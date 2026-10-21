@@ -1,0 +1,7 @@
+# osv-scanner configuration (#1844). Every ignored advisory names its reason, the issue or PR that
+# accepted it, and a date when it is checked again.
+
+[[IgnoredVulns]]
+id = "GHSA-hp3w-g68c-fv3c"
+ignoreUntil = 2027-01-21
+reason = "sprintf-js 1.1.3 has no fixed release; it reaches apps/desktop only through electron-builder's download tooling (@electron/get -> optional global-agent -> roarr), which runs at build time and is not shipped in the app (#1844)"

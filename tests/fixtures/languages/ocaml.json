@@ -1,6 +1,6 @@
 {
   "files": {
-    "src/sum.ml": "let sum a b =\n  failwith \"not implemented\"\n(* AC-001 example: (1, 2, 3) *)\n",
+    "src/sum.ml": "let sum a b =\n  failwith \"not implemented\"\n\nlet three = sum 1 2\n(* AC-001 example: (1, 2, 3) *)\n",
     "dune-project": "(lang dune 3.0)\n"
   },
   "expected": {
@@ -18,9 +18,12 @@
     "properties": null,
     "entryPoints": null,
     "testGates": null,
+    "callGraph": [
+      "sum called at src/sum.ml:4"
+    ],
     "codeMask": [
       "src/sum.ml:2",
-      "src/sum.ml:3 comment"
+      "src/sum.ml:5 comment"
     ]
   }
 }

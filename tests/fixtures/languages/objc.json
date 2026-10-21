@@ -1,7 +1,7 @@
 {
   "files": {
-    "Sources/Sum.m": "@implementation Sum\n@end\n",
-    "Sources/SumTests.m": "@implementation SumTests\n@end\n// AC-001 example: (1, 2, 3)\n"
+    "Sources/Sum.m": "#import \"Sum.h\"\n@implementation Sum\n@end\n\nint sum(int a, int b) {\n  return a + b;\n}\n",
+    "Sources/SumTests.m": "#import \"Sum.h\"\n@implementation SumTests\n- (void)testSum { sum(1, 2); }\n@end\n// AC-001 example: (1, 2, 3)\n"
   },
   "expected": {
     "tests": [
@@ -16,8 +16,14 @@
     "properties": null,
     "entryPoints": null,
     "testGates": null,
+    "callGraph": [
+      "sum called at Sources/SumTests.m:3",
+      "Sources/Sum.m imported by Sources/SumTests.m"
+    ],
     "codeMask": [
-      "Sources/SumTests.m:3 comment"
+      "Sources/Sum.m:1 comment",
+      "Sources/SumTests.m:1 comment",
+      "Sources/SumTests.m:5 comment"
     ]
   }
 }

@@ -121,6 +121,7 @@ const QUERIES: Record<string, string> = {
   `,
   scala: `
     (function_definition name: (identifier) @name) @func
+    (function_declaration name: (identifier) @name) @func
     (class_definition name: (identifier) @name) @class
     (trait_definition name: (identifier) @name) @trait
     (object_definition name: (identifier) @name) @class

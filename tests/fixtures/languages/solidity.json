@@ -1,7 +1,7 @@
 {
   "files": {
     "src/Sum.sol": "contract Sum {\n  function sum(uint a, uint b) public pure returns (uint) {\n    revert(\"not implemented\");\n  }\n}\n",
-    "test/Sum.t.sol": "contract SumTest {}\n// AC-001 example: (1, 2, 3)\n",
+    "test/Sum.t.sol": "contract SumTest {\n  function testSum() public { new Sum().sum(1, 2); }\n}\n// AC-001 example: (1, 2, 3)\n",
     "src/Sum.t.sol": "contract SumTest2 {}\n",
     "foundry.toml": "[profile.default]\n"
   },
@@ -23,9 +23,12 @@
     "properties": null,
     "entryPoints": null,
     "testGates": null,
+    "callGraph": [
+      "sum called at test/Sum.t.sol:2"
+    ],
     "codeMask": [
       "src/Sum.sol:3",
-      "test/Sum.t.sol:2 comment"
+      "test/Sum.t.sol:4 comment"
     ]
   }
 }

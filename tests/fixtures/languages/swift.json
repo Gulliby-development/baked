@@ -1,7 +1,7 @@
 {
   "files": {
     "Sources/Sum.swift": "func sum(_ a: Int, _ b: Int) -> Int {\n    fatalError(\"not implemented\")\n}\n",
-    "Sources/SumTests.swift": "import XCTest\n// AC-001 example: (1, 2, 3)\n",
+    "Sources/SumTests.swift": "import XCTest\nlet three = sum(1, 2)\n// AC-001 example: (1, 2, 3)\n",
     "Package.swift": "// swift-tools-version:5.9\n"
   },
   "expected": {
@@ -21,9 +21,12 @@
     "properties": null,
     "entryPoints": null,
     "testGates": null,
+    "callGraph": [
+      "sum called at Sources/SumTests.swift:2"
+    ],
     "codeMask": [
       "Sources/Sum.swift:2",
-      "Sources/SumTests.swift:2 comment",
+      "Sources/SumTests.swift:3 comment",
       "Package.swift:1 comment"
     ]
   }

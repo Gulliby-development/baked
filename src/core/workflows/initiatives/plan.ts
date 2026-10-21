@@ -70,6 +70,13 @@ export const InitiativeFeatureSchema = z
       .max(50)
       .optional(),
     /**
+     * Files of the skeleton this feature implements, set by the host when it merges a skeleton
+     * into a feature that fills some of its stubs: the feature's run fills them and leaves the
+     * other stubs as written. Merged scopes no longer say which (bench rounds 56 and 57: #1829,
+     * #1847), so the run's request takes them from here.
+     */
+    implements: z.array(PathPattern).max(50).optional(),
+    /**
      * Why the feature stays whole although it holds a large share of the critical path: its parts
      * depend on each other (critical-path.ts, #1522). Absent when nobody asked.
      */
@@ -179,6 +186,10 @@ function skeletonProblems(plan: InitiativePlan): string[] {
       if (first) problems.push(`${path} is in the skeleton of both ${first} and ${feature.id}`);
       else owner.set(path, feature.id);
     }
+  for (const feature of plan.features)
+    for (const path of feature.implements ?? [])
+      if (!feature.skeleton?.some((file) => file.path === path))
+        problems.push(`${feature.id} implements ${path}, which is not a file of its skeleton`);
   return problems;
 }
 
@@ -474,6 +485,7 @@ export function featureDigest(feature: InitiativeFeature): string {
     ...(feature.workflow ? { workflow: feature.workflow } : {}),
     // Left out when there is none, so features approved before skeletons keep their digest.
     ...(feature.skeleton?.length ? { skeleton: feature.skeleton } : {}),
+    ...(feature.implements?.length ? { implements: feature.implements } : {}),
   });
 }
 
@@ -485,13 +497,18 @@ function partSkeleton(
   original: InitiativeFeature,
   parts: readonly { paths?: string[] | undefined }[],
   index: number,
-): Pick<InitiativeFeature, "skeleton"> {
+): Pick<InitiativeFeature, "skeleton" | "implements"> {
   const names = (i: number, path: string) =>
     (parts[i]?.paths ?? original.boundary.paths).some((p) => patternsMeet(path, p));
   const kept = (original.skeleton ?? []).filter(
     ({ path }) => parts.findIndex((_, i) => names(i, path)) === index,
   );
-  return kept.length ? { skeleton: kept } : {};
+  const implemented = (original.implements ?? []).filter((path) =>
+    kept.some((f) => f.path === path),
+  );
+  return kept.length
+    ? { skeleton: kept, ...(implemented.length ? { implements: implemented } : {}) }
+    : {};
 }
 
 /** Edits a person may apply to a proposed split. Each one produces a new plan revision. */
@@ -562,28 +579,41 @@ export function skeletonOnly(feature: Pick<InitiativeFeature, "boundary" | "skel
  * stubs. Its own words were written for a run that fills none ("Create all 25 internal stubs; do
  * not implement them"), and next to the part that implements three of those stubs they gave hdrlens
  * base two orders that cannot both hold: four specify, plan and analyze rounds, 503k tokens and 15.1
- * minutes at the head of the critical path (bench round 56, #1829). They are restated from the
- * files instead: the stubs the merge's other parts list are this feature's to implement, the rest
- * stay as written for the features that fill them.
+ * minutes at the head of the critical path (bench round 56, #1829). They are restated without
+ * naming any stub's fate: which feature fills a stub follows from the plan the run starts on
+ * (`stubFates`), so a later merge or a glob boundary cannot leave a stale list here.
  */
-function skeletonTexts(
-  part: InitiativeFeature,
-  fillers: InitiativeFeature[],
-): { scope: string; contract: string } {
-  const listed = new Set(fillers.flatMap((f) => f.boundary.paths));
-  const stubs = (part.skeleton ?? []).map((f) => f.path);
-  const own = stubs.filter((path) => listed.has(path));
-  const files = `${stubs.length} stub file${stubs.length === 1 ? "" : "s"}`;
+function skeletonTexts(part: InitiativeFeature): { scope: string; contract: string } {
+  const count = part.skeleton?.length ?? 0;
+  const files = `${count} stub file${count === 1 ? "" : "s"}`;
   return {
-    scope: [
-      `The host writes the ${files} the split fixes before any task.`,
-      ...(own.length ? [`This feature implements ${own.join(", ")}.`] : []),
-      ...(own.length < stubs.length
-        ? ["The other stubs stay as written for the features that fill them."]
-        : []),
-    ].join(" "),
+    scope: `The host writes the ${files} of the skeleton before any task; the run's request says which of them this feature implements.`,
     contract: `The ${files} of the skeleton exist with the content the split fixes.`,
   };
+}
+
+/** Whether a feature's boundary names `path`, literally or through one of its globs. */
+export function boundaryCovers(
+  feature: Pick<InitiativeFeature, "boundary">,
+  path: string,
+): boolean {
+  return feature.boundary.paths.some((pattern) => patternsMeet(pattern, path));
+}
+
+/**
+ * Each file of a feature's skeleton with whether the feature implements it (`implements`) and the
+ * other features whose boundary names it, literally or through a glob: those fill the stub later.
+ */
+export function stubFates(
+  plan: InitiativePlan,
+  feature: InitiativeFeature,
+): { path: string; content: string; own: boolean; fillers: string[] }[] {
+  const others = plan.features.filter((f) => f.id !== feature.id);
+  return (feature.skeleton ?? []).map((file) => ({
+    ...file,
+    own: feature.implements?.includes(file.path) ?? false,
+    fillers: others.filter((f) => boundaryCovers(f, file.path)).map((f) => f.id),
+  }));
 }
 
 /**
@@ -620,9 +650,21 @@ function mergeFeatures(
       "Merged source features need one test owner or writable test paths",
     );
   const fillers = merged.filter((f) => !skeletonOnly(f));
+  // A stub another part names, literally or through a glob, is the merged feature's to implement.
+  const implemented = unique(
+    merged.flatMap((part) =>
+      (part.skeleton ?? [])
+        .map((file) => file.path)
+        .filter(
+          (path) =>
+            part.implements?.includes(path) ||
+            merged.some((other) => other !== part && boundaryCovers(other, path)),
+        ),
+    ),
+  );
   const texts = merged.map((f) =>
     fillers.length && skeletonOnly(f)
-      ? skeletonTexts(f, fillers)
+      ? skeletonTexts(f)
       : { scope: f.boundary.scope, contract: f.contract },
   );
   const combined: InitiativeFeature = {
@@ -640,6 +682,7 @@ function mergeFeatures(
     ...(merged.some((f) => f.skeleton?.length)
       ? { skeleton: merged.flatMap((f) => f.skeleton ?? []) }
       : {}),
+    ...(implemented.length ? { implements: implemented } : {}),
   };
   const position = plan.features.findIndex((f) => ids.has(f.id));
   const features: InitiativeFeature[] = [];
