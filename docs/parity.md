@@ -150,6 +150,7 @@ bun test tests/feature-parity.test.ts
 | Pause, resume, accept outside changes, cancel, extend, reroute, undo edits | `/workflow` | `baked workflow pause`, `baked workflow resume`, `baked workflow cancel` +3 | `/v1/workflow/runs/:id/pause`, `/v1/workflow/runs/:id/resume`, `/v1/workflow/runs/:id/cancel` +3 | `project/runs` |
 | Continue approved manifest edits using the run's file-patch hash history | `/workflow` | `baked workflow run`, `baked workflow resume` | `/v1/workflow/runs/:id/resume` | `project/runs` |
 | Adapter-aware provider deadlines and durable zero-token retry limits | `/workflow` | `baked workflow status`, `baked workflow resume` | `/v1/workflow/runs/:id` | `project/runs` |
+| Recovery ladder for a stalled model call: fresh session, other transport, lower effort, next model | `/workflow` | `baked workflow run`, `baked workflow resume` | `/v1/workflow/runs/:id/events` | `project/runs` |
 | Run and initiative active budgets and execution deadlines exclude host suspend gaps | `/workflow` | `baked workflow run`, `baked workflow resume`, `baked workflow initiative drive` | `/v1/workflow/runs` | `project/runs`, `project/initiatives` |
 | Edit preparation journals phases, bounds worker diagnostics and yields during fuzzy matching | `/workflow` | `baked workflow run`, `baked workflow resume` | `/v1/workflow/runs/:id/events` | `project/runs` |
 | Supervisor takeover preserves recorded tokens as an incomplete estimate | `/workflow` | `baked workflow run`, `baked workflow resume`, `baked workflow approve` +3 | `/v1/health` | `project/runs` |
