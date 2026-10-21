@@ -22,6 +22,18 @@ export const INLINE_HARNESS: Record<Framework, string> = {
   xunit: "AcceptanceActual",
 };
 
+/**
+ * The class the JUnit and xUnit blocks add next to the file's own class, named after it: a
+ * written-tests run that names the file's class names this one too.
+ */
+export const INLINE_ROWS_CLASS = {
+  junit: (cls: string) => `${cls}AcceptanceRowsTest`,
+  xunit: (cls: string) => `${cls}AcceptanceRows`,
+};
+
+/** The first line of a block, in any framework. */
+export const INLINE_ROWS_BEGIN = /^(?:\/\/|#) BEGIN acceptance rows: host-written/m;
+
 /** A host-written block of a test file: `tail` ends the file, `head` (Go imports) follows its package clause. */
 export interface InlineRowFile {
   path: string;
@@ -279,7 +291,7 @@ const TEMPLATES: Record<Framework, Template> = {
       skeleton: `package ${pkg};\n`,
       tail: block(
         "junit",
-        `class ${cls}AcceptanceRowsTest {\n  @org.junit.jupiter.api.TestFactory\n  java.util.stream.Stream<org.junit.jupiter.api.DynamicTest> acceptanceRows() {\n    return java.util.stream.Stream.of(\n${rows.map((row) => `        row(${javaString(row.id)}, ${javaValue(row.input)}, ${javaValue(row.expected)})`).join(",\n")});\n  }\n\n  private static org.junit.jupiter.api.DynamicTest row(String id, Object input, Object expected) {\n    return org.junit.jupiter.api.DynamicTest.dynamicTest(\n        id, () -> org.junit.jupiter.api.Assertions.assertEquals(normal(expected), normal(${cls}.acceptanceActual(input))));\n  }\n\n${JAVA_HELPERS}\n}`,
+        `class ${INLINE_ROWS_CLASS.junit(cls)} {\n  @org.junit.jupiter.api.TestFactory\n  java.util.stream.Stream<org.junit.jupiter.api.DynamicTest> acceptanceRows() {\n    return java.util.stream.Stream.of(\n${rows.map((row) => `        row(${javaString(row.id)}, ${javaValue(row.input)}, ${javaValue(row.expected)})`).join(",\n")});\n  }\n\n  private static org.junit.jupiter.api.DynamicTest row(String id, Object input, Object expected) {\n    return org.junit.jupiter.api.DynamicTest.dynamicTest(\n        id, () -> org.junit.jupiter.api.Assertions.assertEquals(normal(expected), normal(${cls}.acceptanceActual(input))));\n  }\n\n${JAVA_HELPERS}\n}`,
       ),
     };
   },
@@ -297,7 +309,7 @@ const TEMPLATES: Record<Framework, Template> = {
       skeleton: "",
       tail: block(
         "xunit",
-        `public class ${cls}AcceptanceRows\n{\n    private const string Rows = ${quoted(data(rows))};\n\n    public static global::System.Collections.Generic.IEnumerable<object[]> Data()\n    {\n        foreach (var row in global::System.Text.Json.Nodes.JsonNode.Parse(Rows)!.AsArray())\n            yield return new object[]\n            {\n                (string)row!["id"]!,\n                row["input"]?.ToJsonString() ?? "null",\n                row["expected"]?.ToJsonString() ?? "null",\n            };\n    }\n\n    [global::Xunit.Theory]\n    [global::Xunit.MemberData(nameof(Data))]\n    public void AcceptanceRow(string id, string input, string expected)\n    {\n        var actual = global::System.Text.Json.JsonSerializer.SerializeToNode(global::${pkg}.${cls}.AcceptanceActual(global::System.Text.Json.Nodes.JsonNode.Parse(input)));\n        global::Xunit.Assert.True(\n            global::System.Text.Json.Nodes.JsonNode.DeepEquals(actual, global::System.Text.Json.Nodes.JsonNode.Parse(expected)),\n            $"{id}: got {actual?.ToJsonString() ?? "null"}, want {expected}");\n    }\n}`,
+        `public class ${INLINE_ROWS_CLASS.xunit(cls)}\n{\n    private const string Rows = ${quoted(data(rows))};\n\n    public static global::System.Collections.Generic.IEnumerable<object[]> Data()\n    {\n        foreach (var row in global::System.Text.Json.Nodes.JsonNode.Parse(Rows)!.AsArray())\n            yield return new object[]\n            {\n                (string)row!["id"]!,\n                row["input"]?.ToJsonString() ?? "null",\n                row["expected"]?.ToJsonString() ?? "null",\n            };\n    }\n\n    [global::Xunit.Theory]\n    [global::Xunit.MemberData(nameof(Data))]\n    public void AcceptanceRow(string id, string input, string expected)\n    {\n        var actual = global::System.Text.Json.JsonSerializer.SerializeToNode(global::${pkg}.${cls}.AcceptanceActual(global::System.Text.Json.Nodes.JsonNode.Parse(input)));\n        global::Xunit.Assert.True(\n            global::System.Text.Json.Nodes.JsonNode.DeepEquals(actual, global::System.Text.Json.Nodes.JsonNode.Parse(expected)),\n            $"{id}: got {actual?.ToJsonString() ?? "null"}, want {expected}");\n    }\n}`,
       ),
     };
   },
