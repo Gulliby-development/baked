@@ -32,7 +32,7 @@ import { criterionCases, missingCases, writtenTestPaths } from "../src/core/veri
 import { reproExecutables } from "../src/core/verification/repro.js";
 import { noteSiblingFindings, ownerOfFinding } from "../src/core/verification/initiative-ownership.js";
 import { exitStatus, timedOutFailure } from "../src/core/verification/check-runner.js";
-import { failureSignature, testCount } from "../src/core/verification/output-counts.js";
+import { baselineRegression, diagnosticCount, failureSignature, testCount } from "../src/core/verification/output-counts.js";
 import { baselineDebt, baselineKeys } from "../src/core/verification/task-end-check.js";
 import { plannedWrittenTests, writtenTestsCheck } from "../src/core/workflows/affected-tests.js";
 import { launchedCommand } from "../src/core/workflows/launcher.js";
@@ -773,6 +773,49 @@ describe("gate matrix: python environments", () => {
       const written = writtenTestsCheck(root, checks, [{ path, action: "create" }]);
       expect(written && [written.executable, ...written.args]).toEqual([runner, verb, "pytest", "-q", `./${path}`]);
     });
+});
+
+// #1791: a passing lint check with six Biome infos became a high "Required check lint failed"
+// finding and a 489k-token correction. Each tool's summary parser counts errors and warnings only,
+// and a rise of warnings alone is a low finding; more errors stay high.
+describe("gate matrix: diagnostics ratchet severity (#1791)", () => {
+  const base = (output: string) => {
+    const count = diagnosticCount(output);
+    if (!count) throw new Error(`no count in ${output}`);
+    return { kind: "diagnostics" as const, ...count };
+  };
+  const rise = (before: string, after: string) => baselineRegression(base(before), after)?.severity ?? null;
+  const biome = (found: string) => `Checked 3 files in 2ms. No fixes applied.\n${found}`;
+  cell("bun", "biome: infos are not counted, warnings are low, errors are high", () => {
+    expect(rise(biome(""), biome("Found 6 infos."))).toBeNull();
+    expect(rise(biome(""), biome("Found 2 warnings.\nFound 6 infos."))).toBe("low");
+    expect(rise(biome("Found 1 warning."), biome("Found 1 error.\nFound 1 warning."))).toBe("high");
+  });
+  cell("npm", "eslint: warnings are low, errors are high", () => {
+    expect(rise("✖ 1 problem (0 errors, 1 warning)", "✖ 3 problems (0 errors, 3 warnings)")).toBe("low");
+    expect(rise("✖ 1 problem (0 errors, 1 warning)", "✖ 2 problems (1 error, 1 warning)")).toBe("high");
+  });
+  cell("python", "ruff: every violation is an error", () => {
+    expect(rise("All checks passed!", "Found 1 error.")).toBe("high");
+  });
+  cell("bun", "tsc: every diagnostic is an error", () => {
+    expect(rise("Found 1 error in 1 file.", "Found 2 errors in 1 file.")).toBe("high");
+  });
+  cell("rust", "cargo: a finished build's warnings are low", () => {
+    const cargo = (n: number) => `    Checking app v0.1.0\n${n ? `warning: \`app\` (bin "app") generated ${n} warnings\n` : ""}    Finished \`dev\` profile [unoptimized] target(s) in 0.5s`;
+    expect(rise(cargo(0), cargo(3))).toBe("low");
+  });
+  cell("dotnet", "dotnet build: warnings are low, errors are high", () => {
+    const build = (w: number, e: number) => `Build succeeded.\n    ${w} Warning(s)\n    ${e} Error(s)`;
+    expect(rise(build(0, 0), build(2, 0))).toBe("low");
+    expect(rise(build(0, 0), build(0, 1))).toBe("high");
+  });
+  cell("go", "go vet prints no summary: no count, no ratchet", () => {
+    expect(diagnosticCount("# example.com/app\n./main.go:5:2: unreachable code")).toBeNull();
+  });
+  cell("maven", "maven has no diagnostics summary parser: no count, no ratchet", () => {
+    expect(diagnosticCount("[WARNING] /src/App.java:[3,8] unused\n[INFO] BUILD SUCCESS")).toBeNull();
+  });
 });
 
 describe("gate matrix: format and type-check gates (#1685)", () => {
