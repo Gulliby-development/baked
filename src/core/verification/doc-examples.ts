@@ -11,6 +11,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import type { SandboxRequest } from "../security/sandbox.js";
 import type { ProcessScope } from "../workflows/process-scope.js";
+import { entryPointCommand } from "./entry-points.js";
 import { REPRO_TIMEOUT_MS, reproEnv } from "./repro.js";
 
 /** Examples the host runs per review stage; each runs for up to REPRO_TIMEOUT_MS. */
@@ -112,6 +113,35 @@ export function commandArgv(command: string): string[] | null {
 }
 
 /**
+ * All-caps words that are values, not placeholders: HTTP methods (`routeshadow match app.txt GET
+ * /users/42`, bench round 55, #1821) and common digest and encoding names.
+ */
+const LITERAL_CAPS = new Set([
+  "GET",
+  "POST",
+  "PUT",
+  "PATCH",
+  "DELETE",
+  "HEAD",
+  "OPTIONS",
+  "TRACE",
+  "CONNECT",
+  "MD5",
+  "SHA1",
+  "SHA256",
+  "SHA384",
+  "SHA512",
+  "UTF8",
+  "UTF16",
+  "ASCII",
+  "JSON",
+  "CSV",
+  "XML",
+  "YAML",
+  "TOML",
+]);
+
+/**
  * The first placeholder argument of a command line (`FILE`, `<file>`, `[options]`, `--out=PATH`),
  * or null. A line with one is a usage line, and the block after it is not what it prints (#1014).
  */
@@ -122,7 +152,7 @@ export function placeholderOf(command: string): string | null {
   for (const arg of args) {
     // An option's own name is not a placeholder; the value after its = may be.
     const value = arg.startsWith("-") ? (arg.split("=")[1] ?? "") : arg;
-    if (/^[A-Z][A-Z0-9_]*[A-Z0-9](\.\.\.)?$/.test(value)) return value;
+    if (/^[A-Z][A-Z0-9_]*[A-Z0-9](\.\.\.)?$/.test(value) && !LITERAL_CAPS.has(value)) return value;
   }
   return null;
 }
@@ -149,16 +179,22 @@ interface Fence {
   lines: string[];
   /** Non-empty lines of prose between the previous fence and this one. */
   proseBefore: number;
+  /** That prose. */
+  prose: string;
 }
 
 function fences(text: string): Fence[] {
   const lines = text.replace(/\r\n?/g, "\n").split("\n");
   const out: Fence[] = [];
   let prose = 0;
+  let proseText = "";
   for (let i = 0; i < lines.length; i++) {
     const open = /^ {0,3}(`{3,}|~{3,})\s*([\w+-]*)/.exec(lines[i] as string);
     if (!open) {
-      if ((lines[i] as string).trim()) prose++;
+      if ((lines[i] as string).trim()) {
+        prose++;
+        proseText += `${(lines[i] as string).trim()}\n`;
+      }
       continue;
     }
     const marker = open[1] as string;
@@ -171,8 +207,10 @@ function fences(text: string): Fence[] {
       start: i + 2,
       lines: body,
       proseBefore: prose,
+      prose: proseText,
     });
     prose = 0;
+    proseText = "";
     i = j;
   }
   return out;
@@ -188,6 +226,27 @@ function joined(lines: string[], from: number): { text: string; next: number } {
   }
   return { text, next };
 }
+
+/**
+ * Whether the prose before a block introduces it as a file rather than as output: it ends with a
+ * colon after naming a file (`An example `net.sp`:`, `Given this input file:`). structpad's
+ * README followed `python -m structpad --help` with a sample struct file, and the host compared
+ * the usage text with it (bench round 55, #1821).
+ */
+function introducesFile(prose: string): boolean {
+  const last = prose.trim().split("\n").at(-1) ?? "";
+  return (
+    /:\s*$/.test(last) &&
+    /\b(?:file|input|sample|config(?:uration)?|schema|definition)s?\b|`[^`\s]+\.\w{1,5}`|\b[\w-]+\.[a-z]{1,5}\b/i.test(
+      last,
+    ) &&
+    !/\b(?:prints?|outputs?|shows?|returns?|writes?|gives?|reports?|displays?)\b/i.test(last)
+  );
+}
+
+/** A block that opens with a source comment (`// wire structs`) is a file, never a program's output. */
+const isSourceText = (lines: readonly string[]): boolean =>
+  /^\s*(?:\/\/|\/\*)/.test(lines.find((l) => l.trim()) ?? "");
 
 /**
  * The command examples of a document that show their output: a fenced block whose `$ ` lines are
@@ -228,6 +287,7 @@ export function extractExamples(file: string, text: string): DocExample[] {
     if (commands.length !== 1) continue;
     const index = block.lines.indexOf(commands[0] as string);
     const command = joined(block.lines, index).text.trim();
+    if (introducesFile(output.prose) || isSourceText(output.lines)) continue;
     examples.push({
       file,
       line: block.start + index,
@@ -282,14 +342,18 @@ function copyWorkspace(root: string, files: readonly string[]): string | null {
     mkdirSync(dirname(join(copy, path)), { recursive: true });
     copyFileSync(join(root, path), join(copy, path));
   }
-  for (const name of LINKED)
-    if (existsSync(join(root, name)) && !existsSync(join(copy, name)))
-      symlinkSync(
-        join(root, name),
-        join(copy, name),
-        process.platform === "win32" ? "junction" : "dir",
-      );
+  for (const name of LINKED) linkInto(root, copy, name);
   return copy;
+}
+
+/** Links a directory of the workspace into its copy, when it exists and the copy has none. */
+function linkInto(root: string, copy: string, name: string): void {
+  if (existsSync(join(root, name)) && !existsSync(join(copy, name)))
+    symlinkSync(
+      join(root, name),
+      join(copy, name),
+      process.platform === "win32" ? "junction" : "dir",
+    );
 }
 
 /**
@@ -337,7 +401,12 @@ export async function runDocExamples(
           skip("The command needs a shell (a pipe, redirect, variable or glob)");
           continue;
         }
-        const [program, ...args] = example.argv as [string, ...string[]];
+        // The project's own command runs through its toolchain (`routeshadow ...` as `cargo run
+        // --bin routeshadow -- ...`, #1821).
+        const entry = options.executables.includes(example.argv[0] as string)
+          ? null
+          : entryPointCommand(options.root, example.argv, options.executables);
+        const [program, ...args] = (entry?.argv ?? example.argv) as [string, ...string[]];
         if (!options.executables.includes(program)) {
           skip(
             `${program} is not a program the run's checks or their toolchains start (${options.executables.join(", ") || "none"})`,
@@ -353,7 +422,8 @@ export async function runDocExamples(
           skip(`The workspace is larger than ${DOC_EXAMPLE_COPY_BYTES / 1024 / 1024} MiB`);
           continue;
         }
-        const unbuilt = missingBuildOutput(example.argv, copy);
+        for (const dir of entry?.entry.link ?? []) linkInto(options.root, copy, dir);
+        const unbuilt = missingBuildOutput([program, ...args], copy);
         if (unbuilt) {
           skip(
             `needs build: ${unbuilt} is a build output that does not exist, and the host runs examples without building`,

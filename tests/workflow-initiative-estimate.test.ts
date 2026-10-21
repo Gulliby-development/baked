@@ -803,3 +803,60 @@ describe("scenario: the path floor starts at the lowest measured rate (#1806, R5
     expect(result.features[0]?.tokens.low).toBeLessThanOrEqual(10 * 270_000);
   });
 });
+
+// Bench rounds 54 and 55: the host moves small leaves to the quick workflow at the split
+// (`lightContracts`). History had no finished quick features of their size, so they took the range
+// of small sdd features, which pay research, spec, analysis and reviews a quick run skips:
+// lanewalk's describe, bisect and lanes got 0.80M-1.00M and used 0.33M-0.47M, routeshadow's export
+// 1.01M-1.38M and used 0.39M (#1813).
+describe("scenario: a light feature is priced from its own workflow, not other workflows' features (#1813, R54)", () => {
+  const sddSample = (runId: string, tokens: number): FeatureRunSample => ({
+    runId,
+    workflowId: "sdd",
+    size: "small",
+    tokens,
+    taskCount: 3,
+    source: "shared",
+  });
+  const samples = [sddSample("a", 800_000), sddSample("b", 900_000), sddSample("c", 1_000_000), sddSample("d", 1_450_000)];
+  // Finished quick runs of the project's history: 0.27M to 0.72M, as the bench updates used.
+  const history = [
+    run("q1", "quick", 270_000, 2),
+    run("q2", "quick", 430_000, 4),
+    run("q3", "quick", 720_000, 4),
+    ...Array.from({ length: 4 }, (_, i) => run(`s${i}`, "sdd", 1_800_000 + i * 200_000, 6)),
+  ];
+  const estimate = (features: FeatureToEstimate[], more: FeatureRunSample[] = []) =>
+    estimateInitiative({ features, history, samples: [...samples, ...more], maxTotalTokens: 30_000_000 });
+
+  test("a small quick feature is priced as a quick run, below the small sdd features", () => {
+    const [describeFeature] = estimate([feature("describe", "small", "quick")]).features;
+    expect(describeFeature?.basis).toBe("workflow-history");
+    expect(describeFeature?.tokens.low).toBeLessThan(400_000);
+    expect(describeFeature?.tokens.high).toBeLessThan(800_000);
+  });
+
+  test("a small sdd feature still takes the small sdd features' range", () => {
+    const [sdd] = estimate([feature("summary", "small")]).features;
+    expect(sdd?.basis).toBe("initiative-history");
+    expect(sdd?.tokens.low).toBeGreaterThanOrEqual(800_000);
+  });
+
+  test("two finished quick features of its size price it as before", () => {
+    const quick = (runId: string, tokens: number): FeatureRunSample => ({ ...sddSample(runId, tokens), workflowId: "quick" });
+    const [own] = estimate([feature("lanes", "small", "quick")], [quick("x", 350_000), quick("y", 450_000)]).features;
+    expect(own?.basis).toBe("initiative-history");
+    expect(own?.samples).toBe(2);
+    expect(own?.tokens).toEqual({ low: 350_000, high: 450_000 });
+  });
+
+  test("without runs of its workflow, a feature still takes its size's features", () => {
+    const [orphan] = estimateInitiative({
+      features: [feature("tree", "small", "quick")],
+      history: history.filter((r) => r.workflowId === "sdd"),
+      samples,
+      maxTotalTokens: 30_000_000,
+    }).features;
+    expect(orphan?.basis).toBe("initiative-history");
+  });
+});

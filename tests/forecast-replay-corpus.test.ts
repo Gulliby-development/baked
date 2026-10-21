@@ -279,12 +279,17 @@ describe("test task splits replay on recorded sizing reports (#1789)", () => {
   }, 120000);
 });
 
-describe("initiative feature ranges replay against what the features used (#1806)", () => {
-  // At each initiative's first replayed start, how many features used less than the low end of
-  // the range the current estimate gives them, and more than its high end. The path floor's low
-  // end at the first quartile of the earlier features' rates put 37 of 104 below their range,
-  // 11 of R54 lanewalk's 12 among them as the round recorded; from the lowest rate, 29 and 7.
-  test("no more features start below their range than the lowest-rate floor allows", () => {
+describe("initiative feature ranges replay against what the features used (#1806, #1813)", () => {
+  // At each initiative's first replayed start, the features that used less than the low end of
+  // the range the current estimate gives them, and more than its high end. A feature's range is
+  // the middle half of comparable finished features, so about a quarter of the features fall
+  // below it and a quarter above by construction; a share above a quarter means the low or high
+  // ends sit away from what features cost. A share, not a count, so each round's new traces keep
+  // the bound (a count of 29 failed when R55 added routeshadow's 2 of 10, a calibrated trace).
+  // R45-R54: a path floor at the first quartile put 37 of 104 below (36%), 11 of R54 lanewalk's
+  // 12 as the round recorded; from the lowest rate 29 (28%, #1806); light features priced as runs
+  // of their own workflow 25 (24%) and lanewalk 5 (#1813).
+  test("no more than a quarter of the features start below their range, or above it", () => {
     let lanewalk = 0;
     let below = 0;
     let above = 0;
@@ -315,8 +320,8 @@ describe("initiative feature ranges replay against what the features used (#1806
         }
     }
     expect(features).toBeGreaterThanOrEqual(104);
-    expect(below).toBeLessThanOrEqual(29);
-    expect(lanewalk).toBeLessThanOrEqual(7);
-    expect(above).toBeLessThanOrEqual(25);
+    expect(below / features).toBeLessThanOrEqual(0.25);
+    expect(above / features).toBeLessThanOrEqual(0.25);
+    expect(lanewalk).toBeLessThanOrEqual(5);
   }, 600000);
 });

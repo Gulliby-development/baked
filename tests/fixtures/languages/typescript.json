@@ -3,7 +3,7 @@
     "src/sum.ts": "export function sum(a: number, b: number): number {\n  throw new Error(\"not implemented\");\n}\n",
     "src/sum.test.ts": "import { sum } from './sum';\n",
     "tsconfig.json": "{}\n",
-    "package.json": "{\"name\": \"fixture\", \"scripts\": {\"test\": \"bun test\", \"lint\": \"biome check .\"}, \"dependencies\": {\"zod\": \"^3.0.0\"}}",
+    "package.json": "{\"name\": \"fixture\", \"scripts\": {\"test\": \"bun test\", \"lint\": \"biome check .\"}, \"dependencies\": {\"zod\": \"^3.0.0\"}, \"bin\": {\"sum\": \"src/sum.ts\"}}",
     "bun.lock": "{}",
     "src/sum.prop.test.ts": "import fc from 'fast-check';\nfc.assert(fc.property(fc.integer(), (a) => a + 0 === a));\n"
   },
@@ -36,6 +36,9 @@
     ],
     "properties": [
       "src/sum.prop.test.ts: library"
+    ],
+    "entryPoints": [
+      "sum: bun src/sum.ts"
     ]
   }
 }
