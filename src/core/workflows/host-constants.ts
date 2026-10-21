@@ -6,7 +6,7 @@
  * accepted spec's and plan's when the task graph is stored.
  */
 import { z } from "zod";
-import { normalizeSpecIds, normalizeTaskIds } from "./host-ids.js";
+import { normalizePlanIds, normalizeSpecIds } from "./host-ids.js";
 
 /** Stands in for a plan hash the model left out or got wrong; the scheduler binds the real one. */
 const PENDING_HASH = "0".repeat(64);
@@ -37,15 +37,16 @@ export function fillHostConstants(output: string, version: unknown, value: unkno
   // Ids are labels the host names: one written as R1 or T1 is renamed, not refused (#1871).
   if (output === "spec") return normalizeSpecIds(filled);
   if (output === "plan" && isRecord(filled.taskGraph)) {
+    const renamed = normalizePlanIds(filled);
     const graph: Record<string, unknown> = {
-      ...normalizeTaskIds(filled.taskGraph),
+      ...(renamed.taskGraph as Record<string, unknown>),
       schemaVersion: 1,
     };
     for (const key of ["specHash", "planHash"])
       if (typeof graph[key] !== "string" || !HASH.test(graph[key] as string))
         graph[key] = PENDING_HASH;
     if (!Number.isInteger(graph.revision) || (graph.revision as number) < 1) graph.revision = 1;
-    filled.taskGraph = graph;
+    return { ...renamed, taskGraph: graph };
   }
   return filled;
 }

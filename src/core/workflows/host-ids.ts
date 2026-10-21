@@ -71,7 +71,7 @@ export function normalizeSpecIds(value: Record<string, unknown>): Record<string,
   );
   if (!ids && !criterionIds) return value;
   const deliverables = value.deliverables;
-  return {
+  return renameInProse(new Map([...(ids ?? []), ...(criterionIds ?? [])]), {
     ...value,
     requirements: requirements.map((r) => ({ ...r, id: rename(ids, r.id) })),
     criteria: criteria.map((c) => ({
@@ -86,24 +86,51 @@ export function normalizeSpecIds(value: Record<string, unknown>): Record<string,
           ),
         }
       : {}),
-  };
+  }) as Record<string, unknown>;
 }
 
-/** A submitted task graph with its task ids, and the dependencies on them, in host format. */
-export function normalizeTaskIds(graph: Record<string, unknown>): Record<string, unknown> {
-  const tasks = Array.isArray(graph.tasks) ? graph.tasks : null;
-  if (!tasks?.every(isRecord)) return graph;
+/**
+ * A submitted plan with its task ids, the dependencies on them and every mention of them in its
+ * markdown and task texts in host format.
+ */
+export function normalizePlanIds(plan: Record<string, unknown>): Record<string, unknown> {
+  const graph = plan.taskGraph;
+  const tasks = isRecord(graph) && Array.isArray(graph.tasks) ? graph.tasks : null;
+  if (!isRecord(graph) || !tasks?.every(isRecord)) return plan;
   const ids = renaming(
     "task",
     tasks.map((t) => t.id),
   );
-  if (!ids) return graph;
-  return {
-    ...graph,
-    tasks: tasks.map((t) => ({
-      ...t,
-      id: rename(ids, t.id),
-      dependsOn: renameAll(ids, t.dependsOn),
-    })),
+  if (!ids) return plan;
+  return renameInProse(ids, {
+    ...plan,
+    taskGraph: {
+      ...graph,
+      tasks: tasks.map((t) => ({
+        ...t,
+        id: rename(ids, t.id),
+        dependsOn: renameAll(ids, t.dependsOn),
+      })),
+    },
+  }) as Record<string, unknown>;
+}
+
+/**
+ * `value` with every whole-word mention of a renamed id in its strings renamed too, so the
+ * readers that find ids in prose (criteria cases, plan consistency, analysis notes) see the host
+ * form the submission's own text cited them in. A mention inside a path or a longer id is kept.
+ */
+function renameInProse(map: Map<string, string>, value: unknown): unknown {
+  if (!map.size) return value;
+  const escaped = [...map.keys()]
+    .sort((a, b) => b.length - a.length)
+    .map((id) => id.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
+  const mention = new RegExp(`(?<![\\w./-])(${escaped.join("|")})(?![\\w/-]|\\.\\w)`, "g");
+  const walk = (v: unknown): unknown => {
+    if (typeof v === "string") return v.replace(mention, (id) => map.get(id) ?? id);
+    if (Array.isArray(v)) return v.map(walk);
+    if (isRecord(v)) return Object.fromEntries(Object.entries(v).map(([k, x]) => [k, walk(x)]));
+    return v;
   };
+  return walk(value);
 }

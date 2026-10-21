@@ -88,6 +88,23 @@ describe("ids a model writes in another shape are renamed to the host's (#1871)"
     expect(plan.taskGraph.tasks.map((t) => [t.id, t.dependsOn])).toEqual([["T001", []], ["T002", ["T001"]]]);
   });
 
+  test("the submission's own prose cites the renamed ids in host form, but not inside paths or longer ids", () => {
+    const value = codexSpec({ requirements: ["R1", "R2", "R12"], criteria: ["AC1", "AC2", "AC3"] });
+    value.criteria[0] = { ...value.criteria[0]!, then: "it prints the tag, as R2 requires (AC1 covers R12), not src/R1.py or R1-legacy" };
+    const parsed = spec.parse(value) as ReturnType<typeof codexSpec>;
+    expect(parsed.criteria[0]?.then).toBe("it prints the tag, as FR-002 requires (AC-001 covers FR-012), not src/R1.py or R1-legacy");
+    const task = (id: string, dependsOn: string[], description: string) => ({
+      id, title: id, description, requirementIds: ["FR-001"], criterionIds: ["AC-001"], dependsOn, profileId: "implementer",
+      writes: [{ path: `${id}.txt`, action: "create" }], readHints: [], checkIds: [], origin: "planned", findingIds: [], rationale: `Needed before ${dependsOn[0] ?? "the end"}`,
+    });
+    const plan = withHostConstants("plan", PlanSchema).parse({
+      schemaVersion: 1, markdown: "# Plan\n\nT1 lays down the skeleton; T2 builds on T1.",
+      taskGraph: { schemaVersion: 1, featureId: "fixture", revision: 1, tasks: [task("T1", [], "Write it"), task("T2", ["T1"], "Extend T1's output")] },
+    }) as { markdown: string; taskGraph: { tasks: { description: string; rationale: string }[] } };
+    expect(plan.markdown).toBe("# Plan\n\nT001 lays down the skeleton; T002 builds on T001.");
+    expect(plan.taskGraph.tasks[1]).toMatchObject({ description: "Extend T001's output", rationale: "Needed before T001" });
+  });
+
   test("the spec author's and the planner's instructions state the formats the schema checks", () => {
     for (const { pattern, examples } of Object.values(HOST_ID_FORMATS))
       for (const example of examples.split(/, | or /)) expect(pattern.test(example)).toBe(true);
@@ -104,12 +121,19 @@ describe("submit_result with a spec (#1871)", () => {
     const original = provider.createModel;
     let call = 0;
     const model = new MockLanguageModelV3({
-      doGenerate: async (): Promise<LanguageModelV3GenerateResult> => ({
-        content: [{ type: "tool-call", toolCallId: `c${call}`, toolName: "submit_result", input: JSON.stringify(submissions[Math.min(call++, submissions.length - 1)]) }],
+      doGenerate: async (): Promise<LanguageModelV3GenerateResult> => {
+        const next = submissions[Math.min(call, submissions.length - 1)];
+        const id = `c${call++}`;
+        // A string is a step that ends on prose instead of a call.
+        return typeof next === "string"
+          ? { content: [{ type: "text", text: next }], finishReason: { unified: "stop", raw: undefined }, usage: { inputTokens: { total: 1000, noCache: 1000, cacheRead: 0, cacheWrite: 0 }, outputTokens: { total: 100, text: 100, reasoning: 0 } }, warnings: [] }
+          : {
+        content: [{ type: "tool-call", toolCallId: id, toolName: "submit_result", input: JSON.stringify(next) }],
         finishReason: { unified: "tool-calls", raw: undefined },
         usage: { inputTokens: { total: 1000, noCache: 1000, cacheRead: 0, cacheWrite: 0 }, outputTokens: { total: 100, text: 100, reasoning: 0 } },
         warnings: [],
-      }),
+      };
+      },
     });
     provider.createModel = () => model as LanguageModelV3;
     cleanups.push(() => {
@@ -143,6 +167,14 @@ describe("submit_result with a spec (#1871)", () => {
   test("a submission the schema refuses is kept as a diagnostic before the corrected one is accepted", async () => {
     const { result, calls, diagnostics } = await author([codexSpec({ requirements: ["LOGIN", "R2", "R3"], criteria: ["AC1", "AC2", "AC3"] }), codexSpec()]);
     expect(calls()).toBe(2);
+    expect(result.output).toMatchObject({ requirements: [{ id: "FR-001" }, { id: "FR-002" }, { id: "FR-003" }] });
+    expect(diagnostics.some((path) => /attempts\/[^/]+\/invalid-1\.json$/.test(path))).toBe(true);
+  });
+
+  test("a refused submission after a prose ending is kept as well", async () => {
+    const refused = codexSpec({ requirements: ["LOGIN", "R2", "R3"], criteria: ["AC1", "AC2", "AC3"] });
+    const { result, calls, diagnostics } = await author(["The spec is ready.", refused, codexSpec()]);
+    expect(calls()).toBe(3);
     expect(result.output).toMatchObject({ requirements: [{ id: "FR-001" }, { id: "FR-002" }, { id: "FR-003" }] });
     expect(diagnostics.some((path) => /attempts\/[^/]+\/invalid-1\.json$/.test(path))).toBe(true);
   });
