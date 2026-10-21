@@ -14,5 +14,9 @@
   "R52/stmtsplit-update.sqlite.gz#17773c4d-d62f-43b9-af76-f1ef4189e423": {
     "newApprovalDeclines": 1,
     "reason": "#1707: the trace was exported before the export kept the file names a request names, so the package.json edit its request named (requestedManifestEdits) replays as an unnamed manifest edit. A trace exported from #1707 on keeps them."
+  },
+  "R53/pgnvet-update.sqlite.gz#438ba5e5-8b09-44a6-8f22-12025b527623": {
+    "newApprovalDeclines": 1,
+    "reason": "#1707: the trace was exported before the export kept the file names a request names, so the package.json edit its request named (requestedManifestEdits) replays as an unnamed manifest edit. A trace exported from #1707 on keeps them."
   }
 }
