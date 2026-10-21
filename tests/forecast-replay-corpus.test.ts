@@ -4,13 +4,15 @@ import { join, relative } from "node:path";
 import { callCostRate, costRate } from "../src/core/workflows/budget.js";
 import { shareShortfall } from "../src/core/workflows/initiatives/service.js";
 import { forecastSamples } from "../src/core/workflows/stage-price.js";
+import { planApprovalDecision } from "../src/core/workflows/auto-approval.js";
 import { CAPACITY_PROBE } from "../src/core/workflows/sizing.js";
-import { type CallRate, openTrace, type PlanPriceReplay, replayInitiativeStarts, replayPlanPrices, replayTrace, type TestSplitRule } from "../src/core/workflows/trace.js";
+import { type CallRate, openTrace, type PlanPriceReplay, replayInitiativeStarts, replayPlanApprovals, replayPlanPrices, replayTrace, type TestSplitRule } from "../src/core/workflows/trace.js";
 
 // #1649, #1715: every recorded bench-round trace replays through the current host decisions: the
 // forecast and cap code, the per-call cost cap (#1740), the first-response deadline of each model
 // call, the test task split of each sizing report (#1789), and the initiative share gate (#1707), asked both on its recorded inputs and with each start
-// rewound and recomputed. A stop, cap growth or park the recorded run did not make fails the suite, unless
+// rewound and recomputed, and the plan auto-approval on the run state it was asked with (#1707). A
+// stop, cap growth, park or approval decision the recorded run did not make fails the suite, unless
 // accepted.json lists it for that run or initiative with the reason: the pull request that changes
 // the decision says so in its diff.
 const ROOT = join(import.meta.dir, "fixtures", "bench-traces");
@@ -23,6 +25,8 @@ interface Accepted {
   newTestSplits?: number;
   newShareStops?: number;
   newStartStops?: number;
+  newApprovalDeclines?: number;
+  newAutoApprovals?: number;
   reason: string;
 }
 
@@ -38,6 +42,8 @@ function traces(dir: string): string[] {
 }
 
 const accepted = JSON.parse(readFileSync(join(ROOT, "accepted.json"), "utf8")) as Record<string, Accepted>;
+/** The first round whose run states count sizing tasks as the current auto approval reads them. */
+const APPROVAL_REPLAY_FROM = 52;
 
 describe("bench-round traces replay without new forecast stops or growth (#1649)", () => {
   const found = traces(ROOT);
@@ -72,6 +78,24 @@ describe("bench-round traces replay without new forecast stops or growth (#1649)
           newTestSplits: allowed?.newTestSplits ?? 0,
         });
       }
+      // Run states before R52 counted the host's own test splits in `hostSplitTasks`, which the
+      // graph's sizing slices now say (#1711): their approvals are not replayed as a gate.
+      if (Number(/^R(\d+)\//.exec(name)?.[1]) >= APPROVAL_REPLAY_FROM) {
+        const approvals = replayPlanApprovals(path);
+        for (const runId of new Set(approvals.map((a) => a.runId))) {
+          const allowed = accepted[`${name}#${runId}`];
+          const own = approvals.filter((a) => a.runId === runId);
+          expect({
+            run: runId,
+            newApprovalDeclines: own.filter((a) => a.recorded === "auto" && a.replayed === "person").length,
+            newAutoApprovals: own.filter((a) => a.recorded === "person" && a.replayed === "auto").length,
+          }).toEqual({
+            run: runId,
+            newApprovalDeclines: allowed?.newApprovalDeclines ?? 0,
+            newAutoApprovals: allowed?.newAutoApprovals ?? 0,
+          });
+        }
+      }
       for (const initiative of replay.initiatives) {
         const allowed = accepted[`${name}#${initiative.initiativeId}`];
         expect({
@@ -98,6 +122,22 @@ describe("the first-response deadline replays on recorded calls (#1715)", () => 
       expect(old.map((b) => [b.provider, b.stage])).toContainEqual(["codex", "spec"]);
       expect(old.every((b) => b.firstByteMs !== null && b.firstByteMs > 60_000)).toBe(true);
       expect(replayTrace(path).runs.reduce((n, r) => n + r.newFirstByteStops, 0)).toBe(0);
+    }
+  }, 120000);
+});
+
+describe("plan auto-approval replays on recorded run states (#1707)", () => {
+  test("#1711: R51 url-shortener and md-site, declined for 9 and 14 tasks of 8, approve on main", () => {
+    // Before #1711 every slice sizing cut from one task counted against the limit.
+    const sliced: typeof planApprovalDecision = (policy, state, ...rest) =>
+      planApprovalDecision(policy, { ...state, graph: { ...state.graph, tasks: state.graph.tasks.map(({ sizingSlice: _, ...t }) => t) } }, ...rest);
+    for (const [app, limit] of [
+      ["url-shortener", "Limits: 9 tasks exceed 8 (4 added for sizing not counted)"],
+      ["md-site", "Limits: 14 tasks exceed 8"],
+    ] as const) {
+      const path = join(ROOT, "R51", `${app}.sqlite.gz`);
+      expect(replayPlanApprovals(path)).toEqual([expect.objectContaining({ recorded: "person", replayed: "auto", reasons: [] })]);
+      expect(replayPlanApprovals(path, sliced)).toEqual([expect.objectContaining({ recorded: "person", replayed: "person", reasons: expect.arrayContaining([limit]) })]);
     }
   }, 120000);
 });

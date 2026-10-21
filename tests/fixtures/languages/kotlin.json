@@ -14,6 +14,10 @@
       "src/main/kotlin/SumSpec.kt",
       "src/test/kotlin/SumPropTest.kt"
     ],
+    "testMarkers": [
+      "src/main/kotlin/SumSpec.kt: source",
+      "src/test/kotlin/SumPropTest.kt: test"
+    ],
     "manifests": null,
     "dependencies": [
       "build.gradle.kts: maven com.squareup.okio:okio"

@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { type LanguageRecord, none, rowOf, SUPPORTED_LANGUAGES } from "./language-records.js";
 import { detectLanguageFromPath, type Language } from "./types.js";
 
@@ -35,6 +37,45 @@ export const TEST_CONVENTIONS: LanguageRecord<RegExp> = {
   svelte: none("Svelte components are tested from `.spec.ts` or `.test.ts` files"),
   rescript: /_test\.resi?$|Test\.resi?$/,
   solidity: /\.t\.sol$/,
+};
+
+/**
+ * What a test file of each language holds (a test attribute, a test function, a test framework's
+ * import), one row per supported language. A name convention of `TEST_CONVENTIONS` that is a plain
+ * word (`PermTest.cs`, `FeatureSpec.kt`, `abtest_test.c`) also names domain code, so an existing
+ * file outside a test directory counts as a test only when it holds one of these (#1848: modeplan,
+ * bench round 57, a `find -perm` stub `PermTest.cs` was read-only for its own implementer). `none`
+ * where the name alone is the language's rule.
+ */
+export const TEST_MARKERS: LanguageRecord<RegExp> = {
+  typescript: none("only the dotted `.test.` and `.spec.` suffixes name tests, never a plain word"),
+  javascript: none("only the dotted `.test.` and `.spec.` suffixes name tests, never a plain word"),
+  python:
+    /\b(?:pytest|unittest|django\.test|hypothesis)\b|^\s*(?:async\s+)?def test_|^\s*class Test/m,
+  go: none("the compiler builds `_test.go` files only into tests"),
+  rust: /#\[(?:[\w:]+::)?test\b|#\[cfg\(test\)\]|#\[rstest\b/,
+  java: /@(?:Test|ParameterizedTest|RepeatedTest|TestFactory|TestTemplate)\b|\borg\.(?:junit|testng)\b/,
+  kotlin:
+    /@(?:Test|ParameterizedTest)\b|\b(?:org\.junit|io\.kotest|kotlin\.test|org\.spekframework)\b/,
+  scala: /\b(?:org\.scalatest|munit|utest|zio\.test|org\.specs2|weaver)\b|@Test\b/,
+  csharp:
+    /\[(?:Fact|Theory|Test|TestCase|TestCaseSource|TestMethod|DataTestMethod|TestClass|TestFixture)\b|\busing\s+(?:Xunit|NUnit|Microsoft\.VisualStudio\.TestTools)\b/,
+  c: /\b(?:START_TEST|TEST_ASSERT\w*|ck_assert\w*|CU_\w+|munit_\w+|cmocka_\w+|assert)\b|\bTEST(?:_F|_P)?\s*\(/,
+  cpp: /\b(?:TEST(?:_F|_P|_CASE)?|BOOST_AUTO_TEST_CASE|SECTION|EXPECT_\w+|ASSERT_\w+|assert)\b|<(?:gtest|catch2|doctest)\b/,
+  ruby: /\b(?:RSpec|Minitest|Test::Unit|describe|context)\b|^\s*(?:it|test)\s*[("']|^\s*def test_/m,
+  php: /\b(?:PHPUnit|TestCase)\b|#\[Test\]|@test\b|function\s+test\w*\s*\(|^\s*(?:it|test)\s*\(/m,
+  swift: /\bimport\s+(?:XCTest|Testing)\b|\bXCTestCase\b|@Test\b|@Suite\b/,
+  lua: /\b(?:describe|luaunit|busted|lust)\b|^\s*it\s*\(/m,
+  elixir: /\bExUnit\b|^\s*test\s+"/m,
+  dart: /package:(?:test|flutter_test)\/|^\s*(?:test|group|testWidgets)\s*\(/m,
+  zig: /^\s*test\s*(?:"|\{)/m,
+  bash: /\b(?:shunit2|bats|assert\w*)\b|@test\b|^\s*test_\w+\s*\(\)/m,
+  ocaml: none("dune keeps tests in a `test/` directory, which the shared rule covers"),
+  objc: /\bXCTest(?:Case)?\b|\bXCTAssert\w*/,
+  vue: none("Vue components are tested from `.spec.ts` or `.test.ts` files"),
+  svelte: none("Svelte components are tested from `.spec.ts` or `.test.ts` files"),
+  rescript: /\b(?:Jest|Vitest|Zora|Ava|RescriptMocha)\b|^\s*(?:test|describe|it)\s*\(/m,
+  solidity: none("`.t.sol` is Foundry's own rule, never a plain word"),
 };
 
 /** Build and package manifests by file name, one row per supported language. */
@@ -83,6 +124,8 @@ interface LanguageTraits {
   source?: true;
   /** Test files by the language's own naming. */
   tests?: RegExp;
+  /** What a test file holds, when a name of `tests` can also name domain code (#1848). */
+  markers?: RegExp;
   /** Build and package manifests by file name. */
   manifests?: RegExp;
 }
@@ -99,10 +142,16 @@ export const LANGUAGE_TRAITS: Partial<Record<Language, LanguageTraits>> = {
   ...Object.fromEntries(
     SUPPORTED_LANGUAGES.map((language) => {
       const tests = rowOf(TEST_CONVENTIONS, language);
+      const markers = rowOf(TEST_MARKERS, language);
       const manifests = rowOf(MANIFEST_NAMES, language);
       return [
         language,
-        { code: true, ...(tests ? { tests } : {}), ...(manifests ? { manifests } : {}) },
+        {
+          code: true,
+          ...(tests ? { tests } : {}),
+          ...(markers ? { markers } : {}),
+          ...(manifests ? { manifests } : {}),
+        },
       ];
     }),
   ),
@@ -146,4 +195,36 @@ export function isTestFile(path: string): boolean {
   return (
     /\.(?:e2e-)?(?:test|spec)\.\w+$/i.test(normalized) || traits.tests?.test(normalized) === true
   );
+}
+
+/**
+ * Whether a file is a test given its content: `isTestFile`, except that a file outside a test
+ * directory whose only claim is a name its language shares with domain code (`PermTest.cs`) needs
+ * a test marker of `TEST_MARKERS` too (#1848). `content` null or undefined (the file does not exist
+ * yet, or was not read) leaves the name rule.
+ */
+export function isTestContent(path: string, content: string | null | undefined): boolean {
+  if (!isTestFile(path)) return false;
+  if (content == null) return true;
+  const normalized = normalize(path);
+  if (TEST_DIR.test(normalized) || /\.(?:e2e-)?(?:test|spec)\.\w+$/i.test(normalized)) return true;
+  const { tests, markers } = traitsOf(normalized) ?? {};
+  if (!tests || !markers) return true;
+  // A rule its directory alone meets (C#'s `App.Tests/`) is a directory rule, not a name.
+  const dir = normalized.slice(0, normalized.length - baseName(normalized).length);
+  const ext = normalized.slice(normalized.lastIndexOf("."));
+  if (tests.test(`${dir}probe${ext}`)) return true;
+  return markers.test(content);
+}
+
+/** `isTestContent` of the file as it is under `root`, by the name alone when it does not exist. */
+export function isTestFileAt(root: string, path: string): boolean {
+  if (!isTestFile(path)) return false;
+  let content: string | null = null;
+  try {
+    content = readFileSync(join(root, path), "utf8");
+  } catch {
+    /* absent or unreadable: the name rule */
+  }
+  return isTestContent(path, content);
 }

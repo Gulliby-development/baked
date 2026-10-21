@@ -7,6 +7,9 @@
     "tests": [
       "Sources/SumTests.m"
     ],
+    "testMarkers": [
+      "Sources/SumTests.m: source"
+    ],
     "manifests": null,
     "dependencies": null,
     "placeholders": null,

@@ -8,6 +8,9 @@
     "tests": [
       "src/sum_test.c"
     ],
+    "testMarkers": [
+      "src/sum_test.c: source"
+    ],
     "manifests": null,
     "dependencies": null,
     "placeholders": [

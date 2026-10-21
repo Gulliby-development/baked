@@ -5,6 +5,7 @@
   },
   "expected": {
     "tests": null,
+    "testMarkers": null,
     "manifests": [
       "dune-project"
     ],

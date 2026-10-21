@@ -1251,6 +1251,12 @@ export const WorkflowConfigSchema = z
      */
     parallelRunsFromPlan: z.boolean().optional(),
     /**
+     * An initiative whose features run in worktrees starts a feature's planning once every
+     * unfinished feature it depends on has an approved spec, instead of after their results are
+     * accepted; its tasks still wait for those results (#1834). Off by default.
+     */
+    planAhead: z.boolean().optional(),
+    /**
      * Deadlines and stall limits (milliseconds): a tool call that never returns, a model attempt
      * with no progress, and how often a stalled run resumes by itself. Defaults in `stall.ts`.
      */
@@ -1563,7 +1569,7 @@ export const EventSchema = z.discriminatedUnion("type", [
         .object({
           requestId: SafeId,
           status: z.enum(["accepted", "rejected", "superseded"]),
-          actor: z.enum(["user", "system-invalidation", "auto-approval"]),
+          actor: z.enum(["user", "system-invalidation", "auto-approval", "host-release"]),
         })
         .strict(),
     })
@@ -1878,6 +1884,11 @@ export interface StartRequest {
    * from its upstream features' accepted results). Ignored by an inline run.
    */
   baseCommit?: string;
+  /**
+   * `baseCommit` is provisional: features this one depends on were not finished when it started,
+   * so its tasks wait until the initiative moves its worktree to their results (#1834).
+   */
+  planAhead?: boolean;
   /** The proposal of `--auto-preset` and the workflow the run took (`PresetChoice`). */
   presetChoice?: import("./preset-router.js").PresetChoice;
   /** Why the host built no auto approval for a run that asked for it (`RuntimeState`, #1467). */

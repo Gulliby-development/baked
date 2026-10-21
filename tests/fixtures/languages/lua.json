@@ -12,6 +12,9 @@
     "tests": [
       "src/sum_spec.lua"
     ],
+    "testMarkers": [
+      "src/sum_spec.lua: source"
+    ],
     "manifests": [
       "fixture-0.1-1.rockspec"
     ],

@@ -14,6 +14,10 @@
       "src/tests.rs",
       "tests/props.rs"
     ],
+    "testMarkers": [
+      "src/tests.rs: test",
+      "tests/props.rs: test"
+    ],
     "manifests": [
       "Cargo.toml"
     ],

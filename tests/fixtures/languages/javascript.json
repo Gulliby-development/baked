@@ -12,6 +12,7 @@
   },
   "expected": {
     "tests": null,
+    "testMarkers": null,
     "manifests": [
       "package.json"
     ],

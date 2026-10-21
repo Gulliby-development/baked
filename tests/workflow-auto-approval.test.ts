@@ -12,6 +12,7 @@ import {
   withoutApprovalRemarks,
 } from "../src/core/workflows/auto-approval.js";
 import { defaultWorkflowPolicy } from "../src/core/workflows/defaults.js";
+import { scrubTrace } from "../src/core/workflows/trace.js";
 import {
   type InputManifest,
   PolicySchema,
@@ -197,10 +198,17 @@ describe("auto approval", () => {
       }
     });
     // #1428: the request names a manifest only by its whole path; a shared name such as
-    // package.json names the root one, and a sentence that keeps a file as is names none.
+    // package.json names the root one, and a sentence that keeps a file as is names none. A bench
+    // trace keeps the paths the request names in place of its prose, and decides the same (#1707).
     test("a manifest is named by its whole path, not by a substring or a shared file name", () => {
-      const decide = (path: string, text: string) =>
-        evaluateAutoApproval(optedIn, manifest, covered, graph([modify(path)]), [], [], { ...present, request: text }).approval?.mode ?? null;
+      const once = (path: string, text: string, named = text) =>
+        evaluateAutoApproval(optedIn, manifest, covered, graph([modify(path)]), [], [], { ...present, request: text, manifestRequest: named }).approval?.mode ?? null;
+      const decide = (path: string, text: string) => {
+        const traced = (scrubTrace({ requestText: text }) as { requestText: string }).requestText;
+        expect(traced).not.toContain("Core library");
+        expect(once(path, text, traced)).toBe(once(path, text));
+        return once(path, text);
+      };
       expect(decide("package.json", request)).toBeNull();
       expect(decide("package.json", "Add a Core library. Do not edit package.json.")).toBeNull();
       expect(decide("package.json", "Add a Core library and leave `package.json` unchanged.")).toBeNull();

@@ -10,6 +10,10 @@
       "spec/sum_spec.rb",
       "lib/sum_test.rb"
     ],
+    "testMarkers": [
+      "spec/sum_spec.rb: test",
+      "lib/sum_test.rb: source"
+    ],
     "manifests": [
       "Gemfile"
     ],

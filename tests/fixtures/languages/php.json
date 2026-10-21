@@ -8,6 +8,9 @@
     "tests": [
       "src/SumTest.php"
     ],
+    "testMarkers": [
+      "src/SumTest.php: source"
+    ],
     "manifests": [
       "composer.json"
     ],
