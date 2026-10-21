@@ -1177,13 +1177,17 @@ export class WorkflowStore {
     id: string,
     status: "accepted" | "rejected" | "superseded",
     answer: unknown,
-    automatic = false,
+    automatic: boolean | "host-release" = false,
   ): void {
-    const actor = automatic
-      ? "auto-approval"
-      : status === "superseded"
-        ? "system-invalidation"
-        : "user";
+    // A planned-ahead run's release is decided by its initiative, not a person (#1834).
+    const actor =
+      automatic === "host-release"
+        ? "host-release"
+        : automatic
+          ? "auto-approval"
+          : status === "superseded"
+            ? "system-invalidation"
+            : "user";
     const result = this.db.run(
       "UPDATE requests SET status=?,answer_json=?,actor=?,decided_at=? WHERE run_id=? AND id=? AND status='pending'",
       [status, canonical(answer), actor, Date.now(), runId, id],
@@ -1194,7 +1198,8 @@ export class WorkflowStore {
   }
   /**
    * Everything that waits for a person across all runs, oldest first: every pending request of a
-   * run that can still act on it, and every blocked run. Requests have no timestamp of their own,
+   * run that can still act on it, and every blocked run. A planned-ahead run's host-release
+   * requests are the initiative's to decide (#1834), so they are left out. Requests have no timestamp of their own,
    * so a request is dated by its `request.created` event and a blocked run by its last change.
    */
   attention(): AttentionRow[] {
@@ -1206,6 +1211,8 @@ export class WorkflowStore {
              AND json_extract(e.payload_json,'$.requestId')=q.id), r.updated_at) AS created_at
          FROM requests q JOIN runs r ON r.id=q.run_id
          WHERE q.status='pending' AND r.status NOT IN ('cancelled','failed')
+           AND NOT (q.kind='manual_evidence'
+             AND COALESCE(json_extract(q.body_json,'$.hostRelease'),0)=1)
          UNION ALL
          SELECT id, feature_id, status, NULL, reason, NULL, updated_at FROM runs WHERE status='blocked'
          ORDER BY created_at, run_id, request_id`,

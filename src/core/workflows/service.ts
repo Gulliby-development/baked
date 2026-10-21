@@ -58,6 +58,7 @@ import {
 } from "./context.js";
 import { refreshCriticOutcomes } from "./critic-outcomes.js";
 import { decideDelivery, isDeliveryRequest } from "./delivery.js";
+import { dependencyContracts, isHostRelease } from "./dependencies.js";
 import {
   checkLine,
   checkRoutingModels,
@@ -164,7 +165,7 @@ import {
   produces,
   stageKind,
 } from "./v2/runtime.js";
-import { removeRunWorktree, runRoot } from "./worktree.js";
+import { moveRunWorktree, removeRunWorktree, runRoot } from "./worktree.js";
 import {
   cleanWorktrees,
   type WorktreeCleanup,
@@ -438,6 +439,8 @@ export class NativeWorkflowService implements WorkflowService {
       testsFirst: null,
       presetChoice: request.presetChoice ?? null,
       autoApprovalDeclined: request.autoApprovalDeclined ?? null,
+      planAhead:
+        request.planAhead && request.baseCommit ? { released: false, baselined: false } : null,
     };
     return this.store.transaction(() => {
       const duplicate = this.store.previousCommand(request.commandId, request);
@@ -2318,6 +2321,8 @@ export class NativeWorkflowService implements WorkflowService {
       baseCommit?: string;
       /** Why the rebased run's policy has no auto approval (#1467). */
       autoApprovalDeclined?: string;
+      /** `baseCommit` is provisional: the rebased run plans ahead again (#1834). */
+      planAhead?: boolean;
     },
   ): Promise<RunSnapshot> {
     this.enabled();
@@ -2328,6 +2333,7 @@ export class NativeWorkflowService implements WorkflowService {
     const policy = rebase.policy ? PolicySchema.parse(rebase.policy) : undefined;
     const baseCommit = rebase.baseCommit;
     const declined = rebase.autoApprovalDeclined;
+    const planAhead = Boolean(rebase.planAhead && baseCommit);
     return this.forkRun(
       runId,
       command,
@@ -2338,14 +2344,89 @@ export class NativeWorkflowService implements WorkflowService {
         dependencies,
         policy: policy ?? null,
         ...(baseCommit ? { baseCommit } : {}),
+        ...(planAhead ? { planAhead } : {}),
       },
       {
         dependencies,
         policy,
         ...(baseCommit ? { baseCommit } : {}),
         ...(declined ? { autoApprovalDeclined: declined } : {}),
+        ...(planAhead ? { planAhead } : {}),
       },
     );
+  }
+  /**
+   * Moves a planned-ahead initiative feature run (#1834) from its provisional base to `baseCommit`,
+   * the results of the features it depends on, once every one of them is finished. The run waits
+   * at its tasks for exactly that: its host-release requests are decided by the host, and its
+   * next drive takes the baseline again before the first task. Refused while a dependency is not
+   * finished or its contract changed (the initiative rebases the run then), or the run waits for
+   * anything else.
+   */
+  async releaseBase(
+    runId: string,
+    command: CommandIdentity,
+    release: { baseCommit: string },
+  ): Promise<RunSnapshot> {
+    this.enabled();
+    const baseCommit = release.baseCommit;
+    if (!/^[0-9a-f]{40,64}$/.test(baseCommit))
+      throw new WorkflowFault("INVALID_REFERENCE", `Not a commit: ${baseCommit}`);
+    const body = { runId, ...command, action: "release-base", baseCommit };
+    const previous = this.store.previousCommand(command.commandId, body);
+    if (previous) return previous;
+    const run = this.store.run(runId);
+    const state = this.store.state(runId);
+    const pending = this.store.requests(runId).filter((r) => r.status === "pending");
+    const held = pending.filter(isHostRelease);
+    if (
+      run.status !== "waiting" ||
+      this.active.has(runId) ||
+      !state.planAhead ||
+      state.planAhead.released ||
+      !state.worktree ||
+      !held.length ||
+      held.length !== pending.filter(blocksRun).length
+    )
+      throw new WorkflowFault(
+        "STALE_DECISION",
+        `Run ${runId} is not a planned-ahead run waiting for its dependencies`,
+      );
+    const unfinished = dependencyContracts(this.store, state).filter((d) => !d.completed);
+    if (unfinished.length)
+      throw new WorkflowFault(
+        "STALE_DECISION",
+        `The run still waits for ${unfinished.map((d) => d.featureId).join(", ")}`,
+      );
+    const from = state.worktree.baseHead;
+    // A retry after a crash between the move and the state save finds the worktree moved.
+    if (from !== baseCommit) await moveRunWorktree(this.workspace, state.worktree, baseCommit);
+    return this.store.command(runId, command, body, () => {
+      const current = this.store.state(runId);
+      if (!current.worktree || !current.planAhead)
+        throw new WorkflowFault("STALE_DECISION", "The run changed during its release");
+      current.worktree = { ...current.worktree, baseHead: baseCommit };
+      current.worktreeBase = baseCommit;
+      current.planAhead = { released: true, baselined: false };
+      // The baseline is taken again on the new base before the first task.
+      current.expectedFiles = null;
+      this.store.artifact(
+        runId,
+        "plan-ahead",
+        "plan-ahead/release.json",
+        canonical({ from, to: baseCommit, requests: held.map((r) => r.id) }),
+      );
+      for (const request of held)
+        this.store.decideRequest(
+          runId,
+          request.id,
+          "accepted",
+          { kind: "host-release", baseCommit },
+          "host-release",
+        );
+      this.store.saveState(runId, current);
+      this.store.transition(runId, "paused", "none");
+    });
   }
   private forkRun(
     runId: string,
@@ -2356,6 +2437,7 @@ export class NativeWorkflowService implements WorkflowService {
       policy?: RunPolicy;
       baseCommit?: string;
       autoApprovalDeclined?: string;
+      planAhead?: boolean;
     },
     fromStage?: string,
   ): RunSnapshot {
@@ -2381,6 +2463,10 @@ export class NativeWorkflowService implements WorkflowService {
         seed = captureForkSeed(this.store, runId, state, runRoot(this.workspace, state), fromStage);
       }
       const worktreeBase = state.worktree?.baseHead ?? state.worktreeBase;
+      // The parent's documents were published into its own worktree, untracked; a fork that
+      // plans again publishes them into its new worktree, where they do not exist yet. Kept, they
+      // stopped every rebase of a worktree feature at "File changed before publication" (#1834).
+      if (state.worktree && !fromStage) state.published = {};
       state.stageIndex = state.spec && state.graph && state.plan ? 3 : 0;
       state.position = restartPosition(
         run.definition_json,
@@ -2439,6 +2525,7 @@ export class NativeWorkflowService implements WorkflowService {
       if (rebase) {
         state.hostDependencies = rebase.dependencies;
         if (rebase.baseCommit) state.worktreeBase = rebase.baseCommit;
+        state.planAhead = rebase.planAhead ? { released: false, baselined: false } : null;
         state.autoApprovalDeclined = rebase.autoApprovalDeclined ?? null;
         state.manifest.policyHash = hashJson(policy);
         state.manifest.dependencyContracts = [];
