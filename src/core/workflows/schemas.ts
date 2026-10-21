@@ -560,6 +560,13 @@ export const PolicySchema = z
     /** Host-written audited acceptance rows and parameterized tests; absent means off (#1596). */
     rowsAsData: z.enum(["off", "on"]).optional(),
     /**
+     * `on` gives implementers `restore_file`, which puts a file the task's edits left unparsable
+     * back to its last version that parsed, and has the progress watcher's steering name the
+     * file's syntax errors and the tool (#1835). Absent means `off`, so stored policies keep their
+     * hash.
+     */
+    restoreFile: z.enum(["off", "on"]).optional(),
+    /**
      * `split` has the decomposer of an initiative split a feature that holds more than a third of
      * the critical path into features that run side by side, or say why it stays whole
      * (initiatives/critical-path.ts, #1522). Absent means `off`, so stored policies keep their hash.

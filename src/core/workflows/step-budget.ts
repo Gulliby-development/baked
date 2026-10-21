@@ -1,6 +1,7 @@
 import type { JSONValue } from "@ai-sdk/provider";
 import type { ModelMessage } from "@ai-sdk/provider-utils";
 import {
+  type BrokenFile,
   missingToolClaims,
   steeringNotice,
   stillStuck,
@@ -395,6 +396,8 @@ export class AttemptStepController {
         mustEdit: boolean;
         /** The edit tools of the session, named back to a worker that says it has none. */
         editTools?: string[];
+        /** Files the attempt's edits left unparsable, named in the steering when set (#1835). */
+        broken?: () => readonly BrokenFile[];
         onSignal: (finding: WatchFinding, action: "steered" | "stopped") => void;
       };
     },
@@ -619,9 +622,14 @@ export class AttemptStepController {
         content: truncationNotice(this.options.maxOutputTokens),
       });
     }
-    if (steer) this.notices.push({ at: compacted.messages.length, content: steeringNotice(steer) });
+    const broken = watch?.broken?.() ?? [];
+    if (steer)
+      this.notices.push({ at: compacted.messages.length, content: steeringNotice(steer, broken) });
     if (namedTools)
-      this.notices.push({ at: compacted.messages.length, content: steeringNotice(namedTools) });
+      this.notices.push({
+        at: compacted.messages.length,
+        content: steeringNotice(namedTools, broken),
+      });
     const nudgeAfter = this.options.editNudgeAfterReads;
     if (nudgeAfter && !this.nudged && !finalizing) {
       let reads = 0;
