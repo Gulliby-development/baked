@@ -182,12 +182,13 @@ export interface InitiativeEstimate {
   /**
    * Tokens per acceptance criterion, measured on finished feature runs and this initiative's
    * accepted features; a feature whose spec is written is forecast at no less than its criteria
-   * times this rate. Null with fewer than `MIN_CRITERIA_SAMPLES` measured features.
+   * times this rate: from the lowest measured rate up to the upper end of their range (the third
+   * quartile from four rates on). Null with fewer than `MIN_CRITERIA_SAMPLES` measured features.
    */
   perCriterion: TokenRange | null;
   /**
-   * Tokens per boundary path, measured like `perCriterion`: the low end of the measured rates up to
-   * their median. A feature still to run, whose spec is not written yet, is forecast at no less than
+   * Tokens per boundary path, measured like `perCriterion`: the lowest measured rate up to their
+   * median. A feature still to run, whose spec is not written yet, is forecast at no less than
    * its paths times this rate (#1354). Null with fewer than `MIN_CRITERIA_SAMPLES`. Finished
    * features of the stores in `sizing.historyStores` count too, so the rate applies at the split,
    * before any feature of this initiative ran (#1376).
@@ -429,7 +430,12 @@ function reforecast(
       .filter((u) => (u.criteria ?? 0) > 0 && u.spent > 0)
       .map((u) => u.spent / (u.criteria ?? 1)),
   ];
-  const perCriterion = rates.length >= MIN_CRITERIA_SAMPLES ? rangeOf(rates) : null;
+  // From the lowest rate, like the path floor below (#1806), up to the upper end of their range.
+  const criteriaRange = rates.length >= MIN_CRITERIA_SAMPLES ? rangeOf(rates) : null;
+  const perCriterion = criteriaRange && {
+    low: Math.round(Math.min(...rates)),
+    high: criteriaRange.high,
+  };
   // The boundary's paths tell features of one size apart before any of them runs: in bench round
   // 35 the four large narrowfit features named 4 to 11 paths and used 1.8M to 7.9M tokens, at 0.36M
   // to 0.92M per path, while the size gave them one range (#1354). A placeholder counts at its
@@ -441,11 +447,16 @@ function reforecast(
       .filter((f) => pathWeight(f) > 0 && used(f).spent > 0)
       .map((f) => used(f).spent / pathWeight(f)),
   ];
-  // Up to the median, not the highest rate: a file dense in rules costs several times a plain one
-  // (bench round 36, seqmill: 0.29M to 1.28M per path), and the highest rate scaled every feature
-  // still to run up to 1.9 times what it used.
-  const pathRange = pathRates.length >= MIN_CRITERIA_SAMPLES ? rangeOf(pathRates) : null;
-  const perPath = pathRange && { low: pathRange.low, high: Math.round(median(pathRates)) };
+  // From the lowest rate, not the first quartile: a floor no measured feature stayed under. The
+  // quartile applied from four samples on, and once other projects' features counted (#1376) it
+  // put the low end of 11 of 12 R54 lanewalk features (Java, 165k-308k per path) above their cost,
+  // at 365k per path over 91 features (#1806). Up to the median, not the highest rate: a file dense
+  // in rules costs several times a plain one (bench round 36, seqmill: 0.29M to 1.28M per path),
+  // and the highest rate scaled every feature still to run up to 1.9 times what it used.
+  const perPath =
+    pathRates.length >= MIN_CRITERIA_SAMPLES
+      ? { low: Math.round(Math.min(...pathRates)), high: Math.round(median(pathRates)) }
+      : null;
   const features = prior.map((f): FeatureEstimate => {
     const { spent, accepted: done, criteria, planned } = used(f);
     const known = { ...(criteria ? { criteria } : {}), ...(planned ? { planned } : {}) };
