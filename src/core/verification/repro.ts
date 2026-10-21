@@ -7,6 +7,7 @@ import { buildSafeEnv } from "../spawn.js";
 import type { ProcessScope } from "../workflows/process-scope.js";
 import { ProbeSchema, type Repro, ReproSchema, type Review } from "../workflows/schemas.js";
 import type { HostTool } from "../workflows/types.js";
+import { entryPointCommand } from "./entry-points.js";
 import { confidenceOnlyNote } from "./findings.js";
 import { changedPaths, sourceManifest } from "./snapshot.js";
 
@@ -149,9 +150,25 @@ function namesakes(root: string, repro: Repro, paths: readonly string[]): Map<st
  * corrected a "regex accepts a trailing newline" claim that is true in Python but false in
  * JavaScript, and spent about 200k tokens on it.
  */
+/** The project's own command, run through its toolchain's launcher when it is not on PATH (#1821). */
+function throughEntryPoint(
+  command: { executable: string; args: string[] },
+  options: { root: string; executables: readonly string[] },
+): { executable: string; args: string[] } {
+  if (options.executables.includes(command.executable)) return command;
+  const entry = entryPointCommand(
+    options.root,
+    [command.executable, ...command.args],
+    options.executables,
+  );
+  return entry
+    ? { executable: entry.argv[0] as string, args: entry.argv.slice(1) }
+    : { executable: command.executable, args: command.args };
+}
+
 export async function runRepro(
   processes: ProcessScope,
-  repro: Repro,
+  requested: Repro,
   options: {
     root: string;
     executables: readonly string[];
@@ -166,6 +183,7 @@ export async function runRepro(
     shadows?: readonly string[];
   },
 ): Promise<ReproOutcome> {
+  const repro = { ...requested, ...throughEntryPoint(requested, options) };
   if (!options.executables.includes(repro.executable))
     return {
       status: "inconclusive",
@@ -385,7 +403,7 @@ export interface ProbeOutcome {
  */
 export async function runProbe(
   processes: ProcessScope,
-  probe: { executable: string; args: string[] },
+  requested: { executable: string; args: string[] },
   options: {
     root: string;
     executables: readonly string[];
@@ -395,6 +413,7 @@ export async function runProbe(
     sandbox: SandboxRequest | null;
   },
 ): Promise<ProbeOutcome> {
+  const probe = throughEntryPoint(requested, options);
   if (!options.executables.includes(probe.executable))
     return {
       status: "refused",

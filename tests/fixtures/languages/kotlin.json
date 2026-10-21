@@ -2,7 +2,7 @@
   "files": {
     "src/main/kotlin/Sum.kt": "fun sum(a: Int, b: Int): Int {\n    TODO()\n}\n",
     "src/main/kotlin/SumSpec.kt": "class SumSpec\n",
-    "build.gradle.kts": "dependencies {\n    implementation(\"com.squareup.okio:okio:3.9.0\")\n}\n",
+    "build.gradle.kts": "plugins {\n    application\n}\n\napplication {\n    mainClass.set(\"SumKt\")\n    applicationName = \"sum\"\n}\n\ndependencies {\n    implementation(\"com.squareup.okio:okio:3.9.0\")\n}\n",
     "src/test/kotlin/SumPropTest.kt": "import io.kotest.property.checkAll\n"
   },
   "outputs": {
@@ -33,6 +33,9 @@
     ],
     "properties": [
       "src/test/kotlin/SumPropTest.kt: library"
+    ],
+    "entryPoints": [
+      "sum: java -cp build/classes/kotlin/main SumKt"
     ]
   }
 }
