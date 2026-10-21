@@ -1,7 +1,7 @@
 {
   "files": {
     "src/Sum.php": "<?php\nfunction sum($a, $b) {\n  throw new \\RuntimeException(\"not implemented\");\n}\n",
-    "src/SumTest.php": "<?php\n",
+    "src/SumTest.php": "<?php\nsum(1, 2);\n",
     "composer.json": "{}\n"
   },
   "expected": {
@@ -21,6 +21,9 @@
     "properties": null,
     "entryPoints": null,
     "testGates": null,
+    "callGraph": [
+      "sum called at src/SumTest.php:2"
+    ],
     "formatters": null
   }
 }

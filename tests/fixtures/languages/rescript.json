@@ -1,7 +1,7 @@
 {
   "files": {
     "src/Sum.res": "let sum = (a, b) => failwith(\"not implemented\")\n",
-    "src/Sum_test.res": "open Sum\n",
+    "src/Sum_test.res": "open Sum\nlet three = sum(1, 2)\n",
     "rescript.json": "{}\n",
     "package.json": "{\"name\": \"fixture\", \"scripts\": {\"test\": \"vitest run\"}, \"dependencies\": {\"rescript\": \"^11.0.0\"}}"
   },
@@ -34,6 +34,10 @@
     "properties": null,
     "entryPoints": null,
     "testGates": null,
+    "callGraph": [
+      "sum called at src/Sum_test.res:2",
+      "src/Sum.res imported by src/Sum_test.res"
+    ],
     "formatters": null
   }
 }

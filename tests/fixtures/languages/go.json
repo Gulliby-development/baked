@@ -1,7 +1,7 @@
 {
   "files": {
     "sum.go": "package sum\n\nfunc Sum(a, b int) int {\n\tpanic(\"not implemented\")\n}\n",
-    "sum_test.go": "package sum\n",
+    "sum_test.go": "package sum\n\nvar _ = Sum(1, 2)\n",
     "go.mod": "module example.com/fixture\n\ngo 1.22\n\nrequire github.com/google/uuid v1.6.0\n",
     "sum_prop_test.go": "//go:build props\n\npackage sum\n\nfunc TestProps(t *testing.T) { rapid.Check(t, func(t *rapid.T) {}) }\n",
     "cmd/sum/main.go": "package main\n\nimport \"fmt\"\n\nfunc main() {\n\tfmt.Println(1 + 2)\n}\n"
@@ -44,6 +44,9 @@
     ],
     "testGates": [
       "go -tags props"
+    ],
+    "callGraph": [
+      "Sum called at sum_test.go:3"
     ],
     "formatters": [
       "gofmt-written: gofmt -l sum.go sum_test.go sum_prop_test.go cmd/sum/main.go"

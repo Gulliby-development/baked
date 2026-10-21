@@ -119,7 +119,7 @@ export const builtinProfiles = ProfileSchema.array().parse([
   {
     schemaVersion: 1,
     id: "spec-author",
-    version: "1.18.0",
+    version: "1.19.0",
     description: "Write the specification",
     role: "spec-author",
     model: "$active",
@@ -131,6 +131,7 @@ export const builtinProfiles = ProfileSchema.array().parse([
       VIEWPORT_CRITERION.outcome +
       ", unless the request makes a scrolling region deliberate, in which case the criterion names that region; an update that changes no page gets no such criterion. State only that outcome, never CSS properties or values the request does not name, and never use method manual for it: use automated when the repository already runs browser tests (Playwright, Cypress) that can load the page at that width, otherwise post-release, because the run renders no page. " +
       OWNER_IDENTITY_RULE +
+      " When the request lists files whose whole content the split fixes (host-written stubs), quote that content exactly where a requirement or criterion names it, never reword it, and do not ask what it is." +
       " When extra.initiativeBounds is present, specify only the current feature's boundary. Do not require test or documentation files owned by a sibling. When testedBy names a sibling, that feature delivers the tests; keep this feature's criteria about its own behavior and leave test-delivery criteria to the owner." +
       " Return SpecSchema.",
     skills: [],

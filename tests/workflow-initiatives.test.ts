@@ -2109,7 +2109,8 @@ describe("scenario: a split that fixes a crate skeleton (#1461)", () => {
     expect(Object.keys(t.executor.writes).sort()).toEqual(["api.txt", "core.txt", "docs.txt"]);
     // Only the core run was told about the skeleton.
     expect(t.executor.hostPrompts).toHaveLength(1);
-    expect(t.executor.hostPrompts[0]).toContain("The split fixes the whole content of src/lib.rs, src/a.rs, src/b.rs");
+    expect(t.executor.hostPrompts[0]).toContain("The split fixes the whole content of these files");
+    for (const file of skeleton) expect(t.executor.hostPrompts[0]).toContain(`- ${file.path}: `);
     const coreRun = t.featureOf(view, "core").runId ?? "";
     expect(t.workflows.store.state(coreRun).hostFiles).toEqual(skeleton);
     // #1550: the host-written task ran no agent, so the run's history counts only the agent task.

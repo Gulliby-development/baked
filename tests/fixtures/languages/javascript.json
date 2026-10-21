@@ -1,7 +1,7 @@
 {
   "files": {
     "src/sum.js": "export function sum(a, b) {\n  throw new Error(\"not implemented\");\n}\n",
-    "src/sum.spec.js": "import { sum } from './sum.js';\n",
+    "src/sum.spec.js": "import { sum } from './sum.js';\nsum(1, 2);\n",
     "package.json": "{\"name\": \"fixture\", \"scripts\": {\"test\": \"vitest run\"}, \"devDependencies\": {\"vitest\": \"^2.0.0\"}, \"bin\": {\"sum\": \"src/sum.js\"}}",
     "src/sum.prop.test.js": "const fc = require('fast-check');\nfc.assert(fc.property(fc.integer(), (a) => a + 0 === a));\n",
     ".prettierrc": "{}\n"
@@ -39,6 +39,10 @@
       "sum: bun src/sum.js"
     ],
     "testGates": null,
+    "callGraph": [
+      "sum called at src/sum.spec.js:2",
+      "src/sum.js imported by src/sum.spec.js"
+    ],
     "formatters": [
       "format-written: npx prettier --check src/sum.js src/sum.spec.js src/sum.prop.test.js"
     ]

@@ -23,6 +23,7 @@ Answer with one fenced `json` block and nothing after it:
       "fix": "One paragraph an agent can act on as is: what to change in that file and how to test it."
     }
   ],
+  "earlier": [{ "id": "A1", "status": "fixed", "note": "One line: what changed, or why it still stands." }],
   "languages": "The languages the `Languages:` line covers, and any language the fix's code path also serves but the line leaves out, or \"Complete.\"",
   "scenario": "For the most likely finding, a concrete input or state (a project layout, a command output, a plan) under which the fixed code still fails, or \"None.\"",
   "confidence": "high, medium or low, and why, in one line"
@@ -30,6 +31,7 @@ Answer with one fenced `json` block and nothing after it:
 ```
 
 - `findings` is empty when you found none.
+- `earlier` reports each finding listed under "Earlier findings on this pull request", by its ID: **fixed**, **still present** or **dismissed**. It is empty when there is no such section. A finding people turned down or answered is not raised again in `findings`.
 - `severity`: **P0** when the missed place breaks a common run (a default toolchain, a supported language's main path, data loss, a blocked run); **P1** when it is a real path the issue's defect reaches; **P2** for an edge path, an incomplete `Languages:` line or a missing test of a listed place.
 - `file` is a repository path and `lines` the lines on the pull request's head (a range, or the diff hunk's lines); when the place is outside the diff, give the symbol's file and the closest lines you can name.
 - `rule` is the checklist item (its bold name) or the AGENTS.md rule the finding falls under, quoted briefly.

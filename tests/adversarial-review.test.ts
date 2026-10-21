@@ -2,12 +2,16 @@ import { describe, expect, test } from "bun:test";
 import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { TreeSitterBackend } from "../src/core/intelligence/backends/tree-sitter";
 import {
   COMMENT_MARKER,
+  callGraphContext,
   type Complete,
   commentBody,
   complete,
   configurationChanges,
+  earlierFindings,
+  feedback,
   fileDiff,
   parseReview,
   REVIEW_INPUTS,
@@ -145,7 +149,7 @@ describe("adversarial review: the verifier pass (#1845)", () => {
   test("a dropped finding lands in a collapsed section with the reason; a kept one has its prompt for agents", () => {
     const { review } = runReview(INPUT, rules, stub([finding("Gradle"), finding("Maven", "P2")], { Gradle: verdict("drop", 5, "The diff already routes Gradle through parse."), Maven: verdict("keep", 3) }));
     const [missed = "", rest = ""] = review.split("<details><summary>Dropped by the verifier (1)</summary>");
-    expect(missed).toContain("- **P2** `src/gates.ts:1`: Maven (Toolchains)");
+    expect(missed).toContain("- **A2** **P2** `src/gates.ts:1`: Maven (Toolchains)");
     expect(missed).toContain("_Verifier: keep, confidence 3/5. keep reason_");
     expect(missed).toContain("<details><summary>Prompt for AI agents</summary>");
     expect(missed).toContain("In src/gates.ts, lines 1: Maven. Maven keeps the old parser. Fix: Route Maven through parse.");
@@ -159,9 +163,9 @@ describe("adversarial review: the verifier pass (#1845)", () => {
 
   test("a failed or unusable verifier run keeps the finding, marked unverified; a downgrade lowers its severity", () => {
     const { review } = runReview(INPUT, rules, stub([finding("Gradle"), finding("Maven"), finding("Sbt", "P0")], { Gradle: new Error("claude exited with 1: rate limited"), Maven: "I think it is fine", Sbt: verdict("downgrade", 2) }));
-    expect(review).toContain("- **P1** `src/gates.ts:1`: Gradle (Toolchains)\n  Gradle keeps the old parser.\n  _Unverified: claude exited with 1: rate limited._");
+    expect(review).toContain("- **A1** **P1** `src/gates.ts:1`: Gradle (Toolchains)\n  Gradle keeps the old parser.\n  _Unverified: claude exited with 1: rate limited._");
     expect(review).toContain("_Unverified: the verifier gave no verdict._");
-    expect(review).toContain("- **P1** `src/gates.ts:1`: Sbt");
+    expect(review).toContain("- **A3** **P1** `src/gates.ts:1`: Sbt");
     expect(review).toContain("Verifier: downgraded, confidence 2/5.");
     expect(review).not.toContain("Dropped by the verifier");
   });
@@ -171,7 +175,7 @@ describe("adversarial review: the verifier pass (#1845)", () => {
     const { review } = runReview(INPUT, rules, run);
     expect(review).toContain("## Missed places\nNone found.");
     expect(review).toContain("its findings are not verified");
-    expect(parseReview("```json\n{\"findings\": []}\n```")).toEqual({ findings: [], languages: "", scenario: "", confidence: "" });
+    expect(parseReview("```json\n{\"findings\": []}\n```")).toEqual({ findings: [], earlier: [], languages: "", scenario: "", confidence: "" });
   });
 
   test.skipIf(process.platform === "win32")("runs through a stub Claude Code CLI on the path BAKED_CLAUDE_CODE_PATH names", () => {
@@ -209,5 +213,89 @@ describe("adversarial review: inputs from the base commit (#1845)", () => {
     expect(fileDiff(DIFF, "src/other.ts")).toStartWith("diff --git a/src/other.ts b/src/other.ts");
     expect(fileDiff(DIFF, "src/other.ts")).not.toContain("parse");
     expect(fileDiff(DIFF, "src/none.ts")).toBe("");
+  });
+});
+
+describe("adversarial review: memory across re-reviews of a pull request (#1845)", () => {
+  /** The first review's comment, then the second review of the same pull request with people's answers. */
+  function rereview(replies: string[], second: unknown[], earlier: unknown[] = []) {
+    const first = runReview(INPUT, rules, stub([finding("Gradle"), finding("Maven")], { Gradle: verdict("keep"), Maven: verdict("keep") })).review;
+    const comments = [{ body: commentBody(first, "openai", "a".repeat(40)) }, ...replies.map((body) => ({ body, user: "gulliby" }))];
+    const found = earlierFindings(comments[0]?.body ?? "");
+    const run = Object.assign(
+      (prompt: string) => {
+        run.prompts.push(prompt);
+        return prompt.startsWith("# Adversarial sweep review")
+          ? `\`\`\`json\n${JSON.stringify({ findings: second, earlier, languages: "Complete.", scenario: "None.", confidence: "high" })}\n\`\`\``
+          : verdict("keep");
+      },
+      { prompts: [] as string[] },
+    );
+    const { review } = runReview({ ...INPUT, earlier: feedback(found, comments) }, rules, run);
+    return { found, review, prompt: run.prompts[0] ?? "" };
+  }
+
+  test("the comment stores its findings with IDs for the next review", () => {
+    const { found } = rereview([], []);
+    expect(found.map((f) => [f.id, f.finding.title])).toEqual([["A1", "Gradle"], ["A2", "Maven"]]);
+    expect(earlierFindings("<!-- adversarial-sweep-review -->\nold comment")).toEqual([]);
+  });
+
+  test("a turned-down earlier finding is not raised again, and the comment says why", () => {
+    const { review, prompt } = rereview(["👎 A1 the Gradle branch already calls parse", "A2 +1"], [finding("Gradle"), finding("Maven")], [{ id: "A2", status: "still present", note: "Not fixed yet." }]);
+    expect(prompt).toContain("# Earlier findings on this pull request");
+    expect(prompt).toContain('- A1 [P1] `src/gates.ts:1`: Gradle. Gradle keeps the old parser. People: turned down (👎); answered: "@gulliby: the Gradle branch already calls parse".');
+    expect(prompt).toContain("- A2 [P1] `src/gates.ts:1`: Maven. Maven keeps the old parser. People: confirmed (👍).");
+    const [since = "", missed = ""] = review.split("## Missed places");
+    expect(since).toContain("## Since last review");
+    expect(since).toContain("- **A1** Gradle: dismissed. 👎; @gulliby: the Gradle branch already calls parse (raised again; not repeated)");
+    expect(since).toContain("- **A2** Maven: still present. Not fixed yet.");
+    expect(missed).not.toContain("Gradle");
+    // The same ID for the same finding, so people's answers keep applying.
+    expect(missed).toContain("- **A2** **P1** `src/gates.ts:1`: Maven");
+    // The dismissed finding stays in memory for the review after this one.
+    const next = earlierFindings(review).map((f) => f.id).sort();
+    expect(next).toEqual(["A1", "A2"]);
+  });
+
+  test("an earlier finding the reviewer reports fixed leaves memory; a new one takes the next ID", () => {
+    const { review } = rereview([], [finding("Sbt")], [{ id: "A1", status: "fixed", note: "Now routed through parse." }]);
+    expect(review).toContain("- **A1** Gradle: fixed. Now routed through parse.");
+    expect(review).toContain("- **A2** Maven: not reported");
+    expect(review).toContain("- **A3** **P1** `src/gates.ts:1`: Sbt");
+    expect(earlierFindings(review).map((f) => f.id).sort()).toEqual(["A2", "A3"]);
+  });
+
+  test("a quoted line or the review's own comment does not count as an answer", () => {
+    const found = [{ id: "A1", finding: finding("Gradle") as never }];
+    const [quoted] = feedback(found, [{ body: "> 👎 A1 nope", user: "x" }, { body: `${COMMENT_MARKER}\nA1 -1` }]);
+    expect(quoted).toMatchObject({ vote: null, replies: [] });
+    const [other] = feedback(found, [{ body: "A11 👎 a different finding", user: "x" }]);
+    expect(other).toMatchObject({ vote: null, replies: [] });
+  });
+});
+
+describe("adversarial review: call-graph context of the changed functions (#1845)", () => {
+  test("the reviewer gets the callers, callees, importers and similar functions of what the diff changes", async () => {
+    const files = [
+      { path: "src/parse.ts", text: "export function parseCargo(out: string) {\n  return count(out.split(\"\\n\"));\n}\nexport function count(lines: string[]) {\n  return lines.length;\n}\n" },
+      { path: "src/gradle.ts", text: "export function parseGradle(out: string) {\n  return count(out.split(\"\\n\"));\n}\n" },
+      { path: "src/gates.ts", text: 'import { parseCargo } from "./parse";\nexport function gate(out: string) {\n  return parseCargo(out);\n}\n' },
+    ];
+    const diff = "diff --git a/src/parse.ts b/src/parse.ts\n--- a/src/parse.ts\n+++ b/src/parse.ts\n@@ -1,3 +1,3 @@\n export function parseCargo(out: string) {\n-  return count(out.split(\"\\r\"));\n+  return count(out.split(\"\\n\"));\n }\n";
+    const backend = new TreeSitterBackend();
+    try {
+      const context = await callGraphContext(diff, files, backend);
+      expect(context).toContain("## `parseCargo` in `src/parse.ts` (lines 1-3)");
+      expect(context).toContain("- Callers: `src/gates.ts:3` in `gate`");
+      expect(context).toContain("- Callees: `count`");
+      expect(context).toContain("- Importers of its file: `src/gates.ts`");
+      expect(context).toContain("`parseGradle` in `src/gradle.ts:1`");
+      expect(context).not.toContain("## `count`");
+      const prompt = reviewPrompt({ ...INPUT, callGraph: context }, rules);
+      expect(prompt).toContain("## Call-graph context of the changed functions");
+    } finally {
+      backend.dispose();
+    }
   });
 });
