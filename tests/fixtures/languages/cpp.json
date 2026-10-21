@@ -1,7 +1,7 @@
 {
   "files": {
     "src/sum.cpp": "int sum(int a, int b) {\n  throw std::logic_error(\"not implemented\");\n}\n",
-    "src/sum_test.cpp": "int main() { return 0; }\n",
+    "src/sum_test.cpp": "int main() { return 0; }\n// AC-001 example: (1, 2, 3)\n",
     "CMakeLists.txt": "project(fixture CXX)\n"
   },
   "expected": {
@@ -20,6 +20,10 @@
     "mutation": null,
     "properties": null,
     "entryPoints": null,
-    "testGates": null
+    "testGates": null,
+    "codeMask": [
+      "src/sum.cpp:2",
+      "src/sum_test.cpp:2 comment"
+    ]
   }
 }

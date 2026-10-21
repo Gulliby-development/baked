@@ -3,7 +3,7 @@
     "src/main/java/Sum.java": "class Sum {\n  int sum(int a, int b) {\n    throw new IllegalStateException(\"not implemented\");\n  }\n}\n",
     "src/test/java/SumTest.java": "class SumTest {}\n",
     "pom.xml": "<project>\n  <artifactId>fixture</artifactId>\n  <properties>\n    <exec.mainClass>Sum</exec.mainClass>\n  </properties>\n  <dependencies>\n    <dependency>\n      <groupId>com.google.guava</groupId>\n      <artifactId>guava</artifactId>\n      <version>33.0.0-jre</version>\n    </dependency>\n  </dependencies>\n</project>\n",
-    "src/test/java/SumPropertyTest.java": "import net.jqwik.api.*;\nclass SumPropertyTest {\n  @Property\n  boolean adds(@ForAll int a) { return a + 0 == a; }\n}\n"
+    "src/test/java/SumPropertyTest.java": "import net.jqwik.api.*;\nclass SumPropertyTest {\n  @Property\n  boolean adds(@ForAll int a) { return a + 0 == a; }\n}\n// AC-001 example: (1, 2, 3)\n"
   },
   "outputs": {
     "tests": "[ERROR] Tests run: 3, Failures: 1, Errors: 0, Skipped: 0\n",
@@ -39,6 +39,10 @@
     "entryPoints": [
       "fixture: java -cp target/classes Sum"
     ],
-    "testGates": null
+    "testGates": null,
+    "codeMask": [
+      "src/main/java/Sum.java:3",
+      "src/test/java/SumPropertyTest.java:6 comment"
+    ]
   }
 }

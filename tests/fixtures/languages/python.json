@@ -3,7 +3,7 @@
     "app/sum.py": "def sum(a, b):\n    raise NotImplementedError\n",
     "app/tests.py": "from app.sum import sum\n",
     "pyproject.toml": "[project]\nname = \"fixture\"\ndependencies = [\"requests>=2\"]\n\n[project.scripts]\nsum = \"app.sum:main\"\n\n[tool.ruff]\n\n[tool.pytest.ini_options]\n",
-    "tests/test_props.py": "from hypothesis import given\n"
+    "tests/test_props.py": "from hypothesis import given\n# AC-001 example: (1, 2, 3)\n"
   },
   "outputs": {
     "tests": "FAILED tests/test_sum.py::test_sum - assert 3 == 4\n========= 1 failed, 2 passed in 0.12s =========\n",
@@ -41,6 +41,9 @@
     "entryPoints": [
       "sum: python -c import sys; from app.sum import main; sys.argv[0] = \"sum\"; sys.exit(main())"
     ],
-    "testGates": null
+    "testGates": null,
+    "codeMask": [
+      "tests/test_props.py:2 comment"
+    ]
   }
 }

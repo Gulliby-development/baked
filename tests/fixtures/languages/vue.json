@@ -1,6 +1,6 @@
 {
   "files": {
-    "src/Sum.vue": "<script setup lang=\"ts\">\nfunction sum(a: number, b: number): number {\n  throw new Error(\"not implemented\");\n}\n</script>\n",
+    "src/Sum.vue": "<script setup lang=\"ts\">\nfunction sum(a: number, b: number): number {\n  throw new Error(\"not implemented\");\n}\n</script>\n<!-- AC-001 example: (1, 2, 3) -->\n",
     "package.json": "{\"name\": \"fixture\", \"scripts\": {\"test\": \"vitest run\"}, \"dependencies\": {\"vue\": \"^3.4.0\"}}"
   },
   "outputs": {
@@ -26,6 +26,11 @@
     "mutation": null,
     "properties": null,
     "entryPoints": null,
-    "testGates": null
+    "testGates": null,
+    "codeMask": [
+      "src/Sum.vue:1",
+      "src/Sum.vue:3",
+      "src/Sum.vue:6 comment"
+    ]
   }
 }

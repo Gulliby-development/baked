@@ -1,7 +1,7 @@
 {
   "files": {
     "Sources/Sum.m": "@implementation Sum\n@end\n",
-    "Sources/SumTests.m": "@implementation SumTests\n@end\n"
+    "Sources/SumTests.m": "@implementation SumTests\n@end\n// AC-001 example: (1, 2, 3)\n"
   },
   "expected": {
     "tests": [
@@ -15,6 +15,9 @@
     "mutation": null,
     "properties": null,
     "entryPoints": null,
-    "testGates": null
+    "testGates": null,
+    "codeMask": [
+      "Sources/SumTests.m:3 comment"
+    ]
   }
 }

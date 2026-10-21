@@ -3,7 +3,7 @@
     "src/App/Sum.cs": "class Sum {\n  int Add(int a, int b) {\n    throw new NotImplementedException();\n  }\n}\n",
     "src/App.Tests/Checks.cs": "class Checks {}\n",
     "src/App/App.csproj": "<Project Sdk=\"Microsoft.NET.Sdk\">\n  <PropertyGroup>\n    <OutputType>Exe</OutputType>\n  </PropertyGroup>\n  <ItemGroup>\n    <PackageReference Include=\"Newtonsoft.Json\" Version=\"13.0.3\" />\n  </ItemGroup>\n</Project>\n",
-    "tests/App.Tests/Props.cs": "using FsCheck;\nclass Props {}\n",
+    "tests/App.Tests/Props.cs": "using FsCheck;\nclass Props {}\n// AC-001 example: (1, 2, 3)\n",
     "App.sln": "Microsoft Visual Studio Solution File, Format Version 12.00\n"
   },
   "outputs": {
@@ -41,6 +41,9 @@
     "entryPoints": [
       "App: dotnet run --project src/App/App.csproj --"
     ],
-    "testGates": null
+    "testGates": null,
+    "codeMask": [
+      "tests/App.Tests/Props.cs:3 comment"
+    ]
   }
 }

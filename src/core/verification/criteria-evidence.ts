@@ -1,5 +1,5 @@
 import { testConventions } from "../intelligence/test-frameworks.js";
-import { maskNonCode } from "../workflows/quality/code-mask.js";
+import { maskNonCode, stripComments } from "../workflows/quality/code-mask.js";
 
 /** A call: a callee with its receiver, or a fluent method after a call (`.as(`, `.Be(`). */
 const CALL = /(\.\s*)?\b([A-Za-z_]\w*(?:\s*\.\s*[A-Za-z_]\w*)*!?)\s*(?:<[^<>()\n]*>\s*)?\(/g;
@@ -7,13 +7,15 @@ const CALL = /(\.\s*)?\b([A-Za-z_]\w*(?:\s*\.\s*[A-Za-z_]\w*)*!?)\s*(?:<[^<>()\n
 /**
  * Remove diagnostic arguments, keeping input and expected-value arguments in place (#1629). Which
  * arguments are messages comes from the assertion table of the file's frameworks (#1650).
+ * Comments are removed too (#1846): R57 modeplan answered a refusal with
+ * `// Expected rows include (6,d,1777,0777,"/tmp")`, which held the row it did not test.
  */
 export function caseEvidence(path: string, text: string): string {
   // Host-written acceptance data is evidence, even when a value resembles assertion code.
   if (path.endsWith(".json")) return text;
   const { calls, messageArgument } = testConventions(path);
   const code = maskNonCode(path, text);
-  const out = text.split("");
+  const out = stripComments(path, text).split("");
   const blank = (start: number, end: number) => {
     for (let i = start; i < end; i++) if (out[i] !== "\n") out[i] = " ";
   };

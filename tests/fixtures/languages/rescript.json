@@ -1,7 +1,7 @@
 {
   "files": {
     "src/Sum.res": "let sum = (a, b) => failwith(\"not implemented\")\n",
-    "src/Sum_test.res": "open Sum\n",
+    "src/Sum_test.res": "open Sum\n// AC-001 example: (1, 2, 3)\n",
     "rescript.json": "{}\n",
     "package.json": "{\"name\": \"fixture\", \"scripts\": {\"test\": \"vitest run\"}, \"dependencies\": {\"rescript\": \"^11.0.0\"}}"
   },
@@ -33,6 +33,10 @@
     "mutation": null,
     "properties": null,
     "entryPoints": null,
-    "testGates": null
+    "testGates": null,
+    "codeMask": [
+      "src/Sum.res:1",
+      "src/Sum_test.res:2 comment"
+    ]
   }
 }

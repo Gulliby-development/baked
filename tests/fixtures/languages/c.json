@@ -1,7 +1,7 @@
 {
   "files": {
     "src/sum.c": "int sum(int a, int b) {\n  assert(0 && \"not implemented\");\n}\n",
-    "src/sum_test.c": "int main(void) { return 0; }\n",
+    "src/sum_test.c": "int main(void) { return 0; }\n// AC-001 example: (1, 2, 3)\n",
     "CMakeLists.txt": "project(fixture C)\n"
   },
   "expected": {
@@ -18,6 +18,10 @@
     "mutation": null,
     "properties": null,
     "entryPoints": null,
-    "testGates": null
+    "testGates": null,
+    "codeMask": [
+      "src/sum.c:2",
+      "src/sum_test.c:2 comment"
+    ]
   }
 }

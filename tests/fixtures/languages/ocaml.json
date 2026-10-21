@@ -1,6 +1,6 @@
 {
   "files": {
-    "src/sum.ml": "let sum a b =\n  failwith \"not implemented\"\n",
+    "src/sum.ml": "let sum a b =\n  failwith \"not implemented\"\n(* AC-001 example: (1, 2, 3) *)\n",
     "dune-project": "(lang dune 3.0)\n"
   },
   "expected": {
@@ -17,6 +17,10 @@
     "mutation": null,
     "properties": null,
     "entryPoints": null,
-    "testGates": null
+    "testGates": null,
+    "codeMask": [
+      "src/sum.ml:2",
+      "src/sum.ml:3 comment"
+    ]
   }
 }

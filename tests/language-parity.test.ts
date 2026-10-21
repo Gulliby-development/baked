@@ -30,6 +30,7 @@ import { checkBuiltinRules } from "../src/core/workflows/quality/rules.js";
 import { INLINE_HARNESS, inlineRowFile } from "../src/core/workflows/acceptance-rows-inline.js";
 import { TEST_GATES, testGateFlags } from "../src/core/workflows/test-gates.js";
 import { TaskSchema } from "../src/core/workflows/schemas.js";
+import { MASK_SYNTAX, maskNonCode, stripComments } from "../src/core/workflows/quality/code-mask.js";
 
 // Language parity (#1717): every language-bound record has a row for every supported language,
 // and every row is exercised by the language's fixture project in `tests/fixtures/languages/`.
@@ -129,6 +130,19 @@ const RECORDS: Record<
       [...testGateFlags(ofLanguage(language, files).map(([path, text]) => ({ path, text })))].map(
         ([program, flags]) => `${program} ${flags.join(" ")}`,
       ),
+  },
+  // The comment and string syntax the case walk and the integrity guards read code by (#1846): the
+  // lines a string or a comment covers, marked `comment` when stripping comments alone blanks them.
+  codeMask: {
+    record: MASK_SYNTAX,
+    run: (language, { files }) =>
+      ofLanguage(language, files).flatMap(([path, text]) => {
+        const masked = maskNonCode(path, text).split("\n");
+        const stripped = stripComments(path, text).split("\n");
+        return text.split("\n").flatMap((line, i) =>
+          masked[i] === line ? [] : [`${path}:${i + 1}${stripped[i] === line ? "" : " comment"}`],
+        );
+      }),
   },
   mutation: {
     record: MUTATION_TOOLS,
