@@ -43,7 +43,7 @@ const QUOTED = /"((?:\\[^\n]|[^"\\\n])+)"|`([^`\n]+)`|\u201c([^\u201d\n]+)\u201d
 const PLACEHOLDER = /<[^<>\s][^<>]*>|\{[^{}]+\}|\.\.\.|\u2026/g;
 
 /** One quoted span of a criterion text: its literal, whether it is a code span, and where. */
-interface QuotedSpan {
+export interface QuotedSpan {
   literal: string;
   /** The span with its quotes. */
   raw: string;
@@ -60,7 +60,7 @@ const DOUBLE_QUOTED = /"((?:\\[^\n]|[^"\\\n])+)"|\u201c([^\u201d\n]+)\u201d/g;
  * trust, so none are guessed there: R53 jsonsplice paired the closing backtick of one span with the
  * opening one of the next and demanded the prose between.
  */
-function quotedSpans(text: string): QuotedSpan[] {
+export function quotedSpans(text: string): QuotedSpan[] {
   const spans: QuotedSpan[] = [];
   let masked = "";
   let offset = 0;
@@ -167,6 +167,11 @@ export interface CaseContext {
   tasks?: readonly CaseTask[];
   /** Pricing has always counted broad criteria; only the task-end walk exempts them. */
   includeBroad?: boolean;
+  /**
+   * The refusal line for a case the source contradicts, or null: with `caseSourceProbe: "on"` the
+   * host runs the criterion's command before it refuses the task for its expected output (#1836).
+   */
+  probe?: (found: CriterionCase, root: string) => Promise<string | null>;
 }
 
 /**
@@ -1136,7 +1141,7 @@ export function caseCheck(
         };
       }),
     );
-    return missingCases(
+    const missing = missingCases(
       cases,
       files.map((file) => file.evidence),
     )
@@ -1148,19 +1153,22 @@ export function caseCheck(
               programHeld(file.evidence, c.literal, programs),
           ),
       )
-      .map((c) =>
-        missingCases(
-          [c],
-          files.map((file) => file.text),
-        ).length
-          ? `${c.criterionId} names ${JSON.stringify(c.literal)}, and no test file this task writes (${paths.join(", ")}) contains it.`
-          : missingCases(
-                [c],
-                files.map((file) => file.code),
-              ).length
-            ? `${c.criterionId} names ${JSON.stringify(c.literal)}, found only in a comment in ${paths.join(", ")}. A comment tests nothing: use it as a test input or expected value.`
-            : `${c.criterionId} names ${JSON.stringify(c.literal)}, found only in an assertion message in ${paths.join(", ")}. Use it as a test input or expected value; the message alone is a decoy.`,
+      .map(
+        async (c) =>
+          (await context.probe?.(c, root)) ??
+          (missingCases(
+            [c],
+            files.map((file) => file.text),
+          ).length
+            ? `${c.criterionId} names ${JSON.stringify(c.literal)}, and no test file this task writes (${paths.join(", ")}) contains it.`
+            : missingCases(
+                  [c],
+                  files.map((file) => file.code),
+                ).length
+              ? `${c.criterionId} names ${JSON.stringify(c.literal)}, found only in a comment in ${paths.join(", ")}. A comment tests nothing: use it as a test input or expected value.`
+              : `${c.criterionId} names ${JSON.stringify(c.literal)}, found only in an assertion message in ${paths.join(", ")}. Use it as a test input or expected value; the message alone is a decoy.`),
       );
+    return Promise.all(missing);
   };
 }
 
