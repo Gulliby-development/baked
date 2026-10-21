@@ -16,6 +16,7 @@ import { correctionAuthorized } from "./convergence.js";
 import { limitedCriteria } from "./convergence-stop.js";
 import { validateEvidence } from "./evidence.js";
 import { requiresSecurityReview } from "./findings.js";
+import { hostPassedChecks } from "./host-passed.js";
 import { deferredOwners } from "./initiative-ownership.js";
 
 /**
@@ -138,21 +139,7 @@ function acceptance(
     if (!row || !["implemented", "verified"].includes(row.status))
       throw new WorkflowFault("OUTPUT_INVALID", `Task ${task.id} is not implemented`);
   }
-  // A static check that failed only on debt from before the run under `staticBaseline:
-  // "relative"` (#1222), and a test check that collected no test in a run whose plan writes none
-  // (#1864), counts as passed; the checks stage recorded which run that was.
-  const debt = new Set(
-    store
-      .artifacts(runId)
-      .filter(
-        (a) =>
-          a.logical_path.startsWith("checks/baseline-debt/") ||
-          a.logical_path.startsWith("checks/no-tests/"),
-      )
-      .map(
-        (a) => (JSON.parse(store.readArtifact(runId, a.id)) as { evidenceId: string }).evidenceId,
-      ),
-  );
+  const debt = hostPassedChecks(store, runId);
   for (const checkId of required.checks) {
     const last = store
       .checks(runId)

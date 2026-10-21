@@ -1,3 +1,4 @@
+import { decidedChecks } from "../verification/host-passed.js";
 import type { WorkflowStore } from "./store.js";
 import { runUsage } from "./usage.js";
 import { parseRunDefinition } from "./v2/runtime.js";
@@ -65,7 +66,8 @@ function compared(store: WorkflowStore, runId: string): ComparedRun {
     })();
     const usage = runUsage(store, runId);
     const latest = new Map<string, string>();
-    for (const row of store.checkDetails(runId)) latest.set(row.check_id, row.status);
+    for (const row of decidedChecks(store, runId, store.checkDetails(runId)))
+      latest.set(row.check_id, row.status);
     const findings: Record<Severity, number> = { critical: 0, high: 0, medium: 0, low: 0 };
     let openFindings = 0;
     for (const row of store.findings(runId)) {

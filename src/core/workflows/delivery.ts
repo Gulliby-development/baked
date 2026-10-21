@@ -20,6 +20,7 @@ import { dirname, join } from "node:path";
 import type { AppConfig } from "../../types/index.js";
 import { canonical, hashBytes, hashJson } from "../specs/hash.js";
 import { workspacePath } from "../specs/validate.js";
+import { decidedChecks } from "../verification/host-passed.js";
 import { changedPaths } from "../verification/snapshot.js";
 import {
   classifyRemoteFailure,
@@ -301,7 +302,7 @@ function journaledPaths(
 function evidenceOf(store: WorkflowStore, runId: string): DeliveryPlan["evidence"] {
   const state = store.state(runId);
   const latest = new Map<string, { id: string; status: string; validity: string }>();
-  for (const row of store.checkDetails(runId))
+  for (const row of decidedChecks(store, runId, store.checkDetails(runId)))
     latest.set(row.check_id, { id: row.check_id, status: row.status, validity: row.validity });
   return {
     checks: [...latest.values()],

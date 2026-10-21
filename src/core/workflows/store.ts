@@ -180,6 +180,7 @@ export interface CheckDetailRow {
   duration_ms: number;
   validity: string;
   artifact_id: string;
+  evidence_id: string;
 }
 export interface MemoryEditRow {
   id: string;
@@ -1934,7 +1935,7 @@ export class WorkflowStore {
   checkDetails(runId: string): CheckDetailRow[] {
     return this.db
       .query<CheckDetailRow, [string]>(
-        "SELECT c.check_id,c.status,c.exit_code,c.reason,c.duration_ms,e.validity,e.artifact_id FROM check_results c JOIN evidence e ON c.run_id=e.run_id AND c.evidence_id=e.id WHERE c.run_id=? ORDER BY c.rowid",
+        "SELECT c.check_id,c.status,c.exit_code,c.reason,c.duration_ms,e.validity,e.artifact_id,c.evidence_id FROM check_results c JOIN evidence e ON c.run_id=e.run_id AND c.evidence_id=e.id WHERE c.run_id=? ORDER BY c.rowid",
       )
       .all(runId);
   }
