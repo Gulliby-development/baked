@@ -15,4 +15,13 @@ describe("a file a baseline check creates is part of the base (#1815)", () => {
     expect(result.final.status).toBe("completed");
   }, 60000);
 
+
+  test("a cache file a check writes after approval is not a change outside the run", async () => {
+    // A task adds a module; the next pytest run writes its `.pyc` into an unignored __pycache__/.
+    const result = await baselineCreatedFilesScenario(["src/__pycache__/app.cpython-312.pyc"], null, ["src/__pycache__/helper.cpython-312.pyc", ".pytest_cache/v/cache/lastfailed"]);
+    expect(result.approval).toEqual({ status: "waiting", reason: "approval" });
+    // Without the cache rule the check was inconclusive (`source_changed`) and the run blocked.
+    expect(result.final.status).toBe("completed");
+    expect(result.baseline?.createdByChecks).toBeUndefined();
+  }, 60000);
 });

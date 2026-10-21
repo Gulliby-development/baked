@@ -16,6 +16,7 @@ import { historyFixture, plannedForecastScenario } from "./helpers/initiative-pl
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { directoryFixers, directoryFixerScenario } from "./helpers/directory-fixer-scenario.js";
 import { baselineCreatedFilesScenario, FIRST_RUN_OUTPUTS } from "./helpers/baseline-created-files-scenario.js";
+import { TOOL_CACHES } from "../src/core/verification/snapshot.js";
 import { spawnSync } from "node:child_process";
 import {
   existsSync,
@@ -260,7 +261,9 @@ describe("gate matrix: files a first check run creates (#1815)", () => {
     test(`${language}: ${outputs.join(", ")}`, async () => {
       const result = await baselineCreatedFilesScenario(outputs);
       expect(result.approval).toEqual({ status: "waiting", reason: "approval" });
-      expect(result.baseline?.createdByChecks).toEqual([...outputs].sort());
+      const base = outputs.filter((p) => !p.split("/").some((segment) => TOOL_CACHES.includes(segment)));
+      expect(result.baseline?.createdByChecks ?? []).toEqual(base.sort());
+      expect(result.final.status).toBe("completed");
     }, 60000);
 });
 const STACKS: Stack[] = ["bun", "npm", "python", "go", "rust", "maven", "dotnet"];

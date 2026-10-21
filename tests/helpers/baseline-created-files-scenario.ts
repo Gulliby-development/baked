@@ -16,19 +16,22 @@ export const FIRST_RUN_OUTPUTS: Record<string, string[]> = {
   maven: ["target/classes/app/App.class"],
   gradle: [".gradle/8.10/fileHashes/fileHashes.lock", "build/classes/kotlin/main/AppKt.class"],
   kotlin: [".kotlin/sessions/kotlin-compiler.salive"],
-  cpp: ["build/app.o"],
+  "c and cpp": ["build/app.o"],
 };
 
 /**
  * A run whose required check creates `outputs` on its first run and leaves them alone after:
  * where it stops before approval, the files its baseline lists, and how it ends once approved.
- * A real toolchain cell seeds a project with `files` and runs its own `checks` instead.
+ The check creates `later` once the task has written its file, as pytest writes the `.pyc` of a
+ * module a task added. A real toolchain cell seeds a project with `files` and runs its own
+ * `checks` instead.
  */
 export async function baselineCreatedFilesScenario(
   outputs: string[],
   project: { files: Record<string, string>; checks: Check[] } | null = null,
+  later: string[] = [],
 ) {
-  const write = `const fs = require("node:fs"); const path = require("node:path"); for (const p of ${JSON.stringify(outputs)}) if (!fs.existsSync(p)) { fs.mkdirSync(path.dirname(p), { recursive: true }); fs.writeFileSync(p, "first run"); }`;
+  const write = `const fs = require("node:fs"); const path = require("node:path"); const make = (ps) => { for (const p of ps) if (!fs.existsSync(p)) { fs.mkdirSync(path.dirname(p), { recursive: true }); fs.writeFileSync(p, "first run"); } }; make(${JSON.stringify(outputs)}); if (fs.existsSync("value.txt")) make(${JSON.stringify(later)});`;
   const build: Check = { id: "build", executable: "bun", args: ["-e", write], cwd: ".", timeoutMs: 10000, required: true, scope: "feature", envNames: [], writes: [] };
   const policy = { ...fixturePolicy, checks: [...fixturePolicy.checks, ...(project ? project.checks : [build])] };
   const f = workflowFixture({ policy });
