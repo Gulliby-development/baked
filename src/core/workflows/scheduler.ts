@@ -36,6 +36,7 @@ import {
   assertAcceptanceV2,
   v1ReviewDimensions,
 } from "../verification/acceptance.js";
+import { caseCommand, probeCase } from "../verification/case-source-probe.js";
 import { buildCheckEnv, CheckRunner, executeCheckCommand } from "../verification/check-runner.js";
 import {
   appendCorrections,
@@ -69,6 +70,7 @@ import {
   STYLE_UNSHOWN,
 } from "../verification/convergence-stop.js";
 import {
+  type CriterionCase,
   caseCheck as criteriaCaseCheck,
   type RepairFinding,
   repairCaseTask,
@@ -266,13 +268,18 @@ import { crossPlatformAnalysisNote, crossPlatformNote } from "./cross-platform.j
 import { git, gitWorktreePaths } from "./delivery-git.js";
 import { dependencyContracts } from "./dependencies.js";
 import {
+  auditCarry,
+  auditedCriteria,
+  carriedDerivations,
   checkedDerivations,
   DERIVATION_RETURN_NOTE,
+  derivationAuditCarryOn,
   derivationAuditExtra,
   derivationAuditOn,
   derivationFindings,
   derivationProblems,
   isDerivationFinding,
+  withCarried,
 } from "./derivation-audit.js";
 import { EffectJournal, fileHash, intentRoot, rootField } from "./effects.js";
 import { WorkflowFault } from "./errors.js";
@@ -915,6 +922,8 @@ const DIFF_REVIEW = "diffReview";
 const REVIEW_ATTEMPT_STEPS = 16;
 /** Errors of the task-end check one submission gets back; the checks stage reports the rest. */
 const TASK_END_ERRORS = 20;
+/** Commands the case walk runs per attempt before it refuses a test task (#1836). */
+const CASE_PROBES = 4;
 
 export class WorkflowScheduler {
   dispose(): void {
@@ -1609,10 +1618,17 @@ export class WorkflowScheduler {
                 advance = false;
                 break;
               }
-              const audit =
-                derivationAuditOn(policy) || rowsAsDataOn(policy)
-                  ? derivationAuditExtra(spec)
-                  : null;
+              const audited =
+                (derivationAuditOn(policy) || rowsAsDataOn(policy)) &&
+                auditedCriteria(spec).length > 0;
+              // Criteria an earlier pass reproduced and that have not changed keep its rows (#1851).
+              const carried =
+                audited && derivationAuditCarryOn(policy)
+                  ? carriedDerivations(spec, state.auditCarried)
+                  : [];
+              const audit = audited
+                ? derivationAuditExtra(spec, new Set(carried.map((d) => d.criterionId)))
+                : null;
               const analysis = AnalysisSchema.parse(
                 await this.call(
                   runId,
@@ -1639,18 +1655,19 @@ export class WorkflowScheduler {
                   0,
                   (output) => {
                     const parsed = AnalysisSchema.safeParse(output);
-                    return parsed.success
-                      ? [
-                          ...deferredBlockingProblems(
-                            parsed.data.findings,
-                            (_, index) => parsed.data.findings[index]?.description ?? "",
-                          ),
-                          ...(audit ? derivationProblems(spec, parsed.data) : []),
-                          ...(rowsAsDataOn(policy)
-                            ? rowAuditProblems(spec, graph, parsed.data, false)
-                            : []),
-                        ]
-                      : [];
+                    if (!parsed.success) return [];
+                    const merged = {
+                      ...parsed.data,
+                      derivations: withCarried(parsed.data.derivations, carried),
+                    };
+                    return [
+                      ...deferredBlockingProblems(
+                        parsed.data.findings,
+                        (_, index) => parsed.data.findings[index]?.description ?? "",
+                      ),
+                      ...(audited ? derivationProblems(spec, merged) : []),
+                      ...(rowsAsDataOn(policy) ? rowAuditProblems(spec, graph, merged, false) : []),
+                    ];
                   },
                 ),
               );
@@ -1658,12 +1675,16 @@ export class WorkflowScheduler {
               // is not checked (#347: one transposed character blocked d0f55591).
               analysis.inputHash = hashJson(state.manifest);
               // A row that rests on the request rests on text the request holds (#1823).
-              if (audit)
+              // Carried rows are checked again: the request text is the run's, not the pass's.
+              if (audited) {
                 analysis.derivations = checkedDerivations(
-                  analysis.derivations,
+                  withCarried(analysis.derivations, carried),
                   statedRequest(state, this.store.requests(runId)),
                   spec,
                 );
+                if (derivationAuditCarryOn(policy))
+                  state.auditCarried = auditCarry(spec, analysis.derivations);
+              }
               // The host adds a finding the model missed: a program was described and none is planned.
               // A feature of an initiative has its boundary approved with the split, not the request.
               const uncovered =
@@ -1742,7 +1763,7 @@ export class WorkflowScheduler {
               // Findings about check outcomes stay in the record as notes; checks run later.
               let findings = demoteDeferred(analysis.findings, (f) => f.description);
               // The host raises the rows the audit could not reproduce; the model does not (#1465).
-              if (audit)
+              if (audited)
                 findings = [
                   ...findings.filter((f) => !isDerivationFinding(f)),
                   ...derivationFindings(spec, analysis),
@@ -3938,6 +3959,105 @@ export class WorkflowScheduler {
     return { ...task, criterionIds: task.criterionIds.filter((id) => !covered.has(id)) };
   }
   /**
+   * The case walk's probe of a test task's expected outputs against the source (#1836): a case the
+   * task's tests lack, whose criterion quotes a command and states the literal as its output, is
+   * run through the project's entry point first. When the program prints something else and an
+   * implemented task wrote the source, the refusal says so: the task keeps the criterion's value,
+   * names the file and reports implemented, and `routeReportedDefect` hands the failing check to
+   * that task. hdrlens negotiate T004 (bench round 56) could not satisfy a refusal for an error
+   * text T002's code printed with a prefix, looped, and the review's corrective cost 1.0M tokens.
+   */
+  private caseSourceProbe(
+    runId: string,
+    state: RuntimeState,
+    policy: RunPolicy,
+    task: Task | undefined,
+    signal: AbortSignal,
+  ): (found: CriterionCase, root: string) => Promise<string | null> {
+    let probes = 0;
+    return async (found, root) => {
+      const graph = state.rootGraph ?? state.graph;
+      const criterion = state.spec?.criteria.find((c) => c.id === found.criterionId);
+      if (!task || !graph || !criterion) return null;
+      const command = caseCommand(criterion, found.literal);
+      if (!command) return null;
+      const done = new Set(
+        this.store
+          .tasks(runId)
+          .filter((r) => ["implemented", "verified"].includes(r.status))
+          .map((r) => r.id),
+      );
+      // The source of the criterion: code an implemented task of the criterion wrote, outside
+      // this task's writes and the tests.
+      const sources = graph.tasks.filter(
+        (t) => t.id !== task.id && done.has(t.id) && t.criterionIds.includes(criterion.id),
+      );
+      const files = [
+        ...new Set(
+          sources.flatMap((t) =>
+            t.writes
+              .filter(
+                (w) =>
+                  w.action !== "delete" &&
+                  isCodePath(w.path) &&
+                  !isTestPath(w.path) &&
+                  !task.writes.some((own) => own.path === w.path),
+              )
+              .map((w) => w.path),
+          ),
+        ),
+      ];
+      if (!files.length || probes >= CASE_PROBES) return null;
+      probes++;
+      const owners = sources
+        .filter((t) => t.writes.some((w) => files.includes(w.path)))
+        .map((t) => t.id);
+      const workspace = await sourceManifest(root, generatedPaths(policy), signal);
+      const contradicted = await probeCase(this.processes, command.argv, found.literal, {
+        root,
+        files: Object.keys(workspace),
+        executables: reproExecutables(policy.checks),
+        signal,
+        sandbox: (dir) => runSandbox(policy, dir),
+      });
+      this.store.transaction(() =>
+        this.store.artifact(
+          runId,
+          "diagnostic",
+          `tasks/${task.id}/case-probe-${newId()}.json`,
+          canonical({
+            taskId: task.id,
+            criterionId: criterion.id,
+            literal: found.literal,
+            command: command.command,
+            contradicted,
+            ...(contradicted ? { files, owners } : {}),
+          }),
+        ),
+      );
+      if (!contradicted) return null;
+      return `${criterion.id} names ${JSON.stringify(found.literal)} as the output of \`${command.command}\`, but the program prints ${JSON.stringify(contradicted.printed)}: the code ${owners.join(", ")} wrote (${files.join(", ")}) disagrees with the criterion. Write the test with ${JSON.stringify(found.literal)} as the criterion states, even though it fails now; do not assert what the program prints. Name ${files.join(", ")} and the difference in your summary and report implemented: the host hands the failing check to ${owners.join(", ")}.`;
+    };
+  }
+  /**
+   * The source files the case walk's probe found disagreeing with a criterion this test task
+   * covers (#1836): the correction of its failing test check may edit them.
+   */
+  private contradictedSources(runId: string, task: Task): string[] {
+    const prefix = `tasks/${task.id}/case-probe-`;
+    return [
+      ...new Set(
+        this.store
+          .artifacts(runId)
+          .filter((a) => a.logical_path.startsWith(prefix))
+          .flatMap((a) => {
+            const body = JSON.parse(this.store.readArtifact(runId, a.id)) as { files?: string[] };
+            return body.files ?? [];
+          }),
+      ),
+    ];
+  }
+  /**
    * The task-end whole-unit check of a task that writes code (#673): the run's feature-scope type
    * checks, run once in the task's directory, keeping the errors in the task's own files that
    * neither the baseline nor a pending sibling task explains. Advisory: the checks stage still
@@ -4628,6 +4748,9 @@ export class WorkflowScheduler {
             {
               checks: policy.checks,
               tasks: (state.rootGraph ?? state.graph)?.tasks ?? [],
+              ...(policy.caseSourceProbe === "on"
+                ? { probe: this.caseSourceProbe(runId, state, policy, task, signal) }
+                : {}),
             },
           )
         : undefined;
@@ -10478,7 +10601,10 @@ ${note}`;
               ),
             ),
           ],
-          owner?.kind === "finished" ? owner.files : [],
+          [
+            ...(owner?.kind === "finished" ? owner.files : []),
+            ...this.contradictedSources(runId, task),
+          ],
         )
       : [];
     const scope = [
