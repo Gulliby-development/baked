@@ -11,6 +11,7 @@ import { toolchainCommand } from "../workflows/toolchain.js";
 import type { Check } from "../workflows/types.js";
 import { isFailedTestLine } from "./failed-test-line.js";
 import { MISSING_GATE_REPORT, readGateReport, renderGateReport } from "./gate-report.js";
+import { testsRan } from "./output-counts.js";
 import { changedPaths, sourceManifest } from "./snapshot.js";
 
 /** Shared process execution for native checks and the legacy project formatter. */
@@ -50,14 +51,29 @@ export function listsFailures(check: Pick<Check, "executable" | "args">): boolea
   return program === "gofmt" && args.includes("-l");
 }
 
-/** The status of a check's finished command: its exit code, and the files a listing check names. */
+/**
+ * A check that must run tests, whose output says it ran none (#1832): every test of the files was
+ * compiled out or skipped. A summary that does not tell is not taken as none.
+ */
+export const ranNoTests = (check: Pick<Check, "requireTests">, output: string): boolean =>
+  check.requireTests === true && testsRan(output)?.count === 0;
+
+/**
+ * The status of a check's finished command: its exit code, the files a listing check names, and
+ * for a check that must run tests, whether any ran.
+ */
 export function exitStatus(
-  check: Pick<Check, "executable" | "args">,
+  check: Pick<Check, "executable" | "args" | "requireTests">,
   exitCode: number,
   output: string,
 ): "passed" | "failed" {
-  return exitCode === 0 && !(listsFailures(check) && output.trim()) ? "passed" : "failed";
+  return exitCode === 0 && !(listsFailures(check) && output.trim()) && !ranNoTests(check, output)
+    ? "passed"
+    : "failed";
 }
+
+const noTestsNote = (check: Check): string =>
+  `Note: ${check.id} exited 0 but ran no test: every test of the files it runs was compiled out or skipped under its command (${[check.executable, ...check.args].join(" ")}), so it verified nothing. Make the tests run under this command. A file behind a Cargo feature, a Go build tag or another gate the request requires is run with that gate when the file declares it the way the language does (\`#![cfg(feature = "name")]\`, \`//go:build name\`); a test skipped at module level or excluded by a profile, group or filter does not run at all.`;
 
 const listedNote = (check: Check): string =>
   `Note: ${check.executable} ${check.args.join(" ")} lists the files that are not formatted and exits 0, so every file listed above fails ${check.id}.${check.fix ? ` Its fixer (${check.fix.executable} ${check.fix.args.join(" ")}) formats them.` : ""}`;
@@ -295,8 +311,13 @@ export class CheckRunner {
       process.stderr.write(
         `[slow-check] ${check.id} ${result.durationMs}ms exit=${result.exitCode} timedOut=${result.timedOut} ${result.output.slice(0, 300)}\n`,
       );
+    const vacuous = result.exitCode === 0 && ranNoTests(check, result.output);
     const listed = result.exitCode === 0 && exitStatus(check, 0, result.output) === "failed";
-    const note = listed ? listedNote(check) : passedOutputNote(result.output, result.exitCode);
+    const note = vacuous
+      ? noTestsNote(check)
+      : listed
+        ? listedNote(check)
+        : passedOutputNote(result.output, result.exitCode);
     if (note) result = { ...result, output: `${result.output}\n\n${note}` };
     const after = await sourceManifest(root, generated);
     const unstable = changedPaths(before, after).length > 0;

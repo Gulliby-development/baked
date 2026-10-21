@@ -39,6 +39,7 @@
     ],
     "entryPoints": [
       "sum: bun src/sum.ts"
-    ]
+    ],
+    "testGates": null
   }
 }

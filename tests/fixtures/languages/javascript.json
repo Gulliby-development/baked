@@ -35,6 +35,7 @@
     ],
     "entryPoints": [
       "sum: bun src/sum.js"
-    ]
+    ],
+    "testGates": null
   }
 }

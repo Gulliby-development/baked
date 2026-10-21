@@ -243,6 +243,12 @@ export const CheckSchema = z
      * asks for that many cheap cases instead of fewer cases (#1367).
      */
     minCases: z.number().int().positive().optional(),
+    /**
+     * A run that executes no test fails the check, although it exits 0: the host's check of the
+     * test files a task wrote, or of the tests that reach its files, ran "0 tests" for a file its
+     * flags compile out and passed (bench round 56, #1832). Read from the runner's summary.
+     */
+    requireTests: z.boolean().optional(),
   })
   .strict();
 

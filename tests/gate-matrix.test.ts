@@ -37,7 +37,7 @@ import { reproExecutables } from "../src/core/verification/repro.js";
 import { entryPointCommand } from "../src/core/verification/entry-points.js";
 import { noteSiblingFindings, ownerOfFinding } from "../src/core/verification/initiative-ownership.js";
 import { exitStatus, timedOutFailure } from "../src/core/verification/check-runner.js";
-import { baselineRegression, diagnosticCount, failureSignature, testCount } from "../src/core/verification/output-counts.js";
+import { baselineRegression, diagnosticCount, failureSignature, testCount, testsRan } from "../src/core/verification/output-counts.js";
 import { baselineDebt, baselineKeys } from "../src/core/verification/task-end-check.js";
 import { plannedWrittenTests, writtenTestsCheck } from "../src/core/workflows/affected-tests.js";
 import { launchedCommand } from "../src/core/workflows/launcher.js";
@@ -362,6 +362,20 @@ const RED_BASELINE: Record<Stack, (n: number) => string> = {
   rust: (n) => `running ${n + 1} tests\ntest old ... FAILED\ntest result: FAILED. ${n} passed; 1 failed; 0 ignored; 0 measured; 0 filtered out`,
   maven: (n) => `[ERROR] Tests run: ${n + 1}, Failures: 1, Errors: 0, Skipped: 0\n[ERROR] com.example.OldTest.old -- Time elapsed: 0.01 s <<< FAILURE!`,
   dotnet: (n) => `  Failed OldTests.Old [3 ms]\nFailed!  - Failed:     1, Passed:     ${n}, Skipped:     0, Total:     ${n + 1}`,
+};
+
+/**
+ * A test run that exits 0 with no test run, as the stack's runner prints it: every test of the
+ * file skipped, compiled out behind a feature or build tag, or matched by no filter (#1832).
+ */
+const ZERO_RUN_OUTPUT: Record<Stack, string> = {
+  bun: "tests/sum.test.ts:\n\n 0 pass\n 1 skip\n 0 fail\nRan 1 test across 1 file. [17.00ms]",
+  npm: " Test Files  1 skipped (1)\n      Tests  1 skipped (1)\n   Duration  210ms",
+  python: "s                                                                        [100%]\n1 skipped in 0.01s",
+  go: "testing: warning: no tests to run\nPASS\nok  \texample.com/fixture\t0.002s [no tests to run]",
+  rust: "     Running tests/unicode_tests.rs (target/debug/deps/unicode_tests-1a2b)\n\nrunning 0 tests\n\ntest result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+  maven: "[WARNING] Tests run: 2, Failures: 0, Errors: 0, Skipped: 2, Time elapsed: 0.01 s -- in com.example.SumTest\n[WARNING] Tests run: 2, Failures: 0, Errors: 0, Skipped: 2",
+  dotnet: "No test matches the given testcase filter `FullyQualifiedName~SumTests.` in /w/bin/Debug/net10.0/Sum.Tests.dll",
 };
 
 // Dependency readers do not imply Gradle or Ruby gate detection support (#1489, #1552).
@@ -999,6 +1013,14 @@ for (const stack of STACKS) {
 
     cell(stack, "baseline-signature test summary", () => {
       expect(failureSignature(RED_BASELINE[stack](4), "/w")).toBe(failureSignature(RED_BASELINE[stack](5), "/w"));
+    });
+
+    cell(stack, "written-tests-check runs no test (#1832)", () => {
+      const check = { id: "tests-affected", executable: stack, args: [], cwd: ".", timeoutMs: 1000, required: false, scope: "task" as const, envNames: [], writes: [] };
+      expect(testsRan(ZERO_RUN_OUTPUT[stack])?.count).toBe(0);
+      expect(exitStatus({ ...check, requireTests: true }, 0, ZERO_RUN_OUTPUT[stack])).toBe("failed");
+      expect(exitStatus(check, 0, ZERO_RUN_OUTPUT[stack])).toBe("passed");
+      expect(testsRan(RED_BASELINE[stack](4))?.count ?? 1).toBeGreaterThan(0);
     });
 
     cell(stack, "written-tests-check", () => {
