@@ -67,6 +67,8 @@ import {
 } from "../verification/convergence-stop.js";
 import {
   caseCheck as criteriaCaseCheck,
+  type RepairFinding,
+  repairCaseTask,
   writtenTestPaths,
 } from "../verification/criteria-cases.js";
 import { canHold } from "../verification/deliverable-paths.js";
@@ -3826,6 +3828,20 @@ export class WorkflowScheduler {
       ? { ...task, criterionIds: task.criterionIds.filter((id) => !overruled.has(id)) }
       : task;
   }
+  /** A corrective owes only the cases of the criteria its findings name (#1790). */
+  private repairCaseTask(runId: string, state: RuntimeState, task: Task): Task {
+    if (task.origin === "planned" || !task.findingIds.length) return task;
+    const findings = this.store
+      .findings(runId)
+      .filter((f) => task.findingIds.includes(f.id))
+      .map((f) => JSON.parse(f.body_json) as RepairFinding);
+    return repairCaseTask(
+      task,
+      findings,
+      state.spec,
+      (state.rootGraph ?? state.graph)?.tasks ?? [],
+    );
+  }
   private caseTask(state: RuntimeState, task: Task): Task {
     const graph = state.rootGraph ?? state.graph;
     if (!graph || task.origin !== "planned" || !task.writes.every((w) => w.action !== "create"))
@@ -4472,10 +4488,17 @@ export class WorkflowScheduler {
         : undefined;
     const literalCaseCheck =
       task && profile.output === "implementation"
-        ? criteriaCaseCheck(state.spec, this.answeredCaseTask(runId, this.caseTask(state, task)), {
-            checks: policy.checks,
-            tasks: (state.rootGraph ?? state.graph)?.tasks ?? [],
-          })
+        ? criteriaCaseCheck(
+            state.spec,
+            this.answeredCaseTask(
+              runId,
+              this.repairCaseTask(runId, state, this.caseTask(state, task)),
+            ),
+            {
+              checks: policy.checks,
+              tasks: (state.rootGraph ?? state.graph)?.tasks ?? [],
+            },
+          )
         : undefined;
     const caseCheck = generatedRows.length
       ? async (root: string) => [
