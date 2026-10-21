@@ -113,13 +113,27 @@ export async function hostDiff(workspace: string): Promise<{ text: string; files
   return { text, files };
 }
 
+/**
+ * Directories only a toolchain writes, which no project edits: a check run that adds a file there
+ * (a `.pyc` for a module a task added, when `.gitignore` does not cover `__pycache__/`) is not a
+ * change of the project's sources (#1815).
+ */
+export const TOOL_CACHES = [
+  "__pycache__",
+  ".pytest_cache",
+  ".mypy_cache",
+  ".ruff_cache",
+  ".gradle",
+  ".kotlin",
+];
+
 export async function sourceManifest(
   workspace: string,
   generated: string[] = [],
   signal?: AbortSignal,
 ): Promise<Record<string, string>> {
   const files: Record<string, string> = {};
-  const excluded = [".git", ".baked", "node_modules"];
+  const excluded = [".git", ".baked", "node_modules", ...TOOL_CACHES];
   const tracked = new Set(await gitTrackedFiles(workspace));
   type Rules = { base: string; matcher: ReturnType<typeof ignore> };
   async function walk(directory: string, inherited: Rules[]): Promise<void> {

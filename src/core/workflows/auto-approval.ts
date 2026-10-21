@@ -1,6 +1,7 @@
 import { canonical, hashJson } from "../specs/hash.js";
 import { WorkflowFault } from "./errors.js";
 import { hostGrowth, withoutHostGrowth } from "./host-growth.js";
+import { MSBUILD_ACTIVE_PROPERTY } from "./quality/manifest-fields.js";
 import { isManifestPath } from "./quality/manifests.js";
 import { unmappedDeliverables } from "./request-coverage.js";
 import {
@@ -378,6 +379,22 @@ function requestedWriteExempt(policy: RunPolicy, write: Write, request: string):
 }
 
 /**
+ * The planned manifest and tool config writes the approval takes as asked for because the request
+ * names them (#1547). The approval sees their paths only, so the manifest field check holds their
+ * executable fields to what the request names (#1793).
+ */
+export function requestExemptPaths(policy: RunPolicy, graph: TaskGraph, request: string): string[] {
+  return [
+    ...new Set(
+      graph.tasks
+        .flatMap((task) => task.writes)
+        .filter((write) => requestedWriteExempt(policy, write, request))
+        .map((write) => write.path),
+    ),
+  ];
+}
+
+/**
  * The rule that keeps a request-named manifest or tool config with a person under
  * `autoApproval.requestedManifestEdits`, so the approval and the planner's advice say the same
  * sentence instead of "outside the allowed paths" (#1710). Undefined when the write is exempt, the
@@ -409,9 +426,6 @@ const named = (pattern: RegExp) => (path: string) => pattern.test(path);
 const MSBUILD_RULE =
   "MSBuild props and targets run build logic; one is approved only when the plan writes it whole with PropertyGroup properties alone";
 
-/** Properties that run commands, chain or import targets, or redirect restore and tool paths. */
-const MSBUILD_ACTIVE_PROPERTY =
-  /(?:Event|DependsOn|Targets?|Props|Command|Exe|ToolPath|Tasks?)$|^(?:Custom|MSBuild|Restore|NuGet)/i;
 const MSBUILD_PROPERTY =
   /<([\w.-]+)((?:\s+(?:Condition|Label)\s*=\s*"[^"]*")*)\s*>([^<]*)<\/\1\s*>/g;
 const MSBUILD_PIN =
