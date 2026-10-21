@@ -264,6 +264,7 @@ import { crossPlatformNote, forbidsCi } from "./cross-platform.js";
 import { git, gitWorktreePaths } from "./delivery-git.js";
 import { dependencyContracts } from "./dependencies.js";
 import {
+  checkedDerivations,
   DERIVATION_RETURN_NOTE,
   derivationAuditExtra,
   derivationAuditOn,
@@ -1633,6 +1634,12 @@ export class WorkflowScheduler {
               // The host binds the analysis to the manifest it analyzed; the model's copy of the hash
               // is not checked (#347: one transposed character blocked d0f55591).
               analysis.inputHash = hashJson(state.manifest);
+              // A row that rests on the request rests on text the request holds (#1823).
+              if (audit)
+                analysis.derivations = checkedDerivations(
+                  analysis.derivations,
+                  statedRequest(state, this.store.requests(runId)),
+                );
               // The host adds a finding the model missed: a program was described and none is planned.
               // A feature of an initiative has its boundary approved with the split, not the request.
               const uncovered =
@@ -9846,9 +9853,12 @@ ${note}`;
           },
         ),
       );
-      const derivations = (analysis.derivations ?? []).filter((d) =>
-        rows.some((r) => r.criterion.id === d.criterionId),
-      );
+      const derivations = (
+        checkedDerivations(
+          analysis.derivations,
+          statedRequest(state, this.store.requests(runId)),
+        ) ?? []
+      ).filter((d) => rows.some((r) => r.criterion.id === d.criterionId));
       this.store.transaction(() => {
         this.store.artifact(
           runId,
