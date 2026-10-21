@@ -708,6 +708,9 @@ describe("a feature's paths place it among finished features of its size (#1767)
     expect(two!.expectedTokens).toBeGreaterThan(900_000);
     expect(two!.expectedTokens).toBeLessThan(1_150_000);
     expect(six!.expectedTokens).toBeGreaterThan(2 * two!.expectedTokens);
+    // Its tasks follow its paths too, where the size's middle half planned 3 to 6 for both.
+    expect(two!.tasks).toEqual({ low: 2, high: 2 });
+    expect(six!.tasks).toEqual({ low: 6, high: 6 });
     expect(two!.tokens.low).toBeLessThan(two!.expectedTokens);
     expect(two!.tokens.high).toBeGreaterThan(two!.expectedTokens);
     expect(estimate.notes.some((n) => n.startsWith("A medium feature still to run is placed among finished medium features by its paths"))).toBe(true);
