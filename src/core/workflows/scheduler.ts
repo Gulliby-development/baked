@@ -1645,6 +1645,7 @@ export class WorkflowScheduler {
                 analysis.derivations = checkedDerivations(
                   analysis.derivations,
                   statedRequest(state, this.store.requests(runId)),
+                  spec,
                 );
               // The host adds a finding the model missed: a program was described and none is planned.
               // A feature of an initiative has its boundary approved with the split, not the request.
@@ -9874,6 +9875,7 @@ ${note}`;
         checkedDerivations(
           analysis.derivations,
           statedRequest(state, this.store.requests(runId)),
+          audited,
         ) ?? []
       ).filter((d) => rows.some((r) => r.criterion.id === d.criterionId));
       this.store.transaction(() => {

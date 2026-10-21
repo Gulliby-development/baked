@@ -110,7 +110,7 @@ describe("scenario: routeshadow 7d83231e, an audit row passed on an invented req
     const executor = new ScriptedExecutor(() => ({ derivation: INVENTED }));
     await plan(executor);
     expect(executor.validation[0]).toEqual([
-      `Derivation audit: the entry for AC-006 row ${JSON.stringify(WRONG)} rests on the request; copy the request's exact words it relies on into quote, or derive the row from the requirements if the request does not state it.`,
+      `Derivation audit: the entry for AC-006 row ${JSON.stringify(WRONG)} rests on the request (the derivation or its requirement says the request states it); copy the request's exact words it relies on into quote, or derive the row from the requirements if the request does not state it.`,
     ]);
   }, 60000);
 });
@@ -146,5 +146,14 @@ describe("request quotes", () => {
     expect(derivationProblems(spec, { derivations: [cited] })).toHaveLength(1);
     expect(derivationProblems(spec, { derivations: [{ ...cited, quote: "the / that opens" }] })).toEqual([]);
     expect(checkedDerivations([cited], BRIEF)?.[0]).toMatchObject({ matches: false, derivation: expect.stringContaining("cites the request without quoting it") });
+  });
+
+  test("a row derived from a requirement that says the request gives it is checked the same way", () => {
+    const relayed: Spec = { ...spec, requirements: [{ ...spec.requirements[0]!, text: "The request gives `GET // n` -> `RS005 empty segment at 1:6`" }] };
+    const cited = derivation({ derivation: "FR-005 explicitly supplies this expected output." });
+    expect(derivationProblems(relayed, { derivations: [cited] })).toHaveLength(1);
+    expect(checkedDerivations([cited], BRIEF, relayed)?.[0]?.matches).toBe(false);
+    expect(checkedDerivations([{ ...cited, quote: "GET // n" }], BRIEF, relayed)?.[0]?.matches).toBe(false);
+    expect(checkedDerivations([cited], BRIEF, spec)).toEqual([cited]);
   });
 });

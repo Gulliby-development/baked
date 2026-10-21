@@ -44,10 +44,21 @@ export function derivationAuditExtra(spec: Spec): {
 const CITES_REQUEST =
   /\bthe\s+(?:request|brief)(?:'s)?\s+(?:itself\s+)?(?:explicitly\s+|expressly\s+|clearly\s+|also\s+)?(?:states?|stated|gives?|given|lists?|listed|says|said|shows?|spells?|specifies|defines?|contains?|includes?|provides?)\b|\bthe\s+(?:request|brief)'s\s+(?:own\s+)?(?:example|explicit|stated|worked)\b|\b(?:stated|given|listed|shown|spelled)\s+(?:verbatim\s+)?(?:in|by)\s+the\s+(?:request|brief)\b/i;
 
+/**
+ * Whether a derivation rests on the request: it quotes it, says so, or derives its row from a
+ * requirement that says the request states it (a spec author can copy an invented example into a
+ * requirement as well as into a row).
+ */
 export function citesRequest(
-  derivation: Pick<NonNullable<Analysis["derivations"]>[number], "derivation" | "quote">,
+  derivation: Pick<
+    NonNullable<Analysis["derivations"]>[number],
+    "criterionId" | "derivation" | "quote"
+  >,
+  spec?: Pick<Spec, "criteria" | "requirements">,
 ): boolean {
-  return derivation.quote !== undefined || CITES_REQUEST.test(derivation.derivation);
+  if (derivation.quote !== undefined || CITES_REQUEST.test(derivation.derivation)) return true;
+  const ids = spec?.criteria.find((c) => c.id === derivation.criterionId)?.requirementIds ?? [];
+  return (spec?.requirements ?? []).some((r) => ids.includes(r.id) && CITES_REQUEST.test(r.text));
 }
 
 /** Text compared as the request words it: case, Markdown emphasis, quote marks and spacing aside. */
@@ -84,12 +95,14 @@ export function quoteInRequest(quote: string, request: string): boolean {
 export function checkedDerivations(
   derivations: Analysis["derivations"],
   request: string,
+  spec?: Pick<Spec, "criteria" | "requirements">,
 ): Analysis["derivations"] {
   return derivations?.map((d) => {
-    if (!citesRequest(d) || (d.quote !== undefined && quoteInRequest(d.quote, request))) return d;
+    if (!citesRequest(d, spec) || (d.quote !== undefined && quoteInRequest(d.quote, request)))
+      return d;
     const why =
       d.quote === undefined
-        ? "The derivation cites the request without quoting it"
+        ? "The derivation or its requirement cites the request without quoting it"
         : `The cited request text ${JSON.stringify(d.quote.slice(0, 400))} is not in the request`;
     return {
       ...d,
@@ -116,9 +129,9 @@ export function derivationProblems(spec: Spec, analysis: Pick<Analysis, "derivat
         `Derivation audit: ${criterion.id} states literal rows and has no entry in derivations; recompute each of its rows from ${criterion.requirementIds.join(", ")} and add one entry per row.`,
       );
   for (const d of derivations)
-    if (d.quote === undefined && citesRequest(d))
+    if (d.quote === undefined && citesRequest(d, spec))
       problems.push(
-        `Derivation audit: the entry for ${d.criterionId} row ${JSON.stringify(d.row)} rests on the request; copy the request's exact words it relies on into quote, or derive the row from the requirements if the request does not state it.`,
+        `Derivation audit: the entry for ${d.criterionId} row ${JSON.stringify(d.row)} rests on the request (the derivation or its requirement says the request states it); copy the request's exact words it relies on into quote, or derive the row from the requirements if the request does not state it.`,
       );
   return problems;
 }
