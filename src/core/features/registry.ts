@@ -835,12 +835,12 @@ export const FEATURES: readonly Feature[] = [
     id: "acceptance-rows-as-data",
     group: "Workflow runs",
     title:
-      "Opt-in audited acceptance rows as JSON and Bun/pytest tests; ignored with a run warning without an analyze stage",
+      "Opt-in audited acceptance rows as JSON and Bun/pytest tests, replayed on each source task's code (replay_rows); ignored with a run warning without an analyze stage",
     tui: ["/workflow: new run Rows setting, tasks and rows.json artifact"],
     cli: [
       "baked workflow run: --rows-as-data on|off",
       "baked workflow quick: --rows-as-data on|off",
-      "baked workflow artifacts",
+      "baked workflow artifacts: rows.json, tasks/ID/row-replay-*.json",
     ],
     api: ["/v1/workflow/runs: rowsAsData", "/v1/workflow/runs/:id/artifacts"],
     desktop: [

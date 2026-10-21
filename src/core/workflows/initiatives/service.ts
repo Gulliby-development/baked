@@ -41,10 +41,10 @@ import {
 } from "../routing.js";
 import {
   type CommandIdentity,
-  DEFAULT_MAX_PARALLEL_RUNS,
   executionModeOf,
   extendToOf,
   PolicySchema,
+  parallelRunCap,
   type RunPolicy,
   type RunSnapshot,
   SafeId,
@@ -61,7 +61,7 @@ import { loadDefinition } from "../v2/definitions.js";
 import { loadGateLibrary } from "../v2/library.js";
 import { autoApprovalPolicy } from "../v2/runtime.js";
 import { mergedBase, worktreeBase } from "../worktree.js";
-import { criticalPathSummary, remainingPath } from "./critical-path.js";
+import { criticalPathSummary, planWidth, remainingPath } from "./critical-path.js";
 import { DECOMPOSE_WORKFLOW_ID } from "./decompose.js";
 import {
   estimateInitiative,
@@ -319,7 +319,8 @@ export interface InitiativeView {
   featureAutoApproval: InitiativeSettings["featureAutoApproval"];
   /**
    * Feature runs that execute at once: 1 when a feature workflow runs inline, up to
-   * `workflows.maxParallelRuns` when every feature runs in a worktree.
+   * `workflows.maxParallelRuns` when every feature runs in a worktree; with
+   * `workflows.parallelRunsFromPlan`, the plan's width up to that cap (#1822).
    */
   parallelRuns: number;
   /**
@@ -332,6 +333,8 @@ export interface InitiativeView {
     workShare: number;
     speedup: number;
     chain: string | null;
+    /** The most features of the plan that can run at once (#1822). */
+    width: number;
   } | null;
   decompose: { runId: string; status: string; reason: string } | null;
   features: FeatureView[];
@@ -1173,8 +1176,9 @@ export class InitiativeService {
   }
 
   /**
-   * The workspace's parallel run cap when every feature runs in a worktree; 1 when any feature
-   * runs inline, since inline runs share the working copy.
+   * The workspace's parallel run cap when every feature runs in a worktree, or the plan's width up
+   * to it with `parallelRunsFromPlan` (#1822); 1 when any feature runs inline, since inline runs
+   * share the working copy.
    */
   private parallelRuns(
     settings: InitiativeSettings,
@@ -1184,9 +1188,11 @@ export class InitiativeService {
     const ids = plan?.features.length
       ? plan.features.map((f) => featureWorkflowId(settings, f))
       : [settings.workflowId];
-    return ids.every((wf) => this.executionMode(settings, wf, facts) === "worktree")
-      ? (this.workflows.config.workflows?.maxParallelRuns ?? DEFAULT_MAX_PARALLEL_RUNS)
-      : 1;
+    if (!ids.every((wf) => this.executionMode(settings, wf, facts) === "worktree")) return 1;
+    const cap = parallelRunCap(this.workflows.config);
+    return this.workflows.config.workflows?.parallelRunsFromPlan && plan?.features.length
+      ? Math.max(1, Math.min(cap, planWidth(plan)))
+      : cap;
   }
 
   /** A feature run's execution mode, as `start` resolves it: the definition, then the policy. */
@@ -2996,6 +3002,28 @@ function lightContract(settings: InitiativeSettings, feature: InitiativeFeature)
   return lightContracts(settings) && featureWorkflowId(settings, feature) === LIGHT_LEAF_WORKFLOW;
 }
 
+/**
+ * What a feature's run does with its skeleton: the host writes every stub, and each stub another
+ * feature lists is named with that feature, so the run leaves exactly those as written. "Later
+ * features replace the stubs" also covered the stubs the feature implements itself, which a folded
+ * skeleton gives it (bench round 56, hdrlens base, #1829).
+ */
+function skeletonLine(feature: InitiativeFeature, others: InitiativeFeature[]): string {
+  const stubs = (feature.skeleton ?? []).map((f) => f.path);
+  const later = stubs.flatMap((path) => {
+    const owners = others.filter((f) => f.boundary.paths.includes(path)).map((f) => f.id);
+    return owners.length ? [`${path} (${owners.join(", ")})`] : [];
+  });
+  return [
+    `The split fixes the whole content of ${stubs.join(", ")}: one task writes them as host-written files with exactly that content (extra.hostFiles; whitespace may follow the project's formatter).`,
+    ...(later.length
+      ? [
+          `Later features fill these stubs, so this run leaves them as written: ${later.join(", ")}.`,
+        ]
+      : []),
+  ].join(" ");
+}
+
 /** The request a feature run starts from: its place in the initiative and the contracts around it. */
 export function featurePrompt(
   row: InitiativeRow,
@@ -3026,11 +3054,7 @@ export function featurePrompt(
       ? `Paths this feature may write: ${feature.boundary.paths.join(", ")}`
       : "The split names no paths for this feature; stay within the boundary above.",
     `Contract this feature provides to the features that depend on it: ${feature.contract}`,
-    ...(feature.skeleton?.length
-      ? [
-          `The split fixes the whole content of ${feature.skeleton.map((f) => f.path).join(", ")}: one task writes them as host-written files with exactly that content (extra.hostFiles; whitespace may follow the project's formatter), and later features replace the stubs.`,
-        ]
-      : []),
+    ...(feature.skeleton?.length ? [skeletonLine(feature, others)] : []),
   ];
   for (const { feature: dependency, contract } of upstream) {
     const definition = plan.features.find((f) => f.id === dependency.id);

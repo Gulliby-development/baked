@@ -798,7 +798,19 @@ export class WorkflowStore {
       this.endOpenSteps(id, null, "waiting", "interrupted");
       for (const task of this.tasks(id))
         if (task.status === "running") this.taskStatus(id, task.id, status);
-    } else if (status === "completed") this.endOpenSteps(id, null, "waiting", "completed");
+    } else if (status === "completed") {
+      this.endOpenSteps(id, null, "waiting", "completed");
+      // A task step a blocked exit left open (#1805): its task ended verified after a corrective,
+      // or it did not finish its work.
+      const tasks = new Map(this.tasks(id).map((task) => [`task-${task.id}`, task.status]));
+      for (const step of this.steps(id))
+        if (step.status === "running" && tasks.has(step.stage_id))
+          this.endRunningStep(
+            id,
+            step.id,
+            tasks.get(step.stage_id) === "verified" ? "completed" : "interrupted",
+          );
+    }
   }
   /** Logs a critic score of a task attempt; the same attempt scored again replaces its row. */
   recordCriticScore(
@@ -1404,6 +1416,12 @@ export class WorkflowStore {
     for (const step of steps)
       if (step.status === from && step.id !== root && (!root || under.has(step.id)))
         this.finishStep(runId, step.id, status);
+  }
+  /** Ends a step that is still running, and its open descendants (#1805); any other is left as it is. */
+  endRunningStep(runId: string, id: string, status: StageState): void {
+    if (this.steps(runId).find((step) => step.id === id)?.status !== "running") return;
+    this.endOpenSteps(runId, id, "running", status);
+    this.finishStep(runId, id, status);
   }
   steps(runId: string): StepRow[] {
     return this.db

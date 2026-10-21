@@ -1,5 +1,6 @@
 import { chatMemoriesForRuns, type SharedChatMemory } from "../memory/sharing.js";
 import { hashBytes } from "../specs/hash.js";
+import { checkOfClaim } from "../verification/convergence.js";
 import { WorkflowFault } from "./errors.js";
 import type { RunPolicy } from "./schemas.js";
 import { PolicySchema } from "./schemas.js";
@@ -171,8 +172,7 @@ function recordedRules(store: WorkflowStore, limit: number): MemoryEntry[] {
         continue;
       }
       if (typeof body.kind !== "string" || typeof body.suggestedFix !== "string") continue;
-      if (typeof body.claim === "string" && /^Required check \S+ failed$/.test(body.claim))
-        continue;
+      if (typeof body.claim === "string" && checkOfClaim(body.claim) !== null) continue;
       const scope = ruleScope(typeof body.file === "string" ? body.file : null);
       const key = `${body.kind}|${scope}`;
       const group = groups.get(key) ?? {

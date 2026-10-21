@@ -12,9 +12,13 @@ import { ProcessScope } from "../src/core/workflows/process-scope.js";
 import { canRepairRun, type RepairBlock } from "../src/core/workflows/repairable.js";
 import { growthLimit, type InitiativeView, rebaseView, shareShortfall } from "../src/core/workflows/initiatives/service.js";
 import { estimateInitiative } from "../src/core/workflows/initiatives/estimate.js";
+import { manifestFieldChanges } from "../src/core/workflows/quality/manifests.js";
+import { unrequestedManifestFields } from "../src/core/workflows/quality/dependencies.js";
 import { historyFixture, plannedForecastScenario } from "./helpers/initiative-planned-forecast.js";
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { directoryFixers, directoryFixerScenario } from "./helpers/directory-fixer-scenario.js";
+import { baselineCreatedFilesScenario, FIRST_RUN_OUTPUTS } from "./helpers/baseline-created-files-scenario.js";
+import { TOOL_CACHES } from "../src/core/verification/snapshot.js";
 import { spawnSync } from "node:child_process";
 import {
   existsSync,
@@ -30,9 +34,10 @@ import { join } from "node:path";
 import { syntaxErrors } from "../src/core/intelligence/syntax-check.js";
 import { criterionCases, missingCases, writtenTestPaths } from "../src/core/verification/criteria-cases.js";
 import { reproExecutables } from "../src/core/verification/repro.js";
+import { entryPointCommand } from "../src/core/verification/entry-points.js";
 import { noteSiblingFindings, ownerOfFinding } from "../src/core/verification/initiative-ownership.js";
 import { exitStatus, timedOutFailure } from "../src/core/verification/check-runner.js";
-import { failureSignature, testCount } from "../src/core/verification/output-counts.js";
+import { baselineRegression, diagnosticCount, failureSignature, testCount, testsRan } from "../src/core/verification/output-counts.js";
 import { baselineDebt, baselineKeys } from "../src/core/verification/task-end-check.js";
 import { plannedWrittenTests, writtenTestsCheck } from "../src/core/workflows/affected-tests.js";
 import { launchedCommand } from "../src/core/workflows/launcher.js";
@@ -252,6 +257,18 @@ describe("gate matrix: directory-wide fixer effects (#1593)", () => {
       await directoryFixerScenario(fixer);
     }, 60000);
 });
+// #1815: the baseline checks before approval create what a first build writes; the run must reach
+// approval with those files in its base, not stop `input_changed`.
+describe("gate matrix: files a first check run creates (#1815)", () => {
+  for (const [language, outputs] of Object.entries(FIRST_RUN_OUTPUTS))
+    test(`${language}: ${outputs.join(", ")}`, async () => {
+      const result = await baselineCreatedFilesScenario(outputs);
+      expect(result.approval).toEqual({ status: "waiting", reason: "approval" });
+      const base = outputs.filter((p) => !p.split("/").some((segment) => TOOL_CACHES.includes(segment)));
+      expect(result.baseline?.createdByChecks ?? []).toEqual(base.sort());
+      expect(result.final.status).toBe("completed");
+    }, 60000);
+});
 const STACKS: Stack[] = ["bun", "npm", "python", "go", "rust", "maven", "dotnet"];
 
 /** The gates a failure of which is corrected only in the files its output names (#1067). */
@@ -286,6 +303,17 @@ const DOCUMENTED_PROGRAM: Record<Stack, string> = {
   rust: "cargo",
   maven: "java",
   dotnet: "dotnet",
+};
+
+/** Each stack's fixture declaring a `tool` command the way its manifest installs one (#1821). */
+const WITH_ENTRY_POINT: Record<Stack, (files: Record<string, string>) => Record<string, string>> = {
+  bun: (files) => ({ ...files, "package.json": JSON.stringify({ ...JSON.parse(files["package.json"]!), bin: { tool: "cli.js" } }) }),
+  npm: (files) => ({ ...files, "package.json": JSON.stringify({ ...JSON.parse(files["package.json"]!), bin: { tool: "cli.js" } }) }),
+  python: (files) => ({ ...files, "pyproject.toml": `${files["pyproject.toml"]}\n[project.scripts]\ntool = "fixture.cli:main"\n` }),
+  go: (files) => ({ ...files, "cmd/tool/main.go": "package main\n\nfunc main() {}\n" }),
+  rust: (files) => ({ ...files, "Cargo.toml": `${files["Cargo.toml"]}\n[[bin]]\nname = "tool"\npath = "src/main.rs"\n` }),
+  maven: (files) => ({ ...files, "pom.xml": "<project><modelVersion>4.0.0</modelVersion><artifactId>tool</artifactId><properties><exec.mainClass>com.example.Main</exec.mainClass></properties></project>\n" }),
+  dotnet: (files) => ({ ...files, "Fixture.csproj": files["Fixture.csproj"]!.replace("</Project>", "<PropertyGroup><PackAsTool>true</PackAsTool><ToolCommandName>tool</ToolCommandName></PropertyGroup></Project>") }),
 };
 
 /**
@@ -334,6 +362,20 @@ const RED_BASELINE: Record<Stack, (n: number) => string> = {
   rust: (n) => `running ${n + 1} tests\ntest old ... FAILED\ntest result: FAILED. ${n} passed; 1 failed; 0 ignored; 0 measured; 0 filtered out`,
   maven: (n) => `[ERROR] Tests run: ${n + 1}, Failures: 1, Errors: 0, Skipped: 0\n[ERROR] com.example.OldTest.old -- Time elapsed: 0.01 s <<< FAILURE!`,
   dotnet: (n) => `  Failed OldTests.Old [3 ms]\nFailed!  - Failed:     1, Passed:     ${n}, Skipped:     0, Total:     ${n + 1}`,
+};
+
+/**
+ * A test run that exits 0 with no test run, as the stack's runner prints it: every test of the
+ * file skipped, compiled out behind a feature or build tag, or matched by no filter (#1832).
+ */
+const ZERO_RUN_OUTPUT: Record<Stack, string> = {
+  bun: "tests/sum.test.ts:\n\n 0 pass\n 1 skip\n 0 fail\nRan 1 test across 1 file. [17.00ms]",
+  npm: " Test Files  1 skipped (1)\n      Tests  1 skipped (1)\n   Duration  210ms",
+  python: "s                                                                        [100%]\n1 skipped in 0.01s",
+  go: "testing: warning: no tests to run\nPASS\nok  \texample.com/fixture\t0.002s [no tests to run]",
+  rust: "     Running tests/unicode_tests.rs (target/debug/deps/unicode_tests-1a2b)\n\nrunning 0 tests\n\ntest result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+  maven: "[WARNING] Tests run: 2, Failures: 0, Errors: 0, Skipped: 2, Time elapsed: 0.01 s -- in com.example.SumTest\n[WARNING] Tests run: 2, Failures: 0, Errors: 0, Skipped: 2",
+  dotnet: "No test matches the given testcase filter `FullyQualifiedName~SumTests.` in /w/bin/Debug/net10.0/Sum.Tests.dll",
 };
 
 // Dependency readers do not imply Gradle or Ruby gate detection support (#1489, #1552).
@@ -775,6 +817,93 @@ describe("gate matrix: python environments", () => {
     });
 });
 
+// #1793: a manifest edit the request names was approved by its path; the manifest field check
+// holds every executable field of it to what the request names. Each stack's manifest changes one
+// executable field (caught) and one plain field (free).
+describe("gate matrix: manifest executable fields (#1793)", () => {
+  const changes = (path: string, before: string, after: string) => manifestFieldChanges(path, before, after);
+  cell("bun", "package.json: scripts, bin and trustedDependencies, not engines", () => {
+    const base = { name: "p", scripts: { test: "bun test" } };
+    const json = (extra: object) => JSON.stringify({ ...base, ...extra });
+    expect(changes("package.json", json({}), json({ engines: { bun: ">=1.4.0" } }))).toEqual([]);
+    expect(changes("package.json", json({}), json({ scripts: { ...base.scripts, postinstall: "node x.js" }, bin: { p: "cli.js" }, trustedDependencies: ["esbuild"] }))).toEqual(["scripts.postinstall", "bin", "trustedDependencies"]);
+    expect(unrequestedManifestFields([{ path: "package.json", before: json({}), content: json({ scripts: { ...base.scripts, postinstall: "x" }, engines: {} }) }], ["package.json"], "Add the engines field to package.json")).toEqual([{ file: "package.json", field: "scripts.postinstall" }]);
+    expect(unrequestedManifestFields([{ path: "package.json", before: json({}), content: json({ scripts: { ...base.scripts, postinstall: "x" } }) }], ["package.json"], "Add a postinstall script to package.json")).toEqual([]);
+  });
+  cell("python", "pyproject.toml build backend and requirements index options, not the description", () => {
+    const pyproject = (backend: string, description: string) => `[build-system]\nrequires = ["hatchling"]\nbuild-backend = "${backend}"\n\n[project]\nname = "p"\ndescription = "${description}"\n`;
+    expect(changes("pyproject.toml", pyproject("hatchling.build", "a"), pyproject("hatchling.build", "b"))).toEqual([]);
+    expect(changes("pyproject.toml", pyproject("hatchling.build", "a"), pyproject("evil.build", "a"))).toEqual(["build-system"]);
+    expect(changes("requirements.txt", "requests==2.32.0\n", "--index-url https://example.test/simple\nrequests==2.32.0\n")).toEqual(["--index-url"]);
+  });
+  cell("rust", "Cargo.toml build script, not the version", () => {
+    const cargo = (extra: string) => `[package]\nname = "p"\nversion = "0.1.0"\n${extra}`;
+    expect(changes("Cargo.toml", cargo(""), cargo("").replace("0.1.0", "0.2.0"))).toEqual([]);
+    expect(changes("Cargo.toml", cargo(""), cargo('build = "build.rs"\n'))).toEqual(["package.build"]);
+  });
+  cell("go", "go.mod replace, not the go version", () => {
+    expect(changes("go.mod", "module m\n\ngo 1.22\n", "module m\n\ngo 1.23\n")).toEqual([]);
+    expect(changes("go.mod", "module m\n\ngo 1.22\n", "module m\n\ngo 1.22\n\nreplace example.com/x => ../x\n")).toEqual(["replace example.com/x"]);
+  });
+  cell("dotnet", "csproj Exec target, not the target framework", () => {
+    const csproj = (extra: string, framework = "net10.0") => `<Project Sdk="Microsoft.NET.Sdk">\n  <PropertyGroup><TargetFramework>${framework}</TargetFramework></PropertyGroup>${extra}\n</Project>\n`;
+    expect(changes("App.csproj", csproj(""), csproj("", "net9.0"))).toEqual([]);
+    expect(changes("App.csproj", csproj(""), csproj('<Target Name="X" BeforeTargets="Build"><Exec Command="curl x" /></Target>'))).toEqual(["Target"]);
+  });
+  cell("maven", "pom.xml plugins and Gradle code, not the version or dependencies", () => {
+    const pom = (extra: string, version = "1.0") => `<project><version>${version}</version>${extra}</project>`;
+    expect(changes("pom.xml", pom(""), pom("", "1.1"))).toEqual([]);
+    expect(changes("pom.xml", pom(""), pom("<build><plugins><plugin><artifactId>exec-maven-plugin</artifactId></plugin></plugins></build>"))).toEqual(["plugins"]);
+    const gradle = (extra: string) => `plugins {\n  id("java")\n}\n\ndependencies {\n  implementation("a:b:1")${extra}\n}\n`;
+    expect(changes("build.gradle.kts", gradle(""), gradle('\n  implementation("c:d:2")'))).toEqual([]);
+    expect(changes("settings.gradle", "", 'rootProject.name = "fixture"\n')).toEqual([]);
+    expect(changes("build.gradle.kts", gradle(""), `${gradle("")}tasks.register<Exec>("x") { commandLine("curl") }\n`)).toEqual(["tasks.register"]);
+  });
+});
+
+// #1791: a passing lint check with six Biome infos became a high "Required check lint failed"
+// finding and a 489k-token correction. Each tool's summary parser counts errors and warnings only,
+// and a rise of warnings alone is a low finding; more errors stay high.
+describe("gate matrix: diagnostics ratchet severity (#1791)", () => {
+  const base = (output: string) => {
+    const count = diagnosticCount(output);
+    if (!count) throw new Error(`no count in ${output}`);
+    return { kind: "diagnostics" as const, ...count };
+  };
+  const rise = (before: string, after: string) => baselineRegression(base(before), after)?.severity ?? null;
+  const biome = (found: string) => `Checked 3 files in 2ms. No fixes applied.\n${found}`;
+  cell("bun", "biome: infos are not counted, warnings are low, errors are high", () => {
+    expect(rise(biome(""), biome("Found 6 infos."))).toBeNull();
+    expect(rise(biome(""), biome("Found 2 warnings.\nFound 6 infos."))).toBe("low");
+    expect(rise(biome("Found 1 warning."), biome("Found 1 error.\nFound 1 warning."))).toBe("high");
+  });
+  cell("npm", "eslint: warnings are low, errors are high", () => {
+    expect(rise("✖ 1 problem (0 errors, 1 warning)", "✖ 3 problems (0 errors, 3 warnings)")).toBe("low");
+    expect(rise("✖ 1 problem (0 errors, 1 warning)", "✖ 2 problems (1 error, 1 warning)")).toBe("high");
+  });
+  cell("python", "ruff: every violation is an error", () => {
+    expect(rise("All checks passed!", "Found 1 error.")).toBe("high");
+  });
+  cell("bun", "tsc: every diagnostic is an error", () => {
+    expect(rise("Found 1 error in 1 file.", "Found 2 errors in 1 file.")).toBe("high");
+  });
+  cell("rust", "cargo: a finished build's warnings are low", () => {
+    const cargo = (n: number) => `    Checking app v0.1.0\n${n ? `warning: \`app\` (bin "app") generated ${n} warnings\n` : ""}    Finished \`dev\` profile [unoptimized] target(s) in 0.5s`;
+    expect(rise(cargo(0), cargo(3))).toBe("low");
+  });
+  cell("dotnet", "dotnet build: warnings are low, errors are high", () => {
+    const build = (w: number, e: number) => `Build succeeded.\n    ${w} Warning(s)\n    ${e} Error(s)`;
+    expect(rise(build(0, 0), build(2, 0))).toBe("low");
+    expect(rise(build(0, 0), build(0, 1))).toBe("high");
+  });
+  cell("go", "go vet prints no summary: no count, no ratchet", () => {
+    expect(diagnosticCount("# example.com/app\n./main.go:5:2: unreachable code")).toBeNull();
+  });
+  cell("maven", "maven has no diagnostics summary parser: no count, no ratchet", () => {
+    expect(diagnosticCount("[WARNING] /src/App.java:[3,8] unused\n[INFO] BUILD SUCCESS")).toBeNull();
+  });
+});
+
 describe("gate matrix: format and type-check gates (#1685)", () => {
   const gates = (files: Record<string, string>) =>
     detectGates(project(files)).map((s) => [s.check.id, [s.check.executable, ...s.check.args].join(" "), s.check.fix ? [s.check.fix.executable, ...s.check.fix.args].join(" ") : null, s.preselected]);
@@ -846,6 +975,17 @@ for (const stack of STACKS) {
       expect(reproExecutables(preselected())).toContain(DOCUMENTED_PROGRAM[stack]);
     });
 
+    // routeshadow R55: the README documented `routeshadow ...`, which is not cargo, so none of its
+    // examples ran; the project's own command runs through the launcher the checks start.
+    cell(stack, "doc examples entry points (#1821)", () => {
+      const root = project(WITH_ENTRY_POINT[stack](fixture.files));
+      const executables = reproExecutables(detectGates(root).filter((s) => s.preselected).map((s) => s.check));
+      const resolved = entryPointCommand(root, ["tool", "--help"], executables);
+      expect(resolved?.entry.name).toBe("tool");
+      expect(executables).toContain(resolved!.argv[0]!);
+      expect(resolved!.argv.at(-1)).toBe("--help");
+    });
+
     cell(stack, "edit-profile", async () => {
       const profile = await detectProfile(project(fixture.files));
       expect({ lint: profile.lint, formatFile: profile.formatFile }).toEqual(EDIT_PROFILE[stack]);
@@ -873,6 +1013,14 @@ for (const stack of STACKS) {
 
     cell(stack, "baseline-signature test summary", () => {
       expect(failureSignature(RED_BASELINE[stack](4), "/w")).toBe(failureSignature(RED_BASELINE[stack](5), "/w"));
+    });
+
+    cell(stack, "written-tests-check runs no test (#1832)", () => {
+      const check = { id: "tests-affected", executable: stack, args: [], cwd: ".", timeoutMs: 1000, required: false, scope: "task" as const, envNames: [], writes: [] };
+      expect(testsRan(ZERO_RUN_OUTPUT[stack])?.count).toBe(0);
+      expect(exitStatus({ ...check, requireTests: true }, 0, ZERO_RUN_OUTPUT[stack])).toBe("failed");
+      expect(exitStatus(check, 0, ZERO_RUN_OUTPUT[stack])).toBe("passed");
+      expect(testsRan(RED_BASELINE[stack](4))?.count ?? 1).toBeGreaterThan(0);
     });
 
     cell(stack, "written-tests-check", () => {
@@ -2020,6 +2168,19 @@ const available = (needs: string[][]) =>
   });
 
 describe.skipIf(!toolchains)("gate matrix: toolchains", () => {
+  test.skipIf(!available([["cargo", "--version"]]))("a cargo init crate reaches approval with the detected cargo gates (#1815)", async () => {
+    const files = {
+      "Cargo.toml": '[package]\nname = "hexview"\nversion = "0.1.0"\nedition = "2021"\n\n[dependencies]\n',
+      "src/main.rs": 'fn main() {\n    println!("Hello, world!");\n}\n',
+      ".gitignore": "/target\n",
+    };
+    const checks = detectGates(project(files)).filter((s) => s.preselected).map((s) => s.check);
+    expect(checks.map((c) => c.executable)).toContain("cargo");
+    const result = await baselineCreatedFilesScenario([], { files, checks });
+    expect(result.approval).toEqual({ status: "waiting", reason: "approval" });
+    expect(result.baseline?.createdByChecks).toContain("Cargo.lock");
+    expect(result.final.status).toBe("completed");
+  }, 300000);
   test("pytest executes host rows and fails a wrong harness (#1596)", () => {
     const root = project({});
     const spec = { ...fixtureSpec, criteria: [{ ...fixtureSpec.criteria[0]!, given: "a JSON value", when: "it is returned", then: 'Input | Expected\n{"ok":true,"value":null} | {"ok":true,"value":null}\n[12,24] | [12,24]' }] };

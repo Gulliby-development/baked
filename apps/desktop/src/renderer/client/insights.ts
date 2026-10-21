@@ -148,6 +148,8 @@ export interface InitiativeView {
     workShare: number;
     speedup: number;
     chain: string | null;
+    /** The most features of the plan that can run at once; absent on older backends. */
+    width?: number;
   } | null;
   goals: string[];
   features: InitiativeFeature[];

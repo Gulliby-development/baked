@@ -6,6 +6,7 @@ import {
   MIN_FEATURE_PATHS,
   namedFiles,
   sizeWeight,
+  skeletonOnly,
 } from "./plan.js";
 
 /**
@@ -20,12 +21,29 @@ import {
 /** A feature holding more than this share of the path's work is asked about. */
 export const CRITICAL_SHARE = 0.35;
 
-/** The work of a feature, in the units of its size weight: its size or half its files. */
+/**
+ * The files of a feature an agent writes: its boundary files without its own skeleton, which the
+ * host writes at no cost. Counted as work, hdrlens's 25 stubs made its skeleton feature 48% of the
+ * path and the decomposer was sent back for a feature the host folds anyway (bench round 56, #1829).
+ */
+function workFiles(
+  feature: Pick<InitiativeFeature, "boundary" | "skeleton">,
+  named: readonly string[],
+): string[] {
+  const own = new Set((feature.skeleton ?? []).map((f) => f.path));
+  return (boundaryFiles(feature, named) ?? []).filter((path) => !own.has(path));
+}
+
+/**
+ * The work of a feature, in the units of its size weight: its size or half its files, and none for
+ * a feature that is only skeleton.
+ */
 export function featureWork(
-  feature: Pick<InitiativeFeature, "boundary" | "size">,
+  feature: Pick<InitiativeFeature, "boundary" | "size" | "skeleton">,
   named: readonly string[],
 ): number {
-  return Math.max(sizeWeight(feature), (boundaryFiles(feature, named)?.length ?? 0) / 2);
+  if (skeletonOnly(feature)) return 0;
+  return Math.max(sizeWeight(feature), workFiles(feature, named).length / 2);
 }
 
 /** The longest chain of dependencies by work, first feature first. */
@@ -73,7 +91,7 @@ export function criticalPathFeatures(
     const feature = plan.features.find((f) => f.id === id);
     if (!feature || feature.serial) return [];
     const share = featureWork(feature, named) / path.work;
-    const files = boundaryFiles(feature, named)?.length ?? 0;
+    const files = workFiles(feature, named).length;
     return share > CRITICAL_SHARE && files >= 2 * MIN_FEATURE_PATHS
       ? [{ feature, share, path: path.features }]
       : [];
@@ -111,6 +129,48 @@ export function criticalChain(
 }
 
 /**
+ * The most features of a plan that can run at once: its widest set of features none of which
+ * depends on another, directly or not (the width of the dependency order, by Dilworth's theorem
+ * the feature count less a maximum matching of the reachability graph). Bench round 55
+ * (routeshadow): six independent features after a serial head ran two at a time (#1822).
+ */
+export function planWidth(plan: Pick<InitiativePlan, "features">): number {
+  const ids = plan.features.map((f) => f.id);
+  const byId = new Map(plan.features.map((f) => [f.id, f] as const));
+  const reach = new Map<string, Set<string>>();
+  const below = (id: string, seen: Set<string> = new Set()): Set<string> => {
+    const known = reach.get(id);
+    if (known) return known;
+    const out = new Set<string>();
+    if (seen.has(id)) return out;
+    seen.add(id);
+    for (const d of byId.get(id)?.dependsOn ?? [])
+      if (byId.has(d)) {
+        out.add(d);
+        for (const r of below(d, seen)) out.add(r);
+      }
+    reach.set(id, out);
+    return out;
+  };
+  const matchOf = new Map<string, string>();
+  const augment = (id: string, seen: Set<string>): boolean => {
+    for (const d of below(id)) {
+      if (seen.has(d)) continue;
+      seen.add(d);
+      const owner = matchOf.get(d);
+      if (owner === undefined || augment(owner, seen)) {
+        matchOf.set(d, id);
+        return true;
+      }
+    }
+    return false;
+  };
+  let matched = 0;
+  for (const id of ids) if (augment(id, new Set())) matched++;
+  return ids.length - matched;
+}
+
+/**
  * The critical path of a split for its approval: the chain, its share of the work, and the most
  * the split can gain over one feature at a time with `parallelRuns` runs at once (total work over
  * the longer of the path and an even spread).
@@ -119,7 +179,13 @@ export function criticalPathSummary(
   plan: InitiativePlan,
   request: string,
   parallelRuns: number,
-): { features: string[]; workShare: number; speedup: number; chain: string | null } | null {
+): {
+  features: string[];
+  workShare: number;
+  speedup: number;
+  chain: string | null;
+  width: number;
+} | null {
   const named = namedFiles(request);
   const path = criticalPath(plan, named);
   const total = totalWork(plan, named);
@@ -130,6 +196,7 @@ export function criticalPathSummary(
     workShare: path.work / total,
     speedup: total / bound,
     chain: plan.chain ?? null,
+    width: planWidth(plan),
   };
 }
 

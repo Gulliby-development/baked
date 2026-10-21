@@ -4,10 +4,12 @@ import type { Check } from "../workflows/types.js";
 
 /**
  * Counts read from check output, so an update run can compare a passing check with the same
- * check on the code it started from: a linter that exits 0 with more infos or warnings, or a test
- * suite that runs fewer tests, passes on its exit code alone (bench R03: new `useTemplate` infos).
- * Every parser recognizes one tool's summary line and returns null for anything else; a null on
- * either side means no comparison and never a finding.
+ * check on the code it started from: a linter that exits 0 with more warnings, or a test suite
+ * that runs fewer tests, passes on its exit code alone (bench R03). Every parser recognizes one
+ * tool's summary line and returns null for anything else; a null on either side means no
+ * comparison and never a finding. Each diagnostic parser states the severities it counts: errors
+ * and warnings, never infos or hints (a Biome `useTemplate` info became a high finding and a
+ * 489k-token correction, #1791), and `errors` is the error share where the summary gives it.
  */
 export type CountKind = "diagnostics" | "tests";
 
@@ -15,6 +17,8 @@ export interface OutputCount {
   /** The tool whose summary was read; a comparison needs the same tool on both sides. */
   tool: string;
   count: number;
+  /** Of a diagnostics count, how many are errors; absent where the summary does not split them. */
+  errors?: number;
 }
 
 /** Where the baseline counts are stored for the run. */
@@ -36,33 +40,45 @@ const sum = (output: string, pattern: RegExp): number | null => {
 const lines = (output: string, pattern: RegExp): number =>
   output.split(/\r?\n/).filter((line) => pattern.test(line)).length;
 
-/** The number of diagnostics a linter or type checker reported, by its summary line. */
+/**
+ * The number of diagnostics a linter or type checker reported, by its summary line: errors and
+ * warnings, with the errors among them where the tool says.
+ */
 export function diagnosticCount(output: string): OutputCount | null {
   // Biome: "Checked 12 files in 3ms. No fixes applied." then "Found 2 warnings." / "Found 3 infos."
+  // Infos are hints (`useTemplate`, an unsafe-fix suggestion): Biome itself exits 0 on them.
   if (/\bChecked \d+ files? in\b/.test(output)) {
-    const found = sum(output, /\bFound (\d+) (?:errors?|warnings?|infos?)\b/g);
-    return { tool: "biome", count: found ?? 0 };
+    const errors = sum(output, /\bFound (\d+) errors?\b/g) ?? 0;
+    const warnings = sum(output, /\bFound (\d+) warnings?\b/g) ?? 0;
+    return { tool: "biome", count: errors + warnings, errors };
   }
   // ESLint: "✖ 5 problems (2 errors, 3 warnings)"
-  const eslint = output.match(/✖ (\d+) problems? \(/);
-  if (eslint) return { tool: "eslint", count: Number(eslint[1]) };
-  // Ruff: "Found 3 errors." / "All checks passed!"
-  if (/^All checks passed!/m.test(output)) return { tool: "ruff", count: 0 };
+  const eslint = output.match(/✖ (\d+) problems? \((\d+) errors?/);
+  if (eslint) return { tool: "eslint", count: Number(eslint[1]), errors: Number(eslint[2]) };
+  // Ruff: "Found 3 errors." / "All checks passed!"; every Ruff violation is an error.
+  if (/^All checks passed!/m.test(output)) return { tool: "ruff", count: 0, errors: 0 };
   // tsc: "Found 2 errors in 1 file." / "Found 1 error in src/a.ts:3"
   const tsc = output.match(/^Found (\d+) errors? in\b/m);
-  if (tsc) return { tool: "tsc", count: Number(tsc[1]) };
+  if (tsc) return { tool: "tsc", count: Number(tsc[1]), errors: Number(tsc[1]) };
   const ruff = output.match(/^Found (\d+) errors?\.?$/m);
-  if (ruff) return { tool: "ruff", count: Number(ruff[1]) };
+  if (ruff) return { tool: "ruff", count: Number(ruff[1]), errors: Number(ruff[1]) };
   // Clippy: "warning: `app` (bin "app") generated 3 warnings"; a clean build only says Finished.
+  // A build that finished has no errors.
   if (/^\s*Finished\b.*\btarget\(s\)/m.test(output) && /\b(?:Checking|Compiling)\b/.test(output))
     return {
       tool: "cargo",
       count: sum(output, /\bgenerated (\d+) warnings?\b/g) ?? 0,
+      errors: 0,
     };
   // dotnet build: "    3 Warning(s)" and "    0 Error(s)"
   const warnings = output.match(/^\s*(\d+) Warning\(s\)/m);
   const errors = output.match(/^\s*(\d+) Error\(s\)/m);
-  if (warnings && errors) return { tool: "dotnet", count: Number(warnings[1]) + Number(errors[1]) };
+  if (warnings && errors)
+    return {
+      tool: "dotnet",
+      count: Number(warnings[1]) + Number(errors[1]),
+      errors: Number(errors[1]),
+    };
   return null;
 }
 
@@ -95,23 +111,55 @@ export type TestRunner =
 
 /**
  * The summary parsers, in the order `testCount` tries them: a more specific summary first, the
- * report formats any runner can print (JUnit XML, TAP) last.
+ * report formats any runner can print (JUnit XML, TAP) last. `ran` is the share of `count` that
+ * executed, skipped and ignored tests left out, or null where the summary does not tell (#1832).
  */
-const TEST_COUNTERS: readonly { tool: TestRunner; count: (output: string) => number | null }[] = [
-  // bun test: "Ran 42 tests across 3 files."
-  { tool: "bun", count: (o) => num(o.match(/^Ran (\d+) tests? across \d+ files?/m)) },
-  // jest: "Tests:       1 failed, 12 passed, 13 total"
-  { tool: "jest", count: (o) => num(o.match(/^Tests:\s+.*?\b(\d+) total\b/m)) },
-  // vitest: "      Tests  12 passed (12)" / "Tests  1 failed | 11 passed (12)"
-  { tool: "vitest", count: (o) => num(o.match(/^\s*Tests\s+.*\((\d+)\)\s*$/m)) },
+const TEST_COUNTERS: readonly {
+  tool: TestRunner;
+  count: (output: string) => number | null;
+  ran: (output: string) => number | null;
+}[] = [
+  {
+    tool: "bun",
+    // bun test: "Ran 42 tests across 3 files." after " 40 pass", " 2 skip", " 0 fail"
+    count: (o) => num(o.match(/^Ran (\d+) tests? across \d+ files?/m)),
+    ran: (o) => (/^Ran \d+ tests?/m.test(o) ? (sum(o, /^\s*(\d+) (?:pass|fail)$/gm) ?? 0) : null),
+  },
+  {
+    tool: "jest",
+    // jest: "Tests:       1 failed, 2 skipped, 12 passed, 15 total"
+    count: (o) => num(o.match(/^Tests:\s+.*?\b(\d+) total\b/m)),
+    ran: (o) => {
+      const line = o.match(/^Tests:\s+(.*?\b\d+ total)\b/m)?.[1];
+      return line === undefined ? null : (sum(line, /(\d+) (?:passed|failed)\b/g) ?? 0);
+    },
+  },
+  {
+    tool: "vitest",
+    // vitest: "      Tests  12 passed (12)" / "Tests  1 failed | 11 passed | 2 skipped (14)"
+    count: (o) => num(o.match(/^\s*Tests\s+.*\((\d+)\)\s*$/m)),
+    ran: (o) => {
+      const line = o.match(/^\s*Tests\s+(.*)\(\d+\)\s*$/m)?.[1];
+      return line === undefined ? null : (sum(line, /(\d+) (?:passed|failed)\b/g) ?? 0);
+    },
+  },
   {
     tool: "pytest",
-    // pytest: "===== 3 passed, 1 skipped in 0.12s ====="
+    // pytest: "===== 3 passed, 1 skipped in 0.12s =====", "===== 2 skipped in 0.01s ====="
     count: (o) => {
       const pytest = o.match(/^=+ (.*\d+ (?:passed|failed).*) in [\d.]+s\b.*=+\s*$/m);
       return pytest
         ? sum(pytest[1] ?? "", /(\d+) (?:passed|failed|skipped|xfailed|xpassed|errors?)\b/g)
         : null;
+    },
+    ran: (o) => {
+      const line = o.match(
+        // `pytest -q` prints the summary without the rule: "1 skipped in 0.01s".
+        /^(?:=+ )?(\d+ (?:passed|failed|skipped|deselected|xfailed|xpassed|errors?)\b.*) in [\d.]+s\b(?:.*=+)?\s*$/m,
+      )?.[1];
+      return line === undefined
+        ? null
+        : (sum(line, /(\d+) (?:passed|failed|xfailed|xpassed|errors?)\b/g) ?? 0);
     },
   },
   {
@@ -124,26 +172,72 @@ const TEST_COUNTERS: readonly { tool: TestRunner; count: (output: string) => num
       const ignored = sum(o, /; (\d+) ignored;/g) ?? 0;
       return passed + failed + ignored;
     },
+    ran: (o) =>
+      /^test result: /m.test(o)
+        ? (sum(o, /^test result: \w+\. (\d+) passed;/gm) ?? 0) + (sum(o, /; (\d+) failed;/g) ?? 0)
+        : null,
   },
-  // dotnet test: "Passed!  - Failed:     0, Passed:    12, Skipped:     0, Total:    12" (the
-  // counts are padded) / "Total tests: 12"
-  { tool: "dotnet", count: (o) => sum(o, /\bTotal(?: tests)?:\s*(\d+)\b/g) },
+  {
+    tool: "dotnet",
+    // dotnet test: "Passed!  - Failed:     0, Passed:    12, Skipped:     0, Total:    12" (the
+    // counts are padded) / "Total tests: 12"
+    count: (o) => sum(o, /\bTotal(?: tests)?:\s*(\d+)\b/g),
+    ran: (o) =>
+      /\bTotal(?: tests)?:\s*\d+/.test(o)
+        ? (sum(o, /\bPassed:\s*(\d+)\b/g) ?? 0) + (sum(o, /\bFailed:\s*(\d+)\b/g) ?? 0)
+        : /\bNo test (?:is available|matches the given testcase filter)\b/.test(o)
+          ? 0
+          : null,
+  },
   {
     tool: "maven",
     // Maven surefire: "Tests run: 12, Failures: 0, Errors: 0, Skipped: 0" (the summary, no time).
     count: (o) =>
       num(o.match(/^\[\w+\] Tests run: (\d+), Failures: \d+, Errors: \d+, Skipped: \d+\s*$/m)),
+    ran: (o) => {
+      const m = o.match(
+        /^\[\w+\] Tests run: (\d+), Failures: \d+, Errors: \d+, Skipped: (\d+)\s*$/m,
+      );
+      return m ? Number(m[1]) - Number(m[2]) : null;
+    },
   },
-  // go test -v: one "=== RUN   TestName" per top-level test; without -v there is no count.
-  { tool: "go", count: (o) => lines(o, /^=== RUN\s+[^/\s]+\s*$/) || null },
+  {
+    tool: "go",
+    // go test -v: one "=== RUN   TestName" per top-level test; without -v there is no count.
+    // "[no tests to run]" and "[no test files]" say that nothing ran, with exit 0.
+    count: (o) => lines(o, /^=== RUN\s+[^/\s]+\s*$/) || null,
+    ran: (o) =>
+      lines(o, /^=== RUN\s+[^/\s]+\s*$/) ||
+      (/\[no tests? (?:to run|files)\]|^testing: warning: no tests to run/m.test(o) &&
+      !/^ok\s+\S+\s+[\d.]+s\s*$/m.test(o)
+        ? 0
+        : null),
+  },
   // A language without a parser of its own (#1488): a JUnit XML report printed to the output
   // (`--reporter=junit`), then TAP (busted, bats, prove, node:test, pgTAP).
-  { tool: "junit", count: junitCount },
+  {
+    tool: "junit",
+    count: junitCount,
+    ran: (o) => {
+      const total = junitCount(o);
+      if (total === null) return null;
+      const skipped =
+        num(/<testsuites\b[^>]*?\sskipped="(\d+)"/.exec(o)) ??
+        sum(o, /<testsuite\b[^>]*?\sskipped="(\d+)"/g) ??
+        [...o.matchAll(/<skipped\b/g)].length;
+      return total - skipped;
+    },
+  },
   {
     tool: "tap",
     count: (o) =>
       // A TAP plan `1..N` per top-level stream; an indented plan belongs to a subtest.
       num(o.match(/^Files=\d+, Tests=(\d+),/m)) ?? sum(o, /^1\.\.(\d+)(?:[ \t]+#.*)?\r?$/gm),
+    ran: (o) => {
+      const plan =
+        num(o.match(/^Files=\d+, Tests=(\d+),/m)) ?? sum(o, /^1\.\.(\d+)(?:[ \t]+#.*)?\r?$/gm);
+      return plan === null ? null : plan - lines(o, /^(?:not )?ok\b.*#\s*skip\b/i);
+    },
   },
 ];
 
@@ -191,6 +285,22 @@ export function testCount(output: string): OutputCount | null {
   return null;
 }
 
+/**
+ * How many tests executed, by the runner's summary: skipped and ignored ones left out, and 0 for
+ * a run that says it found none ("running 0 tests", "[no tests to run]"). Null when the output has
+ * no summary that tells. A test file compiled out under the check's flags (a Rust
+ * `#![cfg(feature = ...)]` file) prints "0 passed" with exit 0 (tonemath-update, bench round 56,
+ * #1832).
+ */
+export function testsRan(output: string): OutputCount | null {
+  for (const { tool, count, ran } of TEST_COUNTERS) {
+    const found = ran(output);
+    if (found !== null) return { tool, count: found };
+    if (count(output) !== null) return null;
+  }
+  return null;
+}
+
 /** Reads the count of a kind from a check's output. */
 export const outputCount = (kind: CountKind, output: string): OutputCount | null =>
   kind === "diagnostics" ? diagnosticCount(output) : testCount(output);
@@ -211,6 +321,17 @@ export interface BaselineCount extends OutputCount {
   kind: CountKind;
 }
 
+export interface BaselineRegression {
+  kind: CountKind;
+  /** What fell behind, for the finding's suggested fix. */
+  message: string;
+  /**
+   * `high` for more errors or fewer tests; `low` when only warnings rose, which a quick fix
+   * clears (#1791). A count that does not split its errors is taken as errors.
+   */
+  severity: "high" | "low";
+}
+
 /**
  * How a passing check falls behind the code the run started from: more diagnostics, or fewer
  * tests unless the run deletes test files. Null when the counts cannot be compared or held.
@@ -219,13 +340,24 @@ export function baselineRegression(
   baseline: BaselineCount,
   output: string,
   deletesTests = false,
-): string | null {
+): BaselineRegression | null {
   const now = outputCount(baseline.kind, output);
   if (!now || now.tool !== baseline.tool) return null;
-  if (baseline.kind === "diagnostics" && now.count > baseline.count)
-    return `diagnostics rose from ${baseline.count} to ${now.count} against the code the run started from (${now.tool}); fix the new ones, the check passing on its exit code is not enough`;
+  if (baseline.kind === "diagnostics" && now.count > baseline.count) {
+    const warningsOnly =
+      now.errors !== undefined && baseline.errors !== undefined && now.errors <= baseline.errors;
+    return {
+      kind: "diagnostics",
+      message: `${warningsOnly ? "warnings" : "diagnostics"} rose from ${baseline.count} to ${now.count} against the code the run started from (${now.tool}); fix the new ones, the check passing on its exit code is not enough`,
+      severity: warningsOnly ? "low" : "high",
+    };
+  }
   if (baseline.kind === "tests" && now.count < baseline.count && !deletesTests)
-    return `tests fell from ${baseline.count} to ${now.count} against the code the run started from (${now.tool}); restore the existing tests the change removed or skipped`;
+    return {
+      kind: "tests",
+      message: `tests fell from ${baseline.count} to ${now.count} against the code the run started from (${now.tool}); restore the existing tests the change removed or skipped`,
+      severity: "high",
+    };
   return null;
 }
 

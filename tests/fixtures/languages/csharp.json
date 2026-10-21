@@ -2,7 +2,7 @@
   "files": {
     "src/App/Sum.cs": "class Sum {\n  int Add(int a, int b) {\n    throw new NotImplementedException();\n  }\n}\n",
     "src/App.Tests/Checks.cs": "class Checks {}\n",
-    "src/App/App.csproj": "<Project Sdk=\"Microsoft.NET.Sdk\">\n  <ItemGroup>\n    <PackageReference Include=\"Newtonsoft.Json\" Version=\"13.0.3\" />\n  </ItemGroup>\n</Project>\n",
+    "src/App/App.csproj": "<Project Sdk=\"Microsoft.NET.Sdk\">\n  <PropertyGroup>\n    <OutputType>Exe</OutputType>\n  </PropertyGroup>\n  <ItemGroup>\n    <PackageReference Include=\"Newtonsoft.Json\" Version=\"13.0.3\" />\n  </ItemGroup>\n</Project>\n",
     "tests/App.Tests/Props.cs": "using FsCheck;\nclass Props {}\n",
     "App.sln": "Microsoft Visual Studio Solution File, Format Version 12.00\n"
   },
@@ -37,6 +37,10 @@
     "mutation": null,
     "properties": [
       "tests/App.Tests/Props.cs: library"
-    ]
+    ],
+    "entryPoints": [
+      "App: dotnet run --project src/App/App.csproj --"
+    ],
+    "testGates": null
   }
 }

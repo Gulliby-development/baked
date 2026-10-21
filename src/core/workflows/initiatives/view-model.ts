@@ -69,7 +69,7 @@ export function criticalPathText(
   if (!path || view.features.length < 2) return null;
   const gain =
     view.parallelRuns > 1
-      ? ` · at most ${path.speedup.toFixed(2)}x faster than one feature at a time`
+      ? ` · at most ${path.speedup.toFixed(2)}x faster than one feature at a time with ${view.parallelRuns} at once (plan width ${path.width})`
       : "";
   const kept = path.chain ? ` · kept: ${path.chain}` : "";
   return `Critical path: ${path.features.join(" -> ")} (${path.features.length} of ${view.features.length} features, ${Math.round(path.workShare * 100)}% of the work)${gain}${kept}`;

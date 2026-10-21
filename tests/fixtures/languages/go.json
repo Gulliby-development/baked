@@ -3,7 +3,8 @@
     "sum.go": "package sum\n\nfunc Sum(a, b int) int {\n\tpanic(\"not implemented\")\n}\n",
     "sum_test.go": "package sum\n",
     "go.mod": "module example.com/fixture\n\ngo 1.22\n\nrequire github.com/google/uuid v1.6.0\n",
-    "sum_prop_test.go": "package sum\n\nfunc TestProps(t *testing.T) { rapid.Check(t, func(t *rapid.T) {}) }\n"
+    "sum_prop_test.go": "//go:build props\n\npackage sum\n\nfunc TestProps(t *testing.T) { rapid.Check(t, func(t *rapid.T) {}) }\n",
+    "cmd/sum/main.go": "package main\n\nimport \"fmt\"\n\nfunc main() {\n\tfmt.Println(1 + 2)\n}\n"
   },
   "outputs": {
     "tests": "=== RUN   TestAdds\n--- PASS: TestAdds (0.00s)\n=== RUN   TestSum\n    sum_test.go:9: got 3, want 4\n--- FAIL: TestSum (0.00s)\nFAIL\nFAIL\texample.com/fixture\t0.012s\n",
@@ -33,10 +34,16 @@
       "signature stable"
     ],
     "mutation": [
-      "go-mutesting: sum.go"
+      "go-mutesting: sum.go, cmd/sum/main.go"
     ],
     "properties": [
       "sum_prop_test.go: library"
+    ],
+    "entryPoints": [
+      "sum: go run ./cmd/sum"
+    ],
+    "testGates": [
+      "go -tags props"
     ]
   }
 }

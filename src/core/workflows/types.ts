@@ -315,6 +315,8 @@ export const RuntimeStateSchema = z
       .default(null),
     /** Times analyze sent plan-only findings back to the planner instead of a person; once. */
     analysisReplans: z.number().int().nonnegative().default(0),
+    /** Defect rounds analyze gave new inconsistencies after the reroute budget was spent (#1830). */
+    lateDefectRounds: z.number().int().nonnegative().default(0),
     /** Times analyze sent derivation audit findings back to the spec author; once (#1465). */
     derivationReturns: z.number().int().nonnegative().default(0),
     /**
@@ -587,6 +589,19 @@ export interface ExecutionRequest {
    * submission that reports the task implemented. The same list is not refused twice.
    */
   caseCheck?: (root: string) => Promise<string[]>;
+  /**
+   * The audited rows a source task's code must meet (#1617): `replay_rows` runs them through the
+   * agent's harness, and a submission that reports the task implemented replays them again on
+   * the files as they are. The same list is not refused twice.
+   */
+  rowReplay?: {
+    replay: import("./acceptance-rows-replay.js").RowReplay;
+    run: (
+      root: string,
+      harness: string,
+      signal: AbortSignal,
+    ) => Promise<import("./acceptance-rows-replay.js").ReplayResult>;
+  };
   /**
    * The writes whose test files the task's tests-written check runs, when they are not all of the
    * task's writes: a correction's check runs only the tests its findings point at (#1373).

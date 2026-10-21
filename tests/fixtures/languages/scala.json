@@ -20,6 +20,8 @@
     ],
     "testRunners": null,
     "mutation": null,
-    "properties": null
+    "properties": null,
+    "entryPoints": null,
+    "testGates": null
   }
 }

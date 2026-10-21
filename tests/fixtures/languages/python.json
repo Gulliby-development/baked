@@ -2,7 +2,7 @@
   "files": {
     "app/sum.py": "def sum(a, b):\n    raise NotImplementedError\n",
     "app/tests.py": "from app.sum import sum\n",
-    "pyproject.toml": "[project]\nname = \"fixture\"\ndependencies = [\"requests>=2\"]\n\n[tool.ruff]\n\n[tool.pytest.ini_options]\n",
+    "pyproject.toml": "[project]\nname = \"fixture\"\ndependencies = [\"requests>=2\"]\n\n[project.scripts]\nsum = \"app.sum:main\"\n\n[tool.ruff]\n\n[tool.pytest.ini_options]\n",
     "tests/test_props.py": "from hypothesis import given\n"
   },
   "outputs": {
@@ -37,6 +37,10 @@
     ],
     "properties": [
       "tests/test_props.py: library"
-    ]
+    ],
+    "entryPoints": [
+      "sum: python -c import sys; from app.sum import main; sys.argv[0] = \"sum\"; sys.exit(main())"
+    ],
+    "testGates": null
   }
 }

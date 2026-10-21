@@ -1,7 +1,9 @@
-import { readFile } from "node:fs/promises";
+import { existsSync } from "node:fs";
+import { readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { rowDataPaths } from "../workflows/acceptance-rows.js";
 import { isTestCodePath } from "../workflows/quality/duplication.js";
+import { propertyTestKind } from "../workflows/quality/properties.js";
 import type { Spec } from "../workflows/schemas.js";
 import { toolchainCommand } from "../workflows/toolchain.js";
 import type { Check, Task } from "../workflows/types.js";
@@ -30,6 +32,8 @@ export interface CriterionCase {
   literal: string;
   /** A set member is a whole word: `f16` is not found inside `bf16`. */
   word?: true;
+  /** The criterion is a property: a test draws its values from a strategy (#1807). */
+  generated?: true;
 }
 
 /** Quoted spans: "...", `...` and the typographic double quotes. */
@@ -37,14 +41,85 @@ const QUOTED = /"((?:\\[^\n]|[^"\\\n])+)"|`([^`\n]+)`|\u201c([^\u201d\n]+)\u201d
 /** A placeholder the test fills with a concrete value: `<file>`, `{name}`, `...`. */
 const PLACEHOLDER = /<[^<>\s][^<>]*>|\{[^{}]+\}|\.\.\.|\u2026/g;
 
-/** Prose labels are for the reviewer, not strings a test must repeat (#1565). */
+/** One quoted span of a criterion text: its literal, whether it is a code span, and where. */
+interface QuotedSpan {
+  literal: string;
+  /** The span with its quotes. */
+  raw: string;
+  code: boolean;
+  index: number;
+}
+
+const DOUBLE_QUOTED = /"((?:\\[^\n]|[^"\\\n])+)"|\u201c([^\u201d\n]+)\u201d/g;
+
+/**
+ * The quoted spans of a text, code spans first (#1790). A double quote inside a code span
+ * (`` `{"a":1}` ``) is code, never the start of a quoted span, and a line whose backticks do not
+ * pair (an odd count, or a span that starts or ends in a space) has no code spans the host can
+ * trust, so none are guessed there: R53 jsonsplice paired the closing backtick of one span with the
+ * opening one of the next and demanded the prose between.
+ */
+function quotedSpans(text: string): QuotedSpan[] {
+  const spans: QuotedSpan[] = [];
+  let masked = "";
+  let offset = 0;
+  for (const line of text.split("\n")) {
+    const code = [...line.matchAll(/`([^`]+)`/g)];
+    // An odd count, or a span that starts or ends in a space (` at character 3`), means the
+    // backticks pair across a span: the line's code spans are not guessed.
+    const paired =
+      (line.match(/`/g) ?? []).length % 2 === 0 &&
+      code.every((m) => (m[1] ?? "") === (m[1] ?? "").trim());
+    let kept = line;
+    if (paired)
+      for (const m of code) {
+        const at = m.index ?? 0;
+        spans.push({ literal: (m[1] ?? "").trim(), raw: m[0], code: true, index: offset + at });
+        kept = kept.slice(0, at) + " ".repeat(m[0].length) + kept.slice(at + m[0].length);
+      }
+    masked += `${kept}\n`;
+    offset += line.length + 1;
+  }
+  for (const match of masked.matchAll(DOUBLE_QUOTED)) {
+    const literal = (match[1] ?? match[2] ?? "").trim();
+    // A span across a backtick crossed a code span the host could not pair.
+    if (!literal.includes("`"))
+      spans.push({ literal, raw: match[0], code: false, index: match.index ?? 0 });
+  }
+  return spans.sort((a, b) => a.index - b.index);
+}
+
+/** A requirement or criterion id: `FR-005`, `AC-011`, `NFR-001`. */
+const SPEC_ID = /^(?:AC|FR|NFR|SC)-\d{1,6}$/;
+/**
+ * A name expression of the code under test: `[src, itemIndex]`, `root.items[itemIndex].value`.
+ * It has a bracket, names only identifiers and holds no digit or quote, so no test spells it.
+ */
+const NAME_EXPRESSION =
+  /^(?=[^\d"'`]*$)(?=.*\[)(?:\[\s*[A-Za-z_$][\w$]*(?:\s*,\s*[A-Za-z_$][\w$]*)*\s*\]|[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*|\[\s*[A-Za-z_$][\w$.]*\s*\])*)$/;
+
+/** A pointer or reference type a criterion names: `*base.Error`, `&Config` (#1820). */
+const TYPE_REFERENCE = /^[*&]\s*[A-Za-z_]\w*(?:(?:\.|::)[A-Za-z_]\w*)*$/;
+/** The shape of a token in prose, made of metavariables: `PARTxCOUNT`, `ROWS:COLS` (#1820). */
+const SHAPE_WORDS = /^[A-Z]{2,}(?:[x\u00d7:,/-][A-Z]{2,})+$/;
+
+/**
+ * Prose labels are for the reviewer, not strings a test must repeat (#1565), and neither are a
+ * spec id or a name expression of the code under test (#1790), nor a type, a field or a function
+ * prefix the criterion names to describe the test (#1820, R55 youngkit-update: `*base.Error`,
+ * `Msg`, "8 `Test` functions", the token shape `PARTxCOUNT`). A single capitalised word is a case
+ * only where the criterion quotes it as a value ("prints `Usage`").
+ */
 function literalCase(literal: string, code = false, value = false): boolean {
   const concrete = literal.replace(PLACEHOLDER, "");
   if (concrete.replace(/[^\p{L}\p{N}_]/gu, "").length < 2) return false;
+  const trimmed = concrete.trim();
+  if (SPEC_ID.test(trimmed) || NAME_EXPRESSION.test(trimmed)) return false;
+  if (TYPE_REFERENCE.test(trimmed) || SHAPE_WORDS.test(trimmed)) return false;
   return (
     value ||
     /\d|(?:^|\s)--?[A-Za-z]|[=<>:+*%{}[\]]/.test(concrete) ||
-    (code && (identifierLike(concrete) || /^[A-Z][a-z]\w*$/.test(concrete)))
+    (code && identifierLike(concrete))
   );
 }
 
@@ -162,7 +237,13 @@ export function criterionCases(
     const key = `${criterionId}:${normalizeLiteral(literal)}`;
     if (seen.has(key) || isCheckCommand(literal, context.checks)) return;
     seen.add(key);
-    cases.push({ criterionId, literal, ...(word ? { word } : {}) });
+    const generated = spec.criteria.find((c) => c.id === criterionId)?.property !== undefined;
+    cases.push({
+      criterionId,
+      literal,
+      ...(word ? { word } : {}),
+      ...(generated ? { generated: true as const } : {}),
+    });
   };
   const tasks = context.tasks ?? [];
   const broad = (id: string): boolean =>
@@ -172,17 +253,10 @@ export function criterionCases(
     bound = boundLabels(`${criterion.given}\n${criterion.when}`);
     for (const [field, text] of [criterion.given, criterion.when, criterion.then].entries()) {
       const table = tableInputs(text);
-      for (const match of table.prose.matchAll(QUOTED)) {
-        const literal = (match[1] ?? match[2] ?? match[3] ?? "").trim();
-        if (
-          !literalCase(
-            literal,
-            match[2] !== undefined,
-            VALUE_CONTEXT.test(table.prose.slice(0, match.index)),
-          )
-        )
-          continue;
-        add(criterion.id, literal, undefined, table.prose.slice(0, match.index), criterion.then);
+      for (const span of quotedSpans(table.prose)) {
+        const before = table.prose.slice(0, span.index);
+        if (!literalCase(span.literal, span.code, VALUE_CONTEXT.test(before))) continue;
+        add(criterion.id, span.literal, undefined, before, criterion.then);
       }
       for (const input of table.inputs)
         add(criterion.id, input.literal, undefined, input.source, input.expected);
@@ -548,14 +622,13 @@ function tableInputs(text: string): {
       push(raw);
       return;
     }
-    const spans = [...raw.matchAll(QUOTED)];
+    const spans = quotedSpans(raw);
     if (spans.length) {
       for (const span of spans) {
         // A role annotation (`...` as `url`) names the parameter, not another input.
         if (/\bas\s*$/i.test(raw.slice(0, span.index))) continue;
-        const literal = (span[1] ?? span[2] ?? span[3] ?? "").trim();
-        if (literalCase(literal, span[2] !== undefined, spans.length > 1 || raw !== span[0]))
-          push(literal, raw.slice(0, span.index));
+        if (literalCase(span.literal, span.code, spans.length > 1 || raw !== span.raw))
+          push(span.literal, raw.slice(0, span.index));
       }
     } else if (literalCase(raw)) push(raw);
   });
@@ -644,7 +717,10 @@ const SIGNIFICANT_TOKEN =
  */
 export function testsHold(text: string, literal: string): boolean {
   const unescaped = normalizeLiteral(text);
-  const normalized = normalizeLiteral(literal);
+  const normalized = metavariables(normalizeLiteral(literal));
+  if (referenceHeld(text, unescaped, normalized.trim())) return true;
+  const structured = structuredHeld(text, literal.trim(), normalized.trim());
+  if (structured !== null) return structured;
   if (!normalized.replace(PLACEHOLDER, "")) return false;
   const tokens = normalized.replace(PLACEHOLDER, " ").match(SIGNIFICANT_TOKEN) ?? [];
   const significant = tokens.filter((token) => token !== "and" && token !== "or");
@@ -663,6 +739,7 @@ export function testsHold(text: string, literal: string): boolean {
     );
   return (
     held(exact) ||
+    (HEX_BYTES.test(normalized.trim()) && bytesHeld(text, normalized)) ||
     // A literal with an escape no decoding layer knows (`\1`, `\!`, `\0` in
     // `s/(a)/&\1\n\t\!\0/`) is raw escape text, as a C#, Java, Go or JavaScript string spells it
     // with every backslash doubled: decoding `\n` on the literal's side only would miss it (#1709).
@@ -671,6 +748,247 @@ export function testsHold(text: string, literal: string): boolean {
     // Formatters change whitespace and quote style inside lists and expressions.
     (/[[\](]/.test(normalized) && testsHoldCompact(unescaped, normalized)) ||
     (significant.length > 0 && significant.every((token) => held(escapeRegex(token))))
+  );
+}
+
+/**
+ * The upper-case metavariables of a usage line or message: `--baseline FILE <dir>`, `wrote 1
+ * finding to FILE`. A test passes a temporary path where the criterion says FILE, so they are
+ * placeholders like `<dir>` (#1807): an upper-case word after a flag or a preposition, unless
+ * the literal is nothing else.
+ */
+const METAVARIABLE =
+  /(?<=(?:(?:^|\s)--?[A-Za-z][\w-]*|\b(?:to|from|into|in|at|of|for|with))\s+)(?:FILES?|DIR|DIRECTORY|PATH|NAME|URL|NUM|COUNT|VALUE|KEY|PORT|HOST|PATTERN|ARGS?)(?![\w>}-])/g;
+function metavariables(literal: string): string {
+  const marked = literal.replace(METAVARIABLE, (word) => `<${word}>`);
+  return marked.replace(PLACEHOLDER, "").replace(/[^\p{L}\p{N}_]/gu, "") ? marked : literal;
+}
+
+/**
+ * A qualified test or member name: a `Class.method` (camelCase, PascalCase or snake_case member,
+ * so `README.md` and `config.yaml` stay paths), a Rust `module::test`, a Go `TestX/subtest`.
+ */
+function qualifiedName(literal: string): string[] | null {
+  const ident = String.raw`[A-Za-z_$][\w$]*`;
+  if (new RegExp(`^${ident}(?:::${ident})+$`).test(literal)) return literal.split("::");
+  if (/^Test[A-Z_]\w*(?:\/[\w-]+)+$/.test(literal)) return literal.split("/");
+  if (!new RegExp(`^[A-Z][\\w$]*(?:\\.${ident})+$`).test(literal)) return null;
+  const parts = literal.split(".");
+  const member = parts.at(-1) ?? "";
+  return /[a-z][A-Z]|_|^[A-Z][a-z]/.test(member) && member.length >= 3 ? parts : null;
+}
+/** A regex a test writes as its own literal, anchored or with a class or escape: `^[a-z]{7}$`. */
+const PATTERN_LITERAL = /^\^.*\$$|^\^.*[[\\]|[[\\].*\$$/;
+/** A base URL a test extends with a path: `https://sho.rt/`. */
+const URL_BASE = /^[a-z][a-z\d+.-]*:\/\/[^\s/]+(?:\/[^\s]*)?\/$/i;
+
+/**
+ * A literal that names something a test spells in parts or extends (#1807): a qualified test name
+ * is held by its last two segments as words (R54 propdrift `PropdriftTest.validates...`: a JUnit
+ * class and its method, likewise a C# `Class.Method`, a Rust `module::test`, a Go `TestX/sub`); a
+ * regex by its body, which a test writes inside `/.../` or a raw string; a base URL by any URL it
+ * begins.
+ */
+function referenceHeld(text: string, unescaped: string, literal: string): boolean {
+  const qualified = qualifiedName(literal);
+  if (qualified) {
+    const segments = qualified.slice(-2);
+    return segments.every((segment) =>
+      new RegExp(`(?<![\\w$])${escapeRegex(segment)}(?![\\w$])`).test(unescaped),
+    );
+  }
+  if (PATTERN_LITERAL.test(literal)) {
+    const body = literal.replace(/^\^/, "").replace(/\$$/, "");
+    return body.length >= 3 && (text.includes(body) || unescaped.includes(body));
+  }
+  if (URL_BASE.test(literal)) return unescaped.includes(literal);
+  return false;
+}
+
+/**
+ * The scalar leaves of a JSON value that holds a string or an object: `{"op":"params","segs":
+ * [{"Lit":"a"}]}` gives `params` and `a`, `[2,"","no such route"]` gives `2` and `no such route`.
+ * Null for anything else, a list of numbers among them, which keeps its own spelling.
+ */
+function jsonLeaves(literal: string): (string | number)[] | null {
+  if (!/^[[{"]/.test(literal)) return null;
+  let value: unknown;
+  try {
+    value = JSON.parse(literal);
+  } catch {
+    return null;
+  }
+  const leaves: (string | number)[] = [];
+  let structured = false;
+  const walk = (node: unknown) => {
+    if (typeof node === "string") {
+      structured = true;
+      if (node.trim()) leaves.push(node);
+    } else if (typeof node === "number") leaves.push(node);
+    else if (Array.isArray(node)) for (const item of node) walk(item);
+    else if (node && typeof node === "object") {
+      structured = true;
+      for (const item of Object.values(node)) walk(item);
+    }
+  };
+  walk(value);
+  return structured && leaves.length ? leaves : null;
+}
+
+/** An HTTP request line: `GET /links/test_1/stats`. */
+const REQUEST_LINE = /^(GET|HEAD|POST|PUT|PATCH|DELETE|OPTIONS)\s+(\/\S*)$/;
+/** An HTTP header line: `Location: https://example.com/a`, `Content-Type: text/plain`. */
+const HEADER_LINE =
+  /^((?:[A-Z][a-z]*-)+[A-Z][A-Za-z]*|Location|Allow|Vary|ETag|Host|Accept|Authorization|Cookie|Server|Link|Expires|Age|Refresh):\s*(\S.*)$/;
+
+/**
+ * A case a test holds in its own structure (#1820), or null when the literal is none of these. A
+ * JSON value is held by its scalar leaves, since a test builds it with constructors (R55
+ * routeshadow, Rust: `{"op":"subset","x":{"Lit":"a"},...}` as `subset(&Seg::Lit("a".into()), ...)`;
+ * its keys and punctuation are the spec's notation). A request line is held by its path and, for
+ * any method but GET, the method; a header line by its value and its name in any letter case
+ * (`res.headers.get("location")`).
+ */
+function structuredHeld(text: string, literal: string, normalized: string): boolean | null {
+  const leaves = jsonLeaves(literal);
+  if (leaves)
+    return leaves.every((leaf) =>
+      typeof leaf === "number"
+        ? new RegExp(`(?<![\\w.])${escapeRegex(String(leaf))}(?![\\w.])`).test(text)
+        : // A name leaf may follow a type (`Ty.Int`, `Ty::Int`) or take the language's case (`Params`).
+          (/^[A-Za-z_]\w*$/.test(leaf) &&
+            new RegExp(`(?<![\\w$])${escapeRegex(leaf)}(?![\\w$])`, "i").test(text)) ||
+          testsHold(text, leaf),
+    );
+  const request = REQUEST_LINE.exec(normalized);
+  if (request)
+    return (
+      // The test joins the path to a base URL: `new Request("http://localhost/test_1")`.
+      new RegExp(`${escapeRegex(request[2] ?? "")}(?![\\w./-])`).test(normalizeLiteral(text)) &&
+      (request[1] === "GET" || new RegExp(`\\b${request[1]}\\b`, "i").test(text))
+    );
+  const header = HEADER_LINE.exec(normalized);
+  if (header)
+    return (
+      new RegExp(escapeRegex(header[1] ?? ""), "i").test(text) && testsHold(text, header[2] ?? "")
+    );
+  return null;
+}
+
+/**
+ * Whether a test holds a command line by its arguments (#1820, R55 youngkit-update: `youngkit rank
+ * 4,3x2,1` where the Go test calls `run([]string{"rank", "4,3x2,1"})`): the first word is the
+ * project's own program, which a test of the entry function never names.
+ */
+function programHeld(text: string, literal: string, programs: ReadonlySet<string>): boolean {
+  const [first, ...rest] = normalizeLiteral(literal).trim().split(/\s+/);
+  return Boolean(first && programs.has(first) && rest.length && testsHold(text, rest.join(" ")));
+}
+
+/**
+ * The names a project's own program goes by, from its manifests: the Cargo package and its bins,
+ * the Go module's last path segment, the npm package and its bins, the Python project and its
+ * scripts, the Maven artifact, the Gradle root project, the .NET project files.
+ */
+export async function programNames(root: string): Promise<Set<string>> {
+  const read = (path: string) => readFile(join(root, path), "utf8").catch(() => "");
+  const names = new Set<string>();
+  const add = (name: string | undefined) => {
+    const base = name?.trim().split("/").at(-1);
+    if (base && /^[\w.-]+$/.test(base)) names.add(base);
+  };
+  const [cargo, gomod, npm, pyproject, pom, gradle, gradleKts] = await Promise.all([
+    read("Cargo.toml"),
+    read("go.mod"),
+    read("package.json"),
+    read("pyproject.toml"),
+    read("pom.xml"),
+    read("settings.gradle"),
+    read("settings.gradle.kts"),
+  ]);
+  for (const m of cargo.matchAll(/^\s*name\s*=\s*"([^"]+)"/gm)) add(m[1]);
+  add(/^module\s+(\S+)/m.exec(gomod)?.[1]);
+  try {
+    const manifest = JSON.parse(npm || "{}") as {
+      name?: string;
+      bin?: string | Record<string, string>;
+    };
+    add(manifest.name);
+    if (manifest.bin && typeof manifest.bin === "object")
+      for (const key of Object.keys(manifest.bin)) add(key);
+  } catch {}
+  add(/^\s*name\s*=\s*"([^"]+)"/m.exec(pyproject)?.[1]);
+  const scripts = /^\[project\.scripts\]([\s\S]*?)(?=^\[|$(?![\s\S]))/m.exec(pyproject)?.[1] ?? "";
+  for (const m of scripts.matchAll(/^\s*"?([\w.-]+)"?\s*=/gm)) add(m[1]);
+  add(
+    /<artifactId>\s*([^<\s]+)\s*<\/artifactId>/.exec(
+      pom.replace(/<parent>[\s\S]*?<\/parent>/, ""),
+    )?.[1],
+  );
+  add(/rootProject\.name\s*=\s*["']([^"']+)["']/.exec(gradle + gradleKts)?.[1]);
+  for (const dir of ["", "src/"]) {
+    const entries = await readdir(join(root, dir), { withFileTypes: true }).catch(() => []);
+    for (const entry of entries)
+      if (entry.isFile() && entry.name.endsWith(".csproj"))
+        add(entry.name.slice(0, -".csproj".length));
+      else if (
+        dir === "src/" &&
+        entry.isDirectory() &&
+        existsSync(join(root, dir, entry.name, `${entry.name}.csproj`))
+      )
+        add(entry.name);
+  }
+  return names;
+}
+
+/**
+ * Whether a property test holds a case whose values its strategies draw (#1807, R54 expenses-py:
+ * `2024-01-02`, `--from 2024-01-02`, `--category fOoD`): every flag of the literal is in the file,
+ * and every other word is, in any letter case; dates and numbers are generated.
+ */
+function propertyHeld(text: string, literal: string): boolean {
+  const tokens = normalizeLiteral(literal).match(SIGNIFICANT_TOKEN) ?? [];
+  const words = tokens.filter((t) => !/^-?\p{N}/u.test(t) && t !== "and" && t !== "or");
+  return words.every((t) =>
+    new RegExp(
+      `(?<![\\p{L}\\p{N}_-])${escapeRegex(t)}(?![\\p{L}\\p{N}_-])`,
+      t.startsWith("-") ? "u" : "iu",
+    ).test(text),
+  );
+}
+
+/** Spaced hex bytes, as a criterion describes binary input: `7B FF 0A`. */
+const HEX_BYTES = /^[\da-f]{2}(?:[\s,]+[\da-f]{2})+$/i;
+const BYTE_ESCAPES: Record<string, string> = {
+  "09": "\\\\t",
+  "0a": "\\\\n",
+  "0d": "\\\\r",
+  "00": "\\\\0",
+};
+
+/**
+ * Whether a test holds spaced hex bytes the way its toolchain spells them (#1790): `0x7b, 0xff`
+ * in TypeScript, Go, Rust, C#, Java and Kotlin (also with `(byte)` casts and `.toByte()`),
+ * `\x7b\xff\n` (or `{\xff\n`) in a Python or Rust byte string, decimal values in a list, or one
+ * hex string such as `"7bff0a"`.
+ */
+function bytesHeld(text: string, literal: string): boolean {
+  const bytes = literal
+    .trim()
+    .split(/[\s,]+/)
+    .map((b) => b.toLowerCase());
+  const one = (b: string) =>
+    `(?:0x0*${b}\\b|\\\\x${b}|${Number.parseInt(b, 16)}\\b${BYTE_ESCAPES[b] ? `|${BYTE_ESCAPES[b]}` : ""})`;
+  const between = String.raw`(?:[\s,]|\(\s*(?:byte|u8)\s*\)|\.to(?:U)?Byte\(\))*`;
+  const listed = new RegExp(`(?<![\\w.])${bytes.map(one).join(between)}`, "i");
+  // A byte string may mix printable characters with escapes (`b"{\xff\n"` for 7B FF 0A).
+  const decoded = bytes.map((b) => String.fromCharCode(Number.parseInt(b, 16))).join("");
+  const compact = bytes.join("");
+  return (
+    listed.test(text) ||
+    normalizeLiteral(text).includes(decoded) ||
+    (bytes.length >= 3 && new RegExp(compact, "i").test(text.replace(/[\s_]/g, ""))) ||
+    new RegExp(`["']${compact}["']`, "i").test(text)
   );
 }
 
@@ -709,22 +1027,77 @@ export function caseCheck(
   const cases = spec ? criterionCases(spec, task, context) : [];
   if (!paths.length || !cases.length) return undefined;
   return async (root) => {
+    const programs = await programNames(root);
     const files = await Promise.all(
       paths.map(async (path) => {
         const text = await readFile(join(root, path), "utf8").catch(() => "");
-        return { text, evidence: caseEvidence(path, text) };
+        return {
+          text,
+          evidence: caseEvidence(path, text),
+          // A fallback that fakes the library draws nothing.
+          property: ![null, "shim"].includes(propertyTestKind(path, text)),
+        };
       }),
     );
     return missingCases(
       cases,
       files.map((file) => file.evidence),
-    ).map((c) =>
-      missingCases(
-        [c],
-        files.map((file) => file.text),
-      ).length
-        ? `${c.criterionId} names ${JSON.stringify(c.literal)}, and no test file this task writes (${paths.join(", ")}) contains it.`
-        : `${c.criterionId} names ${JSON.stringify(c.literal)}, found only in an assertion message in ${paths.join(", ")}. Use it as a test input or expected value; the message alone is a decoy.`,
-    );
+    )
+      .filter(
+        (c) =>
+          !files.some(
+            (file) =>
+              ((file.property || c.generated) && propertyHeld(file.evidence, c.literal)) ||
+              programHeld(file.evidence, c.literal, programs),
+          ),
+      )
+      .map((c) =>
+        missingCases(
+          [c],
+          files.map((file) => file.text),
+        ).length
+          ? `${c.criterionId} names ${JSON.stringify(c.literal)}, and no test file this task writes (${paths.join(", ")}) contains it.`
+          : `${c.criterionId} names ${JSON.stringify(c.literal)}, found only in an assertion message in ${paths.join(", ")}. Use it as a test input or expected value; the message alone is a decoy.`,
+      );
   };
+}
+
+/** What a review finding says it is about, as a corrective's case walk reads it. */
+export interface RepairFinding {
+  criterionIds?: unknown;
+  requirementIds?: unknown;
+  file?: unknown;
+}
+
+/**
+ * The criteria whose cases a corrective owes: the ones its findings name, by criterion, by
+ * requirement or, for a finding that names neither, by the planned tasks that write the file it
+ * names (#1790). A repair of a whole
+ * feature carries every criterion, and R53 jsonsplice T010, correcting one offset bug, was refused
+ * for the rows of a parser slice it never touched. A corrective whose findings name none of its
+ * criteria keeps them all.
+ */
+export function repairCaseTask<T extends Pick<Task, "criterionIds">>(
+  task: T,
+  findings: readonly RepairFinding[],
+  spec: SpecText | null | undefined,
+  tasks: readonly Pick<Task, "origin" | "writes" | "criterionIds">[],
+): T {
+  const list = (value: unknown) =>
+    Array.isArray(value) ? value.filter((v): v is string => typeof v === "string") : [];
+  const named = new Set<string>();
+  for (const finding of findings) {
+    for (const id of list(finding.criterionIds)) named.add(id);
+    const requirements = list(finding.requirementIds);
+    for (const criterion of spec?.criteria ?? [])
+      if (criterion.requirementIds.some((id) => requirements.includes(id))) named.add(criterion.id);
+    const file = typeof finding.file === "string" ? finding.file.replaceAll("\\", "/") : undefined;
+    // The file is a fallback: a shared file's writers carry criteria the finding is not about.
+    if (file && !list(finding.criterionIds).length && !requirements.length)
+      for (const planned of tasks)
+        if (planned.origin === "planned" && planned.writes.some((w) => w.path === file))
+          for (const id of planned.criterionIds) named.add(id);
+  }
+  const owned = task.criterionIds.filter((id) => named.has(id));
+  return owned.length ? { ...task, criterionIds: owned } : task;
 }

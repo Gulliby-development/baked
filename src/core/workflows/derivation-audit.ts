@@ -36,8 +36,83 @@ export function derivationAuditExtra(spec: Spec): {
   return {
     criteria,
     requirements: spec.requirements.filter((r) => ids.has(r.id)),
-    note: "Derivation audit: these criteria state literal rows (an input and the output it must give). Recompute every row from the requirements alone, without looking at the row's own expected value, and record one entry per row in `derivations`: the row as written, the value the requirements give, whether they match, and the derivation step by step. A row that the request itself states is authoritative: when the requirements give something else, it is the requirement that is wrong, so record matches false and say so in the derivation. The host raises every row with matches false as a blocking finding, so do not report those rows again in `findings`.",
+    note: "Derivation audit: these criteria state literal rows (an input and the output it must give). Recompute every row from the requirements alone, without looking at the row's own expected value, and record one entry per row in `derivations`: the row as written, the value the requirements give, whether they match, and the derivation step by step. A row whose expected value is a position, column, offset, length or count is counted, not estimated: write out the index of each character of its input up to the value in the derivation. A row that the request itself states is authoritative: when the requirements give something else, it is the requirement that is wrong, so record matches false and say so in the derivation. A derivation that rests on the request (the request states, gives or lists the row or its rule) copies the request's exact words in `quote`; the host checks the quote against the request, and a row whose quote the request does not contain is raised as a mismatch. A row the request does not list is derived from the rule as the request words it, and a reading of that rule the request leaves open is a finding of kind ambiguity, not a citation. The host raises every row with matches false as a blocking finding, so do not report those rows again in `findings`.",
   };
+}
+
+/** Wording of a derivation that settles its row by what the request states (#1823). */
+const CITES_REQUEST =
+  /\bthe\s+(?:request|brief)(?:'s)?\s+(?:itself\s+)?(?:explicitly\s+|expressly\s+|clearly\s+|also\s+)?(?:states?|stated|gives?|given|lists?|listed|says|said|shows?|spells?|specifies|defines?|contains?|includes?|provides?)\b|\bthe\s+(?:request|brief)'s\s+(?:own\s+)?(?:example|explicit|stated|worked)\b|\b(?:stated|given|listed|shown|spelled)\s+(?:verbatim\s+)?(?:in|by)\s+the\s+(?:request|brief)\b/i;
+
+/**
+ * Whether a derivation rests on the request: it quotes it, says so, or derives its row from a
+ * requirement that says the request states it (a spec author can copy an invented example into a
+ * requirement as well as into a row).
+ */
+export function citesRequest(
+  derivation: Pick<
+    NonNullable<Analysis["derivations"]>[number],
+    "criterionId" | "derivation" | "quote"
+  >,
+  spec?: Pick<Spec, "criteria" | "requirements">,
+): boolean {
+  if (derivation.quote !== undefined || CITES_REQUEST.test(derivation.derivation)) return true;
+  const ids = spec?.criteria.find((c) => c.id === derivation.criterionId)?.requirementIds ?? [];
+  return (spec?.requirements ?? []).some((r) => ids.includes(r.id) && CITES_REQUEST.test(r.text));
+}
+
+/** Text compared as the request words it: case, Markdown emphasis, quote marks and spacing aside. */
+const plain = (text: string) =>
+  text
+    .toLowerCase()
+    .replace(/[`*_"'\u2018\u2019\u201c\u201d]/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+
+/** Whether the request holds the quote, its parts around an ellipsis in order. */
+export function quoteInRequest(quote: string, request: string): boolean {
+  const text = plain(request);
+  const parts = quote
+    .split(/\.{3}|\u2026/)
+    .map(plain)
+    .filter(Boolean);
+  let from = 0;
+  for (const part of parts) {
+    const at = text.indexOf(part, from);
+    if (at < 0) return false;
+    from = at + part.length;
+  }
+  return parts.length > 0;
+}
+
+/**
+ * The derivations with every citation of the request checked against it (#1823): a row that rests
+ * on request text the request does not contain, or on the request without a quote, does not
+ * match, so it goes back to the spec author as a `DERIVE-` finding. R55 routeshadow's audit
+ * passed `GET // n -> RS005 at 1:6` by citing an example the brief never gave, and the wrong
+ * column shipped (49 of 22,611 differential invocations).
+ */
+export function checkedDerivations(
+  derivations: Analysis["derivations"],
+  request: string,
+  spec?: Pick<Spec, "criteria" | "requirements">,
+): Analysis["derivations"] {
+  return derivations?.map((d) => {
+    if (!citesRequest(d, spec) || (d.quote !== undefined && quoteInRequest(d.quote, request)))
+      return d;
+    const why =
+      d.quote === undefined
+        ? "The derivation or its requirement cites the request without quoting it"
+        : `The cited request text ${JSON.stringify(d.quote.slice(0, 400))} is not in the request`;
+    return {
+      ...d,
+      matches: false,
+      derivation: `${why}, so the row does not rest on the request: ${d.derivation}`.slice(
+        0,
+        16000,
+      ),
+    };
+  });
 }
 
 /** Problems with the audit part of an analysis, so the analyzer completes it before submitting. */
@@ -52,6 +127,11 @@ export function derivationProblems(spec: Spec, analysis: Pick<Analysis, "derivat
     if (!derivations.some((d) => d.criterionId === criterion.id))
       problems.push(
         `Derivation audit: ${criterion.id} states literal rows and has no entry in derivations; recompute each of its rows from ${criterion.requirementIds.join(", ")} and add one entry per row.`,
+      );
+  for (const d of derivations)
+    if (d.quote === undefined && citesRequest(d, spec))
+      problems.push(
+        `Derivation audit: the entry for ${d.criterionId} row ${JSON.stringify(d.row)} rests on the request (the derivation or its requirement says the request states it); copy the request's exact words it relies on into quote, or derive the row from the requirements if the request does not state it.`,
       );
   return problems;
 }

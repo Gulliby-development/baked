@@ -12,13 +12,14 @@ export interface PlanCost {
   implementation: {
     model: string;
     usd: { low: number; high: number };
-    rate?: "run" | "mix" | "default";
+    rate?: "run" | "history" | "mix" | "default";
     otherModels?: boolean;
   } | null;
 }
 
 const RATE_TEXT = {
   run: " at this run's dollars per token so far",
+  history: " at what earlier runs' tasks on it paid per token",
   mix: " at this run's mix of cached and uncached tokens",
   default: "",
 } as const;
