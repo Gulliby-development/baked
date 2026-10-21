@@ -2,6 +2,7 @@
 import { z } from "zod";
 import { RouteEffort } from "../llm/model-routing.js";
 import { DEFAULT_MAX_CANDIDATES, MAX_CANDIDATES } from "./candidates.js";
+import { HOST_ID_FORMATS } from "./host-ids.js";
 import { LibraryDocsSchema } from "./library-docs.js";
 import { StopModesSchema, StopReasonIdSchema } from "./stop-reasons.js";
 
@@ -21,9 +22,10 @@ export const RelativePath = z
     "Expected a canonical relative POSIX path",
   );
 const Text = z.string().min(1).max(16000);
-const RequirementId = z.string().regex(/^(FR|NFR|SC)-[0-9]{3,6}$/);
-const CriterionId = z.string().regex(/^AC-[0-9]{3,6}$/);
-const TaskId = z.string().regex(/^T[0-9]{3,6}$/);
+// Built from the one table the instructions and the id normaliser read (#1871).
+const RequirementId = z.string().regex(HOST_ID_FORMATS.requirement.pattern);
+const CriterionId = z.string().regex(HOST_ID_FORMATS.criterion.pattern);
+const TaskId = z.string().regex(HOST_ID_FORMATS.task.pattern);
 const Semver = z.string().regex(/^\d+\.\d+\.\d+$/);
 const UniqueStrings = z.array(z.string().min(1)).refine((xs) => new Set(xs).size === xs.length);
 
