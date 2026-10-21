@@ -284,6 +284,7 @@ import {
   type ForkSeed,
   seedBytes,
 } from "./fork-stage.js";
+import { formatWrittenChecks } from "./format-written.js";
 import { outputTail } from "./gates.js";
 import { HOST_ADDITIONS, HOST_EDITS_PATH, type HostEdit, recordGraphEdits } from "./host-edits.js";
 import { isStoreError, recordHostError } from "./host-error.js";
@@ -391,14 +392,20 @@ import {
   toolShellFiles,
 } from "./quality/mutation-tools.js";
 import {
+  bansPropertyTests,
   checkPropertyTests,
   libraryFiles,
+  type PropertyRepository,
+  type PropertyTestsMode,
+  presetPropertyTests,
   propertyClaim,
   propertyLibraries,
+  propertyRepository,
   propertyTestsNote,
   propertyTestsOf,
   QUALITY_PROPERTIES,
   QUALITY_PROPERTY_LIBRARIES,
+  QUALITY_PROPERTY_REPOSITORY,
 } from "./quality/properties.js";
 import type { RegistryFetch } from "./quality/registry.js";
 import {
@@ -449,6 +456,7 @@ import {
   createdByRunLineage,
   REFUSED_EDIT_PREFIX,
   readKept,
+  runBaseContent,
   runWrittenHash,
   UNFINISHED_BLOCK_PREFIX,
   uncommittedEdits,
@@ -623,6 +631,7 @@ import {
   hasNoSource,
   type WorkspaceFacts,
   workspaceFacts,
+  workspaceFiles,
   workspaceInventory,
 } from "./workspace-facts.js";
 import {
@@ -4786,21 +4795,34 @@ export class WorkflowScheduler {
             error,
           ),
         );
-      const emptyFailures = signal.aborted
-        ? 0
+      const outcome = signal.aborted
+        ? null
         : recordProviderOutcome(this.store, runId, attempt, profile.id, task?.id, error);
-      if (emptyFailures >= PROVIDER_ZERO_TOKEN_LIMIT) {
+      const counted = Math.max(outcome?.failures ?? 0, outcome?.stalls ?? 0);
+      if (outcome && counted >= PROVIDER_ZERO_TOKEN_LIMIT) {
         this.store.artifact(
           runId,
           "recovery",
           "provider/circuit.json",
-          canonical({ open: true, attemptId: attempt, failures: emptyFailures }),
+          canonical({
+            open: true,
+            attemptId: attempt,
+            failures: outcome.failures,
+            ...(outcome.stalls ? { stalls: outcome.stalls } : {}),
+          }),
         );
+        const waited = outcome.waitedSeconds === null ? "" : ` within ${outcome.waitedSeconds} s`;
+        // An answered call followed by silence is a stalled follow-up, and says so (#1875).
+        const what = outcome.stalls
+          ? `${profile.model} answered ${outcome.answered} call(s) of ${profile.id}, then gave no response${waited} on call ${outcome.answered + 1}, in ${outcome.stalls} consecutive attempts`
+          : `${profile.model} returned no tokens in ${outcome.failures} consecutive unreachable attempts for ${profile.id}`;
         throw new WorkflowFault(
           "OUTPUT_INVALID",
           recoveryAdvice(
-            `${profile.model} returned no tokens in ${emptyFailures} consecutive unreachable attempts for ${profile.id}. Automatic retries stopped. Check the provider and reasoning effort, then resume or reroute the run.`,
-            "Repeated zero-token provider failures need your decision before another attempt.",
+            `${what}. Automatic retries stopped. Check the provider and reasoning effort, then resume or reroute the run.`,
+            outcome.stalls
+              ? "Repeated stalled provider calls need your decision before another attempt."
+              : "Repeated zero-token provider failures need your decision before another attempt.",
             { action: "resume", runId },
             { action: "reroute", runId },
           ),
@@ -5172,12 +5194,7 @@ export class WorkflowScheduler {
     // only hear of it once a criterion is marked.
     const marked = state.spec?.criteria.some((c) => c.property) ?? false;
     const propertyNote =
-      (profile.output === "spec" || marked) &&
-      propertyTestsOf(
-        policy,
-        presetOf(parseRunDefinition(this.store.run(runId).definition_json)),
-        state.requestText || state.prompt,
-      ) === "auto"
+      (profile.output === "spec" || marked) && this.propertyMode(runId, state, policy) === "auto"
         ? propertyTestsNote(profile.output, this.propertyLibraries(runId, state))
         : null;
     // The author and the reviewer read the same decision, each worded for its stage (#1831).
@@ -8682,7 +8699,12 @@ ${note}`;
   ): Check[] {
     const own = taskChecks(policy, task);
     const written = this.writtenTestsCheck(runId, state, policy, task, root, own, changed);
-    const gated = written ? [...own, written] : own;
+    // The project's formatter on the code files the task wrote, and on the lines the run changed in
+    // the files it edits, when the run's checks hold no formatter for them (#1837).
+    const formatted = formatWrittenChecks(root, policy.checks, task.writes, undefined, (path) =>
+      runBaseContent(this.store, runId, path),
+    );
+    const gated = [...own, ...(written ? [written] : []), ...formatted];
     const record = this.affectedRecord(state, task);
     if (record?.baseline !== "passed" || !record.checkId) return gated;
     const suite = record.checkId.replace(/-affected$/, "");
@@ -11414,15 +11436,19 @@ ${note}`;
               changed = true;
             }
           };
+          // A check that holds only some files fixes only those (#1837).
+          const own = check.fixPaths
+            ? paths.filter((path) => check.fixPaths?.includes(path))
+            : paths;
           for (const fix of fixerTiers(check)) {
             // A whole-unit formatter (`cargo fmt`) rewrites the whole crate whatever file it is
             // given: one run for all the code files instead of one per file (#1269, #842).
             if (isWholeUnitFixer(fix)) {
-              const code = paths.filter(isCodePath);
+              const code = own.filter(isCodePath);
               if (code.length) await run(wholeUnitFixerCommand(fix, code), code);
               continue;
             }
-            for (const path of paths) await run(fixerCommand(fix, path), [path]);
+            for (const path of own) await run(fixerCommand(fix, path), [path]);
           }
         }
       } finally {
@@ -11562,6 +11588,40 @@ ${note}`;
     );
     return libraries;
   }
+  /** The run's property-test mode, with what the repository's own tests hold (#1872). */
+  private propertyMode(runId: string, state: RuntimeState, policy: RunPolicy): PropertyTestsMode {
+    const preset = presetOf(parseRunDefinition(this.store.run(runId).definition_json));
+    const request = state.requestText || state.prompt;
+    if (policy.propertyTests || presetPropertyTests(preset) === "off" || bansPropertyTests(request))
+      return propertyTestsOf(policy, preset, request);
+    return propertyTestsOf(policy, preset, request, {
+      repository: this.propertyRepository(runId, state),
+      libraries: this.propertyLibraries(runId, state),
+    });
+  }
+  /**
+   * The test files of the workspace and the property tests among them, found once per run, the
+   * first time the mode is asked (the spec stage, before any task writes), and kept in
+   * `quality/property-repository.json`, so a later stage does not count the run's own tests.
+   */
+  private propertyRepository(runId: string, state: RuntimeState): PropertyRepository {
+    const kept = this.store.latestArtifact(runId, QUALITY_PROPERTY_REPOSITORY);
+    if (kept) return JSON.parse(this.store.readArtifact(runId, kept.id)) as PropertyRepository;
+    const root = runRoot(this.store.workspace, state);
+    // A bounded read: a few hundred test files show the convention.
+    const tests = workspaceFiles(root).filter(isTestCodePath).slice(0, 300);
+    const repository = propertyRepository(tests, (path) => {
+      try {
+        return readFileSync(workspacePath(root, path), "utf8");
+      } catch {
+        return null;
+      }
+    });
+    this.store.transaction(() =>
+      this.store.artifact(runId, "quality", QUALITY_PROPERTY_REPOSITORY, canonical(repository)),
+    );
+    return repository;
+  }
   /**
    * Property-based tests (#637): every criterion the spec marks with `property` needs a property
    * test in a test file of a task that covers it. A missing one is a blocking finding on that
@@ -11572,11 +11632,7 @@ ${note}`;
     state: RuntimeState,
     policy: RunPolicy,
   ): Review["findings"] {
-    const mode = propertyTestsOf(
-      policy,
-      presetOf(parseRunDefinition(this.store.run(runId).definition_json)),
-      state.requestText || state.prompt,
-    );
+    const mode = this.propertyMode(runId, state, policy);
     const criteria = state.spec?.criteria ?? [];
     if (mode === "off" || !state.snapshotId || !criteria.some((c) => c.property)) return [];
     const root = runRoot(this.store.workspace, state);

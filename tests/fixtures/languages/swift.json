@@ -18,7 +18,7 @@
     "placeholders": [
       "Sources/Sum.swift:2"
     ],
-    "gates": null,
+    "gates": ["swift-build", "swift-test"],
     "testRunners": null,
     "mutation": null,
     "properties": null,
@@ -31,6 +31,7 @@
       "Sources/Sum.swift:2",
       "Sources/SumTests.swift:3 comment",
       "Package.swift:1 comment"
-    ]
+    ],
+    "formatters": null
   }
 }

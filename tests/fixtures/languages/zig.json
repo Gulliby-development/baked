@@ -18,12 +18,13 @@
     "placeholders": [
       "src/sum.zig:2"
     ],
-    "gates": null,
+    "gates": ["zig-fmt", "zig-build-test"],
     "testRunners": null,
     "mutation": null,
     "properties": null,
     "entryPoints": null,
     "testGates": null,
+    "formatters": null,
     "callGraph": [
       "sum called at src/sum_test.zig:3"
     ],

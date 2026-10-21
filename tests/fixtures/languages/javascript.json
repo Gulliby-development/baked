@@ -3,7 +3,8 @@
     "src/sum.js": "export function sum(a, b) {\n  throw new Error(\"not implemented\");\n}\n",
     "src/sum.spec.js": "import { sum } from './sum.js';\nsum(1, 2);\n",
     "package.json": "{\"name\": \"fixture\", \"scripts\": {\"test\": \"vitest run\"}, \"devDependencies\": {\"vitest\": \"^2.0.0\"}, \"bin\": {\"sum\": \"src/sum.js\"}}",
-    "src/sum.prop.test.js": "const fc = require('fast-check');\nfc.assert(fc.property(fc.integer(), (a) => a + 0 === a));\n// AC-001 example: (1, 2, 3)\n"
+    "src/sum.prop.test.js": "const fc = require('fast-check');\nfc.assert(fc.property(fc.integer(), (a) => a + 0 === a));\n// AC-001 example: (1, 2, 3)\n",
+    ".prettierrc": "{}\n"
   },
   "outputs": {
     "tests": " FAIL  src/sum.test.js > sum\n Test Files  1 failed (1)\n      Tests  1 failed | 2 passed (3)\n",
@@ -22,7 +23,8 @@
       "src/sum.js:2"
     ],
     "gates": [
-      "tests"
+      "tests",
+      "format"
     ],
     "testRunners": [
       "vitest 3",
@@ -47,6 +49,9 @@
       "src/sum.spec.js:1",
       "src/sum.prop.test.js:1",
       "src/sum.prop.test.js:3 comment"
+    ],
+    "formatters": [
+      "format-written: npx prettier --check src/sum.js src/sum.spec.js src/sum.prop.test.js"
     ]
   }
 }

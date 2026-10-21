@@ -648,6 +648,177 @@ function sbtGates(workspace: string): GateSuggestion[] {
   ];
 }
 
+/** SwiftPM builds and tests a package from `Package.swift` (#1753). */
+function swiftGates(workspace: string): GateSuggestion[] {
+  if (!has(workspace, "Package.swift")) return [];
+  return [
+    {
+      check: gate("swift-build", "swift", ["build"], 900000),
+      source: "Package.swift",
+      reason: "swift build",
+      preselected: true,
+    },
+    {
+      check: gate("swift-test", "swift", ["test"], 900000),
+      source: "Package.swift",
+      reason: "swift test",
+      preselected: true,
+    },
+  ];
+}
+
+/**
+ * Mix compiles, formats and tests an Elixir project from `mix.exs` (#1753). `mix format` reads its
+ * inputs from `.formatter.exs` and stops with an error without one, so the format gate needs it;
+ * its fixer formats the file it is given.
+ */
+function mixGates(workspace: string): GateSuggestion[] {
+  if (!has(workspace, "mix.exs")) return [];
+  const out: GateSuggestion[] = [];
+  if (has(workspace, ".formatter.exs"))
+    out.push({
+      check: {
+        ...gate("mix-format", "mix", ["format", "--check-formatted"], 120000),
+        fix: { executable: "mix", args: ["format"] },
+      },
+      source: ".formatter.exs",
+      reason: "mix format --check-formatted (fixer: mix format)",
+      preselected: true,
+    });
+  out.push(
+    {
+      check: gate("mix-compile", "mix", ["compile", "--warnings-as-errors"], 600000),
+      source: "mix.exs",
+      reason: "mix compile --warnings-as-errors",
+      preselected: true,
+    },
+    {
+      check: gate("mix-test", "mix", ["test"], 600000),
+      source: "mix.exs",
+      reason: "mix test",
+      preselected: true,
+    },
+  );
+  return out;
+}
+
+/**
+ * Dart formats, analyzes and tests a package from `pubspec.yaml` (#1753); a Flutter package
+ * (`sdk: flutter`) analyzes and tests with `flutter`, which runs the Flutter test bindings. The
+ * format fixer is `dart format` with the file it is given.
+ */
+function dartGates(workspace: string): GateSuggestion[] {
+  const pubspec = read(workspace, "pubspec.yaml");
+  if (pubspec === null) return [];
+  const tool = /^\s*sdk:\s*flutter\b/m.test(pubspec) ? "flutter" : "dart";
+  return [
+    {
+      check: {
+        ...gate(
+          "dart-format",
+          "dart",
+          ["format", "--output=none", "--set-exit-if-changed", "."],
+          120000,
+        ),
+        fix: { executable: "dart", args: ["format"] },
+      },
+      source: "pubspec.yaml",
+      reason: "dart format --output=none --set-exit-if-changed . (fixer: dart format)",
+      preselected: true,
+    },
+    {
+      check: gate(`${tool}-analyze`, tool, ["analyze"], 300000),
+      source: "pubspec.yaml",
+      reason: `${tool} analyze`,
+      preselected: true,
+    },
+    {
+      check: gate(`${tool}-test`, tool, ["test"], 600000),
+      source: "pubspec.yaml",
+      reason: `${tool} test`,
+      preselected: true,
+    },
+  ];
+}
+
+/** `zig build test` runs the test step `build.zig` declares; `zig fmt --check` fails on any unformatted file (#1753). */
+function zigGates(workspace: string): GateSuggestion[] {
+  if (!has(workspace, "build.zig")) return [];
+  return [
+    {
+      check: {
+        ...gate("zig-fmt", "zig", ["fmt", "--check", "."], 120000),
+        fix: { executable: "zig", args: ["fmt"] },
+      },
+      source: "build.zig",
+      reason: "zig fmt --check . (fixer: zig fmt)",
+      preselected: true,
+    },
+    {
+      check: gate("zig-build-test", "zig", ["build", "test"], 900000),
+      source: "build.zig",
+      reason: "zig build test",
+      preselected: true,
+    },
+  ];
+}
+
+/** dune builds and tests an OCaml project from `dune-project` (#1753). */
+function duneGates(workspace: string): GateSuggestion[] {
+  if (!has(workspace, "dune-project")) return [];
+  return [
+    {
+      check: gate("dune-build", "dune", ["build"], 600000),
+      source: "dune-project",
+      reason: "dune build",
+      preselected: true,
+    },
+    {
+      check: gate("dune-test", "dune", ["test"], 600000),
+      source: "dune-project",
+      reason: "dune test",
+      preselected: true,
+    },
+  ];
+}
+
+/**
+ * A Bundler project's tests (#1753): RSpec when the Gemfile names it or the project has a `spec/`
+ * folder or `.rspec`, else Rake's `test` task when the project has a Rakefile or the Gemfile names
+ * rake. Both run through `bundle exec`, which loads the Gemfile's versions.
+ */
+function rubyGates(workspace: string): GateSuggestion[] {
+  const gemfile = read(workspace, "Gemfile");
+  if (gemfile === null) return [];
+  const names = (gem: string) => new RegExp(`^\\s*gem\\s+["']${gem}["']`, "m").test(gemfile);
+  const rspec =
+    names("rspec") || names("rspec-core") || has(workspace, ".rspec") || has(workspace, "spec");
+  if (rspec)
+    return [
+      {
+        check: gate("rspec", "bundle", ["exec", "rspec"], 600000),
+        source:
+          names("rspec") || names("rspec-core")
+            ? "Gemfile"
+            : has(workspace, ".rspec")
+              ? ".rspec"
+              : "spec/",
+        reason: "bundle exec rspec",
+        preselected: true,
+      },
+    ];
+  const rakefile = ["Rakefile", "rakefile", "Rakefile.rb"].find((name) => has(workspace, name));
+  if (!rakefile && !names("rake")) return [];
+  return [
+    {
+      check: gate("rake-test", "bundle", ["exec", "rake", "test"], 600000),
+      source: rakefile ?? "Gemfile",
+      reason: "bundle exec rake test",
+      preselected: true,
+    },
+  ];
+}
+
 /**
  * Looks for the project's own test and lint commands. Nothing is written: the result is a list the
  * user confirms. Gates already configured (same ID or same command) are left out.
@@ -814,6 +985,12 @@ const TOOLCHAIN_GATES = {
   maven: mavenGates,
   gradle: gradleGates,
   sbt: sbtGates,
+  swift: swiftGates,
+  mix: mixGates,
+  dart: dartGates,
+  zig: zigGates,
+  dune: duneGates,
+  bundler: rubyGates,
 } as const;
 export type GateToolchain = keyof typeof TOOLCHAIN_GATES;
 
@@ -837,15 +1014,15 @@ export const GATE_TOOLCHAINS: LanguageRecord<readonly GateToolchain[]> = {
   scala: ["sbt", "gradle", "maven"],
   c: none("C builds through Make or CMake, read by the runner detector"),
   cpp: none("C++ builds through Make or CMake, read by the runner detector"),
-  ruby: none("Rake and Bundler have no gate detector yet (#1753)"),
+  ruby: ["bundler"],
   php: none("Composer has no gate detector yet (#1491)"),
-  swift: none("SwiftPM has no gate detector yet (#1753)"),
+  swift: ["swift"],
   lua: none("LuaRocks has no gate detector yet (#1495)"),
-  elixir: none("Mix has no gate detector yet (#1753)"),
-  dart: none("dart and flutter have no gate detector yet (#1753)"),
-  zig: none("zig build has no gate detector yet (#1753)"),
+  elixir: ["mix"],
+  dart: ["dart"],
+  zig: ["zig"],
   bash: none("shell scripts have no toolchain"),
-  ocaml: none("dune has no gate detector yet (#1753)"),
+  ocaml: ["dune"],
   objc: none("Xcode projects have no gate detector"),
   solidity: none("Foundry has no gate detector; a Hardhat project is an npm package"),
 };
