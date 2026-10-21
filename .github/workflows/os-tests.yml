@@ -85,6 +85,16 @@ jobs:
       - name: Install
         if: needs.scope.outputs.run == 'true'
         run: bun install --frozen-lockfile
+      # The tests put every repository, database and scratch file in the system temp directory. On
+      # a Windows runner that is on C:, the OS disk, where a test of file and git work took 42 s in
+      # one job and 2 s in another running the same commit at the same time (#1910). D: holds the
+      # checkout and RUNNER_TEMP.
+      - name: Keep temp files on the work disk
+        if: needs.scope.outputs.run == 'true' && runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          "TEMP=$env:RUNNER_TEMP" >> $env:GITHUB_ENV
+          "TMP=$env:RUNNER_TEMP" >> $env:GITHUB_ENV
       - name: Test
         if: needs.scope.outputs.run == 'true'
         env:
