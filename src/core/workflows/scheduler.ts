@@ -189,12 +189,10 @@ import { type CheckState, checkState, checksProgressed } from "./attempt-progres
 import {
   APPROVAL_REVIEWER,
   agentTaskCount,
-  evaluateAutoApproval,
-  hostBudgetGrowth,
   humanApprovalReason,
+  planApprovalDecision,
   plannerApprovalLimits,
   planScopeAdvice,
-  policyDecisions,
   requestExemptPaths,
   withoutApprovalRemarks,
 } from "./auto-approval.js";
@@ -2001,28 +1999,14 @@ export class WorkflowScheduler {
                           `Approved tasks write files with uncommitted user changes: ${userChanges.join(", ")}`,
                         ],
                       }
-                    : evaluateAutoApproval(
+                    : planApprovalDecision(
                         policy,
-                        state.manifest,
-                        state.spec,
-                        state.graph,
+                        { ...state, spec: state.spec, graph: state.graph },
                         this.store.requests(runId),
-                        policyDecisions(this.store.artifacts(runId), (artifact) =>
-                          this.store.readArtifact(runId, artifact.id),
-                        ),
+                        this.store.artifacts(runId),
+                        (artifact) => this.store.readArtifact(runId, artifact.id),
                         {
-                          request: coverageRequest(state),
-                          manifestRequest: state.requestText || state.prompt,
-                          hostSplitTasks: state.hostSplitTasks,
                           scaffold: this.baselineScaffold(runId, state),
-                          hostGrowthTokens: hostBudgetGrowth(
-                            this.store.artifacts(runId),
-                            (artifact) => this.store.readArtifact(runId, artifact.id),
-                          ),
-                          policyRevisions: {
-                            artifacts: this.store.artifacts(runId),
-                            read: (artifact) => this.store.readArtifact(runId, artifact.id),
-                          },
                           exists: (path) =>
                             existsSync(join(runRoot(this.store.workspace, state), path)),
                         },
