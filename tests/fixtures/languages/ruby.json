@@ -21,7 +21,7 @@
       "Gemfile: rubygems rake"
     ],
     "placeholders": null,
-    "gates": null,
+    "gates": ["rspec"],
     "testRunners": null,
     "mutation": null,
     "properties": null,
@@ -38,6 +38,7 @@
       "lib/sum_test.rb:2 comment",
       "Gemfile:1",
       "Gemfile:2"
-    ]
+    ],
+    "formatters": null
   }
 }

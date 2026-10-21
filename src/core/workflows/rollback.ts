@@ -226,6 +226,24 @@ export function runWrittenHash(
 }
 
 /**
+ * The content a path had before the run's first journaled write to it, in any root: null when the
+ * run created it, undefined when the run has not written it or did not keep the content. The
+ * lines a run changed in a file it edits are its own; the rest keep their formatting (#1837).
+ */
+export function runBaseContent(
+  store: WorkflowStore,
+  runId: string,
+  path: string,
+): string | null | undefined {
+  const first = store
+    .effects(runId)
+    .find((e) => e.kind === "file_patch" && pathOf(e) === path && !isRollback(e));
+  if (!first) return undefined;
+  if (first.before_hash === null) return null;
+  return readKept(store, runId, first.before_hash)?.toString("utf8");
+}
+
+/**
  * Restores every path these edits touched to the content it had before the first of them. A path
  * is restored only while it still holds exactly what the run wrote last; a later change by a
  * person or another tool is left in place and reported. The run's version is kept as an artifact

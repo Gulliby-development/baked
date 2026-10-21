@@ -329,11 +329,13 @@ export function failureSignature(output: string): string {
  * ("no tests ran", "collected 0 items", or only "No files were found in testpaths" when the
  * configured `testpaths` directory does not exist yet), or "No tests found" / "No test files found"
  * of the JavaScript runners, Bun's "0 test files matching" (exit 1), Gradle 9's "did not discover
- * any tests to execute" (#1864) and Go's "no test files". A plan that writes the tests last has
- * this state until its test tasks run, and it is no defect of the code (#1031, #1208).
+ * any tests to execute" (#1864), Go's "no test files", SwiftPM's "no tests found", Mix's "did not
+ * match any directory/file: test" or "no tests to run" and Flutter's "Test directory "test" not
+ * found" (#1753). A plan that writes the tests last has this state until its test tasks run, and
+ * it is no defect of the code (#1031, #1208).
  */
 export function noTestsCollected(output: string): boolean {
-  return /\bno tests ran\b|\bcollected 0 items\b|\bno tests? (?:files? )?found\b|\bno test files\b|\bno files were found in testpaths\b|\b0 test files matching\b|\bdid not discover any tests to execute\b/i.test(
+  return /\bno tests ran\b|\bcollected 0 items\b|\bno tests? (?:files? )?found\b|\bno test files\b|\bno files were found in testpaths\b|\b0 test files matching\b|\bdid not discover any tests to execute\b|\bno tests to run\b|\bdid not match any directory\/file\b|\btest directory "?test"? not found\b/i.test(
     output,
   );
 }

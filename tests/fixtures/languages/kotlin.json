@@ -50,6 +50,7 @@
       "build.gradle.kts:7",
       "build.gradle.kts:11",
       "src/test/kotlin/SumPropTest.kt:2 comment"
-    ]
+    ],
+    "formatters": null
   }
 }

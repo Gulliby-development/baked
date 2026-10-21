@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, unlinkSync } from "node:fs";
+import { existsSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import type { ModelMessage, ProviderOptions } from "@ai-sdk/provider-utils";
 import {
@@ -94,6 +94,7 @@ import { EDIT_TOOLS } from "./progress-watch.js";
 import { isTargetedRead, outlineLargeReads } from "./read-outline.js";
 import { settleInterruptedEdits } from "./recovery.js";
 import { recoveryAdvice } from "./remedies.js";
+import { restorableVersion } from "./restore-file.js";
 import { isOutputLimit, isTransient } from "./retry.js";
 import { RevisionSchema } from "./revision-patch.js";
 import {
@@ -520,6 +521,8 @@ export class NativeAgentExecutor implements AgentExecutor {
             : syntaxErrors(path, content).then((errors) => errors.length),
         );
       };
+      // Files the attempt's last edit of each left unparsable, for the watcher's steering (#1835).
+      const broken = new Map<string, string[]>();
       /** `path:line:column: message` for each syntax error the attempt's edits left in `path`. */
       const syntaxRegressions = async (path: string): Promise<string[]> => {
         if (!syntaxCheckable(path)) return [];
@@ -660,10 +663,15 @@ export class NativeAgentExecutor implements AgentExecutor {
                 count.calls++;
                 backends.set(key, count);
               }
-              if (["edit_file", "multi_edit"].includes(name) && typeof args.path === "string")
-                result = await withSyntaxNote(result, () =>
-                  syntaxRegressions(guard.path(args.path as string)),
-                );
+              if (["edit_file", "multi_edit"].includes(name) && typeof args.path === "string") {
+                const path = guard.path(args.path);
+                result = await withSyntaxNote(result, async () => {
+                  const errors = await syntaxRegressions(path);
+                  if (errors.length) broken.set(path, errors);
+                  else broken.delete(path);
+                  return errors;
+                });
+              }
               if (!["edit_file", "multi_edit"].includes(name)) {
                 const files = await sourceManifest(root, generatedPaths(policy), request.signal);
                 const evidenceId = this.store.transaction(() => {
@@ -1067,6 +1075,51 @@ export class NativeAgentExecutor implements AgentExecutor {
           },
         });
       }
+      // A file the task's edits left unparsable goes back to its last version that parsed (#1835).
+      if (
+        !request.hostTools &&
+        policy.restoreFile === "on" &&
+        request.profile.role === "implementer" &&
+        request.profile.allowedTools.includes("edit_file") &&
+        policy.allowedTools.includes("edit_file")
+      ) {
+        available.restore_file = tool({
+          description:
+            "Put back a file your edits left not parsing, to its last version from this task that parsed, when a repair of the syntax error does not hold. The edits after that version are undone; make them again with edit_file.",
+          inputSchema: z.object({ path: z.string() }).strict(),
+          execute: async ({ path: raw }: { path: string }) =>
+            track("restore_file", async () => {
+              const path = guard.path(raw);
+              if (!syntaxCheckable(path))
+                return {
+                  success: false,
+                  output: `The syntax check does not read ${path}, so restore_file cannot tell which version of it parsed. Fix it with edit_file.`,
+                };
+              const errors = await syntaxRegressions(path);
+              if (!errors.length)
+                return {
+                  success: false,
+                  output: `${path} parses; restore_file puts back only a file your edits left not parsing. Edit it instead.`,
+                };
+              const version = await restorableVersion(this.store, {
+                runId: request.runId,
+                root: rootField(this.store.workspace, root).root ?? "",
+                path,
+                taskId: request.task?.id ?? null,
+                attemptId: request.attemptId,
+              });
+              if ("reason" in version) return { success: false, output: version.reason };
+              await guard.execute("edit_file", { path }, async () =>
+                writeFileSync(workspacePath(root, path), version.content),
+              );
+              broken.delete(path);
+              return {
+                success: true,
+                output: `Restored ${path} to its last version that parsed; ${version.editsUndone} edit${version.editsUndone === 1 ? " was" : "s were"} undone. Read the lines you change and make the change again, writing each quote and backslash once.`,
+              };
+            }),
+        });
+      }
       const resultSchema = outputSchemas[request.profile.output];
       if (!resultSchema) throw new WorkflowFault("OUTPUT_INVALID", "Unknown profile output schema");
       const schema = withHostConstants(request.profile.output, resultSchema);
@@ -1315,6 +1368,9 @@ export class NativeAgentExecutor implements AgentExecutor {
         watch: {
           mustEdit: request.profile.role === "implementer" && !!request.task?.writes.length,
           editTools: Object.keys(available).filter((name) => EDIT_TOOLS.has(name)),
+          ...(available.restore_file
+            ? { broken: () => [...broken].map(([path, errors]) => ({ path, errors })) }
+            : {}),
           onSignal: (finding, action) =>
             this.store.transaction(() =>
               this.store.emit(request.runId, {
