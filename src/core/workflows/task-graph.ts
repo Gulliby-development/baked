@@ -6,7 +6,7 @@ import {
 } from "../verification/convergence.js";
 import { isDocFile } from "../verification/doc-examples.js";
 import { writtenCodePaths } from "./check-policy.js";
-import type { TaskGraph } from "./schemas.js";
+import type { Spec, TaskGraph } from "./schemas.js";
 import type { TaskRow } from "./store.js";
 import { isTestPath } from "./test-integrity.js";
 import type { RuntimeState, Task } from "./types.js";
@@ -204,6 +204,46 @@ export function hostFileProblems(
       `Task ${task.id} creates a file of extra.hostFiles; the host-written task creates it, so modify it after that task instead.`,
     );
   return problems;
+}
+
+/** A quoted text that opens like a comment line in one of the supported languages. */
+const COMMENT_QUOTE = /^(?:\/\/|\/\*|#|--|\(\*|;|%|<!--)/;
+
+/**
+ * Spec problems of a run whose files are fixed before planning: a requirement or criterion that
+ * quotes a comment as a stub's content must quote the content the split fixes. The spec author of
+ * bench round 57 modeplan foundation wrote "// Implementation deferred to its owning feature."
+ * where the skeleton held "// Implementation is owned by a later feature.", and analysis found the
+ * inconsistency only after a plan: a second specify, plan and analyze round of 407k tokens (#1847).
+ * A quote counts when its sentence names a host-written file or a stub, placeholder or skeleton.
+ */
+export function hostFileSpecProblems(
+  spec: Pick<Spec, "requirements" | "criteria">,
+  files: readonly { path: string; content: string }[] | null,
+): string[] {
+  if (!files?.length) return [];
+  const known = new Set(
+    files.flatMap((f) => [f.content.trim(), ...f.content.split("\n").map((l) => l.trim())]),
+  );
+  const names = files.flatMap((f) => [f.path, f.path.split("/").at(-1) ?? f.path]);
+  const aboutStubs = (text: string) =>
+    /\b(?:stubs?|placeholders?|skeleton)\b/i.test(text) || names.some((n) => text.includes(n));
+  const sentences = [
+    ...spec.requirements.map((r) => ({ id: r.id, text: r.text })),
+    ...spec.criteria.map((c) => ({ id: c.id, text: `${c.given} ${c.when} ${c.then}` })),
+  ];
+  const fixed = [...new Set(files.map((f) => JSON.stringify(f.content.trim())))].slice(0, 5);
+  return sentences.flatMap(({ id, text }) => {
+    if (!aboutStubs(text)) return [];
+    const quotes = [...text.matchAll(/`([^`\n]+)`|"([^"\n]+)"/g)].map((m) =>
+      (m[1] ?? m[2] ?? "").trim(),
+    );
+    const wrong = quotes.filter((q) => COMMENT_QUOTE.test(q) && !known.has(q));
+    return wrong.map(
+      (q) =>
+        `${id} quotes ${JSON.stringify(q)} as the content of a host-written file, but the split fixes that content (extra.hostFiles): ${fixed.join(", ")}. Quote it exactly or leave the content out of ${id}.`,
+    );
+  });
 }
 
 /** Whether a task writes only documentation: Markdown, a README, a licence or a changelog. */
