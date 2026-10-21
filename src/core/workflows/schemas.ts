@@ -912,6 +912,7 @@ export const ReasonCode = z.enum([
   "provider_unavailable",
   "provider",
   "provider_account",
+  "provider_policy",
   "tool_denied",
   "storage_failure",
   "invalid_output",

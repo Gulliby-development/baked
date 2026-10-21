@@ -21,6 +21,8 @@ describe("budgetPanelNeeded", () => {
   test("opens for budget and provider stops, not for an attempt-cap stop or a running run", () => {
     expect(budgetPanelNeeded(blocked("budget_exhausted", 0.1))).toBe(true);
     expect(budgetPanelNeeded(blocked("provider_unavailable", 0.1))).toBe(true);
+    // A usage-policy refusal offers the switch to another model (#1895).
+    expect(budgetPanelNeeded(blocked("provider_policy", 0.1))).toBe(true);
     expect(budgetPanelNeeded(blocked("attempt_cap", 0.99))).toBe(false);
     expect(budgetPanelNeeded({ ...blocked("invalid_output", 0.99), status: "running" })).toBe(false);
   });

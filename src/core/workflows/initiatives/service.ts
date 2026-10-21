@@ -2494,7 +2494,9 @@ export class InitiativeService {
         // A provider refusal names its own remedy (credits, a usage limit's reset, a reroute), which
         // a bare reason hides from whoever reads the initiative (#1395).
         const refusal =
-          run.reason === "provider_account" ? stopDetail(this.workflows.store, link.run_id) : null;
+          run.reason === "provider_account" || run.reason === "provider_policy"
+            ? stopDetail(this.workflows.store, link.run_id)
+            : null;
         view.blockers = [
           `run ${link.run_id} is blocked (${run.reason})${refusal ? `: ${refusal.split("\n")[0]?.slice(0, 600)}` : ""}; resolve it with baked workflow ${canRepairRun(run) ? "repair" : "resume"} ${link.run_id}`,
         ];

@@ -25,6 +25,12 @@ import {
 } from "../llm/model-routing.js";
 import { modelVendor } from "../llm/model-vendor.js";
 import { knownModelContextWindow } from "../llm/models.js";
+import {
+  POLICY_REFUSAL_KIND,
+  POLICY_REFUSALS_DIR,
+  policyRefusal,
+  policyRefusalDecision,
+} from "../llm/policy-refusal.js";
 import { ProviderUnreachableError } from "../llm/provider-health.js";
 import { runSandbox } from "../security/sandbox.js";
 import { buildSafeEnv } from "../spawn.js";
@@ -4945,6 +4951,59 @@ export class WorkflowScheduler {
         this.store
           .effects(runId)
           .some((effect) => effect.attempt_id === attempt && effect.kind === "file_patch");
+      // A usage-policy refusal is neither an outage nor a lost worker (#1895). The step runs once
+      // more as it was, on the files it has already changed; a second refusal of the same task or
+      // stage on the same model blocks the run for a reroute.
+      const refusedBy = signal.aborted ? null : policyRefusal(error, profile.model);
+      if (refusedBy) {
+        const message = error instanceof Error ? error.message : String(error);
+        const prior = this.policyRefusals(runId, task?.id ?? profile.id, profile.model);
+        const decision = policyRefusalDecision(prior);
+        this.store.artifact(
+          runId,
+          POLICY_REFUSAL_KIND,
+          `${POLICY_REFUSALS_DIR}${attempt}.json`,
+          canonical({
+            attemptId: attempt,
+            stepId,
+            ...(task ? { taskId: task.id } : {}),
+            profile: profile.id,
+            model: profile.model,
+            provider: refusedBy,
+            usedTokens:
+              this.store.attempts(runId).find((a) => a.id === attempt)?.used_tokens ?? null,
+            message: message.slice(0, 2000),
+            decision,
+          }),
+        );
+        if (decision === "retry") {
+          const { attemptId: _refused, ...same } = placement;
+          return this.call(
+            runId,
+            stepId,
+            state,
+            policy,
+            stageProfile,
+            extra,
+            signal,
+            task,
+            0,
+            validate,
+            limits,
+            hostTools,
+            same,
+          );
+        }
+        throw new WorkflowFault(
+          "OUTPUT_INVALID",
+          recoveryAdvice(
+            `${profile.model} refused the request of ${profile.id} under its usage policy ${prior + 1} times. Move the run to another model with baked workflow reroute ${runId} --model ID --expected-revision N, then resume. ${message}`,
+            `${profile.model} refused the request of ${profile.id} under its usage policy ${prior + 1} times. ${message}`,
+            { action: "reroute", runId },
+          ),
+          { reason: "provider_policy" },
+        );
+      }
       const refusal = accountRefusal(error);
       // Another model on the same provider shares the refused account; one elsewhere does not.
       const provider = (model: string) => model.split("/")[0];
@@ -7778,6 +7837,7 @@ ${note}`;
         error instanceof WorkflowFault &&
         (["BUDGET_EXHAUSTED", "CHECKPOINT_REACHED"].includes(error.code) ||
           error.details.reason === "provider_account" ||
+          error.details.reason === "provider_policy" ||
           error.details.reason === "provider" ||
           error.details.providerCircuit === true ||
           error.details.reason === "check_unavailable")
@@ -7882,6 +7942,22 @@ ${note}`;
           e.before_hash !== e.after_hash,
       )
       .map((e) => (JSON.parse(e.intent_json) as { path: string }).path);
+  }
+  /** The usage-policy refusals recorded so far for a task or stage profile on one model. */
+  private policyRefusals(runId: string, key: string, model: string): number {
+    let count = 0;
+    for (const artifact of this.store.artifacts(runId)) {
+      if (!artifact.logical_path.startsWith(POLICY_REFUSALS_DIR)) continue;
+      try {
+        const record = JSON.parse(this.store.readArtifact(runId, artifact.id)) as {
+          taskId?: string;
+          profile?: string;
+          model?: string;
+        };
+        if ((record.taskId ?? record.profile) === key && record.model === model) count++;
+      } catch {}
+    }
+    return count;
   }
   /** The edits a lost worker left in its worktree, which a restart of its task carries over. */
   private async lostWorkerEdits(
