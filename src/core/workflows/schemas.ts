@@ -560,6 +560,13 @@ export const PolicySchema = z
     /** Host-written audited acceptance rows and parameterized tests; absent means off (#1596). */
     rowsAsData: z.enum(["off", "on"]).optional(),
     /**
+     * `on` has the task-end case walk run a criterion's quoted command through the project's entry
+     * point before it refuses a test task for the command's expected output; when the program
+     * prints something else, the refusal names the source file and its owner instead (#1836).
+     * Absent means `off`, so stored policies keep their hash.
+     */
+    caseSourceProbe: z.enum(["off", "on"]).optional(),
+    /**
      * `split` has the decomposer of an initiative split a feature that holds more than a third of
      * the critical path into features that run side by side, or say why it stays whole
      * (initiatives/critical-path.ts, #1522). Absent means `off`, so stored policies keep their hash.

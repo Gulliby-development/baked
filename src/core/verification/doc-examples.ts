@@ -402,7 +402,7 @@ export function firstDifference(
  * Copies the workspace's files (those of its source manifest) to a temporary directory and links
  * its installed dependencies, so examples that write data files leave the workspace unchanged.
  */
-function copyWorkspace(root: string, files: readonly string[]): string | null {
+export function copyWorkspace(root: string, files: readonly string[]): string | null {
   let bytes = 0;
   for (const path of files) {
     bytes += statSync(join(root, path)).size;
@@ -438,7 +438,7 @@ export function missingInput(args: readonly string[], copy: string, output: stri
 }
 
 /** Links a directory of the workspace into its copy, when it exists and the copy has none. */
-function linkInto(root: string, copy: string, name: string): void {
+export function linkInto(root: string, copy: string, name: string): void {
   if (existsSync(join(root, name)) && !existsSync(join(copy, name)))
     symlinkSync(
       join(root, name),
