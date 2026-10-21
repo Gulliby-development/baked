@@ -173,7 +173,7 @@ export function reauditExtra(
     requirements: spec.requirements.filter((r) => ids.has(r.id)),
     report: report.slice(0, 3000),
     inputs,
-    note: "Derivation re-audit: the derivation audit recomputed these rows and found that they match the requirements, but the implementer ran the code and reports a different value with its own derivation (report). Recompute every row of these criteria again from the requirements alone, one entry per row in `derivations`, as in the derivation audit. For a position, column, offset, length or count, read it off the index table of the input (inputs) and cite the indexes you used in the derivation; do not count in your head. Decide each row on the requirements, not on which side said it first. Raise no findings.",
+    note: "Derivation re-audit: the derivation audit recomputed these rows and found that they match the requirements, but the implementer ran the code and reports a different value with its own derivation (report). Recompute every row of these criteria again from the requirements alone, one entry per row in `derivations`, as in the derivation audit. For a position, column, offset, length or count, read it off the index table of the input (inputs) and cite the indexes you used in the derivation; do not count in your head. Decide each row on the requirements, not on which side said it first. A derivation that rests on the request copies its exact words into `quote`, which the host checks against the request. Raise no findings.",
   };
 }
 
