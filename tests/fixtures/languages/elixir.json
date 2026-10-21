@@ -1,7 +1,7 @@
 {
   "files": {
     "lib/sum.ex": "defmodule Sum do\n  def sum(a, b) do\n    raise \"not implemented\"\n  end\nend\n",
-    "lib/sum_test.exs": "ExUnit.start()\n",
+    "lib/sum_test.exs": "ExUnit.start()\nSum.sum(1, 2)\n",
     "mix.exs": "defmodule Fixture.MixProject do\nend\n"
   },
   "expected": {
@@ -23,6 +23,9 @@
     "mutation": null,
     "properties": null,
     "entryPoints": null,
-    "testGates": null
+    "testGates": null,
+    "callGraph": [
+      "sum called at lib/sum_test.exs:2"
+    ]
   }
 }

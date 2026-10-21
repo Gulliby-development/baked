@@ -557,6 +557,7 @@ import {
   hasTaskGate,
   hostContentProblems,
   hostFileProblems,
+  hostFileSpecProblems,
   hostWritten,
   missingArtifactOwners,
   namesPath,
@@ -1199,6 +1200,7 @@ export class WorkflowScheduler {
                 return [
                   ...size,
                   ...specBoundaryProblems(parsed.data, state.initiativeBounds),
+                  ...hostFileSpecProblems(parsed.data, state.hostFiles),
                   ...specCoverageProblems(hostRepairs(parsed.data), policy.checks, {
                     request: statedRequest(state, this.store.requests(runId)),
                   }),

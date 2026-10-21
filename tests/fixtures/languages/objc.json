@@ -1,7 +1,7 @@
 {
   "files": {
-    "Sources/Sum.m": "@implementation Sum\n@end\n",
-    "Sources/SumTests.m": "@implementation SumTests\n@end\n"
+    "Sources/Sum.m": "#import \"Sum.h\"\n@implementation Sum\n@end\n\nint sum(int a, int b) {\n  return a + b;\n}\n",
+    "Sources/SumTests.m": "#import \"Sum.h\"\n@implementation SumTests\n- (void)testSum { sum(1, 2); }\n@end\n"
   },
   "expected": {
     "tests": [
@@ -18,6 +18,10 @@
     "mutation": null,
     "properties": null,
     "entryPoints": null,
-    "testGates": null
+    "testGates": null,
+    "callGraph": [
+      "sum called at Sources/SumTests.m:3",
+      "Sources/Sum.m imported by Sources/SumTests.m"
+    ]
   }
 }

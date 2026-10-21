@@ -42,29 +42,42 @@ const hdrlens: InitiativePlan = {
 };
 const BASE_STUBS = ["text", "options", "io"].map((m) => `internal/hdr/${m}.go`);
 
-/** The merged feature states each stub's fate once: its own stubs implemented, no stub-wide "do not implement". */
-function expectOneOrder(merged: InitiativeFeature | undefined) {
+const row = { id: "hdrlens", prompt: "Build hdrlens." } as InitiativeRow;
+const promptOf = (plan: InitiativePlan, id: string) => {
+  const target = plan.features.find((f) => f.id === id);
+  if (!target) throw new Error(`${id} missing`);
+  return featurePrompt(row, plan, target, []);
+};
+
+/**
+ * The merged feature states each stub's fate once: no stub-wide "do not implement" in its scope,
+ * and its run's request names the stubs it implements and the ones later features fill (#1847
+ * moved the fates from the merged scope to the request, built from the plan the run starts on).
+ */
+function expectOneOrder(plan: InitiativePlan) {
+  const merged = plan.features.find((f) => f.id === "base");
   expect(merged).toBeDefined();
   const scope = merged?.boundary.scope ?? "";
   expect(scope).not.toContain("do not implement");
-  expect(scope).toContain(`This feature implements ${BASE_STUBS.join(", ")}.`);
-  expect(scope).toContain("The other stubs stay as written for the features that fill them.");
+  expect(scope).toContain(`The host writes the ${STUBS.length} stub files of the skeleton before any task`);
   expect(scope).toContain("Own shared text, options, IO and in-memory test support.");
   expect(merged?.contract).not.toContain("no behavior");
   expect(merged?.contract).toContain("base works");
   expect(merged?.skeleton).toEqual(STUBS);
+  const prompt = promptOf(plan, "base");
+  expect(prompt).toContain(`This feature implements ${BASE_STUBS.join(", ")}.`);
+  expect(prompt).toContain("Later features write internal/hdr/message.go (message), ");
 }
 
 describe("a skeleton feature merged with a feature that fills its stubs (#1829)", () => {
   test("the fold restates the skeleton's scope instead of joining its 'do not implement'", () => {
     const { plan, merged } = foldSkeletonFeatures(hdrlens);
     expect(merged).toEqual([{ featureId: "base", from: ["scaffold", "base"] }]);
-    expectOneOrder(plan.features.find((f) => f.id === "base"));
+    expectOneOrder(plan);
   });
 
   test("the person's merge edit does the same", () => {
-    const plan = applySplitEdit(hdrlens, { op: "merge", featureIds: ["scaffold", "base"], id: "base", title: "base" });
-    expectOneOrder(plan.features.find((f) => f.id === "base"));
+    expectOneOrder(applySplitEdit(hdrlens, { op: "merge", featureIds: ["scaffold", "base"], id: "base", title: "base" }));
   });
 
   test("the small-sibling merge does the same", () => {
@@ -81,25 +94,47 @@ describe("a skeleton feature merged with a feature that fills its stubs (#1829)"
     expect(merged).toEqual([{ featureId: "stubs", from: ["stubs", "text"] }]);
     const scope = after.features.find((f) => f.id === "stubs")?.boundary.scope ?? "";
     expect(scope).not.toContain("do not implement");
-    expect(scope).toContain("This feature implements internal/hdr/text.go.");
     expect(scope).toContain("Implement text.");
+    expect(promptOf(after, "stubs")).toContain("This feature implements internal/hdr/text.go.");
   });
 
   test("two skeleton-only features merged keep their own words: no part fills a stub", () => {
     const other = { ...scaffold, id: "scaffold2", skeleton: [{ path: "internal/x/x.go", content: "package x\n" }], boundary: { scope: "Create x; do not implement it.", paths: ["internal/x/x.go"] } };
     const plan = applySplitEdit({ ...hdrlens, features: [...hdrlens.features, other] }, { op: "merge", featureIds: ["scaffold", "scaffold2"] });
     expect(plan.features.find((f) => f.id === "scaffold")?.boundary.scope).toBe(`${SCAFFOLD_SCOPE}\nCreate x; do not implement it.`);
+    // A feature that is only skeleton implements nothing, whoever else lists its stubs.
+    expect(promptOf(plan, "scaffold")).not.toContain("This feature implements");
   });
 
-  test("the folded feature's run is told which stubs later features fill, not that all are replaced later", () => {
-    const { plan } = foldSkeletonFeatures(hdrlens);
-    const folded = plan.features.find((f) => f.id === "base");
-    if (!folded) throw new Error("base missing");
-    const row = { id: "hdrlens", prompt: "Build hdrlens." } as InitiativeRow;
-    const prompt = featurePrompt(row, plan, folded, []);
-    expect(prompt).not.toContain("later features replace the stubs");
-    expect(prompt).toContain("Later features fill these stubs, so this run leaves them as written: internal/hdr/message.go (message),");
-    for (const stub of BASE_STUBS) expect(prompt).not.toContain(`${stub} (`);
+  test("a second merge moves the stub to the merged feature: the fates follow the plan, not an earlier scope", () => {
+    // Adversarial review of #1839: fold scaffold into base, then merge base and message. The
+    // scope listed "the other stubs stay as written", message.go among them.
+    const folded = foldSkeletonFeatures(hdrlens).plan;
+    const plan = applySplitEdit(folded, { op: "merge", featureIds: ["base", "message"], id: "base", title: "base" });
+    const prompt = promptOf(plan, "base");
+    expect(plan.features.find((f) => f.id === "base")?.boundary.scope).not.toContain("stay as written");
+    expect(prompt).toContain(`This feature implements ${[...BASE_STUBS, "internal/hdr/message.go"].join(", ")}.`);
+    expect(prompt).not.toContain("internal/hdr/message.go (message)");
+  });
+
+  test("a stub another feature's glob covers is filled by that feature", () => {
+    const plan: InitiativePlan = {
+      ...hdrlens,
+      features: hdrlens.features.map((f) => (f.id === "front" ? { ...f, boundary: { ...f.boundary, paths: ["internal/hdr/cmd*.go", "internal/hdr/summary.go"] } } : f)),
+    };
+    const prompt = promptOf(foldSkeletonFeatures(plan).plan, "base");
+    expect(prompt).toContain("internal/hdr/cmd.go (front)");
+    expect(prompt).not.toContain("implements internal/hdr/text.go, internal/hdr/options.go, internal/hdr/io.go, internal/hdr/cmd.go");
+  });
+
+  test("a stub a later feature also lists stays this feature's to write where its own boundary needs it", () => {
+    const plan: InitiativePlan = {
+      ...hdrlens,
+      features: hdrlens.features.map((f) => (f.id === "message" ? { ...f, boundary: { ...f.boundary, paths: [...f.boundary.paths, "internal/hdr/text.go"] } } : f)),
+    };
+    const prompt = promptOf(foldSkeletonFeatures(plan).plan, "base");
+    expect(prompt).toContain("internal/hdr/text.go (message)");
+    expect(prompt).toContain("leave those stubs as written, except the ones this feature implements");
   });
 
   test("the critical-path rule counts no work for a feature the host writes whole", () => {

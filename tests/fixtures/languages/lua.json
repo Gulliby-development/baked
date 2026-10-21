@@ -1,7 +1,7 @@
 {
   "files": {
     "src/sum.lua": "local function sum(a, b)\n  error(\"not implemented\")\nend\n",
-    "src/sum_spec.lua": "local sum = require('sum')\n",
+    "src/sum_spec.lua": "local sum = require('sum')\nprint(sum(1, 2))\n",
     "fixture-0.1-1.rockspec": "package = 'fixture'\n"
   },
   "outputs": {
@@ -30,6 +30,10 @@
     "mutation": null,
     "properties": null,
     "entryPoints": null,
-    "testGates": null
+    "testGates": null,
+    "callGraph": [
+      "sum called at src/sum_spec.lua:2",
+      "src/sum.lua imported by src/sum_spec.lua"
+    ]
   }
 }

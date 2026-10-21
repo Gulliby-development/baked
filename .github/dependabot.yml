@@ -4,6 +4,9 @@ updates:
     directory: /
     schedule:
       interval: weekly
+    # A release must be a week old before it is proposed (zizmor dependabot-cooldown, #1844).
+    cooldown:
+      default-days: 7
     open-pull-requests-limit: 5
     groups:
       minor-and-patch:
@@ -16,6 +19,9 @@ updates:
     directory: /apps/desktop
     schedule:
       interval: weekly
+    # A release must be a week old before it is proposed (zizmor dependabot-cooldown, #1844).
+    cooldown:
+      default-days: 7
     open-pull-requests-limit: 5
     groups:
       desktop-minor-and-patch:
@@ -24,6 +30,9 @@ updates:
     directory: /
     schedule:
       interval: weekly
+    # A release must be a week old before it is proposed (zizmor dependabot-cooldown, #1844).
+    cooldown:
+      default-days: 7
     groups:
       actions:
         patterns: ["*"]

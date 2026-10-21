@@ -1,7 +1,7 @@
 {
   "files": {
     "src/main/scala/Sum.scala": "object Sum {\n  def sum(a: Int, b: Int): Int = ???\n}\n",
-    "src/main/scala/SumSuite.scala": "class SumSuite\n",
+    "src/main/scala/SumSuite.scala": "class SumSuite {\n  val three = Sum.sum(1, 2)\n}\n",
     "build.sbt": "name := \"fixture\"\n"
   },
   "expected": {
@@ -25,6 +25,9 @@
     "mutation": null,
     "properties": null,
     "entryPoints": null,
-    "testGates": null
+    "testGates": null,
+    "callGraph": [
+      "sum called at src/main/scala/SumSuite.scala:2"
+    ]
   }
 }
