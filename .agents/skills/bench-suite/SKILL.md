@@ -16,7 +16,7 @@ Each task is a directory `bench/suite/tasks/<id>/`. Name it `<language>-<toolcha
   - `language`: the family the per-language table groups by: `typescript`, `javascript`, `python`, `go`, `rust`, `java`, `kotlin`, `csharp`, `php`, `lua` or `c`.
   - `toolchain`: for example `bun`, `npm`, `pytest`, `cargo`, `maven`, `gradle`, `dotnet` or `make`.
   - `requires`: the executables that must be on `PATH`. Without them the runner reports the task as skipped and does not fail it.
-  - `allowedPaths`: the globs the plan may write. The runner approves a plan that stays inside them; any other stop counts as an intervention.
+  - `allowedPaths`: the globs the plan may write: the source and test folders, `README.md` and the stack's config files (`package.json`, `pyproject.toml`, `Cargo.toml`, `pom.xml`, the Gradle scripts, `go.mod`, `Makefile`), as the bench loop's auto approval allows. The runner approves a plan that stays inside them; any other stop counts as an intervention.
   - `checks`: the run's own gates, in the shape of `workflows.policy.checks` (`id`, `executable`, `args`, an optional `fix`). The runner adds `cwd`, `required`, `scope`, `envNames` and `writes`.
   - `origin`: `#N` when the task reproduces a past stop.
 - `prompt.md`: the brief BAKED gets. It names the exact files, functions and behavior the hidden check tests, so a correct implementation of the brief passes. It never mentions the hidden check.

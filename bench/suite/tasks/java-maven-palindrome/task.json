@@ -8,7 +8,8 @@
   ],
   "allowedPaths": [
     "src/**",
-    "README.md"
+    "README.md",
+    "pom.xml"
   ],
   "checks": [
     {

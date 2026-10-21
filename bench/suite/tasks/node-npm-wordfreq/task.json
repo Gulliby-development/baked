@@ -9,7 +9,8 @@
   "allowedPaths": [
     "src/**",
     "test/**",
-    "README.md"
+    "README.md",
+    "package.json"
   ],
   "checks": [
     {
