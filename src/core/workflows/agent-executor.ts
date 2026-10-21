@@ -1,5 +1,6 @@
 import { existsSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
+import { join } from "node:path";
 import type { ModelMessage, ProviderOptions } from "@ai-sdk/provider-utils";
 import {
   generateText,
@@ -34,6 +35,7 @@ import {
   withAutomaticCache,
   withRouteEffort,
 } from "../llm/provider-options.js";
+import { dataDir } from "../platform/index.js";
 import { runSandbox } from "../security/sandbox.js";
 import { canonical } from "../specs/hash.js";
 import { workspacePath } from "../specs/validate.js";
@@ -1838,7 +1840,7 @@ export class NativeAgentExecutor implements AgentExecutor {
   /** The recorded calls of the workspace's latest attempts, newest last (#1766). */
   private firstByteHistory(): FirstByteHistory {
     if (this.firstBytes) return this.firstBytes;
-    const history = new FirstByteHistory();
+    const history = new FirstByteHistory(join(dataDir(), "first-byte-history.json"));
     const rows = this.store.connection
       .query(
         `SELECT a.run_id, a.id, t.model_id FROM artifacts a
@@ -1874,16 +1876,17 @@ export class NativeAgentExecutor implements AgentExecutor {
     const model = () => {
       const resolved = resolveModel(request.profile.model);
       const history = this.firstByteHistory();
+      const shared = policy.sharedFirstByteHistory === "on";
       return withProviderHealth(resolved, request.profile.model, {
         stage: request.profile.output,
         firstByteLimit: (ceilingMs, call) =>
           adaptiveFirstByteMs(
             ceilingMs,
-            history.healthy(request.profile.model, call.stage, call.effort),
+            history.healthy(request.profile.model, call.stage, call.effort, shared),
           ),
         timing: (call) => {
           watch.calls.push(call);
-          history.record(request.profile.model, call);
+          history.record(request.profile.model, call, shared);
         },
         // A call that may reason silently (a CLI adapter, or high effort on a provider whose
         // reasoning does not stream) is not a stall while it waits (#1652).
