@@ -45,6 +45,18 @@ CI runs `bun run test` on Linux for every pull request (`CI / check`). The `OS t
 
 Checkouts use LF line endings on every platform (`.gitattributes`). A Windows checkout made before that file existed still has CRLF files, which `bun run lint` reports as format errors. Convert it once with `git rm --cached -r -q . && git reset --hard` after committing or stashing your work.
 
+The `Security` workflow (`.github/workflows/security.yml`, #1844) runs three keyless scanners on every pull request and in the merge queue. Its checks report only, so a finding does not block the merge yet. After two weeks without false positives they become required checks of the merge-queue ruleset.
+- `zizmor` audits the workflows, `dependabot.yml` and any `action.yml` for template injection, unpinned actions, broad permissions, persisted credentials and cache poisoning. It runs offline, with accepted findings in `.github/zizmor.yml`.
+- `gitleaks` scans the commits the pull request adds (`base..head`) for secrets, with test-fixture allowlists in `.gitleaks.toml`.
+- `osv-scanner` checks `bun.lock` and `apps/desktop/bun.lock` against the OSV database. It reads Bun's text lockfile (329 packages in the root one), and an OSV API error fails the job (exit 127) instead of passing it.
+
+The tools are pinned: zizmor by version and wheel hash in `.github/security/zizmor-requirements.txt`, and gitleaks and osv-scanner by module version, which `go install` checks against the Go checksum database. To run them locally:
+- `pip install zizmor==1.30.1`, then `zizmor --offline --config .github/zizmor.yml .`
+- `gitleaks git --config .gitleaks.toml --log-opts=origin/main..HEAD .`
+- `osv-scanner scan source --lockfile bun.lock`
+
+Every suppression carries its reason and the issue or pull request that accepted it.
+
 ## Distributables
 
 | Script | Output | Builds on |

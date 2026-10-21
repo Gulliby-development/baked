@@ -1,0 +1,13 @@
+# zizmor configuration (#1844). Every suppression names its reason and the issue or PR that
+# accepted it; a new workflow or composite action passes the audits instead of being excluded.
+rules:
+  self-repository:
+    ignore:
+      # `uses: ./.github/workflows/builds.yml` is the documented form for a reusable workflow of
+      # this repository; the `$/` spelling is not used anywhere else here (#1844).
+      - release.yml:50
+  adhoc-packages:
+    ignore:
+      # The npm-package smoke test installs the tarball the same job just packed with `npm pack`,
+      # not a registry package (#1844).
+      - builds.yml:110
