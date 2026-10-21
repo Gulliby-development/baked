@@ -77,3 +77,12 @@ export function dependencyContracts(store: WorkflowStore, state: RuntimeState) {
     };
   });
 }
+
+/**
+ * A request a planned-ahead run (#1834) waits on until the initiative releases it onto its
+ * dependencies' results: the host decides it, so it is never a person's to answer.
+ */
+export function isHostRelease(request: { kind: string; body_json: string }): boolean {
+  if (request.kind !== "manual_evidence") return false;
+  return (JSON.parse(request.body_json) as { hostRelease?: unknown }).hostRelease === true;
+}

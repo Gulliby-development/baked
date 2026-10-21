@@ -8,6 +8,9 @@
     "tests": [
       "src/sum_test.zig"
     ],
+    "testMarkers": [
+      "src/sum_test.zig: test"
+    ],
     "manifests": [
       "build.zig"
     ],

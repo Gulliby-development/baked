@@ -14,6 +14,10 @@
       "app/tests.py",
       "tests/test_props.py"
     ],
+    "testMarkers": [
+      "app/tests.py: source",
+      "tests/test_props.py: test"
+    ],
     "manifests": [
       "pyproject.toml"
     ],

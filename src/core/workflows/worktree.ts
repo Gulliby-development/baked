@@ -67,6 +67,16 @@ export function runRoot(workspace: string, state: Pick<RuntimeState, "worktree">
 /** Fallback identity for the run branch commit when the repository configures none. */
 const FALLBACK_IDENTITY = { name: "BAKED workflow", email: "workflow@baked.invalid" };
 
+/** The fallback identity at a fixed date, so a host-made commit is the same for the same inputs. */
+const fixedIdentity = (date: number) => ({
+  GIT_AUTHOR_NAME: FALLBACK_IDENTITY.name,
+  GIT_AUTHOR_EMAIL: FALLBACK_IDENTITY.email,
+  GIT_AUTHOR_DATE: `@${date} +0000`,
+  GIT_COMMITTER_NAME: FALLBACK_IDENTITY.name,
+  GIT_COMMITTER_EMAIL: FALLBACK_IDENTITY.email,
+  GIT_COMMITTER_DATE: `@${date} +0000`,
+});
+
 async function required(
   directory: string,
   args: string[],
@@ -149,14 +159,7 @@ export async function mergedBase(
   date: number,
 ): Promise<MergedBase> {
   let base = await worktreeBase(workspace);
-  const env = {
-    GIT_AUTHOR_NAME: FALLBACK_IDENTITY.name,
-    GIT_AUTHOR_EMAIL: FALLBACK_IDENTITY.email,
-    GIT_AUTHOR_DATE: `@${date} +0000`,
-    GIT_COMMITTER_NAME: FALLBACK_IDENTITY.name,
-    GIT_COMMITTER_EMAIL: FALLBACK_IDENTITY.email,
-    GIT_COMMITTER_DATE: `@${date} +0000`,
-  };
+  const env = fixedIdentity(date);
   const ancestor = async (a: string, b: string): Promise<boolean> =>
     (await git(workspace, ["merge-base", "--is-ancestor", a, b])).code === 0;
   for (const commit of commits) {
@@ -187,6 +190,88 @@ export async function mergedBase(
     );
   }
   return { commit: base };
+}
+
+/**
+ * `base` with `files` added where it has no file at their path: the provisional base of a feature
+ * that plans ahead (#1834), so it plans against the host-written stubs of the features it depends
+ * on that have not finished yet. Built in a temporary index with a fixed author and date, as
+ * `mergedBase` is, so the same inputs give the same commit; `base` itself when nothing is added.
+ */
+export async function provisionalBase(
+  workspace: string,
+  base: string,
+  files: { path: string; content: string }[],
+  date: number,
+): Promise<string> {
+  const present = new Set(
+    (await required(workspace, ["ls-tree", "-r", "-z", "--name-only", base]))
+      .split("\0")
+      .filter(Boolean),
+  );
+  const added = [...new Map(files.map((f) => [f.path, f])).values()]
+    .filter((f) => !present.has(f.path) && !internalPath(f.path))
+    .sort((a, b) => a.path.localeCompare(b.path));
+  if (!added.length) return base;
+  const directory = mkdtempSync(join(tmpdir(), "baked-provisional-"));
+  const env = { GIT_INDEX_FILE: join(directory, "index") };
+  try {
+    await required(workspace, ["read-tree", base], { env });
+    const updates: string[] = [];
+    for (const file of added) {
+      const blob = await required(workspace, ["hash-object", "-w", "--stdin"], {
+        input: Buffer.from(file.content),
+      });
+      updates.push(`100644 ${blob}\t${file.path}\0`);
+    }
+    await required(workspace, ["update-index", "-z", "--index-info"], {
+      env,
+      input: updates.join(""),
+    });
+    const tree = await required(workspace, ["write-tree"], { env });
+    return await required(
+      workspace,
+      [
+        "commit-tree",
+        tree,
+        "-p",
+        base,
+        "--no-gpg-sign",
+        "-m",
+        "Stubs of unfinished upstream features",
+      ],
+      { env: { ...env, ...fixedIdentity(date) } },
+    );
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+}
+
+/**
+ * Moves a planned-ahead run's worktree and branch from its provisional base to `commit`, the
+ * results of the features it depends on (#1834). Refused when a tracked file of the worktree
+ * changed: no task has run yet, so only the run's untracked documents may differ, and they stay.
+ */
+export async function moveRunWorktree(
+  workspace: string,
+  worktree: WorktreeState,
+  commit: string,
+): Promise<void> {
+  const root = join(workspace, worktree.path);
+  const status = await git(root, ["status", "--porcelain=v1", "-z", "--untracked-files=no"]);
+  if (status.code !== 0)
+    throw new WorkflowFault("INPUT_CHANGED", `git status failed: ${status.stderr.trim()}`, {
+      reason: "worktree_failed",
+    });
+  const changed = statusPaths(status.stdout);
+  if (changed.length)
+    throw new WorkflowFault(
+      "INPUT_CHANGED",
+      `The planned-ahead run's worktree changed before its tasks: ${changed.slice(0, 10).join(", ")}`,
+      { reason: "worktree_changed", paths: changed },
+    );
+  const hooks = join(workspace, ".baked", "no-hooks");
+  await required(root, ["-c", `core.hooksPath=${hooks}`, "reset", "-q", "--hard", commit]);
 }
 
 /** Shares the project's top-level `node_modules` with the worktree so checks can run there. */

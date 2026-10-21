@@ -26,5 +26,33 @@
   "R48/md-site.sqlite.gz#a42d1cf8-1ceb-45b1-8a60-8a650147539e": {
     "newTestSplits": 1,
     "reason": "#1595 (44965382): test files split by observed case capacity from then on; this round was sized before it and kept them whole. The rule before #1789 splits 4 of them, the current rule only those above four times the capacity or one attempt's cap."
+  },
+  "R52/stmtsplit-update.sqlite.gz#17773c4d-d62f-43b9-af76-f1ef4189e423": {
+    "newApprovalDeclines": 1,
+    "reason": "#1707: the trace was exported before the export kept the file names a request names, so the package.json edit its request named (requestedManifestEdits) replays as an unnamed manifest edit. A trace exported from #1707 on keeps them."
+  },
+  "R53/pgnvet-update.sqlite.gz#438ba5e5-8b09-44a6-8f22-12025b527623": {
+    "newApprovalDeclines": 1,
+    "reason": "#1707: the trace was exported before the export kept the file names a request names, so the package.json edit its request named (requestedManifestEdits) replays as an unnamed manifest edit. A trace exported from #1707 on keeps them."
+  },
+  "R54/shexpand-update.sqlite.gz#b7c4fb3d-303a-4dc9-b5b7-ba2dd84c1e4a": {
+    "newApprovalDeclines": 1,
+    "reason": "#1707: the trace was exported before the export kept the file names a request names, so the Cargo.toml edit its request named (requestedManifestEdits) replays as an unnamed manifest edit. A trace exported from #1707 on keeps them."
+  },
+  "R55/stampbook-update.sqlite.gz#2ea66a81-1cb0-4c9e-91a4-ab80b81ce5ec": {
+    "newApprovalDeclines": 1,
+    "reason": "#1707: the trace was exported before the export kept the file names a request names, so the pyproject.toml edit its request named (requestedManifestEdits) replays as an unnamed manifest edit. A trace exported from #1707 on keeps them."
+  },
+  "R56/tonemath-update.sqlite.gz#c87b91ee-324a-4f63-bf03-84996bf90b79": {
+    "newApprovalDeclines": 1,
+    "reason": "#1707: the trace was exported before the export kept the file names a request names, so the Cargo.toml edit its request named (requestedManifestEdits) replays as an unnamed manifest edit. A trace exported from #1707 on keeps them."
+  },
+  "R57/modeplan.sqlite.gz#61044391-0af4-4308-a28d-cc172b824dea": {
+    "newApprovalDeclines": 1,
+    "reason": "#1707: the trace was exported before the export kept the file names a request names, so the Modeplan.csproj edit its request named (requestedManifestEdits) replays as an unnamed manifest edit. A trace exported from #1707 on keeps them."
+  },
+  "R57/zonevet-update.sqlite.gz#de1d71df-f7c5-4a77-8569-a525388efaa5": {
+    "newApprovalDeclines": 1,
+    "reason": "#1707: the trace was exported before the export kept the file names a request names, so the pyproject.toml edit its request named (requestedManifestEdits) replays as an unnamed manifest edit. A trace exported from #1707 on keeps them."
   }
 }

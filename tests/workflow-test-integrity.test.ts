@@ -82,13 +82,13 @@ test("the scan leaves planned changes, existing code and spec literals alone", (
 
 test("existing tests need a reason in the plan to be changed, unless the guard only warns", () => {
   const graph = { tasks: [task([{ path: "tests/old.test.ts", action: "modify" }]), task([{ path: "tests/new.test.ts", action: "create" }], "T002"), task([{ path: "tests/new.test.ts", action: "modify" }], "T003")] };
-  expect(preexistingTest("tests/old.test.ts", graph.tasks)).toBe(true);
-  expect(preexistingTest("tests/new.test.ts", graph.tasks)).toBe(false);
-  const problems = testWriteProblems(graph, {});
+  expect(preexistingTest("tests/old.test.ts", graph.tasks, "/nonexistent")).toBe(true);
+  expect(preexistingTest("tests/new.test.ts", graph.tasks, "/nonexistent")).toBe(false);
+  const problems = testWriteProblems(graph, {}, "/nonexistent");
   expect(problems).toHaveLength(1);
   expect(problems[0]).toContain("T001 would modify the existing test tests/old.test.ts without a reason");
-  expect(testWriteProblems({ tasks: [task([{ path: "tests/old.test.ts", action: "modify", reason: "The request removes subtraction" }])] }, {})).toEqual([]);
-  expect(testWriteProblems(graph, { testIntegrity: "warn" })).toEqual([]);
+  expect(testWriteProblems({ tasks: [task([{ path: "tests/old.test.ts", action: "modify", reason: "The request removes subtraction" }])] }, {}, "/nonexistent")).toEqual([]);
+  expect(testWriteProblems(graph, { testIntegrity: "warn" }, "/nonexistent")).toEqual([]);
   expect(testIntegrityOf({})).toBe("block");
 });
 
