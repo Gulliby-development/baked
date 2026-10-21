@@ -4,11 +4,13 @@ import { chmodSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "
 import { tmpdir } from "node:os";
 import { delimiter, dirname, join } from "node:path";
 import { hashBytes, hashJson } from "../src/core/specs/hash.js";
+import { cwdPath } from "../src/core/workflows/check-policy.js";
 import { changedLineRanges, formatWrittenChecks } from "../src/core/workflows/format-written.js";
 import { capturePreImage } from "../src/core/workflows/rollback.js";
 import { fileHash } from "../src/core/workflows/effects.js";
+import type { RunPolicy } from "../src/core/workflows/schemas.js";
 import type { ExecutionRequest } from "../src/core/workflows/types.js";
-import { fixtureSpec, workflowFixture } from "./helpers/workflow-fixture.js";
+import { fixturePolicy, fixtureSpec, workflowFixture } from "./helpers/workflow-fixture.js";
 import { removeTempDir } from "./helpers/temp-dir.js";
 
 // R55 structpad-update and R56 logslice-update (#1837): the repository's older
@@ -41,7 +43,11 @@ while [ $# -gt 0 ]; do
   esac
 done
 bad=0
-for f in "$@"; do
+files=""
+for a in "$@"; do
+  if [ -d "$a" ]; then files="$files $(find "$a" -name '*.py' | sort)"; else files="$files $a"; fi
+done
+for f in $files; do
   total=$(wc -l < "$f")
   start=1
   end=$total
@@ -52,7 +58,7 @@ for f in "$@"; do
   if [ $check = 1 ]; then
     if sed -n "\${start},\${end}p" "$f" | grep -q 'x=1'; then echo "Would reformat: $f"; bad=1; fi
   else
-    sed "\${start},\${end}s/x=1/x = 1/" "$f" > "$f.tmp" && mv "$f.tmp" "$f"
+    sed "\${start},\${end}{s/x=1;y=2/x = 1\\n    y = 2/;s/x=1/x = 1/;}" "$f" > "$f.tmp" && mv "$f.tmp" "$f"
   fi
 done
 exit $bad
@@ -182,40 +188,112 @@ describe("the lines a task changes in a file it edits", () => {
     expect(checks).toHaveLength(9);
     const run = (c: { executable: string; args: string[] }, ...extra: string[]) =>
       spawnSync(c.executable, [...c.args, ...extra], { cwd: root }).status;
-    expect(checks.map((c) => run(c))).toEqual([0, 0, 0, 0, 0, 0, 0, 0, 1]);
-    const ninth = checks[8]!;
+    // The last block's check comes first.
+    expect(checks.map((c) => run(c))).toEqual([1, 0, 0, 0, 0, 0, 0, 0, 0]);
+    const ninth = checks[0]!;
     expect(run(ninth.fix!, "tests/test_many.py")).toBe(0);
     expect(run(ninth)).toBe(0);
     expect(readFileSync(join(root, "tests/test_many.py"), "utf8")).toBe(after.replace("x=1", "x = 1"));
   });
 
-  test.skipIf(IS_WIN)("zonevet: the appended test is formatted, the old unformatted line is left alone, and the run completes", async () => {
-    const f = workflowFixture();
-    try {
-      for (const [path, text] of Object.entries({ ...PROJECT, "tests/test_docs.py": OLD_DOCS })) {
-        mkdirSync(dirname(join(f.root, path)), { recursive: true });
-        writeFileSync(join(f.root, path), text);
+  /** Drives a run whose task edits `path` from `before` to `after` as the edit tool journals it. */
+  async function editRun(
+    files: Record<string, string>,
+    path: string,
+    after: string,
+    policy?: RunPolicy,
+  ): Promise<{ status: string; root: string; dispose: () => Promise<void> }> {
+    const f = workflowFixture(policy ? { policy } : {});
+    for (const [file, text] of Object.entries(files)) {
+      mkdirSync(dirname(join(f.root, file)), { recursive: true });
+      writeFileSync(join(f.root, file), text);
+    }
+    const original = f.executor.execute.bind(f.executor);
+    f.executor.execute = async (request: ExecutionRequest) => {
+      const out = await original(request);
+      if (request.profile.output === "plan") {
+        const plan = out.output as { markdown: string; taskGraph: { specHash: string; planHash: string; tasks: { writes: { path: string; action: string }[] }[] } };
+        plan.taskGraph.tasks[0]?.writes.push({ path, action: files[path] === undefined ? "create" : "modify" });
+        plan.taskGraph.specHash = hashJson(fixtureSpec);
+        plan.taskGraph.planHash = hashBytes(plan.markdown);
       }
+      if (request.profile.output === "implementation" && request.attemptId) {
+        // The edit as the implementer's edit tool journals it: the file's content before it is kept.
+        const target = join(f.root, path);
+        const store = f.service.store;
+        const before = store.transaction(() => capturePreImage(store, request.runId, target));
+        const effect = store.transaction(() =>
+          store.prepareEffect(request.runId, request.attemptId, "file_patch", { path, tool: "edit_file" }, before, null),
+        );
+        mkdirSync(dirname(target), { recursive: true });
+        writeFileSync(target, after);
+        store.transaction(() => store.finishFileEffect(request.runId, effect, fileHash(target)));
+      }
+      return out;
+    };
+    const run = await f.start();
+    let view = await f.service.drive(run.runId, new AbortController().signal);
+    expect(view).toMatchObject({ status: "waiting", reason: "approval" });
+    await f.approve(run.runId);
+    view = await f.service.drive(run.runId, new AbortController().signal);
+    return { status: view.status, root: f.root, dispose: f.dispose };
+  }
+
+  test.skipIf(IS_WIN)("zonevet: the appended test is formatted, the old unformatted line is left alone, and the run completes", async () => {
+    const run = await editRun({ ...PROJECT, "tests/test_docs.py": OLD_DOCS }, "tests/test_docs.py", APPENDED);
+    try {
+      expect(run.status).toBe("completed");
+      expect(readFileSync(join(run.root, "tests/test_docs.py"), "utf8")).toBe(`${OLD_DOCS}\n\ndef test_new():\n    x = 1\n`);
+      expect(readFileSync(join(run.root, "logslice/old.py"), "utf8")).toBe("x=1\n");
+    } finally {
+      await run.dispose();
+    }
+  }, 60000);
+
+  // R59 adversarial review of #1862: a fixer that changes a block's line count moved the blocks
+  // after it, so their fixers and re-checks ran on stale lines and left a block unformatted.
+  test.skipIf(IS_WIN)("a fixer that adds a line does not leave a later block unformatted", async () => {
+    const before = "x=1\n\ndef test_a():\n    pass\n\ndef test_b():\n    pass\n\n# end\n";
+    const after = "x=1\n\ndef test_a():\n    x=1;y=2\n\ndef test_b():\n    x=1;y=2\n\n# end\n";
+    const run = await editRun({ ...PROJECT, "tests/test_two.py": before }, "tests/test_two.py", after);
+    try {
+      expect(run.status).toBe("completed");
+      expect(readFileSync(join(run.root, "tests/test_two.py"), "utf8")).toBe(
+        "x=1\n\ndef test_a():\n    x = 1\n    y = 2\n\ndef test_b():\n    x = 1\n    y = 2\n\n# end\n",
+      );
+    } finally {
+      await run.dispose();
+    }
+  }, 60000);
+});
+
+// R59 adversarial review of #1862: a fixer runs in its check's cwd but was given the workspace
+// path, so a check in a subproject (`cwd: "py"`) asked `ruff format py/tests/test_new.py` from
+// inside `py`, which names no file, and the check failed on every try.
+describe.skipIf(IS_WIN)("a fixer of a check in a subproject names the file from the check's cwd", () => {
+  test("the checks stage fixes the new file and the run completes", async () => {
+    const f = workflowFixture({
+      policy: {
+        ...fixturePolicy,
+        checks: [
+          ...fixturePolicy.checks,
+          { id: "py-format", executable: "ruff", args: ["format", "--check", "."], cwd: "py", fix: { executable: "ruff", args: ["format"] }, timeoutMs: 10000, required: true, scope: "feature", envNames: [], writes: [] },
+        ],
+      },
+    });
+    try {
+      mkdirSync(join(f.root, "py/tests"), { recursive: true });
+      writeFileSync(join(f.root, "py/pyproject.toml"), "[project]\nname = 'p'\n");
       const original = f.executor.execute.bind(f.executor);
       f.executor.execute = async (request: ExecutionRequest) => {
         const out = await original(request);
         if (request.profile.output === "plan") {
           const plan = out.output as { markdown: string; taskGraph: { specHash: string; planHash: string; tasks: { writes: { path: string; action: string }[] }[] } };
-          plan.taskGraph.tasks[0]?.writes.push({ path: "tests/test_docs.py", action: "modify" });
+          plan.taskGraph.tasks[0]?.writes.push({ path: "py/tests/test_new.py", action: "create" });
           plan.taskGraph.specHash = hashJson(fixtureSpec);
           plan.taskGraph.planHash = hashBytes(plan.markdown);
         }
-        if (request.profile.output === "implementation" && request.attemptId) {
-          // The edit as the implementer's edit tool journals it: the file's content before it is kept.
-          const target = join(f.root, "tests/test_docs.py");
-          const store = f.service.store;
-          const before = store.transaction(() => capturePreImage(store, request.runId, target));
-          const effect = store.transaction(() =>
-            store.prepareEffect(request.runId, request.attemptId, "file_patch", { path: "tests/test_docs.py", tool: "edit_file" }, before, null),
-          );
-          writeFileSync(target, APPENDED);
-          store.transaction(() => store.finishFileEffect(request.runId, effect, fileHash(target)));
-        }
+        if (request.profile.output === "implementation") writeFileSync(join(f.root, "py/tests/test_new.py"), "x=1\n");
         return out;
       };
       const run = await f.start();
@@ -224,10 +302,17 @@ describe("the lines a task changes in a file it edits", () => {
       await f.approve(run.runId);
       view = await f.service.drive(run.runId, new AbortController().signal);
       expect(view.status).toBe("completed");
-      expect(readFileSync(join(f.root, "tests/test_docs.py"), "utf8")).toBe(`${OLD_DOCS}\n\ndef test_new():\n    x = 1\n`);
-      expect(readFileSync(join(f.root, "logslice/old.py"), "utf8")).toBe("x=1\n");
+      expect(readFileSync(join(f.root, "py/tests/test_new.py"), "utf8")).toBe("x = 1\n");
     } finally {
       await f.dispose();
     }
   }, 60000);
+
+  test("cwdPath names a workspace path from the check's cwd", () => {
+    expect(cwdPath({ cwd: "." }, "py/a.py")).toBe("py/a.py");
+    expect(cwdPath({ cwd: "py" }, "py/tests/a.py")).toBe("tests/a.py");
+    expect(cwdPath({ cwd: "./py/" }, "py/a.py")).toBe("a.py");
+    expect(cwdPath({ cwd: "py" }, "web/a.ts")).toBe("../web/a.ts");
+  });
 });
+

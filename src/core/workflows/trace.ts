@@ -7,6 +7,11 @@ import type { AppConfig } from "../../types/index.js";
 import { builtinProfiles } from "../agents/profiles/builtin.js";
 import { ModelRoutingSchema, type RouteEffort } from "../llm/model-routing.js";
 import {
+  POLICY_REFUSAL_KIND,
+  POLICY_REFUSALS_DIR,
+  policyRefusalDecision,
+} from "../llm/policy-refusal.js";
+import {
   type CallReasoning,
   type CallTiming,
   providerFirstByteMs,
@@ -52,6 +57,8 @@ const KEPT_ARTIFACTS = new Set([
   "tasks",
   // The run state (`internal/state.json`): an initiative's feature views read it (#1707).
   "state",
+  // A provider's usage-policy refusal of an attempt and what the run did with it (#1895).
+  POLICY_REFUSAL_KIND,
 ]);
 
 /** Tables that hold evidence, effects or prose the replay never reads. */
@@ -539,6 +546,68 @@ export interface RunReplay {
   stallLadder: StallLadderBoundary[];
   /** Stalled attempts after which the current ladder takes another rung than the recording. */
   newRecoveries: number;
+  /** Each attempt a provider refused under its usage policy, against the current rule (#1895). */
+  policyRefusals: PolicyRefusalBoundary[];
+  /** Refusals the current rule stops the run on that the recording ran again. */
+  newPolicyStops: number;
+}
+
+/** What a run does with a refused attempt; `policyRefusalDecision` unless a test passes another. */
+export type PolicyRefusalRule = typeof policyRefusalDecision;
+
+export interface PolicyRefusalBoundary {
+  attemptId: string;
+  /** The task, or the stage profile, the refusals are counted for. */
+  key: string;
+  model: string;
+  /** Refusals of the same key and model recorded before this one. */
+  prior: number;
+  recorded: "retry" | "stop";
+  replayed: "retry" | "stop";
+}
+
+/**
+ * Every usage-policy refusal a run recorded (`provider/policy-refusals/*.json`, #1895), decided
+ * again by `decide` from the refusals of the same task or stage profile and model before it.
+ * Traces from before #1895 record none.
+ */
+export function replayPolicyRefusals(
+  store: WorkflowStore,
+  runId: string,
+  decide: PolicyRefusalRule = policyRefusalDecision,
+): PolicyRefusalBoundary[] {
+  const seen = new Map<string, number>();
+  return store
+    .artifacts(runId)
+    .filter((a) => a.logical_path.startsWith(POLICY_REFUSALS_DIR))
+    .flatMap((artifact) => {
+      let record: {
+        attemptId?: string;
+        taskId?: string;
+        profile?: string;
+        model?: string;
+        decision?: "retry" | "stop";
+      };
+      try {
+        record = JSON.parse(store.readArtifact(runId, artifact.id));
+      } catch {
+        return [];
+      }
+      const key = record.taskId ?? record.profile ?? "";
+      const model = record.model ?? "";
+      const prior = seen.get(`${key}\0${model}`) ?? 0;
+      seen.set(`${key}\0${model}`, prior + 1);
+      return [
+        {
+          attemptId: record.attemptId ?? "",
+          key,
+          model,
+          prior,
+          recorded: record.decision ?? "retry",
+          replayed: decide(prior),
+        },
+      ];
+    });
 }
 
 /**
@@ -1585,6 +1654,8 @@ function replayRun(
   | "newTestSplits"
   | "stallLadder"
   | "newRecoveries"
+  | "policyRefusals"
+  | "newPolicyStops"
 > | null {
   const db = store.connection;
   const run = store.run(runId);
@@ -1749,6 +1820,7 @@ export function replayTrace(
     stallRule?: StallRule;
     priceSamples?: PriceSamples;
     historyTrace?: HistoryTrace;
+    policyRefusal?: PolicyRefusalRule;
   } = {},
 ): TraceReplay {
   // Initiative starts rewind their own copies of the trace, before the run replay rewinds this one.
@@ -1772,6 +1844,9 @@ export function replayTrace(
     const stalls = new Map(
       runIds.map((runId) => [runId, replayStallLadder(store, runId, options.stallRule)]),
     );
+    const refusals = new Map(
+      runIds.map((runId) => [runId, replayPolicyRefusals(store, runId, options.policyRefusal)]),
+    );
     const runs: RunReplay[] = [];
     for (const runId of runIds) {
       const firstByte = timings.get(runId) ?? [];
@@ -1789,11 +1864,13 @@ export function replayTrace(
       };
       const testSplits = splits.get(runId) ?? [];
       const stallLadder = stalls.get(runId) ?? [];
+      const policyRefusals = refusals.get(runId) ?? [];
       if (
         !replay.boundaries.length &&
         !firstByte.length &&
         !testSplits.length &&
-        !stallLadder.length
+        !stallLadder.length &&
+        !policyRefusals.length
       )
         continue;
       runs.push({
@@ -1806,6 +1883,10 @@ export function replayTrace(
           .length,
         stallLadder,
         newRecoveries: stallLadder.filter((b) => b.replayed !== b.recorded).length,
+        policyRefusals,
+        newPolicyStops: policyRefusals.filter(
+          (b) => b.replayed === "stop" && b.recorded === "retry",
+        ).length,
       });
     }
     const gates = replayShareGate(store, options.shareGate);

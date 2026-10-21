@@ -95,22 +95,34 @@ const SPEC_REF = /(^|[^a-z])spec(\.json|\.md)?\b|^(FR|NFR|AC)-\d+/i;
 
 const PLAN_REF = /(^|[^a-z])(plan\.md|tasks\.(json|md))\b|^T\d+\b/i;
 
+const CRITERION_REF = /(^|[^a-z])AC-\d+\b/i;
+
+/**
+ * A reference to something the spec itself must change: a requirement, or the spec without a
+ * criterion id. A criterion id alone is what a task misses, so it does not count.
+ */
+const specDefectRef = (ref: string): boolean =>
+  /(^|[^a-z])N?FR-\d+\b/i.test(ref) || (SPEC_REF.test(ref) && !CRITERION_REF.test(ref));
+
 /**
  * Blocking analysis findings the planner can fix alone: a coverage gap in the plan (it names the
- * criteria the tasks miss, so spec references are expected), or an inconsistency that refers only
- * to the plan (plan.md, tasks.json). Runs 2fa658c0 and b0d7484c asked a person about tasks that
- * did not cover some criteria.
+ * criteria the tasks miss, so criterion references are expected, but not a requirement or the spec
+ * itself), or an inconsistency that refers only to the plan (plan.md, tasks.json). Runs 2fa658c0
+ * and b0d7484c asked a person about tasks that did not cover some criteria; jsonshape 2f1c8ef1
+ * sent a finding on spec.json:FR-006 to the planner because it also named plan.md (#1893).
  */
 export function planOnlyFindings<T extends { kind: string; refs: string[]; blocking: boolean }>(
   findings: readonly T[],
 ): T[] {
   const blocking = findings.filter((f) => f.blocking);
-  const refs = (f: T, pattern: RegExp) => f.refs.some((ref) => pattern.test(ref.trim()));
+  const refs = (f: T, test: (ref: string) => boolean) => f.refs.some((ref) => test(ref.trim()));
   return blocking.length > 0 &&
     blocking.every(
       (f) =>
-        (f.kind === "coverage" && refs(f, PLAN_REF)) ||
-        (f.kind === "inconsistency" && !refs(f, SPEC_REF)),
+        (f.kind === "coverage" &&
+          refs(f, (ref) => PLAN_REF.test(ref)) &&
+          !refs(f, specDefectRef)) ||
+        (f.kind === "inconsistency" && !refs(f, (ref) => SPEC_REF.test(ref))),
     )
     ? blocking
     : [];

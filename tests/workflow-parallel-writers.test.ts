@@ -109,6 +109,8 @@ class ParallelExecutor implements AgentExecutor {
   previous: { taskId: string; previousAttempt?: { summary: string; unresolved: string[] } }[] = [];
   /** Attempts per task whose worker writes a partial file and then dies without a result. */
   crashes: Record<string, number> = {};
+  /** Attempts per task whose worker writes a partial file and is refused under the usage policy (#1895). */
+  refusals: Record<string, number> = {};
   /** The earlier edits each implementation was handed. */
   earlier: { taskId: string; root: string; content: string | null; earlierEdits?: { paths: string[]; patch: string } }[] = [];
   constructor(private workspace: string, private plans: Plan[]) {}
@@ -159,6 +161,11 @@ class ParallelExecutor implements AgentExecutor {
         this.crashes[task.id] = (this.crashes[task.id] ?? 0) - 1;
         await write(first, "partial");
         throw new Error("worker process exited");
+      }
+      if ((this.refusals[task.id] ?? 0) > 0) {
+        this.refusals[task.id] = (this.refusals[task.id] ?? 0) - 1;
+        await write(first, "partial");
+        throw new Error("Invalid prompt: your prompt was flagged as potentially violating our usage policy. Please try again with a different prompt");
       }
       this.previous.push({ taskId: task.id, ...(data.extra.previousAttempt ? { previousAttempt: data.extra.previousAttempt } : {}) });
       const blocked = this.blockedOnce[task.id];
@@ -577,6 +584,22 @@ describe("workflow parallel writers", () => {
     expect(fx.batches(run.runId).map((b) => b.tasks)).toEqual([["T001", "T002"], ["T002"]]);
     expect(fx.store.leases()).toEqual([]);
   });
+
+  test("a usage-policy refusal of one writer runs that task again in its worktree, not as a lost worker (#1895)", async () => {
+    // Bench round 59, wheeltags T002: two writers, and T002's attempt was refused after 3 steps.
+    const fx = setup([{ id: "T001", files: { "a.txt": "A" } }, { id: "T002", files: { "b.txt": "B" } }], { "a.txt": "A", "b.txt": "B" });
+    fx.executor.refusals = { T002: 1 };
+    const run = await fx.start(2);
+    const done = await fx.complete(run.runId);
+    expect(done.status).toBe("completed");
+    expect(readFileSync(join(fx.tree(run.runId), "b.txt"), "utf8")).toBe("B");
+    // The second attempt ran on the refused attempt's edit, in the same batch.
+    expect(fx.batches(run.runId).map((b) => b.tasks)).toEqual([["T001", "T002"]]);
+    expect(fx.executor.earlier.filter((e) => e.taskId === "T002").map((e) => e.content)).toEqual([null, "partial"]);
+    const events = JSON.stringify(fx.store.events(run.runId, 0, 10000));
+    expect(events).not.toContain("worker_lost");
+    expect(fx.store.artifacts(run.runId).filter((a) => a.logical_path.startsWith("provider/policy-refusals/"))).toHaveLength(1);
+  }, 60000);
 
   test("a task whose worker dies is restarted once with its edits and the run completes", async () => {
     const fx = setup([{ id: "T001", files: { "a.txt": "A" } }, { id: "T002", files: { "b.txt": "B" } }], { "a.txt": "A", "b.txt": "B" });

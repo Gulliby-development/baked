@@ -1098,8 +1098,9 @@ describe("gate matrix: format-written check on a dirty repository (#1837)", () =
   cell("python", "ruff, edited file: one --range check per changed block, fixer ruff format --range", () => {
     const files = { "pyproject.toml": "[project]\nname = 'p'\n[tool.ruff]\n", "t/test_a.py": "x=1\nY\nz=2\nW\n" };
     expect(edited(files, "t/test_a.py", "x=1\nz=2\n")).toEqual([
-      ["ruff-format-lines", "ruff format --check --range=2-3 t/test_a.py", "ruff format --range=2-3", ["t/test_a.py"]],
-      ["ruff-format-lines-2", "ruff format --check --range=4-5 t/test_a.py", "ruff format --range=4-5", ["t/test_a.py"]],
+      // The last block first: fixing it never moves the blocks above it.
+      ["ruff-format-lines", "ruff format --check --range=4-5 t/test_a.py", "ruff format --range=4-5", ["t/test_a.py"]],
+      ["ruff-format-lines-2", "ruff format --check --range=2-3 t/test_a.py", "ruff format --range=2-3", ["t/test_a.py"]],
     ]);
   });
   cell("python", "ruff, edited file: every changed block gets its check, the ninth too", () => {
@@ -1108,7 +1109,7 @@ describe("gate matrix: format-written check on a dirty repository (#1837)", () =
     const files = { "pyproject.toml": "[project]\nname = 'p'\n[tool.ruff]\n", "t/test_a.py": after };
     const checks = edited(files, "t/test_a.py", before);
     expect(checks).toHaveLength(9);
-    expect(checks.at(-1)).toEqual(["ruff-format-lines-9", "ruff format --check --range=18-19 t/test_a.py", "ruff format --range=18-19", ["t/test_a.py"]]);
+    expect(checks[0]).toEqual(["ruff-format-lines", "ruff format --check --range=18-19 t/test_a.py", "ruff format --range=18-19", ["t/test_a.py"]]);
   });
   cell("python", "black, edited file: one check with every --line-ranges", () => {
     const files = { "pyproject.toml": "[project]\nname = 'p'\n[tool.black]\n", "p/a.py": "x=1\nY\nz=2\nW\n" };

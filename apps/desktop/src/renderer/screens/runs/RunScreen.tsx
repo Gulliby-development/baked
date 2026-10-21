@@ -440,7 +440,9 @@ function Models({
   const summary = run.routing ?? null;
   const providerStop =
     run.status === "blocked" &&
-    (run.reason === "provider_account" || run.reason === "provider_unavailable");
+    (run.reason === "provider_account" ||
+      run.reason === "provider_policy" ||
+      run.reason === "provider_unavailable");
   const reroute = async (): Promise<void> => {
     setBusy(true);
     setError(null);
