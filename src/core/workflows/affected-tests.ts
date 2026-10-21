@@ -14,6 +14,7 @@
  */
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { dirname, join, posix } from "node:path";
+import { isTestFile as isLanguageTestFile, isTestFileAt } from "../intelligence/language-traits.js";
 import { INLINE_ROWS_BEGIN, INLINE_ROWS_CLASS } from "./acceptance-rows-inline.js";
 import { isStaticCheck } from "./check-policy.js";
 import { testGateFlags, withGateFlags } from "./test-gates.js";
@@ -552,7 +553,9 @@ export function writtenTestsCheck(
   const files = writes
     .filter((w) => w.action !== "delete" && isWrittenTestFile(w.path))
     .map((w) => w.path)
-    .filter((path) => existsSync(join(root, path)));
+    .filter((path) => existsSync(join(root, path)))
+    // A source file named like a test (`PermTest.cs` without a test attribute) has no tests to run (#1848).
+    .filter((path) => !isLanguageTestFile(path) || isTestFileAt(root, path));
   const gate = affectedTestCheck(
     checks,
     files,

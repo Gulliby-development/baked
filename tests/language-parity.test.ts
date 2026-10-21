@@ -10,9 +10,11 @@ import {
 } from "../src/core/intelligence/language-records.js";
 import {
   isManifestFile,
+  isTestContent,
   isTestFile,
   MANIFEST_NAMES,
   TEST_CONVENTIONS,
+  TEST_MARKERS,
 } from "../src/core/intelligence/language-traits.js";
 import { detectLanguageFromPath } from "../src/core/intelligence/types.js";
 import {
@@ -77,6 +79,15 @@ const RECORDS: Record<
     record: TEST_CONVENTIONS,
     run: (language, { files }) =>
       Object.keys(files).filter((path) => detectLanguageFromPath(path) === language && isTestFile(path)),
+  },
+  // The fixture's test files that hold a test marker, and its source files named like a test that
+  // hold none, which are not tests (#1848).
+  testMarkers: {
+    record: TEST_MARKERS,
+    run: (language, { files }) =>
+      ofLanguage(language, files)
+        .filter(([path]) => isTestFile(path))
+        .map(([path, text]) => `${path}: ${isTestContent(path, text) ? "test" : "source"}`),
   },
   manifests: {
     record: MANIFEST_NAMES,

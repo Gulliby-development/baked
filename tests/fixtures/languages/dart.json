@@ -8,6 +8,9 @@
     "tests": [
       "lib/sum_test.dart"
     ],
+    "testMarkers": [
+      "lib/sum_test.dart: source"
+    ],
     "manifests": [
       "pubspec.yaml"
     ],

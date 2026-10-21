@@ -8,6 +8,9 @@
     "tests": [
       "src/sum_test.cpp"
     ],
+    "testMarkers": [
+      "src/sum_test.cpp: source"
+    ],
     "manifests": [
       "CMakeLists.txt"
     ],

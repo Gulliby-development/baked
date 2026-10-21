@@ -10,6 +10,7 @@
       "test/Sum.t.sol",
       "src/Sum.t.sol"
     ],
+    "testMarkers": null,
     "manifests": [
       "foundry.toml"
     ],

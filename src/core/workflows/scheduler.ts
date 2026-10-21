@@ -1340,7 +1340,11 @@ export class WorkflowScheduler {
                   ...codeTaskCheckProblems(submitted.taskGraph, policy),
                   ...hostContentProblems(submitted.taskGraph),
                   ...hostFileProblems(submitted.taskGraph, state.hostFiles),
-                  ...testWriteProblems(submitted.taskGraph, policy),
+                  ...testWriteProblems(
+                    submitted.taskGraph,
+                    policy,
+                    runRoot(this.store.workspace, state),
+                  ),
                   ...testsFirstProblems(spec, submitted.taskGraph, policy),
                 ];
                 const open = problems.filter((problem) => {
