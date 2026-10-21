@@ -95,6 +95,7 @@ import {
   sequenceDocumentation,
   sequenceSharedPaths,
   sizeWeight,
+  stubFates,
   testOwnershipProblems,
   topologicalOrder,
   validateInitiativePlan,
@@ -3162,25 +3163,27 @@ function lightContract(settings: InitiativeSettings, feature: InitiativeFeature)
 }
 
 /**
- * What a feature's run does with its skeleton: the host writes every stub, and each stub another
- * feature lists is named with that feature, so the run leaves exactly those as written. "Later
- * features replace the stubs" also covered the stubs the feature implements itself, which a folded
- * skeleton gives it (bench round 56, hdrlens base, #1829).
+ * What a feature's run does with its skeleton, from the plan it starts on: the content of every
+ * stub, quoted, since the spec author was told the split fixes it but not what it is and wrote
+ * another wording into a criterion (bench round 57, modeplan foundation: 407k tokens and 8.8
+ * minutes of a second planning round; R56 hdrlens base the same, #1847); the stubs the feature
+ * implements; and the stubs later features fill, named with them (#1829). A stub another feature's
+ * glob covers counts as filled by it, and the feature may still write a stub its own scope needs.
  */
-function skeletonLine(feature: InitiativeFeature, others: InitiativeFeature[]): string {
-  const stubs = (feature.skeleton ?? []).map((f) => f.path);
-  const later = stubs.flatMap((path) => {
-    const owners = others.filter((f) => f.boundary.paths.includes(path)).map((f) => f.id);
-    return owners.length ? [`${path} (${owners.join(", ")})`] : [];
-  });
+function skeletonLines(plan: InitiativePlan, feature: InitiativeFeature): string[] {
+  const fates = stubFates(plan, feature);
+  const own = fates.filter((f) => f.own);
+  const later = fates.filter((f) => f.fillers.length);
   return [
-    `The split fixes the whole content of ${stubs.join(", ")}: one task writes them as host-written files with exactly that content (extra.hostFiles; whitespace may follow the project's formatter).`,
+    "The split fixes the whole content of these files: one task writes them as host-written files with exactly that content (extra.hostFiles; whitespace may follow the project's formatter). Quote the content exactly wherever a requirement, criterion, plan or test names it; never reword it or ask what it is:",
+    ...fates.map((f) => `- ${f.path}: ${JSON.stringify(f.content)}`),
+    ...(own.length ? [`This feature implements ${own.map((f) => f.path).join(", ")}.`] : []),
     ...(later.length
       ? [
-          `Later features fill these stubs, so this run leaves them as written: ${later.join(", ")}.`,
+          `Later features write ${later.map((f) => `${f.path} (${f.fillers.join(", ")})`).join(", ")}: leave those stubs as written${own.length ? ", except the ones this feature implements" : ""}.`,
         ]
       : []),
-  ].join(" ");
+  ];
 }
 
 /** The request a feature run starts from: its place in the initiative and the contracts around it. */
@@ -3213,7 +3216,7 @@ export function featurePrompt(
       ? `Paths this feature may write: ${feature.boundary.paths.join(", ")}`
       : "The split names no paths for this feature; stay within the boundary above.",
     `Contract this feature provides to the features that depend on it: ${feature.contract}`,
-    ...(feature.skeleton?.length ? [skeletonLine(feature, others)] : []),
+    ...(feature.skeleton?.length ? skeletonLines(plan, feature) : []),
   ];
   for (const { feature: dependency, contract } of upstream) {
     const definition = plan.features.find((f) => f.id === dependency.id);
