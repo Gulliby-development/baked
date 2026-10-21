@@ -315,6 +315,8 @@ export const RuntimeStateSchema = z
       .default(null),
     /** Times analyze sent plan-only findings back to the planner instead of a person; once. */
     analysisReplans: z.number().int().nonnegative().default(0),
+    /** Defect rounds analyze gave new inconsistencies after the reroute budget was spent (#1830). */
+    lateDefectRounds: z.number().int().nonnegative().default(0),
     /** Times analyze sent derivation audit findings back to the spec author; once (#1465). */
     derivationReturns: z.number().int().nonnegative().default(0),
     /**

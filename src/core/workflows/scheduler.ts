@@ -171,9 +171,11 @@ import {
   hostDependencyEdges,
   hostSplitParts,
   knownRisks,
+  LATE_DEFECT_ROUNDS,
   namesExampleRule,
   namesPlatformLimit,
   namesRequestSide,
+  newFacet,
   noteHostEdits,
   persistentDefect,
   REQUEST_NOTE,
@@ -1807,18 +1809,27 @@ export class WorkflowScheduler {
               // An inconsistency that survived the first reroute gets one more, with the finding
               // text and a note that it is a defect to fix, not a decision to assume.
               const defectRound =
-                state.analysisReplans === 2 && findings.some((f) => persistentDefect(f));
+                state.analysisReplans === 2 && findings.some((f) => persistentDefect(f, spec));
               // A scope finding that adds a restriction or a requirement absent from the request gets
               // the same extra return with the instruction that the request is authoritative; a
               // survivor is assumed.
               const restrictsRound =
                 !defectRound &&
                 state.analysisReplans === 2 &&
-                findings.some((f) => restrictsRequest(f));
+                findings.some((f) => restrictsRequest(f, spec));
+              // The reroute budget is the run's, so an inconsistency first raised after it is spent
+              // (often one the repair of earlier findings introduced) gets a defect round of its
+              // own, at most LATE_DEFECT_ROUNDS, before a person is asked (#1830).
+              const lateDefect =
+                !defectRound &&
+                !restrictsRound &&
+                state.analysisReplans >= 3 &&
+                state.lateDefectRounds < LATE_DEFECT_ROUNDS &&
+                findings.some((f) => persistentDefect(f, spec) && newFacet(f, earlierRaised));
               if (
                 !state.analysisPassed &&
                 policy.clarification === "assume" &&
-                (state.analysisReplans < 2 || defectRound || restrictsRound) &&
+                (state.analysisReplans < 2 || defectRound || restrictsRound || lateDefect) &&
                 findings.some((f) => f.blocking)
               ) {
                 const blockingFindings = findings.filter((f) => f.blocking);
@@ -1830,7 +1841,8 @@ export class WorkflowScheduler {
                 });
                 if (target !== asking && this.moveTo(state, stages, target, v2)) {
                   // Findings a default settles go back to the stage they refer to before a person.
-                  state.analysisReplans = defectRound || restrictsRound ? 3 : 2;
+                  state.analysisReplans = defectRound || restrictsRound || lateDefect ? 3 : 2;
+                  if (lateDefect) state.lateDefectRounds += 1;
                   const back = stages[target]?.kind;
                   if (back === "specify" || back === "plan")
                     this.pendPatch(
@@ -1839,8 +1851,8 @@ export class WorkflowScheduler {
                       blockingFindings,
                       back === "specify" ? ["spec", "plan"] : ["plan"],
                     );
-                  const restricted = blockingFindings.some((f) => restrictsRequest(f));
-                  state.prompt += `\nAnalysis findings; resolve every one of them in the artifacts they refer to. ${defectRound ? DEFECT_NOTE : `${restricted ? `${REQUEST_NOTE} ` : ""}Where a finding needs a decision: ${ASSUME_NOTE}`}\n${canonical(blockingFindings.map(({ kind, refs, description }) => ({ kind, refs, description })))}`;
+                  const restricted = blockingFindings.some((f) => restrictsRequest(f, spec));
+                  state.prompt += `\nAnalysis findings; resolve every one of them in the artifacts they refer to. ${defectRound || lateDefect ? DEFECT_NOTE : `${restricted ? `${REQUEST_NOTE} ` : ""}Where a finding needs a decision: ${ASSUME_NOTE}`}\n${canonical(blockingFindings.map(({ kind, refs, description }) => ({ kind, refs, description })))}`;
                   advance = false;
                   rerouted = v2 !== null;
                   break;
@@ -1859,7 +1871,7 @@ export class WorkflowScheduler {
                   (f) =>
                     !f.blocking ||
                     assumable(f) ||
-                    restrictsRequest(f) ||
+                    restrictsRequest(f, spec) ||
                     repeatedFacet(f, earlierRaised),
                 )
               ) {
@@ -1885,7 +1897,7 @@ export class WorkflowScheduler {
                   this.amendFromAnalysis(
                     runId,
                     state,
-                    assumed.filter((f) => restrictsRequest(f)),
+                    assumed.filter((f) => restrictsRequest(f, spec)),
                   ),
                 );
                 findings = findings.map((f) =>
