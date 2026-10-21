@@ -379,27 +379,55 @@ const EXAMPLE_RULE =
   /\b(?:example|sample)[- ]output\b|\bworked\s+example\b|\b(?:request|brief|spec)'s\b[^.]*\bexamples?\b|\boutput\s+(?:block|example)\b|\bexample\b[^.]*\b(?:from the (?:spec|request|brief)|run_probe|probe)\b/i;
 export const namesExampleRule = (text: string): boolean => EXAMPLE_RULE.test(text);
 
-export function requestSettles(finding: {
-  id?: string;
-  kind: string;
-  blocking: boolean;
-  description: string;
-}): boolean {
+/** A requirement named with what it rules ("FR-005 forbids 'named test types'"). */
+const REQUIREMENT_RULES =
+  /\b(FR-\d+)(?:'s)?\s+(?:explicitly\s+|expressly\s+|clearly\s+|also\s+)?(?:allows?|permits?|states?|says|specifies|requires?|bans?|forbids?|excludes?|defines?|prohibits?|disallows?)\b/gi;
+
+/**
+ * The requirements a finding sets against the artifacts that restate the request: the finding
+ * names one with what it rules, and its sources name the request (#1830, R56 hdrlens base: "FR-005
+ * forbids 'named test types'", FR-005 restating the brief's "a test file declares no named type").
+ */
+export function requestRequirements(
+  description: string,
+  spec: Pick<Spec, "requirements"> | null | undefined,
+): string[] {
+  if (!spec) return [];
+  const named = [...description.matchAll(REQUIREMENT_RULES)].map((m) => m[1]?.toUpperCase());
+  return spec.requirements
+    .filter(
+      (r) => named.includes(r.id) && r.sourceRefs.some((ref) => /\b(?:request|brief)\b/i.test(ref)),
+    )
+    .map((r) => r.id);
+}
+
+export function requestSettles(
+  finding: {
+    id?: string;
+    kind: string;
+    blocking: boolean;
+    description: string;
+  },
+  spec?: Pick<Spec, "requirements"> | null,
+): boolean {
   return (
     finding.blocking &&
     finding.kind === "inconsistency" &&
     !(finding.id ?? "").startsWith("COVERAGE") &&
-    SETTLES.test(finding.description)
+    (SETTLES.test(finding.description) || requestRequirements(finding.description, spec).length > 0)
   );
 }
 
-export function restrictsRequest(finding: {
-  id?: string;
-  kind: string;
-  blocking: boolean;
-  description: string;
-}): boolean {
-  if (requestSettles(finding)) return true;
+export function restrictsRequest(
+  finding: {
+    id?: string;
+    kind: string;
+    blocking: boolean;
+    description: string;
+  },
+  spec?: Pick<Spec, "requirements"> | null,
+): boolean {
+  if (requestSettles(finding, spec)) return true;
   return (
     finding.blocking &&
     finding.kind === "scope" &&
@@ -451,16 +479,37 @@ export function repeatedFacet(
 }
 
 /** Whether a blocking finding is a defect the analysis must see fixed rather than assumed. */
-export function persistentDefect(finding: {
-  kind: string;
-  blocking: boolean;
-  description?: string;
-}): boolean {
+export function persistentDefect(
+  finding: {
+    kind: string;
+    blocking: boolean;
+    description?: string;
+  },
+  spec?: Pick<Spec, "requirements"> | null,
+): boolean {
   return (
     finding.blocking &&
     finding.kind === "inconsistency" &&
-    !requestSettles({ ...finding, description: finding.description ?? "" })
+    !requestSettles({ ...finding, description: finding.description ?? "" }, spec)
   );
+}
+
+/** Defect rounds a run gives inconsistencies first raised after its reroute budget is spent. */
+export const LATE_DEFECT_ROUNDS = 2;
+
+/**
+ * A blocking inconsistency on refs no earlier analysis pass raised: a new defect, often one the
+ * repair of earlier findings introduced, which gets its own defect round instead of a person once
+ * the run-wide reroute budget is spent (#1830, R56 hdrlens base F-001: the spec author invented a
+ * failing stdin double while reconciling two earlier findings, and the run asked a person).
+ */
+export function newFacet(
+  finding: { kind: string; blocking: boolean; refs: string[] },
+  earlier: readonly { kind: string; refs: string[] }[],
+): boolean {
+  if (!finding.blocking || finding.kind !== "inconsistency") return false;
+  const refs = [...new Set(finding.refs)].sort().join("\n");
+  return !earlier.some((e) => [...new Set(e.refs)].sort().join("\n") === refs);
 }
 
 /** What the host tells the spec author when a defect survived the assumption reroute. */
