@@ -1177,7 +1177,8 @@ export function caseCheck(
 }
 
 /**
- * The test files the plan's other tasks write (#1886). A case one of them already tests, by the
+ * The test files the plan's other tasks write, and their host-written row data (#1886). A case one
+ * of them already tests, by the
  * same evidence as the task's own files (comments and assertion messages do not count), is held:
  * R57 expenses-py T009 was refused for six CLI argument strings that T007's `tests/test_cli.py`
  * tested (about 435k tokens after the refusal), md-site T009 for four URL schemes the sibling
@@ -1192,9 +1193,12 @@ function siblingTestPaths(
   const mine = new Set(own);
   const paths = new Set<string>();
   for (const other of tasks) {
-    if (other === task || (task.id !== undefined && other.id === task.id) || !other.writes)
-      continue;
-    for (const path of writtenTestPaths({ writes: other.writes }))
+    if (other === task || (task.id !== undefined && other.id === task.id)) continue;
+    // The host-written row data of a rows task holds its cases, as the task's own does.
+    for (const path of [
+      ...(other.writes ? writtenTestPaths({ writes: other.writes }) : []),
+      ...rowDataPaths(other),
+    ])
       if (!mine.has(path)) paths.add(path);
   }
   return [...paths];

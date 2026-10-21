@@ -121,6 +121,20 @@ describe("the case walk counts a sibling task's test file (#1886)", () => {
     expect(check ? await check(root) : []).toEqual([]);
   });
 
+  test("a sibling's host-written row data holds its cases; missing row data holds nothing", async () => {
+    const T008: Pick<Task, "id" | "description" | "criterionIds" | "writes" | "rows" | "rowTest"> = {
+      ...task("T008", "Write the rows of AC-004.", "tests/rows.test.ts"),
+      rows: ["AC-004"],
+      rowTest: { framework: "bun", harness: "tests/harness.ts", test: "tests/rows.test.ts", data: "tests/rows.json" },
+    };
+    const corrective = task("T012", "Fix the report filter.", "tests/report.test.ts");
+    const check = caseCheck({ criteria: spec }, corrective, { checks: [], tasks: [T008] });
+    if (!check) throw new Error("no case check");
+    const own = { "tests/report.test.ts": 'test("report", () => {});\n' };
+    expect(await check(workspace({ ...own, "tests/rows.json": JSON.stringify([{ input: LITERAL, expected: "2" }]) }))).toEqual([]);
+    expect(await check(workspace(own))).toHaveLength(1);
+  });
+
   test("the task's own file is not read twice as a sibling's", async () => {
     const T007 = task("T007", "Write the CLI tests.", "tests/test_cli.py");
     const T009 = task("T009", "Extend the CLI tests.", "tests/test_cli.py", ["T007"]);
