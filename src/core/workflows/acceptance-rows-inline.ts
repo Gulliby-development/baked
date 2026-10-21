@@ -23,18 +23,23 @@ export const INLINE_HARNESS: Record<Framework, string> = {
 };
 
 /**
- * The class the JUnit and xUnit blocks add next to the file's own class, named after it: a
- * written-tests run that names the file's class names this one too.
+ * The class of the JUnit and xUnit blocks, nested in the file's own class so the file keeps one
+ * top-level type (#1804), as a written-tests run names it: the binary name of a JUnit `@Nested`
+ * class, and the reflection name xUnit gives a nested class.
  */
 export const INLINE_ROWS_CLASS = {
-  junit: (cls: string) => `${cls}AcceptanceRowsTest`,
-  xunit: (cls: string) => `${cls}AcceptanceRows`,
+  junit: (cls: string) => `${cls}$AcceptanceRows`,
+  xunit: (cls: string) => `${cls}+AcceptanceRows`,
 };
 
-/** The first line of a block, in any framework. */
-export const INLINE_ROWS_BEGIN = /^(?:\/\/|#) BEGIN acceptance rows: host-written/m;
+/** The first line of a block, in any framework, indented when it is nested in a class. */
+export const INLINE_ROWS_BEGIN = /^[ \t]*(?:\/\/|#) BEGIN acceptance rows: host-written/m;
 
-/** A host-written block of a test file: `tail` ends the file, `head` (Go imports) follows its package clause. */
+/**
+ * A host-written block of a test file: `tail` ends the file, `head` (Go imports) follows its
+ * package clause. With `nest`, `tail` goes inside the file's own class instead, before its closing
+ * brace and indented one level, since Java and C# briefs keep one top-level type per file (#1804).
+ */
 export interface InlineRowFile {
   path: string;
   inline: true;
@@ -42,6 +47,7 @@ export interface InlineRowFile {
   tail: string;
   /** The file the host starts when the test file does not exist yet. */
   skeleton: string;
+  nest?: { language: "java" | "csharp"; className: string; namespace?: string };
 }
 
 const comment = (framework: Framework): string => (framework === "pytest" ? "#" : "//");
@@ -113,18 +119,19 @@ const rustValue = (value: unknown): string => {
     .join(", ")}])`;
 };
 
-const JAVA_HELPERS = `  private static java.util.Map<String, Object> map(Object... entries) {
+/** Instance methods: a static member of an inner class needs Java 16. */
+const JAVA_HELPERS = `  private java.util.Map<String, Object> map(Object... entries) {
     java.util.Map<String, Object> out = new java.util.LinkedHashMap<>();
     for (int i = 0; i < entries.length; i += 2) out.put((String) entries[i], entries[i + 1]);
     return out;
   }
 
-  private static java.util.List<Object> list(Object... items) {
+  private java.util.List<Object> list(Object... items) {
     return new java.util.ArrayList<>(java.util.Arrays.asList(items));
   }
 
   /** JSON numbers compare by value: 2, 2L and 2.0 are equal; collections compare as lists. */
-  private static Object normal(Object value) {
+  private Object normal(Object value) {
     if (value == null || value instanceof String || value instanceof Boolean) return value;
     if (value instanceof Character || value instanceof Enum) return value.toString();
     if (value instanceof Double || value instanceof Float || value instanceof java.math.BigDecimal) {
@@ -284,14 +291,15 @@ const TEMPLATES: Record<Framework, Template> = {
       `func TestAcceptanceRows${camel(posix.basename(test, "_test.go"))}(t *acceptancetesting.T) {\n\tvar rows []struct {\n\t\tID       string \`json:"id"\`\n\t\tInput    any    \`json:"input"\`\n\t\tExpected any    \`json:"expected"\`\n\t}\n\tif err := acceptancejson.Unmarshal([]byte(${quoted(data(rows))}), &rows); err != nil {\n\t\tt.Fatal(err)\n\t}\n\tfor _, row := range rows {\n\t\trow := row\n\t\tt.Run(row.ID, func(t *acceptancetesting.T) {\n\t\t\tgot, err := acceptanceActual(row.Input)\n\t\t\tif err != nil {\n\t\t\t\tt.Fatal(err)\n\t\t\t}\n\t\t\ttext, err := acceptancejson.Marshal(got)\n\t\t\tif err != nil {\n\t\t\t\tt.Fatal(err)\n\t\t\t}\n\t\t\tvar value any\n\t\t\tif err := acceptancejson.Unmarshal(text, &value); err != nil {\n\t\t\t\tt.Fatal(err)\n\t\t\t}\n\t\t\tif !acceptancereflect.DeepEqual(value, row.Expected) {\n\t\t\t\twant, _ := acceptancejson.Marshal(row.Expected)\n\t\t\t\tt.Fatalf("got %s, want %s", text, want)\n\t\t\t}\n\t\t})\n\t}\n}`,
     ),
   }),
-  // A second top-level class in the test file, named so build tools pick it up as a test (*Test).
+  // A @Nested class in the file's own class: JUnit runs it with the outer class.
   junit: ({ test, package: pkg }, rows) => {
     const cls = className(test, ".java");
     return {
       skeleton: `package ${pkg};\n`,
+      nest: { language: "java", className: cls },
       tail: block(
         "junit",
-        `class ${INLINE_ROWS_CLASS.junit(cls)} {\n  @org.junit.jupiter.api.TestFactory\n  java.util.stream.Stream<org.junit.jupiter.api.DynamicTest> acceptanceRows() {\n    return java.util.stream.Stream.of(\n${rows.map((row) => `        row(${javaString(row.id)}, ${javaValue(row.input)}, ${javaValue(row.expected)})`).join(",\n")});\n  }\n\n  private static org.junit.jupiter.api.DynamicTest row(String id, Object input, Object expected) {\n    return org.junit.jupiter.api.DynamicTest.dynamicTest(\n        id, () -> org.junit.jupiter.api.Assertions.assertEquals(normal(expected), normal(${cls}.acceptanceActual(input))));\n  }\n\n${JAVA_HELPERS}\n}`,
+        `@org.junit.jupiter.api.Nested\nclass AcceptanceRows {\n  @org.junit.jupiter.api.TestFactory\n  java.util.stream.Stream<org.junit.jupiter.api.DynamicTest> acceptanceRows() {\n    return java.util.stream.Stream.of(\n${rows.map((row) => `        row(${javaString(row.id)}, ${javaValue(row.input)}, ${javaValue(row.expected)})`).join(",\n")});\n  }\n\n  private org.junit.jupiter.api.DynamicTest row(String id, Object input, Object expected) {\n    return org.junit.jupiter.api.DynamicTest.dynamicTest(\n        id, () -> org.junit.jupiter.api.Assertions.assertEquals(normal(expected), normal(${cls}.acceptanceActual(input)), id));\n  }\n\n${JAVA_HELPERS}\n}`,
       ),
     };
   },
@@ -302,14 +310,15 @@ const TEMPLATES: Record<Framework, Template> = {
       `${RUST_JSON}\n\n#[test]\nfn acceptance_rows() {\n    // Every kind of value, so none reads as dead code.\n    let kinds = [AcceptanceJson::Null, AcceptanceJson::Bool(false), AcceptanceJson::Number(0.0), AcceptanceJson::String(String::new()), AcceptanceJson::Array(Vec::new()), AcceptanceJson::Object(Vec::new())];\n    assert_eq!(kinds.len(), 6);\n    let rows: Vec<(&str, AcceptanceJson, AcceptanceJson)> = vec![\n${rows.map((row) => `        (${rustString(row.id)}, ${rustValue(row.input)}, ${rustValue(row.expected)}),`).join("\n")}\n    ];\n    let mut failed = Vec::new();\n    for (id, input, expected) in &rows {\n        let got = acceptance_actual(input);\n        if &got != expected {\n            failed.push(format!("{}: got {:?}, want {:?}", id, got, expected));\n        }\n    }\n    assert!(failed.is_empty(), "{}", failed.join("\\n"));\n}`,
     ),
   }),
-  // A second public class, outside or inside the file's namespace, that names the harness fully.
+  // A public class nested in the file's own class, which xUnit discovers; it names the harness fully.
   xunit: ({ test, package: pkg }, rows) => {
     const cls = className(test, ".cs");
     return {
       skeleton: "",
+      nest: { language: "csharp", className: cls, ...(pkg ? { namespace: pkg } : {}) },
       tail: block(
         "xunit",
-        `public class ${INLINE_ROWS_CLASS.xunit(cls)}\n{\n    private const string Rows = ${quoted(data(rows))};\n\n    public static global::System.Collections.Generic.IEnumerable<object[]> Data()\n    {\n        foreach (var row in global::System.Text.Json.Nodes.JsonNode.Parse(Rows)!.AsArray())\n            yield return new object[]\n            {\n                (string)row!["id"]!,\n                row["input"]?.ToJsonString() ?? "null",\n                row["expected"]?.ToJsonString() ?? "null",\n            };\n    }\n\n    [global::Xunit.Theory]\n    [global::Xunit.MemberData(nameof(Data))]\n    public void AcceptanceRow(string id, string input, string expected)\n    {\n        var actual = global::System.Text.Json.JsonSerializer.SerializeToNode(global::${pkg}.${cls}.AcceptanceActual(global::System.Text.Json.Nodes.JsonNode.Parse(input)));\n        global::Xunit.Assert.True(\n            global::System.Text.Json.Nodes.JsonNode.DeepEquals(actual, global::System.Text.Json.Nodes.JsonNode.Parse(expected)),\n            $"{id}: got {actual?.ToJsonString() ?? "null"}, want {expected}");\n    }\n}`,
+        `public class AcceptanceRows\n{\n    private const string Rows = ${quoted(data(rows))};\n\n    public static global::System.Collections.Generic.IEnumerable<object[]> Data()\n    {\n        foreach (var row in global::System.Text.Json.Nodes.JsonNode.Parse(Rows)!.AsArray())\n            yield return new object[]\n            {\n                (string)row!["id"]!,\n                row["input"]?.ToJsonString() ?? "null",\n                row["expected"]?.ToJsonString() ?? "null",\n            };\n    }\n\n    [global::Xunit.Theory]\n    [global::Xunit.MemberData(nameof(Data))]\n    public void AcceptanceRow(string id, string input, string expected)\n    {\n        var actual = global::System.Text.Json.JsonSerializer.SerializeToNode(global::${pkg}.${cls}.AcceptanceActual(global::System.Text.Json.Nodes.JsonNode.Parse(input)));\n        global::Xunit.Assert.True(\n            global::System.Text.Json.Nodes.JsonNode.DeepEquals(actual, global::System.Text.Json.Nodes.JsonNode.Parse(expected)),\n            $"{id}: got {actual?.ToJsonString() ?? "null"}, want {expected}");\n    }\n}`,
       ),
     };
   },
@@ -333,11 +342,162 @@ function span(text: string, file: string): { from: number; to: number } | null {
 }
 
 /**
+ * The text with every comment, string and character literal blanked to spaces (newlines kept), so
+ * braces and declarations are found in code only. Java text blocks and C# verbatim, raw and
+ * interpolated strings are literals too; an interpolation hole's own strings are skipped with it.
+ */
+function codeOnly(text: string): string {
+  const out = [...text];
+  const blank = (from: number, to: number) => {
+    for (let i = from; i < to; i++) if (out[i] !== "\n") out[i] = " ";
+  };
+  /** The end of a plain or verbatim string that starts at `at` (its opening quote). */
+  const stringEnd = (at: number, verbatim: boolean, interpolated: boolean): number => {
+    let depth = 0;
+    for (let i = at + 1; i < text.length; i++) {
+      const ch = text[i];
+      if (depth > 0) {
+        if (ch === '"') i = stringEnd(i, false, false) - 1;
+        else if (ch === "{") depth++;
+        else if (ch === "}") depth--;
+        continue;
+      }
+      if (interpolated && ch === "{") {
+        if (text[i + 1] === "{") i++;
+        else depth = 1;
+      } else if (!verbatim && ch === "\\") i++;
+      else if (ch === '"') {
+        if (verbatim && text[i + 1] === '"') i++;
+        else return i + 1;
+      } else if (!verbatim && ch === "\n") return i;
+    }
+    return text.length;
+  };
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    const next = text[i + 1];
+    let end = i;
+    if (ch === "/" && next === "/")
+      end = text.indexOf("\n", i) < 0 ? text.length : text.indexOf("\n", i);
+    else if (ch === "/" && next === "*")
+      end = text.indexOf("*/", i + 2) < 0 ? text.length : text.indexOf("*/", i + 2) + 2;
+    else if (text.startsWith('"""', i)) {
+      const quotes = /^"+/.exec(text.slice(i))?.[0] ?? '"""';
+      const close = text.indexOf(quotes, i + quotes.length);
+      end = close < 0 ? text.length : close + quotes.length;
+    } else if (ch === '"') {
+      const prefix = text.slice(Math.max(0, i - 2), i);
+      end = stringEnd(i, /@\$?$|\$@$/.test(prefix), /\$@?$|@\$$/.test(prefix));
+    } else if (ch === "'" && /[^A-Za-z0-9_]/.test(text[i - 1] ?? " ")) {
+      const close = /^'(?:\\.|[^'\\\n]){1,8}'/.exec(text.slice(i));
+      if (close) end = i + close[0].length;
+    }
+    if (end > i) {
+      blank(i, end);
+      i = end - 1;
+    }
+  }
+  return out.join("");
+}
+
+/** The offset of the brace that closes the one opened at `open`, in code-only text. */
+function closingBrace(code: string, open: number): number {
+  let depth = 0;
+  for (let i = open; i < code.length; i++) {
+    if (code[i] === "{") depth++;
+    else if (code[i] === "}" && --depth === 0) return i;
+  }
+  return -1;
+}
+
+/**
+ * The braces of the file's own type: the class, record or struct named after the file, or else
+ * the first type the file declares. Null when the file declares none.
+ */
+function primaryType(text: string, className: string): { open: number; end: number } | null {
+  const code = codeOnly(text);
+  const declared = (name: string) =>
+    new RegExp(`\\b(?:class|record|struct|interface|enum)\\s+${name}\\b[^{;]*\\{`).exec(code);
+  const found = declared(className) ?? declared("[A-Za-z_]\\w*");
+  if (!found) return null;
+  const open = found.index + found[0].length - 1;
+  const end = closingBrace(code, open);
+  return end < 0 ? null : { open, end };
+}
+
+/** The leading whitespace of the line `at` is on. */
+const indentAt = (text: string, at: number): string =>
+  /^[ \t]*/.exec(text.slice(text.lastIndexOf("\n", at - 1) + 1))?.[0] ?? "";
+
+/** The text without the marked block, wherever and however indented it is, and the blank line before it. */
+function withoutBlock(text: string, file: string): string {
+  const lines = file.trimEnd().split("\n");
+  const first = (lines[0] ?? "").trim();
+  const last = (lines.at(-1) ?? "").trim();
+  const all = text.split("\n");
+  const from = all.findIndex((line) => line.trim() === first);
+  if (from < 0) return text;
+  const to = all.findIndex((line, i) => i > from && line.trim() === last);
+  if (to < 0) return text;
+  const start = from > 0 && all[from - 1]?.trim() === "" ? from - 1 : from;
+  return [...all.slice(0, start), ...all.slice(to + 1)].join("\n");
+}
+
+/** The nested block in the file's own type, indented one level in from its closing brace. */
+function nested(
+  text: string,
+  file: InlineRowFile,
+  nest: NonNullable<InlineRowFile["nest"]>,
+): string {
+  let body = withoutBlock(text, file.tail);
+  let type = primaryType(body, nest.className);
+  if (!type) {
+    // No type yet: the host declares the file's class around the block.
+    const head = body.replace(/\s+$/, "");
+    const wrapper =
+      nest.language === "java" || !nest.namespace || /^\s*namespace\s+[\w.]+\s*;/m.test(head)
+        ? nest.language === "java"
+          ? `class ${nest.className} {\n}\n`
+          : `public class ${nest.className}\n{\n}\n`
+        : `namespace ${nest.namespace}\n{\n    public class ${nest.className}\n    {\n    }\n}\n`;
+    body = head ? `${head}\n\n${wrapper}` : wrapper;
+    type = primaryType(body, nest.className);
+    if (!type) return body;
+  }
+  const { end } = type;
+  const base = indentAt(body, end);
+  const lineStart = body.lastIndexOf("\n", end - 1) + 1;
+  // The class's least indented member line sets the unit; four spaces when the class is empty.
+  const inner = body
+    .slice(type.open + 1, lineStart)
+    .split("\n")
+    .filter((line) => line.trim())
+    .map((line) => /^[ \t]*/.exec(line)?.[0] ?? "")
+    .filter((indent) => indent.length > base.length)
+    .sort((a, b) => a.length - b.length)[0];
+  const unit = inner?.startsWith(base) ? inner.slice(base.length) : "    ";
+  const indented = file.tail
+    .trimEnd()
+    .split("\n")
+    .map((line) => (line ? `${base}${unit}${line}` : line))
+    .join("\n");
+  const own = body.slice(lineStart, end).trim() === "";
+  // Blank lines before the brace collapse, so one blank line separates the block from the members.
+  const before = own
+    ? body.slice(0, lineStart).replace(/\n(?:[ \t]*\n)+$/, "\n")
+    : `${body.slice(0, end).trimEnd()}\n`;
+  const opened = /\{\s*$/.test(before);
+  return `${before}${opened ? "" : "\n"}${indented}\n${base}${body.slice(end)}`;
+}
+
+/**
  * The test file with the host's blocks in place: an existing block is replaced, a missing one is
  * appended (Go's imports follow the package clause), and a missing file starts from the skeleton.
+ * A nested block goes before the closing brace of the file's own type.
  */
 export function withInlineRows(existing: string | null, file: InlineRowFile): string {
   let text = existing ?? file.skeleton;
+  if (file.nest) return nested(text, file, file.nest);
   if (file.head) {
     const at = span(text, file.head);
     if (at) text = text.slice(0, at.from) + file.head + text.slice(at.to);
@@ -354,6 +514,9 @@ export function withInlineRows(existing: string | null, file: InlineRowFile): st
   return body ? `${body}\n\n${file.tail}` : file.tail;
 }
 
-/** Whether the test file holds the host's blocks unchanged. */
+/** Whether the test file holds the host's blocks unchanged, a nested one in the file's own type. */
 export const hasInlineRows = (text: string | null, file: InlineRowFile): boolean =>
-  !!text?.includes(file.tail) && (!file.head || text.includes(file.head));
+  text !== null &&
+  (file.nest
+    ? withInlineRows(text, file) === text
+    : text.includes(file.tail) && (!file.head || text.includes(file.head)));
