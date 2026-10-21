@@ -111,23 +111,55 @@ export type TestRunner =
 
 /**
  * The summary parsers, in the order `testCount` tries them: a more specific summary first, the
- * report formats any runner can print (JUnit XML, TAP) last.
+ * report formats any runner can print (JUnit XML, TAP) last. `ran` is the share of `count` that
+ * executed, skipped and ignored tests left out, or null where the summary does not tell (#1832).
  */
-const TEST_COUNTERS: readonly { tool: TestRunner; count: (output: string) => number | null }[] = [
-  // bun test: "Ran 42 tests across 3 files."
-  { tool: "bun", count: (o) => num(o.match(/^Ran (\d+) tests? across \d+ files?/m)) },
-  // jest: "Tests:       1 failed, 12 passed, 13 total"
-  { tool: "jest", count: (o) => num(o.match(/^Tests:\s+.*?\b(\d+) total\b/m)) },
-  // vitest: "      Tests  12 passed (12)" / "Tests  1 failed | 11 passed (12)"
-  { tool: "vitest", count: (o) => num(o.match(/^\s*Tests\s+.*\((\d+)\)\s*$/m)) },
+const TEST_COUNTERS: readonly {
+  tool: TestRunner;
+  count: (output: string) => number | null;
+  ran: (output: string) => number | null;
+}[] = [
+  {
+    tool: "bun",
+    // bun test: "Ran 42 tests across 3 files." after " 40 pass", " 2 skip", " 0 fail"
+    count: (o) => num(o.match(/^Ran (\d+) tests? across \d+ files?/m)),
+    ran: (o) => (/^Ran \d+ tests?/m.test(o) ? (sum(o, /^\s*(\d+) (?:pass|fail)$/gm) ?? 0) : null),
+  },
+  {
+    tool: "jest",
+    // jest: "Tests:       1 failed, 2 skipped, 12 passed, 15 total"
+    count: (o) => num(o.match(/^Tests:\s+.*?\b(\d+) total\b/m)),
+    ran: (o) => {
+      const line = o.match(/^Tests:\s+(.*?\b\d+ total)\b/m)?.[1];
+      return line === undefined ? null : (sum(line, /(\d+) (?:passed|failed)\b/g) ?? 0);
+    },
+  },
+  {
+    tool: "vitest",
+    // vitest: "      Tests  12 passed (12)" / "Tests  1 failed | 11 passed | 2 skipped (14)"
+    count: (o) => num(o.match(/^\s*Tests\s+.*\((\d+)\)\s*$/m)),
+    ran: (o) => {
+      const line = o.match(/^\s*Tests\s+(.*)\(\d+\)\s*$/m)?.[1];
+      return line === undefined ? null : (sum(line, /(\d+) (?:passed|failed)\b/g) ?? 0);
+    },
+  },
   {
     tool: "pytest",
-    // pytest: "===== 3 passed, 1 skipped in 0.12s ====="
+    // pytest: "===== 3 passed, 1 skipped in 0.12s =====", "===== 2 skipped in 0.01s ====="
     count: (o) => {
       const pytest = o.match(/^=+ (.*\d+ (?:passed|failed).*) in [\d.]+s\b.*=+\s*$/m);
       return pytest
         ? sum(pytest[1] ?? "", /(\d+) (?:passed|failed|skipped|xfailed|xpassed|errors?)\b/g)
         : null;
+    },
+    ran: (o) => {
+      const line = o.match(
+        // `pytest -q` prints the summary without the rule: "1 skipped in 0.01s".
+        /^(?:=+ )?(\d+ (?:passed|failed|skipped|deselected|xfailed|xpassed|errors?)\b.*) in [\d.]+s\b(?:.*=+)?\s*$/m,
+      )?.[1];
+      return line === undefined
+        ? null
+        : (sum(line, /(\d+) (?:passed|failed|xfailed|xpassed|errors?)\b/g) ?? 0);
     },
   },
   {
@@ -140,26 +172,72 @@ const TEST_COUNTERS: readonly { tool: TestRunner; count: (output: string) => num
       const ignored = sum(o, /; (\d+) ignored;/g) ?? 0;
       return passed + failed + ignored;
     },
+    ran: (o) =>
+      /^test result: /m.test(o)
+        ? (sum(o, /^test result: \w+\. (\d+) passed;/gm) ?? 0) + (sum(o, /; (\d+) failed;/g) ?? 0)
+        : null,
   },
-  // dotnet test: "Passed!  - Failed:     0, Passed:    12, Skipped:     0, Total:    12" (the
-  // counts are padded) / "Total tests: 12"
-  { tool: "dotnet", count: (o) => sum(o, /\bTotal(?: tests)?:\s*(\d+)\b/g) },
+  {
+    tool: "dotnet",
+    // dotnet test: "Passed!  - Failed:     0, Passed:    12, Skipped:     0, Total:    12" (the
+    // counts are padded) / "Total tests: 12"
+    count: (o) => sum(o, /\bTotal(?: tests)?:\s*(\d+)\b/g),
+    ran: (o) =>
+      /\bTotal(?: tests)?:\s*\d+/.test(o)
+        ? (sum(o, /\bPassed:\s*(\d+)\b/g) ?? 0) + (sum(o, /\bFailed:\s*(\d+)\b/g) ?? 0)
+        : /\bNo test (?:is available|matches the given testcase filter)\b/.test(o)
+          ? 0
+          : null,
+  },
   {
     tool: "maven",
     // Maven surefire: "Tests run: 12, Failures: 0, Errors: 0, Skipped: 0" (the summary, no time).
     count: (o) =>
       num(o.match(/^\[\w+\] Tests run: (\d+), Failures: \d+, Errors: \d+, Skipped: \d+\s*$/m)),
+    ran: (o) => {
+      const m = o.match(
+        /^\[\w+\] Tests run: (\d+), Failures: \d+, Errors: \d+, Skipped: (\d+)\s*$/m,
+      );
+      return m ? Number(m[1]) - Number(m[2]) : null;
+    },
   },
-  // go test -v: one "=== RUN   TestName" per top-level test; without -v there is no count.
-  { tool: "go", count: (o) => lines(o, /^=== RUN\s+[^/\s]+\s*$/) || null },
+  {
+    tool: "go",
+    // go test -v: one "=== RUN   TestName" per top-level test; without -v there is no count.
+    // "[no tests to run]" and "[no test files]" say that nothing ran, with exit 0.
+    count: (o) => lines(o, /^=== RUN\s+[^/\s]+\s*$/) || null,
+    ran: (o) =>
+      lines(o, /^=== RUN\s+[^/\s]+\s*$/) ||
+      (/\[no tests? (?:to run|files)\]|^testing: warning: no tests to run/m.test(o) &&
+      !/^ok\s+\S+\s+[\d.]+s\s*$/m.test(o)
+        ? 0
+        : null),
+  },
   // A language without a parser of its own (#1488): a JUnit XML report printed to the output
   // (`--reporter=junit`), then TAP (busted, bats, prove, node:test, pgTAP).
-  { tool: "junit", count: junitCount },
+  {
+    tool: "junit",
+    count: junitCount,
+    ran: (o) => {
+      const total = junitCount(o);
+      if (total === null) return null;
+      const skipped =
+        num(/<testsuites\b[^>]*?\sskipped="(\d+)"/.exec(o)) ??
+        sum(o, /<testsuite\b[^>]*?\sskipped="(\d+)"/g) ??
+        [...o.matchAll(/<skipped\b/g)].length;
+      return total - skipped;
+    },
+  },
   {
     tool: "tap",
     count: (o) =>
       // A TAP plan `1..N` per top-level stream; an indented plan belongs to a subtest.
       num(o.match(/^Files=\d+, Tests=(\d+),/m)) ?? sum(o, /^1\.\.(\d+)(?:[ \t]+#.*)?\r?$/gm),
+    ran: (o) => {
+      const plan =
+        num(o.match(/^Files=\d+, Tests=(\d+),/m)) ?? sum(o, /^1\.\.(\d+)(?:[ \t]+#.*)?\r?$/gm);
+      return plan === null ? null : plan - lines(o, /^(?:not )?ok\b.*#\s*skip\b/i);
+    },
   },
 ];
 
@@ -203,6 +281,22 @@ export function testCount(output: string): OutputCount | null {
   for (const { tool, count } of TEST_COUNTERS) {
     const found = count(output);
     if (found !== null) return { tool, count: found };
+  }
+  return null;
+}
+
+/**
+ * How many tests executed, by the runner's summary: skipped and ignored ones left out, and 0 for
+ * a run that says it found none ("running 0 tests", "[no tests to run]"). Null when the output has
+ * no summary that tells. A test file compiled out under the check's flags (a Rust
+ * `#![cfg(feature = ...)]` file) prints "0 passed" with exit 0 (tonemath-update, bench round 56,
+ * #1832).
+ */
+export function testsRan(output: string): OutputCount | null {
+  for (const { tool, count, ran } of TEST_COUNTERS) {
+    const found = ran(output);
+    if (found !== null) return { tool, count: found };
+    if (count(output) !== null) return null;
   }
   return null;
 }

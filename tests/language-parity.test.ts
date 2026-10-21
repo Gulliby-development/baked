@@ -28,6 +28,7 @@ import { detectMutationTool, MUTATION_TOOLS } from "../src/core/workflows/qualit
 import { PROPERTY_LIBRARIES, propertyTestKind } from "../src/core/workflows/quality/properties.js";
 import { checkBuiltinRules } from "../src/core/workflows/quality/rules.js";
 import { INLINE_HARNESS, inlineRowFile } from "../src/core/workflows/acceptance-rows-inline.js";
+import { TEST_GATES, testGateFlags } from "../src/core/workflows/test-gates.js";
 import { TaskSchema } from "../src/core/workflows/schemas.js";
 
 // Language parity (#1717): every language-bound record has a row for every supported language,
@@ -120,6 +121,14 @@ const RECORDS: Record<
       return [count ? `${count.tool} ${count.count}` : "no count", stable ? "signature stable" : "signature changed"];
     },
     never: ["no count", "signature changed"],
+  },
+  // The gate flags a gated test file of the language gets in its written-tests check (#1832).
+  testGates: {
+    record: TEST_GATES,
+    run: (language, { files }) =>
+      [...testGateFlags(ofLanguage(language, files).map(([path, text]) => ({ path, text })))].map(
+        ([program, flags]) => `${program} ${flags.join(" ")}`,
+      ),
   },
   mutation: {
     record: MUTATION_TOOLS,

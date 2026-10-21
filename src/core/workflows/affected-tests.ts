@@ -16,6 +16,7 @@ import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { dirname, join, posix } from "node:path";
 import { INLINE_ROWS_BEGIN, INLINE_ROWS_CLASS } from "./acceptance-rows-inline.js";
 import { isStaticCheck } from "./check-policy.js";
+import { testGateFlags, withGateFlags } from "./test-gates.js";
 import { toolchainCommand } from "./toolchain.js";
 import type { Check } from "./types.js";
 
@@ -334,6 +335,7 @@ export function affectedTestCheck(
   checks: readonly Check[],
   all: string[],
   rows: ReadonlySet<string> = new Set(),
+  gates: ReadonlyMap<string, string[]> = new Map(),
 ): Check | null {
   if (all.length === 0) return null;
   for (const check of checks) {
@@ -373,7 +375,7 @@ export function affectedTestCheck(
       prefix = ["-m", "unittest", ...args.slice(2).filter((arg) => UNITTEST_FLAG.test(arg))];
       targets = py;
     } else if (name === "go" && args[0] === "test") {
-      prefix = ["test", ...flagsOnly(args.slice(1))];
+      prefix = withGateFlags(["test", ...flagsOnly(args.slice(1))], gates.get("go"), 1);
       targets = [
         ...new Set(
           tests.filter((t) => GO_FILE.test(t)).map((t) => `./${dirname(t).replaceAll("\\", "/")}`),
@@ -387,7 +389,11 @@ export function affectedTestCheck(
         tests.filter(isCompiledTestFile),
         new Set(tests.filter((t) => rows.has(`${base}${t}`))),
       );
-      const command = compiled && launch(compiled);
+      const gated =
+        compiled && name === "cargo"
+          ? withGateFlags(compiled, gates.get("cargo"), compiled[0] === "nextest" ? 2 : 1)
+          : compiled;
+      const command = gated && launch(gated);
       if (!command) continue;
       return {
         ...check,
@@ -396,6 +402,7 @@ export function affectedTestCheck(
         required: false,
         scope: "task",
         writes: [],
+        requireTests: true,
       };
     }
     const command = targets.length ? launch([...prefix, ...targets]) : null;
@@ -407,6 +414,7 @@ export function affectedTestCheck(
       required: false,
       scope: "task",
       writes: [],
+      requireTests: true,
     };
   }
   return null;
@@ -501,6 +509,19 @@ export function affectedTestsFor(
   };
 }
 
+/** The gate flags the test files declare (#1832): a Cargo feature, a Go build tag. */
+function gateFlags(root: string, files: readonly string[]): Map<string, string[]> {
+  return testGateFlags(
+    files.flatMap((path) => {
+      try {
+        return [{ path, text: readFileSync(join(root, path), "utf8") }];
+      } catch {
+        return [];
+      }
+    }),
+  );
+}
+
 /** The JUnit and xUnit test files that hold an inline acceptance rows block. */
 function inlineRowFiles(root: string, files: readonly string[]): Set<string> {
   return new Set(
@@ -532,7 +553,12 @@ export function writtenTestsCheck(
     .filter((w) => w.action !== "delete" && isWrittenTestFile(w.path))
     .map((w) => w.path)
     .filter((path) => existsSync(join(root, path)));
-  const gate = affectedTestCheck(checks, files, inlineRowFiles(root, files));
+  const gate = affectedTestCheck(
+    checks,
+    files,
+    inlineRowFiles(root, files),
+    gateFlags(root, files),
+  );
   if (!gate) return null;
   const minCases = requiredCases(text);
   const timeoutMs = Math.min(gate.timeoutMs, WRITTEN_TESTS_TIMEOUT_MS);

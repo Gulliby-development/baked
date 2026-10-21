@@ -26,6 +26,7 @@
     ],
     "mutation": null,
     "properties": null,
-    "entryPoints": null
+    "entryPoints": null,
+    "testGates": null
   }
 }
