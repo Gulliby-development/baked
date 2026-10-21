@@ -30,6 +30,7 @@ import { join } from "node:path";
 import { syntaxErrors } from "../src/core/intelligence/syntax-check.js";
 import { criterionCases, missingCases, writtenTestPaths } from "../src/core/verification/criteria-cases.js";
 import { reproExecutables } from "../src/core/verification/repro.js";
+import { entryPointCommand } from "../src/core/verification/entry-points.js";
 import { noteSiblingFindings, ownerOfFinding } from "../src/core/verification/initiative-ownership.js";
 import { exitStatus, timedOutFailure } from "../src/core/verification/check-runner.js";
 import { baselineRegression, diagnosticCount, failureSignature, testCount } from "../src/core/verification/output-counts.js";
@@ -286,6 +287,17 @@ const DOCUMENTED_PROGRAM: Record<Stack, string> = {
   rust: "cargo",
   maven: "java",
   dotnet: "dotnet",
+};
+
+/** Each stack's fixture declaring a `tool` command the way its manifest installs one (#1821). */
+const WITH_ENTRY_POINT: Record<Stack, (files: Record<string, string>) => Record<string, string>> = {
+  bun: (files) => ({ ...files, "package.json": JSON.stringify({ ...JSON.parse(files["package.json"]!), bin: { tool: "cli.js" } }) }),
+  npm: (files) => ({ ...files, "package.json": JSON.stringify({ ...JSON.parse(files["package.json"]!), bin: { tool: "cli.js" } }) }),
+  python: (files) => ({ ...files, "pyproject.toml": `${files["pyproject.toml"]}\n[project.scripts]\ntool = "fixture.cli:main"\n` }),
+  go: (files) => ({ ...files, "cmd/tool/main.go": "package main\n\nfunc main() {}\n" }),
+  rust: (files) => ({ ...files, "Cargo.toml": `${files["Cargo.toml"]}\n[[bin]]\nname = "tool"\npath = "src/main.rs"\n` }),
+  maven: (files) => ({ ...files, "pom.xml": "<project><modelVersion>4.0.0</modelVersion><artifactId>tool</artifactId><properties><exec.mainClass>com.example.Main</exec.mainClass></properties></project>\n" }),
+  dotnet: (files) => ({ ...files, "Fixture.csproj": files["Fixture.csproj"]!.replace("</Project>", "<PropertyGroup><PackAsTool>true</PackAsTool><ToolCommandName>tool</ToolCommandName></PropertyGroup></Project>") }),
 };
 
 /**
@@ -887,6 +899,17 @@ for (const stack of STACKS) {
     // caesar 21bc3a53: run_probe refused java next to `mvn verify`, so its README task blocked.
     cell(stack, "README example program runs under run_probe", () => {
       expect(reproExecutables(preselected())).toContain(DOCUMENTED_PROGRAM[stack]);
+    });
+
+    // routeshadow R55: the README documented `routeshadow ...`, which is not cargo, so none of its
+    // examples ran; the project's own command runs through the launcher the checks start.
+    cell(stack, "doc examples entry points (#1821)", () => {
+      const root = project(WITH_ENTRY_POINT[stack](fixture.files));
+      const executables = reproExecutables(detectGates(root).filter((s) => s.preselected).map((s) => s.check));
+      const resolved = entryPointCommand(root, ["tool", "--help"], executables);
+      expect(resolved?.entry.name).toBe("tool");
+      expect(executables).toContain(resolved!.argv[0]!);
+      expect(resolved!.argv.at(-1)).toBe("--help");
     });
 
     cell(stack, "edit-profile", async () => {

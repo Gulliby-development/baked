@@ -20,6 +20,7 @@ import {
   TEST_RUNNERS,
   testCount,
 } from "../src/core/verification/output-counts.js";
+import { ENTRY_POINTS, projectEntryPoints } from "../src/core/verification/entry-points.js";
 import { detectGates, GATE_TOOLCHAINS } from "../src/core/workflows/gates.js";
 import { PLACEHOLDERS } from "../src/core/workflows/quality/builtin-rules.js";
 import { DEPENDENCY_MANIFESTS, manifestDependencies } from "../src/core/workflows/quality/manifests.js";
@@ -102,6 +103,11 @@ const RECORDS: Record<
   gates: {
     record: GATE_TOOLCHAINS,
     run: (_, { files }) => detectGates(workspace(files)).map((s) => s.check.id),
+  },
+  entryPoints: {
+    record: ENTRY_POINTS,
+    run: (_, { files }) =>
+      projectEntryPoints(workspace(files)).map((e) => `${e.name}: ${e.launcher.join(" ")}`),
   },
   testRunners: {
     record: TEST_RUNNERS,
