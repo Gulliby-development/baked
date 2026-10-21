@@ -1,0 +1,10 @@
+# gitleaks configuration (#1844): the default rules, plus allowlists for test fixtures. Every
+# allowlist names its reason and the issue or PR that accepted it.
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "The desktop e2e redaction test feeds a fake bearer token and checks it is shown redacted (#1844)"
+condition = "AND"
+paths = ['''^apps/desktop/e2e/electron/setup-config\.electron\.ts$''']
+regexes = ['''s3cr3tvalue''']
