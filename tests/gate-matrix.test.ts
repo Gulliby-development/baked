@@ -997,6 +997,11 @@ describe("gate matrix: format and type-check gates (#1685)", () => {
     expect(gates({ "package.json": pkg({}), "pnpm-lock.yaml": "", ".prettierrc.yaml": "" })).toContainEqual(["format", "pnpm exec prettier --check .", "pnpm exec prettier --write .", false]);
     expect(gates({ "package.json": pkg({}), "bun.lock": "", "biome.json": "{}" })).toContainEqual(["format", "bunx biome format .", "bunx biome format --write .", false]);
     expect(gates({ "package.json": pkg({}), "yarn.lock": "", "dprint.json": "{}" })).toContainEqual(["format", "yarn dprint check", "yarn dprint fmt", false]);
+    // #1920: a project that opted into `bun fmt` runs it through Bun, ahead of a Prettier config.
+    expect(gates({ "package.json": pkg({}), "bun.lock": "", "bunfig.toml": "[fmt]\n", ".prettierrc": "{}" })).toContainEqual(["format", "bun fmt --no-script --check .", "bun fmt --no-script .", false]);
+    expect(gates({ "package.json": pkg({}), "package-lock.json": "{}", "bunfig.toml": "[fmt]\n" })).toContainEqual(["format", "bun fmt --no-script --check .", "bun fmt --no-script .", false]);
+    expect(gates({ "package.json": pkg({}), "bun.lock": "", "bunfig.toml": "[fmt]\n", "biome.json": "{}" })).toContainEqual(["format", "bunx biome format .", "bunx biome format --write .", false]);
+    expect(gates({ "package.json": pkg({}), "bun.lock": "", "bunfig.toml": "[test]\n" }).map(([id]) => id)).not.toContain("format");
     const scripted = gates({ "package.json": pkg({ scripts: { "format:check": "biome format ." } }), "bun.lock": "", "biome.json": "{}" });
     expect(scripted.filter(([id]) => id === "format")).toEqual([["format", "bun run format:check", null, true]]);
     expect(gates({ "package.json": pkg({ scripts: { lint: "eslint ." } }), "bun.lock": "" }).map(([id]) => id)).toEqual(["lint"]);
@@ -1081,6 +1086,19 @@ describe("gate matrix: format-written check on a dirty repository (#1837)", () =
     // Not installed in node_modules nor on the PATH: npx would download it, so no check.
     expect(formatWrittenChecks(project(files), [], [{ path: "src/a.js", action: "create" }], () => null)).toEqual([]);
   });
+  cell("bun", "bun fmt: --check on the written files through Bun, only where Bun has bun fmt (#1920)", () => {
+    const files = { "package.json": pkg, "bun.lock": "", "bunfig.toml": "[fmt]\n", "src/a.ts": "x\n" };
+    const asked: string[] = [];
+    const run = (has: boolean) =>
+      formatWrittenChecks(project(files), [], [{ path: "src/a.ts", action: "create" }], (c) => `/usr/bin/${c}`, undefined, (command, _, flag) => {
+        asked.push(`${[command.executable, ...command.args].join(" ")} ${flag}`);
+        return has;
+      }).map((c) => [c.id, [c.executable, ...c.args].join(" "), c.fix ? [c.fix.executable, ...c.fix.args].join(" ") : null, c.required]);
+    expect(run(true)).toEqual([["format-written", "bun fmt --no-script --check src/a.ts", "bun fmt --no-script", true]]);
+    // A Bun before 1.4.4 has no `bun fmt`: no check that would fail every attempt.
+    expect(run(false)).toEqual([]);
+    expect(asked).toEqual(["bun fmt --no-script --help --all --range-start", "bun fmt --no-script --help --all --range-start"]);
+  });
   cell("go", "gofmt left out: gofmt -l on the written files, fixer gofmt -w", () => {
     const files = { "go.mod": "module p\n\ngo 1.22\n", "a.go": "package p\n" };
     expect(scoped(files, ["a.go"])).toEqual([["gofmt-written", "gofmt -l a.go", "gofmt -w", true]]);
@@ -1121,6 +1139,12 @@ describe("gate matrix: format-written check on a dirty repository (#1837)", () =
     const files = { "package.json": pkg, "package-lock.json": "{}", ".prettierrc": "{}", "src/a.js": "old\nnew( )\n" };
     expect(edited(files, "src/a.js", "old\n")).toEqual([
       ["format-lines", "npx prettier --check --range-start=4 --range-end=11 src/a.js", "npx prettier --write --range-start=4 --range-end=11", ["src/a.js"]],
+    ]);
+  });
+  cell("bun", "bun fmt, edited file: --range-start and --range-end over the changed lines (#1920)", () => {
+    const files = { "package.json": pkg, "bun.lock": "", "bunfig.toml": "[fmt]\n", "src/a.ts": "old\nnew( )\n" };
+    expect(edited(files, "src/a.ts", "old\n")).toEqual([
+      ["format-lines", "bun fmt --no-script --check --range-start=4 --range-end=11 src/a.ts", "bun fmt --no-script --range-start=4 --range-end=11", ["src/a.ts"]],
     ]);
   });
   // A formatter release without the range flag would fail every range check and its fixer (#1907).

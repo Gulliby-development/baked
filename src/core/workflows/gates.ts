@@ -9,6 +9,7 @@ import {
 } from "../intelligence/language-records.js";
 import { gateSandbox } from "../security/sandbox.js";
 import { workspacePath } from "../specs/validate.js";
+import { BUN_FMT, bunFmtConfigured } from "../tools/bun-fmt.js";
 import { ruffSource as pythonRuffSource } from "../tools/python-tooling.js";
 import { buildCheckEnv, executeCheckCommand, exitStatus } from "../verification/check-runner.js";
 import {
@@ -301,9 +302,10 @@ function scriptGates(workspace: string): GateSuggestion[] {
   // run it only in an editor, and its whole tree may not be formatted yet.
   const formatter = jsFormatter(workspace, manifest.prettier !== undefined);
   if (formatter) {
-    // `yarn <bin>` runs a package binary in Yarn 1 and in Yarn 2+.
-    const [executable, ...prefix] =
-      runner === "bun"
+    // `yarn <bin>` runs a package binary in Yarn 1 and in Yarn 2+; `bun fmt` runs in Bun itself.
+    const [executable, ...prefix] = formatter.executable
+      ? [formatter.executable]
+      : runner === "bun"
         ? ["bunx"]
         : runner === "npm"
           ? ["npx"]
@@ -330,7 +332,7 @@ const PRETTIER_CONFIG =
 function jsFormatter(
   workspace: string,
   prettierKey: boolean,
-): { check: string[]; fix: string[]; source: string } | null {
+): { check: string[]; fix: string[]; source: string; executable?: string } | null {
   for (const name of ["biome.json", "biome.jsonc"])
     if (has(workspace, name))
       return {
@@ -341,6 +343,17 @@ function jsFormatter(
   for (const name of ["dprint.json", "dprint.jsonc", ".dprint.json", ".dprint.jsonc"])
     if (has(workspace, name))
       return { check: ["dprint", "check"], fix: ["dprint", "fmt"], source: name };
+  // `bun fmt` reads a Prettier config and formats like Prettier: a project that opted into it
+  // runs it ahead of `prettier`, through Bun rather than a package runner (#1920).
+  if (bunFmtConfigured(workspace)) {
+    const [executable = "bun", ...words] = BUN_FMT.split(" ");
+    return {
+      check: [...words, "--check", "."],
+      fix: [...words, "."],
+      source: "bunfig.toml [fmt]",
+      executable,
+    };
+  }
   const config = prettierKey
     ? "package.json prettier"
     : readdirSync(workspace).find((name) => PRETTIER_CONFIG.test(name));

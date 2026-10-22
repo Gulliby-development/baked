@@ -8,6 +8,7 @@ import { dirname, extname, join } from "node:path";
 import { IS_WIN } from "../platform/index.js";
 import { realPath } from "../projects/paths.js";
 import { runBoundedShell } from "./bounded-process.js";
+import { BUN_FMT } from "./bun-fmt.js";
 
 // Format command per checkout root; `null` from setFormatCache disables formatting everywhere.
 const formatCommands = new Map<string, string | null>();
@@ -123,6 +124,8 @@ export function formatProbeCommand(command: string, filePath: string): string | 
     return `${command.replace(" --write", "")} --stdin-file-path ${file}`;
   if (/^(?:bunx|npx) prettier --write$/.test(command))
     return `${command.replace(" --write", "")} --stdin-filepath ${file}`;
+  // `bun fmt` prints the formatted standard input for the file's language and configuration.
+  if (command === BUN_FMT) return `${command} --stdin-filepath ${file}`;
   if (command === "gofmt -w") return "gofmt";
   if (command === "rustfmt")
     return rustfmtCommand(filePath).replace(/^rustfmt/, "rustfmt --emit stdout");
