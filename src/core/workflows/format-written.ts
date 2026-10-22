@@ -2,6 +2,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { join, posix } from "node:path";
 import { type LanguageRecord, none, rowOf } from "../intelligence/language-records.js";
 import { detectLanguageFromPath } from "../intelligence/types.js";
+import { BUN_FMT } from "../tools/bun-fmt.js";
 import { cwdPath, isCodePath } from "./check-policy.js";
 import { unresolvedChecks } from "./check-preflight.js";
 import { detectGates } from "./gates.js";
@@ -54,6 +55,11 @@ export interface FileFormatter {
   fix: (args: readonly string[]) => string[];
   /** The same formatter on lines of a file, where it can format a range. */
   range?: RangeFormatter;
+  /**
+   * The flag and the help arguments that list it, where the program can lack the formatter
+   * altogether: a Bun before 1.4.4 has no `bun fmt`, so every check and fixer would fail (#1920).
+   */
+  available?: { flag: string; help: string[] };
 }
 
 // `ruff format --range=A-B` ends at the start of line B, so a range through line B ends at B+1; one
@@ -120,6 +126,26 @@ const prettier: FileFormatter = {
     // No probe: `--range-start` and `--range-end` exist since prettier 1.4.
   },
 };
+// `bun fmt` (Bun 1.4.4) takes Prettier's character offsets; `--no-script` keeps a project's `fmt`
+// script from running in its place (#1920).
+const BUN_FMT_ARGS = BUN_FMT.split(" ").slice(1);
+const bunFmt: FileFormatter = {
+  runs: (program, args) => program === "bun" && args[0] === "fmt",
+  check: (_, files) => [...BUN_FMT_ARGS, "--check", ...files],
+  fix: () => BUN_FMT_ARGS,
+  range: {
+    multiple: false,
+    check: (_, file, [range], text) => [
+      ...BUN_FMT_ARGS,
+      "--check",
+      ...prettierRange(text, range ?? [1, 1]),
+      file,
+    ],
+    fix: (_, [range], text) => [...BUN_FMT_ARGS, ...prettierRange(text, range ?? [1, 1])],
+    // No probe of its own: `available` already asks for `--range-start`, there since `bun fmt`.
+  },
+  available: { flag: "--range-start", help: [...BUN_FMT_ARGS, "--help", "--all"] },
+};
 // No range: `dprint` formats whole files only.
 const dprint: FileFormatter = {
   runs: (program, args) => program === "dprint" && args[0] === "check",
@@ -146,7 +172,7 @@ const dotnetFormat: FileFormatter = {
   fix: (args) => args.filter((arg) => arg !== "--verify-no-changes"),
 };
 
-const NPM_FORMATTERS = [biome, prettier, dprint];
+const NPM_FORMATTERS = [biome, prettier, dprint, bunFmt];
 
 /**
  * The formatters whose whole-tree gate `detectGates` offers, by language, in the order a project's
@@ -426,6 +452,14 @@ export function formatWrittenChecks(
           timeoutMs: Math.min(gate.check.timeoutMs, FORMAT_WRITTEN_TIMEOUT_MS),
         };
       };
+      // A Bun without `bun fmt` would fail every check and fixer.
+      const available = formatter.available;
+      const helpCommand = available && command.command(available.help);
+      if (
+        available &&
+        !(helpCommand && accepts(helpCommand, join(root, gate.check.cwd ?? "."), available.flag))
+      )
+        continue;
       const found: Check[] = [];
       // The check runs in the gate's cwd: it holds only the files under it, named from there
       // (`fixPaths` stay workspace paths, as the host matches them).

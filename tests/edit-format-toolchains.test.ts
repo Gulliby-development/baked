@@ -4,6 +4,7 @@ import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSy
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { canAutoFormat, cargoEdition, formatProbeCommand, resetFormatCache, singleFileFormat } from "../src/core/tools/auto-format.js";
+import { BUN_FMT } from "../src/core/tools/bun-fmt.js";
 import { detectProfile, formatFile } from "../src/core/tools/project.js";
 
 // #1681: bare rustfmt parses as Rust 2015, so an `async fn` in a 2021 crate failed the probe and
@@ -30,6 +31,8 @@ function project(files: Record<string, string>): string {
 // os.homedir() still names the real home (as in the gate matrix's toolchain tier).
 process.env.RUSTUP_HOME ??= join(homedir(), ".rustup");
 const hasRustfmt = spawnSync("rustfmt", ["--version"], { stdio: "ignore", timeout: 60_000 }).status === 0;
+// `bun fmt` ships with Bun 1.4.4; an older Bun lists no `--range-start` here.
+const hasBunFmt = (spawnSync("bun", ["fmt", "--no-script", "--help", "--all"], { encoding: "utf8", timeout: 60_000 }).stdout ?? "").includes("--range-start");
 const CRATE = '[package]\nname = "c"\nversion = "0.1.0"\nedition = "2021"\n';
 
 describe("edit-time formatting per toolchain (#1681)", () => {
@@ -70,5 +73,33 @@ describe("edit-time formatting per toolchain (#1681)", () => {
   test("dprint and deno get a stdin probe, so they format after an edit", () => {
     expect(formatProbeCommand("bunx dprint fmt", "/w/a.ts")).toMatch(/^bunx dprint fmt --stdin .*a\.ts.?$/);
     expect(formatProbeCommand("deno fmt", "/w/a.tsx")).toBe("deno fmt --ext tsx -");
+  });
+
+  // #1920: `bun fmt` is used where a project opted in with `[fmt]` in bunfig.toml.
+  test("finds bun fmt from a [fmt] section, after biome and dprint and ahead of prettier", async () => {
+    const pkg = JSON.stringify({ name: "x", scripts: { fmt: "echo not-the-formatter" } });
+    const bunfig = "[fmt]\nprintWidth = 100\n";
+    expect((await detectProfile(project({ "package.json": pkg, "bun.lock": "", "bunfig.toml": bunfig }))).formatFile).toBe(BUN_FMT);
+    expect((await detectProfile(project({ "package.json": pkg, "bunfig.toml": bunfig, ".prettierrc": "{}" }))).formatFile).toBe(BUN_FMT);
+    expect((await detectProfile(project({ "package.json": pkg, "bun.lock": "", "bunfig.toml": bunfig, "biome.json": "{}" }))).formatFile).toBe("bunx biome format --write");
+    expect((await detectProfile(project({ "package.json": pkg, "bun.lock": "", "bunfig.toml": bunfig, "dprint.json": "{}" }))).formatFile).toBe("bunx dprint fmt");
+    // No [fmt] section (or an unreadable bunfig): nothing changes.
+    expect((await detectProfile(project({ "package.json": pkg, "bun.lock": "", "bunfig.toml": "[test]\ntimeout = 5000\n" }))).formatFile).toBeNull();
+    expect((await detectProfile(project({ "package.json": pkg, "bun.lock": "", "bunfig.toml": "[fmt\n" }))).formatFile).toBeNull();
+    expect(formatProbeCommand(BUN_FMT, "/w/a.ts")).toMatch(/^bun fmt --no-script --stdin-filepath .*a\.ts.?$/);
+  });
+
+  test.skipIf(!hasBunFmt)("bun fmt formats one file after an edit, not the project's fmt script", async () => {
+    const root = project({
+      "package.json": JSON.stringify({ name: "x", scripts: { fmt: "echo not-the-formatter" } }),
+      "bunfig.toml": "[fmt]\n",
+      "src/a.ts": "const a = {b:1}\n",
+      "src/b.ts": "const b = {c:2}\n",
+    });
+    expect(await formatFile(join(root, "src/a.ts"), root)).toBe(true);
+    expect(readFileSync(join(root, "src/a.ts"), "utf8")).toBe("const a = { b: 1 };\n");
+    expect(readFileSync(join(root, "src/b.ts"), "utf8")).toBe("const b = {c:2}\n");
+    expect(await canAutoFormat(join(root, "src/a.ts"), "const a = { b: 1 };\n", root)).toBe(true);
+    expect(await canAutoFormat(join(root, "src/a.ts"), "const a = {b:1}\n", root)).toBe(false);
   });
 });

@@ -13,6 +13,7 @@ import { ProcessScope } from "../workflows/process-scope.js";
 import { pythonEnvironment } from "../workflows/toolchain.js";
 import { FORMAT_TIMEOUT_MS, singleFileFormat } from "./auto-format.js";
 import { runBoundedShell } from "./bounded-process.js";
+import { BUN_FMT, bunFmtConfigured } from "./bun-fmt.js";
 import { ruffSource as ruffConfigSource } from "./python-tooling.js";
 import { compressShellOutputFull } from "./shell-compress.js";
 import { saveTee, truncateWithTee } from "./tee.js";
@@ -480,6 +481,9 @@ async function detectJsFormatter(cwd: string, runner = ""): Promise<string | nul
   const run = runner ? `${runner} ` : "";
   if ((await has("biome.json")) || (await has("biome.jsonc"))) return `${run}biome format --write`;
   if ((await has("dprint.json")) || (await has("dprint.jsonc"))) return `${run}dprint fmt`;
+  // `bun fmt` reads a Prettier config and formats like Prettier, so a project that opted into it
+  // with `[fmt]` uses it ahead of `prettier` (#1920).
+  if (bunFmtConfigured(cwd)) return BUN_FMT;
   for (const name of PRETTIER_CONFIGS) if (await has(name)) return `${run}prettier --write`;
   // Prettier also reads its options from a `prettier` key in package.json (#1681).
   try {
