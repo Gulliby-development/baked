@@ -8,6 +8,7 @@ import {
   type InlineRowFile,
   type InlineRowTest,
   inlineRowFile,
+  layoutFree,
 } from "./acceptance-rows-inline.js";
 import type { AcceptanceRow } from "./acceptance-rows-model.js";
 import { WorkflowFault } from "./errors.js";
@@ -425,8 +426,9 @@ const importPath = (from: string, to: string): string => {
 
 type Template = (input: FileRowTest & { rows: AcceptanceRow[] }) => string;
 
+// Two short lines, so a long harness path alone overruns a linter's line length (#1927).
 const header = (comment: string, harness: string): string =>
-  `${comment} Host-written acceptance rows. Review the harness in ${harness}.\n`;
+  `${comment} Host-written acceptance rows.\n${comment} Review the harness in ${harness}.\n`;
 const camel = (text: string): string =>
   text
     .split(/[^A-Za-z0-9]+/)
@@ -467,8 +469,9 @@ const csharpString = (text: string): string =>
 const TEMPLATES: Record<RowTest["framework"], Template> = {
   bun: ({ harness, test, data }) =>
     `${header("//", harness)}import { expect, test } from "bun:test";\nimport { actual } from ${JSON.stringify(importPath(test, harness))};\nimport rows from ${JSON.stringify(importPath(test, data))};\ntest.each(rows)("$id", async (row) => {\n  expect(await actual(row.input)).toEqual(row.expected);\n});\n`,
+  // In isort's groups and ruff's and black's layout at any line length (#1927).
   pytest: ({ harness, test, data }) =>
-    `${header("#", harness)}import importlib.util\nimport json\nfrom pathlib import Path\nimport pytest\n\n_base = Path(__file__).parent\n_spec = importlib.util.spec_from_file_location("acceptance_harness", _base / ${JSON.stringify(importPath(test, harness))})\n_harness = importlib.util.module_from_spec(_spec)\n_spec.loader.exec_module(_harness)\n_rows = json.loads((_base / ${JSON.stringify(importPath(test, data))}).read_text(encoding="utf-8"))\n\n@pytest.mark.parametrize("row", _rows, ids=[row["id"] for row in _rows])\ndef test_acceptance_row(row):\n    assert _harness.actual(row["input"]) == row["expected"]\n`,
+    `${header("#", harness)}import importlib.util\nimport json\nfrom pathlib import Path\n\nimport pytest\n\n_base = Path(__file__).parent\n_harness_path = _base / ${JSON.stringify(importPath(test, harness))}\n_data_path = _base / ${JSON.stringify(importPath(test, data))}\n_spec = importlib.util.spec_from_file_location("rows_harness", _harness_path)\n_harness = importlib.util.module_from_spec(_spec)\n_spec.loader.exec_module(_harness)\n_rows = json.loads(_data_path.read_text(encoding="utf-8"))\n\n\n@pytest.mark.parametrize("row", _rows, ids=[row["id"] for row in _rows])\ndef test_acceptance_row(row):\n    assert _harness.actual(row["input"]) == row["expected"]\n`,
   // `go test` runs in the package directory, so the data path is relative to the test file.
   go: ({ harness, test, data, package: pkg }) =>
     `${header("//", harness)}package ${pkg}\n\nimport (\n\t"encoding/json"\n\t"os"\n\t"reflect"\n\t"testing"\n)\n\nfunc TestAcceptanceRows${camel(posix.basename(test, "_test.go"))}(t *testing.T) {\n\traw, err := os.ReadFile(${JSON.stringify(posix.relative(posix.dirname(test), data))})\n\tif err != nil {\n\t\tt.Fatal(err)\n\t}\n\tvar rows []struct {\n\t\tID       string \`json:"id"\`\n\t\tInput    any    \`json:"input"\`\n\t\tExpected any    \`json:"expected"\`\n\t}\n\tif err := json.Unmarshal(raw, &rows); err != nil {\n\t\tt.Fatal(err)\n\t}\n\tfor _, row := range rows {\n\t\trow := row\n\t\tt.Run(row.ID, func(t *testing.T) {\n\t\t\tgot, err := Actual(row.Input)\n\t\t\tif err != nil {\n\t\t\t\tt.Fatal(err)\n\t\t\t}\n\t\t\ttext, err := json.Marshal(got)\n\t\t\tif err != nil {\n\t\t\t\tt.Fatal(err)\n\t\t\t}\n\t\t\tvar value any\n\t\t\tif err := json.Unmarshal(text, &value); err != nil {\n\t\t\t\tt.Fatal(err)\n\t\t\t}\n\t\t\tif !reflect.DeepEqual(value, row.Expected) {\n\t\t\t\twant, _ := json.Marshal(row.Expected)\n\t\t\t\tt.Fatalf("got %s, want %s", text, want)\n\t\t\t}\n\t\t})\n\t}\n}\n`,
@@ -529,7 +532,9 @@ export async function rowFileProblems(
           : [
               `Host-written acceptance rows block in ${file.path} is missing or changed; restore it and edit only the harness and your own tests.`,
             ];
-      return text === file.content
+      // A formatter gate's fixer may lay a host file out again (#1927).
+      return text !== null &&
+        (text === file.content || layoutFree(text) === layoutFree(file.content))
         ? []
         : [
             `Host-written acceptance file ${file.path} is missing or changed; restore it and edit only the harness.`,

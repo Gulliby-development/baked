@@ -4647,7 +4647,7 @@ export class WorkflowScheduler {
           artifact: ROWS_ARTIFACT,
           files: generatedRows.map((file) => file.path),
           note: generatedRows.some((file) => file.inline)
-            ? `The host wrote the audited rows and their parameterized test into a marked acceptance rows block of ${generatedRows.map((file) => file.path).join(", ")}. Define ${INLINE_HARNESS[task.rowTest?.framework ?? "bun"]}(input) in that file, outside the block, and write any ordinary tests this task owns there too. Keep the block as it is; the host restores it if an edit drops it.`
+            ? `The host wrote the audited rows and their parameterized test into a marked acceptance rows block of ${generatedRows.map((file) => file.path).join(", ")}. Define ${INLINE_HARNESS[task.rowTest?.framework ?? "bun"]}(input) in that file, outside the block, and write any ordinary tests this task owns there too. Keep the block as it is; the project's formatter may lay it out again, and the host restores it if any other edit changes it.`
             : "The host writes the audited row data and parameterized tests. Write only the actual(input) harness and any ordinary tests this task owns. Review and corrections must preserve the host-written files.",
         },
       };
