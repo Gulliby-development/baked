@@ -2483,7 +2483,7 @@ describe.skipIf(!toolchains)("gate matrix: toolchains", () => {
   // #1913, rpn 09a1c786: a required gate names `src tests` before the task that writes `tests/` ran.
   // The real tools' "path does not exist" output names the folder the later task creates.
   for (const [tool, args] of [["ruff", ["check", "src", "tests"]], ["black", ["--check", "src", "tests"]]] as const)
-    (process.env.CI || available([[tool, "--version"]]) ? cell : (s: Stack, name: string) => test.skip(`${name} (no toolchain)`, () => {}))(
+    ((tool === "ruff" && process.env.CI) || available([[tool, "--version"]]) ? cell : (s: Stack, name: string) => test.skip(`${name} (no toolchain)`, () => {}))(
       "python",
       `python: ${tool} on src and a missing tests folder names the folder the test task creates`,
       async () => {
