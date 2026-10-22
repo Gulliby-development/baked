@@ -1725,6 +1725,40 @@ describe("initiative runtime", () => {
       expect(t.workflows.store.requests(runId).filter((r) => r.kind === "manual_evidence").map((r) => [r.status, r.actor])).toEqual([["accepted", "host-release"]]);
     }, 120_000);
 
+    // Bench round 60, wheeltags (#1925): base was accepted while another feature still ran, and the
+    // features planned ahead on it waited 39 minutes with free slots, until a pause and resume
+    // started a new drive. A planned-ahead run is driven once per round, stops waiting for the
+    // release, and was not looked at again in that round.
+    test("on, a planned-ahead feature is released as soon as its upstream is accepted, while another feature still runs", async () => {
+      class SlowAheadExecutor extends AheadExecutor {
+        override async execute(request: ExecutionRequest) {
+          if (request.profile.output === "implementation" && request.task?.writes[0]?.path === "slow.txt") {
+            const deadline = Date.now() + 10_000;
+            while (!this.events.includes("start:message") && Date.now() < deadline) await Bun.sleep(20);
+          }
+          return super.execute(request);
+        }
+      }
+      // front keeps message a spec feature: a light leaf has no planning to overlap.
+      const split = plan([feature("base"), feature("slow"), feature("message", ["base"]), feature("front", ["message"])]);
+      const t = setup(split, 100, (root) => new SlowAheadExecutor(root, split));
+      repository(t.root);
+      t.executor.initiatives = t.initiatives;
+      t.executor.workflows = t.workflows;
+      Object.assign(t.workflows.config.workflows ?? {}, { planAhead: true, maxParallelRuns: 3 });
+      await t.start({ plan: split, policy: { ...policy, executionMode: "worktree" }, featureAutoApproval: { maxTasks: 5, maxFiles: 5 }, budget: { maxTotalTokens: 6_000_000, maxAgentCalls: 2000, maxActiveMs: 6_000_000 } });
+      expect((await t.approveSplit()).parallelRuns).toBe(3);
+      const view = await t.drive();
+      expect(view.status).toBe("completed");
+      const events = t.executor.events;
+      expect(events.indexOf("plan:message")).toBeLessThan(events.indexOf("end:base"));
+      // message's tasks start on base's result while slow still implements, not after it.
+      expect(events.indexOf("start:message")).toBeGreaterThan(events.indexOf("end:base"));
+      expect(events.indexOf("start:message")).toBeLessThan(events.indexOf("end:slow"));
+      expect(t.executor.seen.message).toEqual(["base.txt"]);
+      expect(t.initiatives.events("values").filter((e) => e.type === "feature.released").map((e) => (e.payload as { featureId: string }).featureId)).toContain("message");
+    }, 120_000);
+
     test("a contract that changes under a planned-ahead feature sends it back to planning", async () => {
       const t = setup(chain, 100, (root) => new AheadExecutor(root, chain));
       repository(t.root);

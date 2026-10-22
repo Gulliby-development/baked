@@ -1212,10 +1212,15 @@ export class InitiativeService {
       }
       for (const feature of runnable(view)) {
         const runId = feature.runId ?? "";
+        if (live.has(runId)) continue;
         if (live.size >= view.parallelRuns) break;
-        if (before.has(runId)) continue;
-        if (await this.releasePlanned(id, feature.id, runId)) started = true;
-        before.set(runId, this.workflows.store.run(runId).revision);
+        // A planned-ahead run already driven this round stopped to wait for its upstream; it is
+        // released the moment that upstream is accepted, not when the round's last run stops.
+        // Bench round 60, wheeltags: names and targets waited 39 minutes with free slots (#1925).
+        const released = await this.releasePlanned(id, feature.id, runId);
+        if (released) started = true;
+        else if (before.has(runId)) continue;
+        if (!before.has(runId)) before.set(runId, this.workflows.store.run(runId).revision);
         live.set(
           runId,
           this.driveRun(runId, signal).then(
