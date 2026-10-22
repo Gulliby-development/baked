@@ -332,4 +332,4 @@ test("a repeated finding keeps the earlier noRepro and is not asked again", asyn
     .flatMap((a) => (JSON.parse(service.store.readArtifact(run.runId, a.id)) as Review).findings ?? [])
     .find((f) => f.repeatOf === "C1");
   expect(repeated?.noRepro).toBe("Needs an unreadable directory");
-}, 30000);
+});

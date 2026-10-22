@@ -54,7 +54,7 @@ describe("mode tool gating", () => {
   // The first agent built in a process loads every tool module, which takes seconds on a busy CI runner.
   test("architect mode sends the SAME tool schema as default mode", () => {
     expect(toolNames(makeAgent("architect"))).toEqual(toolNames(makeAgent("default")));
-  }, 30000);
+  });
 
   test("plan-execution sends the SAME tool schema as default mode", () => {
     expect(toolNames(makeAgent("default", true))).toEqual(toolNames(makeAgent("default")));

@@ -121,7 +121,7 @@ describe("the run-level prompt prefix", () => {
         .filter(Boolean);
       expect(marks.length).toBeLessThanOrEqual(4);
     }
-  }, 30_000);
+  });
 
   test("on Claude Code, goes into the system prompt that every attempt of the run shares", async () => {
     const spawned: { instructions: string; sent: string[] }[] = [];
@@ -174,5 +174,5 @@ describe("the run-level prompt prefix", () => {
     expect(firstTurn).not.toContain("The accepted spec");
     expect(firstTurn).toContain('2. USER (continued)\n{"extra":{"task":"T001"}}');
     expect(secondTurn).toContain('{"extra":{"task":"T002"}}');
-  }, 30_000);
+  });
 });

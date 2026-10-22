@@ -107,7 +107,7 @@ describe("adaptive silence limit", () => {
     expect(String((error as Error).message)).toContain("from the run's own model calls");
     // Half of stepStallMs, the floor of a lowered limit, plus the watchdog's check interval.
     expect(Date.now() - started).toBeLessThan(stepStallMs);
-  }, 30000);
+  });
 
   test.each(["codex", "claude-code"])("%s uses adaptive silence after reporting activity", async (adapterId) => {
     let started!: () => void;
@@ -161,5 +161,5 @@ describe("adaptive silence limit", () => {
       expect(isStall(error)).toBe(true);
       expect(String((error as Error).message)).toContain("from the run's own model calls");
     } finally { clock.restore(); }
-  }, 30_000);
+  });
 });

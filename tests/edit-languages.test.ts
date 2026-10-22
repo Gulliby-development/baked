@@ -92,7 +92,7 @@ describe("Python: indentation-sensitive editing", () => {
 		const content = await Bun.file(path).text();
 		expect(content).toContain("validated = [i for i in raw_data");
 		expect(content).toContain("        validated");
-	}, 30_000);
+	});
 
 	it("fuzzy matches tabs→spaces in Python", async () => {
 		// File uses tabs, agent sends spaces
@@ -110,7 +110,7 @@ describe("Python: indentation-sensitive editing", () => {
 		expect(content).toContain("upper()");
 		// Should preserve tabs
 		expect(content).toContain("\t\t\treturn value.strip().upper()");
-	}, 30_000);
+	});
 
 	it("rejects stale edit after method insertion shifted lines", async () => {
 		const path = await writeTestFile("shifted.py", PYTHON_FILE);
@@ -134,7 +134,7 @@ describe("Python: indentation-sensitive editing", () => {
 		// Line 26 now has "        return transformed if transformed else None" — mismatch
 		expect(result.success).toBe(false);
 		expect(result.output).toContain("oldString does not match");
-	}, 30_000);
+	});
 
 	it("multi_edit on Python file preserves indentation", async () => {
 		const path = await writeTestFile("multi-py.py", PYTHON_FILE);
@@ -157,7 +157,7 @@ describe("Python: indentation-sensitive editing", () => {
 		const content = await Bun.file(path).text();
 		expect(content).toContain("self.logger = logging.getLogger");
 		expect(content).toContain("elif isinstance(value, list):");
-	}, 30_000);
+	});
 
 	it("undo restores Python file exactly", async () => {
 		const path = await writeTestFile("undo-py.py", PYTHON_FILE);
@@ -171,7 +171,7 @@ describe("Python: indentation-sensitive editing", () => {
 		expect(undoResult.success).toBe(true);
 		const content = await Bun.file(path).text();
 		expect(content).toBe(PYTHON_FILE);
-	}, 30_000);
+	});
 });
 
 // ════════════════════════════════════════════════════════════
@@ -256,7 +256,7 @@ describe("TypeScript: generics and complex types", () => {
 		expect(result.success).toBe(true);
 		const content = await Bun.file(path).text();
 		expect(content).toContain("statusText");
-	}, 30_000);
+	});
 
 	it("multi_edit on TypeScript preserves generics", async () => {
 		const path = await writeTestFile("multi-ts.tsx", TS_FILE);
@@ -279,7 +279,7 @@ describe("TypeScript: generics and complex types", () => {
 		const content = await Bun.file(path).text();
 		expect(content).toContain("retryCount?: number;");
 		expect(content).toContain("[useData]");
-	}, 30_000);
+	});
 });
 
 // ════════════════════════════════════════════════════════════
@@ -365,7 +365,7 @@ describe("Rust: lifetimes, generics, match arms", () => {
 		const content = await Bun.file(path).text();
 		expect(content).toContain("if let Some(val)");
 		expect(content).not.toContain("match self.store");
-	}, 30_000);
+	});
 
 	it("edits lifetime annotations without corruption", async () => {
 		const path = await writeTestFile("lifetime.rs", RUST_FILE);
@@ -476,7 +476,7 @@ describe("Go: tab indentation, strict formatting", () => {
 		expect(content).toContain("fmt.Fprintf");
 		// Ensure tabs preserved
 		expect(content).toContain("\t\tw.WriteHeader");
-	}, 30_000);
+	});
 
 	it("fuzzy matches spaces→tabs for Go", async () => {
 		const path = await writeTestFile("fuzzy-go.go", GO_FILE);
@@ -578,7 +578,7 @@ describe("YAML: indentation-sensitive editing", () => {
 		const content = await Bun.file(path).text();
 		expect(content).toContain('"1Gi"');
 		expect(content).toContain('"1000m"');
-	}, 30_000);
+	});
 
 	it("rejects edit at wrong indentation level", async () => {
 		const path = await writeTestFile("indent-mismatch.yaml", YAML_FILE);
@@ -593,7 +593,7 @@ describe("YAML: indentation-sensitive editing", () => {
 		expect(result.success).toBe(true);
 		const content = await Bun.file(path).text();
 		expect(content).toContain("v3.0.0");
-	}, 30_000);
+	});
 });
 
 // ════════════════════════════════════════════════════════════
@@ -636,7 +636,7 @@ describe("Makefile: tab-only indentation", () => {
 		expect(result.success).toBe(true);
 		const content = await Bun.file(path).text();
 		expect(content).toContain("\tgo test -race -cover -count=1 -v");
-	}, 30_000);
+	});
 
 	it("multi_edit on Makefile: add target + modify deploy", async () => {
 		const path = await writeTestFile("Makefile2", MAKEFILE);
@@ -660,7 +660,7 @@ describe("Makefile: tab-only indentation", () => {
 		expect(content).toContain("fmt:\n\tgofmt -w .");
 		expect(content).toContain("deploy: build test lint");
 		expect(content).toContain("\tkubectl rollout restart");
-	}, 30_000);
+	});
 });
 
 // ════════════════════════════════════════════════════════════
@@ -686,7 +686,7 @@ describe("correctIndentation: new insertion lines get corrected indentation", ()
 		// All inserted lines should use tabs, not spaces
 		expect(content).toContain("\tz := 3");
 		expect(content).toContain("\tw := 4");
-	}, 30_000);
+	});
 
 	it("Python: inserted lines at deeper nesting get correct spaces", async () => {
 		// File uses tabs, agent sends 4-space indentation
@@ -703,7 +703,7 @@ describe("correctIndentation: new insertion lines get corrected indentation", ()
 		// Inserted lines should use tabs like the file
 		expect(content).toContain("\t\ty = 2");
 		expect(content).toContain("\t\tz = 3");
-	}, 30_000);
+	});
 });
 
 // ════════════════════════════════════════════════════════════
@@ -745,5 +745,5 @@ describe("Python: multi_edit + full undo round-trip", () => {
 		expect(undoResult.success).toBe(true);
 		const restored = await Bun.file(path).text();
 		expect(restored).toBe(PYTHON_FILE);
-	}, 30_000);
+	});
 });

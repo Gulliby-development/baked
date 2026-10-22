@@ -240,7 +240,7 @@ describe("the coordinator answers by rules (scripted scenario)", () => {
       },
     });
     expect(session.messages.some((m) => m.role === "system" && /^The project coordinator approved web search/.test(m.content))).toBe(true);
-  }, 30000);
+  });
 });
 
 class DoneHost implements ChatAgentHost {
@@ -349,7 +349,7 @@ describe("the approval rules API", () => {
     expect((await call("PUT", { enabled: false, rules: [], expectedRevision: 0 })).status).toBe(409);
     const invalid = await call("PUT", { enabled: true, rules: [{ id: "x", kind: "destructive" }], expectedRevision: 1 });
     expect(invalid.status).toBe(400);
-  }, 30000);
+  });
 });
 
 describe("rules as text commands (terminal app and CLI)", () => {

@@ -119,7 +119,7 @@ describe("a provider probe the provider refuses as a request (#1889)", () => {
     const healthy = store.latestArtifact(run.runId, "provider/healthy.json");
     expect(healthy).not.toBeNull();
     expect(store.readArtifact(run.runId, healthy?.id ?? "")).toContain("invalid_json_schema");
-  }, 30_000);
+  });
 
   test("an account refusal from the probe still blocks for a person", async () => {
     let failed = false;
@@ -146,5 +146,5 @@ describe("a provider probe the provider refuses as a request (#1889)", () => {
     await fixture.approve(run.runId);
     const done = await fixture.service.drive(run.runId, signal);
     expect(done).toMatchObject({ status: "blocked", reason: "provider_account" });
-  }, 30_000);
+  });
 });

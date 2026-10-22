@@ -64,7 +64,7 @@ describe("readFileTool", () => {
 		expect(result.success).toBe(true);
 		expect(result.output).toContain("fn0");
 		expect(result.output).toContain("fn399");
-	}, 30_000);
+	});
 
 	it("returns full content for large code file with startLine=1", async () => {
 		const filePath = join(TEST_DIR, "big2.ts");
@@ -79,7 +79,7 @@ describe("readFileTool", () => {
 		expect(result.outlineOnly).toBeUndefined();
 		expect(result.output).toContain("fn0");
 		expect(result.output).toContain("fn399");
-	}, 30_000);
+	});
 
 	it("returns error for non-existent file", async () => {
 		const result = await readFileTool.execute({ path: join(TEST_DIR, "nope.txt") });
@@ -158,7 +158,7 @@ describe("readFileTool", () => {
 		expect(result.output).toContain("fn49");
 		expect(result.output).toContain("fn99");
 		expect(result.output).not.toContain("fn0()");
-	}, 30_000);
+	});
 
 	it("non-code file over 300 lines returns full content", async () => {
 		const filePath = join(TEST_DIR, "big-config.json");

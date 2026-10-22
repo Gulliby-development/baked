@@ -109,7 +109,7 @@ describe("scenario: an awake host loses the provider for eleven minutes (#1613)"
       expect(JSON.stringify(events)).not.toContain("step_stalled");
       expect(fixture.service.store.latestArtifact(run.runId, "provider/healthy.json")).not.toBeNull();
     } finally { clock.restore(); }
-  }, 30_000);
+  });
 
   test.each(["pause", "cancel", "shutdown", "restart"] as const)("a durable provider wait supports %s", async (action) => {
     let failed = false;
@@ -162,5 +162,5 @@ describe("scenario: an awake host loses the provider for eleven minutes (#1613)"
     }
     expect(fixture.service.store.state(run.runId).stallResumes).toBe(0);
     expect(fixture.service.store.state(run.runId).providerResumes).toBe(0);
-  }, 30_000);
+  });
 });

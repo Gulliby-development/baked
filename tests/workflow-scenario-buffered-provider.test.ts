@@ -83,7 +83,7 @@ for (const adapterId of ["codex", "claude-code"] as const) {
     } finally { clock.restore(); }
     await fixture.approve(run.runId);
     expect((await fixture.service.drive(run.runId, new AbortController().signal)).status).toBe("completed");
-  }, 30_000);
+  });
 }
 
 test.each(["spec", "plan", "implementation", "review"])("scenario #1639: healthy probes cannot restart an empty %s stage forever", async (stage) => {
@@ -134,4 +134,4 @@ test.each(["spec", "plan", "implementation", "review"])("scenario #1639: healthy
     snapshot = await fixture.service.drive(run.runId, new AbortController().signal);
   }
   expect(snapshot.status).toBe("completed");
-}, 30_000);
+});

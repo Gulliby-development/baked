@@ -23,5 +23,5 @@ describe("autoFormatAfterEdit", () => {
     cleanups.push(resetFormatCache);
     expect(await autoFormatAfterEdit(file, root, null)).toBe(true);
     expect(readFileSync(file, "utf8")).toBe("formatted");
-  }, 30_000);
+  });
 });

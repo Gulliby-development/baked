@@ -40,5 +40,5 @@ describe("active time of a run (#1038)", () => {
     const total = fx.service.store.run(run.runId).active_ms;
     expect(total).toBeGreaterThanOrEqual(ACTIVE_FLUSH_MS * 2.5 - 50);
     expect(total).toBeLessThanOrEqual(Math.ceil(wall) + 1);
-  }, 30000);
+  });
 });

@@ -209,7 +209,7 @@ describe("edit_file tool: mismatch now fails instead of blind apply", () => {
 		expect(result.output).toContain("oldString does not match");
 		expect(result.output).toContain("line2");
 		expect(result.output).toContain("Re-read the file");
-	}, 30_000);
+	});
 
 	it("shows actual content at line range in error", async () => {
 		const path = await writeTestFile("show-actual.ts", "aaa\nbbb\nccc\nddd");
@@ -222,7 +222,7 @@ describe("edit_file tool: mismatch now fails instead of blind apply", () => {
 		expect(result.success).toBe(false);
 		expect(result.output).toContain("bbb");
 		expect(result.output).toContain("ccc");
-	}, 30_000);
+	});
 
 	it("succeeds when oldString exactly matches line range", async () => {
 		const path = await writeTestFile("exact.ts", "line1\nline2\nline3\nline4");
@@ -234,7 +234,7 @@ describe("edit_file tool: mismatch now fails instead of blind apply", () => {
 		});
 		expect(result.success).toBe(true);
 		expect(result.output).toContain("Edited");
-	}, 30_000);
+	});
 
 	it("succeeds with fuzzy whitespace match at line range", async () => {
 		const path = await writeTestFile("fuzzy.ts", "line1\n\tconst x = 1;\nline3");
@@ -245,7 +245,7 @@ describe("edit_file tool: mismatch now fails instead of blind apply", () => {
 			lineStart: 2,
 		});
 		expect(result.success).toBe(true);
-	}, 30_000);
+	});
 
 	it("falls back to string match when lineStart is out of range", async () => {
 		const path = await writeTestFile("fallback.ts", "aaa\nbbb\nccc");
@@ -257,7 +257,7 @@ describe("edit_file tool: mismatch now fails instead of blind apply", () => {
 		});
 		expect(result.success).toBe(true);
 		expect(result.output).toContain("string match");
-	}, 30_000);
+	});
 });
 
 describe("edit_file tool: string-based edit", () => {
@@ -270,7 +270,7 @@ describe("edit_file tool: string-based edit", () => {
 		});
 		expect(result.success).toBe(true);
 		expect(result.output).toContain("lineStart not provided");
-	}, 30_000);
+	});
 
 	it("rejects when oldString has multiple matches without lineStart", async () => {
 		const path = await writeTestFile("dupes.ts", "x\nx\nx");
@@ -281,7 +281,7 @@ describe("edit_file tool: string-based edit", () => {
 		});
 		expect(result.success).toBe(false);
 		expect(result.output).toContain("matches");
-	}, 30_000);
+	});
 });
 
 describe("edit_file tool: create new file", () => {
@@ -296,7 +296,7 @@ describe("edit_file tool: create new file", () => {
 		expect(result.output).toContain("Created");
 		const content = await Bun.file(path).text();
 		expect(content).toBe("const x = 1;\n");
-	}, 30_000);
+	});
 
 	it("creates nested directories", async () => {
 		const path = join(TMP, "deep", "nested", "dir", "file.ts");
@@ -306,7 +306,7 @@ describe("edit_file tool: create new file", () => {
 			newString: "hello",
 		});
 		expect(result.success).toBe(true);
-	}, 30_000);
+	});
 });
 
 describe("edit_file tool: error cases", () => {
@@ -318,7 +318,7 @@ describe("edit_file tool: error cases", () => {
 		});
 		expect(result.success).toBe(false);
 		expect(result.output).toContain("File not found");
-	}, 30_000);
+	});
 });
 
 // ════════════════════════════════════════════════════════════
@@ -339,7 +339,7 @@ describe("multi_edit tool: mismatch behavior", () => {
 		expect(result.success).toBe(false);
 		expect(result.output).toContain("old_string not found");
 		expect(result.output).toContain("atomic rollback");
-	}, 30_000);
+	});
 
 	it("succeeds when all edits match exactly", async () => {
 		const path = await writeTestFile("multi-ok.ts", "A\nB\nC\nD\nE");
@@ -352,7 +352,7 @@ describe("multi_edit tool: mismatch behavior", () => {
 		});
 		expect(result.success).toBe(true);
 		expect(result.output).toContain("Applied 2 edits");
-	}, 30_000);
+	});
 
 	it("tracks lineOffset across edits — expansion", async () => {
 		const path = await writeTestFile("multi-offset.ts", "A\nB\nC\nD\nE");
@@ -366,7 +366,7 @@ describe("multi_edit tool: mismatch behavior", () => {
 		expect(result.success).toBe(true);
 		const content = await Bun.file(path).text();
 		expect(content.split("\n")).toEqual(["A", "B1", "B2", "B3", "C", "D1", "E"]);
-	}, 30_000);
+	});
 
 	it("tracks lineOffset across 3 edits — first adds lines", async () => {
 		const path = await writeTestFile("3-shift.ts",
@@ -385,7 +385,7 @@ describe("multi_edit tool: mismatch behavior", () => {
 			"line1", "line2a", "line2b", "line2c", "line3", "line4", "FIVE",
 			"line6", "line7", "EIGHT", "line9", "line10",
 		]);
-	}, 30_000);
+	});
 
 	it("tracks lineOffset across 3 edits — first deletes lines", async () => {
 		const path = await writeTestFile("3-shrink.ts",
@@ -403,7 +403,7 @@ describe("multi_edit tool: mismatch behavior", () => {
 		expect(content.split("\n")).toEqual([
 			"line1", "MERGED", "line4", "FIVE", "line6", "SEVEN", "line8",
 		]);
-	}, 30_000);
+	});
 
 	it("handles out-of-order edits — sorts by lineStart before applying", async () => {
 		const path = await writeTestFile("out-of-order.ts",
@@ -421,7 +421,7 @@ describe("multi_edit tool: mismatch behavior", () => {
 		expect(content.split("\n")).toEqual([
 			"line1", "TWO", "line3", "FOUR", "FOUR-B", "FOUR-C", "line5", "SIX", "SIX-B", "line7", "line8",
 		]);
-	}, 30_000);
+	});
 
 	it("single undo reverts entire multi_edit batch", async () => {
 		const original = "1\n2\n3\n4\n5\n6\n7";
@@ -445,7 +445,7 @@ describe("multi_edit tool: mismatch behavior", () => {
 		expect(undoResult.success).toBe(true);
 		const content = await Bun.file(path).text();
 		expect(content).toBe(original);
-	}, 30_000);
+	});
 });
 
 // ════════════════════════════════════════════════════════════
@@ -540,7 +540,7 @@ describe("stale lineStart: the corruption scenario", () => {
 		const content = await Bun.file(path).text();
 		expect(content).toContain("  return 2;");
 		expect(content).not.toContain("return 99");
-	}, 30_000);
+	});
 
 	it("edit with correct lineStart after re-read succeeds", async () => {
 		const path = await writeTestFile("correct-retry.ts",
@@ -556,7 +556,7 @@ describe("stale lineStart: the corruption scenario", () => {
 		expect(result.success).toBe(true);
 		const content = await Bun.file(path).text();
 		expect(content).toContain("return 99");
-	}, 30_000);
+	});
 });
 
 // ════════════════════════════════════════════════════════════
@@ -572,7 +572,7 @@ describe("CAS: edit_file detects concurrent modification", () => {
 			newString: "edited content",
 		});
 		expect(result.success).toBe(true);
-	}, 30_000);
+	});
 
 	it("edit_file rejects stale content after prior edit", async () => {
 		// Two sequential editFileTool calls trigger intelligence diagnostics + auto-format
@@ -593,7 +593,7 @@ describe("CAS: edit_file detects concurrent modification", () => {
 			newString: "version-C",
 		});
 		expect(r2.success).toBe(false);
-	}, 30_000);
+	});
 
 	it("multi_edit rejects stale content after prior edit", async () => {
 		const path = await writeTestFile("cas-multi.ts", "line1\nline2\nline3");
@@ -610,7 +610,7 @@ describe("CAS: edit_file detects concurrent modification", () => {
 			edits: [{ oldString: "line2", newString: "AGAIN", lineStart: 2 }],
 		});
 		expect(r2.success).toBe(false);
-	}, 30_000);
+	});
 });
 
 // ════════════════════════════════════════════════════════════
@@ -742,7 +742,7 @@ describe("sequential edit_file: all edits persist", () => {
 
 		const content = await Bun.file(path).text();
 		expect(content).toBe("FIRST\nline2\nTHIRD\nline4\nFIFTH");
-	}, 30_000);
+	});
 
 	it("4 sequential edits that shift lines all persist", async () => {
 		const path = await writeTestFile("seq-shift.ts", "A\nB\nC\nD");
@@ -773,7 +773,7 @@ describe("sequential edit_file: all edits persist", () => {
 
 		const content = await Bun.file(path).text();
 		expect(content).toBe("A1\nA2\nBB\nCC\nDD");
-	}, 30_000);
+	});
 });
 
 // ════════════════════════════════════════════════════════════
@@ -798,7 +798,7 @@ describe("multi-tab dispatch: concurrent edits to same file", () => {
 
 		const content = await Bun.file(path).text();
 		expect(content).toBe("HEADER\nbody\nFOOTER");
-	}, 30_000);
+	});
 
 	it("tab A undo after tab B edit — refuses (stale)", async () => {
 		const path = await writeTestFile("dispatch-stale.ts", "v0");
@@ -819,7 +819,7 @@ describe("multi-tab dispatch: concurrent edits to same file", () => {
 		// File unchanged — tab B's work preserved
 		const content = await Bun.file(path).text();
 		expect(content).toBe("v2-B");
-	}, 30_000);
+	});
 
 	it("multi_edit from two tabs — second tab sees first tab's changes", async () => {
 		const path = await writeTestFile("dispatch-multi.ts", "A\nB\nC\nD");
@@ -842,7 +842,7 @@ describe("multi-tab dispatch: concurrent edits to same file", () => {
 
 		const content = await Bun.file(path).text();
 		expect(content).toBe("X\nB\nY\nD");
-	}, 30_000);
+	});
 
 	it("multi_edit CAS catches race between tabs", async () => {
 		const path = await writeTestFile("dispatch-cas.ts", "original");
@@ -863,7 +863,7 @@ describe("multi-tab dispatch: concurrent edits to same file", () => {
 		// File is tab1's version
 		const content = await Bun.file(path).text();
 		expect(content).toBe("tab1-wrote");
-	}, 30_000);
+	});
 });
 
 // ════════════════════════════════════════════════════════════
@@ -887,7 +887,7 @@ describe("multi_edit: error messages communicate atomic rollback", () => {
 		// Verify nothing was written
 		const content = await Bun.file(path).text();
 		expect(content).toBe("A\nB\nC");
-	}, 30_000);
+	});
 
 	it("ambiguous match error says NO edits were applied", async () => {
 		const path = await writeTestFile("msg-ambig.ts", "dup\ndup\nother");
@@ -900,7 +900,7 @@ describe("multi_edit: error messages communicate atomic rollback", () => {
 
 		const content = await Bun.file(path).text();
 		expect(content).toBe("dup\ndup\nother");
-	}, 30_000);
+	});
 
 	it("string-not-found error says NO edits were applied", async () => {
 		const path = await writeTestFile("msg-notfound.ts", "hello\nworld");
@@ -913,7 +913,7 @@ describe("multi_edit: error messages communicate atomic rollback", () => {
 
 		const content = await Bun.file(path).text();
 		expect(content).toBe("hello\nworld");
-	}, 30_000);
+	});
 
 	it("CAS failure error says NO edits were applied", async () => {
 		// Can't easily trigger CAS failure without concurrent writes,
@@ -934,5 +934,5 @@ describe("multi_edit: error messages communicate atomic rollback", () => {
 
 		const content = await Bun.file(path).text();
 		expect(content).toBe("changed-externally");
-	}, 30_000);
+	});
 });

@@ -166,5 +166,5 @@ describe("local API MCP servers", () => {
     const off = await call("/v1/mcp/stub", "PATCH", { scope: "project", disabled: true });
     expect((off.body as unknown as View).servers[0]?.status).toBe("disabled");
     expect((await call("/v1/mcp/stub/reconnect", "POST", {})).status).toBe(409);
-  }, 30_000);
+  });
 });

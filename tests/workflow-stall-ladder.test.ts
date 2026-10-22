@@ -89,7 +89,7 @@ describe("scenario: wheeltags R58, a stalled call walks the recovery ladder (#18
     ]);
     expect(recoveries().map((r) => r.rung)).toEqual(["fresh-session", "other-transport"]);
     expect(recoveries()[1]).toMatchObject({ modelId: "codex/gpt-6-astra", transport: "exec" });
-  }, 30_000);
+  });
 
   test("a call that stalls on every rung stops once with the rungs it tried, and a resume starts a new ladder", async () => {
     let stalling = true;
@@ -133,7 +133,7 @@ describe("scenario: wheeltags R58, a stalled call walks the recovery ladder (#18
       transport: null,
       effort: "medium",
     });
-  }, 30_000);
+  });
 
   test("a driver that stops mid-ladder continues on its rung, not from the first", async () => {
     const { snapshot, seen, recoveries } = await ladderRun((request, calls) => {
@@ -151,7 +151,7 @@ describe("scenario: wheeltags R58, a stalled call walks the recovery ladder (#18
       [true, "exec"],
     ]);
     expect(recoveries().map((r) => r.rung)).toEqual(["fresh-session", "other-transport"]);
-  }, 30_000);
+  });
 
   test("a route with no rung to try keeps the provider wait", async () => {
     let stalled = false;
@@ -179,7 +179,7 @@ describe("scenario: wheeltags R58, a stalled call walks the recovery ladder (#18
     const events = fixture.service.store.events(run.runId, 0, 10_000);
     expect(events.some((e) => e.type === "attempt.recovery")).toBe(false);
     expect(events.some((e) => e.type === "run.state_changed" && e.payload.reason === "provider")).toBe(true);
-  }, 30_000);
+  });
 });
 
 describe("recovery ladder rungs", () => {

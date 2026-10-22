@@ -408,7 +408,7 @@ describe("V2-11 revising a started run's definition", () => {
     const snapshot = await drive(run.runId);
     expect(snapshot.status).toBe("blocked");
     expect(service.store.run(run.runId).reason).toBe("input_changed");
-  }, 30000);
+  });
 
   test("a revision that drops the current stage is rejected with the reasons", async () => {
     const { define, start, drive, candidate, service } = setup();
@@ -430,7 +430,7 @@ describe("V2-11 revising a started run's definition", () => {
     expect(fault.code).toBe("INVALID_DEFINITION");
     expect(fault.message).toContain("The current stage approve is not in the revised definition");
     expect(service.store.run(run.runId).definition_json).toBe(before);
-  }, 30000);
+  });
 
   test("changed auto-approval limits need the operator's confirmation", async () => {
     const { define, start, drive, candidate, revise, service } = setup();
@@ -459,7 +459,7 @@ describe("V2-11 revising a started run's definition", () => {
     await revise(run.runId, staged.candidateHash);
     expect(JSON.parse(service.store.run(run.runId).policy_json).autoApproval).not.toBeNull();
     expect(service.store.artifacts(run.runId).some((a) => a.kind === "policy-revision")).toBe(true);
-  }, 30000);
+  });
 
   test("a run of a schema 1 workflow keeps its definition", async () => {
     const { start, candidate } = setup();

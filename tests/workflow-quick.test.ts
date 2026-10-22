@@ -57,7 +57,7 @@ describe("quick workflow", () => {
     expect(service.store.artifacts(run.runId).map((a) => a.logical_path)).toEqual(
       expect.arrayContaining(["plan.md", "tasks.json"]),
     );
-  }, 30000);
+  });
 
   test("the plan approval says why it waits for a person and how to approve automatically", async () => {
     const { start, service } = quickFixture();
@@ -67,14 +67,14 @@ describe("quick workflow", () => {
     const body = JSON.parse(approval?.body_json ?? "{}") as { autoApproval?: { declined?: string[] } };
     expect(body.autoApproval?.declined).toEqual([humanApprovalReason("quick", "approve")]);
     expect(body.autoApproval?.declined?.[0]).toContain("baked workflow define ID --from quick");
-  }, 30000);
+  });
 
   test("a definition without the publish field still writes its documents to specs/", async () => {
     const { start, complete, root } = quickFixture();
     const run = await start("quick-fix");
     expect((await complete(run.runId)).status).toBe("completed");
     expect(existsSync(join(root, "specs", "fixture", "plan.md"))).toBe(true);
-  }, 30000);
+  });
 
   test("the quick planner gets a budget sized by the files the request names", async () => {
     const { start, service, requests } = quickFixture();
@@ -85,7 +85,7 @@ describe("quick workflow", () => {
     expect(plan?.maxSteps).toBe(8);
     expect(plan?.maxTokens).toBe(8 * 20_000);
     expect(plan?.prompt).toContain('"researchScope":{"maxSteps":8,"namedPaths":["value.txt"]}');
-  }, 30000);
+  });
 
   test("a generic planner keeps its limits when the definition has no research", async () => {
     const { start, service, requests } = quickFixture();
@@ -96,7 +96,7 @@ describe("quick workflow", () => {
     expect(plan?.maxSteps).toBe(24);
     expect(plan?.maxTokens).toBeUndefined();
     expect(plan?.prompt).not.toContain('"researchScope":{');
-  }, 30000);
+  });
 
   test("the quick planner runs on the $fast class, which is the run model until it is configured", () => {
     if (!quickPlanner) throw new Error("quick-planner missing");
@@ -138,7 +138,7 @@ describe("baked quick", () => {
     await start("quick");
     expect(quickRunArgs(service, parseWorkflowArgs(["quick", "fixture"])).flags.feature).toBe("fixture-2");
     expect(quickRunArgs(service, parseWorkflowArgs(["quick", "x", "--feature", "mine"])).flags.feature).toBe("mine");
-  }, 30000);
+  });
 
   test("a project's quickWorkflow replaces the preset", () => {
     const { root, executor, policy } = quickFixture();

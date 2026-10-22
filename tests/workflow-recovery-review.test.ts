@@ -242,7 +242,7 @@ test("an orphaned descendant of an exited command still blocks recovery and leas
     await Bun.sleep(100);
   }
   expect(commandMayBeRunning(service.store, run.runId)).toBe(false);
-}, 30000);
+});
 
 // Windows has no readable process environment, so a descendant there is linked only by parent PID.
 test.skipIf(process.platform === "win32")("cancelling a command also stops a descendant that left its process group", async () => {
@@ -277,7 +277,7 @@ test.skipIf(process.platform === "win32")("cancelling a command also stops a des
   } finally {
     for (const pid of started) try { process.kill(pid, "SIGKILL"); } catch {}
   }
-}, 30000);
+});
 
 test("the scope marker is found in the environment column of macOS ps", () => {
   const scope = "3f1c";
