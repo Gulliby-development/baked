@@ -36,7 +36,7 @@ import { criterionCases, missingCases, writtenTestPaths } from "../src/core/veri
 import { reproExecutables } from "../src/core/verification/repro.js";
 import { entryPointCommand } from "../src/core/verification/entry-points.js";
 import { noteSiblingFindings, ownerOfFinding } from "../src/core/verification/initiative-ownership.js";
-import { noTestsCollected } from "../src/core/verification/convergence.js";
+import { missingPlannedPaths, noTestsCollected } from "../src/core/verification/convergence.js";
 import { exitStatus, timedOutFailure } from "../src/core/verification/check-runner.js";
 import { noTestsCollected } from "../src/core/verification/convergence.js";
 import { baselineRegression, diagnosticCount, failureSignature, testCount, testsRan } from "../src/core/verification/output-counts.js";
@@ -2479,6 +2479,23 @@ describe.skipIf(!toolchains)("gate matrix: toolchains", () => {
     },
     300_000,
   );
+
+  // #1913, rpn 09a1c786: a required gate names `src tests` before the task that writes `tests/` ran.
+  // The real tools' "path does not exist" output names the folder the later task creates.
+  for (const [tool, args] of [["ruff", ["check", "src", "tests"]], ["black", ["--check", "src", "tests"]]] as const)
+    (process.env.CI || available([[tool, "--version"]]) ? cell : (s: Stack, name: string) => test.skip(`${name} (no toolchain)`, () => {}))(
+      "python",
+      `python: ${tool} on src and a missing tests folder names the folder the test task creates`,
+      async () => {
+        const root = project({ "pyproject.toml": "[project]\nname = 'rpn'\nversion = '0.1.0'\n", "src/rpn/core.py": "x = 1\n" });
+        const check: Check = { id: tool, executable: tool, args: [...args], cwd: ".", timeoutMs: 60_000, required: true, scope: "feature", envNames: [], writes: [] };
+        const result = await executeGate(root, check, new AbortController().signal);
+        expect(result.status).toBe("failed");
+        const tasks = [{ writes: [{ path: "src/rpn/core.py", action: "create" as const }] }, { writes: [{ path: "tests/test_core.py", action: "create" as const }] }];
+        expect(missingPlannedPaths(result.outputTail, tasks)).toEqual(["tests/test_core.py"]);
+      },
+      300_000,
+    );
 
   // #1837, R57 zonevet: a test appended to a file that was not formatted before the run. The range
   // check fails on the appended lines only, its fixer formats them, and the old lines stay as they were.
