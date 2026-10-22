@@ -48,6 +48,11 @@ export const STOP_REASONS = {
     modes: STOP_MODES,
     defaultMode: "enforce",
   },
+  "initiative-dollar-share": {
+    label: "An initiative's spare dollars are below a starting feature's priced low estimate",
+    modes: STOP_MODES,
+    defaultMode: "shadow",
+  },
   cost: {
     label: "Spent and reserved dollars reach the cost cap",
     modes: ENFORCED,

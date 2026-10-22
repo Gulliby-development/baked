@@ -36,7 +36,7 @@ import { criterionCases, missingCases, writtenTestPaths } from "../src/core/veri
 import { reproExecutables } from "../src/core/verification/repro.js";
 import { entryPointCommand } from "../src/core/verification/entry-points.js";
 import { noteSiblingFindings, ownerOfFinding } from "../src/core/verification/initiative-ownership.js";
-import { noTestsCollected } from "../src/core/verification/convergence.js";
+import { missingPlannedPaths, noTestsCollected } from "../src/core/verification/convergence.js";
 import { exitStatus, timedOutFailure } from "../src/core/verification/check-runner.js";
 import { noTestsCollected } from "../src/core/verification/convergence.js";
 import { baselineRegression, diagnosticCount, failureSignature, testCount, testsRan } from "../src/core/verification/output-counts.js";
@@ -1089,7 +1089,7 @@ describe("gate matrix: format-written check on a dirty repository (#1837)", () =
   // An edited file: only the lines the run changed against its content before the run (#1837, R57
   // zonevet), by a formatter that formats a range; none where the formatter cannot.
   const edited = (files: Record<string, string>, path: string, before: string) =>
-    formatWrittenChecks(project(files), [], [{ path, action: "modify" }], (c) => `/usr/bin/${c}`, (p) => (p === path ? before : undefined)).map((c) => [
+    formatWrittenChecks(project(files), [], [{ path, action: "modify" }], (c) => `/usr/bin/${c}`, (p) => (p === path ? before : undefined), () => true).map((c) => [
       c.id,
       [c.executable, ...c.args].join(" "),
       c.fix ? [c.fix.executable, ...c.fix.args].join(" ") : null,
@@ -1098,8 +1098,9 @@ describe("gate matrix: format-written check on a dirty repository (#1837)", () =
   cell("python", "ruff, edited file: one --range check per changed block, fixer ruff format --range", () => {
     const files = { "pyproject.toml": "[project]\nname = 'p'\n[tool.ruff]\n", "t/test_a.py": "x=1\nY\nz=2\nW\n" };
     expect(edited(files, "t/test_a.py", "x=1\nz=2\n")).toEqual([
-      ["ruff-format-lines", "ruff format --check --range=2-3 t/test_a.py", "ruff format --range=2-3", ["t/test_a.py"]],
-      ["ruff-format-lines-2", "ruff format --check --range=4-5 t/test_a.py", "ruff format --range=4-5", ["t/test_a.py"]],
+      // The last block first: fixing it never moves the blocks above it.
+      ["ruff-format-lines", "ruff format --check --range=4-5 t/test_a.py", "ruff format --range=4-5", ["t/test_a.py"]],
+      ["ruff-format-lines-2", "ruff format --check --range=2-3 t/test_a.py", "ruff format --range=2-3", ["t/test_a.py"]],
     ]);
   });
   cell("python", "ruff, edited file: every changed block gets its check, the ninth too", () => {
@@ -1108,7 +1109,7 @@ describe("gate matrix: format-written check on a dirty repository (#1837)", () =
     const files = { "pyproject.toml": "[project]\nname = 'p'\n[tool.ruff]\n", "t/test_a.py": after };
     const checks = edited(files, "t/test_a.py", before);
     expect(checks).toHaveLength(9);
-    expect(checks.at(-1)).toEqual(["ruff-format-lines-9", "ruff format --check --range=18-19 t/test_a.py", "ruff format --range=18-19", ["t/test_a.py"]]);
+    expect(checks[0]).toEqual(["ruff-format-lines", "ruff format --check --range=18-19 t/test_a.py", "ruff format --range=18-19", ["t/test_a.py"]]);
   });
   cell("python", "black, edited file: one check with every --line-ranges", () => {
     const files = { "pyproject.toml": "[project]\nname = 'p'\n[tool.black]\n", "p/a.py": "x=1\nY\nz=2\nW\n" };
@@ -1121,6 +1122,20 @@ describe("gate matrix: format-written check on a dirty repository (#1837)", () =
     expect(edited(files, "src/a.js", "old\n")).toEqual([
       ["format-lines", "npx prettier --check --range-start=4 --range-end=11 src/a.js", "npx prettier --write --range-start=4 --range-end=11", ["src/a.js"]],
     ]);
+  });
+  // A formatter release without the range flag would fail every range check and its fixer (#1907).
+  cell("python", "ruff and black without their range flag: an edited file is not checked, a new file still is", () => {
+    const asked: string[] = [];
+    const without = (files: Record<string, string>, path: string, before: string) =>
+      formatWrittenChecks(project(files), [], [{ path, action: "modify" }, { path: "t/test_new.py", action: "create" }], (c) => `/usr/bin/${c}`, (p) => (p === path ? before : undefined), (command, _, flag) => {
+        asked.push(`${[command.executable, ...command.args].join(" ")} ${flag}`);
+        return false;
+      }).map((c) => c.id);
+    const ruff = { "pyproject.toml": "[project]\nname = 'p'\n[tool.ruff]\n", "t/test_a.py": "x=1\nY\n", "t/test_new.py": "x=1\n" };
+    expect(without(ruff, "t/test_a.py", "x=1\n")).toEqual(["ruff-format-written"]);
+    const black = { "pyproject.toml": "[project]\nname = 'p'\n[tool.black]\n", "t/test_a.py": "x=1\nY\n", "t/test_new.py": "x=1\n" };
+    expect(without(black, "t/test_a.py", "x=1\n")).toEqual(["black-written"]);
+    expect(asked).toEqual(["ruff format --help --range", "black --help --line-ranges"]);
   });
   cell("bun", "biome, dprint, gofmt and dotnet format take no range: an edited file is not checked", () => {
     expect(edited({ "package.json": pkg, "bun.lock": "", "biome.json": "{}", "src/a.ts": "a\nb\n" }, "src/a.ts", "a\n")).toEqual([]);
@@ -2464,6 +2479,23 @@ describe.skipIf(!toolchains)("gate matrix: toolchains", () => {
     },
     300_000,
   );
+
+  // #1913, rpn 09a1c786: a required gate names `src tests` before the task that writes `tests/` ran.
+  // The real tools' "path does not exist" output names the folder the later task creates.
+  for (const [tool, args] of [["ruff", ["check", "src", "tests"]], ["black", ["--check", "src", "tests"]]] as const)
+    ((tool === "ruff" && process.env.CI) || available([[tool, "--version"]]) ? cell : (s: Stack, name: string) => test.skip(`${name} (no toolchain)`, () => {}))(
+      "python",
+      `python: ${tool} on src and a missing tests folder names the folder the test task creates`,
+      async () => {
+        const root = project({ "pyproject.toml": "[project]\nname = 'rpn'\nversion = '0.1.0'\n", "src/rpn/core.py": "x = 1\n" });
+        const check: Check = { id: tool, executable: tool, args: [...args], cwd: ".", timeoutMs: 60_000, required: true, scope: "feature", envNames: [], writes: [] };
+        const result = await executeGate(root, check, new AbortController().signal);
+        expect(result.status).toBe("failed");
+        const tasks = [{ writes: [{ path: "src/rpn/core.py", action: "create" as const }] }, { writes: [{ path: "tests/test_core.py", action: "create" as const }] }];
+        expect(missingPlannedPaths(result.outputTail, tasks)).toEqual(["tests/test_core.py"]);
+      },
+      300_000,
+    );
 
   // #1837, R57 zonevet: a test appended to a file that was not formatted before the run. The range
   // check fails on the appended lines only, its fixer formats them, and the old lines stay as they were.

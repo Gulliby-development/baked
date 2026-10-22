@@ -2,6 +2,7 @@ import { z } from "zod";
 import { ROUTING_ARTIFACT, RoutingRecordSchema } from "../llm/model-routing.js";
 import { renderSpec } from "../specs/render.js";
 import { workspacePath } from "../specs/validate.js";
+import { decidedChecks } from "../verification/host-passed.js";
 import { ROWS_ARTIFACT, type RowsArtifact } from "./acceptance-rows.js";
 import { BUDGET_PRESETS, type BudgetPresetId, budgetUsage } from "./budget.js";
 import { CHECK_PREFLIGHT_ARTIFACT, type CheckSmoke } from "./check-preflight.js";
@@ -238,6 +239,8 @@ export interface CheckDetail {
   durationMs: number;
   runs: number;
   outputTail: string | null;
+  /** Why the host counts this failed run as passed (no test collected, baseline debt), #1894. */
+  hostPassed?: string;
 }
 
 export interface EstimateView {
@@ -446,11 +449,11 @@ export function changesOf(store: WorkflowStore, runId: string): FileChange[] {
   });
 }
 function checkDetailsOf(store: WorkflowStore, runId: string): CheckDetail[] {
-  const rows = store.checkDetails(runId);
+  const rows = decidedChecks(store, runId, store.checkDetails(runId));
   const latest = new Map<string, CheckDetail>();
   for (const row of rows) {
     let outputTail: string | null = null;
-    if (row.status !== "passed")
+    if (row.status !== "passed" || row.hostPassed)
       try {
         const body = JSON.parse(store.readArtifact(runId, row.artifact_id)) as { output?: string };
         outputTail =
@@ -467,6 +470,7 @@ function checkDetailsOf(store: WorkflowStore, runId: string): CheckDetail[] {
       durationMs: row.duration_ms,
       runs: (latest.get(row.check_id)?.runs ?? 0) + 1,
       outputTail,
+      ...(row.hostPassed ? { hostPassed: row.hostPassed } : {}),
     });
   }
   return [...latest.values()];
@@ -556,7 +560,7 @@ export function readWorkflowView(service: NativeWorkflowService, runId: string) 
       stages,
       budget: budgetOf(store, row),
       tasks: store.tasks(runId),
-      checks: store.checks(runId),
+      checks: decidedChecks(store, runId, store.checks(runId)),
       checkDetails: checkDetailsOf(store, runId),
       changes: changesOf(store, runId),
       configuredChecks: (JSON.parse(row.policy_json) as RunPolicy).checks.map((c) => c.id),

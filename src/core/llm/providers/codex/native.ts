@@ -16,6 +16,7 @@ import { imageUrl, promptImages } from "../prompt-images.js";
 import { type CodexAppServerConnection, startCodexAppServerSession } from "./client.js";
 import {
   codexAdapterConfig,
+  codexRecovery,
   codexWebSearch,
   collectWarnings,
   getFunctionTools,
@@ -88,6 +89,8 @@ export interface CodexNativeRequest {
   effort?: string;
   /** Codex's own web search is on for the thread (`providerOptions.codex.webSearch`, #1239). */
   webSearch?: boolean;
+  /** Start a new thread instead of continuing one (`providerOptions.codex.freshThread`, #1877). */
+  freshThread?: boolean;
 }
 
 /**
@@ -153,10 +156,12 @@ export function buildCodexNativeRequest(
   }));
   const effort = cliReasoningEffort(options.providerOptions, "codex");
   const webSearch = codexWebSearch(options.providerOptions);
+  const { freshThread } = codexRecovery(options.providerOptions);
   return {
     modelId,
     ...(effort ? { effort } : {}),
     ...(webSearch ? { webSearch } : {}),
+    ...(freshThread ? { freshThread } : {}),
     instructions: [
       webSearch ? `${ADAPTER_PREAMBLE}\n${WEB_SEARCH_NOTE}` : ADAPTER_PREAMBLE,
       ...system,
@@ -517,6 +522,16 @@ export class CodexAppServerSessions {
     for (const thread of [...this.threads]) {
       if (thread.modelId !== request.modelId || thread.instructions !== request.instructions)
         continue;
+      // A stalled call's recovery runs each step on a new thread: the thread this conversation
+      // would continue, suspended at a tool call or idle, is dropped instead (#1877).
+      if (request.freshThread) {
+        if (
+          thread.state !== "running" &&
+          thread.keys.every((key, index) => key === request.keys[index])
+        )
+          this.dropThread(connection, thread);
+        continue;
+      }
       if (thread.toolsKey !== toolsKey || thread.webSearch !== (request.webSearch === true))
         continue;
       if (thread.state === "running" || thread.state === "broken") continue;
@@ -1003,7 +1018,8 @@ async function collectStep(stream: ReadableStream<LanguageModelV2StreamPart>) {
 
 /**
  * The Codex model over app-server with native tool calls and streaming; falls
- * back to `fallback` (one `codex exec` per step) when app-server cannot serve a call.
+ * back to `fallback` (one `codex exec` per step) when app-server cannot serve a call,
+ * and uses it at once for a call whose recovery asks for the exec transport (#1877).
  */
 export function createCodexNativeLanguageModel(
   modelId: string,
@@ -1016,6 +1032,7 @@ export function createCodexNativeLanguageModel(
     modelId,
     supportedUrls: {},
     async doStream(options) {
+      if (codexRecovery(options.providerOptions).exec) return fallback.doStream(options);
       const stream = await sessions.openStep(
         buildCodexNativeRequest(modelId, options),
         options.abortSignal,
@@ -1034,6 +1051,7 @@ export function createCodexNativeLanguageModel(
       };
     },
     async doGenerate(options) {
+      if (codexRecovery(options.providerOptions).exec) return fallback.doGenerate(options);
       const stream = await sessions.openStep(
         buildCodexNativeRequest(modelId, options),
         options.abortSignal,

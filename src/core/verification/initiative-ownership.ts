@@ -72,14 +72,39 @@ export function specBoundaryProblems(spec: Spec, bounds: Bounds): string[] {
       /\b(tests? (?:exist|cover|are (?:written|delivered))|coverage|documentation|docs)\b/i.test(
         text,
       );
-    return outside ||
-      (criterion.property && !canHold(current.paths, "test")) ||
-      (kind && delivery && !canHold(current.paths, kind))
+    // A `property` flag in a feature that owns no test path is cleared by the host instead
+    // (`clearBoundaryProperties`, #1891): the criterion's behavior is still this feature's.
+    return outside || (kind && delivery && !canHold(current.paths, kind))
       ? [
           `Criterion ${criterion.id} requires evidence outside ${current.id}'s boundary. Keep only this feature's verifiable behavior; assign the test or documentation criterion to its owning initiative feature.`,
         ]
       : [];
   });
+}
+
+/** Whether the run's initiative feature has no path a test file can sit in (`testedBy` holds them). */
+export function ownsNoTests(bounds: Bounds): boolean {
+  const current = bounds?.features.find((feature) => feature.id === bounds.featureId);
+  return !!current && !canHold(current.paths, "test");
+}
+
+/**
+ * The criteria whose `property` flag the host clears because the feature owns no test path, so
+ * no property test can be written in it (its tests belong to `testedBy`). The criteria stay
+ * automated: their behavior is the feature's. wheeltags (bench round 59) had the specs of names
+ * and targets rejected for it after they were written, three and two calls for one spec (#1891).
+ */
+export function clearBoundaryProperties(
+  spec: Spec,
+  bounds: Bounds,
+): { spec: Spec; cleared: string[] } {
+  if (!ownsNoTests(bounds)) return { spec, cleared: [] };
+  const cleared = spec.criteria.filter((c) => c.property).map((c) => c.id);
+  if (!cleared.length) return { spec, cleared };
+  return {
+    spec: { ...spec, criteria: spec.criteria.map(({ property: _, ...c }) => c) },
+    cleared,
+  };
 }
 
 /** A criterion is deferred only when every finding explaining its failure has an owner. */

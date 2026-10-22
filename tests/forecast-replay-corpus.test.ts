@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join, relative } from "node:path";
 import { callCostRate, costRate } from "../src/core/workflows/budget.js";
-import { shareShortfall } from "../src/core/workflows/initiatives/service.js";
+import { costGrowthLimit, dollarShortfall, shareShortfall } from "../src/core/workflows/initiatives/service.js";
 import { forecastSamples } from "../src/core/workflows/stage-price.js";
 import { planApprovalDecision } from "../src/core/workflows/auto-approval.js";
 import { CAPACITY_PROBE } from "../src/core/workflows/sizing.js";
@@ -10,7 +10,7 @@ import { type CallRate, openTrace, type PlanPriceReplay, replayInitiativeStarts,
 
 // #1649, #1715: every recorded bench-round trace replays through the current host decisions: the
 // forecast and cap code, the per-call cost cap (#1740), the first-response deadline of each model
-// call, the test task split of each sizing report (#1789), and the initiative share gate (#1707), asked both on its recorded inputs and with each start
+// call, the test task split of each sizing report (#1789), each usage-policy refusal (#1895), and the initiative share gate (#1707), asked both on its recorded inputs and with each start
 // rewound and recomputed, and the plan auto-approval on the run state it was asked with (#1707). A
 // stop, cap growth, park or approval decision the recorded run did not make fails the suite, unless
 // accepted.json lists it for that run or initiative with the reason: the pull request that changes
@@ -23,6 +23,8 @@ interface Accepted {
   newFirstByteStops?: number;
   newCostStops?: number;
   newTestSplits?: number;
+  newRecoveries?: number;
+  newPolicyStops?: number;
   newShareStops?: number;
   newStartStops?: number;
   newApprovalDeclines?: number;
@@ -69,6 +71,8 @@ describe("bench-round traces replay without new forecast stops or growth (#1649)
           newFirstByteStops: run.newFirstByteStops,
           newCostStops: run.newCostStops,
           newTestSplits: run.newTestSplits,
+          newRecoveries: run.newRecoveries,
+          newPolicyStops: run.newPolicyStops,
         }).toEqual({
           run: run.runId,
           newStops: allowed?.newStops ?? 0,
@@ -76,6 +80,8 @@ describe("bench-round traces replay without new forecast stops or growth (#1649)
           newFirstByteStops: allowed?.newFirstByteStops ?? 0,
           newCostStops: allowed?.newCostStops ?? 0,
           newTestSplits: allowed?.newTestSplits ?? 0,
+          newRecoveries: allowed?.newRecoveries ?? 0,
+          newPolicyStops: allowed?.newPolicyStops ?? 0,
         });
       }
       // Run states before R52 counted the host's own test splits in `hostSplitTasks`, which the
@@ -184,6 +190,36 @@ describe("initiative starts replay on rewound traces (#1707)", () => {
     const ratios = replay!.starts.filter((b) => b.forecastUsd !== null).map((b) => b.forecastUsd! / replay!.finalUsd!);
     expect(Math.max(...ratios)).toBeLessThan(1.6);
     expect(replay?.newStartStops).toBe(0);
+  }, 120000);
+
+  test("#1890: R59 wheeltags prices its waiting features at its own stage mix, and pick-command could grow past where it stopped", () => {
+    // R59's accepted features paid $1.95 per million tokens. Their stage rates at the history's
+    // stage weights say $2.67 at pick-command's start, so the waiting features reserved too much:
+    // pick-command started with $2.87 to grow into (this replay of main says $1.33) and stopped at
+    // its $3.16 ceiling one corrective short. dead-command and expand-command then started on
+    // what was left.
+    const seen = new Map<string, { view: Parameters<typeof shareShortfall>[0]; feature: Parameters<typeof shareShortfall>[1] }>();
+    const [replay] = replayInitiativeStarts(join(ROOT, "R59", "wheeltags.sqlite.gz"), {
+      gate: (view, feature) => {
+        seen.set(feature.id, { view, feature });
+        return shareShortfall(view, feature);
+      },
+    });
+    expect(replay?.newStartStops).toBe(0);
+    const pick = seen.get("pick-command")!;
+    const rate = pick.feature.needUsd!.low / pick.feature.need!.low;
+    expect(rate * 1e6).toBeGreaterThan(1.8);
+    expect(rate * 1e6).toBeLessThan(2.1);
+    expect(costGrowthLimit(pick.view, "pick-command")!).toBeGreaterThan(3.16);
+    expect(dollarShortfall(pick.view, pick.feature)).toBeNull();
+    // The two later starts are short at that price: in shadow, the default, they start and record
+    // a would-stop; enforced, they wait for an extend.
+    for (const id of ["dead-command", "expand-command"]) {
+      const start = seen.get(id)!;
+      expect(start.view.budget.cost.shareMode).toBe("shadow");
+      expect(dollarShortfall(start.view, start.feature)).toStartWith(`The shared dollar budget is short: ${id} has $`);
+      expect(replay?.starts.find((b) => b.featureId === id)?.replayed).toBe("pass");
+    }
   }, 120000);
 
   test("the rewind sees only what existed at each start, its history stores included", () => {
@@ -316,6 +352,18 @@ describe("test task splits replay on recorded sizing reports (#1789)", () => {
     const path = join(ROOT, "R52/url-shortener.sqlite.gz");
     expect(replayTrace(path, { testSplit: () => true }).runs.reduce((n, r) => n + r.newTestSplits, 0)).toBeGreaterThan(0);
     expect(replayTrace(path).runs.reduce((n, r) => n + r.newTestSplits, 0)).toBe(0);
+  }, 120000);
+
+  test("R56 hdrlens: the stalled analyze call that waited for the provider now climbs the recovery ladder (#1877)", () => {
+    const path = join(ROOT, "R56/hdrlens.sqlite.gz");
+    // Before #1877 a stall had no ladder: the replay with no rung matches the recording.
+    const before = replayTrace(path, { stallRule: () => null }).runs.flatMap((r) => r.stallLadder);
+    expect(before.length).toBeGreaterThan(0);
+    expect(before.every((b) => b.recorded === "none" && b.replayed === "none")).toBe(true);
+    const now = replayTrace(path).runs.flatMap((r) => r.stallLadder);
+    expect(now.map((b) => [b.stage, b.model, b.replayed])).toEqual([
+      ["analyze", "codex/gpt-6.1-sol", "fresh-session"],
+    ]);
   }, 120000);
 });
 

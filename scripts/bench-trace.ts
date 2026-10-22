@@ -79,13 +79,18 @@ if (command === "export" && args.length === 2) {
             `new stops ${run.newStops}, new growth ${run.newGrowth}, stops removed ${run.removedStops}, ` +
             `first-response stops ${run.newFirstByteStops} of ${run.firstByte.length} calls, ` +
             `cost-cap refusals ${run.newCostStops} of ${run.costCap.length} attempts, ` +
-            `new test splits ${run.newTestSplits} of ${run.testSplits.length} test tasks` +
+            `new test splits ${run.newTestSplits} of ${run.testSplits.length} test tasks, ` +
+            `new recovery rungs ${run.newRecoveries} of ${run.stallLadder.length} stalls` +
             (ratios ? `, forecast/final ${ratios}` : ""),
         );
         for (const b of run.boundaries.filter((b) => b.recorded !== b.replayed))
           console.log(
             `    ${new Date(b.at).toISOString()} ${b.attemptId}: recorded ${b.recorded}, now ${b.replayed} ` +
               `(forecast ${usd(b.projectedUsd)}, ceiling ${usd(b.ceilingUsd)}, spent ${usd(b.spentUsd)})`,
+          );
+        for (const b of run.stallLadder.filter((b) => b.recorded !== b.replayed))
+          console.log(
+            `    stall ${b.attemptId} (${b.stage ?? "?"} on ${b.model}): recorded ${b.recorded}, now ${b.replayed}`,
           );
         for (const b of run.costCap.filter((b) => b.replayed === "stop"))
           console.log(

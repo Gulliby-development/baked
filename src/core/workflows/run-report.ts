@@ -6,6 +6,8 @@
 
 import type { z } from "zod";
 import { modelVendor } from "../llm/model-vendor.js";
+import { POLICY_REFUSALS_DIR } from "../llm/policy-refusal.js";
+import { decidedChecks } from "../verification/host-passed.js";
 import { deferredOwners, ownerOfFinding } from "../verification/initiative-ownership.js";
 import {
   type BaselineCount,
@@ -224,6 +226,16 @@ function reproColumn(body: Partial<Finding>, outcomes: Map<string, string>): str
   return body.noRepro ? `none: ${body.noRepro}` : "unverified";
 }
 
+/** An attempt a provider refused under its usage policy (#1895), as the scheduler records it. */
+interface PolicyRefusalRecord {
+  attemptId: string;
+  taskId?: string;
+  profile: string;
+  model: string;
+  usedTokens: number | null;
+  message: string;
+}
+
 function collect(store: WorkflowStore, runId: string) {
   return store.readTransaction(() => {
     const run = store.run(runId);
@@ -254,7 +266,12 @@ function collect(store: WorkflowStore, runId: string) {
       }
     };
     const amendments: SpecAmendment[] = [];
+    const policyRefusals: PolicyRefusalRecord[] = [];
     for (const artifact of store.artifacts(runId)) {
+      if (artifact.logical_path.startsWith(POLICY_REFUSALS_DIR)) {
+        const record = parse<PolicyRefusalRecord | null>(readQuietly(artifact.id), null);
+        if (record) policyRefusals.push(record);
+      }
       if (/^tasks\/[^/]+\/selection\.json$/.test(artifact.logical_path)) {
         const record = parse<SelectionRecord | null>(readQuietly(artifact.id), null);
         if (record) selections.push(record);
@@ -300,13 +317,22 @@ function collect(store: WorkflowStore, runId: string) {
     }
     const checks = new Map<
       string,
-      { status: string; validity: string; runs: number; ms: number; tests: TestsCount | null }
+      {
+        status: string;
+        validity: string;
+        runs: number;
+        ms: number;
+        tests: TestsCount | null;
+        hostPassed?: string;
+      }
     >();
     // The evidence of each check's last passing run, whose output carries its test count.
     const lastPassed = new Map<string, string>();
-    for (const row of store.checkDetails(runId)) {
+    // A failed run the host counts as passed reads passed, as acceptance has it (#1894).
+    for (const row of decidedChecks(store, runId, store.checkDetails(runId))) {
       const known = checks.get(row.check_id);
       checks.set(row.check_id, {
+        ...(row.hostPassed ? { hostPassed: row.hostPassed } : {}),
         status: row.status,
         validity: row.validity,
         runs: (known?.runs ?? 0) + 1,
@@ -403,6 +429,7 @@ function collect(store: WorkflowStore, runId: string) {
       selections,
       candidates,
       amendments,
+      policyRefusals,
       settled: settledConflicts(store, runId),
       outcomes: store.criticOutcomes(runId),
       usage: stagesInRunOrder(store, runUsage(store, runId)),
@@ -865,7 +892,7 @@ function render(facts: Facts, cap: number): string {
         ["Check", "Status", "Validity", "Runs", "Time", ...(counted ? ["Tests"] : [])],
         facts.checks.map((c) => [
           code(c.id),
-          c.status,
+          c.hostPassed ? "passed (by the host)" : c.status,
           c.validity,
           c.runs,
           duration(c.ms),
@@ -875,6 +902,8 @@ function render(facts: Facts, cap: number): string {
       ),
       "",
     );
+    for (const c of facts.checks)
+      if (c.hostPassed) out.push(`${code(c.id)} failed and counts as passed: ${c.hostPassed}.`, "");
     const added = facts.checks.flatMap((c) =>
       c.tests && c.tests.before !== null ? [c.tests.after - c.tests.before] : [],
     );
@@ -1157,6 +1186,21 @@ function render(facts: Facts, cap: number): string {
   );
   const interrupted = interruptedTokensLine(usage.attempts);
   if (interrupted) out.push(interrupted, "");
+  if (facts.policyRefusals.length) {
+    const tokens = facts.policyRefusals.reduce((sum, r) => sum + (r.usedTokens ?? 0), 0);
+    out.push(
+      `Refused under the provider's usage policy: ${facts.policyRefusals.length} attempts, ${count(tokens)} tokens.`,
+      "",
+      ...list(
+        facts.policyRefusals.map(
+          (r) =>
+            `- ${r.taskId ? `task ${r.taskId}` : r.profile} on ${code(r.model)}: ${cell(r.message.slice(0, 300))}`,
+        ),
+        cap,
+      ),
+      "",
+    );
+  }
   if (usage.stages.length)
     out.push(
       ...table(

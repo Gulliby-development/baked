@@ -84,6 +84,19 @@ export function reproExecutables(checks: readonly { executable: string }[]): str
 }
 
 /**
+ * Removes a scratch copy a program the host ran worked in. On Windows a program stopped at the
+ * timeout can hold its directory for a moment (EBUSY): removal is retried, and a directory that
+ * stays locked is left to the temp cleanup instead of replacing the run's result with the error.
+ */
+export function removeScratch(path: string): void {
+  try {
+    rmSync(path, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+  } catch {
+    // The result already stands; a leftover temp directory costs nothing.
+  }
+}
+
+/**
  * The environment of a repro: the safe environment, plus `PYTHONPATH` for a Python project with
  * a `src` layout, so `python -c "import pkg"` finds the package without an install (endfix
  * 2295dbbd: "repro failed to import endfix"; a check cannot install, and a reviewer must not).
@@ -219,7 +232,7 @@ export async function runRepro(
       ...(repro.stdin !== undefined ? { stdin: repro.stdin } : {}),
     });
   } catch (error) {
-    if (files) rmSync(files, { recursive: true, force: true });
+    if (files) removeScratch(files);
     options.signal.throwIfAborted();
     return {
       status: "inconclusive",
@@ -228,7 +241,7 @@ export async function runRepro(
       output: "",
     };
   }
-  if (files) rmSync(files, { recursive: true, force: true });
+  if (files) removeScratch(files);
   const output = result.output.slice(-OUTPUT_LIMIT);
   const after = await sourceManifest(options.root, options.generated);
   const inconclusive = (reason: string): ReproOutcome => ({

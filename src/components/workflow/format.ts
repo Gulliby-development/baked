@@ -158,6 +158,11 @@ export function headline(
           now: `Blocked at ${at}: ${reasonText(snapshot.reason)}.${snapshot.autoRetry ? ` Retrying by itself at ${new Date(snapshot.autoRetry.at).toLocaleTimeString()} (${snapshot.autoRetry.attempt} of ${snapshot.autoRetry.of}).` : ""}`,
           next: `${raiseText(snapshot, budget)}Press R to retry once the provider works again, or M to continue on this tab's model (Ctrl+L picks another); completed work stays. F forks, C cancels.`,
         };
+      if (snapshot.reason === "provider_policy")
+        return {
+          now: `Blocked at ${at}: ${reasonText(snapshot.reason)}.`,
+          next: "Press M to continue on this tab's model (Ctrl+L picks another); completed work stays. R tries the same model once more. F forks, C cancels.",
+        };
       if (snapshot.reason === "host_error")
         return {
           now: `Blocked at ${at}: BAKED failed internally; this is not a model problem.`,
@@ -435,6 +440,8 @@ export function eventText(event: WorkflowEvent, stages: StageView[]): string | n
       return event.payload.mode === "advisory"
         ? `Would stop (advisory): ${event.payload.summary}`
         : null;
+    case "attempt.recovery":
+      return `Stalled agent call, recovery: ${event.payload.detail}`;
     case "attempt.advisory":
       return `Progress watcher ${event.payload.action === "stopped" ? "stopped the agent call" : "warned the agent"}: ${event.payload.detail}`;
     case "task.state_changed":

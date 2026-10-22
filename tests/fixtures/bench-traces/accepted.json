@@ -50,5 +50,33 @@
   "R57/zonevet-update.sqlite.gz#de1d71df-f7c5-4a77-8569-a525388efaa5": {
     "newApprovalDeclines": 1,
     "reason": "#1707: the trace was exported before the export kept the file names a request names, so the pyproject.toml edit its request named (requestedManifestEdits) replays as an unnamed manifest edit. A trace exported from #1707 on keeps them."
+  },
+  "R56/hdrlens.sqlite.gz#e33af6d1-8f43-4b2f-913f-9a24839b71ba": {
+    "newRecoveries": 1,
+    "reason": "#1877: the analyze attempt that stalled on codex/gpt-6.1-sol now takes the recovery ladder's fresh-session rung at once instead of the provider wait."
+  },
+  "R58/wheeltags.sqlite.gz#90cffa36-5ea7-4024-94c9-a9946fd431d1": {
+    "newRecoveries": 7,
+    "reason": "#1877: the base specify that stalled 10 times on Codex native (the run this issue is about) now climbs the recovery ladder after each stall: fresh session, codex exec, lower effort; the recording waited for the provider and resumed instead."
+  },
+  "R59/jsonshape-update.sqlite.gz#2f1c8ef1-e6c1-4746-877d-33c03644359f": {
+    "newRecoveries": 1,
+    "reason": "#1877: a Codex stall that this recording waited out or retried in place now climbs the recovery ladder (fresh session first, then codex exec); the recorded call made no tool effects before it stalled."
+  },
+  "R59/wheeltags.sqlite.gz#621b7f16-8e86-4969-b480-55dc49d5b1bf": {
+    "newRecoveries": 1,
+    "reason": "#1877: a Codex stall that this recording waited out or retried in place now climbs the recovery ladder (fresh session first, then codex exec); the recorded call made no tool effects before it stalled."
+  },
+  "R59/wheeltags.sqlite.gz#d0a34f3c-1b18-473e-a9ac-621467d39c3f": {
+    "newRecoveries": 2,
+    "reason": "#1877: a Codex stall that this recording waited out or retried in place now climbs the recovery ladder (fresh session first, then codex exec); the recorded call made no tool effects before it stalled."
+  },
+  "R59/wheeltags.sqlite.gz#d5f22c99-625e-4cd9-8c65-3edce44e65a2": {
+    "newRecoveries": 1,
+    "reason": "#1877: a Codex stall that this recording waited out or retried in place now climbs the recovery ladder (fresh session first, then codex exec); the recorded call made no tool effects before it stalled."
+  },
+  "R59/wheeltags.sqlite.gz#d2022e1b-485e-486c-8ecd-fd480f0161e0": {
+    "newRecoveries": 1,
+    "reason": "#1877: a Codex stall that this recording waited out or retried in place now climbs the recovery ladder (fresh session first, then codex exec); the recorded call made no tool effects before it stalled."
   }
 }

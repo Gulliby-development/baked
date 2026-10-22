@@ -3,6 +3,8 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import type { RunPolicy, Task } from "../src/core/workflows/schemas.js";
 import type { ExecutionRequest } from "../src/core/workflows/types.js";
+import { runReport } from "../src/core/workflows/run-report.js";
+import { readWorkflowView } from "../src/core/workflows/view.js";
 import { FixtureExecutor, fixturePolicy, workflowFixture } from "./helpers/workflow-fixture.js";
 
 // Bench round 58, wheeltags 9ed8820c (#1864): the decomposer gave the base feature's tests to an
@@ -51,7 +53,9 @@ async function run(withTest: boolean) {
   }
   const diagnostics = fixture.service.store.artifacts(started.runId).filter((a) => a.logical_path.startsWith("checks/no-tests/"));
   const claims = fixture.service.store.findings(started.runId).map((f) => (JSON.parse(f.body_json) as { claim: string }).claim);
-  return { done, diagnostics, claims, read: (id: string) => fixture.service.store.readArtifact(started.runId, id) };
+  const report = runReport(fixture.service.store, started.runId);
+  const view = readWorkflowView(fixture.service, started.runId);
+  return { done, diagnostics, claims, report, view, read: (id: string) => fixture.service.store.readArtifact(started.runId, id) };
 }
 
 test("a plan that writes no test is not failed by a test check that collected none", async () => {
@@ -66,4 +70,21 @@ test("a plan that writes a test still fails when the check collects none", async
   const { done, diagnostics } = await run(true);
   expect((done as { status: string }).status).not.toBe("completed");
   expect(diagnostics).toEqual([]);
+});
+
+// Bench round 59 (#1894): base, names and targets were accepted, and their reports still read
+// `| tests | failed |`; every view of the checks now reads what acceptance decided.
+test("the report and the run view show a host-passed check as passed, with the reason", async () => {
+  const { report, view } = await run(false);
+  expect(report).toContain("| `tests` | passed (by the host) |");
+  expect(report).toContain("`tests` failed and counts as passed: tests collected no test and this run's plan writes none");
+  const detail = view?.checkDetails.find((c) => c.checkId === "tests");
+  expect(detail).toMatchObject({ status: "passed", hostPassed: expect.stringContaining("collected no test") });
+  expect(view?.checks.filter((c) => c.check_id === "tests").every((c) => c.status === "passed")).toBe(true);
+});
+
+test("a check that really failed still reads failed", async () => {
+  const { report, view } = await run(true);
+  expect(report).toMatch(/\| `tests` \| failed \|/);
+  expect(view?.checkDetails.find((c) => c.checkId === "tests")?.status).toBe("failed");
 });

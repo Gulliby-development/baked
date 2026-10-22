@@ -25,6 +25,12 @@ import {
 } from "../llm/model-routing.js";
 import { modelVendor } from "../llm/model-vendor.js";
 import { knownModelContextWindow } from "../llm/models.js";
+import {
+  POLICY_REFUSAL_KIND,
+  POLICY_REFUSALS_DIR,
+  policyRefusal,
+  policyRefusalDecision,
+} from "../llm/policy-refusal.js";
 import { ProviderUnreachableError } from "../llm/provider-health.js";
 import { runSandbox } from "../security/sandbox.js";
 import { buildSafeEnv } from "../spawn.js";
@@ -92,9 +98,11 @@ import {
   requiresSecurityReview,
 } from "../verification/findings.js";
 import {
+  clearBoundaryProperties,
   deferredOwners,
   noteSiblingFindings,
   ownerOfFinding,
+  ownsNoTests,
   specBoundaryProblems,
 } from "../verification/initiative-ownership.js";
 import {
@@ -106,6 +114,7 @@ import {
   failureSignature,
   outputCounts,
   TEST_FILE,
+  withinBaseline,
 } from "../verification/output-counts.js";
 import {
   carryNoRepro,
@@ -216,6 +225,7 @@ import {
   selectCandidate,
 } from "./candidates.js";
 import {
+  cwdPath,
   fixerCommand,
   fixerTiers,
   isCodePath,
@@ -510,6 +520,16 @@ import {
   WorkflowSchema,
 } from "./schemas.js";
 import { specSizeNote, specSizeProblems } from "./spec-size.js";
+import {
+  isStall,
+  ladderPath,
+  ladderSummary,
+  nextRung,
+  type RecoveryPlacement,
+  readLadder,
+  rungText,
+  writeLadder,
+} from "./stall-ladder.js";
 import { recordWouldStop, stopFault } from "./stop-reasons.js";
 import {
   repairUncoveredCriteria,
@@ -1266,6 +1286,18 @@ export class WorkflowScheduler {
                     validateSpec,
                   )),
               );
+              const unflagged = clearBoundaryProperties(state.spec, state.initiativeBounds);
+              if (unflagged.cleared.length) {
+                state.spec = unflagged.spec;
+                this.store.transaction(() =>
+                  this.store.artifact(
+                    runId,
+                    "diagnostic",
+                    "spec-repairs/boundary-property.json",
+                    canonical({ cleared: unflagged.cleared }),
+                  ),
+                );
+              }
               const repair = repairHostBoundCriteria(state.spec);
               if (repair.repaired.length) {
                 const added = repair.spec.criteria
@@ -3061,7 +3093,7 @@ export class WorkflowScheduler {
         }
       }
       const owner = this.failureOwner(runId, state, task, ownerOutput);
-      if (["pending", "test-update", "finished"].includes(owner.kind)) return false;
+      if (["pending", "test-update", "creates", "finished"].includes(owner.kind)) return false;
       failed.push({ id: check.id, output });
     }
     if (!failed.length) return false;
@@ -3835,6 +3867,7 @@ export class WorkflowScheduler {
     state: RuntimeState,
     check: Check,
     output: string,
+    subset = false,
   ): boolean {
     const artifact = this.store.latestArtifact(runId, CHECK_BASELINE_PATH);
     if (!artifact) return false;
@@ -3844,7 +3877,10 @@ export class WorkflowScheduler {
       }
     ).failures?.[commandKey(check)];
     // A failure without output tells nothing about its cause, so it is never matched.
-    return !!before && before === failureSignature(output, runRoot(this.store.workspace, state));
+    if (!before) return false;
+    const after = failureSignature(output, runRoot(this.store.workspace, state));
+    // With `subset`, a failure that only lost diagnostics the baseline had is still that debt (#1913).
+    return before === after || (subset && withinBaseline(before, after));
   }
   /** The IDs of the required checks that failed before any change, from the check baseline. */
   private baselineFailingChecks(runId: string, policy: RunPolicy): string[] {
@@ -4585,6 +4621,8 @@ export class WorkflowScheduler {
        * they run at: one step below the previous call's, or its own when none is lower.
        */
       outputLimit?: { effort?: RouteEffort; tries: number };
+      /** The recovery ladder's rung after a stalled call (#1877). */
+      recovery?: RecoveryPlacement;
     } = {},
   ): Promise<unknown> {
     let extra = inputExtra;
@@ -4629,8 +4667,27 @@ export class WorkflowScheduler {
         },
       };
     const route = this.route(runId, stepId, stageProfile);
-    const effort = placement.outputLimit ? placement.outputLimit.effort : route.effort;
-    const fallbackIndex = placement.fallbackIndex ?? 0;
+    const ladderAt = ladderPath({
+      stageId: this.store.rootStage(runId, stepId),
+      profileId: stageProfile.id,
+      taskId: task?.id ?? null,
+      inputHash: this.store.run(runId).input_hash,
+      models: route.models,
+    });
+    // A driver that restarted mid-ladder continues at the rung it was about to run, as does a
+    // retry below that does not carry the rung; a person's resume after the ladder ran out starts
+    // a new one.
+    let continued: RecoveryPlacement | undefined;
+    if (!placement.recovery && placement.fallbackIndex === undefined) {
+      const ladder = readLadder(this.store, runId, ladderAt);
+      if (ladder.exhausted) writeLadder(this.store, runId, ladderAt, { steps: [] });
+      else continued = ladder.next;
+    }
+    const recovery = placement.recovery ?? continued;
+    const effort = placement.outputLimit
+      ? placement.outputLimit.effort
+      : (recovery?.effort ?? route.effort);
+    const fallbackIndex = placement.fallbackIndex ?? continued?.fallbackIndex ?? 0;
     const largerWindow = placement.largerWindow === true;
     const profile = this.routed(runId, stepId, stageProfile, fallbackIndex, largerWindow);
     // Under `context: auto` a step whose context does not fit tries the model's largest window
@@ -4771,6 +4828,7 @@ export class WorkflowScheduler {
             ...(digested && state.spec ? { [READ_CRITERION]: readCriterionTool(state.spec) } : {}),
           }
         : undefined;
+    const started = Date.now();
     try {
       if (task && profile.output === "implementation") {
         // Save what this attempt receives, before it can fail or the findings change (#1566).
@@ -4862,6 +4920,8 @@ export class WorkflowScheduler {
           : {}),
         ...(host ? { hostTools: host } : {}),
         ...(effort ? { effort } : {}),
+        ...(recovery?.freshSession ? { freshSession: true } : {}),
+        ...(recovery?.transport ? { transport: recovery.transport } : {}),
       });
       const rowRoot = placement.root ?? runRoot(this.store.workspace, state);
       // An edit that dropped or changed an inline block gets it back before the checks (#1763).
@@ -4896,6 +4956,8 @@ export class WorkflowScheduler {
           canonical(output),
         );
         recordProviderOutcome(this.store, runId, attempt, profile.id, task?.id);
+        if (this.store.latestArtifact(runId, ladderAt))
+          writeLadder(this.store, runId, ladderAt, { steps: [] });
       });
       if (
         this.store.run(runId).input_hash !== inputHash ||
@@ -4921,6 +4983,96 @@ export class WorkflowScheduler {
       const outcome = signal.aborted
         ? null
         : recordProviderOutcome(this.store, runId, attempt, profile.id, task?.id, error);
+      // A stalled call that changed nothing climbs the recovery ladder at once (#1877): a fresh
+      // session, the other transport, a lower effort, the next model of the route, then a person.
+      // A route with no rung to try keeps the provider wait and its health probes.
+      if (
+        isStall(error) &&
+        !signal.aborted &&
+        !this.store.effects(runId).some((effect) => effect.attempt_id === attempt)
+      ) {
+        const ladder = readLadder(this.store, runId, ladderAt);
+        const steps = [
+          ...ladder.steps,
+          {
+            rung: recovery?.rung ?? ("first" as const),
+            attemptId: attempt,
+            modelId: profile.model,
+            seconds: Math.round((Date.now() - started) / 1000),
+            error: error instanceof Error ? error.message : String(error),
+          },
+        ];
+        const next = nextRung(recovery, {
+          model: profile.model,
+          models: route.models,
+          fallbackIndex,
+          effort,
+        });
+        if (next) {
+          const nextModel = route.models[next.fallbackIndex] ?? profile.model;
+          this.store.transaction(() => {
+            writeLadder(this.store, runId, ladderAt, { steps, next });
+            this.store.emit(runId, {
+              type: "attempt.recovery",
+              payload: {
+                attemptId: attempt,
+                rung: next.rung,
+                modelId: nextModel,
+                ...(next.transport ? { transport: next.transport } : {}),
+                ...(next.effort ? { effort: next.effort } : {}),
+                detail:
+                  `${error instanceof Error ? error.message : String(error)}; trying ${rungText(next.rung)} on ${nextModel}`.slice(
+                    0,
+                    500,
+                  ),
+              },
+            });
+          });
+          return this.call(
+            runId,
+            stepId,
+            state,
+            policy,
+            stageProfile,
+            extra,
+            signal,
+            task,
+            0,
+            validate,
+            limits,
+            hostTools,
+            {
+              ...(placement.root ? { root: placement.root } : {}),
+              ...(next.fallbackIndex ? { fallbackIndex: next.fallbackIndex } : {}),
+              ...(placement.primaryError !== undefined
+                ? { primaryError: placement.primaryError }
+                : {}),
+              recovery: next,
+            },
+          );
+        }
+        if (recovery) {
+          this.store.transaction(() => {
+            writeLadder(this.store, runId, ladderAt, { steps, exhausted: true });
+            this.store.artifact(
+              runId,
+              "recovery",
+              "provider/circuit.json",
+              canonical({ open: true, attemptId: attempt, ladder: steps.length }),
+            );
+          });
+          throw new WorkflowFault(
+            "OUTPUT_INVALID",
+            recoveryAdvice(
+              `${profile.id} got no model response on every rung of the recovery ladder: ${ladderSummary(steps)}. Automatic retries stopped. Check the provider, then resume (a new ladder starts) or reroute the run to another model.`,
+              `A stalled model call failed on ${steps.length} recovery rungs and needs your decision.`,
+              { action: "resume", runId },
+              { action: "reroute", runId },
+            ),
+            { reason: "no_progress", providerCircuit: true, ladder: steps },
+          );
+        }
+      }
       const counted = Math.max(outcome?.failures ?? 0, outcome?.stalls ?? 0);
       if (outcome && counted >= PROVIDER_ZERO_TOKEN_LIMIT) {
         this.store.artifact(
@@ -4962,6 +5114,59 @@ export class WorkflowScheduler {
         this.store
           .effects(runId)
           .some((effect) => effect.attempt_id === attempt && effect.kind === "file_patch");
+      // A usage-policy refusal is neither an outage nor a lost worker (#1895). The step runs once
+      // more as it was, on the files it has already changed; a second refusal of the same task or
+      // stage on the same model blocks the run for a reroute.
+      const refusedBy = signal.aborted ? null : policyRefusal(error, profile.model);
+      if (refusedBy) {
+        const message = error instanceof Error ? error.message : String(error);
+        const prior = this.policyRefusals(runId, task?.id ?? profile.id, profile.model);
+        const decision = policyRefusalDecision(prior);
+        this.store.artifact(
+          runId,
+          POLICY_REFUSAL_KIND,
+          `${POLICY_REFUSALS_DIR}${attempt}.json`,
+          canonical({
+            attemptId: attempt,
+            stepId,
+            ...(task ? { taskId: task.id } : {}),
+            profile: profile.id,
+            model: profile.model,
+            provider: refusedBy,
+            usedTokens:
+              this.store.attempts(runId).find((a) => a.id === attempt)?.used_tokens ?? null,
+            message: message.slice(0, 2000),
+            decision,
+          }),
+        );
+        if (decision === "retry") {
+          const { attemptId: _refused, ...same } = placement;
+          return this.call(
+            runId,
+            stepId,
+            state,
+            policy,
+            stageProfile,
+            extra,
+            signal,
+            task,
+            0,
+            validate,
+            limits,
+            hostTools,
+            same,
+          );
+        }
+        throw new WorkflowFault(
+          "OUTPUT_INVALID",
+          recoveryAdvice(
+            `${profile.model} refused the request of ${profile.id} under its usage policy ${prior + 1} times. Move the run to another model with baked workflow reroute ${runId} --model ID --expected-revision N, then resume. ${message}`,
+            `${profile.model} refused the request of ${profile.id} under its usage policy ${prior + 1} times. ${message}`,
+            { action: "reroute", runId },
+          ),
+          { reason: "provider_policy" },
+        );
+      }
       const refusal = accountRefusal(error);
       // Another model on the same provider shares the refused account; one elsewhere does not.
       const provider = (model: string) => model.split("/")[0];
@@ -7795,6 +8000,7 @@ ${note}`;
         error instanceof WorkflowFault &&
         (["BUDGET_EXHAUSTED", "CHECKPOINT_REACHED"].includes(error.code) ||
           error.details.reason === "provider_account" ||
+          error.details.reason === "provider_policy" ||
           error.details.reason === "provider" ||
           error.details.providerCircuit === true ||
           error.details.reason === "check_unavailable")
@@ -7899,6 +8105,22 @@ ${note}`;
           e.before_hash !== e.after_hash,
       )
       .map((e) => (JSON.parse(e.intent_json) as { path: string }).path);
+  }
+  /** The usage-policy refusals recorded so far for a task or stage profile on one model. */
+  private policyRefusals(runId: string, key: string, model: string): number {
+    let count = 0;
+    for (const artifact of this.store.artifacts(runId)) {
+      if (!artifact.logical_path.startsWith(POLICY_REFUSALS_DIR)) continue;
+      try {
+        const record = JSON.parse(this.store.readArtifact(runId, artifact.id)) as {
+          taskId?: string;
+          profile?: string;
+          model?: string;
+        };
+        if ((record.taskId ?? record.profile) === key && record.model === model) count++;
+      } catch {}
+    }
+    return count;
   }
   /** The edits a lost worker left in its worktree, which a restart of its task carries over. */
   private async lostWorkerEdits(
@@ -8160,8 +8382,13 @@ ${note}`;
     );
     if (!changed) return results;
     await this.snapshot(runId, state, policy, signal);
+    // A format-written check of a fixed file is built again from the file as it is now: a fixer
+    // that changes a block's line count moves the blocks after it (#1837).
+    const refixed = new Set(failed.flatMap(({ check }) => check.fixPaths ?? []));
+    const scopedTo = (check: Check) => check.fixPaths?.some((path) => refixed.has(path)) ?? false;
     const rerun: WorkerCheck[] = [];
-    for (const result of results)
+    for (const result of results) {
+      if (scopedTo(result.check)) continue;
       rerun.push(
         failed.includes(result)
           ? {
@@ -8170,6 +8397,13 @@ ${note}`;
             }
           : result,
       );
+    }
+    if (refixed.size)
+      for (const check of this.gatedChecks(runId, state, policy, task, root).filter(scopedTo))
+        rerun.push({
+          check,
+          checked: await this.runTaskCheck(runId, child, check, policy, signal, root),
+        });
     return rerun;
   }
   private async recheck(
@@ -10459,12 +10693,14 @@ ${note}`;
     // The check fails exactly as before any change and names no file the task writes: the task
     // did not cause it and a correction could not reach it (dur 741547f0: Biome rejected the
     // scaffold's `biome.json`, which no task writes; T004 spent 38k tokens on `src/duration.ts`,
-    // #1218). The checks stage still runs the check and stops with `baseline_failure`.
+    // #1218). It may also report only some of the baseline's diagnostics: a folder the task created
+    // took its error away (#1913). The checks stage still runs the check and stops with
+    // `baseline_failure` on an exact match.
     if (
       checked.status === "failed" &&
       checked.output &&
       !failingFilesInOutput(checked.output, [task]).length &&
-      this.failsAsBaseline(runId, state, check, checked.output)
+      this.failsAsBaseline(runId, state, check, checked.output, true)
     )
       return undefined;
     const owner =
@@ -10502,7 +10738,8 @@ ${note}`;
       );
       return undefined;
     }
-    const updaters = owner?.kind === "test-update" ? owner.owners : [];
+    // A check that names paths a later task creates (#1913) is that task's to pass, the same way.
+    const updaters = owner?.kind === "test-update" || owner?.kind === "creates" ? owner.owners : [];
     if (updaters.length) {
       // mdtoc-update (bench round 14): the change breaks expectations a later task of the plan
       // updates; a corrective task rewrote that task's tests. That task's own checks run them.
@@ -10917,7 +11154,7 @@ ${note}`;
         const owner = this.failureOwner(runId, state, task, checked.output ?? "", {
           crossProfile: true,
         });
-        if (owner.kind === "test-update" || owner.kind === "pending") {
+        if (owner.kind === "test-update" || owner.kind === "creates" || owner.kind === "pending") {
           ran.push({ checkId: check.id, status: checked.status, evidenceId: checked.evidenceId });
           handoffs.push({
             checkId: check.id,
@@ -10950,7 +11187,7 @@ ${note}`;
       const owner = this.failureOwner(runId, state, task, checked.output ?? "", {
         crossProfile: true,
       });
-      if (owner.kind === "test-update" || owner.kind === "pending") {
+      if (owner.kind === "test-update" || owner.kind === "creates" || owner.kind === "pending") {
         handoffs.push({ checkId: check.id, evidenceId: checked.evidenceId, owners: owner.owners });
         continue;
       }
@@ -11079,7 +11316,7 @@ ${note}`;
       const output = check ? this.commandOutput(runId, finding.evidenceIds) : null;
       if (!check || !output) return false;
       const owner = this.failureOwner(runId, state, task, output);
-      if (["pending", "test-update", "finished"].includes(owner.kind)) return false;
+      if (["pending", "test-update", "creates", "finished"].includes(owner.kind)) return false;
       const regression = finding.claim.includes(" broke existing tests: ");
       const touched =
         graph !== null &&
@@ -11571,10 +11808,18 @@ ${note}`;
             // given: one run for all the code files instead of one per file (#1269, #842).
             if (isWholeUnitFixer(fix)) {
               const code = own.filter(isCodePath);
-              if (code.length) await run(wholeUnitFixerCommand(fix, code), code);
+              if (code.length)
+                await run(
+                  wholeUnitFixerCommand(
+                    fix,
+                    code.map((path) => cwdPath(check, path)),
+                  ),
+                  code,
+                );
               continue;
             }
-            for (const path of own) await run(fixerCommand(fix, path), [path]);
+            // The fixer runs in the check's cwd, so it names the file from there.
+            for (const path of own) await run(fixerCommand(fix, cwdPath(check, path)), [path]);
           }
         }
       } finally {
@@ -11718,6 +11963,8 @@ ${note}`;
   private propertyMode(runId: string, state: RuntimeState, policy: RunPolicy): PropertyTestsMode {
     const preset = presetOf(parseRunDefinition(this.store.run(runId).definition_json));
     const request = state.requestText || state.prompt;
+    // A feature whose tests belong to another initiative feature cannot hold a property test (#1891).
+    if (ownsNoTests(state.initiativeBounds)) return "off";
     if (policy.propertyTests || presetPropertyTests(preset) === "off" || bansPropertyTests(request))
       return propertyTestsOf(policy, preset, request);
     return propertyTestsOf(policy, preset, request, {

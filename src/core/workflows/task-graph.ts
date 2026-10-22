@@ -3,6 +3,7 @@ import {
   failingFilesInOutput,
   failingPathsInOutput,
   isTestOf,
+  missingPlannedPaths,
 } from "../verification/convergence.js";
 import { isDocFile } from "../verification/doc-examples.js";
 import { writtenCodePaths } from "./check-policy.js";
@@ -477,8 +478,44 @@ export function pendingOwners(
   return [...owners];
 }
 
+/**
+ * The unfinished planned tasks that create the paths a failed check of `task` says do not exist,
+ * when that is all it names of the plan's files: `ruff check src tests` after the task that
+ * writes `src/` fails with E902 on `tests` until the task that writes `tests/` runs (rpn 09a1c786
+ * blocked T001 and its correctives for 482k tokens, #1913). None when `task` itself writes under
+ * such a path or the output names a file it writes: the failure is then its own.
+ */
+export function pathCreators(
+  graph: TaskGraph | null | undefined,
+  rows: TaskRow[],
+  gates: RuntimeState["taskGates"],
+  task: Task,
+  output: string,
+): string[] {
+  if (!graph) return [];
+  const missing = missingPlannedPaths(output, graph.tasks);
+  if (!missing.length) return [];
+  const own = (path: string) => task.writes.some((w) => w.path === path);
+  if (missing.some(own) || failingFilesInOutput(output, [task]).length) return [];
+  const done = (id: string): boolean =>
+    rows.some(
+      (r) =>
+        r.id === id &&
+        (r.status === "verified" || (r.status === "implemented" && hasTaskGate(r, gates))),
+    );
+  return graph.tasks
+    .filter(
+      (t) =>
+        t.id !== task.id &&
+        t.origin === "planned" &&
+        !done(t.id) &&
+        t.writes.some((w) => w.action !== "delete" && missing.includes(w.path)),
+    )
+    .map((t) => t.id);
+}
+
 export interface FailureOwner {
-  kind: "self" | "unowned" | "pending" | "test-update" | "finished";
+  kind: "self" | "unowned" | "pending" | "test-update" | "creates" | "finished";
   owners: string[];
   files: string[];
 }
@@ -581,6 +618,11 @@ export function failureOwner(
   if (updaters.length) return { kind: "test-update", owners: updaters, files };
   const pending = task.origin === "planned" ? pendingOwners(graph, rows, gates, task, output) : [];
   if (pending.length) return { kind: "pending", owners: pending, files };
+  const creators = pathCreators(graph, rows, gates, task, output);
+  if (creators.length)
+    return graph && creators.some((id) => taskDependsOn(graph, id, task.id, waitingFor))
+      ? { kind: "creates", owners: creators, files }
+      : { kind: "pending", owners: creators, files };
   const done = new Set(
     rows.filter((r) => ["implemented", "verified"].includes(r.status)).map((r) => r.id),
   );
@@ -622,6 +664,8 @@ export function failureOwner(
 export function failureOwnerNote(owner: FailureOwner): string | undefined {
   if (owner.kind === "test-update")
     return `This failure belongs to ${owner.owners.join(", ")}, which has not finished updating the failing tests. Stop rerunning this check and submit your work; the host hands the failure to that task and checks the integrated result.`;
+  if (owner.kind === "creates")
+    return `This failure names paths that do not exist yet; ${owner.owners.join(", ")} creates them after this task. Submit your work; the host checks the integrated result when those tasks run.`;
   if (owner.kind === "pending")
     return `This failure waits for ${owner.owners.join(", ")}, which has not finished. Submit your work; the host reruns the check after those tasks finish.`;
   if (owner.kind === "finished")

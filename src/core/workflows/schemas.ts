@@ -2,6 +2,7 @@
 import { z } from "zod";
 import { RouteEffort } from "../llm/model-routing.js";
 import { DEFAULT_MAX_CANDIDATES, MAX_CANDIDATES } from "./candidates.js";
+import { HOST_ID_FORMATS } from "./host-ids.js";
 import { LibraryDocsSchema } from "./library-docs.js";
 import { StopModesSchema, StopReasonIdSchema } from "./stop-reasons.js";
 
@@ -21,9 +22,10 @@ export const RelativePath = z
     "Expected a canonical relative POSIX path",
   );
 const Text = z.string().min(1).max(16000);
-const RequirementId = z.string().regex(/^(FR|NFR|SC)-[0-9]{3,6}$/);
-const CriterionId = z.string().regex(/^AC-[0-9]{3,6}$/);
-const TaskId = z.string().regex(/^T[0-9]{3,6}$/);
+// Built from the one table the instructions and the id normaliser read (#1871).
+const RequirementId = z.string().regex(HOST_ID_FORMATS.requirement.pattern);
+const CriterionId = z.string().regex(HOST_ID_FORMATS.criterion.pattern);
+const TaskId = z.string().regex(HOST_ID_FORMATS.task.pattern);
 const Semver = z.string().regex(/^\d+\.\d+\.\d+$/);
 const UniqueStrings = z.array(z.string().min(1)).refine((xs) => new Set(xs).size === xs.length);
 
@@ -918,6 +920,7 @@ export const ReasonCode = z.enum([
   "provider_unavailable",
   "provider",
   "provider_account",
+  "provider_policy",
   "tool_denied",
   "storage_failure",
   "invalid_output",
@@ -1348,6 +1351,7 @@ export const EventType = z.enum([
   "attempt.started",
   "attempt.finished",
   "attempt.advisory",
+  "attempt.recovery",
   "decision.would_stop",
   "task.state_changed",
   "artifact.committed",
@@ -1482,6 +1486,23 @@ export const EventSchema = z.discriminatedUnion("type", [
           key: z.string().max(200),
           summary: z.string().max(1000),
           inputs: z.record(z.string(), z.unknown()),
+        })
+        .strict(),
+    })
+    .strict(),
+  // A stalled call climbs the recovery ladder: the next attempt runs on this rung (#1877).
+  z
+    .object({
+      ...EventBase,
+      type: z.literal("attempt.recovery"),
+      payload: z
+        .object({
+          attemptId: SafeId,
+          rung: z.enum(["fresh-session", "other-transport", "lower-effort", "next-model"]),
+          modelId: z.string(),
+          transport: z.literal("exec").optional(),
+          effort: z.string().optional(),
+          detail: z.string().max(500),
         })
         .strict(),
     })
