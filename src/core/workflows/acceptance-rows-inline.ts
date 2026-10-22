@@ -51,13 +51,17 @@ export interface InlineRowFile {
 }
 
 const comment = (framework: Framework): string => (framework === "pytest" ? "#" : "//");
+/** Python's first line stays within ruff's and black's 88 columns, so its comment takes two (#1927). */
 const begin = (framework: Framework, what = "acceptance rows"): string =>
-  `${comment(framework)} BEGIN ${what}: host-written from the audited spec table. Edit ${INLINE_HARNESS[framework]}, not this block.`;
+  `${comment(framework)} BEGIN ${what}: host-written from the audited spec table.${framework === "pytest" ? "\n#" : ""} Edit ${INLINE_HARNESS[framework]}, not this block.`;
 const end = (framework: Framework, what = "acceptance rows"): string =>
   `${comment(framework)} END ${what}`;
-/** gofmt separates a comment that follows a closing brace or parenthesis by a blank line. */
+/**
+ * gofmt separates a comment that follows a closing brace or parenthesis by a blank line, and ruff
+ * and black put two blank lines between a function and a top-level comment.
+ */
 const block = (framework: Framework, body: string, what?: string): string =>
-  `${begin(framework, what)}\n${body.replace(/\n+$/, "")}\n${framework === "go" ? "\n" : ""}${end(framework, what)}\n`;
+  `${begin(framework, what)}\n${body.replace(/\n+$/, "")}\n${framework === "go" ? "\n" : framework === "pytest" ? "\n\n" : ""}${end(framework, what)}\n`;
 
 const className = (path: string, suffix: string): string => posix.basename(path, suffix);
 const camel = (text: string): string =>
@@ -74,6 +78,47 @@ const quoted = (text: string): string =>
     /[\u0085\u2028\u2029]/g,
     (ch) => `\\u${(ch.codePointAt(0) ?? 0).toString(16).padStart(4, "0")}`,
   );
+
+/**
+ * A Python string literal in the quotes ruff and black choose: double, unless single quotes need
+ * fewer escapes.
+ */
+const pythonString = (text: string): string => {
+  const quote = (text.match(/"/g)?.length ?? 0) > (text.match(/'/g)?.length ?? 0) ? "'" : '"';
+  const body = [...text]
+    .map((ch) => {
+      if (ch === "\\" || ch === quote) return `\\${ch}`;
+      const code = ch.codePointAt(0) ?? 0;
+      return code < 0x20 || code === 0x7f ? `\\x${code.toString(16).padStart(2, "0")}` : ch;
+    })
+    .join("");
+  return `${quote}${body}${quote}`;
+};
+
+/**
+ * The rows' JSON text as short string literals, one row per literal, a long row split over more,
+ * each at most 74 columns with its quotes, so a list of them stays within 79 and ruff and black
+ * keep its layout at any line length (#1927). A row's id starts its first literal.
+ */
+const pythonChunks = (rows: AcceptanceRow[], width = 74): string[] => {
+  const items = rows.map(({ id, input, expected }) => JSON.stringify({ id, input, expected }));
+  const pieces = items.length
+    ? items.map((item, i) => `${i ? "" : "["}${item}${i < items.length - 1 ? "," : "]"}`)
+    : ["[]"];
+  const chunks: string[] = [];
+  for (const piece of pieces) {
+    let chunk = "";
+    for (const ch of piece) {
+      if (chunk && pythonString(chunk + ch).length > width) {
+        chunks.push(chunk);
+        chunk = "";
+      }
+      chunk += ch;
+    }
+    if (chunk) chunks.push(chunk);
+  }
+  return chunks.map(pythonString);
+};
 
 /** A Java string literal; control characters are octal escapes, never \u (read before lexing). */
 const javaString = (text: string): string =>
@@ -272,13 +317,20 @@ const TEMPLATES: Record<Framework, Template> = {
       `import { expect as acceptanceExpect, test as acceptanceTest } from "bun:test";\nconst acceptanceRows${/\.tsx?$/.test(test) ? ": { id: string; input: unknown; expected: unknown }[]" : ""} = JSON.parse(${quoted(data(rows))});\nacceptanceTest.each(acceptanceRows)("$id", async (row) => {\n  acceptanceExpect(await acceptanceActual(row.input)).toEqual(row.expected);\n});`,
     ),
   }),
-  pytest: (_, rows) => ({
-    skeleton: "",
-    tail: block(
-      "pytest",
-      `import json as _acceptance_json\nimport pytest as _acceptance_pytest\n\n_ACCEPTANCE_ROWS = _acceptance_json.loads(${quoted(data(rows))})\n\n\n@_acceptance_pytest.mark.parametrize("row", _ACCEPTANCE_ROWS, ids=[row["id"] for row in _ACCEPTANCE_ROWS])\ndef test_acceptance_row(row):\n    assert acceptance_actual(row["input"]) == row["expected"]`,
-    ),
-  }),
+  // No import statement: below the file's own code one is E402 and an import block of its own for
+  // isort (I001), and the formatter checks run on the whole file (#1927).
+  pytest: (_, rows) => {
+    const text = pythonChunks(rows)
+      .map((chunk) => `    ${chunk},\n`)
+      .join("");
+    return {
+      skeleton: "",
+      tail: block(
+        "pytest",
+        `_acceptance_json = __import__("json")\n_acceptance_pytest = __import__("pytest")\n\n_ACCEPTANCE_TEXT = [\n${text}]\n_ACCEPTANCE_ROWS = _acceptance_json.loads("".join(_ACCEPTANCE_TEXT))\n\n\n@_acceptance_pytest.mark.parametrize(\n    "row",\n    _ACCEPTANCE_ROWS,\n    ids=[row["id"] for row in _ACCEPTANCE_ROWS],\n)\ndef test_acceptance_row(row):\n    assert acceptance_actual(row["input"]) == row["expected"]`,
+      ),
+    };
+  },
   go: ({ test, package: pkg }, rows) => ({
     skeleton: `package ${pkg}\n`,
     head: block(
@@ -328,17 +380,80 @@ export function inlineRowFile(test: InlineRowTest, rows: AcceptanceRow[]): Inlin
   return { path: test.test, inline: true, ...TEMPLATES[test.framework](test, rows) };
 }
 
-/** The marked block of `text` that starts with `first` line, or null. */
-function span(text: string, file: string): { from: number; to: number } | null {
-  const first = file.slice(0, file.indexOf("\n") + 1);
-  const trimmed = file.trimEnd();
-  const last = trimmed.slice(trimmed.lastIndexOf("\n") + 1);
-  const from = text.indexOf(first);
+/**
+ * The lines of the marked block of `file` in `text`, or null: from its BEGIN line, found by the
+ * marker up to its first colon so a block written under older wording is found too, to its END
+ * line. Either may be indented.
+ */
+function blockLines(text: string, file: string): { from: number; to: number } | null {
+  const lines = file.trimEnd().split("\n");
+  const first = (lines[0] ?? "").trim();
+  const marker = first.slice(0, first.indexOf(":") + 1) || first;
+  const last = (lines.at(-1) ?? "").trim();
+  const all = text.split("\n");
+  const from = all.findIndex((line) => line.trim().startsWith(marker));
   if (from < 0) return null;
-  const to = text.indexOf(last, from);
-  if (to < 0) return null;
-  const after = to + last.length;
-  return { from, to: text[after] === "\n" ? after + 1 : after };
+  const to = all.findIndex((line, i) => i > from && line.trim() === last);
+  return to < 0 ? null : { from, to };
+}
+
+/** The marked block of `text` as character offsets, its final newline included, or null. */
+function span(text: string, file: string): { from: number; to: number } | null {
+  const lines = blockLines(text, file);
+  if (!lines) return null;
+  const all = text.split("\n");
+  const offset = (line: number) => all.slice(0, line).reduce((sum, l) => sum + l.length + 1, 0);
+  const to = offset(lines.to) + (all[lines.to]?.length ?? 0);
+  return { from: offset(lines.from), to: text[to] === "\n" ? to + 1 : to };
+}
+
+/** Whitespace and a closing bracket, read at a set position. */
+const CLOSER = /\s*[)\]}]/y;
+
+/**
+ * The text as a formatter cannot change it: whitespace and a trailing comma before a closing
+ * bracket dropped outside string literals, and a literal's escaped quotes unescaped, so either
+ * quote style reads the same. ruff, black, gofmt, rustfmt, prettier, biome and dotnet format
+ * change only these in a block; a formatter gate's fixer must not count as editing the rows
+ * (#1927). A quote with no closing one on its line (an apostrophe in a comment) is plain text.
+ */
+export function layoutFree(text: string): string {
+  let out = "";
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i] ?? "";
+    if (ch === '"' || ch === "'" || ch === "`") {
+      let value = "";
+      let j = i + 1;
+      for (; j < text.length && text[j] !== ch && text[j] !== "\n"; j++) {
+        if (text[j] === "\\" && j + 1 < text.length && text[j + 1] !== "\n") {
+          const next = text[j + 1] ?? "";
+          value += next === '"' || next === "'" ? next : `\\${next}`;
+          j++;
+        } else value += text[j];
+      }
+      if (text[j] === ch) {
+        out += `\u0000${value}\u0000`;
+        i = j;
+        continue;
+      }
+    }
+    if (/\s/.test(ch)) continue;
+    CLOSER.lastIndex = i + 1;
+    if (ch === "," && CLOSER.test(text)) continue;
+    out += ch;
+  }
+  return out;
+}
+
+/** Whether `text` holds the block of `file` as it is or as a formatter laid it out. */
+function sameBlock(text: string, file: string): boolean {
+  const lines = blockLines(text, file);
+  if (!lines) return false;
+  const found = text
+    .split("\n")
+    .slice(lines.from, lines.to + 1)
+    .join("\n");
+  return layoutFree(found) === layoutFree(file);
 }
 
 /**
@@ -425,20 +540,25 @@ function primaryType(text: string, className: string): { open: number; end: numb
   return end < 0 ? null : { open, end };
 }
 
+/** Whether the block of `file` lies in the braces of the file's own type. */
+function insideType(text: string, file: string, className: string): boolean {
+  const lines = blockLines(text, file);
+  const type = primaryType(text, className);
+  if (!lines || !type) return false;
+  const at = text.split("\n").slice(0, lines.from).join("\n").length + 1;
+  return at > type.open && at < type.end;
+}
+
 /** The leading whitespace of the line `at` is on. */
 const indentAt = (text: string, at: number): string =>
   /^[ \t]*/.exec(text.slice(text.lastIndexOf("\n", at - 1) + 1))?.[0] ?? "";
 
 /** The text without the marked block, wherever and however indented it is, and the blank line before it. */
 function withoutBlock(text: string, file: string): string {
-  const lines = file.trimEnd().split("\n");
-  const first = (lines[0] ?? "").trim();
-  const last = (lines.at(-1) ?? "").trim();
+  const lines = blockLines(text, file);
+  if (!lines) return text;
+  const { from, to } = lines;
   const all = text.split("\n");
-  const from = all.findIndex((line) => line.trim() === first);
-  if (from < 0) return text;
-  const to = all.findIndex((line, i) => i > from && line.trim() === last);
-  if (to < 0) return text;
   const start = from > 0 && all[from - 1]?.trim() === "" ? from - 1 : from;
   return [...all.slice(0, start), ...all.slice(to + 1)].join("\n");
 }
@@ -496,6 +616,15 @@ function nested(
  * A nested block goes before the closing brace of the file's own type.
  */
 export function withInlineRows(existing: string | null, file: InlineRowFile): string {
+  // A block the project's formatter laid out stays as it is: putting the host's layout back
+  // would fail the formatter gate again (#1927).
+  if (
+    existing !== null &&
+    sameBlock(existing, file.tail) &&
+    (!file.head || sameBlock(existing, file.head)) &&
+    (!file.nest || insideType(existing, file.tail, file.nest.className))
+  )
+    return existing;
   let text = existing ?? file.skeleton;
   if (file.nest) return nested(text, file, file.nest);
   if (file.head) {
@@ -511,12 +640,14 @@ export function withInlineRows(existing: string | null, file: InlineRowFile): st
   const at = span(text, file.tail);
   if (at) return text.slice(0, at.from) + file.tail + text.slice(at.to);
   const body = text.replace(/\s+$/, "");
-  return body ? `${body}\n\n${file.tail}` : file.tail;
+  // Two blank lines before a top-level Python comment that follows a function (ruff, black).
+  const gap = file.tail.startsWith("#") ? "\n\n\n" : "\n\n";
+  return body ? `${body}${gap}${file.tail}` : file.tail;
 }
 
-/** Whether the test file holds the host's blocks unchanged, a nested one in the file's own type. */
+/**
+ * Whether the test file holds the host's blocks unchanged or only laid out again by a formatter,
+ * a nested one in the file's own type.
+ */
 export const hasInlineRows = (text: string | null, file: InlineRowFile): boolean =>
-  text !== null &&
-  (file.nest
-    ? withInlineRows(text, file) === text
-    : text.includes(file.tail) && (!file.head || text.includes(file.head)));
+  text !== null && withInlineRows(text, file) === text;

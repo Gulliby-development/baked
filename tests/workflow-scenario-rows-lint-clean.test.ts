@@ -1,0 +1,195 @@
+import { afterEach, describe, expect, test } from "bun:test";
+import { spawnSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
+import {
+  hasInlineRows,
+  type InlineRowTest,
+  inlineRowFile,
+  layoutFree,
+  withInlineRows,
+} from "../src/core/workflows/acceptance-rows-inline.js";
+import { rowFileProblems, rowFiles } from "../src/core/workflows/acceptance-rows.js";
+import type { AcceptanceRow } from "../src/core/workflows/acceptance-rows-model.js";
+
+// Scenario of bench round 60, wheeltags (Python, ruff check and ruff format gates, rowsAsData on),
+// #1927. The host's inline block in tests/test_platforms.py and tests/test_target.py failed ruff
+// (I001 for its own import block, then ruff format for a long row line and decorator), and the rows
+// check refused any change to the block, so T003 and T004 each stopped on spec_conflict. The block
+// is now lint- and format-clean, and a formatter's layout of any block is not an edit.
+
+const cleanups: (() => void)[] = [];
+afterEach(() => {
+  for (const cleanup of cleanups.splice(0).reverse()) cleanup();
+});
+
+const rows: AcceptanceRow[] = [
+  {
+    id: "AC-003:1",
+    criterionId: "AC-003",
+    source: "",
+    input: { platform: "manylinux_2_17_x86_64", tags: ["cp311", "abi3"], note: "it's a \\ back\nslash ✓" },
+    expected: { ok: true, values: [1, 2.5, null, 'a "quoted" text'] },
+  },
+  { id: "AC-003:2", criterionId: "AC-003", source: "", input: "macosx_11_0_arm64", expected: false },
+];
+
+const PLATFORMS = `"""Tests of platform tags."""
+
+from wheeltags.platforms import parse_platform
+
+
+def acceptance_actual(value):
+    return parse_platform(value)
+
+
+def test_parse_any():
+    assert parse_platform("any") == "any"
+`;
+
+const pytest: InlineRowTest = { mode: "inline", framework: "pytest", test: "tests/test_platforms.py" };
+const ruff = spawnSync("ruff", ["--version"]).status === 0 ? "ruff" : null;
+const RULES = "E,F,I,W,UP,B,Q,FLY,ISC,PL,SIM,C4,RUF";
+
+function temp(files: Record<string, string>): string {
+  const root = mkdtempSync(join(tmpdir(), "baked-rows-lint-"));
+  cleanups.push(() => rmSync(root, { recursive: true, force: true }));
+  for (const [path, content] of Object.entries(files)) {
+    mkdirSync(dirname(join(root, path)), { recursive: true });
+    writeFileSync(join(root, path), content);
+  }
+  return root;
+}
+
+/** The ruff findings of a file at a line length, empty when it passes both gates. */
+function ruffProblems(root: string, path: string, length: number): string {
+  const run = (args: string[]) => spawnSync(ruff ?? "ruff", ["--isolated", ...args, "--line-length", String(length), path], { cwd: root, encoding: "utf8" });
+  const check = run(["check", "--select", RULES, "--quiet"]);
+  const format = run(["format", "--check", "--quiet"]);
+  return [check.status ? check.stdout : "", format.status ? `format: ${format.stdout}` : ""].join("").trim();
+}
+
+/** What a lint gate reads first, with no tool: the lines of the block and the imports in it. */
+function lineProblems(text: string): string[] {
+  return text.split("\n").flatMap((line, i) => [
+    ...(line.length > 79 ? [`line ${i + 1} is ${line.length} columns`] : []),
+    ...(/^(?:import|from) \w/.test(line) && i > 3 ? [`line ${i + 1} is an import below the file's code`] : []),
+  ]);
+}
+
+describe("scenario: wheeltags R60, host-written Python rows pass ruff (#1927)", () => {
+  const written = withInlineRows(PLATFORMS, inlineRowFile(pytest, rows));
+
+  test("the inline block has no import statement and no line over 79 columns", () => {
+    expect(lineProblems(written)).toEqual([]);
+    expect(written).toContain("# BEGIN acceptance rows");
+    for (const row of rows) expect(written).toContain(row.id);
+  });
+
+  test.skipIf(!ruff)("the inline block passes ruff check (isort) and ruff format at any line length", () => {
+    const root = temp({ [pytest.test]: written });
+    for (const length of [79, 88, 100, 120]) expect(ruffProblems(root, pytest.test, length)).toBe("");
+  });
+
+  test("the inline block's string literals decode to the rows", () => {
+    const list = written.slice(written.indexOf("_ACCEPTANCE_TEXT = ["), written.indexOf("\n]\n"));
+    const literals = [...list.matchAll(/^ {4}(['"])(.*)\1,$/gm)].map(([, quote, body]) =>
+      (body ?? "").replace(/\\(x[0-9a-f]{2}|.)/g, (_, esc: string) =>
+        esc.startsWith("x") && esc.length === 3 ? String.fromCharCode(Number.parseInt(esc.slice(1), 16)) : esc === quote || esc === "\\" ? esc : `\\${esc}`,
+      ),
+    );
+    expect(JSON.parse(literals.join(""))).toEqual(rows.map(({ id, input, expected }) => ({ id, input, expected })));
+  });
+
+  const fileTest = { framework: "pytest" as const, harness: "tests/support/platform_tags_harness.py", test: "tests/test_platform_tags_rows.py", data: "tests/data/platform_tags_rows.json" };
+  const task = { id: "T003", rows: ["AC-003"], rowTest: fileTest } as never;
+  const files = rowFiles(task, { tasks: [{ rows: ["AC-003"], rowTest: fileTest }], rows } as never);
+  const fileModeTest = files.find((file) => file.path === fileTest.test)?.content ?? "";
+
+  test("the file mode's test has isort's groups and no line over 79 columns", () => {
+    expect(fileModeTest).toContain("from pathlib import Path\n\nimport pytest\n");
+    expect(fileModeTest.split("\n").filter((line) => line.length > 79)).toEqual([]);
+  });
+
+  test.skipIf(!ruff)("the file mode's test passes ruff check and ruff format at any line length", () => {
+    const root = temp({ [fileTest.test]: fileModeTest });
+    for (const length of [79, 88, 100, 120]) expect(ruffProblems(root, fileTest.test, length)).toBe("");
+  });
+
+  test("a block from an earlier version is replaced, and the file keeps one block", () => {
+    const old = `${PLATFORMS}\n# BEGIN acceptance rows: host-written from the audited spec table. Edit acceptance_actual, not this block.\nimport json as _acceptance_json\nimport pytest as _acceptance_pytest\n\n_ACCEPTANCE_ROWS = _acceptance_json.loads("[]")\n# END acceptance rows\n`;
+    const replaced = withInlineRows(old, inlineRowFile(pytest, rows));
+    expect(replaced).toContain(inlineRowFile(pytest, rows).tail);
+    expect(replaced).not.toContain("import json as _acceptance_json");
+    expect(replaced.match(/BEGIN acceptance rows/g)?.length).toBe(1);
+  });
+});
+
+/** Formatter layouts of each language's block, made by hand so the test needs no toolchain. */
+const LAYOUTS: { name: string; test: InlineRowTest; harness: string; format: (text: string) => string }[] = [
+  {
+    name: "pytest, black with a wider line: the decorator on one line, single quotes",
+    test: pytest,
+    harness: PLATFORMS,
+    format: (text) =>
+      text
+        .replace('parametrize(\n    "row",\n    _ACCEPTANCE_ROWS,\n    ids=[row["id"] for row in _ACCEPTANCE_ROWS],\n)', 'parametrize(\n    \'row\', _ACCEPTANCE_ROWS, ids=[row[\'id\'] for row in _ACCEPTANCE_ROWS]\n)'),
+  },
+  {
+    name: "rust, cargo fmt: struct fields and match arms laid out again",
+    test: { mode: "inline", framework: "rust", test: "tests/platforms.rs" },
+    harness: "fn acceptance_actual(input: &AcceptanceJson) -> AcceptanceJson {\n    input.clone()\n}\n",
+    format: (text) => text.replace(/\n {8}/g, "\n            ").replace(/\{\n(\s+)/, "{ ").replace(/,\n(\s*)\}/g, "\n$1}"),
+  },
+  {
+    name: "bun, biome: single quotes and a trailing comma",
+    test: { mode: "inline", framework: "bun", test: "tests/platforms.test.ts" },
+    harness: "function acceptanceActual(input: unknown): unknown {\n  return input;\n}\n",
+    format: (text) => text.replace('from "bun:test"', "from 'bun:test'").replace(/\(row\.input\)\)\.toEqual\(row\.expected\)/, "(row.input)).toEqual(\n    row.expected,\n  )"),
+  },
+  {
+    name: "xunit, dotnet format: indentation with tabs",
+    test: { mode: "inline", framework: "xunit", package: "Wheeltags.Tests", test: "tests/PlatformsTests.cs" },
+    harness: "namespace Wheeltags.Tests;\n\npublic class PlatformsTests\n{\n    public static object? AcceptanceActual(System.Text.Json.Nodes.JsonNode? input) => input;\n}\n",
+    format: (text) => text.replace(/^( {4})+/gm, (spaces) => "\t".repeat(spaces.length / 4)),
+  },
+];
+
+describe("scenario: a formatter gate's fixer lays the block out again, in every language (#1927)", () => {
+  for (const layout of LAYOUTS) {
+    const file = inlineRowFile(layout.test, rows);
+    const written = withInlineRows(layout.harness, file);
+    const formatted = layout.format(written);
+
+    test(`${layout.name}: the layout is kept and passes the rows check`, () => {
+      expect(formatted).not.toBe(written);
+      expect(hasInlineRows(formatted, file)).toBe(true);
+      expect(withInlineRows(formatted, file)).toBe(formatted);
+    });
+
+    test(`${layout.name}: a changed row is still caught and put back`, () => {
+      const tampered = formatted.replace("macosx_11_0_arm64", "macosx_12_0_arm64");
+      expect(tampered).not.toBe(formatted);
+      expect(hasInlineRows(tampered, file)).toBe(false);
+      expect(withInlineRows(tampered, file)).toContain("macosx_11_0_arm64");
+    });
+  }
+
+  test("the file mode's check accepts a formatter's layout of a host file and refuses a row change", async () => {
+    const fileTest = { framework: "bun" as const, harness: "tests/harness.ts", test: "tests/rows.test.ts", data: "tests/rows.json" };
+    const task = { id: "T003", rows: ["AC-003"], rowTest: fileTest } as never;
+    const files = rowFiles(task, { tasks: [{ rows: ["AC-003"], rowTest: fileTest }], rows } as never);
+    const data = files.find((file) => file.path === fileTest.data)?.content ?? "";
+    const testFile = files.find((file) => file.path === fileTest.test)?.content ?? "";
+    const formatted = {
+      [fileTest.data]: `${JSON.stringify(JSON.parse(data))}\n`,
+      [fileTest.test]: testFile.replaceAll('"', "'"),
+      [fileTest.harness]: "export const actual = (input: unknown) => input;\n",
+    };
+    expect(layoutFree(formatted[fileTest.data] ?? "")).toBe(layoutFree(data));
+    expect(await rowFileProblems(temp(formatted), files)).toEqual([]);
+    const tampered = { ...formatted, [fileTest.data]: (formatted[fileTest.data] ?? "").replace("macosx_11_0_arm64", "x") };
+    expect(await rowFileProblems(temp(tampered), files)).not.toEqual([]);
+  });
+});
