@@ -1,5 +1,5 @@
 import type { Schedule, ScheduleInput } from "./coordinator.js";
-import { type MockRoute, response } from "./mock-routes.js";
+import { type MockRoute, response } from "./mock-response.js";
 
 /** Each project's coordinator schedules in the mock; `when` is checked only roughly. */
 const schedules = new Map<string, Schedule[]>();

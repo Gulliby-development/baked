@@ -1,7 +1,7 @@
 import type { RunState } from "../../shared/api.js";
 import type { AcceptanceGate, WalkRecord } from "../screens/runs/acceptance.js";
 import type { SavedEstimate, Spec, TaskGraph } from "../screens/runs/model.js";
-import { type MockRoute, type MockStream, response } from "./mock-routes.js";
+import { type MockRoute, type MockStream, response } from "./mock-response.js";
 import type {
   ArtifactEntry,
   ComparedRun,

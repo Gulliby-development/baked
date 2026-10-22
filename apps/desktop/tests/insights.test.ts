@@ -8,7 +8,8 @@ import type {
   UsageGroup,
   UsageSummary,
 } from "../src/renderer/client/insights.ts";
-import { MOCK_ROUTES, type MockRequest } from "../src/renderer/client/mock-routes.ts";
+import type { MockRequest } from "../src/renderer/client/mock-response.ts";
+import { MOCK_ROUTES } from "../src/renderer/client/mock-routes.ts";
 import {
   budgetExtension,
   budgetFields,

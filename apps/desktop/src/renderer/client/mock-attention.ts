@@ -1,9 +1,6 @@
-import type { ApiResponse, AttentionItem, RunSnapshot } from "../../shared/api.js";
+import type { AttentionItem, RunSnapshot } from "../../shared/api.js";
 import type { DeliveryBody, RunRequest, RunWithRequests, SessionPrompts } from "./attention.js";
-import type { MockRoute } from "./mock-routes.js";
-
-// Not `response` from mock-routes.ts: that module imports this one.
-const response = (status: number, body: unknown): ApiResponse => ({ status, body });
+import { type MockRoute, response } from "./mock-response.js";
 
 const MINUTE = 60_000;
 const now = Date.now();

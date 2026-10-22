@@ -1,6 +1,6 @@
 import type { ApiResponse } from "../../shared/api.js";
 import type { GitAction, GitOverview } from "./git.js";
-import { type MockRequest, response } from "./mock-routes.js";
+import { type MockRequest, response } from "./mock-response.js";
 
 /**
  * The Git section in the preview bridge: a small repository per project whose status, branches

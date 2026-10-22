@@ -3,7 +3,7 @@
  * Instructions and Routing mockups. State is kept per project key for the life of the page.
  */
 import type { ApiResponse } from "../../shared/api.js";
-import type { MockRequest, MockRoute } from "./mock-routes.js";
+import { type MockRequest, type MockRoute, response } from "./mock-response.js";
 import type {
   CatalogSkill,
   ChatMemoryCleanupAction,
@@ -45,11 +45,6 @@ import type {
   RunMemoryView,
   SkillEntry,
 } from "./setup.js";
-
-// Local rather than imported: mock-routes.ts imports this module.
-function response(status: number, body: unknown): ApiResponse {
-  return { status, body };
-}
 
 const NOW = Date.now();
 const MIN = 60_000;

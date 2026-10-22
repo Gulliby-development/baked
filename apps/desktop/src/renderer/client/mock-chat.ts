@@ -20,7 +20,7 @@ import type {
   WatchStatus,
 } from "./chat.js";
 import type { ApprovalRules, LaunchedView, ProjectBrief } from "./coordinator.js";
-import { type MockRoute, type MockStream, response } from "./mock-routes.js";
+import { type MockRoute, type MockStream, response } from "./mock-response.js";
 
 /**
  * Sample chat sessions for the browser preview: a few sessions per sample project, one long

@@ -1,4 +1,4 @@
-import { type MockRoute, response } from "./mock-routes.js";
+import { type MockRoute, response } from "./mock-response.js";
 import type { InstalledPackage, PackagePlan } from "./packages.js";
 
 /** The one package folder the mock knows; any other path is not found. */
