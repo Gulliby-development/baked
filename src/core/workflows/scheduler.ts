@@ -114,6 +114,7 @@ import {
   failureSignature,
   outputCounts,
   TEST_FILE,
+  withinBaseline,
 } from "../verification/output-counts.js";
 import {
   carryNoRepro,
@@ -3092,7 +3093,7 @@ export class WorkflowScheduler {
         }
       }
       const owner = this.failureOwner(runId, state, task, ownerOutput);
-      if (["pending", "test-update", "finished"].includes(owner.kind)) return false;
+      if (["pending", "test-update", "creates", "finished"].includes(owner.kind)) return false;
       failed.push({ id: check.id, output });
     }
     if (!failed.length) return false;
@@ -3866,6 +3867,7 @@ export class WorkflowScheduler {
     state: RuntimeState,
     check: Check,
     output: string,
+    subset = false,
   ): boolean {
     const artifact = this.store.latestArtifact(runId, CHECK_BASELINE_PATH);
     if (!artifact) return false;
@@ -3875,7 +3877,10 @@ export class WorkflowScheduler {
       }
     ).failures?.[commandKey(check)];
     // A failure without output tells nothing about its cause, so it is never matched.
-    return !!before && before === failureSignature(output, runRoot(this.store.workspace, state));
+    if (!before) return false;
+    const after = failureSignature(output, runRoot(this.store.workspace, state));
+    // With `subset`, a failure that only lost diagnostics the baseline had is still that debt (#1913).
+    return before === after || (subset && withinBaseline(before, after));
   }
   /** The IDs of the required checks that failed before any change, from the check baseline. */
   private baselineFailingChecks(runId: string, policy: RunPolicy): string[] {
@@ -10688,12 +10693,14 @@ ${note}`;
     // The check fails exactly as before any change and names no file the task writes: the task
     // did not cause it and a correction could not reach it (dur 741547f0: Biome rejected the
     // scaffold's `biome.json`, which no task writes; T004 spent 38k tokens on `src/duration.ts`,
-    // #1218). The checks stage still runs the check and stops with `baseline_failure`.
+    // #1218). It may also report only some of the baseline's diagnostics: a folder the task created
+    // took its error away (#1913). The checks stage still runs the check and stops with
+    // `baseline_failure` on an exact match.
     if (
       checked.status === "failed" &&
       checked.output &&
       !failingFilesInOutput(checked.output, [task]).length &&
-      this.failsAsBaseline(runId, state, check, checked.output)
+      this.failsAsBaseline(runId, state, check, checked.output, true)
     )
       return undefined;
     const owner =
@@ -10731,7 +10738,8 @@ ${note}`;
       );
       return undefined;
     }
-    const updaters = owner?.kind === "test-update" ? owner.owners : [];
+    // A check that names paths a later task creates (#1913) is that task's to pass, the same way.
+    const updaters = owner?.kind === "test-update" || owner?.kind === "creates" ? owner.owners : [];
     if (updaters.length) {
       // mdtoc-update (bench round 14): the change breaks expectations a later task of the plan
       // updates; a corrective task rewrote that task's tests. That task's own checks run them.
@@ -11146,7 +11154,7 @@ ${note}`;
         const owner = this.failureOwner(runId, state, task, checked.output ?? "", {
           crossProfile: true,
         });
-        if (owner.kind === "test-update" || owner.kind === "pending") {
+        if (owner.kind === "test-update" || owner.kind === "creates" || owner.kind === "pending") {
           ran.push({ checkId: check.id, status: checked.status, evidenceId: checked.evidenceId });
           handoffs.push({
             checkId: check.id,
@@ -11179,7 +11187,7 @@ ${note}`;
       const owner = this.failureOwner(runId, state, task, checked.output ?? "", {
         crossProfile: true,
       });
-      if (owner.kind === "test-update" || owner.kind === "pending") {
+      if (owner.kind === "test-update" || owner.kind === "creates" || owner.kind === "pending") {
         handoffs.push({ checkId: check.id, evidenceId: checked.evidenceId, owners: owner.owners });
         continue;
       }
@@ -11308,7 +11316,7 @@ ${note}`;
       const output = check ? this.commandOutput(runId, finding.evidenceIds) : null;
       if (!check || !output) return false;
       const owner = this.failureOwner(runId, state, task, output);
-      if (["pending", "test-update", "finished"].includes(owner.kind)) return false;
+      if (["pending", "test-update", "creates", "finished"].includes(owner.kind)) return false;
       const regression = finding.claim.includes(" broke existing tests: ");
       const touched =
         graph !== null &&

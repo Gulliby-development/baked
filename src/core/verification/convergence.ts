@@ -341,6 +341,76 @@ export function noTestsCollected(output: string): boolean {
 }
 
 /**
+ * The "path does not exist" lines of the gates that take path arguments, each capturing the path
+ * (#1913). A gate that names a folder a later task creates (`ruff check src tests` before the test
+ * task) fails with only this until that task runs. A new lint or test gate that takes paths adds
+ * its form here, with a case in `tests/missing-path-owner.test.ts`.
+ */
+export const MISSING_PATH_LINES: readonly { tool: string; line: RegExp }[] = [
+  // ruff: `E902 No such file or directory (os error 2)` then `--> tests:1:1`; older ruff and
+  // flake8 put the path first: `tests:0:1: E902 FileNotFoundError: [Errno 2] ...`.
+  { tool: "ruff", line: /^\s*-->\s+(\S+?):\d+:\d+\s*$/ },
+  { tool: "ruff, flake8", line: /^(\S+?):\d+:\d+:\s+E902\b/ },
+  { tool: "mypy", line: /\bcan't read file '([^']+)'/ },
+  { tool: "black", line: /\bPath '([^']+)' does not exist/ },
+  { tool: "pytest", line: /\bfile or directory not found:\s+(\S+)/ },
+  { tool: "eslint", line: /\bNo files matching the pattern "([^"]+)"/ },
+  {
+    tool: "phpstan",
+    line: /^\s*(?:\S+\s+)?(?:Path|The file|File)\s+'?([^'\s]+)'?\s+(?:does not|doesn't) exist/i,
+  },
+  { tool: "go", line: /\bstat\s+(\S+):\s+directory not found/ },
+  { tool: "go", line: /"(\S+?)" matched no packages/ },
+  { tool: "go", line: /\bdirectory\s+(\S+)\s+(?:does not exist|not found)/ },
+  { tool: "luacheck", line: /^Checking\s+(\S+)\s+I\/O error/ },
+];
+
+/** Whether an E902 error comes just before ruff's `-->` location line at `index`. */
+const ruffMissing = (lines: readonly string[], index: number): boolean =>
+  lines
+    .slice(Math.max(0, index - 3), index)
+    .some((line) => /\bE902\b|No such file or directory/.test(line));
+
+/**
+ * The planned files under a path a check's output says does not exist: the path itself when it is
+ * a planned write, or the planned writes it is a folder of (#1913). A failure that names only such
+ * paths is the task's that writes them, not the task that ran the check. `./`, a trailing `/` or
+ * `/...` and an absolute prefix (`stat /w/tests`) are ignored.
+ */
+export function missingPlannedPaths(
+  output: string,
+  tasks: readonly Pick<Task, "writes">[],
+): string[] {
+  const lines = output.replaceAll("\\", "/").split(/\r?\n/);
+  const named = new Set<string>();
+  lines.forEach((line, index) => {
+    for (const { tool, line: pattern } of MISSING_PATH_LINES) {
+      const path = pattern.exec(line)?.[1];
+      // The `-->` location line names a missing path only right after an E902 error.
+      if (!path || (tool === "ruff" && !ruffMissing(lines, index))) continue;
+      const clean = path
+        .replace(/^\.\//, "")
+        .replace(/\/\.\.\.$/, "")
+        .replace(/\/+$/, "");
+      if (clean && clean !== ".") named.add(clean);
+    }
+  });
+  if (!named.size) return [];
+  const planned = unique(
+    tasks.flatMap((t) => t.writes.filter((w) => w.action !== "delete").map((w) => w.path)),
+  );
+  // An absolute path (`stat /w/tests`) holds a planned folder at its end; a relative one is exact.
+  const holds = (missing: string, dir: string) =>
+    missing === dir || (/^(?:\/|[A-Za-z]:\/)/.test(missing) && missing.endsWith(`/${dir}`));
+  return planned.filter((path) =>
+    [...named].some((missing) => {
+      const parts = path.split("/");
+      return parts.some((_, i) => holds(missing, parts.slice(0, i + 1).join("/")));
+    }),
+  );
+}
+
+/**
  * A corrective task's title: what its first finding claims, not the finding's id. Reports listed
  * tasks such as "Correct 2f2d7618-1056-452e-a487-c9c888b7e163" that said nothing (#1146).
  */

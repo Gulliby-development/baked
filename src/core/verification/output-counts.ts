@@ -434,3 +434,15 @@ export function failureSignature(output: string, root: string): string {
     .trim();
   return growingCounts(text);
 }
+
+/**
+ * Whether a failure signature reports nothing the baseline's did not: every line of `after` is a
+ * line of `before`. A folder a task creates removes its error from a check that named two missing
+ * folders (`ruff check src tests`: E902 on `src` and `tests`, then on `tests` only), and the rest
+ * is still the debt from before the run (#1913).
+ */
+export function withinBaseline(before: string, after: string): boolean {
+  const lines = new Set(before.split("\n"));
+  const found = after.split("\n").filter(Boolean);
+  return found.length > 0 && found.every((line) => lines.has(line));
+}
