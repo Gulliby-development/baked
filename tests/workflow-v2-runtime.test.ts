@@ -342,14 +342,14 @@ describe("workflow v2 scheduler", () => {
     expect(state.gateResults.check?.status).toBe("passed");
     const completion = service.store.artifacts(run.runId).find((a) => a.logical_path === "completion.json");
     expect(completion).toBeDefined();
-  }, 30000);
+  });
 
   test("the shipped quick-fix preset runs with the project's checks", async () => {
     const { start, complete, service } = setup();
     const run = await start("quick-fix");
     expect((await complete(run.runId)).status).toBe("completed");
     expect(service.store.checks(run.runId).map((c) => c.check_id)).toEqual(["check"]);
-  }, 30000);
+  });
 
   test("the fix-ci preset hands the failing output to research and verifies with the same check", async () => {
     const loud = {
@@ -369,7 +369,7 @@ describe("workflow v2 scheduler", () => {
     const taken = ofType(events(service, run.runId), "transition.taken").map((e) => e.payload.transitionId);
     expect(taken[0]).toBe("reproduce-research");
     expect(taken.at(-1)).toBe("verify-done");
-  }, 30000);
+  });
 
   test("the fix-ci preset ends without changes when the checks already pass", async () => {
     const { root, start, complete, executor, service } = setup();
@@ -378,7 +378,7 @@ describe("workflow v2 scheduler", () => {
     expect((await complete(run.runId)).status).toBe("completed");
     expect(executor.calls).toEqual([]);
     expect(service.store.checks(run.runId).map((c) => `${c.check_id}:${c.status}`)).toEqual(["check:passed"]);
-  }, 30000);
+  });
 
   test("rejecting an approval with a note sends the resumed run back to specify with the note", async () => {
     const { start, drive, service, executor, pending } = setup();
@@ -396,7 +396,7 @@ describe("workflow v2 scheduler", () => {
     expect(service.store.state(run.runId).revisedRejections).toEqual([first.id]);
     const approvals = service.store.requests(run.runId).filter((r) => r.kind === "approval");
     expect(approvals.map((r) => r.status)).toEqual(["rejected", "pending"]);
-  }, 30000);
+  });
 
   test("a plan finding from analysis goes back to the plan stage once before a person", async () => {
     const { start, drive, service, executor } = setup({ analysisFindings: 1 });
@@ -405,7 +405,7 @@ describe("workflow v2 scheduler", () => {
     expect(executor.calls).toEqual(["research", "spec", "plan", "analysis", "plan", "analysis"]);
     expect(executor.prompts[4]).toContain("Analysis findings on the plan");
     expect(service.store.state(run.runId).position?.visits.plan).toBe(2);
-  }, 30000);
+  });
 
   test("under clarification: assume a spec finding from analysis goes back to specify", async () => {
     const { start, drive, service, executor } = setup(
@@ -420,7 +420,7 @@ describe("workflow v2 scheduler", () => {
     const position = service.store.state(run.runId).position;
     expect(position?.visits.specify).toBe(2);
     expect(position?.stageId).toBe("approve");
-  }, 30000);
+  });
 
   test("under clarification: assume a finding that survives the loop-backs is recorded as an assumption", async () => {
     const { start, drive, service, executor } = setup({ analysisFindings: 3 }, { ...policy, clarification: "assume" });
@@ -429,7 +429,7 @@ describe("workflow v2 scheduler", () => {
     expect(executor.calls).toEqual(["research", "spec", "plan", "analysis", "plan", "analysis", "plan", "analysis"]);
     expect(service.store.requests(run.runId).some((r) => r.kind === "clarification")).toBe(false);
     expect(service.store.artifacts(run.runId).some((x) => x.logical_path === "assumptions/analysis.json")).toBe(true);
-  }, 30000);
+  });
 
   test("under clarification: assume a scope finding that survives the loop-backs goes to a person", async () => {
     const { start, drive, executor } = setup(
@@ -439,14 +439,14 @@ describe("workflow v2 scheduler", () => {
     const run = await start("standard");
     expect((await drive(run.runId)).reason).toBe("clarification");
     expect(executor.calls.filter((c) => c === "analysis").length).toBeGreaterThanOrEqual(2);
-  }, 30000);
+  });
 
   test("without clarification: assume a spec finding from analysis goes to a person", async () => {
     const { start, drive, executor } = setup({ analysisFindings: 1, findingKind: "ambiguity", findingRefs: ["spec.json:FR-001"] });
     const run = await start("standard");
     expect((await drive(run.runId)).reason).toBe("clarification");
     expect(executor.calls).toEqual(["research", "spec", "plan", "analysis"]);
-  }, 30000);
+  });
 
   // Runs de6cf1ab and 2fa658c0 used up their repair rounds on ever deeper medium findings while
   // every check passed. A medium finding after the first round is recorded, not repaired.
@@ -458,7 +458,7 @@ describe("workflow v2 scheduler", () => {
     expect(final.status).toBe("completed");
     expect(executor.calls.filter((c) => c === "review")).toHaveLength(2);
     expect(service.store.run(run.runId).review_rounds).toBe(1);
-  }, 30000);
+  });
 
   // R12 dirdrift-update 6b57dc61 completed with AC-005 failing: its spec-based medium finding, which
   // the reviewer's repro confirmed, arrived after the first round and became a note (#801).
@@ -470,7 +470,7 @@ describe("workflow v2 scheduler", () => {
     expect(final.status).toBe("completed");
     expect(executor.calls.filter((c) => c === "review")).toHaveLength(3);
     expect(service.store.run(run.runId).review_rounds).toBe(2);
-  }, 30000);
+  });
 
   test("below the floor, an inferred finding stays a note even with a repro", async () => {
     const { start, complete, service } = setup({ reviewVerdict: "changes_requested", reviewRounds: 2, reviewFinding: { kind: "partial", basis: "inferred" } });
@@ -479,7 +479,7 @@ describe("workflow v2 scheduler", () => {
     expect(lastError(service, run.runId)).toBe("");
     expect(final.status).toBe("completed");
     expect(service.store.run(run.runId).repair_rounds).toBe(0);
-  }, 30000);
+  });
 
   // R13 envguard-update f67dcde0 (`quick`): reviews with no finding left AC-001 inconclusive and the
   // run blocked, since quick has no converge stage; a resume paid 205k for the word `pass` (#841).
@@ -493,7 +493,7 @@ describe("workflow v2 scheduler", () => {
     const limitations = service.store.state(run.runId).limitations;
     expect(limitations.map((l) => [l.findingId, l.criterionIds, l.decidedBy])).toEqual([["review-inconclusive-correctness-AC-001", ["AC-001"], "notes"]]);
     expect(limitations[0]?.claim).toContain("No proven correctness defects");
-  }, 30000);
+  });
 
   test("in quick, an inconclusive review with a finding still blocks", async () => {
     const { start, complete, service } = setup({ reviewInconclusive: true, inconclusiveFinding: true });
@@ -501,7 +501,7 @@ describe("workflow v2 scheduler", () => {
     const final = await complete(run.runId);
     expect(final.status).toBe("blocked");
     expect(lastError(service, run.runId)).toContain("review inconclusive");
-  }, 30000);
+  });
 
   // Run 936ddfa5 blocked on "Coverage is incomplete" after round 1: the only finding for the
   // failing criteria was medium, below the floor. It still repairs, since acceptance needs a pass.
@@ -578,7 +578,7 @@ describe("workflow v2 scheduler", () => {
     const report = runReport(service.store, run.runId);
     expect(report).toContain("## Review notes");
     expect(report).toContain("inferred edge case");
-  }, 30000);
+  });
 
   // Run 5b703388 corrected a regex claim that holds in Python but not in JavaScript (#155).
   test("a review finding whose repro does not show the claim is a note", async () => {
@@ -596,7 +596,7 @@ describe("workflow v2 scheduler", () => {
     const record = service.store.artifacts(run.runId).find((a) => a.kind === "repro");
     expect(service.store.readArtifact(run.runId, record?.id ?? "")).toContain('"status":"refuted"');
     expect(service.store.state(run.runId).reviewNotes.map((n) => n.reason)).toEqual(["repro"]);
-  }, 30000);
+  });
 
   test("a correctness finding without a repro is a note", async () => {
     const { start, complete, service } = setup({
@@ -608,7 +608,7 @@ describe("workflow v2 scheduler", () => {
     expect(lastError(service, run.runId)).toBe("");
     expect(final.status).toBe("completed");
     expect(service.store.run(run.runId).repair_rounds).toBe(0);
-  }, 30000);
+  });
 
   test("an inferred security finding still starts a correction", async () => {
     const { start, complete, service } = setup({
@@ -620,7 +620,7 @@ describe("workflow v2 scheduler", () => {
     expect(lastError(service, run.runId)).toBe("");
     expect(final.status).toBe("completed");
     expect(service.store.run(run.runId).review_rounds).toBe(1);
-  }, 30000);
+  });
 
   test("a failed check takes the bounded repair loop back to the tasks stage", async () => {
     const { start, complete, service, define } = setup({ broken: 1 });
@@ -633,7 +633,7 @@ describe("workflow v2 scheduler", () => {
     expect(taken).toEqual(["plan-approve:passed", "approve-implement:passed", "implement-checks:passed", "checks-repair:failed", "implement-checks:passed", "checks-done:passed"]);
     expect(service.store.state(run.runId).position?.loops).toEqual({ "checks-repair": 1 });
     expect(service.store.tasks(run.runId).map((t) => t.id)).toEqual(["T001", "T002"]);
-  }, 30000);
+  });
 
   // Bench round 58, wheeltags 9ed8820c (#1864): pytest exits 5 on a tree with no test, and the
   // plan of a feature whose tests belong to another feature writes none, so no repair can help.
@@ -651,7 +651,7 @@ describe("workflow v2 scheduler", () => {
     const diagnostic = service.store.artifacts(run.runId).find((a) => a.logical_path.startsWith("checks/no-tests/"));
     expect(service.store.readArtifact(run.runId, diagnostic?.id ?? "")).toContain("tests collected no test and this run's plan writes none");
     expect(service.store.tasks(run.runId).map((t) => t.id)).toEqual(["T001"]);
-  }, 30000);
+  });
 
   // #853: the repair of a failed task check read the definition with the schema-1 parser, so a
   // run of any preset blocked with a schema error instead of correcting the task. #866: without a
@@ -687,7 +687,7 @@ describe("workflow v2 scheduler", () => {
       };
       expect(probe.sizingModel(run.runId, service.store.state(run.runId).graph)).toBe("routed/model");
       expect(routed).toEqual(["implement"]);
-    }, 30000);
+    });
   }
 
   // A check whose fixer resolves what it reports passes without a repair task (#235).
@@ -721,7 +721,7 @@ describe("workflow v2 scheduler", () => {
     expect(uncommittedEdits(service.store, run.runId).map((e) => e.id)).toEqual(fixes.map((e) => e.id));
     await service.undo(run.runId, { commandId: newId(), expectedRevision: (await service.get(run.runId)).revision });
     expect(readFileSync(join(root, "value.txt"), "utf8")).toBe("broken");
-  }, 30000);
+  });
 
   test("a failure the fixer cannot resolve still becomes a repair task", async () => {
     const fixable: RunPolicy = { ...policy, checks: [{ ...valueCheck, fix: fixer("still broken") }] };
@@ -735,7 +735,7 @@ describe("workflow v2 scheduler", () => {
     expect(final.status).toBe("completed");
     expect(service.store.tasks(run.runId).map((t) => t.id)).toEqual(["T001", "T002"]);
     expect(service.store.checks(run.runId).map((c) => `${c.check_id}:${c.status}`)).toEqual(["check:failed", "check:failed", "check:passed"]);
-  }, 30000);
+  });
 
   test("the v1 check stage runs the fixer before repairing", async () => {
     const fixable: RunPolicy = { ...policy, checks: [{ ...valueCheck, fix: fixer("ready") }] };
@@ -764,7 +764,7 @@ describe("workflow v2 scheduler", () => {
     const taken = ofType(events(service, run.runId), "transition.taken").map((e) => `${e.payload.transitionId}:${e.payload.outcome}`);
     expect(taken).toContain("checks-repair:failed");
     expect(service.store.checks(run.runId).map((c) => `${c.check_id}:${c.status}`)).toEqual(["check:failed", "slow:inconclusive", "check:passed", "slow:passed"]);
-  }, 30000);
+  });
 
   test("V2-08 the visit cap stops a run that would loop on", async () => {
     const { start, complete, service, define } = setup({ broken: 5 });
@@ -776,7 +776,7 @@ describe("workflow v2 scheduler", () => {
     expect(lastError(service, run.runId)).toContain("4 stage visits");
     // The rejected transition left no corrective task behind.
     expect(service.store.tasks(run.runId).map((t) => t.id)).toEqual(["T001"]);
-  }, 30000);
+  });
 
   test("V2-08 a loop stops at its maxIterations", async () => {
     const loose = { ...policy, maxConvergenceRounds: 3 };
@@ -831,7 +831,7 @@ describe("workflow v2 scheduler", () => {
     expect(finished.map((g) => `${g.gateId}:${g.status}:${g.mode}`)).toEqual(["check:passed:required", "second-time:passed:required", "always-fails:failed:advisory"]);
     expect(finished.find((g) => g.gateId === "second-time")).toMatchObject({ attempts: 2, flaky: true });
     expect(service.store.checks(run.runId).filter((c) => c.check_id === "second-time").map((c) => c.status)).toEqual(["failed", "passed"]);
-  }, 30000);
+  });
 
   test("V2-09 transition gates stop at the first required failure and block", async () => {
     const { start, complete, service, define, gate } = setup();
@@ -846,7 +846,7 @@ describe("workflow v2 scheduler", () => {
     expect(final.status).toBe("blocked");
     expect(service.store.run(run.runId).reason).toBe("verification_failed");
     expect(service.store.checks(run.runId).map((c) => c.check_id)).toEqual(["check", "gate-fails"]);
-  }, 30000);
+  });
 
   test("V2-09 a human gate on a transition waits for evidence and then lets the run finish", async () => {
     const { start, complete, service, define, gate, pending } = setup();
@@ -870,7 +870,7 @@ describe("workflow v2 scheduler", () => {
     await service.decide(run.runId, { commandId: newId(), expectedRevision: snapshot.revision }, { kind: "manual-evidence", requestId: request?.id ?? "", criterionId: "gate-signoff", accepted: true, evidence: "Checked by hand" });
     expect((await complete(run.runId)).status).toBe("completed");
     expect(service.store.state(run.runId).gateResults.signoff?.status).toBe("passed");
-  }, 30000);
+  });
 
   test("V2-10 the effective mode of a gate is part of the approval digest", async () => {
     const digests: string[] = [];
@@ -887,7 +887,7 @@ describe("workflow v2 scheduler", () => {
     }
     expect(digests[0]).toHaveLength(64);
     expect(digests[1]).not.toBe(digests[0]);
-  }, 30000);
+  });
 
   test("a spike researches and reports without an approval or a file change", async () => {
     const { start, complete, executor, service, root } = setup();
@@ -899,7 +899,7 @@ describe("workflow v2 scheduler", () => {
     const body = JSON.parse(service.store.readArtifact(run.runId, completion?.id ?? "")) as { report: { recommendation: { kind: string } } };
     expect(body.report.recommendation.kind).toBe("proceed");
     expect(() => readFileSync(join(root, "value.txt"))).toThrow();
-  }, 30000);
+  });
 
   test("review only reviews the working tree diff and reports findings without repairing", async () => {
     const { start, complete, executor, service, root } = setup({ reviewVerdict: "changes_requested" });
@@ -927,7 +927,7 @@ describe("workflow v2 scheduler", () => {
     expect(taken).toEqual(["review-findings"]);
     expect(readFileSync(join(root, "value.txt"), "utf8")).toBe("ready");
 
-  }, 30000);
+  });
 });
 
 describe("a stopped convergence asks for a decision", () => {
@@ -1361,7 +1361,7 @@ describe("workflow v2 auto approval", () => {
     expect(approval?.status).toBe("accepted");
     expect(approval?.actor).toBe("auto-approval");
     expect(fixture.service.store.run(run.runId).approval_digest).toBe(approval?.digest ?? "");
-  }, 30000);
+  });
 
   test("V2-12 outside the limits the run waits for a person", async () => {
     const fixture = setup();
@@ -1370,7 +1370,7 @@ describe("workflow v2 auto approval", () => {
     expect((await fixture.drive(run.runId)).status).toBe("waiting");
     const body = JSON.parse(fixture.pending(run.runId, "approval")?.body_json ?? "{}") as { autoApproval: { declined: string[] } };
     expect(body.autoApproval.declined).toContain("Limits: value.txt is outside the allowed paths");
-  }, 30000);
+  });
 
   test("a human approval stage ignores auto approval in the project policy", async () => {
     const auto = { ...policy, autoApproval: { renewal: false, limits: { maxTasks: 3, maxFiles: 5, allowedPaths: ["**"], allowDelete: false, allowNewDependencies: false as const, maxTotalTokens: defaultWorkflowPolicy.maxTotalTokens } } };
@@ -1380,7 +1380,7 @@ describe("workflow v2 auto approval", () => {
     expect(JSON.parse(fixture.service.store.run(run.runId).policy_json).autoApproval).toBeNull();
     expect((await fixture.drive(run.runId)).status).toBe("waiting");
     expect(fixture.pending(run.runId, "approval")).toBeDefined();
-  }, 30000);
+  });
 });
 
 describe("wait stage", () => {
@@ -1431,7 +1431,7 @@ describe("wait stage", () => {
     const progress = ofType(list, "wait.progress").map((e) => e.payload);
     expect(progress[0]).toMatchObject({ stageId: "wait-ready", pending: ["ready"], polls: 0, intervalSeconds: 5 });
     expect(progress.at(-1)?.pending).toEqual([]);
-  }, 30000);
+  });
 
   test("a wait that times out takes its failed edge, and without one blocks the run", async () => {
     const fixture = setup();
@@ -1450,7 +1450,7 @@ describe("wait stage", () => {
     const blocked = await strict.start("wait-only");
     expect((await strict.drive(blocked.runId)).status).toBe("blocked");
     expect(strict.service.store.run(blocked.runId).reason).toBe("verification_failed");
-  }, 30000);
+  });
 
   test("time asleep between polls does not count against the active time limit", async () => {
     // The limit leaves room for the gate's process starts on a slow runner (a 1000 ms limit
@@ -1472,7 +1472,7 @@ describe("wait stage", () => {
     const run = await start("wait-only");
     expect((await drive(run.runId)).status).toBe("completed");
     expect(service.store.run(run.runId).active_ms).toBeLessThan(limit);
-  }, 30000);
+  });
 
   test("a resumed wait keeps its deadline, and a cancel stops it at once", async () => {
     const { start, drive, service, define, gate } = setup();
@@ -1510,5 +1510,5 @@ describe("wait stage", () => {
     await stopping;
     expect(performance.now() - started).toBeLessThan(5000);
     expect(position()?.wait?.deadlineAt).toBe(deadline);
-  }, 30000);
+  });
 });

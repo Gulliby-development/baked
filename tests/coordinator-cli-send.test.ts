@@ -64,7 +64,7 @@ describe("coordinator send (scripted scenario)", () => {
     expect(await talkToCoordinator(chat, coordinator, "clean up", { json: true, yes: true, follow: true }, allowed.io)).toBe(0);
     const result = JSON.parse(allowed.out()) as { sessionId: string; reply: string; launched: unknown[] };
     expect(result).toMatchObject({ sessionId: coordinator.id, reply: "removed build.", launched: [] });
-  }, 30_000);
+  });
 
   test("a terminal answer decides the prompt", async () => {
     const { chat } = service(new ScriptedChatHost({ delayMs: 1, turns: [destructiveTurn] }));
@@ -77,7 +77,7 @@ describe("coordinator send (scripted scenario)", () => {
     await talkToCoordinator(chat, coordinator, "clean up", { json: false, yes: false, follow: true }, io.io);
     expect(asked[0]).toContain("rm -rf build");
     expect(io.out()).toContain("removed build.");
-  }, 30_000);
+  });
 
   test("follows a launched session until it finishes and prints its news", async () => {
     const { root, chat } = service(
@@ -113,7 +113,7 @@ describe("coordinator send (scripted scenario)", () => {
     expect(io.out()).toContain("Started it.");
     expect(io.err()).toContain('Session "Survey auth": done');
     expect(io.err()).toContain('○ Session "Survey auth": done');
-  }, 30_000);
+  });
 });
 
 describe("coordinator send follows a launched run's stages (scripted scenario)", () => {
@@ -154,7 +154,7 @@ describe("coordinator send follows a launched run's stages (scripted scenario)",
     ]);
     expect(io.err()).toContain('Run "Fix CI": completed');
     expect(io.err()).toContain('○ Run "Fix CI" [fix-ci]: completed · 10 tokens\n  ✓ reproduce  ✓ tasks  ✓ check  (tasks 2/2)');
-  }, 30_000);
+  });
 });
 
 describe("coordinator CLI helpers", () => {

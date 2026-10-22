@@ -35,7 +35,7 @@ test("scenario: an empty Python multi_edit match returns without blocking the dr
   expect(result.status).toBe(0);
   expect(JSON.parse(result.stdout)).toMatchObject({ success: false, error: "empty oldString (0 edits applied)" });
   expect(readFileSync(file, "utf8")).toBe(original);
-}, 30000);
+});
 
 /** Completed model steps survive a driver disappearing before its final response. */
 class ScriptedExecutor extends FixtureExecutor {

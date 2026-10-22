@@ -575,7 +575,7 @@ describe("scenario: an initiative budget shared by estimated need (#1311)", () =
     expect(view.next.message).toMatch(/^The shared budget is short: core has \d+ tokens available after reserving the other waiting features' low estimates, below its estimate of \d+-\d+\. /);
     expectRecovery(view.next.message, view.next.recovery, "extend");
     expect(view.features.every((f) => f.runId === null)).toBe(true);
-  }, 30000);
+  });
 
   test("tokens are shared by estimated need and a run grows only into what the others do not need", async () => {
     const t = await measured();
@@ -590,7 +590,7 @@ describe("scenario: an initiative budget shared by estimated need (#1311)", () =
     const started = await t.initiatives.drive("second", new AbortController().signal);
     const run = t.workflows.store.run(t.featureOf(started, "core").runId ?? "");
     expect(JSON.parse(run.policy_json).sizing.maxRunTokens).toBe(view.budget.remaining.tokens - reserve);
-  }, 30000);
+  });
   // Bench round 37, ranktally (#1376): a project's first initiative had no finished features of its
   // own, so the path rate of #1354 could not floor the estimate shown at the split approval. The
   // finished features of the stores in sizing.historyStores now count.
@@ -607,7 +607,7 @@ describe("scenario: an initiative budget shared by estimated need (#1311)", () =
     const alone = setup();
     await alone.start({ plan: threeFeatures });
     expect(alone.initiatives.estimate("values")).toMatchObject({ perPath: null, perPathSamples: { features: 0, shared: 0 } });
-  }, 30000);
+  });
   // Bench round 40, tonemath (#1464): core listed the stubs later features filled, so a finished
   // core counted its whole cost against paths it only created placeholders for.
   test("a finished feature's placeholder paths count at their share in the measured path rate", async () => {
@@ -629,7 +629,7 @@ describe("scenario: an initiative budget shared by estimated need (#1311)", () =
     // Core's 140k over one file and one stub is 105k a path, the median; two full paths said 70k.
     const sorted = [...rates].sort((a, b) => a - b);
     expect(fresh.initiatives.estimate("values")?.perPath).toEqual({ low: sorted[0] ?? 0, high: Math.round(sorted[1] ?? 0) });
-  }, 30000);
+  });
 });
 
 // Bench round 32, notesift (#1317): each feature run had its own $8 cap and nothing added the
@@ -659,7 +659,7 @@ describe("scenario: an initiative dollar budget (#1317)", () => {
     expect([policy.maxCostUsd, policy.costTolerance]).toEqual([1.2, 0.1]);
     expect(t.featureOf(driven, "core").spentUsd).toBeGreaterThan(0);
     expect(driven.budget.cost.spentUsd).toBe(Math.round(driven.features.reduce((sum, f) => sum + f.spentUsd, 0) * 100) / 100);
-  }, 30000);
+  });
 
   // Bench rounds 48 to 50 (#1659): every forecast stop came after one or two accepted features
   // and was 1.3 to 3.1 times what the initiative then cost.
@@ -682,7 +682,7 @@ describe("scenario: an initiative dollar budget (#1317)", () => {
     expect(next.runId).not.toBeNull();
     expect(JSON.parse(t.workflows.store.run(next.runId ?? "").policy_json).costForecast).toBe("advise");
     expect(view.next.message).not.toContain("cost forecast");
-  }, 30000);
+  });
 
   test("with forecastStop on, a forecast above the cap stops the next feature until the cap is raised", async () => {
     const t = setup(threeFeatures, 20_000);
@@ -710,7 +710,7 @@ describe("scenario: an initiative dollar budget (#1317)", () => {
     await expect(t.initiatives.extendBudget("values", t.id(), { maxCostUsd: 1 })).rejects.toThrow("can only be raised");
     view = await t.drive();
     expect(t.featureOf(view, waiting[0]!.id).runId).not.toBeNull();
-  }, 30000);
+  });
 
   // Bench round 42 (#1505): the re-forecast priced the features still to run at every run's
   // dollars over every run's tokens, the decompose run and unpriced held tokens included.
@@ -750,7 +750,7 @@ describe("scenario: an initiative dollar budget (#1317)", () => {
     expect(view.budget.cost.spentUsd).toBeGreaterThan(usd);
     const spent = usd + store.costUsage(decompose).spentUsd;
     expect(view.budget.cost.forecastUsd).toBe(Math.round((spent + (usd / tokens) * left) * 100) / 100);
-  }, 30000);
+  });
 
   test("costForecast off in the base policy keeps only the shares", async () => {
     const t = setup(threeFeatures, 20_000);
@@ -760,7 +760,7 @@ describe("scenario: an initiative dollar budget (#1317)", () => {
     const view = await t.drive();
     expect(view.budget.cost.forecastUsd).toBeNull();
     expect(t.featureOf(view, "api").runId).not.toBeNull();
-  }, 30000);
+  });
 
   test("a dollar share below one cent stops the feature before it starts", async () => {
     const t = setup(threeFeatures, 20_000);
@@ -770,7 +770,7 @@ describe("scenario: an initiative dollar budget (#1317)", () => {
     expect(view.next.message).toMatch(/^The shared dollar budget is exhausted: core would start with \$0\.00 of the \$0\.02 cap/);
     expectRecovery(view.next.message, view.next.recovery, "extend");
     expect(view.features.every((f) => f.runId === null)).toBe(true);
-  }, 30000);
+  });
 
   test("the CLI takes the dollar cap, its tolerance and raises it with extend", () => {
     const args = parseInitiativeArgs(["start", "big", "--prompt", "x", "--budget-usd", "32.5", "--cost-tolerance", "auto"]);
@@ -808,7 +808,7 @@ describe("scenario: a starting feature's calls and time grow into what the other
     const view = await t.drive();
     const run = JSON.parse(t.workflows.store.run(t.featureOf(view, "core").runId ?? "").policy_json);
     expect([run.maxActiveMs, run.maxAgentCalls]).toEqual([Math.floor(ms), Math.floor(calls)]);
-  }, 30000);
+  });
 
   test("a budget far above the per-run limits leaves each feature its own share", async () => {
     const t = setup();
@@ -819,7 +819,7 @@ describe("scenario: a starting feature's calls and time grow into what the other
     const run = JSON.parse(t.workflows.store.run(t.featureOf(view, "core").runId ?? "").policy_json);
     // The floors are the other features' whole shares here, so nothing is left to grow into.
     expect([run.maxActiveMs, run.maxAgentCalls]).toEqual([share?.activeMs, share?.calls]);
-  }, 30000);
+  });
 });
 
 describe("initiative runtime", () => {
@@ -945,7 +945,7 @@ describe("initiative runtime", () => {
     expect(definition.stages.find((s) => s.id === "approve")?.decision).toBe("auto");
     expect(t.workflows.store.requests(release).find((r) => r.kind === "approval")?.actor).toBe("auto-approval");
     expect(JSON.parse(run.policy_json).autoApproval.limits.allowedPaths).toEqual(["release.txt", "LICENSE"]);
-  }, 30000);
+  });
 
   test("glob boundaries are of unknown size: the decomposer's broad features are neither merged nor moved to quick (#1405)", async () => {
     // The decomposer gives boundaries as globs; `src/parser/**` is one entry and any number of
@@ -1008,7 +1008,7 @@ describe("initiative runtime", () => {
       if (waiting?.featureId) await t.approveFeature(waiting.featureId);
     }
     expect(view.status).toBe("completed");
-  }, 30000);
+  });
 
   test("with lightContracts a small feature others depend on runs quick, and its dependent pins the host-made contract (#1664)", async () => {
     // Bench round 50, selwhy: one-file command features that the cli feature joined ran sdd, and
@@ -1281,7 +1281,7 @@ describe("initiative runtime", () => {
       "core:replan",
       "api:rebase",
     ]);
-  }, 30000);
+  });
 
   test("the shared budget is split equally between features of the same size", async () => {
     // One workflow for all three, so their estimates, and so their token shares, are the same.
@@ -1389,7 +1389,7 @@ describe("initiative runtime", () => {
     await t.approveFeature("api");
     view = await t.drive();
     expect(view.status).toBe("completed");
-  }, 30000);
+  });
 
   test("a tiered feature without boundary paths asks a person and says why (#1467)", async () => {
     const pathless = plan([feature("core", [], []), feature("api", ["core"]), feature("docs")]);
@@ -1404,7 +1404,7 @@ describe("initiative runtime", () => {
       declined: ["The approved split names no boundary paths for feature core, so tiered approval has no paths to allow and a person approves its plan."],
     });
     expect(JSON.parse(t.workflows.store.run(core.runId ?? "").policy_json).autoApproval).toBeNull();
-  }, 30000);
+  });
 
   test("a rebased tiered feature's decline reason is stored with its run (#1467)", () => {
     const settings = { basePolicy: policy, featureAutoApproval: { maxTasks: 5, maxFiles: 5 } } as unknown as InitiativeSettings;
@@ -1440,7 +1440,7 @@ describe("initiative runtime", () => {
     const approval = t.workflows.store.requests(apiRun).find((r) => r.kind === "approval");
     expect(approval?.actor).toBe("auto-approval");
     expect(view.status).toBe("completed");
-  }, 30000);
+  });
 
   // Bench round 40, tonemath core (#1458): a boundary of 22 files is more than a definition's auto
   // approval accepts, so the feature's tiered approval was dropped without a reason and a person
@@ -1458,7 +1458,7 @@ describe("initiative runtime", () => {
     expect(JSON.parse(t.workflows.store.run(coreRun).policy_json).autoApproval?.limits).toMatchObject({ maxTasks: 24, maxFiles: 22 });
     expect(t.workflows.store.requests(coreRun).find((r) => r.kind === "approval")?.actor).toBe("auto-approval");
     expect(view.status).toBe("completed");
-  }, 30000);
+  });
 
   // Bench round 42, fecsmith front (#1504): a boundary of globs and a few files counted only its
   // literal paths, so a 19-file plan inside it went to a person under 8-task, 14-file limits.
@@ -1475,7 +1475,7 @@ describe("initiative runtime", () => {
     expect(t.workflows.store.state(coreRun).graph?.tasks.length).toBe(19);
     expect(t.workflows.store.requests(coreRun).find((r) => r.kind === "approval")?.actor).toBe("auto-approval");
     expect(view.status).toBe("completed");
-  }, 30000);
+  });
 
   test("an initiative whose features run in worktrees is refused at start in a folder without Git (#1345)", async () => {
     const t = setup();
@@ -1520,7 +1520,7 @@ describe("initiative runtime", () => {
     // The working copy is never written.
     expect(existsSync(join(t.root, "a.txt"))).toBe(false);
     expect(git(t.root, "status", "--porcelain")).toBe("");
-  }, 30000);
+  });
 
   // Bench round 44, cayleykit (#1535): features started in waves behind Promise.allSettled, so a
   // freed slot stayed empty until the slowest sibling stopped (8.3 slot-minutes), and the ready
@@ -1807,7 +1807,7 @@ describe("initiative runtime", () => {
     } finally {
       spawns.mockRestore();
     }
-  }, 30000);
+  });
 
   test("siblings that share a file run in order, so a dependent's merge of their results succeeds (#1336)", async () => {
     // Bench round 34, sketchfold: hll, frequent, hist and member each added a `pub mod` line to
@@ -1830,7 +1830,7 @@ describe("initiative runtime", () => {
     expect(t.executor.seen.b).toEqual(["a.txt", "shared.txt"]);
     const cRun = t.featureOf(view, "c").runId ?? "";
     expect(git(t.root, "show", `baked/wf/${cRun}:shared.txt`)).toBe("ready v1 (write 2)");
-  }, 30000);
+  });
 
   test("a proposed split runs its documentation feature after the code (#1751)", async () => {
     const split = plan([feature("base", [], ["base.txt"]), feature("search", ["base"], ["search.txt"]), feature("docs", [], ["README.md", "docs/usage.md"])]);
@@ -1842,7 +1842,7 @@ describe("initiative runtime", () => {
       added: [],
       documented: [{ featureId: "docs", dependsOn: "search" }],
     });
-  }, 30000);
+  });
 
   test("conflicting upstream results block the dependent feature with the repair instead of failing every drive (#1336)", async () => {
     // Different globs are not compared, so these siblings still run side by side.
@@ -1867,7 +1867,7 @@ describe("initiative runtime", () => {
     view = await t.drive();
     expect(t.featureOf(view, "c").state).toBe("blocked");
     expect(t.initiatives.events("values").filter((e) => e.type === "feature.upstream_conflict").length).toBe(1);
-  }, 30000);
+  });
 
   test("upstream results merge onto HEAD the same way every time, and conflicting ones are named", async () => {
     const root = mkdtempSync(join(tmpdir(), "baked-merged-base-"));
@@ -1905,7 +1905,7 @@ describe("initiative runtime", () => {
     expect(view.parallelRuns).toBe(1);
     expect((await t.drive()).status).toBe("completed");
     expect(t.executor.maxActive).toBe(1);
-  }, 30000);
+  });
 
   test("tiered approval is refused for a v2 feature workflow, whose auto approval is its own", async () => {
     const t = setup();

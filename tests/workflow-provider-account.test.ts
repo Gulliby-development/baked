@@ -262,7 +262,7 @@ describe("a model at capacity", () => {
     const models: string[] = [];
     await drive(models, undefined);
     expect(models.slice(0, 2)).toEqual(["fixture/model", "fixture/model"]);
-  }, 30_000);
+  });
 
   test("goes to the next model of the route at once", async () => {
     const models: string[] = [];
@@ -272,5 +272,5 @@ describe("a model at capacity", () => {
     // Measured between the two calls, not from the run's start, so a slow runner's setup does not
     // count; the capacity backoff alone would take at least 5 seconds.
     expect((calls[1] ?? Number.POSITIVE_INFINITY) - (calls[0] ?? 0)).toBeLessThan(4_000);
-  }, 30_000);
+  });
 });

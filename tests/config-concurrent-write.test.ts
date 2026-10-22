@@ -68,4 +68,4 @@ test("a config file read while another process replaces it is read again, not re
     stdout: "written",
     stderr: "",
   });
-}, 30000);
+});

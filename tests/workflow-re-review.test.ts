@@ -135,7 +135,7 @@ describe("a review round after a correction", () => {
     const shares = loopSharesFrom(join(fixture.root, ".baked", "workflows.sqlite"));
     expect(shares).toHaveLength(1);
     expect(shares[0]).toBeGreaterThan(0);
-  }, 30000);
+  });
   test("stops re-running a dimension once it only repeats its notes (#1016)", async () => {
     const checks = fixturePolicy.checks.map((c) => ({
       ...c,
@@ -205,5 +205,5 @@ describe("a review round after a correction", () => {
     expect(
       service.store.artifacts(run.runId).filter((a) => a.logical_path.startsWith("reviews/carried-security-")),
     ).toHaveLength(1);
-  }, 30000);
+  });
 });

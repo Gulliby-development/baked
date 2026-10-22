@@ -214,7 +214,7 @@ describe("MCP tools in a workflow attempt", () => {
     const evidence = store.artifacts(runId).filter((a) => a.kind === "read" && a.logical_path.startsWith(`reads/${attemptId}/`));
     expect(evidence[0]?.inline_content).toContain("mcp__stub__echo");
     expect(evidence).toHaveLength(1);
-  }, 30000);
+  });
 
   test("a tool the policy does not grant is not offered and its server is not started", async () => {
     const { executor, request } = await attempt({

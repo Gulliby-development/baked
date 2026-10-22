@@ -62,7 +62,7 @@ describe("scenario: host suspend does not spend a run's active deadline (#1610)"
     } finally {
       wake.restore();
     }
-  }, 30_000);
+  });
 });
 
 describe("execution clock", () => {

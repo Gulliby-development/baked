@@ -137,12 +137,12 @@ describe("workflow agents on the Claude API", () => {
       (200 * price.input + 4000 * price.cacheRead + 2000 * price.cacheWrite + 100 * price.output) /
       1e6;
     expect(attempt?.costUsd).toBeCloseTo(expected, 10);
-  }, 30_000);
+  });
 
   test("use the configured cache lifetime", async () => {
     const bodies = scriptAnthropic([toolUse("submit_result", research)]);
     await researchAttempt("1h");
     expect(bodies[0]?.cache_control).toEqual({ type: "ephemeral", ttl: "1h" });
     expect(bodies[0]?.system?.at(-1)?.cache_control).toEqual({ type: "ephemeral", ttl: "1h" });
-  }, 30_000);
+  });
 });
