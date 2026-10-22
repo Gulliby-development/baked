@@ -1,5 +1,5 @@
 import type { Artifact, DeployPlan, DeployTarget } from "./artifacts.js";
-import { type MockRoute, response } from "./mock-routes.js";
+import { type MockRoute, response } from "./mock-response.js";
 
 /** Artifacts are shared by every project, so the mock keeps one list for all of them. */
 const page = (title: string, body: string) =>

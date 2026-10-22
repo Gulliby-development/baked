@@ -4,7 +4,7 @@
  * `ID-custom` copy, gates and transitions can be added, removed, moved and switched, saving
  * writes nothing but marks the copy saved, and deleting forgets a saved copy.
  */
-import { type MockRequest, type MockRoute, response } from "./mock-routes.js";
+import { type MockRequest, type MockRoute, response } from "./mock-response.js";
 import type {
   EditorOp,
   EditorView,

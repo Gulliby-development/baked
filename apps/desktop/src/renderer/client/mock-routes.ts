@@ -1,5 +1,4 @@
-import type { ApiResponse, RunSnapshot, StreamEvent } from "../../shared/api.js";
-import type { HttpMethod } from "../../shared/bridge.js";
+import type { RunSnapshot } from "../../shared/api.js";
 import { agentRoutes } from "./mock-agents.js";
 import { artifactRoutes } from "./mock-artifacts.js";
 import { attentionRoutes } from "./mock-attention.js";
@@ -13,35 +12,12 @@ import { INSIGHTS_ROUTES } from "./mock-insights.js";
 import { lspRoutes } from "./mock-lsp.js";
 import { mcpRoutes } from "./mock-mcp.js";
 import { packageRoutes } from "./mock-packages.js";
+import { type MockRoute, type MockStream, response } from "./mock-response.js";
 import { activeRunIds, freezeInputChanged, RUN_ROUTES, RUN_STREAMS } from "./mock-runs.js";
 import { scheduleRoutes } from "./mock-schedules.js";
 import { settingsRoutes } from "./mock-settings.js";
 import { setupRoutes } from "./mock-setup.js";
 import { startRoutes } from "./mock-start.js";
-
-export interface MockRequest {
-  key: string;
-  method: HttpMethod;
-  path: string;
-  query: URLSearchParams;
-  body: unknown;
-}
-
-/** Answers a request it knows, or returns undefined to let the next route try. */
-export type MockRoute = (
-  request: MockRequest,
-) => ApiResponse | undefined | Promise<ApiResponse | undefined>;
-
-/** Starts a stream it knows and returns its stop function, or undefined. */
-export type MockStream = (stream: {
-  key: string;
-  path: string;
-  emit: (event: StreamEvent) => void;
-}) => (() => void) | undefined;
-
-export function response<T>(status: number, body: unknown): ApiResponse<T> {
-  return { status, body: body as T };
-}
 
 function run(
   featureId: string,

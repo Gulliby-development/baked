@@ -7,7 +7,10 @@ declare global {
   }
 }
 
+// Undefined outside a browser, as in a unit test that loads a client module without a `window`.
+const host = typeof window === "undefined" ? undefined : window;
+
 /** The preload bridge inside Electron; fixtures in a plain browser. */
 export const bridge: DesktopBridge =
-  window.baked ?? createMockBridge(mockScenario(window.location?.search ?? ""));
-export const isMock = window.baked === undefined;
+  host?.baked ?? createMockBridge(mockScenario(host?.location?.search ?? ""));
+export const isMock = host?.baked === undefined;

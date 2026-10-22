@@ -7,7 +7,8 @@ import {
 } from "../../shared/api.js";
 import type { DesktopBridge, HttpMethod } from "../../shared/bridge.js";
 import { mockAttention } from "./mock-attention.js";
-import { MOCK_ROUTES, MOCK_STREAMS, response } from "./mock-routes.js";
+import { response } from "./mock-response.js";
+import { MOCK_ROUTES, MOCK_STREAMS } from "./mock-routes.js";
 
 const HOUR = 3_600_000;
 

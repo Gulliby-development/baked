@@ -5,7 +5,7 @@ import type {
 } from "../../../../../src/core/intelligence/code-graph-model.js";
 import type { ApiResponse } from "../../shared/api.js";
 import type { GraphLinkAnswer, GraphRequest } from "./graph.js";
-import { type MockRequest, response } from "./mock-routes.js";
+import { type MockRequest, response } from "./mock-response.js";
 
 /**
  * The code graph in the preview bridge. It runs the core grouping on sample data: the BAKED
@@ -272,7 +272,6 @@ export function progressRoutes({ key, method, path }: MockRequest): ApiResponse 
   });
 }
 
-/** A function declaration, so mock-routes.ts can list it while this module is still loading. */
 export async function graphRoutes({
   key,
   method,

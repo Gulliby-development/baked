@@ -8,7 +8,7 @@ import {
   writeSettingPath,
 } from "../../../../../src/core/settings/schema.js";
 import { qualityRuleCatalog } from "../../../../../src/core/workflows/quality/builtin-rules.js";
-import { type MockRoute, response } from "./mock-routes.js";
+import { type MockRoute, response } from "./mock-response.js";
 import type { SettingsView, SettingValue } from "./settings.js";
 
 type Layer = Record<string, unknown>;

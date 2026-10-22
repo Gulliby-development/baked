@@ -1,5 +1,5 @@
 import type { IntelligenceCheck, LspActionView, LspServer, LspView } from "./lsp.js";
-import { type MockRequest, type MockRoute, response } from "./mock-routes.js";
+import { type MockRequest, type MockRoute, response } from "./mock-response.js";
 
 type Seed = Pick<LspServer, "id" | "languages"> & Partial<LspServer>;
 

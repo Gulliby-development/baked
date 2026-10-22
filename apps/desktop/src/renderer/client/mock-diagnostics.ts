@@ -8,7 +8,7 @@ import type {
   SandboxStatus,
   StorageView,
 } from "./diagnostics.js";
-import { type MockRoute, response } from "./mock-routes.js";
+import { type MockRoute, response } from "./mock-response.js";
 
 /** A Linux backend with bubblewrap and the sandbox left at its default. */
 const MOCK_SANDBOX: SandboxStatus = {

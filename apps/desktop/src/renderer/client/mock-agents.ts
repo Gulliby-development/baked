@@ -1,5 +1,5 @@
 import type { AgentList, AgentStage, ConvertResult, ProjectAgent } from "./agents.js";
-import { type MockRoute, response } from "./mock-routes.js";
+import { type MockRoute, response } from "./mock-response.js";
 
 /** The project that brought agents along in the mock; every other project has none. */
 export const MOCK_AGENTS_PROJECT = "baked";

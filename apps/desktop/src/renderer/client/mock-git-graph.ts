@@ -1,6 +1,6 @@
 import type { ApiResponse } from "../../shared/api.js";
 import type { GitGraph, GraphBranch } from "./git.js";
-import { type MockRequest, response } from "./mock-routes.js";
+import { type MockRequest, response } from "./mock-response.js";
 
 /**
  * The commit graph in the preview bridge: a made-up history per project, replayed as branches,

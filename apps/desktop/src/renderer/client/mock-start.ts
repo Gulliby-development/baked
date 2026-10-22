@@ -1,5 +1,5 @@
 import type { RunSnapshot } from "../../shared/api.js";
-import { type MockRoute, response } from "./mock-routes.js";
+import { type MockRoute, response } from "./mock-response.js";
 import { addStartedRun } from "./mock-runs.js";
 import type {
   DefinitionSummary,

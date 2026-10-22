@@ -135,4 +135,6 @@ the smoke test. Releases attach the installers.
 - `build/`: app icons, exported from the SVG next to each PNG ([brand](../../docs/brand.md)).
   `tray.png` and `tray@2x.png` come from `tray.svg`; macOS uses `trayTemplate.png` and
   `trayTemplate@2x.png` from `trayTemplate.svg`.
-- `tests/`: `bun:test` tests; `tests/fixtures/fake-serve.ts` stands in for `baked serve`.
+- `tests/`: `bun:test` tests; `tests/fixtures/fake-serve.ts` stands in for `baked serve`. The
+  tests share one module registry, so a client module must load in any order and without a
+  `window` (`tests/module-load-order.test.ts`).

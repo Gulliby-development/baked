@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
-import { MOCK_ROUTES, type MockRequest } from "../src/renderer/client/mock-routes.ts";
+import type { MockRequest } from "../src/renderer/client/mock-response.ts";
+import { MOCK_ROUTES } from "../src/renderer/client/mock-routes.ts";
 import type { DefinitionSummary } from "../src/renderer/client/start.ts";
 
 async function definitions(key: string): Promise<DefinitionSummary[]> {

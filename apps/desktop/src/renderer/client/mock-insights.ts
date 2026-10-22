@@ -14,7 +14,7 @@ import type {
   UsageGroup,
   UsageSummary,
 } from "./insights.js";
-import { type MockRoute, response } from "./mock-routes.js";
+import { type MockRoute, response } from "./mock-response.js";
 
 function feature(
   id: string,

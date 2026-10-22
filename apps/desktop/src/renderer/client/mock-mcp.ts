@@ -1,5 +1,5 @@
 import type { McpScope, McpServer, McpServerConfig, McpView } from "./mcp.js";
-import { type MockRequest, type MockRoute, response } from "./mock-routes.js";
+import { type MockRequest, type MockRoute, response } from "./mock-response.js";
 
 interface McpState {
   layers: Record<McpScope, McpServerConfig[]>;
