@@ -480,7 +480,9 @@ export function exportTrace(
       db.close();
     }
     const bytes = readFileSync(copy);
-    const zipped = Bun.gzipSync(bytes);
+    // The best compression: R60 wheeltags was 2.28 MB at the default level and 2.10 MB at this one,
+    // against the corpus's 2 MB guide (#1937).
+    const zipped = Bun.gzipSync(bytes, { level: 9 });
     mkdirSync(dirname(out), { recursive: true });
     writeFileSync(out, zipped);
     const counted = new Database(copy, { readonly: true });
@@ -1548,19 +1550,40 @@ const decisionOf = (
   artifacts: { kind: string; created_at: number; content: string | null }[],
   from: number,
   to: number,
+  until = to,
 ): ForecastDecision => {
   const within = artifacts.filter((a) => a.created_at >= from && a.created_at < to);
   if (within.some((a) => a.kind === "cost-forecast")) return "stop";
-  if (
-    within.some(
-      (a) =>
-        a.kind === "policy-revision" &&
-        (JSON.parse(a.content ?? "{}") as { kind?: string }).kind === "forecast-growth",
-    )
-  )
-    return "grow";
+  // The recorded run grew if its cap rose while the attempt ran, by whichever host growth: the
+  // forecast is checked again on later calls of the attempt, after a parallel attempt may have
+  // started, and a token growth raises the cap with the tokens. R60 wheeltags names grew on its
+  // forecast 2.7 s into an attempt, 2.6 s after the next one started, and base's auto-growth took
+  // its cap from $3.18 to $4.78 1.3 s into the attempt the replay grows at (#1937).
+  const during = artifacts.filter(
+    (a) => a.created_at >= from && a.created_at < Math.max(to, until),
+  );
+  if (during.some((a) => a.kind === "policy-revision" && raisesCap(a.content))) return "grow";
   return "pass";
 };
+
+/** Whether a policy revision is the host's growth of the cost cap. */
+function raisesCap(content: string | null): boolean {
+  const body = JSON.parse(content ?? "{}") as {
+    kind?: string;
+    approvedBy?: string;
+    previous?: { maxCostUsd?: unknown };
+    next?: { maxCostUsd?: unknown };
+  };
+  if (body.kind === "forecast-growth") return true;
+  const before = body.previous?.maxCostUsd;
+  const after = body.next?.maxCostUsd;
+  return (
+    body.approvedBy === "sizing" &&
+    typeof before === "number" &&
+    typeof after === "number" &&
+    after > before
+  );
+}
 
 /**
  * Rewinds one run's attempts, artifacts, events, tasks and steps to the moment `t`: later rows
@@ -1683,7 +1706,7 @@ function replayRun(
     .sort((a, b) => b.createdAt - a.createdAt);
   const priced = db
     .query(
-      "SELECT rowid AS r, id, step_id, model_id, reserved_tokens, started_at FROM attempts WHERE run_id=? AND model_id IS NOT NULL ORDER BY started_at, rowid",
+      "SELECT rowid AS r, id, step_id, model_id, reserved_tokens, started_at, ended_at FROM attempts WHERE run_id=? AND model_id IS NOT NULL ORDER BY started_at, rowid",
     )
     .all(runId) as {
     r: number;
@@ -1692,6 +1715,7 @@ function replayRun(
     model_id: string;
     reserved_tokens: number;
     started_at: number;
+    ended_at: number | null;
   }[];
   if (!priced.length) return null;
   const capped =
@@ -1780,7 +1804,7 @@ function replayRun(
     boundaries.unshift({
       attemptId: attempt.id,
       at: t,
-      recorded: decisionOf(artifacts, t, next),
+      recorded: decisionOf(artifacts, t, next, attempt.ended_at ?? next),
       replayed,
       projectedUsd: forecast?.projectedUsd ?? null,
       ceilingUsd: forecast?.ceilingUsd ?? null,
