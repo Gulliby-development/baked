@@ -60,6 +60,7 @@ When your change means to decide differently on a recorded run, add that run to 
 
 - When an export changes what traces contain (a kept artifact, a scrub rule, a new column), the existing traces lack it. Every hook must still work on old traces: a fallback or "no data" for them, never a crash. Then ask the bench loop to re-export the rounds the hook needs from the runner's `C:\Project\baked-bench\RNN\<app>` folders.
 - A migration that changes a table the replay reads must keep old traces readable. `WorkflowStore` migrates a trace when it opens it, so run the corpus test after every migration.
+- A replayed cap growth matches the recording when the recorded run raised its cap while that attempt ran, by a forecast growth or any other host growth (`decisionOf` in `src/core/workflows/trace.ts`): a run checks its forecast again on later calls of an attempt, after a parallel attempt may have started, and a token growth raises the cap with the tokens (R60 wheeltags, #1937).
 - Replay must never trust the order of `previous` values in policy revisions. Apply each revision's `next` forward from the starting policy: a revision written from a stale policy undid an earlier growth (#1704).
 
 ## Bench loop
