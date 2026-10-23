@@ -1752,6 +1752,9 @@ describe("initiative runtime", () => {
           // early implements only once message has its run (its provisional base lacks early's result),
           if (request.profile.output === "implementation" && request.task?.writes[0]?.path === "early.txt")
             while (!view()?.find((f) => f.id === "message")?.runId && Date.now() < deadline) await Bun.sleep(20);
+          // base implements only once message has planned, so message is still held on it then,
+          if (request.profile.output === "implementation" && request.task?.writes[0]?.path === "base.txt")
+            while (this.later === null && Date.now() < deadline) await Bun.sleep(20);
           // and message plans only once early is accepted, while base still holds it.
           const spec = request.profile.output === "plan" ? this.workflows?.store.state(request.runId).spec : null;
           if (spec?.featureId.endsWith("_message") && this.workflows) {
