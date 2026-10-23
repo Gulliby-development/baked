@@ -23,6 +23,9 @@ export function tracedConnection(
     get closed() {
       return connection.closed;
     },
+    get unparsed() {
+      return connection.unparsed;
+    },
     request: async (method, params, timeoutMs) => {
       write({ dir: "out", kind: "request", method, ...traceIds(params), bytes: size(params) });
       try {

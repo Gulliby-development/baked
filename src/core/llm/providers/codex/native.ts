@@ -252,6 +252,8 @@ interface StepSink {
   unreported: number;
   /** Queries of the web searches Codex ran during this step. */
   webSearches: string[];
+  /** The connection's count of unparsed output lines when this step started (#1956). */
+  unparsedBefore: number;
 }
 
 interface NativeThread {
@@ -454,6 +456,7 @@ export class CodexAppServerSessions {
           usageWait: null,
           unreported: this.abandoned,
           webSearches: [],
+          unparsedBefore: connection.unparsed?.count ?? 0,
         };
         this.abandoned = 0;
         thread.sink = sink;
@@ -937,7 +940,11 @@ export class CodexAppServerSessions {
   ): void {
     // Only the step this signal belongs to; a later step on the thread is not affected.
     if (thread.sink !== sink) return;
-    this.failStep(thread, abortError(signal));
+    const error = abortError(signal);
+    // A line the client could not parse may have been this step's answer or tool call (#1956).
+    const note = connection.unparsed?.note(sink.unparsedBefore) ?? "";
+    if (note && firstByteStall(signal)) error.message += note;
+    this.failStep(thread, error);
     this.dropThread(connection, thread);
   }
 
