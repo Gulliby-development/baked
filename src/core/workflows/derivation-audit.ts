@@ -232,7 +232,10 @@ export function derivationFindings(
     const criterion = spec.criteria.find((c) => c.id === criterionId);
     if (!criterion) return [];
     const listed = rows
-      .map((r) => `row "${r.row}": the requirements give "${r.recomputed}" (${r.derivation})`)
+      .map(
+        (r) =>
+          `row ${JSON.stringify(r.row)}: the requirements give ${JSON.stringify(r.recomputed)} (${r.derivation})`,
+      )
       .join("; ");
     return [
       {
