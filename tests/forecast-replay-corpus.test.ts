@@ -10,7 +10,7 @@ import { type CallRate, openTrace, type PlanPriceReplay, replayInitiativeStarts,
 
 // #1649, #1715: every recorded bench-round trace replays through the current host decisions: the
 // forecast and cap code, the per-call cost cap (#1740), the first-response deadline of each model
-// call, the test task split of each sizing report (#1789), each usage-policy refusal (#1895), and the initiative share gate (#1707), asked both on its recorded inputs and with each start
+// call, the test task split of each sizing report (#1789), each usage-policy refusal (#1895), each finding-chain decision (#1959), and the initiative share gate (#1707), asked both on its recorded inputs and with each start
 // rewound and recomputed, and the plan auto-approval on the run state it was asked with (#1707). A
 // stop, cap growth, park or approval decision the recorded run did not make fails the suite, unless
 // accepted.json lists it for that run or initiative with the reason: the pull request that changes
@@ -25,6 +25,7 @@ interface Accepted {
   newTestSplits?: number;
   newRecoveries?: number;
   newPolicyStops?: number;
+  newChainDecisions?: number;
   newShareStops?: number;
   newStartStops?: number;
   newApprovalDeclines?: number;
@@ -73,6 +74,7 @@ describe("bench-round traces replay without new forecast stops or growth (#1649)
           newTestSplits: run.newTestSplits,
           newRecoveries: run.newRecoveries,
           newPolicyStops: run.newPolicyStops,
+          newChainDecisions: run.newChainDecisions,
         }).toEqual({
           run: run.runId,
           newStops: allowed?.newStops ?? 0,
@@ -82,6 +84,7 @@ describe("bench-round traces replay without new forecast stops or growth (#1649)
           newTestSplits: allowed?.newTestSplits ?? 0,
           newRecoveries: allowed?.newRecoveries ?? 0,
           newPolicyStops: allowed?.newPolicyStops ?? 0,
+          newChainDecisions: allowed?.newChainDecisions ?? 0,
         });
       }
       // Run states before R52 counted the host's own test splits in `hostSplitTasks`, which the

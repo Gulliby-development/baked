@@ -22,6 +22,17 @@ import { planApprovalDecision, requestedPathTokens } from "./auto-approval.js";
 import { callCostRate } from "./budget.js";
 import { assertForecastFits, costForecast } from "./cost-forecast.js";
 import { WorkflowFault } from "./errors.js";
+import {
+  type BatteryRecord,
+  type BatteryRule,
+  batteryDecision,
+  CHAIN_BATTERY_DIR,
+  CHAIN_KIND,
+  CHAIN_TASKS_DIR,
+  type ChainRecord,
+  type ChainRule,
+  chainRewriteDecision,
+} from "./finding-chain.js";
 import type { initiativePriceSamples } from "./initiatives/forecast.js";
 import { InitiativeService, type ShareGateRecord, shareShortfall } from "./initiatives/service.js";
 import { recordingOf } from "./model-recording.js";
@@ -59,6 +70,8 @@ const KEPT_ARTIFACTS = new Set([
   "state",
   // A provider's usage-policy refusal of an attempt and what the run did with it (#1895).
   POLICY_REFUSAL_KIND,
+  // Finding chains: each corrective's rewrite decision and each battery run before a review (#1959).
+  CHAIN_KIND,
 ]);
 
 /** Tables that hold evidence, effects or prose the replay never reads. */
@@ -552,6 +565,63 @@ export interface RunReplay {
   policyRefusals: PolicyRefusalBoundary[];
   /** Refusals the current rule stops the run on that the recording ran again. */
   newPolicyStops: number;
+  /** Each recorded finding-chain decision against the current rules (#1959). */
+  findingChains: FindingChainBoundary[];
+  /** Chain decisions (rewrite or patch, reopen or pass) the current rules make differently. */
+  newChainDecisions: number;
+}
+
+export interface FindingChainBoundary {
+  /** The corrective task of a rewrite decision, or the battery record's path. */
+  key: string;
+  kind: "rewrite" | "battery";
+  recorded: string;
+  replayed: string;
+}
+
+/**
+ * Every finding-chain decision a run recorded (#1959), decided again from its recorded inputs: a
+ * corrective's rewrite from its chain's length and the run's policy (`chains/tasks/`), and a
+ * battery's reopen from its cases' outcomes (`chains/battery/`). Traces from before #1959 record
+ * none.
+ */
+export function replayFindingChains(
+  store: WorkflowStore,
+  runId: string,
+  rules: { chain?: ChainRule; battery?: BatteryRule } = {},
+): FindingChainBoundary[] {
+  const decideChain = rules.chain ?? chainRewriteDecision;
+  const decideBattery = rules.battery ?? batteryDecision;
+  return store.artifacts(runId).flatMap((artifact): FindingChainBoundary[] => {
+    if (artifact.kind !== CHAIN_KIND) return [];
+    try {
+      if (artifact.logical_path.startsWith(CHAIN_TASKS_DIR)) {
+        const record = JSON.parse(store.readArtifact(runId, artifact.id)) as ChainRecord;
+        return [
+          {
+            key: record.taskId,
+            kind: "rewrite",
+            recorded: record.decision,
+            replayed: decideChain(record.length, record.policy),
+          },
+        ];
+      }
+      if (artifact.logical_path.startsWith(CHAIN_BATTERY_DIR)) {
+        const record = JSON.parse(store.readArtifact(runId, artifact.id)) as BatteryRecord;
+        return [
+          {
+            key: artifact.logical_path,
+            kind: "battery",
+            recorded: record.decision,
+            replayed: decideBattery(record.cases.map((c) => c.status)),
+          },
+        ];
+      }
+    } catch {
+      return [];
+    }
+    return [];
+  });
 }
 
 /** What a run does with a refused attempt; `policyRefusalDecision` unless a test passes another. */
@@ -1687,6 +1757,8 @@ function replayRun(
   | "newRecoveries"
   | "policyRefusals"
   | "newPolicyStops"
+  | "findingChains"
+  | "newChainDecisions"
 > | null {
   const db = store.connection;
   const run = store.run(runId);
@@ -1853,6 +1925,8 @@ export function replayTrace(
     priceSamples?: PriceSamples;
     historyTrace?: HistoryTrace;
     policyRefusal?: PolicyRefusalRule;
+    chainRule?: ChainRule;
+    batteryRule?: BatteryRule;
   } = {},
 ): TraceReplay {
   // Initiative starts rewind their own copies of the trace, before the run replay rewinds this one.
@@ -1879,6 +1953,15 @@ export function replayTrace(
     const refusals = new Map(
       runIds.map((runId) => [runId, replayPolicyRefusals(store, runId, options.policyRefusal)]),
     );
+    const chains = new Map(
+      runIds.map((runId) => [
+        runId,
+        replayFindingChains(store, runId, {
+          ...(options.chainRule ? { chain: options.chainRule } : {}),
+          ...(options.batteryRule ? { battery: options.batteryRule } : {}),
+        }),
+      ]),
+    );
     const runs: RunReplay[] = [];
     for (const runId of runIds) {
       const firstByte = timings.get(runId) ?? [];
@@ -1897,12 +1980,14 @@ export function replayTrace(
       const testSplits = splits.get(runId) ?? [];
       const stallLadder = stalls.get(runId) ?? [];
       const policyRefusals = refusals.get(runId) ?? [];
+      const findingChains = chains.get(runId) ?? [];
       if (
         !replay.boundaries.length &&
         !firstByte.length &&
         !testSplits.length &&
         !stallLadder.length &&
-        !policyRefusals.length
+        !policyRefusals.length &&
+        !findingChains.length
       )
         continue;
       runs.push({
@@ -1919,6 +2004,8 @@ export function replayTrace(
         newPolicyStops: policyRefusals.filter(
           (b) => b.replayed === "stop" && b.recorded === "retry",
         ).length,
+        findingChains,
+        newChainDecisions: findingChains.filter((b) => b.replayed !== b.recorded).length,
       });
     }
     const gates = replayShareGate(store, options.shareGate);
