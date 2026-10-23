@@ -1088,7 +1088,10 @@ export function appendCorrections(
   // so, and the decision is recorded either way (#1959).
   const chainable = (finding: Review["findings"][number]): boolean =>
     (kind === "convergence" || reviewPass) && !checkRunFinding(finding);
-  const known = findings.some(chainable) ? chainFindings(store, runId, findings) : new Map();
+  // A chain needs a repeatOf link, so a round without one reads no findings.
+  const known = findings.some((f) => chainable(f) && f.repeatOf)
+    ? chainFindings(store, runId, findings)
+    : new Map();
   const chainRecords: ChainRecord[] = [];
   const additions = [...groups].map(([key, { base, bases, findings: grouped }]) => {
     const id = `T${String(next++).padStart(3, "0")}`;
