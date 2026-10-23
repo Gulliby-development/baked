@@ -278,7 +278,7 @@ describe("scenario: the host's file-mode rows tests pass their language's gates 
       ...files,
       "tests/support/links.rows.ts": "export const actual = async (input: unknown): Promise<unknown> => input;\n",
       "biome.json": '{\n  "formatter": { "indentStyle": "space", "lineWidth": 100 }\n}\n',
-      "tsconfig.json": `${JSON.stringify({ compilerOptions: { target: "ESNext", module: "Preserve", moduleResolution: "bundler", strict: true, noEmit: true, skipLibCheck: true, types: ["bun"], typeRoots: [join(import.meta.dir, "..", "node_modules", "@types")] }, include: ["tests"] })}\n`,
+      "tsconfig.json": `${JSON.stringify({ compilerOptions: { target: "ESNext", module: "Preserve", moduleResolution: "bundler", strict: true, noEmit: true, skipLibCheck: true, types: ["bun-types"], typeRoots: [join(import.meta.dir, "..", "node_modules")] }, include: ["tests"] })}\n`,
     });
     expect(run(root, biome ?? "", "check", "tests/links.rows.test.ts")).toStartWith("0 ");
     expect(run(root, tsc ?? "", "-p", ".")).toBe("0");
