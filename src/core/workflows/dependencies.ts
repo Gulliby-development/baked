@@ -91,26 +91,25 @@ export function isHostRelease(request: { kind: string; body_json: string }): boo
 
 /**
  * Paths a planned-ahead run (#1834) may name in a read hint or `reference` although its
- * provisional base lacks them: the boundary paths of the upstream features it pins that have no
- * completed run yet. Their results are in its worktree before its tasks start, so a plan that
- * reads them is what the run is asked for (R60 wheeltags: 7 of 7 planned-ahead features had their
- * first plan refused for such read hints, #1932). Nothing for a run that is not held, so a write
+ * provisional base may lack them: the boundary paths of every upstream feature it pins, finished
+ * or not. Their results are in its worktree before its tasks start, so a plan that reads them is
+ * what the run is asked for (R60 wheeltags: 7 of 7 planned-ahead features had their first plan
+ * refused for such read hints, #1932). A feature accepted after the provisional base was fixed is
+ * on neither that base nor a set of unfinished features until the release (R61 manlens, #1946); one
+ * already on the base has its files there anyway. Nothing for a run that is not held, so a write
  * of another feature's file is still refused. Every check of a plan against the workspace asks it.
  */
-export function pathsExistLater(
-  store: WorkflowStore,
-  state: RuntimeState,
-): (path: string) => boolean {
+export function pathsExistLater(state: RuntimeState): (path: string) => boolean {
   const bounds = state.initiativeBounds;
   if (!state.planAhead || state.planAhead.released || !bounds) return () => false;
   // A run's feature id is `<initiative>_<feature>`, and a feature key has no underscore.
-  const unfinished = new Set(
-    (state.hostDependencies ?? state.spec?.dependencies ?? [])
-      .filter((dependency) => acceptedContract(store, dependency.featureId)?.completed !== true)
-      .map((dependency) => dependency.featureId.slice(dependency.featureId.lastIndexOf("_") + 1)),
+  const upstream = new Set(
+    (state.hostDependencies ?? state.spec?.dependencies ?? []).map((dependency) =>
+      dependency.featureId.slice(dependency.featureId.lastIndexOf("_") + 1),
+    ),
   );
   const patterns = bounds.features
-    .filter((feature) => feature.id !== bounds.featureId && unfinished.has(feature.id))
+    .filter((feature) => feature.id !== bounds.featureId && upstream.has(feature.id))
     .flatMap((feature) => feature.paths.map(normalizePath));
   return (path) => patterns.some((pattern) => matchGlob(normalizePath(path), pattern));
 }
