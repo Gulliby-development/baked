@@ -1,9 +1,11 @@
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, delimiter, join } from "node:path";
+import { z } from "zod";
 import { commentOnlyChange } from "../intelligence/comments.js";
 import type { SandboxRequest } from "../security/sandbox.js";
 import { buildSafeEnv } from "../spawn.js";
+import { BATTERY_CASES } from "../workflows/finding-chain.js";
 import type { ProcessScope } from "../workflows/process-scope.js";
 import { ProbeSchema, type Repro, ReproSchema, type Review } from "../workflows/schemas.js";
 import type { HostTool } from "../workflows/types.js";
@@ -380,6 +382,33 @@ export function carryNoRepro(review: Review, earlier: Review | undefined): void 
   }
 }
 
+/**
+ * The input of `run_repro`: one repro, or `cases`, a list of repros run in one call (#1959). R62
+ * md-site called run_repro 28 times for 2.12M tokens, each call sending the whole context again.
+ */
+export const ReproToolInputSchema = ReproSchema.partial()
+  .extend({ cases: z.array(ReproSchema).min(1).max(BATTERY_CASES).optional() })
+  .strict()
+  .superRefine((input, context) => {
+    if (input.cases) return;
+    if (!ReproSchema.safeParse(input).success)
+      context.addIssue({
+        code: "custom",
+        message: "Give executable, args, expected and actual, or cases: a list of such repros",
+      });
+  });
+
+/** Each case of a battery, run one after the other, with its index and outcome. */
+export async function runReproBattery(
+  cases: readonly Repro[],
+  run: (repro: Repro) => Promise<ReproOutcome>,
+): Promise<(ReproOutcome & { case: number })[]> {
+  const results: (ReproOutcome & { case: number })[] = [];
+  for (const [index, repro] of cases.entries())
+    results.push({ case: index, ...(await run(repro)) });
+  return results;
+}
+
 /** The host tool a reviewer tries a repro with before it attaches the repro to a finding. */
 export function reproTool(
   executables: readonly string[],
@@ -387,15 +416,22 @@ export function reproTool(
 ): HostTool {
   let tries = 0;
   return {
-    description: `Run a repro the way the runtime will run it for a finding: the program (one of ${executables.join(", ")}) and its arguments, without a shell, in the workspace root, for up to ${REPRO_TIMEOUT_MS / 1000} s. For a program that reads its input, give the text as stdin, or input files as files (name and content), written to a temporary directory that {files} in an argument names. It must print the observed value on its own line and change no file. It must run the workspace's own code: an input file that copies a workspace file is refused, since no fix to that file could change the copy's output. Returns reproduced when a line of the output equals actual (an empty actual: the program prints nothing), refuted when it exits 0 without printing actual, inconclusive otherwise, with the output. At most ${REPRO_TRIES} runs.`,
-    inputSchema: ReproSchema,
+    description: `Run a repro the way the runtime will run it for a finding: the program (one of ${executables.join(", ")}) and its arguments, without a shell, in the workspace root, for up to ${REPRO_TIMEOUT_MS / 1000} s. For a program that reads its input, give the text as stdin, or input files as files (name and content), written to a temporary directory that {files} in an argument names. It must print the observed value on its own line and change no file. It must run the workspace's own code: an input file that copies a workspace file is refused, since no fix to that file could change the copy's output. Returns reproduced when a line of the output equals actual (an empty actual: the program prints nothing), refuted when it exits 0 without printing actual, inconclusive otherwise, with the output. To try several inputs, pass cases (up to ${BATTERY_CASES} repros) instead of one repro: they run in one call and the result lists each case's outcome. At most ${REPRO_TRIES} calls.`,
+    inputSchema: ReproToolInputSchema,
     execute: async (input) => {
       if (++tries > REPRO_TRIES)
         return {
           status: "inconclusive",
           reason: `Only ${REPRO_TRIES} repro runs are allowed per review`,
         };
-      return run(ReproSchema.parse(input));
+      const parsed = ReproToolInputSchema.parse(input);
+      if (!parsed.cases) return run(ReproSchema.parse(input));
+      const results = await runReproBattery(parsed.cases, run);
+      return {
+        status: results.some((r) => r.status === "reproduced") ? "reproduced" : "not_reproduced",
+        reproduced: results.filter((r) => r.status === "reproduced").map((r) => r.case),
+        results,
+      };
     },
   };
 }

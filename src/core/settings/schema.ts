@@ -1029,6 +1029,20 @@ export const SETTINGS: readonly SettingDefinition[] = [
     ],
   },
   {
+    id: "quality.chainRewrite",
+    page: "code-quality",
+    section: "Workflow runs",
+    label: "Finding chain rewrite",
+    help: "When review finds a second case of one defect on the same function after a correction (a repeat chain), the next correction rewrites the function from its spec against every case found so far instead of patching the new one, and the host reruns all those cases after each correction, before the next review. A case that fails again reopens the correction without a review call.",
+    scopes: BOTH,
+    type: "enum",
+    default: "off",
+    options: [
+      { value: "off", label: "off", help: "Patch each finding as it comes." },
+      { value: "on", label: "on", help: "Rewrite at the second case and rerun the cases." },
+    ],
+  },
+  {
     id: "quality.propertyTests",
     page: "code-quality",
     section: "Tests",

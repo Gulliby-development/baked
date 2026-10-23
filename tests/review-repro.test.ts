@@ -333,3 +333,64 @@ test("a repeated finding keeps the earlier noRepro and is not asked again", asyn
     .find((f) => f.repeatOf === "C1");
   expect(repeated?.noRepro).toBe("Needs an unreadable directory");
 });
+
+describe("run_repro with a list of cases (#1959)", () => {
+  const options = (root: string, executables: string[]) => ({ root, executables, generated: [], signal: new AbortController().signal, sandbox: null });
+  const battery = (executables: string[], root: string) =>
+    reproTool(executables, (repro) => runRepro(new ProcessScope(), repro, options(root, executables)));
+
+  test("bun: one call runs every case and returns each outcome", async () => {
+    const root = workspace();
+    const tool = battery(["bun"], root);
+    const result = (await tool.execute({
+      cases: [
+        { ...regexRepro, args: ["-e", "console.log(/^[A-Za-z0-9_-]+$/.test('tag\\n'))"] },
+        { ...regexRepro, args: ["-e", "console.log('false')"] },
+        { ...regexRepro, args: ["-e", "process.exit(3)"] },
+      ],
+    })) as { status: string; reproduced: number[]; results: { case: number; status: string }[] };
+    expect(result.results.map((r) => [r.case, r.status])).toEqual([
+      [0, "refuted"],
+      [1, "refuted"],
+      [2, "inconclusive"],
+    ]);
+    expect(result.status).toBe("not_reproduced");
+    const shown = (await tool.execute({ cases: [{ ...regexRepro, args: ["-e", "console.log('true')"] }] })) as { status: string; reproduced: number[] };
+    expect(shown).toMatchObject({ status: "reproduced", reproduced: [0] });
+    // The single-case form still returns one outcome.
+    expect(await tool.execute({ ...regexRepro, args: ["-e", "console.log('true')"] })).toMatchObject({ status: "reproduced" });
+  });
+
+  test("a list counts as one run, and an input with neither form is refused", async () => {
+    let runs = 0;
+    const tool = reproTool(["bun"], async () => {
+      runs++;
+      return { status: "refuted", reason: "", exitCode: 0, output: "false" };
+    });
+    await tool.execute({ cases: [regexRepro, regexRepro, regexRepro] });
+    expect(runs).toBe(3);
+    for (let i = 1; i < REPRO_TRIES; i++) await tool.execute(regexRepro);
+    expect(await tool.execute(regexRepro)).toMatchObject({ status: "inconclusive" });
+    expect(tool.inputSchema.safeParse({ executable: "bun" }).success).toBe(false);
+    expect(tool.inputSchema.safeParse({ cases: [] }).success).toBe(false);
+  });
+
+  // A pytest project's repros run through python, the runtime of its check's toolchain.
+  test.skipIf(!Bun.which("python3"))("pytest toolchain: python cases run in one call", async () => {
+    const root = workspace();
+    writeFileSync(join(root, "pyproject.toml"), "[project]\nname = 'fixture'\nversion = '0.1.0'\n");
+    writeFileSync(join(root, "emphasis.py"), "def parse(text):\n    return 'nested' if text.count('*') == 2 else 'flat'\n");
+    const executables = reproExecutables([{ executable: "pytest" }]);
+    expect(executables).toContain("python3");
+    const tool = battery(executables, root);
+    const program = (input: string) => ["-c", `import emphasis; print(emphasis.parse(${JSON.stringify(input)}))`];
+    const result = (await tool.execute({
+      cases: [
+        { executable: "python3", args: program("*a*"), expected: "nested", actual: "flat" },
+        { executable: "python3", args: program("**a *b***"), expected: "nested", actual: "flat" },
+      ],
+    })) as { status: string; reproduced: number[]; results: { case: number; status: string }[] };
+    expect(result.results.map((r) => r.status)).toEqual(["refuted", "reproduced"]);
+    expect(result).toMatchObject({ status: "reproduced", reproduced: [1] });
+  });
+});

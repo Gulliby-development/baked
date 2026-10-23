@@ -1,5 +1,14 @@
 import { canonical, hashJson } from "../specs/hash.js";
 import { WorkflowFault } from "../workflows/errors.js";
+import {
+  CHAIN_KIND,
+  CHAIN_TASKS_DIR,
+  type ChainRecord,
+  chainFindings,
+  chainRecord,
+  correctiveChain,
+  rewriteStep,
+} from "../workflows/finding-chain.js";
 import { counterexampleOf } from "../workflows/quality/properties.js";
 import { recoveryAdvice } from "../workflows/remedies.js";
 import {
@@ -1074,8 +1083,36 @@ export function appendCorrections(
         );
     }
   }
+  // A review or convergence finding that is the CHAIN_REWRITE_AT-th of a repeatOf chain on one
+  // symbol: its corrective rewrites the symbol against the chain's battery when the policy says
+  // so, and the decision is recorded either way (#1959).
+  const chainable = (finding: Review["findings"][number]): boolean =>
+    (kind === "convergence" || reviewPass) && !checkRunFinding(finding);
+  // A chain needs a repeatOf link, so a round without one reads no findings.
+  const known = findings.some((f) => chainable(f) && f.repeatOf)
+    ? chainFindings(store, runId, findings)
+    : new Map();
+  const chainRecords: ChainRecord[] = [];
   const additions = [...groups].map(([key, { base, bases, findings: grouped }]) => {
+    const id = `T${String(next++).padStart(3, "0")}`;
     const ids = grouped.map((f) => f.id);
+    const found = key.startsWith(SWEEP_KEY)
+      ? null
+      : correctiveChain(known, grouped.filter(chainable));
+    const record = found
+      ? chainRecord(id, found.finding, found.chain, policy.chainRewrite ?? "off")
+      : null;
+    if (record) chainRecords.push(record);
+    const rewrite = record?.decision === "rewrite" ? record : null;
+    const lastStep = (finding: Review["findings"][number]): string =>
+      rewrite && finding.id === rewrite.findingId
+        ? rewriteStep(
+            rewrite.symbol,
+            rewrite.chain.map((f) => f.id),
+          )
+        : finding.repeatOf
+          ? repeatStep(finding.repeatOf)
+          : SIBLING_STEP;
     const sweep = key.startsWith(`${SWEEP_KEY}tests\n`)
       ? testSweepStep(sweepFiles(grouped, base.profileId, base, root))
       : key.startsWith(SWEEP_KEY)
@@ -1094,12 +1131,14 @@ export function appendCorrections(
         state.expectedFiles,
       ),
       checkIds: unique(bases.flatMap((b) => correctionChecks(b, root))),
-      id: `T${String(next++).padStart(3, "0")}`,
-      title: correctionTitle(grouped),
+      id,
+      title: rewrite
+        ? `Rewrite ${rewrite.symbol}: ${correctionTitle(grouped).replace(/^Correct: /, "")}`
+        : correctionTitle(grouped),
       description: grouped
         .map(
           (finding) =>
-            `${grouped.length > 1 ? `Finding ${finding.id}: ` : ""}${finding.claim}\nImpact: ${finding.impact}\nProposed fix: ${finding.suggestedFix}${reproStep(finding)}${(kind === "convergence" || reviewPass) && !sweep && !checkRunFinding(finding) ? (finding.repeatOf ? repeatStep(finding.repeatOf) : SIBLING_STEP) : ""}`,
+            `${grouped.length > 1 ? `Finding ${finding.id}: ` : ""}${finding.claim}\nImpact: ${finding.impact}\nProposed fix: ${finding.suggestedFix}${reproStep(finding)}${(kind === "convergence" || reviewPass) && !sweep && !checkRunFinding(finding) ? lastStep(finding) : ""}`,
         )
         .join("\n\n")
         .concat(sweep),
@@ -1131,6 +1170,8 @@ export function appendCorrections(
       : `corrections/${roundKind}-${round}.json`,
     canonical(correction),
   );
+  for (const record of chainRecords)
+    store.artifact(runId, CHAIN_KIND, `${CHAIN_TASKS_DIR}${record.taskId}.json`, canonical(record));
   state.correctionHashes.push(artifact.content_hash);
   state.manifest.correctionHashes = [...state.correctionHashes];
   state.graph = graph;
