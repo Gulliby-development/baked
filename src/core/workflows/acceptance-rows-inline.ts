@@ -51,9 +51,12 @@ export interface InlineRowFile {
 }
 
 const comment = (framework: Framework): string => (framework === "pytest" ? "#" : "//");
-/** Python's first line stays within ruff's and black's 88 columns, so its comment takes two (#1927). */
+/**
+ * Python's first line stays within ruff's and black's 88 columns, so its comment takes two (#1927),
+ * and so does Java's, whose comment google-java-format wraps at 100 columns (#1961).
+ */
 const begin = (framework: Framework, what = "acceptance rows"): string =>
-  `${comment(framework)} BEGIN ${what}: host-written from the audited spec table.${framework === "pytest" ? "\n#" : ""} Edit ${INLINE_HARNESS[framework]}, not this block.`;
+  `${comment(framework)} BEGIN ${what}: host-written from the audited spec table.${framework === "pytest" || framework === "junit" ? `\n${comment(framework)}` : ""} Edit ${INLINE_HARNESS[framework]}, not this block.`;
 const end = (framework: Framework, what = "acceptance rows"): string =>
   `${comment(framework)} END ${what}`;
 /**
@@ -120,16 +123,35 @@ const pythonChunks = (rows: AcceptanceRow[], width = 74): string[] => {
   return chunks.map(pythonString);
 };
 
-/** A Java string literal; control characters are octal escapes, never \u (read before lexing). */
-const javaString = (text: string): string =>
-  `"${[...text]
-    .map((ch) => {
-      const code = ch.codePointAt(0) ?? 0;
-      if (ch === '"' || ch === "\\") return `\\${ch}`;
-      return code < 0x20 || code === 0x7f ? `\\${code.toString(8).padStart(3, "0")}` : ch;
-    })
-    .join("")}"`;
-const javaValue = (value: unknown): string => {
+/**
+ * A Java string literal; control characters are octal escapes, never \u (read before lexing). A
+ * long text is split into literals of at most 60 characters joined by `+`, before a space where
+ * one is near, as the pytest block's chunks are, so google-java-format finds no literal over its
+ * line limit to reflow (#1961).
+ */
+export const javaString = (text: string, width = 60): string => {
+  const chunks = [""];
+  for (const ch of text) {
+    const code = ch.codePointAt(0) ?? 0;
+    const unit =
+      ch === '"' || ch === "\\"
+        ? `\\${ch}`
+        : code < 0x20 || code === 0x7f
+          ? `\\${code.toString(8).padStart(3, "0")}`
+          : ch;
+    const chunk = chunks.at(-1) ?? "";
+    if (chunk.length + unit.length > width) {
+      // At a space in its second half when there is one, which then starts the next literal.
+      const space = chunk.lastIndexOf(" ");
+      const at = space > width / 2 ? space : chunk.length;
+      chunks[chunks.length - 1] = chunk.slice(0, at);
+      chunks.push(chunk.slice(at));
+    }
+    chunks[chunks.length - 1] += unit;
+  }
+  return chunks.map((chunk) => `"${chunk}"`).join(" + ");
+};
+export const javaValue = (value: unknown): string => {
   if (value === null) return "(Object) null";
   if (typeof value === "boolean") return String(value);
   if (typeof value === "number") return Number.isInteger(value) ? `${value}L` : `${value}d`;
@@ -310,12 +332,13 @@ type Template = (
 ) => Omit<InlineRowFile, "path" | "inline">;
 
 const TEMPLATES: Record<Framework, Template> = {
-  // No type literal: a semicolon-free formatter drops its member separators (#1948).
+  // No type literal: a semicolon-free formatter drops its member separators (#1948). A destructured
+  // parameter keeps its parentheses under any arrowParens option (#1961).
   bun: ({ test }, rows) => ({
     skeleton: "",
     tail: block(
       "bun",
-      `import { expect as acceptanceExpect, test as acceptanceTest } from "bun:test";\nconst acceptanceRows${/\.tsx?$/.test(test) ? ": Record<string, unknown>[]" : ""} = JSON.parse(${quoted(data(rows))});\nacceptanceTest.each(acceptanceRows)("$id", async (row) => {\n  acceptanceExpect(await acceptanceActual(row.input)).toEqual(row.expected);\n});`,
+      `import { expect as acceptanceExpect, test as acceptanceTest } from "bun:test";\nconst acceptanceRows${/\.tsx?$/.test(test) ? ": Record<string, unknown>[]" : ""} = JSON.parse(${quoted(data(rows))});\nacceptanceTest.each(acceptanceRows)("$id", async ({ input, expected }) => {\n  acceptanceExpect(await acceptanceActual(input)).toEqual(expected);\n});`,
     ),
   }),
   // No import statement: below the file's own code one is E402 and an import block of its own for
@@ -425,41 +448,84 @@ function optionalSemicolon(text: string, at: number): boolean {
   return after >= text.length || text[after] === "\n" || text[after] === "}";
 }
 
+/** A single bare arrow parameter with or without its parentheses, read at a set position. */
+const ARROW_PARAMETER = /\(\s*([A-Za-z_$][\w$]*)\s*\)\s*=>|([A-Za-z_$][\w$]*)\s*=>/y;
+/** A `+` and the quote of the string literal it joins, read after a literal. */
+const JOINED_LITERAL = /\s*\+\s*(["'])/y;
+/** What may come before a literal that a `+` joins to the next: nothing that binds tighter. */
+const joinsAfter = (out: string): boolean =>
+  out === "" || "(,=+[{:?!&|".includes(out.at(-1) ?? "") || out.endsWith("return");
+/** What may come after it. */
+const JOIN_AFTER = /\s*(?:$|[),;+\]}:?])/y;
+
+/** The end of the string literal opened at `at` on its line, and its value, or null. */
+function literal(text: string, at: number): { end: number; value: string } | null {
+  const quote = text[at];
+  let value = "";
+  let j = at + 1;
+  for (; j < text.length && text[j] !== quote && text[j] !== "\n"; j++) {
+    if (text[j] === "\\" && j + 1 < text.length && text[j + 1] !== "\n") {
+      const next = text[j + 1] ?? "";
+      value += next === '"' || next === "'" ? next : `\\${next}`;
+      j++;
+    } else value += text[j];
+  }
+  return text[j] === quote ? { end: j, value } : null;
+}
+
 /**
  * The text as a formatter cannot change it: whitespace and a trailing comma before a closing
  * bracket dropped outside string literals, and a literal's escaped quotes unescaped, so either
  * quote style reads the same. ruff, black, gofmt, rustfmt, prettier, biome and dotnet format
  * change only these in a block; a formatter gate's fixer must not count as editing the rows
  * (#1927). A quote with no closing one on its line (an apostrophe in a comment) is plain text.
- * For a JavaScript or TypeScript `path`, a semicolon that ends or starts a line, or comes before a
- * closing brace, is dropped too: Prettier's `semi: false` and Biome's `asNeeded` remove it, and
- * the leading `;` they add before a line opening with a bracket reads the same (#1936).
+ * String literals joined by `+` read as one, by their decoded value, as google-java-format's reflow
+ * of a long literal writes them (#1961). For a JavaScript or TypeScript `path`, a semicolon that
+ * ends or starts a line, or comes before a closing brace, is dropped too: Prettier's `semi: false`
+ * and Biome's `asNeeded` remove it, and the leading `;` they add before a line opening with a
+ * bracket reads the same (#1936); and a single bare arrow parameter reads the same with or without
+ * its parentheses (Prettier's `arrowParens`, Biome's `arrowParentheses`, #1961).
  */
 export function layoutFree(text: string, path = ""): string {
-  const optionalSemicolons = OPTIONAL_SEMICOLONS.test(path);
+  const script = OPTIONAL_SEMICOLONS.test(path);
   let out = "";
   for (let i = 0; i < text.length; i++) {
     const ch = text[i] ?? "";
     if (ch === '"' || ch === "'" || ch === "`") {
-      let value = "";
-      let j = i + 1;
-      for (; j < text.length && text[j] !== ch && text[j] !== "\n"; j++) {
-        if (text[j] === "\\" && j + 1 < text.length && text[j + 1] !== "\n") {
-          const next = text[j + 1] ?? "";
-          value += next === '"' || next === "'" ? next : `\\${next}`;
-          j++;
-        } else value += text[j];
-      }
-      if (text[j] === ch) {
+      const first = literal(text, i);
+      if (first) {
+        let { end, value } = first;
+        // Join only where `+` is the outermost operator on both sides, so the value is the same.
+        if (ch !== "`" && joinsAfter(out)) {
+          for (;;) {
+            JOINED_LITERAL.lastIndex = end + 1;
+            const join = JOINED_LITERAL.exec(text);
+            const next = join ? literal(text, JOINED_LITERAL.lastIndex - 1) : null;
+            if (!next) break;
+            JOIN_AFTER.lastIndex = next.end + 1;
+            if (!JOIN_AFTER.test(text)) break;
+            value += next.value;
+            end = next.end;
+          }
+        }
         out += `\u0000${value}\u0000`;
-        i = j;
+        i = end;
         continue;
       }
     }
     if (/\s/.test(ch)) continue;
+    if (script && (ch === "(" || !/[\w$]/.test(text[i - 1] ?? ""))) {
+      ARROW_PARAMETER.lastIndex = i;
+      const arrow = ARROW_PARAMETER.exec(text);
+      if (arrow) {
+        out += `(${arrow[1] ?? arrow[2]})=>`;
+        i = ARROW_PARAMETER.lastIndex - 1;
+        continue;
+      }
+    }
     CLOSER.lastIndex = i + 1;
     if (ch === "," && CLOSER.test(text)) continue;
-    if (ch === ";" && optionalSemicolons && optionalSemicolon(text, i)) continue;
+    if (ch === ";" && script && optionalSemicolon(text, i)) continue;
     out += ch;
   }
   return out;
