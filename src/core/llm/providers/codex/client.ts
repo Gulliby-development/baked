@@ -1,7 +1,7 @@
 import { spawn, spawnSync } from "node:child_process";
-import readline from "node:readline";
 import { describeSearch, resolveCli } from "../../../platform/cli-path.js";
 import { trackProcess } from "../../../process-tracker.js";
+import { onJsonLines, UnparsedLines } from "../json-lines.js";
 import type { ProviderModelInfo } from "../types.js";
 import { codexRunEnv } from "./home.js";
 
@@ -33,6 +33,8 @@ export interface CodexAppServerConnection extends CodexAppServerClient {
   respond(id: string | number, result: unknown): void;
   respondError(id: string | number, message: string): void;
   readonly closed: boolean;
+  /** The output lines that did not parse, for the error of a call that got no answer (#1956). */
+  readonly unparsed?: UnparsedLines;
 }
 
 export function parseCodexLoginStatus(status: number | null, output: string): CodexLoginStatus {
@@ -203,7 +205,7 @@ export async function startCodexAppServerSession(
     });
   }
 
-  const rl = readline.createInterface({ input: child.stdout, crlfDelay: Infinity });
+  const unparsed = new UnparsedLines();
   const send = (message: Record<string, unknown>) =>
     child.stdin.write(`${JSON.stringify(message)}\n`);
 
@@ -233,7 +235,7 @@ export async function startCodexAppServerSession(
     if (closed) return;
     closed = true;
     notifyClosed(new Error("Codex app-server connection closed"));
-    rl.close();
+    stopReading();
     child.removeAllListeners();
     for (const waiter of pending.values()) {
       waiter.reject(new Error("Codex app-server connection closed"));
@@ -272,13 +274,12 @@ export async function startCodexAppServerSession(
     notifyClosed(err);
   });
 
-  rl.on("line", (line) => {
-    let message: Record<string, unknown>;
-    try {
-      message = JSON.parse(line) as Record<string, unknown>;
-    } catch {
-      return;
-    }
+  // `\n` framing only: `readline` also splits at U+2028 and U+2029 inside a JSON string, and the
+  // halves of a dropped `item/tool/call` left the model waiting until its deadline (#1956).
+  const stopReading = onJsonLines(child.stdout, (line) => {
+    if (!line.trim()) return;
+    const message = unparsed.parse<Record<string, unknown>>(line);
+    if (!message) return;
 
     // Server-initiated requests carry both an id and a method; only bare ids are responses.
     if (typeof message.method === "string" && message.id != null) {
@@ -320,10 +321,11 @@ export async function startCodexAppServerSession(
   const request = (method: string, params: Record<string, unknown>, timeoutMs = 30_000) => {
     if (closed || ended) return Promise.reject(new Error("Codex app-server connection closed"));
     const id = nextRequestId++;
+    const before = unparsed.count;
     return new Promise<unknown>((resolve, reject) => {
       const timer = setTimeout(() => {
         pending.delete(id);
-        reject(new Error(`Codex app-server ${method} timed out`));
+        reject(new Error(`Codex app-server ${method} timed out${unparsed.note(before)}`));
       }, timeoutMs);
       pending.set(id, {
         resolve: (value) => {
@@ -411,6 +413,7 @@ export async function startCodexAppServerSession(
       get closed() {
         return closed || ended;
       },
+      unparsed,
     };
   } catch (error) {
     shutdown();
