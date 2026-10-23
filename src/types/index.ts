@@ -361,6 +361,8 @@ export interface QualityConfig {
   mutationEngine?: "auto" | "built-in";
   /** Run the tests on the code before the change (baseline replay) and keep which fail as evidence: `on` or `off` (default). */
   baselineReplay?: "off" | "on";
+  /** Rewrite a symbol a review keeps finding one case at a time, against all the cases (finding chains): `on` or `off` (default). */
+  chainRewrite?: "off" | "on";
   /** Property-based tests from marked criteria: `preset` or absent follows the workflow preset. */
   propertyTests?: "preset" | "auto" | "off";
 }

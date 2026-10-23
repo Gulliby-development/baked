@@ -8,6 +8,8 @@ import {
   type InlineRowFile,
   type InlineRowTest,
   inlineRowFile,
+  javaString,
+  javaValue,
   layoutFree,
 } from "./acceptance-rows-inline.js";
 import type { AcceptanceRow } from "./acceptance-rows-model.js";
@@ -436,25 +438,6 @@ const camel = (text: string): string =>
     .map((word) => word[0]?.toUpperCase() + word.slice(1))
     .join("");
 
-/** A Java string literal; control characters are octal escapes, never \u (read before lexing). */
-const javaString = (text: string): string =>
-  `"${[...text]
-    .map((ch) => {
-      const code = ch.codePointAt(0) ?? 0;
-      if (ch === '"' || ch === "\\") return `\\${ch}`;
-      return code < 0x20 || code === 0x7f ? `\\${code.toString(8).padStart(3, "0")}` : ch;
-    })
-    .join("")}"`;
-const javaValue = (value: unknown): string => {
-  if (value === null) return "(Object) null";
-  if (typeof value === "boolean") return String(value);
-  if (typeof value === "number") return Number.isInteger(value) ? `${value}L` : `${value}d`;
-  if (typeof value === "string") return javaString(value);
-  if (Array.isArray(value)) return `list(${value.map(javaValue).join(", ")})`;
-  return `map(${Object.entries(value as Record<string, unknown>)
-    .map(([key, item]) => `${javaString(key)}, ${javaValue(item)}`)
-    .join(", ")})`;
-};
 /** C# reads JSON escapes in a regular literal, but U+0085, U+2028 and U+2029 end its line. */
 const csharpString = (text: string): string =>
   JSON.stringify(text).replace(
@@ -468,9 +451,10 @@ const csharpString = (text: string): string =>
  */
 const TEMPLATES: Record<RowTest["framework"], Template> = {
   // One relative import, so no import sorter reorders it, and the harness is loaded without its
-  // extension, which tsc refuses without allowImportingTsExtensions (#1942).
+  // extension, which tsc refuses without allowImportingTsExtensions (#1942). A destructured
+  // parameter keeps its parentheses under Prettier's and Biome's arrow options (#1961).
   bun: ({ harness, test, data }) =>
-    `${header("//", harness)}import { expect, test } from "bun:test";\nimport rows from ${JSON.stringify(importPath(test, data))};\n\ntest.each(rows)("$id", async (row) => {\n  const { actual } = await import(${JSON.stringify(importPath(test, harness).replace(/\.[cm]?[jt]sx?$/, ""))});\n  expect(await actual(row.input)).toEqual(row.expected);\n});\n`,
+    `${header("//", harness)}import { expect, test } from "bun:test";\nimport rows from ${JSON.stringify(importPath(test, data))};\n\ntest.each(rows)("$id", async ({ input, expected }) => {\n  const { actual } = await import(${JSON.stringify(importPath(test, harness).replace(/\.[cm]?[jt]sx?$/, ""))});\n  expect(await actual(input)).toEqual(expected);\n});\n`,
   // In isort's groups and ruff's and black's layout at any line length (#1927).
   pytest: ({ harness, test, data }) =>
     `${header("#", harness)}import importlib.util\nimport json\nfrom pathlib import Path\n\nimport pytest\n\n_base = Path(__file__).parent\n_harness_path = _base / ${JSON.stringify(importPath(test, harness))}\n_data_path = _base / ${JSON.stringify(importPath(test, data))}\n_spec = importlib.util.spec_from_file_location("rows_harness", _harness_path)\n_harness = importlib.util.module_from_spec(_spec)\n_spec.loader.exec_module(_harness)\n_rows = json.loads(_data_path.read_text(encoding="utf-8"))\n\n\n@pytest.mark.parametrize("row", _rows, ids=[row["id"] for row in _rows])\ndef test_acceptance_row(row):\n    assert _harness.actual(row["input"]) == row["expected"]\n`,

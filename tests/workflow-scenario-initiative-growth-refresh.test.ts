@@ -49,8 +49,9 @@ describe("scenario: wheeltags R60 explain grows into the dollars other features 
     const after = refreshedGrowth(explain, base, held, { calls: 40, activeMs: 1_859_458 }, { usd: spareUsd, tokens: 10_000_000, calls: 300, activeMs: 3_600_000 });
     expect(after?.sizing?.maxRunCostUsd).toBe(6.87);
     expect(after?.sizing?.maxRunTokens).toBe(15_000_000);
-    // explain had used 94 percent of its active time; its calls were far from their limit.
-    expect(after?.maxActiveMs).toBe(1_986_252 + 3_600_000);
+    // explain had used 94 percent of its active time; its calls were far from their limit. It
+    // rises by a quarter at most and asks again when it needs more (#1958).
+    expect(after?.maxActiveMs).toBe(Math.ceil(1_986_252 * 1.25));
     expect(after?.maxAgentCalls).toBe(200);
     // The cap itself does not move: the run grows it when a call needs it.
     expect(after?.maxCostUsd).toBe(3.41);

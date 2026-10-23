@@ -232,7 +232,7 @@ describe("scenario: a formatter gate's fixer lays the block out again, in every 
 // #1948: Prettier 3 with semi false and printWidth 40 (recorded output, so no toolchain is needed).
 // The block once typed its rows with a type literal whose member separators Prettier dropped.
 const PRETTIER_NARROW =
-  "// BEGIN acceptance rows: host-written from the audited spec table. Edit acceptanceActual, not this block.\nimport {\n  expect as acceptanceExpect,\n  test as acceptanceTest,\n} from \"bun:test\"\nconst acceptanceRows: Record<\n  string,\n  unknown\n>[] = JSON.parse(\n  '[{\"id\":\"AC-003:2\",\"input\":\"macosx_11_0_arm64\",\"expected\":false}]',\n)\nacceptanceTest.each(acceptanceRows)(\n  \"$id\",\n  async (row) => {\n    acceptanceExpect(\n      await acceptanceActual(row.input),\n    ).toEqual(row.expected)\n  },\n)\n// END acceptance rows\n";
+  "// BEGIN acceptance rows: host-written from the audited spec table. Edit acceptanceActual, not this block.\nimport {\n  expect as acceptanceExpect,\n  test as acceptanceTest,\n} from \"bun:test\"\nconst acceptanceRows: Record<\n  string,\n  unknown\n>[] = JSON.parse(\n  '[{\"id\":\"AC-003:2\",\"input\":\"macosx_11_0_arm64\",\"expected\":false}]',\n)\nacceptanceTest.each(acceptanceRows)(\n  \"$id\",\n  async ({ input, expected }) => {\n    acceptanceExpect(\n      await acceptanceActual(input),\n    ).toEqual(expected)\n  },\n)\n// END acceptance rows\n";
 
 test("a narrow semicolon-free Prettier layout of the inline bun block is kept (#1948)", () => {
   const file = inlineRowFile({ mode: "inline", framework: "bun", test: "tests/platforms.test.ts" }, rows.slice(1));
@@ -311,5 +311,151 @@ describe("scenario: the host's file-mode rows tests pass their language's gates 
       const long = text.split("\n").filter((line) => line.length > 100 && !/^\s+row\(|const string Rows/.test(line));
       expect({ framework: rowTest.framework, long }).toEqual({ framework: rowTest.framework, long: [] });
     }
+  });
+});
+
+// #1961 (adversarial review of #1953): a project formatter's options pick spellings of their own.
+// Prettier `arrowParens: "avoid"` and Biome `arrowParentheses: "asNeeded"` wrote `async row =>` for
+// the bun templates' `async (row) =>`, and google-java-format reflowed a long Java row literal into
+// `"..." + "..."` at its own boundaries; the inline block was restored in a loop and a file-mode
+// test was refused input_changed. Each template is a fixed point of each option below.
+const prettier = tool("prettier", "--version");
+const googleJavaFormat = tool("google-java-format", "--version");
+
+/** Prettier's arrowParens avoid and Biome's asNeeded, as they treat a single bare parameter. */
+const avoidArrowParens = (text: string) => text.replace(/\(([A-Za-z_$][\w$]*)\) =>/g, "$1 =>");
+
+describe("scenario: the bun templates are fixed points of arrowParens avoid and asNeeded (#1961)", () => {
+  for (const ext of ["ts", "js"]) {
+    test(`inline .${ext}: the block is kept, and a changed expected value is still put back`, () => {
+      const file = inlineRowFile({ mode: "inline", framework: "bun", test: `tests/platforms.test.${ext}` }, rows);
+      const written = withInlineRows("function acceptanceActual(input) {\n  return input;\n}\n", file);
+      const formatted = avoidArrowParens(written);
+      expect(hasInlineRows(formatted, file)).toBe(true);
+      expect(withInlineRows(formatted, file)).toBe(formatted);
+      const tampered = formatted.replace('\\"expected\\":false', '\\"expected\\":true');
+      expect(tampered).not.toBe(formatted);
+      expect(hasInlineRows(tampered, file)).toBe(false);
+    });
+
+    test(`file .${ext}: rowFileProblems and the pre-attempt compare accept it, and refuse a changed expected value`, async () => {
+      const rowTest = { framework: "bun", harness: `tests/support/harness.${ext}`, test: `tests/rows.test.${ext}`, data: "tests/rows.json" };
+      const files = fileMode(rowTest);
+      const task = { id: "T003", rows: ["AC-003"], rowTest } as never;
+      const generated = rowFiles(task, { tasks: [{ rows: ["AC-003"], rowTest }], rows } as never);
+      const content = files[rowTest.test] ?? "";
+      const formatted = { ...files, [rowTest.test]: avoidArrowParens(content), [rowTest.harness]: "export const actual = input => input\n" };
+      expect(layoutFree(formatted[rowTest.test] ?? "", rowTest.test)).toBe(layoutFree(content, rowTest.test));
+      expect(await rowFileProblems(temp(formatted), generated)).toEqual([]);
+      const tampered = { ...formatted, [rowTest.data]: (formatted[rowTest.data] ?? "").replace('"expected": false', '"expected": true') };
+      expect(tampered[rowTest.data]).not.toBe(formatted[rowTest.data]);
+      expect(await rowFileProblems(temp(tampered), generated)).not.toEqual([]);
+    });
+  }
+
+  test("a single bare arrow parameter reads the same with or without parentheses, in JavaScript only", () => {
+    expect(layoutFree("each(rows)('$id', async row => {\n  check(row)\n})", "a.ts")).toBe(layoutFree('each(rows)("$id", async (row) => {\n  check(row);\n});', "a.ts"));
+    expect(layoutFree("f(x => x)", "a.js")).toBe(layoutFree("f((x) => x)", "a.js"));
+    expect(layoutFree("f((x, y) => x)", "a.ts")).not.toBe(layoutFree("f((y, x) => x)", "a.ts"));
+    expect(layoutFree("f((row) => row.input)", "a.ts")).not.toBe(layoutFree("f((row) => row.expected)", "a.ts"));
+    expect(layoutFree('s = "(x) => x"', "a.ts")).not.toBe(layoutFree('s = "x => x"', "a.ts"));
+    expect(layoutFree("x => y", "A.cs")).not.toBe(layoutFree("(x) => y", "A.cs"));
+  });
+
+  test.skipIf(!prettier)("Prettier with arrowParens avoid keeps the blocks' arrows as written", () => {
+    for (const ext of ["ts", "js"]) {
+      const inline = withInlineRows("", inlineRowFile({ mode: "inline", framework: "bun", test: `tests/platforms.test.${ext}` }, rows));
+      const rowTest = { framework: "bun", harness: `tests/support/harness.${ext}`, test: `tests/rows.test.${ext}`, data: "tests/rows.json" };
+      const root = temp({ [`tests/platforms.test.${ext}`]: inline, ...fileMode(rowTest) });
+      for (const path of [`tests/platforms.test.${ext}`, rowTest.test]) {
+        const out = spawnSync(prettier ?? "", ["--arrow-parens", "avoid", path], { cwd: root, encoding: "utf8" }).stdout;
+        expect(out).toContain("async ({ input, expected }) =>");
+      }
+    }
+  });
+
+  test.skipIf(!biome)("Biome with arrowParentheses asNeeded leaves the file-mode test unchanged", () => {
+    const rowTest = { framework: "bun", harness: "tests/support/harness.ts", test: "tests/rows.test.ts", data: "tests/rows.json" };
+    const files = fileMode(rowTest);
+    const root = temp({ ...files, "biome.json": '{\n  "formatter": { "indentStyle": "space", "lineWidth": 100 },\n  "javascript": { "formatter": { "arrowParentheses": "asNeeded" } }\n}\n' });
+    expect(run(root, biome ?? "", "format", rowTest.test)).toStartWith("0 ");
+  });
+});
+
+// A row string of 231 characters with spaces, quotes, a backslash and a newline, and the row line
+// google-java-format 1.22 wrote for it under its default settings from the single literal of the
+// earlier template (recorded, so no toolchain is needed).
+const PROSE = 'Given a document with "quoted" headings and a back\\slash, when the reader opens it\nthen every link under the second heading resolves to its anchor, and the table of contents lists them in order of appearance.';
+const proseRows: AcceptanceRow[] = [{ id: "AC-010:1", criterionId: "AC-010", source: "", input: { text: PROSE, depth: 2 }, expected: PROSE.toUpperCase() }];
+const GJF_REFLOW = String.raw`        row(
+            "AC-010:1",
+            map(
+                "text",
+                "Given a document with \"quoted\" headings and a back\\slash, when the reader opens"
+                    + " it\012then every link under the second heading resolves to its anchor, and"
+                    + " the table of contents lists them in order of appearance.",
+                "depth",
+                2L),
+            "GIVEN A DOCUMENT WITH \"QUOTED\" HEADINGS AND A BACK\\SLASH, WHEN THE READER OPENS"
+                + " IT\012THEN EVERY LINK UNDER THE SECOND HEADING RESOLVES TO ITS ANCHOR, AND THE"
+                + " TABLE OF CONTENTS LISTS THEM IN ORDER OF APPEARANCE."));`;
+
+describe("scenario: the junit templates are fixed points of google-java-format's string reflow (#1961)", () => {
+  const rowTest = { framework: "junit", package: "com.example.links", harness: "src/test/java/com/example/links/LinksHarness.java", test: "src/test/java/com/example/links/LinksRowsTest.java", data: "src/test/resources/links_rows.json" };
+  const task = { id: "T003", rows: ["AC-010"], rowTest } as never;
+  const generated = rowFiles(task, { tasks: [{ rows: ["AC-010"], rowTest }], rows: proseRows } as never);
+  const content = generated.find((file) => file.path === rowTest.test && !file.inline)?.content ?? "";
+  const rowLine = content.split("\n").find((line) => line.startsWith("        row(")) ?? "";
+  const files = Object.fromEntries(generated.map((file) => [file.path, file.inline ? "" : file.content]));
+
+  test("no string literal of a row is over 62 columns with its quotes", () => {
+    const literals = rowLine.match(/"(?:[^"\\]|\\.)*"/g) ?? [];
+    expect(literals.length).toBeGreaterThan(6);
+    expect(literals.filter((text) => text.length > 62)).toEqual([]);
+  });
+
+  test("the reflowed layout is accepted by rowFileProblems and the pre-attempt compare; a changed character is refused", async () => {
+    const formatted = content.replace(`${rowLine}\n`, `${GJF_REFLOW}\n`);
+    expect(formatted).not.toBe(content);
+    expect(layoutFree(formatted, rowTest.test)).toBe(layoutFree(content, rowTest.test));
+    expect(await rowFileProblems(temp({ ...files, [rowTest.test]: formatted }), generated)).toEqual([]);
+    const tampered = formatted.replace("in order of appearance.", "in order of appearance!");
+    expect(await rowFileProblems(temp({ ...files, [rowTest.test]: tampered }), generated)).not.toEqual([]);
+  });
+
+  test("the inline block keeps the reflowed layout and puts back a changed character", () => {
+    const file = inlineRowFile({ mode: "inline", framework: "junit", package: "com.example.links", test: "src/test/java/com/example/links/LinksTest.java" }, proseRows);
+    const written = withInlineRows("package com.example.links;\n\nclass LinksTest {\n  static Object acceptanceActual(Object input) {\n    return input;\n  }\n}\n", file);
+    const line = written.split("\n").find((text) => text.trimStart().startsWith('row("AC-010:1"')) ?? "";
+    const indent = line.length - line.trimStart().length - 8;
+    const formatted = written.replace(line, GJF_REFLOW.replace(/^/gm, " ".repeat(indent)));
+    expect(formatted).not.toBe(written);
+    expect(hasInlineRows(formatted, file)).toBe(true);
+    expect(withInlineRows(formatted, file)).toBe(formatted);
+    const tampered = formatted.replace("in order of appearance.", "in order of appearance!");
+    expect(hasInlineRows(tampered, file)).toBe(false);
+  });
+
+  test("joined literals read as one only where + is the outermost operator", () => {
+    expect(layoutFree('f("ab" + "c", x)', "A.java")).toBe(layoutFree('f("a" + "bc", x)', "A.java"));
+    expect(layoutFree('f("a" + "b" * 2)', "a.js")).not.toBe(layoutFree('f("ab" * 2)', "a.js"));
+    expect(layoutFree('f(x * "a" + "b")', "a.js")).not.toBe(layoutFree('f(x * "ab")', "a.js"));
+    expect(layoutFree('f("a" + "b".length)', "a.js")).not.toBe(layoutFree('f("ab".length)', "a.js"));
+  });
+
+  const inline = inlineRowFile({ mode: "inline", framework: "junit", package: "com.example.links", test: "src/test/java/com/example/links/LinksTest.java" }, proseRows);
+  const inlineWritten = withInlineRows("package com.example.links;\n\nclass LinksTest {\n  static Object acceptanceActual(Object input) {\n    return input;\n  }\n}\n", inline);
+
+  test("no comment line of the inline block is over 100 columns, which google-java-format wraps", () => {
+    expect(inlineWritten.split("\n").filter((line) => /^\s*\/\//.test(line) && line.length > 100)).toEqual([]);
+  });
+
+  test.skipIf(!googleJavaFormat)("google-java-format changes only whitespace in the file-mode test and the inline block", () => {
+    const root = temp({ [rowTest.test]: content, [inline.path]: inlineWritten });
+    const out = spawnSync(googleJavaFormat ?? "", [rowTest.test], { cwd: root, encoding: "utf8" }).stdout;
+    expect(out.match(/"(?:[^"\\]|\\.)*"/g)).toEqual(content.match(/"(?:[^"\\]|\\.)*"/g));
+    const formatted = spawnSync(googleJavaFormat ?? "", [inline.path], { cwd: root, encoding: "utf8" }).stdout;
+    expect(formatted).not.toBe(inlineWritten);
+    expect(hasInlineRows(formatted, inline)).toBe(true);
   });
 });

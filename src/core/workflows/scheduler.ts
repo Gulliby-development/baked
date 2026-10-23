@@ -130,6 +130,7 @@ import {
   reproTool,
   runProbe,
   runRepro,
+  runReproBattery,
   unconfidentReproAdvice,
 } from "../verification/repro.js";
 import {
@@ -301,6 +302,23 @@ import {
 import { EffectJournal, fileHash, intentRoot, rootField } from "./effects.js";
 import { WorkflowFault } from "./errors.js";
 import { ExecutionBudgetClock, executionClock, executionTimeout } from "./execution-clock.js";
+import {
+  BATTERY_CASES,
+  BATTERY_NOTE,
+  type BatteryRecord,
+  batteryDecision,
+  batteryOf,
+  batteryTable,
+  CHAIN_BATTERY_DIR,
+  CHAIN_KIND,
+  CHAIN_TASKS_DIR,
+  type ChainFinding,
+  type ChainRecord,
+  chainFindings,
+  chainSpecRows,
+  symbolKey,
+  taskChainRecord,
+} from "./finding-chain.js";
 import { describeChange, keepOutside, restoreOutside, unjournaledOutside } from "./fixer-scope.js";
 import {
   FORK_SEED_ARTIFACT,
@@ -996,6 +1014,11 @@ export class WorkflowScheduler {
   /** Re-arms the active-time deadline after the policy's cap changed; set while a run is driven. */
   private rearmDeadline: () => void = () => {};
   /**
+   * Raises a driven run's host-derived limits in the stored policy before its deadline stops it:
+   * an initiative's refresh of a feature run's share (#1958). Unset outside an initiative.
+   */
+  growLimits: ((runId: string) => void) | undefined;
+  /**
    * Requests for a person raised by the current step. They become durable only together with the
    * state they were raised on (see `flushWaits`), so a decision never sees a request whose state
    * is not saved yet, and a later save never overwrites what the decision wrote.
@@ -1064,12 +1087,21 @@ export class WorkflowScheduler {
     this.providerActivity = () => budgetClock.track();
     const started = budgetClock.now();
     const activeBefore = this.store.run(runId).active_ms;
-    const arm = () =>
-      executionTimeout(
-        () => controller.abort(stopFault("deadline", "Active deadline exhausted")),
-        Math.max(1, policy.maxActiveMs - activeBefore - (budgetClock.now() - started)),
-        budgetClock,
-      );
+    const left = () => policy.maxActiveMs - activeBefore - (budgetClock.now() - started);
+    // An initiative feature's limit is a share the initiative can raise: it is asked when the
+    // deadline comes, not only between drives, when the run may be the only one left (#1958).
+    const expire = (): void => {
+      const before = policy.maxActiveMs;
+      try {
+        this.growLimits?.(runId);
+        adoptStoredLimits(this.store, runId, policy);
+      } catch {
+        // A timer callback must not throw: without the growth the stop stands.
+      }
+      if (policy.maxActiveMs > before && left() > 0) timeout = arm();
+      else controller.abort(stopFault("deadline", "Active deadline exhausted"));
+    };
+    const arm = () => executionTimeout(expire, Math.max(1, left()), budgetClock);
     let timeout = arm();
     this.rearmDeadline = () => {
       timeout();
@@ -2341,6 +2373,14 @@ export class WorkflowScheduler {
                     this.store.addEvidence(runId, "diff", state.snapshotId ?? "", diff.artifactId),
                   );
               }
+              // A rewrite's battery runs before the review: a case that fails again reopens the
+              // correction without a review call (#1959).
+              const reopened = await this.chainBattery(runId, state, policy, signal);
+              if (reopened.length) {
+                repairFindings = { findings: reopened, kind: "repair" };
+                advance = false;
+                break;
+              }
               await this.addReviewBundle(runId, state, signal);
               const failures = await this.review(
                 runId,
@@ -3428,11 +3468,18 @@ export class WorkflowScheduler {
    * correction already fixed them: the symbol is being patched one finding at a time, so this
    * correction rewrites it for its whole input class against every finding's repro (#1330).
    */
-  private recurringContext(runId: string, task: Task): Record<string, unknown> {
+  private recurringContext(
+    runId: string,
+    state: RuntimeState,
+    task: Task,
+  ): Record<string, unknown> {
     const earlier = recurringFindings(this.store, runId, task);
     // The same-file findings gate submit beside the recurring ones (`reproCheck`), so the worker
     // gets both lists (#1423).
-    const siblings = this.siblingContext(runId, task);
+    const siblings = {
+      ...this.siblingContext(runId, task),
+      ...this.batteryContext(runId, state, task),
+    };
     if (!earlier.length) return siblings;
     const corrections = repeatCorrections(this.store, runId, task);
     return {
@@ -3450,6 +3497,131 @@ export class WorkflowScheduler {
         note: "Earlier corrections of this run already patched these symbols for the findings listed here, and the findings this task corrects are the next case of the same input. Do not add another special case: rewrite the symbol for its whole input class. First state the input grammar or contract it must handle (for a parser: tokenize code spans, links and delimiters first, then interpret them; no placeholder substitution), then rewrite it, and add table-driven tests with one row per finding here and per finding this task corrects. The host runs the repro of every listed finding before it accepts submit_result, and run_repro runs them too.",
       },
     };
+  }
+  /**
+   * The battery of a corrective the host opened as a rewrite of a symbol (#1959): every repro of
+   * the finding chain as one table, the symbol and the spec rows its findings name.
+   */
+  private batteryContext(runId: string, state: RuntimeState, task: Task): Record<string, unknown> {
+    if (task.origin === "planned") return {};
+    const record = taskChainRecord(this.store, runId, task.id);
+    if (record?.decision !== "rewrite") return {};
+    const members = batteryOf(chainFindings(this.store, runId), record);
+    return {
+      battery: {
+        symbol: record.symbol,
+        file: record.file,
+        findings: record.chain.map((f) => f.id),
+        cases: batteryTable(members),
+        spec: chainSpecRows(state.spec, members),
+        note: BATTERY_NOTE,
+      },
+    };
+  }
+  /**
+   * The host's battery check before a review round (#1959): the repros of every chain a finished
+   * rewrite corrected, run on the run's files as they are. A case that shows its reported
+   * behavior again becomes a finding that repeats it, so its correction reopens (and, being a
+   * chain, rewrites again) without a model review. Each run is recorded under `chains/battery/`.
+   */
+  private async chainBattery(
+    runId: string,
+    state: RuntimeState,
+    policy: RunPolicy,
+    signal: AbortSignal,
+  ): Promise<Review["findings"]> {
+    if (policy.chainRewrite !== "on") return [];
+    const finished = new Set(
+      this.store
+        .tasks(runId)
+        .filter((t) => ["implemented", "verified"].includes(t.status))
+        .map((t) => t.id),
+    );
+    const records = new Map<string, ChainRecord>();
+    for (const row of this.store.artifacts(runId)) {
+      if (row.kind !== CHAIN_KIND || !row.logical_path.startsWith(CHAIN_TASKS_DIR)) continue;
+      const record = JSON.parse(this.store.readArtifact(runId, row.id)) as ChainRecord;
+      if (record.decision === "rewrite" && finished.has(record.taskId))
+        records.set(record.taskId, record);
+    }
+    if (!records.size) return [];
+    const all = chainFindings(this.store, runId);
+    const decided = decidedFindingIds(this.store, runId);
+    const executables = reproExecutables(policy.checks);
+    // One case per finding, under the latest rewrite of its chain.
+    const cases = new Map<string, { record: ChainRecord; finding: ChainFinding; repro: Repro }>();
+    for (const record of records.values())
+      for (const finding of batteryOf(all, record))
+        if (
+          finding.repro &&
+          !decided.has(finding.id) &&
+          !reproCannotSeeCorrection(finding.file, finding.repro)
+        )
+          cases.set(finding.id, { record, finding, repro: finding.repro });
+    const battery = [...cases.values()].slice(-BATTERY_CASES);
+    if (!battery.length) return [];
+    const root = runRoot(this.store.workspace, state);
+    const touched = this.runChangedPaths(runId, state);
+    const outcomes = await runReproBattery(
+      battery.map((c) => c.repro),
+      (repro) => {
+        const file = battery.find((c) => c.repro === repro)?.finding.file;
+        return runRepro(this.processes, repro, {
+          root,
+          executables,
+          generated: generatedPaths(policy),
+          signal,
+          sandbox: runSandbox(policy, root, { gitWrite: Boolean(state.worktree) }),
+          shadows: file ? [file, ...touched] : touched,
+        });
+      },
+    );
+    const record: BatteryRecord = {
+      schemaVersion: 1,
+      snapshotId: state.snapshotId,
+      cases: battery.map(({ record, finding }, index) => ({
+        taskId: record.taskId,
+        findingId: finding.id,
+        file: finding.file,
+        symbol: record.symbol,
+        status: outcomes[index]?.status ?? "inconclusive",
+        reason: outcomes[index]?.reason ?? "",
+      })),
+      decision: batteryDecision(outcomes.map((o) => o.status)),
+    };
+    const evidenceId = this.store.transaction(() => {
+      const artifact = this.store.artifact(
+        runId,
+        CHAIN_KIND,
+        `${CHAIN_BATTERY_DIR}${newId()}.json`,
+        canonical(record),
+      );
+      return this.store.addEvidence(runId, "command", state.snapshotId ?? "", artifact.id);
+    });
+    if (record.decision !== "reopen") return [];
+    const failing = battery.flatMap((c, index) => {
+      const outcome = outcomes[index];
+      return outcome?.status === "reproduced" ? [{ ...c, outcome }] : [];
+    });
+    return this.recordChecks(
+      runId,
+      state,
+      failing.map(({ record, finding, repro, outcome }) => ({
+        id: newId(),
+        kind: "correctness" as const,
+        severity: finding.severity === "critical" ? ("critical" as const) : ("high" as const),
+        requirementIds: finding.requirementIds,
+        criterionIds: finding.criterionIds,
+        file: finding.file,
+        symbol: finding.symbol,
+        evidenceIds: [evidenceId],
+        claim: `Battery case ${finding.id} of ${record.symbol} shows its reported behavior again after ${record.taskId}: ${finding.claim}`,
+        impact: `${record.taskId} rewrote ${record.symbol} for its chain of findings, and the host's battery run before the next review prints ${JSON.stringify(repro.actual)} again where the spec needs ${JSON.stringify(repro.expected)}. Output: ${outcome.output.slice(-400)}`,
+        suggestedFix: `Make ${record.symbol} pass every case of the battery, ${finding.id} included, without breaking the others.`,
+        repro,
+        repeatOf: finding.id,
+      })),
+    );
   }
   /**
    * The earlier corrected findings in the file this correction's findings name, on other symbols:
@@ -4259,10 +4431,15 @@ export class WorkflowScheduler {
     const executables = reproExecutables(policy.checks);
     // The repros of earlier findings on the same symbol are a regression set: a rewrite that
     // fixes this finding must not bring one of them back (#1330).
+    const chain = taskChainRecord(this.store, runId, task.id);
     const regression = new Set(
       [
         ...recurringFindings(this.store, runId, task),
         ...sameFileFindings(this.store, runId, task),
+        // A rewrite holds the chain's whole battery (#1959).
+        ...(chain?.decision === "rewrite"
+          ? batteryOf(chainFindings(this.store, runId), chain)
+          : []),
       ].map((f) => f.id),
     );
     // A finding a person's spec conflict answer decided is no longer the gate (#1350).
@@ -4900,6 +5077,7 @@ export class WorkflowScheduler {
         const keys = [
           "recurringFindings",
           "siblingFindings",
+          "battery",
           "correctionFocus",
           "cutOffChecks",
           "earlierEdits",
@@ -6590,7 +6768,7 @@ ${note}`;
               ...(await this.libraryDocsContext(runId, policy, root, task)),
               ...this.previousAttempt(runId, task.id),
               ...this.earlierReadsContext(runId, task.id),
-              ...this.recurringContext(runId, task),
+              ...this.recurringContext(runId, state, task),
               ...this.cutOffChecks(runId, task.id),
               ...(focus.files.length
                 ? {
@@ -7885,7 +8063,7 @@ ${note}`;
                   ...entry.extra,
                   task: scoped,
                   ...(await this.correctionContext(runId, state, policy, root, task, narrow)),
-                  ...this.recurringContext(runId, task),
+                  ...this.recurringContext(runId, state, task),
                   ...(await this.libraryDocsContext(runId, policy, root, task)),
                   ...(earlierEdits ? { earlierEdits } : {}),
                   ...this.affectedTestsContext(root, state, policy, task),
@@ -15152,14 +15330,6 @@ export function correctedFiles(
   }
   return files;
 }
-/** The last name of a symbol a reviewer reported: `Parser.parseInline()` is `parseInline`. */
-const symbolKey = (symbol: string | null | undefined): string =>
-  (symbol ?? "")
-    .replace(/\(.*$/s, "")
-    .split(/[.:#\s]+/)
-    .filter(Boolean)
-    .at(-1) ?? "";
-
 /**
  * The earlier findings of the run that a correction's findings recur on: the same symbol in the
  * same file, or the finding one of them names in `repeatOf`, when a correction that finished

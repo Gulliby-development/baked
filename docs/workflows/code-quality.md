@@ -11,12 +11,13 @@ Quality gates of workflow runs measure the code a run writes beyond what its che
 | [Property-based tests](#property-based-tests) | `propertyTests` | `auto`, `off` | by preset: `auto` for `standard` and `full` (the `sdd` workflow), `off` otherwise |
 | [Mutation gate](#mutation-gate) | `mutation`, `mutationThresholds`, `mutationBudgetMs`, `mutationEngine` | `off`, `advisory`, `required`; percent per path; time; `auto`, `built-in` | by preset: `advisory` for `full` (the `sdd` workflow), `off` otherwise; `auto` |
 | [Baseline replay](#baseline-replay) | `baselineReplay` | `on` (absent is off) | off |
+| [Finding chain rewrite](runtime.md#finding-chains) | `chainRewrite` | `on` (absent is off) | off |
 
 Where the defaults are set:
 
 - terminal UI: `/code-quality` (or **Code Quality** in `/settings`), saved to the project or the global config;
 - desktop: Settings, Chat settings, **Code quality** page;
-- local API: `PATCH /v1/settings` with `quality.duplication`, `quality.disabledRules`, `quality.registryLookups`, `quality.sast`, `quality.propertyTests`, `quality.mutation`, `quality.mutationEngine` and `quality.baselineReplay` ([chat settings](../desktop/api.md#chat-settings));
+- local API: `PATCH /v1/settings` with `quality.duplication`, `quality.disabledRules`, `quality.registryLookups`, `quality.sast`, `quality.propertyTests`, `quality.mutation`, `quality.mutationEngine`, `quality.baselineReplay` and `quality.chainRewrite` ([chat settings](../desktop/api.md#chat-settings));
 - config file: `quality` in `.baked/config.json` or `~/.baked/config.json`.
 
 A run can override the default at start: `baked workflow run --duplication off|warn|ratchet`, `--sast auto|off`, `--property-tests auto|off` and `--mutation off|advisory|required`, or `duplication`, `sast`, `propertyTests` and `mutation` in `POST /v1/workflow/runs`. The order is the run flag, then the policy's own field (`--policy FILE` or `workflows.policy`), then the `quality` setting, then the built-in default.

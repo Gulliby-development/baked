@@ -658,6 +658,13 @@ export const PolicySchema = z
      */
     baselineReplay: z.literal("on").optional(),
     /**
+     * Finding chains (finding-chain.ts, #1959): `on` turns the corrective of a `repeatOf` chain of
+     * `CHAIN_REWRITE_AT` findings on one file and symbol into a rewrite of the symbol against the
+     * chain's battery of repros, and runs that battery before each review round. Absent means
+     * off, so stored policies keep their hash.
+     */
+    chainRewrite: z.literal("on").optional(),
+    /**
      * The project's choices for the anti-slop rule pack (quality/rules.ts), which is always on:
      * rules turned off, severities changed and ast-grep rule files added. Absent means the
      * built-in pack as shipped, so stored policies keep their hash.

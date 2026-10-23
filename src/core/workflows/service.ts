@@ -265,7 +265,10 @@ export class NativeWorkflowService implements WorkflowService {
       this.leases,
       executor ?? new NativeAgentExecutor(this.store, this.leases, config, this.rootContext),
     );
+    this.scheduler.growLimits = (runId) => this.growLimits?.(runId);
   }
+  /** Raises a run's host-derived limits before its deadline stops it; set by an initiative. */
+  growLimits: ((runId: string) => void) | undefined;
   private enabled(): void {
     if (!workflowsEnabled(this.config))
       throw new WorkflowFault(
@@ -1088,6 +1091,7 @@ export class NativeWorkflowService implements WorkflowService {
     lane.registryFetch = this.scheduler.registryFetch;
     lane.semgrep = this.scheduler.semgrep;
     lane.waitClock = this.scheduler.waitClock;
+    lane.growLimits = (runId) => this.growLimits?.(runId);
     return lane;
   }
   async pause(runId: string, command: CommandIdentity): Promise<RunSnapshot> {

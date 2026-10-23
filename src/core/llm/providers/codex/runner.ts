@@ -3,7 +3,6 @@ import { randomUUID } from "node:crypto";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import readline from "node:readline";
 import type {
   JSONSchema7,
   LanguageModelV2,
@@ -18,6 +17,7 @@ import { getCwd } from "../../../cwd.js";
 import { trackProcess } from "../../../process-tracker.js";
 import { providerCallDetail, providerResponded } from "../../provider-health.js";
 import { cliReasoningEffort } from "../cli-effort.js";
+import { jsonLines, UnparsedLines } from "../json-lines.js";
 import {
   imageExtension,
   imagePlaceholder,
@@ -473,13 +473,21 @@ export class CodexCliRunner implements CodexRunner {
   }
 }
 
-async function runCodexProcess(
+/**
+ * Runs `codex exec` and reads its JSON Lines events. `command` replaces the CLI in tests: a
+ * program and the arguments that go before the exec arguments.
+ */
+export async function runCodexProcess(
   args: string[],
   prompt: string,
   abortSignal?: AbortSignal,
   onResponse?: () => void,
+  command: { file: string; prefix: string[] } = { file: codexCommand(), prefix: [] },
 ): Promise<CodexRunnerResult> {
-  const child = spawn(codexCommand(), args, { signal: abortSignal, env: codexRunEnv() });
+  const child = spawn(command.file, [...command.prefix, ...args], {
+    signal: abortSignal,
+    env: codexRunEnv(),
+  });
   trackProcess(child);
   let spawnError: unknown | null = null;
   child.once("error", (error) => {
@@ -507,7 +515,9 @@ async function runCodexProcess(
     },
   );
 
-  const rl = readline.createInterface({ input: child.stdout, crlfDelay: Infinity });
+  // `\n` framing only: `readline` also splits at U+2028 and U+2029 inside a JSON string (#1956).
+  const lines = jsonLines(child.stdout);
+  const unparsed = new UnparsedLines();
   let finalText = "";
   let usage: LanguageModelV2Usage = {
     inputTokens: undefined,
@@ -519,15 +529,11 @@ async function runCodexProcess(
   const webSearches: string[] = [];
 
   try {
-    for await (const line of rl) {
+    for await (const line of lines) {
       const trimmed = line.trim();
       if (!trimmed.startsWith("{")) continue;
-      let event: Record<string, unknown>;
-      try {
-        event = JSON.parse(trimmed) as Record<string, unknown>;
-      } catch {
-        continue;
-      }
+      const event = unparsed.parse<Record<string, unknown>>(trimmed);
+      if (!event) continue;
 
       if (event.type === "item.completed" || event.type === "item.updated") {
         const item = event.item as { type?: string } | undefined;
@@ -573,11 +579,11 @@ async function runCodexProcess(
       throw new Error(`Codex exec exited with ${detail}${stderr ? `: ${stderr}` : ""}`);
     }
     if (!finalText) {
-      throw new Error("Codex exec returned no final agent message");
+      throw new Error(`Codex exec returned no final agent message${unparsed.note()}`);
     }
     return { text: finalText, usage, ...(webSearches.length ? { webSearches } : {}) };
   } finally {
-    rl.close();
+    void lines.return(undefined);
     child.removeAllListeners();
     try {
       if (!child.killed) child.kill();

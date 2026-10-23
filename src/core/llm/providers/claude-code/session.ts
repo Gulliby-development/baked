@@ -2,9 +2,9 @@ import { spawn } from "node:child_process";
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import readline from "node:readline";
 import type { JSONSchema7, LanguageModelV3Usage } from "@ai-sdk/provider";
 import { trackProcess } from "../../../process-tracker.js";
+import { onJsonLines, UnparsedLines } from "../json-lines.js";
 import { claudeCodeCommand, getClaudeCodeFlags } from "./cli.js";
 import { type ClaudeCodePromptParts, claudeCodeTurnContent } from "./prompt.js";
 
@@ -156,6 +156,8 @@ interface SessionState {
   closed: boolean;
   lastUsed: number;
   idleTimer: ReturnType<typeof setTimeout> | null;
+  /** Output lines that did not parse, named when the process ends with a call pending (#1956). */
+  unparsed: UnparsedLines;
   pending: {
     onResponse?: () => void;
     resolve: (result: ClaudeCodeTurnResult) => void;
@@ -313,12 +315,12 @@ export const spawnClaudeCodeProcess: ClaudeCodeProcessFactory = ({
     stderr.push(String(chunk));
     if (stderr.length > 50) stderr.shift();
   });
-  if (child.stdout) {
-    const rl = readline.createInterface({ input: child.stdout, crlfDelay: Infinity });
-    rl.on("line", (line) => {
+  // `\n` framing only, as stream-json writes it: `readline` also splits at U+2028 and U+2029,
+  // which the CLI escapes today but JSON allows raw inside a string (#1956).
+  if (child.stdout)
+    onJsonLines(child.stdout, (line) => {
       for (const listener of lineListeners) listener(line);
     });
-  }
   child.once("error", (error) => fireExit(error));
   child.once("exit", (code, signal) => {
     rmSync(dir, { recursive: true, force: true });
@@ -466,6 +468,7 @@ export class ClaudeCodeSessionRunner implements ClaudeCodeRunner {
       closed: false,
       lastUsed: Date.now(),
       idleTimer: null,
+      unparsed: new UnparsedLines(),
       pending: null,
     };
     proc.onLine((line) => this.handleLine(session, line));
@@ -475,6 +478,7 @@ export class ClaudeCodeSessionRunner implements ClaudeCodeRunner {
       if (session.idleTimer) clearTimeout(session.idleTimer);
       const pending = session.pending;
       session.pending = null;
+      if (pending) error.message += session.unparsed.note();
       pending?.reject(error);
     });
     this.sessions.push(session);
@@ -484,12 +488,8 @@ export class ClaudeCodeSessionRunner implements ClaudeCodeRunner {
   private handleLine(session: SessionState, line: string): void {
     const trimmed = line.trim();
     if (!trimmed.startsWith("{") || !session.pending) return;
-    let event: { type?: string };
-    try {
-      event = JSON.parse(trimmed) as { type?: string };
-    } catch {
-      return;
-    }
+    const event = session.unparsed.parse<{ type?: string }>(trimmed);
+    if (!event) return;
     const live = session.pending;
     const stream = event as { event?: { type?: string; delta?: { type?: string } } };
     if (
