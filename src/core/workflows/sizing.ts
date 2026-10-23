@@ -9,7 +9,7 @@ import {
   missingCases,
   type SpecText,
 } from "../verification/criteria-cases.js";
-import { hostRowPaths, literalRows } from "./acceptance-rows.js";
+import { hostRowPaths, literalRows, rowsAsDataOn } from "./acceptance-rows.js";
 import { MAX_EXTENDED_MS } from "./budget.js";
 import { DEFAULT_STAGE_RANGES, historyStorePaths, rangeOf, type TokenRange } from "./estimate.js";
 import { type HostEdit, plannerGraph, recordGraphEdits } from "./host-edits.js";
@@ -507,6 +507,13 @@ export interface TaskSize {
   cases?: number;
   /** Sequential slices of this test file, including this task. */
   sliceCount?: number;
+  /** A rows task (`rows` and `rowTest`), with its criteria that have no rows (#1930). */
+  rowsTask?: TestTaskRows;
+}
+
+/** What sizing knows of a rows task: the criteria a planner could move to a test task of their own. */
+export interface TestTaskRows {
+  movable: string[];
 }
 
 export interface SizingReport {
@@ -693,6 +700,13 @@ export const CAPACITY_PROBE = 4;
  * case capacity, a task above it splits when it covers more than `CAPACITY_PROBE` times it or its
  * expected price is above one attempt's cap; a whole task that finishes raises the capacity for
  * later runs. Without one, only the price decides.
+ *
+ * A rows task is never sliced, by the host or by the planner (`rowPlanProblems`), and its price is
+ * a finished task's tokens over all its continuations, not one attempt's. So price alone never
+ * splits it: only its cases above `CAPACITY_PROBE` times the capacity do, and only when it has
+ * criteria without rows to move into a test task of their own. Bench round 60, wheeltags explain:
+ * a 40-case rows task priced above the cap went between plan and analysis five times, 1.03M tokens,
+ * while the planner note said to keep it whole (#1930).
  */
 export function exceedsTestCapacity(
   cases: number,
@@ -700,8 +714,15 @@ export function exceedsTestCapacity(
   estimate: TokenRange,
   cap: number,
   keepSmall = true,
+  rows: TestTaskRows | null = null,
 ): boolean {
   const capacity = limit?.cases ?? 0;
+  if (rows) {
+    if (!rows.movable.length) return false;
+    return capacity > 0
+      ? cases > CAPACITY_PROBE * capacity
+      : cases > 5 && expectedPrice(estimate) > cap;
+  }
   if (capacity > 0) {
     if ((keepSmall && cases <= 5) || cases <= capacity) return false;
     return cases > CAPACITY_PROBE * capacity || expectedPrice(estimate) > cap;
@@ -779,6 +800,10 @@ export function sizePlan(input: {
           : 0;
       const estimate = priceTask(task, rates, tests, cases);
       const files = writtenFiles(task).length;
+      const rowsTask =
+        kind === "test" && task.rows?.length
+          ? { movable: task.criterionIds.filter((id) => !task.rows?.includes(id)) }
+          : null;
       return {
         taskId: task.id,
         kind,
@@ -788,9 +813,13 @@ export function sizePlan(input: {
         attemptSteps: taskKind(task) === "test" ? testSteps : null,
         oversized:
           kind === "test"
-            ? exceedsTestCapacity(cases, limit, estimate, maxAttemptTokens)
+            ? // A slice of one criterion is as small as the host splits; its worker writes and
+              // checks the cases in batches, so sending it to the planner asks for no plan (#1930).
+              !(task.sizingSlice && task.criterionIds.length === 1) &&
+              exceedsTestCapacity(cases, limit, estimate, maxAttemptTokens, true, rowsTask)
             : files > 1 && estimate.high > maxAttemptTokens,
         ...(kind === "test" ? { cases, sliceCount: task.sizingSlice?.count ?? 1 } : {}),
+        ...(rowsTask ? { rowsTask } : {}),
       };
     });
   const verification = verificationTokens();
@@ -813,11 +842,13 @@ export function sizePlan(input: {
     decision = "split-tasks";
     for (const task of oversized)
       reasons.push(
-        task.kind === "test" &&
-          (limit?.cases ?? 0) > 0 &&
-          (task.cases ?? 0) > CAPACITY_PROBE * (limit?.cases ?? 0)
-          ? `${task.taskId} covers ${task.cases} cases, above ${CAPACITY_PROBE} times the observed capacity of ${limit?.cases}`
-          : `${task.taskId} writes ${task.files} files and needs about ${Math.round(task.kind === "test" ? expectedPrice(task.estimate) : task.estimate.high)} tokens, above one attempt's ${maxAttemptTokens}`,
+        task.rowsTask
+          ? `${task.taskId} is a rows task covering ${task.cases} cases, ${(limit?.cases ?? 0) > 0 ? `above ${CAPACITY_PROBE} times the observed capacity of ${limit?.cases}` : `above one attempt's ${maxAttemptTokens} tokens`}; a rows task is never sliced, so keep only its rows criteria in it and move ${task.rowsTask.movable.join(", ")} into a test task of their own, writing another test file, that depends on it`
+          : task.kind === "test" &&
+              (limit?.cases ?? 0) > 0 &&
+              (task.cases ?? 0) > CAPACITY_PROBE * (limit?.cases ?? 0)
+            ? `${task.taskId} covers ${task.cases} cases, above ${CAPACITY_PROBE} times the observed capacity of ${limit?.cases}`
+            : `${task.taskId} writes ${task.files} files and needs about ${Math.round(task.kind === "test" ? expectedPrice(task.estimate) : task.estimate.high)} tokens, above one attempt's ${maxAttemptTokens}`,
       );
   }
   if (runTokens + repairReserve > budgetBefore && maxRunTokens !== null) {
@@ -958,6 +989,13 @@ export function rateHistory(workspace: string, policy: RunPolicy): number[] {
   ].flatMap((path) => tokenRatesFrom(path));
 }
 
+/**
+ * How sizing treats a rows task, told to the planner both before it plans and in a split note, so
+ * the plan it is asked for is one the rows rule accepts (#1930).
+ */
+export const ROWS_TASK_NOTE =
+  "A rows task (rows and rowTest) is never sliced and stays whole whatever its price; its continuations finish it. If sizing names one as too large, keep only its rows criteria in it and move its other criteria into a test task of their own, writing another test file, that depends on it.";
+
 /** How many code files one attempt covers, and what the planner is told before it plans. */
 export function plannerSizing(
   policy: RunPolicy,
@@ -972,7 +1010,7 @@ export function plannerSizing(
   const k = (kind: FileKind) => `${Math.round(highest(rates, kind) / 1000)}k`;
   return {
     maxCodeFilesPerTask,
-    note: `Give every task that writes code the policy's typecheck check, so its errors show in that task. Put tests in tasks of their own. A code file costs about ${k("code")} tokens, a documentation file about ${k("docs")}, a project manifest or solution file about ${k("manifest")}. ${tests.all && tests.hasCases ? `Finished test tasks cost a median ${Math.round(tests.all.perTask.low / 1000)}k and 90th percentile ${Math.round(tests.all.perTask.high / 1000)}k tokens per task; case counts select broad buckets, not a per-case historical rate.` : `Without history, allow ${DEFAULT_PER_CASE.low}-${DEFAULT_PER_CASE.high} tokens per literal case, at least the file allowance.`} Keep each code task to at most ${maxCodeFilesPerTask} files. A task whose writes all carry their content is written by the host and costs nothing, whatever its file count. Give independent tasks disjoint writes and no dependency between them; a test task depends on the code tasks whose criteria it covers. ${limit?.cases ? `Keep a test task whole up to ${CAPACITY_PROBE * limit.cases} literal cases (${CAPACITY_PROBE} times ${limit.cases}, the largest finished task handled): slices of one file cost more in total than the whole file. Split it only above that.` : "Keep a file with five or fewer literal cases in one task. Without observed case capacity, split a larger test file only when its default expected price exceeds the cap."} Split into sequential slices of whole criteria: create it first, then modify it, each slice depending on the previous. Preserve earlier slices and test only the assigned criteria. If one criterion alone exceeds the capacity, write and check its cases in batches inside the same attempt.`,
+    note: `Give every task that writes code the policy's typecheck check, so its errors show in that task. Put tests in tasks of their own. A code file costs about ${k("code")} tokens, a documentation file about ${k("docs")}, a project manifest or solution file about ${k("manifest")}. ${tests.all && tests.hasCases ? `Finished test tasks cost a median ${Math.round(tests.all.perTask.low / 1000)}k and 90th percentile ${Math.round(tests.all.perTask.high / 1000)}k tokens per task; case counts select broad buckets, not a per-case historical rate.` : `Without history, allow ${DEFAULT_PER_CASE.low}-${DEFAULT_PER_CASE.high} tokens per literal case, at least the file allowance.`} Keep each code task to at most ${maxCodeFilesPerTask} files. A task whose writes all carry their content is written by the host and costs nothing, whatever its file count. Give independent tasks disjoint writes and no dependency between them; a test task depends on the code tasks whose criteria it covers. ${limit?.cases ? `Keep a test task whole up to ${CAPACITY_PROBE * limit.cases} literal cases (${CAPACITY_PROBE} times ${limit.cases}, the largest finished task handled): slices of one file cost more in total than the whole file. Split it only above that; the host itself splits a test task without rows whose price is above one attempt.` : "Keep a file with five or fewer literal cases in one task. Without observed case capacity, split a larger test file only when its default expected price exceeds the cap."} Split into sequential slices of whole criteria: create it first, then modify it, each slice depending on the previous. Preserve earlier slices and test only the assigned criteria. If one criterion alone exceeds the capacity, write and check its cases in batches inside the same attempt.${rowsAsDataOn(policy) ? ` ${ROWS_TASK_NOTE}` : ""}`,
   };
 }
 
@@ -1271,7 +1309,7 @@ export function splitNote(
     maxTasks === undefined
       ? ""
       : ` Automatic approval allows at most ${maxTasks} planned tasks before host sizing splits, not counting tasks the host writes from their content. Prefer fewer, larger slices when they fit the sizing capacity. Give every slice of one test task \`sizingSlice\` with that task's ID, its index, the slice count and its share, so they count as one planned task; extra tasks requested by sizing do not count against that task limit; file, path and other approval limits still apply.`;
-  return `Sizing: the plan is too large for its attempts. ${report.reasons.join(". ")}. Re-plan with smaller tasks: tests in tasks of their own, keep a file with five or fewer literal cases whole, split a test task only above the observed case capacity (or the fallback allowance without capacity) into sequential criterion slices with create then modify writes and a dependency on the preceding slice, at most ${maxCodeFilesPerTask} code files per task, disjoint writes and no dependency between tasks where possible, so they run in parallel. Files whose whole content the request fixes (module stubs, a registration file) go in one task whose writes carry their content, which the host writes for nothing.${approval}`;
+  return `Sizing: the plan is too large for its attempts. ${report.reasons.join(". ")}. Re-plan with smaller tasks: tests in tasks of their own, keep a file with five or fewer literal cases whole, split a test task only above the observed case capacity (or the fallback allowance without capacity) into sequential criterion slices with create then modify writes and a dependency on the preceding slice, at most ${maxCodeFilesPerTask} code files per task, disjoint writes and no dependency between tasks where possible, so they run in parallel. Files whose whole content the request fixes (module stubs, a registration file) go in one task whose writes carry their content, which the host writes for nothing.${report.tasks.some((task) => task.rowsTask) ? ` ${ROWS_TASK_NOTE}` : ""}${approval}`;
 }
 
 /** The approval's line for the sized active time against the active-time cap (#933). */

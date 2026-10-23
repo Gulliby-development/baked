@@ -1681,6 +1681,17 @@ export class WorkflowScheduler {
                       ? { hostSplit: hostSplitParts(graph) }
                       : {}),
                     ...(audit ? { derivationAudit: audit } : {}),
+                    // A sizing re-plan quotes the planner's sizing note; without it the analyzer
+                    // called the quote unsupported five times in bench round 60 (#1930).
+                    ...(policy.sizing && state.sizingReplans > 0
+                      ? {
+                          sizing: plannerSizing(
+                            policy,
+                            sizingHistory(this.store.workspace, policy),
+                            this.sizingModel(runId, null),
+                          ),
+                        }
+                      : {}),
                   },
                   signal,
                   undefined,
