@@ -47,7 +47,9 @@ export function crossPlatformNote(request: string, root: string): string | null 
   // One host proves only what it can run: platform-neutral code and tests that pass here (#1015).
   if (forbidsCi(request))
     return "The request names other operating systems but wants no CI: write criteria this host can check (the code uses platform-neutral path, line-ending and process APIs; the tests pass here), never an automated criterion that claims behavior on Windows, macOS or Linux, and add no CI workflow or platform matrix.";
-  return `${asked ? "The request names CI or other operating systems" : "The project already runs CI"}: add a criterion that ${CROSS_PLATFORM_OUTCOME}, so delivered tests do not assume one operating system.`;
+  // The host writes the criterion itself (#1943): asked of the author, it was left out or turned
+  // into an automated criterion that only CI results prove, which no check of a run produces.
+  return `${asked ? "The request names CI or other operating systems" : "The project already runs CI"}: the host adds a post-release criterion that ${CROSS_PLATFORM_OUTCOME}, which the project's CI proves on the delivered revision, so do not write one. Write no automated criterion that needs CI job results or a run on another operating system; keep delivered tests free of assumptions about one operating system (platform-neutral path, line-ending and process APIs).`;
 }
 
 /**
@@ -72,7 +74,7 @@ export const platformsWithoutCi = (request: string, root: string): boolean =>
  */
 export function crossPlatformAnalysisNote(request: string, root: string): string | null {
   if (crossPlatformCriterionRequired(request, root))
-    return `The host requires a criterion that ${CROSS_PLATFORM_OUTCOME} (${PLATFORMS.test(request) || CI.test(request) ? "the request names CI or other operating systems" : "the project already runs CI"}): it and the requirement it serves are never a scope finding.`;
+    return `The host requires a criterion that ${CROSS_PLATFORM_OUTCOME} (${PLATFORMS.test(request) || CI.test(request) ? "the request names CI or other operating systems" : "the project already runs CI"}) and writes it itself after specify, as a post-release criterion the project's CI proves on the delivered revision: it, the requirement it serves, a spec without it and its method are never a finding.`;
   if (platformsWithoutCi(request, root))
     return "The request names other operating systems but wants no CI, so the host requires no criterion about Windows, macOS or Linux: platform-neutral code and tests that pass on this host settle the request's platform sentence. A missing criterion about other operating systems, a CI workflow or a platform matrix is never a finding.";
   return null;

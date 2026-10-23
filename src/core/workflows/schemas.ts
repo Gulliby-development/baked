@@ -2155,20 +2155,25 @@ const EVERY_HOST =
 // A CI matrix file or a simulated platform is evidence one host can read or run.
 const HOST_EVIDENCE =
   /\bmatrix\b|\bruns-on\b|\.github\/workflows|\bci workflow\b|\bworkflow file\b|\bpath\.(?:win32|posix)\b|\bsimulat|\bemulat|\bmock/i;
+// What only a CI service produces: its jobs' runs, results or reports. A criterion that names the
+// workflow file but asks for these is not settled by reading the file (#1943: taskplan AC-006,
+// "each corresponding CI job provides evidence that all 284 project tests pass").
+const CI_OUTCOME =
+  /\b(?:CI|workflow|pipeline|matrix)\s+(?:jobs?|run results?|results?|reports?|status(?:es)?|builds?)\b|\bjobs?\b[^.]*\b(?:pass(?:es|ed)?|succeed(?:s|ed)?|green|evidence|results?)\b|\b(?:results?|evidence|status)\b[^.]*\b(?:CI|jobs?)\b|\bdelivered revision\b/i;
 
 /**
  * Automated criteria that claim behavior on several operating systems, browsers or real devices.
  * A run checks on one host, so no declared check can prove them and convergence can only answer
  * inconclusive (propdrift eea2e0e9 AC-008: "behavior is confirmed on Windows, macOS, and Linux",
  * two convergence calls and a block). A criterion about a CI matrix file or a simulated platform
- * is checkable here and stays.
+ * is checkable here and stays, unless it asks for what the CI jobs report (#1943).
  */
 export function hostBoundCriteria(spec: Spec): string[] {
   return spec.criteria
     .filter((c) => {
       if (c.method !== "automated") return false;
       const text = `${c.given}\n${c.when}\n${c.then}`;
-      if (HOST_EVIDENCE.test(text)) return false;
+      if (HOST_EVIDENCE.test(text) && !CI_OUTCOME.test(text)) return false;
       const count = (patterns: RegExp[]) => patterns.filter((p) => p.test(text)).length;
       return count(OPERATING_SYSTEMS) >= 2 || count(BROWSERS) >= 2 || EVERY_HOST.test(text);
     })

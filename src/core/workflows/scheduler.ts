@@ -306,9 +306,11 @@ import { outputTail } from "./gates.js";
 import { HOST_ADDITIONS, HOST_EDITS_PATH, type HostEdit, recordGraphEdits } from "./host-edits.js";
 import { isStoreError, recordHostError } from "./host-error.js";
 import {
+  addHostRequiredCriteria,
   asksUnrequiredPlatforms,
   HOST_REQUIRED_CRITERIA,
   hostRequiredIds,
+  hostWrittenIds,
   objectsToHostRequired,
 } from "./host-required-criteria.js";
 import { criticalPathProblems } from "./initiatives/critical-path.js";
@@ -1222,8 +1224,15 @@ export class WorkflowScheduler {
                 browser: !!v2 && acceptanceGrants(v2.gates).some((g) => g.driver === "browser"),
                 measured: !!policy.layoutCheck,
               };
+              // The criteria the host writes itself, when the spec lacks them (#1943).
+              const hostWritten = HOST_REQUIRED_CRITERIA.filter((c) =>
+                c.required(state.requestText || state.prompt, runRoot(this.store.workspace, state)),
+              );
               const hostRepairs = (spec: Spec): Spec =>
-                repairLayoutCriteria(repairHostBoundCriteria(spec).spec, layoutRepair).spec;
+                addHostRequiredCriteria(
+                  repairLayoutCriteria(repairHostBoundCriteria(spec).spec, layoutRepair).spec,
+                  hostWritten,
+                ).spec;
               const validateSpec = (output: unknown): string[] => {
                 const parsed = SpecSchema.safeParse(output);
                 if (!parsed.success) return [];
@@ -1329,6 +1338,18 @@ export class WorkflowScheduler {
                         ? { measured: layout.repaired }
                         : { postRelease: layout.repaired, added },
                     ),
+                  ),
+                );
+              }
+              const written = addHostRequiredCriteria(state.spec, hostWritten);
+              if (written.added.length) {
+                state.spec = written.spec;
+                this.store.transaction(() =>
+                  this.store.artifact(
+                    runId,
+                    "diagnostic",
+                    "spec-repairs/host-required.json",
+                    canonical({ added: written.added }),
                   ),
                 );
               }
@@ -1791,8 +1812,20 @@ export class WorkflowScheduler {
               const root = runRoot(this.store.workspace, state);
               const required = HOST_REQUIRED_CRITERIA.filter((c) => c.required(request, root));
               const requiredIds = hostRequiredIds(spec, required);
+              const writtenIds = hostWrittenIds(spec, required);
               for (const finding of analysis.findings) {
-                if (objectsToHostRequired(finding, requiredIds, required)) {
+                const cited = [...finding.refs, finding.description].flatMap(
+                  (text) => text.match(/\b[A-Z]{1,5}-\d+\b/g) ?? [],
+                );
+                if (
+                  finding.blocking &&
+                  cited.length > 0 &&
+                  cited.every((id) => writtenIds.has(id))
+                ) {
+                  // What the host wrote is not the author's to change, in any finding kind (#1943).
+                  finding.blocking = false;
+                  finding.description = `Objects to a criterion the host wrote itself (${cited.join(", ")}); kept as a note: ${finding.description}`;
+                } else if (objectsToHostRequired(finding, requiredIds, required)) {
                   finding.blocking = false;
                   finding.description = `Objects to a criterion the host's own rules require (${[...requiredIds].join(", ")}); kept as a note: ${finding.description}`;
                 } else if (asksUnrequiredPlatforms(finding, request, root)) {
