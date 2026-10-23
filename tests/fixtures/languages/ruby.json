@@ -39,6 +39,7 @@
       "Gemfile:1",
       "Gemfile:2"
     ],
-    "formatters": null
+    "formatters": null,
+    "packageContents": null
   }
 }

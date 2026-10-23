@@ -32,6 +32,7 @@
       "Sources/SumTests.swift:3 comment",
       "Package.swift:1 comment"
     ],
-    "formatters": null
+    "formatters": null,
+    "packageContents": null
   }
 }

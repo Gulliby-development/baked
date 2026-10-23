@@ -29,6 +29,7 @@
       "src/sum.c:2",
       "src/sum_test.c:2 comment"
     ],
-    "formatters": null
+    "formatters": null,
+    "packageContents": null
   }
 }

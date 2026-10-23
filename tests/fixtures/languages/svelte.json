@@ -36,6 +36,9 @@
       "src/Sum.svelte:3",
       "src/Sum.svelte:7 comment"
     ],
-    "formatters": null
+    "formatters": null,
+    "packageContents": [
+      "package.json: npm-pack"
+    ]
   }
 }

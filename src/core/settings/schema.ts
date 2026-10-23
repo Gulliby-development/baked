@@ -1029,6 +1029,20 @@ export const SETTINGS: readonly SettingDefinition[] = [
     ],
   },
   {
+    id: "quality.packageContents",
+    page: "code-quality",
+    section: "Tests",
+    label: "Package contents",
+    help: "When a run changes a manifest's packaging fields (package data, included files, packed items), builds the package in a copy of the delivered tree and keeps the list of files it holds as review evidence. A criterion that the built wheel, crate, jar, nupkg or npm package contains a file is then checked by the run instead of left to a person. Costs one package build per review.",
+    scopes: BOTH,
+    type: "enum",
+    default: "off",
+    options: [
+      { value: "off", label: "off", help: "Do not build the package." },
+      { value: "on", label: "on", help: "Build it and keep its file list as evidence." },
+    ],
+  },
+  {
     id: "quality.chainRewrite",
     page: "code-quality",
     section: "Workflow runs",

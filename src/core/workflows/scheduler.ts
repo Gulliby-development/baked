@@ -444,6 +444,19 @@ import {
   toolShellFiles,
 } from "./quality/mutation-tools.js";
 import {
+  buildStatus,
+  commandText,
+  isPackagingManifest,
+  MAX_PACKAGE_BUILDS,
+  PACKAGE_CONTENTS_NOTE,
+  PACKAGE_OUTPUT_CHARS,
+  type PackageAttempt,
+  type PackageBuild,
+  type PackageContents,
+  packagingChanges,
+  QUALITY_PACKAGE_CONTENTS,
+} from "./quality/package-contents.js";
+import {
   bansPropertyTests,
   checkPropertyTests,
   libraryFiles,
@@ -716,6 +729,8 @@ type Severity = Review["findings"][number]["severity"];
 const MUTATION_COPY = "quality-mutation";
 /** The task worktree the baseline replay (#1945) runs in. */
 const BASELINE_REPLAY_COPY = "quality-baseline-replay";
+/** The task worktree the package contents check (#1984) builds packages in. */
+const PACKAGE_CONTENTS_COPY = "quality-package-contents";
 const ALL_SEVERITIES: readonly Severity[] = ["critical", "high", "medium", "low"];
 const SERIOUS: readonly Severity[] = ["critical", "high"];
 
@@ -5813,6 +5828,17 @@ export class WorkflowScheduler {
               ? BASELINE_REPLAY_NOTE.review
               : null
         : null;
+    // With the package contents check on, a criterion about the built package is checkable (#1984).
+    const packageContents =
+      policy.packageContents === "on"
+        ? profile.output === "spec"
+          ? PACKAGE_CONTENTS_NOTE.spec
+          : profile.output === "analysis"
+            ? PACKAGE_CONTENTS_NOTE.analysis
+            : profile.output === "review" || profile.output === "convergence"
+              ? PACKAGE_CONTENTS_NOTE.review
+              : null
+        : null;
     const specSize =
       profile.output === "spec" ? specSizeNote(state.requestText || state.prompt) : null;
     // Under assume the authors settle questions with defaults in their first submission instead of
@@ -5838,6 +5864,7 @@ export class WorkflowScheduler {
         ...(propertyNote ? { propertyTests: propertyNote } : {}),
         ...(crossPlatform ? { crossPlatform } : {}),
         ...(baselineReplay ? { baselineReplay } : {}),
+        ...(packageContents ? { packageContents } : {}),
         ...(specSize ? { specSize } : {}),
         ...(assumeDefaults ? { assumeDefaults } : {}),
         ...(hardening ? { hardening } : {}),
@@ -12207,6 +12234,7 @@ ${note}`;
       blocking.push(...(await this.mutationFindings(runId, stepId, state, policy, signal)));
     // Evidence only, so it never blocks; like the mutants, not worth it on code about to change.
     if (!blocking.length) await this.baselineReplay(runId, state, policy, signal);
+    if (!blocking.length) await this.packageContents(runId, state, policy, signal);
     return blocking.slice(0, 100);
   }
   /**
@@ -12259,66 +12287,87 @@ ${note}`;
         [],
         "the run changed no file other than tests, so the baseline is the delivered tree",
       );
+    const failure = await this.inRunCopy(
+      runId,
+      state,
+      BASELINE_REPLAY_COPY,
+      async (copy, scope) => {
+        for (const file of edits.revert)
+          writeFileSync(workspacePath(copy, file.path), file.content);
+        for (const file of edits.remove) rmSync(workspacePath(copy, file), { force: true });
+        const checks: BaselineReplayCheck[] = [];
+        for (const check of tests) {
+          signal.throwIfAborted();
+          const outcome = await executeCheckCommand(
+            scope,
+            check.executable === "bun" ? process.execPath : check.executable,
+            check.args,
+            {
+              cwd: check.cwd === "." ? copy : workspacePath(copy, check.cwd),
+              env: buildCheckEnv(check),
+              timeoutMs: check.timeoutMs,
+              signal,
+              sandbox: runSandbox(policy, copy, { gitWrite: true }),
+            },
+          );
+          const failed = failedTests(outcome.output);
+          checks.push({
+            id: check.id,
+            status: outcome.timedOut ? "timeout" : outcome.exitCode === 0 ? "passed" : "failed",
+            failedTests: failed?.names ?? null,
+            runner: failed?.tool ?? null,
+            output: outcome.output.slice(-REPLAY_OUTPUT_CHARS),
+          });
+        }
+        record(checks);
+      },
+    );
+    if (failure) record([], failure);
+  }
+  /**
+   * Runs `work` in a task worktree checked out from the run's current content, with `.venv`,
+   * `venv` and `node_modules` linked from the run, and removes it afterwards. The baseline replay
+   * (#1945) and the package contents check (#1984) run their commands there, so nothing they
+   * write reaches the run's tree after its snapshot. Returns why no copy could be made, else null.
+   */
+  private async inRunCopy(
+    runId: string,
+    state: RuntimeState,
+    name: string,
+    work: (copy: string, scope: ProcessScope) => Promise<void>,
+  ): Promise<string | null> {
     const root = runRoot(this.store.workspace, state);
     // The copy checks out the whole repository, so it stands in for the run only at its top.
     const top = await gitWorktreePaths(root);
     if (!top || realpathSync.native(top.top) !== realpathSync.native(root))
-      return record(
-        [],
-        "no copy of the run could be made (the run is not at its repository's top)",
-      );
+      return "no copy of the run could be made (the run is not at its repository's top)";
     let path: string;
     try {
       const base = await runContentCommit(this.store, runId, {
         path: relative(this.store.workspace, root),
       });
-      path = await createTaskWorktree(this.store, runId, BASELINE_REPLAY_COPY, base);
+      path = await createTaskWorktree(this.store, runId, name, base);
     } catch (error) {
-      return record([], `no copy of the run could be made: ${String(error).slice(0, 300)}`);
+      return `no copy of the run could be made: ${String(error).slice(0, 300)}`;
     }
     const copy = join(this.store.workspace, path);
     const scope = new ProcessScope();
     try {
-      for (const name of [".venv", "venv", "node_modules"]) {
-        const source = join(root, name);
-        if (existsSync(source) && !existsSync(join(copy, name)))
+      for (const linked of [".venv", "venv", "node_modules"]) {
+        const source = join(root, linked);
+        if (existsSync(source) && !existsSync(join(copy, linked)))
           try {
             symlinkSync(
               source,
-              join(copy, name),
+              join(copy, linked),
               process.platform === "win32" ? "junction" : "dir",
             );
           } catch {
-            // Without the link the copy's tests may fail to start; the output says so.
+            // Without the link the copy's commands may fail to start; their output says so.
           }
       }
-      for (const file of edits.revert) writeFileSync(workspacePath(copy, file.path), file.content);
-      for (const file of edits.remove) rmSync(workspacePath(copy, file), { force: true });
-      const checks: BaselineReplayCheck[] = [];
-      for (const check of tests) {
-        signal.throwIfAborted();
-        const outcome = await executeCheckCommand(
-          scope,
-          check.executable === "bun" ? process.execPath : check.executable,
-          check.args,
-          {
-            cwd: check.cwd === "." ? copy : workspacePath(copy, check.cwd),
-            env: buildCheckEnv(check),
-            timeoutMs: check.timeoutMs,
-            signal,
-            sandbox: runSandbox(policy, copy, { gitWrite: true }),
-          },
-        );
-        const failed = failedTests(outcome.output);
-        checks.push({
-          id: check.id,
-          status: outcome.timedOut ? "timeout" : outcome.exitCode === 0 ? "passed" : "failed",
-          failedTests: failed?.names ?? null,
-          runner: failed?.tool ?? null,
-          output: outcome.output.slice(-REPLAY_OUTPUT_CHARS),
-        });
-      }
-      record(checks);
+      await work(copy, scope);
+      return null;
     } finally {
       await scope.stop();
       await removeTaskWorktree(this.store.workspace, path);
@@ -12329,6 +12378,132 @@ ${note}`;
           break;
         }
     }
+  }
+  /**
+   * The package contents check (#1984, `packageContents: "on"`): when the run changed a manifest's
+   * packaging fields, each such package is built in a copy of the delivered tree and the files it
+   * holds are review evidence (`quality/package-contents.json`), so a criterion that the built
+   * package contains a file is settled by the run. Once per snapshot. A tool that is missing or a
+   * build that fails is recorded in the build's attempts, never a finding.
+   */
+  private async packageContents(
+    runId: string,
+    state: RuntimeState,
+    policy: RunPolicy,
+    signal: AbortSignal,
+  ): Promise<void> {
+    if (policy.packageContents !== "on" || !state.snapshotId) return;
+    const snapshotId = state.snapshotId;
+    const prior = this.store.latestArtifact(runId, QUALITY_PACKAGE_CONTENTS);
+    if (
+      prior &&
+      (JSON.parse(this.store.readArtifact(runId, prior.id)) as PackageContents).snapshotId ===
+        snapshotId
+    )
+      return;
+    const changes = packagingChanges(await this.changedFiles(runId, state, isPackagingManifest));
+    const record = (builds: PackageBuild[], note?: string): void =>
+      this.store.transaction(() => {
+        const value: PackageContents = {
+          schemaVersion: 1,
+          snapshotId,
+          builds,
+          ...(note ? { note } : {}),
+        };
+        const artifact = this.store.artifact(
+          runId,
+          "quality",
+          QUALITY_PACKAGE_CONTENTS,
+          canonical(value),
+        );
+        this.store.addEvidence(runId, "review", snapshotId, artifact.id);
+      });
+    if (!changes.length)
+      return record(
+        [],
+        "the run changed no packaging field of a manifest, so no package was built",
+      );
+    const skipped = changes.length - MAX_PACKAGE_BUILDS;
+    const builds: PackageBuild[] = [];
+    const failure = await this.inRunCopy(
+      runId,
+      state,
+      PACKAGE_CONTENTS_COPY,
+      async (copy, scope) => {
+        for (const change of changes.slice(0, MAX_PACKAGE_BUILDS)) {
+          const dir = change.dir === "." ? copy : workspacePath(copy, change.dir);
+          const attempts: PackageAttempt[] = [];
+          let artifacts: PackageBuild["artifacts"] = [];
+          for (const command of change.tool.builds({
+            dir,
+            manifest: change.manifest,
+            platform: process.platform,
+          })) {
+            signal.throwIfAborted();
+            const text = commandText(command);
+            const local = /^\.{1,2}[\\/]/.test(command.executable);
+            if (
+              local
+                ? !existsSync(join(dir, command.executable))
+                : !Bun.which(command.executable, { PATH: process.env.PATH ?? "", cwd: dir }) &&
+                  !existsSync(command.executable)
+            ) {
+              attempts.push({ command: text, result: "missing" });
+              continue;
+            }
+            let outcome: Awaited<ReturnType<typeof executeCheckCommand>>;
+            try {
+              outcome = await executeCheckCommand(scope, command.executable, command.args, {
+                cwd: dir,
+                env: buildCheckEnv({ envNames: [] }),
+                timeoutMs: change.tool.timeoutMs,
+                signal,
+                sandbox: runSandbox(policy, copy, { gitWrite: true }),
+              });
+            } catch (error) {
+              attempts.push({
+                command: text,
+                result: "failed",
+                output: String(error).slice(0, PACKAGE_OUTPUT_CHARS),
+              });
+              continue;
+            }
+            const tail = outcome.output.slice(-PACKAGE_OUTPUT_CHARS);
+            if (outcome.timedOut) {
+              attempts.push({ command: text, result: "timeout", output: tail });
+              continue;
+            }
+            if (outcome.exitCode !== 0) {
+              attempts.push({ command: text, result: "failed", output: tail });
+              continue;
+            }
+            const listed = change.tool.list(dir, outcome.stdout ?? outcome.output);
+            if (!listed) {
+              attempts.push({ command: text, result: "unread", output: tail });
+              continue;
+            }
+            attempts.push({ command: text, result: "listed" });
+            artifacts = listed;
+            break;
+          }
+          builds.push({
+            tool: change.tool.id,
+            dir: change.dir,
+            fields: change.fields,
+            status: buildStatus(attempts),
+            attempts,
+            artifacts,
+          });
+        }
+        record(
+          builds,
+          skipped > 0
+            ? `${String(skipped)} more package roots changed and were not built`
+            : undefined,
+        );
+      },
+    );
+    if (failure) record([], failure);
   }
   /**
    * The property library of each language the project has, found once per run and kept in

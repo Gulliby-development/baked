@@ -40,6 +40,7 @@
       "src/sum_spec.lua:1",
       "src/sum_spec.lua:3 comment"
     ],
-    "formatters": null
+    "formatters": null,
+    "packageContents": null
   }
 }

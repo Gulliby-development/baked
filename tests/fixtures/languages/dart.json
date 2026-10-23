@@ -30,6 +30,7 @@
     "codeMask": [
       "lib/sum_test.dart:4 comment"
     ],
-    "formatters": null
+    "formatters": null,
+    "packageContents": null
   }
 }

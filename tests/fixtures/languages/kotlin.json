@@ -51,6 +51,9 @@
       "build.gradle.kts:11",
       "src/test/kotlin/SumPropTest.kt:2 comment"
     ],
-    "formatters": null
+    "formatters": null,
+    "packageContents": [
+      "build.gradle.kts: gradle-jar [plugins]"
+    ]
   }
 }

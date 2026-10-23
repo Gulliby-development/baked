@@ -24,7 +24,7 @@ export const executeCheckCommand = (
   scope.execute(executable, withPerTestTimeout({ executable, args }, options.cwd), options);
 
 /** The environment every check and on-demand gate run gets: safe base plus the names it declares. */
-export function buildCheckEnv(check: Check): NodeJS.ProcessEnv {
+export function buildCheckEnv(check: Pick<Check, "envNames">): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = buildSafeEnv();
   for (const name of check.envNames)
     if (process.env[name] !== undefined) env[name] = process.env[name];

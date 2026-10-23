@@ -45,6 +45,9 @@
       "src/Sum.res:1",
       "src/Sum_test.res:3 comment"
     ],
-    "formatters": null
+    "formatters": null,
+    "packageContents": [
+      "package.json: npm-pack"
+    ]
   }
 }
