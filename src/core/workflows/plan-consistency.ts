@@ -575,6 +575,11 @@ export function planConsistencyProblems(
   /** The run's policy lets independent tasks write the same path (integrated by an integrator). */
   overlappingWrites = false,
   edits?: readonly HostEdit[],
+  /**
+   * True for a path that is missing now but exists before the tasks run: an unfinished upstream
+   * feature's file under plan ahead (`pathsExistLater`). Readable only, never written.
+   */
+  existsLater: (path: string) => boolean = () => false,
 ): string[] {
   const problems: string[] = [];
   const known = new Set([
@@ -591,6 +596,7 @@ export function planConsistencyProblems(
 
   const ancestors = new Map(graph.tasks.map((t) => [t.id, ancestorsOf(graph, t.id)]));
   const exists = (path: string): boolean => existsSync(workspacePath(workspace, path));
+  const readable = (path: string): boolean => exists(path) || existsLater(path);
   for (const task of graph.tasks) {
     const earlier = graph.tasks.filter((t) => ancestors.get(task.id)?.has(t.id));
     for (const write of task.writes) {
@@ -612,7 +618,7 @@ export function planConsistencyProblems(
     }
     for (const hint of task.readHints) {
       if (
-        !exists(hint) &&
+        !readable(hint) &&
         ![task, ...earlier].some((t) =>
           t.writes.some((w) => w.path === hint && w.action === "create"),
         )
@@ -621,7 +627,7 @@ export function planConsistencyProblems(
     }
     if (
       task.reference &&
-      !exists(task.reference) &&
+      !readable(task.reference) &&
       !earlier.some((t) => t.writes.some((w) => w.path === task.reference && w.action === "create"))
     )
       problems.push(

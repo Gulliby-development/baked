@@ -48,7 +48,7 @@ import {
 } from "../src/headless/workflow-initiative.js";
 import { workflowHelp } from "../src/headless/workflow-parse.js";
 import { WorkflowFault } from "../src/core/workflows/errors.js";
-import { acceptedContract } from "../src/core/workflows/dependencies.js";
+import { acceptedContract, pathsExistLater } from "../src/core/workflows/dependencies.js";
 import { mergedBase, provisionalBase } from "../src/core/workflows/worktree.js";
 import { PLACEHOLDER_SHARE } from "../src/core/workflows/initiatives/estimate.js";
 import { criticalPathText } from "../src/core/workflows/initiatives/view-model.js";
@@ -101,6 +101,9 @@ class InitiativeExecutor implements AgentExecutor {
   extraWrites: Record<string, string> = {};
   /** Further files a feature's plan writes, one task each. */
   extraTasks: Record<string, string[]> = {};
+  /** Read hints and a reference of a feature's first task. */
+  readHints: Record<string, string[]> = {};
+  references: Record<string, string> = {};
   writes: Record<string, number> = {};
   /** Models whose implementation calls fail as an account without credits. */
   refused = new Set<string>();
@@ -177,7 +180,7 @@ class InitiativeExecutor implements AgentExecutor {
           schemaVersion: 1, markdown,
           taskGraph: {
             schemaVersion: 1, featureId: spec.featureId, revision: 1, specHash: hashJson(spec), planHash: hashBytes(markdown),
-            tasks: [path, ...(this.extraTasks[name] ?? [])].map((file, i) => ({ id: `T${String(i + 1).padStart(3, "0")}`, title: `Create ${file}`, description: "Write ready", requirementIds: ["FR-001"], criterionIds: ["AC-001"], dependsOn: [], profileId: "implementer", writes: i ? [{ path: file, action: existsSync(join(root, file)) ? "modify" : "create" }] : writes, readHints: [], checkIds: [], origin: "planned", findingIds: [], rationale: "Required behavior" })),
+            tasks: [path, ...(this.extraTasks[name] ?? [])].map((file, i) => ({ id: `T${String(i + 1).padStart(3, "0")}`, title: `Create ${file}`, description: "Write ready", requirementIds: ["FR-001"], criterionIds: ["AC-001"], dependsOn: [], profileId: "implementer", writes: i ? [{ path: file, action: existsSync(join(root, file)) ? "modify" : "create" }] : writes, readHints: [], checkIds: [], origin: "planned", findingIds: [], rationale: "Required behavior", ...(i ? {} : { readHints: this.readHints[name] ?? [], ...(this.references[name] ? { reference: this.references[name] } : {}) }) })),
           },
         };
         break;
@@ -1699,6 +1702,43 @@ describe("initiative runtime", () => {
       expect(view.status).toBe("completed");
       return { t, view };
     }
+
+    // Bench round 60, wheeltags (#1932): every planned-ahead feature's first plan was refused for
+    // read hints on its upstream features' files, which its provisional base did not hold yet.
+    test("on, message's plan may read base's files before base has written them", async () => {
+      class ReadingExecutor extends AheadExecutor {
+        /** Which paths message's plan could name although its workspace lacked them. */
+        later: Record<string, boolean> | null = null;
+        override async execute(request: ExecutionRequest) {
+          const spec = request.profile.output === "plan" ? this.workflows?.store.state(request.runId).spec : null;
+          if (spec?.featureId.endsWith("_message") && this.workflows) {
+            const later = pathsExistLater(this.workflows.store, this.workflows.store.state(request.runId));
+            this.later = Object.fromEntries(["base.txt", "nobody.txt", "front.txt", "message.txt"].map((p) => [p, later(p)]));
+          }
+          return super.execute(request);
+        }
+      }
+      const t = setup(chain, 100, (root) => new ReadingExecutor(root, chain));
+      repository(t.root);
+      t.executor.initiatives = t.initiatives;
+      t.executor.workflows = t.workflows;
+      t.executor.readHints.message = ["base.txt"];
+      t.executor.references.message = "base.txt";
+      Object.assign(t.workflows.config.workflows ?? {}, { planAhead: true });
+      await t.start({ plan: chain, policy: { ...policy, executionMode: "worktree" }, featureAutoApproval: { maxTasks: 5, maxFiles: 5 }, budget: { maxTotalTokens: 6_000_000, maxAgentCalls: 2000, maxActiveMs: 6_000_000 } });
+      await t.approveSplit();
+      const view = await t.drive();
+      expect(view.status).toBe("completed");
+      const events = t.executor.events;
+      expect(events.indexOf("plan:message")).toBeLessThan(events.indexOf("end:base"));
+      // Its first plan passed: one plan call, no repair submission.
+      expect(events.filter((e) => e === "plan:message")).toHaveLength(1);
+      const runId = t.featureOf(view, "message").runId ?? "";
+      // Only base's boundary counts, while message waits for it: not a file nobody writes, not its own
+      // or a downstream feature's files, and nothing once the run is released.
+      expect(t.executor.later).toEqual({ "base.txt": true, "nobody.txt": false, "front.txt": false, "message.txt": false });
+      expect(pathsExistLater(t.workflows.store, t.workflows.store.state(runId))("base.txt")).toBe(false);
+    }, 120_000);
 
     test("on, message is planned while base implements, and its tasks start on base's result", async () => {
       const { t, view } = await run(true);
