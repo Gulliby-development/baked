@@ -100,7 +100,11 @@ describe("domain exclusions in a criterion at spec acceptance (#1161)", () => {
     expect((await service.drive(run.runId, new AbortController().signal)).reason).toBe("approval");
     const errors = executor.specErrors[0] ?? [];
     expect(errors.filter((e) => e.includes("with a domain exclusion the request does not state")).map((e) => e.split(" ")[1])).toEqual(["AC-002", "AC-003"]);
-    expect(service.store.state(run.runId).spec?.criteria.map((c) => c.id)).toEqual(["AC-001"]);
+    // The request names CI, so the host adds its cross-platform criterion after the author's (#1943).
+    expect(service.store.state(run.runId).spec?.criteria.map((c) => [c.id, c.method])).toEqual([
+      ["AC-001", "automated"],
+      ["AC-002", "post-release"],
+    ]);
   });
 });
 

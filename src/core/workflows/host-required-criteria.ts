@@ -28,9 +28,31 @@ export interface HostRequiredCriterion {
    * before planning; `condition` says the same in words and the prompts read it.
    */
   required: (request: string, root: string) => boolean;
+  /**
+   * The criterion and requirement the host writes itself when the spec lacks them, or null when
+   * only the author can write it. A criterion with one correct form is the host's: asked of the
+   * author, the cross-platform criterion was left out or weakened, analysis blocked the spec for
+   * it, and the rewrite asked for CI results no check produces, in 3 of 3 sdd updates of bench
+   * rounds 60 and 61 (#1943).
+   */
+  written: HostWrittenCriterion | null;
+}
+
+/** What the host writes for a host-required criterion the spec lacks (#1943). */
+export interface HostWrittenCriterion {
+  requirement: string;
+  given: string;
+  when: string;
+  then: string;
+  /** The one method a run can settle it with. */
+  method: "post-release";
+  /** Whether a criterion of the spec already states it, so the host adds nothing. */
+  present: (criterion: Spec["criteria"][number]) => boolean;
 }
 
 const OPERATING_SYSTEMS = [/\bwindows\b/i, /\bmac\s?os\b|\bos x\b|\bdarwin\b/i, /\blinux\b/i];
+/** The three systems, also by the CI runner names a matrix gives them (ubuntu-latest). */
+const CI_RUNNERS = [/\bwindows\b/i, /\bmac\s?os\b|\bos x\b|\bdarwin\b/i, /\blinux\b|\bubuntu\b/i];
 const CI_MATRIX = /\bmatrix\b|\bruns-on\b|\.github\/workflows|\bci workflow\b/i;
 
 export const VIEWPORT_CRITERION: HostRequiredCriterion = {
@@ -40,6 +62,8 @@ export const VIEWPORT_CRITERION: HostRequiredCriterion = {
   matches: isLayoutCriterion,
   // Whether the work changes pages is the reader's call from the request and the spec.
   required: () => true,
+  // Which pages it covers is the author's; the host only settles its method (repairLayoutCriteria).
+  written: null,
 };
 
 export const CROSS_PLATFORM_CRITERION: HostRequiredCriterion = {
@@ -49,6 +73,18 @@ export const CROSS_PLATFORM_CRITERION: HostRequiredCriterion = {
   matches: (text) =>
     OPERATING_SYSTEMS.filter((os) => os.test(text)).length >= 2 || CI_MATRIX.test(text),
   required: crossPlatformCriterionRequired,
+  // A run checks on one host, so the project's CI on the delivered revision is the only proof.
+  written: {
+    requirement: `After delivery, ${CROSS_PLATFORM_OUTCOME}.`,
+    given: "the delivered revision",
+    when: "the project's CI runs its tests on Windows, macOS and Linux after the run",
+    // biome-ignore lint/suspicious/noThenProperty: Given/When/Then is the versioned acceptance-criterion contract.
+    then: "the tests pass on all three operating systems",
+    method: "post-release",
+    present: (c) =>
+      c.method === "post-release" &&
+      CI_RUNNERS.every((os) => os.test(`${c.given}\n${c.when}\n${c.then}`)),
+  },
 };
 
 export const HOST_REQUIRED_CRITERIA: readonly HostRequiredCriterion[] = [
@@ -57,7 +93,84 @@ export const HOST_REQUIRED_CRITERIA: readonly HostRequiredCriterion[] = [
 ];
 
 /** The analysis rule: what the host requires is never scope the request does not ask for. */
-export const HOST_REQUIRED_ANALYSIS_RULE = `The host's own rules make the spec author add these criteria although the request may not name them: ${HOST_REQUIRED_CRITERIA.map((c) => `when ${c.condition}, a criterion that ${c.outcome}`).join("; ")}. Such a criterion, and the requirement it serves, is never a scope finding; only a defect in its wording or method is a finding. When extra.crossPlatform says the request wants no CI, the host requires no criterion about other operating systems, and a spec without one is never a finding.`;
+export const HOST_REQUIRED_ANALYSIS_RULE = `The host's own rules require these criteria although the request may not name them: ${HOST_REQUIRED_CRITERIA.map((c) => `when ${c.condition}, a criterion that ${c.outcome} (${c.written ? `the host writes it after specify, method ${c.written.method}` : "the spec author writes it"})`).join("; ")}. Such a criterion, and the requirement it serves, is never a scope finding; only a defect in the wording or method of one the author wrote is a finding. One the host writes, its absence before the host adds it, and its method are never a finding. When extra.crossPlatform says the request wants no CI, the host requires no criterion about other operating systems, and a spec without one is never a finding.`;
+
+/**
+ * The spec with every required host-written criterion the spec lacks added, each with a
+ * requirement of its own (#1943). Its requirement is verified post-release, so the spec stays
+ * valid (`validateSpecCoverage`) without a criterion this run checks.
+ */
+export function addHostRequiredCriteria(
+  spec: Spec,
+  required: readonly HostRequiredCriterion[],
+): { spec: Spec; added: string[] } {
+  const number = (ids: string[], prefix: string) =>
+    Math.max(
+      0,
+      ...ids
+        .filter((id) => id.startsWith(prefix))
+        .map((id) => Number(id.slice(prefix.length)) || 0),
+    );
+  let requirements = spec.requirements;
+  let criteria = spec.criteria;
+  const added: string[] = [];
+  for (const entry of required) {
+    const written = entry.written;
+    if (!written || criteria.some(written.present)) continue;
+    const requirementId = `NFR-${String(
+      number(
+        requirements.map((r) => r.id),
+        "NFR-",
+      ) + 1,
+    ).padStart(3, "0")}`;
+    const criterionId = `AC-${String(
+      number(
+        criteria.map((c) => c.id),
+        "AC-",
+      ) + 1,
+    ).padStart(3, "0")}`;
+    requirements = [
+      ...requirements,
+      {
+        id: requirementId,
+        text: written.requirement,
+        priority: "must",
+        verification: written.method,
+        sourceRefs: [`host rule: a criterion that ${entry.outcome}`],
+      },
+    ];
+    criteria = [
+      ...criteria,
+      {
+        id: criterionId,
+        requirementIds: [requirementId],
+        given: written.given,
+        when: written.when,
+        // biome-ignore lint/suspicious/noThenProperty: Given/When/Then is the versioned acceptance-criterion contract.
+        then: written.then,
+        method: written.method,
+      },
+    ];
+    added.push(requirementId, criterionId);
+  }
+  return added.length ? { spec: { ...spec, requirements, criteria }, added } : { spec, added };
+}
+
+/** The ids of the spec's criteria and requirements the host wrote (`addHostRequiredCriteria`). */
+export function hostWrittenIds(
+  spec: Pick<Spec, "criteria" | "requirements">,
+  required: readonly HostRequiredCriterion[],
+): Set<string> {
+  const ids = new Set<string>();
+  for (const { written } of required) {
+    if (!written) continue;
+    for (const r of spec.requirements ?? []) if (r.text === written.requirement) ids.add(r.id);
+    for (const c of spec.criteria)
+      if (c.given === written.given && c.when === written.when && c.then === written.then)
+        ids.add(c.id);
+  }
+  return ids;
+}
 
 const SPEC_ID = /\b[A-Z]{1,5}-\d+\b/g;
 

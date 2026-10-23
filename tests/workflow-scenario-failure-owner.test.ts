@@ -92,7 +92,8 @@ class ScriptedExecutor implements AgentExecutor {
         output = { schemaVersion: 1, taskId: t.id, outcome: "implemented", summary, evidenceIds: [], unresolved: [] };
         break;
       }
-      case "review": case "convergence": output = { schemaVersion: 1, snapshotHash: data.snapshotHash, verdict: "pass", coverage: this.scenarioSpec.criteria.map((c) => ({ criterionId: c.id, verdict: "pass", evidenceIds: data.extra.evidence?.map((e) => e.id) ?? [], explanation: "Checks pass" })), findings: [] }; break;
+      case "review": case "convergence": output = { schemaVersion: 1, snapshotHash: data.snapshotHash, verdict: "pass", // The run's spec, with the criterion the host adds for a request that names CI (#1943).
+        coverage: ((this.service?.store.state(request.runId).spec as Spec | undefined) ?? this.scenarioSpec).criteria.map((c) => ({ criterionId: c.id, verdict: "pass", evidenceIds: data.extra.evidence?.map((e) => e.id) ?? [], explanation: "Checks pass" })), findings: [] }; break;
       default: throw new Error(`Unexpected profile ${request.profile.output}`);
     }
     return { output, inputTokens: 20, outputTokens: 30 };
