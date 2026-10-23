@@ -4384,7 +4384,7 @@ export class WorkflowScheduler {
         (path) => createdByRunLineage(this.store, runId, path, fileHash(workspacePath(root, path))),
         policy.allowOverlappingWrites === true,
         edits,
-        pathsExistLater(this.store, this.store.state(runId)),
+        pathsExistLater(this.store.state(runId)),
       ),
     );
     if (presetOf(parseRunDefinition(this.store.run(runId).definition_json)) === HARDEN_PRESET)

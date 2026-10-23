@@ -1712,7 +1712,7 @@ describe("initiative runtime", () => {
         override async execute(request: ExecutionRequest) {
           const spec = request.profile.output === "plan" ? this.workflows?.store.state(request.runId).spec : null;
           if (spec?.featureId.endsWith("_message") && this.workflows) {
-            const later = pathsExistLater(this.workflows.store, this.workflows.store.state(request.runId));
+            const later = pathsExistLater(this.workflows.store.state(request.runId));
             this.later = Object.fromEntries(["base.txt", "nobody.txt", "front.txt", "message.txt"].map((p) => [p, later(p)]));
           }
           return super.execute(request);
@@ -1737,7 +1737,51 @@ describe("initiative runtime", () => {
       // Only base's boundary counts, while message waits for it: not a file nobody writes, not its own
       // or a downstream feature's files, and nothing once the run is released.
       expect(t.executor.later).toEqual({ "base.txt": true, "nobody.txt": false, "front.txt": false, "message.txt": false });
-      expect(pathsExistLater(t.workflows.store, t.workflows.store.state(runId))("base.txt")).toBe(false);
+      expect(pathsExistLater(t.workflows.store.state(runId))("base.txt")).toBe(false);
+    }, 120_000);
+
+    // Bench round 61, manlens (#1946): roff and inline were accepted while document, planned ahead on
+    // them and on render, still planned; their files were on neither its provisional base nor its
+    // "later" set, and its first plan was refused for read hints on them.
+    test("on, message's plan may read the files of an upstream accepted after its base was fixed", async () => {
+      class EarlyExecutor extends AheadExecutor {
+        later: boolean | null = null;
+        override async execute(request: ExecutionRequest) {
+          const view = () => this.initiatives?.view("values").features;
+          const deadline = Date.now() + 20_000;
+          // early implements only once message has its run (its provisional base lacks early's result),
+          if (request.profile.output === "implementation" && request.task?.writes[0]?.path === "early.txt")
+            while (!view()?.find((f) => f.id === "message")?.runId && Date.now() < deadline) await Bun.sleep(20);
+          // and message plans only once early is accepted, while base still holds it.
+          const spec = request.profile.output === "plan" ? this.workflows?.store.state(request.runId).spec : null;
+          if (spec?.featureId.endsWith("_message") && this.workflows) {
+            while (view()?.find((f) => f.id === "early")?.state !== "accepted" && Date.now() < deadline) await Bun.sleep(20);
+            this.later = pathsExistLater(this.workflows.store.state(request.runId))("early.txt");
+          }
+          return super.execute(request);
+        }
+      }
+      const split = plan([feature("early"), feature("base"), feature("message", ["early", "base"]), feature("front", ["message"])]);
+      const t = setup(split, 100, (root) => new EarlyExecutor(root, split));
+      repository(t.root);
+      t.executor.initiatives = t.initiatives;
+      t.executor.workflows = t.workflows;
+      t.executor.readHints.message = ["early.txt"];
+      Object.assign(t.workflows.config.workflows ?? {}, { planAhead: true, maxParallelRuns: 3 });
+      await t.start({ plan: split, policy: { ...policy, executionMode: "worktree" }, featureAutoApproval: { maxTasks: 5, maxFiles: 5 }, budget: { maxTotalTokens: 6_000_000, maxAgentCalls: 2000, maxActiveMs: 6_000_000 } });
+      await t.approveSplit();
+      const view = await t.drive();
+      expect(view.status).toBe("completed");
+      const events = t.executor.events;
+      expect(events.indexOf("plan:message")).toBeGreaterThan(events.indexOf("end:early"));
+      expect(events.indexOf("plan:message")).toBeLessThan(events.indexOf("end:base"));
+      // early's result was not on message's provisional base, and its first plan passed anyway.
+      const runId = t.featureOf(view, "message").runId ?? "";
+      const release = t.workflows.store.latestArtifact(runId, "plan-ahead/release.json");
+      const moved = JSON.parse(t.workflows.store.readArtifact(runId, release?.id ?? "").toString()) as { from: string };
+      expect(git(t.root, "ls-tree", "--name-only", moved.from)).not.toContain("early.txt");
+      expect(t.executor.later).toBe(true);
+      expect(events.filter((e) => e === "plan:message")).toHaveLength(1);
     }, 120_000);
 
     test("on, message is planned while base implements, and its tasks start on base's result", async () => {
