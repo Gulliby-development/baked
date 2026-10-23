@@ -228,7 +228,7 @@ All three paths must be declared in the task's writes. The test and data must be
 
 | `framework` | Harness | Test | `package` |
 | --- | --- | --- | --- |
-| `bun` | a `.ts` or `.js` file exporting `actual(input)`, which may return a promise | a `.test.ts` file; `test.each` over the data file | not used |
+| `bun` | a `.ts` or `.js` file exporting `actual(input)`, which may return a promise | a `.test.ts` file; `test.each` over the data file, loading the harness with a dynamic `import()` without its extension | not used |
 | `pytest` | a `.py` file defining `actual(input)` | a `test_*.py` file; `pytest.mark.parametrize` over the data file | not used |
 | `go` | a `.go` file defining `func Actual(input any) (any, error)`, in the test's directory | a `_test.go` file; one subtest per row, reading the data file with `encoding/json` | the Go package name |
 | `junit` | a `.java` class named after its file with `static Object actual(Object input)` | a `*Test.java` JUnit 5 class; one `DynamicTest` per row | the Java package, whose directory holds both files |
@@ -236,6 +236,8 @@ All three paths must be declared in the task's writes. The test and data must be
 | `xunit` | a `.cs` static class named after its file with `public static object? Actual(JsonNode? input)` | a `.cs` class with an xUnit `[Theory]` per row, in a project that references xUnit | the C# namespace of both |
 
 Java's input is built from `Map<String, Object>`, `List<Object>`, `Long`, `Double`, `String`, `Boolean` and `null`; its result may use any numeric type, arrays or collections. Java and C# hold the rows as escaped literals in the test (Java has no JSON reader in its standard library, and a .NET test runs from its output directory), and the data file still holds them for review. Two Go harnesses in one package directory would both define `Actual`, so the planner gets one per directory.
+
+Each host-written test passes its language's default formatter, linter and typechecker as written: Biome (including its import sorting) and `tsc --noEmit` without `allowImportingTsExtensions` for `bun` (its only relative import is the data file, so no import sorter reorders it), `ruff` for `pytest`, `gofmt`, `rustfmt`, and no code line over 100 columns for Java and C#. A fixer that still lays a host file out again (a JSON formatter on the data file, tab indentation) is not a change: before each attempt the host compares an existing file with what it would write the way the inline mode does, and keeps the formatter's layout (#1942: in bench round 61 md-site, Biome reordered the bun test's imports and the next attempt over the same rows stopped `input_changed`). Any other change of a host-written file stops the attempt `input_changed`; the message says to delete the file and resume with `--accept-workspace`, so the host writes it again, or to revise or replan the rows (#1944).
 
 **Inline mode.** A brief that names the test files a feature may write leaves no room for the harness, test and data files above, so in bench round 52 no planner selected any of 248 audited rows (#1763). With `"mode": "inline"` the task names only a test file it already writes, new or existing, and no other task writes it:
 

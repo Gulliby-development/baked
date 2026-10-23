@@ -310,11 +310,12 @@ type Template = (
 ) => Omit<InlineRowFile, "path" | "inline">;
 
 const TEMPLATES: Record<Framework, Template> = {
+  // No type literal: a semicolon-free formatter drops its member separators (#1948).
   bun: ({ test }, rows) => ({
     skeleton: "",
     tail: block(
       "bun",
-      `import { expect as acceptanceExpect, test as acceptanceTest } from "bun:test";\nconst acceptanceRows${/\.tsx?$/.test(test) ? ": { id: string; input: unknown; expected: unknown }[]" : ""} = JSON.parse(${quoted(data(rows))});\nacceptanceTest.each(acceptanceRows)("$id", async (row) => {\n  acceptanceExpect(await acceptanceActual(row.input)).toEqual(row.expected);\n});`,
+      `import { expect as acceptanceExpect, test as acceptanceTest } from "bun:test";\nconst acceptanceRows${/\.tsx?$/.test(test) ? ": Record<string, unknown>[]" : ""} = JSON.parse(${quoted(data(rows))});\nacceptanceTest.each(acceptanceRows)("$id", async (row) => {\n  acceptanceExpect(await acceptanceActual(row.input)).toEqual(row.expected);\n});`,
     ),
   }),
   // No import statement: below the file's own code one is E402 and an import block of its own for
