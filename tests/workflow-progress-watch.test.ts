@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import type { ModelMessage } from "@ai-sdk/provider-utils";
 import {
   NO_EDIT_STEPS,
+  STEER_GRACE_STEPS,
   steeringNotice,
   UNCHECKED_SPEND_SHARE,
   stillStuck,
@@ -84,7 +85,28 @@ describe("stillStuck", () => {
   test("waits, then sees the steered pattern continue", () => {
     expect(stillStuck(reads, steps, 3, WATCH_STOP_AFTER)).toBe("waiting");
     expect(stillStuck(reads, [...steps, read("b.ts")], 3, WATCH_STOP_AFTER)).toBe("waiting");
-    expect(stillStuck(reads, [...steps, read("a.ts")], 3, WATCH_STOP_AFTER)).toBe("stuck");
+    expect(stillStuck(reads, [...steps, read("b.ts"), read("a.ts")], 3, WATCH_STOP_AFTER)).toBe("stuck");
+  });
+
+  // #1978: md-site 54da0241 (bench round 63) was stopped 14 s after the steering, by the step that
+  // answered it. The watcher measures in model steps: that step is a grace and never a stop.
+  test("no stop within one step of the steer", () => {
+    expect(STEER_GRACE_STEPS).toBe(1);
+    // The step sent with the steering re-reads the file it is about to edit.
+    expect(stillStuck(reads, [...steps, read("a.ts")], 3, WATCH_STOP_AFTER)).toBe("waiting");
+    // One full step later the same read again is a stop.
+    expect(stillStuck(reads, [...steps, read("a.ts"), read("a.ts")], 3, WATCH_STOP_AFTER)).toBe("stuck");
+    // A read first made in the grace step and made again later is a stop too.
+    expect(stillStuck(reads, [...steps, read("b.ts"), read("b.ts")], 3, WATCH_STOP_AFTER)).toBe("stuck");
+    // An edit in the grace step is progress at once.
+    expect(stillStuck(reads, [...steps, edit()], 3, WATCH_STOP_AFTER)).toBe("progress");
+    const same: WatchFinding = { signal: "same-failure", detail: "x" };
+    const failing = check("same");
+    expect(stillStuck(same, [failing, failing, failing, check("same")], 3, 3)).toBe("waiting");
+    // Every signal, even with a stop after one step, waits for one full step past the grace.
+    for (const signal of ["no-edits", "unchecked-spend"] as const)
+      expect(stillStuck({ signal, detail: "x" }, [other(), other()], 1, 1)).toBe("waiting");
+    expect(stillStuck({ signal: "no-edits", detail: "x" }, [other(), other(), other()], 1, 1)).toBe("stuck");
   });
 
   test("an edit, or enough steps without the pattern, is progress", () => {
@@ -110,8 +132,8 @@ describe("stillStuck", () => {
   test("the same check result again is stuck, a different one is not", () => {
     const finding: WatchFinding = { signal: "same-failure", detail: "x" };
     const failing = check("same");
-    expect(stillStuck(finding, [failing, failing, failing, check("same")], 3, 3)).toBe("stuck");
-    expect(stillStuck(finding, [failing, failing, failing, check("new")], 3, 3)).toBe("waiting");
+    expect(stillStuck(finding, [failing, failing, failing, check("new"), check("same")], 3, 3)).toBe("stuck");
+    expect(stillStuck(finding, [failing, failing, failing, check("new"), check("new")], 3, 3)).toBe("waiting");
   });
 });
 
@@ -145,8 +167,12 @@ describe("AttemptStepController progress watcher", () => {
     expect(steered.messages?.at(-1)).toEqual({ role: "user", content: steeringNotice(finding) });
     expect(steered.activeTools).toBeUndefined();
     expect(signals).toEqual([["repeated-reads", "steered"]]);
-    const later = [...steps, step(read("a.ts"))];
-    const stopped = controller.prepare({ stepNumber: 4, steps: later, messages: steered.messages ?? messages });
+    // The step that answered the steering is a grace (#1978): no stop yet.
+    const answered = [...steps, step(read("a.ts"))];
+    expect(controller.prepare({ stepNumber: 4, steps: answered, messages: steered.messages ?? messages }).activeTools).toBeUndefined();
+    expect(signals).toEqual([["repeated-reads", "steered"]]);
+    const later = [...answered, step(read("a.ts"))];
+    const stopped = controller.prepare({ stepNumber: 5, steps: later, messages: steered.messages ?? messages });
     expect(stopped.activeTools).toEqual(["submit_result"]);
     expect(stopped.messages?.at(-1)).toEqual({ role: "user", content: finalizeNotice("watcher", finding) });
     expect(signals).toEqual([

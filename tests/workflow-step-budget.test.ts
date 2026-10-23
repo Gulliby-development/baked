@@ -244,6 +244,26 @@ describe("AttemptStepController", () => {
     expect(record.modelRequests).toBeUndefined();
   });
 
+  // #1978: md-site T012 re-sent a ~107k-token prompt on every call; the usage record keeps the
+  // prompt size so a corrective's cost per call reads from it.
+  test("records the size of the prompt each step sent", () => {
+    const controller = new AttemptStepController({
+      maxSteps: 4,
+      maxTokens: 100_000,
+      submitTools: ["submit_result"],
+      fallbackStepTokens: 100,
+    });
+    expect(controller.record([], false, { profileId: "implementer", taskId: "T001" }).prompt).toBeUndefined();
+    const first = history(1);
+    controller.prepare({ stepNumber: 0, steps: [], messages: first });
+    const second = history(3);
+    controller.prepare({ stepNumber: 1, steps: [usage(100, 10)], messages: second });
+    const record = controller.record([usage(100, 10), usage(100, 10)], false, { profileId: "implementer", taskId: "T001" });
+    const sent = [Buffer.byteLength(JSON.stringify(first)), Buffer.byteLength(JSON.stringify(second))];
+    expect(record.steps.map((step) => step.sentBytes)).toEqual(sent);
+    expect(record.prompt).toEqual({ firstBytes: sent[0] ?? 0, largestBytes: Math.max(...sent) });
+  });
+
   test("records the names of each step's tool calls (#750)", () => {
     const controller = new AttemptStepController({
       maxSteps: 4,

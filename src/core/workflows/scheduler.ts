@@ -3288,13 +3288,15 @@ export class WorkflowScheduler {
     task: Task,
     fault: WorkflowFault,
     currentPaths: () => Promise<string[]>,
+    /** For a task the host may finish on its edits: the run's policy and where the stop goes. */
+    defer?: { policy: RunPolicy; stop: (fault: WorkflowFault) => void },
   ): Promise<Implementation> {
-    if (
-      (!this.capContinuable(runId, state, stepId, task) &&
-        !this.progressShown(runId, state, stepId, task)) ||
-      !(await currentPaths()).length
-    )
-      throw fault;
+    if (!(await currentPaths()).length) throw fault;
+    if (this.capEndStops(runId, state, stepId, task)) {
+      // A corrective the host may still finish on its edits (#1978) stops only when it cannot.
+      if (!defer || !this.hostFinishEvidence(runId, defer.policy, task)) throw fault;
+      defer.stop(fault);
+    }
     return {
       schemaVersion: 1,
       taskId: task.id,
@@ -3306,6 +3308,121 @@ export class WorkflowScheduler {
           ? "The attempt used its steps before a result was accepted; the next attempt continues from its edits."
           : "The attempt used its token cap before it submitted a result; the next attempt continues from its edits.",
       ],
+    };
+  }
+  /** Whether `capEndResult` stops the run for this cap stop instead of continuing the task. */
+  private capEndStops(runId: string, state: RuntimeState, stepId: string, task: Task): boolean {
+    return (
+      !this.capContinuable(runId, state, stepId, task) &&
+      !this.progressShown(runId, state, stepId, task)
+    );
+  }
+  /**
+   * What lets the host tell on its own that a corrective's edits fixed what it corrects (#1978):
+   * the repros of its findings the run can start, and the required checks its findings name.
+   * Null for a planned task and for a corrective with neither.
+   */
+  private hostFinishEvidence(
+    runId: string,
+    policy: RunPolicy,
+    task: Task,
+  ): { repro?: (root: string, signal: AbortSignal) => Promise<string[]>; named: Check[] } | null {
+    if (task.origin === "planned" || !task.findingIds.length) return null;
+    const repro = this.reproCheck(runId, policy, task);
+    const named = new Set(
+      this.store
+        .findings(runId)
+        .filter((f) => task.findingIds.includes(f.id))
+        .map((f) => {
+          const claim = (JSON.parse(f.body_json) as { claim?: unknown }).claim;
+          return typeof claim === "string"
+            ? (checkOfClaim(claim) ?? taskCheckOfClaim(claim))
+            : null;
+        })
+        .filter((id): id is string => Boolean(id)),
+    );
+    const checks = policy.checks.filter((c) => c.required && named.has(c.id));
+    if (!repro && !checks.length) return null;
+    return { ...(repro ? { repro } : {}), named: checks };
+  }
+  /**
+   * A corrective attempt stopped at its token or step cap, or by the progress watcher, after edits
+   * that already fix its findings is finished by the host instead of by another model session
+   * (#1978). md-site 54da0241 (bench round 63): T012's first session ended at its uncached cap
+   * with the repro passing after its first edit, and two more sessions at a ~107k-token prompt
+   * cost 2.28M tokens to submit the same diff. When the stopped attempt changed files, its
+   * findings' repros no longer reproduce, and the checks its findings name and every required
+   * task-end check pass on the carried edits, its result becomes `implemented` with those runs as
+   * evidence and the task goes on through its usual task checks. Otherwise null, and the usual
+   * cap path runs. `run` keeps each check result, so the task checks do not run it again.
+   */
+  private async hostFinishAfterStop(
+    runId: string,
+    state: RuntimeState,
+    policy: RunPolicy,
+    stepId: string,
+    task: Task,
+    result: Implementation,
+    changed: string[],
+    root: string,
+    signal: AbortSignal,
+    run: (check: Check) => Promise<WorkerCheck["checked"]>,
+  ): Promise<Implementation | null> {
+    if (result.taskId !== task.id || !changed.length) return null;
+    const unfinished =
+      ["blocked", "failed"].includes(result.outcome) ||
+      (result.outcome === "implemented" && result.unresolved.length > 0);
+    if (!unfinished) return null;
+    const record = this.lastAttemptUsage(runId, stepId);
+    const stoppedBy =
+      record?.finalizedBy ??
+      (record?.stopReason === "tokens" || record?.stopReason === "steps"
+        ? record.stopReason
+        : null);
+    if (!stoppedBy) return null;
+    const evidence = this.hostFinishEvidence(runId, policy, task);
+    if (!evidence) return null;
+    signal.throwIfAborted();
+    if (evidence.repro && (await evidence.repro(root, signal)).length) return null;
+    const checks = [...evidence.named];
+    for (const check of this.gatedChecks(runId, state, policy, task, root, changed))
+      if (check.required && !checks.some((c) => c.id === check.id)) checks.push(check);
+    const evidenceIds: string[] = [];
+    for (const check of checks) {
+      signal.throwIfAborted();
+      const checked = await run(check);
+      if (checked.status !== "passed") return null;
+      evidenceIds.push(checked.evidenceId);
+    }
+    this.store.transaction(() =>
+      this.store.artifact(
+        runId,
+        "recovery",
+        `tasks/${task.id}/host-finish.json`,
+        canonical({
+          taskId: task.id,
+          stepId,
+          stoppedBy,
+          repro: evidence.repro ? "passed" : "none",
+          checks: checks.map((c) => c.id),
+          evidenceIds,
+          changed,
+        }),
+      ),
+    );
+    const proof = evidence.repro
+      ? "its findings no longer reproduce"
+      : "the checks its findings name pass";
+    return {
+      ...result,
+      outcome: "implemented",
+      summary:
+        `The host finished this task: its attempt stopped (${stoppedBy}) after edits on which ${proof} and its required checks pass (${checks.map((c) => c.id).join(", ") || "none"}). The attempt's account: ${result.summary}`.slice(
+          0,
+          15000,
+        ),
+      evidenceIds: [...new Set([...result.evidenceIds, ...evidenceIds])],
+      unresolved: [],
     };
   }
   /**
@@ -6754,8 +6871,10 @@ ${note}`;
         };
       };
       let proseEnd = false;
+      // A cap stop that would stop the run waits until the host knows it cannot finish the task.
+      const capStop: { fault?: WorkflowFault } = {};
       const fresh = this.freshStart(runId, state, task);
-      const result = this.settleSizeTargets(
+      let result = this.settleSizeTargets(
         runId,
         task.id,
         ImplementationSchema.parse(
@@ -6827,6 +6946,12 @@ ${note}`;
                 task,
                 error,
                 async () => (await currentChanges()).changed,
+                {
+                  policy,
+                  stop: (fault) => {
+                    capStop.fault = fault;
+                  },
+                },
               );
             if (!endedOnProse(error)) throw error;
             proseEnd = true;
@@ -6870,6 +6995,24 @@ ${note}`;
             .map((path) => describeChange(path, before, after))
             .join(", ")}${outside.length > 5 ? ", ..." : ""}`,
         );
+      const finished = await this.hostFinishAfterStop(
+        runId,
+        state,
+        policy,
+        child,
+        task,
+        result,
+        changed,
+        root,
+        signal,
+        async (check) => {
+          const checked = await this.runTaskCheck(runId, child, check, policy, signal, root);
+          cutOffResults.set(hashJson(check), checked);
+          return checked;
+        },
+      );
+      if (finished) result = finished;
+      else if (capStop.fault) throw capStop.fault;
       const reproduced = await this.stillReproduces(
         runId,
         policy,
@@ -7018,7 +7161,9 @@ ${note}`;
           signal,
           root,
           async (check) => {
-            const checked = await this.runTaskCheck(runId, child, check, policy, signal, root);
+            const checked =
+              cutOffResults.get(hashJson(check)) ??
+              (await this.runTaskCheck(runId, child, check, policy, signal, root));
             cutOffResults.set(hashJson(check), checked);
             return checked;
           },
@@ -8067,7 +8212,11 @@ ${note}`;
         return { after: now, changed: this.workerChanges(runId, entry, known, before ?? {}, now) };
       };
       let proseEnd = false;
-      const result = this.settleSizeTargets(
+      // A cap stop that would stop the run waits until the host knows it cannot finish the task.
+      const capStop: { fault?: WorkflowFault } = {};
+      // Check results the host ran to finish a stopped attempt, reused by the task checks.
+      const hostChecked = new Map<string, WorkerCheck["checked"]>();
+      let result = this.settleSizeTargets(
         runId,
         task.id,
         ImplementationSchema.parse(
@@ -8105,6 +8254,12 @@ ${note}`;
                 task,
                 error,
                 async () => (await currentChanges()).changed,
+                {
+                  policy,
+                  stop: (fault) => {
+                    capStop.fault = fault;
+                  },
+                },
               );
             if (!endedOnProse(error)) throw error;
             proseEnd = true;
@@ -8149,6 +8304,30 @@ ${note}`;
               .join(", ")}${outside.length > 5 ? ", ..." : ""}; its result is not integrated`,
           ),
         };
+      const runCheck = async (check: Check): Promise<WorkerCheck["checked"]> => {
+        const key = hashJson(check);
+        const checked =
+          hostChecked.get(key) ??
+          (await checks.run(() =>
+            this.runTaskCheck(runId, entry.child, check, policy, signal, root),
+          ));
+        hostChecked.set(key, checked);
+        return checked;
+      };
+      const finished = await this.hostFinishAfterStop(
+        runId,
+        state,
+        policy,
+        entry.child,
+        task,
+        result,
+        changed,
+        root,
+        signal,
+        runCheck,
+      );
+      if (finished) result = finished;
+      else if (capStop.fault) throw capStop.fault;
       const reproduced = await this.stillReproduces(
         runId,
         policy,
@@ -8235,8 +8414,7 @@ ${note}`;
           changed,
           signal,
           root,
-          (check) =>
-            checks.run(() => this.runTaskCheck(runId, entry.child, check, policy, signal, root)),
+          runCheck,
         )
       )
         return {
@@ -8253,9 +8431,7 @@ ${note}`;
         this.validateSatisfiedEvidence(runId, state, after, result);
       const results: WorkerCheck[] = [];
       for (const check of this.gatedChecks(runId, state, policy, task, root, changed)) {
-        const checked = await checks.run(() =>
-          this.runTaskCheck(runId, entry.child, check, policy, signal, root),
-        );
+        const checked = await runCheck(check);
         results.push({ check, checked });
         if (
           checked.status === "failed" &&

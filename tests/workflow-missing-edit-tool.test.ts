@@ -53,6 +53,19 @@ describe("a worker that says it has no edit tool while its session has them (#13
     expect(steps.record(second, false, { profileId: "implementer", taskId: "T006" }).finalizedBy).toBe("watcher");
   });
 
+  test("a second claim in the step that answered the naming waits one full step (#1978)", () => {
+    const signals: [string, string, string][] = [];
+    const steps = controller(signals);
+    const first = [read("tests/build.property.test.ts"), claim];
+    steps.prepare({ stepNumber: 2, steps: first, messages });
+    const answered = [...first, claim];
+    expect(steps.prepare({ stepNumber: 3, steps: answered, messages }).activeTools).toBeUndefined();
+    expect(signals.map((s) => s[1])).toEqual(["steered"]);
+    const later = [...answered, claim];
+    expect(steps.prepare({ stepNumber: 4, steps: later, messages }).activeTools).toEqual(["submit_result"]);
+    expect(signals.map((s) => s[1])).toEqual(["steered", "stopped"]);
+  });
+
   test("an edit after the first claim clears it, and a session without edit tools is left alone", () => {
     const signals: [string, string, string][] = [];
     const steps = controller(signals);
