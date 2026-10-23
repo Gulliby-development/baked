@@ -276,6 +276,65 @@ export const TEST_RUNNERS: LanguageRecord<readonly TestRunner[]> = {
   solidity: none("forge test summaries are not read"),
 };
 
+const captured = (output: string, pattern: RegExp): string[] => [
+  ...new Set([...output.matchAll(pattern)].map((m) => (m[1] ?? "").trim()).filter(Boolean)),
+];
+
+/**
+ * The names of the tests a runner reports as failed, by runner: a `Record` over `TestRunner`, so a
+ * new summary parser cannot land without its failure lines. The baseline replay (#1945) reads them
+ * to say which of a run's tests fail on the code the run started from.
+ */
+export const FAILED_TESTS: Record<TestRunner, (output: string) => string[]> = {
+  // "(fail) parser > keeps blank lines [0.81ms]"
+  bun: (o) => captured(o, /^\(fail\) (.+?)(?: \[[\d.]+m?s\])?\s*$/gm),
+  // "  ● parser › keeps blank lines", not the "● Test suite failed to run" header
+  jest: (o) => captured(o, /^\s*● (?!Test suite failed to run)(.+?)\s*$/gm),
+  // " FAIL  tests/parser.test.ts > parser > keeps blank lines"
+  vitest: (o) => captured(o, /^\s*FAIL\s+(\S.* > .+?)\s*$/gm),
+  // "FAILED tests/test_parser.py::test_keeps_blank - AssertionError", also an ERROR at setup
+  pytest: (o) => captured(o, /^(?:FAILED|ERROR) (\S+::\S+)/gm),
+  // "test parser::keeps_blank ... FAILED"
+  cargo: (o) => captured(o, /^test (\S+) \.\.\. FAILED\s*$/gm),
+  // "  Failed Parser.Tests.KeepsBlank [12 ms]"
+  dotnet: (o) => captured(o, /^\s*Failed (\S+) \[/gm),
+  // "[ERROR] app.ParserTest.keepsBlank -- Time elapsed: 0.01 s <<< FAILURE!" (surefire 3), or
+  // "[ERROR] keepsBlank(app.ParserTest)  Time elapsed: 0.01 s  <<< ERROR!" (surefire 2)
+  maven: (o) => captured(o, /^\[ERROR\] (\S+?)(?: --)?\s+Time elapsed: .*<<< (?:FAILURE|ERROR)!/gm),
+  // "--- FAIL: TestKeepsBlank (0.00s)", subtests included
+  go: (o) => captured(o, /^\s*--- FAIL: (\S+)/gm),
+  // A <testcase> with a <failure> or <error> child.
+  junit: (o) =>
+    [...o.matchAll(/<testcase\b([^>]*?)(?:\/>|>([\s\S]*?)<\/testcase>)/g)]
+      .filter((m) => /<(?:failure|error)\b/.test(m[2] ?? ""))
+      .map((m) => {
+        const attr = (name: string) => new RegExp(`\\s${name}="([^"]*)"`).exec(m[1] ?? "")?.[1];
+        return [attr("classname"), attr("name")].filter(Boolean).join(".");
+      })
+      .filter(Boolean),
+  // "not ok 3 - keeps blank lines", not a TODO or skipped test
+  tap: (o) =>
+    captured(o, /^not ok \d+(?: -)? (.+?)\s*$/gm).filter(
+      (name) => !/#\s*(?:todo|skip)\b/i.test(name),
+    ),
+};
+
+/**
+ * The tests a check's output reports as failed, with the runner that printed them: the runner
+ * whose summary the output has, else the first whose failure lines it has (`go test` without `-v`
+ * prints `--- FAIL` lines and no count). Null when neither is in the output, so a caller cannot
+ * read an empty list as "none failed".
+ */
+export function failedTests(output: string): { tool: TestRunner; names: string[] } | null {
+  const counted = testCount(output)?.tool as TestRunner | undefined;
+  if (counted) return { tool: counted, names: FAILED_TESTS[counted](output) };
+  for (const { tool } of TEST_COUNTERS) {
+    const names = FAILED_TESTS[tool](output);
+    if (names.length) return { tool, names };
+  }
+  return null;
+}
+
 /** The number of tests a runner ran, by its summary line. */
 export function testCount(output: string): OutputCount | null {
   for (const { tool, count } of TEST_COUNTERS) {

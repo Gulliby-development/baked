@@ -10,12 +10,13 @@ Quality gates of workflow runs measure the code a run writes beyond what its che
 | [Semgrep](#semgrep) | `sast`, `sastConfig` | `auto`, `off`; a Semgrep `--config` | `auto`, `p/default` |
 | [Property-based tests](#property-based-tests) | `propertyTests` | `auto`, `off` | by preset: `auto` for `standard` and `full` (the `sdd` workflow), `off` otherwise |
 | [Mutation gate](#mutation-gate) | `mutation`, `mutationThresholds`, `mutationBudgetMs`, `mutationEngine` | `off`, `advisory`, `required`; percent per path; time; `auto`, `built-in` | by preset: `advisory` for `full` (the `sdd` workflow), `off` otherwise; `auto` |
+| [Baseline replay](#baseline-replay) | `baselineReplay` | `on` (absent is off) | off |
 
 Where the defaults are set:
 
 - terminal UI: `/code-quality` (or **Code Quality** in `/settings`), saved to the project or the global config;
 - desktop: Settings, Chat settings, **Code quality** page;
-- local API: `PATCH /v1/settings` with `quality.duplication`, `quality.disabledRules`, `quality.registryLookups`, `quality.sast`, `quality.propertyTests`, `quality.mutation` and `quality.mutationEngine` ([chat settings](../desktop/api.md#chat-settings));
+- local API: `PATCH /v1/settings` with `quality.duplication`, `quality.disabledRules`, `quality.registryLookups`, `quality.sast`, `quality.propertyTests`, `quality.mutation`, `quality.mutationEngine` and `quality.baselineReplay` ([chat settings](../desktop/api.md#chat-settings));
 - config file: `quality` in `.baked/config.json` or `~/.baked/config.json`.
 
 A run can override the default at start: `baked workflow run --duplication off|warn|ratchet`, `--sast auto|off`, `--property-tests auto|off` and `--mutation off|advisory|required`, or `duplication`, `sast`, `propertyTests` and `mutation` in `POST /v1/workflow/runs`. The order is the run flag, then the policy's own field (`--policy FILE` or `workflows.policy`), then the `quality` setting, then the built-in default.
@@ -182,3 +183,9 @@ Each mutant's tests get three times the green suite's duration plus 10 seconds, 
 Without a matching threshold every surviving mutant of a file blocks. The default follows the workflow's preset: `full`, which the `sdd` workflow runs, is `advisory`; `quick`, `standard` and the other presets are `off`. `quality.mutation: preset` (the setting's default) keeps that; another value, the policy's `mutation` or `--mutation` overrides it and is frozen in the run's policy. The implementer is told to write tests that fail when a condition, boundary or constant changes.
 
 The run report shows the mode, the engine when it is a tool, the score, how many mutants were killed, timed out, not run or judged equivalent, and a table of the survivors and equivalent mutants with the reason. The [`harden` preset](harden.md) plants the mutants in the module under test instead of in added lines and reports the score before and after.
+
+## Baseline replay
+
+Update requests often ask that the new tests fail on the code before the change, or that the existing tests still pass on it. No command check proves either, so without evidence the review could only call such a criterion inconclusive. With `baselineReplay: on` (setting `quality.baselineReplay`, default `off`) the host proves it itself. After the command checks and the other quality gates pass with no blocking finding, it runs the policy's required test checks (as the mutation gate picks them) once more in a task worktree (`.baked/worktrees/RUN/quality-baseline-replay`) checked out from the run's current content, with `node_modules`, `.venv` and `venv` linked from the run. In that copy every changed file that is not a test is put back as it was before the run, and files the run created are removed; test files stay as delivered.
+
+The result is `quality/baseline-replay.json`, recorded as review evidence: the files reverted, removed and left as delivered because their earlier content was not kept (`unknown`), and per check its status, the failed tests read from the runner's output (`failedTests`, `null` when no runner's output was recognized) and the end of the output. The failed tests are read for bun, Jest, Vitest, pytest, cargo, dotnet, Maven, Go, JUnit XML and TAP. The spec author is told such a criterion is automated, the analysis reviewer that it is never a finding for needing a second tree, and the reviewers how to settle it from the record. The replay runs once per snapshot and never blocks. Without a required test check, with no changed file other than tests, or in a project that is not the top of its Git repository, the record carries a note instead of results. The replay does not compare dependency resolution.

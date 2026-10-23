@@ -1015,6 +1015,20 @@ export const SETTINGS: readonly SettingDefinition[] = [
     ],
   },
   {
+    id: "quality.baselineReplay",
+    page: "code-quality",
+    section: "Tests",
+    label: "Baseline replay",
+    help: "After the checks pass, runs the required test checks once more in a copy of the delivered tree whose changed non-test files are put back as they were before the run, and keeps which tests fail there as review evidence. A criterion that the new tests fail on the old code is then checked by the run instead of left to a person. Costs one more test run per review.",
+    scopes: BOTH,
+    type: "enum",
+    default: "off",
+    options: [
+      { value: "off", label: "off", help: "Do not replay the tests on the old code." },
+      { value: "on", label: "on", help: "Replay them and keep the result as evidence." },
+    ],
+  },
+  {
     id: "quality.propertyTests",
     page: "code-quality",
     section: "Tests",

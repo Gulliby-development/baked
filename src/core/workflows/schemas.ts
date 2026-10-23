@@ -649,6 +649,13 @@ export const PolicySchema = z
      */
     mutationEngine: z.enum(["auto", "built-in"]).optional(),
     /**
+     * The baseline replay (quality/baseline-replay.ts, #1945): `on` runs the required test checks
+     * once more in a copy of the delivered tree whose changed non-test files are put back as they
+     * were before the run, and records which tests fail there as review evidence. Absent means
+     * off, so stored policies keep their hash.
+     */
+    baselineReplay: z.literal("on").optional(),
+    /**
      * The project's choices for the anti-slop rule pack (quality/rules.ts), which is always on:
      * rules turned off, severities changed and ast-grep rule files added. Absent means the
      * built-in pack as shipped, so stored policies keep their hash.
