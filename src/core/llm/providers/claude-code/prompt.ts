@@ -6,6 +6,7 @@ import type {
   LanguageModelV3FinishReason,
 } from "@ai-sdk/provider";
 
+import { ProviderAnswerError } from "../../provider-answer.js";
 import { imagePlaceholder, type PromptImage, promptImage, promptImages } from "../prompt-images.js";
 
 type PromptMessage = LanguageModelV3CallOptions["prompt"][number];
@@ -346,7 +347,9 @@ export function parseClaudeCodeResponse(
       });
     }
     if (content.length === 0) {
-      throw new Error("Claude Code returned finishReason=tool-calls without any tool calls");
+      throw new ProviderAnswerError(
+        "Claude Code returned finishReason=tool-calls without any tool calls",
+      );
     }
     return { content, finishReason: { unified: "tool-calls", raw: "tool-calls" } };
   }

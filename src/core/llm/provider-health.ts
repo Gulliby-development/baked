@@ -7,6 +7,7 @@ import type {
 import { UnsupportedFunctionalityError } from "@ai-sdk/provider";
 import { generateText, type LanguageModel, type LanguageModelUsage, wrapLanguageModel } from "ai";
 import { executionClock, executionTimeout } from "../workflows/execution-clock.js";
+import { lostAnswer } from "./provider-answer.js";
 
 export const PROVIDER_FIRST_BYTE_MS = 60_000;
 export const PROVIDER_BACKOFF_MAX_MS = 5 * 60_000;
@@ -334,7 +335,14 @@ export function withProviderHealth(
               error instanceof Error ? error.message : String(error),
             );
           // A provider refusal is a response too, and must keep its account/rate-limit handling.
-          if (!responded && !signal.aborted && !(error instanceof ProviderUnreachableError)) {
+          // A turn whose answer was lost before any output reached BAKED charges no active time,
+          // as an outage does not: nothing usable arrived (#1957).
+          if (
+            !responded &&
+            !signal.aborted &&
+            !(error instanceof ProviderUnreachableError) &&
+            !lostAnswer(error)
+          ) {
             responded = true;
             settle?.(true);
           }
