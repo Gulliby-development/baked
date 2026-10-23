@@ -10,6 +10,7 @@ import type {
   SharedV2ProviderMetadata,
 } from "@ai-sdk/provider";
 import { getCwd } from "../../../cwd.js";
+import { ProviderAnswerError } from "../../provider-answer.js";
 import { providerCallDetail } from "../../provider-health.js";
 import { cliReasoningEffort } from "../cli-effort.js";
 import { imageUrl, promptImages } from "../prompt-images.js";
@@ -624,7 +625,8 @@ export class CodexAppServerSessions {
       dynamicTools: request.dynamicTools,
     })) as { thread?: { id?: unknown } } | undefined;
     const threadId = result?.thread?.id;
-    if (typeof threadId !== "string") throw new Error("Codex app-server returned no thread id");
+    if (typeof threadId !== "string")
+      throw new ProviderAnswerError("Codex app-server returned no thread id");
 
     const thread: NativeThread = {
       threadId,

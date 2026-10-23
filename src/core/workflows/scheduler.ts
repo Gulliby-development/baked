@@ -31,6 +31,7 @@ import {
   policyRefusal,
   policyRefusalDecision,
 } from "../llm/policy-refusal.js";
+import { invisibleCharacters } from "../llm/provider-answer.js";
 import { ProviderUnreachableError } from "../llm/provider-health.js";
 import { runSandbox } from "../security/sandbox.js";
 import { buildSafeEnv } from "../spawn.js";
@@ -557,12 +558,12 @@ import {
 } from "./schemas.js";
 import { specSizeNote, specSizeProblems } from "./spec-size.js";
 import {
-  isStall,
   ladderPath,
   ladderSummary,
   nextRung,
   type RecoveryPlacement,
   readLadder,
+  recoverableCall,
   rungText,
   writeLadder,
 } from "./stall-ladder.js";
@@ -5233,10 +5234,12 @@ export class WorkflowScheduler {
         : recordProviderOutcome(this.store, runId, attempt, profile.id, task?.id, error);
       // A stalled call that changed nothing climbs the recovery ladder at once (#1877): a fresh
       // session, the other transport, a lower effort, the next model of the route, then a person.
-      // A route with no rung to try keeps the provider wait and its health probes.
+      // A route with no rung to try keeps the provider wait and its health probes. A turn that
+      // finished with no usable answer climbs the same way (#1957), and stops for a person when
+      // no rung is left: it is not an outage to wait out.
+      const recoverable = signal.aborted ? null : recoverableCall(error);
       if (
-        isStall(error) &&
-        !signal.aborted &&
+        recoverable &&
         !this.store.effects(runId).some((effect) => effect.attempt_id === attempt)
       ) {
         const ladder = readLadder(this.store, runId, ladderAt);
@@ -5299,7 +5302,7 @@ export class WorkflowScheduler {
             },
           );
         }
-        if (recovery) {
+        if (recovery || recoverable === "lost-answer") {
           this.store.transaction(() => {
             writeLadder(this.store, runId, ladderAt, { steps, exhausted: true });
             this.store.artifact(
@@ -5309,6 +5312,24 @@ export class WorkflowScheduler {
               canonical({ open: true, attemptId: attempt, ladder: steps.length }),
             );
           });
+          if (recoverable === "lost-answer") {
+            const invisible = invisibleCharacters(prompt);
+            throw new WorkflowFault(
+              "OUTPUT_INVALID",
+              recoveryAdvice(
+                `${profile.id} got no usable answer on every rung of the recovery ladder: ${ladderSummary(steps)}. Each turn finished without an answer BAKED could read; the last one: ${steps.at(-1)?.error ?? ""}. Automatic retries stopped, since the same input (${
+                  this.store
+                    .attempts(runId)
+                    .find((a) => a.id === attempt)
+                    ?.input_hash.slice(0, 12) ?? inputHash.slice(0, 12)
+                }) ends the same way${invisible.length ? `. The input holds ${invisible.join(", ")}` : ""}. Check the stage input, then resume (a new ladder starts) or reroute the run to another model.`,
+                `A model call finished without a usable answer on ${steps.length} recovery rung(s) and needs your decision.`,
+                { action: "resume", runId },
+                { action: "reroute", runId },
+              ),
+              { reason: "no_progress", providerCircuit: true, ladder: steps, lostAnswer: true },
+            );
+          }
           throw new WorkflowFault(
             "OUTPUT_INVALID",
             recoveryAdvice(

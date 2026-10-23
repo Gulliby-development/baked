@@ -1,4 +1,5 @@
 import { lowerEffort, type RouteEffort } from "../llm/model-routing.js";
+import { lostAnswer } from "../llm/provider-answer.js";
 import { ProviderUnreachableError } from "../llm/provider-health.js";
 import { canonical, hashJson } from "../specs/hash.js";
 import type { WorkflowStore } from "./store.js";
@@ -54,6 +55,16 @@ export function isStall(error: unknown): boolean {
       error.message,
     )
   );
+}
+
+/**
+ * A call the ladder climbs on: a stall, or a turn that finished with no usable answer (#1957). The
+ * provider answered the second one, but the same input on the same settings ends the same way, so
+ * waiting out an outage that is not there only repeats it.
+ */
+export function recoverableCall(error: unknown): "stall" | "lost-answer" | null {
+  if (isStall(error)) return "stall";
+  return lostAnswer(error) ? "lost-answer" : null;
 }
 
 /** Only Codex over its app-server keeps a session between steps and has a second transport. */

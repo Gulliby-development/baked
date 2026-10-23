@@ -23,6 +23,7 @@ import { formatSyntaxErrors, syntaxCheckable, syntaxErrors } from "../intelligen
 import { FirstByteHistory } from "../llm/first-byte-history.js";
 import { knownModelContextWindow } from "../llm/models.js";
 import { resolveModel } from "../llm/provider.js";
+import { lostAnswer } from "../llm/provider-answer.js";
 import {
   adaptiveFirstByteMs,
   type CallTiming,
@@ -1462,6 +1463,21 @@ export class NativeAgentExecutor implements AgentExecutor {
         this.store.recordAttemptUsage(request.runId, request.attemptId, budget.consumed(finished));
         return true;
       };
+      // A turn whose answer was lost was billed all the same (#1957): the usage it reported, or the
+      // messages it was sent when it reported none, is charged as a step, and its evidence kept.
+      const chargeLostAnswer = (error: unknown): AttemptUsageRecord["lostAnswer"] | undefined => {
+        const lost = request.signal.aborted ? null : lostAnswer(error);
+        if (!lost) return undefined;
+        const promptBytes = budget.lastSentBytes() ?? Buffer.byteLength(request.prompt);
+        const usage = {
+          inputTokens: lost.usage?.inputTokens ?? Math.ceil(promptBytes / 4),
+          outputTokens: lost.usage?.outputTokens ?? 0,
+        };
+        finished.push({ usage, finishReason: "error", toolCalls: [] });
+        recordStep(usage, error);
+        this.store.recordAttemptUsage(request.runId, request.attemptId, budget.consumed(finished));
+        return { ...lost.evidence, message: lost.message.slice(0, 500), promptBytes };
+      };
       const opening = openingMessage(request.prompt, this.config.cache?.ttl ?? "5m");
       let result: {
         steps: readonly StepLike[];
@@ -1583,7 +1599,8 @@ export class NativeAgentExecutor implements AgentExecutor {
           };
         } else {
           const charged = chargeOutputLimit(error);
-          if (!request.signal.aborted && !charged) recordStep(undefined, error);
+          const lost = charged ? undefined : chargeLostAnswer(error);
+          if (!request.signal.aborted && !charged && !lost) recordStep(undefined, error);
           try {
             const usage = budget.record(
               finished,
@@ -1592,17 +1609,16 @@ export class NativeAgentExecutor implements AgentExecutor {
               request.signal.aborted ? "aborted" : "error",
             );
             const total = sumUsage(finished);
-            writeUsage(
-              charged
+            const estimated =
+              charged || (lost && !lostAnswer(error)?.usage)
                 ? {
-                    ...usage,
                     estimatedUsage: {
                       inputTokens: total.inputTokens ?? 0,
                       outputTokens: total.outputTokens ?? 0,
                     },
                   }
-                : usage,
-            );
+                : {};
+            writeUsage({ ...usage, ...estimated, ...(lost ? { lostAnswer: lost } : {}) });
           } catch {
             // The original failure matters more than a usage record that could not be stored.
           }

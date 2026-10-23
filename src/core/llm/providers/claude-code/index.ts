@@ -6,6 +6,7 @@ import type {
   SharedV3Warning,
 } from "@ai-sdk/provider";
 import { parseOpusVersion } from "../../model-id.js";
+import { answerUsage, lostAnswer } from "../../provider-answer.js";
 import { providerResponded } from "../../provider-health.js";
 import { cliReasoningEffort } from "../cli-effort.js";
 import type { ContextSizeOption, ProviderDefinition, ProviderModelInfo } from "../types.js";
@@ -94,7 +95,13 @@ export function createClaudeCodeLanguageModel(
       abortSignal: options.abortSignal,
       onResponse: () => providerResponded(options.abortSignal),
     });
-    const parsed = parseClaudeCodeResponse(result.structured, result.text);
+    let parsed: ReturnType<typeof parseClaudeCodeResponse>;
+    try {
+      parsed = parseClaudeCodeResponse(result.structured, result.text);
+    } catch (error) {
+      // A billed turn whose answer is unusable carries its usage to the attempt (#1957).
+      throw lostAnswer(error)?.withUsage(answerUsage(result.usage)) ?? error;
+    }
     return {
       content: parsed.content,
       finishReason: parsed.finishReason,

@@ -776,7 +776,8 @@ export interface StallLadderBoundary {
 
 /**
  * Walks the recovery ladder again over each stage's recorded attempts: an attempt whose last model
- * call got no first response is a stall, one that completed ends the ladder. The route comes from
+ * call got no first response is a stall, as is one whose turn lost its answer (`lostAnswer` in its
+ * usage, #1957); one that completed ends the ladder. The route comes from
  * the run's routing record, the effort from the attempt's usage. Effects are not in a trace, so an
  * attempt that edited files before it stalled counts as one that did not.
  */
@@ -816,6 +817,7 @@ export function replayStallLadder(
           profileId?: string;
           effort?: string;
           calls?: CallTiming[];
+          lostAnswer?: unknown;
         })
       : {};
     const key = `${stage}:${usage.profileId ?? ""}`;
@@ -824,13 +826,9 @@ export function replayStallLadder(
       continue;
     }
     const last = usage.calls?.at(-1);
-    if (
-      attempt.status !== "failed" ||
-      !last ||
-      last.firstByteMs !== null ||
-      last.status !== undefined
-    )
-      continue;
+    // A stall, or a turn that finished with no usable answer (#1957), which climbs the same way.
+    const stalled = !!last && last.firstByteMs === null && last.status === undefined;
+    if (attempt.status !== "failed" || (!stalled && usage.lostAnswer === undefined)) continue;
     const entry =
       (stage ? routing.stages?.[stage] : undefined) ??
       (usage.profileId ? routing.profiles?.[usage.profileId] : undefined);
