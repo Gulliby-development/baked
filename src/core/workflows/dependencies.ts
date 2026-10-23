@@ -1,4 +1,6 @@
+import { matchGlob } from "../platform/index.js";
 import { hashJson } from "../specs/hash.js";
+import { normalizePath } from "../verification/deliverable-paths.js";
 import { WorkflowFault } from "./errors.js";
 import type { WorkflowStore } from "./store.js";
 import type { RuntimeState } from "./types.js";
@@ -85,4 +87,30 @@ export function dependencyContracts(store: WorkflowStore, state: RuntimeState) {
 export function isHostRelease(request: { kind: string; body_json: string }): boolean {
   if (request.kind !== "manual_evidence") return false;
   return (JSON.parse(request.body_json) as { hostRelease?: unknown }).hostRelease === true;
+}
+
+/**
+ * Paths a planned-ahead run (#1834) may name in a read hint or `reference` although its
+ * provisional base lacks them: the boundary paths of the upstream features it pins that have no
+ * completed run yet. Their results are in its worktree before its tasks start, so a plan that
+ * reads them is what the run is asked for (R60 wheeltags: 7 of 7 planned-ahead features had their
+ * first plan refused for such read hints, #1932). Nothing for a run that is not held, so a write
+ * of another feature's file is still refused. Every check of a plan against the workspace asks it.
+ */
+export function pathsExistLater(
+  store: WorkflowStore,
+  state: RuntimeState,
+): (path: string) => boolean {
+  const bounds = state.initiativeBounds;
+  if (!state.planAhead || state.planAhead.released || !bounds) return () => false;
+  // A run's feature id is `<initiative>_<feature>`, and a feature key has no underscore.
+  const unfinished = new Set(
+    (state.hostDependencies ?? state.spec?.dependencies ?? [])
+      .filter((dependency) => acceptedContract(store, dependency.featureId)?.completed !== true)
+      .map((dependency) => dependency.featureId.slice(dependency.featureId.lastIndexOf("_") + 1)),
+  );
+  const patterns = bounds.features
+    .filter((feature) => feature.id !== bounds.featureId && unfinished.has(feature.id))
+    .flatMap((feature) => feature.paths.map(normalizePath));
+  return (path) => patterns.some((pattern) => matchGlob(normalizePath(path), pattern));
 }

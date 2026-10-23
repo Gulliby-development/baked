@@ -121,3 +121,25 @@ describe("a task's modify targets", () => {
     ]);
   });
 });
+
+// #1932: a planned-ahead run plans on a provisional base without its unfinished upstream files.
+describe("files an unfinished upstream feature writes", () => {
+  test("a read hint or reference may name them; a modify of them and a file nobody writes are still refused", () => {
+    const root = mkdtempSync(join(tmpdir(), "baked-later-"));
+    dirs.push(root);
+    const later = (path: string) => path.startsWith("pkg/upstream/");
+    const graph = graphOf(
+      task("T001", ["pkg/own.py"], { readHints: ["pkg/upstream/target.py"], reference: "pkg/upstream/tags.py" }),
+      task("T002", ["pkg/other.py"], { readHints: ["pkg/nobody.py"], reference: "pkg/missing.py" }),
+      { ...task("T003", []), writes: [{ path: "pkg/upstream/target.py", action: "modify" }] },
+    );
+    const problems = planConsistencyProblems(root, spec, "", graph, () => false, true, undefined, later);
+    expect(problems).toEqual([
+      "T002 read hint pkg/nobody.py does not exist and no earlier task creates it",
+      "T002 reference pkg/missing.py does not exist and no earlier task creates it; name an existing file that shows the pattern, or leave reference out",
+      "T003 modifies pkg/upstream/target.py, which does not exist and no earlier task creates it; depend on the task that creates it, or use create",
+    ]);
+    // Without the planned-ahead paths, the upstream files are refused as before.
+    expect(planConsistencyProblems(root, spec, "", graph, () => false, true).filter((p) => p.startsWith("T001"))).toHaveLength(2);
+  });
+});
