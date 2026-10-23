@@ -97,7 +97,7 @@
     "undici": "^8.11.2",
     "web-tree-sitter": "0.25.10",
     "web-tree-sitter-engine": "npm:web-tree-sitter@0.27.1",
-    "zod": "4.6.5",
+    "zod": "4.6.6",
     "zustand": "5.0.15"
   },
   "optionalDependencies": {
