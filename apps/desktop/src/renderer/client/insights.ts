@@ -1,3 +1,4 @@
+import type { HighCalibration } from "../../../../../src/core/workflows/initiatives/estimate-budget.js";
 import type { RecoveryAdvice } from "../../../../../src/core/workflows/remedies-model.js";
 import { ApiError, call } from "./api.js";
 
@@ -185,10 +186,14 @@ export interface InitiativeEstimate {
   level: 1 | 2 | 3 | 4 | 5;
   tasks: TokenSpan;
   tokens: TokenSpan;
+  /** The point forecast below the high end; absent on older backends. */
+  expectedTokens?: number;
   withMargin: number;
   margin: number;
   budget: { maxTotalTokens: number; fits: "yes" | "maybe" | "no" };
   basis: EstimateBasis;
+  /** The measured actual-to-low ratios behind the high end, or null; absent on older backends. */
+  highCalibration?: HighCalibration | null;
   features: {
     featureId: string;
     title: string;
@@ -210,6 +215,8 @@ export interface InitiativeEstimate {
     planned?: TokenSpan;
     /** What raised the range above the size-scaled forecast, at its measured rate. */
     floor?: "criteria" | "paths" | "plan";
+    /** "ratios" when measured actual-to-low ratios set the high end; absent on older backends. */
+    highBasis?: "ratios";
   }[];
   /** Tokens used so far and the measured-to-forecast ratio; absent on older backends. */
   progress?: {

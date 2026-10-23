@@ -13,7 +13,16 @@ import {
   type TokenRange,
   tokenText,
 } from "../estimate.js";
-import { estimateBudgetText } from "./estimate-budget.js";
+import {
+  type BudgetDetail,
+  estimateBudgetText,
+  type HighCalibration,
+  highCalibrationText,
+  MIN_HIGH_RATIO_SAMPLES,
+} from "./estimate-budget.js";
+
+export { type HighCalibration, highCalibrationText, MIN_HIGH_RATIO_SAMPLES };
+
 import type { FeatureSize } from "./plan.js";
 
 /** The margin added on top of the high end, for the token figure to plan the budget with. */
@@ -61,6 +70,11 @@ export const MIN_PATH_FIT_SAMPLES = 4;
  */
 export const MIN_PATH_FIT_CORRELATION = 0.5;
 
+/** Initiatives the `MIN_HIGH_RATIO_SAMPLES` measured ratios must come from. */
+export const MIN_HIGH_RATIO_INITIATIVES = 2;
+/** The upper quantile of the measured actual-to-low ratios that sets the high end. */
+export const HIGH_RATIO_QUANTILE = 0.9;
+
 /** Tokens against path weight over finished features: `base + perPath * pathWeight`. */
 export interface PathFit {
   base: number;
@@ -82,6 +96,11 @@ export interface FeatureRunSample {
   placeholders?: number;
   /** Files of its skeleton, which the host wrote; they are not in the per-path rate. */
   skeleton?: number;
+  /**
+   * The initiative the feature run belongs to, unique across stores; absent in older callers, whose
+   * samples then measure no actual-to-low ratio (`HighCalibration`).
+   */
+  initiativeId?: string;
   /** This project's store, or one of the policy's `sizing.historyStores`; absent means project. */
   source?: "project" | "shared";
 }
@@ -142,6 +161,8 @@ export interface FeatureEstimate {
   floor?: FeatureFloor;
   /** The fit over finished features of its size that placed it by its paths, when one did. */
   pathFit?: PathFit;
+  /** "ratios" when the measured actual-to-low ratios set the high end (`HighCalibration`). */
+  highBasis?: "ratios";
 }
 
 export type FeatureFloor = "criteria" | "paths" | "plan";
@@ -161,6 +182,11 @@ export interface InitiativeEstimate {
   level: 1 | 2 | 3 | 4 | 5;
   tasks: TokenRange;
   tokens: TokenRange;
+  /**
+   * The point forecast: what is used so far plus each feature's expected tokens. Below the high end,
+   * which is a bound, not a forecast (#1982).
+   */
+  expectedTokens: number;
   /** The high end plus `ESTIMATE_MARGIN`: what to plan the budget with. */
   withMargin: number;
   margin: number;
@@ -196,6 +222,11 @@ export interface InitiativeEstimate {
   perPath: TokenRange | null;
   /** The finished features `perPath` is measured on, and how many of them are other projects'. */
   perPathSamples: { features: number; shared: number };
+  /**
+   * The measured actual-to-low ratios that set the high end of path-floored features; null with
+   * fewer than `MIN_HIGH_RATIO_SAMPLES`, when the high end is the median path rate.
+   */
+  highCalibration: HighCalibration | null;
   notes: string[];
   label: string;
 }
@@ -222,6 +253,93 @@ const median = (values: number[]): number => {
     ? (sorted[half] ?? 0)
     : ((sorted[half - 1] ?? 0) + (sorted[half] ?? 0)) / 2;
 };
+
+/** Linear-interpolated quantile `q` of `values` (not empty). */
+const quantileOf = (values: number[], q: number): number => {
+  const sorted = [...values].sort((a, b) => a - b);
+  const pos = (sorted.length - 1) * q;
+  const base = Math.floor(pos);
+  const at = sorted[base] ?? 0;
+  return at + (pos - base) * ((sorted[base + 1] ?? at) - at);
+};
+const ratioRound = (r: number): number => Math.round(r * 100) / 100;
+
+/**
+ * The actual-to-low ratios of finished features (`HighCalibration`), or null with fewer than
+ * `MIN_HIGH_RATIO_SAMPLES` of them from `MIN_HIGH_RATIO_INITIATIVES` initiatives. A finished
+ * feature is priced from the other initiatives' features alone, as the estimate prices a feature
+ * still to run from earlier initiatives (their size and path fit, then the path floor at their
+ * lowest per-path rate), and compared with what it used. `accepted` are this initiative's
+ * accepted features with the low end the samples gave them.
+ */
+export function highCalibrationOf(
+  samples: FeatureRunSample[],
+  accepted: { low: number; spent: number }[] = [],
+): HighCalibration | null {
+  const rate = (s: FeatureRunSample) => s.tokens / pathWeight(s);
+  const ratios: number[] = [];
+  const initiatives = new Set<string>();
+  // Per initiative, what its features used against the sum of their low ends: features of one
+  // initiative miss in the same direction, so the total's spread is its own.
+  const totals: number[] = [];
+  const groups = Map.groupBy(
+    samples.filter((s) => s.initiativeId && s.tokens > 0),
+    (s) => s.initiativeId ?? "",
+  );
+  for (const [id, own] of groups) {
+    const others = samples.filter((o) => o.initiativeId && o.initiativeId !== id);
+    if (!others.length) continue;
+    const rates = others.filter((o) => pathWeight(o) > 0).map(rate);
+    const lowest = rates.length >= MIN_CRITERIA_SAMPLES ? Math.min(...rates) : 0;
+    let used = 0;
+    let lows = 0;
+    for (const s of own) {
+      // No stages and no run history: the backtest prices by finished features only.
+      const priced = estimateFeature(
+        {
+          id: s.runId,
+          title: s.runId,
+          workflowId: s.workflowId,
+          size: s.size,
+          stages: [],
+          ...(s.paths ? { paths: s.paths } : {}),
+          ...(s.placeholders ? { placeholders: s.placeholders } : {}),
+          ...(s.skeleton ? { skeleton: s.skeleton } : {}),
+        },
+        [],
+        others,
+      );
+      const low = Math.max(priced.tokens.low, lowest * pathWeight(s));
+      if (low <= 0) continue;
+      ratios.push(s.tokens / low);
+      initiatives.add(id);
+      used += s.tokens;
+      lows += low;
+    }
+    if (lows > 0) totals.push(used / lows);
+  }
+  // This initiative's accepted features, against the low end the earlier initiatives gave them.
+  const own = accepted.filter((a) => a.low > 0 && a.spent > 0);
+  for (const a of own) ratios.push(a.spent / a.low);
+  if (own.length) {
+    initiatives.add("");
+    totals.push(own.reduce((t, a) => t + a.spent, 0) / own.reduce((t, a) => t + a.low, 0));
+  }
+  if (ratios.length < MIN_HIGH_RATIO_SAMPLES || initiatives.size < MIN_HIGH_RATIO_INITIATIVES)
+    return null;
+  return {
+    samples: ratios.length,
+    initiatives: initiatives.size,
+    low: ratioRound(Math.min(...ratios)),
+    median: ratioRound(median(ratios)),
+    high: ratioRound(quantileOf(ratios, HIGH_RATIO_QUANTILE)),
+    total: {
+      low: ratioRound(Math.min(...totals)),
+      median: ratioRound(median(totals)),
+      high: ratioRound(quantileOf(totals, HIGH_RATIO_QUANTILE)),
+    },
+  };
+}
 
 /** The level of a planned task count. */
 export function levelOf(tasks: number): InitiativeEstimate["level"] {
@@ -366,10 +484,23 @@ function estimateFeature(
   };
 }
 
+/** The expected value and measured spread the budget text words its warning by (#1982). */
+export const budgetDetail = (
+  estimate: Pick<InitiativeEstimate, "expectedTokens" | "highCalibration">,
+): BudgetDetail => ({
+  expectedTokens: estimate.expectedTokens,
+  spread: highCalibrationText(estimate.highCalibration),
+});
+
 /** The estimate in one line for a screen: level, tasks, tokens, what to plan for, the budget. */
 export function estimateSummary(estimate: InitiativeEstimate): string {
-  const fits = estimateBudgetText(estimate.tokens, estimate.budget, estimate.withMargin);
-  return `Level ${estimate.level} · ~${estimate.tasks.low}-${estimate.tasks.high} tasks · ${rangeText(estimate.tokens)} tokens · plan for ${tokenText(estimate.withMargin)} · ${fits}`;
+  const fits = estimateBudgetText(
+    estimate.tokens,
+    estimate.budget,
+    estimate.withMargin,
+    budgetDetail(estimate),
+  );
+  return `Level ${estimate.level} · ~${estimate.tasks.low}-${estimate.tasks.high} tasks · ${rangeText(estimate.tokens)} tokens · expected ${tokenText(estimate.expectedTokens)} · plan for ${tokenText(estimate.withMargin)} · ${fits}`;
 }
 
 const fitsOf = (high: number, low: number, limit: number): "yes" | "maybe" | "no" =>
@@ -407,6 +538,7 @@ function reforecast(
   perCriterion: TokenRange | null;
   perPath: TokenRange | null;
   perPathSamples: { features: number; shared: number };
+  highCalibration: HighCalibration | null;
 } {
   const used = (f: FeatureEstimate): InitiativeProgress["features"][string] =>
     progress.features[f.featureId] ?? { spent: 0, accepted: false };
@@ -465,6 +597,16 @@ function reforecast(
     pathRates.length >= MIN_CRITERIA_SAMPLES
       ? { low: Math.round(Math.min(...pathRates)), high: Math.round(median(pathRates)) }
       : null;
+  // The path floor the samples alone set, for the low end an accepted feature was given.
+  const sampleRates = pathSamples.map((s) => s.tokens / pathWeight(s));
+  const sampleLowest = sampleRates.length >= MIN_CRITERIA_SAMPLES ? Math.min(...sampleRates) : 0;
+  const highCalibration = highCalibrationOf(
+    samples,
+    accepted.map((f) => ({
+      low: Math.max(f.tokens.low, sampleLowest * pathWeight(f)),
+      spent: used(f).spent,
+    })),
+  );
   const features = prior.map((f): FeatureEstimate => {
     const { spent, accepted: done, criteria, planned } = used(f);
     const known = { ...(criteria ? { criteria } : {}), ...(planned ? { planned } : {}) };
@@ -484,10 +626,11 @@ function reforecast(
     // 4.55 to 8.08 dollars of tasks while its estimate still said 2.65M tokens at most). Once the spec is written its criteria
     // replace the paths: seqmill used 155k to 320k per criterion against 0.29M to 1.28M per path.
     const byCriteria = perCriterion && criteria ? scaled(perCriterion, criteria) : null;
+    const byPaths = !byCriteria && perPath && pathWeight(f) ? scaled(perPath, pathWeight(f)) : null;
     const floors = (
       [
         ["criteria", byCriteria],
-        ["paths", !byCriteria && perPath && pathWeight(f) ? scaled(perPath, pathWeight(f)) : null],
+        ["paths", byPaths],
         ["plan", planned ?? null],
       ] as const
     ).filter((entry): entry is readonly [FeatureFloor, TokenRange] => entry[1] !== null);
@@ -499,15 +642,37 @@ function reforecast(
     const floor =
       floors.find(([, r]) => r.high === tokens.high && r.high > base.high)?.[0] ??
       floors.find(([, r]) => r.low === tokens.low && r.low > base.low)?.[0];
+    // Flooring the range's low end raises its midpoint even when its calibrated midpoint
+    // already matches measured spend. Floor the point forecast independently (#1607).
+    let expectedTokens = Math.max(middle(base), ...floors.map(([, r]) => middle(r)), spent);
+    // How far finished features landed above the low end the same rules gave them bounds the
+    // high end and sets the expected value (#1982): the median path rate, or a size class of one
+    // sample at 0.7x-1.4x, put the high end at about twice the low end by construction, and R62
+    // stepvet used 1.32x its low end, R63 eolscope 1.05x. Only ever narrower than today's range,
+    // and not where the feature's own spec, plan or a re-forecast of an overrun prices it.
+    const bound =
+      highCalibration && !byCriteria && !planned && (scale === null || scale <= 1)
+        ? Math.max(tokens.low, Math.round(tokens.low * highCalibration.high))
+        : null;
+    const ratios = bound !== null && bound < tokens.high;
+    if (ratios && highCalibration) {
+      tokens.high = bound;
+      expectedTokens = Math.max(
+        spent,
+        Math.min(
+          tokens.high,
+          Math.max(tokens.low, Math.round(tokens.low * highCalibration.median)),
+        ),
+      );
+    }
     return {
       ...f,
       ...known,
       tokens: { low: Math.max(tokens.low, spent), high: Math.max(tokens.high, spent) },
-      // Flooring the range's low end raises its midpoint even when its calibrated midpoint
-      // already matches measured spend. Floor the point forecast independently (#1607).
-      expectedTokens: Math.max(middle(base), ...floors.map(([, r]) => middle(r)), spent),
+      expectedTokens,
       basis: scale === null && !floor ? f.basis : "calibrated",
       ...(floor ? { floor } : {}),
+      ...(ratios ? { highBasis: "ratios" as const } : {}),
       spent,
     };
   });
@@ -515,7 +680,7 @@ function reforecast(
     features: pathRates.length,
     shared: pathSamples.filter((s) => s.source === "shared").length,
   };
-  return { features, ratio, bySize, perCriterion, perPath, perPathSamples };
+  return { features, ratio, bySize, perCriterion, perPath, perPathSamples, highCalibration };
 }
 
 /**
@@ -533,13 +698,29 @@ export function estimateInitiative(input: {
 }): InitiativeEstimate {
   const margin = input.margin ?? ESTIMATE_MARGIN;
   const progress = input.progress ?? { features: {}, overhead: 0 };
-  const { features, ratio, bySize, perCriterion, perPath, perPathSamples } = reforecast(
-    input.features.map((f) => estimateFeature(f, input.history, input.samples)),
-    progress,
-    input.samples,
-  );
+  const { features, ratio, bySize, perCriterion, perPath, perPathSamples, highCalibration } =
+    reforecast(
+      input.features.map((f) => estimateFeature(f, input.history, input.samples)),
+      progress,
+      input.samples,
+    );
   const overhead = { low: progress.overhead, high: progress.overhead };
-  const tokens = sum([overhead, ...features.map((f) => f.tokens)]);
+  const summed = sum([overhead, ...features.map((f) => f.tokens)]);
+  // The total's high end is bounded by how far whole initiatives landed above their summed low
+  // ends, never by the sum of each feature's bound: one feature far above its low end is common,
+  // a whole initiative less so (#1982). Only what is still to run scales.
+  const toRun = features.filter((f) => f.basis !== "measured");
+  const totalBound = highCalibration
+    ? Math.round(
+        summed.low -
+          toRun.reduce((t, f) => t + f.tokens.low, 0) +
+          toRun.reduce((t, f) => t + f.tokens.low, 0) * Math.max(1, highCalibration.total.high),
+      )
+    : null;
+  const tokens =
+    totalBound !== null && totalBound < summed.high
+      ? { low: summed.low, high: totalBound }
+      : summed;
   const tasks = sum(features.map((f) => f.tasks));
   const level = levelOf(middle(tasks));
   // Measured tokens need no margin; only what is still to run does.
@@ -547,6 +728,10 @@ export function estimateInitiative(input: {
     progress.overhead +
     features.filter((f) => f.basis === "measured").reduce((t, f) => t + f.spent, 0);
   const withMargin = Math.round(known + (tokens.high - known) * (1 + margin));
+  const expectedTokens = Math.min(
+    tokens.high,
+    Math.round(progress.overhead + features.reduce((t, f) => t + f.expectedTokens, 0)),
+  );
   const accepted = features.filter((f) => f.basis === "measured").length;
   const spent = progress.overhead + features.reduce((t, f) => t + f.spent, 0);
   const basis = features.reduce<FeatureEstimateBasis>(
@@ -595,6 +780,11 @@ export function estimateInitiative(input: {
           `A feature still to run is forecast at no less than ${rangeText(perPath)} tokens per path of its boundary, as measured on ${perPathSamples.features} finished features${perPathSamples.shared ? ` (${perPathSamples.shared} of other projects)` : ""}.`,
         ]
       : []),
+    ...(highCalibration && features.some((f) => f.basis !== "measured" && f.highBasis)
+      ? [
+          `A feature still to run is forecast at most at its low end times ${highCalibration.high.toFixed(2)}, the ${Math.round(HIGH_RATIO_QUANTILE * 100)}th percentile of actual-to-low ratios (${highCalibrationText(highCalibration)}), and expected at the median ratio.`,
+        ]
+      : []),
     ...(perPath && features.some((f) => f.basis !== "measured" && f.placeholders && !f.criteria)
       ? [
           `A path a later feature also lists counts in full only in that feature, and at ${Math.round(PLACEHOLDER_SHARE * 100)}% as a placeholder in the earlier ones.`,
@@ -614,12 +804,14 @@ export function estimateInitiative(input: {
     tokens,
     { maxTotalTokens: input.maxTotalTokens, fits },
     withMargin,
+    { expectedTokens, spread: highCalibrationText(highCalibration) },
   );
   return {
     schemaVersion: 1,
     level,
     tasks,
     tokens,
+    expectedTokens,
     withMargin,
     margin,
     budget: { maxTotalTokens: input.maxTotalTokens, fits },
@@ -629,7 +821,8 @@ export function estimateInitiative(input: {
     perCriterion,
     perPath,
     perPathSamples,
+    highCalibration,
     notes,
-    label: `Estimate: level ${level}, about ${tasks.low}-${tasks.high} tasks, ${rangeText(tokens)} tokens (plan for ${tokenText(withMargin)} with a ${Math.round(margin * 100)}% margin)${spent ? `, ${tokenText(spent)} used with ${accepted} of ${features.length} features accepted` : ""}; ${budgetText}`,
+    label: `Estimate: level ${level}, about ${tasks.low}-${tasks.high} tasks, ${rangeText(tokens)} tokens, expected ${tokenText(expectedTokens)} (plan for ${tokenText(withMargin)} with a ${Math.round(margin * 100)}% margin)${spent ? `, ${tokenText(spent)} used with ${accepted} of ${features.length} features accepted` : ""}; ${budgetText}`,
   };
 }

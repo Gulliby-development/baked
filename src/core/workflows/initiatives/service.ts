@@ -72,6 +72,7 @@ import { DECOMPOSE_WORKFLOW_ID } from "./decompose.js";
 import {
   estimateInitiative,
   type FeatureRunSample,
+  highCalibrationText,
   type InitiativeEstimate,
   type InitiativeProgress,
   SIZE_STAGE_FACTOR,
@@ -2383,9 +2384,12 @@ export class InitiativeService {
           ]
         : [];
     });
+    // Worded by the expected value and the measured spread: the high end is a bound, and at about
+    // twice the low end it made an operator extend a budget the run used 37% of (#1982).
+    const limit = estimate.budget.maxTotalTokens;
     const tokenWarning =
-      estimate.tokens.high > estimate.budget.maxTotalTokens
-        ? `The estimate's high end (${tokenText(estimate.tokens.high)} tokens) exceeds the shared budget (${tokenText(estimate.budget.maxTotalTokens)}). Consider extending to ${estimate.withMargin} tokens, including margin, before approving, or approve with this risk.`
+      estimate.tokens.high > limit
+        ? `The estimate expects about ${tokenText(estimate.expectedTokens)} tokens${estimate.expectedTokens <= limit ? ", within" : ", above"} the shared budget (${tokenText(limit)}); its high end (${tokenText(estimate.tokens.high)} tokens; ${highCalibrationText(estimate.highCalibration)}) exceeds the shared budget. Consider extending to ${estimate.withMargin} tokens, including margin, before approving, or approve with this risk.`
         : "";
     const warning = [tokenWarning, ...dollarWarnings].filter(Boolean).join(" ");
     if (!warning) return message;
@@ -3090,6 +3094,8 @@ function featureRunSamples(
   runStore: WorkflowStore,
   history: PastRun[],
   source: "project" | "shared" = "project",
+  /** Names the store, so initiative ids of two stores stay apart. */
+  scope = "",
 ): FeatureRunSample[] {
   const runs = new Map(history.map((run) => [run.runId, run]));
   return initiatives.list().flatMap((row) => {
@@ -3111,6 +3117,8 @@ function featureRunSamples(
       return [
         {
           runId: run.runId,
+          // Measures how far a feature lands above the floor the other initiatives set (#1982).
+          initiativeId: `${scope}#${row.id}`,
           workflowId: featureWorkflowId(settings, feature),
           size: feature.size ?? "medium",
           tokens: run.tokens,
@@ -3149,7 +3157,7 @@ function sharedFeatureRunSamples(paths: string[], history: PastRun[]): FeatureRu
     try {
       if (existsSync(path)) {
         store = new WorkflowStore(dirname(parent), true);
-        samples = featureRunSamples(new InitiativeStore(store), store, history, "shared");
+        samples = featureRunSamples(new InitiativeStore(store), store, history, "shared", path);
       }
     } catch {
       samples = [];
