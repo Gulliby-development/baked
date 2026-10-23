@@ -1,5 +1,6 @@
 import type { JSONValue } from "@ai-sdk/provider";
 import type { ModelMessage } from "@ai-sdk/provider-utils";
+import type { AnswerEvidence } from "../llm/provider-answer.js";
 import {
   type BrokenFile,
   missingToolClaims,
@@ -285,6 +286,11 @@ export interface AttemptUsageRecord {
    * request and the response (about 4 bytes a token); absent when the provider reported usage.
    */
   estimatedUsage?: { inputTokens: number; outputTokens: number };
+  /**
+   * The attempt's last turn finished with no usable answer (#1957): what its stream carried and
+   * the size of the prompt it was sent, so the failure can be told apart without a rebuild.
+   */
+  lostAnswer?: AnswerEvidence & { message: string; promptBytes: number };
 }
 
 /** Calls of one tool answered by one backend (lsp with its server, tree-sitter, regex, repo-map). */

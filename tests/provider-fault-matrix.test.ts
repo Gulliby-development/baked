@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { generateText, jsonSchema, tool } from "ai";
 import { FirstByteHistory } from "../src/core/llm/first-byte-history.js";
+import { ProviderAnswerError } from "../src/core/llm/provider-answer.js";
 import {
   ADAPTIVE_FIRST_BYTE_FLOOR_MS,
   adaptiveFirstByteMs,
@@ -14,7 +15,7 @@ import {
 } from "../src/core/llm/provider-health.js";
 import { isStoreError } from "../src/core/workflows/host-error.js";
 import { accountRefusal, isRateLimit, isTransient, retryDelay } from "../src/core/workflows/retry.js";
-import { isStall } from "../src/core/workflows/stall-ladder.js";
+import { isStall, recoverableCall } from "../src/core/workflows/stall-ladder.js";
 import { WorkflowStore } from "../src/core/workflows/store.js";
 import { awakeClock } from "./helpers/awake-clock.js";
 import {
@@ -48,12 +49,20 @@ async function start(provider: FaultProvider, fault: Fault, shape: { stage: stri
   const faulty = faultyModel(provider, fault);
   cleanups.push(() => { faulty.restore(); clock.restore(); });
   let settled = false;
+  // What the call charged to the active deadline: true for a response, false for an outage.
+  let charged: boolean | undefined;
   // With a history, the call takes the workflow executor's adaptive deadline (#1766).
   const adaptive = history
     ? { firstByteLimit: (ceilingMs: number, c: { stage?: string | undefined; effort?: string | undefined }) => adaptiveFirstByteMs(ceilingMs, history.healthy(`${provider}/model`, c.stage, c.effort)) }
     : {};
   const pending = generateText({
-    model: withProviderHealth(faulty.model, `${provider}/model`, { stage: shape.stage, ...adaptive }),
+    model: withProviderHealth(faulty.model, `${provider}/model`, {
+      stage: shape.stage,
+      ...adaptive,
+      pending: () => (responded) => {
+        charged = responded;
+      },
+    }),
     prompt: "Plan the change",
     maxRetries: 0,
     tools: { read: tool({ description: "Read a file", inputSchema: jsonSchema({ type: "object", properties: { path: { type: "string" } }, required: ["path"] }) }) },
@@ -64,6 +73,7 @@ async function start(provider: FaultProvider, fault: Fault, shape: { stage: stri
   return {
     advance: async (ms: number) => { clock.advance(ms); await Bun.sleep(5); },
     settled: () => settled,
+    charged: () => charged,
     outcome: async () => ({ ...(await pending), calls: faulty.calls() }),
   };
 }
@@ -71,7 +81,7 @@ async function start(provider: FaultProvider, fault: Fault, shape: { stage: stri
 async function call(provider: FaultProvider, fault: Fault, advanceMs: number, shape?: { stage: string; effort: string }) {
   const running = await start(provider, fault, shape);
   await running.advance(advanceMs);
-  return running.outcome();
+  return { ...(await running.outcome()), charged: running.charged() };
 }
 
 describe.each(FAULT_PROVIDERS.map((provider) => [provider]))("provider fault matrix: %s", (provider) => {
@@ -167,6 +177,26 @@ describe.each(FAULT_PROVIDERS.map((provider) => [provider]))("provider fault mat
     expect(error).toBeUndefined();
     expect(result?.content.some((part) => part.type === "tool-error")).toBe(true);
     expect(result?.toolResults).toEqual([]);
+  });
+
+  test("a billed turn with no usable answer climbs the recovery ladder, not the provider wait (#1957)", async () => {
+    const { result, error, charged } = await call(provider, { kind: "lost-answer" }, 1_000);
+    if (!CLI.has(provider)) {
+      // An HTTP adapter ends it as an empty finish: the model's answer, corrected in the attempt.
+      expect(error).toBeUndefined();
+      expect(result?.text).toBe("");
+      return;
+    }
+    expect(result).toBeUndefined();
+    expect(error).toBeInstanceOf(ProviderAnswerError);
+    expect(recoverableCall(error)).toBe("lost-answer");
+    expect(error).not.toBeInstanceOf(ProviderUnreachableError);
+    expect(isTransient(error)).toBe(false);
+    // The turn was billed: its usage travels with the error to the attempt.
+    expect((error as ProviderAnswerError).usage).toEqual({ inputTokens: 2, outputTokens: 3 });
+    // Nothing reached BAKED before the answer was lost, so the call's time stays off the active
+    // deadline, as an outage's does; a refused call is still charged (R62: 966 s of six failed calls).
+    expect(charged).toBe(false);
   });
 
   test("an empty answer is the model's, not an outage", async () => {

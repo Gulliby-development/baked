@@ -72,7 +72,12 @@ export type Fault =
   /** Calls a tool with arguments that are not JSON. */
   | { kind: "malformed-tool" }
   /** Finishes without any content. */
-  | { kind: "empty" };
+  | { kind: "empty" }
+  /**
+   * Finishes and is billed with no answer the adapter can use (#1957): a CLI's `tool-calls` finish
+   * with no tool call. HTTP providers end the same turn as an empty finish.
+   */
+  | { kind: "lost-answer" };
 
 /** Providers whose reasoning reaches the stream as it thinks, so a slow answer is not silent. */
 const STREAMS_REASONING = new Set<FaultProvider>(["anthropic"]);
@@ -139,7 +144,7 @@ function answer(
       },
       body: [
         { event: "content_block_stop", data: { type: "content_block_stop", index: 0 } },
-        ...(fault.kind === "empty"
+        ...((fault.kind === "empty" || fault.kind === "lost-answer")
           ? []
           : tool
             ? [
@@ -163,7 +168,7 @@ function answer(
               ]),
       ],
       tail: [
-        ...(fault.kind === "empty" || tool
+        ...((fault.kind === "empty" || fault.kind === "lost-answer") || tool
           ? []
           : [{ event: "content_block_stop", data: { type: "content_block_stop", index: 1 } }]),
         {
@@ -188,7 +193,7 @@ function answer(
       head: [{ data: { type: "response.created", response: { ...response, status: "in_progress" } } }],
       thinking: null,
       body:
-        fault.kind === "empty"
+        (fault.kind === "empty" || fault.kind === "lost-answer")
           ? []
           : [
               { data: { type: "response.output_item.added", output_index: 0, item } },
@@ -213,7 +218,7 @@ function answer(
                   },
             ],
       tail: [
-        ...(fault.kind === "empty"
+        ...((fault.kind === "empty" || fault.kind === "lost-answer")
           ? []
           : [
               {
@@ -262,7 +267,7 @@ function answer(
     head: [chunk({ role: "assistant", content: "" }, null)],
     thinking: null,
     body:
-      fault.kind === "empty"
+      (fault.kind === "empty" || fault.kind === "lost-answer")
         ? []
         : [
             tool
@@ -393,9 +398,9 @@ function cliAnswer(provider: "codex" | "claude-code", fault: Fault) {
   const toolCalls =
     fault.kind === "malformed-tool" ? [{ toolName: "read", inputJson: '{"path": tests/' }] : [];
   const reply = {
-    text: fault.kind === "empty" || toolCalls.length ? "" : "OK",
+    text: fault.kind === "empty" || fault.kind === "lost-answer" || toolCalls.length ? "" : "OK",
     toolCalls,
-    finishReason: toolCalls.length ? "tool-calls" : "stop",
+    finishReason: toolCalls.length || fault.kind === "lost-answer" ? "tool-calls" : "stop",
   };
   return provider === "codex"
     ? { text: JSON.stringify(reply), usage: { inputTokens: 2, outputTokens: 3, totalTokens: 5 } }

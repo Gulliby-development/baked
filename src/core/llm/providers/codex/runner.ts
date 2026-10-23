@@ -15,6 +15,12 @@ import type {
 } from "@ai-sdk/provider";
 import { getCwd } from "../../../cwd.js";
 import { trackProcess } from "../../../process-tracker.js";
+import {
+  type AnswerUsage,
+  answerUsage,
+  lostAnswer,
+  ProviderAnswerError,
+} from "../../provider-answer.js";
 import { providerCallDetail, providerResponded } from "../../provider-health.js";
 import { cliReasoningEffort } from "../cli-effort.js";
 import { jsonLines, UnparsedLines } from "../json-lines.js";
@@ -315,7 +321,9 @@ export function parseCodexResponse(text: string): ParsedCodexResponse {
       });
     }
     if (content.length === 0 || content.every((part) => part.type === "reasoning")) {
-      throw new Error("Codex returned finishReason=tool-calls without any tool calls");
+      throw new ProviderAnswerError(
+        "Codex returned finishReason=tool-calls without any tool calls",
+      );
     }
     return { content, finishReason: "tool-calls" };
   }
@@ -526,14 +534,23 @@ export async function runCodexProcess(
   };
   let turnFailure: string | null = null;
   let streamFailure: string | null = null;
+  let turnUsage: AnswerUsage | undefined;
   const webSearches: string[] = [];
+  // What the stream carried, for the error of a turn that ends with no answer (#1957).
+  const seen = new Set<string>();
+  let lineCount = 0;
+  let bytes = 0;
 
   try {
     for await (const line of lines) {
+      lineCount++;
+      bytes += Buffer.byteLength(line) + 1;
       const trimmed = line.trim();
       if (!trimmed.startsWith("{")) continue;
       const event = unparsed.parse<Record<string, unknown>>(trimmed);
       if (!event) continue;
+      const itemType = (event.item as { type?: unknown } | undefined)?.type;
+      seen.add(typeof itemType === "string" ? `${event.type}:${itemType}` : String(event.type));
 
       if (event.type === "item.completed" || event.type === "item.updated") {
         const item = event.item as { type?: string } | undefined;
@@ -560,6 +577,7 @@ export async function runCodexProcess(
                 : undefined,
             cachedInputTokens: rawUsage.cached_input_tokens,
           };
+          turnUsage = { inputTokens: rawUsage.input_tokens, outputTokens: rawUsage.output_tokens };
         }
       } else if (event.type === "turn.failed") {
         const error = event.error as { message?: string } | undefined;
@@ -579,7 +597,20 @@ export async function runCodexProcess(
       throw new Error(`Codex exec exited with ${detail}${stderr ? `: ${stderr}` : ""}`);
     }
     if (!finalText) {
-      throw new Error(`Codex exec returned no final agent message${unparsed.note()}`);
+      // The turn completed and was billed: the answer was lost, not the provider (#1957).
+      throw new ProviderAnswerError(
+        `Codex exec returned no final agent message${unparsed.note()}`,
+        {
+          ...(turnUsage ? { usage: turnUsage } : {}),
+          evidence: {
+            seen: [...seen],
+            lines: lineCount,
+            bytes,
+            unparsed: unparsed.count,
+            samples: unparsed.samples,
+          },
+        },
+      );
     }
     return { text: finalText, usage, ...(webSearches.length ? { webSearches } : {}) };
   } finally {
@@ -617,7 +648,12 @@ export function createCodexLanguageModel(
         ...(codexWebSearch(options.providerOptions) ? { webSearch: true } : {}),
       });
 
-      const parsed = parseCodexResponse(result.text);
+      let parsed: ParsedCodexResponse;
+      try {
+        parsed = parseCodexResponse(result.text);
+      } catch (error) {
+        throw lostAnswer(error)?.withUsage(answerUsage(result.usage)) ?? error;
+      }
       return {
         content: parsed.content,
         finishReason: parsed.finishReason,
