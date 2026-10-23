@@ -155,7 +155,12 @@ import {
   SPEC_ROWS_NOTE,
   withoutRowsWhenOff,
 } from "./acceptance-rows.js";
-import { INLINE_HARNESS, type InlineRowFile, withInlineRows } from "./acceptance-rows-inline.js";
+import {
+  INLINE_HARNESS,
+  type InlineRowFile,
+  layoutFree,
+  withInlineRows,
+} from "./acceptance-rows-inline.js";
 import {
   type ReplayResult,
   type RowReplay,
@@ -4924,12 +4929,19 @@ export class WorkflowScheduler {
         }
         const absolute = workspacePath(root, file.path);
         if (fileHash(absolute) === hashBytes(file.content)) continue;
-        // Generated files are create-only. A later edit is never silently replaced on resume.
-        if (fileHash(absolute) !== null)
+        // Generated files are create-only. A later edit is never silently replaced on resume, but a
+        // formatter gate's fixer may have laid the file out again, and that layout is kept (#1942).
+        if (fileHash(absolute) !== null) {
+          if (
+            layoutFree(readFileSync(absolute, "utf8"), file.path) ===
+            layoutFree(file.content, file.path)
+          )
+            continue;
           throw new WorkflowFault(
             "INPUT_CHANGED",
-            `Host-written acceptance file changed: ${file.path}`,
+            `Host-written acceptance file changed: ${file.path}. Delete it and resume with \`baked workflow resume ${runId} --accept-workspace\` to have the host write it again, or change the rows: revise the run (\`baked workflow revise ${runId}\`) or replan the initiative feature (\`baked workflow initiative replan ID --feature F\`).`,
           );
+        }
         const before = this.store.transaction(() => capturePreImage(this.store, runId, absolute));
         this.journal.publish(
           runId,

@@ -228,3 +228,88 @@ describe("scenario: a formatter gate's fixer lays the block out again, in every 
     expect(await rowFileProblems(temp(tampered), files)).not.toEqual([]);
   });
 });
+
+// #1948: Prettier 3 with semi false and printWidth 40 (recorded output, so no toolchain is needed).
+// The block once typed its rows with a type literal whose member separators Prettier dropped.
+const PRETTIER_NARROW =
+  "// BEGIN acceptance rows: host-written from the audited spec table. Edit acceptanceActual, not this block.\nimport {\n  expect as acceptanceExpect,\n  test as acceptanceTest,\n} from \"bun:test\"\nconst acceptanceRows: Record<\n  string,\n  unknown\n>[] = JSON.parse(\n  '[{\"id\":\"AC-003:2\",\"input\":\"macosx_11_0_arm64\",\"expected\":false}]',\n)\nacceptanceTest.each(acceptanceRows)(\n  \"$id\",\n  async (row) => {\n    acceptanceExpect(\n      await acceptanceActual(row.input),\n    ).toEqual(row.expected)\n  },\n)\n// END acceptance rows\n";
+
+test("a narrow semicolon-free Prettier layout of the inline bun block is kept (#1948)", () => {
+  const file = inlineRowFile({ mode: "inline", framework: "bun", test: "tests/platforms.test.ts" }, rows.slice(1));
+  const formatted = `function acceptanceActual(\n  input: unknown,\n): unknown {\n  return input\n}\n\n${PRETTIER_NARROW}`;
+  expect(hasInlineRows(formatted, file)).toBe(true);
+  expect(withInlineRows(formatted, file)).toBe(formatted);
+  const tampered = formatted.replace('"expected":false', '"expected":true');
+  expect(hasInlineRows(tampered, file)).toBe(false);
+});
+
+/** A tool if it runs here: the fixed-point checks below need no toolchain to pass in CI. */
+const tool = (command: string, ...args: string[]) => (spawnSync(command, args).status === 0 ? command : null);
+const BIN = join(import.meta.dir, "..", "node_modules", ".bin");
+const biome = tool(join(BIN, "biome"), "--version");
+const tsc = tool(join(BIN, "tsc"), "--version");
+const rustfmt = tool("rustfmt", "--version");
+const gofmt = tool("gofmt", "-l", import.meta.dir);
+
+function fileMode(rowTest: Record<string, string>) {
+  const task = { id: "T003", rows: ["AC-003"], rowTest } as never;
+  const files = rowFiles(task, { tasks: [{ rows: ["AC-003"], rowTest }], rows } as never);
+  return Object.fromEntries(files.map((file) => [file.path, file.content])) as Record<string, string>;
+}
+const run = (cwd: string, command: string, ...args: string[]) => {
+  const result = spawnSync(command, args, { cwd, encoding: "utf8" });
+  return `${result.status} ${result.stdout}${result.stderr}`.trim();
+};
+
+// #1942 (R61 md-site): each file-mode test is a fixed point of its language's formatter, linter and
+// typechecker, so no fixer rewrites a file the host owns.
+describe("scenario: the host's file-mode rows tests pass their language's gates as written (#1942)", () => {
+  test("bun: one relative import, and the harness has no file extension", () => {
+    const files = fileMode({ framework: "bun", harness: "tests/support/links.rows.ts", test: "tests/links.rows.test.ts", data: "tests/links.rows.json" });
+    const text = files["tests/links.rows.test.ts"] ?? "";
+    expect(text.match(/^import .* from "\.\.?\//gm)).toHaveLength(1);
+    expect(text).toContain('await import("./support/links.rows")');
+    expect(text).not.toMatch(/import\(".*\.ts"\)/);
+  });
+
+  test.skipIf(!biome || !tsc)("bun: biome check and tsc --noEmit print nothing", () => {
+    const files = fileMode({ framework: "bun", harness: "tests/support/links.rows.ts", test: "tests/links.rows.test.ts", data: "tests/links.rows.json" });
+    const root = temp({
+      ...files,
+      "tests/support/links.rows.ts": "export const actual = async (input: unknown): Promise<unknown> => input;\n",
+      "biome.json": '{\n  "formatter": { "indentStyle": "space", "lineWidth": 100 }\n}\n',
+      "tsconfig.json": `${JSON.stringify({ compilerOptions: { target: "ESNext", module: "Preserve", moduleResolution: "bundler", strict: true, noEmit: true, skipLibCheck: true, types: ["bun-types"], typeRoots: [join(import.meta.dir, "..", "node_modules")] }, include: ["tests"] })}\n`,
+    });
+    expect(run(root, biome ?? "", "check", "tests/links.rows.test.ts")).toStartWith("0 ");
+    expect(run(root, tsc ?? "", "-p", ".")).toBe("0");
+  });
+
+  test.skipIf(!rustfmt)("rust: rustfmt --check prints nothing", () => {
+    const files = fileMode({ framework: "rust", harness: "tests/support/platform_tags_harness.rs", test: "tests/platform_tags_rows.rs", data: "tests/data/a_long_directory_for_acceptance_rows/platform_tags_rows.json" });
+    const root = temp({ ...files, "tests/support/platform_tags_harness.rs": "pub fn actual(v: serde_json::Value) -> serde_json::Value {\n    v\n}\n" });
+    expect(run(root, rustfmt ?? "", "--check", "--edition", "2021", "tests/platform_tags_rows.rs")).toBe("0");
+  });
+
+  test.skipIf(!gofmt)("go: gofmt -l prints nothing", () => {
+    const files = fileMode({ framework: "go", package: "platformtags", harness: "platform_tags_harness.go", test: "platform_tags_rows_test.go", data: "testdata/platform_tags_rows.json" });
+    expect(run(temp(files), gofmt ?? "", "-l", ".")).toBe("0");
+  });
+
+  test.skipIf(!ruff)("pytest: ruff check and ruff format --check print nothing", () => {
+    const files = fileMode({ framework: "pytest", harness: "tests/support/platform_tags_harness.py", test: "tests/test_platform_tags_rows.py", data: "tests/data/platform_tags_rows.json" });
+    const root = temp(files);
+    expect(run(root, "ruff", "check", "--isolated", "--select", RULES, ".")).toStartWith("0 ");
+    expect(run(root, "ruff", "format", "--isolated", "--check", ".")).toStartWith("0 ");
+  });
+
+  test("junit and xunit: no code line over 100 columns, only the rows' own literals", () => {
+    for (const rowTest of [
+      { framework: "junit", package: "com.example.platformtags", harness: "src/test/java/com/example/platformtags/PlatformTagsHarness.java", test: "src/test/java/com/example/platformtags/PlatformTagsRowsTest.java", data: "src/test/resources/platform_tags_rows.json" },
+      { framework: "xunit", package: "PlatformTags.Tests", harness: "tests/PlatformTagsHarness.cs", test: "tests/PlatformTagsRowsTests.cs", data: "tests/data/platform_tags_rows.json" },
+    ]) {
+      const text = fileMode(rowTest)[rowTest.test] ?? "";
+      const long = text.split("\n").filter((line) => line.length > 100 && !/^\s+row\(|const string Rows/.test(line));
+      expect({ framework: rowTest.framework, long }).toEqual({ framework: rowTest.framework, long: [] });
+    }
+  });
+});
