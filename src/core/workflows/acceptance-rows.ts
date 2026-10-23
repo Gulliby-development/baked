@@ -534,7 +534,8 @@ export async function rowFileProblems(
             ];
       // A formatter gate's fixer may lay a host file out again (#1927).
       return text !== null &&
-        (text === file.content || layoutFree(text) === layoutFree(file.content))
+        (text === file.content ||
+          layoutFree(text, file.path) === layoutFree(file.content, file.path))
         ? []
         : [
             `Host-written acceptance file ${file.path} is missing or changed; restore it and edit only the harness.`,

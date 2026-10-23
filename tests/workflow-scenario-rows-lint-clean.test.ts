@@ -149,6 +149,20 @@ const LAYOUTS: { name: string; test: InlineRowTest; harness: string; format: (te
     format: (text) => text.replace('from "bun:test"', "from 'bun:test'").replace(/\(row\.input\)\)\.toEqual\(row\.expected\)/, "(row.input)).toEqual(\n    row.expected,\n  )"),
   },
   {
+    // What Biome wrote with semicolons "asNeeded" and single quotes (#1936).
+    name: "bun, Biome asNeeded or Prettier semi false: no semicolons",
+    test: { mode: "inline", framework: "bun", test: "tests/platforms.test.ts" },
+    harness: "function acceptanceActual(input: unknown): unknown {\n  for (;;) return input;\n}\n",
+    format: (text) => text.replace(/;$/gm, "").replaceAll('"bun:test"', "'bun:test'"),
+  },
+  {
+    // Prettier's semi false puts a semicolon before a line that opens with a bracket.
+    name: "bun, Prettier semi false: a leading semicolon",
+    test: { mode: "inline", framework: "bun", test: "tests/platforms.test.ts" },
+    harness: "function acceptanceActual(input: unknown): unknown {\n  return input;\n}\n",
+    format: (text) => text.replace(/;$/gm, "").replace("acceptanceTest.each(", ";acceptanceTest.each("),
+  },
+  {
     name: "xunit, dotnet format: indentation with tabs",
     test: { mode: "inline", framework: "xunit", package: "Wheeltags.Tests", test: "tests/PlatformsTests.cs" },
     harness: "namespace Wheeltags.Tests;\n\npublic class PlatformsTests\n{\n    public static object? AcceptanceActual(System.Text.Json.Nodes.JsonNode? input) => input;\n}\n",
@@ -175,6 +189,27 @@ describe("scenario: a formatter gate's fixer lays the block out again, in every 
       expect(withInlineRows(tampered, file)).toContain("macosx_11_0_arm64");
     });
   }
+
+  test("a semicolon inside a for header or a string still counts, and Python keeps its semicolons (#1936)", () => {
+    expect(layoutFree("for (;;) x;\ny;", "a.ts")).toBe(layoutFree("for (;;) x\ny", "a.ts"));
+    expect(layoutFree("for (;;) x", "a.ts")).not.toBe(layoutFree("for () x", "a.ts"));
+    expect(layoutFree('s = "a;"\n', "a.ts")).not.toBe(layoutFree('s = "a"\n', "a.ts"));
+    expect(layoutFree("x = 1;\n", "a.rs")).not.toBe(layoutFree("x = 1\n", "a.rs"));
+  });
+
+  test("the file mode's check accepts a semicolon-free layout of the bun test (#1936)", async () => {
+    const fileTest = { framework: "bun" as const, harness: "tests/harness.ts", test: "tests/rows.test.ts", data: "tests/rows.json" };
+    const task = { id: "T003", rows: ["AC-003"], rowTest: fileTest } as never;
+    const files = rowFiles(task, { tasks: [{ rows: ["AC-003"], rowTest: fileTest }], rows } as never);
+    const content = (path: string) => files.find((file) => file.path === path)?.content ?? "";
+    const formatted = {
+      [fileTest.data]: content(fileTest.data),
+      [fileTest.test]: content(fileTest.test).replace(/;$/gm, ""),
+      [fileTest.harness]: "export const actual = (input: unknown) => input\n",
+    };
+    expect(formatted[fileTest.test]).not.toBe(content(fileTest.test));
+    expect(await rowFileProblems(temp(formatted), files)).toEqual([]);
+  });
 
   test("the file mode's check accepts a formatter's layout of a host file and refuses a row change", async () => {
     const fileTest = { framework: "bun" as const, harness: "tests/harness.ts", test: "tests/rows.test.ts", data: "tests/rows.json" };

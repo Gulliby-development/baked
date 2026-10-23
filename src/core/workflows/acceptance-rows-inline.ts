@@ -409,6 +409,20 @@ function span(text: string, file: string): { from: number; to: number } | null {
 
 /** Whitespace and a closing bracket, read at a set position. */
 const CLOSER = /\s*[)\]}]/y;
+/** Files whose statements end at a line without a semicolon. */
+const OPTIONAL_SEMICOLONS = /\.[cm]?[jt]sx?$/;
+/**
+ * Whether the semicolon at `at` ends or starts its line (spaces and tabs aside) or comes before a
+ * closing brace.
+ */
+function optionalSemicolon(text: string, at: number): boolean {
+  let before = at - 1;
+  while (text[before] === " " || text[before] === "\t") before--;
+  if (before < 0 || text[before] === "\n") return true;
+  let after = at + 1;
+  while (text[after] === " " || text[after] === "\t" || text[after] === "\r") after++;
+  return after >= text.length || text[after] === "\n" || text[after] === "}";
+}
 
 /**
  * The text as a formatter cannot change it: whitespace and a trailing comma before a closing
@@ -416,8 +430,12 @@ const CLOSER = /\s*[)\]}]/y;
  * quote style reads the same. ruff, black, gofmt, rustfmt, prettier, biome and dotnet format
  * change only these in a block; a formatter gate's fixer must not count as editing the rows
  * (#1927). A quote with no closing one on its line (an apostrophe in a comment) is plain text.
+ * For a JavaScript or TypeScript `path`, a semicolon that ends or starts a line, or comes before a
+ * closing brace, is dropped too: Prettier's `semi: false` and Biome's `asNeeded` remove it, and
+ * the leading `;` they add before a line opening with a bracket reads the same (#1936).
  */
-export function layoutFree(text: string): string {
+export function layoutFree(text: string, path = ""): string {
+  const optionalSemicolons = OPTIONAL_SEMICOLONS.test(path);
   let out = "";
   for (let i = 0; i < text.length; i++) {
     const ch = text[i] ?? "";
@@ -440,20 +458,21 @@ export function layoutFree(text: string): string {
     if (/\s/.test(ch)) continue;
     CLOSER.lastIndex = i + 1;
     if (ch === "," && CLOSER.test(text)) continue;
+    if (ch === ";" && optionalSemicolons && optionalSemicolon(text, i)) continue;
     out += ch;
   }
   return out;
 }
 
 /** Whether `text` holds the block of `file` as it is or as a formatter laid it out. */
-function sameBlock(text: string, file: string): boolean {
+function sameBlock(text: string, file: string, path: string): boolean {
   const lines = blockLines(text, file);
   if (!lines) return false;
   const found = text
     .split("\n")
     .slice(lines.from, lines.to + 1)
     .join("\n");
-  return layoutFree(found) === layoutFree(file);
+  return layoutFree(found, path) === layoutFree(file, path);
 }
 
 /**
@@ -620,8 +639,8 @@ export function withInlineRows(existing: string | null, file: InlineRowFile): st
   // would fail the formatter gate again (#1927).
   if (
     existing !== null &&
-    sameBlock(existing, file.tail) &&
-    (!file.head || sameBlock(existing, file.head)) &&
+    sameBlock(existing, file.tail, file.path) &&
+    (!file.head || sameBlock(existing, file.head, file.path)) &&
     (!file.nest || insideType(existing, file.tail, file.nest.className))
   )
     return existing;
