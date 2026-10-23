@@ -359,6 +359,8 @@ export interface QualityConfig {
   mutationBudgetMs?: number;
   /** `built-in` keeps the mutation gate on its own operators when an ecosystem tool is installed; `auto` (default) uses the tool. */
   mutationEngine?: "auto" | "built-in";
+  /** Run the tests on the code before the change (baseline replay) and keep which fail as evidence: `on` or `off` (default). */
+  baselineReplay?: "off" | "on";
   /** Property-based tests from marked criteria: `preset` or absent follows the workflow preset. */
   propertyTests?: "preset" | "auto" | "off";
 }

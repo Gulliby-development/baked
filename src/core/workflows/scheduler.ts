@@ -111,6 +111,7 @@ import {
   CHECK_BASELINE_PATH,
   commandKey,
   diagnosticCount,
+  failedTests,
   failureSignature,
   outputCounts,
   TEST_FILE,
@@ -354,6 +355,14 @@ import {
 } from "./plan-consistency.js";
 import { ProcessScope } from "./process-scope.js";
 import { type LearnedRule, rulesFor } from "./project-memory.js";
+import {
+  BASELINE_REPLAY_NOTE,
+  type BaselineReplay,
+  type BaselineReplayCheck,
+  QUALITY_BASELINE_REPLAY,
+  REPLAY_OUTPUT_CHARS,
+  replayEdits,
+} from "./quality/baseline-replay.js";
 import {
   checkDependencies,
   dependencyClaim,
@@ -681,6 +690,8 @@ const TRACE_RUN_BLOCKS = process.env.BAKED_TRACE_RUN_BLOCKS === "1";
 type Severity = Review["findings"][number]["severity"];
 /** The task worktree an advisory mutation gate runs in beside the review (#1147). */
 const MUTATION_COPY = "quality-mutation";
+/** The task worktree the baseline replay (#1945) runs in. */
+const BASELINE_REPLAY_COPY = "quality-baseline-replay";
 const ALL_SEVERITIES: readonly Severity[] = ["critical", "high", "medium", "low"];
 const SERIOUS: readonly Severity[] = ["critical", "high"];
 
@@ -5580,6 +5591,17 @@ export class WorkflowScheduler {
               runRoot(this.store.workspace, state),
             )
           : null;
+    // With the baseline replay on, a criterion about the old code is one the run can check (#1945).
+    const baselineReplay =
+      policy.baselineReplay === "on"
+        ? profile.output === "spec"
+          ? BASELINE_REPLAY_NOTE.spec
+          : profile.output === "analysis"
+            ? BASELINE_REPLAY_NOTE.analysis
+            : profile.output === "review" || profile.output === "convergence"
+              ? BASELINE_REPLAY_NOTE.review
+              : null
+        : null;
     const specSize =
       profile.output === "spec" ? specSizeNote(state.requestText || state.prompt) : null;
     // Under assume the authors settle questions with defaults in their first submission instead of
@@ -5604,6 +5626,7 @@ export class WorkflowScheduler {
         ...(state.initiativeBounds ? { initiativeBounds: state.initiativeBounds } : {}),
         ...(propertyNote ? { propertyTests: propertyNote } : {}),
         ...(crossPlatform ? { crossPlatform } : {}),
+        ...(baselineReplay ? { baselineReplay } : {}),
         ...(specSize ? { specSize } : {}),
         ...(assumeDefaults ? { assumeDefaults } : {}),
         ...(hardening ? { hardening } : {}),
@@ -11971,7 +11994,130 @@ ${note}`;
     // Mutants run the tests many times; code that is about to change again is not worth it.
     if (!blocking.length)
       blocking.push(...(await this.mutationFindings(runId, stepId, state, policy, signal)));
+    // Evidence only, so it never blocks; like the mutants, not worth it on code about to change.
+    if (!blocking.length) await this.baselineReplay(runId, state, policy, signal);
     return blocking.slice(0, 100);
+  }
+  /**
+   * The baseline replay (#1945, `baselineReplay: "on"`): the required test checks run in a copy of
+   * the delivered tree whose changed non-test files are put back as they were before the run, and
+   * the result is review evidence (`quality/baseline-replay.json`), so a criterion that the new
+   * tests fail on the old code is settled by the run. Once per snapshot; a copy that cannot be
+   * made is recorded as a note, never a failure.
+   */
+  private async baselineReplay(
+    runId: string,
+    state: RuntimeState,
+    policy: RunPolicy,
+    signal: AbortSignal,
+  ): Promise<void> {
+    if (policy.baselineReplay !== "on" || !state.snapshotId) return;
+    const snapshotId = state.snapshotId;
+    const prior = this.store.latestArtifact(runId, QUALITY_BASELINE_REPLAY);
+    if (
+      prior &&
+      (JSON.parse(this.store.readArtifact(runId, prior.id)) as BaselineReplay).snapshotId ===
+        snapshotId
+    )
+      return;
+    const changed = await this.changedFiles(runId, state, (path) => !isTestCodePath(path));
+    const edits = replayEdits(changed);
+    const tests = policy.checks.filter((check) => check.required && isTestCheck(check));
+    const record = (checks: BaselineReplayCheck[], note?: string): void =>
+      this.store.transaction(() => {
+        const value: BaselineReplay = {
+          schemaVersion: 1,
+          snapshotId,
+          reverted: edits.revert.map((file) => file.path),
+          removed: edits.remove,
+          unknown: edits.unknown,
+          checks,
+          ...(note ? { note } : {}),
+        };
+        const artifact = this.store.artifact(
+          runId,
+          "quality",
+          QUALITY_BASELINE_REPLAY,
+          canonical(value),
+        );
+        this.store.addEvidence(runId, "review", snapshotId, artifact.id);
+      });
+    if (!tests.length) return record([], "no required test check in the policy");
+    if (!edits.revert.length && !edits.remove.length)
+      return record(
+        [],
+        "the run changed no file other than tests, so the baseline is the delivered tree",
+      );
+    const root = runRoot(this.store.workspace, state);
+    // The copy checks out the whole repository, so it stands in for the run only at its top.
+    const top = await gitWorktreePaths(root);
+    if (!top || realpathSync.native(top.top) !== realpathSync.native(root))
+      return record(
+        [],
+        "no copy of the run could be made (the run is not at its repository's top)",
+      );
+    let path: string;
+    try {
+      const base = await runContentCommit(this.store, runId, {
+        path: relative(this.store.workspace, root),
+      });
+      path = await createTaskWorktree(this.store, runId, BASELINE_REPLAY_COPY, base);
+    } catch (error) {
+      return record([], `no copy of the run could be made: ${String(error).slice(0, 300)}`);
+    }
+    const copy = join(this.store.workspace, path);
+    const scope = new ProcessScope();
+    try {
+      for (const name of [".venv", "venv", "node_modules"]) {
+        const source = join(root, name);
+        if (existsSync(source) && !existsSync(join(copy, name)))
+          try {
+            symlinkSync(
+              source,
+              join(copy, name),
+              process.platform === "win32" ? "junction" : "dir",
+            );
+          } catch {
+            // Without the link the copy's tests may fail to start; the output says so.
+          }
+      }
+      for (const file of edits.revert) writeFileSync(workspacePath(copy, file.path), file.content);
+      for (const file of edits.remove) rmSync(workspacePath(copy, file), { force: true });
+      const checks: BaselineReplayCheck[] = [];
+      for (const check of tests) {
+        signal.throwIfAborted();
+        const outcome = await executeCheckCommand(
+          scope,
+          check.executable === "bun" ? process.execPath : check.executable,
+          check.args,
+          {
+            cwd: check.cwd === "." ? copy : workspacePath(copy, check.cwd),
+            env: buildCheckEnv(check),
+            timeoutMs: check.timeoutMs,
+            signal,
+            sandbox: runSandbox(policy, copy, { gitWrite: true }),
+          },
+        );
+        const failed = failedTests(outcome.output);
+        checks.push({
+          id: check.id,
+          status: outcome.timedOut ? "timeout" : outcome.exitCode === 0 ? "passed" : "failed",
+          failedTests: failed?.names ?? null,
+          runner: failed?.tool ?? null,
+          output: outcome.output.slice(-REPLAY_OUTPUT_CHARS),
+        });
+      }
+      record(checks);
+    } finally {
+      await scope.stop();
+      await removeTaskWorktree(this.store.workspace, path);
+      for (const folder of [dirname(copy), dirname(dirname(copy))])
+        try {
+          rmdirSync(folder);
+        } catch {
+          break;
+        }
+    }
   }
   /**
    * The property library of each language the project has, found once per run and kept in
