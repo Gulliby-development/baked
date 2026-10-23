@@ -109,6 +109,7 @@ function prepare(task: SuiteTask): string {
     ...(c.fix ? { fix: c.fix } : {}),
   }));
   const policy = {
+    ...task.policy,
     maxTotalTokens: maxTokens,
     clarification: "assume",
     autoApproval: {

@@ -61,6 +61,16 @@ describe("bench suite tasks", () => {
     expect(problems).toContain("origin must look like #N");
     expect(problems).toContain("seed/ is missing");
   });
+
+  test("a task may turn on an opt-in policy field and nothing else (#1981)", () => {
+    expect(validateTask("/nowhere/x", { policy: { chainRewrite: "on" } })).not.toContain("policy.chainRewrite is not an opt-in field the suite allows");
+    const problems = validateTask("/nowhere/x", { policy: { chainRewrite: "off", maxTotalTokens: 1 } });
+    expect(problems).toContain("policy.chainRewrite is not an opt-in field the suite allows");
+    expect(problems).toContain("policy.maxTotalTokens is not an opt-in field the suite allows");
+    expect(validateTask("/nowhere/x", { policy: [] })).toContain("policy must be an object");
+    // The nested-emphasis task measures finding chains with the rewrite on.
+    expect(tasks.find((t) => t.id === "ts-bun-emphasis")?.policy).toEqual({ chainRewrite: "on" });
+  });
 });
 
 describe("pass^k", () => {

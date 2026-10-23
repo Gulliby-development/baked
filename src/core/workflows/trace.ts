@@ -26,12 +26,18 @@ import {
   type BatteryRecord,
   type BatteryRule,
   batteryDecision,
+  batteryOf,
   CHAIN_BATTERY_DIR,
   CHAIN_KIND,
+  CHAIN_REWRITE_AT,
   CHAIN_TASKS_DIR,
+  type ChainFinding,
   type ChainRecord,
   type ChainRule,
+  chainFindings,
+  chainRecord,
   chainRewriteDecision,
+  findingChain,
 } from "./finding-chain.js";
 import type { initiativePriceSamples } from "./initiatives/forecast.js";
 import { InitiativeService, type ShareGateRecord, shareShortfall } from "./initiatives/service.js";
@@ -463,7 +469,6 @@ export function exportTrace(
                 `UPDATE ${table} SET ${column}=replace(${column}, ?, ?) WHERE ${column} LIKE ?`,
                 [from, to, `%${from}%`],
               );
-        if (present.has("findings")) db.exec("UPDATE findings SET body_json='{}'");
         if (present.has("initiatives"))
           for (const row of db.query("SELECT rowid AS r, title, prompt FROM initiatives").all() as {
             r: number;
@@ -621,6 +626,219 @@ export function replayFindingChains(
       return [];
     }
     return [];
+  });
+}
+
+/** One finding of a run, with the chain its corrective would get under a chain-rewrite policy. */
+export interface ChainEscalation {
+  findingId: string;
+  /** The corrective task the run gave the finding, or null. */
+  taskId: string | null;
+  /** The finding's `repeatOf` chain on its file and symbol, oldest first, as recorded so far. */
+  chain: string[];
+  decision: "rewrite" | "patch";
+  /** The findings whose repros a rewrite's battery holds, oldest first; empty for a patch. */
+  battery: string[];
+}
+
+export interface ChainEscalationReplay {
+  runId: string;
+  steps: ChainEscalation[];
+  /**
+   * Findings the trace holds no body for, so no step is decided on them and a chain that links to
+   * one ends there. Traces before #1981 kept no finding bodies; their review findings are read
+   * from the run state's last two reviews, and convergence findings are lost.
+   */
+  missingBodies: string[];
+}
+
+/** The review findings the run states of a trace still hold, by id (`reviews`, `priorReviews`). */
+function stateFindings(store: WorkflowStore, runId: string): Map<string, Record<string, unknown>> {
+  const found = new Map<string, Record<string, unknown>>();
+  const walk = (value: unknown, key: string): void => {
+    if (Array.isArray(value)) {
+      for (const item of value)
+        if (
+          key === "findings" &&
+          item &&
+          typeof item === "object" &&
+          typeof (item as { id?: unknown }).id === "string" &&
+          "claim" in item
+        )
+          found.set((item as { id: string }).id, item as Record<string, unknown>);
+        else walk(item, key);
+    } else if (value && typeof value === "object")
+      for (const [k, v] of Object.entries(value)) walk(v, k);
+  };
+  for (const artifact of store.artifacts(runId))
+    if (artifact.kind === "state")
+      try {
+        const state = JSON.parse(store.readArtifact(runId, artifact.id)) as Record<string, unknown>;
+        walk({ reviews: state.reviews, priorReviews: state.priorReviews }, "");
+      } catch {}
+  return found;
+}
+
+/**
+ * What a chain-rewrite policy (`policy`, `on` unless given) would have decided for each finding a
+ * run recorded (#1981): in recorded order, the finding's `repeatOf` chain among the findings
+ * recorded until then, the rewrite or patch its corrective gets, and the battery a rewrite holds.
+ * It reads finding bodies, so it answers for runs recorded before `chains/` records existed or
+ * with the policy off.
+ */
+export function replayChainEscalation(
+  store: WorkflowStore,
+  runId: string,
+  options: { policy?: "on" | "off"; decide?: ChainRule } = {},
+): ChainEscalationReplay {
+  const policy = options.policy ?? "on";
+  const decide = options.decide ?? chainRewriteDecision;
+  const rows = store.findings(runId);
+  const fromState = stateFindings(store, runId);
+  const missing = new Set<string>();
+  const extra: (Record<string, unknown> & { id: string })[] = [];
+  for (const row of rows) {
+    const body = JSON.parse(row.body_json) as Record<string, unknown>;
+    if (Object.keys(body).length) continue;
+    const recovered = fromState.get(row.id);
+    if (recovered) extra.push({ ...recovered, id: row.id });
+    else missing.add(row.id);
+  }
+  const all = chainFindings(store, runId, extra);
+  const steps: ChainEscalation[] = [];
+  const known = new Map<string, ChainFinding>();
+  for (const row of rows) {
+    const finding = all.get(row.id);
+    if (!finding || missing.has(row.id)) continue;
+    known.set(row.id, finding);
+    const chain = findingChain(known, finding);
+    const decision = decide(chain.length, policy);
+    const battery =
+      decision === "rewrite" && chain.length >= CHAIN_REWRITE_AT
+        ? batteryOf(
+            known,
+            chainRecord(row.repair_task_id ?? "", finding, chain, policy, decide),
+          ).map((f) => f.id)
+        : [];
+    steps.push({
+      findingId: row.id,
+      taskId: row.repair_task_id,
+      chain: chain.map((f) => f.id),
+      decision,
+      battery,
+    });
+  }
+  return { runId, steps, missingBodies: [...missing] };
+}
+
+/** One finding chain a run recorded under `chains/`, with what its correctives and battery did. */
+export interface ChainCost {
+  file: string | null;
+  symbol: string;
+  /** The longest chain a corrective's record names, and its finding ids. */
+  length: number;
+  findings: string[];
+  /** Each corrective of the chain's findings: the record's decision (a patch without one). */
+  tasks: {
+    taskId: string;
+    decision: "rewrite" | "patch";
+    tokens: number;
+    costUsd: number | null;
+  }[];
+  /** Battery runs that held a case of the chain, their cases and outcomes, and reopens. */
+  battery: {
+    runs: number;
+    cases: number;
+    reproduced: number;
+    refuted: number;
+    inconclusive: number;
+    reopened: number;
+  };
+  /** What the chain's correctives used: tokens, and dollars when every attempt has a price. */
+  tokens: number;
+  costUsd: number | null;
+}
+
+/**
+ * The finding chains a run recorded (`chains/tasks/`, `chains/battery/`, #1959) for the round
+ * report (#1981): per file and symbol, the chain length, each corrective's decision and cost, and
+ * the battery's results. Empty for a run without chain records.
+ */
+export function chainCosts(store: WorkflowStore, runId: string): ChainCost[] {
+  const records: ChainRecord[] = [];
+  const batteries: BatteryRecord[] = [];
+  for (const artifact of store.artifacts(runId)) {
+    if (artifact.kind !== CHAIN_KIND) continue;
+    try {
+      const record = JSON.parse(store.readArtifact(runId, artifact.id));
+      if (artifact.logical_path.startsWith(CHAIN_TASKS_DIR)) records.push(record as ChainRecord);
+      else if (artifact.logical_path.startsWith(CHAIN_BATTERY_DIR))
+        batteries.push(record as BatteryRecord);
+    } catch {}
+  }
+  if (!records.length) return [];
+  const repairs = new Map(store.findings(runId).map((f) => [f.id, f.repair_task_id]));
+  const stages = new Map(store.steps(runId).map((s) => [s.id, s.stage_id]));
+  const attempts = store.attempts(runId);
+  const usage = (taskId: string): { tokens: number; costUsd: number | null } => {
+    let tokens = 0;
+    let costUsd: number | null = 0;
+    for (const attempt of attempts) {
+      if (stages.get(attempt.step_id) !== `task-${taskId}`) continue;
+      tokens += attempt.used_tokens ?? 0;
+      const cost = attempt.model_id === null ? 0 : store.attemptCostUsd(runId, attempt.id);
+      costUsd = cost === null || costUsd === null ? null : costUsd + cost;
+    }
+    return { tokens, costUsd };
+  };
+  const key = (file: string | null, symbol: string) => `${file ?? ""}\0${symbol}`;
+  const groups = new Map<string, ChainRecord[]>();
+  for (const record of records)
+    groups.set(key(record.file, record.symbol), [
+      ...(groups.get(key(record.file, record.symbol)) ?? []),
+      record,
+    ]);
+  return [...groups.values()].map((group): ChainCost => {
+    const longest = group.reduce((a, b) => (b.length > a.length ? b : a));
+    const first = group[0] as ChainRecord;
+    const decisions = new Map<string, "rewrite" | "patch">();
+    for (const record of group)
+      for (const link of record.chain) {
+        const taskId = repairs.get(link.id);
+        if (taskId && !decisions.has(taskId)) decisions.set(taskId, "patch");
+      }
+    for (const record of group) decisions.set(record.taskId, record.decision);
+    const tasks = [...decisions].map(([taskId, decision]) => ({
+      taskId,
+      decision,
+      ...usage(taskId),
+    }));
+    const own = batteries
+      .map((b) => ({
+        decision: b.decision,
+        cases: b.cases.filter((c) => key(c.file, c.symbol) === key(first.file, first.symbol)),
+      }))
+      .filter((b) => b.cases.length);
+    const cases = own.flatMap((b) => b.cases);
+    return {
+      file: first.file,
+      symbol: first.symbol,
+      length: longest.length,
+      findings: longest.chain.map((f) => f.id),
+      tasks,
+      battery: {
+        runs: own.length,
+        cases: cases.length,
+        reproduced: cases.filter((c) => c.status === "reproduced").length,
+        refuted: cases.filter((c) => c.status === "refuted").length,
+        inconclusive: cases.filter((c) => c.status === "inconclusive").length,
+        reopened: own.filter((b) => b.decision === "reopen").length,
+      },
+      tokens: tasks.reduce((sum, t) => sum + t.tokens, 0),
+      costUsd: tasks.some((t) => t.costUsd === null)
+        ? null
+        : tasks.reduce((sum, t) => sum + (t.costUsd ?? 0), 0),
+    };
   });
 }
 

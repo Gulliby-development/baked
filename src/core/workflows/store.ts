@@ -1592,7 +1592,7 @@ export class WorkflowStore {
    * The estimated USD cost of one model attempt from its recorded usage and the price table;
    * null for host attempts, attempts without per-step usage and unpriced models.
    */
-  private attemptCostUsd(runId: string, attemptId: string): number | null {
+  attemptCostUsd(runId: string, attemptId: string): number | null {
     const model = this.attempts(runId).find((a) => a.id === attemptId)?.model_id ?? null;
     if (model === null) return null;
     const row = this.latestArtifact(runId, `attempts/${attemptId}/usage.json`);

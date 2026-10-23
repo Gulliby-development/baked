@@ -43,6 +43,11 @@ Stop reasons by count:
 | App | Repository | CI (ubuntu / windows / macos) | Logo | Notes |
 |---|---|---|---|---|
 
+## Finding chains
+From `bun scripts/bench-trace.ts chains` (runs with `chains/` records; `none` when no run formed a chain):
+| App | Run | File and symbol | Length | Correctives (decision) | Tokens | Cost | Battery runs | Cases (reproduced / refuted / inconclusive) | Reopened |
+|---|---|---|---|---|---|---|---|---|---|
+
 ## Experiment
 <what changed, on which app, result vs the map's default>
 
