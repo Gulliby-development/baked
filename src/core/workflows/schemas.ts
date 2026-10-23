@@ -22,6 +22,8 @@ export const RelativePath = z
     "Expected a canonical relative POSIX path",
   );
 const Text = z.string().min(1).max(16000);
+/** A literal value of a row, case or program output: the empty string is a value, not a gap (#1947). */
+const Value = (max: number) => z.string().max(max);
 // Built from the one table the instructions and the id normaliser read (#1871).
 const RequirementId = z.string().regex(HOST_ID_FORMATS.requirement.pattern);
 const CriterionId = z.string().regex(HOST_ID_FORMATS.criterion.pattern);
@@ -937,8 +939,8 @@ export const ReproSchema = z
   .object({
     executable: z.string().min(1).max(512),
     args: z.array(z.string().max(4096)).max(32),
-    expected: z.string().min(1).max(2000),
-    actual: z.string().min(1).max(2000),
+    expected: Value(2000),
+    actual: Value(2000),
     /** Text the program reads on standard input; without it standard input is empty. */
     stdin: z.string().max(65_536).optional(),
     /**
@@ -1192,7 +1194,7 @@ export const DerivationSchema = z
   .object({
     criterionId: CriterionId,
     row: Text,
-    recomputed: Text,
+    recomputed: Value(16000),
     matches: z.boolean(),
     derivation: Text,
     /** The request's own words a row rests on, checked by the host (#1823). */

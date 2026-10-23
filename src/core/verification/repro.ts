@@ -19,7 +19,7 @@ export const REPRO_TRIES = 8;
 
 export interface ReproOutcome {
   /**
-   * `reproduced` when a line of the output is `actual`; `refuted` when the command exited 0
+   * `reproduced` when a line of the output is `actual` (an empty `actual`: the output is empty); `refuted` when the command exited 0
    * without printing it; `inconclusive` when it could not run, failed without printing `actual`,
    * timed out or changed source files.
    */
@@ -31,11 +31,14 @@ export interface ReproOutcome {
 
 const normalize = (text: string) => text.replace(/\r\n?/g, "\n").trim();
 
-/** Whether the output shows `text`: as one of its lines or, for several lines, as a block. */
+/**
+ * Whether the output shows `text`: as one of its lines or, for several lines, as a block. An empty
+ * `text` ("prints nothing") is shown only by an output that is empty too (#1947).
+ */
 export function outputShows(output: string, text: string): boolean {
   const out = normalize(output);
   const wanted = normalize(text);
-  if (!wanted) return false;
+  if (!wanted) return !out;
   if (wanted.includes("\n")) return out.includes(wanted);
   return out.split("\n").some((line) => line.trim() === wanted);
 }
@@ -384,7 +387,7 @@ export function reproTool(
 ): HostTool {
   let tries = 0;
   return {
-    description: `Run a repro the way the runtime will run it for a finding: the program (one of ${executables.join(", ")}) and its arguments, without a shell, in the workspace root, for up to ${REPRO_TIMEOUT_MS / 1000} s. For a program that reads its input, give the text as stdin, or input files as files (name and content), written to a temporary directory that {files} in an argument names. It must print the observed value on its own line and change no file. It must run the workspace's own code: an input file that copies a workspace file is refused, since no fix to that file could change the copy's output. Returns reproduced when a line of the output equals actual, refuted when it exits 0 without printing actual, inconclusive otherwise, with the output. At most ${REPRO_TRIES} runs.`,
+    description: `Run a repro the way the runtime will run it for a finding: the program (one of ${executables.join(", ")}) and its arguments, without a shell, in the workspace root, for up to ${REPRO_TIMEOUT_MS / 1000} s. For a program that reads its input, give the text as stdin, or input files as files (name and content), written to a temporary directory that {files} in an argument names. It must print the observed value on its own line and change no file. It must run the workspace's own code: an input file that copies a workspace file is refused, since no fix to that file could change the copy's output. Returns reproduced when a line of the output equals actual (an empty actual: the program prints nothing), refuted when it exits 0 without printing actual, inconclusive otherwise, with the output. At most ${REPRO_TRIES} runs.`,
     inputSchema: ReproSchema,
     execute: async (input) => {
       if (++tries > REPRO_TRIES)

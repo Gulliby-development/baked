@@ -4281,7 +4281,7 @@ export class WorkflowScheduler {
         .filter(({ outcome }) => outcome.status === "reproduced")
         .map(
           ({ findingId, repro, outcome }) =>
-            `Finding ${findingId} still reproduces: \`${[repro.executable, ...repro.args].join(" ")}\` prints "${repro.actual}" where "${repro.expected}" is expected.${reproInputs(repro)} Output:\n${outcome.output.slice(-1500)}`,
+            `Finding ${findingId} still reproduces: \`${[repro.executable, ...repro.args].join(" ")}\` prints ${JSON.stringify(repro.actual)} where ${JSON.stringify(repro.expected)} is expected.${reproInputs(repro)} Output:\n${outcome.output.slice(-1500)}`,
         );
     };
   }
