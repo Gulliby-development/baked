@@ -112,7 +112,7 @@ describe("scenario: a fixer's layout of a host-written rows file (#1942, #1944)"
     expect(done.status).not.toBe("completed");
     // Not a layout: the assertion itself changed while the run was stopped.
     const test = join(root, rowTest.test);
-    writeFileSync(test, readFileSync(test, "utf8").replace("toEqual(row.expected)", "toBeDefined()"));
+    writeFileSync(test, readFileSync(test, "utf8").replace("toEqual(expected)", "toBeDefined()"));
     await service.resume(runId, { commandId: newId(), expectedRevision: (await service.get(runId)).revision }, { acceptWorkspace: true });
     const blocked = await service.drive(runId, new AbortController().signal);
     const errors = service.store.artifacts(runId).filter((a) => a.logical_path.startsWith("errors/")).map((a) => String(service.store.readArtifact(runId, a.id)));
@@ -125,6 +125,6 @@ describe("scenario: a fixer's layout of a host-written rows file (#1942, #1944)"
     await service.resume(runId, { commandId: newId(), expectedRevision: (await service.get(runId)).revision }, { acceptWorkspace: true });
     const resumed = await service.drive(runId, new AbortController().signal);
     expect(resumed.status).toBe("completed");
-    expect(readFileSync(test, "utf8")).toContain("toEqual(row.expected)");
+    expect(readFileSync(test, "utf8")).toContain("toEqual(expected)");
   }, 90000);
 });
