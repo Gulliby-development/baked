@@ -37,10 +37,12 @@ class ScriptedExecutor extends FixtureExecutor {
   revisions = 0;
   analyses = 0;
   sizingNotes: string[] = [];
+  analysisSizing: ({ note: string } | null)[] = [];
   constructor(root: string, private count: number, private stop: AbortController, private outside: boolean, private hostTests: boolean, private unrelated: boolean, private marker = false) { super(root); }
 
   override async execute(request: ExecutionRequest) {
     const output = request.profile.output;
+    if (output === "analysis") this.analysisSizing.push(JSON.parse(request.prompt.split("\n").at(-1) ?? "{}").extra?.sizing ?? null);
     if (output === "analysis" && ++this.analyses === 2 && this.unrelated) {
       const data = JSON.parse(request.prompt.split("\n").at(-1) ?? "{}");
       return { output: {
@@ -131,6 +133,9 @@ describe("scenario: a sizing replan preserves the approval task count (#1627)", 
       expect(fixture.executor.plans).toBe(revision ? 1 : 2);
       expect(fixture.executor.revisions).toBe(revision ? 1 : 0);
       expect(fixture.executor.sizingNotes[0]).toContain("at most 8 planned tasks");
+      // The analysis of the re-plan can check what the planner quotes from its sizing note (#1930).
+      expect(fixture.executor.analysisSizing[0]).toBeNull();
+      expect(fixture.executor.analysisSizing.at(-1)?.note).toContain("Keep each code task to at most");
     });
 
     test(`host test splits are still excluded when the planner takes over, revision=${revision ?? "full"}`, async () => {

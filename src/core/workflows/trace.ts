@@ -1325,7 +1325,15 @@ export function replayTestSplits(
           taskId: task.taskId,
           cases: task.cases ?? 0,
           recorded: task.oversized ? ("split" as const) : ("whole" as const),
-          replayed: decide(task.cases ?? 0, report.testTaskLimit ?? null, task.estimate, cap)
+          // A rows task is decided as one from #1930 on; older reports did not mark it.
+          replayed: decide(
+            task.cases ?? 0,
+            report.testTaskLimit ?? null,
+            task.estimate,
+            cap,
+            true,
+            task.rowsTask ?? null,
+          )
             ? ("split" as const)
             : ("whole" as const),
         }))
