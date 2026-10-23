@@ -9,8 +9,17 @@
 import type { RunPolicy } from "./schemas.js";
 import type { ArtifactRow } from "./store.js";
 
-/** Limits the host grows by itself. */
-export const HOST_GROWN_KEYS = ["maxTotalTokens", "maxActiveMs", "maxCostUsd"] as const;
+/**
+ * Limits the host grows by itself. An initiative also raises an open feature run's calls and the
+ * growth bounds of its sizing as its other features free their budget (#1931).
+ */
+export const HOST_GROWN_KEYS = [
+  "maxTotalTokens",
+  "maxActiveMs",
+  "maxCostUsd",
+  "maxAgentCalls",
+  "sizing",
+] as const;
 type HostGrownKey = (typeof HOST_GROWN_KEYS)[number];
 
 export interface HostGrowth {
@@ -67,7 +76,9 @@ export function hostGrowth(
     seen.add(hash);
     for (const key of HOST_GROWN_KEYS) {
       const value = step.previous[key];
-      if (typeof value === "number") base[key] = value;
+      if (key === "sizing") {
+        if (value !== null && typeof value === "object") base.sizing = value as RunPolicy["sizing"];
+      } else if (typeof value === "number") base[key] = value;
     }
     if (typeof step.previous.maxCostUsd === "number") caps.push(step.previous.maxCostUsd);
     hash = step.previousPolicyHash;
