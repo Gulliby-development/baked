@@ -994,6 +994,11 @@ export class WorkflowScheduler {
   /** Re-arms the active-time deadline after the policy's cap changed; set while a run is driven. */
   private rearmDeadline: () => void = () => {};
   /**
+   * Raises a driven run's host-derived limits in the stored policy before its deadline stops it:
+   * an initiative's refresh of a feature run's share (#1958). Unset outside an initiative.
+   */
+  growLimits: ((runId: string) => void) | undefined;
+  /**
    * Requests for a person raised by the current step. They become durable only together with the
    * state they were raised on (see `flushWaits`), so a decision never sees a request whose state
    * is not saved yet, and a later save never overwrites what the decision wrote.
@@ -1062,12 +1067,21 @@ export class WorkflowScheduler {
     this.providerActivity = () => budgetClock.track();
     const started = budgetClock.now();
     const activeBefore = this.store.run(runId).active_ms;
-    const arm = () =>
-      executionTimeout(
-        () => controller.abort(stopFault("deadline", "Active deadline exhausted")),
-        Math.max(1, policy.maxActiveMs - activeBefore - (budgetClock.now() - started)),
-        budgetClock,
-      );
+    const left = () => policy.maxActiveMs - activeBefore - (budgetClock.now() - started);
+    // An initiative feature's limit is a share the initiative can raise: it is asked when the
+    // deadline comes, not only between drives, when the run may be the only one left (#1958).
+    const expire = (): void => {
+      const before = policy.maxActiveMs;
+      try {
+        this.growLimits?.(runId);
+        adoptStoredLimits(this.store, runId, policy);
+      } catch {
+        // A timer callback must not throw: without the growth the stop stands.
+      }
+      if (policy.maxActiveMs > before && left() > 0) timeout = arm();
+      else controller.abort(stopFault("deadline", "Active deadline exhausted"));
+    };
+    const arm = () => executionTimeout(expire, Math.max(1, left()), budgetClock);
     let timeout = arm();
     this.rearmDeadline = () => {
       timeout();

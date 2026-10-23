@@ -26,7 +26,8 @@
       "paths": [
         "src/core/workflows/budget.ts",
         "src/core/workflows/host-growth.ts",
-        "src/core/workflows/cost-tolerance.ts"
+        "src/core/workflows/cost-tolerance.ts",
+        "src/core/workflows/initiatives/growth.ts"
       ]
     },
     {
