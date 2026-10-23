@@ -6,7 +6,12 @@ import { findPricing } from "../llm/pricing.js";
 import { canonical, hashBytes, hashJson } from "../specs/hash.js";
 import { workspacePath } from "../specs/validate.js";
 import { writeViaTemp } from "./atomic-write.js";
-import { callCostRate, growBudgetOnProgress, growCostCapToForecast } from "./budget.js";
+import {
+  adoptStoredLimits,
+  callCostRate,
+  growBudgetOnProgress,
+  growCostCapToForecast,
+} from "./budget.js";
 import { costCeilingUsd, costToleranceOf, currentCostCap } from "./cost-tolerance.js";
 import { WorkflowFault } from "./errors.js";
 import type { PastRun } from "./estimate.js";
@@ -1486,6 +1491,8 @@ export class WorkflowStore {
     policy: RunPolicy,
   ): string {
     return this.transaction(() => {
+      // Limits another writer raised while this drive held its copy count (#1931).
+      adoptStoredLimits(this, runId, policy);
       const row = this.run(runId);
       const reserved = this.attempts(runId)
         .filter((a) => !a.usage_complete)

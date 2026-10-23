@@ -313,11 +313,28 @@ export function grownCostCap(
  * $2.32 two minutes after a forecast growth (#1434, #1704).
  */
 export function adoptStoredLimits(store: WorkflowStore, runId: string, policy: RunPolicy): void {
-  const stored = PolicySchema.parse(JSON.parse(store.run(runId).policy_json));
+  // Read as stored: every reservation adopts it, and only its limits are read.
+  const stored = JSON.parse(store.run(runId).policy_json) as RunPolicy;
   if (stored.maxTotalTokens > policy.maxTotalTokens) policy.maxTotalTokens = stored.maxTotalTokens;
   if (stored.maxActiveMs > policy.maxActiveMs) policy.maxActiveMs = stored.maxActiveMs;
   if (stored.maxCostUsd !== null && stored.maxCostUsd > (policy.maxCostUsd ?? Infinity))
     policy.maxCostUsd = stored.maxCostUsd;
+  if (stored.maxAgentCalls > policy.maxAgentCalls) policy.maxAgentCalls = stored.maxAgentCalls;
+  // An initiative raises the bounds of an open feature run as its other features free their
+  // budget (#1931); the drive's copy grows to them too.
+  const bounds = ["maxRunTokens", "extendToTokens", "maxRunCostUsd"] as const;
+  if (
+    stored.sizing &&
+    bounds.some((key) => (stored.sizing?.[key] ?? 0) > (policy.sizing?.[key] ?? Infinity))
+  ) {
+    const sizing = { ...policy.sizing };
+    for (const key of bounds) {
+      const value = stored.sizing[key];
+      const own = sizing[key];
+      if (typeof value === "number" && typeof own === "number" && value > own) sizing[key] = value;
+    }
+    policy.sizing = sizing;
+  }
 }
 
 /**

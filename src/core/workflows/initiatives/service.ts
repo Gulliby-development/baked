@@ -14,7 +14,7 @@ import { ROUTING_ARTIFACT } from "../../llm/model-routing.js";
 import { getCachedProviderStatuses } from "../../llm/provider.js";
 import { availableVendorModels } from "../../llm/vendor-models.js";
 import { matchGlob } from "../../platform/index.js";
-import { hashJson } from "../../specs/hash.js";
+import { canonical, hashJson } from "../../specs/hash.js";
 import { type BudgetLimits, budgetUsage, limitsOf } from "../budget.js";
 import { autoCostTolerance } from "../cost-tolerance.js";
 import {
@@ -1130,6 +1130,8 @@ export class InitiativeService {
           case "decompose":
           case "drive": {
             const runId = next.runId ?? "";
+            const feature = view.features.find((f) => f.runId === runId);
+            if (next.kind === "drive" && feature) this.refreshGrowth(id, feature.id, runId);
             const before = this.workflows.store.run(runId);
             await this.driveRun(runId, controller.signal);
             const after = this.workflows.store.run(runId);
@@ -1212,6 +1214,8 @@ export class InitiativeService {
       }
       for (const feature of runnable(view)) {
         const runId = feature.runId ?? "";
+        // A run that started before other features finished grows into what they freed (#1931).
+        this.refreshGrowth(id, feature.id, runId);
         if (live.has(runId)) continue;
         if (live.size >= view.parallelRuns) break;
         // A planned-ahead run already driven this round stopped to wait for its upstream; it is
@@ -1869,6 +1873,56 @@ export class InitiativeService {
         featureDigest(feature),
         "rebase",
       );
+    });
+  }
+
+  /**
+   * Raises an open feature run's growth bounds to what the initiative can spare now. A run's room
+   * to grow was computed once, when it started: a planned-ahead feature starts at planning, long
+   * before its tasks run, and dollars the other features freed since stayed out of its reach.
+   * R60 wheeltags explain stopped on a $3.41 bound when about $6 was spare, and an owner
+   * extension was approved and never used (#1931). Bounds only rise, so nothing stops sooner;
+   * the run's own growth still asks for each step. Recorded as a host policy revision.
+   */
+  private refreshGrowth(id: string, featureId: string, runId: string): void {
+    if (!runId) return;
+    const run = this.workflows.store.run(runId);
+    if (terminalStates.includes(run.status)) return;
+    const settings = this.store.settings(this.store.get(id));
+    const view = this.view(id);
+    const policy = PolicySchema.parse(JSON.parse(run.policy_json));
+    const guard = guardGrowth(view, featureId, settings.basePolicy);
+    const spareUsd = costGrowthLimit(view, featureId);
+    const spareTokens = growthLimit(view, featureId);
+    const held = { ...this.committed(runId), usd: this.committedUsd(runId) };
+    const after = refreshedGrowth(policy, settings.basePolicy, held, this.usage(runId), {
+      usd: spareUsd,
+      tokens: spareTokens,
+      calls: guard.calls,
+      activeMs: guard.activeMs,
+    });
+    if (!after) return;
+    const store = this.workflows.store;
+    const count = store
+      .artifacts(runId)
+      .filter((a) => a.logical_path.startsWith("policy-revisions/initiative-")).length;
+    const keys = ["maxAgentCalls", "maxActiveMs", "sizing"] as const;
+    store.transaction(() => {
+      store.artifact(
+        runId,
+        "policy-revision",
+        `policy-revisions/initiative-${String(count + 1)}.json`,
+        canonical({
+          kind: "initiative-growth",
+          approvedBy: "sizing",
+          previousPolicyHash: hashJson(policy),
+          policyHash: hashJson(after),
+          previous: Object.fromEntries(keys.map((key) => [key, policy[key] ?? null])),
+          next: Object.fromEntries(keys.map((key) => [key, after[key] ?? null])),
+          inputs: { featureId, held, spareUsd, spareTokens, guard },
+        }),
+      );
+      store.setPolicy(runId, after);
     });
   }
 
@@ -3272,6 +3326,48 @@ export function guardGrowth(
       Math.floor(remaining.activeMs - floor(base.maxActiveMs, (s) => s.activeMs)),
     ),
   };
+}
+
+/**
+ * An open feature run's policy with its growth bounds raised to what it holds plus what the
+ * initiative can spare now (`room`, from `costGrowthLimit`, `growthLimit` and `guardGrowth`), or
+ * null when nothing rises (#1931). The dollar and token bounds are ceilings the run grows toward
+ * on its own (`growCostCapToForecast`, `growBudgetOnProgress`); the base policy's ceilings still
+ * hold, and a null token room (no waiting feature has an estimate) takes them, as a start does.
+ * Calls and active time are limits rather than bounds, and the initiative commits them at once,
+ * so they rise only for a run that has used 80 percent of them.
+ */
+export function refreshedGrowth(
+  policy: RunPolicy,
+  base: RunPolicy,
+  held: { usd: number; tokens: number; calls: number; activeMs: number },
+  used: Pick<UsageView, "calls" | "activeMs">,
+  room: { usd: number | null; tokens: number | null; calls: number; activeMs: number },
+): RunPolicy | null {
+  const sizing = policy.sizing ? { ...policy.sizing } : undefined;
+  if (sizing?.maxRunCostUsd !== undefined && policy.maxCostUsd !== null && room.usd !== null)
+    sizing.maxRunCostUsd = Math.max(sizing.maxRunCostUsd, cents(held.usd + room.usd));
+  const limit = room.tokens === null ? Infinity : Math.floor(held.tokens + room.tokens);
+  const ceiling = base.sizing?.maxRunTokens;
+  if (sizing && typeof sizing.maxRunTokens === "number" && typeof ceiling === "number")
+    sizing.maxRunTokens = Math.max(sizing.maxRunTokens, Math.min(ceiling, limit));
+  const hard = extendToOf(base);
+  if (sizing?.extendToTokens !== undefined && hard !== null)
+    sizing.extendToTokens = Math.max(sizing.extendToTokens, Math.min(hard, limit));
+  const near = (use: number, of: number): boolean => use >= 0.8 * of;
+  const maxAgentCalls = near(used.calls, policy.maxAgentCalls)
+    ? Math.max(policy.maxAgentCalls, Math.min(1000, held.calls + room.calls))
+    : policy.maxAgentCalls;
+  const maxActiveMs = near(used.activeMs, policy.maxActiveMs)
+    ? Math.max(policy.maxActiveMs, Math.floor(held.activeMs + room.activeMs))
+    : policy.maxActiveMs;
+  const after = PolicySchema.parse({
+    ...policy,
+    maxAgentCalls,
+    maxActiveMs,
+    ...(sizing ? { sizing } : {}),
+  });
+  return hashJson(after) === hashJson(policy) ? null : after;
 }
 
 /**
