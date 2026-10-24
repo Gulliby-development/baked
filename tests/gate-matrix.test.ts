@@ -32,7 +32,8 @@ import {
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { syntaxErrors } from "../src/core/intelligence/syntax-check.js";
-import { criterionCases, missingCases, writtenTestPaths } from "../src/core/verification/criteria-cases.js";
+import { criterionCases, missingCases, testsHold, writtenTestPaths } from "../src/core/verification/criteria-cases.js";
+import { INLINE_HARNESS, type InlineRowTest, inlineRowFile, withInlineRows } from "../src/core/workflows/acceptance-rows-inline.js";
 import { reproExecutables } from "../src/core/verification/repro.js";
 import { entryPointCommand } from "../src/core/verification/entry-points.js";
 import { noteSiblingFindings, ownerOfFinding } from "../src/core/verification/initiative-ownership.js";
@@ -252,6 +253,43 @@ describe("host-written acceptance rows in the case-walk and mutation gates (#159
       expect(generateMutants(changes)).toEqual([]);
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
+});
+
+describe("gate matrix: inline rows block holds its own cells (#1997)", () => {
+  // R64 cfgquill lint: 12 refusals of AC-004 cells the host's own Go block held. A new inline
+  // framework or a new text shape adds its row here; the first test fails when a framework lacks one.
+  const layouts: Record<string, InlineRowTest> = {
+    bun: { mode: "inline", framework: "bun", test: "tests/text.test.ts" },
+    pytest: { mode: "inline", framework: "pytest", test: "tests/test_text.py" },
+    go: { mode: "inline", framework: "go", package: "calc", test: "calc/calc_test.go" },
+    junit: { mode: "inline", framework: "junit", package: "com.ex.calc", test: "src/test/java/com/ex/calc/CalcTest.java" },
+    rust: { mode: "inline", framework: "rust", test: "tests/calc.rs" },
+    xunit: { mode: "inline", framework: "xunit", package: "Calc.Tests", test: "Calc.Tests/CalcTest.cs" },
+  };
+  const shapes: [string, unknown][] = [
+    ["two-line CRLF text", ["[a]\r\nb=1\r\n", {}]],
+    ["LF text", ["[a]\nb=1\n", {}]],
+    ["text with a tab", ["k\tv\nnext", {}]],
+    ["BOM, astral, LS and bare CR", ["\ufeff#\u{1f600}\r\r\n#\u2028\r", {}]],
+  ];
+  test("every inline framework has its row", () => {
+    expect(Object.keys(layouts).sort()).toEqual(Object.keys(INLINE_HARNESS).sort());
+  });
+  for (const [framework, rowTest] of Object.entries(layouts))
+    for (const [shape, input] of shapes)
+      test(`${framework}: ${shape}`, async () => {
+        const rows = [{ id: "AC-004:1", criterionId: "AC-004", source: "", input, expected: 1 }];
+        const file = inlineRowFile(rowTest, rows);
+        const text = withInlineRows(null, file);
+        // The block's text holds the cell, decoded to a canonical form.
+        expect(testsHold(text, JSON.stringify(input))).toBe(true);
+        // And the task-end walk asks nothing of a task whose intact block holds its rows.
+        const spec = { criteria: [{ id: "AC-004", requirementIds: ["FR-001"], given: "a config text", when: "it is linted", then: `Input | Expected\n${JSON.stringify(input)} | 1`, method: "automated" as const }] };
+        const task = { id: "T003", criterionIds: ["AC-004"], rows: ["AC-004"], rowTest, writes: [{ path: rowTest.test, action: "modify" as const }] };
+        const root = project({ [rowTest.test]: text });
+        const check = caseCheck(spec, task, { checks: [], hostRows: [file] });
+        expect(await check?.(root)).toEqual([]);
+      });
 });
 
 describe("gate matrix: directory-wide fixer effects (#1593)", () => {

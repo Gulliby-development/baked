@@ -2,8 +2,10 @@ import { afterAll, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { caseCheck, testsHold } from "../src/core/verification/criteria-cases.js";
+import { caseCheck, criterionCases, testsHold } from "../src/core/verification/criteria-cases.js";
 import { caseEvidence } from "../src/core/verification/criteria-evidence.js";
+import { type InlineRowTest, inlineRowFile, withInlineRows } from "../src/core/workflows/acceptance-rows-inline.js";
+import { literalRows } from "../src/core/workflows/acceptance-rows.js";
 import type { Spec } from "../src/core/workflows/schemas.js";
 
 // Bench round 57 (#1846): the task-end case walk ran in 6 of 7 runs with 8 refusals on 18 items,
@@ -126,5 +128,62 @@ describe("scenario: the R57 task-end walk on the stored shapes (#1846)", () => {
     expect(refused.some((line) => line.startsWith(`AC-003 names ${JSON.stringify(ROW)}, found only in a comment`))).toBe(true);
     expect(refused.some((line) => line.startsWith(`AC-016 names ${JSON.stringify("f 0644 a\\n# c\\nf 0600 a")}, and no test file`))).toBe(true);
     expect(await walk(`${TABLE}\nclass M { string m = "f 0644 a\\n# c\\nf 0600 a"; string e = "3:8"; }\n`)).toEqual([]);
+  });
+});
+
+describe("scenario: rows the host wrote are held by its intact block (#1997)", () => {
+  // R64 cfgquill lint T003/T005-T007: 12 refusals of AC-004 cells that the host's own Go block held;
+  // the models added AC-004 tests of their own, and one did not parse (a gofmt error, a session).
+  // A JUnit block spells the number 1777 as `1777L`, which no text match holds.
+  const spec: Pick<Spec, "criteria"> = {
+    criteria: [
+      { id: "AC-004", requirementIds: ["FR-001"], given: "a config text", when: "it is linted", then: 'Input | Expected\n["[a]\\r\\nb=1\\r\\n",{}] | 1\n1777 | 3554', method: "automated" },
+    ],
+  };
+  const layouts: [string, InlineRowTest, string][] = [
+    ["csharp", { mode: "inline", framework: "xunit", package: "Lint.Tests", test: "Lint.Tests/RulesTest.cs" }, "namespace Lint.Tests\n{\n    public class RulesTest\n    {\n        internal static object? AcceptanceActual(System.Text.Json.Nodes.JsonNode? input) => Rules.Count(input);\n    }\n}\n"],
+    ["go", { mode: "inline", framework: "go", package: "lint", test: "internal/lint/rules_test.go" }, "package lint\n\nfunc acceptanceActual(input any) (any, error) { return Count(input), nil }\n"],
+    ["java", { mode: "inline", framework: "junit", package: "com.ex.lint", test: "src/test/java/com/ex/lint/RulesTest.java" }, "package com.ex.lint;\n\nclass RulesTest {\n  static Object acceptanceActual(Object input) { return Rules.count(input); }\n}\n"],
+    ["python", { mode: "inline", framework: "pytest", test: "tests/test_rules.py" }, "from lint import count\n\n\ndef acceptance_actual(input):\n    return count(input)\n"],
+    ["typescript", { mode: "inline", framework: "bun", test: "tests/rules.test.ts" }, 'import { count } from "../src/rules";\n\nfunction acceptanceActual(input: unknown) {\n  return count(input);\n}\n'],
+  ];
+  const walk = async (rowTest: InlineRowTest, text: string, withRows: boolean) => {
+    const rows = literalRows(spec, ["AC-004"]);
+    expect(rows).toHaveLength(2);
+    const file = inlineRowFile(rowTest, rows);
+    const task = { id: "T003", criterionIds: ["AC-004"], ...(withRows ? { rows: ["AC-004"], rowTest } : {}), writes: [{ path: rowTest.test, action: "modify" as const }] };
+    const root = mkdtempSync(join(tmpdir(), "baked-case-rows-"));
+    roots.push(root);
+    mkdirSync(dirname(join(root, rowTest.test)), { recursive: true });
+    writeFileSync(join(root, rowTest.test), text);
+    const check = caseCheck(spec, task, { checks: [], ...(withRows ? { hostRows: [file] } : {}) });
+    if (!check) throw new Error("no case walk");
+    return { refused: await check(root), file };
+  };
+
+  for (const [language, rowTest, own] of layouts) {
+    test(`${language}: an intact block asks for no test text`, async () => {
+      const block = withInlineRows(own, inlineRowFile(rowTest, literalRows(spec, ["AC-004"])));
+      expect((await walk(rowTest, block, true)).refused).toEqual([]);
+    });
+
+    test(`${language}: the same cells with no host rows, or a changed block, are still demanded`, async () => {
+      // No rows: the agent's file holds neither cell.
+      const plain = await walk(rowTest, own, false);
+      expect(plain.refused.some((line) => line.startsWith('AC-004 names "1777"'))).toBe(true);
+      // Rows, but the block is gone: the cells are not held by construction.
+      const dropped = await walk(rowTest, own, true);
+      expect(dropped.refused.some((line) => line.startsWith('AC-004 names "1777"'))).toBe(true);
+    });
+  }
+
+  test("a cell the criterion also quotes outside its table is still demanded", async () => {
+    const quoted = { criteria: [{ ...spec.criteria[0]!, then: `it reports "1777 rows"\n${spec.criteria[0]!.then}` }] };
+    const [, rowTest, own] = layouts[1]!;
+    const task = { id: "T003", criterionIds: ["AC-004"], rows: ["AC-004"], rowTest };
+    const cases = criterionCases(quoted, task, { checks: [] });
+    expect(cases.find((c) => c.literal === "1777 rows")?.row).toBeUndefined();
+    expect(cases.find((c) => c.literal === "1777")?.row).toBe(true);
+    expect(own).not.toContain("1777");
   });
 });
