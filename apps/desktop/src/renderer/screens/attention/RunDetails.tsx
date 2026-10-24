@@ -235,6 +235,11 @@ export function ApprovalDetail({ item, onDone }: DetailProps) {
                 {body.estimateSource}.
               </p>
             ) : null}
+            {body.hostApply ? (
+              <p className={NOTE} data-testid="approval-host-apply">
+                {body.hostApply}.
+              </p>
+            ) : null}
             {inScope.length > 0 && (
               <Alert>
                 <p style={{ margin: "0 0 8px" }}>
