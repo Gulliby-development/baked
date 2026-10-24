@@ -5,6 +5,7 @@ import { basename, dirname, join } from "node:path";
 import { DEFAULT_CONFIG } from "../../config/index.js";
 import type { AppConfig } from "../../types/index.js";
 import { builtinProfiles } from "../agents/profiles/builtin.js";
+import { FirstByteHistory } from "../llm/first-byte-history.js";
 import { ModelRoutingSchema, type RouteEffort } from "../llm/model-routing.js";
 import {
   POLICY_REFUSAL_KIND,
@@ -1193,14 +1194,53 @@ export function replayFirstByte(
   store: WorkflowStore,
   runId: string,
   limit: FirstByteLimit = providerFirstByteMs,
+  adaptive: AdaptiveFirstByteRule | null = adaptiveDeadline,
 ): FirstByteBoundary[] {
-  // A refused call (a 429, say) answered before any deadline; it is the retry ladder's, not this.
-  const answered = recordedCalls(store, runId).filter(({ call }) => call.status === undefined);
-  return answered.map(({ attemptId, call, index, estimated }) => {
-    const limitMs = limit(call.provider, call);
+  return replayFirstBytes(store, [runId], limit, adaptive).get(runId) ?? [];
+}
+
+/**
+ * The adaptive first-response deadline of a recorded call that ran under one (#1766), from the
+ * history of the calls before it; `FirstByteHistory.deadline` unless a test passes another.
+ */
+export type AdaptiveFirstByteRule = (
+  history: FirstByteHistory,
+  ceilingMs: number,
+  model: string,
+  call: CallTiming,
+) => number;
+const adaptiveDeadline: AdaptiveFirstByteRule = (history, ceilingMs, model, call) =>
+  history.deadline(ceilingMs, model, call);
+
+/**
+ * `replayFirstByte` for several runs of one workspace. A call that recorded an adaptive deadline
+ * (`limitMs`) is decided by `adaptive` over a history of every earlier call of the trace, in the
+ * order their attempts started, as the executor seeds its history from the workspace's usage
+ * records; the other calls by `limit`. With `adaptive` null every call takes `limit`, as before
+ * #2041. Each call's prompt size is in its timing from #2041 on; older calls replay without it.
+ */
+export function replayFirstBytes(
+  store: WorkflowStore,
+  runIds: readonly string[],
+  limit: FirstByteLimit = providerFirstByteMs,
+  adaptive: AdaptiveFirstByteRule | null = adaptiveDeadline,
+): Map<string, FirstByteBoundary[]> {
+  const history = new FirstByteHistory();
+  const calls = runIds
+    .flatMap((runId) => recordedCalls(store, runId).map((recorded) => ({ runId, ...recorded })))
+    .sort((a, b) => a.startedAt - b.startedAt);
+  const boundaries = new Map<string, FirstByteBoundary[]>(runIds.map((runId) => [runId, []]));
+  for (const { runId, attemptId, model, call, index, estimated } of calls) {
+    // A refused call (a 429, say) answered before any deadline; it is the retry ladder's, not this.
+    if (call.status !== undefined) continue;
+    const limitMs =
+      adaptive && call.limitMs !== undefined
+        ? adaptive(history, providerFirstByteMs(call.provider, call), model, call)
+        : limit(call.provider, call);
+    history.record(model, call);
     const replayed =
       call.firstByteMs !== null ? call.firstByteMs > limitMs : call.durationMs >= limitMs;
-    return {
+    boundaries.get(runId)?.push({
       attemptId,
       call: index,
       provider: call.provider,
@@ -1212,8 +1252,9 @@ export function replayFirstByte(
       limitMs,
       recorded: call.firstByteMs === null ? "stop" : "pass",
       replayed: replayed ? "stop" : "pass",
-    };
-  });
+    });
+  }
+  return boundaries;
 }
 
 /** The recovery ladder's choice after a stalled call; `nextRung` unless a test passes another. */
@@ -1316,7 +1357,14 @@ export function replayStallLadder(
 function recordedCalls(
   store: WorkflowStore,
   runId: string,
-): { attemptId: string; call: CallTiming; index: number; estimated: boolean }[] {
+): {
+  attemptId: string;
+  model: string;
+  startedAt: number;
+  call: CallTiming;
+  index: number;
+  estimated: boolean;
+}[] {
   const attempts = store.connection
     .query(
       "SELECT id, model_id, status, started_at, ended_at FROM attempts WHERE run_id=? AND model_id IS NOT NULL ORDER BY started_at, rowid",
@@ -1359,7 +1407,14 @@ function recordedCalls(
         },
       ];
     }
-    return calls.map((call, index) => ({ attemptId: attempt.id, call, index, estimated }));
+    return calls.map((call, index) => ({
+      attemptId: attempt.id,
+      model: attempt.model_id,
+      startedAt: attempt.started_at,
+      call,
+      index,
+      estimated,
+    }));
   });
 }
 
@@ -2377,6 +2432,8 @@ export function replayTrace(
   path: string,
   options: {
     firstByteLimit?: FirstByteLimit;
+    /** The adaptive deadline's rule (#2041); null replays every call on `firstByteLimit`. */
+    adaptiveFirstByte?: AdaptiveFirstByteRule | null;
     shareGate?: ShareGate;
     callRate?: CallRate;
     testSplit?: TestSplitRule;
@@ -2403,8 +2460,11 @@ export function replayTrace(
       store.connection.query("SELECT id FROM runs ORDER BY created_at").all() as { id: string }[]
     ).map((r) => r.id);
     // Call timings are read before the forecast replay rewinds each run's attempts.
-    const timings = new Map(
-      runIds.map((runId) => [runId, replayFirstByte(store, runId, options.firstByteLimit)]),
+    const timings = replayFirstBytes(
+      store,
+      runIds,
+      options.firstByteLimit,
+      options.adaptiveFirstByte === undefined ? adaptiveDeadline : options.adaptiveFirstByte,
     );
     const splits = new Map(
       runIds.map((runId) => [runId, replayTestSplits(store, runId, options.testSplit)]),
