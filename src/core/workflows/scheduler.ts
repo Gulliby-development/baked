@@ -15458,6 +15458,9 @@ ${note}`;
       worktree,
       [...journaled, ...changedPaths(baseline, final).filter((path) => declared.has(path))],
       `${title.slice(0, 72)}\n\nAccepted result of BAKED workflow run ${runId}.\n\nBaked-Run: ${runId}\nBaked-Snapshot: ${state.snapshotId}\n`,
+      // An initiative feature's branch is the base of the features that build on it, which read
+      // its accepted spec at specs/<feature>/spec.json; its delivery still leaves specs/ out.
+      state.initiativeBounds ? { specs: true } : {},
     );
     state.worktree = { ...worktree, commit };
   }
