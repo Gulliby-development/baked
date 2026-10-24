@@ -348,6 +348,66 @@ export function changedLines(diff: string): Map<string, number[]> {
   return out;
 }
 
+/** One file's part of a unified diff, as `git apply -p1` reads it. */
+export interface DiffSection {
+  /** The new path, or the old one when the section deletes the file. */
+  path: string;
+  /** The section with `--- a/<old>` and `+++ b/<new>` headers (or `/dev/null`) and its hunks. */
+  patch: string;
+  deletes: boolean;
+}
+
+/**
+ * Each file's section of a unified diff, split where `changedLines` starts a new file (a `--- `
+ * line followed by `+++ `). Headers are rewritten to the `a/` and `b/` form, so a brief that writes
+ * `--- src/x.ts` applies with `-p1` like one that writes `--- a/src/x.ts`; a diff timestamp after a
+ * tab is dropped. Lines between hunks that are not hunk content (`diff --git`, `index`, prose) are
+ * left out, and an empty line inside a hunk is an empty context line, as a markdown editor leaves
+ * it. Hunk counts are kept as written: apply with `--recount` when a person wrote them.
+ */
+export function diffSections(diff: string): DiffSection[] {
+  const texts = diff.split("\n");
+  const strip = (header: string, prefix: "a" | "b"): string => {
+    const path = (header.slice(4).split("\t")[0] ?? "").trim();
+    return path === "/dev/null" || !path.startsWith(`${prefix}/`) ? path : path.slice(2);
+  };
+  const sections: { from: string; to: string; lines: string[] }[] = [];
+  let current: { from: string; to: string; lines: string[] } | null = null;
+  let hunks = false;
+  for (let i = 0; i < texts.length; i++) {
+    const text = texts[i] as string;
+    if (text.startsWith("--- ") && texts[i + 1]?.startsWith("+++ ")) {
+      current = { from: strip(text, "a"), to: strip(texts[i + 1] as string, "b"), lines: [] };
+      sections.push(current);
+      hunks = false;
+      i++;
+      continue;
+    }
+    if (!current) continue;
+    if (/^@@ -\d+(?:,\d+)? \+\d+(?:,\d+)? @@/.test(text)) {
+      hunks = true;
+      current.lines.push(text);
+      continue;
+    }
+    if (!hunks) continue;
+    if (text === "") current.lines.push(" ");
+    else if (/^[ +\-\\]/.test(text)) current.lines.push(text);
+    else hunks = false;
+  }
+  return sections.flatMap(({ from, to, lines }): DiffSection[] => {
+    const deletes = to === "/dev/null";
+    const path = deletes ? from : to;
+    // Blank lines after the last hunk are the fence's layout, not context the file must have.
+    while (lines.at(-1) === " ") lines.pop();
+    if (!lines.length || path === "/dev/null") return [];
+    const head = [
+      `--- ${from === "/dev/null" ? from : `a/${from}`}`,
+      `+++ ${deletes ? to : `b/${to}`}`,
+    ];
+    return [{ path, patch: `${[...head, ...lines].join("\n")}\n`, deletes }];
+  });
+}
+
 /** The context as the reviewer reads it. */
 export function renderCallContext(contexts: readonly FunctionContext[]): string {
   const place = (p: Place) => `\`${p.file}:${p.line}\`${p.in ? ` in \`${p.in}\`` : ""}`;

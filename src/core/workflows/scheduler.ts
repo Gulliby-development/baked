@@ -337,6 +337,14 @@ import {
 } from "./fork-stage.js";
 import { formatWrittenChecks } from "./format-written.js";
 import { outputTail } from "./gates.js";
+import {
+  HOST_APPLY_DIR,
+  HOST_APPLY_KIND,
+  hostAppliableTasks,
+  hostApplyInputs,
+  hostApplyRecord,
+  hostApplyText,
+} from "./host-apply.js";
 import { HOST_ADDITIONS, HOST_EDITS_PATH, type HostEdit, recordGraphEdits } from "./host-edits.js";
 import { isStoreError, recordHostError } from "./host-error.js";
 import {
@@ -2290,6 +2298,12 @@ export class WorkflowScheduler {
                   ...this.approvalCost(runId, policy),
                   // Tasks priced from the lines the request supplies say so (#2002).
                   ...estimateSourceOf(this.store, runId),
+                  // Tasks whose every write the request gives verbatim (#2023, shadow).
+                  ...((text) => (text ? { hostApply: text } : {}))(
+                    hostApplyText(
+                      hostAppliableTasks(state.requestText || state.prompt, state.graph),
+                    ),
+                  ),
                   ...(state.spec.deliverables
                     ? { requestCoverage: requestCoverage(state.spec, coverageRequest(state)) }
                     : {}),
@@ -6865,6 +6879,9 @@ ${note}`;
       });
     } else if (!checking) {
       const root = runRoot(this.store.workspace, state);
+      // Shadow (#2023): whether the host would apply the request's verbatim content itself.
+      if (firstRun && task.origin === "planned")
+        await this.recordHostApply(runId, state, task, root);
       if (await this.affectedBaseline(runId, child, state, policy, task, signal, root))
         this.store.transaction(() => this.store.saveState(runId, state));
       const before = await sourceManifest(root, generatedPaths(policy), signal);
@@ -15790,6 +15807,30 @@ ${note}`;
       if (parsed.schemaVersion === 1)
         state.stageIndex = parsed.definition.stages.findIndex((s) => s.kind === "task-graph");
     });
+  }
+  /**
+   * Records the host's apply decision for a planned task before its first implementer session
+   * (`hostApplyDecision`, #2023), once per task. Shadow: the implementer still runs, and a failure
+   * to read or check never touches the run.
+   */
+  private async recordHostApply(
+    runId: string,
+    state: RuntimeState,
+    task: Task,
+    root: string,
+  ): Promise<void> {
+    const path = `${HOST_APPLY_DIR}${task.id}.json`;
+    if (this.store.latestArtifact(runId, path)) return;
+    try {
+      const writes = await hostApplyInputs(root, state.requestText || state.prompt, task);
+      if (!writes) return;
+      this.store.artifact(
+        runId,
+        HOST_APPLY_KIND,
+        path,
+        canonical(hostApplyRecord(task.id, writes)),
+      );
+    } catch {}
   }
   /**
    * Records each failing corrective's required checks (`repeats/tasks/<task>.json`, #1996) and,

@@ -39,6 +39,12 @@ import {
   chainRewriteDecision,
   findingChain,
 } from "./finding-chain.js";
+import {
+  HOST_APPLY_KIND,
+  type HostApplyRule,
+  hostApplyDecision,
+  hostApplyRecords,
+} from "./host-apply.js";
 import type { initiativePriceSamples } from "./initiatives/forecast.js";
 import { InitiativeService, type ShareGateRecord, shareShortfall } from "./initiatives/service.js";
 import { recordingOf } from "./model-recording.js";
@@ -99,6 +105,8 @@ const KEPT_ARTIFACTS = new Set([
   REPEAT_KIND,
   // Each spec conflict's request decision: checked sides and re-audit verdicts, no quotes (#2016).
   REQUEST_CONFLICT_KIND,
+  // Each planned task's host apply decision: its writes' supplied blocks and apply checks (#2023).
+  HOST_APPLY_KIND,
 ]);
 
 /** Tables that hold evidence, effects or prose the replay never reads. */
@@ -603,6 +611,39 @@ export interface RunReplay {
   requestConflicts: RequestConflictBoundary[];
   /** Conflict reports the current rule settles, re-audits or leaves differently than the recording. */
   newConflictDecisions: number;
+  /** Each planned task's host apply decision against the current rule (#2023, shadow). */
+  hostApply: HostApplyBoundary[];
+  /** Tasks whose apply decision (would apply or not) the current rule makes differently. */
+  newApplyDecisions: number;
+}
+
+export interface HostApplyBoundary {
+  taskId: string;
+  recorded: boolean;
+  replayed: boolean;
+  /** Why the current rule would start an implementer; null when it would apply. */
+  reason: string | null;
+}
+
+/**
+ * Every host apply decision a run recorded (`host-apply/tasks/`, #2023), decided again from its
+ * recorded writes: each write's supplied blocks, whether it exists and whether its diff applied.
+ * Traces before #2023 record none.
+ */
+export function replayHostApply(
+  store: WorkflowStore,
+  runId: string,
+  decide: HostApplyRule = hostApplyDecision,
+): HostApplyBoundary[] {
+  return hostApplyRecords(store, runId).map((record) => {
+    const verdict = decide(record.writes ?? []);
+    return {
+      taskId: record.taskId,
+      recorded: record.wouldApply,
+      replayed: verdict.wouldApply,
+      reason: verdict.reason,
+    };
+  });
 }
 
 export interface RequestConflictBoundary {
@@ -2175,6 +2216,8 @@ function replayRun(
   | "newRepeatStops"
   | "requestConflicts"
   | "newConflictDecisions"
+  | "hostApply"
+  | "newApplyDecisions"
 > | null {
   const db = store.connection;
   const run = store.run(runId);
@@ -2345,6 +2388,7 @@ export function replayTrace(
     batteryRule?: BatteryRule;
     repeatRule?: RepeatRule;
     requestConflictRule?: RequestConflictRule;
+    hostApplyRule?: HostApplyRule;
   } = {},
 ): TraceReplay {
   // Initiative starts rewind their own copies of the trace, before the run replay rewinds this one.
@@ -2389,6 +2433,9 @@ export function replayTrace(
         replayRequestConflicts(store, runId, options.requestConflictRule),
       ]),
     );
+    const applies = new Map(
+      runIds.map((runId) => [runId, replayHostApply(store, runId, options.hostApplyRule)]),
+    );
     const runs: RunReplay[] = [];
     for (const runId of runIds) {
       const firstByte = timings.get(runId) ?? [];
@@ -2410,6 +2457,7 @@ export function replayTrace(
       const findingChains = chains.get(runId) ?? [];
       const repeatedFailures = repeats.get(runId) ?? [];
       const requestConflicts = requests.get(runId) ?? [];
+      const hostApply = applies.get(runId) ?? [];
       if (
         !replay.boundaries.length &&
         !firstByte.length &&
@@ -2418,7 +2466,8 @@ export function replayTrace(
         !policyRefusals.length &&
         !findingChains.length &&
         !repeatedFailures.length &&
-        !requestConflicts.length
+        !requestConflicts.length &&
+        !hostApply.length
       )
         continue;
       runs.push({
@@ -2441,6 +2490,8 @@ export function replayTrace(
         newRepeatStops: newRepeatStops(repeatedFailures),
         requestConflicts,
         newConflictDecisions: requestConflicts.filter((b) => b.replayed !== b.recorded).length,
+        hostApply,
+        newApplyDecisions: hostApply.filter((b) => b.replayed !== b.recorded).length,
       });
     }
     const gates = replayShareGate(store, options.shareGate);

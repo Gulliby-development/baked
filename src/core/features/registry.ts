@@ -842,6 +842,16 @@ export const FEATURES: readonly Feature[] = [
     desktop: ["project/runs: plan approval names the estimate source"],
   },
   {
+    id: "host-apply-shadow",
+    group: "Workflow runs",
+    title:
+      "Shadow decision whether the host would apply a planned task's verbatim diffs and files from the request itself, recorded per task with its apply check, with the host-appliable tasks at approval",
+    tui: ["/workflow: plan approval names the host-appliable tasks"],
+    cli: ["baked workflow status: hostApply records and the approval's hostApply"],
+    api: ["/v1/workflow/runs/:id: approval hostApply and host-apply artifacts"],
+    desktop: ["project/runs: plan approval names the host-appliable tasks"],
+  },
+  {
     id: "acceptance-rows-as-data",
     group: "Workflow runs",
     title:
