@@ -679,14 +679,9 @@ import {
 } from "./spec-amendment.js";
 import { digestsSpec, mayDigestSpec, READ_CRITERION, readCriterionTool } from "./spec-digest.js";
 import { forgetProgress } from "./stall.js";
+import { statedRequest } from "./stated-request.js";
 import type { AttemptUsageRecord } from "./step-budget.js";
-import {
-  type LeaseResource,
-  newId,
-  type RequestRow,
-  type TaskRow,
-  type WorkflowStore,
-} from "./store.js";
+import { type LeaseResource, newId, type TaskRow, type WorkflowStore } from "./store.js";
 import {
   documentsOnly,
   failureOwner,
@@ -884,20 +879,6 @@ function integrityRequirementText(state: RuntimeState): string {
     state.spec ? canonical(state.spec) : "",
     state.plan ?? "",
   ].join("\n");
-}
-
-/**
- * The request with the clarification answers a person gave. A bound or an exclusion a person
- * decided ("files up to 100 MiB") is stated, not invented by the spec author (#1413).
- */
-function statedRequest(state: RuntimeState, requests: readonly RequestRow[]): string {
-  const answers = requests
-    .filter((r) => r.kind === "clarification" && r.status === "accepted" && r.actor === "user")
-    // Only the answers: the decision's request id would add stray numbers.
-    .map((r) =>
-      canonical((JSON.parse(r.answer_json ?? "{}") as { answers?: unknown }).answers ?? ""),
-    );
-  return [state.requestText || state.prompt, ...answers].join("\n");
 }
 
 /**
@@ -1351,7 +1332,10 @@ export class WorkflowScheduler {
               };
               // The criteria the host writes itself, when the spec lacks them (#1943).
               const hostWritten = HOST_REQUIRED_CRITERIA.filter((c) =>
-                c.required(state.requestText || state.prompt, runRoot(this.store.workspace, state)),
+                c.required(
+                  this.criterionRequest(runId, state),
+                  runRoot(this.store.workspace, state),
+                ),
               );
               const hostRepairs = (spec: Spec): Spec =>
                 addHostRequiredCriteria(
@@ -1953,7 +1937,7 @@ export class WorkflowScheduler {
               // A criterion the host's own rules make the spec author add is not scope the request
               // lacks: md-site (bench round 52) ran specify three times and plan and analyze four
               // times over the required 1280 px criterion (#1765).
-              const request = state.requestText || state.prompt;
+              const request = this.criterionRequest(runId, state);
               const root = runRoot(this.store.workspace, state);
               const required = HOST_REQUIRED_CRITERIA.filter((c) => c.required(request, root));
               const requiredIds = hostRequiredIds(spec, required);
@@ -6024,10 +6008,13 @@ export class WorkflowScheduler {
     // The author and the reviewer read the same decision, each worded for its stage (#1831).
     const crossPlatform =
       profile.output === "spec"
-        ? crossPlatformNote(state.requestText || state.prompt, runRoot(this.store.workspace, state))
+        ? crossPlatformNote(
+            this.criterionRequest(runId, state),
+            runRoot(this.store.workspace, state),
+          )
         : profile.output === "analysis"
           ? crossPlatformAnalysisNote(
-              state.requestText || state.prompt,
+              this.criterionRequest(runId, state),
               runRoot(this.store.workspace, state),
             )
           : null;
@@ -11482,6 +11469,14 @@ ${note}`;
     return tasks.some((t) => t.writes.some((w) => w.path === path && w.action === "create"));
   }
   /** The output of the checks whose latest run in a task's attempts failed, joined (#1459). */
+  /**
+   * The request the host-required and cross-platform criterion decisions read: the request with
+   * the clarification answers a person gave (#1964), so an answer that adds a platform or turns CI
+   * down reaches the author note, the analysis filter and the required predicate alike.
+   */
+  private criterionRequest(runId: string, state: RuntimeState): string {
+    return statedRequest(state, this.store.requests(runId));
+  }
   private failedCheckOutput(runId: string, taskId: string): string {
     const latest = new Map<string, { status: string; artifact_id: string }>();
     for (const row of this.store.taskCheckRuns(runId, taskId)) latest.set(row.check_id, row);
