@@ -111,8 +111,13 @@ describe("specify on Sonnet (#1173)", () => {
   const opus = { runModel: "claude-code/opus" };
   const on = parseModelRouting({ specifyOnSonnet: true });
 
-  test("is off by default: a Claude Code Opus run keeps Opus for specify", () => {
-    expect(resolveStageRoutes("sdd", stages, undefined, opus)).toEqual([]);
+  test("is on by default: an unset flag moves a Claude Code Opus run's specify to Sonnet", () => {
+    expect(resolveStageRoutes("sdd", stages, undefined, opus)).toEqual([
+      { stageId: "specify", model: "claude-code/sonnet", source: "modelRouting.specifyOnSonnet" },
+    ]);
+  });
+
+  test("specifyOnSonnet false keeps Opus for specify", () => {
     const off = parseModelRouting({ specifyOnSonnet: false });
     expect(resolveStageRoutes("sdd", stages, undefined, { ...opus, routing: off })).toEqual([]);
   });
