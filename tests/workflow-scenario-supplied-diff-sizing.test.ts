@@ -165,6 +165,83 @@ describe("scenario: spdxok-update R64, a plan priced by files x history and spli
   });
 });
 
+// Bench round 65 (#2018): seqmill-update and aclvet-update supplied a README diff whose hunk shows
+// the README's own code fences as context lines (" ```bash", " ```"). The fence reader ended the
+// diff block there, README.md got no supplied lines, and each mixed task fell back to history:
+// seqmill T001 381k-1.06M for a 276k run, aclvet T002 oversized and a split-tasks replan of 81k.
+const readmeDiff = (tool: string) => [
+  "--- a/README.md",
+  "+++ b/README.md",
+  "@@ -10,6 +10,7 @@",
+  " ## Usage",
+  " ",
+  " ```bash",
+  `-${tool} --help`,
+  `+${tool} --version`,
+  `+${tool} --help`,
+  " ```",
+  " ",
+  "@@ -30,3 +31,2 @@",
+  " ## License",
+  "-----",
+  " MIT",
+].join("\n");
+const cliDiff = ["--- a/src/seqmill/cli.py", "+++ b/src/seqmill/cli.py", "@@ -1,4 +1,6 @@", " import argparse", "+from . import __version__", " ", " def main():", "-    p = argparse.ArgumentParser()", "+    p = argparse.ArgumentParser(prog='seqmill')", "+    p.add_argument('--version', action='version', version=__version__)"].join("\n");
+const testFile = Array.from({ length: 66 }, (_, i) => (i === 0 ? "from seqmill import cli" : `assert cli is not None  # ${i}`));
+const seqmillBrief = [
+  "Add a --version flag. Apply exactly these changes:",
+  "```diff",
+  cliDiff,
+  "```",
+  "Update the README:",
+  "```diff",
+  readmeDiff("seqmill"),
+  "```",
+  "Create `tests/test_version.py` with exactly this content:",
+  "```python",
+  ...testFile,
+  "```",
+].join("\n");
+const aclvetBrief = [
+  "Change the usage line. In `internal/cli/cli_test.go`:",
+  "```diff",
+  "--- a/internal/cli/cli_test.go",
+  "+++ b/internal/cli/cli_test.go",
+  "@@ -12,3 +12,3 @@",
+  " func TestUsage(t *testing.T) {",
+  "-\tconst expectedUsage = \"usage: aclvet [flags] FILE\"",
+  "+\tconst expectedUsage = \"usage: aclvet [flags] FILE...\"",
+  " }",
+  "```",
+  "and the README:",
+  "```diff",
+  readmeDiff("aclvet"),
+  "```",
+].join("\n");
+const seqmillPaths = ["src/seqmill/cli.py", "README.md", "tests/test_version.py"];
+const aclvetPaths = ["internal/cli/cli_test.go", "README.md"];
+
+describe("scenario: seqmill-update and aclvet-update R65, a README diff across a code fence (#2018)", () => {
+  test("every added and removed line of a README hunk with a code fence counts, a removed --- rule too", () => {
+    expect(Object.fromEntries(suppliedLines(seqmillBrief, seqmillPaths))).toEqual({ "src/seqmill/cli.py": 4, "README.md": 4, "tests/test_version.py": 66 });
+    expect(Object.fromEntries(suppliedLines(aclvetBrief, aclvetPaths))).toEqual({ "internal/cli/cli_test.go": 2, "README.md": 4 });
+  });
+
+  test("seqmill's mixed task is priced from the supplied lines and fits", () => {
+    const report = size(policy(true), graph(planned("T001", seqmillPaths)), seqmillBrief);
+    expect(report.tasks).toMatchObject([{ taskId: "T001", basis: "supplied", suppliedLines: 74, oversized: false, estimate: { low: 102_000, high: 402_000 } }]);
+    expect(report.decision).toBe("fits");
+    // Below every history sample (the forecast-floor rule) and around the 276k the run cost.
+    expect(report.tasks[0]?.estimate.low).toBeLessThan(cheapestSample);
+  });
+
+  test("aclvet's test-and-README task is priced from the supplied lines, with no split-tasks replan", () => {
+    const report = size(policy(true), graph(planned("T002", aclvetPaths)), aclvetBrief);
+    expect(report.tasks).toMatchObject([{ taskId: "T002", basis: "supplied", suppliedLines: 6, oversized: false }]);
+    expect(report.decision).toBe("fits");
+  });
+});
+
 // The same run through the scheduler: the request reaches sizing and the approval names the source.
 const spec: Spec = { schemaVersion: 1, featureId: "spdxok", revision: 1, title: "SPDX update", problem: "The SPDX list is old", outcome: "The list is current", inScope: ["Update the list"], outOfScope: [], assumptions: [], openQuestions: [], requirements: [{ id: "FR-001", text: "The SPDX list is 3.24", priority: "must", verification: "automated", sourceRefs: [] }], criteria: [{ id: "AC-001", requirementIds: ["FR-001"], given: "the list", when: "it is read", then: "it is 3.24", method: "automated" }], dependencies: [] };
 const markdown = "# Plan\n## Context\nApply the supplied diff.\n## Decisions\nDEC-001: FR-001 in src/spdx.ts.\n## Components\nsrc/spdx.ts, src/cli.ts, src/license.ts, src/format.ts\n## Data\nNone\n## Verification\nTests\n## Risks\nNone for fixture";
