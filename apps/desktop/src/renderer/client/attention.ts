@@ -39,6 +39,8 @@ export interface ApprovalBody {
   budgetWarning?: string;
   /** Present when tasks were priced from the lines the request supplies (`estimateSourceText`). */
   estimateSource?: string;
+  /** Present when the request gives every write of some tasks verbatim (`hostApplyText`, #2023). */
+  hostApply?: string;
   /** Each deliverable of the request and the requirements, or the request's exclusion, covering it. */
   requestCoverage?: {
     deliverable: string;

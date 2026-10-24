@@ -28,6 +28,8 @@ interface ApprovalBody {
   budgetWarning?: string;
   /** Present when tasks were priced from the lines the request supplies (`estimateSourceText`). */
   estimateSource?: string;
+  /** Present when the request gives every write of some tasks verbatim (`hostApplyText`, #2023). */
+  hostApply?: string;
   requestCoverage?: RequestCoverageRow[];
   executionMode?: "inline" | "worktree";
   sandbox?: "auto" | "required";
@@ -635,6 +637,7 @@ export function DecisionPrompt({
           {body.estimateSource ? (
             <text fg={t.textMuted}>{`  ${flatten(body.estimateSource)}.`}</text>
           ) : null}
+          {body.hostApply ? <text fg={t.textMuted}>{`  ${flatten(body.hostApply)}.`}</text> : null}
           <text fg={t.textMuted}>
             {body.sandbox
               ? `  Checks, fixes and acceptance apps run in the OS sandbox (${body.sandbox}).`

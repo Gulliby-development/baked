@@ -29,6 +29,7 @@ import {
   pullRequestReviews,
   repairReviewsRequest,
 } from "../core/workflows/follow.js";
+import { hostApplySummary } from "../core/workflows/host-apply.js";
 import { InitiativeService, type InitiativeStep } from "../core/workflows/initiatives/service.js";
 import { issueStart } from "../core/workflows/issue-source.js";
 import { runRecording, withModelCalls } from "../core/workflows/model-recording.js";
@@ -430,6 +431,7 @@ export async function executeWorkflowCommand(
         acceptance: walkThroughs(service.store, runId),
         forkStages: service.forkStages(runId),
         wouldStop: wouldStopSummary(service.store, runId),
+        hostApply: hostApplySummary(service.store, runId),
         recovery:
           snapshot.status === "blocked" || snapshot.status === "failed"
             ? stopRecovery(service.store, runId)
