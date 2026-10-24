@@ -134,13 +134,18 @@ if (command === "export" && args.length === 2) {
             `first-response stops ${run.newFirstByteStops} of ${run.firstByte.length} calls, ` +
             `cost-cap refusals ${run.newCostStops} of ${run.costCap.length} attempts, ` +
             `new test splits ${run.newTestSplits} of ${run.testSplits.length} test tasks, ` +
-            `new recovery rungs ${run.newRecoveries} of ${run.stallLadder.length} stalls` +
+            `new recovery rungs ${run.newRecoveries} of ${run.stallLadder.length} stalls, ` +
+            `repeated failures ${run.repeatedFailures.filter((b) => b.replayed === "repeat").length} of ${run.repeatedFailures.length} failing correctives (new ${run.newRepeatStops})` +
             (ratios ? `, forecast/final ${ratios}` : ""),
         );
         for (const b of run.boundaries.filter((b) => b.recorded !== b.replayed))
           console.log(
             `    ${new Date(b.at).toISOString()} ${b.attemptId}: recorded ${b.recorded}, now ${b.replayed} ` +
               `(forecast ${usd(b.projectedUsd)}, ceiling ${usd(b.ceilingUsd)}, spent ${usd(b.spentUsd)})`,
+          );
+        for (const b of run.repeatedFailures.filter((b) => b.replayed === "repeat"))
+          console.log(
+            `    ${b.taskId}: fails as ${b.previous ?? "-"} did (recorded ${b.recorded}, now ${b.replayed})`,
           );
         for (const b of run.stallLadder.filter((b) => b.recorded !== b.replayed))
           console.log(

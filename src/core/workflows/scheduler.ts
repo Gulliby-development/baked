@@ -52,6 +52,7 @@ import {
   failedCheckFindings,
   failingFilesInOutput,
   failureSignature as failingLines,
+  failingOf,
   failuresCovered,
   isTestOf,
   noTestsCollected,
@@ -492,6 +493,14 @@ import { preloadTaskFiles } from "./read-outline.js";
 import { recoverRun, requestRecovery, settleSupersededEffects } from "./recovery.js";
 import { recoveryAdvice } from "./remedies.js";
 import { RepairBlockSchema } from "./repairable-schema.js";
+import {
+  REPEAT_KIND,
+  REPEAT_TASKS_DIR,
+  type RepeatCheck,
+  type RepeatRecord,
+  repeatCheck,
+  repeatRecord,
+} from "./repeated-failure.js";
 import { deliverableProblems, repairDeliverables, requestCoverage } from "./request-coverage.js";
 import {
   type AccountRefusal,
@@ -580,7 +589,7 @@ import {
   rungText,
   writeLadder,
 } from "./stall-ladder.js";
-import { recordWouldStop, stopFault } from "./stop-reasons.js";
+import { recordWouldStop, stopFault, stopMode } from "./stop-reasons.js";
 import {
   repairUncoveredCriteria,
   UNCOVERED_SUBMISSIONS,
@@ -15456,7 +15465,11 @@ ${note}`;
     if (!fresh.length) return;
     if (scope === "task") {
       state.pendingTaskRepair = fresh.map((f) => f.id);
-      this.store.transaction(() => this.store.saveState(runId, state));
+      this.store.transaction(() => {
+        this.store.saveState(runId, state);
+        // Before the correction is counted, so a chain the round limit refuses records it too.
+        this.recordRepeatedFailures(runId, state, policy, fresh);
+      });
     }
     this.store.transaction(() => {
       this.amendSpec(runId, state, fresh);
@@ -15469,6 +15482,80 @@ ${note}`;
       if (parsed.schemaVersion === 1)
         state.stageIndex = parsed.definition.stages.findIndex((s) => s.kind === "task-graph");
     });
+  }
+  /**
+   * Records each failing corrective's required checks (`repeats/tasks/<task>.json`, #1996) and,
+   * when they fail exactly as the corrective it corrects did, the `repeated_failure` stop reason's
+   * would-stop, once per chain. Shadow only: the correction is opened as before. cfgquill lint
+   * a843cc11 (bench round 64): T005, T006 and T007 failed gofmt with the same byte order mark
+   * error at the same position, and only `maxTaskRepairs` ended the chain after 4.8M tokens.
+   */
+  private recordRepeatedFailures(
+    runId: string,
+    state: RuntimeState,
+    policy: RunPolicy,
+    findings: Review["findings"],
+  ): void {
+    const graph = state.graph;
+    if (!graph) return;
+    const byTask = new Map<string, Review["findings"]>();
+    for (const finding of findings) {
+      const taskId = state.repairPredecessors[finding.id];
+      if (taskId) byTask.set(taskId, [...(byTask.get(taskId) ?? []), finding]);
+    }
+    const recordOf = (taskId: string): RepeatRecord | null => {
+      const artifact = this.store.latestArtifact(runId, `${REPEAT_TASKS_DIR}${taskId}.json`);
+      if (!artifact) return null;
+      try {
+        return JSON.parse(this.store.readArtifact(runId, artifact.id)) as RepeatRecord;
+      } catch {
+        return null;
+      }
+    };
+    for (const [taskId, own] of byTask) {
+      const task = graph.tasks.find((t) => t.id === taskId);
+      if (!task || task.origin === "planned" || recordOf(taskId)) continue;
+      const checks = own.flatMap((finding): RepeatCheck[] => {
+        const id = taskCheckOfClaim(finding.claim) ?? checkOfClaim(finding.claim);
+        if (!id) return [];
+        const output =
+          this.commandOutput(runId, finding.evidenceIds) ?? failingOf(finding.impact) ?? "";
+        const files = [
+          ...(finding.file ? [finding.file] : []),
+          ...failingFilesInOutput(output, graph.tasks),
+        ];
+        return [repeatCheck(id, output, files)];
+      });
+      if (!checks.length) continue;
+      const corrected =
+        task.findingIds.map((id) => state.repairPredecessors[id]).find(Boolean) ?? null;
+      const previous = corrected ? recordOf(corrected) : null;
+      const record = repeatRecord(taskId, corrected, previous, checks);
+      this.store.artifact(
+        runId,
+        REPEAT_KIND,
+        `${REPEAT_TASKS_DIR}${taskId}.json`,
+        canonical(record),
+      );
+      if (record.decision !== "repeat" || !record.previous) continue;
+      const mode = stopMode(policy, "repeated_failure");
+      if (mode === "enforce") continue;
+      const positions = checks.flatMap((c) => c.files).slice(0, 5);
+      recordWouldStop(this.store, runId, {
+        reason: "repeated_failure",
+        mode,
+        key: `chain-${record.root}`,
+        summary: `${taskId} failed ${checks.map((c) => c.id).join(", ")} exactly as ${record.previous} did${positions.length ? ` (${positions.join(", ")})` : ""}: a correction would not start another model session`,
+        inputs: {
+          rounds: [record.previous, taskId],
+          root: record.root,
+          checks: checks.map((c) => c.id),
+          files: [...new Set(checks.flatMap((c) => c.files))],
+          hash: record.hash,
+          firstDifference: record.firstDifference,
+        },
+      });
+    }
   }
   /**
    * A correction whose findings are all low, or all point at one file, starts as a quick fix when
