@@ -365,6 +365,8 @@ export interface QualityConfig {
   packageContents?: "off" | "on";
   /** Rewrite a symbol a review keeps finding one case at a time, against all the cases (finding chains): `on` or `off` (default). */
   chainRewrite?: "off" | "on";
+  /** Let the host correct a test that misquotes a criterion literal itself, when the replacement is exact and the task's checks pass on it: `on` or `off` (default, recorded in shadow). */
+  misquoteFix?: "off" | "on";
   /** Property-based tests from marked criteria: `preset` or absent follows the workflow preset. */
   propertyTests?: "preset" | "auto" | "off";
 }

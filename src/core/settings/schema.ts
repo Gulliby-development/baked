@@ -1057,6 +1057,28 @@ export const SETTINGS: readonly SettingDefinition[] = [
     ],
   },
   {
+    id: "quality.misquoteFix",
+    page: "code-quality",
+    section: "Workflow runs",
+    label: "Misquote host fix",
+    help: "When a task reports a spec conflict because its test copied a criterion's value with a small change, and that spelling occurs exactly once in the task's test files with nothing to escape, the host replaces it with the criterion's value as written and runs the task's required checks. When they pass the task goes on without another model session; when one fails the edit is put back and a session corrects the test as before.",
+    scopes: BOTH,
+    type: "enum",
+    default: "off",
+    options: [
+      {
+        value: "off",
+        label: "off",
+        help: "A session corrects the test; the host only records what it would do.",
+      },
+      {
+        value: "on",
+        label: "on",
+        help: "Make the exact replacement and keep it when the checks pass.",
+      },
+    ],
+  },
+  {
     id: "quality.propertyTests",
     page: "code-quality",
     section: "Tests",

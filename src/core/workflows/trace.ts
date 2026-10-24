@@ -54,6 +54,13 @@ import {
   shareShortfall,
 } from "./initiatives/service.js";
 import type { TokenPoolView } from "./initiatives/token-pool.js";
+import {
+  MISQUOTE_FIX_DIR,
+  MISQUOTE_FIX_KIND,
+  type MisquoteFixRecord,
+  type MisquoteFixRule,
+  misquoteFixDecision,
+} from "./misquote-fix.js";
 import { recordingOf } from "./model-recording.js";
 import { type PlanCostRate, planCostOf } from "./plan-cost.js";
 import {
@@ -114,6 +121,8 @@ const KEPT_ARTIFACTS = new Set([
   REQUEST_CONFLICT_KIND,
   // Each planned task's host apply decision: its writes' supplied blocks and apply checks (#2023).
   HOST_APPLY_KIND,
+  // Each misquote settle's host-fix decision: occurrence counts and spelling flags, no text (#2047).
+  MISQUOTE_FIX_KIND,
 ]);
 
 /** Tables that hold evidence, effects or prose the replay never reads. */
@@ -622,6 +631,54 @@ export interface RunReplay {
   hostApply: HostApplyBoundary[];
   /** Tasks whose apply decision (would apply or not) the current rule makes differently. */
   newApplyDecisions: number;
+  /** Each misquote settle's host-fix decision against the current rule (#2047). */
+  misquoteFixes: MisquoteFixBoundary[];
+  /** Misquote settles whose host-fix decision (apply or open a session) the current rule changes. */
+  newMisquoteFixes: number;
+}
+
+export interface MisquoteFixBoundary {
+  taskId: string;
+  mode: MisquoteFixRecord["mode"];
+  recorded: boolean;
+  replayed: boolean;
+  /** Why the current rule opens a session; null when it would apply the replacement. */
+  reason: string | null;
+  /** The checks on the host's edit as recorded; null when the host did not edit. */
+  checks: MisquoteFixRecord["checks"];
+}
+
+/**
+ * Every misquote host-fix decision a run recorded (`conflicts/misquote/`, #2047), decided again
+ * from its recorded sites: occurrence counts and spelling flags. Traces before #2047 record none.
+ */
+export function replayMisquoteFixes(
+  store: WorkflowStore,
+  runId: string,
+  decide: MisquoteFixRule = misquoteFixDecision,
+): MisquoteFixBoundary[] {
+  return store
+    .artifacts(runId)
+    .filter((a) => a.kind === MISQUOTE_FIX_KIND && a.logical_path.startsWith(MISQUOTE_FIX_DIR))
+    .flatMap((artifact) => {
+      let record: MisquoteFixRecord;
+      try {
+        record = JSON.parse(store.readArtifact(runId, artifact.id));
+      } catch {
+        return [];
+      }
+      const verdict = decide(record.sites ?? []);
+      return [
+        {
+          taskId: record.taskId,
+          mode: record.mode,
+          recorded: record.apply,
+          replayed: verdict.apply,
+          reason: verdict.reason,
+          checks: record.checks ?? null,
+        },
+      ];
+    });
 }
 
 export interface HostApplyBoundary {
@@ -2455,6 +2512,8 @@ function replayRun(
   | "newConflictDecisions"
   | "hostApply"
   | "newApplyDecisions"
+  | "misquoteFixes"
+  | "newMisquoteFixes"
 > | null {
   const db = store.connection;
   const run = store.run(runId);
@@ -2629,6 +2688,7 @@ export function replayTrace(
     requestConflictRule?: RequestConflictRule;
     hostApplyRule?: HostApplyRule;
     poolGrowthRule?: PoolGrowthRule;
+    misquoteFixRule?: MisquoteFixRule;
   } = {},
 ): TraceReplay {
   // Initiative starts rewind their own copies of the trace, before the run replay rewinds this one.
@@ -2679,6 +2739,9 @@ export function replayTrace(
     const applies = new Map(
       runIds.map((runId) => [runId, replayHostApply(store, runId, options.hostApplyRule)]),
     );
+    const misquotes = new Map(
+      runIds.map((runId) => [runId, replayMisquoteFixes(store, runId, options.misquoteFixRule)]),
+    );
     const runs: RunReplay[] = [];
     for (const runId of runIds) {
       const firstByte = timings.get(runId) ?? [];
@@ -2701,6 +2764,7 @@ export function replayTrace(
       const repeatedFailures = repeats.get(runId) ?? [];
       const requestConflicts = requests.get(runId) ?? [];
       const hostApply = applies.get(runId) ?? [];
+      const misquoteFixes = misquotes.get(runId) ?? [];
       if (
         !replay.boundaries.length &&
         !firstByte.length &&
@@ -2710,7 +2774,8 @@ export function replayTrace(
         !findingChains.length &&
         !repeatedFailures.length &&
         !requestConflicts.length &&
-        !hostApply.length
+        !hostApply.length &&
+        !misquoteFixes.length
       )
         continue;
       runs.push({
@@ -2735,6 +2800,8 @@ export function replayTrace(
         newConflictDecisions: requestConflicts.filter((b) => b.replayed !== b.recorded).length,
         hostApply,
         newApplyDecisions: hostApply.filter((b) => b.replayed !== b.recorded).length,
+        misquoteFixes,
+        newMisquoteFixes: misquoteFixes.filter((b) => b.replayed !== b.recorded).length,
       });
     }
     const gates = replayShareGate(store, options.shareGate);
