@@ -1,4 +1,5 @@
-import { rowFiles, rowsArtifact } from "../src/core/workflows/acceptance-rows.js";
+import { literalPropertyProblems, rowFiles, rowsArtifact } from "../src/core/workflows/acceptance-rows.js";
+import { clearBannedProperties } from "../src/core/verification/initiative-ownership.js";
 import { CALL_COST_MODELS, NEXT_CALL, perCallCostScenario } from "./helpers/per-call-cost-scenario.js";
 import { decoySamples, residualSamples, residualSpec } from "./helpers/criteria-residual-fixtures.js";
 import { evaluateAutoApproval, planScopeAdvice } from "../src/core/workflows/auto-approval.js";
@@ -83,7 +84,7 @@ import {
 import { staticCorrection } from "../src/core/workflows/scheduler.js";
 import { ASSERTION_FAILURES } from "./helpers/assertion-failures.js";
 import { failureOwner } from "../src/core/workflows/task-graph.js";
-import { type Check, type RunPolicy, type RuntimeState, type TaskGraph, uncontractedBuildCriteria } from "../src/core/workflows/schemas.js";
+import { type Check, type RunPolicy, type RuntimeState, type Spec, type TaskGraph, uncontractedBuildCriteria } from "../src/core/workflows/schemas.js";
 import type { TaskRow, WorkflowStore } from "../src/core/workflows/store.js";
 import { scanTestIntegrity, testChanges } from "../src/core/workflows/test-integrity.js";
 import type { Task } from "../src/core/workflows/types.js";
@@ -254,6 +255,23 @@ describe("host-written acceptance rows in the case-walk and mutation gates (#159
       expect(proposalFiles(changes)).toEqual([]);
       expect(generateMutants(changes)).toEqual([]);
     } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+  // #2045: a `property` flag on the table keeps it from the rows in every framework; the host
+  // clears it under a request that bans generated inputs, and refuses it otherwise.
+  test.each(Object.keys(layouts) as (keyof typeof layouts)[])("%s: a property-flagged table is refused, and cleared under a ban it yields its rows", (framework) => {
+    const flagged: Spec = { ...fixtureSpec, criteria: [{ ...fixtureSpec.criteria[0]!, given: "a number", when: "it is doubled", then: "Input | Expected\n12 | 24\n34 | 68", property: "numbers" }] };
+    const task: Task = { id: "T001", title: "Rows", description: "Write actual(input)", requirementIds: ["FR-001"], criterionIds: ["AC-001"], dependsOn: [], profileId: "implementer", origin: "planned", findingIds: [], rationale: "Test", readHints: [], checkIds: [],
+      rows: ["AC-001"], rowTest: { ...layouts[framework], framework, data: "tests/rows.json" },
+      writes: [layouts[framework].harness, layouts[framework].test, "tests/rows.json"].map((path) => ({ path, action: "create" })) };
+    const graph = { schemaVersion: 1 as const, featureId: "fixture", revision: 1, specHash: "a".repeat(64), planHash: "b".repeat(64), tasks: [task] };
+    const analysis = { schemaVersion: 1 as const, inputHash: "a".repeat(64), verdict: "pass" as const, findings: [] };
+    expect(literalPropertyProblems(flagged)).toEqual([expect.stringContaining("Remove property or the table")]);
+    const { spec, cleared } = clearBannedProperties(flagged, "Every test is a literal example: no random values, no generated inputs.");
+    expect(cleared).toEqual(["AC-001"]);
+    expect(literalPropertyProblems(spec)).toEqual([]);
+    const artifact = rowsArtifact(spec, graph, analysis);
+    expect(artifact.rows.map((row) => row.input)).toEqual([12, 34]);
+    expect(rowFiles(task, artifact).length).toBeGreaterThan(0);
   });
 });
 

@@ -1,5 +1,6 @@
 import { matchGlob } from "../platform/index.js";
 import { namedFiles } from "../workflows/initiatives/plan.js";
+import { bansPropertyTests } from "../workflows/quality/properties.js";
 import type { Review, Spec } from "../workflows/schemas.js";
 import type { RuntimeState } from "../workflows/types.js";
 import { canHold, normalizePath, requestedDeliverable } from "./deliverable-paths.js";
@@ -101,6 +102,25 @@ export function clearBoundaryProperties(
   if (!ownsNoTests(bounds)) return { spec, cleared: [] };
   const cleared = spec.criteria.filter((c) => c.property).map((c) => c.id);
   if (!cleared.length) return { spec, cleared };
+  return {
+    spec: { ...spec, criteria: spec.criteria.map(({ property: _, ...c }) => c) },
+    cleared,
+  };
+}
+
+/**
+ * The criteria whose `property` flag the host clears because the request bans generated inputs
+ * (`bansPropertyTests`): such a run has the property-test mode `off`, so the flag can only keep a
+ * literal table from the rows (`literalRows`) and mark its cases generated. dirdrift-update (bench
+ * round 66, "no random values, no generated inputs") had its 25-row table marked `"strings"`, and
+ * no criterion was eligible for rows (#2045). A recorded host edit, never a rejection.
+ */
+export function clearBannedProperties(
+  spec: Spec,
+  request: string,
+): { spec: Spec; cleared: string[] } {
+  const cleared = spec.criteria.filter((c) => c.property).map((c) => c.id);
+  if (!cleared.length || !bansPropertyTests(request)) return { spec, cleared: [] };
   return {
     spec: { ...spec, criteria: spec.criteria.map(({ property: _, ...c }) => c) },
     cleared,
