@@ -132,7 +132,7 @@ When a model fails with a transient error, BAKED retries it, then moves to the n
 
 Chains are edited in `/router` (Model Fallback section: `Enter` adds, `d` clears) or in config.
 
-Workflow runs use the same chains for routes that have no fallback models of their own, and a run whose provider refuses the account (no credits or quota, a subscription usage limit, rejected key) moves to the first model of the chain on another provider. See [workflow runtime](workflows/runtime.md).
+Workflow runs use the same chains for routes that have no fallback models of their own, and a run whose provider refuses the account (no credits or quota, a subscription usage limit, rejected key) moves to the first model of the chain on another provider. The move happens on the same step, keeps the run's workspace and task state, and leaves the refusal (with a usage limit's reset time) on the failed attempt; in an initiative every feature run does this on its own, so a Codex limit with a chain to a Claude Code model keeps the features going instead of blocking them `provider_account`. A refusal after the attempt has already changed files is not moved and blocks the run for a reroute. Without a chain on another provider, add one before a long initiative on a single subscription. See [workflow runtime](workflows/runtime.md).
 
 - Each model gets `retry.maxTransientRetries` attempts (default 3) with exponential backoff before the next one is tried. After the last fallback the chain starts again from the primary, at most 3 cycles, then the original error is raised.
 - Transient means overload, 429, 5xx, rate limits, timeouts and connection errors. A 403 counts only when its body mentions overload or a rate limit. 401, invalid requests and unknown models fail at once.

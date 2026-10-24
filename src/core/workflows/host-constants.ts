@@ -22,6 +22,49 @@ function schemaVersionOf(schema: z.ZodType): unknown {
   return field instanceof z.ZodLiteral ? field.value : undefined;
 }
 
+/**
+ * The fields `fillHostConstants` fills or the scheduler rebinds, per output, as dotted paths; `*`
+ * applies to every output. The advertised tool schema makes each optional (#1929), so the list
+ * and the filling cannot drift: a host-filled field is added here, never left required.
+ */
+export const HOST_FIELDS: Readonly<Record<string, readonly string[]>> = {
+  "*": ["schemaVersion"],
+  analysis: ["inputHash"],
+  plan: [
+    "taskGraph.schemaVersion",
+    "taskGraph.revision",
+    "taskGraph.specHash",
+    "taskGraph.planHash",
+  ],
+};
+
+const HOST_NOTE = "Filled by the host; leave it out.";
+
+/** `schema` with the field at `path` optional and described as host-filled, when it has one. */
+function hostFieldOptional(schema: z.ZodType, path: readonly string[]): z.ZodType {
+  const [key, ...rest] = path;
+  if (!(schema instanceof z.ZodObject) || key === undefined) return schema;
+  const field = (schema.shape as Record<string, z.ZodType>)[key];
+  if (!field) return schema;
+  // A hash pattern is dropped too: the model has no way to compute the digest it describes.
+  const replaced = rest.length
+    ? hostFieldOptional(field, rest)
+    : (field instanceof z.ZodString ? z.string() : field).optional().describe(HOST_NOTE);
+  return schema.safeExtend({ [key]: replaced });
+}
+
+/**
+ * The schema a model is shown for an `output`'s submission: the result schema with every host
+ * field optional. A model that will not invent a plan hash otherwise never submits (php-slugify
+ * 151471f5). Only its JSON schema is used; submissions are validated by `withHostConstants`.
+ */
+export function advertisedSchema(output: string, schema: z.ZodType): z.ZodType {
+  return [...(HOST_FIELDS["*"] ?? []), ...(HOST_FIELDS[output] ?? [])].reduce(
+    (advertised, path) => hostFieldOptional(advertised, path.split(".")),
+    schema,
+  );
+}
+
 /** `value` with the host-known fields of an `output` result set. */
 export function fillHostConstants(output: string, version: unknown, value: unknown): unknown {
   if (!isRecord(value)) return value;

@@ -3,6 +3,7 @@ import { mkdirSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { withTempDir } from "./helpers/temp-dir.js";
 
+/** Runs a fixture in a child killed after `timeout`, which stays a few seconds under the test's own limit (#1919). */
 async function fixture(name: string, timeout = 30000): Promise<string> {
   return withTempDir("baked-workflow-adapter-", async (root) => {
     const profile = join(root, ".baked", "test-profile");
@@ -38,7 +39,8 @@ test("initiative commands and new-run execution options go through the worker to
 }, 95000);
 
 test("a soft checkpoint stops a read-heavy agent loop between two steps", async () => {
-  expect(await fixture("workflow-checkpoint-loop.ts")).toContain('"checkpointLoop":"passed"');
+  // The child was killed at 30 s under the test's 60 s; a Windows runner took 32.6 s (#1919).
+  expect(await fixture("workflow-checkpoint-loop.ts", 55000)).toContain('"checkpointLoop":"passed"');
 }, 60000);
 
 test("workflow slash command uses the current tab model with an already cached worker", async () => {
