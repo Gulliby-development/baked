@@ -12,6 +12,7 @@ import {
 } from "../src/core/verification/output-counts.js";
 import type { RunPolicy } from "../src/core/workflows/schemas.js";
 import { baselineDebt, baselineKeys } from "../src/core/verification/task-end-check.js";
+import { newId } from "../src/core/workflows/store.js";
 import type { ExecutionRequest } from "../src/core/workflows/types.js";
 import { FixtureExecutor, fixturePolicy, workflowFixture } from "./helpers/workflow-fixture.js";
 
@@ -375,6 +376,30 @@ describe("baseline comparison in update runs", () => {
       const run = await driveToChecks(fixture);
       expect(baseline(fixture, run.runId)?.debt).toEqual({ [commandKey(ruff)]: ["tools/legacy.py|F# [*] `os` imported but unused"] });
       expect((await fixture.service.get(run.runId)).status).toBe("completed");
+    });
+
+    // #1393 (smoke 2026-10-17, chunker e3463396): task end accepted the ruff debt, then the
+    // command-gate stage of the v2 `quick` definition stopped the finished run with
+    // baseline_failure. Its gate takes the same debt now.
+    test("ruff debt passes the command-gate stage of a v2 definition (quick) and the run completes", async () => {
+      const full = "F401 [*] `os` imported but unused\n --> tools/legacy.py:1:8\n  |\n1 | import os\n  |        ^^\n  |\nhelp: Remove unused import: `os`\n\nFound 1 error.\n[*] 1 fixable with the `--fix` option.";
+      const ruff = { ...lint, id: "ruff", args: ["-e", `console.log(${JSON.stringify(full)}); process.exit(1)`] };
+      const policy: RunPolicy = { ...fixturePolicy, clarification: "assume", staticBaseline: "relative", checks: [...fixturePolicy.checks, ruff] };
+      const fixture = workflowFixture({ policy });
+      cleanups.push(fixture.dispose);
+      mkdirSync(join(fixture.root, "tools"));
+      writeFileSync(join(fixture.root, "tools", "legacy.py"), "import os\n");
+      const { service } = fixture;
+      const run = await service.start({ commandId: newId(), featureId: "fixture", workflowId: "quick", prompt: "Create ready value", ownerLabel: "test", policy });
+      let current = await service.drive(run.runId, signal());
+      for (let i = 0; i < 5 && current.status === "waiting"; i++) {
+        if (service.store.requests(run.runId).find((r) => r.status === "pending")?.kind !== "approval") break;
+        await fixture.approve(run.runId);
+        current = await service.drive(run.runId, signal());
+      }
+      const gateDebt = service.store.artifacts(run.runId).filter((a) => a.logical_path.startsWith("checks/baseline-debt/ruff-"));
+      expect(gateDebt.length).toBeGreaterThan(0);
+      expect(current.status).toBe("completed");
     });
 
     test("the same diagnostic in a file a task writes still fails the check", async () => {
