@@ -13,7 +13,7 @@ import { ProcessScope } from "../src/core/workflows/process-scope.js";
 import { canRepairRun, type RepairBlock } from "../src/core/workflows/repairable.js";
 import { growthLimit, type InitiativeView, rebaseView, shareShortfall } from "../src/core/workflows/initiatives/service.js";
 import { estimateInitiative } from "../src/core/workflows/initiatives/estimate.js";
-import { manifestFieldChanges } from "../src/core/workflows/quality/manifests.js";
+import { hasExecutableFields, manifestFieldChanges } from "../src/core/workflows/quality/manifests.js";
 import { REPLAY_TARGETS } from "../src/core/workflows/quality/baseline-replay.js";
 import type { TestRunner } from "../src/core/verification/output-counts.js";
 import { unrequestedManifestFields } from "../src/core/workflows/quality/dependencies.js";
@@ -989,9 +989,42 @@ describe("gate matrix: manifest executable fields (#1793)", () => {
     expect(changes("Cargo.toml", cargo(""), cargo("").replace("0.1.0", "0.2.0"))).toEqual([]);
     expect(changes("Cargo.toml", cargo(""), cargo('build = "build.rs"\n'))).toEqual(["package.build"]);
   });
-  cell("go", "go.mod replace, not the go version", () => {
-    expect(changes("go.mod", "module m\n\ngo 1.22\n", "module m\n\ngo 1.23\n")).toEqual([]);
+  cell("go", "go.mod replace and the go line, not the module path", () => {
+    expect(changes("go.mod", "module m\n\ngo 1.22\n", "module n\n\ngo 1.22\n")).toEqual([]);
     expect(changes("go.mod", "module m\n\ngo 1.22\n", "module m\n\ngo 1.22\n\nreplace example.com/x => ../x\n")).toEqual(["replace example.com/x"]);
+    // #1963: the go line selects (and downloads) the toolchain that runs the checks.
+    const mod = (version: string) => `module m\n\ngo ${version}\n`;
+    expect(changes("go.mod", mod("1.22.0"), mod("1.27.1"))).toEqual(["go 1.22.0", "go 1.27.1"]);
+    expect(unrequestedManifestFields([{ path: "go.mod", before: mod("1.27.0"), content: mod("1.22.0") }], ["go.mod"], "Change go.mod from go 1.27.0 to go 1.22.0")).toEqual([]);
+    expect(unrequestedManifestFields([{ path: "go.mod", before: mod("1.22.0"), content: mod("1.27.1") }], ["go.mod"], "Add a version flag; go.mod may change")).toHaveLength(2);
+  });
+  // #1963: the files beside the manifests that choose the toolchain or tool distribution.
+  cell("rust", "rust-toolchain channel and path, not components", () => {
+    const toml = (channel: string, extra = "") => `[toolchain]\nchannel = "${channel}"\n${extra}`;
+    expect(changes("rust-toolchain.toml", toml("1.80.0"), toml("1.80.0", 'components = ["clippy"]\n'))).toEqual([]);
+    expect(changes("rust-toolchain.toml", toml("1.80.0"), toml("nightly"))).toEqual(["toolchain.channel"]);
+    expect(changes("rust-toolchain", "1.80.0\n", "1.81.0\n")).toEqual(["toolchain.channel"]);
+  });
+  cell("dotnet", "global.json sdk version, not the test runner", () => {
+    const json = (version: string, extra = {}) => JSON.stringify({ sdk: { version }, ...extra });
+    expect(changes("global.json", json("10.0.100"), json("10.0.100", { test: { runner: "Microsoft.Testing.Platform" } }))).toEqual([]);
+    expect(changes("global.json", json("10.0.100"), json("10.0.200"))).toEqual(["sdk.version"]);
+    // The checks stage reads these files with the manifests, so a request-named one reaches the check.
+    for (const path of ["global.json", "rust-toolchain.toml", "gradle/wrapper/gradle-wrapper.properties", ".python-version"]) expect(hasExecutableFields(path)).toBe(true);
+    expect(unrequestedManifestFields([{ path: "global.json", before: json("10.0.100"), content: json("10.0.200") }], ["global.json"], "Pin the SDK in global.json")).toEqual([{ file: "global.json", field: "sdk.version" }]);
+  });
+  cell("maven", "wrapper distributionUrl, not the distribution type", () => {
+    const props = (url: string, type = "only-script") => `wrapperVersion=3.3.2\ndistributionType=${type}\ndistributionUrl=${url}\n`;
+    const url = "https://repo.maven.apache.org/maven2/org/apache/maven/apache-maven/3.9.9/apache-maven-3.9.9-bin.zip";
+    expect(changes(".mvn/wrapper/maven-wrapper.properties", props(url), props(url, "bin"))).toEqual([]);
+    expect(changes(".mvn/wrapper/maven-wrapper.properties", props(url), props("https://example.test/maven.zip"))).toEqual(["distributionUrl"]);
+    expect(changes("gradle/wrapper/gradle-wrapper.properties", "distributionUrl=https\\://services.gradle.org/distributions/gradle-8.10-bin.zip\n", "distributionUrl=https\\://services.gradle.org/distributions/gradle-8.11-bin.zip\n")).toEqual(["distributionUrl"]);
+  });
+  cell("python", "requires-python and .python-version select the interpreter, not the description", () => {
+    const pyproject = (requires: string, description = "a") => `[project]\nname = "p"\ndescription = "${description}"\nrequires-python = "${requires}"\n`;
+    expect(changes("pyproject.toml", pyproject(">=3.11"), pyproject(">=3.11", "b"))).toEqual([]);
+    expect(changes("pyproject.toml", pyproject(">=3.11"), pyproject(">=3.13"))).toEqual(["project.requires-python"]);
+    expect(changes(".python-version", "3.12\n", "3.13\n")).toEqual(["python-version"]);
   });
   cell("dotnet", "csproj Exec target, not the target framework", () => {
     const csproj = (extra: string, framework = "net10.0") => `<Project Sdk="Microsoft.NET.Sdk">\n  <PropertyGroup><TargetFramework>${framework}</TargetFramework></PropertyGroup>${extra}\n</Project>\n`;

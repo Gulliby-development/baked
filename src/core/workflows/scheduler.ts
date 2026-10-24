@@ -445,7 +445,7 @@ import {
   hardenTargets,
   QUALITY_MUTATION_BASELINE,
 } from "./quality/harden.js";
-import { isManifestPath, manifestDependencies } from "./quality/manifests.js";
+import { hasExecutableFields, manifestDependencies } from "./quality/manifests.js";
 import {
   DEFAULT_MUTATION_BUDGET_MS,
   generateMutants,
@@ -12888,7 +12888,7 @@ ${note}`;
       const code = await readCodeFiles(
         root,
         [...new Set(existing)],
-        (path) => isCodePath(path) || isManifestPath(path),
+        (path) => isCodePath(path) || hasExecutableFields(path),
       );
       this.store.transaction(() =>
         this.store.artifact(
@@ -14256,7 +14256,7 @@ ${note}`;
     const changed = await this.changedFiles(
       runId,
       state,
-      (path) => isManifestPath(path) || isCodePath(path),
+      (path) => hasExecutableFields(path) || isCodePath(path),
     );
     if (!changed.length) return [];
     const root = runRoot(this.store.workspace, state);
