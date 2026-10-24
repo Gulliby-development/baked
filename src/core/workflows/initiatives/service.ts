@@ -73,6 +73,7 @@ import { criticalPathSummary, planWidth, remainingPath } from "./critical-path.j
 import { DECOMPOSE_WORKFLOW_ID } from "./decompose.js";
 import { type InitiativeDriveState, initiativeDriveState } from "./drive-state.js";
 import {
+  calibrationLagText,
   estimateInitiative,
   type FeatureRunSample,
   highCalibrationText,
@@ -1466,16 +1467,11 @@ export class InitiativeService {
         { reason: "upstream_conflict", conflicts: merged.conflicts },
       );
     }
-    // No upstream branch carries its spec folder (#2017), so the base gets the accepted specs of
-    // the features this one builds on, which its prompt points at (specs/<feature>/spec.json).
+    // No upstream branch carries its spec folder (#2017); the accepted specs the prompt points at
+    // (specs/<feature>/spec.json) reach the worktree untracked (`baseFiles`), never as a commit
+    // the run's own commit deletes (#2046).
     const date = Math.floor(this.store.get(id).created_at / 1000);
-    const base = await provisionalBase(
-      this.workflows.workspace,
-      merged.commit,
-      this.upstreamSpecs(id, feature, unfinished),
-      date,
-      "Accepted specs of upstream features",
-    );
+    const base = merged.commit;
     if (!unfinished.length) return base;
     // Planning ahead (#1834), the feature sees the stubs the unfinished features it builds on
     // (directly or through others) write, so it plans to modify them as it would on their results.
@@ -1504,7 +1500,8 @@ export class InitiativeService {
   /**
    * The spec documents each accepted feature `feature` builds on (directly or through others)
    * published, byte for byte: what its branch carried before #2017. A feature in `unfinished`,
-   * and one whose run published no spec (a definition with `publish: false`), adds none.
+   * and one whose run published no spec (a definition with `publish: false`), adds none. They go
+   * with the feature's base as `baseFiles`, written untracked into its worktree (#2046).
    */
   private upstreamSpecs(
     id: string,
@@ -1833,7 +1830,7 @@ export class InitiativeService {
       ...(settings.featureIssues[featureId] ? { issue: settings.featureIssues[featureId] } : {}),
       ...(feature.skeleton?.length ? { hostFiles: feature.skeleton } : {}),
       ...(lightContract(settings, feature) ? { contract: feature.contract } : {}),
-      ...(baseCommit ? { baseCommit } : {}),
+      ...(baseCommit ? { baseCommit, baseFiles: this.upstreamSpecs(id, feature, unfinished) } : {}),
       ...(baseCommit && unfinished.length ? { planAhead: true } : {}),
     });
     this.store.transaction(() => {
@@ -1933,7 +1930,9 @@ export class InitiativeService {
       {
         dependencies,
         policy,
-        ...(baseCommit ? { baseCommit } : {}),
+        ...(baseCommit
+          ? { baseCommit, baseFiles: this.upstreamSpecs(id, feature, unfinished) }
+          : {}),
         ...(declined ? { autoApprovalDeclined: declined } : {}),
         ...(baseCommit && unfinished.length ? { planAhead: true } : {}),
       },
@@ -2075,7 +2074,7 @@ export class InitiativeService {
         commandId: `p-${hashJson({ runId, baseCommit }).slice(0, 48)}`,
         expectedRevision: run.revision,
       },
-      { baseCommit },
+      { baseCommit, baseFiles: this.upstreamSpecs(id, feature, []) },
     );
     this.store.emit(id, "feature.released", { featureId, runId, baseCommit });
     return true;
@@ -2483,7 +2482,7 @@ export class InitiativeService {
     const limit = estimate.budget.maxTotalTokens;
     const tokenWarning =
       estimate.tokens.high > limit
-        ? `The estimate expects about ${tokenText(estimate.expectedTokens)} tokens${estimate.expectedTokens <= limit ? ", within" : ", above"} the shared budget (${tokenText(limit)}); its high end (${tokenText(estimate.tokens.high)} tokens; ${highCalibrationText(estimate.highCalibration)}) exceeds the shared budget. Consider extending to ${estimate.withMargin} tokens, including margin, before approving, or approve with this risk.`
+        ? `The estimate expects about ${tokenText(estimate.expectedTokens)} tokens${estimate.expectedTokens <= limit ? ", within" : ", above"} the shared budget (${tokenText(limit)}); its high end (${tokenText(estimate.tokens.high)} tokens; ${highCalibrationText(estimate.highCalibration)}) exceeds the shared budget.${calibrationLagText(estimate)} Consider extending to ${estimate.withMargin} tokens, including margin, before approving, or approve with this risk.`
         : "";
     const warning = [tokenWarning, ...dollarWarnings].filter(Boolean).join(" ");
     if (!warning) return message;

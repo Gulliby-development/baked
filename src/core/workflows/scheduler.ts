@@ -100,6 +100,7 @@ import {
   requiresSecurityReview,
 } from "../verification/findings.js";
 import {
+  clearBannedProperties,
   clearBoundaryProperties,
   deferredOwners,
   noteSiblingFindings,
@@ -147,6 +148,7 @@ import { addReviewNotes, noteReason } from "../verification/review-notes.js";
 import { changedPaths, gitBaseline, sourceManifest } from "../verification/snapshot.js";
 import { baselineDebt, baselineKeys, taskErrors } from "../verification/task-end-check.js";
 import {
+  literalPropertyProblems,
   plannerRows,
   ROWS_ARTIFACT,
   type RowsArtifact,
@@ -1350,6 +1352,16 @@ export class WorkflowScheduler {
                   repairLayoutCriteria(repairHostBoundCriteria(spec).spec, layoutRepair).spec,
                   hostWritten,
                 ).spec;
+              // The `property` flags the host clears itself: a feature that owns no test path
+              // (#1891) and a request that bans generated inputs (#2045).
+              const unflagged = (spec: Spec) => {
+                const boundary = clearBoundaryProperties(spec, state.initiativeBounds);
+                const banned = clearBannedProperties(
+                  boundary.spec,
+                  state.requestText || state.prompt,
+                );
+                return { spec: banned.spec, boundary: boundary.cleared, banned: banned.cleared };
+              };
               const validateSpec = (output: unknown): string[] => {
                 const parsed = SpecSchema.safeParse(output);
                 if (!parsed.success) return [];
@@ -1362,6 +1374,8 @@ export class WorkflowScheduler {
                 return [
                   ...size,
                   ...specBoundaryProblems(parsed.data, state.initiativeBounds),
+                  // A property over a literal table keeps it from the rows (#2045).
+                  ...literalPropertyProblems(unflagged(parsed.data).spec),
                   ...hostFileSpecProblems(parsed.data, state.hostFiles),
                   ...specCoverageProblems(hostRepairs(parsed.data), policy.checks, {
                     request: statedRequest(state, this.store.requests(runId)),
@@ -1412,18 +1426,26 @@ export class WorkflowScheduler {
                     validateSpec,
                   )),
               );
-              const unflagged = clearBoundaryProperties(state.spec, state.initiativeBounds);
-              if (unflagged.cleared.length) {
-                state.spec = unflagged.spec;
+              const flags = unflagged(state.spec);
+              state.spec = flags.spec;
+              if (flags.boundary.length)
                 this.store.transaction(() =>
                   this.store.artifact(
                     runId,
                     "diagnostic",
                     "spec-repairs/boundary-property.json",
-                    canonical({ cleared: unflagged.cleared }),
+                    canonical({ cleared: flags.boundary }),
                   ),
                 );
-              }
+              if (flags.banned.length)
+                this.store.transaction(() =>
+                  this.store.artifact(
+                    runId,
+                    "diagnostic",
+                    "spec-repairs/banned-property.json",
+                    canonical({ cleared: flags.banned }),
+                  ),
+                );
               const repair = repairHostBoundCriteria(state.spec);
               if (repair.repaired.length) {
                 const added = repair.spec.criteria
@@ -15963,7 +15985,7 @@ ${note}`;
       [...journaled, ...changedPaths(baseline, final).filter((path) => declared.has(path))],
       `${title}\n\nAccepted result of BAKED workflow run ${runId}.\n\nBaked-Run: ${runId}\nBaked-Snapshot: ${state.snapshotId}\n`,
       // No branch of an initiative carries its spec folders: a dependent feature reads its
-      // upstream specs from the base the initiative builds for it (#2017).
+      // upstream specs as untracked files of its worktree (`baseFiles`, #2017, #2046).
       {
         initiativeSpecs: initiativeSpecPrefix(
           this.store.run(runId).feature_id,

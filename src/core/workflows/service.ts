@@ -171,7 +171,7 @@ import {
   produces,
   stageKind,
 } from "./v2/runtime.js";
-import { moveRunWorktree, removeRunWorktree, runRoot } from "./worktree.js";
+import { moveRunWorktree, placeBaseFiles, removeRunWorktree, runRoot } from "./worktree.js";
 import {
   cleanWorktrees,
   type WorktreeCleanup,
@@ -460,6 +460,7 @@ export class NativeWorkflowService implements WorkflowService {
       acceptance: {},
       issue: request.issue ?? null,
       worktreeBase: request.baseCommit ?? null,
+      baseFiles: request.baseCommit ? (request.baseFiles ?? []) : [],
       testsFirst: null,
       presetChoice: request.presetChoice ?? null,
       autoApprovalDeclined: request.autoApprovalDeclined ?? null,
@@ -2347,6 +2348,8 @@ export class NativeWorkflowService implements WorkflowService {
       policy?: RunPolicy;
       /** The new worktree base: the feature's upstream results merged onto HEAD. */
       baseCommit?: string;
+      /** Files placed untracked in the new worktree (the upstream specs, #2046). */
+      baseFiles?: { path: string; content: string }[];
       /** Why the rebased run's policy has no auto approval (#1467). */
       autoApprovalDeclined?: string;
       /** `baseCommit` is provisional: the rebased run plans ahead again (#1834). */
@@ -2360,6 +2363,7 @@ export class NativeWorkflowService implements WorkflowService {
     }));
     const policy = rebase.policy ? PolicySchema.parse(rebase.policy) : undefined;
     const baseCommit = rebase.baseCommit;
+    const baseFiles = baseCommit ? (rebase.baseFiles ?? []) : [];
     const declined = rebase.autoApprovalDeclined;
     const planAhead = Boolean(rebase.planAhead && baseCommit);
     return this.forkRun(
@@ -2377,7 +2381,7 @@ export class NativeWorkflowService implements WorkflowService {
       {
         dependencies,
         policy,
-        ...(baseCommit ? { baseCommit } : {}),
+        ...(baseCommit ? { baseCommit, baseFiles } : {}),
         ...(declined ? { autoApprovalDeclined: declined } : {}),
         ...(planAhead ? { planAhead } : {}),
       },
@@ -2394,10 +2398,11 @@ export class NativeWorkflowService implements WorkflowService {
   async releaseBase(
     runId: string,
     command: CommandIdentity,
-    release: { baseCommit: string },
+    release: { baseCommit: string; baseFiles?: { path: string; content: string }[] },
   ): Promise<RunSnapshot> {
     this.enabled();
     const baseCommit = release.baseCommit;
+    const baseFiles = release.baseFiles ?? [];
     if (!/^[0-9a-f]{40,64}$/.test(baseCommit))
       throw new WorkflowFault("INVALID_REFERENCE", `Not a commit: ${baseCommit}`);
     const body = { runId, ...command, action: "release-base", baseCommit };
@@ -2429,12 +2434,15 @@ export class NativeWorkflowService implements WorkflowService {
     const from = state.worktree.baseHead;
     // A retry after a crash between the move and the state save finds the worktree moved.
     if (from !== baseCommit) await moveRunWorktree(this.workspace, state.worktree, baseCommit);
+    // Upstream specs of the features accepted since the provisional base (#2046); idempotent.
+    await placeBaseFiles(this.workspace, state.worktree, baseCommit, baseFiles);
     return this.store.command(runId, command, body, () => {
       const current = this.store.state(runId);
       if (!current.worktree || !current.planAhead)
         throw new WorkflowFault("STALE_DECISION", "The run changed during its release");
       current.worktree = { ...current.worktree, baseHead: baseCommit };
       current.worktreeBase = baseCommit;
+      current.baseFiles = baseFiles;
       current.planAhead = { released: true, baselined: false };
       // The baseline is taken again on the new base before the first task.
       current.expectedFiles = null;
@@ -2464,6 +2472,7 @@ export class NativeWorkflowService implements WorkflowService {
       dependencies: { featureId: string; contractHash: string }[];
       policy?: RunPolicy;
       baseCommit?: string;
+      baseFiles?: { path: string; content: string }[];
       autoApprovalDeclined?: string;
       planAhead?: boolean;
     },
@@ -2552,7 +2561,10 @@ export class NativeWorkflowService implements WorkflowService {
       const policy = rebase?.policy ?? PolicySchema.parse(JSON.parse(run.policy_json));
       if (rebase) {
         state.hostDependencies = rebase.dependencies;
-        if (rebase.baseCommit) state.worktreeBase = rebase.baseCommit;
+        if (rebase.baseCommit) {
+          state.worktreeBase = rebase.baseCommit;
+          state.baseFiles = rebase.baseFiles ?? [];
+        }
         state.planAhead = rebase.planAhead ? { released: false, baselined: false } : null;
         state.autoApprovalDeclined = rebase.autoApprovalDeclined ?? null;
         state.manifest.policyHash = hashJson(policy);

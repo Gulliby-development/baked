@@ -287,9 +287,11 @@ describe("plan approval cost (#1019)", () => {
     const planned = plannedRunTokens(store, runId);
     expect(planned?.low).toBeCloseTo(2_000_000 + verification + 3_000_000, -1);
     expect(planned?.high).toBeCloseTo(2_000_000 + verification + 5_000_000 + 500_000, -1);
+    // The plan's expected tasks with the same run around them (#2043).
+    expect(planned?.expected).toBeCloseTo(2_000_000 + verification + 4_000_000, -1);
     // A report from before `runTokens` gives its tasks alone.
     const old = makeStore([], { model: null, taskTokens: { low: 3_000_000, expected: 4_000_000, high: 5_000_000 } });
-    expect(plannedRunTokens(old, runId)).toEqual({ low: 3_000_000, high: 5_000_000 });
+    expect(plannedRunTokens(old, runId)).toEqual({ low: 3_000_000, expected: 4_000_000, high: 5_000_000 });
     expect(plannedRunTokens(makeStore([]), runId)).toBeNull();
   });
 });

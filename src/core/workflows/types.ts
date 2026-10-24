@@ -533,6 +533,12 @@ export const RuntimeStateSchema = z
       .nullable()
       .default(null),
     /**
+     * Files the host places in the run's worktree for the run to read, untracked and never
+     * committed: an initiative feature's upstream specs (#2046). Only paths `worktreeBase` does not
+     * track are written, when the worktree is created and when a planned-ahead run is released.
+     */
+    baseFiles: z.array(z.object({ path: z.string(), content: z.string() }).strict()).default([]),
+    /**
      * Tests first: the test files the tests-first tasks wrote, once they all failed for the right
      * reason, the digest a person approves, and whether they did. Null until then.
      */

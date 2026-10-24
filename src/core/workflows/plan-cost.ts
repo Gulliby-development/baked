@@ -136,9 +136,13 @@ function latestSizing(store: WorkflowStore, runId: string): Partial<SizingReport
  * what the run spent before its plan was sized, its tasks, and review and convergence (the parts
  * of `runTokens` beyond the tasks' price), plus the repair reserve at the high end. The tasks
  * alone left a run that had spent 2M on research, spec and plan forecast at 3M-5M for 3M-5M of
- * tasks (#1418). A report without `runTokens` gives its tasks alone.
+ * tasks (#1418). A report without `runTokens` gives its tasks alone. `expected` is the plan's
+ * expected tasks with the same run around them, when the report has it.
  */
-export function plannedRunTokens(store: WorkflowStore, runId: string): TokenRange | null {
+export function plannedRunTokens(
+  store: WorkflowStore,
+  runId: string,
+): (TokenRange & { expected?: number }) | null {
   const report = latestSizing(store, runId);
   const tokens = report?.taskTokens;
   if (!tokens) return null;
@@ -149,6 +153,8 @@ export function plannedRunTokens(store: WorkflowStore, runId: string): TokenRang
   return {
     low: around + tokens.low,
     high: around + tokens.high + (report.repairReserve ?? 0),
+    // The plan's own expected tasks, with the same run around them (#2043); older reports lack it.
+    ...(typeof tokens.expected === "number" ? { expected: around + tokens.expected } : {}),
   };
 }
 

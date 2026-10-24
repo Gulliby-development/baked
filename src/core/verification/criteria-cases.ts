@@ -1,6 +1,7 @@
 import { existsSync } from "node:fs";
 import { readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
+import { SEPARATOR_CELL, tableCells } from "../specs/table-cells.js";
 import { rowDataPaths } from "../workflows/acceptance-rows.js";
 import { hasInlineRows, type InlineRowFile } from "../workflows/acceptance-rows-inline.js";
 import { stripComments } from "../workflows/quality/code-mask.js";
@@ -747,7 +748,32 @@ function enumeratedMembers(text: string, sets: ClosedSet[], source: string): str
 /** The header words of a table's first column, and a separator row's cells. */
 const HEADER_CELL =
   /^(?:inputs?|values?|cases?|args?|arguments?|commands?|given|when|expression|query|request)$/i;
-const SEPARATOR_CELL = /^:?-{2,}:?$/;
+const separatorRow = (cells: string[]): boolean =>
+  cells.length >= 2 && cells.every((cell) => SEPARATOR_CELL.test(cell));
+
+/**
+ * The rows of the tables in a criterion's text, each split by the shared splitter (#2044). A row
+ * of a table with a separator row splits to its header's width, or is marked `skipped`.
+ */
+function tableRows(text: string): { line: string; cells: string[]; skipped: boolean }[] {
+  const lines = text.split(/\r?\n/);
+  const guarded = lines.map((line) => (line.includes("|") ? tableCells(line) : []));
+  const rows: { line: string; cells: string[]; skipped: boolean }[] = [];
+  let width: number | undefined;
+  lines.forEach((line, index) => {
+    if (!line.includes("|")) {
+      width = undefined;
+      return;
+    }
+    const next = guarded[index + 1] ?? [];
+    // A header row: the separator row under it gives the table's width.
+    if (separatorRow(next) && !separatorRow(guarded[index] ?? [])) width = next.length;
+    const cells = tableCells(line, width);
+    if (width !== undefined && cells.length !== width) rows.push({ line, cells, skipped: true });
+    else if (cells.length >= 2) rows.push({ line, cells, skipped: false });
+  });
+  return rows;
+}
 
 /**
  * Split explicit input spans in the first cell, leaving context words out.
@@ -760,21 +786,11 @@ function tableInputs(text: string): {
   /** Where the table's remaining cells sit in `prose`, as [from, to) offsets. */
   cells: [number, number][];
 } {
-  const rows = text
-    .split(/\r?\n/)
-    .filter((line) => line.includes("|"))
-    .map((line) => ({
-      line,
-      cells: line
-        .trim()
-        .replace(/^\||\|$/g, "")
-        .split("|")
-        .map((cell) => cell.trim()),
-    }))
-    .filter(({ cells }) => cells.length >= 2);
+  const rows = tableRows(text);
   if (rows.length < 2) return { inputs: [], prose: text, cells: [] };
   const inputs: { literal: string; source: string; expected: string }[] = [];
-  rows.forEach(({ cells }, index) => {
+  rows.forEach(({ cells, skipped }, index) => {
+    if (skipped) return;
     if (cells.every((cell) => SEPARATOR_CELL.test(cell))) return;
     const next = rows[index + 1]?.cells;
     if (next?.every((cell) => SEPARATOR_CELL.test(cell))) return;
@@ -796,7 +812,10 @@ function tableInputs(text: string): {
       }
     } else if (literalCase(raw)) push(raw);
   });
-  const tableLines = new Map(rows.map((row) => [row.line, row.cells.slice(1).join(" | ")]));
+  // A row that does not split to its header's width is skipped whole: none of its text is a case.
+  const tableLines = new Map(
+    rows.map((row) => [row.line, row.skipped ? "" : row.cells.slice(1).join(" | ")]),
+  );
   const cells: [number, number][] = [];
   let offset = 0;
   const prose = text
