@@ -380,6 +380,7 @@ The `baked workflow initiative` commands over HTTP. Mutations take `commandId` a
 | `POST /v1/initiatives/ID/configure` | `feature` and either `workflow` or `size` | `set-workflow`, `set-size` |
 | `POST /v1/initiatives/ID/approve`, `/reject` | `requestId` and `digest`, or `requestId` and `reason` | same; approve drives in the background |
 | `POST /v1/initiatives/ID/resume`, `/pause` | | same; resume drives in the background; a feature run resumed with `POST /v1/workflow/runs/RUN_ID/resume` continues its active initiative in the background once it stops, unless another of its runs is still driven |
+| `POST /v1/initiatives/ID/drive` | `{}` | `drive`, in the background (202 with the view); continues an initiative whose `drive.state` is `idle` |
 | `POST /v1/initiatives/ID/extend` | `tokens?`, `calls?`, `timeMs?`, `costUsd?` (a higher dollar cap) | `extend` |
 | `POST /v1/initiatives/ID/reroute` | `model`, `resume?` | `reroute`; with `resume: true` it drives in the background |
 

@@ -29,6 +29,7 @@ import {
   pullRequestReviews,
   repairReviewsRequest,
 } from "../core/workflows/follow.js";
+import { InitiativeService, type InitiativeStep } from "../core/workflows/initiatives/service.js";
 import { issueStart } from "../core/workflows/issue-source.js";
 import { runRecording, withModelCalls } from "../core/workflows/model-recording.js";
 import { describeProposal, presetChoice } from "../core/workflows/preset-router.js";
@@ -245,6 +246,23 @@ function walkThroughs(store: NativeWorkflowService["store"], runId: string) {
     ]),
   );
 }
+/**
+ * A decision's answer with the initiative step of its run (`initiative`), and `next` naming the
+ * drive command when the initiative's ready work waits for a drive; unchanged outside an initiative.
+ */
+function withInitiativeStep<T extends object>(
+  service: NativeWorkflowService,
+  runId: string,
+  result: T,
+): T {
+  const step = new InitiativeService(service).ofRun(runId);
+  if (!step) return result;
+  return {
+    ...result,
+    initiative: step,
+    ...(step.drive?.command ? { next: step.drive.command } : {}),
+  };
+}
 export async function executeWorkflowCommand(
   service: NativeWorkflowService,
   args: WorkflowArgs,
@@ -254,13 +272,18 @@ export async function executeWorkflowCommand(
 ): Promise<unknown> {
   const runId = args.positional[0] ?? "";
   const artifacts = new WorkflowArtifacts(service);
-  /** Records a decision; with `--resume` the run continues from it when nothing else is pending. */
+  /**
+   * Records a decision; with `--resume` the run continues from it when nothing else is pending.
+   * On a feature run of an initiative the answer also carries the initiative's next step, since
+   * only a drive advances it (#2024).
+   */
   const decideThenResume = async (decision: Decision): Promise<unknown> => {
     const decided = await service.decide(runId, identity(), decision);
-    if (args.flags.resume !== true || !service.canResumeAfterDecision(runId)) return decided;
+    if (args.flags.resume !== true || !service.canResumeAfterDecision(runId))
+      return withInitiativeStep(service, runId, decided);
     await service.resume(runId, { commandId: newId(), expectedRevision: decided.revision });
     onDrive?.(runId);
-    return service.drive(runId, signal);
+    return withInitiativeStep(service, runId, await service.drive(runId, signal));
   };
   const identity = () => {
     const revision = Number(stringFlag(args, "expected-revision"));
@@ -1028,6 +1051,9 @@ export async function runWorkflowCli(argv: string[]): Promise<number> {
       return 0;
     }
     process.stdout.write(`${JSON.stringify(result, null, args.flags.events ? undefined : 2)}\n`);
+    // An initiative's ready work waits for a drive after a decision on its feature run (#2024).
+    const step = (result as { initiative?: InitiativeStep } | null)?.initiative;
+    if (step?.drive?.command) process.stderr.write(`next: ${step.drive.command}\n`);
     return ["run", "quick", "resume"].includes(args.command) ||
       (["revise", "extend", "reroute", "continue", ...DECISION_COMMANDS].includes(args.command) &&
         args.flags.resume === true)

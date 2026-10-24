@@ -46,10 +46,12 @@ export const INITIATIVE_REFRESH_MS = 2000;
  * The status shown on the initiative: a split the person rejected waits for their edits, not for
  * an approval, until an edit proposes a new revision.
  */
-export function detailStatus(view: Pick<InitiativeView, "status" | "pendingDecisions">): {
+export function detailStatus(view: Pick<InitiativeView, "status" | "pendingDecisions" | "drive">): {
   label: string;
   tone: Tone;
 } {
+  // Ready work that no drive advances waits for Continue (#2024).
+  if (view.drive?.state === "idle") return { label: view.drive.text, tone: "warn" };
   if (
     view.status === "awaiting_approval" &&
     !view.pendingDecisions.some((d) => d.scope === "initiative")
@@ -60,7 +62,8 @@ export function detailStatus(view: Pick<InitiativeView, "status" | "pendingDecis
 
 /** The second line of a list item: its status and what happens next. */
 export function initiativeLine(item: InitiativeListItem): string {
-  const { label } = initiativeStatus(item.status);
+  const label =
+    item.drive?.state === "idle" ? item.drive.text : initiativeStatus(item.status).label;
   const features = `${item.features} feature${item.features === 1 ? "" : "s"}`;
   if (item.status === "completed" || item.status === "refused") return label;
   if (item.status === "awaiting_approval") return `${label} · ${item.features} proposed`;

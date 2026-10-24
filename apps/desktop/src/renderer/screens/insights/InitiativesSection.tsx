@@ -580,6 +580,16 @@ function Detail({ projectKey, id }: { projectKey: string; id: string }) {
               Resume
             </Button>
           )}
+          {view.drive?.state === "idle" && (
+            <Button
+              variant="primary"
+              size="md"
+              disabled={busy}
+              onClick={act((v) => insights.driveInitiative(projectKey, v))}
+            >
+              Continue
+            </Button>
+          )}
           {(view.status === "active" || view.status === "decomposing") && (
             <Button
               variant="secondary"
