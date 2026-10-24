@@ -500,6 +500,30 @@ describe("finding chains keyed by file and defect family (#2048)", () => {
       dispose();
     }
   }, 120000);
+
+  // R66 expenses-py f02b4d32: F2 (`build_report`, T010 with F1) and F3 (`_share`, T011, 641k
+  // tokens), both Decimal context precision in expenses/report.py; F1 (`render_table`) is another
+  // defect on the same file.
+  test("R66 expenses-py: with F2 and F3 of one family, F3's corrective rewrites against both cases", () => {
+    const { store, dispose } = openTrace(join(ROOT, "R66/expenses-py.sqlite.gz"));
+    try {
+      const runId = "f02b4d32-69eb-44c4-8036-967e499f7995";
+      const steps = (replay: ReturnType<typeof replayChainEscalation>) => replay.steps.map((s) => [s.findingId, s.taskId, s.chain, s.family, s.decision, s.battery]);
+      expect(steps(replayChainEscalation(store, runId))).toEqual([
+        ["F1", "T010", ["F1"], null, "patch", []],
+        ["F2", "T010", ["F2"], null, "patch", []],
+        ["F3", "T011", ["F3"], null, "patch", []],
+      ]);
+      const families = { F2: "decimal-context-precision", F3: "decimal-context-precision" };
+      expect(steps(replayChainEscalation(store, runId, { families }))).toEqual([
+        ["F1", "T010", ["F1"], null, "patch", []],
+        ["F2", "T010", ["F2"], "decimal-context-precision", "patch", []],
+        ["F3", "T011", ["F2", "F3"], "decimal-context-precision", "rewrite", ["F2", "F3"]],
+      ]);
+    } finally {
+      dispose();
+    }
+  }, 120000);
 });
 
 describe("repeated corrective failures replay on recorded chains (#1996)", () => {
