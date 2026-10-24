@@ -1977,6 +1977,11 @@ export interface StartRequest {
    */
   baseCommit?: string;
   /**
+   * Files placed untracked in the run's worktree for it to read, never committed (`baseFiles` of
+   * `RuntimeState`): an initiative feature's upstream specs (#2046).
+   */
+  baseFiles?: { path: string; content: string }[];
+  /**
    * `baseCommit` is provisional: features this one depends on were not finished when it started,
    * so its tasks wait until the initiative moves its worktree to their results (#1834).
    */

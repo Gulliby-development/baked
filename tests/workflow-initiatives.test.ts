@@ -112,6 +112,8 @@ class InitiativeExecutor implements AgentExecutor {
   refusal = "You have no credits remaining. Add credits to continue.";
   /** The files in each feature's root when it was implemented. */
   seen: Record<string, string[]> = {};
+  /** The spec files (path to content hash) in each feature's root when it was implemented. */
+  specs: Record<string, Record<string, string>> = {};
   /** Implementation calls in flight, and the most at once. */
   active = 0;
   maxActive = 0;
@@ -192,6 +194,7 @@ class InitiativeExecutor implements AgentExecutor {
       case "implementation": {
         const name = request.task?.writes[0]?.path.replace(".txt", "") ?? "";
         this.seen[name] = readdirSync(root).filter((f) => f.endsWith(".txt")).sort();
+        this.specs[name] = specFiles(root);
         for (const write of request.task?.writes ?? []) {
           // Each write changes the file, as a rebased feature adapts its result to the new contract.
           const count = (this.writes[write.path] = (this.writes[write.path] ?? 0) + 1);
@@ -229,6 +232,22 @@ function git(cwd: string, ...args: string[]): string {
 }
 
 /** A Git repository with one commit, for features that run in worktrees. */
+/** Every file under `root`/specs, path to content hash. */
+function specFiles(root: string): Record<string, string> {
+  const folder = join(root, "specs");
+  if (!existsSync(folder)) return {};
+  const files = readdirSync(folder, { recursive: true, withFileTypes: true }).filter((e) => e.isFile());
+  return Object.fromEntries(files.map((e) => {
+    const path = join(e.parentPath, e.name);
+    return [path.slice(root.length + 1).replaceAll("\\", "/"), hashBytes(readFileSync(path))];
+  }));
+}
+
+/** Paths under specs/ that any commit of `ref`'s history adds (`git log --diff-filter=A`). */
+function addedSpecs(root: string, ref: string): string {
+  return git(root, "log", "--diff-filter=A", "--name-only", "--format=", ref, "--", "specs");
+}
+
 function repository(root: string): void {
   git(root, "init", "-q", "-b", "main");
   git(root, "config", "user.name", "Test User");
@@ -1524,10 +1543,13 @@ describe("initiative runtime", () => {
     expect(git(t.root, "show", `${base}:a.txt`)).toStartWith("ready");
     expect(git(t.root, "show", `${base}:b.txt`)).toStartWith("ready");
     expect(git(t.root, "show", `baked/wf/${cRun}:c.txt`)).toStartWith("ready");
-    // c's base holds a's accepted spec, which c's prompt points at, though a's branch does not (#2017).
+    // c read a's accepted spec, which its prompt points at, though a's branch does not carry it
+    // (#2017) and no commit of c's base or branch does either (#2046).
     const aRun = t.featureOf(view, "a").runId ?? "";
     const aFeature = t.workflows.store.run(aRun).feature_id;
-    expect(git(t.root, "ls-tree", "-r", "--name-only", base, "--", "specs")).toContain(`specs/${aFeature}/spec.json`);
+    expect(Object.keys(t.executor.specs.c ?? {})).toContain(`specs/${aFeature}/spec.json`);
+    expect(git(t.root, "ls-tree", "-r", "--name-only", base, "--", "specs")).toBe("");
+    expect(addedSpecs(t.root, `baked/wf/${cRun}`)).toBe("");
     expect(git(t.root, "ls-tree", "-r", "--name-only", `baked/wf/${aRun}`, "--", "specs")).toBe("");
     // The working copy is never written.
     expect(existsSync(join(t.root, "a.txt"))).toBe(false);
@@ -1562,14 +1584,13 @@ describe("initiative runtime", () => {
     }
     const last = t.workflows.store.state(runs.c ?? "").worktree?.commit ?? "";
     expect(git(t.root, "ls-tree", "--name-only", last)).toBe(".gitignore\nREADME.md\na.txt\nb.txt\nc.txt\npyproject.toml\nuritpl");
-    // c's base holds the specs of a and b (directly and through b), byte for byte as their runs
-    // published them, so c reads specs/<feature>/spec.json as before.
-    const base = t.workflows.store.state(runs.c ?? "").worktree?.baseHead ?? "";
+    // c reads the specs of a and b (directly and through b), byte for byte as their runs
+    // published them, at specs/<feature>/spec.json as before, from untracked files (#2046).
     for (const id of ["a", "b"]) {
       const upstream = t.workflows.store.state(runs[id] ?? "");
       const path = `specs/${t.workflows.store.run(runs[id] ?? "").feature_id}/spec.json`;
       expect(upstream.published[path]).toBeDefined();
-      expect(hashBytes(git(t.root, "show", `${base}:${path}`))).toBe(upstream.published[path] ?? "");
+      expect(t.executor.specs.c?.[path]).toBe(upstream.published[path] ?? "");
     }
     // The delivery plan of the last feature leaves every spec of the initiative out.
     const prepared = await prepareDelivery(t.workflows.store, t.config, runs.c ?? "", { local: true });
@@ -1582,6 +1603,65 @@ describe("initiative runtime", () => {
       const result = Bun.spawnSync(["python3", "-c", probe], { cwd: tree, stdout: "pipe", stderr: "pipe" });
       expect(result.stdout.toString().trim() || result.stderr.toString()).toBe("['uritpl']");
     }
+  }, 120_000);
+
+  // Bench round 66, nodepluck (#2046): every branch tip was clean after #2017, but each dependent
+  // run's base was a host commit "Accepted specs of upstream features" adding up to 30 spec files,
+  // which the run's own commit deleted. Whoever keeps the history (a merge instead of a squash)
+  // had a top-level specs/ back at 7 commits: `pip install .` of a flat-layout package, bisect and
+  // per-commit CI broke there, and history scans read the spec files.
+  test("scenario: nodepluck R66, no commit of an initiative's history adds a spec file, and a dependent still reads its upstream's spec", async () => {
+    const chain = plan([feature("a"), feature("b", ["a"]), feature("c", ["b"])]);
+    const t = setup(chain);
+    repository(t.root);
+    mkdirSync(join(t.root, "nodepluck"));
+    writeFileSync(join(t.root, "nodepluck/__init__.py"), "");
+    writeFileSync(join(t.root, "pyproject.toml"), '[project]\nname = "nodepluck"\nversion = "0.1.0"\n');
+    git(t.root, "add", ".");
+    git(t.root, "commit", "-q", "-m", "Flat-layout package");
+    const worktreePolicy: RunPolicy = { ...policy, executionMode: "worktree" };
+    await t.start({ plan: chain, policy: worktreePolicy, featureAutoApproval: { maxTasks: 5, maxFiles: 5 } });
+    await t.approveSplit();
+    const view = await t.drive();
+    expect(view.status).toBe("completed");
+    const runs = Object.fromEntries(["a", "b", "c"].map((id) => [id, t.featureOf(view, id).runId ?? ""]));
+    for (const runId of Object.values(runs)) {
+      const branch = `baked/wf/${runId}`;
+      expect(addedSpecs(t.root, branch)).toBe("");
+      // No commit of the branch, the bases included, has a specs/ folder.
+      for (const commit of git(t.root, "rev-list", branch).split("\n"))
+        expect(git(t.root, "ls-tree", "--name-only", commit, "--", "specs")).toBe("");
+      expect(git(t.root, "log", "--format=%s", branch)).not.toContain("Accepted specs of upstream features");
+    }
+    // c still read the specs of a and b, byte for byte as their runs published them.
+    for (const id of ["a", "b"]) {
+      const path = `specs/${t.workflows.store.run(runs[id] ?? "").feature_id}/spec.json`;
+      expect(t.executor.specs.c?.[path]).toBe(t.workflows.store.state(runs[id] ?? "").published[path] ?? "");
+    }
+  }, 120_000);
+
+  // #2017's rule, kept by #2046: a project that tracks a specs/ folder of its own gets every spec of
+  // its initiative on the branches, as before.
+  test("an initiative in a project that tracks specs/ keeps its spec folders on the branches", async () => {
+    const chain = plan([feature("a"), feature("b", ["a"]), feature("c", ["b"])]);
+    const t = setup(chain);
+    repository(t.root);
+    mkdirSync(join(t.root, "specs", "earlier"), { recursive: true });
+    writeFileSync(join(t.root, "specs/earlier/spec.md"), "# Earlier\n");
+    git(t.root, "add", ".");
+    git(t.root, "commit", "-q", "-m", "Tracked specs");
+    const worktreePolicy: RunPolicy = { ...policy, executionMode: "worktree" };
+    await t.start({ plan: chain, policy: worktreePolicy, featureAutoApproval: { maxTasks: 5, maxFiles: 5 } });
+    await t.approveSplit();
+    const view = await t.drive();
+    expect(view.status).toBe("completed");
+    const [aFeature, bFeature] = ["a", "b"].map((id) => t.workflows.store.run(t.featureOf(view, id).runId ?? "").feature_id);
+    const cBranch = `baked/wf/${t.featureOf(view, "c").runId}`;
+    const listed = git(t.root, "ls-tree", "-r", "--name-only", cBranch, "--", "specs").split("\n");
+    expect(listed).toContain("specs/earlier/spec.md");
+    expect(listed).toContain(`specs/${aFeature}/spec.json`);
+    expect(listed).toContain(`specs/${bFeature}/spec.json`);
+    expect(git(t.root, "log", "--format=%s", cBranch)).not.toContain("Accepted specs of upstream features");
   }, 120_000);
 
   // Bench round 44, cayleykit (#1535): features started in waves behind Promise.allSettled, so a
@@ -1856,6 +1936,10 @@ describe("initiative runtime", () => {
       expect(t.executor.during).toEqual({ state: "waiting", blockers: ["planned ahead; its tasks start once base is accepted"], plannedAhead: ["base"], attention: 0 });
       // It implemented in a worktree moved onto base's result, and took its baseline there.
       expect(t.executor.seen.message).toEqual(["base.txt"]);
+      // base's spec reached message's worktree untracked at the release, with no commit (#2046).
+      const baseFeature = t.workflows.store.run(t.featureOf(view, "base").runId ?? "").feature_id;
+      expect(Object.keys(t.executor.specs.message ?? {})).toContain(`specs/${baseFeature}/spec.json`);
+      expect(addedSpecs(t.root, `baked/wf/${t.featureOf(view, "front").runId}`)).toBe("");
       // front planned ahead on message's approved spec in turn, and built on both results.
       expect(events.indexOf("start:front")).toBeGreaterThan(events.indexOf("end:message"));
       expect(t.executor.seen.front).toEqual(["base.txt", "message.txt"]);
