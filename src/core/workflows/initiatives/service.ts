@@ -1154,64 +1154,66 @@ export class InitiativeService {
     if (signal.aborted) abort();
     this.active.set(id, controller);
     try {
-      await this.settleSuperseded(id);
-      for (let step = 0; step < 500 && !controller.signal.aborted; step++) {
-        const view = this.view(id);
-        const next = view.next;
-        if (view.parallelRuns > 1 && (next.kind === "drive" || next.kind === "start")) {
-          if (!(await this.driveFeatures(id, controller.signal))) return this.view(id);
-          continue;
-        }
-        switch (next.kind) {
-          case "decompose":
-          case "drive": {
-            const runId = next.runId ?? "";
-            const feature = view.features.find((f) => f.runId === runId);
-            if (next.kind === "drive" && feature) this.refreshGrowth(id, feature.id, runId);
-            const before = this.workflows.store.run(runId);
-            await this.driveRun(runId, controller.signal);
-            const after = this.workflows.store.run(runId);
-            // Nothing moved (for example a lost lease): report instead of spinning.
-            if (after.revision === before.revision) return this.view(id);
-            break;
-          }
-          case "finish_decompose":
-            this.finishDecompose(id);
-            break;
-          case "start":
-            await this.startFeature(id, next.featureId ?? "");
-            break;
-          case "rebase":
-            await this.rebaseFeature(id, next.featureId ?? "");
-            break;
-          case "complete":
-            this.store.transaction(() => {
-              this.store.setStatus(id, "completed");
-              this.store.emit(id, "initiative.completed", {
-                features: this.view(id).features.map((f) => ({
-                  id: f.id,
-                  runId: f.runId,
-                  contractHash: f.contractHash,
-                })),
-              });
-            });
-            return this.view(id);
-          default: {
-            const parked = view.features.find((f) => f.id === next.featureId);
-            if (
-              next.kind === "blocked" &&
-              parked?.state === "ready" &&
-              shareShortfall(view, parked)
-            )
-              this.noteShareGate(view, parked, "park");
-            return this.view(id);
-          }
-        }
-      }
-      return this.view(id);
+      await this.driveSteps(id, controller.signal);
     } finally {
       this.active.delete(id);
       signal.removeEventListener("abort", abort);
+    }
+    // After the drive let go, so the view it returns no longer reads "driving" (#2024).
+    return this.view(id);
+  }
+
+  /** The steps of one drive, until the initiative needs a person, finishes or stops moving. */
+  private async driveSteps(id: string, signal: AbortSignal): Promise<void> {
+    await this.settleSuperseded(id);
+    for (let step = 0; step < 500 && !signal.aborted; step++) {
+      const view = this.view(id);
+      const next = view.next;
+      if (view.parallelRuns > 1 && (next.kind === "drive" || next.kind === "start")) {
+        if (!(await this.driveFeatures(id, signal))) return;
+        continue;
+      }
+      switch (next.kind) {
+        case "decompose":
+        case "drive": {
+          const runId = next.runId ?? "";
+          const feature = view.features.find((f) => f.runId === runId);
+          if (next.kind === "drive" && feature) this.refreshGrowth(id, feature.id, runId);
+          const before = this.workflows.store.run(runId);
+          await this.driveRun(runId, signal);
+          const after = this.workflows.store.run(runId);
+          // Nothing moved (for example a lost lease): report instead of spinning.
+          if (after.revision === before.revision) return;
+          break;
+        }
+        case "finish_decompose":
+          this.finishDecompose(id);
+          break;
+        case "start":
+          await this.startFeature(id, next.featureId ?? "");
+          break;
+        case "rebase":
+          await this.rebaseFeature(id, next.featureId ?? "");
+          break;
+        case "complete":
+          this.store.transaction(() => {
+            this.store.setStatus(id, "completed");
+            this.store.emit(id, "initiative.completed", {
+              features: this.view(id).features.map((f) => ({
+                id: f.id,
+                runId: f.runId,
+                contractHash: f.contractHash,
+              })),
+            });
+          });
+          return;
+        default: {
+          const parked = view.features.find((f) => f.id === next.featureId);
+          if (next.kind === "blocked" && parked?.state === "ready" && shareShortfall(view, parked))
+            this.noteShareGate(view, parked, "park");
+          return;
+        }
+      }
     }
   }
 
