@@ -59,8 +59,17 @@ export interface DocExampleResult {
   exitCode?: number | null;
   documented: string;
   printed?: string;
-  /** The first documented line that differs and the line printed in its place. */
-  firstDifference?: { line: number; expected: string; actual: string };
+  /**
+   * The first documented line that differs and the line printed in its place. A side with no line
+   * there is the empty string, named by `missing`: the values are copied into a repro as they are,
+   * and a label in their place would be refuted by the command that prints nothing (#1966).
+   */
+  firstDifference?: {
+    line: number;
+    expected: string;
+    actual: string;
+    missing?: "expected" | "actual";
+  };
 }
 
 /** Whether a changed file is documentation whose examples the host runs: Markdown, or a README. */
@@ -423,8 +432,13 @@ export function firstDifference(
     if (want[i] !== got[i])
       return {
         line: i + 1,
-        expected: want[i] ?? "(no more lines)",
-        actual: got[i] ?? "(no more lines)",
+        expected: want[i] ?? "",
+        actual: got[i] ?? "",
+        ...(want[i] === undefined
+          ? { missing: "expected" as const }
+          : got[i] === undefined
+            ? { missing: "actual" as const }
+            : {}),
       };
   return null;
 }
