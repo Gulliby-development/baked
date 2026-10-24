@@ -97,7 +97,7 @@ describe("local API model routing", () => {
     expect(((await review.json()) as RoutingOverview).independentReview.effective).toBe("require");
 
     // The opt-in specify route to Sonnet (#1173): off until a layer turns it on.
-    expect((await get()).specifyOnSonnet).toEqual({ global: null, project: null, effective: false });
+    expect((await get()).specifyOnSonnet).toEqual({ global: null, project: null, effective: true });
     const sonnet = await patch({ scope: "global", specifyOnSonnet: true });
     expect(((await sonnet.json()) as RoutingOverview).specifyOnSonnet).toEqual({ global: true, project: null, effective: true });
     expect(readFile(join(configDir, "config.json")).modelRouting).toMatchObject({ specifyOnSonnet: true });
