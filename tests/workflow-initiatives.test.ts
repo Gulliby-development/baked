@@ -263,10 +263,11 @@ function setup<E extends InitiativeExecutor = InitiativeExecutor>(
   split: unknown = threeFeatures,
   tokens = 100,
   make: (root: string) => E = (root) => new InitiativeExecutor(root, split, tokens) as E,
+  extra: Partial<typeof DEFAULT_CONFIG> = {},
 ) {
   const root = mkdtempSync(join(tmpdir(), "baked-initiative-"));
   const executor = make(root);
-  const config = { ...DEFAULT_CONFIG, defaultModel: "fixture/model", workflows: { enabled: true, importsEnabled: false, defaultWorkflow: "sdd", policy } };
+  const config = { ...DEFAULT_CONFIG, defaultModel: "fixture/model", ...extra, workflows: { enabled: true, importsEnabled: false, defaultWorkflow: "sdd", policy } };
   const workflows = new NativeWorkflowService(root, config, executor);
   const initiatives = new InitiativeService(workflows);
   cleanups.push(() => {
@@ -2399,6 +2400,52 @@ describe("initiative reroute", () => {
     expect(core.blockers[0]).toContain("baked workflow reroute");
     expect(view.next).toMatchObject({ kind: "blocked" });
     expect(JSON.stringify(view.next)).toContain("usage limit");
+  });
+
+  // R59 wheeltags (#1896): the Codex account reached its usage limit with 8 of 12 features started,
+  // three running features blocked provider_account, and no route had a modelFallback chain.
+  test("a usage limit mid-feature moves the task to its modelFallback model and the feature finishes", async () => {
+    const t = setup(threeFeatures, 100, undefined, { modelFallback: { "fixture/model": ["spare/model"] } });
+    await t.start({ plan: threeFeatures });
+    await t.approveSplit();
+    await t.drive();
+    await t.approveFeature("core");
+    // The spec and plan ran on the primary; the account is refused from the first task call on.
+    t.executor.refused.add("fixture/model");
+    t.executor.refusal =
+      "You've hit your usage limit. Visit https://chatgpt.com/settings/usage to purchase more credits or try again at Oct 27th, 2026 9:22 AM.";
+    let view = await t.drive();
+    const taskAttempts = (runId: string) => {
+      const stages = new Map(t.workflows.store.steps(runId).map((step) => [step.id, step.stage_id]));
+      const errors = new Map(
+        t.workflows.store
+          .events(runId)
+          .flatMap((e) => (e.type === "attempt.finished" ? [e.payload as { attemptId: string; error?: { message: string } }] : []))
+          .map((p) => [p.attemptId, p.error?.message ?? null]),
+      );
+      return t.workflows.store
+        .attempts(runId)
+        .filter((a) => stages.get(a.step_id)?.startsWith("task-"))
+        .map((a) => ({ model: a.model_id, status: a.status, error: errors.get(a.id) ?? null }));
+    };
+    const core = t.featureOf(view, "core");
+    // The refused task call moves to the fallback on the same step, the run is never blocked,
+    // and the refusal stays on the failed attempt with its reset time.
+    expect(core.state).toBe("accepted");
+    expect(t.workflows.store.events(core.runId ?? "").some((e) => e.type === "run.state_changed" && (e.payload as { to?: string }).to === "blocked")).toBe(false);
+    expect(taskAttempts(core.runId ?? "")).toEqual([
+      { model: "fixture/model", status: "failed", error: expect.stringContaining("try again at Oct 27th, 2026 9:22 AM") },
+      { model: "spare/model", status: "completed", error: null },
+    ]);
+    // The next feature, started after the limit, fails over the same way.
+    await t.approveFeature("api");
+    view = await t.drive();
+    const api = t.featureOf(view, "api");
+    expect(api.state).toBe("accepted");
+    expect(taskAttempts(api.runId ?? "").map((a) => [a.model, a.status])).toEqual([
+      ["fixture/model", "failed"],
+      ["spare/model", "completed"],
+    ]);
   });
 
   test("a split waiting for approval is proposed again, since its digest covers the model", async () => {
