@@ -5,8 +5,8 @@
  * its own worktree, and the scheduler integrates the results one at a time.
  */
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { tmpDir } from "../platform/index.js";
 import { git } from "./delivery-git.js";
 import type { Task } from "./types.js";
 
@@ -87,7 +87,7 @@ export async function unifiedDiff(
   before: Uint8Array | null,
   after: Uint8Array | null,
 ): Promise<string> {
-  const directory = mkdtempSync(join(tmpdir(), "baked-diff-"));
+  const directory = mkdtempSync(join(tmpDir(), "baked-diff-"));
   try {
     writeFileSync(join(directory, "a"), before ?? new Uint8Array());
     writeFileSync(join(directory, "b"), after ?? new Uint8Array());
