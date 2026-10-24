@@ -109,6 +109,7 @@ import {
 import {
   type BaselineCount,
   baselineRegression,
+  buildFailure,
   CHECK_BASELINE_PATH,
   commandKey,
   diagnosticCount,
@@ -383,6 +384,7 @@ import {
   BASELINE_REPLAY_NOTE,
   type BaselineReplay,
   type BaselineReplayCheck,
+  GREENFIELD_NOTE,
   QUALITY_BASELINE_REPLAY,
   REPLAY_OUTPUT_CHARS,
   replayEdits,
@@ -12224,16 +12226,23 @@ ${note}`;
   ): Promise<void> {
     if (policy.baselineReplay !== "on" || !state.snapshotId) return;
     const snapshotId = state.snapshotId;
-    const prior = this.store.latestArtifact(runId, QUALITY_BASELINE_REPLAY);
-    if (
-      prior &&
-      (JSON.parse(this.store.readArtifact(runId, prior.id)) as BaselineReplay).snapshotId ===
-        snapshotId
-    )
-      return;
+    const kept = this.store.latestArtifact(runId, QUALITY_BASELINE_REPLAY);
+    const prior = kept
+      ? (JSON.parse(this.store.readArtifact(runId, kept.id)) as BaselineReplay)
+      : null;
+    if (prior?.snapshotId === snapshotId) return;
     const changed = await this.changedFiles(runId, state, (path) => !isTestCodePath(path));
     const edits = replayEdits(changed);
     const tests = policy.checks.filter((check) => check.required && isTestCheck(check));
+    // The delivered non-test files never reach the copy, so a corrective that changed only them
+    // replays the same thing: R62 stepexpr replayed four times for one result (#1960).
+    const inputHash = hashJson({
+      revert: edits.revert,
+      remove: edits.remove,
+      tests: Object.entries(state.expectedFiles ?? {}).filter(([path]) => isTestCodePath(path)),
+      checks: tests,
+    });
+    if (prior?.inputHash === inputHash) return;
     const record = (checks: BaselineReplayCheck[], note?: string): void =>
       this.store.transaction(() => {
         const value: BaselineReplay = {
@@ -12244,6 +12253,7 @@ ${note}`;
           unknown: edits.unknown,
           checks,
           ...(note ? { note } : {}),
+          inputHash,
         };
         const artifact = this.store.artifact(
           runId,
@@ -12259,6 +12269,9 @@ ${note}`;
         [],
         "the run changed no file other than tests, so the baseline is the delivered tree",
       );
+    // Nothing goes back: the copy would only lose the feature's own code (R62 stepvet: 19 replays,
+    // every one failed by construction, #1960).
+    if (!edits.revert.length) return record([], GREENFIELD_NOTE);
     const root = runRoot(this.store.workspace, state);
     // The copy checks out the whole repository, so it stands in for the run only at its top.
     const top = await gitWorktreePaths(root);
@@ -12310,12 +12323,15 @@ ${note}`;
           },
         );
         const failed = failedTests(outcome.output);
+        const status = outcome.timedOut ? "timeout" : outcome.exitCode === 0 ? "passed" : "failed";
+        const build = status === "failed" ? buildFailure(outcome.output) : null;
         checks.push({
           id: check.id,
-          status: outcome.timedOut ? "timeout" : outcome.exitCode === 0 ? "passed" : "failed",
+          status,
           failedTests: failed?.names ?? null,
           runner: failed?.tool ?? null,
           output: outcome.output.slice(-REPLAY_OUTPUT_CHARS),
+          ...(build ? { buildFailed: true as const, buildErrors: build } : {}),
         });
       }
       record(checks);

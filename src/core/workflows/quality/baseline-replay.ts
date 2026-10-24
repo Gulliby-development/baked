@@ -25,6 +25,14 @@ export interface BaselineReplayCheck {
   runner: TestRunner | null;
   /** The end of the check's output. */
   output: string;
+  /**
+   * Some or all tests did not build, collect or load on the code before the change, so they did
+   * not run and are not in `failedTests`: an update's new tests that call an API the old code
+   * lacks (#1960). Absent when every test built.
+   */
+  buildFailed?: true;
+  /** The first lines of that build failure, from the runner's output (`BUILD_FAILURES`). */
+  buildErrors?: string[];
 }
 
 export interface BaselineReplay {
@@ -39,7 +47,16 @@ export interface BaselineReplay {
   unknown: string[];
   checks: BaselineReplayCheck[];
   note?: string;
+  /**
+   * What the replay ran on: the files put back and removed and the delivered tests. A later
+   * snapshot with the same inputs reuses the record instead of running again (#1960).
+   */
+  inputHash?: string;
 }
+
+/** The note of a run that created every changed file other than its tests (#1960). */
+export const GREENFIELD_NOTE =
+  "the run created every changed file other than tests, so there is no code before the change to replay the tests on: every test fails or does not build there by construction";
 
 /**
  * What the replay changes in its copy: every changed file that is not a test goes back to its
@@ -69,5 +86,5 @@ export const BASELINE_REPLAY_NOTE = {
   analysis:
     "The host runs the baseline replay (the test checks on the delivered tests with the other changed files put back as they were before the run, recorded as evidence quality/baseline-replay.json), so a criterion that named tests fail, or pass, on the code before the change is automated and checkable; it is never a finding for needing a second tree.",
   review:
-    "Evidence quality/baseline-replay.json is the baseline replay: the test checks run on the delivered tests with every other changed file put back as it was before the run (reverted), files the run created removed (removed), and files whose earlier content was not kept left as delivered (unknown). Each check lists its status and failedTests. Settle a criterion that tests fail, or pass, on the code before the change from it: the named tests must be in failedTests (or absent from it for tests that must still pass). failedTests null means the output was not read, so read its output.",
+    "Evidence quality/baseline-replay.json is the baseline replay: the test checks run on the delivered tests with every other changed file put back as it was before the run (reverted), files the run created removed (removed), and files whose earlier content was not kept left as delivered (unknown). Each check lists its status and failedTests. Settle a criterion that tests fail, or pass, on the code before the change from it: the named tests must be in failedTests (or absent from it for tests that must still pass). failedTests null means the output was not read, so read its output. buildFailed means some or all tests did not build or load on the code before the change, so they did not run and are not in failedTests (buildErrors holds the first errors): a test that does not build there fails on the code before the change, and is not a test that still passes there. A note instead of checks means there was nothing to replay, for example a feature that created all its code.",
 } as const;
