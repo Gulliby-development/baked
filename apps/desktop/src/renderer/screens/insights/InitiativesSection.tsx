@@ -434,7 +434,11 @@ function EstimatePanel({ projectKey, view }: { projectKey: string; view: Initiat
         </span>
         <span className="text-[13px] text-muted-foreground">
           about {estimate.tasks.low}–{estimate.tasks.high} tasks · {tokens(estimate.tokens.low)}–
-          {tokens(estimate.tokens.high)} tokens · plan for {tokens(estimate.withMargin)}
+          {tokens(estimate.tokens.high)} tokens
+          {estimate.expectedTokens !== undefined
+            ? ` · expected ${tokens(estimate.expectedTokens)}`
+            : ""}{" "}
+          · plan for {tokens(estimate.withMargin)}
           {estimate.progress?.spent ? ` · ${tokens(estimate.progress.spent)} used` : ""}
         </span>
         <Button
@@ -465,7 +469,7 @@ function EstimatePanel({ projectKey, view }: { projectKey: string; view: Initiat
             <span className="font-mono text-muted-foreground">
               {f.basis === "measured"
                 ? `used ${tokens(f.tokens.high)}`
-                : `${tokens(f.tokens.low)}–${tokens(f.tokens.high)}${f.floor ? ` by ${f.floor}` : ""}`}
+                : `${tokens(f.tokens.low)}–${tokens(f.tokens.high)}${f.floor ? ` by ${f.floor}` : ""}${f.highBasis ? ", high by ratios" : ""}`}
             </span>
           </li>
         ))}

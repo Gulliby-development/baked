@@ -1,4 +1,7 @@
-import { estimateBudgetText } from "../../../../../../src/core/workflows/initiatives/estimate-budget.js";
+import {
+  estimateBudgetText,
+  highCalibrationText,
+} from "../../../../../../src/core/workflows/initiatives/estimate-budget.js";
 import type {
   FeatureState,
   InitiativeEstimate,
@@ -532,7 +535,18 @@ export function estimateBasisText(estimate: InitiativeEstimate): string {
 /** The estimate against the shared budget, with its tone. */
 export function estimateFit(estimate: InitiativeEstimate): { text: string; tone: Tone } {
   return {
-    text: estimateBudgetText(estimate.tokens, estimate.budget, estimate.withMargin),
+    // Older backends send no expected value; their warning keeps the bare high end.
+    text: estimateBudgetText(
+      estimate.tokens,
+      estimate.budget,
+      estimate.withMargin,
+      estimate.expectedTokens === undefined
+        ? undefined
+        : {
+            expectedTokens: estimate.expectedTokens,
+            spread: highCalibrationText(estimate.highCalibration ?? null),
+          },
+    ),
     tone: estimate.budget.fits === "yes" ? "ok" : estimate.budget.fits === "maybe" ? "warn" : "err",
   };
 }

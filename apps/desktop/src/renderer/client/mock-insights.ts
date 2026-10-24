@@ -414,6 +414,7 @@ function estimated(view: InitiativeView): ApiResponse {
     level,
     tasks,
     tokens,
+    expectedTokens: Math.round((tokens.low + tokens.high) / 2),
     withMargin,
     margin: 0.25,
     budget: {
@@ -421,6 +422,7 @@ function estimated(view: InitiativeView): ApiResponse {
       fits: withMargin <= limit ? "yes" : tokens.low <= limit ? "maybe" : "no",
     },
     basis: "defaults",
+    highCalibration: null,
     features,
     notes: ["This project has no finished runs yet, so the ranges are generic."],
     label: "",
