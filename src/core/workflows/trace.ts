@@ -24,6 +24,14 @@ import { callCostRate } from "./budget.js";
 import { assertForecastFits, costForecast } from "./cost-forecast.js";
 import { WorkflowFault } from "./errors.js";
 import {
+  EVIDENCE_DECISION_KIND,
+  EVIDENCE_DECISIONS_DIR,
+  type EvidenceRecord,
+  type EvidenceRule,
+  type EvidenceSite,
+  evidenceDecision,
+} from "./evidence-decisions.js";
+import {
   type BatteryRecord,
   type BatteryRule,
   batteryDecision,
@@ -124,6 +132,8 @@ const KEPT_ARTIFACTS = new Set([
   HOST_APPLY_KIND,
   // Each misquote settle's host-fix decision: occurrence counts and spelling flags, no text (#2047).
   MISQUOTE_FIX_KIND,
+  // Each decision for the request or the platform on checked evidence: states, no quotes (#2032).
+  EVIDENCE_DECISION_KIND,
 ]);
 
 /** Tables that hold evidence, effects or prose the replay never reads. */
@@ -640,6 +650,60 @@ export interface RunReplay {
   misquoteFixes: MisquoteFixBoundary[];
   /** Misquote settles whose host-fix decision (apply or open a session) the current rule changes. */
   newMisquoteFixes: number;
+  /** Each decision for the request or the platform on checked evidence (#2032). */
+  evidenceDecisions: EvidenceDecisionBoundary[];
+  /** Findings and conflict reports the current rule settles differently than the recording. */
+  newEvidenceDecisions: number;
+}
+
+export interface EvidenceDecisionBoundary {
+  site: EvidenceSite;
+  ref: string;
+  report: number;
+  recorded: boolean;
+  replayed: boolean;
+}
+
+/**
+ * Every decision a run made for the request or the platform on checked evidence
+ * (`conflicts/evidence/`, #2032), decided again from its recorded inputs: eligibility, the
+ * evidence state, whether the wording rule matched and whether its fallback applied. Traces before
+ * #2032 record none.
+ */
+export function replayEvidenceDecisions(
+  store: WorkflowStore,
+  runId: string,
+  decide: EvidenceRule = evidenceDecision,
+): EvidenceDecisionBoundary[] {
+  return store
+    .artifacts(runId)
+    .filter(
+      (a) => a.kind === EVIDENCE_DECISION_KIND && a.logical_path.startsWith(EVIDENCE_DECISIONS_DIR),
+    )
+    .flatMap((artifact) => {
+      let record: EvidenceRecord;
+      try {
+        record = JSON.parse(store.readArtifact(runId, artifact.id));
+      } catch {
+        return [];
+      }
+      const replayed = decide({
+        site: record.site,
+        eligible: record.eligible ?? false,
+        evidence: record.evidence ?? "absent",
+        wording: record.wording ?? false,
+        fallback: record.fallback ?? false,
+      });
+      return [
+        {
+          site: record.site,
+          ref: record.ref,
+          report: record.report,
+          recorded: record.decision,
+          replayed,
+        },
+      ];
+    });
 }
 
 export interface MisquoteFixBoundary {
@@ -2544,6 +2608,8 @@ function replayRun(
   | "newApplyDecisions"
   | "misquoteFixes"
   | "newMisquoteFixes"
+  | "evidenceDecisions"
+  | "newEvidenceDecisions"
 > | null {
   const db = store.connection;
   const run = store.run(runId);
@@ -2719,6 +2785,7 @@ export function replayTrace(
     hostApplyRule?: HostApplyRule;
     poolGrowthRule?: PoolGrowthRule;
     misquoteFixRule?: MisquoteFixRule;
+    evidenceRule?: EvidenceRule;
   } = {},
 ): TraceReplay {
   // Initiative starts rewind their own copies of the trace, before the run replay rewinds this one.
@@ -2772,6 +2839,9 @@ export function replayTrace(
     const misquotes = new Map(
       runIds.map((runId) => [runId, replayMisquoteFixes(store, runId, options.misquoteFixRule)]),
     );
+    const evidence = new Map(
+      runIds.map((runId) => [runId, replayEvidenceDecisions(store, runId, options.evidenceRule)]),
+    );
     const runs: RunReplay[] = [];
     for (const runId of runIds) {
       const firstByte = timings.get(runId) ?? [];
@@ -2795,6 +2865,7 @@ export function replayTrace(
       const requestConflicts = requests.get(runId) ?? [];
       const hostApply = applies.get(runId) ?? [];
       const misquoteFixes = misquotes.get(runId) ?? [];
+      const evidenceDecisions = evidence.get(runId) ?? [];
       if (
         !replay.boundaries.length &&
         !firstByte.length &&
@@ -2805,7 +2876,8 @@ export function replayTrace(
         !repeatedFailures.length &&
         !requestConflicts.length &&
         !hostApply.length &&
-        !misquoteFixes.length
+        !misquoteFixes.length &&
+        !evidenceDecisions.length
       )
         continue;
       runs.push({
@@ -2832,6 +2904,8 @@ export function replayTrace(
         newApplyDecisions: hostApply.filter((b) => b.replayed !== b.recorded).length,
         misquoteFixes,
         newMisquoteFixes: misquoteFixes.filter((b) => b.replayed !== b.recorded).length,
+        evidenceDecisions,
+        newEvidenceDecisions: evidenceDecisions.filter((b) => b.replayed !== b.recorded).length,
       });
     }
     const gates = replayShareGate(store, options.shareGate);

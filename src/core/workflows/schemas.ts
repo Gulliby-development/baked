@@ -1082,6 +1082,12 @@ export const ReviewSchema = z
             claim: Text,
             impact: Text,
             suggestedFix: Text,
+            /**
+             * The request's exact words, when the finding says the approved spec contradicts the
+             * request (#2032). The host checks them against the request before the finding records
+             * a spec amendment for the request; a quote the request does not hold records none.
+             */
+            quote: Text.optional(),
           })
           .strict(),
       )
@@ -1185,13 +1191,15 @@ export const ImplementationSchema = z
      * The sides of a `spec_conflict`, each with its exact words (#2016): a criterion or a
      * requirement by id, the request, or a test file by path. The host checks every quote against
      * the spec and the request before the conflict is settled for the request, so the decision
-     * rests on verified quotes, not on how the summary is worded.
+     * rests on verified quotes, not on how the summary is worded. A `platform` side (#2032) names
+     * a failing check by id, or `probe`, in ref and quotes a line of its output: the host settles
+     * a platform limit on that recorded output, not on the words "platform limit".
      */
     conflictSides: z
       .array(
         z
           .object({
-            kind: z.enum(["criterion", "requirement", "request", "test"]),
+            kind: z.enum(["criterion", "requirement", "request", "test", "platform"]),
             ref: z.string().min(1).max(512).optional(),
             quote: Text,
           })
@@ -1276,6 +1284,12 @@ export const AnalysisSchema = z
             refs: z.array(z.string().min(1)).min(1),
             description: Text,
             blocking: z.boolean(),
+            /**
+             * The request's exact words, when the finding sets the spec against what the request
+             * states (#2032). The host checks them against the request before the request settles
+             * the finding; a quote the request does not hold settles nothing.
+             */
+            quote: Text.optional(),
           })
           .strict(),
       )

@@ -23,7 +23,8 @@ export const REQUEST_CONFLICTS_DIR = "conflicts/request/";
 /** The shortest request quote that counts, in characters after spacing and quote marks. */
 export const MIN_REQUEST_QUOTE = 12;
 
-export type SideKind = "criterion" | "requirement" | "request" | "test";
+/** `platform` (#2032): ref is a check id or `probe`, and the quote is a line of its output. */
+export type SideKind = "criterion" | "requirement" | "request" | "test" | "platform";
 
 /** A side as the implementer reports it (`conflictSides` of the implementation result). */
 export interface ReportedSide {
@@ -105,10 +106,10 @@ const squash = (text: string) =>
     .replace(/\s+/g, " ")
     .trim();
 
-const criterionText = (c: Spec["criteria"][number]) => `${c.given}\n${c.when}\n${c.then}`;
+export const criterionText = (c: Spec["criteria"][number]) => `${c.given}\n${c.when}\n${c.then}`;
 
 /** A request quote that shows a side of its own: long enough, in the request, not in the criteria. */
-function requestQuote(quote: string, request: string, criteria: readonly string[]): boolean {
+export function requestQuote(quote: string, request: string, criteria: readonly string[]): boolean {
   return (
     squash(quote).length >= MIN_REQUEST_QUOTE &&
     quoteInRequest(quote, request) &&
@@ -117,7 +118,7 @@ function requestQuote(quote: string, request: string, criteria: readonly string[
 }
 
 /** Spans a report quotes: double quotes, backticks or typographic quotes. */
-function quotedSpans(report: string): string[] {
+export function quotedSpans(report: string): string[] {
   return [...report.matchAll(/"([^"\n]+)"|`([^`\n]+)`|“([^”\n]+)”/g)].map((m) =>
     (m[1] ?? m[2] ?? m[3] ?? "").trim(),
   );
@@ -151,7 +152,8 @@ export function checkedSides(
         const requirement = spec.requirements.find((r) => r.id === ref);
         verified = !!requirement && quoteInRequest(side.quote, requirement.text);
       } else if (side.kind === "request") verified = requestQuote(side.quote, request, cited);
-      else verified = ref !== null;
+      // A platform side is checked against the task's failing checks and probes (#2032).
+      else if (side.kind === "test") verified = ref !== null;
       return { kind: side.kind, ref, verified, source: "sides" as const };
     });
   }
