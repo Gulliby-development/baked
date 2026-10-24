@@ -15225,11 +15225,14 @@ ${note}`;
     let inconclusive: string | undefined;
     for (const { gate, check } of ordered) {
       const run = await this.runCommandGate(runId, stepId, check, gate, policy, signal);
+      // Baseline lint debt under `staticBaseline: "relative"` passes here as it does at task end
+      // and in the schema-1 checks stage (#1393).
       const result =
         run.status === "failed" &&
         check.required &&
         !run.reason &&
-        this.noOwnedTests(runId, state, check, run.output ?? "", run.evidenceId)
+        (this.staticDebt(runId, state, policy, check, run.output ?? "", run.evidenceId) ||
+          this.noOwnedTests(runId, state, check, run.output ?? "", run.evidenceId))
           ? { ...run, status: "passed" as const }
           : run;
       this.recordGate(runId, state, gate.id, null, {
