@@ -117,9 +117,15 @@ class InitiativeExecutor implements AgentExecutor {
   /** Implementation calls in flight, and the most at once. */
   active = 0;
   maxActive = 0;
-  /** An implementation waits (up to `rendezvousMs`) until this many implementations have begun. */
+  /**
+   * An implementation waits until this many implementations have begun. `rendezvousMs` only bounds
+   * a run that never gets there; it must not decide the outcome on a slow runner, so a test sets
+   * `rendezvous` to the number the runtime should start at once, never above it, and names in
+   * `rendezvousOf` the features that take part when others implement alone before them (#1915).
+   */
   rendezvous = 0;
-  rendezvousMs = 5000;
+  rendezvousMs = 60_000;
+  rendezvousOf: ReadonlySet<string> | null = null;
   private arrived = 0;
   /** When set, each call records its tokens as priced usage, as the agent executor does. */
   usageStore: WorkflowStore | null = null;
@@ -127,13 +133,13 @@ class InitiativeExecutor implements AgentExecutor {
   async execute(request: ExecutionRequest) {
     this.calls.push(request.profile.output);
     const implementing = request.profile.output === "implementation";
-    if (implementing) {
-      this.maxActive = Math.max(this.maxActive, ++this.active);
-      this.arrived++;
-    }
+    const feature = request.task?.writes[0]?.path.replace(/\.txt$/, "") ?? "";
+    const meets = implementing && (this.rendezvousOf?.has(feature) ?? true);
+    if (implementing) this.maxActive = Math.max(this.maxActive, ++this.active);
+    if (meets) this.arrived++;
     try {
       const deadline = Date.now() + this.rendezvousMs;
-      while (implementing && this.arrived < this.rendezvous && Date.now() < deadline) await Bun.sleep(5);
+      while (meets && this.arrived < this.rendezvous && Date.now() < deadline) await Bun.sleep(5);
       return this.respond(request);
     } finally {
       if (implementing) this.active--;
@@ -1782,8 +1788,12 @@ describe("initiative runtime", () => {
 
     test("on, three of the six middle features implement at once and the run completes", async () => {
       const { t } = await slots(wide, { parallelRunsFromPlan: true });
-      t.executor.rendezvous = 4;
-      t.executor.rendezvousMs = 1500;
+      // The first three middle features hold until all three have begun, so they overlap however
+      // long a worktree takes to create. A rendezvous of 4 (base and three) with a 1.5 s bound
+      // passed only while the third started within 1.5 s of the first, which a slow Windows disk
+      // broke (#1915).
+      t.executor.rendezvous = 3;
+      t.executor.rendezvousOf = new Set(["m1", "m2", "m3", "m4", "m5", "m6"]);
       const view = await t.drive();
       expect(view.status).toBe("completed");
       expect(t.executor.maxActive).toBe(3);
