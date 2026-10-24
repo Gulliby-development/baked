@@ -360,6 +360,17 @@ export function buildFailure(output: string, limit = 5): string[] | null {
 }
 
 /**
+ * The runner whose build-failure lines (`BUILD_FAILURES`) a check's output has, so the baseline
+ * replay knows how to split that check per test target (#2020). Null when none has.
+ */
+export function buildRunner(output: string): TestRunner | null {
+  const lines = output.split(/\r?\n/).map((line) => line.trimEnd());
+  for (const [tool, pattern] of Object.entries(BUILD_FAILURES) as [TestRunner, RegExp][])
+    if (lines.some((line) => pattern.test(line))) return tool;
+  return null;
+}
+
+/**
  * The tests a check's output reports as failed, with the runner that printed them: the runner
  * whose summary the output has, else the first whose failure lines it has (`go test` without `-v`
  * prints `--- FAIL` lines and no count). Null when neither is in the output, so a caller cannot

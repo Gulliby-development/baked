@@ -922,12 +922,18 @@ function joinedStrings(unescaped: string): string {
  * order and next to each other, in the test's text or in its strings joined. R57 foundation T013
  * left out the middle line of `f 0644 a\n# c\nf 0600 a` and the walk accepted it, since each
  * token occurred somewhere in the file. Lines are split and trimmed on ASCII spaces and tabs
- * only: a bare CR, a BOM or an NBSP in a line is part of the literal (#1979).
+ * only: a bare CR, a BOM or an NBSP in a line is part of the literal (#1979). A blank line
+ * between two lines is a line of the literal too, held as a line break of its own: R65 lint
+ * T004 `a\n\n{b\n` and md-site T004 `Intro\n\n# First\n\n# Second` were refused although the
+ * tests spelled them exactly, since the blank lines were dropped and the rest demanded next to
+ * each other (#2021). Blank lines before the first and after the last line do not count.
  */
 function linesHeld(unescaped: string, literal: string): boolean | null {
-  const lines = literal.split(/\r?\n/).map(asciiTrim).filter(Boolean);
+  const all = literal.split(/\r?\n/).map(asciiTrim);
+  const first = all.findIndex(Boolean);
+  const lines = all.slice(first, all.length - [...all].reverse().findIndex(Boolean));
   const placeholder = new RegExp(PLACEHOLDER.source);
-  if (lines.length < 2 || lines.some((line) => placeholder.test(line))) return null;
+  if (lines.filter(Boolean).length < 2 || lines.some((line) => placeholder.test(line))) return null;
   const pattern = new RegExp(
     lines
       .map((line) =>
