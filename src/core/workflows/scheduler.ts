@@ -33,6 +33,7 @@ import {
 } from "../llm/policy-refusal.js";
 import { invisibleCharacters } from "../llm/provider-answer.js";
 import { ProviderUnreachableError } from "../llm/provider-health.js";
+import { dataDir } from "../platform/index.js";
 import { runSandbox } from "../security/sandbox.js";
 import { buildSafeEnv } from "../spawn.js";
 import { canonical, hashBytes, hashJson } from "../specs/hash.js";
@@ -301,6 +302,13 @@ import { costToleranceOf, currentCostCap, inCostWrapUp } from "./cost-tolerance.
 import { coverageFinding } from "./coverage.js";
 import { type CriticCalibration, calibrateCritic, criticExamples } from "./critic-calibration.js";
 import { crossPlatformAnalysisNote, crossPlatformNote } from "./cross-platform.js";
+import {
+  addDefectClasses,
+  DEFECT_CLASSES_FILE,
+  defectAdditions,
+  defectClassesFor,
+  defectRunText,
+} from "./defect-classes.js";
 import {
   git,
   gitWorktreePaths,
@@ -737,11 +745,16 @@ import {
   siblingCorrections,
 } from "./task-graph.js";
 import {
+  INTEGRITY_DIR,
+  INTEGRITY_KIND,
+  type IntegrityRecord,
+  integrityDecision,
   integrityFix,
+  integrityRecord,
   isTestPath,
+  measureTestIntegrity,
   requestedTestRemovals,
   rewriteTargets,
-  scanTestIntegrity,
   strengthenTargets,
   testChanges,
   testIntegrityOf,
@@ -3042,6 +3055,7 @@ export class WorkflowScheduler {
                     }),
                   ),
                 );
+              if (policy.defectClasses === "on") this.learnDefectClasses(runId, state);
               break;
             }
           }
@@ -5297,6 +5311,15 @@ export class WorkflowScheduler {
             : "The host writes the audited row data and parameterized tests. Write only the actual(input) harness and any ordinary tests this task owns. Review and corrections must preserve the host-written files.",
         },
       };
+    }
+    // The cross-run defect classes of the run's domains, as examples (#1970).
+    if (
+      policy.defectClasses === "on" &&
+      (stageProfile.output === "plan" ||
+        (stageProfile.output === "implementation" && task?.origin === "planned"))
+    ) {
+      const classes = defectClassesFor(join(dataDir(), DEFECT_CLASSES_FILE), defectRunText(state));
+      if (classes) extra = { ...(extra as Record<string, unknown>), defectClasses: classes };
     }
     const replay =
       task && !generatedRows.length && stageProfile.output === "implementation"
@@ -10217,6 +10240,12 @@ ${note}`;
     }
     return protects;
   }
+  /** Records an integrity scan's measures and findings for the replay (#1715). */
+  private recordIntegrity(runId: string, name: string, record: IntegrityRecord): void {
+    this.store.transaction(() =>
+      this.store.artifact(runId, INTEGRITY_KIND, `${INTEGRITY_DIR}${name}.json`, canonical(record)),
+    );
+  }
   private integrityFailures(
     runId: string,
     state: RuntimeState,
@@ -10258,7 +10287,7 @@ ${note}`;
       .map((f) => JSON.parse(f.body_json) as Review["findings"][number]);
     const corrective = task.origin !== "planned" && task.findingIds.length > 0;
     if (corrective) this.recordAddedTests(runId, task, changes);
-    const found = scanTestIntegrity(changes, {
+    const measures = measureTestIntegrity(changes, {
       protects: corrective ? this.correctionTests(runId, task, changed) : undefined,
       removalFindings: corrective ? ownFindings : [],
       rewrites: task.origin === "planned" ? new Set() : rewriteTargets(ownFindings),
@@ -10272,8 +10301,14 @@ ${note}`;
       testSources,
       specText: integrityRequirementText(state),
     });
-    if (!found.length) return [];
+    const found = integrityDecision(measures);
     const mode = testIntegrityOf(policy);
+    this.recordIntegrity(
+      runId,
+      `tasks/${task.id}`,
+      integrityRecord("task", task.id, mode, measures, found),
+    );
+    if (!found.length) return [];
     const evidenceId = this.store.transaction(() => {
       const artifact = this.store.artifact(
         runId,
@@ -10491,7 +10526,7 @@ ${note}`;
         ),
       )
       .map((f) => JSON.parse(f.body_json) as Review["findings"][number]);
-    const found = scanTestIntegrity(
+    const measures = measureTestIntegrity(
       changed.map((path) => {
         const hash = baseline.get(path) ?? null;
         const kept = hash === null ? null : readKept(this.store, runId, hash)?.toString("utf8");
@@ -10508,8 +10543,10 @@ ${note}`;
         specText: integrityRequirementText(state),
       },
     );
-    if (!found.length) return [];
+    const found = integrityDecision(measures);
     const mode = testIntegrityOf(policy);
+    this.recordIntegrity(runId, "run", integrityRecord("run", null, mode, measures, found));
+    if (!found.length) return [];
     const evidenceId = this.store.transaction(() => {
       const artifact = this.store.artifact(
         runId,
@@ -12542,6 +12579,28 @@ ${note}`;
       this.store.transaction(() => this.store.finishStep(runId, child, "failed"));
       return null;
     }
+  }
+  /**
+   * Adds the families of the run's resolved correctness findings to the cross-run list of defect
+   * classes (#1970), from the learn stage of a run whose policy turns it on. What the run added is
+   * recorded as `learning/defect-classes.json`.
+   */
+  private learnDefectClasses(runId: string, state: RuntimeState): void {
+    const findings = this.store
+      .findings(runId)
+      .filter((f) => f.status === "resolved" && f.repair_task_id)
+      .map((f) => JSON.parse(f.body_json) as Review["findings"][number]);
+    const additions = defectAdditions(findings, defectRunText(state));
+    if (!additions.length) return;
+    addDefectClasses(join(dataDir(), DEFECT_CLASSES_FILE), additions, new Date().toISOString());
+    this.store.transaction(() =>
+      this.store.artifact(
+        runId,
+        "learning-candidate",
+        "learning/defect-classes.json",
+        canonical({ schemaVersion: 1, additions }),
+      ),
+    );
   }
   /**
    * Routes a defect a task names in another task's file to that file's owner at once (#839). A

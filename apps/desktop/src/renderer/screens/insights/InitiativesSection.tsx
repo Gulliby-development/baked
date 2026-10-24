@@ -44,6 +44,7 @@ import {
   criticalPathLine,
   detailStatus,
   estimateBasisText,
+  estimateDurationLine,
   estimateFit,
   featureCounts,
   featureRow,
@@ -456,6 +457,9 @@ function EstimatePanel({ projectKey, view }: { projectKey: string; view: Initiat
       <p className={`m-0 text-[13px] ${TONE_TEXT[fit.tone]}`}>
         {fit.text} ({tokens(estimate.budget.maxTotalTokens)} tokens).
       </p>
+      {estimateDurationLine(estimate) && (
+        <p className="m-0 text-[12px] text-dim-foreground">{estimateDurationLine(estimate)}</p>
+      )}
       <ul className="m-0 grid list-none grid-cols-[minmax(0,1fr)_auto_auto] gap-x-4 gap-y-1 p-0 text-[12px]">
         {estimate.features.map((f) => (
           <li key={f.featureId} className="contents">

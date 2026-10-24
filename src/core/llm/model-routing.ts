@@ -289,8 +289,12 @@ export function isClaudeCodeOpus(model: string): boolean {
   return provider === "claude-code" && /(?:^|[-/.])opus(?:$|[-.[])/i.test(rest.join("/"));
 }
 
+/**
+ * On by default (#1173): Sonnet specs on Opus runs were accepted by analyze at once in 2 of 2
+ * measured runs, and specify is 11 to 15 percent of a claude-code run on Opus. `false` turns it off.
+ */
 function specifySonnetRoute(inputs: RoutingInputs): Resolved | undefined {
-  if (inputs.routing?.specifyOnSonnet !== true || !isClaudeCodeOpus(inputs.runModel))
+  if (inputs.routing?.specifyOnSonnet === false || !isClaudeCodeOpus(inputs.runModel))
     return undefined;
   return { model: SPECIFY_SONNET_MODEL, source: "modelRouting.specifyOnSonnet" };
 }

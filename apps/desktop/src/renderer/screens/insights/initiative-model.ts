@@ -537,6 +537,22 @@ export const hasDependents = (
 ): boolean => view.features.some((f) => f.dependsOn.includes(feature.id));
 
 /** What the coordinator gets when a person starts an initiative from this screen. */
+/**
+ * The split's minutes in one line (#1557): wall time on the run slots, on the plan's widest group
+ * when wider, and the summed active time the shared time budget limits; null without timed samples
+ * or on an older backend.
+ */
+export function estimateDurationLine(
+  estimate: Pick<InitiativeEstimate, "duration">,
+): string | null {
+  const duration = estimate.duration;
+  if (!duration) return null;
+  const widest = duration.widest
+    ? ` · about ${Math.round(duration.widest.wallMinutes)} min with ${duration.widest.slots}, the plan's widest group`
+    : "";
+  return `About ${Math.round(duration.wallMinutes)} min of wall time with ${duration.slots} at once${widest} · about ${Math.round(duration.activeMinutes)} min of summed active time, which the shared time budget limits`;
+}
+
 /** What an estimate's basis means, for the line under it. */
 export function estimateBasisText(estimate: InitiativeEstimate): string {
   switch (estimate.basis) {

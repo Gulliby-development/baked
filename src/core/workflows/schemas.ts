@@ -685,6 +685,13 @@ export const PolicySchema = z
      */
     misquoteFix: z.literal("on").optional(),
     /**
+     * The cross-run list of defect classes (defect-classes.ts, #1970): `on` lets the run's learn
+     * stage add the families of its resolved correctness findings to the list in the BAKED data
+     * directory, and shows its planner and planned implementers the classes of the domains its
+     * request and spec name, as examples. Absent is off: the list is neither read nor written.
+     */
+    defectClasses: z.literal("on").optional(),
+    /**
      * The host's finish of a task whose spec conflict it settled (conflict-finish.ts, #2033): `on`
      * lets the host run the task's required checks on the attempt's tree when its criteria cases
      * hold with the overruled ones released, and go on with the task when they pass, instead of

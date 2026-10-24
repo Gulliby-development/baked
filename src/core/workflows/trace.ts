@@ -108,6 +108,13 @@ import { exceedsTestCapacity, type SizingReport } from "./sizing.js";
 import { costStageOf, runPrices } from "./stage-price.js";
 import { type LadderRung, nextRung, type RecoveryPlacement } from "./stall-ladder.js";
 import { type ArtifactRow, WorkflowStore } from "./store.js";
+import {
+  INTEGRITY_DIR,
+  INTEGRITY_KIND,
+  type IntegrityMeasure,
+  type IntegrityRecord,
+  integrityDecision,
+} from "./test-integrity.js";
 import { RuntimeStateSchema } from "./types.js";
 
 /**
@@ -146,6 +153,8 @@ const KEPT_ARTIFACTS = new Set([
   HOST_APPLY_KIND,
   // Each misquote settle's host-fix decision: occurrence counts and spelling flags, no text (#2047).
   MISQUOTE_FIX_KIND,
+  // Each test-integrity scan: per-file counts and flags, no code (#1715).
+  INTEGRITY_KIND,
   // Each decision for the request or the platform on checked evidence: states, no quotes (#2032).
   EVIDENCE_DECISION_KIND,
   // Each settled conflict's host finish decision: edits, case and check counts, no text (#2033).
@@ -666,6 +675,10 @@ export interface RunReplay {
   misquoteFixes: MisquoteFixBoundary[];
   /** Misquote settles whose host-fix decision (apply or open a session) the current rule changes. */
   newMisquoteFixes: number;
+  /** Each test-integrity scan's findings against the current rule (#1715). */
+  integrity: IntegrityBoundary[];
+  /** Integrity findings (rule and path) the current rule reports that the recording did not. */
+  newIntegrityFindings: number;
   /** Each decision for the request or the platform on checked evidence (#2032). */
   evidenceDecisions: EvidenceDecisionBoundary[];
   /** Findings and conflict reports the current rule settles differently than the recording. */
@@ -775,6 +788,55 @@ export function replayEvidenceDecisions(
           report: record.report,
           recorded: record.decision,
           replayed,
+        },
+      ];
+    });
+}
+
+export type IntegrityRule = (
+  measures: readonly IntegrityMeasure[],
+) => { rule: string; path: string }[];
+
+export interface IntegrityBoundary {
+  scope: IntegrityRecord["scope"];
+  taskId: string | null;
+  mode: IntegrityRecord["mode"];
+  /** `rule path` of each finding, as recorded and as the current rule decides. */
+  recorded: string[];
+  replayed: string[];
+}
+
+/**
+ * Every test-integrity scan a run recorded (`integrity/decisions/`, #1715), decided again from its
+ * recorded measures: each changed file's test, assertion, skip, suppression and bypass counts and
+ * the exemptions that applied (a reasoned write, a requested removal, a rewrite or strengthen
+ * finding). The counting itself reads code a trace does not keep, so a change to how a rule counts
+ * is not replayed, only what the rules decide from the counts. Traces before #1715 record none.
+ */
+export function replayIntegrity(
+  store: WorkflowStore,
+  runId: string,
+  decide: IntegrityRule = integrityDecision,
+): IntegrityBoundary[] {
+  const key = (f: { rule: string; path: string }) => `${f.rule} ${f.path}`;
+  return store
+    .artifacts(runId)
+    .filter((a) => a.kind === INTEGRITY_KIND && a.logical_path.startsWith(INTEGRITY_DIR))
+    .flatMap((artifact) => {
+      let record: IntegrityRecord;
+      try {
+        record = JSON.parse(store.readArtifact(runId, artifact.id));
+      } catch {
+        return [];
+      }
+      if (record.schemaVersion !== 1) return [];
+      return [
+        {
+          scope: record.scope,
+          taskId: record.taskId,
+          mode: record.mode,
+          recorded: [...new Set(record.findings.map(key))],
+          replayed: [...new Set(decide(record.measures).map(key))],
         },
       ];
     });
@@ -2693,6 +2755,8 @@ function replayRun(
   | "newApplyDecisions"
   | "misquoteFixes"
   | "newMisquoteFixes"
+  | "integrity"
+  | "newIntegrityFindings"
   | "evidenceDecisions"
   | "newEvidenceDecisions"
   | "conflictFinishes"
@@ -2873,6 +2937,7 @@ export function replayTrace(
     hostApplyRule?: HostApplyRule;
     poolGrowthRule?: PoolGrowthRule;
     misquoteFixRule?: MisquoteFixRule;
+    integrityRule?: IntegrityRule;
     evidenceRule?: EvidenceRule;
     conflictFinishRule?: ConflictFinishRule;
   } = {},
@@ -2929,6 +2994,9 @@ export function replayTrace(
     const misquotes = new Map(
       runIds.map((runId) => [runId, replayMisquoteFixes(store, runId, options.misquoteFixRule)]),
     );
+    const scans = new Map(
+      runIds.map((runId) => [runId, replayIntegrity(store, runId, options.integrityRule)]),
+    );
     const evidence = new Map(
       runIds.map((runId) => [runId, replayEvidenceDecisions(store, runId, options.evidenceRule)]),
     );
@@ -2961,6 +3029,7 @@ export function replayTrace(
       const requestConflicts = requests.get(runId) ?? [];
       const hostApply = applies.get(runId) ?? [];
       const misquoteFixes = misquotes.get(runId) ?? [];
+      const integrity = scans.get(runId) ?? [];
       const evidenceDecisions = evidence.get(runId) ?? [];
       const conflictFinishes = finishes.get(runId) ?? [];
       if (
@@ -2974,6 +3043,7 @@ export function replayTrace(
         !requestConflicts.length &&
         !hostApply.length &&
         !misquoteFixes.length &&
+        !integrity.length &&
         !evidenceDecisions.length &&
         !conflictFinishes.length
       )
@@ -3002,6 +3072,11 @@ export function replayTrace(
         newApplyDecisions: hostApply.filter((b) => b.replayed !== b.recorded).length,
         misquoteFixes,
         newMisquoteFixes: misquoteFixes.filter((b) => b.replayed !== b.recorded).length,
+        integrity,
+        newIntegrityFindings: integrity.reduce(
+          (n, b) => n + b.replayed.filter((f) => !b.recorded.includes(f)).length,
+          0,
+        ),
         evidenceDecisions,
         newEvidenceDecisions: evidenceDecisions.filter((b) => b.replayed !== b.recorded).length,
         conflictFinishes,

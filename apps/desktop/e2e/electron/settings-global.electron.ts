@@ -470,9 +470,9 @@ test("routing policies and a project layer route are saved to their own files", 
   await critic.getByRole("button", { name: "advise" }).click();
   await expect.poll(routing).toMatchObject({ critic: "advise" });
   const sonnet = page.getByRole("group", { name: "Specify on Sonnet" });
-  await expect(page.getByText("Opus runs write their spec on Sonnet. In effect: off.")).toBeVisible();
-  await sonnet.getByRole("button", { name: "on" }).click();
-  await expect.poll(routing).toMatchObject({ specifyOnSonnet: true });
+  await expect(page.getByText("Opus runs write their spec on Sonnet. In effect: on.")).toBeVisible();
+  await sonnet.getByRole("button", { name: "off" }).click();
+  await expect.poll(routing).toMatchObject({ specifyOnSonnet: false });
   const search = page.getByRole("group", { name: "Code web search" });
   await expect(page.getByText("Codex code attempts may search the web. In effect: off.")).toBeVisible();
   await search.getByRole("button", { name: "on" }).click();
@@ -492,7 +492,7 @@ test("routing policies and a project layer route are saved to their own files", 
     "aria-pressed",
     "true",
   );
-  await expect(sonnet.getByRole("button", { name: "on" })).toHaveAttribute("aria-pressed", "true");
+  await expect(sonnet.getByRole("button", { name: "off" })).toHaveAttribute("aria-pressed", "true");
   await expect(search.getByRole("button", { name: "on" })).toHaveAttribute("aria-pressed", "true");
   await expect(context.getByRole("button", { name: "auto" })).toHaveAttribute("aria-pressed", "true");
   for (const group of [review, confidence, critic, sonnet, search, context])

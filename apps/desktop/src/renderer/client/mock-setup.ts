@@ -1019,7 +1019,7 @@ function routingOverview(s: SetupState, workflow: string | null): RoutingOvervie
     specifyOnSonnet: {
       global: global?.specifyOnSonnet ?? null,
       project: project?.specifyOnSonnet ?? null,
-      effective: effective?.specifyOnSonnet ?? false,
+      effective: effective?.specifyOnSonnet ?? true,
     },
     codeWebSearch: {
       global: global?.codeWebSearch ?? null,
