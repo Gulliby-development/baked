@@ -1093,6 +1093,28 @@ export const SETTINGS: readonly SettingDefinition[] = [
     ],
   },
   {
+    id: "quality.conflictFinish",
+    page: "code-quality",
+    section: "Workflow runs",
+    label: "Settled conflict host finish",
+    help: "When the host settles a task's spec conflict (for the request, the requirements or the platform) and the attempt's edits already hold the task's criteria cases, with the overruled criteria released, the host runs the task's required checks. When they pass the task goes on without another model session; when one fails a session opens as before.",
+    scopes: BOTH,
+    type: "enum",
+    default: "off",
+    options: [
+      {
+        value: "off",
+        label: "off",
+        help: "A session follows the settlement; the host only records the case walk.",
+      },
+      {
+        value: "on",
+        label: "on",
+        help: "Run the checks on the attempt's edits and finish the task when they pass.",
+      },
+    ],
+  },
+  {
     id: "quality.propertyTests",
     page: "code-quality",
     section: "Tests",

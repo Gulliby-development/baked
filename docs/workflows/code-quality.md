@@ -15,12 +15,13 @@ Quality gates of workflow runs measure the code a run writes beyond what its che
 | [Finding chain rewrite](runtime.md#finding-chains) | `chainRewrite` | `on` (absent is off) | off |
 | [Finding chain sibling probe](runtime.md#finding-chains) | `chainProbe` | `on` (absent is off; needs `chainRewrite`) | off |
 | [Misquote host fix](runtime.md#test-integrity) | `misquoteFix` | `on` (absent is off, recorded in shadow) | off |
+| [Settled conflict host finish](runtime.md#test-integrity) | `conflictFinish` | `on` (absent is off, recorded in shadow) | off |
 
 Where the defaults are set:
 
 - terminal UI: `/code-quality` (or **Code Quality** in `/settings`), saved to the project or the global config;
 - desktop: Settings, Chat settings, **Code quality** page;
-- local API: `PATCH /v1/settings` with `quality.duplication`, `quality.disabledRules`, `quality.registryLookups`, `quality.sast`, `quality.propertyTests`, `quality.mutation`, `quality.mutationEngine`, `quality.baselineReplay`, `quality.packageContents`, `quality.chainRewrite`, `quality.chainProbe` and `quality.misquoteFix` ([chat settings](../desktop/api.md#chat-settings));
+- local API: `PATCH /v1/settings` with `quality.duplication`, `quality.disabledRules`, `quality.registryLookups`, `quality.sast`, `quality.propertyTests`, `quality.mutation`, `quality.mutationEngine`, `quality.baselineReplay`, `quality.packageContents`, `quality.chainRewrite`, `quality.chainProbe`, `quality.misquoteFix` and `quality.conflictFinish` ([chat settings](../desktop/api.md#chat-settings));
 - config file: `quality` in `.baked/config.json` or `~/.baked/config.json`.
 
 A run can override the default at start: `baked workflow run --duplication off|warn|ratchet`, `--sast auto|off`, `--property-tests auto|off` and `--mutation off|advisory|required`, or `duplication`, `sast`, `propertyTests` and `mutation` in `POST /v1/workflow/runs`. The order is the run flag, then the policy's own field (`--policy FILE` or `workflows.policy`), then the `quality` setting, then the built-in default.

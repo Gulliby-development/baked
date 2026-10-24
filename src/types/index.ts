@@ -369,6 +369,8 @@ export interface QualityConfig {
   chainProbe?: "off" | "on";
   /** Let the host correct a test that misquotes a criterion literal itself, when the replacement is exact and the task's checks pass on it: `on` or `off` (default, recorded in shadow). */
   misquoteFix?: "off" | "on";
+  /** Let the host finish a task whose spec conflict it settled when the attempt's cases hold and its required checks pass: `on` or `off` (default, recorded in shadow). */
+  conflictFinish?: "off" | "on";
   /** Property-based tests from marked criteria: `preset` or absent follows the workflow preset. */
   propertyTests?: "preset" | "auto" | "off";
 }
