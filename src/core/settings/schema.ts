@@ -1079,6 +1079,24 @@ export const SETTINGS: readonly SettingDefinition[] = [
     ],
   },
   {
+    id: "quality.defectClasses",
+    page: "code-quality",
+    section: "Workflow runs",
+    label: "Cross-run defect classes",
+    help: "Each run keeps the defect classes its review corrected (such as nested emphasis delimiters in Markdown or Decimal precision in money totals) in a list on this machine, by domain, with a few cases each. The planner and the implementers of a later run whose request names the same domain see those classes as examples, so the first version of the code avoids them.",
+    scopes: BOTH,
+    type: "enum",
+    default: "off",
+    options: [
+      {
+        value: "off",
+        label: "off",
+        help: "Each run starts without the list and adds nothing to it.",
+      },
+      { value: "on", label: "on", help: "Read and add to the list of defect classes by domain." },
+    ],
+  },
+  {
     id: "quality.propertyTests",
     page: "code-quality",
     section: "Tests",
