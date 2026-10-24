@@ -103,43 +103,66 @@ export function literalRows(spec: Pick<Spec, "criteria">, ids: readonly string[]
   return spec.criteria.flatMap((criterion) => {
     if (!ids.includes(criterion.id) || criterion.method !== "automated" || criterion.property)
       return [];
-    const result: AcceptanceRow[] = [];
-    for (const text of [criterion.given, criterion.when, criterion.then]) {
-      let table: Columns | null = null;
-      for (const line of text.split(/\r?\n/)) {
-        const cells = cellsOf(line);
-        const header = headerOf(cells);
-        if (header) {
-          table = header;
-          continue;
-        }
-        if (!table) continue;
-        if (cells.length !== table.width) {
-          if (line.includes("|")) return [];
-          table = null;
-          continue;
-        }
-        if (cells.every((cell) => /^:?-{2,}:?$/.test(cell))) continue;
-        try {
-          const input: unknown = JSON.parse(cells[table.input] ?? "");
-          const expected: unknown = JSON.parse(cells[table.expected] ?? "");
-          if (!finiteJson(input) || !finiteJson(expected)) return [];
-          const label = table.label === undefined ? "" : (cells[table.label] ?? "");
-          result.push({
-            id: `${criterion.id}:${result.length + 1}`,
-            criterionId: criterion.id,
-            source: line.trim(),
-            ...(label ? { label } : {}),
-            input,
-            expected,
-          });
-        } catch {
-          // Never partially emit a table whose remaining cases require an agent.
-          return [];
-        }
+    return tableRows(criterion);
+  });
+}
+
+/** The rows of a criterion's `Input | Expected` JSON table, whatever its flags; [] without one. */
+function tableRows(criterion: Spec["criteria"][number]): AcceptanceRow[] {
+  const result: AcceptanceRow[] = [];
+  for (const text of [criterion.given, criterion.when, criterion.then]) {
+    let table: Columns | null = null;
+    for (const line of text.split(/\r?\n/)) {
+      const cells = cellsOf(line);
+      const header = headerOf(cells);
+      if (header) {
+        table = header;
+        continue;
+      }
+      if (!table) continue;
+      if (cells.length !== table.width) {
+        if (line.includes("|")) return [];
+        table = null;
+        continue;
+      }
+      if (cells.every((cell) => /^:?-{2,}:?$/.test(cell))) continue;
+      try {
+        const input: unknown = JSON.parse(cells[table.input] ?? "");
+        const expected: unknown = JSON.parse(cells[table.expected] ?? "");
+        if (!finiteJson(input) || !finiteJson(expected)) return [];
+        const label = table.label === undefined ? "" : (cells[table.label] ?? "");
+        result.push({
+          id: `${criterion.id}:${result.length + 1}`,
+          criterionId: criterion.id,
+          source: line.trim(),
+          ...(label ? { label } : {}),
+          input,
+          expected,
+        });
+      } catch {
+        // Never partially emit a table whose remaining cases require an agent.
+        return [];
       }
     }
-    return result;
+  }
+  return result;
+}
+
+/**
+ * Criteria that carry `property` over a literal `Input | Expected` table of two or more rows: a
+ * property test draws generated values, a table lists examples, and the flag keeps the table from
+ * the rows (`literalRows`). dirdrift-update (bench round 66) had a 25-row table of paths marked
+ * `"property": "strings"`, so no criterion was eligible for rows (#2045). The author removes one.
+ */
+export function literalPropertyProblems(spec: Pick<Spec, "criteria">): string[] {
+  return spec.criteria.flatMap((criterion) => {
+    if (!criterion.property || criterion.method !== "automated") return [];
+    const rows = tableRows(criterion).length;
+    return rows >= 2
+      ? [
+          `Criterion ${criterion.id} marks "property": "${criterion.property}" but lists a literal Input | Expected table of ${rows} rows: a property draws generated inputs, a table names fixed examples. Remove property or the table (keep the table when the cases are fixed examples).`,
+        ]
+      : [];
   });
 }
 
@@ -148,7 +171,7 @@ export const ROWS_NOTE =
 
 /** Told to the spec author, so the tables the planner may select are ones the host can read (#1660). */
 export const SPEC_ROWS_NOTE =
-  "Acceptance rows as data is enabled. When a criterion's cases are pure calls (one input value gives one output value, with no files, processes, time or state), write them as a Markdown table in its then with the header Input | Expected, or Input | Scenario | Expected where Scenario names each case. Every Input and Expected cell holds one JSON literal, optionally in backticks: a string, number, boolean, null, array or object, never a call expression, a command line or prose. Put several arguments in one JSON array or object and say in the criterion which element is which argument. Do not put | inside a cell. The host turns such tables into data-driven tests in every supported language; keep stateful, process and file cases in ordinary criteria.";
+  "Acceptance rows as data is enabled. When a criterion's cases are pure calls (one input value gives one output value, with no files, processes, time or state), write them as a Markdown table in its then with the header Input | Expected, or Input | Scenario | Expected where Scenario names each case. Every Input and Expected cell holds one JSON literal, optionally in backticks: a string, number, boolean, null, array or object, never a call expression, a command line or prose. Put several arguments in one JSON array or object and say in the criterion which element is which argument. Do not put | inside a cell. A criterion with such a table never carries property. The host turns such tables into data-driven tests in every supported language; keep stateful, process and file cases in ordinary criteria.";
 
 const IDENTIFIER = /^[A-Za-z_][A-Za-z0-9_]*$/;
 const baseName = (path: string, suffix: RegExp): string => posix.basename(path).replace(suffix, "");
