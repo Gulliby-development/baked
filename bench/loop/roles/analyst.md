@@ -48,6 +48,10 @@ For each finding:
 5. **Confirm.** For a `model-behavior` finding, and for a `blocked` run whose cause is not an `invariant` finding, re-run the run from its approved plan on `confirm.crossModel` (a fork restarts at implementation in a fresh worktree, so take the finding with the largest expected effect first) while `confirm.maxTokensPerRound` allows: `baked workflow fork RUN --expected-revision N`, `baked workflow reroute FORK --expected-revision N --model MODEL` (or `--route STAGE=MODEL` for a review stage), `baked workflow resume FORK`. Never resume, extend or change the original run. Record `confirmation`: `reproduced` with the fork id, `not-reproduced` with the fork id (the finding becomes `model-only`), `pending` (budget spent; the next round's analyst tries again) or `skipped: reason`.
 6. **Status.** A `model-behavior` finding that is `model-only` or `pending` and seen for the first time gets `status: "watch"`: the backlog role files no issue for it yet. Seen a second time (another app or round) or `reproduced`, it is filed like any other finding.
 
+## AI app findings
+
+For a run with `group: "ai"`, tag every finding `ai-app` and add one line on whether BAKED kept the offline rule on its own (a fake provider as the default, no network in tests), or the spec or review had to force it.
+
 ## Brownfield findings (update runs)
 
 For a run with `group: "update"`, tag every finding `brownfield` and add:

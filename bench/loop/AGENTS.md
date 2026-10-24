@@ -22,6 +22,7 @@ Rules that follow:
 2. Turn every problem a run shows into a GitHub issue with a point fix **and** a broader option, then implement the best of them.
 3. Ship each new app that passes verification as a public MIT repository in `Gulliby-development` right after verification, so BAKED gains a public portfolio ("Built with BAKED").
 4. Work on existing code too: from round 3 each round also adds a small feature to three public repositories of `Gulliby-development` (brownfield updates), shipped as pull requests to those repositories.
+5. Build AI tooling too: from round 67 each round also builds one new AI-related app (a small agent harness, a skill or agent pack with its validator, an MCP server, an eval or prompt tool, a docs generator, ...) and publishes it like every other new app (see [AI app track](#ai-app-track)).
 
 Success is measured on BAKED, not on app counts (see [Objective](#objective)): fewer interventions per run, fewer blocked runs and stop reasons, fewer tokens per verified app, more runs completed without intervention, and last round's fixes moving the metric they targeted, read mainly from the control apps across rounds. The share of new apps and updates that pass verification and the number published come after these.
 
@@ -42,9 +43,9 @@ Success is measured on BAKED, not on app counts (see [Objective](#objective)): f
 | # | Phase | Role file | Runs | Output (in `rounds/RNN/`) |
 |---|---|---|---|---|
 | 0 | Prepare | this file | once per round | `round.json`, runner commit |
-| 1 | Ideate | `roles/ideator.md` | once per round | `ideas.md` (5 new app candidates and one feature idea per picked repository) |
-| 2 | Review | `roles/reviewer.md` | once per round, up to 2 revise loops | `review.md`, `apps/<app>/brief.md` for 2 accepted new apps and each accepted update (`apps/<repo>-update/brief.md`) |
-| 3 | Build | `roles/implementer.md` | per app (2 new + 3 update + 3 control) | `apps/<app>/run.json`, `interventions.jsonl`, workflow report |
+| 1 | Ideate | `roles/ideator.md` | once per round | `ideas.md` (5 new app candidates, 3 AI app candidates and one feature idea per picked repository) |
+| 2 | Review | `roles/reviewer.md` | once per round, up to 2 revise loops | `review.md`, `apps/<app>/brief.md` for 2 accepted new apps, the accepted AI app and each accepted update (`apps/<repo>-update/brief.md`) |
+| 3 | Build | `roles/implementer.md` | per app (2 new + 1 AI + 3 update + 3 control) | `apps/<app>/run.json`, `interventions.jsonl`, workflow report |
 | 4 | Verify | `roles/verifier.md` | per app | `apps/<app>/verify.json`, screenshot for UI apps |
 | 5 | Analyze | `roles/analyst.md` | per app, right after verify | `apps/<app>/findings.md` |
 | 6 | Scout | `roles/scout.md` | once per round (parallel with phase 3) | `scout.md`, updates `ledger/workflow-map.md` |
@@ -128,6 +129,8 @@ Defaults below. The owner may change any value; roles read it at the start of ea
     "newApps": 2,
     "ideaCandidates": 5,
     "updateApps": 3,
+    "aiApps": 1,
+    "aiIdeaCandidates": 3,
     "controlApps": ["url-shortener", "md-site", "expenses-py"],
     "controlRunsB": true,
     "maxConcurrentRuns": 3,
@@ -146,6 +149,7 @@ Defaults below. The owner may change any value; roles read it at the start of ea
   },
   "budgets": {
     "roundRunUsd": 40,
+    "aiAppUsd": 32,
     "maxFixIssuesPerRound": 6,
     "minBroadFeaturesPerRound": 1
   },
@@ -181,6 +185,7 @@ Defaults below. The owner may change any value; roles read it at the start of ea
 A key missing from the loop root's `config.json` (the file is copied once and never overwritten) takes the default shown here.
 
 - `round.newApps` new apps are kept out of `round.ideaCandidates` candidates; `round.updateApps` existing published repositories get a small feature each (see [Updates to existing projects](#updates-to-existing-projects)). A round therefore builds `newApps + updateApps` = 5 apps plus the control apps.
+- `round.aiApps` AI apps (default 1) are kept out of `round.aiIdeaCandidates` AI candidates (default 3), in addition to `newApps`; 0 switches the [AI app track](#ai-app-track) off. `budgets.aiAppUsd` caps the AI app's own runs (see [Budgets](#budgets)).
 - `runs.referenceModel` is the model every control-app run uses, every round (`provider/model`). `null` means "the default model configured on the PC at loop start"; phase 0 resolves it once and writes it here, and it changes only by the owner's edit.
 - `runs.rotateNewAppProviders`: new apps cycle through the other configured providers (one provider per app, recorded per run), so BAKED keeps being tested on more than one provider. Estimates must stay provider-agnostic; a provider that costs much more is a finding, not a reason to tune constants to it.
 - `round.maxConcurrentRuns` is the number of build lanes: runs of apps (new, update, control) that execute at the same time. It is 3 from round 7 (2 before). If builds or tests start timing out because the PC is saturated, drop back to 2 for the next round and say so in the report; the owner changes the default in `config.json`, the orchestrator never edits it.
@@ -199,6 +204,7 @@ The orchestrator rewrites `state.json` after every completed step, atomically (w
   "round": 7,
   "phase": "build",
   "difficulty": 1,
+  "aiDifficulty": 4,
   "apps": {
     "envguard": { "status": "analyzed", "runIds": ["1185f909"] },
     "mdtoc": { "status": "building", "runIds": ["5b703388"] }
@@ -305,6 +311,19 @@ Besides new apps, each round improves existing public projects of the organizati
 - **Metrics.** Update runs use `group: "update"` and are tracked separately from new apps and control apps in `ledger/metrics.csv`, `run.json` and the round report. They are never averaged with greenfield runs. Their findings are tagged `brownfield`.
 - **Budget.** Update runs are small, but they count toward `roundRunUsd`. Each has the policy sizing as its run budget, like every other app.
 
+## AI app track
+
+The owner's request (2026-10-24, translated): besides the round's other apps, BAKED should each round also work on one new app that is entirely about AI (small harnesses, skill and agent sets, AI tools such as doc generators), published like the other apps. Applied from round 67. The catalogue of archetypes and what the AI subreddits publish is in `roles/ideator.md` (AI apps) and comes from the research in `/mnt/project-files/analysis/ai-app-track-2026-10-24.md`.
+
+- **One per round.** `round.aiApps` (1) AI app per round, chosen by the reviewer from `round.aiIdeaCandidates` (3) AI candidates. It is a new app: greenfield, its own repository, built, verified, analyzed and published like the other new apps.
+- **No keys, no network, no live model.** The owner uses only subscriptions (Codex, Claude), never API keys. An AI app must build, test and run its README examples offline: either it makes no model call at all (it lints, validates, packages, indexes, replays or measures prompts, skills, agents, MCP servers, transcripts and traces), or every model call goes through a provider interface whose default in tests and examples is a deterministic fake (scripted replies, recorded fixtures). Adapters for real backends (an OpenAI-compatible HTTP endpoint, a local Ollama server, a CLI such as `claude -p` or `codex exec`) may exist behind a flag, but no test, CI job or README example may need them, a key, an account or a downloaded model. Never commit a key, a real transcript or a model output that came from a person's account.
+- **Rotation.** The ideator never repeats the archetype of the last 4 AI apps (`ledger/ideas.jsonl` field `archetype`), rotates the stack (prefer the stacks the last 4 AI apps used least) and covers at least two archetype groups in its 3 candidates.
+- **Level.** The AI app has its own level in `state.json` (`aiDifficulty`), starting at 4 in round 67 and moved by the [level ladder rule](#level-ladder-rule) on its own results: an AI app built, verified and published with no new P0 or P1 finding from its runs climbs to 5; otherwise it repeats. At level 5 it is an initiative of 4 to 6 features (smaller than the main level-5 app). Its P0 and P1 findings still count as errors of the whole round, like those of every other app.
+- **Provider.** The AI app alternates series by round: odd rounds on the round's default (codex) series, even rounds on the claude-code series (Opus for plan, spec and review, Sonnet for code). It never replaces the round's existing claude-code app, and it is not the round's experiment.
+- **Metrics.** AI app runs use `group: "ai"` in `ledger/metrics.csv`, `run.json` and the round report, reported next to the new apps but never averaged with them or the controls. Findings from them are tagged `ai-app`.
+- **Budget.** `budgets.aiAppUsd` ($22 at level 4, $32 at level 5) caps the AI app's runs together; it does not take from `roundRunUsd`, so the main apps keep the budget they had. Past the cap the loop pauses the AI app and reports it, like an initiative over its cap.
+- **Scout.** The scout reads the AI app sources (`ledger/scout-sources.md`: r/AIDeveloperNews, r/BestGitHubRepos, GitHub trending) each round and writes an `AI app trends` section that the ideator reads next round.
+
 ## Comparability
 
 Numbers across rounds mean something only if the inputs are fixed. These rules hold unless the owner changes them:
@@ -333,7 +352,8 @@ Most runs use one implementation model and one review model, so a habit of that 
 | Budget | Default | On reaching it |
 |---|---|---|
 | One BAKED run | starts at the policy budget (tokens); the implementer may raise it on its own while the run's estimated cost stays under `selfRaiseUsdUpTo` ($12 at levels 1-3, $22 at levels 4 and 5; owner's decisions of 2026-10-14) | above the cap only with the owner's OK; otherwise stop the run and record `budget_cap`. Every run also carries the policy field `maxCostUsd` set to the cap, so BAKED itself stops the run |
-| All BAKED runs in a round | `roundRunUsd` $40 at levels 1-3, $60 at levels 4 and 5 (the sum of the runs' estimated cost from `baked workflow usage RUN_ID --json`) | finish runs in progress, skip unbuilt new apps and updates (record them), go to phase 6; a level that needs more is reported, not shrunk |
+| All BAKED runs in a round | `roundRunUsd` $40 at levels 1-3, $60 at levels 4 and 5 (the sum of the runs' estimated cost from `baked workflow usage RUN_ID --json`), not counting the AI app | finish runs in progress, skip unbuilt new apps and updates (record them), go to phase 6; a level that needs more is reported, not shrunk |
+| The AI app's runs | `aiAppUsd` $22 at AI level 4, $32 at AI level 5, on top of `roundRunUsd` (owner's request of 2026-10-24; the whole round can therefore reach $92 at level 5) | pause the AI app's run or initiative and report it; never take the rest from `roundRunUsd` |
 | Fix work per round | `maxFixIssuesPerRound` 6 issues, at least `minBroadFeaturesPerRound` 1 broad feature when one is open (the top-ranked `idea` counts; the backlog role ranks ideas, the owner does not pick) | the rest stays on the board for later rounds |
 | One fix PR | `maxPrAttemptsPerIssue` 3 CI rounds | leave the PR open with a comment on what fails, take the next issue |
 | Round wall clock | `maxWallClockHours` 30 | finish the current step, write the report with what is done |
@@ -386,7 +406,7 @@ In `approve-per-round` mode the publish gate never blocks the loop: a batch wait
 The owner reads one message per round, in Russian, at most 15 lines, plus a message for each gate or blocker. Files stay in English. In a Remote Control session started from a thread, "tell the owner" means a message to the controlling thread session, which posts it; standalone, it means printing it and writing `rounds/RNN/report.md`.
 
 Messages:
-- **Round result** (phase 10): BAKED-side metrics first (interventions per run and stop reasons by count vs last round, tokens per verified app, runs completed without intervention, whether last round's fixes worked), then the 3 most important findings with issue links, fixes merged, what the next round changes, then completed/blocked counts for new and control apps and the Published list with repo links, and a link to `report.md`.
+- **Round result** (phase 10): BAKED-side metrics first (interventions per run and stop reasons by count vs last round, tokens per verified app, runs completed without intervention, whether last round's fixes worked), then the 3 most important findings with issue links, fixes merged, what the next round changes, then completed/blocked counts for new, AI and control apps and the Published list with repo links (the AI app with its archetype), and a link to `report.md`.
 - **Published** (phase 9, `auto`): not a separate message. A list inside the round report and the round message, one line per app: name, one-sentence description, repo link, CI result. Apps left private (`ci-failed`) are listed with the reason.
 - **Publish batch** (phase 9, only in `approve-per-round`): one line per app (name, one-sentence description, repo name), links to the prepared README and logo, and the question whether to publish (yes / no / edits).
 - **Blocker**: what stopped, what was checked, what the owner must do, in one or two sentences.

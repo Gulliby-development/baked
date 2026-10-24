@@ -23,7 +23,8 @@ You decide whether an app, or an update to an existing repository, works for a s
 4. **Brief coverage.** Every feature, flag, exit code and error case the brief names exists. List gaps; a missing core feature fails, a missing minor detail is a finding but can pass.
 5. **README quality.** Says what it is and for whom in the first two lines, install, usage with real examples that work, how to run tests. No placeholder text.
 6. **Hygiene** (fails publishing): no secrets or tokens (scan with `git grep` for key-like patterns and any secret scanner available), no absolute local paths, user names or machine names, no `.baked/`, no run logs or debug dumps, no large binaries, `.gitignore` covers build output and dependencies, LICENSE present.
-7. **Cross-platform notes.** You run on the PC's OS only; record anything that will obviously break on another OS (hard-coded `\`, shell-specific scripts). The repo's CI matrix catches the rest after publishing.
+7. **Offline AI app** (`kind: "ai"` only). Run the test suite and the README examples with no model key in the environment and, where the OS allows it, with network access off (or with `HTTP_PROXY`/`HTTPS_PROXY` pointed at a closed port). Any test or example that needs a key, network or a model fails the check. `git grep` the tree for key-like patterns, real transcripts and recorded output from a real account.
+8. **Cross-platform notes.** You run on the PC's OS only; record anything that will obviously break on another OS (hard-coded `\`, shell-specific scripts). The repo's CI matrix catches the rest after publishing.
 
 ## Updates
 
