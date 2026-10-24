@@ -5,12 +5,14 @@ import type { ModelMessage, ProviderOptions } from "@ai-sdk/provider-utils";
 import {
   generateText,
   isStepCount,
+  jsonSchema,
   type LanguageModel,
   type LanguageModelUsage,
   type Tool,
   ToolChoiceViolationError,
   type ToolSet,
   tool,
+  zodSchema,
 } from "ai";
 import { z } from "zod";
 import type { AppConfig } from "../../types/index.js";
@@ -72,7 +74,7 @@ import { WorkflowFault } from "./errors.js";
 import { addsDoubledEscapes, escapeHintFor } from "./escape-hint.js";
 import { executionClock } from "./execution-clock.js";
 import { keepOutside, restoreOutside } from "./fixer-scope.js";
-import { withHostConstants } from "./host-constants.js";
+import { advertisedSchema, withHostConstants } from "./host-constants.js";
 import {
   accountIdentityMessage,
   findAccountIdentity,
@@ -1133,9 +1135,17 @@ export class NativeAgentExecutor implements AgentExecutor {
       const resultSchema = outputSchemas[request.profile.output];
       if (!resultSchema) throw new WorkflowFault("OUTPUT_INVALID", "Unknown profile output schema");
       const schema = withHostConstants(request.profile.output, resultSchema);
+      // The model sees host fields as optional and validation still fills them (#1929).
+      const { validate } = zodSchema(schema);
+      const submitSchema = jsonSchema(
+        () => zodSchema(advertisedSchema(request.profile.output, resultSchema)).jsonSchema,
+        validate ? { validate } : {},
+      );
       let submitted: unknown;
       let lastRefusal: { accepted: false; errors: string[]; instruction: string } | undefined;
+      let refusals = 0;
       const refuse = (errors: string[], instruction: string) => {
+        refusals++;
         lastRefusal = { accepted: false, errors, instruction };
         return lastRefusal;
       };
@@ -1173,7 +1183,7 @@ export class NativeAgentExecutor implements AgentExecutor {
       const submitResult = tool({
         description:
           "Submit the final typed result. Evidence IDs must come from the host context or tools.",
-        inputSchema: schema,
+        inputSchema: submitSchema,
         execute: async (value) => {
           const parsed = schema.parse(value);
           const errors = [...(request.validate?.(parsed) ?? [])];
@@ -1807,6 +1817,7 @@ export class NativeAgentExecutor implements AgentExecutor {
           );
           // Zero until the single correction step reports its usage.
           let correctionTokens = 0;
+          const refusalsBefore = refusals;
           try {
             let correctedText = "";
             try {
@@ -1835,12 +1846,24 @@ export class NativeAgentExecutor implements AgentExecutor {
               // A plain-text reply is still parsed as the result, as with AI SDK 6.
               if (!ToolChoiceViolationError.isInstance(error)) throw error;
             }
-            if (submitted === undefined && !correctedText.trim())
+            if (submitted === undefined && !correctedText.trim()) {
+              // A correction whose submit_result the host refused did return a result: the error
+              // and the next session name the refusal, not "no result" (R60 tags T002, #1933).
+              const refusal =
+                refusals > refusalsBefore && lastRefusal
+                  ? lastRefusal.errors.join("\n").slice(0, 4000)
+                  : undefined;
               throw new WorkflowFault(
                 "OUTPUT_INVALID",
-                `Profile ${request.profile.id} returned no result from format correction`,
-                { reason: "no_submission" },
+                refusal
+                  ? `Profile ${request.profile.id} submitted a result in the format correction that the host refused: ${refusal.slice(0, 1500)}`
+                  : `Profile ${request.profile.id} returned no result from format correction`,
+                {
+                  reason: "no_submission",
+                  ...(refusal ? { refusal, prose: result.text.slice(0, 4000) } : {}),
+                },
               );
+            }
             submitted = schema.parse(submitted ?? JSON.parse(correctedText));
             this.store.transaction(() =>
               this.store.finishAttempt(request.runId, attempt, "completed", correctionTokens),

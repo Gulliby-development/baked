@@ -71,8 +71,11 @@ const server = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(request) 
 process.env.BAKED_WORKFLOW_TEST_ENDPOINT = server.url.origin;
 process.env.ANTHROPIC_API_KEY = "fixture-key-not-a-secret";
 const childEnv = { ...buildSafeEnv(), ANTHROPIC_API_KEY: "fixture-key-not-a-secret", BAKED_WORKFLOW_TEST_ENDPOINT: server.url.origin };
+// One CLI call or worker command may take nearly all of the 120 s the test gives this fixture: a
+// 30 s bound on each timed out the worker's command at 55 s into the test on a Windows runner (#1917).
+const STEP_MS = 110_000;
 async function cli(argv: string[], expectedExit: number) {
-  const child = Bun.spawn([process.execPath, "--preload", preload, entry, "workflow", ...argv], { cwd: workspace, env: childEnv, stdout: "pipe", stderr: "pipe", timeout: 30000 });
+  const child = Bun.spawn([process.execPath, "--preload", preload, entry, "workflow", ...argv], { cwd: workspace, env: childEnv, stdout: "pipe", stderr: "pipe", timeout: STEP_MS });
   const [out, err, code] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
   if (code !== expectedExit) {
     const last = JSON.parse(out.trim().split("\n").at(-1)!);
@@ -87,7 +90,7 @@ async function cli(argv: string[], expectedExit: number) {
 }
 class FixtureWorker extends WorkerClient {
   constructor() { const options = { smol: true, preload: [preload] }; super(workerEntry, { workspace, config }, options); }
-  command(argv: string[]) { return this.callWithTimeout<RunSnapshot>(30000, "command", crypto.randomUUID(), argv); }
+  command(argv: string[]) { return this.callWithTimeout<RunSnapshot>(STEP_MS, "command", crypto.randomUUID(), argv); }
   shutdown() { return this.call("shutdown"); }
 }
 let worker: FixtureWorker | undefined;

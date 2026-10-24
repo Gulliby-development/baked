@@ -606,13 +606,17 @@ export function shareShortfall(
  * round 59 (wheeltags) started pick-command with $2.87 to grow into and it stopped one corrective
  * short with 46% of its token share used; priced at the initiative's own stage mix, the two
  * features after it were short (#1890). The `initiative-dollar-share` stop reason decides whether
- * it parks the feature.
+ * it parks the feature. Before any feature is measured the waiting features' lows are the plan's
+ * guess and nothing else: R62 stepvet recorded two would-stops at the first starts, both false
+ * (lines and stepexpr started anyway, finished and left $3.67 of $30 unspent), so the check waits
+ * for the first measured feature (#1714).
  */
 export function dollarShortfall(
   view: ShareGateView,
   feature: Pick<FeatureView, "id"> & Partial<Pick<FeatureView, "needUsd">>,
 ): string | null {
   const cost = view.budget.cost;
+  if (cost.measuredFeatures === 0) return null;
   const spare = costGrowthLimit(view, feature.id);
   const needUsd = feature.needUsd;
   if (!needUsd || spare === null || cost.ceilingUsd === null || spare >= needUsd.low) return null;
