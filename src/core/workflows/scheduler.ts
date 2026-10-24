@@ -204,6 +204,7 @@ import {
   persistentDefect,
   REQUEST_NOTE,
   repeatedFacet,
+  requestSettlesInput,
   restrictsRequest,
   VERIFICATION_METHODS,
 } from "./analysis-notes.js";
@@ -312,6 +313,17 @@ import {
 } from "./derivation-audit.js";
 import { EffectJournal, fileHash, intentRoot, rootField } from "./effects.js";
 import { WorkflowFault } from "./errors.js";
+import {
+  EVIDENCE_DECISION_KIND,
+  EVIDENCE_DECISIONS_DIR,
+  type EvidenceInput,
+  type EvidenceRecord,
+  type EvidenceSite,
+  evidenceDecision,
+  evidenceRecordPath,
+  platformEvidence,
+  reportRequestEvidence,
+} from "./evidence-decisions.js";
 import { ExecutionBudgetClock, executionClock, executionTimeout } from "./execution-clock.js";
 import {
   BATTERY_CASES,
@@ -680,6 +692,7 @@ import {
   documentAmendmentOf,
   namesRunDocument,
   type SpecAmendment,
+  specAmendmentInput,
   specAmendmentOf,
 } from "./spec-amendment.js";
 import { digestsSpec, mayDigestSpec, READ_CRITERION, readCriterionTool } from "./spec-digest.js";
@@ -2078,17 +2091,23 @@ export class WorkflowScheduler {
                   break;
                 }
               }
+              // Whether the request settles a finding rests on a request quote the host checks,
+              // not on the finding's wording (#2032); each decision is recorded for replay.
+              const stated = statedRequest(state, this.store.requests(runId));
+              this.recordEvidenceDecisions(
+                runId,
+                findings.map((f) => ({ ref: f.id, input: requestSettlesInput(f, spec, stated) })),
+              );
+              const defect = (f: (typeof findings)[number]) => persistentDefect(f, spec, stated);
+              const settles = (f: (typeof findings)[number]) => restrictsRequest(f, spec, stated);
               // An inconsistency that survived the first reroute gets one more, with the finding
               // text and a note that it is a defect to fix, not a decision to assume.
-              const defectRound =
-                state.analysisReplans === 2 && findings.some((f) => persistentDefect(f, spec));
+              const defectRound = state.analysisReplans === 2 && findings.some(defect);
               // A scope finding that adds a restriction or a requirement absent from the request gets
               // the same extra return with the instruction that the request is authoritative; a
               // survivor is assumed.
               const restrictsRound =
-                !defectRound &&
-                state.analysisReplans === 2 &&
-                findings.some((f) => restrictsRequest(f, spec));
+                !defectRound && state.analysisReplans === 2 && findings.some(settles);
               // The reroute budget is the run's, so an inconsistency first raised after it is spent
               // (often one the repair of earlier findings introduced) gets a defect round of its
               // own, at most LATE_DEFECT_ROUNDS, before a person is asked (#1830).
@@ -2097,7 +2116,7 @@ export class WorkflowScheduler {
                 !restrictsRound &&
                 state.analysisReplans >= 3 &&
                 state.lateDefectRounds < LATE_DEFECT_ROUNDS &&
-                findings.some((f) => persistentDefect(f, spec) && newFacet(f, earlierRaised));
+                findings.some((f) => defect(f) && newFacet(f, earlierRaised));
               if (
                 !state.analysisPassed &&
                 policy.clarification === "assume" &&
@@ -2123,7 +2142,7 @@ export class WorkflowScheduler {
                       blockingFindings,
                       back === "specify" ? ["spec", "plan"] : ["plan"],
                     );
-                  const restricted = blockingFindings.some((f) => restrictsRequest(f, spec));
+                  const restricted = blockingFindings.some(settles);
                   state.prompt += `\nAnalysis findings; resolve every one of them in the artifacts they refer to. ${defectRound || lateDefect ? DEFECT_NOTE : `${restricted ? `${REQUEST_NOTE} ` : ""}Where a finding needs a decision: ${ASSUME_NOTE}`}\n${canonical(blockingFindings.map(({ kind, refs, description }) => ({ kind, refs, description })))}`;
                   advance = false;
                   rerouted = v2 !== null;
@@ -2141,10 +2160,7 @@ export class WorkflowScheduler {
                 analysis.verdict !== "inconclusive" &&
                 findings.every(
                   (f) =>
-                    !f.blocking ||
-                    assumable(f) ||
-                    restrictsRequest(f, spec) ||
-                    repeatedFacet(f, earlierRaised),
+                    !f.blocking || assumable(f) || settles(f) || repeatedFacet(f, earlierRaised),
                 )
               ) {
                 const assumed = findings.filter((f) => f.blocking);
@@ -2166,11 +2182,7 @@ export class WorkflowScheduler {
                 // A spec finding the request settles is an amendment, so review does not raise
                 // it against spec.json again after implement (#1120).
                 this.store.transaction(() =>
-                  this.amendFromAnalysis(
-                    runId,
-                    state,
-                    assumed.filter((f) => restrictsRequest(f, spec)),
-                  ),
+                  this.amendFromAnalysis(runId, state, assumed.filter(settles)),
                 );
                 findings = findings.map((f) =>
                   f.blocking
@@ -10678,12 +10690,41 @@ ${note}`;
       !this.store.latestArtifact(runId, assumedPath) &&
       !this.store.latestArtifact(runId, requestConflictPath(task.id));
     // A documentation task torn between the rule for examples and the request's worked example
-    // copies the request's example (#992).
-    const example = first && writesOnlyDocs(task) && namesExampleRule(report);
-    const assume = first && (example || namesRequestSide(report));
+    // copies the request's example (#992). It settles on a request quote the host found, on every
+    // report; the wording rule is only the first report's fallback (#2032).
+    const assumes = policy.clarification === "assume";
+    const exampleInput: EvidenceInput = {
+      site: "docs-example",
+      eligible: assumes && writesOnlyDocs(task) && !this.settledBy(runId, "docs-example", task.id),
+      evidence: reportRequestEvidence(
+        statedRequest(state, this.store.requests(runId)),
+        report,
+        result.conflictSides,
+      ),
+      wording: namesExampleRule(report),
+      fallback: first,
+    };
+    const example = evidenceDecision(exampleInput);
+    const assume = example || (first && namesRequestSide(report));
     // One side is what the platform cannot do at all: no person can choose it, so the nearest
-    // feasible behavior the task named holds (#1384).
-    const platform = first && !assume && namesPlatformLimit(report);
+    // feasible behavior the task named holds (#1384). It settles on a platform side whose quote
+    // a failing check or a probe of the task printed, on every report (#2032).
+    const platformInput: EvidenceInput = {
+      site: "platform-limit",
+      eligible: assumes && !assume && !this.settledBy(runId, "platform-limit", task.id),
+      evidence: platformEvidence(
+        result.conflictSides,
+        this.failedCheckOutputs(runId, task.id),
+        this.probeOutputs(runId, task.id),
+      ),
+      wording: namesPlatformLimit(report),
+      fallback: first,
+    };
+    const platform = evidenceDecision(platformInput);
+    this.recordEvidenceDecisions(runId, [
+      { ref: task.id, input: exampleInput },
+      { ref: task.id, input: platformInput },
+    ]);
     // The test files of the conflict: those the report names, and those the task's last failing
     // check names, since reports often cite a test by function only (tonemath 241fc475, #1459).
     const failing = this.failedCheckOutput(runId, task.id);
@@ -11662,21 +11703,41 @@ ${note}`;
   }
   /** The output of the checks whose latest run in a task's attempts failed, joined (#1459). */
   private failedCheckOutput(runId: string, taskId: string): string {
+    return Object.values(this.failedCheckOutputs(runId, taskId)).join("\n");
+  }
+  /** The output of each check whose latest run for the task failed, by check id. */
+  private failedCheckOutputs(runId: string, taskId: string): Record<string, string> {
     const latest = new Map<string, { status: string; artifact_id: string }>();
     for (const row of this.store.taskCheckRuns(runId, taskId)) latest.set(row.check_id, row);
-    const outputs: string[] = [];
-    for (const row of latest.values()) {
+    const outputs: Record<string, string> = {};
+    for (const [checkId, row] of latest) {
       if (row.status !== "failed") continue;
       try {
-        outputs.push(
-          String(
-            (JSON.parse(this.store.readArtifact(runId, row.artifact_id)) as { output?: unknown })
-              .output ?? "",
-          ),
+        outputs[checkId] = String(
+          (JSON.parse(this.store.readArtifact(runId, row.artifact_id)) as { output?: unknown })
+            .output ?? "",
         );
       } catch {}
     }
-    return outputs.join("\n");
+    return outputs;
+  }
+  /** The output of each probe the task ran (`attempts/<attempt>/probe-<n>.json`, #454). */
+  private probeOutputs(runId: string, taskId: string): string[] {
+    return this.store
+      .artifacts(runId)
+      .filter((a) => a.kind === "probe")
+      .flatMap((a) => {
+        try {
+          const body = JSON.parse(this.store.readArtifact(runId, a.id)) as {
+            taskId?: unknown;
+            status?: unknown;
+            output?: unknown;
+          };
+          return body.taskId === taskId && body.status === "ran" ? [String(body.output ?? "")] : [];
+        } catch {
+          return [];
+        }
+      });
   }
   /**
    * The test files a conflict report names that the task cannot write and that an implemented test
@@ -16380,6 +16441,50 @@ ${note}`;
     );
   }
   /**
+   * Records each eligible decision of a site that settles on checked evidence (#2032), numbered
+   * per site and ref, so `replayEvidenceDecisions` can decide it again on its inputs.
+   */
+  private recordEvidenceDecisions(
+    runId: string,
+    items: readonly { ref: string; input: EvidenceInput }[],
+  ): void {
+    const eligible = items.filter((item) => item.input.eligible);
+    if (!eligible.length) return;
+    const paths = new Set(
+      this.store
+        .artifacts(runId)
+        .filter((a) => a.kind === EVIDENCE_DECISION_KIND)
+        .map((a) => a.logical_path),
+    );
+    this.store.transaction(() => {
+      for (const { ref, input } of eligible) {
+        let report = 1;
+        while (paths.has(evidenceRecordPath(input.site, ref, report))) report++;
+        const path = evidenceRecordPath(input.site, ref, report);
+        paths.add(path);
+        const record: EvidenceRecord = { ...input, ref, report, decision: evidenceDecision(input) };
+        this.store.artifact(runId, EVIDENCE_DECISION_KIND, path, canonical(record));
+      }
+    });
+  }
+  /** Whether a site settled a task's conflict on an earlier report (#2032). */
+  private settledBy(runId: string, site: EvidenceSite, taskId: string): boolean {
+    return this.store
+      .artifacts(runId)
+      .filter(
+        (a) =>
+          a.kind === EVIDENCE_DECISION_KIND &&
+          a.logical_path.startsWith(`${EVIDENCE_DECISIONS_DIR}${site}-${taskId}-`),
+      )
+      .some((a) => {
+        try {
+          return (JSON.parse(this.store.readArtifact(runId, a.id)) as EvidenceRecord).decision;
+        } catch {
+          return false;
+        }
+      });
+  }
+  /**
    * Review findings that put the spec against the request record a spec amendment (#1034): the
    * request wins over the criteria they name, every later agent reads that with the request, and
    * the test-integrity guard accepts the tests their correction changes. A finding on a run
@@ -16388,10 +16493,17 @@ ${note}`;
   private amendSpec(runId: string, state: RuntimeState, findings: Review["findings"]): void {
     if (!state.spec) return;
     const planned = (state.rootGraph?.tasks ?? []).flatMap((t) => t.writes.map((w) => w.path));
+    const request = statedRequest(state, this.store.requests(runId));
     for (const finding of findings) {
-      const amendment = namesRunDocument(finding, planned)
+      const document = namesRunDocument(finding, planned);
+      // A finding for the request rests on a request quote the host checks (#2032).
+      if (!document)
+        this.recordEvidenceDecisions(runId, [
+          { ref: finding.id, input: specAmendmentInput(finding, state.spec, request) },
+        ]);
+      const amendment = document
         ? documentAmendmentOf(finding, state.spec)
-        : specAmendmentOf(finding, state.spec);
+        : specAmendmentOf(finding, state.spec, request);
       if (!amendment) continue;
       const path = `amendments/${finding.id}.json`;
       if (this.store.latestArtifact(runId, path)) continue;
