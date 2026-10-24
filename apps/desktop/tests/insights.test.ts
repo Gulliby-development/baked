@@ -443,6 +443,10 @@ describe("initiative view model", () => {
     expect(detailStatus({ status: "awaiting_approval", pendingDecisions: pending }).label).toBe("approve split");
     expect(detailStatus({ status: "awaiting_approval", pendingDecisions: [] })).toEqual({ label: "split rejected", tone: "warn" });
     expect(detailStatus({ status: "active", pendingDecisions: [] }).label).toBe("active");
+    // Ready work no drive advances shows idle in place of active (#2024).
+    const idle = { state: "idle" as const, text: "idle: waiting for a drive", command: "baked workflow initiative drive i" };
+    expect(detailStatus({ status: "active", pendingDecisions: [], drive: idle })).toEqual({ label: "idle: waiting for a drive", tone: "warn" });
+    expect(detailStatus({ status: "active", pendingDecisions: [], drive: { state: "driving", text: "driving", command: null } }).label).toBe("active");
   });
 
   test("the screen follows an initiative while the backend splits or runs it", () => {
@@ -485,6 +489,10 @@ describe("initiative view model", () => {
     expect(
       initiativeLine({ initiativeId: "i", title: "I", status: "completed", features: 3, next }),
     ).toBe("completed");
+    const drive = { state: "idle" as const, text: "idle: waiting for a drive", command: "baked workflow initiative drive i" };
+    expect(
+      initiativeLine({ initiativeId: "i", title: "I", status: "active", features: 3, next, drive }),
+    ).toBe("idle: waiting for a drive · 3 features");
   });
 
   test("model switch is offered while nothing executes and the backend reports the model", () => {

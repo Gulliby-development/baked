@@ -37,6 +37,17 @@ export interface InitiativeNext {
   message: string;
 }
 
+/**
+ * Whether a drive advances the initiative (`driving`) or its ready work waits for one (`idle`,
+ * with `text` "idle: waiting for a drive" and the CLI command that continues it); null when a
+ * drive has nothing to do. Absent on older backends.
+ */
+export interface InitiativeDrive {
+  state: "driving" | "idle";
+  text: string;
+  command: string | null;
+}
+
 /** One item of `GET /v1/initiatives`, as `baked workflow initiative list` prints it. */
 export interface InitiativeListItem {
   initiativeId: string;
@@ -44,6 +55,7 @@ export interface InitiativeListItem {
   status: InitiativeStatus;
   features: number;
   next: InitiativeNext;
+  drive?: InitiativeDrive | null;
 }
 
 export interface PendingDecision {
@@ -163,6 +175,7 @@ export interface InitiativeView {
     cost?: InitiativeCost;
   };
   next: InitiativeNext;
+  drive?: InitiativeDrive | null;
 }
 
 /** Feature runs within these limits are approved without a person. */
@@ -411,6 +424,9 @@ export const insights = {
     call<InitiativeView>(key, "POST", initiativePath(view.initiativeId, "pause"), command(view)),
   resumeInitiative: (key: string, view: Pick<InitiativeView, "initiativeId" | "revision">) =>
     call<InitiativeView>(key, "POST", initiativePath(view.initiativeId, "resume"), command(view)),
+  /** Continues an initiative whose ready work waits for a drive (`drive.state` idle). */
+  driveInitiative: (key: string, view: Pick<InitiativeView, "initiativeId">) =>
+    call<InitiativeView>(key, "POST", initiativePath(view.initiativeId, "drive"), {}),
   approveSplit: (
     key: string,
     view: Pick<InitiativeView, "initiativeId" | "revision">,

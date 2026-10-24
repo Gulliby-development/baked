@@ -37,6 +37,7 @@ import {
   tokenText,
 } from "../estimate.js";
 import { forecastSamples, forecastStageCost, runForecastStages } from "../forecast-price.js";
+import { executingLeases } from "../leases.js";
 import { plannedRunTokens } from "../plan-cost.js";
 import { plannedStages } from "../pre-run.js";
 import { type RecoveryAdvice, recoveryAdvice } from "../remedies.js";
@@ -70,6 +71,7 @@ import { autoApprovalPolicy } from "../v2/runtime.js";
 import { mergedBase, provisionalBase, worktreeBase } from "../worktree.js";
 import { criticalPathSummary, planWidth, remainingPath } from "./critical-path.js";
 import { DECOMPOSE_WORKFLOW_ID } from "./decompose.js";
+import { type InitiativeDriveState, initiativeDriveState } from "./drive-state.js";
 import {
   estimateInitiative,
   type FeatureRunSample,
@@ -381,6 +383,19 @@ export interface InitiativeView {
     rule: string;
   };
   next: NextAction;
+  /**
+   * Whether a drive advances the initiative now (`driving`) or its ready work waits for one
+   * (`idle`, with the command that continues it); null when a drive has nothing to do (#2024).
+   */
+  drive: InitiativeDriveState | null;
+}
+
+/** An initiative's next step, as the answer of a decision on one of its feature runs carries it. */
+export interface InitiativeStep {
+  initiativeId: string;
+  status: InitiativeView["status"];
+  next: NextAction;
+  drive: InitiativeDriveState | null;
 }
 
 /** True when a feature would start with less than the smallest share a run can work with. */
@@ -695,9 +710,16 @@ const add = (a: UsageView, b: UsageView): UsageView => ({
   activeMs: a.activeMs + b.activeMs,
 });
 
+/**
+ * The initiative drives running in this process, by workflow service: every `InitiativeService` of
+ * one service sees the same drives, so a second instance (the answer of a feature-run decision)
+ * neither starts a parallel drive nor reports a driven initiative as idle.
+ */
+const DRIVES = new WeakMap<NativeWorkflowService, Map<string, AbortController>>();
+
 export class InitiativeService {
   readonly store: InitiativeStore;
-  private active = new Map<string, AbortController>();
+  private readonly active: Map<string, AbortController>;
   /**
    * The measured stage usage that prices the features still to run. The replay passes an older
    * pricing here to show a forecast regression on a recorded round (#1707).
@@ -705,6 +727,9 @@ export class InitiativeService {
   priceSamples: typeof initiativePriceSamples = initiativePriceSamples;
   constructor(readonly workflows: NativeWorkflowService) {
     this.store = new InitiativeStore(workflows.store);
+    const drives = DRIVES.get(workflows) ?? new Map<string, AbortController>();
+    DRIVES.set(workflows, drives);
+    this.active = drives;
     // A feature run's deadline asks for its share to grow before it stops (#1958).
     workflows.growLimits = (runId) => {
       const id = this.store.initiativeOfRun(runId);
@@ -1129,64 +1154,66 @@ export class InitiativeService {
     if (signal.aborted) abort();
     this.active.set(id, controller);
     try {
-      await this.settleSuperseded(id);
-      for (let step = 0; step < 500 && !controller.signal.aborted; step++) {
-        const view = this.view(id);
-        const next = view.next;
-        if (view.parallelRuns > 1 && (next.kind === "drive" || next.kind === "start")) {
-          if (!(await this.driveFeatures(id, controller.signal))) return this.view(id);
-          continue;
-        }
-        switch (next.kind) {
-          case "decompose":
-          case "drive": {
-            const runId = next.runId ?? "";
-            const feature = view.features.find((f) => f.runId === runId);
-            if (next.kind === "drive" && feature) this.refreshGrowth(id, feature.id, runId);
-            const before = this.workflows.store.run(runId);
-            await this.driveRun(runId, controller.signal);
-            const after = this.workflows.store.run(runId);
-            // Nothing moved (for example a lost lease): report instead of spinning.
-            if (after.revision === before.revision) return this.view(id);
-            break;
-          }
-          case "finish_decompose":
-            this.finishDecompose(id);
-            break;
-          case "start":
-            await this.startFeature(id, next.featureId ?? "");
-            break;
-          case "rebase":
-            await this.rebaseFeature(id, next.featureId ?? "");
-            break;
-          case "complete":
-            this.store.transaction(() => {
-              this.store.setStatus(id, "completed");
-              this.store.emit(id, "initiative.completed", {
-                features: this.view(id).features.map((f) => ({
-                  id: f.id,
-                  runId: f.runId,
-                  contractHash: f.contractHash,
-                })),
-              });
-            });
-            return this.view(id);
-          default: {
-            const parked = view.features.find((f) => f.id === next.featureId);
-            if (
-              next.kind === "blocked" &&
-              parked?.state === "ready" &&
-              shareShortfall(view, parked)
-            )
-              this.noteShareGate(view, parked, "park");
-            return this.view(id);
-          }
-        }
-      }
-      return this.view(id);
+      await this.driveSteps(id, controller.signal);
     } finally {
       this.active.delete(id);
       signal.removeEventListener("abort", abort);
+    }
+    // After the drive let go, so the view it returns no longer reads "driving" (#2024).
+    return this.view(id);
+  }
+
+  /** The steps of one drive, until the initiative needs a person, finishes or stops moving. */
+  private async driveSteps(id: string, signal: AbortSignal): Promise<void> {
+    await this.settleSuperseded(id);
+    for (let step = 0; step < 500 && !signal.aborted; step++) {
+      const view = this.view(id);
+      const next = view.next;
+      if (view.parallelRuns > 1 && (next.kind === "drive" || next.kind === "start")) {
+        if (!(await this.driveFeatures(id, signal))) return;
+        continue;
+      }
+      switch (next.kind) {
+        case "decompose":
+        case "drive": {
+          const runId = next.runId ?? "";
+          const feature = view.features.find((f) => f.runId === runId);
+          if (next.kind === "drive" && feature) this.refreshGrowth(id, feature.id, runId);
+          const before = this.workflows.store.run(runId);
+          await this.driveRun(runId, signal);
+          const after = this.workflows.store.run(runId);
+          // Nothing moved (for example a lost lease): report instead of spinning.
+          if (after.revision === before.revision) return;
+          break;
+        }
+        case "finish_decompose":
+          this.finishDecompose(id);
+          break;
+        case "start":
+          await this.startFeature(id, next.featureId ?? "");
+          break;
+        case "rebase":
+          await this.rebaseFeature(id, next.featureId ?? "");
+          break;
+        case "complete":
+          this.store.transaction(() => {
+            this.store.setStatus(id, "completed");
+            this.store.emit(id, "initiative.completed", {
+              features: this.view(id).features.map((f) => ({
+                id: f.id,
+                runId: f.runId,
+                contractHash: f.contractHash,
+              })),
+            });
+          });
+          return;
+        default: {
+          const parked = view.features.find((f) => f.id === next.featureId);
+          if (next.kind === "blocked" && parked?.state === "ready" && shareShortfall(view, parked))
+            this.noteShareGate(view, parked, "park");
+          return;
+        }
+      }
     }
   }
 
@@ -2225,6 +2252,17 @@ export class InitiativeService {
     return estimate;
   }
 
+  /**
+   * The initiative a feature run belongs to and its next step, for the answer of a decision on
+   * that run (#2024); null for a run outside an initiative.
+   */
+  ofRun(runId: string): InitiativeStep | null {
+    const id = this.store.initiativeOfRun(runId);
+    if (!id) return null;
+    const view = this.view(id);
+    return { initiativeId: id, status: view.status, next: view.next, drive: view.drive };
+  }
+
   /** What the initiative is, where every feature stands and why, and what happens next. */
   view(id: string): InitiativeView {
     const row = this.store.get(id);
@@ -2330,9 +2368,22 @@ export class InitiativeService {
         rule: BUDGET_RULE,
       },
       next: { kind: "done", featureId: null, runId: null, message: "" },
+      drive: null,
     };
     view.next = this.nextAction(row, view);
+    view.drive = initiativeDriveState(view, this.driven(id, runIds));
     return view;
+  }
+
+  /**
+   * True while a drive of this process advances the initiative, or a live process holds the
+   * execution lease of one of its runs (a drive or a resumed run elsewhere).
+   */
+  private driven(id: string, runIds: readonly string[]): boolean {
+    if (this.active.has(id)) return true;
+    return executingLeases(this.workflows.store).some(
+      (lease) => lease.run_id !== null && runIds.includes(lease.run_id),
+    );
   }
 
   /** The initiative's dollars: spent, held by open runs, and the cap with its forecast. */

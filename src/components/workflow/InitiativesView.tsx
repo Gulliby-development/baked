@@ -57,6 +57,9 @@ const STATUS_TEXT: Record<InitiativeView["status"], string> = {
   completed: "completed",
   refused: "refused",
 };
+/** The status in words; an initiative whose ready work waits for a drive says so (#2024). */
+const statusText = (view: InitiativeView): string =>
+  view.drive?.state === "idle" ? view.drive.text : STATUS_TEXT[view.status];
 const FEATURE_COLOR: Record<FeatureView["state"], Color> = {
   proposed: (t) => t.textMuted,
   waiting: (t) => t.textMuted,
@@ -374,7 +377,7 @@ export function InitiativesPopup({
       title="Workflow"
       blurb={
         selected
-          ? `Initiative ${selected.initiativeId} · ${STATUS_TEXT[selected.status]}${driving ? " · ⟳ live" : ""}`
+          ? `Initiative ${selected.initiativeId} · ${statusText(selected)}${driving ? " · ⟳ live" : ""}`
           : needsYou
             ? `Initiatives: ${needsYou} waiting for you`
             : "Initiatives: large requests split into features"
@@ -507,13 +510,18 @@ export function InitiativeList({
         const glyph = s.needsYou ? "⚑" : initiativeIsTerminal(view) ? "✓" : "◐";
         const progress = `${s.accepted}/${s.total} features`;
         const budget = `${formatTokens(s.tokensUsed)}/${formatTokens(s.tokensLimit)} tokens${s.cost ? ` · ${s.cost}` : ""}`;
-        const attention = [
+        let attention = [
           s.pending ? `${s.pending} decision${s.pending > 1 ? "s" : ""}` : "",
           s.blockers ? `${s.blockers} blocker${s.blockers > 1 ? "s" : ""}` : "",
         ]
           .filter(Boolean)
           .join(" · ");
-        const status = STATUS_TEXT[view.status];
+        // The list column is narrow: an idle initiative shows "idle" and the detail says why.
+        const status = s.idle ? "idle" : STATUS_TEXT[view.status];
+        if (s.idle)
+          attention = attention
+            ? `${attention} · waiting for a drive (C)`
+            : "waiting for a drive (C)";
         if (narrow)
           return (
             <box key={view.initiativeId} flexDirection="column" backgroundColor={bg}>

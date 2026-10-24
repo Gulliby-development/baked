@@ -449,6 +449,7 @@ const initiativeRoutes: MockRoute = ({ key, method, path, body }) => {
         status: view.status,
         features: view.features.length,
         next: view.next,
+        drive: view.drive ?? null,
       })),
     });
   const match = /^\/v1\/initiatives\/([^/]+)(?:\/([a-z]+))?$/.exec(path);
@@ -461,6 +462,18 @@ const initiativeRoutes: MockRoute = ({ key, method, path, body }) => {
   if (method === "GET" && action === undefined) return response(200, view);
   if (method === "GET" && action === "estimate") return estimated(view);
   if (method !== "POST") return undefined;
+  if (action === "drive") {
+    // A drive takes the ready work of an idle initiative.
+    const next: InitiativeView = {
+      ...view,
+      drive:
+        view.drive?.state === "idle"
+          ? { state: "driving", text: "driving", command: null }
+          : (view.drive ?? null),
+    };
+    views[index] = next;
+    return response(202, next);
+  }
   const answer = command(view, action, (body ?? {}) as Body);
   if (typeof answer === "string") return refuse(answer);
   if (answer) {

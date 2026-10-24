@@ -102,6 +102,21 @@ function driveInitiative(id: string): void {
 }
 
 /**
+ * A feature run a person decided or resumed in the run screen has stopped: its initiative goes on
+ * here when its ready work waits for a drive (`initiativeDriveState` idle: no drive and no live run
+ * execution advances it), as `baked serve` continues it after a resumed run (#2024).
+ */
+function continueInitiativeOf(runId: string): void {
+  try {
+    const step = currentInitiatives().ofRun(runId);
+    if (step?.drive?.state === "idle") driveInitiative(step.initiativeId);
+  } catch (err) {
+    const id = currentInitiatives().store.initiativeOfRun(runId);
+    if (id) initiativeErrors.set(id, tuiErrorText(err));
+  }
+}
+
+/**
  * Takes over the runs of workers the terminal UI stopped because their thread stopped (#1541), and
  * drives the resumed ones here, as `baked workflow resume` and `initiative drive` would.
  */
@@ -360,8 +375,11 @@ const ctx = createWorkerHandler(
           "reroute" in (input as object) ||
           "repair" in (input as object) ||
           DecisionSchema.parse(input).kind !== "reject")
-      )
-        return runtime.drive(id, new AbortController().signal);
+      ) {
+        const driven = await runtime.drive(id, new AbortController().signal);
+        continueInitiativeOf(id);
+        return driven;
+      }
       return state;
     },
     // The files a person changed outside the run, for the "accept changes" confirmation.

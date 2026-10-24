@@ -8,6 +8,7 @@ import { WorkflowFault } from "../errors.js";
 import type { RecoveryAdvice } from "../remedies.js";
 import { canRepairRun, repairText } from "../repairable.js";
 import { newId } from "../store.js";
+import { DRIVABLE_NEXT } from "./drive-state.js";
 import {
   canExtendBudget,
   canReplanFeature,
@@ -35,7 +36,12 @@ export interface InitiativeSummary {
   pending: number;
   /** Features that cannot continue now, plus a blocked next step of the initiative itself. */
   blockers: number;
-  /** True when a person has something to do: a decision, a blocker or a paused initiative. */
+  /** True when ready work waits for a drive (`drive.state` idle, #2024). */
+  idle: boolean;
+  /**
+   * True when a person has something to do: a decision, a blocker, a paused initiative or an idle
+   * one to continue.
+   */
   needsYou: boolean;
   next: string;
 }
@@ -92,9 +98,13 @@ export function summarizeInitiative(
     cost: costText(view.budget.cost),
     pending: view.pendingDecisions.length,
     blockers: blockers.length,
+    idle: view.drive?.state === "idle",
     needsYou:
       !initiativeIsTerminal(view) &&
-      (view.pendingDecisions.length > 0 || blockers.length > 0 || view.status === "paused"),
+      (view.pendingDecisions.length > 0 ||
+        blockers.length > 0 ||
+        view.status === "paused" ||
+        view.drive?.state === "idle"),
     next: render(view.next.message, view.next.recovery),
   };
 }
@@ -202,15 +212,6 @@ const required = (text: string, message: string): string => {
   return value;
 };
 
-const CONTINUABLE: readonly InitiativeView["next"]["kind"][] = [
-  "decompose",
-  "finish_decompose",
-  "start",
-  "rebase",
-  "drive",
-  "complete",
-];
-
 /**
  * The commands the core accepts for this view right now. `driving` says whether this process is
  * already advancing the initiative; `feature` is the feature selected in the detail view; `model`
@@ -247,7 +248,7 @@ export function initiativeActions(
   if (
     (view.status === "active" || view.status === "decomposing") &&
     !driving &&
-    CONTINUABLE.includes(view.next.kind)
+    DRIVABLE_NEXT.includes(view.next.kind)
   )
     options.push({ key: "C", label: "continue", action: { kind: "drive" }, confirm: null });
   if (view.status === "active" || view.status === "decomposing")

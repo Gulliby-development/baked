@@ -1532,6 +1532,26 @@ export const FEATURES: readonly Feature[] = [
     desktop: ["project/initiatives", "attention"],
   },
   {
+    id: "initiative-idle-drive",
+    group: "Initiatives",
+    title:
+      "An initiative whose ready work waits for a drive shows idle; a decision on its feature run names the drive",
+    tui: [
+      "/workflow: initiatives, idle status and C to continue; a decided feature run continues it",
+    ],
+    cli: [
+      "baked workflow answer: initiative and next",
+      "baked workflow initiative show: drive",
+      "baked workflow initiative drive",
+    ],
+    api: [
+      "/v1/initiatives/:id: drive",
+      "/v1/initiatives/:id/drive",
+      "/v1/workflow/runs/:id/answer: initiative and next",
+    ],
+    desktop: ["project/initiatives: idle status and Continue"],
+  },
+  {
     id: "initiative-edit",
     group: "Initiatives",
     title: "Reject, merge, split, rename, remove, re-plan, extend",
