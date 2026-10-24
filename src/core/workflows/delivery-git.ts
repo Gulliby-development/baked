@@ -150,6 +150,24 @@ export function internalPath(path: string): boolean {
   );
 }
 
+/**
+ * Whether a commit of the run carries its published spec artifacts (`specs/<feature>/`): only
+ * when the base already tracks a `specs` folder (#680). The delivery plan and the run branch
+ * commit both ask this, so a run branch never brings a new top-level `specs/` into a project:
+ * setuptools' flat-layout discovery takes it for a second package and `pip install .` fails
+ * (#1998, R64 spdxok-update).
+ */
+export async function shipsSpecs(workspace: string, base: string): Promise<boolean> {
+  return (
+    (await git(workspace, ["ls-tree", "--name-only", base, "--", "specs"])).stdout.trim() !== ""
+  );
+}
+
+/** A path under the run's own spec folder. */
+export function runSpecPath(path: string, featureId: string): boolean {
+  return path.startsWith(`specs/${featureId}/`);
+}
+
 /** Mode of a file as Git stores it: executable or regular. */
 export function gitMode(mode: number): "100755" | "100644" {
   return mode & 0o111 ? "100755" : "100644";

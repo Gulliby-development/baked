@@ -25,6 +25,8 @@ import {
   gitWorktreePaths,
   internalPath,
   looksSecret,
+  runSpecPath,
+  shipsSpecs,
   statusPaths,
   treeModes,
 } from "./delivery-git.js";
@@ -618,6 +620,7 @@ export async function commitRunBranch(
   worktree: WorktreeState,
   paths: string[],
   message: string,
+  options: { specs?: boolean } = {},
 ): Promise<string | null> {
   const workspace = store.workspace;
   const root = join(workspace, worktree.path);
@@ -626,9 +629,13 @@ export async function commitRunBranch(
   try {
     await required(root, ["read-tree", worktree.baseHead], { env });
     const modes = treeModes(await required(root, ["ls-tree", "-r", "-z", worktree.baseHead]));
+    // The run's spec artifacts stay run artifacts unless the project already tracks specs/, as
+    // in the delivery plan (#1998), or the caller needs them on the branch.
+    const featureId = store.run(runId).feature_id;
+    const withSpecs = options.specs ?? (await shipsSpecs(root, worktree.baseHead));
     const updates: string[] = [];
     for (const path of [...new Set(paths)].sort()) {
-      if (internalPath(path)) continue;
+      if (internalPath(path) || (!withSpecs && runSpecPath(path, featureId))) continue;
       const absolute = workspacePath(root, path);
       const stat = existsSync(absolute) ? lstatSync(absolute) : null;
       if (stat?.isSymbolicLink() || looksSecret(path)) continue;

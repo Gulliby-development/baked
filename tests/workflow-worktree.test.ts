@@ -206,9 +206,11 @@ describe("workflow worktree execution", () => {
     expect(git(fx.root, "rev-parse", `baked/wf/${run.runId}`)).toBe(commit);
     expect(git(fx.root, "rev-parse", `${commit}^`)).toBe(fx.head);
     expect(git(fx.root, "show", `${commit}:value.txt`)).toBe("ready");
-    expect(git(fx.root, "show", `${commit}:specs/fixture/spec.json`)).toContain('"featureId":"fixture"');
+    // The project tracks no specs/, so the published spec stays a run artifact, as in the
+    // delivery plan (#1998).
+    expect(git(fx.root, "ls-tree", "--name-only", commit, "--", "specs")).toBe("");
     expect(git(fx.root, "log", "-1", "--format=%B", commit)).toContain(`Baked-Run: ${run.runId}`);
-    expect(status(tree)).toBe("");
+    expect(status(tree).split("\n").every((line) => line.startsWith("?? specs/fixture/"))).toBe(true);
     const completion = fx.service.store.artifacts(run.runId).find((a) => a.logical_path === "completion.json");
     expect(JSON.parse(fx.service.store.readArtifact(run.runId, completion?.id ?? "")).worktree.commit).toBe(commit);
     // The leases are released after the drive.
@@ -629,6 +631,62 @@ class SignExecutor extends RootExecutor {
     return result;
   }
 }
+
+/** Whether setuptools can be asked for a flat-layout package discovery here. */
+const setuptools = Bun.spawnSync(["python3", "-c", "import setuptools"], { stdout: "ignore", stderr: "ignore" }).exitCode === 0;
+/** The packages setuptools' automatic discovery finds in a tree, or its refusal. */
+const discovered = (root: string) => {
+  const probe = 'from setuptools.dist import Distribution; d = Distribution({"name": "spdxok"}); d.set_defaults(); print(d.packages)';
+  const result = Bun.spawnSync(["python3", "-c", probe], { cwd: root, stdout: "pipe", stderr: "pipe" });
+  return result.exitCode === 0 ? result.stdout.toString().trim() : result.stderr.toString();
+};
+
+describe("scenario: the run branch of an update on a flat-layout Python package (#1998)", () => {
+  // R64 spdxok-update: the run branch carried specs/spdxok-ids-min/ next to the change, and
+  // setuptools' flat-layout discovery found two top-level packages, so `pip install .` failed.
+  // The publisher deleted the folder by hand in 4 of 4 sdd deliveries of the round.
+  const flatLayout = (root: string) => {
+    mkdirSync(join(root, "spdxok"), { recursive: true });
+    writeFileSync(join(root, "spdxok/__init__.py"), "");
+    writeFileSync(join(root, "pyproject.toml"), '[project]\nname = "spdxok"\nversion = "0.1.0"\n');
+    git(root, "add", ".");
+    git(root, "commit", "-q", "-m", "Flat-layout package");
+  };
+  const checkout = (root: string, commit: string) => {
+    const tree = mkdtempSync(join(tmpdir(), "baked-branch-tree-"));
+    cleanups.push(() => rmSync(tree, { recursive: true, force: true }));
+    git(root, "--work-tree", tree, "checkout", commit, "--", ".");
+    return tree;
+  };
+
+  test("the accepted commit leaves the spec out, so the package still installs", async () => {
+    const fx = setup();
+    flatLayout(fx.root);
+    const run = await fx.start("worktree");
+    expect((await fx.complete(run.runId)).status).toBe("completed");
+    const commit = fx.service.store.state(run.runId).worktree?.commit ?? "";
+    expect(git(fx.root, "show", `${commit}:value.txt`)).toBe("ready");
+    expect(git(fx.root, "ls-tree", "--name-only", commit, "--", "specs")).toBe("");
+    // The spec is still a run artifact, and the delivery plan excludes it for the same reason.
+    expect(fx.service.store.artifacts(run.runId).some((a) => a.logical_path === "spec.json")).toBe(true);
+    const prepared = await prepareDelivery(fx.service.store, fx.config, run.runId, { local: true });
+    expect(prepared.plan.excluded.filter((e) => e.reason === "specs").map((e) => e.path)).toContain("specs/fixture/spec.json");
+    if (setuptools) expect(discovered(checkout(fx.root, commit))).toBe("['spdxok']");
+  }, 60000);
+
+  test("a project that already tracks specs/ keeps getting the run's spec on its branch", async () => {
+    const fx = setup();
+    flatLayout(fx.root);
+    mkdirSync(join(fx.root, "specs/earlier"), { recursive: true });
+    writeFileSync(join(fx.root, "specs/earlier/spec.json"), "{}\n");
+    git(fx.root, "add", ".");
+    git(fx.root, "commit", "-q", "-m", "Earlier spec");
+    const run = await fx.start("worktree");
+    expect((await fx.complete(run.runId)).status).toBe("completed");
+    const commit = fx.service.store.state(run.runId).worktree?.commit ?? "";
+    expect(git(fx.root, "show", `${commit}:specs/fixture/spec.json`)).toContain('"featureId":"fixture"');
+  }, 60000);
+});
 
 describe("mutation tools in a worktree run", () => {
   // Bench round 13 (#835): every JS/TS worktree run blocked with "Path escapes workspace", because
