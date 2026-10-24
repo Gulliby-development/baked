@@ -569,17 +569,22 @@ export interface SuppliedPrice {
 }
 
 /**
- * The one rule that decides supplied pricing (#2002): a task that is not a test task and whose
- * every written file has a supplied block is priced at `SUPPLIED_PER_LINE` per supplied line, at
- * least `SUPPLIED_PER_FILE` per file. Its split is decided on those lines, never on the number of
- * files. Null for any other task, which keeps its history price.
+ * The one rule that decides supplied pricing (#2002): a task whose every written file has a
+ * supplied block is priced at `SUPPLIED_PER_LINE` per supplied line, at least `SUPPLIED_PER_FILE`
+ * per file. Its split is decided on those lines, never on the number of files, and for a test task
+ * never on its case count. Null for any other task, which keeps its history price.
+ *
+ * A test task is no exception (#2019): the case rates of `testTaskRates` assume the agent designs
+ * the cases, and a test file the request gives verbatim leaves it only the copying. Bench round 65
+ * aclvet-update priced summary_test.go (98 lines given) at 384k-893k and cli_test.go (a 2-line
+ * diff) at 426k-1.14M; they cost 58k and 104k.
  */
 export function suppliedTaskPrice(
   task: SizingTask,
   supplied: ReadonlyMap<string, number> | null,
   cap: number,
 ): SuppliedPrice | null {
-  if (!supplied?.size || taskKind(task) === "test") return null;
+  if (!supplied?.size) return null;
   const files = writtenFiles(task);
   if (!files.length) return null;
   let lines = 0;
@@ -954,15 +959,14 @@ export function sizePlan(input: {
         estimate,
         attemptTokens: Math.min(maxAttemptTokens, Math.max(floor, Math.round(estimate.high))),
         attemptSteps: taskKind(task) === "test" ? testSteps : null,
-        oversized:
-          kind === "test"
+        oversized: fromRequest
+          ? fromRequest.oversized
+          : kind === "test"
             ? // A slice of one criterion is as small as the host splits; its worker writes and
               // checks the cases in batches, so sending it to the planner asks for no plan (#1930).
               !(task.sizingSlice && task.criterionIds.length === 1) &&
               exceedsTestCapacity(cases, limit, estimate, maxAttemptTokens, true, rowsTask)
-            : fromRequest
-              ? fromRequest.oversized
-              : files > 1 && estimate.high > maxAttemptTokens,
+            : files > 1 && estimate.high > maxAttemptTokens,
         basis: fromRequest ? "supplied" : historyBasis(task, rates, tests, cases),
         ...(fromRequest ? { suppliedLines: fromRequest.lines } : {}),
         ...(kind === "test" ? { cases, sliceCount: task.sizingSlice?.count ?? 1 } : {}),
@@ -989,13 +993,16 @@ export function sizePlan(input: {
     decision = "split-tasks";
     for (const task of oversized)
       reasons.push(
-        task.rowsTask
-          ? `${task.taskId} is a rows task covering ${task.cases} cases, ${(limit?.cases ?? 0) > 0 ? `above ${CAPACITY_PROBE} times the observed capacity of ${limit?.cases}` : `above one attempt's ${maxAttemptTokens} tokens`}; a rows task is never sliced, so keep only its rows criteria in it and move ${task.rowsTask.movable.join(", ")} into a test task of their own, writing another test file, that depends on it`
-          : task.kind === "test" &&
-              (limit?.cases ?? 0) > 0 &&
-              (task.cases ?? 0) > CAPACITY_PROBE * (limit?.cases ?? 0)
-            ? `${task.taskId} covers ${task.cases} cases, above ${CAPACITY_PROBE} times the observed capacity of ${limit?.cases}`
-            : `${task.taskId} writes ${task.files} files and needs about ${Math.round(task.kind === "test" ? expectedPrice(task.estimate) : task.estimate.high)} tokens, above one attempt's ${maxAttemptTokens}`,
+        task.basis === "supplied"
+          ? // Split on the supplied lines alone (`suppliedTaskPrice`), whatever the task's kind.
+            `${task.taskId} writes ${task.files} files and needs about ${Math.round(task.estimate.high)} tokens for the ${task.suppliedLines} lines the request supplies, above one attempt's ${maxAttemptTokens}`
+          : task.rowsTask
+            ? `${task.taskId} is a rows task covering ${task.cases} cases, ${(limit?.cases ?? 0) > 0 ? `above ${CAPACITY_PROBE} times the observed capacity of ${limit?.cases}` : `above one attempt's ${maxAttemptTokens} tokens`}; a rows task is never sliced, so keep only its rows criteria in it and move ${task.rowsTask.movable.join(", ")} into a test task of their own, writing another test file, that depends on it`
+            : task.kind === "test" &&
+                (limit?.cases ?? 0) > 0 &&
+                (task.cases ?? 0) > CAPACITY_PROBE * (limit?.cases ?? 0)
+              ? `${task.taskId} covers ${task.cases} cases, above ${CAPACITY_PROBE} times the observed capacity of ${limit?.cases}`
+              : `${task.taskId} writes ${task.files} files and needs about ${Math.round(task.kind === "test" ? expectedPrice(task.estimate) : task.estimate.high)} tokens, above one attempt's ${maxAttemptTokens}`,
       );
   }
   if (runTokens + repairReserve > budgetBefore && maxRunTokens !== null) {
@@ -1259,6 +1266,7 @@ export function splitTestTasks(
   const origins = new Map<string, string>();
   const tasks = graph.tasks.flatMap((task) => {
     if (!oversized.has(task.id) || task.sizingSlice || task.rows?.length) return [task];
+    const suppliedTask = report.tasks.some((t) => t.taskId === task.id && t.basis === "supplied");
     const files = task.writes.filter((write) => write.action !== "delete");
     const deletes = task.writes.filter((write) => write.action === "delete");
     const criteria = partCriteria(
@@ -1312,12 +1320,15 @@ export function splitTestTasks(
         );
       const groups: string[][] = [];
       let group: string[] = [];
-      const needsSlices = exceedsTestCapacity(
-        cases(own),
-        report.testTaskLimit,
-        priceTask(base, report.rates, report.testTaskRates, cases(own)),
-        report.maxAttemptTokens,
-      );
+      // A file the request supplies verbatim is copied whole, never sliced by criterion (#2019).
+      const needsSlices =
+        !suppliedTask &&
+        exceedsTestCapacity(
+          cases(own),
+          report.testTaskLimit,
+          priceTask(base, report.rates, report.testTaskRates, cases(own)),
+          report.maxAttemptTokens,
+        );
       if (!needsSlices) groups.push(own);
       else {
         for (const id of own) {

@@ -13,6 +13,7 @@ import {
   type SizingSample,
   sizePlan,
   suppliedLines,
+  splitTestTasks,
   suppliedTaskPrice,
 } from "../src/core/workflows/sizing.js";
 import { newId } from "../src/core/workflows/store.js";
@@ -155,13 +156,97 @@ describe("scenario: spdxok-update R64, a plan priced by files x history and spli
     expect(report.tasks.every((t) => t.basis === "history")).toBe(true);
   });
 
-  test("supplied lines above one attempt still split a task of several files, and a test task is never priced from them", () => {
+  test("supplied lines above one attempt still split a task of several files", () => {
     const many = Array.from({ length: 400 }, (_, i) => `export const v${i} = ${i};`);
     const big = ["```diff", hunk("src/a.ts", many), hunk("src/b.ts", many), "```"].join("\n");
     const sized = suppliedTaskPrice(planned("T001", ["src/a.ts", "src/b.ts"]), suppliedLines(big, ["src/a.ts", "src/b.ts"]), 600_000);
     expect(sized).toMatchObject({ lines: 800, oversized: true, estimate: { low: 200_000, high: 800_000 } });
-    const tests = ["```diff", hunk("tests/a.test.ts", ["test('a', () => {});"]), "```"].join("\n");
-    expect(suppliedTaskPrice(planned("T002", ["tests/a.test.ts"]), suppliedLines(tests, ["tests/a.test.ts"]), 600_000)).toBeNull();
+  });
+});
+
+// Bench round 65, aclvet-update plan-1 (#2019). The request gave internal/cli/summary_test.go "with
+// exactly this content" (98 lines) and the cli_test.go change as a diff (one expectedUsage line).
+// Sizing priced both test tasks by cases from test history: T004 384k-893k (actual 58k), T002
+// 426k-1.14M (actual 104k). A test task whose files the request supplies is priced like any other
+// supplied task.
+const summaryTest = Array.from({ length: 98 }, (_, i) => (i === 0 ? "package cli" : `// case ${i}`));
+const aclvetPlan1 = [
+  "Create `internal/cli/summary_test.go` with exactly this content:",
+  "```go",
+  ...summaryTest,
+  "```",
+  "Change the usage line in the test:",
+  "```diff",
+  "--- a/internal/cli/cli_test.go",
+  "+++ b/internal/cli/cli_test.go",
+  "@@ -12,3 +12,3 @@",
+  " func TestUsage(t *testing.T) {",
+  "-\tconst expectedUsage = \"usage: aclvet [flags] FILE\"",
+  "+\tconst expectedUsage = \"usage: aclvet [flags] FILE...\"",
+  " }",
+  "```",
+].join("\n");
+// 40 finished test tasks of 380k-1.16M with case counts: case history prices any test task
+// at hundreds of thousands, as aclvet's did.
+const testHistory: SizingSample[] = Array.from({ length: 40 }, (_, i) => ({
+  runId: `t${i}`, taskId: "T004", kind: "test", action: "create", source: "project", files: 1, tokens: 380_000 + i * 20_000, model: null, criteria: 4, cases: 2 + (i % 40),
+}));
+const cheapestTest = Math.min(...testHistory.map((s) => s.tokens));
+const sizeTests = (p: RunPolicy, g: TaskGraph, text: string) => sizePlan({ graph: g, policy: p, samples: testHistory, spent: 0, request: text });
+const aclvetTests = graph(planned("T002", ["internal/cli/cli_test.go"]), planned("T004", ["internal/cli/summary_test.go"], "create"));
+
+describe("scenario: aclvet-update R65, test files the request supplies priced by cases (#2019)", () => {
+  test("without the policy both test tasks keep their case price from history, as before", () => {
+    const report = sizeTests(policy(false), aclvetTests, aclvetPlan1);
+    expect(report.tasks.map((t) => [t.taskId, t.kind, t.basis])).toEqual([["T002", "test", "history"], ["T004", "test", "history"]]);
+    expect(report.tasks.every((t) => t.estimate.low >= cheapestTest)).toBe(true);
+  });
+
+  test("with suppliedDiff a supplied test file is priced from its lines, below every test sample", () => {
+    const report = sizeTests(policy(true), aclvetTests, aclvetPlan1);
+    expect(report.tasks).toMatchObject([
+      { taskId: "T002", kind: "test", basis: "supplied", suppliedLines: 2, oversized: false, estimate: SUPPLIED_PER_FILE },
+      { taskId: "T004", kind: "test", basis: "supplied", suppliedLines: 98, oversized: false, estimate: { low: 34_000, high: 134_000 } },
+    ]);
+    // The forecast-floor rule: the low end sits below the cheapest finished test task, and the
+    // range holds what the tasks cost (104k and 58k).
+    for (const task of report.tasks) expect(task.estimate.low).toBeLessThan(cheapestTest);
+    expect(report.tasks.map((t) => t.estimate.high >= 104_000)).toEqual([true, true]);
+    expect(report.decision).toBe("fits");
+    expect(estimateSourceText(report.tasks)).toBe("Task estimates: T002 (2 lines), T004 (98 lines) from the lines the request supplies");
+  });
+
+  test("a test task whose file the request does not supply keeps the case price", () => {
+    const g = graph(planned("T004", ["internal/cli/summary_test.go"], "create"), planned("T005", ["internal/cli/args_test.go"], "create"));
+    const report = sizeTests(policy(true), g, aclvetPlan1);
+    expect(report.tasks.map((t) => [t.taskId, t.basis])).toEqual([["T004", "supplied"], ["T005", "history"]]);
+    expect(report.tasks[1]?.estimate.low).toBeGreaterThanOrEqual(cheapestTest);
+  });
+
+  test("a test task with supplied lines above one attempt splits on those lines, not on its cases", () => {
+    const many = Array.from({ length: 400 }, (_, i) => `test('t${i}', () => {});`);
+    const big = ["```diff", hunk("tests/a.test.ts", many), hunk("tests/b.test.ts", many), "```"].join("\n");
+    const report = sizeTests(policy(true), graph(planned("T003", ["tests/a.test.ts", "tests/b.test.ts"])), big);
+    expect(report.tasks).toMatchObject([{ taskId: "T003", kind: "test", basis: "supplied", suppliedLines: 800, oversized: true }]);
+    expect(report.decision).toBe("split-tasks");
+    expect(report.reasons).toEqual(["T003 writes 2 files and needs about 800000 tokens for the 800 lines the request supplies, above one attempt's 600000"]);
+  });
+
+  test("the host splits such a task by file and never slices a supplied file by criterion", () => {
+    const lines = Array.from({ length: 60 }, (_, i) => `test('t${i}', () => {});`);
+    const text = ["```diff", hunk("tests/a.test.ts", lines), hunk("tests/b.test.ts", lines), "```"].join("\n");
+    // No test history and a small cap: the default case price of each file is above one attempt,
+    // so a history-priced file of two criteria would be cut into two slices.
+    const task = { ...planned("T003", ["tests/a.test.ts", "tests/b.test.ts"]), criterionIds: ["AC-001", "AC-002"] };
+    const g = graph(task);
+    const p: RunPolicy = { ...defaultWorkflowPolicy, sizing: { maxAttemptTokens: 100_000, suppliedDiff: true } };
+    const report = sizePlan({ graph: g, policy: p, samples: [], spent: 0, request: text });
+    expect(report.tasks).toMatchObject([{ taskId: "T003", basis: "supplied", suppliedLines: 120, oversized: true }]);
+    const split = splitTestTasks(g, report);
+    expect(split?.tasks.map((t) => [t.id, t.writes.map((w) => w.path), t.criterionIds])).toEqual([
+      ["T003", ["tests/a.test.ts"], ["AC-001", "AC-002"]],
+      ["T004", ["tests/b.test.ts"], ["AC-001", "AC-002"]],
+    ]);
   });
 });
 
