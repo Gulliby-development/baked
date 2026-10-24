@@ -14,6 +14,7 @@ import {
   renameSync,
   rmSync,
   symlinkSync,
+  writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
@@ -197,16 +198,16 @@ export async function mergedBase(
 /**
  * `base` with `files` added where it has no file at their path: the provisional base of a feature
  * that plans ahead (#1834), so it plans against the host-written stubs of the features it depends
- * on that have not finished yet, and the accepted specs of its upstream features, which their
- * branches no longer carry (#2017). Built in a temporary index with a fixed author and date, as
- * `mergedBase` is, so the same inputs give the same commit; `base` itself when nothing is added.
+ * on that have not finished yet, which its tasks modify. A file the run only reads (the accepted
+ * specs of its upstream features) never goes here: `placeBaseFiles` writes it untracked (#2046).
+ * Built in a temporary index with a fixed author and date, as `mergedBase` is, so the same inputs
+ * give the same commit; `base` itself when nothing is added.
  */
 export async function provisionalBase(
   workspace: string,
   base: string,
   files: { path: string; content: string }[],
   date: number,
-  message = "Stubs of unfinished upstream features",
 ): Promise<string> {
   const present = new Set(
     (await required(workspace, ["ls-tree", "-r", "-z", "--name-only", base]))
@@ -235,11 +236,49 @@ export async function provisionalBase(
     const tree = await required(workspace, ["write-tree"], { env });
     return await required(
       workspace,
-      ["commit-tree", tree, "-p", base, "--no-gpg-sign", "-m", message],
+      [
+        "commit-tree",
+        tree,
+        "-p",
+        base,
+        "--no-gpg-sign",
+        "-m",
+        "Stubs of unfinished upstream features",
+      ],
       { env: { ...env, ...fixedIdentity(date) } },
     );
   } finally {
     rmSync(directory, { recursive: true, force: true });
+  }
+}
+
+/**
+ * Writes `files` into the run worktree as untracked files where `base` tracks no file at their
+ * path and the worktree has none yet: what the host gives a run to read without it entering any
+ * commit (an initiative feature's upstream specs, #2046). Before, they were a commit of the base
+ * that the run's own commit deleted, so a kept history had `specs/` back at every dependent
+ * base. The run's commits leave them out by `runSpecPath`; its task worktrees, built from the
+ * worktree's content (`runContentCommit`), hold them as the run worktree does.
+ */
+export async function placeBaseFiles(
+  workspace: string,
+  worktree: Pick<WorktreeState, "path">,
+  base: string,
+  files: readonly { path: string; content: string }[],
+): Promise<void> {
+  if (!files.length) return;
+  const root = join(workspace, worktree.path);
+  const tracked = new Set(
+    (await required(workspace, ["ls-tree", "-r", "-z", "--name-only", base]))
+      .split("\0")
+      .filter(Boolean),
+  );
+  for (const file of files) {
+    if (tracked.has(file.path) || internalPath(file.path)) continue;
+    const absolute = workspacePath(root, file.path);
+    if (existsSync(absolute)) continue;
+    mkdirSync(dirname(absolute), { recursive: true });
+    writeFileSync(absolute, file.content);
   }
 }
 
@@ -328,6 +367,7 @@ export async function ensureRunWorktree(
     });
   }
   linkDependencies(workspace, absolute);
+  await placeBaseFiles(workspace, { path }, baseHead, store.state(runId).baseFiles ?? []);
   const worktree: WorktreeState = {
     path,
     branch,
@@ -625,8 +665,9 @@ export async function commitRunBranch(
     const modes = treeModes(await required(root, ["ls-tree", "-r", "-z", worktree.baseHead]));
     // The run's spec artifacts stay run artifacts unless the project already tracks specs/, as
     // in the delivery plan (#1998), or the caller needs them on the branch. An initiative
-    // feature's base holds its upstream features' specs for it to read; they leave its commit
-    // too, so no branch of the initiative carries a spec folder the project does not (#2017).
+    // feature's upstream specs are untracked files of its worktree (`placeBaseFiles`, #2046); a
+    // base made before that still tracks them, and they leave its commit too, so no branch of the
+    // initiative carries a spec folder the project does not (#2017).
     const featureId = store.run(runId).feature_id;
     const prefix = options.initiativeSpecs ?? null;
     const withSpecs = options.specs ?? treeShipsSpecs(modes.keys(), prefix);

@@ -15768,7 +15768,7 @@ ${note}`;
       [...journaled, ...changedPaths(baseline, final).filter((path) => declared.has(path))],
       `${title}\n\nAccepted result of BAKED workflow run ${runId}.\n\nBaked-Run: ${runId}\nBaked-Snapshot: ${state.snapshotId}\n`,
       // No branch of an initiative carries its spec folders: a dependent feature reads its
-      // upstream specs from the base the initiative builds for it (#2017).
+      // upstream specs as untracked files of its worktree (`baseFiles`, #2017, #2046).
       {
         initiativeSpecs: initiativeSpecPrefix(
           this.store.run(runId).feature_id,
