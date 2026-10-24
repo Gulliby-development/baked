@@ -20,6 +20,10 @@ export interface Remedy {
   initiativeId?: string;
   featureId?: string;
   setting?: string;
+  /** For `extend`: the token limit that answers the block, so one command or click applies it. */
+  suggestedTokens?: number;
+  /** For `extend`: the dollar cap that answers the block. */
+  suggestedUsd?: number;
 }
 
 export interface RecoveryAdvice {
@@ -34,6 +38,35 @@ export function recoveryAdvice(
   ...remedies: Remedy[]
 ): RecoveryAdvice {
   return { message, summary, remedies };
+}
+
+/**
+ * The amounts an `extend` answer suggests (#2042): those on the block's remedy, else the token
+ * forecast's suggested pool. Null when nothing names an amount. Front ends prefill their extend
+ * form with it, so the answer is one command or one click.
+ */
+export function extendSuggestion(
+  advice: RecoveryAdvice | null | undefined,
+  poolSuggested?: number | null,
+): { tokens?: number; usd?: number } | null {
+  const remedy = advice?.remedies.find(
+    (r) => r.action === "extend" && (r.suggestedTokens || r.suggestedUsd),
+  );
+  if (remedy)
+    return {
+      ...(remedy.suggestedTokens ? { tokens: remedy.suggestedTokens } : {}),
+      ...(remedy.suggestedUsd ? { usd: remedy.suggestedUsd } : {}),
+    };
+  return poolSuggested ? { tokens: poolSuggested } : null;
+}
+
+/** A suggested amount in words, for a remedy label: "33.1M tokens", "$31.50", or both. */
+export function suggestionText(suggestion: { tokens?: number; usd?: number } | null): string {
+  if (!suggestion) return "";
+  return [
+    ...(suggestion.tokens ? [`${(suggestion.tokens / 1_000_000).toFixed(1)}M tokens`] : []),
+    ...(suggestion.usd ? [`$${suggestion.usd.toFixed(2)}`] : []),
+  ].join(" and ");
 }
 
 function record(value: unknown): value is Record<string, unknown> {
@@ -60,6 +93,12 @@ export function recoveryOf(value: unknown): RecoveryAdvice | undefined {
       const field = entry[key];
       if (field !== undefined && typeof field !== "string") return undefined;
       if (key in entry) remedy[key] = field;
+    }
+    for (const key of ["suggestedTokens", "suggestedUsd"] as const) {
+      const field = entry[key];
+      if (field === undefined) continue;
+      if (typeof field !== "number" || !Number.isFinite(field) || field <= 0) return undefined;
+      remedy[key] = field;
     }
     remedies.push(remedy);
   }

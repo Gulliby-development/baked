@@ -1497,6 +1497,28 @@ export const FEATURES: readonly Feature[] = [
     desktop: ["project/initiatives: split approval warning and Extend budget"],
   },
   {
+    id: "initiative-token-pool-forecast",
+    group: "Initiatives",
+    title:
+      "Token pool forecast notice, block amounts with a one-step extend, and the shadow pool extension inside the dollar cap",
+    tui: [
+      "/workflow: initiatives, Token forecast line and B prefilled with the suggested extension",
+    ],
+    cli: [
+      "baked workflow initiative show: budget.pool, budget.forecastNotice, next.recovery suggestedTokens",
+      "baked workflow initiative events: budget.forecast_notice, decision.would_extend",
+      "baked workflow initiative extend",
+    ],
+    api: [
+      "/v1/initiatives/:id: budget.pool, budget.forecastNotice, next.recovery suggestedTokens",
+      "/v1/initiatives/:id/events",
+      "/v1/initiatives/:id/extend",
+    ],
+    desktop: [
+      "project/initiatives: Token forecast line and one-click Extend to the suggested amount",
+    ],
+  },
+  {
     id: "initiative-finding-ownership",
     group: "Initiatives",
     title:

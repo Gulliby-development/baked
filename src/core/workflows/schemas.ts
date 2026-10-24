@@ -1320,6 +1320,8 @@ export const DEFAULT_MAX_PARALLEL_RUNS = 2;
 export const MAX_PARALLEL_RUNS = 8;
 /** The cap when `workflows.parallelRunsFromPlan` is on and `maxParallelRuns` is unset (#1822). */
 export const PLAN_PARALLEL_RUNS = 3;
+/** The modes of `workflows.extendWithinDollars` (#2042); see `initiatives/token-pool.ts`. */
+export const EXTEND_WITHIN_DOLLARS_MODES = ["off", "shadow"] as const;
 export const WorkflowConfigSchema = z
   .object({
     enabled: z.boolean().default(true),
@@ -1346,6 +1348,12 @@ export const WorkflowConfigSchema = z
      * accepted; its tasks still wait for those results (#1834). Off by default.
      */
     planAhead: z.boolean().optional(),
+    /**
+     * Whether an initiative whose token pool parks a feature, while the person's dollar cap has
+     * room for the extension, records that the host would extend the pool (#2042): `shadow`, the
+     * default, records a `decision.would_extend` event and changes nothing; `off` records nothing.
+     */
+    extendWithinDollars: z.enum(EXTEND_WITHIN_DOLLARS_MODES).optional(),
     /**
      * Deadlines and stall limits (milliseconds): a tool call that never returns, a model attempt
      * with no progress, and how often a stalled run resumes by itself. Defaults in `stall.ts`.

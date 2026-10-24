@@ -623,6 +623,11 @@ export function InitiativeDetail({
           width,
         )}
       </text>
+      {view.budget.forecastNotice ? (
+        <text fg={t.warning} wrapMode="word">
+          {`Token forecast: ${view.budget.forecastNotice}`}
+        </text>
+      ) : null}
       {criticalPathText(view) ? (
         <text fg={t.textMuted}>{clip(criticalPathText(view) ?? "", width)}</text>
       ) : null}

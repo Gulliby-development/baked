@@ -724,7 +724,9 @@ describe("scenario: an initiative dollar budget (#1317)", () => {
     const forecast = view.budget.cost.forecastUsd ?? 0;
     expect(forecast).toBeGreaterThan(3);
     expect(view.next.kind).toBe("blocked");
-    expect(view.next.message).toMatch(/^The initiative's cost forecast is \$\d+\.\d\d, above its \$3\.00 cap: \$\d+\.\d\d spent with \d of 3 features accepted\. Raise the dollar budget to at least \$\d+\.00 with baked workflow initiative extend --budget-usd N/);
+    expect(view.next.message).toMatch(/^The initiative's cost forecast is \$\d+\.\d\d, above its \$3\.00 cap: \$\d+\.\d\d spent with \d of 3 features accepted\. Raise the dollar budget to at least \$(\d+)\.00 with baked workflow initiative extend values --budget-usd \1 to start docs/);
+    // The remedy carries the amount, so one command or click answers it (#2042).
+    expect(view.next.recovery?.remedies[0]).toMatchObject({ action: "extend", suggestedUsd: Math.ceil(forecast) });
     expect(view.next.message).toContain(`spent with ${accepted} of 3 features accepted`);
     expectRecovery(view.next.message, view.next.recovery, "extend");
     expect(initiativeExit(view)).toBe(4);

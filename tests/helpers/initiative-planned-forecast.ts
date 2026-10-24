@@ -32,14 +32,17 @@ export interface Mix {
 
 class ScriptedExecutor extends FixtureExecutor {
   store!: WorkflowStore;
-  constructor(root: string, private featureUsd: number, private skeleton = false, private mix: Mix = {}) { super(root); }
+  /** `featureUsd` by feature name (`f1`, `f2`, ...) spends a different amount per feature. */
+  constructor(root: string, private featureUsd: number | Record<string, number>, private skeleton = false, private mix: Mix = {}) { super(root); }
   override async execute(request: ExecutionRequest) {
     const [documents, attempt] = request.prompt.split("\n").slice(-2);
     const data = { ...JSON.parse(documents ?? "{}"), ...JSON.parse(attempt ?? "{}") } as {
       spec: Spec | null; extra: { featureId: string; hostFiles?: { files: { path: string; content: string }[] } };
     };
     const spec: Spec = data.spec ?? { ...fixtureSpec, featureId: data.extra.featureId };
-    const path = `${spec.featureId?.split("_").at(-1) ?? "fixture"}.txt`;
+    const name = spec.featureId?.split("_").at(-1) ?? "fixture";
+    const path = `${name}.txt`;
+    const featureUsd = typeof this.featureUsd === "number" ? this.featureUsd : (this.featureUsd[name] ?? 0);
     let result = request.profile.output === "implementation" ? {
       output: { schemaVersion: 1, taskId: request.task?.id, outcome: "implemented", summary: "Wrote value", evidenceIds: [], unresolved: [] } as unknown,
       inputTokens: 0, outputTokens: 0,
@@ -65,8 +68,8 @@ class ScriptedExecutor extends FixtureExecutor {
     const task = request.profile.output === "implementation";
     const taskShare = this.mix.taskShare ?? 0.4;
     const cache = (task ? this.mix.cache : this.mix.planCache) ?? 0.9;
-    const usd = this.skeleton ? (request.profile.output === "research" ? this.featureUsd : 0) :
-      this.featureUsd * (task ? taskShare : (1 - taskShare) / 6);
+    const usd = this.skeleton ? (request.profile.output === "research" ? featureUsd : 0) :
+      featureUsd * (task ? taskShare : (1 - taskShare) / 6);
     const totalTokens = Math.round(usd / rateAt(cache));
     const outputTokens = Math.round(totalTokens * 0.05);
     const inputTokens = totalTokens - outputTokens;
@@ -96,12 +99,13 @@ export async function historyFixture(featureUsd: number, mix: Mix = {}) {
 }
 
 export async function plannedForecastScenario(
-  count: number, firstUsd: number, histories: string[],
-  options: { forecastStop?: boolean; stopModes?: RunPolicy["stopModes"]; mix?: Mix; skeleton?: boolean; capUsd?: number } = {},
+  count: number, firstUsd: number | Record<string, number>, histories: string[],
+  options: { forecastStop?: boolean; stopModes?: RunPolicy["stopModes"]; mix?: Mix; skeleton?: boolean; capUsd?: number | null; maxTotalTokens?: number; extendWithinDollars?: "off" | "shadow" } = {},
 ) {
   const skeleton = options.skeleton ?? true;
   const fixture = workflowFixture({ executor: (root) => new ScriptedExecutor(root, firstUsd, skeleton, options.mix) });
   fixture.executor.store = fixture.service.store;
+  if (options.extendWithinDollars) fixture.config.workflows = { ...fixture.config.workflows, extendWithinDollars: options.extendWithinDollars };
   const initiatives = new InitiativeService(fixture.service);
   const plan: InitiativePlan = {
     schemaVersion: 1, title: "Values", goals: ["Write values"], completionCriteria: ["Values exist"],
@@ -118,8 +122,8 @@ export async function plannedForecastScenario(
       ...(options.forecastStop ? { forecastStop: true } : {}),
       policy: { ...fixturePolicy, clarification: "assume", checks: [{ ...fixturePolicy.checks[0]!, args: ["-e", "0"] }], sizing: { maxRunTokens: 50_000_000, historyStores: histories },
         ...(options.stopModes ? { stopModes: options.stopModes } : {}) },
-      budget: { maxTotalTokens: 100_000_000, maxAgentCalls: 1000, maxActiveMs: 21_600_000 },
-      costBudget: { maxCostUsd: options.capUsd ?? 30, costTolerance: 0.25 },
+      budget: { maxTotalTokens: options.maxTotalTokens ?? 100_000_000, maxAgentCalls: 1000, maxActiveMs: 21_600_000 },
+      ...(options.capUsd === null ? {} : { costBudget: { maxCostUsd: options.capUsd ?? 30, costTolerance: 0.25 } }),
     });
     const identity = () => ({ commandId: newId(), expectedRevision: initiatives.view("values").revision });
     const decision = view.pendingDecisions.find((d) => d.scope === "initiative")!;

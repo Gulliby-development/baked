@@ -2,6 +2,7 @@ import {
   estimateBudgetText,
   highCalibrationText,
 } from "../../../../../../src/core/workflows/initiatives/estimate-budget.js";
+import { extendSuggestion } from "../../../../../../src/core/workflows/remedies-model.js";
 import type {
   FeatureState,
   InitiativeEstimate,
@@ -349,6 +350,25 @@ export function parseBudget(
   if (calls === null) return { ok: false, error: "Agent calls: a whole number above 0." };
   if (minutes === null) return { ok: false, error: "Time: whole minutes above 0." };
   return { ok: true, limits: { tokens, calls, timeMs: minutes * 60_000 } };
+}
+
+/**
+ * The extension the block or the token forecast suggests (#2042), or null: the amounts on the
+ * `extend` remedy of `next.recovery`, else the pool's suggested size, kept only where they raise
+ * a limit.
+ */
+export function suggestedExtension(
+  view: Pick<InitiativeView, "budget" | "next">,
+): { tokens?: number; usd?: number } | null {
+  const suggested = extendSuggestion(view.next.recovery, view.budget.pool?.suggestedTokens);
+  const tokens =
+    suggested?.tokens && suggested.tokens > view.budget.limits.maxTotalTokens
+      ? suggested.tokens
+      : undefined;
+  const cap = view.budget.cost?.capUsd ?? null;
+  const usd = suggested?.usd && (cap === null || suggested.usd > cap) ? suggested.usd : undefined;
+  if (!tokens && !usd) return null;
+  return { ...(tokens ? { tokens } : {}), ...(usd ? { usd } : {}) };
 }
 
 /** The budget fields filled with the initiative's current limits. */

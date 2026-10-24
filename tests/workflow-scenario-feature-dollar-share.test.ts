@@ -165,8 +165,13 @@ describe("scenario: feature dollars grow independently of tokens (#1625)", () =>
     expect(view.next.message).toContain("dollar share");
     expect(view.next.message).toContain("below its low estimate");
     expect(view.next.message).not.toContain("high end");
-    expect(tuiRecoveryText(view.next.message, view.next.recovery)).toContain("Press B to extend budget");
-    expect(desktopRecoveryText(view.next.message, view.next.recovery)).toContain("Choose Extend budget");
+    // #2042: the command and the remedy name the cap that lifts the warned shares to their lows.
+    const suggestedUsd = view.next.recovery?.remedies[0]?.suggestedUsd;
+    expect(suggestedUsd).toBeGreaterThan(view.budget.cost.capUsd!);
+    expect(view.next.message).toContain(`baked workflow initiative extend skeleton --budget-usd ${suggestedUsd} --expected-revision`);
+    expect(view.next.message).not.toContain("--budget-usd N");
+    expect(tuiRecoveryText(view.next.message, view.next.recovery)).toContain(`Press B to extend budget (to $${suggestedUsd!.toFixed(2)})`);
+    expect(desktopRecoveryText(view.next.message, view.next.recovery)).toContain(`Choose Extend to $${suggestedUsd!.toFixed(2)}`);
     expect(await executeInitiativeCommand(initiatives, parseInitiativeArgs(["show", "skeleton"]), new AbortController().signal)).toEqual(view);
     const server = await startApiServer({ service: fixture.service, log: () => {} });
     cleanups.push(async () => { await server.stop(); });

@@ -3,11 +3,13 @@ import { REMEDY_ACTIONS, type RecoveryAdvice, type Remedy } from "./remedies-mod
 
 export {
   errorRecovery,
+  extendSuggestion,
   type RecoveryAdvice,
   type Remedy,
   recoveryAdvice,
   recoveryOf,
   renderRecovery,
+  suggestionText,
 } from "./remedies-model.js";
 
 /** Recovery intent travels with the legacy CLI message; clients choose their own labels. */
@@ -17,6 +19,8 @@ export const RemedySchema = z.object({
   initiativeId: z.string().optional(),
   featureId: z.string().optional(),
   setting: z.string().optional(),
+  suggestedTokens: z.number().int().positive().optional(),
+  suggestedUsd: z.number().positive().optional(),
 }) satisfies z.ZodType<Remedy>;
 
 export const RecoveryAdviceSchema = z.object({

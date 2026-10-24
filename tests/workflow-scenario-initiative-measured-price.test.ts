@@ -62,8 +62,9 @@ describe("scenario: an initiative prices waiting features at what its accepted f
     const { initiatives, view, identity } = await scenario("enforce");
     const advice = shareShortfall(view, view.features[1]!);
     expect(advice?.message).toContain("The shared dollar budget is short: f2 has $0.65 to grow into");
-    expect(advice?.message).toContain("needs at least $0.37 more. Raise it with baked workflow initiative extend --budget-usd N");
-    expect(advice?.remedies).toEqual([{ action: "extend", initiativeId: "values" }]);
+    expect(advice?.message).toContain("needs at least $0.37 more. Raise it with baked workflow initiative extend values --budget-usd 5.07.");
+    // The remedy carries the cap that starts f2, so one command or click answers it (#2042).
+    expect(advice?.remedies).toEqual([{ action: "extend", initiativeId: "values", suggestedUsd: 5.07 }]);
 
     const driven = await initiatives.drive("values", new AbortController().signal);
     expect(driven.features.find((f) => f.id === "f2")?.runId).toBeNull();

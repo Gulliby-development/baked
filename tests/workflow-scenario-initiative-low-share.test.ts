@@ -111,9 +111,12 @@ describe("scenario: initiative lows fit but high-end weighted shares do not (#16
     expect(view.next.kind).toBe("await_split_approval");
     expect(view.next.message).toContain("high end");
     expect(view.next.message).toContain("baked workflow initiative extend tight --tokens");
-    expect(view.next.recovery?.remedies).toContainEqual({ action: "extend", initiativeId: "tight" });
+    // #2042: the remedy carries the amount the command names, so B and the desktop apply it.
+    const suggestedTokens = view.next.recovery?.remedies.find((r) => r.action === "extend")?.suggestedTokens;
+    expect(view.next.recovery?.remedies).toContainEqual({ action: "extend", initiativeId: "tight", suggestedTokens });
+    expect(view.next.message).toContain(`baked workflow initiative extend tight --tokens ${suggestedTokens} --expected-revision`);
     expect(tuiRecoveryText(view.next.message, view.next.recovery)).toContain("Press B to extend budget");
-    expect(desktopRecoveryText(view.next.message, view.next.recovery)).toContain("Choose Extend budget");
+    expect(desktopRecoveryText(view.next.message, view.next.recovery)).toContain(`Choose Extend to ${(suggestedTokens! / 1e6).toFixed(1)}M tokens`);
     expect(initiativeActions(view, false).some((a) => a.action.kind === "extend")).toBe(true);
     const cli = await executeInitiativeCommand(initiatives, parseInitiativeArgs(["show", "tight"]), signal);
     expect(cli).toEqual(view);

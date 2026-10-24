@@ -1,4 +1,5 @@
 import { useEffect, useId, useState } from "react";
+import { suggestionText } from "../../../../../../src/core/workflows/remedies-model.js";
 import { canRepairRun, repairText } from "../../../../../../src/core/workflows/repairable.js";
 import { chat } from "../../client/chat.js";
 import type {
@@ -53,6 +54,7 @@ import {
   initiativeLine,
   initiativeStatus,
   splitApproval,
+  suggestedExtension,
   type Tone,
 } from "./initiative-model.js";
 import { LoadState } from "./LoadState.js";
@@ -505,6 +507,8 @@ function Detail({ projectKey, id }: { projectKey: string; id: string }) {
   const counts = featureCounts(view);
   const split = splitApproval(view);
   const editable = canEditSplit(view);
+  // What the block or the token forecast suggests: one click extends to it (#2042).
+  const suggested = suggestedExtension(view);
   // In split order, so a merge without an ID keeps the first feature's ID.
   const selected = editable
     ? view.features.map((f) => f.id).filter((fid) => picked.includes(fid))
@@ -689,6 +693,22 @@ function Detail({ projectKey, id }: { projectKey: string; id: string }) {
           {(view.parallelRuns ?? 1) > 1 && ` · up to ${view.parallelRuns} features at once`}
           {view.next.message && ` · ${desktopRecoveryText(view.next.message, view.next.recovery)}`}
         </p>
+        {canExtendBudget(view) && suggested && (
+          <Button
+            variant="secondary"
+            size="sm"
+            className="h-7 shadow-none"
+            disabled={busy}
+            onClick={act((v) =>
+              insights.extendBudget(projectKey, v, {
+                ...(suggested.tokens ? { tokens: suggested.tokens } : {}),
+                ...(suggested.usd ? { costUsd: suggested.usd } : {}),
+              }),
+            )}
+          >
+            Extend to {suggestionText(suggested)}
+          </Button>
+        )}
         {canExtendBudget(view) && (
           <Button
             variant="secondary"
@@ -701,6 +721,11 @@ function Detail({ projectKey, id }: { projectKey: string; id: string }) {
           </Button>
         )}
       </div>
+      {view.budget.forecastNotice && (
+        <p className="m-0 text-[12px] text-[var(--warn)]">
+          Token forecast: {view.budget.forecastNotice}
+        </p>
+      )}
       {criticalPathLine(view) && (
         <p className="m-0 text-[12px] text-dim-foreground">{criticalPathLine(view)}</p>
       )}
