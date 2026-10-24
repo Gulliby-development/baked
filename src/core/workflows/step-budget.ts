@@ -4,6 +4,7 @@ import type { AnswerEvidence } from "../llm/provider-answer.js";
 import {
   type BrokenFile,
   missingToolClaims,
+  STEER_GRACE_STEPS,
   steeringNotice,
   stillStuck,
   type WatchFinding,
@@ -242,6 +243,11 @@ export interface AttemptStepUsage {
   unreportedResponses?: number;
   /** Web searches the model ran in the step (Codex's own search, #1239); absent when none. */
   webSearches?: number;
+  /**
+   * Serialized size of the messages the step sent, notices and compaction applied (#1978);
+   * absent for a step the controller did not prepare and in older records.
+   */
+  sentBytes?: number;
 }
 
 export interface AttemptUsageRecord {
@@ -271,6 +277,12 @@ export interface AttemptUsageRecord {
    */
   unreportedResponses?: number;
   steps: AttemptStepUsage[];
+  /**
+   * Prompt size of the attempt (#1978): the serialized messages its first step sent and the
+   * largest any step sent, so a corrective whose every call re-sends a large prompt shows it.
+   * Absent when no step was prepared, and in older records.
+   */
+  prompt?: { firstBytes: number; largestBytes: number };
   /** Tool calls by the code intelligence backend that answered; absent when none reported one. */
   toolBackends?: ToolBackendCount[];
   /** The reasoning effort sent to the provider; absent when none was sent (#936). */
@@ -353,8 +365,8 @@ export class AttemptStepController {
   private steered: { at: number; finding: WatchFinding } | null = null;
   private watchDone = false;
   private watchStop: WatchFinding | null = null;
-  /** Whether the session was told which edit tools it has, after it said it had none. */
-  private toolsNamed = false;
+  /** Steps taken when the session was told which edit tools it has, after it said it had none. */
+  private toolsNamedAt: number | null = null;
   private readonly compactedBytes: number[] = [];
   /** Whether compaction has started; once on, it stays on so the cached prefix keeps matching. */
   private compacting = false;
@@ -590,7 +602,12 @@ export class AttemptStepController {
     ) {
       const claims = missingToolClaims(input.steps, claimsLostTool);
       const tools = editTools.join(", ");
-      if (claims.length >= 2 && this.toolsNamed) {
+      // The stop waits one full step past the step that answered the naming, as the watcher does.
+      if (
+        claims.length >= 2 &&
+        this.toolsNamedAt !== null &&
+        input.steps.length > this.toolsNamedAt + STEER_GRACE_STEPS
+      ) {
         this.finalizedBy = "watcher";
         this.watchDone = true;
         this.watchStop = {
@@ -598,8 +615,8 @@ export class AttemptStepController {
           detail: `the worker said twice that it has no edit tool, while this session has ${tools}`,
         };
         watch.onSignal(this.watchStop, "stopped");
-      } else if (claims.length >= 1 && !this.toolsNamed) {
-        this.toolsNamed = true;
+      } else if (claims.length >= 1 && this.toolsNamedAt === null) {
+        this.toolsNamedAt = input.steps.length;
         namedTools = {
           signal: "no-edit-tool",
           detail: `the worker said it has no edit tool, while this session has ${tools}`,
@@ -683,6 +700,9 @@ export class AttemptStepController {
     const lost = unreported.reduce<number>((sum, n) => sum + (n ?? 0), 0);
     const searches = steps.map(stepWebSearchQueries);
     const queries = searches.flat();
+    const sent = steps
+      .map((_, index) => this.sentBytes[index])
+      .filter((bytes): bytes is number => bytes !== undefined);
     return {
       schemaVersion: 1,
       profileId: meta.profileId,
@@ -711,6 +731,9 @@ export class AttemptStepController {
             webSearchQueries: queries.slice(0, 50).map((q) => q.slice(0, 200)),
           }
         : {}),
+      ...(sent.length
+        ? { prompt: { firstBytes: sent[0] ?? 0, largestBytes: Math.max(...sent) } }
+        : {}),
       steps: steps.map((step, index) => ({
         inputTokens: step.usage.inputTokens ?? null,
         outputTokens: step.usage.outputTokens ?? null,
@@ -722,6 +745,7 @@ export class AttemptStepController {
         ...(requests[index] !== undefined ? { modelRequests: requests[index] } : {}),
         ...(unreported[index] !== undefined ? { unreportedResponses: unreported[index] } : {}),
         ...(searches[index]?.length ? { webSearches: searches[index]?.length } : {}),
+        ...(this.sentBytes[index] !== undefined ? { sentBytes: this.sentBytes[index] } : {}),
       })),
     };
   }

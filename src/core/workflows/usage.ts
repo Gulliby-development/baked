@@ -18,6 +18,11 @@ export interface AttemptUsageRow {
   usedTokens: number | null;
   steps: number | null;
   peakInputTokens: number | null;
+  /**
+   * Serialized size of the messages the attempt's first step sent, and the largest any step sent
+   * (#1978); null in attempts recorded before prompt sizes were.
+   */
+  prompt: { firstBytes: number; largestBytes: number } | null;
   /** Input tokens of every step, cache reads included; null without per-step usage. */
   inputTokens: number | null;
   outputTokens: number | null;
@@ -130,6 +135,7 @@ export function runUsage(
         peakInputTokens: usage
           ? Math.max(0, ...usage.steps.map((step) => step.inputTokens ?? 0))
           : null,
+        prompt: usage?.prompt ?? null,
         inputTokens: usage?.estimatedUsage?.inputTokens ?? sum((step) => step.inputTokens),
         outputTokens: usage?.estimatedUsage?.outputTokens ?? sum((step) => step.outputTokens),
         cacheReadTokens: sum((step) => step.cacheReadTokens),

@@ -42,6 +42,13 @@ export const NO_EDIT_STEPS = 10;
 export const SAME_FAILURES = 3;
 /** The share of its token cap an attempt may spend before it checks or submits its edits. */
 export const UNCHECKED_SPEND_SHARE = 0.5;
+/**
+ * Steps after the steering message that never count toward a stop (#1978). The watcher measures
+ * time in model steps: the step sent with the steering is the worker's first answer to it, and
+ * may re-read the file it now edits or re-run the check once. md-site 54da0241 (bench round 63)
+ * was stopped 14 s after the steering, before one full step had followed it.
+ */
+export const STEER_GRACE_STEPS = 1;
 
 const short = (value: unknown): string => {
   const text = canonical(value ?? null);
@@ -160,8 +167,10 @@ export function steeringNotice(finding: WatchFinding, broken: readonly BrokenFil
 
 /**
  * Whether the pattern the watcher steered on went on in the steps after the steering message:
- * an edit counts as progress and clears it (a check, for `unchecked-spend`); otherwise a repeated read of the same input, the same
- * check result again, or `stopAfter` more steps without an edit for `no-edits`.
+ * an edit counts as progress and clears it (a check, for `unchecked-spend`); otherwise a repeated
+ * read of the same input, the same check result again, or `stopAfter` more steps without an edit
+ * for `no-edits`. The first `STEER_GRACE_STEPS` steps after the steering can show progress but
+ * never a stop: the stop comes at the earliest one full step after the step that answered it.
  */
 export function stillStuck(
   finding: WatchFinding,
@@ -171,29 +180,34 @@ export function stillStuck(
 ): "stuck" | "progress" | "waiting" {
   const before = steps.slice(0, steeredAt);
   const after = steps.slice(steeredAt);
+  // Steps past the grace: only they can show the pattern going on.
+  const later = after.slice(STEER_GRACE_STEPS);
+  const minimum = Math.max(stopAfter, STEER_GRACE_STEPS + 1);
   // Only a check clears unchecked spend; another edit without one is more of the same.
   if (finding.signal === "unchecked-spend")
     return after.some((step) => step.toolCalls?.some((call) => CHECK_TOOLS.has(call.toolName)))
       ? "progress"
-      : after.filter((step) => (step.toolCalls ?? []).length > 0).length >= stopAfter
+      : later.length > 0 &&
+          after.filter((step) => (step.toolCalls ?? []).length > 0).length >= minimum
         ? "stuck"
         : "waiting";
   if (after.some((step) => step.toolCalls?.some((call) => EDIT_TOOLS.has(call.toolName))))
     return "progress";
-  if (after.length < 1) return "waiting";
+  if (later.length < 1) return "waiting";
   if (finding.signal === "no-edits")
-    return after.filter((step) => (step.toolCalls ?? []).length > 0).length >= stopAfter
+    return after.filter((step) => (step.toolCalls ?? []).length > 0).length >= minimum
       ? "stuck"
       : "waiting";
   if (finding.signal === "repeated-reads") {
     const key = (call: { toolName: string; input?: unknown }) =>
       `${call.toolName} ${canonical(call.input ?? null)}`;
+    // A read in the grace step is remembered, so reading it once more after the grace is a stop.
     const seen = new Set(
-      before.flatMap((step) =>
+      [...before, ...after.slice(0, STEER_GRACE_STEPS)].flatMap((step) =>
         (step.toolCalls ?? []).filter((c) => READ_TOOLS.has(c.toolName)).map(key),
       ),
     );
-    return after.some((step) =>
+    return later.some((step) =>
       (step.toolCalls ?? []).some((call) => READ_TOOLS.has(call.toolName) && seen.has(key(call))),
     )
       ? "stuck"
@@ -205,7 +219,7 @@ export function stillStuck(
     .flatMap((step) => step.toolResults ?? [])
     .filter((r) => CHECK_TOOLS.has(r.toolName))
     .at(-1);
-  return after.some((step) =>
+  return later.some((step) =>
     (step.toolResults ?? []).some(
       (r) =>
         r.toolName === last?.toolName &&
