@@ -40,6 +40,7 @@
       "title": "Provider timers and stall limits",
       "paths": [
         "src/core/llm/provider-health.ts",
+        "src/core/llm/first-byte-history.ts",
         "src/core/workflows/stall.ts",
         "src/core/workflows/execution-clock.ts"
       ]

@@ -126,18 +126,18 @@ describe("shared first-response history", () => {
     machine.record("codex/m", answer("plan", 5_000));
 
     const fresh = new FirstByteHistory(file);
-    expect(fresh.healthy("codex/m", "spec")).toEqual([]);
-    expect(fresh.healthy("codex/m", "spec", undefined, true)).toEqual([60_000, 70_000, 80_000]);
-    expect(fresh.healthy("codex/m", "plan", undefined, true)).toEqual([]);
+    expect(fresh.healthy("codex/m", "spec").map((sample) => sample.ms)).toEqual([]);
+    expect(fresh.healthy("codex/m", "spec", undefined, true).map((sample) => sample.ms)).toEqual([60_000, 70_000, 80_000]);
+    expect(fresh.healthy("codex/m", "plan", undefined, true).map((sample) => sample.ms)).toEqual([]);
     fresh.record("codex/m", answer("spec", 20_000));
-    expect(fresh.healthy("codex/m", "spec", undefined, true)).toEqual([60_000, 70_000, 80_000, 20_000]);
+    expect(fresh.healthy("codex/m", "spec", undefined, true).map((sample) => sample.ms)).toEqual([60_000, 70_000, 80_000, 20_000]);
     for (const ms of [21_000, 22_000]) fresh.record("codex/m", answer("spec", ms));
     // Three answers of its own: the workspace's deadline is its own again.
-    expect(fresh.healthy("codex/m", "spec", undefined, true)).toEqual([20_000, 21_000, 22_000]);
+    expect(fresh.healthy("codex/m", "spec", undefined, true).map((sample) => sample.ms)).toEqual([20_000, 21_000, 22_000]);
     // A second process's answers are kept when the first writes again.
     new FirstByteHistory(file).record("codex/m", answer("spec", 90_000), true);
     machine.record("codex/m", answer("spec", 95_000), true);
-    expect(new FirstByteHistory(file).healthy("codex/m", "spec", undefined, true)).toEqual([60_000, 70_000, 80_000, 90_000, 95_000]);
+    expect(new FirstByteHistory(file).healthy("codex/m", "spec", undefined, true).map((sample) => sample.ms)).toEqual([60_000, 70_000, 80_000, 90_000, 95_000]);
   });
 
   test("an unreadable shared file is no history", () => {
@@ -145,6 +145,6 @@ describe("shared first-response history", () => {
     cleanups.push(() => rmSync(dir, { recursive: true, force: true }));
     const file = join(dir, "first-byte-history.json");
     writeFileSync(file, "{not json");
-    expect(new FirstByteHistory(file).healthy("codex/m", "spec", undefined, true)).toEqual([]);
+    expect(new FirstByteHistory(file).healthy("codex/m", "spec", undefined, true).map((sample) => sample.ms)).toEqual([]);
   });
 });

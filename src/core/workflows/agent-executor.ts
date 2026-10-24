@@ -24,11 +24,7 @@ import { FirstByteHistory } from "../llm/first-byte-history.js";
 import { knownModelContextWindow } from "../llm/models.js";
 import { resolveModel } from "../llm/provider.js";
 import { lostAnswer } from "../llm/provider-answer.js";
-import {
-  adaptiveFirstByteMs,
-  type CallTiming,
-  withProviderHealth,
-} from "../llm/provider-health.js";
+import { type CallTiming, withProviderHealth } from "../llm/provider-health.js";
 import {
   buildProviderOptions,
   type CacheTTL,
@@ -1943,10 +1939,7 @@ export class NativeAgentExecutor implements AgentExecutor {
       return withProviderHealth(resolved, request.profile.model, {
         stage: request.profile.output,
         firstByteLimit: (ceilingMs, call) =>
-          adaptiveFirstByteMs(
-            ceilingMs,
-            history.healthy(request.profile.model, call.stage, call.effort, shared),
-          ),
+          history.deadline(ceilingMs, request.profile.model, call, shared),
         timing: (call) => {
           watch.calls.push(call);
           history.record(request.profile.model, call, shared);
