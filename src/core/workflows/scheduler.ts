@@ -3730,6 +3730,10 @@ export class WorkflowScheduler {
       battery: {
         symbol: record.symbol,
         file: record.file,
+        // A family chain spans symbols of the file (#2048).
+        ...(record.family && record.symbols
+          ? { family: record.family, symbols: record.symbols }
+          : {}),
         findings: record.chain.map((f) => f.id),
         cases: batteryTable(members),
         spec: chainSpecRows(state.spec, members),
@@ -3833,6 +3837,7 @@ export class WorkflowScheduler {
         criterionIds: finding.criterionIds,
         file: finding.file,
         symbol: finding.symbol,
+        ...(finding.family ? { family: finding.family } : {}),
         evidenceIds: [evidenceId],
         claim: `Battery case ${finding.id} of ${record.symbol} shows its reported behavior again after ${record.taskId}: ${finding.claim}`,
         impact: `${record.taskId} rewrote ${record.symbol} for its chain of findings, and the host's battery run before the next review prints ${JSON.stringify(repro.actual)} again where the spec needs ${JSON.stringify(repro.expected)}. Output: ${outcome.output.slice(-400)}`,

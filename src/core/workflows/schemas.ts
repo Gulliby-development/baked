@@ -1058,6 +1058,14 @@ export const ReviewSchema = z
              * reviewer did not say, and the host compares locations instead.
              */
             repeatOf: SafeId.nullable().optional(),
+            /**
+             * The defect class of the finding as a short lower-case label of hyphenated words
+             * ("decimal-context-precision", "nested-inline-delimiters"), the same label for every
+             * finding of that class (#2048). With `file` it keys finding chains next to the symbol,
+             * so cases of one class on different symbols of a file join one chain (compared after
+             * `familyKey` folds case, spaces and punctuation). Null or absent when no class fits.
+             */
+            family: z.string().max(80).nullable().optional(),
             requirementIds: z.array(RequirementId),
             criterionIds: z.array(CriterionId),
             file: RelativePath.nullable(),
