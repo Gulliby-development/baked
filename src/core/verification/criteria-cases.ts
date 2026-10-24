@@ -146,6 +146,98 @@ function literalCase(literal: string, code = false, value = false): boolean {
 const VALUE_CONTEXT =
   /\b(?:prints?|outputs?|returns?|emits?|says?|equals?|contains?|lists?|(?:message|text|argument|value|input|spelling|stderr|stdout)(?:\s+(?:is|of))?)\s*[:=]?\s*$/i;
 
+/**
+ * One way a criterion's Then spells a change of state between two quoted spans: the left span is
+ * the state before the change (#2000).
+ */
+export interface BeforeAfterPhrasing {
+  name: string;
+  /** The text between the two spans. */
+  between: RegExp;
+  /** The text just before the left span, when the phrasing has one (`from`). */
+  before?: RegExp;
+  /** Whether the phrasing is a change only next to a word of `CHANGE_CONTEXT` in its sentence. */
+  needsContext: boolean;
+}
+
+/**
+ * The before/after phrasings of a Then, as data: a new one gets a case per language in
+ * `tests/workflow-scenario-case-walk-before-after.test.ts`. An arrow or `from ... to` is also a
+ * mapping or a range ("dates from "2024-01-01" to "2024-01-31""), so it reads as a change only in
+ * a sentence about the project's own state (a version, a key, a rename, a move).
+ */
+export const BEFORE_AFTER_PHRASINGS: readonly BeforeAfterPhrasing[] = [
+  { name: "arrow ->", between: /^[ \t]*->[ \t]*$/, needsContext: true },
+  { name: "arrow =>", between: /^[ \t]*=>[ \t]*$/, needsContext: true },
+  { name: "arrow →", between: /^[ \t]*→[ \t]*$/, needsContext: true },
+  {
+    name: "from ... to",
+    before: /\bfrom[ \t]*$/i,
+    between: /^[ \t]+to[ \t]+$/i,
+    needsContext: true,
+  },
+  {
+    name: "becomes",
+    between:
+      /^[ \t]+(?:becomes|became|is changed to|changes to|is renamed to|is bumped to)[ \t]+$/i,
+    needsContext: false,
+  },
+];
+
+/** A word that makes a pair of spans a change of the project's own state. */
+const CHANGE_CONTEXT =
+  /\b(?:versions?|bump(?:s|ed|ing)?|renam(?:e|es|ed|ing)|mov(?:e|es|ed|ing)|chang(?:e|es|ed|ing)|updat(?:e|es|ed|ing)|upgrad(?:e|es|ed|ing)|downgrad(?:e|es|ed|ing)|migrat(?:e|es|ed|ing)|replac(?:e|es|ed|ing)|differs?|edit(?:s|ed)?|keys?|settings?|manifest|package\.json|pyproject\.toml|Cargo\.toml|pom\.xml|go\.mod|\.csproj)\b/i;
+/** A word that makes the left span an input of the code under test, which a test spells. */
+const TRANSFORM_CONTEXT =
+  /\b(?:inputs?|returns?|outputs?|prints?|converts?|maps?|yields?|gives?|transforms?|normali[sz](?:e|es|ed)|parses?|formats?|encodes?|decodes?|slug\w*)\b/i;
+
+/** A sentence ends at `.`, `!`, `?` or `;` before a space (not an ellipsis), or at a line break. */
+const SENTENCE_END = /(?<!\.)[.!?;](?!\.)(?=\s|$)|\n/g;
+const sentenceStart = (text: string, at: number): number => {
+  let start = 0;
+  for (const m of text.slice(0, at).matchAll(SENTENCE_END)) start = (m.index ?? 0) + 1;
+  return start;
+};
+const sentenceEnd = (text: string, from: number): number => {
+  const m = [...text.slice(from).matchAll(SENTENCE_END)][0];
+  return m ? from + (m.index ?? 0) : text.length;
+};
+
+/**
+ * The quoted spans of a Then that are the state before a change it describes (`Only version
+ * "0.1.0" -> "0.2.0" ... differ`): context, not a value the test must spell (#2000). R64
+ * mdtoc-update T004 was refused three times for `0.1.0`, the manifest's version before the bump,
+ * against a test file the request supplied verbatim (784k of the run's 1.28M tokens).
+ */
+export function beforeAfterContext(prose: string, spans: readonly QuotedSpan[]): Set<QuotedSpan> {
+  const context = new Set<QuotedSpan>();
+  // The sentence a pair sits in, with quoted spans blanked so `0.1.0` ends no sentence.
+  let blank = prose;
+  for (const span of spans)
+    blank =
+      blank.slice(0, span.index) +
+      " ".repeat(span.raw.length) +
+      blank.slice(span.index + span.raw.length);
+  for (const [i, left] of spans.entries()) {
+    const right = spans[i + 1];
+    if (!right) break;
+    const between = prose.slice(left.index + left.raw.length, right.index);
+    const lead = prose.slice(0, left.index);
+    const start = sentenceStart(blank, left.index);
+    const end = sentenceEnd(blank, right.index + right.raw.length);
+    const sentence = blank.slice(start, end);
+    if (TRANSFORM_CONTEXT.test(sentence)) continue;
+    const phrased = BEFORE_AFTER_PHRASINGS.some(
+      (p) =>
+        p.between.test(between) &&
+        (!p.before || p.before.test(lead)) &&
+        (!p.needsContext || CHANGE_CONTEXT.test(sentence)),
+    );
+    if (phrased) context.add(left);
+  }
+  return context;
+}
+
 /** The prefixes that run a tool from the project's environment: `npx`, `uv run`, `python -m`. */
 const RUNNER = String.raw`(?:(?:npx|bunx|pnpm\s+(?:exec|dlx)|yarn(?:\s+dlx)?|uv\s+run|poetry\s+run|pipenv\s+run|hatch\s+run|pdm\s+run|python3?\s+-m)\s+)?`;
 const TOOL = String.raw`(?:pytest|unittest|mypy|ruff|black|isort|flake8|pylint|pyright|tox|nox|tsc|eslint|biome|prettier|vitest|jest|mocha|golangci-lint)\b`;
@@ -298,7 +390,11 @@ export function criterionCases(
     for (const [field, text] of [criterion.given, criterion.when, criterion.then].entries()) {
       const table = tableInputs(text);
       const inCell = (at: number) => table.cells.some(([from, to]) => at >= from && at < to);
-      for (const span of quotedSpans(table.prose)) {
+      const spans = quotedSpans(table.prose);
+      // The state before a change the Then describes is context (#2000).
+      const context = field === 2 ? beforeAfterContext(table.prose, spans) : new Set();
+      for (const span of spans) {
+        if (context.has(span)) continue;
         const before = table.prose.slice(0, span.index);
         if (!literalCase(span.literal, span.code, VALUE_CONTEXT.test(before))) continue;
         add(
