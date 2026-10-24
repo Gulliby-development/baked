@@ -655,7 +655,9 @@ export interface RunReplay {
   newIntegrityFindings: number;
 }
 
-export type IntegrityRule = (measures: readonly IntegrityMeasure[]) => { rule: string; path: string }[];
+export type IntegrityRule = (
+  measures: readonly IntegrityMeasure[],
+) => { rule: string; path: string }[];
 
 export interface IntegrityBoundary {
   scope: IntegrityRecord["scope"];
