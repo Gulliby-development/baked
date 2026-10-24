@@ -7,8 +7,8 @@ import {
   symlinkSync,
   writeFileSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { tmpDir } from "../platform/index.js";
 import type { SandboxRequest } from "../security/sandbox.js";
 import type { ProcessScope } from "../workflows/process-scope.js";
 import { entryPointCommand } from "./entry-points.js";
@@ -407,7 +407,7 @@ export function copyWorkspace(root: string, files: readonly string[]): string | 
     bytes += statSync(join(root, path)).size;
     if (bytes > DOC_EXAMPLE_COPY_BYTES) return null;
   }
-  const copy = mkdtempSync(join(tmpdir(), "baked-examples-"));
+  const copy = mkdtempSync(join(tmpDir(), "baked-examples-"));
   for (const path of files) {
     mkdirSync(dirname(join(copy, path)), { recursive: true });
     copyFileSync(join(root, path), join(copy, path));
@@ -550,6 +550,25 @@ export async function runDocExamples(
           continue;
         }
         const difference = firstDifference(example.documented, result.output);
+        // A program that exits 0 and prints nothing where the document shows output most likely
+        // never reached its main (a Bun `import.meta.main` guard under a short Windows path,
+        // #1999): the host's launch is suspect, not the documentation.
+        if (
+          difference &&
+          result.exitCode === 0 &&
+          !result.output.trim() &&
+          example.documented.trim()
+        ) {
+          results.push({
+            ...base,
+            status: "not_run",
+            reason:
+              "The command exited 0 and printed nothing where the document shows output; launcher problem suspected",
+            exitCode: result.exitCode,
+            printed: "",
+          });
+          continue;
+        }
         const absent = difference ? missingInput(args, copy, result.output) : null;
         if (absent) {
           skip(

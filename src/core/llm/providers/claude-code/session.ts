@@ -1,8 +1,8 @@
 import { spawn } from "node:child_process";
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { JSONSchema7, LanguageModelV3Usage } from "@ai-sdk/provider";
+import { tmpDir } from "../../../platform/index.js";
 import { trackProcess } from "../../../process-tracker.js";
 import { onJsonLines, UnparsedLines } from "../json-lines.js";
 import { claudeCodeCommand, getClaudeCodeFlags } from "./cli.js";
@@ -268,7 +268,7 @@ export const spawnClaudeCodeProcess: ClaudeCodeProcessFactory = ({
   instructions,
   schema,
 }) => {
-  const dir = join(tmpdir(), `baked-claude-code-${process.pid}`, String(++workDirCounter));
+  const dir = join(tmpDir(), `baked-claude-code-${process.pid}`, String(++workDirCounter));
   mkdirSync(dir, { recursive: true });
   const promptFile = join(dir, "system-prompt.md");
   writeFileSync(promptFile, instructions, "utf8");
