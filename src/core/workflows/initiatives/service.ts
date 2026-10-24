@@ -2720,9 +2720,11 @@ export class InitiativeService {
       })
       .map((f) => ({ ...f, size: f.size ?? "medium", need: needs.get(f.id) ?? null }));
     const shares = splitShares(waiting, view.budget.remaining, view.budget.cost.remainingUsd);
+    let dollarGap = 0;
     const dollarWarnings = waiting.flatMap((f, index) => {
       const low = estimate.features.find((e) => e.featureId === f.id)?.costUsd?.low;
       const share = shares[index]?.shareUsd;
+      if (low !== undefined && share != null && share < low) dollarGap += low - share;
       return low !== undefined && share != null && share < low
         ? [
             `Feature ${f.id}'s dollar share (${usd(share)}) is below its low estimate (${usd(low)}). Its cap can grow only into dollars left after the other waiting features' low estimates. Consider extending the dollar budget or trimming the split before approving, or approve with this risk.`,
@@ -2738,10 +2740,20 @@ export class InitiativeService {
         : "";
     const warning = [tokenWarning, ...dollarWarnings].filter(Boolean).join(" ");
     if (!warning) return message;
-    const extend = `Use baked workflow initiative extend ${row.id}${tokenWarning ? ` --tokens ${estimate.withMargin}` : " --budget-usd N"} --expected-revision ${row.revision}.`;
+    // The amounts that answer the warnings (#2042): the token estimate with its margin, and a
+    // dollar cap raised by what the warned shares miss of their low estimates.
+    const capUsd = view.budget.cost.capUsd;
+    const suggestedUsd =
+      !tokenWarning && dollarGap > 0 && capUsd !== null ? centsUp(capUsd + dollarGap) : null;
+    const amount = tokenWarning
+      ? ` --tokens ${estimate.withMargin}`
+      : ` --budget-usd ${suggestedUsd ?? "N"}`;
+    const extend = `Use baked workflow initiative extend ${row.id}${amount} --expected-revision ${row.revision}.`;
     return recoveryAdvice(`${warning} ${extend} ${message}`, `${warning} ${message}`, {
       action: "extend",
       initiativeId: row.id,
+      ...(tokenWarning ? { suggestedTokens: estimate.withMargin } : {}),
+      ...(suggestedUsd !== null ? { suggestedUsd } : {}),
     });
   }
 
