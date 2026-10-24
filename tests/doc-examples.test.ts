@@ -15,8 +15,10 @@ import {
   placeholderOf,
   runDocExamples,
 } from "../src/core/verification/doc-examples.js";
+import { runRepro } from "../src/core/verification/repro.js";
 import { capturePreImage } from "../src/core/workflows/rollback.js";
 import { ProcessScope } from "../src/core/workflows/process-scope.js";
+import { ReproSchema } from "../src/core/workflows/schemas.js";
 import type { ExecutionRequest } from "../src/core/workflows/types.js";
 import { FixtureExecutor, workflowFixture } from "./helpers/workflow-fixture.js";
 
@@ -134,7 +136,30 @@ describe("documented examples", () => {
   test("the first documented line that differs is reported", () => {
     expect(firstDifference("a\nb\n", "a\r\nb  \n\n")).toBeNull();
     expect(firstDifference("a\nb", "a\nc")).toEqual({ line: 2, expected: "b", actual: "c" });
-    expect(firstDifference("a\nb", "a")).toEqual({ line: 2, expected: "b", actual: "(no more lines)" });
+    expect(firstDifference("a\nb", "a")).toEqual({ line: 2, expected: "b", actual: "", missing: "actual" });
+    expect(firstDifference("a", "a\nb")).toEqual({ line: 2, expected: "", actual: "b", missing: "expected" });
+  });
+
+  test("a repro built from the first difference reproduces when a side has no line (#1966)", async () => {
+    const root = mkdtempSync(join(tmpdir(), "baked-doc-absent-"));
+    cleanups.push(() => rmSync(root, { recursive: true, force: true }));
+    const reproduce = async (documented: string, code: string) => {
+      const printed = Bun.spawnSync(["bun", "-e", code]).stdout.toString();
+      const difference = firstDifference(documented, printed);
+      if (!difference) throw new Error("no difference");
+      const repro = ReproSchema.parse({
+        executable: "bun",
+        args: ["-e", code],
+        expected: difference.expected,
+        actual: difference.actual,
+      });
+      const options = { root, executables: ["bun"], generated: [], signal: new AbortController().signal, sandbox: null };
+      return (await runRepro(new ProcessScope(), repro, options)).status;
+    };
+    // README promises a usage line; the command exits 0 and prints nothing.
+    expect(await reproduce("Usage: main FILE", "process.exitCode = 0")).toBe("reproduced");
+    // README shows no output; the command prints a line.
+    expect(await reproduce("", "console.log('unexpected')")).toBe("reproduced");
   });
 
   test("only Markdown files and READMEs are documents", () => {

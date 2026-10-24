@@ -671,6 +671,12 @@ export const PolicySchema = z
      */
     chainRewrite: z.literal("on").optional(),
     /**
+     * The sibling probe of a chain rewrite (#1969): `on` asks the `chain-family` profile once per
+     * rewrite corrective for a family of inputs around the chain's repros; the host runs them and
+     * a failing case joins the chain's battery as a finding. Needs `chainRewrite`. Absent is off.
+     */
+    chainProbe: z.literal("on").optional(),
+    /**
      * The host's correction of a misquoted test (misquote-fix.ts, #2047): `on` lets the host make
      * an exact, unambiguous replacement of a test's spelling of a criterion literal when a spec
      * conflict settles as a misquote, and go on with the task when its required checks pass,
@@ -854,6 +860,7 @@ export const ProfileSchema = z
       "mutants",
       "distinction",
       "revision",
+      "chain-family",
     ]),
     maxSteps: z.number().int().min(1).max(100),
     maxOutputTokens: z.number().int().min(256).max(65536),
@@ -1123,6 +1130,23 @@ export const DistinctionSchema = z
   })
   .strict();
 export type Distinction = z.infer<typeof DistinctionSchema>;
+
+/**
+ * The family of inputs a `chain-family` profile proposes around a finding chain's repros (#1969):
+ * each case is a repro without `actual`, since the host runs it and a case whose output does not
+ * show `expected` joins the battery. At most `BATTERY_CASES` (finding-chain.ts) cases.
+ */
+export const ChainFamilySchema = z
+  .object({
+    schemaVersion: z.literal(1),
+    cases: z
+      .array(ReproSchema.omit({ actual: true }))
+      .min(1)
+      .max(16),
+    rationale: Text,
+  })
+  .strict();
+export type ChainFamily = z.infer<typeof ChainFamilySchema>;
 
 export const CritiqueSchema = z
   .object({
