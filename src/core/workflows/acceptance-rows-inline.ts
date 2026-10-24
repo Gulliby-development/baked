@@ -32,8 +32,11 @@ export const INLINE_ROWS_CLASS = {
   xunit: (cls: string) => `${cls}+AcceptanceRows`,
 };
 
-/** The first line of a block, in any framework, indented when it is nested in a class. */
-export const INLINE_ROWS_BEGIN = /^[ \t]*(?:\/\/|#) BEGIN acceptance rows: host-written/m;
+/**
+ * The first line of a block, in any framework, indented when it is nested in a class. The words
+ * after the colon may change (#2004): blocks written before still match.
+ */
+export const INLINE_ROWS_BEGIN = /^[ \t]*(?:\/\/|#) BEGIN acceptance rows:/m;
 
 /**
  * A host-written block of a test file: `tail` ends the file, `head` (Go imports) follows its
@@ -56,7 +59,7 @@ const comment = (framework: Framework): string => (framework === "pytest" ? "#" 
  * and so does Java's, whose comment google-java-format wraps at 100 columns (#1961).
  */
 const begin = (framework: Framework, what = "acceptance rows"): string =>
-  `${comment(framework)} BEGIN ${what}: host-written from the audited spec table.${framework === "pytest" || framework === "junit" ? `\n${comment(framework)}` : ""} Edit ${INLINE_HARNESS[framework]}, not this block.`;
+  `${comment(framework)} BEGIN ${what}: cases from the spec's acceptance table.${framework === "pytest" || framework === "junit" ? `\n${comment(framework)}` : ""} Edit ${INLINE_HARNESS[framework]}, not this block.`;
 const end = (framework: Framework, what = "acceptance rows"): string =>
   `${comment(framework)} END ${what}`;
 /**
@@ -73,14 +76,36 @@ const camel = (text: string): string =>
     .filter(Boolean)
     .map((word) => word[0]?.toUpperCase() + word.slice(1))
     .join("");
+/**
+ * Characters a host-written literal never holds raw (#1995): controls, format characters (U+FEFF,
+ * U+200B, bidi marks) and separators other than the space (U+00A0, U+2028, U+3000). Go rejects a
+ * U+FEFF anywhere but the start of a file, C# ends a line at U+2028, and none of them can be seen
+ * in a diff. cfgquill (bench round 64) spent 9.7M tokens on a Go block that held a raw U+FEFF.
+ */
+export const LITERAL_ESCAPED = /(?! )[\p{Cc}\p{Cf}\p{Z}]/gu;
+
+/** `text` with each character of `LITERAL_ESCAPED` written by `write`, the rest as it is. */
+export const escapeInvisible = (text: string, write: (code: number) => string): string =>
+  text.replace(LITERAL_ESCAPED, (ch) => write(ch.codePointAt(0) ?? 0));
+
+/** `\uXXXX` per UTF-16 unit: JSON, JavaScript and Java read an astral character as a pair. */
+export const utf16Escape = (code: number): string =>
+  String.fromCodePoint(code)
+    .split("")
+    .map((unit) => `\\u${(unit.charCodeAt(0) ?? 0).toString(16).padStart(4, "0")}`)
+    .join("");
+
+/** JSON text whose strings escape every `LITERAL_ESCAPED` character, so it reads the same anywhere. */
+export const jsonText = (value: unknown): string =>
+  escapeInvisible(JSON.stringify(value), utf16Escape);
+
 const data = (rows: AcceptanceRow[]): string =>
-  JSON.stringify(rows.map(({ id, input, expected }) => ({ id, input, expected })));
-/** JSON.stringify of the JSON text is a valid string literal in Python, Go, TypeScript and C#, but C# ends a line at U+0085, U+2028 and U+2029. */
-const quoted = (text: string): string =>
-  JSON.stringify(text).replace(
-    /[\u0085\u2028\u2029]/g,
-    (ch) => `\\u${(ch.codePointAt(0) ?? 0).toString(16).padStart(4, "0")}`,
-  );
+  jsonText(rows.map(({ id, input, expected }) => ({ id, input, expected })));
+/**
+ * JSON.stringify of the JSON text is a valid string literal in Python, Go, TypeScript and C#; the
+ * text itself (`jsonText`) holds no character those languages read differently (#1995).
+ */
+const quoted = (text: string): string => escapeInvisible(JSON.stringify(text), utf16Escape);
 
 /**
  * A Python string literal in the quotes ruff and black choose: double, unless single quotes need
@@ -92,7 +117,12 @@ const pythonString = (text: string): string => {
     .map((ch) => {
       if (ch === "\\" || ch === quote) return `\\${ch}`;
       const code = ch.codePointAt(0) ?? 0;
-      return code < 0x20 || code === 0x7f ? `\\x${code.toString(16).padStart(2, "0")}` : ch;
+      if (code < 0x20 || code === 0x7f) return `\\x${code.toString(16).padStart(2, "0")}`;
+      return escapeInvisible(ch, (c) =>
+        c > 0xffff
+          ? `\\U${c.toString(16).padStart(8, "0")}`
+          : `\\u${c.toString(16).padStart(4, "0")}`,
+      );
     })
     .join("");
   return `${quote}${body}${quote}`;
@@ -104,7 +134,7 @@ const pythonString = (text: string): string => {
  * keep its layout at any line length (#1927). A row's id starts its first literal.
  */
 const pythonChunks = (rows: AcceptanceRow[], width = 74): string[] => {
-  const items = rows.map(({ id, input, expected }) => JSON.stringify({ id, input, expected }));
+  const items = rows.map(({ id, input, expected }) => jsonText({ id, input, expected }));
   const pieces = items.length
     ? items.map((item, i) => `${i ? "" : "["}${item}${i < items.length - 1 ? "," : "]"}`)
     : ["[]"];
@@ -133,12 +163,14 @@ export const javaString = (text: string, width = 60): string => {
   const chunks = [""];
   for (const ch of text) {
     const code = ch.codePointAt(0) ?? 0;
+    // Controls (U+0085 too) as octal, never \u, which Java reads before lexing; other invisible
+    // characters as \u, which is safe for them (#1995).
     const unit =
       ch === '"' || ch === "\\"
         ? `\\${ch}`
-        : code < 0x20 || code === 0x7f
+        : code < 0x20 || (code >= 0x7f && code <= 0x9f)
           ? `\\${code.toString(8).padStart(3, "0")}`
-          : ch;
+          : escapeInvisible(ch, utf16Escape);
     const chunk = chunks.at(-1) ?? "";
     if (chunk.length + unit.length > width) {
       // At a space in its second half when there is one, which then starts the next literal.
@@ -165,9 +197,8 @@ export const javaValue = (value: unknown): string => {
 const rustString = (text: string): string =>
   `"${[...text]
     .map((ch) => {
-      const code = ch.codePointAt(0) ?? 0;
       if (ch === '"' || ch === "\\") return `\\${ch}`;
-      return code < 0x20 || code === 0x7f ? `\\u{${code.toString(16)}}` : ch;
+      return escapeInvisible(ch, (c) => `\\u{${c.toString(16)}}`);
     })
     .join("")}"`;
 const rustNumber = (value: number): string => {
@@ -473,6 +504,44 @@ function literal(text: string, at: number): { end: number; value: string } | nul
   return text[j] === quote ? { end: j, value } : null;
 }
 
+/** A literal's text with its escape sequences read as the languages of the templates read them. */
+function decodeEscapes(text: string): string {
+  return text.replace(
+    /\\(?:u\{([0-9a-fA-F]{1,6})\}|u([0-9a-fA-F]{4})|U([0-9a-fA-F]{8})|x([0-9a-fA-F]{2})|([0-7]{1,3})|([\s\S]))/g,
+    (_match, braced, unit, wide, hex, octal, other: string | undefined) => {
+      if (unit) return String.fromCharCode(Number.parseInt(unit, 16));
+      const code = braced ?? wide ?? hex;
+      if (code) return String.fromCodePoint(Number.parseInt(code, 16));
+      if (octal) return String.fromCharCode(Number.parseInt(octal, 8));
+      const simple: Record<string, string> = {
+        n: "\n",
+        r: "\r",
+        t: "\t",
+        b: "\b",
+        f: "\f",
+        v: "\v",
+      };
+      return simple[other ?? ""] ?? other ?? "";
+    },
+  );
+}
+
+/**
+ * What a literal holding JSON text (the bun, Go and xUnit blocks) means: its rows, whatever escapes
+ * spell them, or null for any other literal. An edit that writes a character of a row as an escape
+ * keeps the block (#1995): in bench round 64 the host restored a raw U+FEFF that Go rejects after
+ * every model escaped it, 9.7M tokens on cfgquill lint.
+ */
+function jsonMeaning(value: string): string | null {
+  const text = decodeEscapes(value);
+  if (!/^\s*[[{]/.test(text)) return null;
+  try {
+    return `json:${JSON.stringify(JSON.parse(text))}`;
+  } catch {
+    return null;
+  }
+}
+
 /**
  * The text as a formatter cannot change it: whitespace and a trailing comma before a closing
  * bracket dropped outside string literals, and a literal's escaped quotes unescaped, so either
@@ -508,7 +577,7 @@ export function layoutFree(text: string, path = ""): string {
             end = next.end;
           }
         }
-        out += `\u0000${value}\u0000`;
+        out += `\u0000${jsonMeaning(value) ?? value}\u0000`;
         i = end;
         continue;
       }
@@ -531,6 +600,9 @@ export function layoutFree(text: string, path = ""): string {
   return out;
 }
 
+/** The words of the first line before #2004, which blocks written then still carry. */
+const EARLIER_BEGIN_WORDS = ": host-written from the audited spec table.";
+
 /** Whether `text` holds the block of `file` as it is or as a formatter laid it out. */
 function sameBlock(text: string, file: string, path: string): boolean {
   const lines = blockLines(text, file);
@@ -538,7 +610,8 @@ function sameBlock(text: string, file: string, path: string): boolean {
   const found = text
     .split("\n")
     .slice(lines.from, lines.to + 1)
-    .join("\n");
+    .join("\n")
+    .replace(EARLIER_BEGIN_WORDS, ": cases from the spec's acceptance table.");
   return layoutFree(found, path) === layoutFree(file, path);
 }
 

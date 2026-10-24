@@ -254,8 +254,10 @@ describe("acceptance rows in every supported language (#1660)", () => {
     expect(java).toContain("package com.ex.calc;");
     expect(java).toContain("class RowsTest {");
     expect(java).toContain('row("AC-001:1", list(2L, 3L), 6L)');
-    // \u is unescaped before Java lexes a literal, so control characters are octal escapes.
-    expect(java).toContain('"a b\\001"');
+    // \u is unescaped before Java lexes a literal, so control characters are octal escapes; an
+    // invisible character that is not a line terminator in Java is a \u escape (#1995).
+    expect(java).toContain('"a\\u2028b\\001"');
+    expect(java).not.toContain("\u2028");
     expect(java).toContain('row("AC-001:3", list((Object) null), map("k", list(1.5d, (Object) null)))');
     expect(java).toContain("Harness.actual(input)");
     const csharp = files("xunit")[1]!.content;
@@ -263,7 +265,8 @@ describe("acceptance rows in every supported language (#1660)", () => {
     expect(csharp).toContain("public class RowsTest");
     expect(csharp).toContain("Harness.Actual(JsonNode.Parse(input))");
     expect(csharp).not.toContain(" ");
-    expect(csharp).toContain("a\\u2028b");
+    // The JSON text escapes it, so the C# literal holds a JSON escape (#1995).
+    expect(csharp).toContain("a\\\\u2028b");
     const rust = files("rust")[1]!.content;
     expect(rust).toContain('#[path = "support/harness.rs"]');
     expect(rust).toContain('include_str!("data/rows.json")');
