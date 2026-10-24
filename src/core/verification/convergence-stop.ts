@@ -232,6 +232,7 @@ export function earlierFindings(
   criterionIds: string[];
   file: string | null;
   symbol: string | null;
+  family: string | null;
   claim: string;
 }[] {
   return store
@@ -245,6 +246,7 @@ export function earlierFindings(
         criterionIds: body.criterionIds ?? [],
         file: body.file ?? null,
         symbol: body.symbol ?? null,
+        family: body.family ?? null,
         claim: (body.claim ?? "").slice(0, 300),
       };
     });
@@ -252,7 +254,7 @@ export function earlierFindings(
 
 /** What the reviewer is told next to the earlier findings. */
 export const REPEAT_NOTE =
-  "earlierFindings are findings a correction of this run already addressed. Set repeatOf on every finding: the id of the earlier finding when it is the same defect (the same root cause, even if the file, symbol or wording changed or the earlier fix was only partial), and null when it is a different defect, even in the same file or function.";
+  "earlierFindings are findings a correction of this run already addressed. Set repeatOf on every finding: the id of the earlier finding when it is the same defect (the same root cause, even if the file, symbol or wording changed or the earlier fix was only partial), and null when it is a different defect, even in the same file or function. Give a finding of the same defect class as an earlier finding that finding's family, also when it is a different defect on another symbol.";
 
 /**
  * The reason the next convergence round must not start without a decision, or null when

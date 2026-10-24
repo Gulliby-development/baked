@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { DEFAULT_CONFIG } from "../src/config/index.js";
 import { hashBytes, hashJson } from "../src/core/specs/hash.js";
 import { defaultWorkflowPolicy } from "../src/core/workflows/defaults.js";
-import { CHAIN_REWRITE_AT, type ChainFinding, type ChainRecord, chainMembers, chainRecord, findingChain } from "../src/core/workflows/finding-chain.js";
+import { CHAIN_REWRITE_AT, type ChainFinding, type ChainRecord, chainMembers, chainRecord, familyKey, findingChain } from "../src/core/workflows/finding-chain.js";
 import type { Check, Repro, RunPolicy, Spec, Task } from "../src/core/workflows/schemas.js";
 import { NativeWorkflowService } from "../src/core/workflows/service.js";
 import { newId } from "../src/core/workflows/store.js";
@@ -36,6 +36,9 @@ const planned: Task = { id: "T001", title: "Write the inline parser", descriptio
 const MEMBERS = ["a", "b", "c"] as const;
 const reproFor = (marker: string): Repro => ({ executable: "bun", args: ["-e", `const t = await Bun.file('inline.txt').text(); console.log(t.includes('case-${marker}') ? 'nested' : 'flat')`], expected: "nested", actual: "flat" });
 
+/** The symbols of report.py the family scenario's findings name, one per round. */
+const FAMILY_SYMBOLS = ["build_report", "_share", "render_table"] as const;
+
 interface Correction {
   taskId: string;
   title: string;
@@ -51,6 +54,11 @@ class ChainExecutor implements AgentExecutor {
   service?: NativeWorkflowService;
   /** The first rewrite drops the earlier cases, as a rewrite from scratch can. */
   breakFirstRewrite = false;
+  /**
+   * Each round's finding is on another symbol of the file with `repeatOf: null` and one family, as
+   * R66 expenses-py F2 (`build_report`) and F3 (`_share`) were (#2048).
+   */
+  family = false;
   constructor(private root: string) {}
   async execute(request: ExecutionRequest) {
     this.calls.push({ output: request.profile.output, ...(request.task ? { taskId: request.task.id } : {}) });
@@ -95,7 +103,7 @@ class ChainExecutor implements AgentExecutor {
         const index = MEMBERS.findIndex((m) => !text.includes(`case-${m}`));
         const marker = MEMBERS[index];
         const findings = marker
-          ? [{ id: `F${index + 1}`, kind: "correctness", severity: "high", basis: "spec", confidence: 0.99, requirementIds: ["FR-001"], criterionIds: ["AC-001"], file: "inline.txt", symbol: index % 2 ? "Inline.findDelimitedInline()" : "findDelimitedInline", evidenceIds, claim: `Nested delimiter run case-${marker} is parsed flat`, impact: "Wrong emphasis", suggestedFix: `Handle case-${marker}`, repro: reproFor(marker), repeatOf: index ? `F${index}` : null }]
+          ? [{ id: `F${index + 1}`, kind: "correctness", severity: "high", basis: "spec", confidence: 0.99, requirementIds: ["FR-001"], criterionIds: ["AC-001"], file: "inline.txt", symbol: this.family ? FAMILY_SYMBOLS[index] : index % 2 ? "Inline.findDelimitedInline()" : "findDelimitedInline", evidenceIds, claim: `Nested delimiter run case-${marker} is parsed flat`, impact: "Wrong emphasis", suggestedFix: `Handle case-${marker}`, repro: reproFor(marker), ...(this.family ? { repeatOf: null, family: index === 1 ? "Decimal context precision" : "decimal-context-precision" } : { repeatOf: index ? `F${index}` : null }) }]
           : [];
         output = findings.length
           ? { schemaVersion: 1, snapshotHash: data.snapshotHash, verdict: "changes_requested", coverage: [{ criterionId: "AC-001", verdict: "fail", evidenceIds, explanation: findings[0]?.claim }], findings }
@@ -108,11 +116,12 @@ class ChainExecutor implements AgentExecutor {
   }
 }
 
-async function drive(options: { policy?: Partial<RunPolicy>; quality?: { chainRewrite: "on" | "off" }; breakFirstRewrite?: boolean }) {
+async function drive(options: { policy?: Partial<RunPolicy>; quality?: { chainRewrite: "on" | "off" }; breakFirstRewrite?: boolean; family?: boolean }) {
   const root = mkdtempSync(join(tmpdir(), "baked-finding-chain-"));
   cleanups.push(() => rmSync(root, { recursive: true, force: true }));
   const executor = new ChainExecutor(root);
   executor.breakFirstRewrite = options.breakFirstRewrite ?? false;
+  executor.family = options.family ?? false;
   const policy: RunPolicy = { ...basePolicy, ...options.policy };
   const config = { ...DEFAULT_CONFIG, defaultModel: "fixture/model", ...(options.quality ? { quality: options.quality } : {}), workflows: { enabled: true, importsEnabled: true, defaultWorkflow: "sdd", policy } };
   const service = new NativeWorkflowService(root, config, executor);
@@ -235,10 +244,90 @@ describe("scenario: R62 md-site, a finding chain on one symbol (#1959)", () => {
   }, 120_000);
 });
 
+describe("scenario: R66 expenses-py, a chain of one defect family on different symbols of a file (#2048)", () => {
+  test("with chainRewrite on, the second finding of the family rewrites against both cases although its symbol and repeatOf differ", async () => {
+    const { root, runId, done, executor, service, artifacts } = await drive({ policy: { chainRewrite: "on" }, family: true });
+    expect(done.status).toBe("completed");
+    const [patch, rewrite, ...rest] = executor.corrections;
+    expect(rest).toEqual([]);
+    expect(patch?.findingIds).toEqual(["F1"]);
+    expect(patch?.battery).toBeUndefined();
+    expect(rewrite?.findingIds).toEqual(["F2"]);
+    expect(rewrite?.title).toStartWith("Rewrite _share:");
+    expect(rewrite?.description).toContain("case 2 of the defect class decimal-context-precision in inline.txt (F1, F2, on build_report, _share)");
+    expect(rewrite?.battery).toMatchObject({ symbol: "_share", family: "decimal-context-precision", symbols: ["build_report", "_share"], findings: ["F1", "F2"] });
+    expect(rewrite?.battery?.cases.map((c) => c.findingId)).toEqual(["F1", "F2"]);
+    expect(rewrite?.saved?.battery).toEqual(rewrite?.battery);
+    expect(readFileSync(join(root, "inline.txt"), "utf8")).toContain("case-c");
+    const decisions = artifacts("chains/tasks/") as unknown as ChainRecord[];
+    expect(decisions.map((d) => [d.findingId, d.length, d.family, d.symbols, d.decision])).toEqual([["F2", 2, "decimal-context-precision", ["build_report", "_share"], "rewrite"]]);
+    expect(artifacts("chains/battery/").map((b) => b.decision)).toEqual(["pass"]);
+
+    // The trace keeps the family, the replay reads it as a column, and the round report groups the
+    // chain by file and family.
+    const dir = mkdtempSync(join(tmpdir(), "finding-family-trace-"));
+    cleanups.push(() => rmSync(dir, { recursive: true, force: true }));
+    const out = join(dir, "run.sqlite.gz");
+    exportTrace(root, out);
+    expect(replayTrace(out).runs.find((r) => r.runId === runId)?.newChainDecisions).toBe(0);
+    const traced = openTrace(out);
+    cleanups.push(traced.dispose);
+    expect(JSON.parse(traced.store.findings(runId).find((f) => f.id === "F2")?.body_json ?? "{}")).toMatchObject({ family: "decimal-context-precision", symbol: "_share", repeatOf: null });
+    const escalation = replayChainEscalation(traced.store, runId);
+    expect(escalation.steps.map((s) => [s.findingId, s.chain, s.family, s.decision, s.battery])).toEqual([["F1", ["F1"], "decimal-context-precision", "patch", []], ["F2", ["F1", "F2"], "decimal-context-precision", "rewrite", ["F1", "F2"]]]);
+    const [chain, ...others] = chainCosts(traced.store, runId);
+    expect(others).toEqual([]);
+    expect(chain).toMatchObject({ file: "inline.txt", family: "decimal-context-precision", length: 2, findings: ["F1", "F2"], battery: { runs: 1, cases: 2 } });
+    expect(service.store.run(runId).policy_json).toContain('"chainRewrite":"on"');
+  }, 120_000);
+
+  test("with chainRewrite off, the family chain is recorded and every corrective patches", async () => {
+    const { done, executor, artifacts } = await drive({ family: true });
+    expect(done.status).toBe("completed");
+    expect(executor.corrections.map((c) => [c.findingIds, c.battery])).toEqual([[["F1"], undefined], [["F2"], undefined], [["F3"], undefined]]);
+    expect((artifacts("chains/tasks/") as unknown as ChainRecord[]).map((d) => [d.findingId, d.length, d.decision])).toEqual([["F2", 2, "patch"], ["F3", 3, "patch"]]);
+  }, 120_000);
+});
+
+describe("the chain key: file and symbol, or file and family (#2048)", () => {
+  const finding = (id: string, symbol: string, family: string | null, repairTaskId: string | null, file = "expenses/report.py"): ChainFinding => ({ id, file, symbol, family, repeatOf: null, repairTaskId, claim: id, severity: "high", status: "resolved", requirementIds: [], criterionIds: [], repro: reproFor(id.toLowerCase()) });
+  const chainOf = (findings: ChainFinding[], id: string) => {
+    const all = new Map(findings.map((f) => [f.id, f]));
+    return findingChain(all, all.get(id) as ChainFinding).map((f) => f.id);
+  };
+
+  test("a later case of the family on another symbol joins the latest addressed one", () => {
+    const findings = [finding("F1", "render_table", null, "T010"), finding("F2", "build_report", "decimal-context-precision", "T010"), finding("F3", "_share", "decimal-context-precision", "T011")];
+    expect(chainOf(findings, "F3")).toEqual(["F2", "F3"]);
+    expect(chainOf(findings, "F2")).toEqual(["F2"]);
+    expect(chainOf(findings, "F1")).toEqual(["F1"]);
+  });
+
+  test("a case found in the same round, another file, another family or no family is no link", () => {
+    expect(chainOf([finding("F2", "build_report", "decimal-context-precision", null), finding("F3", "_share", "decimal-context-precision", null)], "F3")).toEqual(["F3"]);
+    expect(chainOf([finding("F2", "build_report", "decimal-context-precision", "T010"), finding("F3", "_share", "decimal-context-precision", "T010")], "F3")).toEqual(["F3"]);
+    expect(chainOf([finding("F2", "build_report", "decimal-context-precision", "T010", "expenses/other.py"), finding("F3", "_share", "decimal-context-precision", "T011")], "F3")).toEqual(["F3"]);
+    expect(chainOf([finding("F2", "build_report", "nested-inline-delimiters", "T010"), finding("F3", "_share", "decimal-context-precision", "T011")], "F3")).toEqual(["F3"]);
+    expect(chainOf([finding("F2", "build_report", null, "T010"), finding("F3", "_share", null, "T011")], "F3")).toEqual(["F3"]);
+  });
+
+  test("a repeatOf link may point to either half of the key, and a family chain grows by its latest case", () => {
+    const linked = { ...finding("F3", "_share", "decimal-context-precision", "T012"), repeatOf: "F1" };
+    expect(chainOf([finding("F1", "build_report", "decimal-context-precision", "T010"), finding("F2", "total", "decimal-context-precision", "T011"), linked], "F3")).toEqual(["F1", "F3"]);
+    expect(chainOf([finding("F1", "build_report", "decimal-context-precision", "T010"), finding("F2", "total", "decimal-context-precision", "T011"), finding("F3", "_share", "decimal-context-precision", "T012")], "F3")).toEqual(["F1", "F2", "F3"]);
+  });
+
+  test("a family label is compared folded", () => {
+    expect(familyKey(" Decimal context_precision ")).toBe("decimal-context-precision");
+    expect(familyKey("--")).toBeNull();
+    expect(familyKey(null)).toBeNull();
+  });
+});
+
 describe("the R62 md-site chain on findDelimitedInline (#1959)", () => {
   // The findings of run 8711b632 as the review linked them: F1 stood alone, F3 repeated F2, F4 and
   // F4-2 repeated F3, F5 repeated F4. T010 corrected F3, T011 F4 and F4-2, T012 F5.
-  const finding = (id: string, repeatOf: string | null, symbol = "findDelimitedInline"): ChainFinding => ({ id, file: "src/markdown.ts", symbol, repeatOf, claim: id, severity: "high", status: "resolved", requirementIds: [], criterionIds: [], repro: reproFor(id.toLowerCase()) });
+  const finding = (id: string, repeatOf: string | null, symbol = "findDelimitedInline"): ChainFinding => ({ id, file: "src/markdown.ts", symbol, family: null, repeatOf, repairTaskId: null, claim: id, severity: "high", status: "resolved", requirementIds: [], criterionIds: [], repro: reproFor(id.toLowerCase()) });
   const all = new Map([finding("F1", null), finding("F2", null), finding("F3", "F2"), finding("F4", "F3"), finding("F4-2", "F3"), finding("F5", "F4"), finding("F6", "F5", "renderInline")].map((f) => [f.id, f]));
   const at = (id: string) => findingChain(all, all.get(id) as ChainFinding);
 

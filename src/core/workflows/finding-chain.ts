@@ -9,6 +9,14 @@ import type { WorkflowStore } from "./store.js";
  * `chainRewrite: "on"` the corrective of a chain that reaches `CHAIN_REWRITE_AT` findings rewrites
  * the symbol against the chain's whole battery of repros, and the host runs that battery before
  * the next review round.
+ *
+ * A chain's key is its file and either the symbol or the defect class (#2048): a reviewer names the
+ * class of each finding in `family` ("decimal-context-precision"), and a finding of one family on
+ * one file joins the latest earlier finding of that family and file that a correction already
+ * addressed, whatever its symbol and its `repeatOf`. R66 expenses-py F2 (`build_report`) and F3
+ * (`_share`), both Decimal context precision in report.py, were a chain of one each, and F3's
+ * corrective cost 641k tokens; R65 md-site F1 (`findDestinationEnd`) and F3 (`renderInline`) were
+ * the same with nested inline constructs.
  */
 
 /** Findings in a `repeatOf` chain on one file and symbol at which the next corrective rewrites it. */
@@ -34,7 +42,11 @@ export interface ChainFinding {
   id: string;
   file: string | null;
   symbol: string | null;
+  /** The defect class the reviewer named (#2048), or null. */
+  family: string | null;
   repeatOf: string | null;
+  /** The corrective task the run gave the finding, or null while none has corrected it. */
+  repairTaskId: string | null;
   claim: string;
   severity: string;
   status: string;
@@ -47,6 +59,7 @@ type FindingLike = {
   id: string;
   file?: string | null;
   symbol?: string | null;
+  family?: string | null;
   repeatOf?: string | null;
   claim?: string;
   severity?: string;
@@ -55,13 +68,30 @@ type FindingLike = {
   repro?: unknown;
 };
 
-const chainFinding = (body: FindingLike, status: string): ChainFinding => {
+/**
+ * A family label as the key compares it: lower case, every run of other characters than letters
+ * and digits one hyphen (`Decimal context precision` is `decimal-context-precision`), null when
+ * nothing is left.
+ */
+export const familyKey = (family: string | null | undefined): string | null =>
+  (family ?? "")
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}]+/gu, "-")
+    .replace(/^-+|-+$/g, "") || null;
+
+const chainFinding = (
+  body: FindingLike,
+  status: string,
+  repairTaskId: string | null,
+): ChainFinding => {
   const repro = ReproSchema.safeParse(body.repro);
   return {
     id: body.id,
     file: body.file ?? null,
     symbol: body.symbol ?? null,
+    family: familyKey(body.family),
     repeatOf: body.repeatOf ?? null,
+    repairTaskId,
     claim: body.claim ?? "",
     severity: body.severity ?? "medium",
     status,
@@ -81,22 +111,65 @@ export function chainFindings(
   for (const row of store.findings(runId))
     all.set(
       row.id,
-      chainFinding({ ...(JSON.parse(row.body_json) as FindingLike), id: row.id }, row.status),
+      chainFinding(
+        { ...(JSON.parse(row.body_json) as FindingLike), id: row.id },
+        row.status,
+        row.repair_task_id,
+      ),
     );
-  for (const finding of extra)
-    all.set(finding.id, chainFinding(finding, all.get(finding.id)?.status ?? "open"));
+  for (const finding of extra) {
+    const stored = all.get(finding.id);
+    all.set(
+      finding.id,
+      chainFinding(finding, stored?.status ?? "open", stored?.repairTaskId ?? null),
+    );
+  }
   return all;
 }
 
+/** Same file and family, both named: the family half of the chain key (#2048). */
+const sameFamily = (a: ChainFinding, b: ChainFinding): boolean =>
+  a.family !== null && a.family === b.family && a.file !== null && a.file === b.file;
+
+/** The chain key: the same file and either the same symbol or the same family (#2048). */
 const sameSpot = (a: ChainFinding, b: ChainFinding): boolean =>
-  symbolKey(a.symbol) !== "" &&
-  symbolKey(a.symbol) === symbolKey(b.symbol) &&
-  (!a.file || !b.file || a.file === b.file);
+  (symbolKey(a.symbol) !== "" &&
+    symbolKey(a.symbol) === symbolKey(b.symbol) &&
+    (!a.file || !b.file || a.file === b.file)) ||
+  sameFamily(a, b);
 
 /**
- * The `repeatOf` path of a finding on its file and symbol, oldest first and the finding last. A
- * link to a finding on another symbol or file ends the chain; a finding without a symbol is a
- * chain of one.
+ * The latest finding recorded before `current` of `start`'s family and file that a correction
+ * other than `start`'s already addressed (#2048): the case a family chain links to when the
+ * reviewer's `repeatOf` does not. A finding of the same round has no corrective yet, so two
+ * cases found together are not a chain.
+ */
+function familyLink(
+  all: ReadonlyMap<string, ChainFinding>,
+  current: ChainFinding,
+  start: ChainFinding,
+  seen: ReadonlySet<string>,
+): ChainFinding | undefined {
+  if (start.family === null) return undefined;
+  let found: ChainFinding | undefined;
+  for (const finding of all.values()) {
+    if (finding.id === current.id) break;
+    if (
+      !seen.has(finding.id) &&
+      sameFamily(finding, start) &&
+      finding.repairTaskId !== null &&
+      finding.repairTaskId !== start.repairTaskId
+    )
+      found = finding;
+  }
+  return found;
+}
+
+/**
+ * The chain of a finding on its file and symbol or family, oldest first and the finding last: its
+ * `repeatOf` path while each link is on the same spot, and, where that path ends, the latest
+ * earlier addressed finding of its family on its file (`familyLink`). A finding without a symbol
+ * or a family is a chain of one.
  */
 export function findingChain(
   all: ReadonlyMap<string, ChainFinding>,
@@ -105,9 +178,12 @@ export function findingChain(
   const chain = [start];
   const seen = new Set([start.id]);
   let current = start;
-  while (current.repeatOf && !seen.has(current.repeatOf)) {
-    const earlier = all.get(current.repeatOf);
-    if (!earlier || !sameSpot(earlier, start)) break;
+  for (;;) {
+    const linked =
+      current.repeatOf && !seen.has(current.repeatOf) ? all.get(current.repeatOf) : undefined;
+    const earlier =
+      linked && sameSpot(linked, start) ? linked : familyLink(all, current, start, seen);
+    if (!earlier) break;
     chain.unshift(earlier);
     seen.add(earlier.id);
     current = earlier;
@@ -116,8 +192,8 @@ export function findingChain(
 }
 
 /**
- * Every finding on the chain's file and symbol linked to it by `repeatOf`, in the order they were
- * recorded: the chain and its side branches (R62 md-site F4-2 repeated F3 beside F4).
+ * Every finding on the chain's file and symbol or family linked to it by `repeatOf`, in the order
+ * they were recorded: the chain and its side branches (R62 md-site F4-2 repeated F3 beside F4).
  */
 export function chainMembers(
   all: ReadonlyMap<string, ChainFinding>,
@@ -159,6 +235,10 @@ export interface ChainRecord {
   findingId: string;
   file: string | null;
   symbol: string;
+  /** The finding's family (#2048); absent in records before it. */
+  family?: string | null;
+  /** The symbols of the chain's findings, oldest first, when they are not all `symbol`. */
+  symbols?: string[];
   chain: { id: string; repeatOf: string | null; repro: boolean }[];
   length: number;
   threshold: number;
@@ -204,12 +284,15 @@ export function chainRecord(
   policy: "on" | "off",
   decide: ChainRule = chainRewriteDecision,
 ): ChainRecord {
+  const symbols = [...new Set(chain.map((f) => symbolKey(f.symbol)).filter(Boolean))];
   return {
     schemaVersion: 1,
     taskId,
     findingId: finding.id,
     file: finding.file,
     symbol: symbolKey(finding.symbol),
+    family: finding.family,
+    ...(symbols.length > 1 ? { symbols } : {}),
     chain: chain.map((f) => ({ id: f.id, repeatOf: f.repeatOf, repro: f.repro !== undefined })),
     length: chain.length,
     threshold: CHAIN_REWRITE_AT,
@@ -313,6 +396,16 @@ export function chainSpecRows(
 export const BATTERY_NOTE =
   "Earlier corrections patched this symbol one reported case at a time, and review found the next case of the same input class each round. This task rewrites the symbol instead of patching it. First restate its algorithm from the spec rows here, or from a named reference algorithm for its input class (for Markdown inline emphasis, CommonMark's delimiter-run stack; for CSV, RFC 4180; for decimals, exact arithmetic on integers), in a comment above it. Then rewrite the symbol to that algorithm and make every case of the battery pass, not only the last one: run_repro takes the cases as a list. Add one table-driven test with a row per battery case and rows for the neighbouring inputs the algorithm handles (deeper nesting, mixed runs, the empty case). The host runs the whole battery after this task and before the next review, and a case that fails reopens the correction.";
 
-/** The last step of a rewrite corrective's description, in place of the repeat step. */
-export const rewriteStep = (symbol: string, ids: readonly string[]): string =>
-  `\nThis finding is case ${ids.length} of one defect class on ${symbol} (${ids.join(", ")}), each found after the last was patched. Do not patch this case: rewrite ${symbol} from the algorithm its spec rows or a named reference algorithm give, and make every case of the battery in your input pass.`;
+/**
+ * The last step of a rewrite corrective's description, in place of the repeat step. A family
+ * chain (#2048) spans symbols: it names the class and every symbol, and the code of that class in
+ * the file is rewritten.
+ */
+export const rewriteStep = (
+  symbol: string,
+  ids: readonly string[],
+  family?: { name: string; file: string | null; symbols: readonly string[] },
+): string =>
+  family && family.symbols.length > 1
+    ? `\nThis finding is case ${ids.length} of the defect class ${family.name}${family.file ? ` in ${family.file}` : ""} (${ids.join(", ")}, on ${family.symbols.join(", ")}), each found after the last was patched. Do not patch this case: name the rule the class breaks, rewrite every place of that file that handles it (${family.symbols.join(", ")} and their siblings) from the algorithm its spec rows or a named reference algorithm give, and make every case of the battery in your input pass.`
+    : `\nThis finding is case ${ids.length} of one defect class on ${symbol} (${ids.join(", ")}), each found after the last was patched. Do not patch this case: rewrite ${symbol} from the algorithm its spec rows or a named reference algorithm give, and make every case of the battery in your input pass.`;

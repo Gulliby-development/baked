@@ -1083,13 +1083,13 @@ export function appendCorrections(
         );
     }
   }
-  // A review or convergence finding that is the CHAIN_REWRITE_AT-th of a repeatOf chain on one
-  // symbol: its corrective rewrites the symbol against the chain's battery when the policy says
-  // so, and the decision is recorded either way (#1959).
+  // A review or convergence finding that is the CHAIN_REWRITE_AT-th of a chain on one symbol or
+  // one defect family of a file: its corrective rewrites against the chain's battery when the
+  // policy says so, and the decision is recorded either way (#1959, #2048).
   const chainable = (finding: Review["findings"][number]): boolean =>
     (kind === "convergence" || reviewPass) && !checkRunFinding(finding);
-  // A chain needs a repeatOf link, so a round without one reads no findings.
-  const known = findings.some((f) => chainable(f) && f.repeatOf)
+  // A chain needs a repeatOf link or a family, so a round without either reads no findings.
+  const known = findings.some((f) => chainable(f) && (f.repeatOf || f.family))
     ? chainFindings(store, runId, findings)
     : new Map();
   const chainRecords: ChainRecord[] = [];
@@ -1109,6 +1109,9 @@ export function appendCorrections(
         ? rewriteStep(
             rewrite.symbol,
             rewrite.chain.map((f) => f.id),
+            rewrite.family && rewrite.symbols
+              ? { name: rewrite.family, file: rewrite.file, symbols: rewrite.symbols }
+              : undefined,
           )
         : finding.repeatOf
           ? repeatStep(finding.repeatOf)

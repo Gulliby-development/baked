@@ -475,6 +475,60 @@ describe("finding chains replay on recorded findings (#1981)", () => {
   }, 120000);
 });
 
+describe("finding chains keyed by file and defect family (#2048)", () => {
+  // R65 md-site 1e8e7465: F1 (`findDestinationEnd`, corrected by T009) and F3 (`renderInline`,
+  // T011, `repeatOf: null`) were both nested inline constructs in src/markdown.ts, and each was a
+  // chain of one. The trace predates `family`, so the replay reads the families a reviewer that
+  // declares them would have given.
+  test("R65 md-site: with F1 and F3 of one family, F3's corrective rewrites against both cases", () => {
+    const { store, dispose } = openTrace(join(ROOT, "R65/md-site.sqlite.gz"));
+    try {
+      const runId = "1e8e7465-2238-44b0-adbd-dfc61aee4bb2";
+      const row = (replay: ReturnType<typeof replayChainEscalation>, id: string) => {
+        const step = replay.steps.find((s) => s.findingId === id);
+        return step && [step.taskId, step.chain, step.family, step.decision, step.battery];
+      };
+      const recorded = replayChainEscalation(store, runId);
+      // As recorded no finding names a family: the family column is empty and nothing changes.
+      expect(recorded.steps.every((s) => s.family === null)).toBe(true);
+      expect(row(recorded, "F3")).toEqual(["T011", ["F3"], null, "patch", []]);
+      const families = { F1: "nested-inline-delimiters", F3: "Nested inline delimiters" };
+      const declared = replayChainEscalation(store, runId, { families });
+      expect(row(declared, "F1")).toEqual(["T009", ["F1"], "nested-inline-delimiters", "patch", []]);
+      expect(row(declared, "F3")).toEqual(["T011", ["F1", "F3"], "nested-inline-delimiters", "rewrite", ["F1", "F3"]]);
+      // F2 is on another file and names no family.
+      expect(row(declared, "F2")).toEqual(["T010", ["F2"], null, "patch", []]);
+      expect(replayChainEscalation(store, runId, { families, policy: "off" }).steps.every((s) => s.decision === "patch")).toBe(true);
+    } finally {
+      dispose();
+    }
+  }, 120000);
+
+  // R66 expenses-py f02b4d32: F2 (`build_report`, T010 with F1) and F3 (`_share`, T011, 641k
+  // tokens), both Decimal context precision in expenses/report.py; F1 (`render_table`) is another
+  // defect on the same file.
+  test("R66 expenses-py: with F2 and F3 of one family, F3's corrective rewrites against both cases", () => {
+    const { store, dispose } = openTrace(join(ROOT, "R66/expenses-py.sqlite.gz"));
+    try {
+      const runId = "f02b4d32-69eb-44c4-8036-967e499f7995";
+      const steps = (replay: ReturnType<typeof replayChainEscalation>) => replay.steps.map((s) => [s.findingId, s.taskId, s.chain, s.family, s.decision, s.battery]);
+      expect(steps(replayChainEscalation(store, runId))).toEqual([
+        ["F1", "T010", ["F1"], null, "patch", []],
+        ["F2", "T010", ["F2"], null, "patch", []],
+        ["F3", "T011", ["F3"], null, "patch", []],
+      ]);
+      const families = { F2: "decimal-context-precision", F3: "decimal-context-precision" };
+      expect(steps(replayChainEscalation(store, runId, { families }))).toEqual([
+        ["F1", "T010", ["F1"], null, "patch", []],
+        ["F2", "T010", ["F2"], "decimal-context-precision", "patch", []],
+        ["F3", "T011", ["F2", "F3"], "decimal-context-precision", "rewrite", ["F2", "F3"]],
+      ]);
+    } finally {
+      dispose();
+    }
+  }, 120000);
+});
+
 describe("repeated corrective failures replay on recorded chains (#1996)", () => {
   test("R64 cfgquill lint: T006 fails as T005 did, a would-stop the round did not record; other chains do not repeat", () => {
     const replay = replayTrace(join(ROOT, "R64/cfgquill.sqlite.gz"));

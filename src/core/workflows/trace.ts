@@ -38,6 +38,7 @@ import {
   chainFindings,
   chainRecord,
   chainRewriteDecision,
+  familyKey,
   findingChain,
 } from "./finding-chain.js";
 import {
@@ -235,9 +236,13 @@ export function scrubTrace(
       k,
       REQUEST_KEYS.has(k) && typeof v === "string"
         ? requestStandIn(k, v, standIns)
-        : PROSE.has(k) || content.has(k)
-          ? replaced(k, v, standIns)
-          : scrubTrace(v, standIns, content, k),
+        : // A finding's defect class keys finding chains (#2048): kept folded, so the labels one
+          // run wrote with and without spaces stay equal and need no stand-in.
+          k === "family" && typeof v === "string"
+          ? (familyKey(v) ?? "")
+          : PROSE.has(k) || content.has(k)
+            ? replaced(k, v, standIns)
+            : scrubTrace(v, standIns, content, k),
     ]),
   );
 }
@@ -929,8 +934,10 @@ export interface ChainEscalation {
   findingId: string;
   /** The corrective task the run gave the finding, or null. */
   taskId: string | null;
-  /** The finding's `repeatOf` chain on its file and symbol, oldest first, as recorded so far. */
+  /** The finding's chain on its file and symbol or family, oldest first, as recorded so far. */
   chain: string[];
+  /** The finding's family, the second half of the chain key (#2048); null when it names none. */
+  family: string | null;
   decision: "rewrite" | "patch";
   /** The findings whose repros a rewrite's battery holds, oldest first; empty for a patch. */
   battery: string[];
@@ -984,7 +991,15 @@ function stateFindings(store: WorkflowStore, runId: string): Map<string, Record<
 export function replayChainEscalation(
   store: WorkflowStore,
   runId: string,
-  options: { policy?: "on" | "off"; decide?: ChainRule } = {},
+  options: {
+    policy?: "on" | "off";
+    decide?: ChainRule;
+    /**
+     * Families to read for findings by id in place of the recorded ones (#2048): what a reviewer
+     * that declares families would have said on a run recorded before the field existed.
+     */
+    families?: Readonly<Record<string, string | null>>;
+  } = {},
 ): ChainEscalationReplay {
   const policy = options.policy ?? "on";
   const decide = options.decide ?? chainRewriteDecision;
@@ -1000,6 +1015,10 @@ export function replayChainEscalation(
     else missing.add(row.id);
   }
   const all = chainFindings(store, runId, extra);
+  for (const [id, family] of Object.entries(options.families ?? {})) {
+    const finding = all.get(id);
+    if (finding) all.set(id, { ...finding, family: familyKey(family) });
+  }
   const steps: ChainEscalation[] = [];
   const known = new Map<string, ChainFinding>();
   for (const row of rows) {
@@ -1019,6 +1038,7 @@ export function replayChainEscalation(
       findingId: row.id,
       taskId: row.repair_task_id,
       chain: chain.map((f) => f.id),
+      family: finding.family,
       decision,
       battery,
     });
@@ -1030,6 +1050,8 @@ export function replayChainEscalation(
 export interface ChainCost {
   file: string | null;
   symbol: string;
+  /** The chain's family (#2048), which keys it with the file in place of the symbol; or null. */
+  family: string | null;
   /** The longest chain a corrective's record names, and its finding ids. */
   length: number;
   findings: string[];
@@ -1087,12 +1109,14 @@ export function chainCosts(store: WorkflowStore, runId: string): ChainCost[] {
     return { tokens, costUsd };
   };
   const key = (file: string | null, symbol: string) => `${file ?? ""}\0${symbol}`;
+  // A family chain spans symbols: its records group by file and family (#2048).
+  const groupKey = (record: ChainRecord) =>
+    record.family
+      ? `${record.file ?? ""}\0family\0${record.family}`
+      : key(record.file, record.symbol);
   const groups = new Map<string, ChainRecord[]>();
   for (const record of records)
-    groups.set(key(record.file, record.symbol), [
-      ...(groups.get(key(record.file, record.symbol)) ?? []),
-      record,
-    ]);
+    groups.set(groupKey(record), [...(groups.get(groupKey(record)) ?? []), record]);
   return [...groups.values()].map((group): ChainCost => {
     const longest = group.reduce((a, b) => (b.length > a.length ? b : a));
     const first = group[0] as ChainRecord;
@@ -1108,16 +1132,22 @@ export function chainCosts(store: WorkflowStore, runId: string): ChainCost[] {
       decision,
       ...usage(taskId),
     }));
+    const symbols = new Set(group.flatMap((r) => [r.symbol, ...(r.symbols ?? [])]));
     const own = batteries
       .map((b) => ({
         decision: b.decision,
-        cases: b.cases.filter((c) => key(c.file, c.symbol) === key(first.file, first.symbol)),
+        cases: b.cases.filter((c) =>
+          first.family
+            ? c.file === first.file && symbols.has(c.symbol)
+            : key(c.file, c.symbol) === key(first.file, first.symbol),
+        ),
       }))
       .filter((b) => b.cases.length);
     const cases = own.flatMap((b) => b.cases);
     return {
       file: first.file,
       symbol: first.symbol,
+      family: first.family ?? null,
       length: longest.length,
       findings: longest.chain.map((f) => f.id),
       tasks,
