@@ -813,7 +813,8 @@ describe("gate matrix: SwiftPM, Mix, Dart, Zig, dune and Bundler (#1753)", () =>
 
 /**
  * Manifests and tool configs of each stack a request may name (#1710), with the content a
- * host-written task writes and whether the approval takes the write without a person.
+ * host-written task writes and whether the approval takes the write without a person. A lock that
+ * records the project's own version is exempt and bounded by the field check (#1934).
  */
 const PROPS = "<Project>\n  <PropertyGroup>\n    <Version>0.1.0</Version>\n    <Authors>dieodds</Authors>\n  </PropertyGroup>\n</Project>\n";
 const NAMED_CONFIGS: Record<Stack, { path: string; content: string; exempt: boolean }[]> = {
@@ -825,7 +826,7 @@ const NAMED_CONFIGS: Record<Stack, { path: string; content: string; exempt: bool
   ],
   npm: [
     { path: "package.json", content: '{"name":"fixture"}', exempt: true },
-    { path: "package-lock.json", content: "{}", exempt: false },
+    { path: "package-lock.json", content: "{}", exempt: true },
     { path: "biome.json", content: "{}", exempt: false },
   ],
   python: [
@@ -843,7 +844,7 @@ const NAMED_CONFIGS: Record<Stack, { path: string; content: string; exempt: bool
     { path: "rust-toolchain.toml", content: '[toolchain]\nchannel = "stable"\ncomponents = ["clippy"]\n', exempt: true },
     { path: "rust-toolchain.toml", content: '[toolchain]\npath = "/opt/rust"\n', exempt: false },
     { path: ".cargo/config.toml", content: '[build]\nrustflags = ["-Dwarnings"]\n', exempt: false },
-    { path: "Cargo.lock", content: "version = 3\n", exempt: false },
+    { path: "Cargo.lock", content: "version = 3\n", exempt: true },
   ],
   maven: [
     { path: "pom.xml", content: "<project/>", exempt: true },
@@ -1019,6 +1020,29 @@ describe("gate matrix: manifest executable fields (#1793)", () => {
     expect(changes(".mvn/wrapper/maven-wrapper.properties", props(url), props(url, "bin"))).toEqual([]);
     expect(changes(".mvn/wrapper/maven-wrapper.properties", props(url), props("https://example.test/maven.zip"))).toEqual(["distributionUrl"]);
     expect(changes("gradle/wrapper/gradle-wrapper.properties", "distributionUrl=https\\://services.gradle.org/distributions/gradle-8.10-bin.zip\n", "distributionUrl=https\\://services.gradle.org/distributions/gradle-8.11-bin.zip\n")).toEqual(["distributionUrl"]);
+  });
+  // #1934: a request-named lock is bounded to the project's own entry; any other entry it changes
+  // is a finding whatever the request names.
+  cell("rust", "Cargo.lock: the project's own version is free, a dependency entry is not", () => {
+    const lock = (own: string, serde = "1.0.200") => `version = 4\n\n[[package]]\nname = "serde"\nversion = "${serde}"\nsource = "registry+https://github.com/rust-lang/crates.io-index"\nchecksum = "abc"\n\n[[package]]\nname = "sketchfold"\nversion = "${own}"\ndependencies = [\n "serde",\n]\n`;
+    expect(changes("Cargo.lock", lock("0.1.0"), lock("0.2.0"))).toEqual([]);
+    expect(changes("Cargo.lock", lock("0.1.0"), lock("0.2.0", "1.0.201"))).toEqual(["package serde 1.0.200", "package serde 1.0.201"]);
+    expect(unrequestedManifestFields([{ path: "Cargo.lock", before: lock("0.1.0"), content: lock("0.2.0", "1.0.201") }], ["Cargo.lock"], "Bump sketchfold to 0.2.0; Cargo.lock follows, serde 1.0.201")).toHaveLength(2);
+  });
+  cell("npm", "package-lock.json: the root version is free, a node_modules entry is not", () => {
+    const lock = (version: string, dep = "1.0.0") => JSON.stringify({ name: "p", version, lockfileVersion: 3, requires: true, packages: { "": { name: "p", version, dependencies: { a: "^1.0.0" } }, "node_modules/a": { version: dep, resolved: `https://registry.npmjs.org/a/-/a-${dep}.tgz` } } });
+    expect(changes("package-lock.json", lock("1.0.0"), lock("1.1.0"))).toEqual([]);
+    expect(changes("package-lock.json", lock("1.0.0"), lock("1.1.0", "1.0.1"))).toEqual(["package node_modules/a"]);
+  });
+  cell("python", "uv.lock: the editable project is free, a registry package is not", () => {
+    const lock = (own: string, dep = "2.32.0") => `version = 1\nrequires-python = ">=3.11"\n\n[[package]]\nname = "p"\nversion = "${own}"\nsource = { editable = "." }\ndependencies = [{ name = "requests" }]\n\n[[package]]\nname = "requests"\nversion = "${dep}"\nsource = { registry = "https://pypi.org/simple" }\nsdist = { url = "https://example.test/r.tar.gz" }\n`;
+    expect(changes("uv.lock", lock("0.1.0"), lock("0.2.0"))).toEqual([]);
+    expect(changes("uv.lock", lock("0.1.0"), lock("0.1.0", "2.33.0"))).toEqual(["package requests 2.32.0", "package requests 2.33.0"]);
+  });
+  cell("ruby", "Gemfile.lock: the path gem of the project is free, a registry gem is not", () => {
+    const lock = (own: string, rake = "13.2.1") => `PATH\n  remote: .\n  specs:\n    mygem (${own})\n      rake (~> 13.0)\n\nGEM\n  remote: https://rubygems.org/\n  specs:\n    rake (${rake})\n\nPLATFORMS\n  ruby\n\nDEPENDENCIES\n  mygem!\n  rake (~> 13.0)\n\nBUNDLED WITH\n   2.5.0\n`;
+    expect(changes("Gemfile.lock", lock("0.1.0"), lock("0.2.0"))).toEqual([]);
+    expect(changes("Gemfile.lock", lock("0.1.0"), lock("0.1.0", "13.3.0"))).toEqual(["GEM rake"]);
   });
   cell("python", "requires-python and .python-version select the interpreter, not the description", () => {
     const pyproject = (requires: string, description = "a") => `[project]\nname = "p"\ndescription = "${description}"\nrequires-python = "${requires}"\n`;

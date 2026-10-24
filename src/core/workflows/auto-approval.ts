@@ -2,7 +2,7 @@ import { canonical, hashJson } from "../specs/hash.js";
 import { WorkflowFault } from "./errors.js";
 import { hostGrowth, withoutHostGrowth } from "./host-growth.js";
 import { MSBUILD_ACTIVE_PROPERTY } from "./quality/manifest-fields.js";
-import { isManifestPath } from "./quality/manifests.js";
+import { isBoundedLockPath, isManifestPath } from "./quality/manifests.js";
 import { unmappedDeliverables } from "./request-coverage.js";
 import {
   type ApprovalReview,
@@ -346,7 +346,7 @@ export function plannerApprovalLimits(policy: RunPolicy): {
     maxFiles: limits.maxFiles,
     allowedPaths: limits.allowedPaths,
     allowDelete: limits.allowDelete,
-    alwaysHuman: `repository metadata (.git, .github and other CI folders, .baked, specs), agent instructions, package manifests that already exist (creating one is allowed, and editing one on a workspace without source files${policy.autoApproval?.requestedManifestEdits ? " or one the request names: a dependency manifest, a solution or go.work file, or a Directory.Build.props, Directory.Build.targets, Directory.Packages.props, global.json, NuGet.config, gradle.properties, .mvn/maven.config or rust-toolchain.toml the plan writes whole in a host-written task with plain properties only" : ""}), lockfiles, tool configs (tsconfig, biome), .env files and keys`,
+    alwaysHuman: `repository metadata (.git, .github and other CI folders, .baked, specs), agent instructions, package manifests that already exist (creating one is allowed, and editing one on a workspace without source files${policy.autoApproval?.requestedManifestEdits ? " or one the request names: a dependency manifest, a solution or go.work file, or a Directory.Build.props, Directory.Build.targets, Directory.Packages.props, global.json, NuGet.config, gradle.properties, .mvn/maven.config or rust-toolchain.toml the plan writes whole in a host-written task with plain properties only, or a Cargo.lock, package-lock.json, uv.lock or Gemfile.lock that changes only the project's own entry" : ""}), lockfiles, tool configs (tsconfig, biome), .env files and keys`,
   };
 }
 
@@ -554,6 +554,9 @@ const CONFIG_KINDS: readonly ConfigKind[] = [
     matches: named(/(?:^|\/)(?:tsconfig|biome)[^/]*$/i),
     rule: "tsconfig and biome configs set what the checks enforce",
   },
+  // A lock that records the project's own version, named beside a version bump: the manifest
+  // field check holds every other entry of it to what it was (#1934).
+  { matches: isBoundedLockPath },
   {
     matches: named(/(?:^|\/)(?:[^/]*[.-]lock(?:b|\.[^/]*)?|go\.sum)$/i),
     rule: "lock files are written by the package manager",
