@@ -717,6 +717,7 @@ import { forgetProgress } from "./stall.js";
 import { statedRequest } from "./stated-request.js";
 import type { AttemptUsageRecord } from "./step-budget.js";
 import { type LeaseResource, newId, type TaskRow, type WorkflowStore } from "./store.js";
+import { isSuppliedContentFinding, suppliedContentFindings } from "./supplied-content.js";
 import {
   documentsOnly,
   failureOwner,
@@ -2015,6 +2016,17 @@ export class WorkflowScheduler {
                   ...findings.filter((f) => !isDerivationFinding(f)),
                   ...derivationFindings(spec, analysis),
                 ];
+              // A criterion literal a test file the request supplies verbatim lacks is the spec
+              // author's to fix, found here on the host instead of by the task-end walk (#2006).
+              findings = [
+                ...findings.filter((f) => !isSuppliedContentFinding(f)),
+                ...suppliedContentFindings(
+                  spec,
+                  graph,
+                  statedRequest(state, this.store.requests(runId)),
+                  { checks: policy.checks },
+                ),
+              ];
               // Analysis passes when no finding blocks: the rest are notes, whatever the model's verdict.
               const blocking = findings.some((f) => f.blocking);
               state.analysisPassed = !blocking && analysis.verdict !== "inconclusive";
