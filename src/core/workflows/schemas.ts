@@ -692,6 +692,13 @@ export const PolicySchema = z
      */
     edgeProbe: z.literal("on").optional(),
     /**
+     * The cross-run list of defect classes (defect-classes.ts, #1970): `on` lets the run's learn
+     * stage add the families of its resolved correctness findings to the list in the BAKED data
+     * directory, and shows its planner and planned implementers the classes of the domains its
+     * request and spec name, as examples. Absent is off: the list is neither read nor written.
+     */
+    defectClasses: z.literal("on").optional(),
+    /**
      * The project's choices for the anti-slop rule pack (quality/rules.ts), which is always on:
      * rules turned off, severities changed and ast-grep rule files added. Absent means the
      * built-in pack as shipped, so stored policies keep their hash.
@@ -1097,6 +1104,12 @@ export const ReviewSchema = z
             claim: Text,
             impact: Text,
             suggestedFix: Text,
+            /**
+             * The request's exact words, when the finding says the approved spec contradicts the
+             * request (#2032). The host checks them against the request before the finding records
+             * a spec amendment for the request; a quote the request does not hold records none.
+             */
+            quote: Text.optional(),
           })
           .strict(),
       )
@@ -1234,13 +1247,15 @@ export const ImplementationSchema = z
      * The sides of a `spec_conflict`, each with its exact words (#2016): a criterion or a
      * requirement by id, the request, or a test file by path. The host checks every quote against
      * the spec and the request before the conflict is settled for the request, so the decision
-     * rests on verified quotes, not on how the summary is worded.
+     * rests on verified quotes, not on how the summary is worded. A `platform` side (#2032) names
+     * a failing check by id, or `probe`, in ref and quotes a line of its output: the host settles
+     * a platform limit on that recorded output, not on the words "platform limit".
      */
     conflictSides: z
       .array(
         z
           .object({
-            kind: z.enum(["criterion", "requirement", "request", "test"]),
+            kind: z.enum(["criterion", "requirement", "request", "test", "platform"]),
             ref: z.string().min(1).max(512).optional(),
             quote: Text,
           })
@@ -1325,6 +1340,12 @@ export const AnalysisSchema = z
             refs: z.array(z.string().min(1)).min(1),
             description: Text,
             blocking: z.boolean(),
+            /**
+             * The request's exact words, when the finding sets the spec against what the request
+             * states (#2032). The host checks them against the request before the request settles
+             * the finding; a quote the request does not hold settles nothing.
+             */
+            quote: Text.optional(),
           })
           .strict(),
       )
@@ -1997,7 +2018,7 @@ export interface StartRequest {
   /** Approved boundaries used to route review findings to their owning initiative feature. */
   initiativeBounds?: {
     featureId: string;
-    features: { id: string; scope: string; paths: string[] }[];
+    features: { id: string; scope: string; paths: string[]; dependsOn?: string[] }[];
   };
   /**
    * Execution mode requested for this run (CLI `--worktree`). It overrides the policy and the
@@ -2328,7 +2349,9 @@ export function repairHostBoundCriteria(spec: Spec): { spec: Spec; repaired: str
     criteria.push({
       id: `AC-${String(next).padStart(3, "0")}`,
       requirementIds: uncovered,
-      given: original.given,
+      // What this host provides, not the original's Given: one that names the delivered revision
+      // and the CI matrix would flag the fallback host-bound again (#1964).
+      given: "the delivered tree on this host",
       when: "the run's checks run on this host",
       // biome-ignore lint/suspicious/noThenProperty: Given/When/Then is the versioned acceptance-criterion contract.
       then: `the code uses platform-neutral path, line-ending and process APIs and the tests pass here (${id} keeps the claim about other platforms for after release)`,

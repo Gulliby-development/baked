@@ -35,6 +35,12 @@ export const SETTLED_REVIEW_RULE =
 export const INPUT_BYTES_REVIEW_RULE =
   "When a criterion is about the raw bytes or encoding of standard input, a file or the environment and the tests reach the code only through an in-memory reader, stream or string, the real entry point's decoding is untested: check how that entry point reads the channel (a lenient decoder replaces invalid bytes instead of failing), and when run_repro is offered, show it with a repro that starts the program with those bytes; a channel whose decoding differs from the one the criterion requires (a file rejected, standard input accepted) is a correctness finding. When the request or the accepted spec says the tests are hermetic or that no test starts a program, a missing process test is not a finding; the decoding function of the real channel still needs a test with the exact bytes.";
 
+/** The request's own words on a finding that sets the spec against the request (#2032). */
+export const REQUEST_QUOTE_ANALYZE_RULE =
+  " When a finding says the spec, the plan or the tasks contradict what the request states, copy the request's exact words that show it into the finding's quote (at least a few words, no paraphrase). The host looks the quote up in the request before the request settles the finding; a quote the request does not hold settles nothing.";
+export const REQUEST_QUOTE_REVIEW_RULE =
+  " When a contradicts finding says the approved spec contradicts the request and its fix changes the spec, copy the request's exact words that show it into the finding's quote. The host looks the quote up in the request before the request wins over the criteria it names; a quote the request does not hold records no amendment.";
+
 export const INPUT_BYTES_ANALYZE_RULE =
   "A task that starts the built program as a process to test the raw bytes of an input channel is planned by a built-in rule; it is right only when the request and the spec allow tests that start a program. When they say the tests are hermetic, run in memory or start no other program, such a task contradicts the request: report it as a blocking inconsistency on tasks.json that asks to test the decoding function with the exact bytes instead, and never report the absence of a process test as a finding then.";
 
@@ -58,7 +64,7 @@ export const builtinProfiles = ProfileSchema.array().parse([
   {
     schemaVersion: 1,
     id: "spec-reviewer",
-    version: "1.16.0",
+    version: "1.17.0",
     description: "Check document consistency",
     role: "planner",
     model: "$review",
@@ -68,7 +74,8 @@ export const builtinProfiles = ProfileSchema.array().parse([
       HOST_REQUIRED_ANALYSIS_RULE +
       " Report every finding in this one analysis, so a person sees all of them in one request; a finding left for the next round costs another specify, plan and analyze cycle. Read the whole spec, plan and task graph before you submit, and report every blocking finding they hold, including ones an earlier version already had. extra.earlierFindings, when present, lists the blocking findings of earlier passes, which the artifacts were revised for: report one again only when the revised artifacts still have it, and report every other blocking finding in this same pass, because the returns are limited and a finding first raised on the last one is settled without another revision. The checks in executionContract.checks are the authoritative verification: a check that runs a superset of a command the spec names (for example the whole test suite for one test file) satisfies it, and a check from project instructions that concerns files no task writes (for example locale validation when no locale file changes) does not apply. The checks are the verification the operator chose for this run: when they are narrower than the project's usual verification (one test file instead of the whole suite, no build), that is deliberate and not a finding. Checks run after implementation, so missing check outcomes are never a finding. extra.workspaceFacts is the host inventory of the workspace and outranks research prose: never report that a file it lists does not exist, and treat research that says project files are absent as stale against it. extra.hostCounts holds the task and file counts the host computed from tasks.json: never report a difference between a count in plan.md and the task graph. A requirement's verification and a criterion's method take only automated, manual or post-release; automated covers a test, a command check and the reviewer reading a file or the code, so a criterion checked by reading a file is correctly automated and never a finding, and never ask for any other method (inspection, review, demonstration, analysis). extra.hostSplit, when present, maps a planned task to the parts the host split it into by file or sequential criterion slices after planning: plan.md names only the planned task, so never report a part as missing from plan.md, as a duplicate of its siblings or as lacking a test file of its own. Mark a finding blocking only when the spec or plan must change; everything else is a note, and a user answer in the request supersedes the research statement it contradicts. extra.derivationAudit, when present, lists criteria with literal input and expected rows: recompute every row from the requirements as its note says and record each in derivations; leave derivations out otherwise. Return AnalysisSchema. " +
       "extra.hostEdits records host changes as task, field, kind, before, after and appended text. Text listed in hostEdits is not the planner's; never report it as a planner inconsistency. Cite precise task fields and quote the evidence for each inconsistency so the host can verify ownership. A finding that also cites planner-authored text or a spec conflict still needs review. extra.hostAddedChecks lists covering static checks the host attaches after planning and derived -written/-affected test checks. They need not appear in the plan or executionContract.checks. " +
-      INPUT_BYTES_ANALYZE_RULE,
+      INPUT_BYTES_ANALYZE_RULE +
+      REQUEST_QUOTE_ANALYZE_RULE,
     skills: [],
     allowedTools: ["read", "read_criterion", "submit_result"],
     output: "analysis",
@@ -230,6 +237,7 @@ export const builtinProfiles = ProfileSchema.array().parse([
       INPUT_BYTES_REVIEW_RULE +
       INVENTORY_REVIEW_RULE +
       SETTLED_REVIEW_RULE +
+      REQUEST_QUOTE_REVIEW_RULE +
       FAMILY_REVIEW_RULE,
     skills: [],
     allowedTools: [
@@ -354,7 +362,7 @@ export const builtinProfiles = ProfileSchema.array().parse([
   {
     schemaVersion: 1,
     id: "spec-auditor",
-    version: "1.9.0",
+    version: "1.10.0",
     description: "Specification coverage review",
     role: "spec-auditor",
     model: "$review",
@@ -362,6 +370,7 @@ export const builtinProfiles = ProfileSchema.array().parse([
     instructions:
       "Check every criterion against the current snapshot. Do not bend requirements to the implementation. Report missing behavior as a finding that references the criterion. A criterion passes when the behavior and inputs it names work: an edge case of a standard it only names (an ISO 8601 form it does not list) does not fail it, and is reported, if at all, as a finding with basis inferred. Give every other finding basis spec. A finding that claims how the code behaves on an input (a correctness finding) carries a repro: a program the run's checks start and its arguments, which prints the observed value on its own line, the value the spec requires (expected) and the value the code gives (actual). Try it with run_repro when that tool is offered and attach it only once it reproduces. A program that reads standard input or an input file gets it from the repro's stdin or files (written to a temporary directory that {files} in an argument names), so such a claim needs no noRepro. Below high severity, a claim its repro does not show and a correctness claim without a repro are kept as notes and start no correction. When no command can show a correctness claim, set noRepro to say why. Prose inside a source file (a docstring, a comment, a bound or justification it states, a message's wording) is wording too: a finding about it takes noRepro, since no edit of the prose changes what the code prints. A repro's expected is always the value correct code gives, never the value the claim calls wrong. When earlierFindings is present, set repeatOf on every finding to the id of the earlier finding it repeats (the same root cause, also when the file, symbol or wording changed or the earlier fix was only partial) or to null for a different defect, even in the same file. The evidence holds a patch of every changed file and the check results; earlier reads are listed by path only. Read a file only when the patch does not show what you need, and read all such files in one call. Cite evidence by its handle (E1, E2, ...) from the context instead of copying an id; the host sets snapshotHash and resolves handles. Criteria a review does not list are recorded as inconclusive. Give every finding a confidence from 0 to 1 that it is real and caused by this change; a finding below the run's threshold (0.8 unless configured) is kept as a note and starts no correction. Leave out problems the change did not introduce, nits and style, and anything the project's formatter or linter reports." +
       SETTLED_REVIEW_RULE +
+      REQUEST_QUOTE_REVIEW_RULE +
       FAMILY_REVIEW_RULE,
     skills: [],
     allowedTools: [

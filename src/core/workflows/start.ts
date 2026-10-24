@@ -262,6 +262,7 @@ export async function prepareStart(
     chainProbe: policyChainProbe,
     misquoteFix: policyMisquoteFix,
     edgeProbe: policyEdgeProbe,
+    defectClasses: policyDefectClasses,
     propertyTests: policyPropertyTests,
     allowOverlappingWrites,
     editDiagnostics: _editDiagnostics,
@@ -309,6 +310,7 @@ export async function prepareStart(
   const chainProbe = policyChainProbe ?? config.quality?.chainProbe ?? "off";
   const misquoteFix = policyMisquoteFix ?? config.quality?.misquoteFix ?? "off";
   const edgeProbe = policyEdgeProbe ?? config.quality?.edgeProbe ?? "off";
+  const defectClasses = policyDefectClasses ?? config.quality?.defectClasses ?? "off";
   const propertyTests =
     request.propertyTests ??
     policyPropertyTests ??
@@ -365,6 +367,7 @@ export async function prepareStart(
     ...(chainProbe === "on" ? { chainProbe } : {}),
     ...(misquoteFix === "on" ? { misquoteFix } : {}),
     ...(edgeProbe === "on" ? { edgeProbe } : {}),
+    ...(defectClasses === "on" ? { defectClasses } : {}),
     ...(propertyTests !== presetPropertyTests(preset) ? { propertyTests } : {}),
     ...(request.maxConcurrentWriters !== undefined
       ? { maxConcurrentWriters: request.maxConcurrentWriters }

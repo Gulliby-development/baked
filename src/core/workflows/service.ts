@@ -1036,6 +1036,7 @@ export class NativeWorkflowService implements WorkflowService {
             id: feature.id,
             ...feature.boundary,
             ...(feature.testedBy ? { testedBy: feature.testedBy } : {}),
+            dependsOn: feature.dependsOn,
           })),
         };
       }

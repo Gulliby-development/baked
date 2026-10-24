@@ -12,6 +12,7 @@ import {
   replayTargetRecords,
   replayTargets,
 } from "../src/core/workflows/quality/baseline-replay.js";
+import { RESOLUTION_SOURCES, type ResolutionIo, replayResolution, resolutionDiff, UNCHANGED_RESOLUTION_NOTE } from "../src/core/workflows/quality/dependency-resolution.js";
 import type { Check, ExecutionRequest } from "../src/core/workflows/types.js";
 import { FixtureExecutor, fixturePolicy, workflowFixture } from "./helpers/workflow-fixture.js";
 
@@ -110,7 +111,7 @@ describe("baseline replay (#1945)", () => {
       if (request.profile.output === "plan") {
         const result = await super.execute(request);
         const plan = result.output as { taskGraph: { tasks: { writes: { path: string; action: string }[] }[] } };
-        plan.taskGraph.tasks[0]?.writes.push({ path: "src/sign.ts", action: this.greenfield ? "create" : "modify" }, { path: "tests/sign.test.ts", action: "create" }, ...Object.keys(this.extra).map((path) => ({ path, action: "create" })));
+        plan.taskGraph.tasks[0]?.writes.push({ path: "src/sign.ts", action: this.greenfield ? "create" : "modify" }, { path: "tests/sign.test.ts", action: "create" }, ...Object.keys(this.extra).map((path) => ({ path, action: existsSync(join(this.dir, path)) ? "modify" : "create" })));
         return result;
       }
       if (request.profile.output === "implementation") {
@@ -234,6 +235,18 @@ describe("baseline replay (#1945)", () => {
     expect(record?.checks.find((c) => c.id === "unit")?.targets).toBeUndefined();
   }, 60_000);
 
+  // R61 taskplan AC-005 (#1954): "baseline and updated dependency resolution identical" had no
+  // evidence. The replay lists the resolution in its copy as delivered and after putting files back.
+  test("a lock the run changed lists the moved dependency; an unchanged folder is identical", async () => {
+    const lock = (version: string) => `version = 4\n\n[[package]]\nname = "serde"\nversion = "${version}"\nsource = "registry+https://github.com/rust-lang/crates.io-index"\n`;
+    const { record, reviews } = await replay(true, { files: { "Cargo.lock": lock("1.0.200") }, extra: { "Cargo.lock": lock("1.0.201") } });
+    expect(record?.reverted).toContain("Cargo.lock");
+    expect(record?.dependencies).toEqual([{ source: "cargo", folder: ".", identical: false, added: [], removed: [], changed: ["serde 1.0.200 -> 1.0.201"] }]);
+    expect(reviews.some((p) => p.includes("dependencies compares the resolved dependencies"))).toBe(true);
+    const same = await replay(true, { files: { "Cargo.lock": lock("1.0.200") } });
+    expect(same.record?.dependencies).toEqual([{ source: "cargo", folder: ".", identical: true, added: [], removed: [], changed: [], note: UNCHANGED_RESOLUTION_NOTE }]);
+  }, 60_000);
+
   test("off by default: no replay and no note", async () => {
     const { record, reviews } = await replay(false);
     expect(record).toBeNull();
@@ -316,5 +329,58 @@ describe("baseline replay per test target (#2020)", () => {
   test("the spec author and the reviewers are told the replay holds per target", () => {
     expect(BASELINE_REPLAY_NOTE.spec).toContain("per target");
     expect(BASELINE_REPLAY_NOTE.review).toContain("targets");
+  });
+});
+
+describe("baseline replay: dependency resolution (#1954)", () => {
+  /** One row per source: the folder's files before the change and as delivered, and what moved. */
+  const ROWS: { source: string; files: Record<string, string>; output?: (version: string) => string; before: string; after: string; changed: string }[] = [
+    { source: "npm", files: { "package-lock.json": "" }, before: JSON.stringify({ packages: { "": {}, "node_modules/a": { version: "1.0.0" } } }), after: JSON.stringify({ packages: { "": {}, "node_modules/a": { version: "1.1.0" } } }), changed: "a 1.0.0 -> 1.1.0" },
+    { source: "bun", files: { "bun.lock": "" }, before: '{\n  "lockfileVersion": 1,\n  "packages": {\n    "a": ["a@1.0.0", "", {}, "sha"],\n  },\n}\n', after: '{\n  "lockfileVersion": 1,\n  "packages": {\n    "a": ["a@1.1.0", "", {}, "sha"],\n  },\n}\n', changed: "a 1.0.0 -> 1.1.0" },
+    { source: "cargo", files: { "Cargo.lock": "" }, before: 'version = 4\n\n[[package]]\nname = "serde"\nversion = "1.0.200"\nsource = "registry"\n', after: 'version = 4\n\n[[package]]\nname = "serde"\nversion = "1.0.201"\nsource = "registry"\n', changed: "serde 1.0.200 -> 1.0.201" },
+    { source: "uv", files: { "uv.lock": "" }, before: '[[package]]\nname = "requests"\nversion = "2.32.0"\n\n[package.metadata]\nx = 1\n', after: '[[package]]\nname = "requests"\nversion = "2.33.0"\n', changed: "requests 2.32.0 -> 2.33.0" },
+    { source: "poetry", files: { "poetry.lock": "" }, before: '[[package]]\nname = "click"\nversion = "8.1.0"\n', after: '[[package]]\nname = "click"\nversion = "8.2.0"\n', changed: "click 8.1.0 -> 8.2.0" },
+    { source: "nuget", files: { "packages.lock.json": "" }, before: JSON.stringify({ dependencies: { "net10.0": { "Newtonsoft.Json": { resolved: "13.0.1" } } } }), after: JSON.stringify({ dependencies: { "net10.0": { "Newtonsoft.Json": { resolved: "13.0.3" } } } }), changed: "Newtonsoft.Json 13.0.1 -> 13.0.3" },
+    { source: "dotnet", files: { "App.csproj": "" }, output: (v) => `Project 'App' has the following package references\n   [net10.0]:\n   Top-level Package      Requested   Resolved\n   > xunit                2.9.0       ${v}\n`, before: "2.9.0", after: "2.9.2", changed: "xunit 2.9.0 -> 2.9.2" },
+    { source: "go", files: { "go.mod": "" }, output: (v) => `example.com/app\ngolang.org/x/text ${v}\n`, before: "v0.14.0", after: "v0.15.0", changed: "golang.org/x/text v0.14.0 -> v0.15.0" },
+    { source: "maven", files: { "pom.xml": "" }, output: (v) => `[INFO] The following files have been resolved:\n[INFO]    org.slf4j:slf4j-api:jar:${v}:compile -- module org.slf4j\n[INFO]    org.junit.jupiter:junit-jupiter:jar:5.10.0:test\n[INFO] BUILD SUCCESS\n`, before: "2.0.9", after: "2.0.13", changed: "org.slf4j:slf4j-api 2.0.9 -> 2.0.13" },
+    { source: "gradle", files: { "build.gradle.kts": "" }, output: (v) => `testRuntimeClasspath\n+--- com.google.guava:guava:32.0.0-jre -> ${v}\n\\--- junit:junit:4.13.2\n`, before: "33.0.0-jre", after: "33.2.0-jre", changed: "com.google.guava:guava 33.0.0-jre -> 33.2.0-jre" },
+  ];
+
+  test("every source has a row", () => {
+    expect(ROWS.map((row) => row.source).sort()).toEqual(RESOLUTION_SOURCES.map((source) => source.id).sort());
+  });
+
+  for (const row of ROWS)
+    test(`${row.source}: an unchanged tree is identical and a moved dependency is named`, async () => {
+      const io = (text: string): ResolutionIo => ({
+        names: () => Object.keys(row.files),
+        read: () => (row.output ? null : text),
+        run: async () => ({ status: "passed", output: row.output?.(text) ?? "" }),
+      });
+      const [lockfile] = Object.keys(row.files);
+      const same = await replayResolution([lockfile as string], ["."], io(row.before), () => {});
+      expect(same).toEqual([{ source: row.source, folder: ".", identical: true, added: [], removed: [], changed: [] }]);
+      const sides = [row.after, row.before];
+      let side = 0;
+      const moving: ResolutionIo = { ...io(""), read: () => (row.output ? null : (sides[side] ?? null)), run: async () => ({ status: "passed", output: row.output?.(sides[side] ?? "") ?? "" }) };
+      const moved = await replayResolution([lockfile as string], ["."], moving, () => { side = 1; });
+      expect(moved).toEqual([{ source: row.source, folder: ".", identical: false, added: [], removed: [], changed: [row.changed] }]);
+    });
+
+  test("a folder whose dependency files did not change runs nothing; a listing that fails says why", async () => {
+    let runs = 0;
+    const io: ResolutionIo = { names: (folder) => (folder === "svc" ? ["go.mod"] : ["pom.xml", "mvnw"]), read: () => null, run: async (_folder, executable) => { runs++; return { status: "failed", output: `${executable}: offline` }; } };
+    const diffs = await replayResolution(["svc/go.mod", "src/App.java"], [".", "svc"], io, () => {});
+    expect(runs).toBe(2);
+    expect(diffs).toEqual([
+      { source: "go", folder: "svc", identical: false, added: [], removed: [], changed: [], note: "before the change: go list -m all did not list the dependencies: go: offline; delivered: go list -m all did not list the dependencies: go: offline" },
+      { source: "maven", folder: ".", identical: true, added: [], removed: [], changed: [], note: UNCHANGED_RESOLUTION_NOTE },
+    ]);
+  });
+
+  test("added and removed dependencies are listed with their versions", () => {
+    const diff = resolutionDiff("npm", ".", new Map([["a", "1.0.0"], ["b", "2.0.0"]]), new Map([["a", "1.0.0"], ["c", "3.0.0"]]));
+    expect(diff).toEqual({ source: "npm", folder: ".", identical: false, added: ["c 3.0.0"], removed: ["b 2.0.0"], changed: [] });
   });
 });

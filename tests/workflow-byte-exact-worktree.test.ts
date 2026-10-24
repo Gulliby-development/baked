@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileHash, sameContentIgnoringEol } from "../src/core/workflows/effects.js";
@@ -51,6 +51,28 @@ function fixture(autocrlf: boolean) {
 }
 
 describe("byte-exact task worktrees", () => {
+  // #1954: a same-size edit written in the same instant as the run's index ("racily clean") was
+  // left out of the run's content: the copied index got a fresh time, so git trusted its stat.
+  test("the run's content holds a same-size edit as recent as the run's index", async () => {
+    const f = fixture(false);
+    const root = join(f.workspace, f.path);
+    const file = join(root, "Cargo.lock");
+    // Ten seconds back, so `git add` records the entry without smudging it as racy.
+    const then = new Date(Math.floor(Date.now() / 1000) * 1000 - 10_000);
+    git(f.workspace, "config", "core.trustctime", "false");
+    writeFileSync(file, 'version = "1.0.200"\n');
+    utimesSync(file, then, then);
+    git(root, "add", "Cargo.lock");
+    // The edit lands in the same second as the index: same size, same mtime second.
+    writeFileSync(file, 'version = "1.0.201"\n');
+    utimesSync(file, then, then);
+    const index = git(root, "rev-parse", "--path-format=absolute", "--git-path", "index");
+    utimesSync(index, then, new Date(then.getTime() + 500));
+    expect(statSync(index).mtimeMs).toBeGreaterThan(statSync(file).mtimeMs);
+    const base = await runContentCommit(f.store, f.runId, f.worktree as never);
+    expect(git(f.workspace, "show", `${base}:Cargo.lock`)).toBe('version = "1.0.201"');
+  });
+
   test("a task worktree holds the run worktree's LF bytes when autocrlf is on", async () => {
     const f = fixture(true);
     const base = await runContentCommit(f.store, f.runId, f.worktree as never);

@@ -34,6 +34,7 @@ import {
 } from "../llm/policy-refusal.js";
 import { invisibleCharacters } from "../llm/provider-answer.js";
 import { ProviderUnreachableError } from "../llm/provider-health.js";
+import { dataDir } from "../platform/index.js";
 import { runSandbox } from "../security/sandbox.js";
 import { buildSafeEnv } from "../spawn.js";
 import { canonical, hashBytes, hashJson } from "../specs/hash.js";
@@ -214,6 +215,7 @@ import {
   persistentDefect,
   REQUEST_NOTE,
   repeatedFacet,
+  requestSettlesInput,
   restrictsRequest,
   VERIFICATION_METHODS,
 } from "./analysis-notes.js";
@@ -299,6 +301,13 @@ import { coverageFinding } from "./coverage.js";
 import { type CriticCalibration, calibrateCritic, criticExamples } from "./critic-calibration.js";
 import { crossPlatformAnalysisNote, crossPlatformNote } from "./cross-platform.js";
 import {
+  addDefectClasses,
+  DEFECT_CLASSES_FILE,
+  defectAdditions,
+  defectClassesFor,
+  defectRunText,
+} from "./defect-classes.js";
+import {
   git,
   gitWorktreePaths,
   initiativeSpecPrefix,
@@ -322,6 +331,17 @@ import {
 } from "./derivation-audit.js";
 import { EffectJournal, fileHash, intentRoot, rootField } from "./effects.js";
 import { WorkflowFault } from "./errors.js";
+import {
+  EVIDENCE_DECISION_KIND,
+  EVIDENCE_DECISIONS_DIR,
+  type EvidenceInput,
+  type EvidenceRecord,
+  type EvidenceSite,
+  evidenceDecision,
+  evidenceRecordPath,
+  platformEvidence,
+  reportRequestEvidence,
+} from "./evidence-decisions.js";
 import { ExecutionBudgetClock, executionClock, executionTimeout } from "./execution-clock.js";
 import {
   BATTERY_CASES,
@@ -442,6 +462,11 @@ import {
   unrequestedManifestFields,
 } from "./quality/dependencies.js";
 import {
+  isResolutionInput,
+  type ResolutionDiff,
+  replayResolution,
+} from "./quality/dependency-resolution.js";
+import {
   compareWithBaseline,
   duplicationOf,
   isTestCodePath,
@@ -459,7 +484,11 @@ import {
   hardenTargets,
   QUALITY_MUTATION_BASELINE,
 } from "./quality/harden.js";
-import { hasExecutableFields, manifestDependencies } from "./quality/manifests.js";
+import {
+  hasExecutableFields,
+  isBoundedLockPath,
+  manifestDependencies,
+} from "./quality/manifests.js";
 import {
   DEFAULT_MUTATION_BUDGET_MS,
   generateMutants,
@@ -692,18 +721,14 @@ import {
   documentAmendmentOf,
   namesRunDocument,
   type SpecAmendment,
+  specAmendmentInput,
   specAmendmentOf,
 } from "./spec-amendment.js";
 import { digestsSpec, mayDigestSpec, READ_CRITERION, readCriterionTool } from "./spec-digest.js";
 import { forgetProgress } from "./stall.js";
+import { statedRequest } from "./stated-request.js";
 import type { AttemptUsageRecord } from "./step-budget.js";
-import {
-  type LeaseResource,
-  newId,
-  type RequestRow,
-  type TaskRow,
-  type WorkflowStore,
-} from "./store.js";
+import { type LeaseResource, newId, type TaskRow, type WorkflowStore } from "./store.js";
 import {
   documentsOnly,
   failureOwner,
@@ -801,6 +826,8 @@ type Severity = Review["findings"][number]["severity"];
 const MUTATION_COPY = "quality-mutation";
 /** The task worktree the baseline replay (#1945) runs in. */
 const BASELINE_REPLAY_COPY = "quality-baseline-replay";
+/** How long one dependency listing of the baseline replay may run (#1954). */
+const RESOLUTION_TIMEOUT_MS = 180_000;
 /** The task worktree the package contents check (#1984) builds packages in. */
 const PACKAGE_CONTENTS_COPY = "quality-package-contents";
 const ALL_SEVERITIES: readonly Severity[] = ["critical", "high", "medium", "low"];
@@ -901,20 +928,6 @@ function integrityRequirementText(state: RuntimeState): string {
     state.spec ? canonical(state.spec) : "",
     state.plan ?? "",
   ].join("\n");
-}
-
-/**
- * The request with the clarification answers a person gave. A bound or an exclusion a person
- * decided ("files up to 100 MiB") is stated, not invented by the spec author (#1413).
- */
-function statedRequest(state: RuntimeState, requests: readonly RequestRow[]): string {
-  const answers = requests
-    .filter((r) => r.kind === "clarification" && r.status === "accepted" && r.actor === "user")
-    // Only the answers: the decision's request id would add stray numbers.
-    .map((r) =>
-      canonical((JSON.parse(r.answer_json ?? "{}") as { answers?: unknown }).answers ?? ""),
-    );
-  return [state.requestText || state.prompt, ...answers].join("\n");
 }
 
 /**
@@ -1368,7 +1381,10 @@ export class WorkflowScheduler {
               };
               // The criteria the host writes itself, when the spec lacks them (#1943).
               const hostWritten = HOST_REQUIRED_CRITERIA.filter((c) =>
-                c.required(state.requestText || state.prompt, runRoot(this.store.workspace, state)),
+                c.required(
+                  this.criterionRequest(runId, state),
+                  runRoot(this.store.workspace, state),
+                ),
               );
               const hostRepairs = (spec: Spec): Spec =>
                 addHostRequiredCriteria(
@@ -1970,7 +1986,7 @@ export class WorkflowScheduler {
               // A criterion the host's own rules make the spec author add is not scope the request
               // lacks: md-site (bench round 52) ran specify three times and plan and analyze four
               // times over the required 1280 px criterion (#1765).
-              const request = state.requestText || state.prompt;
+              const request = this.criterionRequest(runId, state);
               const root = runRoot(this.store.workspace, state);
               const required = HOST_REQUIRED_CRITERIA.filter((c) => c.required(request, root));
               const requiredIds = hostRequiredIds(spec, required);
@@ -2090,17 +2106,23 @@ export class WorkflowScheduler {
                   break;
                 }
               }
+              // Whether the request settles a finding rests on a request quote the host checks,
+              // not on the finding's wording (#2032); each decision is recorded for replay.
+              const stated = statedRequest(state, this.store.requests(runId));
+              this.recordEvidenceDecisions(
+                runId,
+                findings.map((f) => ({ ref: f.id, input: requestSettlesInput(f, spec, stated) })),
+              );
+              const defect = (f: (typeof findings)[number]) => persistentDefect(f, spec, stated);
+              const settles = (f: (typeof findings)[number]) => restrictsRequest(f, spec, stated);
               // An inconsistency that survived the first reroute gets one more, with the finding
               // text and a note that it is a defect to fix, not a decision to assume.
-              const defectRound =
-                state.analysisReplans === 2 && findings.some((f) => persistentDefect(f, spec));
+              const defectRound = state.analysisReplans === 2 && findings.some(defect);
               // A scope finding that adds a restriction or a requirement absent from the request gets
               // the same extra return with the instruction that the request is authoritative; a
               // survivor is assumed.
               const restrictsRound =
-                !defectRound &&
-                state.analysisReplans === 2 &&
-                findings.some((f) => restrictsRequest(f, spec));
+                !defectRound && state.analysisReplans === 2 && findings.some(settles);
               // The reroute budget is the run's, so an inconsistency first raised after it is spent
               // (often one the repair of earlier findings introduced) gets a defect round of its
               // own, at most LATE_DEFECT_ROUNDS, before a person is asked (#1830).
@@ -2109,7 +2131,7 @@ export class WorkflowScheduler {
                 !restrictsRound &&
                 state.analysisReplans >= 3 &&
                 state.lateDefectRounds < LATE_DEFECT_ROUNDS &&
-                findings.some((f) => persistentDefect(f, spec) && newFacet(f, earlierRaised));
+                findings.some((f) => defect(f) && newFacet(f, earlierRaised));
               if (
                 !state.analysisPassed &&
                 policy.clarification === "assume" &&
@@ -2135,7 +2157,7 @@ export class WorkflowScheduler {
                       blockingFindings,
                       back === "specify" ? ["spec", "plan"] : ["plan"],
                     );
-                  const restricted = blockingFindings.some((f) => restrictsRequest(f, spec));
+                  const restricted = blockingFindings.some(settles);
                   state.prompt += `\nAnalysis findings; resolve every one of them in the artifacts they refer to. ${defectRound || lateDefect ? DEFECT_NOTE : `${restricted ? `${REQUEST_NOTE} ` : ""}Where a finding needs a decision: ${ASSUME_NOTE}`}\n${canonical(blockingFindings.map(({ kind, refs, description }) => ({ kind, refs, description })))}`;
                   advance = false;
                   rerouted = v2 !== null;
@@ -2153,10 +2175,7 @@ export class WorkflowScheduler {
                 analysis.verdict !== "inconclusive" &&
                 findings.every(
                   (f) =>
-                    !f.blocking ||
-                    assumable(f) ||
-                    restrictsRequest(f, spec) ||
-                    repeatedFacet(f, earlierRaised),
+                    !f.blocking || assumable(f) || settles(f) || repeatedFacet(f, earlierRaised),
                 )
               ) {
                 const assumed = findings.filter((f) => f.blocking);
@@ -2178,11 +2197,7 @@ export class WorkflowScheduler {
                 // A spec finding the request settles is an amendment, so review does not raise
                 // it against spec.json again after implement (#1120).
                 this.store.transaction(() =>
-                  this.amendFromAnalysis(
-                    runId,
-                    state,
-                    assumed.filter((f) => restrictsRequest(f, spec)),
-                  ),
+                  this.amendFromAnalysis(runId, state, assumed.filter(settles)),
                 );
                 findings = findings.map((f) =>
                   f.blocking
@@ -3035,6 +3050,7 @@ export class WorkflowScheduler {
                     }),
                   ),
                 );
+              if (policy.defectClasses === "on") this.learnDefectClasses(runId, state);
               break;
             }
           }
@@ -5291,6 +5307,15 @@ export class WorkflowScheduler {
         },
       };
     }
+    // The cross-run defect classes of the run's domains, as examples (#1970).
+    if (
+      policy.defectClasses === "on" &&
+      (stageProfile.output === "plan" ||
+        (stageProfile.output === "implementation" && task?.origin === "planned"))
+    ) {
+      const classes = defectClassesFor(join(dataDir(), DEFECT_CLASSES_FILE), defectRunText(state));
+      if (classes) extra = { ...(extra as Record<string, unknown>), defectClasses: classes };
+    }
     const replay =
       task && !generatedRows.length && stageProfile.output === "implementation"
         ? this.rowReplayFor(runId, state, policy, task)
@@ -6207,10 +6232,13 @@ export class WorkflowScheduler {
     // The author and the reviewer read the same decision, each worded for its stage (#1831).
     const crossPlatform =
       profile.output === "spec"
-        ? crossPlatformNote(state.requestText || state.prompt, runRoot(this.store.workspace, state))
+        ? crossPlatformNote(
+            this.criterionRequest(runId, state),
+            runRoot(this.store.workspace, state),
+          )
         : profile.output === "analysis"
           ? crossPlatformAnalysisNote(
-              state.requestText || state.prompt,
+              this.criterionRequest(runId, state),
               runRoot(this.store.workspace, state),
             )
           : null;
@@ -10694,12 +10722,41 @@ ${note}`;
       !this.store.latestArtifact(runId, assumedPath) &&
       !this.store.latestArtifact(runId, requestConflictPath(task.id));
     // A documentation task torn between the rule for examples and the request's worked example
-    // copies the request's example (#992).
-    const example = first && writesOnlyDocs(task) && namesExampleRule(report);
-    const assume = first && (example || namesRequestSide(report));
+    // copies the request's example (#992). It settles on a request quote the host found, on every
+    // report; the wording rule is only the first report's fallback (#2032).
+    const assumes = policy.clarification === "assume";
+    const exampleInput: EvidenceInput = {
+      site: "docs-example",
+      eligible: assumes && writesOnlyDocs(task) && !this.settledBy(runId, "docs-example", task.id),
+      evidence: reportRequestEvidence(
+        statedRequest(state, this.store.requests(runId)),
+        report,
+        result.conflictSides,
+      ),
+      wording: namesExampleRule(report),
+      fallback: first,
+    };
+    const example = evidenceDecision(exampleInput);
+    const assume = example || (first && namesRequestSide(report));
     // One side is what the platform cannot do at all: no person can choose it, so the nearest
-    // feasible behavior the task named holds (#1384).
-    const platform = first && !assume && namesPlatformLimit(report);
+    // feasible behavior the task named holds (#1384). It settles on a platform side whose quote
+    // a failing check or a probe of the task printed, on every report (#2032).
+    const platformInput: EvidenceInput = {
+      site: "platform-limit",
+      eligible: assumes && !assume && !this.settledBy(runId, "platform-limit", task.id),
+      evidence: platformEvidence(
+        result.conflictSides,
+        this.failedCheckOutputs(runId, task.id),
+        this.probeOutputs(runId, task.id),
+      ),
+      wording: namesPlatformLimit(report),
+      fallback: first,
+    };
+    const platform = evidenceDecision(platformInput);
+    this.recordEvidenceDecisions(runId, [
+      { ref: task.id, input: exampleInput },
+      { ref: task.id, input: platformInput },
+    ]);
     // The test files of the conflict: those the report names, and those the task's last failing
     // check names, since reports often cite a test by function only (tonemath 241fc475, #1459).
     const failing = this.failedCheckOutput(runId, task.id);
@@ -11677,22 +11734,50 @@ ${note}`;
     return tasks.some((t) => t.writes.some((w) => w.path === path && w.action === "create"));
   }
   /** The output of the checks whose latest run in a task's attempts failed, joined (#1459). */
+  /**
+   * The request the host-required and cross-platform criterion decisions read: the request with
+   * the clarification answers a person gave (#1964), so an answer that adds a platform or turns CI
+   * down reaches the author note, the analysis filter and the required predicate alike.
+   */
+  private criterionRequest(runId: string, state: RuntimeState): string {
+    return statedRequest(state, this.store.requests(runId));
+  }
   private failedCheckOutput(runId: string, taskId: string): string {
+    return Object.values(this.failedCheckOutputs(runId, taskId)).join("\n");
+  }
+  /** The output of each check whose latest run for the task failed, by check id. */
+  private failedCheckOutputs(runId: string, taskId: string): Record<string, string> {
     const latest = new Map<string, { status: string; artifact_id: string }>();
     for (const row of this.store.taskCheckRuns(runId, taskId)) latest.set(row.check_id, row);
-    const outputs: string[] = [];
-    for (const row of latest.values()) {
+    const outputs: Record<string, string> = {};
+    for (const [checkId, row] of latest) {
       if (row.status !== "failed") continue;
       try {
-        outputs.push(
-          String(
-            (JSON.parse(this.store.readArtifact(runId, row.artifact_id)) as { output?: unknown })
-              .output ?? "",
-          ),
+        outputs[checkId] = String(
+          (JSON.parse(this.store.readArtifact(runId, row.artifact_id)) as { output?: unknown })
+            .output ?? "",
         );
       } catch {}
     }
-    return outputs.join("\n");
+    return outputs;
+  }
+  /** The output of each probe the task ran (`attempts/<attempt>/probe-<n>.json`, #454). */
+  private probeOutputs(runId: string, taskId: string): string[] {
+    return this.store
+      .artifacts(runId)
+      .filter((a) => a.kind === "probe")
+      .flatMap((a) => {
+        try {
+          const body = JSON.parse(this.store.readArtifact(runId, a.id)) as {
+            taskId?: unknown;
+            status?: unknown;
+            output?: unknown;
+          };
+          return body.taskId === taskId && body.status === "ran" ? [String(body.output ?? "")] : [];
+        } catch {
+          return [];
+        }
+      });
   }
   /**
    * The test files a conflict report names that the task cannot write and that an implemented test
@@ -12414,6 +12499,28 @@ ${note}`;
     });
     this.repair(runId, state, policy, recorded, "repair", "task");
     this.store.transaction(() => this.store.saveState(runId, state));
+  }
+  /**
+   * Adds the families of the run's resolved correctness findings to the cross-run list of defect
+   * classes (#1970), from the learn stage of a run whose policy turns it on. What the run added is
+   * recorded as `learning/defect-classes.json`.
+   */
+  private learnDefectClasses(runId: string, state: RuntimeState): void {
+    const findings = this.store
+      .findings(runId)
+      .filter((f) => f.status === "resolved" && f.repair_task_id)
+      .map((f) => JSON.parse(f.body_json) as Review["findings"][number]);
+    const additions = defectAdditions(findings, defectRunText(state));
+    if (!additions.length) return;
+    addDefectClasses(join(dataDir(), DEFECT_CLASSES_FILE), additions, new Date().toISOString());
+    this.store.transaction(() =>
+      this.store.artifact(
+        runId,
+        "learning-candidate",
+        "learning/defect-classes.json",
+        canonical({ schemaVersion: 1, additions }),
+      ),
+    );
   }
   /**
    * Routes a defect a task names in another task's file to that file's owner at once (#839). A
@@ -13199,7 +13306,8 @@ ${note}`;
       const code = await readCodeFiles(
         root,
         [...new Set(existing)],
-        (path) => isCodePath(path) || hasExecutableFields(path),
+        // Lock files too: the baseline replay lists their resolution before the change (#1954).
+        (path) => isCodePath(path) || hasExecutableFields(path) || isResolutionInput(path),
       );
       this.store.transaction(() =>
         this.store.artifact(
@@ -13296,7 +13404,11 @@ ${note}`;
       checks: tests,
     });
     if (prior?.inputHash === inputHash) return;
-    const record = (checks: BaselineReplayCheck[], note?: string): void =>
+    const record = (
+      checks: BaselineReplayCheck[],
+      note?: string,
+      dependencies?: ResolutionDiff[],
+    ): void =>
       this.store.transaction(() => {
         const value: BaselineReplay = {
           schemaVersion: 1,
@@ -13305,6 +13417,7 @@ ${note}`;
           removed: edits.remove,
           unknown: edits.unknown,
           checks,
+          ...(dependencies ? { dependencies } : {}),
           ...(note ? { note } : {}),
           inputHash,
         };
@@ -13333,9 +13446,55 @@ ${note}`;
       state,
       BASELINE_REPLAY_COPY,
       async (copy, scope) => {
-        for (const file of edits.revert)
-          writeFileSync(workspacePath(copy, file.path), file.content);
-        for (const file of edits.remove) rmSync(workspacePath(copy, file), { force: true });
+        // The resolved dependencies as delivered, then as they were before the change (#1954).
+        const folderOf = (folder: string) => (folder === "." ? copy : workspacePath(copy, folder));
+        const dependencies = await replayResolution(
+          changed.map((file) => file.path),
+          [".", ...tests.map((check) => check.cwd.replace(/\/+$/, "") || ".")],
+          {
+            names: (folder) => {
+              try {
+                return readdirSync(folderOf(folder));
+              } catch {
+                return [];
+              }
+            },
+            read: (path) => {
+              try {
+                return readFileSync(workspacePath(copy, path), "utf8");
+              } catch {
+                return null;
+              }
+            },
+            run: async (folder, executable, args) => {
+              signal.throwIfAborted();
+              try {
+                const outcome = await executeCheckCommand(scope, executable, [...args], {
+                  cwd: folderOf(folder),
+                  env: buildCheckEnv({ envNames: [] }),
+                  timeoutMs: RESOLUTION_TIMEOUT_MS,
+                  signal,
+                  sandbox: runSandbox(policy, copy, { gitWrite: true }),
+                });
+                return {
+                  status: outcome.timedOut
+                    ? "timeout"
+                    : outcome.exitCode === 0
+                      ? "passed"
+                      : "failed",
+                  output: outcome.output,
+                };
+              } catch (error) {
+                return { status: "failed", output: String(error) };
+              }
+            },
+          },
+          () => {
+            for (const file of edits.revert)
+              writeFileSync(workspacePath(copy, file.path), file.content);
+            for (const file of edits.remove) rmSync(workspacePath(copy, file), { force: true });
+          },
+        );
         const checks: BaselineReplayCheck[] = [];
         for (const check of tests) {
           signal.throwIfAborted();
@@ -13404,7 +13563,7 @@ ${note}`;
             ...(targets.length ? { targets } : {}),
           });
         }
-        record(checks);
+        record(checks, undefined, dependencies);
       },
     );
     if (failure) record([], failure);
@@ -14684,9 +14843,17 @@ ${note}`;
         symbol: change.field,
         evidenceId,
         claim: `Manifest ${change.file} changes ${change.field}, which the request does not name`,
-        impact:
-          "The approval took this manifest edit as asked for by its path alone; a field that runs code or chooses where code comes from changed without a person seeing it.",
-        suggestedFix: `Restore ${change.field} in ${change.file} to what it was before the run, and change only the fields the request names.`,
+        ...(isBoundedLockPath(change.file)
+          ? {
+              impact:
+                "The approval took this lock as the follow-up of the project's own version change (#1934); an entry other than the project's own changed without a person seeing it.",
+              suggestedFix: `Restore ${change.field} in ${change.file} to what it was before the run; the lock may change only the project's own entry.`,
+            }
+          : {
+              impact:
+                "The approval took this manifest edit as asked for by its path alone; a field that runs code or chooses where code comes from changed without a person seeing it.",
+              suggestedFix: `Restore ${change.field} in ${change.file} to what it was before the run, and change only the fields the request names.`,
+            }),
       }),
     );
   }
@@ -16546,6 +16713,50 @@ ${note}`;
     );
   }
   /**
+   * Records each eligible decision of a site that settles on checked evidence (#2032), numbered
+   * per site and ref, so `replayEvidenceDecisions` can decide it again on its inputs.
+   */
+  private recordEvidenceDecisions(
+    runId: string,
+    items: readonly { ref: string; input: EvidenceInput }[],
+  ): void {
+    const eligible = items.filter((item) => item.input.eligible);
+    if (!eligible.length) return;
+    const paths = new Set(
+      this.store
+        .artifacts(runId)
+        .filter((a) => a.kind === EVIDENCE_DECISION_KIND)
+        .map((a) => a.logical_path),
+    );
+    this.store.transaction(() => {
+      for (const { ref, input } of eligible) {
+        let report = 1;
+        while (paths.has(evidenceRecordPath(input.site, ref, report))) report++;
+        const path = evidenceRecordPath(input.site, ref, report);
+        paths.add(path);
+        const record: EvidenceRecord = { ...input, ref, report, decision: evidenceDecision(input) };
+        this.store.artifact(runId, EVIDENCE_DECISION_KIND, path, canonical(record));
+      }
+    });
+  }
+  /** Whether a site settled a task's conflict on an earlier report (#2032). */
+  private settledBy(runId: string, site: EvidenceSite, taskId: string): boolean {
+    return this.store
+      .artifacts(runId)
+      .filter(
+        (a) =>
+          a.kind === EVIDENCE_DECISION_KIND &&
+          a.logical_path.startsWith(`${EVIDENCE_DECISIONS_DIR}${site}-${taskId}-`),
+      )
+      .some((a) => {
+        try {
+          return (JSON.parse(this.store.readArtifact(runId, a.id)) as EvidenceRecord).decision;
+        } catch {
+          return false;
+        }
+      });
+  }
+  /**
    * Review findings that put the spec against the request record a spec amendment (#1034): the
    * request wins over the criteria they name, every later agent reads that with the request, and
    * the test-integrity guard accepts the tests their correction changes. A finding on a run
@@ -16554,10 +16765,17 @@ ${note}`;
   private amendSpec(runId: string, state: RuntimeState, findings: Review["findings"]): void {
     if (!state.spec) return;
     const planned = (state.rootGraph?.tasks ?? []).flatMap((t) => t.writes.map((w) => w.path));
+    const request = statedRequest(state, this.store.requests(runId));
     for (const finding of findings) {
-      const amendment = namesRunDocument(finding, planned)
+      const document = namesRunDocument(finding, planned);
+      // A finding for the request rests on a request quote the host checks (#2032).
+      if (!document)
+        this.recordEvidenceDecisions(runId, [
+          { ref: finding.id, input: specAmendmentInput(finding, state.spec, request) },
+        ]);
+      const amendment = document
         ? documentAmendmentOf(finding, state.spec)
-        : specAmendmentOf(finding, state.spec);
+        : specAmendmentOf(finding, state.spec, request);
       if (!amendment) continue;
       const path = `amendments/${finding.id}.json`;
       if (this.store.latestArtifact(runId, path)) continue;

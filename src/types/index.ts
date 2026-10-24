@@ -371,6 +371,8 @@ export interface QualityConfig {
   misquoteFix?: "off" | "on";
   /** Before the test tasks, run extreme legal inputs a small call proposes against each planned source task's code; a failing one is corrected at once (edge-input probe): `on` or `off` (default). */
   edgeProbe?: "off" | "on";
+  /** Keep a list of defect classes earlier runs corrected, by domain, in the BAKED data directory and show a run of the same domain its classes as examples (cross-run defect classes): `on` or `off` (default). */
+  defectClasses?: "off" | "on";
   /** Property-based tests from marked criteria: `preset` or absent follows the workflow preset. */
   propertyTests?: "preset" | "auto" | "off";
 }

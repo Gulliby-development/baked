@@ -1,7 +1,15 @@
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { homedir, tmpdir } from "node:os";
-import { join } from "node:path";
+import { delimiter, join } from "node:path";
 import {
   _electron,
   test as base,
@@ -9,6 +17,7 @@ import {
   expect,
   type Page,
 } from "@playwright/test";
+import { wellKnownBinDirs } from "../../../../src/core/platform/cli-path.ts";
 
 /**
  * Live scenarios: the built app against the repository's own `baked serve` and a real model
@@ -62,6 +71,25 @@ function homeEnv(home: string): Record<string, string> {
   return env;
 }
 
+/**
+ * The PATH of `env` with the folders BAKED searches for provider CLIs under the real home appended.
+ * The throwaway home hides them: on Windows the Codex desktop app's CLI is found only in
+ * `%LOCALAPPDATA%\OpenAI\Codex\bin`, so every Codex scenario failed with "Codex CLI not found".
+ */
+function withProviderCliDirs(env: Record<string, string>): void {
+  const key = Object.keys(env).find((name) => name.toUpperCase() === "PATH") ?? "PATH";
+  const dirs = wellKnownBinDirs({
+    platform: process.platform,
+    env: process.env,
+    home: homedir(),
+    isFile: (path) => existsSync(path) && statSync(path).isFile(),
+    listDir: (path) => (existsSync(path) ? readdirSync(path) : []),
+    loginShellPath: () => null,
+    modifiedMs: (path) => (existsSync(path) ? statSync(path).mtimeMs : 0),
+  }).filter((dir) => existsSync(dir));
+  env[key] = [env[key], ...dirs].filter(Boolean).join(delimiter);
+}
+
 /** Where `baked` reads its global config under `homeEnv(home)` (src/core/platform). */
 function bakedConfigDir(home: string): string {
   return process.platform === "win32"
@@ -104,6 +132,7 @@ export const test = base.extend<Fixtures>({
       const env: Record<string, string> = {};
       for (const [key, value] of Object.entries(process.env)) if (value) env[key] = value;
       Object.assign(env, homeEnv(home));
+      withProviderCliDirs(env);
       const configDir = bakedConfigDir(home);
       mkdirSync(configDir, { recursive: true });
       writeFileSync(
