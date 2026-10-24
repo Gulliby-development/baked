@@ -3402,6 +3402,18 @@ export class WorkflowScheduler {
     if (!stoppedBy) return null;
     const evidence = this.hostFinishEvidence(runId, policy, task);
     if (!evidence) return null;
+    // The carried edits keep the host's rows block, as the submit path requires (#1995): in R64
+    // the host finish accepted a block that the submit path's check never saw.
+    if (task.rows?.length) {
+      const rows = (() => {
+        try {
+          return this.taskRowFiles(runId, state, policy, task);
+        } catch {
+          return null;
+        }
+      })();
+      if (!rows || (await rowFileProblems(root, rows)).length) return null;
+    }
     signal.throwIfAborted();
     if (evidence.repro && (await evidence.repro(root, signal)).length) return null;
     const checks = [...evidence.named];
@@ -5004,19 +5016,7 @@ export class WorkflowScheduler {
     let extra = inputExtra;
     let generatedRows: ReturnType<typeof rowFiles> = [];
     if (task?.rows?.length && stageProfile.output === "implementation") {
-      const artifact = this.store.latestArtifact(runId, ROWS_ARTIFACT);
-      if (!rowsAsDataOn(policy) || !artifact || !state.spec)
-        throw new WorkflowFault(
-          "ARTIFACT_MISSING",
-          "Audited rows.json is required before implementation",
-        );
-      const rows = JSON.parse(this.store.readArtifact(runId, artifact.id)) as RowsArtifact;
-      if (rows.specHash !== hashJson(state.spec))
-        throw new WorkflowFault(
-          "INPUT_CHANGED",
-          "Acceptance rows belong to an earlier spec; analyze again",
-        );
-      generatedRows = rowFiles(task, rows);
+      generatedRows = this.taskRowFiles(runId, state, policy, task);
       extra = {
         ...(extra as Record<string, unknown>),
         acceptanceRows: {
@@ -10600,6 +10600,27 @@ ${note}`;
    * Puts the host's block of an inline rows test file in place, journaled like any host write:
    * before the attempt so the agent sees it, and after so an edit that dropped it is undone.
    */
+  /** The host-written row files of a task with audited rows, from the run's rows artifact. */
+  private taskRowFiles(
+    runId: string,
+    state: RuntimeState,
+    policy: RunPolicy,
+    task: Task,
+  ): ReturnType<typeof rowFiles> {
+    const artifact = this.store.latestArtifact(runId, ROWS_ARTIFACT);
+    if (!rowsAsDataOn(policy) || !artifact || !state.spec)
+      throw new WorkflowFault(
+        "ARTIFACT_MISSING",
+        "Audited rows.json is required before implementation",
+      );
+    const rows = JSON.parse(this.store.readArtifact(runId, artifact.id)) as RowsArtifact;
+    if (rows.specHash !== hashJson(state.spec))
+      throw new WorkflowFault(
+        "INPUT_CHANGED",
+        "Acceptance rows belong to an earlier spec; analyze again",
+      );
+    return rowFiles(task, rows);
+  }
   private writeInlineRows(runId: string, attempt: string, root: string, file: InlineRowFile): void {
     const absolute = workspacePath(root, file.path);
     let existing: string | null = null;

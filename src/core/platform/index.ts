@@ -6,7 +6,7 @@
  */
 
 import { type SpawnOptions, spawn, spawnSync } from "node:child_process";
-import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, realpathSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 
@@ -22,9 +22,31 @@ export const EXE = IS_WIN ? ".exe" : "";
 /** Script-shim suffix — Mason and npm install ".cmd" wrappers on Windows. */
 export const CMD_EXT = IS_WIN ? ".cmd" : "";
 
-/** OS temp dir. Re-exported so callers don't import node:os for a one-liner. */
+/**
+ * The long form of an existing path on Windows (`C:\Users\ILYAMY~1` becomes the full user
+ * name); the path unchanged elsewhere or when it cannot be resolved.
+ */
+export function longPath(
+  path: string,
+  win: boolean = IS_WIN,
+  real: (path: string) => string = realpathSync.native,
+): string {
+  if (!win) return path;
+  try {
+    return real(path);
+  } catch {
+    return path;
+  }
+}
+
+/**
+ * OS temp dir, in its long form. On Windows `os.tmpdir()` is the 8.3 short path for a user name
+ * longer than eight characters, and a Bun program run from a cwd under it has `import.meta.main`
+ * false, so a guarded CLI prints nothing (#1999). Every scratch directory that becomes a
+ * program's cwd is made under this, never under `os.tmpdir()` (tests/platform-tmp.test.ts).
+ */
 export function tmpDir(): string {
-  return tmpdir();
+  return longPath(tmpdir());
 }
 
 /**

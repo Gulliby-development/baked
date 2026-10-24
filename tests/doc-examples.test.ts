@@ -140,6 +140,26 @@ describe("documented examples", () => {
     expect(results.filter((r) => r.status === "match")).toHaveLength(DOC_EXAMPLE_LIMIT);
     expect(results.at(-1)?.reason).toContain(`Only ${DOC_EXAMPLE_LIMIT} examples`);
   });
+
+  test("an example that exits 0 and prints nothing where the document shows output is not run, not a mismatch (#1999)", async () => {
+    // mdtoc R64: under a short Windows temp path the guarded CLI never reached its main.
+    const root = mkdtempSync(join(tmpdir(), "baked-doc-examples-"));
+    cleanups.push(() => rmSync(root, { recursive: true, force: true }));
+    mkdirSync(join(root, "src"));
+    writeFileSync(join(root, "src", "cli.ts"), 'if (process.env.NEVER_SET_1999) console.log("mdtoc 0.2.0");\n');
+    const text = [`${fence}console`, "$ bun run src/cli.ts --version", "mdtoc 0.2.0", fence].join("\n");
+    const results = await runDocExamples(new ProcessScope(), [{ path: "README.md", text }], {
+      root,
+      files: ["src/cli.ts"],
+      executables: ["bun"],
+      signal: new AbortController().signal,
+      sandbox: () => null,
+    });
+    expect(results.map((r) => r.status)).toEqual(["not_run"]);
+    expect(results[0]?.exitCode).toBe(0);
+    expect(results[0]?.reason).toContain("printed nothing");
+    expect(results[0]?.reason).toContain("launcher problem suspected");
+  });
 });
 
 describe("scenario: centsplit d249b8ac, a usage line before a usage block (#1014)", () => {
