@@ -444,6 +444,11 @@ import {
   unrequestedManifestFields,
 } from "./quality/dependencies.js";
 import {
+  isResolutionInput,
+  type ResolutionDiff,
+  replayResolution,
+} from "./quality/dependency-resolution.js";
+import {
   compareWithBaseline,
   duplicationOf,
   isTestCodePath,
@@ -801,6 +806,8 @@ type Severity = Review["findings"][number]["severity"];
 const MUTATION_COPY = "quality-mutation";
 /** The task worktree the baseline replay (#1945) runs in. */
 const BASELINE_REPLAY_COPY = "quality-baseline-replay";
+/** How long one dependency listing of the baseline replay may run (#1954). */
+const RESOLUTION_TIMEOUT_MS = 180_000;
 /** The task worktree the package contents check (#1984) builds packages in. */
 const PACKAGE_CONTENTS_COPY = "quality-package-contents";
 const ALL_SEVERITIES: readonly Severity[] = ["critical", "high", "medium", "low"];
@@ -13093,7 +13100,8 @@ ${note}`;
       const code = await readCodeFiles(
         root,
         [...new Set(existing)],
-        (path) => isCodePath(path) || hasExecutableFields(path),
+        // Lock files too: the baseline replay lists their resolution before the change (#1954).
+        (path) => isCodePath(path) || hasExecutableFields(path) || isResolutionInput(path),
       );
       this.store.transaction(() =>
         this.store.artifact(
@@ -13190,7 +13198,11 @@ ${note}`;
       checks: tests,
     });
     if (prior?.inputHash === inputHash) return;
-    const record = (checks: BaselineReplayCheck[], note?: string): void =>
+    const record = (
+      checks: BaselineReplayCheck[],
+      note?: string,
+      dependencies?: ResolutionDiff[],
+    ): void =>
       this.store.transaction(() => {
         const value: BaselineReplay = {
           schemaVersion: 1,
@@ -13199,6 +13211,7 @@ ${note}`;
           removed: edits.remove,
           unknown: edits.unknown,
           checks,
+          ...(dependencies ? { dependencies } : {}),
           ...(note ? { note } : {}),
           inputHash,
         };
@@ -13227,9 +13240,55 @@ ${note}`;
       state,
       BASELINE_REPLAY_COPY,
       async (copy, scope) => {
-        for (const file of edits.revert)
-          writeFileSync(workspacePath(copy, file.path), file.content);
-        for (const file of edits.remove) rmSync(workspacePath(copy, file), { force: true });
+        // The resolved dependencies as delivered, then as they were before the change (#1954).
+        const folderOf = (folder: string) => (folder === "." ? copy : workspacePath(copy, folder));
+        const dependencies = await replayResolution(
+          changed.map((file) => file.path),
+          [".", ...tests.map((check) => check.cwd.replace(/\/+$/, "") || ".")],
+          {
+            names: (folder) => {
+              try {
+                return readdirSync(folderOf(folder));
+              } catch {
+                return [];
+              }
+            },
+            read: (path) => {
+              try {
+                return readFileSync(workspacePath(copy, path), "utf8");
+              } catch {
+                return null;
+              }
+            },
+            run: async (folder, executable, args) => {
+              signal.throwIfAborted();
+              try {
+                const outcome = await executeCheckCommand(scope, executable, [...args], {
+                  cwd: folderOf(folder),
+                  env: buildCheckEnv({ envNames: [] }),
+                  timeoutMs: RESOLUTION_TIMEOUT_MS,
+                  signal,
+                  sandbox: runSandbox(policy, copy, { gitWrite: true }),
+                });
+                return {
+                  status: outcome.timedOut
+                    ? "timeout"
+                    : outcome.exitCode === 0
+                      ? "passed"
+                      : "failed",
+                  output: outcome.output,
+                };
+              } catch (error) {
+                return { status: "failed", output: String(error) };
+              }
+            },
+          },
+          () => {
+            for (const file of edits.revert)
+              writeFileSync(workspacePath(copy, file.path), file.content);
+            for (const file of edits.remove) rmSync(workspacePath(copy, file), { force: true });
+          },
+        );
         const checks: BaselineReplayCheck[] = [];
         for (const check of tests) {
           signal.throwIfAborted();
@@ -13298,7 +13357,7 @@ ${note}`;
             ...(targets.length ? { targets } : {}),
           });
         }
-        record(checks);
+        record(checks, undefined, dependencies);
       },
     );
     if (failure) record([], failure);
