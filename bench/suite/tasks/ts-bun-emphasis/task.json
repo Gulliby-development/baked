@@ -1,0 +1,28 @@
+{
+  "id": "ts-bun-emphasis",
+  "language": "typescript",
+  "toolchain": "bun",
+  "requires": [
+    "bun"
+  ],
+  "allowedPaths": [
+    "src/**",
+    "tests/**",
+    "README.md",
+    "package.json",
+    "tsconfig.json"
+  ],
+  "checks": [
+    {
+      "id": "bun-test",
+      "executable": "bun",
+      "args": [
+        "test"
+      ]
+    }
+  ],
+  "policy": {
+    "chainRewrite": "on"
+  },
+  "origin": "#1981"
+}

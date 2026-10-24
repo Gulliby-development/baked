@@ -23,6 +23,11 @@ export interface SuiteTask {
   checks: SuiteCheck[];
   /** Issue the task was rebuilt from, when it reproduces a past stop. */
   origin?: string;
+  /**
+   * Policy fields the run gets on top of the runner's, for a task that measures an opt-in host
+   * behavior (`{ "chainRewrite": "on" }`, #1981). Only `POLICY_FIELDS` are allowed.
+   */
+  policy?: Record<string, unknown>;
   dir: string;
 }
 
@@ -57,6 +62,10 @@ export interface TaskSummary {
 }
 
 const ID = /^[a-z0-9]+(-[a-z0-9]+)*$/;
+/** Opt-in policy fields a task may set; the runner owns budgets, approval and checks. */
+export const POLICY_FIELDS: Readonly<Record<string, readonly unknown[]>> = {
+  chainRewrite: ["on"],
+};
 
 export function suiteRoot(): string {
   return import.meta.dir;
@@ -91,6 +100,14 @@ export function validateTask(dir: string, raw: unknown): string[] {
   }
   if (t.origin !== undefined && (typeof t.origin !== "string" || !/^#\d+$/.test(t.origin))) {
     problems.push("origin must look like #N");
+  }
+  if (t.policy !== undefined) {
+    if (!t.policy || typeof t.policy !== "object" || Array.isArray(t.policy))
+      problems.push("policy must be an object");
+    else
+      for (const [key, value] of Object.entries(t.policy as Record<string, unknown>))
+        if (!POLICY_FIELDS[key]?.includes(value))
+          problems.push(`policy.${key} is not an opt-in field the suite allows`);
   }
   for (const file of ["prompt.md", "check.sh"]) {
     if (!existsSync(join(dir, file))) problems.push(`${file} is missing`);

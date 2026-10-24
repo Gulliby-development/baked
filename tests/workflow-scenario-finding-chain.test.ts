@@ -9,7 +9,7 @@ import { CHAIN_REWRITE_AT, type ChainFinding, type ChainRecord, chainMembers, ch
 import type { Check, Repro, RunPolicy, Spec, Task } from "../src/core/workflows/schemas.js";
 import { NativeWorkflowService } from "../src/core/workflows/service.js";
 import { newId } from "../src/core/workflows/store.js";
-import { exportTrace, replayTrace } from "../src/core/workflows/trace.js";
+import { chainCosts, exportTrace, openTrace, replayChainEscalation, replayTrace } from "../src/core/workflows/trace.js";
 import type { AgentExecutor, ExecutionRequest } from "../src/core/workflows/types.js";
 
 // Scenario of bench round 62 (#1959). md-site 8711b632 got six findings on `findDelimitedInline`,
@@ -175,6 +175,26 @@ describe("scenario: R62 md-site, a finding chain on one symbol (#1959)", () => {
     expect(replayed?.newChainDecisions).toBe(0);
     const patching = replayTrace(out, { chainRule: () => "patch" }).runs.find((r) => r.runId === runId);
     expect(patching?.newChainDecisions).toBe(1);
+
+    // The trace keeps each finding's links and repro without its prose (#1981), so the chain the
+    // rewrite saw replays from the findings, and the round report reads the chain's length,
+    // battery and cost from the trace.
+    const traced = openTrace(out);
+    cleanups.push(traced.dispose);
+    const body = JSON.parse(traced.store.findings(runId).find((f) => f.id === "F2")?.body_json ?? "{}");
+    expect(body).toMatchObject({ repeatOf: "F1", file: "inline.txt", symbol: "Inline.findDelimitedInline()", repro: { expected: "nested", actual: "flat" } });
+    expect(body.claim).toMatch(/^claim-\d+$/);
+    expect(JSON.stringify(body)).not.toContain("case-b");
+    const escalation = replayChainEscalation(traced.store, runId);
+    expect(escalation.missingBodies).toEqual([]);
+    expect(escalation.steps.map((s) => [s.findingId, s.chain, s.decision, s.battery])).toEqual([["F1", ["F1"], "patch", []], ["F2", ["F1", "F2"], "rewrite", ["F1", "F2"]]]);
+    expect(replayChainEscalation(traced.store, runId, { policy: "off" }).steps.map((s) => s.decision)).toEqual(["patch", "patch"]);
+    const [chain, ...others] = chainCosts(traced.store, runId);
+    expect(others).toEqual([]);
+    expect(chain).toMatchObject({ file: "inline.txt", symbol: "findDelimitedInline", length: 2, findings: ["F1", "F2"], battery: { runs: 1, cases: 2, reproduced: 0, refuted: 2, inconclusive: 0, reopened: 0 } });
+    expect(chain?.tasks.map((t) => [t.taskId, t.decision])).toEqual([[patch?.taskId, "patch"], [rewrite?.taskId, "rewrite"]]);
+    expect(chain?.tokens).toBe(chain?.tasks.reduce((sum, t) => sum + t.tokens, 0));
+    expect(chain?.tokens).toBeGreaterThan(0);
   }, 120_000);
 
   test("with chainRewrite off, every corrective patches as before", async () => {

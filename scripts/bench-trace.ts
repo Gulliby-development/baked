@@ -6,6 +6,7 @@
  *   bun scripts/bench-trace.ts replay <trace.sqlite.gz> ... [--json]
  *   bun scripts/bench-trace.ts latencies <trace.sqlite.gz> ... [--json]
  *   bun scripts/bench-trace.ts recordings <workspace> <out-dir> [--run RUN_ID ...]
+ *   bun scripts/bench-trace.ts chains <trace.sqlite.gz> ... [--json]
  *
  * `export` writes the anonymised trace of a workspace's workflow database (see
  * src/core/workflows/trace.ts); the bench loop stores one per app per round under
@@ -14,11 +15,17 @@
  * `latencies` prints the healthy first-byte percentiles and retry-after waits of the recorded
  * calls by provider, stage and effort: what the provider fault matrix tests limits against (#1729).
  * `recordings` writes the model calls of runs started with `--record-model-calls` (#1715).
+ * `chains` prints each run's finding chains for the round report (#1981): from `chains/` records,
+ * the chain length, each corrective's decision, tokens and cost, and the battery's results; for
+ * every run, where a chain-rewrite policy would have rewritten and what its battery would hold.
  */
 import {
+  chainCosts,
   corpusCallProfile,
   exportRecordings,
   exportTrace,
+  openTrace,
+  replayChainEscalation,
   replayPlanApprovals,
   replayTrace,
 } from "../src/core/workflows/trace.js";
@@ -27,7 +34,8 @@ const usage =
   "Usage: bun scripts/bench-trace.ts export <workspace> <out.sqlite.gz> [--run RUN_ID ...]\n" +
   "       bun scripts/bench-trace.ts replay <trace.sqlite.gz> ... [--json]\n" +
   "       bun scripts/bench-trace.ts latencies <trace.sqlite.gz> ... [--json]\n" +
-  "       bun scripts/bench-trace.ts recordings <workspace> <out-dir> [--run RUN_ID ...]";
+  "       bun scripts/bench-trace.ts recordings <workspace> <out-dir> [--run RUN_ID ...]\n" +
+  "       bun scripts/bench-trace.ts chains <trace.sqlite.gz> ... [--json]";
 
 const [command, ...rest] = process.argv.slice(2);
 const flags = rest.filter((a) => a.startsWith("--"));
@@ -66,6 +74,52 @@ if (command === "export" && args.length === 2) {
   for (const entry of entries)
     console.log(`${entry.file}: ${entry.featureId}, ${entry.calls} calls, ${entry.status}`);
   if (!entries.length) console.log("No run recorded its model calls (--record-model-calls)");
+} else if (command === "chains" && args.length > 0) {
+  const traces = args.map((path) => {
+    const { store, dispose } = openTrace(path);
+    try {
+      const runs = (
+        store.connection.query("SELECT id, feature_id FROM runs ORDER BY created_at").all() as {
+          id: string;
+          feature_id: string;
+        }[]
+      ).map((run) => ({
+        runId: run.id,
+        featureId: run.feature_id,
+        chains: chainCosts(store, run.id),
+        escalation: replayChainEscalation(store, run.id),
+      }));
+      return { trace: path, runs };
+    } finally {
+      dispose();
+    }
+  });
+  if (flags.includes("--json")) console.log(JSON.stringify(traces, null, 2));
+  else
+    for (const trace of traces) {
+      console.log(trace.trace);
+      for (const run of trace.runs) {
+        const rewrites = run.escalation.steps.filter((s) => s.decision === "rewrite");
+        if (!run.chains.length && !rewrites.length && !run.escalation.missingBodies.length) continue;
+        console.log(`  ${run.featureId} ${run.runId}: ${run.chains.length} recorded chains`);
+        for (const chain of run.chains)
+          console.log(
+            `    ${chain.file ?? "-"} ${chain.symbol}: length ${chain.length} (${chain.findings.join(", ")}), ` +
+              `correctives ${chain.tasks.map((t) => `${t.taskId} ${t.decision}`).join(", ")}, ` +
+              `${chain.tokens} tokens, ${usd(chain.costUsd)}; battery ${chain.battery.runs} runs, ` +
+              `${chain.battery.cases} cases (${chain.battery.reproduced} reproduced, ${chain.battery.refuted} refuted, ` +
+              `${chain.battery.inconclusive} inconclusive), ${chain.battery.reopened} reopened`,
+          );
+        const first = rewrites[0];
+        if (first)
+          console.log(
+            `    with chainRewrite on: first rewrite at ${first.findingId} (chain ${first.chain.join(" > ")}, ` +
+              `battery ${first.battery.length} cases)`,
+          );
+        if (run.escalation.missingBodies.length)
+          console.log(`    no finding body in the trace: ${run.escalation.missingBodies.join(", ")}`);
+      }
+    }
 } else if (command === "replay" && args.length > 0) {
   const replays = args.map((path) => replayTrace(path));
   if (flags.includes("--json")) console.log(JSON.stringify(replays, null, 2));

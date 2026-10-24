@@ -6,7 +6,7 @@ import { costGrowthLimit, dollarShortfall, shareShortfall } from "../src/core/wo
 import { forecastSamples } from "../src/core/workflows/stage-price.js";
 import { planApprovalDecision } from "../src/core/workflows/auto-approval.js";
 import { CAPACITY_PROBE } from "../src/core/workflows/sizing.js";
-import { type CallRate, openTrace, type PlanPriceReplay, replayInitiativeStarts, replayPlanApprovals, replayPlanPrices, replayTrace, type TestSplitRule } from "../src/core/workflows/trace.js";
+import { type CallRate, chainCosts, openTrace, type PlanPriceReplay, replayChainEscalation, replayInitiativeStarts, replayPlanApprovals, replayPlanPrices, replayTrace, type TestSplitRule } from "../src/core/workflows/trace.js";
 
 // #1649, #1715: every recorded bench-round trace replays through the current host decisions: the
 // forecast and cap code, the per-call cost cap (#1740), the first-response deadline of each model
@@ -419,4 +419,34 @@ describe("initiative feature ranges replay against what the features used (#1806
     expect(above / features).toBeLessThanOrEqual(bound);
     expect(lanewalk).toBeLessThanOrEqual(5);
   }, 600000);
+});
+
+describe("finding chains replay on recorded findings (#1981)", () => {
+  // R62 md-site 8711b632 ran with chainRewrite off: six findings on `findDelimitedInline`, each the
+  // next nesting of emphasis delimiter runs, and four correctives (T009-T012: 6.14M tokens, $5.92)
+  // that patched one case each. Its trace was exported before finding bodies were kept, so the
+  // review findings come from the run state's last two reviews (F1, F3, F4, F5) and the two
+  // convergence findings (F2, F4-2) are lost: the chain the trace shows starts at F3.
+  test("R62 md-site: with chainRewrite on, the findDelimitedInline chain rewrites at its second link with its repros as the battery", () => {
+    const { store, dispose } = openTrace(join(ROOT, "R62/md-site.sqlite.gz"));
+    try {
+      const runId = "8711b632-62b7-45ad-9100-15b034464379";
+      const replay = replayChainEscalation(store, runId);
+      expect(replay.missingBodies).toEqual(["F2", "F4-2"]);
+      expect(replay.steps.map((s) => [s.findingId, s.taskId, s.chain, s.decision, s.battery])).toEqual([
+        ["F1", "T009", ["F1"], "patch", []],
+        // F3 repeats F2, whose body the trace lost: the chain ends there.
+        ["F3", "T011", ["F3"], "patch", []],
+        ["F4", null, ["F3", "F4"], "rewrite", ["F3", "F4"]],
+        ["F5", null, ["F3", "F4", "F5"], "rewrite", ["F3", "F4", "F5"]],
+      ]);
+      // A battery holds only findings with a repro, so each link of the chain carries its case.
+      expect(store.findings(runId).map((f) => f.id)).toEqual(["F1", "F2", "F3", "F4", "F4-2", "F5"]);
+      // Off, the same findings patch, as the round did, and nothing was recorded under chains/.
+      expect(replayChainEscalation(store, runId, { policy: "off" }).steps.every((s) => s.decision === "patch")).toBe(true);
+      expect(chainCosts(store, runId)).toEqual([]);
+    } finally {
+      dispose();
+    }
+  }, 120000);
 });
