@@ -11,7 +11,7 @@ import { type CallRate, chainCosts, openTrace, type PlanPriceReplay, replayChain
 
 // #1649, #1715: every recorded bench-round trace replays through the current host decisions: the
 // forecast and cap code, the per-call cost cap (#1740), the first-response deadline of each model
-// call, the test task split of each sizing report (#1789), each usage-policy refusal (#1895), each finding-chain decision (#1959), each repeated corrective failure (#1996), each spec conflict decision for the request (#2016), and the initiative share gate (#1707), asked both on its recorded inputs and with each start
+// call, the test task split of each sizing report (#1789), each usage-policy refusal (#1895), each finding-chain decision (#1959), each repeated corrective failure (#1996), each spec conflict decision for the request (#2016), each token-pool park's extension inside the dollar cap (#2042), and the initiative share gate (#1707), asked both on its recorded inputs and with each start
 // rewound and recomputed, and the plan auto-approval on the run state it was asked with (#1707). A
 // stop, cap growth, park or approval decision the recorded run did not make fails the suite, unless
 // accepted.json lists it for that run or initiative with the reason: the pull request that changes
@@ -31,6 +31,7 @@ interface Accepted {
   newConflictDecisions?: number;
   newApplyDecisions?: number;
   newShareStops?: number;
+  newPoolGrowth?: number;
   newStartStops?: number;
   newApprovalDeclines?: number;
   newAutoApprovals?: number;
@@ -120,10 +121,12 @@ describe("bench-round traces replay without new forecast stops or growth (#1649)
         expect({
           initiative: initiative.initiativeId,
           newShareStops: initiative.newShareStops,
+          newPoolGrowth: initiative.newPoolGrowth,
           newStartStops: initiative.newStartStops,
         }).toEqual({
           initiative: initiative.initiativeId,
           newShareStops: allowed?.newShareStops ?? 0,
+          newPoolGrowth: allowed?.newPoolGrowth ?? 0,
           newStartStops: allowed?.newStartStops ?? 0,
         });
       }

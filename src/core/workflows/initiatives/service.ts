@@ -120,6 +120,18 @@ import {
   InitiativeStore,
 } from "./store.js";
 import {
+  DEFAULT_EXTEND_WITHIN_DOLLARS,
+  type ExtendWithinDollars,
+  type PoolExtension,
+  type PoolFeature,
+  type PoolInputs,
+  poolExtensionDecision,
+  poolForecast,
+  poolShortText,
+  type TokenPoolView,
+  tokenPool,
+} from "./token-pool.js";
+import {
   assignFeatureWorkflows,
   type FeatureWorkflow,
   featureWorkflow,
@@ -381,6 +393,13 @@ export interface InitiativeView {
     nextShare: UsageView | null;
     /** Dollars spent, and the dollar cap with what remains of it when one is set. */
     cost: CostView;
+    /**
+     * The token pool's forecast and what to extend it to (#2042): used plus each unfinished
+     * feature's expected tokens at the measured ratio, against the pool. Null before approval.
+     */
+    pool: TokenPoolView | null;
+    /** The token forecast's notice (`pool.notice`): set while the forecast is above the pool. */
+    forecastNotice: string | null;
     rule: string;
   };
   next: NextAction;
@@ -425,7 +444,9 @@ function forecastOverCeiling(cost: CostView): boolean {
  */
 export interface ShareGateView {
   initiativeId: string;
-  budget: Pick<InitiativeView["budget"], "remaining" | "cost">;
+  /** `limits`, `used` and `pool` are recorded from #2042 on; older events have none of them. */
+  budget: Pick<InitiativeView["budget"], "remaining" | "cost"> &
+    Partial<Pick<InitiativeView["budget"], "limits" | "used" | "pool">>;
   /** `shareUsd` and `needUsd` are recorded from #1890 on; older events have neither. */
   features: (Pick<FeatureView, "id" | "state" | "share" | "need"> &
     Partial<Pick<FeatureView, "shareUsd" | "needUsd">>)[];
@@ -435,15 +456,77 @@ export interface ShareGateView {
 export interface ShareGateRecord {
   featureId: string;
   verdict: "pass" | "park";
+  /**
+   * On a park from #2042 on: whether the host would extend the token pool inside the dollar cap
+   * (`workflows.extendWithinDollars`), and the mode it ran in. Absent before #2042 and when off.
+   */
+  poolGrowth?: { mode: ExtendWithinDollars } & Pick<
+    PoolExtension,
+    "wouldExtend" | "toTokens" | "byTokens"
+  >;
   view: ShareGateView;
   feature: Pick<FeatureView, "id" | "share" | "need" | "shareUsd"> &
     Partial<Pick<FeatureView, "needUsd">>;
+}
+
+/** The waiting features (no run yet) with an estimate, as the token pool reads them. */
+function waitingNeeds(features: ShareGateView["features"]): PoolFeature[] {
+  return features.flatMap((f) =>
+    f.share !== null && f.need ? [{ id: f.id, low: f.need.low, high: f.need.high }] : [],
+  );
+}
+
+/**
+ * The token pool's inputs as a share-gate view holds them (#2042), or null in a record before
+ * #2042 when the caller does not know the pool's limit (`limitTokens`). A record without a pool
+ * counts open runs at the pool less what remains, and has no token forecast or used tokens.
+ */
+export function shareGatePool(
+  view: ShareGateView,
+  limitTokens: number | undefined = view.budget.limits?.maxTotalTokens,
+): PoolInputs | null {
+  const pool = view.budget.pool;
+  const limit = pool?.limitTokens ?? limitTokens;
+  if (limit === undefined) return null;
+  return {
+    initiativeId: view.initiativeId,
+    limitTokens: limit,
+    usedTokens: pool?.usedTokens ?? view.budget.used?.tokens ?? 0,
+    committedTokens: pool?.committedTokens ?? limit - view.budget.remaining.tokens,
+    forecastTokens: pool?.forecastTokens ?? null,
+    ratio: pool?.ratio ?? null,
+    features: view.features.length,
+    waiting: waitingNeeds(view.features),
+    cost: view.budget.cost,
+  };
+}
+
+/** The extend command with the amounts that answer a block, and its remedy (#2042). */
+function extendAdvice(
+  initiativeId: string,
+  message: string,
+  summary: string,
+  amounts: { tokens?: number | null; usd?: number | null; fallback?: string },
+): RecoveryAdvice {
+  const flags = [
+    ...(amounts.tokens ? [`--tokens ${amounts.tokens}`] : []),
+    ...(amounts.usd ? [`--budget-usd ${amounts.usd}`] : []),
+  ];
+  const command = [`baked workflow initiative extend ${initiativeId}`, ...flags];
+  if (!flags.length && amounts.fallback) command.push(amounts.fallback);
+  return recoveryAdvice(`${message} Raise it with ${command.join(" ")}.`, summary, {
+    action: "extend",
+    initiativeId,
+    ...(amounts.tokens ? { suggestedTokens: amounts.tokens } : {}),
+    ...(amounts.usd ? { suggestedUsd: amounts.usd } : {}),
+  });
 }
 
 /**
  * Why a ready feature may not start, or null. Its low estimate must fit after reserving the
  * other waiting features' lows; a weighted share alone can be smaller even when the pool covers
  * them all (#1605). Exhausted token, call, time and dollar budgets still stop a start (#1311).
+ * Every block names the amounts that answer it and puts them on its `extend` remedy (#2042).
  */
 export function shareShortfall(
   view: ShareGateView,
@@ -451,6 +534,7 @@ export function shareShortfall(
     Partial<Pick<FeatureView, "needUsd">>,
 ): RecoveryAdvice | null {
   const cost = view.budget.cost;
+  const id = view.initiativeId;
   if (cost.capUsd !== null && cost.ceilingUsd !== null) {
     const ceiling =
       cost.ceilingUsd > cost.capUsd
@@ -463,40 +547,56 @@ export function shareShortfall(
       cost.forecastMode === "enforce"
     ) {
       const accepted = view.features.filter((f) => f.state === "accepted").length;
+      const raise = Math.ceil(cost.forecastUsd);
       return recoveryAdvice(
-        `The initiative's cost forecast is ${usd(cost.forecastUsd)}, above its ${ceiling}: ${usd(cost.spentUsd)} spent with ${accepted} of ${view.features.length} features accepted. Raise the dollar budget to at least ${usd(Math.ceil(cost.forecastUsd))} with baked workflow initiative extend --budget-usd N to start ${feature.id}, or pause the initiative.`,
-        `The initiative's cost forecast is ${usd(cost.forecastUsd)}, above its ${ceiling}: ${usd(cost.spentUsd)} spent with ${accepted} of ${view.features.length} features accepted. Raise the dollar budget to at least ${usd(Math.ceil(cost.forecastUsd))} to start ${feature.id}, or pause the initiative.`,
-        { action: "extend", initiativeId: view.initiativeId },
+        `The initiative's cost forecast is ${usd(cost.forecastUsd)}, above its ${ceiling}: ${usd(cost.spentUsd)} spent with ${accepted} of ${view.features.length} features accepted. Raise the dollar budget to at least ${usd(raise)} with baked workflow initiative extend ${id} --budget-usd ${raise} to start ${feature.id}, or pause the initiative.`,
+        `The initiative's cost forecast is ${usd(cost.forecastUsd)}, above its ${ceiling}: ${usd(cost.spentUsd)} spent with ${accepted} of ${view.features.length} features accepted. Raise the dollar budget to at least ${usd(raise)} to start ${feature.id}, or pause the initiative.`,
+        { action: "extend", initiativeId: id, suggestedUsd: raise },
       );
     }
-    if ((feature.shareUsd ?? 0) < MIN_SHARE_USD)
-      return recoveryAdvice(
-        `The shared dollar budget is exhausted: ${feature.id} would start with ${usd(feature.shareUsd ?? 0)} of the ${ceiling}, ${usd(cost.spentUsd)} spent. Raise it with baked workflow initiative extend --budget-usd N.`,
-        `The shared dollar budget is exhausted: ${feature.id} would start with ${usd(feature.shareUsd ?? 0)} of the ${ceiling}, ${usd(cost.spentUsd)} spent.`,
-        { action: "extend", initiativeId: view.initiativeId },
-      );
+    if ((feature.shareUsd ?? 0) < MIN_SHARE_USD) {
+      // The cap that covers what open runs hold plus every waiting feature's priced high end.
+      const waiting = view.features.filter((f) => f.share !== null);
+      const highs = waiting.every((f) => f.needUsd)
+        ? waiting.reduce((sum, f) => sum + (f.needUsd?.high ?? 0), 0)
+        : null;
+      const raise = highs === null ? null : centsUp(cost.capUsd - (cost.remainingUsd ?? 0) + highs);
+      const summary = `The shared dollar budget is exhausted: ${feature.id} would start with ${usd(feature.shareUsd ?? 0)} of the ${ceiling}, ${usd(cost.spentUsd)} spent.${raise !== null && raise > cost.capUsd ? ` A cap of ${usd(raise)} covers the high estimates of the waiting features.` : ""}`;
+      return extendAdvice(id, summary, summary, {
+        usd: raise !== null && raise > cost.capUsd ? raise : null,
+        fallback: "--budget-usd N",
+      });
+    }
     const short = dollarShortfall(view, feature);
-    if (short && cost.shareMode === "enforce")
-      return recoveryAdvice(
-        `${short} Raise it with baked workflow initiative extend --budget-usd N.`,
-        short,
-        { action: "extend", initiativeId: view.initiativeId },
-      );
+    if (short && cost.shareMode === "enforce") {
+      const raise = dollarRaise(view, feature);
+      return extendAdvice(id, short, short, {
+        usd: raise === null ? null : centsUp(cost.capUsd + raise),
+        fallback: "--budget-usd N",
+      });
+    }
   }
   const share = feature.share;
-  if (shareTooSmall(share))
-    return recoveryAdvice(
-      `The shared budget is exhausted: ${feature.id} would start with ${share?.tokens ?? 0} tokens, ${share?.calls ?? 0} calls and ${share?.activeMs ?? 0} ms. Raise it with baked workflow initiative extend.`,
-      `The shared budget is exhausted: ${feature.id} would start with ${share?.tokens ?? 0} tokens, ${share?.calls ?? 0} calls and ${share?.activeMs ?? 0} ms.`,
-      { action: "extend", initiativeId: view.initiativeId },
-    );
+  const inputs = shareGatePool(view);
+  const pool = inputs && tokenPool(inputs);
+  if (shareTooSmall(share)) {
+    const tokensShort = (share?.tokens ?? 0) < MIN_SHARE.maxTotalTokens;
+    const cover =
+      tokensShort && pool && pool.coverTokens > pool.limitTokens ? pool.coverTokens : null;
+    const summary = `The shared budget is exhausted: ${feature.id} would start with ${share?.tokens ?? 0} tokens, ${share?.calls ?? 0} calls and ${share?.activeMs ?? 0} ms.${cover ? ` A pool of ${tokenText(cover)} tokens covers the high estimates of the waiting features.` : ""}`;
+    return extendAdvice(id, summary, summary, { tokens: cover });
+  }
   const available = growthLimit(view, feature.id);
-  if (feature.need && available !== null && available < feature.need.low)
-    return recoveryAdvice(
-      `The shared budget is short: ${feature.id} has ${available} tokens available after reserving the other waiting features' low estimates, below its estimate of ${feature.need.low}-${feature.need.high}. Raise it with baked workflow initiative extend.`,
-      `The shared budget is short: ${feature.id} has ${available} tokens available after reserving the other waiting features' low estimates, below its estimate of ${feature.need.low}-${feature.need.high}.`,
-      { action: "extend", initiativeId: view.initiativeId },
-    );
+  if (feature.need && available !== null && available < feature.need.low) {
+    const base = `The shared budget is short: ${feature.id} has ${available} tokens available after reserving the other waiting features' low estimates, below its estimate of ${feature.need.low}-${feature.need.high}.`;
+    const detail =
+      pool && inputs
+        ? ` ${poolShortText(pool, { id: feature.id, ...feature.need }, available, inputs.waiting, cost)}`
+        : "";
+    return extendAdvice(id, `${base}${detail}`, `${base}${detail}`, {
+      tokens: pool ? pool.coverTokens : null,
+    });
+  }
   return null;
 }
 
@@ -520,8 +620,19 @@ export function dollarShortfall(
     cost.capUsd !== null && cost.ceilingUsd > cost.capUsd
       ? `${usd(cost.ceilingUsd)} ceiling`
       : `${usd(cost.capUsd ?? cost.ceilingUsd)} cap`;
-  const raise = Math.ceil((needUsd.low - spare) * 100) / 100;
+  const raise = dollarRaise(view, feature) ?? 0;
   return `The shared dollar budget is short: ${feature.id} has ${usd(spare)} to grow into after reserving the other waiting features' low estimates, below its estimate of ${usd(needUsd.low)}-${usd(needUsd.high)} (${usd(cost.spentUsd)} of the ${ceiling} spent); the dollar budget needs at least ${usd(raise)} more.`;
+}
+
+/** How many more dollars start `feature` at its priced low estimate; null when none are missing. */
+function dollarRaise(
+  view: ShareGateView,
+  feature: Pick<FeatureView, "id"> & Partial<Pick<FeatureView, "needUsd">>,
+): number | null {
+  const spare = costGrowthLimit(view, feature.id);
+  const needUsd = feature.needUsd;
+  if (!needUsd || spare === null || spare >= needUsd.low) return null;
+  return Math.ceil((needUsd.low - spare) * 100) / 100;
 }
 
 /**
@@ -631,6 +742,8 @@ function stageWeights(
 
 const usd = (n: number): string => `$${n.toFixed(2)}`;
 const cents = (n: number): number => Math.floor(n * 100) / 100;
+/** Up to the cent, for an amount a message suggests: it must cover what it names. */
+const centsUp = (n: number): number => Math.ceil(Math.round(n * 1e6) / 1e4) / 100;
 
 /** The smallest dollar share a feature run can start with. */
 export const MIN_SHARE_USD = 0.01;
@@ -1169,6 +1282,7 @@ export class InitiativeService {
     await this.settleSuperseded(id);
     for (let step = 0; step < 500 && !signal.aborted; step++) {
       const view = this.view(id);
+      this.noteTokenForecast(view, null);
       const next = view.next;
       if (view.parallelRuns > 1 && (next.kind === "drive" || next.kind === "start")) {
         if (!(await this.driveFeatures(id, signal))) return;
@@ -1235,6 +1349,7 @@ export class InitiativeService {
     let failure: { error: unknown } | null = null;
     const fill = async (): Promise<void> => {
       let view = this.view(id);
+      this.noteTokenForecast(view, null);
       for (;;) {
         const row = this.store.get(id);
         const ready = this.byPath(
@@ -1622,12 +1737,42 @@ export class InitiativeService {
         .at(-1) as ShareGateRecord | undefined;
       if (last?.verdict === "park") return;
     }
+    const gateView: ShareGateView = {
+      initiativeId: id,
+      budget: {
+        remaining: view.budget.remaining,
+        cost: view.budget.cost,
+        limits: view.budget.limits,
+        used: view.budget.used,
+        pool: view.budget.pool,
+      },
+      features: view.features.map((f) => ({
+        id: f.id,
+        state: f.state,
+        share: f.share,
+        need: f.need,
+        shareUsd: f.shareUsd,
+        needUsd: f.needUsd ?? null,
+      })),
+    };
+    const mode = this.extendWithinDollars();
+    const growth = verdict === "park" && mode !== "off" ? poolGrowthOf(gateView, feature) : null;
     const record: ShareGateRecord = {
       featureId: feature.id,
       verdict,
+      ...(growth
+        ? {
+            poolGrowth: {
+              mode,
+              wouldExtend: growth.wouldExtend,
+              toTokens: growth.toTokens,
+              byTokens: growth.byTokens,
+            },
+          }
+        : {}),
       view: {
         initiativeId: id,
-        budget: { remaining: view.budget.remaining, cost: view.budget.cost },
+        budget: gateView.budget,
         features: view.features.map((f) => ({
           id: f.id,
           state: f.state,
@@ -1646,6 +1791,61 @@ export class InitiativeService {
       },
     };
     this.store.emit(id, "feature.share_gate", record);
+    if (verdict === "pass") this.noteTokenForecast(view, feature.id);
+    if (growth?.wouldExtend) this.noteWouldExtend(gateView, feature.id, growth);
+  }
+
+  /** `workflows.extendWithinDollars`: whether a token park records the host's extension (#2042). */
+  private extendWithinDollars(): ExtendWithinDollars {
+    return this.workflows.config.workflows?.extendWithinDollars ?? DEFAULT_EXTEND_WITHIN_DOLLARS;
+  }
+
+  /**
+   * A `budget.forecast_notice` event the first time a drive sees the token forecast above the
+   * pool, once per pool size (#2042): at a feature's start (`featureId`) or after a run moved, so
+   * `initiative events` and `/v1/initiatives/ID/events` carry the warning before any feature parks.
+   */
+  private noteTokenForecast(view: InitiativeView, featureId: string | null): void {
+    const pool = view.budget.pool;
+    if (!pool?.notice) return;
+    const noted = this.store
+      .eventsOfType(view.initiativeId, "budget.forecast_notice")
+      .some((p) => (p as { limitTokens?: number } | null)?.limitTokens === pool.limitTokens);
+    if (noted) return;
+    this.store.emit(view.initiativeId, "budget.forecast_notice", {
+      featureId,
+      limitTokens: pool.limitTokens,
+      usedTokens: pool.usedTokens,
+      forecastTokens: pool.forecastTokens,
+      ratio: pool.ratio,
+      suggestedTokens: pool.suggestedTokens,
+      message: pool.notice,
+    });
+  }
+
+  /**
+   * The host would extend the token pool to start a parked feature inside the dollar cap
+   * (`extendWithinDollars: shadow`, #2042): a `decision.would_extend` event with the decision's
+   * inputs, once per feature and pool size. Nothing changes: the pool stays as the person set it.
+   */
+  private noteWouldExtend(view: ShareGateView, featureId: string, growth: PoolExtension): void {
+    const id = view.initiativeId;
+    const inputs = shareGatePool(view);
+    const key = `${growth.reason}-${featureId}-${inputs?.limitTokens ?? 0}`;
+    const seen = this.store
+      .eventsOfType(id, "decision.would_extend")
+      .some((p) => (p as { key?: string } | null)?.key === key);
+    if (seen) return;
+    this.store.emit(id, "decision.would_extend", {
+      reason: growth.reason,
+      mode: "shadow",
+      featureId,
+      key,
+      toTokens: growth.toTokens,
+      byTokens: growth.byTokens,
+      summary: `${growth.why} ${featureId} would start.`,
+      inputs,
+    });
   }
 
   /**
@@ -2150,9 +2350,9 @@ export class InitiativeService {
     const over = this.tokenForecastOver(row, view);
     if (!over) return null;
     return recoveryAdvice(
-      `${over.summary} Raise it with baked workflow initiative extend, or trim the split.`,
-      `${over.summary} Raise the budget, or trim the split.`,
-      { action: "extend", initiativeId: row.id },
+      `${over.summary} Raise it with baked workflow initiative extend ${row.id} --tokens ${over.withMargin}, or trim the split.`,
+      `${over.summary} Raise the budget to ${tokenText(over.withMargin)} tokens, or trim the split.`,
+      { action: "extend", initiativeId: row.id, suggestedTokens: over.withMargin },
     );
   }
 
@@ -2160,7 +2360,7 @@ export class InitiativeService {
   private tokenForecastOver(
     row: InitiativeRow,
     view: Pick<InitiativeView, "features">,
-  ): { summary: string; inputs: Record<string, unknown> } | null {
+  ): { summary: string; inputs: Record<string, unknown>; withMargin: number } | null {
     if (!this.store.settings(row).forecastStop) return null;
     const plan = this.approvedPlan(row);
     if (!plan) return null;
@@ -2170,6 +2370,7 @@ export class InitiativeService {
     return {
       summary: `The forecast is over the shared budget: ${rangeText(estimate.tokens)} tokens against ${tokenText(estimate.budget.maxTotalTokens)}.`,
       inputs: { tokens: estimate.tokens, maxTotalTokens: estimate.budget.maxTotalTokens },
+      withMargin: estimate.withMargin,
     };
   }
 
@@ -2302,6 +2503,22 @@ export class InitiativeService {
     const cost = this.costView(row, settings, plan, runIds, used, accepted, estimate);
     const shares = splitShares(waitingForRun, remaining, cost.remainingUsd);
     for (const [index, feature] of waitingForRun.entries()) Object.assign(feature, shares[index]);
+    const measured = estimate ? this.poolForecastOf(row.id, used.tokens, estimate, features) : null;
+    const pool = approved
+      ? tokenPool({
+          initiativeId: row.id,
+          limitTokens: limits.maxTotalTokens,
+          usedTokens: used.tokens,
+          committedTokens: committed.tokens,
+          forecastTokens:
+            measured?.forecastTokens ??
+            (estimate ? Math.max(estimate.expectedTokens, used.tokens) : null),
+          ratio: measured?.ratio ?? null,
+          features: features.length,
+          waiting: waitingNeeds(waitingForRun),
+          cost,
+        })
+      : null;
     const unstarted = waitingForRun.length;
     // The share of the feature that starts next, by the same order the drive starts them in.
     const nextShare =
@@ -2364,6 +2581,8 @@ export class InitiativeService {
         unstartedFeatures: unstarted,
         nextShare,
         cost,
+        pool,
+        forecastNotice: pool?.notice ?? null,
         rule: BUDGET_RULE,
       },
       next: { kind: "done", featureId: null, runId: null, message: "" },
@@ -2372,6 +2591,39 @@ export class InitiativeService {
     view.next = this.nextAction(row, view);
     view.drive = initiativeDriveState(view, this.driven(id, runIds));
     return view;
+  }
+
+  /**
+   * The token pool's measured forecast (`poolForecast`, #2042): each feature's low estimate at its
+   * start from its last passing `feature.share_gate` event, and for a feature without a run its
+   * current one, with what its runs used.
+   */
+  private poolForecastOf(
+    id: string,
+    usedTokens: number,
+    estimate: InitiativeEstimate,
+    features: FeatureView[],
+  ): ReturnType<typeof poolForecast> {
+    const started = new Map<string, number>();
+    for (const payload of this.store.eventsOfType(id, "feature.share_gate")) {
+      const record = payload as ShareGateRecord | null;
+      if (record?.verdict === "pass" && record.feature.need)
+        started.set(record.featureId, record.feature.need.low);
+    }
+    return poolForecast(
+      usedTokens,
+      features.map((f) => {
+        const estimated = estimate.features.find((e) => e.featureId === f.id);
+        return {
+          id: f.id,
+          accepted: f.state === "accepted",
+          skeleton: (estimated?.skeleton ?? 0) > 0 || (f.skeleton?.length ?? 0) > 0,
+          spent: f.usage.tokens,
+          low: f.runId === null ? (f.need?.low ?? null) : (started.get(f.id) ?? null),
+          expected: estimated?.expectedTokens ?? 0,
+        };
+      }),
+    );
   }
 
   /**
@@ -3407,6 +3659,29 @@ function costPolicy(
       : { costForecast: "advise" as const }),
   };
 }
+
+/**
+ * The host's pool extension for a feature the share gate parks (#2042), or null when the park is
+ * not on tokens (a dollar block, or calls or time exhausted) or the view has no pool. A token
+ * block is one whose `extend` remedy suggests tokens.
+ */
+export function poolGrowthOf(
+  view: ShareGateView,
+  feature: Pick<FeatureView, "id" | "share" | "need" | "shareUsd"> &
+    Partial<Pick<FeatureView, "needUsd">>,
+  limitTokens?: number,
+): PoolExtension | null {
+  const inputs = shareGatePool(view, limitTokens);
+  if (!inputs) return null;
+  const pooled: ShareGateView = {
+    ...view,
+    budget: { ...view.budget, limits: { ...ZERO_LIMITS, maxTotalTokens: inputs.limitTokens } },
+  };
+  const advice = shareShortfall(pooled, feature);
+  if (!advice?.remedies.some((r) => r.suggestedTokens !== undefined)) return null;
+  return poolExtensionDecision(inputs);
+}
+const ZERO_LIMITS = { maxTotalTokens: 0, maxAgentCalls: 0, maxActiveMs: 0 };
 
 /**
  * What a starting feature may grow its run budget to: the shared budget that remains less the low

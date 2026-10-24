@@ -563,8 +563,11 @@ const MAX_RATIO = 5;
 /** Accepted non-skeleton features needed before measured usage scales the remaining split. */
 export const MIN_CALIBRATION_FEATURES = 3;
 
-/** Blend a third of the measured ratio at three samples, two thirds at four, and all at five. */
-function calibrationRatio(measured: number, forecast: number, count: number): number | null {
+/**
+ * Blend a third of the measured ratio at three samples, two thirds at four, and all at five. The
+ * token pool's forecast blends its actual-to-low ratio the same way (`poolForecast`, #2042).
+ */
+export function calibrationRatio(measured: number, forecast: number, count: number): number | null {
   if (count < MIN_CALIBRATION_FEATURES || forecast <= 0 || measured <= 0) return null;
   const weight = Math.min(1, (count - MIN_CALIBRATION_FEATURES + 1) / MIN_CALIBRATION_FEATURES);
   return 1 + weight * (Math.min(MAX_RATIO, measured / forecast) - 1);

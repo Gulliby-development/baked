@@ -1,8 +1,10 @@
 import {
   errorRecovery,
+  extendSuggestion,
   type RecoveryAdvice,
   type Remedy,
   renderRecovery,
+  suggestionText,
 } from "../../core/workflows/remedies.js";
 
 function label(remedy: Remedy): string {
@@ -16,8 +18,13 @@ function label(remedy: Remedy): string {
       return `Open ${run} and press A to accept changes`;
     case "reroute":
       return `Open ${run}, choose another model and press M to switch model`;
-    case "extend":
-      return remedy.initiativeId ? "Press B to extend budget" : "Press B to raise limits";
+    case "extend": {
+      const amount = suggestionText(
+        extendSuggestion({ message: "", summary: "", remedies: [remedy] }),
+      );
+      if (!remedy.initiativeId) return "Press B to raise limits";
+      return amount ? `Press B to extend budget (to ${amount})` : "Press B to extend budget";
+    }
     case "replan":
       return "Select the initiative feature and press X to re-plan it";
     case "revise":

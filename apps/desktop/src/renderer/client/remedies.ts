@@ -1,7 +1,9 @@
 import {
+  extendSuggestion,
   type RecoveryAdvice,
   type Remedy,
   renderRecovery,
+  suggestionText,
 } from "../../../../../src/core/workflows/remedies-model.js";
 
 function label(remedy: Remedy): string {
@@ -15,8 +17,12 @@ function label(remedy: Remedy): string {
       return `Open ${run} and choose Accept changes`;
     case "reroute":
       return `Open ${run} and choose Switch model`;
-    case "extend":
-      return "Choose Extend budget";
+    case "extend": {
+      const amount = suggestionText(
+        extendSuggestion({ message: "", summary: "", remedies: [remedy] }),
+      );
+      return amount ? `Choose Extend to ${amount}` : "Choose Extend budget";
+    }
     case "replan":
       return "Open the initiative feature and choose Re-plan";
     case "revise":

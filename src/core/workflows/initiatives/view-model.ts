@@ -5,7 +5,7 @@
  */
 import { z } from "zod";
 import { WorkflowFault } from "../errors.js";
-import type { RecoveryAdvice } from "../remedies.js";
+import { extendSuggestion, type RecoveryAdvice } from "../remedies.js";
 import { canRepairRun, repairText } from "../repairable.js";
 import { newId } from "../store.js";
 import { DRIVABLE_NEXT } from "./drive-state.js";
@@ -414,6 +414,8 @@ export function initiativeActions(
     });
   if (canExtendBudget(view)) {
     const { limits, cost } = view.budget;
+    // The amounts the block or the token forecast suggest, so Enter applies them (#2042).
+    const suggested = extendSuggestion(view.next.recovery, view.budget.pool?.suggestedTokens);
     options.push({
       key: "B",
       label: "extend budget",
@@ -422,7 +424,7 @@ export function initiativeActions(
       input: {
         question: `Raise the shared budget: tokens [calls [time]] [$dollars], such as 8M 400 4h $40; - keeps a limit. Now ${limits.maxTotalTokens} tokens, ${limits.maxAgentCalls} calls, ${Math.round(limits.maxActiveMs / 60_000)}m${cost?.capUsd ? `, $${cost.capUsd.toFixed(2)}` : ""}.`,
         placeholder: `${Math.ceil((limits.maxTotalTokens * 1.5) / 1_000_000)}M`,
-        initial: "",
+        initial: suggestedText(suggested, limits.maxTotalTokens),
         build: (text) => {
           const raised = parseBudgetText(text);
           if (!Object.keys(raised).length)
@@ -433,6 +435,19 @@ export function initiativeActions(
     });
   }
   return options;
+}
+
+/** The B form's prefilled answer from a suggestion: `33100000`, `- $31.50`, or empty. */
+function suggestedText(
+  suggested: { tokens?: number; usd?: number } | null,
+  limitTokens: number,
+): string {
+  const tokens = suggested?.tokens && suggested.tokens > limitTokens ? suggested.tokens : null;
+  if (!tokens && !suggested?.usd) return "";
+  return [
+    tokens ? String(tokens) : "-",
+    ...(suggested?.usd ? [`$${suggested.usd.toFixed(2)}`] : []),
+  ].join(" ");
 }
 
 /**

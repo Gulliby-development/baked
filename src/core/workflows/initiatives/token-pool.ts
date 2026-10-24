@@ -1,0 +1,269 @@
+import { tokenText } from "../estimate.js";
+import { EXTEND_WITHIN_DOLLARS_MODES } from "../schemas.js";
+import { calibrationRatio } from "./estimate.js";
+
+// The initiative's shared token pool beside the person's dollar cap (#2042). Part of the
+// cap-growth hot module (.github/hot-modules.json). Bench round 66 (nodepluck) parked select at
+// 27.7M of a 30M pool with three features unstarted while the $30 cap had $5.98 left: nothing
+// warned while the pool still had room, and the block named no amount.
+
+/** Suggested pool sizes are rounded up to this step, so the answer is a short number. */
+export const POOL_STEP = 100_000;
+const roundUp = (n: number): number => Math.ceil(n / POOL_STEP) * POOL_STEP;
+const roundDown = (n: number): number => Math.floor(n / POOL_STEP) * POOL_STEP;
+const usd = (n: number): string => `$${n.toFixed(2)}`;
+
+/**
+ * Whether the host grows the token pool on its own inside the person's dollar cap
+ * (`workflows.extendWithinDollars`). `shadow`, the default, records the decision as a
+ * `decision.would_extend` initiative event and changes nothing; `off` records nothing. Growing
+ * the pool for real is its own pull request after bench rounds with no false would-extend.
+ */
+export { EXTEND_WITHIN_DOLLARS_MODES };
+export type ExtendWithinDollars = (typeof EXTEND_WITHIN_DOLLARS_MODES)[number];
+export const DEFAULT_EXTEND_WITHIN_DOLLARS: ExtendWithinDollars = "shadow";
+
+/**
+ * Every limit a person set that the host grows, or would grow, on its own, with the other cap the
+ * person set that bounds it. A new growth registers here, ships in shadow and adds its case to
+ * `tests/workflow-scenario-initiative-token-pool.test.ts`, which fails on a `decision.would_extend`
+ * event whose reason is missing here.
+ */
+export const HOST_POOL_GROWTHS = {
+  "extend-within-dollars": {
+    label: "The initiative's token pool parks a feature while its dollar cap has room",
+    grows: "the shared token pool (--budget-tokens)",
+    boundBy: "the dollar cap (--budget-usd) with its tolerance",
+    modes: EXTEND_WITHIN_DOLLARS_MODES,
+    defaultMode: DEFAULT_EXTEND_WITHIN_DOLLARS,
+  },
+} as const;
+export type PoolGrowthReason = keyof typeof HOST_POOL_GROWTHS;
+
+/** A feature still waiting for a run, with its estimated tokens (calibrated once measured). */
+export interface PoolFeature {
+  id: string;
+  low: number;
+  high: number;
+}
+
+/** A feature of the split as the pool's measured forecast reads it. */
+export interface ForecastFeature {
+  id: string;
+  accepted: boolean;
+  /** A feature with host-written skeleton files never calibrates the others. */
+  skeleton: boolean;
+  /** Tokens its runs used so far. */
+  spent: number;
+  /**
+   * The low estimate the share gate gave it at its start (`feature.share_gate` pass), or for a
+   * feature without a run its current one; null when neither is known.
+   */
+  low: number | null;
+  /** The estimate's point forecast of the feature, for one without a low. */
+  expected: number;
+}
+
+/**
+ * The pool's measured forecast (#2042): what was used plus each unfinished feature's low estimate
+ * scaled by how far the accepted features landed above theirs (actual over the low the gate gave
+ * them at their start), blended like the dollar re-forecast (`calibrationRatio`: from three
+ * accepted non-skeleton features, with full weight at five), never below what a running feature
+ * used. Null before three such features are accepted. In R66 nodepluck the accepted features had
+ * used 2.33, 1.47, 0.93 and 4.07 times their low ends while the estimate's point forecast stayed
+ * under the pool.
+ */
+export function poolForecast(
+  usedTokens: number,
+  features: readonly ForecastFeature[],
+): { forecastTokens: number; ratio: number } | null {
+  const measured = features.filter((f) => f.accepted && !f.skeleton && f.low !== null && f.low > 0);
+  const ratio = calibrationRatio(
+    measured.reduce((sum, f) => sum + f.spent, 0),
+    measured.reduce((sum, f) => sum + (f.low ?? 0), 0),
+    measured.length,
+  );
+  if (ratio === null) return null;
+  const toRun = features
+    .filter((f) => !f.accepted)
+    .reduce(
+      (sum, f) => sum + Math.max(0, (f.low === null ? f.expected : f.low * ratio) - f.spent),
+      0,
+    );
+  return { forecastTokens: Math.round(usedTokens + toRun), ratio: Math.round(ratio * 100) / 100 };
+}
+
+/** The dollar side the token pool is compared with: the initiative's `budget.cost`. */
+export interface PoolCost {
+  capUsd: number | null;
+  ceilingUsd: number | null;
+  spentUsd: number;
+  remainingUsd: number | null;
+  forecastUsd: number | null;
+}
+
+export interface PoolInputs {
+  initiativeId: string;
+  limitTokens: number;
+  usedTokens: number;
+  /** Used tokens plus what open runs may still use under their limits. */
+  committedTokens: number;
+  /**
+   * The forecast of the whole initiative: `poolForecast` once three features are measured, else
+   * the estimate's point forecast (`InitiativeEstimate.expectedTokens`: what was used plus each
+   * unfinished feature's expected tokens). Null without an estimate (or in an old record).
+   */
+  forecastTokens: number | null;
+  /** The measured actual-to-low ratio that scales the features still to run; null before it. */
+  ratio: number | null;
+  /** Features of the split. */
+  features: number;
+  waiting: PoolFeature[];
+  cost: PoolCost;
+}
+
+/** The token pool as `initiative show`, the TUI and the desktop budget view read it. */
+export interface TokenPoolView {
+  limitTokens: number;
+  usedTokens: number;
+  committedTokens: number;
+  forecastTokens: number | null;
+  ratio: number | null;
+  /**
+   * The pool that starts every waiting feature at its high estimate beside what open runs hold,
+   * rounded up: what a block on the pool suggests.
+   */
+  coverTokens: number;
+  /**
+   * What the notice suggests extending the pool to: the forecast, and no less than what starts
+   * every waiting feature at its low estimate, rounded up; null while the forecast fits the pool.
+   */
+  suggestedTokens: number | null;
+  /** Dollars per million tokens the initiative paid so far; null before it spent both. */
+  usdPerMillion: number | null;
+  /** The tokens the dollar cap pays for at that rate; null without a cap or a rate. */
+  capTokens: number | null;
+  /** Set when the forecast is above the pool, while the pool still has room. */
+  notice: string | null;
+}
+
+/** The token pool, its forecast and what to extend it to (#2042). */
+export function tokenPool(inputs: PoolInputs): TokenPoolView {
+  const { limitTokens, usedTokens, committedTokens, forecastTokens, cost } = inputs;
+  const coverTokens = roundUp(committedTokens + inputs.waiting.reduce((sum, f) => sum + f.high, 0));
+  const lows = committedTokens + inputs.waiting.reduce((sum, f) => sum + f.low, 0);
+  const suggestedTokens =
+    forecastTokens !== null && forecastTokens > limitTokens
+      ? roundUp(Math.max(forecastTokens, lows))
+      : null;
+  const usdPerMillion =
+    usedTokens > 0 && cost.spentUsd > 0 ? (cost.spentUsd / usedTokens) * 1_000_000 : null;
+  const capTokens =
+    cost.capUsd !== null && usdPerMillion !== null
+      ? Math.floor((cost.capUsd / usdPerMillion) * 1_000_000)
+      : null;
+  const pool: TokenPoolView = {
+    limitTokens,
+    usedTokens,
+    committedTokens,
+    forecastTokens,
+    ratio: inputs.ratio,
+    coverTokens,
+    suggestedTokens,
+    usdPerMillion: usdPerMillion === null ? null : Math.round(usdPerMillion * 100) / 100,
+    capTokens,
+    notice: null,
+  };
+  if (forecastTokens !== null && suggestedTokens !== null) {
+    const basis =
+      inputs.ratio !== null
+        ? `At the measured ${inputs.ratio.toFixed(1)}x of the estimates`
+        : "At the estimates so far";
+    pool.notice = `${basis} the ${inputs.features} features need about ${tokenText(forecastTokens)} tokens (${tokenText(usedTokens)} used); the shared pool is ${tokenText(limitTokens)}. Extend to ${tokenText(suggestedTokens)} (baked workflow initiative extend ${inputs.initiativeId} --tokens ${suggestedTokens})${dollarRoom(pool, cost)}.`;
+  }
+  return pool;
+}
+
+/** What the dollar cap says beside the pool, for a notice or a block message. */
+function dollarRoom(pool: TokenPoolView, cost: PoolCost): string {
+  if (cost.capUsd === null) return "";
+  if (pool.capTokens !== null && pool.usdPerMillion !== null)
+    return `; the ${usd(cost.capUsd)} cap would pay for about ${tokenText(pool.capTokens)} at ${usd(pool.usdPerMillion)} per million`;
+  return `; the ${usd(cost.capUsd)} cap has ${usd(cost.remainingUsd ?? 0)} left`;
+}
+
+/**
+ * The amounts a token block names: how many more tokens start the parked feature, the pool that
+ * covers every waiting feature's high estimate, and the dollar room (#2042).
+ */
+export function poolShortText(
+  pool: TokenPoolView,
+  parked: PoolFeature,
+  available: number,
+  waiting: PoolFeature[],
+  cost: PoolCost,
+): string {
+  const start = Math.max(0, parked.low - available);
+  const names = waiting.map((f) => f.id).join(", ");
+  const cover = pool.coverTokens;
+  const dollars =
+    cost.capUsd === null
+      ? ""
+      : ` The dollar cap has ${usd(cost.remainingUsd ?? 0)} left (${usd(cost.spentUsd)} of ${usd(cost.capUsd)} spent${cost.forecastUsd !== null ? `, forecast ${usd(cost.forecastUsd)}` : ""})${pool.capTokens !== null && pool.usdPerMillion !== null ? ` and would pay for about ${tokenText(pool.capTokens)} tokens at ${usd(pool.usdPerMillion)} per million` : ""}.`;
+  return `${parked.id} needs ${start} more tokens to start; a pool of ${tokenText(cover)} (${cover} tokens, ${Math.max(0, cover - pool.limitTokens)} more than ${tokenText(pool.limitTokens)}) covers the high estimates of ${names}.${dollars}`;
+}
+
+/** The host's decision on a parked feature: whether it would extend the pool inside the dollar cap. */
+export interface PoolExtension {
+  reason: PoolGrowthReason;
+  wouldExtend: boolean;
+  /** The pool after the extension; null when it would not extend. */
+  toTokens: number | null;
+  byTokens: number | null;
+  /** Why it would or would not, in words. */
+  why: string;
+}
+
+/**
+ * Whether the host would extend the token pool to start a feature parked on it (#2042): only with
+ * a dollar cap the person set, a measured dollar forecast within its ceiling, and an extension the
+ * cap pays for at the measured rate that still starts every waiting feature at its low estimate.
+ * It never raises a dollar, call or time limit. The extension is the pool a block suggests (what
+ * covers the waiting features' high estimates), held to the tokens the cap pays for.
+ */
+export function poolExtensionDecision(inputs: PoolInputs, pool = tokenPool(inputs)): PoolExtension {
+  const reason = "extend-within-dollars" as const;
+  const no = (why: string): PoolExtension => ({
+    reason,
+    wouldExtend: false,
+    toTokens: null,
+    byTokens: null,
+    why,
+  });
+  const { cost } = inputs;
+  if (cost.capUsd === null || cost.ceilingUsd === null)
+    return no("No dollar cap: a pool the person set alone is never grown.");
+  if (pool.coverTokens <= inputs.limitTokens)
+    return no("The pool already covers the waiting features.");
+  if (cost.forecastUsd === null) return no("No measured dollar forecast yet.");
+  if (cost.forecastUsd > cost.ceilingUsd)
+    return no(
+      `The dollar forecast ${usd(cost.forecastUsd)} is above the ${usd(cost.ceilingUsd)} ceiling.`,
+    );
+  const toTokens =
+    pool.capTokens === null
+      ? pool.coverTokens
+      : Math.min(pool.coverTokens, roundDown(pool.capTokens));
+  const lows = inputs.waiting.reduce((sum, f) => sum + f.low, 0);
+  if (toTokens <= inputs.limitTokens || toTokens - inputs.committedTokens < lows)
+    return no(
+      `The ${usd(cost.capUsd)} cap pays for about ${tokenText(pool.capTokens ?? 0)} tokens, too few to start the waiting features.`,
+    );
+  return {
+    reason,
+    wouldExtend: true,
+    toTokens,
+    byTokens: toTokens - inputs.limitTokens,
+    why: `The dollar forecast ${usd(cost.forecastUsd)} is within the ${usd(cost.ceilingUsd)} ceiling${pool.capTokens !== null ? ` and the ${usd(cost.capUsd)} cap pays for about ${tokenText(pool.capTokens)} tokens` : ""}: the pool would grow from ${tokenText(inputs.limitTokens)} to ${tokenText(toTokens)}.`,
+  };
+}

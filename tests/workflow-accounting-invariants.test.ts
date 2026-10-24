@@ -2,6 +2,7 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import fc from "fast-check";
 import { canonical } from "../src/core/specs/hash.js";
 import { type CostForecast, costForecast, kindRatio } from "../src/core/workflows/cost-forecast.js";
+import { POOL_STEP, poolExtensionDecision, poolForecast, tokenPool } from "../src/core/workflows/initiatives/token-pool.js";
 import type { RunPolicy } from "../src/core/workflows/schemas.js";
 import { type TaskKind, verificationTokens } from "../src/core/workflows/sizing.js";
 import type { AttemptUsageRecord } from "../src/core/workflows/step-budget.js";
@@ -400,4 +401,84 @@ describe("cost forecast invariants (#1721)", () => {
       { numRuns: RUNS },
     );
   }, 60_000);
+});
+
+// The initiative token pool's forecast, its suggested sizes and the shadow extension inside the
+// dollar cap (#2042).
+describe("token pool invariants (#2042)", () => {
+  const poolFeature = fc.record({
+    low: fc.integer({ min: 1, max: 5_000_000 }),
+    span: fc.integer({ min: 0, max: 5_000_000 }),
+  }).map(({ low, span }) => ({ low, high: low + span }));
+  const poolSeed = fc.record({
+    limitTokens: fc.integer({ min: 1_000_000, max: 60_000_000 }),
+    usedTokens: fc.integer({ min: 0, max: 50_000_000 }),
+    held: fc.integer({ min: 0, max: 10_000_000 }),
+    forecast: fc.option(fc.integer({ min: 0, max: 80_000_000 }), { nil: null }),
+    waiting: fc.array(poolFeature, { minLength: 0, maxLength: 5 }),
+    capUsd: fc.option(fc.integer({ min: 1, max: 100 }), { nil: null }),
+    spentUsd: fc.double({ min: 0, max: 100, noNaN: true }),
+    forecastUsd: fc.option(fc.double({ min: 0, max: 150, noNaN: true }), { nil: null }),
+  }).map((s) => ({
+    initiativeId: "pool",
+    limitTokens: s.limitTokens,
+    usedTokens: s.usedTokens,
+    committedTokens: s.usedTokens + s.held,
+    forecastTokens: s.forecast === null ? null : Math.max(s.forecast, s.usedTokens),
+    ratio: null,
+    features: s.waiting.length + 1,
+    waiting: s.waiting.map((f, i) => ({ id: `f${i}`, ...f })),
+    cost: { capUsd: s.capUsd, ceilingUsd: s.capUsd === null ? null : s.capUsd * 1.25, spentUsd: s.spentUsd, remainingUsd: s.capUsd === null ? null : Math.max(0, s.capUsd - s.spentUsd), forecastUsd: s.forecastUsd },
+  }));
+  const lows = (i: { committedTokens: number; waiting: { low: number }[] }) => i.committedTokens + i.waiting.reduce((n, f) => n + f.low, 0);
+  const highs = (i: { committedTokens: number; waiting: { high: number }[] }) => i.committedTokens + i.waiting.reduce((n, f) => n + f.high, 0);
+
+  test("the suggested pool covers the forecast and every waiting low; the cover covers every high", () => {
+    fc.assert(fc.property(poolSeed, (inputs) => {
+      const pool = tokenPool(inputs);
+      expect(pool.coverTokens % POOL_STEP).toBe(0);
+      expect(pool.coverTokens).toBeGreaterThanOrEqual(highs(inputs));
+      expect(pool.coverTokens - highs(inputs)).toBeLessThan(POOL_STEP);
+      const over = inputs.forecastTokens !== null && inputs.forecastTokens > inputs.limitTokens;
+      expect(pool.suggestedTokens !== null).toBe(over);
+      expect(pool.notice !== null).toBe(over);
+      if (pool.suggestedTokens !== null) {
+        expect(pool.suggestedTokens).toBeGreaterThanOrEqual(inputs.forecastTokens ?? 0);
+        expect(pool.suggestedTokens).toBeGreaterThanOrEqual(lows(inputs));
+        expect(pool.suggestedTokens % POOL_STEP).toBe(0);
+      }
+    }), { numRuns: 200 });
+  });
+
+  test("the extension stays inside the person's dollar cap and starts every waiting feature", () => {
+    fc.assert(fc.property(poolSeed, (inputs) => {
+      const pool = tokenPool(inputs);
+      const decision = poolExtensionDecision(inputs, pool);
+      if (inputs.cost.capUsd === null || inputs.cost.forecastUsd === null) expect(decision.wouldExtend).toBe(false);
+      if (!decision.wouldExtend) return;
+      const to = decision.toTokens ?? 0;
+      expect(to).toBeGreaterThan(inputs.limitTokens);
+      expect(decision.byTokens).toBe(to - inputs.limitTokens);
+      expect(to).toBeLessThanOrEqual(pool.coverTokens);
+      expect(to - inputs.committedTokens).toBeGreaterThanOrEqual(lows(inputs) - inputs.committedTokens);
+      expect(inputs.cost.forecastUsd ?? Infinity).toBeLessThanOrEqual(inputs.cost.ceilingUsd ?? -1);
+      if (pool.capTokens !== null) expect(to).toBeLessThanOrEqual(pool.capTokens);
+    }), { numRuns: 300 });
+  });
+
+  test("the measured forecast is never below what was used", () => {
+    const feature = fc.record({
+      accepted: fc.boolean(), skeleton: fc.boolean(), spent: fc.integer({ min: 0, max: 5_000_000 }),
+      low: fc.option(fc.integer({ min: 1, max: 5_000_000 }), { nil: null }), expected: fc.integer({ min: 0, max: 5_000_000 }),
+    });
+    fc.assert(fc.property(fc.array(feature, { minLength: 3, maxLength: 10 }), (seeds) => {
+      const features = seeds.map((f, i) => ({ id: `f${i}`, ...f }));
+      const used = features.reduce((n, f) => n + f.spent, 0);
+      const forecast = poolForecast(used, features);
+      const measured = features.filter((f) => f.accepted && !f.skeleton && (f.low ?? 0) > 0);
+      if (measured.length < 3 || measured.every((f) => f.spent === 0)) return;
+      expect(forecast).not.toBeNull();
+      expect(forecast?.forecastTokens ?? 0).toBeGreaterThanOrEqual(used);
+    }), { numRuns: 200 });
+  });
 });

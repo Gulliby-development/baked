@@ -86,5 +86,9 @@
   "R64/cfgquill.sqlite.gz#a843cc11-5b8d-4e91-8b46-dea39b078ae7": {
     "newRepeatStops": 1,
     "reason": "#1996: T006 failed gofmt and tests-written with the same failing lines on internal/lint/rules_test.go as T005 (the byte order mark at 26:2217 and 26:3024); the repeated_failure reason (shadow) records a would-stop there, which the round, recorded before #1996, did not."
+  },
+  "R66/nodepluck.sqlite.gz#nodepluck": {
+    "newPoolGrowth": 1,
+    "reason": "#2042: select parked at seq 28 on the shared token pool (611128 tokens available, low 792405) with $4.55 of the $30.00 cap left; the extend-within-dollars growth (shadow) records a would-extend to 33.1M (the waiting features' high estimates), inside the 35.5M the cap pays for at $0.85 per million. The round, recorded before #2042, held."
   }
 }

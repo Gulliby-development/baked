@@ -47,7 +47,13 @@ import {
   hostApplyRecords,
 } from "./host-apply.js";
 import type { initiativePriceSamples } from "./initiatives/forecast.js";
-import { InitiativeService, type ShareGateRecord, shareShortfall } from "./initiatives/service.js";
+import {
+  InitiativeService,
+  poolGrowthOf,
+  type ShareGateRecord,
+  shareShortfall,
+} from "./initiatives/service.js";
+import type { TokenPoolView } from "./initiatives/token-pool.js";
 import { recordingOf } from "./model-recording.js";
 import { type PlanCostRate, planCostOf } from "./plan-cost.js";
 import {
@@ -1539,13 +1545,43 @@ export interface InitiativeStartBoundary {
   estimate: { featureId: string; low: number; high: number }[];
   /** The initiative's token range and expected tokens in that estimate (#2043); null without one. */
   tokens: { low: number; high: number; expected: number } | null;
+  /** The token pool's forecast the current code makes at this start, and its notice (#2042). */
+  pool: Pick<
+    TokenPoolView,
+    "limitTokens" | "usedTokens" | "forecastTokens" | "suggestedTokens" | "notice"
+  > | null;
 }
+
+/**
+ * One park of a feature on the token pool, and whether the host would extend the pool inside the
+ * dollar cap (#2042): `recorded` is what the park recorded (`hold` before #2042), `replayed` what
+ * the current rule decides on the recorded inputs, with the pool it would grow to.
+ */
+export interface PoolGrowthBoundary {
+  featureId: string;
+  seq: number;
+  recorded: "extend" | "hold";
+  replayed: "extend" | "hold";
+  limitTokens: number;
+  toTokens: number | null;
+}
+
+/** The pool-growth rule: `poolGrowthOf` unless a test replays an older one. */
+export type PoolGrowthRule = (
+  view: ShareGateRecord["view"],
+  feature: ShareGateRecord["feature"],
+  limitTokens: number,
+) => { wouldExtend: boolean; toTokens: number | null } | null;
 
 export interface InitiativeReplay {
   initiativeId: string;
   shareGate: ShareGateBoundary[];
   /** Features the recording started that the current gate parks on the recorded inputs. */
   newShareStops: number;
+  /** Every token park with the host's pool extension decided again (#2042). */
+  poolGrowth: PoolGrowthBoundary[];
+  /** Parks whose pool extension the current rule decides differently from the recording. */
+  newPoolGrowth: number;
   starts: InitiativeStartBoundary[];
   /** Features the recording started that the current gate parks on recomputed inputs. */
   newStartStops: number;
@@ -1591,6 +1627,82 @@ export function replayShareGate(
   }));
 }
 
+/**
+ * The token pool's limit when the share-gate event at `seq` was recorded: from the record itself
+ * from #2042 on; before it the limit an extension after it raised (`budget.extended` events'
+ * `previous`), else the initiative's settings or its approved plan revision's budget.
+ */
+function poolLimitAt(store: WorkflowStore, initiativeId: string, seq: number): number | null {
+  const db = store.connection;
+  const extended = db
+    .query(
+      "SELECT payload_json FROM initiative_events WHERE initiative_id=? AND type='budget.extended' AND seq>? ORDER BY seq LIMIT 1",
+    )
+    .get(initiativeId, seq) as { payload_json: string } | null;
+  const previous = extended
+    ? (JSON.parse(extended.payload_json) as { previous?: { maxTotalTokens?: number } }).previous
+    : undefined;
+  if (previous?.maxTotalTokens) return previous.maxTotalTokens;
+  const row = db
+    .query("SELECT settings_json, approved_plan_revision FROM initiatives WHERE id=?")
+    .get(initiativeId) as { settings_json: string; approved_plan_revision: number | null } | null;
+  if (!row) return null;
+  const settings = JSON.parse(row.settings_json) as { budget?: { maxTotalTokens?: number } | null };
+  if (settings.budget?.maxTotalTokens) return settings.budget.maxTotalTokens;
+  if (row.approved_plan_revision === null) return null;
+  const revision = db
+    .query("SELECT budget_json FROM initiative_revisions WHERE initiative_id=? AND revision=?")
+    .get(initiativeId, row.approved_plan_revision) as { budget_json: string } | null;
+  return revision
+    ? ((JSON.parse(revision.budget_json) as { maxTotalTokens?: number }).maxTotalTokens ?? null)
+    : null;
+}
+
+/**
+ * Every recorded park of the trace's initiatives on the token pool, decided again by `rule`
+ * (`poolGrowthOf`): would the host extend the pool inside the dollar cap (#2042). A record from
+ * #2042 on holds the decision's inputs (limits, used tokens, the pool's forecast) and what it
+ * decided; an older park is decided on its limit from `poolLimitAt`, without a token forecast or
+ * a measured dollar rate, and recorded as `hold`, which it was.
+ */
+export function replayPoolGrowth(
+  store: WorkflowStore,
+  rule: PoolGrowthRule = poolGrowthOf,
+): Pick<InitiativeReplay, "initiativeId" | "poolGrowth" | "newPoolGrowth">[] {
+  const rows = store.connection
+    .query(
+      "SELECT initiative_id, seq, payload_json FROM initiative_events WHERE type='feature.share_gate' ORDER BY initiative_id, seq",
+    )
+    .all() as { initiative_id: string; seq: number; payload_json: string }[];
+  const byInitiative = new Map<string, PoolGrowthBoundary[]>();
+  for (const row of rows) {
+    const record = JSON.parse(row.payload_json) as ShareGateRecord;
+    if (record.verdict !== "park") continue;
+    const limitTokens =
+      record.view.budget.pool?.limitTokens ??
+      record.view.budget.limits?.maxTotalTokens ??
+      poolLimitAt(store, row.initiative_id, row.seq);
+    if (limitTokens === null) continue;
+    const decision = rule(record.view, record.feature, limitTokens);
+    if (!decision && !record.poolGrowth) continue;
+    const boundaries = byInitiative.get(row.initiative_id) ?? [];
+    boundaries.push({
+      featureId: record.featureId,
+      seq: row.seq,
+      recorded: record.poolGrowth?.wouldExtend ? "extend" : "hold",
+      replayed: decision?.wouldExtend ? "extend" : "hold",
+      limitTokens,
+      toTokens: decision?.toTokens ?? null,
+    });
+    byInitiative.set(row.initiative_id, boundaries);
+  }
+  return [...byInitiative].map(([initiativeId, poolGrowth]) => ({
+    initiativeId,
+    poolGrowth,
+    newPoolGrowth: poolGrowth.filter((b) => b.replayed !== b.recorded).length,
+  }));
+}
+
 /** Measured stage usage for an initiative's prices; `initiativePriceSamples` unless a test passes an older one. */
 export type PriceSamples = typeof initiativePriceSamples;
 
@@ -1624,8 +1736,23 @@ const NO_AGENTS = {
  */
 export function replayInitiativeStarts(
   path: string,
-  options: { gate?: ShareGate; priceSamples?: PriceSamples; historyTrace?: HistoryTrace } = {},
-): Omit<InitiativeReplay, "shareGate" | "newShareStops">[] {
+  options: {
+    gate?: ShareGate;
+    priceSamples?: PriceSamples;
+    historyTrace?: HistoryTrace;
+    /**
+     * Rewinds the shared budget and each run's used tokens too: an extension made after a start
+     * is undone for it, and a run counts the tokens of the attempts it had finished (#2042). Off
+     * for the corpus gate, which has always replayed starts on the final budget and usage.
+     */
+    budgetAtStart?: boolean;
+    /**
+     * Further moments (epoch ms) to rewind to and compute the view at, between starts: each is a
+     * boundary with an empty `featureId` that never parks (#2042).
+     */
+    moments?: number[];
+  } = {},
+): Omit<InitiativeReplay, "shareGate" | "newShareStops" | "poolGrowth" | "newPoolGrowth">[] {
   const gate = options.gate ?? shareShortfall;
   const historyTrace = options.historyTrace ?? corpusHistoryTrace(dirname(dirname(path)));
   const probe = openTrace(path);
@@ -1640,7 +1767,12 @@ export function replayInitiativeStarts(
     probe.dispose();
   }
   // Each initiative gets its own copies: a rewind removes every later run of the trace.
-  return ids.map((id) => replayStarts(path, id, gate, options.priceSamples, historyTrace));
+  return ids.map((id) =>
+    replayStarts(path, id, gate, options.priceSamples, historyTrace, {
+      budgetAtStart: options.budgetAtStart === true,
+      moments: options.moments ?? [],
+    }),
+  );
 }
 
 /**
@@ -1702,7 +1834,8 @@ function replayStarts(
   gate: ShareGate,
   priceSamples: PriceSamples | undefined,
   historyTrace: HistoryTrace,
-): Omit<InitiativeReplay, "shareGate" | "newShareStops"> {
+  { budgetAtStart, moments }: { budgetAtStart: boolean; moments: number[] },
+): Omit<InitiativeReplay, "shareGate" | "newShareStops" | "poolGrowth" | "newPoolGrowth"> {
   const { store, workspace, dispose } = openTrace(path);
   const histories = new Map<string, ReturnType<typeof openTrace>>();
   try {
@@ -1766,7 +1899,11 @@ function replayStarts(
       ]),
     );
     const starts: InitiativeStartBoundary[] = [];
-    for (const link of [...links].reverse()) {
+    const points = [
+      ...links,
+      ...moments.map((at) => ({ feature_id: "", run_id: "", created_at: at })),
+    ].sort((a, b) => a.created_at - b.created_at);
+    for (const link of points.reverse()) {
       const t = link.created_at;
       if (revisedAt !== null && revisedAt >= t) break;
       db.transaction(() => {
@@ -1782,6 +1919,34 @@ function replayStarts(
           initiativeId,
           t,
         ]);
+        // The shared budget as it stood then: an extension made later is undone (#2042).
+        const extended = !budgetAtStart
+          ? null
+          : (db
+              .query(
+                "SELECT payload_json FROM initiative_events WHERE initiative_id=? AND type='budget.extended' AND at>=? ORDER BY seq LIMIT 1",
+              )
+              .get(initiativeId, t) as { payload_json: string } | null);
+        if (extended) {
+          const event = JSON.parse(extended.payload_json) as {
+            previous?: Record<string, number>;
+            previousCostUsd?: number | null;
+          };
+          const current = JSON.parse(
+            (
+              db.query("SELECT settings_json FROM initiatives WHERE id=?").get(initiativeId) as {
+                settings_json: string;
+              }
+            ).settings_json,
+          ) as { budget?: unknown; costBudget?: { maxCostUsd: number } | null };
+          if (event.previous) current.budget = event.previous;
+          if (typeof event.previousCostUsd === "number" && current.costBudget)
+            current.costBudget = { ...current.costBudget, maxCostUsd: event.previousCostUsd };
+          db.run("UPDATE initiatives SET settings_json=? WHERE id=?", [
+            JSON.stringify(current),
+            initiativeId,
+          ]);
+        }
         db.run("DELETE FROM initiative_events WHERE initiative_id=? AND at>=?", [initiativeId, t]);
         db.run("DELETE FROM initiative_requests WHERE initiative_id=? AND created_at>=?", [
           initiativeId,
@@ -1804,6 +1969,12 @@ function replayStarts(
             state?.reason ?? "none",
             runId,
           ]);
+          // The run's tokens as its finished attempts had used them then, not at its end.
+          if (budgetAtStart)
+            db.run(
+              "UPDATE runs SET token_usage=(SELECT COALESCE(SUM(used_tokens), 0) FROM attempts WHERE run_id=? AND ended_at<=?) WHERE id=?",
+              [runId, t, runId],
+            );
         }
         for (const runId of late) rewinders.delete(runId);
       })();
@@ -1846,6 +2017,13 @@ function replayStarts(
           replayed: feature && gate(view, feature) ? "park" : "pass",
           estimate,
           tokens: whole ? { ...whole.tokens, expected: whole.expectedTokens } : null,
+          pool: view.budget.pool && {
+            limitTokens: view.budget.pool.limitTokens,
+            usedTokens: view.budget.pool.usedTokens,
+            forecastTokens: view.budget.pool.forecastTokens,
+            suggestedTokens: view.budget.pool.suggestedTokens,
+            notice: view.budget.pool.notice,
+          },
         });
       } finally {
         service.close();
@@ -2450,6 +2628,7 @@ export function replayTrace(
     repeatRule?: RepeatRule;
     requestConflictRule?: RequestConflictRule;
     hostApplyRule?: HostApplyRule;
+    poolGrowthRule?: PoolGrowthRule;
   } = {},
 ): TraceReplay {
   // Initiative starts rewind their own copies of the trace, before the run replay rewinds this one.
@@ -2559,14 +2738,18 @@ export function replayTrace(
       });
     }
     const gates = replayShareGate(store, options.shareGate);
+    const pools = replayPoolGrowth(store, options.poolGrowthRule);
     const initiatives = [
       ...new Set([...starts.map((i) => i.initiativeId), ...gates.map((i) => i.initiativeId)]),
     ].map((initiativeId): InitiativeReplay => {
       const gate = gates.find((i) => i.initiativeId === initiativeId);
+      const pool = pools.find((i) => i.initiativeId === initiativeId);
       return {
         initiativeId,
         shareGate: gate?.shareGate ?? [],
         newShareStops: gate?.newShareStops ?? 0,
+        poolGrowth: pool?.poolGrowth ?? [],
+        newPoolGrowth: pool?.newPoolGrowth ?? 0,
         starts: [],
         newStartStops: 0,
         finalUsd: null,

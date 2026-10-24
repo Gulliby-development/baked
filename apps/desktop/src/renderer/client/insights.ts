@@ -131,6 +131,25 @@ export interface InitiativeCost {
   forecastNotice?: string | null;
 }
 
+/** The token pool (`budget.pool`, #2042): its forecast beside the dollar cap. */
+export interface InitiativePool {
+  limitTokens: number;
+  usedTokens: number;
+  committedTokens: number;
+  /** Used plus each unfinished feature's expected tokens; null without an estimate. */
+  forecastTokens: number | null;
+  /** The measured-to-planned ratio that scales the features still to run; null before it. */
+  ratio: number | null;
+  /** The pool that starts every waiting feature at its high estimate. */
+  coverTokens: number;
+  /** What the forecast suggests extending the pool to; null while it fits. */
+  suggestedTokens: number | null;
+  usdPerMillion: number | null;
+  /** The tokens the dollar cap pays for at the measured rate; null without a cap or rate. */
+  capTokens: number | null;
+  notice: string | null;
+}
+
 export type FeatureSize = "small" | "medium" | "large";
 
 /** `GET /v1/initiatives/:id`, as `baked workflow initiative show` prints it. */
@@ -173,6 +192,10 @@ export interface InitiativeView {
     /** What later feature runs can still get; absent on older backends. */
     remaining?: UsageTotals;
     cost?: InitiativeCost;
+    /** The token pool's forecast and what to extend it to (#2042); absent on older backends. */
+    pool?: InitiativePool | null;
+    /** Set while the token forecast is above the pool; absent on older backends. */
+    forecastNotice?: string | null;
   };
   next: InitiativeNext;
   drive?: InitiativeDrive | null;

@@ -27,6 +27,7 @@ import {
   mergeProblem,
   type SplitRow,
   splitProblem,
+  suggestedExtension,
 } from "./initiative-model.js";
 
 const FIELD = "flex min-w-0 flex-col gap-1.5";
@@ -407,9 +408,16 @@ export function BudgetInputs({
 
 export function ExtendDialog({ projectKey, view, onClose }: Props) {
   const id = useId();
-  const [fields, setFields] = useState(() => budgetFields(view));
+  // Prefilled with what the block or the token forecast suggests (#2042).
+  const suggested = suggestedExtension(view);
+  const [fields, setFields] = useState(() => ({
+    ...budgetFields(view),
+    ...(suggested?.tokens ? { tokens: String(suggested.tokens) } : {}),
+  }));
   const cap = view.budget.cost?.capUsd ?? null;
-  const [dollars, setDollars] = useState(() => (cap === null ? "" : String(cap)));
+  const [dollars, setDollars] = useState(() =>
+    suggested?.usd ? String(suggested.usd) : cap === null ? "" : String(cap),
+  );
   const extension = budgetExtension(view, fields, dollars);
   return (
     <FormDialog
