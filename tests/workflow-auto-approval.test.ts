@@ -9,6 +9,7 @@ import {
   planScopeAdvice,
   plannerApprovalLimits,
   policyDecisions,
+  requestExemptPaths,
   withoutApprovalRemarks,
 } from "../src/core/workflows/auto-approval.js";
 import { defaultWorkflowPolicy } from "../src/core/workflows/defaults.js";
@@ -191,7 +192,7 @@ describe("auto approval", () => {
       expect(result.approval?.mode).toBe("limits");
     });
     test("a manifest the request does not name, a delete, a lock file or a tool config still needs a person", () => {
-      for (const write of [modify("src/Other/Other.csproj"), { path: "src/Lockorder/Lockorder.csproj", action: "delete" as const }, modify("packages.lock.json"), modify("Directory.Packages.props"), modify("Directory.Build.props"), modify("bunfig.toml"), modify("Gemfile.lock"), modify("tsconfig.json")]) {
+      for (const write of [modify("src/Other/Other.csproj"), { path: "src/Lockorder/Lockorder.csproj", action: "delete" as const }, modify("packages.lock.json"), modify("Directory.Packages.props"), modify("Directory.Build.props"), modify("bunfig.toml"), modify("poetry.lock"), modify("tsconfig.json")]) {
         const named = `${request} Also touch ${write.path}.`;
         const unnamed = write.path === "src/Other/Other.csproj" ? request : named;
         expect(evaluateAutoApproval(optedIn, manifest, covered, graph([write]), [], [], { ...present, request: unnamed }).approval).toBeNull();
@@ -255,10 +256,27 @@ describe("auto approval", () => {
         const deleted = graph([{ path, action: "delete" as const }]);
         expect(evaluateAutoApproval(scoped, manifest, covered, deleted, [], [], asked).approval).toBeNull();
       }
-      // A shared manifest name in a sub-package is named only by its path; a lockfile never.
+      // A shared manifest name in a sub-package is named only by its path; a lock with no own-entry
+      // bound (#1934) never.
       const nested = graph([modify("tools/package.json")]);
       expect(evaluateAutoApproval(scoped, manifest, covered, nested, [], [], { ...present, request: "Add a Core library. Register the CLI in package.json." }).approval).toBeNull();
-      expect(evaluateAutoApproval(scoped, manifest, covered, graph([modify("Cargo.lock")]), [], [], { ...present, request: "Add a Core library. Update Cargo.lock." }).approval).toBeNull();
+      for (const lock of ["bun.lock", "yarn.lock", "poetry.lock", "go.sum"])
+        expect(evaluateAutoApproval(scoped, manifest, covered, graph([modify(lock)]), [], [], { ...present, request: `Add a Core library. Update ${lock}.` }).approval).toBeNull();
+    });
+    // sketchfold-update 96e1f058 (R60, #1934): the brief named the version bump and the one lock line
+    // that follows it; the lock waited 26 minutes for a person. A lock that records the project's own
+    // version is approved when the request names it; the field check bounds it to that entry.
+    test("a named lock that records the project's own version is approved, an unnamed one is not", () => {
+      const scoped: RunPolicy = { ...anywhere, autoApproval: { renewal: false, limits: { ...limits, allowedPaths: ["src/**", "tests/**"], maxFiles: 10 }, requestedManifestEdits: true } };
+      for (const [manifestPath, lock] of [["Cargo.toml", "Cargo.lock"], ["package.json", "package-lock.json"], ["pyproject.toml", "uv.lock"], ["Gemfile", "Gemfile.lock"]] as const) {
+        const plan = graph([modify(manifestPath)], [modify(lock)]);
+        const asked = `Add a Core library. Change the version in ${manifestPath} to 0.2.0; ${lock} follows in one line.`;
+        expect(evaluateAutoApproval(scoped, manifest, covered, plan, [], [], { ...present, request: asked }).approval?.mode).toBe("limits");
+        expect(requestExemptPaths(scoped, plan, asked)).toEqual([manifestPath, lock]);
+        const unnamed = `Add a Core library. Change the version in ${manifestPath} to 0.2.0.`;
+        expect(evaluateAutoApproval(scoped, manifest, covered, plan, [], [], { ...present, request: unnamed }).reasons.join("\n")).toContain(`${lock} always needs a person`);
+      }
+      expect(plannerApprovalLimits(scoped)?.alwaysHuman).toContain("Cargo.lock, package-lock.json, uv.lock or Gemfile.lock");
     });
     test("the planner is told the request may name manifest edits", () => {
       expect(plannerApprovalLimits(optedIn)?.alwaysHuman).toContain("or one the request names");

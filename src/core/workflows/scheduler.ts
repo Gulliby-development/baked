@@ -445,7 +445,11 @@ import {
   hardenTargets,
   QUALITY_MUTATION_BASELINE,
 } from "./quality/harden.js";
-import { hasExecutableFields, manifestDependencies } from "./quality/manifests.js";
+import {
+  hasExecutableFields,
+  isBoundedLockPath,
+  manifestDependencies,
+} from "./quality/manifests.js";
 import {
   DEFAULT_MUTATION_BUDGET_MS,
   generateMutants,
@@ -14339,9 +14343,17 @@ ${note}`;
         symbol: change.field,
         evidenceId,
         claim: `Manifest ${change.file} changes ${change.field}, which the request does not name`,
-        impact:
-          "The approval took this manifest edit as asked for by its path alone; a field that runs code or chooses where code comes from changed without a person seeing it.",
-        suggestedFix: `Restore ${change.field} in ${change.file} to what it was before the run, and change only the fields the request names.`,
+        ...(isBoundedLockPath(change.file)
+          ? {
+              impact:
+                "The approval took this lock as the follow-up of the project's own version change (#1934); an entry other than the project's own changed without a person seeing it.",
+              suggestedFix: `Restore ${change.field} in ${change.file} to what it was before the run; the lock may change only the project's own entry.`,
+            }
+          : {
+              impact:
+                "The approval took this manifest edit as asked for by its path alone; a field that runs code or chooses where code comes from changed without a person seeing it.",
+              suggestedFix: `Restore ${change.field} in ${change.file} to what it was before the run, and change only the fields the request names.`,
+            }),
       }),
     );
   }
