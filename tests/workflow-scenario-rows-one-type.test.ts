@@ -22,7 +22,7 @@ const rows: AcceptanceRow[] = [
   { id: "AC-004:1", criterionId: "AC-004", source: '`["--lanes","2"]` | `2`', input: ["--lanes", "2"], expected: 2 },
   { id: "AC-004:2", criterionId: "AC-004", source: '`["--lanes","x"]` | `"bad lanes"`', input: ["--lanes", "x"], expected: "bad lanes" },
 ];
-const BEGIN = "// BEGIN acceptance rows: host-written";
+const BEGIN = "// BEGIN acceptance rows: cases from";
 const END = "// END acceptance rows";
 
 /** Top-level type declarations, at column 0 as Java and file-scoped C# files write them. */
