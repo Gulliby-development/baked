@@ -54,6 +54,9 @@
     ],
     "formatters": [
       "dotnet-format-written: dotnet format --verify-no-changes --include src/App/Sum.cs src/App.Tests/Checks.cs tests/App.Tests/Props.cs"
+    ],
+    "packageContents": [
+      "src/App/App.csproj: nupkg"
     ]
   }
 }

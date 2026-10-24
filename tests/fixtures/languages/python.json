@@ -55,6 +55,9 @@
     ],
     "formatters": [
       "ruff-format-written: ruff format --check app/sum.py app/tests.py tests/test_props.py"
+    ],
+    "packageContents": [
+      "pyproject.toml: wheel [project.scripts]"
     ]
   }
 }

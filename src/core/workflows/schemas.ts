@@ -658,6 +658,12 @@ export const PolicySchema = z
      */
     baselineReplay: z.literal("on").optional(),
     /**
+     * The package contents check (quality/package-contents.ts, #1984): `on` builds the package in a
+     * copy of the delivered tree when the run changes a manifest's packaging fields, and records
+     * the files it holds as review evidence. Absent means off, so stored policies keep their hash.
+     */
+    packageContents: z.literal("on").optional(),
+    /**
      * Finding chains (finding-chain.ts, #1959): `on` turns the corrective of a `repeatOf` chain of
      * `CHAIN_REWRITE_AT` findings on one file and symbol into a rewrite of the symbol against the
      * chain's battery of repros, and runs that battery before each review round. Absent means

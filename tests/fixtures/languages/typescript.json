@@ -56,6 +56,9 @@
     ],
     "formatters": [
       "format-written: bunx prettier --check src/sum.ts src/sum.test.ts src/sum.prop.test.ts"
+    ],
+    "packageContents": [
+      "package.json: npm-pack [bin]"
     ]
   }
 }

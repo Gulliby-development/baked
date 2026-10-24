@@ -31,6 +31,7 @@
       "src/sum.cpp:2",
       "src/sum_test.cpp:2 comment"
     ],
-    "formatters": null
+    "formatters": null,
+    "packageContents": null
   }
 }

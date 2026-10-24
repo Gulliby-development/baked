@@ -52,6 +52,9 @@
     ],
     "formatters": [
       "format-written: npx prettier --check src/sum.js src/sum.spec.js src/sum.prop.test.js"
+    ],
+    "packageContents": [
+      "package.json: npm-pack [bin]"
     ]
   }
 }

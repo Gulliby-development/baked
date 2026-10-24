@@ -40,6 +40,9 @@
     ],
     "formatters": [
       "format-written: npx prettier --check src/Sum.vue"
+    ],
+    "packageContents": [
+      "package.json: npm-pack"
     ]
   }
 }

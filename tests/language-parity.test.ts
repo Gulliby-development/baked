@@ -36,6 +36,7 @@ import { TreeSitterBackend } from "../src/core/intelligence/backends/tree-sitter
 import { CALL_SYNTAX, callContext, functionsIn } from "../src/core/intelligence/call-context.js";
 import { TaskSchema } from "../src/core/workflows/schemas.js";
 import { MASK_SYNTAX, maskNonCode, stripComments } from "../src/core/workflows/quality/code-mask.js";
+import { PACKAGE_CONTENTS, packagingFields } from "../src/core/workflows/quality/package-contents.js";
 
 // Language parity (#1717): every language-bound record has a row for every supported language,
 // and every row is exercised by the language's fixture project in `tests/fixtures/languages/`.
@@ -205,6 +206,16 @@ const RECORDS: Record<
       );
       return found ? [`${found.tool}: ${found.files.map((f) => f.path).join(", ")}`] : [];
     },
+  },
+  // The package a manifest edit builds for the package contents check (#1984), with the packaging
+  // fields the fixture's manifests declare.
+  packageContents: {
+    record: PACKAGE_CONTENTS,
+    run: (_, { files }) =>
+      Object.entries(files).flatMap(([path, text]) => {
+        const found = packagingFields(path, text);
+        return found ? [`${path}: ${found.tool}${found.fields.length ? ` [${found.fields.join(", ")}]` : ""}`] : [];
+      }),
   },
   properties: {
     record: PROPERTY_LIBRARIES,

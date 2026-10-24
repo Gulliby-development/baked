@@ -43,7 +43,7 @@ function keys(body: string): FieldMap {
 }
 
 /** Whole sections whose header matches, and listed keys of named sections. */
-function tomlFields(
+export function tomlFields(
   text: string,
   whole: RegExp,
   keyed: Record<string, readonly string[]> = {},

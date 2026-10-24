@@ -55,6 +55,9 @@
       "tests/props.rs:1",
       "tests/props.rs:6 comment"
     ],
-    "formatters": null
+    "formatters": null,
+    "packageContents": [
+      "Cargo.toml: cargo-package"
+    ]
   }
 }
