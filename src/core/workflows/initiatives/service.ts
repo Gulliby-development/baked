@@ -2012,6 +2012,7 @@ export class InitiativeService {
           id: f.id,
           ...f.boundary,
           ...(f.testedBy ? { testedBy: f.testedBy } : {}),
+          dependsOn: f.dependsOn,
         })),
       },
       policy,
