@@ -153,7 +153,7 @@ export interface FeatureEstimate {
   /** Files of its skeleton the host writes, when it has any; they cost no tokens. */
   skeleton?: number;
   /** The tokens the feature run's plan sizing expects the run to use, once it has a plan. */
-  planned?: TokenRange;
+  planned?: PlannedRun;
   /**
    * What raised the range above the size-scaled forecast: the spec's criteria, the boundary's
    * paths or the plan's sized tasks (each times its measured rate); absent when nothing did.
@@ -167,11 +167,44 @@ export interface FeatureEstimate {
 
 export type FeatureFloor = "criteria" | "paths" | "plan";
 
+/**
+ * What a feature run's latest plan sizing expects the whole run to use (`plannedRunTokens`): its
+ * range, and the expected value inside it when the report has one.
+ */
+export interface PlannedRun extends TokenRange {
+  expected?: number;
+}
+
+/**
+ * How far this initiative's accepted features with a plan landed from what their own plans
+ * expected (`PlannedRun.expected`): `features` measured, and the blended actual-to-plan ratio,
+ * null until `MIN_CALIBRATION_FEATURES` of them are accepted.
+ */
+export interface PlanCalibration {
+  features: number;
+  ratio: number | null;
+}
+
+/**
+ * The tokens a feature whose run has a sized plan needs by that plan (#2043): the plan's expected
+ * tokens times the measured plan-to-actual ratio of finished features (times 1 while unmeasured),
+ * never below the plan's own low end, and the plan's high end above that. The estimate takes the
+ * larger of this and the size class's need, so the share gate, the growth limits and the split
+ * approval all reserve it. Bench round 66 (nodepluck): six planned-ahead features' own plans
+ * expected 1.95M to 3.96M while the pool kept their class values (1.12M-2.29M medium) until they
+ * finished, and the initiative used 2.54x its summed low ends.
+ */
+export function ownPlanNeed(planned: PlannedRun, ratio: number | null): TokenRange {
+  const expected = Math.round((planned.expected ?? planned.low) * (ratio ?? 1));
+  const low = Math.max(planned.low, expected);
+  return { low, high: Math.max(planned.high, low) };
+}
+
 /** What an initiative has used so far: per feature, and on runs of no feature (the split). */
 export interface InitiativeProgress {
   features: Record<
     string,
-    { spent: number; accepted: boolean; criteria?: number; planned?: TokenRange }
+    { spent: number; accepted: boolean; criteria?: number; planned?: PlannedRun }
   >;
   overhead: number;
 }
@@ -227,6 +260,8 @@ export interface InitiativeEstimate {
    * fewer than `MIN_HIGH_RATIO_SAMPLES`, when the high end is the median path rate.
    */
   highCalibration: HighCalibration | null;
+  /** How this initiative's accepted features compared with their own plans (`ownPlanNeed`). */
+  planCalibration: PlanCalibration;
   notes: string[];
   label: string;
 }
@@ -492,6 +527,20 @@ export const budgetDetail = (
   spread: highCalibrationText(estimate.highCalibration),
 });
 
+/**
+ * The split warning's words on a calibration still to come (#2043): until
+ * `MIN_CALIBRATION_FEATURES` features are accepted nothing this initiative measured scales the
+ * features still to run, and in a parallel plan they finish late (bench round 66: 4 measured when
+ * half the budget was spent). Empty once the ratio is measured; leads with a space otherwise.
+ */
+export function calibrationLagText(
+  estimate: Pick<InitiativeEstimate, "progress" | "features">,
+): string {
+  if (estimate.progress.ratio !== null) return "";
+  const planned = estimate.features.filter((f) => f.basis !== "measured" && f.planned).length;
+  return ` The measured calibration is unmeasured until ${MIN_CALIBRATION_FEATURES} features are accepted (${estimate.progress.accepted} so far)${planned ? `; ${planned} features still to run are priced by their own plans` : ""}.`;
+}
+
 /** The estimate in one line for a screen: level, tasks, tokens, what to plan for, the budget. */
 export function estimateSummary(estimate: InitiativeEstimate): string {
   const fits = estimateBudgetText(
@@ -539,6 +588,7 @@ function reforecast(
   perPath: TokenRange | null;
   perPathSamples: { features: number; shared: number };
   highCalibration: HighCalibration | null;
+  planCalibration: PlanCalibration;
 } {
   const used = (f: FeatureEstimate): InitiativeProgress["features"][string] =>
     progress.features[f.featureId] ?? { spent: 0, accepted: false };
@@ -553,6 +603,17 @@ function reforecast(
     return calibrationRatio(measured, forecast, features.length);
   };
   const ratio = ratioOf(representative);
+  // Accepted features against what their own plans expected: the ratio that scales the plan of a
+  // feature still to run (`ownPlanNeed`).
+  const withPlan = representative.filter((f) => (used(f).planned?.expected ?? 0) > 0);
+  const planCalibration: PlanCalibration = {
+    features: withPlan.length,
+    ratio: calibrationRatio(
+      withPlan.reduce((total, f) => total + used(f).spent, 0),
+      withPlan.reduce((total, f) => total + (used(f).planned?.expected ?? 0), 0),
+      withPlan.length,
+    ),
+  };
   // Accepted features of the same size say more about a feature than all of them together: in
   // bench round 34 the accepted large feature used 3.2 times its forecast and the medium one about
   // its forecast, and the other large feature then used 3.3 times its own (#1338).
@@ -631,7 +692,7 @@ function reforecast(
       [
         ["criteria", byCriteria],
         ["paths", byPaths],
-        ["plan", planned ?? null],
+        ["plan", planned ? ownPlanNeed(planned, planCalibration.ratio) : null],
       ] as const
     ).filter((entry): entry is readonly [FeatureFloor, TokenRange] => entry[1] !== null);
     const tokens = {
@@ -644,7 +705,14 @@ function reforecast(
       floors.find(([, r]) => r.low === tokens.low && r.low > base.low)?.[0];
     // Flooring the range's low end raises its midpoint even when its calibrated midpoint
     // already matches measured spend. Floor the point forecast independently (#1607).
-    let expectedTokens = Math.max(middle(base), ...floors.map(([, r]) => middle(r)), spent);
+    // The plan's own range sets its point forecast, as before #2043, which raised only the need:
+    // the dollar forecast priced R66 nodepluck at $28.41 of a $28.45 actual.
+    let expectedTokens = Math.max(
+      middle(base),
+      ...floors.map(([kind, r]) => (kind === "plan" && planned ? middle(planned) : middle(r))),
+      tokens.low,
+      spent,
+    );
     // How far finished features landed above the low end the same rules gave them bounds the
     // high end and sets the expected value (#1982): the median path rate, or a size class of one
     // sample at 0.7x-1.4x, put the high end at about twice the low end by construction, and R62
@@ -680,7 +748,16 @@ function reforecast(
     features: pathRates.length,
     shared: pathSamples.filter((s) => s.source === "shared").length,
   };
-  return { features, ratio, bySize, perCriterion, perPath, perPathSamples, highCalibration };
+  return {
+    features,
+    ratio,
+    bySize,
+    perCriterion,
+    perPath,
+    perPathSamples,
+    highCalibration,
+    planCalibration,
+  };
 }
 
 /**
@@ -698,12 +775,20 @@ export function estimateInitiative(input: {
 }): InitiativeEstimate {
   const margin = input.margin ?? ESTIMATE_MARGIN;
   const progress = input.progress ?? { features: {}, overhead: 0 };
-  const { features, ratio, bySize, perCriterion, perPath, perPathSamples, highCalibration } =
-    reforecast(
-      input.features.map((f) => estimateFeature(f, input.history, input.samples)),
-      progress,
-      input.samples,
-    );
+  const {
+    features,
+    ratio,
+    bySize,
+    perCriterion,
+    perPath,
+    perPathSamples,
+    highCalibration,
+    planCalibration,
+  } = reforecast(
+    input.features.map((f) => estimateFeature(f, input.history, input.samples)),
+    progress,
+    input.samples,
+  );
   const overhead = { low: progress.overhead, high: progress.overhead };
   const summed = sum([overhead, ...features.map((f) => f.tokens)]);
   // The total's high end is bounded by how far whole initiatives landed above their summed low
@@ -795,7 +880,7 @@ export function estimateInitiative(input: {
       : []),
     ...(features.some((f) => f.basis !== "measured" && f.planned)
       ? [
-          "A feature whose run has a plan is forecast at no less than the tokens its plan sizing expects the whole run to use.",
+          `A feature whose run has a plan is forecast at no less than the tokens its plan sizing expects the whole run to use, ${planCalibration.ratio !== null ? `times ${planCalibration.ratio.toFixed(2)}, how far ${planCalibration.features} accepted features landed from their own plans` : `unscaled until ${MIN_CALIBRATION_FEATURES} features with a plan are accepted (${planCalibration.features} so far)`}.`,
         ]
       : []),
   ];
@@ -822,6 +907,7 @@ export function estimateInitiative(input: {
     perPath,
     perPathSamples,
     highCalibration,
+    planCalibration,
     notes,
     label: `Estimate: level ${level}, about ${tasks.low}-${tasks.high} tasks, ${rangeText(tokens)} tokens, expected ${tokenText(expectedTokens)} (plan for ${tokenText(withMargin)} with a ${Math.round(margin * 100)}% margin)${spent ? `, ${tokenText(spent)} used with ${accepted} of ${features.length} features accepted` : ""}; ${budgetText}`,
   };
