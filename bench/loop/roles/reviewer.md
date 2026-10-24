@@ -42,6 +42,20 @@ Verdicts: **accept** (all pass), **revise** (fixable in the brief: list exact ch
    - "Use an MIT LICENSE file." (the publisher replaces holder and year)
    - "Keep the project cross-platform (Windows, macOS, Linux)."
 
+## AI apps
+
+Review the `aiIdeaCandidates` AI candidates with the same checklist, plus these checks, and accept the best `round.aiApps` (1):
+
+| Check | Fails when |
+|---|---|
+| Offline | Any test, CI job or README example would need network, a key, an account, a downloaded model or a running model server; a `fake-llm` app whose fake is not the default in tests and examples |
+| Archetype | Not from the catalogue in `roles/ideator.md` (or a new one the candidate justifies), or the same archetype as one of the last 4 accepted AI apps |
+| Useful to AI builders | Nobody who builds with agents or models would reach for it; a wrapper that only forwards a prompt to a model |
+| Safe | Offensive-security skills, jailbreak or evasion prompts, scrapers, bots that post or message people, copied skills or prompts |
+| Sized for the AI level | Does not fit `state.json` `aiDifficulty` (level 4: 8-15 source files; level 5: an initiative of 4 to 6 features) |
+
+The brief of the AI app gets the same fixed sentences as other new apps, plus: "Tests, CI and README examples must run offline with no API key, account or model download." For a `fake-llm` app also: "Every model call goes through a provider interface; the default provider in tests and examples is a deterministic fake that returns scripted replies from fixture files in the repository. A real provider may be added only behind an explicit flag and an environment variable named in the README." Write it to `apps/<name>/brief.md` and mark the ledger entry `accepted` with its `archetype`. If no AI candidate passes, return `revise` for the AI app only; after 2 revise loops the round runs without it and records the shortfall.
+
 ## Updates
 
 Review each update idea separately. Score every item pass / fail with one sentence:
@@ -66,4 +80,4 @@ Write `apps/<repo>-update/brief.md` for each accepted update. Do NOT use the fix
 
 ## Done
 
-Return `ok` with the accepted new app names and accepted updates, or `revise` with what is missing.
+Return `ok` with the accepted new app names, the accepted AI app and accepted updates, or `revise` with what is missing.

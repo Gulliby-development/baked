@@ -4,7 +4,8 @@ You propose the round's new apps and the small features for existing projects. B
 
 ## Inputs
 
-- `config.json` (`round.ideaCandidates`, default 5; `round.updateApps`, default 3)
+- `config.json` (`round.ideaCandidates`, default 5; `round.updateApps`, default 3; `round.aiApps`, default 1; `round.aiIdeaCandidates`, default 3)
+- the previous round's `scout.md`, section `AI app trends`
 - `rounds/RNN/round.json`: the round's update picks (public repositories of the organization) and the seed that chose them
 - `ledger/ideas.jsonl`: every earlier idea; never repeat one, or a near-duplicate of one
 - `ledger/published.jsonl`: what is already public
@@ -47,6 +48,45 @@ Across the round's 2 accepted new apps, aim for:
 - a UI app when none of the recent rounds had one (it gets a screenshot).
 
 Propose `ideaCandidates` (5) so the reviewer can keep `newApps` (2).
+
+## AI apps (one per round, from round 67)
+
+Besides the `ideaCandidates` new apps, propose `round.aiIdeaCandidates` (3) AI app candidates, so the reviewer can keep `round.aiApps` (1). An AI app is a tool for people who build with or around AI models and agents, the kind of repository that r/AIDeveloperNews and r/BestGitHubRepos post: small harnesses, skill and agent packs, MCP servers, eval and prompt tools, doc and diagram generators. Read the scout's `AI app trends` section of the previous round's `scout.md` first: it says what those communities posted and starred lately.
+
+**The hard rule: offline, no keys, no live model.** The owner never uses API keys, only subscriptions. Every test, CI job and README example runs with no network, no account, no key and no downloaded model. Pick one of two shapes and say which in the candidate:
+- `no-llm`: the tool never calls a model (it lints, validates, packages, indexes, converts, replays or measures prompts, skills, agents, MCP servers, transcripts or traces). Preferred: it is fully deterministic.
+- `fake-llm`: the tool's logic needs a model, so every call goes through a small provider interface whose default in tests and examples is a deterministic fake (scripted replies keyed by input, recorded fixture files in the repo). A real adapter (OpenAI-compatible HTTP, local Ollama, or a CLI such as `claude -p` / `codex exec`) may exist behind an explicit flag, is never exercised by tests or CI, and reads any key only from an environment variable the README names.
+
+**Archetype catalogue.** Each AI candidate names one archetype and its group. Never reuse the archetype of the last 4 AI apps (`ledger/ideas.jsonl` entries with `kind: "ai"` and `status: "accepted"`), and cover at least two groups across the 3 candidates. New archetypes may be added to this table by a loop PR when the scout's trends show one; never remove a used one.
+
+| Group | Archetype | Shape | Example of a fitting app |
+|---|---|---|---|
+| Skills and agents | `skill-lint` | no-llm | validate a folder of `SKILL.md` / `AGENTS.md` / agent files: frontmatter schema, broken links, duplicate triggers, size budget, a report and exit codes for CI |
+| Skills and agents | `skill-pack` | no-llm | a themed set of skills or agent definitions plus its own validator and an installer that copies them into the folders of several harnesses |
+| Skills and agents | `skill-router` | no-llm | pick the right skill for a task text by keywords, embeddings-free scoring and rules; a CLI and a library, with a fixture corpus |
+| Harness | `mini-harness` | fake-llm | a small agent loop (plan, call tools, observe, stop) with a tool registry, a step budget and a transcript log; tests drive it with a scripted fake model |
+| Harness | `tool-sandbox` | no-llm | run agent tool calls (shell, file edit) under a policy: allow-lists, path jails, dry-run, an audit log |
+| Harness | `mcp-server` | no-llm | an MCP server over stdio with a few deterministic tools (a notes store, a docs index, a unit converter) and a test client in the repo |
+| Evals and quality | `eval-runner` | fake-llm | run a YAML suite of prompts against a provider, score with exact, regex and JSON-schema checks, a pass^k table and a diff against a baseline |
+| Evals and quality | `transcript-tools` | no-llm | parse agent transcripts (JSONL) into stats: tokens, tool-call counts, loops, failures; a summary report and an HTML view |
+| Evals and quality | `prompt-lint` | no-llm | lint prompt templates: unbound variables, injection-prone concatenation, length budgets, a token estimate per model family |
+| Context and memory | `context-pack` | no-llm | pack a repository into a context file for an agent: ignore rules, file ranking, token budget, a stable output format |
+| Context and memory | `agent-memory` | no-llm | a file or SQLite memory store for agents with tagging, recall by keywords and recency, compaction rules and an MCP or CLI front |
+| Context and memory | `rag-mini` | no-llm | a local document index (BM25, chunking, citations) with a query CLI; no vector database, no model |
+| Generators | `doc-gen` | fake-llm | generate docs (API reference, README sections, changelogs) from code or git history, with the model step behind the fake |
+| Generators | `diagram-gen` | no-llm | turn code structure, plans or a JSON graph into Mermaid or SVG diagrams |
+| Generators | `prompt-kit` | no-llm | a typed prompt template library: variables, partials, versioning, rendering for several chat formats |
+| Gateway and cost | `llm-gateway-mock` | no-llm | a local OpenAI-compatible mock server for tests: scripted responses, streaming, latency and error injection |
+| Gateway and cost | `token-cost` | no-llm | count tokens and estimate cost per model from a price table file; budgets and alerts for CI |
+| UI | `agent-ui` | fake-llm | a small React + Vite page to browse, filter and compare agent runs or transcripts (it gets a screenshot) |
+
+**Stacks.** Rotate stacks: prefer the stack the last 4 AI apps used least (TypeScript on Bun, Python, Go, Rust, .NET, Java, React + Vite for `agent-ui`). The AI app counts toward the round's language mix.
+
+**Size.** The AI app has its own level (`state.json` `aiDifficulty`, from 4): at level 4 one larger app that BAKED may split itself, 8 to 15 source files; at level 5 an initiative of 4 to 6 features. Its cost cap is `budgets.aiAppUsd`.
+
+**Safe.** No offensive-security skills, scrapers, jailbreak or detection-evasion prompts, bots that post or message people, no clones of a named product. Skills and prompts the app ships are written fresh, never copied from another repository.
+
+Each AI candidate uses the new app shape above plus two lines, `- Archetype: <archetype> (<group>)` and `- LLM: no-llm | fake-llm (<what the fake returns and where its fixtures live>)`. Append each to `ledger/ideas.jsonl` as `{"round": N, "kind": "ai", "name": ..., "archetype": ..., "status": "proposed"}`.
 
 ## Update ideas (existing projects)
 
@@ -92,4 +132,4 @@ At levels 4 and 5 the run or round budget in `config.json` may not fit one app a
 
 ## Done
 
-`ideas.md` exists with the required number of new app candidates and one update idea per picked repository, the ledger is updated, and you return `ok` with the path.
+`ideas.md` exists with the required number of new app candidates, `aiIdeaCandidates` AI app candidates (when `aiApps` > 0) and one update idea per picked repository, the ledger is updated, and you return `ok` with the path.

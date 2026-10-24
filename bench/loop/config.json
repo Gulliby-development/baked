@@ -9,6 +9,8 @@
     "newApps": 2,
     "ideaCandidates": 5,
     "updateApps": 3,
+    "aiApps": 1,
+    "aiIdeaCandidates": 3,
     "controlApps": ["url-shortener", "md-site", "expenses-py"],
     "controlRunsB": true,
     "maxConcurrentRuns": 3,
@@ -27,6 +29,7 @@
   },
   "budgets": {
     "roundRunUsd": 40,
+    "aiAppUsd": 32,
     "maxFixIssuesPerRound": 6,
     "minBroadFeaturesPerRound": 1
   },

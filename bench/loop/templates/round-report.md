@@ -35,6 +35,10 @@ Stop reasons by count:
 | App | Task type | Provider/model | Outcome | Tokens | Interventions | Verified | Published |
 |---|---|---|---|---|---|---|---|
 
+## AI app (tracked separately)
+| App | Archetype | Stack | LLM shape | AI level | Provider/model | Outcome | Tokens | Cost | Interventions | Verified | Published |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+
 ## Updates to existing projects (brownfield, tracked separately)
 | Repository | Feature | Provider/model | Outcome | Tokens | Interventions | Baseline tests | After tests | Verified | PR / merge |
 |---|---|---|---|---|---|---|---|---|---|

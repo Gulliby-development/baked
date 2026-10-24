@@ -50,6 +50,8 @@ An update adds a feature to an existing public repository (`group: "update"`). T
 4. **Extras.** BAKED builds the feature. A logo, topics and description named in the brief are produced by the publisher, not by the BAKED run; a `LICENSE` or workflow file named in the brief is part of the run.
 5. **Record.** Same files as a new app. `run.json` has `group: "update"`, `repo`, and `baseline`; metrics rows use `group` `update`.
 
+An AI app (see [AI app track](../AGENTS.md#ai-app-track)) is built exactly like a new app, at the AI level (`state.json` `aiDifficulty`) and on the series the track names for the round; `run.json` and metrics rows use `group: "ai"`. Never give a run a model key or network access to make an AI app's tests pass: that is the app breaking the offline rule, a verification failure, not something to work around.
+
 ## Level-5 apps (initiatives)
 
 A level-5 app is started and driven as an initiative, not as one run (see the level ladder rule in `AGENTS.md`):

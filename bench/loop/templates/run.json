@@ -1,7 +1,7 @@
 {
   "app": "envguard",
   "round": 1,
-  "group": "new | update | control | experiment",
+  "group": "new | ai | update | control | experiment",
   "repo": null,
   "baseline": null,
   "variant": "A | B",
