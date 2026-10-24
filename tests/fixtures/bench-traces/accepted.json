@@ -90,5 +90,9 @@
   "R66/nodepluck.sqlite.gz#nodepluck": {
     "newPoolGrowth": 1,
     "reason": "#2042: select parked at seq 28 on the shared token pool (611128 tokens available, low 792405) with $4.55 of the $30.00 cap left; the extend-within-dollars growth (shadow) records a would-extend to 33.1M (the waiting features' high estimates), inside the 35.5M the cap pays for at $0.85 per million. The round, recorded before #2042, held."
+  },
+  "R60/sketchfold-update.sqlite.gz#96e1f058-d1d0-4697-80f3-a084cc2d4dc1": {
+    "newAutoApprovals": 1,
+    "reason": "#1934: the update request names the version bump and the Cargo.lock line that follows it; a bounded lock (Cargo.lock, package-lock.json, uv.lock, Gemfile.lock) is now exempt from a person under requestedManifestEdits, and the manifest field check holds every other lock entry. The round, recorded before #1934, sent the plan to a person for Cargo.lock."
   }
 }
