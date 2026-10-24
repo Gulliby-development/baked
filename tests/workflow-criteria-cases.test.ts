@@ -416,3 +416,18 @@ test("a test task's attempt is told which set member its tests leave out (#1482)
   ]);
   expect(found[1]).toEqual([]);
 }, 60000);
+
+describe("table cells with a pipe (#2044)", () => {
+  // R66 nodepluck AC-007: a JSONPath query with `||` in a code span was cut at the first pipe.
+  const cases = (then: string) =>
+    criterionCases({ criteria: [{ ...fixtureSpec.criteria[0]!, then }] }, { criterionIds: ["AC-001"] }, { checks: [] }).map((c) => c.literal);
+
+  test("a code span, a JSON string and an escaped pipe keep the whole literal", () => {
+    expect(cases('| Input | Expected |\n| --- | --- |\n| `"$[?@[0,0]==2 || @.b[?-1<0]]"` | `[1]` |\n| "$.a[?@ > 1 || @ < -1]" | `[2]` |\n| `ls -1 \\| wc -l` | 3 |'))
+      .toEqual(['"$[?@[0,0]==2 || @.b[?-1<0]]"', "$.a[?@ > 1 || @ < -1]", "ls -1 | wc -l"]);
+  });
+
+  test("a row that does not split to the header's width is skipped, never demanded", () => {
+    expect(cases('| Input | Expected |\n| --- | --- |\n| "a1" | ok |\n| `x | "y 2 | z" | 3 |')).toEqual(["a1"]);
+  });
+});

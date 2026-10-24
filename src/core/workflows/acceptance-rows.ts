@@ -1,6 +1,7 @@
 import { readFile } from "node:fs/promises";
 import { posix } from "node:path";
 import { hashJson } from "../specs/hash.js";
+import { tableCells } from "../specs/table-cells.js";
 import { workspacePath } from "../specs/validate.js";
 import {
   escapeInvisible,
@@ -25,12 +26,8 @@ export const rowsAsDataOn = (policy: Pick<RunPolicy, "rowsAsData">): boolean =>
   policy.rowsAsData === "on";
 
 const plain = (text: string): string => text.trim().replace(/^`(.*)`$/, "$1");
-const cellsOf = (text: string): string[] =>
-  text
-    .trim()
-    .replace(/^\|\s*|\s*\|$/g, "")
-    .split("|")
-    .map(plain);
+/** A row's cells by the shared splitter: a `|` in a code span or a string is not a separator (#2044). */
+const cellsOf = (text: string, width?: number): string[] => tableCells(text, width).map(plain);
 const jsonOrText = (cell: string): unknown => {
   try {
     return JSON.parse(cell);
@@ -113,7 +110,7 @@ function tableRows(criterion: Spec["criteria"][number]): AcceptanceRow[] {
   for (const text of [criterion.given, criterion.when, criterion.then]) {
     let table: Columns | null = null;
     for (const line of text.split(/\r?\n/)) {
-      const cells = cellsOf(line);
+      const cells = cellsOf(line, table?.width);
       const header = headerOf(cells);
       if (header) {
         table = header;
