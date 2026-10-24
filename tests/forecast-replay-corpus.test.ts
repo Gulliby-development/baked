@@ -10,7 +10,7 @@ import { type CallRate, chainCosts, openTrace, type PlanPriceReplay, replayChain
 
 // #1649, #1715: every recorded bench-round trace replays through the current host decisions: the
 // forecast and cap code, the per-call cost cap (#1740), the first-response deadline of each model
-// call, the test task split of each sizing report (#1789), each usage-policy refusal (#1895), each finding-chain decision (#1959), each repeated corrective failure (#1996), and the initiative share gate (#1707), asked both on its recorded inputs and with each start
+// call, the test task split of each sizing report (#1789), each usage-policy refusal (#1895), each finding-chain decision (#1959), each repeated corrective failure (#1996), each spec conflict decision for the request (#2016), and the initiative share gate (#1707), asked both on its recorded inputs and with each start
 // rewound and recomputed, and the plan auto-approval on the run state it was asked with (#1707). A
 // stop, cap growth, park or approval decision the recorded run did not make fails the suite, unless
 // accepted.json lists it for that run or initiative with the reason: the pull request that changes
@@ -27,6 +27,7 @@ interface Accepted {
   newPolicyStops?: number;
   newChainDecisions?: number;
   newRepeatStops?: number;
+  newConflictDecisions?: number;
   newShareStops?: number;
   newStartStops?: number;
   newApprovalDeclines?: number;
@@ -77,6 +78,7 @@ describe("bench-round traces replay without new forecast stops or growth (#1649)
           newPolicyStops: run.newPolicyStops,
           newChainDecisions: run.newChainDecisions,
           newRepeatStops: run.newRepeatStops,
+          newConflictDecisions: run.newConflictDecisions,
         }).toEqual({
           run: run.runId,
           newStops: allowed?.newStops ?? 0,
@@ -88,6 +90,7 @@ describe("bench-round traces replay without new forecast stops or growth (#1649)
           newPolicyStops: allowed?.newPolicyStops ?? 0,
           newChainDecisions: allowed?.newChainDecisions ?? 0,
           newRepeatStops: allowed?.newRepeatStops ?? 0,
+          newConflictDecisions: allowed?.newConflictDecisions ?? 0,
         });
       }
       // Run states before R52 counted the host's own test splits in `hostSplitTasks`, which the

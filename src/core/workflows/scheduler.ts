@@ -505,6 +505,20 @@ import {
   repeatCheck,
   repeatRecord,
 } from "./repeated-failure.js";
+import {
+  checkedSides,
+  conflictCriteria,
+  REQUEST_CONFLICT_KIND,
+  REQUEST_CONFLICTS_DIR,
+  REQUEST_REAUDIT_NOTE,
+  type RequestConflictInput,
+  type RequestConflictRecord,
+  reauditVerdicts,
+  requestConflictDecision,
+  requestConflictPath,
+  sidesSettle,
+  sideTests,
+} from "./request-conflict.js";
 import { deliverableProblems, repairDeliverables, requestCoverage } from "./request-coverage.js";
 import {
   type AccountRefusal,
@@ -10206,8 +10220,10 @@ ${note}`;
    * tests: it is ready again, and the run asks a person which one is right. The answer joins the
    * request the task's next attempt reads. Under `clarification: assume` too, since every default
    * here would be to fit the tests or to drop a requirement, unless one side of the conflict is what
-   * the request states: then the request wins once per task, as a person answered "defer to the
-   * brief" in bench round 15 (envguard 8b8b7022, structpad 6c8758ed), and the decision is recorded.
+   * the request states: then the request wins, as a person answered "defer to the brief" in bench
+   * round 15 (envguard 8b8b7022, structpad 6c8758ed), and the decision is recorded. That is decided
+   * on quotes the host checks, on every report (`settleForRequest`, #2016); the wording rules below
+   * (`namesRequestSide`, `namesExampleRule`) are only the first report's fallback.
    * When the other side is a test an implemented test task of the plan wrote, the approved spec
    * wins over that test, also once per task: the task may then write the test file and runs
    * again (#967, cfgtrace 49dbf63b: correctives that could only change the source asked a person
@@ -10234,6 +10250,25 @@ ${note}`;
       ...(rows.length ? { criterionIds: rows.map((r) => r.criterion.id) } : {}),
     };
     const assumedPath = `assumptions/conflicts/${task.id}.json`;
+    // A criterion that contradicts what the request states loses to the request, on quotes the
+    // host checked and on every report of the task, whatever words the report uses (#2016). It
+    // comes before the rows are compared with the test: a test that changed a row because the
+    // request says so did not slip in its transcription.
+    if (
+      await this.settleForRequest(
+        runId,
+        state,
+        policy,
+        profiles,
+        child,
+        task,
+        result,
+        account,
+        report,
+        signal,
+      )
+    )
+      return;
     if (
       await this.settleContestedRows(
         runId,
@@ -10317,7 +10352,9 @@ ${note}`;
       }
     }
     const first =
-      policy.clarification === "assume" && !this.store.latestArtifact(runId, assumedPath);
+      policy.clarification === "assume" &&
+      !this.store.latestArtifact(runId, assumedPath) &&
+      !this.store.latestArtifact(runId, requestConflictPath(task.id));
     // A documentation task torn between the rule for examples and the request's worked example
     // copies the request's example (#992).
     const example = first && writesOnlyDocs(task) && namesExampleRule(report);
@@ -10809,13 +10846,18 @@ ${note}`;
     rows: ContestedRow[],
     report: string,
     signal: AbortSignal,
+    // The re-audit of a conflict with the request (#2016) has its own note, step and record.
+    against?: { note: string; step: string; path: string },
   ): Promise<NonNullable<Analysis["derivations"]> | null> {
     const profile = profiles.find((p) => p.output === "analysis");
     if (!profile || !state.spec) return null;
-    const extra = reauditExtra(state.spec, rows, report, policy.checks);
+    const extra = {
+      ...reauditExtra(state.spec, rows, report, policy.checks),
+      ...(against ? { note: against.note } : {}),
+    };
     const audited = { ...state.spec, criteria: extra.criteria };
     const step = this.store.transaction(() =>
-      this.store.beginStep(runId, `reaudit-${task.id}`, parent),
+      this.store.beginStep(runId, against?.step ?? `reaudit-${task.id}`, parent),
     );
     try {
       const analysis = AnalysisSchema.parse(
@@ -10846,7 +10888,7 @@ ${note}`;
         this.store.artifact(
           runId,
           "diagnostic",
-          `tasks/conflicts/${task.id}-reaudit.json`,
+          against?.path ?? `tasks/conflicts/${task.id}-reaudit.json`,
           canonical({ taskId: task.id, derivations }),
         );
         this.store.finishStep(runId, step, "completed");
@@ -10923,6 +10965,176 @@ ${note}`;
       this.store.finishStep(runId, child, "failed");
     });
     state.prompt += `\n${amendmentNote(amendmentPath, amendment)}\nSettled spec conflict (${path}): task ${task.id} reported that the spec contradicts the code: ${report.slice(0, 1200)} ${settled}. Implement what ${requirementIds.join(", ")} state, and where a test this run wrote follows the contradicting row, change only that expected value to what the requirements give; weaken no other test. Report implemented or already_satisfied, not spec_conflict.`;
+  }
+  /**
+   * A conflict between a criterion and what the request states, settled for the request on quotes
+   * the host checked (#2016): the report's sides, or else a targeted re-audit of the cited criteria
+   * against the request whose quotes are checked as well. Decided on every report of a task until
+   * it settles once; each decision records its inputs under `conflicts/request/`. A test the run
+   * did not write keeps the question for a person.
+   */
+  private async settleForRequest(
+    runId: string,
+    state: RuntimeState,
+    policy: RunPolicy,
+    profiles: AgentProfile[],
+    child: string,
+    task: Task,
+    result: Implementation,
+    account: Record<string, unknown>,
+    report: string,
+    signal: AbortSignal,
+  ): Promise<boolean> {
+    const path = requestConflictPath(task.id);
+    if (policy.clarification !== "assume" || !state.spec || this.store.latestArtifact(runId, path))
+      return false;
+    const spec = state.spec;
+    const reported = result.conflictSides;
+    const request = statedRequest(state, this.store.requests(runId));
+    const tasks = (state.rootGraph ?? state.graph)?.tasks ?? [task];
+    const failing = this.failedCheckOutput(runId, task.id);
+    const foreign = [
+      ...new Set([
+        ...pathsInOutput(report, tasks),
+        ...(failing ? failingFilesInOutput(failing, tasks) : []),
+        ...sideTests(reported),
+      ]),
+    ].filter(
+      (p) =>
+        isTestPath(p) &&
+        (state.testsFirst?.files.includes(p) || !this.createdByRun(runId, state, p)),
+    );
+    const criteria = conflictCriteria(spec, report, reported);
+    const earlier = this.store
+      .artifacts(runId)
+      .filter(
+        (a) =>
+          a.kind === REQUEST_CONFLICT_KIND &&
+          a.logical_path.startsWith(`${REQUEST_CONFLICTS_DIR}${task.id}-`),
+      )
+      .flatMap((a) => {
+        try {
+          return [JSON.parse(this.store.readArtifact(runId, a.id)) as RequestConflictRecord];
+        } catch {
+          return [];
+        }
+      });
+    const input: RequestConflictInput = {
+      sides: checkedSides(spec, request, report, reported),
+      foreignTests: foreign.length,
+      criterionIds: criteria.map((c) => c.id),
+      reaudit: null,
+      reauditedBefore: earlier.some((r) => r.reaudit !== null),
+    };
+    let decision = requestConflictDecision(input);
+    let derivations: NonNullable<Analysis["derivations"]> = [];
+    if (decision === "reaudit") {
+      derivations =
+        (await this.reaudit(
+          runId,
+          state,
+          policy,
+          profiles,
+          child,
+          task,
+          criteria.map((criterion) => ({ criterion, audit: [], misquoted: [] })),
+          report,
+          signal,
+          {
+            note: REQUEST_REAUDIT_NOTE,
+            step: `reaudit-request-${task.id}`,
+            path: `tasks/conflicts/${task.id}-request-reaudit.json`,
+          },
+        )) ?? [];
+      input.reaudit = reauditVerdicts(derivations, input.criterionIds, request);
+      decision = requestConflictDecision(input);
+    }
+    const record: RequestConflictRecord = {
+      taskId: task.id,
+      report: earlier.length + 1,
+      ...input,
+      decision,
+    };
+    this.store.transaction(() =>
+      this.store.artifact(
+        runId,
+        REQUEST_CONFLICT_KIND,
+        `${REQUEST_CONFLICTS_DIR}${task.id}-${record.report}.json`,
+        canonical(record),
+      ),
+    );
+    if (decision !== "request") return false;
+    const bySides = sidesSettle(input.sides);
+    const overruled = bySides
+      ? [
+          ...new Set(
+            input.sides.flatMap((s) =>
+              s.kind === "criterion" && s.verified && s.ref ? [s.ref] : [],
+            ),
+          ),
+        ]
+      : (input.reaudit ?? []).filter((v) => v.quoteVerified).map((v) => v.criterionId);
+    const requirementIds = [
+      ...new Set(
+        spec.criteria.filter((c) => overruled.includes(c.id)).flatMap((c) => c.requirementIds),
+      ),
+    ];
+    const quotes = bySides
+      ? (reported ?? [])
+          .filter((s) => s.kind === "request")
+          .map((s) => JSON.stringify(s.quote.slice(0, 600)))
+          .join(", ")
+      : derivations
+          .filter((d) => overruled.includes(d.criterionId) && !d.matches && d.quote !== undefined)
+          .map(
+            (d) =>
+              `${d.criterionId}: the request states ${JSON.stringify((d.quote ?? "").slice(0, 600))}, which gives ${JSON.stringify(d.recomputed.slice(0, 300))}`,
+          )
+          .join("; ");
+    const named = overruled.length ? overruled.join(", ") : "the spec side of the conflict";
+    const settled = `The request wins over ${named}: ${bySides ? `the report quotes the request (${quotes}), and the host found ${reported && reported.filter((s) => s.kind === "request").length > 1 ? "those words" : "the words"} in the request` : `a re-audit against the request found ${quotes}, and the host found each quote in the request`}`;
+    const amendmentPath = `amendments/conflict-${task.id}.json`;
+    const amendment: SpecAmendment | null = overruled.length
+      ? {
+          findingId: `conflict-${task.id}`,
+          criterionIds: overruled,
+          requirementIds,
+          paths: [],
+          claim: report.slice(0, 1500),
+          suggestedFix: `Read ${overruled.join(", ")} as the request states: ${quotes.slice(0, 1500)}`,
+          authority: "request",
+        }
+      : null;
+    this.store.transaction(() => {
+      this.store.artifact(
+        runId,
+        "diagnostic",
+        `tasks/conflicts/${task.id}.json`,
+        canonical(account),
+      );
+      this.store.artifact(
+        runId,
+        "assumption",
+        path,
+        canonical({ ...account, assumed: settled, sides: input.sides, reaudit: input.reaudit }),
+      );
+      if (amendment) this.store.artifact(runId, "assumption", amendmentPath, canonical(amendment));
+      recordConflictDecision(this.store, runId, {
+        requestId: `request-${task.id}`,
+        taskId: task.id,
+        findingIds: task.findingIds,
+        ...(overruled.length ? { criterionIds: overruled } : {}),
+        answer: `Settled for the request (${path}): ${settled}.`,
+      });
+      this.store.taskStatus(runId, task.id, "interrupted", null, { cause: "spec_conflict" });
+      this.store.finishStep(runId, child, "failed");
+    });
+    const freed = task.findingIds.length
+      ? ` The repros of ${task.findingIds.join(", ")} no longer gate the task.`
+      : "";
+    if (amendment) state.prompt += `\n${amendmentNote(amendmentPath, amendment)}`;
+    state.prompt += `\nSettled spec conflict (${path}): task ${task.id} reported that the spec contradicts the request: ${report.slice(0, 1200)} ${settled}. Follow what the request states. Where a test this run wrote follows ${named}, change only that assertion to what the request states; weaken no other test. When the tests already assert what the request states and the checks pass, change nothing and report implemented or already_satisfied, not spec_conflict.${writesOnlyDocs(task) ? " Copy every example output the request gives into the documentation exactly as given, even when its files are not in the workspace." : ""}${freed}`;
+    return true;
   }
   /**
    * A conflict about commands of the run's checks only: the host runs them, so they are not test

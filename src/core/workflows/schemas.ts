@@ -1165,6 +1165,24 @@ export const ImplementationSchema = z
       .array(z.object({ claim: Text, evidence: Text.optional() }).strict())
       .max(5)
       .optional(),
+    /**
+     * The sides of a `spec_conflict`, each with its exact words (#2016): a criterion or a
+     * requirement by id, the request, or a test file by path. The host checks every quote against
+     * the spec and the request before the conflict is settled for the request, so the decision
+     * rests on verified quotes, not on how the summary is worded.
+     */
+    conflictSides: z
+      .array(
+        z
+          .object({
+            kind: z.enum(["criterion", "requirement", "request", "test"]),
+            ref: z.string().min(1).max(512).optional(),
+            quote: Text,
+          })
+          .strict(),
+      )
+      .max(8)
+      .optional(),
   })
   .strict();
 
