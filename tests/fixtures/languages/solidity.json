@@ -32,6 +32,9 @@
       "test/Sum.t.sol:4 comment"
     ],
     "formatters": null,
-    "packageContents": null
+    "packageContents": null,
+    "numericLimits": [
+      "uint256 arithmetic reverts on overflow since 0.8; unchecked blocks wrap"
+    ]
   }
 }

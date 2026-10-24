@@ -102,6 +102,7 @@ import {
   ApprovalReviewSchema,
   CritiqueSchema,
   DistinctionSchema,
+  EdgeCasesSchema,
   generatedPaths,
   ImplementationSchema,
   MutantProposalSchema,
@@ -159,6 +160,7 @@ export const outputSchemas: Record<string, z.ZodType> = {
   mutants: MutantProposalSchema,
   distinction: DistinctionSchema,
   revision: RevisionSchema,
+  "edge-cases": EdgeCasesSchema,
 };
 const MAX_SEMANTIC_CORRECTIONS = 2;
 /** Submissions refused because a written file does not parse; the next one is accepted (#977). */

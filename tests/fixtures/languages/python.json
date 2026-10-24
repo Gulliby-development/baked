@@ -58,6 +58,11 @@
     ],
     "packageContents": [
       "pyproject.toml: wheel [project.scripts]"
+    ],
+    "numericLimits": [
+      "int(str) and str(int) refuse more than 4300 digits (sys.set_int_max_str_digits)",
+      "decimal's default context rounds past 28 significant digits",
+      "the console encoding may not encode non-ASCII output on Windows"
     ]
   }
 }

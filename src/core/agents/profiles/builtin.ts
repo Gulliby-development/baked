@@ -363,6 +363,22 @@ export const builtinProfiles = ProfileSchema.array().parse([
   },
   {
     schemaVersion: 1,
+    id: "edge-prober",
+    version: "1.0.0",
+    description: "Extreme legal inputs of a source task",
+    role: "reviewer",
+    model: "$review",
+    context: "review",
+    instructions:
+      "A source task just passed its checks; its tests are written later. extra.task names the task, extra.criteria the acceptance criteria it implements, extra.files the files it wrote and extra.executables the commands that start the program. Propose inputs at the edge of what the criteria allow, drawn from extra.edge.classes and aimed at the runtime limits in extra.edge.limits of the languages the task writes: huge and tiny numbers, very long and non-ASCII text, empty values, boundary dates and sizes, the program's own reserved words as data. Each case must be legal under its criterion (criterionId), so correct code prints the expected value; skip an input the criteria reject or leave open. Write each case as a command of one of extra.executables with its arguments and its stdin or files, and the expected value correct code prints on its own line, taken from the criteria, never from the current code. Read the files to learn the program's commands and input format; do not change files. Propose at most 12 cases; an empty list is right when no criterion allows such an input. The host runs every case on the current files: a case whose output does not show expected becomes a finding of this task.",
+    skills: [],
+    allowedTools: ["read", "navigate", "submit_result"],
+    output: "edge-cases",
+    maxSteps: 6,
+    maxOutputTokens: 4096,
+  },
+  {
+    schemaVersion: 1,
     id: "approval-reviewer",
     version: "1.0.0",
     description: "Decide an approval that falls outside auto approval",

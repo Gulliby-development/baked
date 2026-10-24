@@ -367,6 +367,8 @@ export interface QualityConfig {
   chainRewrite?: "off" | "on";
   /** Let the host correct a test that misquotes a criterion literal itself, when the replacement is exact and the task's checks pass on it: `on` or `off` (default, recorded in shadow). */
   misquoteFix?: "off" | "on";
+  /** Before the test tasks, run extreme legal inputs a small call proposes against each planned source task's code; a failing one is corrected at once (edge-input probe): `on` or `off` (default). */
+  edgeProbe?: "off" | "on";
   /** Property-based tests from marked criteria: `preset` or absent follows the workflow preset. */
   propertyTests?: "preset" | "auto" | "off";
 }

@@ -679,6 +679,13 @@ export const PolicySchema = z
      */
     misquoteFix: z.literal("on").optional(),
     /**
+     * The edge-input probe of a source task (edge-inputs.ts, #1808): `on` asks the `edge-cases`
+     * profile once per planned source task that settled without failures for extreme legal inputs
+     * its criteria allow; the host runs them through the project's entry points and a case that
+     * prints something else becomes a finding of that task before the test tasks run. Absent is off.
+     */
+    edgeProbe: z.literal("on").optional(),
+    /**
      * The project's choices for the anti-slop rule pack (quality/rules.ts), which is always on:
      * rules turned off, severities changed and ast-grep rule files added. Absent means the
      * built-in pack as shipped, so stored policies keep their hash.
@@ -847,6 +854,7 @@ export const ProfileSchema = z
       "mutants",
       "distinction",
       "revision",
+      "edge-cases",
     ]),
     maxSteps: z.number().int().min(1).max(100),
     maxOutputTokens: z.number().int().min(256).max(65536),
@@ -1116,6 +1124,23 @@ export const DistinctionSchema = z
   })
   .strict();
 export type Distinction = z.infer<typeof DistinctionSchema>;
+
+/**
+ * The extreme legal inputs an `edge-cases` profile proposes for a source task (#1808): each case
+ * is a repro without `actual`, since the host runs it and a case whose output does not show
+ * `expected` becomes a finding, and names the criterion that allows its input. At most
+ * `EDGE_CASES` (edge-inputs.ts) cases run.
+ */
+export const EdgeCasesSchema = z
+  .object({
+    schemaVersion: z.literal(1),
+    cases: z
+      .array(ReproSchema.omit({ actual: true }).extend({ criterionId: z.string().min(1).max(64) }))
+      .max(16),
+    rationale: Text,
+  })
+  .strict();
+export type EdgeCases = z.infer<typeof EdgeCasesSchema>;
 
 export const CritiqueSchema = z
   .object({

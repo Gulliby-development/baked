@@ -19,6 +19,13 @@ import {
 } from "../llm/provider-health.js";
 import { canonical, hashBytes, hashJson } from "../specs/hash.js";
 import { workspacePath } from "../specs/validate.js";
+import {
+  EDGE_DIR,
+  EDGE_KIND,
+  type EdgeRecord,
+  type EdgeRule,
+  edgeDecision,
+} from "../verification/edge-inputs.js";
 import { planApprovalDecision, requestedPathTokens } from "./auto-approval.js";
 import { callCostRate } from "./budget.js";
 import { assertForecastFits, costForecast } from "./cost-forecast.js";
@@ -124,6 +131,8 @@ const KEPT_ARTIFACTS = new Set([
   HOST_APPLY_KIND,
   // Each misquote settle's host-fix decision: occurrence counts and spelling flags, no text (#2047).
   MISQUOTE_FIX_KIND,
+  // Each planned source task's edge-input probe: its cases' criteria and outcomes (#1808).
+  EDGE_KIND,
 ]);
 
 /** Tables that hold evidence, effects or prose the replay never reads. */
@@ -640,6 +649,10 @@ export interface RunReplay {
   misquoteFixes: MisquoteFixBoundary[];
   /** Misquote settles whose host-fix decision (apply or open a session) the current rule changes. */
   newMisquoteFixes: number;
+  /** Each case of a source task's edge-input probe against the current rule (#1808). */
+  edgeProbes: EdgeProbeBoundary[];
+  /** Probed cases the current rule turns into a finding, or lets pass, unlike the recording. */
+  newEdgeDecisions: number;
 }
 
 export interface MisquoteFixBoundary {
@@ -683,6 +696,42 @@ export function replayMisquoteFixes(
           checks: record.checks ?? null,
         },
       ];
+    });
+}
+
+export interface EdgeProbeBoundary {
+  /** The probe record's path and the case's number. */
+  key: string;
+  criterionId: string;
+  recorded: "finding" | "pass";
+  replayed: "finding" | "pass";
+}
+
+/**
+ * Every case of every edge-input probe a run recorded (`probes/edge/`, #1808), decided again from
+ * its recorded outcome. Traces from before #1808 record none.
+ */
+export function replayEdgeProbes(
+  store: WorkflowStore,
+  runId: string,
+  decide: EdgeRule = edgeDecision,
+): EdgeProbeBoundary[] {
+  return store
+    .artifacts(runId)
+    .filter((a) => a.kind === EDGE_KIND && a.logical_path.startsWith(EDGE_DIR))
+    .flatMap((artifact) => {
+      let record: EdgeRecord;
+      try {
+        record = JSON.parse(store.readArtifact(runId, artifact.id));
+      } catch {
+        return [];
+      }
+      return (record.cases ?? []).map((c, index) => ({
+        key: `${artifact.logical_path}#${String(index + 1)}`,
+        criterionId: c.criterionId,
+        recorded: c.decision,
+        replayed: decide(c.status),
+      }));
     });
 }
 
@@ -2544,6 +2593,8 @@ function replayRun(
   | "newApplyDecisions"
   | "misquoteFixes"
   | "newMisquoteFixes"
+  | "edgeProbes"
+  | "newEdgeDecisions"
 > | null {
   const db = store.connection;
   const run = store.run(runId);
@@ -2719,6 +2770,7 @@ export function replayTrace(
     hostApplyRule?: HostApplyRule;
     poolGrowthRule?: PoolGrowthRule;
     misquoteFixRule?: MisquoteFixRule;
+    edgeRule?: EdgeRule;
   } = {},
 ): TraceReplay {
   // Initiative starts rewind their own copies of the trace, before the run replay rewinds this one.
@@ -2772,6 +2824,9 @@ export function replayTrace(
     const misquotes = new Map(
       runIds.map((runId) => [runId, replayMisquoteFixes(store, runId, options.misquoteFixRule)]),
     );
+    const edges = new Map(
+      runIds.map((runId) => [runId, replayEdgeProbes(store, runId, options.edgeRule)]),
+    );
     const runs: RunReplay[] = [];
     for (const runId of runIds) {
       const firstByte = timings.get(runId) ?? [];
@@ -2795,6 +2850,7 @@ export function replayTrace(
       const requestConflicts = requests.get(runId) ?? [];
       const hostApply = applies.get(runId) ?? [];
       const misquoteFixes = misquotes.get(runId) ?? [];
+      const edgeProbes = edges.get(runId) ?? [];
       if (
         !replay.boundaries.length &&
         !firstByte.length &&
@@ -2805,7 +2861,8 @@ export function replayTrace(
         !repeatedFailures.length &&
         !requestConflicts.length &&
         !hostApply.length &&
-        !misquoteFixes.length
+        !misquoteFixes.length &&
+        !edgeProbes.length
       )
         continue;
       runs.push({
@@ -2832,6 +2889,8 @@ export function replayTrace(
         newApplyDecisions: hostApply.filter((b) => b.replayed !== b.recorded).length,
         misquoteFixes,
         newMisquoteFixes: misquoteFixes.filter((b) => b.replayed !== b.recorded).length,
+        edgeProbes,
+        newEdgeDecisions: edgeProbes.filter((b) => b.replayed !== b.recorded).length,
       });
     }
     const gates = replayShareGate(store, options.shareGate);
