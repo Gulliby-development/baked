@@ -259,6 +259,7 @@ export async function prepareStart(
     baselineReplay: policyBaselineReplay,
     packageContents: policyPackageContents,
     chainRewrite: policyChainRewrite,
+    chainProbe: policyChainProbe,
     misquoteFix: policyMisquoteFix,
     propertyTests: policyPropertyTests,
     allowOverlappingWrites,
@@ -304,6 +305,7 @@ export async function prepareStart(
   const baselineReplay = policyBaselineReplay ?? config.quality?.baselineReplay ?? "off";
   const packageContents = policyPackageContents ?? config.quality?.packageContents ?? "off";
   const chainRewrite = policyChainRewrite ?? config.quality?.chainRewrite ?? "off";
+  const chainProbe = policyChainProbe ?? config.quality?.chainProbe ?? "off";
   const misquoteFix = policyMisquoteFix ?? config.quality?.misquoteFix ?? "off";
   const propertyTests =
     request.propertyTests ??
@@ -358,6 +360,7 @@ export async function prepareStart(
     ...(baselineReplay === "on" ? { baselineReplay } : {}),
     ...(packageContents === "on" ? { packageContents } : {}),
     ...(chainRewrite === "on" ? { chainRewrite } : {}),
+    ...(chainProbe === "on" ? { chainProbe } : {}),
     ...(misquoteFix === "on" ? { misquoteFix } : {}),
     ...(propertyTests !== presetPropertyTests(preset) ? { propertyTests } : {}),
     ...(request.maxConcurrentWriters !== undefined

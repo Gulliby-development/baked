@@ -29,6 +29,8 @@ export const CHAIN_KIND = "finding-chain";
 export const CHAIN_TASKS_DIR = "chains/tasks/";
 /** The host's battery runs before a review round: `chains/battery/<id>.json`. */
 export const CHAIN_BATTERY_DIR = "chains/battery/";
+/** The sibling probe of a rewrite corrective (#1969): `chains/family/<task>.json`. */
+export const CHAIN_FAMILY_DIR = "chains/family/";
 
 /** The last name of a symbol a reviewer reported: `Parser.parseInline()` is `parseInline`. */
 export const symbolKey = (symbol: string | null | undefined): string =>
@@ -227,6 +229,40 @@ export const chainRewriteDecision: ChainRule = (length, policy) =>
 export type BatteryRule = (statuses: readonly ReproOutcome["status"][]) => "pass" | "reopen";
 export const batteryDecision: BatteryRule = (statuses) =>
   statuses.includes("reproduced") ? "reopen" : "pass";
+
+/**
+ * Whether a case of a chain's sibling probe joins the battery (#1969). The host runs each case as a
+ * repro whose actual is its expected value: `reproduced` is a case the code already gets right,
+ * `refuted` one that ran and printed something else (a member of the class), `inconclusive` one
+ * that could not show either (a crash, a program no check starts), which is left out.
+ */
+export type FamilyRule = (status: ReproOutcome["status"]) => "join" | "skip";
+export const familyDecision: FamilyRule = (status) => (status === "refuted" ? "join" : "skip");
+
+/** What `chains/family/<task>.json` records: each probed case's outcome and whether it joined. */
+export interface FamilyRecord {
+  schemaVersion: 1;
+  taskId: string;
+  findingId: string;
+  file: string | null;
+  symbol: string;
+  /** The chain's cases the probe was shown, by finding id. */
+  shown: string[];
+  cases: {
+    status: ReproOutcome["status"];
+    reason: string;
+    /** A joined case is a finding with this record as its evidence and `repeatOf` the finding. */
+    decision: "join" | "skip";
+  }[];
+}
+
+/** The observed value of a probed case: its output's last non-empty line, or "" for none. */
+export const observedValue = (output: string): string =>
+  output
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .at(-1) ?? "";
 
 /** What `chains/tasks/<task>.json` records: the decision's inputs, without prose. */
 export interface ChainRecord {

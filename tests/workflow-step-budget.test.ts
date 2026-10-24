@@ -163,6 +163,17 @@ describe("AttemptStepController", () => {
     expect(floored.record(steps, false, { profileId: "implementer", taskId: "T001" }).maxTokens).toBe(400_000);
   });
 
+  test("the step floor counts model requests: a step that reported no tokens is not one (#1987)", () => {
+    // Codex reports a response's usage once its tool call is answered, so every other step reads 0.
+    const options = { maxSteps: 30, maxTokens: 150_000, submitTools: ["submit_result"], fallbackStepTokens: 100, minSteps: 10, ceilingTokens: 2_000_000 };
+    const steps = [usage(48_000, 2000), usage(0, 0), usage(48_000, 2000), usage(0, 0)];
+    const controller = new AttemptStepController(options);
+    expect(controller.tokenCap(steps)).toBe(500_000);
+    expect(controller.allTokensCap(steps)).toBe(1_500_000);
+    // Without a reported step there is nothing to average: the sized cap stands.
+    expect(controller.tokenCap([usage(0, 0)])).toBe(150_000);
+  });
+
   test("tells the agent once that a step was cut off at the output cap, and keeps it in place", () => {
     const controller = new AttemptStepController({
       maxSteps: 14,

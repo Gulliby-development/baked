@@ -10,6 +10,7 @@ import { asV2, listDefinitions, loadDefinition } from "../v2/definitions.js";
 import {
   type InitiativeFeature,
   type InitiativePlan,
+  isDocumentationFeature,
   literalPathCount,
   MIN_FEATURE_PATHS,
 } from "./plan.js";
@@ -89,6 +90,21 @@ const tieredPreset = (d: { id: string; source: "builtin" | "project"; schemaVers
 const hasDependents = (plan: InitiativePlan, feature: InitiativeFeature): boolean =>
   plan.features.some((f) => f.dependsOn.includes(feature.id));
 
+/**
+ * A light feature whose every dependent is a documentation feature (#1768): the host orders docs
+ * after the last code feature of each chain (#1751), and a docs feature reads code, not a spec. So
+ * the feature keeps `LIGHT_LEAF_WORKFLOW` and its run records its host-made spec as the contract
+ * the docs feature pins, as under `lightContracts` (#1664), instead of moving to a spec workflow.
+ */
+export function documentedLightLeaf(plan: InitiativePlan, feature: InitiativeFeature): boolean {
+  const dependents = plan.features.filter((f) => f.dependsOn.includes(feature.id));
+  return (
+    (feature.workflow ?? null) === LIGHT_LEAF_WORKFLOW &&
+    dependents.length > 0 &&
+    dependents.every(isDocumentationFeature)
+  );
+}
+
 /** Why `workflowId` cannot run `feature` of `plan`, or null when it can. */
 export function featureWorkflowProblem(
   plan: InitiativePlan,
@@ -99,7 +115,11 @@ export function featureWorkflowProblem(
   const choice = choices.find((c) => c.id === workflowId);
   if (!choice)
     return `${feature.id}: workflow ${workflowId} cannot run a feature here; use one of ${choices.map((c) => c.id).join(", ") || "none"}`;
-  if (!choice.contract && hasDependents(plan, feature))
+  if (
+    !choice.contract &&
+    hasDependents(plan, feature) &&
+    !documentedLightLeaf(plan, { ...feature, workflow: workflowId })
+  )
     return `${feature.id}: other features depend on it, so it needs a workflow that writes a spec (${
       choices
         .filter((c) => c.contract)
@@ -239,7 +259,8 @@ export function lightenSmallLeaves(
  * spec: a feature on a light workflow that gained a dependent (shared-path sequencing runs after
  * the workflows are chosen) gets `fallback`, the initiative's default when it writes a spec, else
  * the first choice that does. Without it the dependent stops at ARTIFACT_MISSING on every drive,
- * since there is no accepted spec to pin (#1406).
+ * since there is no accepted spec to pin (#1406). A light feature only documentation depends on
+ * keeps its workflow and records a contract instead (`documentedLightLeaf`, #1768).
  */
 export function restoreContractWorkflows(
   plan: InitiativePlan,
@@ -254,7 +275,8 @@ export function restoreContractWorkflows(
   if (!fallback) return { plan, restored };
   const features = plan.features.map((feature) => {
     const from = feature.workflow ?? defaultWorkflow;
-    if (contract(from) || !hasDependents(plan, feature)) return feature;
+    if (contract(from) || !hasDependents(plan, feature) || documentedLightLeaf(plan, feature))
+      return feature;
     restored.push({ featureId: feature.id, from, to: fallback });
     return { ...feature, workflow: fallback };
   });
