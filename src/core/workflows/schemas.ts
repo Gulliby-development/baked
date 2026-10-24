@@ -2325,7 +2325,9 @@ export function repairHostBoundCriteria(spec: Spec): { spec: Spec; repaired: str
     criteria.push({
       id: `AC-${String(next).padStart(3, "0")}`,
       requirementIds: uncovered,
-      given: original.given,
+      // What this host provides, not the original's Given: one that names the delivered revision
+      // and the CI matrix would flag the fallback host-bound again (#1964).
+      given: "the delivered tree on this host",
       when: "the run's checks run on this host",
       // biome-ignore lint/suspicious/noThenProperty: Given/When/Then is the versioned acceptance-criterion contract.
       then: `the code uses platform-neutral path, line-ending and process APIs and the tests pass here (${id} keeps the claim about other platforms for after release)`,

@@ -11,6 +11,12 @@ import {
   SUPPORTED_LANGUAGES,
 } from "../../intelligence/language-records.js";
 import {
+  cargoLockFields,
+  gemfileLockFields,
+  packageLockFields,
+  uvLockFields,
+} from "./lock-fields.js";
+import {
   cargoFields,
   changedFields,
   type FieldMap,
@@ -475,10 +481,31 @@ const TOOLCHAIN_FILES: readonly Pick<ManifestReader, "name" | "fields">[] = [
   { name: /^\.python-version$/, fields: pythonVersionFields },
 ];
 
-const fieldsOf = (path: string): ManifestReader["fields"] | undefined =>
-  (readerOf(path) ?? TOOLCHAIN_FILES.find((file) => file.name.test(base(path))))?.fields;
+/**
+ * The lock files that record the project's own version (#1934), with their entries other than the
+ * project's own: rust `Cargo.lock`, typescript and javascript `package-lock.json`, python
+ * `uv.lock`, ruby `Gemfile.lock`. A request-named one is approved without a person and every
+ * entry it changes beyond the project's own is a finding. A lock with no row (`bun.lock`,
+ * `yarn.lock`, `poetry.lock`, `go.sum`, ...) stays with a person.
+ */
+const LOCK_FIELDS: readonly Pick<ManifestReader, "name" | "fields">[] = [
+  { name: /^Cargo\.lock$/, fields: cargoLockFields },
+  { name: /^package-lock\.json$/, fields: packageLockFields },
+  { name: /^uv\.lock$/, fields: uvLockFields },
+  { name: /^Gemfile\.lock$/, fields: gemfileLockFields },
+];
 
-/** Whether a path is a manifest or toolchain file whose executable fields the field check reads. */
+/** Whether a path is a lock file the field check bounds to the project's own entries. */
+export const isBoundedLockPath = (path: string): boolean =>
+  LOCK_FIELDS.some((lock) => lock.name.test(base(path)));
+
+const fieldsOf = (path: string): ManifestReader["fields"] | undefined =>
+  (
+    readerOf(path) ??
+    [...TOOLCHAIN_FILES, ...LOCK_FIELDS].find((file) => file.name.test(base(path)))
+  )?.fields;
+
+/** Whether a path is a manifest, toolchain or lock file whose fields the field check reads. */
 export const hasExecutableFields = (path: string): boolean => fieldsOf(path) !== undefined;
 
 /** The executable fields of a manifest or toolchain file that differ between two versions of it (#1793). */

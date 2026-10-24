@@ -456,6 +456,11 @@ import {
   unrequestedManifestFields,
 } from "./quality/dependencies.js";
 import {
+  isResolutionInput,
+  type ResolutionDiff,
+  replayResolution,
+} from "./quality/dependency-resolution.js";
+import {
   compareWithBaseline,
   duplicationOf,
   isTestCodePath,
@@ -473,7 +478,11 @@ import {
   hardenTargets,
   QUALITY_MUTATION_BASELINE,
 } from "./quality/harden.js";
-import { hasExecutableFields, manifestDependencies } from "./quality/manifests.js";
+import {
+  hasExecutableFields,
+  isBoundedLockPath,
+  manifestDependencies,
+} from "./quality/manifests.js";
 import {
   DEFAULT_MUTATION_BUDGET_MS,
   generateMutants,
@@ -709,14 +718,9 @@ import {
 } from "./spec-amendment.js";
 import { digestsSpec, mayDigestSpec, READ_CRITERION, readCriterionTool } from "./spec-digest.js";
 import { forgetProgress } from "./stall.js";
+import { statedRequest } from "./stated-request.js";
 import type { AttemptUsageRecord } from "./step-budget.js";
-import {
-  type LeaseResource,
-  newId,
-  type RequestRow,
-  type TaskRow,
-  type WorkflowStore,
-} from "./store.js";
+import { type LeaseResource, newId, type TaskRow, type WorkflowStore } from "./store.js";
 import {
   documentsOnly,
   failureOwner,
@@ -814,6 +818,8 @@ type Severity = Review["findings"][number]["severity"];
 const MUTATION_COPY = "quality-mutation";
 /** The task worktree the baseline replay (#1945) runs in. */
 const BASELINE_REPLAY_COPY = "quality-baseline-replay";
+/** How long one dependency listing of the baseline replay may run (#1954). */
+const RESOLUTION_TIMEOUT_MS = 180_000;
 /** The task worktree the package contents check (#1984) builds packages in. */
 const PACKAGE_CONTENTS_COPY = "quality-package-contents";
 const ALL_SEVERITIES: readonly Severity[] = ["critical", "high", "medium", "low"];
@@ -914,20 +920,6 @@ function integrityRequirementText(state: RuntimeState): string {
     state.spec ? canonical(state.spec) : "",
     state.plan ?? "",
   ].join("\n");
-}
-
-/**
- * The request with the clarification answers a person gave. A bound or an exclusion a person
- * decided ("files up to 100 MiB") is stated, not invented by the spec author (#1413).
- */
-function statedRequest(state: RuntimeState, requests: readonly RequestRow[]): string {
-  const answers = requests
-    .filter((r) => r.kind === "clarification" && r.status === "accepted" && r.actor === "user")
-    // Only the answers: the decision's request id would add stray numbers.
-    .map((r) =>
-      canonical((JSON.parse(r.answer_json ?? "{}") as { answers?: unknown }).answers ?? ""),
-    );
-  return [state.requestText || state.prompt, ...answers].join("\n");
 }
 
 /**
@@ -1381,7 +1373,10 @@ export class WorkflowScheduler {
               };
               // The criteria the host writes itself, when the spec lacks them (#1943).
               const hostWritten = HOST_REQUIRED_CRITERIA.filter((c) =>
-                c.required(state.requestText || state.prompt, runRoot(this.store.workspace, state)),
+                c.required(
+                  this.criterionRequest(runId, state),
+                  runRoot(this.store.workspace, state),
+                ),
               );
               const hostRepairs = (spec: Spec): Spec =>
                 addHostRequiredCriteria(
@@ -1983,7 +1978,7 @@ export class WorkflowScheduler {
               // A criterion the host's own rules make the spec author add is not scope the request
               // lacks: md-site (bench round 52) ran specify three times and plan and analyze four
               // times over the required 1280 px criterion (#1765).
-              const request = state.requestText || state.prompt;
+              const request = this.criterionRequest(runId, state);
               const root = runRoot(this.store.workspace, state);
               const required = HOST_REQUIRED_CRITERIA.filter((c) => c.required(request, root));
               const requiredIds = hostRequiredIds(spec, required);
@@ -6219,10 +6214,13 @@ export class WorkflowScheduler {
     // The author and the reviewer read the same decision, each worded for its stage (#1831).
     const crossPlatform =
       profile.output === "spec"
-        ? crossPlatformNote(state.requestText || state.prompt, runRoot(this.store.workspace, state))
+        ? crossPlatformNote(
+            this.criterionRequest(runId, state),
+            runRoot(this.store.workspace, state),
+          )
         : profile.output === "analysis"
           ? crossPlatformAnalysisNote(
-              state.requestText || state.prompt,
+              this.criterionRequest(runId, state),
               runRoot(this.store.workspace, state),
             )
           : null;
@@ -11929,6 +11927,14 @@ ${note}`;
     return tasks.some((t) => t.writes.some((w) => w.path === path && w.action === "create"));
   }
   /** The output of the checks whose latest run in a task's attempts failed, joined (#1459). */
+  /**
+   * The request the host-required and cross-platform criterion decisions read: the request with
+   * the clarification answers a person gave (#1964), so an answer that adds a platform or turns CI
+   * down reaches the author note, the analysis filter and the required predicate alike.
+   */
+  private criterionRequest(runId: string, state: RuntimeState): string {
+    return statedRequest(state, this.store.requests(runId));
+  }
   private failedCheckOutput(runId: string, taskId: string): string {
     return Object.values(this.failedCheckOutputs(runId, taskId)).join("\n");
   }
@@ -13321,7 +13327,8 @@ ${note}`;
       const code = await readCodeFiles(
         root,
         [...new Set(existing)],
-        (path) => isCodePath(path) || hasExecutableFields(path),
+        // Lock files too: the baseline replay lists their resolution before the change (#1954).
+        (path) => isCodePath(path) || hasExecutableFields(path) || isResolutionInput(path),
       );
       this.store.transaction(() =>
         this.store.artifact(
@@ -13418,7 +13425,11 @@ ${note}`;
       checks: tests,
     });
     if (prior?.inputHash === inputHash) return;
-    const record = (checks: BaselineReplayCheck[], note?: string): void =>
+    const record = (
+      checks: BaselineReplayCheck[],
+      note?: string,
+      dependencies?: ResolutionDiff[],
+    ): void =>
       this.store.transaction(() => {
         const value: BaselineReplay = {
           schemaVersion: 1,
@@ -13427,6 +13438,7 @@ ${note}`;
           removed: edits.remove,
           unknown: edits.unknown,
           checks,
+          ...(dependencies ? { dependencies } : {}),
           ...(note ? { note } : {}),
           inputHash,
         };
@@ -13455,9 +13467,55 @@ ${note}`;
       state,
       BASELINE_REPLAY_COPY,
       async (copy, scope) => {
-        for (const file of edits.revert)
-          writeFileSync(workspacePath(copy, file.path), file.content);
-        for (const file of edits.remove) rmSync(workspacePath(copy, file), { force: true });
+        // The resolved dependencies as delivered, then as they were before the change (#1954).
+        const folderOf = (folder: string) => (folder === "." ? copy : workspacePath(copy, folder));
+        const dependencies = await replayResolution(
+          changed.map((file) => file.path),
+          [".", ...tests.map((check) => check.cwd.replace(/\/+$/, "") || ".")],
+          {
+            names: (folder) => {
+              try {
+                return readdirSync(folderOf(folder));
+              } catch {
+                return [];
+              }
+            },
+            read: (path) => {
+              try {
+                return readFileSync(workspacePath(copy, path), "utf8");
+              } catch {
+                return null;
+              }
+            },
+            run: async (folder, executable, args) => {
+              signal.throwIfAborted();
+              try {
+                const outcome = await executeCheckCommand(scope, executable, [...args], {
+                  cwd: folderOf(folder),
+                  env: buildCheckEnv({ envNames: [] }),
+                  timeoutMs: RESOLUTION_TIMEOUT_MS,
+                  signal,
+                  sandbox: runSandbox(policy, copy, { gitWrite: true }),
+                });
+                return {
+                  status: outcome.timedOut
+                    ? "timeout"
+                    : outcome.exitCode === 0
+                      ? "passed"
+                      : "failed",
+                  output: outcome.output,
+                };
+              } catch (error) {
+                return { status: "failed", output: String(error) };
+              }
+            },
+          },
+          () => {
+            for (const file of edits.revert)
+              writeFileSync(workspacePath(copy, file.path), file.content);
+            for (const file of edits.remove) rmSync(workspacePath(copy, file), { force: true });
+          },
+        );
         const checks: BaselineReplayCheck[] = [];
         for (const check of tests) {
           signal.throwIfAborted();
@@ -13526,7 +13584,7 @@ ${note}`;
             ...(targets.length ? { targets } : {}),
           });
         }
-        record(checks);
+        record(checks, undefined, dependencies);
       },
     );
     if (failure) record([], failure);
@@ -14806,9 +14864,17 @@ ${note}`;
         symbol: change.field,
         evidenceId,
         claim: `Manifest ${change.file} changes ${change.field}, which the request does not name`,
-        impact:
-          "The approval took this manifest edit as asked for by its path alone; a field that runs code or chooses where code comes from changed without a person seeing it.",
-        suggestedFix: `Restore ${change.field} in ${change.file} to what it was before the run, and change only the fields the request names.`,
+        ...(isBoundedLockPath(change.file)
+          ? {
+              impact:
+                "The approval took this lock as the follow-up of the project's own version change (#1934); an entry other than the project's own changed without a person seeing it.",
+              suggestedFix: `Restore ${change.field} in ${change.file} to what it was before the run; the lock may change only the project's own entry.`,
+            }
+          : {
+              impact:
+                "The approval took this manifest edit as asked for by its path alone; a field that runs code or chooses where code comes from changed without a person seeing it.",
+              suggestedFix: `Restore ${change.field} in ${change.file} to what it was before the run, and change only the fields the request names.`,
+            }),
       }),
     );
   }
