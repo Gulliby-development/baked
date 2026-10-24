@@ -227,8 +227,8 @@ describe("adaptive first-response deadline (#1766)", () => {
     history.record("codex/a", { ...call, firstByteMs: null });
     history.record("codex/a", { ...call, firstByteMs: 20, status: 429 });
     history.record("codex/b", { ...call, firstByteMs: 30 });
-    expect(history.healthy("codex/a", "spec", "xhigh")).toEqual([10]);
-    expect(history.healthy("codex/a", "plan", "xhigh")).toEqual([]);
+    expect(history.healthy("codex/a", "spec", "xhigh").map((sample) => sample.ms)).toEqual([10]);
+    expect(history.healthy("codex/a", "plan", "xhigh").map((sample) => sample.ms)).toEqual([]);
   });
 });
 

@@ -65,15 +65,52 @@ const ADAPTIVE_FIRST_BYTE_FACTOR = 2;
  * initiative's critical path for all of it, while the round's other specify calls answered in
  * 66 to 166 s (bench round 52, #1766).
  */
-export function adaptiveFirstByteMs(ceilingMs: number, healthy: readonly number[]): number {
+export function adaptiveFirstByteMs(
+  ceilingMs: number,
+  healthy: readonly (number | SizedFirstByte)[],
+  promptChars?: number,
+): number {
   if (ceilingMs <= ADAPTIVE_FIRST_BYTE_FLOOR_MS || healthy.length < ADAPTIVE_FIRST_BYTE_SAMPLES)
     return ceilingMs;
-  const sorted = [...healthy].sort((a, b) => a - b);
-  const p95 = sorted[Math.max(0, Math.ceil(0.95 * sorted.length) - 1)] ?? 0;
+  let expected = p95(healthy.map((sample) => (typeof sample === "number" ? sample : sample.ms)));
+  // A call larger than the ones its shape answered gets their slowest pace per prompt character
+  // times its own size: a silent call's first byte is its whole answer, which grows with its
+  // input. Bench round 66 (nodepluck syntax): an analysis of 86 derivations met the 180 s floor
+  // set by analyses of 34 to 56 (47 to 70 s), took 182 to 185 s and was cut off five times (#2041).
+  const paces = healthy.flatMap((sample) =>
+    typeof sample !== "number" && sample.chars && sample.chars > 0
+      ? [sample.ms / sample.chars]
+      : [],
+  );
+  if (promptChars && paces.length >= ADAPTIVE_FIRST_BYTE_SAMPLES)
+    expected = Math.max(expected, p95(paces) * promptChars);
   return Math.min(
     ceilingMs,
-    Math.max(ADAPTIVE_FIRST_BYTE_FLOOR_MS, Math.ceil(ADAPTIVE_FIRST_BYTE_FACTOR * p95)),
+    Math.max(ADAPTIVE_FIRST_BYTE_FLOOR_MS, Math.ceil(ADAPTIVE_FIRST_BYTE_FACTOR * expected)),
   );
+}
+
+/** A healthy first response with the size of its call's prompt, when it was recorded (#2041). */
+export interface SizedFirstByte {
+  ms: number;
+  chars?: number;
+}
+
+const p95 = (values: readonly number[]): number => {
+  const sorted = [...values].sort((a, b) => a - b);
+  return sorted[Math.max(0, Math.ceil(0.95 * sorted.length) - 1)] ?? 0;
+};
+
+/**
+ * The size of a call's prompt in characters, the unit `adaptiveFirstByteMs` scales a deadline by.
+ * Undefined when the prompt cannot be measured.
+ */
+export function promptChars(prompt: unknown): number | undefined {
+  try {
+    return JSON.stringify(prompt)?.length;
+  } catch {
+    return undefined;
+  }
 }
 
 /**
@@ -105,6 +142,8 @@ export interface CallTiming extends CallReasoning {
   durationMs: number;
   /** The first-response deadline the call had, when it was not the provider's fixed one (#1766). */
   limitMs?: number;
+  /** The size of the call's prompt (`promptChars`), which the adaptive deadline scales by (#2041). */
+  promptChars?: number;
   /** The HTTP status of a call the provider refused, and its `retry-after` header (#1729). */
   status?: number;
   retryAfter?: string;
@@ -162,7 +201,10 @@ export interface ProviderWatch {
    * The deadline of a call whose fixed one (`providerFirstByteMs`) is `ceilingMs`, from what the
    * same call shape took before (`adaptiveFirstByteMs`, #1766). Unused when `firstByteMs` is set.
    */
-  firstByteLimit?: (ceilingMs: number, call: CallReasoning & { provider: string }) => number;
+  firstByteLimit?: (
+    ceilingMs: number,
+    call: CallReasoning & { provider: string; promptChars?: number },
+  ) => number;
   /** Output kind of the workflow profile, also used by continuations and format correction. */
   stage?: string;
   /** Called once per call when it ends, with its timing. */
@@ -197,9 +239,15 @@ export function withProviderHealth(
         let firstByteAt: number | null = null;
         let refusal: { statusCode?: unknown; responseHeaders?: Record<string, string> } | undefined;
         const ceilingMs = providerFirstByteMs(adapted.provider, reasoning);
+        const size = promptChars(params.prompt);
+        const sized = size !== undefined ? { promptChars: size } : {};
         const firstByteMs =
           watch.firstByteMs ??
-          watch.firstByteLimit?.(ceilingMs, { provider: adapted.provider, ...reasoning }) ??
+          watch.firstByteLimit?.(ceilingMs, {
+            provider: adapted.provider,
+            ...reasoning,
+            ...sized,
+          }) ??
           ceilingMs;
         const cancel = executionTimeout(
           () =>
@@ -355,6 +403,7 @@ export function withProviderHealth(
             firstByteMs: firstByteAt === null ? null : Math.ceil(firstByteAt - startedAt),
             durationMs: Math.ceil(executionClock.now() - startedAt),
             ...(firstByteMs !== ceilingMs ? { limitMs: firstByteMs } : {}),
+            ...sized,
             ...(typeof refusal?.statusCode === "number" ? { status: refusal.statusCode } : {}),
             ...(refusal?.responseHeaders?.["retry-after"]
               ? { retryAfter: refusal.responseHeaders["retry-after"] }
