@@ -149,8 +149,14 @@ async function conflict(scenario: Scenario) {
     const artifact = service.store.latestArtifact(run.runId, path);
     return artifact ? JSON.parse(service.store.readArtifact(run.runId, artifact.id)) : null;
   };
+  const status = (await service.get(run.runId)).status;
+  // A run that did not finish shows why: its error diagnostics and host-error stacks.
+  if (status !== "completed")
+    for (const a of service.store.artifacts(run.runId))
+      if (a.logical_path.startsWith("errors/") || a.logical_path.startsWith("host-errors/"))
+        console.error(`[misquote-host-fix] ${a.logical_path}: ${service.store.readArtifact(run.runId, a.id)}`);
   return {
-    status: (await service.get(run.runId)).status,
+    status,
     asked: service.store.requests(run.runId).filter((r) => r.kind === "clarification"),
     sessions: prompts.length,
     read,
