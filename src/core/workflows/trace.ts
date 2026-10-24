@@ -88,6 +88,13 @@ import {
   type RequestConflictRule,
   requestConflictDecision,
 } from "./request-conflict.js";
+import {
+  REVIEW_GATE_DIR,
+  REVIEW_GATE_KIND,
+  type ReviewGate,
+  type ReviewGateRecord,
+  reviewGateDecision,
+} from "./review-gate.js";
 import { PolicySchema, type RunPolicy } from "./schemas.js";
 import { NativeWorkflowService } from "./service.js";
 import { exceedsTestCapacity, type SizingReport } from "./sizing.js";
@@ -142,6 +149,8 @@ const KEPT_ARTIFACTS = new Set([
   INTEGRITY_KIND,
   // Each task-end case walk: which cases a file held, no literals (#1715).
   CASE_WALK_KIND,
+  // Each review's gate: the findings' labels and repro outcomes, no claims (#1715).
+  REVIEW_GATE_KIND,
 ]);
 
 /** Tables that hold evidence, effects or prose the replay never reads. */
@@ -666,6 +675,53 @@ export interface RunReplay {
   caseWalks: CaseWalkBoundary[];
   /** Cases the current rule refuses a task for that the recorded walk did not. */
   newCaseRefusals: number;
+  /** Each review's gate against the current rule (#1715). */
+  reviewGates: ReviewGateBoundary[];
+  /** Findings the current rule repairs that the recorded gate kept as notes. */
+  newGateRepairs: number;
+}
+
+export type ReviewGateRule = (gate: ReviewGate) => string[];
+
+export interface ReviewGateBoundary {
+  reviewer: string;
+  findings: number;
+  /** IDs of the findings that start a correction, as recorded and as the current rule decides. */
+  recorded: string[];
+  replayed: string[];
+}
+
+/**
+ * Every review gate a run recorded (`review-gate/`, #1715), decided again from each finding's
+ * severity, kind, basis, confidence, sibling note and repro outcome, and the round's repaired
+ * severities. A repro runs only for a finding the recorded gate made a candidate, so a rule that
+ * makes another one a candidate replays it without an outcome. Traces before #1715 record none.
+ */
+export function replayReviewGates(
+  store: WorkflowStore,
+  runId: string,
+  decide: ReviewGateRule = reviewGateDecision,
+): ReviewGateBoundary[] {
+  return store
+    .artifacts(runId)
+    .filter((a) => a.kind === REVIEW_GATE_KIND && a.logical_path.startsWith(REVIEW_GATE_DIR))
+    .flatMap((artifact) => {
+      let record: ReviewGateRecord;
+      try {
+        record = JSON.parse(store.readArtifact(runId, artifact.id));
+      } catch {
+        return [];
+      }
+      if (record.schemaVersion !== 1) return [];
+      return [
+        {
+          reviewer: record.reviewer,
+          findings: record.findings.length,
+          recorded: record.repaired,
+          replayed: decide(record),
+        },
+      ];
+    });
 }
 
 export type CaseWalkRule = (walk: CaseWalk) => number[];
@@ -2668,6 +2724,8 @@ function replayRun(
   | "newIntegrityFindings"
   | "caseWalks"
   | "newCaseRefusals"
+  | "reviewGates"
+  | "newGateRepairs"
 > | null {
   const db = store.connection;
   const run = store.run(runId);
@@ -2845,6 +2903,7 @@ export function replayTrace(
     misquoteFixRule?: MisquoteFixRule;
     integrityRule?: IntegrityRule;
     caseWalkRule?: CaseWalkRule;
+    reviewGateRule?: ReviewGateRule;
   } = {},
 ): TraceReplay {
   // Initiative starts rewind their own copies of the trace, before the run replay rewinds this one.
@@ -2904,6 +2963,9 @@ export function replayTrace(
     const walks = new Map(
       runIds.map((runId) => [runId, replayCaseWalks(store, runId, options.caseWalkRule)]),
     );
+    const reviews = new Map(
+      runIds.map((runId) => [runId, replayReviewGates(store, runId, options.reviewGateRule)]),
+    );
     const runs: RunReplay[] = [];
     for (const runId of runIds) {
       const firstByte = timings.get(runId) ?? [];
@@ -2929,6 +2991,7 @@ export function replayTrace(
       const misquoteFixes = misquotes.get(runId) ?? [];
       const integrity = scans.get(runId) ?? [];
       const caseWalks = walks.get(runId) ?? [];
+      const reviewGates = reviews.get(runId) ?? [];
       if (
         !replay.boundaries.length &&
         !firstByte.length &&
@@ -2941,7 +3004,8 @@ export function replayTrace(
         !hostApply.length &&
         !misquoteFixes.length &&
         !integrity.length &&
-        !caseWalks.length
+        !caseWalks.length &&
+        !reviewGates.length
       )
         continue;
       runs.push({
@@ -2975,6 +3039,11 @@ export function replayTrace(
         ),
         caseWalks,
         newCaseRefusals: caseWalks.reduce(
+          (n, b) => n + b.replayed.filter((f) => !b.recorded.includes(f)).length,
+          0,
+        ),
+        reviewGates,
+        newGateRepairs: reviewGates.reduce(
           (n, b) => n + b.replayed.filter((f) => !b.recorded.includes(f)).length,
           0,
         ),
