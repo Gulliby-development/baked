@@ -1,7 +1,7 @@
 import { Database } from "bun:sqlite";
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { changedLines } from "../intelligence/call-context.js";
+import { changedLines, diffSections } from "../intelligence/call-context.js";
 import { isManifestFile, isTestFile } from "../intelligence/language-traits.js";
 import { isTestOf } from "../verification/convergence.js";
 import {
@@ -536,27 +536,84 @@ function blockPath(block: Fence, wanted: ReadonlySet<string>): string | null {
 }
 
 /**
- * Lines each path of `paths` gets from the verbatim blocks of a request: the added and removed
- * lines of a fenced unified diff (`+++` headers, read by `changedLines`), or every line of a fenced
- * block attributed to the path (`blockPath`). A path no block supplies is absent.
+ * Prose before a fenced file that says the block is the file's whole content ("Replace `a.ts`
+ * with:", "the full contents of `a.ts`"), not an excerpt to merge into it.
  */
-export function suppliedLines(request: string, paths: readonly string[]): Map<string, number> {
+const WHOLE_FILE =
+  /\b(?:replace[ds]?|overwrite|whole|full|entire|complete|contents?|exactly|verbatim)\b/i;
+
+/** One verbatim block a request gives for a path (#2023). */
+export type SuppliedBlock =
+  | {
+      kind: "diff";
+      /** Added and removed lines of the path's hunks (`changedLines`). */
+      lines: number;
+      /** The path's sections of the diff, ready for `git apply -p1` (`diffSections`). */
+      patch: string;
+    }
+  | {
+      kind: "file";
+      lines: number;
+      /** The block's text, ending in a newline. */
+      content: string;
+      /** Whether the prose before it says it is the whole file (`WHOLE_FILE`). */
+      whole: boolean;
+    };
+
+/**
+ * The one reader of a request's verbatim blocks (#2002, #2023): for each path of `paths`, every
+ * fenced unified diff hunk for it (`+++` headers, read by `changedLines` and `diffSections`) and
+ * every fenced block attributed to it (`blockPath`). A path no block supplies is absent. Pricing
+ * (`suppliedLines`) and the host's apply decision (`hostApplyDecision`) both read it.
+ */
+export function suppliedBlocks(
+  request: string,
+  paths: readonly string[],
+): Map<string, SuppliedBlock[]> {
   const wanted = new Set(paths.map(requestPath));
-  const out = new Map<string, number>();
-  const add = (path: string, lines: number) => {
+  const out = new Map<string, SuppliedBlock[]>();
+  const add = (path: string, block: SuppliedBlock) => {
     const key = requestPath(path);
-    if (wanted.has(key) && lines > 0) out.set(key, (out.get(key) ?? 0) + lines);
+    if (wanted.has(key) && block.lines > 0) out.set(key, [...(out.get(key) ?? []), block]);
   };
   for (const block of fences(request)) {
     const body = block.lines.join("\n");
     if (/^\+\+\+ /m.test(body)) {
-      for (const [path, lines] of changedLines(body)) add(path, lines.length);
+      const sections = diffSections(body);
+      for (const [path, lines] of changedLines(body)) {
+        const key = requestPath(path);
+        const patch = sections
+          .filter((s) => !s.deletes && requestPath(s.path) === key)
+          .map((s) => s.patch)
+          .join("");
+        add(path, { kind: "diff", lines: lines.length, patch });
+      }
       continue;
     }
     const path = blockPath(block, wanted);
-    if (path) add(path, block.lines.length);
+    if (path)
+      add(path, {
+        kind: "file",
+        lines: block.lines.length,
+        content: `${body}\n`,
+        whole: WHOLE_FILE.test(block.prose.trim().split("\n").at(-1) ?? ""),
+      });
   }
   return out;
+}
+
+/**
+ * Lines each path of `paths` gets from the verbatim blocks of a request (`suppliedBlocks`): the
+ * added and removed lines of a fenced unified diff, or every line of a fenced block attributed to
+ * the path. A path no block supplies is absent.
+ */
+export function suppliedLines(request: string, paths: readonly string[]): Map<string, number> {
+  return new Map(
+    [...suppliedBlocks(request, paths)].map(([path, blocks]) => [
+      path,
+      blocks.reduce((sum, block) => sum + block.lines, 0),
+    ]),
+  );
 }
 
 /** A task priced from the lines the request supplies for it. */

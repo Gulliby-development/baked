@@ -1,0 +1,215 @@
+import { afterEach, describe, expect, test } from "bun:test";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { DEFAULT_CONFIG } from "../src/config/index.js";
+import { diffSections } from "../src/core/intelligence/call-context.js";
+import { hashBytes, hashJson } from "../src/core/specs/hash.js";
+import { defaultWorkflowPolicy } from "../src/core/workflows/defaults.js";
+import {
+  type HostApplyRecord,
+  type HostApplyWrite,
+  hostAppliableTasks,
+  hostApplyDecision,
+  hostApplyInputs,
+  hostApplyRecords,
+} from "../src/core/workflows/host-apply.js";
+import type { Check, RunPolicy, Spec, Task } from "../src/core/workflows/schemas.js";
+import { NativeWorkflowService } from "../src/core/workflows/service.js";
+import { suppliedBlocks, suppliedLines } from "../src/core/workflows/sizing.js";
+import { newId } from "../src/core/workflows/store.js";
+import { exportTrace, replayTrace } from "../src/core/workflows/trace.js";
+import type { AgentExecutor, ExecutionRequest } from "../src/core/workflows/types.js";
+
+// Bench round 65 (#2023): eolscope-update, seqmill-update and aclvet-update carried briefs with
+// exact diffs and whole files, and spent 400k, 228k and 170k plus a replan on tasks that only
+// applied them. The host now decides, in shadow, whether it would apply a planned task's content
+// itself: every write has a verbatim block, and every diff passes `git apply --check` against the
+// task's base. It records the decision with its inputs; the implementer still runs.
+
+const cleanups: (() => void)[] = [];
+afterEach(() => {
+  for (const cleanup of cleanups.splice(0).reverse()) cleanup();
+});
+
+/** A brief with a prefix-less diff that applies, a whole new file, a diff that does not apply, and a prose-only change. */
+const brief = [
+  "Apply exactly this change:",
+  "```diff",
+  "--- src/a.ts",
+  "+++ src/a.ts",
+  "@@ -1,2 +1,2 @@",
+  " export const A = 1;",
+  "-export const B = 2;",
+  "+export const B = 3;",
+  "```",
+  "Create `src/b.ts` with exactly this content:",
+  "```ts",
+  "export const NEW = true;",
+  "```",
+  "Then this one:",
+  "```diff",
+  "--- a/src/c.ts",
+  "+++ b/src/c.ts",
+  "@@ -1 +1 @@",
+  '-export const C = "old";',
+  '+export const C = "new";',
+  "```",
+  "Also make src/d.ts export D = 2.",
+].join("\n");
+const A_BEFORE = "export const A = 1;\nexport const B = 2;\n";
+
+const write = (over: Partial<HostApplyWrite>): HostApplyWrite => ({ path: "src/x.ts", action: "modify", files: 0, diffs: 1, whole: false, exists: true, applies: true, ...over });
+
+describe("the verbatim reader and the apply decision (#2023)", () => {
+  test("diff sections get a/ and b/ headers, whatever the brief wrote", () => {
+    const sections = diffSections(["--- src/a.ts\t2026-01-01", "+++ src/a.ts", "@@ -1 +1 @@", "-x", "+y", "", "diff --git a/n b/n", "--- /dev/null", "+++ b/src/n.ts", "@@ -0,0 +1 @@", "+n", ""].join("\n"));
+    expect(sections).toEqual([
+      { path: "src/a.ts", patch: "--- a/src/a.ts\n+++ b/src/a.ts\n@@ -1 +1 @@\n-x\n+y\n", deletes: false },
+      { path: "src/n.ts", patch: "--- /dev/null\n+++ b/src/n.ts\n@@ -0,0 +1 @@\n+n\n", deletes: false },
+    ]);
+  });
+
+  test("one reader serves pricing and the apply decision", () => {
+    const paths = ["src/a.ts", "src/b.ts", "src/c.ts", "src/d.ts"];
+    const blocks = suppliedBlocks(brief, paths);
+    expect([...blocks.keys()]).toEqual(["src/a.ts", "src/b.ts", "src/c.ts"]);
+    expect(blocks.get("src/b.ts")).toEqual([{ kind: "file", lines: 1, content: "export const NEW = true;\n", whole: true }]);
+    expect(blocks.get("src/a.ts")?.[0]).toMatchObject({ kind: "diff", lines: 2 });
+    expect(Object.fromEntries(suppliedLines(brief, paths))).toEqual({ "src/a.ts": 2, "src/b.ts": 1, "src/c.ts": 2 });
+  });
+
+  test("the decision keeps the implementer for every write it cannot apply", () => {
+    expect(hostApplyDecision([write({})])).toEqual({ wouldApply: true, reason: null });
+    expect(hostApplyDecision([write({ files: 1, diffs: 0, applies: null, whole: true })]).wouldApply).toBe(true);
+    expect(hostApplyDecision([write({ action: "create", files: 1, diffs: 0, applies: null, exists: false })]).wouldApply).toBe(true);
+    expect(hostApplyDecision([write({ files: 1, diffs: 0, applies: null })]).reason).toContain("may be an excerpt");
+    expect(hostApplyDecision([write({ files: 1, diffs: 1, applies: null })]).reason).toContain("both a fenced file and a diff");
+    expect(hostApplyDecision([write({ files: 2, diffs: 0, applies: null, whole: true })]).reason).toContain("2 fenced blocks");
+    expect(hostApplyDecision([write({ applies: false, refusal: "error: patch failed: src/x.ts:1" })]).reason).toBe("the diff for src/x.ts does not apply to the task's base: error: patch failed: src/x.ts:1");
+    expect(hostApplyDecision([write({}), write({ path: "src/y.ts", diffs: 0, applies: null })]).reason).toBe("the request gives no verbatim block for src/y.ts");
+    expect(hostApplyDecision([write({ action: "delete" })]).reason).toBe("the task deletes src/x.ts");
+  });
+
+  test("the apply check changes no file, and a task without a supplied write has nothing to decide", async () => {
+    const root = mkdtempSync(join(tmpdir(), "baked-host-apply-"));
+    cleanups.push(() => rmSync(root, { recursive: true, force: true }));
+    mkdirSync(join(root, "src"));
+    writeFileSync(join(root, "src/a.ts"), A_BEFORE);
+    const inputs = await hostApplyInputs(root, brief, { writes: [{ path: "src/a.ts", action: "modify" }] });
+    expect(inputs).toEqual([{ path: "src/a.ts", action: "modify", files: 0, diffs: 1, whole: false, exists: true, applies: true }]);
+    expect(readFileSync(join(root, "src/a.ts"), "utf8")).toBe(A_BEFORE);
+    expect(await hostApplyInputs(root, brief, { writes: [{ path: "src/d.ts", action: "modify" }] })).toBeNull();
+  }, 60000);
+});
+
+const spec: Spec = { schemaVersion: 1, featureId: "fixture", revision: 1, title: "Constants", problem: "Old constants", outcome: "New constants", inScope: ["Constants"], outOfScope: [], assumptions: [], openQuestions: [], requirements: [{ id: "FR-001", text: "The constants are current", priority: "must", verification: "automated", sourceRefs: [] }], criteria: [{ id: "AC-001", requirementIds: ["FR-001"], given: "the module", when: "it is read", then: "the constants are current", method: "automated" }], dependencies: [] };
+const markdown = "# Plan\n## Context\nApply the brief.\n## Decisions\nDEC-001: FR-001 in src.\n## Components\nsrc/a.ts, src/b.ts, src/c.ts, src/d.ts\n## Data\nNone\n## Verification\nTests\n## Risks\nNone for fixture";
+const planned = (id: string, path: string, action: "create" | "modify"): Task => ({ id, title: `update ${path}`, description: `update ${path}`, requirementIds: ["FR-001"], criterionIds: ["AC-001"], dependsOn: [], profileId: "implementer", writes: [{ path, action }], readHints: [], checkIds: [], origin: "planned", findingIds: [], rationale: "Required behavior" });
+const tasks = [planned("T001", "src/a.ts", "modify"), planned("T002", "src/b.ts", "create"), planned("T003", "src/c.ts", "modify"), planned("T004", "src/d.ts", "modify")];
+const content: Record<string, [string, string]> = {
+  T001: ["src/a.ts", "export const A = 1;\nexport const B = 3;\n"],
+  T002: ["src/b.ts", "export const NEW = true;\n"],
+  T003: ["src/c.ts", 'export const C = "new";\n'],
+  T004: ["src/d.ts", "export const D = 2;\n"],
+};
+const tests: Check = { id: "tests", executable: "bun", args: ["-e", "process.exit(0)"], cwd: ".", timeoutMs: 60000, required: true, scope: "feature", envNames: [], writes: [] };
+const policy: RunPolicy = { ...defaultWorkflowPolicy, clarification: "assume", checks: [tests] };
+
+class ScriptedExecutor implements AgentExecutor {
+  attempts: string[] = [];
+  /** src/a.ts as T001's implementer found it: the host's check left it alone. */
+  aBefore = "";
+  constructor(private root: string) {}
+  async execute(request: ExecutionRequest) {
+    const data = JSON.parse(request.prompt.split("\n").at(-1) ?? "{}") as { inputHash: string; snapshotHash: string; extra: { evidence?: { id: string }[] } };
+    const evidence = data.extra.evidence?.map((e) => e.id) ?? [];
+    let output: unknown;
+    switch (request.profile.output) {
+      case "research": output = { schemaVersion: 1, summary: "A fixture workspace", facts: [], unknowns: [], constraints: [], suggestedScope: ["src"] }; break;
+      case "spec": output = spec; break;
+      case "plan": output = { schemaVersion: 1, markdown, taskGraph: { schemaVersion: 1, featureId: "fixture", revision: 1, specHash: hashJson(spec), planHash: hashBytes(markdown), tasks } }; break;
+      case "analysis": output = { schemaVersion: 1, inputHash: data.inputHash, verdict: "pass", findings: [] }; break;
+      case "implementation": {
+        const id = request.task?.id ?? "";
+        this.attempts.push(id);
+        if (id === "T001") this.aBefore = readFileSync(join(this.root, "src/a.ts"), "utf8");
+        const [path, text] = content[id] ?? ["", ""];
+        writeFileSync(join(this.root, path), text);
+        output = { schemaVersion: 1, taskId: id, outcome: "implemented", summary: `Updated ${path}`, evidenceIds: [], unresolved: [] };
+        break;
+      }
+      case "review":
+      case "convergence":
+        output = { schemaVersion: 1, snapshotHash: data.snapshotHash, verdict: "pass", coverage: [{ criterionId: "AC-001", verdict: "pass", evidenceIds: evidence, explanation: "The checks pass" }], findings: [] };
+        break;
+      default: throw new Error(`Unexpected profile ${request.profile.output}`);
+    }
+    return { output, inputTokens: 20, outputTokens: 30 };
+  }
+}
+
+describe("scenario: an update brief with exact diffs and a whole file, in shadow (#2023)", () => {
+  test("would_apply is recorded per planned task with its inputs, the implementer still runs, and the decision replays", async () => {
+    const root = mkdtempSync(join(tmpdir(), "baked-host-apply-shadow-"));
+    cleanups.push(() => rmSync(root, { recursive: true, force: true }));
+    mkdirSync(join(root, "src"));
+    writeFileSync(join(root, "src/a.ts"), A_BEFORE);
+    writeFileSync(join(root, "src/c.ts"), 'export const C = "different";\n');
+    writeFileSync(join(root, "src/d.ts"), "export const D = 1;\n");
+    expect(hostAppliableTasks(brief, { tasks })).toEqual(["T001", "T002", "T003"]);
+
+    const executor = new ScriptedExecutor(root);
+    const config = { ...DEFAULT_CONFIG, defaultModel: "fixture/model", workflows: { enabled: true, importsEnabled: true, defaultWorkflow: "sdd", policy } };
+    const service = new NativeWorkflowService(root, config, executor);
+    cleanups.push(() => service.close());
+    const run = await service.start({ commandId: newId(), featureId: "fixture", workflowId: "sdd", prompt: brief, ownerLabel: "test", policy });
+    await service.drive(run.runId, new AbortController().signal);
+    const waiting = await service.get(run.runId);
+    const approval = service.store.requests(run.runId).find((r) => r.kind === "approval" && r.status === "pending");
+    if (!approval) throw new Error(`No approval request: ${waiting.status} ${waiting.reason}`);
+    // The plan approval names the host-appliable tasks.
+    expect((JSON.parse(approval.body_json) as { hostApply?: string }).hostApply).toBe(
+      "Host-appliable from the request's verbatim content: T001, T002, T003 (shadow: the host records whether each would apply, and an implementer still runs)",
+    );
+    await service.decide(run.runId, { commandId: newId(), expectedRevision: waiting.revision }, { kind: "approve", requestId: approval.id, digest: approval.digest });
+    const done = await service.drive(run.runId, new AbortController().signal);
+    expect(done.status).toBe("completed");
+
+    // Shadow: every task still got its implementer, and the apply check changed no file.
+    expect([...executor.attempts].sort()).toEqual(["T001", "T002", "T003", "T004"]);
+    expect(executor.aBefore).toBe(A_BEFORE);
+
+    const records = hostApplyRecords(service.store, run.runId);
+    expect(records.map((r) => [r.taskId, r.wouldApply])).toEqual([
+      ["T001", true],
+      ["T002", true],
+      ["T003", false],
+    ]);
+    const byTask = new Map<string, HostApplyRecord>(records.map((r) => [r.taskId, r]));
+    expect(byTask.get("T001")).toEqual({ taskId: "T001", mode: "shadow", writes: [{ path: "src/a.ts", action: "modify", files: 0, diffs: 1, whole: false, exists: true, applies: true }], wouldApply: true, reason: null });
+    expect(byTask.get("T002")?.writes).toEqual([{ path: "src/b.ts", action: "create", files: 1, diffs: 0, whole: true, exists: false, applies: null }]);
+    expect(byTask.get("T003")?.writes[0]).toMatchObject({ path: "src/c.ts", applies: false });
+    expect(byTask.get("T003")?.reason).toStartWith("the diff for src/c.ts does not apply to the task's base");
+    // A task whose write the request does not supply records nothing.
+    expect(byTask.has("T004")).toBe(false);
+
+    // The replay hook decides each record again from the bench trace (#1649).
+    const dir = mkdtempSync(join(tmpdir(), "host-apply-trace-"));
+    cleanups.push(() => rmSync(dir, { recursive: true, force: true }));
+    const out = join(dir, "run.sqlite.gz");
+    exportTrace(root, out);
+    const replayed = replayTrace(out).runs.find((r) => r.runId === run.runId);
+    expect(replayed?.hostApply.map((b) => [b.taskId, b.recorded, b.replayed])).toEqual([
+      ["T001", true, true],
+      ["T002", true, true],
+      ["T003", false, false],
+    ]);
+    expect(replayed?.newApplyDecisions).toBe(0);
+    // A rule that skipped the apply check would apply T003's stale diff: a new decision.
+    const unchecked = replayTrace(out, {
+      hostApplyRule: (writes) => (writes.every((w) => w.files + w.diffs > 0) ? { wouldApply: true, reason: null } : { wouldApply: false, reason: "unsupplied" }),
+    }).runs.find((r) => r.runId === run.runId);
+    expect(unchecked?.newApplyDecisions).toBe(1);
+  }, 120000);
+});

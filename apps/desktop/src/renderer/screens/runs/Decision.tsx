@@ -262,6 +262,11 @@ function Approval({
           {body.estimateSource}.
         </p>
       ) : null}
+      {body.hostApply ? (
+        <p className="m-0 text-soft-foreground" data-testid="approval-host-apply">
+          {body.hostApply}.
+        </p>
+      ) : null}
       {scope.length > 0 && (
         <label className={CHECK}>
           <input type="checkbox" checked={exclude} onChange={(e) => setExclude(e.target.checked)} />
