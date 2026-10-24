@@ -13,7 +13,9 @@ import {
   readFileSync,
   renameSync,
   rmSync,
+  statSync,
   symlinkSync,
+  utimesSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -433,7 +435,13 @@ export async function runContentCommit(
   try {
     // The worktree's own index only speeds up hashing; the content comes from its files.
     const own = await gitWorktreePaths(root);
-    if (own && existsSync(own.index)) copyFileSync(own.index, index);
+    if (own && existsSync(own.index)) {
+      copyFileSync(own.index, index);
+      // The copy keeps the index's own time: git re-reads a file written in the same instant as
+      // the index ("racily clean"); a fresh time made a same-size edit look unchanged (#1954).
+      const { atime, mtime } = statSync(own.index);
+      utimesSync(index, atime, mtime);
+    }
     else await required(root, ["read-tree", "HEAD"], { env });
     // An exclude pathspec that names an ignored path fails the add ("paths are ignored"); the
     // linked node_modules is a junction on Windows, which .gitignore already covers.
