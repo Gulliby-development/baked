@@ -414,6 +414,8 @@ export const RuntimeStateSchema = z
               scope: z.string(),
               paths: z.array(z.string()),
               testedBy: SafeId.optional(),
+              /** The approved dependencies, so a held run reads its whole ancestor chain (#1965). */
+              dependsOn: z.array(SafeId).optional(),
             })
             .strict(),
         ),

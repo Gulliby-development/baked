@@ -1972,7 +1972,7 @@ export interface StartRequest {
   /** Approved boundaries used to route review findings to their owning initiative feature. */
   initiativeBounds?: {
     featureId: string;
-    features: { id: string; scope: string; paths: string[] }[];
+    features: { id: string; scope: string; paths: string[]; dependsOn?: string[] }[];
   };
   /**
    * Execution mode requested for this run (CLI `--worktree`). It overrides the policy and the
