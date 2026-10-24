@@ -685,6 +685,13 @@ export const PolicySchema = z
      */
     misquoteFix: z.literal("on").optional(),
     /**
+     * The cross-run list of defect classes (defect-classes.ts, #1970): `on` lets the run's learn
+     * stage add the families of its resolved correctness findings to the list in the BAKED data
+     * directory, and shows its planner and planned implementers the classes of the domains its
+     * request and spec name, as examples. Absent is off: the list is neither read nor written.
+     */
+    defectClasses: z.literal("on").optional(),
+    /**
      * The project's choices for the anti-slop rule pack (quality/rules.ts), which is always on:
      * rules turned off, severities changed and ast-grep rule files added. Absent means the
      * built-in pack as shipped, so stored policies keep their hash.

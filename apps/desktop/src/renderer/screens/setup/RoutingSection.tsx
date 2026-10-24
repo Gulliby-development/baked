@@ -814,8 +814,8 @@ function SpecifySonnetRow({
           <Hint label="specify on Sonnet">
             When the run model is a Claude Code Opus model, the specify stage writes the spec on
             claude-code/sonnet and every other stage keeps Opus. A stage route or a route given for
-            the run still decides the specify model. Off by default while the bench loop measures
-            whether specs stay as good.
+            the run still decides the specify model. On by default; turn it off to keep Opus for the
+            spec.
           </Hint>
         </span>
         <span className={cn("text-dim-foreground", NOTE)}>
