@@ -252,6 +252,29 @@ describe("initiative starts replay on rewound traces (#1707)", () => {
     }
   }, 120000);
 
+  test("#1714: R62 stepvet's dollar share is not checked before a feature is measured", () => {
+    // R62 recorded two initiative-dollar-share would-stops, lines and stepexpr, both at
+    // measuredFeatures 0 with every waiting feature's low reserved. Both started anyway, finished
+    // and were accepted, with $3.67 of the $30 left unspent.
+    const seen = new Map<string, { view: Parameters<typeof shareShortfall>[0]; feature: Parameters<typeof shareShortfall>[1] }>();
+    replayInitiativeStarts(join(ROOT, "R62", "stepvet.sqlite.gz"), {
+      gate: (view, feature) => {
+        seen.set(feature.id, { view, feature });
+        return shareShortfall(view, feature);
+      },
+    });
+    for (const id of ["lines", "stepexpr"]) {
+      const start = seen.get(id)!;
+      expect(start.view.budget.cost.measuredFeatures).toBe(0);
+      expect(costGrowthLimit(start.view, id)!).toBeLessThan(start.feature.needUsd!.low);
+      expect(dollarShortfall(start.view, start.feature)).toBeNull();
+    }
+    // Once a feature is measured the check is back.
+    const later = seen.get("stepscmd")!;
+    expect(later.view.budget.cost.measuredFeatures).toBeGreaterThan(0);
+    expect(dollarShortfall(later.view, later.feature)).toStartWith("The shared dollar budget is short: stepscmd has $");
+  }, 120000);
+
   test("the rewind sees only what existed at each start, its history stores included", () => {
     const [replay] = replayInitiativeStarts(selwhy);
     const starts = replay!.starts;

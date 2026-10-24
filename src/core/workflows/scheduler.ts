@@ -445,7 +445,7 @@ import {
   hardenTargets,
   QUALITY_MUTATION_BASELINE,
 } from "./quality/harden.js";
-import { isManifestPath, manifestDependencies } from "./quality/manifests.js";
+import { hasExecutableFields, manifestDependencies } from "./quality/manifests.js";
 import {
   DEFAULT_MUTATION_BUDGET_MS,
   generateMutants,
@@ -5311,6 +5311,7 @@ export class WorkflowScheduler {
           "earlierEdits",
           "earlierReads",
           "previousAttempt",
+          "refusedSubmission",
         ];
         this.store.transaction(() =>
           this.store.artifact(
@@ -5757,6 +5758,15 @@ export class WorkflowScheduler {
         !editedFiles()
       ) {
         const grown = (n: number) => Math.ceil(n * 1.5);
+        // A correction the host refused says why, so the repeat does not submit the same (#1933).
+        const refusal = typeof error.details.refusal === "string" ? error.details.refusal : "";
+        const retryExtra =
+          refusal && extra && typeof extra === "object" && !Array.isArray(extra)
+            ? {
+                ...extra,
+                refusedSubmission: `The host refused your previous session's last submit_result: ${refusal}. Fix what it names before you submit, or submit blocked naming what you cannot change.`,
+              }
+            : extra;
         const steps =
           limits?.maxSteps ??
           (task ? taskSize(state, task, "taskSteps") : undefined) ??
@@ -5767,7 +5777,7 @@ export class WorkflowScheduler {
           state,
           policy,
           stageProfile,
-          extra,
+          retryExtra,
           signal,
           task,
           0,
@@ -9306,6 +9316,12 @@ ${note}`;
   ): Promise<Implementation> {
     const prose = typeof fault.details.prose === "string" ? fault.details.prose : "";
     const said = prose.trim() ? ` Its last text: ${prose.trim().slice(0, 1500)}` : "";
+    // A correction the host refused carries the refusal: the restart reads it as what is left,
+    // instead of a session that "never called submit_result" (#1933).
+    const refusal = typeof fault.details.refusal === "string" ? fault.details.refusal : "";
+    const ending = refusal
+      ? "The host refused the worker's last submit_result, and the session ended without an accepted result"
+      : "The worker ended its session with a text reply and never called submit_result";
     const result = (
       outcome: "implemented" | "blocked",
       summary: string,
@@ -9319,11 +9335,10 @@ ${note}`;
       unresolved: unresolved.map((u) => u.slice(0, 15000)),
     });
     const blocked = (reason: string) =>
-      result(
-        "blocked",
-        "The worker ended its session with a text reply and never called submit_result.",
-        [reason],
-      );
+      result("blocked", `${ending}.`, [
+        reason,
+        ...(refusal ? [`The host refused its submit_result: ${refusal}`] : []),
+      ]);
     const paths = await currentPaths();
     if (!paths.length)
       return blocked("The session changed no file in the task's write scope before it ended.");
@@ -9349,7 +9364,7 @@ ${note}`;
     );
     return result(
       "implemented",
-      `The worker ended its session with a text reply and never called submit_result; the host recorded this result because the task changed ${paths.length} file(s) and its checks pass.`,
+      `${ending}; the host recorded this result because the task changed ${paths.length} file(s) and its checks pass.`,
       [],
     );
   }
@@ -12854,7 +12869,7 @@ ${note}`;
       const code = await readCodeFiles(
         root,
         [...new Set(existing)],
-        (path) => isCodePath(path) || isManifestPath(path),
+        (path) => isCodePath(path) || hasExecutableFields(path),
       );
       this.store.transaction(() =>
         this.store.artifact(
@@ -14222,7 +14237,7 @@ ${note}`;
     const changed = await this.changedFiles(
       runId,
       state,
-      (path) => isManifestPath(path) || isCodePath(path),
+      (path) => hasExecutableFields(path) || isCodePath(path),
     );
     if (!changed.length) return [];
     const root = runRoot(this.store.workspace, state);
@@ -15225,11 +15240,14 @@ ${note}`;
     let inconclusive: string | undefined;
     for (const { gate, check } of ordered) {
       const run = await this.runCommandGate(runId, stepId, check, gate, policy, signal);
+      // Baseline lint debt under `staticBaseline: "relative"` passes here as it does at task end
+      // and in the schema-1 checks stage (#1393).
       const result =
         run.status === "failed" &&
         check.required &&
         !run.reason &&
-        this.noOwnedTests(runId, state, check, run.output ?? "", run.evidenceId)
+        (this.staticDebt(runId, state, policy, check, run.output ?? "", run.evidenceId) ||
+          this.noOwnedTests(runId, state, check, run.output ?? "", run.evidenceId))
           ? { ...run, status: "passed" as const }
           : run;
       this.recordGate(runId, state, gate.id, null, {
