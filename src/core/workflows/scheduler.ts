@@ -36,7 +36,7 @@ import { ProviderUnreachableError } from "../llm/provider-health.js";
 import { runSandbox } from "../security/sandbox.js";
 import { buildSafeEnv } from "../spawn.js";
 import { canonical, hashBytes, hashJson } from "../specs/hash.js";
-import { renderSpec, renderTasks } from "../specs/render.js";
+import { specPublication } from "../specs/render.js";
 import { validatePackage, workspacePath } from "../specs/validate.js";
 import {
   assertAcceptance,
@@ -285,7 +285,13 @@ import { costToleranceOf, currentCostCap, inCostWrapUp } from "./cost-tolerance.
 import { coverageFinding } from "./coverage.js";
 import { type CriticCalibration, calibrateCritic, criticExamples } from "./critic-calibration.js";
 import { crossPlatformAnalysisNote, crossPlatformNote } from "./cross-platform.js";
-import { git, gitWorktreePaths } from "./delivery-git.js";
+import {
+  git,
+  gitWorktreePaths,
+  initiativeSpecPrefix,
+  runSpecPath,
+  shipsSpecs,
+} from "./delivery-git.js";
 import { dependencyContracts, pathsExistLater } from "./dependencies.js";
 import {
   auditCarry,
@@ -6460,14 +6466,9 @@ ${note}`;
     }
     const attempt = this.store.reserve(runId, stepId, null, 0, policy);
     const root = runRoot(this.store.workspace, state);
-    const files = {
-      "spec.json": canonical(state.spec),
-      "spec.md": renderSpec(state.spec),
-      "plan.md": state.plan,
-      "tasks.json": canonical(state.graph),
-      "tasks.md": renderTasks(state.graph),
-    };
-    for (const [name, content] of Object.entries(files)) {
+    for (const [name, content] of Object.entries(
+      specPublication(state.spec, state.plan, state.graph),
+    )) {
       const relative = specPublicationPath(state.spec.featureId, name);
       const path = workspacePath(root, relative);
       const current = fileHash(path);
@@ -12587,6 +12588,20 @@ ${note}`;
     const copy = join(this.store.workspace, path);
     const scope = new ProcessScope();
     try {
+      // The copy holds what a commit of the run ships: a spec folder delivery leaves out is not
+      // in it, so a package built here lists the delivered files (#2017, R65 eolscope).
+      const featureId = this.store.run(runId).feature_id;
+      const prefix = initiativeSpecPrefix(featureId, state.initiativeBounds);
+      const specs = join(copy, "specs");
+      if (
+        existsSync(specs) &&
+        !(await shipsSpecs(this.store.workspace, state.worktree?.baseHead ?? "HEAD", prefix))
+      ) {
+        for (const folder of readdirSync(specs))
+          if (runSpecPath(`specs/${folder}/`, featureId, prefix))
+            rmSync(join(specs, folder), { recursive: true, force: true });
+        if (!readdirSync(specs).length) rmdirSync(specs);
+      }
       for (const linked of [".venv", "venv", "node_modules"]) {
         const source = join(root, linked);
         if (existsSync(source) && !existsSync(join(copy, linked)))
@@ -15475,9 +15490,14 @@ ${note}`;
       worktree,
       [...journaled, ...changedPaths(baseline, final).filter((path) => declared.has(path))],
       `${title}\n\nAccepted result of BAKED workflow run ${runId}.\n\nBaked-Run: ${runId}\nBaked-Snapshot: ${state.snapshotId}\n`,
-      // An initiative feature's branch is the base of the features that build on it, which read
-      // its accepted spec at specs/<feature>/spec.json; its delivery still leaves specs/ out.
-      state.initiativeBounds ? { specs: true } : {},
+      // No branch of an initiative carries its spec folders: a dependent feature reads its
+      // upstream specs from the base the initiative builds for it (#2017).
+      {
+        initiativeSpecs: initiativeSpecPrefix(
+          this.store.run(runId).feature_id,
+          state.initiativeBounds,
+        ),
+      },
     );
     state.worktree = { ...worktree, commit };
   }

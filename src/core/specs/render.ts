@@ -1,3 +1,4 @@
+import { canonical } from "./hash.js";
 import type { Spec, TaskGraph } from "./schema.js";
 
 export function renderSpec(spec: Spec): string {
@@ -52,4 +53,23 @@ export function renderTasks(graph: TaskGraph): string {
       "",
     ]),
   ].join("\n");
+}
+
+/**
+ * The content of each document a workflow run publishes under `specs/<featureId>/`
+ * (`SPEC_PUBLICATION_FILES`). An initiative writes the same bytes into a dependent feature's base,
+ * so both come from here (#2017).
+ */
+export function specPublication(
+  spec: Spec,
+  plan: string,
+  graph: TaskGraph,
+): Record<string, string> {
+  return {
+    "spec.json": canonical(spec),
+    "spec.md": renderSpec(spec),
+    "plan.md": plan,
+    "tasks.json": canonical(graph),
+    "tasks.md": renderTasks(graph),
+  };
 }

@@ -50,6 +50,7 @@ import { workflowHelp } from "../src/headless/workflow-parse.js";
 import { WorkflowFault } from "../src/core/workflows/errors.js";
 import { acceptedContract, pathsExistLater } from "../src/core/workflows/dependencies.js";
 import { mergedBase, provisionalBase } from "../src/core/workflows/worktree.js";
+import { prepareDelivery } from "../src/core/workflows/delivery.js";
 import { PLACEHOLDER_SHARE } from "../src/core/workflows/initiatives/estimate.js";
 import { criticalPathText } from "../src/core/workflows/initiatives/view-model.js";
 import {
@@ -218,6 +219,9 @@ class InitiativeExecutor implements AgentExecutor {
   }
 }
 
+/** Whether setuptools can be asked for a flat-layout package discovery here. */
+const setuptools = Bun.spawnSync(["python3", "-c", "import setuptools"], { stdout: "ignore", stderr: "ignore" }).exitCode === 0;
+
 function git(cwd: string, ...args: string[]): string {
   const result = Bun.spawnSync(["git", ...args], { cwd, stdout: "pipe", stderr: "pipe" });
   if (result.exitCode !== 0) throw new Error(`git ${args.join(" ")}: ${result.stderr.toString()}`);
@@ -275,7 +279,7 @@ function setup<E extends InitiativeExecutor = InitiativeExecutor>(
     if (!found) throw new Error(`Missing feature ${featureId}`);
     return found;
   };
-  return { root, executor, workflows, initiatives, start, id, approveSplit, approveFeature, drive, featureOf };
+  return { root, config, executor, workflows, initiatives, start, id, approveSplit, approveFeature, drive, featureOf };
 }
 
 describe("initiative plan", () => {
@@ -1520,13 +1524,65 @@ describe("initiative runtime", () => {
     expect(git(t.root, "show", `${base}:a.txt`)).toStartWith("ready");
     expect(git(t.root, "show", `${base}:b.txt`)).toStartWith("ready");
     expect(git(t.root, "show", `baked/wf/${cRun}:c.txt`)).toStartWith("ready");
-    // An upstream feature's branch keeps its accepted spec, which c's prompt points at (#1998).
-    const aFeature = t.workflows.store.run(t.featureOf(view, "a").runId ?? "").feature_id;
+    // c's base holds a's accepted spec, which c's prompt points at, though a's branch does not (#2017).
+    const aRun = t.featureOf(view, "a").runId ?? "";
+    const aFeature = t.workflows.store.run(aRun).feature_id;
     expect(git(t.root, "ls-tree", "-r", "--name-only", base, "--", "specs")).toContain(`specs/${aFeature}/spec.json`);
+    expect(git(t.root, "ls-tree", "-r", "--name-only", `baked/wf/${aRun}`, "--", "specs")).toBe("");
     // The working copy is never written.
     expect(existsSync(join(t.root, "a.txt"))).toBe(false);
     expect(git(t.root, "status", "--porcelain")).toBe("");
   });
+
+  // Bench round 65, uritpl (#2017): the integration branch of an initiative of 11 features held 40
+  // files under specs/, because each feature's base carried its upstream features' specs and its
+  // own commit kept them. setuptools' flat-layout discovery found two top-level packages (uritpl
+  // and specs), so `pip install .` failed, and the publisher removed specs/ by hand. #1998 held
+  // for single runs only.
+  test("scenario: uritpl R65, no branch of an initiative carries a spec folder, and a dependent still reads its upstream's spec", async () => {
+    const chain = plan([feature("a"), feature("b", ["a"]), feature("c", ["b"])]);
+    const t = setup(chain);
+    repository(t.root);
+    mkdirSync(join(t.root, "uritpl"));
+    writeFileSync(join(t.root, "uritpl/__init__.py"), "");
+    writeFileSync(join(t.root, "pyproject.toml"), '[project]\nname = "uritpl"\nversion = "0.1.0"\n');
+    git(t.root, "add", ".");
+    git(t.root, "commit", "-q", "-m", "Flat-layout package");
+    const worktreePolicy: RunPolicy = { ...policy, executionMode: "worktree" };
+    await t.start({ plan: chain, policy: worktreePolicy, featureAutoApproval: { maxTasks: 5, maxFiles: 5 } });
+    await t.approveSplit();
+    const view = await t.drive();
+    expect(view.status).toBe("completed");
+    const runs = Object.fromEntries(["a", "b", "c"].map((id) => [id, t.featureOf(view, id).runId ?? ""]));
+    // Every branch the person may merge, the last one holding the whole initiative, has no specs/.
+    for (const runId of Object.values(runs)) {
+      const commit = t.workflows.store.state(runId).worktree?.commit ?? "";
+      expect(commit).not.toBe("");
+      expect(git(t.root, "ls-tree", "-r", "--name-only", commit, "--", "specs")).toBe("");
+    }
+    const last = t.workflows.store.state(runs.c ?? "").worktree?.commit ?? "";
+    expect(git(t.root, "ls-tree", "--name-only", last)).toBe(".gitignore\nREADME.md\na.txt\nb.txt\nc.txt\npyproject.toml\nuritpl");
+    // c's base holds the specs of a and b (directly and through b), byte for byte as their runs
+    // published them, so c reads specs/<feature>/spec.json as before.
+    const base = t.workflows.store.state(runs.c ?? "").worktree?.baseHead ?? "";
+    for (const id of ["a", "b"]) {
+      const upstream = t.workflows.store.state(runs[id] ?? "");
+      const path = `specs/${t.workflows.store.run(runs[id] ?? "").feature_id}/spec.json`;
+      expect(upstream.published[path]).toBeDefined();
+      expect(hashBytes(git(t.root, "show", `${base}:${path}`))).toBe(upstream.published[path] ?? "");
+    }
+    // The delivery plan of the last feature leaves every spec of the initiative out.
+    const prepared = await prepareDelivery(t.workflows.store, t.config, runs.c ?? "", { local: true });
+    expect(prepared.plan.files.map((f) => f.path).filter((path) => path.startsWith("specs/"))).toEqual([]);
+    if (setuptools) {
+      const tree = mkdtempSync(join(tmpdir(), "baked-initiative-tree-"));
+      cleanups.push(() => rmSync(tree, { recursive: true, force: true }));
+      git(t.root, "--work-tree", tree, "checkout", last, "--", ".");
+      const probe = 'from setuptools.dist import Distribution; d = Distribution({"name": "uritpl"}); d.set_defaults(); print(d.packages)';
+      const result = Bun.spawnSync(["python3", "-c", probe], { cwd: tree, stdout: "pipe", stderr: "pipe" });
+      expect(result.stdout.toString().trim() || result.stderr.toString()).toBe("['uritpl']");
+    }
+  }, 120_000);
 
   // Bench round 44, cayleykit (#1535): features started in waves behind Promise.allSettled, so a
   // freed slot stayed empty until the slowest sibling stopped (8.3 slot-minutes), and the ready

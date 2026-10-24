@@ -27,6 +27,7 @@ import {
   git,
   gitMode,
   gitWorktreePaths,
+  initiativeSpecPrefix,
   internalPath,
   looksSecret,
   type RemoteFailure,
@@ -525,7 +526,9 @@ export async function prepareDelivery(
     ]),
   ].sort();
 
-  const withSpecs = options.specs ?? (await shipsSpecs(workspace, base));
+  // An initiative feature leaves out its own spec and its upstream features' specs (#2017).
+  const specPrefix = initiativeSpecPrefix(run.feature_id, state.initiativeBounds);
+  const withSpecs = options.specs ?? (await shipsSpecs(workspace, base, specPrefix));
   const files: DeliveryFile[] = [];
   const excluded: DeliveryExclusion[] = [];
   const dirty: string[] = [];
@@ -543,7 +546,7 @@ export async function prepareDelivery(
       excluded.push({ path, reason: "internal" });
       continue;
     }
-    if (!withSpecs && runSpecPath(path, run.feature_id)) {
+    if (!withSpecs && runSpecPath(path, run.feature_id, specPrefix)) {
       excluded.push({ path, reason: "specs" });
       continue;
     }

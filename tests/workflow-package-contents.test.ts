@@ -169,10 +169,16 @@ describe("package contents check (#1984)", () => {
 
   const BEFORE = '[build-system]\nrequires = ["setuptools>=61"]\nbuild-backend = "setuptools.build_meta"\n\n[project]\nname = "keeplint"\nversion = "0.1.0"\n\n[tool.setuptools]\npackages = ["keeplint"]\n';
   const AFTER = `${BEFORE}\n[tool.setuptools.package-data]\nkeeplint = ["py.typed"]\n`;
+  /** A flat-layout project: setuptools discovers the packages, so a `specs/` folder is a second one. */
+  const FLAT = BEFORE.replace('\n[tool.setuptools]\npackages = ["keeplint"]\n', "");
+  const FLAT_AFTER = `${FLAT}\n[tool.setuptools.package-data]\nkeeplint = ["py.typed"]\n`;
 
   class WheelExecutor extends FixtureExecutor {
     reviews: string[] = [];
-    constructor(private readonly dir: string) {
+    constructor(
+      private readonly dir: string,
+      private readonly after = AFTER,
+    ) {
       super(dir);
     }
     override async execute(request: ExecutionRequest) {
@@ -184,17 +190,17 @@ describe("package contents check (#1984)", () => {
         return result;
       }
       if (request.profile.output === "implementation") {
-        writeFileSync(join(this.dir, "pyproject.toml"), AFTER);
+        writeFileSync(join(this.dir, "pyproject.toml"), this.after);
         writeFileSync(join(this.dir, "keeplint/py.typed"), "");
       }
       return super.execute(request);
     }
   }
 
-  async function packageRun(on: boolean) {
+  async function packageRun(on: boolean, before = BEFORE, after = AFTER) {
     const fixture = workflowFixture({
       policy: { ...fixturePolicy, ...(on ? { packageContents: "on" as const } : {}) },
-      executor: (root) => new WheelExecutor(root),
+      executor: (root) => new WheelExecutor(root, after),
     });
     const git = (...args: string[]) => {
       const result = Bun.spawnSync(["git", ...args], { cwd: fixture.root, stdout: "pipe", stderr: "pipe" });
@@ -208,7 +214,7 @@ describe("package contents check (#1984)", () => {
       git("config", "commit.gpgsign", "false");
       mkdirSync(join(root, "keeplint"), { recursive: true });
       writeFileSync(join(root, ".gitignore"), ".baked/\n");
-      writeFileSync(join(root, "pyproject.toml"), BEFORE);
+      writeFileSync(join(root, "pyproject.toml"), before);
       writeFileSync(join(root, "keeplint/__init__.py"), "VERSION = 1\n");
       git("add", ".");
       git("commit", "-q", "-m", "Initial");
@@ -245,6 +251,18 @@ describe("package contents check (#1984)", () => {
     expect(wheel?.file).toMatch(/^keeplint-0\.1\.0-.*\.whl$/);
     expect(wheel?.files).toContain("keeplint/py.typed");
     expect(reviews.some((p) => p.includes("quality/package-contents.json is the package contents check"))).toBe(true);
+  }, 240_000);
+
+  // Bench round 65 (#2017): the package was built from the run's whole tree, with the spec folder
+  // the delivery leaves out (eolscope's `cargo package --list` listed specs/eolscope-version-exclude/*).
+  // On a flat-layout project setuptools takes that folder for a second package and the build fails.
+  test.skipIf(!canBuild)("the package is built from what the delivery ships, without the run's spec folder", async () => {
+    const { record } = await packageRun(true, FLAT, FLAT_AFTER);
+    const build = record?.builds[0];
+    expect(build).toMatchObject({ tool: "wheel", status: "listed" });
+    const files = build?.artifacts.flatMap((artifact) => artifact.files) ?? [];
+    expect(files).toContain("keeplint/py.typed");
+    expect(files.filter((file) => file.startsWith("specs/"))).toEqual([]);
   }, 240_000);
 
   test("off by default: no build and no note", async () => {
