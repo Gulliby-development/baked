@@ -14,7 +14,8 @@ import { ROUTING_ARTIFACT } from "../../llm/model-routing.js";
 import { getCachedProviderStatuses } from "../../llm/provider.js";
 import { availableVendorModels } from "../../llm/vendor-models.js";
 import { matchGlob } from "../../platform/index.js";
-import { canonical, hashJson } from "../../specs/hash.js";
+import { canonical, hashBytes, hashJson } from "../../specs/hash.js";
+import { specPublication } from "../../specs/render.js";
 import { type BudgetLimits, budgetUsage, limitsOf } from "../budget.js";
 import { autoCostTolerance } from "../cost-tolerance.js";
 import {
@@ -1438,7 +1439,17 @@ export class InitiativeService {
         { reason: "upstream_conflict", conflicts: merged.conflicts },
       );
     }
-    if (!unfinished.length) return merged.commit;
+    // No upstream branch carries its spec folder (#2017), so the base gets the accepted specs of
+    // the features this one builds on, which its prompt points at (specs/<feature>/spec.json).
+    const date = Math.floor(this.store.get(id).created_at / 1000);
+    const base = await provisionalBase(
+      this.workflows.workspace,
+      merged.commit,
+      this.upstreamSpecs(id, feature, unfinished),
+      date,
+      "Accepted specs of upstream features",
+    );
+    if (!unfinished.length) return base;
     // Planning ahead (#1834), the feature sees the stubs the unfinished features it builds on
     // (directly or through others) write, so it plans to modify them as it would on their results.
     const plan = this.approvedPlan(this.store.get(id));
@@ -1455,12 +1466,44 @@ export class InitiativeService {
     for (const upstream of unfinished) visit(upstream);
     return provisionalBase(
       this.workflows.workspace,
-      merged.commit,
+      base,
       [...pending].flatMap(
         (upstream) => plan?.features.find((f) => f.id === upstream)?.skeleton ?? [],
       ),
-      Math.floor(this.store.get(id).created_at / 1000),
+      date,
     );
+  }
+
+  /**
+   * The spec documents each accepted feature `feature` builds on (directly or through others)
+   * published, byte for byte: what its branch carried before #2017. A feature in `unfinished`,
+   * and one whose run published no spec (a definition with `publish: false`), adds none.
+   */
+  private upstreamSpecs(
+    id: string,
+    feature: InitiativeFeature,
+    unfinished: readonly string[],
+  ): { path: string; content: string }[] {
+    const plan = this.approvedPlan(this.store.get(id));
+    const seen = new Set<string>();
+    const files: { path: string; content: string }[] = [];
+    const visit = (upstream: string): void => {
+      if (seen.has(upstream) || unfinished.includes(upstream)) return;
+      seen.add(upstream);
+      const link = this.store.current(id, upstream);
+      const state = link ? this.workflows.store.state(link.run_id) : null;
+      if (state?.spec && state.plan && state.graph) {
+        const documents = specPublication(state.spec, state.plan, state.graph);
+        for (const [name, content] of Object.entries(documents)) {
+          const path = `specs/${state.spec.featureId}/${name}`;
+          if (state.published[path] === hashBytes(content)) files.push({ path, content });
+        }
+      }
+      for (const next of plan?.features.find((f) => f.id === upstream)?.dependsOn ?? [])
+        visit(next);
+    };
+    for (const upstream of feature.dependsOn) visit(upstream);
+    return files;
   }
 
   private async driveRun(runId: string, signal: AbortSignal): Promise<RunSnapshot> {

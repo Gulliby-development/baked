@@ -152,26 +152,49 @@ export function internalPath(path: string): boolean {
 
 /**
  * Whether a commit of the run carries its published spec artifacts (`specs/<feature>/`): only
- * when the base already tracks a `specs` folder (#680). The delivery plan and the run branch
- * commit both ask this, so a run branch never brings a new top-level `specs/` into a project:
- * setuptools' flat-layout discovery takes it for a second package and `pip install .` fails
- * (#1998, R64 spdxok-update).
+ * when the base already tracks a `specs` folder of its own (#680). The delivery plan and the run
+ * branch commit both ask this, so a run branch never brings a new top-level `specs/` into a
+ * project: setuptools' flat-layout discovery takes it for a second package and `pip install .`
+ * fails (#1998, R64 spdxok-update). The spec folders of an initiative's features (`prefix`, from
+ * `initiativeSpecPrefix`) are not the project's own: a base that holds only those ships none
+ * (#2017, R65 uritpl).
  */
-export async function shipsSpecs(workspace: string, base: string): Promise<boolean> {
-  return (
-    (await git(workspace, ["ls-tree", "--name-only", base, "--", "specs"])).stdout.trim() !== ""
-  );
+export async function shipsSpecs(
+  workspace: string,
+  base: string,
+  prefix: string | null = null,
+): Promise<boolean> {
+  const listed = await git(workspace, ["ls-tree", "-r", "-z", "--name-only", base, "--", "specs"]);
+  return treeShipsSpecs(listed.stdout.split("\0").filter(Boolean), prefix);
 }
 
 /** `shipsSpecs` for a caller that already listed the base tree recursively. */
-export function treeShipsSpecs(paths: Iterable<string>): boolean {
-  for (const path of paths) if (path.startsWith("specs/")) return true;
+export function treeShipsSpecs(paths: Iterable<string>, prefix: string | null = null): boolean {
+  for (const path of paths)
+    if (path.startsWith("specs/") && !(prefix && path.startsWith(prefix))) return true;
   return false;
 }
 
-/** A path under the run's own spec folder. */
-export function runSpecPath(path: string, featureId: string): boolean {
-  return path.startsWith(`specs/${featureId}/`);
+/**
+ * The path prefix of the spec folders of an initiative's feature runs (`specs/<initiative>_`), or
+ * null for a run outside an initiative. A feature run's workflow feature ID is
+ * `<initiative>_<feature>` (`runFeatureId`), and `_` occurs in neither part.
+ */
+export function initiativeSpecPrefix(
+  featureId: string,
+  bounds: { featureId: string } | null | undefined,
+): string | null {
+  if (!bounds || !featureId.endsWith(`_${bounds.featureId}`)) return null;
+  return `specs/${featureId.slice(0, -bounds.featureId.length)}`;
+}
+
+/** A path under the run's own spec folder, or under any spec folder of its initiative. */
+export function runSpecPath(
+  path: string,
+  featureId: string,
+  prefix: string | null = null,
+): boolean {
+  return path.startsWith(`specs/${featureId}/`) || (prefix !== null && path.startsWith(prefix));
 }
 
 /** Mode of a file as Git stores it: executable or regular. */

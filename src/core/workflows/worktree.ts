@@ -197,7 +197,8 @@ export async function mergedBase(
 /**
  * `base` with `files` added where it has no file at their path: the provisional base of a feature
  * that plans ahead (#1834), so it plans against the host-written stubs of the features it depends
- * on that have not finished yet. Built in a temporary index with a fixed author and date, as
+ * on that have not finished yet, and the accepted specs of its upstream features, which their
+ * branches no longer carry (#2017). Built in a temporary index with a fixed author and date, as
  * `mergedBase` is, so the same inputs give the same commit; `base` itself when nothing is added.
  */
 export async function provisionalBase(
@@ -205,6 +206,7 @@ export async function provisionalBase(
   base: string,
   files: { path: string; content: string }[],
   date: number,
+  message = "Stubs of unfinished upstream features",
 ): Promise<string> {
   const present = new Set(
     (await required(workspace, ["ls-tree", "-r", "-z", "--name-only", base]))
@@ -233,15 +235,7 @@ export async function provisionalBase(
     const tree = await required(workspace, ["write-tree"], { env });
     return await required(
       workspace,
-      [
-        "commit-tree",
-        tree,
-        "-p",
-        base,
-        "--no-gpg-sign",
-        "-m",
-        "Stubs of unfinished upstream features",
-      ],
+      ["commit-tree", tree, "-p", base, "--no-gpg-sign", "-m", message],
       { env: { ...env, ...fixedIdentity(date) } },
     );
   } finally {
@@ -620,7 +614,7 @@ export async function commitRunBranch(
   worktree: WorktreeState,
   paths: string[],
   message: string,
-  options: { specs?: boolean } = {},
+  options: { specs?: boolean; initiativeSpecs?: string | null } = {},
 ): Promise<string | null> {
   const workspace = store.workspace;
   const root = join(workspace, worktree.path);
@@ -630,12 +624,31 @@ export async function commitRunBranch(
     await required(root, ["read-tree", worktree.baseHead], { env });
     const modes = treeModes(await required(root, ["ls-tree", "-r", "-z", worktree.baseHead]));
     // The run's spec artifacts stay run artifacts unless the project already tracks specs/, as
-    // in the delivery plan (#1998), or the caller needs them on the branch.
+    // in the delivery plan (#1998), or the caller needs them on the branch. An initiative
+    // feature's base holds its upstream features' specs for it to read; they leave its commit
+    // too, so no branch of the initiative carries a spec folder the project does not (#2017).
     const featureId = store.run(runId).feature_id;
-    const withSpecs = options.specs ?? treeShipsSpecs(modes.keys());
+    const prefix = options.initiativeSpecs ?? null;
+    const withSpecs = options.specs ?? treeShipsSpecs(modes.keys(), prefix);
     const updates: string[] = [];
+    if (!withSpecs && prefix) {
+      // A spec folder the project's HEAD tracks (a branch merged before #2017) is its file now.
+      const listed = await git(workspace, [
+        "ls-tree",
+        "-r",
+        "-z",
+        "--name-only",
+        "HEAD",
+        "--",
+        "specs",
+      ]);
+      const tracked = new Set(listed.stdout.split("\0"));
+      for (const path of modes.keys())
+        if (path.startsWith(prefix) && !tracked.has(path))
+          updates.push(`0 ${"0".repeat(worktree.baseHead.length)}\t${path}\0`);
+    }
     for (const path of [...new Set(paths)].sort()) {
-      if (internalPath(path) || (!withSpecs && runSpecPath(path, featureId))) continue;
+      if (internalPath(path) || (!withSpecs && runSpecPath(path, featureId, prefix))) continue;
       const absolute = workspacePath(root, path);
       const stat = existsSync(absolute) ? lstatSync(absolute) : null;
       if (stat?.isSymbolicLink() || looksSecret(path)) continue;

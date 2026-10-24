@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { DEFAULT_CONFIG } from "../src/config/index.js";
 import { hashBytes, hashJson } from "../src/core/specs/hash.js";
 import { executeDelivery, prepareDelivery } from "../src/core/workflows/delivery.js";
+import { initiativeSpecPrefix, runSpecPath, treeShipsSpecs } from "../src/core/workflows/delivery-git.js";
 import { WorkflowFault } from "../src/core/workflows/errors.js";
 import {
   assertWorkspaceMutationAllowed,
@@ -673,6 +674,22 @@ describe("scenario: the run branch of an update on a flat-layout Python package 
     expect(prepared.plan.excluded.filter((e) => e.reason === "specs").map((e) => e.path)).toContain("specs/fixture/spec.json");
     if (setuptools) expect(discovered(checkout(fx.root, commit))).toBe("['spdxok']");
   }, 60000);
+
+  test("an initiative's spec folders are not the project's own (#2017)", () => {
+    const prefix = initiativeSpecPrefix("uritpl_cli", { featureId: "cli" });
+    expect(prefix).toBe("specs/uritpl_");
+    expect(initiativeSpecPrefix("fixture", null)).toBeNull();
+    expect(initiativeSpecPrefix("fixture", { featureId: "cli" })).toBeNull();
+    // A base that holds only the initiative's spec folders ships none; one with a folder of its own does.
+    expect(treeShipsSpecs(["uritpl/__init__.py", "specs/uritpl_core/spec.json"], prefix)).toBe(false);
+    expect(treeShipsSpecs(["specs/uritpl_core/spec.json", "specs/earlier/spec.json"], prefix)).toBe(true);
+    expect(treeShipsSpecs(["specs/uritpl_core/spec.json"])).toBe(true);
+    // An initiative feature's commit leaves out its own spec and its upstream features' specs.
+    expect(runSpecPath("specs/uritpl_core/spec.json", "uritpl_cli", prefix)).toBe(true);
+    expect(runSpecPath("specs/uritpl_cli/plan.md", "uritpl_cli", prefix)).toBe(true);
+    expect(runSpecPath("specs/earlier/spec.json", "uritpl_cli", prefix)).toBe(false);
+    expect(runSpecPath("specs/uritpl_core/spec.json", "uritpl_cli")).toBe(false);
+  });
 
   test("a project that already tracks specs/ keeps getting the run's spec on its branch", async () => {
     const fx = setup();
