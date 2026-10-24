@@ -111,6 +111,7 @@ import {
   type BaselineCount,
   baselineRegression,
   buildFailure,
+  buildRunner,
   CHECK_BASELINE_PATH,
   commandKey,
   diagnosticCount,
@@ -385,10 +386,13 @@ import {
   BASELINE_REPLAY_NOTE,
   type BaselineReplay,
   type BaselineReplayCheck,
+  type BaselineReplayTarget,
   GREENFIELD_NOTE,
   QUALITY_BASELINE_REPLAY,
   REPLAY_OUTPUT_CHARS,
   replayEdits,
+  replayTargetRecords,
+  replayTargets,
 } from "./quality/baseline-replay.js";
 import {
   checkDependencies,
@@ -12514,6 +12518,9 @@ ${note}`;
     // Nothing goes back: the copy would only lose the feature's own code (R62 stepvet: 19 replays,
     // every one failed by construction, #1960).
     if (!edits.revert.length) return record([], GREENFIELD_NOTE);
+    const changedTests = (await this.changedFiles(runId, state, isTestCodePath)).map(
+      (file) => file.path,
+    );
     const failure = await this.inRunCopy(
       runId,
       state,
@@ -12525,32 +12532,69 @@ ${note}`;
         const checks: BaselineReplayCheck[] = [];
         for (const check of tests) {
           signal.throwIfAborted();
-          const outcome = await executeCheckCommand(
-            scope,
-            check.executable === "bun" ? process.execPath : check.executable,
-            check.args,
-            {
-              cwd: check.cwd === "." ? copy : workspacePath(copy, check.cwd),
-              env: buildCheckEnv(check),
-              timeoutMs: check.timeoutMs,
-              signal,
-              sandbox: runSandbox(policy, copy, { gitWrite: true }),
-            },
-          );
+          const cwd = check.cwd === "." ? copy : workspacePath(copy, check.cwd);
+          const run = async (args: string[]) => {
+            const outcome = await executeCheckCommand(
+              scope,
+              check.executable === "bun" ? process.execPath : check.executable,
+              args,
+              {
+                cwd,
+                env: buildCheckEnv(check),
+                timeoutMs: check.timeoutMs,
+                signal,
+                sandbox: runSandbox(policy, copy, { gitWrite: true }),
+              },
+            );
+            const status: BaselineReplayCheck["status"] = outcome.timedOut
+              ? "timeout"
+              : outcome.exitCode === 0
+                ? "passed"
+                : "failed";
+            return { status, output: outcome.output };
+          };
+          const outcome = await run(check.args);
           const failed = failedTests(outcome.output);
-          const status = outcome.timedOut
-            ? "timeout"
-            : outcome.exitCode === 0
-              ? "passed"
-              : "failed";
-          const build = status === "failed" ? buildFailure(outcome.output) : null;
+          const build = outcome.status === "failed" ? buildFailure(outcome.output) : null;
+          // One target that does not build stops the aggregate command in cargo, pytest, dotnet
+          // and Maven, so the others run again per target (#2020).
+          const targets: BaselineReplayTarget[] = [];
+          const runner = build ? buildRunner(outcome.output) : null;
+          const prefix = check.cwd === "." ? "" : `${check.cwd.replace(/\/+$/, "")}/`;
+          const runs = runner
+            ? replayTargets(runner, {
+                args: check.args,
+                tests: changedTests
+                  .filter((path) => path.startsWith(prefix))
+                  .map((path) => path.slice(prefix.length)),
+                list: (dir) => {
+                  try {
+                    return readdirSync(join(cwd, dir));
+                  } catch {
+                    return [];
+                  }
+                },
+              })
+            : [];
+          if (runner)
+            for (const target of runs) {
+              signal.throwIfAborted();
+              targets.push(
+                ...replayTargetRecords(
+                  { paths: target.paths, runner },
+                  await run(target.args),
+                  (path) => `${prefix}${path}`,
+                ),
+              );
+            }
           checks.push({
             id: check.id,
-            status,
+            status: outcome.status,
             failedTests: failed?.names ?? null,
-            runner: failed?.tool ?? null,
+            runner: failed?.tool ?? runner,
             output: outcome.output.slice(-REPLAY_OUTPUT_CHARS),
             ...(build ? { buildFailed: true as const, buildErrors: build } : {}),
+            ...(targets.length ? { targets } : {}),
           });
         }
         record(checks);

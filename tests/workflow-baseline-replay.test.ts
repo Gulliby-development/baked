@@ -1,15 +1,18 @@
 import { describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { BUILD_FAILURES, buildFailure, failedTests } from "../src/core/verification/output-counts.js";
+import { BUILD_FAILURES, buildFailure, buildRunner, failedTests } from "../src/core/verification/output-counts.js";
 import {
   BASELINE_REPLAY_NOTE,
   type BaselineReplay,
   GREENFIELD_NOTE,
   QUALITY_BASELINE_REPLAY,
+  REPLAY_TARGETS,
   replayEdits,
+  replayTargetRecords,
+  replayTargets,
 } from "../src/core/workflows/quality/baseline-replay.js";
-import type { ExecutionRequest } from "../src/core/workflows/types.js";
+import type { Check, ExecutionRequest } from "../src/core/workflows/types.js";
 import { FixtureExecutor, fixturePolicy, workflowFixture } from "./helpers/workflow-fixture.js";
 
 // Bench rounds 60 and 61 (#1945). Update briefs asked for proof that the new tests fail on the code
@@ -98,6 +101,7 @@ describe("baseline replay (#1945)", () => {
       private readonly test = 'test("zero is positive", () => {\n  expect(sign(0)).toBe(1);\n});',
       private readonly code = NEW,
       private readonly greenfield = false,
+      private readonly extra: Record<string, string> = {},
     ) {
       super(dir);
     }
@@ -106,11 +110,12 @@ describe("baseline replay (#1945)", () => {
       if (request.profile.output === "plan") {
         const result = await super.execute(request);
         const plan = result.output as { taskGraph: { tasks: { writes: { path: string; action: string }[] }[] } };
-        plan.taskGraph.tasks[0]?.writes.push({ path: "src/sign.ts", action: this.greenfield ? "create" : "modify" }, { path: "tests/sign.test.ts", action: "create" });
+        plan.taskGraph.tasks[0]?.writes.push({ path: "src/sign.ts", action: this.greenfield ? "create" : "modify" }, { path: "tests/sign.test.ts", action: "create" }, ...Object.keys(this.extra).map((path) => ({ path, action: "create" })));
         return result;
       }
       if (request.profile.output === "implementation") {
         writeFileSync(join(this.dir, "src/sign.ts"), this.code);
+        for (const [path, content] of Object.entries(this.extra)) writeFileSync(join(this.dir, path), content);
         writeFileSync(
           join(this.dir, "tests/sign.test.ts"),
           ['import { expect, test } from "bun:test";', `import { ${this.code.includes("fold") ? "fold, " : ""}sign } from "../src/sign";`, this.test, ""].join("\n"),
@@ -120,11 +125,11 @@ describe("baseline replay (#1945)", () => {
     }
   }
 
-  async function replay(on: boolean, shape: { greenfield?: boolean; test?: string; code?: string } = {}) {
+  async function replay(on: boolean, shape: { greenfield?: boolean; test?: string; code?: string; extra?: Record<string, string>; checks?: Check[]; files?: Record<string, string> } = {}) {
     const first = fixturePolicy.checks[0] as (typeof fixturePolicy.checks)[number];
     const fixture = workflowFixture({
-      policy: { ...fixturePolicy, ...(on ? { baselineReplay: "on" as const } : {}), checks: [...fixturePolicy.checks, { ...first, id: "unit", args: ["test", "tests/"] }] },
-      executor: (root) => new SignExecutor(root, shape.test, shape.code, shape.greenfield),
+      policy: { ...fixturePolicy, ...(on ? { baselineReplay: "on" as const } : {}), checks: [...fixturePolicy.checks, { ...first, id: "unit", args: ["test", "tests/"] }, ...(shape.checks ?? [])] },
+      executor: (root) => new SignExecutor(root, shape.test, shape.code, shape.greenfield, shape.extra),
     });
     const git = (...args: string[]) => {
       const result = Bun.spawnSync(["git", ...args], { cwd: fixture.root, stdout: "pipe", stderr: "pipe" });
@@ -139,6 +144,7 @@ describe("baseline replay (#1945)", () => {
       mkdirSync(join(root, "src"), { recursive: true });
       mkdirSync(join(root, "tests"), { recursive: true });
       writeFileSync(join(root, ".gitignore"), ".baked/\n");
+      for (const [path, content] of Object.entries(shape.files ?? {})) writeFileSync(join(root, path), content);
       if (!shape.greenfield) writeFileSync(join(root, "src/sign.ts"), OLD);
       if (!shape.greenfield)
         writeFileSync(
@@ -195,9 +201,120 @@ describe("baseline replay (#1945)", () => {
     expect(unit?.buildErrors?.join("\n")).toContain("fold");
   }, 60_000);
 
+  // R65 uritpl (#2020): pytest aborts the session at the first test file that does not collect, so
+  // the replay named that file and no test of the others. A stand-in pytest prints what pytest
+  // prints: on the old code test_fold.py does not import, and test_sign.py fails one assertion.
+  const PYTEST = [
+    'if grep -q ": 1)" src/sign.ts; then echo "==== 2 passed in 0.01s ===="; exit 0; fi',
+    'echo "___________ ERROR collecting tests/test_fold.py ___________"',
+    "echo \"E   ImportError: cannot import name 'fold' from 'sign'\"",
+    'case " $* " in *" --continue-on-collection-errors "*)',
+    '  echo "FAILED tests/test_sign.py::test_zero_is_positive - assert 0 == 1"',
+    '  echo "==== 1 failed, 1 passed, 1 error in 0.05s ===="; exit 1;;',
+    "esac",
+    'echo "!!!!!!!! Interrupted: 1 error during collection !!!!!!!!"',
+    'echo "==== 1 error in 0.05s ===="; exit 2',
+    "",
+  ].join("\n");
+
+  test("a test file that does not collect no longer hides the names of the other files", async () => {
+    const first = fixturePolicy.checks[0] as Check;
+    const { record } = await replay(true, {
+      files: { "pytest.sh": PYTEST },
+      extra: { "tests/test_fold.py": "from sign import fold\n", "tests/test_sign.py": "def test_zero_is_positive(): pass\n" },
+      checks: [{ ...first, id: "pytest", executable: "sh", args: ["pytest.sh", "-q"] }],
+    });
+    const check = record?.checks.find((c) => c.id === "pytest");
+    expect(check).toMatchObject({ status: "failed", buildFailed: true, runner: "pytest" });
+    expect(check?.targets?.slice().sort((a, b) => a.path.localeCompare(b.path))).toEqual([
+      { path: "tests/test_fold.py", status: "failed", failedTests: null, buildFailed: true, buildErrors: ["___________ ERROR collecting tests/test_fold.py ___________"] },
+      { path: "tests/test_sign.py", status: "failed", failedTests: ["tests/test_sign.py::test_zero_is_positive"] },
+    ]);
+    // A runner that runs each file on its own is not run again.
+    expect(record?.checks.find((c) => c.id === "unit")?.targets).toBeUndefined();
+  }, 60_000);
+
   test("off by default: no replay and no note", async () => {
     const { record, reviews } = await replay(false);
     expect(record).toBeNull();
     expect(reviews.some((p) => p.includes("baseline replay"))).toBe(false);
   }, 60_000);
+});
+
+describe("baseline replay per test target (#2020)", () => {
+  const dirs: Record<string, string[]> = {
+    tests: ["version_tests.rs", "package_tests.rs", "common"],
+    src: ["lib.rs", "main.rs"],
+    "tests/App.Tests": ["App.Tests.csproj", "ParserTests.cs"],
+    "tests/Cli.Tests": ["Cli.Tests.csproj"],
+    "tests/Cli.Tests/Sub": ["RunTests.cs"],
+  };
+  const input = (args: string[], tests: string[] = []) => ({ args, tests, list: (dir: string) => dirs[dir] ?? [] });
+
+  test("every runner has its row: runs, or why it needs none", () => {
+    expect(Object.keys(REPLAY_TARGETS).sort()).toEqual(Object.keys(BUILD_FAILURES).sort());
+    for (const [runner, row] of Object.entries(REPLAY_TARGETS))
+      expect({ runner, row: typeof row === "function" || row.none.length > 0 }).toEqual({ runner, row: true });
+  });
+
+  // R65 eolscope-update: version_tests did not compile, so package_tests never ran.
+  test("rust: each integration test file and the library tests run on their own", () => {
+    expect(replayTargets("cargo", input(["test", "--all-features", "--", "--nocapture"]))).toEqual([
+      { args: ["test", "--all-features", "--lib", "--", "--nocapture"], paths: ["src/lib.rs"] },
+      { args: ["test", "--all-features", "--test", "package_tests", "--", "--nocapture"], paths: ["tests/package_tests.rs"] },
+      { args: ["test", "--all-features", "--test", "version_tests", "--", "--nocapture"], paths: ["tests/version_tests.rs"] },
+    ]);
+    expect(replayTargets("cargo", input(["test", "--test", "one"]))).toEqual([]);
+  });
+
+  test("python: pytest collects past the files that do not collect", () => {
+    expect(replayTargets("pytest", input(["-m", "pytest", "-q"], ["tests/test_a.py", "tests/conftest.txt"]))).toEqual([
+      { args: ["-m", "pytest", "-q", "--continue-on-collection-errors"], paths: ["tests/test_a.py"] },
+    ]);
+  });
+
+  test("csharp: each test project the run's tests are in, in place of the solution", () => {
+    const tests = ["tests/App.Tests/ParserTests.cs", "tests/Cli.Tests/Sub/RunTests.cs"];
+    expect(replayTargets("dotnet", input(["test", "App.sln", "--nologo"], tests))).toEqual([
+      { args: ["test", "tests/App.Tests/App.Tests.csproj", "--nologo"], paths: ["tests/App.Tests/App.Tests.csproj"] },
+      { args: ["test", "tests/Cli.Tests/Cli.Tests.csproj", "--nologo"], paths: ["tests/Cli.Tests/Cli.Tests.csproj"] },
+    ]);
+    expect(replayTargets("dotnet", input(["test"], tests.slice(0, 1)))[0]?.args).toEqual(["test", "tests/App.Tests/App.Tests.csproj"]);
+  });
+
+  test("java and kotlin: Maven fails at the end and Gradle continues", () => {
+    expect(replayTargets("maven", input(["-q", "verify"]))).toEqual([{ args: ["-q", "verify", "--fail-at-end"], paths: null }]);
+    expect(replayTargets("maven", input(["-fae", "verify"]))).toEqual([]);
+    expect(replayTargets("junit", input(["test"]))).toEqual([{ args: ["test", "--continue"], paths: null }]);
+  });
+
+  test("go, bun, jest, vitest and tap already run each target on their own", () => {
+    for (const runner of ["go", "bun", "jest", "vitest", "tap"] as const) expect(replayTargets(runner, input(["test", "./..."], ["a_test.go"]))).toEqual([]);
+    expect(replayTargets(null, input(["test"]))).toEqual([]);
+  });
+
+  test("the targets a run speaks for: its own outcome, or per file by the lines that name it", () => {
+    const cargo = BUILD_ERRORS.find((row) => row.runner === "cargo")?.output ?? "";
+    expect(replayTargetRecords({ paths: ["tests/fold.rs"], runner: "cargo" }, { status: "failed", output: cargo }, (p) => `crate/${p}`)).toEqual([
+      { path: "crate/tests/fold.rs", status: "failed", failedTests: null, buildFailed: true, buildErrors: ["error[E0425]: cannot find function `fold` in this scope", 'error: could not compile `cidrfold` (test "fold") due to 1 previous error'] },
+    ]);
+    const passed = "running 2 tests\ntest a ... ok\ntest b ... ok\n\ntest result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out";
+    expect(replayTargetRecords({ paths: ["tests/a.rs"], runner: "cargo" }, { status: "passed", output: passed }, (p) => p)).toEqual([
+      { path: "tests/a.rs", status: "passed", failedTests: [] },
+    ]);
+    const maven = "[ERROR] app.ParserTest.blankLines -- Time elapsed: 0.01 s <<< FAILURE!\n[ERROR] Tests run: 4, Failures: 1, Errors: 0, Skipped: 0";
+    expect(replayTargetRecords({ paths: null, runner: "maven" }, { status: "failed", output: maven }, (p) => p)).toEqual([
+      { path: ".", status: "failed", failedTests: ["app.ParserTest.blankLines"] },
+    ]);
+  });
+
+  test("the build runner is read from the build-failure lines", () => {
+    for (const row of BUILD_ERRORS) expect({ row: row.runner, runner: buildRunner(row.output) }).toEqual({ row: row.runner, runner: row.runner });
+    expect(buildRunner("(fail) a [0.1ms]")).toBeNull();
+  });
+
+  test("the spec author and the reviewers are told the replay holds per target", () => {
+    expect(BASELINE_REPLAY_NOTE.spec).toContain("per target");
+    expect(BASELINE_REPLAY_NOTE.review).toContain("targets");
+  });
 });

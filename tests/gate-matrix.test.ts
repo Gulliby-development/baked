@@ -13,6 +13,8 @@ import { canRepairRun, type RepairBlock } from "../src/core/workflows/repairable
 import { growthLimit, type InitiativeView, rebaseView, shareShortfall } from "../src/core/workflows/initiatives/service.js";
 import { estimateInitiative } from "../src/core/workflows/initiatives/estimate.js";
 import { manifestFieldChanges } from "../src/core/workflows/quality/manifests.js";
+import { REPLAY_TARGETS } from "../src/core/workflows/quality/baseline-replay.js";
+import type { TestRunner } from "../src/core/verification/output-counts.js";
 import { unrequestedManifestFields } from "../src/core/workflows/quality/dependencies.js";
 import { historyFixture, plannedForecastScenario } from "./helpers/initiative-planned-forecast.js";
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
@@ -418,6 +420,19 @@ const ZERO_RUN_OUTPUT: Record<Stack, string> = {
   maven: "[WARNING] Tests run: 2, Failures: 0, Errors: 0, Skipped: 2, Time elapsed: 0.01 s -- in com.example.SumTest\n[WARNING] Tests run: 2, Failures: 0, Errors: 0, Skipped: 2",
   dotnet: "No test matches the given testcase filter `FullyQualifiedName~SumTests.` in /w/bin/Debug/net10.0/Sum.Tests.dll",
 };
+
+/**
+ * The runner the baseline replay splits a stack's test check by when it does not build as a whole
+ * (#2020): every stack's runner has a `REPLAY_TARGETS` row, runs or a reason it needs none.
+ */
+const REPLAY_RUNNER: Record<Stack, TestRunner> = { bun: "bun", npm: "vitest", python: "pytest", go: "go", rust: "cargo", maven: "maven", dotnet: "dotnet" };
+
+describe("gate matrix: baseline replay per test target (#2020)", () => {
+  test("each stack's runner has its replay-target row", () => {
+    for (const stack of STACKS) expect({ stack, row: REPLAY_TARGETS[REPLAY_RUNNER[stack]] !== undefined }).toEqual({ stack, row: true });
+    expect(STACKS.filter((stack) => typeof REPLAY_TARGETS[REPLAY_RUNNER[stack]] === "function").sort()).toEqual(["dotnet", "maven", "python", "rust"]);
+  });
+});
 
 // Dependency readers do not imply Gradle or Ruby gate detection support (#1489, #1552).
 describe("requested Gradle and Gemfile dependency checks (#1552)", () => {
