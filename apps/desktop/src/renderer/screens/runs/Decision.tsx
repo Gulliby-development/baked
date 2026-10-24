@@ -257,6 +257,11 @@ function Approval({
           {planCostText(body.planCost)}.
         </p>
       ) : null}
+      {body.estimateSource ? (
+        <p className="m-0 text-soft-foreground" data-testid="approval-estimate-source">
+          {body.estimateSource}.
+        </p>
+      ) : null}
       {scope.length > 0 && (
         <label className={CHECK}>
           <input type="checkbox" checked={exclude} onChange={(e) => setExclude(e.target.checked)} />

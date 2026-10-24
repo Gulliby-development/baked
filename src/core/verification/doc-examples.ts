@@ -181,7 +181,7 @@ export function missingBuildOutput(argv: readonly string[], root: string): strin
   return null;
 }
 
-interface Fence {
+export interface Fence {
   lang: string;
   /** 1-based line of the first content line. */
   start: number;
@@ -192,7 +192,8 @@ interface Fence {
   prose: string;
 }
 
-function fences(text: string): Fence[] {
+/** The fenced code blocks of a Markdown text, with the prose before each; plan sizing reads a request's too. */
+export function fences(text: string): Fence[] {
   const lines = text.replace(/\r\n?/g, "\n").split("\n");
   const out: Fence[] = [];
   let prose = 0;

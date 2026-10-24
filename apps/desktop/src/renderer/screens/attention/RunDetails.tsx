@@ -230,6 +230,11 @@ export function ApprovalDetail({ item, onDone }: DetailProps) {
                 {planCostText(body.planCost)}.
               </p>
             ) : null}
+            {body.estimateSource ? (
+              <p className={NOTE} data-testid="approval-estimate-source">
+                {body.estimateSource}.
+              </p>
+            ) : null}
             {inScope.length > 0 && (
               <Alert>
                 <p style={{ margin: "0 0 8px" }}>
