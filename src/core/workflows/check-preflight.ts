@@ -1,7 +1,7 @@
 import { existsSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
+import { tmpDir } from "../platform/index.js";
 import { buildCheckEnv, executeCheckCommand } from "../verification/check-runner.js";
 import { WorkflowFault } from "./errors.js";
 import { ProcessScope } from "./process-scope.js";
@@ -86,7 +86,7 @@ export async function smokeChecks(
   which?: Parameters<typeof unresolvedChecks>[2],
 ): Promise<CheckSmoke[]> {
   const unresolved = new Set(unresolvedChecks(checks, root, which).map((probe) => probe.checkId));
-  const scratch = await mkdtemp(join(tmpdir(), "baked-check-smoke-"));
+  const scratch = await mkdtemp(join(tmpDir(), "baked-check-smoke-"));
   try {
     const results: CheckSmoke[] = [];
     for (const check of checks) {
