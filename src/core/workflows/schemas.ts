@@ -671,6 +671,14 @@ export const PolicySchema = z
      */
     chainRewrite: z.literal("on").optional(),
     /**
+     * The host's correction of a misquoted test (misquote-fix.ts, #2047): `on` lets the host make
+     * an exact, unambiguous replacement of a test's spelling of a criterion literal when a spec
+     * conflict settles as a misquote, and go on with the task when its required checks pass,
+     * instead of opening another implementer session. Absent means shadow (the decision is
+     * recorded, the session opens), so stored policies keep their hash.
+     */
+    misquoteFix: z.literal("on").optional(),
+    /**
      * The project's choices for the anti-slop rule pack (quality/rules.ts), which is always on:
      * rules turned off, severities changed and ast-grep rule files added. Absent means the
      * built-in pack as shipped, so stored policies keep their hash.
