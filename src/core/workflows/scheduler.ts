@@ -207,6 +207,7 @@ import {
   persistentDefect,
   REQUEST_NOTE,
   repeatedFacet,
+  requestSettlesInput,
   restrictsRequest,
   VERIFICATION_METHODS,
 } from "./analysis-notes.js";
@@ -315,6 +316,17 @@ import {
 } from "./derivation-audit.js";
 import { EffectJournal, fileHash, intentRoot, rootField } from "./effects.js";
 import { WorkflowFault } from "./errors.js";
+import {
+  EVIDENCE_DECISION_KIND,
+  EVIDENCE_DECISIONS_DIR,
+  type EvidenceInput,
+  type EvidenceRecord,
+  type EvidenceSite,
+  evidenceDecision,
+  evidenceRecordPath,
+  platformEvidence,
+  reportRequestEvidence,
+} from "./evidence-decisions.js";
 import { ExecutionBudgetClock, executionClock, executionTimeout } from "./execution-clock.js";
 import {
   BATTERY_CASES,
@@ -324,12 +336,16 @@ import {
   batteryOf,
   batteryTable,
   CHAIN_BATTERY_DIR,
+  CHAIN_FAMILY_DIR,
   CHAIN_KIND,
   CHAIN_TASKS_DIR,
   type ChainFinding,
   type ChainRecord,
   chainFindings,
   chainSpecRows,
+  type FamilyRecord,
+  familyDecision,
+  observedValue,
   symbolKey,
   taskChainRecord,
 } from "./finding-chain.js";
@@ -448,7 +464,11 @@ import {
   hardenTargets,
   QUALITY_MUTATION_BASELINE,
 } from "./quality/harden.js";
-import { hasExecutableFields, manifestDependencies } from "./quality/manifests.js";
+import {
+  hasExecutableFields,
+  isBoundedLockPath,
+  manifestDependencies,
+} from "./quality/manifests.js";
 import {
   DEFAULT_MUTATION_BUDGET_MS,
   generateMutants,
@@ -590,6 +610,7 @@ import {
   type ApprovalReview,
   ApprovalReviewSchema,
   advisorySizeTarget,
+  ChainFamilySchema,
   type Critique,
   CritiqueSchema,
   clarificationOf,
@@ -687,18 +708,14 @@ import {
   documentAmendmentOf,
   namesRunDocument,
   type SpecAmendment,
+  specAmendmentInput,
   specAmendmentOf,
 } from "./spec-amendment.js";
 import { digestsSpec, mayDigestSpec, READ_CRITERION, readCriterionTool } from "./spec-digest.js";
 import { forgetProgress } from "./stall.js";
+import { statedRequest } from "./stated-request.js";
 import type { AttemptUsageRecord } from "./step-budget.js";
-import {
-  type LeaseResource,
-  newId,
-  type RequestRow,
-  type TaskRow,
-  type WorkflowStore,
-} from "./store.js";
+import { type LeaseResource, newId, type TaskRow, type WorkflowStore } from "./store.js";
 import {
   documentsOnly,
   failureOwner,
@@ -893,20 +910,6 @@ function integrityRequirementText(state: RuntimeState): string {
     state.spec ? canonical(state.spec) : "",
     state.plan ?? "",
   ].join("\n");
-}
-
-/**
- * The request with the clarification answers a person gave. A bound or an exclusion a person
- * decided ("files up to 100 MiB") is stated, not invented by the spec author (#1413).
- */
-function statedRequest(state: RuntimeState, requests: readonly RequestRow[]): string {
-  const answers = requests
-    .filter((r) => r.kind === "clarification" && r.status === "accepted" && r.actor === "user")
-    // Only the answers: the decision's request id would add stray numbers.
-    .map((r) =>
-      canonical((JSON.parse(r.answer_json ?? "{}") as { answers?: unknown }).answers ?? ""),
-    );
-  return [state.requestText || state.prompt, ...answers].join("\n");
 }
 
 /**
@@ -1360,7 +1363,10 @@ export class WorkflowScheduler {
               };
               // The criteria the host writes itself, when the spec lacks them (#1943).
               const hostWritten = HOST_REQUIRED_CRITERIA.filter((c) =>
-                c.required(state.requestText || state.prompt, runRoot(this.store.workspace, state)),
+                c.required(
+                  this.criterionRequest(runId, state),
+                  runRoot(this.store.workspace, state),
+                ),
               );
               const hostRepairs = (spec: Spec): Spec =>
                 addHostRequiredCriteria(
@@ -1962,7 +1968,7 @@ export class WorkflowScheduler {
               // A criterion the host's own rules make the spec author add is not scope the request
               // lacks: md-site (bench round 52) ran specify three times and plan and analyze four
               // times over the required 1280 px criterion (#1765).
-              const request = state.requestText || state.prompt;
+              const request = this.criterionRequest(runId, state);
               const root = runRoot(this.store.workspace, state);
               const required = HOST_REQUIRED_CRITERIA.filter((c) => c.required(request, root));
               const requiredIds = hostRequiredIds(spec, required);
@@ -2082,17 +2088,23 @@ export class WorkflowScheduler {
                   break;
                 }
               }
+              // Whether the request settles a finding rests on a request quote the host checks,
+              // not on the finding's wording (#2032); each decision is recorded for replay.
+              const stated = statedRequest(state, this.store.requests(runId));
+              this.recordEvidenceDecisions(
+                runId,
+                findings.map((f) => ({ ref: f.id, input: requestSettlesInput(f, spec, stated) })),
+              );
+              const defect = (f: (typeof findings)[number]) => persistentDefect(f, spec, stated);
+              const settles = (f: (typeof findings)[number]) => restrictsRequest(f, spec, stated);
               // An inconsistency that survived the first reroute gets one more, with the finding
               // text and a note that it is a defect to fix, not a decision to assume.
-              const defectRound =
-                state.analysisReplans === 2 && findings.some((f) => persistentDefect(f, spec));
+              const defectRound = state.analysisReplans === 2 && findings.some(defect);
               // A scope finding that adds a restriction or a requirement absent from the request gets
               // the same extra return with the instruction that the request is authoritative; a
               // survivor is assumed.
               const restrictsRound =
-                !defectRound &&
-                state.analysisReplans === 2 &&
-                findings.some((f) => restrictsRequest(f, spec));
+                !defectRound && state.analysisReplans === 2 && findings.some(settles);
               // The reroute budget is the run's, so an inconsistency first raised after it is spent
               // (often one the repair of earlier findings introduced) gets a defect round of its
               // own, at most LATE_DEFECT_ROUNDS, before a person is asked (#1830).
@@ -2101,7 +2113,7 @@ export class WorkflowScheduler {
                 !restrictsRound &&
                 state.analysisReplans >= 3 &&
                 state.lateDefectRounds < LATE_DEFECT_ROUNDS &&
-                findings.some((f) => persistentDefect(f, spec) && newFacet(f, earlierRaised));
+                findings.some((f) => defect(f) && newFacet(f, earlierRaised));
               if (
                 !state.analysisPassed &&
                 policy.clarification === "assume" &&
@@ -2127,7 +2139,7 @@ export class WorkflowScheduler {
                       blockingFindings,
                       back === "specify" ? ["spec", "plan"] : ["plan"],
                     );
-                  const restricted = blockingFindings.some((f) => restrictsRequest(f, spec));
+                  const restricted = blockingFindings.some(settles);
                   state.prompt += `\nAnalysis findings; resolve every one of them in the artifacts they refer to. ${defectRound || lateDefect ? DEFECT_NOTE : `${restricted ? `${REQUEST_NOTE} ` : ""}Where a finding needs a decision: ${ASSUME_NOTE}`}\n${canonical(blockingFindings.map(({ kind, refs, description }) => ({ kind, refs, description })))}`;
                   advance = false;
                   rerouted = v2 !== null;
@@ -2145,10 +2157,7 @@ export class WorkflowScheduler {
                 analysis.verdict !== "inconclusive" &&
                 findings.every(
                   (f) =>
-                    !f.blocking ||
-                    assumable(f) ||
-                    restrictsRequest(f, spec) ||
-                    repeatedFacet(f, earlierRaised),
+                    !f.blocking || assumable(f) || settles(f) || repeatedFacet(f, earlierRaised),
                 )
               ) {
                 const assumed = findings.filter((f) => f.blocking);
@@ -2170,11 +2179,7 @@ export class WorkflowScheduler {
                 // A spec finding the request settles is an amendment, so review does not raise
                 // it against spec.json again after implement (#1120).
                 this.store.transaction(() =>
-                  this.amendFromAnalysis(
-                    runId,
-                    state,
-                    assumed.filter((f) => restrictsRequest(f, spec)),
-                  ),
+                  this.amendFromAnalysis(runId, state, assumed.filter(settles)),
                 );
                 findings = findings.map((f) =>
                   f.blocking
@@ -3869,6 +3874,162 @@ export class WorkflowScheduler {
         repeatOf: finding.id,
       })),
     );
+  }
+  /**
+   * The sibling probe of a rewrite corrective (#1969), once before its first attempt: the
+   * `chain-family` profile is shown the chain's battery and spec rows and proposes the other
+   * members of the input class (nested, swapped and combined delimiters, the empty input). The
+   * host runs each case on the files as they are, as a repro whose actual is its expected value
+   * (`familyDecision`): a case that prints something else becomes a finding that repeats the
+   * chain's finding, so the battery the rewrite gets, its repro check and the battery before the
+   * next review hold the class, not only the members review found one round at a time (R62
+   * md-site: four more members of `findDelimitedInline`, one per round). Recorded under
+   * `chains/family/`; a failed call or an unusable case leaves the battery as it was.
+   */
+  private async chainFamily(
+    runId: string,
+    stepId: string,
+    state: RuntimeState,
+    policy: RunPolicy,
+    task: Task,
+    root: string,
+    signal: AbortSignal,
+  ): Promise<void> {
+    if (policy.chainProbe !== "on" || policy.chainRewrite !== "on" || task.origin === "planned")
+      return;
+    const record = taskChainRecord(this.store, runId, task.id);
+    if (record?.decision !== "rewrite") return;
+    if (this.store.latestArtifact(runId, `${CHAIN_FAMILY_DIR}${task.id}.json`)) return;
+    const profile = ProfileSchema.array()
+      .parse(JSON.parse(this.store.run(runId).profiles_json))
+      .find((p) => p.output === "chain-family");
+    const executables = reproExecutables(policy.checks);
+    const all = chainFindings(this.store, runId);
+    const head = all.get(record.findingId);
+    const members = batteryOf(all, record);
+    if (!profile || !executables.length || !head || !members.length) return;
+    const child = this.store.transaction(() => this.store.beginStep(runId, "chain-family", stepId));
+    let proposed: { cases: Omit<Repro, "actual">[] };
+    try {
+      proposed = ChainFamilySchema.parse(
+        await this.call(
+          runId,
+          child,
+          state,
+          policy,
+          profile,
+          {
+            symbol: record.symbol,
+            file: record.file,
+            ...(record.family ? { family: record.family } : {}),
+            cases: batteryTable(members),
+            spec: chainSpecRows(state.spec, members),
+            executables,
+          },
+          signal,
+        ),
+      );
+      this.store.transaction(() => this.store.finishStep(runId, child, "completed"));
+    } catch (error) {
+      if (signal.aborted) throw error;
+      if (
+        error instanceof WorkflowFault &&
+        ["BUDGET_EXHAUSTED", "CHECKPOINT_REACHED"].includes(error.code)
+      )
+        throw error;
+      // Recorded without cases, so a later attempt of the rewrite does not ask again.
+      this.store.transaction(() => {
+        this.store.finishStep(runId, child, "failed");
+        this.store.artifact(
+          runId,
+          CHAIN_KIND,
+          `${CHAIN_FAMILY_DIR}${task.id}.json`,
+          canonical({
+            schemaVersion: 1,
+            taskId: task.id,
+            findingId: head.id,
+            file: head.file,
+            symbol: record.symbol,
+            shown: members.map((m) => m.id),
+            cases: [],
+          } satisfies FamilyRecord),
+        );
+      });
+      return;
+    }
+    // A case the battery already holds is not run again.
+    const inputKey = (repro: Omit<Repro, "actual" | "expected">) =>
+      JSON.stringify([repro.executable, repro.args, repro.stdin ?? null, repro.files ?? null]);
+    const known = new Set(members.flatMap((m) => (m.repro ? [inputKey(m.repro)] : [])));
+    const cases = proposed.cases
+      .filter((c) => !known.has(inputKey(c)))
+      .slice(0, BATTERY_CASES)
+      .map((c) => ({ ...c, actual: c.expected }));
+    const touched = this.runChangedPaths(runId, state);
+    const outcomes = await runReproBattery(cases, (repro) =>
+      runRepro(this.processes, repro, {
+        root,
+        executables,
+        generated: generatedPaths(policy),
+        signal,
+        sandbox: runSandbox(policy, root, { gitWrite: Boolean(state.worktree) }),
+        shadows: head.file ? [head.file, ...touched] : touched,
+      }),
+    );
+    const family: FamilyRecord = {
+      schemaVersion: 1,
+      taskId: task.id,
+      findingId: head.id,
+      file: head.file,
+      symbol: record.symbol,
+      shown: members.map((m) => m.id),
+      cases: outcomes.map((o) => ({
+        status: o.status,
+        reason: o.reason ?? "",
+        decision: familyDecision(o.status),
+      })),
+    };
+    this.store.transaction(() => {
+      const artifact = this.store.artifact(
+        runId,
+        CHAIN_KIND,
+        `${CHAIN_FAMILY_DIR}${task.id}.json`,
+        canonical(family),
+      );
+      const evidenceId = this.store.addEvidence(
+        runId,
+        "command",
+        state.snapshotId ?? "",
+        artifact.id,
+      );
+      for (const [index, outcome] of outcomes.entries()) {
+        const entry = family.cases[index];
+        const probe = cases[index];
+        if (entry?.decision !== "join" || !probe) continue;
+        const repro: Repro = { ...probe, actual: observedValue(outcome.output) };
+        const finding: Review["findings"][number] = {
+          id: `${head.id}-family-${String(index + 1)}`,
+          kind: "correctness",
+          severity: head.severity === "critical" ? "critical" : "high",
+          basis: "spec",
+          confidence: 1,
+          requirementIds: head.requirementIds,
+          criterionIds: head.criterionIds,
+          file: head.file,
+          symbol: head.symbol,
+          ...(head.family ? { family: head.family } : {}),
+          evidenceIds: [evidenceId],
+          claim: `Sibling case ${String(index + 1)} of ${record.symbol}, probed around ${head.id}: prints ${JSON.stringify(repro.actual)} where the spec needs ${JSON.stringify(repro.expected)}`,
+          impact: `The same input class as the chain ${record.chain.map((f) => f.id).join(", ")}; without this case the rewrite ${task.id} could pass the battery and leave it for the next review round.`,
+          suggestedFix: `Make ${record.symbol} pass this case together with every other case of the battery.`,
+          repro,
+          repeatOf: head.id,
+        };
+        const id = this.store.addFinding(runId, finding, fingerprint(finding), artifact.id);
+        // The rewrite owns it: it is a case of that rewrite's battery, not a new correction.
+        this.store.findingStatus(runId, id, "confirmed", task.id);
+      }
+    });
   }
   /**
    * The earlier corrected findings in the file this correction's findings name, on other symbols:
@@ -6056,10 +6217,13 @@ export class WorkflowScheduler {
     // The author and the reviewer read the same decision, each worded for its stage (#1831).
     const crossPlatform =
       profile.output === "spec"
-        ? crossPlatformNote(state.requestText || state.prompt, runRoot(this.store.workspace, state))
+        ? crossPlatformNote(
+            this.criterionRequest(runId, state),
+            runRoot(this.store.workspace, state),
+          )
         : profile.output === "analysis"
           ? crossPlatformAnalysisNote(
-              state.requestText || state.prompt,
+              this.criterionRequest(runId, state),
               runRoot(this.store.workspace, state),
             )
           : null;
@@ -7032,6 +7196,8 @@ ${note}`;
       let proseEnd = false;
       // A cap stop that would stop the run waits until the host knows it cannot finish the task.
       const capStop: { fault?: WorkflowFault } = {};
+      // A rewrite's sibling probe runs before its first attempt reads the battery (#1969).
+      await this.chainFamily(runId, child, state, policy, task, root, signal);
       const fresh = this.freshStart(runId, state, task);
       let result = this.settleSizeTargets(
         runId,
@@ -8411,6 +8577,7 @@ ${note}`;
       let proseEnd = false;
       // A cap stop that would stop the run waits until the host knows it cannot finish the task.
       const capStop: { fault?: WorkflowFault } = {};
+      await this.chainFamily(runId, entry.child, state, policy, task, root, signal);
       let result = this.settleSizeTargets(
         runId,
         task.id,
@@ -10550,12 +10717,41 @@ ${note}`;
       !this.store.latestArtifact(runId, assumedPath) &&
       !this.store.latestArtifact(runId, requestConflictPath(task.id));
     // A documentation task torn between the rule for examples and the request's worked example
-    // copies the request's example (#992).
-    const example = first && writesOnlyDocs(task) && namesExampleRule(report);
-    const assume = first && (example || namesRequestSide(report));
+    // copies the request's example (#992). It settles on a request quote the host found, on every
+    // report; the wording rule is only the first report's fallback (#2032).
+    const assumes = policy.clarification === "assume";
+    const exampleInput: EvidenceInput = {
+      site: "docs-example",
+      eligible: assumes && writesOnlyDocs(task) && !this.settledBy(runId, "docs-example", task.id),
+      evidence: reportRequestEvidence(
+        statedRequest(state, this.store.requests(runId)),
+        report,
+        result.conflictSides,
+      ),
+      wording: namesExampleRule(report),
+      fallback: first,
+    };
+    const example = evidenceDecision(exampleInput);
+    const assume = example || (first && namesRequestSide(report));
     // One side is what the platform cannot do at all: no person can choose it, so the nearest
-    // feasible behavior the task named holds (#1384).
-    const platform = first && !assume && namesPlatformLimit(report);
+    // feasible behavior the task named holds (#1384). It settles on a platform side whose quote
+    // a failing check or a probe of the task printed, on every report (#2032).
+    const platformInput: EvidenceInput = {
+      site: "platform-limit",
+      eligible: assumes && !assume && !this.settledBy(runId, "platform-limit", task.id),
+      evidence: platformEvidence(
+        result.conflictSides,
+        this.failedCheckOutputs(runId, task.id),
+        this.probeOutputs(runId, task.id),
+      ),
+      wording: namesPlatformLimit(report),
+      fallback: first,
+    };
+    const platform = evidenceDecision(platformInput);
+    this.recordEvidenceDecisions(runId, [
+      { ref: task.id, input: exampleInput },
+      { ref: task.id, input: platformInput },
+    ]);
     // The test files of the conflict: those the report names, and those the task's last failing
     // check names, since reports often cite a test by function only (tonemath 241fc475, #1459).
     const failing = this.failedCheckOutput(runId, task.id);
@@ -11533,22 +11729,50 @@ ${note}`;
     return tasks.some((t) => t.writes.some((w) => w.path === path && w.action === "create"));
   }
   /** The output of the checks whose latest run in a task's attempts failed, joined (#1459). */
+  /**
+   * The request the host-required and cross-platform criterion decisions read: the request with
+   * the clarification answers a person gave (#1964), so an answer that adds a platform or turns CI
+   * down reaches the author note, the analysis filter and the required predicate alike.
+   */
+  private criterionRequest(runId: string, state: RuntimeState): string {
+    return statedRequest(state, this.store.requests(runId));
+  }
   private failedCheckOutput(runId: string, taskId: string): string {
+    return Object.values(this.failedCheckOutputs(runId, taskId)).join("\n");
+  }
+  /** The output of each check whose latest run for the task failed, by check id. */
+  private failedCheckOutputs(runId: string, taskId: string): Record<string, string> {
     const latest = new Map<string, { status: string; artifact_id: string }>();
     for (const row of this.store.taskCheckRuns(runId, taskId)) latest.set(row.check_id, row);
-    const outputs: string[] = [];
-    for (const row of latest.values()) {
+    const outputs: Record<string, string> = {};
+    for (const [checkId, row] of latest) {
       if (row.status !== "failed") continue;
       try {
-        outputs.push(
-          String(
-            (JSON.parse(this.store.readArtifact(runId, row.artifact_id)) as { output?: unknown })
-              .output ?? "",
-          ),
+        outputs[checkId] = String(
+          (JSON.parse(this.store.readArtifact(runId, row.artifact_id)) as { output?: unknown })
+            .output ?? "",
         );
       } catch {}
     }
-    return outputs.join("\n");
+    return outputs;
+  }
+  /** The output of each probe the task ran (`attempts/<attempt>/probe-<n>.json`, #454). */
+  private probeOutputs(runId: string, taskId: string): string[] {
+    return this.store
+      .artifacts(runId)
+      .filter((a) => a.kind === "probe")
+      .flatMap((a) => {
+        try {
+          const body = JSON.parse(this.store.readArtifact(runId, a.id)) as {
+            taskId?: unknown;
+            status?: unknown;
+            output?: unknown;
+          };
+          return body.taskId === taskId && body.status === "ran" ? [String(body.output ?? "")] : [];
+        } catch {
+          return [];
+        }
+      });
   }
   /**
    * The test files a conflict report names that the task cannot write and that an implemented test
@@ -14390,9 +14614,17 @@ ${note}`;
         symbol: change.field,
         evidenceId,
         claim: `Manifest ${change.file} changes ${change.field}, which the request does not name`,
-        impact:
-          "The approval took this manifest edit as asked for by its path alone; a field that runs code or chooses where code comes from changed without a person seeing it.",
-        suggestedFix: `Restore ${change.field} in ${change.file} to what it was before the run, and change only the fields the request names.`,
+        ...(isBoundedLockPath(change.file)
+          ? {
+              impact:
+                "The approval took this lock as the follow-up of the project's own version change (#1934); an entry other than the project's own changed without a person seeing it.",
+              suggestedFix: `Restore ${change.field} in ${change.file} to what it was before the run; the lock may change only the project's own entry.`,
+            }
+          : {
+              impact:
+                "The approval took this manifest edit as asked for by its path alone; a field that runs code or chooses where code comes from changed without a person seeing it.",
+              suggestedFix: `Restore ${change.field} in ${change.file} to what it was before the run, and change only the fields the request names.`,
+            }),
       }),
     );
   }
@@ -15283,11 +15515,14 @@ ${note}`;
     let inconclusive: string | undefined;
     for (const { gate, check } of ordered) {
       const run = await this.runCommandGate(runId, stepId, check, gate, policy, signal);
+      // Baseline lint debt under `staticBaseline: "relative"` passes here as it does at task end
+      // and in the schema-1 checks stage (#1393).
       const result =
         run.status === "failed" &&
         check.required &&
         !run.reason &&
-        this.noOwnedTests(runId, state, check, run.output ?? "", run.evidenceId)
+        (this.staticDebt(runId, state, policy, check, run.output ?? "", run.evidenceId) ||
+          this.noOwnedTests(runId, state, check, run.output ?? "", run.evidenceId))
           ? { ...run, status: "passed" as const }
           : run;
       this.recordGate(runId, state, gate.id, null, {
@@ -16256,6 +16491,50 @@ ${note}`;
     );
   }
   /**
+   * Records each eligible decision of a site that settles on checked evidence (#2032), numbered
+   * per site and ref, so `replayEvidenceDecisions` can decide it again on its inputs.
+   */
+  private recordEvidenceDecisions(
+    runId: string,
+    items: readonly { ref: string; input: EvidenceInput }[],
+  ): void {
+    const eligible = items.filter((item) => item.input.eligible);
+    if (!eligible.length) return;
+    const paths = new Set(
+      this.store
+        .artifacts(runId)
+        .filter((a) => a.kind === EVIDENCE_DECISION_KIND)
+        .map((a) => a.logical_path),
+    );
+    this.store.transaction(() => {
+      for (const { ref, input } of eligible) {
+        let report = 1;
+        while (paths.has(evidenceRecordPath(input.site, ref, report))) report++;
+        const path = evidenceRecordPath(input.site, ref, report);
+        paths.add(path);
+        const record: EvidenceRecord = { ...input, ref, report, decision: evidenceDecision(input) };
+        this.store.artifact(runId, EVIDENCE_DECISION_KIND, path, canonical(record));
+      }
+    });
+  }
+  /** Whether a site settled a task's conflict on an earlier report (#2032). */
+  private settledBy(runId: string, site: EvidenceSite, taskId: string): boolean {
+    return this.store
+      .artifacts(runId)
+      .filter(
+        (a) =>
+          a.kind === EVIDENCE_DECISION_KIND &&
+          a.logical_path.startsWith(`${EVIDENCE_DECISIONS_DIR}${site}-${taskId}-`),
+      )
+      .some((a) => {
+        try {
+          return (JSON.parse(this.store.readArtifact(runId, a.id)) as EvidenceRecord).decision;
+        } catch {
+          return false;
+        }
+      });
+  }
+  /**
    * Review findings that put the spec against the request record a spec amendment (#1034): the
    * request wins over the criteria they name, every later agent reads that with the request, and
    * the test-integrity guard accepts the tests their correction changes. A finding on a run
@@ -16264,10 +16543,17 @@ ${note}`;
   private amendSpec(runId: string, state: RuntimeState, findings: Review["findings"]): void {
     if (!state.spec) return;
     const planned = (state.rootGraph?.tasks ?? []).flatMap((t) => t.writes.map((w) => w.path));
+    const request = statedRequest(state, this.store.requests(runId));
     for (const finding of findings) {
-      const amendment = namesRunDocument(finding, planned)
+      const document = namesRunDocument(finding, planned);
+      // A finding for the request rests on a request quote the host checks (#2032).
+      if (!document)
+        this.recordEvidenceDecisions(runId, [
+          { ref: finding.id, input: specAmendmentInput(finding, state.spec, request) },
+        ]);
+      const amendment = document
         ? documentAmendmentOf(finding, state.spec)
-        : specAmendmentOf(finding, state.spec);
+        : specAmendmentOf(finding, state.spec, request);
       if (!amendment) continue;
       const path = `amendments/${finding.id}.json`;
       if (this.store.latestArtifact(runId, path)) continue;

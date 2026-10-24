@@ -96,7 +96,8 @@ export function isHostRelease(request: { kind: string; body_json: string }): boo
  * what the run is asked for (R60 wheeltags: 7 of 7 planned-ahead features had their first plan
  * refused for such read hints, #1932). A feature accepted after the provisional base was fixed is
  * on neither that base nor a set of unfinished features until the release (R61 manlens, #1946); one
- * already on the base has its files there anyway. Nothing for a run that is not held, so a write
+ * already on the base has its files there anyway. The ancestors of the pinned features count too,
+ * since the release brings them in (#1965). Nothing for a run that is not held, so a write
  * of another feature's file is still refused. Every check of a plan against the workspace asks it.
  */
 export function pathsExistLater(state: RuntimeState): (path: string) => boolean {
@@ -108,6 +109,13 @@ export function pathsExistLater(state: RuntimeState): (path: string) => boolean 
       dependency.featureId.slice(dependency.featureId.lastIndexOf("_") + 1),
     ),
   );
+  // The release brings in the whole ancestor chain, not only the pinned features (#1965): a feature
+  // pinned on middle reads base's files too. Bounds saved before they carried `dependsOn` keep the
+  // pinned set alone.
+  const dependsOn = new Map(
+    bounds.features.map((feature) => [feature.id, feature.dependsOn ?? []]),
+  );
+  for (const id of upstream) for (const parent of dependsOn.get(id) ?? []) upstream.add(parent);
   const patterns = bounds.features
     .filter((feature) => feature.id !== bounds.featureId && upstream.has(feature.id))
     .flatMap((feature) => feature.paths.map(normalizePath));

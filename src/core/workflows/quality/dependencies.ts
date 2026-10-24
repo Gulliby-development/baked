@@ -14,6 +14,7 @@ import {
   type Dependency,
   type Ecosystem,
   importedPackages,
+  isBoundedLockPath,
   isManifestPath,
   manifestDependencies,
   manifestFieldChanges,
@@ -54,7 +55,8 @@ export function unrequestedManifestFields(
   return changed.flatMap((file) =>
     named.includes(file.path) && typeof file.before === "string"
       ? manifestFieldChanges(file.path, file.before, file.content)
-          .filter((field) => !namesField(requested, field))
+          // A lock's entries beyond the project's own are never the request's to name (#1934).
+          .filter((field) => isBoundedLockPath(file.path) || !namesField(requested, field))
           .map((field) => ({ file: file.path, field }))
       : [],
   );

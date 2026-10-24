@@ -102,6 +102,7 @@ import { RevisionSchema } from "./revision-patch.js";
 import {
   AnalysisSchema,
   ApprovalReviewSchema,
+  ChainFamilySchema,
   CritiqueSchema,
   DistinctionSchema,
   generatedPaths,
@@ -161,6 +162,7 @@ export const outputSchemas: Record<string, z.ZodType> = {
   mutants: MutantProposalSchema,
   distinction: DistinctionSchema,
   revision: RevisionSchema,
+  "chain-family": ChainFamilySchema,
 };
 const MAX_SEMANTIC_CORRECTIONS = 2;
 /** Submissions refused because a written file does not parse; the next one is accepted (#977). */

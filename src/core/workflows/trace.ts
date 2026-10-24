@@ -31,11 +31,20 @@ import { callCostRate } from "./budget.js";
 import { assertForecastFits, costForecast } from "./cost-forecast.js";
 import { WorkflowFault } from "./errors.js";
 import {
+  EVIDENCE_DECISION_KIND,
+  EVIDENCE_DECISIONS_DIR,
+  type EvidenceRecord,
+  type EvidenceRule,
+  type EvidenceSite,
+  evidenceDecision,
+} from "./evidence-decisions.js";
+import {
   type BatteryRecord,
   type BatteryRule,
   batteryDecision,
   batteryOf,
   CHAIN_BATTERY_DIR,
+  CHAIN_FAMILY_DIR,
   CHAIN_KIND,
   CHAIN_REWRITE_AT,
   CHAIN_TASKS_DIR,
@@ -45,6 +54,9 @@ import {
   chainFindings,
   chainRecord,
   chainRewriteDecision,
+  type FamilyRecord,
+  type FamilyRule,
+  familyDecision,
   familyKey,
   findingChain,
 } from "./finding-chain.js";
@@ -135,7 +147,8 @@ const KEPT_ARTIFACTS = new Set([
   "state",
   // A provider's usage-policy refusal of an attempt and what the run did with it (#1895).
   POLICY_REFUSAL_KIND,
-  // Finding chains: each corrective's rewrite decision and each battery run before a review (#1959).
+  // Finding chains: each corrective's rewrite decision, each battery run before a review (#1959)
+  // and each rewrite's sibling probe (#1969).
   CHAIN_KIND,
   // Each failing corrective's required checks, normalized output stood in (#1996).
   REPEAT_KIND,
@@ -151,6 +164,8 @@ const KEPT_ARTIFACTS = new Set([
   CASE_WALK_KIND,
   // Each review's gate: the findings' labels and repro outcomes, no claims (#1715).
   REVIEW_GATE_KIND,
+  // Each decision for the request or the platform on checked evidence: states, no quotes (#2032).
+  EVIDENCE_DECISION_KIND,
 ]);
 
 /** Tables that hold evidence, effects or prose the replay never reads. */
@@ -679,6 +694,60 @@ export interface RunReplay {
   reviewGates: ReviewGateBoundary[];
   /** Findings the current rule repairs that the recorded gate kept as notes. */
   newGateRepairs: number;
+  /** Each decision for the request or the platform on checked evidence (#2032). */
+  evidenceDecisions: EvidenceDecisionBoundary[];
+  /** Findings and conflict reports the current rule settles differently than the recording. */
+  newEvidenceDecisions: number;
+}
+
+export interface EvidenceDecisionBoundary {
+  site: EvidenceSite;
+  ref: string;
+  report: number;
+  recorded: boolean;
+  replayed: boolean;
+}
+
+/**
+ * Every decision a run made for the request or the platform on checked evidence
+ * (`conflicts/evidence/`, #2032), decided again from its recorded inputs: eligibility, the
+ * evidence state, whether the wording rule matched and whether its fallback applied. Traces before
+ * #2032 record none.
+ */
+export function replayEvidenceDecisions(
+  store: WorkflowStore,
+  runId: string,
+  decide: EvidenceRule = evidenceDecision,
+): EvidenceDecisionBoundary[] {
+  return store
+    .artifacts(runId)
+    .filter(
+      (a) => a.kind === EVIDENCE_DECISION_KIND && a.logical_path.startsWith(EVIDENCE_DECISIONS_DIR),
+    )
+    .flatMap((artifact) => {
+      let record: EvidenceRecord;
+      try {
+        record = JSON.parse(store.readArtifact(runId, artifact.id));
+      } catch {
+        return [];
+      }
+      const replayed = decide({
+        site: record.site,
+        eligible: record.eligible ?? false,
+        evidence: record.evidence ?? "absent",
+        wording: record.wording ?? false,
+        fallback: record.fallback ?? false,
+      });
+      return [
+        {
+          site: record.site,
+          ref: record.ref,
+          report: record.report,
+          recorded: record.decision,
+          replayed,
+        },
+      ];
+    });
 }
 
 export type ReviewGateRule = (gate: ReviewGate) => string[];
@@ -1059,26 +1128,28 @@ export function newRepeatStops(boundaries: readonly RepeatedFailureBoundary[]): 
 }
 
 export interface FindingChainBoundary {
-  /** The corrective task of a rewrite decision, or the battery record's path. */
+  /** The corrective task of a rewrite decision, the battery record's path, or a probed case's. */
   key: string;
-  kind: "rewrite" | "battery";
+  kind: "rewrite" | "battery" | "family";
   recorded: string;
   replayed: string;
 }
 
 /**
  * Every finding-chain decision a run recorded (#1959), decided again from its recorded inputs: a
- * corrective's rewrite from its chain's length and the run's policy (`chains/tasks/`), and a
- * battery's reopen from its cases' outcomes (`chains/battery/`). Traces from before #1959 record
- * none.
+ * corrective's rewrite from its chain's length and the run's policy (`chains/tasks/`), a
+ * battery's reopen from its cases' outcomes (`chains/battery/`), and whether each case of a
+ * rewrite's sibling probe joined its battery (`chains/family/`, #1969). Traces from before #1959
+ * record none.
  */
 export function replayFindingChains(
   store: WorkflowStore,
   runId: string,
-  rules: { chain?: ChainRule; battery?: BatteryRule } = {},
+  rules: { chain?: ChainRule; battery?: BatteryRule; family?: FamilyRule } = {},
 ): FindingChainBoundary[] {
   const decideChain = rules.chain ?? chainRewriteDecision;
   const decideBattery = rules.battery ?? batteryDecision;
+  const decideFamily = rules.family ?? familyDecision;
   return store.artifacts(runId).flatMap((artifact): FindingChainBoundary[] => {
     if (artifact.kind !== CHAIN_KIND) return [];
     try {
@@ -1103,6 +1174,15 @@ export function replayFindingChains(
             replayed: decideBattery(record.cases.map((c) => c.status)),
           },
         ];
+      }
+      if (artifact.logical_path.startsWith(CHAIN_FAMILY_DIR)) {
+        const record = JSON.parse(store.readArtifact(runId, artifact.id)) as FamilyRecord;
+        return record.cases.map((c, index) => ({
+          key: `${artifact.logical_path}#${String(index + 1)}`,
+          kind: "family" as const,
+          recorded: c.decision,
+          replayed: decideFamily(c.status),
+        }));
       }
     } catch {
       return [];
@@ -2726,6 +2806,8 @@ function replayRun(
   | "newCaseRefusals"
   | "reviewGates"
   | "newGateRepairs"
+  | "evidenceDecisions"
+  | "newEvidenceDecisions"
 > | null {
   const db = store.connection;
   const run = store.run(runId);
@@ -2896,6 +2978,7 @@ export function replayTrace(
     policyRefusal?: PolicyRefusalRule;
     chainRule?: ChainRule;
     batteryRule?: BatteryRule;
+    familyRule?: FamilyRule;
     repeatRule?: RepeatRule;
     requestConflictRule?: RequestConflictRule;
     hostApplyRule?: HostApplyRule;
@@ -2904,6 +2987,7 @@ export function replayTrace(
     integrityRule?: IntegrityRule;
     caseWalkRule?: CaseWalkRule;
     reviewGateRule?: ReviewGateRule;
+    evidenceRule?: EvidenceRule;
   } = {},
 ): TraceReplay {
   // Initiative starts rewind their own copies of the trace, before the run replay rewinds this one.
@@ -2939,6 +3023,7 @@ export function replayTrace(
         replayFindingChains(store, runId, {
           ...(options.chainRule ? { chain: options.chainRule } : {}),
           ...(options.batteryRule ? { battery: options.batteryRule } : {}),
+          ...(options.familyRule ? { family: options.familyRule } : {}),
         }),
       ]),
     );
@@ -2966,6 +3051,9 @@ export function replayTrace(
     const reviews = new Map(
       runIds.map((runId) => [runId, replayReviewGates(store, runId, options.reviewGateRule)]),
     );
+    const evidence = new Map(
+      runIds.map((runId) => [runId, replayEvidenceDecisions(store, runId, options.evidenceRule)]),
+    );
     const runs: RunReplay[] = [];
     for (const runId of runIds) {
       const firstByte = timings.get(runId) ?? [];
@@ -2992,6 +3080,7 @@ export function replayTrace(
       const integrity = scans.get(runId) ?? [];
       const caseWalks = walks.get(runId) ?? [];
       const reviewGates = reviews.get(runId) ?? [];
+      const evidenceDecisions = evidence.get(runId) ?? [];
       if (
         !replay.boundaries.length &&
         !firstByte.length &&
@@ -3005,7 +3094,8 @@ export function replayTrace(
         !misquoteFixes.length &&
         !integrity.length &&
         !caseWalks.length &&
-        !reviewGates.length
+        !reviewGates.length &&
+        !evidenceDecisions.length
       )
         continue;
       runs.push({
@@ -3047,6 +3137,8 @@ export function replayTrace(
           (n, b) => n + b.replayed.filter((f) => !b.recorded.includes(f)).length,
           0,
         ),
+        evidenceDecisions,
+        newEvidenceDecisions: evidenceDecisions.filter((b) => b.replayed !== b.recorded).length,
       });
     }
     const gates = replayShareGate(store, options.shareGate);

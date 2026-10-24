@@ -1,5 +1,11 @@
 import type { z } from "zod";
 import { coveringChecks } from "./check-policy.js";
+import {
+  type EvidenceInput,
+  evidenceDecision,
+  namedCriteria,
+  requestEvidence,
+} from "./evidence-decisions.js";
 import { HOST_EDITS_PATH, type HostEdit, hostOnlyEvidence } from "./host-edits.js";
 import {
   withCommandDependencies,
@@ -401,33 +407,65 @@ export function requestRequirements(
     .map((r) => r.id);
 }
 
+/** An analysis finding as `requestSettles` reads it. */
+type SettledFinding = {
+  id?: string;
+  kind: string;
+  blocking: boolean;
+  description: string;
+  refs?: readonly string[];
+  quote?: string | undefined;
+};
+
+/**
+ * The inputs of the `analysis-request` decision (#2032): a blocking inconsistency is settled for
+ * the request on a request quote the host found (the finding's `quote`, else a span it quotes), on
+ * every pass. A finding that gives a quote the request does not hold settles nothing; one that
+ * quotes nothing falls back to the wording (`SETTLES`, a requirement named with what it rules).
+ * Without the request text the wording decides, as before #2032.
+ */
+export function requestSettlesInput(
+  finding: SettledFinding,
+  spec?: Pick<Spec, "requirements" | "criteria"> | null,
+  request?: string,
+): EvidenceInput {
+  const texts = [finding.description, ...(finding.refs ?? [])];
+  return {
+    site: "analysis-request",
+    eligible:
+      finding.blocking &&
+      finding.kind === "inconsistency" &&
+      !(finding.id ?? "").startsWith("COVERAGE"),
+    evidence:
+      request === undefined
+        ? "absent"
+        : requestEvidence(
+            request,
+            finding.quote,
+            [finding.description],
+            namedCriteria(spec, texts),
+          ),
+    wording:
+      SETTLES.test(finding.description) ||
+      requestRequirements(finding.description, spec).length > 0,
+    fallback: true,
+  };
+}
+
 export function requestSettles(
-  finding: {
-    id?: string;
-    kind: string;
-    blocking: boolean;
-    description: string;
-  },
-  spec?: Pick<Spec, "requirements"> | null,
+  finding: SettledFinding,
+  spec?: Pick<Spec, "requirements" | "criteria"> | null,
+  request?: string,
 ): boolean {
-  return (
-    finding.blocking &&
-    finding.kind === "inconsistency" &&
-    !(finding.id ?? "").startsWith("COVERAGE") &&
-    (SETTLES.test(finding.description) || requestRequirements(finding.description, spec).length > 0)
-  );
+  return evidenceDecision(requestSettlesInput(finding, spec, request));
 }
 
 export function restrictsRequest(
-  finding: {
-    id?: string;
-    kind: string;
-    blocking: boolean;
-    description: string;
-  },
-  spec?: Pick<Spec, "requirements"> | null,
+  finding: SettledFinding,
+  spec?: Pick<Spec, "requirements" | "criteria"> | null,
+  request?: string,
 ): boolean {
-  if (requestSettles(finding, spec)) return true;
+  if (requestSettles(finding, spec, request)) return true;
   return (
     finding.blocking &&
     finding.kind === "scope" &&
@@ -480,17 +518,14 @@ export function repeatedFacet(
 
 /** Whether a blocking finding is a defect the analysis must see fixed rather than assumed. */
 export function persistentDefect(
-  finding: {
-    kind: string;
-    blocking: boolean;
-    description?: string;
-  },
-  spec?: Pick<Spec, "requirements"> | null,
+  finding: Omit<SettledFinding, "description"> & { description?: string },
+  spec?: Pick<Spec, "requirements" | "criteria"> | null,
+  request?: string,
 ): boolean {
   return (
     finding.blocking &&
     finding.kind === "inconsistency" &&
-    !requestSettles({ ...finding, description: finding.description ?? "" }, spec)
+    !requestSettles({ ...finding, description: finding.description ?? "" }, spec, request)
   );
 }
 
