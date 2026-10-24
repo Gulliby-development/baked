@@ -73,6 +73,7 @@ import { criticalPathSummary, planWidth, remainingPath } from "./critical-path.j
 import { DECOMPOSE_WORKFLOW_ID } from "./decompose.js";
 import { type InitiativeDriveState, initiativeDriveState } from "./drive-state.js";
 import {
+  calibrationLagText,
   estimateInitiative,
   type FeatureRunSample,
   highCalibrationText,
@@ -2483,7 +2484,7 @@ export class InitiativeService {
     const limit = estimate.budget.maxTotalTokens;
     const tokenWarning =
       estimate.tokens.high > limit
-        ? `The estimate expects about ${tokenText(estimate.expectedTokens)} tokens${estimate.expectedTokens <= limit ? ", within" : ", above"} the shared budget (${tokenText(limit)}); its high end (${tokenText(estimate.tokens.high)} tokens; ${highCalibrationText(estimate.highCalibration)}) exceeds the shared budget. Consider extending to ${estimate.withMargin} tokens, including margin, before approving, or approve with this risk.`
+        ? `The estimate expects about ${tokenText(estimate.expectedTokens)} tokens${estimate.expectedTokens <= limit ? ", within" : ", above"} the shared budget (${tokenText(limit)}); its high end (${tokenText(estimate.tokens.high)} tokens; ${highCalibrationText(estimate.highCalibration)}) exceeds the shared budget.${calibrationLagText(estimate)} Consider extending to ${estimate.withMargin} tokens, including margin, before approving, or approve with this risk.`
         : "";
     const warning = [tokenWarning, ...dollarWarnings].filter(Boolean).join(" ");
     if (!warning) return message;

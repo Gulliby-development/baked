@@ -474,3 +474,33 @@ describe("repeated corrective failures replay on recorded chains (#1996)", () =>
     expect(counted.runs.reduce((n, r) => n + r.newRepeatStops, 0)).toBe(0);
   }, 120000);
 });
+
+describe("own-plan feature need replays on recorded initiatives (#2043)", () => {
+  // A feature whose run has a sized plan is priced at its plan's expected tokens (times the
+  // measured plan-to-actual ratio) when that is above its class need. R65 uritpl ran without plan
+  // ahead: at its syntax start the encode run's plan (expected 2.10M) raises encode's low end from
+  // its class value (1.38M), and nothing else moves. The high end at every start is what it was
+  // before the rule (R65 must not rise), and no start parks. R66 nodepluck, the round the issue
+  // measured, has no trace in the corpus; its scenario test replays its numbers.
+  test("R65 uritpl: the high end at every start is unchanged, encode's low end follows its plan", () => {
+    const [replay] = replayInitiativeStarts(join(ROOT, "R65/uritpl.sqlite.gz"));
+    expect(replay?.newStartStops).toBe(0);
+    expect(replay?.starts.map((s) => [s.featureId, s.tokens?.high])).toEqual([
+      ["base", 30_764_134],
+      ["values", 31_330_378],
+      ["encode", 31_330_378],
+      ["syntax", 29_687_632],
+      ["expansion", 27_540_739],
+      ["problem", 23_100_637],
+      ["cmd-read", 22_809_650],
+      ["lint", 22_834_018],
+      ["cmd-expand", 24_446_096],
+      ["cli", 24_679_293],
+      ["docs", 22_864_328],
+    ]);
+    const syntax = replay?.starts.find((s) => s.featureId === "syntax");
+    // Before #2043: low 14,743,241, encode 1,381,658-3,513,129.
+    expect(syntax?.tokens?.low).toBe(15_463_514);
+    expect(syntax?.estimate.find((f) => f.featureId === "encode")).toEqual({ featureId: "encode", low: 2_101_931, high: 3_513_129 });
+  }, 600000);
+});

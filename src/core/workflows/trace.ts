@@ -1482,6 +1482,8 @@ export interface InitiativeStartBoundary {
   replayed: "pass" | "park";
   /** Each feature's token range in the estimate the current code makes at this start (#1806). */
   estimate: { featureId: string; low: number; high: number }[];
+  /** The initiative's token range and expected tokens in that estimate (#2043); null without one. */
+  tokens: { low: number; high: number; expected: number } | null;
 }
 
 export interface InitiativeReplay {
@@ -1772,7 +1774,8 @@ function replayStarts(
         const view = initiatives.view(initiativeId);
         const feature = view.features.find((f) => f.id === link.feature_id);
         const cost = view.budget.cost;
-        const estimate = (initiatives.estimate(initiativeId)?.features ?? []).map((f) => ({
+        const whole = initiatives.estimate(initiativeId);
+        const estimate = (whole?.features ?? []).map((f) => ({
           featureId: f.featureId,
           low: f.tokens.low,
           high: f.tokens.high,
@@ -1787,6 +1790,7 @@ function replayStarts(
           ceilingUsd: cost.ceilingUsd,
           replayed: feature && gate(view, feature) ? "park" : "pass",
           estimate,
+          tokens: whole ? { ...whole.tokens, expected: whole.expectedTokens } : null,
         });
       } finally {
         service.close();
