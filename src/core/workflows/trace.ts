@@ -19,6 +19,13 @@ import {
 } from "../llm/provider-health.js";
 import { canonical, hashBytes, hashJson } from "../specs/hash.js";
 import { workspacePath } from "../specs/validate.js";
+import {
+  CASE_WALK_DIR,
+  CASE_WALK_KIND,
+  type CaseWalk,
+  type CaseWalkRecord,
+  caseWalkDecision,
+} from "../verification/criteria-cases.js";
 import { planApprovalDecision, requestedPathTokens } from "./auto-approval.js";
 import { callCostRate } from "./budget.js";
 import { assertForecastFits, costForecast } from "./cost-forecast.js";
@@ -133,6 +140,8 @@ const KEPT_ARTIFACTS = new Set([
   MISQUOTE_FIX_KIND,
   // Each test-integrity scan: per-file counts and flags, no code (#1715).
   INTEGRITY_KIND,
+  // Each task-end case walk: which cases a file held, no literals (#1715).
+  CASE_WALK_KIND,
 ]);
 
 /** Tables that hold evidence, effects or prose the replay never reads. */
@@ -653,6 +662,55 @@ export interface RunReplay {
   integrity: IntegrityBoundary[];
   /** Integrity findings (rule and path) the current rule reports that the recording did not. */
   newIntegrityFindings: number;
+  /** Each task-end case walk's refusals against the current rule (#1715). */
+  caseWalks: CaseWalkBoundary[];
+  /** Cases the current rule refuses a task for that the recorded walk did not. */
+  newCaseRefusals: number;
+}
+
+export type CaseWalkRule = (walk: CaseWalk) => number[];
+
+export interface CaseWalkBoundary {
+  taskId: string;
+  cases: number;
+  /** `criterion#index` of each refused case, as recorded and as the current rule decides. */
+  recorded: string[];
+  replayed: string[];
+}
+
+/**
+ * Every task-end case walk a run recorded (`case-walk/tasks/`, #1715), decided again from what
+ * held each case: the task's own test files, the host's intact rows, a sibling task's files. The
+ * matching itself reads test code and case literals a trace does not keep, so a change to how a
+ * file holds a case is not replayed, only which unheld cases refuse the task. Traces before #1715
+ * record none.
+ */
+export function replayCaseWalks(
+  store: WorkflowStore,
+  runId: string,
+  decide: CaseWalkRule = caseWalkDecision,
+): CaseWalkBoundary[] {
+  return store
+    .artifacts(runId)
+    .filter((a) => a.kind === CASE_WALK_KIND && a.logical_path.startsWith(CASE_WALK_DIR))
+    .flatMap((artifact) => {
+      let record: CaseWalkRecord;
+      try {
+        record = JSON.parse(store.readArtifact(runId, artifact.id));
+      } catch {
+        return [];
+      }
+      if (record.schemaVersion !== 1) return [];
+      const key = (i: number) => `${record.cases[i]?.criterionId ?? "?"}#${i}`;
+      return [
+        {
+          taskId: record.taskId,
+          cases: record.cases.length,
+          recorded: record.refused.map(key),
+          replayed: decide(record).map(key),
+        },
+      ];
+    });
 }
 
 export type IntegrityRule = (
@@ -2608,6 +2666,8 @@ function replayRun(
   | "newMisquoteFixes"
   | "integrity"
   | "newIntegrityFindings"
+  | "caseWalks"
+  | "newCaseRefusals"
 > | null {
   const db = store.connection;
   const run = store.run(runId);
@@ -2784,6 +2844,7 @@ export function replayTrace(
     poolGrowthRule?: PoolGrowthRule;
     misquoteFixRule?: MisquoteFixRule;
     integrityRule?: IntegrityRule;
+    caseWalkRule?: CaseWalkRule;
   } = {},
 ): TraceReplay {
   // Initiative starts rewind their own copies of the trace, before the run replay rewinds this one.
@@ -2840,6 +2901,9 @@ export function replayTrace(
     const scans = new Map(
       runIds.map((runId) => [runId, replayIntegrity(store, runId, options.integrityRule)]),
     );
+    const walks = new Map(
+      runIds.map((runId) => [runId, replayCaseWalks(store, runId, options.caseWalkRule)]),
+    );
     const runs: RunReplay[] = [];
     for (const runId of runIds) {
       const firstByte = timings.get(runId) ?? [];
@@ -2864,6 +2928,7 @@ export function replayTrace(
       const hostApply = applies.get(runId) ?? [];
       const misquoteFixes = misquotes.get(runId) ?? [];
       const integrity = scans.get(runId) ?? [];
+      const caseWalks = walks.get(runId) ?? [];
       if (
         !replay.boundaries.length &&
         !firstByte.length &&
@@ -2875,7 +2940,8 @@ export function replayTrace(
         !requestConflicts.length &&
         !hostApply.length &&
         !misquoteFixes.length &&
-        !integrity.length
+        !integrity.length &&
+        !caseWalks.length
       )
         continue;
       runs.push({
@@ -2904,6 +2970,11 @@ export function replayTrace(
         newMisquoteFixes: misquoteFixes.filter((b) => b.replayed !== b.recorded).length,
         integrity,
         newIntegrityFindings: integrity.reduce(
+          (n, b) => n + b.replayed.filter((f) => !b.recorded.includes(f)).length,
+          0,
+        ),
+        caseWalks,
+        newCaseRefusals: caseWalks.reduce(
           (n, b) => n + b.replayed.filter((f) => !b.recorded.includes(f)).length,
           0,
         ),
