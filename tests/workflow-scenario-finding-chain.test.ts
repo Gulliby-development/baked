@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { DEFAULT_CONFIG } from "../src/config/index.js";
 import { hashBytes, hashJson } from "../src/core/specs/hash.js";
 import { defaultWorkflowPolicy } from "../src/core/workflows/defaults.js";
-import { CHAIN_REWRITE_AT, type ChainFinding, type ChainRecord, chainMembers, chainRecord, familyKey, findingChain } from "../src/core/workflows/finding-chain.js";
+import { CHAIN_REWRITE_AT, type ChainFinding, type ChainRecord, chainMembers, chainRecord, type FamilyRecord, familyKey, findingChain } from "../src/core/workflows/finding-chain.js";
 import type { Check, Repro, RunPolicy, Spec, Task } from "../src/core/workflows/schemas.js";
 import { NativeWorkflowService } from "../src/core/workflows/service.js";
 import { newId } from "../src/core/workflows/store.js";
@@ -59,6 +59,12 @@ class ChainExecutor implements AgentExecutor {
    * R66 expenses-py F2 (`build_report`) and F3 (`_share`) were (#2048).
    */
   family = false;
+  /** The members of the class the reviewer finds, one per round. */
+  members: readonly string[] = MEMBERS;
+  /** A rewrite writes only the cases its battery holds, so a member it was not shown stays open. */
+  batteryOnly = false;
+  /** The cases the sibling probe proposes (#1969), by marker; `pass` is one the code gets right. */
+  probe: string[] = [];
   constructor(private root: string) {}
   async execute(request: ExecutionRequest) {
     this.calls.push({ output: request.profile.output, ...(request.task ? { taskId: request.task.id } : {}) });
@@ -84,6 +90,9 @@ class ChainExecutor implements AgentExecutor {
             // Only the newest case of the battery: the earlier one fails again.
             const newest = data.extra.battery.cases.at(-1)?.command.match(/case-(\w)/)?.[1] ?? "";
             writeFileSync(path, `ready case-${newest}`);
+          } else if (data.extra.battery && this.batteryOnly) {
+            const shown = data.extra.battery.cases.flatMap((c) => c.command.match(/case-(\w)/)?.[1] ?? []);
+            writeFileSync(path, `ready ${shown.map((m) => `case-${m}`).join(" ")}`);
           } else if (data.extra.battery) {
             // The rewrite restates the algorithm for the whole class, unseen members included.
             writeFileSync(path, `ready ${MEMBERS.map((m) => `case-${m}`).join(" ")}`);
@@ -98,10 +107,23 @@ class ChainExecutor implements AgentExecutor {
         break;
       }
       case "review": output = pass; break;
+      case "chain-family": {
+        // The family around the battery: new members, one already in the battery, one the code gets right.
+        const shown = data.extra as unknown as { cases: { command: string }[]; executables: string[] };
+        expect(shown.cases.length).toBeGreaterThanOrEqual(2);
+        expect(shown.executables).toContain("bun");
+        const { actual: _, ...known } = reproFor("a");
+        const cases = this.probe.map((m) => {
+          const { actual: _a, ...repro } = reproFor(m);
+          return m === "pass" ? { ...repro, args: ["-e", "console.log('nested')"] } : repro;
+        });
+        output = { schemaVersion: 1, cases: [known, ...cases], rationale: "Deeper nesting of the reported delimiter runs" };
+        break;
+      }
       case "convergence": {
         const text = readFileSync(path, "utf8");
-        const index = MEMBERS.findIndex((m) => !text.includes(`case-${m}`));
-        const marker = MEMBERS[index];
+        const index = this.members.findIndex((m) => !text.includes(`case-${m}`));
+        const marker = this.members[index];
         const findings = marker
           ? [{ id: `F${index + 1}`, kind: "correctness", severity: "high", basis: "spec", confidence: 0.99, requirementIds: ["FR-001"], criterionIds: ["AC-001"], file: "inline.txt", symbol: this.family ? FAMILY_SYMBOLS[index] : index % 2 ? "Inline.findDelimitedInline()" : "findDelimitedInline", evidenceIds, claim: `Nested delimiter run case-${marker} is parsed flat`, impact: "Wrong emphasis", suggestedFix: `Handle case-${marker}`, repro: reproFor(marker), ...(this.family ? { repeatOf: null, family: index === 1 ? "Decimal context precision" : "decimal-context-precision" } : { repeatOf: index ? `F${index}` : null }) }]
           : [];
@@ -116,12 +138,15 @@ class ChainExecutor implements AgentExecutor {
   }
 }
 
-async function drive(options: { policy?: Partial<RunPolicy>; quality?: { chainRewrite: "on" | "off" }; breakFirstRewrite?: boolean; family?: boolean }) {
+async function drive(options: { policy?: Partial<RunPolicy>; quality?: { chainRewrite: "on" | "off"; chainProbe?: "on" | "off" }; breakFirstRewrite?: boolean; family?: boolean; members?: readonly string[]; batteryOnly?: boolean; probe?: string[] }) {
   const root = mkdtempSync(join(tmpdir(), "baked-finding-chain-"));
   cleanups.push(() => rmSync(root, { recursive: true, force: true }));
   const executor = new ChainExecutor(root);
   executor.breakFirstRewrite = options.breakFirstRewrite ?? false;
   executor.family = options.family ?? false;
+  executor.members = options.members ?? MEMBERS;
+  executor.batteryOnly = options.batteryOnly ?? false;
+  executor.probe = options.probe ?? [];
   const policy: RunPolicy = { ...basePolicy, ...options.policy };
   const config = { ...DEFAULT_CONFIG, defaultModel: "fixture/model", ...(options.quality ? { quality: options.quality } : {}), workflows: { enabled: true, importsEnabled: true, defaultWorkflow: "sdd", policy } };
   const service = new NativeWorkflowService(root, config, executor);
@@ -241,6 +266,62 @@ describe("scenario: R62 md-site, a finding chain on one symbol (#1959)", () => {
     const batteries = artifacts("chains/battery/");
     expect(batteries.map((b) => b.decision)).toEqual(["reopen", "pass"]);
     expect((batteries[0]?.cases as { findingId: string; status: string }[]).map((c) => [c.findingId, c.status])).toEqual([["F1", "reproduced"], ["F2", "refuted"]]);
+  }, 120_000);
+});
+
+// R62 md-site again (#1969): the class has four members, and the rewrite makes only the cases it is
+// shown pass. Without the probe the third member is found by one more review round and the chain
+// rewrites again; with it, one probe call finds members c and d before the rewrite starts.
+describe("scenario: R62 md-site, a sibling probe at the second link of a chain (#1969)", () => {
+  const FOUR = ["a", "b", "c", "d"] as const;
+
+  test("with chainProbe on, the probe's failing cases join the rewrite's battery and no third finding round comes", async () => {
+    const { root, runId, done, executor, service, artifacts } = await drive({ quality: { chainRewrite: "on", chainProbe: "on" }, members: FOUR, batteryOnly: true, probe: ["c", "d", "pass"] });
+    expect(done.status).toBe("completed");
+    expect(service.store.run(runId).policy_json).toContain('"chainProbe":"on"');
+    const [patch, rewrite, ...rest] = executor.corrections;
+    expect(rest).toEqual([]);
+    expect(patch?.findingIds).toEqual(["F1"]);
+    expect(rewrite?.findingIds).toEqual(["F2"]);
+    // One probe call, before the rewrite's attempt.
+    const calls = executor.calls.map((c) => c.output);
+    expect(calls.filter((c) => c === "chain-family")).toHaveLength(1);
+    expect(executor.calls.findIndex((c) => c.output === "chain-family")).toBeLessThan(executor.calls.findIndex((c) => c.taskId === rewrite?.taskId));
+    const markers = rewrite?.battery?.cases.map((c) => c.command.match(/case-(\w)/)?.[1]);
+    expect(markers).toEqual(["a", "b", "c", "d"]);
+    expect(rewrite?.battery?.cases.slice(2).map((c) => [c.expected, c.actual])).toEqual([["nested", "flat"], ["nested", "flat"]]);
+    expect(readFileSync(join(root, "inline.txt"), "utf8")).toContain("case-d");
+    // Two finding rounds and the closing one: the probe found c and d, not the review.
+    expect(calls.filter((c) => c === "convergence")).toHaveLength(3);
+    const [family, ...others] = artifacts("chains/family/") as unknown as FamilyRecord[];
+    expect(others).toEqual([]);
+    expect(family).toMatchObject({ taskId: rewrite?.taskId, findingId: "F2", symbol: "findDelimitedInline", shown: ["F1", "F2"] });
+    // The case the battery already held is not run again.
+    expect(family?.cases.map((c) => [c.status, c.decision])).toEqual([["refuted", "join"], ["refuted", "join"], ["reproduced", "skip"]]);
+    const joined = service.store.findings(runId).filter((f) => f.id.startsWith("F2-family-"));
+    expect(joined.map((f) => [f.id, JSON.parse(f.body_json).repeatOf, f.repair_task_id])).toEqual([["F2-family-1", "F2", rewrite?.taskId], ["F2-family-2", "F2", rewrite?.taskId]]);
+    // The pre-review battery holds the probed members too.
+    const batteries = artifacts("chains/battery/");
+    expect((batteries[0]?.cases as unknown[]).length).toBe(4);
+
+    // The probe's decisions replay from the bench trace.
+    const dir = mkdtempSync(join(tmpdir(), "finding-chain-probe-trace-"));
+    cleanups.push(() => rmSync(dir, { recursive: true, force: true }));
+    const out = join(dir, "run.sqlite.gz");
+    exportTrace(root, out);
+    const replayed = replayTrace(out).runs.find((r) => r.runId === runId);
+    expect(replayed?.findingChains.filter((b) => b.kind === "family").map((b) => [b.recorded, b.replayed])).toEqual([["join", "join"], ["join", "join"], ["skip", "skip"]]);
+    expect(replayed?.newChainDecisions).toBe(0);
+    expect(replayTrace(out, { familyRule: () => "skip" }).runs.find((r) => r.runId === runId)?.newChainDecisions).toBe(2);
+  }, 120_000);
+
+  test("with chainProbe off, the next member is found by another review round", async () => {
+    const { done, executor, artifacts } = await drive({ policy: { chainRewrite: "on" }, members: FOUR, batteryOnly: true, probe: ["c", "d"] });
+    expect(done.status).toBe("completed");
+    expect(executor.calls.filter((c) => c.output === "chain-family")).toEqual([]);
+    expect(artifacts("chains/family/")).toEqual([]);
+    expect(executor.corrections.map((c) => c.findingIds)).toEqual([["F1"], ["F2"], ["F3"], ["F4"]]);
+    expect(executor.calls.filter((c) => c.output === "convergence").length).toBeGreaterThan(3);
   }, 120_000);
 });
 
