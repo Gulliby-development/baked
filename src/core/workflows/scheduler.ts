@@ -52,6 +52,7 @@ import {
   failedCheckFindings,
   failingFilesInOutput,
   failureSignature as failingLines,
+  failingOf,
   failuresCovered,
   isTestOf,
   noTestsCollected,
@@ -492,6 +493,14 @@ import { preloadTaskFiles } from "./read-outline.js";
 import { recoverRun, requestRecovery, settleSupersededEffects } from "./recovery.js";
 import { recoveryAdvice } from "./remedies.js";
 import { RepairBlockSchema } from "./repairable-schema.js";
+import {
+  REPEAT_KIND,
+  REPEAT_TASKS_DIR,
+  type RepeatCheck,
+  type RepeatRecord,
+  repeatCheck,
+  repeatRecord,
+} from "./repeated-failure.js";
 import { deliverableProblems, repairDeliverables, requestCoverage } from "./request-coverage.js";
 import {
   type AccountRefusal,
@@ -581,7 +590,7 @@ import {
   rungText,
   writeLadder,
 } from "./stall-ladder.js";
-import { recordWouldStop, stopFault } from "./stop-reasons.js";
+import { recordWouldStop, stopFault, stopMode } from "./stop-reasons.js";
 import {
   repairUncoveredCriteria,
   UNCOVERED_SUBMISSIONS,
@@ -3400,6 +3409,18 @@ export class WorkflowScheduler {
     if (!stoppedBy) return null;
     const evidence = this.hostFinishEvidence(runId, policy, task);
     if (!evidence) return null;
+    // The carried edits keep the host's rows block, as the submit path requires (#1995): in R64
+    // the host finish accepted a block that the submit path's check never saw.
+    if (task.rows?.length) {
+      const rows = (() => {
+        try {
+          return this.taskRowFiles(runId, state, policy, task);
+        } catch {
+          return null;
+        }
+      })();
+      if (!rows || (await rowFileProblems(root, rows)).length) return null;
+    }
     signal.throwIfAborted();
     if (evidence.repro && (await evidence.repro(root, signal)).length) return null;
     const checks = [...evidence.named];
@@ -5002,19 +5023,7 @@ export class WorkflowScheduler {
     let extra = inputExtra;
     let generatedRows: ReturnType<typeof rowFiles> = [];
     if (task?.rows?.length && stageProfile.output === "implementation") {
-      const artifact = this.store.latestArtifact(runId, ROWS_ARTIFACT);
-      if (!rowsAsDataOn(policy) || !artifact || !state.spec)
-        throw new WorkflowFault(
-          "ARTIFACT_MISSING",
-          "Audited rows.json is required before implementation",
-        );
-      const rows = JSON.parse(this.store.readArtifact(runId, artifact.id)) as RowsArtifact;
-      if (rows.specHash !== hashJson(state.spec))
-        throw new WorkflowFault(
-          "INPUT_CHANGED",
-          "Acceptance rows belong to an earlier spec; analyze again",
-        );
-      generatedRows = rowFiles(task, rows);
+      generatedRows = this.taskRowFiles(runId, state, policy, task);
       extra = {
         ...(extra as Record<string, unknown>),
         acceptanceRows: {
@@ -10596,6 +10605,27 @@ ${note}`;
    * Puts the host's block of an inline rows test file in place, journaled like any host write:
    * before the attempt so the agent sees it, and after so an edit that dropped it is undone.
    */
+  /** The host-written row files of a task with audited rows, from the run's rows artifact. */
+  private taskRowFiles(
+    runId: string,
+    state: RuntimeState,
+    policy: RunPolicy,
+    task: Task,
+  ): ReturnType<typeof rowFiles> {
+    const artifact = this.store.latestArtifact(runId, ROWS_ARTIFACT);
+    if (!rowsAsDataOn(policy) || !artifact || !state.spec)
+      throw new WorkflowFault(
+        "ARTIFACT_MISSING",
+        "Audited rows.json is required before implementation",
+      );
+    const rows = JSON.parse(this.store.readArtifact(runId, artifact.id)) as RowsArtifact;
+    if (rows.specHash !== hashJson(state.spec))
+      throw new WorkflowFault(
+        "INPUT_CHANGED",
+        "Acceptance rows belong to an earlier spec; analyze again",
+      );
+    return rowFiles(task, rows);
+  }
   private writeInlineRows(runId: string, attempt: string, root: string, file: InlineRowFile): void {
     const absolute = workspacePath(root, file.path);
     let existing: string | null = null;
@@ -15438,6 +15468,9 @@ ${note}`;
       worktree,
       [...journaled, ...changedPaths(baseline, final).filter((path) => declared.has(path))],
       `${title}\n\nAccepted result of BAKED workflow run ${runId}.\n\nBaked-Run: ${runId}\nBaked-Snapshot: ${state.snapshotId}\n`,
+      // An initiative feature's branch is the base of the features that build on it, which read
+      // its accepted spec at specs/<feature>/spec.json; its delivery still leaves specs/ out.
+      state.initiativeBounds ? { specs: true } : {},
     );
     state.worktree = { ...worktree, commit };
   }
@@ -15457,7 +15490,11 @@ ${note}`;
     if (!fresh.length) return;
     if (scope === "task") {
       state.pendingTaskRepair = fresh.map((f) => f.id);
-      this.store.transaction(() => this.store.saveState(runId, state));
+      this.store.transaction(() => {
+        this.store.saveState(runId, state);
+        // Before the correction is counted, so a chain the round limit refuses records it too.
+        this.recordRepeatedFailures(runId, state, policy, fresh);
+      });
     }
     this.store.transaction(() => {
       this.amendSpec(runId, state, fresh);
@@ -15470,6 +15507,80 @@ ${note}`;
       if (parsed.schemaVersion === 1)
         state.stageIndex = parsed.definition.stages.findIndex((s) => s.kind === "task-graph");
     });
+  }
+  /**
+   * Records each failing corrective's required checks (`repeats/tasks/<task>.json`, #1996) and,
+   * when they fail exactly as the corrective it corrects did, the `repeated_failure` stop reason's
+   * would-stop, once per chain. Shadow only: the correction is opened as before. cfgquill lint
+   * a843cc11 (bench round 64): T005, T006 and T007 failed gofmt with the same byte order mark
+   * error at the same position, and only `maxTaskRepairs` ended the chain after 4.8M tokens.
+   */
+  private recordRepeatedFailures(
+    runId: string,
+    state: RuntimeState,
+    policy: RunPolicy,
+    findings: Review["findings"],
+  ): void {
+    const graph = state.graph;
+    if (!graph) return;
+    const byTask = new Map<string, Review["findings"]>();
+    for (const finding of findings) {
+      const taskId = state.repairPredecessors[finding.id];
+      if (taskId) byTask.set(taskId, [...(byTask.get(taskId) ?? []), finding]);
+    }
+    const recordOf = (taskId: string): RepeatRecord | null => {
+      const artifact = this.store.latestArtifact(runId, `${REPEAT_TASKS_DIR}${taskId}.json`);
+      if (!artifact) return null;
+      try {
+        return JSON.parse(this.store.readArtifact(runId, artifact.id)) as RepeatRecord;
+      } catch {
+        return null;
+      }
+    };
+    for (const [taskId, own] of byTask) {
+      const task = graph.tasks.find((t) => t.id === taskId);
+      if (!task || task.origin === "planned" || recordOf(taskId)) continue;
+      const checks = own.flatMap((finding): RepeatCheck[] => {
+        const id = taskCheckOfClaim(finding.claim) ?? checkOfClaim(finding.claim);
+        if (!id) return [];
+        const output =
+          this.commandOutput(runId, finding.evidenceIds) ?? failingOf(finding.impact) ?? "";
+        const files = [
+          ...(finding.file ? [finding.file] : []),
+          ...failingFilesInOutput(output, graph.tasks),
+        ];
+        return [repeatCheck(id, output, files)];
+      });
+      if (!checks.length) continue;
+      const corrected =
+        task.findingIds.map((id) => state.repairPredecessors[id]).find(Boolean) ?? null;
+      const previous = corrected ? recordOf(corrected) : null;
+      const record = repeatRecord(taskId, corrected, previous, checks);
+      this.store.artifact(
+        runId,
+        REPEAT_KIND,
+        `${REPEAT_TASKS_DIR}${taskId}.json`,
+        canonical(record),
+      );
+      if (record.decision !== "repeat" || !record.previous) continue;
+      const mode = stopMode(policy, "repeated_failure");
+      if (mode === "enforce") continue;
+      const positions = checks.flatMap((c) => c.files).slice(0, 5);
+      recordWouldStop(this.store, runId, {
+        reason: "repeated_failure",
+        mode,
+        key: `chain-${record.root}`,
+        summary: `${taskId} failed ${checks.map((c) => c.id).join(", ")} exactly as ${record.previous} did${positions.length ? ` (${positions.join(", ")})` : ""}: a correction would not start another model session`,
+        inputs: {
+          rounds: [record.previous, taskId],
+          root: record.root,
+          checks: checks.map((c) => c.id),
+          files: [...new Set(checks.flatMap((c) => c.files))],
+          hash: record.hash,
+          firstDifference: record.firstDifference,
+        },
+      });
+    }
   }
   /**
    * A correction whose findings are all low, or all point at one file, starts as a quick fix when

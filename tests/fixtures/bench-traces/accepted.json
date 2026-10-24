@@ -82,5 +82,9 @@
   "R62/stepvet.sqlite.gz#40060df8-bfac-4d9c-a5df-5904da9f92e6": {
     "newRecoveries": 6,
     "reason": "#1956, #1957: six codex exec attempts of tagexpr (four analyze on sol, one on astra, one implement on luna) lost their answer to the readline split at U+2028 (#1956) and ended with \"Codex exec returned no final agent message\" and no first byte. The run classified them provider_unavailable, so no ladder rung was recorded (#1957); the replay reads an answer-less call as a stall and climbs, which also shifts the rung of the astra stall at 17:04 (fresh-session recorded, lower-effort replayed). Same commit as the runner (28b3ceea)."
+  },
+  "R64/cfgquill.sqlite.gz#a843cc11-5b8d-4e91-8b46-dea39b078ae7": {
+    "newRepeatStops": 1,
+    "reason": "#1996: T006 failed gofmt and tests-written with the same failing lines on internal/lint/rules_test.go as T005 (the byte order mark at 26:2217 and 26:3024); the repeated_failure reason (shadow) records a would-stop there, which the round, recorded before #1996, did not."
   }
 }

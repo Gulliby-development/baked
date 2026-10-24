@@ -1520,6 +1520,9 @@ describe("initiative runtime", () => {
     expect(git(t.root, "show", `${base}:a.txt`)).toStartWith("ready");
     expect(git(t.root, "show", `${base}:b.txt`)).toStartWith("ready");
     expect(git(t.root, "show", `baked/wf/${cRun}:c.txt`)).toStartWith("ready");
+    // An upstream feature's branch keeps its accepted spec, which c's prompt points at (#1998).
+    const aFeature = t.workflows.store.run(t.featureOf(view, "a").runId ?? "").feature_id;
+    expect(git(t.root, "ls-tree", "-r", "--name-only", base, "--", "specs")).toContain(`specs/${aFeature}/spec.json`);
     // The working copy is never written.
     expect(existsSync(join(t.root, "a.txt"))).toBe(false);
     expect(git(t.root, "status", "--porcelain")).toBe("");

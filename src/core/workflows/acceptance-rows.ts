@@ -3,6 +3,7 @@ import { posix } from "node:path";
 import { hashJson } from "../specs/hash.js";
 import { workspacePath } from "../specs/validate.js";
 import {
+  escapeInvisible,
   hasInlineRows,
   INLINE_HARNESS,
   type InlineRowFile,
@@ -10,7 +11,9 @@ import {
   inlineRowFile,
   javaString,
   javaValue,
+  jsonText,
   layoutFree,
+  utf16Escape,
 } from "./acceptance-rows-inline.js";
 import type { AcceptanceRow } from "./acceptance-rows-model.js";
 import { WorkflowFault } from "./errors.js";
@@ -438,12 +441,11 @@ const camel = (text: string): string =>
     .map((word) => word[0]?.toUpperCase() + word.slice(1))
     .join("");
 
-/** C# reads JSON escapes in a regular literal, but U+0085, U+2028 and U+2029 end its line. */
-const csharpString = (text: string): string =>
-  JSON.stringify(text).replace(
-    /[\u0085\u2028\u2029]/g,
-    (ch) => `\\u${(ch.codePointAt(0) ?? 0).toString(16).padStart(4, "0")}`,
-  );
+/**
+ * C# reads JSON escapes in a regular literal, but U+0085, U+2028 and U+2029 end its line: no
+ * invisible character is written raw (#1995).
+ */
+const csharpString = (text: string): string => escapeInvisible(JSON.stringify(text), utf16Escape);
 
 /**
  * One contract for every framework: the agent writes only the harness, and the host's test feeds
@@ -469,7 +471,7 @@ const TEMPLATES: Record<RowTest["framework"], Template> = {
     `${header("//", harness)}#[path = ${JSON.stringify(posix.relative(posix.dirname(test), harness))}]\nmod harness;\n\nuse serde_json::Value;\n\n/// JSON numbers compare by value, so 2 and 2.0 are equal.\nfn same(a: &Value, b: &Value) -> bool {\n    match (a, b) {\n        (Value::Number(x), Value::Number(y)) => x.as_f64() == y.as_f64(),\n        (Value::Array(x), Value::Array(y)) => {\n            x.len() == y.len() && x.iter().zip(y).all(|(p, q)| same(p, q))\n        }\n        (Value::Object(x), Value::Object(y)) => {\n            x.len() == y.len() && x.iter().all(|(k, v)| y.get(k).is_some_and(|w| same(v, w)))\n        }\n        _ => a == b,\n    }\n}\n\n#[test]\nfn acceptance_rows() {\n    let text = include_str!(${JSON.stringify(posix.relative(posix.dirname(test), data))});\n    let rows: Vec<Value> = serde_json::from_str(text).expect("acceptance rows");\n    let mut failed = Vec::new();\n    for row in &rows {\n        let got = harness::actual(row["input"].clone());\n        if !same(&got, &row["expected"]) {\n            let (id, want) = (&row["id"], &row["expected"]);\n            failed.push(format!("{id}: got {got}, want {want}"));\n        }\n    }\n    assert!(failed.is_empty(), "{}", failed.join("\\n"));\n}\n`,
   // A test project's output directory holds no source files, so the rows are a literal here too.
   xunit: ({ harness, test, package: pkg, rows }) =>
-    `${header("//", harness)}using System.Collections.Generic;\nusing System.Text.Json;\nusing System.Text.Json.Nodes;\nusing Xunit;\n\nnamespace ${pkg}\n{\n    public class ${posix.basename(test, ".cs")}\n    {\n        private const string Rows = ${csharpString(JSON.stringify(rows.map(({ id, input, expected }) => ({ id, input, expected }))))};\n\n        public static IEnumerable<object[]> Data()\n        {\n            foreach (var row in JsonNode.Parse(Rows)!.AsArray())\n                yield return new object[]\n                {\n                    (string)row!["id"]!,\n                    row["input"]?.ToJsonString() ?? "null",\n                    row["expected"]?.ToJsonString() ?? "null",\n                };\n        }\n\n        [Theory]\n        [MemberData(nameof(Data))]\n        public void AcceptanceRow(string id, string input, string expected)\n        {\n            var result = ${posix.basename(harness, ".cs")}.Actual(JsonNode.Parse(input));\n            var actual = JsonSerializer.SerializeToNode(result);\n            Assert.True(\n                JsonNode.DeepEquals(actual, JsonNode.Parse(expected)),\n                $"{id}: got {actual?.ToJsonString() ?? "null"}, want {expected}");\n        }\n    }\n}\n`,
+    `${header("//", harness)}using System.Collections.Generic;\nusing System.Text.Json;\nusing System.Text.Json.Nodes;\nusing Xunit;\n\nnamespace ${pkg}\n{\n    public class ${posix.basename(test, ".cs")}\n    {\n        private const string Rows = ${csharpString(jsonText(rows.map(({ id, input, expected }) => ({ id, input, expected }))))};\n\n        public static IEnumerable<object[]> Data()\n        {\n            foreach (var row in JsonNode.Parse(Rows)!.AsArray())\n                yield return new object[]\n                {\n                    (string)row!["id"]!,\n                    row["input"]?.ToJsonString() ?? "null",\n                    row["expected"]?.ToJsonString() ?? "null",\n                };\n        }\n\n        [Theory]\n        [MemberData(nameof(Data))]\n        public void AcceptanceRow(string id, string input, string expected)\n        {\n            var result = ${posix.basename(harness, ".cs")}.Actual(JsonNode.Parse(input));\n            var actual = JsonSerializer.SerializeToNode(result);\n            Assert.True(\n                JsonNode.DeepEquals(actual, JsonNode.Parse(expected)),\n                $"{id}: got {actual?.ToJsonString() ?? "null"}, want {expected}");\n        }\n    }\n}\n`,
 };
 
 /** A file the host writes for a rows task: a whole file, or the blocks of an inline test file. */

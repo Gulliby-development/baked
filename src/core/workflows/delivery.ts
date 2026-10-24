@@ -30,6 +30,8 @@ import {
   internalPath,
   looksSecret,
   type RemoteFailure,
+  runSpecPath,
+  shipsSpecs,
   statusPaths,
   treeModes,
 } from "./delivery-git.js";
@@ -523,10 +525,7 @@ export async function prepareDelivery(
     ]),
   ].sort();
 
-  const specsDir = `specs/${run.feature_id}/`;
-  const withSpecs =
-    options.specs ??
-    (await git(workspace, ["ls-tree", "--name-only", base, "--", "specs"])).stdout.trim() !== "";
+  const withSpecs = options.specs ?? (await shipsSpecs(workspace, base));
   const files: DeliveryFile[] = [];
   const excluded: DeliveryExclusion[] = [];
   const dirty: string[] = [];
@@ -544,7 +543,7 @@ export async function prepareDelivery(
       excluded.push({ path, reason: "internal" });
       continue;
     }
-    if (!withSpecs && path.startsWith(specsDir)) {
+    if (!withSpecs && runSpecPath(path, run.feature_id)) {
       excluded.push({ path, reason: "specs" });
       continue;
     }

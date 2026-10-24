@@ -10,7 +10,7 @@ import { type CallRate, chainCosts, openTrace, type PlanPriceReplay, replayChain
 
 // #1649, #1715: every recorded bench-round trace replays through the current host decisions: the
 // forecast and cap code, the per-call cost cap (#1740), the first-response deadline of each model
-// call, the test task split of each sizing report (#1789), each usage-policy refusal (#1895), each finding-chain decision (#1959), and the initiative share gate (#1707), asked both on its recorded inputs and with each start
+// call, the test task split of each sizing report (#1789), each usage-policy refusal (#1895), each finding-chain decision (#1959), each repeated corrective failure (#1996), and the initiative share gate (#1707), asked both on its recorded inputs and with each start
 // rewound and recomputed, and the plan auto-approval on the run state it was asked with (#1707). A
 // stop, cap growth, park or approval decision the recorded run did not make fails the suite, unless
 // accepted.json lists it for that run or initiative with the reason: the pull request that changes
@@ -26,6 +26,7 @@ interface Accepted {
   newRecoveries?: number;
   newPolicyStops?: number;
   newChainDecisions?: number;
+  newRepeatStops?: number;
   newShareStops?: number;
   newStartStops?: number;
   newApprovalDeclines?: number;
@@ -75,6 +76,7 @@ describe("bench-round traces replay without new forecast stops or growth (#1649)
           newRecoveries: run.newRecoveries,
           newPolicyStops: run.newPolicyStops,
           newChainDecisions: run.newChainDecisions,
+          newRepeatStops: run.newRepeatStops,
         }).toEqual({
           run: run.runId,
           newStops: allowed?.newStops ?? 0,
@@ -85,6 +87,7 @@ describe("bench-round traces replay without new forecast stops or growth (#1649)
           newRecoveries: allowed?.newRecoveries ?? 0,
           newPolicyStops: allowed?.newPolicyStops ?? 0,
           newChainDecisions: allowed?.newChainDecisions ?? 0,
+          newRepeatStops: allowed?.newRepeatStops ?? 0,
         });
       }
       // Run states before R52 counted the host's own test splits in `hostSplitTasks`, which the
@@ -448,5 +451,20 @@ describe("finding chains replay on recorded findings (#1981)", () => {
     } finally {
       dispose();
     }
+  }, 120000);
+});
+
+describe("repeated corrective failures replay on recorded chains (#1996)", () => {
+  test("R64 cfgquill lint: T006 fails as T005 did, a would-stop the round did not record; other chains do not repeat", () => {
+    const replay = replayTrace(join(ROOT, "R64/cfgquill.sqlite.gz"));
+    const lint = replay.runs.find((r) => r.runId.startsWith("a843cc11"));
+    expect(lint?.repeatedFailures.map((b) => [b.taskId, b.previous, b.recorded, b.replayed, b.source])).toEqual([
+      ["T005", null, null, "first", "findings"],
+      ["T006", "T005", null, "repeat", "findings"],
+    ]);
+    expect(lint?.newRepeatStops).toBe(1);
+    // Before #1996 nothing compared the rounds.
+    const counted = replayTrace(join(ROOT, "R64/cfgquill.sqlite.gz"), { repeatRule: (previous) => (previous ? "progress" : "first") });
+    expect(counted.runs.reduce((n, r) => n + r.newRepeatStops, 0)).toBe(0);
   }, 120000);
 });
