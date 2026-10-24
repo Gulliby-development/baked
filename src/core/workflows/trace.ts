@@ -52,6 +52,14 @@ import {
   type RepeatRule,
   repeatedFailureDecision,
 } from "./repeated-failure.js";
+import {
+  REQUEST_CONFLICT_KIND,
+  REQUEST_CONFLICTS_DIR,
+  type RequestConflictDecision,
+  type RequestConflictRecord,
+  type RequestConflictRule,
+  requestConflictDecision,
+} from "./request-conflict.js";
 import { PolicySchema, type RunPolicy } from "./schemas.js";
 import { NativeWorkflowService } from "./service.js";
 import { exceedsTestCapacity, type SizingReport } from "./sizing.js";
@@ -89,6 +97,8 @@ const KEPT_ARTIFACTS = new Set([
   CHAIN_KIND,
   // Each failing corrective's required checks, normalized output stood in (#1996).
   REPEAT_KIND,
+  // Each spec conflict's request decision: checked sides and re-audit verdicts, no quotes (#2016).
+  REQUEST_CONFLICT_KIND,
 ]);
 
 /** Tables that hold evidence, effects or prose the replay never reads. */
@@ -589,6 +599,58 @@ export interface RunReplay {
   repeatedFailures: RepeatedFailureBoundary[];
   /** Chains the current rule records a repeated-failure would-stop on that the recording did not. */
   newRepeatStops: number;
+  /** Each spec conflict's decision for the request against the current rule (#2016). */
+  requestConflicts: RequestConflictBoundary[];
+  /** Conflict reports the current rule settles, re-audits or leaves differently than the recording. */
+  newConflictDecisions: number;
+}
+
+export interface RequestConflictBoundary {
+  taskId: string;
+  /** The task's how-manieth conflict report, from 1. */
+  report: number;
+  recorded: RequestConflictDecision;
+  replayed: RequestConflictDecision;
+}
+
+/**
+ * Every spec conflict decision for the request a run recorded (`conflicts/request/`, #2016),
+ * decided again from its recorded inputs: the checked sides, the foreign tests, the cited criteria
+ * and the re-audit's verdicts. A record whose re-audit ran is decided on those verdicts, so a
+ * rule that would not have asked the re-audit replays its first answer. Traces before #2016
+ * record none.
+ */
+export function replayRequestConflicts(
+  store: WorkflowStore,
+  runId: string,
+  decide: RequestConflictRule = requestConflictDecision,
+): RequestConflictBoundary[] {
+  return store
+    .artifacts(runId)
+    .filter(
+      (a) => a.kind === REQUEST_CONFLICT_KIND && a.logical_path.startsWith(REQUEST_CONFLICTS_DIR),
+    )
+    .flatMap((artifact) => {
+      let record: RequestConflictRecord;
+      try {
+        record = JSON.parse(store.readArtifact(runId, artifact.id));
+      } catch {
+        return [];
+      }
+      const input = {
+        sides: record.sides ?? [],
+        foreignTests: record.foreignTests ?? 0,
+        criterionIds: record.criterionIds ?? [],
+        reaudit: record.reaudit ?? null,
+        reauditedBefore: record.reauditedBefore ?? false,
+      };
+      // The re-audit is a step of the decision: with its verdicts recorded, ask the rule with them.
+      const first = decide({ ...input, reaudit: null });
+      const replayed = first === "reaudit" && input.reaudit !== null ? decide(input) : first;
+      return [
+        { taskId: record.taskId, report: record.report, recorded: record.decision, replayed },
+      ];
+    });
 }
 
 export interface RepeatedFailureBoundary {
@@ -2111,6 +2173,8 @@ function replayRun(
   | "newChainDecisions"
   | "repeatedFailures"
   | "newRepeatStops"
+  | "requestConflicts"
+  | "newConflictDecisions"
 > | null {
   const db = store.connection;
   const run = store.run(runId);
@@ -2280,6 +2344,7 @@ export function replayTrace(
     chainRule?: ChainRule;
     batteryRule?: BatteryRule;
     repeatRule?: RepeatRule;
+    requestConflictRule?: RequestConflictRule;
   } = {},
 ): TraceReplay {
   // Initiative starts rewind their own copies of the trace, before the run replay rewinds this one.
@@ -2318,6 +2383,12 @@ export function replayTrace(
     const repeats = new Map(
       runIds.map((runId) => [runId, replayRepeatedFailures(store, runId, options.repeatRule)]),
     );
+    const requests = new Map(
+      runIds.map((runId) => [
+        runId,
+        replayRequestConflicts(store, runId, options.requestConflictRule),
+      ]),
+    );
     const runs: RunReplay[] = [];
     for (const runId of runIds) {
       const firstByte = timings.get(runId) ?? [];
@@ -2338,6 +2409,7 @@ export function replayTrace(
       const policyRefusals = refusals.get(runId) ?? [];
       const findingChains = chains.get(runId) ?? [];
       const repeatedFailures = repeats.get(runId) ?? [];
+      const requestConflicts = requests.get(runId) ?? [];
       if (
         !replay.boundaries.length &&
         !firstByte.length &&
@@ -2345,7 +2417,8 @@ export function replayTrace(
         !stallLadder.length &&
         !policyRefusals.length &&
         !findingChains.length &&
-        !repeatedFailures.length
+        !repeatedFailures.length &&
+        !requestConflicts.length
       )
         continue;
       runs.push({
@@ -2366,6 +2439,8 @@ export function replayTrace(
         newChainDecisions: findingChains.filter((b) => b.replayed !== b.recorded).length,
         repeatedFailures,
         newRepeatStops: newRepeatStops(repeatedFailures),
+        requestConflicts,
+        newConflictDecisions: requestConflicts.filter((b) => b.replayed !== b.recorded).length,
       });
     }
     const gates = replayShareGate(store, options.shareGate);
