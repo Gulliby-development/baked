@@ -190,16 +190,40 @@ export interface Fence {
   proseBefore: number;
   /** That prose. */
   prose: string;
+  /** A unified diff (`diff`/`patch`, or a first line such as `--- a/x`): a change, not a program's text. */
+  diff: boolean;
 }
 
-/** The fenced code blocks of a Markdown text, with the prose before each; plan sizing reads a request's too. */
+/** A first block line that starts a unified diff: `--- a/x`, `diff --git`, `Index:` or a hunk. */
+const DIFF_START = /^(?:--- \S|diff --git |Index: |@@ -\d)/;
+
+/**
+ * Whether `line` closes a block opened by `marker` with `indent` leading spaces. A closing fence
+ * is the same character, at least as long, with nothing after it but spaces (CommonMark): a
+ * "```bash" line inside a block is content. In a diff block a fence indented further than the
+ * opening one is a context line of the diff (" ```", the README's own fence after the diff's
+ * leading space), never the end: R65 seqmill-update and aclvet-update lost their README hunks
+ * there, and sizing priced those tasks from history (#2018).
+ */
+function closesFence(line: string, marker: string, indent: number, diff: boolean): boolean {
+  const close = /^( {0,3})(`{3,}|~{3,})\s*$/.exec(line);
+  if (!close) return false;
+  const fence = close[2] as string;
+  if (fence[0] !== marker[0] || fence.length < marker.length) return false;
+  return !diff || (close[1] as string).length <= indent;
+}
+
+/**
+ * The fenced code blocks of a Markdown text, with the prose before each; plan sizing reads a
+ * request's too. The one reader of fenced blocks: where a block ends is decided by `closesFence`.
+ */
 export function fences(text: string): Fence[] {
   const lines = text.replace(/\r\n?/g, "\n").split("\n");
   const out: Fence[] = [];
   let prose = 0;
   let proseText = "";
   for (let i = 0; i < lines.length; i++) {
-    const open = /^ {0,3}(`{3,}|~{3,})\s*([\w+-]*)/.exec(lines[i] as string);
+    const open = /^( {0,3})(`{3,}|~{3,})\s*([\w+-]*)/.exec(lines[i] as string);
     if (!open) {
       if ((lines[i] as string).trim()) {
         prose++;
@@ -207,16 +231,20 @@ export function fences(text: string): Fence[] {
       }
       continue;
     }
-    const marker = open[1] as string;
+    const indent = (open[1] as string).length;
+    const marker = open[2] as string;
+    const lang = (open[3] ?? "").toLowerCase();
+    const diff = lang === "diff" || lang === "patch" || DIFF_START.test(lines[i + 1] ?? "");
     const body: string[] = [];
     let j = i + 1;
-    while (j < lines.length && !(lines[j] as string).trim().startsWith(marker))
+    while (j < lines.length && !closesFence(lines[j] as string, marker, indent, diff))
       body.push(lines[j++] as string);
     out.push({
-      lang: (open[2] ?? "").toLowerCase(),
+      lang,
       start: i + 2,
       lines: body,
       proseBefore: prose,
+      diff,
       prose: proseText,
     });
     prose = 0;
@@ -279,7 +307,7 @@ function fixtureName(block: Fence): string | null {
 /** The files a document tells its reader to save from its blocks, in document order (#1849). */
 export function extractFixtures(text: string): DocFixture[] {
   return fences(text).flatMap((block) => {
-    if (block.lines.some((l) => /^\s*\$ /.test(l))) return [];
+    if (block.diff || block.lines.some((l) => /^\s*\$ /.test(l))) return [];
     const path = fixtureName(block);
     return path ? [{ path, line: block.start, content: `${block.lines.join("\n")}\n` }] : [];
   });
@@ -318,6 +346,8 @@ export function extractExamples(file: string, text: string): DocExample[] {
   const blocks = fences(text);
   for (let b = 0; b < blocks.length; b++) {
     const block = blocks[b] as Fence;
+    // A diff shows a change; its context lines (" $ tool --version") are not a session (#2018).
+    if (block.diff) continue;
     const prompted = block.lines.some((l) => /^\s*\$ /.test(l));
     if (prompted) {
       for (let i = 0; i < block.lines.length; ) {
@@ -352,7 +382,8 @@ export function extractExamples(file: string, text: string): DocExample[] {
       continue;
     }
     const output = blocks[b + 1];
-    if (!SHELL_LANGS.has(block.lang) || !output || !OUTPUT_LANGS.has(output.lang)) continue;
+    if (!SHELL_LANGS.has(block.lang) || !output || output.diff || !OUTPUT_LANGS.has(output.lang))
+      continue;
     if (output.proseBefore > 2 || output.lines.some((l) => /^\s*\$ /.test(l))) continue;
     const commands = block.lines.filter((l) => l.trim() && !l.trim().startsWith("#"));
     if (commands.length !== 1) continue;

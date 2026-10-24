@@ -297,30 +297,53 @@ export function changedFunctions(
   );
 }
 
-/** The changed lines of each file on the new side of a unified diff. */
+/**
+ * The changed lines of each file on the new side of a unified diff. Inside a hunk (by its `@@`
+ * counts) a removed `---` line or an added `+++` line is content, not a file header: a README
+ * hunk that drops a `---` rule or front matter counts that line (#2018). A `--- ` line followed
+ * by `+++ ` starts the next file even where a hand-written hunk's counts run long.
+ */
 export function changedLines(diff: string): Map<string, number[]> {
   const out = new Map<string, number[]>();
+  const texts = diff.split("\n");
   let file: string | null = null;
   let line = 0;
-  for (const text of diff.split("\n")) {
+  let oldLeft = 0;
+  let newLeft = 0;
+  for (let i = 0; i < texts.length; i++) {
+    const text = texts[i] as string;
+    const inHunk = oldLeft > 0 || newLeft > 0;
+    const pairs = (at: number) =>
+      texts[at]?.startsWith("--- ") === true && texts[at + 1]?.startsWith("+++ ") === true;
+    if (pairs(i)) continue;
     const header = /^\+\+\+ (?:b\/)?(.+)$/.exec(text);
-    if (header) {
+    if (header && (!inHunk || pairs(i - 1))) {
       file = header[1] === "/dev/null" ? null : (header[1] ?? null);
+      oldLeft = 0;
+      newLeft = 0;
       continue;
     }
-    const hunk = /^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@/.exec(text);
+    const hunk = /^@@ -\d+(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/.exec(text);
     if (hunk) {
-      line = Number(hunk[1]);
+      line = Number(hunk[2]);
+      oldLeft = Number(hunk[1] ?? 1);
+      newLeft = Number(hunk[3] ?? 1);
       continue;
     }
-    if (!file || text.startsWith("---")) continue;
+    if (!file || (!inHunk && text.startsWith("---"))) continue;
     if (text.startsWith("+")) {
       out.set(file, [...(out.get(file) ?? []), line]);
       line++;
+      newLeft = Math.max(0, newLeft - 1);
     } else if (text.startsWith("-")) {
       // A removed line sits between the new lines around it: count the line after it as touched.
       out.set(file, [...(out.get(file) ?? []), line]);
-    } else if (!text.startsWith("\\")) line++;
+      oldLeft = Math.max(0, oldLeft - 1);
+    } else if (!text.startsWith("\\")) {
+      line++;
+      oldLeft = Math.max(0, oldLeft - 1);
+      newLeft = Math.max(0, newLeft - 1);
+    }
   }
   return out;
 }

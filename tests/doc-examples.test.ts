@@ -7,6 +7,8 @@ import {
   DOC_EXAMPLE_LIMIT,
   type DocExampleResult,
   extractExamples,
+  extractFixtures,
+  fences,
   firstDifference,
   isDocFile,
   missingBuildOutput,
@@ -25,6 +27,51 @@ afterEach(async () => {
 
 const fence = "```";
 const say = (text: string) => `bun -e "console.log('${text}')"`;
+
+describe("fenced blocks (#2018)", () => {
+  const readmeDiff = [
+    "Update the README:",
+    `${fence}diff`,
+    "--- a/README.md",
+    "+++ b/README.md",
+    "@@ -3,5 +3,6 @@",
+    ` ${fence}bash`,
+    " $ tool --help",
+    "+$ tool --version",
+    " usage: tool",
+    ` ${fence}`,
+    fence,
+    "Then run:",
+    `${fence}sh`,
+    "$ tool --version",
+    "tool 1.0",
+    fence,
+  ].join("\n");
+
+  test("a diff block ends at its own fence, not at a README fence shown as a context line", () => {
+    const blocks = fences(readmeDiff);
+    expect(blocks.map((b) => [b.lang, b.diff, b.lines.length])).toEqual([["diff", true, 8], ["sh", false, 2]]);
+    expect(blocks[1]?.prose).toBe("Then run:\n");
+  });
+
+  test("a diff without a language, or indented in a list item, is a diff too", () => {
+    const bare = [fence, "--- a/README.md", "+++ b/README.md", "@@ -1,2 +1,2 @@", ` ${fence}`, "-a", "+b", fence].join("\n");
+    expect(fences(bare).map((b) => [b.diff, b.lines.length])).toEqual([[true, 6]]);
+    const listed = ["- Apply:", `  ${fence}diff`, "  @@ -1,2 +1,2 @@", `   ${fence}`, "  -a", "  +b", `  ${fence}`, "after"].join("\n");
+    expect(fences(listed).map((b) => b.lines.length)).toEqual([4]);
+  });
+
+  test("a fence line with an info string is content of the block it sits in (CommonMark)", () => {
+    const text = [`${fence}markdown`, "# Title", `${fence}bash`, "tool run", fence, "tail"].join("\n");
+    expect(fences(text).map((b) => b.lines)).toEqual([["# Title", "```bash", "tool run"]]);
+  });
+
+  test("a diff is no session: its context and added $ lines give no examples, its prose no fixture", () => {
+    expect(extractExamples("README.md", readmeDiff).map((e) => e.command)).toEqual(["tool --version"]);
+    const saved = ["Save this as `conf.toml`:", `${fence}diff`, "--- a/conf.toml", "+++ b/conf.toml", "@@ -1 +1 @@", "-a = 1", "+a = 2", fence].join("\n");
+    expect(extractFixtures(saved)).toEqual([]);
+  });
+});
 
 describe("documented examples", () => {
   test("prompted lines and a command block followed by its output are examples", () => {
