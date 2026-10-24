@@ -441,8 +441,7 @@ export async function runContentCommit(
       // the index ("racily clean"); a fresh time made a same-size edit look unchanged (#1954).
       const { atime, mtime } = statSync(own.index);
       utimesSync(index, atime, mtime);
-    }
-    else await required(root, ["read-tree", "HEAD"], { env });
+    } else await required(root, ["read-tree", "HEAD"], { env });
     // An exclude pathspec that names an ignored path fails the add ("paths are ignored"); the
     // linked node_modules is a junction on Windows, which .gitignore already covers.
     // The project root (a run without its own worktree) has `.baked`, usually ignored too.
