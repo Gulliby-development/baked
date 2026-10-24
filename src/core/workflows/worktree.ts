@@ -26,9 +26,9 @@ import {
   internalPath,
   looksSecret,
   runSpecPath,
-  shipsSpecs,
   statusPaths,
   treeModes,
+  treeShipsSpecs,
 } from "./delivery-git.js";
 import { WorkflowFault } from "./errors.js";
 import type { WorkflowStore } from "./store.js";
@@ -632,7 +632,7 @@ export async function commitRunBranch(
     // The run's spec artifacts stay run artifacts unless the project already tracks specs/, as
     // in the delivery plan (#1998), or the caller needs them on the branch.
     const featureId = store.run(runId).feature_id;
-    const withSpecs = options.specs ?? (await shipsSpecs(root, worktree.baseHead));
+    const withSpecs = options.specs ?? treeShipsSpecs(modes.keys());
     const updates: string[] = [];
     for (const path of [...new Set(paths)].sort()) {
       if (internalPath(path) || (!withSpecs && runSpecPath(path, featureId))) continue;

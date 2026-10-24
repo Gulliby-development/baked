@@ -163,6 +163,12 @@ export async function shipsSpecs(workspace: string, base: string): Promise<boole
   );
 }
 
+/** `shipsSpecs` for a caller that already listed the base tree recursively. */
+export function treeShipsSpecs(paths: Iterable<string>): boolean {
+  for (const path of paths) if (path.startsWith("specs/")) return true;
+  return false;
+}
+
 /** A path under the run's own spec folder. */
 export function runSpecPath(path: string, featureId: string): boolean {
   return path.startsWith(`specs/${featureId}/`);
