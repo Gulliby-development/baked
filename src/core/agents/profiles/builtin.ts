@@ -337,6 +337,22 @@ export const builtinProfiles = ProfileSchema.array().parse([
   },
   {
     schemaVersion: 1,
+    id: "chain-prober",
+    version: "1.0.0",
+    description: "Family of inputs around a finding chain",
+    role: "reviewer",
+    model: "$review",
+    context: "review",
+    instructions:
+      "Review found one defect class on one symbol one case at a time, and each case was patched after it was found. extra.cases lists the cases so far: each a command with its stdin or input files, the value the spec requires (expected) and the value the code gave (actual); extra.spec holds the spec rows they break. Propose the other members of that input class, so the next correction sees the class and not one more member: vary the input of the cases at depth one to three (swap, nest, repeat or remove their tokens and delimiters, combine two cases), and add the empty input and a single-token input. Write each case as a command of the same program and arguments shape as the cases (one of extra.executables), with its stdin or files, and the expected value correct code prints on its own line, taken from the spec rows or the reference algorithm of the input class, never from the current code. Do not repeat a listed case. Propose at most 16 cases. Read code only when a case's expected value depends on it; do not change files. The host runs every case on the current files: a case whose output does not show expected becomes a finding of this chain.",
+    skills: [],
+    allowedTools: ["read", "navigate", "submit_result"],
+    output: "chain-family",
+    maxSteps: 6,
+    maxOutputTokens: 4096,
+  },
+  {
+    schemaVersion: 1,
     id: "spec-auditor",
     version: "1.9.0",
     description: "Specification coverage review",
