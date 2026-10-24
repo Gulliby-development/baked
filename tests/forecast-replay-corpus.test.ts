@@ -4,6 +4,7 @@ import { join, relative } from "node:path";
 import { callCostRate, costRate } from "../src/core/workflows/budget.js";
 import { costGrowthLimit, dollarShortfall, shareShortfall } from "../src/core/workflows/initiatives/service.js";
 import { forecastSamples } from "../src/core/workflows/stage-price.js";
+import { adaptiveFirstByteMs } from "../src/core/llm/provider-health.js";
 import { planApprovalDecision } from "../src/core/workflows/auto-approval.js";
 import { CAPACITY_PROBE } from "../src/core/workflows/sizing.js";
 import { type CallRate, chainCosts, openTrace, type PlanPriceReplay, replayChainEscalation, replayInitiativeStarts, replayPlanApprovals, replayPlanPrices, replayTrace, type TestSplitRule } from "../src/core/workflows/trace.js";
@@ -141,6 +142,17 @@ describe("the first-response deadline replays on recorded calls (#1715)", () => 
       expect(old.every((b) => b.firstByteMs !== null && b.firstByteMs > 60_000)).toBe(true);
       expect(replayTrace(path).runs.reduce((n, r) => n + r.newFirstByteStops, 0)).toBe(0);
     }
+  }, 120000);
+
+  test("#2041: R66 nodepluck syntax's analyses cut at the 180 s adaptive floor; current main waits the ceiling after the first", () => {
+    const path = join(ROOT, "R66", "nodepluck.sqlite.gz");
+    const cut = (replay: ReturnType<typeof replayTrace>) =>
+      replay.runs.flatMap((r) => r.firstByte.filter((b) => b.recorded === "stop" && b.stage === "analysis").map((b) => b.replayed));
+    // The rule before #2041: twice the shape's p95 from the times alone, with no widening.
+    const old = cut(replayTrace(path, { adaptiveFirstByte: (history, ceilingMs, model, call) => adaptiveFirstByteMs(ceilingMs, history.healthy(model, call.stage, call.effort).map((sample) => sample.ms)) }));
+    expect(old.filter((replayed) => replayed === "stop")).toHaveLength(4);
+    // R66 recorded no prompt sizes, so the first cut stays; every later attempt gets the ceiling.
+    expect(cut(replayTrace(path)).filter((replayed) => replayed === "stop")).toHaveLength(1);
   }, 120000);
 });
 
