@@ -2,6 +2,7 @@ import { existsSync } from "node:fs";
 import { readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { rowDataPaths } from "../workflows/acceptance-rows.js";
+import { hasInlineRows, type InlineRowFile } from "../workflows/acceptance-rows-inline.js";
 import { stripComments } from "../workflows/quality/code-mask.js";
 import { isTestCodePath } from "../workflows/quality/duplication.js";
 import { propertyTestKind } from "../workflows/quality/properties.js";
@@ -36,6 +37,11 @@ export interface CriterionCase {
   word?: true;
   /** The criterion is a property: a test draws its values from a strategy (#1807). */
   generated?: true;
+  /**
+   * A cell of a table whose rows the host writes for this task (`task.rows`): held by the host's
+   * block while it is intact (#1997).
+   */
+  row?: true;
 }
 
 /** Quoted spans: "...", `...` and the typographic double quotes. */
@@ -184,6 +190,12 @@ export interface CaseContext {
    * host runs the criterion's command before it refuses the task for its expected output (#1836).
    */
   probe?: (found: CriterionCase, root: string) => Promise<string | null>;
+  /**
+   * The inline rows blocks the host wrote into this task's test files (#1997). While each is
+   * intact, the cells of the criteria whose rows they hold are held by construction: the block's
+   * parameterized test replays every row, and `rowFileProblems` refuses a changed block.
+   */
+  hostRows?: readonly InlineRowFile[];
 }
 
 /**
@@ -239,21 +251,32 @@ export function criterionCases(
 ): CriterionCase[] {
   const cases: CriterionCase[] = [];
   const seen = new Set<string>();
+  const plain = new Set<string>();
   const sets = closedSets(spec);
   let bound = new Set<string>();
-  const add = (criterionId: string, literal: string, word?: true, source = "", expected = "") => {
+  const add = (
+    criterionId: string,
+    literal: string,
+    word?: true,
+    source = "",
+    expected = "",
+    row = false,
+  ) => {
     const parts = boundFree(literal, bound);
     if (parts) {
-      for (const part of parts) add(criterionId, part, word, source, expected);
+      for (const part of parts) add(criterionId, part, word, source, expected, row);
       return;
     }
     const values = caseValues(literal, source, expected, task);
     if (!values.includes(literal)) {
-      for (const value of values) add(criterionId, value, word);
+      for (const value of values) add(criterionId, value, word, "", "", row);
       return;
     }
     const key = `${criterionId}:${normalizeLiteral(literal)}`;
-    if (seen.has(key) || isCheckCommand(literal, context.checks)) return;
+    // A literal the criterion also quotes outside its table is not held by the rows alone.
+    if (!row) plain.add(key);
+    if (seen.has(key)) return;
+    if (isCheckCommand(literal, context.checks)) return;
     seen.add(key);
     const generated = spec.criteria.find((c) => c.id === criterionId)?.property !== undefined;
     cases.push({
@@ -261,6 +284,7 @@ export function criterionCases(
       literal,
       ...(word ? { word } : {}),
       ...(generated ? { generated: true as const } : {}),
+      ...(row ? { row: true as const } : {}),
     });
   };
   const tasks = context.tasks ?? [];
@@ -269,19 +293,34 @@ export function criterionCases(
   for (const criterion of spec.criteria) {
     if (!task.criterionIds.includes(criterion.id) || criterion.method !== "automated") continue;
     bound = boundLabels(`${criterion.given}\n${criterion.when}`);
+    // The host writes this criterion's table rows for the task (#1997).
+    const hostRows = task.rows?.includes(criterion.id) ?? false;
     for (const [field, text] of [criterion.given, criterion.when, criterion.then].entries()) {
       const table = tableInputs(text);
+      const inCell = (at: number) => table.cells.some(([from, to]) => at >= from && at < to);
       for (const span of quotedSpans(table.prose)) {
         const before = table.prose.slice(0, span.index);
         if (!literalCase(span.literal, span.code, VALUE_CONTEXT.test(before))) continue;
-        add(criterion.id, span.literal, undefined, before, criterion.then);
+        add(
+          criterion.id,
+          span.literal,
+          undefined,
+          before,
+          criterion.then,
+          hostRows && inCell(span.index),
+        );
       }
       for (const input of table.inputs)
-        add(criterion.id, input.literal, undefined, input.source, input.expected);
+        add(criterion.id, input.literal, undefined, input.source, input.expected, hostRows);
       for (const member of enumeratedMembers(text, sets, `${criterion.id}:${field}`))
         add(criterion.id, member, true);
     }
   }
+  for (const [i, c] of cases.entries())
+    if (c.row && plain.has(`${c.criterionId}:${normalizeLiteral(c.literal)}`)) {
+      const { row: _row, ...rest } = c;
+      cases[i] = rest;
+    }
   const elsewhere = ownedElsewhere(spec, task, tasks);
   const owned = partitionCases(cases, task, tasks).filter((c) => !elsewhere(c));
   const applicable = owned.filter((c) => {
@@ -306,12 +345,21 @@ export function criterionCases(
       );
     return context.includeBroad || !broad(c.criterionId) || scoped;
   });
-  return applicable.filter(
-    (c, i) =>
-      applicable.findIndex(
-        (other) => normalizeLiteral(other.literal) === normalizeLiteral(c.literal),
-      ) === i,
-  );
+  return applicable
+    .filter(
+      (c, i) =>
+        applicable.findIndex(
+          (other) => normalizeLiteral(other.literal) === normalizeLiteral(c.literal),
+        ) === i,
+    )
+    .map((c) => {
+      if (!c.row) return c;
+      const same = (other: CriterionCase) =>
+        normalizeLiteral(other.literal) === normalizeLiteral(c.literal);
+      if (applicable.every((other) => !same(other) || other.row)) return c;
+      const { row: _row, ...rest } = c;
+      return rest;
+    });
 }
 
 /** A label: `E4`, `DOC1`, `row_2`, or an all-capitals name such as `DOC`. */
@@ -613,6 +661,8 @@ const SEPARATOR_CELL = /^:?-{2,}:?$/;
 function tableInputs(text: string): {
   inputs: { literal: string; source: string; expected: string }[];
   prose: string;
+  /** Where the table's remaining cells sit in `prose`, as [from, to) offsets. */
+  cells: [number, number][];
 } {
   const rows = text
     .split(/\r?\n/)
@@ -626,7 +676,7 @@ function tableInputs(text: string): {
         .map((cell) => cell.trim()),
     }))
     .filter(({ cells }) => cells.length >= 2);
-  if (rows.length < 2) return { inputs: [], prose: text };
+  if (rows.length < 2) return { inputs: [], prose: text, cells: [] };
   const inputs: { literal: string; source: string; expected: string }[] = [];
   rows.forEach(({ cells }, index) => {
     if (cells.every((cell) => SEPARATOR_CELL.test(cell))) return;
@@ -651,13 +701,19 @@ function tableInputs(text: string): {
     } else if (literalCase(raw)) push(raw);
   });
   const tableLines = new Map(rows.map((row) => [row.line, row.cells.slice(1).join(" | ")]));
-  return {
-    inputs,
-    prose: text
-      .split(/\r?\n/)
-      .map((line) => tableLines.get(line) ?? line)
-      .join("\n"),
-  };
+  const cells: [number, number][] = [];
+  let offset = 0;
+  const prose = text
+    .split(/\r?\n/)
+    .map((line) => {
+      const cell = tableLines.get(line);
+      const kept = cell ?? line;
+      if (cell !== undefined) cells.push([offset, offset + kept.length]);
+      offset += kept.length + 1;
+      return kept;
+    })
+    .join("\n");
+  return { inputs, prose, cells };
 }
 
 /** Scope and coverage requirements are not test inputs. Assignments name their values (#1629). */
@@ -730,6 +786,26 @@ function decodedTwice(once: string): string {
   return /\\[ntr]/.test(once) && !RAW_ESCAPE.test(once.replace(/\\[ntr]/g, ""))
     ? normalizeLiteral(once)
     : once;
+}
+
+/**
+ * A test text decoded until no escape layer is left, at most four: JSON text the test holds in a
+ * quoted string literal (`JSON.parse("[\"a\\r\\nb\"]")`, a host block's rows) keeps
+ * `\r\n` as two characters after one decoding, so a multi-line literal finds no line break in it
+ * (#1997, R64 cfgquill lint: 12 refusals of rows the host's own block held). The literal side is
+ * decoded the same way by `decodedTwice`.
+ */
+function canonicalText(unescaped: string): string {
+  let text = unescaped;
+  for (let layer = 0; layer < 4; layer++) {
+    // Java, C, Python and Go also spell a control character as an octal escape (`\015\012`).
+    const next = normalizeLiteral(text).replace(/\\([0-3][0-7]{2})/g, (_, octal: string) =>
+      String.fromCharCode(Number.parseInt(octal, 8)),
+    );
+    if (next === text) break;
+    text = next;
+  }
+  return text;
 }
 
 /**
@@ -821,7 +897,9 @@ function holds(text: string, literal: string, decoded: string): boolean {
   const row = rowHeld(unescaped, normalized.trim());
   if (row !== null) return row;
   // A literal with an escape no decoding layer knows is raw escape text, matched below (#1709).
+  // JSON text inside a quoted string keeps one more escape layer than the string itself (#1997).
   const lines = RAW_ESCAPE.test(literal) ? null : linesHeld(unescaped, normalized);
+  if (lines === false) return linesHeld(canonicalText(unescaped), normalized) === true;
   if (lines !== null) return lines;
   if (!normalized.replace(PLACEHOLDER, "")) return false;
   const tokens = normalized.replace(PLACEHOLDER, " ").match(SIGNIFICANT_TOKEN) ?? [];
@@ -1172,7 +1250,19 @@ export function caseCheck(
           ),
       );
     const files = await read(paths);
-    let missing = unheld(cases, files);
+    // The cells of the rows the host wrote are held while its blocks are intact (#1997).
+    const blocks = context.hostRows ?? [];
+    const intact =
+      blocks.length > 0 &&
+      cases.some((c) => c.row) &&
+      (
+        await Promise.all(
+          blocks.map(async (block) =>
+            hasInlineRows(await readFile(join(root, block.path), "utf8").catch(() => null), block),
+          ),
+        )
+      ).every(Boolean);
+    let missing = unheld(intact ? cases.filter((c) => !c.row) : cases, files);
     // A case a sibling's test file already tests is not demanded again (#1886).
     if (missing.length && siblings.length) {
       const others = await read(siblings);

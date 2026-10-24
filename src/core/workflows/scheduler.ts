@@ -5178,6 +5178,8 @@ export class WorkflowScheduler {
             {
               checks: policy.checks,
               tasks: (state.rootGraph ?? state.graph)?.tasks ?? [],
+              // The rows the host wrote are held by its intact blocks (#1997).
+              hostRows: generatedRows.filter((file) => file.inline === true),
               ...(policy.caseSourceProbe === "on"
                 ? { probe: this.caseSourceProbe(runId, state, policy, task, signal) }
                 : {}),
