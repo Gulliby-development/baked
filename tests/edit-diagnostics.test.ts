@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { StandaloneLspClient } from "../src/core/intelligence/backends/lsp/standalone-client.js";
@@ -17,6 +17,7 @@ import {
   type DiagnosticsContext,
   originalRegion,
 } from "../src/core/tools/post-edit-helpers.js";
+import { removeTempDir } from "./helpers/temp-dir.js";
 
 const error = (file: string, line: number, message: string): Diagnostic => ({
   file,
@@ -127,7 +128,8 @@ describe("edit diagnostics through a language server", () => {
 
   afterAll(async () => {
     await client.stop();
-    rmSync(dir, { recursive: true, force: true });
+    // The language server process can still hold the directory on Windows just after it stops.
+    await removeTempDir(dir);
   });
 
   const editLib = async (): Promise<DiagnosticsContext> => {
