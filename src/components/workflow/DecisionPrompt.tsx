@@ -26,6 +26,8 @@ interface ApprovalBody {
   planCost?: PlanCost;
   /** Present when the plan and its reserve need more than the token ceiling: where it should stop. */
   budgetWarning?: string;
+  /** Present when tasks were priced from the lines the request supplies (`estimateSourceText`). */
+  estimateSource?: string;
   requestCoverage?: RequestCoverageRow[];
   executionMode?: "inline" | "worktree";
   sandbox?: "auto" | "required";
@@ -629,6 +631,9 @@ export function DecisionPrompt({
           ) : null}
           {body.planCost ? (
             <text fg={t.textMuted}>{`  ${planCostText(body.planCost)}.`}</text>
+          ) : null}
+          {body.estimateSource ? (
+            <text fg={t.textMuted}>{`  ${flatten(body.estimateSource)}.`}</text>
           ) : null}
           <text fg={t.textMuted}>
             {body.sandbox

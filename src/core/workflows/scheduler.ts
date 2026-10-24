@@ -603,6 +603,7 @@ import {
 } from "./revision-patch.js";
 import {
   codeTaskCheckProblems,
+  estimateSourceOf,
   loopHistory,
   overCeilingOf,
   plannerSizing,
@@ -2253,6 +2254,8 @@ export class WorkflowScheduler {
                   // approved knowing where it should stop; planning so far next to what the tasks
                   // should cost (#1019).
                   ...this.approvalCost(runId, policy),
+                  // Tasks priced from the lines the request supplies say so (#2002).
+                  ...estimateSourceOf(this.store, runId),
                   ...(state.spec.deliverables
                     ? { requestCoverage: requestCoverage(state.spec, coverageRequest(state)) }
                     : {}),
@@ -6037,6 +6040,7 @@ export class WorkflowScheduler {
       model,
       loopShares: loopHistory(this.store.workspace, policy),
       tokenRates: rateHistory(this.store.workspace, policy),
+      request: state.requestText || state.prompt,
     });
     this.store.transaction(() =>
       this.store.artifact(
@@ -6175,6 +6179,7 @@ ${note}`;
       model: this.sizingModel(runId, state.graph),
       loopShares: loopHistory(this.store.workspace, policy),
       tokenRates: rateHistory(this.store.workspace, policy),
+      request: state.requestText || state.prompt,
     });
     this.store.transaction(() => {
       this.store.artifact(runId, "sizing", path, canonical(report));

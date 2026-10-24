@@ -732,6 +732,12 @@ export const PolicySchema = z
         maxRunCostUsd: z.number().positive().optional(),
         historyStores: z.array(z.string().min(1)).max(32).optional(),
         testTaskSteps: z.number().int().min(1).max(100).optional(),
+        /**
+         * Prices a task whose every written file the request supplies verbatim (a fenced unified
+         * diff, or a fenced block attributed to the path) from the supplied lines, and never splits
+         * it on its file count (`suppliedTaskPrice`, #2002). Absent means off.
+         */
+        suppliedDiff: z.boolean().optional(),
       })
       .strict()
       .optional(),

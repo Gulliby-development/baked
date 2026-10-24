@@ -832,6 +832,16 @@ export const FEATURES: readonly Feature[] = [
     desktop: ["project/runs: plan approval and task slices"],
   },
   {
+    id: "supplied-diff-sizing",
+    group: "Workflow runs",
+    title:
+      "Opt-in pricing of tasks from the diff or file content the request supplies, never split on file count, with the estimate source at approval",
+    tui: ["/workflow: run with sizing.suppliedDiff in the policy; plan approval names the source"],
+    cli: ["baked workflow run: sizing.suppliedDiff in the policy", "baked workflow status"],
+    api: ["/v1/workflow/runs/:id: approval estimateSource and sizing record"],
+    desktop: ["project/runs: plan approval names the estimate source"],
+  },
+  {
     id: "acceptance-rows-as-data",
     group: "Workflow runs",
     title:

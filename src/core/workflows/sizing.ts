@@ -1,6 +1,7 @@
 import { Database } from "bun:sqlite";
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { changedLines } from "../intelligence/call-context.js";
 import { isManifestFile, isTestFile } from "../intelligence/language-traits.js";
 import { isTestOf } from "../verification/convergence.js";
 import {
@@ -9,6 +10,7 @@ import {
   missingCases,
   type SpecText,
 } from "../verification/criteria-cases.js";
+import { type Fence, fences } from "../verification/doc-examples.js";
 import { hostRowPaths, literalRows, rowsAsDataOn } from "./acceptance-rows.js";
 import { MAX_EXTENDED_MS } from "./budget.js";
 import { DEFAULT_STAGE_RANGES, historyStorePaths, rangeOf, type TokenRange } from "./estimate.js";
@@ -488,6 +490,132 @@ export function perFileRates(samples: SizingSample[], model: string | null = nul
   };
 }
 
+/**
+ * Supplied-lines pricing (`sizing.suppliedDiff`, #2002). A request that carries a task's change
+ * verbatim (a unified diff, or the file's whole content) leaves the agent little to find out, and
+ * the per-file rates of history overpriced such tasks several times over: spdxok-update (bench
+ * round 64) priced two 2-file tasks at 307k-762k and 242k-683k from 79-214 history samples, split
+ * the plan, paid 98k for the replan, and the three tasks it got cost 59k, 72k and 105k.
+ *
+ * Measured exact-diff updates cost 56k-79k per changed file (round 63, sdd) and 34k (ecfit quick),
+ * 134k (spdxok) and 320k (mdtoc) in round 64. The floor's low end is the lowest of them, 34k, never
+ * a quantile (AGENTS.md forecast-floor rule); its high end is the highest outcome of a run that
+ * applied the supplied lines as given, 134k: mdtoc's 320k came from a different defect (round 64
+ * Issue 6), not from the size of the change. These are per written file.
+ */
+export const SUPPLIED_PER_FILE: TokenRange = { low: 34_000, high: 134_000 };
+/**
+ * Tokens per supplied changed line: the edit writes each line once and every later step of the
+ * attempt sends it again. It only takes over from the per-file floor above about 136 lines a file,
+ * a whole file's content rather than a hunk; round 64 recorded no line counts to measure it on.
+ */
+export const SUPPLIED_PER_LINE: TokenRange = { low: 250, high: 1_000 };
+
+/** A path as a request writes it: no `./`, no diff timestamp after a tab. */
+const requestPath = (path: string): string =>
+  (path.split("\t")[0] ?? "").trim().replace(/^(?:\.\/)+/, "");
+
+/**
+ * The one path of `wanted` a block is attributed to: named in the last line of prose before it
+ * ("Replace `src/a.ts` with:"), or in a comment on its first line (`// src/a.ts`). Null when none
+ * or more than one is named.
+ */
+function blockPath(block: Fence, wanted: ReadonlySet<string>): string | null {
+  const last = block.prose.trim().split("\n").at(-1) ?? "";
+  const header = /^\s*(?:#|\/\/|--|;)\s*(\S+)\s*$/.exec(block.lines[0] ?? "")?.[1];
+  const named = new Set(
+    [
+      ...[...last.matchAll(/`([^`\s]+)`/g)].map((m) => m[1] as string),
+      ...[...last.matchAll(/[\w./-]+\.\w+/g)].map((m) => m[0]),
+      ...(header ? [header] : []),
+    ]
+      .map(requestPath)
+      .filter((path) => wanted.has(path)),
+  );
+  return named.size === 1 ? ([...named][0] as string) : null;
+}
+
+/**
+ * Lines each path of `paths` gets from the verbatim blocks of a request: the added and removed
+ * lines of a fenced unified diff (`+++` headers, read by `changedLines`), or every line of a fenced
+ * block attributed to the path (`blockPath`). A path no block supplies is absent.
+ */
+export function suppliedLines(request: string, paths: readonly string[]): Map<string, number> {
+  const wanted = new Set(paths.map(requestPath));
+  const out = new Map<string, number>();
+  const add = (path: string, lines: number) => {
+    const key = requestPath(path);
+    if (wanted.has(key) && lines > 0) out.set(key, (out.get(key) ?? 0) + lines);
+  };
+  for (const block of fences(request)) {
+    const body = block.lines.join("\n");
+    if (/^\+\+\+ /m.test(body)) {
+      for (const [path, lines] of changedLines(body)) add(path, lines.length);
+      continue;
+    }
+    const path = blockPath(block, wanted);
+    if (path) add(path, block.lines.length);
+  }
+  return out;
+}
+
+/** A task priced from the lines the request supplies for it. */
+export interface SuppliedPrice {
+  estimate: TokenRange;
+  /** Supplied changed lines over the task's written files. */
+  lines: number;
+  /** Whether the lines alone, not the per-file floor, put one attempt above the cap. */
+  oversized: boolean;
+}
+
+/**
+ * The one rule that decides supplied pricing (#2002): a task that is not a test task and whose
+ * every written file has a supplied block is priced at `SUPPLIED_PER_LINE` per supplied line, at
+ * least `SUPPLIED_PER_FILE` per file. Its split is decided on those lines, never on the number of
+ * files. Null for any other task, which keeps its history price.
+ */
+export function suppliedTaskPrice(
+  task: SizingTask,
+  supplied: ReadonlyMap<string, number> | null,
+  cap: number,
+): SuppliedPrice | null {
+  if (!supplied?.size || taskKind(task) === "test") return null;
+  const files = writtenFiles(task);
+  if (!files.length) return null;
+  let lines = 0;
+  for (const path of files) {
+    const count = supplied.get(requestPath(path));
+    if (!count) return null;
+    lines += count;
+  }
+  return {
+    estimate: {
+      low: Math.max(files.length * SUPPLIED_PER_FILE.low, lines * SUPPLIED_PER_LINE.low),
+      high: Math.max(files.length * SUPPLIED_PER_FILE.high, lines * SUPPLIED_PER_LINE.high),
+    },
+    lines,
+    oversized: files.length > 1 && lines * SUPPLIED_PER_LINE.high > cap,
+  };
+}
+
+/** Where a history-priced task's estimate came from: measured tasks, or only the defaults. */
+function historyBasis(
+  task: SizingTask,
+  rates: Rates,
+  tests: TestTaskRates,
+  cases: number,
+): "history" | "default" {
+  if (taskKind(task) === "test") {
+    const measured = (cases > 0 ? tests.buckets[caseBucket(cases)] : null) ?? tests.all;
+    if (measured && tests.hasCases) return "history";
+  }
+  return written(task).some(
+    ({ path, action }) => rates[fileKind(path)][action].basis !== "defaults",
+  )
+    ? "history"
+    : "default";
+}
+
 /** The highest per-file price of a kind, over creating and modifying. */
 const highest = (rates: Rates, kind: FileKind): number =>
   Math.max(...WRITE_ACTIONS.map((action) => rates[kind][action].perFile.high));
@@ -504,6 +632,14 @@ export interface TaskSize {
   attemptSteps: number | null;
   /** Tests exceed observed case capacity, or the cold-start allowance; code exceeds its cap. */
   oversized: boolean;
+  /**
+   * What priced the task (#2002): `supplied`, the lines the request supplies for it
+   * (`suppliedTaskPrice`); `history`, finished tasks; `default`, the defaults alone. Absent in
+   * reports written before it.
+   */
+  basis?: "supplied" | "history" | "default";
+  /** The supplied changed lines of a `supplied` task. */
+  suppliedLines?: number;
   cases?: number;
   /** Sequential slices of this test file, including this task. */
   sliceCount?: number;
@@ -777,6 +913,8 @@ export function sizePlan(input: {
   spec?: SpecText | null;
   /** Price only these tasks while keeping the full graph for shared case ownership. */
   taskIds?: ReadonlySet<string>;
+  /** The request as the user wrote it; with `sizing.suppliedDiff` its verbatim blocks price tasks. */
+  request?: string | null;
 }): SizingReport {
   const rates = perFileRates(input.samples, input.model ?? null);
   const tests = testTaskRates(input.samples, input.model ?? null);
@@ -785,6 +923,10 @@ export function sizePlan(input: {
   const maxRunTokens = input.policy.sizing?.maxRunTokens ?? null;
   const floor = input.policy.maxAttemptTokens ?? DEFAULT_MAX_ATTEMPT_TOKENS;
   const testSteps = input.policy.sizing?.testTaskSteps ?? DEFAULT_TEST_TASK_STEPS;
+  const supplied =
+    input.policy.sizing?.suppliedDiff && input.request
+      ? suppliedLines(input.request, input.graph.tasks.flatMap(writtenFiles))
+      : null;
   const tasks = input.graph.tasks
     .filter((task) => !input.taskIds || input.taskIds.has(task.id))
     .filter((task) => writtenFiles(task).length > 0)
@@ -798,7 +940,8 @@ export function sizePlan(input: {
               includeBroad: true,
             })
           : 0;
-      const estimate = priceTask(task, rates, tests, cases);
+      const fromRequest = suppliedTaskPrice(task, supplied, maxAttemptTokens);
+      const estimate = fromRequest?.estimate ?? priceTask(task, rates, tests, cases);
       const files = writtenFiles(task).length;
       const rowsTask =
         kind === "test" && task.rows?.length
@@ -817,7 +960,11 @@ export function sizePlan(input: {
               // checks the cases in batches, so sending it to the planner asks for no plan (#1930).
               !(task.sizingSlice && task.criterionIds.length === 1) &&
               exceedsTestCapacity(cases, limit, estimate, maxAttemptTokens, true, rowsTask)
-            : files > 1 && estimate.high > maxAttemptTokens,
+            : fromRequest
+              ? fromRequest.oversized
+              : files > 1 && estimate.high > maxAttemptTokens,
+        basis: fromRequest ? "supplied" : historyBasis(task, rates, tests, cases),
+        ...(fromRequest ? { suppliedLines: fromRequest.lines } : {}),
         ...(kind === "test" ? { cases, sliceCount: task.sizingSlice?.count ?? 1 } : {}),
         ...(rowsTask ? { rowsTask } : {}),
       };
@@ -1341,4 +1488,40 @@ export function overCeilingOf(
   if (!latest) return {};
   const report = JSON.parse(store.readArtifact(runId, latest.id)) as Partial<SizingReport>;
   return report.overCeiling ? { budgetWarning: report.overCeiling.warning } : {};
+}
+
+/**
+ * The approval's line naming what priced the tasks, when the request's supplied lines priced any
+ * of them (#2002): "Task estimates: T001 (12 lines), T002 (8 lines) from the lines the request
+ * supplies; T003 from history". Null when every task kept its history or default price.
+ */
+export function estimateSourceText(tasks: readonly TaskSize[]): string | null {
+  const supplied = tasks.filter((t) => t.basis === "supplied");
+  if (!supplied.length) return null;
+  const ids = (basis: TaskSize["basis"]) =>
+    tasks
+      .filter((t) => t.basis === basis)
+      .map((t) => t.taskId)
+      .join(", ");
+  const parts = [
+    `${supplied.map((t) => `${t.taskId} (${t.suppliedLines ?? 0} lines)`).join(", ")} from the lines the request supplies`,
+    ...(ids("history") ? [`${ids("history")} from history`] : []),
+    ...(ids("default") ? [`${ids("default")} from the default rates`] : []),
+  ];
+  return `Task estimates: ${parts.join("; ")}`;
+}
+
+/** The latest plan pricing's estimate source as an approval body field (`estimateSourceText`). */
+export function estimateSourceOf(
+  store: Pick<WorkflowStore, "artifacts" | "readArtifact">,
+  runId: string,
+): { estimateSource?: string } {
+  const latest = store
+    .artifacts(runId)
+    .filter((a) => a.kind === "sizing" && a.logical_path.startsWith("sizing/plan-"))
+    .at(-1);
+  if (!latest) return {};
+  const report = JSON.parse(store.readArtifact(runId, latest.id)) as Partial<SizingReport>;
+  const text = estimateSourceText(report.tasks ?? []);
+  return text ? { estimateSource: text } : {};
 }
