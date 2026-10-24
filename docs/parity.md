@@ -195,6 +195,7 @@ bun test tests/feature-parity.test.ts
 | Initiative deliverables have writable owners; deferred findings and mutation checks follow them | `/workflow` | `baked workflow report` | `/v1/workflow/runs/:id/report` | `project/runs` |
 | Start an initiative | `/workflow` | `baked workflow initiative` | `/v1/initiatives` | `project/initiatives` |
 | Initiative view: approve split, pause, resume, switch model | `/workflow` | `baked workflow initiative` | `/v1/initiatives/:id`, `/v1/initiatives/:id/events`, `/v1/initiatives/:id/approve` +3 | `project/initiatives`, `attention` |
+| An initiative whose ready work waits for a drive shows idle; a decision on its feature run names the drive | `/workflow` | `baked workflow answer`, `baked workflow initiative show`, `baked workflow initiative drive` | `/v1/initiatives/:id`, `/v1/initiatives/:id/drive`, `/v1/workflow/runs/:id/answer` | `project/initiatives` |
 | Reject, merge, split, rename, remove, re-plan, extend | `/workflow` | `baked workflow initiative` | `/v1/initiatives/:id/reject`, `/v1/initiatives/:id/merge`, `/v1/initiatives/:id/split` +4 | `project/initiatives` |
 | Each feature runs its own workflow, with a budget share by estimated need (by size without history) | `/workflow` | `baked workflow initiative set-workflow`, `baked workflow initiative set-size` | `/v1/initiatives/:id/configure` | `project/initiatives` |
 | Estimate a split: a difficulty level and a token range from run history | `/workflow` | `baked workflow initiative estimate` | `/v1/initiatives/:id/estimate` | `project/initiatives` |

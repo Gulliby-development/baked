@@ -1,6 +1,7 @@
 /**
  * The initiative endpoints of the local API (`/v1/initiatives`), the `baked workflow initiative`
- * commands over HTTP. Starting, approving and resuming drive the initiative in the background.
+ * commands over HTTP. Starting, approving, resuming and `drive` drive the initiative in the
+ * background.
  */
 import { z } from "zod";
 import {
@@ -65,6 +66,7 @@ const ACTIONS = new Set([
   "reject",
   "pause",
   "resume",
+  "drive",
   "extend",
   "reroute",
 ]);
@@ -87,6 +89,7 @@ export async function initiativeRoute(ctx: InitiativeRouteContext): Promise<Resp
           status: view.status,
           features: view.features.length,
           next: view.next,
+          drive: view.drive,
         })),
       });
     const { commandId, owner, ...input } = StartBody.parse(await ctx.readJson());
@@ -228,6 +231,13 @@ export async function initiativeRoute(ctx: InitiativeRouteContext): Promise<Resp
       const view = await initiatives.resume(id, identity(Command.strict().parse(raw)));
       ctx.launch(id);
       return ctx.json(200, view);
+    }
+    case "drive": {
+      // Continues an initiative whose ready work waits for a drive (`drive.state` idle, #2024),
+      // like `baked workflow initiative drive`; a drive already running here takes it.
+      z.strictObject({}).parse(raw ?? {});
+      ctx.launch(id);
+      return ctx.json(202, initiatives.view(id));
     }
     case "extend": {
       const body = ExtendBody.parse(raw);
