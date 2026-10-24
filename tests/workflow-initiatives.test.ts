@@ -57,6 +57,7 @@ import {
   assignFeatureWorkflows,
   lightenSmallLeaves,
   planWorkflowProblems,
+  documentedLightLeaf,
   restoreContractWorkflows,
   withLightContract,
 } from "../src/core/workflows/initiatives/workflows.js";
@@ -117,9 +118,15 @@ class InitiativeExecutor implements AgentExecutor {
   /** Implementation calls in flight, and the most at once. */
   active = 0;
   maxActive = 0;
-  /** An implementation waits (up to `rendezvousMs`) until this many implementations have begun. */
+  /**
+   * An implementation waits until this many implementations have begun. `rendezvousMs` only bounds
+   * a run that never gets there; it must not decide the outcome on a slow runner, so a test sets
+   * `rendezvous` to the number the runtime should start at once, never above it, and names in
+   * `rendezvousOf` the features that take part when others implement alone before them (#1915).
+   */
   rendezvous = 0;
-  rendezvousMs = 5000;
+  rendezvousMs = 60_000;
+  rendezvousOf: ReadonlySet<string> | null = null;
   private arrived = 0;
   /** When set, each call records its tokens as priced usage, as the agent executor does. */
   usageStore: WorkflowStore | null = null;
@@ -127,13 +134,13 @@ class InitiativeExecutor implements AgentExecutor {
   async execute(request: ExecutionRequest) {
     this.calls.push(request.profile.output);
     const implementing = request.profile.output === "implementation";
-    if (implementing) {
-      this.maxActive = Math.max(this.maxActive, ++this.active);
-      this.arrived++;
-    }
+    const feature = request.task?.writes[0]?.path.replace(/\.txt$/, "") ?? "";
+    const meets = implementing && (this.rendezvousOf?.has(feature) ?? true);
+    if (implementing) this.maxActive = Math.max(this.maxActive, ++this.active);
+    if (meets) this.arrived++;
     try {
       const deadline = Date.now() + this.rendezvousMs;
-      while (implementing && this.arrived < this.rendezvous && Date.now() < deadline) await Bun.sleep(5);
+      while (meets && this.arrived < this.rendezvous && Date.now() < deadline) await Bun.sleep(5);
       return this.respond(request);
     } finally {
       if (implementing) this.active--;
@@ -1153,16 +1160,69 @@ describe("initiative runtime", () => {
     ];
     const both = plan([
       feature("core", [], ["a", "b", "c"]),
-      { ...feature("x", ["core"], ["shared.md"]), workflow: "quick" },
-      { ...feature("y", ["core"], ["shared.md", "y.md"]), workflow: "quick" },
+      { ...feature("x", ["core"], ["shared.txt"]), workflow: "quick" },
+      { ...feature("y", ["core"], ["shared.txt", "y.txt"]), workflow: "quick" },
     ]);
     // Both are light, so the later depends on the earlier, which then needs a spec.
     const sequenced = sequenceSharedPaths(both, new Set(), new Set(["x", "y"]));
-    expect(sequenced.added).toEqual([{ featureId: "y", dependsOn: "x", paths: ["shared.md"] }]);
+    expect(sequenced.added).toEqual([{ featureId: "y", dependsOn: "x", paths: ["shared.txt"] }]);
     const repaired = restoreContractWorkflows(sequenced.plan, choices, "sdd");
     expect(repaired.restored).toEqual([{ featureId: "x", from: "quick", to: "sdd" }]);
     expect(planWorkflowProblems(repaired.plan, choices)).toEqual([]);
   });
+
+  // #1768: the docs feature depends on the last code feature of each chain (#1751), and that made a
+  // quick entry feature move to sdd and pay its fixed stages for a contract nobody reads.
+  test("a quick feature only documentation depends on keeps quick; a code dependent still restores sdd (#1768)", () => {
+    const choices = [
+      { id: "sdd", description: "", schemaVersion: 1 as const, contract: true, execution: "inline" as const, stages: [] },
+      { id: "quick", description: "", schemaVersion: 2 as const, contract: false, execution: "inline" as const, stages: [] },
+    ];
+    const split = plan([
+      { ...feature("core", [], ["src/a.ts", "src/b.ts", "src/c.ts"]), workflow: "sdd" },
+      { ...feature("entry", ["core"], ["src/main.ts"]), workflow: "quick" },
+      { ...feature("docs", [], ["README.md", "docs/usage.md"]), workflow: "sdd" },
+    ]);
+    const documented = sequenceDocumentation(split);
+    expect(documented.added).toEqual([{ featureId: "docs", dependsOn: "entry" }]);
+    const kept = restoreContractWorkflows(documented.plan, choices, "sdd");
+    expect(kept.restored).toEqual([]);
+    expect(planWorkflowProblems(kept.plan, choices)).toEqual([]);
+    expect(documentedLightLeaf(kept.plan, kept.plan.features[1] as (typeof kept.plan.features)[number])).toBe(true);
+    // A code feature that builds on entry needs its spec.
+    const built = plan([...documented.plan.features, { ...feature("plugin", ["entry"], ["src/plugin.ts"]), workflow: "sdd" }]);
+    expect(restoreContractWorkflows(built, choices, "sdd").restored).toEqual([{ featureId: "entry", from: "quick", to: "sdd" }]);
+    expect(planWorkflowProblems(built, choices)).toHaveLength(1);
+  });
+
+  test("a quick feature only documentation depends on records its contract, and the docs feature pins it (#1768)", async () => {
+    const split = plan([
+      { ...feature("core", [], ["core.txt", "core/b.txt", "core/c.txt"]), workflow: "sdd" },
+      { ...feature("entry", ["core"], ["entry.txt"]), workflow: "quick" },
+      { ...feature("docs", [], ["README.md", "docs/usage.md"]), workflow: "quick" },
+    ]);
+    const t = setup(split);
+    await t.start();
+    let view = await t.drive();
+    expect(view.features.map((f) => [f.id, f.workflowId, f.dependsOn])).toEqual([
+      ["core", "sdd", []],
+      ["entry", "quick", ["core"]],
+      ["docs", "quick", ["entry"]],
+    ]);
+    await t.approveSplit();
+    for (let i = 0; i < 12 && view.status !== "completed"; i++) {
+      view = await t.drive();
+      const waiting = view.pendingDecisions.find((d) => d.scope === "feature" && d.kind === "approval");
+      if (waiting?.featureId) await t.approveFeature(waiting.featureId);
+    }
+    expect(view.status).toBe("completed");
+    const entry = t.featureOf(view, "entry").runId ?? "";
+    expect(t.workflows.store.latestArtifact(entry, "spec.json")).toBeTruthy();
+    const docs = t.featureOf(view, "docs").runId ?? "";
+    expect(t.workflows.store.state(docs).spec?.dependencies).toEqual([
+      { featureId: "values_entry", contractHash: hashJson(t.workflows.store.state(entry).spec) },
+    ]);
+  }, 60000);
 
   test("a small leaf that writes a risky path keeps its spec workflow", () => {
     const choices = [
@@ -1783,8 +1843,12 @@ describe("initiative runtime", () => {
 
     test("on, three of the six middle features implement at once and the run completes", async () => {
       const { t } = await slots(wide, { parallelRunsFromPlan: true });
-      t.executor.rendezvous = 4;
-      t.executor.rendezvousMs = 1500;
+      // The first three middle features hold until all three have begun, so they overlap however
+      // long a worktree takes to create. A rendezvous of 4 (base and three) with a 1.5 s bound
+      // passed only while the third started within 1.5 s of the first, which a slow Windows disk
+      // broke (#1915).
+      t.executor.rendezvous = 3;
+      t.executor.rendezvousOf = new Set(["m1", "m2", "m3", "m4", "m5", "m6"]);
       const view = await t.drive();
       expect(view.status).toBe("completed");
       expect(t.executor.maxActive).toBe(3);

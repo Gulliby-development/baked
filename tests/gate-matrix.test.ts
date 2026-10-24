@@ -13,7 +13,7 @@ import { ProcessScope } from "../src/core/workflows/process-scope.js";
 import { canRepairRun, type RepairBlock } from "../src/core/workflows/repairable.js";
 import { growthLimit, type InitiativeView, rebaseView, shareShortfall } from "../src/core/workflows/initiatives/service.js";
 import { estimateInitiative } from "../src/core/workflows/initiatives/estimate.js";
-import { manifestFieldChanges } from "../src/core/workflows/quality/manifests.js";
+import { hasExecutableFields, manifestFieldChanges } from "../src/core/workflows/quality/manifests.js";
 import { REPLAY_TARGETS } from "../src/core/workflows/quality/baseline-replay.js";
 import type { TestRunner } from "../src/core/verification/output-counts.js";
 import { unrequestedManifestFields } from "../src/core/workflows/quality/dependencies.js";
@@ -813,7 +813,8 @@ describe("gate matrix: SwiftPM, Mix, Dart, Zig, dune and Bundler (#1753)", () =>
 
 /**
  * Manifests and tool configs of each stack a request may name (#1710), with the content a
- * host-written task writes and whether the approval takes the write without a person.
+ * host-written task writes and whether the approval takes the write without a person. A lock that
+ * records the project's own version is exempt and bounded by the field check (#1934).
  */
 const PROPS = "<Project>\n  <PropertyGroup>\n    <Version>0.1.0</Version>\n    <Authors>dieodds</Authors>\n  </PropertyGroup>\n</Project>\n";
 const NAMED_CONFIGS: Record<Stack, { path: string; content: string; exempt: boolean }[]> = {
@@ -825,7 +826,7 @@ const NAMED_CONFIGS: Record<Stack, { path: string; content: string; exempt: bool
   ],
   npm: [
     { path: "package.json", content: '{"name":"fixture"}', exempt: true },
-    { path: "package-lock.json", content: "{}", exempt: false },
+    { path: "package-lock.json", content: "{}", exempt: true },
     { path: "biome.json", content: "{}", exempt: false },
   ],
   python: [
@@ -843,7 +844,7 @@ const NAMED_CONFIGS: Record<Stack, { path: string; content: string; exempt: bool
     { path: "rust-toolchain.toml", content: '[toolchain]\nchannel = "stable"\ncomponents = ["clippy"]\n', exempt: true },
     { path: "rust-toolchain.toml", content: '[toolchain]\npath = "/opt/rust"\n', exempt: false },
     { path: ".cargo/config.toml", content: '[build]\nrustflags = ["-Dwarnings"]\n', exempt: false },
-    { path: "Cargo.lock", content: "version = 3\n", exempt: false },
+    { path: "Cargo.lock", content: "version = 3\n", exempt: true },
   ],
   maven: [
     { path: "pom.xml", content: "<project/>", exempt: true },
@@ -989,9 +990,65 @@ describe("gate matrix: manifest executable fields (#1793)", () => {
     expect(changes("Cargo.toml", cargo(""), cargo("").replace("0.1.0", "0.2.0"))).toEqual([]);
     expect(changes("Cargo.toml", cargo(""), cargo('build = "build.rs"\n'))).toEqual(["package.build"]);
   });
-  cell("go", "go.mod replace, not the go version", () => {
-    expect(changes("go.mod", "module m\n\ngo 1.22\n", "module m\n\ngo 1.23\n")).toEqual([]);
+  cell("go", "go.mod replace and the go line, not the module path", () => {
+    expect(changes("go.mod", "module m\n\ngo 1.22\n", "module n\n\ngo 1.22\n")).toEqual([]);
     expect(changes("go.mod", "module m\n\ngo 1.22\n", "module m\n\ngo 1.22\n\nreplace example.com/x => ../x\n")).toEqual(["replace example.com/x"]);
+    // #1963: the go line selects (and downloads) the toolchain that runs the checks.
+    const mod = (version: string) => `module m\n\ngo ${version}\n`;
+    expect(changes("go.mod", mod("1.22.0"), mod("1.27.1"))).toEqual(["go 1.22.0", "go 1.27.1"]);
+    expect(unrequestedManifestFields([{ path: "go.mod", before: mod("1.27.0"), content: mod("1.22.0") }], ["go.mod"], "Change go.mod from go 1.27.0 to go 1.22.0")).toEqual([]);
+    expect(unrequestedManifestFields([{ path: "go.mod", before: mod("1.22.0"), content: mod("1.27.1") }], ["go.mod"], "Add a version flag; go.mod may change")).toHaveLength(2);
+  });
+  // #1963: the files beside the manifests that choose the toolchain or tool distribution.
+  cell("rust", "rust-toolchain channel and path, not components", () => {
+    const toml = (channel: string, extra = "") => `[toolchain]\nchannel = "${channel}"\n${extra}`;
+    expect(changes("rust-toolchain.toml", toml("1.80.0"), toml("1.80.0", 'components = ["clippy"]\n'))).toEqual([]);
+    expect(changes("rust-toolchain.toml", toml("1.80.0"), toml("nightly"))).toEqual(["toolchain.channel"]);
+    expect(changes("rust-toolchain", "1.80.0\n", "1.81.0\n")).toEqual(["toolchain.channel"]);
+  });
+  cell("dotnet", "global.json sdk version, not the test runner", () => {
+    const json = (version: string, extra = {}) => JSON.stringify({ sdk: { version }, ...extra });
+    expect(changes("global.json", json("10.0.100"), json("10.0.100", { test: { runner: "Microsoft.Testing.Platform" } }))).toEqual([]);
+    expect(changes("global.json", json("10.0.100"), json("10.0.200"))).toEqual(["sdk.version"]);
+    // The checks stage reads these files with the manifests, so a request-named one reaches the check.
+    for (const path of ["global.json", "rust-toolchain.toml", "gradle/wrapper/gradle-wrapper.properties", ".python-version"]) expect(hasExecutableFields(path)).toBe(true);
+    expect(unrequestedManifestFields([{ path: "global.json", before: json("10.0.100"), content: json("10.0.200") }], ["global.json"], "Pin the SDK in global.json")).toEqual([{ file: "global.json", field: "sdk.version" }]);
+  });
+  cell("maven", "wrapper distributionUrl, not the distribution type", () => {
+    const props = (url: string, type = "only-script") => `wrapperVersion=3.3.2\ndistributionType=${type}\ndistributionUrl=${url}\n`;
+    const url = "https://repo.maven.apache.org/maven2/org/apache/maven/apache-maven/3.9.9/apache-maven-3.9.9-bin.zip";
+    expect(changes(".mvn/wrapper/maven-wrapper.properties", props(url), props(url, "bin"))).toEqual([]);
+    expect(changes(".mvn/wrapper/maven-wrapper.properties", props(url), props("https://example.test/maven.zip"))).toEqual(["distributionUrl"]);
+    expect(changes("gradle/wrapper/gradle-wrapper.properties", "distributionUrl=https\\://services.gradle.org/distributions/gradle-8.10-bin.zip\n", "distributionUrl=https\\://services.gradle.org/distributions/gradle-8.11-bin.zip\n")).toEqual(["distributionUrl"]);
+  });
+  // #1934: a request-named lock is bounded to the project's own entry; any other entry it changes
+  // is a finding whatever the request names.
+  cell("rust", "Cargo.lock: the project's own version is free, a dependency entry is not", () => {
+    const lock = (own: string, serde = "1.0.200") => `version = 4\n\n[[package]]\nname = "serde"\nversion = "${serde}"\nsource = "registry+https://github.com/rust-lang/crates.io-index"\nchecksum = "abc"\n\n[[package]]\nname = "sketchfold"\nversion = "${own}"\ndependencies = [\n "serde",\n]\n`;
+    expect(changes("Cargo.lock", lock("0.1.0"), lock("0.2.0"))).toEqual([]);
+    expect(changes("Cargo.lock", lock("0.1.0"), lock("0.2.0", "1.0.201"))).toEqual(["package serde 1.0.200", "package serde 1.0.201"]);
+    expect(unrequestedManifestFields([{ path: "Cargo.lock", before: lock("0.1.0"), content: lock("0.2.0", "1.0.201") }], ["Cargo.lock"], "Bump sketchfold to 0.2.0; Cargo.lock follows, serde 1.0.201")).toHaveLength(2);
+  });
+  cell("npm", "package-lock.json: the root version is free, a node_modules entry is not", () => {
+    const lock = (version: string, dep = "1.0.0") => JSON.stringify({ name: "p", version, lockfileVersion: 3, requires: true, packages: { "": { name: "p", version, dependencies: { a: "^1.0.0" } }, "node_modules/a": { version: dep, resolved: `https://registry.npmjs.org/a/-/a-${dep}.tgz` } } });
+    expect(changes("package-lock.json", lock("1.0.0"), lock("1.1.0"))).toEqual([]);
+    expect(changes("package-lock.json", lock("1.0.0"), lock("1.1.0", "1.0.1"))).toEqual(["package node_modules/a"]);
+  });
+  cell("python", "uv.lock: the editable project is free, a registry package is not", () => {
+    const lock = (own: string, dep = "2.32.0") => `version = 1\nrequires-python = ">=3.11"\n\n[[package]]\nname = "p"\nversion = "${own}"\nsource = { editable = "." }\ndependencies = [{ name = "requests" }]\n\n[[package]]\nname = "requests"\nversion = "${dep}"\nsource = { registry = "https://pypi.org/simple" }\nsdist = { url = "https://example.test/r.tar.gz" }\n`;
+    expect(changes("uv.lock", lock("0.1.0"), lock("0.2.0"))).toEqual([]);
+    expect(changes("uv.lock", lock("0.1.0"), lock("0.1.0", "2.33.0"))).toEqual(["package requests 2.32.0", "package requests 2.33.0"]);
+  });
+  cell("ruby", "Gemfile.lock: the path gem of the project is free, a registry gem is not", () => {
+    const lock = (own: string, rake = "13.2.1") => `PATH\n  remote: .\n  specs:\n    mygem (${own})\n      rake (~> 13.0)\n\nGEM\n  remote: https://rubygems.org/\n  specs:\n    rake (${rake})\n\nPLATFORMS\n  ruby\n\nDEPENDENCIES\n  mygem!\n  rake (~> 13.0)\n\nBUNDLED WITH\n   2.5.0\n`;
+    expect(changes("Gemfile.lock", lock("0.1.0"), lock("0.2.0"))).toEqual([]);
+    expect(changes("Gemfile.lock", lock("0.1.0"), lock("0.1.0", "13.3.0"))).toEqual(["GEM rake"]);
+  });
+  cell("python", "requires-python and .python-version select the interpreter, not the description", () => {
+    const pyproject = (requires: string, description = "a") => `[project]\nname = "p"\ndescription = "${description}"\nrequires-python = "${requires}"\n`;
+    expect(changes("pyproject.toml", pyproject(">=3.11"), pyproject(">=3.11", "b"))).toEqual([]);
+    expect(changes("pyproject.toml", pyproject(">=3.11"), pyproject(">=3.13"))).toEqual(["project.requires-python"]);
+    expect(changes(".python-version", "3.12\n", "3.13\n")).toEqual(["python-version"]);
   });
   cell("dotnet", "csproj Exec target, not the target framework", () => {
     const csproj = (extra: string, framework = "net10.0") => `<Project Sdk="Microsoft.NET.Sdk">\n  <PropertyGroup><TargetFramework>${framework}</TargetFramework></PropertyGroup>${extra}\n</Project>\n`;

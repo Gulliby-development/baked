@@ -7,15 +7,19 @@ import { validatePackage, workspacePath } from "../specs/validate.js";
 import { adoptCurrentInstructions, frozenInstructions } from "./context.js";
 import { fileHash } from "./effects.js";
 import { WorkflowFault } from "./errors.js";
+import { addHostRequiredCriteria, HOST_REQUIRED_CRITERIA } from "./host-required-criteria.js";
 import { redactSecrets } from "./redaction.js";
 import {
   type ArtifactService,
   PolicySchema,
+  repairHostBoundCriteria,
   SafeId,
+  type Spec,
   SpecSchema,
   TaskGraphSchema,
 } from "./schemas.js";
 import type { NativeWorkflowService } from "./service.js";
+import { statedRequest } from "./stated-request.js";
 import { runRoot } from "./worktree.js";
 
 export class WorkflowArtifacts implements ArtifactService {
@@ -55,7 +59,12 @@ export class WorkflowArtifacts implements ArtifactService {
       if (current === null) delete state.published[path];
       else state.published[path] = current;
     }
-    state.spec = request.spec ? SpecSchema.parse(request.spec) : state.spec;
+    // A revised spec gets the repairs the specify stage makes, before its hash is computed: a
+    // host-bound criterion becomes post-release and a criterion the host requires is added (#1964).
+    const repairs = request.spec
+      ? reviseSpecRepairs(store, runId, state, SpecSchema.parse(request.spec))
+      : null;
+    state.spec = repairs ? repairs.spec : state.spec;
     state.plan = request.plan ?? state.plan;
     state.graph = request.graph ? TaskGraphSchema.parse(request.graph) : state.graph;
     if (request.graph) state.hostEdits = [];
@@ -97,6 +106,9 @@ export class WorkflowArtifacts implements ArtifactService {
       expectedInputHash: request.expectedInputHash,
       state,
       policy,
+      ...(repairs && (repairs.hostBound.length || repairs.hostRequired.length)
+        ? { repairs: { hostBound: repairs.hostBound, hostRequired: repairs.hostRequired } }
+        : {}),
       ...(revised ?? {}),
     });
     return store.transaction(() => {
@@ -237,4 +249,26 @@ export class WorkflowArtifacts implements ArtifactService {
   async redact(runId: string, artifactId: string, reason: string): Promise<void> {
     this.service.store.redact(runId, artifactId, reason);
   }
+}
+
+/**
+ * The repairs of the specify stage on a revised spec (#1964): host-bound criteria become
+ * post-release with a fallback this host can check, and the criteria the host requires for the
+ * request with its answers are added. A revision that brings in a CI-results criterion would
+ * otherwise be enforced as automated, since a revision restarts at analysis.
+ */
+function reviseSpecRepairs(
+  store: NativeWorkflowService["store"],
+  runId: string,
+  state: ReturnType<NativeWorkflowService["store"]["state"]>,
+  spec: Spec,
+): { spec: Spec; hostBound: string[]; hostRequired: string[] } {
+  const bound = repairHostBoundCriteria(spec);
+  const request = statedRequest(state, store.requests(runId));
+  const root = runRoot(store.workspace, state);
+  const required = addHostRequiredCriteria(
+    bound.spec,
+    HOST_REQUIRED_CRITERIA.filter((c) => c.required(request, root)),
+  );
+  return { spec: required.spec, hostBound: bound.repaired, hostRequired: required.added };
 }

@@ -1,3 +1,9 @@
+import {
+  type EvidenceInput,
+  evidenceDecision,
+  namedCriteria,
+  requestEvidence,
+} from "./evidence-decisions.js";
 import type { Review, Spec } from "./schemas.js";
 import { isTestPath } from "./test-integrity.js";
 
@@ -41,14 +47,44 @@ const REQUEST = /\b(?:request|brief)(?:'s)?\b/i;
 const SPEC_CHANGE =
   /\b(?:remove|drop|delete|change|amend|reword|rewrite|revise|update|replace)\b[^.]*?\b(?:from|in|of)\s+(?:the\s+)?(?:approved\s+)?(?:spec(?:\.json)?|plan(?:\.md)?|tasks\.json|(?:AC|FR)-\d+|criteri(?:on|a)|requirements?)\b/i;
 
+/**
+ * The inputs of the `review-request` decision (#2032): a `contradicts` finding whose fix changes a
+ * document of the approved package records an amendment for the request on a request quote the
+ * host found (its `quote`, else a span its claim or fix quotes); one whose quote the request does
+ * not hold records none; one that quotes nothing falls back to naming the request or the brief.
+ * Without the request text the wording decides, as before #2032.
+ */
+export function specAmendmentInput(
+  finding: Review["findings"][number],
+  spec: Pick<Spec, "criteria" | "requirements">,
+  request?: string,
+): EvidenceInput {
+  const texts = [finding.claim, finding.suggestedFix];
+  return {
+    site: "review-request",
+    eligible: finding.kind === "contradicts" && SPEC_CHANGE.test(finding.suggestedFix),
+    evidence:
+      request === undefined
+        ? "absent"
+        : requestEvidence(
+            request,
+            finding.quote,
+            texts,
+            namedCriteria(spec, [...texts, ...finding.criterionIds]),
+          ),
+    wording: REQUEST.test(texts.join("\n")),
+    fallback: true,
+  };
+}
+
 /** The amendment a review finding records, or null when the code, not the spec, is at fault. */
 export function specAmendmentOf(
   finding: Review["findings"][number],
   spec: Pick<Spec, "criteria" | "requirements">,
+  request?: string,
 ): SpecAmendment | null {
-  if (finding.kind !== "contradicts") return null;
+  if (!evidenceDecision(specAmendmentInput(finding, spec, request))) return null;
   const text = `${finding.claim}\n${finding.suggestedFix}`;
-  if (!REQUEST.test(text) || !SPEC_CHANGE.test(finding.suggestedFix)) return null;
   const named = (id: string) => new RegExp(`\\b${id}\\b`).test(text);
   const criterionIds = [
     ...new Set([...finding.criterionIds, ...spec.criteria.map((c) => c.id).filter(named)]),

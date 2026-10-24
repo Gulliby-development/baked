@@ -11,7 +11,7 @@ import { type CallRate, chainCosts, openTrace, type PlanPriceReplay, replayChain
 
 // #1649, #1715: every recorded bench-round trace replays through the current host decisions: the
 // forecast and cap code, the per-call cost cap (#1740), the first-response deadline of each model
-// call, the test task split of each sizing report (#1789), each usage-policy refusal (#1895), each finding-chain decision (#1959), each repeated corrective failure (#1996), each spec conflict decision for the request (#2016), each misquote host-fix decision (#2047), each token-pool park's extension inside the dollar cap (#2042), and the initiative share gate (#1707), asked both on its recorded inputs and with each start
+// call, the test task split of each sizing report (#1789), each usage-policy refusal (#1895), each finding-chain decision (#1959), each repeated corrective failure (#1996), each spec conflict decision for the request (#2016), each misquote host-fix decision (#2047), each decision for the request or the platform on checked evidence (#2032), each token-pool park's extension inside the dollar cap (#2042), and the initiative share gate (#1707), asked both on its recorded inputs and with each start
 // rewound and recomputed, and the plan auto-approval on the run state it was asked with (#1707). A
 // stop, cap growth, park or approval decision the recorded run did not make fails the suite, unless
 // accepted.json lists it for that run or initiative with the reason: the pull request that changes
@@ -31,6 +31,7 @@ interface Accepted {
   newConflictDecisions?: number;
   newApplyDecisions?: number;
   newMisquoteFixes?: number;
+  newEvidenceDecisions?: number;
   newShareStops?: number;
   newPoolGrowth?: number;
   newStartStops?: number;
@@ -85,6 +86,7 @@ describe("bench-round traces replay without new forecast stops or growth (#1649)
           newConflictDecisions: run.newConflictDecisions,
           newApplyDecisions: run.newApplyDecisions,
           newMisquoteFixes: run.newMisquoteFixes,
+          newEvidenceDecisions: run.newEvidenceDecisions,
         }).toEqual({
           run: run.runId,
           newStops: allowed?.newStops ?? 0,
@@ -99,6 +101,7 @@ describe("bench-round traces replay without new forecast stops or growth (#1649)
           newConflictDecisions: allowed?.newConflictDecisions ?? 0,
           newApplyDecisions: allowed?.newApplyDecisions ?? 0,
           newMisquoteFixes: allowed?.newMisquoteFixes ?? 0,
+          newEvidenceDecisions: allowed?.newEvidenceDecisions ?? 0,
         });
       }
       // Run states before R52 counted the host's own test splits in `hostSplitTasks`, which the
@@ -250,6 +253,29 @@ describe("initiative starts replay on rewound traces (#1707)", () => {
       expect(dollarShortfall(start.view, start.feature)).toStartWith(`The shared dollar budget is short: ${id} has $`);
       expect(replay?.starts.find((b) => b.featureId === id)?.replayed).toBe("pass");
     }
+  }, 120000);
+
+  test("#1714: R62 stepvet's dollar share is not checked before a feature is measured", () => {
+    // R62 recorded two initiative-dollar-share would-stops, lines and stepexpr, both at
+    // measuredFeatures 0 with every waiting feature's low reserved. Both started anyway, finished
+    // and were accepted, with $3.67 of the $30 left unspent.
+    const seen = new Map<string, { view: Parameters<typeof shareShortfall>[0]; feature: Parameters<typeof shareShortfall>[1] }>();
+    replayInitiativeStarts(join(ROOT, "R62", "stepvet.sqlite.gz"), {
+      gate: (view, feature) => {
+        seen.set(feature.id, { view, feature });
+        return shareShortfall(view, feature);
+      },
+    });
+    for (const id of ["lines", "stepexpr"]) {
+      const start = seen.get(id)!;
+      expect(start.view.budget.cost.measuredFeatures).toBe(0);
+      expect(costGrowthLimit(start.view, id)!).toBeLessThan(start.feature.needUsd!.low);
+      expect(dollarShortfall(start.view, start.feature)).toBeNull();
+    }
+    // Once a feature is measured the check is back.
+    const later = seen.get("stepscmd")!;
+    expect(later.view.budget.cost.measuredFeatures).toBeGreaterThan(0);
+    expect(dollarShortfall(later.view, later.feature)).toStartWith("The shared dollar budget is short: stepscmd has $");
   }, 120000);
 
   test("the rewind sees only what existed at each start, its history stores included", () => {

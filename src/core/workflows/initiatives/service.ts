@@ -133,6 +133,7 @@ import {
 } from "./token-pool.js";
 import {
   assignFeatureWorkflows,
+  documentedLightLeaf,
   type FeatureWorkflow,
   featureWorkflow,
   featureWorkflowChoices,
@@ -606,13 +607,17 @@ export function shareShortfall(
  * round 59 (wheeltags) started pick-command with $2.87 to grow into and it stopped one corrective
  * short with 46% of its token share used; priced at the initiative's own stage mix, the two
  * features after it were short (#1890). The `initiative-dollar-share` stop reason decides whether
- * it parks the feature.
+ * it parks the feature. Before any feature is measured the waiting features' lows are the plan's
+ * guess and nothing else: R62 stepvet recorded two would-stops at the first starts, both false
+ * (lines and stepexpr started anyway, finished and left $3.67 of $30 unspent), so the check waits
+ * for the first measured feature (#1714).
  */
 export function dollarShortfall(
   view: ShareGateView,
   feature: Pick<FeatureView, "id"> & Partial<Pick<FeatureView, "needUsd">>,
 ): string | null {
   const cost = view.budget.cost;
+  if (cost.measuredFeatures === 0) return null;
   const spare = costGrowthLimit(view, feature.id);
   const needUsd = feature.needUsd;
   if (!needUsd || spare === null || cost.ceilingUsd === null || spare >= needUsd.low) return null;
@@ -1466,12 +1471,13 @@ export class InitiativeService {
    */
   private canPlanAhead(
     settings: InitiativeSettings,
+    plan: InitiativePlan,
     feature: InitiativeFeature,
     upstream: FeatureView[],
     facts: WorkflowFacts,
   ): boolean {
     if (facts(featureWorkflowId(settings, feature))?.contract === false) return false;
-    if (lightContract(settings, feature)) return false;
+    if (lightContract(settings, feature, plan)) return false;
     return upstream
       .filter((u) => u.state !== "accepted")
       .every(
@@ -2012,6 +2018,7 @@ export class InitiativeService {
           id: f.id,
           ...f.boundary,
           ...(f.testedBy ? { testedBy: f.testedBy } : {}),
+          dependsOn: f.dependsOn,
         })),
       },
       policy,
@@ -2029,7 +2036,7 @@ export class InitiativeService {
       ...(settings.featureAutoApproval ? { boundaryAutoApproval: true } : {}),
       ...(settings.featureIssues[featureId] ? { issue: settings.featureIssues[featureId] } : {}),
       ...(feature.skeleton?.length ? { hostFiles: feature.skeleton } : {}),
-      ...(lightContract(settings, feature) ? { contract: feature.contract } : {}),
+      ...(lightContract(settings, feature, plan) ? { contract: feature.contract } : {}),
       ...(baseCommit ? { baseCommit, baseFiles: this.upstreamSpecs(id, feature, unfinished) } : {}),
       ...(baseCommit && unfinished.length ? { planAhead: true } : {}),
     });
@@ -2960,7 +2967,9 @@ export class InitiativeService {
       const link = this.store.current(row.id, feature.id);
       if (!link) {
         const ahead =
-          waiting.length > 0 && planAhead && this.canPlanAhead(settings, feature, upstream, facts);
+          waiting.length > 0 &&
+          planAhead &&
+          this.canPlanAhead(settings, plan, feature, upstream, facts);
         view.state = waiting.length && !ahead ? "waiting" : "ready";
         view.blockers = ahead ? [] : waiting;
         if (ahead)
@@ -3006,7 +3015,7 @@ export class InitiativeService {
       // A workflow without a spec gives no contract; nothing depends on such a feature, so its
       // verified result is its acceptance. So does a light run that recorded no contract (#1750).
       const specless =
-        facts(workflowId)?.contract === false ||
+        (facts(workflowId)?.contract === false && !lightContract(settings, feature, plan)) ||
         !providesContract(this.workflows.store, link.run_id);
       if (run.status === "completed") {
         const accepted = specless ? null : acceptedContract(this.workflows.store, runFeature);
@@ -3738,10 +3747,17 @@ const lightContracts = (settings: InitiativeSettings): boolean =>
  * A feature on the light workflow while `lightContracts` is on: its run records its host-made spec
  * as the contract (#1664). Every such feature records one, dependents or not, because the setting
  * counts the light workflow as one that provides a contract, so status reads one for each, and a
- * replan or an extension can give it a dependent after it ran (#1750).
+ * replan or an extension can give it a dependent after it ran (#1750). With the setting off, a
+ * light feature whose every dependent is a documentation feature records one as well (#1768).
  */
-function lightContract(settings: InitiativeSettings, feature: InitiativeFeature): boolean {
-  return lightContracts(settings) && featureWorkflowId(settings, feature) === LIGHT_LEAF_WORKFLOW;
+function lightContract(
+  settings: InitiativeSettings,
+  feature: InitiativeFeature,
+  plan: InitiativePlan,
+): boolean {
+  if (featureWorkflowId(settings, feature) !== LIGHT_LEAF_WORKFLOW) return false;
+  // A light feature only documentation depends on records one too, with the setting off (#1768).
+  return lightContracts(settings) || documentedLightLeaf(plan, feature);
 }
 
 /**
