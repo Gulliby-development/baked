@@ -1,7 +1,7 @@
 import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runGit } from "../git/status.js";
+import { tmpDir } from "../platform/index.js";
 import type { TaskGraph } from "./schemas.js";
 import { suppliedBlocks } from "./sizing.js";
 import type { WorkflowStore } from "./store.js";
@@ -108,7 +108,7 @@ async function applyCheck(
   root: string,
   patch: string,
 ): Promise<{ applies: boolean; refusal?: string }> {
-  const dir = mkdtempSync(join(tmpdir(), "baked-host-apply-"));
+  const dir = mkdtempSync(join(tmpDir(), "baked-host-apply-"));
   try {
     const file = join(dir, "task.patch");
     writeFileSync(file, patch);
