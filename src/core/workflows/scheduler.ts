@@ -537,6 +537,7 @@ import {
   UNFINISHED_BLOCK_PREFIX,
   uncommittedEdits,
 } from "./rollback.js";
+import { runSubject } from "./run-title.js";
 import {
   type AgentProfile,
   type Analysis,
@@ -15460,13 +15461,13 @@ ${note}`;
           intentRoot(e.intent_json) === worktree.path,
       )
       .map((e) => (JSON.parse(e.intent_json) as { path: string }).path);
-    const title = state.spec?.title ?? this.store.run(runId).feature_id;
+    const title = runSubject(state, this.store.run(runId).feature_id);
     const commit = await commitRunBranch(
       this.store,
       runId,
       worktree,
       [...journaled, ...changedPaths(baseline, final).filter((path) => declared.has(path))],
-      `${title.slice(0, 72)}\n\nAccepted result of BAKED workflow run ${runId}.\n\nBaked-Run: ${runId}\nBaked-Snapshot: ${state.snapshotId}\n`,
+      `${title}\n\nAccepted result of BAKED workflow run ${runId}.\n\nBaked-Run: ${runId}\nBaked-Snapshot: ${state.snapshotId}\n`,
       // An initiative feature's branch is the base of the features that build on it, which read
       // its accepted spec at specs/<feature>/spec.json; its delivery still leaves specs/ out.
       state.initiativeBounds ? { specs: true } : {},
