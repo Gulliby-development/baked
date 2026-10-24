@@ -14,11 +14,35 @@ import type { Analysis, RunPolicy, Spec } from "./schemas.js";
 /** A table cell boundary (`a | b`, not `||`) or a mapping arrow (`a → b`). */
 const ROW = /\S\s*(?<!\|)\|(?!\|)\s*\S|\S\s*→\s*\S/;
 
-/** The criteria a derivation audit recomputes: automated ones that state literal rows. */
+/**
+ * A value counted from an input in an outcome: a `line:column` pair, a column, offset, position,
+ * index, width, length or count with its number, or a number of characters, bytes or columns.
+ */
+const COMPUTED =
+  /\b\d+:\d+\b|\b(?:columns?|col|offsets?|positions?|index|width|length|count)\s+(?:of\s+\S+\s+)?(?:is\s+|=\s*)?\d+\b|\b\d+\s+(?:characters?|chars?|bytes?|columns?|code\s+points?)\b/i;
+
+/** A literal input: a code span or a quoted string. */
+const LITERAL = /`[^`\n]+`|"[^"\n]+"|\u201c[^\u201d\n]+\u201d/;
+
+/**
+ * What a criterion gives the derivation audit to recompute (#1465, #2022): `rows` when it states
+ * literal rows (a table or a mapping), `computed` when its `then` states a position, column,
+ * offset, width or count of a literal input its given or when names (R65 uritpl cli AC-005, `1:6`
+ * for the second name of `{a}{a}`, which a rows-only audit never looked at), and null otherwise.
+ */
+export function auditShape(criterion: Spec["criteria"][number]): "rows" | "computed" | null {
+  if (criterion.method !== "automated") return null;
+  if ([criterion.given, criterion.when, criterion.then].some((text) => ROW.test(text)))
+    return "rows";
+  return COMPUTED.test(criterion.then) &&
+    (LITERAL.test(criterion.given) || LITERAL.test(criterion.when))
+    ? "computed"
+    : null;
+}
+
+/** The criteria a derivation audit recomputes: those `auditShape` gives a shape. */
 export function auditedCriteria(spec: Spec): Spec["criteria"] {
-  return spec.criteria.filter(
-    (c) => c.method === "automated" && [c.given, c.when, c.then].some((text) => ROW.test(text)),
-  );
+  return spec.criteria.filter((c) => auditShape(c) !== null);
 }
 
 export function derivationAuditOn(policy: Pick<RunPolicy, "derivationAudit">): boolean {
@@ -107,7 +131,7 @@ export function derivationAuditExtra(
     criteria,
     requirements: spec.requirements.filter((r) => ids.has(r.id)),
     note:
-      "Derivation audit: these criteria state literal rows (an input and the output it must give). Recompute every row from the requirements alone, without looking at the row's own expected value, and record one entry per row in `derivations`: the row as written, the value the requirements give, whether they match, and the derivation step by step. A row whose expected value is a position, column, offset, length or count is counted, not estimated: write out the index of each character of its input up to the value in the derivation. A row that the request itself states is authoritative: when the requirements give something else, it is the requirement that is wrong, so record matches false and say so in the derivation. A derivation that rests on the request (the request states, gives or lists the row or its rule) copies the request's exact words in `quote`; the host checks the quote against the request, and a row whose quote the request does not contain is raised as a mismatch. A row the request does not list is derived from the rule as the request words it, and a reading of that rule the request leaves open is a finding of kind ambiguity, not a citation. The host raises every row with matches false as a blocking finding, so do not report those rows again in `findings`." +
+      "Derivation audit: these criteria state literal rows (an input and the output it must give), or a value computed from a literal input in their then (a line and column, offset, position, width, length or count). For a criterion of the second kind, each such value is a row: write the input and the value as the criterion states them as `row`. Recompute every row from the requirements alone, without looking at the row's own expected value, and record one entry per row in `derivations`: the row as written, the value the requirements give, whether they match, and the derivation step by step. A row whose expected value is a position, column, offset, length or count is counted, not estimated: write out the index of each character of its input up to the value in the derivation. A row that the request itself states is authoritative: when the requirements give something else, it is the requirement that is wrong, so record matches false and say so in the derivation. A derivation that rests on the request (the request states, gives or lists the row or its rule) copies the request's exact words in `quote`; the host checks the quote against the request, and a row whose quote the request does not contain is raised as a mismatch. A row the request does not list is derived from the rule as the request words it, and a reading of that rule the request leaves open is a finding of kind ambiguity, not a citation. The host raises every row with matches false as a blocking finding, so do not report those rows again in `findings`." +
       skipped,
   };
 }
@@ -198,7 +222,9 @@ export function derivationProblems(spec: Spec, analysis: Pick<Analysis, "derivat
   for (const criterion of audited)
     if (!derivations.some((d) => d.criterionId === criterion.id))
       problems.push(
-        `Derivation audit: ${criterion.id} states literal rows and has no entry in derivations; recompute each of its rows from ${criterion.requirementIds.join(", ")} and add one entry per row.`,
+        auditShape(criterion) === "computed"
+          ? `Derivation audit: ${criterion.id} states a value computed from a literal input (a column, offset, width, length or count) and has no entry in derivations; recompute each such value from ${criterion.requirementIds.join(", ")} and add one entry per value.`
+          : `Derivation audit: ${criterion.id} states literal rows and has no entry in derivations; recompute each of its rows from ${criterion.requirementIds.join(", ")} and add one entry per row.`,
       );
   for (const d of derivations)
     if (d.quote === undefined && citesRequest(d, spec))
