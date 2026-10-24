@@ -2174,12 +2174,13 @@ export class WorkflowScheduler {
                   "INVALID_DEFINITION",
                   "Automated criteria require at least one mandatory command check. Revise the policy before approval.",
                 );
-              if (
-                !state.approvalRoot &&
-                policy.sizing &&
-                this.sizePlan(runId, state, policy, v2 !== null) !== "continue"
-              ) {
+              const sized =
+                !state.approvalRoot && policy.sizing
+                  ? this.sizePlan(runId, state, policy, v2)
+                  : "continue";
+              if (sized !== "continue") {
                 advance = false;
+                rerouted = sized === "replan" && v2 !== null;
                 break;
               }
               if (!state.approvalRoot) {
@@ -6061,7 +6062,7 @@ export class WorkflowScheduler {
     runId: string,
     state: RuntimeState,
     policy: RunPolicy,
-    v2: boolean,
+    v2: { definition: WorkflowV2 } | null,
   ): "continue" | "replan" | "wait" {
     const graph = state.graph;
     if (!graph) return "continue";
@@ -6087,10 +6088,12 @@ export class WorkflowScheduler {
       ),
     );
     const split = report.decision === "split-tasks" || report.decision === "split-feature";
-    if (split && state.sizingReplans === 0 && !v2) {
-      const stages = WorkflowSchema.parse(JSON.parse(this.store.run(runId).definition_json)).stages;
+    if (split && state.sizingReplans === 0) {
+      // v1 and v2 definitions alike go back to the plan stage (#2036); a v2 definition past its
+      // stage visit limit, or without a plan stage, goes on with the plan as priced.
+      const stages = this.stageKinds(runId, v2);
       const plan = stages.findIndex((stage) => stage.kind === "plan");
-      if (plan >= 0) {
+      if (plan >= 0 && this.moveTo(state, stages, plan, v2)) {
         this.raiseBudget(runId, state, policy, report);
         const note = splitNote(
           report,
@@ -6116,7 +6119,6 @@ export class WorkflowScheduler {
         state.prompt += `
 ${note}`;
         state.analysisPassed = false;
-        state.stageIndex = plan;
         this.store.transaction(() => this.store.saveState(runId, state));
         return "replan";
       }
@@ -6148,14 +6150,16 @@ ${note}`;
         ),
       );
     } else if (report.decision === "split-feature" && state.sizingReplans < 2) {
-      // Asked once; an answer lets the run go on within the ceiling.
+      // Asked once; an answer lets the run go on within the ceiling. The priced plan is
+      // plan-0 when no replan ran (a v2 definition past its visit limit, #2036).
+      const priced = `sizing/plan-${String(state.sizingReplans)}.json`;
       state.sizingReplans = 2;
       this.wait("clarification", state, {
         findings: [
           {
             id: "SIZING-1",
             kind: "scope",
-            refs: ["tasks.json", "sizing/plan-1.json"],
+            refs: ["tasks.json", priced],
             description: `${report.reasons.join(". ")}. Split the request into an initiative of smaller features (baked workflow initiative), or answer to continue within ${String(report.maxRunTokens)} tokens.`,
             blocking: true,
           },
