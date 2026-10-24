@@ -4,6 +4,8 @@ import type { CodexAppServerConnection } from "../src/core/llm/providers/codex/c
 import {
   CodexAppServerSessions,
   createCodexNativeLanguageModel,
+  STALL_PROBE_EXEC_CALLS,
+  STALL_PROBE_MS,
 } from "../src/core/llm/providers/codex/native.js";
 import { createCodexLanguageModel } from "../src/core/llm/providers/codex/runner.js";
 import { getProvider } from "../src/core/llm/providers/index.js";
@@ -167,10 +169,10 @@ describe("scenario: wheeltags base specify, a stalled follow-up on app-server (#
 });
 
 describe("codex app-server stalls", () => {
-  const prompt = (system: string) =>
+  const prompt = (system: string, task = "Write the spec") =>
     [
       { role: "system", content: system },
-      { role: "user", content: [{ type: "text", text: "Write the spec" }] },
+      { role: "user", content: [{ type: "text", text: task }] },
     ] as const;
   const tools = [
     {
@@ -181,9 +183,9 @@ describe("codex app-server stalls", () => {
     },
   ];
 
-  function setup() {
+  function setup(now: () => number = Date.now) {
     const appServer = new StallingAppServer({ tool: "submit_result", args: {} });
-    const sessions = new CodexAppServerSessions(async () => appServer.connection);
+    const sessions = new CodexAppServerSessions(async () => appServer.connection, now);
     let execCalls = 0;
     const exec = createCodexLanguageModel("gpt-test", {
       async run() {
@@ -246,5 +248,59 @@ describe("codex app-server stalls", () => {
     expect(again.finishReason).toBe("tool-calls");
     expect(execCalls()).toBe(0);
     expect(appServer.turns).toBe(2);
+  });
+  type Model = ReturnType<typeof setup>["model"];
+  /** A call of `task` that calls a tool, then the answer to it that gets no first byte. */
+  async function stall(model: Model, task: string) {
+    const first = await model.doGenerate({ prompt: [...prompt("Analyst.", task)], tools });
+    const callId = first.content.find((part) => part.type === "tool-call")?.toolCallId ?? "";
+    const stalled = new AbortController();
+    const resumed = model.doGenerate({
+      prompt: [
+        ...prompt("Analyst.", task),
+        { role: "assistant", content: [{ type: "tool-call", toolCallId: callId, toolName: "submit_result", input: {} }] },
+        { role: "tool", content: [{ type: "tool-result", toolCallId: callId, toolName: "submit_result", output: { type: "text", value: "ok" } }] },
+      ],
+      tools,
+      abortSignal: stalled.signal,
+    });
+    await Bun.sleep(5);
+    stalled.abort(new ProviderUnreachableError("codex/gpt-test", "No model response within 300 seconds"));
+    await expect(resumed).rejects.toThrow("300 seconds");
+  }
+  const call = async (model: Model, task: string) =>
+    (await model.doGenerate({ prompt: [...prompt("Analyst.", task)], tools })).finishReason === "tool-calls" ? "app-server" : "exec";
+
+  // R62 stepvet (#1962): one stall of base's analysis moved the analysis of eight features to
+  // exec for the rest of a 91-minute drive, with no cache reads, at twice the price per token.
+  test("a first stall moves only its input to exec; a stall of another input moves the whole stage", async () => {
+    const { model } = setup();
+    await stall(model, "Analyze base");
+    expect(await call(model, "Analyze base")).toBe("exec");
+    expect(await call(model, "Analyze lines")).toBe("app-server");
+    await stall(model, "Analyze lines");
+    expect(await call(model, "Analyze stepexpr")).toBe("exec");
+  });
+
+  test(`after ${STALL_PROBE_EXEC_CALLS} calls on exec one call probes app-server, and its answer clears the mark`, async () => {
+    const { model, execCalls } = setup();
+    await stall(model, "Analyze base");
+    for (let i = 0; i < STALL_PROBE_EXEC_CALLS; i++) expect(await call(model, "Analyze base")).toBe("exec");
+    expect(await call(model, "Analyze base")).toBe("app-server");
+    expect(await call(model, "Analyze base")).toBe("app-server");
+    expect(execCalls()).toBe(STALL_PROBE_EXEC_CALLS);
+  });
+
+  test("a mark older than the probe interval probes app-server, and a later stall marks it again", async () => {
+    let now = 1_000_000;
+    const { model } = setup(() => now);
+    await stall(model, "Analyze base");
+    expect(await call(model, "Analyze base")).toBe("exec");
+    now += STALL_PROBE_MS - 1;
+    expect(await call(model, "Analyze base")).toBe("exec");
+    now += 1;
+    expect(await call(model, "Analyze base")).toBe("app-server");
+    await stall(model, "Analyze base");
+    expect(await call(model, "Analyze base")).toBe("exec");
   });
 });

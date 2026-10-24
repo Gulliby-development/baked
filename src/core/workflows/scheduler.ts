@@ -331,12 +331,16 @@ import {
   batteryOf,
   batteryTable,
   CHAIN_BATTERY_DIR,
+  CHAIN_FAMILY_DIR,
   CHAIN_KIND,
   CHAIN_TASKS_DIR,
   type ChainFinding,
   type ChainRecord,
   chainFindings,
   chainSpecRows,
+  type FamilyRecord,
+  familyDecision,
+  observedValue,
   symbolKey,
   taskChainRecord,
 } from "./finding-chain.js";
@@ -455,7 +459,7 @@ import {
   hardenTargets,
   QUALITY_MUTATION_BASELINE,
 } from "./quality/harden.js";
-import { isManifestPath, manifestDependencies } from "./quality/manifests.js";
+import { hasExecutableFields, manifestDependencies } from "./quality/manifests.js";
 import {
   DEFAULT_MUTATION_BUDGET_MS,
   generateMutants,
@@ -597,6 +601,7 @@ import {
   type ApprovalReview,
   ApprovalReviewSchema,
   advisorySizeTarget,
+  ChainFamilySchema,
   type Critique,
   CritiqueSchema,
   clarificationOf,
@@ -3874,6 +3879,162 @@ export class WorkflowScheduler {
     );
   }
   /**
+   * The sibling probe of a rewrite corrective (#1969), once before its first attempt: the
+   * `chain-family` profile is shown the chain's battery and spec rows and proposes the other
+   * members of the input class (nested, swapped and combined delimiters, the empty input). The
+   * host runs each case on the files as they are, as a repro whose actual is its expected value
+   * (`familyDecision`): a case that prints something else becomes a finding that repeats the
+   * chain's finding, so the battery the rewrite gets, its repro check and the battery before the
+   * next review hold the class, not only the members review found one round at a time (R62
+   * md-site: four more members of `findDelimitedInline`, one per round). Recorded under
+   * `chains/family/`; a failed call or an unusable case leaves the battery as it was.
+   */
+  private async chainFamily(
+    runId: string,
+    stepId: string,
+    state: RuntimeState,
+    policy: RunPolicy,
+    task: Task,
+    root: string,
+    signal: AbortSignal,
+  ): Promise<void> {
+    if (policy.chainProbe !== "on" || policy.chainRewrite !== "on" || task.origin === "planned")
+      return;
+    const record = taskChainRecord(this.store, runId, task.id);
+    if (record?.decision !== "rewrite") return;
+    if (this.store.latestArtifact(runId, `${CHAIN_FAMILY_DIR}${task.id}.json`)) return;
+    const profile = ProfileSchema.array()
+      .parse(JSON.parse(this.store.run(runId).profiles_json))
+      .find((p) => p.output === "chain-family");
+    const executables = reproExecutables(policy.checks);
+    const all = chainFindings(this.store, runId);
+    const head = all.get(record.findingId);
+    const members = batteryOf(all, record);
+    if (!profile || !executables.length || !head || !members.length) return;
+    const child = this.store.transaction(() => this.store.beginStep(runId, "chain-family", stepId));
+    let proposed: { cases: Omit<Repro, "actual">[] };
+    try {
+      proposed = ChainFamilySchema.parse(
+        await this.call(
+          runId,
+          child,
+          state,
+          policy,
+          profile,
+          {
+            symbol: record.symbol,
+            file: record.file,
+            ...(record.family ? { family: record.family } : {}),
+            cases: batteryTable(members),
+            spec: chainSpecRows(state.spec, members),
+            executables,
+          },
+          signal,
+        ),
+      );
+      this.store.transaction(() => this.store.finishStep(runId, child, "completed"));
+    } catch (error) {
+      if (signal.aborted) throw error;
+      if (
+        error instanceof WorkflowFault &&
+        ["BUDGET_EXHAUSTED", "CHECKPOINT_REACHED"].includes(error.code)
+      )
+        throw error;
+      // Recorded without cases, so a later attempt of the rewrite does not ask again.
+      this.store.transaction(() => {
+        this.store.finishStep(runId, child, "failed");
+        this.store.artifact(
+          runId,
+          CHAIN_KIND,
+          `${CHAIN_FAMILY_DIR}${task.id}.json`,
+          canonical({
+            schemaVersion: 1,
+            taskId: task.id,
+            findingId: head.id,
+            file: head.file,
+            symbol: record.symbol,
+            shown: members.map((m) => m.id),
+            cases: [],
+          } satisfies FamilyRecord),
+        );
+      });
+      return;
+    }
+    // A case the battery already holds is not run again.
+    const inputKey = (repro: Omit<Repro, "actual" | "expected">) =>
+      JSON.stringify([repro.executable, repro.args, repro.stdin ?? null, repro.files ?? null]);
+    const known = new Set(members.flatMap((m) => (m.repro ? [inputKey(m.repro)] : [])));
+    const cases = proposed.cases
+      .filter((c) => !known.has(inputKey(c)))
+      .slice(0, BATTERY_CASES)
+      .map((c) => ({ ...c, actual: c.expected }));
+    const touched = this.runChangedPaths(runId, state);
+    const outcomes = await runReproBattery(cases, (repro) =>
+      runRepro(this.processes, repro, {
+        root,
+        executables,
+        generated: generatedPaths(policy),
+        signal,
+        sandbox: runSandbox(policy, root, { gitWrite: Boolean(state.worktree) }),
+        shadows: head.file ? [head.file, ...touched] : touched,
+      }),
+    );
+    const family: FamilyRecord = {
+      schemaVersion: 1,
+      taskId: task.id,
+      findingId: head.id,
+      file: head.file,
+      symbol: record.symbol,
+      shown: members.map((m) => m.id),
+      cases: outcomes.map((o) => ({
+        status: o.status,
+        reason: o.reason ?? "",
+        decision: familyDecision(o.status),
+      })),
+    };
+    this.store.transaction(() => {
+      const artifact = this.store.artifact(
+        runId,
+        CHAIN_KIND,
+        `${CHAIN_FAMILY_DIR}${task.id}.json`,
+        canonical(family),
+      );
+      const evidenceId = this.store.addEvidence(
+        runId,
+        "command",
+        state.snapshotId ?? "",
+        artifact.id,
+      );
+      for (const [index, outcome] of outcomes.entries()) {
+        const entry = family.cases[index];
+        const probe = cases[index];
+        if (entry?.decision !== "join" || !probe) continue;
+        const repro: Repro = { ...probe, actual: observedValue(outcome.output) };
+        const finding: Review["findings"][number] = {
+          id: `${head.id}-family-${String(index + 1)}`,
+          kind: "correctness",
+          severity: head.severity === "critical" ? "critical" : "high",
+          basis: "spec",
+          confidence: 1,
+          requirementIds: head.requirementIds,
+          criterionIds: head.criterionIds,
+          file: head.file,
+          symbol: head.symbol,
+          ...(head.family ? { family: head.family } : {}),
+          evidenceIds: [evidenceId],
+          claim: `Sibling case ${String(index + 1)} of ${record.symbol}, probed around ${head.id}: prints ${JSON.stringify(repro.actual)} where the spec needs ${JSON.stringify(repro.expected)}`,
+          impact: `The same input class as the chain ${record.chain.map((f) => f.id).join(", ")}; without this case the rewrite ${task.id} could pass the battery and leave it for the next review round.`,
+          suggestedFix: `Make ${record.symbol} pass this case together with every other case of the battery.`,
+          repro,
+          repeatOf: head.id,
+        };
+        const id = this.store.addFinding(runId, finding, fingerprint(finding), artifact.id);
+        // The rewrite owns it: it is a case of that rewrite's battery, not a new correction.
+        this.store.findingStatus(runId, id, "confirmed", task.id);
+      }
+    });
+  }
+  /**
    * The earlier corrected findings in the file this correction's findings name, on other symbols:
    * the review is finding the neighbouring cases of one construct one round at a time, so this
    * correction covers the construct's sibling contexts in one go (#1397).
@@ -7022,6 +7183,8 @@ ${note}`;
       let proseEnd = false;
       // A cap stop that would stop the run waits until the host knows it cannot finish the task.
       const capStop: { fault?: WorkflowFault } = {};
+      // A rewrite's sibling probe runs before its first attempt reads the battery (#1969).
+      await this.chainFamily(runId, child, state, policy, task, root, signal);
       const fresh = this.freshStart(runId, state, task);
       let result = this.settleSizeTargets(
         runId,
@@ -8403,6 +8566,7 @@ ${note}`;
       let proseEnd = false;
       // A cap stop that would stop the run waits until the host knows it cannot finish the task.
       const capStop: { fault?: WorkflowFault } = {};
+      await this.chainFamily(runId, entry.child, state, policy, task, root, signal);
       let result = this.settleSizeTargets(
         runId,
         task.id,
@@ -13035,7 +13199,7 @@ ${note}`;
       const code = await readCodeFiles(
         root,
         [...new Set(existing)],
-        (path) => isCodePath(path) || isManifestPath(path),
+        (path) => isCodePath(path) || hasExecutableFields(path),
       );
       this.store.transaction(() =>
         this.store.artifact(
@@ -14403,7 +14567,7 @@ ${note}`;
     const changed = await this.changedFiles(
       runId,
       state,
-      (path) => isManifestPath(path) || isCodePath(path),
+      (path) => hasExecutableFields(path) || isCodePath(path),
     );
     if (!changed.length) return [];
     const root = runRoot(this.store.workspace, state);
@@ -15406,11 +15570,14 @@ ${note}`;
     let inconclusive: string | undefined;
     for (const { gate, check } of ordered) {
       const run = await this.runCommandGate(runId, stepId, check, gate, policy, signal);
+      // Baseline lint debt under `staticBaseline: "relative"` passes here as it does at task end
+      // and in the schema-1 checks stage (#1393).
       const result =
         run.status === "failed" &&
         check.required &&
         !run.reason &&
-        this.noOwnedTests(runId, state, check, run.output ?? "", run.evidenceId)
+        (this.staticDebt(runId, state, policy, check, run.output ?? "", run.evidenceId) ||
+          this.noOwnedTests(runId, state, check, run.output ?? "", run.evidenceId))
           ? { ...run, status: "passed" as const }
           : run;
       this.recordGate(runId, state, gate.id, null, {

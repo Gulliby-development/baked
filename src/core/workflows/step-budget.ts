@@ -429,11 +429,25 @@ export class AttemptStepController {
   get stoppedByCeiling(): boolean {
     return this.ceilingStop;
   }
+  /**
+   * The steps that were model requests: a step whose provider reported zero tokens did not send
+   * the prompt. Codex reports a response's usage only once its tool call is answered, so the step
+   * that answers it reads 0 and its tokens arrive on the next. Dividing the floor by every step
+   * priced those steps as free: R63 md-site T012's corrective made 7 requests of about 110k tokens
+   * in 10 steps, its floor was 10 x 76k, and it stopped there and re-read the project for 1.36M in
+   * a continuation (#1987). The floor is `minSteps` requests at what one request re-sends.
+   */
+  private requests(steps: ReadonlyArray<{ usage: StepUsageLike }>): number {
+    const reported = steps.filter(
+      (step) => stepTokens(step.usage, this.options.fallbackStepTokens) > 0,
+    ).length;
+    return Math.max(1, reported);
+  }
   /** The token cap after the step floor, given the steps taken so far. */
   tokenCap(steps: ReadonlyArray<{ usage: StepUsageLike }>): number {
     const { maxTokens, minSteps } = this.options;
     if (!minSteps || steps.length === 0) return maxTokens;
-    const floor = Math.ceil((this.capped(steps) / steps.length) * minSteps);
+    const floor = Math.ceil((this.capped(steps) / this.requests(steps)) * minSteps);
     return Math.max(maxTokens, Math.min(floor, this.ceiling ?? maxTokens));
   }
   /** Tokens the steps count against the cap; see `capTokens`. */
@@ -445,12 +459,15 @@ export class AttemptStepController {
   }
   /**
    * The cap on all tokens, cache reads included: `ALL_TOKENS_FACTOR` times the token cap, and never
-   * below the step floor (`minSteps` steps at the attempt's average step, all tokens counted).
+   * below the step floor (`minSteps` model requests at the attempt's average request, all tokens
+   * counted).
    */
   allTokensCap(steps: ReadonlyArray<{ usage: StepUsageLike }>): number {
     const { minSteps } = this.options;
     const floor =
-      minSteps && steps.length ? Math.ceil((this.consumed(steps) / steps.length) * minSteps) : 0;
+      minSteps && steps.length
+        ? Math.ceil((this.consumed(steps) / this.requests(steps)) * minSteps)
+        : 0;
     return Math.max(ALL_TOKENS_FACTOR * this.tokenCap(steps), floor);
   }
   /** Whether the steps used the cap, the all-token cap, or all the tokens the ceiling allows. */

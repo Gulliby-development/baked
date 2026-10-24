@@ -93,11 +93,15 @@ export function packageJsonFields(text: string): FieldMap {
   return out;
 }
 
-/** The build backend, entry points, build hooks and package sources of `pyproject.toml`. */
+/**
+ * The build backend, entry points, build hooks and package sources of `pyproject.toml`, and
+ * `requires-python`, from which uv picks (and downloads) the interpreter that runs the checks.
+ */
 export const pyprojectFields = (text: string): FieldMap =>
   tomlFields(
     text,
     /^(?:build-system|project\.(?:scripts|gui-scripts|entry-points(?:\..+)?)|tool\.(?:hatch\.build(?:\..+)?|setuptools(?:\..+)?|poetry\.(?:scripts|plugins|build|source)|pdm\.(?:scripts|build)|uv\.(?:index|sources)|maturin))$/,
+    { project: ["requires-python"] },
   );
 
 /** Install options and direct references of a requirements file (`-e`, `--index-url`, URLs). */
@@ -127,7 +131,11 @@ export const cargoFields = (text: string): FieldMap =>
     package: ["build", "links", "default-run"],
   });
 
-/** `go.mod` replace directives and the toolchain line. */
+/**
+ * `go.mod` replace directives, the toolchain and godebug lines, and the `go` line: since Go 1.21 a
+ * `go` line newer than the installed toolchain makes the `go` command download that toolchain and
+ * run the checks with it (#1963). Each directive's label holds its value (`go 1.22.0`).
+ */
 export function goModFields(text: string): FieldMap {
   const out: FieldMap = new Map();
   let block: string | null = null;
@@ -141,7 +149,7 @@ export function goModFields(text: string): FieldMap {
     const open = /^(replace|toolchain|godebug)\s*\($/.exec(line)?.[1];
     if (open) block = open;
     else {
-      const directive = /^(replace|toolchain|godebug)\s+(\S+)/.exec(line);
+      const directive = /^(replace|toolchain|godebug|go)\s+(\S+)/.exec(line);
       if (directive) out.set(`${directive[1]} ${directive[2]}`, line);
     }
   }
@@ -231,6 +239,58 @@ export function gemfileFields(text: string): FieldMap {
     out.set(out.has(name) ? `${name} ${line}` : name, line);
   }
   return out;
+}
+
+/**
+ * The files beside the manifests that choose the toolchain or tool distribution that runs the
+ * project's checks (#1963). They declare no dependencies, so the field check alone reads them.
+ */
+
+/** `rust-toolchain.toml` channel and path; a legacy `rust-toolchain` file is the channel alone. */
+export function rustToolchainFields(text: string): FieldMap {
+  const lines = text.split(/\r?\n/).filter((line) => line.trim() && !/^\s*#/.test(line));
+  const legacy = lines.length === 1 && /^\s*[\w.-]+\s*$/.test(lines[0] ?? "");
+  if (legacy) return new Map([["toolchain.channel", (lines[0] ?? "").trim()]]);
+  return tomlFields(text, /(?!)/, { toolchain: ["channel", "path"] });
+}
+
+/** `global.json` SDK selection (`sdk.version`, `sdk.rollForward`) and the MSBuild SDKs it loads. */
+export function globalJsonFields(text: string): FieldMap {
+  const out: FieldMap = new Map();
+  let parsed: Record<string, unknown>;
+  try {
+    parsed = JSON.parse(text) as Record<string, unknown>;
+  } catch {
+    return out;
+  }
+  if (!parsed || typeof parsed !== "object") return out;
+  const sdk = parsed.sdk;
+  if (sdk && typeof sdk === "object")
+    for (const [key, value] of Object.entries(sdk as Record<string, unknown>))
+      out.set(`sdk.${key}`, JSON.stringify(value));
+  if (parsed["msbuild-sdks"] !== undefined)
+    out.set("msbuild-sdks", JSON.stringify(parsed["msbuild-sdks"]));
+  return out;
+}
+
+/** Maven and Gradle wrapper properties: the distribution the wrapper downloads and runs. */
+export function wrapperPropertiesFields(text: string): FieldMap {
+  const out: FieldMap = new Map();
+  for (const raw of text.split(/\r?\n/)) {
+    const assignment = /^\s*(distributionUrl|wrapperUrl|wrapperVersion)\s*[=:]\s*(.*)$/.exec(raw);
+    if (assignment?.[1]) out.set(assignment[1], (assignment[2] ?? "").trim());
+  }
+  return out;
+}
+
+/** `.python-version`: the interpreter uv and pyenv select (uv downloads it). */
+export function pythonVersionFields(text: string): FieldMap {
+  const version = text
+    .split(/\r?\n/)
+    .map((line) => line.replace(/#.*$/, "").trim())
+    .filter(Boolean)
+    .join(" ");
+  return version ? new Map([["python-version", version]]) : new Map();
 }
 
 /** The labels of the executable fields that differ between two versions of a manifest. */

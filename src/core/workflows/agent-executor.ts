@@ -5,12 +5,14 @@ import type { ModelMessage, ProviderOptions } from "@ai-sdk/provider-utils";
 import {
   generateText,
   isStepCount,
+  jsonSchema,
   type LanguageModel,
   type LanguageModelUsage,
   type Tool,
   ToolChoiceViolationError,
   type ToolSet,
   tool,
+  zodSchema,
 } from "ai";
 import { z } from "zod";
 import type { AppConfig } from "../../types/index.js";
@@ -72,7 +74,7 @@ import { WorkflowFault } from "./errors.js";
 import { addsDoubledEscapes, escapeHintFor } from "./escape-hint.js";
 import { executionClock } from "./execution-clock.js";
 import { keepOutside, restoreOutside } from "./fixer-scope.js";
-import { withHostConstants } from "./host-constants.js";
+import { advertisedSchema, withHostConstants } from "./host-constants.js";
 import {
   accountIdentityMessage,
   findAccountIdentity,
@@ -100,6 +102,7 @@ import { RevisionSchema } from "./revision-patch.js";
 import {
   AnalysisSchema,
   ApprovalReviewSchema,
+  ChainFamilySchema,
   CritiqueSchema,
   DistinctionSchema,
   EdgeCasesSchema,
@@ -160,6 +163,7 @@ export const outputSchemas: Record<string, z.ZodType> = {
   mutants: MutantProposalSchema,
   distinction: DistinctionSchema,
   revision: RevisionSchema,
+  "chain-family": ChainFamilySchema,
   "edge-cases": EdgeCasesSchema,
 };
 const MAX_SEMANTIC_CORRECTIONS = 2;
@@ -1135,6 +1139,12 @@ export class NativeAgentExecutor implements AgentExecutor {
       const resultSchema = outputSchemas[request.profile.output];
       if (!resultSchema) throw new WorkflowFault("OUTPUT_INVALID", "Unknown profile output schema");
       const schema = withHostConstants(request.profile.output, resultSchema);
+      // The model sees host fields as optional and validation still fills them (#1929).
+      const { validate } = zodSchema(schema);
+      const submitSchema = jsonSchema(
+        () => zodSchema(advertisedSchema(request.profile.output, resultSchema)).jsonSchema,
+        validate ? { validate } : {},
+      );
       let submitted: unknown;
       let lastRefusal: { accepted: false; errors: string[]; instruction: string } | undefined;
       let refusals = 0;
@@ -1177,7 +1187,7 @@ export class NativeAgentExecutor implements AgentExecutor {
       const submitResult = tool({
         description:
           "Submit the final typed result. Evidence IDs must come from the host context or tools.",
-        inputSchema: schema,
+        inputSchema: submitSchema,
         execute: async (value) => {
           const parsed = schema.parse(value);
           const errors = [...(request.validate?.(parsed) ?? [])];

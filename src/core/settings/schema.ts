@@ -1057,6 +1057,20 @@ export const SETTINGS: readonly SettingDefinition[] = [
     ],
   },
   {
+    id: "quality.chainProbe",
+    page: "code-quality",
+    section: "Workflow runs",
+    label: "Finding chain sibling probe",
+    help: "With the finding chain rewrite on, before the rewrite starts, one small review call proposes the other inputs of the defect class around the cases found so far (nested, swapped and combined delimiters, the empty input). The host runs them, and each that fails joins the cases the rewrite must pass, so the next review round does not find them one at a time.",
+    scopes: BOTH,
+    type: "enum",
+    default: "off",
+    options: [
+      { value: "off", label: "off", help: "The rewrite gets only the cases review found." },
+      { value: "on", label: "on", help: "Probe the class once and add the failing inputs." },
+    ],
+  },
+  {
     id: "quality.misquoteFix",
     page: "code-quality",
     section: "Workflow runs",
