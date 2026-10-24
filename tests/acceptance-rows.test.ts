@@ -37,6 +37,13 @@ describe("acceptance rows", () => {
     ]);
   });
 
+  test("a pipe in a code span or a JSON string stays in its cell; an unsplittable row drops the table (#2044)", () => {
+    const rows = literalRows(spec('| Input | Expected |\n| --- | --- |\n| `"$[?@[0,0]==2 || @.b]"` | `["a|b"]` |\n| "x \\| y" | 1 |'), ["AC-001"]);
+    expect(rows.map((row) => [row.input, row.expected])).toEqual([["$[?@[0,0]==2 || @.b]", ["a|b"]], ["x | y", 1]]);
+    expect(rowAuditProblems(spec('| Input | Expected |\n| --- | --- |\n| "a||b" | 2 |'), graph, analysis(['"a||b" | 2']))).toEqual([]);
+    expect(literalRows(spec('| Input | Expected |\n| --- | --- |\n| "a" | 1 |\n| `x | "y | z" | 2 |'), ["AC-001"])).toEqual([]);
+  });
+
   test("refuses expressions, incomplete tables, unsafe numeric values and manual/property criteria", () => {
     for (const table of ['Input | Expected\n12 | 24\nfoo() | 2', 'Input | Expected\n{"n":1e999} | null', 'Input | Expected\n9007199254740993 | 1', 'value | result\n1 | 2'])
       expect(literalRows(spec(table), ["AC-001"])).toEqual([]);

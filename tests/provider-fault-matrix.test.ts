@@ -248,7 +248,10 @@ describe("fault profiles from the replay corpus (#1729)", () => {
   });
 
   test("the corpus gives every recorded call shape its healthy first-byte percentiles", () => {
-    const codex = CORPUS.firstByte.find((shape) => shape.provider === "codex" && shape.stage === "analysis");
+    // The bench's analysis effort; a round may add a shape with one call at another effort (R66 low).
+    const codex = CORPUS.firstByte.find(
+      (shape) => shape.provider === "codex" && shape.stage === "analysis" && shape.effort === "medium",
+    );
     expect(codex?.calls).toBeGreaterThan(100);
     for (const shape of CORPUS.firstByte) {
       expect(shape.p50Ms).toBeLessThanOrEqual(shape.p99Ms);
