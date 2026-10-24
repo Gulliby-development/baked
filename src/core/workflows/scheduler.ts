@@ -382,6 +382,14 @@ import {
   type McpCall,
   taskLibraries,
 } from "./library-docs.js";
+import {
+  MISQUOTE_FIX_DIR,
+  MISQUOTE_FIX_KIND,
+  type Misquote,
+  type MisquoteFixRecord,
+  misquoteFixPlan,
+  misquoteFixRecord,
+} from "./misquote-fix.js";
 import { MAX_CONCURRENT_TASK_CHECKS, planBatch, Semaphore, unifiedDiff } from "./parallel.js";
 import {
   fileReferences,
@@ -7055,8 +7063,41 @@ ${note}`;
         ),
       );
       if (result.outcome === "spec_conflict" && result.taskId === task.id) {
-        await this.specConflict(runId, state, policy, profiles, child, task, result, root, signal);
-        return;
+        const attemptId = this.store
+          .attempts(runId)
+          .filter((a) => a.step_id === child)
+          .at(-1)?.id;
+        const fixed = await this.specConflict(
+          runId,
+          state,
+          policy,
+          profiles,
+          child,
+          task,
+          result,
+          root,
+          signal,
+          attemptId
+            ? {
+                root,
+                attemptId,
+                run: async (check) => {
+                  const checked = await this.runTaskCheck(
+                    runId,
+                    child,
+                    check,
+                    policy,
+                    signal,
+                    root,
+                  );
+                  cutOffResults.set(hashJson(check), checked);
+                  return checked;
+                },
+              }
+            : undefined,
+        );
+        if (!fixed) return;
+        result = fixed;
       }
       if (result.outcome === "implemented")
         await this.fixTaskFiles(runId, child, root, policy, scoped, signal);
@@ -7456,7 +7497,9 @@ ${note}`;
           this.leases.acquire(entry.lease(), runId, { isolated: true });
         }
         const outcomes = await Promise.all(
-          batch.map((entry) => this.runTaskWorker(runId, state, policy, entry, checks, signal)),
+          batch.map((entry) =>
+            this.runTaskWorker(runId, state, policy, entry, checks, signal, profiles),
+          ),
         );
         // A stopped run integrates nothing: its unintegrated tasks are invalidated on recovery.
         // A rejected task does not keep the others of its batch out of the run worktree. Neither
@@ -7932,19 +7975,20 @@ ${note}`;
   ): Promise<unknown> {
     const { entry } = outcome;
     let failure: unknown = null;
-    if (outcome.kind === "conflict")
-      await this.specConflict(
-        runId,
-        state,
-        policy,
-        profiles,
-        entry.child,
-        entry.task,
-        outcome.result,
-        join(this.store.workspace, entry.path),
-        signal,
-      );
-    else if (outcome.kind === "done") {
+    if (outcome.kind === "conflict") {
+      if (!outcome.settled)
+        await this.specConflict(
+          runId,
+          state,
+          policy,
+          profiles,
+          entry.child,
+          entry.task,
+          outcome.result,
+          join(this.store.workspace, entry.path),
+          signal,
+        );
+    } else if (outcome.kind === "done") {
       if (!fatal)
         await this.closingStep(runId, entry.child, signal, () =>
           this.integrateTask(runId, state, policy, profiles, outcome, signal),
@@ -8258,6 +8302,8 @@ ${note}`;
     entry: BatchEntry,
     checks: Semaphore,
     runSignal: AbortSignal,
+    // Given on the batch path, which may settle a misquote in the worker (#2047); candidates do not.
+    profiles?: AgentProfile[],
   ): Promise<WorkerOutcome> {
     const { task } = entry;
     const root = join(this.store.workspace, entry.path);
@@ -8300,8 +8346,6 @@ ${note}`;
       let proseEnd = false;
       // A cap stop that would stop the run waits until the host knows it cannot finish the task.
       const capStop: { fault?: WorkflowFault } = {};
-      // Check results the host ran to finish a stopped attempt, reused by the task checks.
-      const hostChecked = new Map<string, WorkerCheck["checked"]>();
       let result = this.settleSizeTargets(
         runId,
         task.id,
@@ -8362,8 +8406,37 @@ ${note}`;
           }),
         ),
       );
-      if (result.outcome === "spec_conflict" && result.taskId === task.id)
-        return { kind: "conflict", entry, result };
+      // Check results the host ran to finish a stopped attempt, reused by the task checks.
+      const hostChecked = new Map<string, WorkerCheck["checked"]>();
+      if (result.outcome === "spec_conflict" && result.taskId === task.id) {
+        if (policy.misquoteFix !== "on" || !profiles) return { kind: "conflict", entry, result };
+        // The host may correct a misquoted test itself and go on with the task (#2047), so the
+        // conflict is settled here and not again in `settleOutcome`.
+        const fixed = await this.specConflict(
+          runId,
+          state,
+          policy,
+          profiles,
+          entry.child,
+          task,
+          result,
+          root,
+          signal,
+          {
+            root,
+            attemptId: entry.attemptId,
+            run: async (check) => {
+              const checked = await checks.run(() =>
+                this.runTaskCheck(runId, entry.child, check, policy, signal, root),
+              );
+              hostChecked.set(hashJson(check), checked);
+              return checked;
+            },
+          },
+        );
+        if (!fixed) return { kind: "conflict", entry, result, settled: true };
+        result = fixed;
+      }
       if (result.outcome === "implemented")
         await this.fixTaskFiles(runId, entry.child, root, policy, task, signal);
       await this.revertUnjournaled(
@@ -10262,7 +10335,8 @@ ${note}`;
     result: Implementation,
     root: string,
     signal: AbortSignal,
-  ): Promise<void> {
+    fix?: MisquoteFixContext,
+  ): Promise<Implementation | null> {
     const report = [result.summary, ...result.unresolved].join(" ");
     const rows = this.contestedRows(runId, state, task, report, root, policy.checks);
     const account = {
@@ -10290,23 +10364,37 @@ ${note}`;
         signal,
       )
     )
-      return;
-    if (
-      await this.settleContestedRows(
-        runId,
-        state,
-        policy,
-        profiles,
-        child,
-        task,
-        rows,
-        account,
-        report,
-        signal,
-      )
-    )
-      return;
-    if (this.settleCheckCommands(runId, state, child, task, policy, account, report)) return;
+      return null;
+    const contested = await this.settleContestedRows(
+      runId,
+      state,
+      policy,
+      profiles,
+      child,
+      task,
+      rows,
+      account,
+      report,
+      signal,
+      fix,
+    );
+    // The host corrected a misquoted test itself and its checks pass: the task goes on (#2047).
+    if (contested && typeof contested === "object") {
+      const { conflictSides: _sides, ...attempt } = result;
+      return {
+        ...attempt,
+        outcome: "implemented",
+        summary:
+          `The host corrected the test's misquote of ${contested.criterionIds.join(", ")} (${contested.files.join(", ")}): it replaced the test's spelling with the criterion's literal as written, and the task's required checks pass on that edit (${contested.checks.join(", ")}). The attempt's account: ${result.summary}`.slice(
+            0,
+            15000,
+          ),
+        evidenceIds: [...new Set([...result.evidenceIds, ...contested.evidenceIds])],
+        unresolved: [],
+      };
+    }
+    if (contested) return null;
+    if (this.settleCheckCommands(runId, state, child, task, policy, account, report)) return null;
     // A fully confident spec finding that explicitly names test removals outranks our guard,
     // even under clarification ask. Bind only the host findings, preserving the spec finding.
     if (!this.store.latestArtifact(runId, assumedPath)) {
@@ -10370,7 +10458,7 @@ ${note}`;
           this.store.finishStep(runId, child, "failed");
         });
         state.prompt += `\nSettled spec conflict (${assumedPath}): ${assumed} Report implemented or already_satisfied, not spec_conflict.`;
-        return;
+        return null;
       }
     }
     const first =
@@ -10473,23 +10561,23 @@ ${note}`;
     if (amendment) state.prompt += `\n${amendmentNote(amendmentPath, amendment)}`;
     if (byRequirement) {
       state.prompt += `\nAssumed under clarification assume (${assumedPath}): task ${task.id} reported that criteria of the approved spec contradict its requirements: ${report.slice(0, 1500)} ${assumed} (${amendmentPath}): implement what ${amended.requirementIds.join(", ")} state, and where a test this run wrote follows the contradicting criterion, change only that assertion to what the requirements state; weaken no other test.${freed} Report implemented or already_satisfied, not spec_conflict.`;
-      return;
+      return null;
     }
     if (repro) {
       state.prompt += `\nAssumed under clarification assume (${assumedPath}): task ${task.id} reported that a reviewer's repro contradicts the approved spec: ${report.slice(0, 1500)} ${assumed}. Keep the behavior the spec and the checks require, correct what the finding's claim says is wrong (a comment, a docstring or a stated bound may be the only thing to fix), and do not change the code to print the repro's expected value.${freed} Report implemented or already_satisfied, not spec_conflict.`;
-      return;
+      return null;
     }
     if (platform) {
       state.prompt += `\nAssumed under clarification assume (${assumedPath}): task ${task.id} reported that the platform cannot do what a criterion, a test or a finding demands: ${report.slice(0, 1500)} Implement the nearest feasible behavior the report names (for a value a protocol cannot carry, its standard serialized form). Where a test this run wrote asserts the impossible value, change only that assertion to the feasible behavior; weaken no other test.${freed} Report implemented or already_satisfied, not spec_conflict.`;
-      return;
+      return null;
     }
     if (example) {
       state.prompt += `\nAssumed under clarification assume (${assumedPath}): task ${task.id} reported that the rule for documentation examples contradicts the request: ${report.slice(0, 1500)} The request is authoritative: copy every example output the request or the spec gives into the documentation exactly as given, even when its files are not in the workspace, and name the copied examples in the summary. Run probes only for examples the request does not give.${freed}`;
-      return;
+      return null;
     }
     if (assume) {
       state.prompt += `\nAssumed under clarification assume (${assumedPath}): task ${task.id} reported that the spec or its tests contradict the request: ${report.slice(0, 1500)} The request is authoritative: follow what it states. Where a criterion, a requirement or a test says otherwise, the request wins; a test that contradicts the request is changed to what the request states, and no other test is weakened.${freed}`;
-      return;
+      return null;
     }
     if (own.length) {
       // md-site a652d8fc (bench round 22): a correction met a test this run generated and could
@@ -10508,7 +10596,7 @@ ${note}`;
         ),
       );
       state.prompt += `\nAssumed under clarification assume (${assumedPath}): task ${task.id} reported that tests this run wrote contradict the approved spec: ${report.slice(0, 1500)} The approved spec and the request win over ${own.join(", ")}, which this run wrote and ${task.id} may write: change only the assertions there that contradict them to what they state, keep every other assertion and test, and make the code pass.`;
-      return;
+      return null;
     }
     if (tests.length) {
       const paths = tests.map((t) => t.path);
@@ -10552,7 +10640,7 @@ ${note}`;
         ];
       });
       state.prompt += `\nAssumed under clarification assume (${assumedPath}): task ${task.id} reported that tests contradict the approved spec: ${report.slice(0, 1500)} The approved spec wins over ${paths.join(", ")}: a correction of the test task changes only the assertions that contradict the spec, and ${task.id} runs again after it.`;
-      return;
+      return null;
     }
     // A person already answered a conflict of this task: the task runs once more under that
     // answer instead of asking the same question again (#1350, url-shortener asked it 3 times).
@@ -10569,7 +10657,7 @@ ${note}`;
         ),
       );
       state.prompt += `\nTask ${task.id} reported the spec conflict a person already answered (${CONFLICT_DECISION_PREFIX}${last.requestId}.json): ${last.answer.slice(0, 1500)} That answer is final and the question is not asked again: finish ${task.id} under it, reporting implemented or already_satisfied, not spec_conflict.`;
-      return;
+      return null;
     }
     this.wait("clarification", state, {
       questions: [
@@ -10581,6 +10669,7 @@ ${note}`;
       ],
       specConflict: account,
     });
+    return null;
   }
   /**
    * The audited rows a source task replays on its code before it is accepted (#1617), with the
@@ -10718,6 +10807,91 @@ ${note}`;
     );
   }
   /**
+   * The host's own correction of a misquoted test (#2047): decided by `misquoteFixDecision` on the
+   * task's test files in the attempt's root and recorded under `conflicts/misquote/`. With
+   * `misquoteFix: "on"` and a caller that can go on with the task, an exact replacement is made
+   * as a journaled edit of the attempt and the task's required checks run on it; it is kept only
+   * when they all pass, and put back otherwise. Null when a session corrects the test.
+   */
+  private async misquoteFix(
+    runId: string,
+    state: RuntimeState,
+    policy: RunPolicy,
+    task: Task,
+    misquoted: Misquote[],
+    signal: AbortSignal,
+    fix?: MisquoteFixContext,
+  ): Promise<MisquoteFixed | null> {
+    const root = fix?.root ?? runRoot(this.store.workspace, state);
+    const files = [...new Set([...writtenTestPaths(task), ...rowDataPaths(task)])].flatMap(
+      (path) => {
+        try {
+          return [{ path, text: readFileSync(workspacePath(root, path), "utf8") }];
+        } catch {
+          return [];
+        }
+      },
+    );
+    const plan = misquoteFixPlan(misquoted, files);
+    const mode = policy.misquoteFix === "on" && fix ? "on" : "shadow";
+    const record = misquoteFixRecord(task.id, mode, plan.sites);
+    const save = (body: MisquoteFixRecord) =>
+      this.store.transaction(() =>
+        this.store.artifact(
+          runId,
+          MISQUOTE_FIX_KIND,
+          `${MISQUOTE_FIX_DIR}${task.id}.json`,
+          canonical(body),
+        ),
+      );
+    if (mode !== "on" || !fix || !record.apply || !plan.edits.length) {
+      save(record);
+      return null;
+    }
+    const write = (path: string, content: string) => {
+      const absolute = workspacePath(root, path);
+      const before = this.store.transaction(() => capturePreImage(this.store, runId, absolute));
+      this.journal.publish(
+        runId,
+        fix.attemptId,
+        path,
+        Buffer.from(content),
+        before,
+        "file_patch",
+        root,
+      );
+    };
+    const changed = plan.edits.map((e) => e.path);
+    for (const edit of plan.edits) write(edit.path, edit.after);
+    const checks = this.gatedChecks(runId, state, policy, task, root, changed).filter(
+      (c) => c.required,
+    );
+    const evidenceIds: string[] = [];
+    let passed = checks.length > 0;
+    for (const check of checks) {
+      signal.throwIfAborted();
+      const checked = await fix.run(check);
+      if (checked.status !== "passed") {
+        passed = false;
+        break;
+      }
+      evidenceIds.push(checked.evidenceId);
+    }
+    if (!passed) for (const edit of plan.edits) write(edit.path, edit.before);
+    save({
+      ...record,
+      checks: !checks.length ? "none" : passed ? "passed" : "failed",
+      files: changed,
+    });
+    if (!passed) return null;
+    return {
+      criterionIds: [...new Set(misquoted.map((m) => m.id))],
+      files: changed,
+      checks: checks.map((c) => c.id),
+      evidenceIds,
+    };
+  }
+  /**
    * The criteria a conflict report names, with the audit's verdicts and the literals the task's
    * test files changed when they copied them (#1709).
    */
@@ -10769,7 +10943,8 @@ ${note}`;
     account: Record<string, unknown>,
     report: string,
     signal: AbortSignal,
-  ): Promise<boolean> {
+    fix?: MisquoteFixContext,
+  ): Promise<boolean | MisquoteFixed> {
     const misquoted = rows.flatMap((r) => r.misquoted.map((m) => ({ ...m, id: r.criterion.id })));
     const verified = rows.length > 0 && rows.every(auditVerified);
     const misquotePath = `assumptions/conflicts/${task.id}-misquoted.json`;
@@ -10778,6 +10953,26 @@ ${note}`;
     const rowsText = rows.map(verbatimRow).join(" ");
     if (misquoted.length && !this.store.latestArtifact(runId, misquotePath)) {
       const settled = `The test of ${task.id} does not use the criterion rows as written: ${misquoted.map((m) => `${m.id} states ${JSON.stringify(m.literal)}, the test has ${JSON.stringify(m.quoted)}`).join("; ")}`;
+      // An exact, unambiguous replacement the host makes itself, kept when the task's required
+      // checks pass on it (#2047); otherwise a session corrects the test as before.
+      const fixed = await this.misquoteFix(runId, state, policy, task, misquoted, signal, fix);
+      if (fixed) {
+        this.store.transaction(() => {
+          this.store.artifact(
+            runId,
+            "diagnostic",
+            `tasks/conflicts/${task.id}.json`,
+            canonical(account),
+          );
+          this.store.artifact(
+            runId,
+            "assumption",
+            misquotePath,
+            canonical({ ...account, assumed: settled, misquoted, hostFix: fixed.files }),
+          );
+        });
+        return fixed;
+      }
       this.store.transaction(() => {
         this.store.artifact(
           runId,
@@ -16508,6 +16703,22 @@ interface DistinctionRecord {
 }
 
 /** One task of a batch: its reserved attempt and, once created, its worktree. */
+/**
+ * What a task path gives a spec conflict so the host can correct a misquoted test itself and go
+ * on with the task (#2047): the attempt's root and id, and how it runs a task check.
+ */
+interface MisquoteFixContext {
+  root: string;
+  attemptId: string;
+  run: (check: Check) => Promise<WorkerCheck["checked"]>;
+}
+/** A misquote the host corrected, with the checks that passed on its edit. */
+interface MisquoteFixed {
+  criterionIds: string[];
+  files: string[];
+  checks: string[];
+  evidenceIds: string[];
+}
 interface BatchEntry {
   task: Task;
   profile: AgentProfile;
@@ -16599,7 +16810,8 @@ type WorkerOutcome =
       account?: { summary: string; unresolved: string[] };
     }
   /** The task's worker reported that the spec and the tests cannot both hold. */
-  | { kind: "conflict"; entry: BatchEntry; result: Implementation }
+  /** `settled`: the worker already settled the conflict (`misquoteFix`, #2047). */
+  | { kind: "conflict"; entry: BatchEntry; result: Implementation; settled?: boolean }
   /** The task's worker or worktree lease was lost; only this task stops. */
   | {
       kind: "interrupted";
