@@ -139,7 +139,8 @@ if (command === "export" && args.length === 2) {
             `conflict decisions changed ${run.newConflictDecisions} of ${run.requestConflicts.length} reports, ` +
             `new integrity findings ${run.newIntegrityFindings} in ${run.integrity.length} scans, ` +
             `new case refusals ${run.newCaseRefusals} in ${run.caseWalks.length} case walks, ` +
-            `new gate repairs ${run.newGateRepairs} in ${run.reviewGates.length} review gates` +
+            `new gate repairs ${run.newGateRepairs} in ${run.reviewGates.length} review gates, ` +
+            `convergence verdicts changed ${run.newConvergenceVerdicts} in ${run.convergenceGates.length} gates` +
             (ratios ? `, forecast/final ${ratios}` : ""),
         );
         for (const b of run.boundaries.filter((b) => b.recorded !== b.replayed))
@@ -168,6 +169,12 @@ if (command === "export" && args.length === 2) {
           const added = b.replayed.filter((id) => !b.recorded.includes(id));
           if (added.length) console.log(`    review gate ${b.reviewer}: now also repairs ${added.join(", ")}`);
         }
+        for (const b of run.convergenceGates)
+          for (const v of b.replayed) {
+            const recorded = b.recorded.find((r) => r.id === v.id)?.verdict;
+            if (recorded !== v.verdict)
+              console.log(`    convergence ${v.id}: recorded ${recorded ?? "-"}, now ${v.verdict}`);
+          }
         for (const b of run.stallLadder.filter((b) => b.recorded !== b.replayed))
           console.log(
             `    stall ${b.attemptId} (${b.stage ?? "?"} on ${b.model}): recorded ${b.recorded}, now ${b.replayed}`,
