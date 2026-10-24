@@ -136,7 +136,8 @@ if (command === "export" && args.length === 2) {
             `new test splits ${run.newTestSplits} of ${run.testSplits.length} test tasks, ` +
             `new recovery rungs ${run.newRecoveries} of ${run.stallLadder.length} stalls, ` +
             `repeated failures ${run.repeatedFailures.filter((b) => b.replayed === "repeat").length} of ${run.repeatedFailures.length} failing correctives (new ${run.newRepeatStops}), ` +
-            `conflict decisions changed ${run.newConflictDecisions} of ${run.requestConflicts.length} reports` +
+            `conflict decisions changed ${run.newConflictDecisions} of ${run.requestConflicts.length} reports, ` +
+            `new integrity findings ${run.newIntegrityFindings} in ${run.integrity.length} scans` +
             (ratios ? `, forecast/final ${ratios}` : ""),
         );
         for (const b of run.boundaries.filter((b) => b.recorded !== b.replayed))
@@ -152,6 +153,11 @@ if (command === "export" && args.length === 2) {
           console.log(
             `    ${b.taskId} conflict report ${b.report}: recorded ${b.recorded}, now ${b.replayed}`,
           );
+        for (const b of run.integrity) {
+          const added = b.replayed.filter((f) => !b.recorded.includes(f));
+          if (added.length)
+            console.log(`    integrity ${b.scope} ${b.taskId ?? ""}: now also ${added.join(", ")}`);
+        }
         for (const b of run.stallLadder.filter((b) => b.recorded !== b.replayed))
           console.log(
             `    stall ${b.attemptId} (${b.stage ?? "?"} on ${b.model}): recorded ${b.recorded}, now ${b.replayed}`,

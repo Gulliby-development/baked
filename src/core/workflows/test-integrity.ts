@@ -505,6 +505,81 @@ export function requestedTestRemovals(
 }
 
 /**
+ * What the decision knows of one changed file: counts and flags, no text, so a bench trace holds
+ * no code or prose (#1715). `measureTestIntegrity` reads them from the contents and
+ * `integrityDecision` turns them into findings; `replayIntegrity` in `trace.ts` decides recorded
+ * measures again. `names` carries the test titles and literals the finding details quote; it is
+ * never recorded, and a decision without it words its details from the counts.
+ */
+export type IntegrityMeasure = {
+  path: string;
+  /** The approved plan gave the write a reason, or an amendment covers the path. */
+  reasoned: boolean;
+  /** A spec finding asks for the whole file's tests to be removed. */
+  requestedFile: boolean;
+  names?: IntegrityNames;
+} & (
+  | {
+      /** The file existed but its earlier content was not kept: only a deletion can be judged. */
+      form: "unknown-before";
+      test: boolean;
+      deleted: boolean;
+    }
+  | {
+      form: "test-deleted";
+      /** The file existed before the task (null content means the task created it). */
+      existed: boolean;
+      /** Every test of the file is one a spec finding asks to remove. */
+      allRequested: boolean;
+      testsBefore: number;
+    }
+  | {
+      form: "test";
+      testsBefore: number;
+      testsAfter: number;
+      /** Tests retitled or merged with their body kept (#1532). */
+      matchedTests: number;
+      matchedAssertions: number;
+      /** Cases and assertions of the tests a spec finding asks to remove. */
+      removedTests: number;
+      removedAssertions: number;
+      /** Tests a correction of another finding added that the change leaves out (#1519). */
+      lost: number;
+      /** Removed test titles not counted in `lost`. */
+      unclaimed: number;
+      rewrite: boolean;
+      strengthen: boolean;
+      /** The file holds more expected literal text than before (read only under `strengthen`). */
+      literalGrew: boolean;
+      assertsBefore: number;
+      assertsAfter: number;
+      skips: number;
+      /** Not a documentation file: suppressions and bypasses are counted. */
+      checked: boolean;
+      suppressions: number;
+      bypass: number;
+    }
+  | {
+      form: "source";
+      deleted: boolean;
+      hooks: number;
+      /** Test input literals the file newly compares with that the request, spec and plan do not name. */
+      specialLiterals: number;
+      checked: boolean;
+      suppressions: number;
+      bypass: number;
+    }
+);
+
+export interface IntegrityNames {
+  /** Each left-out test's title, who added it and whether the change removed it (or never kept it). */
+  lost: [name: string, origin: string, removed: boolean][];
+  keep: string[];
+  unclaimed: string[];
+  special: string[];
+}
+
+/**
  * What a task's changes do to the tests: deleted test files, fewer tests or assertions, new
  * skips and focuses, new suppressions, branches on test inputs or on running under a test runner,
  * and verification bypasses. Each rule compares counts before and after, so code that was already
@@ -514,7 +589,15 @@ export function scanTestIntegrity(
   changes: readonly FileChange[],
   options: ScanOptions = {},
 ): IntegrityFinding[] {
-  const findings: IntegrityFinding[] = [];
+  return integrityDecision(measureTestIntegrity(changes, options));
+}
+
+/** The counts and flags of each changed file the integrity decision reads. */
+export function measureTestIntegrity(
+  changes: readonly FileChange[],
+  options: ScanOptions = {},
+): IntegrityMeasure[] {
+  const measures: IntegrityMeasure[] = [];
   const testLiterals = new Set<string>();
   for (const source of [
     ...(options.testSources ?? []),
@@ -541,9 +624,14 @@ export function scanTestIntegrity(
       [...spans.map((span) => span.name), ...(guarded?.keys() ?? [])],
       options.removalFindings ?? [],
     );
+    const base = { path, reasoned, requestedFile: requested.file };
     if (change.before === undefined) {
-      if (isTestPath(path) && change.after === null && !reasoned && !requested.file)
-        findings.push({ rule: "test-deleted", path, detail: "deleted the test file" });
+      measures.push({
+        ...base,
+        form: "unknown-before",
+        test: isTestPath(path),
+        deleted: change.after === null,
+      });
       continue;
     }
     const beforeRaw = change.before ?? "";
@@ -562,6 +650,19 @@ export function scanTestIntegrity(
     const codeAfter = codeLines(blankAfter);
     const grew = (pattern: RegExp, lines: [string[], string[]] = [codeBefore, codeAfter]) =>
       count(lines[1], pattern) - count(lines[0], pattern);
+    // Suppressions live in comments (or attributes), so they are counted on every line that is
+    // not string content.
+    const checks = () => {
+      const checked = change.after !== null && !DOC_FILE.test(path);
+      return {
+        checked,
+        suppressions: checked
+          ? grew(SUPPRESSIONS, [blankBefore.split(/\r?\n/), blankAfter.split(/\r?\n/)]) +
+            (TS_FILE.test(path) ? grew(ANY_TYPE) : 0)
+          : 0,
+        bypass: checked ? grew(BYPASS, [beforeRaw.split(/\r?\n/), afterRaw.split(/\r?\n/)]) : 0,
+      };
+    };
     if (isTestPath(path)) {
       const testsBefore = count(codeBefore, testCases);
       if (change.after === null) {
@@ -570,12 +671,13 @@ export function scanTestIntegrity(
           (spans.length > 0 &&
             spans.every((span) => requested.names.has(span.name)) &&
             spans.length === testsBefore);
-        if (change.before !== null && !reasoned && !allRequested)
-          findings.push({
-            rule: "test-deleted",
-            path,
-            detail: `deleted the test file${testsBefore ? ` with ${String(testsBefore)} test(s)` : ""}`,
-          });
+        measures.push({
+          ...base,
+          form: "test-deleted",
+          existed: change.before !== null,
+          allRequested,
+          testsBefore,
+        });
         continue;
       }
       const testsAfter = count(codeAfter, testCases);
@@ -608,100 +710,158 @@ export function scanTestIntegrity(
       const excludedCode = excluded.flatMap((span) =>
         codeLines(blankStringLiterals(path, before.slice(span.from, span.to).join("\n"))),
       );
-      const removedTests = count(excludedCode, testCases);
-      const removedAssertions = count(excludedCode, assertionForms);
-      for (const [name, origin] of lost)
+      const unclaimed = removed.filter((name) => !lost.some(([lostName]) => lostName === name));
+      const strengthen = options.strengthens?.has(path) === true;
+      measures.push({
+        ...base,
+        form: "test",
+        testsBefore,
+        testsAfter,
+        matchedTests: matched.tests,
+        matchedAssertions: matched.assertions,
+        removedTests: count(excludedCode, testCases),
+        removedAssertions: count(excludedCode, assertionForms),
+        lost: lost.length,
+        unclaimed: unclaimed.length,
+        rewrite: options.rewrites?.has(path) === true,
+        strengthen,
+        literalGrew: strengthen && literalText(after) > literalText(before),
+        assertsBefore: count(codeBefore, assertionForms),
+        assertsAfter: count(codeAfter, assertionForms),
+        skips: unguardedSkips(codeAfter) - unguardedSkips(codeBefore),
+        ...checks(),
+        names: {
+          lost: lost.map(([name, origin]) => [name, origin, removed.includes(name)]),
+          keep: [...new Set(keep)],
+          unclaimed,
+          special: [],
+        },
+      });
+      continue;
+    }
+    const deleted = change.after === null;
+    const beforeCompared = compared(before);
+    const special = deleted
+      ? []
+      : [...compared(after)].filter(
+          ([value, n]) =>
+            n > (beforeCompared.get(value) ?? 0) &&
+            testLiterals.has(value) &&
+            inputLike(value) &&
+            !spec.includes(value),
+        );
+    measures.push({
+      ...base,
+      form: "source",
+      deleted,
+      hooks: deleted ? 0 : grew(TEST_HOOKS),
+      specialLiterals: special.length,
+      ...checks(),
+      names: { lost: [], keep: [], unclaimed: [], special: special.map(([value]) => value) },
+    });
+  }
+  return measures;
+}
+
+/** The findings the guard reports for the measured files, in the order of the files. */
+export function integrityDecision(measures: readonly IntegrityMeasure[]): IntegrityFinding[] {
+  const findings: IntegrityFinding[] = [];
+  for (const m of measures) {
+    const { path, reasoned, requestedFile } = m;
+    if (m.form === "unknown-before") {
+      if (m.test && m.deleted && !reasoned && !requestedFile)
+        findings.push({ rule: "test-deleted", path, detail: "deleted the test file" });
+      continue;
+    }
+    if (m.form === "test-deleted") {
+      if (m.existed && !reasoned && !m.allRequested)
+        findings.push({
+          rule: "test-deleted",
+          path,
+          detail: `deleted the test file${m.testsBefore ? ` with ${String(m.testsBefore)} test(s)` : ""}`,
+        });
+      continue;
+    }
+    if (m.form === "test") {
+      const names = m.names;
+      const lost: [string, string, boolean][] =
+        names?.lost ?? Array.from({ length: m.lost }, () => ["", "", false]);
+      for (const [name, origin, removed] of lost)
         findings.push({
           rule: "test-removed",
           path,
-          detail: `${removed.includes(name) ? "removed" : "left out"} test ${JSON.stringify(name)}, which ${origin} added`,
-          keep: [...new Set(keep)],
+          detail: name
+            ? `${removed ? "removed" : "left out"} test ${JSON.stringify(name)}, which ${origin} added`
+            : "left out a test that a correction of another finding added",
+          keep: names?.keep ?? [],
         });
-      const unclaimed = removed.filter((name) => !lost.some(([lostName]) => lostName === name));
-      if (!reasoned && !requested.file && testsBefore - testsAfter > matched.tests + removedTests)
+      const unclaimed = names?.unclaimed ?? [];
+      if (
+        !reasoned &&
+        !requestedFile &&
+        m.testsBefore - m.testsAfter > m.matchedTests + m.removedTests
+      )
         findings.push({
           rule: "test-count",
           path,
-          detail: `test count dropped from ${String(testsBefore)} to ${String(testsAfter)}${unclaimed.length ? ` (removed ${quoted(unclaimed)})` : ""}`,
+          detail: `test count dropped from ${String(m.testsBefore)} to ${String(m.testsAfter)}${unclaimed.length ? ` (removed ${quoted(unclaimed)})` : ""}`,
         });
-      else if (
-        !reasoned &&
-        !requested.file &&
-        options.rewrites?.has(path) !== true &&
-        options.strengthens?.has(path) !== true &&
-        unclaimed.length
-      )
+      else if (!reasoned && !requestedFile && !m.rewrite && !m.strengthen && m.unclaimed)
         // Equal totals hide a swap: a strong test replaced by a weaker one under another name.
         findings.push({
           rule: "test-removed",
           path,
-          detail: `removed test(s) ${quoted(unclaimed)} while the test count stayed ${String(testsAfter)}`,
+          detail: `removed test(s) ${unclaimed.length ? quoted(unclaimed) : String(m.unclaimed)} while the test count stayed ${String(m.testsAfter)}`,
         });
-      const assertsBefore = count(codeBefore, assertionForms);
-      const assertsAfter = count(codeAfter, assertionForms);
-      const kept = testsAfter + matched.tests + removedTests >= testsBefore && assertsAfter > 0;
-      const rewritten =
-        kept &&
-        (options.rewrites?.has(path) === true ||
-          (options.strengthens?.has(path) === true && literalText(after) > literalText(before)));
+      const kept =
+        m.testsAfter + m.matchedTests + m.removedTests >= m.testsBefore && m.assertsAfter > 0;
+      const rewritten = kept && (m.rewrite || (m.strengthen && m.literalGrew));
       if (
         !reasoned &&
-        !requested.file &&
+        !requestedFile &&
         !rewritten &&
-        assertsBefore - assertsAfter > matched.assertions + removedAssertions
+        m.assertsBefore - m.assertsAfter > m.matchedAssertions + m.removedAssertions
       )
         findings.push({
           rule: "assertions",
           path,
-          detail: `assertions dropped from ${String(assertsBefore)} to ${String(assertsAfter)} (removed or commented out)`,
+          detail: `assertions dropped from ${String(m.assertsBefore)} to ${String(m.assertsAfter)} (removed or commented out)`,
         });
-      const skips = unguardedSkips(codeAfter) - unguardedSkips(codeBefore);
-      if (skips > 0)
+      if (m.skips > 0)
         findings.push({
           rule: "skip",
           path,
-          detail: `added ${String(skips)} skip, only, todo or ignore marker(s)`,
+          detail: `added ${String(m.skips)} skip, only, todo or ignore marker(s)`,
         });
-    } else if (change.after !== null) {
-      const hooks = grew(TEST_HOOKS);
-      if (hooks > 0)
+    } else if (!m.deleted) {
+      if (m.hooks > 0)
         findings.push({
           rule: "test-hook",
           path,
-          detail: `added ${String(hooks)} branch(es) on running under a test runner`,
+          detail: `added ${String(m.hooks)} branch(es) on running under a test runner`,
         });
-      const beforeCompared = compared(before);
-      const special = [...compared(after)].filter(
-        ([value, n]) =>
-          n > (beforeCompared.get(value) ?? 0) &&
-          testLiterals.has(value) &&
-          inputLike(value) &&
-          !spec.includes(value),
-      );
-      if (special.length)
+      if (m.specialLiterals > 0) {
+        const special = m.names?.special ?? [];
         findings.push({
           rule: "literal-branch",
           path,
-          detail: `compares with test input literal(s) ${special
-            .slice(0, 3)
-            .map(([value]) => JSON.stringify(value))
-            .join(", ")} that the request, spec and plan do not name`,
+          detail: special.length
+            ? `compares with test input literal(s) ${special
+                .slice(0, 3)
+                .map((value) => JSON.stringify(value))
+                .join(", ")} that the request, spec and plan do not name`
+            : `compares with ${String(m.specialLiterals)} test input literal(s) that the request, spec and plan do not name`,
         });
+      }
     }
-    if (change.after === null || DOC_FILE.test(path)) continue;
-    // Suppressions live in comments (or attributes), so they are counted on every line that is
-    // not string content.
-    const suppressions =
-      grew(SUPPRESSIONS, [blankBefore.split(/\r?\n/), blankAfter.split(/\r?\n/)]) +
-      (TS_FILE.test(path) ? grew(ANY_TYPE) : 0);
-    if (suppressions > 0)
+    if (!m.checked) continue;
+    if (m.suppressions > 0)
       findings.push({
         rule: "suppression",
         path,
-        detail: `added ${String(suppressions)} type or lint suppression(s) (ts-ignore, eslint-disable, any, type: ignore, allow and similar)`,
+        detail: `added ${String(m.suppressions)} type or lint suppression(s) (ts-ignore, eslint-disable, any, type: ignore, allow and similar)`,
       });
-    const bypass = grew(BYPASS, [beforeRaw.split(/\r?\n/), afterRaw.split(/\r?\n/)]);
-    if (bypass > 0)
+    if (m.bypass > 0)
       findings.push({
         rule: "verification-bypass",
         path,
@@ -709,6 +869,46 @@ export function scanTestIntegrity(
       });
   }
   return findings;
+}
+
+/**
+ * Every integrity scan records its measures and findings as `integrity/decisions/...` (kind
+ * `test-integrity`, kept in bench traces) whether or not it found anything, so a replay sees the
+ * scans that passed too (#1715).
+ */
+export const INTEGRITY_KIND = "test-integrity";
+export const INTEGRITY_DIR = "integrity/decisions/";
+
+export interface IntegrityRecord {
+  schemaVersion: 1;
+  /** A task's own changes, or the whole run's before its review. */
+  scope: "task" | "run";
+  taskId: string | null;
+  mode: "block" | "warn";
+  measures: IntegrityMeasure[];
+  findings: { rule: IntegrityRule; path: string }[];
+}
+
+export function integrityRecord(
+  scope: IntegrityRecord["scope"],
+  taskId: string | null,
+  mode: IntegrityRecord["mode"],
+  measures: readonly IntegrityMeasure[],
+  findings: readonly IntegrityFinding[],
+): IntegrityRecord {
+  return {
+    schemaVersion: 1,
+    scope,
+    taskId,
+    mode,
+    measures: recordedMeasures(measures),
+    findings: findings.map(({ rule, path }) => ({ rule, path })),
+  };
+}
+
+/** The measures without the names: what a run records of a scan (no text). */
+export function recordedMeasures(measures: readonly IntegrityMeasure[]): IntegrityMeasure[] {
+  return measures.map(({ names: _names, ...rest }) => rest as IntegrityMeasure);
 }
 
 /** The instruction a repair gets for an integrity finding. */
