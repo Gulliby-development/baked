@@ -26,6 +26,8 @@ interface StopReason {
 }
 
 const ENFORCED = ["enforce"] as const;
+/** A reason that records what it would do and is not enforced yet: its promotion adds `enforce`. */
+const NOT_ENFORCED = ["shadow", "advisory"] as const;
 
 /**
  * Every reason the host stops a run on (`BUDGET_EXHAUSTED` faults, made by `stopFault`) or
@@ -51,6 +53,13 @@ export const STOP_REASONS = {
   "initiative-dollar-share": {
     label: "An initiative's spare dollars are below a starting feature's priced low estimate",
     modes: STOP_MODES,
+    defaultMode: "shadow",
+  },
+  repeated_failure: {
+    label: "A corrective's required checks fail exactly as the corrective's before it",
+    // Shadow only until two bench rounds show no false would-stop (#1996); its promotion is a
+    // pull request of its own that adds `enforce` and blocks the chain before the next session.
+    modes: NOT_ENFORCED,
     defaultMode: "shadow",
   },
   cost: {
@@ -113,7 +122,9 @@ export const StopModesSchema = z
         ctx.addIssue({
           code: "custom",
           path: [id],
-          message: `${id} is a hard limit and can only be enforced`,
+          message: (STOP_REASONS[id].modes as readonly StopMode[]).includes("enforce")
+            ? `${id} is a hard limit and can only be enforced`
+            : `${id} records what it would stop in shadow or advisory mode and cannot be enforced yet`,
         });
   });
 

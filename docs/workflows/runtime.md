@@ -697,6 +697,7 @@ The policy's `stopModes` sets a mode per reason, for example `"stopModes": { "co
 | `approval-scope` | the plan has more agent tasks or files than the [auto-approval](#auto-approval) limits | all | `enforce` |
 | `initiative-forecast` | an [initiative's](#initiatives) binding dollar forecast passes its ceiling, or with `forecastStop` on its token forecast passes the shared budget | all | `enforce` |
 | `initiative-dollar-share` | an [initiative](#initiatives) feature would start with less spare dollars than its priced low estimate | all | `shadow` |
+| `repeated_failure` | a corrective's required checks fail exactly as the corrective's before it in the same chain (#1996) | `shadow`, `advisory` | `shadow` |
 | `cost` | spent and reserved dollars reach the cost cap, or a model has no known price | `enforce` | `enforce` |
 | `run-budget` | the token, agent-call or active-time budget is used up | `enforce` | `enforce` |
 | `budget_exhausted`, `attempt_cap`, `context_window` | a task stopped by the budget before its first edit, an attempt at its token cap, a context past the model's window | `enforce` | `enforce` |
@@ -711,6 +712,7 @@ A would-stop is recorded once per key:
 - `approval-scope`: once per approval digest (`plan-<digest>`).
 - `initiative-forecast`: on the initiative, once per count of measured features for the dollar forecast (`usd-m<N>`) and once per approved plan revision and accepted count for the token forecast (`tokens-r<revision>-a<N>`), when a feature starts that the forecast would have held. The mode comes from the initiative's base policy.
 - `initiative-dollar-share`: on the initiative, once per feature (`share-<feature>`), when it starts short of dollars. The mode comes from the initiative's base policy.
+- `repeated_failure`: once per corrective chain (`chain-<first task>`), at the first corrective whose failing checks equal the ones of the corrective before it.
 
 The event carries the reason, the mode, the key, a summary in the words of the stop or decline that enforce would have made, and its inputs (the forecast, or the problems and limits).
 
@@ -723,6 +725,8 @@ Where the records show:
 
 A new or changed reason ships in `shadow` and moves to `enforce` in a pull request of its own after two bench rounds with no false would-stop (see AGENTS.md).
 
+
+A corrective whose required checks fail is recorded as `repeats/tasks/<task>.json` (#1996): for each failing check its id, its output normalized (terminal colors, line endings, path separators, timestamps, durations, temporary directories and memory addresses taken out; file, line and column positions kept) and the files the output names failing, with a hash over all three. When the hash equals the one of the corrective it corrects, `repeated_failure` records a `decision.would_stop` once per chain, with both round ids (`inputs.rounds`), the checks, the files and `firstDifference: null`; a failure that comes back only after a different one in between is not a repeat. In bench round 64, cfgquill lint T005, T006 and T007 failed gofmt with the same `illegal byte order mark` at the same position, and only `maxTaskRepairs` ended the chain, after 4.8M tokens. The reason is not enforced yet: the correction still starts, and a later pull request promotes it to block the chain with the check, the position and the rounds before another model session.
 ### Raising a budget limit
 
 A run blocked with `budget_exhausted` shows B (raise limits) next to fork and cancel. The confirmation names the new values: every limit that is used up, or at least 80% used, doubles, and the tokens double when nothing else explains the stop; calls stop at 1000, active time at 24 hours and tokens at 50 million. Y applies it and the run continues from the stage that stopped.

@@ -43,6 +43,15 @@ import type { initiativePriceSamples } from "./initiatives/forecast.js";
 import { InitiativeService, type ShareGateRecord, shareShortfall } from "./initiatives/service.js";
 import { recordingOf } from "./model-recording.js";
 import { type PlanCostRate, planCostOf } from "./plan-cost.js";
+import {
+  REPEAT_KIND,
+  REPEAT_TASKS_DIR,
+  type RepeatCheck,
+  type RepeatDecision,
+  type RepeatRecord,
+  type RepeatRule,
+  repeatedFailureDecision,
+} from "./repeated-failure.js";
 import { PolicySchema, type RunPolicy } from "./schemas.js";
 import { NativeWorkflowService } from "./service.js";
 import { exceedsTestCapacity, type SizingReport } from "./sizing.js";
@@ -78,6 +87,8 @@ const KEPT_ARTIFACTS = new Set([
   POLICY_REFUSAL_KIND,
   // Finding chains: each corrective's rewrite decision and each battery run before a review (#1959).
   CHAIN_KIND,
+  // Each failing corrective's required checks, normalized output stood in (#1996).
+  REPEAT_KIND,
 ]);
 
 /** Tables that hold evidence, effects or prose the replay never reads. */
@@ -574,6 +585,129 @@ export interface RunReplay {
   findingChains: FindingChainBoundary[];
   /** Chain decisions (rewrite or patch, reopen or pass) the current rules make differently. */
   newChainDecisions: number;
+  /** Each failing corrective's checks against the corrective's before it (#1996). */
+  repeatedFailures: RepeatedFailureBoundary[];
+  /** Chains the current rule records a repeated-failure would-stop on that the recording did not. */
+  newRepeatStops: number;
+}
+
+export interface RepeatedFailureBoundary {
+  taskId: string;
+  /** The corrective whose failure this one was compared with, or null. */
+  previous: string | null;
+  /** The first task of the chain; a chain records one would-stop. */
+  root: string;
+  /** What the run recorded; null for a run from before #1996, decided from its findings. */
+  recorded: RepeatDecision | null;
+  replayed: RepeatDecision;
+  /** `record`: the `repeats/tasks/` records; `findings`: the stood-in check findings. */
+  source: "record" | "findings";
+}
+
+/**
+ * The failing checks of each task-level corrective of a run recorded before `repeats/` existed,
+ * from its check findings (the findings `repairPredecessors` gives the corrective, without a
+ * review's `basis`): each finding's stood-in impact (its failing lines) and file. The claim names
+ * the task, so it is left out, and with it the check id: two checks failing with the same lines
+ * on the same file count as one. Traces before #1981 keep no finding bodies and give none.
+ */
+function findingRounds(
+  store: WorkflowStore,
+  runId: string,
+): { taskId: string; corrected: string | null; checks: RepeatCheck[] }[] {
+  const artifact = store.latestArtifact(runId, "internal/state.json");
+  if (!artifact) return [];
+  let state: {
+    graph?: { tasks?: { id: string; origin: string; findingIds: string[] }[] } | null;
+    repairPredecessors?: Record<string, string>;
+  };
+  try {
+    state = JSON.parse(store.readArtifact(runId, artifact.id));
+  } catch {
+    return [];
+  }
+  const predecessors = state.repairPredecessors ?? {};
+  const bodies = new Map(
+    store.findings(runId).map((row) => {
+      try {
+        return [row.id, JSON.parse(row.body_json) as Record<string, unknown>] as const;
+      } catch {
+        return [row.id, {}] as const;
+      }
+    }),
+  );
+  return (state.graph?.tasks ?? []).flatMap((task) => {
+    if (task.origin !== "repair") return [];
+    const checks = [...bodies].flatMap(([id, body]): RepeatCheck[] =>
+      predecessors[id] === task.id &&
+      body.basis === undefined &&
+      typeof body.impact === "string" &&
+      Array.isArray(body.evidenceIds) &&
+      body.evidenceIds.length > 0
+        ? [{ id: "", text: body.impact, files: typeof body.file === "string" ? [body.file] : [] }]
+        : [],
+    );
+    if (!checks.length) return [];
+    const corrected = task.findingIds.map((id) => predecessors[id]).find(Boolean) ?? null;
+    return [{ taskId: task.id, corrected, checks }];
+  });
+}
+
+/**
+ * Every failing corrective's required checks a run recorded (`repeats/tasks/`, #1996), decided
+ * again against the record of the corrective it corrects. A trace keeps each check's normalized
+ * output as a stand-in, and equal outputs get equal stand-ins, so a repeat replays as a repeat.
+ * A run recorded before #1996 has no records: its correctives are decided from their check
+ * findings (`findingRounds`), with nothing recorded to compare.
+ */
+export function replayRepeatedFailures(
+  store: WorkflowStore,
+  runId: string,
+  decide: RepeatRule = repeatedFailureDecision,
+): RepeatedFailureBoundary[] {
+  const records = new Map<string, RepeatRecord>();
+  for (const artifact of store.artifacts(runId)) {
+    if (artifact.kind !== REPEAT_KIND || !artifact.logical_path.startsWith(REPEAT_TASKS_DIR))
+      continue;
+    try {
+      const record = JSON.parse(store.readArtifact(runId, artifact.id)) as RepeatRecord;
+      records.set(record.taskId, record);
+    } catch {}
+  }
+  if (records.size)
+    return [...records.values()].map((record) => ({
+      taskId: record.taskId,
+      previous: record.previous,
+      root: record.root,
+      recorded: record.decision,
+      replayed: decide(
+        record.previous ? (records.get(record.previous)?.checks ?? null) : null,
+        record.checks,
+      ),
+      source: "record" as const,
+    }));
+  const rounds = new Map<string, { checks: RepeatCheck[]; root: string }>();
+  return findingRounds(store, runId).map((round) => {
+    const previous = round.corrected ? rounds.get(round.corrected) : undefined;
+    const root = previous?.root ?? round.corrected ?? round.taskId;
+    rounds.set(round.taskId, { checks: round.checks, root });
+    return {
+      taskId: round.taskId,
+      previous: previous ? (round.corrected ?? null) : null,
+      root,
+      recorded: null,
+      replayed: decide(previous?.checks ?? null, round.checks),
+      source: "findings" as const,
+    };
+  });
+}
+
+/** Chains where the replay records a would-stop the run did not: one per chain, as the run does. */
+export function newRepeatStops(boundaries: readonly RepeatedFailureBoundary[]): number {
+  const recorded = new Set(boundaries.filter((b) => b.recorded === "repeat").map((b) => b.root));
+  return new Set(
+    boundaries.filter((b) => b.replayed === "repeat" && !recorded.has(b.root)).map((b) => b.root),
+  ).size;
 }
 
 export interface FindingChainBoundary {
@@ -1975,6 +2109,8 @@ function replayRun(
   | "newPolicyStops"
   | "findingChains"
   | "newChainDecisions"
+  | "repeatedFailures"
+  | "newRepeatStops"
 > | null {
   const db = store.connection;
   const run = store.run(runId);
@@ -2143,6 +2279,7 @@ export function replayTrace(
     policyRefusal?: PolicyRefusalRule;
     chainRule?: ChainRule;
     batteryRule?: BatteryRule;
+    repeatRule?: RepeatRule;
   } = {},
 ): TraceReplay {
   // Initiative starts rewind their own copies of the trace, before the run replay rewinds this one.
@@ -2178,6 +2315,9 @@ export function replayTrace(
         }),
       ]),
     );
+    const repeats = new Map(
+      runIds.map((runId) => [runId, replayRepeatedFailures(store, runId, options.repeatRule)]),
+    );
     const runs: RunReplay[] = [];
     for (const runId of runIds) {
       const firstByte = timings.get(runId) ?? [];
@@ -2197,13 +2337,15 @@ export function replayTrace(
       const stallLadder = stalls.get(runId) ?? [];
       const policyRefusals = refusals.get(runId) ?? [];
       const findingChains = chains.get(runId) ?? [];
+      const repeatedFailures = repeats.get(runId) ?? [];
       if (
         !replay.boundaries.length &&
         !firstByte.length &&
         !testSplits.length &&
         !stallLadder.length &&
         !policyRefusals.length &&
-        !findingChains.length
+        !findingChains.length &&
+        !repeatedFailures.length
       )
         continue;
       runs.push({
@@ -2222,6 +2364,8 @@ export function replayTrace(
         ).length,
         findingChains,
         newChainDecisions: findingChains.filter((b) => b.replayed !== b.recorded).length,
+        repeatedFailures,
+        newRepeatStops: newRepeatStops(repeatedFailures),
       });
     }
     const gates = replayShareGate(store, options.shareGate);
