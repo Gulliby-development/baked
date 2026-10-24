@@ -39,7 +39,7 @@ export interface CriterionCase {
 }
 
 /** Quoted spans: "...", `...` and the typographic double quotes. */
-const QUOTED = /"((?:\\[^\n]|[^"\\\n])+)"|`([^`\n]+)`|\u201c([^\u201d\n]+)\u201d/g;
+const QUOTED = /"((?:\\[^\n]|[^"\\\n])*)"|`([^`\n]+)`|\u201c([^\u201d\n]*)\u201d/g;
 /** A placeholder the test fills with a concrete value: `<file>`, `{name}`, `...`. */
 const PLACEHOLDER = /<[^<>\s][^<>]*>|\{[^{}]+\}|\.\.\.|\u2026/g;
 
@@ -52,7 +52,18 @@ export interface QuotedSpan {
   index: number;
 }
 
-const DOUBLE_QUOTED = /"((?:\\[^\n]|[^"\\\n])+)"|\u201c([^\u201d\n]+)\u201d/g;
+/**
+ * A double-quoted span, empty ones included: `""` is a literal, not a quote that pairs with the
+ * next span's opening one (#1980, R63 eolscope `gives "";` demanded the prose between spans).
+ */
+const DOUBLE_QUOTED = /"((?:\\[^\n]|[^"\\\n])*)"|\u201c([^\u201d\n]*)\u201d/g;
+
+/**
+ * A literal without the ASCII spaces and tabs around it. JavaScript's `trim()` and `\s` also take
+ * a BOM, NBSP, U+2028, U+2029, U+3000 and a bare CR, which are the literal itself (#1979, R63
+ * eolscope: 5 refusals of tests that spelled such a literal right).
+ */
+const asciiTrim = (text: string) => text.replace(/^[ \t]+|[ \t]+$/g, "");
 
 /**
  * The quoted spans of a text, code spans first (#1790). A double quote inside a code span
@@ -71,19 +82,19 @@ export function quotedSpans(text: string): QuotedSpan[] {
     // backticks pair across a span: the line's code spans are not guessed.
     const paired =
       (line.match(/`/g) ?? []).length % 2 === 0 &&
-      code.every((m) => (m[1] ?? "") === (m[1] ?? "").trim());
+      code.every((m) => (m[1] ?? "") === asciiTrim(m[1] ?? ""));
     let kept = line;
     if (paired)
       for (const m of code) {
         const at = m.index ?? 0;
-        spans.push({ literal: (m[1] ?? "").trim(), raw: m[0], code: true, index: offset + at });
+        spans.push({ literal: asciiTrim(m[1] ?? ""), raw: m[0], code: true, index: offset + at });
         kept = kept.slice(0, at) + " ".repeat(m[0].length) + kept.slice(at + m[0].length);
       }
     masked += `${kept}\n`;
     offset += line.length + 1;
   }
   for (const match of masked.matchAll(DOUBLE_QUOTED)) {
-    const literal = (match[1] ?? match[2] ?? "").trim();
+    const literal = asciiTrim(match[1] ?? match[2] ?? "");
     // A span across a backtick crossed a code span the host could not pair.
     if (!literal.includes("`"))
       spans.push({ literal, raw: match[0], code: false, index: match.index ?? 0 });
@@ -738,18 +749,21 @@ function joinedStrings(unescaped: string): string {
  * Whether a test holds a multi-line literal (#1846), or null for a single line: every line, in
  * order and next to each other, in the test's text or in its strings joined. R57 foundation T013
  * left out the middle line of `f 0644 a\n# c\nf 0600 a` and the walk accepted it, since each
- * token occurred somewhere in the file.
+ * token occurred somewhere in the file. Lines are split and trimmed on ASCII spaces and tabs
+ * only: a bare CR, a BOM or an NBSP in a line is part of the literal (#1979).
  */
 function linesHeld(unescaped: string, literal: string): boolean | null {
-  const lines = literal
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter(Boolean);
+  const lines = literal.split(/\r?\n/).map(asciiTrim).filter(Boolean);
   const placeholder = new RegExp(PLACEHOLDER.source);
   if (lines.length < 2 || lines.some((line) => placeholder.test(line))) return null;
   const pattern = new RegExp(
     lines
-      .map((line) => line.split(/\s+/).map(escapeRegex).join("[ \\t]+"))
+      .map((line) =>
+        line
+          .split(/[ \t]+/)
+          .map(escapeRegex)
+          .join("[ \\t]+"),
+      )
       .join("[ \\t]*\\r?\\n[ \\t]*"),
   );
   return pattern.test(unescaped) || pattern.test(joinedStrings(unescaped));

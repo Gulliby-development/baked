@@ -320,6 +320,46 @@ export const FAILED_TESTS: Record<TestRunner, (output: string) => string[]> = {
 };
 
 /**
+ * The lines a runner prints when tests could not be built, collected or loaded, so they did not
+ * run: a `Record` over `TestRunner`, so a new runner lands with its build-failure lines. The
+ * baseline replay (#1960) reads them: an update whose new tests call an API the old code lacks
+ * fails to compile there (R62 linehunk, Maven), which is not a failed test. No pattern matches what
+ * a failing assertion prints.
+ */
+export const BUILD_FAILURES: Record<TestRunner, RegExp> = {
+  // "# Unhandled error between tests", "SyntaxError: Export named 'fold' not found in module ..."
+  bun: /^(?:# Unhandled error between tests|error: Cannot find module .+|(?:SyntaxError|ResolveMessage): .+)$/,
+  // "● Test suite failed to run", then "Cannot find module '../src/parser' from ..."
+  jest: /^\s*(?:● Test suite failed to run|Cannot find module .+ from .+)$/,
+  // "FAIL  tests/a.test.ts [ tests/a.test.ts ]", "Error: Failed to load url ../src/parser"
+  vitest: /^\s*(?:FAIL\s+\S+ \[ .+ \]|Error: (?:Failed to load|Transform failed).*)$/,
+  // "ERROR collecting tests/test_parser.py", "E   ModuleNotFoundError: No module named 'parser'"
+  pytest: /^(?:_* ?ERROR collecting .+|E\s+(?:ModuleNotFoundError|ImportError|SyntaxError): .+)$/,
+  // "error[E0425]: cannot find function `fold` in this scope", "error: could not compile `cidrfold`"
+  cargo: /^error(?:\[E\d+\]: .+|: could not compile .+)$/,
+  // "Parser.cs(12,5): error CS1501: No overload for method 'Run' takes 7 arguments"
+  dotnet: /^.*\berror CS\d+: .+$/,
+  // "[ERROR] COMPILATION ERROR :", "[ERROR] /src/test/java/AppTest.java:[12,9] cannot find symbol"
+  maven: /^\[ERROR\] (?:COMPILATION ERROR.*|.*\.(?:java|kt|scala):\[\d+,\d+\] .+)$/,
+  // "FAIL\texample.com/cidrfold [build failed]", "./fold_test.go:9:2: undefined: Fold"
+  go: /^(?:FAIL\s+\S+ \[(?:build|setup) failed\]|\S+\.go:\d+:\d+: .+)$/,
+  // Gradle: "> Task :compileTestJava FAILED", "AppTest.java:12: error: cannot find symbol"
+  junit: /^(?:> Task :\S*[cC]ompile\S* FAILED|.+\.(?:java|kt):\d+: error: .+)$/,
+  // "Bail out! Cannot find module"
+  tap: /^Bail out!.*$/,
+};
+
+/**
+ * The first lines of a build failure in a check's output (`BUILD_FAILURES`): some or all of the
+ * tests did not build, collect or load, so they did not run. Null when no runner printed one.
+ */
+export function buildFailure(output: string, limit = 5): string[] | null {
+  const lines = output.split(/\r?\n/).map((line) => line.trimEnd());
+  const found = lines.filter((line) => Object.values(BUILD_FAILURES).some((p) => p.test(line)));
+  return found.length ? found.slice(0, limit) : null;
+}
+
+/**
  * The tests a check's output reports as failed, with the runner that printed them: the runner
  * whose summary the output has, else the first whose failure lines it has (`go test` without `-v`
  * prints `--- FAIL` lines and no count). Null when neither is in the output, so a caller cannot
