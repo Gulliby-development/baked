@@ -128,6 +128,12 @@ async function conflict(scenario: Scenario) {
     git(root, "config", "user.name", "Test User");
     git(root, "config", "user.email", "test@example.test");
     git(root, "config", "commit.gpgsign", "false");
+    // Creating the run's worktree takes longer than the drive's 100 ms management poll, as on a
+    // Windows runner, where the poll read the run still paused and aborted its own drive: the
+    // README's checkout goes through a filter that waits.
+    git(root, "config", "filter.slow.smudge", "sleep 0.5; cat");
+    git(root, "config", "filter.slow.clean", "cat");
+    writeFileSync(join(root, ".gitattributes"), "README.md filter=slow\n");
     writeFileSync(join(root, ".gitignore"), ".baked/\n");
     writeFileSync(join(root, "README.md"), "# Query\n");
     git(root, "add", ".");

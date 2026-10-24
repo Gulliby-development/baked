@@ -1207,10 +1207,15 @@ export class WorkflowScheduler {
       }
     };
     const flush = setInterval(recordActive, ACTIVE_FLUSH_MS);
-    // Management commands from another process must stop this owner before the next effect.
+    // Management commands from another process must stop this owner before the next effect. A
+    // drive starts on a paused run and moves it to running only once its worktree exists; until
+    // then `paused` is the state it started from, not a pause, and creating the worktree can take
+    // longer than one poll (a Windows runner, #2047), so only a cancel stops it before that.
+    let running = false;
     const poll = setInterval(() => {
       try {
-        if (["paused", "cancelled"].includes(this.store.run(runId).status))
+        const status = this.store.run(runId).status;
+        if (status === "cancelled" || (running && status === "paused"))
           controller.abort(new Error("Run management command"));
       } catch (error) {
         // A throw from a timer ends the process; after a sleep the next tick reads it (#1410).
@@ -1229,6 +1234,7 @@ export class WorkflowScheduler {
         this.store.endOpenSteps(runId, null, "waiting", "completed");
         this.store.transition(runId, "running");
       });
+      running = true;
       await this.seedFork(runId, policy, signal);
       await withinWorkflow(this.leases.owner, async () => {
         while (this.store.run(runId).status === "running") {
