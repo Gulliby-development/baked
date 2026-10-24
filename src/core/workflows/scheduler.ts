@@ -733,11 +733,16 @@ import {
   siblingCorrections,
 } from "./task-graph.js";
 import {
+  INTEGRITY_DIR,
+  INTEGRITY_KIND,
+  type IntegrityRecord,
+  integrityDecision,
   integrityFix,
+  integrityRecord,
   isTestPath,
+  measureTestIntegrity,
   requestedTestRemovals,
   rewriteTargets,
-  scanTestIntegrity,
   strengthenTargets,
   testChanges,
   testIntegrityOf,
@@ -10219,6 +10224,12 @@ ${note}`;
     }
     return protects;
   }
+  /** Records an integrity scan's measures and findings for the replay (#1715). */
+  private recordIntegrity(runId: string, name: string, record: IntegrityRecord): void {
+    this.store.transaction(() =>
+      this.store.artifact(runId, INTEGRITY_KIND, `${INTEGRITY_DIR}${name}.json`, canonical(record)),
+    );
+  }
   private integrityFailures(
     runId: string,
     state: RuntimeState,
@@ -10260,7 +10271,7 @@ ${note}`;
       .map((f) => JSON.parse(f.body_json) as Review["findings"][number]);
     const corrective = task.origin !== "planned" && task.findingIds.length > 0;
     if (corrective) this.recordAddedTests(runId, task, changes);
-    const found = scanTestIntegrity(changes, {
+    const measures = measureTestIntegrity(changes, {
       protects: corrective ? this.correctionTests(runId, task, changed) : undefined,
       removalFindings: corrective ? ownFindings : [],
       rewrites: task.origin === "planned" ? new Set() : rewriteTargets(ownFindings),
@@ -10274,8 +10285,14 @@ ${note}`;
       testSources,
       specText: integrityRequirementText(state),
     });
-    if (!found.length) return [];
+    const found = integrityDecision(measures);
     const mode = testIntegrityOf(policy);
+    this.recordIntegrity(
+      runId,
+      `tasks/${task.id}`,
+      integrityRecord("task", task.id, mode, measures, found),
+    );
+    if (!found.length) return [];
     const evidenceId = this.store.transaction(() => {
       const artifact = this.store.artifact(
         runId,
@@ -10493,7 +10510,7 @@ ${note}`;
         ),
       )
       .map((f) => JSON.parse(f.body_json) as Review["findings"][number]);
-    const found = scanTestIntegrity(
+    const measures = measureTestIntegrity(
       changed.map((path) => {
         const hash = baseline.get(path) ?? null;
         const kept = hash === null ? null : readKept(this.store, runId, hash)?.toString("utf8");
@@ -10510,8 +10527,10 @@ ${note}`;
         specText: integrityRequirementText(state),
       },
     );
-    if (!found.length) return [];
+    const found = integrityDecision(measures);
     const mode = testIntegrityOf(policy);
+    this.recordIntegrity(runId, "run", integrityRecord("run", null, mode, measures, found));
+    if (!found.length) return [];
     const evidenceId = this.store.transaction(() => {
       const artifact = this.store.artifact(
         runId,
