@@ -134,7 +134,9 @@ export function criticalChain(
  * the feature count less a maximum matching of the reachability graph). Bench round 55
  * (routeshadow): six independent features after a serial head ran two at a time (#1822).
  */
-export function planWidth(plan: Pick<InitiativePlan, "features">): number {
+export function planWidth(plan: {
+  features: readonly Pick<InitiativeFeature, "id" | "dependsOn">[];
+}): number {
   const ids = plan.features.map((f) => f.id);
   const byId = new Map(plan.features.map((f) => [f.id, f] as const));
   const reach = new Map<string, Set<string>>();

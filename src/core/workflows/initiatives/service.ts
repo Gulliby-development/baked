@@ -2405,6 +2405,7 @@ export class InitiativeService {
         size: feature.size ?? "medium",
         stages: (facts(workflowId)?.stages ?? []).map((stage) => ({ ...stage, models })),
         ...counts.get(feature.id),
+        dependsOn: feature.dependsOn,
       };
     });
     const history = estimateHistory(
@@ -2447,6 +2448,7 @@ export class InitiativeService {
         features: spent,
         overhead: row.decompose_run_id ? this.usage(row.decompose_run_id).tokens : 0,
       },
+      parallelRuns: this.parallelRuns(settings, plan, facts),
     });
     this.priceFeatureNeeds(row, estimate, history, accepted);
     return estimate;
@@ -3480,6 +3482,7 @@ function featureRunSamples(
           size: feature.size ?? "medium",
           tokens: run.tokens,
           taskCount: run.taskCount,
+          activeMs: run.activeMs,
           criteria: runStore.state(run.runId).spec?.criteria.length,
           // A stub it created for a later feature counts at its share, not as a path (#1464).
           ...revision?.counts.get(feature.id),
