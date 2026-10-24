@@ -46,6 +46,7 @@ import { closingReference, type IssueSource } from "./issue-source.js";
 import { mutationLeaseFor, WorkspaceLeases } from "./leases.js";
 import { type RecoveryAdvice, recoveryAdvice } from "./remedies.js";
 import { PULL_REQUEST_BODY_LIMIT, runReport } from "./run-report.js";
+import { runSubject } from "./run-title.js";
 import {
   type Decision,
   DeliveryConfigSchema,
@@ -682,7 +683,7 @@ export async function prepareDelivery(
       !excluded.some((e) => e.path === p && e.reason === "specs"),
   );
   const evidence = evidenceOf(store, runId);
-  const title = (state.spec?.title ?? `Deliver ${run.feature_id}`).slice(0, 72);
+  const title = runSubject(state, `Deliver ${run.feature_id}`);
   const outcome = state.spec?.outcome ?? null;
   const diff = await reviewableDiff(contentRoot, base, files);
   const core = {
