@@ -671,6 +671,12 @@ export const PolicySchema = z
      */
     chainRewrite: z.literal("on").optional(),
     /**
+     * The sibling probe of a chain rewrite (#1969): `on` asks the `chain-family` profile once per
+     * rewrite corrective for a family of inputs around the chain's repros; the host runs them and
+     * a failing case joins the chain's battery as a finding. Needs `chainRewrite`. Absent is off.
+     */
+    chainProbe: z.literal("on").optional(),
+    /**
      * The host's correction of a misquoted test (misquote-fix.ts, #2047): `on` lets the host make
      * an exact, unambiguous replacement of a test's spelling of a criterion literal when a spec
      * conflict settles as a misquote, and go on with the task when its required checks pass,
@@ -847,6 +853,7 @@ export const ProfileSchema = z
       "mutants",
       "distinction",
       "revision",
+      "chain-family",
     ]),
     maxSteps: z.number().int().min(1).max(100),
     maxOutputTokens: z.number().int().min(256).max(65536),
@@ -1082,6 +1089,12 @@ export const ReviewSchema = z
             claim: Text,
             impact: Text,
             suggestedFix: Text,
+            /**
+             * The request's exact words, when the finding says the approved spec contradicts the
+             * request (#2032). The host checks them against the request before the finding records
+             * a spec amendment for the request; a quote the request does not hold records none.
+             */
+            quote: Text.optional(),
           })
           .strict(),
       )
@@ -1116,6 +1129,23 @@ export const DistinctionSchema = z
   })
   .strict();
 export type Distinction = z.infer<typeof DistinctionSchema>;
+
+/**
+ * The family of inputs a `chain-family` profile proposes around a finding chain's repros (#1969):
+ * each case is a repro without `actual`, since the host runs it and a case whose output does not
+ * show `expected` joins the battery. At most `BATTERY_CASES` (finding-chain.ts) cases.
+ */
+export const ChainFamilySchema = z
+  .object({
+    schemaVersion: z.literal(1),
+    cases: z
+      .array(ReproSchema.omit({ actual: true }))
+      .min(1)
+      .max(16),
+    rationale: Text,
+  })
+  .strict();
+export type ChainFamily = z.infer<typeof ChainFamilySchema>;
 
 export const CritiqueSchema = z
   .object({
@@ -1185,13 +1215,15 @@ export const ImplementationSchema = z
      * The sides of a `spec_conflict`, each with its exact words (#2016): a criterion or a
      * requirement by id, the request, or a test file by path. The host checks every quote against
      * the spec and the request before the conflict is settled for the request, so the decision
-     * rests on verified quotes, not on how the summary is worded.
+     * rests on verified quotes, not on how the summary is worded. A `platform` side (#2032) names
+     * a failing check by id, or `probe`, in ref and quotes a line of its output: the host settles
+     * a platform limit on that recorded output, not on the words "platform limit".
      */
     conflictSides: z
       .array(
         z
           .object({
-            kind: z.enum(["criterion", "requirement", "request", "test"]),
+            kind: z.enum(["criterion", "requirement", "request", "test", "platform"]),
             ref: z.string().min(1).max(512).optional(),
             quote: Text,
           })
@@ -1276,6 +1308,12 @@ export const AnalysisSchema = z
             refs: z.array(z.string().min(1)).min(1),
             description: Text,
             blocking: z.boolean(),
+            /**
+             * The request's exact words, when the finding sets the spec against what the request
+             * states (#2032). The host checks them against the request before the request settles
+             * the finding; a quote the request does not hold settles nothing.
+             */
+            quote: Text.optional(),
           })
           .strict(),
       )
@@ -1948,7 +1986,7 @@ export interface StartRequest {
   /** Approved boundaries used to route review findings to their owning initiative feature. */
   initiativeBounds?: {
     featureId: string;
-    features: { id: string; scope: string; paths: string[] }[];
+    features: { id: string; scope: string; paths: string[]; dependsOn?: string[] }[];
   };
   /**
    * Execution mode requested for this run (CLI `--worktree`). It overrides the policy and the
@@ -2279,7 +2317,9 @@ export function repairHostBoundCriteria(spec: Spec): { spec: Spec; repaired: str
     criteria.push({
       id: `AC-${String(next).padStart(3, "0")}`,
       requirementIds: uncovered,
-      given: original.given,
+      // What this host provides, not the original's Given: one that names the delivered revision
+      // and the CI matrix would flag the fallback host-bound again (#1964).
+      given: "the delivered tree on this host",
       when: "the run's checks run on this host",
       // biome-ignore lint/suspicious/noThenProperty: Given/When/Then is the versioned acceptance-criterion contract.
       then: `the code uses platform-neutral path, line-ending and process APIs and the tests pass here (${id} keeps the claim about other platforms for after release)`,

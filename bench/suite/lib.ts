@@ -65,6 +65,7 @@ const ID = /^[a-z0-9]+(-[a-z0-9]+)*$/;
 /** Opt-in policy fields a task may set; the runner owns budgets, approval and checks. */
 export const POLICY_FIELDS: Readonly<Record<string, readonly unknown[]>> = {
   chainRewrite: ["on"],
+  chainProbe: ["on"],
 };
 
 export function suiteRoot(): string {

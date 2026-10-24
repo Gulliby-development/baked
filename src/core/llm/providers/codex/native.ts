@@ -255,7 +255,28 @@ interface StepSink {
   webSearches: string[];
   /** The connection's count of unparsed output lines when this step started (#1956). */
   unparsedBefore: number;
+  /** Called once when the step finishes (true) or fails (false). */
+  settled?: (finished: boolean) => void;
 }
+
+/**
+ * A request shape that got no first byte on app-server (#1876). The first stall marks only the
+ * input that stalled; a stall of another input marks the whole shape. A marked call runs on
+ * `codex exec` until the mark is `STALL_PROBE_MS` old or `STALL_PROBE_EXEC_CALLS` calls have run
+ * there, then one call probes app-server: an answer clears the mark, another stall renews it.
+ * R62 stepvet kept eight features' analysis and seven features' spec on exec for the rest of a
+ * 91-minute drive after one stall each, with no cache reads, at twice the price (#1962).
+ */
+interface StallMark {
+  inputs: Set<string>;
+  shape: boolean;
+  at: number;
+  execCalls: number;
+  probing: boolean;
+}
+
+export const STALL_PROBE_MS = 10 * 60_000;
+export const STALL_PROBE_EXEC_CALLS = 3;
 
 interface NativeThread {
   threadId: string;
@@ -389,12 +410,12 @@ export class CodexAppServerSessions {
   private retired = new Map<string, NativeThread>();
   /**
    * Request shapes (base instructions and tools, so one stage's profile on any model) whose call
-   * got no first byte on app-server: their later calls in this process run on `codex exec`, while
-   * other stages keep their threads. In bench round 58 the call answering a refused submission
-   * of wheeltags' specify got no byte in 8 of 8 attempts on app-server, on astra and sol, and
-   * the same stage completed in one 126 s call on exec (#1876).
+   * got no first byte on app-server: their later calls run on `codex exec` (see `StallMark`),
+   * while other stages keep their threads. In bench round 58 the call answering a refused
+   * submission of wheeltags' specify got no byte in 8 of 8 attempts on app-server, on astra and
+   * sol, and the same stage completed in one 126 s call on exec (#1876).
    */
-  private stalled = new Set<string>();
+  private stalled = new Map<string, StallMark>();
   /** Usage dropped threads reported after BAKED left them; the next step to finish carries it. */
   private late: TokenTotals = { ...ZERO_TOTALS };
   private lateReports = 0;
@@ -408,7 +429,42 @@ export class CodexAppServerSessions {
       const trace = process.env.BAKED_CODEX_TRACE;
       return trace ? tracedConnection(connection, trace) : connection;
     },
+    private readonly now: () => number = Date.now,
   ) {}
+
+  /** Whether a call of this shape and first input goes to exec, or probes app-server. */
+  private stallRoute(shape: string, input: string): "exec" | "app-server" | "probe" {
+    const mark = this.stalled.get(shape);
+    if (!mark || !(mark.shape || mark.inputs.has(input))) return "app-server";
+    if (
+      !mark.probing &&
+      (this.now() - mark.at >= STALL_PROBE_MS || mark.execCalls >= STALL_PROBE_EXEC_CALLS)
+    ) {
+      mark.probing = true;
+      return "probe";
+    }
+    mark.execCalls += 1;
+    return "exec";
+  }
+
+  private markStall(shape: string, input: string): void {
+    const mark = this.stalled.get(shape);
+    if (!mark) {
+      this.stalled.set(shape, {
+        inputs: new Set([input]),
+        shape: false,
+        at: this.now(),
+        execCalls: 0,
+        probing: false,
+      });
+      return;
+    }
+    if (!mark.inputs.has(input)) mark.shape = true;
+    mark.inputs.add(input);
+    mark.at = this.now();
+    mark.execCalls = 0;
+    mark.probing = false;
+  }
 
   /** Opens a streaming step, or returns null when app-server cannot serve it. */
   async openStep(
@@ -418,13 +474,22 @@ export class CodexAppServerSessions {
     if (this.unavailable) return null;
     abortSignal?.throwIfAborted();
     const shape = requestShape(request);
-    if (this.stalled.has(shape)) return null;
+    const input = request.keys[0] ?? "";
+    const route = this.stallRoute(shape, input);
+    if (route === "exec") return null;
+    const probe = route === "probe";
+    // A probe that cannot even start leaves the mark as it was, for a later call to probe again.
+    const unprobe = () => {
+      const mark = this.stalled.get(shape);
+      if (probe && mark) mark.probing = false;
+    };
 
     let connection: CodexAppServerConnection;
     try {
       connection = await this.getConnection();
     } catch {
       this.unavailable = true;
+      unprobe();
       return null;
     }
 
@@ -434,6 +499,7 @@ export class CodexAppServerSessions {
         const thread = await this.startThread(connection, request);
         plan = { kind: "turn", thread, fromIndex: 0 };
       } catch {
+        unprobe();
         return null;
       }
     }
@@ -458,6 +524,14 @@ export class CodexAppServerSessions {
           unreported: this.abandoned,
           webSearches: [],
           unparsedBefore: connection.unparsed?.count ?? 0,
+          ...(probe
+            ? {
+                settled: (finished: boolean) => {
+                  if (finished) this.stalled.delete(shape);
+                  else unprobe();
+                },
+              }
+            : {}),
         };
         this.abandoned = 0;
         thread.sink = sink;
@@ -471,7 +545,7 @@ export class CodexAppServerSessions {
             if (thread.state === "suspended" && thread.suspendedBy === sink)
               this.dropThread(connection, thread);
             else {
-              if (thread.sink === sink && firstByteStall(abortSignal)) this.stalled.add(shape);
+              if (thread.sink === sink && firstByteStall(abortSignal)) this.markStall(shape, input);
               this.abort(connection, thread, sink, abortSignal);
             }
           },
@@ -920,6 +994,7 @@ export class CodexAppServerSessions {
       },
     });
     sink.controller.close();
+    sink.settled?.(true);
   }
 
   private failStep(thread: NativeThread, error: Error): void {
@@ -932,6 +1007,7 @@ export class CodexAppServerSessions {
     }
     thread.sink = null;
     sink.controller.error(error);
+    sink.settled?.(false);
   }
 
   private abort(
