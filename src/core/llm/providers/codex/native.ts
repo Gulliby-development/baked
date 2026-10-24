@@ -545,8 +545,7 @@ export class CodexAppServerSessions {
             if (thread.state === "suspended" && thread.suspendedBy === sink)
               this.dropThread(connection, thread);
             else {
-              if (thread.sink === sink && firstByteStall(abortSignal))
-                this.markStall(shape, input);
+              if (thread.sink === sink && firstByteStall(abortSignal)) this.markStall(shape, input);
               this.abort(connection, thread, sink, abortSignal);
             }
           },
