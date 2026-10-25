@@ -5350,13 +5350,17 @@ export class WorkflowScheduler {
         },
       };
     }
-    // The cross-run defect classes of the run's domains, as examples (#1970).
+    // The cross-run defect classes of the run's domains, as examples (#1970). What a planned
+    // implementer was shown, or null when the list had nothing for it, goes into its
+    // attempt-context (#2140).
+    let defectClassesShown: unknown;
     if (
       policy.defectClasses === "on" &&
       (stageProfile.output === "plan" ||
         (stageProfile.output === "implementation" && task?.origin === "planned"))
     ) {
       const classes = defectClassesFor(join(dataDir(), DEFECT_CLASSES_FILE), defectRunText(state));
+      defectClassesShown = classes;
       if (classes) extra = { ...(extra as Record<string, unknown>), defectClasses: classes };
     }
     const replay =
@@ -5555,8 +5559,12 @@ export class WorkflowScheduler {
       if (task && profile.output === "implementation") {
         // Save what this attempt receives, before it can fail or the findings change (#1566).
         // Both serial tasks and task worktrees, including retries, pass through here.
-        const context = (extra ?? {}) as Record<string, unknown>;
+        const context: Record<string, unknown> = {
+          ...((extra ?? {}) as Record<string, unknown>),
+          ...(defectClassesShown !== undefined ? { defectClasses: defectClassesShown } : {}),
+        };
         const keys = [
+          "defectClasses",
           "recurringFindings",
           "siblingFindings",
           "battery",

@@ -39,7 +39,8 @@ export const DOMAINS: readonly { key: string; label: string; words: RegExp }[] =
   {
     key: "decimal",
     label: "Decimal numbers and money",
-    words: /\b(decimals?|rounding|currency|money|amounts?|totals?|expenses?)\b/i,
+    // Not "totals" or "expenses": they name an app's subject, not decimal arithmetic (#2140).
+    words: /\b(decimals?|rounding|currency|money|amounts?)\b/i,
   },
   {
     key: "dates",
@@ -59,12 +60,29 @@ export const DOMAINS: readonly { key: string; label: string; words: RegExp }[] =
   },
 ];
 
+/**
+ * The bucket of classes whose findings name no domain, in a run whose request names none or
+ * several (#2140). It is shown only to a run whose request and spec name no domain at all.
+ */
+export const GENERAL_DOMAIN = "general";
+/** The longest command or input a case keeps whole; a longer one is kept as a one-line summary. */
+export const CASE_TEXT_MAX = 2000;
+/** The longest expected or printed value a case keeps; a longer one keeps its end. */
+export const CASE_VALUE_MAX = 500;
+/** The characters of each argument a summarized command keeps. */
+const SUMMARY_ARG = 80;
+
 /** One case of a class: the command that showed it and what it printed against what was required. */
 export interface DefectCase {
   command: string;
   stdin?: string;
   expected: string;
   actual: string;
+  /**
+   * True when the command or input was longer than `CASE_TEXT_MAX` and is a summary (the
+   * executable and each argument's first characters), to read and never to run (#2140).
+   */
+  summarized?: true;
 }
 
 export interface DefectClass {
@@ -97,17 +115,87 @@ export function domainsOf(text: string): string[] {
   return DOMAINS.filter((d) => d.words.test(text)).map((d) => d.key);
 }
 
+/** How many times each domain's words occur in a text. */
+function domainScores(text: string): Map<string, number> {
+  return new Map(
+    DOMAINS.map((d) => [d.key, text.match(new RegExp(d.words.source, "gi"))?.length ?? 0]),
+  );
+}
+
 const cut = (text: string, max: number) =>
   text.length > max ? `${text.slice(0, max - 1)}…` : text;
+/** A value's end, where a repro's last line (what was printed against what was required) is. */
+const tail = (text: string, max: number) =>
+  text.length > max ? `…${text.slice(text.length - max + 1)}` : text;
+const oneLine = (text: string) => cut(text.replace(/\s+/g, " "), SUMMARY_ARG);
 
-/** A repro as a case of the list: its command line, its input and its two values, each cut short. */
+/**
+ * A repro as a case of the list (#2140): its command line and input whole up to
+ * `CASE_TEXT_MAX`, else a one-line summary marked `summarized` (never a program cut mid-way),
+ * and its two values with their ends kept.
+ */
 export function defectCase(repro: Repro): DefectCase {
+  const whole = [repro.executable, ...repro.args].join(" ");
+  const longCommand = whole.length > CASE_TEXT_MAX;
+  const longStdin = (repro.stdin?.length ?? 0) > CASE_TEXT_MAX;
+  const command = longCommand
+    ? `${[repro.executable, ...repro.args.map(oneLine)].join(" ")} (summary of a ${String(whole.length)}-character command)`
+    : whole;
+  const stdin =
+    repro.stdin && longStdin
+      ? `${oneLine(repro.stdin)} (summary of ${String(repro.stdin.length)} characters of input)`
+      : repro.stdin;
   return {
-    command: cut([repro.executable, ...repro.args].join(" "), 300),
-    ...(repro.stdin ? { stdin: cut(repro.stdin, 200) } : {}),
-    expected: cut(repro.expected, 200),
-    actual: cut(repro.actual, 200),
+    command,
+    ...(stdin ? { stdin } : {}),
+    expected: tail(repro.expected, CASE_VALUE_MAX),
+    actual: tail(repro.actual, CASE_VALUE_MAX),
+    ...(longCommand || longStdin ? { summarized: true as const } : {}),
   };
+}
+
+/**
+ * The one domain a finding is filed under (#2140): the domain whose words occur most often in
+ * its family, claim, symbol, file path and repro command, a tie going to a domain the run names
+ * and then to `DOMAINS` order. A finding that names no domain goes to the run's domain when the
+ * run names exactly one, else to `GENERAL_DOMAIN`; never to every domain the run names.
+ */
+export function defectDomain(
+  finding: {
+    family?: string | null | undefined;
+    claim: string;
+    file: string | null;
+    symbol: string | null;
+    repro?: Repro | undefined;
+  },
+  runDomains: readonly string[],
+): string {
+  const scores = domainScores(
+    [
+      finding.family ?? "",
+      finding.claim,
+      finding.symbol ?? "",
+      finding.file ?? "",
+      ...(finding.repro ? [finding.repro.executable, ...finding.repro.args] : []),
+    ].join(" "),
+  );
+  let best: string | null = null;
+  let bestScore = 0;
+  for (const { key } of DOMAINS) {
+    const score = scores.get(key) ?? 0;
+    if (
+      score > bestScore ||
+      (score > 0 &&
+        score === bestScore &&
+        runDomains.includes(key) &&
+        !runDomains.includes(best ?? ""))
+    ) {
+      best = key;
+      bestScore = score;
+    }
+  }
+  if (best) return best;
+  return runDomains.length === 1 ? (runDomains[0] ?? GENERAL_DOMAIN) : GENERAL_DOMAIN;
 }
 
 /** What one run adds: a family seen in it, under each domain it belongs to, with its cases. */
@@ -118,9 +206,9 @@ export interface DefectAddition {
 }
 
 /**
- * The resolved correctness findings of a run as additions (#1970). A finding's domains are the
- * ones its family, claim, file and symbol name, else the ones the run's request and spec name; a
- * finding without a family names no class and is left out. One run counts once per class.
+ * The resolved correctness findings of a run as additions (#1970). Each finding is filed under
+ * one domain (`defectDomain`, #2140); a finding without a family names no class and is left
+ * out. One run counts once per class.
  */
 export function defectAdditions(
   findings: readonly {
@@ -138,15 +226,11 @@ export function defectAdditions(
   for (const finding of findings) {
     const family = familyKey(finding.family);
     if (finding.kind !== "correctness" || !family) continue;
-    const own = domainsOf(
-      [finding.family, finding.claim, finding.file ?? "", finding.symbol ?? ""].join(" "),
-    );
-    for (const domain of own.length ? own : runDomains) {
-      const key = `${domain}\u0000${family}`;
-      const addition = additions.get(key) ?? { domain, family, cases: [] };
-      if (finding.repro) addition.cases.push(defectCase(finding.repro));
-      additions.set(key, addition);
-    }
+    const domain = defectDomain(finding, runDomains);
+    const key = `${domain}\u0000${family}`;
+    const addition = additions.get(key) ?? { domain, family, cases: [] };
+    if (finding.repro) addition.cases.push(defectCase(finding.repro));
+    additions.set(key, addition);
   }
   return [...additions.values()];
 }
@@ -231,8 +315,9 @@ export function addDefectClasses(
 
 /**
  * The classes a run's planner and planned implementers are shown (#1970), read through this one
- * helper: the domains the run's request and spec name, each with its classes and their cases.
- * Null when the run names no domain the list holds.
+ * helper: the domains the run's request and spec name, each with its classes and their cases,
+ * or the `GENERAL_DOMAIN` bucket when they name no domain at all (#2140). Null when nothing of
+ * the list applies.
  */
 export function defectClassesFor(
   file: string,
@@ -242,9 +327,12 @@ export function defectClassesFor(
   note: string;
 } | null {
   const list = readDefectClasses(file);
-  const domains = domainsOf(runText).flatMap((domain) => {
+  const named = domainsOf(runText);
+  const domains = (named.length ? named : [GENERAL_DOMAIN]).flatMap((domain) => {
     const classes = list[domain] ?? [];
-    const label = DOMAINS.find((d) => d.key === domain)?.label ?? domain;
+    const label =
+      DOMAINS.find((d) => d.key === domain)?.label ??
+      (domain === GENERAL_DOMAIN ? "Not bound to a domain" : domain);
     return classes.length ? [{ domain, label, classes }] : [];
   });
   if (!domains.length) return null;

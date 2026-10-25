@@ -505,7 +505,12 @@ describe("initiative feature ranges replay against what the features used (#1806
   // added routeshadow's 2 of 10). R45-R54: a path floor at the first quartile put 37 of 104 below,
   // 11 of R54 lanewalk's 12 as the round recorded; from the lowest rate 29 (28%, #1806); light
   // features priced as runs of their own workflow 25 (24%) and lanewalk 5 (#1813).
-  test("a quarter of the features start below their range and a quarter above it, within two standard errors", () => {
+  // Only finished features count (a run of the feature completed): a blocked, paused or waiting
+  // run's tokens are a lower bound of what the feature costs, not its cost. R68 ewvet's codec and
+  // read-commands waited behind the blocked scanner after their plan stages (0.26M and 0.58M against
+  // low ends of 1.77M and 1.11M) and counted as below; with them and R58/R59 wheeltags' five blocked
+  // or paused features the share was 73 of 237 (30.8%), on finished features it is 66 of 228 (28.9%).
+  test("a quarter of the finished features start below their range and a quarter above it, within two standard errors", () => {
     let lanewalk = 0;
     let below = 0;
     let above = 0;
@@ -517,18 +522,23 @@ describe("initiative feature ranges replay against what the features used (#1806
       if (!replays.length) continue;
       const { store, dispose } = openTrace(path);
       const used = new Map<string, number>();
+      const finished = new Set<string>();
       try {
         for (const row of store.connection
-          .query("SELECT l.feature_id AS feature, r.token_usage AS tokens FROM initiative_runs l JOIN runs r ON r.id=l.run_id")
-          .all() as { feature: string; tokens: number }[])
+          .query(
+            "SELECT l.feature_id AS feature, r.token_usage AS tokens, r.status AS status FROM initiative_runs l JOIN runs r ON r.id=l.run_id",
+          )
+          .all() as { feature: string; tokens: number; status: string }[]) {
           used.set(row.feature, (used.get(row.feature) ?? 0) + row.tokens);
+          if (row.status === "completed") finished.add(row.feature);
+        }
       } finally {
         dispose();
       }
       for (const replay of replays)
         for (const f of replay.starts[0]?.estimate ?? []) {
           const tokens = used.get(f.featureId);
-          if (tokens === undefined) continue;
+          if (tokens === undefined || !finished.has(f.featureId)) continue;
           features++;
           if (tokens < f.low) below++;
           if (tokens < f.low && path.endsWith("lanewalk.sqlite.gz")) lanewalk++;

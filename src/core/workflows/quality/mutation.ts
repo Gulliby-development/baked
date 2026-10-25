@@ -250,7 +250,7 @@ export function isTestCheck(check: { id: string; executable: string; args: strin
   const text = [check.id, check.executable, ...check.args.filter((arg) => !flag(arg))]
     .join(" ")
     .toLowerCase();
-  return /\b(?:test|tests|pytest|unittest|vitest|jest|mocha|ava|tap|phpunit|pest|rspec|busted|ctest|nextest)\b/.test(
+  return /\b(?:test|tests|pytest|unittest|vitest|jest|mocha|ava|tap|phpunit|pest|rspec|busted|bats|ctest|nextest)\b/.test(
     text,
   );
 }

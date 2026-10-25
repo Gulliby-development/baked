@@ -71,13 +71,14 @@ Each line is a past bug. A new detector, parser or table row answers it before r
 13. **Host-written code must be clean.** The acceptance rows the host writes pass the language's formatter and linter as configured, carry no raw control characters or BOM, and keep one type per file where the language expects it (#1927, #1942, #1995, #1804, #1961).
 14. **Tools that write into the checkout.** Language servers and first builds leave files (#1508, #1815): list them, or the run blocks `input_changed`.
 15. **Runtimes for examples.** The README of a project builds and runs with the language's runtime, not only its build tool (#1529, #1035).
-16. **One table, all languages.** When a fix for this language touches a shared rule, sweep it across every supported language (the [file-issue skill](../file-issue/SKILL.md), step 3), and prefer a table row over a wider regex.
+16. **Detectors replace the runner fallback.** `detectGates` offers a Makefile, justfile or CI step only when no toolchain detector found anything, so a detector that fires on a config file of a side tool (a `.shellcheckrc` in a C project) would hide `make test`. Shell gates are added on top for that reason (#1497); a new detector for a side tool does the same.
 17. **Shared runners carry their totals.** A harness that several languages run through (TAP::Harness behind `prove` and `pg_prove`) prints a summary with totals and CPU times; strip them in `GROWING_COUNTS`, or the same red check never matches again (#1499).
 18. **Grammar ERROR nodes.** A grammar that cannot parse part of the language (PL/pgSQL bodies in tree-sitter-sql) turns that part into `ERROR` nodes; match the declaration inside the `ERROR` node too, or its symbols vanish from the call graph (#1499).
 19. **A linter that passes broken files.** A linter run at error severity can still pass a file that does not parse (PSScriptAnalyzer needs `ParseError` next to `Error,Warning`); give its gate-matrix cell a file with a syntax error (#1498).
 20. **Every runner in the replay table.** `tests/workflow-baseline-replay.test.ts` holds a `FAILURES` and a `BUILD_ERRORS` row for every runner in `BUILD_FAILURES`; a new runner adds both (#1498).
 21. **Tools that survive HOME isolation.** Tests run with a temporary HOME, so a tool installed for the current user (PowerShell modules in CurrentUser scope, pip user site) vanishes in them: install CI and device tools for all users (#1498).
 22. **Output on a CI runner.** A runner that detects CI (`GITHUB_ACTIONS`, `TF_BUILD`) can change its output: Pester prefixes failed tests with `::error::`. Turn that mode off in the gate's command and run the real gate-matrix cell with `GITHUB_ACTIONS=true` before pushing (#1498).
+23. **One table, all languages.** When a fix for this language touches a shared rule, sweep it across every supported language (the [file-issue skill](../file-issue/SKILL.md), step 3), and prefer a table row over a wider regex.
 
 ## 4. Tests
 
