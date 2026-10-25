@@ -3,7 +3,8 @@
     "lib/sum.rb": "def sum(a, b)\n  a + b\nend\n",
     "spec/sum_spec.rb": "require 'sum'\nsum(1, 2)\n",
     "lib/sum_test.rb": "require 'sum'\n# AC-001 example: (1, 2, 3)\n",
-    "Gemfile": "source 'https://rubygems.org'\ngem 'rake'\ngem 'rubocop', require: false\n"
+    "Gemfile": "source 'https://rubygems.org'\ngem 'rake'\ngem 'rubocop', require: false\n",
+    "sum.gemspec": "Gem::Specification.new do |spec|\n  spec.name = \"sum\"\n  spec.version = \"0.1.0\"\n  spec.files = Dir[\"lib/**/*.rb\"]\n  spec.require_paths = [\"lib\"]\nend\n"
   },
   "outputs": {
     "tests": "..F\n\nFinished in 0.00714 seconds (files took 0.09504 seconds to load)\n3 examples, 1 failure\n\nFailed examples:\n\nrspec ./spec/sum_spec.rb:6 # sum is commutative\n",
@@ -19,7 +20,8 @@
       "lib/sum_test.rb: source"
     ],
     "manifests": [
-      "Gemfile"
+      "Gemfile",
+      "sum.gemspec"
     ],
     "dependencies": [
       "Gemfile: rubygems rake",
@@ -54,7 +56,7 @@
     "formatters": [
       "rubocop-written: bundle exec rubocop --only Layout lib/sum.rb spec/sum_spec.rb lib/sum_test.rb Gemfile"
     ],
-    "packageContents": null,
+    "packageContents": ["sum.gemspec: gem [files, require_paths]"],
     "numericLimits": null
   }
 }
