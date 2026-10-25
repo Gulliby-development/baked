@@ -2608,6 +2608,24 @@ const available = (needs: string[][]) =>
   });
 
 describe.skipIf(!toolchains)("gate matrix: toolchains", () => {
+  // #1489: the host reads the JUnit reports a real Gradle run writes, since `gradle -q check` prints
+  // no total on a passing run.
+  test.skipIf(!available([["gradle", "--version"]]))("a real Gradle check gets its test reports appended (#1489)", async () => {
+    const root = project({
+      "settings.gradle": "rootProject.name = 'calc'\n",
+      "build.gradle": "plugins { id 'java' }\nrepositories { mavenCentral() }\ndependencies {\n    testImplementation platform('org.junit:junit-bom:5.11.4')\n    testImplementation 'org.junit.jupiter:junit-jupiter'\n    testRuntimeOnly 'org.junit.platform:junit-platform-launcher'\n}\ntest { useJUnitPlatform() }\n",
+      "src/main/java/app/Calc.java": "package app;\n\npublic final class Calc {\n    public static int add(int a, int b) { return a + b; }\n}\n",
+      "src/test/java/app/CalcTest.java": "package app;\n\nimport static org.junit.jupiter.api.Assertions.assertEquals;\n\nimport org.junit.jupiter.api.Disabled;\nimport org.junit.jupiter.api.Test;\n\nclass CalcTest {\n    @Test void adds() { assertEquals(3, Calc.add(1, 2)); }\n    @Test void fails() { assertEquals(4, Calc.add(1, 2)); }\n    @Disabled @Test void later() { }\n}\n",
+    });
+    const env = { ...process.env, GRADLE_USER_HOME: process.env.GRADLE_USER_HOME ?? join(homedir(), ".gradle") };
+    const check = () => executeCheckCommand(new ProcessScope(), "gradle", ["-q", "--console=plain", "check"], { cwd: root, env, timeoutMs: 600_000, signal: new AbortController().signal, sandbox: null });
+    const failing = await check();
+    expect([testCount(failing.output), testsRan(failing.output), failedTests(failing.output)]).toEqual([{ tool: "junit", count: 3 }, { tool: "junit", count: 2 }, { tool: "junit", names: ["app.CalcTest.fails()"] }]);
+    writeFileSync(join(root, "src/test/java/app/CalcTest.java"), readFileSync(join(root, "src/test/java/app/CalcTest.java"), "utf8").replace("assertEquals(4,", "assertEquals(3,"));
+    const passing = await check();
+    expect(passing.output).not.toContain("tests completed");
+    expect(testCount(passing.output)).toEqual({ tool: "junit", count: 3 });
+  }, 900000);
   test.skipIf(!available([["cargo", "--version"]]))("a cargo init crate reaches approval with the detected cargo gates (#1815)", async () => {
     const files = {
       "Cargo.toml": '[package]\nname = "hexview"\nversion = "0.1.0"\nedition = "2021"\n\n[dependencies]\n',
