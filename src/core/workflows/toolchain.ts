@@ -23,13 +23,23 @@ export function pythonEnvironment(has: (file: string) => boolean): [string, stri
 }
 
 /**
+ * Every environment runner a check's program may start behind: the Python ones, and Bundler's
+ * `bundle exec`, which loads the versions a Ruby project's Gemfile pins (`bundle exec rspec`,
+ * `bundle exec rubocop`, #1493).
+ */
+const ENVIRONMENT_RUNNERS: readonly (readonly [string, string])[] = [
+  ...PYTHON_ENVIRONMENTS.map(({ prefix }) => prefix),
+  ["bundle", "exec"],
+];
+
+/**
  * The program a check runs, behind at most two shell launchers and one environment runner, with
  * a `launch` that rebuilds the whole command around new arguments.
  */
 export function toolchainCommand(executable: string, args: readonly string[]): LaunchedCommand {
   const outer = launchedCommand(executable, args);
-  const runner = PYTHON_ENVIRONMENTS.find(
-    ({ prefix }) => prefix[0] === outer.program && outer.args[0] === prefix[1],
+  const runner = ENVIRONMENT_RUNNERS.find(
+    (prefix) => prefix[0] === outer.program && outer.args[0] === prefix[1],
   );
   const inner = outer.args[1];
   // `uv run --with x pytest`: an option of the runner itself is not unwrapped.

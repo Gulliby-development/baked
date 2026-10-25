@@ -1,0 +1,35 @@
+{
+  "id": "ruby-rspec-slugify",
+  "language": "ruby",
+  "toolchain": "rspec",
+  "requires": [
+    "ruby",
+    "rspec",
+    "rubocop"
+  ],
+  "allowedPaths": [
+    "lib/**",
+    "spec/**",
+    "README.md",
+    ".rspec",
+    ".rubocop.yml"
+  ],
+  "checks": [
+    {
+      "id": "rubocop",
+      "executable": "rubocop",
+      "args": [],
+      "fix": {
+        "executable": "rubocop",
+        "args": [
+          "-a"
+        ]
+      }
+    },
+    {
+      "id": "rspec",
+      "executable": "rspec",
+      "args": []
+    }
+  ]
+}

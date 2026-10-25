@@ -339,12 +339,13 @@ export function failureSignature(output: string): string {
  * configured `testpaths` directory does not exist yet), or "No tests found" / "No test files found"
  * of the JavaScript runners, Bun's "0 test files matching" (exit 1), Gradle 9's "did not discover
  * any tests to execute" (#1864), Go's "no test files", SwiftPM's "no tests found", Mix's "did not
- * match any directory/file: test" or "no tests to run" and Flutter's "Test directory "test" not
- * found" (#1753). A plan that writes the tests last has this state until its test tasks run, and
+ * match any directory/file: test" or "no tests to run", Flutter's "Test directory "test" not
+ * found" (#1753), and RSpec's "No examples found." or "All examples were filtered out" and
+ * Minitest's "0 runs, 0 assertions" (#1493), all of which exit 0. A plan that writes the tests last has this state until its test tasks run, and
  * it is no defect of the code (#1031, #1208).
  */
 export function noTestsCollected(output: string): boolean {
-  return /\bno tests ran\b|\bcollected 0 items\b|\bno tests? (?:files? )?found\b|\bno test files\b|\bno files were found in testpaths\b|\b0 test files matching\b|\bdid not discover any tests to execute\b|\bno tests to run\b|\bdid not match any directory\/file\b|\btest directory "?test"? not found\b/i.test(
+  return /\bno tests ran\b|\bcollected 0 items\b|\bno tests? (?:files? )?found\b|\bno test files\b|\bno files were found in testpaths\b|\b0 test files matching\b|\bdid not discover any tests to execute\b|\bno tests to run\b|\bdid not match any directory\/file\b|\btest directory "?test"? not found\b|\bno examples found\b|\ball examples were filtered out\b|^0 runs, 0 assertions\b/im.test(
     output,
   );
 }
@@ -372,7 +373,19 @@ export const MISSING_PATH_LINES: readonly { tool: string; line: RegExp }[] = [
   { tool: "go", line: /"(\S+?)" matched no packages/ },
   { tool: "go", line: /\bdirectory\s+(\S+)\s+(?:does not exist|not found)/ },
   { tool: "luacheck", line: /^Checking\s+(\S+)\s+I\/O error/ },
+  // RSpec: `An error occurred while loading ./spec/a_spec.rb.`, a missing file only when RSpec's
+  // own `load` failed (`Failure/Error: __send__(method, file)`), not a `require` inside the file.
+  { tool: "rspec", line: /^An error occurred while loading (\S+?)\.?(?: - Did you mean\?)?$/ },
+  { tool: "ruby", line: /^ruby: No such file or directory -- (\S+) \(LoadError\)$/ },
+  { tool: "rake", line: /^File does not exist: (\S+)$/ },
+  { tool: "rubocop", line: /^Error: No such file or directory: (\S+)$/ },
 ];
+
+/** Whether RSpec's own `load` of the file named at `index` failed, a few lines below it. */
+const rspecMissing = (lines: readonly string[], index: number): boolean =>
+  lines
+    .slice(index + 1, index + 4)
+    .some((line) => /^Failure\/Error: __send__\(method, file\)/.test(line));
 
 /** Whether an E902 error comes just before ruff's `-->` location line at `index`. */
 const ruffMissing = (lines: readonly string[], index: number): boolean =>
@@ -396,7 +409,12 @@ export function missingPlannedPaths(
     for (const { tool, line: pattern } of MISSING_PATH_LINES) {
       const path = pattern.exec(line)?.[1];
       // The `-->` location line names a missing path only right after an E902 error.
-      if (!path || (tool === "ruff" && !ruffMissing(lines, index))) continue;
+      if (
+        !path ||
+        (tool === "ruff" && !ruffMissing(lines, index)) ||
+        (tool === "rspec" && !rspecMissing(lines, index))
+      )
+        continue;
       const clean = path
         .replace(/^\.\//, "")
         .replace(/\/\.\.\.$/, "")
