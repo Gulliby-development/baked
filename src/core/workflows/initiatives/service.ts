@@ -135,7 +135,7 @@ import {
   type TokenPoolView,
   tokenPool,
 } from "./token-pool.js";
-import { upstreamSymbolGaps } from "./upstream-symbols.js";
+import { upstreamFiles, upstreamSymbolGaps } from "./upstream-symbols.js";
 import {
   assignFeatureWorkflows,
   documentedLightLeaf,
@@ -2490,11 +2490,7 @@ export class InitiativeService {
   ): Promise<void> {
     const spec = this.workflows.store.state(runId).spec;
     if (!spec || !plan) return;
-    const files = plan.features
-      .filter((f) => feature.dependsOn.includes(f.id))
-      .flatMap((f) =>
-        f.boundary.paths.filter((p) => !isGlobPath(p)).map((path) => ({ featureId: f.id, path })),
-      );
+    const files = upstreamFiles(plan, feature);
     if (!files.length) return;
     const upstream = await Promise.all(
       files.map(async (file) => {
