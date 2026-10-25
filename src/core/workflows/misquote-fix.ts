@@ -60,9 +60,21 @@ export interface MisquoteFixRecord extends MisquoteFixVerdict {
   checks: "passed" | "failed" | "none" | null;
   /** The test files the host edited (put back when `checks` is `failed`). */
   files: string[];
+  /**
+   * What corrects the test when the host does not (#2058): `continue`, the task's next attempt
+   * continues at a bounded cap with the one-line finding (and the failing check's output);
+   * `session`, a full new session as before; null when the host's edit stands.
+   */
+  fallback?: MisquoteFallback | null;
 }
 
+export type MisquoteFallback = "continue" | "session";
+
 export type MisquoteFixRule = (sites: readonly MisquoteSite[]) => MisquoteFixVerdict;
+
+/** The cap of a misquote continuation (#2058): one literal to copy, then the task's checks. */
+export const MISQUOTE_CONTINUE_STEPS = 8;
+export const MISQUOTE_CONTINUE_TOKENS = 150_000;
 
 const no = (reason: string): MisquoteFixVerdict => ({ apply: false, reason });
 
@@ -145,6 +157,27 @@ export function misquoteFixPlan(
       return text === f.text ? [] : [{ path: f.path, before: f.text, after: text }];
     }),
   };
+}
+
+/**
+ * The fallback when the host does not correct the test itself (#2058). nodepluck eval T004: a
+ * fresh session on the full task prompt spent 1.23M tokens on one literal. A misquote the host
+ * names (a criterion, the row's literal and the test's spelling) is corrected by the task's next
+ * attempt as a continuation at `MISQUOTE_CONTINUE_STEPS` / `MISQUOTE_CONTINUE_TOKENS`, with the
+ * finding and, when the host's edit failed a check, that check's output. A task that already used
+ * its continuation, or a settle with no misquote site, opens the full session as before.
+ */
+export function misquoteFallback(
+  record: Pick<MisquoteFixRecord, "sites" | "apply" | "checks">,
+  continued: boolean,
+): MisquoteFallback | null {
+  if (record.apply && record.checks === "passed") return null;
+  return record.sites.length && !continued ? "continue" : "session";
+}
+
+/** The one-line finding a misquote continuation gets: the criterion, its literal, the test's. */
+export function misquoteFinding(misquoted: readonly Misquote[]): string {
+  return `The test misquotes the criterion rows: ${misquoted.map((m) => `${m.id} states ${JSON.stringify(m.literal)}, the test has ${JSON.stringify(m.quoted)}`).join("; ")}.`;
 }
 
 /** The record of a misquote settle's host-fix decision. */

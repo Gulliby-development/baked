@@ -456,10 +456,14 @@ import {
   taskLibraries,
 } from "./library-docs.js";
 import {
+  MISQUOTE_CONTINUE_STEPS,
+  MISQUOTE_CONTINUE_TOKENS,
   MISQUOTE_FIX_DIR,
   MISQUOTE_FIX_KIND,
   type Misquote,
   type MisquoteFixRecord,
+  misquoteFallback,
+  misquoteFinding,
   misquoteFixPlan,
   misquoteFixRecord,
 } from "./misquote-fix.js";
@@ -3467,6 +3471,33 @@ export class WorkflowScheduler {
       },
     };
   }
+  /** The finding a bounded misquote continuation corrects (#2058), while it is that attempt. */
+  private misquoteContinue(
+    runId: string,
+    state: RuntimeState,
+    taskId: string,
+  ): {
+    misquoteContinue?: {
+      finding: string;
+      failed: { id: string; output: string } | null;
+      note: string;
+    };
+  } {
+    if (state.quickFixes[taskId] !== "quick") return {};
+    const artifact = this.store.latestArtifact(runId, `tasks/${taskId}/misquote-continue.json`);
+    if (!artifact) return {};
+    const record = JSON.parse(this.store.readArtifact(runId, artifact.id)) as {
+      finding: string;
+      failed: { id: string; output: string } | null;
+    };
+    return {
+      misquoteContinue: {
+        finding: record.finding,
+        failed: record.failed,
+        note: `This attempt continues the task to correct one thing: copy each named criterion literal into the test exactly as the criterion states it, in place of the test's spelling. The rest of the task's files stand as the earlier attempt left them; do not survey the project again. ${record.failed ? "The host's own replacement of the spelling failed this required check, with this output; it was put back. " : ""}Run the task's checks with request_check, then submit. The attempt has a small step and token cap.`,
+      },
+    };
+  }
   /** The usage record of a step's latest attempt when its task may still continue at the cap. */
   private capContinuable(
     runId: string,
@@ -5602,6 +5633,7 @@ export class WorkflowScheduler {
           "battery",
           "correctionFocus",
           "cutOffChecks",
+          "misquoteContinue",
           "earlierEdits",
           "earlierReads",
           "previousAttempt",
@@ -7383,6 +7415,7 @@ ${note}`;
               ...this.earlierReadsContext(runId, task.id),
               ...this.recurringContext(runId, state, task),
               ...this.cutOffChecks(runId, task.id),
+              ...this.misquoteContinue(runId, state, task.id),
               ...(focus.files.length
                 ? {
                     correctionFocus: {
@@ -8721,6 +8754,7 @@ ${note}`;
         ...this.previousAttempt(runId, task.id),
         ...this.earlierReadsContext(runId, task.id),
         ...this.cutOffChecks(runId, task.id),
+        ...this.misquoteContinue(runId, state, task.id),
       };
       const needed = reserveTokens(
         this.estimatePrompt(runId, state, policy, profile, extra),
@@ -11539,7 +11573,7 @@ ${note}`;
     misquoted: Misquote[],
     signal: AbortSignal,
     fix?: MisquoteFixContext,
-  ): Promise<MisquoteFixed | null> {
+  ): Promise<MisquoteFixed | MisquoteContinued | null> {
     const root = fix?.root ?? runRoot(this.store.workspace, state);
     const files = [...new Set([...writtenTestPaths(task), ...rowDataPaths(task)])].flatMap(
       (path) => {
@@ -11553,19 +11587,21 @@ ${note}`;
     const plan = misquoteFixPlan(misquoted, files);
     const mode = policy.misquoteFix === "on" && fix ? "on" : "shadow";
     const record = misquoteFixRecord(task.id, mode, plan.sites);
-    const save = (body: MisquoteFixRecord) =>
+    const continued = (state.taskContinuations[task.id] ?? 0) > 0 || !!state.quickFixes[task.id];
+    // A misquote the host does not correct goes to a bounded continuation of the task (#2058).
+    const settle = (body: MisquoteFixRecord, failed: MisquoteContinued["failed"] = null) => {
+      const fallback = misquoteFallback(body, continued);
       this.store.transaction(() =>
         this.store.artifact(
           runId,
           MISQUOTE_FIX_KIND,
           `${MISQUOTE_FIX_DIR}${task.id}.json`,
-          canonical(body),
+          canonical({ ...body, fallback }),
         ),
       );
-    if (mode !== "on" || !fix || !record.apply || !plan.edits.length) {
-      save(record);
-      return null;
-    }
+      return mode === "on" && fallback === "continue" ? { continued: true as const, failed } : null;
+    };
+    if (mode !== "on" || !fix || !record.apply || !plan.edits.length) return settle(record);
     const write = (path: string, content: string) => {
       const absolute = workspacePath(root, path);
       const before = this.store.transaction(() => capturePreImage(this.store, runId, absolute));
@@ -11586,22 +11622,27 @@ ${note}`;
     );
     const evidenceIds: string[] = [];
     let passed = checks.length > 0;
+    let failed: MisquoteContinued["failed"] = null;
     for (const check of checks) {
       signal.throwIfAborted();
       const checked = await fix.run(check);
       if (checked.status !== "passed") {
         passed = false;
+        failed = { id: check.id, output: (checked.output ?? "").slice(-CONTINUED_OUTPUT_CHARS) };
         break;
       }
       evidenceIds.push(checked.evidenceId);
     }
     if (!passed) for (const edit of plan.edits) write(edit.path, edit.before);
-    save({
-      ...record,
-      checks: !checks.length ? "none" : passed ? "passed" : "failed",
-      files: changed,
-    });
-    if (!passed) return null;
+    const outcome = settle(
+      {
+        ...record,
+        checks: !checks.length ? "none" : passed ? "passed" : "failed",
+        files: changed,
+      },
+      failed,
+    );
+    if (!passed) return outcome;
     return {
       criterionIds: [...new Set(misquoted.map((m) => m.id))],
       files: changed,
@@ -11664,6 +11705,9 @@ ${note}`;
     fix?: MisquoteFixContext,
   ): Promise<boolean | MisquoteFixed | ConflictFinished> {
     const misquoted = rows.flatMap((r) => r.misquoted.map((m) => ({ ...m, id: r.criterion.id })));
+    // A bounded misquote continuation that reports a conflict again goes on at the full cap.
+    if (this.store.latestArtifact(runId, `tasks/${task.id}/misquote-continue.json`))
+      this.fallBackFromQuickFix(state, task);
     const verified = rows.length > 0 && rows.every(auditVerified);
     const misquotePath = `assumptions/conflicts/${task.id}-misquoted.json`;
     const verifiedPath = `assumptions/conflicts/${task.id}-audited.json`;
@@ -11674,7 +11718,7 @@ ${note}`;
       // An exact, unambiguous replacement the host makes itself, kept when the task's required
       // checks pass on it (#2047); otherwise a session corrects the test as before.
       const fixed = await this.misquoteFix(runId, state, policy, task, misquoted, signal, fix);
-      if (fixed) {
+      if (fixed && !("continued" in fixed)) {
         this.store.transaction(() => {
           this.store.artifact(
             runId,
@@ -11704,6 +11748,26 @@ ${note}`;
           misquotePath,
           canonical({ ...account, assumed: settled, misquoted }),
         );
+        if (fixed) {
+          // The next attempt is a bounded continuation with the one-line finding (#2058); one
+          // that does not finish falls back once to a full attempt (`fallBackFromQuickFix`).
+          state.quickFixes[task.id] = "quick";
+          state.taskSteps[task.id] = Math.min(MISQUOTE_CONTINUE_STEPS, policy.maxAgentSteps);
+          state.taskBudgets[task.id] = Math.min(
+            MISQUOTE_CONTINUE_TOKENS,
+            policy.maxAttemptTokens ?? MISQUOTE_CONTINUE_TOKENS,
+          );
+          this.store.artifact(
+            runId,
+            "recovery",
+            `tasks/${task.id}/misquote-continue.json`,
+            canonical({
+              taskId: task.id,
+              finding: misquoteFinding(misquoted),
+              failed: fixed.failed,
+            }),
+          );
+        }
         this.store.taskStatus(runId, task.id, "interrupted", null, { cause: "spec_conflict" });
         this.store.finishStep(runId, child, "failed");
       });
@@ -17786,7 +17850,9 @@ ${note}`;
     state.quickFixes[task.id] = "full";
     delete state.taskSteps[task.id];
     delete state.taskBudgets[task.id];
-    if (!state.widenedCorrections.includes(task.id)) state.widenedCorrections.push(task.id);
+    // A planned task's bounded misquote continuation (#2058) has no correction scope to widen.
+    if (task.origin !== "planned" && !state.widenedCorrections.includes(task.id))
+      state.widenedCorrections.push(task.id);
     return true;
   }
   /** The findings of corrective tasks that have not finished: pending, running or interrupted. */
@@ -18423,6 +18489,14 @@ interface MisquoteFixed {
   files: string[];
   checks: string[];
   evidenceIds: string[];
+}
+/**
+ * A misquote the task's next attempt corrects at a bounded cap (#2058), with the required check
+ * that failed on the host's put-back edit, when there was one.
+ */
+interface MisquoteContinued {
+  continued: true;
+  failed: { id: string; output: string } | null;
 }
 interface BatchEntry {
   task: Task;

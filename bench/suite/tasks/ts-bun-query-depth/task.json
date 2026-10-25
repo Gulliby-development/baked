@@ -1,0 +1,28 @@
+{
+  "id": "ts-bun-query-depth",
+  "language": "typescript",
+  "toolchain": "bun",
+  "requires": [
+    "bun"
+  ],
+  "allowedPaths": [
+    "src/**",
+    "tests/**",
+    "README.md",
+    "package.json",
+    "tsconfig.json"
+  ],
+  "checks": [
+    {
+      "id": "bun-test",
+      "executable": "bun",
+      "args": [
+        "test"
+      ]
+    }
+  ],
+  "policy": {
+    "misquoteFix": "on"
+  },
+  "origin": "#2058"
+}
