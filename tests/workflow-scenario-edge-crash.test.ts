@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { DEFAULT_CONFIG } from "../src/config/index.js";
 import { hashBytes, hashJson } from "../src/core/specs/hash.js";
-import { CRASH_FRAMES, caseCrash, EDGE_DIR, type EdgeRecord, edgeCrashDecision, OUTPUT_TAIL_CHARS } from "../src/core/verification/edge-inputs.js";
+import { CRASH_FRAMES, caseCrash, EDGE_DIR, type EdgeRecord, edgeCrashDecision, OUTPUT_TAIL_CHARS, outputTail } from "../src/core/verification/edge-inputs.js";
 import { defaultWorkflowPolicy } from "../src/core/workflows/defaults.js";
 import type { Check, RunPolicy, Spec, Task } from "../src/core/workflows/schemas.js";
 import { NativeWorkflowService } from "../src/core/workflows/service.js";
@@ -195,6 +195,15 @@ describe("the crash frame table (#2136)", () => {
     expect(edgeCrashDecision("inconclusive", "TypeError: x is not a function\n    at /w/node_modules/lib/index.js:3:9\n    at /w/[eval]:1:1\n", files).decision).toBe("pass");
     // A file whose name only ends like the task's is not the task's.
     expect(edgeCrashDecision("inconclusive", "Error: boom\n    at f (/w/src/mystorage.ts:1:1)\n", files).decision).toBe("pass");
+  });
+
+  // Bun on CI printed more after the stack, and the error line fell out of the last 400 characters.
+  test("a tail whose error line falls before its end opens with that line", () => {
+    const output = `error: Missing parameter "code"\n      at createLink (/w/src/storage.ts:2:37)\n${"note: more output\n".repeat(30)}`;
+    const tail = outputTail(output);
+    expect(tail.length).toBeLessThanOrEqual(OUTPUT_TAIL_CHARS);
+    expect(tail).toStartWith('error: Missing parameter "code"\n...\n');
+    expect(outputTail("short output")).toBe("short output");
   });
 
   // CI runs with FORCE_COLOR, and Bun then colours `error` and the frame's path.
