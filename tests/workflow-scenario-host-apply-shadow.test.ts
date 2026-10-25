@@ -174,6 +174,8 @@ describe(`scenario: an update brief with exact diffs and a whole file, in shadow
       git(root, "config", "user.name", "Test User");
       git(root, "config", "user.email", "test@example.test");
       git(root, "config", "commit.gpgsign", "false");
+      // Git for Windows checks task worktrees out as CRLF; CRLF bases are #2158.
+      git(root, "config", "core.autocrlf", "false");
       writeFileSync(join(root, ".gitignore"), ".baked/\n");
       git(root, "add", ".");
       git(root, "commit", "-q", "-m", "Initial");
