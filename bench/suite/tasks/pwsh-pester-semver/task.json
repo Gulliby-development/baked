@@ -1,0 +1,46 @@
+{
+  "id": "pwsh-pester-semver",
+  "language": "powershell",
+  "toolchain": "pester",
+  "requires": [
+    "pwsh"
+  ],
+  "allowedPaths": [
+    "src/**",
+    "tests/**",
+    "README.md"
+  ],
+  "checks": [
+    {
+      "id": "pester",
+      "executable": "pwsh",
+      "args": [
+        "-NoProfile",
+        "-NonInteractive",
+        "-Command",
+        "Invoke-Pester -Configuration @{ Run = @{ Exit = $true }; Output = @{ RenderMode = 'Plaintext' } }"
+      ]
+    },
+    {
+      "id": "psscriptanalyzer",
+      "executable": "pwsh",
+      "args": [
+        "-NoProfile",
+        "-NonInteractive",
+        "-Command",
+        "Invoke-ScriptAnalyzer -Path . -Recurse -Severity ParseError,Error,Warning -EnableExit"
+      ],
+      "fix": {
+        "executable": "pwsh",
+        "args": [
+          "-NoProfile",
+          "-NonInteractive",
+          "-Command",
+          "Invoke-ScriptAnalyzer",
+          "-Fix",
+          "-Path"
+        ]
+      }
+    }
+  ]
+}

@@ -212,6 +212,9 @@ export const FILE_FORMATTERS: LanguageRecord<readonly FileFormatter[]> = {
   sql: none(
     "SQLFluff's layout rules run in the `sqlfluff lint` gate, which covers each task's SQL files; `sqlfluff format` has no check mode",
   ),
+  powershell: none(
+    "PSScriptAnalyzer's Invoke-Formatter formats a script's text, not files; no gate runs it",
+  ),
 };
 
 /** Package runners a JavaScript formatter gate starts through: their words before the formatter. */

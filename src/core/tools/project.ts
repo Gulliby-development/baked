@@ -4,7 +4,7 @@ import { dirname, join, resolve } from "node:path";
 import type { ToolResult } from "../../types/index.js";
 import { getCwd } from "../cwd.js";
 import { logBackgroundError } from "../diagnostics/errors.js";
-import { bunShellArgs, IS_WIN } from "../platform/index.js";
+import { bunShellArgs, IS_WIN, pwshExecutable } from "../platform/index.js";
 import { chatSandbox, SandboxUnavailableError, sandboxNotice } from "../security/sandbox.js";
 import { buildSafeEnv } from "../spawn.js";
 import { executeCheckCommand } from "../verification/check-runner.js";
@@ -399,6 +399,19 @@ async function detectToolchain(cwd: string): Promise<DetectedToolchain> {
     profile.lint = "clj-kondo --lint src";
     profile.typecheck = null;
     profile.run = tool === "lein" ? "lein run" : "clj -M -m core";
+    return profile;
+  }
+
+  // PowerShell — Pester and PSScriptAnalyzer (#1498). No edit-time format: Invoke-Formatter
+  // takes the script text, not a path.
+  if (
+    (await has("PSScriptAnalyzerSettings.psd1")) ||
+    (await hasExt(".Tests.ps1")) ||
+    (await hasExt(".psd1"))
+  ) {
+    const pwsh = pwshExecutable();
+    profile.test = `${pwsh} -NoProfile -Command Invoke-Pester`;
+    profile.lint = `${pwsh} -NoProfile -Command "Invoke-ScriptAnalyzer -Path . -Recurse -EnableExit"`;
     return profile;
   }
 

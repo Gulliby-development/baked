@@ -233,6 +233,15 @@ const FRAMEWORKS: readonly TestFramework[] = [
     ],
     messageArgument: String.raw`^\s*(?:because|message|userMessage)\s*:`,
   },
+  {
+    // `It 'adds two numbers' { $x | Should -Be 4 }`: a command, so no parentheses around the
+    // name, and `-Because` is a parameter rather than an argument.
+    name: "Pester",
+    languages: ["powershell"],
+    cases: String.raw`^\s*It\s+['"]`,
+    named: [{ pattern: /^\s*It\s+(['"])(?<name>(?:(?!\1)[^\n])+)\1/d }],
+    assertions: String.raw`\bShould\s+-(?:Not)?[A-Z]\w*|\bShould-[A-Z]\w*`,
+  },
 ];
 
 const FLUENT = /\.Should\s*\(\s*\)/;

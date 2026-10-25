@@ -7,6 +7,7 @@ import {
   rowOf,
   SUPPORTED_LANGUAGES,
 } from "../intelligence/language-records.js";
+import { pwshExecutable } from "../platform/index.js";
 import { gateSandbox } from "../security/sandbox.js";
 import { workspacePath } from "../specs/validate.js";
 import { BUN_FMT, bunFmtConfigured } from "../tools/bun-fmt.js";
@@ -22,6 +23,7 @@ import { parseWorkflowConfig, type WorkflowConfig } from "./config-policy.js";
 import { defaultWorkflowPolicy } from "./defaults.js";
 import { WorkflowFault } from "./errors.js";
 import { dotnetFiles } from "./language.js";
+import { PESTER_RUN } from "./pester.js";
 import { ProcessScope } from "./process-scope.js";
 import { redactSecrets } from "./redaction.js";
 import { CheckSchema, SafeId } from "./schemas.js";
@@ -558,6 +560,63 @@ function sqlfluffGates(workspace: string): GateSuggestion[] {
   return out;
 }
 
+const PWSH = ["-NoProfile", "-NonInteractive", "-Command"];
+/** The folders a PowerShell project keeps its Pester tests in, besides the root. */
+const PESTER_DIRS = ["tests", "Tests", "test", "Test"];
+/**
+ * PSScriptAnalyzer on the whole tree, parse errors, errors and warnings only: `-EnableExit` alone
+ * exits with the count of every severity, so a missing help comment (Information) failed the gate,
+ * and `-Severity Error,Warning` without `ParseError` passed a script that does not parse. Each
+ * finding is one sorted `path:line:column: Severity Rule: message` line, since the rules run in
+ * parallel and the default table cuts paths to file names.
+ */
+export const PSSA_LINT =
+  "Invoke-ScriptAnalyzer -Path . -Recurse -Severity ParseError,Error,Warning -EnableExit | Sort-Object ScriptPath, Line, Column, RuleName | ForEach-Object { '{0}:{1}:{2}: {3} {4}: {5}' -f $_.ScriptPath, $_.Line, $_.Column, $_.Severity, $_.RuleName, $_.Message }";
+
+/**
+ * Pester tests and PSScriptAnalyzer for a PowerShell project (#1498): Pester when the project has
+ * a `*.Tests.ps1` file at its root or in a test folder; PSScriptAnalyzer when it has a
+ * `PSScriptAnalyzerSettings.psd1`, and offered without one (not preselected) when it has a module
+ * manifest or a script at its root, since the default rules may already fail on its code. The
+ * analyzer reads one file at a time, so it covers each task's scripts, and its fixer
+ * (`Invoke-ScriptAnalyzer -Fix -Path <file>`) takes the task's file.
+ */
+function pwshGates(workspace: string): GateSuggestion[] {
+  const names = (dir: string): string[] => {
+    try {
+      return readdirSync(join(workspace, dir));
+    } catch {
+      return [];
+    }
+  };
+  const root = names(".");
+  const testDir = ["", ...PESTER_DIRS].find((dir) =>
+    names(dir || ".").some((name) => /\.Tests\.ps1$/i.test(name)),
+  );
+  const settings = root.find((name) => /^PSScriptAnalyzerSettings\.psd1$/i.test(name));
+  const scripts = root.find((name) => /\.(?:ps1|psm1|psd1)$/i.test(name));
+  const exe = pwshExecutable();
+  const out: GateSuggestion[] = [];
+  if (testDir !== undefined)
+    out.push({
+      check: gate("pester", exe, [...PWSH, PESTER_RUN], 600000),
+      source: testDir ? `${testDir}/*.Tests.ps1` : "*.Tests.ps1",
+      reason: `${exe} -Command Invoke-Pester`,
+      preselected: true,
+    });
+  if (settings || scripts || testDir !== undefined)
+    out.push({
+      check: {
+        ...gate("psscriptanalyzer", exe, [...PWSH, PSSA_LINT], 300000),
+        fix: { executable: exe, args: [...PWSH, "Invoke-ScriptAnalyzer", "-Fix", "-Path"] },
+      },
+      source: settings ?? scripts ?? `${testDir || "."}/*.Tests.ps1`,
+      reason: `${exe} -Command Invoke-ScriptAnalyzer -Recurse (fixer: Invoke-ScriptAnalyzer -Fix)`,
+      preselected: settings !== undefined,
+    });
+  return out;
+}
+
 function goGates(workspace: string): GateSuggestion[] {
   if (!has(workspace, "go.mod")) return [];
   // `go vet` passes on unformatted code and is a whole-unit check, so its fixer never ran on a
@@ -1054,6 +1113,7 @@ const TOOLCHAIN_GATES = {
   npm: scriptGates,
   python: pythonGates,
   sqlfluff: sqlfluffGates,
+  pwsh: pwshGates,
   go: goGates,
   dotnet: dotnetGates,
   cargo: cargoGates,
@@ -1101,6 +1161,7 @@ export const GATE_TOOLCHAINS: LanguageRecord<readonly GateToolchain[]> = {
   objc: none("Xcode projects have no gate detector"),
   solidity: none("Foundry has no gate detector; a Hardhat project is an npm package"),
   sql: ["sqlfluff"],
+  powershell: ["pwsh"],
 };
 
 export function detectGates(workspace: string, configured: Check[] = []): GateSuggestion[] {

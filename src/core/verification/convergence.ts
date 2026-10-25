@@ -377,6 +377,9 @@ export const MISSING_PATH_LINES: readonly { tool: string; line: RegExp }[] = [
     tool: "sqlfluff",
     line: /\bSpecified path does not exist\. Check it\/they exist\(s\): (\S+?)[.,]?\s*$/,
   },
+  // PowerShell cmdlets (Invoke-ScriptAnalyzer, Pester's Get-ChildItem), absolute:
+  // "Invoke-ScriptAnalyzer: Cannot find path '/w/tests' because it does not exist." (#1498)
+  { tool: "pwsh", line: /\bCannot find path '([^'\n]+)' because it does not exist\b/ },
 ];
 
 /** Whether an E902 error comes just before ruff's `-->` location line at `index`. */

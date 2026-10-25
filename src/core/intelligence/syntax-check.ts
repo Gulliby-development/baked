@@ -24,6 +24,9 @@ const CHECKED_GRAMMARS: Record<string, string> = {
   ".java": "java",
   // Not `.sql`: one grammar covers many dialects (T-SQL, PL/pgSQL bodies, MySQL delimiters) and
   // refuses valid statements of each, so SQL is checked by the project's SQLFluff gate (#1499).
+  // Not `.ps1`/`.psm1`: the tree-sitter grammar reported errors in 27 of 98 scripts of the
+  // Chocolatey, Pester and psake packages that PowerShell's own parser reads without one; the
+  // PSScriptAnalyzer gate reports parse errors instead (#1498).
 };
 
 const MAX_ERRORS = 5;

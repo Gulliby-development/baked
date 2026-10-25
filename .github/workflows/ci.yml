@@ -99,6 +99,12 @@ jobs:
           pipx install ruff
           pipx install sqlfluff==4.4.0
 
+      # ubuntu-latest ships pwsh; the modules go to the AllUsers scope, since the gate matrix
+      # isolates HOME and a CurrentUser module would not load (#1498).
+      - name: PowerShell modules
+        shell: bash
+        run: sudo pwsh -NoProfile -NonInteractive -Command "Set-PSRepository PSGallery -InstallationPolicy Trusted; Install-Module Pester -RequiredVersion 5.9.1 -Scope AllUsers -Force -SkipPublisherCheck; Install-Module PSScriptAnalyzer -RequiredVersion 1.24.0 -Scope AllUsers -Force"
+
       - name: Gate matrix with toolchains
         env:
           BAKED_GATE_MATRIX_TOOLCHAINS: "1"

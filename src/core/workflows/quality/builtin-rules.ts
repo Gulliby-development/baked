@@ -244,6 +244,16 @@ export const PLACEHOLDERS: LanguageRecord<Placeholder> = {
       "i",
     ),
   ),
+  // `throw 'not implemented'`, `throw [System.NotImplementedException]::new()`, the same through
+  // `New-Object`, and `Write-Error 'not implemented'`, as C#'s NotImplementedException (#1498).
+  powershell: anyOf(
+    statement(
+      new RegExp(String.raw`\b(?:throw|Write-Error(?:\s+-Message)?)\s+["']${NOT_IMPLEMENTED}`, "i"),
+    ),
+    statement(
+      /\bthrow\s+(?:\[(?:System\.)?NotImplementedException\]|\(?\s*New-Object\s+(?:System\.)?NotImplementedException\b)/i,
+    ),
+  ),
   cpp: anyOf(
     statement(THROW_NEW),
     statement(new RegExp(String.raw`throw\s+std::\w+\(\s*"${NOT_IMPLEMENTED}`, "i")),
