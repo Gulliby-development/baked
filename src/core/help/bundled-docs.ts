@@ -42,6 +42,7 @@ import workflowsParallelWorktreesMd from "../../../docs/workflows/parallel-workt
 import workflowsQuickMd from "../../../docs/workflows/quick.md" with { type: "text" };
 import workflowsReadmeMd from "../../../docs/workflows/README.md" with { type: "text" };
 import workflowsRuntimeMd from "../../../docs/workflows/runtime.md" with { type: "text" };
+import workflowsSddExportMd from "../../../docs/workflows/sdd-export.md" with { type: "text" };
 import workflowsV2DesignMd from "../../../docs/workflows/v2-design.md" with { type: "text" };
 
 export const BUNDLED_DOCS: ReadonlyArray<readonly [path: string, text: string]> = [
@@ -79,5 +80,6 @@ export const BUNDLED_DOCS: ReadonlyArray<readonly [path: string, text: string]> 
   ["workflows/parallel-worktrees.md", workflowsParallelWorktreesMd],
   ["workflows/quick.md", workflowsQuickMd],
   ["workflows/runtime.md", workflowsRuntimeMd],
+  ["workflows/sdd-export.md", workflowsSddExportMd],
   ["workflows/v2-design.md", workflowsV2DesignMd],
 ];

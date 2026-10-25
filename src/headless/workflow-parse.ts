@@ -23,6 +23,7 @@ const commands = [
   "import",
   "export",
   "export-progress",
+  "export-package",
   "gc",
   "redact",
   "recover",
@@ -110,6 +111,7 @@ const booleanFlags = new Set([
   "resume",
   "no-resume",
   "accept-workspace",
+  "zip",
 ]);
 /** `doctor` and `estimate` take the `run` options that change whether and how a run starts. */
 const preRunFlags = [
@@ -210,6 +212,7 @@ const commandFlags: Record<WorkflowCommand, string[]> = {
   import: ["source", "path", "feature", "command-id"],
   export: ["destination"],
   "export-progress": [],
+  "export-package": ["out", "zip"],
   gc: ["before", "dry-run"],
   redact: ["file", "reason"],
   recover: ["request", "effect", "resolution", "file", "expected-revision", "command-id"],
@@ -760,6 +763,12 @@ estimate [WORKFLOW] (same options as doctor)
   tokens and approximate cost per stage and per model, from earlier runs of this project
 import --source spec-kit|ecc|markdown-edit --path DIRECTORY --feature ID
 export RUN_ID --destination DIRECTORY    export-progress RUN_ID
+  export writes the run's diagnostic report (manifest.json) to attach to a bug report
+export-package RUN_ID|INITIATIVE_ID [--out PATH] [--zip] [--json]
+  Write the accepted spec, plan, tasks and graph of a run or an initiative as a plain SDD package
+  another coding agent can read: AGENTS.md, manifest.json, initiative.md/json, graph.json/md and
+  specs/FEATURE/. A folder by default (.baked/exports/ID-export), one zip archive with --zip.
+  Exit 1 when refused (nothing accepted yet, a secret, the path exists), 2 for an unknown ID
 usage RUN_ID [--model ID] [--stage NAME] [--top N] [--format md] [--output FILE]
   per-stage and per-attempt token and step usage; --format md renders tokens and estimated cost
   by stage and model as Markdown, printed or written to FILE (project-wide: baked usage)
