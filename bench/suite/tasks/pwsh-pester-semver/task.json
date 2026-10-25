@@ -18,7 +18,7 @@
         "-NoProfile",
         "-NonInteractive",
         "-Command",
-        "Invoke-Pester -Configuration @{ Run = @{ Exit = $true }; Output = @{ RenderMode = 'Plaintext' } }"
+        "Invoke-Pester -Configuration @{ Run = @{ Exit = $true }; Output = @{ RenderMode = 'Plaintext'; CIFormat = 'None' } }"
       ]
     },
     {
