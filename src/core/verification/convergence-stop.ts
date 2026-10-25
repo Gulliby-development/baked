@@ -511,20 +511,49 @@ export function passesWithNotes(
   coverage: Review["coverage"],
   checksPass: boolean,
 ): boolean {
+  return notesPass(
+    {
+      severity: finding.severity,
+      kind: finding.kind,
+      testOrDoc: testOrDocFile(finding.file),
+      criterionIds: finding.criterionIds,
+    },
+    coverage.map((c) => ({
+      criterionId: c.criterionId,
+      verdict: c.verdict,
+      evidence: c.evidenceIds.length,
+    })),
+    checksPass,
+  );
+}
+
+/** What the notes rule reads of a convergence criterion: its verdict and evidence count (#1715). */
+export interface NotesCriterion {
+  criterionId: string;
+  verdict: Review["coverage"][number]["verdict"];
+  evidence: number;
+}
+
+/** `passesWithNotes` on a finding's labels: no claim or path, so a bench trace keeps them (#1715). */
+export function notesPass(
+  finding: Pick<Finding, "severity" | "kind" | "criterionIds"> & { testOrDoc: boolean },
+  criteria: readonly NotesCriterion[],
+  checksPass: boolean,
+): boolean {
   const failing = finding.criterionIds.some(
-    (id) => coverage.find((c) => c.criterionId === id)?.verdict === "fail",
+    (id) => criteria.find((c) => c.criterionId === id)?.verdict === "fail",
   );
   return (
     checksPass &&
     (finding.severity === "low" ||
-      (finding.severity === "medium" && testOrDocFile(finding.file) && !failing)) &&
+      (finding.severity === "medium" && finding.testOrDoc && !failing)) &&
     (finding.kind === "partial" ||
-      (finding.kind === "missing" && testOrDocFile(finding.file)) ||
+      (finding.kind === "missing" && finding.testOrDoc) ||
       (finding.severity === "low" &&
         (finding.kind === "correctness" || finding.kind === "contradicts"))) &&
     finding.criterionIds.length > 0 &&
     finding.criterionIds.every(
-      (id) => (coverage.find((c) => c.criterionId === id)?.evidenceIds.length ?? 0) > 0,
+      (id) => (criteria.find((c) => c.criterionId === id)?.evidence ?? 0) > 0,
     )
   );
 }

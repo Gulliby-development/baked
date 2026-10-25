@@ -275,6 +275,8 @@ const CHECK_COMMAND = new RegExp(
     // The arguments of a Python check run by an interpreter path: `.venv/bin/python -m ruff` (#1762).
     String.raw`-m\s+` + TOOL,
     String.raw`(?:mvn|mvnw|gradle|gradlew|\.\/gradlew|\.\/mvnw)\b.*\b(?:test|verify|check|build)\b`,
+    // Bundler: `bundle exec rspec`, `bundle exec rake test`, `bundle exec rubocop` (#1493).
+    String.raw`(?:bundle\s+exec\s+)?(?:rspec|rubocop|standardrb|rake\s+(?:test|spec))\b`,
   ].join("|")})`,
 );
 

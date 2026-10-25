@@ -19,6 +19,9 @@ export const FAILED_TEST_LINE = new RegExp(
     "<<< (?:FAILURE|ERROR)!",
     // Gradle `AppTest > testApp() FAILED`.
     String.raw`\)\s+FAILED\s*$`,
+    // RSpec's rerun line `rspec ./spec/calc_spec.rb:6 # Calc adds`, Minitest `  1) Failure:` (#1493).
+    String.raw`^rspec \S+:\d+ # `,
+    String.raw`^\s*\d+\) (?:Failure|Error):\s*$`,
   ].join("|"),
 );
 
