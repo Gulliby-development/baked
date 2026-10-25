@@ -75,10 +75,12 @@ import {
 } from "./host-apply.js";
 import type { initiativePriceSamples } from "./initiatives/forecast.js";
 import {
+  dollarShortfall,
   InitiativeService,
   poolGrowthOf,
   type ShareGateRecord,
   shareShortfall,
+  shareSpareUsd,
 } from "./initiatives/service.js";
 import type { TokenPoolView } from "./initiatives/token-pool.js";
 import {
@@ -1942,6 +1944,18 @@ export interface InitiativeStartBoundary {
     TokenPoolView,
     "limitTokens" | "usedTokens" | "forecastTokens" | "suggestedTokens" | "notice"
   > | null;
+  /**
+   * The `initiative-dollar-share` would-stop the current code records at this start (whatever the
+   * mode), next to what the initiative spent in the end, so the corpus can judge it: dollars that
+   * were never short make it a false would-stop (#2099). Null when the feature is not short.
+   */
+  shareWouldStop: {
+    summary: string;
+    spareUsd: number | null;
+    lowUsd: number | null;
+    measuredFeatures: number;
+    finalUsd: number | null;
+  } | null;
 }
 
 /**
@@ -2393,6 +2407,7 @@ function replayStarts(
         const feature = view.features.find((f) => f.id === link.feature_id);
         const cost = view.budget.cost;
         const whole = initiatives.estimate(initiativeId);
+        const short = feature ? dollarShortfall(view, feature) : null;
         const estimate = (whole?.features ?? []).map((f) => ({
           featureId: f.featureId,
           low: f.tokens.low,
@@ -2416,6 +2431,15 @@ function replayStarts(
             suggestedTokens: view.budget.pool.suggestedTokens,
             notice: view.budget.pool.notice,
           },
+          shareWouldStop: short
+            ? {
+                summary: short,
+                spareUsd: shareSpareUsd(view, link.feature_id),
+                lowUsd: feature?.needUsd?.low ?? null,
+                measuredFeatures: cost.measuredFeatures,
+                finalUsd: finalUsd > 0 ? Math.round(finalUsd * 100) / 100 : null,
+              }
+            : null,
         });
       } finally {
         service.close();
