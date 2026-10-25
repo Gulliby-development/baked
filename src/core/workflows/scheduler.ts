@@ -147,6 +147,8 @@ import {
 } from "../verification/repro.js";
 import {
   completeReview,
+  hostSettledOmission,
+  OMITTED_DEFERRED,
   reviewProblems,
   unnamedFailureAdvice,
   unnamedFailures,
@@ -2834,9 +2836,24 @@ export class WorkflowScheduler {
                 });
               }
               if (unnamed.length) review.verdict = "changes_requested";
-              if (omitted.length) {
+              // A criterion the host settles itself (a manual one, which a person answers next, and a
+              // post-release one the approval deferred) is deferred when the reviewer leaves it out;
+              // only the rest request changes. commitbump-update 0894df2d stopped invalid_output
+              // twice on a correct tree when the reviewer left out the host's AC-009 (#2190).
+              const settled = omitted.filter((criterion) =>
+                hostSettledOmission(criterion, state.deferredCriteria),
+              );
+              for (const criterion of settled)
+                review.coverage.push({
+                  criterionId: criterion.id,
+                  verdict: "deferred",
+                  evidenceIds: [],
+                  explanation: OMITTED_DEFERRED[criterion.method as "manual" | "post-release"],
+                });
+              const open = omitted.filter((criterion) => !settled.includes(criterion));
+              if (open.length) {
                 const evidenceId = coverageEvidence();
-                for (const criterion of omitted) {
+                for (const criterion of open) {
                   review.coverage.push({
                     criterionId: criterion.id,
                     verdict: "inconclusive",
@@ -2858,6 +2875,11 @@ export class WorkflowScheduler {
                       suggestedFix: `Implement or demonstrate ${criterion.id} within approved task scope and repeat checks.`,
                     });
                 }
+                if (!review.findings.length)
+                  throw new WorkflowFault(
+                    "OUTPUT_INVALID",
+                    `Changes requested without an actionable finding (omitted criteria: ${open.map((c) => `${c.id}, method ${c.method}`).join("; ")})`,
+                  );
                 review.verdict = "changes_requested";
               }
               // A formatting or lint claim passes only on a check that shows it (#1480).
