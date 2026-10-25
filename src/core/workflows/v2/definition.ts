@@ -100,6 +100,8 @@ export const CommandGate = z
           .object({ executable: z.string().min(1).max(512), args: z.array(z.string().max(2048)) })
           .strict()
           .optional(),
+        /** `tests`: the unsafe tier fixes test files only (see `Check.fixUnsafeScope`). */
+        fixUnsafeScope: z.enum(["tests"]).optional(),
         /** `json`: a custom gate whose JSON report decides the result (see `Check.report`). */
         report: z.enum(["exit", "json"]).optional(),
       })

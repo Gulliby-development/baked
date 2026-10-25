@@ -4,7 +4,7 @@ import { dirname, join } from "node:path";
 import { hashJson } from "../src/core/specs/hash.js";
 import type { Analysis, RunPolicy, Spec } from "../src/core/workflows/schemas.js";
 import { newId } from "../src/core/workflows/store.js";
-import { replayRequestConflicts } from "../src/core/workflows/trace.js";
+import { replayConflictFinishes, replayRequestConflicts } from "../src/core/workflows/trace.js";
 import type { ExecutionRequest } from "../src/core/workflows/types.js";
 import { fixturePolicy, fixtureSpec, workflowFixture } from "./helpers/workflow-fixture.js";
 
@@ -57,10 +57,36 @@ interface Script {
   /** A test that existed before the run. */
   legacy?: boolean;
   policy?: RunPolicy;
+  /**
+   * The reporting attempt already wrote the test with the request's column and `value.txt` (the
+   * task's `unit` check wants `ready`), as T003's did (#2033); `on` sets `conflictFinish`.
+   */
+  finish?: { mode?: "on"; value: string };
+  /** The task also carries AC-006, whose literal the attempt's test lacks. */
+  unheld?: boolean;
 }
 
+const UNHELD: Spec["criteria"][number] = { id: "AC-006", requirementIds: ["FR-005"], given: "t.txt holds `{b}` on line 2", when: "uritpl check t.txt runs", then: "it prints `t.txt:2:2: UT101 unused variable \"b\"`", method: "automated" };
+
+/** The task's own check: the code's output is in place. */
+const UNIT: RunPolicy["checks"][number] = {
+  id: "unit",
+  executable: "bun",
+  args: ["-e", "if (await Bun.file('value.txt').text() !== 'ready') process.exit(1)"],
+  cwd: ".",
+  timeoutMs: 10000,
+  required: true,
+  scope: "task",
+  envNames: [],
+  writes: [],
+};
+
 async function conflict(script: Script) {
-  const policy = script.policy ?? { ...fixturePolicy, clarification: "assume" };
+  const base: RunPolicy = script.policy ?? { ...fixturePolicy, clarification: "assume" };
+  const policy: RunPolicy = script.finish
+    ? { ...base, checks: [...base.checks, UNIT], ...(script.finish.mode ? { conflictFinish: script.finish.mode } : {}) }
+    : base;
+  const runSpec: Spec = script.unheld ? { ...spec, criteria: [...spec.criteria, UNHELD] } : spec;
   const fixture = workflowFixture({ policy });
   cleanups.push(fixture.dispose);
   const { service, executor, root } = fixture;
@@ -74,13 +100,13 @@ async function conflict(script: Script) {
   let conflicts = 0;
   let reaudits = 0;
   executor.execute = async (request: ExecutionRequest) => {
-    if (request.profile.output === "spec") return { output: spec, inputTokens: 25, outputTokens: 25 };
+    if (request.profile.output === "spec") return { output: runSpec, inputTokens: 25, outputTokens: 25 };
     if (request.profile.output === "plan") {
       const out = await original(request);
       const graph = (out.output as { taskGraph: { specHash: string; tasks: Record<string, unknown>[] } }).taskGraph;
       const code = graph.tasks[0] as Record<string, unknown> & { writes: { path: string; action: string }[] };
-      graph.specHash = hashJson(spec);
-      graph.tasks = [{ ...code, id: "T001", criterionIds: ["AC-001", "AC-005"], writes: [...code.writes, { path: TEST, action: "create" }] }];
+      graph.specHash = hashJson(runSpec);
+      graph.tasks = [{ ...code, id: "T001", criterionIds: ["AC-001", "AC-005", ...(script.unheld ? ["AC-006"] : [])], ...(script.finish ? { checkIds: ["unit"] } : {}), writes: [...code.writes, { path: TEST, action: "create" }] }];
       return out;
     }
     if (request.profile.output === "analysis") {
@@ -112,7 +138,8 @@ async function conflict(script: Script) {
       return { output: { schemaVersion: 1, taskId: "T001", outcome: "implemented", summary: "The test asserts the column the request gives", evidenceIds: [], unresolved: [] }, inputTokens: 25, outputTokens: 25 };
     }
     // The misquote check reads the test as the conflict leaves it.
-    if (script.literal) writeTest();
+    if (script.literal || script.finish) writeTest();
+    if (script.finish) writeFileSync(join(work, "value.txt"), script.finish.value);
     const summary = script.summaries[Math.min(conflicts, script.summaries.length - 1)] ?? "";
     conflicts++;
     return {
@@ -146,6 +173,7 @@ async function conflict(script: Script) {
     records: service.store.artifacts(started.runId).filter((a) => a.logical_path.startsWith("conflicts/request/")).map((a) => JSON.parse(service.store.readArtifact(started.runId, a.id)) as { report: number; decision: string; sides: { kind: string; verified: boolean }[]; reaudit: unknown }),
     // The replay hook decides each recorded report again, with the current rule or another one.
     replay: (rule?: Parameters<typeof replayRequestConflicts>[2]) => replayRequestConflicts(service.store, started.runId, rule),
+    finishes: (rule?: Parameters<typeof replayConflictFinishes>[2]) => replayConflictFinishes(service.store, started.runId, rule),
     decisions: service.store.artifacts(started.runId).filter((a) => a.logical_path.startsWith("decisions/clarification-")).map((a) => JSON.parse(service.store.readArtifact(started.runId, a.id)) as { criterionIds?: string[]; requestId: string }),
   };
 }
@@ -244,5 +272,63 @@ describe("scenario: uritpl cli T003, a criterion that contradicts the request's 
     const result = await conflict({ summaries: [FIRST[0] ?? ""], sides: SIDES, policy: { ...fixturePolicy, clarification: "ask" } });
     expect(result.records).toEqual([]);
     expect(result.asked).toHaveLength(1);
+  }, 90_000);
+
+  // #2033: the reporting attempt's test already asserts the request's column and its check
+  // passes, so the session after the settlement would only record that (410,310 tokens in R65).
+  test("with conflictFinish on, the host finishes the task on the attempt's passing tree", async () => {
+    const result = await conflict({ summaries: [FIRST[0] ?? "", SECOND], sides: SIDES, finish: { mode: "on", value: "ready" } });
+    expect(result.asked).toEqual([]);
+    expect(result.conflicts).toBe(1);
+    // One implementer session: the one that reported the conflict.
+    expect(result.prompts).toHaveLength(1);
+    expect(result.read("assumptions/conflicts/T001-request.json")?.assumed).toContain("The request wins over AC-005");
+    expect(result.read("conflicts/finish/T001-request.json")).toMatchObject({ taskId: "T001", branch: "request", mode: "on", settledBy: "assumptions/conflicts/T001-request.json", cases: 0, checks: [{ id: "check", status: "passed" }, { id: "unit", status: "passed" }], finish: true });
+    expect(result.read("tasks/T001/host-finish.json")).toMatchObject({ taskId: "T001", branch: "request", checks: ["check", "unit"] });
+    expect(result.finishes()).toEqual([{ taskId: "T001", branch: "request", mode: "on", ready: true, recorded: true, replayed: true }]);
+    expect(result.finishes(() => false).map((b) => b.replayed)).toEqual([false]);
+    expect(result.status).toBe("completed");
+  }, 90_000);
+
+  test("a failing check keeps the session after the settlement", async () => {
+    const result = await conflict({ summaries: [FIRST[0] ?? "", SECOND], sides: SIDES, finish: { mode: "on", value: "draft" } });
+    expect(result.asked).toEqual([]);
+    expect(result.prompts).toHaveLength(2);
+    expect(result.read("conflicts/finish/T001-request.json")).toMatchObject({ mode: "on", checks: [{ id: "check", status: "failed" }], finish: false });
+    expect(result.read("tasks/T001/host-finish.json")).toBeNull();
+    expect(result.walks).toEqual([[]]);
+    expect(result.status).toBe("completed");
+  }, 90_000);
+
+  test("a case the attempt's test lacks keeps the session, with no check run", async () => {
+    // AC-005 is released by the settlement; AC-006 is not, and the test does not test it.
+    const result = await conflict({ summaries: [FIRST[0] ?? "", SECOND], sides: SIDES, finish: { mode: "on", value: "ready" }, unheld: true });
+    expect(result.prompts.length).toBeGreaterThan(1);
+    expect(result.read("conflicts/finish/T001-request.json")).toMatchObject({ mode: "on", checks: null, finish: false });
+    expect((result.read("conflicts/finish/T001-request.json") as { cases: number }).cases).toBeGreaterThan(0);
+  }, 90_000);
+
+  test("without conflictFinish the decision is shadow: recorded, and the session opens", async () => {
+    const result = await conflict({ summaries: [FIRST[0] ?? "", SECOND], sides: SIDES, finish: { value: "ready" } });
+    expect(result.prompts).toHaveLength(2);
+    expect(result.read("conflicts/finish/T001-request.json")).toMatchObject({ mode: "shadow", edits: 2, cases: 0, checks: null, finish: false });
+    expect(result.finishes()).toEqual([{ taskId: "T001", branch: "request", mode: "shadow", ready: true, recorded: false, replayed: false }]);
+  }, 90_000);
+
+  test("a criterion against its requirement finishes on the host too, with the criterion released", async () => {
+    const result = await conflict({ summaries: ["AC-005 gives column 6, but FR-005 requires the 1-based code-point column of the name, which is 5."], finish: { mode: "on", value: "ready" } });
+    expect(result.asked).toEqual([]);
+    expect(result.prompts).toHaveLength(1);
+    expect(result.read("conflicts/finish/T001-requirements.json")).toMatchObject({ branch: "requirements", settledBy: "assumptions/conflicts/T001.json", cases: 0, finish: true });
+    expect(result.read("amendments/conflict-T001.json")).toMatchObject({ criterionIds: ["AC-005"], authority: "requirement" });
+    expect(result.status).toBe("completed");
+  }, 90_000);
+
+  test("a platform limit releases no criterion, so a case the attempt's test lacks keeps the session", async () => {
+    const result = await conflict({ summaries: ["The terminal encoding cannot represent the column AC-005 prints, so the test asserts another one."], finish: { mode: "on", value: "ready" } });
+    expect(result.prompts.length).toBeGreaterThan(1);
+    const record = result.read("conflicts/finish/T001-platform.json") as { cases: number } | null;
+    expect(record).toMatchObject({ branch: "platform", settledBy: "assumptions/conflicts/T001.json", checks: null, finish: false });
+    expect(record?.cases).toBeGreaterThan(0);
   }, 90_000);
 });

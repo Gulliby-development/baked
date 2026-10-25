@@ -25,12 +25,34 @@ export const ROWS_ARTIFACT = "rows.json";
 export const rowsAsDataOn = (policy: Pick<RunPolicy, "rowsAsData">): boolean =>
   policy.rowsAsData === "on";
 
-const plain = (text: string): string => text.trim().replace(/^`(.*)`$/, "$1");
+// `s`: a code span holding U+2028 or U+2029 is still a code span (#2097).
+const plain = (text: string): string => text.trim().replace(/^`(.*)`$/s, "$1");
+/**
+ * A JSON cell with the raw control characters inside its strings escaped: a brief that writes a
+ * CR or a TAB itself in a string cell means that character, which JSON spells `\r` or `\t` (#2097).
+ */
+function escapeRawControls(cell: string): string {
+  let out = "";
+  let inString = false;
+  for (let i = 0; i < cell.length; i++) {
+    const char = cell[i] ?? "";
+    if (inString && char === "\\") {
+      out += char + (cell[i + 1] ?? "");
+      i++;
+      continue;
+    }
+    if (char === '"') inString = !inString;
+    const code = char.charCodeAt(0);
+    out += inString && code < 0x20 ? `\\u${code.toString(16).padStart(4, "0")}` : char;
+  }
+  return out;
+}
+const parseCell = (cell: string): unknown => JSON.parse(escapeRawControls(cell));
 /** A row's cells by the shared splitter: a `|` in a code span or a string is not a separator (#2044). */
 const cellsOf = (text: string, width?: number): string[] => tableCells(text, width).map(plain);
 const jsonOrText = (cell: string): unknown => {
   try {
-    return JSON.parse(cell);
+    return parseCell(cell);
   } catch {
     return cell;
   }
@@ -104,9 +126,37 @@ export function literalRows(spec: Pick<Spec, "criteria">, ids: readonly string[]
   });
 }
 
+/** Why a criterion's `Input | Expected` table gave no rows: the first row the reader refused. */
+export interface UnreadTable {
+  criterionId: string;
+  /** 1-based, counting the table's data rows. */
+  row: number;
+  reason: string;
+}
+
 /** The rows of a criterion's `Input | Expected` JSON table, whatever its flags; [] without one. */
 function tableRows(criterion: Spec["criteria"][number]): AcceptanceRow[] {
+  return readTable(criterion).rows;
+}
+
+/**
+ * The automated criteria with an `Input | Expected` table the reader refused, and why, so the
+ * planner and the report name the row instead of losing the rows silently (#2097).
+ */
+export function unreadTables(spec: Pick<Spec, "criteria">): UnreadTable[] {
+  return spec.criteria.flatMap((criterion) => {
+    if (criterion.method !== "automated" || criterion.property) return [];
+    const { refused } = readTable(criterion);
+    return refused ? [{ criterionId: criterion.id, ...refused }] : [];
+  });
+}
+
+function readTable(criterion: Spec["criteria"][number]): {
+  rows: AcceptanceRow[];
+  refused?: { row: number; reason: string };
+} {
   const result: AcceptanceRow[] = [];
+  const refuse = (reason: string) => ({ rows: [], refused: { row: result.length + 1, reason } });
   for (const text of [criterion.given, criterion.when, criterion.then]) {
     let table: Columns | null = null;
     for (const line of text.split(/\r?\n/)) {
@@ -118,31 +168,38 @@ function tableRows(criterion: Spec["criteria"][number]): AcceptanceRow[] {
       }
       if (!table) continue;
       if (cells.length !== table.width) {
-        if (line.includes("|")) return [];
+        if (line.includes("|"))
+          return refuse(`has ${cells.length} cells where the header has ${table.width}`);
         table = null;
         continue;
       }
       if (cells.every((cell) => /^:?-{2,}:?$/.test(cell))) continue;
-      try {
-        const input: unknown = JSON.parse(cells[table.input] ?? "");
-        const expected: unknown = JSON.parse(cells[table.expected] ?? "");
-        if (!finiteJson(input) || !finiteJson(expected)) return [];
-        const label = table.label === undefined ? "" : (cells[table.label] ?? "");
-        result.push({
-          id: `${criterion.id}:${result.length + 1}`,
-          criterionId: criterion.id,
-          source: line.trim(),
-          ...(label ? { label } : {}),
-          input,
-          expected,
-        });
-      } catch {
-        // Never partially emit a table whose remaining cases require an agent.
-        return [];
-      }
+      const parsed = (column: number, name: string) => {
+        try {
+          return { value: parseCell(cells[column] ?? "") as unknown };
+        } catch (error) {
+          return { error: `${name} is not JSON: ${(error as Error).message}` };
+        }
+      };
+      const input = parsed(table.input, "input");
+      const expected = parsed(table.expected, "expected");
+      // Never partially emit a table whose remaining cases require an agent.
+      if ("error" in input) return refuse(input.error ?? "");
+      if ("error" in expected) return refuse(expected.error ?? "");
+      if (!finiteJson(input.value) || !finiteJson(expected.value))
+        return refuse("holds a number JSON cannot carry exactly");
+      const label = table.label === undefined ? "" : (cells[table.label] ?? "");
+      result.push({
+        id: `${criterion.id}:${result.length + 1}`,
+        criterionId: criterion.id,
+        source: line.trim(),
+        ...(label ? { label } : {}),
+        input: input.value,
+        expected: expected.value,
+      });
     }
   }
-  return result;
+  return { rows: result };
 }
 
 /**
@@ -318,6 +375,10 @@ export function rowsEligible(spec: Pick<Spec, "criteria">): string[] {
   return spec.criteria.filter((c) => literalRows(spec, [c.id]).length > 0).map((c) => c.id);
 }
 
+/** "AC-001 is not read as rows: row 7 expected is not JSON: ..." */
+export const unreadText = (table: UnreadTable): string =>
+  `${table.criterionId} is not read as rows: row ${table.row} ${table.reason}.`;
+
 /** What the planner is told about rows: the note and the criteria it may name, or null for none. */
 export function plannerRows(
   spec: Pick<Spec, "criteria">,
@@ -326,8 +387,9 @@ export function plannerRows(
   if (!rowsAsDataOn(policy)) return null;
   const eligible = rowsEligible(spec);
   if (!eligible.length) return null;
+  const unread = unreadTables(spec).map(unreadText);
   return {
-    note: `${ROWS_NOTE} Only the criteria in eligible (${eligible.join(", ")}) have a table the host reads; name no other criterion in rows.`,
+    note: `${ROWS_NOTE} Only the criteria in eligible (${eligible.join(", ")}) have a table the host reads; name no other criterion in rows.${unread.length ? ` ${unread.join(" ")}` : ""}`,
     eligible,
   };
 }

@@ -237,6 +237,11 @@ export const CheckSchema = z
       .strict()
       .optional(),
     /**
+     * `tests`: the `fixUnsafe` tier runs on test files only, where a fix the tool marks unsafe
+     * cannot change what the program does (#2095). Absent means every file `fix` runs on.
+     */
+    fixUnsafeScope: z.enum(["tests"]).optional(),
+    /**
      * `json`: the command prints a JSON report (`status`, `summary`, `findings`) as its last JSON
      * line and that report decides the result; without one the check is inconclusive. Absent means
      * the exit code decides.
@@ -698,6 +703,14 @@ export const PolicySchema = z
      * request and spec name, as examples. Absent is off: the list is neither read nor written.
      */
     defectClasses: z.literal("on").optional(),
+    /**
+     * The host's finish of a task whose spec conflict it settled (conflict-finish.ts, #2033): `on`
+     * lets the host run the task's required checks on the attempt's tree when its criteria cases
+     * hold with the overruled ones released, and go on with the task when they pass, instead of
+     * opening another implementer session. Absent means shadow (the case walk is recorded, the
+     * session opens), so stored policies keep their hash.
+     */
+    conflictFinish: z.literal("on").optional(),
     /**
      * The project's choices for the anti-slop rule pack (quality/rules.ts), which is always on:
      * rules turned off, severities changed and ast-grep rule files added. Absent means the

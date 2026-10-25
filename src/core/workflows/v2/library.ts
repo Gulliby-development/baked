@@ -64,6 +64,7 @@ export function checkToGate(check: Check): CommandGateDefinition {
       writes: check.writes,
       ...(check.fix ? { fix: check.fix } : {}),
       ...(check.fixUnsafe ? { fixUnsafe: check.fixUnsafe } : {}),
+      ...(check.fixUnsafeScope ? { fixUnsafeScope: check.fixUnsafeScope } : {}),
       ...(check.report ? { report: check.report } : {}),
     },
   };
@@ -83,6 +84,7 @@ export function gateToCheck(gate: CommandGateDefinition, binding?: GateBinding):
     writes: gate.command.writes,
     ...(gate.command.fix ? { fix: gate.command.fix } : {}),
     ...(gate.command.fixUnsafe ? { fixUnsafe: gate.command.fixUnsafe } : {}),
+    ...(gate.command.fixUnsafeScope ? { fixUnsafeScope: gate.command.fixUnsafeScope } : {}),
     ...(gate.command.report ? { report: gate.command.report } : {}),
   };
 }
