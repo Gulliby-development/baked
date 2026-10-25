@@ -4100,7 +4100,9 @@ describe.skipIf(!toolchains)("gate matrix: toolchains", () => {
     const root = project({
       // ktlint-gradle's check also lints the build scripts, so they are ktlint-clean too.
       "settings.gradle.kts": 'pluginManagement {\n    repositories {\n        gradlePluginPortal()\n        mavenCentral()\n    }\n}\nrootProject.name = "calc"\n',
-      "build.gradle.kts": 'plugins {\n    kotlin("jvm") version "2.2.20"\n    id("com.diffplug.spotless") version "8.0.0"\n    id("org.jlleitschuh.gradle.ktlint") version "14.2.0"\n}\nrepositories { mavenCentral() }\nspotless { kotlin { ktlint() } }\n',
+      // Both compilers target 17, which every JDK the build runs on emits (CI's JDK 25 is newer than
+      // the newest target Kotlin 2.2 knows).
+      "build.gradle.kts": 'import org.jetbrains.kotlin.gradle.dsl.JvmTarget\n\nplugins {\n    kotlin("jvm") version "2.2.20"\n    id("com.diffplug.spotless") version "8.0.0"\n    id("org.jlleitschuh.gradle.ktlint") version "14.2.0"\n}\nrepositories { mavenCentral() }\njava { targetCompatibility = JavaVersion.VERSION_17 }\nkotlin { compilerOptions { jvmTarget.set(JvmTarget.JVM_17) } }\nspotless { kotlin { ktlint() } }\n',
       "src/main/kotlin/Calc.kt": "fun add(a:Int,b:Int):Int{\n    return a+b }\n",
     });
     const env = { ...process.env, GRADLE_USER_HOME: process.env.GRADLE_USER_HOME ?? join(homedir(), ".gradle") };
