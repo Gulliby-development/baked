@@ -712,6 +712,13 @@ export const PolicySchema = z
      */
     conflictFinish: z.literal("on").optional(),
     /**
+     * The host's order around a blocked corrective (corrective-defer.ts, #2109): `on` lets the
+     * drive run the ready tasks a corrective that blocked does not hold, keeping its hold on the
+     * rest, and end the run with its stop once nothing else can run. Absent means shadow (the
+     * decision is recorded, the run ends at the block), so stored policies keep their hash.
+     */
+    correctiveDefer: z.literal("on").optional(),
+    /**
      * The project's choices for the anti-slop rule pack (quality/rules.ts), which is always on:
      * rules turned off, severities changed and ast-grep rule files added. Absent means the
      * built-in pack as shipped, so stored policies keep their hash.
@@ -1444,6 +1451,12 @@ export const WorkflowConfigSchema = z
      * accepted; its tasks still wait for those results (#1834). Off by default.
      */
     planAhead: z.boolean().optional(),
+    /**
+     * A planned-ahead feature whose spec names symbols an accepted upstream feature lacks asks
+     * that feature for the amendment at its release: the owner runs again with the request, and
+     * the feature waits for that result (#2157). Off by default.
+     */
+    upstreamAmendments: z.boolean().optional(),
     /**
      * Whether an initiative whose token pool parks a feature, while the person's dollar cap has
      * room for the extension, records that the host would extend the pool (#2042): `shadow`, the

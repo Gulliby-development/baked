@@ -56,6 +56,7 @@ import {
   frozenInputAdvice,
   frozenInstructions,
 } from "./context.js";
+import { type HostRemedy, REMEDY_DECISION } from "./corrective-scope.js";
 import { refreshCriticOutcomes } from "./critic-outcomes.js";
 import { decideDelivery, isDeliveryRequest } from "./delivery.js";
 import { dependencyContracts, isHostRelease } from "./dependencies.js";
@@ -148,6 +149,7 @@ import {
 import { providerResumeWaitMs, stallSettings } from "./stall.js";
 import { bindDefinition, type PreparedStart, prepareStart } from "./start.js";
 import { assertMutable } from "./state-machine.js";
+import { stopRecovery } from "./stop-detail.js";
 import { newId, WorkflowStore } from "./store.js";
 import type { StalledDriver } from "./supervisor.js";
 import { reusableImplementations } from "./task-graph.js";
@@ -201,6 +203,12 @@ function rerouteBody(runId: string, command: CommandIdentity, request: RerouteRe
 
 const INVALID_OUTPUT_NOTE =
   "The previous attempt of this stage was rejected as invalid output with the diagnostic below. Correct what it names in this attempt.";
+/**
+ * The repeat key of the last invalid-output note: the diagnostic's hash and the run inputs a person
+ * can change without touching the prompt (`invalidOutputInputs`). A resume whose key equals it
+ * repeats the attempt (#1348, #2191).
+ */
+const INVALID_OUTPUT_KEY = "invalid-output/repeat-key.json";
 
 /** A file a person changed outside the run; `frozen` marks an instruction or configuration file the run froze. */
 export interface OutsideChange {
@@ -427,8 +435,11 @@ export class NativeWorkflowService implements WorkflowService {
       frozenInputEffectCount: 0,
       repairPredecessors: {},
       repairScope: {},
+      slicedTests: {},
       freshTasks: {},
       widenedCorrections: [],
+      unownedRemedies: {},
+      personWidened: [],
       narrowedCorrections: {},
       taskBudgets: {},
       taskSteps: {},
@@ -1138,11 +1149,40 @@ export class NativeWorkflowService implements WorkflowService {
   async resume(
     runId: string,
     command: CommandIdentity,
-    options: { acceptWorkspace?: boolean } = {},
+    options: { acceptWorkspace?: boolean; remedy?: HostRemedy } = {},
   ): Promise<RunSnapshot> {
     this.enabled();
     const outside = options.acceptWorkspace ? await this.outsideChanges(runId) : null;
-    return this.resumeCommand(runId, command, outside);
+    return this.resumeCommand(runId, command, outside, options.remedy);
+  }
+  /**
+   * A person's answer to a corrective blocked on files it may not write (#2155): the remedy must
+   * be one the block offers. The corrective's next session applies that one host decision, as an
+   * enforced `corrective_unowned_file` would, and `decisions/unowned-TASK-COMMAND.json` records it.
+   */
+  private applyHostRemedy(runId: string, command: CommandIdentity, remedy: HostRemedy): void {
+    const offered = stopRecovery(this.store, runId)?.remedies.find((r) => r.action === remedy);
+    if (this.store.run(runId).status !== "blocked" || !offered?.taskId)
+      throw new WorkflowFault(
+        "STALE_DECISION",
+        `This run's block does not offer the remedy ${remedy}; see \`baked workflow status ${runId}\``,
+      );
+    const state = this.store.state(runId);
+    state.unownedRemedies[offered.taskId] = REMEDY_DECISION[remedy];
+    this.store.artifact(
+      runId,
+      "decision",
+      `decisions/unowned-${offered.taskId}-${command.commandId}.json`,
+      canonical({
+        approvedBy: "user",
+        commandId: command.commandId,
+        remedy,
+        taskId: offered.taskId,
+        paths: offered.paths ?? [],
+        ...(offered.owner ? { owner: offered.owner } : {}),
+      }),
+    );
+    this.store.saveState(runId, state);
   }
   /** A person's grant applies only to the operation refused by the current diagnostic. */
   async repair(runId: string, command: CommandIdentity, rounds = 1): Promise<RunSnapshot> {
@@ -1217,6 +1257,7 @@ export class NativeWorkflowService implements WorkflowService {
     runId: string,
     command: CommandIdentity,
     outside: Awaited<ReturnType<NativeWorkflowService["outsideChanges"]>> | null = null,
+    remedy?: HostRemedy,
   ): RunSnapshot {
     this.enabled();
     const body = {
@@ -1224,9 +1265,11 @@ export class NativeWorkflowService implements WorkflowService {
       ...command,
       action: "resume",
       ...(outside ? { acceptWorkspace: true } : {}),
+      ...(remedy ? { remedy } : {}),
     };
     return this.store.command(runId, command, body, () => {
       assertMutable(this.store.run(runId).status);
+      if (remedy) this.applyHostRemedy(runId, command, remedy);
       if (outside) this.acceptOutsideChanges(runId, outside);
       else this.assertNoRefusedEdit(runId);
       if (this.store.requests(runId).some(blocksRun))
@@ -1251,7 +1294,9 @@ export class NativeWorkflowService implements WorkflowService {
         }
       }
       const blocked = this.store.run(runId);
+      // A remedy changes what the next attempt does, so it is no repeat of the same attempt.
       if (
+        !remedy &&
         blocked.status === "blocked" &&
         blocked.reason === "invalid_output" &&
         !this.noteInvalidOutput(runId)
@@ -1259,8 +1304,9 @@ export class NativeWorkflowService implements WorkflowService {
         throw new WorkflowFault(
           "STALE_DECISION",
           recoveryAdvice(
-            `The run stopped again with the same diagnostic after the last resume, so another resume would repeat the same attempt. Change the input instead: revise the run (\`baked workflow revise ${runId}\`), run an initiative feature again (\`baked workflow initiative replan ID --feature F\`), or cancel it`,
-            "The run stopped again with the same diagnostic after the last resume. Change the input before trying again.",
+            `The run stopped again with the same diagnostic after the last resume, so another resume would repeat the same attempt. Change the input instead: switch the failing stage to another model (\`baked workflow reroute ${runId} --route STAGE=MODEL --resume\`), revise the run (\`baked workflow revise ${runId}\`), run an initiative feature again (\`baked workflow initiative replan ID --feature F\`), or cancel it`,
+            "The run stopped again with the same diagnostic after the last resume. Switch the stage's model or change the input before trying again.",
+            { action: "reroute", runId },
             { action: "revise", runId },
             { action: "replan", runId },
             { action: "cancel", runId },
@@ -1411,8 +1457,12 @@ export class NativeWorkflowService implements WorkflowService {
    */
   /**
    * Gives the next attempt the diagnostic of the stop. False when an earlier resume already gave
-   * it this very diagnostic: the attempt after that resume stopped the same way, and narrowfit
-   * 3c2e3629 stopped identically after two more resumes and an extension (#1348).
+   * it this very diagnostic with the same inputs: the attempt after that resume stopped the same
+   * way, and narrowfit 3c2e3629 stopped identically after two more resumes and an extension
+   * (#1348). The prompt is not the only input: the same diagnostic after a reroute is a new
+   * situation, since another model makes another attempt (commitbump-update 0894df2d, #2191). The
+   * repeat key is the diagnostic plus `invalidOutputInputs`, recorded under `INVALID_OUTPUT_KEY`;
+   * the note itself goes into the prompt once.
    */
   private noteInvalidOutput(runId: string): boolean {
     const latest = this.store
@@ -1424,10 +1474,32 @@ export class NativeWorkflowService implements WorkflowService {
     if (!diagnostic) return true;
     const state = this.store.state(runId);
     const note = `\n${INVALID_OUTPUT_NOTE}\n${canonical({ diagnostic })}`;
-    if (state.prompt.includes(note)) return false;
-    state.prompt += note;
-    this.store.saveState(runId, state);
+    const inputs = this.invalidOutputInputs(runId);
+    const key = canonical({ diagnostic: hashBytes(diagnostic), inputs });
+    if (state.prompt.includes(note)) {
+      const recorded = this.store.latestArtifact(runId, INVALID_OUTPUT_KEY);
+      // A note from before the key was recorded was given with the run's first routing.
+      const previous = recorded
+        ? this.store.readArtifact(runId, recorded.id)
+        : canonical({
+            diagnostic: hashBytes(diagnostic),
+            inputs: { ...inputs, routing: Math.min(inputs.routing, 1) },
+          });
+      if (previous === key) return false;
+    } else {
+      state.prompt += note;
+      this.store.saveState(runId, state);
+    }
+    this.store.artifact(runId, "recovery", INVALID_OUTPUT_KEY, key);
     return true;
+  }
+  /**
+   * The run inputs besides the prompt that a person can change after an invalid output, for the
+   * repeat key of `noteInvalidOutput`: the routing revision (a reroute). A new way to change a
+   * run's input without the prompt adds its revision here (AGENTS.md).
+   */
+  private invalidOutputInputs(runId: string): { routing: number } {
+    return { routing: this.store.latestArtifact(runId, ROUTING_ARTIFACT)?.revision ?? 0 };
   }
   /**
    * "Accept" on a stopped convergence: the remaining findings become known limitations, and the
@@ -1988,6 +2060,8 @@ export class NativeWorkflowService implements WorkflowService {
         state.repairPredecessors = {};
         state.pendingTaskRepair = [];
         state.widenedCorrections = [];
+        state.unownedRemedies = {};
+        state.personWidened = [];
         state.narrowedCorrections = {};
         state.quickFixes = {};
         state.taskGates = {};
@@ -2546,6 +2620,8 @@ export class NativeWorkflowService implements WorkflowService {
       state.repairPredecessors = {};
       state.pendingTaskRepair = [];
       state.widenedCorrections = [];
+      state.unownedRemedies = {};
+      state.personWidened = [];
       state.narrowedCorrections = {};
       state.quickFixes = {};
       state.taskGates = {};

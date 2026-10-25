@@ -81,6 +81,7 @@ export const TEST_GATES: LanguageRecord<TestGate> = {
   solidity: none("forge has no build gate for a test file"),
   sql: none("pgTAP and dbt tests have no build gate"),
   powershell: none("Pester tags are filters of the command, not declared gates"),
+  r: none("testthat skips are calls in the test, not declared gates"),
 };
 
 /**

@@ -261,6 +261,8 @@ const SHADOW: [language: string, path: string, write: (name: string, n: number, 
   ["ocaml", "test/test_scan.ml", (name, n, call) => `  test_case "${name}" \`Quick (fun () ->\n${`    Alcotest.(check int) "same" 1 (${call});\n`.repeat(n)}  );\n`],
   ["objc", "Tests/ScanTests.m", (name, n, call) => `- (void)test_${name} {\n${`    XCTAssertEqual(1, ${call});\n`.repeat(n)}}\n`],
   ["solidity", "test/Scan.t.sol", (name, n, call) => `    function test_${name}() public {\n${`        assertEq(1, ${call});\n`.repeat(n)}    }\n`],
+  ["swift", "Tests/ScanTests/ScanTests.swift", (name, n, call) => `    func test_${name}() {\n${`        XCTAssertEqual(1, ${call})\n`.repeat(n)}    }\n`],
+  ["swift", "Tests/ScanTests/ScanTesting.swift", (name, n, call) => `    @Test func ${name}() {\n${`        #expect(${call} == 1)\n`.repeat(n)}    }\n`],
 ];
 
 /** A swap of a three-assertion test for one that checks something else, and the finding's claim. */
@@ -269,7 +271,7 @@ function swap(language: string, at: string, write: (name: string, n: number, cal
   const before = write(old, 3, "scan(1)") + write(kept, 1, "scan(1)");
   const after = write(replacement, 1, "classify(7)") + write(kept, 1, "scan(1)");
   // Titles carry their framework's prefix where it has one: `test_recognition_via_reader`.
-  const title = ["php", "objc", "solidity", "c"].includes(language) ? `test_${old}` : old;
+  const title = ["php", "objc", "solidity", "c"].includes(language) || at.endsWith("ScanTests.swift") ? `test_${old}` : old;
   const named = { basis: "spec", file: at, claim: `${title} tests through Reader rather than the facade`, suggestedFix: "Add a facade test" };
   return { before, after, named, unnamed: { ...named, claim: "The facade has no tests" } };
 }

@@ -107,6 +107,16 @@ jobs:
         shell: bash
         run: sudo pwsh -NoProfile -NonInteractive -Command "Set-PSRepository PSGallery -InstallationPolicy Trusted; Install-Module Pester -RequiredVersion 5.9.1 -Scope AllUsers -Force -SkipPublisherCheck; Install-Module PSScriptAnalyzer -RequiredVersion 1.24.0 -Scope AllUsers -Force"
 
+      # R from Ubuntu's packages. Ubuntu has no styler, which is pure R: its dependencies come from
+      # apt and styler itself from CRAN, into the site library, since the gate matrix isolates HOME
+      # (#1500).
+      - name: R packages
+        run: |
+          sudo apt-get install -y --no-install-recommends r-base-core r-cran-testthat r-cran-lintr \
+            r-cran-pkgload r-cran-r.cache r-cran-purrr r-cran-rematch2 r-cran-tibble r-cran-withr \
+            r-cran-xfun r-cran-backports r-cran-rprojroot r-cran-magrittr r-cran-cli r-cran-rlang
+          sudo Rscript -e 'install.packages("styler", repos = "https://cloud.r-project.org", lib = .Library.site[1], dependencies = FALSE)'
+
       - name: Gate matrix with toolchains
         env:
           BAKED_GATE_MATRIX_TOOLCHAINS: "1"

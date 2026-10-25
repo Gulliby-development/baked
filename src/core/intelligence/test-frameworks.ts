@@ -223,6 +223,35 @@ const FRAMEWORKS: readonly TestFramework[] = [
     ],
   },
   {
+    // XCTest and swift-testing. `@Test` is read by the JUnit row, `#expect(...)` by the
+    // JavaScript row's `expect` (#1492). Test titles are the shadow row below.
+    name: "XCTest, swift-testing",
+    languages: ["swift"],
+    assertions: String.raw`\bXCTAssert\w*\s*\(|\bXCTFail\s*\(|#require\s*\(`,
+    skips: String.raw`\bXCTSkip(?:If|Unless)?\s*\(|\.disabled\s*\(|\bXCTExpectFailure\s*\(|\bwithKnownIssue\b`,
+    calls: [
+      {
+        callee: /^XCTAssert(?:True|False|Nil|NotNil|NoThrow|ThrowsError)?$/,
+        messages: from(1),
+      },
+      { callee: /^XCTUnwrap$/, messages: from(1) },
+      { callee: /^XCTFail$/, messages: from(0) },
+      { callee: /^XCTAssert\w+$/, messages: from(2) },
+      { callee: /^(?:expect|require)$/, messages: from(1) },
+    ],
+  },
+  {
+    // XCTest `func testAdds()` and swift-testing `@Test func adds()`, measured in shadow (#2147).
+    name: "XCTest, swift-testing titles",
+    languages: ["swift"],
+    shadow: true,
+    cases: String.raw`^\s*func\s+test\w*\s*\(`,
+    named: [
+      { pattern: /^\s*func\s+(?<name>test\w*)\s*\(/d },
+      { pattern: /@Test\b[^\n]*?\bfunc\s+(?<name>\w+)\s*\(/d },
+    ],
+  },
+  {
     // `test("...")` (FunSuite, munit) and `assert(...)` are read by the JavaScript row, JUnit-style
     // `assertEquals` by the JVM row above (#1496).
     name: "ScalaTest, munit",
@@ -423,6 +452,16 @@ const FRAMEWORKS: readonly TestFramework[] = [
     cases: String.raw`^\s*It\s+['"]`,
     named: [{ pattern: /^\s*It\s+(['"])(?<name>(?:(?!\1)[^\n])+)\1/d }],
     assertions: String.raw`\bShould\s+-(?:Not)?[A-Z]\w*|\bShould-[A-Z]\w*`,
+  },
+  {
+    // `test_that("adds", { expect_equal(add(1, 2), 3, info = "...") })` (#1500).
+    name: "testthat",
+    languages: ["r"],
+    cases: String.raw`\btest_that\s*\(`,
+    named: [{ pattern: /\btest_that\s*\(\s*(["'])(?<name>(?:(?!\1)[^\\\n])+)\1/d }],
+    assertions: String.raw`\bexpect_\w+\s*\(`,
+    calls: [{ callee: /^(?:testthat::)?fail$/, messages: from(0) }],
+    messageArgument: String.raw`^\s*(?:info|label)\s*=`,
   },
 ];
 

@@ -7,6 +7,7 @@ import { cwdPath, isCodePath } from "./check-policy.js";
 import { unresolvedChecks } from "./check-preflight.js";
 import { detectGates } from "./gates.js";
 import { programName } from "./launcher.js";
+import { STYLER_CHECK_FILES, STYLER_FIX } from "./r-tools.js";
 import { toolchainCommand } from "./toolchain.js";
 import type { Check } from "./types.js";
 
@@ -172,6 +173,15 @@ const dotnetFormat: FileFormatter = {
   fix: (args) => args.filter((arg) => arg !== "--verify-no-changes"),
 };
 
+// No range: styler styles whole files. Its gate is an R expression, which `formatsPath` reads as an
+// operand, so the whole-tree gate never covers a file and the format-written check always runs.
+const styler: FileFormatter = {
+  runs: (program, args) =>
+    /^rscript$/i.test(program) && args.some((arg) => arg.includes("styler::style_")),
+  check: (_, files) => ["-e", STYLER_CHECK_FILES, ...files],
+  fix: () => ["-e", STYLER_FIX],
+};
+
 // StyLua's range is in bytes, and it formats the statements wholly inside it (#1495).
 const styluaRange = (text: string, range: LineRange): string[] => {
   const [from, to] = offsets(text, range);
@@ -236,6 +246,13 @@ const dartFormat: FileFormatter = {
   fix: () => ["format"],
 };
 
+// No range: swift-format formats whole files (#1492).
+const swiftFormat: FileFormatter = {
+  runs: (program, args) => program === "swift" && args[0] === "format" && args[1] === "lint",
+  check: (_, files) => ["format", "lint", "--strict", ...files],
+  fix: () => ["format", "format", "--in-place"],
+};
+
 const NPM_FORMATTERS = [biome, prettier, dprint, bunFmt];
 
 /**
@@ -264,7 +281,7 @@ export const FILE_FORMATTERS: LanguageRecord<readonly FileFormatter[]> = {
   cpp: [clangFormat],
   ruby: [rubocopLayout],
   php: [pint, phpCsFixer],
-  swift: none("SwiftPM has no gate detector yet (#1753)"),
+  swift: [swiftFormat],
   lua: [stylua],
   elixir: none("Mix has no gate detector yet (#1753)"),
   dart: [dartFormat],
@@ -279,6 +296,7 @@ export const FILE_FORMATTERS: LanguageRecord<readonly FileFormatter[]> = {
   powershell: none(
     "PSScriptAnalyzer's Invoke-Formatter formats a script's text, not files; no gate runs it",
   ),
+  r: [styler],
 };
 
 /** Package runners a JavaScript formatter gate starts through: their words before the formatter. */

@@ -149,6 +149,7 @@ bun test tests/feature-parity.test.ts
 | Acceptance: criteria that need a person's evidence | `/workflow` | `baked workflow evidence` | `/v1/workflow/runs/:id/evidence` | `project/runs`, `attention` |
 | Recover a stuck side effect | `/workflow` | `baked workflow recover` | `/v1/workflow/runs/:id/recover` | `project/runs` |
 | Grant another repair at a refused limit | `/workflow` | `baked workflow repair` | `/v1/workflow/runs/:id/repair` | `project/runs`, `project/initiatives` |
+| Answer a corrective blocked on a file it may not write: correct the owner, widen, ask upstream | `/workflow` | `baked workflow resume`, `baked workflow status` | `/v1/workflow/runs/:id/resume` | `project/runs` |
 | Pause, resume, accept outside changes, cancel, extend, reroute, undo edits | `/workflow` | `baked workflow pause`, `baked workflow resume`, `baked workflow cancel` +3 | `/v1/workflow/runs/:id/pause`, `/v1/workflow/runs/:id/resume`, `/v1/workflow/runs/:id/cancel` +3 | `project/runs` |
 | Continue approved manifest edits using the run's file-patch hash history | `/workflow` | `baked workflow run`, `baked workflow resume` | `/v1/workflow/runs/:id/resume` | `project/runs` |
 | Adapter-aware provider deadlines and durable zero-token retry limits | `/workflow` | `baked workflow status`, `baked workflow resume` | `/v1/workflow/runs/:id` | `project/runs` |
@@ -187,21 +188,23 @@ bun test tests/feature-parity.test.ts
 | Usage across runs: days, by stage and model | `/workflow` | `baked usage`, `baked workflow usage` | `/v1/usage` | `project/usage` |
 | Export usage to Markdown to share | `/workflow` | `baked usage`, `baked workflow usage` | `/v1/usage`, `/v1/workflow/runs/:id/usage` | `project/usage` |
 | Import, export, gc and redact runs | `/workflow` | `baked workflow import`, `baked workflow export`, `baked workflow gc` +1 | `/v1/workflow/import`, `/v1/workflow/runs/:id/export`, `/v1/workflow/gc` +2 | `project/runs` |
+| Export a run or initiative as a portable SDD package (folder or zip) | **Gap** [#2207](https://github.com/Gulliby-development/baked/issues/2207) | `baked workflow export-package` | **Gap** [#2207](https://github.com/Gulliby-development/baked/issues/2207) | **Gap** [#2207](https://github.com/Gulliby-development/baked/issues/2207) |
 
 ### Initiatives
 
 | Feature | TUI | Headless CLI | serve API | Desktop |
 | --- | --- | --- | --- | --- |
 | Feature token shares and dollar growth protect low estimates; split approval warns on underfunded shares | `/workflow` | `baked workflow initiative show`, `baked workflow initiative extend` | `/v1/initiatives/:id`, `/v1/initiatives/:id/extend` | `project/initiatives` |
-| Token pool forecast notice, block amounts with a one-step extend, and the shadow pool extension inside the dollar cap | `/workflow` | `baked workflow initiative show`, `baked workflow initiative events`, `baked workflow initiative extend` | `/v1/initiatives/:id`, `/v1/initiatives/:id/events`, `/v1/initiatives/:id/extend` | `project/initiatives` |
+| Token pool forecast notice at the measured ratio, block amounts with a one-step extend, and the shadow pool extension inside the dollar cap | `/workflow` | `baked workflow initiative show`, `baked workflow initiative events`, `baked workflow initiative extend` | `/v1/initiatives/:id`, `/v1/initiatives/:id/events`, `/v1/initiatives/:id/extend` | `project/initiatives` |
 | Initiative deliverables have writable owners; deferred findings and mutation checks follow them | `/workflow` | `baked workflow report` | `/v1/workflow/runs/:id/report` | `project/runs` |
 | Start an initiative | `/workflow` | `baked workflow initiative` | `/v1/initiatives` | `project/initiatives` |
 | Initiative view: approve split, pause, resume, switch model | `/workflow` | `baked workflow initiative` | `/v1/initiatives/:id`, `/v1/initiatives/:id/events`, `/v1/initiatives/:id/approve` +3 | `project/initiatives`, `attention` |
 | An initiative whose ready work waits for a drive shows idle; a decision on its feature run names the drive | `/workflow` | `baked workflow answer`, `baked workflow initiative show`, `baked workflow initiative drive` | `/v1/initiatives/:id`, `/v1/initiatives/:id/drive`, `/v1/workflow/runs/:id/answer` | `project/initiatives` |
 | Reject, merge, split, rename, remove, re-plan, extend | `/workflow` | `baked workflow initiative` | `/v1/initiatives/:id/reject`, `/v1/initiatives/:id/merge`, `/v1/initiatives/:id/split` +4 | `project/initiatives` |
 | Each feature runs its own workflow, with a budget share by estimated need (by size without history) | `/workflow` | `baked workflow initiative set-workflow`, `baked workflow initiative set-size` | `/v1/initiatives/:id/configure` | `project/initiatives` |
-| Estimate a split: a difficulty level and a token range from run history | `/workflow` | `baked workflow initiative estimate` | `/v1/initiatives/:id/estimate` | `project/initiatives` |
+| Estimate a split: a difficulty level and a token range from run history and the test volume the request demands | `/workflow` | `baked workflow initiative estimate` | `/v1/initiatives/:id/estimate` | `project/initiatives` |
 | Independent features run side by side in worktrees | `/workflow` | `baked workflow initiative drive`, `baked workflow initiative show` | `/v1/initiatives/:id` | `project/initiatives` |
+| A planned-ahead feature asks an accepted upstream feature for a missing symbol (workflows.upstreamAmendments) | `/workflow` | `baked workflow initiative show` | `/v1/initiatives/:id` | `project/initiatives` |
 | Review long dependency chains and merge small siblings by their dependents | `/workflow` | `baked workflow initiative start`, `baked workflow initiative show` | `/v1/initiatives`, `/v1/initiatives/:id` | `project/initiatives` |
 | Small features that others depend on run the light workflow with a host-made contract | `/workflow` | `baked workflow initiative start` | `/v1/initiatives` | `project/initiatives` |
 | A shared dollar cap with priced low reserves and central remaining-stage forecasts using shared history | `/workflow` | `baked workflow initiative start`, `baked workflow initiative extend`, `baked workflow initiative show` | `/v1/initiatives`, `/v1/initiatives/:id`, `/v1/initiatives/:id/extend` | `project/initiatives` |
@@ -237,5 +240,6 @@ bun test tests/feature-parity.test.ts
 ### Open gaps by issue
 
 - [#407](https://github.com/Gulliby-development/baked/issues/407): Instruction files: view and edit content
+- [#2207](https://github.com/Gulliby-development/baked/issues/2207): Export a run or initiative as a portable SDD package (folder or zip)
 
 <!-- parity:end -->

@@ -182,6 +182,12 @@ export const RuntimeStateSchema = z
      */
     repairScope: z.record(z.string(), z.array(z.string())).default({}),
     /**
+     * Test files a test-check correction may write although a later slice of the plan still
+     * writes them, by finding ID: the failing task created the file and the failure reaches no
+     * source, so every failing case is the task's own (#2108).
+     */
+    slicedTests: z.record(z.string(), z.array(z.string())).default({}),
+    /**
      * Corrective tasks that start from a clean context after repeated identical failures, by task
      * ID: the artifact with the host's account of the earlier attempts.
      */
@@ -191,6 +197,13 @@ export const RuntimeStateSchema = z
      * their next attempts may write the full scope of the tasks they correct (#765).
      */
     widenedCorrections: z.array(z.string()).default([]),
+    /**
+     * A person's answer to a blocked corrective's unowned files, by task ID (#2155): the host
+     * decision its next session applies as if `corrective_unowned_file` were enforced, once.
+     */
+    unownedRemedies: z.record(z.string(), z.enum(["route", "widen", "park"])).default({}),
+    /** Paths a person let a corrective write through a `widen` remedy; acceptance reads them. */
+    personWidened: z.array(z.string()).default([]),
     /**
      * The files the first attempt of a corrective task could write, by task ID, when that attempt
      * was limited to where its findings point; the run report shows them next to the full scope.

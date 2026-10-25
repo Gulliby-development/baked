@@ -410,6 +410,9 @@ export const MISSING_PATH_LINES: readonly { tool: string; line: RegExp }[] = [
   // PowerShell cmdlets (Invoke-ScriptAnalyzer, Pester's Get-ChildItem), absolute:
   // "Invoke-ScriptAnalyzer: Cannot find path '/w/tests' because it does not exist." (#1498)
   { tool: "pwsh", line: /\bCannot find path '([^'\n]+)' because it does not exist\b/ },
+  // R's normalizePath, under testthat's "No test files found":
+  // 'In normalizePath(path) : path[1]="tests/testthat": No such file or directory' (#1500)
+  { tool: "Rscript", line: /\bpath\[\d+\]="([^"\n]+)": No such file or directory/ },
 ];
 
 /** Whether RSpec's own `load` of the file named at `index` failed, a few lines below it. */

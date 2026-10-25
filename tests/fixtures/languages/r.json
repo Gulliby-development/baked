@@ -1,0 +1,61 @@
+{
+  "files": {
+    "R/sum.R": "# Sum of two numbers.\nadd_numbers <- function(a, b) {\n  label <- \"it's # not a comment\"\n  pattern <- r\"(\\d+ \"quoted\")\"\n  stop(\"not implemented\")\n}\n",
+    "tests/testthat/test-sum.R": "source(\"../../R/sum.R\")\ntest_that(\"adds\", {\n  expect_equal(add_numbers(1, 2), 3)\n  # AC-001 example: (1, 2, 3)\n})\n",
+    "DESCRIPTION": "Package: sumr\nVersion: 0.1.0\nTitle: Sum\nLicense: MIT\nSuggests: testthat (>= 3.0.0)\n",
+    ".lintr": "linters: linters_with_defaults()\n"
+  },
+  "outputs": {
+    "tests": "[ FAIL 1 | WARN 0 | SKIP 0 | PASS 1 ]\n\n\u2550\u2550 Failed tests \u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\n\u2500\u2500 Failure ('test-sum.R:2:3'): adds \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\nadd_numbers(1, 2) (`actual`) not equal to 3 (`expected`).\n\n  `actual`: -1\n`expected`:  3\n\n[ FAIL 1 | WARN 0 | SKIP 0 | PASS 1 ]\nError: Test failures\nExecution halted\n",
+    "testsGrown": "[ FAIL 1 | WARN 0 | SKIP 0 | PASS 2 ]\n\n\u2550\u2550 Failed tests \u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\n\u2500\u2500 Failure ('test-sum.R:2:3'): adds \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\nadd_numbers(1, 2) (`actual`) not equal to 3 (`expected`).\n\n  `actual`: -1\n`expected`:  3\n\n[ FAIL 1 | WARN 0 | SKIP 0 | PASS 2 ]\nError: Test failures\nExecution halted\n"
+  },
+  "expected": {
+    "tests": [
+      "tests/testthat/test-sum.R"
+    ],
+    "testMarkers": null,
+    "manifests": [
+      "DESCRIPTION"
+    ],
+    "dependencies": null,
+    "placeholders": [
+      "R/sum.R:5"
+    ],
+    "gates": [
+      "testthat",
+      "lintr",
+      "styler"
+    ],
+    "testRunners": [
+      "testthat 2",
+      "signature stable"
+    ],
+    "mutation": null,
+    "properties": null,
+    "entryPoints": null,
+    "testGates": null,
+    "callGraph": [
+      "add_numbers called at tests/testthat/test-sum.R:3",
+      "R/sum.R imported by tests/testthat/test-sum.R"
+    ],
+    "codeMask": [
+      "R/sum.R:1 comment",
+      "R/sum.R:3",
+      "R/sum.R:4",
+      "R/sum.R:5",
+      "tests/testthat/test-sum.R:1",
+      "tests/testthat/test-sum.R:2",
+      "tests/testthat/test-sum.R:4 comment"
+    ],
+    "formatters": [
+      "styler-written: Rscript -e \"options(styler.quiet = TRUE); r <- styler::style_file(commandArgs(TRUE), dry = 'on'); f <- sort(r$file[r$changed]); for (x in f) cat(x, ': would be reformatted by styler\\n', sep = ''); quit(status = as.integer(length(f) > 0))\" R/sum.R tests/testthat/test-sum.R"
+    ],
+    "packageContents": null,
+    "numericLimits": [
+      "integer (1L) arithmetic past 2147483647 gives NA with a warning, not an error; as.integer of a larger value is NA",
+      "numeric is a double: integers past 2^53 lose precision, and 0.1 + 0.2 == 0.3 is FALSE (compare with all.equal)",
+      "NA propagates through arithmetic and comparisons, and an if() on NA is an error"
+    ],
+    "staticTools": ["lintr: linter", "styler: formatter"]
+  }
+}

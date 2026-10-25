@@ -77,6 +77,7 @@ const SUPPORTED_LANGUAGES: Set<Language> = new Set([
   "vue",
   "sql",
   "powershell",
+  "r",
 ]);
 
 export class LspBackend implements IntelligenceBackend {

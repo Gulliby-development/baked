@@ -1,3 +1,4 @@
+import { type ConvergenceGate, type ConvergenceGateFinding, convergenceGateDecision, convergenceReproCandidates, type GateFinding, gateFinding, type ReviewGate, reviewGateCandidates, reviewGateDecision } from "../src/core/workflows/review-gate.js";
 import { literalPropertyProblems, rowFiles, rowsArtifact } from "../src/core/workflows/acceptance-rows.js";
 import { clearBannedProperties } from "../src/core/verification/initiative-ownership.js";
 import { CALL_COST_MODELS, NEXT_CALL, perCallCostScenario } from "./helpers/per-call-cost-scenario.js";
@@ -48,7 +49,8 @@ import { executeCheckCommand, exitStatus, timedOutFailure } from "../src/core/ve
 import { gradleTestReport } from "../src/core/verification/test-reports.js";
 import { detectLanguages, touchesLanguageFiles } from "../src/core/workflows/language.js";
 import { baselineRegression, buildFailure, buildRunner, diagnosticCount, failedTests, failureSignature, testCount, testsRan } from "../src/core/verification/output-counts.js";
-import { pwshExecutable } from "../src/core/platform/index.js";
+import { pwshExecutable, rscriptExecutable } from "../src/core/platform/index.js";
+import { lintrRun, STYLER_CHECK, STYLER_FIX, testthatOn, testthatRun } from "../src/core/workflows/r-tools.js";
 import { PESTER_RUN, pesterOn } from "../src/core/workflows/pester.js";
 import { baselineDebt, baselineKeys } from "../src/core/verification/task-end-check.js";
 import { affectedTestCheck, plannedWrittenTests, writtenTestsCheck } from "../src/core/workflows/affected-tests.js";
@@ -1872,6 +1874,122 @@ describe("gate matrix: sbt, munit, ScalaTest and scalafmt (#1496)", () => {
   });
 });
 
+// #1492: a SwiftPM package got its build and test gates (#1753) but no test count, no format gate,
+// no skip markers of XCTest or swift-testing and no language review. The outputs below are pasted
+// from `swift test` and `swift format` of Swift 6.1.3 on Linux.
+const SWIFT_FAILED = `[25/27] Write Objects.LinkFileList
+[26/27] Linking CalcPackageTests.xctest
+Build complete! (9.32s)
+Test Suite 'All tests' started at 2026-10-25 02:56:10.091
+Test Suite 'debug.xctest' started at 2026-10-25 02:56:10.092
+Test Suite 'CalcXCTests' started at 2026-10-25 02:56:10.092
+Test Case 'CalcXCTests.testAdds' started at 2026-10-25 02:56:10.092
+Test Case 'CalcXCTests.testAdds' passed (0.102 seconds)
+Test Case 'CalcXCTests.testFails' started at 2026-10-25 02:56:10.194
+/w/Tests/CalcTests/CalcXCTests.swift:6: error: CalcXCTests.testFails : XCTAssertEqual failed: ("3") is not equal to ("4") - on purpose
+Test Case 'CalcXCTests.testFails' failed (0.001 seconds)
+Test Case 'CalcXCTests.testSkipped' started at 2026-10-25 02:56:10.194
+/w/Tests/CalcTests/CalcXCTests.swift:7: CalcXCTests.testSkipped : Test skipped - later
+Test Case 'CalcXCTests.testSkipped' skipped (0.0 seconds)
+Test Suite 'CalcXCTests' failed at 2026-10-25 02:56:10.195
+\t Executed 3 tests, with 1 test skipped and 1 failure (0 unexpected) in 0.103 (0.103) seconds
+Test Suite 'debug.xctest' failed at 2026-10-25 02:56:10.195
+\t Executed 3 tests, with 1 test skipped and 1 failure (0 unexpected) in 0.103 (0.103) seconds
+Test Suite 'All tests' failed at 2026-10-25 02:56:10.195
+\t Executed 3 tests, with 1 test skipped and 1 failure (0 unexpected) in 0.103 (0.103) seconds
+◇ Test run started.
+↳ Testing Library Version: 6.1.3 (1d1f7e489c9c606)
+↳ Target Platform: x86_64-unknown-linux-gnu
+◇ Test addsToo() started.
+◇ Test failsToo() started.
+✘ Test waits() skipped: "later"
+✔ Test addsToo() passed after 0.001 seconds.
+✘ Test failsToo() recorded an issue at CalcSwiftTests.swift:5:25: Expectation failed: (add(1, 2) → 3) == 4
+✘ Test failsToo() failed after 0.001 seconds with 1 issue.
+✘ Test run with 3 tests failed after 0.001 seconds with 1 issue.
+`;
+const SWIFT_BROKEN = `Building for debugging...
+/w/Tests/CalcTests/BrokenTests.swift:5:35: error: cannot find 'sub' in scope
+3 |
+4 | final class BrokenTests: XCTestCase {
+5 |   func testSub() { XCTAssertEqual(sub(2, 1), 1) }
+  |                                   \`- error: cannot find 'sub' in scope
+6 | }
+error: fatalError
+`;
+describe("gate matrix: swift test, XCTest, swift-testing and swift-format (#1492)", () => {
+  test("XCTest and swift-testing counts, the tests that ran, the failed tests and a stable signature", () => {
+    expect([testCount(SWIFT_FAILED), testsRan(SWIFT_FAILED), failedTests(SWIFT_FAILED)]).toEqual([
+      { tool: "swift", count: 6 }, { tool: "swift", count: 4 }, { tool: "swift", names: ["CalcXCTests.testFails", "failsToo()"] },
+    ]);
+    // macOS names an XCTest case '-[Module.Class method]'; a package without swift-testing tests.
+    const mac = "Test Case '-[CalcTests.CalcXCTests testFails]' failed (0.001 seconds).\nTest Suite 'All tests' failed at 2026-10-25 02:56:10.195.\n\t Executed 2 tests, with 1 failure (0 unexpected) in 0.103 (0.104) seconds\n";
+    expect([testCount(mac), testsRan(mac), failedTests(mac)]).toEqual([{ tool: "swift", count: 2 }, { tool: "swift", count: 2 }, { tool: "swift", names: ["-[CalcTests.CalcXCTests testFails]"] }]);
+    // Another build, a passing test more of each kind and other times: the same failure.
+    const later = SWIFT_FAILED.replace("[26/27] Linking", "[31/33] Linking").replace("(9.32s)", "(4.1s)").replaceAll("02:56:10", "03:12:44")
+      .replace("Test Case 'CalcXCTests.testAdds' passed (0.102 seconds)\n", "Test Case 'CalcXCTests.testAdds' passed (0.102 seconds)\nTest Case 'CalcXCTests.testSubs' started at 2026-10-25 03:12:44.100\nTest Case 'CalcXCTests.testSubs' passed (0.001 seconds)\n")
+      .replaceAll("Executed 3 tests", "Executed 4 tests").replace("✔ Test addsToo() passed after 0.001 seconds.\n", "✔ Test addsToo() passed after 0.001 seconds.\n◇ Test subsToo() started.\n✔ Test subsToo() passed after 0.002 seconds.\n").replace("Test run with 3 tests", "Test run with 4 tests");
+    expect(testCount(later)).toEqual({ tool: "swift", count: 8 });
+    expect(failureSignature(later, "/w")).toBe(failureSignature(SWIFT_FAILED, "/w"));
+    // Swift 6.2 and later (the CI runner's 6.4) print phase lines, steps with thin spaces round the
+    // slash and the build time in secs.
+    const swift64 = (steps: string, secs: string) => SWIFT_FAILED.replace(/^\[\d+\/\d+\] .*\n/gm, "").replace("Build complete! (9.32s)", `${steps}Build complete! (${secs} secs)`);
+    const first = swift64("[Constructing description]\n[Using on-disk description]\n[Describing: 24\u2009/\u2009202]\n[Pre-planning 1\u2009/\u200995]\n[Planning deferred tasks]\n[29\u2009/\u200951] Calc\n[46\u2009/\u200957]\n[38\u2009/\u200955] CalcTests-product\n[61\u2009/\u200961] CalcTests-test-runner\n", "15.51");
+    expect(failureSignature(swift64("", "0.42"), "/w")).toBe(failureSignature(first, "/w"));
+    expect(failureSignature(first, "/w")).toBe(failureSignature(SWIFT_FAILED, "/w"));
+    expect(failureSignature(SWIFT_FAILED.replace("Test Case 'CalcXCTests.testAdds' passed", "Test Case 'CalcXCTests.testAdds' failed"), "/w")).not.toBe(failureSignature(SWIFT_FAILED, "/w"));
+    expect(timedOutFailure(SWIFT_FAILED)).toBe(true);
+  });
+
+  test("a test target that does not compile is a build failure, and an XCTest failure is not", () => {
+    expect(buildRunner(SWIFT_BROKEN)).toBe("swift");
+    expect(buildRunner(SWIFT_FAILED)).toBeNull();
+    // swiftc 6.4 colors "error:" even off a terminal; the line is read without its colors.
+    const colored = "/w/Tests/CalcTests/B.swift:3:59: \u001b[1;31merror: \u001b[1;39mcannot find 'sub' in scope\u001b[0;0m\nerror: fatalError\n";
+    expect([buildRunner(colored), buildFailure(colored)]).toEqual(["swift", ["/w/Tests/CalcTests/B.swift:3:59: error: cannot find 'sub' in scope"]]);
+    expect(noTestsCollected("error: no tests found; create a target in the 'Tests' directory")).toBe(true);
+  });
+
+  test("swift-format lints before the build with a .swift-format file, and holds a new Swift file", () => {
+    const files = { "Package.swift": "// swift-tools-version:6.0\n", ".swift-format": "{}\n", "Sources/Calc/Calc.swift": "public func add(_ a: Int, _ b: Int) -> Int { a + b }\n" };
+    const checks = detectGates(project(files)).map((s) => s.check);
+    expect(checks.map((c) => [c.id, [c.executable, ...c.args].join(" ")])).toEqual([["swift-format", "swift format lint --strict --recursive ."], ["swift-build", "swift build"], ["swift-test", "swift test"]]);
+    expect(fixerCommand(checks[0]!.fix!, "Sources/Calc/Calc.swift")).toEqual({ executable: "swift", args: ["format", "format", "--in-place", "Sources/Calc/Calc.swift"] });
+    expect(detectGates(project({ "Package.swift": "" })).map((s) => s.check.id)).toEqual(["swift-build", "swift-test"]);
+    const root = project(files);
+    expect(formatWrittenChecks(root, [], [{ path: "Sources/Calc/Calc.swift", action: "create" }], (c) => `/usr/bin/${c}`).map((c) => [c.id, [c.executable, ...c.args].join(" "), [c.fix!.executable, ...c.fix!.args].join(" ")])).toEqual([
+      ["swift-format-written", "swift format lint --strict Sources/Calc/Calc.swift", "swift format format --in-place"],
+    ]);
+  });
+
+  test("XCTest and swift-testing skips, known issues and swiftlint suppressions are found; platform guards are not", () => {
+    const before = "import XCTest\n\nfinal class CalcTests: XCTestCase {\n  func testAdds() {\n    XCTAssertEqual(add(1, 2), 3)\n  }\n}\n";
+    const rules = (path: string, from: string, to: string) => scanTestIntegrity([{ path, before: from, after: to }]).map((f) => `${f.rule}: ${f.detail}`);
+    const skip = ["skip: added 1 skip, only, todo or ignore marker(s)"];
+    const path = "Tests/CalcTests/CalcTests.swift";
+    expect(rules(path, before, before.replace("    XCTAssertEqual", '    throw XCTSkip("later")\n    XCTAssertEqual'))).toEqual(skip);
+    expect(rules(path, before, before.replace("    XCTAssertEqual", '    #if os(Windows)\n    throw XCTSkip("no symlinks")\n    #endif\n    XCTAssertEqual'))).toEqual([]);
+    const testing = "import Testing\n\n@Test func adds() {\n  #expect(add(1, 2) == 3)\n}\n";
+    expect(rules(path, testing, testing.replace("@Test func", '@Test(.disabled("later")) func'))).toEqual(skip);
+    expect(rules(path, testing, testing.replace("  #expect", "  withKnownIssue {\n    #expect"))).toEqual(skip);
+    expect(rules("Sources/Calc/Calc.swift", "let x = 1\n", "// swiftlint:disable:next identifier_name\nlet x = 1\n").map((r) => r.split(":")[0])).toEqual(["suppression"]);
+    const two = before.replace("  }\n}", "  }\n\n  func testSubs() {\n    XCTAssertEqual(sub(2, 1), 1)\n  }\n}");
+    // Test cases and titles are read in shadow (#2147); the assertions are live.
+    expect(scanTestIntegrity([{ path, before: two, after: before }]).map((f) => `${f.rule}: ${f.detail}`)).toEqual([
+      "assertions: assertions dropped from 2 to 1 (removed or commented out)",
+    ]);
+  });
+
+  test("a removed #expect is a lost assertion: Swift macros are code, not # comments", () => {
+    const before = "import Testing\n\n@Test func adds() {\n  #expect(add(1, 2) == 3)\n  #expect(add(2, 2) == 4)\n}\n";
+    expect(scanTestIntegrity([{ path: "Tests/CalcTests/CalcTests.swift", before, after: before.replace("  #expect(add(2, 2) == 4)\n", "") }]).map((f) => f.rule)).toEqual(["assertions"]);
+  });
+
+  test("the agent profile formats with swift-format when the package configures it", async () => {
+    expect((await detectProfile(project({ "Package.swift": "", ".swift-format": "{}" }))).format).toBe("swift format format --in-place --recursive .");
+  });
+});
+
 /**
  * Manifests and tool configs of each stack a request may name (#1710), with the content a
  * host-written task writes and whether the approval takes the write without a person. A lock that
@@ -2164,6 +2282,72 @@ describe("gate matrix: Pester and PSScriptAnalyzer (#1498)", () => {
     expect(buildFailure(BUILD)?.length).toBeGreaterThan(0);
     expect(buildRunner(PESTER(1, 3, 53))).toBeNull();
     expect(diagnosticCount(LINT_OUTPUT)).toEqual({ tool: "psscriptanalyzer", count: 2, errors: 1 });
+  });
+});
+
+describe("gate matrix: testthat, lintr and styler (#1500)", () => {
+  const exe = rscriptExecutable();
+  const ids = (files: Record<string, string>) =>
+    detectGates(project(files)).map((s) => [s.check.id, s.check.args.at(-1), s.source, s.preselected]);
+  const TEST = 'test_that("adds", {\n  expect_equal(add_numbers(1, 2), 3)\n})\n';
+  test("a package gets testthat on the loaded package, lintr offered, styler offered; a scripts project tests its folder", () => {
+    expect(ids({ DESCRIPTION: "Package: sumr\n", "tests/testthat/test-sum.R": TEST })).toEqual([
+      ["testthat", testthatRun(true), "tests/testthat", true],
+      ["lintr", lintrRun(true), "DESCRIPTION", false],
+      ["styler", STYLER_CHECK, "DESCRIPTION", false],
+    ]);
+    expect(testthatRun(true)).toBe("testthat::test_local(reporter = testthat::CheckReporter$new())");
+    // lintr's own print writes GitHub annotations under GITHUB_ACTIONS; the gate writes its lines.
+    expect(lintrRun(true)).not.toContain("print(l)");
+    expect(lintrRun(true)).toContain("x$line_number");
+    expect(ids({ "tests/testthat/test-sum.R": TEST, ".lintr": "linters: linters_with_defaults()\n" })).toEqual([
+      ["testthat", "testthat::test_dir('tests/testthat', reporter = testthat::CheckReporter$new())", "tests/testthat", true],
+      ["lintr", lintrRun(false), ".lintr", true],
+      ["styler", STYLER_CHECK, ".lintr", false],
+    ]);
+    expect(ids({ "analysis.R": "x <- 1\n" })).toEqual([]);
+    const [testthat] = detectGates(project({ "tests/testthat/test-sum.R": TEST })).map((s) => s.check);
+    expect(testthat && [testthat.executable, testthat.args[0]]).toEqual([exe, "-e"]);
+  });
+
+  test("lintr and styler are static checks that cover each task's R files; styler's fixer styles the file", () => {
+    const checks = detectGates(project({ DESCRIPTION: "Package: sumr\n", "tests/testthat/test-sum.R": TEST })).map((s) => s.check);
+    const byId = (id: string) => checks.find((c) => c.id === id) as Check;
+    for (const id of ["lintr", "styler"]) expect([id, isStaticCheck(byId(id)), isWholeUnitCheck(byId(id))]).toEqual([id, true, false]);
+    expect(isStaticCheck(byId("testthat"))).toBe(false);
+    expect(fixerCommand(byId("styler").fix!, "R/sum.R")).toEqual({ executable: exe, args: ["-e", STYLER_FIX, "R/sum.R"] });
+    const covering = (path: string) =>
+      coveringChecks({ checks } as RunPolicy, { writes: [{ path, action: "create" }] }).map((c) => c.id);
+    expect(covering("R/sum.R")).toEqual(["lintr", "styler"]);
+    expect(covering("README.md")).toEqual([]);
+  });
+
+  test("the written-tests check runs only the task's testthat files, by testthat's name filter", () => {
+    const root = project({ DESCRIPTION: "Package: sumr\n", "tests/testthat/test-sum.R": TEST, "tests/testthat/test-diff.R": TEST });
+    const checks = detectGates(root).filter((s) => s.preselected).map((s) => s.check);
+    const written = writtenTestsCheck(root, checks, [{ path: "tests/testthat/test-diff.R", action: "create" }]);
+    expect(written?.args.at(-1)).toBe("testthat::test_local(reporter = testthat::CheckReporter$new(), filter = '^(diff)$')");
+    expect(testthatOn(["tests/testthat/test-a.b.R"], false)).toBe("testthat::test_dir('tests/testthat', reporter = testthat::CheckReporter$new(), filter = '^(a\\\\.b)$')");
+    const own = { ...(checks[0] as Check), args: ["-e", "devtools::test()"] };
+    expect(writtenTestsCheck(root, [own], [{ path: "tests/testthat/test-diff.R", action: "create" }])).toBeNull();
+  });
+
+  // Pasted from testthat 3.2.1 with the check reporter (UTF-8 locale); one more passing expectation in the second.
+  const RUN = "[ FAIL 1 | WARN 0 | SKIP 0 | PASS 1 ]\n\n\u2550\u2550 Failed tests \u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\n\u2500\u2500 Failure ('test-sum.R:2:3'): adds \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\nadd_numbers(1, 2) (`actual`) not equal to 3 (`expected`).\n\n  `actual`: -1\n`expected`:  3\n\n[ FAIL 1 | WARN 0 | SKIP 0 | PASS 1 ]\nError: Test failures\nExecution halted\n";
+  const GROWN = "[ FAIL 1 | WARN 0 | SKIP 0 | PASS 2 ]\n\n\u2550\u2550 Failed tests \u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\n\u2500\u2500 Failure ('test-sum.R:2:3'): adds \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\nadd_numbers(1, 2) (`actual`) not equal to 3 (`expected`).\n\n  `actual`: -1\n`expected`:  3\n\n[ FAIL 1 | WARN 0 | SKIP 0 | PASS 2 ]\nError: Test failures\nExecution halted\n";
+  const BUILD = "Error in `load_all()`:\n! Failed to load 'R/sum.R'\nCaused by error in `parse()`:\n! /work/app/R/sum.R:3:0: unexpected end of input\n1: add_numbers <- function(a, b) {\n2:   a +\n  ^\nBacktrace:\nExecution halted\n";
+  const LINTS =
+    "R/lint.R:2:3: style: [object_name_linter] Variable and function name style should match snake_case or symbols.\n  myVar = a+b\n  ^~~~~\nR/lint.R:2:9: error: [assignment_linter] Use <-, not =, for assignment.\n  myVar = a+b\n        ^\n";
+  test("testthat's counts, failed test and package that does not load; lintr and styler counts; a stable signature", () => {
+    expect(testCount(RUN)).toEqual({ tool: "testthat", count: 2 });
+    expect(testsRan(RUN)).toEqual({ tool: "testthat", count: 2 });
+    expect(failedTests(RUN)).toEqual({ tool: "testthat", names: ["adds"] });
+    expect(failureSignature(RUN, "/work/app")).toBe(failureSignature(GROWN, "/work/app"));
+    expect(failureSignature(RUN, "/work/app")).not.toBe(failureSignature(RUN.replaceAll("FAIL 1", "FAIL 2"), "/work/app").replace("x", "y"));
+    expect(buildRunner(BUILD)).toBe("testthat");
+    expect(buildRunner(RUN)).toBeNull();
+    expect(diagnosticCount(LINTS)).toEqual({ tool: "lintr", count: 2, errors: 1 });
+    expect(diagnosticCount("R/sum.R: would be reformatted by styler\n")).toEqual({ tool: "styler", count: 1, errors: 1 });
   });
 });
 
@@ -4085,6 +4269,29 @@ describe.skipIf(!toolchains)("gate matrix: toolchains", () => {
     run("rubocop", ["-a", "--only", "Layout", "lib/ugly.rb"]);
     expect(readFileSync(join(root, "lib/ugly.rb"), "utf8")).toBe("def ugly(a)\n  a\nend\n");
   }, 300000);
+  // #1492: the swift test and swift-format parsers read what the installed toolchain prints.
+  test.skipIf(!available([["swift", "--version"]]))("swift test and swift-format output reads as their parsers expect (#1492)", () => {
+    const root = project({
+      "Package.swift": '// swift-tools-version:6.0\nimport PackageDescription\n\nlet package = Package(\n  name: "Calc",\n  targets: [\n    .target(name: "Calc"),\n    .testTarget(name: "CalcTests", dependencies: ["Calc"]),\n  ]\n)\n',
+      "Sources/Calc/Calc.swift": "public func add(_ a: Int, _ b: Int) -> Int { a + b }\n",
+      "Tests/CalcTests/CalcXCTests.swift": 'import XCTest\n@testable import Calc\n\nfinal class CalcXCTests: XCTestCase {\n  func testAdds() { XCTAssertEqual(add(1, 2), 3) }\n  func testFails() { XCTAssertEqual(add(1, 2), 4) }\n  func testSkipped() throws { throw XCTSkip("later") }\n}\n',
+      "Tests/CalcTests/CalcSwiftTests.swift": 'import Testing\n@testable import Calc\n\n@Test func addsToo() { #expect(add(1, 2) == 3) }\n@Test func failsToo() { #expect(add(1, 2) == 4) }\n@Test(.disabled("later")) func waits() {}\n',
+      ".swift-format": "{}\n",
+    });
+    const run = (args: string[]) => {
+      const result = spawnSync("swift", args, { cwd: root, encoding: "utf8", timeout: 900000 });
+      return `${result.stdout}${result.stderr}`;
+    };
+    const tests = run(["test"]);
+    expect([testCount(tests), testsRan(tests), failedTests(tests)?.names.sort()]).toEqual([{ tool: "swift", count: 6 }, { tool: "swift", count: 4 }, ["CalcXCTests.testFails", "failsToo()"].sort()]);
+    expect(failureSignature(run(["test"]), root)).toBe(failureSignature(tests, root));
+    writeFileSync(join(root, "Sources/Calc/Ugly.swift"), "public func ugly( _ a:Int)->Int{return a}\n");
+    expect(run(["format", "lint", "--strict", "Sources/Calc/Ugly.swift"])).toContain("Ugly.swift:1:");
+    run(["format", "format", "--in-place", "Sources/Calc/Ugly.swift"]);
+    expect(readFileSync(join(root, "Sources/Calc/Ugly.swift"), "utf8")).toBe("public func ugly(_ a: Int) -> Int { return a }\n");
+    writeFileSync(join(root, "Tests/CalcTests/BrokenTests.swift"), "import XCTest\n@testable import Calc\n\nfinal class BrokenTests: XCTestCase {\n  func testSub() { XCTAssertEqual(sub(2, 1), 1) }\n}\n");
+    expect(buildRunner(run(["test"]))).toBe("swift");
+  }, 1800000);
   // #1496: the sbt, munit, ScalaTest and scalafmt parsers read what a real sbt build prints.
   test.skipIf(!available([["sbt", "--script-version"]]))("sbt test and scalafmt output reads as their parsers expect (#1496)", () => {
     const root = project({
@@ -4188,6 +4395,40 @@ describe.skipIf(!toolchains)("gate matrix: toolchains", () => {
     expect((await executeGate(root, pester, signal)).status).toBe("passed");
     const missing = await executeGate(root, { ...lint, args: [...lint.args.slice(0, -1), "Invoke-ScriptAnalyzer -Path ./lib -EnableExit"] }, signal);
     expect(missingPlannedPaths(missing.outputTail, [{ writes: [{ path: "lib/Diff.ps1", action: "create" }] } as Task])).toEqual(["lib/Diff.ps1"]);
+  }, 300000);
+  test.skipIf(!available([[rscriptExecutable(), "-e", "library(testthat); library(lintr); library(styler)"]]))("Rscript: testthat, lintr and styler gates fail on a defect, styler's fixer repairs the file, and the written-tests check runs one file (#1500)", async () => {
+    const root = project({
+      DESCRIPTION: "Package: sumr\nVersion: 0.1.0\nTitle: Sum\nDescription: Sums.\nLicense: MIT\nSuggests: testthat (>= 3.0.0)\nConfig/testthat/edition: 3\n",
+      NAMESPACE: "export(add_numbers)\n",
+      ".lintr": "linters: linters_with_defaults()\n",
+      "R/sum.R": "add_numbers <- function(a, b) {\n  a - b\n}\n",
+      "R/style.R": "twice <- function(x) {\n  x*2\n}\n",
+      "tests/testthat/test-sum.R": 'test_that("adds", {\n  expect_equal(add_numbers(1, 2), 3)\n})\n',
+      "tests/testthat/test-twice.R": 'test_that("doubles", {\n  expect_equal(twice(2), 4)\n})\n',
+    });
+    const checks = detectGates(root).map((s) => s.check);
+    const byId = (id: string) => checks.find((c) => c.id === id) as Check;
+    const signal = new AbortController().signal;
+    const tests = await executeGate(root, byId("testthat"), signal);
+    expect(tests.status).toBe("failed");
+    expect(testCount(tests.outputTail)).toEqual({ tool: "testthat", count: 2 });
+    expect(failedTests(tests.outputTail)).toEqual({ tool: "testthat", names: ["adds"] });
+    const lint = await executeGate(root, byId("lintr"), signal);
+    expect(lint.status).toBe("failed");
+    expect(diagnosticCount(lint.outputTail)).toEqual({ tool: "lintr", count: 1, errors: 0 });
+    const style = await executeGate(root, byId("styler"), signal);
+    expect(style.status).toBe("failed");
+    expect(diagnosticCount(style.outputTail)).toEqual({ tool: "styler", count: 1, errors: 1 });
+    const fix = fixerCommand(byId("styler").fix!, "R/style.R");
+    expect(spawnSync(fix.executable, fix.args, { cwd: root, encoding: "utf8", timeout: 120000 }).status).toBe(0);
+    expect(readFileSync(join(root, "R/style.R"), "utf8")).toContain("x * 2");
+    expect((await executeGate(root, byId("styler"), signal)).status).toBe("passed");
+    expect((await executeGate(root, byId("lintr"), signal)).status).toBe("passed");
+    const written = writtenTestsCheck(root, [byId("testthat")], [{ path: "tests/testthat/test-twice.R", action: "create" }]);
+    if (!written) throw new Error("no written-tests check");
+    expect((await executeGate(root, written, signal)).status).toBe("passed");
+    writeFileSync(join(root, "R/sum.R"), "add_numbers <- function(a, b) {\n  a + b\n}\n");
+    expect((await executeGate(root, byId("testthat"), signal)).status).toBe("passed");
   }, 300000);
   test("pytest executes host rows and fails a wrong harness (#1596)", () => {
     const root = project({});
@@ -4535,5 +4776,75 @@ describe("gate matrix: no tests collected (#1864)", () => {
     expect(noTestsCollected("FAILED tests/test_tags.py::test_wheel - AssertionError\n1 failed in 0.02s")).toBe(false);
     expect(noTestsCollected(" 3 pass\n 0 fail\nRan 3 tests across 1 file.")).toBe(false);
     expect(noTestsCollected("test result: ok. 0 passed; 0 failed; 0 ignored")).toBe(false);
+  });
+});
+
+describe("review gate: a finding its reviewer marked noRepro (#2194)", () => {
+  // skillplumb 9cdc5669 (R69): N1 quoted a README example's error, said the example's setup was
+  // not run (noRepro) and still carried a repro, which printed the same error in the workspace.
+  const note = (over: Partial<GateFinding> = {}): GateFinding => ({
+    id: "N1",
+    severity: "low",
+    kind: "correctness",
+    basis: "spec",
+    confidence: 0.1,
+    repro: true,
+    sibling: false,
+    outcome: "reproduced",
+    noRepro: true,
+    ...over,
+  });
+  const gate = (findings: GateFinding[]): ReviewGate => ({
+    reviewer: "correctness",
+    required: true,
+    blocking: ["critical", "high", "medium", "low"],
+    severities: ["critical", "high", "medium"],
+    minConfidence: 0.8,
+    reproAvailable: true,
+    findings,
+  });
+  const convergence = (findings: ConvergenceGateFinding[]): ConvergenceGate => ({
+    severities: ["critical", "high", "medium"],
+    minConfidence: 0.8,
+    checksPass: true,
+    reproAvailable: true,
+    canRepro: true,
+    criteria: [],
+    failing: [],
+    findings,
+  });
+  const real = (over: Partial<GateFinding> = {}): GateFinding =>
+    note({ id: "F1", severity: "medium", confidence: 0.98, noRepro: false, ...over });
+
+  for (const [name, finding, repaired] of [
+    ["a 0.1-confidence note with noRepro, its repro reproduced", note(), []],
+    ["the same note with a self-contained repro (no noRepro)", note({ noRepro: false }), ["N1"]],
+    ["a gate recorded before the field", note({ noRepro: undefined }), ["N1"]],
+    ["a confirmed medium finding beside it", real(), ["F1"]],
+    ["a low spec finding with noRepro below the floor, reproduced", note({ confidence: 0.95 }), []],
+    ["the same low finding without noRepro", note({ confidence: 0.95, noRepro: false }), ["N1"]],
+  ] as const)
+    test(`${name}: repairs ${JSON.stringify(repaired)}`, () => {
+      expect(reviewGateDecision(gate([finding]))).toEqual([...repaired]);
+    });
+
+  test("the review does not even run the repro of a noRepro confidence-only note", () => {
+    expect(reviewGateCandidates(gate([note({ outcome: null }), real({ outcome: null })])).map((f) => f.id)).toEqual(["F1"]);
+  });
+
+  test("the converge stage does not repair on a noRepro confidence-only note", () => {
+    const converged = { testOrDoc: true, criterionIds: [] };
+    const findings = [{ ...note(), ...converged }];
+    // A high one is gated by its repro only for its confidence, so its repro does not run either.
+    expect(convergenceReproCandidates(convergence([{ ...note({ severity: "high" }), ...converged }]))).toEqual([]);
+    expect(convergenceGateDecision(convergence(findings)).verdicts.find((v) => v.id === "N1")?.verdict).not.toBe("repair");
+    const shown = [{ ...note({ noRepro: false, severity: "medium" }), ...converged }];
+    expect(convergenceGateDecision(convergence(shown)).verdicts.find((v) => v.id === "N1")?.verdict).toBe("repair");
+  });
+
+  test("gateFinding reads a blank noRepro as none", () => {
+    const finding = { id: "N1", severity: "low", kind: "correctness", claim: "c", confidence: 0.1, criterionIds: [] } as unknown as Parameters<typeof gateFinding>[0];
+    expect(gateFinding({ ...finding, noRepro: "  " }, false, "reproduced").noRepro).toBe(false);
+    expect(gateFinding({ ...finding, noRepro: "needs the README setup" }, false, "reproduced").noRepro).toBe(true);
   });
 });

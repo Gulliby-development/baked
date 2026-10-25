@@ -120,6 +120,8 @@ export const STATIC_TOOLS: LanguageRecord<readonly StaticTool[]> = {
   // gate, `sqlfluff-dbt`, is whole-unit (#1499).
   sql: [lint("sqlfluff"), lint("sqlfluff-dbt", WHOLE)],
   powershell: [lint("PSScriptAnalyzer"), lint("ScriptAnalyzer"), format("Invoke-Formatter")],
+  // Both run inside an `Rscript -e` expression, which the patterns read as words of the command.
+  r: [lint("lintr"), format("styler")],
 };
 
 const ALL: readonly StaticTool[] = [

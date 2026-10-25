@@ -99,6 +99,17 @@ describe("workflow panel formatting", () => {
     expect(discard(snapshot({ status: "cancelled" }), false)).toBeUndefined();
     expect(discard(snapshot({ status: "paused" }), true)).toBeUndefined();
   });
+  test("a blocked run offers the unowned-file remedies its recovery advice names (#2155)", () => {
+    const blocked = snapshot({ status: "blocked", reason: "corrective_unowned_file" });
+    const remedies = [
+      { action: "route" as const, label: "route", owner: "T001" },
+      { action: "widen" as const, label: "widen", taskId: "T003-fix-1", paths: ["src/a.ts"] },
+      { action: "upstream" as const, label: "upstream", owner: "auth" },
+    ];
+    const keys = runActions(blocked, null, null, false, remedies).map((a) => `${a.key}:${a.action}`);
+    expect(keys).toEqual(expect.arrayContaining(["T:route", "W:widen", "Q:upstream"]));
+    expect(runActions(snapshot({ status: "running" }), null, null, false, remedies).some((a) => a.action === "widen")).toBe(false);
+  });
   test("a stopped run offers a switch to the tab's model", () => {
     const blocked = snapshot({ status: "blocked", reason: "provider_account" });
     expect(runActions(blocked, null, "codex/gpt-6-luna").find((a) => a.action === "reroute")?.key).toBe("M");

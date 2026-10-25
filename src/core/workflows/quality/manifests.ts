@@ -514,6 +514,7 @@ export const DEPENDENCY_MANIFESTS: LanguageRecord<readonly ManifestReader[]> = {
   powershell: none(
     "PowerShell Gallery has no registry check yet; RequiredModules of a .psd1 are not read",
   ),
+  r: none("CRAN has no registry check yet; the Imports of DESCRIPTION are not read"),
 };
 
 const READERS: readonly ManifestReader[] = [

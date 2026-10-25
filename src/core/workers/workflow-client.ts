@@ -6,6 +6,7 @@ import type { InitiativeEstimate } from "../workflows/initiatives/estimate.js";
 import type { InitiativeStartInput } from "../workflows/initiatives/forms.js";
 import type { InitiativeView } from "../workflows/initiatives/service.js";
 import type { InitiativeAction, InitiativeListView } from "../workflows/initiatives/view-model.js";
+import type { HostRemedy } from "../workflows/remedies-model.js";
 import type { RollbackReport } from "../workflows/rollback.js";
 import type { RunFileDiff } from "../workflows/run-diff.js";
 import type { Decision, RunSnapshot } from "../workflows/schemas.js";
@@ -44,6 +45,7 @@ export type WorkflowAction =
   | "extend"
   | { reroute: string }
   | { fork: string }
+  | { remedy: HostRemedy }
   | Decision;
 /** The run after an undo, and the `workspace-rollback` report it wrote; null when nothing was undone. */
 export interface UndoResult {

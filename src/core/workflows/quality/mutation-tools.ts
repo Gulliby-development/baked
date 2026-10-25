@@ -615,6 +615,7 @@ export const MUTATION_TOOLS: LanguageRecord<MutationTool> = {
   solidity: none("no Solidity mutation tool is integrated (Gambit)"),
   sql: none("no SQL mutation tool is integrated"),
   powershell: none("no PowerShell mutation tool is integrated"),
+  r: none("no R mutation tool is integrated"),
 };
 
 /** The changed non-test code files a tool would mutate, by tool; build scripts are not mutated. */

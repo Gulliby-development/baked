@@ -2,11 +2,11 @@ import { describe, expect, test } from "bun:test";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join, relative } from "node:path";
 import { callCostRate, costRate } from "../src/core/workflows/budget.js";
-import { costGrowthLimit, dollarShortfall, shareShortfall } from "../src/core/workflows/initiatives/service.js";
+import { costGrowthLimit, dollarShortfall, type ShareGateRecord, shareShortfall } from "../src/core/workflows/initiatives/service.js";
 import { forecastSamples } from "../src/core/workflows/stage-price.js";
 import { adaptiveFirstByteMs } from "../src/core/llm/provider-health.js";
 import { planApprovalDecision } from "../src/core/workflows/auto-approval.js";
-import { CAPACITY_PROBE } from "../src/core/workflows/sizing.js";
+import { CAPACITY_PROBE, type SizingReport, type SizingSample, samplesFrom, testCaseRate } from "../src/core/workflows/sizing.js";
 import { type CallRate, chainCosts, openTrace, type PlanPriceReplay, replayChainEscalation, replayInitiativeStarts, replayPlanApprovals, replayPlanPrices, replayTrace, type TestSplitRule } from "../src/core/workflows/trace.js";
 
 // #1649, #1715: every recorded bench-round trace replays through the current host decisions: the
@@ -40,6 +40,7 @@ interface Accepted {
   newScopeStops?: number;
   newUnownedDecisions?: number;
   newConflictFinishes?: number;
+  newDeferDecisions?: number;
   newShareStops?: number;
   newPoolGrowth?: number;
   newStartStops?: number;
@@ -103,6 +104,7 @@ describe("bench-round traces replay without new forecast stops or growth (#1649)
           newScopeStops: run.newScopeStops,
           newUnownedDecisions: run.newUnownedDecisions,
           newConflictFinishes: run.newConflictFinishes,
+          newDeferDecisions: run.newDeferDecisions,
         }).toEqual({
           run: run.runId,
           newStops: allowed?.newStops ?? 0,
@@ -126,6 +128,7 @@ describe("bench-round traces replay without new forecast stops or growth (#1649)
           newScopeStops: allowed?.newScopeStops ?? 0,
           newUnownedDecisions: allowed?.newUnownedDecisions ?? 0,
           newConflictFinishes: allowed?.newConflictFinishes ?? 0,
+          newDeferDecisions: allowed?.newDeferDecisions ?? 0,
         });
       }
       // Run states before R52 counted the host's own test splits in `hostSplitTasks`, which the
@@ -258,7 +261,8 @@ describe("initiative starts replay on rewound traces (#1707)", () => {
     const seen = new Map<string, { view: Parameters<typeof shareShortfall>[0]; feature: Parameters<typeof shareShortfall>[1] }>();
     const [replay] = replayInitiativeStarts(join(ROOT, "R59", "wheeltags.sqlite.gz"), {
       gate: (view, feature) => {
-        seen.set(feature.id, { view, feature });
+        // The first call is the start's own gate; a plan charge's replay calls it again (#2124).
+        if (!seen.has(feature.id)) seen.set(feature.id, { view, feature });
         return shareShortfall(view, feature);
       },
     });
@@ -269,20 +273,53 @@ describe("initiative starts replay on rewound traces (#1707)", () => {
     expect(rate * 1e6).toBeLessThan(2.1);
     expect(costGrowthLimit(pick.view, "pick-command")!).toBeGreaterThan(3.16);
     expect(dollarShortfall(pick.view, pick.feature)).toBeNull();
-    // At that price the two later starts look short against the cap, but at two measured features
-    // the rule counts the remaining dollars to the $37.50 ceiling (#2099): the initiative spent
-    // $17.69 in the end, so their would-stops would have been false.
+    // At that price the two later starts are not short either: rewound to their own moments
+    // (#2061) the initiative had spent $12.90 and $14.75, and their caps grow to $4.32 and $2.40
+    // against lows of $2.22 and $0.72. Replayed on the final spend ($17.69) and the caps runs grew
+    // to later, they read short against the cap.
     const [plain] = replayInitiativeStarts(join(ROOT, "R59", "wheeltags.sqlite.gz"));
     expect(plain?.finalUsd).toBe(17.69);
     for (const id of ["dead-command", "expand-command"]) {
       const start = seen.get(id)!;
       expect(start.view.budget.cost).toMatchObject({ shareMode: "shadow", measuredFeatures: 2 });
-      expect(costGrowthLimit(start.view, id)!).toBeLessThan(start.feature.needUsd!.low);
+      expect(start.view.budget.cost.spentUsd).toBeLessThan(15);
+      expect(costGrowthLimit(start.view, id)!).toBeGreaterThan(start.feature.needUsd!.low);
       expect(dollarShortfall(start.view, start.feature)).toBeNull();
       expect(replay?.starts.find((b) => b.featureId === id)?.replayed).toBe("pass");
     }
     expect(plain?.starts.every((b) => b.shareWouldStop === null)).toBe(true);
   }, 120000);
+
+  test("#2061: every rewound start of R60 wheeltags reads the dollars its recorded share gate read", () => {
+    // With the initiative's budget rewound to before its later $40 extension but each run's
+    // dollars and caps left final, pick, dead, expand and front parked on "The shared dollar
+    // budget is exhausted ... $0.00". The rewind now restores each run's tokens, dollars and
+    // policy at the start too, so the gate reads what the round's gate read.
+    const path = join(ROOT, "R60", "wheeltags.sqlite.gz");
+    const trace = openTrace(path);
+    let recorded: Map<string, ShareGateRecord["view"]["budget"]["cost"]>;
+    try {
+      recorded = new Map(
+        (trace.store.connection.query("SELECT payload_json FROM initiative_events WHERE type='feature.share_gate' ORDER BY seq").all() as { payload_json: string }[])
+          .map((r) => JSON.parse(r.payload_json) as ShareGateRecord)
+          .map((r) => [r.featureId, r.view.budget.cost]),
+      );
+    } finally {
+      trace.dispose();
+    }
+    const seen = new Map<string, ShareGateRecord["view"]["budget"]["cost"]>();
+    const [replay] = replayInitiativeStarts(path, { gate: (view, feature) => {
+      // The first call is the start's own gate; a plan charge's replay calls it again (#2124).
+      if (!seen.has(feature.id)) seen.set(feature.id, view.budget.cost);
+      return shareShortfall(view, feature);
+    } });
+    expect(replay?.newStartStops).toBe(0);
+    expect(seen.size).toBe(recorded.size);
+    for (const [id, cost] of recorded) {
+      const { capUsd, spentUsd, reservedUsd, remainingUsd, measuredFeatures } = cost;
+      expect([id, seen.get(id)]).toEqual([id, expect.objectContaining({ capUsd, spentUsd, reservedUsd, remainingUsd, measuredFeatures })]);
+    }
+  }, 300000);
 
   test("#1714: R62 stepvet's dollar share is not checked before a feature is measured", () => {
     // R62 recorded two initiative-dollar-share would-stops, lines and stepexpr, both at
@@ -291,7 +328,8 @@ describe("initiative starts replay on rewound traces (#1707)", () => {
     const seen = new Map<string, { view: Parameters<typeof shareShortfall>[0]; feature: Parameters<typeof shareShortfall>[1] }>();
     replayInitiativeStarts(join(ROOT, "R62", "stepvet.sqlite.gz"), {
       gate: (view, feature) => {
-        seen.set(feature.id, { view, feature });
+        // The first call is the start's own gate; a plan charge's replay calls it again (#2124).
+        if (!seen.has(feature.id)) seen.set(feature.id, { view, feature });
         return shareShortfall(view, feature);
       },
     });
@@ -301,14 +339,16 @@ describe("initiative starts replay on rewound traces (#1707)", () => {
       expect(costGrowthLimit(start.view, id)!).toBeLessThan(start.feature.needUsd!.low);
       expect(dollarShortfall(start.view, start.feature)).toBeNull();
     }
-    // From three measured features the cap bounds the check again (#2099), and the replay keeps
-    // the would-stop next to what the initiative spent in the end.
+    // From three measured features the cap bounds the check again (#2099). stepscmd is not short
+    // at its own moment: $12.58 spent and $8.88 remaining, as the round's share gate recorded, and
+    // the round recorded no would-stop for it. Replayed on the final spend ($21.13 by its start's
+    // count) and the caps runs grew to later, it read short (#2061).
     const later = seen.get("stepscmd")!;
-    expect(later.view.budget.cost.measuredFeatures).toBe(3);
-    expect(dollarShortfall(later.view, later.feature)).toStartWith("The shared dollar budget is short: stepscmd has $");
+    expect(later.view.budget.cost).toMatchObject({ measuredFeatures: 3, spentUsd: 12.58, remainingUsd: 8.88 });
+    expect(dollarShortfall(later.view, later.feature)).toBeNull();
     const [replay] = replayInitiativeStarts(join(ROOT, "R62", "stepvet.sqlite.gz"));
-    expect(replay?.starts.find((b) => b.featureId === "stepscmd")?.shareWouldStop).toMatchObject({ measuredFeatures: 3, finalUsd: 26.33 });
-    expect(replay?.starts.filter((b) => b.shareWouldStop !== null).map((b) => b.featureId)).toEqual(["stepscmd"]);
+    expect(replay?.finalUsd).toBe(26.33);
+    expect(replay?.starts.filter((b) => b.shareWouldStop !== null).map((b) => b.featureId)).toEqual([]);
   }, 120000);
 
   test("#2099: R67 ampwhy's dollar share gates record no would-stop before the dollar rate is measured", () => {
@@ -667,12 +707,12 @@ describe("own-plan feature need replays on recorded initiatives (#2043)", () => 
       ["values", 31_330_378],
       ["encode", 31_330_378],
       ["syntax", 29_687_632],
-      ["expansion", 27_540_739],
+      ["expansion", 27_316_895],
       ["problem", 23_100_637],
       ["cmd-read", 22_809_650],
-      ["lint", 22_834_018],
-      ["cmd-expand", 24_446_096],
-      ["cli", 24_679_293],
+      ["lint", 22_680_087],
+      ["cmd-expand", 23_849_366],
+      ["cli", 24_343_314],
       ["docs", 22_864_328],
     ]);
     const syntax = replay?.starts.find((s) => s.featureId === "syntax");
@@ -682,15 +722,79 @@ describe("own-plan feature need replays on recorded initiatives (#2043)", () => 
   }, 600000);
 });
 
+/** Finished test tasks of a trace's initiative feature runs, with the cases their sizing reports recorded. */
+function featureTestTasks(path: string): Map<string, SizingSample[]> {
+  const { store, workspace, dispose } = openTrace(path);
+  try {
+    const cases = new Map<string, number>();
+    for (const { runId, id } of store.connection
+      .query("SELECT run_id AS runId, id FROM artifacts WHERE logical_path LIKE 'sizing/plan-%' ORDER BY created_at, id")
+      .all() as { runId: string; id: string }[])
+      for (const task of (JSON.parse(store.readArtifact(runId, id)) as Partial<SizingReport>).tasks ?? [])
+        if (task.kind === "test" && (task.cases ?? 0) > 0) cases.set(`${runId}/${task.taskId}`, task.cases ?? 0);
+    const features = new Map(
+      (store.connection.query("SELECT run_id AS runId, feature_id AS featureId FROM initiative_runs").all() as {
+        runId: string;
+        featureId: string;
+      }[]).map((r) => [r.runId, r.featureId]),
+    );
+    const byFeature = new Map<string, SizingSample[]>();
+    for (const sample of samplesFrom(join(workspace, ".baked", "workflows.sqlite"), "project")) {
+      const feature = features.get(sample.runId);
+      const count = cases.get(`${sample.runId}/${sample.taskId}`);
+      if (sample.kind !== "test" || !feature || !count) continue;
+      byFeature.set(feature, [...(byFeature.get(feature) ?? []), { ...sample, cases: count }]);
+    }
+    return byFeature;
+  } finally {
+    dispose();
+  }
+}
+
+describe("a brief's test volume replays on recorded test tasks (#2055)", () => {
+  // The traces' briefs are anonymized, so the cases each feature's sizing reports recorded stand in
+  // for the volume a brief demands. Each finished feature is priced from its initiative's other
+  // finished features (this project's runs, the rate's first basis): its test tasks' cases times
+  // the cheapest of their rates is a floor of its need, and a floor above what the feature's test
+  // tasks alone used is an overprice. A rate of single tasks would be no floor: they ran from 1,354
+  // tokens a case, so 509 cases of nodepluck floored at 0.69M of its 15.24M test tokens. Per run the
+  // floor binds: nodepluck's readcmd, 110 cases at 21,124 a case, is floored at 2.32M of the 4.04M
+  // its test tasks used and the 6.24M the feature used. Above its test tokens: 20 of 162 features.
+  test("a feature's test-volume floor stays under what its test tasks used, nodepluck's binds", () => {
+    let features = 0;
+    let above = 0;
+    let readcmd: { floor: number; tokens: number } | null = null;
+    for (const path of readdirSync(ROOT, { recursive: true, encoding: "utf8" })
+      .filter((p) => p.endsWith(".sqlite.gz"))
+      .map((p) => join(ROOT, p))) {
+      if (!replayInitiativeStarts(path).length) continue;
+      const tasks = featureTestTasks(path);
+      for (const [featureId, own] of tasks) {
+        const rate = testCaseRate([...tasks].filter(([id]) => id !== featureId).flatMap(([, s]) => s));
+        if (rate.basis !== "project") continue;
+        const cases = own.reduce((n, s) => n + (s.cases ?? 0), 0);
+        const tokens = own.reduce((n, s) => n + s.tokens, 0);
+        const floor = cases * rate.perCase.low;
+        features++;
+        if (floor > tokens) above++;
+        if (path.endsWith("nodepluck.sqlite.gz") && featureId === "readcmd") readcmd = { floor, tokens };
+      }
+    }
+    expect(features).toBeGreaterThanOrEqual(150);
+    expect(above / features).toBeLessThanOrEqual(0.25 + 2 * Math.sqrt((0.25 * 0.75) / features));
+    expect(readcmd).toEqual({ floor: 110 * 21_124, tokens: 4_044_583 });
+  }, 600000);
+});
+
 describe("the plan charge replays on recorded initiatives (#2100, #2056)", () => {
   // An open feature run with a sized plan is held at the high end of its plan's need at the
   // measured ratio instead of its run limit, in shadow by default: no recorded decision moves, and
   // each rewound start reports what the charge frees (positive) or adds (negative) and the share
   // gate's verdict with it. R67 ampwhy, the round the issue measured (30.5M held at cli's gate for
   // runs that had used 0.05M-6.6M), has no trace in the corpus; its scenario test rebuilds the gate.
-  // R66 nodepluck is the opposite round: its pool was short for use. The rewind keeps each run's
-  // final policy, so an open run counts at the limit it grew to later, and what the charge frees
-  // here is an upper bound (readcmd's limit was 5.79M at the park, 7.24M at its end).
+  // R66 nodepluck is the opposite round: its pool was short for use. The rewind restores each
+  // run's policy at the moment (#2061), so an open run counts at the limit it had then (readcmd's
+  // was 5.79M at the park, 7.24M at its end).
   test("R66 nodepluck: no start would park with the charge; base's plan adds tokens; select still parks at 14:40:20", () => {
     const park = Date.UTC(2026, 9, 24, 14, 40, 20);
     const [replay] = replayInitiativeStarts(join(ROOT, "R66", "nodepluck.sqlite.gz"), { budgetAtStart: true, moments: [park] });
@@ -701,9 +805,33 @@ describe("the plan charge replays on recorded initiatives (#2100, #2056)", () =>
     const json = replay?.starts.find((s) => s.featureId === "json")?.planCharge;
     expect(json?.runs).toEqual([{ featureId: "base", usedTokens: 317_456, limitTokens: 4_356_950, chargeTokens: 4_916_607 }]);
     expect(json?.releasedTokens).toBe(-559_657);
-    // At the park, readcmd's plan frees at most 1.48M; select still needs more than that.
+    // At the park, readcmd's plan frees 33k of its 5.79M limit; select still needs more than that.
     const atPark = replay?.starts.find((s) => s.at === park)?.planCharge;
-    expect(atPark).toMatchObject({ featureId: "select", replayed: "park", releasedTokens: 1_481_563 });
+    expect(atPark).toMatchObject({ featureId: "select", replayed: "park", releasedTokens: 33_117 });
     expect(atPark?.runs.map((r) => r.featureId)).toEqual(["readcmd"]);
+  }, 600000);
+
+  test("#2124: in dollars R62 stepvet's open runs are held at their plans at the task-call rate, and no start moves", () => {
+    // Before #2124 an open run held max(spent + reserved, its maxCostUsd) of the dollar budget.
+    // At stepscmd's start, rewound to that moment (#2061), the runs held $21.11 of the $30 cap
+    // ($8.88 remaining, as the round's share gate recorded); lines' plan, priced at what the
+    // initiative's task calls paid ($1.00 per million), holds $2.22 of its $2.41 cap, and the
+    // four open runs together free $4.86. Before a task call is priced (lines' start) the runs
+    // keep their caps.
+    const [replay] = replayInitiativeStarts(join(ROOT, "R62", "stepvet.sqlite.gz"), { budgetAtStart: true });
+    expect(replay?.newStartStops).toBe(0);
+    expect(replay?.finalUsd).toBe(26.33);
+    const first = replay?.starts.find((s) => s.featureId === "lines")?.planCharge?.usd;
+    expect(first).toMatchObject({ taskRate: null, releasedUsd: 0 });
+    expect(first?.runs).toEqual([{ featureId: "base", limitUsd: 2.41, chargeUsd: null }]);
+    const steps = replay?.starts.find((s) => s.featureId === "stepscmd")?.planCharge;
+    expect(steps?.replayed).toBe("pass");
+    expect(steps?.usd?.taskRate! * 1e6).toBeCloseTo(1.0, 1);
+    expect(steps?.usd?.limitCommittedUsd).toBeCloseTo(21.11, 2);
+    expect(steps?.usd?.releasedUsd).toBeCloseTo(4.86, 2);
+    expect(steps?.usd?.runs.find((r) => r.featureId === "lines")).toEqual({ featureId: "lines", limitUsd: 2.41, chargeUsd: expect.closeTo(2.22, 2) });
+    for (const run of steps?.usd?.runs ?? []) expect(run.chargeUsd!).toBeLessThanOrEqual(run.limitUsd);
+    // Every rewound start has a dollar side, and the plan charge decides no start differently.
+    expect(replay?.starts.filter((s) => s.planCharge).every((s) => s.planCharge?.usd && s.planCharge.replayed === "pass")).toBe(true);
   }, 600000);
 });

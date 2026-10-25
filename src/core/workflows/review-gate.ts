@@ -21,6 +21,11 @@ export interface GateFinding {
   sibling: boolean;
   /** Its repro's outcome, run only for a candidate while a program can run it. */
   outcome: ReproOutcome["status"] | null;
+  /**
+   * The reviewer set `noRepro`: it says no command can show the claim, so a repro it also attached
+   * is no evidence (#2194). Absent in gates recorded before it.
+   */
+  noRepro?: boolean;
 }
 
 export interface ReviewGate {
@@ -68,21 +73,31 @@ export function gateFinding(
     repro: finding.repro !== undefined,
     sibling,
     outcome: outcome ?? null,
+    noRepro: !!finding.noRepro?.trim(),
   };
 }
+
+/**
+ * A finding whose reproduction is evidence: one the reviewer did not mark `noRepro`. skillplumb
+ * 9cdc5669 (R69) repaired a 0.1-confidence README note for 250k tokens because its repro, which
+ * needed the README setup the host marked not_run, printed the error the note quoted; the note's
+ * own `noRepro` said that setup was missing (#2194).
+ */
+const reproEvidence = (f: GateFinding): boolean => !f.noRepro;
 
 /**
  * A finding the severity floor does not demote once the host reproduces it: it is based on the
  * spec and carries a repro. dirdrift-update 6b57dc61 completed with AC-005 failing because its
  * confirmed medium finding arrived after the first repair round (#801).
  */
-const confirmable = (f: GateFinding): boolean => (f.basis ?? "spec") === "spec" && f.repro;
+const confirmable = (f: GateFinding): boolean =>
+  (f.basis ?? "spec") === "spec" && f.repro && reproEvidence(f);
 
 /**
  * The findings whose repro the review runs before deciding: those of a required reviewer, not a
  * sibling's, at a severity it blocks on, at a severity the run repairs or confirmable, and not
  * inferred. A claim kept a note only for its confidence competes too, as in the converge stage
- * (#1210, #1415).
+ * (#1210, #1415), unless its reviewer marked it `noRepro`.
  */
 export function reviewGateCandidates(gate: ReviewGate): GateFinding[] {
   if (!gate.required) return [];
@@ -92,7 +107,7 @@ export function reviewGateCandidates(gate: ReviewGate): GateFinding[] {
       gate.blocking.includes(f.severity) &&
       (gate.severities.includes(f.severity) || confirmable(f)) &&
       (findingBlocks(labels(f), gate.minConfidence) ||
-        confidenceOnlyNote(labels(f), gate.minConfidence)),
+        (confidenceOnlyNote(labels(f), gate.minConfidence) && reproEvidence(f))),
   );
 }
 
@@ -178,13 +193,14 @@ const notesOf = (gate: ConvergenceGate): Set<string> =>
 
 /**
  * The findings whose repro the converge stage runs: below high severity, or kept a note only for
- * their confidence (#1210), and not a sibling's.
+ * their confidence (#1210) and not marked `noRepro` (#2194), and not a sibling's.
  */
 export function convergenceReproCandidates(gate: ConvergenceGate): ConvergenceGateFinding[] {
   return gate.findings.filter(
     (f) =>
       !f.sibling &&
-      (convergenceReproGated(labels(f)) || confidenceOnlyNote(labels(f), gate.minConfidence)) &&
+      (convergenceReproGated(labels(f)) ||
+        (confidenceOnlyNote(labels(f), gate.minConfidence) && reproEvidence(f))) &&
       f.repro &&
       gate.reproAvailable,
   );
@@ -203,7 +219,9 @@ export function convergenceGateDecision(gate: ConvergenceGate): ConvergenceDecis
     findingBlocks(
       labels(f),
       gate.minConfidence,
-      confidenceOnlyNote(labels(f), gate.minConfidence) && f.outcome === "reproduced",
+      confidenceOnlyNote(labels(f), gate.minConfidence) &&
+        reproEvidence(f) &&
+        f.outcome === "reproduced",
     );
   const unreproduced = new Set(
     gate.canRepro

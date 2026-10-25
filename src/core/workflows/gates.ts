@@ -7,7 +7,7 @@ import {
   rowOf,
   SUPPORTED_LANGUAGES,
 } from "../intelligence/language-records.js";
-import { pwshExecutable } from "../platform/index.js";
+import { pwshExecutable, rscriptExecutable } from "../platform/index.js";
 import { gateSandbox } from "../security/sandbox.js";
 import { workspacePath } from "../specs/validate.js";
 import { BUN_FMT, bunFmtConfigured } from "../tools/bun-fmt.js";
@@ -25,6 +25,7 @@ import { WorkflowFault } from "./errors.js";
 import { dotnetFiles } from "./language.js";
 import { PESTER_RUN } from "./pester.js";
 import { ProcessScope } from "./process-scope.js";
+import { lintrRun, STYLER_CHECK, STYLER_FIX, testthatRun } from "./r-tools.js";
 import { redactSecrets } from "./redaction.js";
 import { CheckSchema, SafeId } from "./schemas.js";
 import { staticToolPattern } from "./static-tools.js";
@@ -618,6 +619,45 @@ function pwshGates(workspace: string): GateSuggestion[] {
   return out;
 }
 
+/**
+ * testthat, lintr and styler for an R package or project (#1500). A package is a `DESCRIPTION`
+ * at the root; testthat runs when `tests/testthat` exists, on the loaded package or on the folder.
+ * lintr is preselected with a `.lintr` config and offered without one, since its default linters
+ * may already fail on the code. styler is offered, not preselected, with the fixer
+ * `styler::style_file` on the task's file; the format-written check holds new files to it.
+ */
+function rGates(workspace: string): GateSuggestion[] {
+  const pkg = has(workspace, "DESCRIPTION");
+  const tests = has(workspace, "tests/testthat");
+  const lintr = has(workspace, ".lintr");
+  if (!pkg && !tests && !lintr) return [];
+  const exe = rscriptExecutable();
+  const out: GateSuggestion[] = [];
+  if (tests)
+    out.push({
+      check: gate("testthat", exe, ["-e", testthatRun(pkg)], 600000),
+      source: "tests/testthat",
+      reason: `Rscript -e "${pkg ? "testthat::test_local()" : "testthat::test_dir('tests/testthat')"}" (check reporter)`,
+      preselected: true,
+    });
+  out.push({
+    check: gate("lintr", exe, ["-e", lintrRun(pkg)], 300000),
+    source: lintr ? ".lintr" : pkg ? "DESCRIPTION" : "tests/testthat",
+    reason: `Rscript -e "lintr::${pkg ? "lint_package()" : "lint_dir('.')"}" (fails on any lint)`,
+    preselected: lintr,
+  });
+  out.push({
+    check: {
+      ...gate("styler", exe, ["-e", STYLER_CHECK], 300000),
+      fix: { executable: exe, args: ["-e", STYLER_FIX] },
+    },
+    source: pkg ? "DESCRIPTION" : lintr ? ".lintr" : "tests/testthat",
+    reason: `Rscript -e "styler::style_dir(dry = 'on')" (fails on a file it would change; fixer: styler::style_file)`,
+    preselected: false,
+  });
+  return out;
+}
+
 function goGates(workspace: string): GateSuggestion[] {
   if (!has(workspace, "go.mod")) return [];
   // `go vet` passes on unformatted code and is a whole-unit check, so its fixer never ran on a
@@ -802,10 +842,33 @@ function sbtGates(workspace: string): GateSuggestion[] {
   ];
 }
 
-/** SwiftPM builds and tests a package from `Package.swift` (#1753). */
+/**
+ * SwiftPM builds and tests a package from `Package.swift` (#1753). A package with a `.swift-format`
+ * configuration lints with the swift-format the Swift 6 toolchain bundles first (#1492): `--strict`
+ * makes its warnings fail, and its fixer formats the file it is given.
+ */
 function swiftGates(workspace: string): GateSuggestion[] {
   if (!has(workspace, "Package.swift")) return [];
   return [
+    ...(has(workspace, ".swift-format")
+      ? [
+          {
+            check: {
+              ...gate(
+                "swift-format",
+                "swift",
+                ["format", "lint", "--strict", "--recursive", "."],
+                300000,
+              ),
+              fix: { executable: "swift", args: ["format", "format", "--in-place"] },
+            },
+            source: ".swift-format",
+            reason:
+              "swift format lint --strict --recursive . (fixer: swift format format --in-place)",
+            preselected: true,
+          },
+        ]
+      : []),
     {
       check: gate("swift-build", "swift", ["build"], 900000),
       source: "Package.swift",
@@ -1503,6 +1566,7 @@ const TOOLCHAIN_GATES = {
   python: pythonGates,
   sqlfluff: sqlfluffGates,
   pwsh: pwshGates,
+  rscript: rGates,
   go: goGates,
   dotnet: dotnetGates,
   cargo: cargoGates,
@@ -1556,6 +1620,7 @@ export const GATE_TOOLCHAINS: LanguageRecord<readonly GateToolchain[]> = {
   solidity: none("Foundry has no gate detector; a Hardhat project is an npm package"),
   sql: ["sqlfluff"],
   powershell: ["pwsh"],
+  r: ["rscript"],
 };
 
 /**
