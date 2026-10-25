@@ -239,6 +239,24 @@ const FRAMEWORKS: readonly TestFramework[] = [
     skips: String.raw`^\s*skip\b|\bstartSkipping\b`,
   },
   {
+    // GoogleTest `TEST(SumTest, Adds)` (`TEST_F`, `TEST_P`, typed tests), Catch2 and doctest
+    // `TEST_CASE("adds")`, Boost.Test `BOOST_AUTO_TEST_CASE(adds)`, and C's Unity `void
+    // test_adds(void)` and Check `START_TEST(adds)` (#1490). A GoogleTest `DISABLED_` name, a
+    // `GTEST_SKIP()`, Catch2's hidden `[.]` tag and `SKIP()`, Unity's `TEST_IGNORE()` and CMocka's
+    // `skip()` keep a test from running.
+    name: "GoogleTest, Catch2, doctest, Boost.Test, Unity, Check",
+    languages: ["c", "cpp"],
+    cases: String.raw`^\s*(?:(?:TYPED_)?TEST(?:_F|_P)?|TYPED_TEST_P|TEST_CASE|SCENARIO|BOOST_AUTO_TEST_CASE|START_TEST)\s*\(|^\s*void\s+test_?\w*\s*\(\s*void\s*\)`,
+    named: [
+      { pattern: /^\s*(?:TYPED_)?TEST(?:_F|_P)?\s*\(\s*\w+\s*,\s*(?<name>\w+)\s*\)/d },
+      { pattern: /^\s*(?:TEST_CASE|SCENARIO)\s*\(\s*"(?<name>[^"\n]+)"/d },
+      { pattern: /^\s*(?:BOOST_AUTO_TEST_CASE|START_TEST)\s*\(\s*(?<name>\w+)/d },
+      { pattern: /^\s*void\s+(?<name>test_?\w*)\s*\(\s*void\s*\)/d },
+    ],
+    assertions: String.raw`\b(?:EXPECT|ASSERT)_[A-Z_]+\s*\(|\b(?:REQUIRE|CHECK)(?:_[A-Z_]+)?\s*\(|\bBOOST_(?:CHECK|REQUIRE|TEST)\w*\s*\(|\bTEST_ASSERT\w*\s*\(|\bck_assert\w*\s*\(|\bassert(?:_\w+)?\s*\(`,
+    skips: String.raw`\bGTEST_SKIP\s*\(|\bDISABLED_\w|\bSKIP\s*\(|\bTEST_IGNORE(?:_MESSAGE)?\s*\(|^\s*skip\s*\(\s*\)|\bTEST_CASE\s*\([^)\n]*"[^"\n]*\[\.[^\]\n]*\]`,
+  },
+  {
     name: "xUnit, NUnit, MSTest asserts, FluentAssertions",
     languages: ["csharp"],
     assertions: String.raw`\.Should\s*\(\s*\)`,

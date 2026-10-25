@@ -21,7 +21,7 @@ import { historyFixture, plannedForecastScenario } from "./helpers/initiative-pl
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { directoryFixers, directoryFixerScenario } from "./helpers/directory-fixer-scenario.js";
 import { baselineCreatedFilesScenario, FIRST_RUN_OUTPUTS } from "./helpers/baseline-created-files-scenario.js";
-import { TOOL_CACHES } from "../src/core/verification/snapshot.js";
+import { sourceManifest, TOOL_CACHES } from "../src/core/verification/snapshot.js";
 import { spawnSync } from "node:child_process";
 import {
   chmodSync,
@@ -47,6 +47,7 @@ import { noTestsCollected } from "../src/core/verification/convergence.js";
 import { baselineRegression, buildFailure, buildRunner, diagnosticCount, failedTests, failureSignature, testCount, testsRan } from "../src/core/verification/output-counts.js";
 import { baselineDebt, baselineKeys } from "../src/core/verification/task-end-check.js";
 import { affectedTestCheck, plannedWrittenTests, writtenTestsCheck } from "../src/core/workflows/affected-tests.js";
+import { detectLanguages, touchesLanguageFiles } from "../src/core/workflows/language.js";
 import { launchedCommand } from "../src/core/workflows/launcher.js";
 import { type HostEdit, hostOnlyEvidence, plannerGraph } from "../src/core/workflows/host-edits.js";
 import { defaultWorkflowPolicy } from "../src/core/workflows/defaults.js";
@@ -62,7 +63,7 @@ import {
   isWholeUnitCheck,
   styleClaimShown,
 } from "../src/core/workflows/check-policy.js";
-import { buildWrapper, detectGates, executeGate } from "../src/core/workflows/gates.js";
+import { buildWrapper, cmakeGates, detectGates, executeGate } from "../src/core/workflows/gates.js";
 import { formatWrittenChecks } from "../src/core/workflows/format-written.js";
 import { type LayoutResult, layoutVerdict } from "../src/core/workflows/layout-check.js";
 import { addedDependencies, checkDependencies } from "../src/core/workflows/quality/dependencies.js";
@@ -1088,6 +1089,153 @@ describe("gate matrix: shell (#1497)", () => {
     expect(rules(before.replace("  run", '  [[ "$OSTYPE" == darwin* ]] && skip "GNU sed only"\n  run'))).not.toContain("skip");
     const source = "#!/bin/sh\n# shellcheck disable=SC2086\necho $1\n";
     expect(checkBuiltinRules([{ path: "bin/a.sh", content: source, before: null }], {}).map((f) => f.rule)).toContain("lint-suppression");
+  });
+});
+
+describe("gate matrix: CMake, CTest, GoogleTest and clang tools (#1490)", () => {
+  const ids = (files: Record<string, string>) =>
+    detectGates(project(files)).map((s) => [s.check.id, s.check.executable, s.check.args.join(" "), s.source]);
+  const checks = (files: Record<string, string>) => detectGates(project(files)).map((s) => s.check);
+  const CMAKE = {
+    "CMakeLists.txt": "cmake_minimum_required(VERSION 3.16)\nproject(sum CXX)\nenable_testing()\nfind_package(GTest REQUIRED)\nadd_library(sum src/sum.cpp)\nadd_executable(sum_test tests/sum_test.cpp)\ntarget_link_libraries(sum_test sum GTest::gtest_main)\ninclude(GoogleTest)\ngtest_discover_tests(sum_test)\n",
+    ".clang-format": "BasedOnStyle: LLVM\n",
+    ".clang-tidy": "Checks: '-*,bugprone-*'\n",
+    "src/sum.cpp": '#include "sum.h"\nint sum(int a, int b) { return a + b; }\n',
+    "src/sum.h": "int sum(int a, int b);\n",
+    "tests/sum_test.cpp": '#include <gtest/gtest.h>\n#include "sum.h"\nTEST(SumTest, Adds) { EXPECT_EQ(sum(1, 2), 3); }\n',
+    "third_party/lib.c": "",
+    "build/CMakeCache.txt": "",
+  };
+
+  test("configure, build, clang-tidy and CTest in that order, clang-format on top", () => {
+    expect(ids(CMAKE)).toEqual([
+      ["cmake-configure", "cmake", "-S . -B build -DCMAKE_EXPORT_COMPILE_COMMANDS=ON", "CMakeLists.txt"],
+      ["cmake-build", "cmake", "--build build --config Debug", "CMakeLists.txt"],
+      ["clang-tidy", "clang-tidy", "-p build --quiet --warnings-as-errors=* src/sum.cpp tests/sum_test.cpp", ".clang-tidy"],
+      ["ctest", "ctest", "--test-dir build --output-on-failure -C Debug", "CMakeLists.txt"],
+      ["clang-format", "clang-format", "--dry-run --Werror src/sum.cpp src/sum.h tests/sum_test.cpp", ".clang-format"],
+    ]);
+    // Tests registered in a subfolder's CMakeLists.txt; none registered gives no ctest gate.
+    expect(ids({ "CMakeLists.txt": "project(x C)\nadd_subdirectory(tests)\n", "tests/CMakeLists.txt": "add_test(NAME a COMMAND a)\n" }).map(([id, , , source]) => `${id} ${source}`)).toEqual([
+      "cmake-configure CMakeLists.txt",
+      "cmake-build CMakeLists.txt",
+      "ctest tests/CMakeLists.txt",
+    ]);
+    expect(ids({ "CMakeLists.txt": "project(x C)\nadd_executable(x main.c)\n" }).map(([id]) => id)).toEqual(["cmake-configure", "cmake-build"]);
+    // The Visual Studio generators write no compilation database for clang-tidy.
+    expect(cmakeGates(project(CMAKE), "win32").map((s) => `${s.check.id} ${s.preselected}`)).toEqual([
+      "cmake-configure true",
+      "cmake-build true",
+      "clang-tidy false",
+      "ctest true",
+    ]);
+  });
+
+  test("a Makefile project keeps its targets, with clang-format on top", () => {
+    expect(ids({ Makefile: "test:\n\t./run_tests\n", ".clang-format": "BasedOnStyle: LLVM\n", "src/a.c": "" })).toEqual([
+      ["tests", "make", "test", 'Makefile target "test"'],
+      ["clang-format", "clang-format", "--dry-run --Werror src/a.c", ".clang-format"],
+    ]);
+  });
+
+  test("clang-format runs per task with its fixer on the task's file; clang-tidy after integration; CTest is the test check", () => {
+    const all = checks(CMAKE);
+    const byId = (id: string) => all.find((c) => c.id === id) as Check;
+    expect(isStaticCheck(byId("clang-format")) && !isWholeUnitCheck(byId("clang-format"))).toBe(true);
+    expect(isStaticCheck(byId("clang-tidy")) && isWholeUnitCheck(byId("clang-tidy"))).toBe(true);
+    expect(isTestCheck(byId("ctest")) && !isStaticCheck(byId("ctest"))).toBe(true);
+    for (const id of ["cmake-configure", "cmake-build"]) expect(isStaticCheck(byId(id))).toBe(false);
+    expect(fixerCommand(byId("clang-format").fix!, "src/sum.cpp")).toEqual({ executable: "clang-format", args: ["-i", "src/sum.cpp"] });
+    const feature = all.map((c) => ({ ...c, scope: "feature" as const }));
+    expect(styleClaimShown("the code is clang-format-formatted and clang-tidy reports nothing", feature)).toBe(true);
+    expect(styleClaimShown("clang-tidy reports nothing", feature.filter((c) => c.id !== "clang-tidy"))).toBe(false);
+    // CTest selects tests by name, not file, and runs what the build gate built: no written-tests check.
+    expect(plannedWrittenTests([byId("ctest")], [{ path: "tests/max_test.cpp", action: "create" }])).toBeNull();
+  });
+
+  test("an edited C++ file is checked on its changed lines by clang-format's --lines", () => {
+    const files = { ...CMAKE, "src/sum.cpp": '#include "sum.h"\nint sum(int a, int b) { return a + b; }\nint  max(int a,int b){return a>b?a:b;}\n' };
+    const edited = formatWrittenChecks(project(files), [], [{ path: "src/sum.cpp", action: "modify" }], (c) => `/usr/bin/${c}`, () => CMAKE["src/sum.cpp"], () => true);
+    expect(edited.map((c) => [c.id, [c.executable, ...c.args].join(" "), [c.fix!.executable, ...c.fix!.args].join(" ")])).toEqual([
+      ["clang-format-lines", "clang-format --dry-run --Werror --lines=3:3 src/sum.cpp", "clang-format -i --lines=3:3"],
+    ]);
+  });
+
+  // CTest 3.28 with --output-on-failure over GoogleTest 1.14 binaries.
+  const CTEST_FAILED =
+    "Test project /w/build\n    Start 1: SumTest.Adds\n1/4 Test #1: SumTest.Adds .....................   Passed    0.01 sec\n    Start 2: SumTest.Commutes\n2/4 Test #2: SumTest.Commutes .................***Failed    0.01 sec\nRunning main() from ./googletest/src/gtest_main.cc\nNote: Google Test filter = SumTest.Commutes\n[==========] Running 1 test from 1 test suite.\n[ RUN      ] SumTest.Commutes\n/w/tests/sum_test.cpp:4: Failure\nExpected equality of these values:\n  sum(2, 2)\n    Which is: 4\n  3\n\n[  FAILED  ] SumTest.Commutes (5 ms)\n[==========] 1 test from 1 test suite ran. (5 ms total)\n[  PASSED  ] 0 tests.\n[  FAILED  ] 1 test, listed below:\n[  FAILED  ] SumTest.Commutes\n\n 1 FAILED TEST\n\n    Start 3: SumTest.Later\n3/4 Test #3: SumTest.Later ....................***Skipped   0.01 sec\n    Start 4: SumTest.Slow\n4/4 Test #4: SumTest.Slow .....................***Not Run (Disabled)   0.00 sec\n\n67% tests passed, 1 tests failed out of 3\n\nTotal Test time (real) =   0.04 sec\n\nThe following tests did not run:\n\t  3 - SumTest.Later (Skipped)\n\t  4 - SumTest.Slow (Disabled)\n\nThe following tests FAILED:\n\t  2 - SumTest.Commutes (Failed)\nErrors while running CTest\n";
+  // A GoogleTest binary run on its own.
+  const GTEST_FAILED =
+    "Running main() from ./googletest/src/gtest_main.cc\n[==========] Running 3 tests from 1 test suite.\n[----------] Global test environment set-up.\n[----------] 3 tests from SumTest\n[ RUN      ] SumTest.Adds\n[       OK ] SumTest.Adds (0 ms)\n[ RUN      ] SumTest.Commutes\n/w/tests/sum_test.cpp:4: Failure\nExpected equality of these values:\n  sum(2, 2)\n    Which is: 4\n  3\n\n[  FAILED  ] SumTest.Commutes (0 ms)\n[ RUN      ] SumTest.Later\n/w/tests/sum_test.cpp:5: Skipped\nnot ready\n\n[  SKIPPED ] SumTest.Later (0 ms)\n[ DISABLED ] SumTest.DISABLED_Slow\n[----------] 3 tests from SumTest (0 ms total)\n\n[----------] Global test environment tear-down\n[==========] 3 tests from 1 test suite ran. (0 ms total)\n[  PASSED  ] 1 test.\n[  SKIPPED ] 1 test, listed below:\n[  SKIPPED ] SumTest.Later\n[  FAILED  ] 1 test, listed below:\n[  FAILED  ] SumTest.Commutes\n\n 1 FAILED TEST\n  YOU HAVE 1 DISABLED TEST\n\n";
+
+  test("CTest's summary gives the count, the tests that ran and the failed names, with one signature as tests grow", () => {
+    expect([testCount(CTEST_FAILED), testsRan(CTEST_FAILED), failedTests(CTEST_FAILED)]).toEqual([
+      { tool: "ctest", count: 3 },
+      { tool: "ctest", count: 2 },
+      { tool: "ctest", names: ["SumTest.Commutes"] },
+    ]);
+    expect(timedOutFailure(CTEST_FAILED)).toBe(true);
+    const grown = CTEST_FAILED.replace("1/4 Test #1", "    Start 5: SumTest.Max\n5/5 Test #5: SumTest.Max ......................   Passed    0.02 sec\n1/5 Test #1")
+      .replaceAll(/(\d)\/4 Test/g, "$1/5 Test")
+      .replace("67% tests passed, 1 tests failed out of 3", "75% tests passed, 1 tests failed out of 4")
+      .replace("(5 ms)", "(3 ms)");
+    expect(testCount(grown)).toEqual({ tool: "ctest", count: 4 });
+    expect(failureSignature(grown, "/w")).toBe(failureSignature(CTEST_FAILED, "/w"));
+    expect(convergenceSignature(grown)).toBe(convergenceSignature(CTEST_FAILED));
+    expect(failedTests(CTEST_FAILED.replace("(Failed)", "(SEGFAULT)"))?.names).toEqual(["SumTest.Commutes"]);
+  });
+
+  test("a GoogleTest binary's own summary is read when CTest's is not there", () => {
+    expect([testCount(GTEST_FAILED), testsRan(GTEST_FAILED), failedTests(GTEST_FAILED)]).toEqual([
+      { tool: "gtest", count: 3 },
+      { tool: "gtest", count: 2 },
+      { tool: "gtest", names: ["SumTest.Commutes"] },
+    ]);
+    const grown = GTEST_FAILED.replace("Running 3 tests", "Running 4 tests").replace("3 tests from SumTest\n", "4 tests from SumTest\n[ RUN      ] SumTest.Max\n[       OK ] SumTest.Max (0 ms)\n").replace("3 tests from 1 test suite ran", "4 tests from 1 test suite ran").replace("[  PASSED  ] 1 test.", "[  PASSED  ] 2 tests.");
+    expect(failureSignature(grown, "/w")).toBe(failureSignature(GTEST_FAILED, "/w"));
+    expect(failedTests("[  FAILED  ] Ranges/SumTest.Adds/0, where GetParam() = 4 (0 ms)\n")?.names ?? failedTests("[==========] 1 test from 1 test suite ran.\n[  FAILED  ] Ranges/SumTest.Adds/0, where GetParam() = 4 (0 ms)\n")?.names).toEqual(["Ranges/SumTest.Adds/0"]);
+  });
+
+  test("a test the build did not build and a compiler error are build failures, not failed tests", () => {
+    const notBuilt = "Test project /w/build\n    Start 1: sum_adds\nCould not find executable /w/build/sum_test\nUnable to find executable: /w/build/sum_test\n1/1 Test #1: sum_adds .........................***Not Run   0.00 sec\n\n0% tests passed, 1 tests failed out of 1\n\nThe following tests FAILED:\n\t  1 - sum_adds (Not Run)\nErrors while running CTest\n";
+    expect([buildRunner(notBuilt), failedTests(notBuilt)?.names, testsRan(notBuilt)]).toEqual(["ctest", [], { tool: "ctest", count: 0 }]);
+    const gcc = "/w/tests/sum_test.cpp:3:33: error: 'sum3' was not declared in this scope; did you mean 'sum'?\ngmake[2]: *** [CMakeFiles/sum_test.dir/build.make:76: CMakeFiles/sum_test.dir/tests/sum_test.cpp.o] Error 1\n";
+    expect(buildFailure(gcc)).toEqual(["/w/tests/sum_test.cpp:3:33: error: 'sum3' was not declared in this scope; did you mean 'sum'?"]);
+    expect(buildFailure("C:\\w\\tests\\sum_test.cpp(3,33): error C3861: 'sum3': identifier not found [C:\\w\\build\\sum_test.vcxproj]\n")).not.toBeNull();
+  });
+
+  test("no registered test is no failing suite", () => {
+    expect(noTestsCollected("Test project /w/build\nNo tests were found!!!\n")).toBe(true);
+    expect(noTestsCollected("[==========] 0 tests from 0 test suites ran. (0 ms total)\n[  PASSED  ] 0 tests.\n")).toBe(true);
+    expect(noTestsCollected(CTEST_FAILED)).toBe(false);
+  });
+
+  test("clang-tidy's findings are counted by severity, a compiler's own warnings are not", () => {
+    const tidy = "[1/2] Processing file /w/src/sum.cpp.\n2 warnings generated.\n/w/src/sum.cpp:3:13: error: statement should be inside braces [readability-braces-around-statements,-warnings-as-errors]\n    3 |   if (a > b) return a + b;\n/w/src/sum.cpp:4:3: warning: narrowing conversion [bugprone-narrowing-conversions]\n";
+    expect(diagnosticCount(tidy)).toEqual({ tool: "clang-tidy", count: 2, errors: 1 });
+    expect(diagnosticCount("/w/src/a.c:3:7: warning: unused variable 'x' [-Wunused-variable]\n")?.tool).not.toBe("clang-tidy");
+    expect(failureSignature(tidy.replace("[1/2]", "[2/3]").replace("2 warnings", "5 warnings"), "/w")).toBe(failureSignature(tidy, "/w"));
+  });
+
+  test("GTEST_SKIP, DISABLED_ and NOLINT are integrity findings; a platform guard is not", () => {
+    const before = '#include <gtest/gtest.h>\nTEST(SumTest, Adds) {\n  EXPECT_EQ(sum(1, 2), 3);\n}\n';
+    const rules = (after: string) => scanTestIntegrity([{ path: "tests/sum_test.cpp", before, after }]).map((f) => f.rule);
+    expect(rules(before.replace("  EXPECT", '  GTEST_SKIP() << "later";\n  EXPECT'))).toContain("skip");
+    expect(rules(before.replace("TEST(SumTest, Adds)", "TEST(SumTest, DISABLED_Adds)"))).toContain("skip");
+    expect(rules(before.replace("  EXPECT", "  // NOLINTNEXTLINE(bugprone-*)\n  EXPECT"))).toContain("suppression");
+    expect(rules(before.replace("  EXPECT", "#ifdef _WIN32\n  GTEST_SKIP() << \"POSIX paths\";\n#endif\n  EXPECT"))).not.toContain("skip");
+    const source = '#include "sum.h"\nint sum(int a, int b) { return a + b; } // NOLINT\n';
+    expect(checkBuiltinRules([{ path: "src/sum.cpp", content: source, before: null }], {}).map((f) => f.rule)).toContain("lint-suppression");
+    const swallowed = "int parse(const char* s) {\n  try {\n    return std::stoi(s);\n  } catch (...) {\n  }\n  return 0;\n}\n";
+    expect(checkBuiltinRules([{ path: "src/parse.cpp", content: swallowed, before: null }], {}).map((f) => f.rule)).toContain("empty-catch");
+  });
+
+  test("a CMake project gets the language review, and a build tree is no source a check changes", async () => {
+    expect(detectLanguages(project({ "CMakeLists.txt": "" }))).toEqual(["cpp"]);
+    expect(detectLanguages(project({ "meson.build": "" }))).toEqual(["cpp"]);
+    expect(touchesLanguageFiles(["src/sum.c"]) && touchesLanguageFiles(["include/sum.hpp"])).toBe(true);
+    const root = project({ "src/sum.c": "int x;\n", "build/CMakeCache.txt": "", "build/sum.o": "", "out/notes.txt": "" });
+    expect(Object.keys(await sourceManifest(root)).sort()).toEqual(["out/notes.txt", "src/sum.c"]);
   });
 });
 
@@ -3260,6 +3408,90 @@ describe.skipIf(!toolchains)("gate matrix: toolchains", () => {
       expect((await run(byId("shfmt"))).status).toBe("passed");
     },
     120_000,
+  );
+
+  // #1490: the CMake, CTest, GoogleTest, clang-format and clang-tidy gates and parsers against the
+  // real tools. GoogleTest comes from the system (`libgtest-dev`), found by `find_package(GTest)`.
+  const cmakeTools = available([["cmake", "--version"], ["ctest", "--version"], ["clang-format", "--version"], ["clang-tidy", "--version"]]);
+  const gtest = (() => {
+    if (process.platform === "win32" || !cmakeTools) return false;
+    const dir = mkdtempSync(join(tmpdir(), "baked-gtest-"));
+    writeFileSync(join(dir, "CMakeLists.txt"), "cmake_minimum_required(VERSION 3.16)\nproject(probe CXX)\nfind_package(GTest REQUIRED)\n");
+    const found = spawnSync("cmake", ["-S", dir, "-B", join(dir, "build")], { stdio: "ignore", timeout: 120_000 }).status === 0;
+    rmSync(dir, { recursive: true, force: true });
+    return found;
+  })();
+  test.skipIf(!gtest)(
+    "a CMake project's detected gates run, and CTest, GoogleTest and clang-tidy output reads as the parsers expect (#1490)",
+    async () => {
+      const suite = (body: string) => `#include <gtest/gtest.h>\n\n#include "sum.h"\n\n${body}`;
+      const adds = "TEST(SumTest, Adds) { EXPECT_EQ(sum(1, 2), 3); }\n";
+      const commutes = "TEST(SumTest, Commutes) { EXPECT_EQ(sum(2, 2), 3); }\n";
+      const root = project({
+        "CMakeLists.txt": "cmake_minimum_required(VERSION 3.16)\nproject(sum CXX)\nset(CMAKE_CXX_STANDARD 17)\nenable_testing()\nfind_package(GTest REQUIRED)\nadd_library(sum src/sum.cpp)\ntarget_include_directories(sum PUBLIC src)\nadd_executable(sum_test tests/sum_test.cpp)\ntarget_link_libraries(sum_test sum GTest::gtest_main)\ninclude(GoogleTest)\ngtest_discover_tests(sum_test)\n",
+        ".clang-format": "BasedOnStyle: LLVM\n",
+        ".clang-tidy": "Checks: '-*,readability-braces-around-statements'\nHeaderFilterRegex: 'src/'\n",
+        "src/sum.h": "int sum(int a, int b);\n",
+        "src/sum.cpp": '#include "sum.h"\n\nint sum(int a, int b) { return a + b; }\n',
+        "tests/sum_test.cpp": suite(adds + commutes),
+      });
+      const gates = detectGates(root).map((s) => s.check);
+      expect(gates.map((c) => c.id)).toEqual(["cmake-configure", "cmake-build", "clang-tidy", "ctest", "clang-format"]);
+      const byId = (id: string) => gates.find((c) => c.id === id) as Check;
+      const run = async (check: Check) => executeGate(root, check, new AbortController().signal);
+      const build = async () => {
+        for (const id of ["cmake-configure", "cmake-build"]) {
+          const result = await run(byId(id));
+          expect([id, result.status, result.status === "passed" ? "" : result.outputTail]).toEqual([id, "passed", ""]);
+        }
+      };
+
+      await build();
+      const failing = await run(byId("ctest"));
+      expect(failing.status).toBe("failed");
+      expect([testCount(failing.outputTail), failedTests(failing.outputTail)]).toEqual([{ tool: "ctest", count: 2 }, { tool: "ctest", names: ["SumTest.Commutes"] }]);
+      expect(timedOutFailure(failing.outputTail)).toBe(true);
+      writeFileSync(join(root, "tests/sum_test.cpp"), suite(`${adds}${commutes}TEST(SumTest, Max) { EXPECT_EQ(std::max(1, 2), 2); }\n`));
+      await build();
+      const grown = await run(byId("ctest"));
+      expect(testCount(grown.outputTail)).toEqual({ tool: "ctest", count: 3 });
+      expect(failureSignature(grown.outputTail, root)).toBe(failureSignature(failing.outputTail, root));
+      expect(convergenceSignature(grown.outputTail)).toBe(convergenceSignature(failing.outputTail));
+      // A skipped test is counted and did not run; a DISABLED_ one is not counted.
+      writeFileSync(join(root, "tests/sum_test.cpp"), suite(`${adds}TEST(SumTest, Later) { GTEST_SKIP() << "not ready"; }\nTEST(SumTest, DISABLED_Slow) { EXPECT_EQ(1, 1); }\n`));
+      await build();
+      const passing = await run(byId("ctest"));
+      expect([passing.status, testCount(passing.outputTail), testsRan(passing.outputTail)]).toEqual(["passed", { tool: "ctest", count: 2 }, { tool: "ctest", count: 1 }]);
+      // The test binary on its own prints GoogleTest's summary.
+      const binary = await run({ ...byId("ctest"), id: "sum-test", executable: join(root, "build", "sum_test"), args: [] });
+      expect([binary.status, testCount(binary.outputTail), testsRan(binary.outputTail)]).toEqual(["passed", { tool: "gtest", count: 2 }, { tool: "gtest", count: 1 }]);
+      // A build tree is no source a check changes.
+      expect(Object.keys(await sourceManifest(root)).some((path) => path.startsWith("build/"))).toBe(false);
+
+      writeFileSync(join(root, "tests/sum_test.cpp"), suite("TEST(SumTest, Adds) { EXPECT_EQ(sum3(1, 2), 3); }\n"));
+      const broken = await run(byId("cmake-build"));
+      expect([broken.status, buildFailure(broken.outputTail)?.[0]]).toEqual(["failed", expect.stringMatching(/sum_test\.cpp:\d+:\d+: error: .*sum3/)]);
+      writeFileSync(join(root, "tests/sum_test.cpp"), suite(adds));
+
+      expect((await run(byId("clang-tidy"))).status).toBe("passed");
+      writeFileSync(join(root, "src/sum.cpp"), '#include "sum.h"\n\nint sum(int a, int b) {\n  if (a < 0)\n    return b + a;\n  return a + b;\n}\n');
+      const tidy = await run(byId("clang-tidy"));
+      expect([tidy.status, diagnosticCount(tidy.outputTail)]).toEqual(["failed", { tool: "clang-tidy", count: 1, errors: 1 }]);
+      writeFileSync(join(root, "src/sum.cpp"), '#include "sum.h"\n\nint sum(int a, int b) { return a + b; }\n');
+
+      expect((await run(byId("clang-format"))).status).toBe("passed");
+      const clean = readFileSync(join(root, "src/sum.cpp"), "utf8");
+      writeFileSync(join(root, "src/sum.cpp"), `${clean}int  max2(int a,int b){return a>b?a:b;}\n`);
+      expect((await run(byId("clang-format"))).status).toBe("failed");
+      // The edited file is checked on the lines the task added, and its fixer formats only them.
+      const [lines] = formatWrittenChecks(root, [], [{ path: "src/sum.cpp", action: "modify" }], undefined, () => clean, () => true);
+      expect(lines?.args).toEqual(["--dry-run", "--Werror", "--lines=4:4", "src/sum.cpp"]);
+      expect((await run(lines as Check)).status).toBe("failed");
+      const fix = fixerCommand(byId("clang-format").fix!, "src/sum.cpp");
+      expect(spawnSync(fix.executable, fix.args, { cwd: root }).status).toBe(0);
+      expect((await run(byId("clang-format"))).status).toBe("passed");
+    },
+    600_000,
   );
 
   // #1493: the RSpec, Minitest and RuboCop parsers read what the installed tools print.

@@ -106,6 +106,18 @@ export function diagnosticCount(output: string): OutputCount | null {
       count: shellcheck.length,
       errors: shellcheck.filter((m) => m[1] === "error").length,
     };
+  // clang-tidy (#1490): "src/sum.cpp:3:13: warning: statement should be inside braces
+  // [readability-braces-around-statements]", an error with `--warnings-as-errors`. The check
+  // names tell it from a compiler's own "[-Wunused-variable]".
+  const tidy = [
+    ...output.matchAll(/^\S.*?:\d+:\d+: (warning|error): .+ \[(?!-)[\w.-]+(?:,-?[\w.-]+)*\]$/gm),
+  ];
+  if (tidy.length)
+    return {
+      tool: "clang-tidy",
+      count: tidy.length,
+      errors: tidy.filter((m) => m[1] === "error").length,
+    };
   // dotnet build: "    3 Warning(s)" and "    0 Error(s)"
   const warnings = output.match(/^\s*(\d+) Warning\(s\)/m);
   const errors = output.match(/^\s*(\d+) Error\(s\)/m);
@@ -147,6 +159,8 @@ export type TestRunner =
   | "rspec"
   | "minitest"
   | "busted"
+  | "ctest"
+  | "gtest"
   | "junit"
   | "tap";
 
@@ -162,6 +176,19 @@ const bustedTestErrors = (o: string): number | null =>
   /^Error (?:->|→) /m.test(o)
     ? [...o.matchAll(/^Error (?:->|→) \S+ @ \d+\r?\n(?!suite )/gm)].length
     : null;
+/** CTest's summary: "67% tests passed, 1 tests failed out of 3". Disabled tests are not counted. */
+const CTEST_SUMMARY = /^\d+% tests passed, \d+ tests? failed out of (\d+)$/m;
+/**
+ * CTest's lists of tests by outcome, "\t  2 - SumTest.Commutes (Failed)": under "The following
+ * tests FAILED:" a test whose executable was not built is "(Not Run)", and under "The following
+ * tests did not run:" a skipped one is "(Skipped)" (GTEST_SKIP, a SKIP_RETURN_CODE).
+ */
+const ctestListed = (o: string, outcome: RegExp): string[] =>
+  [...o.matchAll(/^\s+\d+ - (.+?) \(([^)\n]+)\)\s*$/gm)]
+    .filter((m) => outcome.test(m[2] ?? ""))
+    .map((m) => (m[1] ?? "").trim());
+/** GoogleTest's summary of a test binary: "[==========] 3 tests from 1 test suite ran. (0 ms total)". */
+const GTEST_SUMMARY = /^\[==========\] (\d+) tests? from \d+ test (?:suites?|cases?) ran\./m;
 const PEST_SUMMARY = /^\s*Tests:\s+((?:\d+ \w+(?:, )?)+) \(\d+ assertions?\)/m;
 
 /**
@@ -336,6 +363,28 @@ const TEST_COUNTERS: readonly {
       return Number(m[1]) + Number(m[2]) + (bustedTestErrors(o) ?? Number(m[3]));
     },
   },
+  {
+    tool: "ctest",
+    // CTest (#1490), before GoogleTest: `--output-on-failure` prints the output of each failing
+    // GoogleTest binary inside CTest's own. Skipped tests are counted and did not run, nor did a
+    // test whose executable was not built.
+    count: (o) => num(o.match(CTEST_SUMMARY)),
+    ran: (o) => {
+      const total = num(o.match(CTEST_SUMMARY));
+      if (total === null) return null;
+      return total - ctestListed(o, /^(?:Skipped|Not Run)$/).length;
+    },
+  },
+  {
+    tool: "gtest",
+    // A GoogleTest binary run on its own; DISABLED_ tests are not counted, skipped ones are.
+    count: (o) => num(o.match(GTEST_SUMMARY)),
+    ran: (o) => {
+      const total = num(o.match(GTEST_SUMMARY));
+      if (total === null) return null;
+      return total - (num(o.match(/^\[ {2}SKIPPED \] (\d+) tests?, listed below:$/m)) ?? 0);
+    },
+  },
   // A language without a parser of its own (#1488): a JUnit XML report printed to the output
   // (`--reporter=junit`), then TAP (busted, bats, prove, node:test, pgTAP).
   {
@@ -384,8 +433,8 @@ export const TEST_RUNNERS: LanguageRecord<readonly TestRunner[]> = {
   java: ["maven", "junit"],
   kotlin: ["maven", "junit"],
   scala: none('sbt\'s "Tests: succeeded N" summary is not read'),
-  c: none("C has no common test runner summary; ctest output is not read"),
-  cpp: none("ctest and GoogleTest summaries are not read"),
+  c: ["ctest", "tap"],
+  cpp: ["ctest", "gtest"],
   ruby: ["rspec", "minitest"],
   php: ["phpunit", "pest"],
   swift: none("XCTest and swift-testing summaries are not read"),
@@ -444,6 +493,19 @@ export const FAILED_TESTS: Record<TestRunner, (output: string) => string[]> = {
   // "Failure -> spec/sum_spec.lua @ 7" or "Error -> ...", then "sum is commutative"; an error named
   // "suite spec/a_spec.lua" is a spec file that did not load, not a test.
   busted: (o) => captured(o, /^(?:Failure|Error) (?:->|→) \S+ @ \d+\r?\n(?!suite )(.+?)\s*$/gm),
+  // CTest: "\t  2 - SumTest.Commutes (Failed)" under "The following tests FAILED:", also a crash
+  // or a timeout ("(SEGFAULT)", "(Timeout)"); a test whose executable is missing is "(Not Run)".
+  ctest: (o) => {
+    const failed = o.split(/^The following tests FAILED:\r?$/m)[1];
+    return failed ? [...new Set(ctestListed(failed, /^(?!Not Run$)/))] : [];
+  },
+  // GoogleTest: "[  FAILED  ] SumTest.Commutes (5 ms)", and again in the list under its summary;
+  // parameterized and typed tests are "Prefix/Suite.Name/0" and "Suite/0.Name, where ...".
+  gtest: (o) =>
+    captured(
+      o,
+      /^\[ {2}FAILED {2}\] ((?:\w+\/)?\w+(?:\/\d+)?\.\w+(?:\/\w+)?)(?: \(\d+ ms\)|, where .*)?$/gm,
+    ),
   // A <testcase> with a <failure> or <error> child.
   junit: (o) =>
     [...o.matchAll(/<testcase\b([^>]*?)(?:\/>|>([\s\S]*?)<\/testcase>)/g)]
@@ -467,6 +529,8 @@ export const FAILED_TESTS: Record<TestRunner, (output: string) => string[]> = {
  * fails to compile there (R62 linehunk, Maven), which is not a failed test. No pattern matches what
  * a failing assertion prints.
  */
+const C_BUILD_FAILURE =
+  /^(?:\S.*\.(?:c|cc|cpp|cxx|h|hh|hpp|hxx):\d+(?::\d+)?: (?:fatal )?error: .+|\S.*\.(?:c|cc|cpp|cxx|h|hh|hpp|hxx)\(\d+(?:,\d+)?\): (?:fatal )?error C\d+: .+|Unable to find executable: .+)$/;
 export const BUILD_FAILURES: Record<TestRunner, RegExp> = {
   // "# Unhandled error between tests", "SyntaxError: Export named 'fold' not found in module ..."
   bun: /^(?:# Unhandled error between tests|error: Cannot find module .+|(?:SyntaxError|ResolveMessage): .+)$/,
@@ -496,6 +560,11 @@ export const BUILD_FAILURES: Record<TestRunner, RegExp> = {
   // "Error -> spec/a_spec.lua:3: <name> expected near 'end'" (a syntax error), and "suite
   // spec/a_spec.lua" under the error of a spec file whose top level failed (a missing `require`).
   busted: /^(?:Error (?:->|→) \S+\.luau?:\d+: .+|suite \S+\.luau?)$/,
+  // GCC and Clang "tests/sum_test.cpp:3:33: error: 'sum3' was not declared in this scope", MSVC
+  // "sum_test.cpp(3): error C3861: 'sum3': identifier not found", and CTest's "Unable to find
+  // executable: build/sum_test" for a test the build gate did not build (#1490).
+  ctest: C_BUILD_FAILURE,
+  gtest: C_BUILD_FAILURE,
   // Gradle: "> Task :compileTestJava FAILED", "AppTest.java:12: error: cannot find symbol"
   junit: /^(?:> Task :\S*[cC]ompile\S* FAILED|.+\.(?:java|kt):\d+: error: .+)$/,
   // "Bail out! Cannot find module"
@@ -681,6 +750,24 @@ const GROWING_COUNTS: [RegExp, string][] = [
   // pending; `●◼✱◌` in a UTF-8 terminal), and its success count (#1495).
   [/^[+\-*.●◼✱◌]+$\n?/gm, ""],
   [/\b\d+ (successe?s?) \//g, "<n> success /"],
+  // CTest's line per started and per passing test, the test numbers, and its pass share and total
+  // (#1490); the failed count is kept.
+  [/^\s*Start +\d+: .*(?:\n|$)/gm, ""],
+  [/^\s*\d+\/\d+ Test +#\d+: .*\s Passed\b.*(?:\n|$)/gm, ""],
+  [/^(\s*)\d+\/\d+ Test +#\d+:/gm, "$1Test:"],
+  [/^\s+\d+ - /gm, "\t<n> - "],
+  [/^\d+% tests passed, (\d+ tests? failed) out of \d+$/gm, "<n>% tests passed, $1 out of <n>"],
+  // GoogleTest's lines per started and passing test and its counts of tests and suites.
+  [/^\[ (?:RUN| {6}OK) +\] .*(?:\n|$)/gm, ""],
+  [
+    /^(\[[=-]{10}\] (?:Running )?)\d+ tests? from \d+ test (?:suites?|cases?)/gm,
+    "$1<n> tests from <n> test suites",
+  ],
+  [/^(\[-{10}\] )\d+ tests? from /gm, "$1<n> tests from "],
+  [/^\[ {2}PASSED {2}\] \d+ tests?\./gm, "[  PASSED  ] <n> tests."],
+  // clang-tidy's progress line per file and its count of warnings in headers it did not report.
+  [/^\[\d+\/\d+\] Processing file .*(?:\n|$)/gm, ""],
+  [/^\d+ warnings? generated\.(?:\n|$)/gm, ""],
 ];
 
 /**

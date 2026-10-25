@@ -75,7 +75,7 @@ jobs:
         run: bun scripts/check-branch-name.ts "$HEAD_REF"
 
   # The gate matrix's toolchain tier (#854): every stack's detected gates on a minimal project with
-  # the real tools. The runner image has Go, Rust (rustfmt, clippy), Java with Maven and .NET.
+  # the real tools. The runner image has Go, Rust (rustfmt, clippy), Java with Maven, .NET and CMake.
   gate-matrix:
     runs-on: ubuntu-latest
     permissions:
@@ -96,6 +96,9 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y python3-pytest
           pipx install ruff
+
+      - name: C and C++ tools
+        run: sudo apt-get install -y libgtest-dev clang-format clang-tidy
 
       - name: Gate matrix with toolchains
         env:

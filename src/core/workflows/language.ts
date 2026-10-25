@@ -3,7 +3,7 @@ import { readdirSync } from "node:fs";
 /** Review profile that runs as the `language` review dimension for the languages below. */
 export const LANGUAGE_REVIEW_PROFILE = "language-reviewer";
 
-export type ProjectLanguage = "go" | "dotnet" | "rust" | "java" | "ruby" | "php" | "lua";
+export type ProjectLanguage = "go" | "dotnet" | "rust" | "java" | "ruby" | "php" | "lua" | "cpp";
 
 const DOTNET_FILE = /\.(slnx?|csproj|fsproj|vbproj)$/i;
 
@@ -26,6 +26,9 @@ export function dotnetFiles(workspace: string): string[] {
 /** A LuaRocks rockspec, or the config of busted, luacheck, selene or StyLua (#1495). */
 const LUA_MANIFEST = /^(?:.+\.rockspec|\.busted|\.luacheckrc|selene\.toml|\.?stylua\.toml)$/;
 
+/** A C or C++ project's build or package manifest: CMake, Meson, vcpkg or Conan (#1490). */
+const C_MANIFEST = /^(?:CMakeLists\.txt|meson\.build|vcpkg\.json|conanfile\.(?:txt|py))$/;
+
 /** Languages whose manifests sit at the workspace root, in a fixed order. */
 export function detectLanguages(workspace: string): ProjectLanguage[] {
   const names = new Set(rootNames(workspace));
@@ -38,14 +41,15 @@ export function detectLanguages(workspace: string): ProjectLanguage[] {
     out.push("ruby");
   if (names.has("composer.json")) out.push("php");
   if ([...names].some((name) => LUA_MANIFEST.test(name))) out.push("lua");
+  if ([...names].some((name) => C_MANIFEST.test(name))) out.push("cpp");
   return out;
 }
 
 /**
  * The language review profile a run gets when its policy names none and the workspace is a Go,
- * .NET, Rust, Java, Ruby, PHP or Lua project: these are the languages where a general reviewer
- * misses platform pitfalls (newline, path separator, culture, error handling idioms, PHP's loose
- * comparisons, Lua's one-based indexing).
+ * .NET, Rust, Java, Ruby, PHP, Lua, C or C++ project: these are the languages where a general
+ * reviewer misses platform pitfalls (newline, path separator, culture, error handling idioms,
+ * PHP's loose comparisons, Lua's one-based indexing, C's undefined behavior).
  */
 export function languageReviewProfile(workspace: string): string | null {
   return detectLanguages(workspace).length > 0 ? LANGUAGE_REVIEW_PROFILE : null;
@@ -53,10 +57,10 @@ export function languageReviewProfile(workspace: string): string | null {
 
 /** Source and build files of the languages above, by extension or file name. */
 const LANGUAGE_FILE =
-  /(\.(go|cs|fs|vb|csproj|fsproj|vbproj|slnx?|props|targets|rs|java|kt|kts|rb|rake|gemspec|php|lua|luau|rockspec)$|(^|\/)(go\.mod|go\.sum|Cargo\.toml|Cargo\.lock|pom\.xml|build\.gradle|Gemfile|Gemfile\.lock|Rakefile|composer\.json|composer\.lock|\.busted|\.luacheckrc|selene\.toml|\.?stylua\.toml)$)/i;
+  /(\.(go|cs|fs|vb|csproj|fsproj|vbproj|slnx?|props|targets|rs|java|kt|kts|rb|rake|gemspec|php|lua|luau|rockspec|c|h|cc|cpp|cxx|hh|hpp|hxx)$|(^|\/)(go\.mod|go\.sum|Cargo\.toml|Cargo\.lock|pom\.xml|build\.gradle|Gemfile|Gemfile\.lock|Rakefile|composer\.json|composer\.lock|\.busted|\.luacheckrc|selene\.toml|\.?stylua\.toml|CMakeLists\.txt|meson\.build|vcpkg\.json|conanfile\.(?:txt|py))$)/i;
 
 /**
- * Whether a change touches a file of a Go, .NET, Rust, Java, Ruby, PHP or Lua project. The
+ * Whether a change touches a file of a Go, .NET, Rust, Java, Ruby, PHP, Lua, C or C++ project. The
  * language review only adds value there: in R08 it ran on changes to READMEs and scripts of such projects and found
  * nothing in four reviews at about 45k tokens each (#592).
  */

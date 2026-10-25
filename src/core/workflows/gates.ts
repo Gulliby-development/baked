@@ -1014,14 +1014,14 @@ export function luaGates(workspace: string): GateSuggestion[] {
   return out;
 }
 
-/** Folders a shell project's own scripts are not in. */
+/** Folders that hold no scripts or sources of the project's own. */
 const SHELL_SKIPPED = new Set(["node_modules", "vendor", "dist", "build", "target", "out"]);
 const SHELL_FILE = /\.(?:sh|bash)$/;
-/** At most this many scripts go on the shellcheck command line. */
-const MAX_SHELL_FILES = 200;
+/** At most this many files go on a shellcheck, clang-format or clang-tidy command line. */
+const MAX_LISTED_FILES = 200;
 
-/** The project's `.sh` and `.bash` scripts, by paths relative to it, three folders deep at most. */
-function shellScripts(workspace: string): string[] {
+/** The project's files whose names match, by paths relative to it, three folders deep at most. */
+function projectFiles(workspace: string, file: RegExp, skipped: ReadonlySet<string>): string[] {
   const out: string[] = [];
   const walk = (dir: string, depth: number) => {
     let entries: Dirent[];
@@ -1033,13 +1033,13 @@ function shellScripts(workspace: string): string[] {
     for (const entry of entries.sort((a, b) => (a.name < b.name ? -1 : 1))) {
       const path = dir ? `${dir}/${entry.name}` : entry.name;
       if (entry.isDirectory()) {
-        if (depth < 3 && !entry.name.startsWith(".") && !SHELL_SKIPPED.has(entry.name))
+        if (depth < 3 && !entry.name.startsWith(".") && !skipped.has(entry.name))
           walk(path, depth + 1);
-      } else if (entry.isFile() && SHELL_FILE.test(entry.name)) out.push(path);
+      } else if (entry.isFile() && file.test(entry.name)) out.push(path);
     }
   };
   walk("", 0);
-  return out;
+  return out.slice(0, MAX_LISTED_FILES);
 }
 
 /**
@@ -1053,7 +1053,7 @@ export function shellGates(workspace: string): GateSuggestion[] {
   const out: GateSuggestion[] = [];
   const preselected = process.platform !== "win32";
   if (has(workspace, ".shellcheckrc")) {
-    const scripts = shellScripts(workspace).slice(0, MAX_SHELL_FILES);
+    const scripts = projectFiles(workspace, SHELL_FILE, SHELL_SKIPPED);
     if (scripts.length)
       out.push({
         check: gate("shellcheck", "shellcheck", scripts, 120000),
@@ -1088,6 +1088,111 @@ export function shellGates(workspace: string): GateSuggestion[] {
       preselected,
     });
   return out;
+}
+
+/** Folders of a C or C++ project that hold no sources of its own: builds and vendored code. */
+const C_SKIPPED = new Set([
+  ...SHELL_SKIPPED,
+  "third_party",
+  "third-party",
+  "external",
+  "extern",
+  "deps",
+  "_deps",
+]);
+const C_SOURCE = /\.(?:c|cc|cpp|cxx)$/;
+const C_FILE = /\.(?:c|cc|cpp|cxx|h|hh|hpp|hxx)$/;
+/** A CMake script that registers tests with CTest. */
+const CTEST_TESTS =
+  /^\s*(?:enable_testing|add_test|gtest_discover_tests|gtest_add_tests|catch_discover_tests|doctest_discover_tests)\s*\(|^\s*include\s*\(\s*CTest\b/im;
+
+/**
+ * A CMake project's gates (#1490): configure into `build/` (with a compilation database for
+ * clang-tidy), build, clang-tidy when the project has a `.clang-tidy`, and CTest when a CMake
+ * script registers tests. A check runs without a shell, so the steps are separate gates, run in
+ * this order: CTest runs the binaries the build gate built. The Debug configuration is named for
+ * the multi-config generators (Visual Studio, Xcode, Ninja Multi-Config), which need it at build
+ * and test time; single-config generators ignore it. clang-tidy reads the compilation database,
+ * which the Visual Studio generators do not write, so it is not preselected on Windows.
+ */
+export function cmakeGates(
+  workspace: string,
+  platform: NodeJS.Platform = process.platform,
+): GateSuggestion[] {
+  if (!has(workspace, "CMakeLists.txt")) return [];
+  const out: GateSuggestion[] = [
+    {
+      check: gate(
+        "cmake-configure",
+        "cmake",
+        ["-S", ".", "-B", "build", "-DCMAKE_EXPORT_COMPILE_COMMANDS=ON"],
+        600000,
+      ),
+      source: "CMakeLists.txt",
+      reason: "cmake -S . -B build",
+      preselected: true,
+    },
+    {
+      check: gate("cmake-build", "cmake", ["--build", "build", "--config", "Debug"], 900000),
+      source: "CMakeLists.txt",
+      reason: "cmake --build build",
+      preselected: true,
+    },
+  ];
+  if (has(workspace, ".clang-tidy")) {
+    const sources = projectFiles(workspace, C_SOURCE, C_SKIPPED);
+    if (sources.length)
+      out.push({
+        check: gate(
+          "clang-tidy",
+          "clang-tidy",
+          ["-p", "build", "--quiet", "--warnings-as-errors=*", ...sources],
+          600000,
+        ),
+        source: ".clang-tidy",
+        reason: `clang-tidy on ${sources.length} source file${sources.length === 1 ? "" : "s"}`,
+        preselected: platform !== "win32",
+      });
+  }
+  const scripts = projectFiles(workspace, /^CMakeLists\.txt$/, C_SKIPPED);
+  const tests = scripts.find((path) => CTEST_TESTS.test(read(workspace, path) ?? ""));
+  if (tests)
+    out.push({
+      check: gate(
+        "ctest",
+        "ctest",
+        ["--test-dir", "build", "--output-on-failure", "-C", "Debug"],
+        900000,
+      ),
+      source: tests,
+      reason: "ctest --test-dir build --output-on-failure",
+      preselected: true,
+    });
+  return out;
+}
+
+/**
+ * clang-format on a C or C++ project's sources and headers when it has a `.clang-format` (#1490),
+ * listed when the gates are detected: clang-format takes files, not folders. Its fixer formats
+ * the task's file in place. The gate comes on top of the CMake gates or a Makefile's targets, so
+ * a Make project keeps `make test`.
+ */
+export function clangFormatGates(workspace: string): GateSuggestion[] {
+  const config = [".clang-format", "_clang-format"].find((name) => has(workspace, name));
+  if (!config) return [];
+  const files = projectFiles(workspace, C_FILE, C_SKIPPED);
+  if (!files.length) return [];
+  return [
+    {
+      check: {
+        ...gate("clang-format", "clang-format", ["--dry-run", "--Werror", ...files], 120000),
+        fix: { executable: "clang-format", args: ["-i"] },
+      },
+      source: config,
+      reason: `clang-format --dry-run --Werror on ${files.length} file${files.length === 1 ? "" : "s"} (fixer: clang-format -i)`,
+      preselected: true,
+    },
+  ];
 }
 
 /**
@@ -1265,6 +1370,8 @@ const TOOLCHAIN_GATES = {
   luarocks: luaGates,
   shell: shellGates,
   composer: composerGates,
+  cmake: cmakeGates,
+  clang: clangFormatGates,
 } as const;
 export type GateToolchain = keyof typeof TOOLCHAIN_GATES;
 
@@ -1286,8 +1393,8 @@ export const GATE_TOOLCHAINS: LanguageRecord<readonly GateToolchain[]> = {
   java: ["maven", "gradle"],
   kotlin: ["gradle", "maven"],
   scala: ["sbt", "gradle", "maven"],
-  c: none("C builds through Make or CMake, read by the runner detector"),
-  cpp: none("C++ builds through Make or CMake, read by the runner detector"),
+  c: ["cmake", "clang"],
+  cpp: ["cmake", "clang"],
   ruby: ["bundler"],
   php: ["composer"],
   swift: ["swift"],
@@ -1301,18 +1408,23 @@ export const GATE_TOOLCHAINS: LanguageRecord<readonly GateToolchain[]> = {
   solidity: none("Foundry has no gate detector; a Hardhat project is an npm package"),
 };
 
+/**
+ * Detectors of side tools whose config sits beside a project's own toolchain or Makefile: their
+ * gates come on top of either, so a `.shellcheckrc` (#1497) or a `.clang-format` (#1490) does not
+ * hide the Makefile's `make test`.
+ */
+const ADDED_GATES: ReadonlySet<GateToolchain> = new Set(["shell", "clang"]);
+
 export function detectGates(workspace: string, configured: Check[] = []): GateSuggestion[] {
   const known = new Set(configured.map((c) => formatCommandLine(c.executable, c.args)));
   const ids = new Set(configured.map((c) => c.id));
   const used = new Set(SUPPORTED_LANGUAGES.flatMap((l) => rowOf(GATE_TOOLCHAINS, l) ?? []));
   const toolchain = (Object.keys(TOOLCHAIN_GATES) as GateToolchain[])
-    .filter((key) => used.has(key) && key !== "shell")
+    .filter((key) => used.has(key) && !ADDED_GATES.has(key))
     .flatMap((key) => TOOLCHAIN_GATES[key](workspace));
-  // A project's shell scripts sit beside its own toolchain or Makefile, so the shell gates come
-  // on top of either (#1497).
-  const shell = shellGates(workspace);
+  const added = [...ADDED_GATES].flatMap((key) => TOOLCHAIN_GATES[key](workspace));
   const base = toolchain.length ? toolchain : runnerGates(workspace);
-  const all = [...base, ...shell.filter((s) => !base.some((b) => b.check.id === s.check.id))];
+  const all = [...base, ...added.filter((s) => !base.some((b) => b.check.id === s.check.id))];
   return all.filter(
     (s) => !ids.has(s.check.id) && !known.has(formatCommandLine(s.check.executable, s.check.args)),
   );

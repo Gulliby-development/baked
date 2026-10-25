@@ -54,7 +54,7 @@ Agents often leave code that passes the tests but hides failures. The rule pack 
 
 | Rule | Severity | Finds | Languages |
 | --- | --- | --- | --- |
-| `empty-catch` | error | `catch` with an empty block | JS/TS, Java, Kotlin, C#, PHP, Swift, Dart, Scala |
+| `empty-catch` | error | `catch` with an empty block | JS/TS, C++, Java, Kotlin, C#, PHP, Swift, Dart, Scala |
 | `catch-return-default` | error | a `catch` whose only statement returns `null`, `undefined`, `[]`, `{}`, `""`, `false`, `0` or `-1`, unless the enclosing function's declared return type announces that value: `null` from a function typed `: T \| null` (or Kotlin `T?`), `undefined` from one typed with `undefined`, `false` from one returning `boolean` or `bool` | same |
 | `promise-catch-ignore` | error | `.catch(() => {})` and handlers that return `undefined` or `null` | JS/TS |
 | `python-swallowed-exception` | error | an `except` clause that only does `pass`, `...`, `return`, `return None` or `continue` | Python |
@@ -64,7 +64,7 @@ Agents often leave code that passes the tests but hides failures. The rule pack 
 | `rust-unwrap` | warning | `unwrap()`/`expect()` outside `#[cfg(test)]` | Rust |
 | `ts-ignore` | error | `@ts-ignore`, `@ts-nocheck` | JS/TS |
 | `explicit-any` | warning | `: any`, `as any`, `<any>` | TS |
-| `lint-suppression` | warning | `eslint-disable`, `biome-ignore`, `# noqa`, `# type: ignore`, `# pylint: disable`, `//nolint`, `#[allow(...)]`, `@SuppressWarnings`, `#pragma warning disable`, `NOSONAR`, `# rubocop:disable`, `# standard:disable`, `@phpstan-ignore`, `@psalm-suppress`, `-- luacheck: ignore`, `-- selene: allow`, `# shellcheck disable=` | all |
+| `lint-suppression` | warning | `eslint-disable`, `biome-ignore`, `# noqa`, `# type: ignore`, `# pylint: disable`, `//nolint`, `#[allow(...)]`, `@SuppressWarnings`, `#pragma warning disable`, `NOSONAR`, `# rubocop:disable`, `# standard:disable`, `@phpstan-ignore`, `@psalm-suppress`, `-- luacheck: ignore`, `-- selene: allow`, `# shellcheck disable=`, `// NOLINT`, `#pragma GCC diagnostic ignored` | all |
 | `placeholder-body` | error | `throw new Error("not implemented")`, `throw new Error("TODO")` or `"todo: ..."` (a message that only starts with the word, such as `Todo with id 3 does not exist`, is not one), an exception with such a message in Java, Kotlin, C# or PHP, `todo!()`, `unimplemented!()`, `panic("not implemented")` or `panic("unimplemented")` in Go, `error("not implemented")` in Lua, Kotlin's `TODO()`, a .NET `NotImplementedException` with or without a message, an empty Java `UnsupportedOperationException()` (not in an override of a collection or iterator mutator such as `remove` or `add`, where it is the documented contract), a Python function whose whole body (after an optional docstring or `pass`) is `raise NotImplementedError` (not an `@abstractmethod`, nor a method of a class based on `ABC`, `Protocol` or `metaclass=ABCMeta`) | all |
 | `todo-comment` | warning | `TODO`, `FIXME`, `XXX`, `HACK` comments | all |
 | `whitespace-only-line` | error | a line of only spaces or tabs | code files except Markdown |

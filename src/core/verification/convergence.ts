@@ -345,12 +345,14 @@ export function failureSignature(output: string): string {
  * found" (#1753), and RSpec's "No examples found." or "All examples were filtered out" and
  * Minitest's "0 runs, 0 assertions" (#1493), all of which exit 0, PHPUnit's "No tests executed!"
  * (#1491; Pest says "No tests found") and busted's "No test files found matching Lua pattern"
- * (#1495), and a TAP plan of no tests, `1..0` (bats on an empty folder, #1497). A plan that
+ * (#1495), a TAP plan of no tests, `1..0` (bats on an empty folder, #1497), and CTest's "No
+ * tests were found!!!" (exit 0) or a GoogleTest binary's "0 tests from 0 test suites ran"
+ * (#1490). A plan that
  * writes the tests last has this state until its test tasks run, and it is no defect of the code
  * (#1031, #1208).
  */
 export function noTestsCollected(output: string): boolean {
-  return /\bno tests ran\b|\bno tests executed!|\bno test files found matching lua pattern\b|^1\.\.0(?:[ \t]+#.*)?$|\bcollected 0 items\b|\bno tests? (?:files? )?found\b|\bno test files\b|\bno files were found in testpaths\b|\b0 test files matching\b|\bdid not discover any tests to execute\b|\bno tests to run\b|\bdid not match any directory\/file\b|\btest directory "?test"? not found\b|\bno examples found\b|\ball examples were filtered out\b|^0 runs, 0 assertions\b/im.test(
+  return /\bno tests ran\b|\bno tests were found!!!|^\[==========\] 0 tests from 0 test suites ran\.|\bno tests executed!|\bno test files found matching lua pattern\b|^1\.\.0(?:[ \t]+#.*)?$|\bcollected 0 items\b|\bno tests? (?:files? )?found\b|\bno test files\b|\bno files were found in testpaths\b|\b0 test files matching\b|\bdid not discover any tests to execute\b|\bno tests to run\b|\bdid not match any directory\/file\b|\btest directory "?test"? not found\b|\bno examples found\b|\ball examples were filtered out\b|^0 runs, 0 assertions\b/im.test(
     output,
   );
 }

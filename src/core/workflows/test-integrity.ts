@@ -70,8 +70,9 @@ function commentLine(line: string): boolean {
     trimmed.startsWith("/*") ||
     trimmed.startsWith("*") ||
     trimmed.startsWith("<!--") ||
-    // `#[test]` and `#![allow]` are Rust attributes, not comments.
-    (trimmed.startsWith("#") && !/^#!?\[/.test(trimmed))
+    // `#[test]` and `#![allow]` are Rust attributes, not comments, and `#ifdef _WIN32` is the
+    // preprocessor guard of a C or C++ skip (#1490).
+    (trimmed.startsWith("#") && !/^#!?\[|^#(?:if|ifdef|ifndef|elif)\b/.test(trimmed))
   );
 }
 
@@ -328,6 +329,8 @@ const CAPABILITY = new RegExp(
     String.raw`\bpackage\.config\b|\bjit\.os\b|\bpcall\s*\(\s*require\b`,
     // Shell: `uname`, `$OSTYPE`, a tool that may be missing (`command -v jq`, `type -P`, `hash`).
     String.raw`\buname\b|\$\{?OSTYPE\b|\bcommand\s+-v\b|\btype\s+-P\b|^\s*hash\s+\w`,
+    // C and C++: the platform macros of a preprocessor guard (#1490).
+    String.raw`\b(?:_WIN32|_WIN64|_MSC_VER|__APPLE__|__linux__|__unix__|__FreeBSD__|__MINGW32__)\b`,
   ].join("|"),
 );
 /** Lines above a skip that its guard condition may span. */
@@ -373,6 +376,9 @@ const SUPPRESSIONS = new RegExp(
     String.raw`--\s*selene:\s*allow\b`,
     // ShellCheck (#1497).
     String.raw`#\s*shellcheck\s+disable=`,
+    // clang-tidy, and GCC's and Clang's diagnostic pragmas (#1490).
+    String.raw`//\s*NOLINT(?:NEXTLINE|BEGIN)?\b`,
+    String.raw`#\s*pragma\s+(?:GCC|clang)\s+diagnostic\s+ignored\b`,
   ].join("|"),
   "g",
 );

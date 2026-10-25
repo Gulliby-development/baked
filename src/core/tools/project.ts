@@ -8,7 +8,14 @@ import { bunShellArgs, IS_WIN } from "../platform/index.js";
 import { chatSandbox, SandboxUnavailableError, sandboxNotice } from "../security/sandbox.js";
 import { buildSafeEnv } from "../spawn.js";
 import { executeCheckCommand } from "../verification/check-runner.js";
-import { composerGates, formatCommandLine, luaGates, shellGates } from "../workflows/gates.js";
+import {
+  clangFormatGates,
+  cmakeGates,
+  composerGates,
+  formatCommandLine,
+  luaGates,
+  shellGates,
+} from "../workflows/gates.js";
 import { assertWorkspaceMutationAllowed } from "../workflows/leases.js";
 import { ProcessScope } from "../workflows/process-scope.js";
 import { pythonEnvironment } from "../workflows/toolchain.js";
@@ -350,13 +357,18 @@ async function detectToolchain(cwd: string): Promise<DetectedToolchain> {
     return profile;
   }
 
-  // C/C++ — CMake
-  if (await has("CMakeLists.txt")) {
-    profile.test = "ctest --test-dir build";
-    profile.build = "cmake --build build";
-    profile.lint = (await has(".clang-tidy")) ? "clang-tidy" : null;
-    profile.typecheck = "cmake --build build";
+  // C/C++ — CMake: the gates' own detection (#1490), so the agent runs what the checks run.
+  const cmake = cmakeGates(cwd).map((g) => g.check);
+  const clangFormat = clangFormatGates(cwd)[0]?.check;
+  if (cmake.length) {
+    const line = (c: { executable: string; args: string[] } | undefined) =>
+      c ? formatCommandLine(c.executable, c.args) : null;
+    profile.test = line(cmake.find((c) => c.id === "ctest"));
+    profile.build = line(cmake.find((c) => c.id === "cmake-build"));
+    profile.lint = line(cmake.find((c) => c.id === "clang-tidy"));
+    profile.typecheck = profile.build;
     profile.run = null;
+    profile.format = line(clangFormat?.fix);
     return profile;
   }
 
@@ -367,6 +379,9 @@ async function detectToolchain(cwd: string): Promise<DetectedToolchain> {
     profile.lint = null;
     profile.typecheck = null;
     profile.run = "make run";
+    profile.format = clangFormat?.fix
+      ? formatCommandLine(clangFormat.fix.executable, clangFormat.fix.args)
+      : null;
     return profile;
   }
 
@@ -637,6 +652,11 @@ export async function detectNativeChecks(cwd: string): Promise<string | null> {
   // Shell
   const shellcheck = shellGates(cwd).find((g) => g.check.id === "shellcheck");
   if (shellcheck) return formatCommandLine(shellcheck.check.executable, shellcheck.check.args);
+
+  // C and C++ (#1490): clang-format alone, since clang-tidy needs the compilation database that
+  // configuring the build writes.
+  const clangFormat = clangFormatGates(cwd)[0]?.check;
+  if (clangFormat) return formatCommandLine(clangFormat.executable, clangFormat.args);
 
   return null;
 }

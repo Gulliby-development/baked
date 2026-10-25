@@ -173,6 +173,10 @@ export const REPLAY_TARGETS: Record<
   vitest: { none: "Vitest runs each test file as its own suite" },
   tap: { none: "a TAP runner reports each test file on its own" },
   busted: { none: "busted loads each spec file on its own and runs the others" },
+  ctest: {
+    none: "CTest runs each test executable on its own; a build failure is the build gate's",
+  },
+  gtest: { none: "a GoogleTest binary builds as one target" },
   go: { none: "go test builds each package on its own, and a package's files build together" },
   // A collection error aborts the session; this flag collects and runs the other files, and each
   // file that does not collect is named in an "ERROR collecting" line.

@@ -10,7 +10,11 @@ export type { ParseError } from "./backends/tree-sitter.js";
  * bundled tree-sitter-ruby reported errors in 5 of 2,618 valid files of the RuboCop, RSpec and
  * parser gems (`$:` globals, `self(` calls, a leading magic comment). Lua stays out (#1495): the
  * bundled tree-sitter-lua reported errors in 374 of 1,133 files of busted, luassert, penlight and
- * luacheck that `luac -p` accepts (a call without parentheses, `local f = function`).
+ * luacheck that `luac -p` accepts (a call without parentheses, `local f = function`). C and C++
+ * stay out (#1490): the preprocessor is outside the grammars, and the bundled tree-sitter-c and
+ * tree-sitter-cpp reported errors in 162 of 400 C files (mypyc's runtime, CPython headers' users)
+ * and 76 of 241 C++ files (React Native modules, GoogleTest) that their compilers build, at an
+ * `#if` inside a declaration or a macro such as `JNICALL`.
  */
 const CHECKED_GRAMMARS: Record<string, string> = {
   ".rs": "rust",
