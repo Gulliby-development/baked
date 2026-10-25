@@ -61,6 +61,8 @@ const BUILD_ERRORS = [
   { runner: "pest", output: "PHP Fatal error:  Cannot redeclare App\\sum() in /repo/tests/SumTest.php on line 4\n", line: "PHP Fatal error:  Cannot redeclare App\\sum() in /repo/tests/SumTest.php on line 4" },
   // busted 2.2.0 (#1495): a spec file that does not parse, then one whose top level fails.
   { runner: "busted", output: "*\n0 successes / 0 failures / 1 error / 0 pending : 0.0012 seconds\n\nError -> spec/broken_spec.lua:3: <name> or '...' expected near 'end'\nspec/broken_spec.lua\n", line: "Error -> spec/broken_spec.lua:3: <name> or '...' expected near 'end'" },
+  { runner: "ctest", output: "Test project /w/build\n    Start 1: sum_test\nCould not find executable /w/build/sum_test\nLooked in the following places:\n/w/build/sum_test\nUnable to find executable: /w/build/sum_test\n1/1 Test #1: sum_test .........................***Not Run   0.00 sec\n\n0% tests passed, 1 tests failed out of 1\n\nTotal Test time (real) =   0.00 sec\n\nThe following tests FAILED:\n\t  1 - sum_test (Not Run)\nErrors while running CTest\n", line: "Unable to find executable: /w/build/sum_test" },
+  { runner: "gtest", output: "/w/tests/sum_test.cpp:5:15: error: 'sum' was not declared in this scope\n    5 |   EXPECT_EQ(sum(1, 2), 3);\n      |               ^~~\ngmake[2]: *** [CMakeFiles/sum_test.dir/build.make:76: CMakeFiles/sum_test.dir/tests/sum_test.cpp.o] Error 1\n", line: "/w/tests/sum_test.cpp:5:15: error: 'sum' was not declared in this scope" },
   { runner: "rspec", output: "\nAn error occurred while loading ./spec/broken_spec.rb. - Did you mean?\n                    rspec ./spec/calc_spec.rb\n\nFailure/Error: require_relative \"../lib/missing\"\n\nLoadError:\n  cannot load such file -- /repo/lib/missing\n# ./spec/broken_spec.rb:1:in `require_relative'\n\nFinished in 0.00007 seconds (files took 0.09928 seconds to load)\n0 examples, 0 failures, 1 error occurred outside of examples\n", line: "An error occurred while loading ./spec/broken_spec.rb. - Did you mean?" },
   { runner: "minitest", output: "<internal:/opt/ruby/lib/ruby/3.3.0/rubygems/core_ext/kernel_require.rb>:136:in `require': cannot load such file -- missing_lib (LoadError)\n\tfrom /repo/test/broken_test.rb:2:in `<top (required)>'\nrake aborted!\nCommand failed with status (1)", line: "<internal:/opt/ruby/lib/ruby/3.3.0/rubygems/core_ext/kernel_require.rb>:136:in `require': cannot load such file -- missing_lib (LoadError)" },
   { runner: "dart", output: "00:00 +0 -1: loading test/broken_test.dart [E]\n  Failed to load \"test/broken_test.dart\":\n  test/broken_test.dart:3:26: Error: Undefined name 'sum'.\n00:00 +1 -1: Some tests failed.\n", line: "  Failed to load \"test/broken_test.dart\":" },
@@ -354,8 +356,9 @@ describe("baseline replay per test target (#2020)", () => {
   });
 
   test("the build runner is read from the build-failure lines", () => {
-    // Pest prints PHP's own parse and fatal errors, as PHPUnit does; both share one replay row.
-    const shared: Record<string, string> = { pest: "phpunit" };
+    // Pest prints PHP's own parse and fatal errors, as PHPUnit does, and a GoogleTest binary the
+    // compiler errors CTest's build prints; each pair shares one replay row.
+    const shared: Record<string, string> = { pest: "phpunit", gtest: "ctest" };
     for (const row of BUILD_ERRORS) expect({ row: row.runner, runner: buildRunner(row.output) }).toEqual({ row: row.runner, runner: shared[row.runner] ?? row.runner });
     expect(buildRunner("(fail) a [0.1ms]")).toBeNull();
   });

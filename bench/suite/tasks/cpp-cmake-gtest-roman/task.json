@@ -1,0 +1,69 @@
+{
+  "id": "cpp-cmake-gtest-roman",
+  "language": "cpp",
+  "toolchain": "cmake",
+  "requires": [
+    "cmake",
+    "ctest",
+    "c++",
+    "clang-format"
+  ],
+  "allowedPaths": [
+    "src/**",
+    "tests/**",
+    "README.md",
+    "CMakeLists.txt",
+    ".clang-format"
+  ],
+  "checks": [
+    {
+      "id": "cmake-configure",
+      "executable": "cmake",
+      "args": [
+        "-S",
+        ".",
+        "-B",
+        "build",
+        "-DCMAKE_EXPORT_COMPILE_COMMANDS=ON"
+      ]
+    },
+    {
+      "id": "cmake-build",
+      "executable": "cmake",
+      "args": [
+        "--build",
+        "build",
+        "--config",
+        "Debug"
+      ]
+    },
+    {
+      "id": "ctest",
+      "executable": "ctest",
+      "args": [
+        "--test-dir",
+        "build",
+        "--output-on-failure",
+        "-C",
+        "Debug"
+      ]
+    },
+    {
+      "id": "clang-format",
+      "executable": "clang-format",
+      "args": [
+        "--dry-run",
+        "--Werror",
+        "src/roman.hpp",
+        "src/roman.cpp",
+        "tests/roman_test.cpp"
+      ],
+      "fix": {
+        "executable": "clang-format",
+        "args": [
+          "-i"
+        ]
+      }
+    }
+  ]
+}
