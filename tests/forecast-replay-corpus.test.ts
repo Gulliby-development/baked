@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join, relative } from "node:path";
 import { callCostRate, costRate } from "../src/core/workflows/budget.js";
-import { costGrowthLimit, dollarShortfall, shareShortfall } from "../src/core/workflows/initiatives/service.js";
+import { costGrowthLimit, dollarShortfall, shareShortfall, shareSpareUsd } from "../src/core/workflows/initiatives/service.js";
 import { forecastSamples } from "../src/core/workflows/stage-price.js";
 import { adaptiveFirstByteMs } from "../src/core/llm/provider-health.js";
 import { planApprovalDecision } from "../src/core/workflows/auto-approval.js";
@@ -301,14 +301,19 @@ describe("initiative starts replay on rewound traces (#1707)", () => {
       expect(costGrowthLimit(start.view, id)!).toBeLessThan(start.feature.needUsd!.low);
       expect(dollarShortfall(start.view, start.feature)).toBeNull();
     }
-    // From three measured features the cap bounds the check again (#2099), and the replay keeps
-    // the would-stop next to what the initiative spent in the end.
+    // From three measured features the cap bounds the check again (#2099). stepscmd recorded a
+    // would-stop there at the blended rate, $1.31 spare against a $2.39 low, and the initiative
+    // ended at $26.33 under its $30 cap: priced at its task calls' rate the low is $1.66 and the
+    // spare $1.88, so it records none (#2123).
     const later = seen.get("stepscmd")!;
     expect(later.view.budget.cost.measuredFeatures).toBe(3);
-    expect(dollarShortfall(later.view, later.feature)).toStartWith("The shared dollar budget is short: stepscmd has $");
+    expect(costGrowthLimit(later.view, "stepscmd")!).toBeLessThan(later.feature.needUsd!.low);
+    expect(later.feature.taskNeedUsd!.low).toBeLessThan(later.feature.needUsd!.low * 0.75);
+    expect(shareSpareUsd(later.view, "stepscmd")!).toBeGreaterThan(later.feature.taskNeedUsd!.low);
+    expect(dollarShortfall(later.view, later.feature)).toBeNull();
     const [replay] = replayInitiativeStarts(join(ROOT, "R62", "stepvet.sqlite.gz"));
-    expect(replay?.starts.find((b) => b.featureId === "stepscmd")?.shareWouldStop).toMatchObject({ measuredFeatures: 3, finalUsd: 26.33 });
-    expect(replay?.starts.filter((b) => b.shareWouldStop !== null).map((b) => b.featureId)).toEqual(["stepscmd"]);
+    expect(replay?.finalUsd).toBe(26.33);
+    expect(replay?.starts.filter((b) => b.shareWouldStop !== null).map((b) => b.featureId)).toEqual([]);
   }, 120000);
 
   test("#2099: R67 ampwhy's dollar share gates record no would-stop before the dollar rate is measured", () => {

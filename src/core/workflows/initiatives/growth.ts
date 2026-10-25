@@ -11,22 +11,36 @@ import type { InitiativeView, ShareGateView, UsageView } from "./service.js";
 const cents = (n: number): number => Math.floor(n * 100) / 100;
 
 /**
+ * A feature's priced low estimate at the blended stage-mix rate (`needUsd`), or with `task` at the
+ * initiative's task-call rate once one is measured (`taskNeedUsd`, #2123); null when unpriced.
+ */
+export function lowUsd(
+  feature: Partial<Pick<ShareGateView["features"][number], "needUsd" | "taskNeedUsd">>,
+  rate: "blended" | "task",
+): number | null {
+  const range = rate === "task" ? (feature.taskNeedUsd ?? feature.needUsd) : feature.needUsd;
+  return range?.low ?? null;
+}
+
+/**
  * The dollars a starting feature's cap may grow to independently of tokens: the remaining dollar
  * budget less the priced low estimates of the other waiting features. Unpriced features reserve
  * their whole shares. A feature's cap was fixed at its share while its token budget grew:
  * bench round 35's sum feature stopped on its $1.46
  * cap with 62% of its grown tokens unused and $14 of the initiative unspent (#1353). Null without a
- * dollar budget.
+ * dollar budget. With `task`, the share gate's reading (`shareSpareUsd`), the other features' lows
+ * are priced at the task-call rate; a run's cap still grows at the blended one.
  */
 export function costGrowthLimit(
   view: Pick<ShareGateView, "budget" | "features">,
   featureId: string,
+  rate: "blended" | "task" = "blended",
 ): number | null {
   const remaining = view.budget.cost?.remainingUsd;
   if (remaining === null || remaining === undefined) return null;
   const reserve = view.features
     .filter((f) => f.share !== null && f.id !== featureId)
-    .reduce((sum, f) => sum + (f.needUsd?.low ?? f.shareUsd ?? 0), 0);
+    .reduce((sum, f) => sum + (lowUsd(f, rate) ?? f.shareUsd ?? 0), 0);
   return Math.max(0, remaining - reserve);
 }
 

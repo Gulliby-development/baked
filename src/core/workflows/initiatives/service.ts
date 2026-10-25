@@ -84,7 +84,7 @@ import {
   SIZE_STAGE_FACTOR,
   SIZE_TASK_FACTOR,
 } from "./estimate.js";
-import { initiativePriceSamples } from "./forecast.js";
+import { initiativePriceSamples, taskCallRate } from "./forecast.js";
 import { costGrowthLimit, guardGrowth, openGuardRoom, refreshedGrowth } from "./growth.js";
 import {
   applySplitEdit,
@@ -292,6 +292,11 @@ export interface FeatureView {
   shareUsd: number | null;
   /** Priced low and high estimates, independent of the allocated dollar share. */
   needUsd?: TokenRange | null;
+  /**
+   * The same tokens at the initiative's task-call rate (`taskCallRate`, #2123), which the dollar
+   * share gate reads; null until a task call of the initiative is priced.
+   */
+  taskNeedUsd?: TokenRange | null;
   /** The workflow feature ID of this feature's runs. */
   runFeatureId: string;
   /** The GitHub issue the feature's runs start from and their delivery closes; null without one. */
@@ -462,9 +467,12 @@ export interface ShareGateView {
    */
   budget: Pick<InitiativeView["budget"], "remaining" | "cost"> &
     Partial<Pick<InitiativeView["budget"], "limits" | "used" | "pool" | "planCharge">>;
-  /** `shareUsd` and `needUsd` are recorded from #1890 on; older events have neither. */
+  /**
+   * `shareUsd` and `needUsd` are recorded from #1890 on, `taskNeedUsd` from #2123 on; older events
+   * have none of them.
+   */
   features: (Pick<FeatureView, "id" | "state" | "share" | "need"> &
-    Partial<Pick<FeatureView, "shareUsd" | "needUsd">>)[];
+    Partial<Pick<FeatureView, "shareUsd" | "needUsd" | "taskNeedUsd">>)[];
 }
 
 /** The `feature.share_gate` event: the gate's inputs and what it decided for one feature. */
@@ -481,7 +489,7 @@ export interface ShareGateRecord {
   >;
   view: ShareGateView;
   feature: Pick<FeatureView, "id" | "share" | "need" | "shareUsd"> &
-    Partial<Pick<FeatureView, "needUsd">>;
+    Partial<Pick<FeatureView, "needUsd" | "taskNeedUsd">>;
 }
 
 /** The waiting features (no run yet) with an estimate, as the token pool reads them. */
@@ -546,7 +554,7 @@ function extendAdvice(
 export function shareShortfall(
   view: ShareGateView,
   feature: Pick<FeatureView, "id" | "share" | "need" | "shareUsd"> &
-    Partial<Pick<FeatureView, "needUsd">>,
+    Partial<Pick<FeatureView, "needUsd" | "taskNeedUsd">>,
 ): RecoveryAdvice | null {
   const cost = view.budget.cost;
   const id = view.initiativeId;
@@ -625,16 +633,17 @@ export function shareShortfall(
  * guess and nothing else: R62 stepvet recorded two would-stops at the first starts, both false
  * (lines and stepexpr started anyway, finished and left $3.67 of $30 unspent), so the check waits
  * for the first measured feature (#1714). Until `MIN_CALIBRATION_FEATURES` features are measured
- * the dollars per token are too (`shareSpareUsd`).
+ * the dollars per token are too (`shareSpareUsd`). Lows are priced at the initiative's task-call
+ * rate once a task call is priced (`gateNeedUsd`, #2123).
  */
 export function dollarShortfall(
   view: ShareGateView,
-  feature: Pick<FeatureView, "id"> & Partial<Pick<FeatureView, "needUsd">>,
+  feature: Pick<FeatureView, "id"> & Partial<Pick<FeatureView, "needUsd" | "taskNeedUsd">>,
 ): string | null {
   const cost = view.budget.cost;
   if (cost.measuredFeatures === 0) return null;
   const spare = shareSpareUsd(view, feature.id);
-  const needUsd = feature.needUsd;
+  const needUsd = gateNeedUsd(feature);
   if (!needUsd || spare === null || cost.ceilingUsd === null || spare >= needUsd.low) return null;
   const ceiling =
     cost.capUsd !== null && cost.ceilingUsd > cost.capUsd
@@ -663,27 +672,41 @@ function uncalibratedSlack(cost: ShareGateView["budget"]["cost"]): number {
  * The spare dollars the `initiative-dollar-share` rule compares with a starting feature's priced
  * low estimate: `costGrowthLimit`, with the remaining dollars counted up to the tolerance ceiling
  * instead of the cap while the dollar rate is uncalibrated (`uncalibratedSlack`). The bound a run's
- * cap grows to stays `costGrowthLimit`.
+ * cap grows to stays `costGrowthLimit` at the blended rate; the other waiting features' lows here
+ * are at the task-call rate (`gateNeedUsd`, #2123).
  */
 export function shareSpareUsd(view: ShareGateView, featureId: string): number | null {
   const cost = view.budget.cost;
   const slack = uncalibratedSlack(cost);
-  if (!slack || cost.remainingUsd === null) return costGrowthLimit(view, featureId);
+  if (!slack || cost.remainingUsd === null) return costGrowthLimit(view, featureId, "task");
   const remainingUsd = cost.remainingUsd + slack;
   return costGrowthLimit(
     { ...view, budget: { ...view.budget, cost: { ...cost, remainingUsd } } },
     featureId,
+    "task",
   );
+}
+
+/**
+ * The priced estimate the dollar share gate reads: at the initiative's task-call rate once one is
+ * measured (`taskNeedUsd`), else at the blended stage-mix rate (`needUsd`). The blended rate counts
+ * planning and review calls, which cost more per token and scale with the number of features, not
+ * their size: R62 stepvet's stepscmd would-stop at three measured features was false (#2123).
+ */
+export function gateNeedUsd(
+  feature: Partial<Pick<FeatureView, "needUsd" | "taskNeedUsd">>,
+): TokenRange | null {
+  return feature.taskNeedUsd ?? feature.needUsd ?? null;
 }
 
 /** How many more dollars start `feature` at its priced low estimate; null when none are missing. */
 function dollarRaise(
   view: ShareGateView,
-  feature: Pick<FeatureView, "id"> & Partial<Pick<FeatureView, "needUsd">>,
+  feature: Pick<FeatureView, "id"> & Partial<Pick<FeatureView, "needUsd" | "taskNeedUsd">>,
 ): number | null {
   // Raising the cap by the gap raises the ceiling by at least as much.
   const spare = shareSpareUsd(view, feature.id);
-  const needUsd = feature.needUsd;
+  const needUsd = gateNeedUsd(feature);
   if (!needUsd || spare === null || spare >= needUsd.low) return null;
   return Math.ceil((needUsd.low - spare) * 100) / 100;
 }
@@ -1864,6 +1887,7 @@ export class InitiativeService {
         need: f.need,
         shareUsd: f.shareUsd,
         needUsd: f.needUsd ?? null,
+        taskNeedUsd: f.taskNeedUsd ?? null,
       })),
     };
     const mode = this.extendWithinDollars();
@@ -1891,6 +1915,7 @@ export class InitiativeService {
           need: f.need,
           shareUsd: f.shareUsd,
           needUsd: f.needUsd ?? null,
+          taskNeedUsd: f.taskNeedUsd ?? null,
         })),
       },
       feature: {
@@ -1899,6 +1924,7 @@ export class InitiativeService {
         need: feature.need,
         shareUsd: feature.shareUsd,
         needUsd: feature.needUsd ?? null,
+        taskNeedUsd: feature.taskNeedUsd ?? null,
       },
     };
     this.store.emit(id, "feature.share_gate", record);
@@ -2131,6 +2157,7 @@ export class InitiativeService {
       inputs: {
         spareUsd: shareSpareUsd(view, feature.id),
         needUsd: feature.needUsd ?? null,
+        taskNeedUsd: feature.taskNeedUsd ?? null,
         remainingUsd: view.budget.cost.remainingUsd,
         remainingTo: uncalibratedSlack(view.budget.cost) > 0 ? "ceiling" : "cap",
         measuredFeatures: view.budget.cost.measuredFeatures,
@@ -2740,7 +2767,9 @@ export class InitiativeService {
     const needs = estimate ? this.featureNeeds(estimate) : null;
     for (const feature of waitingForRun) {
       feature.need = needs?.get(feature.id) ?? null;
-      feature.needUsd = estimate?.features.find((f) => f.featureId === feature.id)?.costUsd ?? null;
+      const priced = estimate?.features.find((f) => f.featureId === feature.id);
+      feature.needUsd = priced?.costUsd ?? null;
+      feature.taskNeedUsd = priced?.taskCostUsd ?? null;
     }
     const cost = this.costView(row, settings, plan, runIds, used, accepted, estimate);
     const shares = splitShares(waitingForRun, remaining, cost.remainingUsd);
@@ -3415,8 +3444,18 @@ export class InitiativeService {
       history,
       historyStorePaths(this.workflows.workspace, settings.basePolicy),
     );
+    const taskRate = taskCallRate(
+      forecastSamples(
+        this.workflows.store,
+        this.store.links(row.id).map((l) => l.run_id),
+      ),
+    );
     const planned = new Map<string, PlannedStage[]>();
     for (const feature of estimate.features) {
+      feature.taskCostUsd =
+        taskRate === null
+          ? null
+          : { low: feature.tokens.low * taskRate, high: feature.tokens.high * taskRate };
       if (!planned.has(feature.workflowId))
         planned.set(feature.workflowId, this.plannedFeatureStages(settings, feature.workflowId));
       const stages = planned.get(feature.workflowId) ?? [];
@@ -3968,7 +4007,7 @@ function costPolicy(
 export function poolGrowthOf(
   view: ShareGateView,
   feature: Pick<FeatureView, "id" | "share" | "need" | "shareUsd"> &
-    Partial<Pick<FeatureView, "needUsd">>,
+    Partial<Pick<FeatureView, "needUsd" | "taskNeedUsd">>,
   limitTokens?: number,
 ): PoolExtension | null {
   const inputs = shareGatePool(view, limitTokens);

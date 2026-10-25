@@ -1650,9 +1650,13 @@ export const FEATURES: readonly Feature[] = [
     cli: [
       "baked workflow initiative start",
       "baked workflow initiative extend",
-      "baked workflow initiative show",
+      "baked workflow initiative show: features needUsd and taskNeedUsd (task-call rate)",
     ],
-    api: ["/v1/initiatives", "/v1/initiatives/:id", "/v1/initiatives/:id/extend"],
+    api: [
+      "/v1/initiatives",
+      "/v1/initiatives/:id: features needUsd and taskNeedUsd",
+      "/v1/initiatives/:id/extend",
+    ],
     desktop: [
       "project/initiatives: Dollar cap in New initiative and Extend budget, dollars on the shared budget line",
     ],

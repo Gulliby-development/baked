@@ -13,12 +13,16 @@ afterEach(async () => {
   for (const cleanup of cleanups.splice(0).reverse()) await cleanup();
 });
 
-/** The split and f1 pay $2 on uncached planning (a high dollar rate); f2 to f4 pay $0.60 each. */
-async function scenario(capUsd: number) {
+/**
+ * The split and f1 pay $2 on uncached planning (a high dollar rate); f2 to f4 pay $0.60 each. Task
+ * calls are uncached too, so the task-call rate the gate prices at (#2123) is the planning rate.
+ */
+async function scenario(capUsd: number, costTolerance?: number) {
   const history = await historyFixture(1, { taskShare: 0.8 });
   cleanups.push(() => history.dispose());
   const result = await plannedForecastScenario(4, { fixture: 2, f1: 2, f2: 0.6, f3: 0.6, f4: 0.6 }, [history.root], {
-    mix: { taskShare: 0.1, planCache: 0 }, skeleton: false, capUsd,
+    mix: { taskShare: 0.1, planCache: 0, cache: 0 }, skeleton: false, capUsd,
+    ...(costTolerance === undefined ? {} : { costTolerance }),
   });
   cleanups.push(() => result.fixture.dispose());
   return result;
@@ -31,10 +35,10 @@ const wouldStops = (events: { type: string; payload: unknown }[]) =>
 
 describe("scenario: the dollar share waits for a measured dollar rate (#2099, R67 ampwhy)", () => {
   test("a first feature at a high dollar rate does not make features 2 and 3 would-stop", async () => {
-    // $4.70 and its $5.88 ceiling: against the cap f2's spare is $0.65, below its $1.02 low.
-    const { initiatives, view } = await scenario(4.7);
+    // $4.00 and its $5.00 ceiling: against the cap f2's spare is $0.36, below its $0.82 low.
+    const { initiatives, view } = await scenario(4);
     const f2 = view.features[1]!;
-    expect(view.budget.cost).toMatchObject({ measuredFeatures: 1, capUsd: 4.7, ceilingUsd: 5.88 });
+    expect(view.budget.cost).toMatchObject({ measuredFeatures: 1, capUsd: 4, ceilingUsd: 5 });
     expect(costGrowthLimit(view, "f2")!).toBeLessThan(f2.needUsd!.low);
     expect(shareSpareUsd(view, "f2")!).toBeGreaterThan(f2.needUsd!.low);
     expect(dollarShortfall(view, f2)).toBeNull();
@@ -44,9 +48,9 @@ describe("scenario: the dollar share waits for a measured dollar rate (#2099, R6
   }, 120000);
 
   test("a shortage past the ceiling still records a would-stop", async () => {
-    // $4.00 and its $5.00 ceiling: after $2 spent, the $3.00 to the ceiling less f3's and f4's
-    // $1.02 lows does not cover f2's.
-    const { initiatives, view } = await scenario(4);
+    // $4.00 and a 10% band to $4.40: after $2 spent, the $2.39 to the ceiling less f3's and f4's
+    // $0.82 lows does not cover f2's.
+    const { initiatives, view } = await scenario(4, 0.1);
     const f2 = view.features[1]!;
     expect(view.budget.cost.measuredFeatures).toBe(1);
     expect(shareSpareUsd(view, "f2")!).toBeLessThan(f2.needUsd!.low);

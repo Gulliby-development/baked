@@ -84,3 +84,22 @@ export function initiativePriceSamples(
     ),
   ];
 }
+
+/**
+ * The dollars per token the initiative's own task calls paid: implementation and corrective task
+ * attempts, which `forecastSamples` files under `implement`. Null until one is priced. Planning
+ * and review calls cost more per token and scale with the number of features, not their size: on
+ * R67 ampwhy the initiative's blended rate was $2.22 per million at the first gate, $1.83 at
+ * reader and $1.50 at scanning, against $1.33 for the whole initiative (#2123).
+ */
+export function taskCallRate(samples: readonly AttemptUsageRow[]): number | null {
+  let tokens = 0;
+  let usd = 0;
+  for (const a of samples) {
+    if (a.stage !== "implement" || a.status === "running" || a.costUsd === null) continue;
+    if (!a.usedTokens) continue;
+    tokens += a.usedTokens;
+    usd += a.costUsd;
+  }
+  return tokens > 0 ? usd / tokens : null;
+}

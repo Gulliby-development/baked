@@ -2,10 +2,13 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import fc from "fast-check";
 import { canonical } from "../src/core/specs/hash.js";
 import { type CostForecast, costForecast, kindRatio } from "../src/core/workflows/cost-forecast.js";
+import { taskCallRate } from "../src/core/workflows/initiatives/forecast.js";
+import { costGrowthLimit, gateNeedUsd } from "../src/core/workflows/initiatives/service.js";
 import { POOL_STEP, planCharge, planChargeTokens, poolExtensionDecision, poolForecast, tokenPool } from "../src/core/workflows/initiatives/token-pool.js";
 import type { RunPolicy } from "../src/core/workflows/schemas.js";
 import { type TaskKind, verificationTokens } from "../src/core/workflows/sizing.js";
 import type { AttemptUsageRecord } from "../src/core/workflows/step-budget.js";
+import type { AttemptUsageRow } from "../src/core/workflows/usage.js";
 import { WorkflowStore } from "../src/core/workflows/store.js";
 import type { Task } from "../src/core/workflows/types.js";
 import { fixturePolicy, workflowFixture } from "./helpers/workflow-fixture.js";
@@ -545,5 +548,52 @@ describe("plan charge invariants (#2100)", () => {
       const planAfter = after?.planCommittedTokens ?? limitCommitted - held(ended) + ended.usedTokens;
       expect(planAfter).toBe(charge.planCommittedTokens - ended.chargeTokens + ended.usedTokens);
     }), { numRuns: 300 });
+  });
+});
+
+describe("task-call rate invariants (#2123)", () => {
+  const attempt = fc.record({
+    stage: fc.constantFrom("implement", "plan", "review", "specify"),
+    status: fc.constantFrom("completed", "failed", "running"),
+    usedTokens: fc.option(fc.integer({ min: 0, max: 3_000_000 }), { nil: null }),
+    perMillion: fc.option(fc.double({ min: 0.05, max: 20, noNaN: true }), { nil: null }),
+  }).map((a, i) => ({
+    attemptId: `a${i}`, stage: a.stage, status: a.status, usedTokens: a.usedTokens,
+    costUsd: a.perMillion === null ? null : ((a.usedTokens ?? 0) * a.perMillion) / 1e6,
+  }) as unknown as AttemptUsageRow);
+  const priced = (a: AttemptUsageRow) =>
+    a.stage === "implement" && a.status !== "running" && a.costUsd !== null && (a.usedTokens ?? 0) > 0;
+
+  test("it reads only finished, priced task calls, and lies between their own rates", () => {
+    fc.assert(fc.property(fc.array(attempt, { maxLength: 12 }), (samples) => {
+      const tasks = samples.filter(priced);
+      const rate = taskCallRate(samples);
+      if (!tasks.length) return expect(rate).toBeNull();
+      const rates = tasks.map((a) => a.costUsd! / a.usedTokens!);
+      expect(rate!).toBeGreaterThanOrEqual(Math.min(...rates) * (1 - 1e-9));
+      expect(rate!).toBeLessThanOrEqual(Math.max(...rates) * (1 + 1e-9));
+      // Planning and review calls, running attempts and unpriced ones never move it.
+      expect(taskCallRate(tasks)).toBe(rate);
+    }), { numRuns: 300 });
+  });
+
+  test("the share gate reads the task-call low once there is one; a run's cap grows at the blended one", () => {
+    fc.assert(fc.property(
+      fc.double({ min: 0, max: 50, noNaN: true }),
+      fc.array(fc.record({ blended: fc.double({ min: 0, max: 10, noNaN: true }), task: fc.option(fc.double({ min: 0, max: 10, noNaN: true }), { nil: null }) }), { minLength: 1, maxLength: 6 }),
+      (remainingUsd, lows) => {
+        const features = lows.map((l, i) => ({
+          id: `f${i}`, state: "ready" as const, share: { tokens: 1, calls: 1, activeMs: 1 }, need: null, shareUsd: 1,
+          needUsd: { low: l.blended, high: l.blended * 2 },
+          taskNeedUsd: l.task === null ? null : { low: l.task, high: l.task * 2 },
+        }));
+        const view = { budget: { cost: { remainingUsd } }, features } as unknown as Parameters<typeof costGrowthLimit>[0];
+        const reserve = (pick: (f: (typeof features)[number]) => number) =>
+          features.slice(1).reduce((n, f) => n + pick(f), 0);
+        expect(costGrowthLimit(view, "f0")).toBeCloseTo(Math.max(0, remainingUsd - reserve((f) => f.needUsd.low)), 9);
+        expect(costGrowthLimit(view, "f0", "task")).toBeCloseTo(Math.max(0, remainingUsd - reserve((f) => (f.taskNeedUsd ?? f.needUsd).low)), 9);
+        for (const f of features) expect(gateNeedUsd(f)).toEqual(f.taskNeedUsd ?? f.needUsd);
+      },
+    ), { numRuns: 300 });
   });
 });

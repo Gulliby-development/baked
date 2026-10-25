@@ -137,6 +137,8 @@ export type FeatureEstimateBasis =
 export interface FeatureEstimate {
   /** Dollar range on the workflow's routed models; absent without a shared dollar budget. */
   costUsd?: TokenRange | null;
+  /** The same tokens at the initiative's task-call rate (#2123); null until one is priced. */
+  taskCostUsd?: TokenRange | null;
   featureId: string;
   title: string;
   workflowId: string;

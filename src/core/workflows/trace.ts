@@ -97,6 +97,7 @@ import type { initiativePriceSamples } from "./initiatives/forecast.js";
 import {
   dollarShortfall,
   type FeatureView,
+  gateNeedUsd,
   InitiativeService,
   type InitiativeView,
   planChargedGate,
@@ -2166,7 +2167,10 @@ export interface InitiativeStartBoundary {
   shareWouldStop: {
     summary: string;
     spareUsd: number | null;
+    /** The low the gate read: at the task-call rate once measured (#2123). */
     lowUsd: number | null;
+    /** The same low at the blended stage-mix rate. */
+    blendedLowUsd: number | null;
     measuredFeatures: number;
     finalUsd: number | null;
   } | null;
@@ -2650,7 +2654,8 @@ function replayStarts(
             ? {
                 summary: short,
                 spareUsd: shareSpareUsd(view, link.feature_id),
-                lowUsd: feature?.needUsd?.low ?? null,
+                lowUsd: (feature && gateNeedUsd(feature)?.low) ?? null,
+                blendedLowUsd: feature?.needUsd?.low ?? null,
                 measuredFeatures: cost.measuredFeatures,
                 finalUsd: finalUsd > 0 ? Math.round(finalUsd * 100) / 100 : null,
               }
