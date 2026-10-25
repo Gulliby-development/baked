@@ -3838,7 +3838,8 @@ describe.skipIf(!toolchains)("gate matrix: toolchains", () => {
       writeFileSync(join(root, "tests/sum_test.cpp"), suite(`${adds}TEST(SumTest, Later) { GTEST_SKIP() << "not ready"; }\nTEST(SumTest, DISABLED_Slow) { EXPECT_EQ(1, 1); }\n`));
       await build();
       const passing = await run(byId("ctest"));
-      expect([passing.status, testCount(passing.outputTail), testsRan(passing.outputTail)]).toEqual(["passed", { tool: "ctest", count: 2 }, { tool: "ctest", count: 1 }]);
+      // The output is in the expectation when the summary is not read, as in build().
+      expect([passing.status, testCount(passing.outputTail), testsRan(passing.outputTail), testCount(passing.outputTail) ? "" : passing.outputTail]).toEqual(["passed", { tool: "ctest", count: 2 }, { tool: "ctest", count: 1 }, ""]);
       // The test binary on its own prints GoogleTest's summary.
       const binary = await run({ ...byId("ctest"), id: "sum-test", executable: join(root, "build", "sum_test"), args: [] });
       expect([binary.status, testCount(binary.outputTail), testsRan(binary.outputTail)]).toEqual(["passed", { tool: "gtest", count: 2 }, { tool: "gtest", count: 1 }]);
