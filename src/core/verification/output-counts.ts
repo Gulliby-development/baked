@@ -113,6 +113,15 @@ export function diagnosticCount(output: string): OutputCount | null {
     const warned = lines(output, /^L:\s*\d+\s*\|\s*P:\s*\d+\s*\|\s*\w+\s*\|\s*WARNING:/);
     return { tool: "sqlfluff", count: violations, errors: violations - warned };
   }
+  // PSScriptAnalyzer through the gate's format (#1498): one "path:4:3: Warning PSAvoidUsingWriteHost:
+  // ..." line per finding, nothing on a clean run.
+  const analyzer = lines(output, /:\d+:\d+: (?:Error|Warning|ParseError) \w+: /);
+  if (analyzer)
+    return {
+      tool: "psscriptanalyzer",
+      count: analyzer,
+      errors: lines(output, /:\d+:\d+: (?:Error|ParseError) \w+: /),
+    };
   // dart analyze and flutter analyze: "  error - lib/a.dart:3:14 - ... - invalid_assignment", then
   // "2 issues found." or "No issues found!". Infos are lints dart analyze exits 0 on.
   if (
@@ -165,7 +174,11 @@ export type TestRunner =
   | "busted"
   | "dart"
   | "junit"
-  | "tap";
+  | "tap"
+  | "pester";
+
+const PESTER_SUMMARY =
+  /^Tests Passed: (\d+), Failed: (\d+), Skipped: (\d+), Inconclusive: (\d+), NotRun: (\d+)/m;
 
 /** Pest's summary: its counts by outcome, then the assertions (Jest's has a total instead). */
 /** busted's summary: "2 successes / 1 failure / 1 error / 1 pending : 0.0015 seconds". */
@@ -248,6 +261,18 @@ const TEST_COUNTERS: readonly {
       /^test result: /m.test(o)
         ? (sum(o, /^test result: \w+\. (\d+) passed;/gm) ?? 0) + (sum(o, /; (\d+) failed;/g) ?? 0)
         : null,
+  },
+  {
+    tool: "pester",
+    // Pester 5: "Tests Passed: 1, Failed: 1, Skipped: 1, Inconclusive: 0, NotRun: 0" (#1498)
+    count: (o) => {
+      const m = o.match(PESTER_SUMMARY);
+      return m ? [1, 2, 3, 4, 5].reduce((n, i) => n + Number(m[i]), 0) : null;
+    },
+    ran: (o) => {
+      const m = o.match(PESTER_SUMMARY);
+      return m ? Number(m[1]) + Number(m[2]) : null;
+    },
   },
   {
     tool: "dotnet",
@@ -446,6 +471,7 @@ export const TEST_RUNNERS: LanguageRecord<readonly TestRunner[]> = {
   solidity: none("forge test summaries are not read"),
   // pgTAP through pg_prove prints TAP.
   sql: ["tap"],
+  powershell: ["pester"],
 };
 
 const captured = (output: string, pattern: RegExp): string[] => [
@@ -493,6 +519,8 @@ export const FAILED_TESTS: Record<TestRunner, (output: string) => string[]> = {
   // "Failure -> spec/sum_spec.lua @ 7" or "Error -> ...", then "sum is commutative"; an error named
   // "suite spec/a_spec.lua" is a spec file that did not load, not a test.
   busted: (o) => captured(o, /^(?:Failure|Error) (?:->|→) \S+ @ \d+\r?\n(?!suite )(.+?)\s*$/gm),
+  // "[-] Get-Sum.is commutative 36ms (34ms|2ms)", not a container's "[-] tests/a.Tests.ps1 failed with:"
+  pester: (o) => captured(o, /^\s*\[-\] (.+?) \d+(?:\.\d+)?m?s \(/gm),
   // "00:00 +1 -1: test/calc_test.dart: fails on purpose [E]", not a file that did not load
   dart: (o) =>
     captured(o, new RegExp(`${DART_LINE}(?!loading \\S+ \\[E\\])(.+?) \\[E\\]\\s*$`, "gm")),
@@ -557,6 +585,9 @@ export const BUILD_FAILURES: Record<TestRunner, RegExp> = {
   junit: /^(?:> Task :\S*[cC]ompile\S* FAILED|.+\.(?:java|kt):\d+: error: .+)$/,
   // "Bail out! Cannot find module"
   tap: /^Bail out!.*$/,
+  // "[-] Discovery in /w/tests/Sum.Tests.ps1 failed with:", "[-] /w/tests/Sum.Tests.ps1 failed with:"
+  // (a BeforeAll that throws), and the "Container failed: 2" summary.
+  pester: /^(?:\[-\] (?:Discovery in )?\S+\.Tests\.ps1 failed with:|Container failed: \d+)$/,
 };
 
 /**
@@ -707,6 +738,9 @@ const GROWING_COUNTS: [RegExp, string][] = [
     "<n> $1",
   ],
   [/\b(Passed|Skipped|Total|Tests run):\s*\d+/g, "$1: <n>"],
+  // The JUnit block of a Gradle run's test reports (#1489) and any printed JUnit report.
+  [/\b(tests|skipped)="\d+"/g, '$1="<n>"'],
+  [/^(Gradle test reports \()\d+ files?/gm, "$1<n> files"],
   // RSpec "12 examples, 1 failure, 2 pending", Minitest "4 runs, 9 assertions, 1 failures, 0 errors,
   // 1 skips" with its rates "2931.07 runs/s, 1465.53 assertions/s" (#1493).
   [/\b\d+ (examples?|pending|runs?|assertions?|skips?)\b(?!\/s)/g, "<n> $1"],
@@ -748,6 +782,9 @@ const GROWING_COUNTS: [RegExp, string][] = [
   // pending; `●◼✱◌` in a UTF-8 terminal), and its success count (#1495).
   [/^[+\-*.●◼✱◌]+$\n?/gm, ""],
   [/\b\d+ (successe?s?) \//g, "<n> success /"],
+  // Pester counts the files and tests it discovers (#1498).
+  [/\bStarting discovery in \d+ files?\b/g, "Starting discovery in <n> files"],
+  [/\bDiscovery found \d+ tests?\b/g, "Discovery found <n> tests"],
   // TAP::Harness (prove, pg_prove) summarizes with totals, test numbers and CPU times (#1499):
   // "Failed 1/2 subtests", "(Wstat: 0 Tests: 2 Failed: 1)", "  Failed test:  2",
   // "Files=1, Tests=2,  0 wallclock secs ( 0.01 usr + ...)". The failed counts stay.
