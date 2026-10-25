@@ -283,6 +283,8 @@ const CHECK_COMMAND = new RegExp(
     String.raw`(?:bundle\s+exec\s+)?(?:rspec|rubocop|standardrb|rake\s+(?:test|spec))\b`,
     // Lua: busted, luacheck, selene and StyLua, and `luarocks test` (#1495).
     String.raw`(?:busted|luacheck|selene|stylua|luarocks\s+test)\b`,
+    // Shell: bats, ShellCheck and shfmt (#1497).
+    String.raw`(?:bats|shellcheck|shfmt)\b`,
   ].join("|")})`,
 );
 

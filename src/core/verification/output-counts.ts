@@ -97,6 +97,15 @@ export function diagnosticCount(output: string): OutputCount | null {
     const errors = Number(selene[1]) + Number(selene[3]);
     return { tool: "selene", count: errors + Number(selene[2]), errors };
   }
+  // ShellCheck (#1497) prints each finding under its line, "^-- SC2086 (info): Double quote ...",
+  // and no summary; a clean run prints nothing.
+  const shellcheck = [...output.matchAll(/\^-*\^? SC\d+ \((error|warning|info|style)\): /g)];
+  if (shellcheck.length)
+    return {
+      tool: "shellcheck",
+      count: shellcheck.length,
+      errors: shellcheck.filter((m) => m[1] === "error").length,
+    };
   // dotnet build: "    3 Warning(s)" and "    0 Error(s)"
   const warnings = output.match(/^\s*(\d+) Warning\(s\)/m);
   const errors = output.match(/^\s*(\d+) Error\(s\)/m);

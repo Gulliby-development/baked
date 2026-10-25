@@ -116,6 +116,7 @@ export const EXT_TO_LANGUAGE: Record<string, Language> = {
   ".sh": "bash",
   ".bash": "bash",
   ".zsh": "bash",
+  ".bats": "bash",
   // OCaml
   ".ml": "ocaml",
   ".mli": "ocaml",

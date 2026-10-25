@@ -326,6 +326,8 @@ const CAPABILITY = new RegExp(
     String.raw`\bRUBY_PLATFORM\b|\bGem\.win_platform\?|\bRbConfig::CONFIG\b|\bLoadError\b`,
     // Lua: the path separator `package.config:sub(1, 1)`, LuaJIT's `jit.os`, an optional module.
     String.raw`\bpackage\.config\b|\bjit\.os\b|\bpcall\s*\(\s*require\b`,
+    // Shell: `uname`, `$OSTYPE`, a tool that may be missing (`command -v jq`, `type -P`, `hash`).
+    String.raw`\buname\b|\$\{?OSTYPE\b|\bcommand\s+-v\b|\btype\s+-P\b|^\s*hash\s+\w`,
   ].join("|"),
 );
 /** Lines above a skip that its guard condition may span. */
@@ -369,6 +371,8 @@ const SUPPRESSIONS = new RegExp(
     // luacheck and selene (#1495).
     String.raw`--\s*luacheck:\s*(?:ignore|no\s|push\s+ignore)`,
     String.raw`--\s*selene:\s*allow\b`,
+    // ShellCheck (#1497).
+    String.raw`#\s*shellcheck\s+disable=`,
   ].join("|"),
   "g",
 );

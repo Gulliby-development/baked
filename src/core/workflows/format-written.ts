@@ -189,6 +189,12 @@ const stylua: FileFormatter = {
     // No probe: `--range-start` and `--range-end` exist since StyLua 0.5.
   },
 };
+// No range: shfmt formats whole files (#1497).
+const shfmt: FileFormatter = {
+  runs: (program, args) => program === "shfmt" && (args.includes("-d") || args.includes("-l")),
+  check: (_, files) => ["-d", ...files],
+  fix: () => ["-w"],
+};
 // No range: Pint and PHP-CS-Fixer format whole files (#1491). Both run as `php vendor/bin/NAME`,
 // which `toolchainCommand` reads as the tool itself.
 const pint: FileFormatter = {
@@ -242,7 +248,7 @@ export const FILE_FORMATTERS: LanguageRecord<readonly FileFormatter[]> = {
   elixir: none("Mix has no gate detector yet (#1753)"),
   dart: none("dart and flutter have no gate detector yet (#1753)"),
   zig: none("zig build has no gate detector yet (#1753)"),
-  bash: none("shell scripts have no toolchain"),
+  bash: [shfmt],
   ocaml: none("dune has no gate detector yet (#1753)"),
   objc: none("Xcode projects have no gate detector"),
   solidity: none("Foundry has no gate detector; a Hardhat project is an npm package"),

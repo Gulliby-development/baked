@@ -30,7 +30,7 @@ export const TEST_CONVENTIONS: LanguageRecord<RegExp> = {
   elixir: /_test\.exs?$/i,
   dart: /_test\.dart$/i,
   zig: /_test\.zig$/i,
-  bash: /_test\.(?:sh|bash)$/i,
+  bash: /_test\.(?:sh|bash)$|\.bats$/i,
   ocaml: none("dune keeps tests in a `test/` directory, which the shared rule covers"),
   objc: /Tests?\.mm?$/,
   vue: none("Vue components are tested from `.spec.ts` or `.test.ts` files"),

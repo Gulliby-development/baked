@@ -71,7 +71,8 @@ Each line is a past bug. A new detector, parser or table row answers it before r
 13. **Host-written code must be clean.** The acceptance rows the host writes pass the language's formatter and linter as configured, carry no raw control characters or BOM, and keep one type per file where the language expects it (#1927, #1942, #1995, #1804, #1961).
 14. **Tools that write into the checkout.** Language servers and first builds leave files (#1508, #1815): list them, or the run blocks `input_changed`.
 15. **Runtimes for examples.** The README of a project builds and runs with the language's runtime, not only its build tool (#1529, #1035).
-16. **One table, all languages.** When a fix for this language touches a shared rule, sweep it across every supported language (the [file-issue skill](../file-issue/SKILL.md), step 3), and prefer a table row over a wider regex.
+16. **Detectors replace the runner fallback.** `detectGates` offers a Makefile, justfile or CI step only when no toolchain detector found anything, so a detector that fires on a config file of a side tool (a `.shellcheckrc` in a C project) would hide `make test`. Shell gates are added on top for that reason (#1497); a new detector for a side tool does the same.
+17. **One table, all languages.** When a fix for this language touches a shared rule, sweep it across every supported language (the [file-issue skill](../file-issue/SKILL.md), step 3), and prefer a table row over a wider regex.
 
 ## 4. Tests
 

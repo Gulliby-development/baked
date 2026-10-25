@@ -68,6 +68,8 @@ export function isTestFile(path: string): boolean {
   // RSpec specs and Minitest files (#1493), busted specs (#1495).
   if (name.endsWith(".rb")) return name.endsWith("_spec.rb") || RB_TEST.test(name);
   if (/\.luau?$/.test(name)) return LUA_TEST.test(name);
+  // bats files (#1497).
+  if (name.endsWith(".bats")) return true;
   if (!JS_FILE.test(name)) return false;
   return /\.(?:test|spec)\.[cm]?[jt]sx?$/.test(name) || /(^|\/)(__tests__)\//.test(path);
 }
@@ -333,8 +335,9 @@ const flagsOnly = (args: string[]): string[] =>
   args.filter(
     (arg, i) =>
       arg.startsWith("-") ||
-      // busted's `-o TAP`, `-t unit`, `--exclude-tags slow`, `-p _spec`, `--lpath ./src/?.lua` (#1495).
-      /^(?:--(?:timeout|testTimeout|test-timeout|config|format|formatter|require|tag|out|seed|order|output|tags|exclude-tags|pattern|run|lpath|cpath)|-[cotpm])$/.test(
+      // busted's `-o TAP`, `-t unit`, `--exclude-tags slow`, `-p _spec`, `--lpath ./src/?.lua` (#1495);
+      // bats' `-j 4`, `-f adds`, `--filter-tags unit`, `-F tap` (#1497).
+      /^(?:--(?:timeout|testTimeout|test-timeout|config|format|formatter|require|tag|out|seed|order|output|tags|exclude-tags|pattern|run|lpath|cpath|jobs|filter|filter-tags|report-formatter)|-[cotpmjfF])$/.test(
         args[i - 1] ?? "",
       ),
   );
@@ -342,7 +345,7 @@ const flagsOnly = (args: string[]): string[] =>
 /**
  * A command that runs only `tests` with the runner of one of the policy's test checks, or null
  * when no check runs a test runner that takes test files (`bun test`, `vitest`, `jest`,
- * `node --test`, `pytest`, `go test`, `rspec`, `rake test`, `phpunit`, `pest`, `busted`).
+ * `node --test`, `pytest`, `go test`, `rspec`, `rake test`, `phpunit`, `pest`, `busted`, `bats`).
  * Package scripts (`npm test`, `bun run test`) are not
  * used: what they pass on is up to the script.
  */
@@ -393,6 +396,10 @@ export function affectedTestCheck(
       // `php vendor/bin/phpunit tests`: the named files take the place of the test folder (#1491).
       prefix = flagsOnly(args);
       targets = files.filter((f) => PHP_FILE.test(f));
+    } else if (name === "bats") {
+      // bats runs the `.bats` files it is given in place of its test folder (#1497).
+      prefix = flagsOnly(args);
+      targets = files.filter((f) => f.endsWith(".bats"));
     } else if (name === "busted") {
       // busted runs the spec files it is given in place of its ROOT (`spec`) (#1495).
       prefix = flagsOnly(args);

@@ -1,4 +1,4 @@
-import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { type Dirent, existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { loadProjectConfig, saveProjectConfig } from "../../config/index.js";
 import {
@@ -1014,6 +1014,82 @@ export function luaGates(workspace: string): GateSuggestion[] {
   return out;
 }
 
+/** Folders a shell project's own scripts are not in. */
+const SHELL_SKIPPED = new Set(["node_modules", "vendor", "dist", "build", "target", "out"]);
+const SHELL_FILE = /\.(?:sh|bash)$/;
+/** At most this many scripts go on the shellcheck command line. */
+const MAX_SHELL_FILES = 200;
+
+/** The project's `.sh` and `.bash` scripts, by paths relative to it, three folders deep at most. */
+function shellScripts(workspace: string): string[] {
+  const out: string[] = [];
+  const walk = (dir: string, depth: number) => {
+    let entries: Dirent[];
+    try {
+      entries = readdirSync(join(workspace, dir), { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const entry of entries.sort((a, b) => (a.name < b.name ? -1 : 1))) {
+      const path = dir ? `${dir}/${entry.name}` : entry.name;
+      if (entry.isDirectory()) {
+        if (depth < 3 && !entry.name.startsWith(".") && !SHELL_SKIPPED.has(entry.name))
+          walk(path, depth + 1);
+      } else if (entry.isFile() && SHELL_FILE.test(entry.name)) out.push(path);
+    }
+  };
+  walk("", 0);
+  return out;
+}
+
+/**
+ * A shell project's gates (#1497), from the files its tools read: ShellCheck with a
+ * `.shellcheckrc` (on the project's scripts, listed when the gates are detected: ShellCheck takes
+ * files, not folders), shfmt when `.editorconfig` has a section for shell files (`shfmt -d .`,
+ * whose fixer formats the task's file), and bats when `test/` or `tests/` holds `.bats` files. On
+ * Windows the tools come with Git Bash or WSL, so the gates are offered but not preselected there.
+ */
+export function shellGates(workspace: string): GateSuggestion[] {
+  const out: GateSuggestion[] = [];
+  const preselected = process.platform !== "win32";
+  if (has(workspace, ".shellcheckrc")) {
+    const scripts = shellScripts(workspace).slice(0, MAX_SHELL_FILES);
+    if (scripts.length)
+      out.push({
+        check: gate("shellcheck", "shellcheck", scripts, 120000),
+        source: ".shellcheckrc",
+        reason: `shellcheck on ${scripts.length} script${scripts.length === 1 ? "" : "s"}`,
+        preselected,
+      });
+  }
+  const editorconfig = read(workspace, ".editorconfig") ?? "";
+  if (/^\s*\[[^\]\n]*\b(?:sh|bash)\b[^\]\n]*\]/m.test(editorconfig))
+    out.push({
+      check: {
+        ...gate("shfmt", "shfmt", ["-d", "."], 120000),
+        fix: { executable: "shfmt", args: ["-w"] },
+      },
+      source: ".editorconfig",
+      reason: "shfmt -d . (fixer: shfmt -w)",
+      preselected,
+    });
+  const tests = ["test", "tests"].find((dir) => {
+    try {
+      return readdirSync(join(workspace, dir)).some((name) => name.endsWith(".bats"));
+    } catch {
+      return false;
+    }
+  });
+  if (tests)
+    out.push({
+      check: gate("bats", "bats", [tests], 600000),
+      source: `${tests}/`,
+      reason: `bats ${tests}`,
+      preselected,
+    });
+  return out;
+}
+
 /**
  * Looks for the project's own test and lint commands. Nothing is written: the result is a list the
  * user confirms. Gates already configured (same ID or same command) are left out.
@@ -1187,6 +1263,7 @@ const TOOLCHAIN_GATES = {
   dune: duneGates,
   bundler: rubyGates,
   luarocks: luaGates,
+  shell: shellGates,
   composer: composerGates,
 } as const;
 export type GateToolchain = keyof typeof TOOLCHAIN_GATES;
@@ -1218,7 +1295,7 @@ export const GATE_TOOLCHAINS: LanguageRecord<readonly GateToolchain[]> = {
   elixir: ["mix"],
   dart: ["dart"],
   zig: ["zig"],
-  bash: none("shell scripts have no toolchain"),
+  bash: ["shell"],
   ocaml: ["dune"],
   objc: none("Xcode projects have no gate detector"),
   solidity: none("Foundry has no gate detector; a Hardhat project is an npm package"),
@@ -1229,9 +1306,14 @@ export function detectGates(workspace: string, configured: Check[] = []): GateSu
   const ids = new Set(configured.map((c) => c.id));
   const used = new Set(SUPPORTED_LANGUAGES.flatMap((l) => rowOf(GATE_TOOLCHAINS, l) ?? []));
   const toolchain = (Object.keys(TOOLCHAIN_GATES) as GateToolchain[])
-    .filter((key) => used.has(key))
+    .filter((key) => used.has(key) && key !== "shell")
     .flatMap((key) => TOOLCHAIN_GATES[key](workspace));
-  return (toolchain.length ? toolchain : runnerGates(workspace)).filter(
+  // A project's shell scripts sit beside its own toolchain or Makefile, so the shell gates come
+  // on top of either (#1497).
+  const shell = shellGates(workspace);
+  const base = toolchain.length ? toolchain : runnerGates(workspace);
+  const all = [...base, ...shell.filter((s) => !base.some((b) => b.check.id === s.check.id))];
+  return all.filter(
     (s) => !ids.has(s.check.id) && !known.has(formatCommandLine(s.check.executable, s.check.args)),
   );
 }
