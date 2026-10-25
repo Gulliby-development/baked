@@ -17,6 +17,9 @@ import { zipFiles } from "./zip.js";
  */
 export const SDD_EXPORT_FORMAT_VERSION = 1;
 
+/** `details.reason` of the refusal of a run or initiative with nothing accepted yet. */
+export const NOT_ACCEPTED = "not_accepted";
+
 export interface ExportedFeature {
   id: string;
   title: string;
@@ -43,6 +46,13 @@ export interface SddExportManifest {
   features: ExportedFeature[];
   /** sha256 of every other file of the package, by path. */
   files: Record<string, string>;
+}
+/** Where `writeSddPackage` wrote a package, and what. */
+export interface WrittenSddPackage {
+  path: string;
+  zip: boolean;
+  manifest: SddExportManifest;
+  files: string[];
 }
 export interface SddPackage {
   manifest: SddExportManifest;
@@ -292,6 +302,7 @@ function features(
     throw new WorkflowFault(
       "ARTIFACT_MISSING",
       `Initiative ${id} has no accepted plan yet; approve its split first`,
+      { reason: NOT_ACCEPTED },
     );
   const revision = initiatives.revision(id, row.approved_plan_revision);
   const plan = initiatives.plan(revision);
@@ -329,11 +340,19 @@ function features(
  * secret, naming the file and line but never the value, and (ARTIFACT_MISSING) when nothing is
  * accepted yet.
  */
-export function buildSddPackage(store: WorkflowStore, id: string): SddPackage {
+export function buildSddPackage(
+  store: WorkflowStore,
+  id: string,
+  kind?: "run" | "initiative",
+): SddPackage {
   const initiatives = new InitiativeStore(store);
   const isInitiative = InitiativeId.safeParse(id).success && initiatives.exists(id);
-  if (!isInitiative && !SafeId.safeParse(id).success)
-    throw new WorkflowFault("NOT_FOUND", `Unknown run or initiative ${id}`);
+  if ((!isInitiative && !SafeId.safeParse(id).success) || (kind === "initiative" && !isInitiative))
+    throw new WorkflowFault(
+      "NOT_FOUND",
+      `Unknown ${kind === "initiative" ? "initiative" : kind === "run" ? "run" : "run or initiative"} ${id}`,
+    );
+  if (kind === "run" && isInitiative) throw new WorkflowFault("NOT_FOUND", `Unknown run ${id}`);
   const files: Record<string, string> = {};
   let ordered: FeatureDocuments[];
   let manifestBase: Omit<SddExportManifest, "features" | "files" | "gitHead">;
@@ -375,6 +394,7 @@ export function buildSddPackage(store: WorkflowStore, id: string): SddPackage {
       throw new WorkflowFault(
         "ARTIFACT_MISSING",
         `Run ${id} has no accepted spec, plan and tasks yet; approve them first`,
+        { reason: NOT_ACCEPTED },
       );
     ordered = [
       {
@@ -437,11 +457,7 @@ export const defaultExportPath = (workspace: string, id: string, zip: boolean): 
  * Writes the package to `out`: a new folder, or one zip archive with the same tree when `zip` is
  * set. Never overwrites: an existing `out` is refused (INPUT_CHANGED).
  */
-export function writeSddPackage(
-  pkg: SddPackage,
-  out: string,
-  zip: boolean,
-): { path: string; zip: boolean; manifest: SddExportManifest; files: string[] } {
+export function writeSddPackage(pkg: SddPackage, out: string, zip: boolean): WrittenSddPackage {
   if (existsSync(out))
     throw new WorkflowFault(
       "INPUT_CHANGED",

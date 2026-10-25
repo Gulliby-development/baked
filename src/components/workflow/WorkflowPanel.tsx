@@ -25,6 +25,7 @@ import { ArtifactReview } from "./ArtifactReview.js";
 import { ChangesView } from "./ChangesView.js";
 import { ChecksView } from "./ChecksView.js";
 import { DecisionPrompt } from "./DecisionPrompt.js";
+import { exportChoice, exportPackage, exportPromptText } from "./export-package.js";
 import { FindingsView } from "./FindingsView.js";
 import {
   detectChecks,
@@ -121,6 +122,8 @@ export function WorkflowPanel({
   // The files changed outside a blocked run that "accept changes" would keep.
   const [confirmAccept, setConfirmAccept] = useState<string[] | null>(null);
   const [confirmDiscard, setConfirmDiscard] = useState(false);
+  // E on an accepted run asks for a folder or a zip (#2207).
+  const [confirmExport, setConfirmExport] = useState(false);
   // The stage a fork starts at; "" starts from the beginning with a new approval.
   const [forkPick, setForkPick] = useState<{ stages: string[]; index: number } | null>(null);
   /**
@@ -416,6 +419,17 @@ export function WorkflowPanel({
       } else if (key === "escape" || key === "n") setConfirmCancel(false);
       return;
     }
+    if (confirmExport) {
+      event.preventDefault();
+      const choice = exportChoice(key);
+      if (choice) setConfirmExport(false);
+      if (choice && choice !== "cancel" && runId)
+        void exportPackage(workflowSession(workspace), runId, choice).then(
+          (message) => setFlash({ kind: "ok", message }),
+          (err: unknown) => setFlash({ kind: "err", message: tuiErrorText(err) }),
+        );
+      return;
+    }
     // The decision view owns every other key there, including Esc and letters typed into inputs.
     if (tab === "decision" && pending) return;
     if (key === "escape") {
@@ -445,6 +459,7 @@ export function WorkflowPanel({
     else if (action.action === "reroute") setConfirmReroute(true);
     else if (action.action === "cancel") setConfirmCancel(true);
     else if (action.action === "discard-worktree") setConfirmDiscard(true);
+    else if (action.action === "export-package") setConfirmExport(true);
     else if (action.action === "fork" && service?.store.forkStages(snapshot.runId).length)
       setForkPick({ stages: ["", ...service.store.forkStages(snapshot.runId)], index: 0 });
     else if (action.action === "accept-workspace" && service)
@@ -789,6 +804,7 @@ export function WorkflowPanel({
             {`${fixChecks.summary}. Start a ${fixChecks.workflowId} run (${fixChecks.featureId}) for them? Deliver it afterwards with --follow-up ${runId}${fixChecks.deliver}. Y starts it; N leaves it.`}
           </text>
         ) : null}
+        {confirmExport && runId ? <text fg={t.warning}>{exportPromptText(runId)}</text> : null}
         {confirmCancel ? (
           <text fg={t.warning}>
             Cancel this run? It cannot be resumed afterwards. Y confirms; N keeps it.

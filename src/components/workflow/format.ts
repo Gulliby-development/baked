@@ -242,6 +242,7 @@ export interface RunAction {
     | "reroute"
     | "checks"
     | "reviews"
+    | "export-package"
     | HostRemedy;
 }
 /** The limits one "raise" decision would set, from the numbers the run screen already has. */
@@ -349,6 +350,9 @@ export function runActions(
   if (s !== "created" && s !== "running")
     actions.push({ key: "U", label: "undo edits", action: "undo" });
   if (!isTerminal(s)) actions.push({ key: "C", label: "cancel", action: "cancel" });
+  // The accepted spec, plan and tasks as an SDD package another harness reads (#2207).
+  if (snapshot.approvalDigest !== null)
+    actions.push({ key: "E", label: "export package", action: "export-package" });
   return actions;
 }
 

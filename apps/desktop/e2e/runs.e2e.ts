@@ -55,7 +55,7 @@ test("a plan approval is answered from Needs you", async ({ app }) => {
 
 test("a run is exported and an artifact redacted from the run screen", async ({ app }) => {
   const page = await app("#/p/baked/runs/run-settings-dark-mode");
-  await page.getByRole("button", { name: "Export" }).click();
+  await page.getByRole("button", { name: "Export report" }).click();
   await expect(page.getByRole("status").filter({ hasText: "Exported to" })).toContainText(
     ".baked\\exports\\run-settings-dark-mode-",
   );

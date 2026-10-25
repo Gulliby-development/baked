@@ -10,7 +10,9 @@ import type {
 } from "../../client/insights.js";
 import { insights } from "../../client/insights.js";
 import { desktopRecoveryText } from "../../client/remedies.js";
+import { SDD_EXPORT_CAPABILITY } from "../../client/sdd-export.js";
 import { workflow } from "../../client/workflow.js";
+import { ExportPackageDialog } from "../../components/ExportPackageDialog.js";
 import { Alert } from "../../components/ui/alert.js";
 import { Badge } from "../../components/ui/badge.js";
 import { Button } from "../../components/ui/button.js";
@@ -498,6 +500,17 @@ function Detail({ projectKey, id }: { projectKey: string; id: string }) {
   const [dialog, setDialog] = useState<Open | null>(null);
   useLiveRefresh(state.kind === "ready" && initiativeIsLive(state.data.status), reload);
   const [picked, setPicked] = useState<readonly string[]>([]);
+  const [packaging, setPackaging] = useState(false);
+  const [canPackage, setCanPackage] = useState(false);
+  useEffect(() => {
+    let live = true;
+    chat
+      .capabilities(projectKey)
+      .then((caps) => live && setCanPackage(caps?.includes(SDD_EXPORT_CAPABILITY) === true));
+    return () => {
+      live = false;
+    };
+  }, [projectKey]);
   if (state.kind !== "ready")
     return (
       <LoadState
@@ -608,8 +621,21 @@ function Detail({ projectKey, id }: { projectKey: string; id: string }) {
               Pause
             </Button>
           )}
+          {/* The package holds the approved split, so it is offered once the split is approved. */}
+          {canPackage && view.approvedPlanRevision != null && (
+            <Button variant="secondary" size="md" onClick={() => setPackaging(true)}>
+              Export package…
+            </Button>
+          )}
         </div>
       </div>
+      <ExportPackageDialog
+        open={packaging}
+        projectKey={projectKey}
+        kind="initiative"
+        id={view.initiativeId}
+        onClose={() => setPackaging(false)}
+      />
       {error && <Alert tone="error">{error}</Alert>}
       {view.status === "awaiting_approval" && !split && view.reason && <Alert>{view.reason}</Alert>}
       {view.goals.map((goal) => (
