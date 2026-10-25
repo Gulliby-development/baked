@@ -226,6 +226,19 @@ const FRAMEWORKS: readonly TestFramework[] = [
     skips: String.raw`(?:^|[^.\w])pending\s*\(|\blu\.skip(?:If|Unless)?\s*\(`,
   },
   {
+    // bats: `@test "adds" {`, checks with `[ ... ]`, `[[ ... ]]` and bats-assert's `assert_output`;
+    // shunit2: `testAdds() {` with `assertEquals` (#1497).
+    name: "bats, shunit2",
+    languages: ["bash"],
+    cases: String.raw`^\s*@test\s+["']|^\s*(?:function\s+)?test\w+\s*\(\s*\)`,
+    named: [
+      { pattern: /^\s*@test\s+(["'])(?<name>(?:(?!\1)[^\\\n])+)\1/d },
+      { pattern: /^\s*(?:function\s+)?(?<name>test\w+)\s*\(\s*\)/d },
+    ],
+    assertions: String.raw`^\s*\[\[?\s|\b(?:assert|refute)_\w+|\bassert[A-Z]\w*`,
+    skips: String.raw`^\s*skip\b|\bstartSkipping\b`,
+  },
+  {
     // package:test and flutter_test. `test("...")`, `group` and `expect(actual, matcher)` are read
     // by the JavaScript row above; the matcher is what the test checks, and the reason is named.
     name: "package:test, flutter_test",

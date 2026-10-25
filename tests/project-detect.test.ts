@@ -290,6 +290,22 @@ describe("Lua project (rockspec, stylua.toml, .luacheckrc)", () => {
   });
 });
 
+// ── Shell ───────────────────────────────────────────────────
+
+describe("shell project (.shellcheckrc, .editorconfig, bats)", () => {
+  it("runs the gates' ShellCheck, shfmt and bats (#1497)", async () => {
+    const cwd = makeProject("sh-scripts", {
+      ".shellcheckrc": "",
+      ".editorconfig": "[*.sh]\nindent_style = tab\n",
+      "bin/sum.sh": "echo 1\n",
+      "test/sum.bats": "",
+    });
+    const p = await detectProfile(cwd);
+    expect([p.test, p.lint, p.format, p.formatFile]).toEqual(["bats test", "shellcheck bin/sum.sh", "shfmt -w", "shfmt -w"]);
+    expect(await detectNativeChecks(cwd)).toBe("shellcheck bin/sum.sh");
+  });
+});
+
 // ── Flutter/Dart ────────────────────────────────────────────
 
 describe("Flutter project (pubspec.yaml)", () => {
