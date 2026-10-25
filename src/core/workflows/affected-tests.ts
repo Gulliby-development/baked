@@ -54,6 +54,8 @@ const PY_FILE = /\.py$/;
 const RB_TEST = /(?:_test|(?:^|\/)test_(?!helper\.rb$)[^/]*)\.rb$/;
 const GO_FILE = /\.go$/;
 const PHP_FILE = /\.php$/;
+/** A busted spec: `*_spec.lua`, or `*_test.lua` under a `.busted` pattern (#1495). */
+const LUA_TEST = /_(?:spec|test)\.luau?$/;
 const JS_EXTENSIONS = [".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs"];
 
 /** Whether a workspace path is a test file of a supported ecosystem. */
@@ -64,6 +66,11 @@ export function isTestFile(path: string): boolean {
   if (PY_FILE.test(name)) return /^test_.*\.py$|_test\.py$|^tests\.py$/.test(name);
   // PHPUnit and Pest name a test file `*Test.php` (#1491).
   if (PHP_FILE.test(name)) return name.endsWith("Test.php");
+  // RSpec specs and Minitest files (#1493), busted specs (#1495).
+  if (name.endsWith(".rb")) return name.endsWith("_spec.rb") || RB_TEST.test(name);
+  if (/\.luau?$/.test(name)) return LUA_TEST.test(name);
+  // bats files (#1497).
+  if (name.endsWith(".bats")) return true;
   if (!JS_FILE.test(name)) return false;
   return /\.(?:test|spec)\.[cm]?[jt]sx?$/.test(name) || /(^|\/)(__tests__)\//.test(path);
 }
@@ -325,8 +332,9 @@ export function affectedTests(root: string, sources: string[]): AffectedTest[] {
 /** The options of `python -m unittest` that take no value. */
 const UNITTEST_FLAG = /^-(?:[vqfbck]|-(?:verbose|quiet|failfast|buffer|catch|locals))$/;
 
+/** Options that take a value, busted's `-o TAP`, `-t unit`, `--exclude-tags slow`, `--lpath ./src/?.lua` (#1495) and bats' `-j 4`, `-f adds`, `--filter-tags unit` (#1497) among them. */
 const VALUE_OPTION =
-  /^(?:--(?:timeout|testTimeout|test-timeout|config|format|formatter|require|tag|out|seed|order)|-c)$/;
+  /^(?:--(?:timeout|testTimeout|test-timeout|config|format|formatter|require|tag|out|seed|order|output|tags|exclude-tags|pattern|run|lpath|cpath|jobs|filter|filter-tags|report-formatter)|-[cotpmjfF])$/;
 /** dart test's options that take a value: `-r expanded`, `-t slow`, `-x slow`, `-p vm` (#1494). */
 const DART_VALUE_OPTION =
   /^(?:--(?:reporter|name|plain-name|tags|exclude-tags|platform|preset|concurrency|total-shards|shard-index|file-reporter)|-[rnNtxpPj])$/;
@@ -338,7 +346,7 @@ const flagsOnly = (args: string[], values = VALUE_OPTION): string[] =>
 /**
  * A command that runs only `tests` with the runner of one of the policy's test checks, or null
  * when no check runs a test runner that takes test files (`bun test`, `vitest`, `jest`,
- * `node --test`, `pytest`, `go test`, `rspec`, `rake test`, `dart test`, `phpunit`, `pest`). Package scripts (`npm test`, `bun run test`) are not
+ * `node --test`, `pytest`, `go test`, `rspec`, `rake test`, `dart test`, `phpunit`, `pest`, `busted`, `bats`). Package scripts (`npm test`, `bun run test`) are not
  * used: what they pass on is up to the script.
  */
 export function affectedTestCheck(
@@ -388,6 +396,14 @@ export function affectedTestCheck(
       // `php vendor/bin/phpunit tests`: the named files take the place of the test folder (#1491).
       prefix = flagsOnly(args);
       targets = files.filter((f) => PHP_FILE.test(f));
+    } else if (name === "bats") {
+      // bats runs the `.bats` files it is given in place of its test folder (#1497).
+      prefix = flagsOnly(args);
+      targets = files.filter((f) => f.endsWith(".bats"));
+    } else if (name === "busted") {
+      // busted runs the spec files it is given in place of its ROOT (`spec`) (#1495).
+      prefix = flagsOnly(args);
+      targets = files.filter((f) => LUA_TEST.test(f));
     } else if (name === "rspec") {
       // RSpec takes spec files (#1493).
       prefix = flagsOnly(args);

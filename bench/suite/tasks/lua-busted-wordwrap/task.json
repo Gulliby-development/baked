@@ -1,0 +1,46 @@
+{
+  "id": "lua-busted-wordwrap",
+  "language": "lua",
+  "toolchain": "busted",
+  "requires": [
+    "lua",
+    "busted",
+    "luacheck",
+    "stylua"
+  ],
+  "allowedPaths": [
+    "src/**",
+    "spec/**",
+    "README.md",
+    "*.rockspec",
+    ".busted",
+    ".luacheckrc",
+    "stylua.toml"
+  ],
+  "checks": [
+    {
+      "id": "stylua",
+      "executable": "stylua",
+      "args": [
+        "--check",
+        "."
+      ],
+      "fix": {
+        "executable": "stylua",
+        "args": []
+      }
+    },
+    {
+      "id": "luacheck",
+      "executable": "luacheck",
+      "args": [
+        "."
+      ]
+    },
+    {
+      "id": "busted",
+      "executable": "busted",
+      "args": []
+    }
+  ]
+}

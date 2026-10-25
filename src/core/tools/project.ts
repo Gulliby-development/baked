@@ -8,7 +8,14 @@ import { bunShellArgs, IS_WIN, pwshExecutable } from "../platform/index.js";
 import { chatSandbox, SandboxUnavailableError, sandboxNotice } from "../security/sandbox.js";
 import { buildSafeEnv } from "../spawn.js";
 import { executeCheckCommand } from "../verification/check-runner.js";
-import { composerGates, formatCommandLine } from "../workflows/gates.js";
+import {
+  clangFormatGates,
+  cmakeGates,
+  composerGates,
+  formatCommandLine,
+  luaGates,
+  shellGates,
+} from "../workflows/gates.js";
 import { assertWorkspaceMutationAllowed } from "../workflows/leases.js";
 import { ProcessScope } from "../workflows/process-scope.js";
 import { pythonEnvironment } from "../workflows/toolchain.js";
@@ -241,6 +248,21 @@ async function detectToolchain(cwd: string): Promise<DetectedToolchain> {
     return profile;
   }
 
+  // Lua: the gates' own detection (#1495), from a rockspec or the tools' config files.
+  const lua = luaGates(cwd).map((g) => g.check);
+  if (lua.length) {
+    const line = (c: { executable: string; args: string[] } | undefined) =>
+      c ? formatCommandLine(c.executable, c.args) : null;
+    const format = lua.find((c) => c.id === "stylua");
+    profile.test = line(lua.find((c) => c.id === "busted"));
+    profile.build = null;
+    profile.lint = line(lua.find((c) => c.id === "luacheck" || c.id === "selene"));
+    profile.typecheck = null;
+    profile.run = null;
+    profile.format = line(format?.fix);
+    return profile;
+  }
+
   // Swift
   if (await has("Package.swift")) {
     profile.test = "swift test";
@@ -337,13 +359,18 @@ async function detectToolchain(cwd: string): Promise<DetectedToolchain> {
     return profile;
   }
 
-  // C/C++ — CMake
-  if (await has("CMakeLists.txt")) {
-    profile.test = "ctest --test-dir build";
-    profile.build = "cmake --build build";
-    profile.lint = (await has(".clang-tidy")) ? "clang-tidy" : null;
-    profile.typecheck = "cmake --build build";
+  // C/C++ — CMake: the gates' own detection (#1490), so the agent runs what the checks run.
+  const cmake = cmakeGates(cwd).map((g) => g.check);
+  const clangFormat = clangFormatGates(cwd)[0]?.check;
+  if (cmake.length) {
+    const line = (c: { executable: string; args: string[] } | undefined) =>
+      c ? formatCommandLine(c.executable, c.args) : null;
+    profile.test = line(cmake.find((c) => c.id === "ctest"));
+    profile.build = line(cmake.find((c) => c.id === "cmake-build"));
+    profile.lint = line(cmake.find((c) => c.id === "clang-tidy"));
+    profile.typecheck = profile.build;
     profile.run = null;
+    profile.format = line(clangFormat?.fix);
     return profile;
   }
 
@@ -354,6 +381,9 @@ async function detectToolchain(cwd: string): Promise<DetectedToolchain> {
     profile.lint = null;
     profile.typecheck = null;
     profile.run = "make run";
+    profile.format = clangFormat?.fix
+      ? formatCommandLine(clangFormat.fix.executable, clangFormat.fix.args)
+      : null;
     return profile;
   }
 
@@ -425,6 +455,17 @@ async function detectToolchain(cwd: string): Promise<DetectedToolchain> {
     profile.test = dbt ? "dbt test" : null;
     profile.build = dbt ? "dbt build" : null;
     profile.lint = (await has(".sqlfluff")) ? "sqlfluff lint ." : null;
+    return profile;
+  }
+
+  // Shell: the gates' own detection (#1497), for a project of scripts and bats tests only.
+  const shell = shellGates(cwd).map((g) => g.check);
+  if (shell.length) {
+    const line = (c: { executable: string; args: string[] } | undefined) =>
+      c ? formatCommandLine(c.executable, c.args) : null;
+    profile.test = line(shell.find((c) => c.id === "bats"));
+    profile.lint = line(shell.find((c) => c.id === "shellcheck"));
+    profile.format = line(shell.find((c) => c.id === "shfmt")?.fix);
     return profile;
   }
 
@@ -623,11 +664,24 @@ export async function detectNativeChecks(cwd: string): Promise<string | null> {
     return check ? formatCommandLine(check.executable, check.args) : null;
   }
 
+  // Lua
+  const lua = luaGates(cwd).find((g) => g.check.id === "luacheck" || g.check.id === "selene");
+  if (lua) return formatCommandLine(lua.check.executable, lua.check.args);
+
   // Swift
   if ((await has("Package.swift")) && (await has(".swiftlint.yml"))) return "swiftlint";
 
   // Ruby
   if ((await has("Gemfile")) && (await has(".rubocop.yml"))) return "bundle exec rubocop";
+
+  // Shell
+  const shellcheck = shellGates(cwd).find((g) => g.check.id === "shellcheck");
+  if (shellcheck) return formatCommandLine(shellcheck.check.executable, shellcheck.check.args);
+
+  // C and C++ (#1490): clang-format alone, since clang-tidy needs the compilation database that
+  // configuring the build writes.
+  const clangFormat = clangFormatGates(cwd)[0]?.check;
+  if (clangFormat) return formatCommandLine(clangFormat.executable, clangFormat.args);
 
   return null;
 }

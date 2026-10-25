@@ -70,8 +70,9 @@ function commentLine(line: string): boolean {
     trimmed.startsWith("/*") ||
     trimmed.startsWith("*") ||
     trimmed.startsWith("<!--") ||
-    // `#[test]` and `#![allow]` are Rust attributes, not comments.
-    (trimmed.startsWith("#") && !/^#!?\[/.test(trimmed))
+    // `#[test]` and `#![allow]` are Rust attributes, not comments, and `#ifdef _WIN32` is the
+    // preprocessor guard of a C or C++ skip (#1490).
+    (trimmed.startsWith("#") && !/^#!?\[|^#(?:if|ifdef|ifndef|elif)\b/.test(trimmed))
   );
 }
 
@@ -329,6 +330,12 @@ const CAPABILITY = new RegExp(
     String.raw`\b(?:extension_loaded|function_exists)\s*\(`,
     // Ruby: `RUBY_PLATFORM`, `Gem.win_platform?`, `RbConfig::CONFIG["host_os"]`, a gem that may be missing.
     String.raw`\bRUBY_PLATFORM\b|\bGem\.win_platform\?|\bRbConfig::CONFIG\b|\bLoadError\b`,
+    // Lua: the path separator `package.config:sub(1, 1)`, LuaJIT's `jit.os`, an optional module.
+    String.raw`\bpackage\.config\b|\bjit\.os\b|\bpcall\s*\(\s*require\b`,
+    // Shell: `uname`, `$OSTYPE`, a tool that may be missing (`command -v jq`, `type -P`, `hash`).
+    String.raw`\buname\b|\$\{?OSTYPE\b|\bcommand\s+-v\b|\btype\s+-P\b|^\s*hash\s+\w`,
+    // C and C++: the platform macros of a preprocessor guard (#1490).
+    String.raw`\b(?:_WIN32|_WIN64|_MSC_VER|__APPLE__|__linux__|__unix__|__FreeBSD__|__MINGW32__)\b`,
     // Dart: `Platform.isWindows`, `Platform.operatingSystem`, Flutter's `kIsWeb` (#1494).
     String.raw`\bPlatform\.(?:is[A-Z]\w*|operatingSystem)\b|\bkIsWeb\b`,
   ].join("|"),
@@ -373,6 +380,14 @@ const SUPPRESSIONS = new RegExp(
     String.raw`@psalm-suppress\b`,
     String.raw`@codeCoverageIgnore`,
     String.raw`#\s*(?:rubocop|standard):(?:disable|todo)\b`,
+    // luacheck and selene (#1495).
+    String.raw`--\s*luacheck:\s*(?:ignore|no\s|push\s+ignore)`,
+    String.raw`--\s*selene:\s*allow\b`,
+    // ShellCheck (#1497).
+    String.raw`#\s*shellcheck\s+disable=`,
+    // clang-tidy, and GCC's and Clang's diagnostic pragmas (#1490).
+    String.raw`//\s*NOLINT(?:NEXTLINE|BEGIN)?\b`,
+    String.raw`#\s*pragma\s+(?:GCC|clang)\s+diagnostic\s+ignored\b`,
     String.raw`//\s*ignore(?:_for_file)?:\s*\w`,
     // PSScriptAnalyzer, and the same attribute in C#: `[Diagnostics.CodeAnalysis.SuppressMessageAttribute(...)]` (#1498).
     String.raw`\[(?:System\.)?(?:Diagnostics\.CodeAnalysis\.)?SuppressMessage(?:Attribute)?\s*\(`,

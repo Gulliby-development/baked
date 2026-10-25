@@ -241,7 +241,7 @@ describe("every pre-session shadow hook runs on both implementer paths (#2138)",
   test("the single-writer and batch paths call beforeSession, and the hooks are called nowhere else", () => {
     const source = readFileSync(join(import.meta.dir, "../src/core/workflows/scheduler.ts"), "utf8");
     const body = (name: string): string => {
-      const start = source.indexOf(`  private async ${name}(`);
+      const start = source.search(new RegExp(`\\n  private (?:async )?${name}\\(`));
       const end = source.indexOf("\n  private ", start + 1);
       return source.slice(start, end);
     };
@@ -249,8 +249,11 @@ describe("every pre-session shadow hook runs on both implementer paths (#2138)",
     expect(body("runTaskWorker").includes("await this.beforeSession(")).toBe(true);
     // The hooks beforeSession runs: a direct call on one path would skip the other.
     const hooks = [...body("beforeSession").matchAll(/this\.(record\w+)\(/g)].map((m) => m[1]);
-    expect(hooks).toEqual(["recordCorrectiveScope", "recordHostApply"]);
+    expect(hooks).toEqual(["recordHostApply"]);
     expect(source.match(/this\.recordHostApply\(/g)).toHaveLength(1);
-    expect(source.match(/this\.recordCorrectiveScope\([^)]*"start"\)/g)).toHaveLength(1);
+    // A corrective's `start` scope record is unownedFile's (#2133): runTaskStep calls it, and
+    // heldCorrectives before a batch.
+    expect(body("runTaskStep").includes('this.unownedFile(runId, state, policy, task, root, "start")')).toBe(true);
+    expect(body("heldCorrectives").includes('this.unownedFile(runId, state, policy, task, root, "start")')).toBe(true);
   });
 });
