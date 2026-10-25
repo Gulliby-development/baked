@@ -1,6 +1,6 @@
 import { blankStringLiterals } from "../intelligence/comments.js";
 import { isTestFile, isTestFileAt } from "../intelligence/language-traits.js";
-import { testConventions } from "../intelligence/test-frameworks.js";
+import { hasShadowTitles, testConventions } from "../intelligence/test-frameworks.js";
 import type { RunPolicy } from "./schemas.js";
 import type { Task } from "./types.js";
 
@@ -120,8 +120,9 @@ function testSpans(
   path: string,
   lines: readonly string[],
   marks: readonly string[] = lines,
+  shadow = false,
 ): TestSpan[] {
-  const { named: namedTests, attribute: testAttribute } = testConventions(path);
+  const { named: namedTests, attribute: testAttribute } = testConventions(path, shadow);
   const starts: { name: string; from: number; index: number; rest: string }[] = [];
   // The test function a subtest runs in: Go's `t.Run("empty", ...)` in `TestParse` is `TestParse/empty`.
   let parent = "";
@@ -181,9 +182,11 @@ function testNames(
   path: string,
   lines: readonly string[],
   marks?: readonly string[],
+  shadow = false,
 ): Map<string, number> {
   const names = new Map<string, number>();
-  for (const { name } of testSpans(path, lines, marks)) names.set(name, (names.get(name) ?? 0) + 1);
+  for (const { name } of testSpans(path, lines, marks, shadow))
+    names.set(name, (names.get(name) ?? 0) + 1);
   return names;
 }
 
@@ -214,12 +217,13 @@ function matchTests(
   path: string,
   before: { lines: string[]; marks: string[] },
   after: { lines: string[]; marks: string[] },
+  shadow = false,
 ): TestMatch {
-  const was = testSpans(path, before.lines, before.marks);
-  const now = testSpans(path, after.lines, after.marks);
-  const namesBefore = testNames(path, before.lines, before.marks);
-  const namesAfter = testNames(path, after.lines, after.marks);
-  const { assertions: assertionForms } = testConventions(path);
+  const was = testSpans(path, before.lines, before.marks, shadow);
+  const now = testSpans(path, after.lines, after.marks, shadow);
+  const namesBefore = testNames(path, before.lines, before.marks, shadow);
+  const namesAfter = testNames(path, after.lines, after.marks, shadow);
+  const { assertions: assertionForms } = testConventions(path, shadow);
   const added = new Set(missingNames(namesAfter, namesBefore));
   const targets = now.filter((span) => added.has(span.name));
   const renames = new Map<string, string>();
@@ -350,10 +354,10 @@ const GUARD_LINES = 3;
  * machine cannot do what the test needs keeps the test running where it can, so it is not a
  * skipped failing test. A guard names the capability on the skip's line or in the lines above.
  */
-function unguardedSkips(path: string, lines: readonly string[]): number {
+function unguardedSkips(path: string, lines: readonly string[], shadow = false): number {
   // The markers a framework of the file's language spells its own way (RSpec `xit "..."`,
   // Minitest `skip`, #1493), next to the ones read in every file.
-  const own = testConventions(path).skips;
+  const own = testConventions(path, shadow).skips;
   let total = 0;
   lines.forEach((line, index) => {
     const skips = (line.match(SKIPS)?.length ?? 0) + (line.match(own)?.length ?? 0);
@@ -488,6 +492,8 @@ export interface ScanOptions {
   testSources?: readonly string[];
   /** Request, spec and plan text: a literal they name is a requirement, not a test input. */
   specText?: string;
+  /** Also read the framework rows measured in shadow (`testConventions(path, true)`, #2147). */
+  shadowTitles?: boolean;
 }
 
 export interface TestRemovalFinding {
@@ -711,6 +717,7 @@ export function measureTestIntegrity(
   ])
     for (const value of literals(source)) testLiterals.add(value);
   const spec = options.specText ?? "";
+  const shadow = options.shadowTitles === true;
   for (const change of changes) {
     const { path } = change;
     const reasoned = options.reasoned?.has(path) === true;
@@ -719,7 +726,7 @@ export function measureTestIntegrity(
       isTestPath(path) && typeof change.before === "string"
         ? (() => {
             const view = codeView(path, change.before);
-            return testSpans(path, view.lines, view.marks);
+            return testSpans(path, view.lines, view.marks, shadow);
           })()
         : [];
     const requested = requestedTestRemovals(
@@ -739,7 +746,7 @@ export function measureTestIntegrity(
     }
     const beforeRaw = change.before ?? "";
     const afterRaw = change.after ?? "";
-    const { cases: testCases, assertions: assertionForms } = testConventions(path);
+    const { cases: testCases, assertions: assertionForms } = testConventions(path, shadow);
     const viewBefore = codeView(path, beforeRaw);
     const viewAfter = codeView(path, afterRaw);
     const before = viewBefore.lines;
@@ -784,10 +791,10 @@ export function measureTestIntegrity(
         continue;
       }
       const testsAfter = count(codeAfter, testCases);
-      const namesBefore = testNames(path, before, viewBefore.marks);
-      const namesAfter = testNames(path, after, viewAfter.marks);
+      const namesBefore = testNames(path, before, viewBefore.marks, shadow);
+      const namesAfter = testNames(path, after, viewAfter.marks, shadow);
       // A test retitled or merged with its body kept is not removed (#1532).
-      const matched = matchTests(path, viewBefore, viewAfter);
+      const matched = matchTests(path, viewBefore, viewAfter, shadow);
       const targets = new Set(matched.renames.values());
       const gone = missingNames(namesBefore, namesAfter).filter(
         (name) => !matched.renames.has(name) && !requested.names.has(name),
@@ -839,7 +846,7 @@ export function measureTestIntegrity(
         literalGrew: strengthen && literalText(after) > literalText(before),
         assertsBefore: count(codeBefore, assertionForms),
         assertsAfter: count(codeAfter, assertionForms),
-        skips: unguardedSkips(path, codeAfter) - unguardedSkips(path, codeBefore),
+        skips: unguardedSkips(path, codeAfter, shadow) - unguardedSkips(path, codeBefore, shadow),
         ...checks(),
         names: {
           lost: lost.map(([name, origin]) => [name, origin, removed.includes(name)]),
@@ -998,6 +1005,21 @@ export interface IntegrityRecord {
   mode: "block" | "warn";
   measures: IntegrityMeasure[];
   findings: { rule: IntegrityRule; path: string }[];
+  /**
+   * The scan measured again with the shadow title rows (#2147), for the changed files whose
+   * language has one, and the findings it would add. Absent when no such file changed, and in
+   * records before #2147.
+   */
+  shadowTitles?: ShadowTitles;
+}
+
+/** What the shadow title rows would change of a scan (#2147). */
+export interface ShadowTitles {
+  measures: IntegrityMeasure[];
+  /** Findings the rows would add on those files. */
+  findings: { rule: IntegrityRule; path: string }[];
+  /** Findings of the live scan on those files that the rows would clear (a replaced test, #2139). */
+  cleared: { rule: IntegrityRule; path: string }[];
 }
 
 export function integrityRecord(
@@ -1006,6 +1028,7 @@ export function integrityRecord(
   mode: IntegrityRecord["mode"],
   measures: readonly IntegrityMeasure[],
   findings: readonly IntegrityFinding[],
+  shadowTitles: ShadowTitles | null = null,
 ): IntegrityRecord {
   return {
     schemaVersion: 1,
@@ -1014,6 +1037,38 @@ export function integrityRecord(
     mode,
     measures: recordedMeasures(measures),
     findings: findings.map(({ rule, path }) => ({ rule, path })),
+    ...(shadowTitles ? { shadowTitles } : {}),
+  };
+}
+
+/**
+ * The guard's shadow measure of new test-title rows (#2147): PHPUnit, ExUnit, zig test, OCaml's
+ * Alcotest, OUnit and ppx tests, Objective-C XCTest and Foundry tests had no title extractor, so
+ * the guard never named a test there (and the replacement rule of #2139 could not apply). A
+ * language that gains titles also gains `test-removed` findings it never reported, so the rows
+ * are read only here: the scan is measured again with them, and the findings it would add or
+ * clear on the files of those languages are recorded with the scan, counted nowhere. Null when no changed file
+ * is in such a language. Promoting a row drops its `shadow` flag.
+ */
+export function shadowTitleFindings(
+  changes: readonly FileChange[],
+  options: ScanOptions,
+  live: readonly IntegrityFinding[],
+): ShadowTitles | null {
+  const shadowed = new Set(changes.filter((c) => hasShadowTitles(c.path)).map((c) => c.path));
+  if (!shadowed.size) return null;
+  const measures = measureTestIntegrity(changes, { ...options, shadowTitles: true }).filter((m) =>
+    shadowed.has(m.path),
+  );
+  const key = (f: { rule: IntegrityRule; path: string }) => `${f.rule}\0${f.path}`;
+  const shadow = integrityDecision(measures);
+  const raised = new Set(live.map(key));
+  const would = new Set(shadow.map(key));
+  const keep = ({ rule, path }: { rule: IntegrityRule; path: string }) => ({ rule, path });
+  return {
+    measures: recordedMeasures(measures),
+    findings: shadow.filter((f) => !raised.has(key(f))).map(keep),
+    cleared: live.filter((f) => shadowed.has(f.path) && !would.has(key(f))).map(keep),
   };
 }
 
