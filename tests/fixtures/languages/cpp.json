@@ -32,6 +32,9 @@
       "src/sum_test.cpp:2 comment"
     ],
     "formatters": null,
-    "packageContents": null
+    "packageContents": null,
+    "numericLimits": [
+      "signed integer overflow is undefined behavior; std::stoi throws past int"
+    ]
   }
 }

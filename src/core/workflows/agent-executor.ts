@@ -105,6 +105,7 @@ import {
   ChainFamilySchema,
   CritiqueSchema,
   DistinctionSchema,
+  EdgeCasesSchema,
   generatedPaths,
   ImplementationSchema,
   MutantProposalSchema,
@@ -163,6 +164,7 @@ export const outputSchemas: Record<string, z.ZodType> = {
   distinction: DistinctionSchema,
   revision: RevisionSchema,
   "chain-family": ChainFamilySchema,
+  "edge-cases": EdgeCasesSchema,
 };
 const MAX_SEMANTIC_CORRECTIONS = 2;
 /** Submissions refused because a written file does not parse; the next one is accepted (#977). */

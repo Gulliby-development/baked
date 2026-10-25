@@ -38,7 +38,7 @@ outside a class. --effort is ${RouteEffort.options.join(", ")}; --fallback names
 models. review sets independentReview (provider moves reviewers to another vendor's model);
 confidence sets reviewMinConfidence, below which review findings stay notes (0.8 by default);
 critic sets whether a critic scores every task attempt (unset: only on another vendor);
-specify-sonnet on runs the specify stage of a Claude Code Opus run on claude-code/sonnet (off by
+specify-sonnet on runs the specify stage of a Claude Code Opus run on claude-code/sonnet (on by
 default); web-search on lets implementer and acceptance-writer attempts on a Codex model use
 Codex's web search (codeWebSearch, off by default; checks keep the policy's network setting);
 context sets the context window of every route without its own, and --context that of one route:

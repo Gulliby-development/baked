@@ -23,6 +23,8 @@ import {
 
 export { type HighCalibration, highCalibrationText, MIN_HIGH_RATIO_SAMPLES };
 
+import { planWidth } from "./critical-path.js";
+import { type DurationForecast, durationText, msPerToken, scheduledMinutes } from "./duration.js";
 import type { FeatureSize } from "./plan.js";
 
 /** The margin added on top of the high end, for the token figure to plan the budget with. */
@@ -88,6 +90,8 @@ export interface FeatureRunSample {
   size: FeatureSize;
   tokens: number;
   taskCount: number;
+  /** The run's active time; absent in older callers, whose samples give no minutes (#1557). */
+  activeMs?: number;
   /** The acceptance criteria of the run's spec; absent before a spec exists. */
   criteria?: number;
   /** The paths of the feature's boundary in its plan that no later feature lists; absent or 0 when it named none. */
@@ -118,6 +122,8 @@ export interface FeatureToEstimate {
   placeholders?: number;
   /** Files of its skeleton: the host writes them, so they add nothing to its forecast. */
   skeleton?: number;
+  /** The features it waits for, which order the wall-time forecast (#1557); absent means none. */
+  dependsOn?: string[];
 }
 
 export type FeatureEstimateBasis =
@@ -163,6 +169,8 @@ export interface FeatureEstimate {
   pathFit?: PathFit;
   /** "ratios" when the measured actual-to-low ratios set the high end (`HighCalibration`). */
   highBasis?: "ratios";
+  /** Active minutes still to run: its expected tokens not used yet at the measured rate (#1557). */
+  minutes?: number;
 }
 
 export type FeatureFloor = "criteria" | "paths" | "plan";
@@ -262,6 +270,8 @@ export interface InitiativeEstimate {
   highCalibration: HighCalibration | null;
   /** How this initiative's accepted features compared with their own plans (`ownPlanNeed`). */
   planCalibration: PlanCalibration;
+  /** Minutes still to run, summed and on the run slots; null without timed samples (#1557). */
+  duration: DurationForecast | null;
   notes: string[];
   label: string;
 }
@@ -549,7 +559,10 @@ export function estimateSummary(estimate: InitiativeEstimate): string {
     estimate.withMargin,
     budgetDetail(estimate),
   );
-  return `Level ${estimate.level} · ~${estimate.tasks.low}-${estimate.tasks.high} tasks · ${rangeText(estimate.tokens)} tokens · expected ${tokenText(estimate.expectedTokens)} · plan for ${tokenText(estimate.withMargin)} · ${fits}`;
+  const wall = estimate.duration
+    ? ` · ~${Math.round(estimate.duration.wallMinutes)} min wall with ${estimate.duration.slots} at once (~${Math.round(estimate.duration.activeMinutes)} min active)`
+    : "";
+  return `Level ${estimate.level} · ~${estimate.tasks.low}-${estimate.tasks.high} tasks · ${rangeText(estimate.tokens)} tokens · expected ${tokenText(estimate.expectedTokens)} · plan for ${tokenText(estimate.withMargin)}${wall} · ${fits}`;
 }
 
 const fitsOf = (high: number, low: number, limit: number): "yes" | "maybe" | "no" =>
@@ -775,6 +788,8 @@ export function estimateInitiative(input: {
   margin?: number;
   /** What this initiative has used so far; its own runs are not in `samples`. */
   progress?: InitiativeProgress;
+  /** Feature runs the initiative may start at once, for the wall-time forecast; absent means 1. */
+  parallelRuns?: number;
 }): InitiativeEstimate {
   const margin = input.margin ?? ESTIMATE_MARGIN;
   const progress = input.progress ?? { features: {}, overhead: 0 };
@@ -887,6 +902,7 @@ export function estimateInitiative(input: {
         ]
       : []),
   ];
+  const timed = durationOf(input.features, features, input.samples, input.parallelRuns ?? 1);
   const fits = fitsOf(withMargin, tokens.low, input.maxTotalTokens);
   const budgetText = estimateBudgetText(
     tokens,
@@ -904,14 +920,57 @@ export function estimateInitiative(input: {
     margin,
     budget: { maxTotalTokens: input.maxTotalTokens, fits },
     basis,
-    features,
+    features: timed.features,
     progress: { spent, accepted, ratio, bySize },
     perCriterion,
     perPath,
     perPathSamples,
     highCalibration,
     planCalibration,
+    duration: timed.duration,
     notes,
-    label: `Estimate: level ${level}, about ${tasks.low}-${tasks.high} tasks, ${rangeText(tokens)} tokens, expected ${tokenText(expectedTokens)} (plan for ${tokenText(withMargin)} with a ${Math.round(margin * 100)}% margin)${spent ? `, ${tokenText(spent)} used with ${accepted} of ${features.length} features accepted` : ""}; ${budgetText}`,
+    label: `Estimate: level ${level}, about ${tasks.low}-${tasks.high} tasks, ${rangeText(tokens)} tokens, expected ${tokenText(expectedTokens)} (plan for ${tokenText(withMargin)} with a ${Math.round(margin * 100)}% margin)${spent ? `, ${tokenText(spent)} used with ${accepted} of ${features.length} features accepted` : ""}; ${budgetText}${timed.duration ? `; ${durationText(timed.duration)}` : ""}`,
+  };
+}
+
+/**
+ * Each feature's active minutes still to run and the split's wall time (#1557): the expected
+ * tokens a feature has not used yet times the active milliseconds per token of finished feature
+ * runs of its workflow (of all when its workflow has too few), none for an accepted feature; the
+ * wall time schedules them over the plan's dependencies on `slots` runs, and on the plan's widest
+ * group when that is wider. No minutes while a feature has no measured rate.
+ */
+function durationOf(
+  planned: readonly FeatureToEstimate[],
+  features: FeatureEstimate[],
+  samples: readonly FeatureRunSample[],
+  slots: number,
+): { features: FeatureEstimate[]; duration: DurationForecast | null } {
+  const rates = features.map((f) => msPerToken(samples, f.workflowId));
+  if (!features.length || rates.some((r) => r === null)) return { features, duration: null };
+  const timed = features.map((f, i) => ({
+    ...f,
+    minutes:
+      f.basis === "measured"
+        ? 0
+        : (Math.max(0, f.expectedTokens - f.spent) * (rates[i]?.rate ?? 0)) / 60_000,
+  }));
+  const graph = planned.map((f, i) => ({
+    id: f.id,
+    minutes: timed[i]?.minutes ?? 0,
+    dependsOn: f.dependsOn ?? [],
+  }));
+  const width = planWidth({ features: graph });
+  const all = samples.filter((s) => (s.activeMs ?? 0) > 0 && s.tokens > 0).length;
+  return {
+    features: timed,
+    duration: {
+      msPerToken: msPerToken(samples)?.rate ?? 0,
+      samples: all,
+      activeMinutes: timed.reduce((t, f) => t + f.minutes, 0),
+      wallMinutes: scheduledMinutes(graph, slots),
+      slots,
+      widest: width > slots ? { slots: width, wallMinutes: scheduledMinutes(graph, width) } : null,
+    },
   };
 }

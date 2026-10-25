@@ -14,6 +14,7 @@ import {
 import { tmpdir } from "node:os";
 import { basename, dirname, join, relative } from "node:path";
 import { codeWithoutComments } from "../intelligence/comments.js";
+import { detectLanguageFromPath } from "../intelligence/types.js";
 import { largerContextModel } from "../llm/context-sizes.js";
 import {
   lowerEffort,
@@ -33,6 +34,7 @@ import {
 } from "../llm/policy-refusal.js";
 import { invisibleCharacters } from "../llm/provider-answer.js";
 import { ProviderUnreachableError } from "../llm/provider-health.js";
+import { dataDir } from "../platform/index.js";
 import { runSandbox } from "../security/sandbox.js";
 import { buildSafeEnv } from "../spawn.js";
 import { canonical, hashBytes, hashJson } from "../specs/hash.js";
@@ -88,6 +90,15 @@ import {
 } from "../verification/criteria-cases.js";
 import { canHold } from "../verification/deliverable-paths.js";
 import { type DocExampleResult, isDocFile, runDocExamples } from "../verification/doc-examples.js";
+import {
+  EDGE_CASES,
+  EDGE_DIR,
+  EDGE_KIND,
+  type EdgeRecord,
+  edgeDecision,
+  edgeTaxonomy,
+  printedValue,
+} from "../verification/edge-inputs.js";
 import {
   currentEvidence,
   evidenceHandle,
@@ -285,6 +296,13 @@ import { coverageFinding } from "./coverage.js";
 import { type CriticCalibration, calibrateCritic, criticExamples } from "./critic-calibration.js";
 import { crossPlatformAnalysisNote, crossPlatformNote } from "./cross-platform.js";
 import {
+  addDefectClasses,
+  DEFECT_CLASSES_FILE,
+  defectAdditions,
+  defectClassesFor,
+  defectRunText,
+} from "./defect-classes.js";
+import {
   git,
   gitWorktreePaths,
   initiativeSpecPrefix,
@@ -438,6 +456,11 @@ import {
   QUALITY_MANIFEST_FIELDS,
   unrequestedManifestFields,
 } from "./quality/dependencies.js";
+import {
+  isResolutionInput,
+  type ResolutionDiff,
+  replayResolution,
+} from "./quality/dependency-resolution.js";
 import {
   compareWithBaseline,
   duplicationOf,
@@ -610,6 +633,8 @@ import {
   DEFAULT_REVIEW_MIN_CONFIDENCE,
   type Distinction,
   DistinctionSchema,
+  type EdgeCases,
+  EdgeCasesSchema,
   executionModeOf,
   generatedPaths,
   ImplementationSchema,
@@ -717,6 +742,11 @@ import { statedRequest } from "./stated-request.js";
 import type { AttemptUsageRecord } from "./step-budget.js";
 import { type LeaseResource, newId, type TaskRow, type WorkflowStore } from "./store.js";
 import {
+  isSuppliedContentFinding,
+  suppliedConflictCriteria,
+  suppliedContentFindings,
+} from "./supplied-content.js";
+import {
   documentsOnly,
   failureOwner,
   hasTaskGate,
@@ -818,6 +848,8 @@ type Severity = Review["findings"][number]["severity"];
 const MUTATION_COPY = "quality-mutation";
 /** The task worktree the baseline replay (#1945) runs in. */
 const BASELINE_REPLAY_COPY = "quality-baseline-replay";
+/** How long one dependency listing of the baseline replay may run (#1954). */
+const RESOLUTION_TIMEOUT_MS = 180_000;
 /** The task worktree the package contents check (#1984) builds packages in. */
 const PACKAGE_CONTENTS_COPY = "quality-package-contents";
 const ALL_SEVERITIES: readonly Severity[] = ["critical", "high", "medium", "low"];
@@ -2004,6 +2036,17 @@ export class WorkflowScheduler {
                   ...findings.filter((f) => !isDerivationFinding(f)),
                   ...derivationFindings(spec, analysis),
                 ];
+              // A criterion literal a test file the request supplies verbatim lacks is the spec
+              // author's to fix, found here on the host instead of by the task-end walk (#2006).
+              findings = [
+                ...findings.filter((f) => !isSuppliedContentFinding(f)),
+                ...suppliedContentFindings(
+                  spec,
+                  graph,
+                  statedRequest(state, this.store.requests(runId)),
+                  { checks: policy.checks },
+                ),
+              ];
               // Analysis passes when no finding blocks: the rest are notes, whatever the model's verdict.
               const blocking = findings.some((f) => f.blocking);
               state.analysisPassed = !blocking && analysis.verdict !== "inconclusive";
@@ -3016,6 +3059,7 @@ export class WorkflowScheduler {
                     }),
                   ),
                 );
+              if (policy.defectClasses === "on") this.learnDefectClasses(runId, state);
               break;
             }
           }
@@ -5271,6 +5315,15 @@ export class WorkflowScheduler {
             : "The host writes the audited row data and parameterized tests. Write only the actual(input) harness and any ordinary tests this task owns. Review and corrections must preserve the host-written files.",
         },
       };
+    }
+    // The cross-run defect classes of the run's domains, as examples (#1970).
+    if (
+      policy.defectClasses === "on" &&
+      (stageProfile.output === "plan" ||
+        (stageProfile.output === "implementation" && task?.origin === "planned"))
+    ) {
+      const classes = defectClassesFor(join(dataDir(), DEFECT_CLASSES_FILE), defectRunText(state));
+      if (classes) extra = { ...(extra as Record<string, unknown>), defectClasses: classes };
     }
     const replay =
       task && !generatedRows.length && stageProfile.output === "implementation"
@@ -7607,6 +7660,8 @@ ${note}`;
     this.settleTask(runId, state, policy, task, child, taskFailures, checkEvidence);
     if (!taskFailures.length && reported && !unresolvedAccount)
       await this.routeReportedDefect(runId, state, policy, task, child, reported, signal, taskRoot);
+    if (!taskFailures.length && !unresolvedAccount)
+      await this.edgeProbe(runId, child, state, policy, task, taskRoot, signal);
   }
   /**
    * Implementation with several writers (a worktree run whose policy allows more than one). Ready
@@ -9135,6 +9190,8 @@ ${note}`;
         signal,
         mainRoot,
       );
+    if (!failures.length && !outcome.account.unresolved.length)
+      await this.edgeProbe(runId, entry.child, state, policy, task, mainRoot, signal);
   }
   /**
    * A required task check that failed and declares a fixer gets one host repair before it becomes
@@ -11485,7 +11542,22 @@ ${note}`;
         isTestPath(p) &&
         (state.testsFirst?.files.includes(p) || !this.createdByRun(runId, state, p)),
     );
-    const criteria = conflictCriteria(spec, report, reported);
+    const cited = conflictCriteria(spec, report, reported);
+    // A report about a test file the request supplies verbatim that cites no criterion: the
+    // criteria whose literals the file lacks are the conflict's (#2006, part c).
+    const supplied = cited.length
+      ? []
+      : suppliedConflictCriteria(
+          spec,
+          task,
+          { tasks },
+          request,
+          { text: report, paths: [...pathsInOutput(report, tasks), ...sideTests(reported)] },
+          { checks: policy.checks },
+        );
+    const criteria = cited.length
+      ? cited
+      : spec.criteria.filter((c) => c.method === "automated" && supplied.includes(c.id));
     const earlier = this.store
       .artifacts(runId)
       .filter(
@@ -11504,6 +11576,7 @@ ${note}`;
       sides: checkedSides(spec, request, report, reported),
       foreignTests: foreign.length,
       criterionIds: criteria.map((c) => c.id),
+      ...(supplied.length ? { supplied: true } : {}),
       reaudit: null,
       reauditedBefore: earlier.some((r) => r.reaudit !== null),
     };
@@ -12330,6 +12403,178 @@ ${note}`;
     }
   }
   /**
+   * The edge-input probe of a planned source task (#1808), once after it settled without
+   * failures: the `edge-cases` profile is shown the task's criteria, files and the edge taxonomy
+   * of its languages (edge-inputs.ts) and proposes extreme legal inputs; the host runs each
+   * through the project's entry points as a repro whose actual is its expected value
+   * (`edgeDecision`). A case that runs and prints something else becomes a finding of the task,
+   * corrected at once, before the test tasks build on the code (R54 url-shortener: a non-ASCII
+   * redirect target, 2.43M tokens of correctives after the final review). Recorded under
+   * `probes/edge/` (kind `edge-probe`); a failed call records no cases and changes nothing.
+   */
+  private async edgeProbe(
+    runId: string,
+    stepId: string,
+    state: RuntimeState,
+    policy: RunPolicy,
+    task: Task,
+    root: string,
+    signal: AbortSignal,
+  ): Promise<void> {
+    if (policy.edgeProbe !== "on" || task.origin !== "planned" || !task.criterionIds.length) return;
+    const path = `${EDGE_DIR}${task.id}.json`;
+    if (this.store.latestArtifact(runId, path)) return;
+    if (this.store.tasks(runId).find((r) => r.id === task.id)?.status !== "implemented") return;
+    const sources = task.writes
+      .filter((w) => w.action !== "delete" && !isTestPath(w.path))
+      .map((w) => w.path);
+    const languages = [
+      ...new Set(sources.map((p) => detectLanguageFromPath(p)).filter((l) => l !== "unknown")),
+    ];
+    const profile = ProfileSchema.array()
+      .parse(JSON.parse(this.store.run(runId).profiles_json))
+      .find((p) => p.output === "edge-cases");
+    const executables = reproExecutables(policy.checks);
+    if (!profile || !executables.length || !languages.length) return;
+    const criteria = (state.spec?.criteria ?? []).filter((c) => task.criterionIds.includes(c.id));
+    const record = (cases: EdgeRecord["cases"]): EdgeRecord => ({
+      schemaVersion: 1,
+      taskId: task.id,
+      languages,
+      cases,
+    });
+    const child = this.store.transaction(() => this.store.beginStep(runId, "edge-probe", stepId));
+    let proposed: EdgeCases;
+    try {
+      proposed = EdgeCasesSchema.parse(
+        await this.call(
+          runId,
+          child,
+          state,
+          policy,
+          profile,
+          {
+            task: { id: task.id, title: task.title, description: task.description },
+            criteria: criteria.map((c) => ({
+              id: c.id,
+              given: c.given,
+              when: c.when,
+              // biome-ignore lint/suspicious/noThenProperty: Given/When/Then is the versioned acceptance-criterion contract.
+              then: c.then,
+            })),
+            files: sources,
+            executables,
+            edge: edgeTaxonomy(languages),
+          },
+          signal,
+        ),
+      );
+      this.store.transaction(() => this.store.finishStep(runId, child, "completed"));
+    } catch (error) {
+      if (signal.aborted) throw error;
+      if (
+        error instanceof WorkflowFault &&
+        ["BUDGET_EXHAUSTED", "CHECKPOINT_REACHED"].includes(error.code)
+      )
+        throw error;
+      // Recorded without cases, so a resumed run does not ask again.
+      this.store.transaction(() => {
+        this.store.finishStep(runId, child, "failed");
+        this.store.artifact(runId, EDGE_KIND, path, canonical(record([])));
+      });
+      return;
+    }
+    // A case must name a criterion of this task: only a criterion makes its input legal.
+    const cases = proposed.cases
+      .filter((c) => task.criterionIds.includes(c.criterionId))
+      .slice(0, EDGE_CASES);
+    const outcomes = await runReproBattery(
+      cases.map(({ criterionId: _, ...c }) => ({ ...c, actual: c.expected })),
+      (repro) =>
+        runRepro(this.processes, repro, {
+          root,
+          executables,
+          generated: generatedPaths(policy),
+          signal,
+          sandbox: runSandbox(policy, root, { gitWrite: Boolean(state.worktree) }),
+          shadows: sources,
+        }),
+    );
+    const probed = record(
+      outcomes.map((o, index) => ({
+        criterionId: cases[index]?.criterionId ?? "",
+        status: o.status,
+        reason: o.reason,
+        decision: edgeDecision(o.status),
+      })),
+    );
+    const findings: Review["findings"] = [];
+    this.store.transaction(() => {
+      const artifact = this.store.artifact(runId, EDGE_KIND, path, canonical(probed));
+      const evidenceId = this.store.addEvidence(
+        runId,
+        "command",
+        state.snapshotId ?? "",
+        artifact.id,
+      );
+      for (const [index, outcome] of outcomes.entries()) {
+        const probe = cases[index];
+        if (probed.cases[index]?.decision !== "finding" || !probe) continue;
+        const { criterionId, ...input } = probe;
+        const repro: Repro = { ...input, actual: printedValue(outcome.output) };
+        const criterion = criteria.find((c) => c.id === criterionId);
+        findings.push({
+          id: newId(),
+          kind: "correctness",
+          severity: "high",
+          basis: "spec",
+          confidence: 1,
+          requirementIds: criterion?.requirementIds ?? task.requirementIds,
+          criterionIds: [criterionId],
+          file: sources[0] ?? null,
+          symbol: null,
+          evidenceIds: [evidenceId],
+          claim: `Edge input ${String(index + 1)} of ${task.id}, legal under ${criterionId}: prints ${JSON.stringify(repro.actual)} where ${JSON.stringify(repro.expected)} is required`,
+          impact: `An extreme but legal input of ${criterionId} gives a wrong result; the test tasks would build on it and the final review would find it.`,
+          suggestedFix: `Make ${task.id}'s code handle this input as ${criterionId} requires, without breaking its other inputs.`,
+          repro,
+        });
+      }
+    });
+    if (!findings.length) return;
+    const recorded = this.recordFindings(runId, {
+      schemaVersion: 1,
+      snapshotHash: state.workspaceHash ?? "",
+      verdict: "changes_requested",
+      coverage: [],
+      findings,
+    });
+    this.repair(runId, state, policy, recorded, "repair", "task");
+    this.store.transaction(() => this.store.saveState(runId, state));
+  }
+  /**
+   * Adds the families of the run's resolved correctness findings to the cross-run list of defect
+   * classes (#1970), from the learn stage of a run whose policy turns it on. What the run added is
+   * recorded as `learning/defect-classes.json`.
+   */
+  private learnDefectClasses(runId: string, state: RuntimeState): void {
+    const findings = this.store
+      .findings(runId)
+      .filter((f) => f.status === "resolved" && f.repair_task_id)
+      .map((f) => JSON.parse(f.body_json) as Review["findings"][number]);
+    const additions = defectAdditions(findings, defectRunText(state));
+    if (!additions.length) return;
+    addDefectClasses(join(dataDir(), DEFECT_CLASSES_FILE), additions, new Date().toISOString());
+    this.store.transaction(() =>
+      this.store.artifact(
+        runId,
+        "learning-candidate",
+        "learning/defect-classes.json",
+        canonical({ schemaVersion: 1, additions }),
+      ),
+    );
+  }
+  /**
    * Routes a defect a task names in another task's file to that file's owner at once (#839). A
    * test task may not edit the source it exposes a defect in, so it names the file in its summary
    * and reports implemented; until now nothing acted on that before the checks stage, and every
@@ -13113,7 +13358,8 @@ ${note}`;
       const code = await readCodeFiles(
         root,
         [...new Set(existing)],
-        (path) => isCodePath(path) || hasExecutableFields(path),
+        // Lock files too: the baseline replay lists their resolution before the change (#1954).
+        (path) => isCodePath(path) || hasExecutableFields(path) || isResolutionInput(path),
       );
       this.store.transaction(() =>
         this.store.artifact(
@@ -13210,7 +13456,11 @@ ${note}`;
       checks: tests,
     });
     if (prior?.inputHash === inputHash) return;
-    const record = (checks: BaselineReplayCheck[], note?: string): void =>
+    const record = (
+      checks: BaselineReplayCheck[],
+      note?: string,
+      dependencies?: ResolutionDiff[],
+    ): void =>
       this.store.transaction(() => {
         const value: BaselineReplay = {
           schemaVersion: 1,
@@ -13219,6 +13469,7 @@ ${note}`;
           removed: edits.remove,
           unknown: edits.unknown,
           checks,
+          ...(dependencies ? { dependencies } : {}),
           ...(note ? { note } : {}),
           inputHash,
         };
@@ -13247,9 +13498,55 @@ ${note}`;
       state,
       BASELINE_REPLAY_COPY,
       async (copy, scope) => {
-        for (const file of edits.revert)
-          writeFileSync(workspacePath(copy, file.path), file.content);
-        for (const file of edits.remove) rmSync(workspacePath(copy, file), { force: true });
+        // The resolved dependencies as delivered, then as they were before the change (#1954).
+        const folderOf = (folder: string) => (folder === "." ? copy : workspacePath(copy, folder));
+        const dependencies = await replayResolution(
+          changed.map((file) => file.path),
+          [".", ...tests.map((check) => check.cwd.replace(/\/+$/, "") || ".")],
+          {
+            names: (folder) => {
+              try {
+                return readdirSync(folderOf(folder));
+              } catch {
+                return [];
+              }
+            },
+            read: (path) => {
+              try {
+                return readFileSync(workspacePath(copy, path), "utf8");
+              } catch {
+                return null;
+              }
+            },
+            run: async (folder, executable, args) => {
+              signal.throwIfAborted();
+              try {
+                const outcome = await executeCheckCommand(scope, executable, [...args], {
+                  cwd: folderOf(folder),
+                  env: buildCheckEnv({ envNames: [] }),
+                  timeoutMs: RESOLUTION_TIMEOUT_MS,
+                  signal,
+                  sandbox: runSandbox(policy, copy, { gitWrite: true }),
+                });
+                return {
+                  status: outcome.timedOut
+                    ? "timeout"
+                    : outcome.exitCode === 0
+                      ? "passed"
+                      : "failed",
+                  output: outcome.output,
+                };
+              } catch (error) {
+                return { status: "failed", output: String(error) };
+              }
+            },
+          },
+          () => {
+            for (const file of edits.revert)
+              writeFileSync(workspacePath(copy, file.path), file.content);
+            for (const file of edits.remove) rmSync(workspacePath(copy, file), { force: true });
+          },
+        );
         const checks: BaselineReplayCheck[] = [];
         for (const check of tests) {
           signal.throwIfAborted();
@@ -13318,7 +13615,7 @@ ${note}`;
             ...(targets.length ? { targets } : {}),
           });
         }
-        record(checks);
+        record(checks, undefined, dependencies);
       },
     );
     if (failure) record([], failure);

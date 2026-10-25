@@ -66,6 +66,8 @@ const ID = /^[a-z0-9]+(-[a-z0-9]+)*$/;
 export const POLICY_FIELDS: Readonly<Record<string, readonly unknown[]>> = {
   chainRewrite: ["on"],
   chainProbe: ["on"],
+  edgeProbe: ["on"],
+  defectClasses: ["on"],
 };
 
 export function suiteRoot(): string {

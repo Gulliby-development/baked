@@ -27,6 +27,7 @@ interface Accepted {
   newRecoveries?: number;
   newPolicyStops?: number;
   newChainDecisions?: number;
+  newEdgeDecisions?: number;
   newRepeatStops?: number;
   newConflictDecisions?: number;
   newApplyDecisions?: number;
@@ -90,6 +91,7 @@ describe("bench-round traces replay without new forecast stops or growth (#1649)
           newConflictDecisions: run.newConflictDecisions,
           newApplyDecisions: run.newApplyDecisions,
           newMisquoteFixes: run.newMisquoteFixes,
+          newEdgeDecisions: run.newEdgeDecisions,
           newIntegrityFindings: run.newIntegrityFindings,
           newCaseRefusals: run.newCaseRefusals,
           newGateRepairs: run.newGateRepairs,
@@ -109,6 +111,7 @@ describe("bench-round traces replay without new forecast stops or growth (#1649)
           newConflictDecisions: allowed?.newConflictDecisions ?? 0,
           newApplyDecisions: allowed?.newApplyDecisions ?? 0,
           newMisquoteFixes: allowed?.newMisquoteFixes ?? 0,
+          newEdgeDecisions: allowed?.newEdgeDecisions ?? 0,
           newIntegrityFindings: allowed?.newIntegrityFindings ?? 0,
           newCaseRefusals: allowed?.newCaseRefusals ?? 0,
           newGateRepairs: allowed?.newGateRepairs ?? 0,

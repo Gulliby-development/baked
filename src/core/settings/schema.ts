@@ -1093,6 +1093,38 @@ export const SETTINGS: readonly SettingDefinition[] = [
     ],
   },
   {
+    id: "quality.defectClasses",
+    page: "code-quality",
+    section: "Workflow runs",
+    label: "Cross-run defect classes",
+    help: "Each run keeps the defect classes its review corrected (such as nested emphasis delimiters in Markdown or Decimal precision in money totals) in a list on this machine, by domain, with a few cases each. The planner and the implementers of a later run whose request names the same domain see those classes as examples, so the first version of the code avoids them.",
+    scopes: BOTH,
+    type: "enum",
+    default: "off",
+    options: [
+      {
+        value: "off",
+        label: "off",
+        help: "Each run starts without the list and adds nothing to it.",
+      },
+      { value: "on", label: "on", help: "Read and add to the list of defect classes by domain." },
+    ],
+  },
+  {
+    id: "quality.edgeProbe",
+    page: "code-quality",
+    section: "Workflow runs",
+    label: "Edge-input probe",
+    help: "After a planned source task passes its checks and before the test tasks run, one small review call proposes extreme but legal inputs its criteria allow (huge numbers, long and non-ASCII text, empty values, boundary dates). The host runs them through the project's commands, and each one whose output differs from the expected value is corrected in that task at once instead of being found by the final review.",
+    scopes: BOTH,
+    type: "enum",
+    default: "off",
+    options: [
+      { value: "off", label: "off", help: "Extreme inputs are left to the tests and the review." },
+      { value: "on", label: "on", help: "Probe each source task once and correct failing inputs." },
+    ],
+  },
+  {
     id: "quality.propertyTests",
     page: "code-quality",
     section: "Tests",
