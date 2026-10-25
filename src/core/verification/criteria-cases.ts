@@ -279,6 +279,8 @@ const CHECK_COMMAND = new RegExp(
     // Composer-installed PHP tools, run by path or through `php` (#1491), and Composer scripts.
     String.raw`(?:php\s+)?(?:\.\/)?(?:vendor\/bin\/)?(?:phpunit|pest|phpstan|psalm|pint|php-cs-fixer)\b`,
     String.raw`composer\s+(?:run(?:-script)?\s+)?(?:test|tests|lint|check|analyse|analyze|format|fmt|cs)\b`,
+    // Bundler: `bundle exec rspec`, `bundle exec rake test`, `bundle exec rubocop` (#1493).
+    String.raw`(?:bundle\s+exec\s+)?(?:rspec|rubocop|standardrb|rake\s+(?:test|spec))\b`,
   ].join("|")})`,
 );
 

@@ -34,6 +34,9 @@ describe("project language", () => {
     expect(detectLanguages(workspace({ "Cargo.toml": "" }))).toEqual(["rust"]);
     expect(detectLanguages(workspace({ "pom.xml": "" }))).toEqual(["java"]);
     expect(detectLanguages(workspace({ "composer.json": "{}" }))).toEqual(["php"]);
+    // A Ruby application has a Gemfile; a gem may have only its gemspec (#1493).
+    expect(detectLanguages(workspace({ Gemfile: "gem 'rspec'\n" }))).toEqual(["ruby"]);
+    expect(detectLanguages(workspace({ "calc.gemspec": "Gem::Specification.new\n" }))).toEqual(["ruby"]);
     expect(detectLanguages(workspace({ "package.json": "{}" }))).toEqual([]);
   });
   test(".NET solutions rank before projects", () => {
@@ -70,6 +73,8 @@ describe("language review scope", () => {
     expect(touchesLanguageFiles(["service/pom.xml"])).toBe(true);
     expect(touchesLanguageFiles(["src/Sum.php"])).toBe(true);
     expect(touchesLanguageFiles(["composer.json"])).toBe(true);
+    expect(touchesLanguageFiles(["lib/calc.rb", "Gemfile"])).toEqual(true);
+    expect(touchesLanguageFiles(["Gemfile.lock"])).toBe(true);
     expect(touchesLanguageFiles(["README.md", "scripts/run.sh", "docs/go.md"])).toBe(false);
   });
 

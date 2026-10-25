@@ -287,7 +287,15 @@ async function detectToolchain(cwd: string): Promise<DetectedToolchain> {
 
   // Ruby
   if (await has("Gemfile")) {
-    profile.test = (await has("spec")) ? "bundle exec rspec" : "bundle exec rails test";
+    // A gem or a plain Rake project tests with Minitest through `rake test`; only a Rails app has
+    // `rails test` (#1493).
+    profile.test = (await has("spec"))
+      ? "bundle exec rspec"
+      : (await has("bin/rails"))
+        ? "bundle exec rails test"
+        : (await has("Rakefile"))
+          ? "bundle exec rake test"
+          : null;
     profile.build = null;
     profile.lint = "bundle exec rubocop";
     profile.typecheck = null;

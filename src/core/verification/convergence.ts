@@ -6,8 +6,10 @@ import {
   type ChainRecord,
   chainFindings,
   chainRecord,
+  chainSubject,
   correctiveChain,
   rewriteStep,
+  rewritesSymbol,
 } from "../workflows/finding-chain.js";
 import { counterexampleOf } from "../workflows/quality/properties.js";
 import { recoveryAdvice } from "../workflows/remedies.js";
@@ -340,11 +342,12 @@ export function failureSignature(output: string): string {
  * of the JavaScript runners, Bun's "0 test files matching" (exit 1), Gradle 9's "did not discover
  * any tests to execute" (#1864), Go's "no test files", SwiftPM's "no tests found", Mix's "did not
  * match any directory/file: test" or "no tests to run", Flutter's "Test directory "test" not
- * found" (#1753) and PHPUnit's "No tests executed!" (#1491; Pest says "No tests found"). A plan that writes the tests last has this state until its test tasks run, and
+ * found" (#1753), and RSpec's "No examples found." or "All examples were filtered out" and
+ * Minitest's "0 runs, 0 assertions" (#1493), all of which exit 0, and PHPUnit's "No tests executed!" (#1491; Pest says "No tests found"). A plan that writes the tests last has this state until its test tasks run, and
  * it is no defect of the code (#1031, #1208).
  */
 export function noTestsCollected(output: string): boolean {
-  return /\bno tests ran\b|\bno tests executed!|\bcollected 0 items\b|\bno tests? (?:files? )?found\b|\bno test files\b|\bno files were found in testpaths\b|\b0 test files matching\b|\bdid not discover any tests to execute\b|\bno tests to run\b|\bdid not match any directory\/file\b|\btest directory "?test"? not found\b/i.test(
+  return /\bno tests ran\b|\bno tests executed!|\bcollected 0 items\b|\bno tests? (?:files? )?found\b|\bno test files\b|\bno files were found in testpaths\b|\b0 test files matching\b|\bdid not discover any tests to execute\b|\bno tests to run\b|\bdid not match any directory\/file\b|\btest directory "?test"? not found\b|\bno examples found\b|\ball examples were filtered out\b|^0 runs, 0 assertions\b/im.test(
     output,
   );
 }
@@ -376,7 +379,19 @@ export const MISSING_PATH_LINES: readonly { tool: string; line: RegExp }[] = [
   // later), `Cannot open file "tests.php".` (9).
   { tool: "phpunit", line: /\bTest (?:directory|file) "([^"]+)" not found/ },
   { tool: "phpunit", line: /\bCannot open file "([^"]+?)(?:\.php)?"/ },
+  // RSpec: `An error occurred while loading ./spec/a_spec.rb.`, a missing file only when RSpec's
+  // own `load` failed (`Failure/Error: __send__(method, file)`), not a `require` inside the file.
+  { tool: "rspec", line: /^An error occurred while loading (\S+?)\.?(?: - Did you mean\?)?$/ },
+  { tool: "ruby", line: /^ruby: No such file or directory -- (\S+) \(LoadError\)$/ },
+  { tool: "rake", line: /^File does not exist: (\S+)$/ },
+  { tool: "rubocop", line: /^Error: No such file or directory: (\S+)$/ },
 ];
+
+/** Whether RSpec's own `load` of the file named at `index` failed, a few lines below it. */
+const rspecMissing = (lines: readonly string[], index: number): boolean =>
+  lines
+    .slice(index + 1, index + 4)
+    .some((line) => /^Failure\/Error: __send__\(method, file\)/.test(line));
 
 /** Whether an E902 error comes just before ruff's `-->` location line at `index`. */
 const ruffMissing = (lines: readonly string[], index: number): boolean =>
@@ -400,7 +415,12 @@ export function missingPlannedPaths(
     for (const { tool, line: pattern } of MISSING_PATH_LINES) {
       const path = pattern.exec(line)?.[1];
       // The `-->` location line names a missing path only right after an E902 error.
-      if (!path || (tool === "ruff" && !ruffMissing(lines, index))) continue;
+      if (
+        !path ||
+        (tool === "ruff" && !ruffMissing(lines, index)) ||
+        (tool === "rspec" && !rspecMissing(lines, index))
+      )
+        continue;
       const clean = path
         .replace(/^\.\//, "")
         .replace(/\/\.\.\.$/, "")
@@ -1107,11 +1127,13 @@ export function appendCorrections(
       ? chainRecord(id, found.finding, found.chain, policy.chainRewrite ?? "off")
       : null;
     if (record) chainRecords.push(record);
-    const rewrite = record?.decision === "rewrite" ? record : null;
+    const rewrite = rewritesSymbol(record) ? record : null;
+    // A repeat chain on a test file sweeps the test files instead of a symbol rewrite (#2098).
+    const testChain = record?.corrective === "test-sweep";
     const lastStep = (finding: Review["findings"][number]): string =>
       rewrite && finding.id === rewrite.findingId
         ? rewriteStep(
-            rewrite.symbol,
+            chainSubject(rewrite),
             rewrite.chain.map((f) => f.id),
             rewrite.family && rewrite.symbols
               ? { name: rewrite.family, file: rewrite.file, symbols: rewrite.symbols }
@@ -1122,13 +1144,19 @@ export function appendCorrections(
           : SIBLING_STEP;
     const sweep = key.startsWith(`${SWEEP_KEY}tests\n`)
       ? testSweepStep(sweepFiles(grouped, base.profileId, base, root))
-      : key.startsWith(SWEEP_KEY)
-        ? sweepStep(
-            unique(grouped.flatMap(robustnessShapes)),
-            sweepFiles(grouped, base.profileId, base, root),
-            unique(grouped.flatMap((f) => (f.file ? [f.file] : []))),
+      : testChain
+        ? testSweepStep(
+            sweepTestFiles(grouped, root, base.profileId).filter((path) =>
+              writable({ bases }).includes(path),
+            ),
           )
-        : "";
+        : key.startsWith(SWEEP_KEY)
+          ? sweepStep(
+              unique(grouped.flatMap(robustnessShapes)),
+              sweepFiles(grouped, base.profileId, base, root),
+              unique(grouped.flatMap((f) => (f.file ? [f.file] : []))),
+            )
+          : "";
     return {
       ...base,
       writes: mergeCorrectionWrites(
@@ -1140,7 +1168,7 @@ export function appendCorrections(
       checkIds: unique(bases.flatMap((b) => correctionChecks(b, root))),
       id,
       title: rewrite
-        ? `Rewrite ${rewrite.symbol}: ${correctionTitle(grouped).replace(/^Correct: /, "")}`
+        ? `Rewrite ${chainSubject(rewrite)}: ${correctionTitle(grouped).replace(/^Correct: /, "")}`
         : correctionTitle(grouped),
       description: grouped
         .map(
