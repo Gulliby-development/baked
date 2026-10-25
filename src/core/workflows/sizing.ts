@@ -616,6 +616,108 @@ export function suppliedLines(request: string, paths: readonly string[]): Map<st
   );
 }
 
+/**
+ * Tokens per character of a text a test compares exactly, when the request supplies it verbatim
+ * (#2101). Bench round 67 srtvet-update T005 compared the README section "## Cleaning spaces"
+ * (1,264 characters with backticks and two fenced blocks, given in the request) byte for byte in
+ * Go and cost 1.64M tokens in one session, four check rounds over the string's quoting, against a
+ * price of 285k-834k from its 14 cases. The high end is that run's 1,300 tokens a character; the
+ * low end is half of it, an attempt that gets the quoting right in two rounds. One measurement.
+ */
+export const SUPPLIED_TEXT_PER_CHAR: TokenRange = { low: 650, high: 1_300 };
+
+/** A criterion that compares a text exactly, not by its parts. */
+const EXACT_TEXT =
+  /\b(?:exact(?:ly)?|verbatim|byte[- ](?:for[- ]byte|exact)|identical|character[- ]for[- ]character)\b/i;
+const HEADING = /^ {0,3}(#{1,6})[ \t]+(.+?)(?:[ \t]+#+)?[ \t]*$/;
+const FENCE_LINE = /^ {0,3}(`{3,}|~{3,})(.*)$/;
+
+/**
+ * The Markdown sections of a request, by heading title (lower case): the characters from the
+ * heading line to the line before the next heading of the same or a higher level, or to the close
+ * of the fence the section is quoted in. A heading inside a fenced block of the section (`# a
+ * shell comment`) ends nothing.
+ */
+export function requestSections(request: string): Map<string, number> {
+  const lines = request.split(/\r?\n/);
+  const sections = new Map<string, number>();
+  // The fences open at each line: the outer one a section may be quoted in, then its inner ones.
+  const open: { char: string; length: number; info?: string }[] = [];
+  const closes = (line: string, fence: { char: string; length: number }) => {
+    const m = FENCE_LINE.exec(line);
+    return !!m && m[1]?.[0] === fence.char && (m[1]?.length ?? 0) >= fence.length && !m[2]?.trim();
+  };
+  const step = (stack: { char: string; length: number; info?: string }[], line: string) => {
+    const top = stack.at(-1);
+    if (top && closes(line, top)) {
+      stack.pop();
+      return;
+    }
+    const m = FENCE_LINE.exec(line);
+    // Outside a fence any fence line opens one; inside, one with an info string (`` ```text ``),
+    // a block of the Markdown file the outer fence quotes.
+    if (m && (!top || m[2]?.trim()))
+      stack.push({
+        char: m[1]?.[0] ?? "`",
+        length: m[1]?.length ?? 3,
+        info: m[2]?.trim().toLowerCase() ?? "",
+      });
+  };
+  for (const [i, line] of lines.entries()) {
+    // A heading of the request, or of a Markdown file it quotes in a fence.
+    const quoted = open.length === 1 && ["", "md", "markdown"].includes(open[0]?.info ?? "");
+    const heading = !open.length || quoted ? HEADING.exec(line) : null;
+    if (heading) {
+      const level = heading[1]?.length ?? 1;
+      const outer = open.at(-1);
+      const inner: { char: string; length: number }[] = [];
+      let end = lines.length;
+      for (let j = i + 1; j < lines.length; j++) {
+        const next = lines[j] ?? "";
+        if (!inner.length && outer && closes(next, outer)) {
+          end = j;
+          break;
+        }
+        const h = inner.length ? null : HEADING.exec(next);
+        if (h && (h[1]?.length ?? 1) <= level) {
+          end = j;
+          break;
+        }
+        step(inner, next);
+      }
+      const text = lines.slice(i, end).join("\n").replace(/\s+$/, "");
+      const title = (heading[2] ?? "").trim().toLowerCase();
+      if (!sections.has(title)) sections.set(title, [...text].length);
+    }
+    step(open, line);
+  }
+  return sections;
+}
+
+/**
+ * The characters of the request's sections a test task compares exactly (#2101): a section whose
+ * title a criterion of the task names, in a criterion that says the comparison is exact
+ * (`EXACT_TEXT`). Zero when there is none.
+ */
+export function exactTextChars(
+  request: string,
+  spec: SpecText,
+  task: Pick<Task, "criterionIds">,
+): number {
+  const sections = requestSections(request);
+  if (!sections.size) return 0;
+  const named = new Set<string>();
+  for (const criterion of spec.criteria) {
+    if (!task.criterionIds.includes(criterion.id)) continue;
+    const text = `${criterion.given}\n${criterion.when}\n${criterion.then}`;
+    if (!EXACT_TEXT.test(text)) continue;
+    const lower = text.toLowerCase();
+    for (const title of sections.keys())
+      if (title.length >= 3 && lower.includes(title)) named.add(title);
+  }
+  return [...named].reduce((sum, title) => sum + (sections.get(title) ?? 0), 0);
+}
+
 /** A task priced from the lines the request supplies for it. */
 export interface SuppliedPrice {
   estimate: TokenRange;
@@ -702,6 +804,11 @@ export interface TaskSize {
   basis?: "supplied" | "history" | "default";
   /** The supplied changed lines of a `supplied` task. */
   suppliedLines?: number;
+  /**
+   * The characters of the request's sections a test task compares exactly, which price it when
+   * above its case price (#2101).
+   */
+  exactTextChars?: number;
   cases?: number;
   /** Sequential slices of this test file, including this task. */
   sliceCount?: number;
@@ -1003,7 +1110,18 @@ export function sizePlan(input: {
             })
           : 0;
       const fromRequest = suppliedTaskPrice(task, supplied, maxAttemptTokens);
-      const estimate = fromRequest?.estimate ?? priceTask(task, rates, tests, cases);
+      const byCases = fromRequest?.estimate ?? priceTask(task, rates, tests, cases);
+      // A test that compares a supplied text exactly costs by the text's size (#2101).
+      const textChars =
+        supplied && input.request && input.spec && kind === "test" && !fromRequest
+          ? exactTextChars(input.request, input.spec, task)
+          : 0;
+      const estimate = textChars
+        ? {
+            low: Math.max(byCases.low, textChars * SUPPLIED_TEXT_PER_CHAR.low),
+            high: Math.max(byCases.high, textChars * SUPPLIED_TEXT_PER_CHAR.high),
+          }
+        : byCases;
       const files = writtenFiles(task).length;
       const rowsTask =
         kind === "test" && task.rows?.length
@@ -1022,10 +1140,12 @@ export function sizePlan(input: {
             ? // A slice of one criterion is as small as the host splits; its worker writes and
               // checks the cases in batches, so sending it to the planner asks for no plan (#1930).
               !(task.sizingSlice && task.criterionIds.length === 1) &&
-              exceedsTestCapacity(cases, limit, estimate, maxAttemptTokens, true, rowsTask)
+              // A slice holds the same text, so the text's price never splits a task.
+              exceedsTestCapacity(cases, limit, byCases, maxAttemptTokens, true, rowsTask)
             : files > 1 && estimate.high > maxAttemptTokens,
         basis: fromRequest ? "supplied" : historyBasis(task, rates, tests, cases),
         ...(fromRequest ? { suppliedLines: fromRequest.lines } : {}),
+        ...(textChars ? { exactTextChars: textChars } : {}),
         ...(kind === "test" ? { cases, sliceCount: task.sizingSlice?.count ?? 1 } : {}),
         ...(rowsTask ? { rowsTask } : {}),
       };

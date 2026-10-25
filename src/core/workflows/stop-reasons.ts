@@ -55,6 +55,14 @@ export const STOP_REASONS = {
     modes: STOP_MODES,
     defaultMode: "shadow",
   },
+  "initiative-plan-charge": {
+    label:
+      "An initiative's token pool holds an open feature run with a sized plan at its plan's need instead of its run limit",
+    // Shadow by default (#2100, #2056): the charge can start a feature sooner or park one whose
+    // plan prices above its run limit, so it records `decision.would_release` first.
+    modes: STOP_MODES,
+    defaultMode: "shadow",
+  },
   repeated_failure: {
     label: "A corrective's required checks fail exactly as the corrective's before it",
     // Shadow only until two bench rounds show no false would-stop (#1996); its promotion is a

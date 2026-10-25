@@ -36,6 +36,15 @@ import {
 import { planApprovalDecision, requestedPathTokens } from "./auto-approval.js";
 import { callCostRate } from "./budget.js";
 import {
+  CONFLICT_FINISH_DIR,
+  CONFLICT_FINISH_KIND,
+  type ConflictFinishBranch,
+  type ConflictFinishRecord,
+  type ConflictFinishRule,
+  conflictFinishDecision,
+  conflictFinishReady,
+} from "./conflict-finish.js";
+import {
   missingDiagnosed,
   SCOPE_KIND,
   type ScopeDecision,
@@ -83,7 +92,10 @@ import {
 import type { initiativePriceSamples } from "./initiatives/forecast.js";
 import {
   dollarShortfall,
+  type FeatureView,
   InitiativeService,
+  type InitiativeView,
+  planChargedGate,
   poolGrowthOf,
   type ShareGateRecord,
   shareShortfall,
@@ -186,6 +198,8 @@ const KEPT_ARTIFACTS = new Set([
   SCOPE_KIND,
   // Each decision for the request or the platform on checked evidence: states, no quotes (#2032).
   EVIDENCE_DECISION_KIND,
+  // Each settled conflict's host finish decision: edits, case and check counts, no text (#2033).
+  CONFLICT_FINISH_KIND,
 ]);
 
 /** Tables that hold evidence, effects or prose the replay never reads. */
@@ -726,6 +740,10 @@ export interface RunReplay {
   correctiveScopes: CorrectiveScopeBoundary[];
   /** Correctives the current rule refuses for a diagnosed file outside their writes that the recording let run. */
   newScopeStops: number;
+  /** Each settled conflict's host finish decision against the current rule (#2033). */
+  conflictFinishes: ConflictFinishBoundary[];
+  /** Settled conflicts the current rule finishes on the host, or not, differently. */
+  newConflictFinishes: number;
 }
 
 export interface CorrectiveScopeBoundary {
@@ -757,6 +775,60 @@ export function replayCorrectiveScopes(
       missing,
     };
   });
+}
+
+export interface ConflictFinishBoundary {
+  taskId: string;
+  branch: ConflictFinishBranch;
+  mode: ConflictFinishRecord["mode"];
+  /** The tree was ready for the checks: edits, intact rows, no open case. */
+  ready: boolean;
+  recorded: boolean;
+  replayed: boolean;
+}
+
+/**
+ * Every host finish decision of a settled conflict a run recorded (`conflicts/finish/`, #2033),
+ * decided again from its recorded counts and check statuses. A shadow record ran no checks, so
+ * it finishes under no rule that needs one; `ready` says whether `on` would have run them.
+ * Traces before #2033 record none.
+ */
+export function replayConflictFinishes(
+  store: WorkflowStore,
+  runId: string,
+  decide: ConflictFinishRule = conflictFinishDecision,
+): ConflictFinishBoundary[] {
+  return store
+    .artifacts(runId)
+    .filter(
+      (a) => a.kind === CONFLICT_FINISH_KIND && a.logical_path.startsWith(CONFLICT_FINISH_DIR),
+    )
+    .flatMap((artifact) => {
+      let record: ConflictFinishRecord;
+      try {
+        record = JSON.parse(store.readArtifact(runId, artifact.id));
+      } catch {
+        return [];
+      }
+      const input = {
+        branch: record.branch,
+        edits: record.edits ?? 0,
+        rows: record.rows ?? null,
+        cases: record.cases ?? 0,
+        overruled: record.overruled ?? 0,
+        checks: record.checks ?? null,
+      };
+      return [
+        {
+          taskId: record.taskId,
+          branch: record.branch,
+          mode: record.mode,
+          ready: conflictFinishReady(input),
+          recorded: record.finish,
+          replayed: decide(input),
+        },
+      ];
+    });
 }
 
 export interface EvidenceDecisionBoundary {
@@ -1989,6 +2061,20 @@ export interface InitiativeStartBoundary {
     "limitTokens" | "usedTokens" | "forecastTokens" | "suggestedTokens" | "notice"
   > | null;
   /**
+   * The plan charge at this start (#2100, #2056): what the pool holds with open runs at their
+   * limits and with each run that has a sized plan at its plan's need, and the share gate's
+   * verdict with the charge for the boundary's feature (at a moment, the first ready feature
+   * without a run; null when none). Null without an open run with a sized plan.
+   */
+  planCharge: {
+    limitCommittedTokens: number;
+    planCommittedTokens: number;
+    releasedTokens: number;
+    runs: { featureId: string; usedTokens: number; limitTokens: number; chargeTokens: number }[];
+    featureId: string | null;
+    replayed: "pass" | "park" | null;
+  } | null;
+  /**
    * The `initiative-dollar-share` would-stop the current code records at this start (whatever the
    * mode), next to what the initiative spent in the end, so the corpus can judge it: dollars that
    * were never short make it a false would-stop (#2099). Null when the feature is not short.
@@ -2475,6 +2561,7 @@ function replayStarts(
             suggestedTokens: view.budget.pool.suggestedTokens,
             notice: view.budget.pool.notice,
           },
+          planCharge: replayPlanCharge(view, feature, gate),
           shareWouldStop: short
             ? {
                 summary: short,
@@ -2500,6 +2587,40 @@ function replayStarts(
     dispose();
     for (const history of histories.values()) history.dispose();
   }
+}
+
+/**
+ * The plan charge of a rewound start (#2100): the view's `budget.planCharge` with the share gate
+ * asked again on the charged view (`planChargedGate`) for `feature`, or, at a moment, for the
+ * first ready feature without a run.
+ */
+function replayPlanCharge(
+  view: InitiativeView,
+  feature: FeatureView | undefined,
+  gate: ShareGate,
+): InitiativeStartBoundary["planCharge"] {
+  const charge = view.budget.planCharge;
+  if (!charge) return null;
+  const target = feature ?? view.features.find((f) => f.state === "ready" && f.share !== null);
+  const charged = planChargedGate(view) ?? view;
+  const own = target && charged.features.find((f) => f.id === target.id);
+  return {
+    limitCommittedTokens: charge.limitCommittedTokens,
+    planCommittedTokens: charge.planCommittedTokens,
+    releasedTokens: charge.releasedTokens,
+    runs: charge.runs.map(({ featureId, usedTokens, limitTokens, chargeTokens }) => ({
+      featureId,
+      usedTokens,
+      limitTokens,
+      chargeTokens,
+    })),
+    featureId: target?.id ?? null,
+    replayed: target
+      ? gate(charged, { ...target, share: own?.share ?? null })
+        ? "park"
+        : "pass"
+      : null,
+  };
 }
 
 /** Whether sizing splits a test task; `exceedsTestCapacity` unless a test passes another. */
@@ -2929,6 +3050,8 @@ function replayRun(
   | "newEvidenceDecisions"
   | "correctiveScopes"
   | "newScopeStops"
+  | "conflictFinishes"
+  | "newConflictFinishes"
 > | null {
   const db = store.connection;
   const run = store.run(runId);
@@ -3111,6 +3234,7 @@ export function replayTrace(
     reviewGateRule?: ReviewGateRule;
     evidenceRule?: EvidenceRule;
     scopeRule?: ScopeRule;
+    conflictFinishRule?: ConflictFinishRule;
   } = {},
 ): TraceReplay {
   // Initiative starts rewind their own copies of the trace, before the run replay rewinds this one.
@@ -3183,6 +3307,12 @@ export function replayTrace(
     const scopes = new Map(
       runIds.map((runId) => [runId, replayCorrectiveScopes(store, runId, options.scopeRule)]),
     );
+    const finishes = new Map(
+      runIds.map((runId) => [
+        runId,
+        replayConflictFinishes(store, runId, options.conflictFinishRule),
+      ]),
+    );
     const runs: RunReplay[] = [];
     for (const runId of runIds) {
       const firstByte = timings.get(runId) ?? [];
@@ -3212,6 +3342,7 @@ export function replayTrace(
       const reviewGates = reviews.get(runId) ?? [];
       const evidenceDecisions = evidence.get(runId) ?? [];
       const correctiveScopes = scopes.get(runId) ?? [];
+      const conflictFinishes = finishes.get(runId) ?? [];
       if (
         !replay.boundaries.length &&
         !firstByte.length &&
@@ -3228,7 +3359,8 @@ export function replayTrace(
         !caseWalks.length &&
         !reviewGates.length &&
         !evidenceDecisions.length &&
-        !correctiveScopes.length
+        !correctiveScopes.length &&
+        !conflictFinishes.length
       )
         continue;
       runs.push({
@@ -3278,6 +3410,8 @@ export function replayTrace(
         newScopeStops: correctiveScopes.filter(
           (b) => b.replayed === "refuse" && b.recorded === "fits",
         ).length,
+        conflictFinishes,
+        newConflictFinishes: conflictFinishes.filter((b) => b.replayed !== b.recorded).length,
       });
     }
     const gates = replayShareGate(store, options.shareGate);

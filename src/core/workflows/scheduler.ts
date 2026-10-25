@@ -85,6 +85,8 @@ import {
   type CaseWalkRecord,
   type CriterionCase,
   caseCheck as criteriaCaseCheck,
+  criterionCases,
+  missingCases,
   type RepairFinding,
   repairCaseTask,
   writtenTestPaths,
@@ -291,6 +293,16 @@ import {
   recordDeclaredLimits,
   settledConflicts,
 } from "./conflict-decisions.js";
+import {
+  CONFLICT_FINISH_KIND,
+  type ConflictFinishBranch,
+  type ConflictFinishCheck,
+  type ConflictFinishInput,
+  type ConflictFinishRecord,
+  conflictFinishDecision,
+  conflictFinishPath,
+  conflictFinishReady,
+} from "./conflict-finish.js";
 import {
   auditVerified,
   type ContestedRow,
@@ -7392,6 +7404,7 @@ ${note}`;
                   cutOffResults.set(hashJson(check), checked);
                   return checked;
                 },
+                changed: async () => (await currentChanges()).changed,
               }
             : undefined,
         );
@@ -8711,9 +8724,11 @@ ${note}`;
       // Check results the host ran to finish a stopped attempt, reused by the task checks.
       const hostChecked = new Map<string, WorkerCheck["checked"]>();
       if (result.outcome === "spec_conflict" && result.taskId === task.id) {
-        if (policy.misquoteFix !== "on" || !profiles) return { kind: "conflict", entry, result };
-        // The host may correct a misquoted test itself and go on with the task (#2047), so the
-        // conflict is settled here and not again in `settleOutcome`.
+        if ((policy.misquoteFix !== "on" && policy.conflictFinish !== "on") || !profiles)
+          return { kind: "conflict", entry, result };
+        // The host may correct a misquoted test itself (#2047), or finish a task whose conflict
+        // it settled (#2033), and go on with the task, so the conflict is settled here and not
+        // again in `settleOutcome`.
         const fixed = await this.specConflict(
           runId,
           state,
@@ -8734,6 +8749,7 @@ ${note}`;
               hostChecked.set(hashJson(check), checked);
               return checked;
             },
+            changed: async () => (await currentChanges()).changed,
           },
         );
         if (!fixed) return { kind: "conflict", entry, result, settled: true };
@@ -10677,21 +10693,21 @@ ${note}`;
     // host checked and on every report of the task, whatever words the report uses (#2016). It
     // comes before the rows are compared with the test: a test that changed a row because the
     // request says so did not slip in its transcription.
-    if (
-      await this.settleForRequest(
-        runId,
-        state,
-        policy,
-        profiles,
-        child,
-        task,
-        result,
-        account,
-        report,
-        signal,
-      )
-    )
-      return null;
+    const byRequest = await this.settleForRequest(
+      runId,
+      state,
+      policy,
+      profiles,
+      child,
+      task,
+      result,
+      account,
+      report,
+      signal,
+      fix,
+    );
+    if (byRequest && typeof byRequest === "object") return this.finishedConflict(result, byRequest);
+    if (byRequest) return null;
     const contested = await this.settleContestedRows(
       runId,
       state,
@@ -10705,6 +10721,8 @@ ${note}`;
       signal,
       fix,
     );
+    if (contested && typeof contested === "object" && "branch" in contested)
+      return this.finishedConflict(result, contested);
     // The host corrected a misquoted test itself and its checks pass: the task goes on (#2047).
     if (contested && typeof contested === "object") {
       const { conflictSides: _sides, ...attempt } = result;
@@ -10888,6 +10906,28 @@ ${note}`;
     const freed = task.findingIds.length
       ? ` The repros of ${task.findingIds.join(", ")} no longer gate the task.`
       : "";
+    // A settlement the attempt's tree may already satisfy: the host finishes the task when its
+    // cases hold and its required checks pass (#2033).
+    const finishBranch: ConflictFinishBranch | null = byRequirement
+      ? "requirements"
+      : platform
+        ? "platform"
+        : assume && !example
+          ? "request"
+          : null;
+    const finished = finishBranch
+      ? await this.conflictFinish(
+          runId,
+          state,
+          policy,
+          task,
+          finishBranch,
+          assumedPath,
+          byRequirement ? amended.criterionIds : [],
+          signal,
+          fix,
+        )
+      : null;
     this.store.transaction(() => {
       this.store.artifact(
         runId,
@@ -10910,11 +10950,13 @@ ${note}`;
         });
       }
       if (amendment) this.store.artifact(runId, "assumption", amendmentPath, canonical(amendment));
+      if (finished) return;
       this.store.taskStatus(runId, task.id, "interrupted", null, { cause: "spec_conflict" });
       this.store.finishStep(runId, child, "failed");
     });
     // Every later agent reads the amendment, so reviews do not raise the criterion again.
     if (amendment) state.prompt += `\n${amendmentNote(amendmentPath, amendment)}`;
+    if (finished) return this.finishedConflict(result, finished);
     if (byRequirement) {
       state.prompt += `\nAssumed under clarification assume (${assumedPath}): task ${task.id} reported that criteria of the approved spec contradict its requirements: ${report.slice(0, 1500)} ${assumed} (${amendmentPath}): implement what ${amended.requirementIds.join(", ")} state, and where a test this run wrote follows the contradicting criterion, change only that assertion to what the requirements state; weaken no other test.${freed} Report implemented or already_satisfied, not spec_conflict.`;
       return null;
@@ -11163,6 +11205,147 @@ ${note}`;
     );
   }
   /**
+   * The host's finish of a task whose spec conflict a branch settled (#2033, conflict-finish.ts):
+   * on the attempt's tree, the case walk with the overruled criteria `released`, the host's row
+   * blocks and the task's required checks, decided by `conflictFinishDecision` and recorded under
+   * `conflicts/finish/`. The checks run only with `conflictFinish: "on"` and once the tree is
+   * ready, through the caller's runner, so the task checks reuse their results. Null when a
+   * session opens, and with no caller that can go on with the task (nothing is recorded then).
+   */
+  private async conflictFinish(
+    runId: string,
+    state: RuntimeState,
+    policy: RunPolicy,
+    task: Task,
+    branch: ConflictFinishBranch,
+    settledBy: string,
+    released: readonly string[],
+    signal: AbortSignal,
+    fix?: MisquoteFixContext,
+  ): Promise<ConflictFinished | null> {
+    if (!fix) return null;
+    const changed = await fix.changed();
+    const files = (() => {
+      if (!task.rows?.length) return [];
+      try {
+        return this.taskRowFiles(runId, state, policy, task);
+      } catch {
+        return null;
+      }
+    })();
+    const rows =
+      files === null
+        ? false
+        : files.length
+          ? !(await rowFileProblems(fix.root, files)).length
+          : null;
+    const owed = this.answeredCaseTask(
+      runId,
+      this.repairCaseTask(runId, state, this.caseTask(state, task)),
+    );
+    const walk = criteriaCaseCheck(
+      state.spec,
+      { ...owed, criterionIds: owed.criterionIds.filter((id) => !released.includes(id)) },
+      {
+        checks: policy.checks,
+        tasks: (state.rootGraph ?? state.graph)?.tasks ?? [],
+        hostRows: (files ?? []).filter((file) => file.inline === true),
+      },
+    );
+    const cases = walk ? (await walk(fix.root)).length : 0;
+    // A test that still holds an expected value an overruled criterion states follows the losing
+    // side. Only its outcome counts (`then`): its inputs stand, and a literal a criterion that
+    // still holds also names is not the loser's.
+    const kept = new Set(
+      state.spec
+        ? criterionCases(
+            state.spec,
+            { ...owed, criterionIds: owed.criterionIds.filter((id) => !released.includes(id)) },
+            { checks: policy.checks },
+          ).map((c) => c.literal)
+        : [],
+    );
+    const losing = state.spec
+      ? criterionCases(
+          {
+            ...state.spec,
+            criteria: state.spec.criteria.map((c) =>
+              released.includes(c.id) ? { ...c, given: "", when: "" } : c,
+            ),
+          },
+          { ...owed, criterionIds: owed.criterionIds.filter((id) => released.includes(id)) },
+          { checks: policy.checks },
+        ).filter((c) => !kept.has(c.literal))
+      : [];
+    const tests = writtenTestPaths(task).flatMap((path) => {
+      try {
+        return [readFileSync(workspacePath(fix.root, path), "utf8")];
+      } catch {
+        return [];
+      }
+    });
+    const overruled = losing.length - missingCases(losing, tests).length;
+    const mode = policy.conflictFinish === "on" ? "on" : "shadow";
+    const ready = { branch, edits: changed.length, rows, cases, overruled };
+    let checks: ConflictFinishCheck[] | null = null;
+    const evidenceIds: string[] = [];
+    if (mode === "on" && conflictFinishReady(ready)) {
+      checks = [];
+      for (const check of this.gatedChecks(runId, state, policy, task, fix.root, changed)) {
+        if (!check.required) continue;
+        signal.throwIfAborted();
+        const checked = await fix.run(check);
+        const status = checked.status === "passed" ? "passed" : "failed";
+        checks.push({ id: check.id, status });
+        if (status === "failed") break;
+        evidenceIds.push(checked.evidenceId);
+      }
+    }
+    const input: ConflictFinishInput = { ...ready, checks };
+    const finish = mode === "on" && conflictFinishDecision(input);
+    const record: ConflictFinishRecord = { taskId: task.id, mode, settledBy, ...input, finish };
+    this.store.transaction(() => {
+      this.store.artifact(
+        runId,
+        CONFLICT_FINISH_KIND,
+        conflictFinishPath(task.id, branch),
+        canonical(record),
+      );
+      if (finish)
+        this.store.artifact(
+          runId,
+          "recovery",
+          `tasks/${task.id}/host-finish.json`,
+          canonical({
+            taskId: task.id,
+            settledBy,
+            branch,
+            checks: (checks ?? []).map((c) => c.id),
+            evidenceIds,
+            changed,
+          }),
+        );
+    });
+    return finish
+      ? { branch, settledBy, checks: (checks ?? []).map((c) => c.id), evidenceIds }
+      : null;
+  }
+  /** The attempt's result once the host finished its settled conflict (#2033). */
+  private finishedConflict(result: Implementation, finished: ConflictFinished): Implementation {
+    const { conflictSides: _sides, ...attempt } = result;
+    return {
+      ...attempt,
+      outcome: "implemented",
+      summary:
+        `The host finished this task: it settled the conflict (${finished.settledBy}), and on the attempt's edits the task's criteria cases hold, with the overruled ones released, and its required checks pass (${finished.checks.join(", ")}). The attempt's account: ${result.summary}`.slice(
+          0,
+          15000,
+        ),
+      evidenceIds: [...new Set([...result.evidenceIds, ...finished.evidenceIds])],
+      unresolved: [],
+    };
+  }
+  /**
    * The host's own correction of a misquoted test (#2047): decided by `misquoteFixDecision` on the
    * task's test files in the attempt's root and recorded under `conflicts/misquote/`. With
    * `misquoteFix: "on"` and a caller that can go on with the task, an exact replacement is made
@@ -11300,7 +11483,7 @@ ${note}`;
     report: string,
     signal: AbortSignal,
     fix?: MisquoteFixContext,
-  ): Promise<boolean | MisquoteFixed> {
+  ): Promise<boolean | MisquoteFixed | ConflictFinished> {
     const misquoted = rows.flatMap((r) => r.misquoted.map((m) => ({ ...m, id: r.criterion.id })));
     const verified = rows.length > 0 && rows.every(auditVerified);
     const misquotePath = `assumptions/conflicts/${task.id}-misquoted.json`;
@@ -11371,10 +11554,22 @@ ${note}`;
       const disputed = rows.filter((r) =>
         second.some((d) => d.criterionId === r.criterion.id && !d.matches),
       );
-      if (disputed.length) {
-        this.settleForRequirements(runId, state, child, task, disputed, second, account, report);
-        return true;
-      }
+      if (disputed.length)
+        return (
+          (await this.settleForRequirements(
+            runId,
+            state,
+            policy,
+            child,
+            task,
+            disputed,
+            second,
+            account,
+            report,
+            signal,
+            fix,
+          )) ?? true
+        );
       const ids = rows.map((r) => r.criterion.id).join(", ");
       const settled = `The audit-verified rows of ${ids} win: the derivation audit and a second audit against this report each recomputed them from the requirements and they match`;
       this.store.transaction(() => {
@@ -11482,16 +11677,19 @@ ${note}`;
    * The re-audit disagrees with the audited rows: the requirements win over them, as for a report
    * that names both (#1459), and the case walk stops demanding the overruled literals (#1788).
    */
-  private settleForRequirements(
+  private async settleForRequirements(
     runId: string,
     state: RuntimeState,
+    policy: RunPolicy,
     child: string,
     task: Task,
     disputed: ContestedRow[],
     derivations: NonNullable<Analysis["derivations"]>,
     account: Record<string, unknown>,
     report: string,
-  ): void {
+    signal: AbortSignal,
+    fix?: MisquoteFixContext,
+  ): Promise<ConflictFinished | null> {
     const criterionIds = disputed.map((r) => r.criterion.id);
     const requirementIds = [...new Set(disputed.flatMap((r) => r.criterion.requirementIds))];
     const path = `assumptions/conflicts/${task.id}-reaudited.json`;
@@ -11513,6 +11711,17 @@ ${note}`;
       suggestedFix: `Read ${criterionIds.join(", ")} as ${requirementIds.join(", ")} state.`,
       authority: "requirement",
     };
+    const finished = await this.conflictFinish(
+      runId,
+      state,
+      policy,
+      task,
+      "reaudited",
+      path,
+      criterionIds,
+      signal,
+      fix,
+    );
     this.store.transaction(() => {
       this.store.artifact(
         runId,
@@ -11534,10 +11743,14 @@ ${note}`;
         criterionIds,
         answer: `Settled by a second audit (${path}): ${settled}.`,
       });
+      if (finished) return;
       this.store.taskStatus(runId, task.id, "interrupted", null, { cause: "spec_conflict" });
       this.store.finishStep(runId, child, "failed");
     });
-    state.prompt += `\n${amendmentNote(amendmentPath, amendment)}\nSettled spec conflict (${path}): task ${task.id} reported that the spec contradicts the code: ${report.slice(0, 1200)} ${settled}. Implement what ${requirementIds.join(", ")} state, and where a test this run wrote follows the contradicting row, change only that expected value to what the requirements give; weaken no other test. Report implemented or already_satisfied, not spec_conflict.`;
+    state.prompt += `\n${amendmentNote(amendmentPath, amendment)}`;
+    if (finished) return finished;
+    state.prompt += `\nSettled spec conflict (${path}): task ${task.id} reported that the spec contradicts the code: ${report.slice(0, 1200)} ${settled}. Implement what ${requirementIds.join(", ")} state, and where a test this run wrote follows the contradicting row, change only that expected value to what the requirements give; weaken no other test. Report implemented or already_satisfied, not spec_conflict.`;
+    return null;
   }
   /**
    * A conflict between a criterion and what the request states, settled for the request on quotes
@@ -11557,7 +11770,8 @@ ${note}`;
     account: Record<string, unknown>,
     report: string,
     signal: AbortSignal,
-  ): Promise<boolean> {
+    fix?: MisquoteFixContext,
+  ): Promise<boolean | ConflictFinished> {
     const path = requestConflictPath(task.id);
     if (policy.clarification !== "assume" || !state.spec || this.store.latestArtifact(runId, path))
       return false;
@@ -11694,6 +11908,17 @@ ${note}`;
           authority: "request",
         }
       : null;
+    const finished = await this.conflictFinish(
+      runId,
+      state,
+      policy,
+      task,
+      "request",
+      path,
+      overruled,
+      signal,
+      fix,
+    );
     this.store.transaction(() => {
       this.store.artifact(
         runId,
@@ -11715,6 +11940,7 @@ ${note}`;
         ...(overruled.length ? { criterionIds: overruled } : {}),
         answer: `Settled for the request (${path}): ${settled}.`,
       });
+      if (finished) return;
       this.store.taskStatus(runId, task.id, "interrupted", null, { cause: "spec_conflict" });
       this.store.finishStep(runId, child, "failed");
     });
@@ -11722,6 +11948,7 @@ ${note}`;
       ? ` The repros of ${task.findingIds.join(", ")} no longer gate the task.`
       : "";
     if (amendment) state.prompt += `\n${amendmentNote(amendmentPath, amendment)}`;
+    if (finished) return finished;
     state.prompt += `\nSettled spec conflict (${path}): task ${task.id} reported that the spec contradicts the request: ${report.slice(0, 1200)} ${settled}. Follow what the request states. Where a test this run wrote follows ${named}, change only that assertion to what the request states; weaken no other test. When the tests already assert what the request states and the checks pass, change nothing and report implemented or already_satisfied, not spec_conflict.${writesOnlyDocs(task) ? " Copy every example output the request gives into the documentation exactly as given, even when its files are not in the workspace." : ""}${freed}`;
     return true;
   }
@@ -17485,6 +17712,15 @@ interface MisquoteFixContext {
   root: string;
   attemptId: string;
   run: (check: Check) => Promise<WorkerCheck["checked"]>;
+  /** The files the attempt changed, for the host's finish of a settled conflict (#2033). */
+  changed: () => Promise<string[]>;
+}
+/** A settled conflict the host finished on the attempt's tree (#2033). */
+interface ConflictFinished {
+  branch: ConflictFinishBranch;
+  settledBy: string;
+  checks: string[];
+  evidenceIds: string[];
 }
 /** A misquote the host corrected, with the checks that passed on its edit. */
 interface MisquoteFixed {
