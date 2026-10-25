@@ -39,11 +39,12 @@ describe("PowerShell Editor Services (#2125)", () => {
     expect(launch.command).toBe(pwshExecutable());
     expect(launch.args.slice(0, 4)).toEqual(["-NoLogo", "-NoProfile", "-NonInteractive", "-Command"]);
     const script = launch.args[4] ?? "";
-    // PowerShell single quotes double an apostrophe inside a path.
-    const quoted = `'${folder.replaceAll("'", "''")}`;
-    expect(script.startsWith(`& ${quoted}`)).toBe(true);
-    expect(script).toContain("Start-EditorServices.ps1'");
-    expect(script).toContain(`-BundledModulesPath ${quoted}'`);
+    // PowerShell single quotes double an apostrophe inside a path. The start script is joined with
+    // the host's separator, so a POSIX folder reads `\home\dev\...` on Windows.
+    const quoted = (path: string) => `'${path.replaceAll("'", "''")}'`;
+    const start = join(folder, "PowerShellEditorServices", "Start-EditorServices.ps1");
+    expect(script.startsWith(`& ${quoted(start)} `)).toBe(true);
+    expect(script).toContain(`-BundledModulesPath ${quoted(folder)}`);
     expect(script).toMatch(/ -Stdio /);
     expect(script).toMatch(/-HostVersion \d+\.\d+\.\d+/);
     // Its log and session file go to BAKED's data folder, never the project.
