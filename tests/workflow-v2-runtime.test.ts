@@ -8,14 +8,14 @@ import { hashBytes, hashJson } from "../src/core/specs/hash.js";
 import { sddWorkflow } from "../src/core/workflows/builtin/sdd.js";
 import { defaultWorkflowPolicy } from "../src/core/workflows/defaults.js";
 import { passesWithNotes } from "../src/core/verification/convergence-stop.js";
-import { REVIEW_GATE_DIR, reviewGateDecision } from "../src/core/workflows/review-gate.js";
+import { CONVERGENCE_GATE_DIR, convergenceGateDecision, REVIEW_GATE_DIR, reviewGateDecision } from "../src/core/workflows/review-gate.js";
 import { runReport } from "../src/core/workflows/run-report.js";
 import { uncommittedEdits } from "../src/core/workflows/rollback.js";
 import type { RunPolicy, Spec, WorkflowEvent } from "../src/core/workflows/schemas.js";
 import { WorkflowScheduler } from "../src/core/workflows/scheduler.js";
 import { NativeWorkflowService } from "../src/core/workflows/service.js";
 import { newId } from "../src/core/workflows/store.js";
-import { exportTrace, replayReviewGates, replayTrace } from "../src/core/workflows/trace.js";
+import { exportTrace, replayConvergenceGates, replayReviewGates, replayTrace } from "../src/core/workflows/trace.js";
 import { type AgentExecutor, type ExecutionRequest, RuntimeStateSchema } from "../src/core/workflows/types.js";
 import type { Gate, WorkflowV2 } from "../src/core/workflows/v2/definition.js";
 import { builtinPresets, instantiatePreset } from "../src/core/workflows/v2/definitions.js";
@@ -1265,6 +1265,33 @@ describe("a low partial finding passes with notes", () => {
       expect(report).toContain("notes rule (behavior verified)");
     }, 60000);
   }
+
+  // #1715: the convergence gate records its labels, criterion verdicts and evidence counts, never
+  // a claim; a bench trace keeps the record and the replay corpus decides it again.
+  test("each convergence gate is recorded, kept in a bench trace and replayed, and a rule change shows as new verdicts", async () => {
+    const fixture = setup({ gaps: 1, gapSeverity: "low", gapKind: "partial" });
+    const run = await fixture.start("sdd");
+    expect((await fixture.complete(run.runId)).status).toBe("completed");
+    const gates = replayConvergenceGates(fixture.service.store, run.runId);
+    expect(gates.flatMap((b) => b.recorded)).toEqual([{ id: "G1", verdict: "notes" }]);
+    expect(gates.every((b) => JSON.stringify(b.replayed) === JSON.stringify(b.recorded) && JSON.stringify(b.replayedFailing) === JSON.stringify(b.recordedFailing))).toBe(true);
+    const records = fixture.service.store
+      .artifacts(run.runId)
+      .filter((a) => a.logical_path.startsWith(CONVERGENCE_GATE_DIR))
+      .map((a) => fixture.service.store.readArtifact(run.runId, a.id));
+    expect(records.some((r) => r.includes("Gap number") || r.includes("value.txt"))).toBe(false);
+
+    const dir = mkdtempSync(join(tmpdir(), "baked-convergence-gate-trace-"));
+    cleanups.push(() => rmSync(dir, { recursive: true, force: true }));
+    const out = join(dir, "trace.sqlite.gz");
+    exportTrace(fixture.root, out);
+    const runOf = (replay: ReturnType<typeof replayTrace>) => replay.runs.find((r) => r.runId === run.runId);
+    expect(runOf(replayTrace(out))?.newConvergenceVerdicts).toBe(0);
+    // Without the notes rule the low partial gap repairs.
+    const noNotes = (gate: Parameters<typeof convergenceGateDecision>[0]) =>
+      convergenceGateDecision({ ...gate, checksPass: false });
+    expect(runOf(replayTrace(out, { convergenceGateRule: noNotes }))?.newConvergenceVerdicts).toBe(1);
+  }, 60000);
 
   test("a low finding of another kind still starts a repair", async () => {
     const fixture = setup({ gaps: 1, gapSeverity: "low", gapKind: "missing" });

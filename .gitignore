@@ -81,6 +81,7 @@ benchmarks/results-*.json
 !.agents/skills/file-issue/
 !.agents/skills/replay-corpus/
 !.agents/skills/bench-suite/
+!.agents/skills/add-language/
 
 # Audit logs
 audit_issue.json

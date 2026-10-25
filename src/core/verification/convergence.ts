@@ -6,8 +6,10 @@ import {
   type ChainRecord,
   chainFindings,
   chainRecord,
+  chainSubject,
   correctiveChain,
   rewriteStep,
+  rewritesSymbol,
 } from "../workflows/finding-chain.js";
 import { counterexampleOf } from "../workflows/quality/properties.js";
 import { recoveryAdvice } from "../workflows/remedies.js";
@@ -1128,11 +1130,13 @@ export function appendCorrections(
       ? chainRecord(id, found.finding, found.chain, policy.chainRewrite ?? "off")
       : null;
     if (record) chainRecords.push(record);
-    const rewrite = record?.decision === "rewrite" ? record : null;
+    const rewrite = rewritesSymbol(record) ? record : null;
+    // A repeat chain on a test file sweeps the test files instead of a symbol rewrite (#2098).
+    const testChain = record?.corrective === "test-sweep";
     const lastStep = (finding: Review["findings"][number]): string =>
       rewrite && finding.id === rewrite.findingId
         ? rewriteStep(
-            rewrite.symbol,
+            chainSubject(rewrite),
             rewrite.chain.map((f) => f.id),
             rewrite.family && rewrite.symbols
               ? { name: rewrite.family, file: rewrite.file, symbols: rewrite.symbols }
@@ -1143,13 +1147,19 @@ export function appendCorrections(
           : SIBLING_STEP;
     const sweep = key.startsWith(`${SWEEP_KEY}tests\n`)
       ? testSweepStep(sweepFiles(grouped, base.profileId, base, root))
-      : key.startsWith(SWEEP_KEY)
-        ? sweepStep(
-            unique(grouped.flatMap(robustnessShapes)),
-            sweepFiles(grouped, base.profileId, base, root),
-            unique(grouped.flatMap((f) => (f.file ? [f.file] : []))),
+      : testChain
+        ? testSweepStep(
+            sweepTestFiles(grouped, root, base.profileId).filter((path) =>
+              writable({ bases }).includes(path),
+            ),
           )
-        : "";
+        : key.startsWith(SWEEP_KEY)
+          ? sweepStep(
+              unique(grouped.flatMap(robustnessShapes)),
+              sweepFiles(grouped, base.profileId, base, root),
+              unique(grouped.flatMap((f) => (f.file ? [f.file] : []))),
+            )
+          : "";
     return {
       ...base,
       writes: mergeCorrectionWrites(
@@ -1161,7 +1171,7 @@ export function appendCorrections(
       checkIds: unique(bases.flatMap((b) => correctionChecks(b, root))),
       id,
       title: rewrite
-        ? `Rewrite ${rewrite.symbol}: ${correctionTitle(grouped).replace(/^Correct: /, "")}`
+        ? `Rewrite ${chainSubject(rewrite)}: ${correctionTitle(grouped).replace(/^Correct: /, "")}`
         : correctionTitle(grouped),
       description: grouped
         .map(

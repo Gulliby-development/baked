@@ -640,6 +640,9 @@ const GROWING_COUNTS: [RegExp, string][] = [
     "<n> $1",
   ],
   [/\b(Passed|Skipped|Total|Tests run):\s*\d+/g, "$1: <n>"],
+  // The JUnit block of a Gradle run's test reports (#1489) and any printed JUnit report.
+  [/\b(tests|skipped)="\d+"/g, '$1="<n>"'],
+  [/^(Gradle test reports \()\d+ files?/gm, "$1<n> files"],
   // RSpec "12 examples, 1 failure, 2 pending", Minitest "4 runs, 9 assertions, 1 failures, 0 errors,
   // 1 skips" with its rates "2931.07 runs/s, 1465.53 assertions/s" (#1493).
   [/\b\d+ (examples?|pending|runs?|assertions?|skips?)\b(?!\/s)/g, "<n> $1"],

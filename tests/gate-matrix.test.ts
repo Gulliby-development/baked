@@ -24,6 +24,7 @@ import { baselineCreatedFilesScenario, FIRST_RUN_OUTPUTS } from "./helpers/basel
 import { TOOL_CACHES } from "../src/core/verification/snapshot.js";
 import { spawnSync } from "node:child_process";
 import {
+  chmodSync,
   existsSync,
   lstatSync,
   mkdirSync,
@@ -41,7 +42,9 @@ import { reproExecutables } from "../src/core/verification/repro.js";
 import { entryPointCommand } from "../src/core/verification/entry-points.js";
 import { noteSiblingFindings, ownerOfFinding } from "../src/core/verification/initiative-ownership.js";
 import { missingPlannedPaths, noTestsCollected } from "../src/core/verification/convergence.js";
-import { exitStatus, timedOutFailure } from "../src/core/verification/check-runner.js";
+import { executeCheckCommand, exitStatus, timedOutFailure } from "../src/core/verification/check-runner.js";
+import { gradleTestReport } from "../src/core/verification/test-reports.js";
+import { detectLanguages, touchesLanguageFiles } from "../src/core/workflows/language.js";
 import { noTestsCollected } from "../src/core/verification/convergence.js";
 import { baselineRegression, buildRunner, diagnosticCount, failedTests, failureSignature, testCount, testsRan } from "../src/core/verification/output-counts.js";
 import { baselineDebt, baselineKeys } from "../src/core/verification/task-end-check.js";
@@ -809,6 +812,69 @@ describe("gate matrix: SwiftPM, Mix, Dart, Zig, dune and Bundler (#1753)", () =>
     expect(noTestsCollected("There are no tests to run")).toBe(true);
     expect(noTestsCollected('Test directory "test" not found.')).toBe(true);
     expect(noTestsCollected("1 test, 1 failure")).toBe(false);
+  });
+});
+
+// #1489: `gradle -q check` prints no test total, so a Gradle project's baseline compared nothing,
+// and a Gradle-only project got no language review. The report below is the shape Gradle 8 writes
+// to build/test-results/test/TEST-<class>.xml.
+const GRADLE_REPORT = `<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="CalcTest" tests="3" skipped="1" failures="1" errors="0" timestamp="2026-10-25T02:10:00.000Z" hostname="host" time="0.031">
+  <properties/>
+  <testcase name="adds()" classname="CalcTest" time="0.012"/>
+  <testcase name="fails()" classname="CalcTest" time="0.004">
+    <failure message="org.opentest4j.AssertionFailedError: expected: &lt;4&gt; but was: &lt;3&gt;" type="org.opentest4j.AssertionFailedError">org.opentest4j.AssertionFailedError: expected: &lt;4&gt; but was: &lt;3&gt;
+	at CalcTest.fails(CalcTest.kt:7)
+</failure>
+  </testcase>
+  <testcase name="later()" classname="CalcTest" time="0.0">
+    <skipped/>
+  </testcase>
+  <system-out><![CDATA[]]></system-out>
+  <system-err><![CDATA[]]></system-err>
+</testsuite>
+`;
+describe("gate matrix: Gradle test reports and language review (#1489)", () => {
+  const gradleProject = () =>
+    project({
+      "settings.gradle.kts": 'rootProject.name = "calc"\ninclude("lib")\n',
+      "build.gradle.kts": 'plugins { kotlin("jvm") version "2.0.21" }\n',
+      "build/test-results/test/TEST-CalcTest.xml": GRADLE_REPORT,
+      "lib/build/test-results/test/TEST-lib.ParserTest.xml": GRADLE_REPORT.replaceAll("CalcTest", "lib.ParserTest").replace('tests="3" skipped="1" failures="1"', 'tests="1" skipped="0" failures="0"').replace(/<testcase name="fails[\s\S]*<\/testcase>\n  <testcase name="later[\s\S]*?<\/testcase>\n/, ""),
+    });
+  test("a Gradle run's reports become a JUnit block the junit runner counts", () => {
+    const root = gradleProject();
+    const report = gradleTestReport("./gradlew", ["--console=plain", "-q", "check"], root, Date.now() - 1000);
+    expect(report).toContain('<testsuites tests="4" skipped="1" failures="1" errors="0">');
+    const output = `> Task :test FAILED\n\nCalcTest > fails() FAILED\n    org.opentest4j.AssertionFailedError at CalcTest.kt:7\n\n${report}\n`;
+    expect(testCount(output)).toEqual({ tool: "junit", count: 4 });
+    expect(testsRan(output)).toEqual({ tool: "junit", count: 3 });
+    expect(failedTests(output)).toEqual({ tool: "junit", names: ["CalcTest.fails()"] });
+    // One more passing test elsewhere leaves the failure as it was.
+    const grown = output.replace('tests="4"', 'tests="5"').replace("2 files", "3 files");
+    expect(failureSignature(grown, root)).toBe(failureSignature(output, root));
+    // Reports older than the run (a test task Gradle skipped as up to date) and other programs add nothing.
+    expect(gradleTestReport("gradle", ["check"], root, Date.now() + 60_000)).toBeNull();
+    expect(gradleTestReport("mvn", ["verify"], root, Date.now() - 1000)).toBeNull();
+    expect(gradleTestReport("cmd", ["/d", "/c", "gradlew.bat", "test"], root, Date.now() - 1000)).not.toBeNull();
+  });
+
+  test.skipIf(process.platform === "win32")("executeCheckCommand appends the reports a Gradle run wrote", async () => {
+    const root = project({ "build.gradle": "plugins { id 'java' }\n" });
+    const xml = GRADLE_REPORT.replaceAll("'", "'\\''");
+    writeFileSync(join(root, "gradlew"), `#!/bin/sh\nmkdir -p build/test-results/test\nprintf '%s' '${xml}' > build/test-results/test/TEST-CalcTest.xml\necho 'CalcTest > fails() FAILED'\nexit 1\n`);
+    chmodSync(join(root, "gradlew"), 0o755);
+    const result = await executeCheckCommand(new ProcessScope(), "./gradlew", ["-q", "check"], { cwd: root, env: process.env, timeoutMs: 30_000, signal: new AbortController().signal, sandbox: null });
+    expect(result.output).toStartWith("CalcTest > fails() FAILED\n\nGradle test reports (1 file under build/test-results, read by BAKED):\n");
+    expect(testCount(result.output)).toEqual({ tool: "junit", count: 3 });
+  });
+
+  test("a Gradle-only project gets the language review, Kotlin by its build script", () => {
+    expect(detectLanguages(project({ "build.gradle": "plugins { id 'java' }\n" }))).toEqual(["java"]);
+    expect(detectLanguages(project({ "build.gradle.kts": "plugins { java }\n" }))).toEqual(["kotlin"]);
+    expect(detectLanguages(project({ "build.gradle": "plugins { id 'org.jetbrains.kotlin.jvm' version '2.0.21' }\n" }))).toEqual(["kotlin"]);
+    expect(detectLanguages(project({ "pom.xml": "<project/>" }))).toEqual(["java"]);
+    expect(touchesLanguageFiles(["gradle/libs.versions.toml"]) && touchesLanguageFiles(["settings.gradle.kts"]) && touchesLanguageFiles(["src/main/kotlin/App.kt"])).toBe(true);
   });
 });
 
@@ -3019,6 +3085,24 @@ const available = (needs: string[][]) =>
   });
 
 describe.skipIf(!toolchains)("gate matrix: toolchains", () => {
+  // #1489: the host reads the JUnit reports a real Gradle run writes, since `gradle -q check` prints
+  // no total on a passing run.
+  test.skipIf(!available([["gradle", "--version"]]))("a real Gradle check gets its test reports appended (#1489)", async () => {
+    const root = project({
+      "settings.gradle": "rootProject.name = 'calc'\n",
+      "build.gradle": "plugins { id 'java' }\nrepositories { mavenCentral() }\ndependencies {\n    testImplementation platform('org.junit:junit-bom:5.11.4')\n    testImplementation 'org.junit.jupiter:junit-jupiter'\n    testRuntimeOnly 'org.junit.platform:junit-platform-launcher'\n}\ntest { useJUnitPlatform() }\n",
+      "src/main/java/app/Calc.java": "package app;\n\npublic final class Calc {\n    public static int add(int a, int b) { return a + b; }\n}\n",
+      "src/test/java/app/CalcTest.java": "package app;\n\nimport static org.junit.jupiter.api.Assertions.assertEquals;\n\nimport org.junit.jupiter.api.Disabled;\nimport org.junit.jupiter.api.Test;\n\nclass CalcTest {\n    @Test void adds() { assertEquals(3, Calc.add(1, 2)); }\n    @Test void fails() { assertEquals(4, Calc.add(1, 2)); }\n    @Disabled @Test void later() { }\n}\n",
+    });
+    const env = { ...process.env, GRADLE_USER_HOME: process.env.GRADLE_USER_HOME ?? join(homedir(), ".gradle") };
+    const check = () => executeCheckCommand(new ProcessScope(), "gradle", ["-q", "--console=plain", "check"], { cwd: root, env, timeoutMs: 600_000, signal: new AbortController().signal, sandbox: null });
+    const failing = await check();
+    expect([testCount(failing.output), testsRan(failing.output), failedTests(failing.output)]).toEqual([{ tool: "junit", count: 3 }, { tool: "junit", count: 2 }, { tool: "junit", names: ["app.CalcTest.fails()"] }]);
+    writeFileSync(join(root, "src/test/java/app/CalcTest.java"), readFileSync(join(root, "src/test/java/app/CalcTest.java"), "utf8").replace("assertEquals(4,", "assertEquals(3,"));
+    const passing = await check();
+    expect(passing.output).not.toContain("tests completed");
+    expect(testCount(passing.output)).toEqual({ tool: "junit", count: 3 });
+  }, 900000);
   // #1493: the RSpec, Minitest and RuboCop parsers read what the installed tools print.
   test.skipIf(!available([["rspec", "--version"], ["ruby", "-e", "require 'minitest'"], ["rubocop", "--version"]]))("rspec, minitest and rubocop output reads as their parsers expect (#1493)", () => {
     const root = project({
