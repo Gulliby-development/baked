@@ -235,6 +235,7 @@ export const PROPERTY_LIBRARIES: LanguageRecord<PropertyLibrary> = {
   objc: none("Objective-C has no common property library"),
   solidity: none("Foundry fuzz tests are not recognized yet"),
   sql: none("SQL tests (pgTAP, dbt tests) have no property library"),
+  powershell: none("PowerShell has no common property library"),
 };
 
 /** The library row of a path; F# is not a supported language and shares the .NET row. */

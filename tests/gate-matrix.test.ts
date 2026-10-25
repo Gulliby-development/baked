@@ -25,6 +25,7 @@ import { baselineCreatedFilesScenario, FIRST_RUN_OUTPUTS } from "./helpers/basel
 import { TOOL_CACHES } from "../src/core/verification/snapshot.js";
 import { spawnSync } from "node:child_process";
 import {
+  chmodSync,
   existsSync,
   lstatSync,
   mkdirSync,
@@ -42,9 +43,12 @@ import { reproExecutables } from "../src/core/verification/repro.js";
 import { entryPointCommand } from "../src/core/verification/entry-points.js";
 import { noteSiblingFindings, ownerOfFinding } from "../src/core/verification/initiative-ownership.js";
 import { failureSignature as convergenceSignature, missingPlannedPaths, noTestsCollected } from "../src/core/verification/convergence.js";
-import { exitStatus, timedOutFailure } from "../src/core/verification/check-runner.js";
-import { noTestsCollected } from "../src/core/verification/convergence.js";
+import { executeCheckCommand, exitStatus, timedOutFailure } from "../src/core/verification/check-runner.js";
+import { gradleTestReport } from "../src/core/verification/test-reports.js";
+import { detectLanguages, touchesLanguageFiles } from "../src/core/workflows/language.js";
 import { baselineRegression, buildFailure, buildRunner, diagnosticCount, failedTests, failureSignature, testCount, testsRan } from "../src/core/verification/output-counts.js";
+import { pwshExecutable } from "../src/core/platform/index.js";
+import { PESTER_RUN, pesterOn } from "../src/core/workflows/pester.js";
 import { baselineDebt, baselineKeys } from "../src/core/verification/task-end-check.js";
 import { affectedTestCheck, plannedWrittenTests, writtenTestsCheck } from "../src/core/workflows/affected-tests.js";
 import { launchedCommand } from "../src/core/workflows/launcher.js";
@@ -1077,6 +1081,69 @@ describe("gate matrix: SwiftPM, Mix, Dart, Zig, dune and Bundler (#1753)", () =>
   });
 });
 
+// #1489: `gradle -q check` prints no test total, so a Gradle project's baseline compared nothing,
+// and a Gradle-only project got no language review. The report below is the shape Gradle 8 writes
+// to build/test-results/test/TEST-<class>.xml.
+const GRADLE_REPORT = `<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="CalcTest" tests="3" skipped="1" failures="1" errors="0" timestamp="2026-10-25T02:10:00.000Z" hostname="host" time="0.031">
+  <properties/>
+  <testcase name="adds()" classname="CalcTest" time="0.012"/>
+  <testcase name="fails()" classname="CalcTest" time="0.004">
+    <failure message="org.opentest4j.AssertionFailedError: expected: &lt;4&gt; but was: &lt;3&gt;" type="org.opentest4j.AssertionFailedError">org.opentest4j.AssertionFailedError: expected: &lt;4&gt; but was: &lt;3&gt;
+	at CalcTest.fails(CalcTest.kt:7)
+</failure>
+  </testcase>
+  <testcase name="later()" classname="CalcTest" time="0.0">
+    <skipped/>
+  </testcase>
+  <system-out><![CDATA[]]></system-out>
+  <system-err><![CDATA[]]></system-err>
+</testsuite>
+`;
+describe("gate matrix: Gradle test reports and language review (#1489)", () => {
+  const gradleProject = () =>
+    project({
+      "settings.gradle.kts": 'rootProject.name = "calc"\ninclude("lib")\n',
+      "build.gradle.kts": 'plugins { kotlin("jvm") version "2.0.21" }\n',
+      "build/test-results/test/TEST-CalcTest.xml": GRADLE_REPORT,
+      "lib/build/test-results/test/TEST-lib.ParserTest.xml": GRADLE_REPORT.replaceAll("CalcTest", "lib.ParserTest").replace('tests="3" skipped="1" failures="1"', 'tests="1" skipped="0" failures="0"').replace(/<testcase name="fails[\s\S]*<\/testcase>\n  <testcase name="later[\s\S]*?<\/testcase>\n/, ""),
+    });
+  test("a Gradle run's reports become a JUnit block the junit runner counts", () => {
+    const root = gradleProject();
+    const report = gradleTestReport("./gradlew", ["--console=plain", "-q", "check"], root, Date.now() - 1000);
+    expect(report).toContain('<testsuites tests="4" skipped="1" failures="1" errors="0">');
+    const output = `> Task :test FAILED\n\nCalcTest > fails() FAILED\n    org.opentest4j.AssertionFailedError at CalcTest.kt:7\n\n${report}\n`;
+    expect(testCount(output)).toEqual({ tool: "junit", count: 4 });
+    expect(testsRan(output)).toEqual({ tool: "junit", count: 3 });
+    expect(failedTests(output)).toEqual({ tool: "junit", names: ["CalcTest.fails()"] });
+    // One more passing test elsewhere leaves the failure as it was.
+    const grown = output.replace('tests="4"', 'tests="5"').replace("2 files", "3 files");
+    expect(failureSignature(grown, root)).toBe(failureSignature(output, root));
+    // Reports older than the run (a test task Gradle skipped as up to date) and other programs add nothing.
+    expect(gradleTestReport("gradle", ["check"], root, Date.now() + 60_000)).toBeNull();
+    expect(gradleTestReport("mvn", ["verify"], root, Date.now() - 1000)).toBeNull();
+    expect(gradleTestReport("cmd", ["/d", "/c", "gradlew.bat", "test"], root, Date.now() - 1000)).not.toBeNull();
+  });
+
+  test.skipIf(process.platform === "win32")("executeCheckCommand appends the reports a Gradle run wrote", async () => {
+    const root = project({ "build.gradle": "plugins { id 'java' }\n" });
+    const xml = GRADLE_REPORT.replaceAll("'", "'\\''");
+    writeFileSync(join(root, "gradlew"), `#!/bin/sh\nmkdir -p build/test-results/test\nprintf '%s' '${xml}' > build/test-results/test/TEST-CalcTest.xml\necho 'CalcTest > fails() FAILED'\nexit 1\n`);
+    chmodSync(join(root, "gradlew"), 0o755);
+    const result = await executeCheckCommand(new ProcessScope(), "./gradlew", ["-q", "check"], { cwd: root, env: process.env, timeoutMs: 30_000, signal: new AbortController().signal, sandbox: null });
+    expect(result.output).toStartWith("CalcTest > fails() FAILED\n\nGradle test reports (1 file under build/test-results, read by BAKED):\n");
+    expect(testCount(result.output)).toEqual({ tool: "junit", count: 3 });
+  });
+
+  test("a Gradle-only project gets the language review, Kotlin by its build script", () => {
+    expect(detectLanguages(project({ "build.gradle": "plugins { id 'java' }\n" }))).toEqual(["java"]);
+    expect(detectLanguages(project({ "build.gradle.kts": "plugins { java }\n" }))).toEqual(["kotlin"]);
+    expect(detectLanguages(project({ "build.gradle": "plugins { id 'org.jetbrains.kotlin.jvm' version '2.0.21' }\n" }))).toEqual(["kotlin"]);
+    expect(detectLanguages(project({ "pom.xml": "<project/>" }))).toEqual(["java"]);
+    expect(touchesLanguageFiles(["gradle/libs.versions.toml"]) && touchesLanguageFiles(["settings.gradle.kts"]) && touchesLanguageFiles(["src/main/kotlin/App.kt"])).toBe(true);
+  });
+});
+
 // #1493: a Ruby project got Bundler's test gate (#1753) but no lint gate, no test count, no
 // skip markers of RSpec or Minitest and no language review. The outputs below are pasted from
 // RSpec 3.13.6, Minitest 5.20, Rake 13.1 and RuboCop 1.92 on Ruby 3.3.
@@ -1629,6 +1696,78 @@ describe("gate matrix: SQLFluff and dbt (#1499)", () => {
     expect(failureSignature(PROVE(2, 2), "/repo")).not.toBe(failureSignature(PROVE(2, 2).replaceAll("Failed: 1", "Failed: 2"), "/repo"));
     expect(noTestsCollected("Files=0, Tests=0,  0 wallclock secs ( 0.00 usr +  0.00 sys =  0.00 CPU)\nResult: NOTESTS\n")).toBe(true);
     expect(noTestsCollected(PROVE(2, 2))).toBe(false);
+  });
+});
+
+describe("gate matrix: Pester and PSScriptAnalyzer (#1498)", () => {
+  const exe = pwshExecutable();
+  const ids = (files: Record<string, string>) =>
+    detectGates(project(files)).map((s) => [s.check.id, s.source, s.preselected]);
+  const TEST = "Describe 'Get-Sum' {\n  It 'adds' { Get-Sum -A 1 -B 2 | Should -Be 3 }\n}\n";
+  test("Pester runs when a *.Tests.ps1 is at the root or in a test folder; the analyzer is preselected with its settings only", () => {
+    expect(ids({ "tests/Sum.Tests.ps1": TEST })).toEqual([
+      ["pester", "tests/*.Tests.ps1", true],
+      ["psscriptanalyzer", "tests/*.Tests.ps1", false],
+    ]);
+    expect(ids({ "Sum.Tests.ps1": TEST, "PSScriptAnalyzerSettings.psd1": "@{}\n" })).toEqual([
+      ["pester", "*.Tests.ps1", true],
+      ["psscriptanalyzer", "PSScriptAnalyzerSettings.psd1", true],
+    ]);
+    expect(ids({ "Sum.psd1": "@{ ModuleVersion = '1.0.0' }\n" })).toEqual([["psscriptanalyzer", "Sum.psd1", false]]);
+    expect(ids({ "src/deep/Sum.ps1": "function Get-Sum {}\n" })).toEqual([]);
+    const [pester] = detectGates(project({ "tests/Sum.Tests.ps1": TEST })).map((s) => s.check);
+    expect(pester && [pester.executable, ...pester.args.slice(0, 3)]).toEqual([exe, "-NoProfile", "-NonInteractive", "-Command"]);
+    // Plaintext: Pester colours its output even when redirected; no -CI, which writes testResults.xml.
+    expect(pester?.args.at(-1)).toBe(PESTER_RUN);
+    expect(PESTER_RUN).toContain("RenderMode = 'Plaintext'");
+    // A CI runner's annotations (`::error::[-] ...`) would hide the failed tests (#1498).
+    expect(PESTER_RUN).toContain("CIFormat = 'None'");
+    expect(PESTER_RUN).not.toContain("-CI");
+  });
+
+  test("the analyzer is a static check that covers each task's scripts, and its fixer takes the file", () => {
+    const checks = detectGates(project({ "tests/Sum.Tests.ps1": TEST, "PSScriptAnalyzerSettings.psd1": "@{}\n" })).map((s) => s.check);
+    const byId = (id: string) => checks.find((c) => c.id === id) as Check;
+    const lint = byId("psscriptanalyzer");
+    expect(isStaticCheck(lint) && !isWholeUnitCheck(lint)).toBe(true);
+    expect(isStaticCheck(byId("pester"))).toBe(false);
+    // Parse errors fail the gate; Information (a missing help comment) does not.
+    expect(lint.args.at(-1)).toContain("-Severity ParseError,Error,Warning -EnableExit");
+    expect(fixerCommand(lint.fix!, "src/Sum.ps1")).toEqual({
+      executable: exe,
+      args: ["-NoProfile", "-NonInteractive", "-Command", "Invoke-ScriptAnalyzer", "-Fix", "-Path", "src/Sum.ps1"],
+    });
+    const covering = (path: string) =>
+      coveringChecks({ checks } as RunPolicy, { writes: [{ path, action: "create" }] }).map((c) => c.id);
+    expect(covering("src/Sum.ps1")).toEqual(["psscriptanalyzer"]);
+    expect(covering("README.md")).toEqual([]);
+  });
+
+  test("the written-tests check runs only the task's Pester files, and leaves a project's own script alone", () => {
+    const root = project({ "tests/Sum.Tests.ps1": TEST, "tests/Diff.Tests.ps1": TEST });
+    const checks = detectGates(root).filter((s) => s.preselected).map((s) => s.check);
+    const written = writtenTestsCheck(root, checks, [{ path: "tests/Diff.Tests.ps1", action: "create" }]);
+    expect(written?.args.at(-1)).toBe(pesterOn(["./tests/Diff.Tests.ps1"]));
+    expect(pesterOn(["./tests/it's.Tests.ps1"])).toContain("Path = @('./tests/it''s.Tests.ps1')");
+    const own = { ...(checks[0] as Check), args: ["-NoProfile", "-Command", "./build.ps1 -Task Test"] };
+    expect(writtenTestsCheck(root, [own], [{ path: "tests/Diff.Tests.ps1", action: "create" }])).toBeNull();
+  });
+
+  // Pasted from Pester 5.9.1 (RenderMode Plaintext) and PSScriptAnalyzer 1.24 through the gate's format.
+  const PESTER = (passed: number, discovered: number, ms: number) =>
+    JSON.parse("\"\\nStarting discovery in 1 files.\\nDiscovery found 3 tests in 272ms.\\nRunning tests.\\n[-] Get-Sum.is commutative 53ms (50ms|4ms)\\n Expected 4, but got 3.\\n at It 'is commutative' { Get-Sum -A 2 -B 1 | Should -Be 4 }, /work/app/tests/Sum.Tests.ps1:4\\n at <ScriptBlock>, /work/app/tests/Sum.Tests.ps1:4\\nTests completed in 759ms\\nTests Passed: 1, Failed: 1, Skipped: 1, Inconclusive: 0, NotRun: 0\\n\"").replace("Discovery found 3 tests", `Discovery found ${discovered} tests`).replace("Tests Passed: 1,", `Tests Passed: ${passed},`).replaceAll("53ms (50ms|4ms)", `${ms}ms (${ms - 3}ms|3ms)`);
+  const BUILD = "Pester v5.9.1\n\nStarting discovery in 2 files.\n[-] Discovery in /work/app/tests/Broken.Tests.ps1 failed with:\nSystem.Management.Automation.ParseException: At /work/app/tests/Broken.Tests.ps1:1 char:14\n+ Describe 'x' {\n   at System.Management.Automation.ExceptionHandlingOps.CheckActionPreference(FunctionContext funcContext, Exception exception)\nDiscovery found 1 tests in 222ms.\nRunning tests.\nRunning tests from '/work/app/tests/Load.Tests.ps1'\n[-] /work/app/tests/Load.Tests.ps1 failed with:\nFileNotFoundException: The specified module './nothere.psm1' was not loaded because no valid module file was found in any module directory.\nat <ScriptBlock>, /work/app/tests/Load.Tests.ps1:1\nTests completed in 468ms\nTests Passed: 0, Failed: 1, Skipped: 0, Inconclusive: 0, NotRun: 0\nContainer failed: 2\n  - /work/app/tests/Load.Tests.ps1";
+  const LINT_OUTPUT =
+    "/work/app/src/Bad.ps1:2:9: Warning PSReviewUnusedParameter: The parameter 'x' has been declared but not used.\n/work/app/src/Bad.ps1:4:1: ParseError MissingEndCurlyBrace: Missing closing '}' in statement block or type definition.\n";
+  test("Pester's counts and failed test, a signature without its durations or growing counts, and a container that failed", () => {
+    expect(testCount(PESTER(1, 3, 53))).toEqual({ tool: "pester", count: 3 });
+    expect(failedTests(PESTER(1, 3, 53))).toEqual({ tool: "pester", names: ["Get-Sum.is commutative"] });
+    expect(failureSignature(PESTER(1, 3, 53), "/work/app")).toBe(failureSignature(PESTER(2, 4, 36), "/work/app"));
+    expect(failureSignature(PESTER(1, 3, 53), "/work/app")).not.toBe(failureSignature(PESTER(1, 3, 53).replace("Expected 4", "Expected 5"), "/work/app"));
+    expect(buildRunner(BUILD)).toBe("pester");
+    expect(buildFailure(BUILD)?.length).toBeGreaterThan(0);
+    expect(buildRunner(PESTER(1, 3, 53))).toBeNull();
+    expect(diagnosticCount(LINT_OUTPUT)).toEqual({ tool: "psscriptanalyzer", count: 2, errors: 1 });
   });
 });
 
@@ -3361,6 +3500,24 @@ describe.skipIf(!toolchains)("gate matrix: toolchains", () => {
     120_000,
   );
 
+  // #1489: the host reads the JUnit reports a real Gradle run writes, since `gradle -q check` prints
+  // no total on a passing run.
+  test.skipIf(!available([["gradle", "--version"]]))("a real Gradle check gets its test reports appended (#1489)", async () => {
+    const root = project({
+      "settings.gradle": "rootProject.name = 'calc'\n",
+      "build.gradle": "plugins { id 'java' }\nrepositories { mavenCentral() }\ndependencies {\n    testImplementation platform('org.junit:junit-bom:5.11.4')\n    testImplementation 'org.junit.jupiter:junit-jupiter'\n    testRuntimeOnly 'org.junit.platform:junit-platform-launcher'\n}\ntest { useJUnitPlatform() }\n",
+      "src/main/java/app/Calc.java": "package app;\n\npublic final class Calc {\n    public static int add(int a, int b) { return a + b; }\n}\n",
+      "src/test/java/app/CalcTest.java": "package app;\n\nimport static org.junit.jupiter.api.Assertions.assertEquals;\n\nimport org.junit.jupiter.api.Disabled;\nimport org.junit.jupiter.api.Test;\n\nclass CalcTest {\n    @Test void adds() { assertEquals(3, Calc.add(1, 2)); }\n    @Test void fails() { assertEquals(4, Calc.add(1, 2)); }\n    @Disabled @Test void later() { }\n}\n",
+    });
+    const env = { ...process.env, GRADLE_USER_HOME: process.env.GRADLE_USER_HOME ?? join(homedir(), ".gradle") };
+    const check = () => executeCheckCommand(new ProcessScope(), "gradle", ["-q", "--console=plain", "check"], { cwd: root, env, timeoutMs: 600_000, signal: new AbortController().signal, sandbox: null });
+    const failing = await check();
+    expect([testCount(failing.output), testsRan(failing.output), failedTests(failing.output)]).toEqual([{ tool: "junit", count: 3 }, { tool: "junit", count: 2 }, { tool: "junit", names: ["app.CalcTest.fails()"] }]);
+    writeFileSync(join(root, "src/test/java/app/CalcTest.java"), readFileSync(join(root, "src/test/java/app/CalcTest.java"), "utf8").replace("assertEquals(4,", "assertEquals(3,"));
+    const passing = await check();
+    expect(passing.output).not.toContain("tests completed");
+    expect(testCount(passing.output)).toEqual({ tool: "junit", count: 3 });
+  }, 900000);
   // #1493: the RSpec, Minitest and RuboCop parsers read what the installed tools print.
   test.skipIf(!available([["rspec", "--version"], ["ruby", "-e", "require 'minitest'"], ["rubocop", "--version"]]))("rspec, minitest and rubocop output reads as their parsers expect (#1493)", () => {
     const root = project({
@@ -3435,6 +3592,33 @@ describe.skipIf(!toolchains)("gate matrix: toolchains", () => {
     expect((await executeGate(root, lint, new AbortController().signal)).status).toBe("passed");
     const missing = await executeGate(root, { ...lint, args: ["lint", "tests"] }, new AbortController().signal);
     expect(missingPlannedPaths(missing.outputTail, [{ writes: [{ path: "tests/test_orders.sql", action: "create" }] } as Task])).toEqual(["tests/test_orders.sql"]);
+  }, 300000);
+  test.skipIf(!available([[pwshExecutable(), "-NoProfile", "-NonInteractive", "-Command", "Import-Module Pester -MinimumVersion 5.5; Import-Module PSScriptAnalyzer"]]))("pwsh: Pester and PSScriptAnalyzer gates fail on a defect, the analyzer's fixer repairs the file, and a missing path names its task (#1498)", async () => {
+    const root = project({
+      "PSScriptAnalyzerSettings.psd1": "@{ Severity = @('Error', 'Warning') }\n",
+      "src/Sum.ps1": "function Get-Sum {\n  param([int]$A, [int]$B)\n  $A - $B\n}\nfunction Get-Item2 {\n  gci\n}\n",
+      "tests/Sum.Tests.ps1": "BeforeAll { . $PSScriptRoot/../src/Sum.ps1 }\nDescribe 'Get-Sum' {\n  It 'adds' { Get-Sum -A 1 -B 2 | Should -Be 3 }\n}\n",
+    });
+    const checks = detectGates(root).map((s) => s.check);
+    const pester = checks.find((c) => c.id === "pester");
+    const lint = checks.find((c) => c.id === "psscriptanalyzer");
+    if (!pester || !lint?.fix) throw new Error("no PowerShell gates");
+    const signal = new AbortController().signal;
+    const tests = await executeGate(root, pester, signal);
+    expect(tests.status).toBe("failed");
+    expect(testCount(tests.outputTail)).toEqual({ tool: "pester", count: 1 });
+    expect(failedTests(tests.outputTail)).toEqual({ tool: "pester", names: ["Get-Sum.adds"] });
+    const before = await executeGate(root, lint, signal);
+    expect(before.status).toBe("failed");
+    expect(diagnosticCount(before.outputTail)).toEqual({ tool: "psscriptanalyzer", count: 1, errors: 0 });
+    const fix = fixerCommand(lint.fix, "src/Sum.ps1");
+    expect(spawnSync(fix.executable, fix.args, { cwd: root, encoding: "utf8", timeout: 120000 }).status).toBe(0);
+    expect(readFileSync(join(root, "src/Sum.ps1"), "utf8")).toContain("Get-ChildItem");
+    expect((await executeGate(root, lint, signal)).status).toBe("passed");
+    writeFileSync(join(root, "src/Sum.ps1"), readFileSync(join(root, "src/Sum.ps1"), "utf8").replace("$A - $B", "$A + $B"));
+    expect((await executeGate(root, pester, signal)).status).toBe("passed");
+    const missing = await executeGate(root, { ...lint, args: [...lint.args.slice(0, -1), "Invoke-ScriptAnalyzer -Path ./lib -EnableExit"] }, signal);
+    expect(missingPlannedPaths(missing.outputTail, [{ writes: [{ path: "lib/Diff.ps1", action: "create" }] } as Task])).toEqual(["lib/Diff.ps1"]);
   }, 300000);
   test("pytest executes host rows and fails a wrong harness (#1596)", () => {
     const root = project({});

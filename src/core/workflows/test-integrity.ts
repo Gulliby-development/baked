@@ -300,6 +300,9 @@ const SKIPS = new RegExp(
     String.raw`->(?:skip|todo)\s*\(`,
     // pgTAP: `SELECT skip('needs pg 16', 2)`, `SELECT todo_start('...')` (#1499).
     String.raw`\b(?:SELECT|select)\s+(?:skip|todo_start)\s*\(`,
+    // Pester: `It 'adds' -Skip { }`, `Describe 'x' -Skip:$true`, `Set-ItResult -Skipped` (#1498).
+    String.raw`^\s*(?:It|Describe|Context)\b[^{\n]*\s-Skip\b`,
+    String.raw`\bSet-ItResult\s+-(?:Skipped|Pending|Inconclusive)\b`,
   ].join("|"),
   "g",
 );
@@ -376,6 +379,8 @@ const SUPPRESSIONS = new RegExp(
     String.raw`--\s*luacheck:\s*(?:ignore|no\s|push\s+ignore)`,
     String.raw`--\s*selene:\s*allow\b`,
     String.raw`//\s*ignore(?:_for_file)?:\s*\w`,
+    // PSScriptAnalyzer, and the same attribute in C#: `[Diagnostics.CodeAnalysis.SuppressMessageAttribute(...)]` (#1498).
+    String.raw`\[(?:System\.)?(?:Diagnostics\.CodeAnalysis\.)?SuppressMessage(?:Attribute)?\s*\(`,
   ].join("|"),
   "g",
 );
