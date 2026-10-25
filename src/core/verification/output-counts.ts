@@ -469,8 +469,10 @@ export const BUILD_FAILURES: Record<TestRunner, RegExp> = {
   // "FAIL\texample.com/cidrfold [build failed]", "./fold_test.go:9:2: undefined: Fold"
   go: /^(?:FAIL\s+\S+ \[(?:build|setup) failed\]|\S+\.go:\d+:\d+: .+)$/,
   // "PHP Parse error:  syntax error, unexpected token "}" in /w/tests/SumTest.php on line 9"
-  phpunit: /^(?:PHP )?(?:Parse|Fatal) error: .+$/,
-  pest: /^(?:PHP )?(?:Parse|Fatal) error: .+$/,
+  // PHPUnit 11 catches the parse error of a test file itself: "An error occurred inside PHPUnit.",
+  // then "Message:  Unclosed '{' on line 2" and "Location: /w/tests/SumTest.php:3".
+  phpunit: /^(?:(?:PHP )?(?:Parse|Fatal) error: .+|Location: \S+\.php:\d+)$/,
+  pest: /^(?:(?:PHP )?(?:Parse|Fatal) error: .+|Location: \S+\.php:\d+)$/,
   // "An error occurred while loading ./spec/calc_spec.rb.", "While loading ./spec/a_spec.rb a
   // `raise SyntaxError` occurred, RSpec will now quit.": RSpec then runs no example at all.
   rspec: /^(?:An error occurred while loading \S+.*|While loading \S+ a `raise \w+` occurred.*)$/,
