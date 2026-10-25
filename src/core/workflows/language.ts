@@ -1,4 +1,5 @@
-import { readdirSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
+import { join } from "node:path";
 
 /** Review profile that runs as the `language` review dimension for the languages below. */
 export const LANGUAGE_REVIEW_PROFILE = "language-reviewer";
@@ -8,12 +9,29 @@ export type ProjectLanguage =
   | "dotnet"
   | "rust"
   | "java"
+  | "kotlin"
   | "ruby"
   | "dart"
   | "scala"
   | "swift";
 
+/** Gradle build scripts at the workspace root: a Java or Kotlin build (#1489). */
+const GRADLE_BUILDS = [
+  "build.gradle.kts",
+  "build.gradle",
+  "settings.gradle.kts",
+  "settings.gradle",
+];
+
 const DOTNET_FILE = /\.(slnx?|csproj|fsproj|vbproj)$/i;
+
+function readText(workspace: string, name: string): string {
+  try {
+    return readFileSync(join(workspace, name), "utf8");
+  } catch {
+    return "";
+  }
+}
 
 function rootNames(workspace: string): string[] {
   try {
@@ -38,7 +56,14 @@ export function detectLanguages(workspace: string): ProjectLanguage[] {
   if (names.has("go.mod")) out.push("go");
   if (dotnetFiles(workspace).length > 0) out.push("dotnet");
   if (names.has("Cargo.toml")) out.push("rust");
-  if (names.has("pom.xml")) out.push("java");
+  const gradle = GRADLE_BUILDS.filter((name) => names.has(name));
+  // A Gradle build without a Kotlin build script or plugin is Java; a Kotlin one is Kotlin, which
+  // also covers its Java sources (#1489).
+  const kotlin =
+    names.has("build.gradle.kts") ||
+    gradle.some((name) => /\bkotlin\s*\(|org\.jetbrains\.kotlin/.test(readText(workspace, name)));
+  if (names.has("pom.xml") || (gradle.length > 0 && !kotlin)) out.push("java");
+  if (kotlin) out.push("kotlin");
   if (names.has("Gemfile") || [...names].some((name) => name.endsWith(".gemspec")))
     out.push("ruby");
   if (names.has("pubspec.yaml")) out.push("dart");
@@ -49,7 +74,7 @@ export function detectLanguages(workspace: string): ProjectLanguage[] {
 
 /**
  * The language review profile a run gets when its policy names none and the workspace is a Go,
- * .NET, Rust, Java, Ruby, Dart, Scala or Swift project: these are the languages where a general reviewer misses platform
+ * .NET, Rust, Java, Kotlin (Maven or Gradle), Ruby, Dart, Scala or Swift project: these are the languages where a general reviewer misses platform
  * pitfalls (newline, path separator, culture, error handling idioms).
  */
 export function languageReviewProfile(workspace: string): string | null {
@@ -58,10 +83,10 @@ export function languageReviewProfile(workspace: string): string | null {
 
 /** Source and build files of the languages above, by extension or file name. */
 const LANGUAGE_FILE =
-  /(\.(go|cs|fs|vb|csproj|fsproj|vbproj|slnx?|props|targets|rs|java|kt|kts|rb|rake|gemspec|dart|scala|sc|sbt|swift)$|(^|\/)(go\.mod|go\.sum|Cargo\.toml|Cargo\.lock|pom\.xml|build\.gradle|Gemfile|Gemfile\.lock|Rakefile|pubspec\.yaml|pubspec\.lock|analysis_options\.yaml|\.scalafmt\.conf|Package\.resolved|\.swift-format)$)/i;
+  /(\.(go|cs|fs|vb|csproj|fsproj|vbproj|slnx?|props|targets|rs|java|kt|kts|rb|rake|gemspec|dart|scala|sc|sbt|swift)$|(^|\/)(go\.mod|go\.sum|Cargo\.toml|Cargo\.lock|pom\.xml|build\.gradle|settings\.gradle|gradle\.properties|libs\.versions\.toml|Gemfile|Gemfile\.lock|Rakefile|pubspec\.yaml|pubspec\.lock|analysis_options\.yaml|\.scalafmt\.conf|Package\.resolved|\.swift-format)$)/i;
 
 /**
- * Whether a change touches a file of a Go, .NET, Rust, Java, Ruby, Dart, Scala or Swift project. The language review only
+ * Whether a change touches a file of a Go, .NET, Rust, Java, Kotlin, Ruby, Dart, Scala or Swift project. The language review only
  * adds value there: in R08 it ran on changes to READMEs and scripts of such projects and found
  * nothing in four reviews at about 45k tokens each (#592).
  */

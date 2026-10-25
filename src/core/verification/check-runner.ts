@@ -13,15 +13,32 @@ import { isFailedTestLine } from "./failed-test-line.js";
 import { MISSING_GATE_REPORT, readGateReport, renderGateReport } from "./gate-report.js";
 import { testsRan } from "./output-counts.js";
 import { changedPaths, sourceManifest } from "./snapshot.js";
+import { gradleTestReport } from "./test-reports.js";
 
-/** Shared process execution for native checks and the legacy project formatter. */
-export const executeCheckCommand = (
+/**
+ * Shared process execution for native checks and the legacy project formatter. A Gradle run gets
+ * the totals of the test reports it wrote appended to its output (`gradleTestReport`, #1489).
+ */
+export const executeCheckCommand = async (
   scope: ProcessScope,
   executable: string,
   args: string[],
   options: Parameters<ProcessScope["execute"]>[2],
-): Promise<ProcessResult> =>
-  scope.execute(executable, withPerTestTimeout({ executable, args }, options.cwd), options);
+): Promise<ProcessResult> => {
+  const started = Date.now();
+  const result = await scope.execute(
+    executable,
+    withPerTestTimeout({ executable, args }, options.cwd),
+    options,
+  );
+  const report =
+    result.timedOut || result.cancelled
+      ? null
+      : gradleTestReport(executable, args, options.cwd, started);
+  return report
+    ? { ...result, output: `${result.output.replace(/\n*$/, "")}\n\n${report}\n` }
+    : result;
+};
 
 /** The environment every check and on-demand gate run gets: safe base plus the names it declares. */
 export function buildCheckEnv(check: Pick<Check, "envNames">): NodeJS.ProcessEnv {

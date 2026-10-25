@@ -6,12 +6,13 @@ import { tuiRecoveryText } from "../src/components/workflow/remedies.js";
 import { startApiServer } from "../src/core/api/server.js";
 import {
   type InitiativeView,
+  planChargedGate,
   poolGrowthOf,
   type ShareGateRecord,
   type ShareGateView,
   shareShortfall,
 } from "../src/core/workflows/initiatives/service.js";
-import { HOST_POOL_GROWTHS, poolExtensionDecision, tokenPool } from "../src/core/workflows/initiatives/token-pool.js";
+import { HOST_POOL_GROWTHS, planCharge, poolExtensionDecision, tokenPool } from "../src/core/workflows/initiatives/token-pool.js";
 import { initiativeActions } from "../src/core/workflows/initiatives/view-model.js";
 import { openTrace, replayInitiativeStarts, replayPoolGrowth } from "../src/core/workflows/trace.js";
 import { executeInitiativeCommand, parseInitiativeArgs } from "../src/headless/workflow-initiative.js";
@@ -240,4 +241,186 @@ describe("scenario: a scripted initiative whose features cost more than their es
       expect(events("decision.would_extend")).toEqual([]);
     }
   }, 240000);
+});
+
+describe("scenario: an open feature run with a sized plan is charged at its plan's need (#2100, #2056)", () => {
+  /** f1 accepted, f2's run open with its plan sized and its tasks started. */
+  async function sized(mode?: "shadow" | "enforce") {
+    const history = await historyFixture(1, { taskShare: 0.4 });
+    cleanups.push(() => history.dispose());
+    const result = await plannedForecastScenario(5, 1, [history.root], { skeleton: false, maxTotalTokens: 30_000_000, ...(mode ? { stopModes: { "initiative-plan-charge": mode } } : {}) });
+    cleanups.push(() => result.fixture.dispose());
+    const { initiatives, fixture } = result;
+    const driveUntil = async (stop: (type: string) => boolean): Promise<void> => {
+      const controller = new AbortController();
+      const unwatch = fixture.service.store.observe((e) => { if (stop(e.type)) controller.abort(); });
+      try { await initiatives.drive("values", controller.signal); } finally { unwatch(); }
+    };
+    await driveUntil((type) => type === "task.state_changed");
+    const events = () => initiatives.events("values").filter((e) => e.type === "decision.would_release").map((e) => e.payload as Record<string, unknown>);
+    return { ...result, driveUntil, events };
+  }
+
+  test("in shadow the pool keeps holding f2's run limit and a would_release event records what its plan frees", async () => {
+    const { initiatives, driveUntil, events } = await sized();
+    const view = initiatives.view("values");
+    const f2 = view.features.find((f) => f.id === "f2");
+    const charge = view.budget.planCharge;
+    expect(charge).toMatchObject({ mode: "shadow", ratio: null, runs: [{ featureId: "f2", runId: f2?.runId }] });
+    const run = charge?.runs[0];
+    // One accepted feature measures no ratio: the charge is the plan's own high end.
+    expect(run?.chargeTokens).toBe(Math.max(run?.usedTokens ?? 0, run?.plan.high ?? 0));
+    expect(run?.chargeTokens).toBeLessThan(run?.limitTokens ?? 0);
+    expect(charge?.releasedTokens).toBe((run?.limitTokens ?? 0) - (run?.chargeTokens ?? 0));
+    expect(charge?.planCommittedTokens).toBe((charge?.limitCommittedTokens ?? 0) - (charge?.releasedTokens ?? 0));
+    // Shadow: committed, reserved and remaining are what they were before #2100.
+    expect(view.budget.pool?.committedTokens).toBe(charge?.limitCommittedTokens);
+    expect(view.budget.remaining.tokens).toBe(30_000_000 - (charge?.limitCommittedTokens ?? 0));
+    expect(view.budget.reserved.tokens).toBe((charge?.limitCommittedTokens ?? 0) - view.budget.used.tokens);
+    // The next drive records it once per run and plan, before it drives the run on.
+    await driveUntil(() => true);
+    await driveUntil(() => true);
+    expect(events()).toEqual([expect.objectContaining({
+      reason: "initiative-plan-charge", mode: "shadow", featureId: "f2", key: `run-${f2?.runId}-${run?.plan.high}`,
+      releasedTokens: charge?.releasedTokens, wouldStart: false, wouldPark: false,
+    })]);
+    expect(String(events()[0]?.summary)).toMatch(/^f2's plan prices its run at [\d.]+[kM] tokens \([\d.]+[kM] used\): holding that instead of its [\d.]+M limit frees [\d.]+M tokens of the pool\.$/);
+  }, 120000);
+
+  test("in enforce the pool holds f2 at its plan charge, never below what it used, and the run still finishes", async () => {
+    const { initiatives, events, driveUntil } = await sized("enforce");
+    const view = initiatives.view("values");
+    const charge = view.budget.planCharge;
+    expect(charge?.mode).toBe("enforce");
+    expect(charge?.releasedTokens).toBeGreaterThan(0);
+    expect(view.budget.pool?.committedTokens).toBe(charge?.planCommittedTokens);
+    expect(view.budget.remaining.tokens).toBe(30_000_000 - (charge?.planCommittedTokens ?? 0));
+    expect(view.budget.reserved.tokens).toBeGreaterThanOrEqual(0);
+    for (const run of charge?.runs ?? []) expect(run.chargeTokens).toBeGreaterThanOrEqual(run.usedTokens);
+    // The waiting features share what the charge leaves: more than under the run's limit.
+    const share = (v: InitiativeView) => v.features.filter((f) => f.share).reduce((n, f) => n + (f.share?.tokens ?? 0), 0);
+    expect(share(view)).toBe(view.budget.remaining.tokens);
+    expect(share(view)).toBeGreaterThan(30_000_000 - (charge?.limitCommittedTokens ?? 0));
+    // Enforced, nothing is recorded as would-be.
+    await driveUntil((type) => type === "run.state_changed");
+    expect(events()).toEqual([]);
+    const done = await initiatives.drive("values", new AbortController().signal);
+    expect(done.features.find((f) => f.id === "f2")?.state).toBe("accepted");
+  }, 180000);
+});
+
+// Bench round 67, ampwhy (#2100): 11 features, planAhead, 3 slots. The split's warning made the
+// loop extend the 30M pool to 38,579,615; the initiative used 12.2M. At cli's gate the pool held
+// 30.5M for runs that had used 0.05M to 6.6M each, because an open run counts at its limit (its
+// start share: base 4.90M, reader 4.85M, codecs, checking and cli 6.31M, decode-explain and
+// other-commands 3.73M) while the planned-ahead runs' own plans expected 0.37M to 2.1M. The R67
+// trace is not in the corpus: the gate below is rebuilt from the issue's figures, the open runs at
+// their class shares and the accepted features at the rest of the recorded 30.5M.
+describe("scenario: R67 ampwhy's gates with open runs held at their plan's need (#2100, R66 nodepluck)", () => {
+  const ratio = 1.19;
+  const openRuns = [
+    { featureId: "reader", runId: "r-reader", usedTokens: 3_100_000, limitTokens: 4_850_000, plan: { low: 1_600_000, expected: 2_000_000, high: 2_900_000 } },
+    { featureId: "codecs", runId: "r-codecs", usedTokens: 900_000, limitTokens: 6_310_000, plan: { low: 450_000, expected: 630_000, high: 950_000 } },
+    { featureId: "checking", runId: "r-checking", usedTokens: 300_000, limitTokens: 6_310_000, plan: { low: 250_000, expected: 370_000, high: 600_000 } },
+    { featureId: "decode-explain", runId: "r-decode", usedTokens: 50_000, limitTokens: 3_730_000, plan: { low: 800_000, expected: 1_100_000, high: 1_700_000 } },
+    { featureId: "other-commands", runId: "r-other", usedTokens: 1_400_000, limitTokens: 3_730_000, plan: { low: 700_000, expected: 1_000_000, high: 1_500_000 } },
+  ];
+  const acceptedUsed = 30_500_000 - openRuns.reduce((n, r) => n + r.limitTokens, 0);
+  const usedTokens = acceptedUsed + openRuns.reduce((n, r) => n + r.usedTokens, 0);
+  const calls = { calls: 120, activeMs: 3_600_000 };
+  /** cli's gate under a pool of `limit`, as `view()` computes it in `mode`. */
+  const cliGate = (limit: number, mode: "shadow" | "enforce", priced = openRuns): ShareGateView => {
+    const charge = planCharge(mode, ratio, 30_500_000, priced);
+    const committed = mode === "enforce" ? (charge?.planCommittedTokens ?? 0) : 30_500_000;
+    const remaining = Math.max(0, limit - committed);
+    // cli and docs wait; their token shares split what remains by their high ends.
+    const cliTokens = Math.floor((remaining * 6_310_000) / (6_310_000 + 1_200_000));
+    return {
+      initiativeId: "ampwhy",
+      budget: {
+        remaining: { tokens: remaining, calls: 400, activeMs: 10_000_000 },
+        cost: { capUsd: null, tolerance: 0, ceilingUsd: null, spentUsd: 9.4, reservedUsd: 0, remainingUsd: null, forecastUsd: null, measuredFeatures: 4, forecastBinding: false, forecastMode: "enforce", shareMode: "shadow", forecastNotice: null },
+        limits: { maxTotalTokens: limit, maxAgentCalls: 1000, maxActiveMs: 21_600_000 },
+        used: { tokens: usedTokens, calls: 0, activeMs: 0 },
+        planCharge: charge,
+      },
+      features: [
+        ...["values", "entities", "base", "scanning"].map((id) => done(id)),
+        ...openRuns.map((r) => done(r.featureId, "in_progress")),
+        { id: "cli", state: "ready", share: { tokens: cliTokens, ...calls }, need: { low: 2_200_000, high: 6_310_000 } },
+        { id: "docs", state: "waiting", share: { tokens: remaining - cliTokens, ...calls }, need: { low: 500_000, high: 1_200_000 } },
+      ],
+    };
+  };
+  const cli = (view: ShareGateView) => {
+    const feature = view.features.find((f) => f.id === "cli");
+    return { id: "cli", share: feature?.share ?? null, need: feature?.need ?? null, shareUsd: null };
+  };
+
+  test("the charge is each plan's high end at the measured ratio, never below used: 13.4M against 30.5M at the limits", () => {
+    const charge = planCharge("shadow", ratio, 30_500_000, openRuns);
+    // reader used more than its plan's high end: it is held at its use.
+    expect(charge?.runs.map((r) => [r.featureId, r.chargeTokens])).toEqual([
+      ["reader", 3_100_000], ["codecs", 950_000], ["checking", 600_000], ["decode-explain", 1_700_000], ["other-commands", 1_500_000],
+    ]);
+    expect(charge?.planCommittedTokens).toBe(acceptedUsed + 7_850_000);
+    expect(charge?.releasedTokens).toBe(17_080_000);
+    // A plan whose expected tokens at the ratio pass its high end is held there (#2043's need).
+    expect(planCharge("shadow", 3, 0, [{ ...openRuns[2]!, usedTokens: 0 }])?.runs[0]?.chargeTokens).toBe(1_110_000);
+  });
+
+  test("shadow: under the 30M pool the limits park cli, and the charged gate would start it", () => {
+    const view = cliGate(30_000_000, "shadow");
+    expect(view.budget.remaining.tokens).toBe(0);
+    expect(shareShortfall(view, cli(view))?.summary).toStartWith("The shared budget is exhausted: cli would start with 0 tokens");
+    const charged = planChargedGate(view);
+    expect(charged?.budget.remaining.tokens).toBe(30_000_000 - (acceptedUsed + 7_850_000));
+    expect(charged?.budget.pool).toBeUndefined();
+    expect(shareShortfall(charged as ShareGateView, cli(charged as ShareGateView))).toBeNull();
+    // The 38.6M extension the loop made started cli at the limits too: the charge was what it bought.
+    const extended = cliGate(38_579_615, "shadow");
+    expect(shareShortfall(extended, cli(extended))).toBeNull();
+  });
+
+  test("enforce: cli starts under the 30M pool, and the gate needs no charged view", () => {
+    const view = cliGate(30_000_000, "enforce");
+    expect(view.budget.remaining.tokens).toBe(30_000_000 - (acceptedUsed + 7_850_000));
+    expect(shareShortfall(view, cli(view))).toBeNull();
+    expect(planChargedGate(view)).toBeNull();
+  });
+
+  test("#2056: a plan priced above its run's limit adds tokens, and can park a feature the limits start", () => {
+    // Only decode-explain's plan is sized, at 4.5M-6.0M: above its 3.73M limit, the charge holds
+    // 2.27M more; the other open runs keep their limits.
+    const decode = { ...openRuns[3]!, plan: { low: 4_500_000, expected: 5_000_000, high: 6_000_000 } };
+    const charge = planCharge("shadow", ratio, 30_500_000, [decode]);
+    expect(charge?.runs[0]?.chargeTokens).toBe(6_000_000);
+    expect(charge?.releasedTokens).toBe(-2_270_000);
+    // Under a 33.5M pool the limits leave 3.0M and start cli; the charge leaves 0.73M.
+    const gate = cliGate(33_500_000, "shadow", [decode]);
+    expect(shareShortfall(gate, cli(gate))).toBeNull();
+    const charged = planChargedGate(gate) as ShareGateView;
+    expect(charged.budget.remaining.tokens).toBe(730_000);
+    expect(shareShortfall(charged, cli(charged))?.summary).toStartWith("The shared budget is short: cli has 230000 tokens available");
+    // Enforced, the pool reserves the plan and cli waits for an extension.
+    const enforced = cliGate(33_500_000, "enforce", [decode]);
+    expect(enforced.budget.remaining.tokens).toBe(730_000);
+    expect(shareShortfall(enforced, cli(enforced))?.remedies[0]?.action).toBe("extend");
+  });
+
+  test("R66 nodepluck: at select's park readcmd's plan frees 33k, select still parks and the block names its amount", () => {
+    // At the 14:40:20 park readcmd had used 5,320,506 of a limit of 5,793,784 (the recorded
+    // committed less what the other runs used), and its plan prices it at 5,760,667: the pool was
+    // short for use, not for reservations.
+    const readcmd = { featureId: "readcmd", runId: "r-readcmd", usedTokens: 5_320_506, limitTokens: 5_793_784, plan: { low: 4_100_000, expected: 4_500_000, high: 5_760_667 } };
+    const view = withPool(r66Park.view, 26_790_885);
+    const charge = planCharge("shadow", null, POOL - view.budget.remaining.tokens, [readcmd]);
+    expect(charge?.releasedTokens).toBe(33_117);
+    const charged = planChargedGate({ ...view, budget: { ...view.budget, planCharge: charge } }) as ShareGateView;
+    const select = { ...r66Park.feature, share: charged.features.find((f) => f.id === "select")?.share ?? null };
+    const advice = shareShortfall(charged, select);
+    expect(advice?.summary).toStartWith("The shared budget is short: select has 644245 tokens available after reserving the other waiting features' low estimates");
+    expect(advice?.summary).toContain("select needs 148160 more tokens to start; a pool of 33.1M");
+    expect(advice?.remedies).toEqual([{ action: "extend", initiativeId: "nodepluck", suggestedTokens: 33_100_000 }]);
+  });
 });

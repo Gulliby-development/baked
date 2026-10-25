@@ -1505,12 +1505,12 @@ export const FEATURES: readonly Feature[] = [
       "/workflow: initiatives, Token forecast line and B prefilled with the suggested extension",
     ],
     cli: [
-      "baked workflow initiative show: budget.pool, budget.forecastNotice, next.recovery suggestedTokens",
-      "baked workflow initiative events: budget.forecast_notice, decision.would_extend",
+      "baked workflow initiative show: budget.pool, budget.planCharge, budget.forecastNotice, next.recovery suggestedTokens",
+      "baked workflow initiative events: budget.forecast_notice, decision.would_extend, decision.would_release",
       "baked workflow initiative extend",
     ],
     api: [
-      "/v1/initiatives/:id: budget.pool, budget.forecastNotice, next.recovery suggestedTokens",
+      "/v1/initiatives/:id: budget.pool, budget.planCharge, budget.forecastNotice, next.recovery suggestedTokens",
       "/v1/initiatives/:id/events",
       "/v1/initiatives/:id/extend",
     ],

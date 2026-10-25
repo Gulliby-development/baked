@@ -1,5 +1,6 @@
+import { type NotesCriterion, notesPass, testOrDocFile } from "../verification/convergence-stop.js";
 import { confidenceOnlyNote, type FindingLabels, findingBlocks } from "../verification/findings.js";
-import { type ReproOutcome, reproAllows } from "../verification/repro.js";
+import { convergenceReproGated, type ReproOutcome, reproAllows } from "../verification/repro.js";
 import type { Review } from "./schemas.js";
 
 type Finding = Review["findings"][number];
@@ -107,4 +108,148 @@ export function reviewGateDecision(gate: ReviewGate): string[] {
         : f.outcome === "reproduced",
     )
     .map((f) => f.id);
+}
+
+/** What the convergence gate knows of a finding: the review gate's labels and what the notes rule reads. */
+export interface ConvergenceGateFinding extends GateFinding {
+  /** The finding is on a test or documentation file. */
+  testOrDoc: boolean;
+  criterionIds: string[];
+}
+
+export interface ConvergenceGate {
+  /** The severities the run repairs this round. */
+  severities: readonly string[];
+  minConfidence: number;
+  /** Every required check passes on the reviewed snapshot. */
+  checksPass: boolean;
+  /** One of the run's checks starts a program a repro may run. */
+  reproAvailable: boolean;
+  /** The walker was offered `run_repro`, so an unshown claim is held to its repro (#930). */
+  canRepro: boolean;
+  /** Each criterion's verdict (after initiative deferral) and evidence count. */
+  criteria: NotesCriterion[];
+  /** The criteria that fail or are inconclusive and automated, before the gate. */
+  failing: string[];
+  findings: ConvergenceGateFinding[];
+}
+
+/**
+ * `repair` starts a correction; `notes` and `repro` are known limitations accepted by the notes
+ * rule or the repro gate; `note` is a review note.
+ */
+export type ConvergenceVerdict = "repair" | "notes" | "repro" | "note";
+
+export interface ConvergenceDecision {
+  verdicts: { id: string; verdict: ConvergenceVerdict }[];
+  /** The criteria still failing: those not named only by notes and unshown claims. */
+  failing: string[];
+  /** The claims below high severity the host did not reproduce, whatever their verdict. */
+  unreproduced: string[];
+}
+
+/** Each convergence gate is recorded as `convergence-gate/<id>.json` (kind `convergence-gate`, kept in bench traces). */
+export const CONVERGENCE_GATE_KIND = "convergence-gate";
+export const CONVERGENCE_GATE_DIR = "convergence-gate/";
+
+export interface ConvergenceGateRecord extends ConvergenceGate {
+  schemaVersion: 1;
+  decision: ConvergenceDecision;
+}
+
+export function convergenceGateFinding(
+  finding: Finding,
+  sibling: boolean,
+  outcome: ReproOutcome["status"] | undefined,
+): ConvergenceGateFinding {
+  return {
+    ...gateFinding(finding, sibling, outcome),
+    testOrDoc: testOrDocFile(finding.file),
+    criterionIds: [...finding.criterionIds],
+  };
+}
+
+const notesOf = (gate: ConvergenceGate): Set<string> =>
+  new Set(
+    gate.findings
+      .filter((f) => f.sibling || notesPass(f, gate.criteria, gate.checksPass))
+      .map((f) => f.id),
+  );
+
+/**
+ * The findings whose repro the converge stage runs: below high severity, or kept a note only for
+ * their confidence (#1210), and not a sibling's.
+ */
+export function convergenceReproCandidates(gate: ConvergenceGate): ConvergenceGateFinding[] {
+  return gate.findings.filter(
+    (f) =>
+      !f.sibling &&
+      (convergenceReproGated(labels(f)) || confidenceOnlyNote(labels(f), gate.minConfidence)) &&
+      f.repro &&
+      gate.reproAvailable,
+  );
+}
+
+/**
+ * The convergence gate. A low `partial` finding behind verified behavior passes with notes. Below
+ * high severity, a correctness claim the host does not reproduce, and any claim its repro refutes,
+ * is a known limitation when it would have repaired (cfgtrace2 e88a14dd, #930), and a criterion
+ * only such findings name is accepted with them. A finding still repairs below the severity floor
+ * when it is why a criterion fails: acceptance needs every automated criterion to pass.
+ */
+export function convergenceGateDecision(gate: ConvergenceGate): ConvergenceDecision {
+  const notes = notesOf(gate);
+  const blocks = (f: ConvergenceGateFinding): boolean =>
+    findingBlocks(
+      labels(f),
+      gate.minConfidence,
+      confidenceOnlyNote(labels(f), gate.minConfidence) && f.outcome === "reproduced",
+    );
+  const unreproduced = new Set(
+    gate.canRepro
+      ? gate.findings
+          .filter(
+            (f) =>
+              convergenceReproGated(labels(f)) &&
+              !notes.has(f.id) &&
+              !reproAllows(labels(f), f.outcome ?? undefined, true),
+          )
+          .map((f) => f.id)
+      : [],
+  );
+  const failing = new Set(gate.failing);
+  const repairing = (f: ConvergenceGateFinding): boolean =>
+    (gate.severities.includes(f.severity) && blocks(f)) ||
+    f.criterionIds.some((id) => failing.has(id));
+  const noted = new Set(
+    gate.findings.filter((f) => !f.sibling && notes.has(f.id) && repairing(f)).map((f) => f.id),
+  );
+  const unshown = new Set(
+    gate.findings.filter((f) => unreproduced.has(f.id) && repairing(f)).map((f) => f.id),
+  );
+  // Taken while `failing` still holds the criteria they explain (lockorder 6487b225, #1225).
+  for (const id of [...failing]) {
+    const named = gate.findings.filter((f) => f.criterionIds.includes(id));
+    if (named.length && named.every((f) => notes.has(f.id) || unreproduced.has(f.id)))
+      failing.delete(id);
+  }
+  const repair = (f: ConvergenceGateFinding): boolean =>
+    !notes.has(f.id) &&
+    !unreproduced.has(f.id) &&
+    ((gate.severities.includes(f.severity) && blocks(f)) ||
+      f.criterionIds.some((id) => failing.has(id)));
+  return {
+    verdicts: gate.findings.map((f) => ({
+      id: f.id,
+      verdict: repair(f)
+        ? "repair"
+        : noted.has(f.id)
+          ? "notes"
+          : unshown.has(f.id)
+            ? "repro"
+            : "note",
+    })),
+    failing: [...failing],
+    unreproduced: [...unreproduced],
+  };
 }
