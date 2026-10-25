@@ -783,6 +783,10 @@ describe("gate matrix: Composer (#1491)", () => {
     const covering = (path: string) =>
       coveringChecks({ checks: all.map((c) => ({ ...c, scope: "feature" as const })) } as RunPolicy, { writes: [{ path, action: "create" }] }).map((c) => c.id);
     expect(covering("src/Sum.php")).toEqual(["pint"]);
+    // A criterion's "formatted with Pint" or "passes PHPStan" claim is shown by those gates.
+    const passed = all.map((c) => ({ ...c, scope: "feature" as const }));
+    expect(styleClaimShown("all PHP files are Pint-formatted and pass PHPStan", passed)).toBe(true);
+    expect(styleClaimShown("all PHP files are Pint-formatted", passed.filter((c) => c.id !== "pint"))).toBe(false);
     // The whole-tree Pint gate covers a new file, so no format-written check is added for it.
     expect(formatWrittenChecks(project(LARAVEL), all, [{ path: "src/Sum.php", action: "create" }])).toEqual([]);
   });
