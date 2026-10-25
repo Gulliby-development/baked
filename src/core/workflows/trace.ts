@@ -35,6 +35,13 @@ import {
 } from "../verification/edge-inputs.js";
 import { planApprovalDecision, requestedPathTokens } from "./auto-approval.js";
 import { callCostRate } from "./budget.js";
+import {
+  missingDiagnosed,
+  SCOPE_KIND,
+  type ScopeDecision,
+  type ScopeRule,
+  scopeRecords,
+} from "./corrective-scope.js";
 import { assertForecastFits, costForecast } from "./cost-forecast.js";
 import { WorkflowFault } from "./errors.js";
 import {
@@ -175,6 +182,8 @@ const KEPT_ARTIFACTS = new Set([
   CASE_WALK_KIND,
   // Each review's gate: the findings' labels and repro outcomes, no claims (#1715).
   REVIEW_GATE_KIND,
+  // Each task-level corrective's write-scope precondition: diagnosed paths and writes (#2094).
+  SCOPE_KIND,
   // Each decision for the request or the platform on checked evidence: states, no quotes (#2032).
   EVIDENCE_DECISION_KIND,
 ]);
@@ -713,6 +722,41 @@ export interface RunReplay {
   evidenceDecisions: EvidenceDecisionBoundary[];
   /** Findings and conflict reports the current rule settles differently than the recording. */
   newEvidenceDecisions: number;
+  /** Each task-level corrective's write-scope precondition against the current rule (#2094). */
+  correctiveScopes: CorrectiveScopeBoundary[];
+  /** Correctives the current rule refuses for a diagnosed file outside their writes that the recording let run. */
+  newScopeStops: number;
+}
+
+export interface CorrectiveScopeBoundary {
+  taskId: string;
+  at: "create" | "start";
+  recorded: ScopeDecision;
+  replayed: ScopeDecision;
+  /** The diagnosed files the current rule finds outside the corrective's writes. */
+  missing: string[];
+}
+
+/**
+ * Every write-scope precondition of a task-level corrective a run recorded (`scope/tasks/`,
+ * #2094), decided again from its recorded diagnosed files and writes. Traces before #2094 record
+ * none.
+ */
+export function replayCorrectiveScopes(
+  store: WorkflowStore,
+  runId: string,
+  rule: ScopeRule = missingDiagnosed,
+): CorrectiveScopeBoundary[] {
+  return scopeRecords(store, runId).map((record) => {
+    const missing = rule(record.diagnosed ?? [], record.writes ?? []);
+    return {
+      taskId: record.taskId,
+      at: record.at,
+      recorded: record.decision,
+      replayed: missing.length ? "refuse" : "fits",
+      missing,
+    };
+  });
 }
 
 export interface EvidenceDecisionBoundary {
@@ -2883,6 +2927,8 @@ function replayRun(
   | "newGateRepairs"
   | "evidenceDecisions"
   | "newEvidenceDecisions"
+  | "correctiveScopes"
+  | "newScopeStops"
 > | null {
   const db = store.connection;
   const run = store.run(runId);
@@ -3064,6 +3110,7 @@ export function replayTrace(
     caseWalkRule?: CaseWalkRule;
     reviewGateRule?: ReviewGateRule;
     evidenceRule?: EvidenceRule;
+    scopeRule?: ScopeRule;
   } = {},
 ): TraceReplay {
   // Initiative starts rewind their own copies of the trace, before the run replay rewinds this one.
@@ -3133,6 +3180,9 @@ export function replayTrace(
     const evidence = new Map(
       runIds.map((runId) => [runId, replayEvidenceDecisions(store, runId, options.evidenceRule)]),
     );
+    const scopes = new Map(
+      runIds.map((runId) => [runId, replayCorrectiveScopes(store, runId, options.scopeRule)]),
+    );
     const runs: RunReplay[] = [];
     for (const runId of runIds) {
       const firstByte = timings.get(runId) ?? [];
@@ -3161,6 +3211,7 @@ export function replayTrace(
       const caseWalks = walks.get(runId) ?? [];
       const reviewGates = reviews.get(runId) ?? [];
       const evidenceDecisions = evidence.get(runId) ?? [];
+      const correctiveScopes = scopes.get(runId) ?? [];
       if (
         !replay.boundaries.length &&
         !firstByte.length &&
@@ -3176,7 +3227,8 @@ export function replayTrace(
         !integrity.length &&
         !caseWalks.length &&
         !reviewGates.length &&
-        !evidenceDecisions.length
+        !evidenceDecisions.length &&
+        !correctiveScopes.length
       )
         continue;
       runs.push({
@@ -3222,6 +3274,10 @@ export function replayTrace(
         ),
         evidenceDecisions,
         newEvidenceDecisions: evidenceDecisions.filter((b) => b.replayed !== b.recorded).length,
+        correctiveScopes,
+        newScopeStops: correctiveScopes.filter(
+          (b) => b.replayed === "refuse" && b.recorded === "fits",
+        ).length,
       });
     }
     const gates = replayShareGate(store, options.shareGate);

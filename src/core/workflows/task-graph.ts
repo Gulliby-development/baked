@@ -28,6 +28,26 @@ function taskDependsOn(
   ].some((id) => taskDependsOn(graph, id, to, waitingFor, seen));
 }
 
+/**
+ * Whether `id` waits for `task`: it depends on it, or `task` is a corrective and `id` depends on a
+ * task it corrects, which the corrective's hold in `readyTasks` keeps from running until the
+ * corrective is done. Such a task can never be what the corrective waits for: skillcomb T024
+ * (bench round 67, #2094) waited for T017, the later slice of the file it was correcting, while
+ * T017 waited for T024's predecessor T010.
+ */
+export function waitsOnRepaired(
+  graph: TaskGraph,
+  id: string,
+  task: Task,
+  waitingFor: RuntimeState["waitingFor"],
+  predecessors: RuntimeState["repairPredecessors"],
+): boolean {
+  return [
+    task,
+    ...(task.origin === "planned" ? [] : correctedTasks(graph, task, predecessors)),
+  ].some((target) => taskDependsOn(graph, id, target.id, waitingFor));
+}
+
 /** Whether the task uses files the repair writes, through its dependencies or explicit reads. */
 function affectedByRepair(
   graph: TaskGraph,
@@ -290,6 +310,7 @@ export function missingArtifactOwners(
   task: Task,
   account: { summary: string; unresolved: readonly string[] },
   waitingFor: RuntimeState["waitingFor"] = {},
+  predecessors: RuntimeState["repairPredecessors"] = {},
 ): string[] {
   const text = [account.summary, ...account.unresolved].join("\n");
   const status = new Map(rows.map((r) => [r.id, r.status]));
@@ -311,7 +332,7 @@ export function missingArtifactOwners(
           status.get(other.id) ?? "pending",
         ) &&
         !reaches(task.id, other.id) &&
-        !reaches(other.id, task.id) &&
+        !waitsOnRepaired(graph, other.id, task, waitingFor, predecessors) &&
         other.writes.some(
           (w) =>
             w.action !== "delete" &&
@@ -590,6 +611,8 @@ export function failureOwner(
     crossProfile?: boolean;
     pendingFindings?: readonly PendingFindingFailure[];
     waitingFor?: RuntimeState["waitingFor"];
+    /** The predecessors of findings, so a corrective never waits for a task it holds (#2094). */
+    predecessors?: RuntimeState["repairPredecessors"];
   } = {},
 ): FailureOwner {
   const files = failingFilesInOutput(output, graph?.tasks ?? []);
@@ -620,7 +643,10 @@ export function failureOwner(
   if (pending.length) return { kind: "pending", owners: pending, files };
   const creators = pathCreators(graph, rows, gates, task, output);
   if (creators.length)
-    return graph && creators.some((id) => taskDependsOn(graph, id, task.id, waitingFor))
+    return graph &&
+      creators.some((id) =>
+        waitsOnRepaired(graph, id, task, waitingFor, options.predecessors ?? {}),
+      )
       ? { kind: "creates", owners: creators, files }
       : { kind: "pending", owners: creators, files };
   const done = new Set(
