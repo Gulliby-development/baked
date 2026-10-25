@@ -1929,6 +1929,12 @@ describe("gate matrix: swift test, XCTest, swift-testing and swift-format (#1492
       .replaceAll("Executed 3 tests", "Executed 4 tests").replace("✔ Test addsToo() passed after 0.001 seconds.\n", "✔ Test addsToo() passed after 0.001 seconds.\n◇ Test subsToo() started.\n✔ Test subsToo() passed after 0.002 seconds.\n").replace("Test run with 3 tests", "Test run with 4 tests");
     expect(testCount(later)).toEqual({ tool: "swift", count: 8 });
     expect(failureSignature(later, "/w")).toBe(failureSignature(SWIFT_FAILED, "/w"));
+    // Swift 6.2 and later (the CI runner's 6.4) print phase lines, steps with thin spaces round the
+    // slash and the build time in secs.
+    const swift64 = (steps: string, secs: string) => SWIFT_FAILED.replace(/^\[\d+\/\d+\] .*\n/gm, "").replace("Build complete! (9.32s)", `${steps}Build complete! (${secs} secs)`);
+    const first = swift64("[Constructing description]\n[Using on-disk description]\n[Describing: 24\u2009/\u2009202]\n[Pre-planning 1\u2009/\u200995]\n[Planning deferred tasks]\n[29\u2009/\u200951] Calc\n[46\u2009/\u200957]\n[38\u2009/\u200955] CalcTests-product\n[61\u2009/\u200961] CalcTests-test-runner\n", "15.51");
+    expect(failureSignature(swift64("", "0.42"), "/w")).toBe(failureSignature(first, "/w"));
+    expect(failureSignature(first, "/w")).toBe(failureSignature(SWIFT_FAILED, "/w"));
     expect(failureSignature(SWIFT_FAILED.replace("Test Case 'CalcXCTests.testAdds' passed", "Test Case 'CalcXCTests.testAdds' failed"), "/w")).not.toBe(failureSignature(SWIFT_FAILED, "/w"));
     expect(timedOutFailure(SWIFT_FAILED)).toBe(true);
   });
@@ -1936,6 +1942,9 @@ describe("gate matrix: swift test, XCTest, swift-testing and swift-format (#1492
   test("a test target that does not compile is a build failure, and an XCTest failure is not", () => {
     expect(buildRunner(SWIFT_BROKEN)).toBe("swift");
     expect(buildRunner(SWIFT_FAILED)).toBeNull();
+    // swiftc 6.4 colors "error:" even off a terminal; the line is read without its colors.
+    const colored = "/w/Tests/CalcTests/B.swift:3:59: \u001b[1;31merror: \u001b[1;39mcannot find 'sub' in scope\u001b[0;0m\nerror: fatalError\n";
+    expect([buildRunner(colored), buildFailure(colored)]).toEqual(["swift", ["/w/Tests/CalcTests/B.swift:3:59: error: cannot find 'sub' in scope"]]);
     expect(noTestsCollected("error: no tests found; create a target in the 'Tests' directory")).toBe(true);
   });
 

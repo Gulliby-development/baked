@@ -758,12 +758,19 @@ export const BUILD_FAILURES: Record<TestRunner, RegExp> = {
   pester: /^(?:\[-\] (?:Discovery in )?\S+\.Tests\.ps1 failed with:|Container failed: \d+)$/,
 };
 
+// Compilers color their diagnostics even when not on a terminal (swiftc 6.4 prints "error:" in
+// bold red, #1492), so the build-failure lines are read without ANSI colors.
+const buildLines = (output: string): string[] =>
+  withoutAnsi(output)
+    .split(/\r?\n/)
+    .map((line) => line.trimEnd());
+
 /**
  * The first lines of a build failure in a check's output (`BUILD_FAILURES`): some or all of the
  * tests did not build, collect or load, so they did not run. Null when no runner printed one.
  */
 export function buildFailure(output: string, limit = 5): string[] | null {
-  const lines = output.split(/\r?\n/).map((line) => line.trimEnd());
+  const lines = buildLines(output);
   const found = lines.filter((line) => Object.values(BUILD_FAILURES).some((p) => p.test(line)));
   return found.length ? found.slice(0, limit) : null;
 }
@@ -773,7 +780,7 @@ export function buildFailure(output: string, limit = 5): string[] | null {
  * replay knows how to split that check per test target (#2020). Null when none has.
  */
 export function buildRunner(output: string): TestRunner | null {
-  const lines = output.split(/\r?\n/).map((line) => line.trimEnd());
+  const lines = buildLines(output);
   for (const [tool, pattern] of Object.entries(BUILD_FAILURES) as [TestRunner, RegExp][])
     if (lines.some((line) => pattern.test(line))) return tool;
   return null;
@@ -941,9 +948,14 @@ const GROWING_COUNTS: [RegExp, string][] = [
   // sbt compiles only what changed since its last run: its compile lines are progress, not output.
   [/^\[info\] (?:compiling \d+ (?:Scala|Java)(?: and \w+)? sources?\b.*|done compiling)\n?/gm, ""],
   [/\b(Checking|Formatting) \d+ Scala sources\b/g, "$1 <n> Scala sources"],
-  // swift test (#1492): SwiftPM's build steps, XCTest's started and passed lines and its suite
-  // timestamps, swift-testing's started, passed and skipped lines, with the failures kept.
-  [/^\[\d+\/\d+\] .*(?:\n|$)/gm, ""],
+  // swift test (#1492): SwiftPM's build steps ("[3/5] Compiling", and from Swift 6.2 "[29 / 51] Calc"
+  // with thin spaces and phase lines such as "[Planning deferred tasks]" or "[Describing: 24 / 202]",
+  // never Maven's "[INFO]") and build time ("Build
+  // complete! (15.51 secs)"), XCTest's started and passed lines and its suite timestamps,
+  // swift-testing's started, passed and skipped lines, with the failures kept.
+  [/^\[\d+\s*\/\s*\d+\](?: .*)?(?:\n|$)/gm, ""],
+  [/^\[[A-Z][a-z][^\]\n]*\]$\n?/gm, ""],
+  [/^(Build complete!) \([\d.]+ ?s(?:ecs?)?\)/gm, "$1 (<duration>)"],
   [/^Test (?:Suite|Case) '.+' (?:started at .*|passed \(.*)(?:\n|$)/gm, ""],
   [/^(Test Suite '.+' failed) at .*$/gm, "$1"],
   [
