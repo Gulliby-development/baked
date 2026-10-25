@@ -29,10 +29,13 @@ import {
 import {
   EDGE_DIR,
   EDGE_KIND,
+  type EdgeCrashRule,
   type EdgeRecord,
   type EdgeRule,
+  edgeCrashDecision,
   edgeDecision,
 } from "../verification/edge-inputs.js";
+import type { ReproOutcome } from "../verification/repro.js";
 import { planApprovalDecision, requestedPathTokens } from "./auto-approval.js";
 import { callCostRate } from "./budget.js";
 import {
@@ -66,6 +69,7 @@ import {
   type BatteryRule,
   batteryDecision,
   batteryOf,
+  type CaseCrash,
   CHAIN_BATTERY_DIR,
   CHAIN_FAMILY_DIR,
   CHAIN_KIND,
@@ -330,9 +334,13 @@ export function scrubTrace(
           // run wrote with and without spaces stay equal and need no stand-in.
           k === "family" && typeof v === "string"
           ? (familyKey(v) ?? "")
-          : PROSE.has(k) || content.has(k)
-            ? replaced(k, v, standIns)
-            : scrubTrace(v, standIns, content, k),
+          : // A probed case's output tail is what its crash decision replays on (#2136): kept as
+            // is, at most `OUTPUT_TAIL_CHARS` characters of a command's output.
+            k === "outputTail" && typeof v === "string"
+            ? v
+            : PROSE.has(k) || content.has(k)
+              ? replaced(k, v, standIns)
+              : scrubTrace(v, standIns, content, k),
     ]),
   );
 }
@@ -726,7 +734,10 @@ export interface RunReplay {
   newMisquoteFixes: number;
   /** Each case of a source task's edge-input probe against the current rule (#1808). */
   edgeProbes: EdgeProbeBoundary[];
-  /** Probed cases the current rule turns into a finding, or lets pass, unlike the recording. */
+  /**
+   * Probed cases the current rule turns into a finding, or lets pass, unlike the recording, and
+   * cases whose shadow crash decision (#2136) differs from the recorded one.
+   */
   newEdgeDecisions: number;
   /** Each test-integrity scan's findings against the current rule (#1715). */
   integrity: IntegrityBoundary[];
@@ -1128,16 +1139,44 @@ export interface EdgeProbeBoundary {
   criterionId: string;
   recorded: "finding" | "pass";
   replayed: "finding" | "pass";
+  /**
+   * The shadow crash decision (#2136) as recorded and on the recorded output's tail; null on a
+   * record from before #2136, which kept no output.
+   */
+  crashRecorded: "finding" | "pass" | null;
+  crashReplayed: "finding" | "pass" | null;
+}
+
+/** Each case of one edge probe record, decided again (#1808) and its crash decision (#2136). */
+export function replayEdgeRecord(
+  path: string,
+  record: EdgeRecord,
+  decide: EdgeRule = edgeDecision,
+  crash: EdgeCrashRule = edgeCrashDecision,
+): EdgeProbeBoundary[] {
+  return (record.cases ?? []).map((c, index) => ({
+    key: `${path}#${String(index + 1)}`,
+    criterionId: c.criterionId,
+    recorded: c.decision,
+    replayed: decide(c.status),
+    crashRecorded: c.crash ?? null,
+    crashReplayed:
+      c.outputTail === undefined
+        ? null
+        : crash(c.status, c.outputTail, record.files ?? []).decision,
+  }));
 }
 
 /**
  * Every case of every edge-input probe a run recorded (`probes/edge/`, #1808), decided again from
- * its recorded outcome. Traces from before #1808 record none.
+ * its recorded outcome, and its crash decision from its output's tail (#2136). Traces from before
+ * #1808 record none; traces from before #2136 keep no output, so their crash decisions are null.
  */
 export function replayEdgeProbes(
   store: WorkflowStore,
   runId: string,
   decide: EdgeRule = edgeDecision,
+  crash: EdgeCrashRule = edgeCrashDecision,
 ): EdgeProbeBoundary[] {
   return store
     .artifacts(runId)
@@ -1149,12 +1188,7 @@ export function replayEdgeProbes(
       } catch {
         return [];
       }
-      return (record.cases ?? []).map((c, index) => ({
-        key: `${artifact.logical_path}#${String(index + 1)}`,
-        criterionId: c.criterionId,
-        recorded: c.decision,
-        replayed: decide(c.status),
-      }));
+      return replayEdgeRecord(artifact.logical_path, record, decide, crash);
     });
 }
 
@@ -1355,9 +1389,12 @@ export function newRepeatStops(boundaries: readonly RepeatedFailureBoundary[]): 
 }
 
 export interface FindingChainBoundary {
-  /** The corrective task of a rewrite decision, the battery record's path, or a probed case's. */
+  /**
+   * The corrective task of a rewrite decision, the battery record's path, or a probed case's.
+   * `crash` is a battery or sibling-probe case's shadow crash decision (#2136).
+   */
   key: string;
-  kind: "rewrite" | "battery" | "family";
+  kind: "rewrite" | "battery" | "family" | "crash";
   recorded: string;
   replayed: string;
 }
@@ -1391,6 +1428,27 @@ export function replayFindingChains(
           },
         ];
       }
+      // A case's shadow crash decision (#2136), on its recorded output's tail and the chain's file.
+      const crashes = (
+        cases: readonly (CaseCrash & { status: ReproOutcome["status"] })[],
+        file: (index: number) => string | null,
+      ): FindingChainBoundary[] =>
+        cases.flatMap((c, index) =>
+          c.outputTail === undefined || c.crash === undefined
+            ? []
+            : [
+                {
+                  key: `${artifact.logical_path}#${String(index + 1)}`,
+                  kind: "crash" as const,
+                  recorded: c.crash,
+                  replayed: edgeCrashDecision(
+                    c.status,
+                    c.outputTail,
+                    [file(index)].filter((f): f is string => Boolean(f)),
+                  ).decision,
+                },
+              ],
+        );
       if (artifact.logical_path.startsWith(CHAIN_BATTERY_DIR)) {
         const record = JSON.parse(store.readArtifact(runId, artifact.id)) as BatteryRecord;
         return [
@@ -1400,16 +1458,20 @@ export function replayFindingChains(
             recorded: record.decision,
             replayed: decideBattery(record.cases.map((c) => c.status)),
           },
+          ...crashes(record.cases, (index) => record.cases[index]?.file ?? null),
         ];
       }
       if (artifact.logical_path.startsWith(CHAIN_FAMILY_DIR)) {
         const record = JSON.parse(store.readArtifact(runId, artifact.id)) as FamilyRecord;
-        return record.cases.map((c, index) => ({
-          key: `${artifact.logical_path}#${String(index + 1)}`,
-          kind: "family" as const,
-          recorded: c.decision,
-          replayed: decideFamily(c.status),
-        }));
+        return [
+          ...record.cases.map((c, index) => ({
+            key: `${artifact.logical_path}#${String(index + 1)}`,
+            kind: "family" as const,
+            recorded: c.decision,
+            replayed: decideFamily(c.status),
+          })),
+          ...crashes(record.cases, () => record.file),
+        ];
       }
     } catch {
       return [];
@@ -3291,6 +3353,7 @@ export function replayTrace(
     poolGrowthRule?: PoolGrowthRule;
     misquoteFixRule?: MisquoteFixRule;
     edgeRule?: EdgeRule;
+    edgeCrashRule?: EdgeCrashRule;
     integrityRule?: IntegrityRule;
     caseWalkRule?: CaseWalkRule;
     reviewGateRule?: ReviewGateRule;
@@ -3353,7 +3416,10 @@ export function replayTrace(
       runIds.map((runId) => [runId, replayMisquoteFixes(store, runId, options.misquoteFixRule)]),
     );
     const edges = new Map(
-      runIds.map((runId) => [runId, replayEdgeProbes(store, runId, options.edgeRule)]),
+      runIds.map((runId) => [
+        runId,
+        replayEdgeProbes(store, runId, options.edgeRule, options.edgeCrashRule),
+      ]),
     );
     const scans = new Map(
       runIds.map((runId) => [runId, replayIntegrity(store, runId, options.integrityRule)]),
@@ -3459,7 +3525,9 @@ export function replayTrace(
         misquoteFixes,
         newMisquoteFixes: misquoteFixes.filter((b) => b.replayed !== b.recorded).length,
         edgeProbes,
-        newEdgeDecisions: edgeProbes.filter((b) => b.replayed !== b.recorded).length,
+        newEdgeDecisions: edgeProbes.filter(
+          (b) => b.replayed !== b.recorded || b.crashReplayed !== b.crashRecorded,
+        ).length,
         integrity,
         newIntegrityFindings: integrity.reduce(
           (n, b) => n + b.replayed.filter((f) => !b.recorded.includes(f)).length,

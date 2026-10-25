@@ -33,13 +33,16 @@ describe("stop reasons", () => {
   test("hard limits take only enforce; the forecasts and the approval scope take every mode", () => {
     for (const [id, reason] of Object.entries(STOP_REASONS)) {
       expect(reason.modes).toContain(reason.defaultMode);
-      if (!["cost-forecast", "approval-scope", "initiative-forecast", "initiative-dollar-share", "initiative-plan-charge", "repeated_failure", "corrective_scope"].includes(id))
+      if (!["cost-forecast", "approval-scope", "initiative-forecast", "initiative-dollar-share", "initiative-plan-charge", "repeated_failure", "corrective_scope", "edge_crash_finding"].includes(id))
         expect(reason.modes).toEqual(["enforce"]);
     }
     expect(STOP_REASONS["cost-forecast"].modes).toEqual(STOP_MODES);
     // Shadow until its promotion (#1996): a policy cannot enforce it yet.
     expect(STOP_REASONS.repeated_failure.modes).toEqual(["shadow", "advisory"]);
     expect(STOP_REASONS.repeated_failure.defaultMode).toBe("shadow");
+    // Shadow until its promotion (#2136): a crash inside the probed task's file is not a finding yet.
+    expect(STOP_REASONS.edge_crash_finding.modes).toEqual(["shadow", "advisory"]);
+    expect(STOP_REASONS.edge_crash_finding.defaultMode).toBe("shadow");
     const parse = (stopModes: unknown) => PolicySchema.safeParse({ ...defaultWorkflowPolicy, stopModes }).success;
     expect(parse({ "cost-forecast": "shadow", "approval-scope": "advisory" })).toBe(true);
     expect(parse({ cost: "shadow" })).toBe(false);

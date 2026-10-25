@@ -117,22 +117,172 @@ export function edgeTaxonomy(languages: readonly string[]): {
  * Whether a probed case is a defect (#1808). The host runs each case as a repro whose actual is
  * its expected value: `reproduced` is a case the code gets right, `refuted` one that ran and
  * printed something else, `inconclusive` one that could not show either (a crash with a nonzero
- * exit, a program no check starts), which is left to the review.
+ * exit, a program no check starts), which is left to the review. Whether an inconclusive case is
+ * a crash inside the task's own files is `edgeCrashDecision`'s (#2136, shadow).
  */
 export type EdgeRule = (status: ReproOutcome["status"]) => "finding" | "pass";
 export const edgeDecision: EdgeRule = (status) => (status === "refuted" ? "finding" : "pass");
+
+/**
+ * How much of a probed case's output its record keeps (#2136): the end, where a crash's error line
+ * and innermost frames are. The crash decision reads the same tail, so a record replays exactly.
+ */
+export const OUTPUT_TAIL_CHARS = 400;
+export const outputTail = (output: string): string => output.slice(-OUTPUT_TAIL_CHARS);
+
+/**
+ * The stack-frame spelling of each runtime (#2136): one pattern per spelling, whose `file` group
+ * names the source file of the frame. A new runtime's frame spelling joins this table with a case
+ * in `tests/workflow-scenario-edge-crash.test.ts`. JVM frames name only the file's base name.
+ */
+export const CRASH_FRAMES: readonly { runtime: string; frame: RegExp; baseName?: true }[] = [
+  // `    at createLink (C:\p\src\storage.ts:70:10)`, `    at file:///p/src/a.ts:3:9`
+  {
+    runtime: "bun, node, deno",
+    frame:
+      /^\s*at\s+(?:.*?\s\()?(?:file:\/\/\/?)?(?<file>(?:[A-Za-z]:)?[^():\s][^():]*?):\d+(?::\d+)?\)?\s*$/,
+  },
+  // `  File "/p/src/store.py", line 12, in add`
+  { runtime: "python", frame: /^\s*File "(?<file>[^"]+)", line \d+/ },
+  // `\t/p/internal/store.go:42 +0x1d`
+  { runtime: "go", frame: /^\s+(?<file>(?:[A-Za-z]:)?[^\s:]+\.go):\d+(?:\s+\+0x[0-9a-f]+)?\s*$/ },
+  // `\tat com.acme.Store.add(Store.java:57)`
+  {
+    runtime: "jvm",
+    frame: /^\s*at\s+[\w$.<>/]+\((?<file>[\w$-]+\.(?:java|kt|scala|groovy)):\d+\)/,
+    baseName: true,
+  },
+  // `   at Acme.Store.Add(String code) in /p/src/Store.cs:line 12`
+  { runtime: ".net", frame: /^\s*at\s.+\sin\s(?<file>.+?):line\s\d+/ },
+  // `thread 'main' panicked at src/store.rs:5:9:`, `   at ./src/store.rs:5:9`
+  { runtime: "rust", frame: /(?:panicked at |^\s+at )(?<file>(?:[A-Za-z]:)?[^\s:]+\.rs):\d+/ },
+  // `/p/lib/store.rb:12:in 'add': boom (RuntimeError)`, `\tfrom /p/lib/store.rb:3:in '<main>'`
+  { runtime: "ruby", frame: /^\s*(?:from\s+)?(?<file>(?:[A-Za-z]:)?[^\s:]+\.rb):\d+:in\s/ },
+  // `PHP Fatal error:  Uncaught Exception: boom in /p/src/Store.php:12`
+  { runtime: "php", frame: /\bin (?<file>(?:[A-Za-z]:)?[^\s:]+\.php)(?::| on line )\d+/ },
+  // `#0 /p/src/Store.php(12): add()`
+  { runtime: "php trace", frame: /^#\d+\s+(?<file>[^\s(]+\.php)\(\d+\)/ },
+  // `    (acme 0.1.0) lib/store.ex:12: Acme.Store.add/1`
+  { runtime: "elixir", frame: /^\s+(?:\([\w.]+ [\w.-]+\)\s+)?(?<file>[^\s:]+\.exs?):\d+:/ },
+  // `#0      add (file:///p/lib/store.dart:12:5)`
+  { runtime: "dart", frame: /^#\d+\s+.*\((?:file:\/\/\/?)?(?<file>[^()]+\.dart):\d+(?::\d+)?\)/ },
+  // `Fatal error: boom: file Sources/Store/Store.swift, line 12`
+  { runtime: "swift", frame: /\bfile (?<file>[^\s,]+\.swift), line \d+/ },
+  // AddressSanitizer: `    #0 0x55d1 in add /p/src/store.c:12:5`
+  {
+    runtime: "c, c++ (sanitizers)",
+    frame: /^\s*#\d+\s+0x[0-9a-f]+\s+in\s+\S+\s+(?<file>(?:[A-Za-z]:)?[^\s:]+):\d+/,
+  },
+  // `lua: src/store.lua:12: boom`, `\tsrc/store.lua:12: in function 'add'`
+  { runtime: "lua", frame: /^\s*(?:lua\S*:\s+)?(?<file>[^\s:]+\.lua):\d+:/ },
+  // `./store.sh: line 12: boom: command not found`
+  { runtime: "bash", frame: /^(?<file>[^\s:]+\.(?:sh|bash)): line \d+:/ },
+];
+
+/** A line that opens an uncaught error, in any runtime's spelling; Python's `Traceback` is not one. */
+const ERROR_LINE =
+  /^\s*(?:error:|Uncaught\b|Unhandled exception|Exception in thread|panic:|thread '.*' panicked|Fatal error:|PHP (?:Fatal|Parse) error|fatal error:|\*\* \(\w+\)|[\w.$]*(?:Error|Exception|Panic)\b[^:\n]*:)/;
+
+const normalPath = (path: string): string =>
+  path
+    .replaceAll("\\", "/")
+    .replace(/^file:\/\/\/?/, "")
+    .replace(/^\.\//, "");
+
+/** Whether a frame's file is `path`: the same path, or one ending in `/path` (an absolute frame). */
+function namesFile(frameFile: string, path: string, baseName: boolean): boolean {
+  const file = normalPath(frameFile);
+  const own = normalPath(path);
+  if (file === own || file.endsWith(`/${own}`)) return true;
+  return baseName && own.split("/").at(-1) === file;
+}
+
+const outputLines = (output: string): string[] => output.replace(/\r\n?/g, "\n").split("\n");
+
+/** The frame lines of `output` that name one of `files`, by the frame table. */
+export function ownFrames(output: string, files: readonly string[]): string[] {
+  return outputLines(output).filter((line) =>
+    CRASH_FRAMES.some(({ frame, baseName }) => {
+      const file = frame.exec(line)?.groups?.file;
+      return Boolean(file && files.some((path) => namesFile(file, path, Boolean(baseName))));
+    }),
+  );
+}
+
+/**
+ * Whether an inconclusive probed case is a crash of the probed code itself (#2136): its output
+ * holds a stack frame inside one of `files`, the files the probed task writes. Its repro's actual
+ * is the first error line, or that frame's line. A case whose command itself fails (a syntax error
+ * of the command, a module that does not exist, frames only outside those files) stays `pass`.
+ * R68 url-shortener: T001's storage module threw `Missing parameter "code"` at `src/storage.ts:70`
+ * on every call, both cases were inconclusive and passed, and the run blocked at 1.19M tokens.
+ * Shadow: the decision is recorded with the case and a `decision.would_stop` of
+ * `edge_crash_finding` names the finding it would be; nothing opens until that reason is promoted.
+ */
+export type EdgeCrashRule = (
+  status: ReproOutcome["status"],
+  output: string,
+  files: readonly string[],
+) => { decision: "finding" | "pass"; actual: string | null };
+export const edgeCrashDecision: EdgeCrashRule = (status, output, files) => {
+  if (status !== "inconclusive") return { decision: "pass", actual: null };
+  const frames = ownFrames(output, files);
+  if (!frames.length) return { decision: "pass", actual: null };
+  const error = outputLines(output).find((line) => ERROR_LINE.test(line));
+  return { decision: "finding", actual: (error ?? frames[0] ?? "").trim().slice(0, 2000) };
+};
 
 /** What `probes/edge/<task>.json` records: each case's criterion, outcome and decision. */
 export interface EdgeRecord {
   schemaVersion: 1;
   taskId: string;
   languages: string[];
+  /** The task's source files, which a crash's frame must name (#2136); absent before #2136. */
+  files?: string[];
   cases: {
     criterionId: string;
     status: ReproOutcome["status"];
     reason: string;
     decision: "finding" | "pass";
+    /** The output's last `OUTPUT_TAIL_CHARS` characters (#2136); absent before #2136. */
+    outputTail?: string;
+    /** `edgeCrashDecision` on `outputTail`, recorded in shadow (#2136); absent before #2136. */
+    crash?: "finding" | "pass";
   }[];
+}
+
+/**
+ * What a probed case's record keeps of its output (#2136): the tail and the shadow crash decision
+ * on it against `files`, with the crash's actual for the would-stop record (null for `pass`). The
+ * edge probe, the chain battery and the sibling probe record it alike.
+ */
+export function caseCrash(
+  outcome: Pick<ReproOutcome, "status" | "output"> | undefined,
+  files: readonly (string | null)[],
+): { outputTail: string; crash: "finding" | "pass"; actual: string | null } {
+  const tail = outputTail(outcome?.output ?? "");
+  const own = files.filter((f): f is string => Boolean(f));
+  const crash = edgeCrashDecision(outcome?.status ?? "inconclusive", tail, own);
+  return { outputTail: tail, crash: crash.decision, actual: crash.actual };
+}
+
+/** A probed case as `probes/edge/<task>.json` keeps it, with the crash's actual (#2136). */
+export function edgeCase(
+  criterionId: string,
+  outcome: Pick<ReproOutcome, "status" | "reason" | "output">,
+  files: readonly string[],
+): { recorded: EdgeRecord["cases"][number]; crashActual: string | null } {
+  const { actual, ...crash } = caseCrash(outcome, files);
+  return {
+    recorded: {
+      criterionId,
+      status: outcome.status,
+      reason: outcome.reason,
+      decision: edgeDecision(outcome.status),
+      ...crash,
+    },
+    crashActual: actual,
+  };
 }
 
 /** The value a probed case printed, for its finding's repro: the output's last non-empty line. */
