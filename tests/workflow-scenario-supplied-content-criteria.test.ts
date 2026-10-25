@@ -2,7 +2,8 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { hashBytes, hashJson } from "../src/core/specs/hash.js";
 import type { Spec, TaskGraph } from "../src/core/workflows/schemas.js";
 import { newId } from "../src/core/workflows/store.js";
-import { suppliedContentFindings, suppliedTestFiles } from "../src/core/workflows/supplied-content.js";
+import { requestConflictDecision } from "../src/core/workflows/request-conflict.js";
+import { namesExactContent, suppliedConflictCriteria, suppliedContentFindings, suppliedTestFiles } from "../src/core/workflows/supplied-content.js";
 import type { ExecutionRequest } from "../src/core/workflows/types.js";
 import { fixturePolicy, fixtureSpec, workflowFixture } from "./helpers/workflow-fixture.js";
 
@@ -91,4 +92,33 @@ describe("criteria against file content the request supplies verbatim (#2006)", 
     const asked = service.store.requests(run.runId).filter((r) => r.kind === "clarification");
     expect(asked.map((r) => r.body_json).join("\n")).toContain("Supplied content: AC-006");
   }, 60000);
+
+  // Part c: a spec_conflict about the supplied file that cites no criterion by id still gets the
+  // request re-audit at its first report, on the criteria the supplied file lacks.
+  describe("a conflict about a supplied test file (#2006, part c)", () => {
+    const T004 = task("T004", [{ path: TEST, action: "create" }]);
+    const conflictCriteria = (text: string, paths: string[] = []) =>
+      suppliedConflictCriteria(WRONG, T004, graph([T004]), REQUEST, { text, paths }, { checks });
+
+    test("a report that names the supplied file gives the criteria it lacks", () => {
+      expect(conflictCriteria("The version line differs from what tests/version.test.ts expects.", [TEST])).toEqual(["AC-006"]);
+    });
+
+    test("so does a report that says the file's content is fixed", () => {
+      for (const text of ["The test must stay verbatim, so the criterion cannot hold.", "The request gives exactly this content for the test.", "The file is to be kept byte for byte."])
+        expect(conflictCriteria(text)).toEqual(["AC-006"]);
+      expect(namesExactContent("The version flag prints the wrong text.")).toBe(false);
+    });
+
+    test("a report about something else, or a supplied file that holds every case, gives none", () => {
+      expect(conflictCriteria("The version flag prints the wrong text.")).toEqual([]);
+      expect(suppliedConflictCriteria(RIGHT, T004, graph([T004]), REQUEST, { text: "verbatim", paths: [TEST] }, { checks })).toEqual([]);
+    });
+
+    test("those criteria send the first report to the request re-audit", () => {
+      const input = { sides: [], foreignTests: 0, criterionIds: conflictCriteria("verbatim"), supplied: true as const, reaudit: null, reauditedBefore: false };
+      expect(requestConflictDecision(input)).toBe("reaudit");
+      expect(requestConflictDecision({ ...input, criterionIds: [] })).toBe("none");
+    });
+  });
 });

@@ -29,6 +29,9 @@
       "Sources/SumTests.m:5 comment"
     ],
     "formatters": null,
-    "packageContents": null
+    "packageContents": null,
+    "numericLimits": [
+      "NSInteger overflow wraps; NSNumber loses integers past 2^53 as double"
+    ]
   }
 }

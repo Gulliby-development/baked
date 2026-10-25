@@ -55,6 +55,10 @@
     ],
     "packageContents": [
       "package.json: npm-pack [bin]"
+    ],
+    "numericLimits": [
+      "Number loses integers past 2^53 and prints large values in exponent form",
+      "Headers and URLs reject non-ASCII header values without encoding"
     ]
   }
 }

@@ -54,6 +54,10 @@
     "formatters": null,
     "packageContents": [
       "pom.xml: maven-jar"
+    ],
+    "numericLimits": [
+      "int and long arithmetic overflow silently; Integer.parseInt fails past int",
+      "double formatting switches to exponent form for large values"
     ]
   }
 }

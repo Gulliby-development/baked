@@ -30,6 +30,9 @@
       "src/sum_test.c:2 comment"
     ],
     "formatters": null,
-    "packageContents": null
+    "packageContents": null,
+    "numericLimits": [
+      "signed integer overflow is undefined behavior; strtol saturates at LONG_MAX"
+    ]
   }
 }
