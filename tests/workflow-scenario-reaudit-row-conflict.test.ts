@@ -43,9 +43,13 @@ const derivation = (matches: boolean): NonNullable<Analysis["derivations"]>[numb
   derivation: matches ? "The comma after \"a\" is the 20th character" : "Index table: the comma is at UTF-16 index 20, so 1-based column 21",
 });
 
-/** `reaudit` is the re-audit's verdict on AC-007; the first audit always verifies the row. */
-async function conflict(reaudit: boolean) {
-  const fixture = workflowFixture({ policy: { ...fixturePolicy, clarification: "ask" } });
+/**
+ * `reaudit` is the re-audit's verdict on AC-007; the first audit always verifies the row. With
+ * `finish` the reporting attempt's value is in place and its checks pass, under
+ * `conflictFinish: "on"` (#2033).
+ */
+async function conflict(reaudit: boolean, finish = false) {
+  const fixture = workflowFixture({ policy: { ...fixturePolicy, clarification: "ask", ...(finish ? { conflictFinish: "on" as const } : {}) } });
   cleanups.push(fixture.dispose);
   const { service, executor, root } = fixture;
   const original = executor.execute.bind(executor);
@@ -84,7 +88,7 @@ async function conflict(reaudit: boolean) {
     // confirms it, as when the implementer had miscounted.
     const forRequirements = /Implement what FR-005 state/.test(request.prompt);
     const forRow = /Keep each row's input and expected value exactly as written/.test(request.prompt);
-    writeFileSync(join(work, "value.txt"), forRequirements || forRow ? "ready" : "draft");
+    writeFileSync(join(work, "value.txt"), forRequirements || forRow || finish ? "ready" : "draft");
     writeFileSync(join(work, TEST), goTest(forRequirements ? RIGHT : WRONG));
     if (forRequirements || (forRow && reaudit)) {
       walks.push((await request.caseCheck?.(work)) ?? []);
@@ -144,6 +148,18 @@ describe("scenario: jsonsplice paths T006, a miscounted row the derivation audit
     expect(result.asked).toEqual([]);
     expect(result.read("assumptions/conflicts/T001-audited.json")?.assumed).toContain("a second audit against this report");
     expect(result.prompts.at(-1)).toContain("Keep each row's input and expected value exactly as written");
+    expect(result.status).toBe("completed");
+  }, 90_000);
+
+  // #2033: the reporting attempt's checks pass, but its test still asserts the overruled
+  // `column 20`, so the host does not finish: the session changes that expected value.
+  test("with conflictFinish on, a test that still follows the overruled row keeps the session", async () => {
+    const result = await conflict(false, true);
+    expect(result.asked).toEqual([]);
+    expect(result.prompts).toHaveLength(2);
+    expect(result.read("conflicts/finish/T001-reaudited.json")).toMatchObject({ branch: "reaudited", settledBy: "assumptions/conflicts/T001-reaudited.json", cases: 0, overruled: 1, checks: null, finish: false });
+    expect(result.read("tasks/T001/host-finish.json")).toBeNull();
+    expect(result.walks).toEqual([[]]);
     expect(result.status).toBe("completed");
   }, 90_000);
 });
