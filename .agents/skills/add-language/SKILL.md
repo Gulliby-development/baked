@@ -78,7 +78,10 @@ Each line is a past bug. A new detector, parser or table row answers it before r
 20. **Every runner in the replay table.** `tests/workflow-baseline-replay.test.ts` holds a `FAILURES` and a `BUILD_ERRORS` row for every runner in `BUILD_FAILURES`; a new runner adds both (#1498).
 21. **Tools that survive HOME isolation.** Tests run with a temporary HOME, so a tool installed for the current user (PowerShell modules in CurrentUser scope, pip user site) vanishes in them: install CI and device tools for all users (#1498).
 22. **Output on a CI runner.** A runner that detects CI (`GITHUB_ACTIONS`, `TF_BUILD`) can change its output: Pester prefixes failed tests with `::error::`. Turn that mode off in the gate's command and run the real gate-matrix cell with `GITHUB_ACTIONS=true` before pushing (#1498).
-23. **One table, all languages.** When a fix for this language touches a shared rule, sweep it across every supported language (the [file-issue skill](../file-issue/SKILL.md), step 3), and prefer a table row over a wider regex.
+23. **Build trees are not sources.** A check that writes into the checkout on every run (a CMake `build/` folder) makes every later check `source_changed` unless the project ignores it; `sourceManifest` skips a folder holding `CMakeCache.txt` (#1490). A tool that needs a configure or build step first gets that step as its own gate, in order, since a check runs without a shell.
+24. **Preprocessor lines are code.** The integrity and rule scanners treat a line that starts with `#` as a comment; `#if`, `#ifdef` and `#elif` stay code, so a C or C++ skip under `#ifdef _WIN32` reads as guarded (#1490).
+25. **Bench files the root `.gitignore` hides.** `bin/`, `build/` and the like are ignored at the root, so a bench task's `seed/bin/` or `solution/bin/` is never committed: run `git status --ignored bench/` before the pull request and `git add -f` them (#1497).
+26. **One table, all languages.** When a fix for this language touches a shared rule, sweep it across every supported language (the [file-issue skill](../file-issue/SKILL.md), step 3), and prefer a table row over a wider regex.
 
 ## 4. Tests
 

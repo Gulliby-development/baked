@@ -189,6 +189,20 @@ const stylua: FileFormatter = {
     // No probe: `--range-start` and `--range-end` exist since StyLua 0.5.
   },
 };
+// clang-format takes several `--lines=A:B` ranges of one file, both ends 1-based (#1490). No
+// probe: the flag exists since clang-format 3.4.
+const clangFormatLines = (ranges: readonly LineRange[]): string[] =>
+  ranges.map(([start, end]) => `--lines=${start}:${end}`);
+const clangFormat: FileFormatter = {
+  runs: (program, args) => program === "clang-format" && args.includes("--dry-run"),
+  check: (_, files) => ["--dry-run", "--Werror", ...files],
+  fix: () => ["-i"],
+  range: {
+    multiple: true,
+    check: (_, file, ranges) => ["--dry-run", "--Werror", ...clangFormatLines(ranges), file],
+    fix: (_, ranges) => ["-i", ...clangFormatLines(ranges)],
+  },
+};
 // No range: shfmt formats whole files (#1497).
 const shfmt: FileFormatter = {
   runs: (program, args) => program === "shfmt" && (args.includes("-d") || args.includes("-l")),
@@ -246,8 +260,8 @@ export const FILE_FORMATTERS: LanguageRecord<readonly FileFormatter[]> = {
   ),
   kotlin: none("ktlint and spotless run inside Gradle's `check`; no gate detects one"),
   scala: none("scalafmt runs inside sbt; no gate detects it"),
-  c: none("clang-format has no gate detector"),
-  cpp: none("clang-format has no gate detector"),
+  c: [clangFormat],
+  cpp: [clangFormat],
   ruby: [rubocopLayout],
   php: [pint, phpCsFixer],
   swift: none("SwiftPM has no gate detector yet (#1753)"),

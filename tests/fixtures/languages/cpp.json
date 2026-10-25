@@ -2,7 +2,9 @@
   "files": {
     "src/sum.cpp": "int sum(int a, int b) {\n  throw std::logic_error(\"not implemented\");\n}\n",
     "src/sum_test.cpp": "int main() { return sum(1, 2) - 3; }\n// AC-001 example: (1, 2, 3)\n",
-    "CMakeLists.txt": "project(fixture CXX)\n"
+    "CMakeLists.txt": "cmake_minimum_required(VERSION 3.16)\nproject(fixture CXX)\nenable_testing()\nfind_package(GTest REQUIRED)\nadd_executable(sum_test src/sum.cpp src/sum_test.cpp)\ntarget_link_libraries(sum_test GTest::gtest_main)\ninclude(GoogleTest)\ngtest_discover_tests(sum_test)\n",
+    ".clang-format": "BasedOnStyle: LLVM\n",
+    ".clang-tidy": "Checks: '-*,bugprone-*'\n"
   },
   "expected": {
     "tests": [
@@ -18,8 +20,17 @@
     "placeholders": [
       "src/sum.cpp:2"
     ],
-    "gates": null,
-    "testRunners": null,
+    "gates": [
+      "cmake-configure",
+      "cmake-build",
+      "clang-tidy",
+      "ctest",
+      "clang-format"
+    ],
+    "testRunners": [
+      "ctest 3",
+      "signature stable"
+    ],
     "mutation": null,
     "properties": null,
     "entryPoints": null,
@@ -31,10 +42,16 @@
       "src/sum.cpp:2",
       "src/sum_test.cpp:2 comment"
     ],
-    "formatters": null,
+    "formatters": [
+      "clang-format-written: clang-format --dry-run --Werror src/sum.cpp src/sum_test.cpp"
+    ],
     "packageContents": null,
     "numericLimits": [
       "signed integer overflow is undefined behavior; std::stoi throws past int"
     ]
+  },
+  "outputs": {
+    "tests": "Test project /w/build\n    Start 1: SumTest.Adds\n1/3 Test #1: SumTest.Adds .....................   Passed    0.01 sec\n    Start 2: SumTest.Commutes\n2/3 Test #2: SumTest.Commutes .................***Failed    0.01 sec\nRunning main() from ./googletest/src/gtest_main.cc\nNote: Google Test filter = SumTest.Commutes\n[==========] Running 1 test from 1 test suite.\n[----------] Global test environment set-up.\n[----------] 1 test from SumTest\n[ RUN      ] SumTest.Commutes\n/w/tests/sum_test.cpp:4: Failure\nExpected equality of these values:\n  sum(2, 2)\n    Which is: 4\n  3\n\n[  FAILED  ] SumTest.Commutes (5 ms)\n[----------] 1 test from SumTest (5 ms total)\n\n[----------] Global test environment tear-down\n[==========] 1 test from 1 test suite ran. (5 ms total)\n[  PASSED  ] 0 tests.\n[  FAILED  ] 1 test, listed below:\n[  FAILED  ] SumTest.Commutes\n\n 1 FAILED TEST\n\n    Start 3: SumTest.Later\n3/3 Test #3: SumTest.Later ....................***Skipped   0.01 sec\n\n33% tests passed, 1 tests failed out of 3\n\nTotal Test time (real) =   0.04 sec\n\nThe following tests did not run:\n\t  3 - SumTest.Later (Skipped)\n\nThe following tests FAILED:\n\t  2 - SumTest.Commutes (Failed)\nErrors while running CTest\n",
+    "testsGrown": "Test project /w/build\n    Start 1: SumTest.Adds\n1/4 Test #1: SumTest.Adds .....................   Passed    0.01 sec\n    Start 4: SumTest.Max\n4/4 Test #4: SumTest.Max ......................   Passed    0.02 sec\n    Start 2: SumTest.Commutes\n2/4 Test #2: SumTest.Commutes .................***Failed    0.01 sec\nRunning main() from ./googletest/src/gtest_main.cc\nNote: Google Test filter = SumTest.Commutes\n[==========] Running 1 test from 1 test suite.\n[----------] Global test environment set-up.\n[----------] 1 test from SumTest\n[ RUN      ] SumTest.Commutes\n/w/tests/sum_test.cpp:4: Failure\nExpected equality of these values:\n  sum(2, 2)\n    Which is: 4\n  3\n\n[  FAILED  ] SumTest.Commutes (4 ms)\n[----------] 1 test from SumTest (4 ms total)\n\n[----------] Global test environment tear-down\n[==========] 1 test from 1 test suite ran. (4 ms total)\n[  PASSED  ] 0 tests.\n[  FAILED  ] 1 test, listed below:\n[  FAILED  ] SumTest.Commutes\n\n 1 FAILED TEST\n\n    Start 3: SumTest.Later\n3/4 Test #3: SumTest.Later ....................***Skipped   0.01 sec\n\n50% tests passed, 1 tests failed out of 4\n\nTotal Test time (real) =   0.06 sec\n\nThe following tests did not run:\n\t  3 - SumTest.Later (Skipped)\n\nThe following tests FAILED:\n\t  2 - SumTest.Commutes (Failed)\nErrors while running CTest\n"
   }
 }
