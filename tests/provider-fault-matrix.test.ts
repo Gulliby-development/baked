@@ -3,7 +3,9 @@ import { Database } from "bun:sqlite";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { generateText, jsonSchema, tool } from "ai";
+import { generateText, tool } from "ai";
+import { z } from "zod";
+import { coerceStringifiedToolCall, type ToolInputCoercion } from "../src/core/agents/tool-input-coercion.js";
 import { FirstByteHistory } from "../src/core/llm/first-byte-history.js";
 import { ProviderAnswerError } from "../src/core/llm/provider-answer.js";
 import {
@@ -49,6 +51,7 @@ async function start(provider: FaultProvider, fault: Fault, shape: { stage: stri
   const faulty = faultyModel(provider, fault);
   cleanups.push(() => { faulty.restore(); clock.restore(); });
   let settled = false;
+  const coercions: ToolInputCoercion[] = [];
   // What the call charged to the active deadline: true for a response, false for an outage.
   let charged: boolean | undefined;
   // With a history, the call takes the workflow executor's adaptive deadline (#1766).
@@ -65,7 +68,9 @@ async function start(provider: FaultProvider, fault: Fault, shape: { stage: stri
     }),
     prompt: "Plan the change",
     maxRetries: 0,
-    tools: { read: tool({ description: "Read a file", inputSchema: jsonSchema({ type: "object", properties: { path: { type: "string" } }, required: ["path"] }) }) },
+    tools: { read: tool({ description: "Read a file", inputSchema: z.object({ path: z.string(), ranges: z.array(z.array(z.number())).optional() }).strict() }) },
+    // The tool-input layer every workflow call shares (#2141).
+    repairToolCall: (options) => coerceStringifiedToolCall(options, (coercion) => coercions.push(coercion)),
     providerOptions: { [family(provider)]: { reasoningEffort: shape.effort, effort: shape.effort } },
   }).then((result) => ({ result, error: undefined }), (error: unknown) => ({ result: undefined, error }))
     .finally(() => { settled = true; });
@@ -74,7 +79,7 @@ async function start(provider: FaultProvider, fault: Fault, shape: { stage: stri
     advance: async (ms: number) => { clock.advance(ms); await Bun.sleep(5); },
     settled: () => settled,
     charged: () => charged,
-    outcome: async () => ({ ...(await pending), calls: faulty.calls() }),
+    outcome: async () => ({ ...(await pending), calls: faulty.calls(), coercions }),
   };
 }
 
@@ -177,6 +182,15 @@ describe.each(FAULT_PROVIDERS.map((provider) => [provider]))("provider fault mat
     expect(error).toBeUndefined();
     expect(result?.content.some((part) => part.type === "tool-error")).toBe(true);
     expect(result?.toolResults).toEqual([]);
+  });
+
+  test("a tool call whose array field is JSON text is decoded and accepted in the same round (#2141)", async () => {
+    const { result, error, calls, coercions } = await call(provider, { kind: "stringified-fields" }, 1_000);
+    expect(error).toBeUndefined();
+    expect(calls).toBe(1);
+    expect(result?.content.some((part) => part.type === "tool-error")).toBe(false);
+    expect(result?.toolCalls.map((part) => part.input)).toEqual([{ path: "src/a.ts", ranges: [[1, 5]] }]);
+    expect(coercions.map((c) => [c.toolName, c.fields])).toEqual([["read", ["ranges"]]]);
   });
 
   test("a billed turn with no usable answer climbs the recovery ladder, not the provider wait (#1957)", async () => {
