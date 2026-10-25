@@ -67,7 +67,9 @@ import {
   fixerTierPaths,
   isStaticCheck,
   isWholeUnitCheck,
+  isWholeUnitFixer,
   styleClaimShown,
+  wholeUnitFixerCommand,
 } from "../src/core/workflows/check-policy.js";
 import { buildWrapper, cmakeGates, detectGates, executeGate } from "../src/core/workflows/gates.js";
 import { formatWrittenChecks } from "../src/core/workflows/format-written.js";
@@ -750,6 +752,36 @@ describe("gate matrix: JVM build tools (#1749)", () => {
   });
   cell("maven", "sbt-test from build.sbt", () => {
     expect(ids({ "build.sbt": 'name := "fixture"\n' })).toEqual([["sbt-test", "sbt", "-batch test", "build.sbt"]]);
+  });
+  // #2121: Spotless and ktlint-gradle got no gate and no fixer; `check` failed on a format violation.
+  const SPOTLESS = 'plugins {\n    kotlin("jvm") version "2.2.20"\n    id("com.diffplug.spotless") version "8.0.0"\n}\nspotless { kotlin { ktlint() } }\n';
+  const KTLINT = 'plugins {\n    kotlin("jvm") version "2.2.20"\n    id("org.jlleitschuh.gradle.ktlint") version "14.2.0"\n}\n';
+  cell("maven", "Spotless and ktlint-gradle get their own gates with fixers; check leaves Spotless out (#2121)", () => {
+    expect(ids({ "build.gradle.kts": SPOTLESS })).toEqual([
+      ["spotless", "gradle", "--console=plain --warn spotlessCheck", "build.gradle.kts"],
+      ["gradle-check", "gradle", "--console=plain -q check -x spotlessCheck", "build.gradle.kts"],
+    ]);
+    // ktlint-gradle hangs each source set's task on `check` directly, so `-x ktlintCheck` would not leave it out.
+    expect(ids({ "build.gradle.kts": KTLINT })).toEqual([
+      ["ktlint", "gradle", "--console=plain --warn ktlintCheck", "build.gradle.kts"],
+      ["gradle-check", "gradle", "--console=plain -q check", "build.gradle.kts"],
+    ]);
+    // Applied through the version catalog or `apply plugin:`.
+    const catalog = { "build.gradle.kts": "plugins {\n    alias(libs.plugins.spotless)\n}\n", "gradle/libs.versions.toml": '[plugins]\nspotless = { id = "com.diffplug.spotless", version = "8.0.0" }\n' };
+    expect(ids(catalog).map(([id]) => id)).toEqual(["spotless", "gradle-check"]);
+    expect(ids({ "build.gradle": "apply plugin: 'org.jlleitschuh.gradle.ktlint'\n" }).map(([id]) => id)).toEqual(["ktlint", "gradle-check"]);
+    const [spotless] = detectGates(project({ "build.gradle.kts": SPOTLESS })).map((s) => s.check);
+    expect([isStaticCheck(spotless as Check), isWholeUnitCheck(spotless as Check), isTestCheck(spotless as Check)]).toEqual([true, false, false]);
+  });
+  cell("maven", "the Spotless and ktlint fixer tasks run once for all of a task's files, with no file argument (#2121)", () => {
+    for (const task of ["spotlessApply", "ktlintFormat"]) {
+      const fix = { executable: "gradle", args: ["--console=plain", "--warn", task] };
+      expect(isWholeUnitFixer(fix)).toBe(true);
+      expect(wholeUnitFixerCommand(fix, ["src/main/kotlin/A.kt", "src/main/kotlin/B.kt"])).toEqual(fix);
+      const wrapped = { executable: "cmd", args: ["/d", "/c", "gradlew.bat", "--console=plain", "--warn", task] };
+      expect([isWholeUnitFixer(wrapped), wholeUnitFixerCommand(wrapped, ["a.kt"])]).toEqual([true, wrapped]);
+    }
+    expect(isWholeUnitFixer({ executable: "gradle", args: ["check"] })).toBe(false);
   });
   cell("maven", "a Windows wrapper runs through cmd, which the check routing unwraps", () => {
     const root = project({ "gradlew.bat": "@echo off\n", "mvnw.cmd": "@echo off\n" });
@@ -4061,6 +4093,33 @@ describe.skipIf(!toolchains)("gate matrix: toolchains", () => {
     const passing = await check();
     expect(passing.output).not.toContain("tests completed");
     expect(testCount(passing.output)).toEqual({ tool: "junit", count: 3 });
+  }, 900000);
+  // #2121: the Spotless and ktlint gates against the real plugins: each fails with the violation and
+  // its file, its fixer clears it, and the test gate then passes.
+  test.skipIf(!available([["gradle", "--version"]]))("a real Gradle build's Spotless and ktlint gates fail, their fixers clear them (#2121)", async () => {
+    const root = project({
+      "settings.gradle.kts": 'pluginManagement {\n    repositories { gradlePluginPortal(); mavenCentral() }\n}\nrootProject.name = "calc"\n',
+      "build.gradle.kts": 'plugins {\n    kotlin("jvm") version "2.2.20"\n    id("com.diffplug.spotless") version "8.0.0"\n    id("org.jlleitschuh.gradle.ktlint") version "14.2.0"\n}\nrepositories { mavenCentral() }\nspotless { kotlin { ktlint() } }\n',
+      "src/main/kotlin/Calc.kt": "fun add(a:Int,b:Int):Int{\n    return a+b }\n",
+    });
+    const env = { ...process.env, GRADLE_USER_HOME: process.env.GRADLE_USER_HOME ?? join(homedir(), ".gradle") };
+    const gates = detectGates(root).map((s) => s.check);
+    expect(gates.map((c) => c.id)).toEqual(["spotless", "ktlint", "gradle-check"]);
+    const byId = (id: string) => gates.find((c) => c.id === id) as Check;
+    const run = (executable: string, args: string[]) => executeCheckCommand(new ProcessScope(), executable, args, { cwd: root, env, timeoutMs: 600_000, signal: new AbortController().signal, sandbox: null });
+    for (const id of ["spotless", "ktlint"]) {
+      const check = byId(id);
+      const failing = await run(check.executable, check.args);
+      expect([id, failing.exitCode]).toEqual([id, 1]);
+      expect(failing.output).toContain("Calc.kt");
+      expect(failing.output).toMatch(id === "spotless" ? /format violations/ : /Calc\.kt:1:\d+ /);
+      const fix = wholeUnitFixerCommand(check.fix!, ["src/main/kotlin/Calc.kt"]);
+      expect((await run(fix.executable, fix.args)).exitCode).toBe(0);
+      expect([id, (await run(check.executable, check.args)).exitCode]).toEqual([id, 0]);
+      writeFileSync(join(root, "src/main/kotlin/Calc.kt"), "fun add(a:Int,b:Int):Int{\n    return a+b }\n");
+    }
+    expect((await run(byId("spotless").executable, byId("spotless").fix!.args)).exitCode).toBe(0);
+    expect((await run(byId("gradle-check").executable, byId("gradle-check").args)).exitCode).toBe(0);
   }, 900000);
   // #1493: the RSpec, Minitest and RuboCop parsers read what the installed tools print.
   test.skipIf(!available([["rspec", "--version"], ["ruby", "-e", "require 'minitest'"], ["rubocop", "--version"]]))("rspec, minitest and rubocop output reads as their parsers expect (#1493)", () => {

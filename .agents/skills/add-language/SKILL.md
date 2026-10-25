@@ -91,6 +91,7 @@ Each line is a past bug. A new detector, parser or table row answers it before r
 33. **Build-tool formatters.** A formatter that runs through the build tool (`sbt scalafmtOnly`) needs a fixer that passes the file inside the same build command, not as a separate argument (#1496).
 34. **Real output only.** Parser cases are pasted from a real run of the tool. In the cloud, Maven Central's Google mirror (`maven-central.storage-download.googleapis.com/maven2`) and Docker images (`sbtscala/scala-sbt`, `swift`) give real JVM and Swift tools where the default downloads are blocked (#1496, #1492).
 35. **One table, all languages.** When a fix for this language touches a shared rule, sweep it across every supported language (the [file-issue skill](../file-issue/SKILL.md), step 3), and prefer a table row over a wider regex.
+36. **Build-tool fixers without a file argument.** A fixer task that formats the whole source set and takes no file (Gradle's `spotlessApply`, `ktlintFormat`) is a whole-unit fixer (`isWholeUnitFixer`, `wholeUnitFixerCommand`): it runs once and is never given a path, which Gradle would read as a task name. A plugin that hangs its per-source-set tasks on `check` directly (ktlint-gradle) cannot be left out with `-x` on its lifecycle task; check with `gradle check -x TASK --dry-run` (#2121).
 
 ## 4. Tests
 

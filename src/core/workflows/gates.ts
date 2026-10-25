@@ -750,15 +750,63 @@ function mavenGates(workspace: string): GateSuggestion[] {
 const GRADLE_BUILD = ["build.gradle.kts", "build.gradle", "settings.gradle.kts", "settings.gradle"];
 
 /**
+ * Gradle lint and format plugins with a check task and a fixer task (#2121). `excluded` is a check
+ * task `check` runs only through it, so `-x` leaves it out; ktlint-gradle makes `check` depend on
+ * each source set's task (`ktlintMainSourceSetCheck`) directly, so `check` still runs those, and
+ * once the ktlint gate passes they are up to date.
+ */
+const GRADLE_STYLE_PLUGINS = [
+  {
+    id: "spotless",
+    plugin: /\bcom\.diffplug\.spotless\b/,
+    check: "spotlessCheck",
+    fix: "spotlessApply",
+    excluded: true,
+  },
+  {
+    id: "ktlint",
+    plugin: /\borg\.jlleitschuh\.gradle\.ktlint\b/,
+    check: "ktlintCheck",
+    fix: "ktlintFormat",
+    excluded: false,
+  },
+] as const;
+
+/**
  * Gradle's `check` task runs the tests and every verification task the build applies (ktlint,
- * detekt, Checkstyle, Spotless check), so it is the one preselected gate (#1749).
+ * detekt, Checkstyle, Spotless check), so it is the preselected test gate (#1749). A build that
+ * applies Spotless or ktlint-gradle (in a build script or the version catalog) gets that plugin's
+ * check as its own gate, with its fixer task, so a format violation is fixed before the retry
+ * instead of failing only the test gate, and `check` leaves Spotless out with `-x` (#2121). `--warn` keeps the
+ * violations ktlint prints, which `-q` hides. The fixer tasks format the whole source set: the
+ * host keeps only the files the task wrote (`isWholeUnitFixer`).
  */
 function gradleGates(workspace: string): GateSuggestion[] {
   const source = GRADLE_BUILD.find((name) => has(workspace, name));
   if (!source || has(workspace, "pom.xml")) return [];
   const gradle = buildWrapper(workspace, "gradlew", "gradle");
-  const args = [...gradle.args, "--console=plain", "-q", "check"];
+  const scripts = [...GRADLE_BUILD, "gradle/libs.versions.toml"]
+    .map((name) => read(workspace, name) ?? "")
+    .join("\n");
+  const style = GRADLE_STYLE_PLUGINS.filter((p) => p.plugin.test(scripts));
+  const run = (task: string) => [...gradle.args, "--console=plain", "--warn", task];
+  const args = [
+    ...gradle.args,
+    "--console=plain",
+    "-q",
+    "check",
+    ...style.flatMap((p) => (p.excluded ? ["-x", p.check] : [])),
+  ];
   return [
+    ...style.map((p) => ({
+      check: {
+        ...gate(p.id, gradle.executable, run(p.check), 600000),
+        fix: { executable: gradle.executable, args: run(p.fix) },
+      },
+      source,
+      reason: `${formatCommandLine(gradle.executable, run(p.check))} (fixer: ${formatCommandLine(gradle.executable, run(p.fix))})`,
+      preselected: true,
+    })),
     {
       check: gate("gradle-check", gradle.executable, args, 1200000),
       source,
