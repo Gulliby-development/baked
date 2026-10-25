@@ -881,6 +881,132 @@ describe("gate matrix: Composer (#1491)", () => {
   });
 });
 
+// #1495: a Lua project has a rockspec or the config of its tools, and no Makefile or CI step of
+// its own, so the runner fallback found nothing.
+describe("gate matrix: LuaRocks (#1495)", () => {
+  const ids = (files: Record<string, string>) =>
+    detectGates(project(files)).map((s) => [s.check.id, s.check.executable, s.check.args.join(" "), s.source]);
+  const checks = (files: Record<string, string>) => detectGates(project(files)).map((s) => s.check);
+  const ROCK = {
+    "calc-0.1-1.rockspec": "package = 'calc'\nversion = '0.1-1'\ndependencies = { 'lua >= 5.1' }\ntest_dependencies = { 'busted' }\n",
+    "stylua.toml": "column_width = 100\n",
+    ".luacheckrc": "std = 'max+busted'\n",
+  };
+
+  test("a rockspec and the tools' config files get the format, lint and test gates", () => {
+    expect(ids(ROCK)).toEqual([
+      ["stylua", "stylua", "--check .", "stylua.toml"],
+      ["luacheck", "luacheck", ".", ".luacheckrc"],
+      ["busted", "busted", "", "calc-0.1-1.rockspec"],
+    ]);
+    expect(ids({ "selene.toml": "std = 'lua51'\n", ".busted": "return { default = { ROOT = { 'spec' } } }\n" })).toEqual([
+      ["selene", "selene", ".", "selene.toml"],
+      ["busted", "busted", "", ".busted"],
+    ]);
+    expect(ids({ "calc-0.1-1.rockspec": "package = 'calc'\n", "spec/calc_spec.lua": "" })).toEqual([["busted", "busted", "", "spec/"]]);
+    // A Ruby project's spec/ folder is no Lua project, and a rockspec without tools gets nothing:
+    // the runner fallback then reads its Makefile.
+    expect(ids({ "spec/calc_spec.rb": "" })).toEqual([]);
+    expect(ids({ "calc-0.1-1.rockspec": "package = 'calc'\n", Makefile: "test:\n\tbusted\n" })).toEqual([["tests", "make", "test", 'Makefile target "test"']]);
+  });
+
+  test("luacheck lints per task, StyLua's fixer gets the task's file, busted is the test check", () => {
+    const all = checks(ROCK);
+    const byId = (id: string) => all.find((c) => c.id === id) as Check;
+    expect(isStaticCheck(byId("luacheck")) && !isWholeUnitCheck(byId("luacheck"))).toBe(true);
+    expect(isStaticCheck(byId("stylua")) && !isTestCheck(byId("stylua"))).toBe(true);
+    expect(isTestCheck(byId("busted")) && !isStaticCheck(byId("busted"))).toBe(true);
+    expect(fixerCommand(byId("stylua").fix!, "src/calc.lua")).toEqual({ executable: "stylua", args: ["src/calc.lua"] });
+    // LuaRocks' Windows wrappers are batch files the check runner starts through cmd.exe.
+    expect(launchedCommand("cmd", ["/d", "/c", "busted.bat", "-o", "TAP"]).program).toBe("busted");
+    expect(launchedCommand("cmd", ["/d", "/c", "luacheck.bat", "."]).program).toBe("luacheck");
+    const covering = (path: string) =>
+      coveringChecks({ checks: all.map((c) => ({ ...c, scope: "feature" as const })) } as RunPolicy, { writes: [{ path, action: "create" }] }).map((c) => c.id);
+    expect(covering("src/calc.lua")).toEqual(["stylua", "luacheck"]);
+    expect(styleClaimShown("all Lua files are stylua-formatted and luacheck-clean", all.map((c) => ({ ...c, scope: "feature" as const })))).toBe(true);
+  });
+
+  test("an edited Lua file is checked on its changed lines by StyLua's byte range", () => {
+    const files = { ...ROCK, "src/é.lua": "local a = 'é'\nlocal  b=1\n" };
+    const edited = formatWrittenChecks(project(files), [], [{ path: "src/é.lua", action: "modify" }], (c) => `/usr/bin/${c}`, () => "local a = 'é'\n", () => true);
+    expect(edited.map((c) => [c.id, [c.executable, ...c.args].join(" "), [c.fix!.executable, ...c.fix!.args].join(" ")])).toEqual([
+      ["stylua-lines", "stylua --check --range-start 15 --range-end 26 src/é.lua", "stylua --range-start 15 --range-end 26"],
+    ]);
+  });
+
+  test("a written spec runs on its own, with busted's flags and their values", () => {
+    const busted = { ...(checks(ROCK).find((c) => c.id === "busted") as Check), args: ["-o", "TAP", "--exclude-tags", "slow", "spec"] };
+    expect(affectedTestCheck([busted], ["spec/calc_spec.lua"])?.args).toEqual(["-o", "TAP", "--exclude-tags", "slow", "./spec/calc_spec.lua"]);
+    expect(plannedWrittenTests([busted], [{ path: "spec/calc_spec.lua", action: "create" }])?.id).toBe("busted-written");
+    expect(plannedWrittenTests([busted], [{ path: "src/calc.lua", action: "create" }])).toBeNull();
+  });
+
+  // busted 2.2.0, default output handler.
+  const BUSTED_FAILED =
+    "+-*.\n1 success / 1 failure / 1 error / 1 pending : 0.00145 seconds\n\nPending -> spec/sum_spec.lua @ 13\nsum later\n\nFailure -> spec/sum_spec.lua @ 7\nsum is commutative\nspec/sum_spec.lua:8: Expected objects to be equal.\nPassed in:\n(number) 4\nExpected:\n(number) 5\n\nError -> spec/sum_spec.lua @ 10\nsum errors\nspec/sum_spec.lua:11: boom\n";
+  const BUSTED_SUITE_ERROR =
+    "*+-*.\n1 success / 1 failure / 2 errors / 1 pending : 0.003723 seconds\n\nFailure -> spec/sum_spec.lua @ 7\nsum is commutative\nspec/sum_spec.lua:8: Expected objects to be equal.\n\nError -> spec/req_spec.lua @ 1\nsuite spec/req_spec.lua\nspec/req_spec.lua:1: module 'nosuch' not found:\n\tno field package.preload['nosuch']\n";
+
+  test("busted's summary gives the count and the tests that ran; a spec file that did not load is no test", () => {
+    expect(testCount(BUSTED_FAILED)).toEqual({ tool: "busted", count: 4 });
+    expect(testsRan(BUSTED_FAILED)).toEqual({ tool: "busted", count: 3 });
+    expect(failedTests(BUSTED_FAILED)).toEqual({ tool: "busted", names: ["sum is commutative", "sum errors"] });
+    expect(testCount(BUSTED_SUITE_ERROR)).toEqual({ tool: "busted", count: 3 });
+    expect(failedTests(BUSTED_SUITE_ERROR)).toEqual({ tool: "busted", names: ["sum is commutative"] });
+    expect(testsRan("\n0 successes / 0 failures / 2 errors / 0 pending : 0.000019 seconds\n\nError -> Cannot find file or directory: spec\n\n\nError -> No test files found matching Lua pattern: _spec\n")).toEqual({ tool: "busted", count: 0 });
+  });
+
+  test("a failing run keeps one signature as passing tests grow, and hangs as a failure", () => {
+    const grown = BUSTED_FAILED.replace("+-*.\n1 success /", "++-*.\n2 successes /").replace("0.00145", "0.00201");
+    expect(failureSignature(grown, "/w")).toBe(failureSignature(BUSTED_FAILED, "/w"));
+    expect(convergenceSignature(grown)).toBe(convergenceSignature(BUSTED_FAILED));
+    expect(convergenceSignature(BUSTED_FAILED)).toContain("Failure -> spec/sum_spec.lua");
+    expect(timedOutFailure("Failure -> spec/sum_spec.lua @ 7\nsum is commutative")).toBe(true);
+  });
+
+  test("no spec files or a missing spec path is no failing suite, and names the path its task creates", () => {
+    const empty = "\n0 successes / 0 failures / 2 errors / 0 pending : 0.000066 seconds\n\nError -> Cannot find file or directory: spec\n\n\nError -> No test files found matching Lua pattern: _spec\n";
+    expect(noTestsCollected(empty)).toBe(true);
+    const tasks = [{ writes: [{ path: "spec/later_spec.lua", action: "create" as const }] }];
+    expect(missingPlannedPaths(empty.replace(": spec\n", ": spec/later_spec.lua\n"), tasks)).toEqual(["spec/later_spec.lua"]);
+    expect(missingPlannedPaths("ERROR: Error getting metadata of spec/later_spec.lua: No such file or directory (os error 2)\n", tasks)).toEqual(["spec/later_spec.lua"]);
+    expect(missingPlannedPaths("error: no file or directory found matching 'spec/later_spec.lua'\n", tasks)).toEqual(["spec/later_spec.lua"]);
+  });
+
+  test("a spec file that does not parse or load is a build failure; busted runs the other files", () => {
+    const syntax = "*+-*.\n1 success / 1 failure / 2 errors / 1 pending : 0.002888 seconds\n\nError -> spec/broken_spec.lua:3: <name> or '...' expected near 'end'\nspec/broken_spec.lua\n";
+    expect(buildFailure(syntax)).toEqual(["Error -> spec/broken_spec.lua:3: <name> or '...' expected near 'end'"]);
+    expect(buildRunner(syntax)).toBe("busted");
+    expect(buildFailure(BUSTED_SUITE_ERROR)).toEqual(["suite spec/req_spec.lua"]);
+    expect(buildFailure(BUSTED_FAILED)).toBeNull();
+    expect(replayTargets("busted", { args: [], tests: ["spec/sum_spec.lua"], list: () => [] })).toEqual([]);
+  });
+
+  test("luacheck and selene counts", () => {
+    expect(diagnosticCount("Checking src/bad.lua                              \u001b[0m\u001b[31m\u001b[1m2 warnings\u001b[0m\n\nTotal: \u001b[0m\u001b[31m\u001b[1m2\u001b[0m warnings / \u001b[0m\u001b[0m\u001b[1m0\u001b[0m errors in 3 files\n")).toEqual({ tool: "luacheck", count: 2, errors: 0 });
+    expect(diagnosticCount("Total: 0 warnings / 1 error in 3 files\n")).toEqual({ tool: "luacheck", count: 1, errors: 1 });
+    expect(diagnosticCount("error[undefined_variable]: `it` is not defined\n\nResults:\n8 errors\n4 warnings\n0 parse errors\n")).toEqual({ tool: "selene", count: 12, errors: 8 });
+    expect(diagnosticCount("Results:\n0 errors\n0 warnings\n1 parse errors\n")).toEqual({ tool: "selene", count: 1, errors: 1 });
+  });
+
+  test("busted's pending and luacheck's ignore are integrity findings; a platform guard is not", () => {
+    const before = 'describe("sum", function()\n  it("adds", function()\n    assert.are.equal(3, sum(1, 2))\n  end)\nend)\n';
+    const rules = (after: string) => scanTestIntegrity([{ path: "spec/sum_spec.lua", before, after }]).map((f) => f.rule);
+    expect(rules(before.replace("end)\nend)", 'end)\n  pending("commutes")\nend)'))).toContain("skip");
+    expect(rules(before.replace("    assert", "    -- luacheck: ignore 211\n    assert"))).toContain("suppression");
+    expect(rules(before.replace("  it(", '  if package.config:sub(1, 1) == "\\\\" then\n    pending("no symlinks on Windows")\n  end\n  it('))).not.toContain("skip");
+    const source = "local x = 1 -- luacheck: ignore\nreturn 2\n";
+    expect(checkBuiltinRules([{ path: "src/calc.lua", content: source, before: null }], {}).map((f) => f.rule)).toContain("lint-suppression");
+  });
+
+  test("a rockspec's dependencies are read, and its build, source and test are executable fields", () => {
+    const spec = (extra: string) => `package = 'calc'\nversion = '0.1-1'\ndescription = { summary = 'x' }\ndependencies = {\n  'lua >= 5.1',\n  "penlight ~> 1.13",\n}\n${extra}`;
+    expect(manifestFieldChanges("calc-0.1-1.rockspec", spec(""), spec("").replace("summary = 'x'", "summary = 'y'"))).toEqual([]);
+    expect(manifestFieldChanges("calc-0.1-1.rockspec", spec(""), spec("build = {\n  type = 'command',\n  build_command = 'make',\n}\nsource = { url = 'git+https://example.test/calc' }\n"))).toEqual(["build", "source"]);
+    expect(addedDependencies([{ path: "calc-0.1-1.rockspec", before: spec(""), content: spec("test_dependencies = { 'busted >= 2' }\n") }]).declared.map((d) => [d.ecosystem, d.name])).toEqual([["luarocks", "busted"]]);
+  });
+});
+
 // #1753: a plain SwiftPM, Mix, Dart, Zig, dune or Bundler project has no Makefile, justfile or CI
 // run step, so the runner fallback found nothing and no test gate was suggested.
 describe("gate matrix: SwiftPM, Mix, Dart, Zig, dune and Bundler (#1753)", () => {
@@ -3313,6 +3439,65 @@ describe.skipIf(!toolchains)("gate matrix: toolchains", () => {
       expect([dirty.status, diagnosticCount(dirty.outputTail)]).toEqual(["failed", { tool: "phpstan", count: 1, errors: 1 }]);
     },
     900_000,
+  );
+
+  // #1495: the LuaRocks gates and the busted, luacheck and StyLua parsers against the real tools.
+  test.skipIf(!available([["busted", "--version"], ["luacheck", "--version"], ["stylua", "--version"]]))(
+    "a Lua project's detected gates run, and their output reads as the parsers expect (#1495)",
+    async () => {
+      const spec = (body: string) => `local sum = require("sum")\n\ndescribe("sum", function()\n${body}end)\n`;
+      const adds = '\tit("adds", function()\n\t\tassert.are.equal(3, sum(1, 2))\n\tend)\n';
+      const commutes = '\tit("commutes", function()\n\t\tassert.are.equal(5, sum(2, 2))\n\tend)\n';
+      const root = project({
+        "calc-0.1-1.rockspec": "package = 'calc'\nversion = '0.1-1'\ntest_dependencies = { 'busted' }\n",
+        ".busted": "return {\n\tdefault = {\n\t\tlpath = './src/?.lua',\n\t},\n}\n",
+        ".luacheckrc": "std = 'max+busted'\n",
+        "stylua.toml": "",
+        "src/sum.lua": "local function sum(a, b)\n\treturn a + b\nend\n\nreturn sum\n",
+        "spec/sum_spec.lua": spec(adds + commutes),
+      });
+      const gates = detectGates(root).map((s) => s.check);
+      expect(gates.map((c) => c.id)).toEqual(["stylua", "luacheck", "busted"]);
+      const byId = (id: string) => gates.find((c) => c.id === id) as Check;
+      const run = async (check: Check) => executeGate(root, check, new AbortController().signal);
+
+      const failing = await run(byId("busted"));
+      expect(failing.status).toBe("failed");
+      expect([testCount(failing.outputTail), failedTests(failing.outputTail)]).toEqual([{ tool: "busted", count: 2 }, { tool: "busted", names: ["sum commutes"] }]);
+      expect(timedOutFailure(failing.outputTail)).toBe(true);
+      writeFileSync(join(root, "spec/max_spec.lua"), 'describe("max", function()\n\tit("picks", function()\n\t\tassert.are.equal(2, math.max(1, 2))\n\tend)\nend)\n');
+      const grown = await run(byId("busted"));
+      expect(testCount(grown.outputTail)).toEqual({ tool: "busted", count: 3 });
+      expect(failureSignature(grown.outputTail, root)).toBe(failureSignature(failing.outputTail, root));
+      expect(convergenceSignature(grown.outputTail)).toBe(convergenceSignature(failing.outputTail));
+      writeFileSync(join(root, "spec/sum_spec.lua"), spec(adds));
+      const passing = await run(byId("busted"));
+      expect([passing.status, testsRan(passing.outputTail)]).toEqual(["passed", { tool: "busted", count: 2 }]);
+
+      const one = await run(affectedTestCheck([byId("busted")], ["spec/max_spec.lua"]) as Check);
+      expect([one.status, testsRan(one.outputTail)]).toEqual(["passed", { tool: "busted", count: 1 }]);
+      const missing = await run({ ...byId("busted"), args: ["spec/later_spec.lua"] });
+      expect(missingPlannedPaths(missing.outputTail, [{ writes: [{ path: "spec/later_spec.lua", action: "create" }] }])).toEqual(["spec/later_spec.lua"]);
+      writeFileSync(join(root, "spec/broken_spec.lua"), 'describe("x", function()\n\tit("y", function(\nend)\n');
+      const broken = await run(byId("busted"));
+      expect([broken.status, buildRunner(broken.outputTail)]).toEqual(["failed", "busted"]);
+      rmSync(join(root, "spec/broken_spec.lua"));
+
+      const clean = await run(byId("luacheck"));
+      expect([clean.status, diagnosticCount(clean.outputTail)]).toEqual(["passed", { tool: "luacheck", count: 0, errors: 0 }]);
+      writeFileSync(join(root, "src/bad.lua"), "local unused = 1\nglobal_value = 2\n");
+      const dirty = await run(byId("luacheck"));
+      expect([dirty.status, diagnosticCount(dirty.outputTail)]).toEqual(["failed", { tool: "luacheck", count: 2, errors: 0 }]);
+      rmSync(join(root, "src/bad.lua"));
+
+      expect((await run(byId("stylua"))).status).toBe("passed");
+      writeFileSync(join(root, "src/max.lua"), "local function max2( a,b )\nreturn a>b and a or b end\nreturn max2\n");
+      expect((await run(byId("stylua"))).status).toBe("failed");
+      const fix = fixerCommand(byId("stylua").fix!, "src/max.lua");
+      expect(spawnSync(fix.executable, fix.args, { cwd: root }).status).toBe(0);
+      expect((await run(byId("stylua"))).status).toBe("passed");
+    },
+    120_000,
   );
 
   // #1489: the host reads the JUnit reports a real Gradle run writes, since `gradle -q check` prints
