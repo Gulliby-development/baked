@@ -122,6 +122,12 @@ import {
   requestConflictDecision,
 } from "./request-conflict.js";
 import {
+  CONVERGENCE_GATE_DIR,
+  CONVERGENCE_GATE_KIND,
+  type ConvergenceDecision,
+  type ConvergenceGate,
+  type ConvergenceGateRecord,
+  convergenceGateDecision,
   REVIEW_GATE_DIR,
   REVIEW_GATE_KIND,
   type ReviewGate,
@@ -187,6 +193,8 @@ const KEPT_ARTIFACTS = new Set([
   CASE_WALK_KIND,
   // Each review's gate: the findings' labels and repro outcomes, no claims (#1715).
   REVIEW_GATE_KIND,
+  // Each convergence gate: the same labels, criterion verdicts and evidence counts (#1715).
+  CONVERGENCE_GATE_KIND,
   // Each decision for the request or the platform on checked evidence: states, no quotes (#2032).
   EVIDENCE_DECISION_KIND,
   // Each settled conflict's host finish decision: edits, case and check counts, no text (#2033).
@@ -723,6 +731,10 @@ export interface RunReplay {
   reviewGates: ReviewGateBoundary[];
   /** Findings the current rule repairs that the recorded gate kept as notes. */
   newGateRepairs: number;
+  /** Each convergence gate against the current rule (#1715). */
+  convergenceGates: ConvergenceGateBoundary[];
+  /** Convergence findings whose verdict (repair, limitation or note) the current rule changes. */
+  newConvergenceVerdicts: number;
   /** Each decision for the request or the platform on checked evidence (#2032). */
   evidenceDecisions: EvidenceDecisionBoundary[];
   /** Findings and conflict reports the current rule settles differently than the recording. */
@@ -832,6 +844,54 @@ export function replayEvidenceDecisions(
           report: record.report,
           recorded: record.decision,
           replayed,
+        },
+      ];
+    });
+}
+
+export type ConvergenceGateRule = (gate: ConvergenceGate) => ConvergenceDecision;
+
+export interface ConvergenceGateBoundary {
+  /** Each finding's verdict, as recorded and as the current rule decides. */
+  recorded: ConvergenceDecision["verdicts"];
+  replayed: ConvergenceDecision["verdicts"];
+  /** The criteria left failing, as recorded and as the current rule decides. */
+  recordedFailing: string[];
+  replayedFailing: string[];
+}
+
+/**
+ * Every convergence gate a run recorded (`convergence-gate/`, #1715), decided again from each
+ * finding's labels and repro outcome, whether it is on a test or documentation file and the
+ * criteria it names, each criterion's verdict and evidence count, and whether the required checks
+ * passed. As for the review gate, a repro ran only for the recorded candidates. Traces before #1715
+ * record none.
+ */
+export function replayConvergenceGates(
+  store: WorkflowStore,
+  runId: string,
+  decide: ConvergenceGateRule = convergenceGateDecision,
+): ConvergenceGateBoundary[] {
+  return store
+    .artifacts(runId)
+    .filter(
+      (a) => a.kind === CONVERGENCE_GATE_KIND && a.logical_path.startsWith(CONVERGENCE_GATE_DIR),
+    )
+    .flatMap((artifact) => {
+      let record: ConvergenceGateRecord;
+      try {
+        record = JSON.parse(store.readArtifact(runId, artifact.id));
+      } catch {
+        return [];
+      }
+      if (record.schemaVersion !== 1) return [];
+      const replayed = decide(record);
+      return [
+        {
+          recorded: record.decision.verdicts,
+          replayed: replayed.verdicts,
+          recordedFailing: record.decision.failing,
+          replayedFailing: replayed.failing,
         },
       ];
     });
@@ -3002,6 +3062,8 @@ function replayRun(
   | "newCaseRefusals"
   | "reviewGates"
   | "newGateRepairs"
+  | "convergenceGates"
+  | "newConvergenceVerdicts"
   | "evidenceDecisions"
   | "newEvidenceDecisions"
   | "conflictFinishes"
@@ -3186,6 +3248,7 @@ export function replayTrace(
     integrityRule?: IntegrityRule;
     caseWalkRule?: CaseWalkRule;
     reviewGateRule?: ReviewGateRule;
+    convergenceGateRule?: ConvergenceGateRule;
     evidenceRule?: EvidenceRule;
     conflictFinishRule?: ConflictFinishRule;
   } = {},
@@ -3254,6 +3317,12 @@ export function replayTrace(
     const reviews = new Map(
       runIds.map((runId) => [runId, replayReviewGates(store, runId, options.reviewGateRule)]),
     );
+    const converges = new Map(
+      runIds.map((runId) => [
+        runId,
+        replayConvergenceGates(store, runId, options.convergenceGateRule),
+      ]),
+    );
     const evidence = new Map(
       runIds.map((runId) => [runId, replayEvidenceDecisions(store, runId, options.evidenceRule)]),
     );
@@ -3290,6 +3359,7 @@ export function replayTrace(
       const integrity = scans.get(runId) ?? [];
       const caseWalks = walks.get(runId) ?? [];
       const reviewGates = reviews.get(runId) ?? [];
+      const convergenceGates = converges.get(runId) ?? [];
       const evidenceDecisions = evidence.get(runId) ?? [];
       const conflictFinishes = finishes.get(runId) ?? [];
       if (
@@ -3307,6 +3377,7 @@ export function replayTrace(
         !integrity.length &&
         !caseWalks.length &&
         !reviewGates.length &&
+        !convergenceGates.length &&
         !evidenceDecisions.length &&
         !conflictFinishes.length
       )
@@ -3350,6 +3421,14 @@ export function replayTrace(
         reviewGates,
         newGateRepairs: reviewGates.reduce(
           (n, b) => n + b.replayed.filter((f) => !b.recorded.includes(f)).length,
+          0,
+        ),
+        convergenceGates,
+        newConvergenceVerdicts: convergenceGates.reduce(
+          (n, b) =>
+            n +
+            b.replayed.filter((v) => b.recorded.find((r) => r.id === v.id)?.verdict !== v.verdict)
+              .length,
           0,
         ),
         evidenceDecisions,
