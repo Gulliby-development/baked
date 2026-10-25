@@ -1,0 +1,46 @@
+{
+  "id": "dart-test-wordfreq",
+  "language": "dart",
+  "toolchain": "dart",
+  "requires": [
+    "dart"
+  ],
+  "allowedPaths": [
+    "lib/**",
+    "test/**",
+    "README.md",
+    "analysis_options.yaml"
+  ],
+  "checks": [
+    {
+      "id": "dart-format",
+      "executable": "dart",
+      "args": [
+        "format",
+        "--output=none",
+        "--set-exit-if-changed",
+        "."
+      ],
+      "fix": {
+        "executable": "dart",
+        "args": [
+          "format"
+        ]
+      }
+    },
+    {
+      "id": "dart-analyze",
+      "executable": "dart",
+      "args": [
+        "analyze"
+      ]
+    },
+    {
+      "id": "dart-test",
+      "executable": "dart",
+      "args": [
+        "test"
+      ]
+    }
+  ]
+}

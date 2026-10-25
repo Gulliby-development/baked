@@ -22,6 +22,8 @@ export const FAILED_TEST_LINE = new RegExp(
     // RSpec's rerun line `rspec ./spec/calc_spec.rb:6 # Calc adds`, Minitest `  1) Failure:` (#1493).
     String.raw`^rspec \S+:\d+ # `,
     String.raw`^\s*\d+\) (?:Failure|Error):\s*$`,
+    // dart test `00:03 +4 -1: test/calc_test.dart: adds [E]` (#1494).
+    String.raw`^[\d:]+ \+\d+(?: ~\d+)? -\d+: .+ \[E\]\s*$`,
   ].join("|"),
 );
 

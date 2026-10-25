@@ -341,11 +341,12 @@ export function failureSignature(output: string): string {
  * any tests to execute" (#1864), Go's "no test files", SwiftPM's "no tests found", Mix's "did not
  * match any directory/file: test" or "no tests to run", Flutter's "Test directory "test" not
  * found" (#1753), and RSpec's "No examples found." or "All examples were filtered out" and
- * Minitest's "0 runs, 0 assertions" (#1493), all of which exit 0. A plan that writes the tests last has this state until its test tasks run, and
+ * Minitest's "0 runs, 0 assertions" (#1493), all of which exit 0; dart test's "No tests ran." exits 79
+ * and its 'the default "test/" directory doesn't exist' exits 65 (#1494). A plan that writes the tests last has this state until its test tasks run, and
  * it is no defect of the code (#1031, #1208).
  */
 export function noTestsCollected(output: string): boolean {
-  return /\bno tests ran\b|\bcollected 0 items\b|\bno tests? (?:files? )?found\b|\bno test files\b|\bno files were found in testpaths\b|\b0 test files matching\b|\bdid not discover any tests to execute\b|\bno tests to run\b|\bdid not match any directory\/file\b|\btest directory "?test"? not found\b|\bno examples found\b|\ball examples were filtered out\b|^0 runs, 0 assertions\b/im.test(
+  return /\bno tests ran\b|\bcollected 0 items\b|\bno tests? (?:files? )?found\b|\bno test files\b|\bno files were found in testpaths\b|\b0 test files matching\b|\bdid not discover any tests to execute\b|\bno tests to run\b|\bdid not match any directory\/file\b|\btest directory "?test"? not found\b|\bno examples found\b|\ball examples were filtered out\b|^0 runs, 0 assertions\b|\bthe default "test\/" directory doesn't exist\b/im.test(
     output,
   );
 }
@@ -379,6 +380,12 @@ export const MISSING_PATH_LINES: readonly { tool: string; line: RegExp }[] = [
   { tool: "ruby", line: /^ruby: No such file or directory -- (\S+) \(LoadError\)$/ },
   { tool: "rake", line: /^File does not exist: (\S+)$/ },
   { tool: "rubocop", line: /^Error: No such file or directory: (\S+)$/ },
+  // dart test `  Failed to load "test/a_test.dart": Does not exist.`, dart analyze `Directory or
+  // file doesn't exist: lib/a`, and dart format `No file or directory found at "lib/a".`, which
+  // exits 0 (#1494).
+  { tool: "dart", line: /^\s*Failed to load "([^"]+)": Does not exist\.$/ },
+  { tool: "dart", line: /^Directory or file doesn't exist: (\S+)$/ },
+  { tool: "dart", line: /^No file or directory found at "([^"]+)"\.$/ },
 ];
 
 /** Whether RSpec's own `load` of the file named at `index` failed, a few lines below it. */
