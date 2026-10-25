@@ -32,7 +32,7 @@
       "lib/sum_test.exs:3 comment"
     ],
     "formatters": null,
-    "packageContents": null,
+    "packageContents": ["mix.exs: hex"],
     "numericLimits": null,
     "staticTools": [
       "credo: linter",
