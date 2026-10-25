@@ -8,6 +8,7 @@ import { runScanner } from "../src/core/workflows/quality/rules.js";
 import { suspendClock } from "./helpers/suspend-clock.js";
 import { caseCheck } from "../src/core/verification/criteria-cases.js";
 import { fixtureSpec, workflowFixture } from "./helpers/workflow-fixture.js";
+import { slicedCorrective } from "./helpers/sliced-corrective-scenario.js";
 import { cellSamples, cellSpec, omittedCellInput, withoutCellInput } from "./helpers/criteria-cell-fixtures.js";
 import { ProcessScope } from "../src/core/workflows/process-scope.js";
 import { canRepairRun, type RepairBlock } from "../src/core/workflows/repairable.js";
@@ -2045,6 +2046,19 @@ for (const stack of STACKS) {
         return staticCorrection(store, "run", { checks: [check] } as RunPolicy, task);
       };
       expect(preselected().filter(correction).map((c) => c.id)).toEqual(STATIC_FIXES[stack]);
+    });
+
+    // A static check that fails on slice 1 of a sliced test file is corrected in that file while
+    // slice 2 is pending, without the related tasks' sources, so an independent test task that
+    // depends on those sources is not held (#2094, skillcomb R67: ruff ISC004 in tests/test_fields.py).
+    cell(stack, "sliced-test-diagnostics-corrective (#2094)", () => {
+      const path = fixture.property.path;
+      const lint: Check = { id: "lint", executable: "lint", args: [], cwd: ".", timeoutMs: 10000, required: true, scope: "feature", envNames: [], writes: [] };
+      const checks = preselected().filter((c) => STATIC_FIXES[stack].includes(c.id));
+      for (const check of checks.length ? checks : [lint]) {
+        const { added, ready } = slicedCorrective(check, path, `${path}:3:5: error: a diagnostic\nFound 1 error.`);
+        expect({ check: check.id, writes: added.writes.map((w) => w.path), ready }).toEqual({ check: check.id, writes: [path], ready: ["T004", added.id] });
+      }
     });
 
     cell(stack, "dependency-check", () => {
