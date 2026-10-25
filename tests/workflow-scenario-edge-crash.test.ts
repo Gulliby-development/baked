@@ -139,7 +139,8 @@ describe("scenario: R68 url-shortener, an edge case that crashes in the probed t
       ["shadow", `${EDGE_DIR}T001.json#2`],
     ]);
     // The finding it would be: T001's, with the stack's first error line as actual.
-    expect(stops[0]?.inputs).toMatchObject({ taskId: "T001", actual: 'error: Missing parameter "code"' });
+    // The tail rides along so a mismatch shows the output it was decided from.
+    expect({ ...stops[0]?.inputs, tail: record.cases[0]?.outputTail }).toMatchObject({ taskId: "T001", actual: 'error: Missing parameter "code"' });
     // Shadow: no finding, no corrective; the run's tasks are as before.
     expect(service.store.findings(runId)).toEqual([]);
     expect(executor.calls.filter((c) => c.output === "implementation").map((c) => c.taskId)).toEqual(["T001", "T002"]);

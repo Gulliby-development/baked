@@ -128,19 +128,20 @@ export const edgeDecision: EdgeRule = (status) => (status === "refuted" ? "findi
  * How much of a probed case's output its record keeps (#2136): the end, where a crash's innermost
  * frames are. When the first error line falls before that end (a runtime that prints more after
  * the stack, as Bun on CI did), the tail opens with it, so the actual is kept. The crash decision
- * reads the same tail, so a record replays exactly.
+ * reads the same tail, so a record replays exactly. Colour codes are left out of it.
  */
 export const OUTPUT_TAIL_CHARS = 400;
 export function outputTail(output: string): string {
-  const tail = output.slice(-OUTPUT_TAIL_CHARS);
-  if (output.length <= OUTPUT_TAIL_CHARS) return tail;
-  const error = outputLines(output)
+  const plain = stripAnsi(output);
+  const tail = plain.slice(-OUTPUT_TAIL_CHARS);
+  if (plain.length <= OUTPUT_TAIL_CHARS) return tail;
+  const error = outputLines(plain)
     .find((line) => ERROR_LINE.test(line))
     ?.trim()
     .slice(0, OUTPUT_TAIL_CHARS / 2);
-  if (!error || stripAnsi(tail).includes(error)) return tail;
+  if (!error || tail.includes(error)) return tail;
   const head = `${error}\n...\n`;
-  return head + output.slice(-(OUTPUT_TAIL_CHARS - head.length));
+  return head + plain.slice(-(OUTPUT_TAIL_CHARS - head.length));
 }
 
 /**
