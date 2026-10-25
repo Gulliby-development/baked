@@ -2,7 +2,7 @@ import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { detectProfile } from "../src/core/tools/project.js";
+import { detectNativeChecks, detectProfile } from "../src/core/tools/project.js";
 
 /**
  * Tests for detectProfile — the production function, not a mirror.
@@ -267,6 +267,26 @@ describe("PHP project (composer.json)", () => {
     expect(p.lint).toBe("php vendor/bin/pint --test");
     expect(p.typecheck).toBe("php vendor/bin/phpstan analyse --no-progress");
     expect(p.formatFile).toBe("php vendor/bin/pint");
+  });
+});
+
+// ── Lua ─────────────────────────────────────────────────────
+
+describe("Lua project (rockspec, stylua.toml, .luacheckrc)", () => {
+  it("runs the gates' busted, luacheck and StyLua (#1495)", async () => {
+    const cwd = makeProject("lua-rock", {
+      "calc-0.1-1.rockspec": "package = 'calc'\ntest_dependencies = { 'busted' }\n",
+      "stylua.toml": "",
+      ".luacheckrc": "std = 'max'\n",
+    });
+    const p = await detectProfile(cwd);
+    expect([p.test, p.lint, p.format, p.formatFile]).toEqual(["busted", "luacheck .", "stylua", "stylua"]);
+    expect(await detectNativeChecks(cwd)).toBe("luacheck .");
+  });
+
+  it("a rockspec without tools has no commands of its own", async () => {
+    const p = await detectProfile(makeProject("lua-bare", { "calc-0.1-1.rockspec": "package = 'calc'\n" }));
+    expect([p.test, p.lint, p.format]).toEqual([null, null, null]);
   });
 });
 

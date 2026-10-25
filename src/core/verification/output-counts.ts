@@ -78,6 +78,25 @@ export function diagnosticCount(output: string): OutputCount | null {
   const psalm = output.match(/^(\d+) errors? found\b/m);
   if (psalm) return { tool: "psalm", count: Number(psalm[1]), errors: Number(psalm[1]) };
   if (/^No errors found!/m.test(output)) return { tool: "psalm", count: 0, errors: 0 };
+  // luacheck (#1495): "Total: 2 warnings / 1 error in 3 files", in colour even without a terminal.
+  const luacheck = output
+    // biome-ignore lint/suspicious/noControlCharactersInRegex: ANSI colour codes
+    .replace(/\u001b\[[0-9;]*m/g, "")
+    .match(/^Total: (\d+) warnings? \/ (\d+) errors? in \d+ files?/m);
+  if (luacheck)
+    return {
+      tool: "luacheck",
+      count: Number(luacheck[1]) + Number(luacheck[2]),
+      errors: Number(luacheck[2]),
+    };
+  // selene: "Results:" then "8 errors", "4 warnings" and "0 parse errors", one per line.
+  const selene = output.match(
+    /^Results:\r?\n(\d+) errors?\r?\n(\d+) warnings?\r?\n(\d+) parse errors?$/m,
+  );
+  if (selene) {
+    const errors = Number(selene[1]) + Number(selene[3]);
+    return { tool: "selene", count: errors + Number(selene[2]), errors };
+  }
   // dotnet build: "    3 Warning(s)" and "    0 Error(s)"
   const warnings = output.match(/^\s*(\d+) Warning\(s\)/m);
   const errors = output.match(/^\s*(\d+) Error\(s\)/m);
@@ -118,10 +137,22 @@ export type TestRunner =
   | "pest"
   | "rspec"
   | "minitest"
+  | "busted"
   | "junit"
   | "tap";
 
 /** Pest's summary: its counts by outcome, then the assertions (Jest's has a total instead). */
+/** busted's summary: "2 successes / 1 failure / 1 error / 1 pending : 0.0015 seconds". */
+const BUSTED_SUMMARY =
+  /^(\d+) successe?s? \/ (\d+) failures? \/ (\d+) errors? \/ (\d+) pending : /m;
+/**
+ * busted's errors that are tests: "Error -> spec/a_spec.lua @ 10" and then the test's name. A file
+ * that did not load is an error too, named "suite spec/a_spec.lua" or with no `@` line at all.
+ */
+const bustedTestErrors = (o: string): number | null =>
+  /^Error (?:->|→) /m.test(o)
+    ? [...o.matchAll(/^Error (?:->|→) \S+ @ \d+\r?\n(?!suite )/gm)].length
+    : null;
 const PEST_SUMMARY = /^\s*Tests:\s+((?:\d+ \w+(?:, )?)+) \(\d+ assertions?\)/m;
 
 /**
@@ -280,6 +311,22 @@ const TEST_COUNTERS: readonly {
       return m ? Number(m[1]) - Number(m[2]) : null;
     },
   },
+  {
+    tool: "busted",
+    // busted's default output (#1495). Its error count also counts spec files that did not load,
+    // so the errors are read from the list below the summary when it is there.
+    count: (o) => {
+      const m = o.match(BUSTED_SUMMARY);
+      if (!m) return null;
+      const errors = bustedTestErrors(o) ?? Number(m[3]);
+      return Number(m[1]) + Number(m[2]) + errors + Number(m[4]);
+    },
+    ran: (o) => {
+      const m = o.match(BUSTED_SUMMARY);
+      if (!m) return null;
+      return Number(m[1]) + Number(m[2]) + (bustedTestErrors(o) ?? Number(m[3]));
+    },
+  },
   // A language without a parser of its own (#1488): a JUnit XML report printed to the output
   // (`--reporter=junit`), then TAP (busted, bats, prove, node:test, pgTAP).
   {
@@ -333,7 +380,7 @@ export const TEST_RUNNERS: LanguageRecord<readonly TestRunner[]> = {
   ruby: ["rspec", "minitest"],
   php: ["phpunit", "pest"],
   swift: none("XCTest and swift-testing summaries are not read"),
-  lua: ["tap"],
+  lua: ["busted", "tap"],
   elixir: none('ExUnit\'s "N tests, M failures" summary is not read'),
   dart: none("dart test's summary is not read"),
   zig: none("zig build test prints no count"),
@@ -385,6 +432,9 @@ export const FAILED_TESTS: Record<TestRunner, (output: string) => string[]> = {
   // "  1) Failure:" or "  2) Error:", then "CalcTest#test_fail [/w/test/calc_test.rb:8]:"
   minitest: (o) =>
     captured(o, /^\s*\d+\) (?:Failure|Error):\r?\n(\S+#\S+?)(?: \[[^\]\n]*\])?:\s*$/gm),
+  // "Failure -> spec/sum_spec.lua @ 7" or "Error -> ...", then "sum is commutative"; an error named
+  // "suite spec/a_spec.lua" is a spec file that did not load, not a test.
+  busted: (o) => captured(o, /^(?:Failure|Error) (?:->|→) \S+ @ \d+\r?\n(?!suite )(.+?)\s*$/gm),
   // A <testcase> with a <failure> or <error> child.
   junit: (o) =>
     [...o.matchAll(/<testcase\b([^>]*?)(?:\/>|>([\s\S]*?)<\/testcase>)/g)]
@@ -434,6 +484,9 @@ export const BUILD_FAILURES: Record<TestRunner, RegExp> = {
   // `rake test` loads every test file first: "/w/test/calc_test.rb:2:in `require': cannot load
   // such file -- calc (LoadError)", "/w/test/a_test.rb:9: syntax error ... (SyntaxError)".
   minitest: /^.*\.rb>?:\d+:.* \((?:LoadError|SyntaxError|NameError)\)$/,
+  // "Error -> spec/a_spec.lua:3: <name> expected near 'end'" (a syntax error), and "suite
+  // spec/a_spec.lua" under the error of a spec file whose top level failed (a missing `require`).
+  busted: /^(?:Error (?:->|→) \S+\.luau?:\d+: .+|suite \S+\.luau?)$/,
   // Gradle: "> Task :compileTestJava FAILED", "AppTest.java:12: error: cannot find symbol"
   junit: /^(?:> Task :\S*[cC]ompile\S* FAILED|.+\.(?:java|kt):\d+: error: .+)$/,
   // "Bail out! Cannot find module"
@@ -615,6 +668,10 @@ const GROWING_COUNTS: [RegExp, string][] = [
   [/^(Tests|Assertions): \d+/gm, "$1: <n>"],
   [/\b(Assertions): \d+/g, "$1: <n>"],
   [/\(\d+ assertions?\)/g, "(<n> assertions)"],
+  // busted's progress line, one character per test (`+` success, `-` failure, `*` error, `.`
+  // pending; `●◼✱◌` in a UTF-8 terminal), and its success count (#1495).
+  [/^[+\-*.●◼✱◌]+$\n?/gm, ""],
+  [/\b\d+ (successe?s?) \//g, "<n> success /"],
 ];
 
 /**

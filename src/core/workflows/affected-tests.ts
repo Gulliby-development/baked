@@ -53,6 +53,8 @@ const PY_FILE = /\.py$/;
 const RB_TEST = /(?:_test|(?:^|\/)test_(?!helper\.rb$)[^/]*)\.rb$/;
 const GO_FILE = /\.go$/;
 const PHP_FILE = /\.php$/;
+/** A busted spec: `*_spec.lua`, or `*_test.lua` under a `.busted` pattern (#1495). */
+const LUA_TEST = /_(?:spec|test)\.luau?$/;
 const JS_EXTENSIONS = [".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs"];
 
 /** Whether a workspace path is a test file of a supported ecosystem. */
@@ -63,6 +65,9 @@ export function isTestFile(path: string): boolean {
   if (PY_FILE.test(name)) return /^test_.*\.py$|_test\.py$|^tests\.py$/.test(name);
   // PHPUnit and Pest name a test file `*Test.php` (#1491).
   if (PHP_FILE.test(name)) return name.endsWith("Test.php");
+  // RSpec specs and Minitest files (#1493), busted specs (#1495).
+  if (name.endsWith(".rb")) return name.endsWith("_spec.rb") || RB_TEST.test(name);
+  if (/\.luau?$/.test(name)) return LUA_TEST.test(name);
   if (!JS_FILE.test(name)) return false;
   return /\.(?:test|spec)\.[cm]?[jt]sx?$/.test(name) || /(^|\/)(__tests__)\//.test(path);
 }
@@ -328,7 +333,8 @@ const flagsOnly = (args: string[]): string[] =>
   args.filter(
     (arg, i) =>
       arg.startsWith("-") ||
-      /^(?:--(?:timeout|testTimeout|test-timeout|config|format|formatter|require|tag|out|seed|order)|-c)$/.test(
+      // busted's `-o TAP`, `-t unit`, `--exclude-tags slow`, `-p _spec`, `--lpath ./src/?.lua` (#1495).
+      /^(?:--(?:timeout|testTimeout|test-timeout|config|format|formatter|require|tag|out|seed|order|output|tags|exclude-tags|pattern|run|lpath|cpath)|-[cotpm])$/.test(
         args[i - 1] ?? "",
       ),
   );
@@ -336,7 +342,8 @@ const flagsOnly = (args: string[]): string[] =>
 /**
  * A command that runs only `tests` with the runner of one of the policy's test checks, or null
  * when no check runs a test runner that takes test files (`bun test`, `vitest`, `jest`,
- * `node --test`, `pytest`, `go test`, `rspec`, `rake test`, `phpunit`, `pest`). Package scripts (`npm test`, `bun run test`) are not
+ * `node --test`, `pytest`, `go test`, `rspec`, `rake test`, `phpunit`, `pest`, `busted`).
+ * Package scripts (`npm test`, `bun run test`) are not
  * used: what they pass on is up to the script.
  */
 export function affectedTestCheck(
@@ -386,6 +393,10 @@ export function affectedTestCheck(
       // `php vendor/bin/phpunit tests`: the named files take the place of the test folder (#1491).
       prefix = flagsOnly(args);
       targets = files.filter((f) => PHP_FILE.test(f));
+    } else if (name === "busted") {
+      // busted runs the spec files it is given in place of its ROOT (`spec`) (#1495).
+      prefix = flagsOnly(args);
+      targets = files.filter((f) => LUA_TEST.test(f));
     } else if (name === "rspec") {
       // RSpec takes spec files (#1493).
       prefix = flagsOnly(args);

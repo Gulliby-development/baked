@@ -43,7 +43,7 @@ export function validateChecks(workspace: string, policy: RunPolicy, graph?: Tas
 
 /** Commands that analyze source without running it: linters, formatters and type checkers. */
 const STATIC_COMMAND =
-  /\b(?:lint|eslint|biome|ruff|flake8|pylint|clippy|vet|fmt|gofmt|format|prettier|mypy|pyright|tsc|typecheck|check|phpstan|psalm|pint|php-cs-fixer)\b|\b(?:dart|flutter)\s+analyze\b/i;
+  /\b(?:lint|eslint|biome|ruff|flake8|pylint|clippy|vet|fmt|gofmt|format|prettier|mypy|pyright|tsc|typecheck|check|phpstan|psalm|pint|php-cs-fixer|luacheck|selene|stylua)\b|\b(?:dart|flutter)\s+analyze\b/i;
 
 /** Source code a linter or formatter reads: any written file that is not documentation or data. */
 export const isCodePath = (path: string): boolean => isCodeFile(path);
@@ -236,13 +236,13 @@ export function fixerCommand(
 
 /** A criterion that claims the code is formatted: a formatter's name, or files "are formatted". */
 const FORMAT_CLAIM =
-  /\b(?:gofmt|go\s+fmt|rustfmt|cargo\s+fmt|ruff\s+format|prettier|dotnet\s+format|clang-format|mix\s+format|dart\s+format|zig\s+fmt|pint|php-cs-fixer)\b|-formatted\b|\b(?:code|files?|sources?)\b[^.;]{0,40}?\b(?:is|are|stays?|remains?)\s+(?:properly\s+|correctly\s+)?formatted\b/i;
+  /\b(?:gofmt|go\s+fmt|rustfmt|cargo\s+fmt|ruff\s+format|prettier|dotnet\s+format|clang-format|mix\s+format|dart\s+format|zig\s+fmt|pint|php-cs-fixer|stylua)\b|-formatted\b|\b(?:code|files?|sources?)\b[^.;]{0,40}?\b(?:is|are|stays?|remains?)\s+(?:properly\s+|correctly\s+)?formatted\b/i;
 /** A criterion that claims the code is lint-clean or passes a named linter. */
 const LINT_CLAIM =
-  /\blint(?:-clean|s|ed|ers?|ing)?\b|\b(?:clippy|ruff\s+check|eslint|flake8|pylint|go\s+vet|rubocop|standardrb|ktlint|phpstan|psalm|(?:dart|flutter)\s+analyze)\b/i;
-const FORMAT_COMMAND = /\b(?:gofmt|fmt|format|prettier|biome|lint|pint|php-cs-fixer)\b/i;
+  /\blint(?:-clean|s|ed|ers?|ing)?\b|\b(?:clippy|ruff\s+check|eslint|flake8|pylint|go\s+vet|rubocop|standardrb|ktlint|luacheck|selene|phpstan|psalm|(?:dart|flutter)\s+analyze)\b/i;
+const FORMAT_COMMAND = /\b(?:gofmt|fmt|format|prettier|biome|lint|pint|php-cs-fixer|stylua)\b/i;
 const LINT_COMMAND =
-  /\b(?:lint|eslint|biome|ruff|flake8|pylint|clippy|vet|rubocop|standardrb|ktlint|golangci-lint|phpstan|psalm)\b|\b(?:dart|flutter)\s+analyze\b/i;
+  /\b(?:lint|eslint|biome|ruff|flake8|pylint|clippy|vet|rubocop|standardrb|ktlint|golangci-lint|luacheck|selene|phpstan|psalm)\b|\b(?:dart|flutter)\s+analyze\b/i;
 
 /**
  * Whether the passing checks show a criterion's formatting or lint claim, or null when it makes

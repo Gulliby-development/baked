@@ -217,6 +217,15 @@ const FRAMEWORKS: readonly TestFramework[] = [
     ],
   },
   {
+    // busted's `it("adds", function()` and luassert's `assert.are.equal` are read by the shared
+    // rows above; LuaUnit names its tests `function TestSum:testAdds()` (#1495).
+    name: "busted, LuaUnit",
+    languages: ["lua"],
+    cases: String.raw`^\s*function\s+[Tt]est\w*(?:[.:][Tt]est\w*)?\s*\(`,
+    named: [{ pattern: /^\s*function\s+(?<name>[Tt]est\w*(?:[.:][Tt]est\w*)?)\s*\(/d }],
+    skips: String.raw`(?:^|[^.\w])pending\s*\(|\blu\.skip(?:If|Unless)?\s*\(`,
+  },
+  {
     name: "xUnit, NUnit, MSTest asserts, FluentAssertions",
     languages: ["csharp"],
     assertions: String.raw`\.Should\s*\(\s*\)`,

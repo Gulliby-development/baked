@@ -8,7 +8,7 @@ import { bunShellArgs, IS_WIN } from "../platform/index.js";
 import { chatSandbox, SandboxUnavailableError, sandboxNotice } from "../security/sandbox.js";
 import { buildSafeEnv } from "../spawn.js";
 import { executeCheckCommand } from "../verification/check-runner.js";
-import { composerGates, formatCommandLine } from "../workflows/gates.js";
+import { composerGates, formatCommandLine, luaGates } from "../workflows/gates.js";
 import { assertWorkspaceMutationAllowed } from "../workflows/leases.js";
 import { ProcessScope } from "../workflows/process-scope.js";
 import { pythonEnvironment } from "../workflows/toolchain.js";
@@ -237,6 +237,21 @@ async function detectToolchain(cwd: string): Promise<DetectedToolchain> {
     profile.lint = line(format);
     profile.typecheck = line(gates.find((c) => c.id === "phpstan" || c.id === "psalm"));
     profile.run = (await has("artisan")) ? "php artisan serve" : null;
+    profile.format = line(format?.fix);
+    return profile;
+  }
+
+  // Lua: the gates' own detection (#1495), from a rockspec or the tools' config files.
+  const lua = luaGates(cwd).map((g) => g.check);
+  if (lua.length) {
+    const line = (c: { executable: string; args: string[] } | undefined) =>
+      c ? formatCommandLine(c.executable, c.args) : null;
+    const format = lua.find((c) => c.id === "stylua");
+    profile.test = line(lua.find((c) => c.id === "busted"));
+    profile.build = null;
+    profile.lint = line(lua.find((c) => c.id === "luacheck" || c.id === "selene"));
+    profile.typecheck = null;
+    profile.run = null;
     profile.format = line(format?.fix);
     return profile;
   }
@@ -597,6 +612,10 @@ export async function detectNativeChecks(cwd: string): Promise<string | null> {
     )?.check;
     return check ? formatCommandLine(check.executable, check.args) : null;
   }
+
+  // Lua
+  const lua = luaGates(cwd).find((g) => g.check.id === "luacheck" || g.check.id === "selene");
+  if (lua) return formatCommandLine(lua.check.executable, lua.check.args);
 
   // Swift
   if ((await has("Package.swift")) && (await has(".swiftlint.yml"))) return "swiftlint";

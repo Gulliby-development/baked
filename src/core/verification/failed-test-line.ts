@@ -23,6 +23,8 @@ export const FAILED_TEST_LINE = new RegExp(
     // `FAILED  Tests\SumTest > it adds` and `⨯ it adds`.
     String.raw`^\d+\) [\w\\/]+::\w+`,
     String.raw`^\s*⨯\s`,
+    // busted: `Failure -> spec/sum_spec.lua @ 7` and `Error -> spec/sum_spec.lua @ 10` (#1495).
+    String.raw`^(?:Failure|Error) (?:->|→) \S+ @ \d+$`,
     // RSpec's rerun line `rspec ./spec/calc_spec.rb:6 # Calc adds`, Minitest `  1) Failure:` (#1493).
     String.raw`^rspec \S+:\d+ # `,
     String.raw`^\s*\d+\) (?:Failure|Error):\s*$`,
