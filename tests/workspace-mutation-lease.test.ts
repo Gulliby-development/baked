@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -10,6 +10,7 @@ import { ContextManager } from "../src/core/context/manager.js";
 import { hasWorkspaceMutationContext, withWorkspaceMutation } from "../src/core/workflows/leases.js";
 import { guardWorkspaceTools } from "../src/core/workflows/mutation-guard.js";
 import { WorkflowStore } from "../src/core/workflows/store.js";
+import { removeTempDir } from "./helpers/temp-dir.js";
 
 let root: string;
 const contexts: ContextManager[] = [];
@@ -19,7 +20,7 @@ beforeEach(() => {
 });
 afterEach(async () => {
   await Promise.all(contexts.splice(0).map((cm) => cm.dispose()));
-  rmSync(root, { recursive: true, force: true });
+  await removeTempDir(root);
 });
 
 const tick = () => new Promise((resolve) => setTimeout(resolve, 5));
