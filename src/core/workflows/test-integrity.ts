@@ -326,6 +326,8 @@ const CAPABILITY = new RegExp(
     String.raw`\bRUBY_PLATFORM\b|\bGem\.win_platform\?|\bRbConfig::CONFIG\b|\bLoadError\b`,
     // Lua: the path separator `package.config:sub(1, 1)`, LuaJIT's `jit.os`, an optional module.
     String.raw`\bpackage\.config\b|\bjit\.os\b|\bpcall\s*\(\s*require\b`,
+    // Dart: `Platform.isWindows`, `Platform.operatingSystem`, Flutter's `kIsWeb` (#1494).
+    String.raw`\bPlatform\.(?:is[A-Z]\w*|operatingSystem)\b|\bkIsWeb\b`,
   ].join("|"),
 );
 /** Lines above a skip that its guard condition may span. */
@@ -369,6 +371,7 @@ const SUPPRESSIONS = new RegExp(
     // luacheck and selene (#1495).
     String.raw`--\s*luacheck:\s*(?:ignore|no\s|push\s+ignore)`,
     String.raw`--\s*selene:\s*allow\b`,
+    String.raw`//\s*ignore(?:_for_file)?:\s*\w`,
   ].join("|"),
   "g",
 );
@@ -384,6 +387,8 @@ const TEST_HOOKS = new RegExp(
     String.raw`\bRails\.env\.test\?`,
     String.raw`\bENV\[\s*["'](?:RAILS_ENV|RACK_ENV|APP_ENV)["']\s*\]\s*[!=]=\s*["']test["']`,
     String.raw`\bdefined\?\(\s*(?:RSpec|Minitest)\b`,
+    // flutter test sets FLUTTER_TEST: `Platform.environment.containsKey('FLUTTER_TEST')` (#1494).
+    String.raw`\bFLUTTER_TEST\b`,
   ].join("|"),
   "g",
 );

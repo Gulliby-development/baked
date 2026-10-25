@@ -209,6 +209,13 @@ const rubocopLayout: FileFormatter = {
   fix: () => ["-a", "--only", "Layout"],
 };
 
+// No range: `dart format` formats whole files (#1494). A Flutter package formats with `dart` too.
+const dartFormat: FileFormatter = {
+  runs: (program, args) => program === "dart" && args[0] === "format",
+  check: (_, files) => ["format", "--output=none", "--set-exit-if-changed", ...files],
+  fix: () => ["format"],
+};
+
 const NPM_FORMATTERS = [biome, prettier, dprint, bunFmt];
 
 /**
@@ -240,7 +247,7 @@ export const FILE_FORMATTERS: LanguageRecord<readonly FileFormatter[]> = {
   swift: none("SwiftPM has no gate detector yet (#1753)"),
   lua: [stylua],
   elixir: none("Mix has no gate detector yet (#1753)"),
-  dart: none("dart and flutter have no gate detector yet (#1753)"),
+  dart: [dartFormat],
   zig: none("zig build has no gate detector yet (#1753)"),
   bash: none("shell scripts have no toolchain"),
   ocaml: none("dune has no gate detector yet (#1753)"),

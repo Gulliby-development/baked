@@ -295,12 +295,19 @@ describe("Lua project (rockspec, stylua.toml, .luacheckrc)", () => {
 describe("Flutter project (pubspec.yaml)", () => {
   it("detects flutter/dart toolchain", async () => {
     const cwd = makeProject("flutter", {
-      "pubspec.yaml": "name: myapp\ndescription: A Flutter app",
+      "pubspec.yaml": "name: myapp\ndescription: A Flutter app\ndependencies:\n  flutter:\n    sdk: flutter\n",
     });
     const p = await detectProfile(cwd);
     expect(p.test).toBe("flutter test");
     expect(p.lint).toBe("dart analyze");
     expect(p.format).toBe("dart format");
+  });
+
+  // A Dart package without the Flutter SDK has no `flutter` command (#1494).
+  it("detects a plain Dart package", async () => {
+    const cwd = makeProject("dart", { "pubspec.yaml": "name: calc\ndev_dependencies:\n  test: ^1.25.0\n" });
+    const p = await detectProfile(cwd);
+    expect([p.test, p.build, p.run]).toEqual(["dart test", null, "dart run"]);
   });
 });
 

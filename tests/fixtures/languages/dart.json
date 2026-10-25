@@ -4,6 +4,10 @@
     "lib/sum_test.dart": "void main() {\n  sum(1, 2);\n}\n// AC-001 example: (1, 2, 3)\n",
     "pubspec.yaml": "name: fixture\n"
   },
+  "outputs": {
+    "tests": "00:00 +0: loading test/sum_test.dart\n00:00 +0: test/sum_test.dart: adds\n00:00 +1: test/sum_test.dart: is commutative\n00:00 +1 -1: test/sum_test.dart: is commutative [E]\n  Expected: <4>\n    Actual: <3>\n\n00:00 +1 -1: Some tests failed.\n\nFailing tests:\n  test/sum_test.dart: is commutative\n",
+    "testsGrown": "00:00 +0: loading test/sum_test.dart\n00:00 +0: test/sum_test.dart: adds\n00:00 +1: test/sum_test.dart: is commutative\n00:00 +1 -1: test/sum_test.dart: is commutative [E]\n  Expected: <4>\n    Actual: <3>\n\n00:00 +1 -1: test/sum_test.dart: subtracts\n00:01 +2 -1: Some tests failed.\n\nFailing tests:\n  test/sum_test.dart: is commutative\n"
+  },
   "expected": {
     "tests": [
       "lib/sum_test.dart"
@@ -18,8 +22,15 @@
     "placeholders": [
       "lib/sum.dart:2"
     ],
-    "gates": ["dart-format", "dart-analyze", "dart-test"],
-    "testRunners": null,
+    "gates": [
+      "dart-format",
+      "dart-analyze",
+      "dart-test"
+    ],
+    "testRunners": [
+      "dart 2",
+      "signature stable"
+    ],
     "mutation": null,
     "properties": null,
     "entryPoints": null,
@@ -30,7 +41,9 @@
     "codeMask": [
       "lib/sum_test.dart:4 comment"
     ],
-    "formatters": null,
+    "formatters": [
+      "dart-format-written: dart format --output=none --set-exit-if-changed lib/sum.dart lib/sum_test.dart"
+    ],
     "packageContents": null,
     "numericLimits": [
       "int is 64-bit on the VM and 2^53-exact when compiled to JavaScript"
