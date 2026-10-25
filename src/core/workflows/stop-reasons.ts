@@ -77,11 +77,28 @@ export const STOP_REASONS = {
     modes: NOT_ENFORCED,
     defaultMode: "shadow",
   },
+  corrective_unowned_file: {
+    label:
+      "A corrective's evidence names a file it may not write: route to its owner, widen, park for an upstream change or block",
+    // Shadow by default (#2133): the host's decision (`hostDecision` in corrective-scope.ts) is
+    // recorded as a would-stop on a corrective's blocked or failed result and before each of its
+    // sessions. `stopModes: { corrective_unowned_file: "enforce" }` acts on it; making that the
+    // default is a pull request of its own after two bench rounds with no false would-stop.
+    modes: STOP_MODES,
+    defaultMode: "shadow",
+  },
   upstream_symbol: {
     label:
       "A released planned-ahead feature's spec names a symbol of an upstream feature that the accepted upstream code does not have",
     // Shadow only until two bench rounds show no false would-stop (#2135); its promotion sends
     // the feature back to specify at release, before any implementer starts.
+    modes: NOT_ENFORCED,
+    defaultMode: "shadow",
+  },
+  repeat_without_change: {
+    label: "A finding comes back after its corrective changed no file",
+    // Shadow only until two bench rounds show no false would-stop (#2137); its promotion asks for
+    // an owner or scope decision instead of opening another corrective of the same finding.
     modes: NOT_ENFORCED,
     defaultMode: "shadow",
   },

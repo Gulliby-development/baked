@@ -45,11 +45,15 @@ import {
   conflictFinishReady,
 } from "./conflict-finish.js";
 import {
+  hostDecision,
   missingDiagnosed,
   SCOPE_KIND,
   type ScopeDecision,
   type ScopeRule,
   scopeRecords,
+  type UnownedDecision,
+  type UnownedRule,
+  unownedRule,
 } from "./corrective-scope.js";
 import { assertForecastFits, costForecast } from "./cost-forecast.js";
 import { WorkflowFault } from "./errors.js";
@@ -752,6 +756,8 @@ export interface RunReplay {
   correctiveScopes: CorrectiveScopeBoundary[];
   /** Correctives the current rule refuses for a diagnosed file outside their writes that the recording let run. */
   newScopeStops: number;
+  /** Correctives whose named files outside their writes the current rule decides otherwise (#2133). */
+  newUnownedDecisions: number;
   /** Each settled conflict's host finish decision against the current rule (#2033). */
   conflictFinishes: ConflictFinishBoundary[];
   /** Settled conflicts the current rule finishes on the host, or not, differently. */
@@ -760,31 +766,49 @@ export interface RunReplay {
 
 export interface CorrectiveScopeBoundary {
   taskId: string;
-  at: "create" | "start";
+  at: "create" | "start" | "result";
   recorded: ScopeDecision;
   replayed: ScopeDecision;
   /** The diagnosed files the current rule finds outside the corrective's writes. */
   missing: string[];
+  /** The recorded decision over the named files outside the writes (#2133); null before it. */
+  unownedRecorded: UnownedDecision | "fits" | null;
+  /** The current rule's decision over the same recorded inputs. */
+  unownedReplayed: UnownedDecision | "fits" | null;
 }
 
 /**
  * Every write-scope precondition of a task-level corrective a run recorded (`scope/tasks/`,
- * #2094), decided again from its recorded diagnosed files and writes. Traces before #2094 record
- * none.
+ * #2094), decided again from its recorded diagnosed files and writes, and the host's decision
+ * over the files a corrective's evidence names outside its writes from each path's recorded
+ * owner, writers, feature and approval (#2133). Traces before #2094 record none, and records
+ * before #2133 no named files.
  */
 export function replayCorrectiveScopes(
   store: WorkflowStore,
   runId: string,
   rule: ScopeRule = missingDiagnosed,
+  unowned: UnownedRule = unownedRule,
 ): CorrectiveScopeBoundary[] {
   return scopeRecords(store, runId).map((record) => {
     const missing = rule(record.diagnosed ?? [], record.writes ?? []);
+    const paths = record.unowned?.map((p) => ({
+      decision: unowned({
+        path: p.path,
+        owner: p.owner ?? null,
+        openWriters: p.openWriters ?? [],
+        feature: p.feature ?? null,
+        allowed: p.allowed === true,
+      }),
+    }));
     return {
       taskId: record.taskId,
       at: record.at,
       recorded: record.decision,
       replayed: missing.length ? "refuse" : "fits",
       missing,
+      unownedRecorded: record.host ?? null,
+      unownedReplayed: paths ? hostDecision(paths) : null,
     };
   });
 }
@@ -3112,6 +3136,7 @@ function replayRun(
   | "newEvidenceDecisions"
   | "correctiveScopes"
   | "newScopeStops"
+  | "newUnownedDecisions"
   | "conflictFinishes"
   | "newConflictFinishes"
 > | null {
@@ -3297,6 +3322,7 @@ export function replayTrace(
     convergenceGateRule?: ConvergenceGateRule;
     evidenceRule?: EvidenceRule;
     scopeRule?: ScopeRule;
+    unownedRule?: UnownedRule;
     conflictFinishRule?: ConflictFinishRule;
   } = {},
 ): TraceReplay {
@@ -3374,7 +3400,10 @@ export function replayTrace(
       runIds.map((runId) => [runId, replayEvidenceDecisions(store, runId, options.evidenceRule)]),
     );
     const scopes = new Map(
-      runIds.map((runId) => [runId, replayCorrectiveScopes(store, runId, options.scopeRule)]),
+      runIds.map((runId) => [
+        runId,
+        replayCorrectiveScopes(store, runId, options.scopeRule, options.unownedRule),
+      ]),
     );
     const finishes = new Map(
       runIds.map((runId) => [
@@ -3488,6 +3517,9 @@ export function replayTrace(
         correctiveScopes,
         newScopeStops: correctiveScopes.filter(
           (b) => b.replayed === "refuse" && b.recorded === "fits",
+        ).length,
+        newUnownedDecisions: correctiveScopes.filter(
+          (b) => b.unownedRecorded !== null && b.unownedReplayed !== b.unownedRecorded,
         ).length,
         conflictFinishes,
         newConflictFinishes: conflictFinishes.filter((b) => b.replayed !== b.recorded).length,

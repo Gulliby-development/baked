@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { batteryOf, type ChainFinding, chainMembers, chainRecord, chainRewriteDecision, chainSubject, findingChain, rewritesSymbol } from "../src/core/workflows/finding-chain.js";
+import { batteryOf, type ChainFinding, chainMembers, chainRecord, chainRewriteDecision, chainSubject, correctiveChain, findingChain, rewritesSymbol, symbolKey, symbolPath, unchangedRepeats } from "../src/core/workflows/finding-chain.js";
 
 // The join rules of a finding chain. A new join rule adds a case here with a pair the older rule
 // failed to join (AGENTS.md).
@@ -61,5 +61,72 @@ describe("R67 ampwhy: a reviewer's repeatOf on one file when the earlier finding
     expect(record.corrective).toBeUndefined();
     expect(rewritesSymbol(record)).toBe(true);
     expect(chainSubject(record)).toBe("src/main/java/amp/Reader.java");
+  });
+});
+
+describe("R68 ewvet scanner: a reviewer's repeatOf from a class to its member (#2137)", () => {
+  // The run's seven findings: F1 on the class, the rest on one member, all but F1-2 `repeatOf: F1`.
+  const file = { file: "src/Ewvet/Scan/Scanner.cs" };
+  const member = "Scanner.IsEncodingToken";
+  const F1 = finding("F1", { ...file, symbol: "Scanner", repairTaskId: "T009" });
+  const findings = [
+    F1,
+    finding("F1-2", { ...file, symbol: member, repairTaskId: "T009" }),
+    finding("F1-repeat", { ...file, symbol: member, repeatOf: "F1", repairTaskId: "T011" }),
+    ...["F1-3", "F1-4", "F1-5", "F1-6"].map((id) => finding(id, { ...file, symbol: member, repeatOf: "F1", status: "open" })),
+  ];
+  const all = byId(findings);
+  const at = (id: string) => findingChain(all, all.get(id) as ChainFinding).map((f) => f.id);
+
+  test("F1-3 on the member, repeatOf F1 on the class, is the second link: the old rule left it a chain of one", () => {
+    // The last names differ, and neither finding has a family or lacks a symbol.
+    expect(symbolKey("Scanner")).not.toBe(symbolKey(member));
+    expect(symbolPath(member)).toEqual(["Scanner", "IsEncodingToken"]);
+    expect(at("F1-3")).toEqual(["F1", "F1-3"]);
+    expect(chainRewriteDecision(at("F1-3").length, "on")).toBe("rewrite");
+    expect(correctiveChain(all, [{ id: "F1-3" }])?.chain.map((f) => f.id)).toEqual(["F1", "F1-3"]);
+    // F1-2 names no repeatOf and no family: no link.
+    expect(at("F1-2")).toEqual(["F1-2"]);
+  });
+
+  test("the chain's members are every finding linked to F1, its record names both symbols", () => {
+    expect(chainMembers(all, findingChain(all, all.get("F1-6") as ChainFinding)).map((f) => f.id)).toEqual(["F1", "F1-repeat", "F1-3", "F1-4", "F1-5", "F1-6"]);
+    const record = chainRecord("T012", all.get("F1-3") as ChainFinding, findingChain(all, all.get("F1-3") as ChainFinding), "on");
+    expect(record).toMatchObject({ decision: "rewrite", symbol: "IsEncodingToken", symbols: ["Scanner", "IsEncodingToken"] });
+    expect(record.corrective).toBeUndefined();
+  });
+
+  test("a link from a class to a member of another file, or to another class's member, stays unjoined", () => {
+    const other = byId([F1, finding("F2", { file: "src/Ewvet/Scan/Lexer.cs", symbol: member, repeatOf: "F1" })]);
+    expect(findingChain(other, other.get("F2") as ChainFinding)).toHaveLength(1);
+    const sibling = byId([F1, finding("F2", { ...file, symbol: "Lexer.IsEncodingToken", repeatOf: "F1" })]);
+    expect(findingChain(sibling, sibling.get("F2") as ChainFinding)).toHaveLength(1);
+  });
+});
+
+describe("R68 ewvet scanner: a finding back after its corrective changed no file (#2137)", () => {
+  const file = { file: "src/Ewvet/Scan/Scanner.cs" };
+  const F1 = finding("F1", { ...file, symbol: "Scanner", claim: "IsEncodingToken  misses the BOM", repairTaskId: "T010" });
+  const changes: Record<string, string[] | null> = { T010: [], T011: ["src/Ewvet/Scan/Scanner.cs"] };
+  const changedOf = (taskId: string) => changes[taskId] ?? null;
+
+  test("a repeatOf of the finding an empty corrective addressed is a repeat without change", () => {
+    const repeat = finding("F1-repeat", { ...file, symbol: "Scanner.IsEncodingToken", repeatOf: "F1", status: "open" });
+    expect(unchangedRepeats(byId([F1, repeat]), [repeat], changedOf)).toEqual([{ findingId: "F1-repeat", earlierId: "F1", taskId: "T010", changed: [], chain: ["F1", "F1-repeat"] }]);
+  });
+
+  test("without repeatOf, the same claim on the same file counts, case and spacing folded", () => {
+    const again = finding("F3", { ...file, symbol: null, claim: "isencodingtoken misses the BOM ", status: "open" });
+    expect(unchangedRepeats(byId([F1, again]), [again], changedOf).map((r) => [r.findingId, r.earlierId])).toEqual([["F3", "F1"]]);
+    const elsewhere = finding("F3", { file: "src/Ewvet/Scan/Lexer.cs", claim: F1.claim, status: "open" });
+    expect(unchangedRepeats(byId([F1, elsewhere]), [elsewhere], changedOf)).toEqual([]);
+  });
+
+  test("a corrective that changed a file, recorded no change yet, or a new defect is no repeat without change", () => {
+    const changed = finding("F1", { ...F1, repairTaskId: "T011" });
+    const repeat = finding("F1-repeat", { ...file, repeatOf: "F1", status: "open" });
+    expect(unchangedRepeats(byId([changed, repeat]), [repeat], changedOf)).toEqual([]);
+    expect(unchangedRepeats(byId([finding("F1", { ...F1, repairTaskId: "T099" }), repeat]), [repeat], changedOf)).toEqual([]);
+    expect(unchangedRepeats(byId([F1, finding("F2", { ...file, claim: "Another defect", status: "open" })]), [{ id: "F2" }], changedOf)).toEqual([]);
   });
 });
