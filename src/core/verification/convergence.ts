@@ -1142,7 +1142,7 @@ export function appendCorrections(
       : testChain
         ? testSweepStep(
             sweepTestFiles(grouped, root, base.profileId).filter((path) =>
-              writable({ bases }).includes(path),
+              writable(group).includes(path),
             ),
           )
         : key.startsWith(SWEEP_KEY)
