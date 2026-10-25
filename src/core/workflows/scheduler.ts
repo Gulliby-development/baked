@@ -14238,7 +14238,10 @@ ${note}`;
               attempts.push({ command: text, result: "timeout", output: tail });
               continue;
             }
-            if (outcome.exitCode !== 0) {
+            if (
+              outcome.exitCode !== 0 &&
+              !change.tool.listedExits?.includes(outcome.exitCode ?? 0)
+            ) {
               attempts.push({ command: text, result: "failed", output: tail });
               continue;
             }
