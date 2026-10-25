@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { existsSync } from "node:fs";
+import { existsSync, realpathSync } from "node:fs";
 import { join } from "node:path";
 import { startApiServer } from "../src/core/api/server.js";
 import { hashJson } from "../src/core/specs/hash.js";
@@ -50,7 +50,8 @@ test("the run and initiative package endpoints write, download and refuse like t
   expect((await request("POST", `/v1/workflow/runs/${run.runId}/package`, {})).status).toBe(409);
   expect((await request("POST", `/v1/workflow/runs/${run.runId}/package`, { out: "../outside" })).status).toBe(400);
   const zipped = (await (await request("POST", `/v1/workflow/runs/${run.runId}/package`, { zip: true, out: "handoff/run.zip" })).json()) as { path: string };
-  expect(zipped.path).toBe(join(root, "handoff", "run.zip"));
+  // `out` resolves inside the real workspace path (macOS temp folders are behind /private).
+  expect(zipped.path).toBe(join(realpathSync(root), "handoff", "run.zip"));
 
   // The download is the same tree, written nowhere.
   const download = await request("GET", `/v1/workflow/runs/${run.runId}/package`);
