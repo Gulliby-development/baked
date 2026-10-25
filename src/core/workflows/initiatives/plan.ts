@@ -10,6 +10,7 @@ import { canHold, deliverableKind, normalizePath } from "../../verification/deli
 import { isCodePath } from "../check-policy.js";
 import { WorkflowFault } from "../errors.js";
 import { HOST_CONTENT_MAX_CHARS, SafeId } from "../schemas.js";
+import { conditionalContractProblems } from "./upstream-symbols.js";
 
 /** An initiative holds at least this many features; a smaller request is a single run. */
 export const MIN_FEATURES = 3;
@@ -131,7 +132,7 @@ export function planStructureProblems(plan: InitiativePlan): string[] {
   }
   const cycle = findCycle(plan);
   if (cycle) problems.push(`dependency cycle: ${cycle.join(" -> ")}`);
-  return [...problems, ...skeletonProblems(plan)];
+  return [...problems, ...skeletonProblems(plan), ...conditionalContractProblems(plan)];
 }
 
 /**
