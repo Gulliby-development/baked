@@ -771,7 +771,10 @@ export function RoutingView({
       const own = layers[scope]?.specifyOnSonnet;
       return own !== undefined
         ? { value: `‹ ${own ? "on" : "off"} ›`, tone: "set" }
-        : { value: `‹ unset › = ${effective?.specifyOnSonnet ? "on" : "off"}`, tone: "default" };
+        : {
+            value: `‹ unset › = ${effective?.specifyOnSonnet === false ? "off" : "on"}`,
+            tone: "default",
+          };
     }
     if (row.kind === "search") {
       const own = layers[scope]?.codeWebSearch;

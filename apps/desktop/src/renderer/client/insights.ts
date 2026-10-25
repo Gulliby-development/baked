@@ -262,6 +262,19 @@ export interface InitiativeEstimate {
     /** The same ratio per feature size with an accepted feature, which scales that size instead. */
     bySize?: Partial<Record<"small" | "medium" | "large", number>>;
   };
+  /**
+   * Minutes still to run: summed active time, which the shared time budget limits, and wall time
+   * on the run slots (and on the plan's widest group when wider); null without timed samples,
+   * absent on older backends.
+   */
+  duration?: {
+    msPerToken: number;
+    samples: number;
+    activeMinutes: number;
+    wallMinutes: number;
+    slots: number;
+    widest: { slots: number; wallMinutes: number } | null;
+  } | null;
   notes: string[];
   label: string;
 }

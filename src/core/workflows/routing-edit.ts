@@ -488,7 +488,7 @@ export interface RoutingOverview {
     project: CriticMode | null;
     effective: CriticMode | null;
   };
-  /** The opt-in `specify` route to Sonnet on Claude Code Opus runs; `effective` is false when unset. */
+  /** The `specify` route to Sonnet on Claude Code Opus runs; `effective` is true when unset. */
   specifyOnSonnet: {
     global: boolean | null;
     project: boolean | null;
@@ -570,7 +570,7 @@ export function routingOverview(input: {
     specifyOnSonnet: {
       global: layers.global?.specifyOnSonnet ?? null,
       project: layers.project?.specifyOnSonnet ?? null,
-      effective: routing?.specifyOnSonnet ?? false,
+      effective: routing?.specifyOnSonnet ?? true,
     },
     codeWebSearch: {
       global: layers.global?.codeWebSearch ?? null,

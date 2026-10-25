@@ -33,6 +33,7 @@ import {
 } from "../llm/policy-refusal.js";
 import { invisibleCharacters } from "../llm/provider-answer.js";
 import { ProviderUnreachableError } from "../llm/provider-health.js";
+import { dataDir } from "../platform/index.js";
 import { runSandbox } from "../security/sandbox.js";
 import { buildSafeEnv } from "../spawn.js";
 import { canonical, hashBytes, hashJson } from "../specs/hash.js";
@@ -293,6 +294,13 @@ import { coverageFinding } from "./coverage.js";
 import { type CriticCalibration, calibrateCritic, criticExamples } from "./critic-calibration.js";
 import { crossPlatformAnalysisNote, crossPlatformNote } from "./cross-platform.js";
 import {
+  addDefectClasses,
+  DEFECT_CLASSES_FILE,
+  defectAdditions,
+  defectClassesFor,
+  defectRunText,
+} from "./defect-classes.js";
+import {
   git,
   gitWorktreePaths,
   initiativeSpecPrefix,
@@ -446,6 +454,11 @@ import {
   QUALITY_MANIFEST_FIELDS,
   unrequestedManifestFields,
 } from "./quality/dependencies.js";
+import {
+  isResolutionInput,
+  type ResolutionDiff,
+  replayResolution,
+} from "./quality/dependency-resolution.js";
 import {
   compareWithBaseline,
   duplicationOf,
@@ -716,6 +729,7 @@ import { forgetProgress } from "./stall.js";
 import { statedRequest } from "./stated-request.js";
 import type { AttemptUsageRecord } from "./step-budget.js";
 import { type LeaseResource, newId, type TaskRow, type WorkflowStore } from "./store.js";
+import { isSuppliedContentFinding, suppliedContentFindings } from "./supplied-content.js";
 import {
   documentsOnly,
   failureOwner,
@@ -818,6 +832,8 @@ type Severity = Review["findings"][number]["severity"];
 const MUTATION_COPY = "quality-mutation";
 /** The task worktree the baseline replay (#1945) runs in. */
 const BASELINE_REPLAY_COPY = "quality-baseline-replay";
+/** How long one dependency listing of the baseline replay may run (#1954). */
+const RESOLUTION_TIMEOUT_MS = 180_000;
 /** The task worktree the package contents check (#1984) builds packages in. */
 const PACKAGE_CONTENTS_COPY = "quality-package-contents";
 const ALL_SEVERITIES: readonly Severity[] = ["critical", "high", "medium", "low"];
@@ -2004,6 +2020,17 @@ export class WorkflowScheduler {
                   ...findings.filter((f) => !isDerivationFinding(f)),
                   ...derivationFindings(spec, analysis),
                 ];
+              // A criterion literal a test file the request supplies verbatim lacks is the spec
+              // author's to fix, found here on the host instead of by the task-end walk (#2006).
+              findings = [
+                ...findings.filter((f) => !isSuppliedContentFinding(f)),
+                ...suppliedContentFindings(
+                  spec,
+                  graph,
+                  statedRequest(state, this.store.requests(runId)),
+                  { checks: policy.checks },
+                ),
+              ];
               // Analysis passes when no finding blocks: the rest are notes, whatever the model's verdict.
               const blocking = findings.some((f) => f.blocking);
               state.analysisPassed = !blocking && analysis.verdict !== "inconclusive";
@@ -3032,6 +3059,7 @@ export class WorkflowScheduler {
                     }),
                   ),
                 );
+              if (policy.defectClasses === "on") this.learnDefectClasses(runId, state);
               break;
             }
           }
@@ -5287,6 +5315,15 @@ export class WorkflowScheduler {
             : "The host writes the audited row data and parameterized tests. Write only the actual(input) harness and any ordinary tests this task owns. Review and corrections must preserve the host-written files.",
         },
       };
+    }
+    // The cross-run defect classes of the run's domains, as examples (#1970).
+    if (
+      policy.defectClasses === "on" &&
+      (stageProfile.output === "plan" ||
+        (stageProfile.output === "implementation" && task?.origin === "planned"))
+    ) {
+      const classes = defectClassesFor(join(dataDir(), DEFECT_CLASSES_FILE), defectRunText(state));
+      if (classes) extra = { ...(extra as Record<string, unknown>), defectClasses: classes };
     }
     const replay =
       task && !generatedRows.length && stageProfile.output === "implementation"
@@ -12346,6 +12383,28 @@ ${note}`;
     }
   }
   /**
+   * Adds the families of the run's resolved correctness findings to the cross-run list of defect
+   * classes (#1970), from the learn stage of a run whose policy turns it on. What the run added is
+   * recorded as `learning/defect-classes.json`.
+   */
+  private learnDefectClasses(runId: string, state: RuntimeState): void {
+    const findings = this.store
+      .findings(runId)
+      .filter((f) => f.status === "resolved" && f.repair_task_id)
+      .map((f) => JSON.parse(f.body_json) as Review["findings"][number]);
+    const additions = defectAdditions(findings, defectRunText(state));
+    if (!additions.length) return;
+    addDefectClasses(join(dataDir(), DEFECT_CLASSES_FILE), additions, new Date().toISOString());
+    this.store.transaction(() =>
+      this.store.artifact(
+        runId,
+        "learning-candidate",
+        "learning/defect-classes.json",
+        canonical({ schemaVersion: 1, additions }),
+      ),
+    );
+  }
+  /**
    * Routes a defect a task names in another task's file to that file's owner at once (#839). A
    * test task may not edit the source it exposes a defect in, so it names the file in its summary
    * and reports implemented; until now nothing acted on that before the checks stage, and every
@@ -13129,7 +13188,8 @@ ${note}`;
       const code = await readCodeFiles(
         root,
         [...new Set(existing)],
-        (path) => isCodePath(path) || hasExecutableFields(path),
+        // Lock files too: the baseline replay lists their resolution before the change (#1954).
+        (path) => isCodePath(path) || hasExecutableFields(path) || isResolutionInput(path),
       );
       this.store.transaction(() =>
         this.store.artifact(
@@ -13226,7 +13286,11 @@ ${note}`;
       checks: tests,
     });
     if (prior?.inputHash === inputHash) return;
-    const record = (checks: BaselineReplayCheck[], note?: string): void =>
+    const record = (
+      checks: BaselineReplayCheck[],
+      note?: string,
+      dependencies?: ResolutionDiff[],
+    ): void =>
       this.store.transaction(() => {
         const value: BaselineReplay = {
           schemaVersion: 1,
@@ -13235,6 +13299,7 @@ ${note}`;
           removed: edits.remove,
           unknown: edits.unknown,
           checks,
+          ...(dependencies ? { dependencies } : {}),
           ...(note ? { note } : {}),
           inputHash,
         };
@@ -13263,9 +13328,55 @@ ${note}`;
       state,
       BASELINE_REPLAY_COPY,
       async (copy, scope) => {
-        for (const file of edits.revert)
-          writeFileSync(workspacePath(copy, file.path), file.content);
-        for (const file of edits.remove) rmSync(workspacePath(copy, file), { force: true });
+        // The resolved dependencies as delivered, then as they were before the change (#1954).
+        const folderOf = (folder: string) => (folder === "." ? copy : workspacePath(copy, folder));
+        const dependencies = await replayResolution(
+          changed.map((file) => file.path),
+          [".", ...tests.map((check) => check.cwd.replace(/\/+$/, "") || ".")],
+          {
+            names: (folder) => {
+              try {
+                return readdirSync(folderOf(folder));
+              } catch {
+                return [];
+              }
+            },
+            read: (path) => {
+              try {
+                return readFileSync(workspacePath(copy, path), "utf8");
+              } catch {
+                return null;
+              }
+            },
+            run: async (folder, executable, args) => {
+              signal.throwIfAborted();
+              try {
+                const outcome = await executeCheckCommand(scope, executable, [...args], {
+                  cwd: folderOf(folder),
+                  env: buildCheckEnv({ envNames: [] }),
+                  timeoutMs: RESOLUTION_TIMEOUT_MS,
+                  signal,
+                  sandbox: runSandbox(policy, copy, { gitWrite: true }),
+                });
+                return {
+                  status: outcome.timedOut
+                    ? "timeout"
+                    : outcome.exitCode === 0
+                      ? "passed"
+                      : "failed",
+                  output: outcome.output,
+                };
+              } catch (error) {
+                return { status: "failed", output: String(error) };
+              }
+            },
+          },
+          () => {
+            for (const file of edits.revert)
+              writeFileSync(workspacePath(copy, file.path), file.content);
+            for (const file of edits.remove) rmSync(workspacePath(copy, file), { force: true });
+          },
+        );
         const checks: BaselineReplayCheck[] = [];
         for (const check of tests) {
           signal.throwIfAborted();
@@ -13334,7 +13445,7 @@ ${note}`;
             ...(targets.length ? { targets } : {}),
           });
         }
-        record(checks);
+        record(checks, undefined, dependencies);
       },
     );
     if (failure) record([], failure);
