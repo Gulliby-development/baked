@@ -34,7 +34,7 @@ import {
 } from "../llm/policy-refusal.js";
 import { invisibleCharacters } from "../llm/provider-answer.js";
 import { ProviderUnreachableError } from "../llm/provider-health.js";
-import { dataDir } from "../platform/index.js";
+import { dataDir, matchGlob } from "../platform/index.js";
 import { runSandbox } from "../security/sandbox.js";
 import { buildSafeEnv } from "../spawn.js";
 import { canonical, hashBytes, hashJson } from "../specs/hash.js";
@@ -305,11 +305,22 @@ import {
 } from "./conflict-rows.js";
 import { assertFrozenInputs, buildWorkflowContext } from "./context.js";
 import {
+  evidencePaths,
+  hostDecision,
+  hostWiden,
   outOfScopeAdvice,
+  SCOPE_EDITS_DIR,
   SCOPE_KIND,
   SCOPE_TASKS_DIR,
+  type ScopeEdit,
+  type ScopeEvidence,
   type ScopeRecord,
   scopeRecord,
+  scopeRecords,
+  stackFrames,
+  type UnownedPath,
+  unownedAdvice,
+  unownedSummary,
 } from "./corrective-scope.js";
 import { costToleranceOf, currentCostCap, inCostWrapUp } from "./cost-tolerance.js";
 import { coverageFinding } from "./coverage.js";
@@ -1053,6 +1064,10 @@ export function ownCheckFailures(
   return result.unresolved.every(
     (item) => (CHECK_FAILURE.test(item) && CHECK_KIND.test(item)) || RULE_CODE.test(item),
   );
+}
+/** Whether a fault is a task's unfinished implementation (`OUTPUT_INVALID` with `unfinishedTask`). */
+function isUnfinished(error: unknown, taskId: string): boolean {
+  return error instanceof WorkflowFault && error.details.unfinishedTask === taskId;
 }
 const incompleteReason = (unresolved: string[]): string =>
   unresolved.length ? `: ${unresolved.slice(0, 3).join("; ").slice(0, 500)}` : "";
@@ -7177,12 +7192,25 @@ ${note}`;
       });
     } else if (!checking) {
       const root = runRoot(this.store.workspace, state);
-      // Shadow (#2094): whether the corrective can write the files its failing check names, on
-      // every session, so a resume of a corrective that cannot is recorded before it is paid.
-      if (task.origin !== "planned")
-        this.store.transaction(() =>
-          this.recordCorrectiveScope(runId, state, policy, task, "start"),
-        );
+      // Shadow (#2094, #2133): whether the corrective can write the files its failing check, its
+      // finding's evidence and its last attempt's unresolved items name, on every session, so a
+      // resume of a corrective that cannot is recorded (and, enforced, decided) before it is paid.
+      const held = this.unownedFile(runId, state, policy, task, root, "start");
+      if (held && "refuse" in held) {
+        this.store.transaction(() => this.store.taskStatus(runId, task.id, "blocked"));
+        throw held.refuse;
+      }
+      if (held) {
+        this.store.transaction(() => {
+          this.store.taskStatus(runId, task.id, "interrupted", null, {
+            cause: held.cause,
+            detail: "host decision before the session (corrective_unowned_file)",
+          });
+          this.store.finishStep(runId, child, "failed");
+          this.store.saveState(runId, state);
+        });
+        return;
+      }
       // Shadow (#2023): whether the host would apply the request's verbatim content itself.
       if (firstRun && task.origin === "planned")
         await this.recordHostApply(runId, state, task, root);
@@ -7517,6 +7545,27 @@ ${note}`;
           })
         )
           return;
+        // The host decides about a file the corrective may not write before any restart (#2133).
+        const unowned = this.unownedFile(runId, state, policy, task, root, "result", account);
+        if (unowned && "cause" in unowned) {
+          this.store.transaction(() => {
+            this.store.taskStatus(runId, task.id, "interrupted", null, {
+              cause: unowned.cause,
+              detail: "host decision on a blocked result (corrective_unowned_file)",
+              carried: changed.length > 0,
+            });
+            this.store.finishStep(runId, child, "failed");
+            this.store.saveState(runId, state);
+          });
+          return;
+        }
+        if (unowned) {
+          this.store.transaction(() => {
+            this.store.taskStatus(runId, task.id, "blocked");
+            this.recordUnfinished(runId, child, task.id, result, changed);
+          });
+          throw unowned.refuse;
+        }
         if (
           restartReason &&
           changed.length === 0 &&
@@ -7765,6 +7814,12 @@ ${note}`;
         policy.allowOverlappingWrites === true,
         (path) => existsSync(workspacePath(mainRoot, path)),
       );
+      // Each corrective's precondition before its session, as on the single-writer path (#2094,
+      // #2133): enforced, a held corrective leaves the batch and the loop plans again.
+      if (this.heldCorrectives(runId, state, policy, plan.batch, mainRoot)) {
+        if (this.queued.length) return;
+        continue;
+      }
       const batch = this.reserveBatch(runId, stepId, state, policy, profiles, plan.batch);
       const base = await runContentCommit(this.store, runId, worktree);
       this.store.transaction(() =>
@@ -8292,6 +8347,18 @@ ${note}`;
         );
       delete state.taskCarry[entry.task.id];
     } else if (outcome.kind === "interrupted") {
+      // Shadow (#2133): a blocked corrective's restart is recorded with the host's decision about
+      // the files its account names; enforced, its result comes as a rejected outcome instead.
+      if (!fatal && outcome.cause === "restart" && outcome.account)
+        this.unownedFile(
+          runId,
+          state,
+          policy,
+          entry.task,
+          join(this.store.workspace, entry.path),
+          "result",
+          outcome.account,
+        );
       const restart = !fatal && this.restartLostTask(runId, state, outcome);
       if (restart && outcome.edits) this.carryEdits(runId, state, entry, outcome.edits);
       if (!restart) lost.set(entry.task.id, outcome.reason);
@@ -8306,7 +8373,7 @@ ${note}`;
       });
     } else if (outcome.kind === "rejected") {
       // A cut-off attempt whose check failed already continues at its cap (#1329).
-      const cause: InterruptCause | null = outcome.continued
+      const early: InterruptCause | null = outcome.continued
         ? "continue_at_cap"
         : this.fallBackFromQuickFix(state, entry.task) ||
             this.widenCorrection(state, entry, outcome)
@@ -8321,6 +8388,28 @@ ${note}`;
                 [],
               )
             ? "waits_for_artifact"
+            : null;
+      // The host decides about a file the corrective may not write before any restart, as on
+      // the single-writer path (#2133).
+      const unowned =
+        early === null && !fatal && outcome.account && isUnfinished(outcome.error, entry.task.id)
+          ? this.unownedFile(
+              runId,
+              state,
+              policy,
+              entry.task,
+              join(this.store.workspace, entry.path),
+              "result",
+              outcome.account,
+            )
+          : null;
+      if (unowned && "refuse" in unowned) outcome.error = unowned.refuse;
+      const cause: InterruptCause | null =
+        early ??
+        (unowned && "cause" in unowned
+          ? unowned.cause
+          : unowned
+            ? null
             : outcome.edits !== undefined &&
                 this.continueAtCap(runId, state, entry.child, entry.task)
               ? "continue_at_cap"
@@ -8338,7 +8427,7 @@ ${note}`;
                 : outcome.edits !== undefined &&
                     this.progressAttempt(runId, state, entry.child, entry.task)
                   ? "continue_at_cap"
-                  : null;
+                  : null);
       const again = cause !== null;
       if (again && outcome.edits) this.carryEdits(runId, state, entry, outcome.edits);
       if (!again) failure ??= outcome.error;
@@ -8816,8 +8905,12 @@ ${note}`;
         changed.length === 0 && result.outcome === "blocked"
           ? this.missingArtifactOwnersOf(runId, state, task, result)
           : [];
-      // A narrowed correction widens before it restarts, as on the single-writer path.
-      if (restartReason && changed.length === 0 && !waits.length && !narrow)
+      // A narrowed correction widens before it restarts, as on the single-writer path. An
+      // enforced decision about a file a corrective may not write comes before any restart
+      // (#2133): its result goes to `settleOutcome` as a rejected one.
+      const decidesUnowned =
+        task.origin !== "planned" && stopMode(policy, "corrective_unowned_file") === "enforce";
+      if (restartReason && changed.length === 0 && !waits.length && !narrow && !decidesUnowned)
         return {
           kind: "interrupted",
           entry,
@@ -12778,13 +12871,34 @@ ${note}`;
           shadows: sources,
         }),
     );
+    // The file a failing case's output names in its first workspace frame (#2133): url-shortener
+    // (R68) probed T002's handler, and the defect was in T001's storage.ts, which T002's
+    // corrective could not write. A settled task's source the frame names takes the finding, and
+    // its correction goes to the task that wrote it; the probed task's first source otherwise.
+    const rows = this.store.tasks(runId);
+    const settled = new Set(
+      rows.filter((r) => ["implemented", "verified"].includes(r.status)).map((r) => r.id),
+    );
+    const settledSources = (state.graph?.tasks ?? [])
+      .filter((t) => t.origin === "planned" && settled.has(t.id))
+      .flatMap((t) => t.writes)
+      .filter((w) => w.action !== "delete" && !isTestPath(w.path))
+      .map((w) => w.path);
+    const evidence = this.scopeEvidence(runId, state, policy, root, []);
+    const frameFile = (output: string): string | undefined =>
+      evidence.paths(stackFrames(output)).find((path) => settledSources.includes(path));
     const probed = record(
-      outcomes.map((o, index) => ({
-        criterionId: cases[index]?.criterionId ?? "",
-        status: o.status,
-        reason: o.reason,
-        decision: edgeDecision(o.status),
-      })),
+      outcomes.map((o, index) => {
+        const decision = edgeDecision(o.status);
+        const file = decision === "finding" ? frameFile(o.output) : undefined;
+        return {
+          criterionId: cases[index]?.criterionId ?? "",
+          status: o.status,
+          reason: o.reason,
+          decision,
+          ...(file && file !== sources[0] ? { file } : {}),
+        };
+      }),
     );
     const findings: Review["findings"] = [];
     this.store.transaction(() => {
@@ -12809,12 +12923,14 @@ ${note}`;
           confidence: 1,
           requirementIds: criterion?.requirementIds ?? task.requirementIds,
           criterionIds: [criterionId],
-          file: sources[0] ?? null,
+          file: probed.cases[index]?.file ?? sources[0] ?? null,
           symbol: null,
           evidenceIds: [evidenceId],
           claim: `Edge input ${String(index + 1)} of ${task.id}, legal under ${criterionId}: prints ${JSON.stringify(repro.actual)} where ${JSON.stringify(repro.expected)} is required`,
           impact: `An extreme but legal input of ${criterionId} gives a wrong result; the test tasks would build on it and the final review would find it.`,
-          suggestedFix: `Make ${task.id}'s code handle this input as ${criterionId} requires, without breaking its other inputs.`,
+          suggestedFix: probed.cases[index]?.file
+            ? `The failing output points at ${probed.cases[index]?.file}: make that code handle this input as ${criterionId} requires, without breaking its other inputs.`
+            : `Make ${task.id}'s code handle this input as ${criterionId} requires, without breaking its other inputs.`,
           repro,
         });
       }
@@ -16885,9 +17001,17 @@ ${note}`;
       this.amendSpec(runId, state, fresh);
       const before = new Set(state.graph?.tasks.map((t) => t.id));
       appendCorrections(this.store, runId, state, policy, fresh, kind, scope);
-      if (scope === "task")
+      if (scope === "task") {
+        const evidence = this.scopeEvidence(
+          runId,
+          state,
+          policy,
+          runRoot(this.store.workspace, state),
+          [],
+        );
         for (const task of state.graph?.tasks.filter((t) => !before.has(t.id)) ?? [])
-          this.recordCorrectiveScope(runId, state, policy, task, "create");
+          this.recordCorrectiveScope(runId, state, policy, task, "create", evidence);
+      }
       this.markQuickFixes(runId, state, policy, fresh);
       if (scope === "task") state.pendingTaskRepair = [];
       // A v2 run keeps its position: a task's repair runs in the tasks stage it is in, and a
@@ -16910,35 +17034,382 @@ ${note}`;
     policy: RunPolicy,
     task: Task,
     at: ScopeRecord["at"],
-  ): void {
-    if (task.origin === "planned" || !task.findingIds.length) return;
+    evidence?: ScopeEvidence,
+  ): ScopeRecord | null {
+    if (task.origin === "planned" || !task.findingIds.length) return null;
     const findings = this.store
       .findings(runId)
       .filter((row) => task.findingIds.includes(row.id))
-      .map((row) => ({
-        id: row.id,
-        claim: String((JSON.parse(row.body_json) as { claim?: unknown }).claim ?? ""),
-      }));
-    const record = scopeRecord(state, policy, task, findings, at);
-    if (!record) return;
+      .map((row) => {
+        const body = JSON.parse(row.body_json) as {
+          claim?: unknown;
+          file?: unknown;
+          repro?: { actual?: unknown };
+        };
+        return {
+          id: row.id,
+          claim: String(body.claim ?? ""),
+          file: typeof body.file === "string" ? body.file : null,
+          ...(typeof body.repro?.actual === "string"
+            ? { repro: { actual: body.repro.actual } }
+            : {}),
+        };
+      });
+    const record = scopeRecord(state, policy, task, findings, at, undefined, evidence);
+    if (!record) return null;
     const sessions = this.store.steps(runId).filter((s) => s.stage_id === `task-${task.id}`).length;
     const path = `${SCOPE_TASKS_DIR}${task.id}.json`;
     const last = this.store.latestArtifact(runId, path);
     const previous = last
       ? (JSON.parse(this.store.readArtifact(runId, last.id)) as ScopeRecord)
       : null;
-    if (!previous || previous.at !== at || previous.decision !== record.decision)
+    if (
+      !previous ||
+      previous.at !== at ||
+      previous.decision !== record.decision ||
+      previous.host !== record.host ||
+      canonical(previous.unowned ?? []) !== canonical(record.unowned ?? [])
+    )
       this.store.artifact(runId, SCOPE_KIND, path, canonical(record));
-    if (record.decision !== "refuse") return;
-    const mode = stopMode(policy, "corrective_scope");
-    if (mode === "enforce") return;
-    recordWouldStop(this.store, runId, {
-      reason: "corrective_scope",
-      mode,
-      key: `${task.id}-${at}-${String(sessions)}`,
-      summary: `${task.id} cannot write ${record.missing.slice(0, 5).join(", ")}, which ${record.checks.join(", ")} of ${record.failing.join(", ")} names: ${at === "create" ? "the correction would not be opened" : "its session would not start"}`,
-      inputs: { ...record },
+    const key = `${task.id}-${at}-${String(sessions)}`;
+    if (record.decision === "refuse") {
+      const mode = stopMode(policy, "corrective_scope");
+      if (mode !== "enforce")
+        recordWouldStop(this.store, runId, {
+          reason: "corrective_scope",
+          mode,
+          key,
+          summary: `${task.id} cannot write ${record.missing.slice(0, 5).join(", ")}, which ${record.checks.join(", ")} of ${record.failing.join(", ")} names: ${at === "create" ? "the correction would not be opened" : "its session would not start"}`,
+          inputs: { ...record },
+        });
+    }
+    // Shadow (#2133): what the host would do about the files the evidence names outside the
+    // corrective's writes. `wait` is the existing wait for an unfinished writer.
+    if (record.host && record.host !== "fits" && record.host !== "wait") {
+      const mode = stopMode(policy, "corrective_unowned_file");
+      if (mode !== "enforce")
+        recordWouldStop(this.store, runId, {
+          reason: "corrective_unowned_file",
+          mode,
+          key,
+          summary: unownedSummary(task.id, record.unowned ?? [], record.host),
+          inputs: { ...record },
+        });
+    }
+    return record;
+  }
+  /**
+   * What a corrective's scope record reads besides its findings (#2133): the attempts' unresolved
+   * items, the run's task rows, the paths a text names in the run's root (planned paths, initiative
+   * boundaries, files that exist), auto-approval's allowed paths and the named files' hashes.
+   */
+  private scopeEvidence(
+    runId: string,
+    state: RuntimeState,
+    policy: RunPolicy,
+    root: string,
+    unresolved: readonly string[],
+  ): ScopeEvidence {
+    const patterns = state.initiativeBounds?.features.flatMap((f) => f.paths) ?? [];
+    const known = [
+      ...new Set([...this.plannedPaths(state), ...patterns.filter((p) => !/[*?[{]/.test(p))]),
+    ];
+    const inside = (path: string): string | null => {
+      try {
+        return workspacePath(root, path);
+      } catch {
+        return null;
+      }
+    };
+    return {
+      unresolved,
+      rows: this.store.tasks(runId),
+      paths: (text) =>
+        evidencePaths(text, root, known, (path) => {
+          if (patterns.some((p) => matchGlob(path, p))) return true;
+          const absolute = inside(path);
+          return absolute !== null && existsSync(absolute);
+        }),
+      allowedPaths: policy.autoApproval?.limits?.allowedPaths ?? [],
+      hash: (path) => {
+        const absolute = inside(path);
+        return absolute ? fileHash(absolute) : null;
+      },
+    };
+  }
+  /**
+   * The host's decision about the files a corrective's evidence names outside its writes
+   * (#2133), on a session's blocked or failed result (`account`) and before each session (the
+   * last attempt's unresolved items). It records `scope/tasks/<task>.json` and, in shadow (the
+   * default), the `corrective_unowned_file` would-stop; the caller goes on as before. Enforced
+   * (`stopModes`), it acts once per path: `route` opens a correction of the settled task that
+   * wrote the path and the corrective waits for it, `park` waits for a person's answer naming the
+   * upstream feature, `widen` adds one path per finding to the corrective's writes, and `refuse`
+   * returns the block the caller throws instead of another session. Before a session it acts only
+   * on what the last result named while the file is unchanged, so a resume after the file was
+   * changed opens the session.
+   */
+  private unownedFile(
+    runId: string,
+    state: RuntimeState,
+    policy: RunPolicy,
+    task: Task,
+    root: string,
+    at: "start" | "result",
+    account?: { summary: string; unresolved: readonly string[] },
+  ): { cause: InterruptCause } | { refuse: WorkflowFault } | null {
+    if (task.origin === "planned" || !task.findingIds.length) return null;
+    const unresolved = account
+      ? account.unresolved.length
+        ? [...account.unresolved]
+        : account.summary
+          ? [account.summary]
+          : []
+      : this.lastUnresolved(runId, task.id);
+    const evidence = this.scopeEvidence(runId, state, policy, root, unresolved);
+    const record = this.store.transaction(() =>
+      this.recordCorrectiveScope(runId, state, policy, task, at, evidence),
+    );
+    if (!record?.unowned?.length || stopMode(policy, "corrective_unowned_file") !== "enforce")
+      return null;
+    const edits = this.scopeEdits(runId, task.id);
+    const lastResult =
+      at === "start"
+        ? scopeRecords(this.store, runId)
+            .filter((r) => r.taskId === task.id && r.at === "result")
+            .at(-1)
+        : undefined;
+    const candidates = record.unowned.filter((p) => {
+      if (at === "start") {
+        const before = lastResult?.unowned?.find((q) => q.path === p.path);
+        if (!before || before.hash !== p.hash) return false;
+      }
+      const done = edits.find((e) => e.path === p.path);
+      return !done || (done.decision === "refuse" && p.decision === "refuse");
     });
+    const decision = hostDecision(candidates);
+    if (decision === "fits" || decision === "wait") return null;
+    const acting = candidates.filter((p) => p.decision === decision);
+    const journal = (correctiveIds?: string[]) =>
+      this.store.artifact(
+        runId,
+        SCOPE_KIND,
+        `${SCOPE_EDITS_DIR}${task.id}.json`,
+        canonical([
+          ...edits,
+          ...acting.map(
+            (p): ScopeEdit => ({
+              path: p.path,
+              decision,
+              owner: p.owner ?? p.feature,
+              at,
+              ...(correctiveIds ? { correctiveIds } : {}),
+              hash: p.hash,
+            }),
+          ),
+        ]),
+      );
+    if (decision === "refuse") {
+      this.store.transaction(() => journal());
+      const paths = acting.map((p) => p.path);
+      return {
+        refuse: new WorkflowFault(
+          "RECOVERY_REQUIRED",
+          unownedAdvice(
+            runId,
+            `out_of_scope_failure: ${unownedSummary(task.id, acting, "refuse").replace("would block", "blocks")}.`,
+            paths,
+          ),
+          { reason: "no_progress", paths, unfinishedTask: task.id },
+        ),
+      };
+    }
+    if (decision === "widen") {
+      // One path per finding, as a `host-widen` link of the correction chain: the corrective's
+      // next session may write it, and acceptance checks the link.
+      const added = this.store.transaction(() => {
+        const paths = hostWiden(
+          this.store,
+          runId,
+          state,
+          policy,
+          task,
+          acting
+            .slice(0, Math.max(1, task.findingIds.length))
+            .map((p) => ({ path: p.path, exists: p.hash !== null })),
+        );
+        if (!paths.length) return paths;
+        if (!state.widenedCorrections.includes(task.id)) state.widenedCorrections.push(task.id);
+        journal();
+        this.store.saveState(runId, state);
+        return paths;
+      });
+      return added.length ? { cause: "widened_correction" } : null;
+    }
+    if (decision === "park") {
+      const features = [...new Set(acting.map((p) => p.feature))].join(", ");
+      const files = acting.map((p) => p.path).join(", ");
+      this.store.transaction(() => journal());
+      this.wait("manual_evidence", state, {
+        criterionId: `upstream-${task.id}`,
+        snapshotId: state.snapshotId,
+        upstream: {
+          taskId: task.id,
+          paths: acting.map((p) => ({ path: p.path, feature: p.feature })),
+          unresolved,
+        },
+        question: `${task.id} needs ${files} changed, which feature ${features} owns: ${unresolved.join(" ").slice(0, 600)} Make the change in ${features} and answer with what changed; ${task.id} then runs again.`,
+      });
+      return { cause: "waits_for_artifact" };
+    }
+    const added = this.routeUnowned(runId, state, policy, task, acting, unresolved);
+    if (!added.length) return null;
+    this.store.transaction(() => {
+      journal(added);
+      state.waitingFor[task.id] = [...new Set([...(state.waitingFor[task.id] ?? []), ...added])];
+      this.store.artifact(
+        runId,
+        "recovery",
+        `tasks/waits/${task.id}.json`,
+        canonical({
+          taskId: task.id,
+          waitsFor: added,
+          summary: unownedSummary(task.id, acting, "route"),
+        }),
+      );
+      this.store.saveState(runId, state);
+    });
+    return { cause: "waits_for_artifact" };
+  }
+  /**
+   * The precondition of each corrective of a batch before its session (#2094, #2133), in the run
+   * worktree. True when an enforced decision held one (it waits, is widened or the run parks), so
+   * the caller plans the batch again; a refusal blocks the corrective and throws.
+   */
+  private heldCorrectives(
+    runId: string,
+    state: RuntimeState,
+    policy: RunPolicy,
+    tasks: readonly Task[],
+    root: string,
+  ): boolean {
+    let held = false;
+    for (const task of tasks) {
+      const decided = this.unownedFile(runId, state, policy, task, root, "start");
+      if (!decided) continue;
+      if ("refuse" in decided) {
+        this.store.transaction(() => this.store.taskStatus(runId, task.id, "blocked"));
+        throw decided.refuse;
+      }
+      held = true;
+      this.store.transaction(() => {
+        this.store.taskStatus(runId, task.id, "interrupted", null, {
+          cause: decided.cause,
+          detail: "host decision before the session (corrective_unowned_file)",
+        });
+        this.store.saveState(runId, state);
+      });
+    }
+    return held;
+  }
+  /** The unresolved items of a corrective's last attempt (`tasks/restarts/<task>.json`). */
+  private lastUnresolved(runId: string, taskId: string): string[] {
+    const last = this.store.latestArtifact(runId, `tasks/restarts/${taskId}.json`);
+    if (!last) return [];
+    try {
+      const body = JSON.parse(this.store.readArtifact(runId, last.id)) as { unresolved?: unknown };
+      return Array.isArray(body.unresolved)
+        ? body.unresolved.filter((item): item is string => typeof item === "string")
+        : [];
+    } catch {
+      return [];
+    }
+  }
+  /** The paths the host already acted on for a corrective (`scope/edits/<task>.json`, #2133). */
+  private scopeEdits(runId: string, taskId: string): ScopeEdit[] {
+    const last = this.store.latestArtifact(runId, `${SCOPE_EDITS_DIR}${taskId}.json`);
+    if (!last) return [];
+    try {
+      return JSON.parse(this.store.readArtifact(runId, last.id)) as ScopeEdit[];
+    } catch {
+      return [];
+    }
+  }
+  /**
+   * Opens a correction of the settled task that wrote each routed path (#2133), with the
+   * corrective's unresolved item as the claim and its finding's criteria, as `routeReportedDefect`
+   * does for a defect a task reports (#839). Returns the ids of the corrections it opened.
+   */
+  private routeUnowned(
+    runId: string,
+    state: RuntimeState,
+    policy: RunPolicy,
+    task: Task,
+    paths: readonly UnownedPath[],
+    unresolved: readonly string[],
+  ): string[] {
+    const graph = state.graph;
+    if (!graph) return [];
+    const base = this.store
+      .findings(runId)
+      .filter((row) => task.findingIds.includes(row.id))
+      .map((row) => JSON.parse(row.body_json) as Review["findings"][number])[0];
+    const evidenceId = this.store.transaction(() => {
+      const artifact = this.store.artifact(
+        runId,
+        "diff",
+        `tasks/${task.id}/unowned.json`,
+        canonical({ taskId: task.id, unresolved, paths }),
+      );
+      return this.store.addEvidence(runId, "diff", state.snapshotId ?? "", artifact.id);
+    });
+    const findings: Review["findings"] = [];
+    const owners = new Map<string, string>();
+    for (const path of paths) {
+      const owner = graph.tasks.find((t) => t.id === path.owner);
+      if (!owner) continue;
+      const item =
+        unresolved.find((text) => text.includes(path.path)) ??
+        unresolved.find((text) => text.includes(path.path.split("/").at(-1) ?? path.path)) ??
+        unresolved[0] ??
+        "";
+      const id = newId();
+      owners.set(id, owner.id);
+      findings.push({
+        id,
+        kind: "correctness",
+        severity: base?.severity ?? "high",
+        basis: "spec",
+        confidence: 1,
+        // The owner's own criteria: its correction is authorized by the tasks they relate it to.
+        requirementIds: owner.requirementIds.length
+          ? owner.requirementIds
+          : (base?.requirementIds ?? []),
+        criterionIds: owner.criterionIds.length ? owner.criterionIds : (base?.criterionIds ?? []),
+        file: path.path,
+        symbol: null,
+        evidenceIds: [evidenceId],
+        claim: `${task.id} cannot change ${path.path}, which ${owner.id} wrote: ${item.slice(0, 1200)}`,
+        impact: `${task.id}'s correction${base ? ` of "${base.claim.slice(0, 300)}"` : ""} needs this change in ${owner.id}'s file and cannot finish without it.`,
+        suggestedFix: `Make the change in ${path.path} that ${task.id} names: ${item.slice(0, 600)}${base?.repro ? ` ${task.id}'s finding is shown by ${[base.repro.executable, ...base.repro.args].map((a) => JSON.stringify(a)).join(" ")}, which prints ${JSON.stringify(base.repro.actual)} where ${JSON.stringify(base.repro.expected)} is required.` : ""} Keep the other behavior of ${path.path} as it is.`,
+      });
+    }
+    if (!findings.length) return [];
+    const recorded = this.recordFindings(runId, {
+      schemaVersion: 1,
+      snapshotHash: state.workspaceHash ?? "",
+      verdict: "changes_requested",
+      coverage: [],
+      findings,
+    });
+    // The store gives each finding its own id; the order is kept.
+    for (const [index, finding] of recorded.entries()) {
+      const owner = owners.get(findings[index]?.id ?? "");
+      if (owner) state.repairPredecessors[finding.id] = owner;
+    }
+    const before = new Set(graph.tasks.map((t) => t.id));
+    this.repair(runId, state, policy, recorded, "repair", "task");
+    return (state.graph?.tasks ?? []).filter((t) => !before.has(t.id)).map((t) => t.id);
   }
   /**
    * Records the host's apply decision for a planned task before its first implementer session
