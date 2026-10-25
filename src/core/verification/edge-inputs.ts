@@ -1,3 +1,4 @@
+import stripAnsi from "strip-ansi";
 import {
   type LanguageRecord,
   none,
@@ -197,7 +198,9 @@ function namesFile(frameFile: string, path: string, baseName: boolean): boolean 
   return baseName && own.split("/").at(-1) === file;
 }
 
-const outputLines = (output: string): string[] => output.replace(/\r\n?/g, "\n").split("\n");
+// A runtime that colours its output (FORCE_COLOR, as on CI) wraps `error` and paths in escapes.
+const outputLines = (output: string): string[] =>
+  stripAnsi(output).replace(/\r\n?/g, "\n").split("\n");
 
 /** The frame lines of `output` that name one of `files`, by the frame table. */
 export function ownFrames(output: string, files: readonly string[]): string[] {
