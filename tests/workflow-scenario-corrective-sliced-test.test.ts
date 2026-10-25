@@ -3,6 +3,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { hashBytes, hashJson } from "../src/core/specs/hash.js";
+import { type CorrectiveDeferRecord, DEFER_KIND } from "../src/core/workflows/corrective-defer.js";
 import { scopeRecord, scopeRecords } from "../src/core/workflows/corrective-scope.js";
 import { WorkflowScheduler } from "../src/core/workflows/scheduler.js";
 import type { Check, Review, RunPolicy, Spec, TaskGraph } from "../src/core/workflows/schemas.js";
@@ -356,5 +357,84 @@ describe("scenario: a test-check corrective holds only what its findings point a
     expect(fx.service.store.state(started.runId).graph?.tasks.find((t) => t.id === corrective?.id)?.writes.map((w) => w.path)).toContain("src/b.ts");
     // Before #2109 T004, which depends on T002's src/b.ts, waited for the corrective.
     expect(fx.executor.attempts.map((t) => t.id)).toEqual(["T001", "T002", "T003", "T004", corrective?.id ?? ""]);
+  }, 120000);
+});
+
+// #2109: a corrective that blocks ended the run at once, with ready tasks it does not hold never
+// run. T004 reads src/a.ts, which the corrective of T003 fixes, so the corrective runs first; it
+// blocks. T005 tests src/b.ts only: with `correctiveDefer: "on"` it runs before the run stops.
+const DEFER_PLAN = [
+  ...HOLD_PLAN.slice(0, 3),
+  holdTask("T004", "tests/a_more.test.ts", ["AC-001"], ["T001"]),
+  holdTask("T005", "tests/b.test.ts", ["AC-002"], ["T002"]),
+];
+
+class DeferExecutor extends HoldExecutor {
+  override async execute(request: ExecutionRequest) {
+    if (request.profile.output === "plan") {
+      const result = await super.execute(request);
+      const output = result.output as { taskGraph: TaskGraph };
+      output.taskGraph = { ...output.taskGraph, tasks: DEFER_PLAN };
+      return result;
+    }
+    const own = request.task as Task | undefined;
+    if (request.profile.output === "implementation" && own && own.origin !== "planned") {
+      this.attempts.push(own);
+      return {
+        output: { schemaVersion: 1, taskId: own.id, outcome: "blocked", summary: "The fix needs a decision on the return value", evidenceIds: [], unresolved: ["Which value a() returns"] },
+        inputTokens: 25,
+        outputTokens: 25,
+      };
+    }
+    return super.execute(request);
+  }
+}
+
+async function deferRun(correctiveDefer: boolean) {
+  const fx = workflowFixture({
+    policy: { ...fixturePolicy, checks: [testsWritten], ...(correctiveDefer ? { correctiveDefer: "on" as const } : {}) },
+    executor: (root) => new DeferExecutor(root),
+  });
+  cleanups.push(fx.dispose);
+  const started = await fx.start();
+  const planned = await fx.service.drive(started.runId, signal());
+  expect(planned.reason).toBe("approval");
+  await fx.approve(started.runId);
+  const final = await fx.service.drive(started.runId, signal());
+  const records = fx.service.store
+    .artifacts(started.runId)
+    .filter((a) => a.kind === DEFER_KIND)
+    .map((a) => JSON.parse(fx.service.store.readArtifact(started.runId, a.id)) as CorrectiveDeferRecord);
+  const statuses = Object.fromEntries(fx.service.store.tasks(started.runId).map((r) => [r.id, r.status]));
+  return { fx, final, records, statuses, runId: started.runId, attempts: fx.executor.attempts.map((t) => t.id) };
+}
+
+describe("scenario: a blocked corrective with independent ready tasks (#2109)", () => {
+  test("on: the independent task runs before the run stops with the corrective's block", async () => {
+    const { final, records, statuses, attempts } = await deferRun(true);
+    expect(final.status).toBe("blocked");
+    const corrective = records[0]?.taskId ?? "";
+    expect(statuses[corrective]).toBe("blocked");
+    // T005 ran after the block; T004, which reads the file the corrective fixes, is still held.
+    expect(attempts.indexOf("T005")).toBeGreaterThan(attempts.indexOf(corrective));
+    expect(statuses.T005).not.toBe("pending");
+    expect(statuses.T004).toBe("pending");
+    expect(records.map((r) => [r.mode, r.ready, r.parked, r.defer])).toEqual([["on", ["T005"], [], true]]);
+  }, 120000);
+
+  test("shadow: the run stops at the block, and the record says what could have run", async () => {
+    const { fx, final, records, statuses, runId } = await deferRun(false);
+    expect(final.status).toBe("blocked");
+    expect(statuses.T005).toBe("pending");
+    expect(records.map((r) => [r.mode, r.ready, r.defer])).toEqual([["shadow", ["T005"], true]]);
+    // The replay hook decides the record again from the bench trace.
+    const dir = mkdtempSync(join(tmpdir(), "corrective-defer-trace-"));
+    cleanups.push(() => rmSync(dir, { recursive: true, force: true }));
+    const out = join(dir, "run.sqlite.gz");
+    exportTrace(fx.root, out);
+    const replayed = replayTrace(out).runs.find((r) => r.runId === runId);
+    expect(replayed?.correctiveDefers.map((b) => [b.mode, b.ready, b.recorded, b.replayed])).toEqual([["shadow", 1, true, true]]);
+    expect(replayed?.newDeferDecisions).toBe(0);
+    expect(replayTrace(out, { correctiveDeferRule: () => false }).runs.find((r) => r.runId === runId)?.newDeferDecisions).toBe(1);
   }, 120000);
 });
