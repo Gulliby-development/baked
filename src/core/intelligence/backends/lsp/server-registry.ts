@@ -4,7 +4,13 @@ import { appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { loadConfig, loadProjectConfig } from "../../../../config/index.js";
 import { getCwd } from "../../../cwd.js";
-import { commandExists, configDir, IS_WIN, userDataDir } from "../../../platform/index.js";
+import {
+  commandExists,
+  configDir,
+  IS_WIN,
+  pwshExecutable,
+  userDataDir,
+} from "../../../platform/index.js";
 import type { Language } from "../../types.js";
 import { loadRegistry } from "./installer.js";
 
@@ -86,7 +92,73 @@ const SERVER_CANDIDATES: Record<string, ServerCandidate[]> = {
     { command: "sqls", args: [] },
     { command: "sql-language-server", args: ["up", "--method", "stdio"] },
   ],
+  // A release bundle started by PowerShell, not a program on PATH: see `SERVER_BUNDLES` (#2125).
+  powershell: [{ command: "powershell-editor-services", args: [] }],
 };
+
+/**
+ * A server shipped as a release folder that a runtime starts, named by its Mason package: the
+ * folder is `lsp-servers/NAME` (where `/lsp` installs it) or Mason's `packages/NAME` (#2125).
+ */
+export interface ServerBundle {
+  /** A file inside the folder that shows the bundle is installed. */
+  entry: string;
+  /** The program that runs the bundle. */
+  runtime: () => string;
+  /** The runtime's arguments for the bundle in `folder`. */
+  args: (folder: string) => string[];
+}
+
+const PSES_STATE = () => join(userDataDir(), "powershell-editor-services");
+const quoted = (path: string) => `'${path.replaceAll("'", "''")}'`;
+
+const SERVER_BUNDLES: Record<string, ServerBundle> = {
+  // PowerShell Editor Services, by PowerShell 7 (Windows PowerShell 5.1 on a Windows machine
+  // without it, as the gates run). Its log and session file go to BAKED's data folder, not the
+  // project; the bundle's own PSScriptAnalyzer gives the diagnostics.
+  "powershell-editor-services": {
+    entry: join("PowerShellEditorServices", "Start-EditorServices.ps1"),
+    runtime: pwshExecutable,
+    args: (folder) => [
+      "-NoLogo",
+      "-NoProfile",
+      "-NonInteractive",
+      "-Command",
+      [
+        `& ${quoted(join(folder, "PowerShellEditorServices", "Start-EditorServices.ps1"))}`,
+        "-Stdio",
+        `-BundledModulesPath ${quoted(folder)}`,
+        `-LogPath ${quoted(join(PSES_STATE(), "logs"))}`,
+        "-LogLevel Warning",
+        `-SessionDetailsPath ${quoted(join(PSES_STATE(), "session.json"))}`,
+        "-FeatureFlags @()",
+        "-HostName baked",
+        "-HostProfileId baked",
+        // Any version parses; the real one would bundle package.json, whose dependency list trips
+        // the worker bundle's TUI canary (scripts/build.ts).
+        "-HostVersion 1.0.0",
+      ].join(" "),
+    ],
+  },
+};
+
+/** The bundle a server command names, or undefined for a program. */
+export const serverBundle = (command: string): ServerBundle | undefined => SERVER_BUNDLES[command];
+
+/**
+ * How to start a server: a program runs as itself, a bundle through its runtime (resolved is
+ * the bundle's folder then).
+ */
+export function serverLaunch(
+  command: string,
+  resolved: string,
+  args: string[],
+): { command: string; args: string[] } {
+  const bundle = SERVER_BUNDLES[command];
+  return bundle
+    ? { command: bundle.runtime(), args: bundle.args(resolved) }
+    : { command: resolved, args };
+}
 
 /**
  * What a server writes into the project it is started on, and how it is kept out of the user's
@@ -202,7 +274,20 @@ export interface ResolvedServerCommand {
 /** Cache of resolved commands: name → where it was found (or null) */
 const probeCache = new Map<string, ResolvedServerCommand | null>();
 
+/** The folder of an installed bundle whose runtime is on PATH. */
+function probeBundle(name: string, bundle: ServerBundle): ResolvedServerCommand | null {
+  if (!commandExists(bundle.runtime())) return null;
+  for (const [folder, source] of [
+    [join(BAKED_BIN_DIR, name), "baked"],
+    [join(userDataDir(), "mason", "packages", name), "mason"],
+  ] as const)
+    if (existsSync(join(folder, bundle.entry))) return { path: folder, source };
+  return null;
+}
+
 function probe(cmd: string): ResolvedServerCommand | null {
+  const bundle = SERVER_BUNDLES[cmd];
+  if (bundle) return probeBundle(cmd, bundle);
   if (commandExists(cmd)) return { path: cmd, source: "PATH" };
   const sfPath = findInbaked(cmd);
   if (sfPath) return { path: sfPath, source: "baked" };
@@ -287,13 +372,8 @@ export function findServersForLanguage(language: Language): LspServerConfig[] {
   for (const candidate of candidates) {
     if (isServerDisabled(candidate.command)) continue;
     const resolved = resolveServerCommand(candidate.command);
-    if (resolved) {
-      results.push({
-        command: resolved.path,
-        args: candidate.args,
-        language,
-      });
-    }
+    if (resolved)
+      results.push({ ...serverLaunch(candidate.command, resolved.path, candidate.args), language });
   }
   return results;
 }
