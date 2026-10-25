@@ -95,6 +95,13 @@ export const STOP_REASONS = {
     modes: NOT_ENFORCED,
     defaultMode: "shadow",
   },
+  repeat_without_change: {
+    label: "A finding comes back after its corrective changed no file",
+    // Shadow only until two bench rounds show no false would-stop (#2137); its promotion asks for
+    // an owner or scope decision instead of opening another corrective of the same finding.
+    modes: NOT_ENFORCED,
+    defaultMode: "shadow",
+  },
   cost: {
     label: "Spent and reserved dollars reach the cost cap",
     modes: ENFORCED,

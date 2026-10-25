@@ -26,10 +26,11 @@ export const INVENTORY_REVIEW_RULE =
   " extra.workspaceInventory, when present, is the host's list of the files in the reviewed workspace now (tracked and untracked, without ignored and deleted files), with the total and the number of test files: settle a criterion that counts, lists or limits files from it, never leave it inconclusive for want of a file listing, and never search for files with navigate to count them.";
 /**
  * The defect class of a finding (#2048): with its file it keys finding chains next to the symbol,
- * so cases of one class on different symbols of a file join one chain.
+ * so cases of one class on different symbols of a file join one chain. Every kind of finding that
+ * can repeat carries one (#2137): a missing or partial finding without it never joins by family.
  */
 export const FAMILY_REVIEW_RULE =
-  " Give every correctness finding a family: a short lower-case label of hyphenated words for its defect class, the rule the code breaks rather than the input that shows it (decimal-context-precision, nested-inline-delimiters, utf8-byte-offsets), or null when none fits. Give a finding of the same class as one in earlierFindings that finding's family, also on another symbol of the file, and keep one label per class.";
+  " Give every finding a family, a missing or partial finding as well as a correctness one: a short lower-case label of hyphenated words for its defect class, the rule the code breaks or the behavior left out rather than the input that shows it (decimal-context-precision, nested-inline-delimiters, utf8-byte-offsets, encoding-token-detection), or null when none fits. Give a finding of the same class as one in earlierFindings that finding's family, also on another symbol of the file, and keep one label per class.";
 export const SETTLED_REVIEW_RULE =
   " extra.settledConflicts, when present, lists conflicts tasks of this run reported and how they were settled, by an assumption under clarification assume or by a person's answer, and platform limits a finished task declared (declared: true): what the platform cannot do, so the nearest feasible behavior the task implemented holds. A finding that asks again for what a declared limit rules out (the raw value a protocol cannot carry) is basis inferred unless its repro shows the platform can do it. A rule the request states and a settled conflict outrank a suggested fix: raise no finding whose fix would break one (a test input built by a loop when the request forbids generated test inputs), and when the behavior still looks missing, give the finding basis inferred and name the settled conflict in its claim.";
 export const INPUT_BYTES_REVIEW_RULE =
