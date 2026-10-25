@@ -100,10 +100,11 @@ function runsAggregateTarget(check: Pick<Check, "executable" | "args">): boolean
  * read one file at a time and stay per task, as do `mix format`, `dart format` and `zig fmt`;
  * `dart analyze` and `flutter analyze` resolve every import, so they are whole-unit (#1753), as
  * are PHPStan and Psalm, which load every class a file uses (#1491); Pint and PHP-CS-Fixer format
- * one file at a time.
+ * one file at a time. SQLFluff with the dbt templater compiles the whole dbt project (`ref()` to
+ * other models), so its gate, `sqlfluff-dbt`, is too (#1499).
  */
 const WHOLE_UNIT_COMMAND =
-  /\b(?:clippy|vet|tsc|typecheck|mypy|pyright|rustfmt|phpstan|psalm)\b|\bcargo\s+(?:check|fmt)\b|\b(?:dart|flutter)\s+analyze\b/i;
+  /\b(?:clippy|vet|tsc|typecheck|mypy|pyright|rustfmt|phpstan|psalm|sqlfluff-dbt)\b|\bcargo\s+(?:check|fmt)\b|\b(?:dart|flutter)\s+analyze\b/i;
 
 export const isWholeUnitCheck = (check: Check): boolean =>
   WHOLE_UNIT_COMMAND.test([check.id, check.executable, ...check.args].join(" "));

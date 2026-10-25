@@ -44,6 +44,13 @@ import {
   conflictFinishDecision,
   conflictFinishReady,
 } from "./conflict-finish.js";
+import {
+  missingDiagnosed,
+  SCOPE_KIND,
+  type ScopeDecision,
+  type ScopeRule,
+  scopeRecords,
+} from "./corrective-scope.js";
 import { assertForecastFits, costForecast } from "./cost-forecast.js";
 import { WorkflowFault } from "./errors.js";
 import {
@@ -193,6 +200,8 @@ const KEPT_ARTIFACTS = new Set([
   CASE_WALK_KIND,
   // Each review's gate: the findings' labels and repro outcomes, no claims (#1715).
   REVIEW_GATE_KIND,
+  // Each task-level corrective's write-scope precondition: diagnosed paths and writes (#2094).
+  SCOPE_KIND,
   // Each convergence gate: the same labels, criterion verdicts and evidence counts (#1715).
   CONVERGENCE_GATE_KIND,
   // Each decision for the request or the platform on checked evidence: states, no quotes (#2032).
@@ -739,10 +748,45 @@ export interface RunReplay {
   evidenceDecisions: EvidenceDecisionBoundary[];
   /** Findings and conflict reports the current rule settles differently than the recording. */
   newEvidenceDecisions: number;
+  /** Each task-level corrective's write-scope precondition against the current rule (#2094). */
+  correctiveScopes: CorrectiveScopeBoundary[];
+  /** Correctives the current rule refuses for a diagnosed file outside their writes that the recording let run. */
+  newScopeStops: number;
   /** Each settled conflict's host finish decision against the current rule (#2033). */
   conflictFinishes: ConflictFinishBoundary[];
   /** Settled conflicts the current rule finishes on the host, or not, differently. */
   newConflictFinishes: number;
+}
+
+export interface CorrectiveScopeBoundary {
+  taskId: string;
+  at: "create" | "start";
+  recorded: ScopeDecision;
+  replayed: ScopeDecision;
+  /** The diagnosed files the current rule finds outside the corrective's writes. */
+  missing: string[];
+}
+
+/**
+ * Every write-scope precondition of a task-level corrective a run recorded (`scope/tasks/`,
+ * #2094), decided again from its recorded diagnosed files and writes. Traces before #2094 record
+ * none.
+ */
+export function replayCorrectiveScopes(
+  store: WorkflowStore,
+  runId: string,
+  rule: ScopeRule = missingDiagnosed,
+): CorrectiveScopeBoundary[] {
+  return scopeRecords(store, runId).map((record) => {
+    const missing = rule(record.diagnosed ?? [], record.writes ?? []);
+    return {
+      taskId: record.taskId,
+      at: record.at,
+      recorded: record.decision,
+      replayed: missing.length ? "refuse" : "fits",
+      missing,
+    };
+  });
 }
 
 export interface ConflictFinishBoundary {
@@ -3066,6 +3110,8 @@ function replayRun(
   | "newConvergenceVerdicts"
   | "evidenceDecisions"
   | "newEvidenceDecisions"
+  | "correctiveScopes"
+  | "newScopeStops"
   | "conflictFinishes"
   | "newConflictFinishes"
 > | null {
@@ -3250,6 +3296,7 @@ export function replayTrace(
     reviewGateRule?: ReviewGateRule;
     convergenceGateRule?: ConvergenceGateRule;
     evidenceRule?: EvidenceRule;
+    scopeRule?: ScopeRule;
     conflictFinishRule?: ConflictFinishRule;
   } = {},
 ): TraceReplay {
@@ -3326,6 +3373,9 @@ export function replayTrace(
     const evidence = new Map(
       runIds.map((runId) => [runId, replayEvidenceDecisions(store, runId, options.evidenceRule)]),
     );
+    const scopes = new Map(
+      runIds.map((runId) => [runId, replayCorrectiveScopes(store, runId, options.scopeRule)]),
+    );
     const finishes = new Map(
       runIds.map((runId) => [
         runId,
@@ -3361,6 +3411,7 @@ export function replayTrace(
       const reviewGates = reviews.get(runId) ?? [];
       const convergenceGates = converges.get(runId) ?? [];
       const evidenceDecisions = evidence.get(runId) ?? [];
+      const correctiveScopes = scopes.get(runId) ?? [];
       const conflictFinishes = finishes.get(runId) ?? [];
       if (
         !replay.boundaries.length &&
@@ -3379,6 +3430,7 @@ export function replayTrace(
         !reviewGates.length &&
         !convergenceGates.length &&
         !evidenceDecisions.length &&
+        !correctiveScopes.length &&
         !conflictFinishes.length
       )
         continue;
@@ -3433,6 +3485,10 @@ export function replayTrace(
         ),
         evidenceDecisions,
         newEvidenceDecisions: evidenceDecisions.filter((b) => b.replayed !== b.recorded).length,
+        correctiveScopes,
+        newScopeStops: correctiveScopes.filter(
+          (b) => b.replayed === "refuse" && b.recorded === "fits",
+        ).length,
         conflictFinishes,
         newConflictFinishes: conflictFinishes.filter((b) => b.replayed !== b.recorded).length,
       });

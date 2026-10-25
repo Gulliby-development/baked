@@ -32,6 +32,7 @@ export const SUPPORTED_LANGUAGES = [
   "svelte",
   "rescript",
   "solidity",
+  "sql",
 ] as const satisfies readonly Language[];
 
 export type SupportedLanguage = (typeof SUPPORTED_LANGUAGES)[number];

@@ -8,9 +8,12 @@ export type { ParseError } from "./backends/tree-sitter.js";
  * current code of its language; a grammar that lags its language (Kotlin, Swift) would refuse
  * valid files, so a language outside this list passes unchecked. Ruby stays out (#1493): the
  * bundled tree-sitter-ruby reported errors in 5 of 2,618 valid files of the RuboCop, RSpec and
- * parser gems (`$:` globals, `self(` calls, a leading magic comment). Lua stays out (#1495): the
- * bundled tree-sitter-lua reported errors in 374 of 1,133 files of busted, luassert, penlight and
- * luacheck that `luac -p` accepts (a call without parentheses, `local f = function`).
+ * parser gems (`$:` globals, `self(` calls, a leading magic comment). Dart stays out (#1494): the
+ * bundled tree-sitter-dart reported errors in 92 of 444 valid files of the args, async, collection,
+ * path, matcher, test, shelf, glob, crypto and io packages (`library;` without a name, Dart 3
+ * patterns). Lua stays out (#1495): the bundled tree-sitter-lua reported errors in 374 of 1,133
+ * files of busted, luassert, penlight and luacheck that `luac -p` accepts (a call without
+ * parentheses, `local f = function`).
  */
 const CHECKED_GRAMMARS: Record<string, string> = {
   ".rs": "rust",
@@ -26,6 +29,8 @@ const CHECKED_GRAMMARS: Record<string, string> = {
   ".py": "python",
   ".cs": "csharp",
   ".java": "java",
+  // Not `.sql`: one grammar covers many dialects (T-SQL, PL/pgSQL bodies, MySQL delimiters) and
+  // refuses valid statements of each, so SQL is checked by the project's SQLFluff gate (#1499).
 };
 
 const MAX_ERRORS = 5;

@@ -212,6 +212,8 @@ mkdir -p "${DEPS_DIR}/wasm"
 cp node_modules/web-tree-sitter/tree-sitter.wasm "${DEPS_DIR}/wasm/"
 cp node_modules/web-tree-sitter-engine/web-tree-sitter.wasm "${DEPS_DIR}/wasm/"
 cp node_modules/tree-sitter-wasms/out/*.wasm "${DEPS_DIR}/wasm/"
+# Grammars tree-sitter-wasms lacks (SQL, #1499), vendored with their sources in vendor/tree-sitter.
+cp vendor/tree-sitter/*.wasm "${DEPS_DIR}/wasm/"
 cp -r node_modules/@opentui/core/assets "${DEPS_DIR}/opentui-assets"
 # Pre-bundle the worker with all deps (web-tree-sitter) into a single file
 bun build node_modules/@opentui/core/parser.worker.js --outdir "${DEPS_DIR}/opentui-assets" --target=bun --asset-naming="[name].[ext]"

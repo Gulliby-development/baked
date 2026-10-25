@@ -1,4 +1,5 @@
 import { canonical, hashJson } from "../specs/hash.js";
+import { diagnosedFiles, diagnosticsOnly } from "../workflows/corrective-scope.js";
 import { WorkflowFault } from "../workflows/errors.js";
 import {
   CHAIN_KIND,
@@ -343,14 +344,12 @@ export function failureSignature(output: string): string {
  * any tests to execute" (#1864), Go's "no test files", SwiftPM's "no tests found", Mix's "did not
  * match any directory/file: test" or "no tests to run", Flutter's "Test directory "test" not
  * found" (#1753), and RSpec's "No examples found." or "All examples were filtered out" and
- * Minitest's "0 runs, 0 assertions" (#1493), all of which exit 0, PHPUnit's "No tests executed!"
- * (#1491; Pest says "No tests found") and busted's "No test files found matching Lua pattern"
- * (#1495), and a TAP plan of no tests, `1..0` (bats on an empty folder, #1497). A plan that
- * writes the tests last has this state until its test tasks run, and it is no defect of the code
- * (#1031, #1208).
+ * Minitest's "0 runs, 0 assertions" (#1493), all of which exit 0; dart test's "No tests ran." exits 79
+ * and its 'the default "test/" directory doesn't exist' exits 65 (#1494), and PHPUnit's "No tests executed!" (#1491; Pest says "No tests found") and busted's "No test files found matching Lua pattern" (#1495), and a TAP plan of no tests, `1..0` (bats on an empty folder, #1497). A plan that writes the tests last has this state until its test tasks run, and
+ * it is no defect of the code (#1031, #1208).
  */
 export function noTestsCollected(output: string): boolean {
-  return /\bno tests ran\b|\bno tests executed!|\bno test files found matching lua pattern\b|^1\.\.0(?:[ \t]+#.*)?$|\bcollected 0 items\b|\bno tests? (?:files? )?found\b|\bno test files\b|\bno files were found in testpaths\b|\b0 test files matching\b|\bdid not discover any tests to execute\b|\bno tests to run\b|\bdid not match any directory\/file\b|\btest directory "?test"? not found\b|\bno examples found\b|\ball examples were filtered out\b|^0 runs, 0 assertions\b/im.test(
+  return /\bno tests ran\b|\bno tests executed!|\bno test files found matching lua pattern\b|^1\.\.0(?:[ \t]+#.*)?$|\bcollected 0 items\b|\bno tests? (?:files? )?found\b|\bno test files\b|\bno files were found in testpaths\b|\b0 test files matching\b|\bdid not discover any tests to execute\b|\bno tests to run\b|\bdid not match any directory\/file\b|\btest directory "?test"? not found\b|\bno examples found\b|\ball examples were filtered out\b|^0 runs, 0 assertions\b|\bthe default "test\/" directory doesn't exist\b|^Result: NOTESTS\b/im.test(
     output,
   );
 }
@@ -396,6 +395,17 @@ export const MISSING_PATH_LINES: readonly { tool: string; line: RegExp }[] = [
   { tool: "ruby", line: /^ruby: No such file or directory -- (\S+) \(LoadError\)$/ },
   { tool: "rake", line: /^File does not exist: (\S+)$/ },
   { tool: "rubocop", line: /^Error: No such file or directory: (\S+)$/ },
+  // dart test `  Failed to load "test/a_test.dart": Does not exist.`, dart analyze `Directory or
+  // file doesn't exist: lib/a`, and dart format `No file or directory found at "lib/a".`, which
+  // exits 0 (#1494).
+  { tool: "dart", line: /^\s*Failed to load "([^"]+)": Does not exist\.$/ },
+  { tool: "dart", line: /^Directory or file doesn't exist: (\S+)$/ },
+  { tool: "dart", line: /^No file or directory found at "([^"]+)"\.$/ },
+  // "User Error: Specified path does not exist. Check it/they exist(s): models/stg_orders.sql."
+  {
+    tool: "sqlfluff",
+    line: /\bSpecified path does not exist\. Check it\/they exist\(s\): (\S+?)[.,]?\s*$/,
+  },
 ];
 
 /** Whether RSpec's own `load` of the file named at `index` failed, a few lines below it. */
@@ -1052,15 +1062,29 @@ export function appendCorrections(
       root.tasks.some(
         (t) => finished.has(t.id) && t.writes.some((w) => w.path === path && w.action !== "delete"),
       ));
+  // A task-level corrective of a failed non-test check may write the files that check names in
+  // the failing task's own files, also while a later slice of a shared test file is pending: the
+  // slice depends on the failing task and reads the corrected file (#2094). A diagnostics-only
+  // corrective writes only the failing task's own files, never its related tasks' sources.
+  type Group = { base: Task; bases: Task[]; findings: Review["findings"] };
+  const diagnosed = (group: Pick<Group, "findings">): Set<string> =>
+    new Set(taskLevel ? group.findings.flatMap((f) => diagnosedFiles(state, policy, f)) : []);
+  const diagnosticGroup = (group: Pick<Group, "findings">): boolean =>
+    taskLevel && group.findings.every((f) => diagnosticsOnly(state, policy, f));
+  const available =
+    (group: Pick<Group, "findings">) =>
+    (path: string): boolean =>
+      availableTest(path) || diagnosed(group).has(path);
+  const groupWrites = (group: Group, expected: RuntimeState["expectedFiles"]): Task["writes"] =>
+    (diagnosticGroup(group)
+      ? group.bases.flatMap((b) => b.writes)
+      : group.bases.flatMap((b) => correctionWrites(b, root, expected))
+    ).filter((w) => available(group)(w.path));
   // A planned file the correction needs: its owner of the same profile joins the group, so the
   // correction may write it and the acceptance rule still finds it related.
-  const writable = (group: { bases: Task[] }): string[] =>
-    group.bases
-      .flatMap((b) => correctionWrites(b, root, null))
-      .map((w) => w.path)
-      .filter(availableTest);
-  const join = (group: { base: Task; bases: Task[] }, path: string): void => {
-    if (!availableTest(path) || writable(group).includes(path)) return;
+  const writable = (group: Group): string[] => groupWrites(group, null).map((w) => w.path);
+  const join = (group: Group, path: string): void => {
+    if (!available(group)(path) || writable(group).includes(path)) return;
     const owner = root.tasks.find(
       (t) => t.profileId === group.base.profileId && t.writes.some((w) => w.path === path),
     );
@@ -1076,7 +1100,8 @@ export function appendCorrections(
   for (const group of groups.values()) {
     // The files a failing check names, and the planned files the findings name in their claim or
     // fix (expenses-py 1363445a: "update tests/test_cli.py" from a task that could not write it).
-    for (const finding of group.findings) {
+    // A diagnostics-only group already writes every file its diagnostics name.
+    for (const finding of diagnosticGroup(group) ? [] : group.findings) {
       for (const path of state.repairScope?.[finding.id] ?? []) join(group, path);
       for (const path of pathsInOutput(`${finding.claim}\n${finding.suggestedFix}`, root.tasks))
         join(group, path);
@@ -1093,7 +1118,7 @@ export function appendCorrections(
           ...entries,
         ]);
     }
-    const written = writable(group);
+    const written = diagnosticGroup(group) ? [] : writable(group);
     for (const path of planned)
       if (availableTest(path) && written.some((source) => isTestOf(path, source)))
         join(group, path);
@@ -1128,7 +1153,8 @@ export function appendCorrections(
     ? chainFindings(store, runId, findings)
     : new Map();
   const chainRecords: ChainRecord[] = [];
-  const additions = [...groups].map(([key, { base, bases, findings: grouped }]) => {
+  const additions = [...groups].map(([key, group]) => {
+    const { base, bases, findings: grouped } = group;
     const id = `T${String(next++).padStart(3, "0")}`;
     const ids = grouped.map((f) => f.id);
     const found = key.startsWith(SWEEP_KEY)
@@ -1158,7 +1184,7 @@ export function appendCorrections(
       : testChain
         ? testSweepStep(
             sweepTestFiles(grouped, root, base.profileId).filter((path) =>
-              writable({ bases }).includes(path),
+              writable(group).includes(path),
             ),
           )
         : key.startsWith(SWEEP_KEY)
@@ -1170,12 +1196,7 @@ export function appendCorrections(
           : "";
     return {
       ...base,
-      writes: mergeCorrectionWrites(
-        bases
-          .flatMap((b) => correctionWrites(b, root, state.expectedFiles))
-          .filter((w) => availableTest(w.path)),
-        state.expectedFiles,
-      ),
+      writes: mergeCorrectionWrites(groupWrites(group, state.expectedFiles), state.expectedFiles),
       checkIds: unique(bases.flatMap((b) => correctionChecks(b, root))),
       id,
       title: rewrite

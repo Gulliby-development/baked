@@ -298,6 +298,8 @@ const SKIPS = new RegExp(
     // PHPUnit and Pest (#1491).
     String.raw`->markTest(?:Skipped|Incomplete)\s*\(`,
     String.raw`->(?:skip|todo)\s*\(`,
+    // pgTAP: `SELECT skip('needs pg 16', 2)`, `SELECT todo_start('...')` (#1499).
+    String.raw`\b(?:SELECT|select)\s+(?:skip|todo_start)\s*\(`,
   ].join("|"),
   "g",
 );
@@ -328,6 +330,8 @@ const CAPABILITY = new RegExp(
     String.raw`\bpackage\.config\b|\bjit\.os\b|\bpcall\s*\(\s*require\b`,
     // Shell: `uname`, `$OSTYPE`, a tool that may be missing (`command -v jq`, `type -P`, `hash`).
     String.raw`\buname\b|\$\{?OSTYPE\b|\bcommand\s+-v\b|\btype\s+-P\b|^\s*hash\s+\w`,
+    // Dart: `Platform.isWindows`, `Platform.operatingSystem`, Flutter's `kIsWeb` (#1494).
+    String.raw`\bPlatform\.(?:is[A-Z]\w*|operatingSystem)\b|\bkIsWeb\b`,
   ].join("|"),
 );
 /** Lines above a skip that its guard condition may span. */
@@ -359,6 +363,8 @@ const SUPPRESSIONS = new RegExp(
     String.raw`\bbiome-ignore\b`,
     String.raw`#\s*type:\s*ignore\b`,
     String.raw`#\s*noqa\b`,
+    // SQLFluff (#1499).
+    String.raw`--\s*noqa\b`,
     String.raw`#\s*pragma:\s*no cover\b`,
     String.raw`#!?\[allow\(`,
     String.raw`@SuppressWarnings\b`,
@@ -373,6 +379,7 @@ const SUPPRESSIONS = new RegExp(
     String.raw`--\s*selene:\s*allow\b`,
     // ShellCheck (#1497).
     String.raw`#\s*shellcheck\s+disable=`,
+    String.raw`//\s*ignore(?:_for_file)?:\s*\w`,
   ].join("|"),
   "g",
 );
@@ -388,6 +395,8 @@ const TEST_HOOKS = new RegExp(
     String.raw`\bRails\.env\.test\?`,
     String.raw`\bENV\[\s*["'](?:RAILS_ENV|RACK_ENV|APP_ENV)["']\s*\]\s*[!=]=\s*["']test["']`,
     String.raw`\bdefined\?\(\s*(?:RSpec|Minitest)\b`,
+    // flutter test sets FLUTTER_TEST: `Platform.environment.containsKey('FLUTTER_TEST')` (#1494).
+    String.raw`\bFLUTTER_TEST\b`,
   ].join("|"),
   "g",
 );

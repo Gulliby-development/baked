@@ -8,6 +8,7 @@ import { runScanner } from "../src/core/workflows/quality/rules.js";
 import { suspendClock } from "./helpers/suspend-clock.js";
 import { caseCheck } from "../src/core/verification/criteria-cases.js";
 import { fixtureSpec, workflowFixture } from "./helpers/workflow-fixture.js";
+import { slicedCorrective } from "./helpers/sliced-corrective-scenario.js";
 import { cellSamples, cellSpec, omittedCellInput, withoutCellInput } from "./helpers/criteria-cell-fixtures.js";
 import { ProcessScope } from "../src/core/workflows/process-scope.js";
 import { canRepairRun, type RepairBlock } from "../src/core/workflows/repairable.js";
@@ -48,6 +49,7 @@ import { baselineRegression, buildFailure, buildRunner, diagnosticCount, failedT
 import { baselineDebt, baselineKeys } from "../src/core/verification/task-end-check.js";
 import { affectedTestCheck, plannedWrittenTests, writtenTestsCheck } from "../src/core/workflows/affected-tests.js";
 import { launchedCommand } from "../src/core/workflows/launcher.js";
+import { toolchainCommand } from "../src/core/workflows/toolchain.js";
 import { type HostEdit, hostOnlyEvidence, plannerGraph } from "../src/core/workflows/host-edits.js";
 import { defaultWorkflowPolicy } from "../src/core/workflows/defaults.js";
 import { sizePlan, splitTestTasks } from "../src/core/workflows/sizing.js";
@@ -1355,6 +1357,148 @@ describe("gate matrix: Bundler lint, RSpec and Minitest (#1493)", () => {
   });
 });
 
+// #1494: a Dart package got its format, analyze and test gates (#1753) but no test count, no
+// format-written check, no skip markers and no language review. The outputs below are pasted from
+// Dart SDK 3.13.7 with package:test 1.26 (`dart test`, `dart analyze`, `dart format`).
+const DART_FAILED = `00:00 +0: loading test/calc_test.dart
+00:00 +0: test/calc_test.dart: adds
+00:00 +1: test/calc_test.dart: fails on purpose
+00:00 +1 -1: test/calc_test.dart: fails on purpose [E]
+  Expected: <4>
+    Actual: <3>
+  
+  package:matcher           expect
+  test/calc_test.dart 6:34  main.<fn>
+  
+00:00 +1 -1: test/calc_test.dart: later
+  Skip: not yet
+00:00 +1 ~1 -1: test/calc_test.dart: nested works
+00:00 +2 ~1 -1: Some tests failed.
+
+Failing tests:
+  test/calc_test.dart: fails on purpose
+
+Consider enabling the flag chain-stack-traces to receive more detailed exceptions.
+For example, 'dart test --chain-stack-traces'.
+`;
+const DART_BROKEN = `00:00 +0: loading test/broken_test.dart
+00:00 +0 -1: loading test/broken_test.dart [E]
+  Failed to load "test/broken_test.dart":
+  test/broken_test.dart:3:26: Error: Undefined name 'undefinedThing'.
+    test('x', () => expect(undefinedThing, 1));
+                           ^^^^^^^^^^^^^^
+00:00 +0 -1: test/calc_test.dart: adds
+00:00 +1 -1: test/calc_test.dart: fails on purpose
+00:00 +1 -2: test/calc_test.dart: fails on purpose [E]
+  Expected: <4>
+    Actual: <3>
+  
+  package:matcher           expect
+  test/calc_test.dart 6:34  main.<fn>
+  
+00:00 +1 -2: test/calc_test.dart: later
+  Skip: not yet
+00:00 +1 ~1 -2: test/calc_test.dart: nested works
+00:00 +2 ~1 -2: Some tests failed.
+
+Failing tests:
+  test/broken_test.dart: loading test/broken_test.dart
+  test/calc_test.dart: fails on purpose
+`;
+const DART_MISSING = `00:00 +0: loading test/nope_test.dart
+00:00 +0 -1: loading test/nope_test.dart [E]
+  Failed to load "test/nope_test.dart": Does not exist.
+00:00 +0 -1: Some tests failed.
+
+Failing tests:
+  test/nope_test.dart: loading test/nope_test.dart
+`;
+const DART_ANALYZE = `Analyzing calc...
+
+  error - lib/bad.dart:3:14 - A value of type 'int' can't be assigned to a variable of type 'String'. Try changing the type of the variable, or casting the right-hand type to 'String'. - invalid_assignment
+warning - lib/bad.dart:2:7 - The value of the local variable 'unused' isn't used. Try removing the variable or using it. - unused_local_variable
+   info - lib/bad.dart:5:3 - Don't invoke 'print' in production code. Try using a logging framework. - avoid_print
+
+3 issues found.
+`;
+describe("gate matrix: dart test, dart analyze and dart format (#1494)", () => {
+  test("dart test counts, the tests that ran, the failed tests and a stable signature", () => {
+    expect([testCount(DART_FAILED), testsRan(DART_FAILED), failedTests(DART_FAILED)]).toEqual([
+      { tool: "dart", count: 4 }, { tool: "dart", count: 3 }, { tool: "dart", names: ["test/calc_test.dart: fails on purpose"] },
+    ]);
+    expect(testCount("00:00 +0: loading test/calc_test.dart\n00:00 +0: test/calc_test.dart: adds\n00:00 +1: All tests passed!\n")).toEqual({ tool: "dart", count: 1 });
+    // A test file that does not load counts as a failure in dart test's summary, and is no test.
+    expect([testCount(DART_BROKEN), testsRan(DART_BROKEN), failedTests(DART_BROKEN)]).toEqual([
+      { tool: "dart", count: 4 }, { tool: "dart", count: 3 }, { tool: "dart", names: ["test/calc_test.dart: fails on purpose"] },
+    ]);
+    // A passing test more and other timings: the same failure. A second failure is not.
+    const later = DART_FAILED.replace("00:00 +1 ~1 -1: test/calc_test.dart: nested works\n00:00 +2 ~1 -1: Some", "00:00 +1 ~1 -1: test/calc_test.dart: nested works\n00:01 +2 ~1 -1: test/calc_test.dart: nested more\n00:01 +3 ~1 -1: Some");
+    expect(testCount(later)).toEqual({ tool: "dart", count: 5 });
+    expect(failureSignature(later, "/repo")).toBe(failureSignature(DART_FAILED, "/repo"));
+    expect(failureSignature(DART_BROKEN, "/repo")).not.toBe(failureSignature(DART_FAILED, "/repo"));
+    expect(timedOutFailure(DART_FAILED)).toBe(true);
+  });
+
+  test("a test file that does not load is a build failure; an empty run reads as no tests collected", () => {
+    expect(buildRunner(DART_BROKEN)).toBe("dart");
+    expect(buildRunner(DART_FAILED)).toBeNull();
+    expect(REPLAY_TARGETS.dart).toEqual({ none: "dart test loads and runs each test file on its own" });
+    expect(noTestsCollected('00:00 +0: loading test/calc_test.dart\nNo tests ran.\nNo tests match regular expression "zzz".\n')).toBe(true);
+    expect(noTestsCollected('No test files were passed and the default "test/" directory doesn\'t exist.\n\nUsage: dart test [files or directories...]\n')).toBe(true);
+    expect(noTestsCollected(DART_FAILED)).toBe(false);
+  });
+
+  test("a missing path of dart test, dart analyze or dart format is the task's that creates it", () => {
+    const tasks = [{ id: "T002", writes: [{ path: "test/nope_test.dart", action: "create" }, { path: "lib/src", action: "create" }] }] as Task[];
+    expect(missingPlannedPaths(DART_MISSING, tasks)).toEqual(["test/nope_test.dart"]);
+    expect(missingPlannedPaths("Directory or file doesn't exist: lib/src\n\nUsage: dart analyze [arguments] [<directory>]\n", tasks)).toEqual(["lib/src"]);
+    // dart format exits 0 on a missing path.
+    expect(missingPlannedPaths('No file or directory found at "lib/src".\nFormatted 1 file (0 changed) in 0.00 seconds.\n', tasks)).toEqual(["lib/src"]);
+  });
+
+  test("dart analyze counts errors and warnings; infos are lints it exits 0 on", () => {
+    expect(diagnosticCount(DART_ANALYZE)).toEqual({ tool: "dart", count: 2, errors: 1 });
+    expect(diagnosticCount("Analyzing calc...\nNo issues found!\n")).toEqual({ tool: "dart", count: 0, errors: 0 });
+    expect(failureSignature("Changed lib/ugly.dart\nFormatted 3 files (1 changed) in 0.01 seconds.\n", "/repo")).toBe(failureSignature("Changed lib/ugly.dart\nFormatted 4 files (1 changed) in 0.00 seconds.\n", "/repo"));
+  });
+
+  test("the affected tests run through dart test's file arguments", () => {
+    const check = (executable: string, args: string[]): Check => ({ id: `${executable}-test`, executable, args, cwd: ".", timeoutMs: 600000, required: true, scope: "feature", envNames: [], writes: [] });
+    expect(affectedTestCheck([check("dart", ["test", "-r", "expanded", "test/"])], ["test/calc_test.dart", "lib/calc.dart"])?.args).toEqual(["test", "-r", "expanded", "./test/calc_test.dart"]);
+    expect(affectedTestCheck([check("flutter", ["test"])], ["test/widget_test.dart"])?.args).toEqual(["test", "./test/widget_test.dart"]);
+    expect(isStaticCheck(check("dart", ["test", "--reporter", "expanded"]))).toBe(false);
+  });
+
+  test("a new Dart file is held to dart format when the run leaves the gate out (#1837)", () => {
+    const root = project({ "pubspec.yaml": "name: calc\n", "lib/calc.dart": "int add(int a, int b) => a + b;\n" });
+    expect(formatWrittenChecks(root, [], [{ path: "lib/calc.dart", action: "create" }], (c) => `/usr/bin/${c}`).map((c) => [c.id, [c.executable, ...c.args].join(" "), [c.fix!.executable, ...c.fix!.args].join(" ")])).toEqual([
+      ["dart-format-written", "dart format --output=none --set-exit-if-changed lib/calc.dart", "dart format"],
+    ]);
+  });
+
+  test("package:test skips, solo and analyzer ignores are found; platform guards are not", () => {
+    const before = "import 'package:test/test.dart';\n\nvoid main() {\n  test('adds', () {\n    expect(add(1, 2), 3);\n  });\n}\n";
+    const rules = (path: string, from: string, to: string) => scanTestIntegrity([{ path, before: from, after: to }]).map((f) => `${f.rule}: ${f.detail}`);
+    const skip = ["skip: added 1 skip, only, todo or ignore marker(s)"];
+    expect(rules("test/calc_test.dart", before, before.replace("  });\n}", "  }, skip: 'later');\n}"))).toEqual(skip);
+    expect(rules("test/calc_test.dart", before, before.replace("  });\n}", "  }, skip: false);\n}"))).toEqual([]);
+    expect(rules("test/calc_test.dart", before, before.replace("  });\n}", "  }, solo: true);\n}"))).toEqual(skip);
+    expect(rules("test/calc_test.dart", before, `@Skip('flaky')\n${before}`)).toEqual(skip);
+    expect(rules("test/calc_test.dart", before, before.replace("  });\n}", "  }, skip: Platform.isWindows ? 'no symlinks' : null);\n}"))).toEqual([]);
+    expect(rules("lib/calc.dart", "int add(int a, int b) => a + b;\n", "// ignore: avoid_print\nint add(int a, int b) => a + b;\n").map((r) => r.split(":")[0])).toEqual(["suppression"]);
+    const two = before.replace("  });\n}", "  });\n  testWidgets('renders', (tester) async {\n    await expectLater(find.text('1'), findsOneWidget);\n  });\n}");
+    expect(scanTestIntegrity([{ path: "test/calc_test.dart", before: two, after: before }]).map((f) => `${f.rule}: ${f.detail}`)).toEqual([
+      'test-count: test count dropped from 2 to 1 (removed "renders")',
+      "assertions: assertions dropped from 2 to 1 (removed or commented out)",
+    ]);
+  });
+
+  test("the agent profile tests a Dart package with dart test and only a Flutter package with flutter", async () => {
+    expect((await detectProfile(project({ "pubspec.yaml": "name: calc\ndev_dependencies:\n  test: ^1.25.0\n" }))).test).toBe("dart test");
+    expect((await detectProfile(project({ "pubspec.yaml": "name: app\ndependencies:\n  flutter:\n    sdk: flutter\n" }))).test).toBe("flutter test");
+  });
+});
+
 /**
  * Manifests and tool configs of each stack a request may name (#1710), with the content a
  * host-written task writes and whether the approval takes the write without a person. A lock that
@@ -1502,6 +1646,79 @@ describe("gate matrix: unsafe fixer tiers (#2095)", () => {
     expect(ruff && fixerTierPaths(ruff, 1, files)).toEqual(["tests/test_fields.py"]);
     // A person's own unsafe tier without a scope keeps every file.
     expect(fixerTierPaths({}, 1, files)).toEqual(files);
+  });
+});
+
+// #1499: SQLFluff lints a project's SQL per file and fixes the task's file; with the dbt templater
+// it compiles the whole dbt project. A dbt project's `dbt build` needs its database profile.
+describe("gate matrix: SQLFluff and dbt (#1499)", () => {
+  const LINT = "sqlfluff lint .";
+  const ids = (files: Record<string, string>) =>
+    detectGates(project(files)).map((s) => [s.check.id, [s.check.executable, ...s.check.args].join(" "), s.source, s.preselected]);
+  test("each SQLFluff config gets the lint gate with its fixer; nothing without one", () => {
+    expect(ids({ ".sqlfluff": "[sqlfluff]\ndialect = postgres\n" })).toEqual([["sqlfluff", LINT, ".sqlfluff", true]]);
+    expect(ids({ "pyproject.toml": '[tool.sqlfluff.core]\ndialect = "postgres"\n' })).toEqual([["sqlfluff", LINT, "pyproject.toml [tool.sqlfluff]", true]]);
+    expect(ids({ "setup.cfg": "[sqlfluff]\ndialect = ansi\n" })).toEqual([["sqlfluff", LINT, "setup.cfg [sqlfluff]", true]]);
+    expect(ids({ "tox.ini": "[sqlfluff:rules]\ncapitalisation_policy = upper\n" })).toEqual([["sqlfluff", LINT, "tox.ini [sqlfluff]", true]]);
+    expect(ids({ "migrations/001_init.sql": "CREATE TABLE t (id INT);\n" })).toEqual([]);
+    expect(ids({ "pyproject.toml": "[tool.sqlfluffy]\n" })).toEqual([]);
+    const [lint] = detectGates(project({ ".sqlfluff": "[sqlfluff]\ndialect = postgres\n" })).map((s) => s.check);
+    expect(lint?.fix).toEqual({ executable: "sqlfluff", args: ["fix"] });
+  });
+
+  test("the dbt templater makes the lint gate whole-unit; a dbt project offers dbt build unselected", () => {
+    const dbt = { ".sqlfluff": "[sqlfluff]\ndialect = postgres\ntemplater = dbt\n", "dbt_project.yml": "name: shop\n" };
+    expect(ids(dbt)).toEqual([
+      ["sqlfluff-dbt", LINT, ".sqlfluff, templater = dbt", true],
+      ["dbt-build", "dbt build", "dbt_project.yml", false],
+    ]);
+    expect(ids({ "dbt_project.yml": "name: shop\n" })).toEqual([["dbt-build", "dbt build", "dbt_project.yml", false]]);
+    const checks = detectGates(project(dbt)).map((s) => s.check);
+    const byId = (id: string) => checks.find((c) => c.id === id) as Check;
+    expect(isStaticCheck(byId("sqlfluff-dbt")) && isWholeUnitCheck(byId("sqlfluff-dbt"))).toBe(true);
+    expect(isStaticCheck(byId("dbt-build"))).toBe(false);
+  });
+
+  test("SQLFluff runs in the project's Python environment, and on Windows as a plain program", () => {
+    const [lint] = detectGates(project({ ".sqlfluff": "[sqlfluff]\n", "uv.lock": "" })).map((s) => s.check);
+    expect(lint && [lint.executable, ...lint.args]).toEqual(["uv", "run", "sqlfluff", "lint", "."]);
+    expect(lint?.fix).toEqual({ executable: "uv", args: ["run", "sqlfluff", "fix"] });
+    expect(toolchainCommand(lint?.executable ?? "", lint?.args ?? []).program).toBe("sqlfluff");
+    // pip installs `sqlfluff.exe` on Windows, which `cmd /d /c` may still wrap.
+    expect(launchedCommand("cmd", ["/d", "/c", "sqlfluff.exe", "lint", "."]).program).toBe("sqlfluff");
+  });
+
+  test("the lint gate covers each task's SQL and its fixer takes the task's file", () => {
+    const checks = detectGates(project({ ".sqlfluff": "[sqlfluff]\n" })).map((s) => s.check);
+    const lint = checks[0] as Check;
+    expect(isStaticCheck(lint) && !isWholeUnitCheck(lint)).toBe(true);
+    expect(fixerCommand(lint.fix!, "models/stg_orders.sql")).toEqual({ executable: "sqlfluff", args: ["fix", "models/stg_orders.sql"] });
+    const covering = (path: string) =>
+      coveringChecks({ checks } as RunPolicy, { writes: [{ path, action: "create" }] }).map((c) => c.id);
+    expect(covering("models/stg_orders.sql")).toEqual(["sqlfluff"]);
+    expect(covering("README.md")).toEqual([]);
+  });
+
+  // Pasted from sqlfluff 4.4.0 (dialect postgres, `warnings = LT01`).
+  const LINT_OUTPUT =
+    "== [models/bad.sql] FAIL\nL:   1 | P:   1 | LT09 | Select targets should be on a new line unless there is\n                       | only one select target. [layout.select_targets]\nL:   1 | P:  10 | LT01 | WARNING: Expected single whitespace between comma ','\n                       | and naked identifier. [layout.spacing]\nAll Finished!\n";
+  test("the lint count splits errors from warnings, and the signature keeps each violation", () => {
+    expect(diagnosticCount(LINT_OUTPUT)).toEqual({ tool: "sqlfluff", count: 2, errors: 1 });
+    expect(diagnosticCount("All Finished!\n")).toEqual({ tool: "sqlfluff", count: 0, errors: 0 });
+    expect(failureSignature(LINT_OUTPUT, "/repo")).toBe(LINT_OUTPUT.trim());
+  });
+
+  // Pasted from prove 3.44 (TAP::Harness, which pg_prove runs): one test more passes in the second.
+  const PROVE = (tests: number, failed: number) =>
+    `t/sum.sql .. \nFailed 1/${tests} subtests \n\nTest Summary Report\n-------------------\nt/sum.sql (Wstat: 0 Tests: ${tests} Failed: 1)\n  Failed test:  ${failed}\nFiles=1, Tests=${tests},  0 wallclock secs ( 0.01 usr +  0.00 sys =  0.01 CPU)\nResult: FAIL\n`;
+  test("pg_prove's test count, a signature without its totals and CPU times, and an empty run", () => {
+    expect(testCount(PROVE(2, 2))).toEqual({ tool: "tap", count: 2 });
+    expect(failureSignature(PROVE(2, 2), "/repo")).toBe(failureSignature(PROVE(3, 3), "/repo"));
+    expect(failureSignature(PROVE(2, 2).replace("0.01 usr", "0.03 usr"), "/repo")).toBe(failureSignature(PROVE(2, 2), "/repo"));
+    // A second failing test is a new failure.
+    expect(failureSignature(PROVE(2, 2), "/repo")).not.toBe(failureSignature(PROVE(2, 2).replaceAll("Failed: 1", "Failed: 2"), "/repo"));
+    expect(noTestsCollected("Files=0, Tests=0,  0 wallclock secs ( 0.00 usr +  0.00 sys =  0.00 CPU)\nResult: NOTESTS\n")).toBe(true);
+    expect(noTestsCollected(PROVE(2, 2))).toBe(false);
   });
 });
 
@@ -1665,6 +1882,15 @@ describe("gate matrix: diagnostics ratchet severity (#1791)", () => {
   });
   cell("maven", "maven has no diagnostics summary parser: no count, no ratchet", () => {
     expect(diagnosticCount("[WARNING] /src/App.java:[3,8] unused\n[INFO] BUILD SUCCESS")).toBeNull();
+  });
+  test("dart analyze: infos are not counted, warnings are low, errors are high (#1494)", () => {
+    const analyze = (...lines: string[]) => `Analyzing calc...\n\n${lines.join("\n")}\n\n${lines.length ? `${lines.length} issue${lines.length > 1 ? "s" : ""} found.` : "No issues found!"}\n`;
+    const info = "   info - lib/a.dart:5:3 - Don't invoke 'print' in production code. - avoid_print";
+    const warning = "warning - lib/a.dart:2:7 - The value of the local variable 'unused' isn't used. - unused_local_variable";
+    const error = "  error - lib/a.dart:3:14 - A value of type 'int' can't be assigned to a variable of type 'String'. - invalid_assignment";
+    expect(rise(analyze(), analyze(info))).toBeNull();
+    expect(rise(analyze(), analyze(warning, info))).toBe("low");
+    expect(rise(analyze(warning), analyze(error, warning))).toBe("high");
   });
 });
 
@@ -2181,6 +2407,19 @@ for (const stack of STACKS) {
         return staticCorrection(store, "run", { checks: [check] } as RunPolicy, task);
       };
       expect(preselected().filter(correction).map((c) => c.id)).toEqual(STATIC_FIXES[stack]);
+    });
+
+    // A static check that fails on slice 1 of a sliced test file is corrected in that file while
+    // slice 2 is pending, without the related tasks' sources, so an independent test task that
+    // depends on those sources is not held (#2094, skillcomb R67: ruff ISC004 in tests/test_fields.py).
+    cell(stack, "sliced-test-diagnostics-corrective (#2094)", () => {
+      const path = fixture.property.path;
+      const lint: Check = { id: "lint", executable: "lint", args: [], cwd: ".", timeoutMs: 10000, required: true, scope: "feature", envNames: [], writes: [] };
+      const checks = preselected().filter((c) => STATIC_FIXES[stack].includes(c.id));
+      for (const check of checks.length ? checks : [lint]) {
+        const { added, ready } = slicedCorrective(check, path, `${path}:3:5: error: a diagnostic\nFound 1 error.`);
+        expect({ check: check.id, writes: added.writes.map((w) => w.path), ready }).toEqual({ check: check.id, writes: [path], ready: ["T004", added.id] });
+      }
     });
 
     cell(stack, "dependency-check", () => {
@@ -3091,9 +3330,9 @@ describe.skipIf(!toolchains)("gate matrix: toolchains", () => {
     "a Composer project's detected gates run, and their output reads as the parsers expect (#1491)",
     async () => {
       const testClass = (name: string, body: string) =>
-        `<?php\ndeclare(strict_types=1);\n\nnamespace App\\Tests;\n\nuse PHPUnit\\Framework\\TestCase;\n\nfinal class ${name} extends TestCase\n{\n${body}}\n`;
-      const adds = "    public function testAdds(): void\n    {\n        self::assertSame(3, \\App\\sum(1, 2));\n    }\n";
-      const commutes = "    public function testCommutes(): void\n    {\n        self::assertSame(3, \\App\\sum(2, 2));\n    }\n";
+        `<?php\n\ndeclare(strict_types=1);\n\nnamespace App\\Tests;\n\nuse PHPUnit\\Framework\\TestCase;\n\nfinal class ${name} extends TestCase\n{\n${body}}\n`;
+      const adds = "    public function test_adds(): void\n    {\n        self::assertSame(3, \\App\\sum(1, 2));\n    }\n";
+      const commutes = "    public function test_commutes(): void\n    {\n        self::assertSame(3, \\App\\sum(2, 2));\n    }\n";
       const root = project({
         "composer.json": JSON.stringify({
           name: "fixture/sum",
@@ -3116,9 +3355,9 @@ describe.skipIf(!toolchains)("gate matrix: toolchains", () => {
       const failing = await run(byId("phpunit"));
       expect(failing.status).toBe("failed");
       expect(testCount(failing.outputTail)).toEqual({ tool: "phpunit", count: 2 });
-      expect(failedTests(failing.outputTail)).toEqual({ tool: "phpunit", names: ["App\\Tests\\SumTest::testCommutes"] });
+      expect(failedTests(failing.outputTail)).toEqual({ tool: "phpunit", names: ["App\\Tests\\SumTest::test_commutes"] });
       expect(timedOutFailure(failing.outputTail)).toBe(true);
-      writeFileSync(join(root, "tests/MaxTest.php"), testClass("MaxTest", "    public function testMax(): void\n    {\n        self::assertSame(2, max(1, 2));\n    }\n"));
+      writeFileSync(join(root, "tests/MaxTest.php"), testClass("MaxTest", "    public function test_max(): void\n    {\n        self::assertSame(2, max(1, 2));\n    }\n"));
       const grown = await run(byId("phpunit"));
       expect(testCount(grown.outputTail)).toEqual({ tool: "phpunit", count: 3 });
       expect(failureSignature(grown.outputTail, root)).toBe(failureSignature(failing.outputTail, root));
@@ -3285,6 +3524,31 @@ describe.skipIf(!toolchains)("gate matrix: toolchains", () => {
     run("rubocop", ["-a", "--only", "Layout", "lib/ugly.rb"]);
     expect(readFileSync(join(root, "lib/ugly.rb"), "utf8")).toBe("def ugly(a)\n  a\nend\n");
   }, 300000);
+  // #1494: the dart test, dart analyze and dart format parsers read what the installed SDK prints.
+  // package:test comes from the real pub cache; the test preload points HOME elsewhere.
+  test.skipIf(!available([["dart", "--version"]]))("dart test, analyze and format output reads as their parsers expect (#1494)", () => {
+    const root = project({
+      "pubspec.yaml": "name: calc\nenvironment:\n  sdk: ^3.5.0\ndev_dependencies:\n  test: ^1.25.0\n",
+      "lib/calc.dart": "int add(int a, int b) => a + b;\n",
+      "test/calc_test.dart": "import 'package:calc/calc.dart';\nimport 'package:test/test.dart';\n\nvoid main() {\n  test('adds', () => expect(add(1, 2), 3));\n  test('fails', () => expect(add(1, 2), 4));\n  test('waits', () {}, skip: 'later');\n}\n",
+      "lib/ugly.dart": "int  ugly( int a ){return a;}\n",
+      "lib/bad.dart": "int f(int a) {\n  var unused = 1;\n  String s = 3;\n  return a;\n}\n",
+    });
+    const env = { ...process.env, PUB_CACHE: process.env.PUB_CACHE ?? join(homedir(), ".pub-cache") };
+    const run = (args: string[]) => {
+      const result = spawnSync("dart", args, { cwd: root, encoding: "utf8", timeout: 300000, env });
+      return `${result.stdout}${result.stderr}`;
+    };
+    run(["pub", "get"]);
+    const tests = run(["test"]);
+    expect([testCount(tests), testsRan(tests), failedTests(tests)]).toEqual([{ tool: "dart", count: 3 }, { tool: "dart", count: 2 }, { tool: "dart", names: ["test/calc_test.dart: fails"] }]);
+    expect(failureSignature(run(["test"]), root)).toBe(failureSignature(tests, root));
+    expect(missingPlannedPaths(run(["test", "test/later_test.dart"]), [{ id: "T002", writes: [{ path: "test/later_test.dart", action: "create" }] }] as Task[])).toEqual(["test/later_test.dart"]);
+    expect(diagnosticCount(run(["analyze", "lib/bad.dart"]))).toEqual({ tool: "dart", count: 3, errors: 1 });
+    expect(run(["format", "--output=none", "--set-exit-if-changed", "lib/ugly.dart"])).toContain("Changed lib/ugly.dart");
+    run(["format", "lib/ugly.dart"]);
+    expect(readFileSync(join(root, "lib/ugly.dart"), "utf8")).toBe("int ugly(int a) {\n  return a;\n}\n");
+  }, 600000);
   test.skipIf(!available([["cargo", "--version"]]))("a cargo init crate reaches approval with the detected cargo gates (#1815)", async () => {
     const files = {
       "Cargo.toml": '[package]\nname = "hexview"\nversion = "0.1.0"\nedition = "2021"\n\n[dependencies]\n',
@@ -3297,6 +3561,20 @@ describe.skipIf(!toolchains)("gate matrix: toolchains", () => {
     expect(result.approval).toEqual({ status: "waiting", reason: "approval" });
     expect(result.baseline?.createdByChecks).toContain("Cargo.lock");
     expect(result.final.status).toBe("completed");
+  }, 300000);
+  test.skipIf(!available([["sqlfluff", "--version"]]))("sqlfluff: the detected gate fails on a violation and its fixer on the file repairs it (#1499)", async () => {
+    const root = project({ ".sqlfluff": "[sqlfluff]\ndialect = postgres\n", "models/orders.sql": "select id,total from orders\n" });
+    const [lint] = detectGates(root).map((s) => s.check);
+    if (!lint?.fix) throw new Error("no sqlfluff gate");
+    const before = await executeGate(root, lint, new AbortController().signal);
+    expect(before.status).toBe("failed");
+    expect(diagnosticCount(before.outputTail)?.tool).toBe("sqlfluff");
+    expect(diagnosticCount(before.outputTail)?.count).toBeGreaterThan(0);
+    const fix = fixerCommand(lint.fix, "models/orders.sql");
+    expect(spawnSync(fix.executable, fix.args, { cwd: root, encoding: "utf8", timeout: 120000 }).status).toBe(0);
+    expect((await executeGate(root, lint, new AbortController().signal)).status).toBe("passed");
+    const missing = await executeGate(root, { ...lint, args: ["lint", "tests"] }, new AbortController().signal);
+    expect(missingPlannedPaths(missing.outputTail, [{ writes: [{ path: "tests/test_orders.sql", action: "create" }] } as Task])).toEqual(["tests/test_orders.sql"]);
   }, 300000);
   test("pytest executes host rows and fails a wrong harness (#1596)", () => {
     const root = project({});

@@ -164,6 +164,19 @@ async function main() {
     }
   }
 
+  // Grammars tree-sitter-wasms lacks (SQL, #1499), vendored in the package's vendor/tree-sitter.
+  const vendored = join(__dirname, "..", "vendor", "tree-sitter");
+  if (existsSync(vendored)) {
+    try {
+      for (const name of readdirSync(vendored)) {
+        if (name.endsWith(".wasm")) copyFile(join(vendored, name), join(wasmDir, name));
+      }
+      log("✓ vendored tree-sitter grammars");
+    } catch (err) {
+      warn(`failed to copy vendored tree-sitter grammars: ${err.message}`);
+    }
+  }
+
   // ── OpenTUI assets (glyphs, parser.worker) ──
   const opentuiCore = findPackageRoot("@opentui/core");
   if (opentuiCore && existsSync(join(opentuiCore, "assets"))) {
