@@ -140,6 +140,8 @@ export interface InitiativePool {
   forecastTokens: number | null;
   /** The measured-to-planned ratio that scales the features still to run; null before it. */
   ratio: number | null;
+  /** The forecast at the raw measured ratio, which the notice advises at (#2062); null before it. */
+  advice?: { forecastTokens: number; ratio: number } | null;
   /** The pool that starts every waiting feature at its high estimate. */
   coverTokens: number;
   /** What the forecast suggests extending the pool to; null while it fits. */

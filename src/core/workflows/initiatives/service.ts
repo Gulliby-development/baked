@@ -1930,6 +1930,7 @@ export class InitiativeService {
       usedTokens: pool.usedTokens,
       forecastTokens: pool.forecastTokens,
       ratio: pool.ratio,
+      advice: pool.advice,
       suggestedTokens: pool.suggestedTokens,
       message: pool.notice,
     });
@@ -2756,6 +2757,7 @@ export class InitiativeService {
             measured?.forecastTokens ??
             (estimate ? Math.max(estimate.expectedTokens, used.tokens) : null),
           ratio: measured?.ratio ?? null,
+          advice: measured?.advice ?? null,
           features: features.length,
           waiting: waitingNeeds(waitingForRun),
           cost,
