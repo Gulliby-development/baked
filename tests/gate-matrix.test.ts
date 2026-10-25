@@ -9,6 +9,7 @@ import { suspendClock } from "./helpers/suspend-clock.js";
 import { caseCheck } from "../src/core/verification/criteria-cases.js";
 import { fixtureSpec, workflowFixture } from "./helpers/workflow-fixture.js";
 import { slicedCorrective } from "./helpers/sliced-corrective-scenario.js";
+import { evidencePaths, scopeRecord, stackFrames } from "../src/core/workflows/corrective-scope.js";
 import { cellSamples, cellSpec, omittedCellInput, withoutCellInput } from "./helpers/criteria-cell-fixtures.js";
 import { ProcessScope } from "../src/core/workflows/process-scope.js";
 import { canRepairRun, type RepairBlock } from "../src/core/workflows/repairable.js";
@@ -339,6 +340,20 @@ describe("gate matrix: files a first check run creates (#1815)", () => {
     }, 60000);
 });
 const STACKS: Stack[] = ["bun", "npm", "python", "go", "rust", "maven", "dotnet"];
+
+/**
+ * A source file of another task and the stack frame each stack's runtime prints for it, on the
+ * machine that ran the probe (#2133): the corrective's evidence names the file through the frame.
+ */
+const STACK_FRAMES: Record<Stack, { path: string; frame: (root: string) => string }> = {
+  bun: { path: "src/storage.ts", frame: (root) => `error: Missing parameter "code"\n      at getLink (${root}/src/storage.ts:91:53)` },
+  npm: { path: "src/storage.js", frame: (root) => `Error: Missing parameter\n    at getLink (${root}\\src\\storage.js:91:53)\n    at node:internal/main:1:1` },
+  python: { path: "src/app/storage.py", frame: (root) => `Traceback (most recent call last):\n  File "${root}/src/app/storage.py", line 91, in get_link\nKeyError: 'code'` },
+  go: { path: "internal/storage/storage.go", frame: (root) => `panic: missing parameter\n\ngoroutine 1 [running]:\nexample/internal/storage.GetLink()\n\t${root}/internal/storage/storage.go:91 +0x1d` },
+  rust: { path: "src/storage.rs", frame: () => "thread 'main' panicked at src/storage.rs:91:5:\nmissing parameter" },
+  maven: { path: "src/main/java/app/Storage.java", frame: () => "java.lang.IllegalStateException: missing parameter\n\tat app.Storage.getLink(Storage.java:91)" },
+  dotnet: { path: "src/App/Storage.cs", frame: (root) => `Unhandled exception. System.InvalidOperationException: missing parameter\n   at App.Storage.GetLink() in ${root}/src/App/Storage.cs:line 91` },
+};
 
 /** The gates a failure of which is corrected only in the files its output names (#1067). */
 const STATIC_FIXES: Record<Stack, string[]> = {
@@ -2714,6 +2729,19 @@ for (const stack of STACKS) {
         const { added, ready } = slicedCorrective(check, path, `${path}:3:5: error: a diagnostic\nFound 1 error.`);
         expect({ check: check.id, writes: added.writes.map((w) => w.path), ready }).toEqual({ check: check.id, writes: [path], ready: ["T004", added.id] });
       }
+    });
+
+    // A corrective whose repro output's frame names another task's source records that task as
+    // the owner to route the change to (#2133, url-shortener R68: storage.ts of T001).
+    cell(stack, "corrective-unowned-file (#2133)", () => {
+      const { path, frame } = STACK_FRAMES[stack];
+      const root = "/w/project";
+      const task = (id: string, file: string, origin: "planned" | "repair" = "planned") => ({ id, writes: [{ path: file, action: "modify" }], origin, findingIds: origin === "planned" ? [] : ["F1"] });
+      const graph = { tasks: [task("T001", path), task("T002", "src/handler.txt"), task("T004", "src/handler.txt", "repair")] } as unknown as NonNullable<Parameters<typeof scopeRecord>[0]["graph"]>;
+      const known = [path, "src/handler.txt"];
+      expect(evidencePaths(stackFrames(frame(root)), root, known)).toEqual([path]);
+      const record = scopeRecord({ graph, repairScope: {}, repairPredecessors: { F1: "T002" } }, { checks: [] }, { id: "T004", writes: [{ path: "src/handler.txt", action: "modify" }] }, [{ id: "F1", claim: "Edge input 1 of T002, legal under AC-001: prints x", file: "src/handler.txt", repro: { actual: frame(root) } }], "create", undefined, { unresolved: [], rows: [{ id: "T001", status: "verified" }, { id: "T002", status: "implemented" }], paths: (text) => evidencePaths(text, root, known), allowedPaths: [], hash: () => null });
+      expect({ host: record?.host, owner: record?.unowned?.[0]?.owner, path: record?.unowned?.[0]?.path }).toEqual({ host: "route", owner: "T001", path });
     });
 
     cell(stack, "dependency-check", () => {
