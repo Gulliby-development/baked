@@ -110,6 +110,7 @@ export function resolveGateRequests(
             ...result.check,
             fix: base.fix,
             ...(base.fixUnsafe ? { fixUnsafe: base.fixUnsafe } : {}),
+            ...(base.fixUnsafeScope ? { fixUnsafeScope: base.fixUnsafeScope } : {}),
           }
         : result.check,
     );
