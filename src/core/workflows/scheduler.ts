@@ -805,6 +805,8 @@ import {
   measureTestIntegrity,
   requestedTestRemovals,
   rewriteTargets,
+  type ScanOptions,
+  shadowTitleFindings,
   strengthenTargets,
   testChanges,
   testIntegrityOf,
@@ -10441,7 +10443,7 @@ ${note}`;
       .map((f) => JSON.parse(f.body_json) as Review["findings"][number]);
     const corrective = task.origin !== "planned" && task.findingIds.length > 0;
     if (corrective) this.recordAddedTests(runId, task, changes);
-    const measures = measureTestIntegrity(changes, {
+    const scanOptions: ScanOptions = {
       protects: corrective ? this.correctionTests(runId, task, changed) : undefined,
       removalFindings: corrective ? ownFindings : [],
       rewrites: task.origin === "planned" ? new Set() : rewriteTargets(ownFindings),
@@ -10454,13 +10456,21 @@ ${note}`;
       ]),
       testSources,
       specText: integrityRequirementText(state),
-    });
+    };
+    const measures = measureTestIntegrity(changes, scanOptions);
     const found = integrityDecision(measures);
     const mode = testIntegrityOf(policy);
     this.recordIntegrity(
       runId,
       `tasks/${task.id}`,
-      integrityRecord("task", task.id, mode, measures, found),
+      integrityRecord(
+        "task",
+        task.id,
+        mode,
+        measures,
+        found,
+        shadowTitleFindings(changes, scanOptions, found),
+      ),
     );
     if (!found.length) return [];
     const evidenceId = this.store.transaction(() => {
@@ -10680,26 +10690,36 @@ ${note}`;
         ),
       )
       .map((f) => JSON.parse(f.body_json) as Review["findings"][number]);
-    const measures = measureTestIntegrity(
-      changed.map((path) => {
-        const hash = baseline.get(path) ?? null;
-        const kept = hash === null ? null : readKept(this.store, runId, hash)?.toString("utf8");
-        return { path, before: kept, after: read(path) };
-      }),
-      {
-        removalFindings: corrected,
-        rewrites: rewriteTargets(corrected),
-        strengthens: strengthenTargets(corrected),
-        reasoned: new Set([
-          ...tasks.flatMap((t) => t.writes.filter((w) => w.reason).map((w) => w.path)),
-          ...this.amendments(runId).flatMap((a) => a.paths),
-        ]),
-        specText: integrityRequirementText(state),
-      },
-    );
+    const runChanges = changed.map((path) => {
+      const hash = baseline.get(path) ?? null;
+      const kept = hash === null ? null : readKept(this.store, runId, hash)?.toString("utf8");
+      return { path, before: kept, after: read(path) };
+    });
+    const scanOptions: ScanOptions = {
+      removalFindings: corrected,
+      rewrites: rewriteTargets(corrected),
+      strengthens: strengthenTargets(corrected),
+      reasoned: new Set([
+        ...tasks.flatMap((t) => t.writes.filter((w) => w.reason).map((w) => w.path)),
+        ...this.amendments(runId).flatMap((a) => a.paths),
+      ]),
+      specText: integrityRequirementText(state),
+    };
+    const measures = measureTestIntegrity(runChanges, scanOptions);
     const found = integrityDecision(measures);
     const mode = testIntegrityOf(policy);
-    this.recordIntegrity(runId, "run", integrityRecord("run", null, mode, measures, found));
+    this.recordIntegrity(
+      runId,
+      "run",
+      integrityRecord(
+        "run",
+        null,
+        mode,
+        measures,
+        found,
+        shadowTitleFindings(runChanges, scanOptions, found),
+      ),
+    );
     if (!found.length) return [];
     const evidenceId = this.store.transaction(() => {
       const artifact = this.store.artifact(

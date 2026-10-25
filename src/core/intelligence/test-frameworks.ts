@@ -23,6 +23,12 @@ interface TestFramework {
   calls?: readonly AssertionCall[];
   /** A named argument that carries a message, wherever it stands: `msg=`, `because:`. */
   messageArgument?: string;
+  /**
+   * Read only by the guard's shadow measure (`testConventions(path, true)`, #2147): a language
+   * that gains test titles also gains `test-removed` findings it never reported, so its row is
+   * measured in shadow until bench rounds show what it would raise. Promoting it drops the flag.
+   */
+  shadow?: true;
 }
 
 export interface NamedTest {
@@ -335,6 +341,81 @@ const FRAMEWORKS: readonly TestFramework[] = [
     messageArgument: String.raw`^\s*(?:because|message|userMessage)\s*:`,
   },
   {
+    // PHPUnit `public function testAdds(): void`. Pest's `it('adds', ...)` and `test(...)`, and
+    // `$this->assertSame(...)`, are read by the JavaScript row; skips by the guard's own list.
+    name: "PHPUnit",
+    languages: ["php"],
+    shadow: true,
+    cases: String.raw`^\s*(?:(?:public|protected|private|static|final)\s+)*function\s+test\w*\s*\(`,
+    named: [
+      {
+        pattern:
+          /^\s*(?:(?:public|protected|private|static|final)\s+)*function\s+(?<name>test\w*)\s*\(/d,
+      },
+    ],
+  },
+  {
+    // ExUnit `test "adds" do` (and `test "adds", %{conn: conn} do`); `assert` is read by the
+    // JavaScript row.
+    name: "ExUnit",
+    languages: ["elixir"],
+    shadow: true,
+    cases: String.raw`^\s*test\s+"`,
+    named: [{ pattern: /^\s*test\s+"(?<name>[^"\n]+)"/d }],
+    assertions: String.raw`\brefute(?:_\w+)?\b`,
+    skips: String.raw`@(?:module)?tag\s+(?::skip\b|skip:)`,
+  },
+  {
+    // `test "adds" {` and decltests `test adds {`; `try testing.expect(...)` is read by the
+    // JavaScript row's `expect`, its other `expect*` helpers here.
+    name: "zig test",
+    languages: ["zig"],
+    shadow: true,
+    cases: String.raw`^\s*test\b\s*(?:"[^"\n]*"|[A-Za-z_]\w*)?\s*\{`,
+    named: [
+      { pattern: /^\s*test\s+"(?<name>[^"\n]+)"\s*\{/d },
+      { pattern: /^\s*test\s+(?<name>[A-Za-z_]\w*)\s*\{/d },
+    ],
+    assertions: String.raw`\bexpect(?:Equal|Error|Fmt|Approx|String|Deep)\w*\s*\(`,
+    skips: String.raw`\berror\.SkipZigTest\b`,
+  },
+  {
+    // Alcotest `test_case "adds" Quick f`, OUnit `"adds" >:: f`, ppx_inline_test and
+    // ppx_expect `let%test "adds" =`. OUnit's `assert_equal` is read by the JavaScript row.
+    name: "Alcotest, OUnit, ppx_inline_test",
+    languages: ["ocaml"],
+    shadow: true,
+    cases: String.raw`\btest_case\s+"|"[^"\n]*"\s*>::|^\s*let%(?:test|test_unit|expect_test)\s+"`,
+    named: [
+      { pattern: /\btest_case\s+"(?<name>[^"\n]+)"/d },
+      { pattern: /"(?<name>[^"\n]+)"\s*>::/d },
+      { pattern: /^\s*let%(?:test|test_unit|expect_test)\s+"(?<name>[^"\n]+)"/d },
+    ],
+    assertions: String.raw`\bAlcotest\.check\b|\(\s*check\s+[\w.]+\s*\)|\[%expect\b`,
+    skips: String.raw`\bAlcotest\.skip\b|\bskip_if\b`,
+  },
+  {
+    // XCTest in Objective-C: `- (void)testAdds {`.
+    name: "XCTest (Objective-C)",
+    languages: ["objc"],
+    shadow: true,
+    cases: String.raw`^\s*-\s*\(\s*void\s*\)\s*test\w*`,
+    named: [{ pattern: /^\s*-\s*\(\s*void\s*\)\s*(?<name>test\w*)/d }],
+    assertions: String.raw`\bXCTAssert\w*\s*\(|\bXCTFail\s*\(`,
+    skips: String.raw`\bXCTSkip(?:If|Unless)?\b`,
+  },
+  {
+    // Foundry `function test_Adds() public` (`testFuzz_`, `testFail`); `assertEq` is read by the
+    // JavaScript row.
+    name: "Foundry",
+    languages: ["solidity"],
+    shadow: true,
+    cases: String.raw`^\s*function\s+test\w*\s*\(`,
+    named: [{ pattern: /^\s*function\s+(?<name>test\w*)\s*\(/d }],
+    assertions: String.raw`\bvm\.expect(?:Revert|Emit|Call)\w*\s*\(`,
+    skips: String.raw`\bvm\.skip\s*\(\s*true\b`,
+  },
+  {
     // `It 'adds two numbers' { $x | Should -Be 4 }`: a command, so no parentheses around the
     // name, and `-Because` is a parameter rather than an argument.
     name: "Pester",
@@ -358,14 +439,26 @@ interface Conventions {
 }
 
 const NEVER = "(?!)";
-const byLanguage = new Map<Language, Conventions>();
+const byLanguage = new Map<string, Conventions>();
 
-/** The test and assertion conventions read in a file. */
-export function testConventions(path: string): Conventions {
+/** Whether a file's language has a framework row read only in shadow (#2147). */
+export function hasShadowTitles(path: string): boolean {
   const language = detectLanguageFromPath(path);
-  const known = byLanguage.get(language);
+  return FRAMEWORKS.some((f) => f.shadow && f.languages?.includes(language));
+}
+
+/**
+ * The test and assertion conventions read in a file; `shadow` also reads the rows measured in
+ * shadow (#2147).
+ */
+export function testConventions(path: string, shadow = false): Conventions {
+  const language = detectLanguageFromPath(path);
+  const key = `${language}${shadow ? ":shadow" : ""}`;
+  const known = byLanguage.get(key);
   if (known) return known;
-  const frameworks = FRAMEWORKS.filter((f) => !f.languages || f.languages.includes(language));
+  const frameworks = FRAMEWORKS.filter(
+    (f) => (!f.languages || f.languages.includes(language)) && (shadow || !f.shadow),
+  );
   const join = (parts: (string | undefined)[]) =>
     parts.filter((part): part is string => part !== undefined).join("|") || NEVER;
   const messageArguments = frameworks.flatMap((f) =>
@@ -384,6 +477,6 @@ export function testConventions(path: string): Conventions {
     ].flatMap((f) => f.calls ?? []),
     messageArgument: messageArguments.length ? new RegExp(messageArguments.join("|")) : null,
   };
-  byLanguage.set(language, conventions);
+  byLanguage.set(key, conventions);
   return conventions;
 }
