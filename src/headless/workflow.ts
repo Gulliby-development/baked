@@ -54,6 +54,11 @@ import {
   type RunSnapshot,
   type RunState,
 } from "../core/workflows/schemas.js";
+import {
+  buildSddPackage,
+  defaultExportPath,
+  writeSddPackage,
+} from "../core/workflows/sdd-export/package.js";
 import { NativeWorkflowService } from "../core/workflows/service.js";
 import { stopDetail, stopRecovery } from "../core/workflows/stop-detail.js";
 import { wouldStopSummary } from "../core/workflows/stop-reasons.js";
@@ -643,6 +648,14 @@ export async function executeWorkflowCommand(
       );
     case "export-progress":
       return artifacts.exportProgress(runId);
+    case "export-package": {
+      const zip = args.flags.zip === true;
+      const out =
+        typeof args.flags.out === "string"
+          ? resolve(service.store.workspace, args.flags.out)
+          : defaultExportPath(service.store.workspace, runId, zip);
+      return writeSddPackage(buildSddPackage(service.store, runId), out, zip);
+    }
     case "usage": {
       service.store.run(runId);
       const markdown = args.flags.format === "md";
@@ -929,6 +942,7 @@ export async function runWorkflowCli(argv: string[]): Promise<number> {
       "artifacts",
       "export",
       "export-progress",
+      "export-package",
       "usage",
       "report",
       "outcomes",
@@ -1048,6 +1062,14 @@ export async function runWorkflowCli(argv: string[]): Promise<number> {
       process.stdout.write(formatCriticOutcomes(result as CriticOutcomes));
       return 0;
     }
+    if (args.command === "export-package" && !args.flags.json) {
+      const written = result as ReturnType<typeof writeSddPackage>;
+      const accepted = written.manifest.features.filter((f) => f.accepted).length;
+      process.stdout.write(
+        `Exported ${written.manifest.kind} ${written.manifest.id} (${accepted} of ${written.manifest.features.length} features accepted, ${written.files.length} files) to ${written.path}\n`,
+      );
+      return 0;
+    }
     if (args.command === "memory" && !args.flags.json) {
       process.stdout.write(formatProjectMemory(result as ProjectMemoryView & { id?: string }));
       return 0;
@@ -1070,6 +1092,12 @@ export async function runWorkflowCli(argv: string[]): Promise<number> {
     process.stderr.write(
       `${JSON.stringify({ code: error instanceof WorkflowFault ? error.code : "ERROR", message: error instanceof Error ? error.message : String(error) })}\n`,
     );
+    // An export package is written or refused (1); an unknown ID or bad arguments exit 2 (#2206).
+    if (argv[0] === "export-package")
+      return error instanceof WorkflowFault &&
+        ["NOT_FOUND", "INVALID_DEFINITION"].includes(error.code)
+        ? 2
+        : 1;
     return error instanceof WorkflowFault &&
       [
         "REVISION_CONFLICT",

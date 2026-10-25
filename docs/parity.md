@@ -187,6 +187,7 @@ bun test tests/feature-parity.test.ts
 | Usage across runs: days, by stage and model | `/workflow` | `baked usage`, `baked workflow usage` | `/v1/usage` | `project/usage` |
 | Export usage to Markdown to share | `/workflow` | `baked usage`, `baked workflow usage` | `/v1/usage`, `/v1/workflow/runs/:id/usage` | `project/usage` |
 | Import, export, gc and redact runs | `/workflow` | `baked workflow import`, `baked workflow export`, `baked workflow gc` +1 | `/v1/workflow/import`, `/v1/workflow/runs/:id/export`, `/v1/workflow/gc` +2 | `project/runs` |
+| Export a run or initiative as a portable SDD package (folder or zip) | **Gap** [#2207](https://github.com/Gulliby-development/baked/issues/2207) | `baked workflow export-package` | **Gap** [#2207](https://github.com/Gulliby-development/baked/issues/2207) | **Gap** [#2207](https://github.com/Gulliby-development/baked/issues/2207) |
 
 ### Initiatives
 
@@ -237,5 +238,6 @@ bun test tests/feature-parity.test.ts
 ### Open gaps by issue
 
 - [#407](https://github.com/Gulliby-development/baked/issues/407): Instruction files: view and edit content
+- [#2207](https://github.com/Gulliby-development/baked/issues/2207): Export a run or initiative as a portable SDD package (folder or zip)
 
 <!-- parity:end -->
