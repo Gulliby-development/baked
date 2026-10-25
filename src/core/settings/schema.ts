@@ -1147,6 +1147,28 @@ export const SETTINGS: readonly SettingDefinition[] = [
     ],
   },
   {
+    id: "quality.correctiveDefer",
+    page: "code-quality",
+    section: "Workflow runs",
+    label: "Run independent work past a blocked correction",
+    help: "When a correction blocks, the tasks that read the files it would have fixed wait, and the run used to stop at once. With this on, the ready tasks the correction does not touch run first and the run then stops with the blocked correction, so a resume after the fix has less left to do.",
+    scopes: BOTH,
+    type: "enum",
+    default: "off",
+    options: [
+      {
+        value: "off",
+        label: "off",
+        help: "The run stops at the blocked correction; the host only records what could have run.",
+      },
+      {
+        value: "on",
+        label: "on",
+        help: "Run the independent ready tasks first, then stop with the blocked correction.",
+      },
+    ],
+  },
+  {
     id: "quality.propertyTests",
     page: "code-quality",
     section: "Tests",

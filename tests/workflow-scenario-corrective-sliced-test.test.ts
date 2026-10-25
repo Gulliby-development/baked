@@ -3,6 +3,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { hashBytes, hashJson } from "../src/core/specs/hash.js";
+import { type CorrectiveDeferRecord, DEFER_KIND } from "../src/core/workflows/corrective-defer.js";
 import { scopeRecord, scopeRecords } from "../src/core/workflows/corrective-scope.js";
 import { WorkflowScheduler } from "../src/core/workflows/scheduler.js";
 import type { Check, Review, RunPolicy, Spec, TaskGraph } from "../src/core/workflows/schemas.js";
@@ -129,6 +130,54 @@ describe("scenario: a lint failure in a sliced test file (#2094)", () => {
     expect(replayed?.newScopeStops).toBe(0);
     const old = replayTrace(out, { scopeRule: (diagnosed) => diagnosed.filter((path) => path.startsWith("tests/")) }).runs.find((r) => r.runId === started.runId);
     expect(old?.newScopeStops).toBe(2);
+  }, 120000);
+});
+
+// #2108: the test-check copy. T002's own case in slice 1 of tests/test_a.py fails an assertion
+// (the BAD marker), with no source in the output; slice 2 (T003) is pending. The corrective may
+// write the test file, and the run completes. A failure located in a source keeps #1612 (the
+// shared-file case of workflow-scenario-repair-priority.test.ts).
+const ASSERTION = "FAILED tests/test_a.py::test_a - AssertionError: assert 'BAD' == 'ok'\n1 failed in 0.01s";
+const pytest: Check = {
+  ...lint, id: "tests", scope: "task",
+  args: ["-e", `const f = Bun.file('tes' + 'ts/test_a.py'); if ((await f.exists()) && (await f.text()).includes('BAD')) { console.log(atob('${btoa(ASSERTION)}')); process.exit(1) } console.log('1 passed')`],
+};
+
+class TestCheckSlicedExecutor extends SlicedExecutor {
+  override async execute(request: ExecutionRequest) {
+    const result = await super.execute(request);
+    if (request.profile.output === "plan") {
+      const output = result.output as { taskGraph: TaskGraph };
+      output.taskGraph = { ...output.taskGraph, tasks: PLAN.map((t) => (t.id === "T002" ? { ...t, checkIds: ["tests"] } : t)) };
+    }
+    return result;
+  }
+}
+
+describe("scenario: a test-check failure in slice 1's own case of a sliced test file (#2108)", () => {
+  test("the corrective writes the test file and the run completes", async () => {
+    const fx = workflowFixture({
+      policy: { ...fixturePolicy, checks: [pytest] },
+      executor: (root) => new TestCheckSlicedExecutor(root),
+    });
+    cleanups.push(fx.dispose);
+    const started = await fx.start();
+    const planned = await fx.service.drive(started.runId, signal());
+    expect(planned.reason).toBe("approval");
+    await fx.approve(started.runId);
+    const final = await fx.service.drive(started.runId, signal());
+    const errors = fx.service.store.artifacts(started.runId).filter((a) => a.logical_path.startsWith("errors/")).map((a) => fx.service.store.readArtifact(started.runId, a.id));
+    expect({ status: final.status, errors }).toEqual({ status: "completed", errors: [] });
+    const corrective = fx.executor.attempts.find((t) => t.origin !== "planned");
+    expect(corrective?.writes.map((w) => w.path)).toContain("tests/test_a.py");
+    expect(corrective?.description).toContain("T003 runs after this correction and adds the rest of tests/test_a.py: change only what the failure needs in it.");
+    const order = fx.executor.attempts.map((t) => t.id);
+    expect(order.indexOf("T003")).toBeGreaterThan(order.indexOf(corrective?.id ?? ""));
+    expect(readFileSync(join(fx.root, "tests/test_a.py"), "utf8")).toContain("def test_a_again");
+    expect(readFileSync(join(fx.root, "tests/test_a.py"), "utf8")).not.toContain("BAD");
+    // The precondition records the test file as one the corrective must write, and it fits.
+    const records = scopeRecords(fx.service.store, started.runId).filter((r) => r.taskId === corrective?.id);
+    expect(records.map((r) => [r.at, r.decision, r.diagnosed])).toContainEqual(["create", "fits", ["tests/test_a.py"]]);
   }, 120000);
 });
 
@@ -356,5 +405,84 @@ describe("scenario: a test-check corrective holds only what its findings point a
     expect(fx.service.store.state(started.runId).graph?.tasks.find((t) => t.id === corrective?.id)?.writes.map((w) => w.path)).toContain("src/b.ts");
     // Before #2109 T004, which depends on T002's src/b.ts, waited for the corrective.
     expect(fx.executor.attempts.map((t) => t.id)).toEqual(["T001", "T002", "T003", "T004", corrective?.id ?? ""]);
+  }, 120000);
+});
+
+// #2109: a corrective that blocks ended the run at once, with ready tasks it does not hold never
+// run. T004 reads src/a.ts, which the corrective of T003 fixes, so the corrective runs first; it
+// blocks. T005 tests src/b.ts only: with `correctiveDefer: "on"` it runs before the run stops.
+const DEFER_PLAN = [
+  ...HOLD_PLAN.slice(0, 3),
+  holdTask("T004", "tests/a_more.test.ts", ["AC-001"], ["T001"]),
+  holdTask("T005", "tests/b.test.ts", ["AC-002"], ["T002"]),
+];
+
+class DeferExecutor extends HoldExecutor {
+  override async execute(request: ExecutionRequest) {
+    if (request.profile.output === "plan") {
+      const result = await super.execute(request);
+      const output = result.output as { taskGraph: TaskGraph };
+      output.taskGraph = { ...output.taskGraph, tasks: DEFER_PLAN };
+      return result;
+    }
+    const own = request.task as Task | undefined;
+    if (request.profile.output === "implementation" && own && own.origin !== "planned") {
+      this.attempts.push(own);
+      return {
+        output: { schemaVersion: 1, taskId: own.id, outcome: "blocked", summary: "The fix needs a decision on the return value", evidenceIds: [], unresolved: ["Which value a() returns"] },
+        inputTokens: 25,
+        outputTokens: 25,
+      };
+    }
+    return super.execute(request);
+  }
+}
+
+async function deferRun(correctiveDefer: boolean) {
+  const fx = workflowFixture({
+    policy: { ...fixturePolicy, checks: [testsWritten], ...(correctiveDefer ? { correctiveDefer: "on" as const } : {}) },
+    executor: (root) => new DeferExecutor(root),
+  });
+  cleanups.push(fx.dispose);
+  const started = await fx.start();
+  const planned = await fx.service.drive(started.runId, signal());
+  expect(planned.reason).toBe("approval");
+  await fx.approve(started.runId);
+  const final = await fx.service.drive(started.runId, signal());
+  const records = fx.service.store
+    .artifacts(started.runId)
+    .filter((a) => a.kind === DEFER_KIND)
+    .map((a) => JSON.parse(fx.service.store.readArtifact(started.runId, a.id)) as CorrectiveDeferRecord);
+  const statuses = Object.fromEntries(fx.service.store.tasks(started.runId).map((r) => [r.id, r.status]));
+  return { fx, final, records, statuses, runId: started.runId, attempts: fx.executor.attempts.map((t) => t.id) };
+}
+
+describe("scenario: a blocked corrective with independent ready tasks (#2109)", () => {
+  test("on: the independent task runs before the run stops with the corrective's block", async () => {
+    const { final, records, statuses, attempts } = await deferRun(true);
+    expect(final.status).toBe("blocked");
+    const corrective = records[0]?.taskId ?? "";
+    expect(statuses[corrective]).toBe("blocked");
+    // T005 ran after the block; T004, which reads the file the corrective fixes, is still held.
+    expect(attempts.indexOf("T005")).toBeGreaterThan(attempts.indexOf(corrective));
+    expect(statuses.T005).not.toBe("pending");
+    expect(statuses.T004).toBe("pending");
+    expect(records.map((r) => [r.mode, r.ready, r.parked, r.defer])).toEqual([["on", ["T005"], [], true]]);
+  }, 120000);
+
+  test("shadow: the run stops at the block, and the record says what could have run", async () => {
+    const { fx, final, records, statuses, runId } = await deferRun(false);
+    expect(final.status).toBe("blocked");
+    expect(statuses.T005).toBe("pending");
+    expect(records.map((r) => [r.mode, r.ready, r.defer])).toEqual([["shadow", ["T005"], true]]);
+    // The replay hook decides the record again from the bench trace.
+    const dir = mkdtempSync(join(tmpdir(), "corrective-defer-trace-"));
+    cleanups.push(() => rmSync(dir, { recursive: true, force: true }));
+    const out = join(dir, "run.sqlite.gz");
+    exportTrace(fx.root, out);
+    const replayed = replayTrace(out).runs.find((r) => r.runId === runId);
+    expect(replayed?.correctiveDefers.map((b) => [b.mode, b.ready, b.recorded, b.replayed])).toEqual([["shadow", 1, true, true]]);
+    expect(replayed?.newDeferDecisions).toBe(0);
+    expect(replayTrace(out, { correctiveDeferRule: () => false }).runs.find((r) => r.runId === runId)?.newDeferDecisions).toBe(1);
   }, 120000);
 });

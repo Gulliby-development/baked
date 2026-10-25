@@ -1003,6 +1003,56 @@ function testTaskLimit(samples: SizingSample[], model: string | null): TestTaskL
   };
 }
 
+/** What a literal test case costs, as the initiative estimate prices a brief's test volume. */
+export interface TestCaseRate {
+  perCase: TokenRange;
+  /** Finished runs whose test tasks with cases the rate is measured on; 0 for the default. */
+  samples: number;
+  /**
+   * `project`: this project's own runs. `history`: too few of those, so every store's.
+   * `defaults`: fewer than two runs with finished test tasks with cases (`DEFAULT_PER_CASE`).
+   */
+  basis: "project" | "history" | "defaults";
+}
+
+/**
+ * Tokens per literal case of finished runs' test tasks, for the test volume a brief demands of an
+ * initiative's feature (#2055). Each run's test tasks count as one rate (their tokens over their
+ * cases), since a brief's volume is per feature and one task's rate swings with how its cases fall
+ * into files: in the bench-trace corpus single tasks ran from 1,354 tokens a case, initiative
+ * features from 2,152. From the lowest run rate, as a forecast floor takes it (#1806), up to their
+ * median, this project's runs first: in bench round 66 nodepluck's test tasks were 17.26M tokens,
+ * 51.9 percent of the initiative, and its features' rates ran from 21k to 41k a case.
+ */
+export function testCaseRate(samples: SizingSample[]): TestCaseRate {
+  const tests = samples.filter(
+    (s) => s.kind === "test" && (s.cases ?? 0) > 0 && Number.isFinite(s.tokens) && s.tokens > 0,
+  );
+  const runs = (pool: SizingSample[]) => {
+    const byRun = new Map<string, { tokens: number; cases: number }>();
+    for (const s of pool) {
+      const run = byRun.get(s.runId) ?? { tokens: 0, cases: 0 };
+      run.tokens += s.tokens;
+      run.cases += s.cases ?? 0;
+      byRun.set(s.runId, run);
+    }
+    return [...byRun.values()].map((run) => run.tokens / run.cases);
+  };
+  const project = runs(tests.filter((s) => s.source === "project"));
+  const basis = project.length >= MIN_PROJECT_SAMPLES ? "project" : "history";
+  const rates = (basis === "project" ? project : runs(tests)).sort((a, b) => a - b);
+  if (rates.length < MIN_PROJECT_SAMPLES)
+    return { perCase: DEFAULT_PER_CASE, samples: 0, basis: "defaults" };
+  const mid = Math.floor(rates.length / 2);
+  const median =
+    rates.length % 2 ? (rates[mid] ?? 0) : ((rates[mid - 1] ?? 0) + (rates[mid] ?? 0)) / 2;
+  return {
+    perCase: { low: Math.round(rates[0] ?? 0), high: Math.round(median) },
+    samples: rates.length,
+    basis,
+  };
+}
+
 /** Test history prices a whole task. Only cold starts multiply a default by the case count. */
 export function priceTask(
   task: SizingTask & Partial<Pick<Task, "criterionIds" | "sizingSlice">>,
