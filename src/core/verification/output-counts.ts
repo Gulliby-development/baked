@@ -497,6 +497,9 @@ const GROWING_COUNTS: [RegExp, string][] = [
     "<n> $1",
   ],
   [/\b(Passed|Skipped|Total|Tests run):\s*\d+/g, "$1: <n>"],
+  // The JUnit block of a Gradle run's test reports (#1489) and any printed JUnit report.
+  [/\b(tests|skipped)="\d+"/g, '$1="<n>"'],
+  [/^(Gradle test reports \()\d+ files?/gm, "$1<n> files"],
   [/^(\s*)\d+ (pass|skip|todo)$/gm, "$1<n> $2"],
   [/\b\d+ expect\(\) calls\b/g, "<n> expect() calls"],
   [/\bRan \d+ tests? across \d+ files?\b/g, "Ran <n> tests across <n> files"],
