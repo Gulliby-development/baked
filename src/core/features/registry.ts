@@ -1523,7 +1523,7 @@ export const FEATURES: readonly Feature[] = [
     id: "initiative-token-pool-forecast",
     group: "Initiatives",
     title:
-      "Token pool forecast notice, block amounts with a one-step extend, and the shadow pool extension inside the dollar cap",
+      "Token pool forecast notice at the measured ratio, block amounts with a one-step extend, and the shadow pool extension inside the dollar cap",
     tui: [
       "/workflow: initiatives, Token forecast line and B prefilled with the suggested extension",
     ],

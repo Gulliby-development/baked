@@ -2196,7 +2196,7 @@ export interface InitiativeStartBoundary {
   /** The token pool's forecast the current code makes at this start, and its notice (#2042). */
   pool: Pick<
     TokenPoolView,
-    "limitTokens" | "usedTokens" | "forecastTokens" | "suggestedTokens" | "notice"
+    "limitTokens" | "usedTokens" | "forecastTokens" | "advice" | "suggestedTokens" | "notice"
   > | null;
   /**
    * The plan charge at this start (#2100, #2056): what the pool holds with open runs at their
@@ -2696,6 +2696,7 @@ function replayStarts(
             limitTokens: view.budget.pool.limitTokens,
             usedTokens: view.budget.pool.usedTokens,
             forecastTokens: view.budget.pool.forecastTokens,
+            advice: view.budget.pool.advice,
             suggestedTokens: view.budget.pool.suggestedTokens,
             notice: view.budget.pool.notice,
           },
