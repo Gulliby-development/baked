@@ -1181,6 +1181,16 @@ export class WorkflowScheduler {
   /** Re-arms the active-time deadline after the policy's cap changed; set while a run is driven. */
   private rearmDeadline: () => void = () => {};
   /**
+   * Adopts the run's stored limits into the drive's copy and re-arms the active-time deadline
+   * when that raised `maxActiveMs` (#2216). Adoptions inside a reservation or a budget growth do
+   * not re-arm; the deadline reads the adopted limit when it fires and re-arms on what is left.
+   */
+  private adoptLimits(runId: string, policy: RunPolicy): void {
+    const before = policy.maxActiveMs;
+    adoptStoredLimits(this.store, runId, policy);
+    if (policy.maxActiveMs > before) this.rearmDeadline();
+  }
+  /**
    * Raises a driven run's host-derived limits in the stored policy before its deadline stops it:
    * an initiative's refresh of a feature run's share (#1958). Unset outside an initiative.
    */
@@ -1257,16 +1267,28 @@ export class WorkflowScheduler {
     const left = () => policy.maxActiveMs - activeBefore - (budgetClock.now() - started);
     // An initiative feature's limit is a share the initiative can raise: it is asked when the
     // deadline comes, not only between drives, when the run may be the only one left (#1958).
+    // The decision reads the limit after the adoption, never whether this callback raised it: a
+    // reservation or growth may already have adopted the raise into this copy, and R70 soundex
+    // stopped at its held 1,482,098 ms with 1,852,623 stored (#2216).
     const expire = (): void => {
-      const before = policy.maxActiveMs;
       try {
         this.growLimits?.(runId);
+        // Adopted without `adoptLimits`: this callback re-arms on what is left itself.
         adoptStoredLimits(this.store, runId, policy);
       } catch {
         // A timer callback must not throw: without the growth the stop stands.
       }
-      if (policy.maxActiveMs > before && left() > 0) timeout = arm();
-      else controller.abort(stopFault("deadline", "Active deadline exhausted"));
+      if (left() > 0) timeout = arm();
+      else {
+        const used = Math.round(policy.maxActiveMs - left());
+        controller.abort(
+          stopFault(
+            "deadline",
+            `Active deadline exhausted: ${String(used)} ms active of the stored ${String(policy.maxActiveMs)} ms limit`,
+            { activeMs: used, maxActiveMs: policy.maxActiveMs },
+          ),
+        );
+      }
     };
     const arm = () => executionTimeout(expire, Math.max(1, left()), budgetClock);
     let timeout = arm();
@@ -6642,7 +6664,7 @@ ${note}`;
     report: SizingReport,
   ): void {
     // The drive's copy misses what the executor grew since: writing it back undid that (#1704).
-    adoptStoredLimits(this.store, runId, policy);
+    this.adoptLimits(runId, policy);
     const tokens = report.budgetAfter > policy.maxTotalTokens;
     const time = report.activeTime.after > policy.maxActiveMs;
     if (!tokens && !time) return;
