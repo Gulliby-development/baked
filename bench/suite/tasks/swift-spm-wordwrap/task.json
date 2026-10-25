@@ -1,0 +1,29 @@
+{
+  "id": "swift-spm-wordwrap",
+  "language": "swift",
+  "toolchain": "swiftpm",
+  "requires": [
+    "swift"
+  ],
+  "allowedPaths": [
+    "Sources/**",
+    "Tests/**",
+    "README.md"
+  ],
+  "checks": [
+    {
+      "id": "swift-build",
+      "executable": "swift",
+      "args": [
+        "build"
+      ]
+    },
+    {
+      "id": "swift-test",
+      "executable": "swift",
+      "args": [
+        "test"
+      ]
+    }
+  ]
+}

@@ -558,7 +558,42 @@ export type SuppliedBlock =
       content: string;
       /** Whether the prose before it says it is the whole file (`WHOLE_FILE`). */
       whole: boolean;
+      /** The Markdown section the block is, for a Markdown file (`markdownRegion`, #2101). */
+      region?: MarkdownRegion;
     };
+
+/** A Markdown section by its heading: the title (trimmed) and the heading's level. */
+export interface MarkdownRegion {
+  title: string;
+  level: number;
+}
+
+const MARKDOWN_FILE = /\.(?:md|mdx|markdown)$/i;
+/**
+ * Prose that says a fenced Markdown block is the whole file. Stricter than `WHOLE_FILE`, whose
+ * "exactly" and "verbatim" describe a section's text as well ("add this section exactly").
+ */
+const WHOLE_DOCUMENT =
+  /\b(?:whole|full|entire|complete|overwrite)\b|\breplace[ds]?\s+(?:the\s+)?(?:file|readme|`?[\w./-]+\.(?:md|mdx|markdown)`?)(?:\s|$|[:.,])/i;
+
+/**
+ * The section a fenced block gives for a Markdown file (#2101): a block whose first non-blank
+ * line is a heading, for a `.md`, `.mdx` or `.markdown` path, when the prose before it does not
+ * say it is the whole file (`WHOLE_DOCUMENT`). Bench round 67 srtvet-update gave the README
+ * section "## Cleaning spaces" verbatim, and the README task (T003, 123k tokens) was an
+ * implementer's: the host had no way to write a section into an existing file. Null otherwise.
+ */
+export function markdownRegion(
+  path: string,
+  lines: readonly string[],
+  prose: string,
+): MarkdownRegion | null {
+  if (!MARKDOWN_FILE.test(path)) return null;
+  if (WHOLE_DOCUMENT.test(prose.trim().split("\n").at(-1) ?? "")) return null;
+  const heading = HEADING.exec(lines.find((line) => line.trim()) ?? "");
+  const title = heading?.[2]?.trim();
+  return heading && title ? { title, level: heading[1]?.length ?? 1 } : null;
+}
 
 /**
  * The one reader of a request's verbatim blocks (#2002, #2023): for each path of `paths`, every
@@ -591,13 +626,15 @@ export function suppliedBlocks(
       continue;
     }
     const path = blockPath(block, wanted);
-    if (path)
-      add(path, {
-        kind: "file",
-        lines: block.lines.length,
-        content: `${body}\n`,
-        whole: WHOLE_FILE.test(block.prose.trim().split("\n").at(-1) ?? ""),
-      });
+    if (!path) continue;
+    const region = markdownRegion(path, block.lines, block.prose);
+    add(path, {
+      kind: "file",
+      lines: block.lines.length,
+      content: `${body}\n`,
+      whole: WHOLE_FILE.test(block.prose.trim().split("\n").at(-1) ?? ""),
+      ...(region ? { region } : {}),
+    });
   }
   return out;
 }
@@ -963,6 +1000,56 @@ function testTaskLimit(samples: SizingSample[], model: string | null): TestTaskL
     tokens: Math.max(...chosen.map((s) => s.tokens)),
     cases: Math.max(...chosen.map((s) => s.cases ?? 0)),
     criteria: Math.max(...chosen.map((s) => s.criteria ?? 0)),
+  };
+}
+
+/** What a literal test case costs, as the initiative estimate prices a brief's test volume. */
+export interface TestCaseRate {
+  perCase: TokenRange;
+  /** Finished runs whose test tasks with cases the rate is measured on; 0 for the default. */
+  samples: number;
+  /**
+   * `project`: this project's own runs. `history`: too few of those, so every store's.
+   * `defaults`: fewer than two runs with finished test tasks with cases (`DEFAULT_PER_CASE`).
+   */
+  basis: "project" | "history" | "defaults";
+}
+
+/**
+ * Tokens per literal case of finished runs' test tasks, for the test volume a brief demands of an
+ * initiative's feature (#2055). Each run's test tasks count as one rate (their tokens over their
+ * cases), since a brief's volume is per feature and one task's rate swings with how its cases fall
+ * into files: in the bench-trace corpus single tasks ran from 1,354 tokens a case, initiative
+ * features from 2,152. From the lowest run rate, as a forecast floor takes it (#1806), up to their
+ * median, this project's runs first: in bench round 66 nodepluck's test tasks were 17.26M tokens,
+ * 51.9 percent of the initiative, and its features' rates ran from 21k to 41k a case.
+ */
+export function testCaseRate(samples: SizingSample[]): TestCaseRate {
+  const tests = samples.filter(
+    (s) => s.kind === "test" && (s.cases ?? 0) > 0 && Number.isFinite(s.tokens) && s.tokens > 0,
+  );
+  const runs = (pool: SizingSample[]) => {
+    const byRun = new Map<string, { tokens: number; cases: number }>();
+    for (const s of pool) {
+      const run = byRun.get(s.runId) ?? { tokens: 0, cases: 0 };
+      run.tokens += s.tokens;
+      run.cases += s.cases ?? 0;
+      byRun.set(s.runId, run);
+    }
+    return [...byRun.values()].map((run) => run.tokens / run.cases);
+  };
+  const project = runs(tests.filter((s) => s.source === "project"));
+  const basis = project.length >= MIN_PROJECT_SAMPLES ? "project" : "history";
+  const rates = (basis === "project" ? project : runs(tests)).sort((a, b) => a - b);
+  if (rates.length < MIN_PROJECT_SAMPLES)
+    return { perCase: DEFAULT_PER_CASE, samples: 0, basis: "defaults" };
+  const mid = Math.floor(rates.length / 2);
+  const median =
+    rates.length % 2 ? (rates[mid] ?? 0) : ((rates[mid - 1] ?? 0) + (rates[mid] ?? 0)) / 2;
+  return {
+    perCase: { low: Math.round(rates[0] ?? 0), high: Math.round(median) },
+    samples: rates.length,
+    basis,
   };
 }
 

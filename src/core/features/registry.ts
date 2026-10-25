@@ -845,7 +845,7 @@ export const FEATURES: readonly Feature[] = [
     id: "host-apply-shadow",
     group: "Workflow runs",
     title:
-      "Shadow decision whether the host would apply a planned task's verbatim diffs and files from the request itself, recorded per task with its apply check, with the host-appliable tasks at approval",
+      "Shadow decision whether the host would apply a planned task's verbatim diffs, files and Markdown sections from the request itself, recorded per task with its apply check, with the host-appliable tasks at approval",
     tui: ["/workflow: plan approval names the host-appliable tasks"],
     cli: ["baked workflow status: hostApply records and the approval's hostApply"],
     api: ["/v1/workflow/runs/:id: approval hostApply and host-apply artifacts"],
@@ -1603,7 +1603,8 @@ export const FEATURES: readonly Feature[] = [
   {
     id: "initiative-estimate",
     group: "Initiatives",
-    title: "Estimate a split: a difficulty level and a token range from run history",
+    title:
+      "Estimate a split: a difficulty level and a token range from run history and the test volume the request demands",
     tui: ["/workflow: initiatives, T estimates the split"],
     cli: ["baked workflow initiative estimate"],
     api: ["/v1/initiatives/:id/estimate"],

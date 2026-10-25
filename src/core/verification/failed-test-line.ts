@@ -38,6 +38,9 @@ export const FAILED_TEST_LINE = new RegExp(
     // ScalaTest `[info] - adds *** FAILED ***`, munit `==> X CalcSuite.adds  0.04s` in colour (#1496).
     String.raw`\*\*\* FAILED \*\*\*`,
     "==> X ",
+    // XCTest `Test Case 'CalcTests.testAdds' failed (`, swift-testing `✘ Test adds() failed after` (#1492).
+    String.raw`^Test Case '.+' failed \(`,
+    "^. Test .+ failed after ",
   ].join("|"),
 );
 
