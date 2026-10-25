@@ -211,9 +211,15 @@ function namesFile(frameFile: string, path: string, baseName: boolean): boolean 
   return baseName && own.split("/").at(-1) === file;
 }
 
+/** A GitHub Actions annotation, which Bun prints under `GITHUB_ACTIONS` in place of its error line. */
+const ACTIONS_ANNOTATION = /^::error\b[^:]*?\btitle=(?<title>.*?)::/;
+
 // A runtime that colours its output (FORCE_COLOR, as on CI) wraps `error` and paths in escapes.
 const outputLines = (output: string): string[] =>
-  stripAnsi(output).replace(/\r\n?/g, "\n").split("\n");
+  stripAnsi(output)
+    .replace(/\r\n?/g, "\n")
+    .split("\n")
+    .map((line) => ACTIONS_ANNOTATION.exec(line)?.groups?.title ?? line);
 
 /** The frame lines of `output` that name one of `files`, by the frame table. */
 export function ownFrames(output: string, files: readonly string[]): string[] {

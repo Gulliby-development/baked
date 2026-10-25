@@ -208,6 +208,12 @@ describe("the crash frame table (#2136)", () => {
     expect(outputTail("short output")).toBe("short output");
   });
 
+  // Under GITHUB_ACTIONS Bun prints its error line as an annotation (the CI run of this file).
+  test("an Actions annotation is read as the error line it carries", () => {
+    const output = 'de"\n      at createLink (/w/src/storage.ts:2:37)\n\n::error file=../../w/src/storage.ts,line=2,col=37,title=error: Missing parameter "code"::\n      at createLink (/w/src/storage.ts:2:37)\n';
+    expect(edgeCrashDecision("inconclusive", output, ["src/storage.ts"])).toEqual({ decision: "finding", actual: 'error: Missing parameter "code"' });
+  });
+
   // CI runs with FORCE_COLOR, and Bun then colours `error` and the frame's path.
   test("a coloured crash is decided as the plain one", () => {
     const output = '\x1b[31merror\x1b[0m\x1b[2m:\x1b[0m Missing parameter "code"\n      \x1b[2mat\x1b[0m createLink (\x1b[36m/w/src/storage.ts\x1b[0m:70:10)\n';
