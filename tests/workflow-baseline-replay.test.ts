@@ -32,6 +32,8 @@ const FAILURES = [
   { runner: "go", output: "--- FAIL: TestBlankLines (0.00s)\nFAIL\nFAIL\texample.com/taskplan\t0.002s", name: "TestBlankLines" },
   { runner: "dotnet", output: "  Failed Parser.Tests.BlankLines [12 ms]\nFailed!  - Failed:     1, Passed:     3, Skipped:     0, Total:     4", name: "Parser.Tests.BlankLines" },
   { runner: "maven", output: "[ERROR] app.ParserTest.blankLines -- Time elapsed: 0.01 s <<< FAILURE!\n[ERROR] Tests run: 4, Failures: 1, Errors: 0, Skipped: 0", name: "app.ParserTest.blankLines" },
+  { runner: "phpunit", output: "There was 1 failure:\n\n1) App\\Tests\\ParserTest::testBlankLines\nFailed asserting that false is true.\n\nFAILURES!\nTests: 4, Assertions: 4, Failures: 1.", name: "App\\Tests\\ParserTest::testBlankLines" },
+  { runner: "pest", output: "   FAILED  Tests\\ParserTest > it keeps blank lines\n  Failed asserting that false is true.\n\n  Tests:    1 failed, 3 passed (4 assertions)", name: "Tests\\ParserTest > it keeps blank lines" },
 ] as const;
 
 /**
@@ -48,6 +50,8 @@ const BUILD_ERRORS = [
   { runner: "go", output: "# example.com/cidrfold [example.com/cidrfold.test]\n./fold_test.go:9:2: undefined: Fold\nFAIL\texample.com/cidrfold [build failed]\nFAIL", line: "./fold_test.go:9:2: undefined: Fold" },
   { runner: "dotnet", output: "/repo/tests/ParserTests.cs(12,5): error CS1501: No overload for method 'Run' takes 7 arguments [/repo/tests/Tests.csproj]\n\nBuild FAILED.", line: "/repo/tests/ParserTests.cs(12,5): error CS1501: No overload for method 'Run' takes 7 arguments [/repo/tests/Tests.csproj]" },
   { runner: "maven", output: "[INFO] --- compiler:3.13.0:testCompile (default-testCompile) @ linehunk ---\n[ERROR] COMPILATION ERROR : \n[ERROR] /repo/src/test/java/app/StdinPatchTest.java:[31,20] method run in class app.Applier cannot be applied to given types;\n[INFO] BUILD FAILURE", line: "[ERROR] /repo/src/test/java/app/StdinPatchTest.java:[31,20] method run in class app.Applier cannot be applied to given types;" },
+  { runner: "phpunit", output: "PHP Parse error:  syntax error, unexpected end of file in /repo/tests/SumTest.php on line 3\n", line: "PHP Parse error:  syntax error, unexpected end of file in /repo/tests/SumTest.php on line 3" },
+  { runner: "pest", output: "PHP Fatal error:  Cannot redeclare App\\sum() in /repo/tests/SumTest.php on line 4\n", line: "PHP Fatal error:  Cannot redeclare App\\sum() in /repo/tests/SumTest.php on line 4" },
   { runner: "junit", output: "> Task :compileTestJava FAILED\n/repo/src/test/java/app/StdinPatchTest.java:31: error: method run in class Applier cannot be applied to given types;\nBUILD FAILED in 2s", line: "> Task :compileTestJava FAILED" },
 ] as const;
 
@@ -322,7 +326,9 @@ describe("baseline replay per test target (#2020)", () => {
   });
 
   test("the build runner is read from the build-failure lines", () => {
-    for (const row of BUILD_ERRORS) expect({ row: row.runner, runner: buildRunner(row.output) }).toEqual({ row: row.runner, runner: row.runner });
+    // Pest prints PHP's own parse and fatal errors, as PHPUnit does; both share one replay row.
+    const shared: Record<string, string> = { pest: "phpunit" };
+    for (const row of BUILD_ERRORS) expect({ row: row.runner, runner: buildRunner(row.output) }).toEqual({ row: row.runner, runner: shared[row.runner] ?? row.runner });
     expect(buildRunner("(fail) a [0.1ms]")).toBeNull();
   });
 
