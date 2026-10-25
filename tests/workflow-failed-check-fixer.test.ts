@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { hashBytes } from "../src/core/specs/hash.js";
@@ -239,4 +239,72 @@ test.skipIf(process.platform === "win32")("a whole-unit formatter runs once for 
     ["a.rs", hashBytes(Buffer.from("fn a() {}  \n")), hashBytes(Buffer.from("fn a() {}"))],
     ["b.rs", hashBytes(Buffer.from("fn b() {}  \n")), hashBytes(Buffer.from("fn b() {}"))],
   ]);
+});
+
+// Bench round 67, skillcomb (#2095): ruff 0.17 flags two adjacent string literals in a tuple as
+// ISC004, whose only fix is unsafe. 22 such diagnostics on two test files cost 3.83M tokens of
+// correctives. The detected ruff gate's unsafe tier fixes test files only, where an unsafe fix
+// cannot change what the program does; a source file still goes to the repair task.
+function unsafeOnly(path: string): RunPolicy {
+  const read = `const t = await Bun.file(${JSON.stringify(path)}).text()`;
+  return {
+    ...policy,
+    checks: policy.checks.map((c) =>
+      c.id === "fmt"
+        ? {
+            ...c,
+            args: ["-e", `${read}; if (t.includes("'x', 'a'")) process.exit(1)`],
+            fix: { executable: "bun", args: ["-e", "0"] },
+            fixUnsafe: {
+              executable: "bun",
+              args: ["-e", "const f = process.argv.at(-1); await Bun.write(f, (await Bun.file(f).text()).replace(\"'x', 'a' 'b'\", \"'x', ('a' 'b')\"))"],
+            },
+            fixUnsafeScope: "tests" as const,
+          }
+        : c,
+    ),
+  };
+}
+
+function concatenatingExecutor(fixture: ReturnType<typeof workflowFixture>, path: string) {
+  const { executor, root } = fixture;
+  const original = executor.execute.bind(executor);
+  executor.execute = async (request: ExecutionRequest) => {
+    const out = await original(request);
+    if (request.profile.output === "plan") {
+      const plan = out.output as { taskGraph: { tasks: { checkIds?: string[]; writes: { path: string; action: string }[] }[] } };
+      const task = plan.taskGraph.tasks[0];
+      if (task) {
+        task.checkIds = ["fmt"];
+        task.writes.push({ path, action: "create" });
+      }
+    }
+    if (request.profile.output === "implementation") {
+      mkdirSync(join(root, path, ".."), { recursive: true });
+      writeFileSync(join(root, path), "CASES = [('x', 'a' 'b')]\n");
+    }
+    return out;
+  };
+}
+
+test("an unsafe-only lint fix on the task's test file is applied by the host, with no repair task (#2095)", async () => {
+  const path = "tests/test_value.py";
+  const fixture = workflowFixture({ policy: unsafeOnly(path) });
+  cleanups.push(fixture.dispose);
+  concatenatingExecutor(fixture, path);
+  const run = await runToEnd(fixture);
+  expect((await fixture.service.get(run.runId)).status).toBe("completed");
+  expect(readFileSync(join(fixture.root, path), "utf8")).toBe("CASES = [('x', ('a' 'b'))]\n");
+  expect(fixture.executor.calls.filter((call) => call === "implementation")).toHaveLength(1);
+});
+
+test("the tests-scoped unsafe tier leaves a source file to the repair task (#2095)", async () => {
+  const path = "src/value.py";
+  const fixture = workflowFixture({ policy: unsafeOnly(path) });
+  cleanups.push(fixture.dispose);
+  concatenatingExecutor(fixture, path);
+  const run = await runToEnd(fixture);
+  expect(fixture.executor.calls.filter((call) => call === "implementation").length).toBeGreaterThan(1);
+  expect(readFileSync(join(fixture.root, path), "utf8")).toBe("CASES = [('x', 'a' 'b')]\n");
+  expect((await fixture.service.get(run.runId)).status).not.toBe("completed");
 });

@@ -237,6 +237,11 @@ export const CheckSchema = z
       .strict()
       .optional(),
     /**
+     * `tests`: the `fixUnsafe` tier runs on test files only, where a fix the tool marks unsafe
+     * cannot change what the program does (#2095). Absent means every file `fix` runs on.
+     */
+    fixUnsafeScope: z.enum(["tests"]).optional(),
+    /**
      * `json`: the command prints a JSON report (`status`, `summary`, `findings`) as its last JSON
      * line and that report decides the result; without one the check is inconclusive. Absent means
      * the exit code decides.

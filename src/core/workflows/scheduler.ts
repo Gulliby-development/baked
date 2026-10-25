@@ -242,6 +242,7 @@ import {
 import {
   cwdPath,
   fixerCommand,
+  fixerTierPaths,
   fixerTiers,
   isCodePath,
   isStaticCheck,
@@ -13108,11 +13109,12 @@ ${note}`;
           const own = check.fixPaths
             ? paths.filter((path) => check.fixPaths?.includes(path))
             : paths;
-          for (const fix of fixerTiers(check)) {
+          for (const [tier, fix] of fixerTiers(check).entries()) {
+            const files = fixerTierPaths(check, tier, own);
             // A whole-unit formatter (`cargo fmt`) rewrites the whole crate whatever file it is
             // given: one run for all the code files instead of one per file (#1269, #842).
             if (isWholeUnitFixer(fix)) {
-              const code = own.filter(isCodePath);
+              const code = files.filter(isCodePath);
               if (code.length)
                 await run(
                   wholeUnitFixerCommand(
@@ -13124,7 +13126,7 @@ ${note}`;
               continue;
             }
             // The fixer runs in the check's cwd, so it names the file from there.
-            for (const path of own) await run(fixerCommand(fix, cwdPath(check, path)), [path]);
+            for (const path of files) await run(fixerCommand(fix, cwdPath(check, path)), [path]);
           }
         }
       } finally {
