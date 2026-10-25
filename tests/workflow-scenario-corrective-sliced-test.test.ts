@@ -6,7 +6,7 @@ import { hashBytes, hashJson } from "../src/core/specs/hash.js";
 import { scopeRecord, scopeRecords } from "../src/core/workflows/corrective-scope.js";
 import { WorkflowScheduler } from "../src/core/workflows/scheduler.js";
 import type { Check, Review, RunPolicy, TaskGraph } from "../src/core/workflows/schemas.js";
-import type { TaskRow, WorkflowStore } from "../src/core/workflows/store.js";
+import { newId, type TaskRow, type WorkflowStore } from "../src/core/workflows/store.js";
 import { failureOwner, missingArtifactOwners } from "../src/core/workflows/task-graph.js";
 import { exportTrace, replayTrace } from "../src/core/workflows/trace.js";
 import type { ExecutionRequest, RuntimeState, Task } from "../src/core/workflows/types.js";
@@ -129,6 +129,41 @@ describe("scenario: a lint failure in a sliced test file (#2094)", () => {
     expect(replayed?.newScopeStops).toBe(0);
     const old = replayTrace(out, { scopeRule: (diagnosed) => diagnosed.filter((path) => path.startsWith("tests/")) }).runs.find((r) => r.runId === started.runId);
     expect(old?.newScopeStops).toBe(2);
+  }, 120000);
+});
+
+describe("scenario: the same lint failure in a batch run, two writers (#2138)", () => {
+  test("the corrective's session in the batch worker records its start scope too", async () => {
+    const fx = workflowFixture({
+      policy: { ...fixturePolicy, checks: [lint] },
+      executor: (root) => new SlicedExecutor(root),
+    });
+    cleanups.push(fx.dispose);
+    const git = (...args: string[]) => {
+      const result = Bun.spawnSync(["git", ...args], { cwd: fx.root, stdout: "pipe", stderr: "pipe" });
+      if (result.exitCode !== 0) throw new Error(`git ${args.join(" ")}: ${result.stderr.toString()}`);
+    };
+    git("init", "-q", "-b", "main");
+    git("config", "user.name", "Test User");
+    git("config", "user.email", "test@example.test");
+    git("config", "commit.gpgsign", "false");
+    writeFileSync(join(fx.root, ".gitignore"), ".baked/\n");
+    writeFileSync(join(fx.root, "README.md"), "# Fixture\n");
+    git("add", ".");
+    git("commit", "-q", "-m", "Initial");
+    const started = await fx.service.start({ commandId: newId(), featureId: "fixture", workflowId: "sdd", prompt: "Create ready value", ownerLabel: "test", policy: fx.policy, executionMode: "worktree", maxConcurrentWriters: 2 });
+    const planned = await fx.service.drive(started.runId, signal());
+    expect(planned.reason).toBe("approval");
+    await fx.approve(started.runId);
+    const final = await fx.service.drive(started.runId, signal());
+    expect(final.status).toBe("completed");
+    const corrective = fx.executor.attempts.find((t) => t.origin !== "planned");
+    expect(corrective?.writes.map((w) => w.path)).toEqual(["tests/test_a.py"]);
+    // Before #2138 the batch worker skipped the pre-session hook: only the `create` record.
+    expect(scopeRecords(fx.service.store, started.runId).map((r) => [r.taskId, r.at, r.decision])).toEqual([
+      [corrective?.id, "create", "fits"],
+      [corrective?.id, "start", "fits"],
+    ]);
   }, 120000);
 });
 
