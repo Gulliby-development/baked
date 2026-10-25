@@ -24,6 +24,9 @@ export const FAILED_TEST_LINE = new RegExp(
     String.raw`^\s*\d+\) (?:Failure|Error):\s*$`,
     // dart test `00:03 +4 -1: test/calc_test.dart: adds [E]` (#1494).
     String.raw`^[\d:]+ \+\d+(?: ~\d+)? -\d+: .+ \[E\]\s*$`,
+    // ScalaTest `[info] - adds *** FAILED ***`, munit `==> X CalcSuite.adds  0.04s` in colour (#1496).
+    String.raw`\*\*\* FAILED \*\*\*`,
+    "==> X ",
   ].join("|"),
 );
 

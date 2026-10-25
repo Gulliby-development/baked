@@ -321,6 +321,8 @@ const CAPABILITY = new RegExp(
     String.raw`\bRUBY_PLATFORM\b|\bGem\.win_platform\?|\bRbConfig::CONFIG\b|\bLoadError\b`,
     // Dart: `Platform.isWindows`, `Platform.operatingSystem`, Flutter's `kIsWeb` (#1494).
     String.raw`\bPlatform\.(?:is[A-Z]\w*|operatingSystem)\b|\bkIsWeb\b`,
+    // Scala: `scala.util.Properties.isWin` (#1496).
+    String.raw`\bProperties\.(?:isWin|isMac|isLinux)\b`,
   ].join("|"),
 );
 /** Lines above a skip that its guard condition may span. */
@@ -359,6 +361,7 @@ const SUPPRESSIONS = new RegExp(
     String.raw`#pragma\s+warning\s+disable\b`,
     String.raw`#\s*(?:rubocop|standard):(?:disable|todo)\b`,
     String.raw`//\s*ignore(?:_for_file)?:\s*\w`,
+    String.raw`@nowarn\b|//\s*scalafix:(?:off|ok)\b|//\s*scalastyle:off\b`,
   ].join("|"),
   "g",
 );

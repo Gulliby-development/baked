@@ -118,6 +118,7 @@ export type TestRunner =
   | "rspec"
   | "minitest"
   | "dart"
+  | "sbt"
   | "junit"
   | "tap";
 
@@ -261,6 +262,23 @@ const TEST_COUNTERS: readonly {
       return done ? done.passed + done.failed - dartLoads(o) : null;
     },
   },
+  {
+    tool: "sbt",
+    // sbt prints one "Passed: Total 5, Failed 0, Errors 0, Passed 5, Ignored 1, Pending 1" (or
+    // "Failed: Total ...") per project that ran tests, over every framework, except when ScalaTest is
+    // the only one: then ScalaTest's "Tests: succeeded 2, failed 2, canceled 0, ignored 1, pending
+    // 1" is the summary (#1496). Ignored, skipped and pending tests are not in sbt's Total.
+    count: (o) => {
+      const projects = sbtTotals(o);
+      if (projects.length) return projects.reduce((n, t) => n + t.total + t.idle, 0);
+      return scalatest(o, (m) => m.reduce((n, x) => n + x, 0));
+    },
+    ran: (o) => {
+      const projects = sbtTotals(o);
+      if (projects.length) return projects.reduce((n, t) => n + t.total, 0);
+      return scalatest(o, ([succeeded = 0, failed = 0]) => succeeded + failed);
+    },
+  },
   // A language without a parser of its own (#1488): a JUnit XML report printed to the output
   // (`--reporter=junit`), then TAP (busted, bats, prove, node:test, pgTAP).
   {
@@ -290,6 +308,28 @@ const TEST_COUNTERS: readonly {
 ];
 
 const num = (match: RegExpMatchArray | null): number | null => (match ? Number(match[1]) : null);
+
+/** sbt's per-project summary: the tests that ran (`Total`) and those that did not (`idle`). */
+function sbtTotals(o: string): { total: number; idle: number }[] {
+  return [...o.matchAll(/^\[(?:info|error)\] (?:Passed|Failed|Error): Total (\d+), (.*)$/gm)].map(
+    (m) => ({
+      total: Number(m[1]),
+      idle: [...(m[2] ?? "").matchAll(/\b(?:Ignored|Skipped|Pending) (\d+)/g)].reduce(
+        (n, x) => n + Number(x[1]),
+        0,
+      ),
+    }),
+  );
+}
+/** ScalaTest's own counts, summed over its "Tests: succeeded 2, failed 2, ..." lines. */
+function scalatest(o: string, count: (numbers: number[]) => number): number | null {
+  const lines = [
+    ...o.matchAll(
+      /^\[info\] Tests: succeeded (\d+), failed (\d+), canceled (\d+), ignored (\d+), pending (\d+)$/gm,
+    ),
+  ];
+  return lines.length ? lines.reduce((n, m) => n + count(m.slice(1).map(Number)), 0) : null;
+}
 
 /** The progress prefix of `dart test`: elapsed time, then passed `+N`, skipped `~N`, failed `-N`. */
 const DART_PROGRESS = String.raw`^[\d:]+ \+(\d+)(?: ~(\d+))?(?: -(\d+))?: `;
@@ -324,7 +364,7 @@ export const TEST_RUNNERS: LanguageRecord<readonly TestRunner[]> = {
   csharp: ["dotnet"],
   java: ["maven", "junit"],
   kotlin: ["maven", "junit"],
-  scala: none('sbt\'s "Tests: succeeded N" summary is not read'),
+  scala: ["sbt", "maven", "junit"],
   c: none("C has no common test runner summary; ctest output is not read"),
   cpp: none("ctest and GoogleTest summaries are not read"),
   ruby: ["rspec", "minitest"],
@@ -339,6 +379,9 @@ export const TEST_RUNNERS: LanguageRecord<readonly TestRunner[]> = {
   objc: none("xcodebuild test summaries are not read"),
   solidity: none("forge test summaries are not read"),
 };
+
+// biome-ignore lint/suspicious/noControlCharactersInRegex: munit colours its output even without a terminal
+const withoutAnsi = (o: string): string => o.replace(/\u001b\[[0-9;]*m/g, "");
 
 const captured = (output: string, pattern: RegExp): string[] => [
   ...new Set([...output.matchAll(pattern)].map((m) => (m[1] ?? "").trim()).filter(Boolean)),
@@ -375,6 +418,21 @@ export const FAILED_TESTS: Record<TestRunner, (output: string) => string[]> = {
   // "00:00 +1 -1: test/calc_test.dart: fails on purpose [E]", not a file that did not load
   dart: (o) =>
     captured(o, new RegExp(`${DART_LINE}(?!loading \\S+ \\[E\\])(.+?) \\[E\\]\\s*$`, "gm")),
+  // munit "==> X CalcSuite.fails on purpose  0.038s munit.ComparisonFailException: ...", and
+  // ScalaTest "[info] - fails on purpose *** FAILED ***" under its "[info] CalcSpec:" header
+  sbt: (o) => {
+    const text = withoutAnsi(o);
+    const munit = captured(text, /^==> X (\S.*?)\s{2,}[\d.]+s\b/gm);
+    let suite = "";
+    const scalatest: string[] = [];
+    for (const line of text.split(/\r?\n/)) {
+      const header = /^\[info\] (\w[\w.$]*):$/.exec(line);
+      if (header) suite = header[1] ?? "";
+      const failed = /^\[info\] - (.+?) \*\*\* FAILED \*\*\*/.exec(line);
+      if (failed) scalatest.push(suite ? `${suite}: ${failed[1]}` : (failed[1] ?? ""));
+    }
+    return [...new Set([...munit, ...scalatest])];
+  },
   // A <testcase> with a <failure> or <error> child.
   junit: (o) =>
     [...o.matchAll(/<testcase\b([^>]*?)(?:\/>|>([\s\S]*?)<\/testcase>)/g)]
@@ -424,6 +482,10 @@ export const BUILD_FAILURES: Record<TestRunner, RegExp> = {
   // dart test loads each test file on its own: '  Failed to load "test/a_test.dart":', then the
   // compile error "test/a_test.dart:3:26: Error: Undefined name 'sum'.", or "Does not exist."
   dart: /^\s*Failed to load "[^"]+":.*$/,
+  // sbt: Scala 3 "[error] -- [E006] Not Found Error: /w/src/test/scala/A.scala:2:31 ----", Scala 2
+  // "[error] /w/src/test/scala/A.scala:2:31: not found: value x", then "(Test / compileIncremental)
+  // Compilation failed" for the project whose sources do not compile.
+  sbt: /^\[error\] (?:-- (?:\[E\d+\] )?.*: \S+\.scala:\d+:\d+ -*|\S+\.scala:\d+:\d+: .+|\(.*compileIncremental\) Compilation failed)$/,
   // Gradle: "> Task :compileTestJava FAILED", "AppTest.java:12: error: cannot find symbol"
   junit: /^(?:> Task :\S*[cC]ompile\S* FAILED|.+\.(?:java|kt):\d+: error: .+)$/,
   // "Bail out! Cannot find module"
@@ -592,6 +654,24 @@ const GROWING_COUNTS: [RegExp, string][] = [
   ],
   [/^[\d:]+ \+\d+(?: ~\d+)?( -\d+)?: /gm, "+<n>$1: "],
   [/^\s*Skip: .*(?:\n|$)/gm, ""],
+  // sbt (#1496): munit's line per passing or ignored test, ScalaTest's line per test that did not
+  // fail, the per-project and ScalaTest totals with their failures kept, and the sources counted.
+  [/^\s*\+ \S.*? (?:<duration>|[\d.]+s)\s*(?:\n|$)/gm, ""],
+  [/^==> i \S.* ignored\b.*(?:\n|$)/gm, ""],
+  [/^\[info\] - (?!.*\*\*\* FAILED \*\*\*).*(?:\n|$)/gm, ""],
+  [
+    /^(\[(?:info|error)\] (?:Passed|Failed|Error): )Total \d+, (Failed \d+, Errors \d+), Passed \d+.*$/gm,
+    "$1Total <n>, $2, Passed <n>",
+  ],
+  [/^\[info\] Total number of tests run: \d+$/gm, "[info] Total number of tests run: <n>"],
+  [/\bSuites: completed \d+, aborted (\d+)/g, "Suites: completed <n>, aborted $1"],
+  [
+    /\bTests: succeeded \d+, failed (\d+), canceled (\d+), ignored \d+, pending \d+/g,
+    "Tests: succeeded <n>, failed $1, canceled $2, ignored <n>, pending <n>",
+  ],
+  // sbt compiles only what changed since its last run: its compile lines are progress, not output.
+  [/^\[info\] (?:compiling \d+ (?:Scala|Java)(?: and \w+)? sources?\b.*|done compiling)\n?/gm, ""],
+  [/\b(Checking|Formatting) \d+ Scala sources\b/g, "$1 <n> Scala sources"],
   // dart format: "Formatted 3 files (1 changed) in 0.01 seconds."
   [/\bFormatted \d+ files? \((\d+) changed\)/g, "Formatted <n> files ($1 changed)"],
   // The progress line of RSpec, Minitest and RuboCop, one character per example or file.
@@ -633,6 +713,13 @@ export function failureSignature(output: string, root: string): string {
     .replace(/\d{4}-\d{2}-\d{2}T[\d:.]+Z?/g, "<time>")
     .replace(/\d+(\.\d+)?\s*(ms|s|sec|seconds|m)\b/g, "<duration>")
     .replace(/\[\d+(\.\d+)?(ms|s)\]/g, "<duration>")
+    // ScalaTest "Run completed in 387 milliseconds.", sbt "Total time: 12 s, completed Oct 25, 2026,
+    // 2:43:17 AM" (#1496).
+    .replace(/\bRun completed in \d+ milliseconds\b/g, "Run completed in <duration>")
+    .replace(
+      /, completed [A-Z][a-z]{2} \d{1,2}, \d{4},? \d{1,2}:\d{2}:\d{2}(?: [AP]M)?/g,
+      ", completed <time>",
+    )
     // RuboCop: "Inspecting 3 files".
     .replace(/\bInspecting \d+ files?\b/g, "Inspecting <n> file")
     .replace(SUMMARY_COUNT, (_, verb: string, noun: string) => `${verb} <n> ${singular(noun)}`)

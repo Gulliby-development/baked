@@ -60,6 +60,8 @@ describe("case evidence drops assertion messages of every listed framework (#165
     ["Rust assert_eq!", "tests/parse.rs", `assert_eq!(parse("a"), 1, "${DECOY}");`],
     ["Dart expect reason:", "test/parse_test.dart", `expect(parse("a"), equals(1), reason: "${DECOY}");`],
     ["Dart fail", "test/parse_test.dart", `if (parse("a") != 1) fail("${DECOY}");`],
+    ["ScalaTest withClue", "src/test/scala/ParseSpec.scala", `withClue("${DECOY}") { parse("a") shouldBe 1 }`],
+    ["munit assertEquals clue", "src/test/scala/ParseSuite.scala", `assertEquals(parse("a"), 1, "${DECOY}")`],
   ];
   for (const [framework, path, line] of rows)
     test(`${framework}: the message is blanked and the input kept`, () => {

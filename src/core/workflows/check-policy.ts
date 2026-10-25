@@ -43,7 +43,7 @@ export function validateChecks(workspace: string, policy: RunPolicy, graph?: Tas
 
 /** Commands that analyze source without running it: linters, formatters and type checkers. */
 const STATIC_COMMAND =
-  /\b(?:lint|eslint|biome|ruff|flake8|pylint|clippy|vet|fmt|gofmt|format|prettier|mypy|pyright|tsc|typecheck|check)\b|\b(?:dart|flutter)\s+analyze\b/i;
+  /\b(?:lint|eslint|biome|ruff|flake8|pylint|clippy|vet|fmt|gofmt|format|prettier|mypy|pyright|tsc|typecheck|check|scalafmt\w*)\b|\b(?:dart|flutter)\s+analyze\b/i;
 
 /** Source code a linter or formatter reads: any written file that is not documentation or data. */
 export const isCodePath = (path: string): boolean => isCodeFile(path);
@@ -227,18 +227,21 @@ export function fixerCommand(
         ? launch(["-w", path], "gofmt")
         : name === "dotnet" && first === "format" && !args.includes("--include")
           ? launch([...args, "--include", path])
-          : launch([...args, path]);
+          : // Each sbt argument is a command: the file goes with the task (`"scalafmtOnly a.scala"`).
+            name === "sbt" && args.length
+            ? launch([...args.slice(0, -1), `${args.at(-1)} ${path}`])
+            : launch([...args, path]);
   // A path a launcher cannot pass unchanged is given to the fixer's own command line.
   return command ?? { executable: fix.executable, args: [...fix.args, path] };
 }
 
 /** A criterion that claims the code is formatted: a formatter's name, or files "are formatted". */
 const FORMAT_CLAIM =
-  /\b(?:gofmt|go\s+fmt|rustfmt|cargo\s+fmt|ruff\s+format|prettier|dotnet\s+format|clang-format|mix\s+format|dart\s+format|zig\s+fmt)\b|-formatted\b|\b(?:code|files?|sources?)\b[^.;]{0,40}?\b(?:is|are|stays?|remains?)\s+(?:properly\s+|correctly\s+)?formatted\b/i;
+  /\b(?:gofmt|go\s+fmt|rustfmt|cargo\s+fmt|ruff\s+format|prettier|dotnet\s+format|clang-format|mix\s+format|dart\s+format|zig\s+fmt|scalafmt)\b|-formatted\b|\b(?:code|files?|sources?)\b[^.;]{0,40}?\b(?:is|are|stays?|remains?)\s+(?:properly\s+|correctly\s+)?formatted\b/i;
 /** A criterion that claims the code is lint-clean or passes a named linter. */
 const LINT_CLAIM =
   /\blint(?:-clean|s|ed|ers?|ing)?\b|\b(?:clippy|ruff\s+check|eslint|flake8|pylint|go\s+vet|rubocop|standardrb|ktlint|(?:dart|flutter)\s+analyze)\b/i;
-const FORMAT_COMMAND = /\b(?:gofmt|fmt|format|prettier|biome|lint)\b/i;
+const FORMAT_COMMAND = /\b(?:gofmt|fmt|format|prettier|biome|lint|scalafmt\w*)\b/i;
 const LINT_COMMAND =
   /\b(?:lint|eslint|biome|ruff|flake8|pylint|clippy|vet|rubocop|standardrb|ktlint|golangci-lint)\b|\b(?:dart|flutter)\s+analyze\b/i;
 
