@@ -11,7 +11,6 @@ import {
   pwshExecutable,
   userDataDir,
 } from "../../../platform/index.js";
-import { CURRENT_VERSION } from "../../../version.js";
 import type { Language } from "../../types.js";
 import { loadRegistry } from "./installer.js";
 
@@ -135,7 +134,9 @@ const SERVER_BUNDLES: Record<string, ServerBundle> = {
         "-FeatureFlags @()",
         "-HostName baked",
         "-HostProfileId baked",
-        `-HostVersion ${CURRENT_VERSION.replace(/[^\d.].*$/, "") || "0.0.0"}`,
+        // Any version parses; the real one would bundle package.json, whose dependency list trips
+        // the worker bundle's TUI canary (scripts/build.ts).
+        "-HostVersion 1.0.0",
       ].join(" "),
     ],
   },
