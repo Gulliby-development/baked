@@ -210,7 +210,7 @@ const commandFlags: Record<WorkflowCommand, string[]> = {
   candidate: ["spec", "plan", "tasks", "policy", "workflow", "confirm-auto-approval", "command-id"],
   profiles: ["model"],
   artifacts: ["file"],
-  import: ["source", "path", "feature", "command-id"],
+  import: ["source", "path", "feature", "id", "command-id"],
   export: ["destination"],
   "export-progress": [],
   "export-package": ["out", "zip"],
@@ -768,6 +768,11 @@ doctor [WORKFLOW] [--model ID] [--route STAGE=MODEL,...] [--policy FILE] [--work
 estimate [WORKFLOW] (same options as doctor)
   tokens and approximate cost per stage and per model, from earlier runs of this project
 import --source spec-kit|ecc|markdown-edit --path DIRECTORY --feature ID
+import --source baked-export --path DIRECTORY|ZIP [--id ID] [--json]
+  Continue the work of a package written by export-package: its manifest is checked, an
+  initiative is recreated awaiting the approval of its split (a run is created, not driven), and
+  each feature with accepted documents starts at analysis with its spec, plan and tasks.
+  --id names the new initiative or run feature (default: the package's)
 export RUN_ID --destination DIRECTORY    export-progress RUN_ID
   export writes the run's diagnostic report (manifest.json) to attach to a bug report
 export-package RUN_ID|INITIATIVE_ID [--out PATH] [--zip] [--json]

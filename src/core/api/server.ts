@@ -199,6 +199,7 @@ export const CAPABILITIES = [
   "provider-switch",
   "chat-export",
   "sdd-export",
+  "sdd-import",
   "chat-effort",
   "diagnostics",
   "gate-drafts",
@@ -1425,7 +1426,8 @@ export async function startApiServer(options: ApiServerOptions): Promise<ApiServ
           flags: {
             source: body.source,
             path: body.path,
-            feature: body.featureId,
+            ...(body.featureId ? { feature: body.featureId } : {}),
+            ...(body.id ? { id: body.id } : {}),
             "command-id": body.commandId ?? crypto.randomUUID(),
           },
         }),

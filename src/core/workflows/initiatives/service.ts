@@ -59,6 +59,7 @@ import {
   SafeId,
   specWritingRule,
 } from "../schemas.js";
+import type { StartSeed } from "../sdd-export/seed.js";
 import type { NativeWorkflowService, PlannedReroute } from "../service.js";
 import { sizingHistory, testCaseRate } from "../sizing.js";
 import { terminalStates } from "../state-machine.js";
@@ -192,7 +193,15 @@ export interface InitiativeStartRequest {
   splitCriticalPath?: boolean;
   /** Let a small feature that others depend on run the light workflow with a host-made contract (#1664). */
   lightContracts?: boolean;
+  /**
+   * Accepted documents of features of `plan`, from an imported SDD package (#2208): a feature's
+   * first run starts at analysis with them while the approved split keeps the feature as imported.
+   */
+  seeds?: Record<string, StartSeed>;
 }
+
+/** The event that keeps the seeds of an imported initiative, with the digest of each feature. */
+export const IMPORTED_EVENT = "initiative.imported";
 
 /** What an initiative reroute did to one of its open runs (`initiative.rerouted` event). */
 export interface RerouteResult {
@@ -1033,6 +1042,13 @@ export class InitiativeService {
         "INVALID_DEFINITION",
         `Feature issues name features the split does not have: ${unknown.join(", ")}`,
       );
+    const seeded = Object.keys(request.seeds ?? {});
+    const strays = seeded.filter((key) => !request.plan?.features.some((f) => f.id === key));
+    if (strays.length)
+      throw new WorkflowFault(
+        "INVALID_DEFINITION",
+        `Imported documents name features the split does not have: ${strays.join(", ")}`,
+      );
     if (request.plan) {
       const given = InitiativePlanSchema.parse(request.plan);
       const problems = validateInitiativePlan(given);
@@ -1048,6 +1064,18 @@ export class InitiativeService {
           decomposeRunId: null,
         });
         this.propose(id, plan, "user", null);
+        if (seeded.length) {
+          const proposed = this.store.plan(
+            this.store.revision(id, this.store.get(id).plan_revision),
+          );
+          this.store.emit(id, IMPORTED_EVENT, {
+            features: Object.fromEntries(
+              proposed.features
+                .filter((f) => request.seeds?.[f.id])
+                .map((f) => [f.id, { digest: featureDigest(f), seed: request.seeds?.[f.id] }]),
+            ),
+          });
+        }
         const view = this.view(id);
         this.store.saveCommand(request.commandId, id, body, view);
         return view;
@@ -2238,6 +2266,7 @@ export class InitiativeService {
       current.budget.cost.forecastBinding,
     );
     const declined = featureApprovalDeclined(settings, feature, false, policy);
+    const seed = previous ? null : this.importedSeed(id, settings, plan, feature);
     // A derived command ID makes a start after a crash return the same run instead of a second one.
     const snapshot = await this.workflows.start({
       commandId: `i-${hashJson({ id, featureId, previous, revision: row.approved_plan_revision }).slice(0, 48)}`,
@@ -2277,6 +2306,7 @@ export class InitiativeService {
       ...(lightContract(settings, feature, plan) ? { contract: feature.contract } : {}),
       ...(baseCommit ? { baseCommit, baseFiles: this.upstreamSpecs(id, feature, unfinished) } : {}),
       ...(baseCommit && unfinished.length ? { planAhead: true } : {}),
+      ...(seed ? { seed } : {}),
     });
     this.store.transaction(() => {
       if (this.store.links(id).some((l) => l.run_id === snapshot.runId)) return;
@@ -2290,6 +2320,28 @@ export class InitiativeService {
       );
     });
     return true;
+  }
+
+  /**
+   * The imported documents a feature's first run starts from (#2208): only while the approved
+   * split holds the feature as imported, and its workflow specifies and plans.
+   */
+  private importedSeed(
+    id: string,
+    settings: InitiativeSettings,
+    plan: InitiativePlan,
+    feature: InitiativeFeature,
+  ): StartSeed | null {
+    const imported = this.store.eventsOfType(id, IMPORTED_EVENT)[0] as
+      | { features: Record<string, { digest: string; seed: StartSeed }> }
+      | undefined;
+    const entry = imported?.features[feature.id];
+    if (!entry || entry.digest !== featureDigest(feature)) return null;
+    const workflow = this.workflowChoices(settings).find(
+      (c) => c.id === featureWorkflowId(settings, feature),
+    );
+    if (!workflow?.contract || lightContract(settings, feature, plan)) return null;
+    return entry.seed;
   }
 
   /**

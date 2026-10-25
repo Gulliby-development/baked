@@ -1510,6 +1510,16 @@ export const FEATURES: readonly Feature[] = [
     api: ["/v1/workflow/runs/:id/package", "/v1/initiatives/:id/package"],
     desktop: ["project/runs: Export package…", "project/initiatives: Export package…"],
   },
+  {
+    id: "sdd-import-package",
+    group: "Workflow runs",
+    title:
+      "Import an SDD export package to continue its initiative or run; accepted features start at analysis",
+    tui: ["/workflow: import --source baked-export --path PATH [--id ID]"],
+    cli: ["baked workflow import", "baked-export"],
+    api: ["/v1/workflow/import: source baked-export"],
+    desktop: ["project/runs: Import… → BAKED export package"],
+  },
 
   // Initiatives
   {

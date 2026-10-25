@@ -9,7 +9,12 @@ import { useWorkflowStore } from "../../stores/workflow.js";
 import { type CriticOutcomes, formatCriticOutcomes } from "../workflows/critic-outcomes.js";
 import type { DoctorReport } from "../workflows/doctor.js";
 import type { RunSnapshot } from "../workflows/schemas.js";
-import { describeSddExport, isSddExport } from "../workflows/sdd-export/describe.js";
+import {
+  describeSddExport,
+  describeSddImport,
+  isSddExport,
+  isSddImport,
+} from "../workflows/sdd-export/describe.js";
 import { QUICK_WORKFLOW_ID } from "../workflows/v2/definitions.js";
 import type { CommandHandler } from "./types.js";
 import { sysMsg } from "./utils.js";
@@ -66,6 +71,7 @@ export function formatWorkflowResult(result: unknown): string {
   }
   if (isReport(result)) return result.markdown;
   if (isSddExport(result)) return describeSddExport(result);
+  if (isSddImport(result)) return describeSddImport(result);
   if (result && typeof result === "object" && "criticOutcomes" in result)
     return formatCriticOutcomes(result as CriticOutcomes);
   if (isWrittenReport(result))
