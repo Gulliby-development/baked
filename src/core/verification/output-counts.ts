@@ -106,6 +106,8 @@ export type TestRunner =
   | "dotnet"
   | "maven"
   | "go"
+  | "rspec"
+  | "minitest"
   | "junit"
   | "tap";
 
@@ -213,6 +215,28 @@ const TEST_COUNTERS: readonly {
         ? 0
         : null),
   },
+  {
+    tool: "rspec",
+    // RSpec: "5 examples, 1 failure, 2 pending" (pending and `xit` examples are listed, not run),
+    // "0 examples, 0 failures, 1 error occurred outside of examples" when a spec file did not load.
+    count: (o) => num(o.match(/^(\d+) examples?, \d+ failures?\b/m)),
+    ran: (o) => {
+      const m = o.match(/^(\d+) examples?, \d+ failures?(?:, (\d+) pending)?\b/m);
+      return m ? Number(m[1]) - Number(m[2] ?? 0) : null;
+    },
+  },
+  {
+    tool: "minitest",
+    // Minitest (also through `rake test`): "4 runs, 2 assertions, 1 failures, 1 errors, 1 skips".
+    count: (o) =>
+      num(o.match(/^(\d+) runs?, \d+ assertions?, \d+ failures?, \d+ errors?, \d+ skips?$/m)),
+    ran: (o) => {
+      const m = o.match(
+        /^(\d+) runs?, \d+ assertions?, \d+ failures?, \d+ errors?, (\d+) skips?$/m,
+      );
+      return m ? Number(m[1]) - Number(m[2]) : null;
+    },
+  },
   // A language without a parser of its own (#1488): a JUnit XML report printed to the output
   // (`--reporter=junit`), then TAP (busted, bats, prove, node:test, pgTAP).
   {
@@ -263,7 +287,7 @@ export const TEST_RUNNERS: LanguageRecord<readonly TestRunner[]> = {
   scala: none('sbt\'s "Tests: succeeded N" summary is not read'),
   c: none("C has no common test runner summary; ctest output is not read"),
   cpp: none("ctest and GoogleTest summaries are not read"),
-  ruby: none("RSpec and Minitest summaries are not read"),
+  ruby: ["rspec", "minitest"],
   php: none("PHPUnit summaries are not read yet (#1491)"),
   swift: none("XCTest and swift-testing summaries are not read"),
   lua: ["tap"],
@@ -303,6 +327,11 @@ export const FAILED_TESTS: Record<TestRunner, (output: string) => string[]> = {
   maven: (o) => captured(o, /^\[ERROR\] (\S+?)(?: --)?\s+Time elapsed: .*<<< (?:FAILURE|ERROR)!/gm),
   // "--- FAIL: TestKeepsBlank (0.00s)", subtests included
   go: (o) => captured(o, /^\s*--- FAIL: (\S+)/gm),
+  // "rspec ./spec/calc_spec.rb:6 # Calc fails on purpose", the rerun list after "Failed examples:"
+  rspec: (o) => captured(o, /^rspec \S+:\d+ # (.+?)\s*$/gm),
+  // "  1) Failure:" or "  2) Error:", then "CalcTest#test_fail [/w/test/calc_test.rb:8]:"
+  minitest: (o) =>
+    captured(o, /^\s*\d+\) (?:Failure|Error):\r?\n(\S+#\S+?)(?: \[[^\]\n]*\])?:\s*$/gm),
   // A <testcase> with a <failure> or <error> child.
   junit: (o) =>
     [...o.matchAll(/<testcase\b([^>]*?)(?:\/>|>([\s\S]*?)<\/testcase>)/g)]
@@ -343,6 +372,12 @@ export const BUILD_FAILURES: Record<TestRunner, RegExp> = {
   maven: /^\[ERROR\] (?:COMPILATION ERROR.*|.*\.(?:java|kt|scala):\[\d+,\d+\] .+)$/,
   // "FAIL\texample.com/cidrfold [build failed]", "./fold_test.go:9:2: undefined: Fold"
   go: /^(?:FAIL\s+\S+ \[(?:build|setup) failed\]|\S+\.go:\d+:\d+: .+)$/,
+  // "An error occurred while loading ./spec/calc_spec.rb.", "While loading ./spec/a_spec.rb a
+  // `raise SyntaxError` occurred, RSpec will now quit.": RSpec then runs no example at all.
+  rspec: /^(?:An error occurred while loading \S+.*|While loading \S+ a `raise \w+` occurred.*)$/,
+  // `rake test` loads every test file first: "/w/test/calc_test.rb:2:in `require': cannot load
+  // such file -- calc (LoadError)", "/w/test/a_test.rb:9: syntax error ... (SyntaxError)".
+  minitest: /^.*\.rb>?:\d+:.* \((?:LoadError|SyntaxError|NameError)\)$/,
   // Gradle: "> Task :compileTestJava FAILED", "AppTest.java:12: error: cannot find symbol"
   junit: /^(?:> Task :\S*[cC]ompile\S* FAILED|.+\.(?:java|kt):\d+: error: .+)$/,
   // "Bail out! Cannot find module"
@@ -484,7 +519,7 @@ const SUMMARY_COUNT =
   /\b(Checked|Found|in|Scanned) \d+ (files?|errors?|warnings?|infos?|problems?|diagnostics?)\b/g;
 const singular = (noun: string): string => noun.replace(/s$/, "");
 const FILES_DONE =
-  /\b\d+ (files?) (checked|scanned|formatted|already formatted|left unchanged|would be left unchanged|would be reformatted)\b/g;
+  /\b\d+ (files?) (checked|scanned|inspected|formatted|already formatted|left unchanged|would be left unchanged|would be reformatted)\b/g;
 /**
  * Counts that grow when a task adds a file or a passing test while the failure stays the same
  * (#1425): mypy's "checked 4 source files", and the passed, skipped and total counts of test
@@ -500,6 +535,14 @@ const GROWING_COUNTS: [RegExp, string][] = [
   // The JUnit block of a Gradle run's test reports (#1489) and any printed JUnit report.
   [/\b(tests|skipped)="\d+"/g, '$1="<n>"'],
   [/^(Gradle test reports \()\d+ files?/gm, "$1<n> files"],
+  // RSpec "12 examples, 1 failure, 2 pending", Minitest "4 runs, 9 assertions, 1 failures, 0 errors,
+  // 1 skips" with its rates "2931.07 runs/s, 1465.53 assertions/s" (#1493).
+  [/\b\d+ (examples?|pending|runs?|assertions?|skips?)\b(?!\/s)/g, "<n> $1"],
+  [/\b[\d.]+ (runs|assertions)\/s\b/g, "<n> $1/s"],
+  // The random order seed of RSpec and Minitest: "Randomized with seed 1809", "--seed 1809".
+  [/\b(seed|--seed) \d+\b/g, "$1 <n>"],
+  // The progress line of RSpec, Minitest and RuboCop, one character per example or file.
+  [/^[.*CEFRSW]+$\n?/gm, ""],
   [/^(\s*)\d+ (pass|skip|todo)$/gm, "$1<n> $2"],
   [/\b\d+ expect\(\) calls\b/g, "<n> expect() calls"],
   [/\bRan \d+ tests? across \d+ files?\b/g, "Ran <n> tests across <n> files"],
@@ -537,6 +580,8 @@ export function failureSignature(output: string, root: string): string {
     .replace(/\d{4}-\d{2}-\d{2}T[\d:.]+Z?/g, "<time>")
     .replace(/\d+(\.\d+)?\s*(ms|s|sec|seconds|m)\b/g, "<duration>")
     .replace(/\[\d+(\.\d+)?(ms|s)\]/g, "<duration>")
+    // RuboCop: "Inspecting 3 files".
+    .replace(/\bInspecting \d+ files?\b/g, "Inspecting <n> file")
     .replace(SUMMARY_COUNT, (_, verb: string, noun: string) => `${verb} <n> ${singular(noun)}`)
     .replace(FILES_DONE, (_, noun: string, verb: string) => `<n> ${singular(noun)} ${verb}`)
     .replace(/✖ \d+ problems? \(\d+ errors?, \d+ warnings?\)/g, "✖ <n> problems")

@@ -303,7 +303,9 @@ export function reproAllows(
  * Whether the convergence walker's finding passes the repro gate before it starts a correction:
  * medium and low findings do, high and critical ones repair on the walker's word (#930).
  */
-export function convergenceReproGated(finding: Review["findings"][number]): boolean {
+export function convergenceReproGated(
+  finding: Pick<Review["findings"][number], "severity">,
+): boolean {
   return finding.severity === "medium" || finding.severity === "low";
 }
 

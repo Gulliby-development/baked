@@ -3,7 +3,11 @@
     "lib/sum.rb": "def sum(a, b)\n  a + b\nend\n",
     "spec/sum_spec.rb": "require 'sum'\nsum(1, 2)\n",
     "lib/sum_test.rb": "require 'sum'\n# AC-001 example: (1, 2, 3)\n",
-    "Gemfile": "source 'https://rubygems.org'\ngem 'rake'\n"
+    "Gemfile": "source 'https://rubygems.org'\ngem 'rake'\ngem 'rubocop', require: false\n"
+  },
+  "outputs": {
+    "tests": "..F\n\nFinished in 0.00714 seconds (files took 0.09504 seconds to load)\n3 examples, 1 failure\n\nFailed examples:\n\nrspec ./spec/sum_spec.rb:6 # sum is commutative\n",
+    "testsGrown": "...F\n\nFinished in 0.00911 seconds (files took 0.1 seconds to load)\n4 examples, 1 failure\n\nFailed examples:\n\nrspec ./spec/sum_spec.rb:6 # sum is commutative\n"
   },
   "expected": {
     "tests": [
@@ -18,11 +22,18 @@
       "Gemfile"
     ],
     "dependencies": [
-      "Gemfile: rubygems rake"
+      "Gemfile: rubygems rake",
+      "Gemfile: rubygems rubocop"
     ],
     "placeholders": null,
-    "gates": ["rspec"],
-    "testRunners": null,
+    "gates": [
+      "rubocop",
+      "rspec"
+    ],
+    "testRunners": [
+      "rspec 3",
+      "signature stable"
+    ],
     "mutation": null,
     "properties": null,
     "entryPoints": null,
@@ -37,9 +48,12 @@
       "lib/sum_test.rb:1",
       "lib/sum_test.rb:2 comment",
       "Gemfile:1",
-      "Gemfile:2"
+      "Gemfile:2",
+      "Gemfile:3"
     ],
-    "formatters": null,
+    "formatters": [
+      "rubocop-written: bundle exec rubocop --only Layout lib/sum.rb spec/sum_spec.rb lib/sum_test.rb Gemfile"
+    ],
     "packageContents": null,
     "numericLimits": null
   }

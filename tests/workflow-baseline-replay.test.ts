@@ -32,6 +32,9 @@ const FAILURES = [
   { runner: "go", output: "--- FAIL: TestBlankLines (0.00s)\nFAIL\nFAIL\texample.com/taskplan\t0.002s", name: "TestBlankLines" },
   { runner: "dotnet", output: "  Failed Parser.Tests.BlankLines [12 ms]\nFailed!  - Failed:     1, Passed:     3, Skipped:     0, Total:     4", name: "Parser.Tests.BlankLines" },
   { runner: "maven", output: "[ERROR] app.ParserTest.blankLines -- Time elapsed: 0.01 s <<< FAILURE!\n[ERROR] Tests run: 4, Failures: 1, Errors: 0, Skipped: 0", name: "app.ParserTest.blankLines" },
+  // RSpec 3.13 and Minitest 5.20 through `rake test` (#1493).
+  { runner: "rspec", output: "Finished in 0.00714 seconds (files took 0.09504 seconds to load)\n5 examples, 1 failure, 2 pending\n\nFailed examples:\n\nrspec ./spec/calc_spec.rb:6 # Calc fails on purpose\n", name: "Calc fails on purpose" },
+  { runner: "minitest", output: "  1) Failure:\nCalcTest#test_fail [/repo/test/calc_test.rb:8]:\nExpected: 4\n  Actual: 3\n\n  2) Error:\nCalcTest#test_error:\nRuntimeError: boom\n\n4 runs, 2 assertions, 1 failures, 1 errors, 1 skips", name: "CalcTest#test_error" },
 ] as const;
 
 /**
@@ -48,6 +51,8 @@ const BUILD_ERRORS = [
   { runner: "go", output: "# example.com/cidrfold [example.com/cidrfold.test]\n./fold_test.go:9:2: undefined: Fold\nFAIL\texample.com/cidrfold [build failed]\nFAIL", line: "./fold_test.go:9:2: undefined: Fold" },
   { runner: "dotnet", output: "/repo/tests/ParserTests.cs(12,5): error CS1501: No overload for method 'Run' takes 7 arguments [/repo/tests/Tests.csproj]\n\nBuild FAILED.", line: "/repo/tests/ParserTests.cs(12,5): error CS1501: No overload for method 'Run' takes 7 arguments [/repo/tests/Tests.csproj]" },
   { runner: "maven", output: "[INFO] --- compiler:3.13.0:testCompile (default-testCompile) @ linehunk ---\n[ERROR] COMPILATION ERROR : \n[ERROR] /repo/src/test/java/app/StdinPatchTest.java:[31,20] method run in class app.Applier cannot be applied to given types;\n[INFO] BUILD FAILURE", line: "[ERROR] /repo/src/test/java/app/StdinPatchTest.java:[31,20] method run in class app.Applier cannot be applied to given types;" },
+  { runner: "rspec", output: "\nAn error occurred while loading ./spec/broken_spec.rb. - Did you mean?\n                    rspec ./spec/calc_spec.rb\n\nFailure/Error: require_relative \"../lib/missing\"\n\nLoadError:\n  cannot load such file -- /repo/lib/missing\n# ./spec/broken_spec.rb:1:in `require_relative'\n\nFinished in 0.00007 seconds (files took 0.09928 seconds to load)\n0 examples, 0 failures, 1 error occurred outside of examples\n", line: "An error occurred while loading ./spec/broken_spec.rb. - Did you mean?" },
+  { runner: "minitest", output: "<internal:/opt/ruby/lib/ruby/3.3.0/rubygems/core_ext/kernel_require.rb>:136:in `require': cannot load such file -- missing_lib (LoadError)\n\tfrom /repo/test/broken_test.rb:2:in `<top (required)>'\nrake aborted!\nCommand failed with status (1)", line: "<internal:/opt/ruby/lib/ruby/3.3.0/rubygems/core_ext/kernel_require.rb>:136:in `require': cannot load such file -- missing_lib (LoadError)" },
   { runner: "junit", output: "> Task :compileTestJava FAILED\n/repo/src/test/java/app/StdinPatchTest.java:31: error: method run in class Applier cannot be applied to given types;\nBUILD FAILED in 2s", line: "> Task :compileTestJava FAILED" },
 ] as const;
 
@@ -299,6 +304,20 @@ describe("baseline replay per test target (#2020)", () => {
     expect(replayTargets("maven", input(["-q", "verify"]))).toEqual([{ args: ["-q", "verify", "--fail-at-end"], paths: null }]);
     expect(replayTargets("maven", input(["-fae", "verify"]))).toEqual([]);
     expect(replayTargets("junit", input(["test"]))).toEqual([{ args: ["test", "--continue"], paths: null }]);
+  });
+
+  // RSpec runs no example once a spec file does not load, and `rake test` loads every file first (#1493).
+  test("ruby: each spec file, and each Minitest file through rake's TEST", () => {
+    expect(replayTargets("rspec", input(["exec", "rspec"], ["spec/a_spec.rb", "spec/spec_helper.rb", "spec/b_spec.rb"]))).toEqual([
+      { args: ["exec", "rspec", "spec/a_spec.rb"], paths: ["spec/a_spec.rb"] },
+      { args: ["exec", "rspec", "spec/b_spec.rb"], paths: ["spec/b_spec.rb"] },
+    ]);
+    expect(replayTargets("rspec", input(["exec", "rspec", "spec/a_spec.rb"], ["spec/a_spec.rb"]))).toEqual([]);
+    expect(replayTargets("minitest", input(["exec", "rake", "test"], ["test/a_test.rb", "test/test_helper.rb", "test/test_b.rb"]))).toEqual([
+      { args: ["exec", "rake", "test", "TEST=test/a_test.rb"], paths: ["test/a_test.rb"] },
+      { args: ["exec", "rake", "test", "TEST=test/test_b.rb"], paths: ["test/test_b.rb"] },
+    ]);
+    expect(replayTargets("minitest", input(["-Itest", "test/a_test.rb"], ["test/a_test.rb"]))).toEqual([]);
   });
 
   test("go, bun, jest, vitest and tap already run each target on their own", () => {
