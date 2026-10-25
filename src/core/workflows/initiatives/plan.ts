@@ -59,6 +59,12 @@ export const InitiativeFeatureSchema = z
     /** How much work the feature is; its budget share is weighted by it. Omitted, medium. */
     size: z.enum(["small", "medium", "large"]).optional(),
     /**
+     * The test cases the request demands of this feature ("at least 150 cases", "40 cases for the
+     * read commands"), which the estimate prices at the project's measured cost per case (#2055).
+     * Omitted when the request states no test volume for it.
+     */
+    testCases: z.number().int().min(1).max(10_000).optional(),
+    /**
      * Files of the boundary whose whole content the request fixes (module stubs that hold only a
      * comment, a registration file of `pub mod` lines, an empty `__init__.py`). The feature's
      * run writes them in the host with no agent; later features replace the stubs through their
