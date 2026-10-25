@@ -768,10 +768,30 @@ function gradleGates(workspace: string): GateSuggestion[] {
   ];
 }
 
-/** sbt runs a Scala build's tests with `sbt test`; `-batch` keeps it from waiting for input. */
+/**
+ * sbt runs a Scala build's tests with `sbt test`; `-batch` keeps it from waiting for input. A build
+ * with the sbt-scalafmt plugin and a `.scalafmt.conf` checks formatting first (#1496): its fixer
+ * formats the file it is given (`scalafmtOnly <file>`, one sbt command).
+ */
 function sbtGates(workspace: string): GateSuggestion[] {
   if (!has(workspace, "build.sbt")) return [];
+  const scalafmt =
+    has(workspace, ".scalafmt.conf") &&
+    /"sbt-scalafmt"/.test(read(workspace, "project/plugins.sbt") ?? "");
   return [
+    ...(scalafmt
+      ? [
+          {
+            check: {
+              ...gate("scalafmt", "sbt", ["-batch", "scalafmtCheckAll"], 600000),
+              fix: { executable: "sbt", args: ["-batch", "scalafmtOnly"] },
+            },
+            source: "project/plugins.sbt",
+            reason: "sbt -batch scalafmtCheckAll (fixer: sbt -batch scalafmtOnly <file>)",
+            preselected: true,
+          },
+        ]
+      : []),
     {
       check: gate("sbt-test", "sbt", ["-batch", "test"], 1200000),
       source: "build.sbt",

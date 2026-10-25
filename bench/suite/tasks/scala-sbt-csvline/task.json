@@ -1,0 +1,38 @@
+{
+  "id": "scala-sbt-csvline",
+  "language": "scala",
+  "toolchain": "sbt",
+  "requires": [
+    "java",
+    "sbt"
+  ],
+  "allowedPaths": [
+    "src/**",
+    "README.md"
+  ],
+  "checks": [
+    {
+      "id": "scalafmt",
+      "executable": "sbt",
+      "args": [
+        "-batch",
+        "scalafmtCheckAll"
+      ],
+      "fix": {
+        "executable": "sbt",
+        "args": [
+          "-batch",
+          "scalafmtOnly"
+        ]
+      }
+    },
+    {
+      "id": "sbt-test",
+      "executable": "sbt",
+      "args": [
+        "-batch",
+        "test"
+      ]
+    }
+  ]
+}

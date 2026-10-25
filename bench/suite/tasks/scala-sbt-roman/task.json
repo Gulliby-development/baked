@@ -1,0 +1,23 @@
+{
+  "id": "scala-sbt-roman",
+  "language": "scala",
+  "toolchain": "sbt",
+  "requires": [
+    "java",
+    "sbt"
+  ],
+  "allowedPaths": [
+    "src/**",
+    "README.md"
+  ],
+  "checks": [
+    {
+      "id": "sbt-test",
+      "executable": "sbt",
+      "args": [
+        "-batch",
+        "test"
+      ]
+    }
+  ]
+}

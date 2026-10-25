@@ -415,12 +415,17 @@ async function detectToolchain(cwd: string): Promise<DetectedToolchain> {
 
   // Scala
   if (await has("build.sbt")) {
-    profile.test = "sbt test";
-    profile.build = "sbt compile";
-    profile.lint = (await has(".scalafmt.conf")) ? "scalafmt --check" : null;
-    profile.typecheck = "sbt compile";
+    // `-batch` keeps sbt from waiting for input; scalafmt runs through the sbt-scalafmt plugin,
+    // since a scalafmt CLI is rarely installed (#1496).
+    const scalafmt =
+      (await has(".scalafmt.conf")) &&
+      /"sbt-scalafmt"/.test(await readSafe(join(cwd, "project", "plugins.sbt")));
+    profile.test = "sbt -batch test";
+    profile.build = "sbt -batch compile";
+    profile.lint = scalafmt ? "sbt -batch scalafmtCheckAll" : null;
+    profile.typecheck = "sbt -batch compile";
     profile.run = "sbt run";
-    profile.format = (await has(".scalafmt.conf")) ? "scalafmt" : null;
+    profile.format = scalafmt ? "sbt -batch scalafmtAll" : null;
     return profile;
   }
 
