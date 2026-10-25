@@ -1,15 +1,21 @@
 import { afterEach, expect, test } from "bun:test";
-import { writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { RunPolicy } from "../src/core/workflows/schemas.js";
 import { newId } from "../src/core/workflows/store.js";
 import {
+  INTEGRITY_DIR,
+  integrityDecision,
   isTestPath,
+  measureTestIntegrity,
   preexistingTest,
+  recordedMeasures,
   scanTestIntegrity,
   testIntegrityOf,
   testWriteProblems,
 } from "../src/core/workflows/test-integrity.js";
+import { exportTrace, replayIntegrity, replayTrace } from "../src/core/workflows/trace.js";
 import { WorkflowToolPolicy } from "../src/core/workflows/tool-policy.js";
 import type { ExecutionRequest, Task } from "../src/core/workflows/types.js";
 import { FixtureExecutor, fixturePolicy, workflowFixture } from "./helpers/workflow-fixture.js";
@@ -56,6 +62,35 @@ test("the scan reports deleted, skipped and weakened tests, suppressions and tes
     "literal-branch src/parse.ts",
     "verification-bypass package.json",
   ]);
+});
+
+test("the decision reads only the counts a run records, and the record holds no code (#1715)", () => {
+  const before = 'import { expect, it } from "bun:test";\nit("adds", () => {\n  expect(add(1, 2)).toBe(3);\n});\nit("subtracts", () => {\n  expect(sub(3, 1)).toBe(2);\n});\n';
+  const changes = [
+    { path: "tests/old.test.ts", before, after: null },
+    { path: "tests/gone.test.ts", before: undefined, after: null },
+    { path: "tests/count.test.ts", before, after: 'it("adds", () => {\n  // expect(add(1, 2)).toBe(3);\n});\n' },
+    { path: "tests/swap.test.ts", before, after: before.replace('it("subtracts", () => {\n  expect(sub(3, 1)).toBe(2);', 'it("negates", () => {\n  expect(neg(1)).toBe(-1);') },
+    { path: "tests/skip.test.ts", before, after: before.replace('it("subtracts"', 'it.skip("subtracts"') },
+    { path: "src/add.ts", before: "export const add = (a: number, b: number) => a + b;\n", after: "// @ts-ignore\nexport const add = (a: any, b: number) => (process.env.NODE_ENV === \"test\" ? 3 : a + b);\n" },
+    { path: "src/parse.ts", before: "export const parse = (s: string) => s.trim();\n", after: 'export const parse = (s: string) => (s === "  hello world  " ? "hello world" : s);\n' },
+    { path: "package.json", before: '{"scripts":{"test":"bun test"}}', after: '{"scripts":{"test":"jest --passWithNoTests"}}' },
+  ];
+  const options = {
+    testSources: ['it("trims", () => expect(parse("  hello world  ")).toBe("hello world"));'],
+    protects: new Map([["tests/count.test.ts", new Map([["subtracts", "T002 for finding F-1"]])]]),
+  };
+  const key = (f: { rule: string; path: string }) => `${f.rule} ${f.path}`;
+  const scanned = scanTestIntegrity(changes, options).map(key);
+  expect(scanned).toContain("test-removed tests/count.test.ts");
+  expect(scanned).toContain("test-removed tests/swap.test.ts");
+  const recorded = recordedMeasures(measureTestIntegrity(changes, options));
+  expect(integrityDecision(recorded).map(key)).toEqual(scanned);
+  const text = JSON.stringify(recorded);
+  for (const code of ["expect(", "subtracts", "hello world", "NODE_ENV", "passWithNoTests"]) expect(text).not.toContain(code);
+  // Exemptions are recorded too: a reasoned write changes nothing in a replay without its reason.
+  const reasoned = recordedMeasures(measureTestIntegrity(changes, { ...options, reasoned: new Set(["tests/count.test.ts"]) }));
+  expect(integrityDecision(reasoned).map(key)).not.toContain("test-count tests/count.test.ts");
 });
 
 test("the scan leaves planned changes, existing code and spec literals alone", () => {
@@ -233,3 +268,36 @@ test("a spec conflict stops the task and asks a person; the answer reaches the n
   expect(prompts[1]).toContain("The spec is right: ready");
   expect((await service.get(run.runId)).status).toBe("completed");
 });
+
+test("each integrity scan is recorded, kept in a bench trace and replayed, and a rule change shows as new findings (#1715)", async () => {
+  const fixture = workflowFixture({ executor: (root) => new SkippingExecutor(root) });
+  cleanups.push(fixture.dispose);
+  const { service } = fixture;
+  const run = await fixture.start();
+  await service.drive(run.runId, signal());
+  await fixture.approve(run.runId);
+  await service.drive(run.runId, signal());
+  expect((await service.get(run.runId)).status).toBe("completed");
+
+  // The skipping attempt's scan and the repair's clean one, and the run's own scan before review.
+  const scans = replayIntegrity(service.store, run.runId);
+  expect(scans.filter((b) => b.scope === "task").map((b) => b.recorded)).toEqual([["skip value.test.ts"], []]);
+  expect(scans.some((b) => b.scope === "run")).toBe(true);
+  expect(scans.every((b) => JSON.stringify(b.replayed) === JSON.stringify(b.recorded))).toBe(true);
+  const paths = service.store.artifacts(run.runId).filter((a) => a.logical_path.startsWith(INTEGRITY_DIR)).map((a) => a.logical_path);
+  expect(paths).toContain(`${INTEGRITY_DIR}tasks/T001.json`);
+
+  const dir = mkdtempSync(join(tmpdir(), "baked-integrity-trace-"));
+  cleanups.push(() => rmSync(dir, { recursive: true, force: true }));
+  const out = join(dir, "trace.sqlite.gz");
+  exportTrace(fixture.root, out);
+  expect(Buffer.from(Bun.gunzipSync(readFileSync(out))).includes('it("is ready"')).toBe(false);
+  const runOf = (replay: ReturnType<typeof replayTrace>) => replay.runs.find((r) => r.runId === run.runId);
+  expect(runOf(replayTrace(out))?.newIntegrityFindings).toBe(0);
+  // A rule that would also report any test file the task touched finds the repair's scan new.
+  const stricter = (measures: Parameters<typeof integrityDecision>[0]) => [
+    ...integrityDecision(measures),
+    ...measures.filter((m) => m.form === "test").map((m) => ({ rule: "skip", path: m.path })),
+  ];
+  expect(runOf(replayTrace(out, { integrityRule: stricter }))?.newIntegrityFindings).toBeGreaterThan(0);
+}, 60_000);
