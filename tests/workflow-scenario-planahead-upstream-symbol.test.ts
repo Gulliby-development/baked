@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { type InitiativePlan, planStructureProblems, validateInitiativePlan } from "../src/core/workflows/initiatives/plan.js";
-import { conditionalContractProblems, upstreamFiles, upstreamSymbolGaps } from "../src/core/workflows/initiatives/upstream-symbols.js";
+import { amendmentAnswer, amendmentLines, conditionalContractProblems, upstreamFiles, upstreamSymbolGaps } from "../src/core/workflows/initiatives/upstream-symbols.js";
 import type { Spec } from "../src/core/workflows/schemas.js";
 
 // Bench round 68, ewvet (#2135): reader's contract said "If encoding needs auxiliary syntax
@@ -85,6 +85,23 @@ describe("a released feature's spec is checked against the accepted upstream cod
   test("a file name is not a member, and a type of no upstream file is not checked", () => {
     const upstream = [{ featureId: "reader", path: "src/Reader.cs", text: "class Reader {}" }];
     expect(upstreamSymbolGaps(spec("Scanner reads Reader.cs and calls Console.WriteLine."), upstream)).toEqual([]);
+  });
+});
+
+describe("a planned-ahead feature asks the owner for the missing symbol (#2157)", () => {
+  test("an owner whose run finished is reopened once, in a live initiative", () => {
+    expect(amendmentAnswer({ ownerRunStatus: "completed", initiativeStatus: "active", requested: false })).toBe("replan");
+    expect(amendmentAnswer({ ownerRunStatus: "completed", initiativeStatus: "paused", requested: false })).toBe("replan");
+    expect(amendmentAnswer({ ownerRunStatus: "completed", initiativeStatus: "active", requested: true })).toBe("none");
+    expect(amendmentAnswer({ ownerRunStatus: "running", initiativeStatus: "active", requested: false })).toBe("none");
+    expect(amendmentAnswer({ ownerRunStatus: null, initiativeStatus: "active", requested: false })).toBe("none");
+    expect(amendmentAnswer({ ownerRunStatus: "completed", initiativeStatus: "completed", requested: false })).toBe("none");
+  });
+
+  test("the reopened owner's prompt names the requester, the symbol, the file and the clause", () => {
+    const lines = amendmentLines([{ from: "scanner", gaps: [{ ref: "FR-003", symbol: "Reader.IsEncodingToken", featureId: "reader", path: "src/Reader.cs" }] }]);
+    expect(lines.at(-1)).toBe("- scanner needs Reader.IsEncodingToken in src/Reader.cs (its FR-003).");
+    expect(amendmentLines([])).toEqual([]);
   });
 });
 

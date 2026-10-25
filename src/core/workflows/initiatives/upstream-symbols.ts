@@ -143,3 +143,47 @@ export function upstreamSymbolGaps(
   }
   return gaps;
 }
+
+/**
+ * How the initiative answers a planned-ahead feature's request for an amendment of an accepted
+ * upstream feature (#2157), under `workflows.upstreamAmendments`. `replan`: the owner runs again
+ * from research (origin `replan`) with the request in its prompt, and the requesting feature waits
+ * for that result; `none`: nothing is reopened and the release goes on as before (the
+ * `upstream_symbol` would-stop is still recorded).
+ */
+export type AmendmentAnswer = "replan" | "none";
+
+export interface AmendmentInput {
+  /** The status of the owner's current run; null when it has none. */
+  ownerRunStatus: string | null;
+  initiativeStatus: string;
+  /** The requesting feature already asked this owner under the approved split. */
+  requested: boolean;
+}
+
+/** The one rule: reopen an owner whose run has finished, once per request, in a live initiative. */
+export function amendmentAnswer(input: AmendmentInput): AmendmentAnswer {
+  if (input.requested) return "none";
+  if (input.initiativeStatus !== "active" && input.initiativeStatus !== "paused") return "none";
+  return input.ownerRunStatus === "completed" ? "replan" : "none";
+}
+
+/** A request an owner's reopened run gets in its prompt. */
+export interface AmendmentRequest {
+  /** The requesting feature. */
+  from: string;
+  gaps: UpstreamSymbolGap[];
+}
+
+/** The prompt lines of the amendments an owner's run was reopened for. */
+export function amendmentLines(requests: readonly AmendmentRequest[]): string[] {
+  if (!requests.length) return [];
+  return [
+    "",
+    "Amendments requested by features planned on this feature's accepted result. Add each, keeping what the features that depend on this one already use:",
+    ...requests.map(
+      (r) =>
+        `- ${r.from} needs ${r.gaps.map((g) => `${g.symbol} in ${g.path} (its ${g.ref})`).join(", ")}.`,
+    ),
+  ];
+}

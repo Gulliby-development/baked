@@ -1452,6 +1452,12 @@ export const WorkflowConfigSchema = z
      */
     planAhead: z.boolean().optional(),
     /**
+     * A planned-ahead feature whose spec names symbols an accepted upstream feature lacks asks
+     * that feature for the amendment at its release: the owner runs again with the request, and
+     * the feature waits for that result (#2157). Off by default.
+     */
+    upstreamAmendments: z.boolean().optional(),
+    /**
      * Whether an initiative whose token pool parks a feature, while the person's dollar cap has
      * room for the extension, records that the host would extend the pool (#2042): `shadow`, the
      * default, records a `decision.would_extend` event and changes nothing; `off` records nothing.
