@@ -201,6 +201,12 @@ function rerouteBody(runId: string, command: CommandIdentity, request: RerouteRe
 
 const INVALID_OUTPUT_NOTE =
   "The previous attempt of this stage was rejected as invalid output with the diagnostic below. Correct what it names in this attempt.";
+/**
+ * The repeat key of the last invalid-output note: the diagnostic's hash and the run inputs a person
+ * can change without touching the prompt (`invalidOutputInputs`). A resume whose key equals it
+ * repeats the attempt (#1348, #2191).
+ */
+const INVALID_OUTPUT_KEY = "invalid-output/repeat-key.json";
 
 /** A file a person changed outside the run; `frozen` marks an instruction or configuration file the run froze. */
 export interface OutsideChange {
@@ -427,6 +433,7 @@ export class NativeWorkflowService implements WorkflowService {
       frozenInputEffectCount: 0,
       repairPredecessors: {},
       repairScope: {},
+      slicedTests: {},
       freshTasks: {},
       widenedCorrections: [],
       narrowedCorrections: {},
@@ -1259,8 +1266,9 @@ export class NativeWorkflowService implements WorkflowService {
         throw new WorkflowFault(
           "STALE_DECISION",
           recoveryAdvice(
-            `The run stopped again with the same diagnostic after the last resume, so another resume would repeat the same attempt. Change the input instead: revise the run (\`baked workflow revise ${runId}\`), run an initiative feature again (\`baked workflow initiative replan ID --feature F\`), or cancel it`,
-            "The run stopped again with the same diagnostic after the last resume. Change the input before trying again.",
+            `The run stopped again with the same diagnostic after the last resume, so another resume would repeat the same attempt. Change the input instead: switch the failing stage to another model (\`baked workflow reroute ${runId} --route STAGE=MODEL --resume\`), revise the run (\`baked workflow revise ${runId}\`), run an initiative feature again (\`baked workflow initiative replan ID --feature F\`), or cancel it`,
+            "The run stopped again with the same diagnostic after the last resume. Switch the stage's model or change the input before trying again.",
+            { action: "reroute", runId },
             { action: "revise", runId },
             { action: "replan", runId },
             { action: "cancel", runId },
@@ -1411,8 +1419,12 @@ export class NativeWorkflowService implements WorkflowService {
    */
   /**
    * Gives the next attempt the diagnostic of the stop. False when an earlier resume already gave
-   * it this very diagnostic: the attempt after that resume stopped the same way, and narrowfit
-   * 3c2e3629 stopped identically after two more resumes and an extension (#1348).
+   * it this very diagnostic with the same inputs: the attempt after that resume stopped the same
+   * way, and narrowfit 3c2e3629 stopped identically after two more resumes and an extension
+   * (#1348). The prompt is not the only input: the same diagnostic after a reroute is a new
+   * situation, since another model makes another attempt (commitbump-update 0894df2d, #2191). The
+   * repeat key is the diagnostic plus `invalidOutputInputs`, recorded under `INVALID_OUTPUT_KEY`;
+   * the note itself goes into the prompt once.
    */
   private noteInvalidOutput(runId: string): boolean {
     const latest = this.store
@@ -1424,10 +1436,32 @@ export class NativeWorkflowService implements WorkflowService {
     if (!diagnostic) return true;
     const state = this.store.state(runId);
     const note = `\n${INVALID_OUTPUT_NOTE}\n${canonical({ diagnostic })}`;
-    if (state.prompt.includes(note)) return false;
-    state.prompt += note;
-    this.store.saveState(runId, state);
+    const inputs = this.invalidOutputInputs(runId);
+    const key = canonical({ diagnostic: hashBytes(diagnostic), inputs });
+    if (state.prompt.includes(note)) {
+      const recorded = this.store.latestArtifact(runId, INVALID_OUTPUT_KEY);
+      // A note from before the key was recorded was given with the run's first routing.
+      const previous = recorded
+        ? this.store.readArtifact(runId, recorded.id)
+        : canonical({
+            diagnostic: hashBytes(diagnostic),
+            inputs: { ...inputs, routing: Math.min(inputs.routing, 1) },
+          });
+      if (previous === key) return false;
+    } else {
+      state.prompt += note;
+      this.store.saveState(runId, state);
+    }
+    this.store.artifact(runId, "recovery", INVALID_OUTPUT_KEY, key);
     return true;
+  }
+  /**
+   * The run inputs besides the prompt that a person can change after an invalid output, for the
+   * repeat key of `noteInvalidOutput`: the routing revision (a reroute). A new way to change a
+   * run's input without the prompt adds its revision here (AGENTS.md).
+   */
+  private invalidOutputInputs(runId: string): { routing: number } {
+    return { routing: this.store.latestArtifact(runId, ROUTING_ARTIFACT)?.revision ?? 0 };
   }
   /**
    * "Accept" on a stopped convergence: the remaining findings become known limitations, and the

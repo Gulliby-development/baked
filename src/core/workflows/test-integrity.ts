@@ -70,9 +70,11 @@ function commentLine(line: string): boolean {
     trimmed.startsWith("/*") ||
     trimmed.startsWith("*") ||
     trimmed.startsWith("<!--") ||
-    // `#[test]` and `#![allow]` are Rust attributes, not comments, and `#ifdef _WIN32` is the
-    // preprocessor guard of a C or C++ skip (#1490).
-    (trimmed.startsWith("#") && !/^#!?\[|^#(?:if|ifdef|ifndef|elif)\b/.test(trimmed))
+    // `#[test]` and `#![allow]` are Rust attributes, not comments; `#ifdef _WIN32` is the
+    // preprocessor guard of a C or C++ skip (#1490), and Swift's `#if os(Linux)`, `#elseif` and
+    // `#expect(...)` are code too (#1492).
+    (trimmed.startsWith("#") &&
+      !/^#!?\[|^#(?:if|ifdef|ifndef|elif|elseif)\b|^#(?:expect|require)\s*\(/.test(trimmed))
   );
 }
 
@@ -344,6 +346,8 @@ const CAPABILITY = new RegExp(
     String.raw`\bPlatform\.(?:is[A-Z]\w*|operatingSystem)\b|\bkIsWeb\b`,
     // Scala: `scala.util.Properties.isWin` (#1496).
     String.raw`\bProperties\.(?:isWin|isMac|isLinux)\b`,
+    // Swift: `#if os(Linux)`, `#if canImport(Darwin)`, `.enabled(if:` with a platform (#1492).
+    String.raw`#if\s+!?(?:os|canImport)\s*\(|\bProcessInfo\.processInfo\.(?:operatingSystem\w*|isOperatingSystemAtLeast)\b`,
   ].join("|"),
 );
 /** Lines above a skip that its guard condition may span. */
@@ -396,6 +400,7 @@ const SUPPRESSIONS = new RegExp(
     String.raw`#\s*pragma\s+(?:GCC|clang)\s+diagnostic\s+ignored\b`,
     String.raw`//\s*ignore(?:_for_file)?:\s*\w`,
     String.raw`@nowarn\b|//\s*scalafix:(?:off|ok)\b|//\s*scalastyle:off\b`,
+    String.raw`//\s*swiftlint:disable\b|//\s*swift-format-ignore\b`,
     // PSScriptAnalyzer, and the same attribute in C#: `[Diagnostics.CodeAnalysis.SuppressMessageAttribute(...)]` (#1498).
     String.raw`\[(?:System\.)?(?:Diagnostics\.CodeAnalysis\.)?SuppressMessage(?:Attribute)?\s*\(`,
   ].join("|"),
@@ -415,6 +420,8 @@ const TEST_HOOKS = new RegExp(
     String.raw`\bdefined\?\(\s*(?:RSpec|Minitest)\b`,
     // flutter test sets FLUTTER_TEST: `Platform.environment.containsKey('FLUTTER_TEST')` (#1494).
     String.raw`\bFLUTTER_TEST\b`,
+    // XCTest sets XCTestConfigurationFilePath on macOS (#1492).
+    String.raw`\bXCTestConfigurationFilePath\b|NSClassFromString\(\s*"XCTestCase"\s*\)`,
   ].join("|"),
   "g",
 );

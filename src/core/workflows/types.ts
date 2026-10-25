@@ -182,6 +182,12 @@ export const RuntimeStateSchema = z
      */
     repairScope: z.record(z.string(), z.array(z.string())).default({}),
     /**
+     * Test files a test-check correction may write although a later slice of the plan still
+     * writes them, by finding ID: the failing task created the file and the failure reaches no
+     * source, so every failing case is the task's own (#2108).
+     */
+    slicedTests: z.record(z.string(), z.array(z.string())).default({}),
+    /**
      * Corrective tasks that start from a clean context after repeated identical failures, by task
      * ID: the artifact with the host's account of the earlier attempts.
      */

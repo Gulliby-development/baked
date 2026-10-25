@@ -36,7 +36,10 @@ export const executeCheckCommand = async (
       ? null
       : gradleTestReport(executable, args, options.cwd, started);
   return report
-    ? { ...result, output: `${result.output.replace(/\n*$/, "")}\n\n${report}\n` }
+    ? {
+        ...result,
+        output: `${result.output.replace(/\n*$/, "")}\n\n${report}\n`,
+      }
     : result;
 };
 
@@ -174,7 +177,12 @@ export class CheckRunner {
     reason: string,
     message: string,
     root: string = this.store.workspace,
-  ): Promise<{ status: "failed"; evidenceId: string; snapshotId: string; output: string }> {
+  ): Promise<{
+    status: "failed";
+    evidenceId: string;
+    snapshotId: string;
+    output: string;
+  }> {
     const generated = generatedPaths(JSON.parse(this.store.run(runId).policy_json) as RunPolicy);
     const files = await sourceManifest(root, generated);
     const evidence = this.store.transaction(() => {
@@ -234,7 +242,11 @@ export class CheckRunner {
     root: string,
     sandbox: SandboxRequest | null,
     timeoutMs: number = check.timeoutMs,
-  ): Promise<{ status: "passed" | "failed" | "inconclusive"; output: string; truncated: boolean }> {
+  ): Promise<{
+    status: "passed" | "failed" | "inconclusive";
+    output: string;
+    truncated: boolean;
+  }> {
     try {
       const executable = check.executable === "bun" ? process.execPath : check.executable;
       const result = await executeCheckCommand(this.processes, executable, check.args, {
@@ -287,41 +299,67 @@ export class CheckRunner {
         null,
       ),
     );
-    let result: ProcessResult;
     let reason = "exit";
-    try {
-      const env = buildCheckEnv(check);
-      const executable = check.executable === "bun" ? process.execPath : check.executable;
-      result = await executeCheckCommand(this.processes, executable, check.args, {
-        cwd: check.cwd === "." ? root : workspacePath(root, check.cwd),
-        env,
-        timeoutMs: check.timeoutMs,
-        signal,
-        onSpawn: (pid, scope) =>
-          this.store.transaction(() => this.store.recordProcess(runId, effectId, pid, scope)),
-        sandbox: runSandbox(policy, root, { gitWrite: root !== this.store.workspace }),
-      });
-    } catch (error) {
-      reason = error instanceof SandboxUnavailableError ? "sandbox_unavailable" : "spawn_error";
-      result = {
-        exitCode: null,
-        signal: null,
-        output: error instanceof Error ? error.message : String(error),
-        timedOut: false,
-        cancelled: signal.aborted,
-        truncated: false,
-        durationMs: 0,
-        ...(error instanceof SandboxUnavailableError && policy.sandbox
-          ? {
-              sandbox: {
-                backend: "none" as const,
-                mode: policy.sandbox,
-                network: false,
-                reason: error.reason,
-              },
-            }
-          : {}),
-      };
+    const execute = async (): Promise<ProcessResult> => {
+      try {
+        const env = buildCheckEnv(check);
+        const executable = check.executable === "bun" ? process.execPath : check.executable;
+        return await executeCheckCommand(this.processes, executable, check.args, {
+          cwd: check.cwd === "." ? root : workspacePath(root, check.cwd),
+          env,
+          timeoutMs: check.timeoutMs,
+          signal,
+          onSpawn: (pid, scope) =>
+            this.store.transaction(() => this.store.recordProcess(runId, effectId, pid, scope)),
+          sandbox: runSandbox(policy, root, {
+            gitWrite: root !== this.store.workspace,
+          }),
+        });
+      } catch (error) {
+        reason = error instanceof SandboxUnavailableError ? "sandbox_unavailable" : "spawn_error";
+        return {
+          exitCode: null,
+          signal: null,
+          output: error instanceof Error ? error.message : String(error),
+          timedOut: false,
+          cancelled: signal.aborted,
+          truncated: false,
+          durationMs: 0,
+          ...(error instanceof SandboxUnavailableError && policy.sandbox
+            ? {
+                sandbox: {
+                  backend: "none" as const,
+                  mode: policy.sandbox,
+                  network: false,
+                  reason: error.reason,
+                },
+              }
+            : {}),
+        };
+      }
+    };
+    // The first run of a check in a run builds the toolchain's cache (Go's GOCACHE, cargo's
+    // target, a Gradle daemon): on a cold Windows runner `go test` of one new file took 60 s to
+    // compile and ran in 5.6 s again, and the timeout sent a finished task back to its worker
+    // (#2162). A written-tests check that timed out without a result is therefore run once more
+    // when it has no earlier result in the run; a file that never ends times out again and fails.
+    const firstRun = !this.store.checks(runId).some((c) => c.check_id === check.id);
+    let result = await execute();
+    if (
+      firstRun &&
+      result.timedOut &&
+      check.onTimeout === "failed" &&
+      !result.cancelled &&
+      !signal.aborted &&
+      !timedOutFailure(result.output)
+    ) {
+      const cold = result.durationMs;
+      result = await execute();
+      if (!result.timedOut)
+        result = {
+          ...result,
+          output: `${result.output}\n\nNote: ${check.id} timed out after ${String(cold)} ms on its first run in this run, which also builds the toolchain's cache, and was run once more.`,
+        };
     }
     // The test setup turns this on in CI, so a check that is slow only on one runner shows in the log (#1177).
     if (process.env.BAKED_TRACE_RUN_BLOCKS === "1" && result.durationMs > 3000)
@@ -385,7 +423,10 @@ export class CheckRunner {
     // timed out (#1426).
     const perTest = status === "failed" && !result.timedOut ? perTestTimeout(result.output) : null;
     if (perTest !== null)
-      result = { ...result, output: `${result.output}\n\n${perTestTimeoutNote(perTest)}` };
+      result = {
+        ...result,
+        output: `${result.output}\n\n${perTestTimeoutNote(perTest)}`,
+      };
     // `output` already holds stdout and stderr interleaved; storing them again tripled a 2 MB
     // pytest diff in one artifact (#993).
     const { stdout: _stdout, stderr: _stderr, ...recorded } = result;
@@ -423,7 +464,13 @@ export class CheckRunner {
       if (unstable) this.store.invalidateEvidence(runId, snapshot.id, "source_changed");
       return evidence;
     });
-    return { status, evidenceId, snapshotId: snapshot.id, output: result.output, reason };
+    return {
+      status,
+      evidenceId,
+      snapshotId: snapshot.id,
+      output: result.output,
+      reason,
+    };
   }
 }
 

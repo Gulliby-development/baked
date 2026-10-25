@@ -1,0 +1,48 @@
+{
+  "id": "swift-spm-semver",
+  "language": "swift",
+  "toolchain": "swiftpm",
+  "requires": [
+    "swift"
+  ],
+  "allowedPaths": [
+    "Sources/**",
+    "Tests/**",
+    "README.md"
+  ],
+  "checks": [
+    {
+      "id": "swift-format",
+      "executable": "swift",
+      "args": [
+        "format",
+        "lint",
+        "--strict",
+        "--recursive",
+        "."
+      ],
+      "fix": {
+        "executable": "swift",
+        "args": [
+          "format",
+          "format",
+          "--in-place"
+        ]
+      }
+    },
+    {
+      "id": "swift-build",
+      "executable": "swift",
+      "args": [
+        "build"
+      ]
+    },
+    {
+      "id": "swift-test",
+      "executable": "swift",
+      "args": [
+        "test"
+      ]
+    }
+  ]
+}

@@ -236,6 +236,13 @@ const dartFormat: FileFormatter = {
   fix: () => ["format"],
 };
 
+// No range: swift-format formats whole files (#1492).
+const swiftFormat: FileFormatter = {
+  runs: (program, args) => program === "swift" && args[0] === "format" && args[1] === "lint",
+  check: (_, files) => ["format", "lint", "--strict", ...files],
+  fix: () => ["format", "format", "--in-place"],
+};
+
 const NPM_FORMATTERS = [biome, prettier, dprint, bunFmt];
 
 /**
@@ -264,7 +271,7 @@ export const FILE_FORMATTERS: LanguageRecord<readonly FileFormatter[]> = {
   cpp: [clangFormat],
   ruby: [rubocopLayout],
   php: [pint, phpCsFixer],
-  swift: none("SwiftPM has no gate detector yet (#1753)"),
+  swift: [swiftFormat],
   lua: [stylua],
   elixir: none("Mix has no gate detector yet (#1753)"),
   dart: [dartFormat],

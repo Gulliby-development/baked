@@ -375,6 +375,8 @@ export interface QualityConfig {
   defectClasses?: "off" | "on";
   /** Let the host finish a task whose spec conflict it settled when the attempt's cases hold and its required checks pass: `on` or `off` (default, recorded in shadow). */
   conflictFinish?: "off" | "on";
+  /** Let a run go on with the ready tasks a blocked corrective does not hold, and end with its stop once they ran: `on` or `off` (default, recorded in shadow). */
+  correctiveDefer?: "off" | "on";
   /** Property-based tests from marked criteria: `preset` or absent follows the workflow preset. */
   propertyTests?: "preset" | "auto" | "off";
 }
