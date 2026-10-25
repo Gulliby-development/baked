@@ -137,7 +137,9 @@ if (command === "export" && args.length === 2) {
             `new recovery rungs ${run.newRecoveries} of ${run.stallLadder.length} stalls, ` +
             `repeated failures ${run.repeatedFailures.filter((b) => b.replayed === "repeat").length} of ${run.repeatedFailures.length} failing correctives (new ${run.newRepeatStops}), ` +
             `conflict decisions changed ${run.newConflictDecisions} of ${run.requestConflicts.length} reports, ` +
-            `new integrity findings ${run.newIntegrityFindings} in ${run.integrity.length} scans` +
+            `new integrity findings ${run.newIntegrityFindings} in ${run.integrity.length} scans, ` +
+            `new case refusals ${run.newCaseRefusals} in ${run.caseWalks.length} case walks, ` +
+            `new gate repairs ${run.newGateRepairs} in ${run.reviewGates.length} review gates` +
             (ratios ? `, forecast/final ${ratios}` : ""),
         );
         for (const b of run.boundaries.filter((b) => b.recorded !== b.replayed))
@@ -157,6 +159,14 @@ if (command === "export" && args.length === 2) {
           const added = b.replayed.filter((f) => !b.recorded.includes(f));
           if (added.length)
             console.log(`    integrity ${b.scope} ${b.taskId ?? ""}: now also ${added.join(", ")}`);
+        }
+        for (const b of run.caseWalks) {
+          const added = b.replayed.filter((c) => !b.recorded.includes(c));
+          if (added.length) console.log(`    case walk ${b.taskId}: now also refuses ${added.join(", ")}`);
+        }
+        for (const b of run.reviewGates) {
+          const added = b.replayed.filter((id) => !b.recorded.includes(id));
+          if (added.length) console.log(`    review gate ${b.reviewer}: now also repairs ${added.join(", ")}`);
         }
         for (const b of run.stallLadder.filter((b) => b.recorded !== b.replayed))
           console.log(

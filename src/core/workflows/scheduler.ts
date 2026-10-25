@@ -14,6 +14,7 @@ import {
 import { tmpdir } from "node:os";
 import { basename, dirname, join, relative } from "node:path";
 import { codeWithoutComments } from "../intelligence/comments.js";
+import { detectLanguageFromPath } from "../intelligence/types.js";
 import { largerContextModel } from "../llm/context-sizes.js";
 import {
   lowerEffort,
@@ -79,6 +80,9 @@ import {
   STYLE_UNSHOWN,
 } from "../verification/convergence-stop.js";
 import {
+  CASE_WALK_DIR,
+  CASE_WALK_KIND,
+  type CaseWalkRecord,
   type CriterionCase,
   caseCheck as criteriaCaseCheck,
   type RepairFinding,
@@ -87,6 +91,15 @@ import {
 } from "../verification/criteria-cases.js";
 import { canHold } from "../verification/deliverable-paths.js";
 import { type DocExampleResult, isDocFile, runDocExamples } from "../verification/doc-examples.js";
+import {
+  EDGE_CASES,
+  EDGE_DIR,
+  EDGE_KIND,
+  type EdgeRecord,
+  edgeDecision,
+  edgeTaxonomy,
+  printedValue,
+} from "../verification/edge-inputs.js";
 import {
   currentEvidence,
   evidenceHandle,
@@ -242,6 +255,7 @@ import {
 import {
   cwdPath,
   fixerCommand,
+  fixerTierPaths,
   fixerTiers,
   isCodePath,
   isStaticCheck,
@@ -628,6 +642,8 @@ import {
   DEFAULT_REVIEW_MIN_CONFIDENCE,
   type Distinction,
   DistinctionSchema,
+  type EdgeCases,
+  EdgeCasesSchema,
   executionModeOf,
   generatedPaths,
   ImplementationSchema,
@@ -681,6 +697,15 @@ import { browserLayoutProbe, type LayoutProbe, layoutVerdict } from "./layout-ch
 import { planCostOf, planCostWarning } from "./plan-cost.js";
 import { EDIT_TOOLS } from "./progress-watch.js";
 import {
+  gateFinding,
+  REVIEW_GATE_DIR,
+  REVIEW_GATE_KIND,
+  type ReviewGate,
+  type ReviewGateRecord,
+  reviewGateCandidates,
+  reviewGateDecision,
+} from "./review-gate.js";
+import {
   applyRevision,
   MAX_PATCH_FINDINGS,
   RevisionSchema,
@@ -717,7 +742,11 @@ import { forgetProgress } from "./stall.js";
 import { statedRequest } from "./stated-request.js";
 import type { AttemptUsageRecord } from "./step-budget.js";
 import { type LeaseResource, newId, type TaskRow, type WorkflowStore } from "./store.js";
-import { isSuppliedContentFinding, suppliedContentFindings } from "./supplied-content.js";
+import {
+  isSuppliedContentFinding,
+  suppliedConflictCriteria,
+  suppliedContentFindings,
+} from "./supplied-content.js";
 import {
   documentsOnly,
   failureOwner,
@@ -852,14 +881,6 @@ const repairSeverities = (
     : policy.lowFindings === "note"
       ? NOT_LOW
       : ALL_SEVERITIES;
-
-/**
- * A finding the severity floor does not demote once the host reproduces it: it is based on the
- * spec and carries a repro. dirdrift-update 6b57dc61 completed with AC-005 failing because its
- * confirmed medium finding arrived after the first repair round (#801).
- */
-const confirmableSpecFinding = (f: Review["findings"][number]): boolean =>
-  (f.basis ?? "spec") === "spec" && f.repro !== undefined;
 
 /** The task graph as the scheduler stores it: hashes are bound to the accepted spec and plan. */
 function planGraph(
@@ -5476,6 +5497,19 @@ export class WorkflowScheduler {
               tasks: (state.rootGraph ?? state.graph)?.tasks ?? [],
               // The rows the host wrote are held by its intact blocks (#1997).
               hostRows: generatedRows.filter((file) => file.inline === true),
+              record: (walk) =>
+                this.store.transaction(() =>
+                  this.store.artifact(
+                    runId,
+                    CASE_WALK_KIND,
+                    `${CASE_WALK_DIR}${task.id}.json`,
+                    canonical({
+                      schemaVersion: 1,
+                      taskId: task.id,
+                      ...walk,
+                    } satisfies CaseWalkRecord),
+                  ),
+                ),
               ...(policy.caseSourceProbe === "on"
                 ? { probe: this.caseSourceProbe(runId, state, policy, task, signal) }
                 : {}),
@@ -7643,6 +7677,8 @@ ${note}`;
     this.settleTask(runId, state, policy, task, child, taskFailures, checkEvidence);
     if (!taskFailures.length && reported && !unresolvedAccount)
       await this.routeReportedDefect(runId, state, policy, task, child, reported, signal, taskRoot);
+    if (!taskFailures.length && !unresolvedAccount)
+      await this.edgeProbe(runId, child, state, policy, task, taskRoot, signal);
   }
   /**
    * Implementation with several writers (a worktree run whose policy allows more than one). Ready
@@ -9171,6 +9207,8 @@ ${note}`;
         signal,
         mainRoot,
       );
+    if (!failures.length && !outcome.account.unresolved.length)
+      await this.edgeProbe(runId, entry.child, state, policy, task, mainRoot, signal);
   }
   /**
    * A required task check that failed and declares a fixer gets one host repair before it becomes
@@ -11521,7 +11559,22 @@ ${note}`;
         isTestPath(p) &&
         (state.testsFirst?.files.includes(p) || !this.createdByRun(runId, state, p)),
     );
-    const criteria = conflictCriteria(spec, report, reported);
+    const cited = conflictCriteria(spec, report, reported);
+    // A report about a test file the request supplies verbatim that cites no criterion: the
+    // criteria whose literals the file lacks are the conflict's (#2006, part c).
+    const supplied = cited.length
+      ? []
+      : suppliedConflictCriteria(
+          spec,
+          task,
+          { tasks },
+          request,
+          { text: report, paths: [...pathsInOutput(report, tasks), ...sideTests(reported)] },
+          { checks: policy.checks },
+        );
+    const criteria = cited.length
+      ? cited
+      : spec.criteria.filter((c) => c.method === "automated" && supplied.includes(c.id));
     const earlier = this.store
       .artifacts(runId)
       .filter(
@@ -11540,6 +11593,7 @@ ${note}`;
       sides: checkedSides(spec, request, report, reported),
       foreignTests: foreign.length,
       criterionIds: criteria.map((c) => c.id),
+      ...(supplied.length ? { supplied: true } : {}),
       reaudit: null,
       reauditedBefore: earlier.some((r) => r.reaudit !== null),
     };
@@ -12366,6 +12420,156 @@ ${note}`;
     }
   }
   /**
+   * The edge-input probe of a planned source task (#1808), once after it settled without
+   * failures: the `edge-cases` profile is shown the task's criteria, files and the edge taxonomy
+   * of its languages (edge-inputs.ts) and proposes extreme legal inputs; the host runs each
+   * through the project's entry points as a repro whose actual is its expected value
+   * (`edgeDecision`). A case that runs and prints something else becomes a finding of the task,
+   * corrected at once, before the test tasks build on the code (R54 url-shortener: a non-ASCII
+   * redirect target, 2.43M tokens of correctives after the final review). Recorded under
+   * `probes/edge/` (kind `edge-probe`); a failed call records no cases and changes nothing.
+   */
+  private async edgeProbe(
+    runId: string,
+    stepId: string,
+    state: RuntimeState,
+    policy: RunPolicy,
+    task: Task,
+    root: string,
+    signal: AbortSignal,
+  ): Promise<void> {
+    if (policy.edgeProbe !== "on" || task.origin !== "planned" || !task.criterionIds.length) return;
+    const path = `${EDGE_DIR}${task.id}.json`;
+    if (this.store.latestArtifact(runId, path)) return;
+    if (this.store.tasks(runId).find((r) => r.id === task.id)?.status !== "implemented") return;
+    const sources = task.writes
+      .filter((w) => w.action !== "delete" && !isTestPath(w.path))
+      .map((w) => w.path);
+    const languages = [
+      ...new Set(sources.map((p) => detectLanguageFromPath(p)).filter((l) => l !== "unknown")),
+    ];
+    const profile = ProfileSchema.array()
+      .parse(JSON.parse(this.store.run(runId).profiles_json))
+      .find((p) => p.output === "edge-cases");
+    const executables = reproExecutables(policy.checks);
+    if (!profile || !executables.length || !languages.length) return;
+    const criteria = (state.spec?.criteria ?? []).filter((c) => task.criterionIds.includes(c.id));
+    const record = (cases: EdgeRecord["cases"]): EdgeRecord => ({
+      schemaVersion: 1,
+      taskId: task.id,
+      languages,
+      cases,
+    });
+    const child = this.store.transaction(() => this.store.beginStep(runId, "edge-probe", stepId));
+    let proposed: EdgeCases;
+    try {
+      proposed = EdgeCasesSchema.parse(
+        await this.call(
+          runId,
+          child,
+          state,
+          policy,
+          profile,
+          {
+            task: { id: task.id, title: task.title, description: task.description },
+            criteria: criteria.map((c) => ({
+              id: c.id,
+              given: c.given,
+              when: c.when,
+              // biome-ignore lint/suspicious/noThenProperty: Given/When/Then is the versioned acceptance-criterion contract.
+              then: c.then,
+            })),
+            files: sources,
+            executables,
+            edge: edgeTaxonomy(languages),
+          },
+          signal,
+        ),
+      );
+      this.store.transaction(() => this.store.finishStep(runId, child, "completed"));
+    } catch (error) {
+      if (signal.aborted) throw error;
+      if (
+        error instanceof WorkflowFault &&
+        ["BUDGET_EXHAUSTED", "CHECKPOINT_REACHED"].includes(error.code)
+      )
+        throw error;
+      // Recorded without cases, so a resumed run does not ask again.
+      this.store.transaction(() => {
+        this.store.finishStep(runId, child, "failed");
+        this.store.artifact(runId, EDGE_KIND, path, canonical(record([])));
+      });
+      return;
+    }
+    // A case must name a criterion of this task: only a criterion makes its input legal.
+    const cases = proposed.cases
+      .filter((c) => task.criterionIds.includes(c.criterionId))
+      .slice(0, EDGE_CASES);
+    const outcomes = await runReproBattery(
+      cases.map(({ criterionId: _, ...c }) => ({ ...c, actual: c.expected })),
+      (repro) =>
+        runRepro(this.processes, repro, {
+          root,
+          executables,
+          generated: generatedPaths(policy),
+          signal,
+          sandbox: runSandbox(policy, root, { gitWrite: Boolean(state.worktree) }),
+          shadows: sources,
+        }),
+    );
+    const probed = record(
+      outcomes.map((o, index) => ({
+        criterionId: cases[index]?.criterionId ?? "",
+        status: o.status,
+        reason: o.reason,
+        decision: edgeDecision(o.status),
+      })),
+    );
+    const findings: Review["findings"] = [];
+    this.store.transaction(() => {
+      const artifact = this.store.artifact(runId, EDGE_KIND, path, canonical(probed));
+      const evidenceId = this.store.addEvidence(
+        runId,
+        "command",
+        state.snapshotId ?? "",
+        artifact.id,
+      );
+      for (const [index, outcome] of outcomes.entries()) {
+        const probe = cases[index];
+        if (probed.cases[index]?.decision !== "finding" || !probe) continue;
+        const { criterionId, ...input } = probe;
+        const repro: Repro = { ...input, actual: printedValue(outcome.output) };
+        const criterion = criteria.find((c) => c.id === criterionId);
+        findings.push({
+          id: newId(),
+          kind: "correctness",
+          severity: "high",
+          basis: "spec",
+          confidence: 1,
+          requirementIds: criterion?.requirementIds ?? task.requirementIds,
+          criterionIds: [criterionId],
+          file: sources[0] ?? null,
+          symbol: null,
+          evidenceIds: [evidenceId],
+          claim: `Edge input ${String(index + 1)} of ${task.id}, legal under ${criterionId}: prints ${JSON.stringify(repro.actual)} where ${JSON.stringify(repro.expected)} is required`,
+          impact: `An extreme but legal input of ${criterionId} gives a wrong result; the test tasks would build on it and the final review would find it.`,
+          suggestedFix: `Make ${task.id}'s code handle this input as ${criterionId} requires, without breaking its other inputs.`,
+          repro,
+        });
+      }
+    });
+    if (!findings.length) return;
+    const recorded = this.recordFindings(runId, {
+      schemaVersion: 1,
+      snapshotHash: state.workspaceHash ?? "",
+      verdict: "changes_requested",
+      coverage: [],
+      findings,
+    });
+    this.repair(runId, state, policy, recorded, "repair", "task");
+    this.store.transaction(() => this.store.saveState(runId, state));
+  }
+  /**
    * Adds the families of the run's resolved correctness findings to the cross-run list of defect
    * classes (#1970), from the learn stage of a run whose policy turns it on. What the run added is
    * recorded as `learning/defect-classes.json`.
@@ -13108,11 +13312,12 @@ ${note}`;
           const own = check.fixPaths
             ? paths.filter((path) => check.fixPaths?.includes(path))
             : paths;
-          for (const fix of fixerTiers(check)) {
+          for (const [tier, fix] of fixerTiers(check).entries()) {
+            const files = fixerTierPaths(check, tier, own);
             // A whole-unit formatter (`cargo fmt`) rewrites the whole crate whatever file it is
             // given: one run for all the code files instead of one per file (#1269, #842).
             if (isWholeUnitFixer(fix)) {
-              const code = own.filter(isCodePath);
+              const code = files.filter(isCodePath);
               if (code.length)
                 await run(
                   wholeUnitFixerCommand(
@@ -13124,7 +13329,7 @@ ${note}`;
               continue;
             }
             // The fixer runs in the check's cwd, so it names the file from there.
-            for (const path of own) await run(fixerCommand(fix, cwdPath(check, path)), [path]);
+            for (const path of files) await run(fixerCommand(fix, cwdPath(check, path)), [path]);
           }
         }
       } finally {
@@ -15286,25 +15491,22 @@ ${note}`;
         state.reviews[reviewer.key] = result;
         const siblingNotes = noteSiblingFindings(state, reviewer.dimension, result.findings);
         // Advisory reviewers, findings below the blocking severities and inferred notes are
-        // recorded, not repaired.
-        // Below the severity floor, a spec-based finding with a repro still competes: it repairs
-        // when the host reproduces it (#801). So does a claim kept a note only for its confidence,
-        // as in the converge stage (#1210, #1415).
-        const unconfident = (f: Review["findings"][number]): boolean =>
-          confidenceOnlyNote(f, policy.reviewMinConfidence);
-        const candidates = reviewer.required
-          ? result.findings.filter(
-              (f) =>
-                !siblingNotes.has(f.id) &&
-                reviewer.blocking.includes(f.severity) &&
-                (severities.includes(f.severity) || confirmableSpecFinding(f)) &&
-                (findingBlocks(f, policy.reviewMinConfidence) || unconfident(f)),
-            )
-          : [];
+        // recorded, not repaired (review-gate.ts). The gate's labels are recorded for the replay
+        // corpus (#1715).
+        const gate: ReviewGate = {
+          reviewer: reviewer.key,
+          required: reviewer.required,
+          blocking: reviewer.blocking,
+          severities,
+          minConfidence: policy.reviewMinConfidence ?? DEFAULT_REVIEW_MIN_CONFIDENCE,
+          reproAvailable: executables.length > 0,
+          findings: result.findings.map((f) => gateFinding(f, siblingNotes.has(f.id), undefined)),
+        };
+        const candidates = new Set(reviewGateCandidates(gate).map((f) => f.id));
         // A claim starts a correction only when its repro shows it (#155).
         const outcomes = new Map<string, ReproOutcome>();
-        for (const finding of candidates)
-          if (finding.repro && executables.length)
+        for (const finding of result.findings)
+          if (candidates.has(finding.id) && finding.repro && executables.length)
             outcomes.set(finding.id, await repro(finding.repro, finding.file));
         if (outcomes.size)
           this.store.transaction(() =>
@@ -15315,11 +15517,21 @@ ${note}`;
               canonical({ dimension: reviewer.dimension, outcomes: Object.fromEntries(outcomes) }),
             ),
           );
-        const blocking = candidates.filter((f) =>
-          severities.includes(f.severity) && !unconfident(f)
-            ? reproAllows(f, outcomes.get(f.id)?.status, executables.length > 0)
-            : outcomes.get(f.id)?.status === "reproduced",
+        for (const f of gate.findings) f.outcome = outcomes.get(f.id)?.status ?? null;
+        const decided = new Set(reviewGateDecision(gate));
+        this.store.transaction(() =>
+          this.store.artifact(
+            runId,
+            REVIEW_GATE_KIND,
+            `${REVIEW_GATE_DIR}${reviewer.key}-${newId()}.json`,
+            canonical({
+              schemaVersion: 1,
+              ...gate,
+              repaired: [...decided],
+            } satisfies ReviewGateRecord),
+          ),
         );
+        const blocking = result.findings.filter((f) => decided.has(f.id));
         const repaired = new Set(blocking.map((f) => f.id));
         addReviewNotes(
           state.reviewNotes,

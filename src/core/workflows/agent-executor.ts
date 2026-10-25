@@ -61,6 +61,7 @@ import { assertAttemptFits, growBudgetOnProgress } from "./budget.js";
 import {
   cwdPath,
   fixerCommand,
+  fixerTierPaths,
   fixerTiers,
   isWholeUnitFixer,
   isWholeUnitFormatter,
@@ -105,6 +106,7 @@ import {
   ChainFamilySchema,
   CritiqueSchema,
   DistinctionSchema,
+  EdgeCasesSchema,
   generatedPaths,
   ImplementationSchema,
   MutantProposalSchema,
@@ -163,6 +165,7 @@ export const outputSchemas: Record<string, z.ZodType> = {
   distinction: DistinctionSchema,
   revision: RevisionSchema,
   "chain-family": ChainFamilySchema,
+  "edge-cases": EdgeCasesSchema,
 };
 const MAX_SEMANTIC_CORRECTIONS = 2;
 /** Submissions refused because a written file does not parse; the next one is accepted (#977). */
@@ -1038,20 +1041,21 @@ export class NativeAgentExecutor implements AgentExecutor {
                 )();
               };
               try {
-                for (const fix of tiers) {
+                for (const [tier, fix] of tiers.entries()) {
                   if (isWholeUnitFixer(fix)) {
-                    if (!codePaths.length) continue;
+                    const code = fixerTierPaths(check, tier, codePaths);
+                    if (!code.length) continue;
                     await runFixer(
                       wholeUnitFixerCommand(
                         fix,
-                        codePaths.map((path) => cwdPath(check, path)),
+                        code.map((path) => cwdPath(check, path)),
                       ),
-                      codePaths,
+                      code,
                     );
                     continue;
                   }
                   // The fixer runs in the check's cwd, so it names the file from there.
-                  for (const path of paths)
+                  for (const path of fixerTierPaths(check, tier, paths))
                     await runFixer(fixerCommand(fix, cwdPath(check, path)), [path]);
                 }
               } finally {

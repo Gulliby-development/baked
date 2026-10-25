@@ -16,12 +16,13 @@ Quality gates of workflow runs measure the code a run writes beyond what its che
 | [Finding chain sibling probe](runtime.md#finding-chains) | `chainProbe` | `on` (absent is off; needs `chainRewrite`) | off |
 | [Cross-run defect classes](runtime.md#cross-run-defect-classes) | `defectClasses` | `on` (absent is off) | off |
 | [Misquote host fix](runtime.md#test-integrity) | `misquoteFix` | `on` (absent is off, recorded in shadow) | off |
+| [Edge-input probe](runtime.md#edge-input-probe) | `edgeProbe` | `on` (absent is off) | off |
 
 Where the defaults are set:
 
 - terminal UI: `/code-quality` (or **Code Quality** in `/settings`), saved to the project or the global config;
 - desktop: Settings, Chat settings, **Code quality** page;
-- local API: `PATCH /v1/settings` with `quality.duplication`, `quality.disabledRules`, `quality.registryLookups`, `quality.sast`, `quality.propertyTests`, `quality.mutation`, `quality.mutationEngine`, `quality.baselineReplay`, `quality.packageContents`, `quality.chainRewrite`, `quality.chainProbe`, `quality.defectClasses` and `quality.misquoteFix` ([chat settings](../desktop/api.md#chat-settings));
+- local API: `PATCH /v1/settings` with `quality.duplication`, `quality.disabledRules`, `quality.registryLookups`, `quality.sast`, `quality.propertyTests`, `quality.mutation`, `quality.mutationEngine`, `quality.baselineReplay`, `quality.packageContents`, `quality.chainRewrite`, `quality.chainProbe`, `quality.defectClasses`, `quality.misquoteFix` and `quality.edgeProbe` ([chat settings](../desktop/api.md#chat-settings));
 - config file: `quality` in `.baked/config.json` or `~/.baked/config.json`.
 
 A run can override the default at start: `baked workflow run --duplication off|warn|ratchet`, `--sast auto|off`, `--property-tests auto|off` and `--mutation off|advisory|required`, or `duplication`, `sast`, `propertyTests` and `mutation` in `POST /v1/workflow/runs`. The order is the run flag, then the policy's own field (`--policy FILE` or `workflows.policy`), then the `quality` setting, then the built-in default.

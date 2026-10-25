@@ -112,3 +112,32 @@ export function suppliedContentFindings(
     ];
   });
 }
+
+/** A report that says the content of a file is fixed: "verbatim", "exactly this content", "byte for byte". */
+const EXACT_CONTENT =
+  /\bverbatim\b|\bexact(?:ly)?\s+(?:this\s+|the\s+)?(?:content|contents|file|text)\b|\bbyte[- ]for[- ]byte\b|\bas (?:supplied|given) in the request\b/i;
+export const namesExactContent = (text: string): boolean => EXACT_CONTENT.test(text);
+
+/**
+ * The criteria of a `spec_conflict` that cites none by id but is about a test file the request
+ * supplies verbatim (#2006, part c): the report names the file, or says its content is fixed, and
+ * the task writes a supplied test file. They are the task's criteria whose literals its supplied
+ * files lack, as `suppliedContentFindings` finds them, so the request re-audit of the first
+ * report checks them against the request instead of a second session meeting the same refusal.
+ */
+export function suppliedConflictCriteria(
+  spec: Spec,
+  task: TaskGraph["tasks"][number],
+  graph: Pick<TaskGraph, "tasks">,
+  request: string,
+  report: { text: string; paths: readonly string[] },
+  context: Pick<CaseContext, "checks">,
+): string[] {
+  const files = suppliedTestFiles(request, graph).get(task.id);
+  if (!files) return [];
+  if (!files.some((f) => report.paths.includes(f.path)) && !namesExactContent(report.text))
+    return [];
+  return suppliedContentFindings(spec, graph, request, context)
+    .map((f) => f.refs[1] ?? "")
+    .filter((id) => task.criterionIds.includes(id));
+}
