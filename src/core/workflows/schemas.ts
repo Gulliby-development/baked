@@ -1318,12 +1318,25 @@ export const CorrectionSchema = z
     schemaVersion: z.literal(1),
     parentDigest: Hash,
     parentGraphHash: Hash,
-    rule: z.literal("bounded-correction"),
+    /**
+     * `bounded-correction` adds corrective tasks inside the approved tasks' authority;
+     * `host-widen` adds one path per finding to an existing corrective's writes when the frozen
+     * policy enforces `corrective_unowned_file` and the run's approved paths hold the path (#2133).
+     */
+    rule: z.enum(["bounded-correction", "host-widen"]),
     newGraphHash: Hash,
     findingIds: z.array(SafeId).min(1),
     taskIds: z.array(TaskId).min(1),
     roundKind: z.enum(["repair", "review", "convergence"]),
     round: z.number().int().positive(),
+    /** The writes a `host-widen` link adds, per corrective. */
+    widened: z
+      .array(
+        z
+          .object({ taskId: TaskId, path: RelativePath, action: z.enum(["create", "modify"]) })
+          .strict(),
+      )
+      .optional(),
   })
   .strict();
 /** One literal row of a criterion recomputed from the requirements (derivation-audit.ts). */
