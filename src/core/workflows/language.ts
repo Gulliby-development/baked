@@ -3,7 +3,7 @@ import { readdirSync } from "node:fs";
 /** Review profile that runs as the `language` review dimension for the languages below. */
 export const LANGUAGE_REVIEW_PROFILE = "language-reviewer";
 
-export type ProjectLanguage = "go" | "dotnet" | "rust" | "java" | "ruby" | "dart";
+export type ProjectLanguage = "go" | "dotnet" | "rust" | "java" | "ruby" | "dart" | "sql";
 
 const DOTNET_FILE = /\.(slnx?|csproj|fsproj|vbproj)$/i;
 
@@ -34,13 +34,16 @@ export function detectLanguages(workspace: string): ProjectLanguage[] {
   if (names.has("Gemfile") || [...names].some((name) => name.endsWith(".gemspec")))
     out.push("ruby");
   if (names.has("pubspec.yaml")) out.push("dart");
+  // A dbt project or a SQLFluff-configured one: its SQL is the project's code (#1499).
+  if (names.has("dbt_project.yml") || names.has(".sqlfluff")) out.push("sql");
   return out;
 }
 
 /**
  * The language review profile a run gets when its policy names none and the workspace is a Go,
- * .NET, Rust, Java, Ruby or Dart project: these are the languages where a general reviewer misses platform
- * pitfalls (newline, path separator, culture, error handling idioms).
+ * .NET, Rust, Java, Ruby, Dart or SQL project: these are the languages where a general reviewer
+ * misses platform pitfalls (newline, path separator, culture, error handling idioms; for SQL,
+ * dialect, migrations that cannot be reversed and locks).
  */
 export function languageReviewProfile(workspace: string): string | null {
   return detectLanguages(workspace).length > 0 ? LANGUAGE_REVIEW_PROFILE : null;
@@ -48,10 +51,10 @@ export function languageReviewProfile(workspace: string): string | null {
 
 /** Source and build files of the languages above, by extension or file name. */
 const LANGUAGE_FILE =
-  /(\.(go|cs|fs|vb|csproj|fsproj|vbproj|slnx?|props|targets|rs|java|kt|kts|rb|rake|gemspec|dart)$|(^|\/)(go\.mod|go\.sum|Cargo\.toml|Cargo\.lock|pom\.xml|build\.gradle|Gemfile|Gemfile\.lock|Rakefile|pubspec\.yaml|pubspec\.lock|analysis_options\.yaml)$)/i;
+  /(\.(go|cs|fs|vb|csproj|fsproj|vbproj|slnx?|props|targets|rs|java|kt|kts|rb|rake|gemspec|dart|sql)$|(^|\/)(go\.mod|go\.sum|Cargo\.toml|Cargo\.lock|pom\.xml|build\.gradle|Gemfile|Gemfile\.lock|Rakefile|pubspec\.yaml|pubspec\.lock|analysis_options\.yaml|dbt_project\.yml)$)/i;
 
 /**
- * Whether a change touches a file of a Go, .NET, Rust, Java, Ruby or Dart project. The language review only
+ * Whether a change touches a file of a Go, .NET, Rust, Java, Ruby, Dart or SQL project. The language review only
  * adds value there: in R08 it ran on changes to READMEs and scripts of such projects and found
  * nothing in four reviews at about 45k tokens each (#592).
  */

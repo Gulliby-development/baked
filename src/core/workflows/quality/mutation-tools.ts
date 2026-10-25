@@ -613,6 +613,7 @@ export const MUTATION_TOOLS: LanguageRecord<MutationTool> = {
   ocaml: none("no OCaml mutation tool is integrated"),
   objc: none("no Objective-C mutation tool is integrated"),
   solidity: none("no Solidity mutation tool is integrated (Gambit)"),
+  sql: none("no SQL mutation tool is integrated"),
 };
 
 /** The changed non-test code files a tool would mutate, by tool; build scripts are not mutated. */
