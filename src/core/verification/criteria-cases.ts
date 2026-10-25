@@ -277,6 +277,8 @@ const CHECK_COMMAND = new RegExp(
     String.raw`(?:mvn|mvnw|gradle|gradlew|\.\/gradlew|\.\/mvnw)\b.*\b(?:test|verify|check|build)\b`,
     // Bundler: `bundle exec rspec`, `bundle exec rake test`, `bundle exec rubocop` (#1493).
     String.raw`(?:bundle\s+exec\s+)?(?:rspec|rubocop|standardrb|rake\s+(?:test|spec))\b`,
+    // `dart test`, `flutter test`, `dart analyze`, `dart format` (#1494).
+    String.raw`(?:dart|flutter)\s+(?:test|analyze|format)\b`,
   ].join("|")})`,
 );
 
