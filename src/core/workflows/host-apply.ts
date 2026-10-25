@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { runGit } from "../git/status.js";
 import { tmpDir } from "../platform/index.js";
 import type { TaskGraph } from "./schemas.js";
-import { suppliedBlocks } from "./sizing.js";
+import { type MarkdownRegion, suppliedBlocks } from "./sizing.js";
 import type { WorkflowStore } from "./store.js";
 import { hostWritten } from "./task-graph.js";
 import type { Task } from "./types.js";
@@ -49,10 +49,17 @@ export interface HostApplyWrite {
   /** The last line of git's refusal when the hunks do not apply. */
   refusal?: string;
   /**
-   * `crlf` when the hunks applied only with CRLF line ends: the base file is CRLF (a Git for
-   * Windows worktree with `core.autocrlf=true`) and the brief's diff is LF (#2158).
+   * `crlf` when the hunks applied only with CRLF line ends: the base file is CRLF and git does
+   * not convert it (committed as CRLF, or `core.autocrlf=false`), and the brief's diff is LF (#2158).
    */
   eol?: "crlf";
+  /**
+   * The path's one fenced block is a Markdown section of a file that exists (`markdownRegion`,
+   * #2101): its heading's level and how many sections of that heading and level the file holds
+   * (0: the host would append it, 1: replace that section). The title is not recorded (#1715).
+   * Absent for any other write, and in records before #2101.
+   */
+  region?: { level: number; matches: number };
 }
 
 export interface HostApplyVerdict {
@@ -87,6 +94,15 @@ export const hostApplyDecision: HostApplyRule = (writes) => {
     if (w.files && w.diffs)
       return no(`the request gives both a fenced file and a diff for ${w.path}`);
     if (w.files > 1) return no(`the request gives ${w.files} fenced blocks for ${w.path}`);
+    // A Markdown section the host writes into the file (#2101): appended, or in place of the one
+    // section of its heading.
+    if (w.files && w.region) {
+      if (w.region.matches > 1)
+        return no(
+          `the section the request gives for ${w.path} has a heading that ${w.region.matches} sections of the file share`,
+        );
+      continue;
+    }
     if (w.files && w.exists && !w.whole)
       return no(
         `the fenced block for ${w.path}, which exists, may be an excerpt: the prose before it does not say it is the whole file`,
@@ -98,6 +114,57 @@ export const hostApplyDecision: HostApplyRule = (writes) => {
   }
   return { wouldApply: true, reason: null };
 };
+
+const FENCE = /^ {0,3}(`{3,}|~{3,})/;
+const HEADING_LINE = /^ {0,3}(#{1,6})[ \t]+(.+?)(?:[ \t]+#+)?[ \t]*$/;
+
+/**
+ * The sections of a Markdown text with `region`'s heading: each as its line range, from the
+ * heading to the line before the next heading of the same or a higher level (headings inside
+ * fenced blocks end nothing).
+ */
+export function regionSections(
+  text: string,
+  region: MarkdownRegion,
+): { from: number; to: number }[] {
+  const lines = text.split("\n");
+  const headings: { index: number; level: number; title: string }[] = [];
+  let fence: string | null = null;
+  for (const [index, line] of lines.entries()) {
+    const open = FENCE.exec(line)?.[1];
+    if (open && (fence === null || (open[0] === fence[0] && open.length >= fence.length))) {
+      fence = fence === null ? open : null;
+      continue;
+    }
+    if (fence !== null) continue;
+    const heading = HEADING_LINE.exec(line.replace(/\r$/, ""));
+    if (heading)
+      headings.push({ index, level: heading[1]?.length ?? 1, title: (heading[2] ?? "").trim() });
+  }
+  return headings.flatMap((h, i) => {
+    if (h.level !== region.level || h.title.toLowerCase() !== region.title.toLowerCase()) return [];
+    const next = headings.slice(i + 1).find((n) => n.level <= h.level);
+    return [{ from: h.index, to: next ? next.index : lines.length }];
+  });
+}
+
+/**
+ * A Markdown text with a section written in (#2101): in place of the one section of its heading,
+ * or appended after a blank line when the text has none. The section's text ends in one newline
+ * and is followed by a blank line before a next heading. Null when several sections share the
+ * heading. What the host writes once the region decision is promoted; shadow until then.
+ */
+export function applyRegion(text: string, section: string, region: MarkdownRegion): string | null {
+  const found = regionSections(text, region);
+  if (found.length > 1) return null;
+  const body = `${section.replace(/\s+$/, "")}\n`;
+  const at = found[0];
+  if (!at) return `${text.replace(/\s+$/, "")}${text.trim() ? "\n\n" : ""}${body}`;
+  const lines = text.split("\n");
+  const after = lines.slice(at.to).join("\n");
+  const before = lines.slice(0, at.from).join("\n");
+  return `${before}${before ? "\n" : ""}${body}${after ? `\n${after}` : ""}`;
+}
 
 /** The record of a task's apply decision from its writes' inputs. */
 export function hostApplyRecord(
@@ -137,9 +204,9 @@ function crlfFile(root: string, path: string): boolean {
 
 /**
  * `git apply --check` of a write's patch against the task's base. The check compares bytes, so an
- * LF diff from the brief fails on a CRLF checkout of the same content (Git for Windows checks task
- * worktrees out with `core.autocrlf=true`): when the base file is CRLF, the patch with CRLF hunk
- * lines is checked too, and `eol: "crlf"` records that it applied that way (#2158).
+ * LF diff from the brief fails on a CRLF base of the same content that git does not convert (git
+ * already converts a `core.autocrlf=true` worktree): when the base file is CRLF, the patch with
+ * CRLF hunk lines is checked too, and `eol: "crlf"` records that it applied that way (#2158).
  */
 async function applyWriteCheck(
   root: string,
@@ -203,16 +270,27 @@ export async function hostApplyInputs(
           ? await applyWriteCheck(root, write.path, patch)
           : { applies: false }
         : null;
+    const exists = existsSync(join(root, write.path));
+    const only = files.length === 1 ? files[0] : undefined;
+    const region = only?.kind === "file" && exists && only.region ? only.region : null;
     writes.push({
       path: write.path,
       action: write.action,
       files: files.length,
       diffs: diffs.length,
-      whole: files.length === 1 && files[0]?.kind === "file" && files[0].whole,
-      exists: existsSync(join(root, write.path)),
+      whole: only?.kind === "file" && only.whole,
+      exists,
       applies: check ? check.applies : null,
       ...(check?.refusal ? { refusal: check.refusal } : {}),
       ...(check?.eol ? { eol: check.eol } : {}),
+      ...(region
+        ? {
+            region: {
+              level: region.level,
+              matches: regionSections(readFileSync(join(root, write.path), "utf8"), region).length,
+            },
+          }
+        : {}),
     });
   }
   return writes;

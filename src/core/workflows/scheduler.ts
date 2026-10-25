@@ -791,6 +791,7 @@ import {
   namesPath,
   pendingCodePaths,
   pendingWriters,
+  type RepairHolds,
   readyTasks,
   siblingCorrections,
 } from "./task-graph.js";
@@ -805,6 +806,8 @@ import {
   measureTestIntegrity,
   requestedTestRemovals,
   rewriteTargets,
+  type ScanOptions,
+  shadowTitleFindings,
   strengthenTargets,
   testChanges,
   testIntegrityOf,
@@ -7006,6 +7009,7 @@ ${note}`;
             state.taskGates,
             state.waitingFor,
             state.repairPredecessors,
+            this.repairHolds(runId, state),
           ),
         ))
       )
@@ -7022,6 +7026,7 @@ ${note}`;
               state.taskGates,
               state.waitingFor,
               state.repairPredecessors,
+              this.repairHolds(runId, state),
             ),
           );
       // The tests are put to a person; the code tasks wait for the approval.
@@ -7779,6 +7784,7 @@ ${note}`;
         state.taskGates,
         state.waitingFor,
         state.repairPredecessors,
+        this.repairHolds(runId, state),
       ).filter((t) => !lost.has(t.id));
       const runnable = checking ? all : this.testsFirstReady(runId, state, policy, all);
       if (runnable === null) return;
@@ -10441,7 +10447,7 @@ ${note}`;
       .map((f) => JSON.parse(f.body_json) as Review["findings"][number]);
     const corrective = task.origin !== "planned" && task.findingIds.length > 0;
     if (corrective) this.recordAddedTests(runId, task, changes);
-    const measures = measureTestIntegrity(changes, {
+    const scanOptions: ScanOptions = {
       protects: corrective ? this.correctionTests(runId, task, changed) : undefined,
       removalFindings: corrective ? ownFindings : [],
       rewrites: task.origin === "planned" ? new Set() : rewriteTargets(ownFindings),
@@ -10454,13 +10460,21 @@ ${note}`;
       ]),
       testSources,
       specText: integrityRequirementText(state),
-    });
+    };
+    const measures = measureTestIntegrity(changes, scanOptions);
     const found = integrityDecision(measures);
     const mode = testIntegrityOf(policy);
     this.recordIntegrity(
       runId,
       `tasks/${task.id}`,
-      integrityRecord("task", task.id, mode, measures, found),
+      integrityRecord(
+        "task",
+        task.id,
+        mode,
+        measures,
+        found,
+        shadowTitleFindings(changes, scanOptions, found),
+      ),
     );
     if (!found.length) return [];
     const evidenceId = this.store.transaction(() => {
@@ -10680,26 +10694,36 @@ ${note}`;
         ),
       )
       .map((f) => JSON.parse(f.body_json) as Review["findings"][number]);
-    const measures = measureTestIntegrity(
-      changed.map((path) => {
-        const hash = baseline.get(path) ?? null;
-        const kept = hash === null ? null : readKept(this.store, runId, hash)?.toString("utf8");
-        return { path, before: kept, after: read(path) };
-      }),
-      {
-        removalFindings: corrected,
-        rewrites: rewriteTargets(corrected),
-        strengthens: strengthenTargets(corrected),
-        reasoned: new Set([
-          ...tasks.flatMap((t) => t.writes.filter((w) => w.reason).map((w) => w.path)),
-          ...this.amendments(runId).flatMap((a) => a.paths),
-        ]),
-        specText: integrityRequirementText(state),
-      },
-    );
+    const runChanges = changed.map((path) => {
+      const hash = baseline.get(path) ?? null;
+      const kept = hash === null ? null : readKept(this.store, runId, hash)?.toString("utf8");
+      return { path, before: kept, after: read(path) };
+    });
+    const scanOptions: ScanOptions = {
+      removalFindings: corrected,
+      rewrites: rewriteTargets(corrected),
+      strengthens: strengthenTargets(corrected),
+      reasoned: new Set([
+        ...tasks.flatMap((t) => t.writes.filter((w) => w.reason).map((w) => w.path)),
+        ...this.amendments(runId).flatMap((a) => a.paths),
+      ]),
+      specText: integrityRequirementText(state),
+    };
+    const measures = measureTestIntegrity(runChanges, scanOptions);
     const found = integrityDecision(measures);
     const mode = testIntegrityOf(policy);
-    this.recordIntegrity(runId, "run", integrityRecord("run", null, mode, measures, found));
+    this.recordIntegrity(
+      runId,
+      "run",
+      integrityRecord(
+        "run",
+        null,
+        mode,
+        measures,
+        found,
+        shadowTitleFindings(runChanges, scanOptions, found),
+      ),
+    );
     if (!found.length) return [];
     const evidenceId = this.store.transaction(() => {
       const artifact = this.store.artifact(
@@ -12210,6 +12234,31 @@ ${note}`;
       return owner ? [{ path, owner }] : [];
     });
   }
+  /**
+   * The holds of the run's unfinished correctives that are narrower than their writes (#2109):
+   * the files its first attempt writes once it started, and before that where its findings point,
+   * with their tests. A corrective that widened holds its whole write scope again.
+   */
+  private repairHolds(runId: string, state: RuntimeState): RepairHolds {
+    const done = new Set(
+      this.store
+        .tasks(runId)
+        .filter((row) => row.status === "verified" || row.status === "blocked")
+        .map((row) => row.id),
+    );
+    const holds: Record<string, string[]> = {};
+    for (const task of state.graph?.tasks ?? []) {
+      if (task.origin !== "repair" || done.has(task.id)) continue;
+      if (state.widenedCorrections.includes(task.id)) continue;
+      const narrowed =
+        state.narrowedCorrections[task.id] ??
+        narrowCorrectionWrites(task, correctionFocus(this.store, runId, state, task).files)?.map(
+          (w) => w.path,
+        );
+      if (narrowed) holds[task.id] = narrowed;
+    }
+    return holds;
+  }
   /** Shared ownership with the open findings' recorded command evidence (#1612). */
   private failureOwner(
     runId: string,
@@ -12255,6 +12304,7 @@ ${note}`;
       ...options,
       pendingFindings,
       predecessors: state.repairPredecessors,
+      holds: this.repairHolds(runId, state),
       waitingFor: Object.fromEntries(
         [
           ...new Set([
@@ -14188,7 +14238,10 @@ ${note}`;
               attempts.push({ command: text, result: "timeout", output: tail });
               continue;
             }
-            if (outcome.exitCode !== 0) {
+            if (
+              outcome.exitCode !== 0 &&
+              !change.tool.listedExits?.includes(outcome.exitCode ?? 0)
+            ) {
               attempts.push({ command: text, result: "failed", output: tail });
               continue;
             }
