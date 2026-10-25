@@ -141,11 +141,11 @@ describe("scenario: the shared token pool names its amounts and would grow insid
     expect(at(syntax)).toMatchObject({ limitTokens: POOL, usedTokens: 15_369_363, notice: null });
     expect(at(syntax)?.forecastTokens).toBeLessThan(POOL);
     // With five, the measured 1.8x says 31.6M (the round used 33.25M): the notice, before the park.
-    expect(at(lint)?.notice).toBe("At the measured 1.8x of the estimates the 10 features need about 31.6M tokens (26.7M used); the shared pool is 30.0M. Extend to 32.4M (baked workflow initiative extend nodepluck --tokens 32400000); the $30.00 cap would pay for about 33.4M at $0.90 per million.");
+    expect(at(lint)?.notice).toBe("At the measured 1.8x of the estimates the 10 features need about 31.6M tokens (26.7M used); the shared pool is 30.0M. Extend to 31.6M (baked workflow initiative extend nodepluck --tokens 31600000); the $30.00 cap would pay for about 36.0M at $0.83 per million.");
     // No start before then warned: the estimate's point forecast stayed under the pool.
     expect(replay?.starts.filter((s) => s.at < lint && s.pool?.notice)).toEqual([]);
-    // The corpus gate replays starts on the final 38M budget, under which nothing warns.
-    const [final] = replayInitiativeStarts(R66);
+    // Replayed on the final 38M budget, as the corpus gate did before #2061, nothing warns.
+    const [final] = replayInitiativeStarts(R66, { budgetAtStart: false });
     expect(final?.starts.some((s) => s.pool?.notice)).toBe(false);
   }, 180000);
 });
