@@ -5,7 +5,7 @@ import { dirname, join } from "node:path";
 import { StartBody } from "../src/core/api/schemas.js";
 import { builtinProfiles } from "../src/core/agents/profiles/builtin.js";
 import { sddWorkflow } from "../src/core/workflows/builtin/sdd.js";
-import { hostRowPaths, literalRows, ROWS_NOTE, rowAuditProblems, rowDataPaths, rowFiles, rowPlanProblems, rowsArtifact } from "../src/core/workflows/acceptance-rows.js";
+import { hostRowPaths, literalRows, plannerRows, ROWS_NOTE, unreadTables, rowAuditProblems, rowDataPaths, rowFiles, rowPlanProblems, rowsArtifact } from "../src/core/workflows/acceptance-rows.js";
 import { hasInlineRows, INLINE_HARNESS, type InlineRowTest, inlineRowFile, withInlineRows } from "../src/core/workflows/acceptance-rows-inline.js";
 import { type Analysis, type Spec, type Task, type TaskGraph, TaskSchema } from "../src/core/workflows/schemas.js";
 import { prepareStart } from "../src/core/workflows/start.js";
@@ -380,5 +380,42 @@ describe("inline acceptance rows (#1763)", () => {
   test("the planner and the implementer are told the inline harness of every framework", () => {
     for (const name of Object.values(INLINE_HARNESS)) expect(ROWS_NOTE).toContain(name);
     expect(ROWS_NOTE).toContain('mode: "inline"');
+  });
+});
+
+// #2097: one cell with a raw control character, or a code span holding U+2028/U+2029, emptied the
+// whole table, and the planner was told nothing.
+describe("literal rows with invisible and control characters (#2097)", () => {
+  const two = (cell: string) => `| Input | Expected |\n| --- | --- |\n| "a" | 1 |\n| ${cell} | 2 |`;
+  const cases: [string, string, unknown][] = [
+    ["plain", '"ab"', "ab"],
+    ["code span", '`"ab"`', "ab"],
+    ["BOM", '`"a\uFEFFb"`', "a\uFEFFb"],
+    ["NBSP", '`"a\u00A0b"`', "a\u00A0b"],
+    ["LS in a code span", '`"a\u2028b"`', "a\u2028b"],
+    ["PS in a code span", '`"a\u2029b"`', "a\u2029b"],
+    ["raw CR", '"a\rb"', "a\rb"],
+    ["raw TAB", '"a\tb"', "a\tb"],
+  ];
+  for (const [name, cell, input] of cases)
+    test(`${name}: both rows are read`, () => {
+      const rows = literalRows(spec(two(cell)), ["AC-001"]);
+      expect(rows.map((r) => r.input)).toEqual(["a", input]);
+      expect(unreadTables(spec(two(cell)))).toEqual([]);
+    });
+
+  test("an escaped control character in a string keeps its escape", () => {
+    expect(literalRows(spec(two('"a\\tb"')), ["AC-001"])[1]?.input).toBe("a\tb");
+  });
+
+  test("a table still refused names the row and why, and the planner is told", () => {
+    const bad = spec(`| Input | Expected |\n| --- | --- |\n| "a" | 1 |\n| a b | 2 |`);
+    expect(literalRows(bad, ["AC-001"])).toEqual([]);
+    const [unread] = unreadTables(bad);
+    expect(unread).toMatchObject({ criterionId: "AC-001", row: 2 });
+    expect(unread?.reason).toStartWith("input is not JSON");
+    const both: Spec = { ...bad, criteria: [...spec(two('"ab"')).criteria, { ...bad.criteria[0]!, id: "AC-002" }] };
+    const note = plannerRows(both, { ...fixturePolicy, rowsAsData: "on" })?.note ?? "";
+    expect(note).toContain("AC-002 is not read as rows: row 2 input is not JSON");
   });
 });

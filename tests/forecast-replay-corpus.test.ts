@@ -37,6 +37,7 @@ interface Accepted {
   newGateRepairs?: number;
   newConvergenceVerdicts?: number;
   newEvidenceDecisions?: number;
+  newConflictFinishes?: number;
   newShareStops?: number;
   newPoolGrowth?: number;
   newStartStops?: number;
@@ -97,6 +98,7 @@ describe("bench-round traces replay without new forecast stops or growth (#1649)
           newGateRepairs: run.newGateRepairs,
           newConvergenceVerdicts: run.newConvergenceVerdicts,
           newEvidenceDecisions: run.newEvidenceDecisions,
+          newConflictFinishes: run.newConflictFinishes,
         }).toEqual({
           run: run.runId,
           newStops: allowed?.newStops ?? 0,
@@ -117,6 +119,7 @@ describe("bench-round traces replay without new forecast stops or growth (#1649)
           newGateRepairs: allowed?.newGateRepairs ?? 0,
           newConvergenceVerdicts: allowed?.newConvergenceVerdicts ?? 0,
           newEvidenceDecisions: allowed?.newEvidenceDecisions ?? 0,
+          newConflictFinishes: allowed?.newConflictFinishes ?? 0,
         });
       }
       // Run states before R52 counted the host's own test splits in `hostSplitTasks`, which the
@@ -260,14 +263,19 @@ describe("initiative starts replay on rewound traces (#1707)", () => {
     expect(rate * 1e6).toBeLessThan(2.1);
     expect(costGrowthLimit(pick.view, "pick-command")!).toBeGreaterThan(3.16);
     expect(dollarShortfall(pick.view, pick.feature)).toBeNull();
-    // The two later starts are short at that price: in shadow, the default, they start and record
-    // a would-stop; enforced, they wait for an extend.
+    // At that price the two later starts look short against the cap, but at two measured features
+    // the rule counts the remaining dollars to the $37.50 ceiling (#2099): the initiative spent
+    // $17.69 in the end, so their would-stops would have been false.
+    const [plain] = replayInitiativeStarts(join(ROOT, "R59", "wheeltags.sqlite.gz"));
+    expect(plain?.finalUsd).toBe(17.69);
     for (const id of ["dead-command", "expand-command"]) {
       const start = seen.get(id)!;
-      expect(start.view.budget.cost.shareMode).toBe("shadow");
-      expect(dollarShortfall(start.view, start.feature)).toStartWith(`The shared dollar budget is short: ${id} has $`);
+      expect(start.view.budget.cost).toMatchObject({ shareMode: "shadow", measuredFeatures: 2 });
+      expect(costGrowthLimit(start.view, id)!).toBeLessThan(start.feature.needUsd!.low);
+      expect(dollarShortfall(start.view, start.feature)).toBeNull();
       expect(replay?.starts.find((b) => b.featureId === id)?.replayed).toBe("pass");
     }
+    expect(plain?.starts.every((b) => b.shareWouldStop === null)).toBe(true);
   }, 120000);
 
   test("#1714: R62 stepvet's dollar share is not checked before a feature is measured", () => {
@@ -287,11 +295,51 @@ describe("initiative starts replay on rewound traces (#1707)", () => {
       expect(costGrowthLimit(start.view, id)!).toBeLessThan(start.feature.needUsd!.low);
       expect(dollarShortfall(start.view, start.feature)).toBeNull();
     }
-    // Once a feature is measured the check is back.
+    // From three measured features the cap bounds the check again (#2099), and the replay keeps
+    // the would-stop next to what the initiative spent in the end.
     const later = seen.get("stepscmd")!;
-    expect(later.view.budget.cost.measuredFeatures).toBeGreaterThan(0);
+    expect(later.view.budget.cost.measuredFeatures).toBe(3);
     expect(dollarShortfall(later.view, later.feature)).toStartWith("The shared dollar budget is short: stepscmd has $");
+    const [replay] = replayInitiativeStarts(join(ROOT, "R62", "stepvet.sqlite.gz"));
+    expect(replay?.starts.find((b) => b.featureId === "stepscmd")?.shareWouldStop).toMatchObject({ measuredFeatures: 3, finalUsd: 26.33 });
+    expect(replay?.starts.filter((b) => b.shareWouldStop !== null).map((b) => b.featureId)).toEqual(["stepscmd"]);
   }, 120000);
+
+  test("#2099: R67 ampwhy's dollar share gates record no would-stop before the dollar rate is measured", () => {
+    // R67 ampwhy is not in the corpus; these are the gate inputs its decision.would_stop events
+    // recorded. Cap $30, ceiling $37.50, shadow. reader and scanning were judged short at one
+    // measured feature, started anyway and finished at $2.86 and $1.55; the initiative spent
+    // $16.24 in all, so both would-stops were false.
+    const finalUsd = 16.24;
+    const gate = (remainingUsd: number, reservedUsd: number, low: number, high: number, measuredFeatures: number) => {
+      const view = {
+        initiativeId: "ampwhy",
+        budget: {
+          remaining: { tokens: 50_000_000, calls: 500, activeMs: 10_000_000 },
+          cost: {
+            capUsd: 30, tolerance: 0.25, ceilingUsd: 37.5, spentUsd: 30 - remainingUsd, reservedUsd: 0, remainingUsd,
+            forecastUsd: null, measuredFeatures, forecastBinding: false, forecastMode: "enforce" as const, forecastNotice: null, shareMode: "shadow" as const,
+          },
+        },
+        features: [
+          { id: "f", state: "ready" as const, share: { tokens: 5_000_000, calls: 50, activeMs: 1_000_000 }, need: null, shareUsd: 3, needUsd: { low, high } },
+          { id: "others", state: "waiting" as const, share: { tokens: 5_000_000, calls: 50, activeMs: 1_000_000 }, need: null, shareUsd: 3, needUsd: { low: reservedUsd, high: reservedUsd * 2 } },
+        ],
+      };
+      return { view, feature: view.features[0]! };
+    };
+    // reader: $22.36 remaining, $1.45 spare against $4.26-$8.66; scanning: $18.67, $2.23 against $2.25-$4.66.
+    for (const [remaining, spare, low, high] of [[22.36, 1.45, 4.26, 8.66], [18.67, 2.23, 2.25, 4.66]] as const) {
+      const at1 = gate(remaining, remaining - spare, low, high, 1);
+      expect(costGrowthLimit(at1.view, "f")!).toBeCloseTo(spare, 2);
+      expect(dollarShortfall(at1.view, at1.feature)).toBeNull();
+      // The other waiting features reserved more than the cap the initiative left unspent.
+      expect(remaining - spare).toBeGreaterThan(30 - finalUsd);
+      // The same inputs once three features have measured the rate still record one.
+      const at3 = gate(remaining, remaining - spare, low, high, 3);
+      expect(dollarShortfall(at3.view, at3.feature)).toStartWith("The shared dollar budget is short: f has $");
+    }
+  });
 
   test("the rewind sees only what existed at each start, its history stores included", () => {
     const [replay] = replayInitiativeStarts(selwhy);
