@@ -147,6 +147,8 @@ import {
 } from "../verification/repro.js";
 import {
   completeReview,
+  hostSettledOmission,
+  OMITTED_DEFERRED,
   reviewProblems,
   unnamedFailureAdvice,
   unnamedFailures,
@@ -2838,9 +2840,24 @@ export class WorkflowScheduler {
                 });
               }
               if (unnamed.length) review.verdict = "changes_requested";
-              if (omitted.length) {
+              // A criterion the host settles itself (a manual one, which a person answers next, and a
+              // post-release one the approval deferred) is deferred when the reviewer leaves it out;
+              // only the rest request changes. commitbump-update 0894df2d stopped invalid_output
+              // twice on a correct tree when the reviewer left out the host's AC-009 (#2190).
+              const settled = omitted.filter((criterion) =>
+                hostSettledOmission(criterion, state.deferredCriteria),
+              );
+              for (const criterion of settled)
+                review.coverage.push({
+                  criterionId: criterion.id,
+                  verdict: "deferred",
+                  evidenceIds: [],
+                  explanation: OMITTED_DEFERRED[criterion.method as "manual" | "post-release"],
+                });
+              const open = omitted.filter((criterion) => !settled.includes(criterion));
+              if (open.length) {
                 const evidenceId = coverageEvidence();
-                for (const criterion of omitted) {
+                for (const criterion of open) {
                   review.coverage.push({
                     criterionId: criterion.id,
                     verdict: "inconclusive",
@@ -2862,6 +2879,11 @@ export class WorkflowScheduler {
                       suggestedFix: `Implement or demonstrate ${criterion.id} within approved task scope and repeat checks.`,
                     });
                 }
+                if (!review.findings.length)
+                  throw new WorkflowFault(
+                    "OUTPUT_INVALID",
+                    `Changes requested without an actionable finding (omitted criteria: ${open.map((c) => `${c.id}, method ${c.method}`).join("; ")})`,
+                  );
                 review.verdict = "changes_requested";
               }
               // A formatting or lint claim passes only on a check that shows it (#1480).
@@ -12648,10 +12670,32 @@ ${note}`;
               later(path).length > 0,
           )
         : [];
+    // A failing test check whose output locates no source, in a test file this task created and
+    // a later slice extends: every case in the file is this task's, so the defect may be in it and
+    // the correction may write it before the slice adds the rest (#2108); the sources its tests
+    // import stay in scope. A failure located in a source keeps #1612: the correction fixes the
+    // source and leaves the shared file to the slice.
+    const located = owned.length > 0 || (owner?.kind === "finished" && owner.files.length > 0);
+    const ownSliced =
+      !regression && isTestCheck(check) && !located
+        ? failingTests.filter(
+            (path) =>
+              task.writes.some((w) => w.path === path && w.action === "create") &&
+              later(path).length > 0 &&
+              rootTasks.every(
+                (t) =>
+                  t.id === task.id ||
+                  later(path).includes(t.id) ||
+                  !t.writes.some((w) => w.path === path),
+              ),
+          )
+        : [];
+    if (ownSliced.length) state.slicedTests[findingId] = ownSliced;
     const scope = [
       ...new Set([
         ...diagnosed,
         ...sliced,
+        ...ownSliced,
         ...owned,
         ...(sources.length || owned.length ? failingTests : []),
         ...sources,
@@ -12667,7 +12711,7 @@ ${note}`;
       criterionIds: task.criterionIds,
       // One failing test file is where the failure shows, and the correction starts there.
       file:
-        failingTests.length === 1 && (sources.length || owned.length)
+        failingTests.length === 1 && (sources.length || owned.length || ownSliced.length)
           ? (failingTests[0] ?? null)
           : null,
       symbol: null,
@@ -12688,7 +12732,7 @@ ${note}`;
             ? `Fix ${task.id} and the files the check output names (${owned.slice(0, 5).join(", ")}) and repeat ${check.id}.`
             : `Fix ${task.id} within its approved paths and repeat ${check.id}.`,
     });
-    const slicedNote = sliced
+    const slicedNote = [...sliced, ...ownSliced]
       .map(
         (path) =>
           `${later(path).join(", ")} runs after this correction and adds the rest of ${path}`,

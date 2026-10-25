@@ -50,7 +50,8 @@ export function checkRepairKind(
   return isStaticCheck(check) ? "diagnostics" : "build";
 }
 
-type ScopeState = Pick<RuntimeState, "repairScope" | "repairPredecessors" | "graph">;
+type ScopeState = Pick<RuntimeState, "repairScope" | "repairPredecessors" | "graph"> &
+  Partial<Pick<RuntimeState, "slicedTests">>;
 
 /** The files in a finding's repair scope that the failing task (its predecessor) itself writes. */
 export function ownScope(state: ScopeState, findingId: string): string[] {
@@ -63,14 +64,18 @@ export function ownScope(state: ScopeState, findingId: string): string[] {
 
 /**
  * The files a corrective of `finding` must be able to write: those its failed non-test check
- * names in the failing task's own files. Empty for a test check and every other finding.
+ * names in the failing task's own files, and for a failed test check the test file the failing
+ * task created whose later slice is pending, when the failure reaches no source (#2108). Empty
+ * for every other finding.
  */
 export function diagnosedFiles(
   state: ScopeState,
   policy: Pick<RunPolicy, "checks">,
   finding: Pick<Review["findings"][number], "id" | "claim">,
 ): string[] {
-  return checkRepairKind(policy, finding) ? ownScope(state, finding.id) : [];
+  return checkRepairKind(policy, finding)
+    ? ownScope(state, finding.id)
+    : (state.slicedTests?.[finding.id] ?? []);
 }
 
 /**
@@ -333,7 +338,9 @@ export function scopeRecord(
   evidence?: ScopeEvidence,
   unowned: UnownedRule = unownedRule,
 ): ScopeRecord | null {
-  const own = findings.filter((f) => checkRepairKind(policy, f));
+  const own = findings.filter(
+    (f) => checkRepairKind(policy, f) || diagnosedFiles(state, policy, f).length > 0,
+  );
   const writes = task.writes.filter((w) => w.action !== "delete").map((w) => w.path);
   // A failed check names its files through its diagnostics, which #2094 compares; every other
   // origin names them through the finding's file and its repro's output, and every attempt
@@ -352,7 +359,7 @@ export function scopeRecord(
       ]
     : [];
   if (!own.length && !named.length) return null;
-  const diagnosed = [...new Set(own.flatMap((f) => ownScope(state, f.id)))];
+  const diagnosed = [...new Set(own.flatMap((f) => diagnosedFiles(state, policy, f)))];
   const missing = rule(diagnosed, writes);
   const outside = evidence ? unownedPaths(state, task.id, named, writes, evidence, unowned) : [];
   return {

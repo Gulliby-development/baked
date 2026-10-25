@@ -132,6 +132,54 @@ describe("scenario: a lint failure in a sliced test file (#2094)", () => {
   }, 120000);
 });
 
+// #2108: the test-check copy. T002's own case in slice 1 of tests/test_a.py fails an assertion
+// (the BAD marker), with no source in the output; slice 2 (T003) is pending. The corrective may
+// write the test file, and the run completes. A failure located in a source keeps #1612 (the
+// shared-file case of workflow-scenario-repair-priority.test.ts).
+const ASSERTION = "FAILED tests/test_a.py::test_a - AssertionError: assert 'BAD' == 'ok'\n1 failed in 0.01s";
+const pytest: Check = {
+  ...lint, id: "tests", scope: "task",
+  args: ["-e", `const f = Bun.file('tes' + 'ts/test_a.py'); if ((await f.exists()) && (await f.text()).includes('BAD')) { console.log(atob('${btoa(ASSERTION)}')); process.exit(1) } console.log('1 passed')`],
+};
+
+class TestCheckSlicedExecutor extends SlicedExecutor {
+  override async execute(request: ExecutionRequest) {
+    const result = await super.execute(request);
+    if (request.profile.output === "plan") {
+      const output = result.output as { taskGraph: TaskGraph };
+      output.taskGraph = { ...output.taskGraph, tasks: PLAN.map((t) => (t.id === "T002" ? { ...t, checkIds: ["tests"] } : t)) };
+    }
+    return result;
+  }
+}
+
+describe("scenario: a test-check failure in slice 1's own case of a sliced test file (#2108)", () => {
+  test("the corrective writes the test file and the run completes", async () => {
+    const fx = workflowFixture({
+      policy: { ...fixturePolicy, checks: [pytest] },
+      executor: (root) => new TestCheckSlicedExecutor(root),
+    });
+    cleanups.push(fx.dispose);
+    const started = await fx.start();
+    const planned = await fx.service.drive(started.runId, signal());
+    expect(planned.reason).toBe("approval");
+    await fx.approve(started.runId);
+    const final = await fx.service.drive(started.runId, signal());
+    const errors = fx.service.store.artifacts(started.runId).filter((a) => a.logical_path.startsWith("errors/")).map((a) => fx.service.store.readArtifact(started.runId, a.id));
+    expect({ status: final.status, errors }).toEqual({ status: "completed", errors: [] });
+    const corrective = fx.executor.attempts.find((t) => t.origin !== "planned");
+    expect(corrective?.writes.map((w) => w.path)).toContain("tests/test_a.py");
+    expect(corrective?.description).toContain("T003 runs after this correction and adds the rest of tests/test_a.py: change only what the failure needs in it.");
+    const order = fx.executor.attempts.map((t) => t.id);
+    expect(order.indexOf("T003")).toBeGreaterThan(order.indexOf(corrective?.id ?? ""));
+    expect(readFileSync(join(fx.root, "tests/test_a.py"), "utf8")).toContain("def test_a_again");
+    expect(readFileSync(join(fx.root, "tests/test_a.py"), "utf8")).not.toContain("BAD");
+    // The precondition records the test file as one the corrective must write, and it fits.
+    const records = scopeRecords(fx.service.store, started.runId).filter((r) => r.taskId === corrective?.id);
+    expect(records.map((r) => [r.at, r.decision, r.diagnosed])).toContainEqual(["create", "fits", ["tests/test_a.py"]]);
+  }, 120000);
+});
+
 describe("scenario: the same lint failure in a batch run, two writers (#2138)", () => {
   test("the corrective's session in the batch worker records its start scope too", async () => {
     const fx = workflowFixture({
