@@ -26,9 +26,16 @@ export function testthatOn(files: readonly string[] | null, pkg: boolean): strin
     : `testthat::test_dir('tests/testthat', reporter = testthat::CheckReporter$new()${filter})`;
 }
 
-/** lintr on the package or the directory, one `path:line:column: type: [linter] message` per lint. */
+const LINT_LINES =
+  "for (x in l) cat(sprintf('%s:%d:%d: %s: [%s] %s\\n', x$filename, x$line_number, x$column_number, x$type, x$linter, x$message), sep = '')";
+
+/**
+ * lintr on the package or the directory, one `path:line:column: type: [linter] message` per lint.
+ * The lines are written here, not by `print`: under `GITHUB_ACTIONS` lintr prints GitHub
+ * `::warning file=...` annotations instead, which the diagnostic count does not read.
+ */
 export const lintrRun = (pkg: boolean): string =>
-  `l <- lintr::${pkg ? "lint_package()" : "lint_dir('.')"}; print(l); quit(status = as.integer(length(l) > 0))`;
+  `l <- lintr::${pkg ? "lint_package()" : "lint_dir('.')"}; ${LINT_LINES}; quit(status = as.integer(length(l) > 0))`;
 
 /**
  * styler in dry mode, one `path: would be reformatted by styler` line per file it would change:

@@ -1456,6 +1456,9 @@ describe("gate matrix: testthat, lintr and styler (#1500)", () => {
       ["styler", STYLER_CHECK, "DESCRIPTION", false],
     ]);
     expect(testthatRun(true)).toBe("testthat::test_local(reporter = testthat::CheckReporter$new())");
+    // lintr's own print writes GitHub annotations under GITHUB_ACTIONS; the gate writes its lines.
+    expect(lintrRun(true)).not.toContain("print(l)");
+    expect(lintrRun(true)).toContain("x$line_number");
     expect(ids({ "tests/testthat/test-sum.R": TEST, ".lintr": "linters: linters_with_defaults()\n" })).toEqual([
       ["testthat", "testthat::test_dir('tests/testthat', reporter = testthat::CheckReporter$new())", "tests/testthat", true],
       ["lintr", lintrRun(false), ".lintr", true],
