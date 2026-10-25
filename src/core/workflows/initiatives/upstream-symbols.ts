@@ -11,10 +11,13 @@ const CONDITIONAL =
 /** A sentence of a contract: it ends at `.`, `;` or `!` before a space, or at a line break. */
 const SENTENCES = /[^.;!\n]+(?:[.;!](?=\s|$)|$)/g;
 
+/** A glob in a boundary (`src/**`) names no one file. plan.ts imports this module, so it is not imported back. */
+const isGlob = (path: string) => /[*?[\]{}]/.test(path);
+
 /** The names a feature is known by in another feature's text: its id and its files' stems. */
 function featureNames(feature: InitiativePlan["features"][number]): string[] {
   const stems = feature.boundary.paths
-    .filter((path) => !/[*?[\]{}]/.test(path))
+    .filter((path) => !isGlob(path))
     .map((path) => basename(path).replace(/\.[^.]+$/, ""));
   return [feature.id, ...stems].filter((name) => name.length >= 3);
 }
@@ -50,6 +53,31 @@ export function conditionalContractProblems(plan: InitiativePlan): string[] {
     }
   }
   return problems;
+}
+
+/**
+ * The files whose accepted text holds a released feature's upstream symbols: the paths its
+ * dependencies list that no other feature lists, each with the dependency planned last that lists
+ * it. A path the released feature, a feature planned after it or any other non-dependency also
+ * lists is that feature's code, whoever owns its stub: R69 ewvet's base folded the skeleton, so its boundary listed all 27 stub files, and 6 of 7
+ * released features recorded a would-stop for the members they write themselves (`Base64.Decode`
+ * of bytes, #2192).
+ */
+export function upstreamFiles(
+  plan: InitiativePlan,
+  feature: InitiativePlan["features"][number],
+): { featureId: string; path: string }[] {
+  const upstream = plan.features.filter((f) => feature.dependsOn.includes(f.id));
+  const elsewhere = new Set(
+    plan.features.filter((f) => !feature.dependsOn.includes(f.id)).flatMap((f) => f.boundary.paths),
+  );
+  // A path several dependencies list (a stub and its filler) belongs to the one planned last, the
+  // filler, so a gap names the feature that wrote the member.
+  const owners = new Map<string, string>();
+  for (const f of upstream)
+    for (const path of f.boundary.paths)
+      if (!isGlob(path) && !elsewhere.has(path)) owners.set(path, f.id);
+  return [...owners].map(([path, featureId]) => ({ featureId, path }));
 }
 
 /** A symbol of an upstream feature that a downstream spec names and the accepted code lacks. */

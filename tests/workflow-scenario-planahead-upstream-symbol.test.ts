@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { type InitiativePlan, planStructureProblems, validateInitiativePlan } from "../src/core/workflows/initiatives/plan.js";
-import { amendmentAnswer, amendmentLines, conditionalContractProblems, upstreamSymbolGaps } from "../src/core/workflows/initiatives/upstream-symbols.js";
+import { amendmentAnswer, amendmentLines, conditionalContractProblems, upstreamFiles, upstreamSymbolGaps } from "../src/core/workflows/initiatives/upstream-symbols.js";
 import type { Spec } from "../src/core/workflows/schemas.js";
 
 // Bench round 68, ewvet (#2135): reader's contract said "If encoding needs auxiliary syntax
@@ -102,5 +102,49 @@ describe("a planned-ahead feature asks the owner for the missing symbol (#2157)"
     const lines = amendmentLines([{ from: "scanner", gaps: [{ ref: "FR-003", symbol: "Reader.IsEncodingToken", featureId: "reader", path: "src/Reader.cs" }] }]);
     expect(lines.at(-1)).toBe("- scanner needs Reader.IsEncodingToken in src/Reader.cs (its FR-003).");
     expect(amendmentLines([])).toEqual([]);
+  });
+});
+
+// Bench round 69, ewvet (#2192): the base feature folded the skeleton, so its boundary listed every
+// stub file (`// Implementation is supplied by the owning feature.`). Each released feature's spec
+// names the members it writes itself (bytes: `Base64.Decode` in Base64.cs), and 6 of 7 releases
+// recorded an `upstream_symbol` would-stop for them.
+describe("a skeleton owner's stubs are not upstream code (#2192)", () => {
+  const STUB = "// Implementation is supplied by the owning feature.\n";
+  const skeleton = (id: string, paths: string[], dependsOn: string[] = []) => ({ ...feature(id, paths[0] ?? "", `${id} works.`, dependsOn), boundary: { scope: id, paths } });
+  const plan: InitiativePlan = {
+    schemaVersion: 1, title: "ewvet", goals: ["Check encodings"], completionCriteria: ["Encodings are checked"],
+    features: [
+      skeleton("base", ["src/Base64.cs", "src/Reader.cs", "src/Codec.cs", "src/Ewvet.csproj"]),
+      skeleton("bytes", ["src/Base64.cs"], ["base"]),
+      skeleton("reader", ["src/Reader.cs"], ["base"]),
+      skeleton("scan", ["src/Scanner.cs"], ["base", "reader"]),
+      skeleton("codec", ["src/Codec.cs"], ["scan"]),
+    ],
+  };
+  const at = (texts: Record<string, string>) => (file: { featureId: string; path: string }) => ({ ...file, text: texts[file.path] ?? STUB });
+  const byId = (id: string) => plan.features.find((f) => f.id === id) ?? plan.features[0]!;
+
+  test("a released feature's own files, and a sibling's, are left out", () => {
+    expect(upstreamFiles(plan, byId("bytes"))).toEqual([{ featureId: "base", path: "src/Ewvet.csproj" }]);
+    const files = upstreamFiles(plan, byId("bytes")).map(at({}));
+    expect(upstreamSymbolGaps(spec("Base64.Decode returns the bytes and Reader.Read the tokens."), files)).toEqual([]);
+  });
+
+  test("a member a filler planned later has not delivered is not a gap", () => {
+    // codec fills the base's Codec.cs stub and depends on scan: scan's release reads only its own upstream.
+    const files = upstreamFiles(plan, byId("scan")).map(at({}));
+    expect(files.map((f) => f.path)).not.toContain("src/Codec.cs");
+    expect(upstreamSymbolGaps(spec("Scanner hands tokens to Codec.Encode."), files)).toEqual([]);
+  });
+
+  test("the R68 case still records the gap: the accepted upstream file lacks the member", () => {
+    const files = upstreamFiles(plan, byId("scan")).map(at({ "src/Reader.cs": LANGUAGES[0]?.[2] ?? "" }));
+    // The base's stub and reader's filler are the same file; the gap names reader, which wrote it.
+    expect(files.filter((f) => f.path === "src/Reader.cs").map((f) => f.featureId)).toEqual(["reader"]);
+    expect(upstreamSymbolGaps(spec("Scanner delegates to Reader.IsEncodingToken for encoding tokens."), files)).toEqual([
+      { ref: "FR-004", symbol: "Reader.IsEncodingToken", featureId: "reader", path: "src/Reader.cs" },
+    ]);
+    expect(upstreamSymbolGaps(spec("Scanner calls Reader.Read once per file."), files)).toEqual([]);
   });
 });
