@@ -433,14 +433,26 @@ describe("Maven project (pom.xml)", () => {
 // ── C/C++ ───────────────────────────────────────────────────
 
 describe("CMake project", () => {
-  it("detects cmake with clang-tidy", async () => {
+  it("runs the gates' build, CTest, clang-tidy and clang-format (#1490)", async () => {
     const cwd = makeProject("cmake", {
-      "CMakeLists.txt": "cmake_minimum_required(VERSION 3.20)",
+      "CMakeLists.txt": "cmake_minimum_required(VERSION 3.20)\nenable_testing()\n",
       ".clang-tidy": "Checks: '-*,clang-analyzer-*'",
+      ".clang-format": "BasedOnStyle: LLVM\n",
+      "src/main.cpp": "int main() {}\n",
     });
     const p = await detectProfile(cwd);
-    expect(p.build).toBe("cmake --build build");
-    expect(p.lint).toBe("clang-tidy");
+    expect([p.build, p.test, p.lint, p.format]).toEqual([
+      "cmake --build build --config Debug",
+      "ctest --test-dir build --output-on-failure -C Debug",
+      "clang-tidy -p build --quiet --warnings-as-errors=* src/main.cpp",
+      "clang-format -i",
+    ]);
+    expect(await detectNativeChecks(cwd)).toBe("clang-format --dry-run --Werror src/main.cpp");
+  });
+
+  it("a CMake project without tests or clang tools builds only", async () => {
+    const p = await detectProfile(makeProject("cmake-bare", { "CMakeLists.txt": "project(x C)\n" }));
+    expect([p.build, p.test, p.lint, p.format]).toEqual(["cmake --build build --config Debug", null, null, null]);
   });
 });
 
@@ -452,6 +464,11 @@ describe("Makefile project", () => {
     const p = await detectProfile(cwd);
     expect(p.build).toBe("make");
     expect(p.test).toBe("make test");
+  });
+
+  it("formats with clang-format when the project has a .clang-format (#1490)", async () => {
+    const p = await detectProfile(makeProject("make-fmt", { Makefile: "all:\n\tcc main.c\n", ".clang-format": "", "main.c": "" }));
+    expect(p.format).toBe("clang-format -i");
   });
 });
 

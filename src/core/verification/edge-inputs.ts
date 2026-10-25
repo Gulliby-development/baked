@@ -266,6 +266,11 @@ export interface EdgeRecord {
     status: ReproOutcome["status"];
     reason: string;
     decision: "finding" | "pass";
+    /**
+     * The settled task's source a failing case's output names in its first workspace frame, when
+     * it is not the probed task's first source: the finding is on that file (#2133).
+     */
+    file?: string;
     /** The output's last `OUTPUT_TAIL_CHARS` characters (#2136); absent before #2136. */
     outputTail?: string;
     /** `edgeCrashDecision` on `outputTail`, recorded in shadow (#2136); absent before #2136. */
