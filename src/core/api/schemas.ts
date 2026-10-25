@@ -385,13 +385,22 @@ export const GcBody = z.strictObject({
   }),
   dryRun: z.boolean().optional(),
 });
-export const ImportBody = z.strictObject({
-  source: z.enum(["spec-kit", "ecc", "markdown-edit"]),
-  /** A local directory, relative to the workspace or absolute. */
-  path: z.string().min(1).max(1000),
-  featureId: SafeId,
-  commandId: SafeId.optional(),
-});
+export const ImportBody = z
+  .strictObject({
+    /** `baked-export` continues the work of an SDD package written by `export-package` (#2208). */
+    source: z.enum(["spec-kit", "ecc", "markdown-edit", "baked-export"]),
+    /** A local directory (or a package's zip archive), relative to the workspace or absolute. */
+    path: z.string().min(1).max(1000),
+    /** The feature of the candidate; not used by `baked-export`. */
+    featureId: SafeId.optional(),
+    /** `baked-export`: the new initiative's or run feature's ID, the package's by default. */
+    id: SafeId.optional(),
+    commandId: SafeId.optional(),
+  })
+  .refine((body) => body.source === "baked-export" || body.featureId !== undefined, {
+    message: "featureId is required",
+    path: ["featureId"],
+  });
 export const RouteQuery = z.strictObject({
   workflow: SafeId.optional(),
   model: z.string().min(1).optional(),

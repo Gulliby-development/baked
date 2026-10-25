@@ -2129,6 +2129,11 @@ export interface StartRequest {
   presetChoice?: import("./preset-router.js").PresetChoice;
   /** Why the host built no auto approval for a run that asked for it (`RuntimeState`, #1467). */
   autoApprovalDeclined?: string;
+  /**
+   * Accepted spec, plan and tasks from an imported SDD package (#2208): the run starts at its
+   * analysis stage with them instead of specifying and planning again.
+   */
+  seed?: import("./sdd-export/seed.js").StartSeed;
 }
 export type Decision =
   | {

@@ -146,6 +146,7 @@ import {
   workflowsEnabled,
   writerPolicyProblem,
 } from "./schemas.js";
+import { IMPORT_SEED_ARTIFACT, seedState } from "./sdd-export/seed.js";
 import { providerResumeWaitMs, stallSettings } from "./stall.js";
 import { bindDefinition, type PreparedStart, prepareStart } from "./start.js";
 import { assertMutable } from "./state-machine.js";
@@ -490,6 +491,18 @@ export class NativeWorkflowService implements WorkflowService {
       planAhead:
         request.planAhead && request.baseCommit ? { released: false, baselined: false } : null,
     };
+    if (request.seed) {
+      // Only a workflow that specifies and plans can take the documents those stages made.
+      if (generated || (v2 && !produces(v2, "plan")))
+        throw new WorkflowFault(
+          "INVALID_DEFINITION",
+          `Workflow ${request.workflowId} has no spec and plan stages to start an imported feature from`,
+          { reason: "seed_unsupported" },
+        );
+      seedState(state, request.seed, request.featureId, hostDependencies, this.workspace);
+      state.stageIndex = 3;
+      state.position = restartPosition(canonical(workflow), true);
+    }
     return this.store.transaction(() => {
       const duplicate = this.store.previousCommand(request.commandId, request);
       if (duplicate) return duplicate;
@@ -539,6 +552,18 @@ export class NativeWorkflowService implements WorkflowService {
         const artifact = this.store.artifact(id, "diff", "diff/input.patch", diff.text);
         state.diff = { artifactId: artifact.id, hash: artifact.content_hash, files: diff.files };
         this.store.saveState(id, state);
+      }
+      if (request.seed && state.spec && state.plan !== null && state.graph) {
+        this.store.artifact(id, "spec", "spec.json", canonical(state.spec));
+        this.store.artifact(id, "plan", "plan.md", state.plan);
+        this.store.artifact(id, "tasks", "tasks.json", canonical(state.graph));
+        this.store.syncTasks(id, state.graph);
+        this.store.artifact(
+          id,
+          "import",
+          IMPORT_SEED_ARTIFACT,
+          canonical({ source: request.seed.source, featureId: request.seed.spec.featureId }),
+        );
       }
       this.saveEstimate(id, prepared, request.workflowId);
       const snapshot = this.store.snapshot(id);

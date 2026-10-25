@@ -80,3 +80,22 @@ test("the run and initiative package endpoints write, download and refuse like t
   expect((await request("GET", `/v1/initiatives/${run.runId}/package`)).status).toBe(404);
   expect((await request("GET", "/v1/workflow/runs/value-init/package")).status).toBe(404);
 });
+
+test("POST /v1/workflow/import reads a package back under a new ID and refuses a changed one (#2208)", async () => {
+  const { service, start, approve, request } = await serve();
+  const run = await start();
+  await service.drive(run.runId, new AbortController().signal);
+  await approve(run.runId);
+  await service.drive(run.runId, new AbortController().signal);
+  expect((await request("POST", `/v1/workflow/runs/${run.runId}/package`, { zip: true, out: "handoff/run.zip" })).status).toBe(200);
+
+  const imported = await request("POST", "/v1/workflow/import", { source: "baked-export", path: "handoff/run.zip", id: "again" });
+  expect(imported.status).toBe(200);
+  const body = (await imported.json()) as { kind: string; id: string; seeded: string[]; run: { runId: string; featureId: string } };
+  expect(body).toMatchObject({ kind: "run", id: "again", seeded: ["again"], run: { featureId: "again" } });
+  expect(service.store.state(body.run.runId).spec?.featureId).toBe("again");
+
+  // The other sources still need their feature ID; a missing package is unknown.
+  expect((await request("POST", "/v1/workflow/import", { source: "spec-kit", path: "specs/x" })).status).toBe(400);
+  expect((await request("POST", "/v1/workflow/import", { source: "baked-export", path: "handoff/none.zip" })).status).toBe(404);
+});

@@ -55,7 +55,12 @@ import {
   type RunSnapshot,
   type RunState,
 } from "../core/workflows/schemas.js";
-import { describeSddExport } from "../core/workflows/sdd-export/describe.js";
+import { describeSddExport, describeSddImport } from "../core/workflows/sdd-export/describe.js";
+import {
+  type ImportedPackage,
+  importSddPackage,
+  readSddPackage,
+} from "../core/workflows/sdd-export/import.js";
 import {
   buildSddPackage,
   defaultExportPath,
@@ -639,6 +644,18 @@ export async function executeWorkflowCommand(
             }));
     case "import": {
       const source = stringFlag(args, "source");
+      if (source === "baked-export")
+        return importSddPackage(
+          new InitiativeService(service),
+          readSddPackage(resolve(service.store.workspace, stringFlag(args, "path"))),
+          {
+            commandId: stringFlag(args, "command-id", newId()),
+            policy: PolicySchema.parse(service.config.workflows?.policy ?? defaultWorkflowPolicy),
+            workflowId: service.config.workflows?.defaultWorkflow ?? "sdd",
+            ownerLabel: stringFlag(args, "owner", "CLI"),
+            ...(typeof args.flags.id === "string" ? { id: args.flags.id } : {}),
+          },
+        );
       if (!["spec-kit", "ecc", "markdown-edit"].includes(source))
         throw new WorkflowFault("INVALID_DEFINITION", "Unknown importer");
       return artifacts.importCandidate({
@@ -1067,6 +1084,10 @@ export async function runWorkflowCli(argv: string[]): Promise<number> {
     }
     if (args.command === "outcomes" && !args.flags.json) {
       process.stdout.write(formatCriticOutcomes(result as CriticOutcomes));
+      return 0;
+    }
+    if (args.command === "import" && args.flags.source === "baked-export" && !args.flags.json) {
+      process.stdout.write(`${describeSddImport(result as ImportedPackage)}\n`);
       return 0;
     }
     if (args.command === "export-package" && !args.flags.json) {

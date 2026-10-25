@@ -4,7 +4,9 @@ import { describe, expect, test } from "bun:test";
 const scope = globalThis as { window?: unknown };
 scope.window = {};
 const { ApiError } = await import("../src/renderer/client/api.ts");
-const { sddExport } = await import("../src/renderer/client/sdd-export.ts");
+const { importedSummary, sddExport, sddImport } = await import(
+  "../src/renderer/client/sdd-export.ts"
+);
 const { defaultPackageOut, packageOutProblem, packageSummary } = await import(
   "../src/renderer/components/ExportPackageDialog.tsx"
 );
@@ -45,5 +47,23 @@ describe("Export package dialog (#2207)", () => {
     await expect(
       sddExport.write("baked", "initiative", "headless-automation", { zip: false }),
     ).rejects.toMatchObject({ status: 409 });
+  });
+});
+
+describe("Import of an export package (#2208)", () => {
+  test("an initiative package names the seeded features and where to continue", async () => {
+    const imported = await sddImport.importPackage("baked", { path: "handoff/desktop-app-export" });
+    expect(imported).toMatchObject({ kind: "initiative", id: "desktop-app", seeded: ["shell"] });
+    expect(importedSummary(imported)).toBe(
+      "Created initiative desktop-app. 1 of 3 features start at analysis with their imported spec, plan and tasks; approve the split on the Initiatives screen to continue.",
+    );
+  });
+
+  test("a run package creates a run under the new ID; a changed package is refused", async () => {
+    const run = await sddImport.importPackage("baked", { path: "handoff/run.zip", id: "dark" });
+    expect(importedSummary(run)).toStartWith("Created run run-imported-dark for dark.");
+    const refused = sddImport.importPackage("baked", { path: "handoff/edited" });
+    await expect(refused).rejects.toBeInstanceOf(ApiError);
+    await expect(refused).rejects.toMatchObject({ status: 400 });
   });
 });
