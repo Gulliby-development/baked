@@ -1,0 +1,58 @@
+{
+  "files": {
+    "sql/sum.sql": "-- Sum of two integers.\nCREATE TABLE totals (id INT PRIMARY KEY, label TEXT DEFAULT 'it''s');\n\nCREATE FUNCTION add_numbers(a integer, b integer) RETURNS integer AS $$\nBEGIN\n  RAISE EXCEPTION 'not implemented';\nEND;\n$$ LANGUAGE plpgsql;\n",
+    "sql/test_sum.sql": "\\ir sum.sql\nSELECT plan(1);\nSELECT is(add_numbers(1, 2), 3, 'adds');\n/* AC-001 example: (1, 2, 3) */\nSELECT * FROM finish();\n",
+    ".sqlfluff": "[sqlfluff]\ndialect = postgres\n",
+    "dbt_project.yml": "name: fixture\nversion: '1.0.0'\n"
+  },
+  "outputs": {
+    "tests": "sql/test_sum.sql .. \nFailed 1/2 subtests \n\nTest Summary Report\n-------------------\nsql/test_sum.sql (Wstat: 0 Tests: 2 Failed: 1)\n  Failed test:  2\nFiles=1, Tests=2,  0 wallclock secs ( 0.01 usr +  0.00 sys =  0.01 CPU)\nResult: FAIL\n",
+    "testsGrown": "sql/test_sum.sql .. \nFailed 1/3 subtests \n\nTest Summary Report\n-------------------\nsql/test_sum.sql (Wstat: 0 Tests: 3 Failed: 1)\n  Failed test:  3\nFiles=1, Tests=3,  0 wallclock secs ( 0.01 usr +  0.00 sys =  0.01 CPU)\nResult: FAIL\n"
+  },
+  "expected": {
+    "tests": [
+      "sql/test_sum.sql"
+    ],
+    "testMarkers": [
+      "sql/test_sum.sql: test"
+    ],
+    "manifests": [
+      ".sqlfluff",
+      "dbt_project.yml"
+    ],
+    "dependencies": null,
+    "placeholders": [
+      "sql/sum.sql:6"
+    ],
+    "gates": [
+      "sqlfluff",
+      "dbt-build"
+    ],
+    "testRunners": [
+      "tap 2",
+      "signature stable"
+    ],
+    "mutation": null,
+    "properties": null,
+    "entryPoints": null,
+    "testGates": null,
+    "callGraph": [
+      "add_numbers called at sql/test_sum.sql:3",
+      "sql/sum.sql imported by sql/test_sum.sql"
+    ],
+    "codeMask": [
+      "sql/sum.sql:1 comment",
+      "sql/sum.sql:2",
+      "sql/sum.sql:6",
+      "sql/test_sum.sql:3",
+      "sql/test_sum.sql:4 comment"
+    ],
+    "formatters": null,
+    "packageContents": null,
+    "numericLimits": [
+      "INTEGER is 32-bit and BIGINT 64-bit: PostgreSQL and SQL Server raise an overflow error, SQLite stores any integer as 64-bit",
+      "NUMERIC and DECIMAL round or reject values past their declared precision and scale",
+      "VARCHAR(n) rejects or truncates text past n characters, by dialect"
+    ]
+  }
+}

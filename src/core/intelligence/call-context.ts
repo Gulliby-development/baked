@@ -103,6 +103,11 @@ export const CALL_SYNTAX: LanguageRecord<CallSyntax> = {
   },
   rescript: { call: parens, imports: (_, module) => `\\bopen\\s+${module}\\b|\\b${module}\\.` },
   solidity: { call: parens, imports: (stem) => `\\bimport\\b.*["'][^"']*\\b${stem}\\.sol["']` },
+  sql: {
+    call: parens,
+    // psql's `\i` and `\ir` include a file; SQL itself has no import.
+    imports: (stem) => `^\\s*\\\\i(?:r|nclude(?:_relative)?)?\\s+\\S*\\b${stem}\\.sql\\b`,
+  },
 };
 
 /** A function of a file: its name and 1-based lines. */

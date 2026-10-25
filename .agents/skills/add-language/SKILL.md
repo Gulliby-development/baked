@@ -40,7 +40,7 @@ Every row you fill gets its golden in `tests/fixtures/languages/<language>.json`
 
 ### Lists outside the records (check each by hand)
 
-- **Extension and grammar**: `EXT_TO_LANGUAGE`, `BARE_FILENAME_TO_LANGUAGE` (`src/core/intelligence/types.ts`), the tree-sitter queries (`backends/tree-sitter.ts`), imports in `repo-map.ts`.
+- **Extension and grammar**: `EXT_TO_LANGUAGE`, `BARE_FILENAME_TO_LANGUAGE` (`src/core/intelligence/types.ts`), the tree-sitter queries (`backends/tree-sitter.ts`), imports in `repo-map.ts`. A grammar that `tree-sitter-wasms` lacks goes in `vendor/tree-sitter/` with a README row (source, version, how it was built) and its license file; `resolveWasm`, the bundles and `postinstall.mjs` already copy that folder (#1499). Vendor the `.wasm`, never an npm grammar package that runs node-gyp on install.
 - **Syntax check**: `CHECKED_GRAMMARS` in `src/core/intelligence/syntax-check.ts`. Add a grammar only after it parses real projects without false errors; a grammar that lags the language (Kotlin) stays out, with a comment.
 - **Language server**: `SERVER_CANDIDATES` and `SERVER_PROJECT_STATE` in `backends/lsp/server-registry.ts`, the installer. A server that writes project files into the checkout (jdtls `.project`, #1508) gets its files in `SERVER_PROJECT_STATE`.
 - **Agent profile and edit-time format**: `detectToolchain` in `src/core/tools/project.ts`, read by `tools/auto-format.ts`. Read the tool's config from every place the tool reads it (ruff in `pyproject.toml`, #1537; prettier in `package.json`, rustfmt's edition, #1681).
@@ -72,6 +72,17 @@ Each line is a past bug. A new detector, parser or table row answers it before r
 14. **Tools that write into the checkout.** Language servers and first builds leave files (#1508, #1815): list them, or the run blocks `input_changed`.
 15. **Runtimes for examples.** The README of a project builds and runs with the language's runtime, not only its build tool (#1529, #1035).
 16. **One table, all languages.** When a fix for this language touches a shared rule, sweep it across every supported language (the [file-issue skill](../file-issue/SKILL.md), step 3), and prefer a table row over a wider regex.
+17. **Shared runners carry their totals.** A harness that several languages run through (TAP::Harness behind `prove` and `pg_prove`) prints a summary with totals and CPU times; strip them in `GROWING_COUNTS`, or the same red check never matches again (#1499).
+18. **Grammar ERROR nodes.** A grammar that cannot parse part of the language (PL/pgSQL bodies in tree-sitter-sql) turns that part into `ERROR` nodes; match the declaration inside the `ERROR` node too, or its symbols vanish from the call graph (#1499).
+19. **A framework's own skip spellings.** RSpec's `xit`, ScalaTest's `ignore`, package:test's `skip:` go in the framework's `skips` column of `test-frameworks.ts`, not in the shared `SKIPS`, so they never match another language's code (#1493, #1494, #1496).
+20. **Output flags are not static checks.** A flag that only picks the output format (`rspec --format`) leaves the check a test run in `isStaticCheck` (#1493).
+21. **Load failures in the summary.** A runner that counts a test file that did not load as a failure (`dart test`'s `loading x_test.dart [E]`) needs it subtracted from the test count and read as a build failure, not a failed test (#1494).
+22. **Shared assertion rows.** A shared row (the JavaScript `expect`) can misread another language's argument order; add a scoped row whose calls come first (#1494).
+23. **Formatters that exit 0 on a missing path.** `dart format` prints `No file or directory found` and exits 0: it needs a `MISSING_PATH_LINES` entry, or a task that formats a file it has not written passes (#1494).
+24. **Runners that print no totals.** Gradle prints no test count; read the reports it writes (`build/test-results/**/*.xml`) and append them to the check output (#1489).
+25. **The first run compiles.** sbt and SwiftPM print compile and build-step lines only on the run that compiles; strip them from the failure signature, or a repeated failure looks new (#1496, #1492).
+26. **Build-tool formatters.** A formatter that runs through the build tool (`sbt scalafmtOnly`) needs a fixer that passes the file inside the same build command, not as a separate argument (#1496).
+27. **Real output only.** Parser cases are pasted from a real run of the tool. In the cloud, Maven Central's Google mirror (`maven-central.storage-download.googleapis.com/maven2`) and Docker images (`sbtscala/scala-sbt`, `swift`) give real JVM and Swift tools where the default downloads are blocked (#1496, #1492).
 
 ## 4. Tests
 
@@ -101,3 +112,4 @@ Sources of the rakes above, worth a re-read before a language pull request:
 - The 2026-10-17 sibling audit, #1405-#1435: toolchain coverage is uneven, and one fix leaves the other copies of a computation.
 - The 2026-10-20 language sweep, #1678-#1686: fixes written for the language of the run that exposed them missed the other languages.
 - Closed Bug issues on toolchains: #587, #1208, #1228, #1326, #1424, #1425, #1508, #1529, #1537, #1582, #1593, #1749, #1753, #1791, #1815, #1832, #1848, #1907, #1913, #1963, #1995.
+- The 2026-10-25 language lines (Ruby #2120, Kotlin #2122, Dart #2127, Scala, Swift): rakes 19-27.
