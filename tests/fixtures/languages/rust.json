@@ -58,6 +58,10 @@
     "formatters": null,
     "packageContents": [
       "Cargo.toml: cargo-package"
+    ],
+    "numericLimits": [
+      "integer overflow panics in debug builds and wraps in release",
+      "str::parse fails past the target type's range"
     ]
   }
 }

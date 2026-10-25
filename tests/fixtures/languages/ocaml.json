@@ -27,6 +27,9 @@
       "src/sum.ml:5 comment"
     ],
     "formatters": null,
-    "packageContents": null
+    "packageContents": null,
+    "numericLimits": [
+      "int is 63-bit and wraps silently"
+    ]
   }
 }

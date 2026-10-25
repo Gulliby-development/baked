@@ -33,6 +33,9 @@
       "Package.swift:1 comment"
     ],
     "formatters": null,
-    "packageContents": null
+    "packageContents": null,
+    "numericLimits": [
+      "integer overflow traps at runtime"
+    ]
   }
 }

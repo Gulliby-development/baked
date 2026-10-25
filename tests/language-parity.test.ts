@@ -23,6 +23,7 @@ import {
   testCount,
 } from "../src/core/verification/output-counts.js";
 import { ENTRY_POINTS, projectEntryPoints } from "../src/core/verification/entry-points.js";
+import { edgeTaxonomy, NUMERIC_LIMITS } from "../src/core/verification/edge-inputs.js";
 import { FILE_FORMATTERS, formatWrittenChecks } from "../src/core/workflows/format-written.js";
 import { detectGates, formatCommandLine, GATE_TOOLCHAINS } from "../src/core/workflows/gates.js";
 import { PLACEHOLDERS } from "../src/core/workflows/quality/builtin-rules.js";
@@ -136,6 +137,14 @@ const RECORDS: Record<
     record: ENTRY_POINTS,
     run: (_, { files }) =>
       projectEntryPoints(workspace(files)).map((e) => `${e.name}: ${e.launcher.join(" ")}`),
+  },
+  numericLimits: {
+    record: NUMERIC_LIMITS,
+    // The runtime limits the edge-input probe is told for the fixture's own files (#1808).
+    run: (language, { files }) =>
+      edgeTaxonomy(Object.keys(files).map((path) => detectLanguageFromPath(path)))
+        .limits.filter((row) => row.language === language)
+        .flatMap((row) => [...row.limits]),
   },
   testRunners: {
     record: TEST_RUNNERS,

@@ -14,6 +14,7 @@ import {
 import { tmpdir } from "node:os";
 import { basename, dirname, join, relative } from "node:path";
 import { codeWithoutComments } from "../intelligence/comments.js";
+import { detectLanguageFromPath } from "../intelligence/types.js";
 import { largerContextModel } from "../llm/context-sizes.js";
 import {
   lowerEffort,
@@ -90,6 +91,15 @@ import {
 } from "../verification/criteria-cases.js";
 import { canHold } from "../verification/deliverable-paths.js";
 import { type DocExampleResult, isDocFile, runDocExamples } from "../verification/doc-examples.js";
+import {
+  EDGE_CASES,
+  EDGE_DIR,
+  EDGE_KIND,
+  type EdgeRecord,
+  edgeDecision,
+  edgeTaxonomy,
+  printedValue,
+} from "../verification/edge-inputs.js";
 import {
   currentEvidence,
   evidenceHandle,
@@ -631,6 +641,8 @@ import {
   DEFAULT_REVIEW_MIN_CONFIDENCE,
   type Distinction,
   DistinctionSchema,
+  type EdgeCases,
+  EdgeCasesSchema,
   executionModeOf,
   generatedPaths,
   ImplementationSchema,
@@ -7663,6 +7675,8 @@ ${note}`;
     this.settleTask(runId, state, policy, task, child, taskFailures, checkEvidence);
     if (!taskFailures.length && reported && !unresolvedAccount)
       await this.routeReportedDefect(runId, state, policy, task, child, reported, signal, taskRoot);
+    if (!taskFailures.length && !unresolvedAccount)
+      await this.edgeProbe(runId, child, state, policy, task, taskRoot, signal);
   }
   /**
    * Implementation with several writers (a worktree run whose policy allows more than one). Ready
@@ -9191,6 +9205,8 @@ ${note}`;
         signal,
         mainRoot,
       );
+    if (!failures.length && !outcome.account.unresolved.length)
+      await this.edgeProbe(runId, entry.child, state, policy, task, mainRoot, signal);
   }
   /**
    * A required task check that failed and declares a fixer gets one host repair before it becomes
@@ -12400,6 +12416,156 @@ ${note}`;
       this.store.transaction(() => this.store.finishStep(runId, child, "failed"));
       return null;
     }
+  }
+  /**
+   * The edge-input probe of a planned source task (#1808), once after it settled without
+   * failures: the `edge-cases` profile is shown the task's criteria, files and the edge taxonomy
+   * of its languages (edge-inputs.ts) and proposes extreme legal inputs; the host runs each
+   * through the project's entry points as a repro whose actual is its expected value
+   * (`edgeDecision`). A case that runs and prints something else becomes a finding of the task,
+   * corrected at once, before the test tasks build on the code (R54 url-shortener: a non-ASCII
+   * redirect target, 2.43M tokens of correctives after the final review). Recorded under
+   * `probes/edge/` (kind `edge-probe`); a failed call records no cases and changes nothing.
+   */
+  private async edgeProbe(
+    runId: string,
+    stepId: string,
+    state: RuntimeState,
+    policy: RunPolicy,
+    task: Task,
+    root: string,
+    signal: AbortSignal,
+  ): Promise<void> {
+    if (policy.edgeProbe !== "on" || task.origin !== "planned" || !task.criterionIds.length) return;
+    const path = `${EDGE_DIR}${task.id}.json`;
+    if (this.store.latestArtifact(runId, path)) return;
+    if (this.store.tasks(runId).find((r) => r.id === task.id)?.status !== "implemented") return;
+    const sources = task.writes
+      .filter((w) => w.action !== "delete" && !isTestPath(w.path))
+      .map((w) => w.path);
+    const languages = [
+      ...new Set(sources.map((p) => detectLanguageFromPath(p)).filter((l) => l !== "unknown")),
+    ];
+    const profile = ProfileSchema.array()
+      .parse(JSON.parse(this.store.run(runId).profiles_json))
+      .find((p) => p.output === "edge-cases");
+    const executables = reproExecutables(policy.checks);
+    if (!profile || !executables.length || !languages.length) return;
+    const criteria = (state.spec?.criteria ?? []).filter((c) => task.criterionIds.includes(c.id));
+    const record = (cases: EdgeRecord["cases"]): EdgeRecord => ({
+      schemaVersion: 1,
+      taskId: task.id,
+      languages,
+      cases,
+    });
+    const child = this.store.transaction(() => this.store.beginStep(runId, "edge-probe", stepId));
+    let proposed: EdgeCases;
+    try {
+      proposed = EdgeCasesSchema.parse(
+        await this.call(
+          runId,
+          child,
+          state,
+          policy,
+          profile,
+          {
+            task: { id: task.id, title: task.title, description: task.description },
+            criteria: criteria.map((c) => ({
+              id: c.id,
+              given: c.given,
+              when: c.when,
+              // biome-ignore lint/suspicious/noThenProperty: Given/When/Then is the versioned acceptance-criterion contract.
+              then: c.then,
+            })),
+            files: sources,
+            executables,
+            edge: edgeTaxonomy(languages),
+          },
+          signal,
+        ),
+      );
+      this.store.transaction(() => this.store.finishStep(runId, child, "completed"));
+    } catch (error) {
+      if (signal.aborted) throw error;
+      if (
+        error instanceof WorkflowFault &&
+        ["BUDGET_EXHAUSTED", "CHECKPOINT_REACHED"].includes(error.code)
+      )
+        throw error;
+      // Recorded without cases, so a resumed run does not ask again.
+      this.store.transaction(() => {
+        this.store.finishStep(runId, child, "failed");
+        this.store.artifact(runId, EDGE_KIND, path, canonical(record([])));
+      });
+      return;
+    }
+    // A case must name a criterion of this task: only a criterion makes its input legal.
+    const cases = proposed.cases
+      .filter((c) => task.criterionIds.includes(c.criterionId))
+      .slice(0, EDGE_CASES);
+    const outcomes = await runReproBattery(
+      cases.map(({ criterionId: _, ...c }) => ({ ...c, actual: c.expected })),
+      (repro) =>
+        runRepro(this.processes, repro, {
+          root,
+          executables,
+          generated: generatedPaths(policy),
+          signal,
+          sandbox: runSandbox(policy, root, { gitWrite: Boolean(state.worktree) }),
+          shadows: sources,
+        }),
+    );
+    const probed = record(
+      outcomes.map((o, index) => ({
+        criterionId: cases[index]?.criterionId ?? "",
+        status: o.status,
+        reason: o.reason,
+        decision: edgeDecision(o.status),
+      })),
+    );
+    const findings: Review["findings"] = [];
+    this.store.transaction(() => {
+      const artifact = this.store.artifact(runId, EDGE_KIND, path, canonical(probed));
+      const evidenceId = this.store.addEvidence(
+        runId,
+        "command",
+        state.snapshotId ?? "",
+        artifact.id,
+      );
+      for (const [index, outcome] of outcomes.entries()) {
+        const probe = cases[index];
+        if (probed.cases[index]?.decision !== "finding" || !probe) continue;
+        const { criterionId, ...input } = probe;
+        const repro: Repro = { ...input, actual: printedValue(outcome.output) };
+        const criterion = criteria.find((c) => c.id === criterionId);
+        findings.push({
+          id: newId(),
+          kind: "correctness",
+          severity: "high",
+          basis: "spec",
+          confidence: 1,
+          requirementIds: criterion?.requirementIds ?? task.requirementIds,
+          criterionIds: [criterionId],
+          file: sources[0] ?? null,
+          symbol: null,
+          evidenceIds: [evidenceId],
+          claim: `Edge input ${String(index + 1)} of ${task.id}, legal under ${criterionId}: prints ${JSON.stringify(repro.actual)} where ${JSON.stringify(repro.expected)} is required`,
+          impact: `An extreme but legal input of ${criterionId} gives a wrong result; the test tasks would build on it and the final review would find it.`,
+          suggestedFix: `Make ${task.id}'s code handle this input as ${criterionId} requires, without breaking its other inputs.`,
+          repro,
+        });
+      }
+    });
+    if (!findings.length) return;
+    const recorded = this.recordFindings(runId, {
+      schemaVersion: 1,
+      snapshotHash: state.workspaceHash ?? "",
+      verdict: "changes_requested",
+      coverage: [],
+      findings,
+    });
+    this.repair(runId, state, policy, recorded, "repair", "task");
+    this.store.transaction(() => this.store.saveState(runId, state));
   }
   /**
    * Adds the families of the run's resolved correctness findings to the cross-run list of defect

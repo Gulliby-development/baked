@@ -32,6 +32,9 @@
       "src/SumTest.php:3 comment"
     ],
     "formatters": null,
-    "packageContents": null
+    "packageContents": null,
+    "numericLimits": [
+      "integers past PHP_INT_MAX become floats"
+    ]
   }
 }
