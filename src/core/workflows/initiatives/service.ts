@@ -60,6 +60,7 @@ import {
   specWritingRule,
 } from "../schemas.js";
 import type { NativeWorkflowService, PlannedReroute } from "../service.js";
+import { sizingHistory, testCaseRate } from "../sizing.js";
 import { terminalStates } from "../state-machine.js";
 import { stopDetail, stopRecovery } from "../stop-detail.js";
 import { recordWouldStop, type StopMode, stopFault, stopMode } from "../stop-reasons.js";
@@ -83,6 +84,7 @@ import {
   MIN_CALIBRATION_FEATURES,
   SIZE_STAGE_FACTOR,
   SIZE_TASK_FACTOR,
+  testVolumeText,
 } from "./estimate.js";
 import { initiativePriceSamples } from "./forecast.js";
 import { costGrowthLimit, guardGrowth, openGuardRoom, refreshedGrowth } from "./growth.js";
@@ -2643,6 +2645,7 @@ export class InitiativeService {
         stages: (facts(workflowId)?.stages ?? []).map((stage) => ({ ...stage, models })),
         ...counts.get(feature.id),
         dependsOn: feature.dependsOn,
+        ...(feature.testCases ? { testCases: feature.testCases } : {}),
       };
     });
     const history = estimateHistory(
@@ -2686,6 +2689,14 @@ export class InitiativeService {
         overhead: row.decompose_run_id ? this.usage(row.decompose_run_id).tokens : 0,
       },
       parallelRuns: this.parallelRuns(settings, plan, facts),
+      // Read only when the request demands a test volume: the sizing history opens every store.
+      ...(features.some((f) => f.testCases)
+        ? {
+            testCaseRate: testCaseRate(
+              sizingHistory(this.workflows.workspace, settings.basePolicy),
+            ),
+          }
+        : {}),
     });
     this.priceFeatureNeeds(row, estimate, history, accepted);
     return estimate;
@@ -2942,7 +2953,6 @@ export class InitiativeService {
 
   /** Warn on the proposed revision before approval, including edits to an approved split. */
   private splitApprovalMessage(row: InitiativeRow, view: InitiativeView): string | RecoveryAdvice {
-    const message = `Approve the split (plan revision ${row.plan_revision}) or edit it.`;
     const plan = this.store.plan(this.store.revision(row.id, row.plan_revision));
     const accepted = new Set(
       view.features
@@ -2957,6 +2967,13 @@ export class InitiativeService {
         .map((f) => f.id),
     );
     const estimate = this.estimateOf(row, plan, accepted);
+    const tests = estimate.testVolume
+      ? `${testVolumeText(
+          estimate.testVolume,
+          estimate.features.filter((f) => f.basis !== "measured" && f.testCases),
+        )} `
+      : "";
+    const message = `${tests}Approve the split (plan revision ${row.plan_revision}) or edit it.`;
     const needs = this.featureNeeds(estimate);
     const waiting = plan.features
       .filter((f) => {

@@ -139,15 +139,15 @@ describe("scenario: the shared token pool names its amounts and would grow insid
     const at = (t: number) => replay?.starts.find((s) => s.at === t)?.pool;
     // With three measured features the blend weighs their 2.36x a third: 25.1M, under the pool. The
     // notice advises at the raw ratio (#2062): 31.8M, 13 minutes before select parked.
-    expect(at(syntax)).toMatchObject({ limitTokens: POOL, usedTokens: 15_369_363, advice: { forecastTokens: 31_768_074, ratio: 2.36 }, suggestedTokens: 33_600_000 });
+    expect(at(syntax)).toMatchObject({ limitTokens: POOL, usedTokens: 15_369_363, advice: { forecastTokens: 31_768_074, ratio: 2.36 }, suggestedTokens: 31_800_000 });
     expect(at(syntax)?.forecastTokens).toBeLessThan(POOL);
-    expect(at(syntax)?.notice).toStartWith("At the measured 2.4x of the estimates the 10 features need about 31.8M tokens (25.1M at the blended 1.4x that budget decisions use; 15.4M used); the shared pool is 30.0M. Extend to 33.6M");
+    expect(at(syntax)?.notice).toStartWith("At the measured 2.4x of the estimates the 10 features need about 31.8M tokens (25.1M at the blended 1.4x that budget decisions use; 15.4M used); the shared pool is 30.0M. Extend to 31.8M");
     // At lint the blend says 1.8x and 31.6M; the raw 2.2x says 33.2M, and the round used 33.25M.
-    expect(at(lint)?.notice).toBe("At the measured 2.2x of the estimates the 10 features need about 33.2M tokens (31.6M at the blended 1.8x that budget decisions use; 26.7M used); the shared pool is 30.0M. Extend to 33.3M (baked workflow initiative extend nodepluck --tokens 33300000); the $30.00 cap would pay for about 33.4M at $0.90 per million.");
+    expect(at(lint)?.notice).toBe("At the measured 2.2x of the estimates the 10 features need about 33.2M tokens (31.6M at the blended 1.8x that budget decisions use; 26.7M used); the shared pool is 30.0M. Extend to 33.3M (baked workflow initiative extend nodepluck --tokens 33300000); the $30.00 cap would pay for about 36.0M at $0.83 per million.");
     // No start before the third accepted feature warned: the estimate's point forecast stayed under the pool.
     expect(replay?.starts.filter((s) => s.at < syntax && s.pool?.notice)).toEqual([]);
-    // The corpus gate replays starts on the final 38M budget, under which nothing warns.
-    const [final] = replayInitiativeStarts(R66);
+    // Replayed on the final 38M budget, as the corpus gate did before #2061, nothing warns.
+    const [final] = replayInitiativeStarts(R66, { budgetAtStart: false });
     expect(final?.starts.some((s) => s.pool?.notice)).toBe(false);
   }, 180000);
 });
