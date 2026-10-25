@@ -77,6 +77,7 @@ Each line is a past bug. A new detector, parser or table row answers it before r
 19. **A linter that passes broken files.** A linter run at error severity can still pass a file that does not parse (PSScriptAnalyzer needs `ParseError` next to `Error,Warning`); give its gate-matrix cell a file with a syntax error (#1498).
 20. **Every runner in the replay table.** `tests/workflow-baseline-replay.test.ts` holds a `FAILURES` and a `BUILD_ERRORS` row for every runner in `BUILD_FAILURES`; a new runner adds both (#1498).
 21. **Tools that survive HOME isolation.** Tests run with a temporary HOME, so a tool installed for the current user (PowerShell modules in CurrentUser scope, pip user site) vanishes in them: install CI and device tools for all users (#1498).
+22. **Output on a CI runner.** A runner that detects CI (`GITHUB_ACTIONS`, `TF_BUILD`) can change its output: Pester prefixes failed tests with `::error::`. Turn that mode off in the gate's command and run the real gate-matrix cell with `GITHUB_ACTIONS=true` before pushing (#1498).
 
 ## 4. Tests
 
