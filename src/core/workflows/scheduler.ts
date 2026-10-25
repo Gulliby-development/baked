@@ -7177,15 +7177,7 @@ ${note}`;
       });
     } else if (!checking) {
       const root = runRoot(this.store.workspace, state);
-      // Shadow (#2094): whether the corrective can write the files its failing check names, on
-      // every session, so a resume of a corrective that cannot is recorded before it is paid.
-      if (task.origin !== "planned")
-        this.store.transaction(() =>
-          this.recordCorrectiveScope(runId, state, policy, task, "start"),
-        );
-      // Shadow (#2023): whether the host would apply the request's verbatim content itself.
-      if (firstRun && task.origin === "planned")
-        await this.recordHostApply(runId, state, task, root);
+      await this.beforeSession(runId, state, policy, task, root, firstRun);
       if (await this.affectedBaseline(runId, child, state, policy, task, signal, root))
         this.store.transaction(() => this.store.saveState(runId, state));
       const before = await sourceManifest(root, generatedPaths(policy), signal);
@@ -8569,6 +8561,7 @@ ${note}`;
       planned.push({ task, profile, extra, tokens: needed });
     }
     return planned.map(({ task, profile, extra, tokens: reserved }) => {
+      const firstRun = this.store.tasks(runId).find((t) => t.id === task.id)?.status === "pending";
       const child = this.store.transaction(() => {
         this.store.taskStatus(runId, task.id, "running");
         return this.store.beginStep(runId, `task-${task.id}`, stepId);
@@ -8580,6 +8573,7 @@ ${note}`;
         extra,
         child,
         attemptId,
+        firstRun,
         path: "",
         released: false,
         lease: () => mutationLeaseFor(this.store.workspace, join(this.store.workspace, entry.path)),
@@ -8619,6 +8613,8 @@ ${note}`;
     try {
       before = await sourceManifest(root, generatedPaths(policy), signal);
       const kept = keepOutside(root, before, new Set(task.writes.map((w) => w.path)));
+      // On the task's base, before an earlier attempt's edits are carried over (#2138).
+      await this.beforeSession(runId, state, policy, task, root, entry.firstRun);
       await this.affectedBaseline(runId, entry.child, state, policy, task, signal, root);
       const earlierEdits = await this.applyCarry(runId, state, entry, root);
       // A correction's first attempt writes only where its findings point, as on the single-writer
@@ -16898,6 +16894,29 @@ ${note}`;
     });
   }
   /**
+   * The shadow hooks that run before every implementer session, on the single-writer path
+   * (`runTaskStep`) and the batch and candidate paths (`runTaskWorker`) alike, with the root the
+   * session edits (#2138). They record only: no outcome of the run changes here. A new pre-session
+   * shadow hook goes here, never into one path's own steps: cfgquill-update and wheeltags-update
+   * (bench round 68, three writers) recorded no host-apply decision and no `start` scope record,
+   * since both hooks ran on the single-writer path only.
+   */
+  private async beforeSession(
+    runId: string,
+    state: RuntimeState,
+    policy: RunPolicy,
+    task: Task,
+    root: string,
+    firstRun: boolean,
+  ): Promise<void> {
+    // Shadow (#2094): whether the corrective can write the files its failing check names, on
+    // every session, so a resume of a corrective that cannot is recorded before it is paid.
+    if (task.origin !== "planned")
+      this.store.transaction(() => this.recordCorrectiveScope(runId, state, policy, task, "start"));
+    // Shadow (#2023): whether the host would apply the request's verbatim content itself.
+    if (firstRun && task.origin === "planned") await this.recordHostApply(runId, state, task, root);
+  }
+  /**
    * Records whether a task-level corrective can write the files its failed non-test check names in
    * the failing task's own files (`scope/tasks/<task>.json`, #2094), when it is created and before
    * each session, so a resume is checked too. One that cannot records the `corrective_scope`
@@ -17718,6 +17737,8 @@ interface BatchEntry {
   extra: unknown;
   child: string;
   attemptId: string;
+  /** Whether the task was pending when the batch reserved it: its first session (`beforeSession`). */
+  firstRun: boolean;
   /** The task worktree relative to the project root; empty until it is created. */
   path: string;
   released: boolean;

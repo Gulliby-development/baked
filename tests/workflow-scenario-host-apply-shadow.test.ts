@@ -132,10 +132,12 @@ class ScriptedExecutor implements AgentExecutor {
       case "analysis": output = { schemaVersion: 1, inputHash: data.inputHash, verdict: "pass", findings: [] }; break;
       case "implementation": {
         const id = request.task?.id ?? "";
+        // A batch worker edits its own task worktree.
+        const root = request.root ?? this.root;
         this.attempts.push(id);
-        if (id === "T001") this.aBefore = readFileSync(join(this.root, "src/a.ts"), "utf8");
+        if (id === "T001") this.aBefore = readFileSync(join(root, "src/a.ts"), "utf8");
         const [path, text] = content[id] ?? ["", ""];
-        writeFileSync(join(this.root, path), text);
+        writeFileSync(join(root, path), text);
         output = { schemaVersion: 1, taskId: id, outcome: "implemented", summary: `Updated ${path}`, evidenceIds: [], unresolved: [] };
         break;
       }
@@ -149,7 +151,16 @@ class ScriptedExecutor implements AgentExecutor {
   }
 }
 
-describe("scenario: an update brief with exact diffs and a whole file, in shadow (#2023)", () => {
+function git(cwd: string, ...args: string[]): void {
+  const result = Bun.spawnSync(["git", ...args], { cwd, stdout: "pipe", stderr: "pipe" });
+  if (result.exitCode !== 0) throw new Error(`git ${args.join(" ")}: ${result.stderr.toString()}`);
+}
+
+// Bench round 68 (#2138): with `--writers 3` every task ran in the batch worker, which skipped the
+// pre-session shadow hooks; cfgquill-update recorded no decision for two tasks whose diffs applied
+// (one of them 55 percent of the run's tokens). The same scenario runs on both paths.
+for (const writers of [1, 2])
+describe(`scenario: an update brief with exact diffs and a whole file, in shadow, ${String(writers)} writer(s) (#2023, #2138)`, () => {
   test("would_apply is recorded per planned task with its inputs, the implementer still runs, and the decision replays", async () => {
     const root = mkdtempSync(join(tmpdir(), "baked-host-apply-shadow-"));
     cleanups.push(() => rmSync(root, { recursive: true, force: true }));
@@ -157,13 +168,23 @@ describe("scenario: an update brief with exact diffs and a whole file, in shadow
     writeFileSync(join(root, "src/a.ts"), A_BEFORE);
     writeFileSync(join(root, "src/c.ts"), 'export const C = "different";\n');
     writeFileSync(join(root, "src/d.ts"), "export const D = 1;\n");
+    if (writers > 1) {
+      // A worktree run: the batch path needs a repository to cut task worktrees from.
+      git(root, "init", "-q", "-b", "main");
+      git(root, "config", "user.name", "Test User");
+      git(root, "config", "user.email", "test@example.test");
+      git(root, "config", "commit.gpgsign", "false");
+      writeFileSync(join(root, ".gitignore"), ".baked/\n");
+      git(root, "add", ".");
+      git(root, "commit", "-q", "-m", "Initial");
+    }
     expect(hostAppliableTasks(brief, { tasks })).toEqual(["T001", "T002", "T003"]);
 
     const executor = new ScriptedExecutor(root);
     const config = { ...DEFAULT_CONFIG, defaultModel: "fixture/model", workflows: { enabled: true, importsEnabled: true, defaultWorkflow: "sdd", policy } };
     const service = new NativeWorkflowService(root, config, executor);
     cleanups.push(() => service.close());
-    const run = await service.start({ commandId: newId(), featureId: "fixture", workflowId: "sdd", prompt: brief, ownerLabel: "test", policy });
+    const run = await service.start({ commandId: newId(), featureId: "fixture", workflowId: "sdd", prompt: brief, ownerLabel: "test", policy, ...(writers > 1 ? { executionMode: "worktree" as const, maxConcurrentWriters: writers } : {}) });
     await service.drive(run.runId, new AbortController().signal);
     const waiting = await service.get(run.runId);
     const approval = service.store.requests(run.runId).find((r) => r.kind === "approval" && r.status === "pending");
@@ -212,4 +233,22 @@ describe("scenario: an update brief with exact diffs and a whole file, in shadow
     }).runs.find((r) => r.runId === run.runId);
     expect(unchecked?.newApplyDecisions).toBe(1);
   }, 120000);
+});
+
+describe("every pre-session shadow hook runs on both implementer paths (#2138)", () => {
+  test("the single-writer and batch paths call beforeSession, and the hooks are called nowhere else", () => {
+    const source = readFileSync(join(import.meta.dir, "../src/core/workflows/scheduler.ts"), "utf8");
+    const body = (name: string): string => {
+      const start = source.indexOf(`  private async ${name}(`);
+      const end = source.indexOf("\n  private ", start + 1);
+      return source.slice(start, end);
+    };
+    expect(body("runTaskStep").includes("await this.beforeSession(")).toBe(true);
+    expect(body("runTaskWorker").includes("await this.beforeSession(")).toBe(true);
+    // The hooks beforeSession runs: a direct call on one path would skip the other.
+    const hooks = [...body("beforeSession").matchAll(/this\.(record\w+)\(/g)].map((m) => m[1]);
+    expect(hooks).toEqual(["recordCorrectiveScope", "recordHostApply"]);
+    expect(source.match(/this\.recordHostApply\(/g)).toHaveLength(1);
+    expect(source.match(/this\.recordCorrectiveScope\([^)]*"start"\)/g)).toHaveLength(1);
+  });
 });
