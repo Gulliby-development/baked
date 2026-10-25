@@ -1604,7 +1604,7 @@ export const FEATURES: readonly Feature[] = [
     id: "initiative-estimate",
     group: "Initiatives",
     title:
-      "Estimate a split: a difficulty level and a token range from run history, optionally weighted by recency",
+      "Estimate a split: a difficulty level and a token range from run history, optionally weighted by recency, and the test volume the request demands",
     tui: ["/workflow: initiatives, T estimates the split"],
     cli: ["baked workflow initiative estimate"],
     api: ["/v1/initiatives/:id/estimate"],

@@ -45,6 +45,13 @@ import {
   conflictFinishReady,
 } from "./conflict-finish.js";
 import {
+  type CorrectiveDeferRecord,
+  type CorrectiveDeferRule,
+  correctiveDeferDecision,
+  DEFER_DIR,
+  DEFER_KIND,
+} from "./corrective-defer.js";
+import {
   hostDecision,
   missingDiagnosed,
   SCOPE_KIND,
@@ -212,6 +219,8 @@ const KEPT_ARTIFACTS = new Set([
   EVIDENCE_DECISION_KIND,
   // Each settled conflict's host finish decision: edits, case and check counts, no text (#2033).
   CONFLICT_FINISH_KIND,
+  // Each blocked corrective's order decision: stop code, ready task ids, writers (#2109).
+  DEFER_KIND,
 ]);
 
 /** Tables that hold evidence, effects or prose the replay never reads. */
@@ -762,6 +771,51 @@ export interface RunReplay {
   conflictFinishes: ConflictFinishBoundary[];
   /** Settled conflicts the current rule finishes on the host, or not, differently. */
   newConflictFinishes: number;
+  /** Each blocked corrective's order decision against the current rule (#2109). */
+  correctiveDefers: CorrectiveDeferBoundary[];
+  /** Blocked correctives the current rule runs independent work past, or not, differently. */
+  newDeferDecisions: number;
+}
+
+export interface CorrectiveDeferBoundary {
+  taskId: string;
+  mode: CorrectiveDeferRecord["mode"];
+  /** The ready tasks the blocked chains did not hold. */
+  ready: number;
+  recorded: boolean;
+  replayed: boolean;
+}
+
+/**
+ * Every order decision of a blocked corrective a run recorded (`blocks/correctives/`, #2109),
+ * decided again from its recorded ready tasks and writers. Traces before #2109 record none.
+ */
+export function replayCorrectiveDefers(
+  store: WorkflowStore,
+  runId: string,
+  decide: CorrectiveDeferRule = correctiveDeferDecision,
+): CorrectiveDeferBoundary[] {
+  return store
+    .artifacts(runId)
+    .filter((a) => a.kind === DEFER_KIND && a.logical_path.startsWith(DEFER_DIR))
+    .flatMap((artifact) => {
+      let record: CorrectiveDeferRecord;
+      try {
+        record = JSON.parse(store.readArtifact(runId, artifact.id));
+      } catch {
+        return [];
+      }
+      const input = { ready: record.ready ?? [], writers: record.writers ?? 1 };
+      return [
+        {
+          taskId: record.taskId,
+          mode: record.mode,
+          ready: input.ready.length,
+          recorded: record.defer,
+          replayed: decide(input),
+        },
+      ];
+    });
 }
 
 export interface CorrectiveScopeBoundary {
@@ -2361,9 +2415,11 @@ export function replayInitiativeStarts(
     priceSamples?: PriceSamples;
     historyTrace?: HistoryTrace;
     /**
-     * Rewinds the shared budget and each run's used tokens too: an extension made after a start
-     * is undone for it, and a run counts the tokens of the attempts it had finished (#2042). Off
-     * for the corpus gate, which has always replayed starts on the final budget and usage.
+     * Rewinds the shared budget and each run's budget inputs too (the default): an extension made
+     * after a start is undone for it, and a run counts the tokens and dollars of the attempts it
+     * had finished and its policy then (#2042, #2061). `false` replays every start on the final
+     * budget, usage and run caps, as the corpus did before #2061: R60 wheeltags then read its
+     * runs' final spend and grown caps and parked four starts on $0.00.
      */
     budgetAtStart?: boolean;
     /**
@@ -2391,7 +2447,7 @@ export function replayInitiativeStarts(
   // Each initiative gets its own copies: a rewind removes every later run of the trace.
   return ids.map((id) =>
     replayStarts(path, id, gate, options.priceSamples, historyTrace, {
-      budgetAtStart: options.budgetAtStart === true,
+      budgetAtStart: options.budgetAtStart !== false,
       moments: options.moments ?? [],
       ...(options.recencyHalfLife ? { recencyHalfLife: options.recencyHalfLife } : {}),
     }),
@@ -2520,6 +2576,7 @@ function replayStarts(
     const tables = runTables(db);
     const runIds = (db.query("SELECT id FROM runs").all() as { id: string }[]).map((r) => r.id);
     const rewinders = new Map(runIds.map((runId) => [runId, runRewinder(store, runId)]));
+    const policies = new Map(runIds.map((runId) => [runId, runPolicyAt(store, runId)]));
     const states = new Map(
       runIds.map((runId) => [
         runId,
@@ -2606,12 +2663,9 @@ function replayStarts(
             state?.reason ?? "none",
             runId,
           ]);
-          // The run's tokens as its finished attempts had used them then, not at its end.
-          if (budgetAtStart)
-            db.run(
-              "UPDATE runs SET token_usage=(SELECT COALESCE(SUM(used_tokens), 0) FROM attempts WHERE run_id=? AND ended_at<=?) WHERE id=?",
-              [runId, t, runId],
-            );
+          // The run's tokens, dollars and policy as they stood then, not at its end (#2061).
+          const policyAt = policies.get(runId);
+          if (budgetAtStart && policyAt) rewindRunBudget(db, runId, t, policyAt);
         }
         for (const runId of late) rewinders.delete(runId);
       })();
@@ -3036,6 +3090,66 @@ function raisesCap(content: string | null): boolean {
 }
 
 /**
+ * A run's policy at any moment: the policy it started with, then each revision's own limits
+ * forward. Undoing `previous` backwards from the final policy went wrong where a revision was
+ * written from a stale copy and its `previous` undid an earlier growth (#1704). `revisions` are
+ * newest first.
+ */
+function policyAtOf(
+  final: RunPolicy,
+  revisions: readonly Pick<RevisionRecord, "createdAt" | "previous" | "next">[],
+): (t: number) => RunPolicy {
+  let initial: Record<string, unknown> = { ...final };
+  for (const revision of revisions) initial = { ...initial, ...revision.previous };
+  return (t) => {
+    let policy = initial;
+    for (const revision of [...revisions].reverse()) {
+      if (revision.createdAt > t) break;
+      policy = { ...policy, ...revision.next };
+    }
+    return PolicySchema.parse(policy);
+  };
+}
+
+/** `policyAtOf` from a run's recorded policy revisions, read before any rewind removes them. */
+function runPolicyAt(store: WorkflowStore, runId: string): (t: number) => RunPolicy {
+  const revisions = (
+    store.connection
+      .query(
+        "SELECT created_at, inline_content AS content FROM artifacts WHERE run_id=? AND kind='policy-revision'",
+      )
+      .all(runId) as { created_at: number; content: string | null }[]
+  )
+    .map((a) => {
+      const body = JSON.parse(a.content ?? "{}") as {
+        previous?: Record<string, unknown>;
+        next?: Record<string, unknown>;
+      };
+      return { createdAt: a.created_at, previous: body.previous ?? {}, next: body.next ?? {} };
+    })
+    .sort((a, b) => b.createdAt - a.createdAt);
+  return policyAtOf(PolicySchema.parse(JSON.parse(store.run(runId).policy_json)), revisions);
+}
+
+/**
+ * A run's budget inputs as they stood at `t`, for a replay that rewound its attempts there (#2061):
+ * the tokens and dollars of the attempts that had finished by then, and its policy then. The
+ * stored token and dollar totals and the policy are the run's final ones; an initiative view
+ * replayed on them sees every later spend and cap growth.
+ */
+function rewindRunBudget(
+  db: Database,
+  runId: string,
+  t: number,
+  policyAt: (t: number) => RunPolicy,
+): void {
+  db.run(
+    "UPDATE runs SET token_usage=(SELECT COALESCE(SUM(used_tokens), 0) FROM attempts WHERE run_id=? AND ended_at<=?), estimated_cost_microusd=NULL, policy_json=? WHERE id=?",
+    [runId, t, canonical(policyAt(t)), runId],
+  );
+}
+
+/**
  * Rewinds one run's attempts, artifacts, events, tasks and steps to the moment `t`: later rows
  * are removed, and an attempt that was still running then is running again. With `current`, the
  * attempt that starts at `t` is kept as the running one. Kinds in `keep` stay, as the run state
@@ -3156,6 +3270,8 @@ function replayRun(
   | "newUnownedDecisions"
   | "conflictFinishes"
   | "newConflictFinishes"
+  | "correctiveDefers"
+  | "newDeferDecisions"
 > | null {
   const db = store.connection;
   const run = store.run(runId);
@@ -3199,19 +3315,7 @@ function replayRun(
     final.maxCostUsd !== null || revisions.some((r) => typeof r.previous.maxCostUsd === "number");
   if (!capped) return null;
   const finalUsd = store.costUsage(runId).spentUsd;
-  // The policy the run started with, then each revision's own limits forward. Undoing `previous`
-  // backwards from the final policy went wrong where a revision was written from a stale copy and
-  // its `previous` undid an earlier growth (#1704).
-  let initial: Record<string, unknown> = { ...final };
-  for (const revision of revisions) initial = { ...initial, ...revision.previous };
-  const policyAt = (t: number): RunPolicy => {
-    let policy = initial;
-    for (const revision of [...revisions].reverse()) {
-      if (revision.createdAt > t) break;
-      policy = { ...policy, ...revision.next };
-    }
-    return PolicySchema.parse(policy);
-  };
+  const policyAt = policyAtOf(final, revisions);
   const rewind = runRewinder(store, runId);
   const boundaries: ReplayBoundary[] = [];
   const costCap: CostCapBoundary[] = [];
@@ -3341,6 +3445,7 @@ export function replayTrace(
     scopeRule?: ScopeRule;
     unownedRule?: UnownedRule;
     conflictFinishRule?: ConflictFinishRule;
+    correctiveDeferRule?: CorrectiveDeferRule;
   } = {},
 ): TraceReplay {
   // Initiative starts rewind their own copies of the trace, before the run replay rewinds this one.
@@ -3428,6 +3533,12 @@ export function replayTrace(
         replayConflictFinishes(store, runId, options.conflictFinishRule),
       ]),
     );
+    const defers = new Map(
+      runIds.map((runId) => [
+        runId,
+        replayCorrectiveDefers(store, runId, options.correctiveDeferRule),
+      ]),
+    );
     const runs: RunReplay[] = [];
     for (const runId of runIds) {
       const firstByte = timings.get(runId) ?? [];
@@ -3459,6 +3570,7 @@ export function replayTrace(
       const evidenceDecisions = evidence.get(runId) ?? [];
       const correctiveScopes = scopes.get(runId) ?? [];
       const conflictFinishes = finishes.get(runId) ?? [];
+      const correctiveDefers = defers.get(runId) ?? [];
       if (
         !replay.boundaries.length &&
         !firstByte.length &&
@@ -3477,7 +3589,8 @@ export function replayTrace(
         !convergenceGates.length &&
         !evidenceDecisions.length &&
         !correctiveScopes.length &&
-        !conflictFinishes.length
+        !conflictFinishes.length &&
+        !correctiveDefers.length
       )
         continue;
       runs.push({
@@ -3540,6 +3653,8 @@ export function replayTrace(
         ).length,
         conflictFinishes,
         newConflictFinishes: conflictFinishes.filter((b) => b.replayed !== b.recorded).length,
+        correctiveDefers,
+        newDeferDecisions: correctiveDefers.filter((b) => b.replayed !== b.recorded).length,
       });
     }
     const gates = replayShareGate(store, options.shareGate);

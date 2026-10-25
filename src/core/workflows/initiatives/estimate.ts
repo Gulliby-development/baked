@@ -23,6 +23,7 @@ import {
 
 export { type HighCalibration, highCalibrationText, MIN_HIGH_RATIO_SAMPLES };
 
+import type { TestCaseRate } from "../sizing.js";
 import { planWidth } from "./critical-path.js";
 import { type DurationForecast, durationText, msPerToken, scheduledMinutes } from "./duration.js";
 import type { FeatureSize } from "./plan.js";
@@ -126,6 +127,8 @@ export interface FeatureToEstimate {
   skeleton?: number;
   /** The features it waits for, which order the wall-time forecast (#1557); absent means none. */
   dependsOn?: string[];
+  /** The test cases the request demands of it (`testCases` of the plan, #2055); absent when none. */
+  testCases?: number;
 }
 
 export type FeatureEstimateBasis =
@@ -160,11 +163,14 @@ export interface FeatureEstimate {
   placeholders?: number;
   /** Files of its skeleton the host writes, when it has any; they cost no tokens. */
   skeleton?: number;
+  /** The test cases the request demands of it, when it states any (#2055). */
+  testCases?: number;
   /** The tokens the feature run's plan sizing expects the run to use, once it has a plan. */
   planned?: PlannedRun;
   /**
    * What raised the range above the size-scaled forecast: the spec's criteria, the boundary's
-   * paths or the plan's sized tasks (each times its measured rate); absent when nothing did.
+   * paths, the plan's sized tasks or the request's test cases (each times its measured rate);
+   * absent when nothing did.
    */
   floor?: FeatureFloor;
   /** The fit over finished features of its size that placed it by its paths, when one did. */
@@ -175,7 +181,7 @@ export interface FeatureEstimate {
   minutes?: number;
 }
 
-export type FeatureFloor = "criteria" | "paths" | "plan";
+export type FeatureFloor = "criteria" | "paths" | "plan" | "tests";
 
 /**
  * What a feature run's latest plan sizing expects the whole run to use (`plannedRunTokens`): its
@@ -272,6 +278,12 @@ export interface InitiativeEstimate {
   highCalibration: HighCalibration | null;
   /** How this initiative's accepted features compared with their own plans (`ownPlanNeed`). */
   planCalibration: PlanCalibration;
+  /**
+   * The test cases the request demands across the features still to run and what each is priced
+   * at (`testCaseRate`): a feature with `testCases` is forecast at no less than its cases times
+   * `perCase` (#2055). Null when no feature carries test cases.
+   */
+  testVolume: ({ cases: number; features: number } & TestCaseRate) | null;
   /** Minutes still to run, summed and on the run slots; null without timed samples (#1557). */
   duration: DurationForecast | null;
   notes: string[];
@@ -451,6 +463,7 @@ function estimateFeature(
     ...(feature.paths ? { paths: feature.paths } : {}),
     ...(feature.placeholders ? { placeholders: feature.placeholders } : {}),
     ...(feature.skeleton ? { skeleton: feature.skeleton } : {}),
+    ...(feature.testCases ? { testCases: feature.testCases } : {}),
   };
   const hasTasks = feature.stages.some((s) => s.type === "tasks");
   // Finished feature runs of the same size measure the whole feature, split and all; those of the
@@ -558,6 +571,22 @@ export function calibrationLagText(
   return ` The measured calibration is unmeasured until ${MIN_CALIBRATION_FEATURES} features are accepted (${estimate.progress.accepted} so far)${planned ? `; ${planned} features still to run are priced by their own plans` : ""}.`;
 }
 
+/**
+ * The test volume line of the estimate and the split request (#2055): the cases the request
+ * demands of the features still to run, and what a case is priced at.
+ */
+export function testVolumeText(
+  volume: NonNullable<InitiativeEstimate["testVolume"]>,
+  features: Pick<FeatureEstimate, "featureId" | "testCases">[],
+): string {
+  const each = features.map((f) => `${f.featureId} ${f.testCases}`).join(", ");
+  const from =
+    volume.basis === "defaults"
+      ? "the default allowance: no finished test task with cases yet"
+      : `as measured on ${volume.samples} finished test tasks${volume.basis === "project" ? " of this project" : ""}`;
+  return `The request demands ${volume.cases} test cases of ${volume.features} features (${each}); each feature is forecast at no less than ${rangeText(volume.perCase)} tokens per case, ${from}.`;
+}
+
 /** The estimate in one line for a screen: level, tasks, tokens, what to plan for, the budget. */
 export function estimateSummary(estimate: InitiativeEstimate): string {
   const fits = estimateBudgetText(
@@ -603,6 +632,7 @@ function reforecast(
   prior: FeatureEstimate[],
   progress: InitiativeProgress,
   samples: FeatureRunSample[],
+  perTestCase: TokenRange | null,
 ): {
   features: FeatureEstimate[];
   ratio: number | null;
@@ -711,11 +741,15 @@ function reforecast(
     // replace the paths: seqmill used 155k to 320k per criterion against 0.29M to 1.28M per path.
     const byCriteria = perCriterion && criteria ? scaled(perCriterion, criteria) : null;
     const byPaths = !byCriteria && perPath && pathWeight(f) ? scaled(perPath, pathWeight(f)) : null;
+    // The test cases the request demands of it, at what a case costs in this project's test
+    // tasks: R66 nodepluck's test tasks were 51.9 percent of the initiative (#2055).
+    const byTests = perTestCase && f.testCases ? scaled(perTestCase, f.testCases) : null;
     const floors = (
       [
         ["criteria", byCriteria],
         ["paths", byPaths],
         ["plan", planned ? ownPlanNeed(planned, planCalibration.ratio) : null],
+        ["tests", byTests],
       ] as const
     ).filter((entry): entry is readonly [FeatureFloor, TokenRange] => entry[1] !== null);
     const tokens = {
@@ -742,7 +776,7 @@ function reforecast(
     // stepvet used 1.32x its low end, R63 eolscope 1.05x. Only ever narrower than today's range,
     // and not where the feature's own spec, plan or a re-forecast of an overrun prices it.
     const bound =
-      highCalibration && !byCriteria && !planned && (scale === null || scale <= 1)
+      highCalibration && !byCriteria && !planned && !byTests && (scale === null || scale <= 1)
         ? Math.max(tokens.low, Math.round(tokens.low * highCalibration.high))
         : null;
     const ratios = bound !== null && bound < tokens.high;
@@ -851,6 +885,8 @@ export function estimateInitiative(input: {
   parallelRuns?: number;
   /** `sizing.recencyHalfLife`: weighs the size pools by `recencyWeights`; absent, all count the same. */
   recencyHalfLife?: number;
+  /** What a test case costs (`testCaseRate`), for features with `testCases`; absent prices none. */
+  testCaseRate?: TestCaseRate;
 }): InitiativeEstimate {
   const margin = input.margin ?? ESTIMATE_MARGIN;
   const progress = input.progress ?? { features: {}, overhead: 0 };
@@ -874,6 +910,7 @@ export function estimateInitiative(input: {
     ),
     progress,
     input.samples,
+    input.testCaseRate?.perCase ?? null,
   );
   const overhead = { low: progress.overhead, high: progress.overhead };
   const summed = sum([overhead, ...features.map((f) => f.tokens)]);
@@ -970,6 +1007,16 @@ export function estimateInitiative(input: {
         ]
       : []),
   ];
+  const tested = features.filter((f) => f.basis !== "measured" && f.testCases);
+  const testVolume =
+    tested.length && input.testCaseRate
+      ? {
+          cases: tested.reduce((n, f) => n + (f.testCases ?? 0), 0),
+          features: tested.length,
+          ...input.testCaseRate,
+        }
+      : null;
+  if (testVolume) notes.push(testVolumeText(testVolume, tested));
   const timed = durationOf(input.features, features, input.samples, input.parallelRuns ?? 1);
   const fits = fitsOf(withMargin, tokens.low, input.maxTotalTokens);
   const budgetText = estimateBudgetText(
@@ -995,6 +1042,7 @@ export function estimateInitiative(input: {
     perPathSamples,
     highCalibration,
     planCalibration,
+    testVolume,
     duration: timed.duration,
     notes,
     label: `Estimate: level ${level}, about ${tasks.low}-${tasks.high} tasks, ${rangeText(tokens)} tokens, expected ${tokenText(expectedTokens)} (plan for ${tokenText(withMargin)} with a ${Math.round(margin * 100)}% margin)${spent ? `, ${tokenText(spent)} used with ${accepted} of ${features.length} features accepted` : ""}; ${budgetText}${timed.duration ? `; ${durationText(timed.duration)}` : ""}`,

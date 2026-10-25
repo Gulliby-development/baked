@@ -712,6 +712,13 @@ export const PolicySchema = z
      */
     conflictFinish: z.literal("on").optional(),
     /**
+     * The host's order around a blocked corrective (corrective-defer.ts, #2109): `on` lets the
+     * drive run the ready tasks a corrective that blocked does not hold, keeping its hold on the
+     * rest, and end the run with its stop once nothing else can run. Absent means shadow (the
+     * decision is recorded, the run ends at the block), so stored policies keep their hash.
+     */
+    correctiveDefer: z.literal("on").optional(),
+    /**
      * The project's choices for the anti-slop rule pack (quality/rules.ts), which is always on:
      * rules turned off, severities changed and ast-grep rule files added. Absent means the
      * built-in pack as shipped, so stored policies keep their hash.
