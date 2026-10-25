@@ -217,6 +217,26 @@ const FRAMEWORKS: readonly TestFramework[] = [
     ],
   },
   {
+    // `test("...")` (FunSuite, munit) and `assert(...)` are read by the JavaScript row, JUnit-style
+    // `assertEquals` by the JVM row above (#1496).
+    name: "ScalaTest, munit",
+    languages: ["scala"],
+    cases: String.raw`^\s*ignore\s*\(\s*"|(?:\b(?:it|they)|"[^"\n]*")\s+(?:should|must|can|ignore)\s+"[^"\n]*"\s+(?:in|ignore)\b|"[^"\n]*"\s+in\s*\{`,
+    named: [
+      { pattern: /^\s*ignore\s*\(\s*"(?<name>[^"\n]+)"/d },
+      {
+        pattern:
+          /(?:\b(?:it|they)|"[^"\n]*")\s+(?:should|must|can)\s+"(?<name>[^"\n]+)"\s+(?:in|ignore)\b/d,
+      },
+    ],
+    assertions: String.raw`\b(?:shouldBe|shouldEqual|shouldNot\w*|mustBe|mustEqual)\b|\b(?:should|must)\s+(?:be|equal|contain|have|include|startWith|endWith|matchPattern)\b|\b(?:intercept|assertThrows)\s*\[|\bassertResult\s*\(`,
+    skips: String.raw`^\s*ignore\s*\(|(?:\b(?:it|they)|"[^"\n]*")\s+ignore\b|\b(?:should|must|can)\s+"[^"\n]*"\s+ignore\b|"[^"\n]*"\s*\.(?:ignore|only|flaky)\b|\bpending\b(?!\s*[=:(.])|\bcancel\s*\(`,
+    calls: [
+      { callee: /^withClue$/, messages: (args) => (args.length ? [0] : []) },
+      { callee: /^assertResult$/, messages: none },
+    ],
+  },
+  {
     // busted's `it("adds", function()` and luassert's `assert.are.equal` are read by the shared
     // rows above; LuaUnit names its tests `function TestSum:testAdds()` (#1495).
     name: "busted, LuaUnit",

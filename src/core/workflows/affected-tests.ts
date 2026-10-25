@@ -13,7 +13,7 @@
  * scheduler decides when to run them.
  */
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
-import { dirname, join, posix } from "node:path";
+import { basename, dirname, join, posix } from "node:path";
 import { isTestFile as isLanguageTestFile, isTestFileAt } from "../intelligence/language-traits.js";
 import { INLINE_ROWS_BEGIN, INLINE_ROWS_CLASS } from "./acceptance-rows-inline.js";
 import { isStaticCheck } from "./check-policy.js";
@@ -346,7 +346,7 @@ const flagsOnly = (args: string[], values = VALUE_OPTION): string[] =>
 /**
  * A command that runs only `tests` with the runner of one of the policy's test checks, or null
  * when no check runs a test runner that takes test files (`bun test`, `vitest`, `jest`,
- * `node --test`, `pytest`, `go test`, `rspec`, `rake test`, `dart test`, `phpunit`, `pest`, `busted`, `bats`). Package scripts (`npm test`, `bun run test`) are not
+ * `node --test`, `pytest`, `go test`, `rspec`, `rake test`, `dart test`, `phpunit`, `pest`, `busted`, `bats`, `sbt test`). Package scripts (`npm test`, `bun run test`) are not
  * used: what they pass on is up to the script.
  */
 export function affectedTestCheck(
@@ -421,6 +421,14 @@ export function affectedTestCheck(
       // dart test and flutter test take test files (#1494).
       prefix = ["test", ...flagsOnly(args.slice(1), DART_VALUE_OPTION)];
       targets = files.filter((f) => f.endsWith("_test.dart"));
+    } else if (name === "sbt" && args.includes("test")) {
+      // sbt runs test classes, not files: `testOnly *CalcSuite *CalcSpec`, one sbt command, by the
+      // file names of the Scala tests (#1496).
+      const classes = tests
+        .filter((t) => t.endsWith(".scala"))
+        .map((t) => `*${basename(t, ".scala")}`);
+      prefix = args.filter((a) => a !== "test");
+      targets = classes.length ? [`testOnly ${classes.join(" ")}`] : [];
     } else if (name === "go" && args[0] === "test") {
       prefix = withGateFlags(["test", ...flagsOnly(args.slice(1))], gates.get("go"), 1);
       targets = [

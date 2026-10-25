@@ -81,7 +81,16 @@ Each line is a past bug. A new detector, parser or table row answers it before r
 23. **Build trees are not sources.** A check that writes into the checkout on every run (a CMake `build/` folder) makes every later check `source_changed` unless the project ignores it; `sourceManifest` skips a folder holding `CMakeCache.txt` (#1490). A tool that needs a configure or build step first gets that step as its own gate, in order, since a check runs without a shell.
 24. **Preprocessor lines are code.** The integrity and rule scanners treat a line that starts with `#` as a comment; `#if`, `#ifdef` and `#elif` stay code, so a C or C++ skip under `#ifdef _WIN32` reads as guarded (#1490).
 25. **Bench files the root `.gitignore` hides.** `bin/`, `build/` and the like are ignored at the root, so a bench task's `seed/bin/` or `solution/bin/` is never committed: run `git status --ignored bench/` before the pull request and `git add -f` them (#1497).
-26. **One table, all languages.** When a fix for this language touches a shared rule, sweep it across every supported language (the [file-issue skill](../file-issue/SKILL.md), step 3), and prefer a table row over a wider regex.
+26. **A framework's own skip spellings.** RSpec's `xit`, ScalaTest's `ignore`, package:test's `skip:` go in the framework's `skips` column of `test-frameworks.ts`, not in the shared `SKIPS`, so they never match another language's code (#1493, #1494, #1496).
+27. **Output flags are not static checks.** A flag that only picks the output format (`rspec --format`) leaves the check a test run in `isStaticCheck` (#1493).
+28. **Load failures in the summary.** A runner that counts a test file that did not load as a failure (`dart test`'s `loading x_test.dart [E]`) needs it subtracted from the test count and read as a build failure, not a failed test (#1494).
+29. **Shared assertion rows.** A shared row (the JavaScript `expect`) can misread another language's argument order; add a scoped row whose calls come first (#1494).
+30. **Formatters that exit 0 on a missing path.** `dart format` prints `No file or directory found` and exits 0: it needs a `MISSING_PATH_LINES` entry, or a task that formats a file it has not written passes (#1494).
+31. **Runners that print no totals.** Gradle prints no test count; read the reports it writes (`build/test-results/**/*.xml`) and append them to the check output (#1489).
+32. **The first run compiles.** sbt and SwiftPM print compile and build-step lines only on the run that compiles; strip them from the failure signature, or a repeated failure looks new (#1496, #1492).
+33. **Build-tool formatters.** A formatter that runs through the build tool (`sbt scalafmtOnly`) needs a fixer that passes the file inside the same build command, not as a separate argument (#1496).
+34. **Real output only.** Parser cases are pasted from a real run of the tool. In the cloud, Maven Central's Google mirror (`maven-central.storage-download.googleapis.com/maven2`) and Docker images (`sbtscala/scala-sbt`, `swift`) give real JVM and Swift tools where the default downloads are blocked (#1496, #1492).
+35. **One table, all languages.** When a fix for this language touches a shared rule, sweep it across every supported language (the [file-issue skill](../file-issue/SKILL.md), step 3), and prefer a table row over a wider regex.
 
 ## 4. Tests
 
@@ -111,3 +120,4 @@ Sources of the rakes above, worth a re-read before a language pull request:
 - The 2026-10-17 sibling audit, #1405-#1435: toolchain coverage is uneven, and one fix leaves the other copies of a computation.
 - The 2026-10-20 language sweep, #1678-#1686: fixes written for the language of the run that exposed them missed the other languages.
 - Closed Bug issues on toolchains: #587, #1208, #1228, #1326, #1424, #1425, #1508, #1529, #1537, #1582, #1593, #1749, #1753, #1791, #1815, #1832, #1848, #1907, #1913, #1963, #1995.
+- The 2026-10-25 language lines (Ruby #2120, Kotlin #2122, Dart #2127, Scala, Swift): rakes 26-34.

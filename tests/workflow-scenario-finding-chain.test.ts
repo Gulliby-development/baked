@@ -5,7 +5,8 @@ import { join } from "node:path";
 import { DEFAULT_CONFIG } from "../src/config/index.js";
 import { hashBytes, hashJson } from "../src/core/specs/hash.js";
 import { defaultWorkflowPolicy } from "../src/core/workflows/defaults.js";
-import { CHAIN_REWRITE_AT, type ChainFinding, type ChainRecord, chainMembers, chainRecord, type FamilyRecord, familyKey, findingChain } from "../src/core/workflows/finding-chain.js";
+import { SUPPORTED_LANGUAGES, type SupportedLanguage } from "../src/core/intelligence/language-records.js";
+import { CHAIN_REWRITE_AT, type ChainFinding, type ChainRecord, chainMembers, chainRecord, containsSymbol, type FamilyRecord, familyKey, findingChain, symbolKey } from "../src/core/workflows/finding-chain.js";
 import type { Check, Repro, RunPolicy, Spec, Task } from "../src/core/workflows/schemas.js";
 import { NativeWorkflowService } from "../src/core/workflows/service.js";
 import { newId } from "../src/core/workflows/store.js";
@@ -73,6 +74,17 @@ class ChainExecutor implements AgentExecutor {
   batteryOnly = false;
   /** The cases the sibling probe proposes (#1969), by marker; `pass` is one the code gets right. */
   probe: string[] = [];
+  /**
+   * The first finding names a class and the next a member of it, each `repeatOf` the first, as R68
+   * ewvet scanner F1 (`Scanner`) and F1-3 (`Scanner.IsEncodingToken`) were (#2137).
+   */
+  container = false;
+  /**
+   * The first corrective changes no file, and the reviewer reports its finding again as
+   * `F1-repeat` (`repeatOf: F1`), as R68 ewvet scanner T010 and F1-repeat were (#2137).
+   */
+  emptyFirst = false;
+  private reported = new Set<string>();
   constructor(private root: string) {}
   async execute(request: ExecutionRequest) {
     this.calls.push({ output: request.profile.output, ...(request.task ? { taskId: request.task.id } : {}) });
@@ -97,7 +109,9 @@ class ChainExecutor implements AgentExecutor {
           const row = this.service?.store.latestArtifact(request.runId, `attempts/${request.attemptId}/context.json`);
           const rewrites = this.corrections.filter((c) => c.battery).length;
           this.corrections.push({ taskId: task.id, title: task.title, description: task.description, findingIds: task.findingIds, ...(data.extra.battery ? { battery: data.extra.battery } : {}), saved: row ? JSON.parse(this.service?.store.readArtifact(request.runId, row.id) ?? "{}") : undefined });
-          if (data.extra.battery && this.breakFirstRewrite && rewrites === 0) {
+          if (this.emptyFirst && this.corrections[0]?.taskId === task.id) {
+            // "I made no edits in this task": the corrective reports implemented and changes nothing.
+          } else if (data.extra.battery && this.breakFirstRewrite && rewrites === 0) {
             // Only the newest case of the battery: the earlier one fails again.
             const newest = data.extra.battery.cases.at(-1)?.command.match(/case-(\w)/)?.[1] ?? "";
             writeFileSync(path, `ready case-${newest}`);
@@ -135,11 +149,20 @@ class ChainExecutor implements AgentExecutor {
         const text = readFileSync(path, "utf8");
         const index = this.members.findIndex((m) => !text.includes(`case-${m}`));
         const marker = this.members[index];
-        const findings = marker && this.testFile
+        const again = this.emptyFirst && marker !== undefined && this.reported.has(marker);
+        if (marker) this.reported.add(marker);
+        const findings = marker && again
+          ? [{ id: `F${index + 1}-repeat`, kind: "correctness", severity: "high", basis: "spec", confidence: 0.99, requirementIds: ["FR-001"], criterionIds: ["AC-001"], file: "inline.txt", symbol: "findDelimitedInline", evidenceIds, claim: `Nested delimiter run case-${marker} is still parsed flat`, impact: "Wrong emphasis", suggestedFix: `Handle case-${marker}`, repro: reproFor(marker), repeatOf: `F${index + 1}` }]
+          : marker && this.container
+          ? [{ id: `F${index + 1}`, kind: "missing", severity: "high", basis: "spec", confidence: 0.99, requirementIds: ["FR-001"], criterionIds: ["AC-001"], file: "inline.txt", symbol: index ? "Scanner.IsEncodingToken" : "Scanner", evidenceIds, claim: `Nested delimiter run case-${marker} is parsed flat`, impact: "Wrong emphasis", suggestedFix: `Handle case-${marker}`, repro: reproFor(marker), repeatOf: index ? "F1" : null }]
+          : marker && this.testFile
           ? [{ id: `F${index + 1}`, kind: "partial", severity: "medium", basis: "spec", confidence: 0.9, requirementIds: ["FR-001"], criterionIds: ["AC-001"], file: TEST_FILE, symbol: index ? "nestedRunsInBothModes" : null, evidenceIds, claim: `The tests leave nested delimiter run case-${marker} unchecked`, impact: "A regression would pass", suggestedFix: `Assert case-${marker}`, repeatOf: index ? `F${index}` : null }]
           : marker
           ? [{ id: `F${index + 1}`, kind: "correctness", severity: "high", basis: "spec", confidence: 0.99, requirementIds: ["FR-001"], criterionIds: ["AC-001"], file: "inline.txt", symbol: this.family ? FAMILY_SYMBOLS[index] : index % 2 ? "Inline.findDelimitedInline()" : "findDelimitedInline", evidenceIds, claim: `Nested delimiter run case-${marker} is parsed flat`, impact: "Wrong emphasis", suggestedFix: `Handle case-${marker}`, repro: reproFor(marker), ...(this.family ? { repeatOf: null, family: index === 1 ? "Decimal context precision" : "decimal-context-precision" } : { repeatOf: index ? `F${index}` : null }) }]
           : [];
+        // R68 F1 was a missing finding without a repro: a repro the corrective leaves failing
+        // would block it at submit, before any review saw the repeat.
+        if (this.emptyFirst) for (const finding of findings) delete (finding as { repro?: Repro }).repro;
         output = findings.length
           ? { schemaVersion: 1, snapshotHash: data.snapshotHash, verdict: "changes_requested", coverage: [{ criterionId: "AC-001", verdict: "fail", evidenceIds, explanation: findings[0]?.claim }], findings }
           : pass;
@@ -151,7 +174,7 @@ class ChainExecutor implements AgentExecutor {
   }
 }
 
-async function drive(options: { policy?: Partial<RunPolicy>; quality?: { chainRewrite: "on" | "off"; chainProbe?: "on" | "off" }; breakFirstRewrite?: boolean; family?: boolean; testFile?: boolean; members?: readonly string[]; batteryOnly?: boolean; probe?: string[] }) {
+async function drive(options: { policy?: Partial<RunPolicy>; quality?: { chainRewrite: "on" | "off"; chainProbe?: "on" | "off" }; breakFirstRewrite?: boolean; family?: boolean; testFile?: boolean; members?: readonly string[]; batteryOnly?: boolean; probe?: string[]; container?: boolean; emptyFirst?: boolean }) {
   const root = mkdtempSync(join(tmpdir(), "baked-finding-chain-"));
   cleanups.push(() => rmSync(root, { recursive: true, force: true }));
   const executor = new ChainExecutor(root);
@@ -161,6 +184,8 @@ async function drive(options: { policy?: Partial<RunPolicy>; quality?: { chainRe
   executor.members = options.members ?? MEMBERS;
   executor.batteryOnly = options.batteryOnly ?? false;
   executor.probe = options.probe ?? [];
+  executor.container = options.container ?? false;
+  executor.emptyFirst = options.emptyFirst ?? false;
   const policy: RunPolicy = { ...basePolicy, ...options.policy };
   const config = { ...DEFAULT_CONFIG, defaultModel: "fixture/model", ...(options.quality ? { quality: options.quality } : {}), workflows: { enabled: true, importsEnabled: true, defaultWorkflow: "sdd", policy } };
   const service = new NativeWorkflowService(root, config, executor);
@@ -473,4 +498,109 @@ describe("scenario: R67 ampwhy, a reviewer's repeat on a test file whose first f
     const decisions = artifacts("chains/tasks/") as unknown as ChainRecord[];
     expect(decisions.map((d) => [d.length, d.decision, d.corrective])).toEqual([[2, "patch", undefined]]);
   }, 60000);
+});
+
+describe("scenario: R68 ewvet scanner, a reviewer's repeat from a class to its member (#2137)", () => {
+  test("with chainRewrite on, the member finding linked to the class finding is the second link and rewrites against both cases", async () => {
+    const { done, executor, service, runId, artifacts } = await drive({ quality: { chainRewrite: "on" }, container: true });
+    expect(done.status).toBe("completed");
+    const [patch, rewrite, ...rest] = executor.corrections;
+    expect(rest).toEqual([]);
+    expect(patch?.findingIds).toEqual(["F1"]);
+    expect(rewrite?.findingIds).toEqual(["F2"]);
+    expect(rewrite?.title).toStartWith("Rewrite IsEncodingToken:");
+    expect(rewrite?.battery?.cases.map((c) => c.findingId)).toEqual(["F1", "F2"]);
+    const decisions = artifacts("chains/tasks/") as unknown as ChainRecord[];
+    expect(decisions.map((d) => [d.taskId, d.chain.map((f) => f.id), d.symbols, d.decision])).toEqual([[rewrite?.taskId, ["F1", "F2"], ["Scanner", "IsEncodingToken"], "rewrite"]]);
+    // Both correctives changed the file: no repeat without a change.
+    expect(service.store.eventsOfType(runId, "decision.would_stop").filter((e) => e.type === "decision.would_stop" && e.payload.reason === "repeat_without_change")).toEqual([]);
+  }, 60000);
+});
+
+describe("scenario: R68 ewvet scanner, a finding back after a corrective that changed no file (#2137)", () => {
+  test("the repeat records the repeat_without_change would-stop with the corrective's empty change and the chain, and the run goes on", async () => {
+    // The corrective's own required check passes on the unchanged files, so the host accepts its
+    // empty result as implemented, as T010's was.
+    const { done, executor, service, runId } = await drive({ quality: { chainRewrite: "on" }, policy: { clarification: "assume", checks: [{ ...check, scope: "task" }] }, emptyFirst: true, members: ["a"] });
+    expect(done.status).toBe("completed");
+    const empty = executor.corrections[0];
+    expect(empty?.findingIds).toEqual(["F1"]);
+    // Shadow: the repeat still gets its corrective.
+    expect(executor.corrections.at(-1)?.findingIds).toEqual(["F1-repeat"]);
+    expect(executor.corrections.map((c) => c.findingIds)).toEqual([["F1"], ["F1-repeat"]]);
+    const stops = service.store
+      .eventsOfType(runId, "decision.would_stop")
+      .flatMap((e) => (e.type === "decision.would_stop" && e.payload.reason === "repeat_without_change" ? [e.payload] : []));
+    expect(stops).toEqual([
+      expect.objectContaining({
+        mode: "shadow",
+        key: `task-${empty?.taskId}`,
+        inputs: { findingId: "F1-repeat", earlierId: "F1", taskId: empty?.taskId, changed: [], chain: ["F1", "F1-repeat"] },
+      }),
+    ]);
+  }, 60000);
+});
+
+/**
+ * A container and a member of it in each supported language's qualified-name spelling (#2137). A
+ * language added to `SUPPORTED_LANGUAGES` adds its row, and a new spelling joins `symbolPath`.
+ */
+const CONTAINER_MEMBER: Record<SupportedLanguage, readonly [container: string, member: string]> = {
+  typescript: ["Parser", "Parser.parseInline()"],
+  javascript: ["Parser", "Parser.prototype.parse"],
+  python: ["Reader", "Reader.read"],
+  go: ["Reader", "(*Reader).Read"],
+  rust: ["Reader", "Reader::read"],
+  java: ["Reader", "Reader.read(int)"],
+  kotlin: ["Reader", "Reader.read"],
+  scala: ["Reader", "Reader#read"],
+  csharp: ["Scanner", "Scanner.IsEncodingToken"],
+  c: ["struct reader", "reader->read"],
+  cpp: ["Reader", "Reader::read() const"],
+  ruby: ["Reader", "Reader#read"],
+  php: ["Reader", "App\\Reader->read"],
+  swift: ["Reader", "Reader.read(_:)"],
+  lua: ["Reader", "Reader:read"],
+  elixir: ["Reader", "Reader.read/1"],
+  dart: ["Reader", "Reader.read"],
+  zig: ["Reader", "Reader.read"],
+  bash: ["reader", "reader::read"],
+  ocaml: ["Reader", "Reader.read"],
+  objc: ["Reader", "-[Reader read:]"],
+  vue: ["Reader", "Reader.methods.read"],
+  svelte: ["Reader", "Reader.read"],
+  rescript: ["Reader", "Reader.read"],
+  solidity: ["Vault", "Vault.withdraw"],
+  sql: ["inventory", "inventory.stock_level"],
+  powershell: ["Reader", "[Reader]::Read"],
+};
+
+describe("a reviewer's link between a class and its member joins in every supported language (#2137)", () => {
+  const linked = (id: string, symbol: string, repeatOf: string | null): ChainFinding => ({ id, file: "src/reader", symbol, family: null, repeatOf, repairTaskId: repeatOf ? null : "T005", claim: id, severity: "high", status: "resolved", requirementIds: [], criterionIds: [] });
+
+  test("the table has a row for every supported language", () => {
+    expect(Object.keys(CONTAINER_MEMBER).sort()).toEqual([...SUPPORTED_LANGUAGES].sort());
+  });
+
+  for (const [language, [container, member]] of Object.entries(CONTAINER_MEMBER)) {
+    test(`${language}: ${container} and ${member}`, () => {
+      // The last names differ, so the chain key alone never joined them.
+      expect(symbolKey(member)).not.toBe(symbolKey(container));
+      expect(containsSymbol(container, member)).toBe(true);
+      expect(containsSymbol(member, container)).toBe(true);
+      for (const [first, second] of [[container, member], [member, container]] as const) {
+        const all = new Map([linked("F1", first, null), linked("F2", second, "F1")].map((f) => [f.id, f]));
+        expect(findingChain(all, all.get("F2") as ChainFinding).map((f) => f.id)).toEqual(["F1", "F2"]);
+      }
+    });
+  }
+
+  test("unrelated symbols, a name that only starts like another, and one symbol twice are no container", () => {
+    expect(containsSymbol("Reader", "Writer.write")).toBe(false);
+    expect(containsSymbol("Read", "Reader.read")).toBe(false);
+    expect(containsSymbol("Reader.read", "Reader.read")).toBe(false);
+    expect(containsSymbol(null, "Reader.read")).toBe(false);
+    // A namespace before the container still joins.
+    expect(containsSymbol("Scanner", "Ewvet.Scan.Scanner.IsEncodingToken")).toBe(true);
+  });
 });

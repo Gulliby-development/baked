@@ -290,6 +290,8 @@ const CHECK_COMMAND = new RegExp(
     String.raw`(?:cmake|ctest|clang-format|clang-tidy)\b`,
     // `dart test`, `flutter test`, `dart analyze`, `dart format` (#1494).
     String.raw`(?:dart|flutter)\s+(?:test|analyze|format)\b`,
+    // `sbt -batch test`, `sbt "testOnly *CalcSuite"`, `sbt scalafmtCheckAll` (#1496).
+    String.raw`sbt\b.*\b(?:test|testOnly|compile|scalafmtCheck\w*)\b`,
   ].join("|")})`,
 );
 

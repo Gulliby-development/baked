@@ -95,6 +95,13 @@ export const STOP_REASONS = {
     modes: NOT_ENFORCED,
     defaultMode: "shadow",
   },
+  repeat_without_change: {
+    label: "A finding comes back after its corrective changed no file",
+    // Shadow only until two bench rounds show no false would-stop (#2137); its promotion asks for
+    // an owner or scope decision instead of opening another corrective of the same finding.
+    modes: NOT_ENFORCED,
+    defaultMode: "shadow",
+  },
   edge_crash_finding: {
     label: "A probed case crashes inside a file the probed code's task writes",
     // Shadow only until two bench rounds show no false would-stop (#2136); its promotion makes

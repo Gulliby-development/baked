@@ -16,7 +16,8 @@ export type ProjectLanguage =
   | "sql"
   | "powershell"
   | "lua"
-  | "cpp";
+  | "cpp"
+  | "scala";
 
 /** Gradle build scripts at the workspace root: a Java or Kotlin build (#1489). */
 const GRADLE_BUILDS = [
@@ -83,15 +84,16 @@ export function detectLanguages(workspace: string): ProjectLanguage[] {
   if (names.has("dbt_project.yml") || names.has(".sqlfluff")) out.push("sql");
   // A module manifest or PSScriptAnalyzer settings: a PowerShell module or project (#1498).
   if ([...names].some((name) => /\.psd1$/i.test(name))) out.push("powershell");
+  if (names.has("build.sbt")) out.push("scala");
   return out;
 }
 
 /**
  * The language review profile a run gets when its policy names none and the workspace is a Go,
- * .NET, Rust, Java, Kotlin (Maven or Gradle), Ruby, Dart, PHP, SQL, PowerShell, Lua, C or C++
- * project: these are the languages where a general reviewer misses platform pitfalls (newline, path
- * separator, culture, error handling idioms, PHP's loose comparisons, Lua's one-based indexing, C's
- * undefined behavior; for SQL, dialect, migrations that cannot be reversed and locks; for
+ * .NET, Rust, Java, Kotlin (Maven or Gradle), Ruby, Dart, PHP, SQL, PowerShell, Lua, C, C++ or
+ * Scala project: these are the languages where a general reviewer misses platform pitfalls (newline,
+ * path separator, culture, error handling idioms, PHP's loose comparisons, Lua's one-based indexing,
+ * C's undefined behavior; for SQL, dialect, migrations that cannot be reversed and locks; for
  * PowerShell, pipeline unrolling, non-terminating errors and the differences of Windows PowerShell
  * 5.1).
  */
@@ -101,10 +103,10 @@ export function languageReviewProfile(workspace: string): string | null {
 
 /** Source and build files of the languages above, by extension or file name. */
 const LANGUAGE_FILE =
-  /(\.(go|cs|fs|vb|csproj|fsproj|vbproj|slnx?|props|targets|rs|java|kt|kts|rb|rake|gemspec|dart|php|sql|ps1|psm1|psd1|lua|luau|rockspec|c|h|cc|cpp|cxx|hh|hpp|hxx)$|(^|\/)(go\.mod|go\.sum|Cargo\.toml|Cargo\.lock|pom\.xml|build\.gradle|settings\.gradle|gradle\.properties|libs\.versions\.toml|Gemfile|Gemfile\.lock|Rakefile|pubspec\.yaml|pubspec\.lock|analysis_options\.yaml|composer\.json|composer\.lock|dbt_project\.yml|\.busted|\.luacheckrc|selene\.toml|\.?stylua\.toml|CMakeLists\.txt|meson\.build|vcpkg\.json|conanfile\.(?:txt|py))$)/i;
+  /(\.(go|cs|fs|vb|csproj|fsproj|vbproj|slnx?|props|targets|rs|java|kt|kts|rb|rake|gemspec|dart|php|sql|ps1|psm1|psd1|lua|luau|rockspec|c|h|cc|cpp|cxx|hh|hpp|hxx|scala|sc|sbt)$|(^|\/)(go\.mod|go\.sum|Cargo\.toml|Cargo\.lock|pom\.xml|build\.gradle|settings\.gradle|gradle\.properties|libs\.versions\.toml|Gemfile|Gemfile\.lock|Rakefile|pubspec\.yaml|pubspec\.lock|analysis_options\.yaml|composer\.json|composer\.lock|dbt_project\.yml|\.busted|\.luacheckrc|selene\.toml|\.?stylua\.toml|CMakeLists\.txt|meson\.build|vcpkg\.json|conanfile\.(?:txt|py)|\.scalafmt\.conf)$)/i;
 
 /**
- * Whether a change touches a file of a Go, .NET, Rust, Java, Kotlin, Ruby, Dart, PHP, SQL, PowerShell, Lua, C or C++ project. The language review only
+ * Whether a change touches a file of a Go, .NET, Rust, Java, Kotlin, Ruby, Dart, PHP, SQL, PowerShell, Lua, C, C++ or Scala project. The language review only
  * adds value there: in R08 it ran on changes to READMEs and scripts of such projects and found
  * nothing in four reviews at about 45k tokens each (#592).
  */
