@@ -79,6 +79,9 @@ import {
   STYLE_UNSHOWN,
 } from "../verification/convergence-stop.js";
 import {
+  CASE_WALK_DIR,
+  CASE_WALK_KIND,
+  type CaseWalkRecord,
   type CriterionCase,
   caseCheck as criteriaCaseCheck,
   type RepairFinding,
@@ -717,7 +720,11 @@ import { forgetProgress } from "./stall.js";
 import { statedRequest } from "./stated-request.js";
 import type { AttemptUsageRecord } from "./step-budget.js";
 import { type LeaseResource, newId, type TaskRow, type WorkflowStore } from "./store.js";
-import { isSuppliedContentFinding, suppliedContentFindings } from "./supplied-content.js";
+import {
+  isSuppliedContentFinding,
+  suppliedConflictCriteria,
+  suppliedContentFindings,
+} from "./supplied-content.js";
 import {
   documentsOnly,
   failureOwner,
@@ -5476,6 +5483,19 @@ export class WorkflowScheduler {
               tasks: (state.rootGraph ?? state.graph)?.tasks ?? [],
               // The rows the host wrote are held by its intact blocks (#1997).
               hostRows: generatedRows.filter((file) => file.inline === true),
+              record: (walk) =>
+                this.store.transaction(() =>
+                  this.store.artifact(
+                    runId,
+                    CASE_WALK_KIND,
+                    `${CASE_WALK_DIR}${task.id}.json`,
+                    canonical({
+                      schemaVersion: 1,
+                      taskId: task.id,
+                      ...walk,
+                    } satisfies CaseWalkRecord),
+                  ),
+                ),
               ...(policy.caseSourceProbe === "on"
                 ? { probe: this.caseSourceProbe(runId, state, policy, task, signal) }
                 : {}),
@@ -11521,7 +11541,22 @@ ${note}`;
         isTestPath(p) &&
         (state.testsFirst?.files.includes(p) || !this.createdByRun(runId, state, p)),
     );
-    const criteria = conflictCriteria(spec, report, reported);
+    const cited = conflictCriteria(spec, report, reported);
+    // A report about a test file the request supplies verbatim that cites no criterion: the
+    // criteria whose literals the file lacks are the conflict's (#2006, part c).
+    const supplied = cited.length
+      ? []
+      : suppliedConflictCriteria(
+          spec,
+          task,
+          { tasks },
+          request,
+          { text: report, paths: [...pathsInOutput(report, tasks), ...sideTests(reported)] },
+          { checks: policy.checks },
+        );
+    const criteria = cited.length
+      ? cited
+      : spec.criteria.filter((c) => c.method === "automated" && supplied.includes(c.id));
     const earlier = this.store
       .artifacts(runId)
       .filter(
@@ -11540,6 +11575,7 @@ ${note}`;
       sides: checkedSides(spec, request, report, reported),
       foreignTests: foreign.length,
       criterionIds: criteria.map((c) => c.id),
+      ...(supplied.length ? { supplied: true } : {}),
       reaudit: null,
       reauditedBefore: earlier.some((r) => r.reaudit !== null),
     };

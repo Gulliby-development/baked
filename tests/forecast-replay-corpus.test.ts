@@ -32,6 +32,7 @@ interface Accepted {
   newApplyDecisions?: number;
   newMisquoteFixes?: number;
   newIntegrityFindings?: number;
+  newCaseRefusals?: number;
   newEvidenceDecisions?: number;
   newShareStops?: number;
   newPoolGrowth?: number;
@@ -88,6 +89,7 @@ describe("bench-round traces replay without new forecast stops or growth (#1649)
           newApplyDecisions: run.newApplyDecisions,
           newMisquoteFixes: run.newMisquoteFixes,
           newIntegrityFindings: run.newIntegrityFindings,
+          newCaseRefusals: run.newCaseRefusals,
           newEvidenceDecisions: run.newEvidenceDecisions,
         }).toEqual({
           run: run.runId,
@@ -104,6 +106,7 @@ describe("bench-round traces replay without new forecast stops or growth (#1649)
           newApplyDecisions: allowed?.newApplyDecisions ?? 0,
           newMisquoteFixes: allowed?.newMisquoteFixes ?? 0,
           newIntegrityFindings: allowed?.newIntegrityFindings ?? 0,
+          newCaseRefusals: allowed?.newCaseRefusals ?? 0,
           newEvidenceDecisions: allowed?.newEvidenceDecisions ?? 0,
         });
       }

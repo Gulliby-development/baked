@@ -60,6 +60,11 @@ export interface RequestConflictInput {
   foreignTests: number;
   /** The automated criteria the conflict cites. */
   criterionIds: string[];
+  /**
+   * The criteria came from a test file the request supplies verbatim, not from the report's ids
+   * (#2006, part c): those whose literals the supplied file lacks.
+   */
+  supplied?: true;
   /** The re-audit's verdicts; null when it has not run for this report. */
   reaudit: ReauditVerdict[] | null;
   /** A re-audit of this task's conflict ran before, on an earlier report. */
