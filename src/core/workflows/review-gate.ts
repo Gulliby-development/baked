@@ -26,6 +26,12 @@ export interface GateFinding {
    * is no evidence (#2194). Absent in gates recorded before it.
    */
   noRepro?: boolean;
+  /**
+   * `edgeCrashDecision` on an inconclusive repro's output against the finding's file (#2152,
+   * shadow, `reproCrash`): `finding` when the repro crashed inside that file. Absent when the
+   * repro was not inconclusive, and in records before #2152.
+   */
+  crash?: "finding" | "pass";
 }
 
 export interface ReviewGate {
@@ -112,17 +118,37 @@ export function reviewGateCandidates(gate: ReviewGate): GateFinding[] {
 }
 
 /**
+ * Whether the repro gate lets a finding start a correction (`reproAllows`), or with `crash` also
+ * when its inconclusive repro crashed inside the finding's own file (#2152). The `crash` form is
+ * the shadow rule of `edge_crash_finding`: decided and recorded, not yet applied.
+ */
+const gateAllows = (f: GateFinding, available: boolean, crash: boolean): boolean =>
+  reproAllows(labels(f), f.outcome ?? undefined, available) ||
+  (crash && f.outcome === "inconclusive" && f.crash === "finding");
+
+/**
  * The findings (by ID) that start a correction. A candidate at a repaired severity passes the repro
  * gate (#155); one below it, or kept a note only for its confidence, repairs only when reproduced.
+ * `crash` decides with the shadow crash rule (`gateAllows`).
  */
-export function reviewGateDecision(gate: ReviewGate): string[] {
+export function reviewGateDecision(gate: ReviewGate, crash = false): string[] {
   return reviewGateCandidates(gate)
     .filter((f) =>
       gate.severities.includes(f.severity) && !confidenceOnlyNote(labels(f), gate.minConfidence)
-        ? reproAllows(labels(f), f.outcome ?? undefined, gate.reproAvailable)
+        ? gateAllows(f, gate.reproAvailable, crash)
         : f.outcome === "reproduced",
     )
     .map((f) => f.id);
+}
+
+/**
+ * The findings the repro gate keeps notes that the shadow crash rule would repair (#2152): their
+ * repro was inconclusive and crashed inside the finding's own file. Each records an
+ * `edge_crash_finding` would-stop; nothing changes until the reason is promoted with #2136's.
+ */
+export function reviewGateCrashKeeps(gate: ReviewGate): string[] {
+  const decided = new Set(reviewGateDecision(gate));
+  return reviewGateDecision(gate, true).filter((id) => !decided.has(id));
 }
 
 /** What the convergence gate knows of a finding: the review gate's labels and what the notes rule reads. */
@@ -213,7 +239,7 @@ export function convergenceReproCandidates(gate: ConvergenceGate): ConvergenceGa
  * only such findings name is accepted with them. A finding still repairs below the severity floor
  * when it is why a criterion fails: acceptance needs every automated criterion to pass.
  */
-export function convergenceGateDecision(gate: ConvergenceGate): ConvergenceDecision {
+export function convergenceGateDecision(gate: ConvergenceGate, crash = false): ConvergenceDecision {
   const notes = notesOf(gate);
   const blocks = (f: ConvergenceGateFinding): boolean =>
     findingBlocks(
@@ -228,9 +254,7 @@ export function convergenceGateDecision(gate: ConvergenceGate): ConvergenceDecis
       ? gate.findings
           .filter(
             (f) =>
-              convergenceReproGated(labels(f)) &&
-              !notes.has(f.id) &&
-              !reproAllows(labels(f), f.outcome ?? undefined, true),
+              convergenceReproGated(labels(f)) && !notes.has(f.id) && !gateAllows(f, true, crash),
           )
           .map((f) => f.id)
       : [],
@@ -270,4 +294,15 @@ export function convergenceGateDecision(gate: ConvergenceGate): ConvergenceDecis
     failing: [...failing],
     unreproduced: [...unreproduced],
   };
+}
+
+/**
+ * The convergence findings the gate does not repair that the shadow crash rule would (#2152), as
+ * `reviewGateCrashKeeps` for the review gate.
+ */
+export function convergenceGateCrashKeeps(gate: ConvergenceGate): string[] {
+  const repaired = (decision: ConvergenceDecision) =>
+    decision.verdicts.filter((v) => v.verdict === "repair").map((v) => v.id);
+  const decided = new Set(repaired(convergenceGateDecision(gate)));
+  return repaired(convergenceGateDecision(gate, true)).filter((id) => !decided.has(id));
 }

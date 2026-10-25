@@ -9,6 +9,7 @@ import { BATTERY_CASES } from "../workflows/finding-chain.js";
 import type { ProcessScope } from "../workflows/process-scope.js";
 import { ProbeSchema, type Repro, ReproSchema, type Review } from "../workflows/schemas.js";
 import type { HostTool } from "../workflows/types.js";
+import { caseCrash } from "./edge-inputs.js";
 import { entryPointCommand } from "./entry-points.js";
 import { confidenceOnlyNote } from "./findings.js";
 import { changedPaths, sourceManifest } from "./snapshot.js";
@@ -297,6 +298,23 @@ export function reproAllows(
   const exempt = finding.kind === "security" || finding.severity === "critical";
   if (outcome === "inconclusive") return exempt;
   return exempt || finding.kind !== "correctness";
+}
+
+/**
+ * Whether a reviewer's inconclusive repro crashed inside the finding's own file (#2152, sibling of
+ * #2136): `edgeCrashDecision` on the output's tail against the finding's file, the decision the
+ * edge probe makes for a probed case. `reproAllows` still keeps such a finding a note; the review
+ * and convergence gates record this decision on the finding (`crash`) and an `edge_crash_finding`
+ * would-stop when it would have repaired. Null when the repro was not inconclusive. A repro that
+ * fails on its own (a syntax error, a missing module, frames only outside the file) is `pass`.
+ */
+export function reproCrash(
+  outcome: Pick<ReproOutcome, "status" | "output"> | undefined,
+  file: string | null | undefined,
+): { crash: "finding" | "pass"; actual: string | null } | null {
+  if (outcome?.status !== "inconclusive") return null;
+  const { crash, actual } = caseCrash(outcome, [file ?? null]);
+  return { crash, actual };
 }
 
 /**
