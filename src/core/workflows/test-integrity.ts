@@ -300,6 +300,8 @@ const SKIPS = new RegExp(
     // Pester: `It 'adds' -Skip { }`, `Describe 'x' -Skip:$true`, `Set-ItResult -Skipped` (#1498).
     String.raw`^\s*(?:It|Describe|Context)\b[^{\n]*\s-Skip\b`,
     String.raw`\bSet-ItResult\s+-(?:Skipped|Pending|Inconclusive)\b`,
+    // testthat: `skip("later")`, `skip_if(...)`, `skip_on_cran()` and the rest of the family (#1500).
+    String.raw`(?:^|[^.\w])skip(?:_if(?:_not)?|_on_\w+|_if_offline|_if_not_installed)?\s*\(`,
   ].join("|"),
   "g",
 );
@@ -322,6 +324,9 @@ const CAPABILITY = new RegExp(
     String.raw`\b(?:ImportError|ModuleNotFoundError|PermissionError)\b`,
     String.raw`\b(?:ErrPermission|EPERM|EACCES)\b`,
     String.raw`\b(?:os\.)?[Gg]ete?uid\s*\(`,
+    // testthat's guards that name the platform or a missing capability, and R's platform checks.
+    String.raw`\bskip_(?:on_os|on_cran|on_ci|if_offline|if_not_installed)\s*\(`,
+    String.raw`\.Platform\$OS\.type\b|\bSys\.info\s*\(\s*\)\s*\[`,
   ].join("|"),
 );
 /** Lines above a skip that its guard condition may span. */
@@ -356,6 +361,8 @@ const SUPPRESSIONS = new RegExp(
     String.raw`#!?\[allow\(`,
     String.raw`@SuppressWarnings\b`,
     String.raw`//\s*nolint\b`,
+    // lintr: `# nolint`, `# nolint: object_name_linter.`, `# nolint start` (#1500).
+    String.raw`#\s*nolint\b`,
     String.raw`#pragma\s+warning\s+disable\b`,
     // PSScriptAnalyzer, and the same attribute in C#: `[Diagnostics.CodeAnalysis.SuppressMessageAttribute(...)]` (#1498).
     String.raw`\[(?:System\.)?(?:Diagnostics\.CodeAnalysis\.)?SuppressMessage(?:Attribute)?\s*\(`,

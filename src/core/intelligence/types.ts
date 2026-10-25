@@ -51,6 +51,7 @@ export type Language =
   | "rescript"
   | "solidity"
   | "powershell"
+  | "r"
   | "tlaplus"
   | "elisp"
   | "unknown";
@@ -121,6 +122,11 @@ export const EXT_TO_LANGUAGE: Record<string, Language> = {
   ".ps1": "powershell",
   ".psm1": "powershell",
   ".psd1": "powershell",
+  // R; detection lowercases, so `.r` covers `.R`. R Markdown and Quarto documents are prose with
+  // R chunks, which an R parser cannot read as a whole (#1500).
+  ".r": "r",
+  ".rmd": "markdown",
+  ".qmd": "markdown",
   // OCaml
   ".ml": "ocaml",
   ".mli": "ocaml",
@@ -200,6 +206,7 @@ export const EXT_TO_LANGUAGE: Record<string, Language> = {
 /** Bare filenames (no extension) that map to a language. Lowercased lookup. */
 export const BARE_FILENAME_TO_LANGUAGE: Record<string, Language> = {
   dockerfile: "dockerfile",
+  ".rprofile": "r",
   containerfile: "dockerfile",
   makefile: "makefile",
   gnumakefile: "makefile",

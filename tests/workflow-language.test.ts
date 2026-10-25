@@ -39,6 +39,10 @@ describe("project language", () => {
     expect(detectLanguages(workspace({ "PSScriptAnalyzerSettings.psd1": "@{}" }))).toEqual(["powershell"]);
     expect(detectLanguages(workspace({ "build.ps1": "" }))).toEqual([]);
     expect(touchesLanguageFiles(["src/Sum.psm1"])).toBe(true);
+    // An R package or an renv project (#1500).
+    expect(detectLanguages(workspace({ DESCRIPTION: "Package: sumr\n" }))).toEqual(["r"]);
+    expect(detectLanguages(workspace({ "renv.lock": "{}" }))).toEqual(["r"]);
+    expect(touchesLanguageFiles(["R/sum.R"])).toBe(true);
   });
   test(".NET solutions rank before projects", () => {
     expect(dotnetFiles(workspace({ "b.csproj": "", "a.sln": "", "c.slnx": "", "readme.md": "" }))).toEqual([

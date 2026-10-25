@@ -164,6 +164,24 @@ describe("the test-integrity guard reads every listed framework (#1651)", () => 
     expect(scan("src/Sum.ps1", "function Get-Sum {\n  param()\n}\n", suppressed).map((f) => f.rule)).toEqual(["suppression"]);
   });
 
+  test("R testthat: a removed test_that is flagged by name, its expectations counted (#1500)", () => {
+    const before = `test_that("adds", {\n  expect_equal(add(1, 1), 2)\n})\n\ntest_that("subtracts", {\n  expect_equal(sub(2, 1), 1)\n})\n`;
+    const after = before.replace(`\ntest_that("subtracts", {\n  expect_equal(sub(2, 1), 1)\n})\n`, "");
+    const found = scan("tests/testthat/test-math.R", before, after);
+    expect(found.map((f) => f.rule)).toEqual(["test-count", "assertions"]);
+    expect(found[0]?.detail).toContain('"subtracts"');
+  });
+
+  test("R testthat: skip() and # nolint are flagged; skip_on_os is a platform guard (#1500)", () => {
+    const before = `test_that("adds", {\n  expect_equal(add(1, 1), 2)\n})\n`;
+    const skipped = before.replace("  expect_equal", '  skip("later")\n  expect_equal');
+    expect(scan("tests/testthat/test-math.R", before, skipped).map((f) => f.rule)).toEqual(["skip"]);
+    const guarded = before.replace("  expect_equal", '  skip_on_os("windows")\n  expect_equal');
+    expect(scan("tests/testthat/test-math.R", before, guarded)).toEqual([]);
+    const suppressed = "add <- function(a, b) {\n  myVar <- a + b # nolint: object_name_linter.\n  myVar\n}\n";
+    expect(scan("R/add.R", "add <- function(a, b) {\n  a + b\n}\n", suppressed).map((f) => f.rule)).toEqual(["suppression"]);
+  });
+
   test("a framework's patterns are read only in its language's files", () => {
     // A Kotest-looking line in TypeScript, and t.Run in Python, are not tests.
     const ts = `const table = {\n  "adds" { }\n};\n`;

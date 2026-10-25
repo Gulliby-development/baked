@@ -38,7 +38,7 @@ describe("the language table", () => {
 
   test("the languages the per-language issues name are code (#1489-#1500)", () => {
     // SQL is a language since #1499: SQLFluff lints it, so a task that writes SQL gets the lint gate.
-    for (const path of ["a.lua", "a.luau", "a.dart", "a.scala", "a.kt", "a.c", "a.cc", "a.hpp", "a.swift", "a.rb", "a.php", "a.sh", "a.svelte", "a.pyi", "a.sql", "a.ps1", "a.psm1"])
+    for (const path of ["a.lua", "a.luau", "a.dart", "a.scala", "a.kt", "a.c", "a.cc", "a.hpp", "a.swift", "a.rb", "a.php", "a.sh", "a.svelte", "a.pyi", "a.sql", "a.ps1", "a.psm1", "a.R", "a.r"])
       expect([path, isCodeFile(path)]).toEqual([path, true]);
   });
 

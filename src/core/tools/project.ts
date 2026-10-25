@@ -4,7 +4,7 @@ import { dirname, join, resolve } from "node:path";
 import type { ToolResult } from "../../types/index.js";
 import { getCwd } from "../cwd.js";
 import { logBackgroundError } from "../diagnostics/errors.js";
-import { bunShellArgs, IS_WIN, pwshExecutable } from "../platform/index.js";
+import { bunShellArgs, IS_WIN, pwshExecutable, rscriptExecutable } from "../platform/index.js";
 import { chatSandbox, SandboxUnavailableError, sandboxNotice } from "../security/sandbox.js";
 import { buildSafeEnv } from "../spawn.js";
 import { executeCheckCommand } from "../verification/check-runner.js";
@@ -412,6 +412,19 @@ async function detectToolchain(cwd: string): Promise<DetectedToolchain> {
     const pwsh = pwshExecutable();
     profile.test = `${pwsh} -NoProfile -Command Invoke-Pester`;
     profile.lint = `${pwsh} -NoProfile -Command "Invoke-ScriptAnalyzer -Path . -Recurse -EnableExit"`;
+    return profile;
+  }
+
+  // R — a package (DESCRIPTION) or a project with testthat tests (#1500). The edit-time format is
+  // styler on the file, which Rscript passes to the expression after it.
+  if ((await has("DESCRIPTION")) || (await has("tests/testthat"))) {
+    const pkg = await has("DESCRIPTION");
+    const r = rscriptExecutable();
+    const quoted = r.includes(" ") ? `"${r}"` : r;
+    profile.test = `${quoted} -e "${pkg ? "testthat::test_local()" : "testthat::test_dir('tests/testthat')"}"`;
+    profile.lint = `${quoted} -e "${pkg ? "lintr::lint_package()" : "lintr::lint_dir('.')"}"`;
+    profile.build = pkg ? "R CMD build ." : null;
+    profile.format = `${quoted} -e "styler::style_file(commandArgs(TRUE))"`;
     return profile;
   }
 

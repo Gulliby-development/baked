@@ -161,6 +161,7 @@ export const REPLAY_TARGETS: Record<
   vitest: { none: "Vitest runs each test file as its own suite" },
   tap: { none: "a TAP runner reports each test file on its own" },
   pester: { none: "Pester runs each test file as its own container" },
+  testthat: { none: "testthat runs each test file in its own environment" },
   go: { none: "go test builds each package on its own, and a package's files build together" },
   // A collection error aborts the session; this flag collects and runs the other files, and each
   // file that does not collect is named in an "ERROR collecting" line.

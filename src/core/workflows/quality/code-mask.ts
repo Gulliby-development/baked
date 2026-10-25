@@ -98,6 +98,20 @@ const cppRaw: Rule = (text, at) => {
   };
 };
 
+/** R raw strings (R 4.0): `r"(…)"`, `R'[…]'`, `r"{…}"`, with dashes: `r"--(…)--"`. */
+const rRaw: Rule = (text, at) => {
+  const match = /^[rR](["'])(-*)([([{])/.exec(text.slice(at, at + 64));
+  if (!match || /[\w.]/.test(text[at - 1] ?? "")) return null;
+  const close = { "(": ")", "[": "]", "{": "}" }[match[3] as "(" | "[" | "{"];
+  return {
+    comment: false,
+    open: match[0].length,
+    close: `${close}${match[2]}${match[1]}`,
+    escape: null,
+    multiline: true,
+  };
+};
+
 /** Lua long brackets: `[[…]]`, `[==[…]==]`, and the comments `--[[…]]`. */
 const luaLong =
   (comment: boolean): Rule =>
@@ -165,6 +179,9 @@ const SYNTAX: Record<string, Rule[]> = {
     quoted('"', { escape: "`", multiline: true }),
     quoted("'", { escape: null, multiline: true }),
   ],
+  // R (#1500): `#` comments, raw strings, and `"…"` and `'…'` with backslash escapes, which may
+  // span lines. Backticks quote a name, which is code.
+  r: [lineComment("#"), rRaw, quoted('"', { multiline: true }), quoted("'", { multiline: true })],
   // Zig, Solidity and ReScript: C comments and strings, ReScript's backtick templates.
   clike: [...C_COMMENTS, ...C_STRINGS, quoted("`", { multiline: true })],
   // Vue and Svelte components: HTML comments around a JavaScript or TypeScript script block.
@@ -210,6 +227,7 @@ export const MASK_SYNTAX: LanguageRecord<keyof typeof SYNTAX> = {
   ocaml: "ocaml",
   sql: "sql",
   powershell: "powershell",
+  r: "r",
 };
 
 const LANGUAGE: Record<string, keyof typeof SYNTAX> = {

@@ -254,6 +254,16 @@ export const PLACEHOLDERS: LanguageRecord<Placeholder> = {
       /\bthrow\s+(?:\[(?:System\.)?NotImplementedException\]|\(?\s*New-Object\s+(?:System\.)?NotImplementedException\b)/i,
     ),
   ),
+  // `stop("not implemented")`, rlang's `abort(...)`, and base R's `.NotYetImplemented()` (#1500).
+  r: anyOf(
+    statement(
+      new RegExp(
+        String.raw`\b(?:stop|(?:rlang::)?abort|cli::cli_abort)\s*\(\s*["']${NOT_IMPLEMENTED}`,
+        "i",
+      ),
+    ),
+    statement(/\.NotYetImplemented\s*\(/),
+  ),
   cpp: anyOf(
     statement(THROW_NEW),
     statement(new RegExp(String.raw`throw\s+std::\w+\(\s*"${NOT_IMPLEMENTED}`, "i")),

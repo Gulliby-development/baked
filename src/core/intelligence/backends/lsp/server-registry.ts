@@ -86,6 +86,8 @@ const SERVER_CANDIDATES: Record<string, ServerCandidate[]> = {
     { command: "sqls", args: [] },
     { command: "sql-language-server", args: ["up", "--method", "stdio"] },
   ],
+  // The languageserver package from CRAN, started by R itself (#1500).
+  r: [{ command: "R", args: ["--no-echo", "-e", "languageserver::run()"] }],
 };
 
 /**

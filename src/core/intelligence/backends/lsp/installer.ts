@@ -418,6 +418,7 @@ const PROJECT_INDICATORS: Record<string, string[]> = {
   Swift: ["Package.swift", "*.swift"],
   Dart: ["pubspec.yaml", "*.dart"],
   SQL: ["*.sql", ".sqlfluff", "dbt_project.yml"],
+  R: ["DESCRIPTION", "renv.lock", "*.R", "*.r"],
 };
 
 /** Detect which languages are used in the current project */

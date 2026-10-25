@@ -256,6 +256,7 @@ export const ENTRY_POINTS: LanguageRecord<readonly EntryReader[]> = {
   powershell: none(
     "a script is run by its path; a module's functions are imported, not installed as commands",
   ),
+  r: none("an R package exports functions; scripts run with Rscript by their path"),
 };
 
 const READERS: readonly EntryReader[] = [

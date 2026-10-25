@@ -242,6 +242,16 @@ const FRAMEWORKS: readonly TestFramework[] = [
     named: [{ pattern: /^\s*It\s+(['"])(?<name>(?:(?!\1)[^\n])+)\1/d }],
     assertions: String.raw`\bShould\s+-(?:Not)?[A-Z]\w*|\bShould-[A-Z]\w*`,
   },
+  {
+    // `test_that("adds", { expect_equal(add(1, 2), 3, info = "...") })` (#1500).
+    name: "testthat",
+    languages: ["r"],
+    cases: String.raw`\btest_that\s*\(`,
+    named: [{ pattern: /\btest_that\s*\(\s*(["'])(?<name>(?:(?!\1)[^\\\n])+)\1/d }],
+    assertions: String.raw`\bexpect_\w+\s*\(`,
+    calls: [{ callee: /^(?:testthat::)?fail$/, messages: from(0) }],
+    messageArgument: String.raw`^\s*(?:info|label)\s*=`,
+  },
 ];
 
 const FLUENT = /\.Should\s*\(\s*\)/;
