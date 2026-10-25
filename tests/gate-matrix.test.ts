@@ -3026,9 +3026,9 @@ describe.skipIf(!toolchains)("gate matrix: toolchains", () => {
     "a Composer project's detected gates run, and their output reads as the parsers expect (#1491)",
     async () => {
       const testClass = (name: string, body: string) =>
-        `<?php\ndeclare(strict_types=1);\n\nnamespace App\\Tests;\n\nuse PHPUnit\\Framework\\TestCase;\n\nfinal class ${name} extends TestCase\n{\n${body}}\n`;
-      const adds = "    public function testAdds(): void\n    {\n        self::assertSame(3, \\App\\sum(1, 2));\n    }\n";
-      const commutes = "    public function testCommutes(): void\n    {\n        self::assertSame(3, \\App\\sum(2, 2));\n    }\n";
+        `<?php\n\ndeclare(strict_types=1);\n\nnamespace App\\Tests;\n\nuse PHPUnit\\Framework\\TestCase;\n\nfinal class ${name} extends TestCase\n{\n${body}}\n`;
+      const adds = "    public function test_adds(): void\n    {\n        self::assertSame(3, \\App\\sum(1, 2));\n    }\n";
+      const commutes = "    public function test_commutes(): void\n    {\n        self::assertSame(3, \\App\\sum(2, 2));\n    }\n";
       const root = project({
         "composer.json": JSON.stringify({
           name: "fixture/sum",
@@ -3051,9 +3051,9 @@ describe.skipIf(!toolchains)("gate matrix: toolchains", () => {
       const failing = await run(byId("phpunit"));
       expect(failing.status).toBe("failed");
       expect(testCount(failing.outputTail)).toEqual({ tool: "phpunit", count: 2 });
-      expect(failedTests(failing.outputTail)).toEqual({ tool: "phpunit", names: ["App\\Tests\\SumTest::testCommutes"] });
+      expect(failedTests(failing.outputTail)).toEqual({ tool: "phpunit", names: ["App\\Tests\\SumTest::test_commutes"] });
       expect(timedOutFailure(failing.outputTail)).toBe(true);
-      writeFileSync(join(root, "tests/MaxTest.php"), testClass("MaxTest", "    public function testMax(): void\n    {\n        self::assertSame(2, max(1, 2));\n    }\n"));
+      writeFileSync(join(root, "tests/MaxTest.php"), testClass("MaxTest", "    public function test_max(): void\n    {\n        self::assertSame(2, max(1, 2));\n    }\n"));
       const grown = await run(byId("phpunit"));
       expect(testCount(grown.outputTail)).toEqual({ tool: "phpunit", count: 3 });
       expect(failureSignature(grown.outputTail, root)).toBe(failureSignature(failing.outputTail, root));
