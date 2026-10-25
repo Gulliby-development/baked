@@ -131,7 +131,9 @@ export function scopeRecord(
     taskId: task.id,
     at,
     failing: [
-      ...new Set(own.map((f) => state.repairPredecessors?.[f.id]).filter((id): id is string => !!id)),
+      ...new Set(
+        own.map((f) => state.repairPredecessors?.[f.id]).filter((id): id is string => !!id),
+      ),
     ],
     checks: [...new Set(own.map((f) => TASK_CHECK_FAILED.exec(f.claim)?.[1] ?? ""))],
     diagnosed,
