@@ -25,6 +25,8 @@ const SKIPPED = new Set([
   ".gradle",
   ".idea",
   "__pycache__",
+  // dbt's installed packages (#1499).
+  "dbt_packages",
 ]);
 const SCAN_LIMIT = 2000;
 const LISTED_LIMIT = 80;

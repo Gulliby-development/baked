@@ -418,6 +418,7 @@ export const PACKAGE_CONTENTS: LanguageRecord<readonly PackageTool[]> = {
   ocaml: none("opam packages are source archives; no package is built"),
   objc: none("CocoaPods packaging is not built yet"),
   solidity: none("Solidity libraries are published through npm, read by the npm row"),
+  sql: none("SQL files are deployed as migrations or models, not built into a package"),
 };
 
 const TOOLS: readonly PackageTool[] = [

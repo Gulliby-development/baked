@@ -1,0 +1,31 @@
+{
+  "id": "sql-sqlfluff-migration",
+  "language": "sql",
+  "toolchain": "sqlfluff",
+  "requires": [
+    "sqlfluff",
+    "python3"
+  ],
+  "allowedPaths": [
+    "sql/**",
+    "tests/**",
+    "README.md",
+    ".sqlfluff"
+  ],
+  "checks": [
+    {
+      "id": "sqlfluff",
+      "executable": "sqlfluff",
+      "args": [
+        "lint",
+        "."
+      ],
+      "fix": {
+        "executable": "sqlfluff",
+        "args": [
+          "fix"
+        ]
+      }
+    }
+  ]
+}

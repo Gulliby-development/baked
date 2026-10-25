@@ -75,6 +75,7 @@ const SUPPORTED_LANGUAGES: Set<Language> = new Set([
   "yaml",
   "dockerfile",
   "vue",
+  "sql",
 ]);
 
 export class LspBackend implements IntelligenceBackend {
