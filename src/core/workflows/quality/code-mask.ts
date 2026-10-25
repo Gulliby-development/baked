@@ -9,8 +9,11 @@ interface Region {
   open: number;
   /** The closing delimiter; null ends the region at the end of the line. */
   close: string | null;
-  /** `\` escapes the next character; `""` is an escaped quote (C# verbatim strings). */
-  escape: "\\" | '""' | null;
+  /**
+   * `\` (or PowerShell's backtick) escapes the next character; `""` is an escaped quote (C#
+   * verbatim strings).
+   */
+  escape: "\\" | "`" | '""' | null;
   multiline: boolean;
   /** `${` opens code inside the string (JavaScript template literals). */
   interpolation?: boolean;
@@ -151,6 +154,17 @@ const SYNTAX: Record<string, Rule[]> = {
     blockComment("/*", "*/"),
     quoted("'", { escape: null, multiline: true }),
   ],
+  // PowerShell (#1498): `#` and `<# #>` comments; here-strings `@"…"@` and `@'…'@` close at a line
+  // that starts with the quote; a backtick escapes in double-quoted strings, a doubled quote closes
+  // and reopens a single-quoted one. `$(…)` inside a double-quoted string is masked with it.
+  powershell: [
+    blockComment("<#", "#>"),
+    lineComment("#"),
+    quoted('@"', { close: '\n"@', escape: null, multiline: true }),
+    quoted("@'", { close: "\n'@", escape: null, multiline: true }),
+    quoted('"', { escape: "`", multiline: true }),
+    quoted("'", { escape: null, multiline: true }),
+  ],
   // Zig, Solidity and ReScript: C comments and strings, ReScript's backtick templates.
   clike: [...C_COMMENTS, ...C_STRINGS, quoted("`", { multiline: true })],
   // Vue and Svelte components: HTML comments around a JavaScript or TypeScript script block.
@@ -195,6 +209,7 @@ export const MASK_SYNTAX: LanguageRecord<keyof typeof SYNTAX> = {
   rescript: "clike",
   ocaml: "ocaml",
   sql: "sql",
+  powershell: "powershell",
 };
 
 const LANGUAGE: Record<string, keyof typeof SYNTAX> = {
@@ -305,7 +320,7 @@ function scan(path: string, text: string, strings: boolean): string {
       i++;
       continue;
     }
-    if (region.escape === "\\" && c === "\\") {
+    if ((region.escape === "\\" || region.escape === "`") && c === region.escape) {
       blank(i, i + 2);
       i += 2;
       continue;

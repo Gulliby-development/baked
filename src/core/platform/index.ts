@@ -257,6 +257,13 @@ export function processTreeAlive(pid: number, sinceMs: number, scope?: string): 
 
 // ── Command detection ──────────────────────────────────────────
 
+/**
+ * PowerShell 7 (`pwsh`) runs on Windows, macOS and Linux; a Windows machine without it has
+ * Windows PowerShell 5.1 (`powershell`), which runs Pester 5 and PSScriptAnalyzer too (#1498).
+ */
+export const pwshExecutable = (): string =>
+  IS_WIN && !commandExists("pwsh") ? "powershell" : "pwsh";
+
 export function commandExists(bin: string): boolean {
   if (IS_WIN) {
     const result = spawnSync("where", [bin], {
