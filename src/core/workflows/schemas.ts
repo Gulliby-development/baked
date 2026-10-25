@@ -685,6 +685,13 @@ export const PolicySchema = z
      */
     misquoteFix: z.literal("on").optional(),
     /**
+     * The edge-input probe of a source task (edge-inputs.ts, #1808): `on` asks the `edge-cases`
+     * profile once per planned source task that settled without failures for extreme legal inputs
+     * its criteria allow; the host runs them through the project's entry points and a case that
+     * prints something else becomes a finding of that task before the test tasks run. Absent is off.
+     */
+    edgeProbe: z.literal("on").optional(),
+    /**
      * The cross-run list of defect classes (defect-classes.ts, #1970): `on` lets the run's learn
      * stage add the families of its resolved correctness findings to the list in the BAKED data
      * directory, and shows its planner and planned implementers the classes of the domains its
@@ -861,6 +868,7 @@ export const ProfileSchema = z
       "distinction",
       "revision",
       "chain-family",
+      "edge-cases",
     ]),
     maxSteps: z.number().int().min(1).max(100),
     maxOutputTokens: z.number().int().min(256).max(65536),
@@ -1153,6 +1161,23 @@ export const ChainFamilySchema = z
   })
   .strict();
 export type ChainFamily = z.infer<typeof ChainFamilySchema>;
+
+/**
+ * The extreme legal inputs an `edge-cases` profile proposes for a source task (#1808): each case
+ * is a repro without `actual`, since the host runs it and a case whose output does not show
+ * `expected` becomes a finding, and names the criterion that allows its input. At most
+ * `EDGE_CASES` (edge-inputs.ts) cases run.
+ */
+export const EdgeCasesSchema = z
+  .object({
+    schemaVersion: z.literal(1),
+    cases: z
+      .array(ReproSchema.omit({ actual: true }).extend({ criterionId: z.string().min(1).max(64) }))
+      .max(16),
+    rationale: Text,
+  })
+  .strict();
+export type EdgeCases = z.infer<typeof EdgeCasesSchema>;
 
 export const CritiqueSchema = z
   .object({

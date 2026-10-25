@@ -39,6 +39,7 @@
     "formatters": null,
     "packageContents": [
       "package.json: npm-pack"
-    ]
+    ],
+    "numericLimits": null
   }
 }

@@ -57,6 +57,10 @@
     ],
     "packageContents": [
       "src/App/App.csproj: nupkg"
+    ],
+    "numericLimits": [
+      "int arithmetic wraps unless checked; int.Parse fails past Int32",
+      "decimal holds 28 to 29 significant digits"
     ]
   }
 }

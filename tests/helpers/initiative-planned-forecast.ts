@@ -100,7 +100,7 @@ export async function historyFixture(featureUsd: number, mix: Mix = {}) {
 
 export async function plannedForecastScenario(
   count: number, firstUsd: number | Record<string, number>, histories: string[],
-  options: { forecastStop?: boolean; stopModes?: RunPolicy["stopModes"]; mix?: Mix; skeleton?: boolean; capUsd?: number | null; maxTotalTokens?: number; extendWithinDollars?: "off" | "shadow" } = {},
+  options: { forecastStop?: boolean; stopModes?: RunPolicy["stopModes"]; mix?: Mix; skeleton?: boolean; capUsd?: number | null; maxTotalTokens?: number; extendWithinDollars?: "off" | "shadow"; costTolerance?: number | "off" } = {},
 ) {
   const skeleton = options.skeleton ?? true;
   const fixture = workflowFixture({ executor: (root) => new ScriptedExecutor(root, firstUsd, skeleton, options.mix) });
@@ -123,7 +123,7 @@ export async function plannedForecastScenario(
       policy: { ...fixturePolicy, clarification: "assume", checks: [{ ...fixturePolicy.checks[0]!, args: ["-e", "0"] }], sizing: { maxRunTokens: 50_000_000, historyStores: histories },
         ...(options.stopModes ? { stopModes: options.stopModes } : {}) },
       budget: { maxTotalTokens: options.maxTotalTokens ?? 100_000_000, maxAgentCalls: 1000, maxActiveMs: 21_600_000 },
-      ...(options.capUsd === null ? {} : { costBudget: { maxCostUsd: options.capUsd ?? 30, costTolerance: 0.25 } }),
+      ...(options.capUsd === null ? {} : { costBudget: { maxCostUsd: options.capUsd ?? 30, costTolerance: options.costTolerance ?? 0.25 } }),
     });
     const identity = () => ({ commandId: newId(), expectedRevision: initiatives.view("values").revision });
     const decision = view.pendingDecisions.find((d) => d.scope === "initiative")!;

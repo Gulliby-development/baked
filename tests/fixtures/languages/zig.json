@@ -35,6 +35,9 @@
       "src/sum_test.zig:5 comment",
       "build.zig:1"
     ],
-    "packageContents": null
+    "packageContents": null,
+    "numericLimits": [
+      "integer overflow is a panic in safe builds"
+    ]
   }
 }

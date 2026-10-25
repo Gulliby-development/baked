@@ -16,9 +16,10 @@ async function scenario(mode?: StopMode) {
   const history = await historyFixture(1, { taskShare: 0.8 });
   cleanups.push(() => history.dispose());
   // $4.70: after f1's $2, the $2.69 left covers the next three features at the history's price
-  // and not at the price f1 paid.
+  // and not at the price f1 paid. Without a tolerance band the ceiling is the cap, so the shortage
+  // holds at one measured feature too (#2099).
   const result = await plannedForecastScenario(4, 2, [history.root], {
-    mix: { taskShare: 0.1, planCache: 0 }, skeleton: false, capUsd: 4.7,
+    mix: { taskShare: 0.1, planCache: 0 }, skeleton: false, capUsd: 4.7, costTolerance: "off",
     ...(mode ? { stopModes: { "initiative-dollar-share": mode } } : {}),
   });
   cleanups.push(() => result.fixture.dispose());
