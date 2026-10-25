@@ -35,6 +35,15 @@ import {
 } from "../verification/edge-inputs.js";
 import { planApprovalDecision, requestedPathTokens } from "./auto-approval.js";
 import { callCostRate } from "./budget.js";
+import {
+  CONFLICT_FINISH_DIR,
+  CONFLICT_FINISH_KIND,
+  type ConflictFinishBranch,
+  type ConflictFinishRecord,
+  type ConflictFinishRule,
+  conflictFinishDecision,
+  conflictFinishReady,
+} from "./conflict-finish.js";
 import { assertForecastFits, costForecast } from "./cost-forecast.js";
 import { WorkflowFault } from "./errors.js";
 import {
@@ -177,6 +186,8 @@ const KEPT_ARTIFACTS = new Set([
   REVIEW_GATE_KIND,
   // Each decision for the request or the platform on checked evidence: states, no quotes (#2032).
   EVIDENCE_DECISION_KIND,
+  // Each settled conflict's host finish decision: edits, case and check counts, no text (#2033).
+  CONFLICT_FINISH_KIND,
 ]);
 
 /** Tables that hold evidence, effects or prose the replay never reads. */
@@ -713,6 +724,64 @@ export interface RunReplay {
   evidenceDecisions: EvidenceDecisionBoundary[];
   /** Findings and conflict reports the current rule settles differently than the recording. */
   newEvidenceDecisions: number;
+  /** Each settled conflict's host finish decision against the current rule (#2033). */
+  conflictFinishes: ConflictFinishBoundary[];
+  /** Settled conflicts the current rule finishes on the host, or not, differently. */
+  newConflictFinishes: number;
+}
+
+export interface ConflictFinishBoundary {
+  taskId: string;
+  branch: ConflictFinishBranch;
+  mode: ConflictFinishRecord["mode"];
+  /** The tree was ready for the checks: edits, intact rows, no open case. */
+  ready: boolean;
+  recorded: boolean;
+  replayed: boolean;
+}
+
+/**
+ * Every host finish decision of a settled conflict a run recorded (`conflicts/finish/`, #2033),
+ * decided again from its recorded counts and check statuses. A shadow record ran no checks, so
+ * it finishes under no rule that needs one; `ready` says whether `on` would have run them.
+ * Traces before #2033 record none.
+ */
+export function replayConflictFinishes(
+  store: WorkflowStore,
+  runId: string,
+  decide: ConflictFinishRule = conflictFinishDecision,
+): ConflictFinishBoundary[] {
+  return store
+    .artifacts(runId)
+    .filter(
+      (a) => a.kind === CONFLICT_FINISH_KIND && a.logical_path.startsWith(CONFLICT_FINISH_DIR),
+    )
+    .flatMap((artifact) => {
+      let record: ConflictFinishRecord;
+      try {
+        record = JSON.parse(store.readArtifact(runId, artifact.id));
+      } catch {
+        return [];
+      }
+      const input = {
+        branch: record.branch,
+        edits: record.edits ?? 0,
+        rows: record.rows ?? null,
+        cases: record.cases ?? 0,
+        overruled: record.overruled ?? 0,
+        checks: record.checks ?? null,
+      };
+      return [
+        {
+          taskId: record.taskId,
+          branch: record.branch,
+          mode: record.mode,
+          ready: conflictFinishReady(input),
+          recorded: record.finish,
+          replayed: decide(input),
+        },
+      ];
+    });
 }
 
 export interface EvidenceDecisionBoundary {
@@ -2883,6 +2952,8 @@ function replayRun(
   | "newGateRepairs"
   | "evidenceDecisions"
   | "newEvidenceDecisions"
+  | "conflictFinishes"
+  | "newConflictFinishes"
 > | null {
   const db = store.connection;
   const run = store.run(runId);
@@ -3064,6 +3135,7 @@ export function replayTrace(
     caseWalkRule?: CaseWalkRule;
     reviewGateRule?: ReviewGateRule;
     evidenceRule?: EvidenceRule;
+    conflictFinishRule?: ConflictFinishRule;
   } = {},
 ): TraceReplay {
   // Initiative starts rewind their own copies of the trace, before the run replay rewinds this one.
@@ -3133,6 +3205,12 @@ export function replayTrace(
     const evidence = new Map(
       runIds.map((runId) => [runId, replayEvidenceDecisions(store, runId, options.evidenceRule)]),
     );
+    const finishes = new Map(
+      runIds.map((runId) => [
+        runId,
+        replayConflictFinishes(store, runId, options.conflictFinishRule),
+      ]),
+    );
     const runs: RunReplay[] = [];
     for (const runId of runIds) {
       const firstByte = timings.get(runId) ?? [];
@@ -3161,6 +3239,7 @@ export function replayTrace(
       const caseWalks = walks.get(runId) ?? [];
       const reviewGates = reviews.get(runId) ?? [];
       const evidenceDecisions = evidence.get(runId) ?? [];
+      const conflictFinishes = finishes.get(runId) ?? [];
       if (
         !replay.boundaries.length &&
         !firstByte.length &&
@@ -3176,7 +3255,8 @@ export function replayTrace(
         !integrity.length &&
         !caseWalks.length &&
         !reviewGates.length &&
-        !evidenceDecisions.length
+        !evidenceDecisions.length &&
+        !conflictFinishes.length
       )
         continue;
       runs.push({
@@ -3222,6 +3302,8 @@ export function replayTrace(
         ),
         evidenceDecisions,
         newEvidenceDecisions: evidenceDecisions.filter((b) => b.replayed !== b.recorded).length,
+        conflictFinishes,
+        newConflictFinishes: conflictFinishes.filter((b) => b.replayed !== b.recorded).length,
       });
     }
     const gates = replayShareGate(store, options.shareGate);
