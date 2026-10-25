@@ -4,10 +4,12 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { DEFAULT_CONFIG } from "../src/config/index.js";
 import { hashBytes, hashJson } from "../src/core/specs/hash.js";
-import { evidencePaths, findingOrigin, hostDecision, SCOPE_EDITS_DIR, type ScopeEdit, type ScopeEvidence, scopeRecord, scopeRecords, stackFrames, unownedRule } from "../src/core/workflows/corrective-scope.js";
+import { evidencePaths, findingOrigin, hostDecision, SCOPE_EDITS_DIR, type ScopeEdit, type ScopeEvidence, type ScopeRecord, scopeRecord, scopeRecords, stackFrames, unownedBlockAdvice, unownedRemedies, unownedRule } from "../src/core/workflows/corrective-scope.js";
+import { recoveryOf } from "../src/core/workflows/remedies.js";
 import { defaultWorkflowPolicy } from "../src/core/workflows/defaults.js";
 import type { Check, RunPolicy, Spec, Task } from "../src/core/workflows/schemas.js";
 import { NativeWorkflowService } from "../src/core/workflows/service.js";
+import { stopRecovery } from "../src/core/workflows/stop-detail.js";
 import { newId } from "../src/core/workflows/store.js";
 import { exportTrace, replayTrace } from "../src/core/workflows/trace.js";
 import type { AgentExecutor, ExecutionRequest, RuntimeState } from "../src/core/workflows/types.js";
@@ -278,6 +280,78 @@ describe("scenario: R68 url-shortener, a corrective whose evidence names another
     expect((JSON.parse(service.store.readArtifact(runId, probe?.id ?? "")) as { cases: { file?: string }[] }).cases[0]?.file).toBe("src/storage.ts");
     expect(records().every((r) => r.host === "fits")).toBe(true);
   }, 120_000);
+});
+
+// #2155: in shadow the person answers the block with the act the enforced host would take.
+describe("scenario: a person answers a blocked corrective's unowned file with a remedy (#2155)", () => {
+  for (const worktree of [false, true])
+    test(`shadow (${worktree ? "batch workers" : "single writer"}): the block offers route to T001, and applying it corrects T001 and the run completes`, async () => {
+      const { runId, done, executor, service } = await drive({ enforce: false, worktree });
+      expect(done.status).toBe("blocked");
+      const recovery = stopRecovery(service.store, runId);
+      const route = recovery?.remedies.find((r) => r.action === "route");
+      const corrective = implementations(executor).find((c) => c.origin !== "planned");
+      expect(route).toEqual({ action: "route", runId, taskId: corrective?.taskId, paths: ["src/storage.ts"], owner: "T001" });
+      expect(recovery?.message).toContain(`baked workflow resume ${runId} --remedy route`);
+      // A remedy the block does not offer is refused.
+      await expect(service.resume(runId, { commandId: newId(), expectedRevision: (await service.get(runId)).revision }, { remedy: "widen" })).rejects.toThrow("does not offer the remedy widen");
+      await service.resume(runId, { commandId: newId(), expectedRevision: (await service.get(runId)).revision }, { remedy: "route" });
+      const resumed = await service.drive(runId, new AbortController().signal);
+      expect(resumed.status).toBe("completed");
+      const calls = implementations(executor);
+      const owner = calls.find((c) => c.origin !== "planned" && c.writes?.includes("src/storage.ts"));
+      const graph = service.store.state(runId).graph?.tasks ?? [];
+      expect(graph.find((t) => t.id === owner?.taskId)?.findingIds.map((f) => service.store.state(runId).repairPredecessors[f])).toEqual(["T001"]);
+      expect(calls.at(-1)?.taskId).toBe("T003");
+      const edits = service.store.latestArtifact(runId, `${SCOPE_EDITS_DIR}${corrective?.taskId}.json`);
+      expect(JSON.parse(service.store.readArtifact(runId, edits?.id ?? "")) as ScopeEdit[]).toEqual([expect.objectContaining({ path: "src/storage.ts", decision: "route", owner: "T001", approvedBy: "user" })]);
+      expect(service.store.artifacts(runId).some((a) => a.logical_path.startsWith(`decisions/unowned-${corrective?.taskId}-`))).toBe(true);
+      expect(service.store.state(runId).unownedRemedies).toEqual({});
+    }, 120_000);
+
+  test("shadow, a project file no task writes inside the approved paths: the widen remedy lets the corrective write it", async () => {
+    const { root, runId, done, executor, service } = await drive({ enforce: false, defect: "src/sql.ts", allowedPaths: ["src/**", "tests/**"] });
+    expect(done.status).toBe("blocked");
+    expect(stopRecovery(service.store, runId)?.remedies.map((r) => r.action)).toEqual(["widen", "resume", "revise", "cancel"]);
+    await service.resume(runId, { commandId: newId(), expectedRevision: (await service.get(runId)).revision }, { remedy: "widen" });
+    const resumed = await service.drive(runId, new AbortController().signal);
+    expect(resumed.status).toBe("completed");
+    expect(readFileSync(join(root, "src/sql.ts"), "utf8")).toContain("unprefixed");
+    const links = service.store.artifacts(runId).filter((a) => a.kind === "correction").map((a) => JSON.parse(service.store.readArtifact(runId, a.id)) as { rule: string });
+    expect(links.map((l) => l.rule)).toContain("host-widen");
+    expect(service.store.state(runId).personWidened).toEqual(["src/sql.ts"]);
+    expect(implementations(executor).at(-1)?.taskId).toBe("T003");
+  }, 120_000);
+
+  test("shadow, an upstream initiative feature's file: the upstream remedy parks the run with a request to that feature", async () => {
+    const bounds = { featureId: "shortener", features: [{ id: "shortener", scope: "Links", paths: ["src/storage.ts", "src/handler.ts", "tests/**"] }, { id: "reader", scope: "Reader", paths: ["src/reader.ts"] }] };
+    const { runId, done, service } = await drive({ enforce: false, defect: "src/reader.ts", bounds });
+    expect(done.status).toBe("blocked");
+    expect(stopRecovery(service.store, runId)?.remedies[0]).toMatchObject({ action: "upstream", owner: "reader", paths: ["src/reader.ts"] });
+    await service.resume(runId, { commandId: newId(), expectedRevision: (await service.get(runId)).revision }, { remedy: "upstream" });
+    const parked = await service.drive(runId, new AbortController().signal);
+    expect(parked.status).toBe("waiting");
+    const request = service.store.requests(runId).find((r) => r.kind === "manual_evidence" && r.status === "pending");
+    expect((JSON.parse(request?.body_json ?? "{}") as { upstream: { paths: { path: string; feature: string }[] } }).upstream.paths).toEqual([{ path: "src/reader.ts", feature: "reader" }]);
+  }, 120_000);
+});
+
+describe("unownedRemedies offers one remedy per host decision (#2155)", () => {
+  const record = (decisions: ("route" | "widen" | "park" | "wait" | "refuse")[]): ScopeRecord => ({
+    taskId: "T009", at: "result", failing: [], checks: [], diagnosed: [], writes: ["src/handler.ts"], missing: [], decision: "fits",
+    unowned: decisions.map((decision, i) => ({ path: `src/f${i}.ts`, owner: decision === "route" ? "T001" : null, openWriters: decision === "wait" ? ["T003"] : [], feature: decision === "park" ? "reader" : null, allowed: decision === "widen", hash: "h", decision })),
+  });
+  test("route, widen and park become route, widen and upstream; wait and refuse offer none", () => {
+    expect(unownedRemedies("R1", record(["route"]))).toEqual([{ action: "route", runId: "R1", taskId: "T009", paths: ["src/f0.ts"], owner: "T001" }]);
+    expect(unownedRemedies("R1", record(["widen"]))).toEqual([{ action: "widen", runId: "R1", taskId: "T009", paths: ["src/f0.ts"] }]);
+    expect(unownedRemedies("R1", record(["park"]))).toEqual([{ action: "upstream", runId: "R1", taskId: "T009", paths: ["src/f0.ts"], owner: "reader" }]);
+    expect(unownedRemedies("R1", record(["wait", "refuse"]))).toEqual([]);
+    expect(unownedRemedies("R1", record(["refuse", "widen", "route"])).map((r) => r.action)).toEqual(["route", "widen"]);
+    // Every host decision a block can be answered with has its remedy (the #2155 invariant).
+    for (const decision of ["route", "widen", "park"] as const) expect(unownedRemedies("R1", record([decision]))).toHaveLength(1);
+    expect(unownedBlockAdvice("R1", "Task T009 did not complete", record(["wait"]))).toBeUndefined();
+    expect(recoveryOf(unownedBlockAdvice("R1", "Task T009 did not complete", record(["route"])))?.remedies[0]).toMatchObject({ action: "route", paths: ["src/f0.ts"] });
+  });
 });
 
 describe("scopeRecord reads the files every corrective origin names (#2133)", () => {

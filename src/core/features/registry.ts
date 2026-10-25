@@ -1079,6 +1079,19 @@ export const FEATURES: readonly Feature[] = [
     desktop: ["project/runs: One more repair", "project/initiatives: feature One more repair"],
   },
   {
+    id: "run-unowned-file-remedies",
+    group: "Workflow runs",
+    title:
+      "Answer a corrective blocked on a file it may not write: correct the owner, widen, ask upstream",
+    tui: ["/workflow: T, W or Q on the blocked run"],
+    cli: [
+      "baked workflow resume: --remedy route|widen|upstream",
+      "baked workflow status: recovery",
+    ],
+    api: ["/v1/workflow/runs/:id/resume: remedy"],
+    desktop: ["project/runs: Correct the owner first, Let it write, Ask feature"],
+  },
+  {
     id: "run-control",
     group: "Workflow runs",
     title: "Pause, resume, accept outside changes, cancel, extend, reroute, undo edits",

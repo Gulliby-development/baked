@@ -149,6 +149,7 @@ bun test tests/feature-parity.test.ts
 | Acceptance: criteria that need a person's evidence | `/workflow` | `baked workflow evidence` | `/v1/workflow/runs/:id/evidence` | `project/runs`, `attention` |
 | Recover a stuck side effect | `/workflow` | `baked workflow recover` | `/v1/workflow/runs/:id/recover` | `project/runs` |
 | Grant another repair at a refused limit | `/workflow` | `baked workflow repair` | `/v1/workflow/runs/:id/repair` | `project/runs`, `project/initiatives` |
+| Answer a corrective blocked on a file it may not write: correct the owner, widen, ask upstream | `/workflow` | `baked workflow resume`, `baked workflow status` | `/v1/workflow/runs/:id/resume` | `project/runs` |
 | Pause, resume, accept outside changes, cancel, extend, reroute, undo edits | `/workflow` | `baked workflow pause`, `baked workflow resume`, `baked workflow cancel` +3 | `/v1/workflow/runs/:id/pause`, `/v1/workflow/runs/:id/resume`, `/v1/workflow/runs/:id/cancel` +3 | `project/runs` |
 | Continue approved manifest edits using the run's file-patch hash history | `/workflow` | `baked workflow run`, `baked workflow resume` | `/v1/workflow/runs/:id/resume` | `project/runs` |
 | Adapter-aware provider deadlines and durable zero-token retry limits | `/workflow` | `baked workflow status`, `baked workflow resume` | `/v1/workflow/runs/:id` | `project/runs` |

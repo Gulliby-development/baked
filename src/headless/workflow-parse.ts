@@ -2,6 +2,7 @@ import { parseRouteOverrides } from "../core/llm/model-routing.js";
 import { BUDGET_PRESETS } from "../core/workflows/budget.js";
 import { MAX_CANDIDATES } from "../core/workflows/candidates.js";
 import { WorkflowFault } from "../core/workflows/errors.js";
+import { HOST_REMEDIES } from "../core/workflows/remedies-model.js";
 import { MAX_CONCURRENT_WRITERS, RunStatus } from "../core/workflows/schemas.js";
 
 const commands = [
@@ -183,7 +184,7 @@ const commandFlags: Record<WorkflowCommand, string[]> = {
   status: [],
   list: ["feature", "limit", "cursor", "status"],
   repair: ["rounds", "expected-revision", "command-id", ...decisionResumeFlags],
-  resume: ["expected-revision", "command-id", "accept-workspace", "events", "after"],
+  resume: ["expected-revision", "command-id", "accept-workspace", "remedy", "events", "after"],
   approve: [
     "request",
     "digest",
@@ -350,6 +351,11 @@ export function validateWorkflowArgs(result: WorkflowArgs): WorkflowArgs {
       if (!/^\d+(\.\d+)?$/.test(String(result.flags[name])) || !(value > 0))
         throw new WorkflowFault("INVALID_DEFINITION", `--${name} requires a positive number`);
     }
+  if ("remedy" in result.flags && !HOST_REMEDIES.some((remedy) => remedy === result.flags.remedy))
+    throw new WorkflowFault(
+      "INVALID_DEFINITION",
+      `--remedy takes ${HOST_REMEDIES.join(", ")}: the remedies a corrective's block offers`,
+    );
   if ("format" in result.flags && result.flags.format !== "md")
     throw new WorkflowFault("INVALID_DEFINITION", "--format takes md");
   if (result.command === "usage" && "output" in result.flags && !("format" in result.flags))

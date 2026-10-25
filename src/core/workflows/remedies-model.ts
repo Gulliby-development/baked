@@ -12,7 +12,16 @@ export const REMEDY_ACTIONS = [
   "fork",
   "cancel",
   "pause",
+  // A person's answer to a blocked corrective's unowned file (#2155): one act each, as the host
+  // applies it when `corrective_unowned_file` is enforced.
+  "route",
+  "widen",
+  "upstream",
 ] as const;
+
+/** The remedies that answer a corrective's block on files it may not write (#2155). */
+export const HOST_REMEDIES = ["route", "widen", "upstream"] as const;
+export type HostRemedy = (typeof HOST_REMEDIES)[number];
 
 export interface Remedy {
   action: (typeof REMEDY_ACTIONS)[number];
@@ -24,6 +33,12 @@ export interface Remedy {
   suggestedTokens?: number;
   /** For `extend`: the dollar cap that answers the block. */
   suggestedUsd?: number;
+  /** For `route`, `widen` and `upstream`: the blocked corrective. */
+  taskId?: string;
+  /** For `route`, `widen` and `upstream`: the files the corrective may not write. */
+  paths?: string[];
+  /** For `route`: the task that wrote them; for `upstream`: the feature that owns them. */
+  owner?: string;
 }
 
 export interface RecoveryAdvice {
@@ -89,7 +104,14 @@ export function recoveryOf(value: unknown): RecoveryAdvice | undefined {
     const action = REMEDY_ACTIONS.find((action) => action === entry.action);
     if (!action) return undefined;
     const remedy: Remedy = { action };
-    for (const key of ["runId", "initiativeId", "featureId", "setting"] as const) {
+    for (const key of [
+      "runId",
+      "initiativeId",
+      "featureId",
+      "setting",
+      "taskId",
+      "owner",
+    ] as const) {
       const field = entry[key];
       if (field !== undefined && typeof field !== "string") return undefined;
       if (key in entry) remedy[key] = field;
@@ -99,6 +121,11 @@ export function recoveryOf(value: unknown): RecoveryAdvice | undefined {
       if (field === undefined) continue;
       if (typeof field !== "number" || !Number.isFinite(field) || field <= 0) return undefined;
       remedy[key] = field;
+    }
+    if (entry.paths !== undefined) {
+      if (!Array.isArray(entry.paths) || !entry.paths.every((p) => typeof p === "string"))
+        return undefined;
+      remedy.paths = [...entry.paths];
     }
     remedies.push(remedy);
   }
