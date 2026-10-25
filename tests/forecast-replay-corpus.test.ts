@@ -593,6 +593,76 @@ describe("initiative feature ranges replay against what the features used (#1806
   }, 600000);
 });
 
+/** Finished features below and above the range of their initiative's first replayed start, by round. */
+function rangeMisses(options: { recencyHalfLife?: number } = {}) {
+  const rounds = new Map<number, { features: number; below: number; above: number }>();
+  for (const name of readdirSync(ROOT, { recursive: true, encoding: "utf8" }).filter((p) => p.endsWith(".sqlite.gz"))) {
+    const path = join(ROOT, name);
+    const replays = replayInitiativeStarts(path, options);
+    if (!replays.length) continue;
+    const { store, dispose } = openTrace(path);
+    const used = new Map<string, number>();
+    const finished = new Set<string>();
+    try {
+      for (const row of store.connection
+        .query("SELECT l.feature_id AS feature, r.token_usage AS tokens, r.status AS status FROM initiative_runs l JOIN runs r ON r.id=l.run_id")
+        .all() as { feature: string; tokens: number; status: string }[]) {
+        used.set(row.feature, (used.get(row.feature) ?? 0) + row.tokens);
+        if (row.status === "completed") finished.add(row.feature);
+      }
+    } finally {
+      dispose();
+    }
+    const round = Number(/R(\d+)/.exec(name)?.[1]);
+    const counts = rounds.get(round) ?? { features: 0, below: 0, above: 0 };
+    for (const replay of replays)
+      for (const f of replay.starts[0]?.estimate ?? []) {
+        const tokens = used.get(f.featureId);
+        if (tokens === undefined || !finished.has(f.featureId)) continue;
+        counts.features++;
+        if (tokens < f.low) counts.below++;
+        if (tokens > f.high) counts.above++;
+      }
+    rounds.set(round, counts);
+  }
+  const last = Math.max(...rounds.keys());
+  /** The rounds from `from` to `to`, both included. */
+  const sum = (from: number, to = last) =>
+    [...rounds]
+      .filter(([round]) => round >= from && round <= to)
+      .reduce((t, [, c]) => ({ features: t.features + c.features, below: t.below + c.below, above: t.above + c.above }), { features: 0, below: 0, above: 0 });
+  return { all: sum(0), window: sum(last - RANGE_WINDOW + 1), r63to68: sum(63, 68) };
+}
+
+/** Rounds of the rolling window a range backtest bounds too (#2150). */
+const RANGE_WINDOW = 6;
+const quarterBound = (features: number) => 0.25 + 2 * Math.sqrt((0.25 * 0.75) / features);
+
+describe("the size pools' ranges over the last rounds (#2150)", () => {
+  // The whole-corpus share hides a trend: rounds 63 to 68 put 24 of 60 finished features below
+  // their range (40%, above the 36.2% bound of 60), rounds 45 to 61 37 of 156 (24%). 20 of the 24
+  // were priced by the size pool, which weighs round 45's features as much as the last round's.
+  // `sizing.recencyHalfLife: 2` halves a feature's weight for every two initiatives started after
+  // its own: rounds 63 to 68 then put 20 of 60 (33.3%) below, and the whole corpus stays within
+  // its bounds. The rolling window is bounded by default too: with round 69 it is rounds 64 to
+  // 69, 16 of 59 below and 11 above, within the bounds without the weighting (12 and 18 with it).
+  // The weighting stays opt-in; this row keeps the figures that would justify switching it on.
+  test("rounds 63 to 68 miss their range above the bound by default and within it at a half-life of 2; the rolling window is bounded", () => {
+    const off = rangeMisses();
+    expect(off.r63to68.features).toBe(60);
+    expect(off.r63to68.below / off.r63to68.features).toBeGreaterThan(quarterBound(off.r63to68.features));
+    const on = rangeMisses({ recencyHalfLife: 2 });
+    for (const share of [on.r63to68, on.window, on.all]) {
+      expect(share.below / share.features).toBeLessThanOrEqual(quarterBound(share.features));
+      expect(share.above / share.features).toBeLessThanOrEqual(quarterBound(share.features));
+    }
+    expect(on.r63to68.below).toBeLessThan(off.r63to68.below);
+    // The standing guard: the last six rounds, as the whole corpus is, within the bounds by default.
+    expect(off.window.below / off.window.features).toBeLessThanOrEqual(quarterBound(off.window.features));
+    expect(off.window.above / off.window.features).toBeLessThanOrEqual(quarterBound(off.window.features));
+  }, 1200000);
+});
+
 describe("finding chains replay on recorded findings (#1981)", () => {
   // R62 md-site 8711b632 ran with chainRewrite off: six findings on `findDelimitedInline`, each the
   // next nesting of emphasis delimiter runs, and four correctives (T009-T012: 6.14M tokens, $5.92)

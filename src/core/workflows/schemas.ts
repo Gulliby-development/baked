@@ -786,6 +786,12 @@ export const PolicySchema = z
          * it on its file count (`suppliedTaskPrice`, #2002). Absent means off.
          */
         suppliedDiff: z.boolean().optional(),
+        /**
+         * Weighs an initiative estimate's finished features by how recent their initiative is: a
+         * feature's weight halves for every this many initiatives started after its own
+         * (`recencyWeights`, #2150). Absent means every feature counts the same.
+         */
+        recencyHalfLife: z.number().positive().max(1_000).optional(),
       })
       .strict()
       .optional(),
