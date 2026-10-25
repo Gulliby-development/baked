@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PassThrough } from "node:stream";
@@ -10,6 +10,7 @@ import { jsonLines, LineSplitter, onJsonLines } from "../src/core/llm/providers/
 import { NativeAgentExecutor } from "../src/core/workflows/agent-executor.js";
 import type { Spec } from "../src/core/workflows/schemas.js";
 import type { ExecutionRequest } from "../src/core/workflows/types.js";
+import { removeTempDir } from "./helpers/temp-dir.js";
 import { FixtureExecutor, fixtureSpec, workflowFixture } from "./helpers/workflow-fixture.js";
 
 // Bench round 62, stepvet tagexpr (#1956). The provider readers framed JSON Lines with
@@ -27,7 +28,9 @@ afterEach(async () => {
 
 function tempDir(prefix: string): string {
   const dir = mkdtempSync(join(tmpdir(), prefix));
-  cleanups.push(() => rmSync(dir, { recursive: true, force: true }));
+  // A closed app-server is killed, not awaited, and on Windows its working directory stays
+  // locked until it exits: a bare rmSync failed with EBUSY (#2161).
+  cleanups.push(() => removeTempDir(dir));
   return dir;
 }
 
