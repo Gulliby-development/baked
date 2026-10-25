@@ -1,6 +1,7 @@
-import type { LanguageModelV4ToolCall } from "@ai-sdk/provider";
+import type { JSONSchema7, LanguageModelV4ToolCall } from "@ai-sdk/provider";
 import type { ModelMessage } from "ai";
 import { jsonrepair } from "jsonrepair";
+import { coerceStringifiedToolCall } from "./tool-input-coercion.js";
 
 /**
  * The history a prepareStep hook works from: the call's initial messages plus
@@ -155,13 +156,21 @@ export async function repairToolCall({
   toolCall,
   tools,
   error,
+  inputSchema,
 }: {
   toolCall: LanguageModelV4ToolCall;
   tools?: Record<string, unknown>;
   error?: { name?: string } | unknown;
+  inputSchema?: (options: { toolName: string }) => PromiseLike<JSONSchema7>;
 }): Promise<LanguageModelV4ToolCall | null> {
   const trimmed = toolCall.input.trim();
   if (!trimmed) return null;
+
+  // Valid JSON whose array/object/number fields arrived as JSON text is decoded first (#2141).
+  if (inputSchema) {
+    const coerced = await coerceStringifiedToolCall({ toolCall, inputSchema, error });
+    if (coerced) return coerced;
+  }
 
   // Truncation detection: tool name is registered AND we got InvalidToolInputError
   // → the model emitted a real tool call whose JSON args got cut off mid-stream.

@@ -71,6 +71,11 @@ export type Fault =
   | { kind: "cut" }
   /** Calls a tool with arguments that are not JSON. */
   | { kind: "malformed-tool" }
+  /**
+   * Calls a tool with valid JSON whose array field is JSON text (#2141), as Claude Code's Sonnet
+   * sent submit_result's `evidenceIds`: `"ranges": "[[1,5]]"` where the schema asks for an array.
+   */
+  | { kind: "stringified-fields" }
   /** Finishes without any content. */
   | { kind: "empty" }
   /**
@@ -89,6 +94,13 @@ export interface FaultyModel {
   calls: () => number;
   restore: () => void;
 }
+
+/** Whether `fault` answers with a tool call. */
+const callsTool = (fault: Fault) => fault.kind === "malformed-tool" || fault.kind === "stringified-fields";
+
+/** The arguments of the tool call `fault` answers with. */
+export const toolArguments = (fault: Fault) =>
+  fault.kind === "stringified-fields" ? '{"path":"src/a.ts","ranges":"[[1,5]]"}' : '{"path": tests/';
 
 const encoder = new TextEncoder();
 type Event = { event?: string; data: unknown };
@@ -117,7 +129,7 @@ function answer(
         },
       },
     ];
-    const tool = fault.kind === "malformed-tool";
+    const tool = callsTool(fault);
     return {
       head: [
         {
@@ -154,7 +166,7 @@ function answer(
                   data: {
                     type: "content_block_delta",
                     index: 1,
-                    delta: { type: "input_json_delta", partial_json: '{"path": tests/' },
+                    delta: { type: "input_json_delta", partial_json: toolArguments(fault) },
                   },
                 },
                 { event: "content_block_stop", data: { type: "content_block_stop", index: 1 } },
@@ -185,7 +197,7 @@ function answer(
   }
   if (provider === "openai") {
     const response = { id: "resp_fault", object: "response", created_at: 1, model: "gpt-4o" };
-    const tool = fault.kind === "malformed-tool";
+    const tool = callsTool(fault);
     const item = tool
       ? { type: "function_call", id: "fc_1", call_id: "call_1", name: "read", arguments: "" }
       : { type: "message", id: "msg_fault", role: "assistant", status: "in_progress", content: [] };
@@ -203,7 +215,7 @@ function answer(
                       type: "response.function_call_arguments.delta",
                       item_id: "fc_1",
                       output_index: 0,
-                      delta: '{"path": tests/',
+                      delta: toolArguments(fault),
                     },
                   }
                 : {
@@ -226,7 +238,7 @@ function answer(
                   type: "response.output_item.done",
                   output_index: 0,
                   item: tool
-                    ? { ...item, arguments: '{"path": tests/', status: "completed" }
+                    ? { ...item, arguments: toolArguments(fault), status: "completed" }
                     : {
                         ...item,
                         status: "completed",
@@ -262,7 +274,7 @@ function answer(
       ...extra,
     },
   });
-  const tool = fault.kind === "malformed-tool";
+  const tool = callsTool(fault);
   return {
     head: [chunk({ role: "assistant", content: "" }, null)],
     thinking: null,
@@ -278,7 +290,7 @@ function answer(
                         index: 0,
                         id: "call_1",
                         type: "function",
-                        function: { name: "read", arguments: '{"path": tests/' },
+                        function: { name: "read", arguments: toolArguments(fault) },
                       },
                     ],
                   },
@@ -396,7 +408,7 @@ function cliError(provider: "codex" | "claude-code", fault: Fault): Error | null
 /** The structured answer each CLI returns for a fault that still answers. */
 function cliAnswer(provider: "codex" | "claude-code", fault: Fault) {
   const toolCalls =
-    fault.kind === "malformed-tool" ? [{ toolName: "read", inputJson: '{"path": tests/' }] : [];
+    callsTool(fault) ? [{ toolName: "read", inputJson: toolArguments(fault) }] : [];
   const reply = {
     text: fault.kind === "empty" || fault.kind === "lost-answer" || toolCalls.length ? "" : "OK",
     toolCalls,

@@ -5,7 +5,7 @@ import { dirname, join } from "node:path";
 import { hashBytes, hashJson } from "../src/core/specs/hash.js";
 import { scopeRecord, scopeRecords } from "../src/core/workflows/corrective-scope.js";
 import { WorkflowScheduler } from "../src/core/workflows/scheduler.js";
-import type { Check, Review, RunPolicy, TaskGraph } from "../src/core/workflows/schemas.js";
+import type { Check, Review, RunPolicy, Spec, TaskGraph } from "../src/core/workflows/schemas.js";
 import { newId, type TaskRow, type WorkflowStore } from "../src/core/workflows/store.js";
 import { failureOwner, missingArtifactOwners } from "../src/core/workflows/task-graph.js";
 import { exportTrace, replayTrace } from "../src/core/workflows/trace.js";
@@ -320,4 +320,89 @@ describe("the corrective's precondition and waits (#2094)", () => {
     expect(failureOwner(full, taskRows, {}, repair, missing, { predecessors }).kind).toBe("creates");
     expect(failureOwner(full, taskRows, {}, repair, missing, {}).kind).toBe("pending");
   });
+});
+
+// #2109: a test-check corrective writes the union of its related tasks' writes (`correctionWrites`)
+// and its hold kept every task that depends on any of them waiting. Here T001 writes src/a.ts for
+// AC-001 and T002 src/b.ts for AC-002; T003 tests both, and its test check fails on src/a.ts only.
+// T004 tests src/b.ts: it does not read the file the corrective fixes, so it runs while the
+// corrective is open.
+const holdSpec: Spec = {
+  ...fixtureSpec,
+  criteria: [
+    { id: "AC-001", requirementIds: ["FR-001"], given: "a workspace", when: "a runs", then: "it returns 1", method: "automated" },
+    { id: "AC-002", requirementIds: ["FR-001"], given: "a workspace", when: "b runs", then: "it returns 1", method: "automated" },
+  ],
+};
+const holdTask = (id: string, path: string, criterionIds: string[], dependsOn: string[] = [], checkIds: string[] = []): Task => ({
+  ...task(id, path, dependsOn), criterionIds, checkIds,
+});
+const HOLD_PLAN = [
+  holdTask("T001", "src/a.ts", ["AC-001"]),
+  holdTask("T002", "src/b.ts", ["AC-002"]),
+  holdTask("T003", "tests/a.test.ts", ["AC-001", "AC-002"], ["T001", "T002"], ["tests-written"]),
+  holdTask("T004", "tests/b.test.ts", ["AC-002"], ["T002"]),
+];
+const testsWritten: Check = {
+  id: "tests-written", executable: "bun", cwd: ".", timeoutMs: 10000, required: true, scope: "task", envNames: [], writes: [],
+  args: ["-e", "const fs = require('node:fs'); if (fs.existsSync('tests/a.test.ts') && fs.readFileSync('src/a.ts', 'utf8').includes('bug')) { console.log('(fail) tests/a.test.ts > a: expected 1, received 2\\n    at a (src/a.ts:1:20)'); process.exit(1) }"],
+};
+
+class HoldExecutor extends FixtureExecutor {
+  attempts: Task[] = [];
+  constructor(private dir: string) {
+    super(dir);
+  }
+  override async execute(request: ExecutionRequest) {
+    const data = JSON.parse(request.prompt.split("\n").at(-1) ?? "{}") as { snapshotHash: string; extra: { evidence?: { id: string }[] } };
+    if (request.profile.output === "spec") return { output: holdSpec, inputTokens: 25, outputTokens: 25 };
+    if (request.profile.output === "review" || request.profile.output === "convergence") {
+      const coverage = holdSpec.criteria.map((c) => ({ criterionId: c.id, verdict: "pass", evidenceIds: data.extra.evidence?.map((e) => e.id) ?? [], explanation: "Checks pass" }));
+      return { output: { schemaVersion: 1, snapshotHash: data.snapshotHash, verdict: "pass", coverage, findings: [] }, inputTokens: 25, outputTokens: 25 };
+    }
+    if (request.profile.output === "plan") {
+      const markdown = "# Plan\n## Context\nTwo modules and their tests.\n## Decisions\nDEC-001: FR-001 in src.\n## Components\nsrc/a.ts, src/b.ts, tests\n## Data\nText\n## Verification\nTests\n## Risks\nNone for fixture";
+      const taskGraph: TaskGraph = { schemaVersion: 1, featureId: "fixture", revision: 1, specHash: hashJson(holdSpec), planHash: hashBytes(markdown), tasks: HOLD_PLAN };
+      return { output: { schemaVersion: 1, markdown, taskGraph }, inputTokens: 25, outputTokens: 25 };
+    }
+    if (request.profile.output !== "implementation") return super.execute(request);
+    const own = request.task as Task;
+    this.attempts.push(own);
+    const root = request.root ?? this.dir;
+    const put = (path: string, text: string) => {
+      mkdirSync(dirname(join(root, path)), { recursive: true });
+      writeFileSync(join(root, path), text);
+    };
+    if (own.origin !== "planned") put("src/a.ts", "export const a = () => 1;\n");
+    else if (own.id === "T001") put("src/a.ts", "export const a = () => 2; // bug\n");
+    else if (own.id === "T002") put("src/b.ts", "export const b = () => 1;\n");
+    else put(own.writes[0]?.path ?? "", "test();\n");
+    return {
+      output: { schemaVersion: 1, taskId: own.id, outcome: "implemented", summary: "Done", evidenceIds: [], unresolved: [] },
+      inputTokens: 25,
+      outputTokens: 25,
+    };
+  }
+}
+
+describe("scenario: a test-check corrective holds only what its findings point at (#2109)", () => {
+  test("the independent test task runs while the corrective is open", async () => {
+    const fx = workflowFixture({
+      policy: { ...fixturePolicy, checks: [testsWritten] },
+      executor: (root) => new HoldExecutor(root),
+    });
+    cleanups.push(fx.dispose);
+    const started = await fx.start();
+    const planned = await fx.service.drive(started.runId, signal());
+    expect(planned.reason).toBe("approval");
+    await fx.approve(started.runId);
+    const final = await fx.service.drive(started.runId, signal());
+    expect(final.status).toBe("completed");
+    const corrective = fx.executor.attempts.find((t) => t.origin !== "planned");
+    // The corrective may write every related file; its first attempt and its hold cover src/a.ts.
+    expect(corrective?.writes.map((w) => w.path).sort()).toEqual(["src/a.ts", "tests/a.test.ts"]);
+    expect(fx.service.store.state(started.runId).graph?.tasks.find((t) => t.id === corrective?.id)?.writes.map((w) => w.path)).toContain("src/b.ts");
+    // Before #2109 T004, which depends on T002's src/b.ts, waited for the corrective.
+    expect(fx.executor.attempts.map((t) => t.id)).toEqual(["T001", "T002", "T003", "T004", corrective?.id ?? ""]);
+  }, 120000);
 });

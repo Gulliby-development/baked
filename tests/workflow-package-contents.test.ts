@@ -1,15 +1,21 @@
 import { describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pythonExecutable } from "../src/core/workflows/gates.js";
 import {
   buildStatus,
   cargoPackageFiles,
+  folderFiles,
+  gemEntries,
+  PACKAGE_CONTENTS,
   npmPackFiles,
   PACKAGE_CONTENTS_NOTE,
   type PackageContents,
   packagingChanges,
+  pubPublishFiles,
   QUALITY_PACKAGE_CONTENTS,
+  tarEntries,
   zipEntries,
 } from "../src/core/workflows/quality/package-contents.js";
 import type { ExecutionRequest } from "../src/core/workflows/types.js";
@@ -69,6 +75,34 @@ const MANIFESTS = [
     packaging: '{"name":"keeplint","version":"0.1.0","files":["lib","types"]}',
     plain: '{"name":"keeplint","version":"0.2.0","files":["lib"]}',
     field: "package.json: files",
+  },
+  {
+    path: "sumgem.gemspec",
+    before: 'Gem::Specification.new do |spec|\n  spec.name = "sumgem"\n  spec.version = "0.1.0"\n  spec.files = Dir["lib/**/*.rb"]\nend\n',
+    packaging: 'Gem::Specification.new do |spec|\n  spec.name = "sumgem"\n  spec.version = "0.1.0"\n  spec.files = Dir["lib/**/*.rb"] + Dir["data/*.yml"]\nend\n',
+    plain: 'Gem::Specification.new do |spec|\n  spec.name = "sumgem"\n  spec.version = "0.2.0"\n  spec.files = Dir["lib/**/*.rb"]\nend\n',
+    field: "sumgem.gemspec: files",
+  },
+  {
+    path: "pubspec.yaml",
+    before: "name: sumpkg\nversion: 1.0.0\nenvironment:\n  sdk: ^3.0.0\n",
+    packaging: "name: sumpkg\nversion: 1.0.0\nenvironment:\n  sdk: ^3.0.0\nexecutables:\n  sumpkg:\n",
+    plain: "name: sumpkg\nversion: 1.1.0\nenvironment:\n  sdk: ^3.0.0\n",
+    field: "pubspec.yaml: executables",
+  },
+  {
+    path: "mix.exs",
+    before: 'defmodule Sumex.MixProject do\n  use Mix.Project\n\n  def project do\n    [app: :sumex, version: "0.1.0", package: package()]\n  end\n\n  defp package do\n    [licenses: ["MIT"], files: ~w(lib mix.exs)]\n  end\nend\n',
+    packaging: 'defmodule Sumex.MixProject do\n  use Mix.Project\n\n  def project do\n    [app: :sumex, version: "0.1.0", package: package()]\n  end\n\n  defp package do\n    [licenses: ["MIT"], files: ~w(lib priv mix.exs)]\n  end\nend\n',
+    plain: 'defmodule Sumex.MixProject do\n  use Mix.Project\n\n  def project do\n    [app: :sumex, version: "0.2.0", package: package()]\n  end\n\n  defp package do\n    [licenses: ["MIT"], files: ~w(lib mix.exs)]\n  end\nend\n',
+    field: "mix.exs: defp package",
+  },
+  {
+    path: "build.sbt",
+    before: 'name := "sumsb"\nversion := "0.1.0"\n',
+    packaging: 'name := "sumsb"\nversion := "0.1.0"\nCompile / packageBin / mappings += {\n  (baseDirectory.value / "NOTICE") -> "NOTICE"\n}\n',
+    plain: 'name := "sumsb"\nversion := "0.2.0"\n',
+    field: "build.sbt: Compile",
   },
 ] as const;
 
@@ -157,6 +191,84 @@ describe("package contents check (#1984)", () => {
       { file: "cargo package --list", files: ["Cargo.lock", "Cargo.toml", "Cargo.toml.orig", "py.typed", "src/lib.rs"] },
     ]);
     expect(cargoPackageFiles("")).toBeNull();
+  });
+
+  // #1986: Ruby, Dart, Elixir and sbt packages, listed from what their tools print or build.
+  const tool = (language: "ruby" | "dart" | "elixir" | "scala") => {
+    const row = PACKAGE_CONTENTS[language];
+    if (!Array.isArray(row) || !row[0]) throw new Error(`${language} builds no package`);
+    return row[0];
+  };
+  const scratch = () => mkdtempSync(join(tmpdir(), "baked-package-contents-"));
+
+  test("a .gem lists the files of its data.tar.gz", () => {
+    // Built by RubyGems 3.5 from a gemspec with `spec.files = Dir["lib/**/*.rb"] + Dir["data/*.yml"]`.
+    const gem = readFileSync(join(import.meta.dir, "fixtures/package-contents/sumgem-0.1.0.gem"));
+    expect(gemEntries(gem)).toEqual(["data/table.yml", "lib/sumgem.rb"]);
+    const dir = scratch();
+    try {
+      writeFileSync(join(dir, "sumgem-0.1.0.gem"), gem);
+      expect(tool("ruby").builds({ dir, manifest: "sumgem.gemspec", platform: "linux" })).toEqual([
+        { executable: "gem", args: ["build", "sumgem.gemspec"] },
+      ]);
+      expect(tool("ruby").list(dir, "")).toEqual([{ file: "sumgem-0.1.0.gem", files: ["data/table.yml", "lib/sumgem.rb"] }]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+    expect(gemEntries(new TextEncoder().encode("not a gem"))).toBeNull();
+    expect(tarEntries(new Uint8Array(1024))).toEqual([]);
+  });
+
+  test("dart pub publish --dry-run lists the tree it prints, also when it exits 65 on a warning", () => {
+    // Recorded from Dart 3.13 in a git tree with uncommitted files: it warns and exits 65.
+    const stdout = "Resolving dependencies...\nDownloading packages...\nGot dependencies!\nPublishing sumpkg 1.0.0 to https://pub.dev:\n\u251c\u2500\u2500 CHANGELOG.md (<1 KB)\n\u251c\u2500\u2500 README.md (<1 KB)\n\u251c\u2500\u2500 bin\n\u2502   \u2514\u2500\u2500 sumpkg.dart (<1 KB)\n\u251c\u2500\u2500 err.txt (<1 KB)\n\u251c\u2500\u2500 lib\n\u2502   \u251c\u2500\u2500 src\n\u2502   \u2502   \u2514\u2500\u2500 a.dart (<1 KB)\n\u2502   \u2514\u2500\u2500 sumpkg.dart (<1 KB)\n\u251c\u2500\u2500 out.txt (<1 KB)\n\u2514\u2500\u2500 pubspec.yaml (<1 KB)\n\nTotal compressed archive size: <1 KB.\nValidating package...\nPackage validation found the following error:\n* You must have a LICENSE file in the root directory.\n  An open-source license helps ensure people can legally use your code.\n\nPackage validation found the following 2 potential issues:\n* 1 checked-in file is ignored by a `.gitignore`.\n  Previous versions of Pub would include those in the published package.\n  \n  Consider adjusting your `.gitignore` files to not ignore those files, and if you do not wish to\n  publish these files use `.pubignore`. See also dart.dev/go/pubignore\n  \n  Files that are checked in while gitignored:\n  \n  LICENSE\n  \n  \n\n* 6 checked-in files are modified in git.\n  \n  Usually you want to publish from a clean git state.\n  \n  Consider committing these files or reverting the changes.\n  \n  Modified files:\n  \n  CHANGELOG.md\n  README.md\n  bin/sumpkg.dart\n  lib/src/a.dart\n  lib/sumpkg.dart\n  pubspec.yaml\n  \n  Run `git status` for more information.\n  \n";
+    expect(pubPublishFiles(stdout)).toEqual([
+      {
+        file: "pub publish --dry-run",
+        files: ["CHANGELOG.md", "README.md", "bin/sumpkg.dart", "err.txt", "lib/src/a.dart", "lib/sumpkg.dart", "out.txt", "pubspec.yaml"],
+      },
+    ]);
+    expect(pubPublishFiles("Could not find a file named \"pubspec.yaml\"")).toBeNull();
+    expect(tool("dart").listedExits).toEqual([65]);
+    const dir = scratch();
+    try {
+      writeFileSync(join(dir, "pubspec.yaml"), "name: app\ndependencies:\n  flutter:\n    sdk: flutter\n");
+      expect(tool("dart").builds({ dir, manifest: "pubspec.yaml", platform: "linux" }).map((c) => c.executable)).toEqual(["flutter", "dart"]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("mix hex.build --unpack lists the unpacked package without Hex's metadata", () => {
+    const dir = scratch();
+    try {
+      // The files `mix hex.build --unpack` (Hex 2) wrote for `files: ~w(lib priv mix.exs README.md)`.
+      for (const path of ["README.md", "hex_metadata.config", "lib/sumex.ex", "mix.exs", "priv/data.yml"]) {
+        mkdirSync(join(dir, ".baked-package/hex", path, ".."), { recursive: true });
+        writeFileSync(join(dir, ".baked-package/hex", path), "");
+      }
+      expect(tool("elixir").list(dir, "")).toEqual([
+        { file: "mix hex.build", files: ["README.md", "lib/sumex.ex", "mix.exs", "priv/data.yml"] },
+      ]);
+      expect(folderFiles(join(dir, "missing"))).toBeNull();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("sbt package lists the jar below target/, not its classes or test jars", () => {
+    const dir = scratch();
+    try {
+      for (const folder of ["target/scala-3.7.4/classes", "target/streams"]) mkdirSync(join(dir, folder), { recursive: true });
+      // sbt 1.11 packaged `sumsb_3-0.1.0.jar` with a `mappings` entry for NOTICE.
+      const names = ["META-INF/MANIFEST.MF", "NOTICE", "Sum$.class", "Sum.class", "Sum.tasty", "data.yml"];
+      writeFileSync(join(dir, "target/scala-3.7.4/sumsb_3-0.1.0.jar"), zip(names));
+      writeFileSync(join(dir, "target/scala-3.7.4/sumsb_3-0.1.0-sources.jar"), zip(["Sum.scala"]));
+      writeFileSync(join(dir, "target/streams/cached.jar"), zip(["x"]));
+      expect(tool("scala").list(dir, "")).toEqual([{ file: "sumsb_3-0.1.0.jar", files: names }]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   test("a missing tool or a failed build is a status of the record, never a finding", () => {
