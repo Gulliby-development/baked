@@ -558,7 +558,42 @@ export type SuppliedBlock =
       content: string;
       /** Whether the prose before it says it is the whole file (`WHOLE_FILE`). */
       whole: boolean;
+      /** The Markdown section the block is, for a Markdown file (`markdownRegion`, #2101). */
+      region?: MarkdownRegion;
     };
+
+/** A Markdown section by its heading: the title (trimmed) and the heading's level. */
+export interface MarkdownRegion {
+  title: string;
+  level: number;
+}
+
+const MARKDOWN_FILE = /\.(?:md|mdx|markdown)$/i;
+/**
+ * Prose that says a fenced Markdown block is the whole file. Stricter than `WHOLE_FILE`, whose
+ * "exactly" and "verbatim" describe a section's text as well ("add this section exactly").
+ */
+const WHOLE_DOCUMENT =
+  /\b(?:whole|full|entire|complete|overwrite)\b|\breplace[ds]?\s+(?:the\s+)?(?:file|readme|`?[\w./-]+\.(?:md|mdx|markdown)`?)(?:\s|$|[:.,])/i;
+
+/**
+ * The section a fenced block gives for a Markdown file (#2101): a block whose first non-blank
+ * line is a heading, for a `.md`, `.mdx` or `.markdown` path, when the prose before it does not
+ * say it is the whole file (`WHOLE_DOCUMENT`). Bench round 67 srtvet-update gave the README
+ * section "## Cleaning spaces" verbatim, and the README task (T003, 123k tokens) was an
+ * implementer's: the host had no way to write a section into an existing file. Null otherwise.
+ */
+export function markdownRegion(
+  path: string,
+  lines: readonly string[],
+  prose: string,
+): MarkdownRegion | null {
+  if (!MARKDOWN_FILE.test(path)) return null;
+  if (WHOLE_DOCUMENT.test(prose.trim().split("\n").at(-1) ?? "")) return null;
+  const heading = HEADING.exec(lines.find((line) => line.trim()) ?? "");
+  const title = heading?.[2]?.trim();
+  return heading && title ? { title, level: heading[1]?.length ?? 1 } : null;
+}
 
 /**
  * The one reader of a request's verbatim blocks (#2002, #2023): for each path of `paths`, every
@@ -591,13 +626,15 @@ export function suppliedBlocks(
       continue;
     }
     const path = blockPath(block, wanted);
-    if (path)
-      add(path, {
-        kind: "file",
-        lines: block.lines.length,
-        content: `${body}\n`,
-        whole: WHOLE_FILE.test(block.prose.trim().split("\n").at(-1) ?? ""),
-      });
+    if (!path) continue;
+    const region = markdownRegion(path, block.lines, block.prose);
+    add(path, {
+      kind: "file",
+      lines: block.lines.length,
+      content: `${body}\n`,
+      whole: WHOLE_FILE.test(block.prose.trim().split("\n").at(-1) ?? ""),
+      ...(region ? { region } : {}),
+    });
   }
   return out;
 }
