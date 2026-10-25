@@ -791,6 +791,7 @@ import {
   namesPath,
   pendingCodePaths,
   pendingWriters,
+  type RepairHolds,
   readyTasks,
   siblingCorrections,
 } from "./task-graph.js";
@@ -7006,6 +7007,7 @@ ${note}`;
             state.taskGates,
             state.waitingFor,
             state.repairPredecessors,
+            this.repairHolds(runId, state),
           ),
         ))
       )
@@ -7022,6 +7024,7 @@ ${note}`;
               state.taskGates,
               state.waitingFor,
               state.repairPredecessors,
+              this.repairHolds(runId, state),
             ),
           );
       // The tests are put to a person; the code tasks wait for the approval.
@@ -7779,6 +7782,7 @@ ${note}`;
         state.taskGates,
         state.waitingFor,
         state.repairPredecessors,
+        this.repairHolds(runId, state),
       ).filter((t) => !lost.has(t.id));
       const runnable = checking ? all : this.testsFirstReady(runId, state, policy, all);
       if (runnable === null) return;
@@ -12210,6 +12214,31 @@ ${note}`;
       return owner ? [{ path, owner }] : [];
     });
   }
+  /**
+   * The holds of the run's unfinished correctives that are narrower than their writes (#2109):
+   * the files its first attempt writes once it started, and before that where its findings point,
+   * with their tests. A corrective that widened holds its whole write scope again.
+   */
+  private repairHolds(runId: string, state: RuntimeState): RepairHolds {
+    const done = new Set(
+      this.store
+        .tasks(runId)
+        .filter((row) => row.status === "verified" || row.status === "blocked")
+        .map((row) => row.id),
+    );
+    const holds: Record<string, string[]> = {};
+    for (const task of state.graph?.tasks ?? []) {
+      if (task.origin !== "repair" || done.has(task.id)) continue;
+      if (state.widenedCorrections.includes(task.id)) continue;
+      const narrowed =
+        state.narrowedCorrections[task.id] ??
+        narrowCorrectionWrites(task, correctionFocus(this.store, runId, state, task).files)?.map(
+          (w) => w.path,
+        );
+      if (narrowed) holds[task.id] = narrowed;
+    }
+    return holds;
+  }
   /** Shared ownership with the open findings' recorded command evidence (#1612). */
   private failureOwner(
     runId: string,
@@ -12255,6 +12284,7 @@ ${note}`;
       ...options,
       pendingFindings,
       predecessors: state.repairPredecessors,
+      holds: this.repairHolds(runId, state),
       waitingFor: Object.fromEntries(
         [
           ...new Set([
