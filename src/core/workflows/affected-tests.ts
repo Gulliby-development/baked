@@ -49,6 +49,8 @@ const SKIPPED_DIRS = new Set([
 
 const JS_FILE = /\.(?:[cm]?[jt]sx?)$/;
 const PY_FILE = /\.py$/;
+/** A Minitest file: `*_test.rb` or `test_*.rb`. */
+const RB_TEST = /(?:_test|(?:^|\/)test_(?!helper\.rb$)[^/]*)\.rb$/;
 const GO_FILE = /\.go$/;
 const JS_EXTENSIONS = [".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs"];
 
@@ -323,13 +325,15 @@ const flagsOnly = (args: string[]): string[] =>
   args.filter(
     (arg, i) =>
       arg.startsWith("-") ||
-      /^(?:--(?:timeout|testTimeout|test-timeout|config)|-c)$/.test(args[i - 1] ?? ""),
+      /^(?:--(?:timeout|testTimeout|test-timeout|config|format|formatter|require|tag|out|seed|order)|-c)$/.test(
+        args[i - 1] ?? "",
+      ),
   );
 
 /**
  * A command that runs only `tests` with the runner of one of the policy's test checks, or null
  * when no check runs a test runner that takes test files (`bun test`, `vitest`, `jest`,
- * `node --test`, `pytest`, `go test`). Package scripts (`npm test`, `bun run test`) are not
+ * `node --test`, `pytest`, `go test`, `rspec`, `rake test`). Package scripts (`npm test`, `bun run test`) are not
  * used: what they pass on is up to the script.
  */
 export function affectedTestCheck(
@@ -375,6 +379,19 @@ export function affectedTestCheck(
       // Discovery options (`discover -s tests -p ...`) take values and do not apply to named files.
       prefix = ["-m", "unittest", ...args.slice(2).filter((arg) => UNITTEST_FLAG.test(arg))];
       targets = py;
+    } else if (name === "rspec") {
+      // RSpec takes spec files (#1493).
+      prefix = flagsOnly(args);
+      targets = files.filter((f) => f.endsWith("_spec.rb"));
+    } else if (
+      name === "rake" &&
+      args.includes("test") &&
+      !args.some((a) => a.startsWith("TEST="))
+    ) {
+      // Rake's TestTask reads one file or a glob from TEST: `TEST={a_test.rb,b_test.rb}`.
+      const ruby = tests.filter((t) => RB_TEST.test(t));
+      prefix = args;
+      targets = ruby.length ? [`TEST=${ruby.length === 1 ? ruby[0] : `{${ruby.join(",")}}`}`] : [];
     } else if (name === "go" && args[0] === "test") {
       prefix = withGateFlags(["test", ...flagsOnly(args.slice(1))], gates.get("go"), 1);
       targets = [
