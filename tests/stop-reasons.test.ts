@@ -33,13 +33,18 @@ describe("stop reasons", () => {
   test("hard limits take only enforce; the forecasts and the approval scope take every mode", () => {
     for (const [id, reason] of Object.entries(STOP_REASONS)) {
       expect(reason.modes).toContain(reason.defaultMode);
-      if (!["cost-forecast", "approval-scope", "initiative-forecast", "initiative-dollar-share", "initiative-plan-charge", "repeated_failure", "corrective_scope"].includes(id))
+      if (!["cost-forecast", "approval-scope", "initiative-forecast", "initiative-dollar-share", "initiative-plan-charge", "repeated_failure", "corrective_scope", "corrective_unowned_file", "repeat_without_change", "upstream_symbol"].includes(id))
         expect(reason.modes).toEqual(["enforce"]);
     }
     expect(STOP_REASONS["cost-forecast"].modes).toEqual(STOP_MODES);
     // Shadow until its promotion (#1996): a policy cannot enforce it yet.
     expect(STOP_REASONS.repeated_failure.modes).toEqual(["shadow", "advisory"]);
     expect(STOP_REASONS.repeated_failure.defaultMode).toBe("shadow");
+    // Shadow until its promotion (#2137).
+    expect(STOP_REASONS.repeat_without_change.modes).toEqual(["shadow", "advisory"]);
+    expect(STOP_REASONS.repeat_without_change.defaultMode).toBe("shadow");
+    expect(STOP_REASONS.upstream_symbol.modes).toEqual(["shadow", "advisory"]);
+    expect(STOP_REASONS.upstream_symbol.defaultMode).toBe("shadow");
     const parse = (stopModes: unknown) => PolicySchema.safeParse({ ...defaultWorkflowPolicy, stopModes }).success;
     expect(parse({ "cost-forecast": "shadow", "approval-scope": "advisory" })).toBe(true);
     expect(parse({ cost: "shadow" })).toBe(false);
@@ -47,6 +52,10 @@ describe("stop reasons", () => {
     expect(parse({ unknown: "shadow" })).toBe(false);
     expect(parse({ repeated_failure: "advisory" })).toBe(true);
     expect(parse({ repeated_failure: "enforce" })).toBe(false);
+    // Shadow by default (#2133), enforceable through stopModes so its host decision can be turned on.
+    expect(STOP_REASONS.corrective_unowned_file.defaultMode).toBe("shadow");
+    expect(stopMode(defaultWorkflowPolicy, "corrective_unowned_file")).toBe("shadow");
+    expect(parse({ corrective_unowned_file: "enforce" })).toBe(true);
   });
 
   test("the mode is the explicit entry, else the legacy advisory forecast, else the default", () => {

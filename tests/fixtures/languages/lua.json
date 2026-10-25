@@ -2,11 +2,13 @@
   "files": {
     "src/sum.lua": "local function sum(a, b)\n  error(\"not implemented\")\nend\n",
     "src/sum_spec.lua": "local sum = require('sum')\nprint(sum(1, 2))\n-- AC-001 example: (1, 2, 3)\n",
-    "fixture-0.1-1.rockspec": "package = 'fixture'\n"
+    "fixture-0.1-1.rockspec": "package = 'fixture'\nversion = '0.1-1'\ndependencies = {\n  'lua >= 5.1',\n  'penlight >= 1.5',\n}\ntest_dependencies = { 'busted' }\nbuild = {\n  type = 'builtin',\n  modules = { sum = 'src/sum.lua' },\n}\n",
+    "stylua.toml": "column_width = 100\n",
+    ".luacheckrc": "std = 'max+busted'\n"
   },
   "outputs": {
-    "tests": "ok 1 - adds\nnot ok 2 - sum is commutative\n1..2\n",
-    "testsGrown": "ok 1 - adds\nok 2 - subtracts\nnot ok 3 - sum is commutative\n1..3\n"
+    "tests": "+-\n1 success / 1 failure / 0 errors / 0 pending : 0.001421 seconds\n\nFailure -> src/sum_spec.lua @ 5\nsum is commutative\nsrc/sum_spec.lua:6: Expected objects to be equal.\nPassed in:\n(number) 4\nExpected:\n(number) 5\n",
+    "testsGrown": "++-\n2 successes / 1 failure / 0 errors / 0 pending : 0.001873 seconds\n\nFailure -> src/sum_spec.lua @ 5\nsum is commutative\nsrc/sum_spec.lua:6: Expected objects to be equal.\nPassed in:\n(number) 4\nExpected:\n(number) 5\n"
   },
   "expected": {
     "tests": [
@@ -16,15 +18,23 @@
       "src/sum_spec.lua: source"
     ],
     "manifests": [
-      "fixture-0.1-1.rockspec"
+      "fixture-0.1-1.rockspec",
+      ".luacheckrc"
     ],
-    "dependencies": null,
+    "dependencies": [
+      "fixture-0.1-1.rockspec: luarocks penlight",
+      "fixture-0.1-1.rockspec: luarocks busted"
+    ],
     "placeholders": [
       "src/sum.lua:2"
     ],
-    "gates": null,
+    "gates": [
+      "stylua",
+      "luacheck",
+      "busted"
+    ],
     "testRunners": [
-      "tap 2",
+      "busted 2",
       "signature stable"
     ],
     "mutation": null,
@@ -40,7 +50,9 @@
       "src/sum_spec.lua:1",
       "src/sum_spec.lua:3 comment"
     ],
-    "formatters": null,
+    "formatters": [
+      "stylua-written: stylua --check src/sum.lua src/sum_spec.lua"
+    ],
     "packageContents": null,
     "numericLimits": [
       "integers past 2^63 wrap; tonumber of a long digit string gives a float"

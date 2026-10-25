@@ -217,6 +217,66 @@ const FRAMEWORKS: readonly TestFramework[] = [
     ],
   },
   {
+    // `test("...")` (FunSuite, munit) and `assert(...)` are read by the JavaScript row, JUnit-style
+    // `assertEquals` by the JVM row above (#1496).
+    name: "ScalaTest, munit",
+    languages: ["scala"],
+    cases: String.raw`^\s*ignore\s*\(\s*"|(?:\b(?:it|they)|"[^"\n]*")\s+(?:should|must|can|ignore)\s+"[^"\n]*"\s+(?:in|ignore)\b|"[^"\n]*"\s+in\s*\{`,
+    named: [
+      { pattern: /^\s*ignore\s*\(\s*"(?<name>[^"\n]+)"/d },
+      {
+        pattern:
+          /(?:\b(?:it|they)|"[^"\n]*")\s+(?:should|must|can)\s+"(?<name>[^"\n]+)"\s+(?:in|ignore)\b/d,
+      },
+    ],
+    assertions: String.raw`\b(?:shouldBe|shouldEqual|shouldNot\w*|mustBe|mustEqual)\b|\b(?:should|must)\s+(?:be|equal|contain|have|include|startWith|endWith|matchPattern)\b|\b(?:intercept|assertThrows)\s*\[|\bassertResult\s*\(`,
+    skips: String.raw`^\s*ignore\s*\(|(?:\b(?:it|they)|"[^"\n]*")\s+ignore\b|\b(?:should|must|can)\s+"[^"\n]*"\s+ignore\b|"[^"\n]*"\s*\.(?:ignore|only|flaky)\b|\bpending\b(?!\s*[=:(.])|\bcancel\s*\(`,
+    calls: [
+      { callee: /^withClue$/, messages: (args) => (args.length ? [0] : []) },
+      { callee: /^assertResult$/, messages: none },
+    ],
+  },
+  {
+    // busted's `it("adds", function()` and luassert's `assert.are.equal` are read by the shared
+    // rows above; LuaUnit names its tests `function TestSum:testAdds()` (#1495).
+    name: "busted, LuaUnit",
+    languages: ["lua"],
+    cases: String.raw`^\s*function\s+[Tt]est\w*(?:[.:][Tt]est\w*)?\s*\(`,
+    named: [{ pattern: /^\s*function\s+(?<name>[Tt]est\w*(?:[.:][Tt]est\w*)?)\s*\(/d }],
+    skips: String.raw`(?:^|[^.\w])pending\s*\(|\blu\.skip(?:If|Unless)?\s*\(`,
+  },
+  {
+    // bats: `@test "adds" {`, checks with `[ ... ]`, `[[ ... ]]` and bats-assert's `assert_output`;
+    // shunit2: `testAdds() {` with `assertEquals` (#1497).
+    name: "bats, shunit2",
+    languages: ["bash"],
+    cases: String.raw`^\s*@test\s+["']|^\s*(?:function\s+)?test\w+\s*\(\s*\)`,
+    named: [
+      { pattern: /^\s*@test\s+(["'])(?<name>(?:(?!\1)[^\\\n])+)\1/d },
+      { pattern: /^\s*(?:function\s+)?(?<name>test\w+)\s*\(\s*\)/d },
+    ],
+    assertions: String.raw`^\s*\[\[?\s|\b(?:assert|refute)_\w+|\bassert[A-Z]\w*`,
+    skips: String.raw`^\s*skip\b|\bstartSkipping\b`,
+  },
+  {
+    // GoogleTest `TEST(SumTest, Adds)` (`TEST_F`, `TEST_P`, typed tests), Catch2 and doctest
+    // `TEST_CASE("adds")`, Boost.Test `BOOST_AUTO_TEST_CASE(adds)`, and C's Unity `void
+    // test_adds(void)` and Check `START_TEST(adds)` (#1490). A GoogleTest `DISABLED_` name, a
+    // `GTEST_SKIP()`, Catch2's hidden `[.]` tag and `SKIP()`, Unity's `TEST_IGNORE()` and CMocka's
+    // `skip()` keep a test from running.
+    name: "GoogleTest, Catch2, doctest, Boost.Test, Unity, Check",
+    languages: ["c", "cpp"],
+    cases: String.raw`^\s*(?:(?:TYPED_)?TEST(?:_F|_P)?|TYPED_TEST_P|TEST_CASE|SCENARIO|BOOST_AUTO_TEST_CASE|START_TEST)\s*\(|^\s*void\s+test_?\w*\s*\(\s*void\s*\)`,
+    named: [
+      { pattern: /^\s*(?:TYPED_)?TEST(?:_F|_P)?\s*\(\s*\w+\s*,\s*(?<name>\w+)\s*\)/d },
+      { pattern: /^\s*(?:TEST_CASE|SCENARIO)\s*\(\s*"(?<name>[^"\n]+)"/d },
+      { pattern: /^\s*(?:BOOST_AUTO_TEST_CASE|START_TEST)\s*\(\s*(?<name>\w+)/d },
+      { pattern: /^\s*void\s+(?<name>test_?\w*)\s*\(\s*void\s*\)/d },
+    ],
+    assertions: String.raw`\b(?:EXPECT|ASSERT)_[A-Z_]+\s*\(|\b(?:REQUIRE|CHECK)(?:_[A-Z_]+)?\s*\(|\bBOOST_(?:CHECK|REQUIRE|TEST)\w*\s*\(|\bTEST_ASSERT\w*\s*\(|\bck_assert\w*\s*\(|\bassert(?:_\w+)?\s*\(`,
+    skips: String.raw`\bGTEST_SKIP\s*\(|\bDISABLED_\w|\bSKIP\s*\(|\bTEST_IGNORE(?:_MESSAGE)?\s*\(|^\s*skip\s*\(\s*\)|\bTEST_CASE\s*\([^)\n]*"[^"\n]*\[\.[^\]\n]*\]`,
+  },
+  {
     // package:test and flutter_test. `test("...")`, `group` and `expect(actual, matcher)` are read
     // by the JavaScript row above; the matcher is what the test checks, and the reason is named.
     name: "package:test, flutter_test",

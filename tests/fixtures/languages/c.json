@@ -2,7 +2,8 @@
   "files": {
     "src/sum.c": "int sum(int a, int b) {\n  assert(0 && \"not implemented\");\n}\n",
     "src/sum_test.c": "int main(void) { return sum(1, 2) - 3; }\n// AC-001 example: (1, 2, 3)\n",
-    "CMakeLists.txt": "project(fixture C)\n"
+    "CMakeLists.txt": "cmake_minimum_required(VERSION 3.16)\nproject(fixture C)\nenable_testing()\nadd_executable(sum_test src/sum.c src/sum_test.c)\nadd_test(NAME sum_test COMMAND sum_test)\n",
+    ".clang-format": "BasedOnStyle: LLVM\n"
   },
   "expected": {
     "tests": [
@@ -16,8 +17,16 @@
     "placeholders": [
       "src/sum.c:2"
     ],
-    "gates": null,
-    "testRunners": null,
+    "gates": [
+      "cmake-configure",
+      "cmake-build",
+      "ctest",
+      "clang-format"
+    ],
+    "testRunners": [
+      "ctest 2",
+      "signature stable"
+    ],
     "mutation": null,
     "properties": null,
     "entryPoints": null,
@@ -29,10 +38,16 @@
       "src/sum.c:2",
       "src/sum_test.c:2 comment"
     ],
-    "formatters": null,
+    "formatters": [
+      "clang-format-written: clang-format --dry-run --Werror src/sum.c src/sum_test.c"
+    ],
     "packageContents": null,
     "numericLimits": [
       "signed integer overflow is undefined behavior; strtol saturates at LONG_MAX"
     ]
+  },
+  "outputs": {
+    "tests": "Test project /w/build\n    Start 1: sum_adds\n1/2 Test #1: sum_adds .........................   Passed    0.03 sec\n    Start 2: sum_commutes\n2/2 Test #2: sum_commutes .....................***Failed    0.01 sec\n\n\n50% tests passed, 1 tests failed out of 2\n\nTotal Test time (real) =   0.05 sec\n\nThe following tests FAILED:\n\t  2 - sum_commutes (Failed)\nErrors while running CTest\n",
+    "testsGrown": "Test project /w/build\n    Start 1: sum_adds\n1/3 Test #1: sum_adds .........................   Passed    0.02 sec\n    Start 2: sum_subtracts\n2/3 Test #2: sum_subtracts ....................   Passed    0.01 sec\n    Start 3: sum_commutes\n3/3 Test #3: sum_commutes .....................***Failed    0.01 sec\n\n\n67% tests passed, 1 tests failed out of 3\n\nTotal Test time (real) =   0.07 sec\n\nThe following tests FAILED:\n\t  3 - sum_commutes (Failed)\nErrors while running CTest\n"
   }
 }
