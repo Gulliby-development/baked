@@ -188,6 +188,7 @@ export type TestRunner =
   | "gtest"
   | "dart"
   | "sbt"
+  | "swift"
   | "junit"
   | "tap"
   | "pester";
@@ -463,6 +464,15 @@ const TEST_COUNTERS: readonly {
       return scalatest(o, ([succeeded = 0, failed = 0]) => succeeded + failed);
     },
   },
+  {
+    tool: "swift",
+    // swift test runs XCTest, then swift-testing (#1492): XCTest's "Test Suite 'All tests' failed
+    // at ..." is followed by "Executed 3 tests, with 1 test skipped and 1 failure (0 unexpected)",
+    // and swift-testing ends with "Test run with 3 tests failed after 0.001 seconds with 1 issue."
+    // Its skipped tests are in that count and are listed one by one ("Test waits() skipped").
+    count: (o) => swiftCount(o, false),
+    ran: (o) => swiftCount(o, true),
+  },
   // A language without a parser of its own (#1488): a JUnit XML report printed to the output
   // (`--reporter=junit`), then TAP (busted, bats, prove, node:test, pgTAP).
   {
@@ -492,6 +502,18 @@ const TEST_COUNTERS: readonly {
 ];
 
 const num = (match: RegExpMatchArray | null): number | null => (match ? Number(match[1]) : null);
+
+function swiftCount(o: string, ran: boolean): number | null {
+  const xctest = [
+    ...o.matchAll(
+      /^Test Suite '(?:All tests|Selected tests)' (?:passed|failed) at .*\r?\n\s*Executed (\d+) tests?, with (?:(\d+) tests? skipped and )?\d+ failures?/gm,
+    ),
+  ].at(-1);
+  const testing = [...o.matchAll(/^. Test run with (\d+) tests?\b/gm)].at(-1);
+  if (!xctest && !testing) return null;
+  const skipped = ran ? Number(xctest?.[2] ?? 0) + lines(o, /^. Test .+ skipped(?::|\.|$)/) : 0;
+  return Number(xctest?.[1] ?? 0) + Number(testing?.[1] ?? 0) - skipped;
+}
 
 /** sbt's per-project summary: the tests that ran (`Total`) and those that did not (`idle`). */
 function sbtTotals(o: string): { total: number; idle: number }[] {
@@ -553,7 +575,7 @@ export const TEST_RUNNERS: LanguageRecord<readonly TestRunner[]> = {
   cpp: ["ctest", "gtest"],
   ruby: ["rspec", "minitest"],
   php: ["phpunit", "pest"],
-  swift: none("XCTest and swift-testing summaries are not read"),
+  swift: ["swift"],
   lua: ["busted", "tap"],
   elixir: none('ExUnit\'s "N tests, M failures" summary is not read'),
   dart: ["dart"],
@@ -648,6 +670,14 @@ export const FAILED_TESTS: Record<TestRunner, (output: string) => string[]> = {
     }
     return [...new Set([...munit, ...scalatest])];
   },
+  // XCTest "Test Case 'CalcXCTests.testFails' failed (0.001 seconds)" ('-[CalcTests.CalcXCTests
+  // testFails]' on macOS), swift-testing "✘ Test failsToo() failed after 0.001 seconds with 1 issue."
+  swift: (o) => [
+    ...new Set([
+      ...captured(o, /^Test Case '(.+?)' failed \(/gm),
+      ...captured(o, /^. Test (?!run with )(.+?) failed after /gm),
+    ]),
+  ],
   // A <testcase> with a <failure> or <error> child.
   junit: (o) =>
     [...o.matchAll(/<testcase\b([^>]*?)(?:\/>|>([\s\S]*?)<\/testcase>)/g)]
@@ -716,6 +746,9 @@ export const BUILD_FAILURES: Record<TestRunner, RegExp> = {
   // "[error] /w/src/test/scala/A.scala:2:31: not found: value x", then "(Test / compileIncremental)
   // Compilation failed" for the project whose sources do not compile.
   sbt: /^\[error\] (?:-- (?:\[E\d+\] )?.*: \S+\.scala:\d+:\d+ -*|\S+\.scala:\d+:\d+: .+|\(.*compileIncremental\) Compilation failed)$/,
+  // swiftc: "/w/Tests/CalcTests/CalcTests.swift:6:27: error: cannot find 'sub' in scope"; an XCTest
+  // failure names no column ("CalcTests.swift:6: error: CalcTests.testFails : XCTAssertEqual ...").
+  swift: /^\S+\.swift:\d+:\d+: error: .+$/,
   // Gradle: "> Task :compileTestJava FAILED", "AppTest.java:12: error: cannot find symbol"
   junit: /^(?:> Task :\S*[cC]ompile\S* FAILED|.+\.(?:java|kt):\d+: error: .+)$/,
   // "Bail out! Cannot find module"
@@ -725,12 +758,19 @@ export const BUILD_FAILURES: Record<TestRunner, RegExp> = {
   pester: /^(?:\[-\] (?:Discovery in )?\S+\.Tests\.ps1 failed with:|Container failed: \d+)$/,
 };
 
+// Compilers color their diagnostics even when not on a terminal (swiftc 6.4 prints "error:" in
+// bold red, #1492), so the build-failure lines are read without ANSI colors.
+const buildLines = (output: string): string[] =>
+  withoutAnsi(output)
+    .split(/\r?\n/)
+    .map((line) => line.trimEnd());
+
 /**
  * The first lines of a build failure in a check's output (`BUILD_FAILURES`): some or all of the
  * tests did not build, collect or load, so they did not run. Null when no runner printed one.
  */
 export function buildFailure(output: string, limit = 5): string[] | null {
-  const lines = output.split(/\r?\n/).map((line) => line.trimEnd());
+  const lines = buildLines(output);
   const found = lines.filter((line) => Object.values(BUILD_FAILURES).some((p) => p.test(line)));
   return found.length ? found.slice(0, limit) : null;
 }
@@ -740,7 +780,7 @@ export function buildFailure(output: string, limit = 5): string[] | null {
  * replay knows how to split that check per test target (#2020). Null when none has.
  */
 export function buildRunner(output: string): TestRunner | null {
-  const lines = output.split(/\r?\n/).map((line) => line.trimEnd());
+  const lines = buildLines(output);
   for (const [tool, pattern] of Object.entries(BUILD_FAILURES) as [TestRunner, RegExp][])
     if (lines.some((line) => pattern.test(line))) return tool;
   return null;
@@ -908,6 +948,22 @@ const GROWING_COUNTS: [RegExp, string][] = [
   // sbt compiles only what changed since its last run: its compile lines are progress, not output.
   [/^\[info\] (?:compiling \d+ (?:Scala|Java)(?: and \w+)? sources?\b.*|done compiling)\n?/gm, ""],
   [/\b(Checking|Formatting) \d+ Scala sources\b/g, "$1 <n> Scala sources"],
+  // swift test (#1492): SwiftPM's build steps ("[3/5] Compiling", and from Swift 6.2 "[29 / 51] Calc"
+  // with thin spaces and phase lines such as "[Planning deferred tasks]" or "[Describing: 24 / 202]",
+  // never Maven's "[INFO]") and build time ("Build
+  // complete! (15.51 secs)"), XCTest's started and passed lines and its suite timestamps,
+  // swift-testing's started, passed and skipped lines, with the failures kept.
+  [/^\[\d+\s*\/\s*\d+\](?: .*)?(?:\n|$)/gm, ""],
+  [/^\[[A-Z][a-z][^\]\n]*\]$\n?/gm, ""],
+  [/^(Build complete!) \([\d.]+ ?s(?:ecs?)?\)/gm, "$1 (<duration>)"],
+  [/^Test (?:Suite|Case) '.+' (?:started at .*|passed \(.*)(?:\n|$)/gm, ""],
+  [/^(Test Suite '.+' failed) at .*$/gm, "$1"],
+  [
+    /\bExecuted \d+ tests?, with (?:\d+ tests? skipped and )?(\d+ failures? \(\d+ unexpected\)) in [\d.]+ \([\d.]+\) seconds/g,
+    "Executed <n> tests, with $1 in <duration>",
+  ],
+  [/^. Test (?!run with ).+ (?:started\.|passed after .*|skipped(?::.*|\.)?)(?:\n|$)/gm, ""],
+  [/^(. Test run with )\d+ (tests?)/gm, "$1<n> $2"],
   // dart format: "Formatted 3 files (1 changed) in 0.01 seconds."
   [/\bFormatted \d+ files? \((\d+) changed\)/g, "Formatted <n> files ($1 changed)"],
   // The progress line of RSpec, Minitest and RuboCop, one character per example or file.
