@@ -258,7 +258,7 @@ export function beforeAfterContext(prose: string, spans: readonly QuotedSpan[]):
 
 /** The prefixes that run a tool from the project's environment: `npx`, `uv run`, `python -m`. */
 const RUNNER = String.raw`(?:(?:npx|bunx|pnpm\s+(?:exec|dlx)|yarn(?:\s+dlx)?|uv\s+run|poetry\s+run|pipenv\s+run|hatch\s+run|pdm\s+run|python3?\s+-m)\s+)?`;
-const TOOL = String.raw`(?:pytest|unittest|mypy|ruff|black|isort|flake8|pylint|pyright|tox|nox|tsc|eslint|biome|prettier|vitest|jest|mocha|golangci-lint)\b`;
+const TOOL = String.raw`(?:pytest|unittest|mypy|ruff|black|isort|flake8|pylint|pyright|tox|nox|tsc|eslint|biome|prettier|vitest|jest|mocha|golangci-lint|sqlfluff|pg_prove)\b`;
 /**
  * A quoted command of the project's own checks: the test, type check, lint, build or format
  * commands of the usual runners, also run through `npx`, `bunx`, `pnpm exec`, `uv run`,
@@ -272,6 +272,7 @@ const CHECK_COMMAND = new RegExp(
     String.raw`deno\s+(?:test|lint|fmt|check)\b`,
     String.raw`node\s+--test\b`,
     String.raw`make\s+(?:test|check|lint|build)\b`,
+    String.raw`dbt\s+(?:build|test|run|compile)\b`,
     RUNNER + TOOL,
     // The arguments of a Python check run by an interpreter path: `.venv/bin/python -m ruff` (#1762).
     String.raw`-m\s+` + TOOL,

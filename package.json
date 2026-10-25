@@ -25,6 +25,7 @@
   ],
   "files": [
     "dist",
+    "vendor/tree-sitter",
     "scripts/postinstall.mjs",
     "scripts/launcher.mjs"
   ],

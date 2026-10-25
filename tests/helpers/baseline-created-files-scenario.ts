@@ -20,6 +20,8 @@ export const FIRST_RUN_OUTPUTS: Record<string, string[]> = {
   "c and cpp": ["build/app.o"],
   php: [".phpunit.cache/test-results", ".php-cs-fixer.cache"],
   lua: [".luacheckcache", "luacov.stats.out"],
+  // dbt build writes its manifest and log into the project (#1499).
+  dbt: ["target/manifest.json", "logs/dbt.log"],
 };
 
 /**

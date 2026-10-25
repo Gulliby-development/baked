@@ -97,6 +97,13 @@ export function diagnosticCount(output: string): OutputCount | null {
     const errors = Number(selene[1]) + Number(selene[3]);
     return { tool: "selene", count: errors + Number(selene[2]), errors };
   }
+  // SQLFluff (#1499): one "L:   1 | P:  10 | LT01 | ..." line per violation, then "All Finished!";
+  // a rule listed under `warnings` prints "WARNING:" after the code, and counts as a warning.
+  if (/^All Finished\b/m.test(output)) {
+    const violations = lines(output, /^L:\s*\d+\s*\|\s*P:\s*\d+\s*\|\s*\w+\s*\|/);
+    const warned = lines(output, /^L:\s*\d+\s*\|\s*P:\s*\d+\s*\|\s*\w+\s*\|\s*WARNING:/);
+    return { tool: "sqlfluff", count: violations, errors: violations - warned };
+  }
   // dart analyze and flutter analyze: "  error - lib/a.dart:3:14 - ... - invalid_assignment", then
   // "2 issues found." or "No issues found!". Infos are lints dart analyze exits 0 on.
   if (
@@ -428,6 +435,8 @@ export const TEST_RUNNERS: LanguageRecord<readonly TestRunner[]> = {
   ocaml: none("dune test output has no common summary"),
   objc: none("xcodebuild test summaries are not read"),
   solidity: none("forge test summaries are not read"),
+  // pgTAP through pg_prove prints TAP.
+  sql: ["tap"],
 };
 
 const captured = (output: string, pattern: RegExp): string[] => [
@@ -730,6 +739,13 @@ const GROWING_COUNTS: [RegExp, string][] = [
   // pending; `●◼✱◌` in a UTF-8 terminal), and its success count (#1495).
   [/^[+\-*.●◼✱◌]+$\n?/gm, ""],
   [/\b\d+ (successe?s?) \//g, "<n> success /"],
+  // TAP::Harness (prove, pg_prove) summarizes with totals, test numbers and CPU times (#1499):
+  // "Failed 1/2 subtests", "(Wstat: 0 Tests: 2 Failed: 1)", "  Failed test:  2",
+  // "Files=1, Tests=2,  0 wallclock secs ( 0.01 usr + ...)". The failed counts stay.
+  [/\bFailed (\d+)\/\d+ subtests\b/g, "Failed $1/<n> subtests"],
+  [/\(Wstat: (\d+) Tests: \d+ Failed: (\d+)\)/g, "(Wstat: $1 Tests: <n> Failed: $2)"],
+  [/^(\s*Failed tests?:)\s+[\d, -]+$/gm, "$1 <n>"],
+  [/^Files=\d+, Tests=\d+,.*$/gm, "Files=<n>, Tests=<n>"],
 ];
 
 /**

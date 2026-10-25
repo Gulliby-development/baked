@@ -298,6 +298,8 @@ const SKIPS = new RegExp(
     // PHPUnit and Pest (#1491).
     String.raw`->markTest(?:Skipped|Incomplete)\s*\(`,
     String.raw`->(?:skip|todo)\s*\(`,
+    // pgTAP: `SELECT skip('needs pg 16', 2)`, `SELECT todo_start('...')` (#1499).
+    String.raw`\b(?:SELECT|select)\s+(?:skip|todo_start)\s*\(`,
   ].join("|"),
   "g",
 );
@@ -359,6 +361,8 @@ const SUPPRESSIONS = new RegExp(
     String.raw`\bbiome-ignore\b`,
     String.raw`#\s*type:\s*ignore\b`,
     String.raw`#\s*noqa\b`,
+    // SQLFluff (#1499).
+    String.raw`--\s*noqa\b`,
     String.raw`#\s*pragma:\s*no cover\b`,
     String.raw`#!?\[allow\(`,
     String.raw`@SuppressWarnings\b`,

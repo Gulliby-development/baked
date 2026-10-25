@@ -417,6 +417,7 @@ const PROJECT_INDICATORS: Record<string, string[]> = {
   Kotlin: ["*.kt", "build.gradle.kts"],
   Swift: ["Package.swift", "*.swift"],
   Dart: ["pubspec.yaml", "*.dart"],
+  SQL: ["*.sql", ".sqlfluff", "dbt_project.yml"],
 };
 
 /** Detect which languages are used in the current project */
