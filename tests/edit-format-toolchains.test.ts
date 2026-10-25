@@ -95,6 +95,11 @@ describe("edit-time formatting per toolchain (#1681)", () => {
     expect(formatProbeCommand("stylua", "/w/a.lua")).toMatch(/^stylua --stdin-filepath .*a\.lua.? -$/);
   });
 
+  // #1497: shfmt reads the pre-image from stdin and the path for its .editorconfig.
+  test("shfmt gets a stdin probe", () => {
+    expect(formatProbeCommand("shfmt -w", "/w/a.sh")).toMatch(/^shfmt --filename .*a\.sh.?$/);
+  });
+
   test.skipIf(!hasStylua)("StyLua formats one edited file only when it was clean", async () => {
     const root = project({ "stylua.toml": "", ".luacheckrc": "", "src/a.lua": "local a = {b=1}\n", "src/b.lua": "local b = {c=2}\n" });
     expect(await formatFile(join(root, "src/a.lua"), root)).toBe(true);

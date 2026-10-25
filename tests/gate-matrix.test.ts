@@ -1007,6 +1007,95 @@ describe("gate matrix: LuaRocks (#1495)", () => {
   });
 });
 
+// #1497: a shell project has scripts, the config of ShellCheck or shfmt and bats tests, and the
+// runner fallback found nothing without a Makefile.
+describe("gate matrix: shell (#1497)", () => {
+  const ids = (files: Record<string, string>) =>
+    detectGates(project(files)).map((s) => [s.check.id, s.check.executable, s.check.args.join(" "), s.source]);
+  const checks = (files: Record<string, string>) => detectGates(project(files)).map((s) => s.check);
+  const SCRIPTS = {
+    ".shellcheckrc": "disable=SC1091\n",
+    ".editorconfig": "root = true\n\n[*.{sh,bats}]\nindent_style = space\nindent_size = 2\n",
+    "bin/sum.sh": "#!/usr/bin/env bash\necho $(($1 + $2))\n",
+    "lib/util.bash": "",
+    "node_modules/x/y.sh": "",
+    "test/sum.bats": '@test "adds" {\n  run bin/sum.sh 1 2\n}\n',
+  };
+
+  test("ShellCheck on the project's scripts, shfmt with an .editorconfig shell section, bats on its test folder", () => {
+    expect(ids(SCRIPTS)).toEqual([
+      ["shellcheck", "shellcheck", "bin/sum.sh lib/util.bash", ".shellcheckrc"],
+      ["shfmt", "shfmt", "-d .", ".editorconfig"],
+      ["bats", "bats", "test", "test/"],
+    ]);
+    expect(ids({ "tests/a.bats": "" })).toEqual([["bats", "bats", "tests", "tests/"]]);
+    // An .editorconfig without a shell section and a .shellcheckrc without scripts give nothing.
+    expect(ids({ ".editorconfig": "[*.md]\nindent_size = 2\n", ".shellcheckrc": "" })).toEqual([]);
+  });
+
+  test("the shell gates come on top of the project's own toolchain and of its Makefile", () => {
+    expect(ids({ ...SCRIPTS, "go.mod": "module x\n\ngo 1.22\n" }).map(([id]) => id)).toEqual(["gofmt", "go-vet", "go-test", "shellcheck", "shfmt", "bats"]);
+    expect(ids({ Makefile: "test:\n\tbats test\n", "test/sum.bats": "" })).toEqual([
+      ["tests", "make", "test", 'Makefile target "test"'],
+      ["bats", "bats", "test", "test/"],
+    ]);
+  });
+
+  test("ShellCheck and shfmt run per task, shfmt's fixer gets the task's file, bats is the test check", () => {
+    const all = checks(SCRIPTS);
+    const byId = (id: string) => all.find((c) => c.id === id) as Check;
+    expect(isStaticCheck(byId("shellcheck")) && !isWholeUnitCheck(byId("shellcheck"))).toBe(true);
+    expect(isStaticCheck(byId("shfmt")) && !isTestCheck(byId("shfmt"))).toBe(true);
+    expect(isTestCheck(byId("bats")) && !isStaticCheck(byId("bats"))).toBe(true);
+    expect(fixerCommand(byId("shfmt").fix!, "bin/sum.sh")).toEqual({ executable: "shfmt", args: ["-w", "bin/sum.sh"] });
+    expect(styleClaimShown("every script is shfmt-formatted and passes shellcheck", all.map((c) => ({ ...c, scope: "feature" as const })))).toBe(true);
+    // The whole-tree shfmt gate covers a new script; without it the written-format check is shfmt -d on the file.
+    expect(formatWrittenChecks(project(SCRIPTS), all, [{ path: "bin/new.sh", action: "create" }])).toEqual([]);
+  });
+
+  test("a written bats file runs on its own, with bats' flags and their values", () => {
+    const bats = { ...(checks(SCRIPTS).find((c) => c.id === "bats") as Check), args: ["-j", "4", "--filter-tags", "unit", "test"] };
+    expect(affectedTestCheck([bats], ["test/sum.bats"])?.args).toEqual(["-j", "4", "--filter-tags", "unit", "./test/sum.bats"]);
+    expect(plannedWrittenTests([bats], [{ path: "test/sum.bats", action: "create" }])?.id).toBe("bats-written");
+  });
+
+  // bats 1.10.0 prints TAP.
+  const BATS_FAILED =
+    "1..3\nok 1 adds\nnot ok 2 commutes\n# (in test file test/sum.bats, line 10)\n#   `[ \"$output\" = \"5\" ]' failed\nok 3 later # skip not ready\n";
+
+  test("bats' TAP gives the count, the tests that ran and the failed names, with one signature as tests grow", () => {
+    expect([testCount(BATS_FAILED), testsRan(BATS_FAILED), failedTests(BATS_FAILED)]).toEqual([{ tool: "tap", count: 3 }, { tool: "tap", count: 2 }, { tool: "tap", names: ["commutes"] }]);
+    const grown = BATS_FAILED.replace("1..3\nok 1 adds\nnot ok 2", "1..4\nok 1 adds\nok 2 subtracts\nnot ok 3").replace("ok 3 later", "ok 4 later");
+    expect(failureSignature(grown, "/w")).toBe(failureSignature(BATS_FAILED, "/w"));
+    expect(convergenceSignature(grown)).toBe(convergenceSignature(BATS_FAILED));
+  });
+
+  test("an empty test folder or a missing path is no failing suite, and names the path its task creates", () => {
+    expect(noTestsCollected("1..0\n")).toBe(true);
+    expect(noTestsCollected("1..10\nok 1 a\n")).toBe(false);
+    const tasks = [{ writes: [{ path: "test/later.bats", action: "create" as const }, { path: "bin/later.sh", action: "create" as const }] }];
+    expect(missingPlannedPaths('Error: Test file "/w/test/later.bats" does not exist\n', tasks)).toEqual(["test/later.bats"]);
+    expect(missingPlannedPaths("bin/later.sh: bin/later.sh: openBinaryFile: does not exist (No such file or directory)\n", tasks)).toEqual(["bin/later.sh"]);
+    expect(missingPlannedPaths("lstat bin/later.sh: no such file or directory\n", tasks)).toEqual(["bin/later.sh"]);
+  });
+
+  test("ShellCheck's findings are counted by severity", () => {
+    const output = "\nIn bin/bad.sh line 2:\necho $1\n     ^-- SC2086 (info): Double quote to prevent globbing and word splitting.\n\n\nIn bin/bad.sh line 3:\nfor f in $(ls); do echo $f; done\n         ^---^ SC2045 (error): Iterating over ls output is fragile. Use globs.\n                        ^-- SC2086 (info): Double quote to prevent globbing and word splitting.\n";
+    expect(diagnosticCount(output)).toEqual({ tool: "shellcheck", count: 3, errors: 1 });
+  });
+
+  test("bats' skip and ShellCheck's disable are integrity findings; a platform or tool guard is not", () => {
+    const before = '@test "adds" {\n  run bin/sum.sh 1 2\n  [ "$output" = "3" ]\n}\n';
+    const rules = (after: string) => scanTestIntegrity([{ path: "test/sum.bats", before, after }]).map((f) => f.rule);
+    expect(rules(before.replace("  run", '  skip "later"\n  run'))).toContain("skip");
+    expect(rules(before.replace("  run", "  # shellcheck disable=SC2086\n  run"))).toContain("suppression");
+    expect(rules(before.replace("  run", '  if ! command -v jq >/dev/null; then\n    skip "no jq"\n  fi\n  run'))).not.toContain("skip");
+    expect(rules(before.replace("  run", '  [[ "$OSTYPE" == darwin* ]] && skip "GNU sed only"\n  run'))).not.toContain("skip");
+    const source = "#!/bin/sh\n# shellcheck disable=SC2086\necho $1\n";
+    expect(checkBuiltinRules([{ path: "bin/a.sh", content: source, before: null }], {}).map((f) => f.rule)).toContain("lint-suppression");
+  });
+});
+
 // #1753: a plain SwiftPM, Mix, Dart, Zig, dune or Bundler project has no Makefile, justfile or CI
 // run step, so the runner fallback found nothing and no test gate was suggested.
 describe("gate matrix: SwiftPM, Mix, Dart, Zig, dune and Bundler (#1753)", () => {
@@ -3496,6 +3585,56 @@ describe.skipIf(!toolchains)("gate matrix: toolchains", () => {
       const fix = fixerCommand(byId("stylua").fix!, "src/max.lua");
       expect(spawnSync(fix.executable, fix.args, { cwd: root }).status).toBe(0);
       expect((await run(byId("stylua"))).status).toBe("passed");
+    },
+    120_000,
+  );
+
+  // #1497: the shell gates and the bats, ShellCheck and shfmt output against the real tools.
+  test.skipIf(process.platform === "win32" || !available([["bats", "--version"], ["shellcheck", "--version"], ["shfmt", "--version"]]))(
+    "a shell project's detected gates run, and their output reads as the parsers expect (#1497)",
+    async () => {
+      const bats = (body: string) => `#!/usr/bin/env bats\n\n${body}`;
+      const adds = '@test "adds" {\n  run bin/sum.sh 1 2\n  [ "$output" = "3" ]\n}\n';
+      const commutes = '\n@test "commutes" {\n  run bin/sum.sh 2 2\n  [ "$output" = "5" ]\n}\n';
+      const root = project({
+        ".shellcheckrc": "disable=SC1091\n",
+        ".editorconfig": "root = true\n\n[*.{sh,bats}]\nindent_style = space\nindent_size = 2\n",
+        "bin/sum.sh": '#!/usr/bin/env bash\nset -euo pipefail\necho "$(($1 + $2))"\n',
+        "test/sum.bats": bats(adds + commutes),
+      });
+      chmodSync(join(root, "bin/sum.sh"), 0o755);
+      const gates = detectGates(root).map((s) => s.check);
+      expect(gates.map((c) => c.id)).toEqual(["shellcheck", "shfmt", "bats"]);
+      const byId = (id: string) => gates.find((c) => c.id === id) as Check;
+      const run = async (check: Check) => executeGate(root, check, new AbortController().signal);
+
+      const failing = await run(byId("bats"));
+      expect(failing.status).toBe("failed");
+      expect([testCount(failing.outputTail), failedTests(failing.outputTail)]).toEqual([{ tool: "tap", count: 2 }, { tool: "tap", names: ["commutes"] }]);
+      writeFileSync(join(root, "test/max.bats"), bats('@test "max" {\n  [ "$(printf "1\\n2\\n" | sort -n | tail -1)" = "2" ]\n}\n'));
+      const grown = await run(byId("bats"));
+      expect(testCount(grown.outputTail)).toEqual({ tool: "tap", count: 3 });
+      expect(failureSignature(grown.outputTail, root)).toBe(failureSignature(failing.outputTail, root));
+      writeFileSync(join(root, "test/sum.bats"), bats(adds));
+      expect((await run(byId("bats"))).status).toBe("passed");
+      const one = await run(affectedTestCheck([byId("bats")], ["test/max.bats"]) as Check);
+      expect([one.status, testsRan(one.outputTail)]).toEqual(["passed", { tool: "tap", count: 1 }]);
+      const missing = await run({ ...byId("bats"), args: ["test/later.bats"] });
+      expect(missingPlannedPaths(missing.outputTail, [{ writes: [{ path: "test/later.bats", action: "create" }] }])).toEqual(["test/later.bats"]);
+
+      const clean = await run(byId("shellcheck"));
+      expect(clean.status).toBe("passed");
+      writeFileSync(join(root, "bin/sum.sh"), "#!/usr/bin/env bash\necho $(($1 + $2))\nfor f in $(ls); do echo \"$f\"; done\n");
+      const dirty = await run(byId("shellcheck"));
+      expect([dirty.status, diagnosticCount(dirty.outputTail)]).toEqual(["failed", { tool: "shellcheck", count: 1, errors: 1 }]);
+
+      writeFileSync(join(root, "bin/sum.sh"), '#!/usr/bin/env bash\necho "$(($1 + $2))"\n');
+      expect((await run(byId("shfmt"))).status).toBe("passed");
+      writeFileSync(join(root, "bin/max.sh"), "#!/bin/sh\nif [ $1 -gt $2 ]; then\necho $1\nfi\n");
+      expect((await run(byId("shfmt"))).status).toBe("failed");
+      const fix = fixerCommand(byId("shfmt").fix!, "bin/max.sh");
+      expect(spawnSync(fix.executable, fix.args, { cwd: root }).status).toBe(0);
+      expect((await run(byId("shfmt"))).status).toBe("passed");
     },
     120_000,
   );

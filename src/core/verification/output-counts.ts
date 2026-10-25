@@ -97,6 +97,15 @@ export function diagnosticCount(output: string): OutputCount | null {
     const errors = Number(selene[1]) + Number(selene[3]);
     return { tool: "selene", count: errors + Number(selene[2]), errors };
   }
+  // ShellCheck (#1497) prints each finding under its line, "^-- SC2086 (info): Double quote ...",
+  // and no summary; a clean run prints nothing.
+  const shellcheck = [...output.matchAll(/\^-*\^? SC\d+ \((error|warning|info|style)\): /g)];
+  if (shellcheck.length)
+    return {
+      tool: "shellcheck",
+      count: shellcheck.length,
+      errors: shellcheck.filter((m) => m[1] === "error").length,
+    };
   // SQLFluff (#1499): one "L:   1 | P:  10 | LT01 | ..." line per violation, then "All Finished!";
   // a rule listed under `warnings` prints "WARNING:" after the code, and counts as a warning.
   if (/^All Finished\b/m.test(output)) {
