@@ -57,6 +57,12 @@
     ],
     "numericLimits": [
       "Int and Long arithmetic overflow silently; toInt() fails past Int"
+    ],
+    "staticTools": [
+      "ktlint: linter",
+      "detekt: linter",
+      "ktfmt: formatter",
+      "spotless: formatter"
     ]
   }
 }

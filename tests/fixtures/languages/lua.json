@@ -56,6 +56,11 @@
     "packageContents": null,
     "numericLimits": [
       "integers past 2^63 wrap; tonumber of a long digit string gives a float"
+    ],
+    "staticTools": [
+      "luacheck: linter",
+      "selene: linter",
+      "stylua: formatter"
     ]
   }
 }

@@ -44,6 +44,12 @@
     "packageContents": null,
     "numericLimits": [
       "signed integer overflow is undefined behavior; strtol saturates at LONG_MAX"
+    ],
+    "staticTools": [
+      "clang-tidy: linter, whole unit",
+      "clang-format: formatter",
+      "cppcheck: linter",
+      "cpplint: linter"
     ]
   },
   "outputs": {

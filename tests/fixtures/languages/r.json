@@ -55,6 +55,7 @@
       "integer (1L) arithmetic past 2147483647 gives NA with a warning, not an error; as.integer of a larger value is NA",
       "numeric is a double: integers past 2^53 lose precision, and 0.1 + 0.2 == 0.3 is FALSE (compare with all.equal)",
       "NA propagates through arithmetic and comparisons, and an if() on NA is an error"
-    ]
+    ],
+    "staticTools": ["lintr: linter", "styler: formatter"]
   }
 }

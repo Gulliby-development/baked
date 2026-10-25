@@ -58,6 +58,13 @@
     "numericLimits": [
       "int and long arithmetic overflow silently; Integer.parseInt fails past int",
       "double formatting switches to exponent form for large values"
+    ],
+    "staticTools": [
+      "checkstyle: linter",
+      "pmd: linter",
+      "spotbugs: linter, whole unit",
+      "spotless: formatter",
+      "google-java-format: formatter"
     ]
   }
 }

@@ -51,6 +51,10 @@
     "packageContents": null,
     "numericLimits": [
       "arithmetic is 64-bit signed and wraps silently"
+    ],
+    "staticTools": [
+      "shellcheck: linter",
+      "shfmt: formatter"
     ]
   }
 }

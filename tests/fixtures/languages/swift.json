@@ -50,6 +50,11 @@
     "packageContents": null,
     "numericLimits": [
       "integer overflow traps at runtime"
+    ],
+    "staticTools": [
+      "swiftlint: linter",
+      "swiftformat: formatter",
+      "swift-format: formatter"
     ]
   }
 }

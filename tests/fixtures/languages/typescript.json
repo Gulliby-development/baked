@@ -63,6 +63,13 @@
     "numericLimits": [
       "Number loses integers past 2^53 and prints large values in exponent form",
       "Headers and URLs reject non-ASCII header values without encoding"
+    ],
+    "staticTools": [
+      "eslint: linter",
+      "biome: linter",
+      "oxlint: linter",
+      "prettier: formatter",
+      "tsc: typechecker, whole unit"
     ]
   }
 }

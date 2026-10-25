@@ -47,6 +47,11 @@
     "packageContents": ["pubspec.yaml: pub"],
     "numericLimits": [
       "int is 64-bit on the VM and 2^53-exact when compiled to JavaScript"
+    ],
+    "staticTools": [
+      "dart analyze: linter, whole unit",
+      "flutter analyze: linter, whole unit",
+      "dart format: formatter"
     ]
   }
 }

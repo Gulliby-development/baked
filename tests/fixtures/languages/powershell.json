@@ -53,6 +53,11 @@
       "[int] and [long] arithmetic past their range silently widens to [double] and loses integers past 2^53",
       "casting a too large value or numeric string to [int] throws",
       "[decimal] holds 28 to 29 significant digits"
+    ],
+    "staticTools": [
+      "PSScriptAnalyzer: linter",
+      "ScriptAnalyzer: linter",
+      "Invoke-Formatter: formatter"
     ]
   }
 }

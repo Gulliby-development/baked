@@ -62,6 +62,12 @@
     "numericLimits": [
       "integer overflow panics in debug builds and wraps in release",
       "str::parse fails past the target type's range"
+    ],
+    "staticTools": [
+      "clippy: linter, whole unit",
+      "cargo check: linter, whole unit",
+      "rustfmt: formatter, whole unit",
+      "cargo fmt: formatter, whole unit"
     ]
   }
 }
