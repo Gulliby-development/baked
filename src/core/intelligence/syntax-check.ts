@@ -11,7 +11,9 @@ export type { ParseError } from "./backends/tree-sitter.js";
  * parser gems (`$:` globals, `self(` calls, a leading magic comment). Dart stays out (#1494): the
  * bundled tree-sitter-dart reported errors in 92 of 444 valid files of the args, async, collection,
  * path, matcher, test, shelf, glob, crypto and io packages (`library;` without a name, Dart 3
- * patterns).
+ * patterns). Lua stays out (#1495): the bundled tree-sitter-lua reported errors in 374 of 1,133
+ * files of busted, luassert, penlight and luacheck that `luac -p` accepts (a call without
+ * parentheses, `local f = function`).
  */
 const CHECKED_GRAMMARS: Record<string, string> = {
   ".rs": "rust",

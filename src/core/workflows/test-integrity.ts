@@ -329,6 +329,8 @@ const CAPABILITY = new RegExp(
     String.raw`\b(?:extension_loaded|function_exists)\s*\(`,
     // Ruby: `RUBY_PLATFORM`, `Gem.win_platform?`, `RbConfig::CONFIG["host_os"]`, a gem that may be missing.
     String.raw`\bRUBY_PLATFORM\b|\bGem\.win_platform\?|\bRbConfig::CONFIG\b|\bLoadError\b`,
+    // Lua: the path separator `package.config:sub(1, 1)`, LuaJIT's `jit.os`, an optional module.
+    String.raw`\bpackage\.config\b|\bjit\.os\b|\bpcall\s*\(\s*require\b`,
     // Dart: `Platform.isWindows`, `Platform.operatingSystem`, Flutter's `kIsWeb` (#1494).
     String.raw`\bPlatform\.(?:is[A-Z]\w*|operatingSystem)\b|\bkIsWeb\b`,
   ].join("|"),
@@ -373,6 +375,9 @@ const SUPPRESSIONS = new RegExp(
     String.raw`@psalm-suppress\b`,
     String.raw`@codeCoverageIgnore`,
     String.raw`#\s*(?:rubocop|standard):(?:disable|todo)\b`,
+    // luacheck and selene (#1495).
+    String.raw`--\s*luacheck:\s*(?:ignore|no\s|push\s+ignore)`,
+    String.raw`--\s*selene:\s*allow\b`,
     String.raw`//\s*ignore(?:_for_file)?:\s*\w`,
     // PSScriptAnalyzer, and the same attribute in C#: `[Diagnostics.CodeAnalysis.SuppressMessageAttribute(...)]` (#1498).
     String.raw`\[(?:System\.)?(?:Diagnostics\.CodeAnalysis\.)?SuppressMessage(?:Attribute)?\s*\(`,

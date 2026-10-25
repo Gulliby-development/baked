@@ -275,6 +275,42 @@ export function gemfileFields(text: string): FieldMap {
 }
 
 /**
+ * A rockspec's top-level statements other than its name, version, description and dependency
+ * lists (#1495): a rockspec is Lua code, and `build` (its commands, `build.install.bin`),
+ * `source` and `test` say what `luarocks make` and `luarocks test` fetch and run.
+ */
+export function rockspecFields(text: string): FieldMap {
+  const out: FieldMap = new Map();
+  let name: string | null = null;
+  let body: string[] = [];
+  const flush = () => {
+    if (name !== null && !ROCKSPEC_DATA.has(name))
+      out.set(out.has(name) ? `${name} ${out.size}` : name, body.join("\n").trim());
+  };
+  for (const line of text.split(/\r?\n/)) {
+    if (!line.trim() || /^\s*--/.test(line)) continue;
+    if (/^[^\s}\])]/.test(line)) {
+      flush();
+      name = /^([A-Za-z_]\w*)\s*=/.exec(line)?.[1] ?? line.trim();
+      body = [];
+    }
+    body.push(line);
+  }
+  flush();
+  return out;
+}
+const ROCKSPEC_DATA = new Set([
+  "rockspec_format",
+  "package",
+  "version",
+  "description",
+  "dependencies",
+  "build_dependencies",
+  "test_dependencies",
+  "supported_platforms",
+]);
+
+/**
  * The files beside the manifests that choose the toolchain or tool distribution that runs the
  * project's checks (#1963). They declare no dependencies, so the field check alone reads them.
  */

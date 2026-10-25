@@ -129,6 +129,10 @@ export const TOOL_CACHES = [
   ".phpunit.cache",
   ".phpunit.result.cache",
   ".php-cs-fixer.cache",
+  // luacheck's cache (`cache = true`) and the LuaCov statistics `busted --coverage` writes (#1495).
+  ".luacheckcache",
+  "luacov.stats.out",
+  "luacov.report.out",
 ];
 
 export async function sourceManifest(

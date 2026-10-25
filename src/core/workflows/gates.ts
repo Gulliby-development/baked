@@ -1072,6 +1072,64 @@ export function composerGates(workspace: string): GateSuggestion[] {
 }
 
 /**
+ * A Lua project's gates (#1495), from the files its tools read: StyLua's `stylua.toml` (a format
+ * check whose fixer formats the task's file), luacheck's `.luacheckrc` or else selene's
+ * `selene.toml` (both lint file by file, without resolving `require`), and busted when the project
+ * has a `.busted`, a rockspec that names busted or a `spec/` folder. LuaRocks installs busted and
+ * luacheck as `.bat` wrappers on Windows, which the check runner finds on PATH like any command.
+ */
+export function luaGates(workspace: string): GateSuggestion[] {
+  let names: string[];
+  try {
+    names = readdirSync(workspace);
+  } catch {
+    return [];
+  }
+  const rockspecs = names.filter((name) => name.endsWith(".rockspec")).sort();
+  const config = (candidates: string[]) => candidates.find((name) => names.includes(name));
+  const stylua = config(["stylua.toml", ".stylua.toml"]);
+  const luacheck = config([".luacheckrc"]);
+  const selene = config(["selene.toml"]);
+  const busted = config([".busted"]);
+  if (!rockspecs.length && !stylua && !luacheck && !selene && !busted) return [];
+  const out: GateSuggestion[] = [];
+  if (stylua)
+    out.push({
+      check: {
+        ...gate("stylua", "stylua", ["--check", "."], 120000),
+        fix: { executable: "stylua", args: [] },
+      },
+      source: stylua,
+      reason: "stylua --check . (fixer: stylua)",
+      preselected: true,
+    });
+  if (luacheck)
+    out.push({
+      check: gate("luacheck", "luacheck", ["."], 120000),
+      source: luacheck,
+      reason: "luacheck .",
+      preselected: true,
+    });
+  else if (selene)
+    out.push({
+      check: gate("selene", "selene", ["."], 120000),
+      source: selene,
+      reason: "selene .",
+      preselected: true,
+    });
+  const rockspec = rockspecs.find((name) => /\bbusted\b/.test(read(workspace, name) ?? ""));
+  const tests = busted ?? rockspec ?? (has(workspace, "spec") ? "spec/" : undefined);
+  if (tests)
+    out.push({
+      check: gate("busted", "busted", [], 600000),
+      source: tests,
+      reason: "busted",
+      preselected: true,
+    });
+  return out;
+}
+
+/**
  * Looks for the project's own test and lint commands. Nothing is written: the result is a list the
  * user confirms. Gates already configured (same ID or same command) are left out.
  */
@@ -1245,6 +1303,7 @@ const TOOLCHAIN_GATES = {
   zig: zigGates,
   dune: duneGates,
   bundler: rubyGates,
+  luarocks: luaGates,
   composer: composerGates,
 } as const;
 export type GateToolchain = keyof typeof TOOLCHAIN_GATES;
@@ -1272,7 +1331,7 @@ export const GATE_TOOLCHAINS: LanguageRecord<readonly GateToolchain[]> = {
   ruby: ["bundler"],
   php: ["composer"],
   swift: ["swift"],
-  lua: none("LuaRocks has no gate detector yet (#1495)"),
+  lua: ["luarocks"],
   elixir: ["mix"],
   dart: ["dart"],
   zig: ["zig"],
