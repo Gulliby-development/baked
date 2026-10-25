@@ -41,7 +41,7 @@ Every row you fill gets its golden in `tests/fixtures/languages/<language>.json`
 ### Lists outside the records (check each by hand)
 
 - **Extension and grammar**: `EXT_TO_LANGUAGE`, `BARE_FILENAME_TO_LANGUAGE` (`src/core/intelligence/types.ts`), the tree-sitter queries (`backends/tree-sitter.ts`), imports in `repo-map.ts`. A grammar that `tree-sitter-wasms` lacks goes in `vendor/tree-sitter/` with a README row (source, version, how it was built) and its license file; `resolveWasm`, the bundles and `postinstall.mjs` already copy that folder (#1499). Vendor the `.wasm`, never an npm grammar package that runs node-gyp on install.
-- **Syntax check**: `CHECKED_GRAMMARS` in `src/core/intelligence/syntax-check.ts`. Add a grammar only after it parses real projects without false errors; a grammar that lags the language (Kotlin) stays out, with a comment.
+- **Syntax check**: `CHECKED_GRAMMARS` in `src/core/intelligence/syntax-check.ts`. Add a grammar only after it parses real projects without false errors; a grammar that lags the language (Kotlin, and tree-sitter-powershell with false errors on 27 of 98 real scripts, #1498) stays out, with a comment. Measure on a real corpus (published packages of the language), not on the fixture.
 - **Language server**: `SERVER_CANDIDATES` and `SERVER_PROJECT_STATE` in `backends/lsp/server-registry.ts`, the installer. A server that writes project files into the checkout (jdtls `.project`, #1508) gets its files in `SERVER_PROJECT_STATE`.
 - **Agent profile and edit-time format**: `detectToolchain` in `src/core/tools/project.ts`, read by `tools/auto-format.ts`. Read the tool's config from every place the tool reads it (ruff in `pyproject.toml`, #1537; prettier in `package.json`, rustfmt's edition, #1681).
 - **Language reviewer**: `ProjectLanguage`, `detectLanguages`, `LANGUAGE_FILE` in `src/core/workflows/language.ts`, and the `language-reviewer` profile text (`src/core/agents/profiles/builtin.ts`) for the language's platform pitfalls.
@@ -74,6 +74,9 @@ Each line is a past bug. A new detector, parser or table row answers it before r
 16. **One table, all languages.** When a fix for this language touches a shared rule, sweep it across every supported language (the [file-issue skill](../file-issue/SKILL.md), step 3), and prefer a table row over a wider regex.
 17. **Shared runners carry their totals.** A harness that several languages run through (TAP::Harness behind `prove` and `pg_prove`) prints a summary with totals and CPU times; strip them in `GROWING_COUNTS`, or the same red check never matches again (#1499).
 18. **Grammar ERROR nodes.** A grammar that cannot parse part of the language (PL/pgSQL bodies in tree-sitter-sql) turns that part into `ERROR` nodes; match the declaration inside the `ERROR` node too, or its symbols vanish from the call graph (#1499).
+19. **A linter that passes broken files.** A linter run at error severity can still pass a file that does not parse (PSScriptAnalyzer needs `ParseError` next to `Error,Warning`); give its gate-matrix cell a file with a syntax error (#1498).
+20. **Every runner in the replay table.** `tests/workflow-baseline-replay.test.ts` holds a `FAILURES` and a `BUILD_ERRORS` row for every runner in `BUILD_FAILURES`; a new runner adds both (#1498).
+21. **Tools that survive HOME isolation.** Tests run with a temporary HOME, so a tool installed for the current user (PowerShell modules in CurrentUser scope, pip user site) vanishes in them: install CI and device tools for all users (#1498).
 
 ## 4. Tests
 
