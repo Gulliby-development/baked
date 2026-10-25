@@ -2685,6 +2685,9 @@ export class InitiativeService {
         overhead: row.decompose_run_id ? this.usage(row.decompose_run_id).tokens : 0,
       },
       parallelRuns: this.parallelRuns(settings, plan, facts),
+      ...(settings.basePolicy?.sizing?.recencyHalfLife
+        ? { recencyHalfLife: settings.basePolicy.sizing.recencyHalfLife }
+        : {}),
     });
     this.priceFeatureNeeds(row, estimate, history, accepted);
     return estimate;
@@ -3772,6 +3775,7 @@ function featureRunSamples(
           // A stub it created for a later feature counts at its share, not as a path (#1464).
           ...revision?.counts.get(feature.id),
           ...(source === "shared" ? { source } : {}),
+          startedAt: link.created_at,
         },
       ];
     });
