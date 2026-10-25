@@ -32,6 +32,7 @@ const FAILURES = [
   { runner: "go", output: "--- FAIL: TestBlankLines (0.00s)\nFAIL\nFAIL\texample.com/taskplan\t0.002s", name: "TestBlankLines" },
   { runner: "dotnet", output: "  Failed Parser.Tests.BlankLines [12 ms]\nFailed!  - Failed:     1, Passed:     3, Skipped:     0, Total:     4", name: "Parser.Tests.BlankLines" },
   { runner: "maven", output: "[ERROR] app.ParserTest.blankLines -- Time elapsed: 0.01 s <<< FAILURE!\n[ERROR] Tests run: 4, Failures: 1, Errors: 0, Skipped: 0", name: "app.ParserTest.blankLines" },
+  { runner: "pester", output: "Starting discovery in 1 files.\nDiscovery found 2 tests in 210ms.\nRunning tests.\n[-] Parser.keeps blank lines 41ms (38ms|3ms)\n Expected 2, but got 1.\nTests completed in 702ms\nTests Passed: 1, Failed: 1, Skipped: 0, Inconclusive: 0, NotRun: 0", name: "Parser.keeps blank lines" },
 ] as const;
 
 /**
@@ -49,6 +50,8 @@ const BUILD_ERRORS = [
   { runner: "dotnet", output: "/repo/tests/ParserTests.cs(12,5): error CS1501: No overload for method 'Run' takes 7 arguments [/repo/tests/Tests.csproj]\n\nBuild FAILED.", line: "/repo/tests/ParserTests.cs(12,5): error CS1501: No overload for method 'Run' takes 7 arguments [/repo/tests/Tests.csproj]" },
   { runner: "maven", output: "[INFO] --- compiler:3.13.0:testCompile (default-testCompile) @ linehunk ---\n[ERROR] COMPILATION ERROR : \n[ERROR] /repo/src/test/java/app/StdinPatchTest.java:[31,20] method run in class app.Applier cannot be applied to given types;\n[INFO] BUILD FAILURE", line: "[ERROR] /repo/src/test/java/app/StdinPatchTest.java:[31,20] method run in class app.Applier cannot be applied to given types;" },
   { runner: "junit", output: "> Task :compileTestJava FAILED\n/repo/src/test/java/app/StdinPatchTest.java:31: error: method run in class Applier cannot be applied to given types;\nBUILD FAILED in 2s", line: "> Task :compileTestJava FAILED" },
+  // Pester 5.9 (#1498): a test file that does not parse fails its discovery.
+  { runner: "pester", output: "Starting discovery in 1 files.\n[-] Discovery in /repo/tests/Fold.Tests.ps1 failed with:\nSystem.Management.Automation.ParseException: At /repo/tests/Fold.Tests.ps1:1 char:14\nMissing closing '}' in statement block or type definition.\nDiscovery found 0 tests in 222ms.\nTests completed in 300ms\nTests Passed: 0, Failed: 0, Skipped: 0, Inconclusive: 0, NotRun: 0\nContainer failed: 1\n  - /repo/tests/Fold.Tests.ps1", line: "[-] Discovery in /repo/tests/Fold.Tests.ps1 failed with:" },
 ] as const;
 
 describe("baseline replay (#1945)", () => {
