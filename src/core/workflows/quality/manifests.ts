@@ -32,6 +32,7 @@ import {
   pyprojectFields,
   pythonVersionFields,
   requirementsFields,
+  rockspecFields,
   rustToolchainFields,
   setupCfgFields,
   versionCatalogFields,
@@ -46,7 +47,8 @@ export type Ecosystem =
   | "nuget"
   | "maven"
   | "rubygems"
-  | "packagist";
+  | "packagist"
+  | "luarocks";
 
 export interface Dependency {
   ecosystem: Ecosystem;
@@ -345,6 +347,28 @@ function gemfile(path: string, text: string): Dependency[] {
   return out;
 }
 
+/**
+ * A LuaRocks rockspec's `dependencies`, `build_dependencies` and `test_dependencies` (#1495):
+ * strings of a rock name and its constraint (`"penlight >= 1.5"`). `lua` is the runtime.
+ */
+function rockspec(path: string, text: string): Dependency[] {
+  const out: Dependency[] = [];
+  for (const list of text.matchAll(/^(?:build_|test_)?dependencies\s*=\s*\{([^}]*)\}/gm)) {
+    const start = (list.index ?? 0) + list[0].indexOf("{");
+    for (const entry of (list[1] ?? "").matchAll(/(["'])\s*([A-Za-z0-9][\w.-]*)[^"'\n]*\1/g)) {
+      const name = (entry[2] ?? "").toLowerCase();
+      if (name === "lua") continue;
+      out.push({
+        ecosystem: "luarocks",
+        name,
+        file: path,
+        line: lineOf(text, start + 1 + (entry.index ?? 0)),
+      });
+    }
+  }
+  return out;
+}
+
 /** Pipfile: the keys of `[packages]` and `[dev-packages]`. */
 function pipfile(path: string, text: string): Dependency[] {
   const out: Dependency[] = [];
@@ -476,7 +500,7 @@ export const DEPENDENCY_MANIFESTS: LanguageRecord<readonly ManifestReader[]> = {
   ruby: [{ name: /^Gemfile$/, read: gemfile, fields: gemfileFields }],
   php: [{ name: /^composer\.json$/, read: composerJson, fields: composerFields }],
   swift: none("Swift Package Manager manifests are Swift code, not read"),
-  lua: none("LuaRocks has no registry check yet (#1495)"),
+  lua: [{ name: /\.rockspec$/, read: rockspec, fields: rockspecFields }],
   elixir: none("Hex has no registry check yet"),
   dart: none("pub.dev has no registry check yet"),
   zig: none("Zig packages are URLs with hashes, not registry names"),
