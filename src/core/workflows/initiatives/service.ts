@@ -79,6 +79,7 @@ import {
   highCalibrationText,
   type InitiativeEstimate,
   type InitiativeProgress,
+  MIN_CALIBRATION_FEATURES,
   SIZE_STAGE_FACTOR,
   SIZE_TASK_FACTOR,
 } from "./estimate.js";
@@ -610,7 +611,8 @@ export function shareShortfall(
  * it parks the feature. Before any feature is measured the waiting features' lows are the plan's
  * guess and nothing else: R62 stepvet recorded two would-stops at the first starts, both false
  * (lines and stepexpr started anyway, finished and left $3.67 of $30 unspent), so the check waits
- * for the first measured feature (#1714).
+ * for the first measured feature (#1714). Until `MIN_CALIBRATION_FEATURES` features are measured
+ * the dollars per token are too (`shareSpareUsd`).
  */
 export function dollarShortfall(
   view: ShareGateView,
@@ -618,15 +620,47 @@ export function dollarShortfall(
 ): string | null {
   const cost = view.budget.cost;
   if (cost.measuredFeatures === 0) return null;
-  const spare = costGrowthLimit(view, feature.id);
+  const spare = shareSpareUsd(view, feature.id);
   const needUsd = feature.needUsd;
   if (!needUsd || spare === null || cost.ceilingUsd === null || spare >= needUsd.low) return null;
   const ceiling =
     cost.capUsd !== null && cost.ceilingUsd > cost.capUsd
       ? `${usd(cost.ceilingUsd)} ceiling`
       : `${usd(cost.capUsd ?? cost.ceilingUsd)} cap`;
+  const within = uncalibratedSlack(cost) > 0 ? " within the ceiling" : "";
   const raise = dollarRaise(view, feature) ?? 0;
-  return `The shared dollar budget is short: ${feature.id} has ${usd(spare)} to grow into after reserving the other waiting features' low estimates, below its estimate of ${usd(needUsd.low)}-${usd(needUsd.high)} (${usd(cost.spentUsd)} of the ${ceiling} spent); the dollar budget needs at least ${usd(raise)} more.`;
+  return `The shared dollar budget is short: ${feature.id} has ${usd(spare)} to grow into${within} after reserving the other waiting features' low estimates, below its estimate of ${usd(needUsd.low)}-${usd(needUsd.high)} (${usd(cost.spentUsd)} of the ${ceiling} spent); the dollar budget needs at least ${usd(raise)} more.`;
+}
+
+/**
+ * The tolerance band the dollar share counts as remaining while the dollars per token are measured
+ * on fewer than `MIN_CALIBRATION_FEATURES` features, as the forecast's measured ratio waits for
+ * them; 0 from then on. R67 ampwhy (#2099): at 1 measured feature the waiting features' lows were
+ * priced at $1.83 and $1.50 per million against the initiative's $1.33, reserved $20.91 of an
+ * initiative that cost $16.24 in all, and reader and scanning recorded would-stops for dollars
+ * that were never short.
+ */
+function uncalibratedSlack(cost: ShareGateView["budget"]["cost"]): number {
+  if (cost.measuredFeatures >= MIN_CALIBRATION_FEATURES) return 0;
+  if (cost.capUsd === null || cost.ceilingUsd === null) return 0;
+  return Math.max(0, cost.ceilingUsd - cost.capUsd);
+}
+
+/**
+ * The spare dollars the `initiative-dollar-share` rule compares with a starting feature's priced
+ * low estimate: `costGrowthLimit`, with the remaining dollars counted up to the tolerance ceiling
+ * instead of the cap while the dollar rate is uncalibrated (`uncalibratedSlack`). The bound a run's
+ * cap grows to stays `costGrowthLimit`.
+ */
+export function shareSpareUsd(view: ShareGateView, featureId: string): number | null {
+  const cost = view.budget.cost;
+  const slack = uncalibratedSlack(cost);
+  if (!slack || cost.remainingUsd === null) return costGrowthLimit(view, featureId);
+  const remainingUsd = cost.remainingUsd + slack;
+  return costGrowthLimit(
+    { ...view, budget: { ...view.budget, cost: { ...cost, remainingUsd } } },
+    featureId,
+  );
 }
 
 /** How many more dollars start `feature` at its priced low estimate; null when none are missing. */
@@ -634,7 +668,8 @@ function dollarRaise(
   view: ShareGateView,
   feature: Pick<FeatureView, "id"> & Partial<Pick<FeatureView, "needUsd">>,
 ): number | null {
-  const spare = costGrowthLimit(view, feature.id);
+  // Raising the cap by the gap raises the ceiling by at least as much.
+  const spare = shareSpareUsd(view, feature.id);
   const needUsd = feature.needUsd;
   if (!needUsd || spare === null || spare >= needUsd.low) return null;
   return Math.ceil((needUsd.low - spare) * 100) / 100;
@@ -1951,9 +1986,10 @@ export class InitiativeService {
       key,
       summary: `${summary} ${feature.id} would not start.`,
       inputs: {
-        spareUsd: costGrowthLimit(view, feature.id),
+        spareUsd: shareSpareUsd(view, feature.id),
         needUsd: feature.needUsd ?? null,
         remainingUsd: view.budget.cost.remainingUsd,
+        remainingTo: uncalibratedSlack(view.budget.cost) > 0 ? "ceiling" : "cap",
         measuredFeatures: view.budget.cost.measuredFeatures,
       },
     });
