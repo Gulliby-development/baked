@@ -43,7 +43,7 @@ export function validateChecks(workspace: string, policy: RunPolicy, graph?: Tas
 
 /** Commands that analyze source without running it: linters, formatters and type checkers. */
 const STATIC_COMMAND =
-  /\b(?:lint|eslint|biome|ruff|flake8|pylint|clippy|vet|fmt|gofmt|format|prettier|mypy|pyright|tsc|typecheck|check|phpstan|psalm|pint|php-cs-fixer|luacheck|selene|stylua|shellcheck|shfmt|clang-tidy|ScriptAnalyzer|scalafmt\w*)\b|\b(?:dart|flutter)\s+analyze\b/i;
+  /\b(?:lint|eslint|biome|ruff|flake8|pylint|clippy|vet|fmt|gofmt|format|prettier|mypy|pyright|tsc|typecheck|check|phpstan|psalm|pint|php-cs-fixer|luacheck|selene|stylua|shellcheck|shfmt|clang-tidy|ScriptAnalyzer|lintr|styler|scalafmt\w*)\b|\b(?:dart|flutter)\s+analyze\b/i;
 
 /** Source code a linter or formatter reads: any written file that is not documentation or data. */
 export const isCodePath = (path: string): boolean => isCodeFile(path);

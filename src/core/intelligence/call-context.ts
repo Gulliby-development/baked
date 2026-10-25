@@ -112,6 +112,11 @@ export const CALL_SYNTAX: LanguageRecord<CallSyntax> = {
     imports: (stem) =>
       `(?:\\bImport-Module\\b|\\busing\\s+module\\b|(?:^|[{;])\\s*\\.\\s).*\\b${stem}\\.ps[dm]?1\\b`,
   },
+  // `source("R/sum.R")` and `sys.source(...)`; `library(pkg)` loads a package, not a file (#1500).
+  r: {
+    call: parens,
+    imports: (stem) => `\\b(?:sys\\.)?source\\s*\\(.*["'][^"']*\\b${stem}\\.[rR]["']`,
+  },
   sql: {
     call: parens,
     // psql's `\i` and `\ir` include a file; SQL itself has no import.

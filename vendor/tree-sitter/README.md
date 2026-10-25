@@ -9,6 +9,7 @@ with the others.
 | File | Source | Version | License | How it was made |
 |---|---|---|---|---|
 | `tree-sitter-powershell.wasm` | [airbus-cert/tree-sitter-powershell](https://github.com/airbus-cert/tree-sitter-powershell), npm `tree-sitter-powershell` | 0.26.4 | MIT, `LICENSE-tree-sitter-powershell` | copied from the npm package, which ships it (its install script builds a native binding, so the package is not a dependency) |
+| `tree-sitter-r.wasm` | [r-lib/tree-sitter-r](https://github.com/r-lib/tree-sitter-r), npm `@davisvaughan/tree-sitter-r` | 1.3.0 | MIT, `LICENSE-tree-sitter-r` | copied from the npm package, which ships it (its install script builds a native binding, so the package is not a dependency) |
 | `tree-sitter-sql.wasm` | [DerekStride/tree-sitter-sql](https://github.com/derekstride/tree-sitter-sql), npm `@derekstride/tree-sitter-sql` | 0.3.11 | MIT, `LICENSE-tree-sitter-sql` | built from the npm package's `src/` (see below); the package ships no wasm |
 
 The engine is web-tree-sitter 0.27, which loads grammars of ABI 13 to 15.

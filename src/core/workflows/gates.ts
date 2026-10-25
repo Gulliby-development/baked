@@ -7,7 +7,7 @@ import {
   rowOf,
   SUPPORTED_LANGUAGES,
 } from "../intelligence/language-records.js";
-import { pwshExecutable } from "../platform/index.js";
+import { pwshExecutable, rscriptExecutable } from "../platform/index.js";
 import { gateSandbox } from "../security/sandbox.js";
 import { workspacePath } from "../specs/validate.js";
 import { BUN_FMT, bunFmtConfigured } from "../tools/bun-fmt.js";
@@ -25,6 +25,7 @@ import { WorkflowFault } from "./errors.js";
 import { dotnetFiles } from "./language.js";
 import { PESTER_RUN } from "./pester.js";
 import { ProcessScope } from "./process-scope.js";
+import { lintrRun, STYLER_CHECK, STYLER_FIX, testthatRun } from "./r-tools.js";
 import { redactSecrets } from "./redaction.js";
 import { CheckSchema, SafeId } from "./schemas.js";
 import { pythonEnvironment } from "./toolchain.js";
@@ -614,6 +615,45 @@ function pwshGates(workspace: string): GateSuggestion[] {
       reason: `${exe} -Command Invoke-ScriptAnalyzer -Recurse (fixer: Invoke-ScriptAnalyzer -Fix)`,
       preselected: settings !== undefined,
     });
+  return out;
+}
+
+/**
+ * testthat, lintr and styler for an R package or project (#1500). A package is a `DESCRIPTION`
+ * at the root; testthat runs when `tests/testthat` exists, on the loaded package or on the folder.
+ * lintr is preselected with a `.lintr` config and offered without one, since its default linters
+ * may already fail on the code. styler is offered, not preselected, with the fixer
+ * `styler::style_file` on the task's file; the format-written check holds new files to it.
+ */
+function rGates(workspace: string): GateSuggestion[] {
+  const pkg = has(workspace, "DESCRIPTION");
+  const tests = has(workspace, "tests/testthat");
+  const lintr = has(workspace, ".lintr");
+  if (!pkg && !tests && !lintr) return [];
+  const exe = rscriptExecutable();
+  const out: GateSuggestion[] = [];
+  if (tests)
+    out.push({
+      check: gate("testthat", exe, ["-e", testthatRun(pkg)], 600000),
+      source: "tests/testthat",
+      reason: `Rscript -e "${pkg ? "testthat::test_local()" : "testthat::test_dir('tests/testthat')"}" (check reporter)`,
+      preselected: true,
+    });
+  out.push({
+    check: gate("lintr", exe, ["-e", lintrRun(pkg)], 300000),
+    source: lintr ? ".lintr" : pkg ? "DESCRIPTION" : "tests/testthat",
+    reason: `Rscript -e "lintr::${pkg ? "lint_package()" : "lint_dir('.')"}" (fails on any lint)`,
+    preselected: lintr,
+  });
+  out.push({
+    check: {
+      ...gate("styler", exe, ["-e", STYLER_CHECK], 300000),
+      fix: { executable: exe, args: ["-e", STYLER_FIX] },
+    },
+    source: pkg ? "DESCRIPTION" : lintr ? ".lintr" : "tests/testthat",
+    reason: `Rscript -e "styler::style_dir(dry = 'on')" (fails on a file it would change; fixer: styler::style_file)`,
+    preselected: false,
+  });
   return out;
 }
 
@@ -1515,6 +1555,7 @@ const TOOLCHAIN_GATES = {
   python: pythonGates,
   sqlfluff: sqlfluffGates,
   pwsh: pwshGates,
+  rscript: rGates,
   go: goGates,
   dotnet: dotnetGates,
   cargo: cargoGates,
@@ -1568,6 +1609,7 @@ export const GATE_TOOLCHAINS: LanguageRecord<readonly GateToolchain[]> = {
   solidity: none("Foundry has no gate detector; a Hardhat project is an npm package"),
   sql: ["sqlfluff"],
   powershell: ["pwsh"],
+  r: ["rscript"],
 };
 
 /**

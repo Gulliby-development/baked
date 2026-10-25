@@ -143,6 +143,14 @@ export function diagnosticCount(output: string): OutputCount | null {
     const errors = lines(output, /^\s*error - \S+:\d+:\d+ - /);
     return { tool: "dart", count: errors + lines(output, /^\s*warning - \S+:\d+:\d+ - /), errors };
   }
+  // lintr through the gate (#1500): "R/sum.R:2:3: style: [object_name_linter] ..." per lint, then
+  // the source line and a caret; nothing on a clean run.
+  const lints = lines(output, /^\S.*:\d+:\d+: (?:style|warning|error): \[\w+\] /);
+  if (lints)
+    return { tool: "lintr", count: lints, errors: lines(output, /^\S.*:\d+:\d+: error: \[\w+\] /) };
+  // styler through the gate: "R/sum.R: would be reformatted by styler" per file.
+  const styled = lines(output, /: would be reformatted by styler$/);
+  if (styled) return { tool: "styler", count: styled, errors: styled };
   // dotnet build: "    3 Warning(s)" and "    0 Error(s)"
   const warnings = output.match(/^\s*(\d+) Warning\(s\)/m);
   const errors = output.match(/^\s*(\d+) Error\(s\)/m);
@@ -191,7 +199,10 @@ export type TestRunner =
   | "swift"
   | "junit"
   | "tap"
-  | "pester";
+  | "pester"
+  | "testthat";
+
+const TESTTHAT_SUMMARY = /^\[ FAIL (\d+) \| WARN (\d+) \| SKIP (\d+) \| PASS (\d+) \]/m;
 
 const PESTER_SUMMARY =
   /^Tests Passed: (\d+), Failed: (\d+), Skipped: (\d+), Inconclusive: (\d+), NotRun: (\d+)/m;
@@ -305,6 +316,18 @@ const TEST_COUNTERS: readonly {
     ran: (o) => {
       const m = o.match(PESTER_SUMMARY);
       return m ? Number(m[1]) + Number(m[2]) : null;
+    },
+  },
+  {
+    tool: "testthat",
+    // testthat 3: "[ FAIL 1 | WARN 0 | SKIP 1 | PASS 3 ]", in expectations rather than tests (#1500).
+    count: (o) => {
+      const m = o.match(TESTTHAT_SUMMARY);
+      return m ? Number(m[1]) + Number(m[3]) + Number(m[4]) : null;
+    },
+    ran: (o) => {
+      const m = o.match(TESTTHAT_SUMMARY);
+      return m ? Number(m[1]) + Number(m[4]) : null;
     },
   },
   {
@@ -587,6 +610,7 @@ export const TEST_RUNNERS: LanguageRecord<readonly TestRunner[]> = {
   // pgTAP through pg_prove prints TAP.
   sql: ["tap"],
   powershell: ["pester"],
+  r: ["testthat"],
 };
 
 // biome-ignore lint/suspicious/noControlCharactersInRegex: munit colours its output even without a terminal
@@ -678,6 +702,8 @@ export const FAILED_TESTS: Record<TestRunner, (output: string) => string[]> = {
       ...captured(o, /^. Test (?!run with )(.+?) failed after /gm),
     ]),
   ],
+  // "── Failure ('test-sum.R:2:3'): adds ───", "-- Error (...): name ---" in an ASCII locale.
+  testthat: (o) => captured(o, /^(?:──|--) (?:Failure|Error) \([^)]*\): (.+?) (?:─+|-+)$/gm),
   // A <testcase> with a <failure> or <error> child.
   junit: (o) =>
     [...o.matchAll(/<testcase\b([^>]*?)(?:\/>|>([\s\S]*?)<\/testcase>)/g)]
@@ -756,6 +782,8 @@ export const BUILD_FAILURES: Record<TestRunner, RegExp> = {
   // "[-] Discovery in /w/tests/Sum.Tests.ps1 failed with:", "[-] /w/tests/Sum.Tests.ps1 failed with:"
   // (a BeforeAll that throws), and the "Container failed: 2" summary.
   pester: /^(?:\[-\] (?:Discovery in )?\S+\.Tests\.ps1 failed with:|Container failed: \d+)$/,
+  // The package did not load: "Error in `load_all()`:" then "! Failed to load 'R/sum.R'".
+  testthat: /^(?:Error in `(?:pkgload::)?load_all\(\)`:|! Failed to load '.+')$/,
 };
 
 // Compilers color their diagnostics even when not on a terminal (swiftc 6.4 prints "error:" in
@@ -1013,6 +1041,8 @@ const GROWING_COUNTS: [RegExp, string][] = [
   // Pester counts the files and tests it discovers (#1498).
   [/\bStarting discovery in \d+ files?\b/g, "Starting discovery in <n> files"],
   [/\bDiscovery found \d+ tests?\b/g, "Discovery found <n> tests"],
+  // testthat's summary counts passing and skipped expectations (#1500).
+  [/\| SKIP \d+ \| PASS \d+ \]/g, "| SKIP <n> | PASS <n> ]"],
   // TAP::Harness (prove, pg_prove) summarizes with totals, test numbers and CPU times (#1499):
   // "Failed 1/2 subtests", "(Wstat: 0 Tests: 2 Failed: 1)", "  Failed test:  2",
   // "Files=1, Tests=2,  0 wallclock secs ( 0.01 usr + ...)". The failed counts stay.

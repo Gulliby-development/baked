@@ -700,6 +700,7 @@ export const PACKAGE_CONTENTS: LanguageRecord<readonly PackageTool[]> = {
   solidity: none("Solidity libraries are published through npm, read by the npm row"),
   sql: none("SQL files are deployed as migrations or models, not built into a package"),
   powershell: none("Publish-Module packaging is not built yet"),
+  r: none("R CMD build and .Rbuildignore are not read yet"),
 };
 
 const TOOLS: readonly PackageTool[] = [

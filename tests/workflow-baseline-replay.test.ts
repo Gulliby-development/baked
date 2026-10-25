@@ -41,6 +41,7 @@ const FAILURES = [
   { runner: "dart", output: "00:00 +0: test/calc_test.dart: adds\n00:00 +1 -1: test/calc_test.dart: fails on purpose [E]\n  Expected: <4>\n    Actual: <3>\n00:00 +2 ~1 -1: Some tests failed.\n", name: "test/calc_test.dart: fails on purpose" },
   { runner: "swift", output: "Test Case '-[AppTests.CalcTests testFails]' started.\n/w/Tests/AppTests/CalcTests.swift:7: error: -[AppTests.CalcTests testFails] : XCTAssertEqual failed: (\"3\") is not equal to (\"4\")\nTest Case '-[AppTests.CalcTests testFails]' failed (0.001 seconds).\n", name: "-[AppTests.CalcTests testFails]" },
   { runner: "sbt", output: "[info] CalcSpec:\n[info] - adds\n[info] - fails on purpose *** FAILED ***\n[info]   3 did not equal 4 (CalcSpec.scala:7)\n[info] Tests: succeeded 1, failed 1, canceled 0, ignored 0, pending 0\n", name: "CalcSpec: fails on purpose" },
+  { runner: "testthat", output: "[ FAIL 1 | WARN 0 | SKIP 0 | PASS 3 ]\n\n══ Failed tests ════════\n── Failure ('test-parser.R:4:3'): keeps blank lines ────────\nlength(lines) (`actual`) not equal to 2 (`expected`).\n\n[ FAIL 1 | WARN 0 | SKIP 0 | PASS 3 ]\nError: Test failures", name: "keeps blank lines" },
   { runner: "pester", output: "Starting discovery in 1 files.\nDiscovery found 2 tests in 210ms.\nRunning tests.\n[-] Parser.keeps blank lines 41ms (38ms|3ms)\n Expected 2, but got 1.\nTests completed in 702ms\nTests Passed: 1, Failed: 1, Skipped: 0, Inconclusive: 0, NotRun: 0", name: "Parser.keeps blank lines" },
 ] as const;
 
@@ -71,6 +72,8 @@ const BUILD_ERRORS = [
   { runner: "sbt", output: "[error] -- [E006] Not Found Error: /w/src/test/scala/CalcSuite.scala:2:31 ---------------\n[error] 2 |  test(\"adds\") { assertEquals(sum(1, 2), 3) }\n[error] one error found\n[error] (Test / compileIncremental) Compilation failed\n", line: "[error] -- [E006] Not Found Error: /w/src/test/scala/CalcSuite.scala:2:31 ---------------" },
   { runner: "swift", output: "Building for debugging...\n/w/Tests/AppTests/CalcTests.swift:5:24: error: cannot find 'sum' in scope\nerror: fatalError\n", line: "/w/Tests/AppTests/CalcTests.swift:5:24: error: cannot find 'sum' in scope" },
   { runner: "junit", output: "> Task :compileTestJava FAILED\n/repo/src/test/java/app/StdinPatchTest.java:31: error: method run in class Applier cannot be applied to given types;\nBUILD FAILED in 2s", line: "> Task :compileTestJava FAILED" },
+  // testthat 3.2 (#1500): the package does not load.
+  { runner: "testthat", output: "Error in `load_all()`:\n! Failed to load 'R/fold.R'\nCaused by error in `parse()`:\n! /repo/R/fold.R:3:0: unexpected end of input\nExecution halted", line: "Error in `load_all()`:" },
   // Pester 5.9 (#1498): a test file that does not parse fails its discovery.
   { runner: "pester", output: "Starting discovery in 1 files.\n[-] Discovery in /repo/tests/Fold.Tests.ps1 failed with:\nSystem.Management.Automation.ParseException: At /repo/tests/Fold.Tests.ps1:1 char:14\nMissing closing '}' in statement block or type definition.\nDiscovery found 0 tests in 222ms.\nTests completed in 300ms\nTests Passed: 0, Failed: 0, Skipped: 0, Inconclusive: 0, NotRun: 0\nContainer failed: 1\n  - /repo/tests/Fold.Tests.ps1", line: "[-] Discovery in /repo/tests/Fold.Tests.ps1 failed with:" },
 ] as const;

@@ -60,7 +60,8 @@ const DECLARATION_KEYWORD =
  * qualified names split it: `.` (C#, Java, Kotlin, Python, Go, TypeScript and most others), `::`
  * (Rust, C++, PHP static members, Ruby constants, Bash namespaced functions), `#` (Ruby and Scala
  * instance methods), `:` (Lua methods), `->` (C struct pointers, PHP instance members), `\` (PHP
- * namespaces) and `/`. An Elixir arity (`read/1`), a call or signature (`read(buf)`), type
+ * namespaces), `/`, and `$` between two names (R6 and Reference Class methods, #1500). An
+ * Elixir arity (`read/1`), a call or signature (`read(buf)`), type
  * arguments (`Reader<T>`), a Go receiver (`(*Reader).Read`), an Objective-C message
  * (`-[Reader read:]`), a PowerShell type literal (`[Reader]::Read`) and a leading declaration
  * keyword (`struct reader`) are dropped. A language
@@ -82,7 +83,7 @@ export const symbolPath = (symbol: string | null | undefined): string[] => {
   }
   return text
     .replace(/\/\d+$/, "")
-    .split(/::|->|[.:#/\\\s]+/)
+    .split(/::|->|(?<=\w)\$(?=\w)|[.:#/\\\s]+/)
     .filter(Boolean);
 };
 
