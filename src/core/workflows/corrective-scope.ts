@@ -50,9 +50,9 @@ type ScopeState = Pick<RuntimeState, "repairScope" | "repairPredecessors" | "gra
 
 /** The files in a finding's repair scope that the failing task (its predecessor) itself writes. */
 export function ownScope(state: ScopeState, findingId: string): string[] {
-  const base = state.graph?.tasks.find((t) => t.id === state.repairPredecessors[findingId]);
+  const base = state.graph?.tasks.find((t) => t.id === state.repairPredecessors?.[findingId]);
   if (!base) return [];
-  return (state.repairScope[findingId] ?? []).filter((path) =>
+  return (state.repairScope?.[findingId] ?? []).filter((path) =>
     base.writes.some((w) => w.path === path && w.action !== "delete"),
   );
 }
@@ -79,7 +79,7 @@ export function diagnosticsOnly(
   policy: Pick<RunPolicy, "checks">,
   finding: Pick<Review["findings"][number], "id" | "claim">,
 ): boolean {
-  const scope = state.repairScope[finding.id] ?? [];
+  const scope = state.repairScope?.[finding.id] ?? [];
   return (
     checkRepairKind(policy, finding) === "diagnostics" &&
     scope.length > 0 &&
@@ -131,7 +131,7 @@ export function scopeRecord(
     taskId: task.id,
     at,
     failing: [
-      ...new Set(own.map((f) => state.repairPredecessors[f.id]).filter((id): id is string => !!id)),
+      ...new Set(own.map((f) => state.repairPredecessors?.[f.id]).filter((id): id is string => !!id)),
     ],
     checks: [...new Set(own.map((f) => TASK_CHECK_FAILED.exec(f.claim)?.[1] ?? ""))],
     diagnosed,
