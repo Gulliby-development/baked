@@ -36,6 +36,9 @@ const planned: Task = { id: "T001", title: "Write the inline parser", descriptio
 const MEMBERS = ["a", "b", "c"] as const;
 const reproFor = (marker: string): Repro => ({ executable: "bun", args: ["-e", `const t = await Bun.file('inline.txt').text(); console.log(t.includes('case-${marker}') ? 'nested' : 'flat')`], expected: "nested", actual: "flat" });
 
+/** The planned test file of the test-file chain scenario (#2098). */
+const TEST_FILE = "inline.test.ts";
+
 /** The symbols of report.py the family scenario's findings name, one per round. */
 const FAMILY_SYMBOLS = ["build_report", "_share", "render_table"] as const;
 
@@ -59,6 +62,11 @@ class ChainExecutor implements AgentExecutor {
    * R66 expenses-py F2 (`build_report`) and F3 (`_share`) were (#2048).
    */
   family = false;
+  /**
+   * Each round's finding is on the planned test file, the first without a symbol and the next on
+   * a test method with `repeatOf` the first, as R67 ampwhy F2 and F4 were (#2098).
+   */
+  testFile = false;
   /** The members of the class the reviewer finds, one per round. */
   members: readonly string[] = MEMBERS;
   /** A rewrite writes only the cases its battery holds, so a member it was not shown stays open. */
@@ -77,11 +85,14 @@ class ChainExecutor implements AgentExecutor {
     switch (request.profile.output) {
       case "research": output = { schemaVersion: 1, summary: "A fixture workspace", facts: [], unknowns: [], constraints: [], suggestedScope: ["inline.txt"] }; break;
       case "spec": output = spec; break;
-      case "plan": output = { schemaVersion: 1, markdown, taskGraph: { schemaVersion: 1, featureId: "fixture", revision: 1, specHash: hashJson(spec), planHash: hashBytes(markdown), tasks: [planned] } }; break;
+      case "plan": output = { schemaVersion: 1, markdown, taskGraph: { schemaVersion: 1, featureId: "fixture", revision: 1, specHash: hashJson(spec), planHash: hashBytes(markdown), tasks: [this.testFile ? { ...planned, writes: [...planned.writes, { path: TEST_FILE, action: "create" as const }] } : planned] } }; break;
       case "analysis": output = { schemaVersion: 1, inputHash: data.inputHash, verdict: "pass", findings: [] }; break;
       case "implementation": {
         const task = request.task;
-        if (task?.origin === "planned") writeFileSync(path, "ready");
+        if (task?.origin === "planned") {
+          writeFileSync(path, "ready");
+          if (this.testFile) writeFileSync(join(root, TEST_FILE), "test('inline', () => {});\n");
+        }
         else if (task) {
           const row = this.service?.store.latestArtifact(request.runId, `attempts/${request.attemptId}/context.json`);
           const rewrites = this.corrections.filter((c) => c.battery).length;
@@ -124,7 +135,9 @@ class ChainExecutor implements AgentExecutor {
         const text = readFileSync(path, "utf8");
         const index = this.members.findIndex((m) => !text.includes(`case-${m}`));
         const marker = this.members[index];
-        const findings = marker
+        const findings = marker && this.testFile
+          ? [{ id: `F${index + 1}`, kind: "partial", severity: "medium", basis: "spec", confidence: 0.9, requirementIds: ["FR-001"], criterionIds: ["AC-001"], file: TEST_FILE, symbol: index ? "nestedRunsInBothModes" : null, evidenceIds, claim: `The tests leave nested delimiter run case-${marker} unchecked`, impact: "A regression would pass", suggestedFix: `Assert case-${marker}`, repeatOf: index ? `F${index}` : null }]
+          : marker
           ? [{ id: `F${index + 1}`, kind: "correctness", severity: "high", basis: "spec", confidence: 0.99, requirementIds: ["FR-001"], criterionIds: ["AC-001"], file: "inline.txt", symbol: this.family ? FAMILY_SYMBOLS[index] : index % 2 ? "Inline.findDelimitedInline()" : "findDelimitedInline", evidenceIds, claim: `Nested delimiter run case-${marker} is parsed flat`, impact: "Wrong emphasis", suggestedFix: `Handle case-${marker}`, repro: reproFor(marker), ...(this.family ? { repeatOf: null, family: index === 1 ? "Decimal context precision" : "decimal-context-precision" } : { repeatOf: index ? `F${index}` : null }) }]
           : [];
         output = findings.length
@@ -138,12 +151,13 @@ class ChainExecutor implements AgentExecutor {
   }
 }
 
-async function drive(options: { policy?: Partial<RunPolicy>; quality?: { chainRewrite: "on" | "off"; chainProbe?: "on" | "off" }; breakFirstRewrite?: boolean; family?: boolean; members?: readonly string[]; batteryOnly?: boolean; probe?: string[] }) {
+async function drive(options: { policy?: Partial<RunPolicy>; quality?: { chainRewrite: "on" | "off"; chainProbe?: "on" | "off" }; breakFirstRewrite?: boolean; family?: boolean; testFile?: boolean; members?: readonly string[]; batteryOnly?: boolean; probe?: string[] }) {
   const root = mkdtempSync(join(tmpdir(), "baked-finding-chain-"));
   cleanups.push(() => rmSync(root, { recursive: true, force: true }));
   const executor = new ChainExecutor(root);
   executor.breakFirstRewrite = options.breakFirstRewrite ?? false;
   executor.family = options.family ?? false;
+  executor.testFile = options.testFile ?? false;
   executor.members = options.members ?? MEMBERS;
   executor.batteryOnly = options.batteryOnly ?? false;
   executor.probe = options.probe ?? [];
@@ -426,4 +440,35 @@ describe("the R62 md-site chain on findDelimitedInline (#1959)", () => {
   test("the battery holds the chain's side branches", () => {
     expect(chainMembers(all, at("F5")).map((f) => f.id)).toEqual(["F2", "F3", "F4", "F4-2", "F5"]);
   });
+});
+
+describe("scenario: R67 ampwhy, a reviewer's repeat on a test file whose first finding has no symbol (#2098)", () => {
+  // A repeat without a new repro is a contradiction stop; the `assume` rule grants the round R67 got.
+  test("with chainRewrite on, the second finding is the second link of the chain and its corrective is the test sweep, not a rewrite", async () => {
+    const { done, executor, artifacts } = await drive({ quality: { chainRewrite: "on" }, policy: { clarification: "assume" }, testFile: true, members: ["a", "b"] });
+    expect(done.status).toBe("completed");
+    const [patch, sweep, ...rest] = executor.corrections;
+    expect(rest).toEqual([]);
+    expect(patch?.findingIds).toEqual(["F1"]);
+    expect(sweep?.findingIds).toEqual(["F2"]);
+    expect(sweep?.title).not.toStartWith("Rewrite");
+    expect(sweep?.description).toContain("Class sweep: the review shows the defect in one test file");
+    expect(sweep?.description).toContain(`- ${TEST_FILE}`);
+    expect(sweep?.description).not.toContain("This finding repeats F1");
+    expect(sweep?.description).not.toContain("Do not patch this case");
+    // No battery: a test-file finding has no repro, and the host runs none before the review.
+    expect(sweep?.battery).toBeUndefined();
+    expect(sweep?.saved?.battery).toBeUndefined();
+    expect(artifacts("chains/battery/")).toEqual([]);
+    const decisions = artifacts("chains/tasks/") as unknown as ChainRecord[];
+    expect(decisions.map((d) => [d.taskId, d.findingId, d.chain.map((f) => f.id), d.decision, d.corrective])).toEqual([[sweep?.taskId, "F2", ["F1", "F2"], "rewrite", "test-sweep"]]);
+  }, 60000);
+
+  test("with chainRewrite off, the chain is recorded as a patch and the corrective repeats the earlier fix", async () => {
+    const { done, executor, artifacts } = await drive({ quality: { chainRewrite: "off" }, policy: { clarification: "assume" }, testFile: true, members: ["a", "b"] });
+    expect(done.status).toBe("completed");
+    expect(executor.corrections[1]?.description).toContain("This finding repeats F1");
+    const decisions = artifacts("chains/tasks/") as unknown as ChainRecord[];
+    expect(decisions.map((d) => [d.length, d.decision, d.corrective])).toEqual([[2, "patch", undefined]]);
+  }, 60000);
 });

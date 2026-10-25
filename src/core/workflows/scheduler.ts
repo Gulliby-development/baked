@@ -381,9 +381,11 @@ import {
   type ChainRecord,
   chainFindings,
   chainSpecRows,
+  chainSubject,
   type FamilyRecord,
   familyDecision,
   observedValue,
+  rewritesSymbol,
   symbolKey,
   taskChainRecord,
 } from "./finding-chain.js";
@@ -3816,7 +3818,7 @@ export class WorkflowScheduler {
   private batteryContext(runId: string, state: RuntimeState, task: Task): Record<string, unknown> {
     if (task.origin === "planned") return {};
     const record = taskChainRecord(this.store, runId, task.id);
-    if (record?.decision !== "rewrite") return {};
+    if (!rewritesSymbol(record)) return {};
     const members = batteryOf(chainFindings(this.store, runId), record);
     return {
       battery: {
@@ -3856,8 +3858,7 @@ export class WorkflowScheduler {
     for (const row of this.store.artifacts(runId)) {
       if (row.kind !== CHAIN_KIND || !row.logical_path.startsWith(CHAIN_TASKS_DIR)) continue;
       const record = JSON.parse(this.store.readArtifact(runId, row.id)) as ChainRecord;
-      if (record.decision === "rewrite" && finished.has(record.taskId))
-        records.set(record.taskId, record);
+      if (rewritesSymbol(record) && finished.has(record.taskId)) records.set(record.taskId, record);
     }
     if (!records.size) return [];
     const all = chainFindings(this.store, runId);
@@ -3931,9 +3932,9 @@ export class WorkflowScheduler {
         symbol: finding.symbol,
         ...(finding.family ? { family: finding.family } : {}),
         evidenceIds: [evidenceId],
-        claim: `Battery case ${finding.id} of ${record.symbol} shows its reported behavior again after ${record.taskId}: ${finding.claim}`,
-        impact: `${record.taskId} rewrote ${record.symbol} for its chain of findings, and the host's battery run before the next review prints ${JSON.stringify(repro.actual)} again where the spec needs ${JSON.stringify(repro.expected)}. Output: ${outcome.output.slice(-400)}`,
-        suggestedFix: `Make ${record.symbol} pass every case of the battery, ${finding.id} included, without breaking the others.`,
+        claim: `Battery case ${finding.id} of ${chainSubject(record)} shows its reported behavior again after ${record.taskId}: ${finding.claim}`,
+        impact: `${record.taskId} rewrote ${chainSubject(record)} for its chain of findings, and the host's battery run before the next review prints ${JSON.stringify(repro.actual)} again where the spec needs ${JSON.stringify(repro.expected)}. Output: ${outcome.output.slice(-400)}`,
+        suggestedFix: `Make ${chainSubject(record)} pass every case of the battery, ${finding.id} included, without breaking the others.`,
         repro,
         repeatOf: finding.id,
       })),
@@ -3962,7 +3963,7 @@ export class WorkflowScheduler {
     if (policy.chainProbe !== "on" || policy.chainRewrite !== "on" || task.origin === "planned")
       return;
     const record = taskChainRecord(this.store, runId, task.id);
-    if (record?.decision !== "rewrite") return;
+    if (!rewritesSymbol(record)) return;
     if (this.store.latestArtifact(runId, `${CHAIN_FAMILY_DIR}${task.id}.json`)) return;
     const profile = ProfileSchema.array()
       .parse(JSON.parse(this.store.run(runId).profiles_json))
@@ -4083,9 +4084,9 @@ export class WorkflowScheduler {
           symbol: head.symbol,
           ...(head.family ? { family: head.family } : {}),
           evidenceIds: [evidenceId],
-          claim: `Sibling case ${String(index + 1)} of ${record.symbol}, probed around ${head.id}: prints ${JSON.stringify(repro.actual)} where the spec needs ${JSON.stringify(repro.expected)}`,
+          claim: `Sibling case ${String(index + 1)} of ${chainSubject(record)}, probed around ${head.id}: prints ${JSON.stringify(repro.actual)} where the spec needs ${JSON.stringify(repro.expected)}`,
           impact: `The same input class as the chain ${record.chain.map((f) => f.id).join(", ")}; without this case the rewrite ${task.id} could pass the battery and leave it for the next review round.`,
-          suggestedFix: `Make ${record.symbol} pass this case together with every other case of the battery.`,
+          suggestedFix: `Make ${chainSubject(record)} pass this case together with every other case of the battery.`,
           repro,
           repeatOf: head.id,
         };
@@ -4909,9 +4910,7 @@ export class WorkflowScheduler {
         ...recurringFindings(this.store, runId, task),
         ...sameFileFindings(this.store, runId, task),
         // A rewrite holds the chain's whole battery (#1959).
-        ...(chain?.decision === "rewrite"
-          ? batteryOf(chainFindings(this.store, runId), chain)
-          : []),
+        ...(rewritesSymbol(chain) ? batteryOf(chainFindings(this.store, runId), chain) : []),
       ].map((f) => f.id),
     );
     // A finding a person's spec conflict answer decided is no longer the gate (#1350).
