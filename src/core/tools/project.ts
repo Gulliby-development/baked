@@ -4,10 +4,18 @@ import { dirname, join, resolve } from "node:path";
 import type { ToolResult } from "../../types/index.js";
 import { getCwd } from "../cwd.js";
 import { logBackgroundError } from "../diagnostics/errors.js";
-import { bunShellArgs, IS_WIN } from "../platform/index.js";
+import { bunShellArgs, IS_WIN, pwshExecutable } from "../platform/index.js";
 import { chatSandbox, SandboxUnavailableError, sandboxNotice } from "../security/sandbox.js";
 import { buildSafeEnv } from "../spawn.js";
 import { executeCheckCommand } from "../verification/check-runner.js";
+import {
+  clangFormatGates,
+  cmakeGates,
+  composerGates,
+  formatCommandLine,
+  luaGates,
+  shellGates,
+} from "../workflows/gates.js";
 import { assertWorkspaceMutationAllowed } from "../workflows/leases.js";
 import { ProcessScope } from "../workflows/process-scope.js";
 import { pythonEnvironment } from "../workflows/toolchain.js";
@@ -224,27 +232,34 @@ async function detectToolchain(cwd: string): Promise<DetectedToolchain> {
     return profile;
   }
 
-  // PHP
+  // PHP: the gates' own detection (#1491), so the agent runs what the workflow checks run.
   if (await has("composer.json")) {
-    profile.test = "vendor/bin/phpunit";
+    const gates = composerGates(cwd).map((g) => g.check);
+    const line = (c: { executable: string; args: string[] } | undefined) =>
+      c ? formatCommandLine(c.executable, c.args) : null;
+    const format = gates.find((c) => c.id === "pint" || c.id === "php-cs-fixer");
+    profile.test =
+      line(gates.find((c) => c.id === "phpunit" || c.id === "pest")) ?? "php vendor/bin/phpunit";
     profile.build = null;
-    profile.lint = (await has("pint.json"))
-      ? "vendor/bin/pint --test"
-      : (await has(".php-cs-fixer.php")) || (await has(".php-cs-fixer.dist.php"))
-        ? "vendor/bin/php-cs-fixer fix --dry-run"
-        : null;
-    profile.typecheck =
-      (await has("phpstan.neon")) || (await has("phpstan.neon.dist"))
-        ? "vendor/bin/phpstan analyse"
-        : (await has("psalm.xml")) || (await has("psalm.xml.dist"))
-          ? "vendor/bin/psalm"
-          : null;
+    profile.lint = line(format);
+    profile.typecheck = line(gates.find((c) => c.id === "phpstan" || c.id === "psalm"));
     profile.run = (await has("artisan")) ? "php artisan serve" : null;
-    profile.format = (await has("pint.json"))
-      ? "vendor/bin/pint"
-      : (await has(".php-cs-fixer.php")) || (await has(".php-cs-fixer.dist.php"))
-        ? "vendor/bin/php-cs-fixer fix"
-        : null;
+    profile.format = line(format?.fix);
+    return profile;
+  }
+
+  // Lua: the gates' own detection (#1495), from a rockspec or the tools' config files.
+  const lua = luaGates(cwd).map((g) => g.check);
+  if (lua.length) {
+    const line = (c: { executable: string; args: string[] } | undefined) =>
+      c ? formatCommandLine(c.executable, c.args) : null;
+    const format = lua.find((c) => c.id === "stylua");
+    profile.test = line(lua.find((c) => c.id === "busted"));
+    profile.build = null;
+    profile.lint = line(lua.find((c) => c.id === "luacheck" || c.id === "selene"));
+    profile.typecheck = null;
+    profile.run = null;
+    profile.format = line(format?.fix);
     return profile;
   }
 
@@ -349,13 +364,18 @@ async function detectToolchain(cwd: string): Promise<DetectedToolchain> {
     return profile;
   }
 
-  // C/C++ — CMake
-  if (await has("CMakeLists.txt")) {
-    profile.test = "ctest --test-dir build";
-    profile.build = "cmake --build build";
-    profile.lint = (await has(".clang-tidy")) ? "clang-tidy" : null;
-    profile.typecheck = "cmake --build build";
+  // C/C++ — CMake: the gates' own detection (#1490), so the agent runs what the checks run.
+  const cmake = cmakeGates(cwd).map((g) => g.check);
+  const clangFormat = clangFormatGates(cwd)[0]?.check;
+  if (cmake.length) {
+    const line = (c: { executable: string; args: string[] } | undefined) =>
+      c ? formatCommandLine(c.executable, c.args) : null;
+    profile.test = line(cmake.find((c) => c.id === "ctest"));
+    profile.build = line(cmake.find((c) => c.id === "cmake-build"));
+    profile.lint = line(cmake.find((c) => c.id === "clang-tidy"));
+    profile.typecheck = profile.build;
     profile.run = null;
+    profile.format = line(clangFormat?.fix);
     return profile;
   }
 
@@ -366,6 +386,9 @@ async function detectToolchain(cwd: string): Promise<DetectedToolchain> {
     profile.lint = null;
     profile.typecheck = null;
     profile.run = "make run";
+    profile.format = clangFormat?.fix
+      ? formatCommandLine(clangFormat.fix.executable, clangFormat.fix.args)
+      : null;
     return profile;
   }
 
@@ -422,6 +445,19 @@ async function detectToolchain(cwd: string): Promise<DetectedToolchain> {
     return profile;
   }
 
+  // PowerShell — Pester and PSScriptAnalyzer (#1498). No edit-time format: Invoke-Formatter
+  // takes the script text, not a path.
+  if (
+    (await has("PSScriptAnalyzerSettings.psd1")) ||
+    (await hasExt(".Tests.ps1")) ||
+    (await hasExt(".psd1"))
+  ) {
+    const pwsh = pwshExecutable();
+    profile.test = `${pwsh} -NoProfile -Command Invoke-Pester`;
+    profile.lint = `${pwsh} -NoProfile -Command "Invoke-ScriptAnalyzer -Path . -Recurse -EnableExit"`;
+    return profile;
+  }
+
   // SQL — dbt and SQLFluff (#1499). No edit-time format: `sqlfluff fix` also rewrites
   // capitalisation and aliases, and with the dbt templater it compiles the whole project.
   if ((await has("dbt_project.yml")) || (await has(".sqlfluff"))) {
@@ -429,6 +465,17 @@ async function detectToolchain(cwd: string): Promise<DetectedToolchain> {
     profile.test = dbt ? "dbt test" : null;
     profile.build = dbt ? "dbt build" : null;
     profile.lint = (await has(".sqlfluff")) ? "sqlfluff lint ." : null;
+    return profile;
+  }
+
+  // Shell: the gates' own detection (#1497), for a project of scripts and bats tests only.
+  const shell = shellGates(cwd).map((g) => g.check);
+  if (shell.length) {
+    const line = (c: { executable: string; args: string[] } | undefined) =>
+      c ? formatCommandLine(c.executable, c.args) : null;
+    profile.test = line(shell.find((c) => c.id === "bats"));
+    profile.lint = line(shell.find((c) => c.id === "shellcheck"));
+    profile.format = line(shell.find((c) => c.id === "shfmt")?.fix);
     return profile;
   }
 
@@ -621,17 +668,30 @@ export async function detectNativeChecks(cwd: string): Promise<string | null> {
 
   // PHP
   if (await has("composer.json")) {
-    if ((await has("phpstan.neon")) || (await has("phpstan.neon.dist")))
-      return "vendor/bin/phpstan analyse";
-    if ((await has("psalm.xml")) || (await has("psalm.xml.dist"))) return "vendor/bin/psalm";
-    return null;
+    const check = composerGates(cwd).find(
+      (g) => g.check.id === "phpstan" || g.check.id === "psalm",
+    )?.check;
+    return check ? formatCommandLine(check.executable, check.args) : null;
   }
+
+  // Lua
+  const lua = luaGates(cwd).find((g) => g.check.id === "luacheck" || g.check.id === "selene");
+  if (lua) return formatCommandLine(lua.check.executable, lua.check.args);
 
   // Swift
   if ((await has("Package.swift")) && (await has(".swiftlint.yml"))) return "swiftlint";
 
   // Ruby
   if ((await has("Gemfile")) && (await has(".rubocop.yml"))) return "bundle exec rubocop";
+
+  // Shell
+  const shellcheck = shellGates(cwd).find((g) => g.check.id === "shellcheck");
+  if (shellcheck) return formatCommandLine(shellcheck.check.executable, shellcheck.check.args);
+
+  // C and C++ (#1490): clang-format alone, since clang-tidy needs the compilation database that
+  // configuring the build writes.
+  const clangFormat = clangFormatGates(cwd)[0]?.check;
+  if (clangFormat) return formatCommandLine(clangFormat.executable, clangFormat.args);
 
   return null;
 }

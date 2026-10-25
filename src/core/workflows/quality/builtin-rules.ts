@@ -35,7 +35,9 @@ export interface QualityRule {
 }
 
 const C_LIKE = [".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx", ".mts", ".cts"];
-const BRACE_CATCH = [...C_LIKE, ".java", ".kt", ".cs", ".php", ".swift", ".dart", ".scala"];
+// C++ catches with braces too, `catch (...) {}` included (#1490).
+const CPP = [".cpp", ".cc", ".cxx", ".hpp", ".hh", ".hxx"];
+const BRACE_CATCH = [...C_LIKE, ...CPP, ".java", ".kt", ".cs", ".php", ".swift", ".dart", ".scala"];
 const PY = [".py", ".pyi"];
 
 /** The index of the next line after `index` that is not blank, or -1. */
@@ -244,6 +246,16 @@ export const PLACEHOLDERS: LanguageRecord<Placeholder> = {
       "i",
     ),
   ),
+  // `throw 'not implemented'`, `throw [System.NotImplementedException]::new()`, the same through
+  // `New-Object`, and `Write-Error 'not implemented'`, as C#'s NotImplementedException (#1498).
+  powershell: anyOf(
+    statement(
+      new RegExp(String.raw`\b(?:throw|Write-Error(?:\s+-Message)?)\s+["']${NOT_IMPLEMENTED}`, "i"),
+    ),
+    statement(
+      /\bthrow\s+(?:\[(?:System\.)?NotImplementedException\]|\(?\s*New-Object\s+(?:System\.)?NotImplementedException\b)/i,
+    ),
+  ),
   cpp: anyOf(
     statement(THROW_NEW),
     statement(new RegExp(String.raw`throw\s+std::\w+\(\s*"${NOT_IMPLEMENTED}`, "i")),
@@ -332,7 +344,10 @@ const CODE = [
   ".h",
   ".cc",
   ".cpp",
+  ".cxx",
+  ".hh",
   ".hpp",
+  ".hxx",
   ".kts",
   ".gradle",
   ".sh",
@@ -541,7 +556,7 @@ export const BUILTIN_RULES: readonly QualityRule[] = [
     message: "A new lint suppression hides a finding instead of fixing it",
     fix: "Fix what the linter reports, or explain on the same line why the rule does not apply.",
     match: lineRule(
-      /(?:eslint-disable|biome-ignore|oxlint-disable|#\s*noqa\b|#\s*type:\s*ignore|#\s*pylint:\s*disable|\/\/\s*nolint\b|#!?\[allow\(|@SuppressWarnings\(|#pragma\s+warning\s+disable|NOSONAR|#\s*(?:rubocop|standard):(?:disable|todo)\b|\/\/\s*ignore(?:_for_file)?:\s*\w|@nowarn\b|\/\/\s*scalafix:(?:off|ok)\b|\/\/\s*scalastyle:off\b|\/\/\s*swiftlint:disable\b|\/\/\s*swift-format-ignore\b)/,
+      /(?:eslint-disable|biome-ignore|oxlint-disable|#\s*noqa\b|#\s*type:\s*ignore|#\s*pylint:\s*disable|\/\/\s*nolint\b|#!?\[allow\(|@SuppressWarnings\(|#pragma\s+warning\s+disable|NOSONAR|#\s*(?:rubocop|standard):(?:disable|todo)\b|@phpstan-ignore|@psalm-suppress\b|--\s*luacheck:\s*(?:ignore|no\s|push\s+ignore)|--\s*selene:\s*allow\b|\/\/\s*ignore(?:_for_file)?:\s*\w|#\s*shellcheck\s+disable=|\/\/\s*NOLINT(?:NEXTLINE|BEGIN)?\b|#\s*pragma\s+(?:GCC|clang)\s+diagnostic\s+ignored\b|@nowarn\b|\/\/\s*scalafix:(?:off|ok)\b|\/\/\s*scalastyle:off\b|\/\/\s*swiftlint:disable\b|\/\/\s*swift-format-ignore\b)/,
     ),
   },
   {
@@ -588,7 +603,10 @@ export const BUILTIN_RULES: readonly QualityRule[] = [
       ".h",
       ".cc",
       ".cpp",
+      ".cxx",
+      ".hh",
       ".hpp",
+      ".hxx",
       ".kts",
       ".gradle",
     ],

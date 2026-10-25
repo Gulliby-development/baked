@@ -152,6 +152,24 @@ describe("the test-integrity guard reads every listed framework (#1651)", () => 
     expect(scan("tests/math.rs", before, after)[0]?.detail).toContain('"subs"');
   });
 
+  test("PowerShell Pester: a removed It is flagged by name, its Should assertion counted (#1498)", () => {
+    const before = `Describe 'Get-Sum' {\n  It 'adds' {\n    Get-Sum -A 1 -B 1 | Should -Be 2\n  }\n  It 'subtracts' {\n    Get-Diff -A 2 -B 1 | Should -Be 1\n  }\n}\n`;
+    const after = before.replace(`  It 'subtracts' {\n    Get-Diff -A 2 -B 1 | Should -Be 1\n  }\n`, "");
+    const found = scan("tests/Sum.Tests.ps1", before, after);
+    expect(found.map((f) => f.rule)).toEqual(["test-count", "assertions"]);
+    expect(found[0]?.detail).toContain('"subtracts"');
+  });
+
+  test("PowerShell Pester: -Skip, Set-ItResult -Skipped and SuppressMessageAttribute are flagged (#1498)", () => {
+    const before = `Describe 'Get-Sum' {\n  It 'adds' {\n    Get-Sum -A 1 -B 1 | Should -Be 2\n  }\n}\n`;
+    const skipped = before.replace("It 'adds' {", "It 'adds' -Skip {");
+    expect(scan("tests/Sum.Tests.ps1", before, skipped).map((f) => f.rule)).toEqual(["skip"]);
+    const result = before.replace("    Get-Sum", "    Set-ItResult -Skipped -Because 'flaky'\n    Get-Sum");
+    expect(scan("tests/Sum.Tests.ps1", before, result).map((f) => f.rule)).toEqual(["skip"]);
+    const suppressed = `function Get-Sum {\n  [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSAvoidUsingWriteHost', '')]\n  param()\n}\n`;
+    expect(scan("src/Sum.ps1", "function Get-Sum {\n  param()\n}\n", suppressed).map((f) => f.rule)).toEqual(["suppression"]);
+  });
+
   test("a framework's patterns are read only in its language's files", () => {
     // A Kotest-looking line in TypeScript, and t.Run in Python, are not tests.
     const ts = `const table = {\n  "adds" { }\n};\n`;

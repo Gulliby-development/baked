@@ -30,7 +30,7 @@ export const TEST_CONVENTIONS: LanguageRecord<RegExp> = {
   elixir: /_test\.exs?$/i,
   dart: /_test\.dart$/i,
   zig: /_test\.zig$/i,
-  bash: /_test\.(?:sh|bash)$/i,
+  bash: /_test\.(?:sh|bash)$|\.bats$/i,
   ocaml: none("dune keeps tests in a `test/` directory, which the shared rule covers"),
   objc: /Tests?\.mm?$/,
   vue: none("Vue components are tested from `.spec.ts` or `.test.ts` files"),
@@ -40,6 +40,7 @@ export const TEST_CONVENTIONS: LanguageRecord<RegExp> = {
   // pgTAP and dbt keep tests in a `test/` or `tests/` directory (the shared rule); a file of its
   // own is `test_name.sql` or `name_test.sql`.
   sql: /(?:^|\/)test_[^/]*\.sql$|_test\.sql$/i,
+  powershell: /\.Tests\.ps1$/i,
 };
 
 /**
@@ -81,6 +82,7 @@ export const TEST_MARKERS: LanguageRecord<RegExp> = {
   solidity: none("`.t.sol` is Foundry's own rule, never a plain word"),
   // pgTAP's plan and assertions, tSQLt's test classes and assertions.
   sql: /\b(?:plan|no_plan)\s*\(\s*\d*\s*\)|\bselect\s+\*?\s*(?:from\s+)?(?:ok|is|isnt|results_eq|throws_ok|lives_ok|has_table|has_column)\s*\(|\btSQLt\.\w+/i,
+  powershell: none("Pester's `.Tests.ps1` suffix is never a plain word"),
 };
 
 /** Build and package manifests by file name, one row per supported language. */
@@ -112,6 +114,8 @@ export const MANIFEST_NAMES: LanguageRecord<RegExp> = {
   rescript: /^rescript\.json$|^bsconfig\.json$/i,
   solidity: /^(?:foundry\.toml|hardhat\.config\.[cm]?[jt]s|remappings\.txt)$/i,
   sql: /^(?:dbt_project\.yml|\.sqlfluff)$/i,
+  // Module manifests, PSScriptAnalyzer settings and PSDepend or PSResourceGet requirements.
+  powershell: /^(?!PSScriptAnalyzerSettings\.psd1$)[^/]+\.psd1$/i,
 };
 
 /**

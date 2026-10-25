@@ -253,6 +253,9 @@ export const ENTRY_POINTS: LanguageRecord<readonly EntryReader[]> = {
   objc: none("Xcode projects have no command line runner among the checks"),
   solidity: none("contracts are deployed, not run as commands"),
   sql: none("SQL files are run by a database client, not installed as commands"),
+  powershell: none(
+    "a script is run by its path; a module's functions are imported, not installed as commands",
+  ),
 };
 
 const READERS: readonly EntryReader[] = [

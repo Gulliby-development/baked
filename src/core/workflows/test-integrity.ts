@@ -70,13 +70,11 @@ function commentLine(line: string): boolean {
     trimmed.startsWith("/*") ||
     trimmed.startsWith("*") ||
     trimmed.startsWith("<!--") ||
-    // `#[test]` and `#![allow]` are Rust attributes, not comments; `#if os(Linux)` and
-    // `#expect(...)` are Swift code (#1492).
+    // `#[test]` and `#![allow]` are Rust attributes, not comments; `#ifdef _WIN32` is the
+    // preprocessor guard of a C or C++ skip (#1490), and Swift's `#if os(Linux)`, `#elseif` and
+    // `#expect(...)` are code too (#1492).
     (trimmed.startsWith("#") &&
-      !/^#!?\[/.test(trimmed) &&
-      !/^#(?:(?:else)?if\s+!?(?:os|canImport|arch|targetEnvironment)\s*\(|(?:expect|require)\s*\()/.test(
-        trimmed,
-      ))
+      !/^#!?\[|^#(?:if|ifdef|ifndef|elif|elseif)\b|^#(?:expect|require)\s*\(/.test(trimmed))
   );
 }
 
@@ -300,8 +298,14 @@ const SKIPS = new RegExp(
     String.raw`@(?:Disabled|Ignore)\b`,
     String.raw`\[Ignore\b`,
     String.raw`\bSkip\s*=\s*"`,
+    // PHPUnit and Pest (#1491).
+    String.raw`->markTest(?:Skipped|Incomplete)\s*\(`,
+    String.raw`->(?:skip|todo)\s*\(`,
     // pgTAP: `SELECT skip('needs pg 16', 2)`, `SELECT todo_start('...')` (#1499).
     String.raw`\b(?:SELECT|select)\s+(?:skip|todo_start)\s*\(`,
+    // Pester: `It 'adds' -Skip { }`, `Describe 'x' -Skip:$true`, `Set-ItResult -Skipped` (#1498).
+    String.raw`^\s*(?:It|Describe|Context)\b[^{\n]*\s-Skip\b`,
+    String.raw`\bSet-ItResult\s+-(?:Skipped|Pending|Inconclusive)\b`,
   ].join("|"),
   "g",
 );
@@ -324,8 +328,16 @@ const CAPABILITY = new RegExp(
     String.raw`\b(?:ImportError|ModuleNotFoundError|PermissionError)\b`,
     String.raw`\b(?:ErrPermission|EPERM|EACCES)\b`,
     String.raw`\b(?:os\.)?[Gg]ete?uid\s*\(`,
+    String.raw`\bPHP_OS(?:_FAMILY)?\b`,
+    String.raw`\b(?:extension_loaded|function_exists)\s*\(`,
     // Ruby: `RUBY_PLATFORM`, `Gem.win_platform?`, `RbConfig::CONFIG["host_os"]`, a gem that may be missing.
     String.raw`\bRUBY_PLATFORM\b|\bGem\.win_platform\?|\bRbConfig::CONFIG\b|\bLoadError\b`,
+    // Lua: the path separator `package.config:sub(1, 1)`, LuaJIT's `jit.os`, an optional module.
+    String.raw`\bpackage\.config\b|\bjit\.os\b|\bpcall\s*\(\s*require\b`,
+    // Shell: `uname`, `$OSTYPE`, a tool that may be missing (`command -v jq`, `type -P`, `hash`).
+    String.raw`\buname\b|\$\{?OSTYPE\b|\bcommand\s+-v\b|\btype\s+-P\b|^\s*hash\s+\w`,
+    // C and C++: the platform macros of a preprocessor guard (#1490).
+    String.raw`\b(?:_WIN32|_WIN64|_MSC_VER|__APPLE__|__linux__|__unix__|__FreeBSD__|__MINGW32__)\b`,
     // Dart: `Platform.isWindows`, `Platform.operatingSystem`, Flutter's `kIsWeb` (#1494).
     String.raw`\bPlatform\.(?:is[A-Z]\w*|operatingSystem)\b|\bkIsWeb\b`,
     // Scala: `scala.util.Properties.isWin` (#1496).
@@ -370,10 +382,23 @@ const SUPPRESSIONS = new RegExp(
     String.raw`@SuppressWarnings\b`,
     String.raw`//\s*nolint\b`,
     String.raw`#pragma\s+warning\s+disable\b`,
+    String.raw`@phpstan-ignore`,
+    String.raw`@psalm-suppress\b`,
+    String.raw`@codeCoverageIgnore`,
     String.raw`#\s*(?:rubocop|standard):(?:disable|todo)\b`,
+    // luacheck and selene (#1495).
+    String.raw`--\s*luacheck:\s*(?:ignore|no\s|push\s+ignore)`,
+    String.raw`--\s*selene:\s*allow\b`,
+    // ShellCheck (#1497).
+    String.raw`#\s*shellcheck\s+disable=`,
+    // clang-tidy, and GCC's and Clang's diagnostic pragmas (#1490).
+    String.raw`//\s*NOLINT(?:NEXTLINE|BEGIN)?\b`,
+    String.raw`#\s*pragma\s+(?:GCC|clang)\s+diagnostic\s+ignored\b`,
     String.raw`//\s*ignore(?:_for_file)?:\s*\w`,
     String.raw`@nowarn\b|//\s*scalafix:(?:off|ok)\b|//\s*scalastyle:off\b`,
     String.raw`//\s*swiftlint:disable\b|//\s*swift-format-ignore\b`,
+    // PSScriptAnalyzer, and the same attribute in C#: `[Diagnostics.CodeAnalysis.SuppressMessageAttribute(...)]` (#1498).
+    String.raw`\[(?:System\.)?(?:Diagnostics\.CodeAnalysis\.)?SuppressMessage(?:Attribute)?\s*\(`,
   ].join("|"),
   "g",
 );

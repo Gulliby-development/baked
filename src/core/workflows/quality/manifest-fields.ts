@@ -227,6 +227,39 @@ export function gradleFields(text: string): FieldMap {
 export const versionCatalogFields = (text: string): FieldMap => tomlFields(text, /^plugins$/);
 
 /**
+ * `composer.json` fields that run code or choose where packages come from (#1491): `scripts` (run
+ * by `composer test` and on install), the `autoload` files Composer includes on every request,
+ * `bin`, `repositories`, the `config` that moves the vendor folder or allows plugins, and the
+ * stability that lets dev releases in.
+ */
+export function composerFields(text: string): FieldMap {
+  const out: FieldMap = new Map();
+  let parsed: Record<string, unknown>;
+  try {
+    parsed = JSON.parse(text) as Record<string, unknown>;
+  } catch {
+    return out;
+  }
+  if (!parsed || typeof parsed !== "object") return out;
+  const scripts = parsed.scripts;
+  if (scripts && typeof scripts === "object")
+    for (const [name, command] of Object.entries(scripts as Record<string, unknown>))
+      out.set(`scripts.${name}`, JSON.stringify(command));
+  for (const field of COMPOSER_FIELDS)
+    if (parsed[field] !== undefined) out.set(field, JSON.stringify(parsed[field]));
+  return out;
+}
+const COMPOSER_FIELDS = [
+  "autoload",
+  "autoload-dev",
+  "bin",
+  "repositories",
+  "config",
+  "minimum-stability",
+  "prefer-stable",
+] as const;
+
+/**
  * Gemfile lines other than gem declarations and their groups: a Gemfile is Ruby code, so
  * `source`, `git`, `path`, `plugin`, `eval_gemfile` and any other statement can run something.
  */
@@ -240,6 +273,42 @@ export function gemfileFields(text: string): FieldMap {
   }
   return out;
 }
+
+/**
+ * A rockspec's top-level statements other than its name, version, description and dependency
+ * lists (#1495): a rockspec is Lua code, and `build` (its commands, `build.install.bin`),
+ * `source` and `test` say what `luarocks make` and `luarocks test` fetch and run.
+ */
+export function rockspecFields(text: string): FieldMap {
+  const out: FieldMap = new Map();
+  let name: string | null = null;
+  let body: string[] = [];
+  const flush = () => {
+    if (name !== null && !ROCKSPEC_DATA.has(name))
+      out.set(out.has(name) ? `${name} ${out.size}` : name, body.join("\n").trim());
+  };
+  for (const line of text.split(/\r?\n/)) {
+    if (!line.trim() || /^\s*--/.test(line)) continue;
+    if (/^[^\s}\])]/.test(line)) {
+      flush();
+      name = /^([A-Za-z_]\w*)\s*=/.exec(line)?.[1] ?? line.trim();
+      body = [];
+    }
+    body.push(line);
+  }
+  flush();
+  return out;
+}
+const ROCKSPEC_DATA = new Set([
+  "rockspec_format",
+  "package",
+  "version",
+  "description",
+  "dependencies",
+  "build_dependencies",
+  "test_dependencies",
+  "supported_platforms",
+]);
 
 /**
  * The files beside the manifests that choose the toolchain or tool distribution that runs the
