@@ -78,6 +78,15 @@ export function diagnosticCount(output: string): OutputCount | null {
   const psalm = output.match(/^(\d+) errors? found\b/m);
   if (psalm) return { tool: "psalm", count: Number(psalm[1]), errors: Number(psalm[1]) };
   if (/^No errors found!/m.test(output)) return { tool: "psalm", count: 0, errors: 0 };
+  // dart analyze and flutter analyze: "  error - lib/a.dart:3:14 - ... - invalid_assignment", then
+  // "2 issues found." or "No issues found!". Infos are lints dart analyze exits 0 on.
+  if (
+    /^Analyzing \S.*\.\.\.$/m.test(output) &&
+    /^(?:No issues found!|\d+ issues? found\.)$/m.test(output)
+  ) {
+    const errors = lines(output, /^\s*error - \S+:\d+:\d+ - /);
+    return { tool: "dart", count: errors + lines(output, /^\s*warning - \S+:\d+:\d+ - /), errors };
+  }
   // dotnet build: "    3 Warning(s)" and "    0 Error(s)"
   const warnings = output.match(/^\s*(\d+) Warning\(s\)/m);
   const errors = output.match(/^\s*(\d+) Error\(s\)/m);
@@ -118,6 +127,7 @@ export type TestRunner =
   | "pest"
   | "rspec"
   | "minitest"
+  | "dart"
   | "junit"
   | "tap";
 
@@ -280,6 +290,20 @@ const TEST_COUNTERS: readonly {
       return m ? Number(m[1]) - Number(m[2]) : null;
     },
   },
+  {
+    tool: "dart",
+    // dart test and flutter test: "00:02 +12 ~1 -2: Some tests failed.", "00:00 +3: All tests
+    // passed!". A test file that does not load counts as one failure (`-1`), named
+    // "loading test/a_test.dart", and is no test.
+    count: (o) => {
+      const done = dartSummary(o);
+      return done ? done.passed + done.skipped + done.failed - dartLoads(o) : null;
+    },
+    ran: (o) => {
+      const done = dartSummary(o);
+      return done ? done.passed + done.failed - dartLoads(o) : null;
+    },
+  },
   // A language without a parser of its own (#1488): a JUnit XML report printed to the output
   // (`--reporter=junit`), then TAP (busted, bats, prove, node:test, pgTAP).
   {
@@ -310,6 +334,22 @@ const TEST_COUNTERS: readonly {
 
 const num = (match: RegExpMatchArray | null): number | null => (match ? Number(match[1]) : null);
 
+/** The progress prefix of `dart test`: elapsed time, then passed `+N`, skipped `~N`, failed `-N`. */
+const DART_PROGRESS = String.raw`^[\d:]+ \+(\d+)(?: ~(\d+))?(?: -(\d+))?: `;
+/** The same prefix without its groups. */
+const DART_LINE = String.raw`^[\d:]+ \+\d+(?: ~\d+)?(?: -\d+)?: `;
+const DART_SUMMARY = new RegExp(
+  `${DART_PROGRESS}(?:All tests passed!|Some tests failed\\.|All tests skipped\\.)\\s*$`,
+  "gm",
+);
+function dartSummary(o: string): { passed: number; skipped: number; failed: number } | null {
+  const last = [...o.matchAll(DART_SUMMARY)].at(-1);
+  if (!last) return null;
+  return { passed: Number(last[1]), skipped: Number(last[2] ?? 0), failed: Number(last[3] ?? 0) };
+}
+const dartLoads = (o: string): number =>
+  lines(o, new RegExp(`${DART_LINE}loading \\S+ \\[E\\]\\s*$`));
+
 /**
  * The test runners of each supported language whose summary `testCount` reads (#1717, #1733), so
  * the baseline comparison and the failure signature cover the language. A language whose runner
@@ -335,7 +375,7 @@ export const TEST_RUNNERS: LanguageRecord<readonly TestRunner[]> = {
   swift: none("XCTest and swift-testing summaries are not read"),
   lua: ["tap"],
   elixir: none('ExUnit\'s "N tests, M failures" summary is not read'),
-  dart: none("dart test's summary is not read"),
+  dart: ["dart"],
   zig: none("zig build test prints no count"),
   bash: ["tap"],
   ocaml: none("dune test output has no common summary"),
@@ -385,6 +425,9 @@ export const FAILED_TESTS: Record<TestRunner, (output: string) => string[]> = {
   // "  1) Failure:" or "  2) Error:", then "CalcTest#test_fail [/w/test/calc_test.rb:8]:"
   minitest: (o) =>
     captured(o, /^\s*\d+\) (?:Failure|Error):\r?\n(\S+#\S+?)(?: \[[^\]\n]*\])?:\s*$/gm),
+  // "00:00 +1 -1: test/calc_test.dart: fails on purpose [E]", not a file that did not load
+  dart: (o) =>
+    captured(o, new RegExp(`${DART_LINE}(?!loading \\S+ \\[E\\])(.+?) \\[E\\]\\s*$`, "gm")),
   // A <testcase> with a <failure> or <error> child.
   junit: (o) =>
     [...o.matchAll(/<testcase\b([^>]*?)(?:\/>|>([\s\S]*?)<\/testcase>)/g)]
@@ -434,6 +477,9 @@ export const BUILD_FAILURES: Record<TestRunner, RegExp> = {
   // `rake test` loads every test file first: "/w/test/calc_test.rb:2:in `require': cannot load
   // such file -- calc (LoadError)", "/w/test/a_test.rb:9: syntax error ... (SyntaxError)".
   minitest: /^.*\.rb>?:\d+:.* \((?:LoadError|SyntaxError|NameError)\)$/,
+  // dart test loads each test file on its own: '  Failed to load "test/a_test.dart":', then the
+  // compile error "test/a_test.dart:3:26: Error: Undefined name 'sum'.", or "Does not exist."
+  dart: /^\s*Failed to load "[^"]+":.*$/,
   // Gradle: "> Task :compileTestJava FAILED", "AppTest.java:12: error: cannot find symbol"
   junit: /^(?:> Task :\S*[cC]ompile\S* FAILED|.+\.(?:java|kt):\d+: error: .+)$/,
   // "Bail out! Cannot find module"
@@ -594,6 +640,16 @@ const GROWING_COUNTS: [RegExp, string][] = [
   [/\b[\d.]+ (runs|assertions)\/s\b/g, "<n> $1/s"],
   // The random order seed of RSpec and Minitest: "Randomized with seed 1809", "--seed 1809".
   [/\b(seed|--seed) \d+\b/g, "$1 <n>"],
+  // dart test prints a progress line as each test starts (#1494): only the failures, their
+  // summary and its failed count stay, the passed and skipped counts go.
+  [
+    /^[\d:]+ \+\d+(?: ~\d+)?(?: -\d+)?: (?!.*\[E\]\s*$)(?!(?:All tests passed!|Some tests failed\.|All tests skipped\.)\s*$).*(?:\n|$)/gm,
+    "",
+  ],
+  [/^[\d:]+ \+\d+(?: ~\d+)?( -\d+)?: /gm, "+<n>$1: "],
+  [/^\s*Skip: .*(?:\n|$)/gm, ""],
+  // dart format: "Formatted 3 files (1 changed) in 0.01 seconds."
+  [/\bFormatted \d+ files? \((\d+) changed\)/g, "Formatted <n> files ($1 changed)"],
   // The progress line of RSpec, Minitest and RuboCop, one character per example or file.
   [/^[.*CEFRSW]+$\n?/gm, ""],
   [/^(\s*)\d+ (pass|skip|todo)$/gm, "$1<n> $2"],

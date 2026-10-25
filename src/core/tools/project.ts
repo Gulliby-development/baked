@@ -263,13 +263,15 @@ async function detectToolchain(cwd: string): Promise<DetectedToolchain> {
     return profile;
   }
 
-  // Flutter / Dart
+  // Flutter / Dart: only a Flutter package (`sdk: flutter`) has `flutter`; a Dart package tests
+  // with `dart test` (#1494).
   if (await has("pubspec.yaml")) {
-    profile.test = "flutter test";
-    profile.build = "flutter build";
+    const flutter = /^\s*sdk:\s*flutter\b/m.test(await readSafe(join(cwd, "pubspec.yaml")));
+    profile.test = flutter ? "flutter test" : "dart test";
+    profile.build = flutter ? "flutter build" : null;
     profile.lint = "dart analyze";
     profile.typecheck = "dart analyze";
-    profile.run = "flutter run";
+    profile.run = flutter ? "flutter run" : "dart run";
     profile.format = "dart format";
     return profile;
   }
