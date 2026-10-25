@@ -44,7 +44,7 @@
     "formatters": [
       "dart-format-written: dart format --output=none --set-exit-if-changed lib/sum.dart lib/sum_test.dart"
     ],
-    "packageContents": null,
+    "packageContents": ["pubspec.yaml: pub"],
     "numericLimits": [
       "int is 64-bit on the VM and 2^53-exact when compiled to JavaScript"
     ]
