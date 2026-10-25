@@ -9,6 +9,7 @@ import {
   chainRecord,
   chainSubject,
   correctiveChain,
+  recordUnchangedRepeats,
   rewriteStep,
   rewritesSymbol,
 } from "../workflows/finding-chain.js";
@@ -1234,6 +1235,9 @@ export function appendCorrections(
   );
   for (const record of chainRecords)
     store.artifact(runId, CHAIN_KIND, `${CHAIN_TASKS_DIR}${record.taskId}.json`, canonical(record));
+  // A finding back after its corrective changed no file (#2137, shadow); v1, v2 and a granted
+  // round all open review and convergence correctives here.
+  recordUnchangedRepeats(store, runId, policy, findings.filter(chainable));
   state.correctionHashes.push(artifact.content_hash);
   state.manifest.correctionHashes = [...state.correctionHashes];
   state.graph = graph;
