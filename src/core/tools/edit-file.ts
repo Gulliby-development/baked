@@ -335,7 +335,7 @@ export const editFileTool = {
           dirCreated = true;
         }
         await mkdir(dir, { recursive: true });
-        const newEol = detectNewFileLineEnding(dir);
+        const newEol = detectNewFileLineEnding(dir, filePath);
         const fileText = newEol ? withLineEnding(newStr, newEol) : args.newString;
         assertEditActive();
         toolPhase("write");

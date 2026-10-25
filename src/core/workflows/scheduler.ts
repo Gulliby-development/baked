@@ -40,6 +40,7 @@ import { buildSafeEnv } from "../spawn.js";
 import { canonical, hashBytes, hashJson } from "../specs/hash.js";
 import { specPublication } from "../specs/render.js";
 import { validatePackage, workspacePath } from "../specs/validate.js";
+import { captureEndings, restoreEndings } from "../tools/line-endings.js";
 import {
   assertAcceptance,
   assertAcceptanceV2,
@@ -13930,6 +13931,8 @@ ${note}`;
               path,
               id: journal(path, check, images.get(path) ?? null),
             }));
+            // A fixer that writes text mode on Windows turns a LF file into CRLF (#2214).
+            const endings = captureEndings(paths.map((path) => workspacePath(root, path)));
             try {
               // A fixer that cannot fix everything exits non-zero; the rerun check decides.
               await executeCheckCommand(
@@ -13945,10 +13948,12 @@ ${note}`;
                 },
               );
             } catch (error) {
+              restoreEndings(endings);
               for (const effect of effects)
                 this.store.transaction(() => this.store.effectStatus(runId, effect.id, "unknown"));
               throw error;
             }
+            restoreEndings(endings);
             for (const effect of effects) {
               const target = workspacePath(root, effect.path);
               const after = fileHash(target);
