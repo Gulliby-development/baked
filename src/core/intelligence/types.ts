@@ -50,6 +50,7 @@ export type Language =
   | "svelte"
   | "rescript"
   | "solidity"
+  | "powershell"
   | "tlaplus"
   | "elisp"
   | "unknown";
@@ -117,6 +118,10 @@ export const EXT_TO_LANGUAGE: Record<string, Language> = {
   ".bash": "bash",
   ".zsh": "bash",
   ".bats": "bash",
+  // PowerShell: scripts, modules and module manifests (#1498)
+  ".ps1": "powershell",
+  ".psm1": "powershell",
+  ".psd1": "powershell",
   // OCaml
   ".ml": "ocaml",
   ".mli": "ocaml",

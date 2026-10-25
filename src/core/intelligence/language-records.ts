@@ -33,6 +33,7 @@ export const SUPPORTED_LANGUAGES = [
   "rescript",
   "solidity",
   "sql",
+  "powershell",
 ] as const satisfies readonly Language[];
 
 export type SupportedLanguage = (typeof SUPPORTED_LANGUAGES)[number];
