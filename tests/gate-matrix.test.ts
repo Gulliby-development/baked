@@ -1190,6 +1190,14 @@ describe("gate matrix: CMake, CTest, GoogleTest and clang tools (#1490)", () => 
     expect(failedTests(CTEST_FAILED.replace("(Failed)", "(SEGFAULT)"))?.names).toEqual(["SumTest.Commutes"]);
   });
 
+  test("a passing CTest run is counted in both summary forms, without its disabled tests", () => {
+    // Newer CTest drops ", 0 tests failed" from a run without failures (seen on the CI runner).
+    const passing = "Test project /w/build\n    Start 1: SumTest.Adds\n1/3 Test #1: SumTest.Adds .....................   Passed    0.00 sec\n    Start 2: SumTest.Later\n2/3 Test #2: SumTest.Later ....................***Skipped   0.00 sec\n    Start 3: SumTest.Slow\n3/3 Test #3: SumTest.Slow .....................***Not Run (Disabled)   0.00 sec\n\n100% tests passed out of 2\n\nTotal Test time (real) =   0.01 sec\n\nThe following tests did not run:\n\t  2 - SumTest.Later (Skipped)\n\t  3 - SumTest.Slow (Disabled)\n";
+    for (const output of [passing, passing.replace("100% tests passed out of 2", "100% tests passed, 0 tests failed out of 2")])
+      expect([testCount(output), testsRan(output), failedTests(output)?.names ?? []]).toEqual([{ tool: "ctest", count: 2 }, { tool: "ctest", count: 1 }, []]);
+    expect(failureSignature(passing.replace("out of 2", "out of 3"), "/w")).toBe(failureSignature(passing, "/w"));
+  });
+
   test("a GoogleTest binary's own summary is read when CTest's is not there", () => {
     expect([testCount(GTEST_FAILED), testsRan(GTEST_FAILED), failedTests(GTEST_FAILED)]).toEqual([
       { tool: "gtest", count: 3 },

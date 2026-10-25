@@ -206,8 +206,12 @@ const bustedTestErrors = (o: string): number | null =>
   /^Error (?:->|→) /m.test(o)
     ? [...o.matchAll(/^Error (?:->|→) \S+ @ \d+\r?\n(?!suite )/gm)].length
     : null;
-/** CTest's summary: "67% tests passed, 1 tests failed out of 3". Disabled tests are not counted. */
-const CTEST_SUMMARY = /^\d+% tests passed, \d+ tests? failed out of (\d+)$/m;
+/**
+ * CTest's summary: "67% tests passed, 1 tests failed out of 3", and on a run without failures
+ * "100% tests passed, 0 tests failed out of 2" or, in newer CTest, "100% tests passed out of 2".
+ * Disabled tests are not counted.
+ */
+const CTEST_SUMMARY = /^\d+% tests passed(?:, \d+ tests? failed)? out of (\d+)$/m;
 /**
  * CTest's lists of tests by outcome, "\t  2 - SumTest.Commutes (Failed)": under "The following
  * tests FAILED:" a test whose executable was not built is "(Not Run)", and under "The following
@@ -858,6 +862,7 @@ const GROWING_COUNTS: [RegExp, string][] = [
   [/^(\s*)\d+\/\d+ Test +#\d+:/gm, "$1Test:"],
   [/^\s+\d+ - /gm, "\t<n> - "],
   [/^\d+% tests passed, (\d+ tests? failed) out of \d+$/gm, "<n>% tests passed, $1 out of <n>"],
+  [/^\d+% tests passed out of \d+$/gm, "<n>% tests passed out of <n>"],
   // GoogleTest's lines per started and passing test and its counts of tests and suites.
   [/^\[ (?:RUN| {6}OK) +\] .*(?:\n|$)/gm, ""],
   [
