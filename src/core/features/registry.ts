@@ -951,7 +951,7 @@ export const FEATURES: readonly Feature[] = [
       "baked workflow status",
       "baked workflow report",
       "baked workflow artifacts: includes attempts/ID/context.json for task context",
-      "baked workflow usage",
+      "baked workflow usage: toolInputs (invalid and decoded tool inputs per model)",
     ],
     api: [
       "/v1/workflow/runs",
