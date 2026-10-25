@@ -546,8 +546,8 @@ Workspace facts list the build and package manifests of every language in the la
 
 **Languages.** One table, `src/core/intelligence/language-traits.ts`, keyed by the languages of the extension map, decides for every workflow rule what a file is:
 
-- **Code** is a file of a programming language (TypeScript, JavaScript, Python, Go, Rust, Java, Kotlin, Scala, C#, C, C++, Ruby, PHP, Swift, Lua and Luau, Elixir, Dart, Zig, shell, OCaml, Objective-C, Vue, Svelte, ReScript, Solidity). A task that writes code gets the file-local static checks, and the duplication and harden checks read it.
-- **Source** is code, plus SQL, CSS and HTML. A workspace with source is `source`, not `scaffold`.
+- **Code** is a file of a programming language (TypeScript, JavaScript, Python, Go, Rust, Java, Kotlin, Scala, C#, C, C++, Ruby, PHP, Swift, Lua and Luau, Elixir, Dart, Zig, shell, OCaml, Objective-C, Vue, Svelte, ReScript, Solidity, SQL). A task that writes code gets the file-local static checks, and the duplication and harden checks read it.
+- **Source** is code, plus CSS and HTML. A workspace with source is `source`, not `scaffold`.
 - **Tests** are files under `test/`, `tests/`, `__tests__/` or `spec/` (RSpec, busted); `specs/` is not a test directory, since it holds the workflow's specifications. Outside those directories a test is a code file named `name.test.ext` or `name.spec.ext`, or one that follows its language's convention: `test_*.py`, `*_test.py`, `conftest.py`, Django's `tests.py`, `*_test.go`, Rust `tests.rs` modules and `*_tests.rs`, `*Test.java`, `*Spec.scala`, `*Tests.cs` and every file of a .NET test project (`App.Tests/`, `App.UnitTests/`), NestJS `*.e2e-spec.ts`, `*_spec.rb`, `*_spec.lua`, `*_test.dart`, `*Test.php`, `*Tests.swift`, `*_test.exs`, `test_*.c` and the like. Test integrity, sizing, the check baseline, duplication, review notes and `bake_find` all use this rule.
 - **Manifests** are the build and package files listed above, for workspace facts and sizing.
 
