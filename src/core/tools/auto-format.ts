@@ -132,6 +132,10 @@ export function formatProbeCommand(command: string, filePath: string): string | 
   // dprint reads the file text from stdin and takes the path for its configuration and plugin.
   if (/^(?:bunx |npx )?dprint fmt$/.test(command)) return `${command} --stdin ${file}`;
   if (command === "deno fmt") return `deno fmt --ext ${extname(filePath).slice(1) || "ts"} -`;
+  // StyLua reads `stylua.toml` and its ignore file for the path it is given (#1495).
+  if (command === "stylua") return `stylua --stdin-filepath ${file} -`;
+  // shfmt reads standard input and takes the path for `.editorconfig` (#1497).
+  if (command === "shfmt -w") return `shfmt --filename ${file}`;
   // Unknown formatters cannot establish a clean baseline safely. Explicit format requests
   // and workflow check fixers still run them normally.
   return null;

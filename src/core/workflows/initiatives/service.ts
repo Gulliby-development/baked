@@ -944,12 +944,17 @@ export class InitiativeService {
     const drives = DRIVES.get(workflows) ?? new Map<string, AbortController>();
     DRIVES.set(workflows, drives);
     this.active = drives;
-    // A feature run's deadline asks for its share to grow before it stops (#1958).
-    workflows.growLimits = (runId) => {
-      const id = this.store.initiativeOfRun(runId);
-      const featureId = id && this.store.links(id).find((l) => l.run_id === runId)?.feature_id;
-      if (id && featureId) this.refreshGrowth(id, featureId, runId);
-    };
+  }
+
+  /**
+   * Grows a feature run's share to what its initiative can spare now; nothing for a run of no
+   * initiative. The workflow service calls it when a run's deadline comes and before it drives
+   * (#1958, #2134).
+   */
+  growRun(runId: string): void {
+    const id = this.store.available() ? this.store.initiativeOfRun(runId) : null;
+    const featureId = id && this.store.links(id).find((l) => l.run_id === runId)?.feature_id;
+    if (id && featureId) this.refreshGrowth(id, featureId, runId);
   }
 
   // --- Commands --------------------------------------------------------------------------

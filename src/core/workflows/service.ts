@@ -79,6 +79,7 @@ import {
   forkStages,
 } from "./fork-stage.js";
 import { isStoreError, recordHostError } from "./host-error.js";
+import { InitiativeService } from "./initiatives/service.js";
 import { InitiativeStore } from "./initiatives/store.js";
 import {
   commandProcessMayRun,
@@ -267,8 +268,19 @@ export class NativeWorkflowService implements WorkflowService {
     );
     this.scheduler.growLimits = (runId) => this.growLimits?.(runId);
   }
-  /** Raises a run's host-derived limits before its deadline stops it; set by an initiative. */
-  growLimits: ((runId: string) => void) | undefined;
+  /**
+   * Raises a run's host-derived limits before its deadline stops it: an initiative's feature run
+   * asks its initiative for room (#1958). The service holds the hook itself, so every entry point
+   * that drives a run has it: R68 ewvet scanner stopped "Active deadline exhausted" 33 s after a
+   * headless `workflow reroute --resume`, which drove the run before any `InitiativeService`
+   * existed in that process, with 37 percent of the initiative's time used (#2134).
+   */
+  growLimits: ((runId: string) => void) | undefined = (runId) => {
+    if (this.store.readonly) return;
+    this.initiatives ??= new InitiativeService(this);
+    this.initiatives.growRun(runId);
+  };
+  private initiatives: InitiativeService | null = null;
   private enabled(): void {
     if (!workflowsEnabled(this.config))
       throw new WorkflowFault(
@@ -627,6 +639,8 @@ export class NativeWorkflowService implements WorkflowService {
     { controller: AbortController; promise: Promise<boolean> }
   >();
   async drive(runId: string, signal: AbortSignal): Promise<RunSnapshot> {
+    // Room the initiative freed since the run stopped is the run's before it drives (#2134).
+    this.growLimits?.(runId);
     for (;;) {
       const current = this.store.run(runId);
       if (current.status === "blocked" && providerCircuitOpen(this.store, runId))

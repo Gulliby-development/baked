@@ -32,6 +32,7 @@ function project(files: Record<string, string>): string {
 process.env.RUSTUP_HOME ??= join(homedir(), ".rustup");
 const hasRustfmt = spawnSync("rustfmt", ["--version"], { stdio: "ignore", timeout: 60_000 }).status === 0;
 // `bun fmt` ships with Bun 1.4.4; an older Bun lists no `--range-start` here.
+const hasStylua = spawnSync("stylua", ["--version"], { stdio: "ignore", timeout: 60_000 }).status === 0;
 const hasBunFmt = (spawnSync("bun", ["fmt", "--no-script", "--help", "--all"], { encoding: "utf8", timeout: 60_000 }).stdout ?? "").includes("--range-start");
 const CRATE = '[package]\nname = "c"\nversion = "0.1.0"\nedition = "2021"\n';
 
@@ -87,6 +88,25 @@ describe("edit-time formatting per toolchain (#1681)", () => {
     expect((await detectProfile(project({ "package.json": pkg, "bun.lock": "", "bunfig.toml": "[test]\ntimeout = 5000\n" }))).formatFile).toBeNull();
     expect((await detectProfile(project({ "package.json": pkg, "bun.lock": "", "bunfig.toml": "[fmt\n" }))).formatFile).toBeNull();
     expect(formatProbeCommand(BUN_FMT, "/w/a.ts")).toMatch(/^bun fmt --no-script --stdin-filepath .*a\.ts.?$/);
+  });
+
+  // #1495: StyLua reads the pre-image from stdin with the file's path for its config and ignores.
+  test("StyLua gets a stdin probe", () => {
+    expect(formatProbeCommand("stylua", "/w/a.lua")).toMatch(/^stylua --stdin-filepath .*a\.lua.? -$/);
+  });
+
+  // #1497: shfmt reads the pre-image from stdin and the path for its .editorconfig.
+  test("shfmt gets a stdin probe", () => {
+    expect(formatProbeCommand("shfmt -w", "/w/a.sh")).toMatch(/^shfmt --filename .*a\.sh.?$/);
+  });
+
+  test.skipIf(!hasStylua)("StyLua formats one edited file only when it was clean", async () => {
+    const root = project({ "stylua.toml": "", ".luacheckrc": "", "src/a.lua": "local a = {b=1}\n", "src/b.lua": "local b = {c=2}\n" });
+    expect(await formatFile(join(root, "src/a.lua"), root)).toBe(true);
+    expect(readFileSync(join(root, "src/a.lua"), "utf8")).toBe("local a = { b = 1 }\n");
+    expect(readFileSync(join(root, "src/b.lua"), "utf8")).toBe("local b = {c=2}\n");
+    expect(await canAutoFormat(join(root, "src/a.lua"), "local a = { b = 1 }\n", root)).toBe(true);
+    expect(await canAutoFormat(join(root, "src/a.lua"), "local a = {b=1}\n", root)).toBe(false);
   });
 
   test.skipIf(!hasBunFmt)("bun fmt formats one file after an edit, not the project's fmt script", async () => {

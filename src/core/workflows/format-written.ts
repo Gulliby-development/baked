@@ -172,6 +172,29 @@ const dotnetFormat: FileFormatter = {
   fix: (args) => args.filter((arg) => arg !== "--verify-no-changes"),
 };
 
+// StyLua's range is in bytes, and it formats the statements wholly inside it (#1495).
+const styluaRange = (text: string, range: LineRange): string[] => {
+  const [from, to] = offsets(text, range);
+  const bytes = (end: number) => Buffer.byteLength(text.slice(0, end), "utf8");
+  return ["--range-start", String(bytes(from)), "--range-end", String(bytes(to))];
+};
+const stylua: FileFormatter = {
+  runs: (program) => program === "stylua",
+  check: (_, files) => ["--check", ...files],
+  fix: () => [],
+  range: {
+    multiple: false,
+    check: (_, file, [range], text) => ["--check", ...styluaRange(text, range ?? [1, 1]), file],
+    fix: (_, [range], text) => styluaRange(text, range ?? [1, 1]),
+    // No probe: `--range-start` and `--range-end` exist since StyLua 0.5.
+  },
+};
+// No range: shfmt formats whole files (#1497).
+const shfmt: FileFormatter = {
+  runs: (program, args) => program === "shfmt" && (args.includes("-d") || args.includes("-l")),
+  check: (_, files) => ["-d", ...files],
+  fix: () => ["-w"],
+};
 // No range: Pint and PHP-CS-Fixer format whole files (#1491). Both run as `php vendor/bin/NAME`,
 // which `toolchainCommand` reads as the tool itself.
 const pint: FileFormatter = {
@@ -228,11 +251,11 @@ export const FILE_FORMATTERS: LanguageRecord<readonly FileFormatter[]> = {
   ruby: [rubocopLayout],
   php: [pint, phpCsFixer],
   swift: none("SwiftPM has no gate detector yet (#1753)"),
-  lua: none("LuaRocks has no gate detector yet (#1495)"),
+  lua: [stylua],
   elixir: none("Mix has no gate detector yet (#1753)"),
   dart: [dartFormat],
   zig: none("zig build has no gate detector yet (#1753)"),
-  bash: none("shell scripts have no toolchain"),
+  bash: [shfmt],
   ocaml: none("dune has no gate detector yet (#1753)"),
   objc: none("Xcode projects have no gate detector"),
   solidity: none("Foundry has no gate detector; a Hardhat project is an npm package"),
