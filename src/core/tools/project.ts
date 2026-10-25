@@ -255,7 +255,12 @@ async function detectToolchain(cwd: string): Promise<DetectedToolchain> {
     profile.lint = (await has(".swiftlint.yml")) ? "swiftlint" : null;
     profile.typecheck = "swift build";
     profile.run = "swift run";
-    profile.format = (await has(".swiftformat")) ? "swiftformat" : null;
+    // swift-format ships with the Swift 6 toolchain; SwiftFormat is a separate tool (#1492).
+    profile.format = (await has(".swift-format"))
+      ? "swift format format --in-place --recursive ."
+      : (await has(".swiftformat"))
+        ? "swiftformat"
+        : null;
     return profile;
   }
 

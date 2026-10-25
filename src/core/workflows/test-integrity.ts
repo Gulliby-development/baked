@@ -70,8 +70,13 @@ function commentLine(line: string): boolean {
     trimmed.startsWith("/*") ||
     trimmed.startsWith("*") ||
     trimmed.startsWith("<!--") ||
-    // `#[test]` and `#![allow]` are Rust attributes, not comments.
-    (trimmed.startsWith("#") && !/^#!?\[/.test(trimmed))
+    // `#[test]` and `#![allow]` are Rust attributes, not comments; `#if os(Linux)` and
+    // `#expect(...)` are Swift code (#1492).
+    (trimmed.startsWith("#") &&
+      !/^#!?\[/.test(trimmed) &&
+      !/^#(?:(?:else)?if\s+!?(?:os|canImport|arch|targetEnvironment)\s*\(|(?:expect|require)\s*\()/.test(
+        trimmed,
+      ))
   );
 }
 
@@ -323,6 +328,8 @@ const CAPABILITY = new RegExp(
     String.raw`\bPlatform\.(?:is[A-Z]\w*|operatingSystem)\b|\bkIsWeb\b`,
     // Scala: `scala.util.Properties.isWin` (#1496).
     String.raw`\bProperties\.(?:isWin|isMac|isLinux)\b`,
+    // Swift: `#if os(Linux)`, `#if canImport(Darwin)`, `.enabled(if:` with a platform (#1492).
+    String.raw`#if\s+!?(?:os|canImport)\s*\(|\bProcessInfo\.processInfo\.(?:operatingSystem\w*|isOperatingSystemAtLeast)\b`,
   ].join("|"),
 );
 /** Lines above a skip that its guard condition may span. */
@@ -362,6 +369,7 @@ const SUPPRESSIONS = new RegExp(
     String.raw`#\s*(?:rubocop|standard):(?:disable|todo)\b`,
     String.raw`//\s*ignore(?:_for_file)?:\s*\w`,
     String.raw`@nowarn\b|//\s*scalafix:(?:off|ok)\b|//\s*scalastyle:off\b`,
+    String.raw`//\s*swiftlint:disable\b|//\s*swift-format-ignore\b`,
   ].join("|"),
   "g",
 );
@@ -379,6 +387,8 @@ const TEST_HOOKS = new RegExp(
     String.raw`\bdefined\?\(\s*(?:RSpec|Minitest)\b`,
     // flutter test sets FLUTTER_TEST: `Platform.environment.containsKey('FLUTTER_TEST')` (#1494).
     String.raw`\bFLUTTER_TEST\b`,
+    // XCTest sets XCTestConfigurationFilePath on macOS (#1492).
+    String.raw`\bXCTestConfigurationFilePath\b|NSClassFromString\(\s*"XCTestCase"\s*\)`,
   ].join("|"),
   "g",
 );

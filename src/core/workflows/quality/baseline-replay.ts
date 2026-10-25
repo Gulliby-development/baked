@@ -161,6 +161,7 @@ export const REPLAY_TARGETS: Record<
   vitest: { none: "Vitest runs each test file as its own suite" },
   tap: { none: "a TAP runner reports each test file on its own" },
   dart: { none: "dart test loads and runs each test file on its own" },
+  swift: { none: "swift test builds every test target together" },
   sbt: {
     none: "sbt runs the other projects' tests when one does not compile, and compiles a project's tests together",
   },

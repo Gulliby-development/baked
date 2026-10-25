@@ -686,10 +686,33 @@ function sbtGates(workspace: string): GateSuggestion[] {
   ];
 }
 
-/** SwiftPM builds and tests a package from `Package.swift` (#1753). */
+/**
+ * SwiftPM builds and tests a package from `Package.swift` (#1753). A package with a `.swift-format`
+ * configuration lints with the swift-format the Swift 6 toolchain bundles first (#1492): `--strict`
+ * makes its warnings fail, and its fixer formats the file it is given.
+ */
 function swiftGates(workspace: string): GateSuggestion[] {
   if (!has(workspace, "Package.swift")) return [];
   return [
+    ...(has(workspace, ".swift-format")
+      ? [
+          {
+            check: {
+              ...gate(
+                "swift-format",
+                "swift",
+                ["format", "lint", "--strict", "--recursive", "."],
+                300000,
+              ),
+              fix: { executable: "swift", args: ["format", "format", "--in-place"] },
+            },
+            source: ".swift-format",
+            reason:
+              "swift format lint --strict --recursive . (fixer: swift format format --in-place)",
+            preselected: true,
+          },
+        ]
+      : []),
     {
       check: gate("swift-build", "swift", ["build"], 900000),
       source: "Package.swift",
