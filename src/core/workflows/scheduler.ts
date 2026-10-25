@@ -696,6 +696,15 @@ import { browserLayoutProbe, type LayoutProbe, layoutVerdict } from "./layout-ch
 import { planCostOf, planCostWarning } from "./plan-cost.js";
 import { EDIT_TOOLS } from "./progress-watch.js";
 import {
+  gateFinding,
+  REVIEW_GATE_DIR,
+  REVIEW_GATE_KIND,
+  type ReviewGate,
+  type ReviewGateRecord,
+  reviewGateCandidates,
+  reviewGateDecision,
+} from "./review-gate.js";
+import {
   applyRevision,
   MAX_PATCH_FINDINGS,
   RevisionSchema,
@@ -871,14 +880,6 @@ const repairSeverities = (
     : policy.lowFindings === "note"
       ? NOT_LOW
       : ALL_SEVERITIES;
-
-/**
- * A finding the severity floor does not demote once the host reproduces it: it is based on the
- * spec and carries a repro. dirdrift-update 6b57dc61 completed with AC-005 failing because its
- * confirmed medium finding arrived after the first repair round (#801).
- */
-const confirmableSpecFinding = (f: Review["findings"][number]): boolean =>
-  (f.basis ?? "spec") === "spec" && f.repro !== undefined;
 
 /** The task graph as the scheduler stores it: hashes are bound to the accepted spec and plan. */
 function planGraph(
@@ -15488,25 +15489,22 @@ ${note}`;
         state.reviews[reviewer.key] = result;
         const siblingNotes = noteSiblingFindings(state, reviewer.dimension, result.findings);
         // Advisory reviewers, findings below the blocking severities and inferred notes are
-        // recorded, not repaired.
-        // Below the severity floor, a spec-based finding with a repro still competes: it repairs
-        // when the host reproduces it (#801). So does a claim kept a note only for its confidence,
-        // as in the converge stage (#1210, #1415).
-        const unconfident = (f: Review["findings"][number]): boolean =>
-          confidenceOnlyNote(f, policy.reviewMinConfidence);
-        const candidates = reviewer.required
-          ? result.findings.filter(
-              (f) =>
-                !siblingNotes.has(f.id) &&
-                reviewer.blocking.includes(f.severity) &&
-                (severities.includes(f.severity) || confirmableSpecFinding(f)) &&
-                (findingBlocks(f, policy.reviewMinConfidence) || unconfident(f)),
-            )
-          : [];
+        // recorded, not repaired (review-gate.ts). The gate's labels are recorded for the replay
+        // corpus (#1715).
+        const gate: ReviewGate = {
+          reviewer: reviewer.key,
+          required: reviewer.required,
+          blocking: reviewer.blocking,
+          severities,
+          minConfidence: policy.reviewMinConfidence ?? DEFAULT_REVIEW_MIN_CONFIDENCE,
+          reproAvailable: executables.length > 0,
+          findings: result.findings.map((f) => gateFinding(f, siblingNotes.has(f.id), undefined)),
+        };
+        const candidates = new Set(reviewGateCandidates(gate).map((f) => f.id));
         // A claim starts a correction only when its repro shows it (#155).
         const outcomes = new Map<string, ReproOutcome>();
-        for (const finding of candidates)
-          if (finding.repro && executables.length)
+        for (const finding of result.findings)
+          if (candidates.has(finding.id) && finding.repro && executables.length)
             outcomes.set(finding.id, await repro(finding.repro, finding.file));
         if (outcomes.size)
           this.store.transaction(() =>
@@ -15517,11 +15515,21 @@ ${note}`;
               canonical({ dimension: reviewer.dimension, outcomes: Object.fromEntries(outcomes) }),
             ),
           );
-        const blocking = candidates.filter((f) =>
-          severities.includes(f.severity) && !unconfident(f)
-            ? reproAllows(f, outcomes.get(f.id)?.status, executables.length > 0)
-            : outcomes.get(f.id)?.status === "reproduced",
+        for (const f of gate.findings) f.outcome = outcomes.get(f.id)?.status ?? null;
+        const decided = new Set(reviewGateDecision(gate));
+        this.store.transaction(() =>
+          this.store.artifact(
+            runId,
+            REVIEW_GATE_KIND,
+            `${REVIEW_GATE_DIR}${reviewer.key}-${newId()}.json`,
+            canonical({
+              schemaVersion: 1,
+              ...gate,
+              repaired: [...decided],
+            } satisfies ReviewGateRecord),
+          ),
         );
+        const blocking = result.findings.filter((f) => decided.has(f.id));
         const repaired = new Set(blocking.map((f) => f.id));
         addReviewNotes(
           state.reviewNotes,
