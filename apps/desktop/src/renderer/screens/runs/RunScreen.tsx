@@ -5,7 +5,12 @@ import { canRepairRun, repairText } from "../../../../../../src/core/workflows/r
 import { attentionHash } from "../../../shared/attention.js";
 import { attentionApi } from "../../client/attention.js";
 import { chat } from "../../client/chat.js";
-import { desktopRecoveryText } from "../../client/remedies.js";
+import {
+  desktopRecoveryText,
+  hostRemedies,
+  remedyLabel,
+  remedyTitle,
+} from "../../client/remedies.js";
 import {
   errorText,
   GROUP_B_CAPABILITY,
@@ -162,6 +167,21 @@ function Controls({
         </>
       )}
       <RunMaintenance projectKey={projectKey} data={data} />
+      {run.status === "blocked" &&
+        hostRemedies(run.recovery).map((remedy) => (
+          <Button
+            key={remedy.action}
+            variant="primary"
+            size="md"
+            disabled={busy}
+            title={remedyTitle(remedy)}
+            onClick={() =>
+              void act(() => workflow.resume(projectKey, run, { remedy: remedy.action }))
+            }
+          >
+            {remedyLabel(remedy)}
+          </Button>
+        ))}
       {canAccept && (
         <Button variant="secondary" size="md" disabled={busy} onClick={() => ask("accept")}>
           Accept changes

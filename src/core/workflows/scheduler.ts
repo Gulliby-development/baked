@@ -320,6 +320,7 @@ import {
   stackFrames,
   type UnownedPath,
   unownedAdvice,
+  unownedBlockAdvice,
   unownedSummary,
 } from "./corrective-scope.js";
 import { costToleranceOf, currentCostCap, inCostWrapUp } from "./cost-tolerance.js";
@@ -590,7 +591,7 @@ import { DEFAULT_SAST_CONFIG, QUALITY_SAST, runSast, sastClaim, sastOf } from ".
 import { carriesOver, changedSince, previousRound } from "./re-review.js";
 import { preloadTaskFiles } from "./read-outline.js";
 import { recoverRun, requestRecovery, settleSupersededEffects } from "./recovery.js";
-import { recoveryAdvice } from "./remedies.js";
+import { type RecoveryAdvice, recoveryAdvice } from "./remedies.js";
 import { RepairBlockSchema } from "./repairable-schema.js";
 import {
   REPEAT_KIND,
@@ -3224,12 +3225,18 @@ export class WorkflowScheduler {
               : String(fault),
         );
         if (reason === "host_error") recordHostError(this.store, runId, diagnostic.id, fault);
-        if (fault instanceof WorkflowFault && fault.details.recovery)
+        // A corrective that blocked on files it may not write offers the host's act as a
+        // person's remedy, in shadow too (#2155).
+        const recovery =
+          fault instanceof WorkflowFault
+            ? (fault.details.recovery ?? this.unownedAdviceOf(runId, fault))
+            : undefined;
+        if (recovery)
           this.store.artifact(
             runId,
             "recovery",
             `recovery/advice-${diagnostic.id}.json`,
-            canonical(fault.details.recovery),
+            canonical(recovery),
           );
         const repair = RepairBlockSchema.safeParse(
           fault instanceof WorkflowFault ? fault.details.repairBlock : undefined,
@@ -17199,8 +17206,11 @@ ${note}`;
     const record = this.store.transaction(() =>
       this.recordCorrectiveScope(runId, state, policy, task, at, evidence),
     );
-    if (!record?.unowned?.length || stopMode(policy, "corrective_unowned_file") !== "enforce")
-      return null;
+    // A person's remedy of an earlier block applies its one decision as the enforced host would
+    // (#2155); otherwise only an enforced `corrective_unowned_file` acts.
+    const enforced = stopMode(policy, "corrective_unowned_file") === "enforce";
+    const person = enforced ? undefined : state.unownedRemedies[task.id];
+    if (!record?.unowned?.length || (!enforced && !person)) return null;
     const edits = this.scopeEdits(runId, task.id);
     const lastResult =
       at === "start"
@@ -17214,11 +17224,21 @@ ${note}`;
         if (!before || before.hash !== p.hash) return false;
       }
       const done = edits.find((e) => e.path === p.path);
-      return !done || (done.decision === "refuse" && p.decision === "refuse");
+      return (
+        (!person || p.decision === person) &&
+        (!done || (done.decision === "refuse" && p.decision === "refuse"))
+      );
     });
     const decision = hostDecision(candidates);
     if (decision === "fits" || decision === "wait") return null;
     const acting = candidates.filter((p) => p.decision === decision);
+    if (person) {
+      // Applied once: a later block of the same corrective is the person's to answer again.
+      delete state.unownedRemedies[task.id];
+      if (decision === "widen")
+        state.personWidened = [...new Set([...state.personWidened, ...acting.map((p) => p.path)])];
+      this.store.transaction(() => this.store.saveState(runId, state));
+    }
     const journal = (correctiveIds?: string[]) =>
       this.store.artifact(
         runId,
@@ -17234,6 +17254,7 @@ ${note}`;
               at,
               ...(correctiveIds ? { correctiveIds } : {}),
               hash: p.hash,
+              ...(person ? { approvedBy: "user" as const } : {}),
             }),
           ),
         ]),
@@ -17309,6 +17330,19 @@ ${note}`;
       this.store.saveState(runId, state);
     });
     return { cause: "waits_for_artifact" };
+  }
+  /**
+   * The remedies of a stop by a corrective whose last result named files it may not write
+   * (#2155): its latest `result` scope record's route, widen or park decision, as a person's
+   * choice. Undefined for any other stop.
+   */
+  private unownedAdviceOf(runId: string, fault: WorkflowFault): RecoveryAdvice | undefined {
+    const taskId = fault.details.unfinishedTask;
+    if (typeof taskId !== "string") return undefined;
+    const record = scopeRecords(this.store, runId)
+      .filter((r) => r.taskId === taskId && r.at === "result")
+      .at(-1);
+    return unownedBlockAdvice(runId, fault.message, record);
   }
   /**
    * The precondition of each corrective of a batch before its session (#2094, #2133), in the run
