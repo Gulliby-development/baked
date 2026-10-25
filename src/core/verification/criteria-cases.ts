@@ -258,7 +258,7 @@ export function beforeAfterContext(prose: string, spans: readonly QuotedSpan[]):
 
 /** The prefixes that run a tool from the project's environment: `npx`, `uv run`, `python -m`. */
 const RUNNER = String.raw`(?:(?:npx|bunx|pnpm\s+(?:exec|dlx)|yarn(?:\s+dlx)?|uv\s+run|poetry\s+run|pipenv\s+run|hatch\s+run|pdm\s+run|python3?\s+-m)\s+)?`;
-const TOOL = String.raw`(?:pytest|unittest|mypy|ruff|black|isort|flake8|pylint|pyright|tox|nox|tsc|eslint|biome|prettier|vitest|jest|mocha|golangci-lint|sqlfluff|pg_prove)\b`;
+const TOOL = String.raw`(?:pytest|unittest|mypy|ruff|black|isort|flake8|pylint|pyright|tox|nox|tsc|eslint|biome|prettier|vitest|jest|mocha|golangci-lint|sqlfluff|pg_prove|Invoke-Pester|Invoke-ScriptAnalyzer)\b`;
 /**
  * A quoted command of the project's own checks: the test, type check, lint, build or format
  * commands of the usual runners, also run through `npx`, `bunx`, `pnpm exec`, `uv run`,

@@ -39,6 +39,11 @@ describe("project language", () => {
     expect(detectLanguages(workspace({ "calc.gemspec": "Gem::Specification.new\n" }))).toEqual(["ruby"]);
     expect(detectLanguages(workspace({ "pubspec.yaml": "name: calc\n" }))).toEqual(["dart"]);
     expect(detectLanguages(workspace({ "package.json": "{}" }))).toEqual([]);
+    // A module manifest or PSScriptAnalyzer settings (#1498); a script alone is not a project.
+    expect(detectLanguages(workspace({ "Sum.psd1": "@{}" }))).toEqual(["powershell"]);
+    expect(detectLanguages(workspace({ "PSScriptAnalyzerSettings.psd1": "@{}" }))).toEqual(["powershell"]);
+    expect(detectLanguages(workspace({ "build.ps1": "" }))).toEqual([]);
+    expect(touchesLanguageFiles(["src/Sum.psm1"])).toBe(true);
   });
   test(".NET solutions rank before projects", () => {
     expect(dotnetFiles(workspace({ "b.csproj": "", "a.sln": "", "c.slnx": "", "readme.md": "" }))).toEqual([
