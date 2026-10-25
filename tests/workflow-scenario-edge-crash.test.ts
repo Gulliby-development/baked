@@ -9,7 +9,7 @@ import { defaultWorkflowPolicy } from "../src/core/workflows/defaults.js";
 import type { Check, RunPolicy, Spec, Task } from "../src/core/workflows/schemas.js";
 import { NativeWorkflowService } from "../src/core/workflows/service.js";
 import { newId } from "../src/core/workflows/store.js";
-import { exportTrace, replayTrace } from "../src/core/workflows/trace.js";
+import { exportTrace, foldHomeDirs, replayTrace } from "../src/core/workflows/trace.js";
 import type { AgentExecutor, ExecutionRequest } from "../src/core/workflows/types.js";
 
 // Scenario of bench round 68 url-shortener 67c90258 (#2136). The edge probe of T001 ran two cases
@@ -203,5 +203,26 @@ describe("the crash frame table (#2136)", () => {
     expect(caseCrash({ status: "inconclusive", output }, [null])).toMatchObject({ crash: "pass", actual: null });
     // The decision reads only the recorded tail.
     expect(caseCrash({ status: "inconclusive", output: `${"x".repeat(1000)}\n${output}` }, ["src/expenses/store.py"]).outputTail.length).toBe(OUTPUT_TAIL_CHARS);
+  });
+});
+
+describe("a bench trace's output tail names no account (#2136)", () => {
+  const cases: [string, string][] = [
+    ["    at get (/home/runner/work/app/src/storage.ts:70:11)", "    at get (~/work/app/src/storage.ts:70:11)"],
+    ["  File \"/Users/alice/app/src/storage.py\", line 3", "  File \"~/app/src/storage.py\", line 3"],
+    ["   at Scanner.Read() in C:\\Users\\Bob\\ewvet\\src\\Scanner.cs:line 12", "   at Scanner.Read() in ~\\ewvet\\src\\Scanner.cs:line 12"],
+  ];
+  test.each(cases)("folds the home directory of %p", (line, folded) => {
+    expect(foldHomeDirs(line)).toBe(folded);
+  });
+
+  test("the crash decision is the same on the folded tail", () => {
+    for (const [line] of cases) {
+      const file = line.includes(".ts") ? "src/storage.ts" : line.includes(".py") ? "src/storage.py" : "src/Scanner.cs";
+      const output = `error: boom\n${line}\n`;
+      expect(edgeCrashDecision("inconclusive", foldHomeDirs(output), [file]).decision).toBe(
+        edgeCrashDecision("inconclusive", output, [file]).decision,
+      );
+    }
   });
 });

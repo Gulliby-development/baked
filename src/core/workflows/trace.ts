@@ -310,6 +310,12 @@ const replaced = (key: string, value: unknown, standIns: StandIns): unknown =>
         ? Object.fromEntries(Object.entries(value).map(([k, v]) => [k, replaced(key, v, standIns)]))
         : value;
 
+/** Folds the user's home directory out of absolute paths (`/home/<user>`, `/Users/<user>`,
+ * `C:\\Users\\<user>`) so recorded command output names no account (#2136). */
+export function foldHomeDirs(text: string): string {
+  return text.replace(/(?:\b[A-Za-z]:[\\/]Users[\\/]|\/Users\/|\/home\/)[^\\/\s"'`]+/g, "~");
+}
+
 /**
  * `value` with every string under a prose key (and under `content`, the keys a run state keeps
  * content in) replaced by its stand-in, keeping arrays, their lengths and record keys. Any other
@@ -334,10 +340,12 @@ export function scrubTrace(
           // run wrote with and without spaces stay equal and need no stand-in.
           k === "family" && typeof v === "string"
           ? (familyKey(v) ?? "")
-          : // A probed case's output tail is what its crash decision replays on (#2136): kept as
-            // is, at most `OUTPUT_TAIL_CHARS` characters of a command's output.
+          : // A probed case's output tail is what its crash decision replays on (#2136): kept,
+            // at most `OUTPUT_TAIL_CHARS` characters of a command's output, with the home
+            // directory of an absolute path folded to `~` (the decision matches a frame's file by
+            // its suffix, so the fold keeps the replay exact).
             k === "outputTail" && typeof v === "string"
-            ? v
+            ? foldHomeDirs(v)
             : PROSE.has(k) || content.has(k)
               ? replaced(k, v, standIns)
               : scrubTrace(v, standIns, content, k),
