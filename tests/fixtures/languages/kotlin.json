@@ -54,6 +54,9 @@
     "formatters": null,
     "packageContents": [
       "build.gradle.kts: gradle-jar [plugins]"
+    ],
+    "numericLimits": [
+      "Int and Long arithmetic overflow silently; toInt() fails past Int"
     ]
   }
 }

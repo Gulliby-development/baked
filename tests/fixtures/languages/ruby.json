@@ -40,6 +40,7 @@
       "Gemfile:2"
     ],
     "formatters": null,
-    "packageContents": null
+    "packageContents": null,
+    "numericLimits": null
   }
 }

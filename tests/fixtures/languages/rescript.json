@@ -48,6 +48,9 @@
     "formatters": null,
     "packageContents": [
       "package.json: npm-pack"
+    ],
+    "numericLimits": [
+      "int is 32-bit and wraps silently"
     ]
   }
 }

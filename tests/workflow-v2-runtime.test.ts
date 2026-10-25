@@ -8,12 +8,14 @@ import { hashBytes, hashJson } from "../src/core/specs/hash.js";
 import { sddWorkflow } from "../src/core/workflows/builtin/sdd.js";
 import { defaultWorkflowPolicy } from "../src/core/workflows/defaults.js";
 import { passesWithNotes } from "../src/core/verification/convergence-stop.js";
+import { REVIEW_GATE_DIR, reviewGateDecision } from "../src/core/workflows/review-gate.js";
 import { runReport } from "../src/core/workflows/run-report.js";
 import { uncommittedEdits } from "../src/core/workflows/rollback.js";
 import type { RunPolicy, Spec, WorkflowEvent } from "../src/core/workflows/schemas.js";
 import { WorkflowScheduler } from "../src/core/workflows/scheduler.js";
 import { NativeWorkflowService } from "../src/core/workflows/service.js";
 import { newId } from "../src/core/workflows/store.js";
+import { exportTrace, replayReviewGates, replayTrace } from "../src/core/workflows/trace.js";
 import { type AgentExecutor, type ExecutionRequest, RuntimeStateSchema } from "../src/core/workflows/types.js";
 import type { Gate, WorkflowV2 } from "../src/core/workflows/v2/definition.js";
 import { builtinPresets, instantiatePreset } from "../src/core/workflows/v2/definitions.js";
@@ -479,6 +481,48 @@ describe("workflow v2 scheduler", () => {
     expect(lastError(service, run.runId)).toBe("");
     expect(final.status).toBe("completed");
     expect(service.store.run(run.runId).repair_rounds).toBe(0);
+  });
+
+  // #1715: each review's gate records its findings' labels and repro outcomes, never a claim; a
+  // bench trace keeps the record and the replay corpus decides it again.
+  test("each review gate is recorded, kept in a bench trace and replayed, and a rule change shows as new repairs", async () => {
+    const { root, start, complete, service } = setup({ reviewVerdict: "changes_requested", reviewRounds: 2, reviewFinding: { kind: "partial", basis: "inferred" } });
+    const run = await start("standard");
+    expect((await complete(run.runId)).status).toBe("completed");
+    const gates = replayReviewGates(service.store, run.runId);
+    expect(gates.length).toBeGreaterThan(0);
+    expect(gates.every((b) => JSON.stringify(b.replayed) === JSON.stringify(b.recorded))).toBe(true);
+    expect(gates.flatMap((b) => b.recorded)).toEqual([]);
+    const records = service.store
+      .artifacts(run.runId)
+      .filter((a) => a.logical_path.startsWith(REVIEW_GATE_DIR))
+      .map((a) => service.store.readArtifact(run.runId, a.id));
+    expect(records.some((r) => r.includes('"basis":"inferred"'))).toBe(true);
+    expect(records.some((r) => r.includes("misses an edge case"))).toBe(false);
+
+    const dir = mkdtempSync(join(tmpdir(), "baked-review-gate-trace-"));
+    cleanups.push(() => rmSync(dir, { recursive: true, force: true }));
+    const out = join(dir, "trace.sqlite.gz");
+    exportTrace(root, out);
+    const runOf = (replay: ReturnType<typeof replayTrace>) => replay.runs.find((r) => r.runId === run.runId);
+    expect(runOf(replayTrace(out))?.newGateRepairs).toBe(0);
+    // A rule that repairs inferred findings too finds the noted ones new.
+    const everyFinding = (gate: Parameters<typeof reviewGateDecision>[0]) => gate.findings.map((f) => f.id);
+    expect(runOf(replayTrace(out, { reviewGateRule: everyFinding }))?.newGateRepairs).toBeGreaterThan(0);
+  });
+
+  test("the review gate decides from labels: a refuted claim is a note, a reproduced one below the floor repairs", () => {
+    const finding = { id: "F1", severity: "medium" as const, kind: "correctness" as const, basis: null, confidence: null, repro: true, sibling: false, outcome: null };
+    const gate = { reviewer: "correctness", required: true, blocking: ["critical", "high", "medium", "low"], severities: ["critical", "high", "medium", "low"], minConfidence: 0.5, reproAvailable: true, findings: [finding] };
+    expect(reviewGateDecision({ ...gate, findings: [{ ...finding, outcome: "reproduced" }] })).toEqual(["F1"]);
+    expect(reviewGateDecision({ ...gate, findings: [{ ...finding, outcome: "refuted" }] })).toEqual([]);
+    // After the first round only high and critical repair, unless the host reproduces the claim (#801).
+    const later = { ...gate, severities: ["critical", "high"] };
+    expect(reviewGateDecision({ ...later, findings: [{ ...finding, outcome: "reproduced" }] })).toEqual(["F1"]);
+    expect(reviewGateDecision({ ...later, findings: [{ ...finding, outcome: "inconclusive" }] })).toEqual([]);
+    expect(reviewGateDecision({ ...gate, findings: [{ ...finding, outcome: "reproduced", sibling: true }] })).toEqual([]);
+    expect(reviewGateDecision({ ...gate, required: false, findings: [{ ...finding, outcome: "reproduced" }] })).toEqual([]);
+    expect(reviewGateDecision({ ...gate, findings: [{ ...finding, basis: "inferred" as const, outcome: "reproduced" }] })).toEqual([]);
   });
 
   // R13 envguard-update f67dcde0 (`quick`): reviews with no finding left AC-001 inconclusive and the
