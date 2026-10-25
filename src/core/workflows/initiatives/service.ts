@@ -135,7 +135,14 @@ import {
   type TokenPoolView,
   tokenPool,
 } from "./token-pool.js";
-import { upstreamSymbolGaps } from "./upstream-symbols.js";
+import {
+  type AmendmentAnswer,
+  type AmendmentRequest,
+  amendmentAnswer,
+  amendmentLines,
+  type UpstreamSymbolGap,
+  upstreamSymbolGaps,
+} from "./upstream-symbols.js";
 import {
   assignFeatureWorkflows,
   documentedLightLeaf,
@@ -325,6 +332,11 @@ export interface FeatureView {
    * feature plans against, before its run starts and until its run is released onto their results.
    */
   plannedAhead?: string[];
+  /**
+   * Under `workflows.upstreamAmendments` (#2157): the amendments planned-ahead features asked of
+   * this feature at their release, and how the initiative answered each.
+   */
+  amendments?: (AmendmentRequest & { answer: AmendmentAnswer })[];
 }
 
 export interface NextAction {
@@ -2190,7 +2202,13 @@ export class InitiativeService {
       commandId: `i-${hashJson({ id, featureId, previous, revision: row.approved_plan_revision }).slice(0, 48)}`,
       workflowId: featureWorkflowId(settings, feature),
       featureId: runFeature,
-      prompt: featurePrompt(row, plan, feature, upstream),
+      prompt: featurePrompt(
+        row,
+        plan,
+        feature,
+        upstream,
+        this.amendments(row).filter((a) => a.featureId === featureId && a.answer === "replan"),
+      ),
       initiativeBounds: {
         featureId,
         features: plan.features.map((f) => ({
@@ -2462,6 +2480,11 @@ export class InitiativeService {
     if (!feature) return false;
     const baseCommit = await this.featureBase(id, feature, this.store.settings(row));
     if (!baseCommit) return false;
+    if (
+      this.workflows.config.workflows?.upstreamAmendments === true &&
+      (await this.amendUpstream(id, feature, runId, baseCommit))
+    )
+      return false;
     await this.workflows.releaseBase(
       runId,
       {
@@ -2488,21 +2511,7 @@ export class InitiativeService {
     plan: InitiativePlan | null,
     baseCommit: string,
   ): Promise<void> {
-    const spec = this.workflows.store.state(runId).spec;
-    if (!spec || !plan) return;
-    const files = plan.features
-      .filter((f) => feature.dependsOn.includes(f.id))
-      .flatMap((f) =>
-        f.boundary.paths.filter((p) => !isGlobPath(p)).map((path) => ({ featureId: f.id, path })),
-      );
-    if (!files.length) return;
-    const upstream = await Promise.all(
-      files.map(async (file) => {
-        const shown = await git(this.workflows.workspace, ["show", `${baseCommit}:${file.path}`]);
-        return { ...file, text: shown.code === 0 ? shown.stdout : null };
-      }),
-    );
-    const gaps = upstreamSymbolGaps(spec, upstream);
+    const gaps = await this.upstreamGaps(runId, feature, plan, baseCommit);
     const policy = PolicySchema.parse(JSON.parse(this.workflows.store.run(runId).policy_json));
     const mode = stopMode(policy, "upstream_symbol");
     // The reason is not enforced yet, so a policy can only choose shadow or advisory.
@@ -2514,6 +2523,97 @@ export class InitiativeService {
       summary: `The spec names upstream symbols the accepted code does not have: ${gaps.map((g) => `${g.ref} ${g.symbol} (${g.path}, ${g.featureId})`).join("; ")}`,
       inputs: { baseCommit, gaps },
     });
+  }
+
+  /** The upstream symbols a feature run's spec names that the code at `baseCommit` lacks (#2135). */
+  private async upstreamGaps(
+    runId: string,
+    feature: InitiativePlan["features"][number],
+    plan: InitiativePlan | null,
+    baseCommit: string,
+  ): Promise<UpstreamSymbolGap[]> {
+    const spec = this.workflows.store.state(runId).spec;
+    if (!spec || !plan) return [];
+    const files = plan.features
+      .filter((f) => feature.dependsOn.includes(f.id))
+      .flatMap((f) =>
+        f.boundary.paths.filter((p) => !isGlobPath(p)).map((path) => ({ featureId: f.id, path })),
+      );
+    if (!files.length) return [];
+    const upstream = await Promise.all(
+      files.map(async (file) => {
+        const shown = await git(this.workflows.workspace, ["show", `${baseCommit}:${file.path}`]);
+        return { ...file, text: shown.code === 0 ? shown.stdout : null };
+      }),
+    );
+    return upstreamSymbolGaps(spec, upstream);
+  }
+
+  /** The amendment requests of the approved split (#2157), oldest first. */
+  private amendments(row: InitiativeRow): (AmendmentRequest & {
+    featureId: string;
+    answer: AmendmentAnswer;
+  })[] {
+    return this.store
+      .eventsOfType(row.id, "feature.amendment_requested")
+      .map(
+        (payload) =>
+          payload as AmendmentRequest & {
+            featureId: string;
+            planRevision: number | null;
+            answer: AmendmentAnswer;
+          },
+      )
+      .filter((e) => e.planRevision === row.approved_plan_revision)
+      .map(({ featureId, from, gaps, answer }) => ({ featureId, from, gaps, answer }));
+  }
+
+  /**
+   * A planned-ahead feature whose spec names upstream symbols the accepted code lacks asks their
+   * owners for an amendment before its release (#2157, R68 ewvet scanner). Each owner is asked
+   * once per split and answered by `amendmentAnswer`: an owner reopened for it runs again with the
+   * request in its prompt, and the feature stays held until that run is accepted, then releases
+   * onto its result (or is rebased when the owner's contract changed). True while it waits.
+   */
+  private async amendUpstream(
+    id: string,
+    feature: InitiativePlan["features"][number],
+    runId: string,
+    baseCommit: string,
+  ): Promise<boolean> {
+    const row = this.store.get(id);
+    const asked = this.amendments(row).filter((a) => a.from === feature.id);
+    const settled = (owner: string) => {
+      const link = this.store.current(id, owner);
+      return link !== null && this.workflows.store.run(link.run_id).status === "completed";
+    };
+    if (asked.some((a) => a.answer === "replan" && !settled(a.featureId))) return true;
+    const gaps = await this.upstreamGaps(runId, feature, this.approvedPlan(row), baseCommit);
+    let held = false;
+    for (const owner of [...new Set(gaps.map((g) => g.featureId))]) {
+      const link = this.store.current(id, owner);
+      const answer = amendmentAnswer({
+        ownerRunStatus: link ? this.workflows.store.run(link.run_id).status : null,
+        initiativeStatus: row.status,
+        requested: asked.some((a) => a.featureId === owner),
+      });
+      if (asked.some((a) => a.featureId === owner)) continue;
+      this.store.transaction(() => {
+        if (answer === "replan" && link)
+          this.store.supersede(id, link.run_id, `amended for ${feature.id}`);
+        this.store.emit(id, "feature.amendment_requested", {
+          featureId: owner,
+          from: feature.id,
+          runId,
+          planRevision: row.approved_plan_revision,
+          gaps: gaps.filter((g) => g.featureId === owner),
+          answer,
+        });
+      });
+      if (answer === "replan") held = true;
+    }
+    if (held) await this.settleSuperseded(id);
+    return held;
   }
 
   /** Superseded runs that are still open are cancelled, so they hold no publication or lease. */
@@ -3165,6 +3265,7 @@ export class InitiativeService {
     }
     const planAhead = this.planAhead(settings, plan, facts);
     const mergedFrom = new Map<string, string[]>();
+    const amendments = this.amendments(row);
     for (const payload of this.store.eventsOfType(row.id, "split.merged"))
       for (const entry of (payload as { merged: { featureId: string; from: string[] }[] }).merged)
         mergedFrom.set(entry.featureId, entry.from);
@@ -3201,6 +3302,9 @@ export class InitiativeService {
         mergedFrom: mergedFrom.get(feature.id) ?? [],
         ...(feature.serial ? { serial: feature.serial } : {}),
       };
+      const asked = amendments.filter((a) => a.featureId === feature.id);
+      if (asked.length)
+        view.amendments = asked.map(({ from, gaps, answer }) => ({ from, gaps, answer }));
       views.set(feature.id, view);
       if (!approved) continue;
       const upstream = feature.dependsOn.map((d) => views.get(d)).filter((u) => u !== undefined);
@@ -4069,6 +4173,7 @@ export function featurePrompt(
   plan: InitiativePlan,
   feature: InitiativeFeature,
   upstream: { feature: { id: string }; contract: AcceptedContract }[],
+  amendments: readonly AmendmentRequest[] = [],
 ): string {
   const others = plan.features.filter((f) => f.id !== feature.id);
   // A goal that counts spec criteria is a rule for writing specs, which no feature run can
@@ -4094,6 +4199,7 @@ export function featurePrompt(
       : "The split names no paths for this feature; stay within the boundary above.",
     `Contract this feature provides to the features that depend on it: ${feature.contract}`,
     ...(feature.skeleton?.length ? skeletonLines(plan, feature) : []),
+    ...amendmentLines(amendments),
   ];
   for (const { feature: dependency, contract } of upstream) {
     const definition = plan.features.find((f) => f.id === dependency.id);

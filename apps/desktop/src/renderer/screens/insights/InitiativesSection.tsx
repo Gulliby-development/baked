@@ -294,6 +294,13 @@ function FeatureCard({
         {(feature.mergedFrom?.length ?? 0) > 0 && (
           <span className="text-dim-foreground">merged from {feature.mergedFrom?.join(", ")}</span>
         )}
+        {feature.amendments?.map((a) => (
+          <span key={a.from} className="text-dim-foreground">
+            {a.from} asked for{" "}
+            <span className="font-mono">{a.gaps.map((g) => g.symbol).join(", ")}</span>
+            {a.answer === "replan" ? " · re-planned for it" : " · not reopened"}
+          </span>
+        ))}
         {(feature.skeleton?.length ?? 0) > 0 && (
           <span className="text-dim-foreground">
             skeleton written by the host:{" "}

@@ -712,6 +712,14 @@ export function InitiativeDetail({
                     )}
                   </text>
                 ) : null}
+                {f.amendments?.length ? (
+                  <text fg={t.textMuted}>
+                    {clip(
+                      `Amendments asked: ${f.amendments.map((a) => `${a.from} needs ${a.gaps.map((g) => g.symbol).join(", ")} (${a.answer === "replan" ? "re-planned for it" : "not reopened"})`).join("; ")}`,
+                      width - 4,
+                    )}
+                  </text>
+                ) : null}
                 {f.skeleton?.length ? (
                   <text fg={t.textMuted}>
                     {clip(

@@ -97,6 +97,15 @@ export interface InitiativeFeature {
   size?: FeatureSize;
   /** The decomposer's features merged into this one, each too small for a run of its own. */
   mergedFrom?: string[];
+  /**
+   * Amendments planned-ahead features asked of this one at their release, and the answer
+   * (`replan`: it ran again for them); absent when none or on older backends.
+   */
+  amendments?: {
+    from: string;
+    gaps: { ref: string; symbol: string; featureId: string; path: string }[];
+    answer: "replan" | "none";
+  }[];
   /** Boundary files whose content the split fixes; its run writes them with no agent. */
   skeleton?: { path: string; content: string }[];
   /** Why the decomposer kept this feature of the critical path whole; absent otherwise. */

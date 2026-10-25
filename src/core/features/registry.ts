@@ -1619,6 +1619,16 @@ export const FEATURES: readonly Feature[] = [
     desktop: ["project/initiatives: the shared budget line shows up to N features at once"],
   },
   {
+    id: "initiative-upstream-amendments",
+    group: "Initiatives",
+    title:
+      "A planned-ahead feature asks an accepted upstream feature for a missing symbol (workflows.upstreamAmendments)",
+    tui: ["/workflow: initiatives, Amendments asked on the upstream feature"],
+    cli: ["baked workflow initiative show: features[].amendments"],
+    api: ["/v1/initiatives/:id: features[].amendments"],
+    desktop: ["project/initiatives: asked for ... · re-planned for it on the upstream feature"],
+  },
+  {
     id: "initiative-critical-path",
     group: "Initiatives",
     title: "Review long dependency chains and merge small siblings by their dependents",
