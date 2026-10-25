@@ -304,6 +304,13 @@ import {
   verbatimRow,
 } from "./conflict-rows.js";
 import { assertFrozenInputs, buildWorkflowContext } from "./context.js";
+import {
+  outOfScopeAdvice,
+  SCOPE_KIND,
+  SCOPE_TASKS_DIR,
+  type ScopeRecord,
+  scopeRecord,
+} from "./corrective-scope.js";
 import { costToleranceOf, currentCostCap, inCostWrapUp } from "./cost-tolerance.js";
 import { coverageFinding } from "./coverage.js";
 import { type CriticCalibration, calibrateCritic, criticExamples } from "./critic-calibration.js";
@@ -7067,6 +7074,7 @@ ${note}`;
       task,
       account,
       state.waitingFor,
+      state.repairPredecessors,
     );
   }
   /**
@@ -7169,6 +7177,12 @@ ${note}`;
       });
     } else if (!checking) {
       const root = runRoot(this.store.workspace, state);
+      // Shadow (#2094): whether the corrective can write the files its failing check names, on
+      // every session, so a resume of a corrective that cannot is recorded before it is paid.
+      if (task.origin !== "planned")
+        this.store.transaction(() =>
+          this.recordCorrectiveScope(runId, state, policy, task, "start"),
+        );
       // Shadow (#2023): whether the host would apply the request's verbatim content itself.
       if (firstRun && task.origin === "planned")
         await this.recordHostApply(runId, state, task, root);
@@ -9704,7 +9718,11 @@ ${note}`;
       if (outside.length)
         return new WorkflowFault(
           "RECOVERY_REQUIRED",
-          `out_of_scope_failure: ${task.id} changed nothing and check ${check.id} still fails on ${outside.slice(0, 5).join(", ")}, which it may not write (evidence ${checked.evidenceId}). Fix those files or revise the plan, then resume.`,
+          outOfScopeAdvice(
+            runId,
+            `out_of_scope_failure: ${task.id} changed nothing and check ${check.id} still fails on ${outside.slice(0, 5).join(", ")}, which it may not write (evidence ${checked.evidenceId}).`,
+            outside,
+          ),
           { reason: "no_progress", paths: outside },
         );
       const named = checked.output
@@ -12114,14 +12132,10 @@ ${note}`;
     // Ordinary ownership needs only the approved graph and task state. Read durable finding
     // evidence only when an unfinished repair could own this planned task's failure.
     if (!repairs.length)
-      return failureOwner(
-        state.rootGraph ?? state.graph,
-        rows,
-        state.taskGates,
-        task,
-        output,
-        options,
-      );
+      return failureOwner(state.rootGraph ?? state.graph, rows, state.taskGates, task, output, {
+        ...options,
+        predecessors: state.repairPredecessors,
+      });
     const pendingFindings = this.store
       .findings(runId)
       .filter((row) => row.status === "open" || row.status === "confirmed")
@@ -12137,6 +12151,7 @@ ${note}`;
     return failureOwner(state.graph, rows, state.taskGates, task, output, {
       ...options,
       pendingFindings,
+      predecessors: state.repairPredecessors,
       waitingFor: Object.fromEntries(
         [
           ...new Set([
@@ -12340,8 +12355,12 @@ ${note}`;
     if (!regression && named.length && outside.length === named.length && !owned.length)
       throw new WorkflowFault(
         "RECOVERY_REQUIRED",
-        `out_of_scope_failure: check ${check.id} fails on ${outside.slice(0, 5).join(", ")}, which ${task.id} may not write and no task of its profile owns (evidence ${checked.evidenceId}). Fix those files or revise the plan, then resume.`,
-        { reason: "no_progress" },
+        outOfScopeAdvice(
+          runId,
+          `out_of_scope_failure: check ${check.id} fails on ${outside.slice(0, 5).join(", ")}, which ${task.id} may not write and no task of its profile owns (evidence ${checked.evidenceId}).`,
+          outside,
+        ),
+        { reason: "no_progress", paths: outside },
       );
     // A linter or formatter names each file it rejects, and its diagnostics are fixed in those
     // lines: the correction starts there, not from the whole task (cfgtrace 424e275b T013: 1.56M
@@ -12391,9 +12410,31 @@ ${note}`;
           ],
         )
       : [];
+    // The task's own files the check names that a later slice of the plan also writes: the
+    // correction writes them too, and the slice after it reads the corrected file (#2094).
+    const status = new Map(this.store.tasks(runId).map((row) => [row.id, row.status]));
+    const later = (path: string): string[] =>
+      rootTasks
+        .filter(
+          (t) =>
+            t.id !== task.id &&
+            t.origin === "planned" &&
+            ["pending", "invalidated", "interrupted"].includes(status.get(t.id) ?? "pending") &&
+            t.writes.some((w) => w.path === path && w.action !== "delete"),
+        )
+        .map((t) => t.id);
+    const sliced =
+      !regression && !isTestCheck(check)
+        ? named.filter(
+            (path) =>
+              task.writes.some((w) => w.path === path && w.action !== "delete") &&
+              later(path).length > 0,
+          )
+        : [];
     const scope = [
       ...new Set([
         ...diagnosed,
+        ...sliced,
         ...owned,
         ...(sources.length || owned.length ? failingTests : []),
         ...sources,
@@ -12430,6 +12471,16 @@ ${note}`;
             ? `Fix ${task.id} and the files the check output names (${owned.slice(0, 5).join(", ")}) and repeat ${check.id}.`
             : `Fix ${task.id} within its approved paths and repeat ${check.id}.`,
     });
+    const slicedNote = sliced
+      .map(
+        (path) =>
+          `${later(path).join(", ")} runs after this correction and adds the rest of ${path}`,
+      )
+      .join("; ");
+    const failure = taskFailures.at(-1);
+    // Worded so that no deliverable is read into it (`requestedDeliverable`).
+    if (failure && slicedNote)
+      failure.suggestedFix += ` ${slicedNote}: change only what the failure needs in it.`;
     // A correction keeps the generated inputs the task requires, and its own check knows the
     // number from this text (#1367). Only after a timeout: on an assertion failure the note sent
     // the correction after speed instead of the defect (#1373).
@@ -16832,7 +16883,11 @@ ${note}`;
     }
     this.store.transaction(() => {
       this.amendSpec(runId, state, fresh);
+      const before = new Set(state.graph?.tasks.map((t) => t.id));
       appendCorrections(this.store, runId, state, policy, fresh, kind, scope);
+      if (scope === "task")
+        for (const task of state.graph?.tasks.filter((t) => !before.has(t.id)) ?? [])
+          this.recordCorrectiveScope(runId, state, policy, task, "create");
       this.markQuickFixes(runId, state, policy, fresh);
       if (scope === "task") state.pendingTaskRepair = [];
       // A v2 run keeps its position: a task's repair runs in the tasks stage it is in, and a
@@ -16840,6 +16895,49 @@ ${note}`;
       const parsed = parseRunDefinition(this.store.run(runId).definition_json);
       if (parsed.schemaVersion === 1)
         state.stageIndex = parsed.definition.stages.findIndex((s) => s.kind === "task-graph");
+    });
+  }
+  /**
+   * Records whether a task-level corrective can write the files its failed non-test check names in
+   * the failing task's own files (`scope/tasks/<task>.json`, #2094), when it is created and before
+   * each session, so a resume is checked too. One that cannot records the `corrective_scope`
+   * would-stop: no model session can change a file outside the task's scope. Shadow: the
+   * corrective still runs.
+   */
+  private recordCorrectiveScope(
+    runId: string,
+    state: RuntimeState,
+    policy: RunPolicy,
+    task: Task,
+    at: ScopeRecord["at"],
+  ): void {
+    if (task.origin === "planned" || !task.findingIds.length) return;
+    const findings = this.store
+      .findings(runId)
+      .filter((row) => task.findingIds.includes(row.id))
+      .map((row) => ({
+        id: row.id,
+        claim: String((JSON.parse(row.body_json) as { claim?: unknown }).claim ?? ""),
+      }));
+    const record = scopeRecord(state, policy, task, findings, at);
+    if (!record) return;
+    const sessions = this.store.steps(runId).filter((s) => s.stage_id === `task-${task.id}`).length;
+    const path = `${SCOPE_TASKS_DIR}${task.id}.json`;
+    const last = this.store.latestArtifact(runId, path);
+    const previous = last
+      ? (JSON.parse(this.store.readArtifact(runId, last.id)) as ScopeRecord)
+      : null;
+    if (!previous || previous.at !== at || previous.decision !== record.decision)
+      this.store.artifact(runId, SCOPE_KIND, path, canonical(record));
+    if (record.decision !== "refuse") return;
+    const mode = stopMode(policy, "corrective_scope");
+    if (mode === "enforce") return;
+    recordWouldStop(this.store, runId, {
+      reason: "corrective_scope",
+      mode,
+      key: `${task.id}-${at}-${String(sessions)}`,
+      summary: `${task.id} cannot write ${record.missing.slice(0, 5).join(", ")}, which ${record.checks.join(", ")} of ${record.failing.join(", ")} names: ${at === "create" ? "the correction would not be opened" : "its session would not start"}`,
+      inputs: { ...record },
     });
   }
   /**

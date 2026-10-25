@@ -231,6 +231,9 @@ export const FILE_FORMATTERS: LanguageRecord<readonly FileFormatter[]> = {
   ocaml: none("dune has no gate detector yet (#1753)"),
   objc: none("Xcode projects have no gate detector"),
   solidity: none("Foundry has no gate detector; a Hardhat project is an npm package"),
+  sql: none(
+    "SQLFluff's layout rules run in the `sqlfluff lint` gate, which covers each task's SQL files; `sqlfluff format` has no check mode",
+  ),
 };
 
 /** Package runners a JavaScript formatter gate starts through: their words before the formatter. */

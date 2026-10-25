@@ -99,9 +99,11 @@ function runsAggregateTarget(check: Pick<Check, "executable" | "args">): boolean
  * "failed to resolve mod"). Other formatters and file-local linters (gofmt, ruff, biome, eslint)
  * read one file at a time and stay per task, as do `mix format`, `dart format` and `zig fmt`;
  * `dart analyze` and `flutter analyze` resolve every import, so they are whole-unit (#1753).
+ * SQLFluff with the dbt templater compiles the whole dbt project (`ref()` to other models), so its
+ * gate, `sqlfluff-dbt`, is too (#1499).
  */
 const WHOLE_UNIT_COMMAND =
-  /\b(?:clippy|vet|tsc|typecheck|mypy|pyright|rustfmt)\b|\bcargo\s+(?:check|fmt)\b|\b(?:dart|flutter)\s+analyze\b/i;
+  /\b(?:clippy|vet|tsc|typecheck|mypy|pyright|rustfmt|sqlfluff-dbt)\b|\bcargo\s+(?:check|fmt)\b|\b(?:dart|flutter)\s+analyze\b/i;
 
 export const isWholeUnitCheck = (check: Check): boolean =>
   WHOLE_UNIT_COMMAND.test([check.id, check.executable, ...check.args].join(" "));

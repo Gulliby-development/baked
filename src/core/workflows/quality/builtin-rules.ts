@@ -236,6 +236,14 @@ export const PLACEHOLDERS: LanguageRecord<Placeholder> = {
   ),
   rescript: statement(failing("failwith|Js\\.Exn\\.raiseError")),
   solidity: statement(failing("revert")),
+  // PL/pgSQL `RAISE EXCEPTION 'not implemented'`, T-SQL `THROW 50000, 'not implemented', 1` and
+  // `RAISERROR('not implemented', 16, 1)`, MySQL `SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = '…'`.
+  sql: statement(
+    new RegExp(
+      String.raw`\b(?:raise\s+(?:exception\s*)?|throw\s+\d+\s*,\s*|raiserror\s*\(\s*|message_text\s*=\s*)N?'${NOT_IMPLEMENTED}`,
+      "i",
+    ),
+  ),
   cpp: anyOf(
     statement(THROW_NEW),
     statement(new RegExp(String.raw`throw\s+std::\w+\(\s*"${NOT_IMPLEMENTED}`, "i")),

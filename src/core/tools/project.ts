@@ -422,6 +422,16 @@ async function detectToolchain(cwd: string): Promise<DetectedToolchain> {
     return profile;
   }
 
+  // SQL — dbt and SQLFluff (#1499). No edit-time format: `sqlfluff fix` also rewrites
+  // capitalisation and aliases, and with the dbt templater it compiles the whole project.
+  if ((await has("dbt_project.yml")) || (await has(".sqlfluff"))) {
+    const dbt = await has("dbt_project.yml");
+    profile.test = dbt ? "dbt test" : null;
+    profile.build = dbt ? "dbt build" : null;
+    profile.lint = (await has(".sqlfluff")) ? "sqlfluff lint ." : null;
+    return profile;
+  }
+
   return profile;
 }
 

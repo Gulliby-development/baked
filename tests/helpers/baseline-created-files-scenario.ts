@@ -17,6 +17,8 @@ export const FIRST_RUN_OUTPUTS: Record<string, string[]> = {
   gradle: [".gradle/8.10/fileHashes/fileHashes.lock", "build/classes/kotlin/main/AppKt.class"],
   kotlin: [".kotlin/sessions/kotlin-compiler.salive"],
   "c and cpp": ["build/app.o"],
+  // dbt build writes its manifest and log into the project (#1499).
+  dbt: ["target/manifest.json", "logs/dbt.log"],
 };
 
 /**
