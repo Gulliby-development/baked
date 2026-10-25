@@ -31,7 +31,8 @@ describe("the language table", () => {
         path,
         code: true,
         source: true,
-        test: false,
+        // A `.bats` file is a bats test file whatever its name (#1497).
+        test: extension === ".bats",
       });
     }
   });
