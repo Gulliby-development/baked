@@ -214,6 +214,22 @@ export const REPLAY_TARGETS: Record<
   },
   // A module whose tests do not compile stops the build; --fail-at-end builds and tests the others.
   maven: keepGoing("--fail-at-end", "-fae"),
+  // RSpec runs no example once one spec file does not load: each spec file the run's tests are in,
+  // on its own (`rspec spec/a_spec.rb`).
+  rspec: ({ args, tests }) =>
+    args.some((arg) => arg.endsWith(".rb"))
+      ? []
+      : tests
+          .filter((path) => path.endsWith("_spec.rb"))
+          .map((path) => ({ args: withArgs(args, [path]), paths: [path] })),
+  // `rake test` loads every test file into one process before running any: each file on its own
+  // (`rake test TEST=test/a_test.rb`). A Minitest file run by `ruby` is already one target.
+  minitest: ({ args, tests }) =>
+    !args.includes("rake") || args.some((arg) => arg.startsWith("TEST="))
+      ? []
+      : tests
+          .filter((path) => /_test\.rb$|(?:^|\/)test_(?!helper\.rb$)[^/]*\.rb$/.test(path))
+          .map((path) => ({ args: withArgs(args, [`TEST=${path}`]), paths: [path] })),
   // Gradle (JUnit output): --continue runs the other projects' tests after a compile failure.
   junit: keepGoing("--continue"),
 };

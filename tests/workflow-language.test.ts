@@ -33,6 +33,9 @@ describe("project language", () => {
     expect(detectLanguages(workspace({ "App.csproj": "<Project />" }))).toEqual(["dotnet"]);
     expect(detectLanguages(workspace({ "Cargo.toml": "" }))).toEqual(["rust"]);
     expect(detectLanguages(workspace({ "pom.xml": "" }))).toEqual(["java"]);
+    // A Ruby application has a Gemfile; a gem may have only its gemspec (#1493).
+    expect(detectLanguages(workspace({ Gemfile: "gem 'rspec'\n" }))).toEqual(["ruby"]);
+    expect(detectLanguages(workspace({ "calc.gemspec": "Gem::Specification.new\n" }))).toEqual(["ruby"]);
     expect(detectLanguages(workspace({ "package.json": "{}" }))).toEqual([]);
     // A module manifest or PSScriptAnalyzer settings (#1498); a script alone is not a project.
     expect(detectLanguages(workspace({ "Sum.psd1": "@{}" }))).toEqual(["powershell"]);
@@ -72,6 +75,8 @@ describe("language review scope", () => {
     expect(touchesLanguageFiles(["src\\App\\Program.cs"])).toBe(true);
     expect(touchesLanguageFiles(["Cargo.toml"])).toBe(true);
     expect(touchesLanguageFiles(["service/pom.xml"])).toBe(true);
+    expect(touchesLanguageFiles(["lib/calc.rb", "Gemfile"])).toEqual(true);
+    expect(touchesLanguageFiles(["Gemfile.lock"])).toBe(true);
     expect(touchesLanguageFiles(["README.md", "scripts/run.sh", "docs/go.md"])).toBe(false);
   });
 

@@ -13,8 +13,8 @@ Each task is a directory `bench/suite/tasks/<id>/`. Name it `<language>-<toolcha
 
 - `task.json`:
   - `id`: the directory name.
-  - `language`: the family the per-language table groups by: `typescript`, `javascript`, `python`, `go`, `rust`, `java`, `kotlin`, `csharp`, `php`, `lua`, `c`, `sql` or `powershell`.
-  - `toolchain`: for example `bun`, `npm`, `pytest`, `cargo`, `maven`, `gradle`, `dotnet`, `make`, `sqlfluff` or `pester`.
+  - `language`: the family the per-language table groups by: `typescript`, `javascript`, `python`, `go`, `rust`, `java`, `kotlin`, `csharp`, `php`, `lua`, `ruby`, `c`, `sql` or `powershell`.
+  - `toolchain`: for example `bun`, `npm`, `pytest`, `cargo`, `maven`, `gradle`, `dotnet`, `rspec`, `minitest`, `make`, `sqlfluff` or `pester`.
   - `requires`: the executables that must be on `PATH`. Without them the runner reports the task as skipped and does not fail it.
   - `allowedPaths`: the globs the plan may write: the source and test folders, `README.md` and the stack's config files (`package.json`, `pyproject.toml`, `Cargo.toml`, `pom.xml`, the Gradle scripts, `go.mod`, `Makefile`), as the bench loop's auto approval allows. The runner approves a plan that stays inside them; any other stop counts as an intervention.
   - `checks`: the run's own gates, in the shape of `workflows.policy.checks` (`id`, `executable`, `args`, an optional `fix`). The runner adds `cwd`, `required`, `scope`, `envNames` and `writes`.
