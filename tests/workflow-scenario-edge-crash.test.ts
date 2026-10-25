@@ -127,10 +127,11 @@ describe("scenario: R68 url-shortener, an edge case that crashes in the probed t
       expect(c.outputTail!.length).toBeLessThanOrEqual(OUTPUT_TAIL_CHARS);
     }
     expect(record.cases[0]?.outputTail).toContain('error: Missing parameter "code"');
-    expect(record.cases[0]?.outputTail).toContain("src/storage.ts");
+    expect(record.cases[0]?.outputTail?.replaceAll("\\", "/")).toContain("src/storage.ts");
     expect(record.cases[2]?.outputTail).toContain("nope");
-    // The two crashes inside T001's file are findings of T001; the two mistakes stay passes.
-    expect(record.cases.map((c) => c.crash)).toEqual(["finding", "finding", "pass", "pass"]);
+    // The two crashes inside T001's file are findings of T001; the two mistakes stay passes. The
+    // tails ride along so a mismatch on another platform shows the output it was decided from.
+    expect(record.cases.map((c) => ({ crash: c.crash, tail: c.outputTail }))).toMatchObject([{ crash: "finding" }, { crash: "finding" }, { crash: "pass" }, { crash: "pass" }]);
     const stops = service.store
       .eventsOfType(runId, "decision.would_stop")
       .flatMap((e) => (e.type === "decision.would_stop" && e.payload.reason === "edge_crash_finding" ? [e.payload] : []));
