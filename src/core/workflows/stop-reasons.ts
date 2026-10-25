@@ -70,6 +70,13 @@ export const STOP_REASONS = {
     modes: NOT_ENFORCED,
     defaultMode: "shadow",
   },
+  corrective_scope: {
+    label: "A corrective cannot write a file its own failing check names",
+    // Shadow only until two bench rounds show no false would-stop (#2094); its promotion blocks
+    // the corrective at creation and before a resumed session, at 0 tokens.
+    modes: NOT_ENFORCED,
+    defaultMode: "shadow",
+  },
   cost: {
     label: "Spent and reserved dollars reach the cost cap",
     modes: ENFORCED,

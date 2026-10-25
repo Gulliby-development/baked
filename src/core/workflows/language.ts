@@ -9,6 +9,7 @@ export type ProjectLanguage =
   | "rust"
   | "java"
   | "ruby"
+  | "dart"
   | "sql"
   | "powershell"
   | "r";
@@ -41,6 +42,7 @@ export function detectLanguages(workspace: string): ProjectLanguage[] {
   if (names.has("pom.xml")) out.push("java");
   if (names.has("Gemfile") || [...names].some((name) => name.endsWith(".gemspec")))
     out.push("ruby");
+  if (names.has("pubspec.yaml")) out.push("dart");
   // A dbt project or a SQLFluff-configured one: its SQL is the project's code (#1499).
   if (names.has("dbt_project.yml") || names.has(".sqlfluff")) out.push("sql");
   // A module manifest or PSScriptAnalyzer settings: a PowerShell module or project (#1498).
@@ -52,11 +54,11 @@ export function detectLanguages(workspace: string): ProjectLanguage[] {
 
 /**
  * The language review profile a run gets when its policy names none and the workspace is a Go,
- * .NET, Rust, Java, Ruby, SQL, PowerShell or R project: these are the languages where a general
- * reviewer misses platform pitfalls (newline, path separator, culture, error handling idioms; for
- * SQL, dialect, migrations that cannot be reversed and locks; for PowerShell, pipeline unrolling,
- * non-terminating errors and the differences of Windows PowerShell 5.1; for R, vector recycling,
- * NA handling and 1:length() on empty input).
+ * .NET, Rust, Java, Ruby, Dart, SQL, PowerShell or R project: these are the languages where a
+ * general reviewer misses platform pitfalls (newline, path separator, culture, error handling
+ * idioms; for SQL, dialect, migrations that cannot be reversed and locks; for PowerShell, pipeline
+ * unrolling, non-terminating errors and the differences of Windows PowerShell 5.1; for R, vector
+ * recycling, NA handling and 1:length() on empty input).
  */
 export function languageReviewProfile(workspace: string): string | null {
   return detectLanguages(workspace).length > 0 ? LANGUAGE_REVIEW_PROFILE : null;
@@ -64,10 +66,10 @@ export function languageReviewProfile(workspace: string): string | null {
 
 /** Source and build files of the languages above, by extension or file name. */
 const LANGUAGE_FILE =
-  /(\.(go|cs|fs|vb|csproj|fsproj|vbproj|slnx?|props|targets|rs|java|kt|kts|rb|rake|gemspec|sql|ps1|psm1|psd1|r)$|(^|\/)(go\.mod|go\.sum|Cargo\.toml|Cargo\.lock|pom\.xml|build\.gradle|Gemfile|Gemfile\.lock|Rakefile|dbt_project\.yml|DESCRIPTION|renv\.lock)$)/i;
+  /(\.(go|cs|fs|vb|csproj|fsproj|vbproj|slnx?|props|targets|rs|java|kt|kts|rb|rake|gemspec|dart|sql|ps1|psm1|psd1|r)$|(^|\/)(go\.mod|go\.sum|Cargo\.toml|Cargo\.lock|pom\.xml|build\.gradle|Gemfile|Gemfile\.lock|Rakefile|pubspec\.yaml|pubspec\.lock|analysis_options\.yaml|dbt_project\.yml|DESCRIPTION|renv\.lock)$)/i;
 
 /**
- * Whether a change touches a file of a Go, .NET, Rust, Java, Ruby, SQL, PowerShell or R project. The language review only
+ * Whether a change touches a file of a Go, .NET, Rust, Java, Ruby, Dart, SQL, PowerShell or R project. The language review only
  * adds value there: in R08 it ran on changes to READMEs and scripts of such projects and found
  * nothing in four reviews at about 45k tokens each (#592).
  */

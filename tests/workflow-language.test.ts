@@ -36,6 +36,7 @@ describe("project language", () => {
     // A Ruby application has a Gemfile; a gem may have only its gemspec (#1493).
     expect(detectLanguages(workspace({ Gemfile: "gem 'rspec'\n" }))).toEqual(["ruby"]);
     expect(detectLanguages(workspace({ "calc.gemspec": "Gem::Specification.new\n" }))).toEqual(["ruby"]);
+    expect(detectLanguages(workspace({ "pubspec.yaml": "name: calc\n" }))).toEqual(["dart"]);
     expect(detectLanguages(workspace({ "package.json": "{}" }))).toEqual([]);
     // A module manifest or PSScriptAnalyzer settings (#1498); a script alone is not a project.
     expect(detectLanguages(workspace({ "Sum.psd1": "@{}" }))).toEqual(["powershell"]);
