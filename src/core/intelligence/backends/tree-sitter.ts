@@ -196,6 +196,13 @@ const QUERIES: Record<string, string> = {
     (create_trigger (object_reference name: (identifier) @name)) @func
     (ERROR (keyword_function) . (object_reference name: (identifier) @name)) @func
   `,
+  // Airbus CERT's grammar (vendored, #1498): functions and filters, classes, their methods, enums.
+  powershell: `
+    (function_statement (function_name) @name) @func
+    (class_statement (simple_name) @name) @class
+    (class_method_definition (simple_name) @name) @method
+    (enum_statement (simple_name) @name) @type
+  `,
   tlaplus: `
     (operator_definition name: (identifier) @name) @func
     (function_definition name: (identifier) @name) @func
@@ -241,6 +248,7 @@ const GRAMMAR_FILES: Record<string, string> = {
   solidity: "tree-sitter-solidity.wasm",
   // Vendored in `vendor/tree-sitter/` (its README says where each comes from).
   sql: "tree-sitter-sql.wasm",
+  powershell: "tree-sitter-powershell.wasm",
   tlaplus: "tree-sitter-tlaplus.wasm",
   elisp: "tree-sitter-elisp.wasm",
 };

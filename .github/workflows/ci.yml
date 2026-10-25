@@ -75,8 +75,8 @@ jobs:
         run: bun scripts/check-branch-name.ts "$HEAD_REF"
 
   # The gate matrix's toolchain tier (#854): every stack's detected gates on a minimal project with
-  # the real tools. The runner image has Go, Rust (rustfmt, clippy), Java with Maven and .NET; the
-  # Python tools step adds pytest, ruff and SQLFluff.
+  # the real tools. The runner image has Go, Rust (rustfmt, clippy), Java with Maven, .NET and CMake;
+  # the Python tools step adds pytest, ruff and SQLFluff.
   gate-matrix:
     runs-on: ubuntu-latest
     permissions:
@@ -98,6 +98,14 @@ jobs:
           sudo apt-get install -y python3-pytest
           pipx install ruff
           pipx install sqlfluff==4.4.0
+
+      - name: C and C++ tools
+        run: sudo apt-get install -y libgtest-dev clang-format clang-tidy
+      # ubuntu-latest ships pwsh; the modules go to the AllUsers scope, since the gate matrix
+      # isolates HOME and a CurrentUser module would not load (#1498).
+      - name: PowerShell modules
+        shell: bash
+        run: sudo pwsh -NoProfile -NonInteractive -Command "Set-PSRepository PSGallery -InstallationPolicy Trusted; Install-Module Pester -RequiredVersion 5.9.1 -Scope AllUsers -Force -SkipPublisherCheck; Install-Module PSScriptAnalyzer -RequiredVersion 1.24.0 -Scope AllUsers -Force"
 
       - name: Gate matrix with toolchains
         env:

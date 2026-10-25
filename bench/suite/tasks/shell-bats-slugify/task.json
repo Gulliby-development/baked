@@ -1,0 +1,48 @@
+{
+  "id": "shell-bats-slugify",
+  "language": "shell",
+  "toolchain": "bats",
+  "requires": [
+    "bash",
+    "bats",
+    "shellcheck",
+    "shfmt"
+  ],
+  "allowedPaths": [
+    "bin/**",
+    "test/**",
+    "README.md",
+    ".shellcheckrc",
+    ".editorconfig"
+  ],
+  "checks": [
+    {
+      "id": "shellcheck",
+      "executable": "shellcheck",
+      "args": [
+        "bin/slugify.sh"
+      ]
+    },
+    {
+      "id": "shfmt",
+      "executable": "shfmt",
+      "args": [
+        "-d",
+        "."
+      ],
+      "fix": {
+        "executable": "shfmt",
+        "args": [
+          "-w"
+        ]
+      }
+    },
+    {
+      "id": "bats",
+      "executable": "bats",
+      "args": [
+        "test"
+      ]
+    }
+  ]
+}

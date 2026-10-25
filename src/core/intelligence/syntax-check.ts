@@ -11,7 +11,13 @@ export type { ParseError } from "./backends/tree-sitter.js";
  * parser gems (`$:` globals, `self(` calls, a leading magic comment). Dart stays out (#1494): the
  * bundled tree-sitter-dart reported errors in 92 of 444 valid files of the args, async, collection,
  * path, matcher, test, shelf, glob, crypto and io packages (`library;` without a name, Dart 3
- * patterns).
+ * patterns). Lua stays out (#1495): the bundled tree-sitter-lua reported errors in 374 of 1,133
+ * files of busted, luassert, penlight and luacheck that `luac -p` accepts (a call without
+ * parentheses, `local f = function`). C and C++
+ * stay out (#1490): the preprocessor is outside the grammars, and the bundled tree-sitter-c and
+ * tree-sitter-cpp reported errors in 162 of 400 C files (mypyc's runtime, CPython headers' users)
+ * and 76 of 241 C++ files (React Native modules, GoogleTest) that their compilers build, at an
+ * `#if` inside a declaration or a macro such as `JNICALL`.
  */
 const CHECKED_GRAMMARS: Record<string, string> = {
   ".rs": "rust",
@@ -29,6 +35,9 @@ const CHECKED_GRAMMARS: Record<string, string> = {
   ".java": "java",
   // Not `.sql`: one grammar covers many dialects (T-SQL, PL/pgSQL bodies, MySQL delimiters) and
   // refuses valid statements of each, so SQL is checked by the project's SQLFluff gate (#1499).
+  // Not `.ps1`/`.psm1`: the tree-sitter grammar reported errors in 27 of 98 scripts of the
+  // Chocolatey, Pester and psake packages that PowerShell's own parser reads without one; the
+  // PSScriptAnalyzer gate reports parse errors instead (#1498).
 };
 
 const MAX_ERRORS = 5;

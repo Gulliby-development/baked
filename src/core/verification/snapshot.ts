@@ -125,7 +125,23 @@ export const TOOL_CACHES = [
   ".ruff_cache",
   ".gradle",
   ".kotlin",
+  // PHPUnit's result cache (10 and later a folder, 9 a file) and PHP-CS-Fixer's (#1491).
+  ".phpunit.cache",
+  ".phpunit.result.cache",
+  ".php-cs-fixer.cache",
+  // luacheck's cache (`cache = true`) and the LuaCov statistics `busted --coverage` writes (#1495).
+  ".luacheckcache",
+  "luacov.stats.out",
+  "luacov.report.out",
 ];
+
+const isFile = async (path: string): Promise<boolean> => {
+  try {
+    return (await lstat(path)).isFile();
+  } catch {
+    return false;
+  }
+};
 
 export async function sourceManifest(
   workspace: string,
@@ -172,6 +188,9 @@ export async function sourceManifest(
         continue;
       }
       if (entry.isDirectory()) {
+        // A CMake build tree (#1490), wherever it is configured: every build rewrites it, so a
+        // project that does not ignore `build/` would see each check change its sources.
+        if (!trackedPath && (await isFile(join(absolute, "CMakeCache.txt")))) continue;
         await walk(path, rules);
         continue;
       }

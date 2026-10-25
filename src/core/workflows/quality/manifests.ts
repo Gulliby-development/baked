@@ -19,6 +19,7 @@ import {
 import {
   cargoFields,
   changedFields,
+  composerFields,
   type FieldMap,
   gemfileFields,
   globalJsonFields,
@@ -31,13 +32,23 @@ import {
   pyprojectFields,
   pythonVersionFields,
   requirementsFields,
+  rockspecFields,
   rustToolchainFields,
   setupCfgFields,
   versionCatalogFields,
   wrapperPropertiesFields,
 } from "./manifest-fields.js";
 
-export type Ecosystem = "npm" | "pypi" | "crates" | "go" | "nuget" | "maven" | "rubygems";
+export type Ecosystem =
+  | "npm"
+  | "pypi"
+  | "crates"
+  | "go"
+  | "nuget"
+  | "maven"
+  | "rubygems"
+  | "packagist"
+  | "luarocks";
 
 export interface Dependency {
   ecosystem: Ecosystem;
@@ -72,6 +83,35 @@ function packageJson(path: string, text: string): Dependency[] {
       if (typeof spec === "string" && /^(workspace:|file:|link:|portal:)/.test(spec)) continue;
       const at = text.indexOf(`"${name}"`);
       out.push({ ecosystem: "npm", name, file: path, line: at < 0 ? 1 : lineOf(text, at) });
+    }
+  }
+  return out;
+}
+
+/**
+ * `composer.json` packages of `require` and `require-dev` (#1491). The platform packages (`php`,
+ * `ext-*`, `lib-*`, `composer-plugin-api` and its kin) are the runtime, not Packagist packages.
+ */
+function composerJson(path: string, text: string): Dependency[] {
+  let parsed: Record<string, unknown>;
+  try {
+    parsed = JSON.parse(text) as Record<string, unknown>;
+  } catch {
+    return [];
+  }
+  const out: Dependency[] = [];
+  for (const field of ["require", "require-dev"]) {
+    const deps = parsed[field];
+    if (!deps || typeof deps !== "object") continue;
+    for (const name of Object.keys(deps as Record<string, unknown>)) {
+      if (!name.includes("/")) continue;
+      const at = text.indexOf(`"${name}"`);
+      out.push({
+        ecosystem: "packagist",
+        name: name.toLowerCase(),
+        file: path,
+        line: at < 0 ? 1 : lineOf(text, at),
+      });
     }
   }
   return out;
@@ -307,6 +347,28 @@ function gemfile(path: string, text: string): Dependency[] {
   return out;
 }
 
+/**
+ * A LuaRocks rockspec's `dependencies`, `build_dependencies` and `test_dependencies` (#1495):
+ * strings of a rock name and its constraint (`"penlight >= 1.5"`). `lua` is the runtime.
+ */
+function rockspec(path: string, text: string): Dependency[] {
+  const out: Dependency[] = [];
+  for (const list of text.matchAll(/^(?:build_|test_)?dependencies\s*=\s*\{([^}]*)\}/gm)) {
+    const start = (list.index ?? 0) + list[0].indexOf("{");
+    for (const entry of (list[1] ?? "").matchAll(/(["'])\s*([A-Za-z0-9][\w.-]*)[^"'\n]*\1/g)) {
+      const name = (entry[2] ?? "").toLowerCase();
+      if (name === "lua") continue;
+      out.push({
+        ecosystem: "luarocks",
+        name,
+        file: path,
+        line: lineOf(text, start + 1 + (entry.index ?? 0)),
+      });
+    }
+  }
+  return out;
+}
+
 /** Pipfile: the keys of `[packages]` and `[dev-packages]`. */
 function pipfile(path: string, text: string): Dependency[] {
   const out: Dependency[] = [];
@@ -436,9 +498,9 @@ export const DEPENDENCY_MANIFESTS: LanguageRecord<readonly ManifestReader[]> = {
     "sbt builds are Scala code; a Scala project on Maven or Gradle is read by the Java row",
   ),
   ruby: [{ name: /^Gemfile$/, read: gemfile, fields: gemfileFields }],
-  php: none("Packagist has no registry check yet (#1491)"),
+  php: [{ name: /^composer\.json$/, read: composerJson, fields: composerFields }],
   swift: none("Swift Package Manager manifests are Swift code, not read"),
-  lua: none("LuaRocks has no registry check yet (#1495)"),
+  lua: [{ name: /\.rockspec$/, read: rockspec, fields: rockspecFields }],
   elixir: none("Hex has no registry check yet"),
   dart: none("pub.dev has no registry check yet"),
   zig: none("Zig packages are URLs with hashes, not registry names"),
@@ -449,6 +511,9 @@ export const DEPENDENCY_MANIFESTS: LanguageRecord<readonly ManifestReader[]> = {
   objc: none("CocoaPods has no registry check yet"),
   solidity: none("Solidity libraries come from npm or git submodules, read by the npm row"),
   sql: none("SQL has no package manifest; a dbt project's packages.yml is not read"),
+  powershell: none(
+    "PowerShell Gallery has no registry check yet; RequiredModules of a .psd1 are not read",
+  ),
 };
 
 const READERS: readonly ManifestReader[] = [

@@ -19,9 +19,20 @@ export const FAILED_TEST_LINE = new RegExp(
     "<<< (?:FAILURE|ERROR)!",
     // Gradle `AppTest > testApp() FAILED`.
     String.raw`\)\s+FAILED\s*$`,
+    // PHPUnit `1) Tests\SumTest::testAdds` in its failure and error lists (#1491); Pest prints
+    // `FAILED  Tests\SumTest > it adds` and `⨯ it adds`.
+    String.raw`^\d+\) [\w\\/]+::\w+`,
+    String.raw`^\s*⨯\s`,
+    // busted: `Failure -> spec/sum_spec.lua @ 7` and `Error -> spec/sum_spec.lua @ 10` (#1495).
+    String.raw`^(?:Failure|Error) (?:->|→) \S+ @ \d+$`,
     // RSpec's rerun line `rspec ./spec/calc_spec.rb:6 # Calc adds`, Minitest `  1) Failure:` (#1493).
     String.raw`^rspec \S+:\d+ # `,
     String.raw`^\s*\d+\) (?:Failure|Error):\s*$`,
+    // CTest `2/4 Test #2: SumTest.Commutes ....***Failed  0.01 sec` (also a crash or a timeout, not
+    // a skipped test or one whose executable was not built) and GoogleTest `[  FAILED  ] Suite.Name`
+    // (#1490).
+    String.raw`^\s*\d+\/\d+ Test +#\d+: .*\*\*\*(?!Skipped|Not Run)\w`,
+    String.raw`^\[  FAILED  \] (?!\d+ tests?,)\S`,
     // dart test `00:03 +4 -1: test/calc_test.dart: adds [E]` (#1494).
     String.raw`^[\d:]+ \+\d+(?: ~\d+)? -\d+: .+ \[E\]\s*$`,
     // ScalaTest `[info] - adds *** FAILED ***`, munit `==> X CalcSuite.adds  0.04s` in colour (#1496).

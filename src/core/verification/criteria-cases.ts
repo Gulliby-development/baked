@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { SEPARATOR_CELL, tableCells } from "../specs/table-cells.js";
 import { rowDataPaths } from "../workflows/acceptance-rows.js";
 import { hasInlineRows, type InlineRowFile } from "../workflows/acceptance-rows-inline.js";
+import { programName } from "../workflows/launcher.js";
 import { stripComments } from "../workflows/quality/code-mask.js";
 import { isTestCodePath } from "../workflows/quality/duplication.js";
 import { propertyTestKind } from "../workflows/quality/properties.js";
@@ -257,7 +258,7 @@ export function beforeAfterContext(prose: string, spans: readonly QuotedSpan[]):
 
 /** The prefixes that run a tool from the project's environment: `npx`, `uv run`, `python -m`. */
 const RUNNER = String.raw`(?:(?:npx|bunx|pnpm\s+(?:exec|dlx)|yarn(?:\s+dlx)?|uv\s+run|poetry\s+run|pipenv\s+run|hatch\s+run|pdm\s+run|python3?\s+-m)\s+)?`;
-const TOOL = String.raw`(?:pytest|unittest|mypy|ruff|black|isort|flake8|pylint|pyright|tox|nox|tsc|eslint|biome|prettier|vitest|jest|mocha|golangci-lint|sqlfluff|pg_prove)\b`;
+const TOOL = String.raw`(?:pytest|unittest|mypy|ruff|black|isort|flake8|pylint|pyright|tox|nox|tsc|eslint|biome|prettier|vitest|jest|mocha|golangci-lint|sqlfluff|pg_prove|Invoke-Pester|Invoke-ScriptAnalyzer)\b`;
 /**
  * A quoted command of the project's own checks: the test, type check, lint, build or format
  * commands of the usual runners, also run through `npx`, `bunx`, `pnpm exec`, `uv run`,
@@ -276,8 +277,17 @@ const CHECK_COMMAND = new RegExp(
     // The arguments of a Python check run by an interpreter path: `.venv/bin/python -m ruff` (#1762).
     String.raw`-m\s+` + TOOL,
     String.raw`(?:mvn|mvnw|gradle|gradlew|\.\/gradlew|\.\/mvnw)\b.*\b(?:test|verify|check|build)\b`,
+    // Composer-installed PHP tools, run by path or through `php` (#1491), and Composer scripts.
+    String.raw`(?:php\s+)?(?:\.\/)?(?:vendor\/bin\/)?(?:phpunit|pest|phpstan|psalm|pint|php-cs-fixer)\b`,
+    String.raw`composer\s+(?:run(?:-script)?\s+)?(?:test|tests|lint|check|analyse|analyze|format|fmt|cs)\b`,
     // Bundler: `bundle exec rspec`, `bundle exec rake test`, `bundle exec rubocop` (#1493).
     String.raw`(?:bundle\s+exec\s+)?(?:rspec|rubocop|standardrb|rake\s+(?:test|spec))\b`,
+    // Lua: busted, luacheck, selene and StyLua, and `luarocks test` (#1495).
+    String.raw`(?:busted|luacheck|selene|stylua|luarocks\s+test)\b`,
+    // Shell: bats, ShellCheck and shfmt (#1497).
+    String.raw`(?:bats|shellcheck|shfmt)\b`,
+    // C and C++: CMake, CTest, clang-format and clang-tidy (#1490).
+    String.raw`(?:cmake|ctest|clang-format|clang-tidy)\b`,
     // `dart test`, `flutter test`, `dart analyze`, `dart format` (#1494).
     String.raw`(?:dart|flutter)\s+(?:test|analyze|format)\b`,
     // `sbt -batch test`, `sbt "testOnly *CalcSuite"`, `sbt scalafmtCheckAll` (#1496).
@@ -359,10 +369,17 @@ function checkSpellings(check: Pick<Check, "executable" | "args">): {
 } {
   const { program, args } = toolchainCommand(check.executable, check.args);
   const tails = [args, ...(args[0] === "-m" ? [args.slice(1)] : [])];
+  // `php vendor/bin/phpunit` is also quoted as the script it runs (#1491).
+  const script = check.args[0];
+  const scripted =
+    script !== undefined &&
+    program !== programName(check.executable) &&
+    programName(script) === program;
   return {
     commands: [
       [check.executable, ...check.args],
       [program, ...args],
+      ...(scripted ? [[...check.args]] : []),
     ],
     args: tails.filter((tail) => tail.length >= 2 || (tail.length === 1 && tail !== args)),
   };

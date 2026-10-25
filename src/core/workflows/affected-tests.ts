@@ -17,6 +17,7 @@ import { basename, dirname, join, posix } from "node:path";
 import { isTestFile as isLanguageTestFile, isTestFileAt } from "../intelligence/language-traits.js";
 import { INLINE_ROWS_BEGIN, INLINE_ROWS_CLASS } from "./acceptance-rows-inline.js";
 import { isStaticCheck } from "./check-policy.js";
+import { PESTER_RUN, pesterOn } from "./pester.js";
 import { testGateFlags, withGateFlags } from "./test-gates.js";
 import { toolchainCommand } from "./toolchain.js";
 import type { Check } from "./types.js";
@@ -52,6 +53,9 @@ const PY_FILE = /\.py$/;
 /** A Minitest file: `*_test.rb` or `test_*.rb`. */
 const RB_TEST = /(?:_test|(?:^|\/)test_(?!helper\.rb$)[^/]*)\.rb$/;
 const GO_FILE = /\.go$/;
+const PHP_FILE = /\.php$/;
+/** A busted spec: `*_spec.lua`, or `*_test.lua` under a `.busted` pattern (#1495). */
+const LUA_TEST = /_(?:spec|test)\.luau?$/;
 const JS_EXTENSIONS = [".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs"];
 
 /** Whether a workspace path is a test file of a supported ecosystem. */
@@ -60,6 +64,13 @@ export function isTestFile(path: string): boolean {
   if (GO_FILE.test(name)) return name.endsWith("_test.go");
   // Django keeps an app's tests in `tests.py` (#1683); pytest runs a file it is given by path.
   if (PY_FILE.test(name)) return /^test_.*\.py$|_test\.py$|^tests\.py$/.test(name);
+  // PHPUnit and Pest name a test file `*Test.php` (#1491).
+  if (PHP_FILE.test(name)) return name.endsWith("Test.php");
+  // RSpec specs and Minitest files (#1493), busted specs (#1495).
+  if (name.endsWith(".rb")) return name.endsWith("_spec.rb") || RB_TEST.test(name);
+  if (/\.luau?$/.test(name)) return LUA_TEST.test(name);
+  // bats files (#1497).
+  if (name.endsWith(".bats")) return true;
   if (!JS_FILE.test(name)) return false;
   return /\.(?:test|spec)\.[cm]?[jt]sx?$/.test(name) || /(^|\/)(__tests__)\//.test(path);
 }
@@ -67,6 +78,7 @@ export function isTestFile(path: string): boolean {
 const CS_FILE = /\.cs$/;
 const RS_FILE = /\.rs$/;
 const JVM_FILE = /\.(?:java|kt)$/;
+const PESTER_FILE = /\.Tests\.ps1$/i;
 
 /**
  * Whether a path is a test file of a compiled stack the written-tests check runs (#1396): a C#
@@ -94,7 +106,7 @@ export function isCompiledTestFile(path: string): boolean {
 
 /** Whether a task's written test file is one the written-tests check can run. */
 export const isWrittenTestFile = (path: string): boolean =>
-  isTestFile(path) || isCompiledTestFile(path);
+  isTestFile(path) || isCompiledTestFile(path) || PESTER_FILE.test(path);
 
 const DOC_EXTENSION = /\.(?:md|mdx|markdown|rst|adoc)$/i;
 const DOC_NAME = /^(?:readme|changelog|license|licence|notice|authors|contributing)(?:\.\w+)?$/i;
@@ -320,8 +332,9 @@ export function affectedTests(root: string, sources: string[]): AffectedTest[] {
 /** The options of `python -m unittest` that take no value. */
 const UNITTEST_FLAG = /^-(?:[vqfbck]|-(?:verbose|quiet|failfast|buffer|catch|locals))$/;
 
+/** Options that take a value, busted's `-o TAP`, `-t unit`, `--exclude-tags slow`, `--lpath ./src/?.lua` (#1495) and bats' `-j 4`, `-f adds`, `--filter-tags unit` (#1497) among them. */
 const VALUE_OPTION =
-  /^(?:--(?:timeout|testTimeout|test-timeout|config|format|formatter|require|tag|out|seed|order)|-c)$/;
+  /^(?:--(?:timeout|testTimeout|test-timeout|config|format|formatter|require|tag|out|seed|order|output|tags|exclude-tags|pattern|run|lpath|cpath|jobs|filter|filter-tags|report-formatter)|-[cotpmjfF])$/;
 /** dart test's options that take a value: `-r expanded`, `-t slow`, `-x slow`, `-p vm` (#1494). */
 const DART_VALUE_OPTION =
   /^(?:--(?:reporter|name|plain-name|tags|exclude-tags|platform|preset|concurrency|total-shards|shard-index|file-reporter)|-[rnNtxpPj])$/;
@@ -333,7 +346,7 @@ const flagsOnly = (args: string[], values = VALUE_OPTION): string[] =>
 /**
  * A command that runs only `tests` with the runner of one of the policy's test checks, or null
  * when no check runs a test runner that takes test files (`bun test`, `vitest`, `jest`,
- * `node --test`, `pytest`, `go test`, `rspec`, `rake test`, `dart test`, `sbt test`). Package scripts (`npm test`, `bun run test`) are not
+ * `node --test`, `pytest`, `go test`, `rspec`, `rake test`, `dart test`, `phpunit`, `pest`, `busted`, `bats`, `sbt test`). Package scripts (`npm test`, `bun run test`) are not
  * used: what they pass on is up to the script.
  */
 export function affectedTestCheck(
@@ -379,6 +392,18 @@ export function affectedTestCheck(
       // Discovery options (`discover -s tests -p ...`) take values and do not apply to named files.
       prefix = ["-m", "unittest", ...args.slice(2).filter((arg) => UNITTEST_FLAG.test(arg))];
       targets = py;
+    } else if (name === "phpunit" || name === "pest") {
+      // `php vendor/bin/phpunit tests`: the named files take the place of the test folder (#1491).
+      prefix = flagsOnly(args);
+      targets = files.filter((f) => PHP_FILE.test(f));
+    } else if (name === "bats") {
+      // bats runs the `.bats` files it is given in place of its test folder (#1497).
+      prefix = flagsOnly(args);
+      targets = files.filter((f) => f.endsWith(".bats"));
+    } else if (name === "busted") {
+      // busted runs the spec files it is given in place of its ROOT (`spec`) (#1495).
+      prefix = flagsOnly(args);
+      targets = files.filter((f) => LUA_TEST.test(f));
     } else if (name === "rspec") {
       // RSpec takes spec files (#1493).
       prefix = flagsOnly(args);
@@ -416,7 +441,7 @@ export function affectedTestCheck(
       const compiled = compiledTestArgs(
         name,
         args,
-        tests.filter(isCompiledTestFile),
+        tests.filter((t) => isCompiledTestFile(t) || PESTER_FILE.test(t)),
         new Set(tests.filter((t) => rows.has(`${base}${t}`))),
       );
       const gated =
@@ -493,6 +518,14 @@ function compiledTestArgs(
       ...files.flatMap((file) => ["--test", file]),
       ...(end === -1 ? [] : args.slice(end)),
     ];
+  }
+  // Pester takes its test files in its configuration's `Run.Path`; only the gate's own command is
+  // narrowed, since a project's own `-Command` script may do more than run Pester (#1498).
+  if (/^(?:pwsh|powershell)$/i.test(name)) {
+    const files = tests.filter((t) => PESTER_FILE.test(t)).map((t) => `./${t}`);
+    const at = args.indexOf(PESTER_RUN);
+    if (!files.length || at < 0 || args[at - 1] !== "-Command") return null;
+    return [...args.slice(0, at), pesterOn(files), ...args.slice(at + 1)];
   }
   const classes = tests
     .filter((t) => JVM_FILE.test(t))

@@ -89,6 +89,11 @@ export const NUMERIC_LIMITS: LanguageRecord<readonly string[]> = {
     "NUMERIC and DECIMAL round or reject values past their declared precision and scale",
     "VARCHAR(n) rejects or truncates text past n characters, by dialect",
   ],
+  powershell: [
+    "[int] and [long] arithmetic past their range silently widens to [double] and loses integers past 2^53",
+    "casting a too large value or numeric string to [int] throws",
+    "[decimal] holds 28 to 29 significant digits",
+  ],
 };
 
 /** The taxonomy and the limits rows of `languages`, as the probe's input shows them. */

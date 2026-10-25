@@ -15,14 +15,14 @@ import { canRepairRun, type RepairBlock } from "../src/core/workflows/repairable
 import { growthLimit, type InitiativeView, rebaseView, shareShortfall } from "../src/core/workflows/initiatives/service.js";
 import { estimateInitiative } from "../src/core/workflows/initiatives/estimate.js";
 import { hasExecutableFields, manifestFieldChanges } from "../src/core/workflows/quality/manifests.js";
-import { REPLAY_TARGETS } from "../src/core/workflows/quality/baseline-replay.js";
+import { REPLAY_TARGETS, replayTargets } from "../src/core/workflows/quality/baseline-replay.js";
 import type { TestRunner } from "../src/core/verification/output-counts.js";
 import { unrequestedManifestFields } from "../src/core/workflows/quality/dependencies.js";
 import { historyFixture, plannedForecastScenario } from "./helpers/initiative-planned-forecast.js";
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { directoryFixers, directoryFixerScenario } from "./helpers/directory-fixer-scenario.js";
 import { baselineCreatedFilesScenario, FIRST_RUN_OUTPUTS } from "./helpers/baseline-created-files-scenario.js";
-import { TOOL_CACHES } from "../src/core/verification/snapshot.js";
+import { sourceManifest, TOOL_CACHES } from "../src/core/verification/snapshot.js";
 import { spawnSync } from "node:child_process";
 import {
   chmodSync,
@@ -42,14 +42,16 @@ import { INLINE_HARNESS, type InlineRowTest, inlineRowFile, withInlineRows } fro
 import { reproExecutables } from "../src/core/verification/repro.js";
 import { entryPointCommand } from "../src/core/verification/entry-points.js";
 import { noteSiblingFindings, ownerOfFinding } from "../src/core/verification/initiative-ownership.js";
-import { missingPlannedPaths, noTestsCollected } from "../src/core/verification/convergence.js";
+import { failureSignature as convergenceSignature, missingPlannedPaths, noTestsCollected } from "../src/core/verification/convergence.js";
 import { executeCheckCommand, exitStatus, timedOutFailure } from "../src/core/verification/check-runner.js";
 import { gradleTestReport } from "../src/core/verification/test-reports.js";
 import { detectLanguages, touchesLanguageFiles } from "../src/core/workflows/language.js";
-import { noTestsCollected } from "../src/core/verification/convergence.js";
-import { baselineRegression, buildRunner, diagnosticCount, failedTests, failureSignature, testCount, testsRan } from "../src/core/verification/output-counts.js";
+import { baselineRegression, buildFailure, buildRunner, diagnosticCount, failedTests, failureSignature, testCount, testsRan } from "../src/core/verification/output-counts.js";
+import { pwshExecutable } from "../src/core/platform/index.js";
+import { PESTER_RUN, pesterOn } from "../src/core/workflows/pester.js";
 import { baselineDebt, baselineKeys } from "../src/core/verification/task-end-check.js";
 import { affectedTestCheck, plannedWrittenTests, writtenTestsCheck } from "../src/core/workflows/affected-tests.js";
+import { detectLanguages, touchesLanguageFiles } from "../src/core/workflows/language.js";
 import { launchedCommand } from "../src/core/workflows/launcher.js";
 import { toolchainCommand } from "../src/core/workflows/toolchain.js";
 import { type HostEdit, hostOnlyEvidence, plannerGraph } from "../src/core/workflows/host-edits.js";
@@ -66,7 +68,7 @@ import {
   isWholeUnitCheck,
   styleClaimShown,
 } from "../src/core/workflows/check-policy.js";
-import { buildWrapper, detectGates, executeGate } from "../src/core/workflows/gates.js";
+import { buildWrapper, cmakeGates, detectGates, executeGate } from "../src/core/workflows/gates.js";
 import { formatWrittenChecks } from "../src/core/workflows/format-written.js";
 import { type LayoutResult, layoutVerdict } from "../src/core/workflows/layout-check.js";
 import { addedDependencies, checkDependencies } from "../src/core/workflows/quality/dependencies.js";
@@ -743,6 +745,513 @@ describe("gate matrix: JVM build tools (#1749)", () => {
     expect(buildWrapper(project({}), "gradlew", "gradle", "win32").executable).toBe("gradle");
   });
 });
+// #1491: a Composer project got no gate, so a shipped SDD preset did not start until the commands
+// were typed by hand, and PHPUnit's and Pest's output was not read.
+describe("gate matrix: Composer (#1491)", () => {
+  const ids = (files: Record<string, string>) =>
+    detectGates(project(files)).map((s) => [s.check.id, s.check.executable, s.check.args.join(" "), s.source]);
+  const checks = (files: Record<string, string>) => detectGates(project(files)).map((s) => s.check);
+  const composer = (dev: Record<string, string>) => JSON.stringify({ require: { php: ">=8.2" }, "require-dev": dev });
+  const LARAVEL = {
+    "composer.json": composer({ "phpunit/phpunit": "^11", "laravel/pint": "^1" }),
+    "phpunit.xml": "<phpunit/>",
+    "phpstan.neon": "parameters:\n  level: 6\n",
+    artisan: "",
+  };
+
+  test("composer.json gets its format, analysis and test gates, each tool run through php", () => {
+    expect(ids(LARAVEL)).toEqual([
+      ["pint", "php", "vendor/bin/pint --test", "composer.json"],
+      ["phpstan", "php", "vendor/bin/phpstan analyse --no-progress", "phpstan.neon"],
+      ["phpunit", "php", "vendor/bin/phpunit", "composer.json"],
+    ]);
+    expect(ids({ "composer.json": composer({ "pestphp/pest": "^3" }), ".php-cs-fixer.dist.php": "<?php return [];", "psalm.xml": "<psalm/>" })).toEqual([
+      ["php-cs-fixer", "php", "vendor/bin/php-cs-fixer fix --dry-run --diff", ".php-cs-fixer.dist.php"],
+      ["psalm", "php", "vendor/bin/psalm --no-progress", "psalm.xml"],
+      ["pest", "php", "vendor/bin/pest", "composer.json"],
+    ]);
+    // Without a phpunit.xml PHPUnit runs only what it is given.
+    expect(ids({ "composer.json": composer({ "phpunit/phpunit": "^11" }) })).toEqual([["phpunit", "php", "vendor/bin/phpunit tests", "composer.json"]]);
+    expect(ids({ "composer.json": "{}", "phpunit.xml.dist": "<phpunit/>" })).toEqual([["phpunit", "php", "vendor/bin/phpunit", "phpunit.xml.dist"]]);
+    // PHPStan without its config does not know what to analyse; a library without tools gets nothing.
+    expect(ids({ "composer.json": composer({ "phpstan/phpstan": "^2" }) })).toEqual([]);
+    expect(ids({ "composer.json": "not json" })).toEqual([]);
+  });
+
+  test("the vendor script is the program: no cmd wrapper on Windows, and routing sees the tool", () => {
+    const all = checks(LARAVEL);
+    const byId = (id: string) => all.find((c) => c.id === id) as Check;
+    expect(launchedCommand("php", ["vendor/bin/phpunit"]).program).toBe("php");
+    expect(isWholeUnitCheck(byId("phpstan")) && isStaticCheck(byId("phpstan"))).toBe(true);
+    expect(isWholeUnitCheck(byId("pint")) || isTestCheck(byId("pint"))).toBe(false);
+    expect(isTestCheck(byId("phpunit")) && !isStaticCheck(byId("phpunit"))).toBe(true);
+    expect(fixerCommand(byId("pint").fix!, "src/Sum.php")).toEqual({ executable: "php", args: ["vendor/bin/pint", "src/Sum.php"] });
+    expect(fixerCommand({ executable: "php", args: ["vendor/bin/php-cs-fixer", "fix"] }, "src/Sum.php")).toEqual({ executable: "php", args: ["vendor/bin/php-cs-fixer", "fix", "src/Sum.php"] });
+    const covering = (path: string) =>
+      coveringChecks({ checks: all.map((c) => ({ ...c, scope: "feature" as const })) } as RunPolicy, { writes: [{ path, action: "create" }] }).map((c) => c.id);
+    expect(covering("src/Sum.php")).toEqual(["pint"]);
+    // A criterion's "formatted with Pint" or "passes PHPStan" claim is shown by those gates.
+    const passed = all.map((c) => ({ ...c, scope: "feature" as const }));
+    expect(styleClaimShown("all PHP files are Pint-formatted and pass PHPStan", passed)).toBe(true);
+    expect(styleClaimShown("all PHP files are Pint-formatted", passed.filter((c) => c.id !== "pint"))).toBe(false);
+    // The whole-tree Pint gate covers a new file, so no format-written check is added for it.
+    expect(formatWrittenChecks(project(LARAVEL), all, [{ path: "src/Sum.php", action: "create" }])).toEqual([]);
+  });
+
+  test("a written PHP test runs on its own through the same php command", () => {
+    const phpunit = checks(LARAVEL).find((c) => c.id === "phpunit") as Check;
+    const affected = affectedTestCheck([phpunit], ["tests/SumTest.php"]);
+    expect(affected && [affected.executable, ...affected.args]).toEqual(["php", "vendor/bin/phpunit", "./tests/SumTest.php"]);
+    const folder = { ...phpunit, args: ["vendor/bin/phpunit", "tests", "--testdox"] };
+    expect(affectedTestCheck([folder], ["tests/SumTest.php"])?.args).toEqual(["vendor/bin/phpunit", "--testdox", "./tests/SumTest.php"]);
+    expect(plannedWrittenTests([phpunit], [{ path: "tests/SumTest.php", action: "create" }])?.id).toBe("phpunit-written");
+  });
+
+  const PHPUNIT_FAILED =
+    "PHPUnit 11.5.0 by Sebastian Bergmann and contributors.\n\n.FS.  4 / 4 (100%)\n\nTime: 00:00.015, Memory: 8.00 MB\n\nThere was 1 failure:\n\n1) App\\Tests\\SumTest::testCommutes\nFailed asserting that 4 is identical to 3.\n\n/w/tests/SumTest.php:14\n\n--\n\nThere was 1 skipped test:\n\n1) App\\Tests\\SumTest::testLater\nnot ready\n\nFAILURES!\nTests: 4, Assertions: 3, Failures: 1, Skipped: 1.\n";
+  const PEST_FAILED =
+    "\n   PASS  Tests\\Unit\\SumTest\n  ✓ it adds\n\n   FAIL  Tests\\Unit\\SumTest\n  ⨯ it commutes  0.01s\n  - it later → not ready\n  ────────────\n   FAILED  Tests\\Unit\\SumTest > it commutes\n  Failed asserting that 4 is identical to 3.\n\n  Tests:    1 failed, 1 skipped, 1 passed (2 assertions)\n  Duration: 0.05s\n";
+
+  test("PHPUnit and Pest summaries give the count, the executed tests and the failed names", () => {
+    expect(testCount("OK (5 tests, 10 assertions)")).toEqual({ tool: "phpunit", count: 5 });
+    expect(testCount(PHPUNIT_FAILED)).toEqual({ tool: "phpunit", count: 4 });
+    expect(testsRan(PHPUNIT_FAILED)).toEqual({ tool: "phpunit", count: 3 });
+    expect(testsRan("PHPUnit 11.5.0\n\nNo tests executed!\n")).toEqual({ tool: "phpunit", count: 0 });
+    expect(failedTests(PHPUNIT_FAILED)).toEqual({ tool: "phpunit", names: ["App\\Tests\\SumTest::testCommutes"] });
+    expect(testCount(PEST_FAILED)).toEqual({ tool: "pest", count: 3 });
+    expect(testsRan(PEST_FAILED)).toEqual({ tool: "pest", count: 2 });
+    expect(failedTests(PEST_FAILED)).toEqual({ tool: "pest", names: ["Tests\\Unit\\SumTest > it commutes"] });
+    // Jest's summary has a total; Pest's has assertions, so neither reads the other.
+    expect(testCount("Tests:       1 failed, 2 passed, 3 total")?.tool).toBe("jest");
+  });
+
+  test("a failing run names its failure, keeps one signature as passing tests grow, and hangs as a failure", () => {
+    const grown = PHPUNIT_FAILED.replace(".FS.  4 / 4", ".FS..  5 / 5").replace("Tests: 4, Assertions: 3", "Tests: 5, Assertions: 4").replace("00:00.015", "00:00.021");
+    expect(failureSignature(grown, "/w")).toBe(failureSignature(PHPUNIT_FAILED, "/w"));
+    expect(convergenceSignature(grown)).toBe(convergenceSignature(PHPUNIT_FAILED));
+    expect(convergenceSignature(PHPUNIT_FAILED)).toContain("SumTest::testCommutes");
+    const pestGrown = PEST_FAILED.replace("1 passed (2 assertions)", "2 passed (3 assertions)").replace("0.05s", "0.07s");
+    expect(failureSignature(pestGrown, "/w")).toBe(failureSignature(PEST_FAILED, "/w"));
+    expect(timedOutFailure("1) App\\Tests\\SumTest::testCommutes\nFailed asserting that 4 is identical to 3.")).toBe(true);
+    expect(timedOutFailure("  ⨯ it commutes")).toBe(true);
+    expect(timedOutFailure("1) First step of the program")).toBe(false);
+  });
+
+  test("an empty or missing test folder is no failing suite, and names the folder its task creates", () => {
+    expect(noTestsCollected("PHPUnit 11.5.0 by Sebastian Bergmann and contributors.\n\nNo tests executed!\n")).toBe(true);
+    expect(noTestsCollected("  INFO  No tests found.\n")).toBe(true);
+    const tasks = [{ writes: [{ path: "tests/SumTest.php", action: "create" as const }] }];
+    expect(missingPlannedPaths('PHPUnit 11.5.0\n\nTest directory "/w/tests" not found\n', tasks)).toEqual(["tests/SumTest.php"]);
+    expect(missingPlannedPaths('Cannot open file "tests.php".\n', tasks)).toEqual(["tests/SumTest.php"]);
+  });
+
+  test("a parse error in one test file is a build failure, replayed per changed test file", () => {
+    const output = 'PHP Parse error:  syntax error, unexpected token "}" in /w/tests/SumTest.php on line 9\n';
+    expect(buildFailure(output)).toEqual([output.trim()]);
+    expect(buildRunner(output)).toBe("phpunit");
+    const runs = replayTargets("phpunit", { args: ["vendor/bin/phpunit", "tests", "--testdox"], tests: ["tests/SumTest.php", "tests/MaxTest.php", "README.md"], list: () => [] });
+    expect(runs).toEqual([
+      { args: ["vendor/bin/phpunit", "--testdox", "tests/MaxTest.php"], paths: ["tests/MaxTest.php"] },
+      { args: ["vendor/bin/phpunit", "--testdox", "tests/SumTest.php"], paths: ["tests/SumTest.php"] },
+    ]);
+  });
+
+  test("PHPStan and Psalm counts are errors", () => {
+    expect(diagnosticCount(" [ERROR] Found 3 errors \n")).toEqual({ tool: "phpstan", count: 3, errors: 3 });
+    expect(diagnosticCount(" [OK] No errors \n")).toEqual({ tool: "phpstan", count: 0, errors: 0 });
+    expect(diagnosticCount("2 errors found\n")).toEqual({ tool: "psalm", count: 2, errors: 2 });
+    expect(diagnosticCount("No errors found!\n")).toEqual({ tool: "psalm", count: 0, errors: 0 });
+  });
+
+  test("PHPUnit and Pest skips and PHPStan and Psalm suppressions are integrity findings; a capability guard is not", () => {
+    const before = "<?php\nfinal class SumTest extends TestCase\n{\n    public function testAdds(): void\n    {\n        self::assertSame(3, sum(1, 2));\n    }\n}\n";
+    const rules = (after: string) => scanTestIntegrity([{ path: "tests/SumTest.php", before, after }]).map((f) => f.rule);
+    expect(rules(before.replace("        self::assertSame", "        $this->markTestSkipped('later');\n        self::assertSame"))).toContain("skip");
+    expect(rules(before.replace("        self::assertSame", "        /** @phpstan-ignore-next-line */\n        self::assertSame"))).toContain("suppression");
+    expect(rules(before.replace("        self::assertSame", "        if (PHP_OS_FAMILY === 'Windows') {\n            $this->markTestSkipped('no symlinks');\n        }\n        self::assertSame"))).not.toContain("skip");
+    const pest = "<?php\nit('adds', function () {\n    expect(sum(1, 2))->toBe(3);\n});\n";
+    expect(scanTestIntegrity([{ path: "tests/SumTest.php", before: pest, after: pest.replace("});", "})->skip();") }]).map((f) => f.rule)).toContain("skip");
+    const source = "<?php\n/** @phpstan-ignore-next-line */\n$x = sum('1', 2);\n";
+    expect(checkBuiltinRules([{ path: "src/use.php", content: source, before: null }], {}).map((f) => f.rule)).toContain("lint-suppression");
+  });
+
+  test("composer.json scripts, autoload files and repositories are executable fields, not the description", () => {
+    const json = (extra: object) => JSON.stringify({ name: "a/b", description: "x", ...extra });
+    expect(manifestFieldChanges("composer.json", json({}), json({ description: "y" }))).toEqual([]);
+    expect(manifestFieldChanges("composer.json", json({}), json({ scripts: { "post-install-cmd": "php x.php" }, autoload: { files: ["boot.php"] }, repositories: [{ type: "vcs", url: "https://example.test/x" }] }))).toEqual(["scripts.post-install-cmd", "autoload", "repositories"]);
+  });
+});
+
+// #1495: a Lua project has a rockspec or the config of its tools, and no Makefile or CI step of
+// its own, so the runner fallback found nothing.
+describe("gate matrix: LuaRocks (#1495)", () => {
+  const ids = (files: Record<string, string>) =>
+    detectGates(project(files)).map((s) => [s.check.id, s.check.executable, s.check.args.join(" "), s.source]);
+  const checks = (files: Record<string, string>) => detectGates(project(files)).map((s) => s.check);
+  const ROCK = {
+    "calc-0.1-1.rockspec": "package = 'calc'\nversion = '0.1-1'\ndependencies = { 'lua >= 5.1' }\ntest_dependencies = { 'busted' }\n",
+    "stylua.toml": "column_width = 100\n",
+    ".luacheckrc": "std = 'max+busted'\n",
+  };
+
+  test("a rockspec and the tools' config files get the format, lint and test gates", () => {
+    expect(ids(ROCK)).toEqual([
+      ["stylua", "stylua", "--check .", "stylua.toml"],
+      ["luacheck", "luacheck", ".", ".luacheckrc"],
+      ["busted", "busted", "", "calc-0.1-1.rockspec"],
+    ]);
+    expect(ids({ "selene.toml": "std = 'lua51'\n", ".busted": "return { default = { ROOT = { 'spec' } } }\n" })).toEqual([
+      ["selene", "selene", ".", "selene.toml"],
+      ["busted", "busted", "", ".busted"],
+    ]);
+    expect(ids({ "calc-0.1-1.rockspec": "package = 'calc'\n", "spec/calc_spec.lua": "" })).toEqual([["busted", "busted", "", "spec/"]]);
+    // A Ruby project's spec/ folder is no Lua project, and a rockspec without tools gets nothing:
+    // the runner fallback then reads its Makefile.
+    expect(ids({ "spec/calc_spec.rb": "" })).toEqual([]);
+    expect(ids({ "calc-0.1-1.rockspec": "package = 'calc'\n", Makefile: "test:\n\tbusted\n" })).toEqual([["tests", "make", "test", 'Makefile target "test"']]);
+  });
+
+  test("luacheck lints per task, StyLua's fixer gets the task's file, busted is the test check", () => {
+    const all = checks(ROCK);
+    const byId = (id: string) => all.find((c) => c.id === id) as Check;
+    expect(isStaticCheck(byId("luacheck")) && !isWholeUnitCheck(byId("luacheck"))).toBe(true);
+    expect(isStaticCheck(byId("stylua")) && !isTestCheck(byId("stylua"))).toBe(true);
+    expect(isTestCheck(byId("busted")) && !isStaticCheck(byId("busted"))).toBe(true);
+    expect(fixerCommand(byId("stylua").fix!, "src/calc.lua")).toEqual({ executable: "stylua", args: ["src/calc.lua"] });
+    // LuaRocks' Windows wrappers are batch files the check runner starts through cmd.exe.
+    expect(launchedCommand("cmd", ["/d", "/c", "busted.bat", "-o", "TAP"]).program).toBe("busted");
+    expect(launchedCommand("cmd", ["/d", "/c", "luacheck.bat", "."]).program).toBe("luacheck");
+    const covering = (path: string) =>
+      coveringChecks({ checks: all.map((c) => ({ ...c, scope: "feature" as const })) } as RunPolicy, { writes: [{ path, action: "create" }] }).map((c) => c.id);
+    expect(covering("src/calc.lua")).toEqual(["stylua", "luacheck"]);
+    expect(styleClaimShown("all Lua files are stylua-formatted and luacheck-clean", all.map((c) => ({ ...c, scope: "feature" as const })))).toBe(true);
+  });
+
+  test("an edited Lua file is checked on its changed lines by StyLua's byte range", () => {
+    const files = { ...ROCK, "src/é.lua": "local a = 'é'\nlocal  b=1\n" };
+    const edited = formatWrittenChecks(project(files), [], [{ path: "src/é.lua", action: "modify" }], (c) => `/usr/bin/${c}`, () => "local a = 'é'\n", () => true);
+    expect(edited.map((c) => [c.id, [c.executable, ...c.args].join(" "), [c.fix!.executable, ...c.fix!.args].join(" ")])).toEqual([
+      ["stylua-lines", "stylua --check --range-start 15 --range-end 26 src/é.lua", "stylua --range-start 15 --range-end 26"],
+    ]);
+  });
+
+  test("a written spec runs on its own, with busted's flags and their values", () => {
+    const busted = { ...(checks(ROCK).find((c) => c.id === "busted") as Check), args: ["-o", "TAP", "--exclude-tags", "slow", "spec"] };
+    expect(affectedTestCheck([busted], ["spec/calc_spec.lua"])?.args).toEqual(["-o", "TAP", "--exclude-tags", "slow", "./spec/calc_spec.lua"]);
+    expect(plannedWrittenTests([busted], [{ path: "spec/calc_spec.lua", action: "create" }])?.id).toBe("busted-written");
+    expect(plannedWrittenTests([busted], [{ path: "src/calc.lua", action: "create" }])).toBeNull();
+  });
+
+  // busted 2.2.0, default output handler.
+  const BUSTED_FAILED =
+    "+-*.\n1 success / 1 failure / 1 error / 1 pending : 0.00145 seconds\n\nPending -> spec/sum_spec.lua @ 13\nsum later\n\nFailure -> spec/sum_spec.lua @ 7\nsum is commutative\nspec/sum_spec.lua:8: Expected objects to be equal.\nPassed in:\n(number) 4\nExpected:\n(number) 5\n\nError -> spec/sum_spec.lua @ 10\nsum errors\nspec/sum_spec.lua:11: boom\n";
+  const BUSTED_SUITE_ERROR =
+    "*+-*.\n1 success / 1 failure / 2 errors / 1 pending : 0.003723 seconds\n\nFailure -> spec/sum_spec.lua @ 7\nsum is commutative\nspec/sum_spec.lua:8: Expected objects to be equal.\n\nError -> spec/req_spec.lua @ 1\nsuite spec/req_spec.lua\nspec/req_spec.lua:1: module 'nosuch' not found:\n\tno field package.preload['nosuch']\n";
+
+  test("busted's summary gives the count and the tests that ran; a spec file that did not load is no test", () => {
+    expect(testCount(BUSTED_FAILED)).toEqual({ tool: "busted", count: 4 });
+    expect(testsRan(BUSTED_FAILED)).toEqual({ tool: "busted", count: 3 });
+    expect(failedTests(BUSTED_FAILED)).toEqual({ tool: "busted", names: ["sum is commutative", "sum errors"] });
+    expect(testCount(BUSTED_SUITE_ERROR)).toEqual({ tool: "busted", count: 3 });
+    expect(failedTests(BUSTED_SUITE_ERROR)).toEqual({ tool: "busted", names: ["sum is commutative"] });
+    expect(testsRan("\n0 successes / 0 failures / 2 errors / 0 pending : 0.000019 seconds\n\nError -> Cannot find file or directory: spec\n\n\nError -> No test files found matching Lua pattern: _spec\n")).toEqual({ tool: "busted", count: 0 });
+  });
+
+  test("a failing run keeps one signature as passing tests grow, and hangs as a failure", () => {
+    const grown = BUSTED_FAILED.replace("+-*.\n1 success /", "++-*.\n2 successes /").replace("0.00145", "0.00201");
+    expect(failureSignature(grown, "/w")).toBe(failureSignature(BUSTED_FAILED, "/w"));
+    expect(convergenceSignature(grown)).toBe(convergenceSignature(BUSTED_FAILED));
+    expect(convergenceSignature(BUSTED_FAILED)).toContain("Failure -> spec/sum_spec.lua");
+    expect(timedOutFailure("Failure -> spec/sum_spec.lua @ 7\nsum is commutative")).toBe(true);
+  });
+
+  test("no spec files or a missing spec path is no failing suite, and names the path its task creates", () => {
+    const empty = "\n0 successes / 0 failures / 2 errors / 0 pending : 0.000066 seconds\n\nError -> Cannot find file or directory: spec\n\n\nError -> No test files found matching Lua pattern: _spec\n";
+    expect(noTestsCollected(empty)).toBe(true);
+    const tasks = [{ writes: [{ path: "spec/later_spec.lua", action: "create" as const }] }];
+    expect(missingPlannedPaths(empty.replace(": spec\n", ": spec/later_spec.lua\n"), tasks)).toEqual(["spec/later_spec.lua"]);
+    expect(missingPlannedPaths("ERROR: Error getting metadata of spec/later_spec.lua: No such file or directory (os error 2)\n", tasks)).toEqual(["spec/later_spec.lua"]);
+    expect(missingPlannedPaths("error: no file or directory found matching 'spec/later_spec.lua'\n", tasks)).toEqual(["spec/later_spec.lua"]);
+  });
+
+  test("a spec file that does not parse or load is a build failure; busted runs the other files", () => {
+    const syntax = "*+-*.\n1 success / 1 failure / 2 errors / 1 pending : 0.002888 seconds\n\nError -> spec/broken_spec.lua:3: <name> or '...' expected near 'end'\nspec/broken_spec.lua\n";
+    expect(buildFailure(syntax)).toEqual(["Error -> spec/broken_spec.lua:3: <name> or '...' expected near 'end'"]);
+    expect(buildRunner(syntax)).toBe("busted");
+    expect(buildFailure(BUSTED_SUITE_ERROR)).toEqual(["suite spec/req_spec.lua"]);
+    expect(buildFailure(BUSTED_FAILED)).toBeNull();
+    expect(replayTargets("busted", { args: [], tests: ["spec/sum_spec.lua"], list: () => [] })).toEqual([]);
+  });
+
+  test("luacheck and selene counts", () => {
+    expect(diagnosticCount("Checking src/bad.lua                              \u001b[0m\u001b[31m\u001b[1m2 warnings\u001b[0m\n\nTotal: \u001b[0m\u001b[31m\u001b[1m2\u001b[0m warnings / \u001b[0m\u001b[0m\u001b[1m0\u001b[0m errors in 3 files\n")).toEqual({ tool: "luacheck", count: 2, errors: 0 });
+    expect(diagnosticCount("Total: 0 warnings / 1 error in 3 files\n")).toEqual({ tool: "luacheck", count: 1, errors: 1 });
+    expect(diagnosticCount("error[undefined_variable]: `it` is not defined\n\nResults:\n8 errors\n4 warnings\n0 parse errors\n")).toEqual({ tool: "selene", count: 12, errors: 8 });
+    expect(diagnosticCount("Results:\n0 errors\n0 warnings\n1 parse errors\n")).toEqual({ tool: "selene", count: 1, errors: 1 });
+  });
+
+  test("busted's pending and luacheck's ignore are integrity findings; a platform guard is not", () => {
+    const before = 'describe("sum", function()\n  it("adds", function()\n    assert.are.equal(3, sum(1, 2))\n  end)\nend)\n';
+    const rules = (after: string) => scanTestIntegrity([{ path: "spec/sum_spec.lua", before, after }]).map((f) => f.rule);
+    expect(rules(before.replace("end)\nend)", 'end)\n  pending("commutes")\nend)'))).toContain("skip");
+    expect(rules(before.replace("    assert", "    -- luacheck: ignore 211\n    assert"))).toContain("suppression");
+    expect(rules(before.replace("  it(", '  if package.config:sub(1, 1) == "\\\\" then\n    pending("no symlinks on Windows")\n  end\n  it('))).not.toContain("skip");
+    const source = "local x = 1 -- luacheck: ignore\nreturn 2\n";
+    expect(checkBuiltinRules([{ path: "src/calc.lua", content: source, before: null }], {}).map((f) => f.rule)).toContain("lint-suppression");
+  });
+
+  test("a rockspec's dependencies are read, and its build, source and test are executable fields", () => {
+    const spec = (extra: string) => `package = 'calc'\nversion = '0.1-1'\ndescription = { summary = 'x' }\ndependencies = {\n  'lua >= 5.1',\n  "penlight ~> 1.13",\n}\n${extra}`;
+    expect(manifestFieldChanges("calc-0.1-1.rockspec", spec(""), spec("").replace("summary = 'x'", "summary = 'y'"))).toEqual([]);
+    expect(manifestFieldChanges("calc-0.1-1.rockspec", spec(""), spec("build = {\n  type = 'command',\n  build_command = 'make',\n}\nsource = { url = 'git+https://example.test/calc' }\n"))).toEqual(["build", "source"]);
+    expect(addedDependencies([{ path: "calc-0.1-1.rockspec", before: spec(""), content: spec("test_dependencies = { 'busted >= 2' }\n") }]).declared.map((d) => [d.ecosystem, d.name])).toEqual([["luarocks", "busted"]]);
+  });
+});
+
+// #1497: a shell project has scripts, the config of ShellCheck or shfmt and bats tests, and the
+// runner fallback found nothing without a Makefile.
+describe("gate matrix: shell (#1497)", () => {
+  const ids = (files: Record<string, string>) =>
+    detectGates(project(files)).map((s) => [s.check.id, s.check.executable, s.check.args.join(" "), s.source]);
+  const checks = (files: Record<string, string>) => detectGates(project(files)).map((s) => s.check);
+  const SCRIPTS = {
+    ".shellcheckrc": "disable=SC1091\n",
+    ".editorconfig": "root = true\n\n[*.{sh,bats}]\nindent_style = space\nindent_size = 2\n",
+    "bin/sum.sh": "#!/usr/bin/env bash\necho $(($1 + $2))\n",
+    "lib/util.bash": "",
+    "node_modules/x/y.sh": "",
+    "test/sum.bats": '@test "adds" {\n  run bin/sum.sh 1 2\n}\n',
+  };
+
+  test("ShellCheck on the project's scripts, shfmt with an .editorconfig shell section, bats on its test folder", () => {
+    expect(ids(SCRIPTS)).toEqual([
+      ["shellcheck", "shellcheck", "bin/sum.sh lib/util.bash", ".shellcheckrc"],
+      ["shfmt", "shfmt", "-d .", ".editorconfig"],
+      ["bats", "bats", "test", "test/"],
+    ]);
+    expect(ids({ "tests/a.bats": "" })).toEqual([["bats", "bats", "tests", "tests/"]]);
+    // An .editorconfig without a shell section and a .shellcheckrc without scripts give nothing.
+    expect(ids({ ".editorconfig": "[*.md]\nindent_size = 2\n", ".shellcheckrc": "" })).toEqual([]);
+  });
+
+  test("the shell gates come on top of the project's own toolchain and of its Makefile", () => {
+    expect(ids({ ...SCRIPTS, "go.mod": "module x\n\ngo 1.22\n" }).map(([id]) => id)).toEqual(["gofmt", "go-vet", "go-test", "shellcheck", "shfmt", "bats"]);
+    expect(ids({ Makefile: "test:\n\tbats test\n", "test/sum.bats": "" })).toEqual([
+      ["tests", "make", "test", 'Makefile target "test"'],
+      ["bats", "bats", "test", "test/"],
+    ]);
+  });
+
+  test("ShellCheck and shfmt run per task, shfmt's fixer gets the task's file, bats is the test check", () => {
+    const all = checks(SCRIPTS);
+    const byId = (id: string) => all.find((c) => c.id === id) as Check;
+    expect(isStaticCheck(byId("shellcheck")) && !isWholeUnitCheck(byId("shellcheck"))).toBe(true);
+    expect(isStaticCheck(byId("shfmt")) && !isTestCheck(byId("shfmt"))).toBe(true);
+    expect(isTestCheck(byId("bats")) && !isStaticCheck(byId("bats"))).toBe(true);
+    expect(fixerCommand(byId("shfmt").fix!, "bin/sum.sh")).toEqual({ executable: "shfmt", args: ["-w", "bin/sum.sh"] });
+    expect(styleClaimShown("every script is shfmt-formatted and passes shellcheck", all.map((c) => ({ ...c, scope: "feature" as const })))).toBe(true);
+    // The whole-tree shfmt gate covers a new script; without it the written-format check is shfmt -d on the file.
+    expect(formatWrittenChecks(project(SCRIPTS), all, [{ path: "bin/new.sh", action: "create" }])).toEqual([]);
+  });
+
+  test("a written bats file runs on its own, with bats' flags and their values", () => {
+    const bats = { ...(checks(SCRIPTS).find((c) => c.id === "bats") as Check), args: ["-j", "4", "--filter-tags", "unit", "test"] };
+    expect(affectedTestCheck([bats], ["test/sum.bats"])?.args).toEqual(["-j", "4", "--filter-tags", "unit", "./test/sum.bats"]);
+    expect(plannedWrittenTests([bats], [{ path: "test/sum.bats", action: "create" }])?.id).toBe("bats-written");
+  });
+
+  // bats 1.10.0 prints TAP.
+  const BATS_FAILED =
+    "1..3\nok 1 adds\nnot ok 2 commutes\n# (in test file test/sum.bats, line 10)\n#   `[ \"$output\" = \"5\" ]' failed\nok 3 later # skip not ready\n";
+
+  test("bats' TAP gives the count, the tests that ran and the failed names, with one signature as tests grow", () => {
+    expect([testCount(BATS_FAILED), testsRan(BATS_FAILED), failedTests(BATS_FAILED)]).toEqual([{ tool: "tap", count: 3 }, { tool: "tap", count: 2 }, { tool: "tap", names: ["commutes"] }]);
+    const grown = BATS_FAILED.replace("1..3\nok 1 adds\nnot ok 2", "1..4\nok 1 adds\nok 2 subtracts\nnot ok 3").replace("ok 3 later", "ok 4 later");
+    expect(failureSignature(grown, "/w")).toBe(failureSignature(BATS_FAILED, "/w"));
+    expect(convergenceSignature(grown)).toBe(convergenceSignature(BATS_FAILED));
+  });
+
+  test("an empty test folder or a missing path is no failing suite, and names the path its task creates", () => {
+    expect(noTestsCollected("1..0\n")).toBe(true);
+    expect(noTestsCollected("1..10\nok 1 a\n")).toBe(false);
+    const tasks = [{ writes: [{ path: "test/later.bats", action: "create" as const }, { path: "bin/later.sh", action: "create" as const }] }];
+    expect(missingPlannedPaths('Error: Test file "/w/test/later.bats" does not exist\n', tasks)).toEqual(["test/later.bats"]);
+    expect(missingPlannedPaths("bin/later.sh: bin/later.sh: openBinaryFile: does not exist (No such file or directory)\n", tasks)).toEqual(["bin/later.sh"]);
+    expect(missingPlannedPaths("lstat bin/later.sh: no such file or directory\n", tasks)).toEqual(["bin/later.sh"]);
+  });
+
+  test("ShellCheck's findings are counted by severity", () => {
+    const output = "\nIn bin/bad.sh line 2:\necho $1\n     ^-- SC2086 (info): Double quote to prevent globbing and word splitting.\n\n\nIn bin/bad.sh line 3:\nfor f in $(ls); do echo $f; done\n         ^---^ SC2045 (error): Iterating over ls output is fragile. Use globs.\n                        ^-- SC2086 (info): Double quote to prevent globbing and word splitting.\n";
+    expect(diagnosticCount(output)).toEqual({ tool: "shellcheck", count: 3, errors: 1 });
+  });
+
+  test("bats' skip and ShellCheck's disable are integrity findings; a platform or tool guard is not", () => {
+    const before = '@test "adds" {\n  run bin/sum.sh 1 2\n  [ "$output" = "3" ]\n}\n';
+    const rules = (after: string) => scanTestIntegrity([{ path: "test/sum.bats", before, after }]).map((f) => f.rule);
+    expect(rules(before.replace("  run", '  skip "later"\n  run'))).toContain("skip");
+    expect(rules(before.replace("  run", "  # shellcheck disable=SC2086\n  run"))).toContain("suppression");
+    expect(rules(before.replace("  run", '  if ! command -v jq >/dev/null; then\n    skip "no jq"\n  fi\n  run'))).not.toContain("skip");
+    expect(rules(before.replace("  run", '  [[ "$OSTYPE" == darwin* ]] && skip "GNU sed only"\n  run'))).not.toContain("skip");
+    const source = "#!/bin/sh\n# shellcheck disable=SC2086\necho $1\n";
+    expect(checkBuiltinRules([{ path: "bin/a.sh", content: source, before: null }], {}).map((f) => f.rule)).toContain("lint-suppression");
+  });
+});
+
+describe("gate matrix: CMake, CTest, GoogleTest and clang tools (#1490)", () => {
+  const ids = (files: Record<string, string>) =>
+    detectGates(project(files)).map((s) => [s.check.id, s.check.executable, s.check.args.join(" "), s.source]);
+  const checks = (files: Record<string, string>) => detectGates(project(files)).map((s) => s.check);
+  const CMAKE = {
+    "CMakeLists.txt": "cmake_minimum_required(VERSION 3.16)\nproject(sum CXX)\nenable_testing()\nfind_package(GTest REQUIRED)\nadd_library(sum src/sum.cpp)\nadd_executable(sum_test tests/sum_test.cpp)\ntarget_link_libraries(sum_test sum GTest::gtest_main)\ninclude(GoogleTest)\ngtest_discover_tests(sum_test)\n",
+    ".clang-format": "BasedOnStyle: LLVM\n",
+    ".clang-tidy": "Checks: '-*,bugprone-*'\n",
+    "src/sum.cpp": '#include "sum.h"\nint sum(int a, int b) { return a + b; }\n',
+    "src/sum.h": "int sum(int a, int b);\n",
+    "tests/sum_test.cpp": '#include <gtest/gtest.h>\n#include "sum.h"\nTEST(SumTest, Adds) { EXPECT_EQ(sum(1, 2), 3); }\n',
+    "third_party/lib.c": "",
+    "build/CMakeCache.txt": "",
+  };
+
+  test("configure, build, clang-tidy and CTest in that order, clang-format on top", () => {
+    expect(ids(CMAKE)).toEqual([
+      ["cmake-configure", "cmake", "-S . -B build -DCMAKE_EXPORT_COMPILE_COMMANDS=ON", "CMakeLists.txt"],
+      ["cmake-build", "cmake", "--build build --config Debug", "CMakeLists.txt"],
+      ["clang-tidy", "clang-tidy", "-p build --quiet --warnings-as-errors=* src/sum.cpp tests/sum_test.cpp", ".clang-tidy"],
+      ["ctest", "ctest", "--test-dir build --output-on-failure -C Debug", "CMakeLists.txt"],
+      ["clang-format", "clang-format", "--dry-run --Werror src/sum.cpp src/sum.h tests/sum_test.cpp", ".clang-format"],
+    ]);
+    // Tests registered in a subfolder's CMakeLists.txt; none registered gives no ctest gate.
+    expect(ids({ "CMakeLists.txt": "project(x C)\nadd_subdirectory(tests)\n", "tests/CMakeLists.txt": "add_test(NAME a COMMAND a)\n" }).map(([id, , , source]) => `${id} ${source}`)).toEqual([
+      "cmake-configure CMakeLists.txt",
+      "cmake-build CMakeLists.txt",
+      "ctest tests/CMakeLists.txt",
+    ]);
+    expect(ids({ "CMakeLists.txt": "project(x C)\nadd_executable(x main.c)\n" }).map(([id]) => id)).toEqual(["cmake-configure", "cmake-build"]);
+    // The Visual Studio generators write no compilation database for clang-tidy.
+    expect(cmakeGates(project(CMAKE), "win32").map((s) => `${s.check.id} ${s.preselected}`)).toEqual([
+      "cmake-configure true",
+      "cmake-build true",
+      "clang-tidy false",
+      "ctest true",
+    ]);
+  });
+
+  test("a Makefile project keeps its targets, with clang-format on top", () => {
+    expect(ids({ Makefile: "test:\n\t./run_tests\n", ".clang-format": "BasedOnStyle: LLVM\n", "src/a.c": "" })).toEqual([
+      ["tests", "make", "test", 'Makefile target "test"'],
+      ["clang-format", "clang-format", "--dry-run --Werror src/a.c", ".clang-format"],
+    ]);
+  });
+
+  test("clang-format runs per task with its fixer on the task's file; clang-tidy after integration; CTest is the test check", () => {
+    const all = checks(CMAKE);
+    const byId = (id: string) => all.find((c) => c.id === id) as Check;
+    expect(isStaticCheck(byId("clang-format")) && !isWholeUnitCheck(byId("clang-format"))).toBe(true);
+    expect(isStaticCheck(byId("clang-tidy")) && isWholeUnitCheck(byId("clang-tidy"))).toBe(true);
+    expect(isTestCheck(byId("ctest")) && !isStaticCheck(byId("ctest"))).toBe(true);
+    for (const id of ["cmake-configure", "cmake-build"]) expect(isStaticCheck(byId(id))).toBe(false);
+    expect(fixerCommand(byId("clang-format").fix!, "src/sum.cpp")).toEqual({ executable: "clang-format", args: ["-i", "src/sum.cpp"] });
+    const feature = all.map((c) => ({ ...c, scope: "feature" as const }));
+    expect(styleClaimShown("the code is clang-format-formatted and clang-tidy reports nothing", feature)).toBe(true);
+    expect(styleClaimShown("clang-tidy reports nothing", feature.filter((c) => c.id !== "clang-tidy"))).toBe(false);
+    // CTest selects tests by name, not file, and runs what the build gate built: no written-tests check.
+    expect(plannedWrittenTests([byId("ctest")], [{ path: "tests/max_test.cpp", action: "create" }])).toBeNull();
+  });
+
+  test("an edited C++ file is checked on its changed lines by clang-format's --lines", () => {
+    const files = { ...CMAKE, "src/sum.cpp": '#include "sum.h"\nint sum(int a, int b) { return a + b; }\nint  max(int a,int b){return a>b?a:b;}\n' };
+    const edited = formatWrittenChecks(project(files), [], [{ path: "src/sum.cpp", action: "modify" }], (c) => `/usr/bin/${c}`, () => CMAKE["src/sum.cpp"], () => true);
+    expect(edited.map((c) => [c.id, [c.executable, ...c.args].join(" "), [c.fix!.executable, ...c.fix!.args].join(" ")])).toEqual([
+      ["clang-format-lines", "clang-format --dry-run --Werror --lines=3:3 src/sum.cpp", "clang-format -i --lines=3:3"],
+    ]);
+  });
+
+  // CTest 3.28 with --output-on-failure over GoogleTest 1.14 binaries.
+  const CTEST_FAILED =
+    "Test project /w/build\n    Start 1: SumTest.Adds\n1/4 Test #1: SumTest.Adds .....................   Passed    0.01 sec\n    Start 2: SumTest.Commutes\n2/4 Test #2: SumTest.Commutes .................***Failed    0.01 sec\nRunning main() from ./googletest/src/gtest_main.cc\nNote: Google Test filter = SumTest.Commutes\n[==========] Running 1 test from 1 test suite.\n[ RUN      ] SumTest.Commutes\n/w/tests/sum_test.cpp:4: Failure\nExpected equality of these values:\n  sum(2, 2)\n    Which is: 4\n  3\n\n[  FAILED  ] SumTest.Commutes (5 ms)\n[==========] 1 test from 1 test suite ran. (5 ms total)\n[  PASSED  ] 0 tests.\n[  FAILED  ] 1 test, listed below:\n[  FAILED  ] SumTest.Commutes\n\n 1 FAILED TEST\n\n    Start 3: SumTest.Later\n3/4 Test #3: SumTest.Later ....................***Skipped   0.01 sec\n    Start 4: SumTest.Slow\n4/4 Test #4: SumTest.Slow .....................***Not Run (Disabled)   0.00 sec\n\n67% tests passed, 1 tests failed out of 3\n\nTotal Test time (real) =   0.04 sec\n\nThe following tests did not run:\n\t  3 - SumTest.Later (Skipped)\n\t  4 - SumTest.Slow (Disabled)\n\nThe following tests FAILED:\n\t  2 - SumTest.Commutes (Failed)\nErrors while running CTest\n";
+  // A GoogleTest binary run on its own.
+  const GTEST_FAILED =
+    "Running main() from ./googletest/src/gtest_main.cc\n[==========] Running 3 tests from 1 test suite.\n[----------] Global test environment set-up.\n[----------] 3 tests from SumTest\n[ RUN      ] SumTest.Adds\n[       OK ] SumTest.Adds (0 ms)\n[ RUN      ] SumTest.Commutes\n/w/tests/sum_test.cpp:4: Failure\nExpected equality of these values:\n  sum(2, 2)\n    Which is: 4\n  3\n\n[  FAILED  ] SumTest.Commutes (0 ms)\n[ RUN      ] SumTest.Later\n/w/tests/sum_test.cpp:5: Skipped\nnot ready\n\n[  SKIPPED ] SumTest.Later (0 ms)\n[ DISABLED ] SumTest.DISABLED_Slow\n[----------] 3 tests from SumTest (0 ms total)\n\n[----------] Global test environment tear-down\n[==========] 3 tests from 1 test suite ran. (0 ms total)\n[  PASSED  ] 1 test.\n[  SKIPPED ] 1 test, listed below:\n[  SKIPPED ] SumTest.Later\n[  FAILED  ] 1 test, listed below:\n[  FAILED  ] SumTest.Commutes\n\n 1 FAILED TEST\n  YOU HAVE 1 DISABLED TEST\n\n";
+
+  test("CTest's summary gives the count, the tests that ran and the failed names, with one signature as tests grow", () => {
+    expect([testCount(CTEST_FAILED), testsRan(CTEST_FAILED), failedTests(CTEST_FAILED)]).toEqual([
+      { tool: "ctest", count: 3 },
+      { tool: "ctest", count: 2 },
+      { tool: "ctest", names: ["SumTest.Commutes"] },
+    ]);
+    expect(timedOutFailure(CTEST_FAILED)).toBe(true);
+    const grown = CTEST_FAILED.replace("1/4 Test #1", "    Start 5: SumTest.Max\n5/5 Test #5: SumTest.Max ......................   Passed    0.02 sec\n1/5 Test #1")
+      .replaceAll(/(\d)\/4 Test/g, "$1/5 Test")
+      .replace("67% tests passed, 1 tests failed out of 3", "75% tests passed, 1 tests failed out of 4")
+      .replace("(5 ms)", "(3 ms)");
+    expect(testCount(grown)).toEqual({ tool: "ctest", count: 4 });
+    expect(failureSignature(grown, "/w")).toBe(failureSignature(CTEST_FAILED, "/w"));
+    expect(convergenceSignature(grown)).toBe(convergenceSignature(CTEST_FAILED));
+    expect(failedTests(CTEST_FAILED.replace("(Failed)", "(SEGFAULT)"))?.names).toEqual(["SumTest.Commutes"]);
+  });
+
+  test("a passing CTest run is counted in both summary forms, without its disabled tests", () => {
+    // Newer CTest drops ", 0 tests failed" from a run without failures (seen on the CI runner).
+    const passing = "Test project /w/build\n    Start 1: SumTest.Adds\n1/3 Test #1: SumTest.Adds .....................   Passed    0.00 sec\n    Start 2: SumTest.Later\n2/3 Test #2: SumTest.Later ....................***Skipped   0.00 sec\n    Start 3: SumTest.Slow\n3/3 Test #3: SumTest.Slow .....................***Not Run (Disabled)   0.00 sec\n\n100% tests passed out of 2\n\nTotal Test time (real) =   0.01 sec\n\nThe following tests did not run:\n\t  2 - SumTest.Later (Skipped)\n\t  3 - SumTest.Slow (Disabled)\n";
+    for (const output of [passing, passing.replace("100% tests passed out of 2", "100% tests passed, 0 tests failed out of 2")])
+      expect([testCount(output), testsRan(output), failedTests(output)?.names ?? []]).toEqual([{ tool: "ctest", count: 2 }, { tool: "ctest", count: 1 }, []]);
+    expect(failureSignature(passing.replace("out of 2", "out of 3"), "/w")).toBe(failureSignature(passing, "/w"));
+  });
+
+  test("a GoogleTest binary's own summary is read when CTest's is not there", () => {
+    expect([testCount(GTEST_FAILED), testsRan(GTEST_FAILED), failedTests(GTEST_FAILED)]).toEqual([
+      { tool: "gtest", count: 3 },
+      { tool: "gtest", count: 2 },
+      { tool: "gtest", names: ["SumTest.Commutes"] },
+    ]);
+    const grown = GTEST_FAILED.replace("Running 3 tests", "Running 4 tests").replace("3 tests from SumTest\n", "4 tests from SumTest\n[ RUN      ] SumTest.Max\n[       OK ] SumTest.Max (0 ms)\n").replace("3 tests from 1 test suite ran", "4 tests from 1 test suite ran").replace("[  PASSED  ] 1 test.", "[  PASSED  ] 2 tests.");
+    expect(failureSignature(grown, "/w")).toBe(failureSignature(GTEST_FAILED, "/w"));
+    expect(failedTests("[  FAILED  ] Ranges/SumTest.Adds/0, where GetParam() = 4 (0 ms)\n")?.names ?? failedTests("[==========] 1 test from 1 test suite ran.\n[  FAILED  ] Ranges/SumTest.Adds/0, where GetParam() = 4 (0 ms)\n")?.names).toEqual(["Ranges/SumTest.Adds/0"]);
+  });
+
+  test("a test the build did not build and a compiler error are build failures, not failed tests", () => {
+    const notBuilt = "Test project /w/build\n    Start 1: sum_adds\nCould not find executable /w/build/sum_test\nUnable to find executable: /w/build/sum_test\n1/1 Test #1: sum_adds .........................***Not Run   0.00 sec\n\n0% tests passed, 1 tests failed out of 1\n\nThe following tests FAILED:\n\t  1 - sum_adds (Not Run)\nErrors while running CTest\n";
+    expect([buildRunner(notBuilt), failedTests(notBuilt)?.names, testsRan(notBuilt)]).toEqual(["ctest", [], { tool: "ctest", count: 0 }]);
+    const gcc = "/w/tests/sum_test.cpp:3:33: error: 'sum3' was not declared in this scope; did you mean 'sum'?\ngmake[2]: *** [CMakeFiles/sum_test.dir/build.make:76: CMakeFiles/sum_test.dir/tests/sum_test.cpp.o] Error 1\n";
+    expect(buildFailure(gcc)).toEqual(["/w/tests/sum_test.cpp:3:33: error: 'sum3' was not declared in this scope; did you mean 'sum'?"]);
+    expect(buildFailure("C:\\w\\tests\\sum_test.cpp(3,33): error C3861: 'sum3': identifier not found [C:\\w\\build\\sum_test.vcxproj]\n")).not.toBeNull();
+  });
+
+  test("no registered test is no failing suite", () => {
+    expect(noTestsCollected("Test project /w/build\nNo tests were found!!!\n")).toBe(true);
+    expect(noTestsCollected("[==========] 0 tests from 0 test suites ran. (0 ms total)\n[  PASSED  ] 0 tests.\n")).toBe(true);
+    expect(noTestsCollected(CTEST_FAILED)).toBe(false);
+  });
+
+  test("clang-tidy's findings are counted by severity, a compiler's own warnings are not", () => {
+    const tidy = "[1/2] Processing file /w/src/sum.cpp.\n2 warnings generated.\n/w/src/sum.cpp:3:13: error: statement should be inside braces [readability-braces-around-statements,-warnings-as-errors]\n    3 |   if (a > b) return a + b;\n/w/src/sum.cpp:4:3: warning: narrowing conversion [bugprone-narrowing-conversions]\n";
+    expect(diagnosticCount(tidy)).toEqual({ tool: "clang-tidy", count: 2, errors: 1 });
+    expect(diagnosticCount("/w/src/a.c:3:7: warning: unused variable 'x' [-Wunused-variable]\n")?.tool).not.toBe("clang-tidy");
+    expect(failureSignature(tidy.replace("[1/2]", "[2/3]").replace("2 warnings", "5 warnings"), "/w")).toBe(failureSignature(tidy, "/w"));
+  });
+
+  test("GTEST_SKIP, DISABLED_ and NOLINT are integrity findings; a platform guard is not", () => {
+    const before = '#include <gtest/gtest.h>\nTEST(SumTest, Adds) {\n  EXPECT_EQ(sum(1, 2), 3);\n}\n';
+    const rules = (after: string) => scanTestIntegrity([{ path: "tests/sum_test.cpp", before, after }]).map((f) => f.rule);
+    expect(rules(before.replace("  EXPECT", '  GTEST_SKIP() << "later";\n  EXPECT'))).toContain("skip");
+    expect(rules(before.replace("TEST(SumTest, Adds)", "TEST(SumTest, DISABLED_Adds)"))).toContain("skip");
+    expect(rules(before.replace("  EXPECT", "  // NOLINTNEXTLINE(bugprone-*)\n  EXPECT"))).toContain("suppression");
+    expect(rules(before.replace("  EXPECT", "#ifdef _WIN32\n  GTEST_SKIP() << \"POSIX paths\";\n#endif\n  EXPECT"))).not.toContain("skip");
+    const source = '#include "sum.h"\nint sum(int a, int b) { return a + b; } // NOLINT\n';
+    expect(checkBuiltinRules([{ path: "src/sum.cpp", content: source, before: null }], {}).map((f) => f.rule)).toContain("lint-suppression");
+    const swallowed = "int parse(const char* s) {\n  try {\n    return std::stoi(s);\n  } catch (...) {\n  }\n  return 0;\n}\n";
+    expect(checkBuiltinRules([{ path: "src/parse.cpp", content: swallowed, before: null }], {}).map((f) => f.rule)).toContain("empty-catch");
+  });
+
+  test("a CMake project gets the language review, and a build tree is no source a check changes", async () => {
+    expect(detectLanguages(project({ "CMakeLists.txt": "" }))).toEqual(["cpp"]);
+    expect(detectLanguages(project({ "meson.build": "" }))).toEqual(["cpp"]);
+    expect(touchesLanguageFiles(["src/sum.c"]) && touchesLanguageFiles(["include/sum.hpp"])).toBe(true);
+    const root = project({ "src/sum.c": "int x;\n", "build/CMakeCache.txt": "", "build/sum.o": "", "out/notes.txt": "" });
+    expect(Object.keys(await sourceManifest(root)).sort()).toEqual(["out/notes.txt", "src/sum.c"]);
+  });
+});
+
 // #1753: a plain SwiftPM, Mix, Dart, Zig, dune or Bundler project has no Makefile, justfile or CI
 // run step, so the runner fallback found nothing and no test gate was suggested.
 describe("gate matrix: SwiftPM, Mix, Dart, Zig, dune and Bundler (#1753)", () => {
@@ -1568,6 +2077,78 @@ describe("gate matrix: SQLFluff and dbt (#1499)", () => {
     expect(failureSignature(PROVE(2, 2), "/repo")).not.toBe(failureSignature(PROVE(2, 2).replaceAll("Failed: 1", "Failed: 2"), "/repo"));
     expect(noTestsCollected("Files=0, Tests=0,  0 wallclock secs ( 0.00 usr +  0.00 sys =  0.00 CPU)\nResult: NOTESTS\n")).toBe(true);
     expect(noTestsCollected(PROVE(2, 2))).toBe(false);
+  });
+});
+
+describe("gate matrix: Pester and PSScriptAnalyzer (#1498)", () => {
+  const exe = pwshExecutable();
+  const ids = (files: Record<string, string>) =>
+    detectGates(project(files)).map((s) => [s.check.id, s.source, s.preselected]);
+  const TEST = "Describe 'Get-Sum' {\n  It 'adds' { Get-Sum -A 1 -B 2 | Should -Be 3 }\n}\n";
+  test("Pester runs when a *.Tests.ps1 is at the root or in a test folder; the analyzer is preselected with its settings only", () => {
+    expect(ids({ "tests/Sum.Tests.ps1": TEST })).toEqual([
+      ["pester", "tests/*.Tests.ps1", true],
+      ["psscriptanalyzer", "tests/*.Tests.ps1", false],
+    ]);
+    expect(ids({ "Sum.Tests.ps1": TEST, "PSScriptAnalyzerSettings.psd1": "@{}\n" })).toEqual([
+      ["pester", "*.Tests.ps1", true],
+      ["psscriptanalyzer", "PSScriptAnalyzerSettings.psd1", true],
+    ]);
+    expect(ids({ "Sum.psd1": "@{ ModuleVersion = '1.0.0' }\n" })).toEqual([["psscriptanalyzer", "Sum.psd1", false]]);
+    expect(ids({ "src/deep/Sum.ps1": "function Get-Sum {}\n" })).toEqual([]);
+    const [pester] = detectGates(project({ "tests/Sum.Tests.ps1": TEST })).map((s) => s.check);
+    expect(pester && [pester.executable, ...pester.args.slice(0, 3)]).toEqual([exe, "-NoProfile", "-NonInteractive", "-Command"]);
+    // Plaintext: Pester colours its output even when redirected; no -CI, which writes testResults.xml.
+    expect(pester?.args.at(-1)).toBe(PESTER_RUN);
+    expect(PESTER_RUN).toContain("RenderMode = 'Plaintext'");
+    // A CI runner's annotations (`::error::[-] ...`) would hide the failed tests (#1498).
+    expect(PESTER_RUN).toContain("CIFormat = 'None'");
+    expect(PESTER_RUN).not.toContain("-CI");
+  });
+
+  test("the analyzer is a static check that covers each task's scripts, and its fixer takes the file", () => {
+    const checks = detectGates(project({ "tests/Sum.Tests.ps1": TEST, "PSScriptAnalyzerSettings.psd1": "@{}\n" })).map((s) => s.check);
+    const byId = (id: string) => checks.find((c) => c.id === id) as Check;
+    const lint = byId("psscriptanalyzer");
+    expect(isStaticCheck(lint) && !isWholeUnitCheck(lint)).toBe(true);
+    expect(isStaticCheck(byId("pester"))).toBe(false);
+    // Parse errors fail the gate; Information (a missing help comment) does not.
+    expect(lint.args.at(-1)).toContain("-Severity ParseError,Error,Warning -EnableExit");
+    expect(fixerCommand(lint.fix!, "src/Sum.ps1")).toEqual({
+      executable: exe,
+      args: ["-NoProfile", "-NonInteractive", "-Command", "Invoke-ScriptAnalyzer", "-Fix", "-Path", "src/Sum.ps1"],
+    });
+    const covering = (path: string) =>
+      coveringChecks({ checks } as RunPolicy, { writes: [{ path, action: "create" }] }).map((c) => c.id);
+    expect(covering("src/Sum.ps1")).toEqual(["psscriptanalyzer"]);
+    expect(covering("README.md")).toEqual([]);
+  });
+
+  test("the written-tests check runs only the task's Pester files, and leaves a project's own script alone", () => {
+    const root = project({ "tests/Sum.Tests.ps1": TEST, "tests/Diff.Tests.ps1": TEST });
+    const checks = detectGates(root).filter((s) => s.preselected).map((s) => s.check);
+    const written = writtenTestsCheck(root, checks, [{ path: "tests/Diff.Tests.ps1", action: "create" }]);
+    expect(written?.args.at(-1)).toBe(pesterOn(["./tests/Diff.Tests.ps1"]));
+    expect(pesterOn(["./tests/it's.Tests.ps1"])).toContain("Path = @('./tests/it''s.Tests.ps1')");
+    const own = { ...(checks[0] as Check), args: ["-NoProfile", "-Command", "./build.ps1 -Task Test"] };
+    expect(writtenTestsCheck(root, [own], [{ path: "tests/Diff.Tests.ps1", action: "create" }])).toBeNull();
+  });
+
+  // Pasted from Pester 5.9.1 (RenderMode Plaintext) and PSScriptAnalyzer 1.24 through the gate's format.
+  const PESTER = (passed: number, discovered: number, ms: number) =>
+    JSON.parse("\"\\nStarting discovery in 1 files.\\nDiscovery found 3 tests in 272ms.\\nRunning tests.\\n[-] Get-Sum.is commutative 53ms (50ms|4ms)\\n Expected 4, but got 3.\\n at It 'is commutative' { Get-Sum -A 2 -B 1 | Should -Be 4 }, /work/app/tests/Sum.Tests.ps1:4\\n at <ScriptBlock>, /work/app/tests/Sum.Tests.ps1:4\\nTests completed in 759ms\\nTests Passed: 1, Failed: 1, Skipped: 1, Inconclusive: 0, NotRun: 0\\n\"").replace("Discovery found 3 tests", `Discovery found ${discovered} tests`).replace("Tests Passed: 1,", `Tests Passed: ${passed},`).replaceAll("53ms (50ms|4ms)", `${ms}ms (${ms - 3}ms|3ms)`);
+  const BUILD = "Pester v5.9.1\n\nStarting discovery in 2 files.\n[-] Discovery in /work/app/tests/Broken.Tests.ps1 failed with:\nSystem.Management.Automation.ParseException: At /work/app/tests/Broken.Tests.ps1:1 char:14\n+ Describe 'x' {\n   at System.Management.Automation.ExceptionHandlingOps.CheckActionPreference(FunctionContext funcContext, Exception exception)\nDiscovery found 1 tests in 222ms.\nRunning tests.\nRunning tests from '/work/app/tests/Load.Tests.ps1'\n[-] /work/app/tests/Load.Tests.ps1 failed with:\nFileNotFoundException: The specified module './nothere.psm1' was not loaded because no valid module file was found in any module directory.\nat <ScriptBlock>, /work/app/tests/Load.Tests.ps1:1\nTests completed in 468ms\nTests Passed: 0, Failed: 1, Skipped: 0, Inconclusive: 0, NotRun: 0\nContainer failed: 2\n  - /work/app/tests/Load.Tests.ps1";
+  const LINT_OUTPUT =
+    "/work/app/src/Bad.ps1:2:9: Warning PSReviewUnusedParameter: The parameter 'x' has been declared but not used.\n/work/app/src/Bad.ps1:4:1: ParseError MissingEndCurlyBrace: Missing closing '}' in statement block or type definition.\n";
+  test("Pester's counts and failed test, a signature without its durations or growing counts, and a container that failed", () => {
+    expect(testCount(PESTER(1, 3, 53))).toEqual({ tool: "pester", count: 3 });
+    expect(failedTests(PESTER(1, 3, 53))).toEqual({ tool: "pester", names: ["Get-Sum.is commutative"] });
+    expect(failureSignature(PESTER(1, 3, 53), "/work/app")).toBe(failureSignature(PESTER(2, 4, 36), "/work/app"));
+    expect(failureSignature(PESTER(1, 3, 53), "/work/app")).not.toBe(failureSignature(PESTER(1, 3, 53).replace("Expected 4", "Expected 5"), "/work/app"));
+    expect(buildRunner(BUILD)).toBe("pester");
+    expect(buildFailure(BUILD)?.length).toBeGreaterThan(0);
+    expect(buildRunner(PESTER(1, 3, 53))).toBeNull();
+    expect(diagnosticCount(LINT_OUTPUT)).toEqual({ tool: "psscriptanalyzer", count: 2, errors: 1 });
   });
 });
 
@@ -3173,6 +3754,268 @@ const available = (needs: string[][]) =>
   });
 
 describe.skipIf(!toolchains)("gate matrix: toolchains", () => {
+  // #1491: the Composer gates and the PHPUnit, Pint and PHPStan parsers against the real tools'
+  // output. `composer install` needs the network, as in the CI job.
+  test.skipIf(!available([["php", "--version"], ["composer", "--version"]]))(
+    "a Composer project's detected gates run, and their output reads as the parsers expect (#1491)",
+    async () => {
+      const testClass = (name: string, body: string) =>
+        `<?php\n\ndeclare(strict_types=1);\n\nnamespace App\\Tests;\n\nuse PHPUnit\\Framework\\TestCase;\n\nfinal class ${name} extends TestCase\n{\n${body}}\n`;
+      const adds = "    public function test_adds(): void\n    {\n        self::assertSame(3, \\App\\sum(1, 2));\n    }\n";
+      const commutes = "    public function test_commutes(): void\n    {\n        self::assertSame(3, \\App\\sum(2, 2));\n    }\n";
+      const root = project({
+        "composer.json": JSON.stringify({
+          name: "fixture/sum",
+          autoload: { files: ["src/sum.php"] },
+          "require-dev": { "phpunit/phpunit": "^11", "laravel/pint": "^1", "phpstan/phpstan": "^2" },
+          config: { "allow-plugins": false },
+        }),
+        "phpunit.xml": '<?xml version="1.0"?>\n<phpunit bootstrap="vendor/autoload.php" cacheDirectory=".phpunit.cache">\n  <testsuites>\n    <testsuite name="unit">\n      <directory>tests</directory>\n    </testsuite>\n  </testsuites>\n</phpunit>\n',
+        "phpstan.neon": "parameters:\n  level: 5\n  paths:\n    - src\n",
+        "src/sum.php": "<?php\n\ndeclare(strict_types=1);\n\nnamespace App;\n\nfunction sum(int $a, int $b): int\n{\n    return $a + $b;\n}\n",
+        "tests/SumTest.php": testClass("SumTest", adds + "\n" + commutes),
+      });
+      const install = spawnSync("composer", ["install", "--no-interaction", "--no-progress", "--prefer-dist"], { cwd: root, encoding: "utf8", timeout: 600_000 });
+      expect({ status: install.status, output: install.status === 0 ? "" : install.stdout + install.stderr }).toEqual({ status: 0, output: "" });
+      const gates = detectGates(root).map((s) => s.check);
+      expect(gates.map((c) => c.id)).toEqual(["pint", "phpstan", "phpunit"]);
+      const byId = (id: string) => gates.find((c) => c.id === id) as Check;
+      const run = async (check: Check) => executeGate(root, check, new AbortController().signal);
+
+      const failing = await run(byId("phpunit"));
+      expect(failing.status).toBe("failed");
+      expect(testCount(failing.outputTail)).toEqual({ tool: "phpunit", count: 2 });
+      expect(failedTests(failing.outputTail)).toEqual({ tool: "phpunit", names: ["App\\Tests\\SumTest::test_commutes"] });
+      expect(timedOutFailure(failing.outputTail)).toBe(true);
+      writeFileSync(join(root, "tests/MaxTest.php"), testClass("MaxTest", "    public function test_max(): void\n    {\n        self::assertSame(2, max(1, 2));\n    }\n"));
+      const grown = await run(byId("phpunit"));
+      expect(testCount(grown.outputTail)).toEqual({ tool: "phpunit", count: 3 });
+      expect(failureSignature(grown.outputTail, root)).toBe(failureSignature(failing.outputTail, root));
+      expect(convergenceSignature(grown.outputTail)).toBe(convergenceSignature(failing.outputTail));
+      writeFileSync(join(root, "tests/SumTest.php"), testClass("SumTest", adds));
+      const passing = await run(byId("phpunit"));
+      expect([passing.status, testsRan(passing.outputTail)]).toEqual(["passed", { tool: "phpunit", count: 2 }]);
+
+      const written = affectedTestCheck([byId("phpunit")], ["tests/MaxTest.php"]) as Check;
+      const one = await run(written);
+      expect([one.status, testsRan(one.outputTail)]).toEqual(["passed", { tool: "phpunit", count: 1 }]);
+      const missing = await run({ ...byId("phpunit"), args: ["vendor/bin/phpunit", "later"] });
+      expect(missingPlannedPaths(missing.outputTail, [{ writes: [{ path: "later/LaterTest.php", action: "create" }] }])).toEqual(["later/LaterTest.php"]);
+      writeFileSync(join(root, "tests/BrokenTest.php"), "<?php\nfinal class BrokenTest {\n");
+      const broken = await run(byId("phpunit"));
+      expect([broken.status, buildRunner(broken.outputTail)]).toEqual(["failed", "phpunit"]);
+      rmSync(join(root, "tests/BrokenTest.php"));
+
+      expect((await run(byId("pint"))).status).toBe("passed");
+      writeFileSync(join(root, "src/max.php"), "<?php\nnamespace App;\nfunction max2( int $a,int $b ):int { return $a>$b?$a:$b; }\n");
+      expect((await run(byId("pint"))).status).toBe("failed");
+      const fix = fixerCommand(byId("pint").fix!, "src/max.php");
+      expect(spawnSync(fix.executable, fix.args, { cwd: root }).status).toBe(0);
+      expect((await run(byId("pint"))).status).toBe("passed");
+
+      const clean = await run(byId("phpstan"));
+      expect([clean.status, diagnosticCount(clean.outputTail)]).toEqual(["passed", { tool: "phpstan", count: 0, errors: 0 }]);
+      writeFileSync(join(root, "src/bad.php"), "<?php\n\ndeclare(strict_types=1);\n\nnamespace App;\n\nfunction bad(): int\n{\n    return 'x';\n}\n");
+      const dirty = await run(byId("phpstan"));
+      expect([dirty.status, diagnosticCount(dirty.outputTail)]).toEqual(["failed", { tool: "phpstan", count: 1, errors: 1 }]);
+    },
+    900_000,
+  );
+
+  // #1495: the LuaRocks gates and the busted, luacheck and StyLua parsers against the real tools.
+  test.skipIf(!available([["busted", "--version"], ["luacheck", "--version"], ["stylua", "--version"]]))(
+    "a Lua project's detected gates run, and their output reads as the parsers expect (#1495)",
+    async () => {
+      const spec = (body: string) => `local sum = require("sum")\n\ndescribe("sum", function()\n${body}end)\n`;
+      const adds = '\tit("adds", function()\n\t\tassert.are.equal(3, sum(1, 2))\n\tend)\n';
+      const commutes = '\tit("commutes", function()\n\t\tassert.are.equal(5, sum(2, 2))\n\tend)\n';
+      const root = project({
+        "calc-0.1-1.rockspec": "package = 'calc'\nversion = '0.1-1'\ntest_dependencies = { 'busted' }\n",
+        ".busted": "return {\n\tdefault = {\n\t\tlpath = './src/?.lua',\n\t},\n}\n",
+        ".luacheckrc": "std = 'max+busted'\n",
+        "stylua.toml": "",
+        "src/sum.lua": "local function sum(a, b)\n\treturn a + b\nend\n\nreturn sum\n",
+        "spec/sum_spec.lua": spec(adds + commutes),
+      });
+      const gates = detectGates(root).map((s) => s.check);
+      expect(gates.map((c) => c.id)).toEqual(["stylua", "luacheck", "busted"]);
+      const byId = (id: string) => gates.find((c) => c.id === id) as Check;
+      const run = async (check: Check) => executeGate(root, check, new AbortController().signal);
+
+      const failing = await run(byId("busted"));
+      expect(failing.status).toBe("failed");
+      expect([testCount(failing.outputTail), failedTests(failing.outputTail)]).toEqual([{ tool: "busted", count: 2 }, { tool: "busted", names: ["sum commutes"] }]);
+      expect(timedOutFailure(failing.outputTail)).toBe(true);
+      writeFileSync(join(root, "spec/max_spec.lua"), 'describe("max", function()\n\tit("picks", function()\n\t\tassert.are.equal(2, math.max(1, 2))\n\tend)\nend)\n');
+      const grown = await run(byId("busted"));
+      expect(testCount(grown.outputTail)).toEqual({ tool: "busted", count: 3 });
+      expect(failureSignature(grown.outputTail, root)).toBe(failureSignature(failing.outputTail, root));
+      expect(convergenceSignature(grown.outputTail)).toBe(convergenceSignature(failing.outputTail));
+      writeFileSync(join(root, "spec/sum_spec.lua"), spec(adds));
+      const passing = await run(byId("busted"));
+      expect([passing.status, testsRan(passing.outputTail)]).toEqual(["passed", { tool: "busted", count: 2 }]);
+
+      const one = await run(affectedTestCheck([byId("busted")], ["spec/max_spec.lua"]) as Check);
+      expect([one.status, testsRan(one.outputTail)]).toEqual(["passed", { tool: "busted", count: 1 }]);
+      const missing = await run({ ...byId("busted"), args: ["spec/later_spec.lua"] });
+      expect(missingPlannedPaths(missing.outputTail, [{ writes: [{ path: "spec/later_spec.lua", action: "create" }] }])).toEqual(["spec/later_spec.lua"]);
+      writeFileSync(join(root, "spec/broken_spec.lua"), 'describe("x", function()\n\tit("y", function(\nend)\n');
+      const broken = await run(byId("busted"));
+      expect([broken.status, buildRunner(broken.outputTail)]).toEqual(["failed", "busted"]);
+      rmSync(join(root, "spec/broken_spec.lua"));
+
+      const clean = await run(byId("luacheck"));
+      expect([clean.status, diagnosticCount(clean.outputTail)]).toEqual(["passed", { tool: "luacheck", count: 0, errors: 0 }]);
+      writeFileSync(join(root, "src/bad.lua"), "local unused = 1\nglobal_value = 2\n");
+      const dirty = await run(byId("luacheck"));
+      expect([dirty.status, diagnosticCount(dirty.outputTail)]).toEqual(["failed", { tool: "luacheck", count: 2, errors: 0 }]);
+      rmSync(join(root, "src/bad.lua"));
+
+      expect((await run(byId("stylua"))).status).toBe("passed");
+      writeFileSync(join(root, "src/max.lua"), "local function max2( a,b )\nreturn a>b and a or b end\nreturn max2\n");
+      expect((await run(byId("stylua"))).status).toBe("failed");
+      const fix = fixerCommand(byId("stylua").fix!, "src/max.lua");
+      expect(spawnSync(fix.executable, fix.args, { cwd: root }).status).toBe(0);
+      expect((await run(byId("stylua"))).status).toBe("passed");
+    },
+    120_000,
+  );
+
+  // #1497: the shell gates and the bats, ShellCheck and shfmt output against the real tools.
+  test.skipIf(process.platform === "win32" || !available([["bats", "--version"], ["shellcheck", "--version"], ["shfmt", "--version"]]))(
+    "a shell project's detected gates run, and their output reads as the parsers expect (#1497)",
+    async () => {
+      const bats = (body: string) => `#!/usr/bin/env bats\n\n${body}`;
+      const adds = '@test "adds" {\n  run bin/sum.sh 1 2\n  [ "$output" = "3" ]\n}\n';
+      const commutes = '\n@test "commutes" {\n  run bin/sum.sh 2 2\n  [ "$output" = "5" ]\n}\n';
+      const root = project({
+        ".shellcheckrc": "disable=SC1091\n",
+        ".editorconfig": "root = true\n\n[*.{sh,bats}]\nindent_style = space\nindent_size = 2\n",
+        "bin/sum.sh": '#!/usr/bin/env bash\nset -euo pipefail\necho "$(($1 + $2))"\n',
+        "test/sum.bats": bats(adds + commutes),
+      });
+      chmodSync(join(root, "bin/sum.sh"), 0o755);
+      const gates = detectGates(root).map((s) => s.check);
+      expect(gates.map((c) => c.id)).toEqual(["shellcheck", "shfmt", "bats"]);
+      const byId = (id: string) => gates.find((c) => c.id === id) as Check;
+      const run = async (check: Check) => executeGate(root, check, new AbortController().signal);
+
+      const failing = await run(byId("bats"));
+      expect(failing.status).toBe("failed");
+      expect([testCount(failing.outputTail), failedTests(failing.outputTail)]).toEqual([{ tool: "tap", count: 2 }, { tool: "tap", names: ["commutes"] }]);
+      writeFileSync(join(root, "test/max.bats"), bats('@test "max" {\n  [ "$(printf "1\\n2\\n" | sort -n | tail -1)" = "2" ]\n}\n'));
+      const grown = await run(byId("bats"));
+      expect(testCount(grown.outputTail)).toEqual({ tool: "tap", count: 3 });
+      expect(failureSignature(grown.outputTail, root)).toBe(failureSignature(failing.outputTail, root));
+      writeFileSync(join(root, "test/sum.bats"), bats(adds));
+      expect((await run(byId("bats"))).status).toBe("passed");
+      const one = await run(affectedTestCheck([byId("bats")], ["test/max.bats"]) as Check);
+      expect([one.status, testsRan(one.outputTail)]).toEqual(["passed", { tool: "tap", count: 1 }]);
+      const missing = await run({ ...byId("bats"), args: ["test/later.bats"] });
+      expect(missingPlannedPaths(missing.outputTail, [{ writes: [{ path: "test/later.bats", action: "create" }] }])).toEqual(["test/later.bats"]);
+
+      const clean = await run(byId("shellcheck"));
+      expect(clean.status).toBe("passed");
+      writeFileSync(join(root, "bin/sum.sh"), "#!/usr/bin/env bash\necho $(($1 + $2))\nfor f in $(ls); do echo \"$f\"; done\n");
+      const dirty = await run(byId("shellcheck"));
+      expect([dirty.status, diagnosticCount(dirty.outputTail)]).toEqual(["failed", { tool: "shellcheck", count: 1, errors: 1 }]);
+
+      writeFileSync(join(root, "bin/sum.sh"), '#!/usr/bin/env bash\necho "$(($1 + $2))"\n');
+      expect((await run(byId("shfmt"))).status).toBe("passed");
+      writeFileSync(join(root, "bin/max.sh"), "#!/bin/sh\nif [ $1 -gt $2 ]; then\necho $1\nfi\n");
+      expect((await run(byId("shfmt"))).status).toBe("failed");
+      const fix = fixerCommand(byId("shfmt").fix!, "bin/max.sh");
+      expect(spawnSync(fix.executable, fix.args, { cwd: root }).status).toBe(0);
+      expect((await run(byId("shfmt"))).status).toBe("passed");
+    },
+    120_000,
+  );
+
+  // #1490: the CMake, CTest, GoogleTest, clang-format and clang-tidy gates and parsers against the
+  // real tools. GoogleTest comes from the system (`libgtest-dev`), found by `find_package(GTest)`.
+  const cmakeTools = available([["cmake", "--version"], ["ctest", "--version"], ["clang-format", "--version"], ["clang-tidy", "--version"]]);
+  const gtest = (() => {
+    if (process.platform === "win32" || !cmakeTools) return false;
+    const dir = mkdtempSync(join(tmpdir(), "baked-gtest-"));
+    writeFileSync(join(dir, "CMakeLists.txt"), "cmake_minimum_required(VERSION 3.16)\nproject(probe CXX)\nfind_package(GTest REQUIRED)\n");
+    const found = spawnSync("cmake", ["-S", dir, "-B", join(dir, "build")], { stdio: "ignore", timeout: 120_000 }).status === 0;
+    rmSync(dir, { recursive: true, force: true });
+    return found;
+  })();
+  test.skipIf(!gtest)(
+    "a CMake project's detected gates run, and CTest, GoogleTest and clang-tidy output reads as the parsers expect (#1490)",
+    async () => {
+      const suite = (body: string) => `#include <gtest/gtest.h>\n\n#include "sum.h"\n\n${body}`;
+      const adds = "TEST(SumTest, Adds) { EXPECT_EQ(sum(1, 2), 3); }\n";
+      const commutes = "TEST(SumTest, Commutes) { EXPECT_EQ(sum(2, 2), 3); }\n";
+      const root = project({
+        "CMakeLists.txt": "cmake_minimum_required(VERSION 3.16)\nproject(sum CXX)\nset(CMAKE_CXX_STANDARD 17)\nenable_testing()\nfind_package(GTest REQUIRED)\nadd_library(sum src/sum.cpp)\ntarget_include_directories(sum PUBLIC src)\nadd_executable(sum_test tests/sum_test.cpp)\ntarget_link_libraries(sum_test sum GTest::gtest_main)\ninclude(GoogleTest)\ngtest_discover_tests(sum_test)\n",
+        ".clang-format": "BasedOnStyle: LLVM\n",
+        ".clang-tidy": "Checks: '-*,readability-braces-around-statements'\nHeaderFilterRegex: 'src/'\n",
+        "src/sum.h": "int sum(int a, int b);\n",
+        "src/sum.cpp": '#include "sum.h"\n\nint sum(int a, int b) { return a + b; }\n',
+        "tests/sum_test.cpp": suite(adds + commutes),
+      });
+      const gates = detectGates(root).map((s) => s.check);
+      expect(gates.map((c) => c.id)).toEqual(["cmake-configure", "cmake-build", "clang-tidy", "ctest", "clang-format"]);
+      const byId = (id: string) => gates.find((c) => c.id === id) as Check;
+      const run = async (check: Check) => executeGate(root, check, new AbortController().signal);
+      const build = async () => {
+        for (const id of ["cmake-configure", "cmake-build"]) {
+          const result = await run(byId(id));
+          expect([id, result.status, result.status === "passed" ? "" : result.outputTail]).toEqual([id, "passed", ""]);
+        }
+      };
+
+      await build();
+      const failing = await run(byId("ctest"));
+      expect(failing.status).toBe("failed");
+      expect([testCount(failing.outputTail), failedTests(failing.outputTail)]).toEqual([{ tool: "ctest", count: 2 }, { tool: "ctest", names: ["SumTest.Commutes"] }]);
+      expect(timedOutFailure(failing.outputTail)).toBe(true);
+      writeFileSync(join(root, "tests/sum_test.cpp"), suite(`${adds}${commutes}TEST(SumTest, Max) { EXPECT_EQ(std::max(1, 2), 2); }\n`));
+      await build();
+      const grown = await run(byId("ctest"));
+      expect(testCount(grown.outputTail)).toEqual({ tool: "ctest", count: 3 });
+      expect(failureSignature(grown.outputTail, root)).toBe(failureSignature(failing.outputTail, root));
+      expect(convergenceSignature(grown.outputTail)).toBe(convergenceSignature(failing.outputTail));
+      // A skipped test is counted and did not run; a DISABLED_ one is not counted.
+      writeFileSync(join(root, "tests/sum_test.cpp"), suite(`${adds}TEST(SumTest, Later) { GTEST_SKIP() << "not ready"; }\nTEST(SumTest, DISABLED_Slow) { EXPECT_EQ(1, 1); }\n`));
+      await build();
+      const passing = await run(byId("ctest"));
+      // The output is in the expectation when the summary is not read, as in build().
+      expect([passing.status, testCount(passing.outputTail), testsRan(passing.outputTail), testCount(passing.outputTail) ? "" : passing.outputTail]).toEqual(["passed", { tool: "ctest", count: 2 }, { tool: "ctest", count: 1 }, ""]);
+      // The test binary on its own prints GoogleTest's summary.
+      const binary = await run({ ...byId("ctest"), id: "sum-test", executable: join(root, "build", "sum_test"), args: [] });
+      expect([binary.status, testCount(binary.outputTail), testsRan(binary.outputTail)]).toEqual(["passed", { tool: "gtest", count: 2 }, { tool: "gtest", count: 1 }]);
+      // A build tree is no source a check changes.
+      expect(Object.keys(await sourceManifest(root)).some((path) => path.startsWith("build/"))).toBe(false);
+
+      writeFileSync(join(root, "tests/sum_test.cpp"), suite("TEST(SumTest, Adds) { EXPECT_EQ(sum3(1, 2), 3); }\n"));
+      const broken = await run(byId("cmake-build"));
+      expect([broken.status, buildFailure(broken.outputTail)?.[0]]).toEqual(["failed", expect.stringMatching(/sum_test\.cpp:\d+:\d+: error: .*sum3/)]);
+      writeFileSync(join(root, "tests/sum_test.cpp"), suite(adds));
+
+      expect((await run(byId("clang-tidy"))).status).toBe("passed");
+      writeFileSync(join(root, "src/sum.cpp"), '#include "sum.h"\n\nint sum(int a, int b) {\n  if (a < 0)\n    return b + a;\n  return a + b;\n}\n');
+      const tidy = await run(byId("clang-tidy"));
+      expect([tidy.status, diagnosticCount(tidy.outputTail)]).toEqual(["failed", { tool: "clang-tidy", count: 1, errors: 1 }]);
+      writeFileSync(join(root, "src/sum.cpp"), '#include "sum.h"\n\nint sum(int a, int b) { return a + b; }\n');
+
+      expect((await run(byId("clang-format"))).status).toBe("passed");
+      const clean = readFileSync(join(root, "src/sum.cpp"), "utf8");
+      writeFileSync(join(root, "src/sum.cpp"), `${clean}int  max2(int a,int b){return a>b?a:b;}\n`);
+      expect((await run(byId("clang-format"))).status).toBe("failed");
+      // The edited file is checked on the lines the task added, and its fixer formats only them.
+      const [lines] = formatWrittenChecks(root, [], [{ path: "src/sum.cpp", action: "modify" }], undefined, () => clean, () => true);
+      expect(lines?.args).toEqual(["--dry-run", "--Werror", "--lines=4:4", "src/sum.cpp"]);
+      expect((await run(lines as Check)).status).toBe("failed");
+      const fix = fixerCommand(byId("clang-format").fix!, "src/sum.cpp");
+      expect(spawnSync(fix.executable, fix.args, { cwd: root }).status).toBe(0);
+      expect((await run(byId("clang-format"))).status).toBe("passed");
+    },
+    600_000,
+  );
+
   // #1489: the host reads the JUnit reports a real Gradle run writes, since `gradle -q check` prints
   // no total on a passing run.
   test.skipIf(!available([["gradle", "--version"]]))("a real Gradle check gets its test reports appended (#1489)", async () => {
@@ -3290,6 +4133,33 @@ describe.skipIf(!toolchains)("gate matrix: toolchains", () => {
     expect((await executeGate(root, lint, new AbortController().signal)).status).toBe("passed");
     const missing = await executeGate(root, { ...lint, args: ["lint", "tests"] }, new AbortController().signal);
     expect(missingPlannedPaths(missing.outputTail, [{ writes: [{ path: "tests/test_orders.sql", action: "create" }] } as Task])).toEqual(["tests/test_orders.sql"]);
+  }, 300000);
+  test.skipIf(!available([[pwshExecutable(), "-NoProfile", "-NonInteractive", "-Command", "Import-Module Pester -MinimumVersion 5.5; Import-Module PSScriptAnalyzer"]]))("pwsh: Pester and PSScriptAnalyzer gates fail on a defect, the analyzer's fixer repairs the file, and a missing path names its task (#1498)", async () => {
+    const root = project({
+      "PSScriptAnalyzerSettings.psd1": "@{ Severity = @('Error', 'Warning') }\n",
+      "src/Sum.ps1": "function Get-Sum {\n  param([int]$A, [int]$B)\n  $A - $B\n}\nfunction Get-Item2 {\n  gci\n}\n",
+      "tests/Sum.Tests.ps1": "BeforeAll { . $PSScriptRoot/../src/Sum.ps1 }\nDescribe 'Get-Sum' {\n  It 'adds' { Get-Sum -A 1 -B 2 | Should -Be 3 }\n}\n",
+    });
+    const checks = detectGates(root).map((s) => s.check);
+    const pester = checks.find((c) => c.id === "pester");
+    const lint = checks.find((c) => c.id === "psscriptanalyzer");
+    if (!pester || !lint?.fix) throw new Error("no PowerShell gates");
+    const signal = new AbortController().signal;
+    const tests = await executeGate(root, pester, signal);
+    expect(tests.status).toBe("failed");
+    expect(testCount(tests.outputTail)).toEqual({ tool: "pester", count: 1 });
+    expect(failedTests(tests.outputTail)).toEqual({ tool: "pester", names: ["Get-Sum.adds"] });
+    const before = await executeGate(root, lint, signal);
+    expect(before.status).toBe("failed");
+    expect(diagnosticCount(before.outputTail)).toEqual({ tool: "psscriptanalyzer", count: 1, errors: 0 });
+    const fix = fixerCommand(lint.fix, "src/Sum.ps1");
+    expect(spawnSync(fix.executable, fix.args, { cwd: root, encoding: "utf8", timeout: 120000 }).status).toBe(0);
+    expect(readFileSync(join(root, "src/Sum.ps1"), "utf8")).toContain("Get-ChildItem");
+    expect((await executeGate(root, lint, signal)).status).toBe("passed");
+    writeFileSync(join(root, "src/Sum.ps1"), readFileSync(join(root, "src/Sum.ps1"), "utf8").replace("$A - $B", "$A + $B"));
+    expect((await executeGate(root, pester, signal)).status).toBe("passed");
+    const missing = await executeGate(root, { ...lint, args: [...lint.args.slice(0, -1), "Invoke-ScriptAnalyzer -Path ./lib -EnableExit"] }, signal);
+    expect(missingPlannedPaths(missing.outputTail, [{ writes: [{ path: "lib/Diff.ps1", action: "create" }] } as Task])).toEqual(["lib/Diff.ps1"]);
   }, 300000);
   test("pytest executes host rows and fails a wrong harness (#1596)", () => {
     const root = project({});
