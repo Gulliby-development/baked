@@ -2209,6 +2209,18 @@ export interface InitiativeStartBoundary {
     planCommittedTokens: number;
     releasedTokens: number;
     runs: { featureId: string; usedTokens: number; limitTokens: number; chargeTokens: number }[];
+    /**
+     * The dollar side (#2124): the task-call rate, what the dollar budget holds with open runs at
+     * their caps and with priced runs at their plan's tokens at that rate, and each priced run's
+     * amounts. Null without a dollar budget.
+     */
+    usd: {
+      taskRate: number | null;
+      limitCommittedUsd: number;
+      planCommittedUsd: number;
+      releasedUsd: number;
+      runs: { featureId: string; limitUsd: number; chargeUsd: number | null }[];
+    } | null;
     featureId: string | null;
     replayed: "pass" | "park" | null;
   } | null;
@@ -2752,6 +2764,16 @@ function replayPlanCharge(
       limitTokens,
       chargeTokens,
     })),
+    usd: charge.usd
+      ? {
+          ...charge.usd,
+          runs: charge.runs.map((r) => ({
+            featureId: r.featureId,
+            limitUsd: r.limitUsd ?? 0,
+            chargeUsd: r.chargeUsd ?? null,
+          })),
+        }
+      : null,
     featureId: target?.id ?? null,
     replayed: target
       ? gate(charged, { ...target, share: own?.share ?? null })

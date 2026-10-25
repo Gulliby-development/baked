@@ -86,7 +86,7 @@ import {
   SIZE_TASK_FACTOR,
   testVolumeText,
 } from "./estimate.js";
-import { initiativePriceSamples } from "./forecast.js";
+import { initiativePriceSamples, taskCallRate } from "./forecast.js";
 import { costGrowthLimit, guardGrowth, openGuardRoom, refreshedGrowth } from "./growth.js";
 import {
   applySplitEdit,
@@ -764,14 +764,26 @@ function splitTokens(byNeed: number[], lows: number[], remaining: number): numbe
  * the view records no plan charge or its limits, when the charge is already enforced (the view
  * is this one), or when it changes nothing. A record has no feature sizes: a split without an
  * estimate for every waiting feature weighs by their call shares, which `splitShares` divides
- * by size.
+ * by size. With a dollar side (#2124) the remaining dollars move by what the charge frees in
+ * dollars too.
  */
 export function planChargedGate(view: ShareGateView): ShareGateView | null {
   const charge = view.budget.planCharge;
   const limit = view.budget.limits?.maxTotalTokens;
-  if (!charge || charge.mode === "enforce" || charge.releasedTokens === 0 || limit === undefined)
+  const releasedUsd = charge?.usd?.releasedUsd ?? 0;
+  if (
+    !charge ||
+    charge.mode === "enforce" ||
+    (charge.releasedTokens === 0 && releasedUsd === 0) ||
+    limit === undefined
+  )
     return null;
   const tokens = Math.max(0, limit - charge.planCommittedTokens);
+  const cost = view.budget.cost;
+  const remainingUsd =
+    cost.capUsd === null || cost.remainingUsd === null || !charge.usd
+      ? cost.remainingUsd
+      : cents(Math.max(0, cost.capUsd - charge.usd.planCommittedUsd));
   const waiting = view.features.filter((f) => f.share !== null);
   const byNeed = waiting.every((f) => (f.need?.high ?? 0) > 0)
     ? waiting.map((f) => f.need?.high ?? 0)
@@ -788,6 +800,7 @@ export function planChargedGate(view: ShareGateView): ShareGateView | null {
     budget: {
       ...view.budget,
       remaining: { ...view.budget.remaining, tokens },
+      cost: { ...cost, remainingUsd },
       ...(pool ? { pool: { ...pool, committedTokens: charge.planCommittedTokens } } : {}),
     },
     features: view.features.map((f) =>
@@ -1987,29 +2000,53 @@ export class InitiativeService {
       ratio: charge.ratio,
       limitCommittedTokens: charge.limitCommittedTokens,
       planCommittedTokens: charge.planCommittedTokens,
-      runs: charge.runs.map(({ featureId, runId, usedTokens, limitTokens, chargeTokens }) => ({
-        featureId,
-        runId,
-        usedTokens,
-        limitTokens,
-        chargeTokens,
-      })),
+      ...(charge.usd ? { usd: charge.usd } : {}),
+      runs: charge.runs.map(
+        ({
+          featureId,
+          runId,
+          usedTokens,
+          limitTokens,
+          chargeTokens,
+          usedUsd,
+          limitUsd,
+          chargeUsd,
+        }) => ({
+          featureId,
+          runId,
+          usedTokens,
+          limitTokens,
+          chargeTokens,
+          ...(chargeUsd !== undefined ? { usedUsd, limitUsd, chargeUsd } : {}),
+        }),
+      ),
     };
     const amount = (n: number): string =>
       n >= 0 ? `frees ${tokenText(n)} tokens` : `adds ${tokenText(-n)} tokens`;
+    const dollars = (n: number): string => (n >= 0 ? `frees ${usd(n)}` : `adds ${usd(-n)}`);
     for (const run of charge.runs) {
+      // The dollar charge moves with the run's spending; its key changes with the plan only.
       const key = `run-${run.runId}-${run.plan.high}`;
       if (seen.has(key)) continue;
       const released = Math.max(run.usedTokens, run.limitTokens) - run.chargeTokens;
-      if (released === 0) continue;
+      const releasedUsd =
+        run.chargeUsd === null || run.chargeUsd === undefined
+          ? null
+          : cents((run.limitUsd ?? 0) - run.chargeUsd);
+      if (released === 0 && !releasedUsd) continue;
+      const usdText =
+        releasedUsd === null || run.chargeUsd === null || run.chargeUsd === undefined
+          ? ""
+          : ` In dollars it holds ${usd(run.chargeUsd)} at the task-call rate instead of ${usd(run.limitUsd ?? 0)}, which ${dollars(releasedUsd)} of the dollar budget.`;
       this.store.emit(id, "decision.would_release", {
         ...base,
         key,
         featureId: run.featureId,
         releasedTokens: released,
+        ...(releasedUsd !== null ? { releasedUsd } : {}),
         wouldStart: false,
         wouldPark: false,
-        summary: `${run.featureId}'s plan prices its run at ${tokenText(run.chargeTokens)} tokens (${tokenText(run.usedTokens)} used): holding that instead of its ${tokenText(run.limitTokens)} limit ${amount(released)} of the pool.`,
+        summary: `${run.featureId}'s plan prices its run at ${tokenText(run.chargeTokens)} tokens (${tokenText(run.usedTokens)} used): holding that instead of its ${tokenText(run.limitTokens)} limit ${amount(released)} of the pool.${usdText}`,
       });
     }
     if (!gate) return;
@@ -2411,7 +2448,7 @@ export class InitiativeService {
     const held = {
       ...committed,
       tokens: own ? own.chargeTokens : committed.tokens,
-      usd: this.committedUsd(runId),
+      usd: own?.chargeUsd ?? this.committedUsd(runId),
     };
     const after = refreshedGrowth(policy, settings.basePolicy, held, this.usage(runId), {
       usd: spareUsd,
@@ -2739,7 +2776,9 @@ export class InitiativeService {
       approved && features.some((f) => f.state !== "accepted")
         ? this.estimateOf(row, approved, accepted, 0)
         : null;
-    const charge = estimate ? this.planChargeOf(id, settings, estimate, byLimits.tokens) : null;
+    const charge = estimate
+      ? this.planChargeOf(id, settings, estimate, byLimits.tokens, runIds)
+      : null;
     // Only in enforce does the pool hold open runs with a sized plan at their plan charge (#2100).
     const committed =
       charge?.mode === "enforce" ? { ...byLimits, tokens: charge.planCommittedTokens } : byLimits;
@@ -2753,7 +2792,7 @@ export class InitiativeService {
       feature.need = needs?.get(feature.id) ?? null;
       feature.needUsd = estimate?.features.find((f) => f.featureId === feature.id)?.costUsd ?? null;
     }
-    const cost = this.costView(row, settings, plan, runIds, used, accepted, estimate);
+    const cost = this.costView(row, settings, plan, runIds, used, accepted, estimate, charge);
     const shares = splitShares(waitingForRun, remaining, cost.remainingUsd);
     for (const [index, feature] of waitingForRun.entries()) Object.assign(feature, shares[index]);
     const measured = estimate ? this.poolForecastOf(row.id, used.tokens, estimate, features) : null;
@@ -2900,9 +2939,14 @@ export class InitiativeService {
     used: UsageView,
     accepted: ReadonlySet<string>,
     estimate: InitiativeEstimate | null,
+    charge: PlanChargeView | null,
   ): CostView {
     const spentUsd = runIds.reduce((sum, runId) => sum + this.spentUsd(runId), 0);
-    const committedUsd = runIds.reduce((sum, runId) => sum + this.committedUsd(runId), 0);
+    // Only in enforce do the dollars hold priced open runs at their plan charge (#2124).
+    const committedUsd =
+      charge?.mode === "enforce" && charge.usd
+        ? charge.usd.planCommittedUsd
+        : runIds.reduce((sum, runId) => sum + this.committedUsd(runId), 0);
     const budget = settings.costBudget;
     const capUsd = budget?.maxCostUsd ?? null;
     const tolerance = budget
@@ -3596,13 +3640,15 @@ export class InitiativeService {
   /**
    * The plan charge of the initiative's open feature runs whose latest plan sizing priced them
    * (#2100, #2056), at the plan-to-actual ratio the estimate measured; null without one.
-   * `limitCommitted` is the pool's committed tokens with every open run at its limit.
+   * `limitCommitted` is the pool's committed tokens with every open run at its limit, and `runIds`
+   * every run the initiative's budgets count.
    */
   private planChargeOf(
     id: string,
     settings: InitiativeSettings,
     estimate: InitiativeEstimate,
     limitCommitted: number,
+    runIds: string[],
   ): PlanChargeView | null {
     const runs = this.store.links(id).flatMap((link) => {
       const run = this.workflows.store.run(link.run_id);
@@ -3610,6 +3656,7 @@ export class InitiativeService {
       const plan = plannedRunTokens(this.workflows.store, link.run_id);
       if (!plan) return [];
       const limit = limitsOf(PolicySchema.parse(JSON.parse(run.policy_json))).maxTotalTokens;
+      const { spentUsd, reservedUsd } = this.workflows.store.costUsage(link.run_id);
       return [
         {
           featureId: link.feature_id,
@@ -3617,14 +3664,31 @@ export class InitiativeService {
           usedTokens: this.usage(link.run_id).tokens,
           limitTokens: limit,
           plan,
+          ...(settings.costBudget
+            ? { usedUsd: spentUsd + reservedUsd, limitUsd: this.committedUsd(link.run_id) }
+            : {}),
         },
       ];
     });
+    // The dollar side holds a priced run at its plan's tokens times what the initiative's task
+    // calls paid per token (#2124): there is no measured plan-to-actual dollar ratio.
+    const dollars = settings.costBudget
+      ? {
+          taskRate: taskCallRate(
+            forecastSamples(
+              this.workflows.store,
+              this.store.links(id).map((l) => l.run_id),
+            ),
+          ),
+          limitCommittedUsd: runIds.reduce((sum, runId) => sum + this.committedUsd(runId), 0),
+        }
+      : undefined;
     return planCharge(
       stopMode(settings.basePolicy, "initiative-plan-charge"),
       estimate.planCalibration.ratio,
       limitCommitted,
       runs,
+      dollars,
     );
   }
 
