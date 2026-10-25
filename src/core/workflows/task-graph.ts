@@ -48,14 +48,23 @@ export function waitsOnRepaired(
   ].some((target) => taskDependsOn(graph, id, target.id, waitingFor));
 }
 
+/**
+ * The files a corrective's hold in `readyTasks` covers, by task ID, when they are fewer than its
+ * writes: those its findings point at, which its first attempt may write (`narrowCorrectionWrites`),
+ * until it widens. A test-check corrective writes the union of its related tasks' writes, and its
+ * hold kept every task depending on any of them waiting for the whole run (skillcomb R67, #2109).
+ */
+export type RepairHolds = Readonly<Record<string, readonly string[]>>;
+
 /** Whether the task uses files the repair writes, through its dependencies or explicit reads. */
 function affectedByRepair(
   graph: TaskGraph,
   task: Task,
   repair: Task,
   waitingFor: RuntimeState["waitingFor"],
+  holds: RepairHolds = {},
 ): boolean {
-  const paths = repair.writes.map((w) => w.path);
+  const paths = holds[repair.id] ?? repair.writes.map((w) => w.path);
   return (
     (!documentsOnly(task) &&
       graph.tasks.some(
@@ -85,6 +94,7 @@ export function readyTasks(
   gates: RuntimeState["taskGates"] = {},
   waitingFor: RuntimeState["waitingFor"] = {},
   predecessors: RuntimeState["repairPredecessors"] = {},
+  holds: RepairHolds = {},
 ): Task[] {
   const statuses = new Map(rows.map((r) => [r.id, r.status]));
   const ready = graph.tasks.filter(
@@ -138,7 +148,7 @@ export function readyTasks(
   const affected = (task: Task, repair: Task): boolean =>
     task.origin === "planned" &&
     !taskDependsOn(graph, repair.id, task.id, waitingFor) &&
-    affectedByRepair(graph, task, repair, waitingFor);
+    affectedByRepair(graph, task, repair, waitingFor, holds);
   // Move a repair to the first ready task it holds back. Earlier unrelated tasks keep their
   // order, including a document's first run, whose dependency is not a failing code check.
   const order = new Map(available.map((t, index) => [t, index]));
@@ -613,6 +623,8 @@ export function failureOwner(
     waitingFor?: RuntimeState["waitingFor"];
     /** The predecessors of findings, so a corrective never waits for a task it holds (#2094). */
     predecessors?: RuntimeState["repairPredecessors"];
+    /** The narrowed holds of open correctives, as `readyTasks` reads them (#2109). */
+    holds?: RepairHolds;
   } = {},
 ): FailureOwner {
   const files = failingFilesInOutput(output, graph?.tasks ?? []);
@@ -626,7 +638,7 @@ export function failureOwner(
                 t.id === id &&
                 t.origin === "repair" &&
                 !taskDependsOn(graph, id, task.id, waitingFor) &&
-                affectedByRepair(graph, task, t, waitingFor),
+                affectedByRepair(graph, task, t, waitingFor, options.holds),
             ) &&
             rows.some(
               (r) =>

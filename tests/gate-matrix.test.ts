@@ -1972,8 +1972,8 @@ describe("gate matrix: swift test, XCTest, swift-testing and swift-format (#1492
     expect(rules(path, testing, testing.replace("  #expect", "  withKnownIssue {\n    #expect"))).toEqual(skip);
     expect(rules("Sources/Calc/Calc.swift", "let x = 1\n", "// swiftlint:disable:next identifier_name\nlet x = 1\n").map((r) => r.split(":")[0])).toEqual(["suppression"]);
     const two = before.replace("  }\n}", "  }\n\n  func testSubs() {\n    XCTAssertEqual(sub(2, 1), 1)\n  }\n}");
+    // Test cases and titles are read in shadow (#2147); the assertions are live.
     expect(scanTestIntegrity([{ path, before: two, after: before }]).map((f) => `${f.rule}: ${f.detail}`)).toEqual([
-      'test-count: test count dropped from 2 to 1 (removed "testSubs")',
       "assertions: assertions dropped from 2 to 1 (removed or commented out)",
     ]);
   });

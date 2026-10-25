@@ -8,6 +8,7 @@ import {
   type IntegrityRecord,
   measureTestIntegrity,
   scanTestIntegrity,
+  shadowTitleFindings,
   type TestRemovalFinding,
 } from "../src/core/workflows/test-integrity.js";
 import type { ExecutionRequest, Task } from "../src/core/workflows/types.js";
@@ -243,4 +244,74 @@ describe("every language with a test title convention (#2139)", () => {
       expect(scan(before, after, finding, at)).toEqual([]);
       expect(scan(before, after, { ...finding, claim: "The facade has no tests" }, at)).toContain("test-removed");
     });
+});
+
+/** Languages whose titles are read live since their language pull requests (#1490, #1497). */
+const LATER_LIVE: [language: string, path: string, write: (name: string, n: number, call: string) => string][] = [
+  ["bash", "test/scan.bats", (name, n, call) => `@test "${name}" {\n${`  [ "$(${call})" = "1" ]\n`.repeat(n)}}\n`],
+  ["c", "test/test_scan.c", (name, n, call) => `void test_${name}(void) {\n${`    TEST_ASSERT_EQUAL(1, ${call});\n`.repeat(n)}}\n`],
+  ["cpp", "tests/scan_test.cpp", (name, n, call) => `TEST(Scan, ${name}) {\n${`  EXPECT_EQ(1, ${call});\n`.repeat(n)}}\n`],
+];
+
+/** The rows read only in shadow (#2147): one test of each title convention. */
+const SHADOW: [language: string, path: string, write: (name: string, n: number, call: string) => string][] = [
+  ["php", "tests/ScanTest.php", (name, n, call) => `    public function test_${name}(): void\n    {\n${`        $this->assertSame(1, ${call});\n`.repeat(n)}    }\n`],
+  ["elixir", "test/scan_test.exs", (name, n, call) => `  test "${name}" do\n${`    assert ${call} == 1\n`.repeat(n)}  end\n`],
+  ["zig", "src/scan_test.zig", (name, n, call) => `test "${name}" {\n${`    try std.testing.expectEqual(1, ${call});\n`.repeat(n)}}\n`],
+  ["ocaml", "test/test_scan.ml", (name, n, call) => `  test_case "${name}" \`Quick (fun () ->\n${`    Alcotest.(check int) "same" 1 (${call});\n`.repeat(n)}  );\n`],
+  ["objc", "Tests/ScanTests.m", (name, n, call) => `- (void)test_${name} {\n${`    XCTAssertEqual(1, ${call});\n`.repeat(n)}}\n`],
+  ["solidity", "test/Scan.t.sol", (name, n, call) => `    function test_${name}() public {\n${`        assertEq(1, ${call});\n`.repeat(n)}    }\n`],
+  ["swift", "Tests/ScanTests/ScanTests.swift", (name, n, call) => `    func test_${name}() {\n${`        XCTAssertEqual(1, ${call})\n`.repeat(n)}    }\n`],
+  ["swift", "Tests/ScanTests/ScanTesting.swift", (name, n, call) => `    @Test func ${name}() {\n${`        #expect(${call} == 1)\n`.repeat(n)}    }\n`],
+];
+
+/** A swap of a three-assertion test for one that checks something else, and the finding's claim. */
+function swap(language: string, at: string, write: (name: string, n: number, call: string) => string) {
+  const [old, replacement, kept] = ["recognition_via_reader", "facade_classification", "whitespace"];
+  const before = write(old, 3, "scan(1)") + write(kept, 1, "scan(1)");
+  const after = write(replacement, 1, "classify(7)") + write(kept, 1, "scan(1)");
+  // Titles carry their framework's prefix where it has one: `test_recognition_via_reader`.
+  const title = ["php", "objc", "solidity", "c"].includes(language) || at.endsWith("ScanTests.swift") ? `test_${old}` : old;
+  const named = { basis: "spec", file: at, claim: `${title} tests through Reader rather than the facade`, suggestedFix: "Add a facade test" };
+  return { before, after, named, unnamed: { ...named, claim: "The facade has no tests" } };
+}
+
+describe("languages whose titles came with their language support (#2147)", () => {
+  for (const [language, at, write] of LATER_LIVE)
+    test(`${language}: a named test replaced is exempt, an unnamed one is flagged`, () => {
+      const { before, after, named, unnamed } = swap(language, at, write);
+      expect(scan(before, after, named, at)).toEqual([]);
+      expect(scan(before, after, unnamed, at)).toContain("test-removed");
+    });
+});
+
+describe("test titles read in shadow (#2147)", () => {
+  for (const [language, at, write] of SHADOW)
+    test(`${language}: live, no test is named; in shadow, a named test replaced is exempt and an unnamed one would be flagged`, () => {
+      const { before, after, named, unnamed } = swap(language, at, write);
+      const changes = [{ path: at, before, after }];
+      // Live, the guard reads no title in the file, as before #2147.
+      for (const finding of [named, unnamed]) expect(scan(before, after, finding, at)).not.toContain("test-removed");
+      const shadow = (finding: TestRemovalFinding) =>
+        scanTestIntegrity(changes, { removalFindings: [finding], shadowTitles: true }).map((f) => f.rule);
+      expect(shadow(named)).not.toContain("test-removed");
+      expect(shadow(unnamed)).toContain("test-removed");
+      // The scan records what the rows would add, and counts it nowhere.
+      const live = scanTestIntegrity(changes, { removalFindings: [unnamed] });
+      const recorded = shadowTitleFindings(changes, { removalFindings: [unnamed] }, live);
+      expect(recorded?.findings).toContainEqual({ rule: "test-removed", path: at });
+      expect(recorded?.measures.map((m) => m.path)).toEqual([at]);
+      expect(recorded?.measures.every((m) => !("names" in m))).toBe(true);
+      // A named replacement adds nothing, and clears every live finding on the swap (an
+      // `assertions` drop where a live row counts the language's assertions).
+      const liveNamed = scanTestIntegrity(changes, { removalFindings: [named] });
+      const exempt = shadowTitleFindings(changes, { removalFindings: [named] }, liveNamed);
+      expect(exempt?.findings).toEqual([]);
+      expect(exempt?.cleared).toEqual(liveNamed.map(({ rule, path }) => ({ rule, path })));
+    });
+
+  test("a scan of files in live languages records no shadow measure", () => {
+    const changes = [{ path: "tests/scan.test.ts", before: 'test("a", () => { expect(1).toBe(1); });\n', after: "" }];
+    expect(shadowTitleFindings(changes, {}, [])).toBeNull();
+  });
 });
