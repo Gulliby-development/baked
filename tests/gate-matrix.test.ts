@@ -1,3 +1,4 @@
+import { type ConvergenceGate, type ConvergenceGateFinding, convergenceGateDecision, convergenceReproCandidates, type GateFinding, gateFinding, type ReviewGate, reviewGateCandidates, reviewGateDecision } from "../src/core/workflows/review-gate.js";
 import { literalPropertyProblems, rowFiles, rowsArtifact } from "../src/core/workflows/acceptance-rows.js";
 import { clearBannedProperties } from "../src/core/verification/initiative-ownership.js";
 import { CALL_COST_MODELS, NEXT_CALL, perCallCostScenario } from "./helpers/per-call-cost-scenario.js";
@@ -4535,5 +4536,75 @@ describe("gate matrix: no tests collected (#1864)", () => {
     expect(noTestsCollected("FAILED tests/test_tags.py::test_wheel - AssertionError\n1 failed in 0.02s")).toBe(false);
     expect(noTestsCollected(" 3 pass\n 0 fail\nRan 3 tests across 1 file.")).toBe(false);
     expect(noTestsCollected("test result: ok. 0 passed; 0 failed; 0 ignored")).toBe(false);
+  });
+});
+
+describe("review gate: a finding its reviewer marked noRepro (#2194)", () => {
+  // skillplumb 9cdc5669 (R69): N1 quoted a README example's error, said the example's setup was
+  // not run (noRepro) and still carried a repro, which printed the same error in the workspace.
+  const note = (over: Partial<GateFinding> = {}): GateFinding => ({
+    id: "N1",
+    severity: "low",
+    kind: "correctness",
+    basis: "spec",
+    confidence: 0.1,
+    repro: true,
+    sibling: false,
+    outcome: "reproduced",
+    noRepro: true,
+    ...over,
+  });
+  const gate = (findings: GateFinding[]): ReviewGate => ({
+    reviewer: "correctness",
+    required: true,
+    blocking: ["critical", "high", "medium", "low"],
+    severities: ["critical", "high", "medium"],
+    minConfidence: 0.8,
+    reproAvailable: true,
+    findings,
+  });
+  const convergence = (findings: ConvergenceGateFinding[]): ConvergenceGate => ({
+    severities: ["critical", "high", "medium"],
+    minConfidence: 0.8,
+    checksPass: true,
+    reproAvailable: true,
+    canRepro: true,
+    criteria: [],
+    failing: [],
+    findings,
+  });
+  const real = (over: Partial<GateFinding> = {}): GateFinding =>
+    note({ id: "F1", severity: "medium", confidence: 0.98, noRepro: false, ...over });
+
+  for (const [name, finding, repaired] of [
+    ["a 0.1-confidence note with noRepro, its repro reproduced", note(), []],
+    ["the same note with a self-contained repro (no noRepro)", note({ noRepro: false }), ["N1"]],
+    ["a gate recorded before the field", note({ noRepro: undefined }), ["N1"]],
+    ["a confirmed medium finding beside it", real(), ["F1"]],
+    ["a low spec finding with noRepro below the floor, reproduced", note({ confidence: 0.95 }), []],
+    ["the same low finding without noRepro", note({ confidence: 0.95, noRepro: false }), ["N1"]],
+  ] as const)
+    test(`${name}: repairs ${JSON.stringify(repaired)}`, () => {
+      expect(reviewGateDecision(gate([finding]))).toEqual([...repaired]);
+    });
+
+  test("the review does not even run the repro of a noRepro confidence-only note", () => {
+    expect(reviewGateCandidates(gate([note({ outcome: null }), real({ outcome: null })])).map((f) => f.id)).toEqual(["F1"]);
+  });
+
+  test("the converge stage does not repair on a noRepro confidence-only note", () => {
+    const converged = { testOrDoc: true, criterionIds: [] };
+    const findings = [{ ...note(), ...converged }];
+    // A high one is gated by its repro only for its confidence, so its repro does not run either.
+    expect(convergenceReproCandidates(convergence([{ ...note({ severity: "high" }), ...converged }]))).toEqual([]);
+    expect(convergenceGateDecision(convergence(findings)).verdicts.find((v) => v.id === "N1")?.verdict).not.toBe("repair");
+    const shown = [{ ...note({ noRepro: false, severity: "medium" }), ...converged }];
+    expect(convergenceGateDecision(convergence(shown)).verdicts.find((v) => v.id === "N1")?.verdict).toBe("repair");
+  });
+
+  test("gateFinding reads a blank noRepro as none", () => {
+    const finding = { id: "N1", severity: "low", kind: "correctness", claim: "c", confidence: 0.1, criterionIds: [] } as unknown as Parameters<typeof gateFinding>[0];
+    expect(gateFinding({ ...finding, noRepro: "  " }, false, "reproduced").noRepro).toBe(false);
+    expect(gateFinding({ ...finding, noRepro: "needs the README setup" }, false, "reproduced").noRepro).toBe(true);
   });
 });
