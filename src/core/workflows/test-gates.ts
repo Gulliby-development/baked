@@ -80,6 +80,7 @@ export const TEST_GATES: LanguageRecord<TestGate> = {
   objc: none("a preprocessor symbol comes from the Xcode project, not from a test file"),
   solidity: none("forge has no build gate for a test file"),
   sql: none("pgTAP and dbt tests have no build gate"),
+  powershell: none("Pester tags are filters of the command, not declared gates"),
 };
 
 /**

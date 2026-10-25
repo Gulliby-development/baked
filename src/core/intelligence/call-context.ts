@@ -103,6 +103,15 @@ export const CALL_SYNTAX: LanguageRecord<CallSyntax> = {
   },
   rescript: { call: parens, imports: (_, module) => `\\bopen\\s+${module}\\b|\\b${module}\\.` },
   solidity: { call: parens, imports: (stem) => `\\bimport\\b.*["'][^"']*\\b${stem}\\.sol["']` },
+  powershell: {
+    // A function is called like a command, with its parameters after it: `Get-Sum -A 1 -B 2`, at
+    // the start of a statement, after a pipe, `(`, `=` or `$(`, or with the call operator `&`.
+    call: (name) => `(?:^|[;|({=&]|\\$\\()\\s*${name}(?![\\w-])`,
+    // `Import-Module ./Sum.psm1`, `using module ./Sum.psm1`, dot-sourcing `. $PSScriptRoot/sum.ps1`
+    // on its own line or in Pester's `BeforeAll { . $PSScriptRoot/../src/Sum.ps1 }`.
+    imports: (stem) =>
+      `(?:\\bImport-Module\\b|\\busing\\s+module\\b|(?:^|[{;])\\s*\\.\\s).*\\b${stem}\\.ps[dm]?1\\b`,
+  },
   sql: {
     call: parens,
     // psql's `\i` and `\ir` include a file; SQL itself has no import.
@@ -163,7 +172,8 @@ export async function functionsIn(
       const seen = new Set<string>();
       for (const s of symbols) {
         if (s.kind !== "function" && s.kind !== "method") continue;
-        if (syntax.skip?.includes(s.name) || !/^[A-Za-z_][\w]*[!?]?$/.test(s.name)) continue;
+        // PowerShell names its functions Verb-Noun (#1498).
+        if (syntax.skip?.includes(s.name) || !/^[A-Za-z_][\w-]*[!?]?$/.test(s.name)) continue;
         const start = s.location.line;
         const end = Math.max(ends.get(start) ?? start, s.location.endLine ?? start);
         const key = `${s.name}:${start}`;
