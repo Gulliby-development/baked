@@ -32,6 +32,8 @@ const FAILURES = [
   { runner: "go", output: "--- FAIL: TestBlankLines (0.00s)\nFAIL\nFAIL\texample.com/taskplan\t0.002s", name: "TestBlankLines" },
   { runner: "dotnet", output: "  Failed Parser.Tests.BlankLines [12 ms]\nFailed!  - Failed:     1, Passed:     3, Skipped:     0, Total:     4", name: "Parser.Tests.BlankLines" },
   { runner: "maven", output: "[ERROR] app.ParserTest.blankLines -- Time elapsed: 0.01 s <<< FAILURE!\n[ERROR] Tests run: 4, Failures: 1, Errors: 0, Skipped: 0", name: "app.ParserTest.blankLines" },
+  { runner: "phpunit", output: "There was 1 failure:\n\n1) App\\Tests\\ParserTest::testBlankLines\nFailed asserting that false is true.\n\nFAILURES!\nTests: 4, Assertions: 4, Failures: 1.", name: "App\\Tests\\ParserTest::testBlankLines" },
+  { runner: "pest", output: "   FAILED  Tests\\ParserTest > it keeps blank lines\n  Failed asserting that false is true.\n\n  Tests:    1 failed, 3 passed (4 assertions)", name: "Tests\\ParserTest > it keeps blank lines" },
   // RSpec 3.13 and Minitest 5.20 through `rake test` (#1493).
   { runner: "rspec", output: "Finished in 0.00714 seconds (files took 0.09504 seconds to load)\n5 examples, 1 failure, 2 pending\n\nFailed examples:\n\nrspec ./spec/calc_spec.rb:6 # Calc fails on purpose\n", name: "Calc fails on purpose" },
   { runner: "minitest", output: "  1) Failure:\nCalcTest#test_fail [/repo/test/calc_test.rb:8]:\nExpected: 4\n  Actual: 3\n\n  2) Error:\nCalcTest#test_error:\nRuntimeError: boom\n\n4 runs, 2 assertions, 1 failures, 1 errors, 1 skips", name: "CalcTest#test_error" },
@@ -53,6 +55,9 @@ const BUILD_ERRORS = [
   { runner: "go", output: "# example.com/cidrfold [example.com/cidrfold.test]\n./fold_test.go:9:2: undefined: Fold\nFAIL\texample.com/cidrfold [build failed]\nFAIL", line: "./fold_test.go:9:2: undefined: Fold" },
   { runner: "dotnet", output: "/repo/tests/ParserTests.cs(12,5): error CS1501: No overload for method 'Run' takes 7 arguments [/repo/tests/Tests.csproj]\n\nBuild FAILED.", line: "/repo/tests/ParserTests.cs(12,5): error CS1501: No overload for method 'Run' takes 7 arguments [/repo/tests/Tests.csproj]" },
   { runner: "maven", output: "[INFO] --- compiler:3.13.0:testCompile (default-testCompile) @ linehunk ---\n[ERROR] COMPILATION ERROR : \n[ERROR] /repo/src/test/java/app/StdinPatchTest.java:[31,20] method run in class app.Applier cannot be applied to given types;\n[INFO] BUILD FAILURE", line: "[ERROR] /repo/src/test/java/app/StdinPatchTest.java:[31,20] method run in class app.Applier cannot be applied to given types;" },
+  { runner: "phpunit", output: "PHP Parse error:  syntax error, unexpected end of file in /repo/tests/SumTest.php on line 3\n", line: "PHP Parse error:  syntax error, unexpected end of file in /repo/tests/SumTest.php on line 3" },
+  { runner: "phpunit", output: "An error occurred inside PHPUnit.\n\nMessage:  Unclosed '{' on line 2\nLocation: /repo/tests/SumTest.php:3\n\n#0 /repo/vendor/phpunit/phpunit/src/Runner/TestSuiteLoader.php(49): load()\n", line: "Location: /repo/tests/SumTest.php:3" },
+  { runner: "pest", output: "PHP Fatal error:  Cannot redeclare App\\sum() in /repo/tests/SumTest.php on line 4\n", line: "PHP Fatal error:  Cannot redeclare App\\sum() in /repo/tests/SumTest.php on line 4" },
   { runner: "rspec", output: "\nAn error occurred while loading ./spec/broken_spec.rb. - Did you mean?\n                    rspec ./spec/calc_spec.rb\n\nFailure/Error: require_relative \"../lib/missing\"\n\nLoadError:\n  cannot load such file -- /repo/lib/missing\n# ./spec/broken_spec.rb:1:in `require_relative'\n\nFinished in 0.00007 seconds (files took 0.09928 seconds to load)\n0 examples, 0 failures, 1 error occurred outside of examples\n", line: "An error occurred while loading ./spec/broken_spec.rb. - Did you mean?" },
   { runner: "minitest", output: "<internal:/opt/ruby/lib/ruby/3.3.0/rubygems/core_ext/kernel_require.rb>:136:in `require': cannot load such file -- missing_lib (LoadError)\n\tfrom /repo/test/broken_test.rb:2:in `<top (required)>'\nrake aborted!\nCommand failed with status (1)", line: "<internal:/opt/ruby/lib/ruby/3.3.0/rubygems/core_ext/kernel_require.rb>:136:in `require': cannot load such file -- missing_lib (LoadError)" },
   { runner: "dart", output: "00:00 +0 -1: loading test/broken_test.dart [E]\n  Failed to load \"test/broken_test.dart\":\n  test/broken_test.dart:3:26: Error: Undefined name 'sum'.\n00:00 +1 -1: Some tests failed.\n", line: "  Failed to load \"test/broken_test.dart\":" },
@@ -68,7 +73,7 @@ describe("baseline replay (#1945)", () => {
     });
 
   test("every runner has its build-failure lines", () => {
-    expect(BUILD_ERRORS.map((row) => row.runner).sort()).toEqual(Object.keys(BUILD_FAILURES).sort());
+    expect([...new Set(BUILD_ERRORS.map((row) => row.runner))].sort()).toEqual(Object.keys(BUILD_FAILURES).sort());
   });
 
   for (const row of BUILD_ERRORS)
@@ -346,7 +351,9 @@ describe("baseline replay per test target (#2020)", () => {
   });
 
   test("the build runner is read from the build-failure lines", () => {
-    for (const row of BUILD_ERRORS) expect({ row: row.runner, runner: buildRunner(row.output) }).toEqual({ row: row.runner, runner: row.runner });
+    // Pest prints PHP's own parse and fatal errors, as PHPUnit does; both share one replay row.
+    const shared: Record<string, string> = { pest: "phpunit" };
+    for (const row of BUILD_ERRORS) expect({ row: row.runner, runner: buildRunner(row.output) }).toEqual({ row: row.runner, runner: shared[row.runner] ?? row.runner });
     expect(buildRunner("(fail) a [0.1ms]")).toBeNull();
   });
 

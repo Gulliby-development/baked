@@ -165,6 +165,8 @@ describe("check commands as each toolchain's spec quotes them (#1762)", () => {
     ["maven wrapper", check("tests", "cmd", ["/d", "/c", "mvnw.cmd", "-q", "verify"]), ["-q verify", "mvnw -q verify", "cmd /d /c mvnw.cmd -q verify"], ["verify"]],
     ["gradle wrapper", check("tests", "./gradlew", ["test", "--no-daemon"]), ["test --no-daemon", "./gradlew test --no-daemon", "gradlew test --no-daemon"], ["test"]],
     ["phpunit", check("tests", "vendor/bin/phpunit", []), ["vendor/bin/phpunit", "phpunit", "vendor/bin/phpunit --testdox"], ["--testdox"]],
+    ["phpunit through php", check("tests", "php", ["vendor/bin/phpunit"]), ["php vendor/bin/phpunit", "vendor/bin/phpunit", "phpunit"], ["vendor"]],
+    ["pint through php", check("format", "php", ["vendor/bin/pint", "--test"]), ["php vendor/bin/pint --test", "vendor/bin/pint --test", "pint --test"], ["--test"]],
   ];
   for (const [name, own, spellings, values] of cases) {
     test(`${name}: the command and its arguments are host checks, a fragment of them is a value`, () => {

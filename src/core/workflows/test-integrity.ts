@@ -295,6 +295,9 @@ const SKIPS = new RegExp(
     String.raw`@(?:Disabled|Ignore)\b`,
     String.raw`\[Ignore\b`,
     String.raw`\bSkip\s*=\s*"`,
+    // PHPUnit and Pest (#1491).
+    String.raw`->markTest(?:Skipped|Incomplete)\s*\(`,
+    String.raw`->(?:skip|todo)\s*\(`,
     // pgTAP: `SELECT skip('needs pg 16', 2)`, `SELECT todo_start('...')` (#1499).
     String.raw`\b(?:SELECT|select)\s+(?:skip|todo_start)\s*\(`,
     // Pester: `It 'adds' -Skip { }`, `Describe 'x' -Skip:$true`, `Set-ItResult -Skipped` (#1498).
@@ -322,6 +325,8 @@ const CAPABILITY = new RegExp(
     String.raw`\b(?:ImportError|ModuleNotFoundError|PermissionError)\b`,
     String.raw`\b(?:ErrPermission|EPERM|EACCES)\b`,
     String.raw`\b(?:os\.)?[Gg]ete?uid\s*\(`,
+    String.raw`\bPHP_OS(?:_FAMILY)?\b`,
+    String.raw`\b(?:extension_loaded|function_exists)\s*\(`,
     // Ruby: `RUBY_PLATFORM`, `Gem.win_platform?`, `RbConfig::CONFIG["host_os"]`, a gem that may be missing.
     String.raw`\bRUBY_PLATFORM\b|\bGem\.win_platform\?|\bRbConfig::CONFIG\b|\bLoadError\b`,
     // Dart: `Platform.isWindows`, `Platform.operatingSystem`, Flutter's `kIsWeb` (#1494).
@@ -364,6 +369,9 @@ const SUPPRESSIONS = new RegExp(
     String.raw`@SuppressWarnings\b`,
     String.raw`//\s*nolint\b`,
     String.raw`#pragma\s+warning\s+disable\b`,
+    String.raw`@phpstan-ignore`,
+    String.raw`@psalm-suppress\b`,
+    String.raw`@codeCoverageIgnore`,
     String.raw`#\s*(?:rubocop|standard):(?:disable|todo)\b`,
     String.raw`//\s*ignore(?:_for_file)?:\s*\w`,
     // PSScriptAnalyzer, and the same attribute in C#: `[Diagnostics.CodeAnalysis.SuppressMessageAttribute(...)]` (#1498).

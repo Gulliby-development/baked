@@ -992,6 +992,86 @@ function rubyGates(workspace: string): GateSuggestion[] {
 }
 
 /**
+ * The packages a `composer.json` requires, `require` and `require-dev` together, lowercase; null
+ * when the file does not parse.
+ */
+export function composerPackages(text: string): Set<string> | null {
+  try {
+    const parsed = JSON.parse(text) as Record<string, unknown>;
+    const names = ["require", "require-dev"].flatMap((key) => {
+      const table = parsed?.[key];
+      return table && typeof table === "object" ? Object.keys(table) : [];
+    });
+    return new Set(names.map((name) => name.toLowerCase()));
+  } catch {
+    return null;
+  }
+}
+
+/** A Composer-installed tool: `php vendor/bin/NAME`, which runs the same on every platform. */
+const vendorBin = (name: string, args: string[]): { executable: string; args: string[] } => ({
+  executable: "php",
+  args: [`vendor/bin/${name}`, ...args],
+});
+
+/**
+ * A Composer project's gates (#1491): Pest or PHPUnit for the tests, PHPStan or Psalm when the
+ * project configures one (both need their config file to know what to analyse), and Pint or
+ * PHP-CS-Fixer as a format check whose fixer formats the task's file. The tools run as
+ * `php vendor/bin/NAME`: Composer's `vendor/bin` proxies are PHP scripts, and on Windows only their
+ * `.bat` twins run without `php`. `composer install` must have run first, as for any project
+ * dependency.
+ */
+export function composerGates(workspace: string): GateSuggestion[] {
+  const text = read(workspace, "composer.json");
+  if (text === null) return [];
+  const packages = composerPackages(text) ?? new Set<string>();
+  const first = (names: string[]) => names.find((name) => has(workspace, name));
+  const out: GateSuggestion[] = [];
+  const suggest = (
+    id: string,
+    tool: { executable: string; args: string[] },
+    source: string,
+    timeoutMs: number,
+    fix?: { executable: string; args: string[] },
+  ) =>
+    out.push({
+      check: { ...gate(id, tool.executable, tool.args, timeoutMs), ...(fix ? { fix } : {}) },
+      source,
+      reason: `${formatCommandLine(tool.executable, tool.args)}${fix ? ` (fixer: ${formatCommandLine(fix.executable, fix.args)})` : ""}`,
+      preselected: true,
+    });
+  const pint = packages.has("laravel/pint") ? "composer.json" : first(["pint.json"]);
+  const csFixer = first([".php-cs-fixer.php", ".php-cs-fixer.dist.php"]);
+  if (pint) suggest("pint", vendorBin("pint", ["--test"]), pint, 120000, vendorBin("pint", []));
+  else if (csFixer)
+    suggest(
+      "php-cs-fixer",
+      vendorBin("php-cs-fixer", ["fix", "--dry-run", "--diff"]),
+      csFixer,
+      120000,
+      vendorBin("php-cs-fixer", ["fix"]),
+    );
+  const phpstan = first(["phpstan.neon", "phpstan.neon.dist", "phpstan.dist.neon"]);
+  const psalm = first(["psalm.xml", "psalm.xml.dist"]);
+  if (phpstan)
+    suggest("phpstan", vendorBin("phpstan", ["analyse", "--no-progress"]), phpstan, 300000);
+  else if (psalm) suggest("psalm", vendorBin("psalm", ["--no-progress"]), psalm, 300000);
+  const phpunitXml = first(["phpunit.xml", "phpunit.xml.dist", "phpunit.dist.xml"]);
+  if (packages.has("pestphp/pest")) suggest("pest", vendorBin("pest", []), "composer.json", 600000);
+  // Without a phpunit.xml PHPUnit runs nothing it is not given (it prints its help), so the
+  // gate names the conventional `tests` folder.
+  else if (packages.has("phpunit/phpunit") || phpunitXml)
+    suggest(
+      "phpunit",
+      vendorBin("phpunit", phpunitXml ? [] : ["tests"]),
+      packages.has("phpunit/phpunit") ? "composer.json" : (phpunitXml as string),
+      600000,
+    );
+  return out;
+}
+
+/**
  * Looks for the project's own test and lint commands. Nothing is written: the result is a list the
  * user confirms. Gates already configured (same ID or same command) are left out.
  */
@@ -1165,6 +1245,7 @@ const TOOLCHAIN_GATES = {
   zig: zigGates,
   dune: duneGates,
   bundler: rubyGates,
+  composer: composerGates,
 } as const;
 export type GateToolchain = keyof typeof TOOLCHAIN_GATES;
 
@@ -1189,7 +1270,7 @@ export const GATE_TOOLCHAINS: LanguageRecord<readonly GateToolchain[]> = {
   c: none("C builds through Make or CMake, read by the runner detector"),
   cpp: none("C++ builds through Make or CMake, read by the runner detector"),
   ruby: ["bundler"],
-  php: none("Composer has no gate detector yet (#1491)"),
+  php: ["composer"],
   swift: ["swift"],
   lua: none("LuaRocks has no gate detector yet (#1495)"),
   elixir: ["mix"],

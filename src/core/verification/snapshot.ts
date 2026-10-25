@@ -125,6 +125,10 @@ export const TOOL_CACHES = [
   ".ruff_cache",
   ".gradle",
   ".kotlin",
+  // PHPUnit's result cache (10 and later a folder, 9 a file) and PHP-CS-Fixer's (#1491).
+  ".phpunit.cache",
+  ".phpunit.result.cache",
+  ".php-cs-fixer.cache",
 ];
 
 export async function sourceManifest(

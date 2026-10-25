@@ -59,6 +59,15 @@ async function lookup(
         return { status: "unknown", reason: `registry answered ${meta.status}` };
       return { status: "exists" };
     }
+    case "packagist": {
+      // Packagist's metadata mirror answers 404 for a package that does not exist.
+      const meta = await getJson(fetcher, `https://repo.packagist.org/p2/${name}.json`);
+      const gone = missing(meta.status);
+      if (gone) return gone;
+      if (meta.status !== 200)
+        return { status: "unknown", reason: `registry answered ${meta.status}` };
+      return { status: "exists" };
+    }
     case "npm": {
       const meta = await getJson(fetcher, `https://registry.npmjs.org/${name.replace("/", "%2F")}`);
       const gone = missing(meta.status);
@@ -361,6 +370,18 @@ const POPULAR: Record<Ecosystem, readonly string[]> = {
   ],
   maven: [],
   rubygems: [],
+  packagist: [
+    "laravel/framework",
+    "symfony/console",
+    "guzzlehttp/guzzle",
+    "monolog/monolog",
+    "phpunit/phpunit",
+    "phpstan/phpstan",
+    "nesbot/carbon",
+    "doctrine/orm",
+    "league/flysystem",
+    "vlucas/phpdotenv",
+  ],
 };
 
 function distance(a: string, b: string): number {

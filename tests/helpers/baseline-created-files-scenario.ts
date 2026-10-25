@@ -7,7 +7,8 @@ import { fixturePolicy, workflowFixture } from "./workflow-fixture.js";
  * What each toolchain's first check run creates in a project that does not ignore it (#1815):
  * `cargo test` on a `cargo init` crate writes `Cargo.lock`, pytest `__pycache__/`, `dotnet test`
  * without a `.gitignore` `obj/` and `bin/`, Maven `target/`, Gradle `.gradle/` and `build/`,
- * Kotlin 2 `.kotlin/`, a `make` target `build/`.
+ * Kotlin 2 `.kotlin/`, a `make` target `build/`, PHPUnit `.phpunit.cache/` and PHP-CS-Fixer
+ * `.php-cs-fixer.cache`.
  */
 export const FIRST_RUN_OUTPUTS: Record<string, string[]> = {
   rust: ["Cargo.lock"],
@@ -17,6 +18,7 @@ export const FIRST_RUN_OUTPUTS: Record<string, string[]> = {
   gradle: [".gradle/8.10/fileHashes/fileHashes.lock", "build/classes/kotlin/main/AppKt.class"],
   kotlin: [".kotlin/sessions/kotlin-compiler.salive"],
   "c and cpp": ["build/app.o"],
+  php: [".phpunit.cache/test-results", ".php-cs-fixer.cache"],
   // dbt build writes its manifest and log into the project (#1499).
   dbt: ["target/manifest.json", "logs/dbt.log"],
 };

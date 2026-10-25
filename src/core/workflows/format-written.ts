@@ -172,6 +172,18 @@ const dotnetFormat: FileFormatter = {
   fix: (args) => args.filter((arg) => arg !== "--verify-no-changes"),
 };
 
+// No range: Pint and PHP-CS-Fixer format whole files (#1491). Both run as `php vendor/bin/NAME`,
+// which `toolchainCommand` reads as the tool itself.
+const pint: FileFormatter = {
+  runs: (program) => program === "pint",
+  check: (_, files) => ["--test", ...files],
+  fix: () => [],
+};
+const phpCsFixer: FileFormatter = {
+  runs: (program, args) => program === "php-cs-fixer" && args[0] === "fix",
+  check: (_, files) => ["fix", "--dry-run", "--diff", ...files],
+  fix: () => ["fix"],
+};
 // No range: RuboCop inspects whole files. Its layout cops are its formatter (#1493); the lint cops
 // stay with the gate, since a lint offense has no fixer that always clears it.
 const rubocopLayout: FileFormatter = {
@@ -214,7 +226,7 @@ export const FILE_FORMATTERS: LanguageRecord<readonly FileFormatter[]> = {
   c: none("clang-format has no gate detector"),
   cpp: none("clang-format has no gate detector"),
   ruby: [rubocopLayout],
-  php: none("Composer has no gate detector yet (#1491)"),
+  php: [pint, phpCsFixer],
   swift: none("SwiftPM has no gate detector yet (#1753)"),
   lua: none("LuaRocks has no gate detector yet (#1495)"),
   elixir: none("Mix has no gate detector yet (#1753)"),
@@ -260,8 +272,11 @@ function formatterCommand(check: Pick<Check, "executable" | "args">): {
   };
 }
 
-/** The formatter subcommands before a gate's paths (`ruff format`, `dprint check`, `go fmt`). */
-const SUBCOMMANDS = new Set(["format", "check", "fmt"]);
+/**
+ * The formatter subcommands before a gate's paths (`ruff format`, `dprint check`, `go fmt`,
+ * `php-cs-fixer fix`).
+ */
+const SUBCOMMANDS = new Set(["format", "check", "fmt", "fix"]);
 /** Arguments that narrow a formatter to some files or lines of its paths. */
 const NARROWING = /^--(include|exclude|range|line-ranges)/;
 /** A project or solution file `dotnet format` takes: it formats the files under its directory. */

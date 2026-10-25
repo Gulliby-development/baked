@@ -70,6 +70,14 @@ export function diagnosticCount(output: string): OutputCount | null {
       count: sum(output, /\bgenerated (\d+) warnings?\b/g) ?? 0,
       errors: 0,
     };
+  // PHPStan (#1491): " [ERROR] Found 3 errors" / " [OK] No errors"; every finding is an error.
+  const phpstan = output.match(/^\s*\[ERROR\] Found (\d+) errors?\b/m);
+  if (phpstan) return { tool: "phpstan", count: Number(phpstan[1]), errors: Number(phpstan[1]) };
+  if (/^\s*\[OK\] No errors\b/m.test(output)) return { tool: "phpstan", count: 0, errors: 0 };
+  // Psalm: "3 errors found" / "No errors found!"; its info issues are not counted.
+  const psalm = output.match(/^(\d+) errors? found\b/m);
+  if (psalm) return { tool: "psalm", count: Number(psalm[1]), errors: Number(psalm[1]) };
+  if (/^No errors found!/m.test(output)) return { tool: "psalm", count: 0, errors: 0 };
   // SQLFluff (#1499): one "L:   1 | P:  10 | LT01 | ..." line per violation, then "All Finished!";
   // a rule listed under `warnings` prints "WARNING:" after the code, and counts as a warning.
   if (/^All Finished\b/m.test(output)) {
@@ -131,6 +139,8 @@ export type TestRunner =
   | "dotnet"
   | "maven"
   | "go"
+  | "phpunit"
+  | "pest"
   | "rspec"
   | "minitest"
   | "dart"
@@ -140,6 +150,9 @@ export type TestRunner =
 
 const PESTER_SUMMARY =
   /^Tests Passed: (\d+), Failed: (\d+), Skipped: (\d+), Inconclusive: (\d+), NotRun: (\d+)/m;
+
+/** Pest's summary: its counts by outcome, then the assertions (Jest's has a total instead). */
+const PEST_SUMMARY = /^\s*Tests:\s+((?:\d+ \w+(?:, )?)+) \(\d+ assertions?\)/m;
 
 /**
  * The summary parsers, in the order `testCount` tries them: a more specific summary first, the
@@ -258,6 +271,36 @@ const TEST_COUNTERS: readonly {
         : null),
   },
   {
+    tool: "phpunit",
+    // PHPUnit (#1491): "OK (5 tests, 10 assertions)", or after "FAILURES!" or "OK, but ..." the
+    // line "Tests: 5, Assertions: 8, Failures: 1, Skipped: 1."
+    count: (o) =>
+      num(o.match(/^OK \((\d+) tests?, \d+ assertions?\)/m)) ??
+      num(o.match(/^Tests: (\d+), Assertions: \d+\b/m)),
+    ran: (o) => {
+      const ok = num(o.match(/^OK \((\d+) tests?, \d+ assertions?\)/m));
+      if (ok !== null) return ok;
+      const line = o.match(/^Tests: (\d+), Assertions: \d+\b(.*)$/m);
+      if (!line) return /^No tests executed!/m.test(o) ? 0 : null;
+      return Number(line[1]) - (sum(line[2] ?? "", /\b(?:Skipped|Incomplete): (\d+)/g) ?? 0);
+    },
+  },
+  {
+    tool: "pest",
+    // Pest: "  Tests:    1 failed, 1 skipped, 3 passed (6 assertions)"
+    count: (o) => {
+      const line = o.match(PEST_SUMMARY)?.[1];
+      return line === undefined ? null : (sum(line, /(\d+) \w+/g) ?? 0);
+    },
+    ran: (o) => {
+      const line = o.match(PEST_SUMMARY)?.[1];
+      if (line === undefined) return null;
+      return (
+        (sum(line, /(\d+) \w+/g) ?? 0) - (sum(line, /(\d+) (?:skipped|todos?|incomplete)\b/g) ?? 0)
+      );
+    },
+  },
+  {
     tool: "rspec",
     // RSpec: "5 examples, 1 failure, 2 pending" (pending and `xit` examples are listed, not run),
     // "0 examples, 0 failures, 1 error occurred outside of examples" when a spec file did not load.
@@ -360,7 +403,7 @@ export const TEST_RUNNERS: LanguageRecord<readonly TestRunner[]> = {
   c: none("C has no common test runner summary; ctest output is not read"),
   cpp: none("ctest and GoogleTest summaries are not read"),
   ruby: ["rspec", "minitest"],
-  php: none("PHPUnit summaries are not read yet (#1491)"),
+  php: ["phpunit", "pest"],
   swift: none("XCTest and swift-testing summaries are not read"),
   lua: ["tap"],
   elixir: none('ExUnit\'s "N tests, M failures" summary is not read'),
@@ -402,6 +445,16 @@ export const FAILED_TESTS: Record<TestRunner, (output: string) => string[]> = {
   maven: (o) => captured(o, /^\[ERROR\] (\S+?)(?: --)?\s+Time elapsed: .*<<< (?:FAILURE|ERROR)!/gm),
   // "--- FAIL: TestKeepsBlank (0.00s)", subtests included
   go: (o) => captured(o, /^\s*--- FAIL: (\S+)/gm),
+  // "1) Tests\\SumTest::testAdds" under "There was 1 failure:" or "There were 2 errors:", not
+  // under the lists of skipped, incomplete or risky tests.
+  phpunit: (o) =>
+    [
+      ...o.matchAll(
+        /^There (?:was|were) \d+ (?:failures?|errors?):\s*$([\s\S]*?)(?=^There (?:was|were) |^FAILURES!|^ERRORS!|(?![\s\S]))/gm,
+      ),
+    ].flatMap((m) => captured(m[1] ?? "", /^\d+\) (\S+::\S+?)(?: with data set .*)?\s*$/gm)),
+  // "  FAILED  Tests\\Unit\\SumTest > it adds two numbers"
+  pest: (o) => captured(o, /^\s*FAILED\s+(\S.*? > .+?)\s*$/gm),
   // "rspec ./spec/calc_spec.rb:6 # Calc fails on purpose", the rerun list after "Failed examples:"
   rspec: (o) => captured(o, /^rspec \S+:\d+ # (.+?)\s*$/gm),
   // "  1) Failure:" or "  2) Error:", then "CalcTest#test_fail [/w/test/calc_test.rb:8]:"
@@ -452,6 +505,11 @@ export const BUILD_FAILURES: Record<TestRunner, RegExp> = {
   maven: /^\[ERROR\] (?:COMPILATION ERROR.*|.*\.(?:java|kt|scala):\[\d+,\d+\] .+)$/,
   // "FAIL\texample.com/cidrfold [build failed]", "./fold_test.go:9:2: undefined: Fold"
   go: /^(?:FAIL\s+\S+ \[(?:build|setup) failed\]|\S+\.go:\d+:\d+: .+)$/,
+  // "PHP Parse error:  syntax error, unexpected token "}" in /w/tests/SumTest.php on line 9"
+  // PHPUnit 11 catches the parse error of a test file itself: "An error occurred inside PHPUnit.",
+  // then "Message:  Unclosed '{' on line 2" and "Location: /w/tests/SumTest.php:3".
+  phpunit: /^(?:(?:PHP )?(?:Parse|Fatal) error: .+|Location: \S+\.php:\d+)$/,
+  pest: /^(?:(?:PHP )?(?:Parse|Fatal) error: .+|Location: \S+\.php:\d+)$/,
   // "An error occurred while loading ./spec/calc_spec.rb.", "While loading ./spec/a_spec.rb a
   // `raise SyntaxError` occurred, RSpec will now quit.": RSpec then runs no example at all.
   rspec: /^(?:An error occurred while loading \S+.*|While loading \S+ a `raise \w+` occurred.*)$/,
@@ -651,6 +709,13 @@ const GROWING_COUNTS: [RegExp, string][] = [
   [/^(\s*)ok \d+\b.*(?:\n|$)/gm, ""],
   [/^(\s*)not ok \d+\b/gm, "$1not ok"],
   [/^(?<indent>\s*)1\.\.\d+/gm, "$<indent>1..<n>"],
+  // PHPUnit's progress line and its time and memory, its test and assertion counts, and Pest's
+  // assertions (#1491); the failure and error counts are kept.
+  [/^[.FEWRSIDN]+\s+\d+ \/ \d+ \(\s*\d+%\)\s*(?:\n|$)/gm, ""],
+  [/^Time: [\d:.]+, Memory: [\d.]+ \w+\s*(?:\n|$)/gm, ""],
+  [/^(Tests|Assertions): \d+/gm, "$1: <n>"],
+  [/\b(Assertions): \d+/g, "$1: <n>"],
+  [/\(\d+ assertions?\)/g, "(<n> assertions)"],
   // Pester counts the files and tests it discovers (#1498).
   [/\bStarting discovery in \d+ files?\b/g, "Starting discovery in <n> files"],
   [/\bDiscovery found \d+ tests?\b/g, "Discovery found <n> tests"],

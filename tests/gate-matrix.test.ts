@@ -15,7 +15,7 @@ import { canRepairRun, type RepairBlock } from "../src/core/workflows/repairable
 import { growthLimit, type InitiativeView, rebaseView, shareShortfall } from "../src/core/workflows/initiatives/service.js";
 import { estimateInitiative } from "../src/core/workflows/initiatives/estimate.js";
 import { hasExecutableFields, manifestFieldChanges } from "../src/core/workflows/quality/manifests.js";
-import { REPLAY_TARGETS } from "../src/core/workflows/quality/baseline-replay.js";
+import { REPLAY_TARGETS, replayTargets } from "../src/core/workflows/quality/baseline-replay.js";
 import type { TestRunner } from "../src/core/verification/output-counts.js";
 import { unrequestedManifestFields } from "../src/core/workflows/quality/dependencies.js";
 import { historyFixture, plannedForecastScenario } from "./helpers/initiative-planned-forecast.js";
@@ -42,11 +42,10 @@ import { INLINE_HARNESS, type InlineRowTest, inlineRowFile, withInlineRows } fro
 import { reproExecutables } from "../src/core/verification/repro.js";
 import { entryPointCommand } from "../src/core/verification/entry-points.js";
 import { noteSiblingFindings, ownerOfFinding } from "../src/core/verification/initiative-ownership.js";
-import { missingPlannedPaths, noTestsCollected } from "../src/core/verification/convergence.js";
+import { failureSignature as convergenceSignature, missingPlannedPaths, noTestsCollected } from "../src/core/verification/convergence.js";
 import { executeCheckCommand, exitStatus, timedOutFailure } from "../src/core/verification/check-runner.js";
 import { gradleTestReport } from "../src/core/verification/test-reports.js";
 import { detectLanguages, touchesLanguageFiles } from "../src/core/workflows/language.js";
-import { noTestsCollected } from "../src/core/verification/convergence.js";
 import { baselineRegression, buildFailure, buildRunner, diagnosticCount, failedTests, failureSignature, testCount, testsRan } from "../src/core/verification/output-counts.js";
 import { pwshExecutable } from "../src/core/platform/index.js";
 import { PESTER_RUN, pesterOn } from "../src/core/workflows/pester.js";
@@ -745,6 +744,143 @@ describe("gate matrix: JVM build tools (#1749)", () => {
     expect(buildWrapper(project({}), "gradlew", "gradle", "win32").executable).toBe("gradle");
   });
 });
+// #1491: a Composer project got no gate, so a shipped SDD preset did not start until the commands
+// were typed by hand, and PHPUnit's and Pest's output was not read.
+describe("gate matrix: Composer (#1491)", () => {
+  const ids = (files: Record<string, string>) =>
+    detectGates(project(files)).map((s) => [s.check.id, s.check.executable, s.check.args.join(" "), s.source]);
+  const checks = (files: Record<string, string>) => detectGates(project(files)).map((s) => s.check);
+  const composer = (dev: Record<string, string>) => JSON.stringify({ require: { php: ">=8.2" }, "require-dev": dev });
+  const LARAVEL = {
+    "composer.json": composer({ "phpunit/phpunit": "^11", "laravel/pint": "^1" }),
+    "phpunit.xml": "<phpunit/>",
+    "phpstan.neon": "parameters:\n  level: 6\n",
+    artisan: "",
+  };
+
+  test("composer.json gets its format, analysis and test gates, each tool run through php", () => {
+    expect(ids(LARAVEL)).toEqual([
+      ["pint", "php", "vendor/bin/pint --test", "composer.json"],
+      ["phpstan", "php", "vendor/bin/phpstan analyse --no-progress", "phpstan.neon"],
+      ["phpunit", "php", "vendor/bin/phpunit", "composer.json"],
+    ]);
+    expect(ids({ "composer.json": composer({ "pestphp/pest": "^3" }), ".php-cs-fixer.dist.php": "<?php return [];", "psalm.xml": "<psalm/>" })).toEqual([
+      ["php-cs-fixer", "php", "vendor/bin/php-cs-fixer fix --dry-run --diff", ".php-cs-fixer.dist.php"],
+      ["psalm", "php", "vendor/bin/psalm --no-progress", "psalm.xml"],
+      ["pest", "php", "vendor/bin/pest", "composer.json"],
+    ]);
+    // Without a phpunit.xml PHPUnit runs only what it is given.
+    expect(ids({ "composer.json": composer({ "phpunit/phpunit": "^11" }) })).toEqual([["phpunit", "php", "vendor/bin/phpunit tests", "composer.json"]]);
+    expect(ids({ "composer.json": "{}", "phpunit.xml.dist": "<phpunit/>" })).toEqual([["phpunit", "php", "vendor/bin/phpunit", "phpunit.xml.dist"]]);
+    // PHPStan without its config does not know what to analyse; a library without tools gets nothing.
+    expect(ids({ "composer.json": composer({ "phpstan/phpstan": "^2" }) })).toEqual([]);
+    expect(ids({ "composer.json": "not json" })).toEqual([]);
+  });
+
+  test("the vendor script is the program: no cmd wrapper on Windows, and routing sees the tool", () => {
+    const all = checks(LARAVEL);
+    const byId = (id: string) => all.find((c) => c.id === id) as Check;
+    expect(launchedCommand("php", ["vendor/bin/phpunit"]).program).toBe("php");
+    expect(isWholeUnitCheck(byId("phpstan")) && isStaticCheck(byId("phpstan"))).toBe(true);
+    expect(isWholeUnitCheck(byId("pint")) || isTestCheck(byId("pint"))).toBe(false);
+    expect(isTestCheck(byId("phpunit")) && !isStaticCheck(byId("phpunit"))).toBe(true);
+    expect(fixerCommand(byId("pint").fix!, "src/Sum.php")).toEqual({ executable: "php", args: ["vendor/bin/pint", "src/Sum.php"] });
+    expect(fixerCommand({ executable: "php", args: ["vendor/bin/php-cs-fixer", "fix"] }, "src/Sum.php")).toEqual({ executable: "php", args: ["vendor/bin/php-cs-fixer", "fix", "src/Sum.php"] });
+    const covering = (path: string) =>
+      coveringChecks({ checks: all.map((c) => ({ ...c, scope: "feature" as const })) } as RunPolicy, { writes: [{ path, action: "create" }] }).map((c) => c.id);
+    expect(covering("src/Sum.php")).toEqual(["pint"]);
+    // A criterion's "formatted with Pint" or "passes PHPStan" claim is shown by those gates.
+    const passed = all.map((c) => ({ ...c, scope: "feature" as const }));
+    expect(styleClaimShown("all PHP files are Pint-formatted and pass PHPStan", passed)).toBe(true);
+    expect(styleClaimShown("all PHP files are Pint-formatted", passed.filter((c) => c.id !== "pint"))).toBe(false);
+    // The whole-tree Pint gate covers a new file, so no format-written check is added for it.
+    expect(formatWrittenChecks(project(LARAVEL), all, [{ path: "src/Sum.php", action: "create" }])).toEqual([]);
+  });
+
+  test("a written PHP test runs on its own through the same php command", () => {
+    const phpunit = checks(LARAVEL).find((c) => c.id === "phpunit") as Check;
+    const affected = affectedTestCheck([phpunit], ["tests/SumTest.php"]);
+    expect(affected && [affected.executable, ...affected.args]).toEqual(["php", "vendor/bin/phpunit", "./tests/SumTest.php"]);
+    const folder = { ...phpunit, args: ["vendor/bin/phpunit", "tests", "--testdox"] };
+    expect(affectedTestCheck([folder], ["tests/SumTest.php"])?.args).toEqual(["vendor/bin/phpunit", "--testdox", "./tests/SumTest.php"]);
+    expect(plannedWrittenTests([phpunit], [{ path: "tests/SumTest.php", action: "create" }])?.id).toBe("phpunit-written");
+  });
+
+  const PHPUNIT_FAILED =
+    "PHPUnit 11.5.0 by Sebastian Bergmann and contributors.\n\n.FS.  4 / 4 (100%)\n\nTime: 00:00.015, Memory: 8.00 MB\n\nThere was 1 failure:\n\n1) App\\Tests\\SumTest::testCommutes\nFailed asserting that 4 is identical to 3.\n\n/w/tests/SumTest.php:14\n\n--\n\nThere was 1 skipped test:\n\n1) App\\Tests\\SumTest::testLater\nnot ready\n\nFAILURES!\nTests: 4, Assertions: 3, Failures: 1, Skipped: 1.\n";
+  const PEST_FAILED =
+    "\n   PASS  Tests\\Unit\\SumTest\n  ✓ it adds\n\n   FAIL  Tests\\Unit\\SumTest\n  ⨯ it commutes  0.01s\n  - it later → not ready\n  ────────────\n   FAILED  Tests\\Unit\\SumTest > it commutes\n  Failed asserting that 4 is identical to 3.\n\n  Tests:    1 failed, 1 skipped, 1 passed (2 assertions)\n  Duration: 0.05s\n";
+
+  test("PHPUnit and Pest summaries give the count, the executed tests and the failed names", () => {
+    expect(testCount("OK (5 tests, 10 assertions)")).toEqual({ tool: "phpunit", count: 5 });
+    expect(testCount(PHPUNIT_FAILED)).toEqual({ tool: "phpunit", count: 4 });
+    expect(testsRan(PHPUNIT_FAILED)).toEqual({ tool: "phpunit", count: 3 });
+    expect(testsRan("PHPUnit 11.5.0\n\nNo tests executed!\n")).toEqual({ tool: "phpunit", count: 0 });
+    expect(failedTests(PHPUNIT_FAILED)).toEqual({ tool: "phpunit", names: ["App\\Tests\\SumTest::testCommutes"] });
+    expect(testCount(PEST_FAILED)).toEqual({ tool: "pest", count: 3 });
+    expect(testsRan(PEST_FAILED)).toEqual({ tool: "pest", count: 2 });
+    expect(failedTests(PEST_FAILED)).toEqual({ tool: "pest", names: ["Tests\\Unit\\SumTest > it commutes"] });
+    // Jest's summary has a total; Pest's has assertions, so neither reads the other.
+    expect(testCount("Tests:       1 failed, 2 passed, 3 total")?.tool).toBe("jest");
+  });
+
+  test("a failing run names its failure, keeps one signature as passing tests grow, and hangs as a failure", () => {
+    const grown = PHPUNIT_FAILED.replace(".FS.  4 / 4", ".FS..  5 / 5").replace("Tests: 4, Assertions: 3", "Tests: 5, Assertions: 4").replace("00:00.015", "00:00.021");
+    expect(failureSignature(grown, "/w")).toBe(failureSignature(PHPUNIT_FAILED, "/w"));
+    expect(convergenceSignature(grown)).toBe(convergenceSignature(PHPUNIT_FAILED));
+    expect(convergenceSignature(PHPUNIT_FAILED)).toContain("SumTest::testCommutes");
+    const pestGrown = PEST_FAILED.replace("1 passed (2 assertions)", "2 passed (3 assertions)").replace("0.05s", "0.07s");
+    expect(failureSignature(pestGrown, "/w")).toBe(failureSignature(PEST_FAILED, "/w"));
+    expect(timedOutFailure("1) App\\Tests\\SumTest::testCommutes\nFailed asserting that 4 is identical to 3.")).toBe(true);
+    expect(timedOutFailure("  ⨯ it commutes")).toBe(true);
+    expect(timedOutFailure("1) First step of the program")).toBe(false);
+  });
+
+  test("an empty or missing test folder is no failing suite, and names the folder its task creates", () => {
+    expect(noTestsCollected("PHPUnit 11.5.0 by Sebastian Bergmann and contributors.\n\nNo tests executed!\n")).toBe(true);
+    expect(noTestsCollected("  INFO  No tests found.\n")).toBe(true);
+    const tasks = [{ writes: [{ path: "tests/SumTest.php", action: "create" as const }] }];
+    expect(missingPlannedPaths('PHPUnit 11.5.0\n\nTest directory "/w/tests" not found\n', tasks)).toEqual(["tests/SumTest.php"]);
+    expect(missingPlannedPaths('Cannot open file "tests.php".\n', tasks)).toEqual(["tests/SumTest.php"]);
+  });
+
+  test("a parse error in one test file is a build failure, replayed per changed test file", () => {
+    const output = 'PHP Parse error:  syntax error, unexpected token "}" in /w/tests/SumTest.php on line 9\n';
+    expect(buildFailure(output)).toEqual([output.trim()]);
+    expect(buildRunner(output)).toBe("phpunit");
+    const runs = replayTargets("phpunit", { args: ["vendor/bin/phpunit", "tests", "--testdox"], tests: ["tests/SumTest.php", "tests/MaxTest.php", "README.md"], list: () => [] });
+    expect(runs).toEqual([
+      { args: ["vendor/bin/phpunit", "--testdox", "tests/MaxTest.php"], paths: ["tests/MaxTest.php"] },
+      { args: ["vendor/bin/phpunit", "--testdox", "tests/SumTest.php"], paths: ["tests/SumTest.php"] },
+    ]);
+  });
+
+  test("PHPStan and Psalm counts are errors", () => {
+    expect(diagnosticCount(" [ERROR] Found 3 errors \n")).toEqual({ tool: "phpstan", count: 3, errors: 3 });
+    expect(diagnosticCount(" [OK] No errors \n")).toEqual({ tool: "phpstan", count: 0, errors: 0 });
+    expect(diagnosticCount("2 errors found\n")).toEqual({ tool: "psalm", count: 2, errors: 2 });
+    expect(diagnosticCount("No errors found!\n")).toEqual({ tool: "psalm", count: 0, errors: 0 });
+  });
+
+  test("PHPUnit and Pest skips and PHPStan and Psalm suppressions are integrity findings; a capability guard is not", () => {
+    const before = "<?php\nfinal class SumTest extends TestCase\n{\n    public function testAdds(): void\n    {\n        self::assertSame(3, sum(1, 2));\n    }\n}\n";
+    const rules = (after: string) => scanTestIntegrity([{ path: "tests/SumTest.php", before, after }]).map((f) => f.rule);
+    expect(rules(before.replace("        self::assertSame", "        $this->markTestSkipped('later');\n        self::assertSame"))).toContain("skip");
+    expect(rules(before.replace("        self::assertSame", "        /** @phpstan-ignore-next-line */\n        self::assertSame"))).toContain("suppression");
+    expect(rules(before.replace("        self::assertSame", "        if (PHP_OS_FAMILY === 'Windows') {\n            $this->markTestSkipped('no symlinks');\n        }\n        self::assertSame"))).not.toContain("skip");
+    const pest = "<?php\nit('adds', function () {\n    expect(sum(1, 2))->toBe(3);\n});\n";
+    expect(scanTestIntegrity([{ path: "tests/SumTest.php", before: pest, after: pest.replace("});", "})->skip();") }]).map((f) => f.rule)).toContain("skip");
+    const source = "<?php\n/** @phpstan-ignore-next-line */\n$x = sum('1', 2);\n";
+    expect(checkBuiltinRules([{ path: "src/use.php", content: source, before: null }], {}).map((f) => f.rule)).toContain("lint-suppression");
+  });
+
+  test("composer.json scripts, autoload files and repositories are executable fields, not the description", () => {
+    const json = (extra: object) => JSON.stringify({ name: "a/b", description: "x", ...extra });
+    expect(manifestFieldChanges("composer.json", json({}), json({ description: "y" }))).toEqual([]);
+    expect(manifestFieldChanges("composer.json", json({}), json({ scripts: { "post-install-cmd": "php x.php" }, autoload: { files: ["boot.php"] }, repositories: [{ type: "vcs", url: "https://example.test/x" }] }))).toEqual(["scripts.post-install-cmd", "autoload", "repositories"]);
+  });
+});
+
 // #1753: a plain SwiftPM, Mix, Dart, Zig, dune or Bundler project has no Makefile, justfile or CI
 // run step, so the runner fallback found nothing and no test gate was suggested.
 describe("gate matrix: SwiftPM, Mix, Dart, Zig, dune and Bundler (#1753)", () => {
@@ -3111,6 +3247,74 @@ const available = (needs: string[][]) =>
   });
 
 describe.skipIf(!toolchains)("gate matrix: toolchains", () => {
+  // #1491: the Composer gates and the PHPUnit, Pint and PHPStan parsers against the real tools'
+  // output. `composer install` needs the network, as in the CI job.
+  test.skipIf(!available([["php", "--version"], ["composer", "--version"]]))(
+    "a Composer project's detected gates run, and their output reads as the parsers expect (#1491)",
+    async () => {
+      const testClass = (name: string, body: string) =>
+        `<?php\n\ndeclare(strict_types=1);\n\nnamespace App\\Tests;\n\nuse PHPUnit\\Framework\\TestCase;\n\nfinal class ${name} extends TestCase\n{\n${body}}\n`;
+      const adds = "    public function test_adds(): void\n    {\n        self::assertSame(3, \\App\\sum(1, 2));\n    }\n";
+      const commutes = "    public function test_commutes(): void\n    {\n        self::assertSame(3, \\App\\sum(2, 2));\n    }\n";
+      const root = project({
+        "composer.json": JSON.stringify({
+          name: "fixture/sum",
+          autoload: { files: ["src/sum.php"] },
+          "require-dev": { "phpunit/phpunit": "^11", "laravel/pint": "^1", "phpstan/phpstan": "^2" },
+          config: { "allow-plugins": false },
+        }),
+        "phpunit.xml": '<?xml version="1.0"?>\n<phpunit bootstrap="vendor/autoload.php" cacheDirectory=".phpunit.cache">\n  <testsuites>\n    <testsuite name="unit">\n      <directory>tests</directory>\n    </testsuite>\n  </testsuites>\n</phpunit>\n',
+        "phpstan.neon": "parameters:\n  level: 5\n  paths:\n    - src\n",
+        "src/sum.php": "<?php\n\ndeclare(strict_types=1);\n\nnamespace App;\n\nfunction sum(int $a, int $b): int\n{\n    return $a + $b;\n}\n",
+        "tests/SumTest.php": testClass("SumTest", adds + "\n" + commutes),
+      });
+      const install = spawnSync("composer", ["install", "--no-interaction", "--no-progress", "--prefer-dist"], { cwd: root, encoding: "utf8", timeout: 600_000 });
+      expect({ status: install.status, output: install.status === 0 ? "" : install.stdout + install.stderr }).toEqual({ status: 0, output: "" });
+      const gates = detectGates(root).map((s) => s.check);
+      expect(gates.map((c) => c.id)).toEqual(["pint", "phpstan", "phpunit"]);
+      const byId = (id: string) => gates.find((c) => c.id === id) as Check;
+      const run = async (check: Check) => executeGate(root, check, new AbortController().signal);
+
+      const failing = await run(byId("phpunit"));
+      expect(failing.status).toBe("failed");
+      expect(testCount(failing.outputTail)).toEqual({ tool: "phpunit", count: 2 });
+      expect(failedTests(failing.outputTail)).toEqual({ tool: "phpunit", names: ["App\\Tests\\SumTest::test_commutes"] });
+      expect(timedOutFailure(failing.outputTail)).toBe(true);
+      writeFileSync(join(root, "tests/MaxTest.php"), testClass("MaxTest", "    public function test_max(): void\n    {\n        self::assertSame(2, max(1, 2));\n    }\n"));
+      const grown = await run(byId("phpunit"));
+      expect(testCount(grown.outputTail)).toEqual({ tool: "phpunit", count: 3 });
+      expect(failureSignature(grown.outputTail, root)).toBe(failureSignature(failing.outputTail, root));
+      expect(convergenceSignature(grown.outputTail)).toBe(convergenceSignature(failing.outputTail));
+      writeFileSync(join(root, "tests/SumTest.php"), testClass("SumTest", adds));
+      const passing = await run(byId("phpunit"));
+      expect([passing.status, testsRan(passing.outputTail)]).toEqual(["passed", { tool: "phpunit", count: 2 }]);
+
+      const written = affectedTestCheck([byId("phpunit")], ["tests/MaxTest.php"]) as Check;
+      const one = await run(written);
+      expect([one.status, testsRan(one.outputTail)]).toEqual(["passed", { tool: "phpunit", count: 1 }]);
+      const missing = await run({ ...byId("phpunit"), args: ["vendor/bin/phpunit", "later"] });
+      expect(missingPlannedPaths(missing.outputTail, [{ writes: [{ path: "later/LaterTest.php", action: "create" }] }])).toEqual(["later/LaterTest.php"]);
+      writeFileSync(join(root, "tests/BrokenTest.php"), "<?php\nfinal class BrokenTest {\n");
+      const broken = await run(byId("phpunit"));
+      expect([broken.status, buildRunner(broken.outputTail)]).toEqual(["failed", "phpunit"]);
+      rmSync(join(root, "tests/BrokenTest.php"));
+
+      expect((await run(byId("pint"))).status).toBe("passed");
+      writeFileSync(join(root, "src/max.php"), "<?php\nnamespace App;\nfunction max2( int $a,int $b ):int { return $a>$b?$a:$b; }\n");
+      expect((await run(byId("pint"))).status).toBe("failed");
+      const fix = fixerCommand(byId("pint").fix!, "src/max.php");
+      expect(spawnSync(fix.executable, fix.args, { cwd: root }).status).toBe(0);
+      expect((await run(byId("pint"))).status).toBe("passed");
+
+      const clean = await run(byId("phpstan"));
+      expect([clean.status, diagnosticCount(clean.outputTail)]).toEqual(["passed", { tool: "phpstan", count: 0, errors: 0 }]);
+      writeFileSync(join(root, "src/bad.php"), "<?php\n\ndeclare(strict_types=1);\n\nnamespace App;\n\nfunction bad(): int\n{\n    return 'x';\n}\n");
+      const dirty = await run(byId("phpstan"));
+      expect([dirty.status, diagnosticCount(dirty.outputTail)]).toEqual(["failed", { tool: "phpstan", count: 1, errors: 1 }]);
+    },
+    900_000,
+  );
+
   // #1489: the host reads the JUnit reports a real Gradle run writes, since `gradle -q check` prints
   // no total on a passing run.
   test.skipIf(!available([["gradle", "--version"]]))("a real Gradle check gets its test reports appended (#1489)", async () => {
