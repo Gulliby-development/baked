@@ -1,4 +1,5 @@
 import { canonical, hashJson } from "../specs/hash.js";
+import { diagnosedFiles, diagnosticsOnly } from "../workflows/corrective-scope.js";
 import { WorkflowFault } from "../workflows/errors.js";
 import {
   CHAIN_KIND,
@@ -1052,15 +1053,29 @@ export function appendCorrections(
       root.tasks.some(
         (t) => finished.has(t.id) && t.writes.some((w) => w.path === path && w.action !== "delete"),
       ));
+  // A task-level corrective of a failed non-test check may write the files that check names in
+  // the failing task's own files, also while a later slice of a shared test file is pending: the
+  // slice depends on the failing task and reads the corrected file (#2094). A diagnostics-only
+  // corrective writes only the failing task's own files, never its related tasks' sources.
+  type Group = { base: Task; bases: Task[]; findings: Review["findings"] };
+  const diagnosed = (group: Pick<Group, "findings">): Set<string> =>
+    new Set(taskLevel ? group.findings.flatMap((f) => diagnosedFiles(state, policy, f)) : []);
+  const diagnosticGroup = (group: Pick<Group, "findings">): boolean =>
+    taskLevel && group.findings.every((f) => diagnosticsOnly(state, policy, f));
+  const available =
+    (group: Pick<Group, "findings">) =>
+    (path: string): boolean =>
+      availableTest(path) || diagnosed(group).has(path);
+  const groupWrites = (group: Group, expected: RuntimeState["expectedFiles"]): Task["writes"] =>
+    (diagnosticGroup(group)
+      ? group.bases.flatMap((b) => b.writes)
+      : group.bases.flatMap((b) => correctionWrites(b, root, expected))
+    ).filter((w) => available(group)(w.path));
   // A planned file the correction needs: its owner of the same profile joins the group, so the
   // correction may write it and the acceptance rule still finds it related.
-  const writable = (group: { bases: Task[] }): string[] =>
-    group.bases
-      .flatMap((b) => correctionWrites(b, root, null))
-      .map((w) => w.path)
-      .filter(availableTest);
-  const join = (group: { base: Task; bases: Task[] }, path: string): void => {
-    if (!availableTest(path) || writable(group).includes(path)) return;
+  const writable = (group: Group): string[] => groupWrites(group, null).map((w) => w.path);
+  const join = (group: Group, path: string): void => {
+    if (!available(group)(path) || writable(group).includes(path)) return;
     const owner = root.tasks.find(
       (t) => t.profileId === group.base.profileId && t.writes.some((w) => w.path === path),
     );
@@ -1076,7 +1091,8 @@ export function appendCorrections(
   for (const group of groups.values()) {
     // The files a failing check names, and the planned files the findings name in their claim or
     // fix (expenses-py 1363445a: "update tests/test_cli.py" from a task that could not write it).
-    for (const finding of group.findings) {
+    // A diagnostics-only group already writes every file its diagnostics name.
+    for (const finding of diagnosticGroup(group) ? [] : group.findings) {
       for (const path of state.repairScope?.[finding.id] ?? []) join(group, path);
       for (const path of pathsInOutput(`${finding.claim}\n${finding.suggestedFix}`, root.tasks))
         join(group, path);
@@ -1093,7 +1109,7 @@ export function appendCorrections(
           ...entries,
         ]);
     }
-    const written = writable(group);
+    const written = diagnosticGroup(group) ? [] : writable(group);
     for (const path of planned)
       if (availableTest(path) && written.some((source) => isTestOf(path, source)))
         join(group, path);
@@ -1128,7 +1144,8 @@ export function appendCorrections(
     ? chainFindings(store, runId, findings)
     : new Map();
   const chainRecords: ChainRecord[] = [];
-  const additions = [...groups].map(([key, { base, bases, findings: grouped }]) => {
+  const additions = [...groups].map(([key, group]) => {
+    const { base, bases, findings: grouped } = group;
     const id = `T${String(next++).padStart(3, "0")}`;
     const ids = grouped.map((f) => f.id);
     const found = key.startsWith(SWEEP_KEY)
@@ -1158,7 +1175,7 @@ export function appendCorrections(
       : testChain
         ? testSweepStep(
             sweepTestFiles(grouped, root, base.profileId).filter((path) =>
-              writable({ bases }).includes(path),
+              writable(group).includes(path),
             ),
           )
         : key.startsWith(SWEEP_KEY)
@@ -1170,12 +1187,7 @@ export function appendCorrections(
           : "";
     return {
       ...base,
-      writes: mergeCorrectionWrites(
-        bases
-          .flatMap((b) => correctionWrites(b, root, state.expectedFiles))
-          .filter((w) => availableTest(w.path)),
-        state.expectedFiles,
-      ),
+      writes: mergeCorrectionWrites(groupWrites(group, state.expectedFiles), state.expectedFiles),
       checkIds: unique(bases.flatMap((b) => correctionChecks(b, root))),
       id,
       title: rewrite
