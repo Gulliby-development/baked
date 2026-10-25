@@ -279,6 +279,14 @@ describe("scenario: an open feature run with a sized plan is charged at its plan
     expect(view.budget.pool?.committedTokens).toBe(charge?.limitCommittedTokens);
     expect(view.budget.remaining.tokens).toBe(30_000_000 - (charge?.limitCommittedTokens ?? 0));
     expect(view.budget.reserved.tokens).toBe((charge?.limitCommittedTokens ?? 0) - view.budget.used.tokens);
+    // #2124: in dollars the run is held at its plan's tokens at f1's task-call rate, never below
+    // what it spent and reserved, instead of its dollar cap; in shadow the remaining dollars stay.
+    const usd = charge?.usd;
+    expect(usd?.taskRate).toBeGreaterThan(0);
+    expect(run?.chargeUsd).toBeCloseTo(Math.max(run?.usedUsd ?? 0, (run?.chargeTokens ?? 0) * (usd?.taskRate ?? 0)), 9);
+    expect(run?.chargeUsd).toBeLessThan(run?.limitUsd ?? 0);
+    expect(usd?.releasedUsd).toBeCloseTo((run?.limitUsd ?? 0) - (run?.chargeUsd ?? 0), 9);
+    expect(view.budget.cost.remainingUsd).toBe(Math.floor((30 - (usd?.limitCommittedUsd ?? 0)) * 100) / 100);
     // The next drive records it once per run and plan, before it drives the run on.
     await driveUntil(() => true);
     await driveUntil(() => true);
@@ -286,7 +294,9 @@ describe("scenario: an open feature run with a sized plan is charged at its plan
       reason: "initiative-plan-charge", mode: "shadow", featureId: "f2", key: `run-${f2?.runId}-${run?.plan.high}`,
       releasedTokens: charge?.releasedTokens, wouldStart: false, wouldPark: false,
     })]);
-    expect(String(events()[0]?.summary)).toMatch(/^f2's plan prices its run at [\d.]+[kM] tokens \([\d.]+[kM] used\): holding that instead of its [\d.]+M limit frees [\d.]+M tokens of the pool\.$/);
+    expect(events()[0]?.releasedUsd).toBeGreaterThan(0);
+    expect(events()[0]?.usd).toMatchObject({ taskRate: usd?.taskRate });
+    expect(String(events()[0]?.summary)).toMatch(/^f2's plan prices its run at [\d.]+[kM] tokens \([\d.]+[kM] used\): holding that instead of its [\d.]+M limit frees [\d.]+M tokens of the pool\. In dollars it holds \$[\d.]+ at the task-call rate instead of \$[\d.]+, which frees \$[\d.]+ of the dollar budget\.$/);
   }, 120000);
 
   test("in enforce the pool holds f2 at its plan charge, never below what it used, and the run still finishes", async () => {
@@ -299,6 +309,10 @@ describe("scenario: an open feature run with a sized plan is charged at its plan
     expect(view.budget.remaining.tokens).toBe(30_000_000 - (charge?.planCommittedTokens ?? 0));
     expect(view.budget.reserved.tokens).toBeGreaterThanOrEqual(0);
     for (const run of charge?.runs ?? []) expect(run.chargeTokens).toBeGreaterThanOrEqual(run.usedTokens);
+    // #2124: the dollar budget holds f2 at its plan charge in dollars too.
+    expect(charge?.usd?.releasedUsd).toBeGreaterThan(0);
+    expect(view.budget.cost.remainingUsd).toBe(Math.floor((30 - (charge?.usd?.planCommittedUsd ?? 0)) * 100) / 100);
+    for (const run of charge?.runs ?? []) expect(run.chargeUsd).toBeGreaterThanOrEqual(run.usedUsd ?? 0);
     // The waiting features share what the charge leaves: more than under the run's limit.
     const share = (v: InitiativeView) => v.features.filter((f) => f.share).reduce((n, f) => n + (f.share?.tokens ?? 0), 0);
     expect(share(view)).toBe(view.budget.remaining.tokens);

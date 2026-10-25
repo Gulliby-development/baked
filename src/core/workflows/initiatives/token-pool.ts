@@ -142,6 +142,28 @@ export interface PlanChargeRun {
   plan: PlannedRun;
   /** What the plan charge holds for it (`planChargeTokens`). */
   chargeTokens: number;
+  /** The dollars the run spent plus what its attempts in flight reserved (#2124). */
+  usedUsd?: number;
+  /** What the dollar budget holds for it without the plan charge: max(usedUsd, its maxCostUsd). */
+  limitUsd?: number;
+  /**
+   * What the plan charge holds for it in dollars (`planChargeUsd`); null while the initiative's
+   * task-call rate is unmeasured or the run has no dollar limit, and it holds `limitUsd` then.
+   */
+  chargeUsd?: number | null;
+}
+
+/**
+ * The plan charge in dollars (#2124): the plan charge's tokens at the initiative's task-call rate
+ * (`taskCallRate`, #2124), never below what the run spent and reserved. Null without a measured
+ * rate: there is no plan-to-actual dollar ratio, and a run then holds its dollar limit, as before.
+ */
+export function planChargeUsd(
+  chargeTokens: number,
+  usedUsd: number,
+  rate: number | null,
+): number | null {
+  return rate === null ? null : Math.max(usedUsd, chargeTokens * rate);
 }
 
 /**
@@ -176,6 +198,17 @@ export interface PlanChargeView {
   planCommittedTokens: number;
   /** limitCommittedTokens - planCommittedTokens: positive frees tokens, negative adds them. */
   releasedTokens: number;
+  /**
+   * The dollar side (#2124), null without a dollar budget: the task-call rate the charges use,
+   * what all runs hold with each open run at max(used, cap) (`committedUsd`), the same with each
+   * priced run at its `chargeUsd`, and the difference (positive frees dollars).
+   */
+  usd: {
+    taskRate: number | null;
+    limitCommittedUsd: number;
+    planCommittedUsd: number;
+    releasedUsd: number;
+  } | null;
 }
 
 /**
@@ -186,15 +219,34 @@ export function planCharge(
   mode: StopMode,
   ratio: number | null,
   limitCommitted: number,
-  runs: readonly Omit<PlanChargeRun, "chargeTokens">[],
+  runs: readonly Omit<PlanChargeRun, "chargeTokens" | "chargeUsd">[],
+  dollars?: { taskRate: number | null; limitCommittedUsd: number },
 ): PlanChargeView | null {
   if (!runs.length) return null;
-  const charged = runs.map((run) => ({
-    ...run,
-    chargeTokens: planChargeTokens(run.usedTokens, run.plan, ratio),
-  }));
+  const charged = runs.map((run) => {
+    const chargeTokens = planChargeTokens(run.usedTokens, run.plan, ratio);
+    return {
+      ...run,
+      chargeTokens,
+      ...(dollars
+        ? {
+            chargeUsd:
+              run.usedUsd === undefined || run.limitUsd === undefined
+                ? null
+                : planChargeUsd(chargeTokens, run.usedUsd, dollars.taskRate),
+          }
+        : {}),
+    };
+  });
   const released = charged.reduce(
     (sum, run) => sum + Math.max(run.usedTokens, run.limitTokens) - run.chargeTokens,
+    0,
+  );
+  const releasedUsd = charged.reduce(
+    (sum, run) =>
+      run.chargeUsd === null || run.chargeUsd === undefined
+        ? sum
+        : sum + (run.limitUsd ?? 0) - run.chargeUsd,
     0,
   );
   return {
@@ -204,6 +256,14 @@ export function planCharge(
     limitCommittedTokens: limitCommitted,
     planCommittedTokens: limitCommitted - released,
     releasedTokens: released,
+    usd: dollars
+      ? {
+          taskRate: dollars.taskRate,
+          limitCommittedUsd: dollars.limitCommittedUsd,
+          planCommittedUsd: dollars.limitCommittedUsd - releasedUsd,
+          releasedUsd,
+        }
+      : null,
   };
 }
 
