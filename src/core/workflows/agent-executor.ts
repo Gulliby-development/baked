@@ -9,6 +9,7 @@ import {
   type LanguageModel,
   type LanguageModelUsage,
   type Tool,
+  type ToolCallRepairFunction,
   ToolChoiceViolationError,
   type ToolSet,
   tool,
@@ -17,6 +18,7 @@ import {
 import { z } from "zod";
 import type { AppConfig } from "../../types/index.js";
 import { AbnormalFinishError, cleanStepMessages } from "../agents/stream-options.js";
+import { coerceStringifiedToolCall } from "../agents/tool-input-coercion.js";
 import { ContextManager } from "../context/manager.js";
 import { SharedRootContext } from "../context/shared-root.js";
 import { recordModelCall } from "../diagnostics/model-events.js";
@@ -1177,6 +1179,22 @@ export class NativeAgentExecutor implements AgentExecutor {
             );
           }
       };
+      // A call whose array/object/number fields arrived as JSON text is decoded before it is
+      // validated again, on every model path of the attempt; each decoding is kept with the
+      // attempt as `coerced-N.json` (#2141).
+      let coercions = 0;
+      const coerceToolCall: ToolCallRepairFunction<ToolSet> = (options) =>
+        coerceStringifiedToolCall(options, ({ toolName, fields }) => {
+          coercions++;
+          this.store.transaction(() =>
+            this.store.artifact(
+              request.runId,
+              "diagnostic",
+              `attempts/${request.attemptId}/coerced-${String(coercions)}.json`,
+              canonical({ tool: toolName, coerced: fields }),
+            ),
+          );
+        });
       let taskEndChecked = false;
       let editsNoted = false;
       let syntaxRefusals = 0;
@@ -1514,6 +1532,7 @@ export class NativeAgentExecutor implements AgentExecutor {
             },
             messages,
             tools: available,
+            repairToolCall: coerceToolCall,
             stopWhen: [
               () => submitted !== undefined,
               isStepCount(request.maxSteps - earlier.length),
@@ -1675,6 +1694,7 @@ export class NativeAgentExecutor implements AgentExecutor {
             },
             messages: [opening, ...result.messages, { role: "user", content: SUBMIT_NOW_NOTICE }],
             tools: available,
+            repairToolCall: coerceToolCall,
             activeTools: submitTools,
             toolChoice: "required",
             // One more step corrects a submission the stage validators reject.
@@ -1831,6 +1851,7 @@ export class NativeAgentExecutor implements AgentExecutor {
                 model,
                 prompt: correctionPrompt,
                 tools: { submit_result: submitResult },
+                repairToolCall: coerceToolCall,
                 toolChoice: { type: "tool", toolName: "submit_result" },
                 stopWhen: isStepCount(1),
                 maxRetries: 0,

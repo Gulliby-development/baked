@@ -1,8 +1,9 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { startCodexAppServerSession } from "../src/core/llm/providers/codex/client.js";
+import { removeTempDir } from "./helpers/temp-dir.js";
 
 // A stand-in app-server: `bun app-server --listen stdio://` runs ./app-server.ts from the cwd.
 // It answers every request and never sends a notification, like Codex while a browser login waits.
@@ -31,13 +32,12 @@ describe("codex app-server notification waiters", () => {
     process.chdir(dir);
   });
 
-  afterEach(() => {
+  afterEach(async () => {
     process.chdir(cwd);
     if (codexPath === undefined) delete process.env.BAKED_CODEX_PATH;
     else process.env.BAKED_CODEX_PATH = codexPath;
-    try {
-      rmSync(dir, { recursive: true, force: true });
-    } catch {}
+    // The killed app-server keeps its working directory locked on Windows until it exits (#2161).
+    await removeTempDir(dir);
   });
 
   test("closing the session rejects a pending notification wait", async () => {
