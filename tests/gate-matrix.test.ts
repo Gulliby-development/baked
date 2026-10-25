@@ -4098,7 +4098,8 @@ describe.skipIf(!toolchains)("gate matrix: toolchains", () => {
   // its file, its fixer clears it, and the test gate then passes.
   test.skipIf(!available([["gradle", "--version"]]))("a real Gradle build's Spotless and ktlint gates fail, their fixers clear them (#2121)", async () => {
     const root = project({
-      "settings.gradle.kts": 'pluginManagement {\n    repositories { gradlePluginPortal(); mavenCentral() }\n}\nrootProject.name = "calc"\n',
+      // ktlint-gradle's check also lints the build scripts, so they are ktlint-clean too.
+      "settings.gradle.kts": 'pluginManagement {\n    repositories {\n        gradlePluginPortal()\n        mavenCentral()\n    }\n}\nrootProject.name = "calc"\n',
       "build.gradle.kts": 'plugins {\n    kotlin("jvm") version "2.2.20"\n    id("com.diffplug.spotless") version "8.0.0"\n    id("org.jlleitschuh.gradle.ktlint") version "14.2.0"\n}\nrepositories { mavenCentral() }\nspotless { kotlin { ktlint() } }\n',
       "src/main/kotlin/Calc.kt": "fun add(a:Int,b:Int):Int{\n    return a+b }\n",
     });
@@ -4119,7 +4120,8 @@ describe.skipIf(!toolchains)("gate matrix: toolchains", () => {
       writeFileSync(join(root, "src/main/kotlin/Calc.kt"), "fun add(a:Int,b:Int):Int{\n    return a+b }\n");
     }
     expect((await run(byId("spotless").executable, byId("spotless").fix!.args)).exitCode).toBe(0);
-    expect((await run(byId("gradle-check").executable, byId("gradle-check").args)).exitCode).toBe(0);
+    const check = await run(byId("gradle-check").executable, byId("gradle-check").args);
+    expect([check.exitCode, check.exitCode === 0 ? "" : check.output.slice(-2000)]).toEqual([0, ""]);
   }, 900000);
   // #1493: the RSpec, Minitest and RuboCop parsers read what the installed tools print.
   test.skipIf(!available([["rspec", "--version"], ["ruby", "-e", "require 'minitest'"], ["rubocop", "--version"]]))("rspec, minitest and rubocop output reads as their parsers expect (#1493)", () => {
