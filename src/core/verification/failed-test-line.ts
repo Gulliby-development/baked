@@ -29,7 +29,7 @@ export const FAILED_TEST_LINE = new RegExp(
     "==> X ",
     // XCTest `Test Case 'CalcTests.testAdds' failed (`, swift-testing `✘ Test adds() failed after` (#1492).
     String.raw`^Test Case '.+' failed \(`,
-    String.raw`^. Test .+ failed after `,
+    "^. Test .+ failed after ",
   ].join("|"),
 );
 
