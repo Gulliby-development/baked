@@ -44,6 +44,12 @@ export interface CriterionCase {
    * block while it is intact (#1997).
    */
   row?: true;
+  /**
+   * A bare number a length or boundary sentence names (`name boundaries \`1\`/\`64\``): held by
+   * the number or by a string literal of that many characters, the way a test spells a boundary
+   * value out (#2096).
+   */
+  length?: true;
 }
 
 /** Quoted spans: "...", `...` and the typographic double quotes. */
@@ -143,6 +149,16 @@ function literalCase(literal: string, code = false, value = false): boolean {
     (code && identifierLike(concrete))
   );
 }
+
+/**
+ * The words of a sentence that make a bare backticked number a size or a boundary, not text a test
+ * repeats (#2096, R67 skillcomb: "name boundaries `1`/`64`" refused a test that spelled the
+ * 64-character name out four times).
+ */
+const LENGTH_CONTEXT =
+  /\b(?:boundar(?:y|ies)|lengths?|long|limits?|characters?|chars?|sizes?|width|max(?:imum)?|min(?:imum)?|at (?:most|least)|up to|between)\b/i;
+/** A file name a criterion names: `UnitTest1.cs`, `tests/test_fields.py`. */
+const FILE_NAME = /^(?:[\w.-]+[/\\])*[\w-][\w.-]*\.[A-Za-z][A-Za-z0-9]{0,7}$/;
 
 /** A quoted output or argument value can be plain English, unlike a quoted scenario label. */
 const VALUE_CONTEXT =
@@ -399,15 +415,16 @@ export function criterionCases(
     source = "",
     expected = "",
     row = false,
+    length = false,
   ) => {
     const parts = boundFree(literal, bound);
     if (parts) {
-      for (const part of parts) add(criterionId, part, word, source, expected, row);
+      for (const part of parts) add(criterionId, part, word, source, expected, row, length);
       return;
     }
     const values = caseValues(literal, source, expected, task);
     if (!values.includes(literal)) {
-      for (const value of values) add(criterionId, value, word, "", "", row);
+      for (const value of values) add(criterionId, value, word, "", "", row, length);
       return;
     }
     const key = `${criterionId}:${normalizeLiteral(literal)}`;
@@ -423,6 +440,7 @@ export function criterionCases(
       ...(word ? { word } : {}),
       ...(generated ? { generated: true as const } : {}),
       ...(row ? { row: true as const } : {}),
+      ...(length ? { length: true as const } : {}),
     });
   };
   const tasks = context.tasks ?? [];
@@ -442,7 +460,9 @@ export function criterionCases(
       for (const span of spans) {
         if (context.has(span)) continue;
         const before = table.prose.slice(0, span.index);
-        if (!literalCase(span.literal, span.code, VALUE_CONTEXT.test(before))) continue;
+        const value = VALUE_CONTEXT.test(before);
+        if (!literalCase(span.literal, span.code, value)) continue;
+        const sentence = table.prose.slice(sentenceStart(table.prose, span.index), span.index);
         add(
           criterion.id,
           span.literal,
@@ -450,6 +470,7 @@ export function criterionCases(
           before,
           criterion.then,
           hostRows && inCell(span.index),
+          span.code && !value && /^\d+$/.test(span.literal) && LENGTH_CONTEXT.test(sentence),
         );
       }
       for (const input of table.inputs)
@@ -889,7 +910,9 @@ function caseValues(literal: string, source: string, expected: string, task: Cas
     !valueContext &&
     paths.every(
       (p) =>
-        task.writes?.some((w) => w.path.replace(/\\/g, "/") === p) ||
+        // A file the task writes, also by its bare name (`UnitTest1.cs` for
+        // `tests/App.Tests/UnitTest1.cs`, #2096), is the test, not text it contains.
+        (FILE_NAME.test(p) && task.writes?.some((w) => sameFile(w.path, p))) ||
         /^(?:\.?\.?\/)?(?:[\w.-]+\/)+[\w.-]+\.[A-Za-z]\w*$/.test(p),
     )
   )
@@ -1360,13 +1383,29 @@ function testsHoldCompact(text: string, literal: string): boolean {
   ).test(compact(text));
 }
 
+/** A one-line string literal of a test, in any supported language's quotes. */
+const STRING_LITERAL = /"((?:\\.|[^"\\\n])*)"|'((?:\\.|[^'\\\n])*)'|`([^`\n]*)`/g;
+
+/** Whether a test spells a string of exactly `length` characters, raw or with escapes decoded. */
+export function lengthHeld(text: string, length: number): boolean {
+  for (const m of text.matchAll(STRING_LITERAL)) {
+    const raw = m[1] ?? m[2] ?? m[3] ?? "";
+    if ([...raw].length === length || [...raw.replace(/\\./g, "x")].length === length) return true;
+  }
+  return false;
+}
+
 /** The cases no text holds. */
 export const missingCases = (cases: CriterionCase[], texts: string[]): CriterionCase[] =>
   cases.filter((c) => {
     const word = c.word
       ? new RegExp(`(?<![A-Za-z0-9_])${escapeRegex(c.literal)}(?![A-Za-z0-9_])`)
       : undefined;
-    return !texts.some((text) => (word ? word.test(text) : testsHold(text, c.literal)));
+    return !texts.some(
+      (text) =>
+        (word ? word.test(text) : testsHold(text, c.literal)) ||
+        (c.length === true && lengthHeld(text, Number(c.literal))),
+    );
   });
 
 /** The test files a task creates or modifies. */

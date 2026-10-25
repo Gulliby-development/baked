@@ -412,6 +412,11 @@ function pythonGates(workspace: string): GateSuggestion[] {
       check: {
         ...gate("ruff", ruff(["check", "."]).executable, ruff(["check", "."]).args, 120000),
         fix: ruff(["check", "--fix"]),
+        // A rule whose only fix is unsafe (ISC004 in ruff 0.17's defaults) cost skillcomb 3.83M
+        // tokens of correctives on two test files; on a test file the fix cannot change what the
+        // program does (#2095).
+        fixUnsafe: ruff(["check", "--fix", "--unsafe-fixes"]),
+        fixUnsafeScope: "tests",
       },
       source: ruffSource,
       reason: `${prefix}ruff check .`,

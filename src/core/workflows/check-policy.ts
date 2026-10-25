@@ -2,6 +2,7 @@ import { posix } from "node:path";
 import { isCodeFile } from "../intelligence/language-traits.js";
 import { workspacePath } from "../specs/validate.js";
 import { WorkflowFault } from "./errors.js";
+import { isTestCodePath } from "./quality/duplication.js";
 import type { RunPolicy, TaskGraph } from "./schemas.js";
 import { toolchainCommand } from "./toolchain.js";
 import type { Check, Task } from "./types.js";
@@ -156,6 +157,18 @@ export function fixerTiers(check: {
 }): { executable: string; args: string[] }[] {
   if (!check.fix) return [];
   return check.fixUnsafe ? [check.fix, check.fixUnsafe] : [check.fix];
+}
+
+/**
+ * The files a fixer tier of `check` runs on, of `paths`: the unsafe tier of a check scoped to
+ * tests fixes only test files (#2095), every other tier all of them.
+ */
+export function fixerTierPaths(
+  check: Pick<Check, "fixUnsafeScope">,
+  tier: number,
+  paths: readonly string[],
+): string[] {
+  return tier > 0 && check.fixUnsafeScope === "tests" ? paths.filter(isTestCodePath) : [...paths];
 }
 
 /**

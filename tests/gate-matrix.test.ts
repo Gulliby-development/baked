@@ -56,6 +56,7 @@ import { formatProbeCommand } from "../src/core/tools/auto-format.js";
 import {
   coveringChecks,
   fixerCommand,
+  fixerTierPaths,
   isStaticCheck,
   isWholeUnitCheck,
   styleClaimShown,
@@ -1082,6 +1083,18 @@ const PYTHON_ENVIRONMENTS: [string, string, string][] = [
   ["poetry.lock", "poetry", "run"],
   ["Pipfile.lock", "pipenv", "run"],
 ];
+describe("gate matrix: unsafe fixer tiers (#2095)", () => {
+  cell("python", "ruff's unsafe tier runs on test files only; the safe tier on every file", () => {
+    const ruff = detectGates(project(FIXTURES.python.files)).find((s) => s.check.id === "ruff")?.check;
+    expect(ruff?.fixUnsafe?.args.slice(-3)).toEqual(["check", "--fix", "--unsafe-fixes"]);
+    const files = ["src/fields.py", "tests/test_fields.py"];
+    expect(ruff && fixerTierPaths(ruff, 0, files)).toEqual(files);
+    expect(ruff && fixerTierPaths(ruff, 1, files)).toEqual(["tests/test_fields.py"]);
+    // A person's own unsafe tier without a scope keeps every file.
+    expect(fixerTierPaths({}, 1, files)).toEqual(files);
+  });
+});
+
 describe("gate matrix: python environments", () => {
   for (const [lockfile, runner, verb] of PYTHON_ENVIRONMENTS)
     cell("python", `${lockfile}: gates and the written-tests check run in the environment`, () => {
@@ -1094,6 +1107,9 @@ describe("gate matrix: python environments", () => {
         ["ruff", runner, verb, "ruff"],
       ]);
       expect(checks.find((c) => c.id === "ruff")?.fix).toEqual({ executable: runner, args: [verb, "ruff", "check", "--fix"] });
+      // #2095: the unsafe tier, on test files only.
+      expect(checks.find((c) => c.id === "ruff")?.fixUnsafe).toEqual({ executable: runner, args: [verb, "ruff", "check", "--fix", "--unsafe-fixes"] });
+      expect(checks.find((c) => c.id === "ruff")?.fixUnsafeScope).toBe("tests");
       const written = writtenTestsCheck(root, checks, [{ path, action: "create" }]);
       expect(written && [written.executable, ...written.args]).toEqual([runner, verb, "pytest", "-q", `./${path}`]);
     });
