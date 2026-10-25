@@ -76,6 +76,7 @@ const SUPPORTED_LANGUAGES: Set<Language> = new Set([
   "dockerfile",
   "vue",
   "sql",
+  "powershell",
   "r",
 ]);
 

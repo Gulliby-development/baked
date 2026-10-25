@@ -146,6 +146,18 @@ const keepGoing =
 
 const PROJECT_FILE = /\.(?:sln|slnx|csproj|fsproj|vbproj)$/;
 
+/** One run per changed PHP test file: the check's flags, the vendor script and the file. */
+function phpTestFiles({ args, tests }: ReplayTargetInput): ReplayRun[] {
+  // `php vendor/bin/phpunit tests`: the script stays, the folder gives way to the file.
+  const kept = args.filter(
+    (arg, i) => arg.startsWith("-") || (i === 0 && /vendor[\\/]bin[\\/]/.test(arg)),
+  );
+  return tests
+    .filter((path) => path.endsWith(".php"))
+    .sort()
+    .map((path) => ({ args: [...kept, path], paths: [path] }));
+}
+
 /**
  * How the baseline replay splits a check per test target once it did not build as a whole, by the
  * runner whose build failure the output has (#2020): a `Record` over `TestRunner`, so a new runner
@@ -160,7 +172,16 @@ export const REPLAY_TARGETS: Record<
   jest: { none: "Jest runs each test file as its own suite" },
   vitest: { none: "Vitest runs each test file as its own suite" },
   tap: { none: "a TAP runner reports each test file on its own" },
+  busted: { none: "busted loads each spec file on its own and runs the others" },
+  ctest: {
+    none: "CTest runs each test executable on its own; a build failure is the build gate's",
+  },
+  gtest: { none: "a GoogleTest binary builds as one target" },
   dart: { none: "dart test loads and runs each test file on its own" },
+  swift: { none: "swift test builds every test target together" },
+  sbt: {
+    none: "sbt runs the other projects' tests when one does not compile, and compiles a project's tests together",
+  },
   pester: { none: "Pester runs each test file as its own container" },
   testthat: { none: "testthat runs each test file in its own environment" },
   go: { none: "go test builds each package on its own, and a package's files build together" },
@@ -214,6 +235,10 @@ export const REPLAY_TARGETS: Record<
       paths: [project],
     }));
   },
+  // A parse error in one test file stops PHPUnit and Pest before any test runs: each changed test
+  // file runs on its own, in place of the check's own test folder (#1491).
+  phpunit: phpTestFiles,
+  pest: phpTestFiles,
   // A module whose tests do not compile stops the build; --fail-at-end builds and tests the others.
   maven: keepGoing("--fail-at-end", "-fae"),
   // RSpec runs no example once one spec file does not load: each spec file the run's tests are in,

@@ -2,7 +2,12 @@
   "files": {
     "src/Sum.php": "<?php\nfunction sum($a, $b) {\n  throw new \\RuntimeException(\"not implemented\");\n}\n",
     "src/SumTest.php": "<?php\nsum(1, 2);\n// AC-001 example: (1, 2, 3)\n",
-    "composer.json": "{}\n"
+    "composer.json": "{\n  \"require\": {\n    \"php\": \">=8.2\",\n    \"monolog/monolog\": \"^3\"\n  },\n  \"require-dev\": {\n    \"phpunit/phpunit\": \"^11\",\n    \"laravel/pint\": \"^1\"\n  },\n  \"autoload\": {\n    \"psr-4\": {\n      \"App\\\\\": \"src/\"\n    }\n  }\n}\n",
+    "phpstan.neon": "parameters:\n  level: 6\n  paths:\n    - src\n"
+  },
+  "outputs": {
+    "tests": "PHPUnit 11.5.0 by Sebastian Bergmann and contributors.\n\nRuntime:       PHP 8.3.6\n\n.F                                                                  2 / 2 (100%)\n\nTime: 00:00.012, Memory: 8.00 MB\n\nThere was 1 failure:\n\n1) App\\Tests\\SumTest::testCommutes\nFailed asserting that 4 is identical to 3.\n\n/repo/tests/SumTest.php:14\n\nFAILURES!\nTests: 2, Assertions: 2, Failures: 1.\n",
+    "testsGrown": "PHPUnit 11.5.0 by Sebastian Bergmann and contributors.\n\nRuntime:       PHP 8.3.6\n\n..F                                                                 3 / 3 (100%)\n\nTime: 00:00.019, Memory: 8.00 MB\n\nThere was 1 failure:\n\n1) App\\Tests\\SumTest::testCommutes\nFailed asserting that 4 is identical to 3.\n\n/repo/tests/SumTest.php:14\n\nFAILURES!\nTests: 3, Assertions: 3, Failures: 1.\n"
   },
   "expected": {
     "tests": [
@@ -14,12 +19,23 @@
     "manifests": [
       "composer.json"
     ],
-    "dependencies": null,
+    "dependencies": [
+      "composer.json: packagist monolog/monolog",
+      "composer.json: packagist phpunit/phpunit",
+      "composer.json: packagist laravel/pint"
+    ],
     "placeholders": [
       "src/Sum.php:3"
     ],
-    "gates": null,
-    "testRunners": null,
+    "gates": [
+      "pint",
+      "phpstan",
+      "phpunit"
+    ],
+    "testRunners": [
+      "phpunit 2",
+      "signature stable"
+    ],
     "mutation": null,
     "properties": null,
     "entryPoints": null,
@@ -31,7 +47,9 @@
       "src/Sum.php:3",
       "src/SumTest.php:3 comment"
     ],
-    "formatters": null,
+    "formatters": [
+      "pint-written: php vendor/bin/pint --test src/Sum.php src/SumTest.php"
+    ],
     "packageContents": null,
     "numericLimits": [
       "integers past PHP_INT_MAX become floats"

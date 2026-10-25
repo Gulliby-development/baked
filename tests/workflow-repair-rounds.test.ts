@@ -47,6 +47,7 @@ function fakeStore() {
     syncTasks: () => undefined,
     tasks: () => [],
     findingStatus: () => undefined,
+    findings: () => [],
     addRound: (_run: string, kind: "repair" | "review" | "convergence", count: number) => {
       counts[`${kind}_rounds`]++;
       counts.corrective_tasks += count;

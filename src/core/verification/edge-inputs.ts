@@ -137,6 +137,11 @@ export interface EdgeRecord {
     status: ReproOutcome["status"];
     reason: string;
     decision: "finding" | "pass";
+    /**
+     * The settled task's source a failing case's output names in its first workspace frame, when
+     * it is not the probed task's first source: the finding is on that file (#2133).
+     */
+    file?: string;
   }[];
 }
 

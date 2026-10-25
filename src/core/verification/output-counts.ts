@@ -70,6 +70,54 @@ export function diagnosticCount(output: string): OutputCount | null {
       count: sum(output, /\bgenerated (\d+) warnings?\b/g) ?? 0,
       errors: 0,
     };
+  // PHPStan (#1491): " [ERROR] Found 3 errors" / " [OK] No errors"; every finding is an error.
+  const phpstan = output.match(/^\s*\[ERROR\] Found (\d+) errors?\b/m);
+  if (phpstan) return { tool: "phpstan", count: Number(phpstan[1]), errors: Number(phpstan[1]) };
+  if (/^\s*\[OK\] No errors\b/m.test(output)) return { tool: "phpstan", count: 0, errors: 0 };
+  // Psalm: "3 errors found" / "No errors found!"; its info issues are not counted.
+  const psalm = output.match(/^(\d+) errors? found\b/m);
+  if (psalm) return { tool: "psalm", count: Number(psalm[1]), errors: Number(psalm[1]) };
+  if (/^No errors found!/m.test(output)) return { tool: "psalm", count: 0, errors: 0 };
+  // luacheck (#1495): "Total: 2 warnings / 1 error in 3 files", in colour even without a terminal.
+  const luacheck = output
+    // biome-ignore lint/suspicious/noControlCharactersInRegex: ANSI colour codes
+    .replace(/\u001b\[[0-9;]*m/g, "")
+    .match(/^Total: (\d+) warnings? \/ (\d+) errors? in \d+ files?/m);
+  if (luacheck)
+    return {
+      tool: "luacheck",
+      count: Number(luacheck[1]) + Number(luacheck[2]),
+      errors: Number(luacheck[2]),
+    };
+  // selene: "Results:" then "8 errors", "4 warnings" and "0 parse errors", one per line.
+  const selene = output.match(
+    /^Results:\r?\n(\d+) errors?\r?\n(\d+) warnings?\r?\n(\d+) parse errors?$/m,
+  );
+  if (selene) {
+    const errors = Number(selene[1]) + Number(selene[3]);
+    return { tool: "selene", count: errors + Number(selene[2]), errors };
+  }
+  // ShellCheck (#1497) prints each finding under its line, "^-- SC2086 (info): Double quote ...",
+  // and no summary; a clean run prints nothing.
+  const shellcheck = [...output.matchAll(/\^-*\^? SC\d+ \((error|warning|info|style)\): /g)];
+  if (shellcheck.length)
+    return {
+      tool: "shellcheck",
+      count: shellcheck.length,
+      errors: shellcheck.filter((m) => m[1] === "error").length,
+    };
+  // clang-tidy (#1490): "src/sum.cpp:3:13: warning: statement should be inside braces
+  // [readability-braces-around-statements]", an error with `--warnings-as-errors`. The check
+  // names tell it from a compiler's own "[-Wunused-variable]".
+  const tidy = [
+    ...output.matchAll(/^\S.*?:\d+:\d+: (warning|error): .+ \[(?!-)[\w.-]+(?:,-?[\w.-]+)*\]$/gm),
+  ];
+  if (tidy.length)
+    return {
+      tool: "clang-tidy",
+      count: tidy.length,
+      errors: tidy.filter((m) => m[1] === "error").length,
+    };
   // SQLFluff (#1499): one "L:   1 | P:  10 | LT01 | ..." line per violation, then "All Finished!";
   // a rule listed under `warnings` prints "WARNING:" after the code, and counts as a warning.
   if (/^All Finished\b/m.test(output)) {
@@ -139,9 +187,16 @@ export type TestRunner =
   | "dotnet"
   | "maven"
   | "go"
+  | "phpunit"
+  | "pest"
   | "rspec"
   | "minitest"
+  | "busted"
+  | "ctest"
+  | "gtest"
   | "dart"
+  | "sbt"
+  | "swift"
   | "junit"
   | "tap"
   | "pester"
@@ -151,6 +206,37 @@ const TESTTHAT_SUMMARY = /^\[ FAIL (\d+) \| WARN (\d+) \| SKIP (\d+) \| PASS (\d
 
 const PESTER_SUMMARY =
   /^Tests Passed: (\d+), Failed: (\d+), Skipped: (\d+), Inconclusive: (\d+), NotRun: (\d+)/m;
+
+/** Pest's summary: its counts by outcome, then the assertions (Jest's has a total instead). */
+/** busted's summary: "2 successes / 1 failure / 1 error / 1 pending : 0.0015 seconds". */
+const BUSTED_SUMMARY =
+  /^(\d+) successe?s? \/ (\d+) failures? \/ (\d+) errors? \/ (\d+) pending : /m;
+/**
+ * busted's errors that are tests: "Error -> spec/a_spec.lua @ 10" and then the test's name. A file
+ * that did not load is an error too, named "suite spec/a_spec.lua" or with no `@` line at all.
+ */
+const bustedTestErrors = (o: string): number | null =>
+  /^Error (?:->|→) /m.test(o)
+    ? [...o.matchAll(/^Error (?:->|→) \S+ @ \d+\r?\n(?!suite )/gm)].length
+    : null;
+/**
+ * CTest's summary: "67% tests passed, 1 tests failed out of 3", and on a run without failures
+ * "100% tests passed, 0 tests failed out of 2" or, in newer CTest, "100% tests passed out of 2".
+ * Disabled tests are not counted.
+ */
+const CTEST_SUMMARY = /^\d+% tests passed(?:, \d+ tests? failed)? out of (\d+)$/m;
+/**
+ * CTest's lists of tests by outcome, "\t  2 - SumTest.Commutes (Failed)": under "The following
+ * tests FAILED:" a test whose executable was not built is "(Not Run)", and under "The following
+ * tests did not run:" a skipped one is "(Skipped)" (GTEST_SKIP, a SKIP_RETURN_CODE).
+ */
+const ctestListed = (o: string, outcome: RegExp): string[] =>
+  [...o.matchAll(/^\s+\d+ - (.+?) \(([^)\n]+)\)\s*$/gm)]
+    .filter((m) => outcome.test(m[2] ?? ""))
+    .map((m) => (m[1] ?? "").trim());
+/** GoogleTest's summary of a test binary: "[==========] 3 tests from 1 test suite ran. (0 ms total)". */
+const GTEST_SUMMARY = /^\[==========\] (\d+) tests? from \d+ test (?:suites?|cases?) ran\./m;
+const PEST_SUMMARY = /^\s*Tests:\s+((?:\d+ \w+(?:, )?)+) \(\d+ assertions?\)/m;
 
 /**
  * The summary parsers, in the order `testCount` tries them: a more specific summary first, the
@@ -281,6 +367,36 @@ const TEST_COUNTERS: readonly {
         : null),
   },
   {
+    tool: "phpunit",
+    // PHPUnit (#1491): "OK (5 tests, 10 assertions)", or after "FAILURES!" or "OK, but ..." the
+    // line "Tests: 5, Assertions: 8, Failures: 1, Skipped: 1."
+    count: (o) =>
+      num(o.match(/^OK \((\d+) tests?, \d+ assertions?\)/m)) ??
+      num(o.match(/^Tests: (\d+), Assertions: \d+\b/m)),
+    ran: (o) => {
+      const ok = num(o.match(/^OK \((\d+) tests?, \d+ assertions?\)/m));
+      if (ok !== null) return ok;
+      const line = o.match(/^Tests: (\d+), Assertions: \d+\b(.*)$/m);
+      if (!line) return /^No tests executed!/m.test(o) ? 0 : null;
+      return Number(line[1]) - (sum(line[2] ?? "", /\b(?:Skipped|Incomplete): (\d+)/g) ?? 0);
+    },
+  },
+  {
+    tool: "pest",
+    // Pest: "  Tests:    1 failed, 1 skipped, 3 passed (6 assertions)"
+    count: (o) => {
+      const line = o.match(PEST_SUMMARY)?.[1];
+      return line === undefined ? null : (sum(line, /(\d+) \w+/g) ?? 0);
+    },
+    ran: (o) => {
+      const line = o.match(PEST_SUMMARY)?.[1];
+      if (line === undefined) return null;
+      return (
+        (sum(line, /(\d+) \w+/g) ?? 0) - (sum(line, /(\d+) (?:skipped|todos?|incomplete)\b/g) ?? 0)
+      );
+    },
+  },
+  {
     tool: "rspec",
     // RSpec: "5 examples, 1 failure, 2 pending" (pending and `xit` examples are listed, not run),
     // "0 examples, 0 failures, 1 error occurred outside of examples" when a spec file did not load.
@@ -303,6 +419,44 @@ const TEST_COUNTERS: readonly {
     },
   },
   {
+    tool: "busted",
+    // busted's default output (#1495). Its error count also counts spec files that did not load,
+    // so the errors are read from the list below the summary when it is there.
+    count: (o) => {
+      const m = o.match(BUSTED_SUMMARY);
+      if (!m) return null;
+      const errors = bustedTestErrors(o) ?? Number(m[3]);
+      return Number(m[1]) + Number(m[2]) + errors + Number(m[4]);
+    },
+    ran: (o) => {
+      const m = o.match(BUSTED_SUMMARY);
+      if (!m) return null;
+      return Number(m[1]) + Number(m[2]) + (bustedTestErrors(o) ?? Number(m[3]));
+    },
+  },
+  {
+    tool: "ctest",
+    // CTest (#1490), before GoogleTest: `--output-on-failure` prints the output of each failing
+    // GoogleTest binary inside CTest's own. Skipped tests are counted and did not run, nor did a
+    // test whose executable was not built.
+    count: (o) => num(o.match(CTEST_SUMMARY)),
+    ran: (o) => {
+      const total = num(o.match(CTEST_SUMMARY));
+      if (total === null) return null;
+      return total - ctestListed(o, /^(?:Skipped|Not Run)$/).length;
+    },
+  },
+  {
+    tool: "gtest",
+    // A GoogleTest binary run on its own; DISABLED_ tests are not counted, skipped ones are.
+    count: (o) => num(o.match(GTEST_SUMMARY)),
+    ran: (o) => {
+      const total = num(o.match(GTEST_SUMMARY));
+      if (total === null) return null;
+      return total - (num(o.match(/^\[ {2}SKIPPED \] (\d+) tests?, listed below:$/m)) ?? 0);
+    },
+  },
+  {
     tool: "dart",
     // dart test and flutter test: "00:02 +12 ~1 -2: Some tests failed.", "00:00 +3: All tests
     // passed!". A test file that does not load counts as one failure (`-1`), named
@@ -315,6 +469,32 @@ const TEST_COUNTERS: readonly {
       const done = dartSummary(o);
       return done ? done.passed + done.failed - dartLoads(o) : null;
     },
+  },
+  {
+    tool: "sbt",
+    // sbt prints one "Passed: Total 5, Failed 0, Errors 0, Passed 5, Ignored 1, Pending 1" (or
+    // "Failed: Total ...") per project that ran tests, over every framework, except when ScalaTest is
+    // the only one: then ScalaTest's "Tests: succeeded 2, failed 2, canceled 0, ignored 1, pending
+    // 1" is the summary (#1496). Ignored, skipped and pending tests are not in sbt's Total.
+    count: (o) => {
+      const projects = sbtTotals(o);
+      if (projects.length) return projects.reduce((n, t) => n + t.total + t.idle, 0);
+      return scalatest(o, (m) => m.reduce((n, x) => n + x, 0));
+    },
+    ran: (o) => {
+      const projects = sbtTotals(o);
+      if (projects.length) return projects.reduce((n, t) => n + t.total, 0);
+      return scalatest(o, ([succeeded = 0, failed = 0]) => succeeded + failed);
+    },
+  },
+  {
+    tool: "swift",
+    // swift test runs XCTest, then swift-testing (#1492): XCTest's "Test Suite 'All tests' failed
+    // at ..." is followed by "Executed 3 tests, with 1 test skipped and 1 failure (0 unexpected)",
+    // and swift-testing ends with "Test run with 3 tests failed after 0.001 seconds with 1 issue."
+    // Its skipped tests are in that count and are listed one by one ("Test waits() skipped").
+    count: (o) => swiftCount(o, false),
+    ran: (o) => swiftCount(o, true),
   },
   // A language without a parser of its own (#1488): a JUnit XML report printed to the output
   // (`--reporter=junit`), then TAP (busted, bats, prove, node:test, pgTAP).
@@ -345,6 +525,40 @@ const TEST_COUNTERS: readonly {
 ];
 
 const num = (match: RegExpMatchArray | null): number | null => (match ? Number(match[1]) : null);
+
+function swiftCount(o: string, ran: boolean): number | null {
+  const xctest = [
+    ...o.matchAll(
+      /^Test Suite '(?:All tests|Selected tests)' (?:passed|failed) at .*\r?\n\s*Executed (\d+) tests?, with (?:(\d+) tests? skipped and )?\d+ failures?/gm,
+    ),
+  ].at(-1);
+  const testing = [...o.matchAll(/^. Test run with (\d+) tests?\b/gm)].at(-1);
+  if (!xctest && !testing) return null;
+  const skipped = ran ? Number(xctest?.[2] ?? 0) + lines(o, /^. Test .+ skipped(?::|\.|$)/) : 0;
+  return Number(xctest?.[1] ?? 0) + Number(testing?.[1] ?? 0) - skipped;
+}
+
+/** sbt's per-project summary: the tests that ran (`Total`) and those that did not (`idle`). */
+function sbtTotals(o: string): { total: number; idle: number }[] {
+  return [...o.matchAll(/^\[(?:info|error)\] (?:Passed|Failed|Error): Total (\d+), (.*)$/gm)].map(
+    (m) => ({
+      total: Number(m[1]),
+      idle: [...(m[2] ?? "").matchAll(/\b(?:Ignored|Skipped|Pending) (\d+)/g)].reduce(
+        (n, x) => n + Number(x[1]),
+        0,
+      ),
+    }),
+  );
+}
+/** ScalaTest's own counts, summed over its "Tests: succeeded 2, failed 2, ..." lines. */
+function scalatest(o: string, count: (numbers: number[]) => number): number | null {
+  const lines = [
+    ...o.matchAll(
+      /^\[info\] Tests: succeeded (\d+), failed (\d+), canceled (\d+), ignored (\d+), pending (\d+)$/gm,
+    ),
+  ];
+  return lines.length ? lines.reduce((n, m) => n + count(m.slice(1).map(Number)), 0) : null;
+}
 
 /** The progress prefix of `dart test`: elapsed time, then passed `+N`, skipped `~N`, failed `-N`. */
 const DART_PROGRESS = String.raw`^[\d:]+ \+(\d+)(?: ~(\d+))?(?: -(\d+))?: `;
@@ -379,13 +593,13 @@ export const TEST_RUNNERS: LanguageRecord<readonly TestRunner[]> = {
   csharp: ["dotnet"],
   java: ["maven", "junit"],
   kotlin: ["maven", "junit"],
-  scala: none('sbt\'s "Tests: succeeded N" summary is not read'),
-  c: none("C has no common test runner summary; ctest output is not read"),
-  cpp: none("ctest and GoogleTest summaries are not read"),
+  scala: ["sbt", "maven", "junit"],
+  c: ["ctest", "tap"],
+  cpp: ["ctest", "gtest"],
   ruby: ["rspec", "minitest"],
-  php: none("PHPUnit summaries are not read yet (#1491)"),
-  swift: none("XCTest and swift-testing summaries are not read"),
-  lua: ["tap"],
+  php: ["phpunit", "pest"],
+  swift: ["swift"],
+  lua: ["busted", "tap"],
   elixir: none('ExUnit\'s "N tests, M failures" summary is not read'),
   dart: ["dart"],
   zig: none("zig build test prints no count"),
@@ -398,6 +612,9 @@ export const TEST_RUNNERS: LanguageRecord<readonly TestRunner[]> = {
   powershell: ["pester"],
   r: ["testthat"],
 };
+
+// biome-ignore lint/suspicious/noControlCharactersInRegex: munit colours its output even without a terminal
+const withoutAnsi = (o: string): string => o.replace(/\u001b\[[0-9;]*m/g, "");
 
 const captured = (output: string, pattern: RegExp): string[] => [
   ...new Set([...output.matchAll(pattern)].map((m) => (m[1] ?? "").trim()).filter(Boolean)),
@@ -426,16 +643,65 @@ export const FAILED_TESTS: Record<TestRunner, (output: string) => string[]> = {
   maven: (o) => captured(o, /^\[ERROR\] (\S+?)(?: --)?\s+Time elapsed: .*<<< (?:FAILURE|ERROR)!/gm),
   // "--- FAIL: TestKeepsBlank (0.00s)", subtests included
   go: (o) => captured(o, /^\s*--- FAIL: (\S+)/gm),
+  // "1) Tests\\SumTest::testAdds" under "There was 1 failure:" or "There were 2 errors:", not
+  // under the lists of skipped, incomplete or risky tests.
+  phpunit: (o) =>
+    [
+      ...o.matchAll(
+        /^There (?:was|were) \d+ (?:failures?|errors?):\s*$([\s\S]*?)(?=^There (?:was|were) |^FAILURES!|^ERRORS!|(?![\s\S]))/gm,
+      ),
+    ].flatMap((m) => captured(m[1] ?? "", /^\d+\) (\S+::\S+?)(?: with data set .*)?\s*$/gm)),
+  // "  FAILED  Tests\\Unit\\SumTest > it adds two numbers"
+  pest: (o) => captured(o, /^\s*FAILED\s+(\S.*? > .+?)\s*$/gm),
   // "rspec ./spec/calc_spec.rb:6 # Calc fails on purpose", the rerun list after "Failed examples:"
   rspec: (o) => captured(o, /^rspec \S+:\d+ # (.+?)\s*$/gm),
   // "  1) Failure:" or "  2) Error:", then "CalcTest#test_fail [/w/test/calc_test.rb:8]:"
   minitest: (o) =>
     captured(o, /^\s*\d+\) (?:Failure|Error):\r?\n(\S+#\S+?)(?: \[[^\]\n]*\])?:\s*$/gm),
+  // "Failure -> spec/sum_spec.lua @ 7" or "Error -> ...", then "sum is commutative"; an error named
+  // "suite spec/a_spec.lua" is a spec file that did not load, not a test.
+  busted: (o) => captured(o, /^(?:Failure|Error) (?:->|→) \S+ @ \d+\r?\n(?!suite )(.+?)\s*$/gm),
+  // CTest: "\t  2 - SumTest.Commutes (Failed)" under "The following tests FAILED:", also a crash
+  // or a timeout ("(SEGFAULT)", "(Timeout)"); a test whose executable is missing is "(Not Run)".
+  ctest: (o) => {
+    const failed = o.split(/^The following tests FAILED:\r?$/m)[1];
+    return failed ? [...new Set(ctestListed(failed, /^(?!Not Run$)/))] : [];
+  },
+  // GoogleTest: "[  FAILED  ] SumTest.Commutes (5 ms)", and again in the list under its summary;
+  // parameterized and typed tests are "Prefix/Suite.Name/0" and "Suite/0.Name, where ...".
+  gtest: (o) =>
+    captured(
+      o,
+      /^\[ {2}FAILED {2}\] ((?:\w+\/)?\w+(?:\/\d+)?\.\w+(?:\/\w+)?)(?: \(\d+ ms\)|, where .*)?$/gm,
+    ),
   // "[-] Get-Sum.is commutative 36ms (34ms|2ms)", not a container's "[-] tests/a.Tests.ps1 failed with:"
   pester: (o) => captured(o, /^\s*\[-\] (.+?) \d+(?:\.\d+)?m?s \(/gm),
   // "00:00 +1 -1: test/calc_test.dart: fails on purpose [E]", not a file that did not load
   dart: (o) =>
     captured(o, new RegExp(`${DART_LINE}(?!loading \\S+ \\[E\\])(.+?) \\[E\\]\\s*$`, "gm")),
+  // munit "==> X CalcSuite.fails on purpose  0.038s munit.ComparisonFailException: ...", and
+  // ScalaTest "[info] - fails on purpose *** FAILED ***" under its "[info] CalcSpec:" header
+  sbt: (o) => {
+    const text = withoutAnsi(o);
+    const munit = captured(text, /^==> X (\S.*?)\s{2,}[\d.]+s\b/gm);
+    let suite = "";
+    const scalatest: string[] = [];
+    for (const line of text.split(/\r?\n/)) {
+      const header = /^\[info\] (\w[\w.$]*):$/.exec(line);
+      if (header) suite = header[1] ?? "";
+      const failed = /^\[info\] - (.+?) \*\*\* FAILED \*\*\*/.exec(line);
+      if (failed) scalatest.push(suite ? `${suite}: ${failed[1]}` : (failed[1] ?? ""));
+    }
+    return [...new Set([...munit, ...scalatest])];
+  },
+  // XCTest "Test Case 'CalcXCTests.testFails' failed (0.001 seconds)" ('-[CalcTests.CalcXCTests
+  // testFails]' on macOS), swift-testing "✘ Test failsToo() failed after 0.001 seconds with 1 issue."
+  swift: (o) => [
+    ...new Set([
+      ...captured(o, /^Test Case '(.+?)' failed \(/gm),
+      ...captured(o, /^. Test (?!run with )(.+?) failed after /gm),
+    ]),
+  ],
   // "── Failure ('test-sum.R:2:3'): adds ───", "-- Error (...): name ---" in an ASCII locale.
   testthat: (o) => captured(o, /^(?:──|--) (?:Failure|Error) \([^)]*\): (.+?) (?:─+|-+)$/gm),
   // A <testcase> with a <failure> or <error> child.
@@ -461,6 +727,8 @@ export const FAILED_TESTS: Record<TestRunner, (output: string) => string[]> = {
  * fails to compile there (R62 linehunk, Maven), which is not a failed test. No pattern matches what
  * a failing assertion prints.
  */
+const C_BUILD_FAILURE =
+  /^(?:\S.*\.(?:c|cc|cpp|cxx|h|hh|hpp|hxx):\d+(?::\d+)?: (?:fatal )?error: .+|\S.*\.(?:c|cc|cpp|cxx|h|hh|hpp|hxx)\(\d+(?:,\d+)?\): (?:fatal )?error C\d+: .+|Unable to find executable: .+)$/;
 export const BUILD_FAILURES: Record<TestRunner, RegExp> = {
   // "# Unhandled error between tests", "SyntaxError: Export named 'fold' not found in module ..."
   bun: /^(?:# Unhandled error between tests|error: Cannot find module .+|(?:SyntaxError|ResolveMessage): .+)$/,
@@ -478,15 +746,35 @@ export const BUILD_FAILURES: Record<TestRunner, RegExp> = {
   maven: /^\[ERROR\] (?:COMPILATION ERROR.*|.*\.(?:java|kt|scala):\[\d+,\d+\] .+)$/,
   // "FAIL\texample.com/cidrfold [build failed]", "./fold_test.go:9:2: undefined: Fold"
   go: /^(?:FAIL\s+\S+ \[(?:build|setup) failed\]|\S+\.go:\d+:\d+: .+)$/,
+  // "PHP Parse error:  syntax error, unexpected token "}" in /w/tests/SumTest.php on line 9"
+  // PHPUnit 11 catches the parse error of a test file itself: "An error occurred inside PHPUnit.",
+  // then "Message:  Unclosed '{' on line 2" and "Location: /w/tests/SumTest.php:3".
+  phpunit: /^(?:(?:PHP )?(?:Parse|Fatal) error: .+|Location: \S+\.php:\d+)$/,
+  pest: /^(?:(?:PHP )?(?:Parse|Fatal) error: .+|Location: \S+\.php:\d+)$/,
   // "An error occurred while loading ./spec/calc_spec.rb.", "While loading ./spec/a_spec.rb a
   // `raise SyntaxError` occurred, RSpec will now quit.": RSpec then runs no example at all.
   rspec: /^(?:An error occurred while loading \S+.*|While loading \S+ a `raise \w+` occurred.*)$/,
   // `rake test` loads every test file first: "/w/test/calc_test.rb:2:in `require': cannot load
   // such file -- calc (LoadError)", "/w/test/a_test.rb:9: syntax error ... (SyntaxError)".
   minitest: /^.*\.rb>?:\d+:.* \((?:LoadError|SyntaxError|NameError)\)$/,
+  // "Error -> spec/a_spec.lua:3: <name> expected near 'end'" (a syntax error), and "suite
+  // spec/a_spec.lua" under the error of a spec file whose top level failed (a missing `require`).
+  busted: /^(?:Error (?:->|→) \S+\.luau?:\d+: .+|suite \S+\.luau?)$/,
+  // GCC and Clang "tests/sum_test.cpp:3:33: error: 'sum3' was not declared in this scope", MSVC
+  // "sum_test.cpp(3): error C3861: 'sum3': identifier not found", and CTest's "Unable to find
+  // executable: build/sum_test" for a test the build gate did not build (#1490).
+  ctest: C_BUILD_FAILURE,
+  gtest: C_BUILD_FAILURE,
   // dart test loads each test file on its own: '  Failed to load "test/a_test.dart":', then the
   // compile error "test/a_test.dart:3:26: Error: Undefined name 'sum'.", or "Does not exist."
   dart: /^\s*Failed to load "[^"]+":.*$/,
+  // sbt: Scala 3 "[error] -- [E006] Not Found Error: /w/src/test/scala/A.scala:2:31 ----", Scala 2
+  // "[error] /w/src/test/scala/A.scala:2:31: not found: value x", then "(Test / compileIncremental)
+  // Compilation failed" for the project whose sources do not compile.
+  sbt: /^\[error\] (?:-- (?:\[E\d+\] )?.*: \S+\.scala:\d+:\d+ -*|\S+\.scala:\d+:\d+: .+|\(.*compileIncremental\) Compilation failed)$/,
+  // swiftc: "/w/Tests/CalcTests/CalcTests.swift:6:27: error: cannot find 'sub' in scope"; an XCTest
+  // failure names no column ("CalcTests.swift:6: error: CalcTests.testFails : XCTAssertEqual ...").
+  swift: /^\S+\.swift:\d+:\d+: error: .+$/,
   // Gradle: "> Task :compileTestJava FAILED", "AppTest.java:12: error: cannot find symbol"
   junit: /^(?:> Task :\S*[cC]ompile\S* FAILED|.+\.(?:java|kt):\d+: error: .+)$/,
   // "Bail out! Cannot find module"
@@ -498,12 +786,19 @@ export const BUILD_FAILURES: Record<TestRunner, RegExp> = {
   testthat: /^(?:Error in `(?:pkgload::)?load_all\(\)`:|! Failed to load '.+')$/,
 };
 
+// Compilers color their diagnostics even when not on a terminal (swiftc 6.4 prints "error:" in
+// bold red, #1492), so the build-failure lines are read without ANSI colors.
+const buildLines = (output: string): string[] =>
+  withoutAnsi(output)
+    .split(/\r?\n/)
+    .map((line) => line.trimEnd());
+
 /**
  * The first lines of a build failure in a check's output (`BUILD_FAILURES`): some or all of the
  * tests did not build, collect or load, so they did not run. Null when no runner printed one.
  */
 export function buildFailure(output: string, limit = 5): string[] | null {
-  const lines = output.split(/\r?\n/).map((line) => line.trimEnd());
+  const lines = buildLines(output);
   const found = lines.filter((line) => Object.values(BUILD_FAILURES).some((p) => p.test(line)));
   return found.length ? found.slice(0, limit) : null;
 }
@@ -513,7 +808,7 @@ export function buildFailure(output: string, limit = 5): string[] | null {
  * replay knows how to split that check per test target (#2020). Null when none has.
  */
 export function buildRunner(output: string): TestRunner | null {
-  const lines = output.split(/\r?\n/).map((line) => line.trimEnd());
+  const lines = buildLines(output);
   for (const [tool, pattern] of Object.entries(BUILD_FAILURES) as [TestRunner, RegExp][])
     if (lines.some((line) => pattern.test(line))) return tool;
   return null;
@@ -646,6 +941,9 @@ const GROWING_COUNTS: [RegExp, string][] = [
     "<n> $1",
   ],
   [/\b(Passed|Skipped|Total|Tests run):\s*\d+/g, "$1: <n>"],
+  // The JUnit block of a Gradle run's test reports (#1489) and any printed JUnit report.
+  [/\b(tests|skipped)="\d+"/g, '$1="<n>"'],
+  [/^(Gradle test reports \()\d+ files?/gm, "$1<n> files"],
   // RSpec "12 examples, 1 failure, 2 pending", Minitest "4 runs, 9 assertions, 1 failures, 0 errors,
   // 1 skips" with its rates "2931.07 runs/s, 1465.53 assertions/s" (#1493).
   [/\b\d+ (examples?|pending|runs?|assertions?|skips?)\b(?!\/s)/g, "<n> $1"],
@@ -660,6 +958,40 @@ const GROWING_COUNTS: [RegExp, string][] = [
   ],
   [/^[\d:]+ \+\d+(?: ~\d+)?( -\d+)?: /gm, "+<n>$1: "],
   [/^\s*Skip: .*(?:\n|$)/gm, ""],
+  // sbt (#1496): munit's line per passing or ignored test, ScalaTest's line per test that did not
+  // fail, the per-project and ScalaTest totals with their failures kept, and the sources counted.
+  [/^\s*\+ \S.*? (?:<duration>|[\d.]+s)\s*(?:\n|$)/gm, ""],
+  [/^==> i \S.* ignored\b.*(?:\n|$)/gm, ""],
+  [/^\[info\] - (?!.*\*\*\* FAILED \*\*\*).*(?:\n|$)/gm, ""],
+  [
+    /^(\[(?:info|error)\] (?:Passed|Failed|Error): )Total \d+, (Failed \d+, Errors \d+), Passed \d+.*$/gm,
+    "$1Total <n>, $2, Passed <n>",
+  ],
+  [/^\[info\] Total number of tests run: \d+$/gm, "[info] Total number of tests run: <n>"],
+  [/\bSuites: completed \d+, aborted (\d+)/g, "Suites: completed <n>, aborted $1"],
+  [
+    /\bTests: succeeded \d+, failed (\d+), canceled (\d+), ignored \d+, pending \d+/g,
+    "Tests: succeeded <n>, failed $1, canceled $2, ignored <n>, pending <n>",
+  ],
+  // sbt compiles only what changed since its last run: its compile lines are progress, not output.
+  [/^\[info\] (?:compiling \d+ (?:Scala|Java)(?: and \w+)? sources?\b.*|done compiling)\n?/gm, ""],
+  [/\b(Checking|Formatting) \d+ Scala sources\b/g, "$1 <n> Scala sources"],
+  // swift test (#1492): SwiftPM's build steps ("[3/5] Compiling", and from Swift 6.2 "[29 / 51] Calc"
+  // with thin spaces and phase lines such as "[Planning deferred tasks]" or "[Describing: 24 / 202]",
+  // never Maven's "[INFO]") and build time ("Build
+  // complete! (15.51 secs)"), XCTest's started and passed lines and its suite timestamps,
+  // swift-testing's started, passed and skipped lines, with the failures kept.
+  [/^\[\d+\s*\/\s*\d+\](?: .*)?(?:\n|$)/gm, ""],
+  [/^\[[A-Z][a-z][^\]\n]*\]$\n?/gm, ""],
+  [/^(Build complete!) \([\d.]+ ?s(?:ecs?)?\)/gm, "$1 (<duration>)"],
+  [/^Test (?:Suite|Case) '.+' (?:started at .*|passed \(.*)(?:\n|$)/gm, ""],
+  [/^(Test Suite '.+' failed) at .*$/gm, "$1"],
+  [
+    /\bExecuted \d+ tests?, with (?:\d+ tests? skipped and )?(\d+ failures? \(\d+ unexpected\)) in [\d.]+ \([\d.]+\) seconds/g,
+    "Executed <n> tests, with $1 in <duration>",
+  ],
+  [/^. Test (?!run with ).+ (?:started\.|passed after .*|skipped(?::.*|\.)?)(?:\n|$)/gm, ""],
+  [/^(. Test run with )\d+ (tests?)/gm, "$1<n> $2"],
   // dart format: "Formatted 3 files (1 changed) in 0.01 seconds."
   [/\bFormatted \d+ files? \((\d+) changed\)/g, "Formatted <n> files ($1 changed)"],
   // The progress line of RSpec, Minitest and RuboCop, one character per example or file.
@@ -676,6 +1008,36 @@ const GROWING_COUNTS: [RegExp, string][] = [
   [/^(\s*)ok \d+\b.*(?:\n|$)/gm, ""],
   [/^(\s*)not ok \d+\b/gm, "$1not ok"],
   [/^(?<indent>\s*)1\.\.\d+/gm, "$<indent>1..<n>"],
+  // PHPUnit's progress line and its time and memory, its test and assertion counts, and Pest's
+  // assertions (#1491); the failure and error counts are kept.
+  [/^[.FEWRSIDN]+\s+\d+ \/ \d+ \(\s*\d+%\)\s*(?:\n|$)/gm, ""],
+  [/^Time: [\d:.]+, Memory: [\d.]+ \w+\s*(?:\n|$)/gm, ""],
+  [/^(Tests|Assertions): \d+/gm, "$1: <n>"],
+  [/\b(Assertions): \d+/g, "$1: <n>"],
+  [/\(\d+ assertions?\)/g, "(<n> assertions)"],
+  // busted's progress line, one character per test (`+` success, `-` failure, `*` error, `.`
+  // pending; `●◼✱◌` in a UTF-8 terminal), and its success count (#1495).
+  [/^[+\-*.●◼✱◌]+$\n?/gm, ""],
+  [/\b\d+ (successe?s?) \//g, "<n> success /"],
+  // CTest's line per started and per passing test, the test numbers, and its pass share and total
+  // (#1490); the failed count is kept.
+  [/^\s*Start +\d+: .*(?:\n|$)/gm, ""],
+  [/^\s*\d+\/\d+ Test +#\d+: .*\s Passed\b.*(?:\n|$)/gm, ""],
+  [/^(\s*)\d+\/\d+ Test +#\d+:/gm, "$1Test:"],
+  [/^\s+\d+ - /gm, "\t<n> - "],
+  [/^\d+% tests passed, (\d+ tests? failed) out of \d+$/gm, "<n>% tests passed, $1 out of <n>"],
+  [/^\d+% tests passed out of \d+$/gm, "<n>% tests passed out of <n>"],
+  // GoogleTest's lines per started and passing test and its counts of tests and suites.
+  [/^\[ (?:RUN| {6}OK) +\] .*(?:\n|$)/gm, ""],
+  [
+    /^(\[[=-]{10}\] (?:Running )?)\d+ tests? from \d+ test (?:suites?|cases?)/gm,
+    "$1<n> tests from <n> test suites",
+  ],
+  [/^(\[-{10}\] )\d+ tests? from /gm, "$1<n> tests from "],
+  [/^\[ {2}PASSED {2}\] \d+ tests?\./gm, "[  PASSED  ] <n> tests."],
+  // clang-tidy's progress line per file and its count of warnings in headers it did not report.
+  [/^\[\d+\/\d+\] Processing file .*(?:\n|$)/gm, ""],
+  [/^\d+ warnings? generated\.(?:\n|$)/gm, ""],
   // Pester counts the files and tests it discovers (#1498).
   [/\bStarting discovery in \d+ files?\b/g, "Starting discovery in <n> files"],
   [/\bDiscovery found \d+ tests?\b/g, "Discovery found <n> tests"],
@@ -713,6 +1075,13 @@ export function failureSignature(output: string, root: string): string {
     .replace(/\d{4}-\d{2}-\d{2}T[\d:.]+Z?/g, "<time>")
     .replace(/\d+(\.\d+)?\s*(ms|s|sec|seconds|m)\b/g, "<duration>")
     .replace(/\[\d+(\.\d+)?(ms|s)\]/g, "<duration>")
+    // ScalaTest "Run completed in 387 milliseconds.", sbt "Total time: 12 s, completed Oct 25, 2026,
+    // 2:43:17 AM" (#1496).
+    .replace(/\bRun completed in \d+ milliseconds\b/g, "Run completed in <duration>")
+    .replace(
+      /, completed [A-Z][a-z]{2} \d{1,2}, \d{4},? \d{1,2}:\d{2}:\d{2}(?: [AP]M)?/g,
+      ", completed <time>",
+    )
     // RuboCop: "Inspecting 3 files".
     .replace(/\bInspecting \d+ files?\b/g, "Inspecting <n> file")
     .replace(SUMMARY_COUNT, (_, verb: string, noun: string) => `${verb} <n> ${singular(noun)}`)

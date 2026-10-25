@@ -33,10 +33,16 @@ describe("project language", () => {
     expect(detectLanguages(workspace({ "App.csproj": "<Project />" }))).toEqual(["dotnet"]);
     expect(detectLanguages(workspace({ "Cargo.toml": "" }))).toEqual(["rust"]);
     expect(detectLanguages(workspace({ "pom.xml": "" }))).toEqual(["java"]);
+    expect(detectLanguages(workspace({ "composer.json": "{}" }))).toEqual(["php"]);
+    // A Lua project has a rockspec or the config of its tools (#1495).
+    expect(detectLanguages(workspace({ "calc-0.1-1.rockspec": "package = 'calc'\n" }))).toEqual(["lua"]);
+    expect(detectLanguages(workspace({ ".luacheckrc": "std = 'max'\n" }))).toEqual(["lua"]);
     // A Ruby application has a Gemfile; a gem may have only its gemspec (#1493).
     expect(detectLanguages(workspace({ Gemfile: "gem 'rspec'\n" }))).toEqual(["ruby"]);
     expect(detectLanguages(workspace({ "calc.gemspec": "Gem::Specification.new\n" }))).toEqual(["ruby"]);
     expect(detectLanguages(workspace({ "pubspec.yaml": "name: calc\n" }))).toEqual(["dart"]);
+    expect(detectLanguages(workspace({ "build.sbt": "" }))).toEqual(["scala"]);
+    expect(detectLanguages(workspace({ "Package.swift": "" }))).toEqual(["swift"]);
     expect(detectLanguages(workspace({ "package.json": "{}" }))).toEqual([]);
     // A module manifest or PSScriptAnalyzer settings (#1498); a script alone is not a project.
     expect(detectLanguages(workspace({ "Sum.psd1": "@{}" }))).toEqual(["powershell"]);
@@ -80,6 +86,10 @@ describe("language review scope", () => {
     expect(touchesLanguageFiles(["src\\App\\Program.cs"])).toBe(true);
     expect(touchesLanguageFiles(["Cargo.toml"])).toBe(true);
     expect(touchesLanguageFiles(["service/pom.xml"])).toBe(true);
+    expect(touchesLanguageFiles(["src/Sum.php"])).toBe(true);
+    expect(touchesLanguageFiles(["composer.json"])).toBe(true);
+    expect(touchesLanguageFiles(["src/calc.lua", "calc-0.1-1.rockspec"])).toBe(true);
+    expect(touchesLanguageFiles([".luacheckrc"])).toBe(true);
     expect(touchesLanguageFiles(["lib/calc.rb", "Gemfile"])).toEqual(true);
     expect(touchesLanguageFiles(["Gemfile.lock"])).toBe(true);
     expect(touchesLanguageFiles(["README.md", "scripts/run.sh", "docs/go.md"])).toBe(false);

@@ -1,7 +1,8 @@
 import { hashJson } from "../specs/hash.js";
+import { widenAuthorized } from "../workflows/corrective-scope.js";
 import { WorkflowFault } from "../workflows/errors.js";
 import { LANGUAGE_REVIEW_PROFILE, touchesLanguageFiles } from "../workflows/language.js";
-import { CorrectionSchema, type RunPolicy } from "../workflows/schemas.js";
+import { CorrectionSchema, PolicySchema, type RunPolicy } from "../workflows/schemas.js";
 import type { WorkflowStore } from "../workflows/store.js";
 import { hasTaskGate } from "../workflows/task-graph.js";
 import type { RuntimeState } from "../workflows/types.js";
@@ -109,15 +110,55 @@ function acceptance(
     throw new WorkflowFault("STALE_DECISION", "Missing accepted artifacts or convergence");
   let graphHash = hashJson(state.rootGraph);
   const reconstructed = structuredClone(state.rootGraph);
-  for (const correctionHash of state.correctionHashes) {
+  const links = state.correctionHashes.map((correctionHash) => {
     const artifact = store
       .artifacts(runId)
       .find((a) => a.kind === "correction" && a.content_hash === correctionHash);
     if (!artifact) throw new WorkflowFault("ARTIFACT_MISSING", "Correction chain is incomplete");
-    const correction = CorrectionSchema.parse(JSON.parse(store.readArtifact(runId, artifact.id)));
+    return CorrectionSchema.parse(JSON.parse(store.readArtifact(runId, artifact.id)));
+  });
+  // A corrective added as it was created: the writes later `host-widen` links added are left out
+  // here and checked by those links (#2133).
+  const widenedLater = (taskId: string, index: number): Set<string> =>
+    new Set(
+      links
+        .slice(index + 1)
+        .filter((link) => link.rule === "host-widen")
+        .flatMap((link) => link.widened ?? [])
+        .filter((w) => w.taskId === taskId)
+        .map((w) => w.path),
+    );
+  let frozen: RunPolicy | undefined;
+  for (const [index, correction] of links.entries()) {
     if (correction.parentDigest !== state.approvalRoot || correction.parentGraphHash !== graphHash)
       throw new WorkflowFault("STALE_DECISION", "Invalid correction chain");
-    const additions = correction.taskIds.map((id) => state.graph?.tasks.find((t) => t.id === id));
+    if (correction.rule === "host-widen") {
+      frozen ??= PolicySchema.parse(JSON.parse(store.run(runId).policy_json));
+      const policy = frozen;
+      for (const write of correction.widened ?? []) {
+        const task = reconstructed.tasks.find((t) => t.id === write.taskId);
+        if (
+          !task ||
+          task.origin === "planned" ||
+          !correction.taskIds.includes(task.id) ||
+          task.writes.some((w) => w.path === write.path) ||
+          !widenAuthorized(write.path, state, policy)
+        )
+          throw new WorkflowFault("STALE_DECISION", "Correction exceeds the approved authority");
+        task.writes.push({ path: write.path, action: write.action });
+      }
+      if (!correction.widened?.length || hashJson(reconstructed) !== correction.newGraphHash)
+        throw new WorkflowFault("STALE_DECISION", "Correction changed existing tasks");
+      graphHash = correction.newGraphHash;
+      continue;
+    }
+    const additions = correction.taskIds.map((id) => {
+      const task = state.graph?.tasks.find((t) => t.id === id);
+      const later = task ? widenedLater(task.id, index) : new Set<string>();
+      return task && later.size
+        ? { ...task, writes: task.writes.filter((w) => !later.has(w.path)) }
+        : task;
+    });
     for (const task of additions) {
       if (
         !task ||

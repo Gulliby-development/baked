@@ -118,6 +118,7 @@ export const EXT_TO_LANGUAGE: Record<string, Language> = {
   ".sh": "bash",
   ".bash": "bash",
   ".zsh": "bash",
+  ".bats": "bash",
   // PowerShell: scripts, modules and module manifests (#1498)
   ".ps1": "powershell",
   ".psm1": "powershell",

@@ -23,6 +23,12 @@ interface TestFramework {
   calls?: readonly AssertionCall[];
   /** A named argument that carries a message, wherever it stands: `msg=`, `because:`. */
   messageArgument?: string;
+  /**
+   * Read only by the guard's shadow measure (`testConventions(path, true)`, #2147): a language
+   * that gains test titles also gains `test-removed` findings it never reported, so its row is
+   * measured in shadow until bench rounds show what it would raise. Promoting it drops the flag.
+   */
+  shadow?: true;
 }
 
 export interface NamedTest {
@@ -217,6 +223,95 @@ const FRAMEWORKS: readonly TestFramework[] = [
     ],
   },
   {
+    // XCTest and swift-testing. `@Test` is read by the JUnit row, `#expect(...)` by the
+    // JavaScript row's `expect` (#1492). Test titles are the shadow row below.
+    name: "XCTest, swift-testing",
+    languages: ["swift"],
+    assertions: String.raw`\bXCTAssert\w*\s*\(|\bXCTFail\s*\(|#require\s*\(`,
+    skips: String.raw`\bXCTSkip(?:If|Unless)?\s*\(|\.disabled\s*\(|\bXCTExpectFailure\s*\(|\bwithKnownIssue\b`,
+    calls: [
+      {
+        callee: /^XCTAssert(?:True|False|Nil|NotNil|NoThrow|ThrowsError)?$/,
+        messages: from(1),
+      },
+      { callee: /^XCTUnwrap$/, messages: from(1) },
+      { callee: /^XCTFail$/, messages: from(0) },
+      { callee: /^XCTAssert\w+$/, messages: from(2) },
+      { callee: /^(?:expect|require)$/, messages: from(1) },
+    ],
+  },
+  {
+    // XCTest `func testAdds()` and swift-testing `@Test func adds()`, measured in shadow (#2147).
+    name: "XCTest, swift-testing titles",
+    languages: ["swift"],
+    shadow: true,
+    cases: String.raw`^\s*func\s+test\w*\s*\(`,
+    named: [
+      { pattern: /^\s*func\s+(?<name>test\w*)\s*\(/d },
+      { pattern: /@Test\b[^\n]*?\bfunc\s+(?<name>\w+)\s*\(/d },
+    ],
+  },
+  {
+    // `test("...")` (FunSuite, munit) and `assert(...)` are read by the JavaScript row, JUnit-style
+    // `assertEquals` by the JVM row above (#1496).
+    name: "ScalaTest, munit",
+    languages: ["scala"],
+    cases: String.raw`^\s*ignore\s*\(\s*"|(?:\b(?:it|they)|"[^"\n]*")\s+(?:should|must|can|ignore)\s+"[^"\n]*"\s+(?:in|ignore)\b|"[^"\n]*"\s+in\s*\{`,
+    named: [
+      { pattern: /^\s*ignore\s*\(\s*"(?<name>[^"\n]+)"/d },
+      {
+        pattern:
+          /(?:\b(?:it|they)|"[^"\n]*")\s+(?:should|must|can)\s+"(?<name>[^"\n]+)"\s+(?:in|ignore)\b/d,
+      },
+    ],
+    assertions: String.raw`\b(?:shouldBe|shouldEqual|shouldNot\w*|mustBe|mustEqual)\b|\b(?:should|must)\s+(?:be|equal|contain|have|include|startWith|endWith|matchPattern)\b|\b(?:intercept|assertThrows)\s*\[|\bassertResult\s*\(`,
+    skips: String.raw`^\s*ignore\s*\(|(?:\b(?:it|they)|"[^"\n]*")\s+ignore\b|\b(?:should|must|can)\s+"[^"\n]*"\s+ignore\b|"[^"\n]*"\s*\.(?:ignore|only|flaky)\b|\bpending\b(?!\s*[=:(.])|\bcancel\s*\(`,
+    calls: [
+      { callee: /^withClue$/, messages: (args) => (args.length ? [0] : []) },
+      { callee: /^assertResult$/, messages: none },
+    ],
+  },
+  {
+    // busted's `it("adds", function()` and luassert's `assert.are.equal` are read by the shared
+    // rows above; LuaUnit names its tests `function TestSum:testAdds()` (#1495).
+    name: "busted, LuaUnit",
+    languages: ["lua"],
+    cases: String.raw`^\s*function\s+[Tt]est\w*(?:[.:][Tt]est\w*)?\s*\(`,
+    named: [{ pattern: /^\s*function\s+(?<name>[Tt]est\w*(?:[.:][Tt]est\w*)?)\s*\(/d }],
+    skips: String.raw`(?:^|[^.\w])pending\s*\(|\blu\.skip(?:If|Unless)?\s*\(`,
+  },
+  {
+    // bats: `@test "adds" {`, checks with `[ ... ]`, `[[ ... ]]` and bats-assert's `assert_output`;
+    // shunit2: `testAdds() {` with `assertEquals` (#1497).
+    name: "bats, shunit2",
+    languages: ["bash"],
+    cases: String.raw`^\s*@test\s+["']|^\s*(?:function\s+)?test\w+\s*\(\s*\)`,
+    named: [
+      { pattern: /^\s*@test\s+(["'])(?<name>(?:(?!\1)[^\\\n])+)\1/d },
+      { pattern: /^\s*(?:function\s+)?(?<name>test\w+)\s*\(\s*\)/d },
+    ],
+    assertions: String.raw`^\s*\[\[?\s|\b(?:assert|refute)_\w+|\bassert[A-Z]\w*`,
+    skips: String.raw`^\s*skip\b|\bstartSkipping\b`,
+  },
+  {
+    // GoogleTest `TEST(SumTest, Adds)` (`TEST_F`, `TEST_P`, typed tests), Catch2 and doctest
+    // `TEST_CASE("adds")`, Boost.Test `BOOST_AUTO_TEST_CASE(adds)`, and C's Unity `void
+    // test_adds(void)` and Check `START_TEST(adds)` (#1490). A GoogleTest `DISABLED_` name, a
+    // `GTEST_SKIP()`, Catch2's hidden `[.]` tag and `SKIP()`, Unity's `TEST_IGNORE()` and CMocka's
+    // `skip()` keep a test from running.
+    name: "GoogleTest, Catch2, doctest, Boost.Test, Unity, Check",
+    languages: ["c", "cpp"],
+    cases: String.raw`^\s*(?:(?:TYPED_)?TEST(?:_F|_P)?|TYPED_TEST_P|TEST_CASE|SCENARIO|BOOST_AUTO_TEST_CASE|START_TEST)\s*\(|^\s*void\s+test_?\w*\s*\(\s*void\s*\)`,
+    named: [
+      { pattern: /^\s*(?:TYPED_)?TEST(?:_F|_P)?\s*\(\s*\w+\s*,\s*(?<name>\w+)\s*\)/d },
+      { pattern: /^\s*(?:TEST_CASE|SCENARIO)\s*\(\s*"(?<name>[^"\n]+)"/d },
+      { pattern: /^\s*(?:BOOST_AUTO_TEST_CASE|START_TEST)\s*\(\s*(?<name>\w+)/d },
+      { pattern: /^\s*void\s+(?<name>test_?\w*)\s*\(\s*void\s*\)/d },
+    ],
+    assertions: String.raw`\b(?:EXPECT|ASSERT)_[A-Z_]+\s*\(|\b(?:REQUIRE|CHECK)(?:_[A-Z_]+)?\s*\(|\bBOOST_(?:CHECK|REQUIRE|TEST)\w*\s*\(|\bTEST_ASSERT\w*\s*\(|\bck_assert\w*\s*\(|\bassert(?:_\w+)?\s*\(`,
+    skips: String.raw`\bGTEST_SKIP\s*\(|\bDISABLED_\w|\bSKIP\s*\(|\bTEST_IGNORE(?:_MESSAGE)?\s*\(|^\s*skip\s*\(\s*\)|\bTEST_CASE\s*\([^)\n]*"[^"\n]*\[\.[^\]\n]*\]`,
+  },
+  {
     // package:test and flutter_test. `test("...")`, `group` and `expect(actual, matcher)` are read
     // by the JavaScript row above; the matcher is what the test checks, and the reason is named.
     name: "package:test, flutter_test",
@@ -275,6 +370,81 @@ const FRAMEWORKS: readonly TestFramework[] = [
     messageArgument: String.raw`^\s*(?:because|message|userMessage)\s*:`,
   },
   {
+    // PHPUnit `public function testAdds(): void`. Pest's `it('adds', ...)` and `test(...)`, and
+    // `$this->assertSame(...)`, are read by the JavaScript row; skips by the guard's own list.
+    name: "PHPUnit",
+    languages: ["php"],
+    shadow: true,
+    cases: String.raw`^\s*(?:(?:public|protected|private|static|final)\s+)*function\s+test\w*\s*\(`,
+    named: [
+      {
+        pattern:
+          /^\s*(?:(?:public|protected|private|static|final)\s+)*function\s+(?<name>test\w*)\s*\(/d,
+      },
+    ],
+  },
+  {
+    // ExUnit `test "adds" do` (and `test "adds", %{conn: conn} do`); `assert` is read by the
+    // JavaScript row.
+    name: "ExUnit",
+    languages: ["elixir"],
+    shadow: true,
+    cases: String.raw`^\s*test\s+"`,
+    named: [{ pattern: /^\s*test\s+"(?<name>[^"\n]+)"/d }],
+    assertions: String.raw`\brefute(?:_\w+)?\b`,
+    skips: String.raw`@(?:module)?tag\s+(?::skip\b|skip:)`,
+  },
+  {
+    // `test "adds" {` and decltests `test adds {`; `try testing.expect(...)` is read by the
+    // JavaScript row's `expect`, its other `expect*` helpers here.
+    name: "zig test",
+    languages: ["zig"],
+    shadow: true,
+    cases: String.raw`^\s*test\b\s*(?:"[^"\n]*"|[A-Za-z_]\w*)?\s*\{`,
+    named: [
+      { pattern: /^\s*test\s+"(?<name>[^"\n]+)"\s*\{/d },
+      { pattern: /^\s*test\s+(?<name>[A-Za-z_]\w*)\s*\{/d },
+    ],
+    assertions: String.raw`\bexpect(?:Equal|Error|Fmt|Approx|String|Deep)\w*\s*\(`,
+    skips: String.raw`\berror\.SkipZigTest\b`,
+  },
+  {
+    // Alcotest `test_case "adds" Quick f`, OUnit `"adds" >:: f`, ppx_inline_test and
+    // ppx_expect `let%test "adds" =`. OUnit's `assert_equal` is read by the JavaScript row.
+    name: "Alcotest, OUnit, ppx_inline_test",
+    languages: ["ocaml"],
+    shadow: true,
+    cases: String.raw`\btest_case\s+"|"[^"\n]*"\s*>::|^\s*let%(?:test|test_unit|expect_test)\s+"`,
+    named: [
+      { pattern: /\btest_case\s+"(?<name>[^"\n]+)"/d },
+      { pattern: /"(?<name>[^"\n]+)"\s*>::/d },
+      { pattern: /^\s*let%(?:test|test_unit|expect_test)\s+"(?<name>[^"\n]+)"/d },
+    ],
+    assertions: String.raw`\bAlcotest\.check\b|\(\s*check\s+[\w.]+\s*\)|\[%expect\b`,
+    skips: String.raw`\bAlcotest\.skip\b|\bskip_if\b`,
+  },
+  {
+    // XCTest in Objective-C: `- (void)testAdds {`.
+    name: "XCTest (Objective-C)",
+    languages: ["objc"],
+    shadow: true,
+    cases: String.raw`^\s*-\s*\(\s*void\s*\)\s*test\w*`,
+    named: [{ pattern: /^\s*-\s*\(\s*void\s*\)\s*(?<name>test\w*)/d }],
+    assertions: String.raw`\bXCTAssert\w*\s*\(|\bXCTFail\s*\(`,
+    skips: String.raw`\bXCTSkip(?:If|Unless)?\b`,
+  },
+  {
+    // Foundry `function test_Adds() public` (`testFuzz_`, `testFail`); `assertEq` is read by the
+    // JavaScript row.
+    name: "Foundry",
+    languages: ["solidity"],
+    shadow: true,
+    cases: String.raw`^\s*function\s+test\w*\s*\(`,
+    named: [{ pattern: /^\s*function\s+(?<name>test\w*)\s*\(/d }],
+    assertions: String.raw`\bvm\.expect(?:Revert|Emit|Call)\w*\s*\(`,
+    skips: String.raw`\bvm\.skip\s*\(\s*true\b`,
+  },
+  {
     // `It 'adds two numbers' { $x | Should -Be 4 }`: a command, so no parentheses around the
     // name, and `-Because` is a parameter rather than an argument.
     name: "Pester",
@@ -308,14 +478,26 @@ interface Conventions {
 }
 
 const NEVER = "(?!)";
-const byLanguage = new Map<Language, Conventions>();
+const byLanguage = new Map<string, Conventions>();
 
-/** The test and assertion conventions read in a file. */
-export function testConventions(path: string): Conventions {
+/** Whether a file's language has a framework row read only in shadow (#2147). */
+export function hasShadowTitles(path: string): boolean {
   const language = detectLanguageFromPath(path);
-  const known = byLanguage.get(language);
+  return FRAMEWORKS.some((f) => f.shadow && f.languages?.includes(language));
+}
+
+/**
+ * The test and assertion conventions read in a file; `shadow` also reads the rows measured in
+ * shadow (#2147).
+ */
+export function testConventions(path: string, shadow = false): Conventions {
+  const language = detectLanguageFromPath(path);
+  const key = `${language}${shadow ? ":shadow" : ""}`;
+  const known = byLanguage.get(key);
   if (known) return known;
-  const frameworks = FRAMEWORKS.filter((f) => !f.languages || f.languages.includes(language));
+  const frameworks = FRAMEWORKS.filter(
+    (f) => (!f.languages || f.languages.includes(language)) && (shadow || !f.shadow),
+  );
   const join = (parts: (string | undefined)[]) =>
     parts.filter((part): part is string => part !== undefined).join("|") || NEVER;
   const messageArguments = frameworks.flatMap((f) =>
@@ -334,6 +516,6 @@ export function testConventions(path: string): Conventions {
     ].flatMap((f) => f.calls ?? []),
     messageArgument: messageArguments.length ? new RegExp(messageArguments.join("|")) : null,
   };
-  byLanguage.set(language, conventions);
+  byLanguage.set(key, conventions);
   return conventions;
 }

@@ -245,8 +245,12 @@ export function isTestCheck(check: { id: string; executable: string; args: strin
   const launched = toolchainCommand(check.executable, check.args);
   const build = buildToolRunsTests(launched.program, launched.args);
   if (build !== null) return build;
-  const text = [check.id, check.executable, ...check.args].join(" ").toLowerCase();
-  return /\b(?:test|tests|pytest|unittest|vitest|jest|mocha|ava|tap|phpunit|rspec|ctest|nextest)\b/.test(
+  // Pint's `--test` is its check mode, not a test run (#1491); node and deno take `--test` to run tests.
+  const flag = (arg: string) => arg === "--test" && !/^(?:node|deno)$/.test(launched.program);
+  const text = [check.id, check.executable, ...check.args.filter((arg) => !flag(arg))]
+    .join(" ")
+    .toLowerCase();
+  return /\b(?:test|tests|pytest|unittest|vitest|jest|mocha|ava|tap|phpunit|pest|rspec|busted|bats|ctest|nextest)\b/.test(
     text,
   );
 }

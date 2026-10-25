@@ -7,12 +7,14 @@ import { diffSections } from "../src/core/intelligence/call-context.js";
 import { hashBytes, hashJson } from "../src/core/specs/hash.js";
 import { defaultWorkflowPolicy } from "../src/core/workflows/defaults.js";
 import {
+  applyRegion,
   type HostApplyRecord,
   type HostApplyWrite,
   hostAppliableTasks,
   hostApplyDecision,
   hostApplyInputs,
   hostApplyRecords,
+  regionSections,
 } from "../src/core/workflows/host-apply.js";
 import type { Check, RunPolicy, Spec, Task } from "../src/core/workflows/schemas.js";
 import { NativeWorkflowService } from "../src/core/workflows/service.js";
@@ -132,10 +134,12 @@ class ScriptedExecutor implements AgentExecutor {
       case "analysis": output = { schemaVersion: 1, inputHash: data.inputHash, verdict: "pass", findings: [] }; break;
       case "implementation": {
         const id = request.task?.id ?? "";
+        // A batch worker edits its own task worktree.
+        const root = request.root ?? this.root;
         this.attempts.push(id);
-        if (id === "T001") this.aBefore = readFileSync(join(this.root, "src/a.ts"), "utf8");
+        if (id === "T001") this.aBefore = readFileSync(join(root, "src/a.ts"), "utf8");
         const [path, text] = content[id] ?? ["", ""];
-        writeFileSync(join(this.root, path), text);
+        writeFileSync(join(root, path), text);
         output = { schemaVersion: 1, taskId: id, outcome: "implemented", summary: `Updated ${path}`, evidenceIds: [], unresolved: [] };
         break;
       }
@@ -149,7 +153,16 @@ class ScriptedExecutor implements AgentExecutor {
   }
 }
 
-describe("scenario: an update brief with exact diffs and a whole file, in shadow (#2023)", () => {
+function git(cwd: string, ...args: string[]): void {
+  const result = Bun.spawnSync(["git", ...args], { cwd, stdout: "pipe", stderr: "pipe" });
+  if (result.exitCode !== 0) throw new Error(`git ${args.join(" ")}: ${result.stderr.toString()}`);
+}
+
+// Bench round 68 (#2138): with `--writers 3` every task ran in the batch worker, which skipped the
+// pre-session shadow hooks; cfgquill-update recorded no decision for two tasks whose diffs applied
+// (one of them 55 percent of the run's tokens). The same scenario runs on both paths.
+for (const writers of [1, 2])
+describe(`scenario: an update brief with exact diffs and a whole file, in shadow, ${String(writers)} writer(s) (#2023, #2138)`, () => {
   test("would_apply is recorded per planned task with its inputs, the implementer still runs, and the decision replays", async () => {
     const root = mkdtempSync(join(tmpdir(), "baked-host-apply-shadow-"));
     cleanups.push(() => rmSync(root, { recursive: true, force: true }));
@@ -157,13 +170,25 @@ describe("scenario: an update brief with exact diffs and a whole file, in shadow
     writeFileSync(join(root, "src/a.ts"), A_BEFORE);
     writeFileSync(join(root, "src/c.ts"), 'export const C = "different";\n');
     writeFileSync(join(root, "src/d.ts"), "export const D = 1;\n");
+    if (writers > 1) {
+      // A worktree run: the batch path needs a repository to cut task worktrees from.
+      git(root, "init", "-q", "-b", "main");
+      git(root, "config", "user.name", "Test User");
+      git(root, "config", "user.email", "test@example.test");
+      git(root, "config", "commit.gpgsign", "false");
+      // Git for Windows checks task worktrees out as CRLF; CRLF bases are #2158.
+      git(root, "config", "core.autocrlf", "false");
+      writeFileSync(join(root, ".gitignore"), ".baked/\n");
+      git(root, "add", ".");
+      git(root, "commit", "-q", "-m", "Initial");
+    }
     expect(hostAppliableTasks(brief, { tasks })).toEqual(["T001", "T002", "T003"]);
 
     const executor = new ScriptedExecutor(root);
     const config = { ...DEFAULT_CONFIG, defaultModel: "fixture/model", workflows: { enabled: true, importsEnabled: true, defaultWorkflow: "sdd", policy } };
     const service = new NativeWorkflowService(root, config, executor);
     cleanups.push(() => service.close());
-    const run = await service.start({ commandId: newId(), featureId: "fixture", workflowId: "sdd", prompt: brief, ownerLabel: "test", policy });
+    const run = await service.start({ commandId: newId(), featureId: "fixture", workflowId: "sdd", prompt: brief, ownerLabel: "test", policy, ...(writers > 1 ? { executionMode: "worktree" as const, maxConcurrentWriters: writers } : {}) });
     await service.drive(run.runId, new AbortController().signal);
     const waiting = await service.get(run.runId);
     const approval = service.store.requests(run.runId).find((r) => r.kind === "approval" && r.status === "pending");
@@ -212,4 +237,80 @@ describe("scenario: an update brief with exact diffs and a whole file, in shadow
     }).runs.find((r) => r.runId === run.runId);
     expect(unchecked?.newApplyDecisions).toBe(1);
   }, 120000);
+});
+
+describe("every pre-session shadow hook runs on both implementer paths (#2138)", () => {
+  test("the single-writer and batch paths call beforeSession, and the hooks are called nowhere else", () => {
+    const source = readFileSync(join(import.meta.dir, "../src/core/workflows/scheduler.ts"), "utf8");
+    const body = (name: string): string => {
+      const start = source.search(new RegExp(`\\n  private (?:async )?${name}\\(`));
+      const end = source.indexOf("\n  private ", start + 1);
+      return source.slice(start, end);
+    };
+    expect(body("runTaskStep").includes("await this.beforeSession(")).toBe(true);
+    expect(body("runTaskWorker").includes("await this.beforeSession(")).toBe(true);
+    // The hooks beforeSession runs: a direct call on one path would skip the other.
+    const hooks = [...body("beforeSession").matchAll(/this\.(record\w+)\(/g)].map((m) => m[1]);
+    expect(hooks).toEqual(["recordHostApply"]);
+    expect(source.match(/this\.recordHostApply\(/g)).toHaveLength(1);
+    // A corrective's `start` scope record is unownedFile's (#2133): runTaskStep calls it, and
+    // heldCorrectives before a batch.
+    expect(body("runTaskStep").includes('this.unownedFile(runId, state, policy, task, root, "start")')).toBe(true);
+    expect(body("heldCorrectives").includes('this.unownedFile(runId, state, policy, task, root, "start")')).toBe(true);
+  });
+});
+
+// Bench round 67 srtvet-update (#2101): the brief gave the README section "## Cleaning spaces"
+// verbatim (1,264 characters, two fenced blocks) and the README task cost an implementer 123k
+// tokens: a fenced block for a file that exists is an excerpt, which the host could not place.
+// A Markdown block that opens with a heading is now the section of that heading: the host would
+// write it in place of the file's one section of that heading, or append it.
+const SECTION = ["## Cleaning spaces", "", "Run `srtvet clean` to strip spaces:", "", "```sh", "srtvet clean in.srt > out.srt", "```", "", "Spaces show as `<U+0020>` and tabs as `<TAB>`:", "", "```text", "1<TAB>00:00:01", "```"].join("\n");
+const regionBrief = (prose: string) => [prose, "````markdown", SECTION, "````"].join("\n");
+const README = ["# srtvet", "", "Checks subtitle files.", "", "## Usage", "", "```sh", "## Cleaning spaces (a shell comment, not a heading)", "srtvet check in.srt", "```", "", "## License", "", "MIT", ""].join("\n");
+
+describe("a verbatim Markdown section the host writes into its file (#2101)", () => {
+  test("the reader marks a heading-led Markdown block as a region, unless the prose says it is the whole file", () => {
+    const [block] = suppliedBlocks(regionBrief("Add this section to `README.md` exactly as written:"), ["README.md"]).get("README.md") ?? [];
+    expect(block).toMatchObject({ kind: "file", whole: true, region: { title: "Cleaning spaces", level: 2 } });
+    for (const prose of ["Replace `README.md` with:", "The full contents of `README.md`:", "Overwrite README.md with this:"])
+      expect(suppliedBlocks(regionBrief(prose), ["README.md"]).get("README.md")?.[0]).not.toHaveProperty("region");
+    // A block that does not open with a heading, or a file that is not Markdown, is no region.
+    expect(suppliedBlocks("Add to `README.md`:\n```markdown\nSome text.\n```", ["README.md"]).get("README.md")?.[0]).not.toHaveProperty("region");
+    expect(suppliedBlocks("Add to `notes.txt`:\n```\n## Heading\n```", ["notes.txt"]).get("notes.txt")?.[0]).not.toHaveProperty("region");
+  });
+
+  test("the host would append a new section, replace the one existing section, and refuse a heading the file repeats", async () => {
+    const root = mkdtempSync(join(tmpdir(), "baked-host-region-"));
+    cleanups.push(() => rmSync(root, { recursive: true, force: true }));
+    const task = { writes: [{ path: "README.md", action: "modify" as const }] };
+    const request = regionBrief("Add this section to `README.md` exactly as written:");
+    const decide = async (readme: string) => {
+      writeFileSync(join(root, "README.md"), readme);
+      const writes = (await hostApplyInputs(root, request, task)) ?? [];
+      return { writes, verdict: hostApplyDecision(writes) };
+    };
+    // The heading inside the fenced shell block is no section.
+    const absent = await decide(README);
+    expect(absent.writes[0]?.region).toEqual({ level: 2, matches: 0 });
+    expect(absent.verdict).toEqual({ wouldApply: true, reason: null });
+    const once = await decide(README.replace("## License", "## Cleaning spaces\n\nOld text.\n\n## License"));
+    expect(once.writes[0]?.region).toEqual({ level: 2, matches: 1 });
+    expect(once.verdict.wouldApply).toBe(true);
+    const twice = await decide(`${README}\n## Cleaning spaces\n\nA.\n\n## Cleaning spaces\n\nB.\n`);
+    expect(twice.verdict).toEqual({ wouldApply: false, reason: "the section the request gives for README.md has a heading that 2 sections of the file share" });
+    // Without the region rule the same block was an excerpt the host could not place.
+    expect(hostApplyDecision([{ ...absent.writes[0]!, region: undefined, whole: false }]).wouldApply).toBe(false);
+  });
+
+  test("applyRegion writes the section in place or at the end, and leaves the rest of the file as it was", () => {
+    const region = { title: "Cleaning spaces", level: 2 };
+    expect(applyRegion(README, SECTION, region)).toBe(`${README.trimEnd()}\n\n${SECTION}\n`);
+    const old = README.replace("## License", "## Cleaning spaces\n\nOld text.\n\n### Detail\n\nMore.\n\n## License");
+    expect(applyRegion(old, SECTION, region)).toBe(README.replace("## License", `${SECTION}\n\n## License`));
+    // The written file holds the section byte for byte: an exact-text test of it passes.
+    expect(applyRegion(old, SECTION, region)).toContain(SECTION);
+    expect(applyRegion(`${README}\n## Cleaning spaces\n\nA.\n\n## Cleaning spaces\n`, SECTION, region)).toBeNull();
+    expect(regionSections(README, region)).toEqual([]);
+  });
 });

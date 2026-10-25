@@ -9,6 +9,7 @@ import {
   chainRecord,
   chainSubject,
   correctiveChain,
+  recordUnchangedRepeats,
   rewriteStep,
   rewritesSymbol,
 } from "../workflows/finding-chain.js";
@@ -297,7 +298,7 @@ export function failingFilesInOutput(output: string, tasks: Task[]): string[] {
 
 /** Lines of a check's output that name what fails: test names and assertion messages. */
 const FAILURE_LINE =
-  /^\s*(?:\(fail\)|✗|✘|×|✖|FAIL|not ok|error:|AssertionError|Expected|Received|E\s{2,}|---\s*FAIL)/i;
+  /^\s*(?:\(fail\)|✗|✘|×|✖|⨯|FAIL|not ok|error:|AssertionError|Expected|Received|E\s{2,}|---\s*FAIL|Failed asserting)/i;
 
 /**
  * What fails in a check's output, normalized so two runs of the same failure compare equal:
@@ -318,7 +319,7 @@ export function failureSignature(output: string): string {
         // between runs of the same failure (aclvet 5684de0e, #1189).
         .replace(/^(\s*(?:FAIL|ok)\s.*?)\s+\d+(?:\.\d+)?m?s(?:\s+\(cached\))?\s*$/, "$1")
         // vitest's failed-test line ends with a bare time (` × adds 3ms`).
-        .replace(/^(\s*[✗✕✘×✖]\s.*?)\s+\d+(?:\.\d+)?\s?m?s\s*$/, "$1")
+        .replace(/^(\s*[✗✕✘×✖⨯]\s.*?)\s+\d+(?:\.\d+)?\s?m?s\s*$/, "$1")
         // Maven Surefire's `Time elapsed: 0.052 s <<< FAILURE!` and dotnet's summary
         // `Duration: 45 ms` (or `< 1 ms`, `1 m 2 s`) are on the failure lines themselves (#1678).
         .replace(
@@ -345,11 +346,11 @@ export function failureSignature(output: string): string {
  * match any directory/file: test" or "no tests to run", Flutter's "Test directory "test" not
  * found" (#1753), and RSpec's "No examples found." or "All examples were filtered out" and
  * Minitest's "0 runs, 0 assertions" (#1493), all of which exit 0; dart test's "No tests ran." exits 79
- * and its 'the default "test/" directory doesn't exist' exits 65 (#1494). A plan that writes the tests last has this state until its test tasks run, and
+ * and its 'the default "test/" directory doesn't exist' exits 65 (#1494), and PHPUnit's "No tests executed!" (#1491; Pest says "No tests found") and busted's "No test files found matching Lua pattern" (#1495), and a TAP plan of no tests, `1..0` (bats on an empty folder, #1497), CTest's "No tests were found!!!" (exit 0) or a GoogleTest binary's "0 tests from 0 test suites ran" (#1490). A plan that writes the tests last has this state until its test tasks run, and
  * it is no defect of the code (#1031, #1208).
  */
 export function noTestsCollected(output: string): boolean {
-  return /\bno tests ran\b|\bcollected 0 items\b|\bno tests? (?:files? )?found\b|\bno test files\b|\bno files were found in testpaths\b|\b0 test files matching\b|\bdid not discover any tests to execute\b|\bno tests to run\b|\bdid not match any directory\/file\b|\btest directory "?test"? not found\b|\bno examples found\b|\ball examples were filtered out\b|^0 runs, 0 assertions\b|\bthe default "test\/" directory doesn't exist\b|^Result: NOTESTS\b/im.test(
+  return /\bno tests ran\b|\bno tests were found!!!|^\[==========\] 0 tests from 0 test suites ran\.|\bno tests executed!|\bno test files found matching lua pattern\b|^1\.\.0(?:[ \t]+#.*)?$|\bcollected 0 items\b|\bno tests? (?:files? )?found\b|\bno test files\b|\bno files were found in testpaths\b|\b0 test files matching\b|\bdid not discover any tests to execute\b|\bno tests to run\b|\bdid not match any directory\/file\b|\btest directory "?test"? not found\b|\bno examples found\b|\ball examples were filtered out\b|^0 runs, 0 assertions\b|\bthe default "test\/" directory doesn't exist\b|^Result: NOTESTS\b/im.test(
     output,
   );
 }
@@ -377,6 +378,18 @@ export const MISSING_PATH_LINES: readonly { tool: string; line: RegExp }[] = [
   { tool: "go", line: /"(\S+?)" matched no packages/ },
   { tool: "go", line: /\bdirectory\s+(\S+)\s+(?:does not exist|not found)/ },
   { tool: "luacheck", line: /^Checking\s+(\S+)\s+I\/O error/ },
+  // busted, selene and StyLua given a path that does not exist (#1495).
+  { tool: "busted", line: /^Error (?:->|→) Cannot find file or directory: (\S+)$/ },
+  { tool: "selene", line: /\bError getting metadata of (\S+?): No such file or directory/ },
+  { tool: "stylua", line: /\bno file or directory found matching '([^']+)'/ },
+  // bats, ShellCheck and shfmt (#1497).
+  { tool: "bats", line: /^Error: Test file "([^"]+)" does not exist$/ },
+  { tool: "shellcheck", line: /^(\S+): \S+: openBinaryFile: does not exist\b/ },
+  { tool: "shfmt", line: /^lstat (\S+): no such file or directory$/ },
+  // PHPUnit given a folder that does not exist: `Test directory "/w/tests" not found` (10 and
+  // later), `Cannot open file "tests.php".` (9).
+  { tool: "phpunit", line: /\bTest (?:directory|file) "([^"]+)" not found/ },
+  { tool: "phpunit", line: /\bCannot open file "([^"]+?)(?:\.php)?"/ },
   // RSpec: `An error occurred while loading ./spec/a_spec.rb.`, a missing file only when RSpec's
   // own `load` failed (`Failure/Error: __send__(method, file)`), not a `require` inside the file.
   { tool: "rspec", line: /^An error occurred while loading (\S+?)\.?(?: - Did you mean\?)?$/ },
@@ -1233,6 +1246,9 @@ export function appendCorrections(
   );
   for (const record of chainRecords)
     store.artifact(runId, CHAIN_KIND, `${CHAIN_TASKS_DIR}${record.taskId}.json`, canonical(record));
+  // A finding back after its corrective changed no file (#2137, shadow); v1, v2 and a granted
+  // round all open review and convergence correctives here.
+  recordUnchangedRepeats(store, runId, policy, findings.filter(chainable));
   state.correctionHashes.push(artifact.content_hash);
   state.manifest.correctionHashes = [...state.correctionHashes];
   state.graph = graph;

@@ -1,5 +1,6 @@
 import type { ReproOutcome } from "../verification/repro.js";
-import { type Repro, ReproSchema, type Spec } from "./schemas.js";
+import { type Repro, ReproSchema, type RunPolicy, type Spec } from "./schemas.js";
+import { recordWouldStop, stopMode } from "./stop-reasons.js";
 import type { WorkflowStore } from "./store.js";
 import { isTestPath } from "./test-integrity.js";
 
@@ -23,7 +24,14 @@ import { isTestPath } from "./test-integrity.js";
  * symbol (#2098): a finding on a test file rarely has one, so R67 ampwhy F4 (a test method,
  * `repeatOf: F2`) and F2 (`ReaderNumericTest.java`, no symbol) were a chain of one. A repeat
  * chain on a test file is no symbol rewrite: its corrective is the test sweep
- * (`corrective: "test-sweep"`), and it has no battery.
+ * (`corrective: "test-sweep"`), and it has no battery. The same holds when one finding names a
+ * class and the other a member of it (#2137): ewvet scanner F1 (`Scanner`) and F1-3..F1-6
+ * (`Scanner.IsEncodingToken`, each `repeatOf: F1`) were chains of one.
+ *
+ * A corrective that changed no file and whose finding then comes back (`repeatOf` it, or the same
+ * claim on the same file) is the `repeat_without_change` would-stop (`unchangedRepeats`, shadow):
+ * no further session can change what the last one left alone, and the next step is a decision on
+ * the owner or the scope.
  */
 
 /** Findings in a `repeatOf` chain on one file and symbol at which the next corrective rewrites it. */
@@ -39,13 +47,68 @@ export const CHAIN_BATTERY_DIR = "chains/battery/";
 /** The sibling probe of a rewrite corrective (#1969): `chains/family/<task>.json`. */
 export const CHAIN_FAMILY_DIR = "chains/family/";
 
+/**
+ * A leading declaration keyword a reviewer may copy with the name (`struct reader`, `impl Reader`,
+ * `def read`): no part of the qualified name.
+ */
+const DECLARATION_KEYWORD =
+  /^(?:(?:pub|public|private|protected|internal|static|async|export|abstract|final|override|open)\s+)*(?:struct|class|enum|union|impl|trait|interface|protocol|extension|module|namespace|object|record|contract|type|def|defp|fn|func|function|fun|sub|proc|method|let|var|const|val)\s+/;
+
+/**
+ * The qualified name of a symbol a reviewer reported as its segments, outermost first (#2137):
+ * `Parser.parseInline()` is `Parser`, `parseInline`. The separators of every supported language's
+ * qualified names split it: `.` (C#, Java, Kotlin, Python, Go, TypeScript and most others), `::`
+ * (Rust, C++, PHP static members, Ruby constants, Bash namespaced functions), `#` (Ruby and Scala
+ * instance methods), `:` (Lua methods), `->` (C struct pointers, PHP instance members), `\` (PHP
+ * namespaces), `/`, and `$` between two names (R6 and Reference Class methods, #1500). An
+ * Elixir arity (`read/1`), a call or signature (`read(buf)`), type
+ * arguments (`Reader<T>`), a Go receiver (`(*Reader).Read`), an Objective-C message
+ * (`-[Reader read:]`), a PowerShell type literal (`[Reader]::Read`) and a leading declaration
+ * keyword (`struct reader`) are dropped. A language
+ * whose qualified names use another spelling adds it here and a row to `CONTAINER_MEMBER` in
+ * `tests/workflow-scenario-finding-chain.test.ts`.
+ */
+export const symbolPath = (symbol: string | null | undefined): string[] => {
+  let text = (symbol ?? "").trim();
+  const message = /^[-+]\s*\[([^\]]*)\]$/.exec(text);
+  if (message?.[1]) text = message[1];
+  text = text
+    .replace(/^\(\s*\*?\s*([\w.]+)\s*\)\s*\./, "$1.")
+    .replace(/^\[([\w.]+)\]/, "$1")
+    .replace(DECLARATION_KEYWORD, "")
+    .replace(/\(.*$/s, "");
+  for (let before = ""; before !== text; ) {
+    before = text;
+    text = text.replace(/(?<=\w)<[\w\s,:.&*'?[\]]*>/g, "");
+  }
+  return text
+    .replace(/\/\d+$/, "")
+    .split(/::|->|(?<=\w)\$(?=\w)|[.:#/\\\s]+/)
+    .filter(Boolean);
+};
+
 /** The last name of a symbol a reviewer reported: `Parser.parseInline()` is `parseInline`. */
 export const symbolKey = (symbol: string | null | undefined): string =>
-  (symbol ?? "")
-    .replace(/\(.*$/s, "")
-    .split(/[.:#\s]+/)
-    .filter(Boolean)
-    .at(-1) ?? "";
+  symbolPath(symbol).at(-1) ?? "";
+
+/**
+ * Whether one symbol contains the other (#2137): the shorter qualified name is a run of the longer
+ * one's segments that ends before its last (`Scanner` and `Scanner.IsEncodingToken`, `Reader` and
+ * `Reader::read`, `Scanner` and `Ewvet.Scan.Scanner.IsEncodingToken`). For a reviewer's own link a
+ * finding on a class and one on its member are one place, as a finding without a symbol is.
+ */
+export const containsSymbol = (
+  a: string | null | undefined,
+  b: string | null | undefined,
+): boolean => {
+  const left = symbolPath(a);
+  const right = symbolPath(b);
+  const [outer, inner] = left.length <= right.length ? [left, right] : [right, left];
+  if (!outer.length || outer.length === inner.length) return false;
+  for (let i = 0; i + outer.length < inner.length; i++)
+    if (outer.every((segment, j) => inner[i + j] === segment)) return true;
+  return false;
+};
 
 export interface ChainFinding {
   id: string;
@@ -149,14 +212,17 @@ const sameSpot = (a: ChainFinding, b: ChainFinding): boolean =>
 
 /**
  * Whether the reviewer's `repeatOf` link between `a` and `b` joins a chain (#2098): the chain key,
- * or the same named file when either finding names no symbol. The host's own links (`familyLink`)
- * keep the key; a link between two different symbols without a shared family stays unjoined.
+ * or the same named file when either finding names no symbol or one symbol contains the other (a
+ * class and its member, `containsSymbol`, #2137). The host's own links (`familyLink`) keep the
+ * key; a link between two unrelated symbols without a shared family stays unjoined.
  */
 const explicitLink = (a: ChainFinding, b: ChainFinding): boolean =>
   sameSpot(a, b) ||
   (a.file !== null &&
     a.file === b.file &&
-    (symbolKey(a.symbol) === "" || symbolKey(b.symbol) === ""));
+    (symbolKey(a.symbol) === "" ||
+      symbolKey(b.symbol) === "" ||
+      containsSymbol(a.symbol, b.symbol)));
 
 /**
  * The latest finding recorded before `current` of `start`'s family and file that a correction
@@ -347,6 +413,121 @@ export function correctiveChain(
       best = { finding, chain };
   }
   return best;
+}
+
+/** The artifact path of a task's recorded changes, which holds `changed`: the paths it changed. */
+export const taskDiffPath = (taskId: string): string => `tasks/${taskId}/diff.json`;
+
+/** A finding that came back after a corrective that changed no file (#2137). */
+export interface UnchangedRepeat {
+  findingId: string;
+  /** The earlier finding it repeats: its `repeatOf`, or the same claim on the same file. */
+  earlierId: string;
+  /** The corrective of the earlier finding. */
+  taskId: string;
+  /** The paths that corrective changed, across its sessions: empty. */
+  changed: string[];
+  /** The finding's chain, oldest first (`findingChain`). */
+  chain: string[];
+}
+
+const claimKey = (claim: string): string => claim.toLowerCase().replace(/\s+/g, " ").trim();
+
+/**
+ * The findings of a round that repeat an earlier finding whose corrective changed no file (#2137):
+ * the earlier one is the finding's `repeatOf`, else the latest earlier finding on the same file
+ * with the same claim (case and spacing folded). `changedOf` gives a corrective's changed paths
+ * over all its sessions, or null when it recorded none (still running, never ran): only a recorded
+ * empty change counts. ewvet scanner T010 reported "I made no edits in this task" after three
+ * sessions (252k tokens), was marked implemented, and review found F1 again.
+ */
+export function unchangedRepeats(
+  all: ReadonlyMap<string, ChainFinding>,
+  findings: readonly Pick<FindingLike, "id">[],
+  changedOf: (taskId: string) => readonly string[] | null,
+): UnchangedRepeat[] {
+  const order = [...all.keys()];
+  const repeats: UnchangedRepeat[] = [];
+  for (const own of findings) {
+    const finding = all.get(own.id);
+    if (!finding) continue;
+    const linked = finding.repeatOf ? all.get(finding.repeatOf) : undefined;
+    const sameClaim = (): ChainFinding | undefined =>
+      order
+        .slice(0, order.indexOf(finding.id))
+        .map((id) => all.get(id) as ChainFinding)
+        .filter(
+          (f) =>
+            f.file !== null &&
+            f.file === finding.file &&
+            f.repairTaskId !== null &&
+            claimKey(f.claim) !== "" &&
+            claimKey(f.claim) === claimKey(finding.claim),
+        )
+        .at(-1);
+    const earlier = linked ?? sameClaim();
+    const taskId = earlier?.repairTaskId;
+    if (!earlier || !taskId || taskId === finding.repairTaskId) continue;
+    const changed = changedOf(taskId);
+    if (changed === null || changed.length) continue;
+    repeats.push({
+      findingId: finding.id,
+      earlierId: earlier.id,
+      taskId,
+      changed: [],
+      chain: findingChain(all, finding).map((f) => f.id),
+    });
+  }
+  return repeats;
+}
+
+/** A task's changed paths over all its recorded sessions, or null when it recorded none. */
+export function taskChangedPaths(
+  store: WorkflowStore,
+  runId: string,
+  taskId: string,
+): string[] | null {
+  const rows = store.artifacts(runId).filter((a) => a.logical_path === taskDiffPath(taskId));
+  if (!rows.length) return null;
+  const changed = new Set<string>();
+  for (const row of rows) {
+    try {
+      const body = JSON.parse(store.readArtifact(runId, row.id)) as { changed?: unknown };
+      if (!Array.isArray(body.changed)) return null;
+      for (const path of body.changed) if (typeof path === "string") changed.add(path);
+    } catch {
+      return null;
+    }
+  }
+  return [...changed].sort();
+}
+
+/**
+ * Records the `repeat_without_change` would-stop for each finding of a round that repeats one
+ * whose corrective changed no file (#2137), once per corrective, with the corrective's changed
+ * paths, the finding ids and the chain. Shadow: the corrective is opened as before.
+ */
+export function recordUnchangedRepeats(
+  store: WorkflowStore,
+  runId: string,
+  policy: Pick<RunPolicy, "stopModes" | "costForecast">,
+  findings: readonly FindingLike[],
+): UnchangedRepeat[] {
+  if (!findings.length) return [];
+  const mode = stopMode(policy, "repeat_without_change");
+  if (mode === "enforce") return [];
+  const repeats = unchangedRepeats(chainFindings(store, runId, findings), findings, (taskId) =>
+    taskChangedPaths(store, runId, taskId),
+  );
+  for (const repeat of repeats)
+    recordWouldStop(store, runId, {
+      reason: "repeat_without_change",
+      mode,
+      key: `task-${repeat.taskId}`,
+      summary: `${repeat.findingId} repeats ${repeat.earlierId} after ${repeat.taskId} changed no file: another session would start from the same files, and the finding needs a decision on its owner or scope`,
+      inputs: { ...repeat },
+    });
+  return repeats;
 }
 
 export function chainRecord(
