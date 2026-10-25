@@ -31,6 +31,9 @@
       "lib/sum_test.dart:4 comment"
     ],
     "formatters": null,
-    "packageContents": null
+    "packageContents": null,
+    "numericLimits": [
+      "int is 64-bit on the VM and 2^53-exact when compiled to JavaScript"
+    ]
   }
 }

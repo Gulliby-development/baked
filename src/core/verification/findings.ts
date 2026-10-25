@@ -18,8 +18,14 @@ export function fingerprint(finding: Review["findings"][number]): string {
  * reviewer asked for gaps always finds some (#635), unless `reproduced`: the host ran its repro and
  * it showed the claim (#1210).
  */
+/** The labels of a finding the review gates read: no claim, file or repro (#1715). */
+export type FindingLabels = Pick<
+  Review["findings"][number],
+  "severity" | "kind" | "basis" | "confidence"
+>;
+
 export function findingBlocks(
-  finding: Review["findings"][number],
+  finding: FindingLabels,
   minConfidence = DEFAULT_REVIEW_MIN_CONFIDENCE,
   reproduced = false,
 ): boolean {
@@ -35,7 +41,7 @@ export function findingBlocks(
  * raised it at medium with low confidence and no repro, and it ended a note (#1210).
  */
 export function confidenceOnlyNote(
-  finding: Review["findings"][number],
+  finding: FindingLabels,
   minConfidence = DEFAULT_REVIEW_MIN_CONFIDENCE,
 ): boolean {
   return (

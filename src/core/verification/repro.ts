@@ -287,7 +287,7 @@ export async function runRepro(
  * findings keep blocking as before.
  */
 export function reproAllows(
-  finding: Review["findings"][number],
+  finding: Pick<Review["findings"][number], "kind" | "severity">,
   outcome: ReproOutcome["status"] | undefined,
   available: boolean,
 ): boolean {

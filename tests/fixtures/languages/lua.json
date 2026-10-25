@@ -41,6 +41,9 @@
       "src/sum_spec.lua:3 comment"
     ],
     "formatters": null,
-    "packageContents": null
+    "packageContents": null,
+    "numericLimits": [
+      "integers past 2^63 wrap; tonumber of a long digit string gives a float"
+    ]
   }
 }

@@ -1111,6 +1111,20 @@ export const SETTINGS: readonly SettingDefinition[] = [
     ],
   },
   {
+    id: "quality.edgeProbe",
+    page: "code-quality",
+    section: "Workflow runs",
+    label: "Edge-input probe",
+    help: "After a planned source task passes its checks and before the test tasks run, one small review call proposes extreme but legal inputs its criteria allow (huge numbers, long and non-ASCII text, empty values, boundary dates). The host runs them through the project's commands, and each one whose output differs from the expected value is corrected in that task at once instead of being found by the final review.",
+    scopes: BOTH,
+    type: "enum",
+    default: "off",
+    options: [
+      { value: "off", label: "off", help: "Extreme inputs are left to the tests and the review." },
+      { value: "on", label: "on", help: "Probe each source task once and correct failing inputs." },
+    ],
+  },
+  {
     id: "quality.conflictFinish",
     page: "code-quality",
     section: "Workflow runs",

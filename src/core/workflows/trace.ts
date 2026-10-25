@@ -26,6 +26,13 @@ import {
   type CaseWalkRecord,
   caseWalkDecision,
 } from "../verification/criteria-cases.js";
+import {
+  EDGE_DIR,
+  EDGE_KIND,
+  type EdgeRecord,
+  type EdgeRule,
+  edgeDecision,
+} from "../verification/edge-inputs.js";
 import { planApprovalDecision, requestedPathTokens } from "./auto-approval.js";
 import { callCostRate } from "./budget.js";
 import {
@@ -109,6 +116,13 @@ import {
   type RequestConflictRule,
   requestConflictDecision,
 } from "./request-conflict.js";
+import {
+  REVIEW_GATE_DIR,
+  REVIEW_GATE_KIND,
+  type ReviewGate,
+  type ReviewGateRecord,
+  reviewGateDecision,
+} from "./review-gate.js";
 import { PolicySchema, type RunPolicy } from "./schemas.js";
 import { NativeWorkflowService } from "./service.js";
 import { exceedsTestCapacity, type SizingReport } from "./sizing.js";
@@ -160,10 +174,14 @@ const KEPT_ARTIFACTS = new Set([
   HOST_APPLY_KIND,
   // Each misquote settle's host-fix decision: occurrence counts and spelling flags, no text (#2047).
   MISQUOTE_FIX_KIND,
+  // Each planned source task's edge-input probe: its cases' criteria and outcomes (#1808).
+  EDGE_KIND,
   // Each test-integrity scan: per-file counts and flags, no code (#1715).
   INTEGRITY_KIND,
   // Each task-end case walk: which cases a file held, no literals (#1715).
   CASE_WALK_KIND,
+  // Each review's gate: the findings' labels and repro outcomes, no claims (#1715).
+  REVIEW_GATE_KIND,
   // Each decision for the request or the platform on checked evidence: states, no quotes (#2032).
   EVIDENCE_DECISION_KIND,
   // Each settled conflict's host finish decision: edits, case and check counts, no text (#2033).
@@ -684,6 +702,10 @@ export interface RunReplay {
   misquoteFixes: MisquoteFixBoundary[];
   /** Misquote settles whose host-fix decision (apply or open a session) the current rule changes. */
   newMisquoteFixes: number;
+  /** Each case of a source task's edge-input probe against the current rule (#1808). */
+  edgeProbes: EdgeProbeBoundary[];
+  /** Probed cases the current rule turns into a finding, or lets pass, unlike the recording. */
+  newEdgeDecisions: number;
   /** Each test-integrity scan's findings against the current rule (#1715). */
   integrity: IntegrityBoundary[];
   /** Integrity findings (rule and path) the current rule reports that the recording did not. */
@@ -692,6 +714,10 @@ export interface RunReplay {
   caseWalks: CaseWalkBoundary[];
   /** Cases the current rule refuses a task for that the recorded walk did not. */
   newCaseRefusals: number;
+  /** Each review's gate against the current rule (#1715). */
+  reviewGates: ReviewGateBoundary[];
+  /** Findings the current rule repairs that the recorded gate kept as notes. */
+  newGateRepairs: number;
   /** Each decision for the request or the platform on checked evidence (#2032). */
   evidenceDecisions: EvidenceDecisionBoundary[];
   /** Findings and conflict reports the current rule settles differently than the recording. */
@@ -801,6 +827,49 @@ export function replayEvidenceDecisions(
           report: record.report,
           recorded: record.decision,
           replayed,
+        },
+      ];
+    });
+}
+
+export type ReviewGateRule = (gate: ReviewGate) => string[];
+
+export interface ReviewGateBoundary {
+  reviewer: string;
+  findings: number;
+  /** IDs of the findings that start a correction, as recorded and as the current rule decides. */
+  recorded: string[];
+  replayed: string[];
+}
+
+/**
+ * Every review gate a run recorded (`review-gate/`, #1715), decided again from each finding's
+ * severity, kind, basis, confidence, sibling note and repro outcome, and the round's repaired
+ * severities. A repro runs only for a finding the recorded gate made a candidate, so a rule that
+ * makes another one a candidate replays it without an outcome. Traces before #1715 record none.
+ */
+export function replayReviewGates(
+  store: WorkflowStore,
+  runId: string,
+  decide: ReviewGateRule = reviewGateDecision,
+): ReviewGateBoundary[] {
+  return store
+    .artifacts(runId)
+    .filter((a) => a.kind === REVIEW_GATE_KIND && a.logical_path.startsWith(REVIEW_GATE_DIR))
+    .flatMap((artifact) => {
+      let record: ReviewGateRecord;
+      try {
+        record = JSON.parse(store.readArtifact(runId, artifact.id));
+      } catch {
+        return [];
+      }
+      if (record.schemaVersion !== 1) return [];
+      return [
+        {
+          reviewer: record.reviewer,
+          findings: record.findings.length,
+          recorded: record.repaired,
+          replayed: decide(record),
         },
       ];
     });
@@ -941,6 +1010,42 @@ export function replayMisquoteFixes(
           checks: record.checks ?? null,
         },
       ];
+    });
+}
+
+export interface EdgeProbeBoundary {
+  /** The probe record's path and the case's number. */
+  key: string;
+  criterionId: string;
+  recorded: "finding" | "pass";
+  replayed: "finding" | "pass";
+}
+
+/**
+ * Every case of every edge-input probe a run recorded (`probes/edge/`, #1808), decided again from
+ * its recorded outcome. Traces from before #1808 record none.
+ */
+export function replayEdgeProbes(
+  store: WorkflowStore,
+  runId: string,
+  decide: EdgeRule = edgeDecision,
+): EdgeProbeBoundary[] {
+  return store
+    .artifacts(runId)
+    .filter((a) => a.kind === EDGE_KIND && a.logical_path.startsWith(EDGE_DIR))
+    .flatMap((artifact) => {
+      let record: EdgeRecord;
+      try {
+        record = JSON.parse(store.readArtifact(runId, artifact.id));
+      } catch {
+        return [];
+      }
+      return (record.cases ?? []).map((c, index) => ({
+        key: `${artifact.logical_path}#${String(index + 1)}`,
+        criterionId: c.criterionId,
+        recorded: c.decision,
+        replayed: decide(c.status),
+      }));
     });
 }
 
@@ -2813,10 +2918,14 @@ function replayRun(
   | "newApplyDecisions"
   | "misquoteFixes"
   | "newMisquoteFixes"
+  | "edgeProbes"
+  | "newEdgeDecisions"
   | "integrity"
   | "newIntegrityFindings"
   | "caseWalks"
   | "newCaseRefusals"
+  | "reviewGates"
+  | "newGateRepairs"
   | "evidenceDecisions"
   | "newEvidenceDecisions"
   | "conflictFinishes"
@@ -2997,8 +3106,10 @@ export function replayTrace(
     hostApplyRule?: HostApplyRule;
     poolGrowthRule?: PoolGrowthRule;
     misquoteFixRule?: MisquoteFixRule;
+    edgeRule?: EdgeRule;
     integrityRule?: IntegrityRule;
     caseWalkRule?: CaseWalkRule;
+    reviewGateRule?: ReviewGateRule;
     evidenceRule?: EvidenceRule;
     conflictFinishRule?: ConflictFinishRule;
   } = {},
@@ -3055,11 +3166,17 @@ export function replayTrace(
     const misquotes = new Map(
       runIds.map((runId) => [runId, replayMisquoteFixes(store, runId, options.misquoteFixRule)]),
     );
+    const edges = new Map(
+      runIds.map((runId) => [runId, replayEdgeProbes(store, runId, options.edgeRule)]),
+    );
     const scans = new Map(
       runIds.map((runId) => [runId, replayIntegrity(store, runId, options.integrityRule)]),
     );
     const walks = new Map(
       runIds.map((runId) => [runId, replayCaseWalks(store, runId, options.caseWalkRule)]),
+    );
+    const reviews = new Map(
+      runIds.map((runId) => [runId, replayReviewGates(store, runId, options.reviewGateRule)]),
     );
     const evidence = new Map(
       runIds.map((runId) => [runId, replayEvidenceDecisions(store, runId, options.evidenceRule)]),
@@ -3093,8 +3210,10 @@ export function replayTrace(
       const requestConflicts = requests.get(runId) ?? [];
       const hostApply = applies.get(runId) ?? [];
       const misquoteFixes = misquotes.get(runId) ?? [];
+      const edgeProbes = edges.get(runId) ?? [];
       const integrity = scans.get(runId) ?? [];
       const caseWalks = walks.get(runId) ?? [];
+      const reviewGates = reviews.get(runId) ?? [];
       const evidenceDecisions = evidence.get(runId) ?? [];
       const conflictFinishes = finishes.get(runId) ?? [];
       if (
@@ -3108,8 +3227,10 @@ export function replayTrace(
         !requestConflicts.length &&
         !hostApply.length &&
         !misquoteFixes.length &&
+        !edgeProbes.length &&
         !integrity.length &&
         !caseWalks.length &&
+        !reviewGates.length &&
         !evidenceDecisions.length &&
         !conflictFinishes.length
       )
@@ -3138,6 +3259,8 @@ export function replayTrace(
         newApplyDecisions: hostApply.filter((b) => b.replayed !== b.recorded).length,
         misquoteFixes,
         newMisquoteFixes: misquoteFixes.filter((b) => b.replayed !== b.recorded).length,
+        edgeProbes,
+        newEdgeDecisions: edgeProbes.filter((b) => b.replayed !== b.recorded).length,
         integrity,
         newIntegrityFindings: integrity.reduce(
           (n, b) => n + b.replayed.filter((f) => !b.recorded.includes(f)).length,
@@ -3145,6 +3268,11 @@ export function replayTrace(
         ),
         caseWalks,
         newCaseRefusals: caseWalks.reduce(
+          (n, b) => n + b.replayed.filter((f) => !b.recorded.includes(f)).length,
+          0,
+        ),
+        reviewGates,
+        newGateRepairs: reviewGates.reduce(
           (n, b) => n + b.replayed.filter((f) => !b.recorded.includes(f)).length,
           0,
         ),
