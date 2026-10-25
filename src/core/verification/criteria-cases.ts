@@ -289,6 +289,40 @@ export interface CaseContext {
    * parameterized test replays every row, and `rowFileProblems` refuses a changed block.
    */
   hostRows?: readonly InlineRowFile[];
+  /** Receives each walk's holds and refusals, for the run's record and its replay (#1715). */
+  record?: (walk: CaseWalk & { refused: number[] }) => void;
+}
+
+/**
+ * What the walk's decision knows of each case: no literal, so a bench trace holds no spec text
+ * (#1715). `held` is true when a test file the task writes holds it (as an input or expected value,
+ * a property's drawn value or the project's program); `sibling` says whether another task's test
+ * file holds it, read only for a case the task's own files do not hold.
+ */
+export interface CaseWalk {
+  /** The host's inline rows blocks are all intact, so the cells they hold are held (#1997). */
+  rowsIntact: boolean;
+  /** Test files other tasks of the plan write, which may hold a case (#1886). */
+  siblings: number;
+  cases: { criterionId: string; row: boolean; held: boolean; sibling: boolean | null }[];
+}
+
+/** Each task-end walk is recorded as `case-walk/tasks/<task>.json` (kind `case-walk`, kept in bench traces). */
+export const CASE_WALK_KIND = "case-walk";
+export const CASE_WALK_DIR = "case-walk/tasks/";
+
+export interface CaseWalkRecord extends CaseWalk {
+  schemaVersion: 1;
+  taskId: string;
+  /** The cases (by index) the walk refused the task for. */
+  refused: number[];
+}
+
+/** The cases (by index) the walk refuses the task for: those nothing holds. */
+export function caseWalkDecision(walk: CaseWalk): number[] {
+  return walk.cases.flatMap((c, i) =>
+    (walk.rowsIntact && c.row) || c.held || c.sibling === true ? [] : [i],
+  );
 }
 
 /**
@@ -1358,17 +1392,16 @@ export function caseCheck(
         }),
       );
     type Read = Awaited<ReturnType<typeof read>>;
-    const unheld = (list: CriterionCase[], files: Read) =>
+    /** Whether some file of `files` holds the case, by the walk's evidence (no comments or messages). */
+    const heldIn = (c: CriterionCase, files: Read) =>
       missingCases(
-        list,
+        [c],
         files.map((file) => file.evidence),
-      ).filter(
-        (c) =>
-          !files.some(
-            (file) =>
-              ((file.property || c.generated) && propertyHeld(file.evidence, c.literal)) ||
-              programHeld(file.evidence, c.literal, programs),
-          ),
+      ).length === 0 ||
+      files.some(
+        (file) =>
+          ((file.property || c.generated) && propertyHeld(file.evidence, c.literal)) ||
+          programHeld(file.evidence, c.literal, programs),
       );
     const files = await read(paths);
     // The cells of the rows the host wrote are held while its blocks are intact (#1997).
@@ -1383,13 +1416,23 @@ export function caseCheck(
           ),
         )
       ).every(Boolean);
-    let missing = unheld(intact ? cases.filter((c) => !c.row) : cases, files);
+    const own = cases.map((c) => heldIn(c, files));
     // A case a sibling's test file already tests is not demanded again (#1886).
-    if (missing.length && siblings.length) {
-      const others = await read(siblings);
-      const open = new Set(unheld(missing, others));
-      missing = missing.filter((c) => open.has(c));
-    }
+    const open = cases.some((c, i) => !own[i] && !(intact && c.row));
+    const others = siblings.length && open ? await read(siblings) : null;
+    const walk: CaseWalk = {
+      rowsIntact: intact,
+      siblings: siblings.length,
+      cases: cases.map((c, i) => ({
+        criterionId: c.criterionId,
+        row: c.row === true,
+        held: own[i] === true,
+        sibling: own[i] || (intact && c.row) || !others ? null : heldIn(c, others),
+      })),
+    };
+    const refused = caseWalkDecision(walk);
+    context.record?.({ ...walk, refused });
+    const missing = refused.flatMap((i) => cases[i] ?? []);
     return Promise.all(
       missing.map(
         async (c) =>

@@ -20,6 +20,13 @@ import {
 import { canonical, hashBytes, hashJson } from "../specs/hash.js";
 import { workspacePath } from "../specs/validate.js";
 import {
+  CASE_WALK_DIR,
+  CASE_WALK_KIND,
+  type CaseWalk,
+  type CaseWalkRecord,
+  caseWalkDecision,
+} from "../verification/criteria-cases.js";
+import {
   EDGE_DIR,
   EDGE_KIND,
   type EdgeRecord,
@@ -155,6 +162,8 @@ const KEPT_ARTIFACTS = new Set([
   EDGE_KIND,
   // Each test-integrity scan: per-file counts and flags, no code (#1715).
   INTEGRITY_KIND,
+  // Each task-end case walk: which cases a file held, no literals (#1715).
+  CASE_WALK_KIND,
   // Each decision for the request or the platform on checked evidence: states, no quotes (#2032).
   EVIDENCE_DECISION_KIND,
 ]);
@@ -681,6 +690,10 @@ export interface RunReplay {
   integrity: IntegrityBoundary[];
   /** Integrity findings (rule and path) the current rule reports that the recording did not. */
   newIntegrityFindings: number;
+  /** Each task-end case walk's refusals against the current rule (#1715). */
+  caseWalks: CaseWalkBoundary[];
+  /** Cases the current rule refuses a task for that the recorded walk did not. */
+  newCaseRefusals: number;
   /** Each decision for the request or the platform on checked evidence (#2032). */
   evidenceDecisions: EvidenceDecisionBoundary[];
   /** Findings and conflict reports the current rule settles differently than the recording. */
@@ -732,6 +745,51 @@ export function replayEvidenceDecisions(
           report: record.report,
           recorded: record.decision,
           replayed,
+        },
+      ];
+    });
+}
+
+export type CaseWalkRule = (walk: CaseWalk) => number[];
+
+export interface CaseWalkBoundary {
+  taskId: string;
+  cases: number;
+  /** `criterion#index` of each refused case, as recorded and as the current rule decides. */
+  recorded: string[];
+  replayed: string[];
+}
+
+/**
+ * Every task-end case walk a run recorded (`case-walk/tasks/`, #1715), decided again from what
+ * held each case: the task's own test files, the host's intact rows, a sibling task's files. The
+ * matching itself reads test code and case literals a trace does not keep, so a change to how a
+ * file holds a case is not replayed, only which unheld cases refuse the task. Traces before #1715
+ * record none.
+ */
+export function replayCaseWalks(
+  store: WorkflowStore,
+  runId: string,
+  decide: CaseWalkRule = caseWalkDecision,
+): CaseWalkBoundary[] {
+  return store
+    .artifacts(runId)
+    .filter((a) => a.kind === CASE_WALK_KIND && a.logical_path.startsWith(CASE_WALK_DIR))
+    .flatMap((artifact) => {
+      let record: CaseWalkRecord;
+      try {
+        record = JSON.parse(store.readArtifact(runId, artifact.id));
+      } catch {
+        return [];
+      }
+      if (record.schemaVersion !== 1) return [];
+      const key = (i: number) => `${record.cases[i]?.criterionId ?? "?"}#${i}`;
+      return [
+        {
+          taskId: record.taskId,
+          cases: record.cases.length,
+          recorded: record.refused.map(key),
+          replayed: decide(record).map(key),
         },
       ];
     });
@@ -2739,6 +2797,8 @@ function replayRun(
   | "newEdgeDecisions"
   | "integrity"
   | "newIntegrityFindings"
+  | "caseWalks"
+  | "newCaseRefusals"
   | "evidenceDecisions"
   | "newEvidenceDecisions"
 > | null {
@@ -2919,6 +2979,7 @@ export function replayTrace(
     misquoteFixRule?: MisquoteFixRule;
     edgeRule?: EdgeRule;
     integrityRule?: IntegrityRule;
+    caseWalkRule?: CaseWalkRule;
     evidenceRule?: EvidenceRule;
   } = {},
 ): TraceReplay {
@@ -2980,6 +3041,9 @@ export function replayTrace(
     const scans = new Map(
       runIds.map((runId) => [runId, replayIntegrity(store, runId, options.integrityRule)]),
     );
+    const walks = new Map(
+      runIds.map((runId) => [runId, replayCaseWalks(store, runId, options.caseWalkRule)]),
+    );
     const evidence = new Map(
       runIds.map((runId) => [runId, replayEvidenceDecisions(store, runId, options.evidenceRule)]),
     );
@@ -3008,6 +3072,7 @@ export function replayTrace(
       const misquoteFixes = misquotes.get(runId) ?? [];
       const edgeProbes = edges.get(runId) ?? [];
       const integrity = scans.get(runId) ?? [];
+      const caseWalks = walks.get(runId) ?? [];
       const evidenceDecisions = evidence.get(runId) ?? [];
       if (
         !replay.boundaries.length &&
@@ -3022,6 +3087,7 @@ export function replayTrace(
         !misquoteFixes.length &&
         !edgeProbes.length &&
         !integrity.length &&
+        !caseWalks.length &&
         !evidenceDecisions.length
       )
         continue;
@@ -3053,6 +3119,11 @@ export function replayTrace(
         newEdgeDecisions: edgeProbes.filter((b) => b.replayed !== b.recorded).length,
         integrity,
         newIntegrityFindings: integrity.reduce(
+          (n, b) => n + b.replayed.filter((f) => !b.recorded.includes(f)).length,
+          0,
+        ),
+        caseWalks,
+        newCaseRefusals: caseWalks.reduce(
           (n, b) => n + b.replayed.filter((f) => !b.recorded.includes(f)).length,
           0,
         ),

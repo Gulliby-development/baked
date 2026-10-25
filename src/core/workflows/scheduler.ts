@@ -80,6 +80,9 @@ import {
   STYLE_UNSHOWN,
 } from "../verification/convergence-stop.js";
 import {
+  CASE_WALK_DIR,
+  CASE_WALK_KIND,
+  type CaseWalkRecord,
   type CriterionCase,
   caseCheck as criteriaCaseCheck,
   type RepairFinding,
@@ -5488,6 +5491,19 @@ export class WorkflowScheduler {
               tasks: (state.rootGraph ?? state.graph)?.tasks ?? [],
               // The rows the host wrote are held by its intact blocks (#1997).
               hostRows: generatedRows.filter((file) => file.inline === true),
+              record: (walk) =>
+                this.store.transaction(() =>
+                  this.store.artifact(
+                    runId,
+                    CASE_WALK_KIND,
+                    `${CASE_WALK_DIR}${task.id}.json`,
+                    canonical({
+                      schemaVersion: 1,
+                      taskId: task.id,
+                      ...walk,
+                    } satisfies CaseWalkRecord),
+                  ),
+                ),
               ...(policy.caseSourceProbe === "on"
                 ? { probe: this.caseSourceProbe(runId, state, policy, task, signal) }
                 : {}),
