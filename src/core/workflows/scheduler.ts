@@ -12606,10 +12606,32 @@ ${note}`;
               later(path).length > 0,
           )
         : [];
+    // A failing test check whose output locates no source, in a test file this task created and
+    // a later slice extends: every case in the file is this task's, so the defect may be in it and
+    // the correction may write it before the slice adds the rest (#2108); the sources its tests
+    // import stay in scope. A failure located in a source keeps #1612: the correction fixes the
+    // source and leaves the shared file to the slice.
+    const located = owned.length > 0 || (owner?.kind === "finished" && owner.files.length > 0);
+    const ownSliced =
+      !regression && isTestCheck(check) && !located
+        ? failingTests.filter(
+            (path) =>
+              task.writes.some((w) => w.path === path && w.action === "create") &&
+              later(path).length > 0 &&
+              rootTasks.every(
+                (t) =>
+                  t.id === task.id ||
+                  later(path).includes(t.id) ||
+                  !t.writes.some((w) => w.path === path),
+              ),
+          )
+        : [];
+    if (ownSliced.length) state.slicedTests[findingId] = ownSliced;
     const scope = [
       ...new Set([
         ...diagnosed,
         ...sliced,
+        ...ownSliced,
         ...owned,
         ...(sources.length || owned.length ? failingTests : []),
         ...sources,
@@ -12625,7 +12647,7 @@ ${note}`;
       criterionIds: task.criterionIds,
       // One failing test file is where the failure shows, and the correction starts there.
       file:
-        failingTests.length === 1 && (sources.length || owned.length)
+        failingTests.length === 1 && (sources.length || owned.length || ownSliced.length)
           ? (failingTests[0] ?? null)
           : null,
       symbol: null,
@@ -12646,7 +12668,7 @@ ${note}`;
             ? `Fix ${task.id} and the files the check output names (${owned.slice(0, 5).join(", ")}) and repeat ${check.id}.`
             : `Fix ${task.id} within its approved paths and repeat ${check.id}.`,
     });
-    const slicedNote = sliced
+    const slicedNote = [...sliced, ...ownSliced]
       .map(
         (path) =>
           `${later(path).join(", ")} runs after this correction and adds the rest of ${path}`,

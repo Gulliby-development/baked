@@ -433,6 +433,7 @@ export class NativeWorkflowService implements WorkflowService {
       frozenInputEffectCount: 0,
       repairPredecessors: {},
       repairScope: {},
+      slicedTests: {},
       freshTasks: {},
       widenedCorrections: [],
       narrowedCorrections: {},
