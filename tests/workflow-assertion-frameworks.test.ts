@@ -58,6 +58,8 @@ describe("case evidence drops assertion messages of every listed framework (#165
     ["Chai assert.isTrue", "tests/parse.test.ts", `assert.isTrue(parse("a"), "${DECOY}");`],
     ["Jest expect message", "tests/parse.test.ts", `expect(parse("a"), "${DECOY}").toBe(1);`],
     ["Rust assert_eq!", "tests/parse.rs", `assert_eq!(parse("a"), 1, "${DECOY}");`],
+    ["Dart expect reason:", "test/parse_test.dart", `expect(parse("a"), equals(1), reason: "${DECOY}");`],
+    ["Dart fail", "test/parse_test.dart", `if (parse("a") != 1) fail("${DECOY}");`],
   ];
   for (const [framework, path, line] of rows)
     test(`${framework}: the message is blanked and the input kept`, () => {
@@ -74,6 +76,8 @@ describe("case evidence drops assertion messages of every listed framework (#165
     expect(holds("tests/test_parse.py", `assert send(msg="${DECOY}")`).decoy).toBe(true);
     // Outside a Should() chain a C# method's second argument is input.
     expect(holds("tests/ParseTests.cs", `var r = Parser.Parse("a", "${DECOY}");`).decoy).toBe(true);
+    // Dart's expect(actual, matcher) takes the expected value second (#1494).
+    expect(holds("test/parse_test.dart", `expect(parse("a"), "${DECOY}");`).decoy).toBe(true);
     // JUnit 4's assertEquals(expected, actual, delta) has no message.
     expect(holds("src/test/java/ParseTest.java", `import org.junit.Test;\nassertEquals(1.0, parse("a"), 0.01);`).input).toBe(true);
   });

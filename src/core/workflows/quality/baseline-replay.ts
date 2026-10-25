@@ -160,6 +160,7 @@ export const REPLAY_TARGETS: Record<
   jest: { none: "Jest runs each test file as its own suite" },
   vitest: { none: "Vitest runs each test file as its own suite" },
   tap: { none: "a TAP runner reports each test file on its own" },
+  dart: { none: "dart test loads and runs each test file on its own" },
   pester: { none: "Pester runs each test file as its own container" },
   go: { none: "go test builds each package on its own, and a package's files build together" },
   // A collection error aborts the session; this flag collects and runs the other files, and each

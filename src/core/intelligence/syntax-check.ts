@@ -8,7 +8,10 @@ export type { ParseError } from "./backends/tree-sitter.js";
  * current code of its language; a grammar that lags its language (Kotlin, Swift) would refuse
  * valid files, so a language outside this list passes unchecked. Ruby stays out (#1493): the
  * bundled tree-sitter-ruby reported errors in 5 of 2,618 valid files of the RuboCop, RSpec and
- * parser gems (`$:` globals, `self(` calls, a leading magic comment).
+ * parser gems (`$:` globals, `self(` calls, a leading magic comment). Dart stays out (#1494): the
+ * bundled tree-sitter-dart reported errors in 92 of 444 valid files of the args, async, collection,
+ * path, matcher, test, shelf, glob, crypto and io packages (`library;` without a name, Dart 3
+ * patterns).
  */
 const CHECKED_GRAMMARS: Record<string, string> = {
   ".rs": "rust",

@@ -322,20 +322,20 @@ export function affectedTests(root: string, sources: string[]): AffectedTest[] {
 /** The options of `python -m unittest` that take no value. */
 const UNITTEST_FLAG = /^-(?:[vqfbck]|-(?:verbose|quiet|failfast|buffer|catch|locals))$/;
 
+const VALUE_OPTION =
+  /^(?:--(?:timeout|testTimeout|test-timeout|config|format|formatter|require|tag|out|seed|order)|-c)$/;
+/** dart test's options that take a value: `-r expanded`, `-t slow`, `-x slow`, `-p vm` (#1494). */
+const DART_VALUE_OPTION =
+  /^(?:--(?:reporter|name|plain-name|tags|exclude-tags|platform|preset|concurrency|total-shards|shard-index|file-reporter)|-[rnNtxpPj])$/;
+
 /** Keeps a test runner's own flags and drops the paths or patterns a check named. */
-const flagsOnly = (args: string[]): string[] =>
-  args.filter(
-    (arg, i) =>
-      arg.startsWith("-") ||
-      /^(?:--(?:timeout|testTimeout|test-timeout|config|format|formatter|require|tag|out|seed|order)|-c)$/.test(
-        args[i - 1] ?? "",
-      ),
-  );
+const flagsOnly = (args: string[], values = VALUE_OPTION): string[] =>
+  args.filter((arg, i) => arg.startsWith("-") || values.test(args[i - 1] ?? ""));
 
 /**
  * A command that runs only `tests` with the runner of one of the policy's test checks, or null
  * when no check runs a test runner that takes test files (`bun test`, `vitest`, `jest`,
- * `node --test`, `pytest`, `go test`, `rspec`, `rake test`). Package scripts (`npm test`, `bun run test`) are not
+ * `node --test`, `pytest`, `go test`, `rspec`, `rake test`, `dart test`). Package scripts (`npm test`, `bun run test`) are not
  * used: what they pass on is up to the script.
  */
 export function affectedTestCheck(
@@ -394,6 +394,10 @@ export function affectedTestCheck(
       const ruby = tests.filter((t) => RB_TEST.test(t));
       prefix = args;
       targets = ruby.length ? [`TEST=${ruby.length === 1 ? ruby[0] : `{${ruby.join(",")}}`}`] : [];
+    } else if ((name === "dart" || name === "flutter") && args[0] === "test") {
+      // dart test and flutter test take test files (#1494).
+      prefix = ["test", ...flagsOnly(args.slice(1), DART_VALUE_OPTION)];
+      targets = files.filter((f) => f.endsWith("_test.dart"));
     } else if (name === "go" && args[0] === "test") {
       prefix = withGateFlags(["test", ...flagsOnly(args.slice(1))], gates.get("go"), 1);
       targets = [
