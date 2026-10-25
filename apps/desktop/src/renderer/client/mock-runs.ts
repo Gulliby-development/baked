@@ -941,6 +941,64 @@ const all = (): MockRun[] => {
 };
 const find = (runId: string): MockRun | undefined => all().find((r) => r.runId === runId);
 
+/** Whether the run's spec, plan and tasks were approved: an accepted request, or a later stage. */
+const approved = (run: MockRun): boolean =>
+  run.requests.some((r) => r.kind === "approval" && r.status === "accepted") ||
+  run.status === "completed" ||
+  ["implement", "checks", "review", "converge", "learn"].includes(run.stageId ?? "");
+
+interface PackageBody {
+  zip?: boolean;
+  out?: string;
+}
+/** `GET|POST .../package`: refused before approval, like the backend (#2207). */
+function mockPackage(run: MockRun, method: string, body: PackageBody | undefined) {
+  if (!approved(run))
+    return response(409, {
+      error: {
+        code: "NOT_ACCEPTED",
+        message: `Run ${run.runId} has no accepted spec, plan and tasks yet; approve them first`,
+      },
+    });
+  const files = [
+    "AGENTS.md",
+    "graph.json",
+    "graph.md",
+    "manifest.json",
+    ...["plan.md", "spec.json", "spec.md", "tasks.json", "tasks.md"].map(
+      (f) => `specs/${run.featureId}/${f}`,
+    ),
+  ];
+  if (method === "GET") return response(200, files);
+  const zip = body?.zip === true;
+  const out = body?.out ?? `.baked/exports/${run.runId}-export${zip ? ".zip" : ""}`;
+  return response(200, {
+    path: `C:\\Project\\BAKED\\${out.replaceAll("/", "\\")}`,
+    zip,
+    files,
+    manifest: {
+      formatVersion: 1,
+      kind: "run",
+      id: run.runId,
+      title: run.featureId,
+      gitHead: null,
+      status: run.status,
+      features: [
+        {
+          id: run.featureId,
+          title: run.featureId,
+          status: run.status,
+          runId: run.runId,
+          accepted: true,
+          dependsOn: [],
+          dir: `specs/${run.featureId}`,
+        },
+      ],
+      files: {},
+    },
+  });
+}
+
 function snapshot(run: MockRun) {
   return {
     runId: run.runId,
@@ -950,7 +1008,7 @@ function snapshot(run: MockRun) {
     revision: run.revision,
     eventSeq: run.events.at(-1)?.seq ?? 0,
     stageId: run.stageId,
-    approvalDigest: null,
+    approvalDigest: approved(run) ? DIGEST : null,
     tokenUsage: run.tokenUsage,
     activeMs: run.activeMs,
     estimatedCostUsd: run.tokenUsage / 330_000,
@@ -1411,6 +1469,7 @@ const runRoutes: MockRoute = ({ key, method, path, query, body }) => {
       manifestHash: DIGEST,
     });
   if (method === "POST" && action === "redact") return redact(run, body as RedactBody);
+  if (action === "package") return mockPackage(run, method, body as PackageBody | undefined);
   if (method === "POST" && action)
     return mutate(run, action, (body ?? {}) as { requestId?: string; tokens?: number });
   if (method !== "GET") return undefined;

@@ -150,6 +150,7 @@ import {
   WorkingSetBody,
   WorktreeCleanBody,
 } from "./schemas.js";
+import { sddExportRoute } from "./sdd-export-routes.js";
 import { type SettingsSecretStore, settingsRoute } from "./settings-routes.js";
 import { setupRoute } from "./setup-routes.js";
 
@@ -197,6 +198,7 @@ export const CAPABILITIES = [
   "hooks-edit",
   "provider-switch",
   "chat-export",
+  "sdd-export",
   "chat-effort",
   "diagnostics",
   "gate-drafts",
@@ -1101,6 +1103,7 @@ export async function startApiServer(options: ApiServerOptions): Promise<ApiServ
     const routed =
       progressRoute({ ...ctx, tracker: progress }) ??
       (await chatRoute({ ...ctx, chat })) ??
+      (await sddExportRoute({ ...ctx, store: service.store })) ??
       (await initiativeRoute({ ...ctx, initiatives, launch: driveInitiative })) ??
       (await memoryRoute({ ...ctx, config: service.config, store: service.store })) ??
       criticOutcomesRoute({ ...ctx, config: service.config, store: service.store }) ??

@@ -1,5 +1,5 @@
 import { mkdirSync, writeFileSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { isAbsolute, join, relative, resolve } from "node:path";
 import {
   app,
   BrowserWindow,
@@ -337,6 +337,13 @@ function registerIpc(): void {
       return result.filePath;
     },
   );
+  handle(IPC.showInFolder, (_e, key: string, path: string) => {
+    const project = supervisor.projects().find((p) => p.key === key);
+    const inside = project ? relative(project.path, resolve(path)) : "..";
+    if (!project || inside.startsWith("..") || isAbsolute(inside))
+      throw new Error("Only files of the project open in the file manager");
+    shell.showItemInFolder(resolve(path));
+  });
   handle(IPC.attention, () => attention.items());
   handle(IPC.settings, () => settings.get());
   handle(IPC.updateSettings, (_e, patch: Partial<AppSettings>) => settings.update(patch));

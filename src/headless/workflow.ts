@@ -55,9 +55,11 @@ import {
   type RunSnapshot,
   type RunState,
 } from "../core/workflows/schemas.js";
+import { describeSddExport } from "../core/workflows/sdd-export/describe.js";
 import {
   buildSddPackage,
   defaultExportPath,
+  type WrittenSddPackage,
   writeSddPackage,
 } from "../core/workflows/sdd-export/package.js";
 import { NativeWorkflowService } from "../core/workflows/service.js";
@@ -1068,11 +1070,7 @@ export async function runWorkflowCli(argv: string[]): Promise<number> {
       return 0;
     }
     if (args.command === "export-package" && !args.flags.json) {
-      const written = result as ReturnType<typeof writeSddPackage>;
-      const accepted = written.manifest.features.filter((f) => f.accepted).length;
-      process.stdout.write(
-        `Exported ${written.manifest.kind} ${written.manifest.id} (${accepted} of ${written.manifest.features.length} features accepted, ${written.files.length} files) to ${written.path}\n`,
-      );
+      process.stdout.write(`${describeSddExport(result as WrittenSddPackage)}\n`);
       return 0;
     }
     if (args.command === "memory" && !args.flags.json) {

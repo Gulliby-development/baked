@@ -10,6 +10,12 @@ baked workflow export-package INITIATIVE_ID --out ../handoff/payments --json
 
 The command only reads the workflow database: no model call, no change to a run. It is not the same as `baked workflow export RUN_ID --destination DIR`, which writes the run's diagnostic report (`manifest.json` with requests, checks and findings) to attach to a bug report.
 
+## In the terminal app, the desktop app and the local API
+
+- Terminal app: on the run screen of a run whose plan is approved, **E** (export package) asks for a folder (**F**) or a zip archive (**Z**) and writes it to `.baked/exports/`; on an initiative with an approved split the same prompt opens with **Ctrl+E**. The result line names the path. `/workflow export-package ID [--zip] [--out PATH]` writes elsewhere.
+- Desktop app: **Export package…** on the run screen (once the plan is approved) and on the initiative screen (once the split is approved) opens a dialog: Folder or Zip archive, and the destination inside the project (`.baked/exports/ID-export` by default). After the export it shows the path with **Show in folder**. **Export report** next to it is the diagnostic report.
+- Local API: `POST /v1/workflow/runs/ID/package` and `POST /v1/initiatives/ID/package` with `{zip?, out?}` write it inside the project; `GET` on the same paths answers the package as one zip archive without writing it ([API](../desktop/api.md)). Nothing accepted yet is 409 `NOT_ACCEPTED`.
+
 ## Layout
 
 ```text

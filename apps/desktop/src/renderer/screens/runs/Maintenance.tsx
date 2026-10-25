@@ -13,6 +13,8 @@ import {
   type WorktreeCleanup,
   type WorktreeReport,
 } from "../../client/runs.js";
+import { SDD_EXPORT_CAPABILITY } from "../../client/sdd-export.js";
+import { ExportPackageDialog } from "../../components/ExportPackageDialog.js";
 import { Alert } from "../../components/ui/alert.js";
 import { Button } from "../../components/ui/button.js";
 import {
@@ -120,14 +122,16 @@ function FormDialog({
 }
 
 /**
- * Export and Redact on the run screen, as `baked workflow export` and `redact` do. Export writes
- * the portable manifest into a new folder under `.baked/exports/`.
+ * Export report, Export package… and Redact on the run screen, as `baked workflow export`,
+ * `export-package` and `redact` do. Export report writes the diagnostic manifest into a new folder
+ * under `.baked/exports/`; Export package… writes the accepted spec, plan and tasks as an SDD package.
  */
 export function RunMaintenance({ projectKey, data }: { projectKey: string; data: RunData }) {
   const runId = data.status.runId;
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState<{ text: string; failed?: boolean } | null>(null);
   const [redacting, setRedacting] = useState(false);
+  const [packaging, setPackaging] = useState(false);
   const [artifacts, setArtifacts] = useState<ArtifactEntry[] | null>(null);
   const [target, setTarget] = useState("");
   const [reason, setReason] = useState("");
@@ -152,6 +156,9 @@ export function RunMaintenance({ projectKey, data }: { projectKey: string; data:
   }, [redacting, projectKey, runId]);
 
   if (!data.capabilities.includes(RUN_MAINTENANCE_CAPABILITY)) return null;
+  // The SDD export package holds accepted work only, so it is offered once the plan is approved.
+  const canPackage =
+    data.capabilities.includes(SDD_EXPORT_CAPABILITY) && !!data.status.approvalDigest;
 
   const exportRun = async () => {
     setBusy(true);
@@ -199,9 +206,27 @@ export function RunMaintenance({ projectKey, data }: { projectKey: string; data:
           {notice.text}
         </span>
       )}
-      <Button variant="secondary" size="md" disabled={busy} onClick={() => void exportRun()}>
-        Export
+      <Button
+        variant="secondary"
+        size="md"
+        disabled={busy}
+        title="The run's diagnostic report (manifest.json) to attach to a bug report"
+        onClick={() => void exportRun()}
+      >
+        Export report
       </Button>
+      {canPackage && (
+        <Button variant="secondary" size="md" disabled={busy} onClick={() => setPackaging(true)}>
+          Export package…
+        </Button>
+      )}
+      <ExportPackageDialog
+        open={packaging}
+        projectKey={projectKey}
+        kind="run"
+        id={runId}
+        onClose={() => setPackaging(false)}
+      />
       <Button
         variant="secondary"
         size="md"

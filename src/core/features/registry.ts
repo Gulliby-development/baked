@@ -1495,17 +1495,20 @@ export const FEATURES: readonly Feature[] = [
       "/v1/workflow/runs/:id/redact",
       "/v1/workflow/runs/:id/progress",
     ],
-    desktop: ["project/runs: Import, Clean up old runs; Export and Redact on a run"],
+    desktop: ["project/runs: Import, Clean up old runs; Export report and Redact on a run"],
   },
 
   {
     id: "sdd-export-package",
     group: "Workflow runs",
     title: "Export a run or initiative as a portable SDD package (folder or zip)",
-    tui: { status: "gap", issue: 2207 },
+    tui: [
+      "/workflow: E on an accepted run, Ctrl+E on an approved initiative",
+      "/workflow: export-package ID [--zip] [--out PATH]",
+    ],
     cli: ["baked workflow export-package"],
-    api: { status: "gap", issue: 2207 },
-    desktop: { status: "gap", issue: 2207 },
+    api: ["/v1/workflow/runs/:id/package", "/v1/initiatives/:id/package"],
+    desktop: ["project/runs: Export package…", "project/initiatives: Export package…"],
   },
 
   // Initiatives
