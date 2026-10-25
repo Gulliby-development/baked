@@ -1,6 +1,7 @@
 import { tokenText } from "../estimate.js";
 import { EXTEND_WITHIN_DOLLARS_MODES } from "../schemas.js";
-import { calibrationRatio } from "./estimate.js";
+import type { StopMode } from "../stop-reasons.js";
+import { calibrationRatio, ownPlanNeed, type PlannedRun } from "./estimate.js";
 
 // The initiative's shared token pool beside the person's dollar cap (#2042). Part of the
 // cap-growth hot module (.github/hot-modules.json). Bench round 66 (nodepluck) parked select at
@@ -91,6 +92,82 @@ export function poolForecast(
       0,
     );
   return { forecastTokens: Math.round(usedTokens + toRun), ratio: Math.round(ratio * 100) / 100 };
+}
+
+/** An open feature run with a sized plan, as the plan charge reads it (#2100, #2056). */
+export interface PlanChargeRun {
+  featureId: string;
+  runId: string;
+  usedTokens: number;
+  /** The run's token limit: what the pool holds for it without the plan charge. */
+  limitTokens: number;
+  /** What the run's latest plan sizing expects the whole run to use (`plannedRunTokens`). */
+  plan: PlannedRun;
+  /** What the plan charge holds for it (`planChargeTokens`). */
+  chargeTokens: number;
+}
+
+/**
+ * What the pool holds for an open feature run once its plan is sized (#2100, #2056): the high end
+ * of the plan's need at the measured plan-to-actual ratio (`ownPlanNeed`, #2043), never below what
+ * the run used. One rule both ways: it frees what a start share holds above the plan (R67 ampwhy
+ * held 30.5M at cli's gate while its runs had used 0.05M to 6.6M each) and adds what a plan prices
+ * above the run's limit (#2056).
+ */
+export function planChargeTokens(
+  usedTokens: number,
+  plan: PlannedRun,
+  ratio: number | null,
+): number {
+  return Math.max(usedTokens, ownPlanNeed(plan, ratio).high);
+}
+
+/**
+ * The plan charge of an initiative's open feature runs (the `initiative-plan-charge` stop
+ * reason). In `enforce` the pool's `committedTokens` counts each run with a sized plan at its
+ * charge; otherwise at its limit, as before, and a `decision.would_release` event records what
+ * the charge would free (or add) and whether a parked feature would have started.
+ */
+export interface PlanChargeView {
+  mode: StopMode;
+  /** The measured plan-to-actual ratio the charges use; null while unmeasured (times 1). */
+  ratio: number | null;
+  runs: PlanChargeRun[];
+  /** What all runs hold with each open run at max(used, limit): the rule before #2100. */
+  limitCommittedTokens: number;
+  /** The same with each run of `runs` at its charge. */
+  planCommittedTokens: number;
+  /** limitCommittedTokens - planCommittedTokens: positive frees tokens, negative adds them. */
+  releasedTokens: number;
+}
+
+/**
+ * The plan charge over the open runs with a sized plan, or null when none has one.
+ * `limitCommitted` is what the pool holds with every open run at max(used, limit).
+ */
+export function planCharge(
+  mode: StopMode,
+  ratio: number | null,
+  limitCommitted: number,
+  runs: readonly Omit<PlanChargeRun, "chargeTokens">[],
+): PlanChargeView | null {
+  if (!runs.length) return null;
+  const charged = runs.map((run) => ({
+    ...run,
+    chargeTokens: planChargeTokens(run.usedTokens, run.plan, ratio),
+  }));
+  const released = charged.reduce(
+    (sum, run) => sum + Math.max(run.usedTokens, run.limitTokens) - run.chargeTokens,
+    0,
+  );
+  return {
+    mode,
+    ratio,
+    runs: charged,
+    limitCommittedTokens: limitCommitted,
+    planCommittedTokens: limitCommitted - released,
+    releasedTokens: released,
+  };
 }
 
 /** The dollar side the token pool is compared with: the initiative's `budget.cost`. */

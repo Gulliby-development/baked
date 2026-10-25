@@ -172,6 +172,14 @@ const dotnetFormat: FileFormatter = {
   fix: (args) => args.filter((arg) => arg !== "--verify-no-changes"),
 };
 
+// No range: RuboCop inspects whole files. Its layout cops are its formatter (#1493); the lint cops
+// stay with the gate, since a lint offense has no fixer that always clears it.
+const rubocopLayout: FileFormatter = {
+  runs: (program) => program === "rubocop",
+  check: (_, files) => ["--only", "Layout", ...files],
+  fix: () => ["-a", "--only", "Layout"],
+};
+
 const NPM_FORMATTERS = [biome, prettier, dprint, bunFmt];
 
 /**
@@ -198,7 +206,7 @@ export const FILE_FORMATTERS: LanguageRecord<readonly FileFormatter[]> = {
   scala: none("scalafmt runs inside sbt; no gate detects it"),
   c: none("clang-format has no gate detector"),
   cpp: none("clang-format has no gate detector"),
-  ruby: none("Rake and Bundler have no gate detector yet (#1753)"),
+  ruby: [rubocopLayout],
   php: none("Composer has no gate detector yet (#1491)"),
   swift: none("SwiftPM has no gate detector yet (#1753)"),
   lua: none("LuaRocks has no gate detector yet (#1495)"),

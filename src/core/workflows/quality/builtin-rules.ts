@@ -437,6 +437,37 @@ export const BUILTIN_RULES: readonly QualityRule[] = [
     },
   },
   {
+    id: "ruby-swallowed-exception",
+    title: "Swallowed Ruby exception",
+    severity: "error",
+    extensions: [".rb", ".rake"],
+    inTests: false,
+    message: "A rescue clause that is empty or only returns nil hides the error",
+    fix: "Handle the exception, re-raise it with context, or rescue only what you expect.",
+    match: (lines, index) => {
+      const line = lines[index] ?? "";
+      // The modifier form: `value = Integer(text) rescue nil`.
+      if (/\S.*\brescue\s+nil\s*$/.test(line) && !/^\s*rescue\b/.test(line)) return [index];
+      if (
+        !/^\s*rescue\b(?:\s+[\w:]+(?:\s*,\s*[\w:]+)*)?(?:\s*=>\s*\w+)?\s*(?:;\s*(?:nil\s*;?\s*)?end\s*)?$/.test(
+          line,
+        )
+      )
+        return null;
+      if (/\bend\s*$/.test(line)) return [index];
+      const body = nextCode(lines, index);
+      if (body < 0) return null;
+      const text = (lines[body] ?? "").trim();
+      // An empty clause: the next line ends it.
+      if (/^(?:end|ensure|else|rescue)\b/.test(text)) return [index];
+      if (!/^(?:nil|next|return(?:\s+nil)?)$/.test(text)) return null;
+      const after = nextCode(lines, body);
+      return after < 0 || /^\s*(?:end|ensure|else|rescue)\b/.test(lines[after] ?? "")
+        ? [index, body]
+        : null;
+    },
+  },
+  {
     id: "go-empty-error-check",
     title: "Empty Go error check",
     severity: "error",
@@ -510,7 +541,7 @@ export const BUILTIN_RULES: readonly QualityRule[] = [
     message: "A new lint suppression hides a finding instead of fixing it",
     fix: "Fix what the linter reports, or explain on the same line why the rule does not apply.",
     match: lineRule(
-      /(?:eslint-disable|biome-ignore|oxlint-disable|#\s*noqa\b|#\s*type:\s*ignore|#\s*pylint:\s*disable|\/\/\s*nolint\b|#!?\[allow\(|@SuppressWarnings\(|#pragma\s+warning\s+disable|NOSONAR)/,
+      /(?:eslint-disable|biome-ignore|oxlint-disable|#\s*noqa\b|#\s*type:\s*ignore|#\s*pylint:\s*disable|\/\/\s*nolint\b|#!?\[allow\(|@SuppressWarnings\(|#pragma\s+warning\s+disable|NOSONAR|#\s*(?:rubocop|standard):(?:disable|todo)\b)/,
     ),
   },
   {

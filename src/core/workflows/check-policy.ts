@@ -59,7 +59,20 @@ export const writtenCodePaths = (task: Pick<Task, "writes">): string[] =>
 export const isStaticCheck = (check: Check): boolean =>
   Boolean(check.fix) ||
   (!runsAggregateTarget(check) &&
-    STATIC_COMMAND.test([check.id, check.executable, ...check.args].join(" ")));
+    STATIC_COMMAND.test(
+      [check.id, check.executable, ...withoutOutputFormat(check.args)].join(" "),
+    ));
+
+/**
+ * A test runner's output format option and its value say how results print, not that the check
+ * formats code: `rspec --format documentation`, `rubocop --format simple` (#1493).
+ */
+const OUTPUT_FORMAT = /^--?(?:format|formatter|reporter)(=.*)?$/;
+const withoutOutputFormat = (args: readonly string[]): string[] =>
+  args.filter(
+    (arg, i) =>
+      !OUTPUT_FORMAT.test(arg) && !/^--?(?:format|formatter|reporter)$/.test(args[i - 1] ?? ""),
+  );
 
 /** Task runners whose targets the gate fallback offers (#1488). */
 const TASK_RUNNER = /^(?:make|gmake|mingw32-make|just|task)$/;
@@ -226,10 +239,10 @@ const FORMAT_CLAIM =
   /\b(?:gofmt|go\s+fmt|rustfmt|cargo\s+fmt|ruff\s+format|prettier|dotnet\s+format|clang-format|mix\s+format|dart\s+format|zig\s+fmt)\b|-formatted\b|\b(?:code|files?|sources?)\b[^.;]{0,40}?\b(?:is|are|stays?|remains?)\s+(?:properly\s+|correctly\s+)?formatted\b/i;
 /** A criterion that claims the code is lint-clean or passes a named linter. */
 const LINT_CLAIM =
-  /\blint(?:-clean|s|ed|ers?|ing)?\b|\b(?:clippy|ruff\s+check|eslint|flake8|pylint|go\s+vet|rubocop|ktlint|(?:dart|flutter)\s+analyze)\b/i;
+  /\blint(?:-clean|s|ed|ers?|ing)?\b|\b(?:clippy|ruff\s+check|eslint|flake8|pylint|go\s+vet|rubocop|standardrb|ktlint|(?:dart|flutter)\s+analyze)\b/i;
 const FORMAT_COMMAND = /\b(?:gofmt|fmt|format|prettier|biome|lint)\b/i;
 const LINT_COMMAND =
-  /\b(?:lint|eslint|biome|ruff|flake8|pylint|clippy|vet|rubocop|ktlint|golangci-lint)\b|\b(?:dart|flutter)\s+analyze\b/i;
+  /\b(?:lint|eslint|biome|ruff|flake8|pylint|clippy|vet|rubocop|standardrb|ktlint|golangci-lint)\b|\b(?:dart|flutter)\s+analyze\b/i;
 
 /**
  * Whether the passing checks show a criterion's formatting or lint claim, or null when it makes

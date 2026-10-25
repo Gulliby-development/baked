@@ -1,0 +1,24 @@
+{
+  "id": "ruby-minitest-wordwrap",
+  "language": "ruby",
+  "toolchain": "minitest",
+  "requires": [
+    "ruby",
+    "rake"
+  ],
+  "allowedPaths": [
+    "lib/**",
+    "test/**",
+    "README.md",
+    "Rakefile"
+  ],
+  "checks": [
+    {
+      "id": "rake-test",
+      "executable": "rake",
+      "args": [
+        "test"
+      ]
+    }
+  ]
+}
