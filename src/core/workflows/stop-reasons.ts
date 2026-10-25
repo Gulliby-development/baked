@@ -77,6 +77,14 @@ export const STOP_REASONS = {
     modes: NOT_ENFORCED,
     defaultMode: "shadow",
   },
+  upstream_symbol: {
+    label:
+      "A released planned-ahead feature's spec names a symbol of an upstream feature that the accepted upstream code does not have",
+    // Shadow only until two bench rounds show no false would-stop (#2135); its promotion sends
+    // the feature back to specify at release, before any implementer starts.
+    modes: NOT_ENFORCED,
+    defaultMode: "shadow",
+  },
   cost: {
     label: "Spent and reserved dollars reach the cost cap",
     modes: ENFORCED,

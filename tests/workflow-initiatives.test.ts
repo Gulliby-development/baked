@@ -106,6 +106,8 @@ class InitiativeExecutor implements AgentExecutor {
   /** Read hints and a reference of a feature's first task. */
   readHints: Record<string, string[]> = {};
   references: Record<string, string> = {};
+  /** A feature's FR-001 text, in place of "Value is ready". */
+  requirements: Record<string, string> = {};
   writes: Record<string, number> = {};
   /** Models whose implementation calls fail as an account without credits. */
   refused = new Set<string>();
@@ -170,7 +172,7 @@ class InitiativeExecutor implements AgentExecutor {
           schemaVersion: 1, featureId, revision: 1, title: `Spec ${key(featureId)}`, problem: "Missing value",
           outcome: `Value exists (${this.contracts[key(featureId)] ?? "v1"})`,
           inScope: ["Create value"], outOfScope: [], assumptions: [], openQuestions: [],
-          requirements: [{ id: "FR-001", text: "Value is ready", priority: "must", verification: "automated", sourceRefs: [] }],
+          requirements: [{ id: "FR-001", text: this.requirements[key(featureId)] ?? "Value is ready", priority: "must", verification: "automated", sourceRefs: [] }],
           criteria: [{ id: "AC-001", requirementIds: ["FR-001"], given: "a workspace", when: "the task completes", then: "value is ready", method: "automated" }],
           // The host replaces these with the initiative's pins.
           dependencies: [],
@@ -1908,6 +1910,29 @@ describe("initiative runtime", () => {
       expect(view.status).toBe("completed");
       return { t, view };
     }
+
+    // Bench round 68, ewvet (#2135): scanner, planned ahead on reader, made a reader helper that
+    // the accepted reader did not have a `must`, and its release compared nothing. At release
+    // the spec's upstream symbols are looked up in the accepted files: shadow records the gap.
+    test("on, a released feature whose spec names a symbol upstream lacks records a would-stop", async () => {
+      const t = setup(chain, 100, (root) => new AheadExecutor(root, chain));
+      repository(t.root);
+      t.executor.initiatives = t.initiatives;
+      t.executor.workflows = t.workflows;
+      t.executor.requirements.message = "Message delegates to Base.isReady and to Base.ready for the value.";
+      Object.assign(t.workflows.config.workflows ?? {}, { planAhead: true });
+      await t.start({ plan: chain, policy: { ...policy, executionMode: "worktree" }, featureAutoApproval: { maxTasks: 5, maxFiles: 5 }, budget: { maxTotalTokens: 6_000_000, maxAgentCalls: 2000, maxActiveMs: 6_000_000 } });
+      await t.approveSplit();
+      const view = await t.drive();
+      // Shadow: the run goes on as before.
+      expect(view.status).toBe("completed");
+      const message = t.featureOf(view, "message").runId ?? "";
+      const stops = t.workflows.store.eventsOfType(message, "decision.would_stop");
+      expect(stops).toHaveLength(1);
+      expect(stops[0]?.payload).toMatchObject({ reason: "upstream_symbol", mode: "shadow", inputs: { gaps: [{ ref: "FR-001", symbol: "Base.isReady", featureId: "base", path: "base.txt" }] } });
+      // base's own release had no upstream to check.
+      expect(t.workflows.store.eventsOfType(t.featureOf(view, "base").runId ?? "", "decision.would_stop")).toHaveLength(0);
+    }, 120_000);
 
     // Bench round 60, wheeltags (#1932): every planned-ahead feature's first plan was refused for
     // read hints on its upstream features' files, which its provisional base did not hold yet.

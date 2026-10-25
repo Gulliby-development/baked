@@ -18,6 +18,7 @@ import { canonical, hashBytes, hashJson } from "../../specs/hash.js";
 import { specPublication } from "../../specs/render.js";
 import { type BudgetLimits, budgetUsage, limitsOf } from "../budget.js";
 import { autoCostTolerance } from "../cost-tolerance.js";
+import { git } from "../delivery-git.js";
 import {
   type AcceptedContract,
   acceptedContract,
@@ -61,7 +62,7 @@ import {
 import type { NativeWorkflowService, PlannedReroute } from "../service.js";
 import { terminalStates } from "../state-machine.js";
 import { stopDetail, stopRecovery } from "../stop-detail.js";
-import { type StopMode, stopFault, stopMode } from "../stop-reasons.js";
+import { recordWouldStop, type StopMode, stopFault, stopMode } from "../stop-reasons.js";
 import { newId, WorkflowStore } from "../store.js";
 import type { IssueSource } from "../types.js";
 import { HOST_AUTO_APPROVAL_CEILING, HostAutoApprovalSchema } from "../v2/definition.js";
@@ -134,6 +135,7 @@ import {
   type TokenPoolView,
   tokenPool,
 } from "./token-pool.js";
+import { upstreamSymbolGaps } from "./upstream-symbols.js";
 import {
   assignFeatureWorkflows,
   documentedLightLeaf,
@@ -2464,7 +2466,49 @@ export class InitiativeService {
       { baseCommit, baseFiles: this.upstreamSpecs(id, feature, []) },
     );
     this.store.emit(id, "feature.released", { featureId, runId, baseCommit });
+    await this.checkUpstreamSymbols(runId, feature, this.approvedPlan(row), baseCommit);
     return true;
+  }
+
+  /**
+   * A released feature's spec was written on a provisional base: each upstream symbol it names is
+   * looked up in the accepted upstream files, and a missing one is recorded as a would-stop
+   * (`upstream_symbol`, shadow) naming the clause, the symbol and the file (#2135). R68 ewvet
+   * scanner made a "public Reader helper" a `must` that the accepted reader did not have, and
+   * spent 4.5M tokens before review found it.
+   */
+  private async checkUpstreamSymbols(
+    runId: string,
+    feature: InitiativePlan["features"][number],
+    plan: InitiativePlan | null,
+    baseCommit: string,
+  ): Promise<void> {
+    const spec = this.workflows.store.state(runId).spec;
+    if (!spec || !plan) return;
+    const files = plan.features
+      .filter((f) => feature.dependsOn.includes(f.id))
+      .flatMap((f) =>
+        f.boundary.paths.filter((p) => !isGlobPath(p)).map((path) => ({ featureId: f.id, path })),
+      );
+    if (!files.length) return;
+    const upstream = await Promise.all(
+      files.map(async (file) => {
+        const shown = await git(this.workflows.workspace, ["show", `${baseCommit}:${file.path}`]);
+        return { ...file, text: shown.code === 0 ? shown.stdout : null };
+      }),
+    );
+    const gaps = upstreamSymbolGaps(spec, upstream);
+    const policy = PolicySchema.parse(JSON.parse(this.workflows.store.run(runId).policy_json));
+    const mode = stopMode(policy, "upstream_symbol");
+    // The reason is not enforced yet, so a policy can only choose shadow or advisory.
+    if (!gaps.length || mode === "enforce") return;
+    recordWouldStop(this.workflows.store, runId, {
+      reason: "upstream_symbol",
+      mode,
+      key: `release-${baseCommit}`,
+      summary: `The spec names upstream symbols the accepted code does not have: ${gaps.map((g) => `${g.ref} ${g.symbol} (${g.path}, ${g.featureId})`).join("; ")}`,
+      inputs: { baseCommit, gaps },
+    });
   }
 
   /** Superseded runs that are still open are cancelled, so they hold no publication or lease. */
