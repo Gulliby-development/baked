@@ -252,6 +252,7 @@ export const ENTRY_POINTS: LanguageRecord<readonly EntryReader[]> = {
   ocaml: none("dune executables have no runner among the checks yet"),
   objc: none("Xcode projects have no command line runner among the checks"),
   solidity: none("contracts are deployed, not run as commands"),
+  sql: none("SQL files are run by a database client, not installed as commands"),
 };
 
 const READERS: readonly EntryReader[] = [

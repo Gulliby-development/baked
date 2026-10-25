@@ -502,6 +502,62 @@ function pythonGates(workspace: string): GateSuggestion[] {
   return out;
 }
 
+/**
+ * SQLFluff lints and fixes the project's SQL (#1499) where the project configures it: a `.sqlfluff`
+ * file, or a `[tool.sqlfluff]` section in `pyproject.toml`, `[sqlfluff]` in `setup.cfg` or
+ * `tox.ini`. It reads one file at a time, so it covers each task's SQL and its fixer takes the
+ * task's file; with the dbt templater it compiles the whole dbt project, so that gate is
+ * whole-unit (`sqlfluff-dbt`). A dbt project also gets `dbt build`, offered but not preselected:
+ * it needs a database profile. SQLFluff is a Python tool and runs in the project's Python
+ * environment where a lockfile names one.
+ */
+function sqlfluffGates(workspace: string): GateSuggestion[] {
+  const config = read(workspace, ".sqlfluff");
+  const pyproject = read(workspace, "pyproject.toml") ?? "";
+  const section = (name: string) =>
+    /^\[sqlfluff(?:[:\]])/m.test(read(workspace, name) ?? "") ? `${name} [sqlfluff]` : null;
+  const source =
+    config !== null
+      ? ".sqlfluff"
+      : /^\[tool\.sqlfluff(?:[.\]])/m.test(pyproject)
+        ? "pyproject.toml [tool.sqlfluff]"
+        : (section("setup.cfg") ?? section("tox.ini"));
+  const dbt = has(workspace, "dbt_project.yml");
+  const out: GateSuggestion[] = [];
+  if (source) {
+    const environment = pythonEnvironment((file) => has(workspace, file));
+    const run = (args: string[]) =>
+      environment
+        ? { executable: environment[0], args: [environment[1], "sqlfluff", ...args] }
+        : { executable: "sqlfluff", args };
+    const prefix = environment ? `${environment.join(" ")} ` : "";
+    const templater = /^\s*templater\s*=\s*["']?(\w+)/m.exec(`${config ?? ""}\n${pyproject}`)?.[1];
+    const lint = run(["lint", "."]);
+    out.push({
+      check: {
+        ...gate(
+          templater === "dbt" ? "sqlfluff-dbt" : "sqlfluff",
+          lint.executable,
+          lint.args,
+          300000,
+        ),
+        fix: run(["fix"]),
+      },
+      source: templater === "dbt" ? `${source}, templater = dbt` : source,
+      reason: `${prefix}sqlfluff lint . (fixer: ${prefix}sqlfluff fix)`,
+      preselected: true,
+    });
+  }
+  if (dbt)
+    out.push({
+      check: gate("dbt-build", "dbt", ["build"], 1800000),
+      source: "dbt_project.yml",
+      reason: "dbt build (needs the project's database profile)",
+      preselected: false,
+    });
+  return out;
+}
+
 function goGates(workspace: string): GateSuggestion[] {
   if (!has(workspace, "go.mod")) return [];
   // `go vet` passes on unformatted code and is a whole-unit check, so its fixer never ran on a
@@ -1116,6 +1172,7 @@ function runnerGates(workspace: string): GateSuggestion[] {
 const TOOLCHAIN_GATES = {
   npm: scriptGates,
   python: pythonGates,
+  sqlfluff: sqlfluffGates,
   go: goGates,
   dotnet: dotnetGates,
   cargo: cargoGates,
@@ -1163,6 +1220,7 @@ export const GATE_TOOLCHAINS: LanguageRecord<readonly GateToolchain[]> = {
   ocaml: ["dune"],
   objc: none("Xcode projects have no gate detector"),
   solidity: none("Foundry has no gate detector; a Hardhat project is an npm package"),
+  sql: ["sqlfluff"],
 };
 
 export function detectGates(workspace: string, configured: Check[] = []): GateSuggestion[] {

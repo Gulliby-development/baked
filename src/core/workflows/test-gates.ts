@@ -79,6 +79,7 @@ export const TEST_GATES: LanguageRecord<TestGate> = {
   ocaml: none("dune enables a test by its stanza, not by a flag of dune test"),
   objc: none("a preprocessor symbol comes from the Xcode project, not from a test file"),
   solidity: none("forge has no build gate for a test file"),
+  sql: none("pgTAP and dbt tests have no build gate"),
 };
 
 /**

@@ -78,6 +78,13 @@ export function diagnosticCount(output: string): OutputCount | null {
   const psalm = output.match(/^(\d+) errors? found\b/m);
   if (psalm) return { tool: "psalm", count: Number(psalm[1]), errors: Number(psalm[1]) };
   if (/^No errors found!/m.test(output)) return { tool: "psalm", count: 0, errors: 0 };
+  // SQLFluff (#1499): one "L:   1 | P:  10 | LT01 | ..." line per violation, then "All Finished!";
+  // a rule listed under `warnings` prints "WARNING:" after the code, and counts as a warning.
+  if (/^All Finished\b/m.test(output)) {
+    const violations = lines(output, /^L:\s*\d+\s*\|\s*P:\s*\d+\s*\|\s*\w+\s*\|/);
+    const warned = lines(output, /^L:\s*\d+\s*\|\s*P:\s*\d+\s*\|\s*\w+\s*\|\s*WARNING:/);
+    return { tool: "sqlfluff", count: violations, errors: violations - warned };
+  }
   // dart analyze and flutter analyze: "  error - lib/a.dart:3:14 - ... - invalid_assignment", then
   // "2 issues found." or "No issues found!". Infos are lints dart analyze exits 0 on.
   if (
@@ -381,6 +388,8 @@ export const TEST_RUNNERS: LanguageRecord<readonly TestRunner[]> = {
   ocaml: none("dune test output has no common summary"),
   objc: none("xcodebuild test summaries are not read"),
   solidity: none("forge test summaries are not read"),
+  // pgTAP through pg_prove prints TAP.
+  sql: ["tap"],
 };
 
 const captured = (output: string, pattern: RegExp): string[] => [
@@ -673,6 +682,13 @@ const GROWING_COUNTS: [RegExp, string][] = [
   [/^(Tests|Assertions): \d+/gm, "$1: <n>"],
   [/\b(Assertions): \d+/g, "$1: <n>"],
   [/\(\d+ assertions?\)/g, "(<n> assertions)"],
+  // TAP::Harness (prove, pg_prove) summarizes with totals, test numbers and CPU times (#1499):
+  // "Failed 1/2 subtests", "(Wstat: 0 Tests: 2 Failed: 1)", "  Failed test:  2",
+  // "Files=1, Tests=2,  0 wallclock secs ( 0.01 usr + ...)". The failed counts stay.
+  [/\bFailed (\d+)\/\d+ subtests\b/g, "Failed $1/<n> subtests"],
+  [/\(Wstat: (\d+) Tests: \d+ Failed: (\d+)\)/g, "(Wstat: $1 Tests: <n> Failed: $2)"],
+  [/^(\s*Failed tests?:)\s+[\d, -]+$/gm, "$1 <n>"],
+  [/^Files=\d+, Tests=\d+,.*$/gm, "Files=<n>, Tests=<n>"],
 ];
 
 /**

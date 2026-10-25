@@ -183,6 +183,19 @@ const QUERIES: Record<string, string> = {
     (enum_declaration name: (identifier) @name) @type
     (import_directive) @import
   `,
+  // DerekStride's grammar (vendored, #1499): the objects a schema defines. An index's name is its
+  // `column` field in this grammar. The grammar does not parse procedural bodies (PL/pgSQL `BEGIN
+  // ... RAISE ... END`), so such a function is an ERROR node that still holds `FUNCTION name`.
+  sql: `
+    (create_table (object_reference name: (identifier) @name)) @class
+    (create_view (object_reference name: (identifier) @name)) @type
+    (create_materialized_view (object_reference name: (identifier) @name)) @type
+    (create_function (object_reference name: (identifier) @name)) @func
+    (create_type (object_reference name: (identifier) @name)) @type
+    (create_index column: (identifier) @name) @var
+    (create_trigger (object_reference name: (identifier) @name)) @func
+    (ERROR (keyword_function) . (object_reference name: (identifier) @name)) @func
+  `,
   tlaplus: `
     (operator_definition name: (identifier) @name) @func
     (function_definition name: (identifier) @name) @func
@@ -226,6 +239,8 @@ const GRAMMAR_FILES: Record<string, string> = {
   vue: "tree-sitter-vue.wasm",
   rescript: "tree-sitter-rescript.wasm",
   solidity: "tree-sitter-solidity.wasm",
+  // Vendored in `vendor/tree-sitter/` (its README says where each comes from).
+  sql: "tree-sitter-sql.wasm",
   tlaplus: "tree-sitter-tlaplus.wasm",
   elisp: "tree-sitter-elisp.wasm",
 };
@@ -1460,6 +1475,7 @@ export class TreeSitterBackend implements IntelligenceBackend {
       for (const sub of [
         "node_modules/web-tree-sitter-engine",
         "node_modules/tree-sitter-wasms/out",
+        "vendor/tree-sitter",
       ]) {
         const p = join(dir, sub, basename);
         if (existsSync(p)) return p;

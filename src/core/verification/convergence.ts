@@ -349,7 +349,7 @@ export function failureSignature(output: string): string {
  * it is no defect of the code (#1031, #1208).
  */
 export function noTestsCollected(output: string): boolean {
-  return /\bno tests ran\b|\bno tests executed!|\bcollected 0 items\b|\bno tests? (?:files? )?found\b|\bno test files\b|\bno files were found in testpaths\b|\b0 test files matching\b|\bdid not discover any tests to execute\b|\bno tests to run\b|\bdid not match any directory\/file\b|\btest directory "?test"? not found\b|\bno examples found\b|\ball examples were filtered out\b|^0 runs, 0 assertions\b|\bthe default "test\/" directory doesn't exist\b/im.test(
+  return /\bno tests ran\b|\bno tests executed!|\bcollected 0 items\b|\bno tests? (?:files? )?found\b|\bno test files\b|\bno files were found in testpaths\b|\b0 test files matching\b|\bdid not discover any tests to execute\b|\bno tests to run\b|\bdid not match any directory\/file\b|\btest directory "?test"? not found\b|\bno examples found\b|\ball examples were filtered out\b|^0 runs, 0 assertions\b|\bthe default "test\/" directory doesn't exist\b|^Result: NOTESTS\b/im.test(
     output,
   );
 }
@@ -393,6 +393,11 @@ export const MISSING_PATH_LINES: readonly { tool: string; line: RegExp }[] = [
   { tool: "dart", line: /^\s*Failed to load "([^"]+)": Does not exist\.$/ },
   { tool: "dart", line: /^Directory or file doesn't exist: (\S+)$/ },
   { tool: "dart", line: /^No file or directory found at "([^"]+)"\.$/ },
+  // "User Error: Specified path does not exist. Check it/they exist(s): models/stg_orders.sql."
+  {
+    tool: "sqlfluff",
+    line: /\bSpecified path does not exist\. Check it\/they exist\(s\): (\S+?)[.,]?\s*$/,
+  },
 ];
 
 /** Whether RSpec's own `load` of the file named at `index` failed, a few lines below it. */
