@@ -13,7 +13,7 @@ describe("decomposer feature floor", () => {
     expect(text).toContain("at least three files or a group of at least three related behaviors");
     expect(text).toContain("merge a smaller one into a sibling with the same dependencies");
     expect(text).toContain("The host merges features of one or two paths");
-    expect(decomposer?.version).toBe("1.9.0");
+    expect(decomposer?.version).toBe("1.10.0");
   });
 
   // Bench round 42, fecsmith (#1504): the brief named every command file, the decomposer wrote
@@ -22,5 +22,13 @@ describe("decomposer feature floor", () => {
     const text = decomposer?.instructions ?? "";
     expect(text).toContain("each file by its path when the request or the code names it");
     expect(text).toContain("a glob only for an open set of files that nobody lists");
+  });
+
+  // Bench round 66, nodepluck (#2055): the brief demanded "at least 150 cases" and "40 cases for
+  // the read commands"; test tasks were 51.9 percent of the initiative and nothing priced them.
+  test("the decomposer states the test cases the request demands of each feature", () => {
+    const text = decomposer?.instructions ?? "";
+    expect(text).toContain("set testCases on each feature that delivers those tests");
+    expect(text).toContain("Leave testCases out when the request states no number.");
   });
 });

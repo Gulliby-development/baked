@@ -211,3 +211,54 @@ describe("the adaptive deadline replays on recorded calls (#2041)", () => {
     expect(stops(replayFirstBytes(store, [run.runId]))).toEqual(["pass", "pass", "pass"]);
   }, 60_000);
 });
+
+// Bench round 69, skillplumb (#2193). The plan call (codex/gpt-6-astra, medium, 142,929
+// characters, a 23-task graph) ran out the 180 s floor three times. Each retry attempt opened with
+// a short call of the same shape that answered in about 8 s, which cleared the #2041 ceiling
+// before the large call, so attempts 2 and 3 recorded `limitMs: 180000` again. The shape had
+// answered at most 82 s for 181k characters; this call needed 205 s.
+describe("scenario: skillplumb R69, a retry's short first call does not clear the ceiling (#2193)", () => {
+  const ASTRA = "codex/gpt-6-astra";
+  const PLAN = { stage: "plan", effort: "medium" } as const;
+  const PLAN_CEILING = providerFirstByteMs("codex", PLAN);
+  const LARGE = 142_929;
+  const planned = () => {
+    const history = new FirstByteHistory();
+    for (const [chars, ms] of [[60_000, 31_000], [90_000, 44_000], [120_000, 58_000], [181_000, 82_000], [75_000, 36_000], [100_000, 47_000], [140_000, 66_000], [50_000, 25_000]] as const)
+      history.record(ASTRA, { provider: "codex", ...PLAN, firstByteMs: ms, durationMs: ms + 5_000, promptChars: chars });
+    return history;
+  };
+  const expire = (history: FirstByteHistory, promptChars?: number) =>
+    history.record(ASTRA, { provider: "codex", ...PLAN, firstByteMs: null, durationMs: 186_000, limitMs: ADAPTIVE_FIRST_BYTE_FLOOR_MS, ...(promptChars ? { promptChars } : {}) });
+  const answer = (history: FirstByteHistory, ms: number, promptChars?: number) =>
+    history.record(ASTRA, { provider: "codex", ...PLAN, firstByteMs: ms, durationMs: ms + 2_000, ...(promptChars ? { promptChars } : {}) });
+
+  test("the large plan call keeps the ceiling through the next attempt's short answers until it answers itself", () => {
+    const history = planned();
+    expect(history.deadline(PLAN_CEILING, ASTRA, { ...PLAN, promptChars: LARGE })).toBe(ADAPTIVE_FIRST_BYTE_FLOOR_MS);
+    expire(history, LARGE);
+    expect(history.deadline(PLAN_CEILING, ASTRA, { ...PLAN, promptChars: LARGE })).toBe(PLAN_CEILING);
+    // Attempt 2: its first call answers in 7.6 s, a continuation in 3 ms.
+    answer(history, 7_564, 12_000);
+    answer(history, 3, 13_000);
+    // Before #2193 the heavy call was back on the 180 s floor here.
+    expect(history.deadline(PLAN_CEILING, ASTRA, { ...PLAN, promptChars: LARGE })).toBe(PLAN_CEILING);
+    // The large call answers at 205 s: the shape adapts again, from a history that knows it.
+    answer(history, 205_334, LARGE);
+    const after = history.deadline(PLAN_CEILING, ASTRA, { ...PLAN, promptChars: LARGE });
+    expect(after).toBeLessThan(PLAN_CEILING);
+    expect(after).toBeGreaterThan(205_334);
+  });
+
+  test("a call without a recorded size neither clears a sized expiry nor keeps an unsized one", () => {
+    const sized = planned();
+    expire(sized, LARGE);
+    answer(sized, 8_000);
+    expect(sized.deadline(PLAN_CEILING, ASTRA, { ...PLAN, promptChars: LARGE })).toBe(PLAN_CEILING);
+    // An expiry recorded without a size (before #2041) clears on any answer, as it did.
+    const unsized = planned();
+    expire(unsized);
+    answer(unsized, 8_000);
+    expect(unsized.deadline(PLAN_CEILING, ASTRA, PLAN)).not.toBe(PLAN_CEILING);
+  });
+});

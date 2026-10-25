@@ -18,12 +18,13 @@ Quality gates of workflow runs measure the code a run writes beyond what its che
 | [Misquote host fix](runtime.md#test-integrity) | `misquoteFix` | `on` (absent is off, recorded in shadow) | off |
 | [Edge-input probe](runtime.md#edge-input-probe) | `edgeProbe` | `on` (absent is off) | off |
 | [Settled conflict host finish](runtime.md#test-integrity) | `conflictFinish` | `on` (absent is off, recorded in shadow) | off |
+| [Independent work past a blocked correction](runtime.md#stop-reasons-and-shadow-mode) | `correctiveDefer` | `on` (absent is off, recorded in shadow) | off |
 
 Where the defaults are set:
 
 - terminal UI: `/code-quality` (or **Code Quality** in `/settings`), saved to the project or the global config;
 - desktop: Settings, Chat settings, **Code quality** page;
-- local API: `PATCH /v1/settings` with `quality.duplication`, `quality.disabledRules`, `quality.registryLookups`, `quality.sast`, `quality.propertyTests`, `quality.mutation`, `quality.mutationEngine`, `quality.baselineReplay`, `quality.packageContents`, `quality.chainRewrite`, `quality.chainProbe`, `quality.defectClasses`, `quality.misquoteFix`, `quality.edgeProbe` and `quality.conflictFinish` ([chat settings](../desktop/api.md#chat-settings));
+- local API: `PATCH /v1/settings` with `quality.duplication`, `quality.disabledRules`, `quality.registryLookups`, `quality.sast`, `quality.propertyTests`, `quality.mutation`, `quality.mutationEngine`, `quality.baselineReplay`, `quality.packageContents`, `quality.chainRewrite`, `quality.chainProbe`, `quality.defectClasses`, `quality.misquoteFix`, `quality.edgeProbe`, `quality.conflictFinish` and `quality.correctiveDefer` ([chat settings](../desktop/api.md#chat-settings));
 - config file: `quality` in `.baked/config.json` or `~/.baked/config.json`.
 
 A run can override the default at start: `baked workflow run --duplication off|warn|ratchet`, `--sast auto|off`, `--property-tests auto|off` and `--mutation off|advisory|required`, or `duplication`, `sast`, `propertyTests` and `mutation` in `POST /v1/workflow/runs`. The order is the run flag, then the policy's own field (`--policy FILE` or `workflows.policy`), then the `quality` setting, then the built-in default.
@@ -64,7 +65,7 @@ Agents often leave code that passes the tests but hides failures. The rule pack 
 | `rust-unwrap` | warning | `unwrap()`/`expect()` outside `#[cfg(test)]` | Rust |
 | `ts-ignore` | error | `@ts-ignore`, `@ts-nocheck` | JS/TS |
 | `explicit-any` | warning | `: any`, `as any`, `<any>` | TS |
-| `lint-suppression` | warning | `eslint-disable`, `biome-ignore`, `# noqa`, `# type: ignore`, `# pylint: disable`, `//nolint`, `#[allow(...)]`, `@SuppressWarnings`, `#pragma warning disable`, `NOSONAR`, `# rubocop:disable`, `# standard:disable`, `@phpstan-ignore`, `@psalm-suppress`, `// ignore:` (Dart), `-- luacheck: ignore`, `-- selene: allow`, `# shellcheck disable=`, `// NOLINT`, `#pragma GCC diagnostic ignored`, `@nowarn`, `// scalafix:off`, `// scalastyle:off` (Scala) | all |
+| `lint-suppression` | warning | `eslint-disable`, `biome-ignore`, `# noqa`, `# type: ignore`, `# pylint: disable`, `//nolint`, `#[allow(...)]`, `@SuppressWarnings`, `#pragma warning disable`, `NOSONAR`, `# rubocop:disable`, `# standard:disable`, `@phpstan-ignore`, `@psalm-suppress`, `// ignore:` (Dart), `-- luacheck: ignore`, `-- selene: allow`, `# shellcheck disable=`, `// NOLINT`, `#pragma GCC diagnostic ignored`, `@nowarn`, `// scalafix:off`, `// scalastyle:off` (Scala), `// swiftlint:disable`, `// swift-format-ignore` (Swift) | all |
 | `placeholder-body` | error | `throw new Error("not implemented")`, `throw new Error("TODO")` or `"todo: ..."` (a message that only starts with the word, such as `Todo with id 3 does not exist`, is not one), an exception with such a message in Java, Kotlin, C# or PHP, `todo!()`, `unimplemented!()`, `panic("not implemented")` or `panic("unimplemented")` in Go, `error("not implemented")` in Lua, Kotlin's `TODO()`, a .NET `NotImplementedException` with or without a message, an empty Java `UnsupportedOperationException()` (not in an override of a collection or iterator mutator such as `remove` or `add`, where it is the documented contract), a Python function whose whole body (after an optional docstring or `pass`) is `raise NotImplementedError` (not an `@abstractmethod`, nor a method of a class based on `ABC`, `Protocol` or `metaclass=ABCMeta`) | all |
 | `todo-comment` | warning | `TODO`, `FIXME`, `XXX`, `HACK` comments | all |
 | `whitespace-only-line` | error | a line of only spaces or tabs | code files except Markdown |
