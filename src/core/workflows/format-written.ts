@@ -259,7 +259,7 @@ export const FILE_FORMATTERS: LanguageRecord<readonly FileFormatter[]> = {
     "Maven formatters (spotless, google-java-format) run inside `mvn verify`; no gate detects one",
   ),
   kotlin: none("ktlint and spotless run inside Gradle's `check`; no gate detects one"),
-  scala: none("scalafmt runs inside sbt; no gate detects it"),
+  scala: none("sbt-scalafmt formats named files (scalafmtOnly) but has no check mode for them"),
   c: [clangFormat],
   cpp: [clangFormat],
   ruby: [rubocopLayout],

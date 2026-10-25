@@ -4,6 +4,10 @@
     "src/main/scala/SumSuite.scala": "class SumSuite {\n  val three = Sum.sum(1, 2)\n}\n// AC-001 example: (1, 2, 3)\n",
     "build.sbt": "name := \"fixture\"\n"
   },
+  "outputs": {
+    "tests": "[info] SumSuite:\n[info] - adds\n[info] - is commutative *** FAILED ***\n[info]   3 did not equal 4 (SumSuite.scala:7)\n[info] Run completed in 312 milliseconds.\n[info] Total number of tests run: 2\n[info] Suites: completed 1, aborted 0\n[info] Tests: succeeded 1, failed 1, canceled 0, ignored 0, pending 0\n[info] *** 1 TEST FAILED ***\n[error] Failed tests:\n[error] \tSumSuite\n[error] (Test / test) sbt.TestsFailedException: Tests unsuccessful\n[error] Total time: 9 s, completed Oct 25, 2026, 2:43:17 AM\n",
+    "testsGrown": "[info] SumSuite:\n[info] - adds\n[info] - subtracts\n[info] - is commutative *** FAILED ***\n[info]   3 did not equal 4 (SumSuite.scala:7)\n[info] Run completed in 350 milliseconds.\n[info] Total number of tests run: 3\n[info] Suites: completed 1, aborted 0\n[info] Tests: succeeded 2, failed 1, canceled 0, ignored 0, pending 0\n[info] *** 1 TEST FAILED ***\n[error] Failed tests:\n[error] \tSumSuite\n[error] (Test / test) sbt.TestsFailedException: Tests unsuccessful\n[error] Total time: 11 s, completed Oct 25, 2026, 3:01:09 AM\n"
+  },
   "expected": {
     "tests": [
       "src/main/scala/SumSuite.scala"
@@ -21,7 +25,10 @@
     "gates": [
       "sbt-test"
     ],
-    "testRunners": null,
+    "testRunners": [
+      "sbt 2",
+      "signature stable"
+    ],
     "mutation": null,
     "properties": null,
     "entryPoints": null,

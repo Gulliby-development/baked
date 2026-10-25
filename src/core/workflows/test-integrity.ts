@@ -338,6 +338,8 @@ const CAPABILITY = new RegExp(
     String.raw`\b(?:_WIN32|_WIN64|_MSC_VER|__APPLE__|__linux__|__unix__|__FreeBSD__|__MINGW32__)\b`,
     // Dart: `Platform.isWindows`, `Platform.operatingSystem`, Flutter's `kIsWeb` (#1494).
     String.raw`\bPlatform\.(?:is[A-Z]\w*|operatingSystem)\b|\bkIsWeb\b`,
+    // Scala: `scala.util.Properties.isWin` (#1496).
+    String.raw`\bProperties\.(?:isWin|isMac|isLinux)\b`,
   ].join("|"),
 );
 /** Lines above a skip that its guard condition may span. */
@@ -389,6 +391,7 @@ const SUPPRESSIONS = new RegExp(
     String.raw`//\s*NOLINT(?:NEXTLINE|BEGIN)?\b`,
     String.raw`#\s*pragma\s+(?:GCC|clang)\s+diagnostic\s+ignored\b`,
     String.raw`//\s*ignore(?:_for_file)?:\s*\w`,
+    String.raw`@nowarn\b|//\s*scalafix:(?:off|ok)\b|//\s*scalastyle:off\b`,
     // PSScriptAnalyzer, and the same attribute in C#: `[Diagnostics.CodeAnalysis.SuppressMessageAttribute(...)]` (#1498).
     String.raw`\[(?:System\.)?(?:Diagnostics\.CodeAnalysis\.)?SuppressMessage(?:Attribute)?\s*\(`,
   ].join("|"),

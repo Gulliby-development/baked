@@ -9,6 +9,7 @@ import { suspendClock } from "./helpers/suspend-clock.js";
 import { caseCheck } from "../src/core/verification/criteria-cases.js";
 import { fixtureSpec, workflowFixture } from "./helpers/workflow-fixture.js";
 import { slicedCorrective } from "./helpers/sliced-corrective-scenario.js";
+import { evidencePaths, scopeRecord, stackFrames } from "../src/core/workflows/corrective-scope.js";
 import { cellSamples, cellSpec, omittedCellInput, withoutCellInput } from "./helpers/criteria-cell-fixtures.js";
 import { ProcessScope } from "../src/core/workflows/process-scope.js";
 import { canRepairRun, type RepairBlock } from "../src/core/workflows/repairable.js";
@@ -339,6 +340,20 @@ describe("gate matrix: files a first check run creates (#1815)", () => {
     }, 60000);
 });
 const STACKS: Stack[] = ["bun", "npm", "python", "go", "rust", "maven", "dotnet"];
+
+/**
+ * A source file of another task and the stack frame each stack's runtime prints for it, on the
+ * machine that ran the probe (#2133): the corrective's evidence names the file through the frame.
+ */
+const STACK_FRAMES: Record<Stack, { path: string; frame: (root: string) => string }> = {
+  bun: { path: "src/storage.ts", frame: (root) => `error: Missing parameter "code"\n      at getLink (${root}/src/storage.ts:91:53)` },
+  npm: { path: "src/storage.js", frame: (root) => `Error: Missing parameter\n    at getLink (${root}\\src\\storage.js:91:53)\n    at node:internal/main:1:1` },
+  python: { path: "src/app/storage.py", frame: (root) => `Traceback (most recent call last):\n  File "${root}/src/app/storage.py", line 91, in get_link\nKeyError: 'code'` },
+  go: { path: "internal/storage/storage.go", frame: (root) => `panic: missing parameter\n\ngoroutine 1 [running]:\nexample/internal/storage.GetLink()\n\t${root}/internal/storage/storage.go:91 +0x1d` },
+  rust: { path: "src/storage.rs", frame: () => "thread 'main' panicked at src/storage.rs:91:5:\nmissing parameter" },
+  maven: { path: "src/main/java/app/Storage.java", frame: () => "java.lang.IllegalStateException: missing parameter\n\tat app.Storage.getLink(Storage.java:91)" },
+  dotnet: { path: "src/App/Storage.cs", frame: (root) => `Unhandled exception. System.InvalidOperationException: missing parameter\n   at App.Storage.GetLink() in ${root}/src/App/Storage.cs:line 91` },
+};
 
 /** The gates a failure of which is corrected only in the files its output names (#1067). */
 const STATIC_FIXES: Record<Stack, string[]> = {
@@ -1721,6 +1736,142 @@ describe("gate matrix: dart test, dart analyze and dart format (#1494)", () => {
   });
 });
 
+// #1496: an sbt build got its test gate but no test count, no scalafmt gate, no skip markers of
+// ScalaTest or munit and no language review. The outputs below are pasted from sbt 1.10.11 on
+// Scala 3.6.4 with munit 1.1.0, ScalaTest 3.2.19 and sbt-scalafmt 2.5.4; munit colours its lines
+// without a terminal too.
+const E = "\u001b";
+const MUNIT_FAILED = `[info] compiling 1 Scala source to /w/target/scala-3.6.4/test-classes ...
+[info] done compiling
+${E}[32mCalcSuite:${E}[0m
+${E}[32m  + ${E}[0m${E}[32madds${E}[0m ${E}[90m0.011s${E}[0m
+${E}[91m==> X ${E}[0m${E}[91mCalcSuite${E}[0m.${E}[91mfails on purpose${E}[0m  ${E}[90m0.038s${E}[0m munit.ComparisonFailException: src/test/scala/CalcSuite.scala:3
+2:  test("adds") { assertEquals(Calc.add(1, 2), 3) }
+${E}[7m3:  test("fails on purpose") { assertEquals(Calc.add(1, 2), 4) }${E}[0m
+values are not the same
+${E}[33m==> i ${E}[0m${E}[33mCalcSuite${E}[0m.${E}[33mlater${E}[0m${E}[33m ignored${E}[0m ${E}[90m0.0s${E}[0m
+[error] Failed: Total 2, Failed 1, Errors 0, Passed 1, Ignored 1
+[error] Failed tests:
+[error] \tCalcSuite
+[error] (Test / test) sbt.TestsFailedException: Tests unsuccessful
+[error] Total time: 16 s, completed Oct 25, 2026, 2:40:35 AM
+`;
+const SCALATEST_FAILED = `[info] CalcFlatSpec:
+[info] Calc
+[info] - should add
+[info] - should fail too *** FAILED ***
+[info]   2 was not equal to 3 (CalcSpec.scala:13)
+[info] CalcSpec:
+[info] - adds
+[info] - fails on purpose *** FAILED ***
+[info]   3 did not equal 4 (CalcSpec.scala:7)
+[info] - later !!! IGNORED !!!
+[info] - pending one (pending)
+[info] Run completed in 387 milliseconds.
+[info] Total number of tests run: 4
+[info] Suites: completed 2, aborted 0
+[info] Tests: succeeded 2, failed 2, canceled 0, ignored 1, pending 1
+[info] *** 2 TESTS FAILED ***
+[error] Failed tests:
+[error] \tCalcSpec
+[error] \tCalcFlatSpec
+[error] (Test / test) sbt.TestsFailedException: Tests unsuccessful
+[error] Total time: 12 s, completed Oct 25, 2026, 2:43:17 AM
+`;
+const SBT_MULTI = `[info] compiling 1 Scala source to /w/b/target/scala-3.6.4/test-classes ...
+[info] compiling 1 Scala source to /w/a/target/scala-3.6.4/test-classes ...
+[error] -- [E006] Not Found Error: /w/b/src/test/scala/BSuite.scala:2:31 ---------------
+[error] 2 |  test("three") { assertEquals(undefinedThing, 3) }
+[error]   |                               ^^^^^^^^^^^^^^
+[error]   |                               Not found: undefinedThing
+[error] one error found
+[info] done compiling
+ASuite:
+  + one 0.01s
+==> X ASuite.two  0.037s munit.ComparisonFailException: a/src/test/scala/ASuite.scala:3
+[error] Failed: Total 2, Failed 1, Errors 0, Passed 1
+[error] Failed tests:
+[error] \tASuite
+[error] (a / Test / test) sbt.TestsFailedException: Tests unsuccessful
+[error] (b / Test / compileIncremental) Compilation failed
+[error] Total time: 7 s, completed Oct 25, 2026, 2:44:20 AM
+`;
+describe("gate matrix: sbt, munit, ScalaTest and scalafmt (#1496)", () => {
+  test("sbt and ScalaTest counts, the tests that ran, the failed tests and a stable signature", () => {
+    expect([testCount(MUNIT_FAILED), testsRan(MUNIT_FAILED), failedTests(MUNIT_FAILED)]).toEqual([
+      { tool: "sbt", count: 3 }, { tool: "sbt", count: 2 }, { tool: "sbt", names: ["CalcSuite.fails on purpose"] },
+    ]);
+    // ScalaTest alone prints its own totals and no sbt line.
+    expect([testCount(SCALATEST_FAILED), testsRan(SCALATEST_FAILED), failedTests(SCALATEST_FAILED)]).toEqual([
+      { tool: "sbt", count: 6 }, { tool: "sbt", count: 4 }, { tool: "sbt", names: ["CalcFlatSpec: should fail too", "CalcSpec: fails on purpose"] },
+    ]);
+    // With munit beside it, sbt's line counts both frameworks.
+    const mixed = "[info] Tests: succeeded 4, failed 0, canceled 0, ignored 1, pending 1\n[info] All tests passed.\n[info] Passed: Total 5, Failed 0, Errors 0, Passed 5, Ignored 1, Pending 1\n";
+    expect([testCount(mixed), testsRan(mixed)]).toEqual([{ tool: "sbt", count: 7 }, { tool: "sbt", count: 5 }]);
+    // One summary per project that ran tests.
+    expect(testCount("[info] Passed: Total 2, Failed 0, Errors 0, Passed 2\n[info] Passed: Total 3, Failed 0, Errors 0, Passed 3\n")).toEqual({ tool: "sbt", count: 5 });
+    // A passing test more, other timings and another date: the same failure. A second failure is not.
+    const later = MUNIT_FAILED.replace(`${E}[90m0.011s${E}[0m\n`, `${E}[90m0.02s${E}[0m\n${E}[32m  + ${E}[0m${E}[32msubtracts${E}[0m ${E}[90m0.001s${E}[0m\n`)
+      .replace("Total 2, Failed 1, Errors 0, Passed 1", "Total 3, Failed 1, Errors 0, Passed 2").replace("16 s, completed Oct 25, 2026, 2:40:35 AM", "9 s, completed Oct 26, 2026, 11:02:01 PM");
+    expect(failureSignature(later, "/w")).toBe(failureSignature(MUNIT_FAILED, "/w"));
+    const scalatestLater = SCALATEST_FAILED.replace("[info] - adds\n", "[info] - adds\n[info] - subtracts\n").replace("387 milliseconds", "401 milliseconds")
+      .replace("tests run: 4", "tests run: 5").replace("succeeded 2, failed 2, canceled 0, ignored 1, pending 1", "succeeded 3, failed 2, canceled 0, ignored 1, pending 1");
+    expect(failureSignature(scalatestLater, "/w")).toBe(failureSignature(SCALATEST_FAILED, "/w"));
+    expect(failureSignature(SCALATEST_FAILED.replace("[info] - adds\n", "[info] - adds *** FAILED ***\n"), "/w")).not.toBe(failureSignature(SCALATEST_FAILED, "/w"));
+    expect(timedOutFailure(MUNIT_FAILED) && timedOutFailure(SCALATEST_FAILED)).toBe(true);
+  });
+
+  test("a project whose tests do not compile is a build failure; an empty run reads as no tests collected", () => {
+    expect(buildRunner(SBT_MULTI)).toBe("sbt");
+    expect(buildRunner(MUNIT_FAILED)).toBeNull();
+    expect(buildRunner("[error] /w/src/test/scala/A.scala:2:31: not found: value x\n[error] one error found\n")).toBe("sbt");
+    expect(testCount(SBT_MULTI)).toEqual({ tool: "sbt", count: 2 });
+    expect(noTestsCollected("[info] Passed: Total 0, Failed 0, Errors 0, Passed 0\n[info] No tests to run for Test / testOnly\n")).toBe(true);
+  });
+
+  test("scalafmt formats before the tests when the build has the plugin, and its fixer takes the task's file", () => {
+    const files = { "build.sbt": 'scalaVersion := "3.6.4"\n', "project/plugins.sbt": 'addSbtPlugin("org.scalameta" % "sbt-scalafmt" % "2.5.4")\n', ".scalafmt.conf": 'version = "3.9.4"\n' };
+    const checks = detectGates(project(files)).map((s) => s.check);
+    expect(checks.map((c) => [c.id, [c.executable, ...c.args].join(" ")])).toEqual([["scalafmt", "sbt -batch scalafmtCheckAll"], ["sbt-test", "sbt -batch test"]]);
+    expect(isStaticCheck(checks[0]!) && !isStaticCheck(checks[1]!)).toBe(true);
+    expect(fixerCommand(checks[0]!.fix!, "src/main/scala/Calc.scala")).toEqual({ executable: "sbt", args: ["-batch", "scalafmtOnly src/main/scala/Calc.scala"] });
+    // A .scalafmt.conf without the plugin, or the plugin without a config, formats nothing.
+    expect(detectGates(project({ ...files, "project/plugins.sbt": "" })).map((s) => s.check.id)).toEqual(["sbt-test"]);
+    const scalafmt = "[info] scalafmt: Checking 2 Scala sources (/w)...\n[warn] scalafmt: /w/src/main/scala/Ugly.scala isn't formatted properly!\n[error] scalafmt: 1 files must be formatted (/w)\n";
+    expect(failureSignature(scalafmt, "/w")).toBe(failureSignature(scalafmt.replace("Checking 2", "Checking 3"), "/w"));
+  });
+
+  test("the affected tests run through testOnly, by the test files' class names", () => {
+    const check: Check = { id: "sbt-test", executable: "sbt", args: ["-batch", "test"], cwd: ".", timeoutMs: 1200000, required: true, scope: "feature", envNames: [], writes: [] };
+    expect(affectedTestCheck([check], ["src/test/scala/app/CalcSuite.scala", "core/src/test/scala/ParseSpec.scala"])?.args).toEqual(["-batch", "testOnly *CalcSuite *ParseSpec"]);
+  });
+
+  test("ScalaTest and munit skips, focus and Scala suppressions are found; platform guards are not", () => {
+    const before = 'class CalcSuite extends munit.FunSuite:\n  test("adds") {\n    assertEquals(Calc.add(1, 2), 3)\n  }\n';
+    const rules = (path: string, from: string, to: string) => scanTestIntegrity([{ path, before: from, after: to }]).map((f) => `${f.rule}: ${f.detail}`);
+    const skip = ["skip: added 1 skip, only, todo or ignore marker(s)"];
+    const path = "src/test/scala/CalcSuite.scala";
+    expect(rules(path, before, before.replace('test("adds")', 'test("adds".ignore)'))).toEqual(skip);
+    expect(rules(path, before, before.replace('test("adds")', 'test("adds".only)'))).toEqual(skip);
+    expect(rules(path, before, before.replace('  test("adds")', '  ignore("adds")'))).toEqual(skip);
+    expect(rules(path, before, before.replace("    assertEquals", "    pending\n    assertEquals"))).toEqual(skip);
+    expect(rules(path, before, before.replace("    assertEquals", '    assume(!scala.util.Properties.isWin, "no symlinks")\n    assertEquals'))).toEqual([]);
+    const flat = 'class CalcSpec extends AnyFlatSpec:\n  "Calc" should "add" in {\n    Calc.add(1, 1) shouldBe 2\n  }\n';
+    expect(rules("src/test/scala/CalcSpec.scala", flat, flat.replace('"Calc" should "add" in', '"Calc" should "add" ignore'))).toEqual(skip);
+    expect(rules("src/main/scala/Calc.scala", "object Calc\n", "@nowarn(\"msg=unused\")\nobject Calc\n").map((r) => r.split(":")[0])).toEqual(["suppression"]);
+    const two = flat.replace("  }\n", '  }\n  it should "subtract" in {\n    Calc.sub(2, 1) shouldBe 1\n  }\n');
+    expect(scanTestIntegrity([{ path: "src/test/scala/CalcSpec.scala", before: two, after: flat }]).map((f) => `${f.rule}: ${f.detail}`)).toEqual([
+      'test-count: test count dropped from 2 to 1 (removed "subtract")',
+      "assertions: assertions dropped from 2 to 1 (removed or commented out)",
+    ]);
+  });
+
+  test("the agent profile runs sbt in batch mode and scalafmt through its plugin", async () => {
+    const profile = await detectProfile(project({ "build.sbt": "", ".scalafmt.conf": "", "project/plugins.sbt": 'addSbtPlugin("org.scalameta" % "sbt-scalafmt" % "2.5.4")\n' }));
+    expect([profile.test, profile.lint, profile.format]).toEqual(["sbt -batch test", "sbt -batch scalafmtCheckAll", "sbt -batch scalafmtAll"]);
+  });
+});
+
 /**
  * Manifests and tool configs of each stack a request may name (#1710), with the content a
  * host-written task writes and whether the approval takes the write without a person. A lock that
@@ -2714,6 +2865,19 @@ for (const stack of STACKS) {
         const { added, ready } = slicedCorrective(check, path, `${path}:3:5: error: a diagnostic\nFound 1 error.`);
         expect({ check: check.id, writes: added.writes.map((w) => w.path), ready }).toEqual({ check: check.id, writes: [path], ready: ["T004", added.id] });
       }
+    });
+
+    // A corrective whose repro output's frame names another task's source records that task as
+    // the owner to route the change to (#2133, url-shortener R68: storage.ts of T001).
+    cell(stack, "corrective-unowned-file (#2133)", () => {
+      const { path, frame } = STACK_FRAMES[stack];
+      const root = "/w/project";
+      const task = (id: string, file: string, origin: "planned" | "repair" = "planned") => ({ id, writes: [{ path: file, action: "modify" }], origin, findingIds: origin === "planned" ? [] : ["F1"] });
+      const graph = { tasks: [task("T001", path), task("T002", "src/handler.txt"), task("T004", "src/handler.txt", "repair")] } as unknown as NonNullable<Parameters<typeof scopeRecord>[0]["graph"]>;
+      const known = [path, "src/handler.txt"];
+      expect(evidencePaths(stackFrames(frame(root)), root, known)).toEqual([path]);
+      const record = scopeRecord({ graph, repairScope: {}, repairPredecessors: { F1: "T002" } }, { checks: [] }, { id: "T004", writes: [{ path: "src/handler.txt", action: "modify" }] }, [{ id: "F1", claim: "Edge input 1 of T002, legal under AC-001: prints x", file: "src/handler.txt", repro: { actual: frame(root) } }], "create", undefined, { unresolved: [], rows: [{ id: "T001", status: "verified" }, { id: "T002", status: "implemented" }], paths: (text) => evidencePaths(text, root, known), allowedPaths: [], hash: () => null });
+      expect({ host: record?.host, owner: record?.unowned?.[0]?.owner, path: record?.unowned?.[0]?.path }).toEqual({ host: "route", owner: "T001", path });
     });
 
     cell(stack, "dependency-check", () => {
@@ -3921,6 +4085,31 @@ describe.skipIf(!toolchains)("gate matrix: toolchains", () => {
     run("rubocop", ["-a", "--only", "Layout", "lib/ugly.rb"]);
     expect(readFileSync(join(root, "lib/ugly.rb"), "utf8")).toBe("def ugly(a)\n  a\nend\n");
   }, 300000);
+  // #1496: the sbt, munit, ScalaTest and scalafmt parsers read what a real sbt build prints.
+  test.skipIf(!available([["sbt", "--script-version"]]))("sbt test and scalafmt output reads as their parsers expect (#1496)", () => {
+    const root = project({
+      "build.sbt": 'scalaVersion := "3.6.4"\nlibraryDependencies ++= Seq("org.scalameta" %% "munit" % "1.1.0" % Test, "org.scalatest" %% "scalatest" % "3.2.19" % Test)\n',
+      "project/build.properties": "sbt.version=1.10.11\n",
+      "project/plugins.sbt": 'addSbtPlugin("org.scalameta" % "sbt-scalafmt" % "2.5.4")\n',
+      ".scalafmt.conf": 'version = "3.9.4"\nrunner.dialect = scala3\n',
+      "src/main/scala/Calc.scala": "object Calc:\n  def add(a: Int, b: Int): Int = a + b\n",
+      "src/test/scala/CalcSuite.scala": 'class CalcSuite extends munit.FunSuite:\n  test("adds") { assertEquals(Calc.add(1, 2), 3) }\n  test("fails") { assertEquals(Calc.add(1, 2), 4) }\n  test("later".ignore) { assertEquals(1, 1) }\n',
+      "src/test/scala/CalcSpec.scala": 'import org.scalatest.funsuite.AnyFunSuite\n\nclass CalcSpec extends AnyFunSuite:\n  test("adds too") { assert(Calc.add(1, 2) == 3) }\n  ignore("waits") { assert(true) }\n',
+    });
+    const run = (args: string[]) => {
+      const result = spawnSync("sbt", ["-batch", ...args], { cwd: root, encoding: "utf8", timeout: 900000 });
+      return `${result.stdout}${result.stderr}`;
+    };
+    const tests = run(["test"]);
+    expect([testCount(tests), testsRan(tests), failedTests(tests)]).toEqual([{ tool: "sbt", count: 5 }, { tool: "sbt", count: 3 }, { tool: "sbt", names: ["CalcSuite.fails"] }]);
+    expect(failureSignature(run(["test"]), root)).toBe(failureSignature(tests, root));
+    const only = run(["testOnly *CalcSpec"]);
+    expect([testCount(only), failedTests(only)]).toEqual([{ tool: "sbt", count: 2 }, { tool: "sbt", names: [] }]);
+    writeFileSync(join(root, "src/main/scala/Ugly.scala"), "object Ugly:\n  def  f( a:Int ):Int=a\n");
+    expect(run(["scalafmtCheckAll"])).toContain("isn't formatted properly");
+    run(["scalafmtOnly src/main/scala/Ugly.scala"]);
+    expect(readFileSync(join(root, "src/main/scala/Ugly.scala"), "utf8")).toBe("object Ugly:\n  def f(a: Int): Int = a\n");
+  }, 1800000);
   // #1494: the dart test, dart analyze and dart format parsers read what the installed SDK prints.
   // package:test comes from the real pub cache; the test preload points HOME elsewhere.
   test.skipIf(!available([["dart", "--version"]]))("dart test, analyze and format output reads as their parsers expect (#1494)", () => {
