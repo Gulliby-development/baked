@@ -2,7 +2,12 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { hashJson } from "../src/core/specs/hash.js";
-import { misquoteFixDecision, misquoteFixPlan } from "../src/core/workflows/misquote-fix.js";
+import {
+  MISQUOTE_CONTINUE_STEPS,
+  misquoteFallback,
+  misquoteFixDecision,
+  misquoteFixPlan,
+} from "../src/core/workflows/misquote-fix.js";
 import type { RunPolicy, Spec } from "../src/core/workflows/schemas.js";
 import { replayMisquoteFixes } from "../src/core/workflows/trace.js";
 import { newId } from "../src/core/workflows/store.js";
@@ -82,6 +87,7 @@ async function conflict(scenario: Scenario) {
   const { service, executor, root } = fixture;
   const original = executor.execute.bind(executor);
   const prompts: string[] = [];
+  const caps: (number | undefined)[] = [];
   executor.execute = async (request: ExecutionRequest) => {
     if (request.profile.output === "spec") return { output: spec, inputTokens: 25, outputTokens: 25 };
     if (request.profile.output === "plan") {
@@ -101,6 +107,7 @@ async function conflict(scenario: Scenario) {
     if (request.profile.output !== "implementation") return original(request);
     const work = request.root ?? root;
     prompts.push(request.prompt);
+    caps.push(request.maxSteps);
     mkdirSync(join(work, dirname(TEST)), { recursive: true });
     if (/Settled spec conflict/.test(request.prompt)) {
       writeFileSync(join(work, "value.txt"), "ready");
@@ -169,6 +176,11 @@ async function conflict(scenario: Scenario) {
     test: scenario.parallel ? "" : readFileSync(join(root, TEST), "utf8"),
     edits: service.store.effects(run.runId).filter((e) => e.kind === "file_patch" && (JSON.parse(e.intent_json) as { path: string }).path === TEST),
     replay: replayMisquoteFixes(service.store, run.runId),
+    caps,
+    contexts: service.store
+      .artifacts(run.runId)
+      .filter((a) => a.kind === "attempt-context")
+      .map((a) => JSON.parse(service.store.readArtifact(run.runId, a.id)) as Record<string, unknown>),
   };
 }
 
@@ -194,18 +206,25 @@ describe("scenario: nodepluck eval T004, a misquote conflict settled without a s
     expect(result.status).toBe("completed");
   }, 90_000);
 
-  test("a failing check on the host's edit puts it back and opens the session as before", async () => {
+  test("a failing check on the host's edit puts it back and the task continues at a bounded cap with that output (#2058)", async () => {
     const result = await conflict({ misquoteFix: "on", first: tsTest(TEN), value: "draft" });
     expect(result.sessions).toBe(2);
-    expect(result.read("conflicts/misquote/T004.json")).toMatchObject({ apply: true, checks: "failed", files: [TEST] });
+    expect(result.read("conflicts/misquote/T004.json")).toMatchObject({ apply: true, checks: "failed", files: [TEST], fallback: "continue" });
     expect(result.read("assumptions/conflicts/T004-misquoted.json")?.hostFix).toBeUndefined();
+    // The continuation gets the one-line finding and the failing check, at the bounded cap.
+    const continued = result.contexts.at(-1)?.misquoteContinue as { finding: string; failed: { id: string } | null } | undefined;
+    expect(continued?.finding).toBe(`The test misquotes the criterion rows: AC-007 states ${JSON.stringify(ELEVEN)}, the test has ${JSON.stringify(TEN)}.`);
+    expect(continued?.failed?.id).toBeString();
+    expect(result.caps.at(-1)).toBeLessThanOrEqual(MISQUOTE_CONTINUE_STEPS);
     expect(result.status).toBe("completed");
   }, 90_000);
 
-  test("a spelling the test holds twice is ambiguous: the session corrects the test", async () => {
+  test("a spelling the test holds twice is ambiguous: the task continues at a bounded cap with the finding (#2058)", async () => {
     const result = await conflict({ misquoteFix: "on", first: tsTest(TEN, `\ntest("the same query again", () => {\n  expect(() => evaluate("${TEN}")).toThrow();\n});\n`) });
     expect(result.sessions).toBe(2);
-    expect(result.read("conflicts/misquote/T004.json")).toMatchObject({ apply: false, checks: null, reason: "the test's spelling of AC-007's literal occurs 2 times, so the replacement is ambiguous" });
+    expect(result.read("conflicts/misquote/T004.json")).toMatchObject({ apply: false, checks: null, fallback: "continue", reason: "the test's spelling of AC-007's literal occurs 2 times, so the replacement is ambiguous" });
+    expect(result.contexts.at(-1)?.misquoteContinue).toMatchObject({ failed: null });
+    expect(result.caps.at(-1)).toBeLessThanOrEqual(MISQUOTE_CONTINUE_STEPS);
     expect(result.status).toBe("completed");
   }, 90_000);
 
@@ -213,6 +232,8 @@ describe("scenario: nodepluck eval T004, a misquote conflict settled without a s
     const result = await conflict({ first: tsTest(TEN) });
     expect(result.sessions).toBe(2);
     expect(result.read("conflicts/misquote/T004.json")).toMatchObject({ mode: "shadow", apply: true, checks: null, files: [] });
+    // Shadow keeps the full session: no bounded continuation.
+    expect(result.contexts.some((c) => c.misquoteContinue !== undefined)).toBe(false);
     expect(result.status).toBe("completed");
   }, 90_000);
 
@@ -227,7 +248,8 @@ describe("scenario: nodepluck eval T004, a misquote conflict settled without a s
   test("in a task worktree, a failing check puts the edit back and the conflict is settled once", async () => {
     const result = await conflict({ misquoteFix: "on", first: tsTest(TEN), value: "draft", parallel: true });
     expect(result.sessions).toBe(2);
-    expect(result.read("conflicts/misquote/T004.json")).toMatchObject({ checks: "failed" });
+    expect(result.read("conflicts/misquote/T004.json")).toMatchObject({ checks: "failed", fallback: "continue" });
+    expect((result.contexts.at(-1)?.misquoteContinue as { failed: unknown } | undefined)?.failed).toBeTruthy();
     expect(result.status).toBe("completed");
   }, 90_000);
 
@@ -266,6 +288,15 @@ describe("the exact replacement in each language's test spelling (#2047)", () =>
     const absent = misquoteFixPlan([misquote], [{ path: "t", text: "nothing here" }]);
     expect(misquoteFixDecision(absent.sites).reason).toBe("the test's spelling of AC-007's literal is not in its test files");
     expect(misquoteFixDecision([]).reason).toBe("no misquoted literal");
+  });
+
+  test("the fallback: a bounded continuation once, then the full session (#2058)", () => {
+    const sites = [{ criterionId: "AC-007", occurrences: 2, unescaped: true, plain: true, held: false }];
+    expect(misquoteFallback({ sites, apply: false, checks: null }, false)).toBe("continue");
+    expect(misquoteFallback({ sites, apply: true, checks: "failed" }, false)).toBe("continue");
+    expect(misquoteFallback({ sites, apply: true, checks: "passed" }, false)).toBeNull();
+    expect(misquoteFallback({ sites, apply: false, checks: null }, true)).toBe("session");
+    expect(misquoteFallback({ sites: [], apply: false, checks: null }, false)).toBe("session");
   });
 
   test("a spelling in two files counts as two", () => {

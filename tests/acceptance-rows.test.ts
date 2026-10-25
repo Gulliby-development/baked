@@ -281,6 +281,7 @@ describe("acceptance rows in every supported language (#1660)", () => {
 
   // Bun.spawnSync throws when the executable is missing (macOS runners have no Go).
   const go = Bun.which("go") !== null && Bun.which("gofmt") !== null;
+  // A cold Go build cache on a Windows runner compiled both runs past 120 s (#2162).
   test.skipIf(!go)("Go runs every row through Actual, and a wrong harness fails", () => {
     const root = mkdtempSync(join(tmpdir(), "baked-row-go-"));
     cleanups.push(() => rmSync(root, { recursive: true, force: true }));
@@ -298,7 +299,7 @@ describe("acceptance rows in every supported language (#1660)", () => {
     expect(Bun.spawnSync(["gofmt", "-l", "."], { cwd: root }).stdout.toString()).toBe("");
     harness("\treturn input, nil");
     expect(run().exitCode).not.toBe(0);
-  }, 120000);
+  }, 300000);
 });
 
 describe("inline acceptance rows (#1763)", () => {
