@@ -136,6 +136,8 @@ export function formatProbeCommand(command: string, filePath: string): string | 
   if (command === "stylua") return `stylua --stdin-filepath ${file} -`;
   // shfmt reads standard input and takes the path for `.editorconfig` (#1497).
   if (command === "shfmt -w") return `shfmt --filename ${file}`;
+  // clang-format reads standard input and finds `.clang-format` from the path it is given (#1490).
+  if (command === "clang-format -i") return `clang-format --assume-filename=${file}`;
   // Unknown formatters cannot establish a clean baseline safely. Explicit format requests
   // and workflow check fixers still run them normally.
   return null;

@@ -135,6 +135,14 @@ export const TOOL_CACHES = [
   "luacov.report.out",
 ];
 
+const isFile = async (path: string): Promise<boolean> => {
+  try {
+    return (await lstat(path)).isFile();
+  } catch {
+    return false;
+  }
+};
+
 export async function sourceManifest(
   workspace: string,
   generated: string[] = [],
@@ -180,6 +188,9 @@ export async function sourceManifest(
         continue;
       }
       if (entry.isDirectory()) {
+        // A CMake build tree (#1490), wherever it is configured: every build rewrites it, so a
+        // project that does not ignore `build/` would see each check change its sources.
+        if (!trackedPath && (await isFile(join(absolute, "CMakeCache.txt")))) continue;
         await walk(path, rules);
         continue;
       }

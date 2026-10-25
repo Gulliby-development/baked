@@ -100,6 +100,11 @@ describe("edit-time formatting per toolchain (#1681)", () => {
     expect(formatProbeCommand("shfmt -w", "/w/a.sh")).toMatch(/^shfmt --filename .*a\.sh.?$/);
   });
 
+  // #1490: clang-format reads the pre-image from stdin and the path for its .clang-format.
+  test("clang-format gets a stdin probe", () => {
+    expect(formatProbeCommand("clang-format -i", "/w/a.cpp")).toMatch(/^clang-format --assume-filename=.*a\.cpp.?$/);
+  });
+
   test.skipIf(!hasStylua)("StyLua formats one edited file only when it was clean", async () => {
     const root = project({ "stylua.toml": "", ".luacheckrc": "", "src/a.lua": "local a = {b=1}\n", "src/b.lua": "local b = {c=2}\n" });
     expect(await formatFile(join(root, "src/a.lua"), root)).toBe(true);
