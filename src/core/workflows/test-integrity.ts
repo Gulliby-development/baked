@@ -331,6 +331,8 @@ const CAPABILITY = new RegExp(
     String.raw`\bRUBY_PLATFORM\b|\bGem\.win_platform\?|\bRbConfig::CONFIG\b|\bLoadError\b`,
     // Lua: the path separator `package.config:sub(1, 1)`, LuaJIT's `jit.os`, an optional module.
     String.raw`\bpackage\.config\b|\bjit\.os\b|\bpcall\s*\(\s*require\b`,
+    // Shell: `uname`, `$OSTYPE`, a tool that may be missing (`command -v jq`, `type -P`, `hash`).
+    String.raw`\buname\b|\$\{?OSTYPE\b|\bcommand\s+-v\b|\btype\s+-P\b|^\s*hash\s+\w`,
     // Dart: `Platform.isWindows`, `Platform.operatingSystem`, Flutter's `kIsWeb` (#1494).
     String.raw`\bPlatform\.(?:is[A-Z]\w*|operatingSystem)\b|\bkIsWeb\b`,
   ].join("|"),
@@ -378,6 +380,8 @@ const SUPPRESSIONS = new RegExp(
     // luacheck and selene (#1495).
     String.raw`--\s*luacheck:\s*(?:ignore|no\s|push\s+ignore)`,
     String.raw`--\s*selene:\s*allow\b`,
+    // ShellCheck (#1497).
+    String.raw`#\s*shellcheck\s+disable=`,
     String.raw`//\s*ignore(?:_for_file)?:\s*\w`,
     // PSScriptAnalyzer, and the same attribute in C#: `[Diagnostics.CodeAnalysis.SuppressMessageAttribute(...)]` (#1498).
     String.raw`\[(?:System\.)?(?:Diagnostics\.CodeAnalysis\.)?SuppressMessage(?:Attribute)?\s*\(`,
