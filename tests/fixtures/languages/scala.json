@@ -43,6 +43,10 @@
     "packageContents": null,
     "numericLimits": [
       "Int and Long arithmetic overflow silently; toInt fails past Int"
+    ],
+    "staticTools": [
+      "scalafmt: formatter",
+      "scalafix: linter, whole unit"
     ]
   }
 }

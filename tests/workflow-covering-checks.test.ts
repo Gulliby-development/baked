@@ -11,6 +11,7 @@ import {
   withCoveringChecks,
 } from "../src/core/workflows/check-policy.js";
 import { detectGates } from "../src/core/workflows/gates.js";
+import { isTestCheck } from "../src/core/workflows/quality/mutation.js";
 import type { RunPolicy, TaskGraph } from "../src/core/workflows/schemas.js";
 import type { Check, Task } from "../src/core/workflows/types.js";
 import { fixturePolicy } from "./helpers/workflow-fixture.js";
@@ -178,5 +179,49 @@ describe("a task runner's check target is not a linter (#1680)", () => {
   test("checks that analyze source keep their static role", () => {
     for (const [executable, args] of [["cargo", ["check"]], ["deno", ["check", "main.ts"]], ["ruff", ["check", "."]], ["make", ["lint"]], ["make.exe", ["format-check"]]] as const)
       expect([executable, isStaticCheck({ ...check("x", [...args], "feature"), id: args[0], executable })]).toEqual([executable, true]);
+  });
+});
+
+// #2110: a check named after its tool, with no fixer and no generic word in its command line, was
+// no static check (no per-task run, no diagnostics-only correction), and one whose arguments name
+// the test files read as a test check.
+describe("checks named after their linter or formatter (#2110)", () => {
+  const named = (executable: string, args: string[]): Check => ({ ...check(executable, args, "feature"), executable });
+  const NAMED: [string, string[]][] = [
+    ["rubocop", []],
+    ["phpcs", ["--standard=PSR12", "src"]],
+    ["swiftlint", ["--strict"]],
+    ["luacheck", ["."]],
+    ["shellcheck", ["scripts/build.sh"]],
+    ["clang-tidy", ["src/sum.c"]],
+    ["solhint", ["test/**/*.sol"]],
+    ["ktlint", ["src/**/*.kt"]],
+    ["scalafmt", ["--test"]],
+    ["ocamlformat", ["--check", "bin/main.ml"]],
+    ["stylua", ["--check", "spec"]],
+    ["standardrb", []],
+    ["cppcheck", ["tests/"]],
+  ];
+  test.each(NAMED)("%s %p is a static check and no test check", (executable, args) => {
+    const c = named(executable, args);
+    expect([isStaticCheck(c), isTestCheck(c)]).toEqual([true, false]);
+  });
+
+  test("a code task runs them; the whole-unit ones wait for the checks stage", () => {
+    const gated: RunPolicy = { ...fixturePolicy, checks: NAMED.map(([e, a]) => named(e, a)) };
+    expect(coveringChecks(gated, { writes: [{ path: "src/a.rb", action: "create" }] }).map((c) => c.id)).toEqual(
+      NAMED.map(([e]) => e).filter((e) => e !== "clang-tidy"),
+    );
+  });
+
+  test("build-tool tasks named after the tool are static: spotlessCheck, ktlintCheck, checkstyleMain", () => {
+    for (const task of ["spotlessCheck", "ktlintCheck", "checkstyleMain", "detektMain", "scalafmtCheckAll"])
+      expect([task, isStaticCheck({ ...named("gradle", [task]), id: "build" })]).toEqual([task, true]);
+    expect(isWholeUnitCheck({ ...named("sbt", ["scalafixAll --check"]), id: "sbt" })).toBe(true);
+  });
+
+  test("test runners stay test checks", () => {
+    for (const [executable, args] of [["rspec", []], ["phpunit", []], ["busted", []], ["bats", ["test"]], ["bun", ["test"]]] as const)
+      expect(isTestCheck(named(executable, [...args]))).toBe(true);
   });
 });

@@ -53,6 +53,10 @@
       "INTEGER is 32-bit and BIGINT 64-bit: PostgreSQL and SQL Server raise an overflow error, SQLite stores any integer as 64-bit",
       "NUMERIC and DECIMAL round or reject values past their declared precision and scale",
       "VARCHAR(n) rejects or truncates text past n characters, by dialect"
+    ],
+    "staticTools": [
+      "sqlfluff: linter",
+      "sqlfluff-dbt: linter, whole unit"
     ]
   }
 }

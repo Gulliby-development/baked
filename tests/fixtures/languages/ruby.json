@@ -55,6 +55,11 @@
       "rubocop-written: bundle exec rubocop --only Layout lib/sum.rb spec/sum_spec.rb lib/sum_test.rb Gemfile"
     ],
     "packageContents": null,
-    "numericLimits": null
+    "numericLimits": null,
+    "staticTools": [
+      "rubocop: linter",
+      "standardrb: linter",
+      "reek: linter"
+    ]
   }
 }

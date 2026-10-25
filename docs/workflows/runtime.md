@@ -519,6 +519,8 @@ A gate can be any script or container that reports its result as JSON: set its r
 - The report is appended to the check's output as `Gate report: STATUS. SUMMARY` with one `- [SEVERITY] PATH:LINE MESSAGE` line per finding, so the repair task and the run report see where to look.
 - A container is a command like any other, for example `docker run --rm -v .:/work -w /work IMAGE audit --json`; it runs without a shell, with the gate's timeout and the env names it declares. Run now treats an `inconclusive` report, or a pass that exited nonzero, as an error.
 
+A check is static (a linter, formatter or type checker) when it names a fixer, or when its ID or command line holds `lint`, `format`, `fmt`, `check`, `typecheck` or `vet`, or one of the tools of `STATIC_TOOLS` ([static-tools.ts](../../src/core/workflows/static-tools.ts)), the linters, formatters and type checkers of every supported language by name: `rubocop`, `phpcs`, `swiftlint`, `luacheck`, `shellcheck`, `credo`, `solhint`, `ocamlformat` and the build-tool tasks named after a tool, such as Gradle's `spotlessCheck`, `ktlintCheck` and `checkstyleMain` (#2110). A static feature check runs after every code task that writes a file it covers, a failure is corrected as diagnostics only, and it is never a test check, also when its arguments name the test files (`solhint 'test/**'`, `scalafmt --test`). Tools marked whole-unit there (tsc, mypy, Clippy, PHPStan, clang-tidy, SpotBugs, Scalafix, Dialyzer, Slither) wait for the checks stage instead. A CI step's command is labelled `lint`, `format` or `typecheck` from the same record.
+
 Detection offers gates; nothing is added until the user confirms. It reads the project root only:
 
 | Ecosystem | Found by | Suggested gates |

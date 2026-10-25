@@ -33,6 +33,11 @@
     ],
     "formatters": null,
     "packageContents": null,
-    "numericLimits": null
+    "numericLimits": null,
+    "staticTools": [
+      "credo: linter",
+      "dialyzer: linter, whole unit",
+      "mix format: formatter"
+    ]
   }
 }

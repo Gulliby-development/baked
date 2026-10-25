@@ -40,6 +40,13 @@
     "packageContents": [
       "package.json: npm-pack"
     ],
-    "numericLimits": null
+    "numericLimits": null,
+    "staticTools": [
+      "eslint: linter",
+      "biome: linter",
+      "oxlint: linter",
+      "prettier: formatter",
+      "svelte-check: typechecker, whole unit"
+    ]
   }
 }

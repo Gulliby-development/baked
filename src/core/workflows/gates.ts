@@ -27,6 +27,7 @@ import { PESTER_RUN } from "./pester.js";
 import { ProcessScope } from "./process-scope.js";
 import { redactSecrets } from "./redaction.js";
 import { CheckSchema, SafeId } from "./schemas.js";
+import { staticToolPattern } from "./static-tools.js";
 import { pythonEnvironment } from "./toolchain.js";
 import type { Check } from "./types.js";
 
@@ -1402,15 +1403,25 @@ export function workflowRunCommands(text: string): string[] {
 const SHELL_SYNTAX = /[|&;<>`$(){}*?\\]|^\w+=/;
 /** Steps that set the job up rather than check the code: `luarocks install busted`. */
 const SETUP_COMMAND = /\b(?:install|add|setup|update|upgrade|download|fetch|restore|cache)\b/i;
+/**
+ * The kind of a CI step's command. Linters, formatters and type checkers come from `STATIC_TOOLS`
+ * (#2110); PHPStan and Psalm lint for the static check, but CI calls their step a type check.
+ */
 const CI_KIND: [string, RegExp][] = [
-  ["typecheck", /\b(?:typecheck|type-check|mypy|pyright|tsc|phpstan|psalm)\b/i],
   [
-    "lint",
-    /\b(?:lint|luacheck|rubocop|shellcheck|ktlint|swiftlint|clang-tidy|golangci-lint|flake8|pylint|eslint)\b/i,
+    "typecheck",
+    staticToolPattern(
+      (t) => t.kind === "typechecker",
+      ["typecheck", "type-check", "phpstan", "psalm"],
+    ),
   ],
+  ["lint", staticToolPattern((t) => t.kind === "linter", ["lint"])],
   [
     "format",
-    /\b(?:fmt|format|stylua|prettier|pint|black)\b.*(?:--check|--verify|-check|--dry-run)\b/i,
+    new RegExp(
+      `${staticToolPattern((t) => t.kind === "formatter", ["fmt", "format"]).source}.*(?:--check|--verify|-check|--dry-run)\\b`,
+      "i",
+    ),
   ],
   ["tests", /\b(?:test|tests|busted|rspec|phpunit|pest|ctest|bats|pester|prove)\b/i],
 ];

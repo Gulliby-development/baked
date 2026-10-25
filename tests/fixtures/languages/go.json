@@ -62,6 +62,14 @@
     "numericLimits": [
       "strconv.ParseInt and Atoi fail past int64; int arithmetic wraps silently",
       "float64 formatting switches to exponent form for large values"
+    ],
+    "staticTools": [
+      "go vet: linter, whole unit",
+      "golangci-lint: linter",
+      "staticcheck: linter",
+      "gofmt: formatter",
+      "go fmt: formatter",
+      "goimports: formatter"
     ]
   }
 }
