@@ -7,12 +7,14 @@ import { diffSections } from "../src/core/intelligence/call-context.js";
 import { hashBytes, hashJson } from "../src/core/specs/hash.js";
 import { defaultWorkflowPolicy } from "../src/core/workflows/defaults.js";
 import {
+  applyRegion,
   type HostApplyRecord,
   type HostApplyWrite,
   hostAppliableTasks,
   hostApplyDecision,
   hostApplyInputs,
   hostApplyRecords,
+  regionSections,
 } from "../src/core/workflows/host-apply.js";
 import type { Check, RunPolicy, Spec, Task } from "../src/core/workflows/schemas.js";
 import { NativeWorkflowService } from "../src/core/workflows/service.js";
@@ -255,5 +257,60 @@ describe("every pre-session shadow hook runs on both implementer paths (#2138)",
     // heldCorrectives before a batch.
     expect(body("runTaskStep").includes('this.unownedFile(runId, state, policy, task, root, "start")')).toBe(true);
     expect(body("heldCorrectives").includes('this.unownedFile(runId, state, policy, task, root, "start")')).toBe(true);
+  });
+});
+
+// Bench round 67 srtvet-update (#2101): the brief gave the README section "## Cleaning spaces"
+// verbatim (1,264 characters, two fenced blocks) and the README task cost an implementer 123k
+// tokens: a fenced block for a file that exists is an excerpt, which the host could not place.
+// A Markdown block that opens with a heading is now the section of that heading: the host would
+// write it in place of the file's one section of that heading, or append it.
+const SECTION = ["## Cleaning spaces", "", "Run `srtvet clean` to strip spaces:", "", "```sh", "srtvet clean in.srt > out.srt", "```", "", "Spaces show as `<U+0020>` and tabs as `<TAB>`:", "", "```text", "1<TAB>00:00:01", "```"].join("\n");
+const regionBrief = (prose: string) => [prose, "````markdown", SECTION, "````"].join("\n");
+const README = ["# srtvet", "", "Checks subtitle files.", "", "## Usage", "", "```sh", "## Cleaning spaces (a shell comment, not a heading)", "srtvet check in.srt", "```", "", "## License", "", "MIT", ""].join("\n");
+
+describe("a verbatim Markdown section the host writes into its file (#2101)", () => {
+  test("the reader marks a heading-led Markdown block as a region, unless the prose says it is the whole file", () => {
+    const [block] = suppliedBlocks(regionBrief("Add this section to `README.md` exactly as written:"), ["README.md"]).get("README.md") ?? [];
+    expect(block).toMatchObject({ kind: "file", whole: true, region: { title: "Cleaning spaces", level: 2 } });
+    for (const prose of ["Replace `README.md` with:", "The full contents of `README.md`:", "Overwrite README.md with this:"])
+      expect(suppliedBlocks(regionBrief(prose), ["README.md"]).get("README.md")?.[0]).not.toHaveProperty("region");
+    // A block that does not open with a heading, or a file that is not Markdown, is no region.
+    expect(suppliedBlocks("Add to `README.md`:\n```markdown\nSome text.\n```", ["README.md"]).get("README.md")?.[0]).not.toHaveProperty("region");
+    expect(suppliedBlocks("Add to `notes.txt`:\n```\n## Heading\n```", ["notes.txt"]).get("notes.txt")?.[0]).not.toHaveProperty("region");
+  });
+
+  test("the host would append a new section, replace the one existing section, and refuse a heading the file repeats", async () => {
+    const root = mkdtempSync(join(tmpdir(), "baked-host-region-"));
+    cleanups.push(() => rmSync(root, { recursive: true, force: true }));
+    const task = { writes: [{ path: "README.md", action: "modify" as const }] };
+    const request = regionBrief("Add this section to `README.md` exactly as written:");
+    const decide = async (readme: string) => {
+      writeFileSync(join(root, "README.md"), readme);
+      const writes = (await hostApplyInputs(root, request, task)) ?? [];
+      return { writes, verdict: hostApplyDecision(writes) };
+    };
+    // The heading inside the fenced shell block is no section.
+    const absent = await decide(README);
+    expect(absent.writes[0]?.region).toEqual({ level: 2, matches: 0 });
+    expect(absent.verdict).toEqual({ wouldApply: true, reason: null });
+    const once = await decide(README.replace("## License", "## Cleaning spaces\n\nOld text.\n\n## License"));
+    expect(once.writes[0]?.region).toEqual({ level: 2, matches: 1 });
+    expect(once.verdict.wouldApply).toBe(true);
+    const twice = await decide(`${README}\n## Cleaning spaces\n\nA.\n\n## Cleaning spaces\n\nB.\n`);
+    expect(twice.verdict).toEqual({ wouldApply: false, reason: "the section the request gives for README.md has a heading that 2 sections of the file share" });
+    // Without the region rule the same block was an excerpt the host could not place.
+    expect(hostApplyDecision([{ ...absent.writes[0]!, region: undefined, whole: false }]).wouldApply).toBe(false);
+  });
+
+  test("applyRegion writes the section in place or at the end, and leaves the rest of the file as it was", () => {
+    const region = { title: "Cleaning spaces", level: 2 };
+    expect(applyRegion(README, SECTION, region)).toBe(`${README.trimEnd()}\n\n${SECTION}\n`);
+    const old = README.replace("## License", "## Cleaning spaces\n\nOld text.\n\n### Detail\n\nMore.\n\n## License");
+    expect(applyRegion(old, SECTION, region)).toBe(README.replace("## License", `${SECTION}\n\n## License`));
+    // The written file holds the section byte for byte: an exact-text test of it passes.
+    expect(applyRegion(old, SECTION, region)).toContain(SECTION);
+    expect(applyRegion(`${README}\n## Cleaning spaces\n\nA.\n\n## Cleaning spaces\n`, SECTION, region)).toBeNull();
+    expect(regionSections(README, region)).toEqual([]);
   });
 });
