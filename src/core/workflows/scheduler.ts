@@ -71,7 +71,6 @@ import {
   noteInconclusiveReview,
   noteStoppedInconclusive,
   noteUnverifiedCriteria,
-  passesWithNotes,
   REPEAT_NOTE,
   reaskableCriteria,
   requiredChecksPass,
@@ -109,12 +108,7 @@ import {
   validateEvidence,
   validEvidenceNote,
 } from "../verification/evidence.js";
-import {
-  confidenceOnlyNote,
-  findingBlocks,
-  fingerprint,
-  requiresSecurityReview,
-} from "../verification/findings.js";
+import { fingerprint, requiresSecurityReview } from "../verification/findings.js";
 import {
   clearBannedProperties,
   clearBoundaryProperties,
@@ -140,11 +134,9 @@ import {
 } from "../verification/output-counts.js";
 import {
   carryNoRepro,
-  convergenceReproGated,
   missingReproAdvice,
   outputShows,
   type ReproOutcome,
-  reproAllows,
   reproCannotSeeCorrection,
   reproExecutables,
   reproTool,
@@ -374,9 +366,11 @@ import {
   type ChainRecord,
   chainFindings,
   chainSpecRows,
+  chainSubject,
   type FamilyRecord,
   familyDecision,
   observedValue,
+  rewritesSymbol,
   symbolKey,
   taskChainRecord,
 } from "./finding-chain.js";
@@ -709,6 +703,14 @@ import { browserLayoutProbe, type LayoutProbe, layoutVerdict } from "./layout-ch
 import { planCostOf, planCostWarning } from "./plan-cost.js";
 import { EDIT_TOOLS } from "./progress-watch.js";
 import {
+  CONVERGENCE_GATE_DIR,
+  CONVERGENCE_GATE_KIND,
+  type ConvergenceGate,
+  type ConvergenceGateRecord,
+  type ConvergenceVerdict,
+  convergenceGateDecision,
+  convergenceGateFinding,
+  convergenceReproCandidates,
   gateFinding,
   REVIEW_GATE_DIR,
   REVIEW_GATE_KIND,
@@ -2897,34 +2899,32 @@ export class WorkflowScheduler {
                   );
                 }
               }
-              const notes = new Set(
-                review.findings
-                  .filter(
-                    (f) =>
-                      siblingNotes.has(f.id) || passesWithNotes(f, review.coverage, checksPass),
-                  )
-                  .map((f) => f.id),
-              );
+              // The gate's labels are recorded for the replay corpus (review-gate.ts, #1715).
+              const gate: ConvergenceGate = {
+                severities,
+                minConfidence,
+                checksPass,
+                reproAvailable: executables.length > 0,
+                canRepro,
+                criteria: review.coverage.map((c) => ({
+                  criterionId: c.criterionId,
+                  verdict: c.verdict,
+                  evidence: c.evidenceIds.length,
+                })),
+                failing: [...failing],
+                findings: review.findings.map((f) =>
+                  convergenceGateFinding(f, siblingNotes.has(f.id), undefined),
+                ),
+              };
               // Below high severity, a correctness claim the host does not reproduce, and any claim
               // its repro refutes, is a note: cfgtrace2 e88a14dd spent about 1.1M on two corrective
               // tasks for static medium claims the walker could not run (#930).
               // A claim kept a note only for its confidence repairs when its repro shows it (#1210).
+              const candidates = new Set(convergenceReproCandidates(gate).map((f) => f.id));
               const outcomes = new Map<string, ReproOutcome>();
               for (const finding of review.findings)
-                if (
-                  !siblingNotes.has(finding.id) &&
-                  (convergenceReproGated(finding) || confidenceOnlyNote(finding, minConfidence)) &&
-                  finding.repro &&
-                  executables.length
-                )
+                if (candidates.has(finding.id) && finding.repro)
                   outcomes.set(finding.id, await repro(finding.repro, finding.file));
-              const blocks = (f: Review["findings"][number]): boolean =>
-                findingBlocks(
-                  f,
-                  minConfidence,
-                  confidenceOnlyNote(f, minConfidence) &&
-                    outcomes.get(f.id)?.status === "reproduced",
-                );
               if (outcomes.size)
                 this.store.transaction(() =>
                   this.store.artifact(
@@ -2934,38 +2934,30 @@ export class WorkflowScheduler {
                     canonical({ outcomes: Object.fromEntries(outcomes) }),
                   ),
                 );
-              const unreproduced = new Set(
-                canRepro
-                  ? review.findings
-                      .filter(
-                        (f) =>
-                          convergenceReproGated(f) &&
-                          !notes.has(f.id) &&
-                          !reproAllows(f, outcomes.get(f.id)?.status, true),
-                      )
-                      .map((f) => f.id)
-                  : [],
+              for (const f of gate.findings) f.outcome = outcomes.get(f.id)?.status ?? null;
+              const decision = convergenceGateDecision(gate);
+              this.store.transaction(() =>
+                this.store.artifact(
+                  runId,
+                  CONVERGENCE_GATE_KIND,
+                  `${CONVERGENCE_GATE_DIR}${newId()}.json`,
+                  canonical({
+                    schemaVersion: 1,
+                    ...gate,
+                    decision,
+                  } satisfies ConvergenceGateRecord),
+                ),
               );
-              const noteOnly = (id: string): boolean => {
-                const named = review.findings.filter((f) => f.criterionIds.includes(id));
-                return (
-                  named.length > 0 && named.every((f) => notes.has(f.id) || unreproduced.has(f.id))
-                );
-              };
-              const repairing = (f: Review["findings"][number]): boolean =>
-                (severities.includes(f.severity) && blocks(f)) ||
-                f.criterionIds.some((id) => failing.has(id));
-              // Both are taken while `failing` still holds the criteria they explain: the loop below
-              // drops a criterion only these findings name, and an unreproduced claim that was the
-              // only one naming an inconclusive criterion then left it unlimited, so acceptance
-              // threw after all the work was done (lockorder 6487b225, #1225).
-              const noted = review.findings.filter(
-                (f) => !siblingNotes.has(f.id) && notes.has(f.id) && repairing(f),
-              );
+              const verdictOf = new Map(decision.verdicts.map((v) => [v.id, v.verdict]));
+              const ofVerdict = (verdict: ConvergenceVerdict) =>
+                review.findings.filter((f) => verdictOf.get(f.id) === verdict);
+              const noted = ofVerdict("notes");
               // An unreproduced claim that would have repaired is a known limitation, so the criterion
               // it fails is accepted with it and the run report names the claim.
-              const unshown = review.findings.filter((f) => unreproduced.has(f.id) && repairing(f));
-              for (const id of [...failing]) if (noteOnly(id)) failing.delete(id);
+              const unshown = ofVerdict("repro");
+              // A criterion named only by notes and unshown claims counts as met (#1225).
+              failing.clear();
+              for (const id of decision.failing) failing.add(id);
               if (noted.length) {
                 const recorded = this.recordFindings(runId, review, noted);
                 this.store.transaction(() =>
@@ -2980,13 +2972,7 @@ export class WorkflowScheduler {
               }
               // Below the severity floor a finding still repairs when it is why a criterion fails:
               // acceptance needs every automated criterion to pass.
-              const repair = review.findings.filter(
-                (f) =>
-                  !notes.has(f.id) &&
-                  !unreproduced.has(f.id) &&
-                  ((severities.includes(f.severity) && blocks(f)) ||
-                    f.criterionIds.some((id) => failing.has(id))),
-              );
+              const repair = ofVerdict("repair");
               const findings = this.recordFindings(runId, review, repair);
               const kept = new Set([...repair, ...noted, ...unshown].map((f) => f.id));
               addReviewNotes(
@@ -2997,7 +2983,7 @@ export class WorkflowScheduler {
                   .filter((f) => !kept.has(f.id))
                   .map((finding) => ({
                     finding,
-                    reason: unreproduced.has(finding.id)
+                    reason: decision.unreproduced.includes(finding.id)
                       ? "repro"
                       : noteReason(finding, severities, policy.reviewMinConfidence),
                   })),
@@ -3809,7 +3795,7 @@ export class WorkflowScheduler {
   private batteryContext(runId: string, state: RuntimeState, task: Task): Record<string, unknown> {
     if (task.origin === "planned") return {};
     const record = taskChainRecord(this.store, runId, task.id);
-    if (record?.decision !== "rewrite") return {};
+    if (!rewritesSymbol(record)) return {};
     const members = batteryOf(chainFindings(this.store, runId), record);
     return {
       battery: {
@@ -3849,8 +3835,7 @@ export class WorkflowScheduler {
     for (const row of this.store.artifacts(runId)) {
       if (row.kind !== CHAIN_KIND || !row.logical_path.startsWith(CHAIN_TASKS_DIR)) continue;
       const record = JSON.parse(this.store.readArtifact(runId, row.id)) as ChainRecord;
-      if (record.decision === "rewrite" && finished.has(record.taskId))
-        records.set(record.taskId, record);
+      if (rewritesSymbol(record) && finished.has(record.taskId)) records.set(record.taskId, record);
     }
     if (!records.size) return [];
     const all = chainFindings(this.store, runId);
@@ -3924,9 +3909,9 @@ export class WorkflowScheduler {
         symbol: finding.symbol,
         ...(finding.family ? { family: finding.family } : {}),
         evidenceIds: [evidenceId],
-        claim: `Battery case ${finding.id} of ${record.symbol} shows its reported behavior again after ${record.taskId}: ${finding.claim}`,
-        impact: `${record.taskId} rewrote ${record.symbol} for its chain of findings, and the host's battery run before the next review prints ${JSON.stringify(repro.actual)} again where the spec needs ${JSON.stringify(repro.expected)}. Output: ${outcome.output.slice(-400)}`,
-        suggestedFix: `Make ${record.symbol} pass every case of the battery, ${finding.id} included, without breaking the others.`,
+        claim: `Battery case ${finding.id} of ${chainSubject(record)} shows its reported behavior again after ${record.taskId}: ${finding.claim}`,
+        impact: `${record.taskId} rewrote ${chainSubject(record)} for its chain of findings, and the host's battery run before the next review prints ${JSON.stringify(repro.actual)} again where the spec needs ${JSON.stringify(repro.expected)}. Output: ${outcome.output.slice(-400)}`,
+        suggestedFix: `Make ${chainSubject(record)} pass every case of the battery, ${finding.id} included, without breaking the others.`,
         repro,
         repeatOf: finding.id,
       })),
@@ -3955,7 +3940,7 @@ export class WorkflowScheduler {
     if (policy.chainProbe !== "on" || policy.chainRewrite !== "on" || task.origin === "planned")
       return;
     const record = taskChainRecord(this.store, runId, task.id);
-    if (record?.decision !== "rewrite") return;
+    if (!rewritesSymbol(record)) return;
     if (this.store.latestArtifact(runId, `${CHAIN_FAMILY_DIR}${task.id}.json`)) return;
     const profile = ProfileSchema.array()
       .parse(JSON.parse(this.store.run(runId).profiles_json))
@@ -4076,9 +4061,9 @@ export class WorkflowScheduler {
           symbol: head.symbol,
           ...(head.family ? { family: head.family } : {}),
           evidenceIds: [evidenceId],
-          claim: `Sibling case ${String(index + 1)} of ${record.symbol}, probed around ${head.id}: prints ${JSON.stringify(repro.actual)} where the spec needs ${JSON.stringify(repro.expected)}`,
+          claim: `Sibling case ${String(index + 1)} of ${chainSubject(record)}, probed around ${head.id}: prints ${JSON.stringify(repro.actual)} where the spec needs ${JSON.stringify(repro.expected)}`,
           impact: `The same input class as the chain ${record.chain.map((f) => f.id).join(", ")}; without this case the rewrite ${task.id} could pass the battery and leave it for the next review round.`,
-          suggestedFix: `Make ${record.symbol} pass this case together with every other case of the battery.`,
+          suggestedFix: `Make ${chainSubject(record)} pass this case together with every other case of the battery.`,
           repro,
           repeatOf: head.id,
         };
@@ -4902,9 +4887,7 @@ export class WorkflowScheduler {
         ...recurringFindings(this.store, runId, task),
         ...sameFileFindings(this.store, runId, task),
         // A rewrite holds the chain's whole battery (#1959).
-        ...(chain?.decision === "rewrite"
-          ? batteryOf(chainFindings(this.store, runId), chain)
-          : []),
+        ...(rewritesSymbol(chain) ? batteryOf(chainFindings(this.store, runId), chain) : []),
       ].map((f) => f.id),
     );
     // A finding a person's spec conflict answer decided is no longer the gate (#1350).
