@@ -7,6 +7,7 @@ import { diffSections } from "../src/core/intelligence/call-context.js";
 import { hashBytes, hashJson } from "../src/core/specs/hash.js";
 import { defaultWorkflowPolicy } from "../src/core/workflows/defaults.js";
 import {
+  crlfPatch,
   type HostApplyRecord,
   type HostApplyWrite,
   hostAppliableTasks,
@@ -101,6 +102,22 @@ describe("the verbatim reader and the apply decision (#2023)", () => {
     expect(readFileSync(join(root, "src/a.ts"), "utf8")).toBe(A_BEFORE);
     expect(await hostApplyInputs(root, brief, { writes: [{ path: "src/d.ts", action: "modify" }] })).toBeNull();
   }, 60000);
+
+  test("an LF diff applies to a CRLF checkout of the same content, and the record says so (#2158)", async () => {
+    const root = mkdtempSync(join(tmpdir(), "baked-host-apply-crlf-"));
+    cleanups.push(() => rmSync(root, { recursive: true, force: true }));
+    mkdirSync(join(root, "src"));
+    const crlf = A_BEFORE.replaceAll("\n", "\r\n");
+    writeFileSync(join(root, "src/a.ts"), crlf);
+    writeFileSync(join(root, "src/c.ts"), 'export const C = "different";\r\n');
+    const inputs = await hostApplyInputs(root, brief, { writes: [{ path: "src/a.ts", action: "modify" }, { path: "src/c.ts", action: "modify" }] });
+    expect(inputs?.[0]).toEqual({ path: "src/a.ts", action: "modify", files: 0, diffs: 1, whole: false, exists: true, applies: true, eol: "crlf" });
+    // A diff whose context differs still does not apply, in either line end.
+    expect(inputs?.[1]).toMatchObject({ path: "src/c.ts", applies: false });
+    expect(inputs?.[1]?.eol).toBeUndefined();
+    expect(readFileSync(join(root, "src/a.ts"), "utf8")).toBe(crlf);
+    expect(crlfPatch("--- a/x\n+++ b/x\n@@ -1 +1 @@\n-a\n+b\n \n")).toBe("--- a/x\n+++ b/x\n@@ -1 +1 @@\n-a\r\n+b\r\n \r\n");
+  }, 60000);
 });
 
 const spec: Spec = { schemaVersion: 1, featureId: "fixture", revision: 1, title: "Constants", problem: "Old constants", outcome: "New constants", inScope: ["Constants"], outOfScope: [], assumptions: [], openQuestions: [], requirements: [{ id: "FR-001", text: "The constants are current", priority: "must", verification: "automated", sourceRefs: [] }], criteria: [{ id: "AC-001", requirementIds: ["FR-001"], given: "the module", when: "it is read", then: "the constants are current", method: "automated" }], dependencies: [] };
@@ -159,8 +176,11 @@ function git(cwd: string, ...args: string[]): void {
 // Bench round 68 (#2138): with `--writers 3` every task ran in the batch worker, which skipped the
 // pre-session shadow hooks; cfgquill-update recorded no decision for two tasks whose diffs applied
 // (one of them 55 percent of the run's tokens). The same scenario runs on both paths.
-for (const writers of [1, 2])
-describe(`scenario: an update brief with exact diffs and a whole file, in shadow, ${String(writers)} writer(s) (#2023, #2138)`, () => {
+// With `core.autocrlf=true`, as Git for Windows sets it, the task worktrees are CRLF; git apply
+// converts them to the repository's LF before it compares, so the brief's LF diffs still apply
+// (#2158). A CRLF base git does not convert is the CRLF case above.
+for (const [writers, autocrlf] of [[1, false], [2, false], [2, true]] as const)
+describe(`scenario: an update brief with exact diffs and a whole file, in shadow, ${String(writers)} writer(s)${autocrlf ? ", autocrlf" : ""} (#2023, #2138, #2158)`, () => {
   test("would_apply is recorded per planned task with its inputs, the implementer still runs, and the decision replays", async () => {
     const root = mkdtempSync(join(tmpdir(), "baked-host-apply-shadow-"));
     cleanups.push(() => rmSync(root, { recursive: true, force: true }));
@@ -174,8 +194,7 @@ describe(`scenario: an update brief with exact diffs and a whole file, in shadow
       git(root, "config", "user.name", "Test User");
       git(root, "config", "user.email", "test@example.test");
       git(root, "config", "commit.gpgsign", "false");
-      // Git for Windows checks task worktrees out as CRLF; CRLF bases are #2158.
-      git(root, "config", "core.autocrlf", "false");
+      git(root, "config", "core.autocrlf", String(autocrlf));
       writeFileSync(join(root, ".gitignore"), ".baked/\n");
       git(root, "add", ".");
       git(root, "commit", "-q", "-m", "Initial");
@@ -201,7 +220,7 @@ describe(`scenario: an update brief with exact diffs and a whole file, in shadow
 
     // Shadow: every task still got its implementer, and the apply check changed no file.
     expect([...executor.attempts].sort()).toEqual(["T001", "T002", "T003", "T004"]);
-    expect(executor.aBefore).toBe(A_BEFORE);
+    expect(executor.aBefore).toBe(autocrlf ? A_BEFORE.replaceAll("\n", "\r\n") : A_BEFORE);
 
     const records = hostApplyRecords(service.store, run.runId);
     expect(records.map((r) => [r.taskId, r.wouldApply])).toEqual([

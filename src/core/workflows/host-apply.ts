@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { runGit } from "../git/status.js";
 import { tmpDir } from "../platform/index.js";
@@ -48,6 +48,11 @@ export interface HostApplyWrite {
   applies: boolean | null;
   /** The last line of git's refusal when the hunks do not apply. */
   refusal?: string;
+  /**
+   * `crlf` when the hunks applied only with CRLF line ends: the base file is CRLF (a Git for
+   * Windows worktree with `core.autocrlf=true`) and the brief's diff is LF (#2158).
+   */
+  eol?: "crlf";
 }
 
 export interface HostApplyVerdict {
@@ -103,6 +108,51 @@ export function hostApplyRecord(
   return { taskId, mode: "shadow", writes, ...decide(writes) };
 }
 
+/**
+ * Gives a patch's hunk lines CRLF ends, the form a diff of a CRLF file has. Headers keep LF, as
+ * `git diff` writes them.
+ */
+export function crlfPatch(patch: string): string {
+  let hunk = false;
+  return patch
+    .split("\n")
+    .map((line, i, lines) => {
+      if (line.startsWith("@@")) hunk = true;
+      else if (/^(?:diff |--- |\+\+\+ )/.test(line)) hunk = false;
+      else if (hunk && i < lines.length - 1 && /^[ +-]/.test(line) && !line.endsWith("\r"))
+        return `${line}\r`;
+      return line;
+    })
+    .join("\n");
+}
+
+/** Whether the file at `path` in `root` has a CRLF line end. */
+function crlfFile(root: string, path: string): boolean {
+  try {
+    return readFileSync(join(root, path), "utf8").includes("\r\n");
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * `git apply --check` of a write's patch against the task's base. The check compares bytes, so an
+ * LF diff from the brief fails on a CRLF checkout of the same content (Git for Windows checks task
+ * worktrees out with `core.autocrlf=true`): when the base file is CRLF, the patch with CRLF hunk
+ * lines is checked too, and `eol: "crlf"` records that it applied that way (#2158).
+ */
+async function applyWriteCheck(
+  root: string,
+  path: string,
+  patch: string,
+): Promise<{ applies: boolean; refusal?: string; eol?: "crlf" }> {
+  const check = await applyCheck(root, patch);
+  if (check.applies || !crlfFile(root, path)) return check;
+  const crlf = crlfPatch(patch);
+  if (crlf === patch) return check;
+  return (await applyCheck(root, crlf)).applies ? { applies: true, eol: "crlf" } : check;
+}
+
 /** Runs `git apply --check` for a patch in `root`; changes no file. */
 async function applyCheck(
   root: string,
@@ -150,7 +200,7 @@ export async function hostApplyInputs(
     const check =
       diffs.length && !files.length && write.action !== "delete"
         ? patch
-          ? await applyCheck(root, patch)
+          ? await applyWriteCheck(root, write.path, patch)
           : { applies: false }
         : null;
     writes.push({
@@ -162,6 +212,7 @@ export async function hostApplyInputs(
       exists: existsSync(join(root, write.path)),
       applies: check ? check.applies : null,
       ...(check?.refusal ? { refusal: check.refusal } : {}),
+      ...(check?.eol ? { eol: check.eol } : {}),
     });
   }
   return writes;
