@@ -1,7 +1,7 @@
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
-import { basename, dirname, isAbsolute, join, resolve } from "node:path";
+import { basename, dirname, isAbsolute, join, posix, resolve, win32 } from "node:path";
 import { loadConfig, loadProjectConfig } from "../../../../config/index.js";
 import { getCwd } from "../../../cwd.js";
 import {
@@ -111,6 +111,10 @@ export interface ServerBundle {
 
 const PSES_STATE = () => join(userDataDir(), "powershell-editor-services");
 const quoted = (path: string) => `'${path.replaceAll("'", "''")}'`;
+// The entry path keeps the install folder's own separators: Node's `join` on Windows would turn a
+// POSIX folder's slashes into backslashes, so the command would name a path that is not the folder.
+const inFolder = (folder: string, ...parts: string[]) =>
+  (folder.includes("\\") ? win32 : posix).join(folder, ...parts);
 
 const SERVER_BUNDLES: Record<string, ServerBundle> = {
   // PowerShell Editor Services, by PowerShell 7 (Windows PowerShell 5.1 on a Windows machine
@@ -125,7 +129,7 @@ const SERVER_BUNDLES: Record<string, ServerBundle> = {
       "-NonInteractive",
       "-Command",
       [
-        `& ${quoted(join(folder, "PowerShellEditorServices", "Start-EditorServices.ps1"))}`,
+        `& ${quoted(inFolder(folder, "PowerShellEditorServices", "Start-EditorServices.ps1"))}`,
         "-Stdio",
         `-BundledModulesPath ${quoted(folder)}`,
         `-LogPath ${quoted(join(PSES_STATE(), "logs"))}`,
