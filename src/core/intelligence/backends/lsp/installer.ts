@@ -9,7 +9,9 @@ import {
   chmodSync,
   existsSync,
   mkdirSync,
+  readdirSync,
   readFileSync,
+  renameSync,
   rmSync,
   unlinkSync,
   writeFileSync,
@@ -46,16 +48,19 @@ export interface MasonPackage {
   source: {
     id: string; // purl: pkg:npm/name@version, pkg:github/owner/repo@tag, etc.
     extra_packages?: string[];
-    asset?: Array<{
-      target: string;
-      file: string;
-      bin?: string;
-    }>;
+    /** One asset per target, or one asset for every platform (`{ file }`, #2125). */
+    asset?: MasonAsset[] | Omit<MasonAsset, "target">;
     /** pkg:generic packages: files to download per target, keyed by local file name. */
     download?: MasonDownload[];
   };
   bin?: Record<string, string>;
   deprecation?: { since: string; message: string };
+}
+
+export interface MasonAsset {
+  target: string;
+  file: string;
+  bin?: string;
 }
 
 /** A Mason download entry; `target` is one target name or a list of them. */
@@ -223,6 +228,9 @@ export async function downloadRegistry(signal?: AbortSignal): Promise<MasonPacka
   }
 }
 
+/** Where `/lsp` keeps a package that ships a folder instead of binaries. */
+export const bundleFolder = (name: string): string => join(BAKED_LSP_DIR, name);
+
 function getBinaries(pkg: MasonPackage): string[] {
   if (!pkg.bin) return [];
   return Object.keys(pkg.bin);
@@ -345,6 +353,18 @@ export function checkPackageStatus(pkg: MasonPackage): PackageStatus {
     }
   }
 
+  // A package without binaries is installed when its folder is (lsp-servers or Mason's packages).
+  if (binaries.length === 0)
+    for (const [folder, from] of [
+      [bundleFolder(pkg.name), "baked"],
+      [join(MASON_BIN_DIR, "..", "packages", pkg.name), "mason"],
+    ] as const)
+      if (existsSync(folder) && readdirSync(folder).length > 0) {
+        installed = true;
+        source = from;
+        break;
+      }
+
   const registryVersion = purl?.version ?? null;
   const installedVersion = installed ? getInstalledVersion(pkg.name) : null;
   const hasUpdate =
@@ -418,6 +438,7 @@ const PROJECT_INDICATORS: Record<string, string[]> = {
   Swift: ["Package.swift", "*.swift"],
   Dart: ["pubspec.yaml", "*.dart"],
   SQL: ["*.sql", ".sqlfluff", "dbt_project.yml"],
+  PowerShell: ["*.ps1", "*.psm1", "*.psd1"],
 };
 
 /** Detect which languages are used in the current project */
@@ -644,8 +665,17 @@ export async function installPackage(
           }
         }
 
+        // A package without binaries is a folder its runtime starts (PowerShell Editor Services):
+        // the extracted tree is kept whole in lsp-servers/NAME (#2125).
+        if (getBinaries(pkg).length === 0) {
+          const folder = bundleFolder(pkg.name);
+          rmSync(folder, { recursive: true, force: true });
+          for (const name of ["download", "download.tar.gz", "download.tar.xz", "download.zip"])
+            rmSync(join(tmpDir, name), { force: true });
+          renameSync(tmpDir, folder);
+        }
+
         // Clean up
-        const { rmSync } = await import("node:fs");
         rmSync(tmpDir, { recursive: true, force: true });
         break;
       }
@@ -744,6 +774,7 @@ export async function uninstallPackage(
         for (const bin of binaries) {
           removeBin(join(BAKED_LSP_DIR, "bin"), bin);
         }
+        if (binaries.length === 0) rmSync(bundleFolder(pkg.name), { recursive: true, force: true });
         break;
       }
 
@@ -804,10 +835,10 @@ function getMasonTarget(): string {
   return `${platform}_${arch}`;
 }
 
-function findPlatformAsset(
-  pkg: MasonPackage,
-): { target: string; file: string; bin?: string } | null {
+export function findPlatformAsset(pkg: MasonPackage): Omit<MasonAsset, "target"> | null {
   if (!pkg.source.asset) return null;
+  // A single asset with no target is the same file on every platform (a PowerShell bundle).
+  if (!Array.isArray(pkg.source.asset)) return pkg.source.asset;
   const target = getMasonTarget();
 
   // Try exact match first
