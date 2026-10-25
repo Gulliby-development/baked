@@ -19,6 +19,10 @@ export const FAILED_TEST_LINE = new RegExp(
     "<<< (?:FAILURE|ERROR)!",
     // Gradle `AppTest > testApp() FAILED`.
     String.raw`\)\s+FAILED\s*$`,
+    // PHPUnit `1) Tests\SumTest::testAdds` in its failure and error lists (#1491); Pest prints
+    // `FAILED  Tests\SumTest > it adds` and `⨯ it adds`.
+    String.raw`^\d+\) [\w\\/]+::\w+`,
+    String.raw`^\s*⨯\s`,
   ].join("|"),
 );
 

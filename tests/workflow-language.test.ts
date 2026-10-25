@@ -33,6 +33,7 @@ describe("project language", () => {
     expect(detectLanguages(workspace({ "App.csproj": "<Project />" }))).toEqual(["dotnet"]);
     expect(detectLanguages(workspace({ "Cargo.toml": "" }))).toEqual(["rust"]);
     expect(detectLanguages(workspace({ "pom.xml": "" }))).toEqual(["java"]);
+    expect(detectLanguages(workspace({ "composer.json": "{}" }))).toEqual(["php"]);
     expect(detectLanguages(workspace({ "package.json": "{}" }))).toEqual([]);
   });
   test(".NET solutions rank before projects", () => {
@@ -67,6 +68,8 @@ describe("language review scope", () => {
     expect(touchesLanguageFiles(["src\\App\\Program.cs"])).toBe(true);
     expect(touchesLanguageFiles(["Cargo.toml"])).toBe(true);
     expect(touchesLanguageFiles(["service/pom.xml"])).toBe(true);
+    expect(touchesLanguageFiles(["src/Sum.php"])).toBe(true);
+    expect(touchesLanguageFiles(["composer.json"])).toBe(true);
     expect(touchesLanguageFiles(["README.md", "scripts/run.sh", "docs/go.md"])).toBe(false);
   });
 

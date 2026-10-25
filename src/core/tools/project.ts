@@ -8,6 +8,7 @@ import { bunShellArgs, IS_WIN } from "../platform/index.js";
 import { chatSandbox, SandboxUnavailableError, sandboxNotice } from "../security/sandbox.js";
 import { buildSafeEnv } from "../spawn.js";
 import { executeCheckCommand } from "../verification/check-runner.js";
+import { composerGates, formatCommandLine } from "../workflows/gates.js";
 import { assertWorkspaceMutationAllowed } from "../workflows/leases.js";
 import { ProcessScope } from "../workflows/process-scope.js";
 import { pythonEnvironment } from "../workflows/toolchain.js";
@@ -224,27 +225,19 @@ async function detectToolchain(cwd: string): Promise<DetectedToolchain> {
     return profile;
   }
 
-  // PHP
+  // PHP: the gates' own detection (#1491), so the agent runs what the workflow checks run.
   if (await has("composer.json")) {
-    profile.test = "vendor/bin/phpunit";
+    const gates = composerGates(cwd).map((g) => g.check);
+    const line = (c: { executable: string; args: string[] } | undefined) =>
+      c ? formatCommandLine(c.executable, c.args) : null;
+    const format = gates.find((c) => c.id === "pint" || c.id === "php-cs-fixer");
+    profile.test =
+      line(gates.find((c) => c.id === "phpunit" || c.id === "pest")) ?? "php vendor/bin/phpunit";
     profile.build = null;
-    profile.lint = (await has("pint.json"))
-      ? "vendor/bin/pint --test"
-      : (await has(".php-cs-fixer.php")) || (await has(".php-cs-fixer.dist.php"))
-        ? "vendor/bin/php-cs-fixer fix --dry-run"
-        : null;
-    profile.typecheck =
-      (await has("phpstan.neon")) || (await has("phpstan.neon.dist"))
-        ? "vendor/bin/phpstan analyse"
-        : (await has("psalm.xml")) || (await has("psalm.xml.dist"))
-          ? "vendor/bin/psalm"
-          : null;
+    profile.lint = line(format);
+    profile.typecheck = line(gates.find((c) => c.id === "phpstan" || c.id === "psalm"));
     profile.run = (await has("artisan")) ? "php artisan serve" : null;
-    profile.format = (await has("pint.json"))
-      ? "vendor/bin/pint"
-      : (await has(".php-cs-fixer.php")) || (await has(".php-cs-fixer.dist.php"))
-        ? "vendor/bin/php-cs-fixer fix"
-        : null;
+    profile.format = line(format?.fix);
     return profile;
   }
 
@@ -591,10 +584,10 @@ export async function detectNativeChecks(cwd: string): Promise<string | null> {
 
   // PHP
   if (await has("composer.json")) {
-    if ((await has("phpstan.neon")) || (await has("phpstan.neon.dist")))
-      return "vendor/bin/phpstan analyse";
-    if ((await has("psalm.xml")) || (await has("psalm.xml.dist"))) return "vendor/bin/psalm";
-    return null;
+    const check = composerGates(cwd).find(
+      (g) => g.check.id === "phpstan" || g.check.id === "psalm",
+    )?.check;
+    return check ? formatCommandLine(check.executable, check.args) : null;
   }
 
   // Swift

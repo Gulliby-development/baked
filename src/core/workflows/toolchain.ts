@@ -22,12 +22,26 @@ export function pythonEnvironment(has: (file: string) => boolean): [string, stri
   return PYTHON_ENVIRONMENTS.find((environment) => has(environment.lockfile))?.prefix ?? null;
 }
 
+/** A Composer `vendor/bin` proxy script, which the PHP interpreter runs on every platform. */
+const COMPOSER_BIN = /^(?:\.[\\/])?vendor[\\/]bin[\\/][\w.-]+$/;
+
 /**
  * The program a check runs, behind at most two shell launchers and one environment runner, with
  * a `launch` that rebuilds the whole command around new arguments.
  */
 export function toolchainCommand(executable: string, args: readonly string[]): LaunchedCommand {
   const outer = launchedCommand(executable, args);
+  // `php vendor/bin/phpunit`: a Composer-installed tool run by the interpreter (#1491).
+  const vendor = outer.program === "php" ? COMPOSER_BIN.exec(outer.args[0] ?? "") : null;
+  if (vendor) {
+    const script = outer.args[0] as string;
+    return {
+      program: programName(script),
+      args: outer.args.slice(1),
+      launch: (next, program) =>
+        outer.launch([program ? script.replace(/[^\\/]+$/, program) : script, ...next]),
+    };
+  }
   const runner = PYTHON_ENVIRONMENTS.find(
     ({ prefix }) => prefix[0] === outer.program && outer.args[0] === prefix[1],
   );

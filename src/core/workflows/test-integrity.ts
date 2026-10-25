@@ -295,6 +295,9 @@ const SKIPS = new RegExp(
     String.raw`@(?:Disabled|Ignore)\b`,
     String.raw`\[Ignore\b`,
     String.raw`\bSkip\s*=\s*"`,
+    // PHPUnit and Pest (#1491).
+    String.raw`->markTest(?:Skipped|Incomplete)\s*\(`,
+    String.raw`->(?:skip|todo)\s*\(`,
   ].join("|"),
   "g",
 );
@@ -317,6 +320,8 @@ const CAPABILITY = new RegExp(
     String.raw`\b(?:ImportError|ModuleNotFoundError|PermissionError)\b`,
     String.raw`\b(?:ErrPermission|EPERM|EACCES)\b`,
     String.raw`\b(?:os\.)?[Gg]ete?uid\s*\(`,
+    String.raw`\bPHP_OS(?:_FAMILY)?\b`,
+    String.raw`\b(?:extension_loaded|function_exists)\s*\(`,
   ].join("|"),
 );
 /** Lines above a skip that its guard condition may span. */
@@ -350,6 +355,9 @@ const SUPPRESSIONS = new RegExp(
     String.raw`@SuppressWarnings\b`,
     String.raw`//\s*nolint\b`,
     String.raw`#pragma\s+warning\s+disable\b`,
+    String.raw`@phpstan-ignore`,
+    String.raw`@psalm-suppress\b`,
+    String.raw`@codeCoverageIgnore`,
   ].join("|"),
   "g",
 );

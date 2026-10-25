@@ -294,7 +294,7 @@ export function failingFilesInOutput(output: string, tasks: Task[]): string[] {
 
 /** Lines of a check's output that name what fails: test names and assertion messages. */
 const FAILURE_LINE =
-  /^\s*(?:\(fail\)|✗|✘|×|✖|FAIL|not ok|error:|AssertionError|Expected|Received|E\s{2,}|---\s*FAIL)/i;
+  /^\s*(?:\(fail\)|✗|✘|×|✖|⨯|FAIL|not ok|error:|AssertionError|Expected|Received|E\s{2,}|---\s*FAIL|Failed asserting)/i;
 
 /**
  * What fails in a check's output, normalized so two runs of the same failure compare equal:
@@ -315,7 +315,7 @@ export function failureSignature(output: string): string {
         // between runs of the same failure (aclvet 5684de0e, #1189).
         .replace(/^(\s*(?:FAIL|ok)\s.*?)\s+\d+(?:\.\d+)?m?s(?:\s+\(cached\))?\s*$/, "$1")
         // vitest's failed-test line ends with a bare time (` × adds 3ms`).
-        .replace(/^(\s*[✗✕✘×✖]\s.*?)\s+\d+(?:\.\d+)?\s?m?s\s*$/, "$1")
+        .replace(/^(\s*[✗✕✘×✖⨯]\s.*?)\s+\d+(?:\.\d+)?\s?m?s\s*$/, "$1")
         // Maven Surefire's `Time elapsed: 0.052 s <<< FAILURE!` and dotnet's summary
         // `Duration: 45 ms` (or `< 1 ms`, `1 m 2 s`) are on the failure lines themselves (#1678).
         .replace(
@@ -339,12 +339,12 @@ export function failureSignature(output: string): string {
  * configured `testpaths` directory does not exist yet), or "No tests found" / "No test files found"
  * of the JavaScript runners, Bun's "0 test files matching" (exit 1), Gradle 9's "did not discover
  * any tests to execute" (#1864), Go's "no test files", SwiftPM's "no tests found", Mix's "did not
- * match any directory/file: test" or "no tests to run" and Flutter's "Test directory "test" not
- * found" (#1753). A plan that writes the tests last has this state until its test tasks run, and
+ * match any directory/file: test" or "no tests to run", Flutter's "Test directory "test" not
+ * found" (#1753) and PHPUnit's "No tests executed!" (#1491; Pest says "No tests found"). A plan that writes the tests last has this state until its test tasks run, and
  * it is no defect of the code (#1031, #1208).
  */
 export function noTestsCollected(output: string): boolean {
-  return /\bno tests ran\b|\bcollected 0 items\b|\bno tests? (?:files? )?found\b|\bno test files\b|\bno files were found in testpaths\b|\b0 test files matching\b|\bdid not discover any tests to execute\b|\bno tests to run\b|\bdid not match any directory\/file\b|\btest directory "?test"? not found\b/i.test(
+  return /\bno tests ran\b|\bno tests executed!|\bcollected 0 items\b|\bno tests? (?:files? )?found\b|\bno test files\b|\bno files were found in testpaths\b|\b0 test files matching\b|\bdid not discover any tests to execute\b|\bno tests to run\b|\bdid not match any directory\/file\b|\btest directory "?test"? not found\b/i.test(
     output,
   );
 }
@@ -372,6 +372,10 @@ export const MISSING_PATH_LINES: readonly { tool: string; line: RegExp }[] = [
   { tool: "go", line: /"(\S+?)" matched no packages/ },
   { tool: "go", line: /\bdirectory\s+(\S+)\s+(?:does not exist|not found)/ },
   { tool: "luacheck", line: /^Checking\s+(\S+)\s+I\/O error/ },
+  // PHPUnit given a folder that does not exist: `Test directory "/w/tests" not found` (10 and
+  // later), `Cannot open file "tests.php".` (9).
+  { tool: "phpunit", line: /\bTest (?:directory|file) "([^"]+)" not found/ },
+  { tool: "phpunit", line: /\bCannot open file "([^"]+?)(?:\.php)?"/ },
 ];
 
 /** Whether an E902 error comes just before ruff's `-->` location line at `index`. */

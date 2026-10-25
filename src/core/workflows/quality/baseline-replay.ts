@@ -146,6 +146,18 @@ const keepGoing =
 
 const PROJECT_FILE = /\.(?:sln|slnx|csproj|fsproj|vbproj)$/;
 
+/** One run per changed PHP test file: the check's flags, the vendor script and the file. */
+function phpTestFiles({ args, tests }: ReplayTargetInput): ReplayRun[] {
+  // `php vendor/bin/phpunit tests`: the script stays, the folder gives way to the file.
+  const kept = args.filter(
+    (arg, i) => arg.startsWith("-") || (i === 0 && /vendor[\\/]bin[\\/]/.test(arg)),
+  );
+  return tests
+    .filter((path) => path.endsWith(".php"))
+    .sort()
+    .map((path) => ({ args: [...kept, path], paths: [path] }));
+}
+
 /**
  * How the baseline replay splits a check per test target once it did not build as a whole, by the
  * runner whose build failure the output has (#2020): a `Record` over `TestRunner`, so a new runner
@@ -211,6 +223,10 @@ export const REPLAY_TARGETS: Record<
       paths: [project],
     }));
   },
+  // A parse error in one test file stops PHPUnit and Pest before any test runs: each changed test
+  // file runs on its own, in place of the check's own test folder (#1491).
+  phpunit: phpTestFiles,
+  pest: phpTestFiles,
   // A module whose tests do not compile stops the build; --fail-at-end builds and tests the others.
   maven: keepGoing("--fail-at-end", "-fae"),
   // Gradle (JUnit output): --continue runs the other projects' tests after a compile failure.

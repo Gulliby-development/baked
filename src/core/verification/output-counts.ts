@@ -70,6 +70,14 @@ export function diagnosticCount(output: string): OutputCount | null {
       count: sum(output, /\bgenerated (\d+) warnings?\b/g) ?? 0,
       errors: 0,
     };
+  // PHPStan (#1491): " [ERROR] Found 3 errors" / " [OK] No errors"; every finding is an error.
+  const phpstan = output.match(/^\s*\[ERROR\] Found (\d+) errors?\b/m);
+  if (phpstan) return { tool: "phpstan", count: Number(phpstan[1]), errors: Number(phpstan[1]) };
+  if (/^\s*\[OK\] No errors\b/m.test(output)) return { tool: "phpstan", count: 0, errors: 0 };
+  // Psalm: "3 errors found" / "No errors found!"; its info issues are not counted.
+  const psalm = output.match(/^(\d+) errors? found\b/m);
+  if (psalm) return { tool: "psalm", count: Number(psalm[1]), errors: Number(psalm[1]) };
+  if (/^No errors found!/m.test(output)) return { tool: "psalm", count: 0, errors: 0 };
   // dotnet build: "    3 Warning(s)" and "    0 Error(s)"
   const warnings = output.match(/^\s*(\d+) Warning\(s\)/m);
   const errors = output.match(/^\s*(\d+) Error\(s\)/m);
@@ -106,8 +114,13 @@ export type TestRunner =
   | "dotnet"
   | "maven"
   | "go"
+  | "phpunit"
+  | "pest"
   | "junit"
   | "tap";
+
+/** Pest's summary: its counts by outcome, then the assertions (Jest's has a total instead). */
+const PEST_SUMMARY = /^\s*Tests:\s+((?:\d+ \w+(?:, )?)+) \(\d+ assertions?\)/m;
 
 /**
  * The summary parsers, in the order `testCount` tries them: a more specific summary first, the
@@ -213,6 +226,36 @@ const TEST_COUNTERS: readonly {
         ? 0
         : null),
   },
+  {
+    tool: "phpunit",
+    // PHPUnit (#1491): "OK (5 tests, 10 assertions)", or after "FAILURES!" or "OK, but ..." the
+    // line "Tests: 5, Assertions: 8, Failures: 1, Skipped: 1."
+    count: (o) =>
+      num(o.match(/^OK \((\d+) tests?, \d+ assertions?\)/m)) ??
+      num(o.match(/^Tests: (\d+), Assertions: \d+\b/m)),
+    ran: (o) => {
+      const ok = num(o.match(/^OK \((\d+) tests?, \d+ assertions?\)/m));
+      if (ok !== null) return ok;
+      const line = o.match(/^Tests: (\d+), Assertions: \d+\b(.*)$/m);
+      if (!line) return /^No tests executed!/m.test(o) ? 0 : null;
+      return Number(line[1]) - (sum(line[2] ?? "", /\b(?:Skipped|Incomplete): (\d+)/g) ?? 0);
+    },
+  },
+  {
+    tool: "pest",
+    // Pest: "  Tests:    1 failed, 1 skipped, 3 passed (6 assertions)"
+    count: (o) => {
+      const line = o.match(PEST_SUMMARY)?.[1];
+      return line === undefined ? null : (sum(line, /(\d+) \w+/g) ?? 0);
+    },
+    ran: (o) => {
+      const line = o.match(PEST_SUMMARY)?.[1];
+      if (line === undefined) return null;
+      return (
+        (sum(line, /(\d+) \w+/g) ?? 0) - (sum(line, /(\d+) (?:skipped|todos?|incomplete)\b/g) ?? 0)
+      );
+    },
+  },
   // A language without a parser of its own (#1488): a JUnit XML report printed to the output
   // (`--reporter=junit`), then TAP (busted, bats, prove, node:test, pgTAP).
   {
@@ -264,7 +307,7 @@ export const TEST_RUNNERS: LanguageRecord<readonly TestRunner[]> = {
   c: none("C has no common test runner summary; ctest output is not read"),
   cpp: none("ctest and GoogleTest summaries are not read"),
   ruby: none("RSpec and Minitest summaries are not read"),
-  php: none("PHPUnit summaries are not read yet (#1491)"),
+  php: ["phpunit", "pest"],
   swift: none("XCTest and swift-testing summaries are not read"),
   lua: ["tap"],
   elixir: none('ExUnit\'s "N tests, M failures" summary is not read'),
@@ -303,6 +346,16 @@ export const FAILED_TESTS: Record<TestRunner, (output: string) => string[]> = {
   maven: (o) => captured(o, /^\[ERROR\] (\S+?)(?: --)?\s+Time elapsed: .*<<< (?:FAILURE|ERROR)!/gm),
   // "--- FAIL: TestKeepsBlank (0.00s)", subtests included
   go: (o) => captured(o, /^\s*--- FAIL: (\S+)/gm),
+  // "1) Tests\\SumTest::testAdds" under "There was 1 failure:" or "There were 2 errors:", not
+  // under the lists of skipped, incomplete or risky tests.
+  phpunit: (o) =>
+    [
+      ...o.matchAll(
+        /^There (?:was|were) \d+ (?:failures?|errors?):\s*$([\s\S]*?)(?=^There (?:was|were) |^FAILURES!|^ERRORS!|(?![\s\S]))/gm,
+      ),
+    ].flatMap((m) => captured(m[1] ?? "", /^\d+\) (\S+::\S+?)(?: with data set .*)?\s*$/gm)),
+  // "  FAILED  Tests\\Unit\\SumTest > it adds two numbers"
+  pest: (o) => captured(o, /^\s*FAILED\s+(\S.*? > .+?)\s*$/gm),
   // A <testcase> with a <failure> or <error> child.
   junit: (o) =>
     [...o.matchAll(/<testcase\b([^>]*?)(?:\/>|>([\s\S]*?)<\/testcase>)/g)]
@@ -343,6 +396,9 @@ export const BUILD_FAILURES: Record<TestRunner, RegExp> = {
   maven: /^\[ERROR\] (?:COMPILATION ERROR.*|.*\.(?:java|kt|scala):\[\d+,\d+\] .+)$/,
   // "FAIL\texample.com/cidrfold [build failed]", "./fold_test.go:9:2: undefined: Fold"
   go: /^(?:FAIL\s+\S+ \[(?:build|setup) failed\]|\S+\.go:\d+:\d+: .+)$/,
+  // "PHP Parse error:  syntax error, unexpected token "}" in /w/tests/SumTest.php on line 9"
+  phpunit: /^(?:PHP )?(?:Parse|Fatal) error: .+$/,
+  pest: /^(?:PHP )?(?:Parse|Fatal) error: .+$/,
   // Gradle: "> Task :compileTestJava FAILED", "AppTest.java:12: error: cannot find symbol"
   junit: /^(?:> Task :\S*[cC]ompile\S* FAILED|.+\.(?:java|kt):\d+: error: .+)$/,
   // "Bail out! Cannot find module"
@@ -509,6 +565,13 @@ const GROWING_COUNTS: [RegExp, string][] = [
   [/^(\s*)ok \d+\b.*(?:\n|$)/gm, ""],
   [/^(\s*)not ok \d+\b/gm, "$1not ok"],
   [/^(?<indent>\s*)1\.\.\d+/gm, "$<indent>1..<n>"],
+  // PHPUnit's progress line and its time and memory, its test and assertion counts, and Pest's
+  // assertions (#1491); the failure and error counts are kept.
+  [/^[.FEWRSIDN]+\s+\d+ \/ \d+ \(\s*\d+%\)\s*(?:\n|$)/gm, ""],
+  [/^Time: [\d:.]+, Memory: [\d.]+ \w+\s*(?:\n|$)/gm, ""],
+  [/^(Tests|Assertions): \d+/gm, "$1: <n>"],
+  [/\b(Assertions): \d+/g, "$1: <n>"],
+  [/\(\d+ assertions?\)/g, "(<n> assertions)"],
 ];
 
 /**

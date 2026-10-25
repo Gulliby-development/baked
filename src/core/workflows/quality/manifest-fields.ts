@@ -227,6 +227,39 @@ export function gradleFields(text: string): FieldMap {
 export const versionCatalogFields = (text: string): FieldMap => tomlFields(text, /^plugins$/);
 
 /**
+ * `composer.json` fields that run code or choose where packages come from (#1491): `scripts` (run
+ * by `composer test` and on install), the `autoload` files Composer includes on every request,
+ * `bin`, `repositories`, the `config` that moves the vendor folder or allows plugins, and the
+ * stability that lets dev releases in.
+ */
+export function composerFields(text: string): FieldMap {
+  const out: FieldMap = new Map();
+  let parsed: Record<string, unknown>;
+  try {
+    parsed = JSON.parse(text) as Record<string, unknown>;
+  } catch {
+    return out;
+  }
+  if (!parsed || typeof parsed !== "object") return out;
+  const scripts = parsed.scripts;
+  if (scripts && typeof scripts === "object")
+    for (const [name, command] of Object.entries(scripts as Record<string, unknown>))
+      out.set(`scripts.${name}`, JSON.stringify(command));
+  for (const field of COMPOSER_FIELDS)
+    if (parsed[field] !== undefined) out.set(field, JSON.stringify(parsed[field]));
+  return out;
+}
+const COMPOSER_FIELDS = [
+  "autoload",
+  "autoload-dev",
+  "bin",
+  "repositories",
+  "config",
+  "minimum-stability",
+  "prefer-stable",
+] as const;
+
+/**
  * Gemfile lines other than gem declarations and their groups: a Gemfile is Ruby code, so
  * `source`, `git`, `path`, `plugin`, `eval_gemfile` and any other statement can run something.
  */

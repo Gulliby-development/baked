@@ -242,9 +242,9 @@ describe("PHP project (composer.json)", () => {
       "pint.json": "{}",
     });
     const p = await detectProfile(cwd);
-    expect(p.test).toBe("vendor/bin/phpunit");
-    expect(p.lint).toContain("pint");
-    expect(p.format).toBe("vendor/bin/pint");
+    expect(p.test).toBe("php vendor/bin/phpunit");
+    expect(p.lint).toBe("php vendor/bin/pint --test");
+    expect(p.format).toBe("php vendor/bin/pint");
     expect(p.run).toContain("artisan");
   });
 
@@ -254,7 +254,19 @@ describe("PHP project (composer.json)", () => {
       ".php-cs-fixer.php": "<?php return [];",
     });
     const p = await detectProfile(cwd);
-    expect(p.format).toBe("vendor/bin/php-cs-fixer fix");
+    expect(p.format).toBe("php vendor/bin/php-cs-fixer fix");
+  });
+
+  it("runs the gates' tools through php, so the commands work on Windows too (#1491)", async () => {
+    const cwd = makeProject("php-pest", {
+      "composer.json": JSON.stringify({ "require-dev": { "pestphp/pest": "^3", "laravel/pint": "^1" } }),
+      "phpstan.neon": "parameters:\n  level: 6\n",
+    });
+    const p = await detectProfile(cwd);
+    expect(p.test).toBe("php vendor/bin/pest");
+    expect(p.lint).toBe("php vendor/bin/pint --test");
+    expect(p.typecheck).toBe("php vendor/bin/phpstan analyse --no-progress");
+    expect(p.formatFile).toBe("php vendor/bin/pint");
   });
 });
 

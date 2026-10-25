@@ -502,7 +502,7 @@ export const BUILTIN_RULES: readonly QualityRule[] = [
     message: "A new lint suppression hides a finding instead of fixing it",
     fix: "Fix what the linter reports, or explain on the same line why the rule does not apply.",
     match: lineRule(
-      /(?:eslint-disable|biome-ignore|oxlint-disable|#\s*noqa\b|#\s*type:\s*ignore|#\s*pylint:\s*disable|\/\/\s*nolint\b|#!?\[allow\(|@SuppressWarnings\(|#pragma\s+warning\s+disable|NOSONAR)/,
+      /(?:eslint-disable|biome-ignore|oxlint-disable|#\s*noqa\b|#\s*type:\s*ignore|#\s*pylint:\s*disable|\/\/\s*nolint\b|#!?\[allow\(|@SuppressWarnings\(|#pragma\s+warning\s+disable|NOSONAR|@phpstan-ignore|@psalm-suppress\b)/,
     ),
   },
   {

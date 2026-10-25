@@ -50,6 +50,7 @@ const SKIPPED_DIRS = new Set([
 const JS_FILE = /\.(?:[cm]?[jt]sx?)$/;
 const PY_FILE = /\.py$/;
 const GO_FILE = /\.go$/;
+const PHP_FILE = /\.php$/;
 const JS_EXTENSIONS = [".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs"];
 
 /** Whether a workspace path is a test file of a supported ecosystem. */
@@ -58,6 +59,8 @@ export function isTestFile(path: string): boolean {
   if (GO_FILE.test(name)) return name.endsWith("_test.go");
   // Django keeps an app's tests in `tests.py` (#1683); pytest runs a file it is given by path.
   if (PY_FILE.test(name)) return /^test_.*\.py$|_test\.py$|^tests\.py$/.test(name);
+  // PHPUnit and Pest name a test file `*Test.php` (#1491).
+  if (PHP_FILE.test(name)) return name.endsWith("Test.php");
   if (!JS_FILE.test(name)) return false;
   return /\.(?:test|spec)\.[cm]?[jt]sx?$/.test(name) || /(^|\/)(__tests__)\//.test(path);
 }
@@ -329,7 +332,7 @@ const flagsOnly = (args: string[]): string[] =>
 /**
  * A command that runs only `tests` with the runner of one of the policy's test checks, or null
  * when no check runs a test runner that takes test files (`bun test`, `vitest`, `jest`,
- * `node --test`, `pytest`, `go test`). Package scripts (`npm test`, `bun run test`) are not
+ * `node --test`, `pytest`, `go test`, `phpunit`, `pest`). Package scripts (`npm test`, `bun run test`) are not
  * used: what they pass on is up to the script.
  */
 export function affectedTestCheck(
@@ -375,6 +378,10 @@ export function affectedTestCheck(
       // Discovery options (`discover -s tests -p ...`) take values and do not apply to named files.
       prefix = ["-m", "unittest", ...args.slice(2).filter((arg) => UNITTEST_FLAG.test(arg))];
       targets = py;
+    } else if (name === "phpunit" || name === "pest") {
+      // `php vendor/bin/phpunit tests`: the named files take the place of the test folder (#1491).
+      prefix = flagsOnly(args);
+      targets = files.filter((f) => PHP_FILE.test(f));
     } else if (name === "go" && args[0] === "test") {
       prefix = withGateFlags(["test", ...flagsOnly(args.slice(1))], gates.get("go"), 1);
       targets = [

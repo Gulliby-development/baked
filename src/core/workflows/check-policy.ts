@@ -42,7 +42,7 @@ export function validateChecks(workspace: string, policy: RunPolicy, graph?: Tas
 
 /** Commands that analyze source without running it: linters, formatters and type checkers. */
 const STATIC_COMMAND =
-  /\b(?:lint|eslint|biome|ruff|flake8|pylint|clippy|vet|fmt|gofmt|format|prettier|mypy|pyright|tsc|typecheck|check)\b|\b(?:dart|flutter)\s+analyze\b/i;
+  /\b(?:lint|eslint|biome|ruff|flake8|pylint|clippy|vet|fmt|gofmt|format|prettier|mypy|pyright|tsc|typecheck|check|phpstan|psalm|pint|php-cs-fixer)\b|\b(?:dart|flutter)\s+analyze\b/i;
 
 /** Source code a linter or formatter reads: any written file that is not documentation or data. */
 export const isCodePath = (path: string): boolean => isCodeFile(path);
@@ -84,10 +84,12 @@ function runsAggregateTarget(check: Pick<Check, "executable" | "args">): boolean
  * fail on a module file a later task writes (bench round 11, mdrefs: a skeleton task blocked on
  * "failed to resolve mod"). Other formatters and file-local linters (gofmt, ruff, biome, eslint)
  * read one file at a time and stay per task, as do `mix format`, `dart format` and `zig fmt`;
- * `dart analyze` and `flutter analyze` resolve every import, so they are whole-unit (#1753).
+ * `dart analyze` and `flutter analyze` resolve every import, so they are whole-unit (#1753), as
+ * are PHPStan and Psalm, which load every class a file uses (#1491); Pint and PHP-CS-Fixer format
+ * one file at a time.
  */
 const WHOLE_UNIT_COMMAND =
-  /\b(?:clippy|vet|tsc|typecheck|mypy|pyright|rustfmt)\b|\bcargo\s+(?:check|fmt)\b|\b(?:dart|flutter)\s+analyze\b/i;
+  /\b(?:clippy|vet|tsc|typecheck|mypy|pyright|rustfmt|phpstan|psalm)\b|\bcargo\s+(?:check|fmt)\b|\b(?:dart|flutter)\s+analyze\b/i;
 
 export const isWholeUnitCheck = (check: Check): boolean =>
   WHOLE_UNIT_COMMAND.test([check.id, check.executable, ...check.args].join(" "));
@@ -208,7 +210,7 @@ export function fixerCommand(
 
 /** A criterion that claims the code is formatted: a formatter's name, or files "are formatted". */
 const FORMAT_CLAIM =
-  /\b(?:gofmt|go\s+fmt|rustfmt|cargo\s+fmt|ruff\s+format|prettier|dotnet\s+format|clang-format|mix\s+format|dart\s+format|zig\s+fmt)\b|-formatted\b|\b(?:code|files?|sources?)\b[^.;]{0,40}?\b(?:is|are|stays?|remains?)\s+(?:properly\s+|correctly\s+)?formatted\b/i;
+  /\b(?:gofmt|go\s+fmt|rustfmt|cargo\s+fmt|ruff\s+format|prettier|dotnet\s+format|clang-format|mix\s+format|dart\s+format|zig\s+fmt|pint|php-cs-fixer)\b|-formatted\b|\b(?:code|files?|sources?)\b[^.;]{0,40}?\b(?:is|are|stays?|remains?)\s+(?:properly\s+|correctly\s+)?formatted\b/i;
 /** A criterion that claims the code is lint-clean or passes a named linter. */
 const LINT_CLAIM =
   /\blint(?:-clean|s|ed|ers?|ing)?\b|\b(?:clippy|ruff\s+check|eslint|flake8|pylint|go\s+vet|rubocop|ktlint|(?:dart|flutter)\s+analyze)\b/i;

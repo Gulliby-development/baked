@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { SEPARATOR_CELL, tableCells } from "../specs/table-cells.js";
 import { rowDataPaths } from "../workflows/acceptance-rows.js";
 import { hasInlineRows, type InlineRowFile } from "../workflows/acceptance-rows-inline.js";
+import { programName } from "../workflows/launcher.js";
 import { stripComments } from "../workflows/quality/code-mask.js";
 import { isTestCodePath } from "../workflows/quality/duplication.js";
 import { propertyTestKind } from "../workflows/quality/properties.js";
@@ -259,6 +260,9 @@ const CHECK_COMMAND = new RegExp(
     // The arguments of a Python check run by an interpreter path: `.venv/bin/python -m ruff` (#1762).
     String.raw`-m\s+` + TOOL,
     String.raw`(?:mvn|mvnw|gradle|gradlew|\.\/gradlew|\.\/mvnw)\b.*\b(?:test|verify|check|build)\b`,
+    // Composer-installed PHP tools, run by path or through `php` (#1491), and Composer scripts.
+    String.raw`(?:php\s+)?(?:\.\/)?(?:vendor\/bin\/)?(?:phpunit|pest|phpstan|psalm|pint|php-cs-fixer)\b`,
+    String.raw`composer\s+(?:run(?:-script)?\s+)?(?:test|tests|lint|check|analyse|analyze|format|fmt|cs)\b`,
   ].join("|")})`,
 );
 
@@ -336,10 +340,17 @@ function checkSpellings(check: Pick<Check, "executable" | "args">): {
 } {
   const { program, args } = toolchainCommand(check.executable, check.args);
   const tails = [args, ...(args[0] === "-m" ? [args.slice(1)] : [])];
+  // `php vendor/bin/phpunit` is also quoted as the script it runs (#1491).
+  const script = check.args[0];
+  const scripted =
+    script !== undefined &&
+    program !== programName(check.executable) &&
+    programName(script) === program;
   return {
     commands: [
       [check.executable, ...check.args],
       [program, ...args],
+      ...(scripted ? [[...check.args]] : []),
     ],
     args: tails.filter((tail) => tail.length >= 2 || (tail.length === 1 && tail !== args)),
   };

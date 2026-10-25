@@ -19,6 +19,7 @@ import {
 import {
   cargoFields,
   changedFields,
+  composerFields,
   type FieldMap,
   gemfileFields,
   globalJsonFields,
@@ -37,7 +38,15 @@ import {
   wrapperPropertiesFields,
 } from "./manifest-fields.js";
 
-export type Ecosystem = "npm" | "pypi" | "crates" | "go" | "nuget" | "maven" | "rubygems";
+export type Ecosystem =
+  | "npm"
+  | "pypi"
+  | "crates"
+  | "go"
+  | "nuget"
+  | "maven"
+  | "rubygems"
+  | "packagist";
 
 export interface Dependency {
   ecosystem: Ecosystem;
@@ -72,6 +81,35 @@ function packageJson(path: string, text: string): Dependency[] {
       if (typeof spec === "string" && /^(workspace:|file:|link:|portal:)/.test(spec)) continue;
       const at = text.indexOf(`"${name}"`);
       out.push({ ecosystem: "npm", name, file: path, line: at < 0 ? 1 : lineOf(text, at) });
+    }
+  }
+  return out;
+}
+
+/**
+ * `composer.json` packages of `require` and `require-dev` (#1491). The platform packages (`php`,
+ * `ext-*`, `lib-*`, `composer-plugin-api` and its kin) are the runtime, not Packagist packages.
+ */
+function composerJson(path: string, text: string): Dependency[] {
+  let parsed: Record<string, unknown>;
+  try {
+    parsed = JSON.parse(text) as Record<string, unknown>;
+  } catch {
+    return [];
+  }
+  const out: Dependency[] = [];
+  for (const field of ["require", "require-dev"]) {
+    const deps = parsed[field];
+    if (!deps || typeof deps !== "object") continue;
+    for (const name of Object.keys(deps as Record<string, unknown>)) {
+      if (!name.includes("/")) continue;
+      const at = text.indexOf(`"${name}"`);
+      out.push({
+        ecosystem: "packagist",
+        name: name.toLowerCase(),
+        file: path,
+        line: at < 0 ? 1 : lineOf(text, at),
+      });
     }
   }
   return out;
@@ -436,7 +474,7 @@ export const DEPENDENCY_MANIFESTS: LanguageRecord<readonly ManifestReader[]> = {
     "sbt builds are Scala code; a Scala project on Maven or Gradle is read by the Java row",
   ),
   ruby: [{ name: /^Gemfile$/, read: gemfile, fields: gemfileFields }],
-  php: none("Packagist has no registry check yet (#1491)"),
+  php: [{ name: /^composer\.json$/, read: composerJson, fields: composerFields }],
   swift: none("Swift Package Manager manifests are Swift code, not read"),
   lua: none("LuaRocks has no registry check yet (#1495)"),
   elixir: none("Hex has no registry check yet"),
