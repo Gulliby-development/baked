@@ -662,3 +662,29 @@ describe("own-plan feature need replays on recorded initiatives (#2043)", () => 
     expect(syntax?.estimate.find((f) => f.featureId === "encode")).toEqual({ featureId: "encode", low: 2_101_931, high: 3_513_129 });
   }, 600000);
 });
+
+describe("the plan charge replays on recorded initiatives (#2100, #2056)", () => {
+  // An open feature run with a sized plan is held at the high end of its plan's need at the
+  // measured ratio instead of its run limit, in shadow by default: no recorded decision moves, and
+  // each rewound start reports what the charge frees (positive) or adds (negative) and the share
+  // gate's verdict with it. R67 ampwhy, the round the issue measured (30.5M held at cli's gate for
+  // runs that had used 0.05M-6.6M), has no trace in the corpus; its scenario test rebuilds the gate.
+  // R66 nodepluck is the opposite round: its pool was short for use. The rewind keeps each run's
+  // final policy, so an open run counts at the limit it grew to later, and what the charge frees
+  // here is an upper bound (readcmd's limit was 5.79M at the park, 7.24M at its end).
+  test("R66 nodepluck: no start would park with the charge; base's plan adds tokens; select still parks at 14:40:20", () => {
+    const park = Date.UTC(2026, 9, 24, 14, 40, 20);
+    const [replay] = replayInitiativeStarts(join(ROOT, "R66", "nodepluck.sqlite.gz"), { budgetAtStart: true, moments: [park] });
+    expect(replay?.newStartStops).toBe(0);
+    const charged = replay?.starts.filter((s) => s.planCharge) ?? [];
+    expect(charged.filter((s) => s.featureId).every((s) => s.planCharge?.replayed === "pass")).toBe(true);
+    // #2056: base's plan priced its run 0.56M above its 4.36M limit at json's start.
+    const json = replay?.starts.find((s) => s.featureId === "json")?.planCharge;
+    expect(json?.runs).toEqual([{ featureId: "base", usedTokens: 317_456, limitTokens: 4_356_950, chargeTokens: 4_916_607 }]);
+    expect(json?.releasedTokens).toBe(-559_657);
+    // At the park, readcmd's plan frees at most 1.48M; select still needs more than that.
+    const atPark = replay?.starts.find((s) => s.at === park)?.planCharge;
+    expect(atPark).toMatchObject({ featureId: "select", replayed: "park", releasedTokens: 1_481_563 });
+    expect(atPark?.runs.map((r) => r.featureId)).toEqual(["readcmd"]);
+  }, 600000);
+});

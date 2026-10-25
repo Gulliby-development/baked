@@ -85,7 +85,10 @@ import {
 import type { initiativePriceSamples } from "./initiatives/forecast.js";
 import {
   dollarShortfall,
+  type FeatureView,
   InitiativeService,
+  type InitiativeView,
+  planChargedGate,
   poolGrowthOf,
   type ShareGateRecord,
   shareShortfall,
@@ -2014,6 +2017,20 @@ export interface InitiativeStartBoundary {
     "limitTokens" | "usedTokens" | "forecastTokens" | "suggestedTokens" | "notice"
   > | null;
   /**
+   * The plan charge at this start (#2100, #2056): what the pool holds with open runs at their
+   * limits and with each run that has a sized plan at its plan's need, and the share gate's
+   * verdict with the charge for the boundary's feature (at a moment, the first ready feature
+   * without a run; null when none). Null without an open run with a sized plan.
+   */
+  planCharge: {
+    limitCommittedTokens: number;
+    planCommittedTokens: number;
+    releasedTokens: number;
+    runs: { featureId: string; usedTokens: number; limitTokens: number; chargeTokens: number }[];
+    featureId: string | null;
+    replayed: "pass" | "park" | null;
+  } | null;
+  /**
    * The `initiative-dollar-share` would-stop the current code records at this start (whatever the
    * mode), next to what the initiative spent in the end, so the corpus can judge it: dollars that
    * were never short make it a false would-stop (#2099). Null when the feature is not short.
@@ -2500,6 +2517,7 @@ function replayStarts(
             suggestedTokens: view.budget.pool.suggestedTokens,
             notice: view.budget.pool.notice,
           },
+          planCharge: replayPlanCharge(view, feature, gate),
           shareWouldStop: short
             ? {
                 summary: short,
@@ -2525,6 +2543,40 @@ function replayStarts(
     dispose();
     for (const history of histories.values()) history.dispose();
   }
+}
+
+/**
+ * The plan charge of a rewound start (#2100): the view's `budget.planCharge` with the share gate
+ * asked again on the charged view (`planChargedGate`) for `feature`, or, at a moment, for the
+ * first ready feature without a run.
+ */
+function replayPlanCharge(
+  view: InitiativeView,
+  feature: FeatureView | undefined,
+  gate: ShareGate,
+): InitiativeStartBoundary["planCharge"] {
+  const charge = view.budget.planCharge;
+  if (!charge) return null;
+  const target = feature ?? view.features.find((f) => f.state === "ready" && f.share !== null);
+  const charged = planChargedGate(view) ?? view;
+  const own = target && charged.features.find((f) => f.id === target.id);
+  return {
+    limitCommittedTokens: charge.limitCommittedTokens,
+    planCommittedTokens: charge.planCommittedTokens,
+    releasedTokens: charge.releasedTokens,
+    runs: charge.runs.map(({ featureId, usedTokens, limitTokens, chargeTokens }) => ({
+      featureId,
+      usedTokens,
+      limitTokens,
+      chargeTokens,
+    })),
+    featureId: target?.id ?? null,
+    replayed: target
+      ? gate(charged, { ...target, share: own?.share ?? null })
+        ? "park"
+        : "pass"
+      : null,
+  };
 }
 
 /** Whether sizing splits a test task; `exceedsTestCapacity` unless a test passes another. */

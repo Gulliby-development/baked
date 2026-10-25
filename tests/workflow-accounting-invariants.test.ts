@@ -2,7 +2,7 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import fc from "fast-check";
 import { canonical } from "../src/core/specs/hash.js";
 import { type CostForecast, costForecast, kindRatio } from "../src/core/workflows/cost-forecast.js";
-import { POOL_STEP, poolExtensionDecision, poolForecast, tokenPool } from "../src/core/workflows/initiatives/token-pool.js";
+import { POOL_STEP, planCharge, planChargeTokens, poolExtensionDecision, poolForecast, tokenPool } from "../src/core/workflows/initiatives/token-pool.js";
 import type { RunPolicy } from "../src/core/workflows/schemas.js";
 import { type TaskKind, verificationTokens } from "../src/core/workflows/sizing.js";
 import type { AttemptUsageRecord } from "../src/core/workflows/step-budget.js";
@@ -480,5 +480,70 @@ describe("token pool invariants (#2042)", () => {
       expect(forecast).not.toBeNull();
       expect(forecast?.forecastTokens ?? 0).toBeGreaterThanOrEqual(used);
     }), { numRuns: 200 });
+  });
+});
+
+// The plan charge (#2100, #2056): an open feature run with a sized plan is held at the high end of
+// its plan's need at the measured ratio, never below its use, instead of max(used, limit).
+describe("plan charge invariants (#2100)", () => {
+  const openRun = fc.record({
+    usedTokens: fc.integer({ min: 0, max: 8_000_000 }),
+    limitTokens: fc.integer({ min: 100_000, max: 8_000_000 }),
+    low: fc.integer({ min: 10_000, max: 6_000_000 }),
+    expected: fc.option(fc.integer({ min: 0, max: 6_000_000 }), { nil: undefined }),
+    span: fc.integer({ min: 0, max: 4_000_000 }),
+  }).map((r, i) => ({
+    featureId: `f${i}`, runId: `r${i}`, usedTokens: r.usedTokens, limitTokens: r.limitTokens,
+    plan: { low: r.low, high: r.low + r.span, ...(r.expected === undefined ? {} : { expected: Math.max(r.low, r.expected) }) },
+  }));
+  const seed = fc.record({
+    finished: fc.integer({ min: 0, max: 20_000_000 }),
+    unplanned: fc.integer({ min: 0, max: 10_000_000 }),
+    ratio: fc.option(fc.double({ min: 0.3, max: 3, noNaN: true }), { nil: null }),
+    runs: fc.array(openRun, { minLength: 1, maxLength: 6 }),
+  });
+  const held = (r: { usedTokens: number; limitTokens: number }) => Math.max(r.usedTokens, r.limitTokens);
+
+  test("the charge is never below what a run used, and the pool never below what all runs used", () => {
+    fc.assert(fc.property(seed, ({ finished, unplanned, ratio, runs }) => {
+      const limitCommitted = finished + unplanned + runs.reduce((n, r) => n + held(r), 0);
+      const charge = planCharge("enforce", ratio, limitCommitted, runs);
+      expect(charge).not.toBeNull();
+      for (const run of charge?.runs ?? []) expect(run.chargeTokens).toBeGreaterThanOrEqual(run.usedTokens);
+      const used = finished + runs.reduce((n, r) => n + r.usedTokens, 0);
+      expect(charge?.planCommittedTokens ?? 0).toBeGreaterThanOrEqual(used);
+    }), { numRuns: 300 });
+  });
+
+  test("it is exactly the plan's need both ways: never above the open runs' limits unless a plan prices above its limit", () => {
+    fc.assert(fc.property(seed, ({ finished, unplanned, ratio, runs }) => {
+      const limitCommitted = finished + unplanned + runs.reduce((n, r) => n + held(r), 0);
+      const charge = planCharge("shadow", ratio, limitCommitted, runs);
+      for (const run of charge?.runs ?? []) {
+        expect(run.chargeTokens).toBe(planChargeTokens(run.usedTokens, run.plan, ratio));
+        expect(run.chargeTokens).toBeGreaterThanOrEqual(run.plan.high);
+        const need = Math.max(run.plan.high, Math.round((run.plan.expected ?? run.plan.low) * (ratio ?? 1)));
+        expect(run.chargeTokens).toBe(Math.max(run.usedTokens, need));
+        if (need <= run.limitTokens) expect(run.chargeTokens).toBeLessThanOrEqual(held(run));
+      }
+      const fits = (charge?.runs ?? []).every((r) => r.chargeTokens <= held(r));
+      if (fits) expect(charge?.planCommittedTokens ?? 0).toBeLessThanOrEqual(limitCommitted);
+    }), { numRuns: 300 });
+  });
+
+  test("what the charge frees is counted once, and a run that ends returns its charge to the pool once", () => {
+    fc.assert(fc.property(seed, ({ finished, unplanned, ratio, runs }) => {
+      const limitCommitted = finished + unplanned + runs.reduce((n, r) => n + held(r), 0);
+      const charge = planCharge("shadow", ratio, limitCommitted, runs);
+      if (!charge) return;
+      expect(charge.releasedTokens).toBe(charge.runs.reduce((n, r) => n + held(r) - r.chargeTokens, 0));
+      expect(charge.limitCommittedTokens - charge.planCommittedTokens).toBe(charge.releasedTokens);
+      // The first run ends: it counts at its use, and the others keep their charges.
+      const [ended, ...rest] = charge.runs;
+      if (!ended) return;
+      const after = planCharge("shadow", ratio, limitCommitted - held(ended) + ended.usedTokens, rest);
+      const planAfter = after?.planCommittedTokens ?? limitCommitted - held(ended) + ended.usedTokens;
+      expect(planAfter).toBe(charge.planCommittedTokens - ended.chargeTokens + ended.usedTokens);
+    }), { numRuns: 300 });
   });
 });
