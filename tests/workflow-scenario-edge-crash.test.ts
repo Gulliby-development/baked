@@ -126,6 +126,7 @@ describe("scenario: R68 url-shortener, an edge case that crashes in the probed t
       expect(c.outputTail).toBeString();
       expect(c.outputTail!.length).toBeLessThanOrEqual(OUTPUT_TAIL_CHARS);
     }
+    expect(record.cases[0]?.outputTail).toContain('error: Missing parameter "code"');
     expect(record.cases[0]?.outputTail).toContain("src/storage.ts");
     expect(record.cases[2]?.outputTail).toContain("nope");
     // The two crashes inside T001's file are findings of T001; the two mistakes stay passes.
