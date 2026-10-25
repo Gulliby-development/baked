@@ -40,7 +40,7 @@
       "src/main/scala/SumSuite.scala:4 comment"
     ],
     "formatters": null,
-    "packageContents": null,
+    "packageContents": ["build.sbt: sbt-jar"],
     "numericLimits": [
       "Int and Long arithmetic overflow silently; toInt fails past Int"
     ]

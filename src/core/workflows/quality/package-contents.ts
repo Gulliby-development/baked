@@ -9,6 +9,7 @@
  */
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import { gunzipSync } from "node:zlib";
 import {
   type LanguageRecord,
   none,
@@ -69,12 +70,27 @@ export interface PackageRoot {
 }
 
 export interface PackageTool {
-  id: "wheel" | "cargo-package" | "maven-jar" | "gradle-jar" | "nupkg" | "npm-pack";
+  id:
+    | "wheel"
+    | "cargo-package"
+    | "maven-jar"
+    | "gradle-jar"
+    | "nupkg"
+    | "npm-pack"
+    | "gem"
+    | "pub"
+    | "hex"
+    | "sbt-jar";
   manifests: readonly PackageManifest[];
   /** The commands that build the package, tried in order until one succeeds. */
   builds: (root: PackageRoot) => PackageCommand[];
   /** The files of what the build made, read from its output folder or its stdout; null when unread. */
   list: (dir: string, stdout: string) => PackageArtifact[] | null;
+  /**
+   * Nonzero exit codes after which the build still printed its listing: `dart pub publish
+   * --dry-run` exits 65 on any validation warning, and the copy's uncommitted tree always warns.
+   */
+  listedExits?: readonly number[];
   timeoutMs: number;
 }
 
@@ -171,6 +187,155 @@ export function listArchives(folder: string, name: RegExp): PackageArtifact[] | 
   return out.length ? out : null;
 }
 
+/**
+ * The regular files of a tar archive (ustar, with GNU long names and pax `path` records), or null
+ * when the bytes are not one.
+ */
+export function tarEntries(bytes: Uint8Array): string[] | null {
+  const decoder = new TextDecoder();
+  const text = (from: number, length: number) =>
+    decoder.decode(bytes.subarray(from, from + length)).replace(/\0[\s\S]*$/, "");
+  const names: string[] = [];
+  let longName: string | null = null;
+  for (let at = 0; at + 512 <= bytes.length; ) {
+    if (bytes.subarray(at, at + 512).every((byte) => byte === 0)) return names;
+    const size = Number.parseInt(text(at + 124, 12).trim() || "0", 8);
+    if (!Number.isFinite(size) || (at === 0 && !text(at + 257, 5).startsWith("ustar"))) return null;
+    const type = String.fromCharCode(bytes[at + 156] ?? 0);
+    const data = at + 512;
+    if (type === "L") longName = text(data, size);
+    else if (type === "x") {
+      const path = /(?:^|\n)\d+ path=([^\n]*)\n/.exec(
+        decoder.decode(bytes.subarray(data, data + size)),
+      );
+      if (path?.[1]) longName = path[1];
+    } else if (type === "g") {
+      // A global pax header names no entry.
+    } else {
+      const prefix = text(at + 345, 155);
+      const name = longName ?? (prefix ? `${prefix}/${text(at, 100)}` : text(at, 100));
+      longName = null;
+      if (type === "0" || type === "\0" || type === "7") names.push(name.replace(/^\.\//, ""));
+    }
+    at = data + Math.ceil(size / 512) * 512;
+  }
+  return names;
+}
+
+/** The files a `.gem` packs: the entries of the `data.tar.gz` inside its outer tar. */
+export function gemEntries(bytes: Uint8Array): string[] | null {
+  const decoder = new TextDecoder();
+  for (let at = 0; at + 512 <= bytes.length; ) {
+    const name = decoder.decode(bytes.subarray(at, at + 100)).replace(/\0[\s\S]*$/, "");
+    const size = Number.parseInt(
+      decoder
+        .decode(bytes.subarray(at + 124, at + 136))
+        .replace(/\0[\s\S]*$/, "")
+        .trim() || "0",
+      8,
+    );
+    if (!name || !Number.isFinite(size)) return null;
+    if (name === "data.tar.gz") {
+      try {
+        return tarEntries(gunzipSync(bytes.subarray(at + 512, at + 512 + size)));
+      } catch {
+        return null;
+      }
+    }
+    at += 512 + Math.ceil(size / 512) * 512;
+  }
+  return null;
+}
+
+/**
+ * The files of `dart pub publish --dry-run` (or `flutter pub publish --dry-run`): the tree it
+ * prints, one `├── name (size)` line per entry, nested four columns per level; a file has a size.
+ */
+export function pubPublishFiles(stdout: string): PackageArtifact[] | null {
+  const path: string[] = [];
+  const files: string[] = [];
+  for (const line of stdout.split(/\r?\n/)) {
+    const m = /^((?:[│|] {3}| {4})*)[├└`|][─-]{2} (.+?)(?: \((?:<\s*)?[\d.]+ ?[KMGT]?B\))?$/.exec(
+      line,
+    );
+    if (!m?.[2]) continue;
+    const depth = [...(m[1] ?? "")].length / 4;
+    path.length = depth;
+    if (/\((?:<\s*)?[\d.]+ ?[KMGT]?B\)$/.test(line)) files.push([...path, m[2]].join("/"));
+    else path.push(m[2]);
+  }
+  return files.length ? [capped("pub publish --dry-run", files)] : null;
+}
+
+/** Every file below a folder, as `/`-separated paths relative to it; null when it does not exist. */
+export function folderFiles(
+  folder: string,
+  skip: (name: string) => boolean = () => false,
+): string[] | null {
+  const out: string[] = [];
+  const walk = (dir: string, prefix: string) => {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const path = prefix ? `${prefix}/${entry.name}` : entry.name;
+      if (skip(path)) continue;
+      if (entry.isDirectory()) walk(join(dir, entry.name), path);
+      else if (entry.isFile()) out.push(path);
+    }
+  };
+  try {
+    walk(folder, "");
+  } catch {
+    return null;
+  }
+  return out;
+}
+
+const readText = (path: string): string => {
+  try {
+    return readFileSync(path, "utf8");
+  } catch {
+    return "";
+  }
+};
+
+/** The `.gem` archives a build left in a folder, with the files each packs. */
+function listGems(folder: string): PackageArtifact[] | null {
+  let names: string[];
+  try {
+    names = readdirSync(folder)
+      .filter((entry) => entry.endsWith(".gem"))
+      .sort();
+  } catch {
+    return null;
+  }
+  const out: PackageArtifact[] = [];
+  for (const file of names) {
+    const entries = gemEntries(readFileSync(join(folder, file)));
+    if (entries) out.push(capped(file, entries));
+  }
+  return out.length ? out : null;
+}
+
+/**
+ * The jars sbt packaged below `target/`: `target/scala-3.7.4/` (sbt 1) or
+ * `target/out/jvm/scala-3.7.4/NAME/` (sbt 2), without its compile and cache folders.
+ */
+function listSbtJars(dir: string): PackageArtifact[] | null {
+  const jars = folderFiles(
+    join(dir, "target"),
+    (path) =>
+      /(?:^|\/)(?:streams|classes|test-classes|zinc|sync|task-temp-directory|global-logging|resolution-cache|update|bg-jobs)$/.test(
+        path,
+      ) || path.split("/").length > 6,
+  )?.filter((path) => MAIN_JAR.test(fileName(path)));
+  if (!jars?.length) return null;
+  const out: PackageArtifact[] = [];
+  for (const jar of jars.sort()) {
+    const entries = zipEntries(readFileSync(join(dir, "target", jar)));
+    if (entries) out.push(capped(fileName(jar), entries));
+  }
+  return out.length ? out : null;
+}
+
 // --- Packaging fields ------------------------------------------------------------------------
 
 /** pyproject.toml: the build backend, its package discovery and data, and entry points. */
@@ -250,6 +415,69 @@ export function gradlePackaging(text: string): FieldMap {
     )
       out.set(key, body);
   }
+  return out;
+}
+
+/**
+ * Statements of an indentation-structured file (a gemspec, `mix.exs`, YAML): from where `start`
+ * matches a line, with the lines indented deeper below it and a closing `end`, `]`, `)` or `}`
+ * at its own indentation. Keyed by the matched name; a name seen twice keeps both bodies.
+ */
+function indentedStatements(text: string, start: RegExp): FieldMap {
+  const out: FieldMap = new Map();
+  const lines = text.split(/\r?\n/);
+  const indent = (line: string) => line.length - line.trimStart().length;
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i] ?? "";
+    const match = start.exec(line);
+    const name = match?.[1];
+    if (!match || !name) continue;
+    // A keyword in the middle of a line (`[app: :x, package: package()]`) starts where it is.
+    const body = [line.slice(match.index).trim()];
+    let j = i + 1;
+    for (; j < lines.length; j++) {
+      const next = lines[j] ?? "";
+      if (!next.trim()) continue;
+      if (indent(next) > indent(line)) body.push(next.trim());
+      else {
+        if (indent(next) === indent(line) && /^(?:end\b|[\])}])/.test(next.trim()))
+          body.push(next.trim());
+        else j--;
+        break;
+      }
+    }
+    i = Math.max(i, j);
+    const value = body.join("\n");
+    out.set(out.has(name) ? `${name} ${out.size}` : name, value);
+  }
+  return out;
+}
+
+/** A gemspec: the files, executables, extensions and load paths the gem packs. */
+export const gemspecPackaging = (text: string): FieldMap =>
+  indentedStatements(
+    text.replace(/(^|\s)#.*$/gm, "$1"),
+    /^\s*\w+\.(files|test_files|executables|bindir|require_paths|extensions|extra_rdoc_files|licenses?_files)\b\s*(?:\+?=|<<|\.(?:concat|push|append))/,
+  );
+
+/** `pubspec.yaml`: the top-level keys that change what `dart pub publish` packs or ships. */
+export const pubspecPackaging = (text: string): FieldMap =>
+  indentedStatements(text, /^(executables|screenshots|false_secrets|topics|platforms):/);
+
+/** `mix.exs`: the `package:` keyword of the project and the `package` function it calls. */
+export const mixPackaging = (text: string): FieldMap =>
+  indentedStatements(text.replace(/(^|\s)#.*$/gm, "$1"), /\b(package(?=:\s)|defp?\s+package\b)/);
+
+/** `build.sbt`: settings of the packaged jar, its resources and its mappings. */
+export function sbtPackaging(text: string): FieldMap {
+  const out: FieldMap = new Map();
+  for (const [key, body] of gradleFields(text))
+    if (
+      /\b(?:packageBin|packageSrc|mappings|resourceDirector(?:y|ies)|unmanagedResource\w*|resourceGenerators|includeFilter|excludeFilter|artifactName|exportJars|Compile\s*\/\s*package\w*)\b/.test(
+        body,
+      )
+    )
+      out.set(key, body);
   return out;
 }
 
@@ -388,6 +616,58 @@ const NPM: PackageTool = {
   timeoutMs: 300_000,
 };
 
+const GEM: PackageTool = {
+  id: "gem",
+  manifests: [{ name: /\.gemspec$/, fields: gemspecPackaging }],
+  // `gem build` writes NAME-VERSION.gem into the package root (its `--output` folder must exist).
+  builds: ({ manifest }) => [{ executable: "gem", args: ["build", manifest] }],
+  list: (dir) => listGems(dir),
+  timeoutMs: 300_000,
+};
+
+const PUB: PackageTool = {
+  id: "pub",
+  manifests: [
+    { name: /^pubspec\.yaml$/, fields: pubspecPackaging },
+    { name: /^\.pubignore$/, fields: "whole" },
+  ],
+  // A Flutter package resolves only with the Flutter SDK; `dart pub` builds a plain Dart one.
+  builds: ({ dir }) => {
+    const flutter = /\bsdk:\s*flutter\b/.test(readText(join(dir, "pubspec.yaml")));
+    const dart = { executable: "dart", args: ["pub", "publish", "--dry-run"] };
+    const viaFlutter = { executable: "flutter", args: ["pub", "publish", "--dry-run"] };
+    return flutter ? [viaFlutter, dart] : [dart, viaFlutter];
+  },
+  list: (_, stdout) => pubPublishFiles(stdout),
+  listedExits: [65],
+  timeoutMs: 300_000,
+};
+
+const HEX: PackageTool = {
+  id: "hex",
+  manifests: [{ name: /^mix\.exs$/, fields: mixPackaging }],
+  builds: () => [
+    { executable: "mix", args: ["hex.build", "--unpack", "--output", `${PACKAGE_OUT}/hex`] },
+  ],
+  // The unpacked folder holds the package's files and the metadata Hex writes beside them.
+  list: (dir) => {
+    const files = folderFiles(
+      join(dir, PACKAGE_OUT, "hex"),
+      (path) => path === "hex_metadata.config",
+    );
+    return files?.length ? [capped("mix hex.build", files)] : null;
+  },
+  timeoutMs: 600_000,
+};
+
+const SBT: PackageTool = {
+  id: "sbt-jar",
+  manifests: [{ name: /^build\.sbt$/, fields: sbtPackaging }],
+  builds: () => [{ executable: "sbt", args: ["-batch", "package"] }],
+  list: (dir) => listSbtJars(dir),
+  timeoutMs: 900_000,
+};
+
 /**
  * The package each supported language builds, and how to list it (#1984): a tool per packaging
  * system, or `none(reason)` where no package is built or its build is not supported here.
@@ -403,14 +683,14 @@ export const PACKAGE_CONTENTS: LanguageRecord<readonly PackageTool[]> = {
   java: [MAVEN, GRADLE],
   kotlin: [GRADLE, MAVEN],
   csharp: [NUPKG],
-  scala: none("sbt packaging is not built (sbt builds are Scala code)"),
+  scala: [SBT, MAVEN, GRADLE],
   go: none("Go modules are published as source from version control; no package is built"),
-  ruby: none("gemspecs are Ruby code and .gem archives (tar of gzip) are not read yet"),
+  ruby: [GEM],
   php: none("Composer packages are source archives of the repository; no package is built"),
   swift: none("Swift packages are published as source from version control"),
   lua: none("LuaRocks packaging is not built yet"),
-  elixir: none("Hex packaging (mix hex.build) is not built yet"),
-  dart: none("pub packaging (dart pub publish --dry-run) is not built yet"),
+  elixir: [HEX],
+  dart: [PUB],
   zig: none("Zig packages are source archives fetched by URL"),
   c: none("C has no package format"),
   cpp: none("Conan and vcpkg packaging is not built yet"),
@@ -535,7 +815,7 @@ export const commandText = (command: PackageCommand): string =>
 
 /** What the spec author, the spec reviewer and the reviewers are told when the check is on. */
 export const PACKAGE_CONTENTS_NOTE = {
-  spec: "The host runs the package contents check: when the run changes a manifest's packaging fields (package data, included files, packed items, build backend), it builds the package in a copy of the delivered tree (a Python wheel, `cargo package --list`, a Maven or Gradle jar, `dotnet pack`, `npm pack --dry-run`) and records the files it holds. A criterion that the built package contains, or leaves out, a named file is automated: name the file and the package, not a build you expect a person to run.",
+  spec: "The host runs the package contents check: when the run changes a manifest's packaging fields (package data, included files, packed items, build backend), it builds the package in a copy of the delivered tree (a Python wheel, `cargo package --list`, a Maven, Gradle or sbt jar, `dotnet pack`, `npm pack --dry-run`, a Ruby gem, `dart pub publish --dry-run`, `mix hex.build`) and records the files it holds. A criterion that the built package contains, or leaves out, a named file is automated: name the file and the package, not a build you expect a person to run.",
   analysis:
     "The host runs the package contents check (the package built in a copy of the delivered tree when a manifest's packaging fields change, its file list recorded as evidence quality/package-contents.json), so a criterion that the built package contains or leaves out a named file is automated and checkable; it is never a finding for needing a build.",
   review:
