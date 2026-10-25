@@ -110,6 +110,11 @@ describe("the verbatim reader and the apply decision (#2023)", () => {
     const crlf = A_BEFORE.replaceAll("\n", "\r\n");
     writeFileSync(join(root, "src/a.ts"), crlf);
     writeFileSync(join(root, "src/c.ts"), 'export const C = "different";\r\n');
+    // Staged as CRLF, which git does not convert: Git for Windows' system `core.autocrlf=true`
+    // would otherwise normalize the files, there and in a directory outside any repository.
+    git(root, "init", "-q");
+    git(root, "config", "core.autocrlf", "false");
+    git(root, "add", ".");
     const inputs = await hostApplyInputs(root, brief, { writes: [{ path: "src/a.ts", action: "modify" }, { path: "src/c.ts", action: "modify" }] });
     expect(inputs?.[0]).toEqual({ path: "src/a.ts", action: "modify", files: 0, diffs: 1, whole: false, exists: true, applies: true, eol: "crlf" });
     // A diff whose context differs still does not apply, in either line end.
