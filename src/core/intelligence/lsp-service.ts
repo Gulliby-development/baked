@@ -24,6 +24,7 @@ import {
   lspServerCandidates,
   type ResolvedServerCommand,
   resolveServerCommand,
+  serverLaunch,
 } from "./backends/lsp/server-registry.js";
 import { probeLspServer } from "./backends/lsp/spawn.js";
 import {
@@ -197,8 +198,9 @@ export function serverCommandName(path: string): string {
 
 /** The Mason package that installs `command`, preferring packages listed as language servers. */
 function packageFor(command: string, registry: MasonPackage[]): MasonPackage | null {
+  // A bundled server (PowerShell Editor Services) is named after its package, which has no bin.
   const providing = registry.filter(
-    (p) => !p.deprecation && p.bin && Object.hasOwn(p.bin, command),
+    (p) => !p.deprecation && (p.bin ? Object.hasOwn(p.bin, command) : p.name === command),
   );
   return providing.find((p) => p.categories.includes("LSP")) ?? providing[0] ?? null;
 }
@@ -396,7 +398,10 @@ export async function installLspServer(
   let pkg = server ? packageFor(server.command, registry) : null;
   if (!server) {
     pkg = registry.find((p) => p.name === id && !p.deprecation) ?? null;
-    if (pkg) server = candidates.find((c) => pkg?.bin && Object.hasOwn(pkg.bin, c.command));
+    if (pkg)
+      server = candidates.find((c) =>
+        pkg?.bin ? Object.hasOwn(pkg.bin, c.command) : pkg?.name === c.command,
+      );
   }
   if (!server && !pkg) {
     const forLanguage = candidates.filter((c) => c.languages.includes(id as Language));
@@ -463,7 +468,8 @@ export async function installLspServer(
 async function startProblem(ctx: Context, server: LspServerCandidate): Promise<string | undefined> {
   const resolved = ctx.deps.resolve(server.command);
   if (!resolved) return `${server.command} was installed but is not found where baked looks for it`;
-  const problem = await ctx.deps.probe(resolved.path, server.args, ctx.workspace);
+  const launch = serverLaunch(server.command, resolved.path, server.args);
+  const problem = await ctx.deps.probe(launch.command, launch.args, ctx.workspace);
   return problem ? `${server.command} was installed but does not start: ${problem}` : undefined;
 }
 
