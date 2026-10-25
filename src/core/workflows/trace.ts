@@ -1928,8 +1928,10 @@ export interface StallLadderBoundary {
  * Walks the recovery ladder again over each stage's recorded attempts: an attempt whose last model
  * call got no first response is a stall, as is one whose turn lost its answer (`lostAnswer` in its
  * usage, #1957); one that completed ends the ladder. The route comes from
- * the run's routing record, the effort from the attempt's usage. Effects are not in a trace, so an
- * attempt that edited files before it stalled counts as one that did not.
+ * the run's routing record, the effort from the attempt's usage. The effects table is not in a
+ * trace, so an attempt that changed a file is one with a `pre_image` tool phase, which the tool
+ * policy emits as it prepares each file effect: the scheduler keeps the provider wait for such an
+ * attempt instead of climbing, and the next attempt starts the ladder again.
  */
 export function replayStallLadder(
   store: WorkflowStore,
@@ -1941,14 +1943,20 @@ export function replayStallLadder(
       "SELECT id, step_id, model_id, status FROM attempts WHERE run_id=? AND model_id IS NOT NULL ORDER BY started_at, rowid",
     )
     .all(runId) as { id: string; step_id: string; model_id: string; status: string }[];
+  const events = store.events(runId, 0, 1_000_000);
   const taken = new Map(
-    store
-      .events(runId, 0, 1_000_000)
-      .flatMap((event) =>
-        event.type === "attempt.recovery"
-          ? [[event.payload.attemptId, event.payload.rung] as const]
-          : [],
-      ),
+    events.flatMap((event) =>
+      event.type === "attempt.recovery"
+        ? [[event.payload.attemptId, event.payload.rung] as const]
+        : [],
+    ),
+  );
+  const changed = new Set(
+    events.flatMap((event) =>
+      event.type === "tool.phase" && event.payload.phase === "pre_image"
+        ? [event.payload.attemptId]
+        : [],
+    ),
   );
   const saved = store.latestArtifact(runId, "routing.json");
   const routing = saved
@@ -1984,6 +1992,17 @@ export function replayStallLadder(
       (usage.profileId ? routing.profiles?.[usage.profileId] : undefined);
     const models = entry ? [entry.model, ...(entry.fallback ?? [])] : [attempt.model_id];
     const effort = (usage.effort ?? entry?.effort) as RouteEffort | undefined;
+    if (changed.has(attempt.id)) {
+      ladders.delete(key);
+      boundaries.push({
+        attemptId: attempt.id,
+        stage,
+        model: attempt.model_id,
+        recorded: taken.get(attempt.id) ?? "none",
+        replayed: "none",
+      });
+      continue;
+    }
     const current = ladders.get(key);
     const next = rule(current, {
       model: attempt.model_id,
