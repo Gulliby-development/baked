@@ -307,6 +307,13 @@ import {
 } from "./conflict-rows.js";
 import { assertFrozenInputs, buildWorkflowContext } from "./context.js";
 import {
+  type CorrectiveDeferRecord,
+  correctiveDeferDecision,
+  correctiveDeferPath,
+  DEFER_DIR,
+  DEFER_KIND,
+} from "./corrective-defer.js";
+import {
   evidencePaths,
   hostDecision,
   hostWiden,
@@ -7013,6 +7020,8 @@ ${note}`;
   ): Promise<void> {
     if (!state.graph || !state.approvalRoot)
       throw new WorkflowFault("STALE_DECISION", "Approved tasks required");
+    // Correctives that blocked while independent work was ready, with their stops (#2109).
+    const parked: ParkedCorrective[] = [];
     for (;;) {
       this.refreshTaskSizing(runId, state, policy);
       const rows = this.store.tasks(runId);
@@ -7031,7 +7040,12 @@ ${note}`;
             state.taskGates,
             state.waitingFor,
             state.repairPredecessors,
-            this.repairHolds(runId, state),
+            this.repairHolds(
+              runId,
+              state,
+              parked.map((p) => p.taskId),
+            ),
+            parked.map((p) => p.taskId),
           ),
         ))
       )
@@ -7048,7 +7062,12 @@ ${note}`;
               state.taskGates,
               state.waitingFor,
               state.repairPredecessors,
-              this.repairHolds(runId, state),
+              this.repairHolds(
+                runId,
+                state,
+                parked.map((p) => p.taskId),
+              ),
+              parked.map((p) => p.taskId),
             ),
           );
       // The tests are put to a person; the code tasks wait for the approval.
@@ -7060,9 +7079,16 @@ ${note}`;
         break;
       }
       signal.throwIfAborted();
-      await this.implementTask(runId, stepId, state, policy, profiles, signal, task, !!checking);
+      try {
+        await this.implementTask(runId, stepId, state, policy, profiles, signal, task, !!checking);
+      } catch (error) {
+        if (!this.parkBlockedCorrective(runId, state, policy, task, error, parked, signal))
+          throw error;
+      }
       if (this.queued.length) return;
     }
+    // The blocked chains end the run once the work they do not hold has run.
+    if (parked[0]) throw parked[0].error;
     if (
       this.store
         .tasks(runId)
@@ -7795,6 +7821,8 @@ ${note}`;
     const checks = new Semaphore(MAX_CONCURRENT_TASK_CHECKS);
     // Tasks whose worker was lost in this drive; the run stops once nothing else can progress.
     const lost = new Map<string, string>();
+    // Correctives that blocked while independent work was ready, with their stops (#2109).
+    const parked: ParkedCorrective[] = [];
     for (;;) {
       this.refreshTaskSizing(runId, state, policy);
       const rows = this.store.tasks(runId);
@@ -7806,7 +7834,12 @@ ${note}`;
         state.taskGates,
         state.waitingFor,
         state.repairPredecessors,
-        this.repairHolds(runId, state),
+        this.repairHolds(
+          runId,
+          state,
+          parked.map((p) => p.taskId),
+        ),
+        parked.map((p) => p.taskId),
       ).filter((t) => !lost.has(t.id));
       const runnable = checking ? all : this.testsFirstReady(runId, state, policy, all);
       if (runnable === null) return;
@@ -7908,7 +7941,19 @@ ${note}`;
             lost,
             signal,
           );
-          failure ??= error;
+          if (
+            error &&
+            !this.parkBlockedCorrective(
+              runId,
+              state,
+              policy,
+              outcome.entry.task,
+              error,
+              parked,
+              signal,
+            )
+          )
+            failure ??= error;
           await this.releaseTaskWorktree(runId, outcome.entry);
         }
       } finally {
@@ -7917,6 +7962,8 @@ ${note}`;
       if (failure) throw failure;
       if (this.queued.length) return;
     }
+    // The blocked chains end the run once the work they do not hold has run.
+    if (parked[0]) throw parked[0].error;
     if (lost.size)
       throw new WorkflowFault(
         "RECOVERY_REQUIRED",
@@ -12259,9 +12306,15 @@ ${note}`;
   /**
    * The holds of the run's unfinished correctives that are narrower than their writes (#2109):
    * the files its first attempt writes once it started, and before that where its findings point,
-   * with their tests. A corrective that widened holds its whole write scope again.
+   * with their tests. A corrective that widened holds its whole write scope again, except one the
+   * drive parked after it blocked: it writes nothing more in this drive, so it holds the files its
+   * findings point at, where its defect is.
    */
-  private repairHolds(runId: string, state: RuntimeState): RepairHolds {
+  private repairHolds(
+    runId: string,
+    state: RuntimeState,
+    parked: readonly string[] = [],
+  ): RepairHolds {
     const done = new Set(
       this.store
         .tasks(runId)
@@ -12270,8 +12323,9 @@ ${note}`;
     );
     const holds: Record<string, string[]> = {};
     for (const task of state.graph?.tasks ?? []) {
-      if (task.origin !== "repair" || done.has(task.id)) continue;
-      if (state.widenedCorrections.includes(task.id)) continue;
+      const held = parked.includes(task.id);
+      if (task.origin !== "repair" || (done.has(task.id) && !held)) continue;
+      if (state.widenedCorrections.includes(task.id) && !held) continue;
       const narrowed =
         state.narrowedCorrections[task.id] ??
         narrowCorrectionWrites(task, correctionFocus(this.store, runId, state, task).files)?.map(
@@ -12280,6 +12334,61 @@ ${note}`;
       if (narrowed) holds[task.id] = narrowed;
     }
     return holds;
+  }
+  /**
+   * Whether the drive goes on past a corrective that blocked (#2109): its row is blocked and its
+   * stop is the run's own, and ready tasks remain that neither it nor a corrective parked before
+   * it holds. Every such block records `blocks/correctives/<task>-<n>.json`; with
+   * `correctiveDefer: "on"` the corrective is parked, keeping its hold, and its stop ends the run
+   * once nothing else can run. Shadow otherwise: the stop ends the run at once, as before.
+   */
+  private parkBlockedCorrective(
+    runId: string,
+    state: RuntimeState,
+    policy: RunPolicy,
+    task: Task,
+    error: unknown,
+    parked: ParkedCorrective[],
+    signal: AbortSignal,
+  ): boolean {
+    if (signal.aborted || task.origin === "planned" || !(error instanceof WorkflowFault))
+      return false;
+    const rows = this.store.tasks(runId);
+    if (!state.graph || rows.find((row) => row.id === task.id)?.status !== "blocked") return false;
+    const held = parked.map((p) => p.taskId);
+    const ready = readyTasks(
+      state.graph,
+      rows,
+      state.taskGates,
+      state.waitingFor,
+      state.repairPredecessors,
+      this.repairHolds(runId, state, [...held, task.id]),
+      [...held, task.id],
+    ).map((t) => t.id);
+    const input = { ready, writers: policy.maxConcurrentWriters };
+    const mode = policy.correctiveDefer === "on" ? "on" : "shadow";
+    const defer = correctiveDeferDecision(input);
+    const n = this.store
+      .artifacts(runId)
+      .filter(
+        (a) => a.kind === DEFER_KIND && a.logical_path.startsWith(`${DEFER_DIR}${task.id}-`),
+      ).length;
+    const reason = typeof error.details.reason === "string" ? error.details.reason : null;
+    const record: CorrectiveDeferRecord = {
+      taskId: task.id,
+      mode,
+      code: error.code,
+      reason,
+      parked: held,
+      ...input,
+      defer,
+    };
+    this.store.transaction(() =>
+      this.store.artifact(runId, DEFER_KIND, correctiveDeferPath(task.id, n), canonical(record)),
+    );
+    if (mode !== "on" || !defer) return false;
+    parked.push({ taskId: task.id, error });
+    return true;
   }
   /** Shared ownership with the open findings' recorded command evidence (#1612). */
   private failureOwner(
@@ -17843,6 +17952,12 @@ ${note}`;
       this.store.transition(runId, "completed");
     });
   }
+}
+
+/** A corrective the drive parked after it blocked, and the stop it ends the run with (#2109). */
+interface ParkedCorrective {
+  taskId: string;
+  error: WorkflowFault;
 }
 
 /**

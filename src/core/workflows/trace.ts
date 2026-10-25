@@ -45,6 +45,13 @@ import {
   conflictFinishReady,
 } from "./conflict-finish.js";
 import {
+  type CorrectiveDeferRecord,
+  type CorrectiveDeferRule,
+  correctiveDeferDecision,
+  DEFER_DIR,
+  DEFER_KIND,
+} from "./corrective-defer.js";
+import {
   hostDecision,
   missingDiagnosed,
   SCOPE_KIND,
@@ -212,6 +219,8 @@ const KEPT_ARTIFACTS = new Set([
   EVIDENCE_DECISION_KIND,
   // Each settled conflict's host finish decision: edits, case and check counts, no text (#2033).
   CONFLICT_FINISH_KIND,
+  // Each blocked corrective's order decision: stop code, ready task ids, writers (#2109).
+  DEFER_KIND,
 ]);
 
 /** Tables that hold evidence, effects or prose the replay never reads. */
@@ -762,6 +771,51 @@ export interface RunReplay {
   conflictFinishes: ConflictFinishBoundary[];
   /** Settled conflicts the current rule finishes on the host, or not, differently. */
   newConflictFinishes: number;
+  /** Each blocked corrective's order decision against the current rule (#2109). */
+  correctiveDefers: CorrectiveDeferBoundary[];
+  /** Blocked correctives the current rule runs independent work past, or not, differently. */
+  newDeferDecisions: number;
+}
+
+export interface CorrectiveDeferBoundary {
+  taskId: string;
+  mode: CorrectiveDeferRecord["mode"];
+  /** The ready tasks the blocked chains did not hold. */
+  ready: number;
+  recorded: boolean;
+  replayed: boolean;
+}
+
+/**
+ * Every order decision of a blocked corrective a run recorded (`blocks/correctives/`, #2109),
+ * decided again from its recorded ready tasks and writers. Traces before #2109 record none.
+ */
+export function replayCorrectiveDefers(
+  store: WorkflowStore,
+  runId: string,
+  decide: CorrectiveDeferRule = correctiveDeferDecision,
+): CorrectiveDeferBoundary[] {
+  return store
+    .artifacts(runId)
+    .filter((a) => a.kind === DEFER_KIND && a.logical_path.startsWith(DEFER_DIR))
+    .flatMap((artifact) => {
+      let record: CorrectiveDeferRecord;
+      try {
+        record = JSON.parse(store.readArtifact(runId, artifact.id));
+      } catch {
+        return [];
+      }
+      const input = { ready: record.ready ?? [], writers: record.writers ?? 1 };
+      return [
+        {
+          taskId: record.taskId,
+          mode: record.mode,
+          ready: input.ready.length,
+          recorded: record.defer,
+          replayed: decide(input),
+        },
+      ];
+    });
 }
 
 export interface CorrectiveScopeBoundary {
@@ -3139,6 +3193,8 @@ function replayRun(
   | "newUnownedDecisions"
   | "conflictFinishes"
   | "newConflictFinishes"
+  | "correctiveDefers"
+  | "newDeferDecisions"
 > | null {
   const db = store.connection;
   const run = store.run(runId);
@@ -3324,6 +3380,7 @@ export function replayTrace(
     scopeRule?: ScopeRule;
     unownedRule?: UnownedRule;
     conflictFinishRule?: ConflictFinishRule;
+    correctiveDeferRule?: CorrectiveDeferRule;
   } = {},
 ): TraceReplay {
   // Initiative starts rewind their own copies of the trace, before the run replay rewinds this one.
@@ -3411,6 +3468,12 @@ export function replayTrace(
         replayConflictFinishes(store, runId, options.conflictFinishRule),
       ]),
     );
+    const defers = new Map(
+      runIds.map((runId) => [
+        runId,
+        replayCorrectiveDefers(store, runId, options.correctiveDeferRule),
+      ]),
+    );
     const runs: RunReplay[] = [];
     for (const runId of runIds) {
       const firstByte = timings.get(runId) ?? [];
@@ -3442,6 +3505,7 @@ export function replayTrace(
       const evidenceDecisions = evidence.get(runId) ?? [];
       const correctiveScopes = scopes.get(runId) ?? [];
       const conflictFinishes = finishes.get(runId) ?? [];
+      const correctiveDefers = defers.get(runId) ?? [];
       if (
         !replay.boundaries.length &&
         !firstByte.length &&
@@ -3460,7 +3524,8 @@ export function replayTrace(
         !convergenceGates.length &&
         !evidenceDecisions.length &&
         !correctiveScopes.length &&
-        !conflictFinishes.length
+        !conflictFinishes.length &&
+        !correctiveDefers.length
       )
         continue;
       runs.push({
@@ -3523,6 +3588,8 @@ export function replayTrace(
         ).length,
         conflictFinishes,
         newConflictFinishes: conflictFinishes.filter((b) => b.replayed !== b.recorded).length,
+        correctiveDefers,
+        newDeferDecisions: correctiveDefers.filter((b) => b.replayed !== b.recorded).length,
       });
     }
     const gates = replayShareGate(store, options.shareGate);
