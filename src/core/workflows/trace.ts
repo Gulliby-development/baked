@@ -2371,6 +2371,8 @@ export function replayInitiativeStarts(
      * boundary with an empty `featureId` that never parks (#2042).
      */
     moments?: number[];
+    /** Sets the initiative's `sizing.recencyHalfLife`, to backtest the weighting (#2150). */
+    recencyHalfLife?: number;
   } = {},
 ): Omit<InitiativeReplay, "shareGate" | "newShareStops" | "poolGrowth" | "newPoolGrowth">[] {
   const gate = options.gate ?? shareShortfall;
@@ -2391,6 +2393,7 @@ export function replayInitiativeStarts(
     replayStarts(path, id, gate, options.priceSamples, historyTrace, {
       budgetAtStart: options.budgetAtStart === true,
       moments: options.moments ?? [],
+      ...(options.recencyHalfLife ? { recencyHalfLife: options.recencyHalfLife } : {}),
     }),
   );
 }
@@ -2454,7 +2457,11 @@ function replayStarts(
   gate: ShareGate,
   priceSamples: PriceSamples | undefined,
   historyTrace: HistoryTrace,
-  { budgetAtStart, moments }: { budgetAtStart: boolean; moments: number[] },
+  {
+    budgetAtStart,
+    moments,
+    recencyHalfLife,
+  }: { budgetAtStart: boolean; moments: number[]; recencyHalfLife?: number },
 ): Omit<InitiativeReplay, "shareGate" | "newShareStops" | "poolGrowth" | "newPoolGrowth"> {
   const { store, workspace, dispose } = openTrace(path);
   const histories = new Map<string, ReturnType<typeof openTrace>>();
@@ -2464,9 +2471,19 @@ function replayStarts(
       .query("SELECT settings_json, decompose_run_id FROM initiatives WHERE id=?")
       .get(initiativeId) as { settings_json: string; decompose_run_id: string | null };
     const settings = JSON.parse(row.settings_json) as {
-      basePolicy?: { sizing?: { historyStores?: string[] } };
+      basePolicy?: { sizing?: { historyStores?: string[]; recencyHalfLife?: number } };
     };
     const missingHistory: string[] = [];
+    if (recencyHalfLife) {
+      settings.basePolicy = {
+        ...settings.basePolicy,
+        sizing: { ...settings.basePolicy?.sizing, recencyHalfLife },
+      };
+      db.run("UPDATE initiatives SET settings_json=? WHERE id=?", [
+        JSON.stringify(settings),
+        initiativeId,
+      ]);
+    }
     const sizing = settings.basePolicy?.sizing;
     if (sizing?.historyStores) {
       const mapped: string[] = [];
