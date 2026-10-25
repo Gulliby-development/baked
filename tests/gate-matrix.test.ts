@@ -1392,6 +1392,8 @@ describe("gate matrix: Pester and PSScriptAnalyzer (#1498)", () => {
     // Plaintext: Pester colours its output even when redirected; no -CI, which writes testResults.xml.
     expect(pester?.args.at(-1)).toBe(PESTER_RUN);
     expect(PESTER_RUN).toContain("RenderMode = 'Plaintext'");
+    // A CI runner's annotations (`::error::[-] ...`) would hide the failed tests (#1498).
+    expect(PESTER_RUN).toContain("CIFormat = 'None'");
     expect(PESTER_RUN).not.toContain("-CI");
   });
 
