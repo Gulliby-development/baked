@@ -321,6 +321,8 @@ const CAPABILITY = new RegExp(
     String.raw`\b(?:os\.)?[Gg]ete?uid\s*\(`,
     // Ruby: `RUBY_PLATFORM`, `Gem.win_platform?`, `RbConfig::CONFIG["host_os"]`, a gem that may be missing.
     String.raw`\bRUBY_PLATFORM\b|\bGem\.win_platform\?|\bRbConfig::CONFIG\b|\bLoadError\b`,
+    // Dart: `Platform.isWindows`, `Platform.operatingSystem`, Flutter's `kIsWeb` (#1494).
+    String.raw`\bPlatform\.(?:is[A-Z]\w*|operatingSystem)\b|\bkIsWeb\b`,
   ].join("|"),
 );
 /** Lines above a skip that its guard condition may span. */
@@ -360,6 +362,7 @@ const SUPPRESSIONS = new RegExp(
     String.raw`//\s*nolint\b`,
     String.raw`#pragma\s+warning\s+disable\b`,
     String.raw`#\s*(?:rubocop|standard):(?:disable|todo)\b`,
+    String.raw`//\s*ignore(?:_for_file)?:\s*\w`,
   ].join("|"),
   "g",
 );
@@ -375,6 +378,8 @@ const TEST_HOOKS = new RegExp(
     String.raw`\bRails\.env\.test\?`,
     String.raw`\bENV\[\s*["'](?:RAILS_ENV|RACK_ENV|APP_ENV)["']\s*\]\s*[!=]=\s*["']test["']`,
     String.raw`\bdefined\?\(\s*(?:RSpec|Minitest)\b`,
+    // flutter test sets FLUTTER_TEST: `Platform.environment.containsKey('FLUTTER_TEST')` (#1494).
+    String.raw`\bFLUTTER_TEST\b`,
   ].join("|"),
   "g",
 );
