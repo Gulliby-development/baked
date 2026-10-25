@@ -956,40 +956,79 @@ function duneGates(workspace: string): GateSuggestion[] {
 }
 
 /**
- * A Bundler project's tests (#1753): RSpec when the Gemfile names it or the project has a `spec/`
- * folder or `.rspec`, else Rake's `test` task when the project has a Rakefile or the Gemfile names
- * rake. Both run through `bundle exec`, which loads the Gemfile's versions.
+ * A Bundler project's gates. The linter first (#1493): Standard when the bundle names it, else
+ * RuboCop when it names `rubocop` or one of its plugins; both lint file by file, so their safe
+ * autocorrect (`--fix`, `-a`) is the fixer of the task's file. Then the tests (#1753): RSpec when
+ * the bundle names it or the project has a `spec/` folder or `.rspec`, else Rake's `test` task when
+ * the project has a Rakefile or the bundle names rake. Everything runs through `bundle exec`, which
+ * loads the Gemfile's versions. A gem's Gemfile often says only `gemspec`: its development
+ * dependencies are in the gemspec, read as well.
  */
 function rubyGates(workspace: string): GateSuggestion[] {
   const gemfile = read(workspace, "Gemfile");
   if (gemfile === null) return [];
-  const names = (gem: string) => new RegExp(`^\\s*gem\\s+["']${gem}["']`, "m").test(gemfile);
+  const gemspecs = /^\s*gemspec\b/m.test(gemfile)
+    ? readdirSync(workspace)
+        .filter((name) => name.endsWith(".gemspec"))
+        .sort()
+    : [];
+  const bundle = [gemfile, ...gemspecs.map((name) => read(workspace, name) ?? "")].join("\n");
+  const named = (gem: string) =>
+    new RegExp(
+      `^\\s*(?:gem|\\w+\\.add_(?:development_|runtime_)?dependency)\\s*\\(?\\s*["']${gem}["']`,
+      "m",
+    );
+  const source = (gem: string) =>
+    named(gem).test(gemfile)
+      ? "Gemfile"
+      : (gemspecs.find((n) => named(gem).test(read(workspace, n) ?? "")) ?? "Gemfile");
+  const names = (gem: string) => named(gem).test(bundle);
+  const out: GateSuggestion[] = [];
+  if (names("standard"))
+    out.push({
+      check: {
+        ...gate("standardrb", "bundle", ["exec", "standardrb"], 300000),
+        fix: { executable: "bundle", args: ["exec", "standardrb", "--fix"] },
+      },
+      source: source("standard"),
+      reason: "bundle exec standardrb (fixer: bundle exec standardrb --fix)",
+      preselected: true,
+    });
+  else if (names("rubocop(?:-[\\w-]+)?"))
+    out.push({
+      check: {
+        ...gate("rubocop", "bundle", ["exec", "rubocop"], 300000),
+        fix: { executable: "bundle", args: ["exec", "rubocop", "-a"] },
+      },
+      source: source("rubocop(?:-[\\w-]+)?"),
+      reason: "bundle exec rubocop (fixer: bundle exec rubocop -a)",
+      preselected: true,
+    });
   const rspec =
     names("rspec") || names("rspec-core") || has(workspace, ".rspec") || has(workspace, "spec");
-  if (rspec)
-    return [
-      {
-        check: gate("rspec", "bundle", ["exec", "rspec"], 600000),
-        source:
-          names("rspec") || names("rspec-core")
-            ? "Gemfile"
-            : has(workspace, ".rspec")
-              ? ".rspec"
-              : "spec/",
-        reason: "bundle exec rspec",
-        preselected: true,
-      },
-    ];
-  const rakefile = ["Rakefile", "rakefile", "Rakefile.rb"].find((name) => has(workspace, name));
-  if (!rakefile && !names("rake")) return [];
-  return [
-    {
-      check: gate("rake-test", "bundle", ["exec", "rake", "test"], 600000),
-      source: rakefile ?? "Gemfile",
-      reason: "bundle exec rake test",
+  if (rspec) {
+    out.push({
+      check: gate("rspec", "bundle", ["exec", "rspec"], 600000),
+      source:
+        names("rspec") || names("rspec-core")
+          ? source(names("rspec") ? "rspec" : "rspec-core")
+          : has(workspace, ".rspec")
+            ? ".rspec"
+            : "spec/",
+      reason: "bundle exec rspec",
       preselected: true,
-    },
-  ];
+    });
+    return out;
+  }
+  const rakefile = ["Rakefile", "rakefile", "Rakefile.rb"].find((name) => has(workspace, name));
+  if (!rakefile && !names("rake")) return out;
+  out.push({
+    check: gate("rake-test", "bundle", ["exec", "rake", "test"], 600000),
+    source: rakefile ?? source("rake"),
+    reason: "bundle exec rake test",
+    preselected: true,
+  });
+  return out;
 }
 
 /**

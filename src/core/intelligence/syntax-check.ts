@@ -6,7 +6,9 @@ export type { ParseError } from "./backends/tree-sitter.js";
 /**
  * The grammars the syntax check trusts, by file extension. Each was checked against idiomatic
  * current code of its language; a grammar that lags its language (Kotlin, Swift) would refuse
- * valid files, so a language outside this list passes unchecked.
+ * valid files, so a language outside this list passes unchecked. Ruby stays out (#1493): the
+ * bundled tree-sitter-ruby reported errors in 5 of 2,618 valid files of the RuboCop, RSpec and
+ * parser gems (`$:` globals, `self(` calls, a leading magic comment).
  */
 const CHECKED_GRAMMARS: Record<string, string> = {
   ".rs": "rust",

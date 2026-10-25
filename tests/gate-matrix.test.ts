@@ -48,7 +48,7 @@ import { pwshExecutable, rscriptExecutable } from "../src/core/platform/index.js
 import { lintrRun, STYLER_CHECK, STYLER_FIX, testthatOn, testthatRun } from "../src/core/workflows/r-tools.js";
 import { PESTER_RUN, pesterOn } from "../src/core/workflows/pester.js";
 import { baselineDebt, baselineKeys } from "../src/core/verification/task-end-check.js";
-import { plannedWrittenTests, writtenTestsCheck } from "../src/core/workflows/affected-tests.js";
+import { affectedTestCheck, plannedWrittenTests, writtenTestsCheck } from "../src/core/workflows/affected-tests.js";
 import { launchedCommand } from "../src/core/workflows/launcher.js";
 import { toolchainCommand } from "../src/core/workflows/toolchain.js";
 import { type HostEdit, hostOnlyEvidence, plannerGraph } from "../src/core/workflows/host-edits.js";
@@ -813,6 +813,196 @@ describe("gate matrix: SwiftPM, Mix, Dart, Zig, dune and Bundler (#1753)", () =>
     expect(noTestsCollected("There are no tests to run")).toBe(true);
     expect(noTestsCollected('Test directory "test" not found.')).toBe(true);
     expect(noTestsCollected("1 test, 1 failure")).toBe(false);
+  });
+});
+
+// #1493: a Ruby project got Bundler's test gate (#1753) but no lint gate, no test count, no
+// skip markers of RSpec or Minitest and no language review. The outputs below are pasted from
+// RSpec 3.13.6, Minitest 5.20, Rake 13.1 and RuboCop 1.92 on Ruby 3.3.
+const RSPEC_FAILED = `.F**.
+
+Pending: (Failures listed here are expected and do not affect your suite's status)
+
+  1) Calc is skipped
+     # Temporarily skipped with xit
+     # ./spec/calc_spec.rb:9
+
+Failures:
+
+  1) Calc fails on purpose
+     Failure/Error: expect(Calc.add(1, 2)).to eq(4)
+
+       expected: 4
+            got: 3
+
+       (compared using ==)
+     # ./spec/calc_spec.rb:7:in \`block (2 levels) in <top (required)>'
+
+Finished in 0.00714 seconds (files took 0.09504 seconds to load)
+5 examples, 1 failure, 2 pending
+
+Failed examples:
+
+rspec ./spec/calc_spec.rb:6 # Calc fails on purpose
+`;
+const MINITEST_FAILED = `Run options: --seed 1809
+
+# Running:
+
+SF.E
+
+Finished in 0.001365s, 2931.0707 runs/s, 1465.5354 assertions/s.
+
+  1) Failure:
+CalcTest#test_fail [/repo/test/calc_test.rb:8]:
+Expected: 4
+  Actual: 3
+
+  2) Error:
+CalcTest#test_error:
+RuntimeError: boom
+    /repo/test/calc_test.rb:14:in \`test_error'
+
+4 runs, 2 assertions, 1 failures, 1 errors, 1 skips
+
+You have skipped tests. Run with --verbose for details.
+rake aborted!
+Command failed with status (1)
+`;
+const RSPEC_MISSING = `
+An error occurred while loading ./spec/nope_spec.rb. - Did you mean?
+                    rspec ./spec/calc_spec.rb
+
+Failure/Error: __send__(method, file)
+
+LoadError:
+  cannot load such file -- /repo/spec/nope_spec.rb
+# /gems/rspec-core-3.13.6/lib/rspec/core/configuration.rb:2144:in \`load'
+No examples found.
+
+
+Finished in 0.00004 seconds (files took 0.1556 seconds to load)
+0 examples, 0 failures, 1 error occurred outside of examples
+`;
+describe("gate matrix: Bundler lint, RSpec and Minitest (#1493)", () => {
+  const ids = (files: Record<string, string>) =>
+    detectGates(project(files)).map((s) => [s.check.id, s.check.executable, s.check.args.join(" "), s.source]);
+  test("Standard or RuboCop lints before the tests, from the Gemfile or the gemspec it names", () => {
+    expect(ids({ Gemfile: "gem 'rubocop', require: false\ngem 'rspec'\n" })).toEqual([
+      ["rubocop", "bundle", "exec rubocop", "Gemfile"],
+      ["rspec", "bundle", "exec rspec", "Gemfile"],
+    ]);
+    expect(ids({ Gemfile: "group :development do\n  gem \"rubocop-rails\"\n  gem \"standard\"\nend\n", Rakefile: "" }).map(([id]) => id)).toEqual(["standardrb", "rake-test"]);
+    const gem = { Gemfile: "source 'https://rubygems.org'\ngemspec\n", "calc.gemspec": 'Gem::Specification.new do |spec|\n  spec.add_development_dependency "rubocop", "~> 1.60"\n  spec.add_development_dependency("rspec", "~> 3.13")\nend\n' };
+    expect(ids(gem)).toEqual([
+      ["rubocop", "bundle", "exec rubocop", "calc.gemspec"],
+      ["rspec", "bundle", "exec rspec", "calc.gemspec"],
+    ]);
+    // A gemspec the Gemfile does not load is not the bundle.
+    expect(ids({ Gemfile: "gem 'rake'\n", "calc.gemspec": 'spec.add_development_dependency "rubocop"\n' }).map(([id]) => id)).toEqual(["rake-test"]);
+  });
+
+  test("the linter runs per task with its safe autocorrect on the task's file; `bundle exec` is unwrapped", () => {
+    const [lint] = detectGates(project({ Gemfile: "gem 'rubocop'\n" })).map((s) => s.check);
+    expect(isStaticCheck(lint!) && !isWholeUnitCheck(lint!)).toBe(true);
+    expect(fixerCommand(lint!.fix!, "lib/calc.rb")).toEqual({ executable: "bundle", args: ["exec", "rubocop", "-a", "lib/calc.rb"] });
+    const [standard] = detectGates(project({ Gemfile: "gem 'standard'\n" })).map((s) => s.check);
+    expect(fixerCommand(standard!.fix!, "lib/calc.rb")).toEqual({ executable: "bundle", args: ["exec", "standardrb", "--fix", "lib/calc.rb"] });
+    expect(launchedCommand("cmd", ["/d", "/c", "bundle.bat", "exec", "rspec"]).program).toBe("bundle");
+  });
+
+  test("RSpec and Minitest counts, the tests that ran, the failed tests and a stable signature", () => {
+    expect(testCount(RSPEC_FAILED)).toEqual({ tool: "rspec", count: 5 });
+    expect(testsRan(RSPEC_FAILED)).toEqual({ tool: "rspec", count: 3 });
+    expect(failedTests(RSPEC_FAILED)).toEqual({ tool: "rspec", names: ["Calc fails on purpose"] });
+    expect(testCount(MINITEST_FAILED)).toEqual({ tool: "minitest", count: 4 });
+    expect(testsRan(MINITEST_FAILED)).toEqual({ tool: "minitest", count: 3 });
+    expect(failedTests(MINITEST_FAILED)).toEqual({ tool: "minitest", names: ["CalcTest#test_fail", "CalcTest#test_error"] });
+    // Another seed, another order, a test more that passes and other timings: the same failure.
+    const later = MINITEST_FAILED.replace("--seed 1809", "--seed 52011").replace("SF.E", "S.F.E").replace("0.001365s, 2931.0707 runs/s, 1465.5354", "0.002001s, 2498.7 runs/s, 1499.2")
+      .replace("4 runs, 2 assertions", "5 runs, 3 assertions");
+    expect(failureSignature(later, "/repo")).toBe(failureSignature(MINITEST_FAILED, "/repo"));
+    const rspecLater = RSPEC_FAILED.replace(".F**.", ".F**..").replace("0.00714", "0.00911").replace("0.09504", "0.1").replace("5 examples", "6 examples");
+    expect(failureSignature(rspecLater, "/repo")).toBe(failureSignature(RSPEC_FAILED, "/repo"));
+    expect(failureSignature(RSPEC_FAILED.replace("1 failure,", "2 failures,"), "/repo")).not.toBe(failureSignature(RSPEC_FAILED, "/repo"));
+    expect(timedOutFailure(RSPEC_FAILED) && timedOutFailure(MINITEST_FAILED)).toBe(true);
+  });
+
+  test("a spec file that does not load is a build failure, and RSpec ran none", () => {
+    expect(buildRunner(RSPEC_MISSING)).toBe("rspec");
+    expect(testsRan(RSPEC_MISSING)).toEqual({ tool: "rspec", count: 0 });
+  });
+
+  test("an empty run reads as no tests collected; a missing path is the task's that creates it", () => {
+    expect(noTestsCollected("No examples found.\n\n\nFinished in 0.00023 seconds (files took 0.04904 seconds to load)\n0 examples, 0 failures\n")).toBe(true);
+    expect(noTestsCollected("Run options: include {:slow=>true}\n\nAll examples were filtered out\n")).toBe(true);
+    expect(noTestsCollected("Finished in 0.000711s, 0.0000 runs/s, 0.0000 assertions/s.\n\n0 runs, 0 assertions, 0 failures, 0 errors, 0 skips\n")).toBe(true);
+    expect(noTestsCollected("1 runs, 1 assertions, 0 failures, 0 errors, 0 skips")).toBe(false);
+    const tasks = [{ id: "T002", writes: [{ path: "spec/nope_spec.rb", action: "create" }, { path: "test/nope_test.rb", action: "create" }, { path: "lib/nope.rb", action: "create" }] }] as Task[];
+    expect(missingPlannedPaths(RSPEC_MISSING, tasks)).toEqual(["spec/nope_spec.rb"]);
+    expect(missingPlannedPaths("ruby: No such file or directory -- test/nope_test.rb (LoadError)", tasks)).toEqual(["test/nope_test.rb"]);
+    expect(missingPlannedPaths("\nFile does not exist: /repo/test/nope_test.rb\n\nrake aborted!", tasks)).toEqual(["test/nope_test.rb"]);
+    expect(missingPlannedPaths("Error: No such file or directory: /repo/lib/nope.rb\nInspecting 1 file\n", tasks)).toEqual(["lib/nope.rb"]);
+    // A `require` inside a spec file that loads is the spec's own failure.
+    const required = "\nAn error occurred while loading ./spec/nope_spec.rb.\n\nFailure/Error: require_relative \"../lib/missing\"\n\nLoadError:\n  cannot load such file -- /repo/lib/missing\n";
+    expect(missingPlannedPaths(required, tasks)).toEqual([]);
+  });
+
+  test("the affected tests run through RSpec's file arguments and Rake's TEST", () => {
+    const check = (id: string, args: string[]): Check => ({ id, executable: "bundle", args, cwd: ".", timeoutMs: 600000, required: true, scope: "feature", envNames: [], writes: [] });
+    expect(affectedTestCheck([check("rspec", ["exec", "rspec", "--format", "progress"])], ["spec/calc_spec.rb", "lib/calc.rb"])?.args).toEqual(["exec", "rspec", "--format", "progress", "./spec/calc_spec.rb"]);
+    expect(affectedTestCheck([check("rake-test", ["exec", "rake", "test"])], ["test/calc_test.rb"])?.args).toEqual(["exec", "rake", "test", "TEST=test/calc_test.rb"]);
+    expect(affectedTestCheck([check("rake-test", ["exec", "rake", "test"])], ["test/a_test.rb", "test/test_helper.rb", "test/test_b.rb"])?.args).toEqual(["exec", "rake", "test", "TEST={test/a_test.rb,test/test_b.rb}"]);
+  });
+
+  test("a new Ruby file is held to RuboCop's layout cops when the run leaves the gate out (#1837)", () => {
+    const root = project({ Gemfile: "gem 'rubocop'\n", "lib/calc.rb": "def add(a, b) = a + b\n" });
+    expect(formatWrittenChecks(root, [], [{ path: "lib/calc.rb", action: "create" }], (c) => `/usr/bin/${c}`).map((c) => [c.id, [c.executable, ...c.args].join(" "), [c.fix!.executable, ...c.fix!.args].join(" ")])).toEqual([
+      ["rubocop-written", "bundle exec rubocop --only Layout lib/calc.rb", "bundle exec rubocop -a --only Layout"],
+    ]);
+  });
+
+  test("RSpec and Minitest skips, focus and RuboCop suppressions are found; capability guards are not", () => {
+    const before = 'RSpec.describe Calc do\n  it "adds" do\n    expect(Calc.add(1, 2)).to eq(3)\n  end\nend\n';
+    const rules = (path: string, from: string, to: string) => scanTestIntegrity([{ path, before: from, after: to }]).map((f) => `${f.rule}: ${f.detail}`);
+    expect(rules("spec/calc_spec.rb", before, before.replace('  it "adds"', '  xit "adds"'))).toEqual(["skip: added 1 skip, only, todo or ignore marker(s)"]);
+    expect(rules("spec/calc_spec.rb", before, before.replace('it "adds" do', 'it "adds", skip: "later" do'))).toEqual(["skip: added 1 skip, only, todo or ignore marker(s)"]);
+    expect(rules("spec/calc_spec.rb", before, before.replace("  it ", "  fit "))).toEqual(["skip: added 1 skip, only, todo or ignore marker(s)"]);
+    expect(rules("spec/calc_spec.rb", before, before.replace("    expect", '    pending "rounding"\n    expect'))).toEqual(["skip: added 1 skip, only, todo or ignore marker(s)"]);
+    expect(rules("spec/calc_spec.rb", before, before.replace("    expect", '    skip "no symlinks" if Gem.win_platform?\n    expect'))).toEqual([]);
+    const mini = "class CalcTest < Minitest::Test\n  def test_add\n    assert_equal 3, Calc.add(1, 2)\n  end\nend\n";
+    expect(rules("test/calc_test.rb", mini, mini.replace("    assert_equal", "    skip\n    assert_equal"))).toEqual(["skip: added 1 skip, only, todo or ignore marker(s)"]);
+    expect(rules("test/calc_test.rb", mini, mini.replace("    assert_equal 3, Calc.add(1, 2)", "    skip = 3\n    assert_equal skip, Calc.add(1, 2)"))).toEqual([]);
+    expect(rules("lib/calc.rb", "def add(a, b) = a + b\n", "def add(a, b) = a + b # rubocop:disable Style/EndlessMethod\n").map((r) => r.split(":")[0])).toEqual(["suppression"]);
+    expect(rules("spec/calc_spec.rb", before, before.replace('  it "adds" do\n    expect(Calc.add(1, 2)).to eq(3)\n  end\n', ""))[0]).toStartWith("test-count");
+  });
+
+  test("Minitest and RSpec tests are named, and their assertions counted", () => {
+    const before = 'RSpec.describe Calc do\n  it "adds" do\n    expect(Calc.add(1, 2)).to eq(3)\n  end\n  it("subtracts") { expect(Calc.sub(2, 1)).to eq(1) }\nend\n';
+    const removed = scanTestIntegrity([{ path: "spec/calc_spec.rb", before, after: before.replace('  it("subtracts") { expect(Calc.sub(2, 1)).to eq(1) }\n', "") }]);
+    expect(removed.map((f) => `${f.rule}: ${f.detail}`)).toEqual([
+      'test-count: test count dropped from 2 to 1 (removed "subtracts")',
+      "assertions: assertions dropped from 2 to 1 (removed or commented out)",
+    ]);
+    const mini = "class CalcTest < Minitest::Test\n  def test_add\n    assert_equal 3, Calc.add(1, 2)\n    refute_nil Calc\n  end\nend\n";
+    const weaker = scanTestIntegrity([{ path: "test/calc_test.rb", before: mini, after: mini.replace("    refute_nil Calc\n", "") }]);
+    expect(weaker.map((f) => f.rule)).toEqual(["assertions"]);
+  });
+
+  test("the agent profile tests a gem with rake, an RSpec project with rspec and only a Rails app with rails", async () => {
+    expect((await detectProfile(project({ Gemfile: "gemspec\n", Rakefile: "" }))).test).toBe("bundle exec rake test");
+    expect((await detectProfile(project({ Gemfile: "", "spec/a_spec.rb": "" }))).test).toBe("bundle exec rspec");
+    expect((await detectProfile(project({ Gemfile: "gem 'rails'\n", Rakefile: "", "bin/rails": "" }))).test).toBe("bundle exec rails test");
+  });
+
+  test("a swallowed rescue is a quality finding; a handled one is not", () => {
+    const found = (content: string) => checkBuiltinRules([{ path: "lib/load.rb", content, before: null }], {}).map((f) => `${f.rule}:${f.line}`);
+    expect(found("def load(path)\n  File.read(path)\nrescue Errno::ENOENT\nend\n")).toEqual(["ruby-swallowed-exception:3"]);
+    expect(found("def load(path)\n  File.read(path)\nrescue => e\n  nil\nend\n")).toEqual(["ruby-swallowed-exception:3"]);
+    expect(found("value = Integer(text) rescue nil\n")).toEqual(["ruby-swallowed-exception:1"]);
+    expect(found("def load(path)\n  File.read(path)\nrescue Errno::ENOENT => e\n  raise LoadFailed, e.message\nend\n")).toEqual([]);
+    // Ruby's abstract method idiom is not a placeholder (#1679).
+    expect(found("def area\n  raise NotImplementedError\nend\n")).toEqual([]);
   });
 });
 
@@ -2752,6 +2942,29 @@ const available = (needs: string[][]) =>
   });
 
 describe.skipIf(!toolchains)("gate matrix: toolchains", () => {
+  // #1493: the RSpec, Minitest and RuboCop parsers read what the installed tools print.
+  test.skipIf(!available([["rspec", "--version"], ["ruby", "-e", "require 'minitest'"], ["rubocop", "--version"]]))("rspec, minitest and rubocop output reads as their parsers expect (#1493)", () => {
+    const root = project({
+      "lib/calc.rb": "module Calc\n  def self.add(a, b) = a + b\nend\n",
+      "spec/calc_spec.rb": 'require_relative "../lib/calc"\nRSpec.describe Calc do\n  it "adds" do\n    expect(Calc.add(1, 2)).to eq(3)\n  end\n  it "fails" do\n    expect(Calc.add(1, 2)).to eq(4)\n  end\n  xit "waits" do\n  end\nend\n',
+      "test/calc_test.rb": 'require "minitest/autorun"\nrequire_relative "../lib/calc"\nclass CalcTest < Minitest::Test\n  def test_add = assert_equal(3, Calc.add(1, 2))\n  def test_fail = assert_equal(4, Calc.add(1, 2))\n  def test_skip = skip("later")\nend\n',
+      "lib/ugly.rb": "def  ugly( a )\n    a\nend\n",
+      ".rubocop.yml": "AllCops:\n  NewCops: enable\n  SuggestExtensions: false\n  TargetRubyVersion: 3.3\n",
+    });
+    const run = (command: string, args: string[]) => {
+      const result = spawnSync(command, args, { cwd: root, encoding: "utf8", timeout: 120000 });
+      return `${result.stdout}${result.stderr}`;
+    };
+    const rspec = run("rspec", []);
+    expect([testCount(rspec), testsRan(rspec), failedTests(rspec)]).toEqual([{ tool: "rspec", count: 3 }, { tool: "rspec", count: 2 }, { tool: "rspec", names: ["Calc fails"] }]);
+    const minitest = run("ruby", ["test/calc_test.rb"]);
+    expect([testCount(minitest), testsRan(minitest), failedTests(minitest)]).toEqual([{ tool: "minitest", count: 3 }, { tool: "minitest", count: 2 }, { tool: "minitest", names: ["CalcTest#test_fail"] }]);
+    expect(failureSignature(run("ruby", ["test/calc_test.rb"]), root)).toBe(failureSignature(minitest, root));
+    expect(missingPlannedPaths(run("rspec", ["spec/later_spec.rb"]), [{ id: "T002", writes: [{ path: "spec/later_spec.rb", action: "create" }] }] as Task[])).toEqual(["spec/later_spec.rb"]);
+    expect(run("rubocop", ["--only", "Layout", "lib/ugly.rb"])).toContain("Layout/");
+    run("rubocop", ["-a", "--only", "Layout", "lib/ugly.rb"]);
+    expect(readFileSync(join(root, "lib/ugly.rb"), "utf8")).toBe("def ugly(a)\n  a\nend\n");
+  }, 300000);
   test.skipIf(!available([["cargo", "--version"]]))("a cargo init crate reaches approval with the detected cargo gates (#1815)", async () => {
     const files = {
       "Cargo.toml": '[package]\nname = "hexview"\nversion = "0.1.0"\nedition = "2021"\n\n[dependencies]\n',

@@ -17,6 +17,8 @@ interface TestFramework {
   attribute?: string;
   /** One match per assertion. */
   assertions?: string;
+  /** One match per skip, focus or pending marker the framework spells its own way. */
+  skips?: string;
   /** Assertion calls whose diagnostic arguments are not evidence of what a test checks. */
   calls?: readonly AssertionCall[];
   /** A named argument that carries a message, wherever it stands: `msg=`, `because:`. */
@@ -191,6 +193,30 @@ const FRAMEWORKS: readonly TestFramework[] = [
     calls: [{ callee: /^withClue$/, messages: (args) => (args.length ? [0] : []) }],
   },
   {
+    // Ruby calls take no parentheses: `it "adds" do`, `assert_equal 3, sum`.
+    name: "RSpec, Minitest, Test::Unit",
+    languages: ["ruby"],
+    cases: String.raw`^\s*[xf]?(?:it|specify|example|scenario)\b\s*\(?\s*(?:["':]|\{|do\b)|^\s*test\s*\(?\s*["']|^\s*def\s+test_\w*`,
+    named: [
+      {
+        pattern:
+          /^\s*[xf]?(?:it|specify|example|scenario|test)\s*\(?\s*(["'])(?<name>(?:(?!\1)[^\\\n])+)\1/d,
+      },
+      { pattern: /^\s*def\s+(?<name>test_\w+)/d },
+    ],
+    assertions: String.raw`\bexpect\s*\{|\bis_expected\b|\.(?:must|wont)_\w+|\b(?:assert|refute)(?:_\w+)?\b|\bflunk\b`,
+    skips: String.raw`^\s*x(?:it|specify|example|scenario|describe|context|feature)\b|^\s*f(?:it|specify|example|describe|context)\b|^\s*(?:skip|pending)\b(?!\s*[=.:(]\s*[^"'\s)])|,\s*(?::skip\b|skip:\s|:focus\b|focus:\s*true\b)`,
+    calls: [
+      {
+        callee: /^(?:assert|refute|assert_(?:nil|empty|predicate)|refute_(?:nil|empty))$/,
+        messages: from(1),
+      },
+      { callee: /^(?:assert|refute)_raises$/, messages: none },
+      { callee: /^flunk$/, messages: from(0) },
+      { callee: /^(?:assert|refute)_\w+$/, messages: from(2) },
+    ],
+  },
+  {
     name: "xUnit, NUnit, MSTest asserts, FluentAssertions",
     languages: ["csharp"],
     assertions: String.raw`\.Should\s*\(\s*\)`,
@@ -261,6 +287,7 @@ interface Conventions {
   named: NamedTest[];
   attribute: RegExp;
   assertions: RegExp;
+  skips: RegExp;
   calls: AssertionCall[];
   messageArgument: RegExp | null;
 }
@@ -284,6 +311,7 @@ export function testConventions(path: string): Conventions {
     named: frameworks.flatMap((f) => f.named ?? []),
     attribute: new RegExp(join(frameworks.map((f) => f.attribute))),
     assertions: new RegExp(join(frameworks.map((f) => f.assertions)), "g"),
+    skips: new RegExp(join(frameworks.map((f) => f.skips)), "g"),
     // Scoped frameworks first: their rules are more specific than the shared `assert(...)`.
     calls: [
       ...frameworks.filter((f) => f.languages),

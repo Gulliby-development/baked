@@ -324,6 +324,8 @@ const CAPABILITY = new RegExp(
     String.raw`\b(?:ImportError|ModuleNotFoundError|PermissionError)\b`,
     String.raw`\b(?:ErrPermission|EPERM|EACCES)\b`,
     String.raw`\b(?:os\.)?[Gg]ete?uid\s*\(`,
+    // Ruby: `RUBY_PLATFORM`, `Gem.win_platform?`, `RbConfig::CONFIG["host_os"]`, a gem that may be missing.
+    String.raw`\bRUBY_PLATFORM\b|\bGem\.win_platform\?|\bRbConfig::CONFIG\b|\bLoadError\b`,
     // testthat's guards that name the platform or a missing capability, and R's platform checks.
     String.raw`\bskip_(?:on_os|on_cran|on_ci|if_offline|if_not_installed)\s*\(`,
     String.raw`\.Platform\$OS\.type\b|\bSys\.info\s*\(\s*\)\s*\[`,
@@ -337,10 +339,13 @@ const GUARD_LINES = 3;
  * machine cannot do what the test needs keeps the test running where it can, so it is not a
  * skipped failing test. A guard names the capability on the skip's line or in the lines above.
  */
-function unguardedSkips(lines: readonly string[]): number {
+function unguardedSkips(path: string, lines: readonly string[]): number {
+  // The markers a framework of the file's language spells its own way (RSpec `xit "..."`,
+  // Minitest `skip`, #1493), next to the ones read in every file.
+  const own = testConventions(path).skips;
   let total = 0;
   lines.forEach((line, index) => {
-    const skips = line.match(SKIPS)?.length ?? 0;
+    const skips = (line.match(SKIPS)?.length ?? 0) + (line.match(own)?.length ?? 0);
     if (!skips) return;
     const guard = lines.slice(Math.max(0, index - GUARD_LINES), index + 1).join("\n");
     if (!CAPABILITY.test(guard)) total += skips;
@@ -364,6 +369,7 @@ const SUPPRESSIONS = new RegExp(
     // lintr: `# nolint`, `# nolint: object_name_linter.`, `# nolint start` (#1500).
     String.raw`#\s*nolint\b`,
     String.raw`#pragma\s+warning\s+disable\b`,
+    String.raw`#\s*(?:rubocop|standard):(?:disable|todo)\b`,
     // PSScriptAnalyzer, and the same attribute in C#: `[Diagnostics.CodeAnalysis.SuppressMessageAttribute(...)]` (#1498).
     String.raw`\[(?:System\.)?(?:Diagnostics\.CodeAnalysis\.)?SuppressMessage(?:Attribute)?\s*\(`,
   ].join("|"),
@@ -378,6 +384,9 @@ const TEST_HOOKS = new RegExp(
     String.raw`["']pytest["']\s+in\s+sys\.modules`,
     String.raw`\bPYTEST_CURRENT_TEST\b`,
     String.raw`\btesting\.Testing\(\)`,
+    String.raw`\bRails\.env\.test\?`,
+    String.raw`\bENV\[\s*["'](?:RAILS_ENV|RACK_ENV|APP_ENV)["']\s*\]\s*[!=]=\s*["']test["']`,
+    String.raw`\bdefined\?\(\s*(?:RSpec|Minitest)\b`,
   ].join("|"),
   "g",
 );
@@ -744,7 +753,7 @@ export function measureTestIntegrity(
         literalGrew: strengthen && literalText(after) > literalText(before),
         assertsBefore: count(codeBefore, assertionForms),
         assertsAfter: count(codeAfter, assertionForms),
-        skips: unguardedSkips(codeAfter) - unguardedSkips(codeBefore),
+        skips: unguardedSkips(path, codeAfter) - unguardedSkips(path, codeBefore),
         ...checks(),
         names: {
           lost: lost.map(([name, origin]) => [name, origin, removed.includes(name)]),

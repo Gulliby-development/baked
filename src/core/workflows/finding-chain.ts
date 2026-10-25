@@ -1,6 +1,7 @@
 import type { ReproOutcome } from "../verification/repro.js";
 import { type Repro, ReproSchema, type Spec } from "./schemas.js";
 import type { WorkflowStore } from "./store.js";
+import { isTestPath } from "./test-integrity.js";
 
 /**
  * Finding chains (#1959): a review that finds one defect class on one symbol one case at a time
@@ -17,6 +18,12 @@ import type { WorkflowStore } from "./store.js";
  * (`_share`), both Decimal context precision in report.py, were a chain of one each, and F3's
  * corrective cost 641k tokens; R65 md-site F1 (`findDestinationEnd`) and F3 (`renderInline`) were
  * the same with nested inline constructs.
+ *
+ * A reviewer's own `repeatOf` link is also accepted on one file when either finding names no
+ * symbol (#2098): a finding on a test file rarely has one, so R67 ampwhy F4 (a test method,
+ * `repeatOf: F2`) and F2 (`ReaderNumericTest.java`, no symbol) were a chain of one. A repeat
+ * chain on a test file is no symbol rewrite: its corrective is the test sweep
+ * (`corrective: "test-sweep"`), and it has no battery.
  */
 
 /** Findings in a `repeatOf` chain on one file and symbol at which the next corrective rewrites it. */
@@ -141,6 +148,17 @@ const sameSpot = (a: ChainFinding, b: ChainFinding): boolean =>
   sameFamily(a, b);
 
 /**
+ * Whether the reviewer's `repeatOf` link between `a` and `b` joins a chain (#2098): the chain key,
+ * or the same named file when either finding names no symbol. The host's own links (`familyLink`)
+ * keep the key; a link between two different symbols without a shared family stays unjoined.
+ */
+const explicitLink = (a: ChainFinding, b: ChainFinding): boolean =>
+  sameSpot(a, b) ||
+  (a.file !== null &&
+    a.file === b.file &&
+    (symbolKey(a.symbol) === "" || symbolKey(b.symbol) === ""));
+
+/**
  * The latest finding recorded before `current` of `start`'s family and file that a correction
  * other than `start`'s already addressed (#2048): the case a family chain links to when the
  * reviewer's `repeatOf` does not. A finding of the same round has no corrective yet, so two
@@ -169,9 +187,10 @@ function familyLink(
 
 /**
  * The chain of a finding on its file and symbol or family, oldest first and the finding last: its
- * `repeatOf` path while each link is on the same spot, and, where that path ends, the latest
- * earlier addressed finding of its family on its file (`familyLink`). A finding without a symbol
- * or a family is a chain of one.
+ * `repeatOf` path while each link is on the same spot (`explicitLink`: the key, or one file when
+ * either names no symbol, #2098), and, where that path ends, the latest earlier addressed finding
+ * of its family on its file (`familyLink`). A finding without a symbol, a family or a same-file
+ * `repeatOf` is a chain of one.
  */
 export function findingChain(
   all: ReadonlyMap<string, ChainFinding>,
@@ -184,7 +203,7 @@ export function findingChain(
     const linked =
       current.repeatOf && !seen.has(current.repeatOf) ? all.get(current.repeatOf) : undefined;
     const earlier =
-      linked && sameSpot(linked, start) ? linked : familyLink(all, current, start, seen);
+      linked && explicitLink(linked, start) ? linked : familyLink(all, current, start, seen);
     if (!earlier) break;
     chain.unshift(earlier);
     seen.add(earlier.id);
@@ -196,6 +215,7 @@ export function findingChain(
 /**
  * Every finding on the chain's file and symbol or family linked to it by `repeatOf`, in the order
  * they were recorded: the chain and its side branches (R62 md-site F4-2 repeated F3 beside F4).
+ * A side branch is a reviewer's link, so it joins as `findingChain` joins one (`explicitLink`).
  */
 export function chainMembers(
   all: ReadonlyMap<string, ChainFinding>,
@@ -211,7 +231,7 @@ export function chainMembers(
         !ids.has(finding.id) &&
         finding.repeatOf &&
         ids.has(finding.repeatOf) &&
-        sameSpot(finding, head)
+        explicitLink(finding, head)
       ) {
         ids.add(finding.id);
         grew = true;
@@ -280,7 +300,23 @@ export interface ChainRecord {
   threshold: number;
   policy: "on" | "off";
   decision: "rewrite" | "patch";
+  /**
+   * The corrective a rewrite decision opens when it is not a symbol rewrite (#2098): a chain on a
+   * test file sweeps the test files (`testSweepStep`) and has no battery. Absent: a rewrite.
+   */
+  corrective?: "test-sweep";
 }
+
+/** Whether a recorded chain decision rewrites code against a battery (not a test sweep, #2098). */
+export const rewritesSymbol = (record: ChainRecord | null | undefined): record is ChainRecord =>
+  record?.decision === "rewrite" && record.corrective !== "test-sweep";
+
+/**
+ * What a chain's prose names: its symbol, or its file for a chain of reviewer links whose findings
+ * name no symbol (#2098).
+ */
+export const chainSubject = (record: Pick<ChainRecord, "symbol" | "file">): string =>
+  record.symbol || record.file || "the reported code";
 
 /** What `chains/battery/<id>.json` records: each case's outcome and what the host did. */
 export interface BatteryRecord {
@@ -321,19 +357,24 @@ export function chainRecord(
   decide: ChainRule = chainRewriteDecision,
 ): ChainRecord {
   const symbols = [...new Set(chain.map((f) => symbolKey(f.symbol)).filter(Boolean))];
+  const decision = decide(chain.length, policy);
   return {
     schemaVersion: 1,
     taskId,
     findingId: finding.id,
     file: finding.file,
-    symbol: symbolKey(finding.symbol),
+    // A finding without a symbol takes its chain's latest one (#2098).
+    symbol: symbolKey(finding.symbol) || (symbols.at(-1) ?? ""),
     family: finding.family,
     ...(symbols.length > 1 ? { symbols } : {}),
     chain: chain.map((f) => ({ id: f.id, repeatOf: f.repeatOf, repro: f.repro !== undefined })),
     length: chain.length,
     threshold: CHAIN_REWRITE_AT,
     policy,
-    decision: decide(chain.length, policy),
+    decision,
+    ...(decision === "rewrite" && finding.file && isTestPath(finding.file)
+      ? { corrective: "test-sweep" as const }
+      : {}),
   };
 }
 
@@ -358,7 +399,7 @@ export function batteryOf(
   record: ChainRecord,
 ): ChainFinding[] {
   const finding = all.get(record.findingId);
-  if (!finding) return [];
+  if (!finding || record.corrective === "test-sweep") return [];
   // A finding the host opened for a battery case carries that case's repro: one row per input.
   const seen = new Set<string>();
   return chainMembers(all, findingChain(all, finding))
