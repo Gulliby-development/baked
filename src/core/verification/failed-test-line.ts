@@ -33,6 +33,8 @@ export const FAILED_TEST_LINE = new RegExp(
     // (#1490).
     String.raw`^\s*\d+\/\d+ Test +#\d+: .*\*\*\*(?!Skipped|Not Run)\w`,
     String.raw`^\[  FAILED  \] (?!\d+ tests?,)\S`,
+    // dart test `00:03 +4 -1: test/calc_test.dart: adds [E]` (#1494).
+    String.raw`^[\d:]+ \+\d+(?: ~\d+)? -\d+: .+ \[E\]\s*$`,
   ].join("|"),
 );
 

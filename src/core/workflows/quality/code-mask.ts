@@ -143,6 +143,14 @@ const SYNTAX: Record<string, Rule[]> = {
     quoted("'", { multiline: true }),
   ],
   ocaml: [blockComment("(*", "*)"), quoted('"', { multiline: true })],
+  // SQL: `--` and block comments; a doubled quote inside a string closes and reopens it, which
+  // masks the same text, so no escape is read (a backslash is a plain character in standard SQL).
+  // `"…"` quotes an identifier, which is code.
+  sql: [
+    lineComment("--"),
+    blockComment("/*", "*/"),
+    quoted("'", { escape: null, multiline: true }),
+  ],
   // Zig, Solidity and ReScript: C comments and strings, ReScript's backtick templates.
   clike: [...C_COMMENTS, ...C_STRINGS, quoted("`", { multiline: true })],
   // Vue and Svelte components: HTML comments around a JavaScript or TypeScript script block.
@@ -186,6 +194,7 @@ export const MASK_SYNTAX: LanguageRecord<keyof typeof SYNTAX> = {
   solidity: "clike",
   rescript: "clike",
   ocaml: "ocaml",
+  sql: "sql",
 };
 
 const LANGUAGE: Record<string, keyof typeof SYNTAX> = {

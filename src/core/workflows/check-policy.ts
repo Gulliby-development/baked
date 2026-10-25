@@ -101,10 +101,11 @@ function runsAggregateTarget(check: Pick<Check, "executable" | "args">): boolean
  * `dart analyze` and `flutter analyze` resolve every import, so they are whole-unit (#1753), as
  * are PHPStan and Psalm, which load every class a file uses (#1491), and clang-tidy, which compiles
  * each file with the includes of the project's compilation database (#1490); Pint, PHP-CS-Fixer and
- * clang-format format one file at a time.
+ * clang-format format one file at a time. SQLFluff with the dbt templater compiles the whole dbt
+ * project (`ref()` to other models), so its gate, `sqlfluff-dbt`, is too (#1499).
  */
 const WHOLE_UNIT_COMMAND =
-  /\b(?:clippy|vet|tsc|typecheck|mypy|pyright|rustfmt|phpstan|psalm|clang-tidy)\b|\bcargo\s+(?:check|fmt)\b|\b(?:dart|flutter)\s+analyze\b/i;
+  /\b(?:clippy|vet|tsc|typecheck|mypy|pyright|rustfmt|phpstan|psalm|clang-tidy|sqlfluff-dbt)\b|\bcargo\s+(?:check|fmt)\b|\b(?:dart|flutter)\s+analyze\b/i;
 
 export const isWholeUnitCheck = (check: Check): boolean =>
   WHOLE_UNIT_COMMAND.test([check.id, check.executable, ...check.args].join(" "));

@@ -118,6 +118,22 @@ export function diagnosticCount(output: string): OutputCount | null {
       count: tidy.length,
       errors: tidy.filter((m) => m[1] === "error").length,
     };
+  // SQLFluff (#1499): one "L:   1 | P:  10 | LT01 | ..." line per violation, then "All Finished!";
+  // a rule listed under `warnings` prints "WARNING:" after the code, and counts as a warning.
+  if (/^All Finished\b/m.test(output)) {
+    const violations = lines(output, /^L:\s*\d+\s*\|\s*P:\s*\d+\s*\|\s*\w+\s*\|/);
+    const warned = lines(output, /^L:\s*\d+\s*\|\s*P:\s*\d+\s*\|\s*\w+\s*\|\s*WARNING:/);
+    return { tool: "sqlfluff", count: violations, errors: violations - warned };
+  }
+  // dart analyze and flutter analyze: "  error - lib/a.dart:3:14 - ... - invalid_assignment", then
+  // "2 issues found." or "No issues found!". Infos are lints dart analyze exits 0 on.
+  if (
+    /^Analyzing \S.*\.\.\.$/m.test(output) &&
+    /^(?:No issues found!|\d+ issues? found\.)$/m.test(output)
+  ) {
+    const errors = lines(output, /^\s*error - \S+:\d+:\d+ - /);
+    return { tool: "dart", count: errors + lines(output, /^\s*warning - \S+:\d+:\d+ - /), errors };
+  }
   // dotnet build: "    3 Warning(s)" and "    0 Error(s)"
   const warnings = output.match(/^\s*(\d+) Warning\(s\)/m);
   const errors = output.match(/^\s*(\d+) Error\(s\)/m);
@@ -161,6 +177,7 @@ export type TestRunner =
   | "busted"
   | "ctest"
   | "gtest"
+  | "dart"
   | "junit"
   | "tap";
 
@@ -385,6 +402,20 @@ const TEST_COUNTERS: readonly {
       return total - (num(o.match(/^\[ {2}SKIPPED \] (\d+) tests?, listed below:$/m)) ?? 0);
     },
   },
+  {
+    tool: "dart",
+    // dart test and flutter test: "00:02 +12 ~1 -2: Some tests failed.", "00:00 +3: All tests
+    // passed!". A test file that does not load counts as one failure (`-1`), named
+    // "loading test/a_test.dart", and is no test.
+    count: (o) => {
+      const done = dartSummary(o);
+      return done ? done.passed + done.skipped + done.failed - dartLoads(o) : null;
+    },
+    ran: (o) => {
+      const done = dartSummary(o);
+      return done ? done.passed + done.failed - dartLoads(o) : null;
+    },
+  },
   // A language without a parser of its own (#1488): a JUnit XML report printed to the output
   // (`--reporter=junit`), then TAP (busted, bats, prove, node:test, pgTAP).
   {
@@ -415,6 +446,22 @@ const TEST_COUNTERS: readonly {
 
 const num = (match: RegExpMatchArray | null): number | null => (match ? Number(match[1]) : null);
 
+/** The progress prefix of `dart test`: elapsed time, then passed `+N`, skipped `~N`, failed `-N`. */
+const DART_PROGRESS = String.raw`^[\d:]+ \+(\d+)(?: ~(\d+))?(?: -(\d+))?: `;
+/** The same prefix without its groups. */
+const DART_LINE = String.raw`^[\d:]+ \+\d+(?: ~\d+)?(?: -\d+)?: `;
+const DART_SUMMARY = new RegExp(
+  `${DART_PROGRESS}(?:All tests passed!|Some tests failed\\.|All tests skipped\\.)\\s*$`,
+  "gm",
+);
+function dartSummary(o: string): { passed: number; skipped: number; failed: number } | null {
+  const last = [...o.matchAll(DART_SUMMARY)].at(-1);
+  if (!last) return null;
+  return { passed: Number(last[1]), skipped: Number(last[2] ?? 0), failed: Number(last[3] ?? 0) };
+}
+const dartLoads = (o: string): number =>
+  lines(o, new RegExp(`${DART_LINE}loading \\S+ \\[E\\]\\s*$`));
+
 /**
  * The test runners of each supported language whose summary `testCount` reads (#1717, #1733), so
  * the baseline comparison and the failure signature cover the language. A language whose runner
@@ -440,12 +487,14 @@ export const TEST_RUNNERS: LanguageRecord<readonly TestRunner[]> = {
   swift: none("XCTest and swift-testing summaries are not read"),
   lua: ["busted", "tap"],
   elixir: none('ExUnit\'s "N tests, M failures" summary is not read'),
-  dart: none("dart test's summary is not read"),
+  dart: ["dart"],
   zig: none("zig build test prints no count"),
   bash: ["tap"],
   ocaml: none("dune test output has no common summary"),
   objc: none("xcodebuild test summaries are not read"),
   solidity: none("forge test summaries are not read"),
+  // pgTAP through pg_prove prints TAP.
+  sql: ["tap"],
 };
 
 const captured = (output: string, pattern: RegExp): string[] => [
@@ -506,6 +555,9 @@ export const FAILED_TESTS: Record<TestRunner, (output: string) => string[]> = {
       o,
       /^\[ {2}FAILED {2}\] ((?:\w+\/)?\w+(?:\/\d+)?\.\w+(?:\/\w+)?)(?: \(\d+ ms\)|, where .*)?$/gm,
     ),
+  // "00:00 +1 -1: test/calc_test.dart: fails on purpose [E]", not a file that did not load
+  dart: (o) =>
+    captured(o, new RegExp(`${DART_LINE}(?!loading \\S+ \\[E\\])(.+?) \\[E\\]\\s*$`, "gm")),
   // A <testcase> with a <failure> or <error> child.
   junit: (o) =>
     [...o.matchAll(/<testcase\b([^>]*?)(?:\/>|>([\s\S]*?)<\/testcase>)/g)]
@@ -549,8 +601,10 @@ export const BUILD_FAILURES: Record<TestRunner, RegExp> = {
   // "FAIL\texample.com/cidrfold [build failed]", "./fold_test.go:9:2: undefined: Fold"
   go: /^(?:FAIL\s+\S+ \[(?:build|setup) failed\]|\S+\.go:\d+:\d+: .+)$/,
   // "PHP Parse error:  syntax error, unexpected token "}" in /w/tests/SumTest.php on line 9"
-  phpunit: /^(?:PHP )?(?:Parse|Fatal) error: .+$/,
-  pest: /^(?:PHP )?(?:Parse|Fatal) error: .+$/,
+  // PHPUnit 11 catches the parse error of a test file itself: "An error occurred inside PHPUnit.",
+  // then "Message:  Unclosed '{' on line 2" and "Location: /w/tests/SumTest.php:3".
+  phpunit: /^(?:(?:PHP )?(?:Parse|Fatal) error: .+|Location: \S+\.php:\d+)$/,
+  pest: /^(?:(?:PHP )?(?:Parse|Fatal) error: .+|Location: \S+\.php:\d+)$/,
   // "An error occurred while loading ./spec/calc_spec.rb.", "While loading ./spec/a_spec.rb a
   // `raise SyntaxError` occurred, RSpec will now quit.": RSpec then runs no example at all.
   rspec: /^(?:An error occurred while loading \S+.*|While loading \S+ a `raise \w+` occurred.*)$/,
@@ -565,6 +619,9 @@ export const BUILD_FAILURES: Record<TestRunner, RegExp> = {
   // executable: build/sum_test" for a test the build gate did not build (#1490).
   ctest: C_BUILD_FAILURE,
   gtest: C_BUILD_FAILURE,
+  // dart test loads each test file on its own: '  Failed to load "test/a_test.dart":', then the
+  // compile error "test/a_test.dart:3:26: Error: Undefined name 'sum'.", or "Does not exist."
+  dart: /^\s*Failed to load "[^"]+":.*$/,
   // Gradle: "> Task :compileTestJava FAILED", "AppTest.java:12: error: cannot find symbol"
   junit: /^(?:> Task :\S*[cC]ompile\S* FAILED|.+\.(?:java|kt):\d+: error: .+)$/,
   // "Bail out! Cannot find module"
@@ -725,6 +782,16 @@ const GROWING_COUNTS: [RegExp, string][] = [
   [/\b[\d.]+ (runs|assertions)\/s\b/g, "<n> $1/s"],
   // The random order seed of RSpec and Minitest: "Randomized with seed 1809", "--seed 1809".
   [/\b(seed|--seed) \d+\b/g, "$1 <n>"],
+  // dart test prints a progress line as each test starts (#1494): only the failures, their
+  // summary and its failed count stay, the passed and skipped counts go.
+  [
+    /^[\d:]+ \+\d+(?: ~\d+)?(?: -\d+)?: (?!.*\[E\]\s*$)(?!(?:All tests passed!|Some tests failed\.|All tests skipped\.)\s*$).*(?:\n|$)/gm,
+    "",
+  ],
+  [/^[\d:]+ \+\d+(?: ~\d+)?( -\d+)?: /gm, "+<n>$1: "],
+  [/^\s*Skip: .*(?:\n|$)/gm, ""],
+  // dart format: "Formatted 3 files (1 changed) in 0.01 seconds."
+  [/\bFormatted \d+ files? \((\d+) changed\)/g, "Formatted <n> files ($1 changed)"],
   // The progress line of RSpec, Minitest and RuboCop, one character per example or file.
   [/^[.*CEFRSW]+$\n?/gm, ""],
   [/^(\s*)\d+ (pass|skip|todo)$/gm, "$1<n> $2"],
@@ -768,6 +835,13 @@ const GROWING_COUNTS: [RegExp, string][] = [
   // clang-tidy's progress line per file and its count of warnings in headers it did not report.
   [/^\[\d+\/\d+\] Processing file .*(?:\n|$)/gm, ""],
   [/^\d+ warnings? generated\.(?:\n|$)/gm, ""],
+  // TAP::Harness (prove, pg_prove) summarizes with totals, test numbers and CPU times (#1499):
+  // "Failed 1/2 subtests", "(Wstat: 0 Tests: 2 Failed: 1)", "  Failed test:  2",
+  // "Files=1, Tests=2,  0 wallclock secs ( 0.01 usr + ...)". The failed counts stay.
+  [/\bFailed (\d+)\/\d+ subtests\b/g, "Failed $1/<n> subtests"],
+  [/\(Wstat: (\d+) Tests: \d+ Failed: (\d+)\)/g, "(Wstat: $1 Tests: <n> Failed: $2)"],
+  [/^(\s*Failed tests?:)\s+[\d, -]+$/gm, "$1 <n>"],
+  [/^Files=\d+, Tests=\d+,.*$/gm, "Files=<n>, Tests=<n>"],
 ];
 
 /**

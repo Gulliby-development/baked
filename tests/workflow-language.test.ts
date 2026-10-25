@@ -40,6 +40,7 @@ describe("project language", () => {
     // A Ruby application has a Gemfile; a gem may have only its gemspec (#1493).
     expect(detectLanguages(workspace({ Gemfile: "gem 'rspec'\n" }))).toEqual(["ruby"]);
     expect(detectLanguages(workspace({ "calc.gemspec": "Gem::Specification.new\n" }))).toEqual(["ruby"]);
+    expect(detectLanguages(workspace({ "pubspec.yaml": "name: calc\n" }))).toEqual(["dart"]);
     expect(detectLanguages(workspace({ "package.json": "{}" }))).toEqual([]);
   });
   test(".NET solutions rank before projects", () => {

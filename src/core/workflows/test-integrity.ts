@@ -299,6 +299,8 @@ const SKIPS = new RegExp(
     // PHPUnit and Pest (#1491).
     String.raw`->markTest(?:Skipped|Incomplete)\s*\(`,
     String.raw`->(?:skip|todo)\s*\(`,
+    // pgTAP: `SELECT skip('needs pg 16', 2)`, `SELECT todo_start('...')` (#1499).
+    String.raw`\b(?:SELECT|select)\s+(?:skip|todo_start)\s*\(`,
   ].join("|"),
   "g",
 );
@@ -331,6 +333,8 @@ const CAPABILITY = new RegExp(
     String.raw`\buname\b|\$\{?OSTYPE\b|\bcommand\s+-v\b|\btype\s+-P\b|^\s*hash\s+\w`,
     // C and C++: the platform macros of a preprocessor guard (#1490).
     String.raw`\b(?:_WIN32|_WIN64|_MSC_VER|__APPLE__|__linux__|__unix__|__FreeBSD__|__MINGW32__)\b`,
+    // Dart: `Platform.isWindows`, `Platform.operatingSystem`, Flutter's `kIsWeb` (#1494).
+    String.raw`\bPlatform\.(?:is[A-Z]\w*|operatingSystem)\b|\bkIsWeb\b`,
   ].join("|"),
 );
 /** Lines above a skip that its guard condition may span. */
@@ -362,6 +366,8 @@ const SUPPRESSIONS = new RegExp(
     String.raw`\bbiome-ignore\b`,
     String.raw`#\s*type:\s*ignore\b`,
     String.raw`#\s*noqa\b`,
+    // SQLFluff (#1499).
+    String.raw`--\s*noqa\b`,
     String.raw`#\s*pragma:\s*no cover\b`,
     String.raw`#!?\[allow\(`,
     String.raw`@SuppressWarnings\b`,
@@ -379,6 +385,7 @@ const SUPPRESSIONS = new RegExp(
     // clang-tidy, and GCC's and Clang's diagnostic pragmas (#1490).
     String.raw`//\s*NOLINT(?:NEXTLINE|BEGIN)?\b`,
     String.raw`#\s*pragma\s+(?:GCC|clang)\s+diagnostic\s+ignored\b`,
+    String.raw`//\s*ignore(?:_for_file)?:\s*\w`,
   ].join("|"),
   "g",
 );
@@ -394,6 +401,8 @@ const TEST_HOOKS = new RegExp(
     String.raw`\bRails\.env\.test\?`,
     String.raw`\bENV\[\s*["'](?:RAILS_ENV|RACK_ENV|APP_ENV)["']\s*\]\s*[!=]=\s*["']test["']`,
     String.raw`\bdefined\?\(\s*(?:RSpec|Minitest)\b`,
+    // flutter test sets FLUTTER_TEST: `Platform.environment.containsKey('FLUTTER_TEST')` (#1494).
+    String.raw`\bFLUTTER_TEST\b`,
   ].join("|"),
   "g",
 );

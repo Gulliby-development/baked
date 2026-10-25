@@ -170,6 +170,8 @@ try {
     if (Test-Path $grammars) {
         Get-ChildItem $grammars -Filter *.wasm | Copy-Item -Destination (Join-Path $depsDir "wasm") -Force
     }
+    # Grammars tree-sitter-wasms lacks (SQL, #1499), vendored with their sources in vendor/tree-sitter.
+    Get-ChildItem (Join-Path $repoRoot "vendor/tree-sitter") -Filter *.wasm | Copy-Item -Destination (Join-Path $depsDir "wasm") -Force
     Write-Host "    OK wasm"
 
     $opentuiAssets = Join-Path $repoRoot "node_modules/@opentui/core/assets"

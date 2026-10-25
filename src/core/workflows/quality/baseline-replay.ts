@@ -177,6 +177,7 @@ export const REPLAY_TARGETS: Record<
     none: "CTest runs each test executable on its own; a build failure is the build gate's",
   },
   gtest: { none: "a GoogleTest binary builds as one target" },
+  dart: { none: "dart test loads and runs each test file on its own" },
   go: { none: "go test builds each package on its own, and a package's files build together" },
   // A collection error aborts the session; this flag collects and runs the other files, and each
   // file that does not collect is named in an "ERROR collecting" line.

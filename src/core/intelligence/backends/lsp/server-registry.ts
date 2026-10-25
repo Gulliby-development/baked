@@ -81,6 +81,11 @@ const SERVER_CANDIDATES: Record<string, ServerCandidate[]> = {
   ],
   ocaml: [{ command: "ocamllsp", args: [] }],
   vue: [{ command: "vue-language-server", args: ["--stdio"] }],
+  // sqls reads its database connections from its own config; without one it still parses (#1499).
+  sql: [
+    { command: "sqls", args: [] },
+    { command: "sql-language-server", args: ["up", "--method", "stdio"] },
+  ],
 };
 
 /**

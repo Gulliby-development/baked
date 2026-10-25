@@ -238,6 +238,14 @@ export const PLACEHOLDERS: LanguageRecord<Placeholder> = {
   ),
   rescript: statement(failing("failwith|Js\\.Exn\\.raiseError")),
   solidity: statement(failing("revert")),
+  // PL/pgSQL `RAISE EXCEPTION 'not implemented'`, T-SQL `THROW 50000, 'not implemented', 1` and
+  // `RAISERROR('not implemented', 16, 1)`, MySQL `SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = '…'`.
+  sql: statement(
+    new RegExp(
+      String.raw`\b(?:raise\s+(?:exception\s*)?|throw\s+\d+\s*,\s*|raiserror\s*\(\s*|message_text\s*=\s*)N?'${NOT_IMPLEMENTED}`,
+      "i",
+    ),
+  ),
   cpp: anyOf(
     statement(THROW_NEW),
     statement(new RegExp(String.raw`throw\s+std::\w+\(\s*"${NOT_IMPLEMENTED}`, "i")),
@@ -538,7 +546,7 @@ export const BUILTIN_RULES: readonly QualityRule[] = [
     message: "A new lint suppression hides a finding instead of fixing it",
     fix: "Fix what the linter reports, or explain on the same line why the rule does not apply.",
     match: lineRule(
-      /(?:eslint-disable|biome-ignore|oxlint-disable|#\s*noqa\b|#\s*type:\s*ignore|#\s*pylint:\s*disable|\/\/\s*nolint\b|#!?\[allow\(|@SuppressWarnings\(|#pragma\s+warning\s+disable|NOSONAR|#\s*(?:rubocop|standard):(?:disable|todo)\b|@phpstan-ignore|@psalm-suppress\b|--\s*luacheck:\s*(?:ignore|no\s|push\s+ignore)|--\s*selene:\s*allow\b|#\s*shellcheck\s+disable=|\/\/\s*NOLINT(?:NEXTLINE|BEGIN)?\b|#\s*pragma\s+(?:GCC|clang)\s+diagnostic\s+ignored\b)/,
+      /(?:eslint-disable|biome-ignore|oxlint-disable|#\s*noqa\b|#\s*type:\s*ignore|#\s*pylint:\s*disable|\/\/\s*nolint\b|#!?\[allow\(|@SuppressWarnings\(|#pragma\s+warning\s+disable|NOSONAR|#\s*(?:rubocop|standard):(?:disable|todo)\b|@phpstan-ignore|@psalm-suppress\b|--\s*luacheck:\s*(?:ignore|no\s|push\s+ignore)|--\s*selene:\s*allow\b|\/\/\s*ignore(?:_for_file)?:\s*\w|#\s*shellcheck\s+disable=|\/\/\s*NOLINT(?:NEXTLINE|BEGIN)?\b|#\s*pragma\s+(?:GCC|clang)\s+diagnostic\s+ignored\b)/,
     ),
   },
   {

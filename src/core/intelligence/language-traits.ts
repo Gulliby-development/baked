@@ -37,6 +37,9 @@ export const TEST_CONVENTIONS: LanguageRecord<RegExp> = {
   svelte: none("Svelte components are tested from `.spec.ts` or `.test.ts` files"),
   rescript: /_test\.resi?$|Test\.resi?$/,
   solidity: /\.t\.sol$/,
+  // pgTAP and dbt keep tests in a `test/` or `tests/` directory (the shared rule); a file of its
+  // own is `test_name.sql` or `name_test.sql`.
+  sql: /(?:^|\/)test_[^/]*\.sql$|_test\.sql$/i,
 };
 
 /**
@@ -76,6 +79,8 @@ export const TEST_MARKERS: LanguageRecord<RegExp> = {
   svelte: none("Svelte components are tested from `.spec.ts` or `.test.ts` files"),
   rescript: /\b(?:Jest|Vitest|Zora|Ava|RescriptMocha)\b|^\s*(?:test|describe|it)\s*\(/m,
   solidity: none("`.t.sol` is Foundry's own rule, never a plain word"),
+  // pgTAP's plan and assertions, tSQLt's test classes and assertions.
+  sql: /\b(?:plan|no_plan)\s*\(\s*\d*\s*\)|\bselect\s+\*?\s*(?:from\s+)?(?:ok|is|isnt|results_eq|throws_ok|lives_ok|has_table|has_column)\s*\(|\btSQLt\.\w+/i,
 };
 
 /** Build and package manifests by file name, one row per supported language. */
@@ -106,6 +111,7 @@ export const MANIFEST_NAMES: LanguageRecord<RegExp> = {
   svelte: none("a Svelte project is an npm package: the JavaScript row names its manifests"),
   rescript: /^rescript\.json$|^bsconfig\.json$/i,
   solidity: /^(?:foundry\.toml|hardhat\.config\.[cm]?[jt]s|remappings\.txt)$/i,
+  sql: /^(?:dbt_project\.yml|\.sqlfluff)$/i,
 };
 
 /**
@@ -131,7 +137,6 @@ interface LanguageTraits {
 }
 
 const OTHER_LANGUAGE_TRAITS: Partial<Record<Language, LanguageTraits>> = {
-  sql: { source: true },
   css: { source: true },
   html: { source: true },
   makefile: { manifests: /^(?:GNU)?Makefile$/i },

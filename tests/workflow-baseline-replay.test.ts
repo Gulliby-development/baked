@@ -38,6 +38,7 @@ const FAILURES = [
   // RSpec 3.13 and Minitest 5.20 through `rake test` (#1493).
   { runner: "rspec", output: "Finished in 0.00714 seconds (files took 0.09504 seconds to load)\n5 examples, 1 failure, 2 pending\n\nFailed examples:\n\nrspec ./spec/calc_spec.rb:6 # Calc fails on purpose\n", name: "Calc fails on purpose" },
   { runner: "minitest", output: "  1) Failure:\nCalcTest#test_fail [/repo/test/calc_test.rb:8]:\nExpected: 4\n  Actual: 3\n\n  2) Error:\nCalcTest#test_error:\nRuntimeError: boom\n\n4 runs, 2 assertions, 1 failures, 1 errors, 1 skips", name: "CalcTest#test_error" },
+  { runner: "dart", output: "00:00 +0: test/calc_test.dart: adds\n00:00 +1 -1: test/calc_test.dart: fails on purpose [E]\n  Expected: <4>\n    Actual: <3>\n00:00 +2 ~1 -1: Some tests failed.\n", name: "test/calc_test.dart: fails on purpose" },
 ] as const;
 
 /**
@@ -55,6 +56,7 @@ const BUILD_ERRORS = [
   { runner: "dotnet", output: "/repo/tests/ParserTests.cs(12,5): error CS1501: No overload for method 'Run' takes 7 arguments [/repo/tests/Tests.csproj]\n\nBuild FAILED.", line: "/repo/tests/ParserTests.cs(12,5): error CS1501: No overload for method 'Run' takes 7 arguments [/repo/tests/Tests.csproj]" },
   { runner: "maven", output: "[INFO] --- compiler:3.13.0:testCompile (default-testCompile) @ linehunk ---\n[ERROR] COMPILATION ERROR : \n[ERROR] /repo/src/test/java/app/StdinPatchTest.java:[31,20] method run in class app.Applier cannot be applied to given types;\n[INFO] BUILD FAILURE", line: "[ERROR] /repo/src/test/java/app/StdinPatchTest.java:[31,20] method run in class app.Applier cannot be applied to given types;" },
   { runner: "phpunit", output: "PHP Parse error:  syntax error, unexpected end of file in /repo/tests/SumTest.php on line 3\n", line: "PHP Parse error:  syntax error, unexpected end of file in /repo/tests/SumTest.php on line 3" },
+  { runner: "phpunit", output: "An error occurred inside PHPUnit.\n\nMessage:  Unclosed '{' on line 2\nLocation: /repo/tests/SumTest.php:3\n\n#0 /repo/vendor/phpunit/phpunit/src/Runner/TestSuiteLoader.php(49): load()\n", line: "Location: /repo/tests/SumTest.php:3" },
   { runner: "pest", output: "PHP Fatal error:  Cannot redeclare App\\sum() in /repo/tests/SumTest.php on line 4\n", line: "PHP Fatal error:  Cannot redeclare App\\sum() in /repo/tests/SumTest.php on line 4" },
   // busted 2.2.0 (#1495): a spec file that does not parse, then one whose top level fails.
   { runner: "busted", output: "*\n0 successes / 0 failures / 1 error / 0 pending : 0.0012 seconds\n\nError -> spec/broken_spec.lua:3: <name> or '...' expected near 'end'\nspec/broken_spec.lua\n", line: "Error -> spec/broken_spec.lua:3: <name> or '...' expected near 'end'" },
@@ -62,6 +64,7 @@ const BUILD_ERRORS = [
   { runner: "gtest", output: "/w/tests/sum_test.cpp:5:15: error: 'sum' was not declared in this scope\n    5 |   EXPECT_EQ(sum(1, 2), 3);\n      |               ^~~\ngmake[2]: *** [CMakeFiles/sum_test.dir/build.make:76: CMakeFiles/sum_test.dir/tests/sum_test.cpp.o] Error 1\n", line: "/w/tests/sum_test.cpp:5:15: error: 'sum' was not declared in this scope" },
   { runner: "rspec", output: "\nAn error occurred while loading ./spec/broken_spec.rb. - Did you mean?\n                    rspec ./spec/calc_spec.rb\n\nFailure/Error: require_relative \"../lib/missing\"\n\nLoadError:\n  cannot load such file -- /repo/lib/missing\n# ./spec/broken_spec.rb:1:in `require_relative'\n\nFinished in 0.00007 seconds (files took 0.09928 seconds to load)\n0 examples, 0 failures, 1 error occurred outside of examples\n", line: "An error occurred while loading ./spec/broken_spec.rb. - Did you mean?" },
   { runner: "minitest", output: "<internal:/opt/ruby/lib/ruby/3.3.0/rubygems/core_ext/kernel_require.rb>:136:in `require': cannot load such file -- missing_lib (LoadError)\n\tfrom /repo/test/broken_test.rb:2:in `<top (required)>'\nrake aborted!\nCommand failed with status (1)", line: "<internal:/opt/ruby/lib/ruby/3.3.0/rubygems/core_ext/kernel_require.rb>:136:in `require': cannot load such file -- missing_lib (LoadError)" },
+  { runner: "dart", output: "00:00 +0 -1: loading test/broken_test.dart [E]\n  Failed to load \"test/broken_test.dart\":\n  test/broken_test.dart:3:26: Error: Undefined name 'sum'.\n00:00 +1 -1: Some tests failed.\n", line: "  Failed to load \"test/broken_test.dart\":" },
   { runner: "junit", output: "> Task :compileTestJava FAILED\n/repo/src/test/java/app/StdinPatchTest.java:31: error: method run in class Applier cannot be applied to given types;\nBUILD FAILED in 2s", line: "> Task :compileTestJava FAILED" },
 ] as const;
 

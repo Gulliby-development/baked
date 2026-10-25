@@ -257,6 +257,21 @@ const FRAMEWORKS: readonly TestFramework[] = [
     skips: String.raw`\bGTEST_SKIP\s*\(|\bDISABLED_\w|\bSKIP\s*\(|\bTEST_IGNORE(?:_MESSAGE)?\s*\(|^\s*skip\s*\(\s*\)|\bTEST_CASE\s*\([^)\n]*"[^"\n]*\[\.[^\]\n]*\]`,
   },
   {
+    // package:test and flutter_test. `test("...")`, `group` and `expect(actual, matcher)` are read
+    // by the JavaScript row above; the matcher is what the test checks, and the reason is named.
+    name: "package:test, flutter_test",
+    languages: ["dart"],
+    cases: String.raw`(?:^|[^.\w$])testWidgets\s*\(`,
+    named: [{ pattern: /(?:^|[^.\w$])testWidgets\s*\(\s*(["'])(?<name>(?:(?!\1)[^\\\n])+)\1/d }],
+    assertions: String.raw`\bexpectLater\s*\(|(?:^|[^.\w$])fail\s*\(`,
+    skips: String.raw`\bskip:\s*(?!false\b|null\b)\S|@Skip\b|\bsolo:\s*true\b|\bmarkTestSkipped\s*\(`,
+    calls: [
+      { callee: /^(?:expect|expectLater)$/, messages: none },
+      { callee: /^fail$/, messages: from(0) },
+    ],
+    messageArgument: String.raw`^\s*reason\s*:`,
+  },
+  {
     name: "xUnit, NUnit, MSTest asserts, FluentAssertions",
     languages: ["csharp"],
     assertions: String.raw`\.Should\s*\(\s*\)`,
