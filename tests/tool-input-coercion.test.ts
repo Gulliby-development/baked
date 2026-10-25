@@ -13,6 +13,7 @@ import {
   KEPT_TYPES,
 } from "../src/core/agents/tool-input-coercion.js";
 import { getProvider } from "../src/core/llm/providers/index.js";
+import { MemoryManager } from "../src/core/memory/manager.js";
 import { buildTools } from "../src/core/tools/index.js";
 import { NativeAgentExecutor, outputSchemas } from "../src/core/workflows/agent-executor.js";
 import { advertisedSchema } from "../src/core/workflows/host-constants.js";
@@ -144,7 +145,10 @@ describe("every structured tool the host validates has its field types in COERCI
   test("the registry's tools", async () => {
     const root = mkdtempSync(join(tmpdir(), "baked-coerce-"));
     cleanups.push(() => rmSync(root, { recursive: true, force: true }));
-    const tools = buildTools(root) as Record<string, { inputSchema?: unknown }>;
+    // The memory database is closed before the directory goes, which Windows requires.
+    const memoryManager = new MemoryManager(root, join(root, "global"));
+    cleanups.push(() => memoryManager.close());
+    const tools = buildTools(root, undefined, { memoryManager }) as Record<string, { inputSchema?: unknown }>;
     let checked = 0;
     for (const [name, registered] of Object.entries(tools)) {
       if (!registered?.inputSchema) continue;
