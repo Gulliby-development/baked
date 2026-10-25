@@ -344,7 +344,7 @@ export function failureSignature(output: string): string {
  * it is no defect of the code (#1031, #1208).
  */
 export function noTestsCollected(output: string): boolean {
-  return /\bno tests ran\b|\bcollected 0 items\b|\bno tests? (?:files? )?found\b|\bno test files\b|\bno files were found in testpaths\b|\b0 test files matching\b|\bdid not discover any tests to execute\b|\bno tests to run\b|\bdid not match any directory\/file\b|\btest directory "?test"? not found\b/i.test(
+  return /\bno tests ran\b|\bcollected 0 items\b|\bno tests? (?:files? )?found\b|\bno test files\b|\bno files were found in testpaths\b|\b0 test files matching\b|\bdid not discover any tests to execute\b|\bno tests to run\b|\bdid not match any directory\/file\b|\btest directory "?test"? not found\b|^Result: NOTESTS\b/im.test(
     output,
   );
 }
@@ -372,6 +372,11 @@ export const MISSING_PATH_LINES: readonly { tool: string; line: RegExp }[] = [
   { tool: "go", line: /"(\S+?)" matched no packages/ },
   { tool: "go", line: /\bdirectory\s+(\S+)\s+(?:does not exist|not found)/ },
   { tool: "luacheck", line: /^Checking\s+(\S+)\s+I\/O error/ },
+  // "User Error: Specified path does not exist. Check it/they exist(s): models/stg_orders.sql."
+  {
+    tool: "sqlfluff",
+    line: /\bSpecified path does not exist\. Check it\/they exist\(s\): (\S+?)[.,]?\s*$/,
+  },
 ];
 
 /** Whether an E902 error comes just before ruff's `-->` location line at `index`. */

@@ -26,6 +26,8 @@ describe("missingPlannedPaths: the planned files under a path a gate says does n
     ["go test", "stat /work/app/tests: directory not found"],
     ["go vet", 'go: warning: "./tests/..." matched no packages\nno packages to vet'],
     ["luacheck", "Checking tests                                    I/O error\n\nTotal: 0 warnings / 0 errors in 0 files, couldn't check 1 file"],
+    // Pasted from sqlfluff 4.4.0 (#1499).
+    ["sqlfluff", "\nUser Error: Specified path does not exist. Check it/they exist(s): tests."],
   ] as const)
     test(tool, () => expect(missingPlannedPaths(output, tasks)).toEqual(tests));
 

@@ -47,6 +47,7 @@ import { baselineRegression, diagnosticCount, failureSignature, testCount, tests
 import { baselineDebt, baselineKeys } from "../src/core/verification/task-end-check.js";
 import { plannedWrittenTests, writtenTestsCheck } from "../src/core/workflows/affected-tests.js";
 import { launchedCommand } from "../src/core/workflows/launcher.js";
+import { toolchainCommand } from "../src/core/workflows/toolchain.js";
 import { type HostEdit, hostOnlyEvidence, plannerGraph } from "../src/core/workflows/host-edits.js";
 import { defaultWorkflowPolicy } from "../src/core/workflows/defaults.js";
 import { sizePlan, splitTestTasks } from "../src/core/workflows/sizing.js";
@@ -959,6 +960,79 @@ describe("gate matrix: unsafe fixer tiers (#2095)", () => {
     expect(ruff && fixerTierPaths(ruff, 1, files)).toEqual(["tests/test_fields.py"]);
     // A person's own unsafe tier without a scope keeps every file.
     expect(fixerTierPaths({}, 1, files)).toEqual(files);
+  });
+});
+
+// #1499: SQLFluff lints a project's SQL per file and fixes the task's file; with the dbt templater
+// it compiles the whole dbt project. A dbt project's `dbt build` needs its database profile.
+describe("gate matrix: SQLFluff and dbt (#1499)", () => {
+  const LINT = "sqlfluff lint .";
+  const ids = (files: Record<string, string>) =>
+    detectGates(project(files)).map((s) => [s.check.id, [s.check.executable, ...s.check.args].join(" "), s.source, s.preselected]);
+  test("each SQLFluff config gets the lint gate with its fixer; nothing without one", () => {
+    expect(ids({ ".sqlfluff": "[sqlfluff]\ndialect = postgres\n" })).toEqual([["sqlfluff", LINT, ".sqlfluff", true]]);
+    expect(ids({ "pyproject.toml": '[tool.sqlfluff.core]\ndialect = "postgres"\n' })).toEqual([["sqlfluff", LINT, "pyproject.toml [tool.sqlfluff]", true]]);
+    expect(ids({ "setup.cfg": "[sqlfluff]\ndialect = ansi\n" })).toEqual([["sqlfluff", LINT, "setup.cfg [sqlfluff]", true]]);
+    expect(ids({ "tox.ini": "[sqlfluff:rules]\ncapitalisation_policy = upper\n" })).toEqual([["sqlfluff", LINT, "tox.ini [sqlfluff]", true]]);
+    expect(ids({ "migrations/001_init.sql": "CREATE TABLE t (id INT);\n" })).toEqual([]);
+    expect(ids({ "pyproject.toml": "[tool.sqlfluffy]\n" })).toEqual([]);
+    const [lint] = detectGates(project({ ".sqlfluff": "[sqlfluff]\ndialect = postgres\n" })).map((s) => s.check);
+    expect(lint?.fix).toEqual({ executable: "sqlfluff", args: ["fix"] });
+  });
+
+  test("the dbt templater makes the lint gate whole-unit; a dbt project offers dbt build unselected", () => {
+    const dbt = { ".sqlfluff": "[sqlfluff]\ndialect = postgres\ntemplater = dbt\n", "dbt_project.yml": "name: shop\n" };
+    expect(ids(dbt)).toEqual([
+      ["sqlfluff-dbt", LINT, ".sqlfluff, templater = dbt", true],
+      ["dbt-build", "dbt build", "dbt_project.yml", false],
+    ]);
+    expect(ids({ "dbt_project.yml": "name: shop\n" })).toEqual([["dbt-build", "dbt build", "dbt_project.yml", false]]);
+    const checks = detectGates(project(dbt)).map((s) => s.check);
+    const byId = (id: string) => checks.find((c) => c.id === id) as Check;
+    expect(isStaticCheck(byId("sqlfluff-dbt")) && isWholeUnitCheck(byId("sqlfluff-dbt"))).toBe(true);
+    expect(isStaticCheck(byId("dbt-build"))).toBe(false);
+  });
+
+  test("SQLFluff runs in the project's Python environment, and on Windows as a plain program", () => {
+    const [lint] = detectGates(project({ ".sqlfluff": "[sqlfluff]\n", "uv.lock": "" })).map((s) => s.check);
+    expect(lint && [lint.executable, ...lint.args]).toEqual(["uv", "run", "sqlfluff", "lint", "."]);
+    expect(lint?.fix).toEqual({ executable: "uv", args: ["run", "sqlfluff", "fix"] });
+    expect(toolchainCommand(lint?.executable ?? "", lint?.args ?? []).program).toBe("sqlfluff");
+    // pip installs `sqlfluff.exe` on Windows, which `cmd /d /c` may still wrap.
+    expect(launchedCommand("cmd", ["/d", "/c", "sqlfluff.exe", "lint", "."]).program).toBe("sqlfluff");
+  });
+
+  test("the lint gate covers each task's SQL and its fixer takes the task's file", () => {
+    const checks = detectGates(project({ ".sqlfluff": "[sqlfluff]\n" })).map((s) => s.check);
+    const lint = checks[0] as Check;
+    expect(isStaticCheck(lint) && !isWholeUnitCheck(lint)).toBe(true);
+    expect(fixerCommand(lint.fix!, "models/stg_orders.sql")).toEqual({ executable: "sqlfluff", args: ["fix", "models/stg_orders.sql"] });
+    const covering = (path: string) =>
+      coveringChecks({ checks } as RunPolicy, { writes: [{ path, action: "create" }] }).map((c) => c.id);
+    expect(covering("models/stg_orders.sql")).toEqual(["sqlfluff"]);
+    expect(covering("README.md")).toEqual([]);
+  });
+
+  // Pasted from sqlfluff 4.4.0 (dialect postgres, `warnings = LT01`).
+  const LINT_OUTPUT =
+    "== [models/bad.sql] FAIL\nL:   1 | P:   1 | LT09 | Select targets should be on a new line unless there is\n                       | only one select target. [layout.select_targets]\nL:   1 | P:  10 | LT01 | WARNING: Expected single whitespace between comma ','\n                       | and naked identifier. [layout.spacing]\nAll Finished!\n";
+  test("the lint count splits errors from warnings, and the signature keeps each violation", () => {
+    expect(diagnosticCount(LINT_OUTPUT)).toEqual({ tool: "sqlfluff", count: 2, errors: 1 });
+    expect(diagnosticCount("All Finished!\n")).toEqual({ tool: "sqlfluff", count: 0, errors: 0 });
+    expect(failureSignature(LINT_OUTPUT, "/repo")).toBe(LINT_OUTPUT.trim());
+  });
+
+  // Pasted from prove 3.44 (TAP::Harness, which pg_prove runs): one test more passes in the second.
+  const PROVE = (tests: number, failed: number) =>
+    `t/sum.sql .. \nFailed 1/${tests} subtests \n\nTest Summary Report\n-------------------\nt/sum.sql (Wstat: 0 Tests: ${tests} Failed: 1)\n  Failed test:  ${failed}\nFiles=1, Tests=${tests},  0 wallclock secs ( 0.01 usr +  0.00 sys =  0.01 CPU)\nResult: FAIL\n`;
+  test("pg_prove's test count, a signature without its totals and CPU times, and an empty run", () => {
+    expect(testCount(PROVE(2, 2))).toEqual({ tool: "tap", count: 2 });
+    expect(failureSignature(PROVE(2, 2), "/repo")).toBe(failureSignature(PROVE(3, 3), "/repo"));
+    expect(failureSignature(PROVE(2, 2).replace("0.01 usr", "0.03 usr"), "/repo")).toBe(failureSignature(PROVE(2, 2), "/repo"));
+    // A second failing test is a new failure.
+    expect(failureSignature(PROVE(2, 2), "/repo")).not.toBe(failureSignature(PROVE(2, 2).replaceAll("Failed: 1", "Failed: 2"), "/repo"));
+    expect(noTestsCollected("Files=0, Tests=0,  0 wallclock secs ( 0.00 usr +  0.00 sys =  0.00 CPU)\nResult: NOTESTS\n")).toBe(true);
+    expect(noTestsCollected(PROVE(2, 2))).toBe(false);
   });
 });
 
@@ -2554,6 +2628,20 @@ describe.skipIf(!toolchains)("gate matrix: toolchains", () => {
     expect(result.approval).toEqual({ status: "waiting", reason: "approval" });
     expect(result.baseline?.createdByChecks).toContain("Cargo.lock");
     expect(result.final.status).toBe("completed");
+  }, 300000);
+  test.skipIf(!available([["sqlfluff", "--version"]]))("sqlfluff: the detected gate fails on a violation and its fixer on the file repairs it (#1499)", async () => {
+    const root = project({ ".sqlfluff": "[sqlfluff]\ndialect = postgres\n", "models/orders.sql": "select id,total from orders\n" });
+    const [lint] = detectGates(root).map((s) => s.check);
+    if (!lint?.fix) throw new Error("no sqlfluff gate");
+    const before = await executeGate(root, lint, new AbortController().signal);
+    expect(before.status).toBe("failed");
+    expect(diagnosticCount(before.outputTail)?.tool).toBe("sqlfluff");
+    expect(diagnosticCount(before.outputTail)?.count).toBeGreaterThan(0);
+    const fix = fixerCommand(lint.fix, "models/orders.sql");
+    expect(spawnSync(fix.executable, fix.args, { cwd: root, encoding: "utf8", timeout: 120000 }).status).toBe(0);
+    expect((await executeGate(root, lint, new AbortController().signal)).status).toBe("passed");
+    const missing = await executeGate(root, { ...lint, args: ["lint", "tests"] }, new AbortController().signal);
+    expect(missingPlannedPaths(missing.outputTail, [{ writes: [{ path: "tests/test_orders.sql", action: "create" }] } as Task])).toEqual(["tests/test_orders.sql"]);
   }, 300000);
   test("pytest executes host rows and fails a wrong harness (#1596)", () => {
     const root = project({});

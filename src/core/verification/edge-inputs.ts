@@ -84,6 +84,11 @@ export const NUMERIC_LIMITS: LanguageRecord<readonly string[]> = {
   svelte: none("a Svelte component's limits are its script language's (typescript, javascript)"),
   rescript: ["int is 32-bit and wraps silently"],
   solidity: ["uint256 arithmetic reverts on overflow since 0.8; unchecked blocks wrap"],
+  sql: [
+    "INTEGER is 32-bit and BIGINT 64-bit: PostgreSQL and SQL Server raise an overflow error, SQLite stores any integer as 64-bit",
+    "NUMERIC and DECIMAL round or reject values past their declared precision and scale",
+    "VARCHAR(n) rejects or truncates text past n characters, by dialect",
+  ],
 };
 
 /** The taxonomy and the limits rows of `languages`, as the probe's input shows them. */

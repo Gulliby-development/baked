@@ -22,6 +22,8 @@ const CHECKED_GRAMMARS: Record<string, string> = {
   ".py": "python",
   ".cs": "csharp",
   ".java": "java",
+  // Not `.sql`: one grammar covers many dialects (T-SQL, PL/pgSQL bodies, MySQL delimiters) and
+  // refuses valid statements of each, so SQL is checked by the project's SQLFluff gate (#1499).
 };
 
 const MAX_ERRORS = 5;

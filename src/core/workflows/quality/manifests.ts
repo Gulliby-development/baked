@@ -448,6 +448,7 @@ export const DEPENDENCY_MANIFESTS: LanguageRecord<readonly ManifestReader[]> = {
   ocaml: none("opam has no registry check yet"),
   objc: none("CocoaPods has no registry check yet"),
   solidity: none("Solidity libraries come from npm or git submodules, read by the npm row"),
+  sql: none("SQL has no package manifest; a dbt project's packages.yml is not read"),
 };
 
 const READERS: readonly ManifestReader[] = [
