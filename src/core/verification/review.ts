@@ -52,6 +52,28 @@ export function validateReview(
   }
 }
 
+/** The coverage the converge stage writes for a criterion the reviewer left out and the host settles. */
+export const OMITTED_DEFERRED = {
+  manual:
+    "Deferred: omitted from the convergence report; a person provides the evidence for this manual criterion",
+  "post-release":
+    "Deferred: omitted from the convergence report; post-release evidence, settled by the host",
+} as const;
+
+/**
+ * Whether the host settles a criterion a convergence report left out, so the omission requests no
+ * change: a manual criterion (a person answers it after convergence) and a post-release criterion
+ * the approval deferred. An omitted automated criterion, or a post-release one the approval did
+ * not defer, stays the reviewer's to cover (#2190).
+ */
+export function hostSettledOmission(
+  criterion: Spec["criteria"][number],
+  deferredCriteria: readonly string[],
+): boolean {
+  if (criterion.method === "manual") return true;
+  return criterion.method === "post-release" && deferredCriteria.includes(criterion.id);
+}
+
 /**
  * Replaces what the host knows and the model copied: the snapshot hash is set, evidence
  * references (handles, ids with a mistyped tail) become ids of the snapshot's current evidence,
