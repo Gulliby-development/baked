@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { RepoMap } from "../src/core/intelligence/repo-map.js";
 import { ContextManager } from "../src/core/context/manager.js";
 import { useErrorStore } from "../src/stores/errors.js";
+import { removeTempDir } from "./helpers/temp-dir.js";
 
 let TMP: string;
 
@@ -14,8 +15,8 @@ beforeEach(() => {
   useErrorStore.getState().clear();
 });
 
-afterEach(() => {
-  rmSync(TMP, { recursive: true, force: true });
+afterEach(async () => {
+  await removeTempDir(TMP);
 });
 
 describe("RepoMap.onError surfacing", () => {

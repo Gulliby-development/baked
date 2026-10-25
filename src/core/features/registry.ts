@@ -951,7 +951,7 @@ export const FEATURES: readonly Feature[] = [
       "baked workflow status",
       "baked workflow report",
       "baked workflow artifacts: includes attempts/ID/context.json for task context",
-      "baked workflow usage",
+      "baked workflow usage: toolInputs (invalid and decoded tool inputs per model)",
     ],
     api: [
       "/v1/workflow/runs",
@@ -1077,6 +1077,19 @@ export const FEATURES: readonly Feature[] = [
     cli: ["baked workflow repair"],
     api: ["/v1/workflow/runs/:id/repair"],
     desktop: ["project/runs: One more repair", "project/initiatives: feature One more repair"],
+  },
+  {
+    id: "run-unowned-file-remedies",
+    group: "Workflow runs",
+    title:
+      "Answer a corrective blocked on a file it may not write: correct the owner, widen, ask upstream",
+    tui: ["/workflow: T, W or Q on the blocked run"],
+    cli: [
+      "baked workflow resume: --remedy route|widen|upstream",
+      "baked workflow status: recovery",
+    ],
+    api: ["/v1/workflow/runs/:id/resume: remedy"],
+    desktop: ["project/runs: Correct the owner first, Let it write, Ask feature"],
   },
   {
     id: "run-control",
@@ -1485,6 +1498,16 @@ export const FEATURES: readonly Feature[] = [
     desktop: ["project/runs: Import, Clean up old runs; Export and Redact on a run"],
   },
 
+  {
+    id: "sdd-export-package",
+    group: "Workflow runs",
+    title: "Export a run or initiative as a portable SDD package (folder or zip)",
+    tui: { status: "gap", issue: 2207 },
+    cli: ["baked workflow export-package"],
+    api: { status: "gap", issue: 2207 },
+    desktop: { status: "gap", issue: 2207 },
+  },
+
   // Initiatives
   {
     id: "initiative-budget-reserves",
@@ -1500,17 +1523,17 @@ export const FEATURES: readonly Feature[] = [
     id: "initiative-token-pool-forecast",
     group: "Initiatives",
     title:
-      "Token pool forecast notice, block amounts with a one-step extend, and the shadow pool extension inside the dollar cap",
+      "Token pool forecast notice at the measured ratio, block amounts with a one-step extend, and the shadow pool extension inside the dollar cap",
     tui: [
       "/workflow: initiatives, Token forecast line and B prefilled with the suggested extension",
     ],
     cli: [
-      "baked workflow initiative show: budget.pool, budget.planCharge, budget.forecastNotice, next.recovery suggestedTokens",
+      "baked workflow initiative show: budget.pool, budget.planCharge (usd: dollar plan charge), budget.forecastNotice, next.recovery suggestedTokens",
       "baked workflow initiative events: budget.forecast_notice, decision.would_extend, decision.would_release",
       "baked workflow initiative extend",
     ],
     api: [
-      "/v1/initiatives/:id: budget.pool, budget.planCharge, budget.forecastNotice, next.recovery suggestedTokens",
+      "/v1/initiatives/:id: budget.pool, budget.planCharge (usd: dollar plan charge), budget.forecastNotice, next.recovery suggestedTokens",
       "/v1/initiatives/:id/events",
       "/v1/initiatives/:id/extend",
     ],
@@ -1618,6 +1641,16 @@ export const FEATURES: readonly Feature[] = [
     cli: ["baked workflow initiative drive", "baked workflow initiative show"],
     api: ["/v1/initiatives/:id"],
     desktop: ["project/initiatives: the shared budget line shows up to N features at once"],
+  },
+  {
+    id: "initiative-upstream-amendments",
+    group: "Initiatives",
+    title:
+      "A planned-ahead feature asks an accepted upstream feature for a missing symbol (workflows.upstreamAmendments)",
+    tui: ["/workflow: initiatives, Amendments asked on the upstream feature"],
+    cli: ["baked workflow initiative show: features[].amendments"],
+    api: ["/v1/initiatives/:id: features[].amendments"],
+    desktop: ["project/initiatives: asked for ... · re-planned for it on the upstream feature"],
   },
   {
     id: "initiative-critical-path",

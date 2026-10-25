@@ -18,6 +18,9 @@ import { buildTools } from "../src/core/tools/index.js";
 import { NativeAgentExecutor, outputSchemas } from "../src/core/workflows/agent-executor.js";
 import { advertisedSchema } from "../src/core/workflows/host-constants.js";
 import { WorkspaceLeases } from "../src/core/workflows/leases.js";
+import { recordToolInputSignal, TOOL_INPUT_THRESHOLD, toolInputSignalPath } from "../src/core/workflows/tool-input-health.js";
+import { runUsage } from "../src/core/workflows/usage.js";
+import { runUsageMarkdown } from "../src/core/workflows/usage-markdown.js";
 import { type AgentProfile, ProfileSchema } from "../src/core/workflows/schemas.js";
 import type { ExecutionRequest } from "../src/core/workflows/types.js";
 import { workflowFixture } from "./helpers/workflow-fixture.js";
@@ -191,63 +194,65 @@ function stringifiedSpec(inScope = '["Tags"]') {
   };
 }
 
-describe("a spec author whose submit_result stringifies its arrays (#2141)", () => {
-  async function author(submissions: unknown[]) {
-    const provider = getProvider("openai");
-    if (!provider) throw new Error("openai provider missing");
-    const original = provider.createModel;
-    let call = 0;
-    const model = new MockLanguageModelV3({
-      doGenerate: async (): Promise<LanguageModelV3GenerateResult> => {
-        const next = submissions[Math.min(call, submissions.length - 1)];
-        const id = `c${call++}`;
-        return {
-          content: [{ type: "tool-call", toolCallId: id, toolName: "submit_result", input: JSON.stringify(next) }],
-          finishReason: { unified: "tool-calls", raw: undefined },
-          usage: {
-            inputTokens: { total: 1000, noCache: 1000, cacheRead: 0, cacheWrite: 0 },
-            outputTokens: { total: 100, text: 100, reasoning: 0 },
-          },
-          warnings: [],
-        };
-      },
-    });
-    provider.createModel = () => model as LanguageModelV3;
-    cleanups.push(() => {
-      provider.createModel = original;
-    });
-    const fixture = workflowFixture();
-    cleanups.push(fixture.dispose);
-    const { store } = fixture.service;
-    const run = await fixture.start();
-    store.transaction(() => store.transition(run.runId, "running"));
-    const profiles = ProfileSchema.array().parse(JSON.parse(store.run(run.runId).profiles_json));
-    const specAuthor = profiles.find((p) => p.output === "spec");
-    if (!specAuthor) throw new Error("spec profile missing");
-    const profile: AgentProfile = { ...specAuthor, model: "openai/fixture-model" };
-    const stepId = store.beginStep(run.runId, "fixture");
-    const attemptId = store.reserve(run.runId, stepId, profile.model, 2000, fixture.policy);
-    const executor = new NativeAgentExecutor(store, new WorkspaceLeases(store), {
-      ...fixture.config,
-      repoMap: false,
-    });
-    cleanups.push(() => executor.dispose());
-    const request: ExecutionRequest = {
-      runId: run.runId,
-      attemptId,
-      profile,
-      prompt: "Specify the fixture",
-      signal: new AbortController().signal,
-      maxSteps: 4,
-    };
-    const result = await executor.execute(request);
-    const diagnostics = store
-      .artifacts(run.runId)
-      .filter((a) => a.kind === "diagnostic")
-      .map((a) => ({ path: a.logical_path, content: store.readArtifact(run.runId, a.id) }));
-    return { result, calls: () => call, diagnostics };
-  }
+/** Runs the spec author on a mock model that sends `submissions` in turn. */
+async function author(submissions: unknown[], options: { maxSteps?: number; effort?: "high" } = {}) {
+  const provider = getProvider("openai");
+  if (!provider) throw new Error("openai provider missing");
+  const original = provider.createModel;
+  let call = 0;
+  const model = new MockLanguageModelV3({
+    doGenerate: async (): Promise<LanguageModelV3GenerateResult> => {
+      const next = submissions[Math.min(call, submissions.length - 1)];
+      const id = `c${call++}`;
+      return {
+        content: [{ type: "tool-call", toolCallId: id, toolName: "submit_result", input: JSON.stringify(next) }],
+        finishReason: { unified: "tool-calls", raw: undefined },
+        usage: {
+          inputTokens: { total: 1000, noCache: 1000, cacheRead: 0, cacheWrite: 0 },
+          outputTokens: { total: 100, text: 100, reasoning: 0 },
+        },
+        warnings: [],
+      };
+    },
+  });
+  provider.createModel = () => model as LanguageModelV3;
+  cleanups.push(() => {
+    provider.createModel = original;
+  });
+  const fixture = workflowFixture();
+  cleanups.push(fixture.dispose);
+  const { store } = fixture.service;
+  const run = await fixture.start();
+  store.transaction(() => store.transition(run.runId, "running"));
+  const profiles = ProfileSchema.array().parse(JSON.parse(store.run(run.runId).profiles_json));
+  const specAuthor = profiles.find((p) => p.output === "spec");
+  if (!specAuthor) throw new Error("spec profile missing");
+  const profile: AgentProfile = { ...specAuthor, model: "openai/fixture-model" };
+  const stepId = store.beginStep(run.runId, "fixture");
+  const attemptId = store.reserve(run.runId, stepId, profile.model, 2000, fixture.policy);
+  const executor = new NativeAgentExecutor(store, new WorkspaceLeases(store), {
+    ...fixture.config,
+    repoMap: false,
+  });
+  cleanups.push(() => executor.dispose());
+  const request: ExecutionRequest = {
+    runId: run.runId,
+    attemptId,
+    profile,
+    prompt: "Specify the fixture",
+    signal: new AbortController().signal,
+    maxSteps: options.maxSteps ?? 4,
+    ...(options.effort ? { effort: options.effort } : {}),
+  };
+  const result = await executor.execute(request);
+  const diagnostics = store
+    .artifacts(run.runId)
+    .filter((a) => a.kind === "diagnostic")
+    .map((a) => ({ path: a.logical_path, content: store.readArtifact(run.runId, a.id) }));
+  return { result, calls: () => call, diagnostics, store, runId: run.runId };
+}
 
+describe("a spec author whose submit_result stringifies its arrays (#2141)", () => {
   test("the submission is accepted in one round and the attempt records what was decoded", async () => {
     const { result, calls, diagnostics } = await author([stringifiedSpec()]);
     expect(calls()).toBe(1);
@@ -278,5 +283,44 @@ describe("a spec author whose submit_result stringifies its arrays (#2141)", () 
     expect(calls()).toBe(2);
     expect(result.output).toMatchObject({ inScope: ["Tags"] });
     expect(diagnostics.some((d) => /attempts\/[^/]+\/invalid-1\.json$/.test(d.path))).toBe(true);
+  });
+});
+
+// #2149: the invalid and decoded inputs were kept per attempt, but nothing counted them per
+// model, so a model that kept sending malformed submissions showed up only as lost rounds.
+describe("invalid and decoded tool inputs per model (#2149)", () => {
+  const corrected = () => {
+    const spec = stringifiedSpec();
+    return { ...spec, revision: 1, inScope: ["Tags"], outOfScope: [], criteria: spec.criteria.map((c) => ({ ...c, requirementIds: ["FR-001"] })) };
+  };
+
+  test("the usage summary counts them, and the shadow ladder records the rung it would take at the threshold", async () => {
+    const bad = stringifiedSpec("Tags");
+    // Three refused submissions, one decoded and refused for the same field, then one accepted.
+    const { result, store, runId } = await author([bad, bad, bad, corrected()], { maxSteps: 8, effort: "high" });
+    expect(result.output).toMatchObject({ inScope: ["Tags"] });
+    const usage = runUsage(store, runId);
+    expect(usage.toolInputs).toEqual([{ model: "openai/fixture-model", invalid: 3, coerced: 3 }]);
+    expect(runUsageMarkdown(usage)).toContain("- Tool inputs: openai/fixture-model 3 invalid, 3 decoded");
+    const signal = store.latestArtifact(runId, toolInputSignalPath("openai/fixture-model"));
+    expect(JSON.parse(store.readArtifact(runId, signal?.id ?? ""))).toMatchObject({
+      mode: "shadow", model: "openai/fixture-model", invalid: 3, threshold: TOOL_INPUT_THRESHOLD, rung: "lower-effort",
+    });
+    // Shadow: the attempt ran on as before and was not placed anew.
+    expect(store.attempts(runId)).toHaveLength(1);
+  });
+
+  test("below the threshold nothing is recorded, and a model with no other rung records next-model", async () => {
+    const bad = stringifiedSpec("Tags");
+    const below = await author([bad, bad, corrected()], { maxSteps: 8 });
+    expect(runUsage(below.store, below.runId).toolInputs).toEqual([{ model: "openai/fixture-model", invalid: 2, coerced: 2 }]);
+    expect(below.store.latestArtifact(below.runId, toolInputSignalPath("openai/fixture-model"))).toBeNull();
+    // A third invalid input in the same run crosses it; a route with no rung left still names one.
+    const store = below.store;
+    const attempt = store.attempts(below.runId)[0];
+    store.transaction(() => store.artifact(below.runId, "diagnostic", `attempts/${attempt?.id}/invalid-9.json`, "{}"));
+    expect(recordToolInputSignal(store, below.runId, attempt?.id ?? "", "openai/fixture-model", undefined)).toMatchObject({ invalid: 3, rung: "next-model" });
+    // Once per model and run.
+    expect(recordToolInputSignal(store, below.runId, attempt?.id ?? "", "openai/fixture-model", undefined)).toBeNull();
   });
 });

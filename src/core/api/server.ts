@@ -383,6 +383,7 @@ function mutationArgs(action: Mutation, runId: string, raw: unknown): WorkflowAr
       return args({
         ...identity(body),
         ...(body.acceptWorkspace ? { "accept-workspace": true } : {}),
+        ...(body.remedy ? { remedy: body.remedy } : {}),
       });
     }
     case "pause":

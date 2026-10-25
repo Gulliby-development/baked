@@ -437,6 +437,7 @@ export function WorkflowPanel({
       service?.store.budget(snapshot.runId) ?? null,
       switchTo,
       service?.store.worktree(snapshot.runId)?.present === true,
+      service?.store.details(snapshot.runId)?.recovery?.remedies ?? [],
     ).find((a) => a.key.toLowerCase() === key);
     if (!action || action.action === "decide") return;
     event.preventDefault();
@@ -452,6 +453,8 @@ export function WorkflowPanel({
         .then((changes) => setConfirmAccept(changes.map((c) => c.path)))
         .catch((err: unknown) => setFlash({ kind: "err", message: tuiErrorText(err) }));
     else if (action.action === "repair") void act({ repair: snapshot.revision });
+    else if (action.action === "route" || action.action === "widen" || action.action === "upstream")
+      void act({ remedy: action.action });
     else if (action.action === "checks") void readChecks(snapshot.runId);
     else if (action.action === "reviews") void readChecks(snapshot.runId, true);
     else if (action.action === "undo") {
@@ -678,9 +681,13 @@ export function WorkflowPanel({
   const budgetView = service ? service.store.budget(runId) : null;
   const worktree = service ? service.store.worktree(runId) : null;
   const actions = snapshot
-    ? runActions(snapshot, budgetView, switchTo, worktree?.present === true).filter(
-        (a) => !(a.action === "undo" && driving),
-      )
+    ? runActions(
+        snapshot,
+        budgetView,
+        switchTo,
+        worktree?.present === true,
+        details?.recovery?.remedies ?? [],
+      ).filter((a) => !(a.action === "undo" && driving))
     : [];
   const hints =
     tab === "decision" && pending

@@ -12,7 +12,7 @@ import {
   type ShareGateView,
   shareShortfall,
 } from "../src/core/workflows/initiatives/service.js";
-import { HOST_POOL_GROWTHS, planCharge, poolExtensionDecision, tokenPool } from "../src/core/workflows/initiatives/token-pool.js";
+import { adviceRatio, decisionRatio, HOST_POOL_GROWTHS, planCharge, poolExtensionDecision, poolForecast, tokenPool } from "../src/core/workflows/initiatives/token-pool.js";
 import { initiativeActions } from "../src/core/workflows/initiatives/view-model.js";
 import { openTrace, replayInitiativeStarts, replayPoolGrowth } from "../src/core/workflows/trace.js";
 import { executeInitiativeCommand, parseInitiativeArgs } from "../src/headless/workflow-initiative.js";
@@ -137,13 +137,15 @@ describe("scenario: the shared token pool names its amounts and would grow insid
     const lint = Date.UTC(2026, 9, 24, 14, 39, 39, 627);
     const [replay] = replayInitiativeStarts(R66, { budgetAtStart: true, moments: [syntax, lint] });
     const at = (t: number) => replay?.starts.find((s) => s.at === t)?.pool;
-    // With three measured features the blend weighs their 2.2x a third: 25.1M, under the pool.
-    expect(at(syntax)).toMatchObject({ limitTokens: POOL, usedTokens: 15_369_363, notice: null });
+    // With three measured features the blend weighs their 2.36x a third: 25.1M, under the pool. The
+    // notice advises at the raw ratio (#2062): 31.8M, 13 minutes before select parked.
+    expect(at(syntax)).toMatchObject({ limitTokens: POOL, usedTokens: 15_369_363, advice: { forecastTokens: 31_768_074, ratio: 2.36 }, suggestedTokens: 31_800_000 });
     expect(at(syntax)?.forecastTokens).toBeLessThan(POOL);
-    // With five, the measured 1.8x says 31.6M (the round used 33.25M): the notice, before the park.
-    expect(at(lint)?.notice).toBe("At the measured 1.8x of the estimates the 10 features need about 31.6M tokens (26.7M used); the shared pool is 30.0M. Extend to 31.6M (baked workflow initiative extend nodepluck --tokens 31600000); the $30.00 cap would pay for about 36.0M at $0.83 per million.");
-    // No start before then warned: the estimate's point forecast stayed under the pool.
-    expect(replay?.starts.filter((s) => s.at < lint && s.pool?.notice)).toEqual([]);
+    expect(at(syntax)?.notice).toStartWith("At the measured 2.4x of the estimates the 10 features need about 31.8M tokens (25.1M at the blended 1.4x that budget decisions use; 15.4M used); the shared pool is 30.0M. Extend to 31.8M");
+    // At lint the blend says 1.8x and 31.6M; the raw 2.2x says 33.2M, and the round used 33.25M.
+    expect(at(lint)?.notice).toBe("At the measured 2.2x of the estimates the 10 features need about 33.2M tokens (31.6M at the blended 1.8x that budget decisions use; 26.7M used); the shared pool is 30.0M. Extend to 33.3M (baked workflow initiative extend nodepluck --tokens 33300000); the $30.00 cap would pay for about 36.0M at $0.83 per million.");
+    // No start before the third accepted feature warned: the estimate's point forecast stayed under the pool.
+    expect(replay?.starts.filter((s) => s.at < syntax && s.pool?.notice)).toEqual([]);
     // Replayed on the final 38M budget, as the corpus gate did before #2061, nothing warns.
     const [final] = replayInitiativeStarts(R66, { budgetAtStart: false });
     expect(final?.starts.some((s) => s.pool?.notice)).toBe(false);
@@ -277,6 +279,14 @@ describe("scenario: an open feature run with a sized plan is charged at its plan
     expect(view.budget.pool?.committedTokens).toBe(charge?.limitCommittedTokens);
     expect(view.budget.remaining.tokens).toBe(30_000_000 - (charge?.limitCommittedTokens ?? 0));
     expect(view.budget.reserved.tokens).toBe((charge?.limitCommittedTokens ?? 0) - view.budget.used.tokens);
+    // #2124: in dollars the run is held at its plan's tokens at f1's task-call rate, never below
+    // what it spent and reserved, instead of its dollar cap; in shadow the remaining dollars stay.
+    const usd = charge?.usd;
+    expect(usd?.taskRate).toBeGreaterThan(0);
+    expect(run?.chargeUsd).toBeCloseTo(Math.max(run?.usedUsd ?? 0, (run?.chargeTokens ?? 0) * (usd?.taskRate ?? 0)), 9);
+    expect(run?.chargeUsd).toBeLessThan(run?.limitUsd ?? 0);
+    expect(usd?.releasedUsd).toBeCloseTo((run?.limitUsd ?? 0) - (run?.chargeUsd ?? 0), 9);
+    expect(view.budget.cost.remainingUsd).toBe(Math.floor((30 - (usd?.limitCommittedUsd ?? 0)) * 100) / 100);
     // The next drive records it once per run and plan, before it drives the run on.
     await driveUntil(() => true);
     await driveUntil(() => true);
@@ -284,7 +294,9 @@ describe("scenario: an open feature run with a sized plan is charged at its plan
       reason: "initiative-plan-charge", mode: "shadow", featureId: "f2", key: `run-${f2?.runId}-${run?.plan.high}`,
       releasedTokens: charge?.releasedTokens, wouldStart: false, wouldPark: false,
     })]);
-    expect(String(events()[0]?.summary)).toMatch(/^f2's plan prices its run at [\d.]+[kM] tokens \([\d.]+[kM] used\): holding that instead of its [\d.]+M limit frees [\d.]+M tokens of the pool\.$/);
+    expect(events()[0]?.releasedUsd).toBeGreaterThan(0);
+    expect(events()[0]?.usd).toMatchObject({ taskRate: usd?.taskRate });
+    expect(String(events()[0]?.summary)).toMatch(/^f2's plan prices its run at [\d.]+[kM] tokens \([\d.]+[kM] used\): holding that instead of its [\d.]+M limit frees [\d.]+M tokens of the pool\. In dollars it holds \$[\d.]+ at the task-call rate instead of \$[\d.]+, which frees \$[\d.]+ of the dollar budget\.$/);
   }, 120000);
 
   test("in enforce the pool holds f2 at its plan charge, never below what it used, and the run still finishes", async () => {
@@ -297,6 +309,10 @@ describe("scenario: an open feature run with a sized plan is charged at its plan
     expect(view.budget.remaining.tokens).toBe(30_000_000 - (charge?.planCommittedTokens ?? 0));
     expect(view.budget.reserved.tokens).toBeGreaterThanOrEqual(0);
     for (const run of charge?.runs ?? []) expect(run.chargeTokens).toBeGreaterThanOrEqual(run.usedTokens);
+    // #2124: the dollar budget holds f2 at its plan charge in dollars too.
+    expect(charge?.usd?.releasedUsd).toBeGreaterThan(0);
+    expect(view.budget.cost.remainingUsd).toBe(Math.floor((30 - (charge?.usd?.planCommittedUsd ?? 0)) * 100) / 100);
+    for (const run of charge?.runs ?? []) expect(run.chargeUsd).toBeGreaterThanOrEqual(run.usedUsd ?? 0);
     // The waiting features share what the charge leaves: more than under the run's limit.
     const share = (v: InitiativeView) => v.features.filter((f) => f.share).reduce((n, f) => n + (f.share?.tokens ?? 0), 0);
     expect(share(view)).toBe(view.budget.remaining.tokens);
@@ -422,5 +438,44 @@ describe("scenario: R67 ampwhy's gates with open runs held at their plan's need 
     expect(advice?.summary).toStartWith("The shared budget is short: select has 644245 tokens available after reserving the other waiting features' low estimates");
     expect(advice?.summary).toContain("select needs 148160 more tokens to start; a pool of 33.1M");
     expect(advice?.remedies).toEqual([{ action: "extend", initiativeId: "nodepluck", suggestedTokens: 33_100_000 }]);
+  });
+});
+
+describe("scenario: the notice advises at the measured ratio, decisions keep the blend (#2062)", () => {
+  // Three accepted features used twice their 1M lows; three wait at 1M lows each.
+  const features = [
+    ...["f1", "f2", "f3"].map((id) => ({ id, accepted: true, skeleton: false, spent: 2_000_000, low: 1_000_000, expected: 1_500_000 })),
+    ...["f4", "f5", "f6"].map((id) => ({ id, accepted: false, skeleton: false, spent: 0, low: 1_000_000, expected: 1_500_000 })),
+  ];
+  const inputs = (forecast: NonNullable<ReturnType<typeof poolForecast>>, advice: boolean) => ({
+    initiativeId: "values",
+    limitTokens: 11_000_000,
+    usedTokens: 6_000_000,
+    committedTokens: 6_000_000,
+    forecastTokens: forecast.forecastTokens,
+    ratio: forecast.ratio,
+    ...(advice ? { advice: forecast.advice } : {}),
+    features: 6,
+    waiting: ["f4", "f5", "f6"].map((id) => ({ id, low: 1_000_000, high: 2_000_000 })),
+    cost: { capUsd: null, ceilingUsd: null, spentUsd: 0, remainingUsd: null, forecastUsd: null },
+  });
+
+  test("three measured features at 2x warn although the blend still fits the pool", () => {
+    // The blend weighs the measured 2x a third at three features: 1.33x.
+    expect(decisionRatio(6_000_000, 3_000_000, 3)).toBeCloseTo(4 / 3, 9);
+    expect(adviceRatio(6_000_000, 3_000_000, 3)).toBe(2);
+    expect(adviceRatio(6_000_000, 3_000_000, 2)).toBeNull();
+    const forecast = poolForecast(6_000_000, features);
+    expect(forecast).toEqual({ forecastTokens: 10_000_000, ratio: 1.33, advice: { forecastTokens: 12_000_000, ratio: 2 } });
+    const pool = tokenPool(inputs(forecast!, true));
+    expect(pool.notice).toBe("At the measured 2.0x of the estimates the 6 features need about 12.0M tokens (10.0M at the blended 1.3x that budget decisions use; 6.0M used); the shared pool is 11.0M. Extend to 12.0M (baked workflow initiative extend values --tokens 12000000).");
+    expect(pool.suggestedTokens).toBe(12_000_000);
+    // What a block or a park reads keeps the blend: the forecast fits, nothing is suggested.
+    expect(pool.forecastTokens).toBe(10_000_000);
+    expect(tokenPool(inputs(forecast!, false))).toMatchObject({ notice: null, suggestedTokens: null, advice: null });
+  });
+
+  test("the advice ratio is capped like the blend", () => {
+    expect(adviceRatio(60_000_000, 3_000_000, 3)).toBe(5);
   });
 });

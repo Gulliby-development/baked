@@ -261,7 +261,8 @@ describe("initiative starts replay on rewound traces (#1707)", () => {
     const seen = new Map<string, { view: Parameters<typeof shareShortfall>[0]; feature: Parameters<typeof shareShortfall>[1] }>();
     const [replay] = replayInitiativeStarts(join(ROOT, "R59", "wheeltags.sqlite.gz"), {
       gate: (view, feature) => {
-        seen.set(feature.id, { view, feature });
+        // The first call is the start's own gate; a plan charge's replay calls it again (#2124).
+        if (!seen.has(feature.id)) seen.set(feature.id, { view, feature });
         return shareShortfall(view, feature);
       },
     });
@@ -308,7 +309,8 @@ describe("initiative starts replay on rewound traces (#1707)", () => {
     }
     const seen = new Map<string, ShareGateRecord["view"]["budget"]["cost"]>();
     const [replay] = replayInitiativeStarts(path, { gate: (view, feature) => {
-      seen.set(feature.id, view.budget.cost);
+      // The first call is the start's own gate; a plan charge's replay calls it again (#2124).
+      if (!seen.has(feature.id)) seen.set(feature.id, view.budget.cost);
       return shareShortfall(view, feature);
     } });
     expect(replay?.newStartStops).toBe(0);
@@ -326,7 +328,8 @@ describe("initiative starts replay on rewound traces (#1707)", () => {
     const seen = new Map<string, { view: Parameters<typeof shareShortfall>[0]; feature: Parameters<typeof shareShortfall>[1] }>();
     replayInitiativeStarts(join(ROOT, "R62", "stepvet.sqlite.gz"), {
       gate: (view, feature) => {
-        seen.set(feature.id, { view, feature });
+        // The first call is the start's own gate; a plan charge's replay calls it again (#2124).
+        if (!seen.has(feature.id)) seen.set(feature.id, { view, feature });
         return shareShortfall(view, feature);
       },
     });
@@ -871,5 +874,29 @@ describe("the plan charge replays on recorded initiatives (#2100, #2056)", () =>
     const atPark = replay?.starts.find((s) => s.at === park)?.planCharge;
     expect(atPark).toMatchObject({ featureId: "select", replayed: "park", releasedTokens: 33_117 });
     expect(atPark?.runs.map((r) => r.featureId)).toEqual(["readcmd"]);
+  }, 600000);
+
+  test("#2124: in dollars R62 stepvet's open runs are held at their plans at the task-call rate, and no start moves", () => {
+    // Before #2124 an open run held max(spent + reserved, its maxCostUsd) of the dollar budget.
+    // At stepscmd's start, rewound to that moment (#2061), the runs held $21.11 of the $30 cap
+    // ($8.88 remaining, as the round's share gate recorded); lines' plan, priced at what the
+    // initiative's task calls paid ($1.00 per million), holds $2.22 of its $2.41 cap, and the
+    // four open runs together free $4.86. Before a task call is priced (lines' start) the runs
+    // keep their caps.
+    const [replay] = replayInitiativeStarts(join(ROOT, "R62", "stepvet.sqlite.gz"), { budgetAtStart: true });
+    expect(replay?.newStartStops).toBe(0);
+    expect(replay?.finalUsd).toBe(26.33);
+    const first = replay?.starts.find((s) => s.featureId === "lines")?.planCharge?.usd;
+    expect(first).toMatchObject({ taskRate: null, releasedUsd: 0 });
+    expect(first?.runs).toEqual([{ featureId: "base", limitUsd: 2.41, chargeUsd: null }]);
+    const steps = replay?.starts.find((s) => s.featureId === "stepscmd")?.planCharge;
+    expect(steps?.replayed).toBe("pass");
+    expect(steps?.usd?.taskRate! * 1e6).toBeCloseTo(1.0, 1);
+    expect(steps?.usd?.limitCommittedUsd).toBeCloseTo(21.11, 2);
+    expect(steps?.usd?.releasedUsd).toBeCloseTo(4.86, 2);
+    expect(steps?.usd?.runs.find((r) => r.featureId === "lines")).toEqual({ featureId: "lines", limitUsd: 2.41, chargeUsd: expect.closeTo(2.22, 2) });
+    for (const run of steps?.usd?.runs ?? []) expect(run.chargeUsd!).toBeLessThanOrEqual(run.limitUsd);
+    // Every rewound start has a dollar side, and the plan charge decides no start differently.
+    expect(replay?.starts.filter((s) => s.planCharge).every((s) => s.planCharge?.usd && s.planCharge.replayed === "pass")).toBe(true);
   }, 600000);
 });

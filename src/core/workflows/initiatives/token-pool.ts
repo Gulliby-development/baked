@@ -1,7 +1,12 @@
 import { tokenText } from "../estimate.js";
 import { EXTEND_WITHIN_DOLLARS_MODES } from "../schemas.js";
 import type { StopMode } from "../stop-reasons.js";
-import { calibrationRatio, ownPlanNeed, type PlannedRun } from "./estimate.js";
+import {
+  calibrationRatio,
+  MIN_CALIBRATION_FEATURES,
+  ownPlanNeed,
+  type PlannedRun,
+} from "./estimate.js";
 
 // The initiative's shared token pool beside the person's dollar cap (#2042). Part of the
 // cap-growth hot module (.github/hot-modules.json). Bench round 66 (nodepluck) parked select at
@@ -66,32 +71,64 @@ export interface ForecastFeature {
 }
 
 /**
+ * The ratio a budget decision scales the features still to run by (a block, a park, a growth):
+ * the measured actual-to-low ratio blended like the dollar re-forecast (`calibrationRatio`: a third
+ * at three accepted non-skeleton features, full weight at five), so three features do not decide
+ * alone. Null before three.
+ */
+export const decisionRatio = (measured: number, low: number, count: number): number | null =>
+  calibrationRatio(measured, low, count);
+
+/**
+ * The ratio advice scales them by (the forecast notice, #2062): the measured actual-to-low ratio
+ * itself from three accepted features, capped like the blend. A notice changes nothing, so it
+ * need not wait for the blend: in R66 nodepluck three features had used 2.2 times their lows at
+ * 14:27, the blend said 1.4x and a forecast under the pool, and the notice came 13 minutes later,
+ * 41 seconds before select parked. Null before three.
+ */
+export const adviceRatio = (measured: number, low: number, count: number): number | null =>
+  count < MIN_CALIBRATION_FEATURES
+    ? null
+    : calibrationRatio(measured, low, Number.MAX_SAFE_INTEGER);
+
+/** A pool forecast at one ratio. */
+export interface RatioForecast {
+  forecastTokens: number;
+  ratio: number;
+}
+
+/**
  * The pool's measured forecast (#2042): what was used plus each unfinished feature's low estimate
  * scaled by how far the accepted features landed above theirs (actual over the low the gate gave
- * them at their start), blended like the dollar re-forecast (`calibrationRatio`: from three
- * accepted non-skeleton features, with full weight at five), never below what a running feature
- * used. Null before three such features are accepted. In R66 nodepluck the accepted features had
- * used 2.33, 1.47, 0.93 and 4.07 times their low ends while the estimate's point forecast stayed
- * under the pool.
+ * them at their start), never below what a running feature used. `forecastTokens` and `ratio` are
+ * at the `decisionRatio`, which budget decisions read; `advice` is at the `adviceRatio`, which
+ * only the notice reads. Null before three accepted non-skeleton features. In R66 nodepluck the
+ * accepted features had used 2.33, 1.47, 0.93 and 4.07 times their low ends while the estimate's
+ * point forecast stayed under the pool.
  */
 export function poolForecast(
   usedTokens: number,
   features: readonly ForecastFeature[],
-): { forecastTokens: number; ratio: number } | null {
+): (RatioForecast & { advice: RatioForecast }) | null {
   const measured = features.filter((f) => f.accepted && !f.skeleton && f.low !== null && f.low > 0);
-  const ratio = calibrationRatio(
-    measured.reduce((sum, f) => sum + f.spent, 0),
-    measured.reduce((sum, f) => sum + (f.low ?? 0), 0),
-    measured.length,
-  );
-  if (ratio === null) return null;
-  const toRun = features
-    .filter((f) => !f.accepted)
-    .reduce(
-      (sum, f) => sum + Math.max(0, (f.low === null ? f.expected : f.low * ratio) - f.spent),
-      0,
-    );
-  return { forecastTokens: Math.round(usedTokens + toRun), ratio: Math.round(ratio * 100) / 100 };
+  const spent = measured.reduce((sum, f) => sum + f.spent, 0);
+  const lows = measured.reduce((sum, f) => sum + (f.low ?? 0), 0);
+  const blended = decisionRatio(spent, lows, measured.length);
+  const raw = adviceRatio(spent, lows, measured.length);
+  if (blended === null || raw === null) return null;
+  const at = (ratio: number): RatioForecast => ({
+    forecastTokens: Math.round(
+      usedTokens +
+        features
+          .filter((f) => !f.accepted)
+          .reduce(
+            (sum, f) => sum + Math.max(0, (f.low === null ? f.expected : f.low * ratio) - f.spent),
+            0,
+          ),
+    ),
+    ratio: Math.round(ratio * 100) / 100,
+  });
+  return { ...at(blended), advice: at(raw) };
 }
 
 /** An open feature run with a sized plan, as the plan charge reads it (#2100, #2056). */
@@ -105,6 +142,28 @@ export interface PlanChargeRun {
   plan: PlannedRun;
   /** What the plan charge holds for it (`planChargeTokens`). */
   chargeTokens: number;
+  /** The dollars the run spent plus what its attempts in flight reserved (#2124). */
+  usedUsd?: number;
+  /** What the dollar budget holds for it without the plan charge: max(usedUsd, its maxCostUsd). */
+  limitUsd?: number;
+  /**
+   * What the plan charge holds for it in dollars (`planChargeUsd`); null while the initiative's
+   * task-call rate is unmeasured or the run has no dollar limit, and it holds `limitUsd` then.
+   */
+  chargeUsd?: number | null;
+}
+
+/**
+ * The plan charge in dollars (#2124): the plan charge's tokens at the initiative's task-call rate
+ * (`taskCallRate`, #2124), never below what the run spent and reserved. Null without a measured
+ * rate: there is no plan-to-actual dollar ratio, and a run then holds its dollar limit, as before.
+ */
+export function planChargeUsd(
+  chargeTokens: number,
+  usedUsd: number,
+  rate: number | null,
+): number | null {
+  return rate === null ? null : Math.max(usedUsd, chargeTokens * rate);
 }
 
 /**
@@ -139,6 +198,17 @@ export interface PlanChargeView {
   planCommittedTokens: number;
   /** limitCommittedTokens - planCommittedTokens: positive frees tokens, negative adds them. */
   releasedTokens: number;
+  /**
+   * The dollar side (#2124), null without a dollar budget: the task-call rate the charges use,
+   * what all runs hold with each open run at max(used, cap) (`committedUsd`), the same with each
+   * priced run at its `chargeUsd`, and the difference (positive frees dollars).
+   */
+  usd: {
+    taskRate: number | null;
+    limitCommittedUsd: number;
+    planCommittedUsd: number;
+    releasedUsd: number;
+  } | null;
 }
 
 /**
@@ -149,15 +219,34 @@ export function planCharge(
   mode: StopMode,
   ratio: number | null,
   limitCommitted: number,
-  runs: readonly Omit<PlanChargeRun, "chargeTokens">[],
+  runs: readonly Omit<PlanChargeRun, "chargeTokens" | "chargeUsd">[],
+  dollars?: { taskRate: number | null; limitCommittedUsd: number },
 ): PlanChargeView | null {
   if (!runs.length) return null;
-  const charged = runs.map((run) => ({
-    ...run,
-    chargeTokens: planChargeTokens(run.usedTokens, run.plan, ratio),
-  }));
+  const charged = runs.map((run) => {
+    const chargeTokens = planChargeTokens(run.usedTokens, run.plan, ratio);
+    return {
+      ...run,
+      chargeTokens,
+      ...(dollars
+        ? {
+            chargeUsd:
+              run.usedUsd === undefined || run.limitUsd === undefined
+                ? null
+                : planChargeUsd(chargeTokens, run.usedUsd, dollars.taskRate),
+          }
+        : {}),
+    };
+  });
   const released = charged.reduce(
     (sum, run) => sum + Math.max(run.usedTokens, run.limitTokens) - run.chargeTokens,
+    0,
+  );
+  const releasedUsd = charged.reduce(
+    (sum, run) =>
+      run.chargeUsd === null || run.chargeUsd === undefined
+        ? sum
+        : sum + (run.limitUsd ?? 0) - run.chargeUsd,
     0,
   );
   return {
@@ -167,6 +256,14 @@ export function planCharge(
     limitCommittedTokens: limitCommitted,
     planCommittedTokens: limitCommitted - released,
     releasedTokens: released,
+    usd: dollars
+      ? {
+          taskRate: dollars.taskRate,
+          limitCommittedUsd: dollars.limitCommittedUsd,
+          planCommittedUsd: dollars.limitCommittedUsd - releasedUsd,
+          releasedUsd,
+        }
+      : null,
   };
 }
 
@@ -193,6 +290,11 @@ export interface PoolInputs {
   forecastTokens: number | null;
   /** The measured actual-to-low ratio that scales the features still to run; null before it. */
   ratio: number | null;
+  /**
+   * The forecast at the raw measured ratio (`poolForecast`'s `advice`), which only the notice
+   * reads (#2062); absent or null in a block, a park, a growth and records before it.
+   */
+  advice?: RatioForecast | null;
   /** Features of the split. */
   features: number;
   waiting: PoolFeature[];
@@ -204,7 +306,13 @@ export interface TokenPoolView {
   limitTokens: number;
   usedTokens: number;
   committedTokens: number;
+  /** The forecast at the decision ratio (`ratio`), which budget decisions read. */
   forecastTokens: number | null;
+  /**
+   * The forecast at the raw measured ratio, which the notice and its suggestion read (#2062); null
+   * before three features are measured, or where no notice is computed (a block, a park).
+   */
+  advice: RatioForecast | null;
   ratio: number | null;
   /**
    * The pool that starts every waiting feature at its high estimate beside what open runs hold,
@@ -227,12 +335,14 @@ export interface TokenPoolView {
 /** The token pool, its forecast and what to extend it to (#2042). */
 export function tokenPool(inputs: PoolInputs): TokenPoolView {
   const { limitTokens, usedTokens, committedTokens, forecastTokens, cost } = inputs;
+  const advice = inputs.advice ?? null;
   const coverTokens = roundUp(committedTokens + inputs.waiting.reduce((sum, f) => sum + f.high, 0));
   const lows = committedTokens + inputs.waiting.reduce((sum, f) => sum + f.low, 0);
+  // The notice warns on the higher of the two forecasts: advice may run ahead of the blend.
+  const noticed =
+    forecastTokens === null ? null : Math.max(forecastTokens, advice?.forecastTokens ?? 0);
   const suggestedTokens =
-    forecastTokens !== null && forecastTokens > limitTokens
-      ? roundUp(Math.max(forecastTokens, lows))
-      : null;
+    noticed !== null && noticed > limitTokens ? roundUp(Math.max(noticed, lows)) : null;
   const usdPerMillion =
     usedTokens > 0 && cost.spentUsd > 0 ? (cost.spentUsd / usedTokens) * 1_000_000 : null;
   const capTokens =
@@ -244,6 +354,7 @@ export function tokenPool(inputs: PoolInputs): TokenPoolView {
     usedTokens,
     committedTokens,
     forecastTokens,
+    advice,
     ratio: inputs.ratio,
     coverTokens,
     suggestedTokens,
@@ -252,11 +363,19 @@ export function tokenPool(inputs: PoolInputs): TokenPoolView {
     notice: null,
   };
   if (forecastTokens !== null && suggestedTokens !== null) {
+    const ratio = advice?.ratio ?? inputs.ratio;
     const basis =
-      inputs.ratio !== null
-        ? `At the measured ${inputs.ratio.toFixed(1)}x of the estimates`
+      ratio !== null
+        ? `At the measured ${ratio.toFixed(1)}x of the estimates`
         : "At the estimates so far";
-    pool.notice = `${basis} the ${inputs.features} features need about ${tokenText(forecastTokens)} tokens (${tokenText(usedTokens)} used); the shared pool is ${tokenText(limitTokens)}. Extend to ${tokenText(suggestedTokens)} (baked workflow initiative extend ${inputs.initiativeId} --tokens ${suggestedTokens})${dollarRoom(pool, cost)}.`;
+    // Both forecasts, when the blend that budget decisions use says another figure (#2062).
+    const blended =
+      advice &&
+      inputs.ratio !== null &&
+      tokenText(advice.forecastTokens) !== tokenText(forecastTokens)
+        ? `${tokenText(forecastTokens)} at the blended ${inputs.ratio.toFixed(1)}x that budget decisions use; `
+        : "";
+    pool.notice = `${basis} the ${inputs.features} features need about ${tokenText(advice?.forecastTokens ?? forecastTokens)} tokens (${blended}${tokenText(usedTokens)} used); the shared pool is ${tokenText(limitTokens)}. Extend to ${tokenText(suggestedTokens)} (baked workflow initiative extend ${inputs.initiativeId} --tokens ${suggestedTokens})${dollarRoom(pool, cost)}.`;
   }
   return pool;
 }

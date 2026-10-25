@@ -7,6 +7,7 @@ import { rangeText, type StartEstimate } from "../../core/workflows/estimate.js"
 import { canExtendRun } from "../../core/workflows/extendable.js";
 import { detectGates } from "../../core/workflows/gates.js";
 import { reasonText } from "../../core/workflows/reasons.js";
+import type { HostRemedy, Remedy } from "../../core/workflows/remedies-model.js";
 import { canRepairRun, repairText } from "../../core/workflows/repairable.js";
 import type { RunSnapshot, WorkflowEvent } from "../../core/workflows/schemas.js";
 import type { Check } from "../../core/workflows/types.js";
@@ -240,7 +241,8 @@ export interface RunAction {
     | "undo"
     | "reroute"
     | "checks"
-    | "reviews";
+    | "reviews"
+    | HostRemedy;
 }
 /** The limits one "raise" decision would set, from the numbers the run screen already has. */
 export function extensionFor(budget: BudgetView): BudgetLimits | null {
@@ -292,11 +294,31 @@ export function runActions(
   budget: BudgetView | null = null,
   switchTo: string | null = null,
   worktree = false,
+  remedies: readonly Remedy[] = [],
 ): RunAction[] {
   const actions: RunAction[] = [];
   const s = snapshot.status;
   if (snapshot.pendingRequestIds.length)
     actions.push({ key: "Enter", label: "decide", action: "decide" });
+  // A corrective's block on files it may not write: the act the host would take (#2155).
+  if (s === "blocked")
+    for (const remedy of remedies) {
+      const files = remedy.paths?.slice(0, 2).join(", ") ?? "";
+      if (remedy.action === "route")
+        actions.push({
+          key: "T",
+          label: `correct ${remedy.owner ?? "owner"} first`,
+          action: "route",
+        });
+      else if (remedy.action === "widen")
+        actions.push({
+          key: "W",
+          label: `let ${remedy.taskId ?? "it"} write ${files}`,
+          action: "widen",
+        });
+      else if (remedy.action === "upstream")
+        actions.push({ key: "Q", label: `ask ${remedy.owner ?? "upstream"}`, action: "upstream" });
+    }
   if (
     s === "created" ||
     s === "paused" ||

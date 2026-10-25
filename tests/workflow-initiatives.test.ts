@@ -1934,6 +1934,50 @@ describe("initiative runtime", () => {
       expect(t.workflows.store.eventsOfType(t.featureOf(view, "base").runId ?? "", "decision.would_stop")).toHaveLength(0);
     }, 120_000);
 
+    // R68 ewvet (#2157): with upstream amendments on, the release asks base for the symbol: base
+    // runs again (origin replan) with the request in its prompt, message waits for that result and
+    // then releases onto it, and the request shows on base in the initiative view.
+    test("on with upstream amendments, the owner is reopened for the missing symbol and message waits for it", async () => {
+      class AmendingExecutor extends AheadExecutor {
+        amended: string[] = [];
+        override async execute(request: ExecutionRequest) {
+          if (request.prompt.includes("Amendments requested by features planned on this feature's accepted result")) {
+            this.amended.push(request.profile.output);
+            this.contracts.base = "isReady";
+          }
+          return super.execute(request);
+        }
+      }
+      const t = setup(chain, 100, (root) => new AmendingExecutor(root, chain));
+      repository(t.root);
+      t.executor.initiatives = t.initiatives;
+      t.executor.workflows = t.workflows;
+      t.executor.requirements.message = "Message delegates to Base.isReady for the value.";
+      Object.assign(t.workflows.config.workflows ?? {}, { planAhead: true, upstreamAmendments: true });
+      await t.start({ plan: chain, policy: { ...policy, executionMode: "worktree" }, featureAutoApproval: { maxTasks: 5, maxFiles: 5 }, budget: { maxTotalTokens: 6_000_000, maxAgentCalls: 2000, maxActiveMs: 6_000_000 } });
+      await t.approveSplit();
+      // base's amended contract rebases message, whose approval goes to a person.
+      let view = await t.drive();
+      for (let i = 0; i < 4 && view.status !== "completed"; i++) {
+        const waiting = view.pendingDecisions.find((d) => d.kind === "approval");
+        if (!waiting?.featureId) break;
+        await t.approveFeature(waiting.featureId);
+        view = await t.drive();
+      }
+      expect(view.status).toBe("completed");
+      // base ran twice, the second time for the amendment.
+      const links = t.initiatives.store.links(view.initiativeId).filter((l) => l.feature_id === "base");
+      expect(links.map((l) => l.origin)).toEqual(["start", "replan"]);
+      expect(t.executor.amended.length).toBeGreaterThan(0);
+      expect(t.featureOf(view, "base").amendments).toEqual([
+        { from: "message", answer: "replan", gaps: [{ ref: "FR-001", symbol: "Base.isReady", featureId: "base", path: "base.txt" }] },
+      ]);
+      // base wrote its file again for the amendment, and message's tasks ran on that result.
+      expect(t.executor.writes["base.txt"]).toBe(2);
+      expect(t.executor.seen.message).toContain("base.txt");
+      expect(t.workflows.store.eventsOfType(t.featureOf(view, "message").runId ?? "", "decision.would_stop")).toHaveLength(0);
+    }, 180_000);
+
     // Bench round 60, wheeltags (#1932): every planned-ahead feature's first plan was refused for
     // read hints on its upstream features' files, which its provisional base did not hold yet.
     test("on, message's plan may read base's files before base has written them", async () => {

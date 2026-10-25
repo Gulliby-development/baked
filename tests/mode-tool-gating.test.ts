@@ -8,7 +8,7 @@
  * (error: mode_restricted) instead of running.
  */
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 // No repo map needed — the gate is pure logic over the tool set. Disabling it
@@ -18,6 +18,7 @@ process.env.BAKED_NO_REPOMAP = "1";
 
 import { createBakeAgent } from "../src/core/agents/bake.js";
 import { ContextManager } from "../src/core/context/manager.js";
+import { removeTempDir } from "./helpers/temp-dir.js";
 
 let TMP: string;
 const contexts: ContextManager[] = [];
@@ -29,7 +30,8 @@ beforeEach(() => {
 
 afterEach(async () => {
   await Promise.all(contexts.splice(0).map((cm) => cm.dispose()));
-  rmSync(TMP, { recursive: true, force: true });
+  // A disposed context can hold a handle in the directory a moment longer on Windows (EBUSY).
+  await removeTempDir(TMP);
 });
 
 // biome-ignore lint/suspicious/noExplicitAny: minimal model stub for agent construction

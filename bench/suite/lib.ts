@@ -68,6 +68,7 @@ export const POLICY_FIELDS: Readonly<Record<string, readonly unknown[]>> = {
   chainProbe: ["on"],
   edgeProbe: ["on"],
   defectClasses: ["on"],
+  misquoteFix: ["on"],
 };
 
 export function suiteRoot(): string {
