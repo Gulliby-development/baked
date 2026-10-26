@@ -334,6 +334,19 @@ export const RuntimeStateSchema = z
     /** Times analyze sent derivation audit findings back to the spec author; once (#1465). */
     derivationReturns: z.number().int().nonnegative().default(0),
     /**
+     * The derivation amendment in flight under `derivationAmend: "on"` (#2219): the criteria the
+     * return names, the rows the audit could not reproduce, and the hash of the analyzed spec
+     * without those criteria's text. The specify stage consumes it.
+     */
+    derivationAmend: z
+      .object({
+        criterionIds: z.array(z.string()),
+        rows: z.array(z.string()),
+        baseline: z.string(),
+      })
+      .nullable()
+      .default(null),
+    /**
      * Audited criteria whose rows an analysis pass reproduced, keyed by their text and their
      * requirements' text, carried into later passes with `derivationAuditCarry: "on"` (#1851).
      */

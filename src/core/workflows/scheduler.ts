@@ -363,17 +363,21 @@ import {
 } from "./delivery-git.js";
 import { dependencyContracts, pathsExistLater } from "./dependencies.js";
 import {
+  amendableReturn,
+  amendKeepsPlan,
   auditCarry,
   auditedCriteria,
   carriedDerivations,
   checkedDerivations,
   DERIVATION_RETURN_NOTE,
+  derivationAmendOn,
   derivationAuditCarryOn,
   derivationAuditExtra,
   derivationAuditOn,
   derivationFindings,
   derivationProblems,
   isDerivationFinding,
+  startAmend,
   withCarried,
 } from "./derivation-audit.js";
 import { EffectJournal, fileHash, intentRoot, rootField } from "./effects.js";
@@ -1654,7 +1658,73 @@ export class WorkflowScheduler {
               this.store.transaction(() =>
                 this.store.artifact(runId, "spec", "spec.json", canonical(state.spec)),
               );
-              if (state.spec.openQuestions.some((q) => q.blocking)) {
+              const questioned = state.spec.openQuestions.some((q) => q.blocking);
+              // A derivation amendment keeps the plan and tasks when only the amended criteria's
+              // text changed, and runs analyze again without a planner session (#2219).
+              const amend = state.derivationAmend;
+              state.derivationAmend = null;
+              if (amend) {
+                const decision = questioned
+                  ? { keep: false as const, reason: "the amended spec asks a blocking question" }
+                  : amendKeepsPlan(
+                      amend,
+                      state.spec,
+                      state.plan,
+                      state.graph,
+                      rowsAsDataOn(policy),
+                    );
+                const stages = this.stageKinds(runId, v2);
+                const analyze = stages.findIndex((s) => s.kind === "analyze");
+                const here = v2 ? stages.findIndex((s) => s.id === v2.stage.id) : state.stageIndex;
+                const kept = decision.keep && analyze > here;
+                const round = this.store
+                  .artifacts(runId)
+                  .filter((a) =>
+                    a.logical_path.startsWith("spec-repairs/derivation-amend-"),
+                  ).length;
+                this.store.transaction(() =>
+                  this.store.artifact(
+                    runId,
+                    "diagnostic",
+                    `spec-repairs/derivation-amend-${String(round + 1)}.json`,
+                    canonical({
+                      criteria: amend.criterionIds,
+                      rows: amend.rows,
+                      planKept: kept,
+                      ...(decision.keep
+                        ? kept
+                          ? {}
+                          : { reason: "no analyze stage after specify" }
+                        : { reason: decision.reason }),
+                    }),
+                  ),
+                );
+                if (
+                  kept &&
+                  state.graph &&
+                  state.plan !== null &&
+                  this.moveTo(state, stages, analyze, v2)
+                ) {
+                  // The tasks stand; only their binding to the amended spec changes.
+                  const rebind = (graph: TaskGraph): TaskGraph => ({
+                    ...graph,
+                    specHash: hashJson(state.spec),
+                  });
+                  state.graph = rebind(state.graph);
+                  if (state.rootGraph) state.rootGraph = rebind(state.rootGraph);
+                  state.manifest.rootGraphHash = hashJson(state.rootGraph ?? state.graph);
+                  state.manifest.effectiveGraphHash = hashJson(state.graph);
+                  const graph = state.graph;
+                  this.store.transaction(() => {
+                    this.store.artifact(runId, "tasks", "tasks.json", canonical(graph));
+                    this.store.syncTasks(runId, graph);
+                  });
+                  advance = false;
+                  rerouted = v2 !== null;
+                  break;
+                }
+              }
+              if (questioned) {
                 this.wait("clarification", state, { questions: state.spec.openQuestions });
                 advance = false;
               }
@@ -2201,7 +2271,20 @@ export class WorkflowScheduler {
                 this.moveTo(state, stages, specify, v2)
               ) {
                 state.derivationReturns = 1;
-                this.pendPatch(state, policy, derived, ["spec", "plan"]);
+                // Under `derivationAmend: "on"` a return of rows alone amends those criteria by
+                // patch, and the specify stage keeps the plan when nothing else changed (#2219).
+                const blockingNow = findings.filter((f) => f.blocking);
+                if (derivationAmendOn(policy) && amendableReturn(blockingNow, MAX_PATCH_FINDINGS)) {
+                  state.derivationAmend = startAmend(spec, analysis.derivations, derived);
+                  state.pendingPatch = {
+                    findings: derived.map(({ kind, refs, description }) => ({
+                      kind,
+                      refs,
+                      description,
+                    })),
+                    targets: policy.revision === "patch" ? ["spec", "plan"] : ["spec"],
+                  };
+                } else this.pendPatch(state, policy, derived, ["spec", "plan"]);
                 state.prompt += `\n${DERIVATION_RETURN_NOTE}\n${canonical(derived.map(({ kind, refs, description }) => ({ kind, refs, description })))}`;
                 advance = false;
                 rerouted = v2 !== null;
