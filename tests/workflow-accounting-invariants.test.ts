@@ -529,10 +529,15 @@ describe("plan charge invariants (#2100)", () => {
       const limitCommitted = finished + unplanned + runs.reduce((n, r) => n + held(r), 0);
       const charge = planCharge("shadow", ratio, limitCommitted, runs);
       for (const run of charge?.runs ?? []) {
-        expect(run.chargeTokens).toBe(planChargeTokens(run.usedTokens, run.plan, ratio));
-        expect(run.chargeTokens).toBeGreaterThanOrEqual(run.plan.high);
-        const need = Math.max(run.plan.high, Math.round((run.plan.expected ?? run.plan.low) * (ratio ?? 1)));
+        expect(run.chargeTokens).toBe(planChargeTokens(run.usedTokens, run.plan, ratio, run.limitTokens));
+        const expected = Math.round((run.plan.expected ?? run.plan.low) * (ratio ?? 1));
+        // #2253: unmeasured, a plan whose low end is above the run's limit is held at its expected
+        // need (never below its low end, so still above the limit), not at its high end.
+        const contradicts = ratio === null && run.plan.low > run.limitTokens;
+        const need = contradicts ? Math.max(run.plan.low, expected) : Math.max(run.plan.high, expected);
         expect(run.chargeTokens).toBe(Math.max(run.usedTokens, need));
+        if (contradicts) expect(run.chargeTokens).toBeGreaterThan(run.limitTokens);
+        else expect(run.chargeTokens).toBeGreaterThanOrEqual(run.plan.high);
         if (need <= run.limitTokens) expect(run.chargeTokens).toBeLessThanOrEqual(held(run));
       }
       const fits = (charge?.runs ?? []).every((r) => r.chargeTokens <= held(r));
