@@ -1,3 +1,5 @@
+import { statSync } from "node:fs";
+import { join } from "node:path";
 import { runSandbox, type SandboxRequest, SandboxUnavailableError } from "../security/sandbox.js";
 import { buildSafeEnv } from "../spawn.js";
 import { canonical, hashJson } from "../specs/hash.js";
@@ -343,7 +345,8 @@ export class CheckRunner {
     // compile and ran in 5.6 s again, and the timeout sent a finished task back to its worker
     // (#2162). A written-tests check that timed out without a result is therefore run once more
     // when it has no earlier result in the run; a file that never ends times out again and fails.
-    const firstRun = !this.store.checks(runId).some((c) => c.check_id === check.id);
+    const earlier = this.store.checks(runId).filter((c) => c.check_id === check.id);
+    const firstRun = !earlier.length;
     let result = await execute();
     if (
       firstRun &&
@@ -406,6 +409,24 @@ export class CheckRunner {
           check.args.filter((arg) => /[/\\]|\.\w+$/.test(arg)).join(" ") || check.args.join(" ")
         } and did not finish within ${check.timeoutMs} ms, without printing a test result. These tests are too slow or never end. ${timeoutAdvice(check)}`,
       };
+    } else if (result.timedOut && !result.cancelled && !signal.aborted) {
+      // A formatter or linter is deterministic: a hang on files it passed earlier in the run, or
+      // one a run on each written file alone pins to a file, is the run's own work (#2240: rustfmt
+      // never finished on a 20-deep nested literal, and the inconclusive check blocked the run
+      // with nothing to repair). Without either it stays inconclusive (a cold toolchain, #1177).
+      const passed = earlier.some((c) => c.status === "passed");
+      const hanging = await this.hangingFile(
+        runId,
+        check,
+        root,
+        signal,
+        runSandbox(policy, root, { gitWrite: root !== this.store.workspace }),
+      );
+      if (passed || hanging) {
+        status = "failed";
+        reason = "timeout_slow";
+        result = { ...result, output: `${result.output}\n\n${timeoutSlowNote(check, hanging)}` };
+      } else reason = "timeout";
     } else if (result.timedOut) reason = "timeout";
     else if (result.cancelled) reason = "cancelled";
     else if (check.report === "json" && reason === "exit") {
@@ -472,6 +493,79 @@ export class CheckRunner {
       reason,
     };
   }
+  /**
+   * The first file the run wrote that the check's formatter, run on that file alone, does not
+   * finish within `BISECT_FILE_MS` (or the check's own timeout, when shorter): the largest
+   * `BISECT_FILES` code files of the check's language under its directory, one at a time. Null for
+   * a check with no file-scoped form (`fileScopedFormat`) or when every file finishes.
+   */
+  private async hangingFile(
+    runId: string,
+    check: Check,
+    root: string,
+    signal: AbortSignal,
+    sandbox: SandboxRequest | null,
+  ): Promise<string | null> {
+    // Loaded here: format-written reaches gate detection, which imports this module.
+    const { fileScopedFormat } = await import("../workflows/format-written.js");
+    const dir = check.cwd === "." ? root : workspacePath(root, check.cwd);
+    const prefix = check.cwd === "." ? "" : `${check.cwd.replace(/\\/g, "/").replace(/\/$/, "")}/`;
+    let tasks: { writes: { path: string; action: string }[] }[] = [];
+    try {
+      tasks = this.store.state(runId).graph?.tasks ?? [];
+    } catch {
+      return null;
+    }
+    const written = [
+      ...new Set(
+        tasks.flatMap((t) =>
+          t.writes.filter((w) => w.action !== "delete").map((w) => w.path.replace(/\\/g, "/")),
+        ),
+      ),
+    ]
+      .filter((path) => path.startsWith(prefix))
+      .map((path) => {
+        const local = path.slice(prefix.length);
+        const command = fileScopedFormat(check, dir, local);
+        const size = command
+          ? (statSync(join(dir, local), { throwIfNoEntry: false })?.size ?? 0)
+          : 0;
+        return { path, command, size };
+      })
+      .filter((file) => file.command && file.size > 0)
+      .sort((a, b) => b.size - a.size)
+      .slice(0, BISECT_FILES);
+    for (const file of written) {
+      if (signal.aborted || !file.command) return null;
+      const executable =
+        file.command.executable === "bun" ? process.execPath : file.command.executable;
+      try {
+        const alone = await executeCheckCommand(this.processes, executable, file.command.args, {
+          cwd: dir,
+          env: buildCheckEnv(check),
+          timeoutMs: Math.min(BISECT_FILE_MS, check.timeoutMs),
+          signal,
+          sandbox,
+        });
+        if (alone.timedOut && !alone.cancelled) return file.path;
+      } catch {
+        return null;
+      }
+    }
+    return null;
+  }
+}
+
+/** How many written files a timed-out formatter is run on alone, and how long each may take. */
+const BISECT_FILES = 5;
+const BISECT_FILE_MS = 20_000;
+
+/** What a check that timed out on the run's own work should change (#2240). */
+export function timeoutSlowNote(check: Check, hanging: string | null): string {
+  const timeout = `${check.id} did not finish within ${String(check.timeoutMs)} ms`;
+  if (hanging)
+    return `Note: ${timeout}. Run on each file the run wrote alone, the formatter does not finish on ${hanging} either: the tool hangs on its content (rustfmt on a data literal of deeply nested macro or tuple arguments). Restructure that code (build the nested value in steps, or a helper per level), or put the tool's skip marker on the item (\`#[rustfmt::skip]\` on the function in Rust); the fixer is not run on it.`;
+  return `Note: ${timeout}, although it passed earlier in this run. A file the run changed since makes the tool run far longer or never end: run the check's command on the files changed since its last pass, one at a time, and simplify the one it does not finish on.`;
 }
 
 /**

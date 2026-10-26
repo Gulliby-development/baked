@@ -356,6 +356,18 @@ function costCapOf(policyJson: string): { maxCostUsd?: number } {
 /** Parsed artifacts a store keeps; the oldest is dropped past this. */
 const PARSED_ARTIFACTS = 4096;
 
+/** One recorded check run, with the workspace snapshot it ran on. */
+export interface CheckRun {
+  check_id: string;
+  evidence_id: string;
+  status: string;
+  /** Why the status is what it is (`exit`, `timeout`, `timeout_slow`, ...). */
+  reason: string;
+  snapshot_id: string;
+  snapshot_hash: string | null;
+  validity: string;
+}
+
 export class WorkflowStore {
   private readonly db: Database;
   readonly path: string;
@@ -1971,25 +1983,10 @@ export class WorkflowStore {
         [toRun, newId(), toEvidence, fromRun, row.id],
       );
   }
-  checks(runId: string): {
-    check_id: string;
-    evidence_id: string;
-    status: string;
-    snapshot_id: string;
-    validity: string;
-  }[] {
+  checks(runId: string): CheckRun[] {
     return this.db
-      .query<
-        {
-          check_id: string;
-          evidence_id: string;
-          status: string;
-          snapshot_id: string;
-          validity: string;
-        },
-        [string]
-      >(
-        "SELECT c.check_id,c.evidence_id,c.status,e.snapshot_id,e.validity FROM check_results c JOIN evidence e ON c.run_id=e.run_id AND c.evidence_id=e.id WHERE c.run_id=? ORDER BY c.rowid",
+      .query<CheckRun, [string]>(
+        "SELECT c.check_id,c.evidence_id,c.status,c.reason,e.snapshot_id,s.manifest_hash AS snapshot_hash,e.validity FROM check_results c JOIN evidence e ON c.run_id=e.run_id AND c.evidence_id=e.id LEFT JOIN workspace_snapshots s ON s.run_id=e.run_id AND s.id=e.snapshot_id WHERE c.run_id=? ORDER BY c.rowid",
       )
       .all(runId);
   }
