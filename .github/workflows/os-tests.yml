@@ -64,13 +64,18 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { os: windows-latest, shard: 1, shards: 3 }
-          - { os: windows-latest, shard: 2, shards: 3 }
-          - { os: windows-latest, shard: 3, shards: 3 }
-          # One macOS shard ran past the job's 30 minutes on main and in the queue once the suite grew
-          # (19 to 28 minutes before, still in the w* files at the limit on 2026-10-26).
-          - { os: macos-latest, shard: 1, shards: 2 }
-          - { os: macos-latest, shard: 2, shards: 2 }
+          # Each shard must finish inside the job's 30 minutes. Files used to go round-robin by name:
+          # on 2026-10-26 one Windows shard of three passed 30 minutes while another took 10, and a
+          # single macOS shard passed it too (#2259, #2261). They are now balanced by measured time
+          # (scripts/test-shard-weights.json); the replay corpus alone takes about 17 minutes on Windows.
+          - { os: windows-latest, shard: 1, shards: 5 }
+          - { os: windows-latest, shard: 2, shards: 5 }
+          - { os: windows-latest, shard: 3, shards: 5 }
+          - { os: windows-latest, shard: 4, shards: 5 }
+          - { os: windows-latest, shard: 5, shards: 5 }
+          - { os: macos-latest, shard: 1, shards: 3 }
+          - { os: macos-latest, shard: 2, shards: 3 }
+          - { os: macos-latest, shard: 3, shards: 3 }
     runs-on: ${{ matrix.os }}
     name: shard (${{ matrix.os }}, ${{ matrix.shard }}/${{ matrix.shards }})
     timeout-minutes: 30
