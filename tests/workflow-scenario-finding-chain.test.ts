@@ -244,7 +244,9 @@ describe("scenario: R62 md-site, a finding chain on one symbol (#1959)", () => {
     const out = join(dir, "run.sqlite.gz");
     exportTrace(root, out);
     const replayed = replayTrace(out).runs.find((r) => r.runId === runId);
-    expect(replayed?.findingChains.map((b) => [b.kind, b.recorded, b.replayed])).toEqual([["rewrite", "rewrite", "rewrite"], ["battery", "pass", "pass"]]);
+    expect(replayed?.findingChains.filter((b) => b.kind !== "crash").map((b) => [b.kind, b.recorded, b.replayed])).toEqual([["rewrite", "rewrite", "rewrite"], ["battery", "pass", "pass"]]);
+    // Each battery case records its output tail and crash decision in shadow (#2136): none crashed.
+    expect(replayed?.findingChains.filter((b) => b.kind === "crash").every((b) => b.recorded === "pass" && b.replayed === "pass")).toBe(true);
     expect(replayed?.newChainDecisions).toBe(0);
     const patching = replayTrace(out, { chainRule: () => "patch" }).runs.find((r) => r.runId === runId);
     expect(patching?.newChainDecisions).toBe(1);

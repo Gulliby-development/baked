@@ -94,11 +94,12 @@ import {
 import { canHold } from "../verification/deliverable-paths.js";
 import { type DocExampleResult, isDocFile, runDocExamples } from "../verification/doc-examples.js";
 import {
+  caseCrash,
   EDGE_CASES,
   EDGE_DIR,
   EDGE_KIND,
   type EdgeRecord,
-  edgeDecision,
+  edgeCase,
   edgeTaxonomy,
   printedValue,
 } from "../verification/edge-inputs.js";
@@ -4109,6 +4110,8 @@ export class WorkflowScheduler {
         });
       },
     );
+    // A case that crashes inside the chain's file is recorded in shadow (#2136).
+    const crashes = battery.map(({ finding }, index) => caseCrash(outcomes[index], [finding.file]));
     const record: BatteryRecord = {
       schemaVersion: 1,
       snapshotId: state.snapshotId,
@@ -4119,18 +4122,26 @@ export class WorkflowScheduler {
         symbol: record.symbol,
         status: outcomes[index]?.status ?? "inconclusive",
         reason: outcomes[index]?.reason ?? "",
+        outputTail: crashes[index]?.outputTail ?? "",
+        crash: crashes[index]?.crash ?? "pass",
       })),
       decision: batteryDecision(outcomes.map((o) => o.status)),
     };
+    const batteryPath = `${CHAIN_BATTERY_DIR}${newId()}.json`;
     const evidenceId = this.store.transaction(() => {
-      const artifact = this.store.artifact(
-        runId,
-        CHAIN_KIND,
-        `${CHAIN_BATTERY_DIR}${newId()}.json`,
-        canonical(record),
-      );
+      const artifact = this.store.artifact(runId, CHAIN_KIND, batteryPath, canonical(record));
       return this.store.addEvidence(runId, "command", state.snapshotId ?? "", artifact.id);
     });
+    this.crashWouldStops(
+      runId,
+      policy,
+      battery.flatMap(({ record }, index) => {
+        const actual = crashes[index]?.actual;
+        return actual
+          ? [{ key: `${batteryPath}#${String(index + 1)}`, taskId: record.taskId, actual }]
+          : [];
+      }),
+    );
     if (record.decision !== "reopen") return [];
     const failing = battery.flatMap((c, index) => {
       const outcome = outcomes[index];
@@ -4265,12 +4276,26 @@ export class WorkflowScheduler {
       file: head.file,
       symbol: record.symbol,
       shown: members.map((m) => m.id),
-      cases: outcomes.map((o) => ({
-        status: o.status,
-        reason: o.reason ?? "",
-        decision: familyDecision(o.status),
-      })),
+      cases: outcomes.map((o) => {
+        // A case that crashes inside the chain's file is recorded in shadow (#2136).
+        const { actual: _, ...crash } = caseCrash(o, [head.file]);
+        return {
+          status: o.status,
+          reason: o.reason ?? "",
+          decision: familyDecision(o.status),
+          ...crash,
+        };
+      }),
     };
+    this.crashWouldStops(
+      runId,
+      policy,
+      outcomes.flatMap((o, index) => {
+        const { actual } = caseCrash(o, [head.file]);
+        const key = `${CHAIN_FAMILY_DIR}${task.id}.json#${String(index + 1)}`;
+        return actual ? [{ key, taskId: task.id, actual }] : [];
+      }),
+    );
     this.store.transaction(() => {
       const artifact = this.store.artifact(
         runId,
@@ -13469,6 +13494,27 @@ ${note}`;
     }
   }
   /**
+   * The `edge_crash_finding` would-stops of probed cases that crashed inside the probed code's
+   * own files (#2136): the edge probe's, the chain battery's and the sibling probe's. Shadow: each
+   * names the finding the case would be, and nothing opens until the reason is promoted.
+   */
+  private crashWouldStops(
+    runId: string,
+    policy: RunPolicy,
+    crashes: readonly { key: string; taskId: string; actual: string }[],
+  ): void {
+    const mode = stopMode(policy, "edge_crash_finding");
+    if (mode === "enforce") return;
+    for (const crash of crashes)
+      recordWouldStop(this.store, runId, {
+        reason: "edge_crash_finding",
+        mode,
+        key: crash.key,
+        summary: `Probed case ${crash.key} crashes inside ${crash.taskId}'s own code (${crash.actual}): it would be a finding of ${crash.taskId}`,
+        inputs: { ...crash },
+      });
+  }
+  /**
    * The edge-input probe of a planned source task (#1808), once after it settled without
    * failures: the `edge-cases` profile is shown the task's criteria, files and the edge taxonomy
    * of its languages (edge-inputs.ts) and proposes extreme legal inputs; the host runs each
@@ -13507,6 +13553,7 @@ ${note}`;
       schemaVersion: 1,
       taskId: task.id,
       languages,
+      files: sources,
       cases,
     });
     const child = this.store.transaction(() => this.store.beginStep(runId, "edge-probe", stepId));
@@ -13582,19 +13629,13 @@ ${note}`;
     const evidence = this.scopeEvidence(runId, state, policy, root, []);
     const frameFile = (output: string): string | undefined =>
       evidence.paths(stackFrames(output)).find((path) => settledSources.includes(path));
-    const probed = record(
-      outcomes.map((o, index) => {
-        const decision = edgeDecision(o.status);
-        const file = decision === "finding" ? frameFile(o.output) : undefined;
-        return {
-          criterionId: cases[index]?.criterionId ?? "",
-          status: o.status,
-          reason: o.reason,
-          decision,
-          ...(file && file !== sources[0] ? { file } : {}),
-        };
-      }),
-    );
+    // Each case keeps its output's tail and the shadow crash decision on it (#2136).
+    const decided = outcomes.map((o, index) => {
+      const d = edgeCase(cases[index]?.criterionId ?? "", o, sources);
+      const file = d.recorded.decision === "finding" ? frameFile(o.output) : undefined;
+      return file && file !== sources[0] ? { ...d, recorded: { ...d.recorded, file } } : d;
+    });
+    const probed = record(decided.map((d) => d.recorded));
     const findings: Review["findings"] = [];
     this.store.transaction(() => {
       const artifact = this.store.artifact(runId, EDGE_KIND, path, canonical(probed));
@@ -13630,6 +13671,15 @@ ${note}`;
         });
       }
     });
+    this.crashWouldStops(
+      runId,
+      policy,
+      decided.flatMap(({ crashActual }, index) =>
+        crashActual === null
+          ? []
+          : [{ key: `${path}#${String(index + 1)}`, taskId: task.id, actual: crashActual }],
+      ),
+    );
     if (!findings.length) return;
     const recorded = this.recordFindings(runId, {
       schemaVersion: 1,

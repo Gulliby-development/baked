@@ -311,7 +311,10 @@ export type ChainRule = (length: number, policy: "on" | "off") => "rewrite" | "p
 export const chainRewriteDecision: ChainRule = (length, policy) =>
   policy === "on" && length >= CHAIN_REWRITE_AT ? "rewrite" : "patch";
 
-/** Whether a battery's case outcomes reopen the chain's corrective before the review. */
+/**
+ * Whether a battery's case outcomes reopen the chain's corrective before the review. A case that
+ * crashes inside the chain's file is inconclusive here; `edgeCrashDecision` records it (#2136).
+ */
 export type BatteryRule = (statuses: readonly ReproOutcome["status"][]) => "pass" | "reopen";
 export const batteryDecision: BatteryRule = (statuses) =>
   statuses.includes("reproduced") ? "reopen" : "pass";
@@ -320,10 +323,20 @@ export const batteryDecision: BatteryRule = (statuses) =>
  * Whether a case of a chain's sibling probe joins the battery (#1969). The host runs each case as a
  * repro whose actual is its expected value: `reproduced` is a case the code already gets right,
  * `refuted` one that ran and printed something else (a member of the class), `inconclusive` one
- * that could not show either (a crash, a program no check starts), which is left out.
+ * that could not show either (a crash, a program no check starts), which is left out. Whether an
+ * inconclusive case crashed inside the chain's own file is `edgeCrashDecision`'s (#2136, shadow).
  */
 export type FamilyRule = (status: ReproOutcome["status"]) => "join" | "skip";
 export const familyDecision: FamilyRule = (status) => (status === "refuted" ? "join" : "skip");
+
+/**
+ * A crash record of a chain case (#2136): the output's tail and `edgeCrashDecision` on it against
+ * the chain's file, in shadow. Absent on records before #2136.
+ */
+export interface CaseCrash {
+  outputTail?: string;
+  crash?: "finding" | "pass";
+}
 
 /** What `chains/family/<task>.json` records: each probed case's outcome and whether it joined. */
 export interface FamilyRecord {
@@ -334,12 +347,12 @@ export interface FamilyRecord {
   symbol: string;
   /** The chain's cases the probe was shown, by finding id. */
   shown: string[];
-  cases: {
+  cases: ({
     status: ReproOutcome["status"];
     reason: string;
     /** A joined case is a finding with this record as its evidence and `repeatOf` the finding. */
     decision: "join" | "skip";
-  }[];
+  } & CaseCrash)[];
 }
 
 /** The observed value of a probed case: its output's last non-empty line, or "" for none. */
@@ -388,14 +401,14 @@ export const chainSubject = (record: Pick<ChainRecord, "symbol" | "file">): stri
 export interface BatteryRecord {
   schemaVersion: 1;
   snapshotId: string | null;
-  cases: {
+  cases: ({
     taskId: string;
     findingId: string;
     file: string | null;
     symbol: string;
     status: ReproOutcome["status"];
     reason: string;
-  }[];
+  } & CaseCrash)[];
   decision: "pass" | "reopen";
 }
 
