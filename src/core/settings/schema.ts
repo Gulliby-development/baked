@@ -1169,6 +1169,28 @@ export const SETTINGS: readonly SettingDefinition[] = [
     ],
   },
   {
+    id: "quality.baselineFix",
+    page: "code-quality",
+    section: "Workflow runs",
+    label: "Repair lint debt from before the run",
+    help: "When a required lint or format check already fails before any change, on files no task of the plan writes, and its tool marks every finding as correctable, the host runs the check's fixer on those files before the first task. It keeps the edit only when the check then passes, and puts the files back otherwise.",
+    scopes: BOTH,
+    type: "enum",
+    default: "off",
+    options: [
+      {
+        value: "off",
+        label: "off",
+        help: "The host only records the failure; the run stops at the checks stage as before.",
+      },
+      {
+        value: "on",
+        label: "on",
+        help: "Run the fixer on the named files before the first task and keep a passing result.",
+      },
+    ],
+  },
+  {
     id: "quality.propertyTests",
     page: "code-quality",
     section: "Tests",

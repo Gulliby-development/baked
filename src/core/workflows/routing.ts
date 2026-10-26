@@ -20,9 +20,10 @@ import type { Gate } from "./v2/definition.js";
 import { type LoadedDefinition, loadDefinition } from "./v2/definitions.js";
 import { loadGateLibrary } from "./v2/library.js";
 
-function inputs(config: AppConfig, model: string): RoutingInputs {
+function inputs(config: AppConfig, model: string, strict = false): RoutingInputs {
   return {
     runModel: model,
+    ...(strict ? { strict: true } : {}),
     routing: parseModelRouting(config.modelRouting),
     legacy: {
       coding: config.taskRouter?.ember ?? config.taskRouter?.coding ?? undefined,
@@ -34,6 +35,8 @@ function inputs(config: AppConfig, model: string): RoutingInputs {
 /**
  * The configuration of a run whose model is strict: no configured route applies, so the run model
  * serves every class, role, profile and stage. Routes given for the run itself (`--route`) still do.
+ * Default-on routes are not configuration, so the strict run also passes `strict` to
+ * `routingRecord`, which turns them off (`RoutingInputs.strict`, #2217).
  */
 export function strictRoutingConfig(config: AppConfig): AppConfig {
   const { modelRouting: _routing, taskRouter: _router, ...rest } = config;
@@ -143,7 +146,10 @@ export function routedProfiles(
   );
 }
 
-/** What a run freezes at start: each profile's model and each routed stage's model, with sources. */
+/**
+ * What a run freezes at start: each profile's model and each routed stage's model, with sources.
+ * `strict` (`--model-strict`) turns off the default-on routes, such as `specifyOnSonnet`.
+ */
 export function routingRecord(
   config: AppConfig,
   registry: ProfileRegistry,
@@ -151,8 +157,9 @@ export function routingRecord(
   workflowId: string,
   stageIds: string[],
   overrides: Record<string, string> | undefined,
+  strict = false,
 ): RoutingRecord {
-  const routing = inputs(config, model);
+  const routing = inputs(config, model, strict);
   const stages = resolveStageRoutes(workflowId, stageIds, overrides, routing);
   const fallback = withModelFallback(config);
   const sized = withRouteContext(routing.routing?.context);
@@ -669,7 +676,15 @@ export function rerouteRecord(
     if (entry.source.startsWith(ROUTE_OVERRIDE)) carried[stageId] = moved(entry.model);
   const overrides = { ...carried, ...request.routes };
   const registry = routedProfiles(workspace, config, model);
-  const fresh = routingRecord(config, registry, model, workflowId, stageIds, overrides);
+  const fresh = routingRecord(
+    config,
+    registry,
+    model,
+    workflowId,
+    stageIds,
+    overrides,
+    previous.strict === true,
+  );
   const profiles: RoutingRecord["profiles"] = {};
   for (const id of profileIds) {
     const entry = fresh.profiles[id] ?? previous.profiles[id];
