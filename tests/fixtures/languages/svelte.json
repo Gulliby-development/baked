@@ -48,6 +48,7 @@
       "oxlint: linter",
       "prettier: formatter",
       "svelte-check: typechecker, whole unit"
-    ]
+    ],
+    "sortedLists": null
   }
 }

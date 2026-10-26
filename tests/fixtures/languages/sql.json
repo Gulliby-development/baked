@@ -58,6 +58,7 @@
     "staticTools": [
       "sqlfluff: linter",
       "sqlfluff-dbt: linter, whole unit"
-    ]
+    ],
+    "sortedLists": null
   }
 }

@@ -38,6 +38,7 @@
       "clang-tidy: linter, whole unit",
       "clang-format: formatter",
       "oclint: linter"
-    ]
+    ],
+    "sortedLists": null
   }
 }

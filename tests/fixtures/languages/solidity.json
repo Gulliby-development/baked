@@ -41,6 +41,7 @@
       "solhint: linter",
       "slither: linter, whole unit",
       "forge fmt: formatter"
-    ]
+    ],
+    "sortedLists": null
   }
 }

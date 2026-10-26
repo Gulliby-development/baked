@@ -52,6 +52,7 @@
       "oxlint: linter",
       "prettier: formatter",
       "vue-tsc: typechecker, whole unit"
-    ]
+    ],
+    "sortedLists": null
   }
 }

@@ -41,6 +41,7 @@ import { PACKAGE_CONTENTS, packagingFields } from "../src/core/workflows/quality
 import { isStaticCheck, isWholeUnitCheck } from "../src/core/workflows/check-policy.js";
 import { isTestCheck } from "../src/core/workflows/quality/mutation.js";
 import { STATIC_TOOLS } from "../src/core/workflows/static-tools.js";
+import { layOutForFormatter, SORTED_LISTS } from "../src/core/workflows/initiatives/skeleton-layout.js";
 import { CHECK_CONFIGS, checkConfigOf } from "../src/core/workflows/quality/check-configs.js";
 import type { Check } from "../src/core/workflows/types.js";
 import { rowOf } from "../src/core/intelligence/language-records.js";
@@ -247,6 +248,16 @@ const RECORDS: Record<
         ];
         return `${tool}: ${as.join(", ")}`;
       }),
+  },
+  // The lists a language's formatter sorts within groups of consecutive lines, and the lines of the
+  // row's sample a host-written skeleton gets a blank line before so the order stays (#2222).
+  sortedLists: {
+    record: SORTED_LISTS,
+    run: (language) => {
+      const row = rowOf(SORTED_LISTS, language);
+      const laid = row ? layOutForFormatter(row.sample.path, row.sample.content) : null;
+      return laid ? [`${row?.sample.path}: ${laid.formatter} blank line before ${laid.lines.join(", ")}`] : [];
+    },
   },
   // The check-defining configs auto-approval protects and holds to named tightenings (#2221): each
   // row's example file, the tool it is for, and how a plain edit of it reads ("loosens" for every

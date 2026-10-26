@@ -63,6 +63,7 @@
       "pint: formatter",
       "php-cs-fixer: formatter",
       "phpcbf: formatter"
-    ]
+    ],
+    "sortedLists": null
   }
 }

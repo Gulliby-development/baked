@@ -66,6 +66,7 @@
       "biome: linter",
       "oxlint: linter",
       "prettier: formatter"
-    ]
+    ],
+    "sortedLists": null
   }
 }

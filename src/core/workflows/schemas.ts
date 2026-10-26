@@ -735,6 +735,14 @@ export const PolicySchema = z
      */
     correctiveDefer: z.literal("on").optional(),
     /**
+     * The skeleton layout of an initiative split (initiatives/skeleton-layout.ts, #2222): `on` puts
+     * a blank line before each skeleton line the language's formatter would sort elsewhere (rustfmt's
+     * `pub mod` lists, gofmt's import blocks), so the host-written content is a fixed point of the
+     * project's format check. Absent means shadow (the layout is recorded in a `split.skeleton_layout`
+     * event, the content stays as the decomposer wrote it), so stored policies keep their hash.
+     */
+    skeletonLayout: z.literal("on").optional(),
+    /**
      * The host's route of a test task's wrong-value failure (source-defect.ts, #2220): `on` hands
      * a planned test task's failing check whose expected values are all literals of its criteria
      * to the finished sibling that carries those criteria and wrote the source the tests import,

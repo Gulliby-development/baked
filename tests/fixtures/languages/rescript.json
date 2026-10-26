@@ -55,6 +55,7 @@
     ],
     "staticTools": [
       "rescript format: formatter"
-    ]
+    ],
+    "sortedLists": null
   }
 }

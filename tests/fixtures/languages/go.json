@@ -71,6 +71,7 @@
       "gofmt: formatter",
       "go fmt: formatter",
       "goimports: formatter"
-    ]
+    ],
+    "sortedLists": ["main.go: gofmt blank line before 5"]
   }
 }

@@ -66,6 +66,7 @@
     "staticTools": [
       "dotnet format: formatter",
       "csharpier: formatter"
-    ]
+    ],
+    "sortedLists": null
   }
 }

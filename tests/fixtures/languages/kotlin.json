@@ -64,6 +64,7 @@
       "detekt: linter",
       "ktfmt: formatter",
       "spotless: formatter"
-    ]
+    ],
+    "sortedLists": null
   }
 }
