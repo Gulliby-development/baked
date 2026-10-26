@@ -1,6 +1,12 @@
 import { canonical, hashJson } from "../specs/hash.js";
 import { WorkflowFault } from "./errors.js";
 import { hostGrowth, withoutHostGrowth } from "./host-growth.js";
+import {
+  checkConfigLoosening,
+  checkConfigOf,
+  isCheckConfigPath,
+  isEnforcedCheckConfig,
+} from "./quality/check-configs.js";
 import { MSBUILD_ACTIVE_PROPERTY } from "./quality/manifest-fields.js";
 import { isBoundedLockPath, isManifestPath } from "./quality/manifests.js";
 import { unmappedDeliverables } from "./request-coverage.js";
@@ -46,6 +52,12 @@ export interface AutoApprovalResult {
    * mode: they did not decline the approval, and the caller records them (#1714).
    */
   wouldStop?: { mode: "shadow" | "advisory"; problems: string[] };
+  /**
+   * Edits of check-defining configs that auto-approval did not keep with a person before #2221
+   * (`.rubocop.yml`, `ruff.toml`, `.golangci.yml`, ...), while `check-config-approval` is in shadow
+   * or advisory mode: they did not decline the approval, and the caller records them.
+   */
+  configWouldStop?: { mode: "shadow" | "advisory"; problems: string[] };
 }
 /**
  * A policy the operator set with an explicit workflow command (`extend`, or `revise` of a staged
@@ -58,11 +70,14 @@ type Write = TaskGraph["tasks"][number]["writes"][number];
 
 /** Paths that always need a person, whatever the limits (design section 5.2). */
 const alwaysHuman =
-  /^(?:\.git|\.baked|baked|specs|\.github|\.gitlab|\.circleci|\.husky)(?:\/|$)|(?:^|\/)(?:AGENTS\.md|CLAUDE\.md|constitution\.md|package\.json|bunfig\.toml|Cargo\.toml|go\.(?:mod|sum)|pyproject\.toml|requirements[^/]*\.txt|Gemfile|[^/]*\.(?:csproj|fsproj|vbproj)|pom\.xml|build\.gradle(?:\.kts)?|settings\.gradle(?:\.kts)?|Directory\.(?:Packages|Build)\.props|Directory\.Build\.targets|[^/]*[.-]lock(?:b|\.[^/]*)?|tsconfig[^/]*|biome[^/]*|\.env(?:\.[^/]*)?|\.gitlab-ci\.yml|azure-pipelines\.yml|Jenkinsfile|[^/]*\.(?:pem|key|crt|cer|p12|pfx|jks|keystore))$/i;
+  /^(?:\.git|\.baked|baked|specs|\.github|\.gitlab|\.circleci|\.husky)(?:\/|$)|(?:^|\/)(?:AGENTS\.md|CLAUDE\.md|constitution\.md|package\.json|bunfig\.toml|Cargo\.toml|go\.(?:mod|sum)|pyproject\.toml|requirements[^/]*\.txt|Gemfile|[^/]*\.(?:csproj|fsproj|vbproj)|pom\.xml|build\.gradle(?:\.kts)?|settings\.gradle(?:\.kts)?|Directory\.(?:Packages|Build)\.props|Directory\.Build\.targets|[^/]*[.-]lock(?:b|\.[^/]*)?|\.env(?:\.[^/]*)?|\.gitlab-ci\.yml|azure-pipelines\.yml|Jenkinsfile|[^/]*\.(?:pem|key|crt|cer|p12|pfx|jks|keystore))$/i;
 
-/** Whether writing `path` always needs a person: secrets, CI and deployment config, manifests. */
+/**
+ * Whether writing `path` always needs a person: secrets, CI and deployment config, manifests, and
+ * the check configs that needed one before #2221 (tsconfig, biome; `isEnforcedCheckConfig`).
+ */
 export function alwaysNeedsPerson(path: string): boolean {
-  return alwaysHuman.test(path);
+  return alwaysHuman.test(path) || isEnforcedCheckConfig(path);
 }
 
 /**
@@ -70,7 +85,10 @@ export function alwaysNeedsPerson(path: string): boolean {
  * starts and changes nothing a person has reviewed; modifying one stays with a person.
  */
 const manifestFile =
-  /(?:^|\/)(?:package\.json|bunfig\.toml|Cargo\.toml|go\.mod|pyproject\.toml|requirements[^/]*\.txt|Gemfile|[^/]*\.(?:csproj|fsproj|vbproj)|pom\.xml|build\.gradle(?:\.kts)?|settings\.gradle(?:\.kts)?|Directory\.(?:Packages|Build)\.props|Directory\.Build\.targets|tsconfig[^/]*|biome[^/]*)$/i;
+  /(?:^|\/)(?:package\.json|bunfig\.toml|Cargo\.toml|go\.mod|pyproject\.toml|requirements[^/]*\.txt|Gemfile|[^/]*\.(?:csproj|fsproj|vbproj)|pom\.xml|build\.gradle(?:\.kts)?|settings\.gradle(?:\.kts)?|Directory\.(?:Packages|Build)\.props|Directory\.Build\.targets)$/i;
+
+/** A manifest or a check config, which a scaffold may create or edit (see `needsPerson`). */
+const scaffoldFile = (path: string): boolean => manifestFile.test(path) || isCheckConfigPath(path);
 
 /**
  * Whether a write needs a person whatever the limits; `exists` tells which files are already there.
@@ -78,14 +96,40 @@ const manifestFile =
  * person has reviewed yet, and the next task needs its scripts and dev dependencies.
  */
 function needsPerson(write: Write, exists?: (path: string) => boolean, scaffold = false): boolean {
-  if (!alwaysHuman.test(write.path)) return false;
-  if (scaffold && manifestFile.test(write.path) && write.action !== "delete") return false;
-  return !(
-    write.action === "create" &&
-    exists !== undefined &&
-    manifestFile.test(write.path) &&
-    !exists(write.path)
+  if (!alwaysNeedsPerson(write.path)) return false;
+  return !newOrScaffold(write, exists, scaffold);
+}
+
+/** A write that creates a manifest or check config not there yet, or edits one on a scaffold. */
+function newOrScaffold(
+  write: Write,
+  exists?: (path: string) => boolean,
+  scaffold = false,
+): boolean {
+  if (!scaffoldFile(write.path)) return false;
+  if (scaffold && write.action !== "delete") return true;
+  return write.action === "create" && exists !== undefined && !exists(write.path);
+}
+
+/**
+ * A check-defining config outside the enforced ones (#2221) that this write changes: it needs a
+ * person only while `check-config-approval` is enforced, and is recorded as a would-stop until then.
+ */
+function shadowedCheckConfig(
+  write: Write,
+  exists?: (path: string) => boolean,
+  scaffold = false,
+): boolean {
+  return (
+    isCheckConfigPath(write.path) &&
+    !isEnforcedCheckConfig(write.path) &&
+    !newOrScaffold(write, exists, scaffold)
   );
+}
+
+/** Whether a check config's request-named write is held to its rule under this policy. */
+function checkConfigGuarded(policy: RunPolicy, path: string): boolean {
+  return isEnforcedCheckConfig(path) || stopMode(policy, "check-config-approval") === "enforce";
 }
 
 /** What the host knows about the run's package that the graph does not say. */
@@ -108,6 +152,11 @@ export interface ApprovalContext {
    * boundary lists (#1394, dieodds cli).
    */
   manifestRequest?: string;
+  /**
+   * The text of a workspace file before the run, so a request-named check config the plan writes
+   * whole (a host-written task) is compared with what it replaces (#2221).
+   */
+  read?: (path: string) => string | undefined;
   /**
    * Tokens the host added to the run budget on its own (planning floor, sizing, growth), recorded
    * as policy revisions with `approvedBy: "sizing"`; see `hostBudgetGrowth`.
@@ -162,12 +211,25 @@ export function evaluateAutoApproval(
   if (!config) return { approval: null, reasons: [] };
   const writes = graph.tasks.flatMap((task) => task.writes);
   const manifestRequest = context.manifestRequest ?? context.request ?? "";
-  const requested = (write: Write) => requestedWriteExempt(policy, write, manifestRequest);
-  const ruleOf = (write: Write) => requestedWriteRule(policy, write, manifestRequest);
+  const requested = (write: Write) =>
+    requestedWriteExempt(policy, write, manifestRequest, context.read);
+  const ruleOf = (write: Write) => requestedWriteRule(policy, write, manifestRequest, context.read);
   const common: string[] = [];
-  for (const write of writes)
-    if (needsPerson(write, context.exists, context.scaffold) && !requested(write))
+  const configMode = stopMode(policy, "check-config-approval");
+  const configProblems: string[] = [];
+  for (const write of writes) {
+    if (requested(write)) continue;
+    if (needsPerson(write, context.exists, context.scaffold))
       common.push(personText(write, ruleOf(write)));
+    else if (shadowedCheckConfig(write, context.exists, context.scaffold))
+      (configMode === "enforce" ? common : configProblems).push(
+        personText(write, ruleOf(write) ?? checkConfigText(write.path)),
+      );
+  }
+  const configWouldStop =
+    configProblems.length && configMode !== "enforce"
+      ? { configWouldStop: { mode: configMode, problems: [...new Set(configProblems)] } }
+      : {};
   // Under `clarification: assume` the run already decides what it may on its own; the deferral is
   // recorded in the approval body and the run report, so it is visible without a person.
   if (
@@ -189,7 +251,7 @@ export function evaluateAutoApproval(
       context.policyRevisions,
     );
     if (!common.length && !renewal.length)
-      return { approval: { mode: "renewal", limitsHash }, reasons: [] };
+      return { approval: { mode: "renewal", limitsHash }, reasons: [], ...configWouldStop };
     reasons.push(...renewal.map((reason) => `Renewal: ${reason}`));
   }
   let reviewable = false;
@@ -222,6 +284,7 @@ export function evaluateAutoApproval(
         approval: { mode: "limits", limitsHash },
         reasons: [],
         ...(wouldStop ? { wouldStop } : {}),
+        ...configWouldStop,
       };
     reasons.push(...problems.map((reason) => `Limits: ${reason}`));
     reviewable =
@@ -236,6 +299,7 @@ export function evaluateAutoApproval(
     reasons: [...new Set(reasons)],
     ...(reviewable ? { reviewable, limitsHash } : {}),
     ...(wouldStop ? { wouldStop } : {}),
+    ...configWouldStop,
   };
 }
 
@@ -346,7 +410,7 @@ export function plannerApprovalLimits(policy: RunPolicy): {
     maxFiles: limits.maxFiles,
     allowedPaths: limits.allowedPaths,
     allowDelete: limits.allowDelete,
-    alwaysHuman: `repository metadata (.git, .github and other CI folders, .baked, specs), agent instructions, package manifests that already exist (creating one is allowed, and editing one on a workspace without source files${policy.autoApproval?.requestedManifestEdits ? " or one the request names: a dependency manifest, a solution or go.work file, or a Directory.Build.props, Directory.Build.targets, Directory.Packages.props, global.json, NuGet.config, gradle.properties, .mvn/maven.config or rust-toolchain.toml the plan writes whole in a host-written task with plain properties only, or a Cargo.lock, package-lock.json, uv.lock or Gemfile.lock that changes only the project's own entry" : ""}), lockfiles, tool configs (tsconfig, biome), .env files and keys`,
+    alwaysHuman: `repository metadata (.git, .github and other CI folders, .baked, specs), agent instructions, package manifests that already exist (creating one is allowed, and editing one on a workspace without source files${policy.autoApproval?.requestedManifestEdits ? " or one the request names: a dependency manifest, a solution or go.work file, or a Directory.Build.props, Directory.Build.targets, Directory.Packages.props, global.json, NuGet.config, gradle.properties, .mvn/maven.config or rust-toolchain.toml the plan writes whole in a host-written task with plain properties only, or a Cargo.lock, package-lock.json, uv.lock or Gemfile.lock that changes only the project's own entry" : ""}), lockfiles, check configs (tsconfig, biome${stopMode(policy, "check-config-approval") === "enforce" ? " and every other linter, formatter or type checker config" : ""}${policy.autoApproval?.requestedCheckTightening ? ", except one the request names to turn on strictness settings it names" : ""}), .env files and keys`,
   };
 }
 
@@ -373,10 +437,16 @@ function requiredByRequest(write: Write, request: string): boolean {
  * the approval declines (spdxok b270088e, bench round 45: the `pyproject.toml` edit the brief
  * named passed the first and failed the second, #1547).
  */
-function requestedWriteExempt(policy: RunPolicy, write: Write, request: string): boolean {
-  return (
-    policy.autoApproval?.requestedManifestEdits === true && namedConfigRule(write, request) === null
-  );
+function requestedWriteExempt(
+  policy: RunPolicy,
+  write: Write,
+  request: string,
+  read?: (path: string) => string | undefined,
+): boolean {
+  const setting = configKind(write.path)?.check
+    ? policy.autoApproval?.requestedCheckTightening
+    : policy.autoApproval?.requestedManifestEdits;
+  return setting === true && namedConfigRule(policy, write, request, read) === null;
 }
 
 /**
@@ -401,9 +471,45 @@ export function requestExemptPaths(policy: RunPolicy, graph: TaskGraph, request:
  * sentence instead of "outside the allowed paths" (#1710). Undefined when the write is exempt, the
  * request does not name it, or the setting is off.
  */
-function requestedWriteRule(policy: RunPolicy, write: Write, request: string): string | undefined {
-  if (policy.autoApproval?.requestedManifestEdits !== true) return undefined;
-  return namedConfigRule(write, request) ?? undefined;
+function requestedWriteRule(
+  policy: RunPolicy,
+  write: Write,
+  request: string,
+  read?: (path: string) => string | undefined,
+): string | undefined {
+  const auto = policy.autoApproval;
+  if (configKind(write.path)?.check) {
+    if (!auto?.requestedManifestEdits && !auto?.requestedCheckTightening) return undefined;
+    if (!checkConfigGuarded(policy, write.path)) return undefined;
+  } else if (auto?.requestedManifestEdits !== true) return undefined;
+  return namedConfigRule(policy, write, request, read) ?? undefined;
+}
+
+/** Why a check config's edit needs a person. */
+function checkConfigText(path: string): string {
+  return `a ${checkConfigOf(path)?.tool ?? "check"} config sets what the checks enforce`;
+}
+
+/**
+ * The rule for a request-named check config write (#2221): exempt (null) only under
+ * `autoApproval.requestedCheckTightening`, and, when the plan writes the file whole, only when that
+ * content turns on nothing but strictness settings the request names. An implementer's edit is
+ * held to the same by the manifest field check after the run.
+ */
+function namedCheckRule(
+  policy: RunPolicy,
+  write: Write,
+  request: string,
+  read?: (path: string) => string | undefined,
+): string | null {
+  const text = checkConfigText(write.path);
+  if (policy.autoApproval?.requestedCheckTightening !== true)
+    return `${text}; autoApproval.requestedCheckTightening approves a tightening the request names`;
+  if (write.content === undefined) return null;
+  const loose = checkConfigLoosening(write.path, read?.(write.path) ?? "", write.content, request);
+  return loose.length
+    ? `${text}; the planned content changes ${loose.join(", ")}, which is not a tightening the request names`
+    : null;
 }
 
 function personText(write: Write, rule: string | undefined): string {
@@ -420,6 +526,8 @@ interface ConfigKind {
   matches: (path: string) => boolean;
   rule?: string;
   inert?: (content: string) => boolean;
+  /** A check-defining config (`CHECK_CONFIGS`), decided by `namedCheckRule`. */
+  check?: true;
 }
 
 const named = (pattern: RegExp) => (path: string) => pattern.test(path);
@@ -550,10 +658,8 @@ const CONFIG_KINDS: readonly ConfigKind[] = [
     matches: named(/(?:^|\/)bunfig\.toml$/i),
     rule: "bunfig.toml sets preload scripts and package registries",
   },
-  {
-    matches: named(/(?:^|\/)(?:tsconfig|biome)[^/]*$/i),
-    rule: "tsconfig and biome configs set what the checks enforce",
-  },
+  // Every linter, formatter and type checker config of every supported language (#2221).
+  { matches: isCheckConfigPath, check: true },
   // A lock that records the project's own version, named beside a version bump: the manifest
   // field check holds every other entry of it to what it was (#1934).
   { matches: isBoundedLockPath },
@@ -574,10 +680,16 @@ function configKind(path: string): ConfigKind | undefined {
  * the write, else the rule that keeps it with a person. Undefined for a delete, another file, or a
  * file the request does not name.
  */
-function namedConfigRule(write: Write, request: string): string | null | undefined {
+function namedConfigRule(
+  policy: RunPolicy,
+  write: Write,
+  request: string,
+  read?: (path: string) => string | undefined,
+): string | null | undefined {
   if (write.action === "delete") return undefined;
   const kind = configKind(write.path);
   if (!kind || !requestNamesManifest(write, request)) return undefined;
+  if (kind.check) return namedCheckRule(policy, write, request, read);
   if (!kind.rule) return null;
   if (kind.inert && write.content !== undefined && kind.inert(write.content)) return null;
   return kind.rule;
@@ -612,7 +724,9 @@ export function requestedPathTokens(request: string): string[] {
       changeSentences(request).flatMap((sentence) =>
         (sentence.match(/[\w./-]+/g) ?? [])
           .map((token) => token.replace(/\.+$/, ""))
-          .filter((token) => /\w\.\w/.test(token) || manifestFile.test(token)),
+          .filter(
+            (token) => /\w\.\w/.test(token) || manifestFile.test(token) || isCheckConfigPath(token),
+          ),
       ),
     ),
   ];
@@ -887,7 +1001,12 @@ export function planApprovalDecision(
   requests: RequestRow[],
   artifacts: ArtifactRow[],
   read: (artifact: ArtifactRow) => string,
-  workspace: { scaffold: boolean; exists: (path: string) => boolean; coverage?: boolean },
+  workspace: {
+    scaffold: boolean;
+    exists: (path: string) => boolean;
+    coverage?: boolean;
+    read?: (path: string) => string | undefined;
+  },
 ): AutoApprovalResult {
   return evaluateAutoApproval(
     policy,
@@ -904,6 +1023,7 @@ export function planApprovalDecision(
       hostGrowthTokens: hostBudgetGrowth(artifacts, read),
       policyRevisions: { artifacts, read },
       exists: workspace.exists,
+      ...(workspace.read ? { read: workspace.read } : {}),
     },
   );
 }

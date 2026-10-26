@@ -11,6 +11,7 @@
     "testsGrown": "...F\n\nFinished in 0.00911 seconds (files took 0.1 seconds to load)\n4 examples, 1 failure\n\nFailed examples:\n\nrspec ./spec/sum_spec.rb:6 # sum is commutative\n"
   },
   "expected": {
+    "checkConfigs": [".rubocop.yml: rubocop", ".standard.yml: standard"],
     "tests": [
       "spec/sum_spec.rb",
       "lib/sum_test.rb"

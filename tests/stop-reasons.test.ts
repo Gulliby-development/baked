@@ -33,7 +33,7 @@ describe("stop reasons", () => {
   test("hard limits take only enforce; the forecasts and the approval scope take every mode", () => {
     for (const [id, reason] of Object.entries(STOP_REASONS)) {
       expect(reason.modes).toContain(reason.defaultMode);
-      if (!["cost-forecast", "approval-scope", "initiative-forecast", "initiative-dollar-share", "initiative-plan-charge", "repeated_failure", "corrective_scope", "corrective_unowned_file", "repeat_without_change", "edge_crash_finding", "upstream_symbol", "baseline_unrepairable"].includes(id))
+      if (!["cost-forecast", "approval-scope", "initiative-forecast", "initiative-dollar-share", "initiative-plan-charge", "repeated_failure", "corrective_scope", "corrective_unowned_file", "repeat_without_change", "edge_crash_finding", "upstream_symbol", "baseline_unrepairable", "check-config-approval"].includes(id))
         expect(reason.modes).toEqual(["enforce"]);
     }
     expect(STOP_REASONS["cost-forecast"].modes).toEqual(STOP_MODES);
@@ -64,6 +64,9 @@ describe("stop reasons", () => {
     expect(STOP_REASONS.corrective_unowned_file.defaultMode).toBe("shadow");
     expect(stopMode(defaultWorkflowPolicy, "corrective_unowned_file")).toBe("shadow");
     expect(parse({ corrective_unowned_file: "enforce" })).toBe(true);
+    // Shadow by default (#2221) for the check configs auto-approval did not protect before.
+    expect(stopMode(defaultWorkflowPolicy, "check-config-approval")).toBe("shadow");
+    expect(parse({ "check-config-approval": "enforce" })).toBe(true);
   });
 
   test("the mode is the explicit entry, else the legacy advisory forecast, else the default", () => {
