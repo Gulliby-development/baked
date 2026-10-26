@@ -73,7 +73,7 @@ import {
   styleClaimShown,
 } from "../src/core/workflows/check-policy.js";
 import { buildWrapper, cmakeGates, detectGates, executeGate } from "../src/core/workflows/gates.js";
-import { formatWrittenChecks } from "../src/core/workflows/format-written.js";
+import { fileScopedFormat, formatWrittenChecks } from "../src/core/workflows/format-written.js";
 import { type LayoutResult, layoutVerdict } from "../src/core/workflows/layout-check.js";
 import { addedDependencies, checkDependencies } from "../src/core/workflows/quality/dependencies.js";
 import {
@@ -367,6 +367,19 @@ const STATIC_FIXES: Record<Stack, string[]> = {
   rust: ["cargo-fmt", "cargo-clippy"],
   maven: [],
   dotnet: ["dotnet-format"],
+};
+
+/** A formatter gate on one written file, as a timed-out run of it is bisected (#2240). */
+const FORMAT_FILE: Record<Stack, { path: string; command: string | null }> = {
+  // A package.json `lint` or `format` script runs whatever it names: no file-scoped form.
+  bun: { path: "src/sum.ts", command: null },
+  npm: { path: "src/sum.js", command: null },
+  python: { path: "src/app/sum.py", command: "ruff format --check src/app/sum.py" },
+  go: { path: "sum.go", command: "gofmt -l sum.go" },
+  rust: { path: "tests/json.rs", command: "rustfmt --check --edition 2021 tests/json.rs" },
+  // Maven formatters run inside `mvn verify`; no gate runs one alone.
+  maven: { path: "src/main/java/app/Sum.java", command: null },
+  dotnet: { path: "src/App/Sum.cs", command: "dotnet format --verify-no-changes --include src/App/Sum.cs" },
 };
 
 /** The task-scope check that runs a test task's own file (#1271; compiled stacks #1396). */
@@ -2851,6 +2864,18 @@ for (const stack of STACKS) {
 
     cell(stack, "timed-out-failure", () => {
       expect(timedOutFailure(`${FAILED_TEST_OUTPUT[stack]}\nstill running`)).toBe(true);
+    });
+
+    // evalpin json a77894d4 (R71): rustfmt never finished on one test file, and the whole-tree
+    // `cargo fmt --check` timed out with nothing to repair. A formatter gate that times out is run
+    // on each written file alone to name the one it hangs on (`timeout_slow`).
+    cell(stack, "formatter timeout is a finding (#2240)", () => {
+      const root = project(fixture.files);
+      const { path, command } = FORMAT_FILE[stack];
+      const gates = detectGates(root).map((s) => s.check);
+      const formatter = gates.find((c) => fileScopedFormat(c, root, path));
+      const scoped = formatter ? fileScopedFormat(formatter, root, path) : null;
+      expect(scoped ? [launchedCommand(scoped.executable, []).program, ...scoped.args].join(" ") : null).toBe(command);
     });
 
     cell(stack, "baseline-signature test summary", () => {

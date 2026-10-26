@@ -444,9 +444,17 @@ describe("token pool invariants (#2042)", () => {
       expect(pool.suggestedTokens !== null).toBe(over);
       expect(pool.notice !== null).toBe(over);
       if (pool.suggestedTokens !== null) {
-        expect(pool.suggestedTokens).toBeGreaterThanOrEqual(inputs.forecastTokens ?? 0);
-        expect(pool.suggestedTokens).toBeGreaterThanOrEqual(lows(inputs));
         expect(pool.suggestedTokens % POOL_STEP).toBe(0);
+        // A cap that pays for more than the pool advises what it pays for, never more (#2244).
+        const byDollars = pool.capTokens !== null && Math.floor(pool.capTokens / POOL_STEP) * POOL_STEP > inputs.limitTokens;
+        if (byDollars) {
+          expect(pool.suggestedTokens).toBe(Math.floor((pool.capTokens ?? 0) / POOL_STEP) * POOL_STEP);
+          expect(pool.suggestedTokens).toBeGreaterThan(inputs.limitTokens);
+          expect(pool.notice).toContain("so the pool stops no feature before the dollar cap does");
+        } else {
+          expect(pool.suggestedTokens).toBeGreaterThanOrEqual(inputs.forecastTokens ?? 0);
+          expect(pool.suggestedTokens).toBeGreaterThanOrEqual(lows(inputs));
+        }
       }
     }), { numRuns: 200 });
   });
@@ -521,10 +529,15 @@ describe("plan charge invariants (#2100)", () => {
       const limitCommitted = finished + unplanned + runs.reduce((n, r) => n + held(r), 0);
       const charge = planCharge("shadow", ratio, limitCommitted, runs);
       for (const run of charge?.runs ?? []) {
-        expect(run.chargeTokens).toBe(planChargeTokens(run.usedTokens, run.plan, ratio));
-        expect(run.chargeTokens).toBeGreaterThanOrEqual(run.plan.high);
-        const need = Math.max(run.plan.high, Math.round((run.plan.expected ?? run.plan.low) * (ratio ?? 1)));
+        expect(run.chargeTokens).toBe(planChargeTokens(run.usedTokens, run.plan, ratio, run.limitTokens));
+        const expected = Math.round((run.plan.expected ?? run.plan.low) * (ratio ?? 1));
+        // #2253: unmeasured, a plan whose low end is above the run's limit is held at its expected
+        // need (never below its low end, so still above the limit), not at its high end.
+        const contradicts = ratio === null && run.plan.low > run.limitTokens;
+        const need = contradicts ? Math.max(run.plan.low, expected) : Math.max(run.plan.high, expected);
         expect(run.chargeTokens).toBe(Math.max(run.usedTokens, need));
+        if (contradicts) expect(run.chargeTokens).toBeGreaterThan(run.limitTokens);
+        else expect(run.chargeTokens).toBeGreaterThanOrEqual(run.plan.high);
         if (need <= run.limitTokens) expect(run.chargeTokens).toBeLessThanOrEqual(held(run));
       }
       const fits = (charge?.runs ?? []).every((r) => r.chargeTokens <= held(r));
