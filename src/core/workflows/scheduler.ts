@@ -8164,7 +8164,7 @@ ${note}`;
         checkEvidence,
         policy,
       );
-    this.inconclusiveTaskCheck(inconclusive, taskFailures);
+    this.inconclusiveTaskCheck(runId, inconclusive, taskFailures);
     await this.spawnedCheckOutput(runId, child, policy, settled, taskFailures, signal, taskRoot);
     if (unresolvedAccount && !taskFailures.length && !taskResults.length)
       taskFailures.push(...this.unresolvedFindings(runId, state, task, unresolvedAccount));
@@ -9759,7 +9759,7 @@ ${note}`;
         evidence,
         policy,
       );
-    this.inconclusiveTaskCheck(inconclusive, failures);
+    this.inconclusiveTaskCheck(runId, inconclusive, failures);
     await this.spawnedCheckOutput(runId, entry.child, policy, settled, failures, signal, mainRoot);
     if (outcome.account.unresolved.length && !failures.length && !results.length)
       failures.push(...this.unresolvedFindings(runId, state, task, outcome.account));
@@ -9848,6 +9848,8 @@ ${note}`;
     const failed = results.filter(
       ({ check, checked }) =>
         checked.status === "failed" &&
+        // A formatter that hung on the files hangs as their fixer too (#2240).
+        checked.reason !== "timeout_slow" &&
         check.required &&
         check.fix &&
         this.failureOwner(runId, state, task, checked.output ?? "").kind !== "pending",
@@ -10712,6 +10714,7 @@ ${note}`;
     status: "passed" | "failed" | "inconclusive";
     evidenceId: string;
     output?: string;
+    reason?: string;
   }> {
     const attempt = this.store.reserve(runId, child, null, 0, policy);
     const checked = await this.checks.run(runId, attempt, check, signal, root);
@@ -13319,11 +13322,46 @@ ${note}`;
    * A failed task check is repaired first, and the repaired task reruns all its checks; an
    * inconclusive one with nothing to repair stops the run.
    */
-  private inconclusiveTaskCheck(checkId: string | undefined, failures: Review["findings"]): void {
-    if (checkId && !failures.length)
-      throw new WorkflowFault("OUTPUT_INVALID", `Task check ${checkId} is inconclusive`, {
-        reason: "verification_failed",
-      });
+  private inconclusiveTaskCheck(
+    runId: string,
+    checkId: string | undefined,
+    failures: Review["findings"],
+  ): void {
+    if (checkId && !failures.length) throw this.inconclusiveFault(runId, checkId, "Task check");
+  }
+  /**
+   * The block of a required check that ended inconclusive with nothing to repair. A check that
+   * timed out on the same workspace snapshot as its previous run says so: a plain resume reruns
+   * it into the same timeout (R71 evalpin: `cargo fmt --check` 300 s twice on one snapshot,
+   * #2240). The person decides; the run never skips a required check by itself.
+   */
+  private inconclusiveFault(
+    runId: string,
+    checkId: string,
+    label: "Required check" | "Task check" = "Required check",
+  ): WorkflowFault {
+    const runs = this.store.checks(runId).filter((c) => c.check_id === checkId);
+    const [previous, last] = runs.slice(-2);
+    const message = `${label} ${checkId} is inconclusive`;
+    if (
+      !last ||
+      !previous ||
+      last.reason !== "timeout" ||
+      previous.reason !== "timeout" ||
+      last.snapshot_id !== previous.snapshot_id
+    )
+      return new WorkflowFault("OUTPUT_INVALID", message, { reason: "verification_failed" });
+    const snapshot = (last.snapshot_hash ?? last.snapshot_id).slice(0, 12);
+    return new WorkflowFault(
+      "OUTPUT_INVALID",
+      recoveryAdvice(
+        `${message}: it timed out twice on the same workspace (snapshot ${snapshot}, evidence ${previous.evidence_id} and ${last.evidence_id}), so a plain resume runs it into the same timeout again. Run its command yourself to find what it does not finish on (a formatter on one file at a time), change that file or the tool and resume, or revise the run to change or drop the check (\`baked workflow revise ${runId}\`).`,
+        `${label} ${checkId} timed out twice on the same workspace and needs your decision.`,
+        { action: "revise", runId },
+        { action: "resume", runId },
+      ),
+      { reason: "verification_failed", checkId, snapshot },
+    );
   }
   /**
    * The critic of a run (#646), or null when it does not run: `critic: "off"` turns it off and
@@ -14287,7 +14325,8 @@ ${note}`;
       if ((result.status === "failed" || regression) && check.required) {
         if (!regression)
           this.assertNotBaselineFailure(runId, state, check, result.output, result.evidenceId);
-        failedIds.push(check.id);
+        // A formatter that hung on the files hangs as their fixer too (#2240).
+        if (result.reason !== "timeout_slow") failedIds.push(check.id);
         const task =
           state.graph?.tasks.find((t) => t.checkIds.includes(check.id)) ?? state.graph?.tasks[0];
         if (!task)
@@ -14315,10 +14354,7 @@ ${note}`;
       (await this.applyFixers(runId, stepId, state, policy, failedIds, signal))
     )
       return this.runChecks(runId, stepId, state, policy, signal, true);
-    if (!failures.length && inconclusive)
-      throw new WorkflowFault("OUTPUT_INVALID", `Required check ${inconclusive} is inconclusive`, {
-        reason: "verification_failed",
-      });
+    if (!failures.length && inconclusive) throw this.inconclusiveFault(runId, inconclusive);
     if (!failures.length)
       failures.push(...(await this.qualityFindings(runId, stepId, state, policy, signal)));
     if (failures.length)
@@ -16931,6 +16967,8 @@ ${note}`;
     /** Set when the host failed the gate without running it. */
     reason?: string;
     output?: string;
+    /** The gate timed out on the run's own work (`timeout_slow`, #2240): no fixer runs. */
+    slow?: boolean;
   }> {
     let attempts = 0;
     let unstable = false;
@@ -16966,8 +17004,14 @@ ${note}`;
       if (result.status === "passed")
         return { status: "passed", evidenceId: result.evidenceId, attempts, flaky: unstable };
       unstable = true;
+      const slow = result.reason === "timeout_slow";
+      // A gate that hung on the run's own work retries only as a timeout would.
       const retryable = gate.retries.retryOn.some((on) =>
-        result.status === "failed" ? on === "failed" : on === "inconclusive" || on === "timeout",
+        slow
+          ? on === "timeout"
+          : result.status === "failed"
+            ? on === "failed"
+            : on === "inconclusive" || on === "timeout",
       );
       if (!retryable || attempts > gate.retries.max)
         return {
@@ -16976,6 +17020,7 @@ ${note}`;
           attempts,
           flaky: false,
           output: result.output,
+          ...(slow ? { slow } : {}),
         };
     }
   }
@@ -17043,7 +17088,7 @@ ${note}`;
       }
       if (!result.reason && !regression)
         this.assertNotBaselineFailure(runId, state, check, result.output ?? "", result.evidenceId);
-      if (!result.reason) failedIds.push(check.id);
+      if (!result.reason && !result.slow) failedIds.push(check.id);
       const task =
         state.graph?.tasks.find((t) => t.checkIds.includes(check.id)) ?? state.graph?.tasks[0];
       const fallback = {
@@ -17077,10 +17122,7 @@ ${note}`;
       (await this.applyFixers(runId, stepId, state, policy, failedIds, signal))
     )
       return this.runCheckStage(runId, stepId, state, policy, v2, signal, true);
-    if (!failures.length && inconclusive)
-      throw new WorkflowFault("OUTPUT_INVALID", `Required check ${inconclusive} is inconclusive`, {
-        reason: "verification_failed",
-      });
+    if (!failures.length && inconclusive) throw this.inconclusiveFault(runId, inconclusive);
     if (!failures.length)
       failures.push(...(await this.qualityFindings(runId, stepId, state, policy, signal)));
     if (!failures.length) {
@@ -19083,7 +19125,13 @@ interface BatchEntry {
 }
 interface WorkerCheck {
   check: Check;
-  checked: { status: "passed" | "failed" | "inconclusive"; evidenceId: string; output?: string };
+  checked: {
+    status: "passed" | "failed" | "inconclusive";
+    evidenceId: string;
+    output?: string;
+    /** The check runner's reason, where the host ran it (`timeout_slow`, #2240). */
+    reason?: string;
+  };
 }
 /** How much of a spawned check's output a finding quotes (#1285). */
 const SPAWNED_OUTPUT_CHARS = 3000;

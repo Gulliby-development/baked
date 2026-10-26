@@ -2,6 +2,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { join, posix } from "node:path";
 import { type LanguageRecord, none, rowOf } from "../intelligence/language-records.js";
 import { detectLanguageFromPath } from "../intelligence/types.js";
+import { cargoEdition } from "../tools/auto-format.js";
 import { BUN_FMT } from "../tools/bun-fmt.js";
 import { cwdPath, isCodePath } from "./check-policy.js";
 import { unresolvedChecks } from "./check-preflight.js";
@@ -325,6 +326,34 @@ function formatterCommand(check: Pick<Check, "executable" | "args">): {
     packaged: true,
     command: (next) => launch([...prefix, ...next]),
   };
+}
+
+/**
+ * A formatter check's command on one file alone, run from the check's directory, so a whole-tree
+ * run that timed out can name the file the formatter hangs on (#2240: rustfmt never finished on a
+ * 20-deep nested literal). The language's `FILE_FORMATTERS` row, or for `cargo fmt` (which has no
+ * file-scoped form) rustfmt with the crate's edition next to the cargo the check runs (a bare
+ * `cargo` gives a bare `rustfmt`). Null for a check that runs no formatter with a file-scoped form. `dir` is the check's directory and `path`
+ * the file relative to it.
+ */
+export function fileScopedFormat(
+  check: Pick<Check, "executable" | "args">,
+  dir: string,
+  path: string,
+): { executable: string; args: string[] } | null {
+  const language = detectLanguageFromPath(path);
+  const { program, args, command } = formatterCommand(check);
+  if (language === "rust" && program === "cargo" && args[0] === "fmt") {
+    // Behind a launcher the rustfmt to run is not known; only a cargo run directly is bisected.
+    if (programName(check.executable) !== "cargo") return null;
+    const edition = cargoEdition(join(dir, path));
+    return {
+      executable: check.executable.replace(/cargo(\.exe)?$/i, "rustfmt$1"),
+      args: ["--check", ...(edition ? ["--edition", edition] : []), path],
+    };
+  }
+  const formatter = (rowOf(FILE_FORMATTERS, language) ?? []).find((f) => f.runs(program, args));
+  return formatter ? command(formatter.check(args, [path])) : null;
 }
 
 /**
