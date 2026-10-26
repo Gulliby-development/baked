@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { type RowsArtifact, rowFiles } from "../src/core/workflows/acceptance-rows.js";
 import {
@@ -24,6 +24,11 @@ const cleanups: (() => void)[] = [];
 afterEach(() => {
   for (const cleanup of cleanups.splice(0).reverse()) cleanup();
 });
+// The test preload points HOME at an empty profile, where rustup finds no default toolchain;
+// os.homedir() still names the real home. Without this the rust case passed only when an earlier
+// file of its shard had set these (a macOS shard of #2269 ran it first: "no default is configured").
+process.env.RUSTUP_HOME ??= join(homedir(), ".rustup");
+process.env.CARGO_HOME ??= join(homedir(), ".cargo");
 
 /** Every class of character the brief of R64 held, and the ones a literal may not hold raw. */
 const RAW = "\ufeff\u200b\u00a0\u3000\u2028\u2029\u0085\r\u0000\u0007\u202e\u{e0001}😀 x\t\"'\\";
