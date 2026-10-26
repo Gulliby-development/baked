@@ -1321,6 +1321,17 @@ export const FEATURES: readonly Feature[] = [
     desktop: ["settings/chat: Code quality page"],
   },
   {
+    id: "source-defect-route",
+    group: "Workflow runs",
+    title: "Send a test task's wrong-value failure to the task that wrote the code under test",
+    tui: ["/code-quality"],
+    cli: notNeeded(
+      "quality.sourceDefectRoute in config.json; the route shows as the test task's corrective",
+    ),
+    api: ["/v1/settings: code-quality page"],
+    desktop: ["settings/chat: Code quality page"],
+  },
+  {
     id: "dependency-check-sast",
     group: "Workflow runs",
     title: "New dependencies looked up before checks; Semgrep on the run's diff",
@@ -1536,9 +1547,13 @@ export const FEATURES: readonly Feature[] = [
     id: "initiative-budget-reserves",
     group: "Initiatives",
     title:
-      "Feature token shares and dollar growth protect low estimates; split approval warns on underfunded shares",
+      "Feature token shares and dollar growth protect low estimates; split approval warns on underfunded shares and states the expected total; shadow dollar-cap park",
     tui: ["/workflow: initiatives, split approval warning and B to extend budget"],
-    cli: ["baked workflow initiative show", "baked workflow initiative extend"],
+    cli: [
+      "baked workflow initiative show",
+      "baked workflow initiative extend",
+      "baked workflow initiative events: decision.would_stop initiative-dollar-cap",
+    ],
     api: ["/v1/initiatives/:id: next.recovery, feature shares", "/v1/initiatives/:id/extend"],
     desktop: ["project/initiatives: split approval warning and Extend budget"],
   },

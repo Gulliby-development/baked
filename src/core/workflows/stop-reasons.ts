@@ -64,6 +64,15 @@ export const STOP_REASONS = {
     modes: STOP_MODES,
     defaultMode: "shadow",
   },
+  "initiative-dollar-cap": {
+    label:
+      "No dollars left under an initiative's cap after its open runs' needs pay for a starting feature's low estimate",
+    // Shadow only until two bench rounds show no false would-stop (#2218, R70 evalpin's
+    // report-cli is a true one); its promotion adds `enforce` and pauses the initiative with the
+    // `dollar_cap` reason and its extend remedy instead of starting the feature.
+    modes: NOT_ENFORCED,
+    defaultMode: "shadow",
+  },
   "initiative-plan-charge": {
     label:
       "An initiative's token pool holds an open feature run with a sized plan at its plan's need instead of its run limit",

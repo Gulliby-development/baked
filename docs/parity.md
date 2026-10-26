@@ -171,6 +171,7 @@ bun test tests/feature-parity.test.ts
 | Gates: list and confirm | `/workflow` | `baked workflow gates` | `/v1/workflow/gates`, `/v1/workflow/gates/confirm` | `project/gates` |
 | Duplication and dead-code ratchet | `/code-quality`, `/workflow` | `baked workflow run`, `baked workflow report` | `/v1/settings`, `/v1/workflow/runs`, `/v1/workflow/runs/:id/report` | `settings/chat` |
 | Anti-slop rule pack on the lines a run adds | `/code-quality`, `/workflow` | Not needed: rule choices and ast-grep files live in quality of config.json; baked workflow report shows the findings | `/v1/settings`, `/v1/workflow/runs/:id/report` | `settings/chat` |
+| Send a test task's wrong-value failure to the task that wrote the code under test | `/code-quality` | Not needed: quality.sourceDefectRoute in config.json; the route shows as the test task's corrective | `/v1/settings` | `settings/chat` |
 | New dependencies looked up before checks; Semgrep on the run's diff | `/code-quality`, `/workflow` | `baked workflow run`, `baked workflow report` | `/v1/settings`, `/v1/workflow/runs`, `/v1/workflow/runs/:id/report` | `settings/chat` |
 | Docs for the locked library versions a task uses | `/code-quality` | `baked workflow doctor` | `/v1/settings` | `settings/chat` |
 | Per-profile effort and compaction threshold (set in agent profile files) | `/workflow` | `baked workflow profiles`, `baked workflow route` | `/v1/workflow/profiles`, `/v1/workflow/route` | `settings/routing` |
@@ -196,7 +197,7 @@ bun test tests/feature-parity.test.ts
 
 | Feature | TUI | Headless CLI | serve API | Desktop |
 | --- | --- | --- | --- | --- |
-| Feature token shares and dollar growth protect low estimates; split approval warns on underfunded shares | `/workflow` | `baked workflow initiative show`, `baked workflow initiative extend` | `/v1/initiatives/:id`, `/v1/initiatives/:id/extend` | `project/initiatives` |
+| Feature token shares and dollar growth protect low estimates; split approval warns on underfunded shares and states the expected total; shadow dollar-cap park | `/workflow` | `baked workflow initiative show`, `baked workflow initiative extend`, `baked workflow initiative events` | `/v1/initiatives/:id`, `/v1/initiatives/:id/extend` | `project/initiatives` |
 | Token pool forecast notice at the measured ratio, block amounts with a one-step extend, and the shadow pool extension inside the dollar cap | `/workflow` | `baked workflow initiative show`, `baked workflow initiative events`, `baked workflow initiative extend` | `/v1/initiatives/:id`, `/v1/initiatives/:id/events`, `/v1/initiatives/:id/extend` | `project/initiatives` |
 | Initiative deliverables have writable owners; deferred findings and mutation checks follow them | `/workflow` | `baked workflow report` | `/v1/workflow/runs/:id/report` | `project/runs` |
 | Start an initiative | `/workflow` | `baked workflow initiative` | `/v1/initiatives` | `project/initiatives` |

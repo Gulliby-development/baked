@@ -165,6 +165,8 @@ describe("scenario: feature dollars grow independently of tokens (#1625)", () =>
     expect(view.next.message).toContain("dollar share");
     expect(view.next.message).toContain("below its low estimate");
     expect(view.next.message).not.toContain("high end");
+    // #2218: beside the lows, the expected total of the split and how many features the cap pays for.
+    expect(view.next.message).toMatch(/The split is expected to cost about \$\d+\.\d\d in all: \$\d+\.\d\d spent and \$\d+\.\d\d for the 3 waiting features at their expected cost, against \$\d+\.\d\d at their low estimates\. The \$0\.10 left under the cap pays for about 0 of the 3 at that cost\./);
     // #2042: the command and the remedy name the cap that lifts the warned shares to their lows.
     const suggestedUsd = view.next.recovery?.remedies[0]?.suggestedUsd;
     expect(suggestedUsd).toBeGreaterThan(view.budget.cost.capUsd!);
