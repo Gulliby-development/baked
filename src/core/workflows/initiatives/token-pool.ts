@@ -172,13 +172,25 @@ export function planChargeUsd(
  * the run used. One rule both ways: it frees what a start share holds above the plan (R67 ampwhy
  * held 30.5M at cli's gate while its runs had used 0.05M to 6.6M each) and adds what a plan prices
  * above the run's limit (#2056).
+ *
+ * One exception (#2253): while the ratio is unmeasured, a plan whose whole range sits above the
+ * run's limit (its low end above it) contradicts the size class that set the limit, and nothing
+ * yet says which one is right. The run is held at its plan's expected need then, still above its
+ * limit, not at the high end. R60 wheeltags' names was sized at 10.3M-14.1M against its 8.0M
+ * limit and used 4.57M; at its high end the charge parked dead. Of the corpus's 24 plans priced
+ * above their limits while unmeasured, names is the only one whose low end was above it; the high
+ * end stays where a plan straddles the limit (R71 xmlvet's scanner, 4.26M-11.75M against 8.0M,
+ * used 12.10M). The dollar charge (`planChargeUsd`) prices these tokens, so it follows.
  */
 export function planChargeTokens(
   usedTokens: number,
   plan: PlannedRun,
   ratio: number | null,
+  limitTokens: number,
 ): number {
-  return Math.max(usedTokens, ownPlanNeed(plan, ratio).high);
+  const need = ownPlanNeed(plan, ratio);
+  const contradicts = ratio === null && plan.low > limitTokens;
+  return Math.max(usedTokens, contradicts ? need.low : need.high);
 }
 
 /**
@@ -224,7 +236,7 @@ export function planCharge(
 ): PlanChargeView | null {
   if (!runs.length) return null;
   const charged = runs.map((run) => {
-    const chargeTokens = planChargeTokens(run.usedTokens, run.plan, ratio);
+    const chargeTokens = planChargeTokens(run.usedTokens, run.plan, ratio, run.limitTokens);
     return {
       ...run,
       chargeTokens,

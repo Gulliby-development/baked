@@ -938,6 +938,28 @@ describe("the plan charge replays on recorded initiatives (#2100, #2056)", () =>
     expect(atPark?.runs.map((r) => r.featureId)).toEqual(["readcmd"]);
   }, 600000);
 
+  test("#2253: R60 wheeltags parks no start with the charge, names held at its expected need; R71 xmlvet's canonical still parks", () => {
+    // names' plan sized its run at 10.3M-14.1M against its 8.0M limit, unmeasured (ratio null);
+    // it used 4.57M. At its high end the charged gate parked dead at 19:31:58 (154,373 short).
+    // A plan whose low end is above its run's limit is held at its expected need while the ratio
+    // is unmeasured: 10,645,303, still above the limit.
+    const [wheeltags] = replayInitiativeStarts(join(ROOT, "R60", "wheeltags.sqlite.gz"), { budgetAtStart: true });
+    expect(wheeltags?.newStartStops).toBe(0);
+    expect(wheeltags?.starts.every((s) => s.planCharge === null || s.planCharge.replayed === "pass")).toBe(true);
+    const dead = wheeltags?.starts.find((s) => s.featureId === "dead")?.planCharge;
+    expect(dead?.runs.find((r) => r.featureId === "names")).toEqual({ featureId: "names", usedTokens: 351_910, limitTokens: 8_000_000, chargeTokens: 10_645_303 });
+    // In dollars the same tokens at the task-call rate (planChargeUsd follows the token charge).
+    const names = dead?.usd?.runs.find((r) => r.featureId === "names");
+    expect(names?.chargeUsd).toBeCloseTo(10_645_303 * (dead?.usd?.taskRate ?? 0), 6);
+    // scanner's plan straddles its 8.0M limit (4.26M-11.75M) and used 12.10M: the high end stays,
+    // and canonical's would-park at 04:48 (4.7M of the 30.0M pool left) is kept.
+    const [xmlvet] = replayInitiativeStarts(join(ROOT, "R71", "xmlvet.sqlite.gz"), { budgetAtStart: true });
+    const canonical = xmlvet?.starts.find((s) => s.featureId === "canonical")?.planCharge;
+    expect(canonical).toMatchObject({ planCommittedTokens: 25_336_588, featureId: "canonical", replayed: "park" });
+    expect(canonical?.runs.find((r) => r.featureId === "scanner")?.chargeTokens).toBe(11_749_743);
+    expect(xmlvet?.starts.filter((s) => s.planCharge?.replayed === "park").map((s) => s.featureId)).toEqual(["canonical"]);
+  }, 600000);
+
   test("#2124: in dollars R62 stepvet's open runs are held at their plans at the task-call rate, and no start moves", () => {
     // Before #2124 an open run held max(spent + reserved, its maxCostUsd) of the dollar budget.
     // At stepscmd's start, rewound to that moment (#2061), the runs held $21.11 of the $30 cap
