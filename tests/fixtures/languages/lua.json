@@ -61,6 +61,7 @@
       "luacheck: linter",
       "selene: linter",
       "stylua: formatter"
-    ]
+    ],
+    "sortedLists": null
   }
 }

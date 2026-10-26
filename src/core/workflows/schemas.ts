@@ -719,6 +719,14 @@ export const PolicySchema = z
      */
     correctiveDefer: z.literal("on").optional(),
     /**
+     * The skeleton layout of an initiative split (initiatives/skeleton-layout.ts, #2222): `on` puts
+     * a blank line before each skeleton line the language's formatter would sort elsewhere (rustfmt's
+     * `pub mod` lists, gofmt's import blocks), so the host-written content is a fixed point of the
+     * project's format check. Absent means shadow (the layout is recorded in a `split.skeleton_layout`
+     * event, the content stays as the decomposer wrote it), so stored policies keep their hash.
+     */
+    skeletonLayout: z.literal("on").optional(),
+    /**
      * The project's choices for the anti-slop rule pack (quality/rules.ts), which is always on:
      * rules turned off, severities changed and ast-grep rule files added. Absent means the
      * built-in pack as shipped, so stored policies keep their hash.

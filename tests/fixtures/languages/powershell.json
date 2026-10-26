@@ -58,6 +58,7 @@
       "PSScriptAnalyzer: linter",
       "ScriptAnalyzer: linter",
       "Invoke-Formatter: formatter"
-    ]
+    ],
+    "sortedLists": null
   }
 }

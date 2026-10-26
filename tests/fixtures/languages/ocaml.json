@@ -33,6 +33,7 @@
     ],
     "staticTools": [
       "ocamlformat: formatter"
-    ]
+    ],
+    "sortedLists": null
   }
 }

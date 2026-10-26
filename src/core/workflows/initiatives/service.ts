@@ -113,6 +113,7 @@ import {
   topologicalOrder,
   validateInitiativePlan,
 } from "./plan.js";
+import { layOutSkeletons } from "./skeleton-layout.js";
 import {
   type BudgetLimitsValue,
   CostBudgetSchema,
@@ -1823,8 +1824,14 @@ export class InitiativeService {
     const state = this.workflows.store.state(row.decompose_run_id ?? "");
     if (!state.initiativePlan)
       throw new WorkflowFault("ARTIFACT_MISSING", "The decompose run has no initiative plan");
-    const decomposed = InitiativePlanSchema.parse(JSON.parse(state.initiativePlan));
+    const written = InitiativePlanSchema.parse(JSON.parse(state.initiativePlan));
     const settings = this.store.settings(row);
+    // Skeleton lines the project's formatter would sort get a blank line before them, so the
+    // host-written content stays a fixed point of the format check (#2222); in shadow (absent)
+    // the layout is only recorded.
+    const layout = layOutSkeletons(written);
+    const layoutMode = settings.basePolicy.skeletonLayout === "on" ? "on" : "shadow";
+    const decomposed = layoutMode === "on" ? layout.plan : written;
     // Small siblings share one run's fixed stages (#1352); the decomposer's prompt alone did not.
     // A feature that is only skeleton runs inside a dependent instead of a run of its own (#1662).
     const folded = settings.keepFeatures
@@ -1869,6 +1876,12 @@ export class InitiativeService {
       }
       this.store.setTitle(id, plan.title);
       this.propose(id, plan, "decomposer", null);
+      if (layout.files.length)
+        this.store.emit(id, "split.skeleton_layout", {
+          planRevision: this.store.get(id).plan_revision,
+          mode: layoutMode,
+          files: layout.files,
+        });
       if (floored.merged.length)
         this.store.emit(id, "split.merged", {
           planRevision: this.store.get(id).plan_revision,

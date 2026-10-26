@@ -55,6 +55,7 @@
     "staticTools": [
       "shellcheck: linter",
       "shfmt: formatter"
-    ]
+    ],
+    "sortedLists": null
   }
 }

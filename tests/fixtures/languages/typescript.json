@@ -70,6 +70,7 @@
       "oxlint: linter",
       "prettier: formatter",
       "tsc: typechecker, whole unit"
-    ]
+    ],
+    "sortedLists": null
   }
 }

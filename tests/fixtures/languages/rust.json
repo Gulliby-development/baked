@@ -68,6 +68,7 @@
       "cargo check: linter, whole unit",
       "rustfmt: formatter, whole unit",
       "cargo fmt: formatter, whole unit"
-    ]
+    ],
+    "sortedLists": ["src/lib.rs: rustfmt blank line before 2"]
   }
 }

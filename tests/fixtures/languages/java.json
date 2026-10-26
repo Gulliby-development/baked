@@ -65,6 +65,7 @@
       "spotbugs: linter, whole unit",
       "spotless: formatter",
       "google-java-format: formatter"
-    ]
+    ],
+    "sortedLists": null
   }
 }

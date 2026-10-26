@@ -47,6 +47,7 @@
     "staticTools": [
       "scalafmt: formatter",
       "scalafix: linter, whole unit"
-    ]
+    ],
+    "sortedLists": null
   }
 }

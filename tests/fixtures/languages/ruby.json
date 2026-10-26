@@ -62,6 +62,7 @@
       "rubocop: linter",
       "standardrb: linter",
       "reek: linter"
-    ]
+    ],
+    "sortedLists": null
   }
 }

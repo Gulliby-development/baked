@@ -55,6 +55,7 @@
       "swiftlint: linter",
       "swiftformat: formatter",
       "swift-format: formatter"
-    ]
+    ],
+    "sortedLists": null
   }
 }

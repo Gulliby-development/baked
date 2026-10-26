@@ -54,7 +54,8 @@
       "clang-format: formatter",
       "cppcheck: linter",
       "cpplint: linter"
-    ]
+    ],
+    "sortedLists": null
   },
   "outputs": {
     "tests": "Test project /w/build\n    Start 1: SumTest.Adds\n1/3 Test #1: SumTest.Adds .....................   Passed    0.01 sec\n    Start 2: SumTest.Commutes\n2/3 Test #2: SumTest.Commutes .................***Failed    0.01 sec\nRunning main() from ./googletest/src/gtest_main.cc\nNote: Google Test filter = SumTest.Commutes\n[==========] Running 1 test from 1 test suite.\n[----------] Global test environment set-up.\n[----------] 1 test from SumTest\n[ RUN      ] SumTest.Commutes\n/w/tests/sum_test.cpp:4: Failure\nExpected equality of these values:\n  sum(2, 2)\n    Which is: 4\n  3\n\n[  FAILED  ] SumTest.Commutes (5 ms)\n[----------] 1 test from SumTest (5 ms total)\n\n[----------] Global test environment tear-down\n[==========] 1 test from 1 test suite ran. (5 ms total)\n[  PASSED  ] 0 tests.\n[  FAILED  ] 1 test, listed below:\n[  FAILED  ] SumTest.Commutes\n\n 1 FAILED TEST\n\n    Start 3: SumTest.Later\n3/3 Test #3: SumTest.Later ....................***Skipped   0.01 sec\n\n33% tests passed, 1 tests failed out of 3\n\nTotal Test time (real) =   0.04 sec\n\nThe following tests did not run:\n\t  3 - SumTest.Later (Skipped)\n\nThe following tests FAILED:\n\t  2 - SumTest.Commutes (Failed)\nErrors while running CTest\n",

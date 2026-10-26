@@ -41,6 +41,7 @@
     ],
     "staticTools": [
       "zig fmt: formatter"
-    ]
+    ],
+    "sortedLists": null
   }
 }

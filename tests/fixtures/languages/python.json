@@ -73,6 +73,7 @@
       "isort: formatter",
       "mypy: typechecker, whole unit",
       "pyright: typechecker, whole unit"
-    ]
+    ],
+    "sortedLists": null
   }
 }

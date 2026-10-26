@@ -38,6 +38,7 @@
       "credo: linter",
       "dialyzer: linter, whole unit",
       "mix format: formatter"
-    ]
+    ],
+    "sortedLists": null
   }
 }
