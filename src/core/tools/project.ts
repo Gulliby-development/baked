@@ -22,6 +22,7 @@ import { pythonEnvironment } from "../workflows/toolchain.js";
 import { FORMAT_TIMEOUT_MS, singleFileFormat } from "./auto-format.js";
 import { runBoundedShell } from "./bounded-process.js";
 import { BUN_FMT, bunFmtConfigured } from "./bun-fmt.js";
+import { captureEndings, restoreEndings } from "./line-endings.js";
 import { ruffSource as ruffConfigSource } from "./python-tooling.js";
 import { compressShellOutputFull } from "./shell-compress.js";
 import { saveTee, truncateWithTee } from "./tee.js";
@@ -1217,10 +1218,12 @@ export async function formatFile(filePath: string, cwd?: string): Promise<boolea
   // `/var` is `/private/var`) would look outside the project to it.
   const command = singleFileFormat(profile.formatFile, filePath);
   try {
+    // A formatter that writes text mode on Windows turns a LF file into CRLF (#2214).
+    const endings = captureEndings([filePath]);
     const result = await runBoundedShell(command, {
       cwd: effectiveCwd,
       timeoutMs: FORMAT_TIMEOUT_MS,
-    });
+    }).finally(() => restoreEndings(endings));
     return !result.timedOut && result.exitCode === 0;
   } catch {
     return false;
