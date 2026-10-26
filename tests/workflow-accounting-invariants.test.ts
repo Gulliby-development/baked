@@ -444,9 +444,17 @@ describe("token pool invariants (#2042)", () => {
       expect(pool.suggestedTokens !== null).toBe(over);
       expect(pool.notice !== null).toBe(over);
       if (pool.suggestedTokens !== null) {
-        expect(pool.suggestedTokens).toBeGreaterThanOrEqual(inputs.forecastTokens ?? 0);
-        expect(pool.suggestedTokens).toBeGreaterThanOrEqual(lows(inputs));
         expect(pool.suggestedTokens % POOL_STEP).toBe(0);
+        // A cap that pays for more than the pool advises what it pays for, never more (#2244).
+        const byDollars = pool.capTokens !== null && Math.floor(pool.capTokens / POOL_STEP) * POOL_STEP > inputs.limitTokens;
+        if (byDollars) {
+          expect(pool.suggestedTokens).toBe(Math.floor((pool.capTokens ?? 0) / POOL_STEP) * POOL_STEP);
+          expect(pool.suggestedTokens).toBeGreaterThan(inputs.limitTokens);
+          expect(pool.notice).toContain("so the pool stops no feature before the dollar cap does");
+        } else {
+          expect(pool.suggestedTokens).toBeGreaterThanOrEqual(inputs.forecastTokens ?? 0);
+          expect(pool.suggestedTokens).toBeGreaterThanOrEqual(lows(inputs));
+        }
       }
     }), { numRuns: 200 });
   });

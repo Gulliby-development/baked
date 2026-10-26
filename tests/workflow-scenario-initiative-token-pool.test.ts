@@ -143,7 +143,8 @@ describe("scenario: the shared token pool names its amounts and would grow insid
     expect(at(syntax)?.forecastTokens).toBeLessThan(POOL);
     expect(at(syntax)?.notice).toStartWith("At the measured 2.4x of the estimates the 10 features need about 31.8M tokens (25.1M at the blended 1.4x that budget decisions use; 15.4M used); the shared pool is 30.0M. Extend to 31.8M");
     // At lint the blend says 1.8x and 31.6M; the raw 2.2x says 33.2M, and the round used 33.25M.
-    expect(at(lint)?.notice).toBe("At the measured 2.2x of the estimates the 10 features need about 33.2M tokens (31.6M at the blended 1.8x that budget decisions use; 26.7M used); the shared pool is 30.0M. Extend to 33.3M (baked workflow initiative extend nodepluck --tokens 33300000); the $30.00 cap would pay for about 36.0M at $0.83 per million.");
+    // The advice is what the $30 cap pays for at the measured rate (#2244), above both.
+    expect(at(lint)?.notice).toBe("At the measured 2.2x of the estimates the 10 features need about 33.2M tokens (31.6M at the blended 1.8x that budget decisions use; 26.7M used); the shared pool is 30.0M. Extend to 36.0M, what the $30.00 cap pays for at $0.83 per million, so the pool stops no feature before the dollar cap does (baked workflow initiative extend nodepluck --tokens 36000000).");
     // No start before the third accepted feature warned: the estimate's point forecast stayed under the pool.
     expect(replay?.starts.filter((s) => s.at < syntax && s.pool?.notice)).toEqual([]);
     // Replayed on the final 38M budget, as the corpus gate did before #2061, nothing warns.
@@ -178,7 +179,8 @@ describe("scenario: a scripted initiative whose features cost more than their es
     expect(view.features.filter((f) => f.state === "accepted").map((f) => f.id)).toEqual(["f1", "f2"]);
     expect(view.next).toMatchObject({ kind: "start", featureId: "f3" });
     expect(view.budget.forecastNotice).toBe(view.budget.pool?.notice ?? "");
-    expect(view.budget.forecastNotice).toMatch(/^At the estimates so far the 5 features need about 7\.\dM tokens \(2\.9M used\); the shared pool is 7\.0M\. Extend to 7\.\dM \(baked workflow initiative extend values --tokens 7\d{6}\); the \$30\.00 cap would pay for about \d+\.\dM at \$\d\.\d\d per million\.$/);
+    // The $30 cap pays for more than the 7.0M pool: the notice advises what it pays for (#2244).
+    expect(view.budget.forecastNotice).toMatch(/^At the estimates so far the 5 features need about 7\.\dM tokens \(2\.9M used\); the shared pool is 7\.0M\. Extend to (\d+\.\d)M, what the \$30\.00 cap pays for at \$\d\.\d\d per million, so the pool stops no feature before the dollar cap does \(baked workflow initiative extend values --tokens \d+\)\.$/);
     const suggested = view.budget.pool?.suggestedTokens ?? 0;
     expect(suggested).toBeGreaterThan(7_000_000);
     // The TUI's B form and the desktop's one-click extend take the suggested pool.
