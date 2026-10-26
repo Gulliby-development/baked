@@ -31,7 +31,17 @@ const LAYERS = ["text", "io", "osio", "options", "json", "jsonpath", "check", "r
 const LIB_RS = `${LAYERS.map((m) => `pub mod ${m};`).join("\n")}\n`;
 const GO_MAIN = 'package main\n\nimport (\n\t"strings"\n\t"fmt"\n\t"os"\n)\n\nfunc main() { fmt.Println(strings.ToUpper(os.Args[0])) }\n';
 
-const installed = (tool: string) => Bun.which(tool) !== null;
+// A formatter counts as installed only when it leaves an already formatted LF sample unchanged: the
+// queue's Windows runner has rustfmt on its path, but it fails or rewrites line endings there, which
+// says nothing about the skeleton's order (#2222).
+const SAMPLES: Record<string, string> = { rustfmt: "pub mod a;\n", gofmt: "package main\n" };
+const installed = (tool: string): boolean => {
+  if (Bun.which(tool) === null) return false;
+  const sample = SAMPLES[tool === "cargo" ? "rustfmt" : tool];
+  if (!sample) return true;
+  const run = spawnSync(tool === "cargo" ? "rustfmt" : tool, tool === "gofmt" ? [] : ["--edition", "2021"], { input: sample, encoding: "utf8" });
+  return run.status === 0 && run.stdout === sample;
+};
 const format = (tool: string, args: string[], input: string): string => {
   const run = spawnSync(tool, args, { input, encoding: "utf8" });
   if (run.status !== 0) throw new Error(`${tool} failed: ${run.stderr}`);
