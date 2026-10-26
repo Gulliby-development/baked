@@ -10,6 +10,7 @@
     "testsGrown": "[ERROR] Tests run: 4, Failures: 1, Errors: 0, Skipped: 0\n"
   },
   "expected": {
+    "checkConfigs": ["checkstyle.xml: checkstyle", "pmd-ruleset.xml: pmd", "spotbugs-exclude.xml: spotbugs"],
     "tests": [
       "src/test/java/SumTest.java",
       "src/test/java/SumPropertyTest.java"

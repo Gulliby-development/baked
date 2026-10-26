@@ -9,6 +9,11 @@
  * blocks too (#802).
  */
 
+import {
+  checkConfigLoosening,
+  embeddedCheckLoosening,
+  isCheckConfigPath,
+} from "./check-configs.js";
 import { namesField } from "./manifest-fields.js";
 import {
   type Dependency,
@@ -33,11 +38,18 @@ export const dependencyClaim = (claim: unknown): boolean =>
 export const QUALITY_MANIFEST_FIELDS = "quality/manifest-fields.json";
 /** Whether a finding's claim is one the manifest field check made. */
 export const manifestFieldClaim = (claim: unknown): boolean =>
-  typeof claim === "string" && /^Manifest \S+ changes .+ the request does not name$/.test(claim);
+  typeof claim === "string" &&
+  (/^Manifest \S+ changes .+ the request does not name$/.test(claim) ||
+    /^Check config \S+ changes .+, which is not a tightening the request names$/.test(claim));
 
 export interface ManifestFieldChange {
   file: string;
   field: string;
+  /**
+   * The field decides what a check enforces (#2221): it may change only into a tightening the
+   * request names, never by being named alone.
+   */
+  check?: true;
 }
 
 /**
@@ -52,14 +64,27 @@ export function unrequestedManifestFields(
   named: readonly string[],
   requested: string,
 ): ManifestFieldChange[] {
-  return changed.flatMap((file) =>
-    named.includes(file.path) && typeof file.before === "string"
-      ? manifestFieldChanges(file.path, file.before, file.content)
-          // A lock's entries beyond the project's own are never the request's to name (#1934).
-          .filter((field) => isBoundedLockPath(file.path) || !namesField(requested, field))
-          .map((field) => ({ file: file.path, field }))
-      : [],
-  );
+  return changed.flatMap((file): ManifestFieldChange[] => {
+    if (!named.includes(file.path) || typeof file.before !== "string") return [];
+    // A check config the request named moves only into the tightenings it names (#2221).
+    if (isCheckConfigPath(file.path))
+      return checkConfigLoosening(file.path, file.before, file.content, requested).map((field) => ({
+        file: file.path,
+        field,
+        check: true,
+      }));
+    return [
+      ...manifestFieldChanges(file.path, file.before, file.content)
+        // A lock's entries beyond the project's own are never the request's to name (#1934).
+        .filter((field) => isBoundedLockPath(file.path) || !namesField(requested, field))
+        .map((field) => ({ file: file.path, field })),
+      ...embeddedCheckLoosening(file.path, file.before, file.content, requested).map((field) => ({
+        file: file.path,
+        field,
+        check: true as const,
+      })),
+    ];
+  });
 }
 
 /** A package younger than this many days is suspicious (slopsquatting registers names fast). */

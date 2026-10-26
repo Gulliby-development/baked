@@ -13,6 +13,7 @@
     "testsGrown": "src/a.test.ts:\n(fail) sum is commutative [1.20ms]\n\n 3 pass\n 1 fail\nRan 4 tests across 1 file. [15.00ms]\n"
   },
   "expected": {
+    "checkConfigs": ["tsconfig.json: tsconfig", "biome.json: biome", "jsconfig.json: jsconfig", ".eslintrc.json: eslint", ".eslintrc.yml: eslint", "eslint.config.js: eslint, read as text", ".oxlintrc.json: oxlint", ".prettierrc: prettier, read as text"],
     "tests": null,
     "testMarkers": null,
     "manifests": [

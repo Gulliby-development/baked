@@ -7,6 +7,7 @@
     ".clang-tidy": "Checks: '-*,bugprone-*'\n"
   },
   "expected": {
+    "checkConfigs": [".clang-tidy: clang-tidy", ".clang-format: clang-format, read as text"],
     "tests": [
       "src/sum_test.cpp"
     ],

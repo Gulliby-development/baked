@@ -299,6 +299,14 @@ export const AutoApprovalSchema = z
      * the edit adds still blocks the run unless the request or spec names it (#802).
      */
     requestedManifestEdits: z.boolean().optional(),
+    /**
+     * Opt-in (#2221): an edit of an existing linter, formatter or type checker config
+     * (`CHECK_CONFIGS`: tsconfig, biome, .rubocop.yml, ruff.toml, .golangci.yml, ...) that the
+     * request names no longer needs a person when it only turns on strictness settings the request
+     * names. A plan's whole content is compared at approval; an implementer's edit is held to the
+     * same by the manifest field check after the run, and any loosening is a finding.
+     */
+    requestedCheckTightening: z.boolean().optional(),
   })
   .strict()
   .refine((value) => value.renewal || value.limits !== null, "Auto approval requires limits")
@@ -592,6 +600,14 @@ export const PolicySchema = z
      * (derivation-audit.ts, #1851). Absent means `off`, so stored policies keep their hash.
      */
     derivationAuditCarry: z.enum(["off", "on"]).optional(),
+    /**
+     * `on` has a derivation return whose only blocking findings are `DERIVE-` rows amend those
+     * criteria in place: the spec author revises them by patch, and when the amended spec changes
+     * nothing but those criteria's text the plan and tasks are kept and only analyze runs again
+     * (derivation-audit.ts, #2219). Anything else falls back to the full return. Absent means
+     * `off`, so stored policies keep their hash.
+     */
+    derivationAmend: z.enum(["off", "on"]).optional(),
     /** Host-written audited acceptance rows and parameterized tests; absent means off (#1596). */
     rowsAsData: z.enum(["off", "on"]).optional(),
     /**

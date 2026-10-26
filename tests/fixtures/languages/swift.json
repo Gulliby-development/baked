@@ -10,6 +10,7 @@
     "testsGrown": "Test Suite 'All tests' started at 2026-10-25 02:56:10.091\nTest Case 'SumTests.testAdds' started at 2026-10-25 02:56:10.092\nTest Case 'SumTests.testAdds' passed (0.102 seconds)\nTest Case 'SumTests.testSubs' started at 2026-10-25 02:56:10.193\nTest Case 'SumTests.testSubs' passed (0.001 seconds)\nTest Case 'SumTests.testCommutes' started at 2026-10-25 02:56:10.194\n/w/Tests/SumTests/SumTests.swift:6: error: SumTests.testCommutes : XCTAssertEqual failed: (\"3\") is not equal to (\"4\")\nTest Case 'SumTests.testCommutes' failed (0.001 seconds)\nTest Suite 'All tests' failed at 2026-10-25 02:56:10.195\n\t Executed 3 tests, with 1 failure (0 unexpected) in 0.105 (0.106) seconds\n"
   },
   "expected": {
+    "checkConfigs": [".swiftlint.yml: swiftlint", ".swiftformat: swiftformat, read as text"],
     "tests": [
       "Sources/SumTests.swift"
     ],
