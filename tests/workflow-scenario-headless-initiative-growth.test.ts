@@ -71,6 +71,17 @@ describe("scenario: ewvet R68, a headless resume drives a feature run with the i
     expect(run.reason).not.toBe("budget_exhausted");
   }, 60000);
 
+  test("its store asks the initiative before a cost stop, too (#2241)", async () => {
+    const { headless, scanner } = await exhaustedShare();
+    // Installed by the workflow service itself; the stop path's case is in
+    // tests/workflow-scenario-started-run-stage-reserve.test.ts.
+    expect(headless.store.reserveStages).toBeDefined();
+    const policy = headless.store.run(scanner).policy_json;
+    // scanner has not finished its tasks: nothing to reserve.
+    headless.store.reserveStages?.(scanner, 0.02);
+    expect(headless.store.run(scanner).policy_json).toBe(policy);
+  }, 60000);
+
   test("a run of no initiative is left alone", async () => {
     const fixture = workflowFixture();
     cleanups.push(fixture.dispose);

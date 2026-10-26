@@ -3,6 +3,7 @@ import fc from "fast-check";
 import { canonical } from "../src/core/specs/hash.js";
 import { type CostForecast, costForecast, kindRatio } from "../src/core/workflows/cost-forecast.js";
 import { POOL_STEP, planCharge, planChargeTokens, poolExtensionDecision, poolForecast, tokenPool } from "../src/core/workflows/initiatives/token-pool.js";
+import { stageReserveDecision } from "../src/core/workflows/initiatives/growth.js";
 import { dollarCapPark, expectedSplitUsd, type ShareGateView } from "../src/core/workflows/initiatives/service.js";
 import type { RunPolicy } from "../src/core/workflows/schemas.js";
 import { type TaskKind, verificationTokens } from "../src/core/workflows/sizing.js";
@@ -650,6 +651,42 @@ describe("dollar cap park invariants (#2218)", () => {
       const paidUsd = Array.from({ length: e.paid }, (_, i) => expectedOf(i)).reduce((n, x) => n + x, 0);
       expect(paidUsd).toBeLessThanOrEqual(remainingUsd + 1e-6);
       if (e.paid < features.length) expect(paidUsd + expectedOf(e.paid)).toBeGreaterThan(remainingUsd);
+    }), { numRuns: 300 });
+  });
+});
+
+// A started feature run's remaining stages (#2241): the growth pays for them and never takes the
+// initiative past its dollar ceiling.
+describe("stage reserve invariants (#2241)", () => {
+  const seed = fc.record({
+    runSpentUsd: fc.double({ min: 0, max: 20, noNaN: true }),
+    runReservedUsd: fc.double({ min: 0, max: 2, noNaN: true }),
+    requestedUsd: fc.double({ min: 0, max: 2, noNaN: true }),
+    stageReserveUsd: fc.double({ min: 0.001, max: 3, noNaN: true }),
+    boundOver: fc.double({ min: -1, max: 3, noNaN: true }),
+    othersUsd: fc.double({ min: 0, max: 60, noNaN: true }),
+    capUsd: fc.double({ min: 1, max: 60, noNaN: true }),
+    tolerance: fc.double({ min: 0, max: 0.5, noNaN: true }),
+  });
+
+  test("the grown bound covers spent, reserved and the stages, and the initiative stays under its ceiling", () => {
+    fc.assert(fc.property(seed, (s) => {
+      const boundUsd = Math.max(0.01, Math.round((s.runSpentUsd + s.runReservedUsd + s.boundOver) * 100) / 100);
+      const runHeldUsd = Math.max(boundUsd, s.runSpentUsd + s.runReservedUsd);
+      const ceilingUsd = s.capUsd * (1 + s.tolerance);
+      const inputs = { runId: "r", featureId: "f", stages: ["review", "converge"], stageReserveUsd: s.stageReserveUsd, runSpentUsd: s.runSpentUsd, runReservedUsd: s.runReservedUsd, requestedUsd: s.requestedUsd, boundUsd, runHeldUsd, spareUsd: 0, initiative: { committedUsd: s.othersUsd + runHeldUsd, capUsd: s.capUsd, ceilingUsd } };
+      const decision = stageReserveDecision(inputs);
+      const need = s.runSpentUsd + s.runReservedUsd + Math.max(s.requestedUsd, s.stageReserveUsd);
+      // The suggested cap always pays for the stages, by less than a cent more.
+      expect(decision.suggestedUsd).toBeGreaterThanOrEqual(need - 1e-9);
+      expect(decision.suggestedUsd - need).toBeLessThan(0.01 + 1e-9);
+      if (!decision.wouldExtend) {
+        expect(decision.toUsd).toBeNull();
+        return;
+      }
+      expect(decision.toUsd).toBe(decision.suggestedUsd);
+      expect(decision.toUsd!).toBeGreaterThan(boundUsd);
+      expect(s.othersUsd + decision.toUsd!).toBeLessThanOrEqual(ceilingUsd + 1e-9);
     }), { numRuns: 300 });
   });
 });

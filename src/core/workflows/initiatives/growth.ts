@@ -1,5 +1,6 @@
 import { hashJson } from "../../specs/hash.js";
 import { extendToOf, PolicySchema, type RunPolicy } from "../schemas.js";
+import { centsUp } from "../stage-reserve.js";
 import { sizeWeight } from "./plan.js";
 import type { InitiativeView, ShareGateView, UsageView } from "./service.js";
 
@@ -9,6 +10,7 @@ import type { InitiativeView, ShareGateView, UsageView } from "./service.js";
 // tests/workflow-scenario-initiative-guard-growth.test.ts.
 
 const cents = (n: number): number => Math.floor(n * 100) / 100;
+const usd = (n: number): string => `$${n.toFixed(2)}`;
 
 /**
  * The dollars a starting feature's cap may grow to independently of tokens: the remaining dollar
@@ -141,4 +143,86 @@ export function guardStep(used: number, limit: number, target: number): number {
   if (used < 0.8 * limit) return limit;
   const next = Math.min(target, Math.ceil(limit * 1.25));
   return next - limit < Math.max(1, limit * 0.01) ? limit : next;
+}
+
+/** What `stageReserveDecision` reads: the run at its stop and the initiative's dollar budget. */
+export interface StageReserveInputs {
+  runId: string;
+  featureId: string;
+  /** The run's remaining stages after its tasks and their priced reserve (`stageReserve`). */
+  stages: string[];
+  stageReserveUsd: number;
+  /** What the run spent, what its open attempts hold and what the call that would stop asks. */
+  runSpentUsd: number;
+  runReservedUsd: number;
+  requestedUsd: number;
+  /** The run's dollar growth bound now (`sizing.maxRunCostUsd`). */
+  boundUsd: number;
+  /** What the initiative holds for the run now (`committedUsd`: its cap, or spent and reserved). */
+  runHeldUsd: number;
+  /** The share of the initiative's dollars the run may grow into now (`costGrowthLimit`). */
+  spareUsd: number | null;
+  /**
+   * The initiative's dollars: what its runs spent and its open runs hold (`spentUsd` plus
+   * `reservedUsd` of its cost view), its cap, and the cap with its tolerance.
+   */
+  initiative: { committedUsd: number; capUsd: number; ceilingUsd: number };
+}
+
+/** The host's decision on a started run's remaining stages (#2241). */
+export interface StageReserveDecision {
+  reason: "stage-reserve";
+  wouldExtend: boolean;
+  /** The dollar cap that pays for the remaining stages (`stageSuggestedUsd`). */
+  suggestedUsd: number;
+  /** The bound after the growth; null when it would not grow. */
+  toUsd: number | null;
+  byUsd: number | null;
+  why: string;
+}
+
+/**
+ * Whether a feature run that finished its tasks and would stop on its cost ceiling grows its
+ * dollar bound to pay for its remaining review and convergence (#2241). A started run's tasks are
+ * sunk: its mandatory stages come before the low estimates of features that have not started
+ * (`costGrowthLimit` reserves those), as long as what the initiative spent and holds, with the
+ * run held at its spent plus the stages, stays under its ceiling (the cap with its tolerance). R71 xmlvet get-command stopped
+ * at its first review call with $1.29 spent while $28.87 of the $30 cap ($37.50 ceiling) was
+ * spent and cli-release's $3.13 low left it a room of 0; an operator extended it 25 minutes later.
+ */
+export function stageReserveDecision(inputs: StageReserveInputs): StageReserveDecision {
+  const reason = "stage-reserve" as const;
+  const own = inputs.runSpentUsd + inputs.runReservedUsd;
+  const extra = Math.max(inputs.requestedUsd, inputs.stageReserveUsd);
+  const suggestedUsd = centsUp(own + extra);
+  const stages = inputs.stages.join(" and ");
+  const no = (why: string): StageReserveDecision => ({
+    reason,
+    wouldExtend: false,
+    suggestedUsd,
+    toUsd: null,
+    byUsd: null,
+    why,
+  });
+  if (suggestedUsd <= inputs.boundUsd)
+    return no(`The run's ${usd(inputs.boundUsd)} bound already pays for its ${stages}.`);
+  const { initiative } = inputs;
+  // The run is held at its own need afterwards instead of what the initiative holds for it now.
+  const after = initiative.committedUsd - inputs.runHeldUsd + suggestedUsd;
+  if (after > initiative.ceilingUsd)
+    return no(
+      `The ${stages} (${usd(extra)}) would take the initiative to ${usd(after)}, above its ${usd(initiative.ceilingUsd)} ceiling.`,
+    );
+  const spare =
+    inputs.spareUsd === null
+      ? ""
+      : ` (${usd(inputs.spareUsd)} spare after the waiting features' lows)`;
+  return {
+    reason,
+    wouldExtend: true,
+    suggestedUsd,
+    toUsd: suggestedUsd,
+    byUsd: centsUp(suggestedUsd - inputs.boundUsd),
+    why: `${inputs.featureId} finished its tasks with ${usd(inputs.runSpentUsd)} spent and its ${stages} (${usd(extra)}) still to run; its bound would grow from ${usd(inputs.boundUsd)}${spare} to ${usd(suggestedUsd)}, the initiative staying at ${usd(after)} of its ${usd(initiative.ceilingUsd)} ceiling (${usd(initiative.capUsd)} cap).`,
+  };
 }

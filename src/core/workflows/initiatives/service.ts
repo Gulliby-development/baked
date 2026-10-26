@@ -62,6 +62,7 @@ import {
 import type { StartSeed } from "../sdd-export/seed.js";
 import type { NativeWorkflowService, PlannedReroute } from "../service.js";
 import { sizingHistory, testCaseRate } from "../sizing.js";
+import { stageReserve } from "../stage-reserve.js";
 import { terminalStates } from "../state-machine.js";
 import { stopDetail, stopRecovery } from "../stop-detail.js";
 import { recordWouldStop, type StopMode, stopFault, stopMode } from "../stop-reasons.js";
@@ -89,7 +90,13 @@ import {
   testVolumeText,
 } from "./estimate.js";
 import { initiativePriceSamples, taskCallRate } from "./forecast.js";
-import { costGrowthLimit, guardGrowth, openGuardRoom, refreshedGrowth } from "./growth.js";
+import {
+  costGrowthLimit,
+  guardGrowth,
+  openGuardRoom,
+  refreshedGrowth,
+  stageReserveDecision,
+} from "./growth.js";
 import {
   applySplitEdit,
   boundaryPathCounts,
@@ -128,6 +135,7 @@ import {
 } from "./store.js";
 import {
   DEFAULT_EXTEND_WITHIN_DOLLARS,
+  DEFAULT_STAGE_RESERVE,
   dollarTokens,
   type ExtendWithinDollars,
   type PlanChargeView,
@@ -1085,7 +1093,7 @@ export function planBudget(settings: InitiativeSettings, plan: InitiativePlan): 
 export const MIN_SHARE = { maxTotalTokens: 1000, maxAgentCalls: 1, maxActiveMs: 1000 } as const;
 
 export const BUDGET_RULE =
-  "Each feature run starts with a share of the remaining shared budget, rounded down: remaining = limit - (usage of finished runs + the limits of open runs, decompose and superseded runs included; an open feature run whose plan is sized counts at the high end of its plan's need at the measured plan-to-actual ratio, never below its usage, instead of its limit, unless stopModes sets initiative-plan-charge to shadow), times the feature's weight, divided by the weights of the features of the approved plan without a run. Tokens are weighted by each feature's estimated need (the high end of its estimate), calls and time by size (small 1, medium 2, large 4). When the remaining pool covers the waiting features' low estimates, token shares reserve any lows that the weighted split would underfund and divide the rest by the same weights. A feature starts only if the remaining pool minus the other waiting features' low estimates covers its own low estimate. Otherwise it waits for a budget extension. A feature run grows its own budget only up to what remains after the low ends of the features still waiting. A starting feature's calls and active time are what remains less a floor for each other waiting feature (the base policy's per-run limit scaled by size, at most its share), never below its own share. A rebased run takes one more share of the same split. Agent calls per run are capped at 1000. With a dollar budget (--budget-usd), dollars use the original token weights and each feature run gets its share as its maxCostUsd with the initiative's costTolerance. Its cap may grow independently of tokens, only up to the remaining dollars less the priced low estimates of the other waiting features (their whole shares when unpriced). Split approval warns on dollar shares below their own priced lows; open runs hold their caps. No feature starts on less than $0.01, or once a feature is accepted and the projected total passes the cap and its tolerance.";
+  "Each feature run starts with a share of the remaining shared budget, rounded down: remaining = limit - (usage of finished runs + the limits of open runs, decompose and superseded runs included; an open feature run whose plan is sized counts at the high end of its plan's need at the measured plan-to-actual ratio, never below its usage, instead of its limit, unless stopModes sets initiative-plan-charge to shadow), times the feature's weight, divided by the weights of the features of the approved plan without a run. Tokens are weighted by each feature's estimated need (the high end of its estimate), calls and time by size (small 1, medium 2, large 4). When the remaining pool covers the waiting features' low estimates, token shares reserve any lows that the weighted split would underfund and divide the rest by the same weights. A feature starts only if the remaining pool minus the other waiting features' low estimates covers its own low estimate. Otherwise it waits for a budget extension. A feature run grows its own budget only up to what remains after the low ends of the features still waiting. A starting feature's calls and active time are what remains less a floor for each other waiting feature (the base policy's per-run limit scaled by size, at most its share), never below its own share. A rebased run takes one more share of the same split. Agent calls per run are capped at 1000. With a dollar budget (--budget-usd), dollars use the original token weights and each feature run gets its share as its maxCostUsd with the initiative's costTolerance. Its cap may grow independently of tokens, only up to the remaining dollars less the priced low estimates of the other waiting features (their whole shares when unpriced); a run that finished its tasks and would stop on its cost ceiling reserves its remaining review and convergence before those lows, inside the dollar cap and its tolerance (workflows.stageReserve: shadow, the default, records decision.would_extend; on grows the run's bound). Split approval warns on dollar shares below their own priced lows; open runs hold their caps. No feature starts on less than $0.01, or once a feature is accepted and the projected total passes the cap and its tolerance.";
 
 /** Digest a person approves for a plan revision: the plan, the budget and the frozen settings. */
 export function splitDigest(
@@ -2748,6 +2756,23 @@ export class InitiativeService {
       activeMs: guard.activeMs,
     });
     if (!after) return;
+    this.writeGrowth(runId, policy, after, "initiative-growth", {
+      featureId,
+      held,
+      spareUsd,
+      spareTokens,
+      guard,
+    });
+  }
+
+  /** Stores a host growth of an open feature run's policy as a revision a renewal undoes. */
+  private writeGrowth(
+    runId: string,
+    policy: RunPolicy,
+    after: RunPolicy,
+    kind: "initiative-growth" | "stage-reserve",
+    inputs: Record<string, unknown>,
+  ): void {
     const store = this.workflows.store;
     const count = store
       .artifacts(runId)
@@ -2759,17 +2784,89 @@ export class InitiativeService {
         "policy-revision",
         `policy-revisions/initiative-${String(count + 1)}.json`,
         canonical({
-          kind: "initiative-growth",
+          kind,
           approvedBy: "sizing",
           previousPolicyHash: hashJson(policy),
           policyHash: hashJson(after),
           previous: Object.fromEntries(keys.map((key) => [key, policy[key] ?? null])),
           next: Object.fromEntries(keys.map((key) => [key, after[key] ?? null])),
-          inputs: { featureId, held, spareUsd, spareTokens, guard },
+          inputs,
         }),
       );
       store.setPolicy(runId, after);
     });
+  }
+
+  /**
+   * Asked before a feature run's model call stops on its cost ceiling (#2241): when the run
+   * finished its tasks and its remaining review and convergence fit under the initiative's dollar
+   * ceiling (`stageReserveDecision`), `workflows.stageReserve: shadow` (the default) records a
+   * `decision.would_extend` event once per bound and the stop stands; `on` raises the run's dollar
+   * growth bound to the stages' need as a host revision, and the call grows into it. Nothing for a
+   * run of no initiative or without a dollar cap.
+   */
+  reserveStages(runId: string, requestedUsd: number): void {
+    const mode = this.workflows.config.workflows?.stageReserve ?? DEFAULT_STAGE_RESERVE;
+    if (mode === "off" || !this.store.available()) return;
+    const id = this.store.initiativeOfRun(runId);
+    const featureId = id && this.store.links(id).find((l) => l.run_id === runId)?.feature_id;
+    if (!id || !featureId) return;
+    const store = this.workflows.store;
+    const run = store.run(runId);
+    if (terminalStates.includes(run.status)) return;
+    const policy = PolicySchema.parse(JSON.parse(run.policy_json));
+    const boundUsd = policy.sizing?.maxRunCostUsd;
+    if (boundUsd === undefined || policy.maxCostUsd === null) return;
+    const reserve = stageReserve(store, runId, policy);
+    if (!reserve) return;
+    const view = this.view(id);
+    const cost = view.budget.cost;
+    if (cost.capUsd === null || cost.ceilingUsd === null) return;
+    const inputs = {
+      runId,
+      featureId,
+      stages: reserve.stages,
+      stageReserveUsd: Math.round(reserve.usd * 10_000) / 10_000,
+      runSpentUsd: Math.round(reserve.spentUsd * 10_000) / 10_000,
+      runReservedUsd: Math.round(reserve.reservedUsd * 10_000) / 10_000,
+      requestedUsd: Math.round(requestedUsd * 10_000) / 10_000,
+      boundUsd,
+      runHeldUsd: this.committedUsd(runId),
+      spareUsd: costGrowthLimit(view, featureId),
+      initiative: {
+        committedUsd: cost.spentUsd + cost.reservedUsd,
+        capUsd: cost.capUsd,
+        ceilingUsd: cost.ceilingUsd,
+      },
+    };
+    const decision = stageReserveDecision(inputs);
+    if (!decision.wouldExtend || decision.toUsd === null) return;
+    if (mode === "shadow") {
+      // The stop that follows rolls the call's transaction back: the record is written after it.
+      const key = `${decision.reason}-${runId}-${boundUsd}`;
+      store.afterTransaction(() => {
+        const seen = this.store
+          .eventsOfType(id, "decision.would_extend")
+          .some((p) => (p as { key?: string } | null)?.key === key);
+        if (seen) return;
+        this.store.emit(id, "decision.would_extend", {
+          reason: decision.reason,
+          mode,
+          featureId,
+          runId,
+          key,
+          toUsd: decision.toUsd,
+          byUsd: decision.byUsd,
+          suggestedUsd: decision.suggestedUsd,
+          summary: `${decision.why} The run would continue instead of stopping on its cost ceiling.`,
+          inputs,
+        });
+      });
+      return;
+    }
+    const sizing = { ...policy.sizing, maxRunCostUsd: decision.toUsd };
+    const after = PolicySchema.parse({ ...policy, sizing });
+    this.writeGrowth(runId, policy, after, "stage-reserve", { ...inputs, why: decision.why });
   }
 
   /**

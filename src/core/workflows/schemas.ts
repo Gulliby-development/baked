@@ -1473,6 +1473,8 @@ export const MAX_PARALLEL_RUNS = 8;
 export const PLAN_PARALLEL_RUNS = 3;
 /** The modes of `workflows.extendWithinDollars` (#2042); see `initiatives/token-pool.ts`. */
 export const EXTEND_WITHIN_DOLLARS_MODES = ["off", "shadow"] as const;
+/** The modes of `workflows.stageReserve` (#2241); see `initiatives/growth.ts`. */
+export const STAGE_RESERVE_MODES = ["off", "shadow", "on"] as const;
 export const WorkflowConfigSchema = z
   .object({
     enabled: z.boolean().default(true),
@@ -1511,6 +1513,13 @@ export const WorkflowConfigSchema = z
      * default, records a `decision.would_extend` event and changes nothing; `off` records nothing.
      */
     extendWithinDollars: z.enum(EXTEND_WITHIN_DOLLARS_MODES).optional(),
+    /**
+     * Whether a feature run that finished its tasks and would stop on its cost ceiling grows its
+     * dollar bound by the reserve of its remaining review and convergence, inside the initiative's
+     * dollar cap and tolerance (#2241): `shadow`, the default, records a `decision.would_extend`
+     * event and the run still stops; `on` grows the bound; `off` records nothing.
+     */
+    stageReserve: z.enum(STAGE_RESERVE_MODES).optional(),
     /**
      * Deadlines and stall limits (milliseconds): a tool call that never returns, a model attempt
      * with no progress, and how often a stalled run resumes by itself. Defaults in `stall.ts`.

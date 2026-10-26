@@ -1,5 +1,5 @@
 import { tokenText } from "../estimate.js";
-import { EXTEND_WITHIN_DOLLARS_MODES } from "../schemas.js";
+import { EXTEND_WITHIN_DOLLARS_MODES, STAGE_RESERVE_MODES } from "../schemas.js";
 import type { StopMode } from "../stop-reasons.js";
 import {
   calibrationRatio,
@@ -30,6 +30,17 @@ export type ExtendWithinDollars = (typeof EXTEND_WITHIN_DOLLARS_MODES)[number];
 export const DEFAULT_EXTEND_WITHIN_DOLLARS: ExtendWithinDollars = "shadow";
 
 /**
+ * Whether a feature run that finished its tasks grows its dollar bound by the reserve of its
+ * remaining review and convergence before its cost ceiling stops it (`workflows.stageReserve`,
+ * #2241, `stageReserveDecision` in `growth.ts`). `shadow`, the default, records a
+ * `decision.would_extend` initiative event and the run still stops; `on` (opt-in) grows the bound;
+ * `off` records nothing. Making `on` the default is its own pull request.
+ */
+export { STAGE_RESERVE_MODES };
+export type StageReserveMode = (typeof STAGE_RESERVE_MODES)[number];
+export const DEFAULT_STAGE_RESERVE: StageReserveMode = "shadow";
+
+/**
  * Every limit a person set that the host grows, or would grow, on its own, with the other cap the
  * person set that bounds it. A new growth registers here, ships in shadow and adds its case to
  * `tests/workflow-scenario-initiative-token-pool.test.ts`, which fails on a `decision.would_extend`
@@ -42,6 +53,14 @@ export const HOST_POOL_GROWTHS = {
     boundBy: "the dollar cap (--budget-usd) with its tolerance",
     modes: EXTEND_WITHIN_DOLLARS_MODES,
     defaultMode: DEFAULT_EXTEND_WITHIN_DOLLARS,
+  },
+  "stage-reserve": {
+    label:
+      "A feature run that finished its tasks would stop on its cost ceiling before its review and convergence",
+    grows: "the feature run's dollar growth bound (sizing.maxRunCostUsd)",
+    boundBy: "the initiative's dollar cap (--budget-usd) with its tolerance",
+    modes: STAGE_RESERVE_MODES,
+    defaultMode: DEFAULT_STAGE_RESERVE,
   },
 } as const;
 export type PoolGrowthReason = keyof typeof HOST_POOL_GROWTHS;
