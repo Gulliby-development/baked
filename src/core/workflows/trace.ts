@@ -110,6 +110,7 @@ import {
 } from "./host-apply.js";
 import type { initiativePriceSamples } from "./initiatives/forecast.js";
 import {
+  dollarCapPark,
   dollarShortfall,
   type FeatureView,
   InitiativeService,
@@ -2382,6 +2383,19 @@ export interface InitiativeStartBoundary {
     measuredFeatures: number;
     finalUsd: number | null;
   } | null;
+  /**
+   * The `initiative-dollar-cap` would-stop the current code records at this start (#2218): the
+   * initiative would pause because no dollars left after the open runs' needs pay for the
+   * feature's low, next to the final spend so the corpus can judge it. Null when they do.
+   */
+  capWouldStop: {
+    summary: string;
+    leftUsd: number;
+    lowUsd: number;
+    openNeedUsd: number;
+    suggestedUsd: number;
+    finalUsd: number | null;
+  } | null;
 }
 
 /**
@@ -2851,6 +2865,7 @@ function replayStarts(
         const cost = view.budget.cost;
         const whole = initiatives.estimate(initiativeId);
         const short = feature ? dollarShortfall(view, feature) : null;
+        const park = feature ? dollarCapPark(view, feature) : null;
         const estimate = (whole?.features ?? []).map((f) => ({
           featureId: f.featureId,
           low: f.tokens.low,
@@ -2882,6 +2897,16 @@ function replayStarts(
                 spareUsd: shareSpareUsd(view, link.feature_id),
                 lowUsd: feature?.needUsd?.low ?? null,
                 measuredFeatures: cost.measuredFeatures,
+                finalUsd: finalUsd > 0 ? Math.round(finalUsd * 100) / 100 : null,
+              }
+            : null,
+          capWouldStop: park
+            ? {
+                summary: park.summary,
+                leftUsd: park.leftUsd,
+                lowUsd: park.lowUsd,
+                openNeedUsd: park.openNeedUsd,
+                suggestedUsd: park.suggestedUsd,
                 finalUsd: finalUsd > 0 ? Math.round(finalUsd * 100) / 100 : null,
               }
             : null,
