@@ -42,6 +42,7 @@ import { canonical } from "../specs/hash.js";
 import { workspacePath } from "../specs/validate.js";
 import { withEditDiagnosticsMode } from "../tools/edit-diagnostics.js";
 import { buildTools } from "../tools/index.js";
+import { captureEndings, restoreEndings } from "../tools/line-endings.js";
 import { contentHash, deriveTool, withoutAstEditHint } from "../tools/tool-utils.js";
 import {
   buildCheckEnv,
@@ -1038,7 +1039,9 @@ export class NativeAgentExecutor implements AgentExecutor {
                 return [...new Set(paths)].reduceRight<() => Promise<unknown>>(
                   (inner, path) => () => guard.execute("edit_file", { path }, inner),
                   async () => {
-                    const result = await once();
+                    // A fixer that writes text mode on Windows turns a LF file into CRLF (#2214).
+                    const endings = captureEndings(paths.map((path) => workspacePath(root, path)));
+                    const result = await once().finally(() => restoreEndings(endings));
                     outputs.push(`${targets.join(", ")}: exit ${String(result.exitCode)}`);
                   },
                 )();

@@ -34,6 +34,14 @@ import {
   edgeDecision,
 } from "../verification/edge-inputs.js";
 import { planApprovalDecision, requestedPathTokens } from "./auto-approval.js";
+import {
+  BASELINE_FIX_KIND,
+  type BaselineFailureDecision,
+  type BaselineFailureRecord,
+  type BaselineFailureRule,
+  baselineFailureDecision,
+  baselineFixPath,
+} from "./baseline-fix.js";
 import { callCostRate } from "./budget.js";
 import {
   CONFLICT_FINISH_DIR,
@@ -228,6 +236,8 @@ const KEPT_ARTIFACTS = new Set([
   CONFLICT_FINISH_KIND,
   // Each blocked corrective's order decision: stop code, ready task ids, writers (#2109).
   DEFER_KIND,
+  // Each baseline failure's repair decision: finding counts, file paths, the fix (#2215).
+  BASELINE_FIX_KIND,
   // Each test task's wrong-value failure route: counts, task ids and paths, no literals (#2220).
   SOURCE_DEFECT_KIND,
 ]);
@@ -784,10 +794,67 @@ export interface RunReplay {
   correctiveDefers: CorrectiveDeferBoundary[];
   /** Blocked correctives the current rule runs independent work past, or not, differently. */
   newDeferDecisions: number;
+  /** Each required check's baseline failure decision against the current rule (#2215). */
+  baselineFailures: BaselineFailureBoundary[];
+  /** Baseline failures the current rule repairs, would stop on or leaves differently. */
+  newBaselineDecisions: number;
   /** Each test task's wrong-value failure route against the current rule (#2220). */
   sourceDefects: SourceDefectBoundary[];
   /** Test task failures the current rule routes to the source's task, or not, differently. */
   newSourceDefectRoutes: number;
+}
+
+export interface BaselineFailureBoundary {
+  checkId: string;
+  findings: number;
+  recorded: BaselineFailureDecision;
+  replayed: BaselineFailureDecision;
+}
+
+/**
+ * Every baseline failure decision a run recorded (`baseline-fix/<check>.json`, #2215), decided
+ * again from its recorded finding counts, plan and git facts. Traces before #2215 record none.
+ */
+export function replayBaselineFailures(
+  store: WorkflowStore,
+  runId: string,
+  decide: BaselineFailureRule = baselineFailureDecision,
+): BaselineFailureBoundary[] {
+  return store
+    .artifacts(runId)
+    .filter(
+      (a) =>
+        a.kind === BASELINE_FIX_KIND &&
+        !a.logical_path.endsWith("-repair.json") &&
+        a.logical_path.endsWith(".json"),
+    )
+    .flatMap((artifact) => {
+      let record: BaselineFailureRecord;
+      try {
+        record = JSON.parse(store.readArtifact(runId, artifact.id));
+      } catch {
+        return [];
+      }
+      if (artifact.logical_path !== baselineFixPath(record.checkId)) return [];
+      return [
+        {
+          checkId: record.checkId,
+          findings: record.findings,
+          recorded: record.decision,
+          replayed: decide({
+            fileLocal: record.fileLocal,
+            fix: record.fix,
+            findings: record.findings,
+            complete: record.complete,
+            correctable: record.correctable,
+            planned: record.planned,
+            untracked: record.untracked,
+            enabled: record.enabled,
+            ...(record.exempt !== undefined ? { exempt: record.exempt } : {}),
+          }),
+        },
+      ];
+    });
 }
 
 export interface SourceDefectBoundary {
@@ -3374,6 +3441,8 @@ function replayRun(
   | "newConflictFinishes"
   | "correctiveDefers"
   | "newDeferDecisions"
+  | "baselineFailures"
+  | "newBaselineDecisions"
   | "sourceDefects"
   | "newSourceDefectRoutes"
 > | null {
@@ -3550,6 +3619,8 @@ export function replayTrace(
     unownedRule?: UnownedRule;
     conflictFinishRule?: ConflictFinishRule;
     correctiveDeferRule?: CorrectiveDeferRule;
+    /** Decides each recorded baseline failure again (#2215); the current rule by default. */
+    baselineFailureRule?: BaselineFailureRule;
     sourceDefectRule?: SourceDefectRule;
   } = {},
 ): TraceReplay {
@@ -3644,6 +3715,12 @@ export function replayTrace(
         replayCorrectiveDefers(store, runId, options.correctiveDeferRule),
       ]),
     );
+    const baselines = new Map(
+      runIds.map((runId) => [
+        runId,
+        replayBaselineFailures(store, runId, options.baselineFailureRule),
+      ]),
+    );
     const routes = new Map(
       runIds.map((runId) => [runId, replaySourceDefects(store, runId, options.sourceDefectRule)]),
     );
@@ -3679,6 +3756,7 @@ export function replayTrace(
       const correctiveScopes = scopes.get(runId) ?? [];
       const conflictFinishes = finishes.get(runId) ?? [];
       const correctiveDefers = defers.get(runId) ?? [];
+      const baselineFailures = baselines.get(runId) ?? [];
       const sourceDefects = routes.get(runId) ?? [];
       if (
         !replay.boundaries.length &&
@@ -3700,6 +3778,7 @@ export function replayTrace(
         !correctiveScopes.length &&
         !conflictFinishes.length &&
         !correctiveDefers.length &&
+        !baselineFailures.length &&
         !sourceDefects.length
       )
         continue;
@@ -3765,6 +3844,8 @@ export function replayTrace(
         newConflictFinishes: conflictFinishes.filter((b) => b.replayed !== b.recorded).length,
         correctiveDefers,
         newDeferDecisions: correctiveDefers.filter((b) => b.replayed !== b.recorded).length,
+        baselineFailures,
+        newBaselineDecisions: baselineFailures.filter((b) => b.replayed !== b.recorded).length,
         sourceDefects,
         newSourceDefectRoutes: sourceDefects.filter((b) => b.replayed !== b.recorded).length,
       });

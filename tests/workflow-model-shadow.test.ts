@@ -21,7 +21,7 @@ const ACTIVE_ROUTING = {
 };
 
 async function start(
-  extra: { model?: string; modelStrict?: boolean },
+  extra: { model?: string; modelStrict?: boolean; routes?: Record<string, string> },
   routing: unknown = GLOBAL_ROUTING,
 ) {
   const fixture = workflowFixture();
@@ -105,5 +105,47 @@ describe("an explicit run model with a configured active class (#1172)", () => {
     expect(rerouted.explicitModel).toBe(true);
     const implicit = rerouteRecord(root, config, { ...previous, explicitModel: undefined }, "sdd", [], ["researcher"], {});
     expect(implicit.profiles.researcher?.model).toBe("codex/gpt-6-luna");
+  });
+});
+
+describe("a strict Claude Code Opus run and the default-on specifyOnSonnet route (#2217)", () => {
+  const OPUS = "claude-code/opus";
+  const stageModel = (summary: Awaited<ReturnType<typeof start>>, stage: string) =>
+    summary.effective.find((row) => row.target === `stage ${stage}`);
+
+  test("without --model-strict, specify runs on Sonnet", async () => {
+    const summary = await start({ model: OPUS }, {});
+    expect(stageModel(summary, "specify")).toMatchObject({
+      model: "claude-code/sonnet",
+      source: "modelRouting.specifyOnSonnet",
+    });
+  });
+
+  test("--model-strict keeps specify on the run model, as docs/workflows/runtime.md says", async () => {
+    const summary = await start({ model: OPUS, modelStrict: true }, {});
+    expect(summary.strict).toBe(true);
+    expect(stageModel(summary, "specify")).toBeUndefined();
+    expect([...new Set(summary.effective.map((row) => row.model))]).toEqual([OPUS]);
+  });
+
+  test("--model-strict with --route specify=... still honors the route", async () => {
+    const summary = await start(
+      { model: OPUS, modelStrict: true, routes: { specify: "claude-code/sonnet" } },
+      {},
+    );
+    expect(stageModel(summary, "specify")).toMatchObject({
+      model: "claude-code/sonnet",
+      source: "route override specify",
+    });
+  });
+
+  test("a reroute of a strict run keeps specify off Sonnet", async () => {
+    const summary = await start({ model: OPUS, modelStrict: true }, {});
+    const { root, config } = summary.fixture;
+    const previous = { schemaVersion: 1 as const, runModel: OPUS, profiles: {}, stages: {}, strict: true };
+    const rerouted = rerouteRecord(root, config, previous, "sdd", ["specify"], [], {});
+    expect(rerouted.stages.specify).toBeUndefined();
+    const loose = rerouteRecord(root, config, { ...previous, strict: undefined }, "sdd", ["specify"], [], {});
+    expect(loose.stages.specify?.model).toBe("claude-code/sonnet");
   });
 });

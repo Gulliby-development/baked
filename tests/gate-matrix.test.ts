@@ -18,6 +18,7 @@ import { growthLimit, type InitiativeView, rebaseView, shareShortfall } from "..
 import { estimateInitiative } from "../src/core/workflows/initiatives/estimate.js";
 import { hasExecutableFields, manifestFieldChanges } from "../src/core/workflows/quality/manifests.js";
 import { REPLAY_TARGETS, replayTargets } from "../src/core/workflows/quality/baseline-replay.js";
+import { type BaselineFailureDecision, baselineFailureDecision, baselineFindings } from "../src/core/workflows/baseline-fix.js";
 import type { TestRunner } from "../src/core/verification/output-counts.js";
 import { unrequestedManifestFields } from "../src/core/workflows/quality/dependencies.js";
 import { historyFixture, plannedForecastScenario } from "./helpers/initiative-planned-forecast.js";
@@ -726,6 +727,75 @@ function cell(stack: Stack, name: string, body: () => void | Promise<void>, time
   if (issue) test.skip(`${name} (known: ${issue})`, body);
   else test(name, body, timeout);
 }
+
+// #2215 (R70 namesound docs): a required linter failed before any change with only correctable
+// findings in a file no task wrote, and the run learned it only at the checks stage. Each stack's
+// detected file-local linter, on a recorded failing output of its tool: whether the host may run
+// its fixer before the first task (`repair`), records the `baseline_unrepairable` would-stop, or
+// decides nothing because the output names no located finding it can hold to the tool's summary.
+const BASELINE_LINT: Record<Stack, { gate: string; output: string; decision: BaselineFailureDecision }> = {
+  // The project's own `lint` script carries no fixer the host knows: correctable, yet a would-stop.
+  bun: {
+    gate: "lint",
+    output: "src/legacy.ts:3:7 lint/style/useConst FIXABLE ━━━━━━━━━━\n\n  × This let declares a variable that is only assigned once.\n\nChecked 2 files in 3ms. No fixes applied.\nFound 1 error.",
+    decision: "would_stop",
+  },
+  // ESLint's default `stylish` output prints the file on its own line: nothing located to hold.
+  npm: {
+    gate: "lint",
+    output: "/w/src/legacy.js\n  1:7  error  'x' is assigned a value but never used  no-unused-vars\n\n✖ 1 problem (1 error, 0 warnings)",
+    decision: "none",
+  },
+  python: {
+    gate: "ruff",
+    output: "F401 [*] `os` imported but unused\n --> tools/legacy.py:1:8\n  |\n1 | import os\n  |        ^^\n\nFound 1 error.\n[*] 1 fixable with the `--fix` option.",
+    decision: "repair",
+  },
+  // `gofmt -l` lists files without a location.
+  go: { gate: "gofmt", output: "internal/legacy.go\n", decision: "none" },
+  // clippy and cargo fmt are whole-unit: the plan's own files may be what they fail on.
+  rust: { gate: "clippy", output: "warning: unused variable: `x`\n --> src/legacy.rs:3:9\n", decision: "none" },
+  maven: { gate: "checkstyle", output: "[ERROR] /w/src/main/java/app/Legacy.java:[3,5] (whitespace) WhitespaceAround\n", decision: "none" },
+  dotnet: { gate: "format", output: "/w/src/App/Legacy.cs(3,5): error WHITESPACE: Fix whitespace formatting.\n", decision: "none" },
+};
+
+describe("gate matrix: baseline failure outside the plan (#2215)", () => {
+  for (const stack of Object.keys(FIXTURES) as Stack[])
+    cell(stack, "baseline failure outside the plan", () => {
+      const row = BASELINE_LINT[stack];
+      const checks = detectGates(project(FIXTURES[stack].files)).map((s) => s.check);
+      const check = checks.find((c) => c.id === row.gate) ?? { id: row.gate, executable: row.gate, args: [], cwd: ".", timeoutMs: 1000, required: true, scope: "feature" as const, envNames: [], writes: [] };
+      const found = baselineFindings(row.output, "/w", check.cwd);
+      const input = {
+        fileLocal: isStaticCheck(check) && !isTestCheck(check) && !isWholeUnitCheck(check),
+        fix: Boolean(check.fix),
+        findings: found.findings,
+        complete: found.complete,
+        correctable: found.correctable,
+        planned: 0,
+        untracked: 0,
+        enabled: true,
+      };
+      expect([stack, baselineFailureDecision(input)]).toEqual([stack, row.decision]);
+      // A task that writes a named file may still repair it: the host decides nothing.
+      if (found.files.length) expect(baselineFailureDecision({ ...input, planned: 1 })).toBe("none");
+      // With the flag off a repairable failure is a would-stop the run records before its tasks.
+      if (row.decision === "repair") expect(baselineFailureDecision({ ...input, enabled: false })).toBe("would_stop");
+    });
+
+  // The R70 case itself: Bundler's RuboCop gate with its safe autocorrect.
+  test("Bundler's RuboCop gate repairs [Correctable] offenses and records the rest", () => {
+    const [rubocop] = detectGates(project({ Gemfile: "gem 'rubocop'\ngem 'rspec'\n" })).map((s) => s.check);
+    const output = (marks: string[]) =>
+      `Inspecting 1 file\nC\n\nOffenses:\n\n${marks.map((m, i) => `spec/cmd/cli_spec.rb:${String(i + 1)}:5: C: ${m}Style/StringLiterals: Prefer single-quoted strings.`).join("\n")}\n\n1 file inspected, ${String(marks.length)} offenses detected`;
+    const decide = (text: string) => {
+      const found = baselineFindings(text, "/w", rubocop!.cwd);
+      return baselineFailureDecision({ fileLocal: isStaticCheck(rubocop!) && !isTestCheck(rubocop!) && !isWholeUnitCheck(rubocop!), fix: Boolean(rubocop!.fix), findings: found.findings, complete: found.complete, correctable: found.correctable, planned: 0, untracked: 0, enabled: true });
+    };
+    expect(decide(output(["[Correctable] ", "[Correctable] ", "[Correctable] "]))).toBe("repair");
+    expect(decide(output(["[Correctable] ", ""]))).toBe("would_stop");
+  });
+});
 
 // #1749: a Gradle project got no toolchain gate, a Maven project with a wrapper got `mvn` even
 // where only the wrapper builds, and an sbt project got nothing.

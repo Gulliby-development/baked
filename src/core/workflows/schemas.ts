@@ -728,6 +728,15 @@ export const PolicySchema = z
      */
     sourceDefectRoute: z.literal("on").optional(),
     /**
+     * The host's repair of a required check that fails before any change (baseline-fix.ts, #2215):
+     * `on` lets the host run the check's fixer on the files it names, before the first task, when
+     * no task writes them, git tracks them and every finding is marked correctable, and keep the
+     * edit only when the check then passes. Absent means off: the decision is recorded and a check
+     * no task can repair records the `baseline_unrepairable` would-stop, so stored policies keep
+     * their hash.
+     */
+    baselineFix: z.literal("on").optional(),
+    /**
      * The project's choices for the anti-slop rule pack (quality/rules.ts), which is always on:
      * rules turned off, severities changed and ast-grep rule files added. Absent means the
      * built-in pack as shipped, so stored policies keep their hash.
