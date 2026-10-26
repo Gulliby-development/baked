@@ -40,6 +40,24 @@ A single run has the same layout without `initiative.*`, and its graph holds one
 - Before anything is written, every file is scanned for secrets (the scan of an artifact deploy: key formats, credential assignments, values of secret environment variables). A finding refuses the export and names the file and line, never the value.
 - A feature whose ID is a name Windows reserves (`con`, `nul`, `com1`, ...) gets the folder `<id>_`; `manifest.json` names each feature's folder.
 
+## Importing a package back
+
+```sh
+baked workflow import --source baked-export --path handoff/payments-export.zip
+baked workflow import --source baked-export --path handoff/payments-export --id payments-2 --json
+```
+
+`import --source baked-export` continues the work of a package in this checkout or another one. Nothing calls a model before a person decides:
+
+- The package is checked first: `manifest.json` must have format version 1, every file it lists must have its sha256, and no other file may be there. A package edited after the export is refused (`reason: "bad_package"`) and names the files.
+- An initiative package recreates the initiative from `initiative.json`: its request, the accepted plan as a `user` revision awaiting approval, and its budget. The split is validated and fitted to this project's workflows as any given split is; approve it (or edit it) as usual.
+- Once the split is approved, the first run of each feature that had a folder starts at its analysis stage with the exported spec, plan and tasks, instead of specifying and planning again: the plan is analyzed against this workspace and goes to a person for approval. A feature without a folder, a feature the split edit changed, or one whose workflow has no spec and plan stages (light) specifies and plans as usual.
+- A run package creates one run at its analysis stage and does not drive it; continue it with `baked workflow resume RUN_ID --expected-revision N` (the command prints both).
+- The initiative ID or run feature ID is the package's; `--id` names another one (needed when this project already has it). Spec and task IDs are kept; the spec's feature ID, its upstream contracts and the hashes are those of the new run, and the run records the package in `import/seed.json`.
+- The terminal app takes the same command as `/workflow import --source baked-export --path PATH`; on the desktop, **Import…** on the run list has the source **BAKED export package (folder or .zip)**; the local API takes `source: "baked-export"` on `POST /v1/workflow/import`.
+
+Importing does not need `workflows.importsEnabled`, which guards the candidates of the other importers: the package is BAKED's own and runs nothing before an approval.
+
 ## Exit codes
 
 | Code | Meaning |

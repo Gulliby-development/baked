@@ -53,6 +53,15 @@
     "packageContents": null,
     "numericLimits": [
       "integers past PHP_INT_MAX become floats"
+    ],
+    "staticTools": [
+      "phpstan: linter, whole unit",
+      "psalm: linter, whole unit",
+      "phpcs: linter",
+      "phpmd: linter",
+      "pint: formatter",
+      "php-cs-fixer: formatter",
+      "phpcbf: formatter"
     ]
   }
 }

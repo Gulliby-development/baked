@@ -32,6 +32,11 @@
     "packageContents": null,
     "numericLimits": [
       "NSInteger overflow wraps; NSNumber loses integers past 2^53 as double"
+    ],
+    "staticTools": [
+      "clang-tidy: linter, whole unit",
+      "clang-format: formatter",
+      "oclint: linter"
     ]
   }
 }

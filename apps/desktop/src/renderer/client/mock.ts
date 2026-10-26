@@ -109,6 +109,7 @@ const FULL_CAPABILITIES = [
   "provider-switch",
   "chat-export",
   "sdd-export",
+  "sdd-import",
   "chat-effort",
   "watch",
   "diagnostics",

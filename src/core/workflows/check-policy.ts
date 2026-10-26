@@ -4,6 +4,7 @@ import { workspacePath } from "../specs/validate.js";
 import { WorkflowFault } from "./errors.js";
 import { isTestCodePath } from "./quality/duplication.js";
 import type { RunPolicy, TaskGraph } from "./schemas.js";
+import { staticToolPattern } from "./static-tools.js";
 import { toolchainCommand } from "./toolchain.js";
 import type { Check, Task } from "./types.js";
 
@@ -41,9 +42,14 @@ export function validateChecks(workspace: string, policy: RunPolicy, graph?: Tas
   }
 }
 
-/** Commands that analyze source without running it: linters, formatters and type checkers. */
-const STATIC_COMMAND =
-  /\b(?:lint|eslint|biome|ruff|flake8|pylint|clippy|vet|fmt|gofmt|format|prettier|mypy|pyright|tsc|typecheck|check|phpstan|psalm|pint|php-cs-fixer|luacheck|selene|stylua|shellcheck|shfmt|clang-tidy|ScriptAnalyzer|lintr|styler|scalafmt\w*)\b|\b(?:dart|flutter)\s+analyze\b/i;
+/**
+ * Commands that analyze source without running it: the generic words and every language's
+ * linters, formatters and type checkers by name (`STATIC_TOOLS`, #2110).
+ */
+const STATIC_COMMAND = staticToolPattern(
+  () => true,
+  ["lint", "fmt", "format", "check", "typecheck", "vet"],
+);
 
 /** Source code a linter or formatter reads: any written file that is not documentation or data. */
 export const isCodePath = (path: string): boolean => isCodeFile(path);
@@ -102,10 +108,10 @@ function runsAggregateTarget(check: Pick<Check, "executable" | "args">): boolean
  * are PHPStan and Psalm, which load every class a file uses (#1491), and clang-tidy, which compiles
  * each file with the includes of the project's compilation database (#1490); Pint, PHP-CS-Fixer and
  * clang-format format one file at a time. SQLFluff with the dbt templater compiles the whole dbt
- * project (`ref()` to other models), so its gate, `sqlfluff-dbt`, is too (#1499).
+ * project (`ref()` to other models), so its gate, `sqlfluff-dbt`, is too (#1499). The tools are the
+ * `wholeUnit` rows of `STATIC_TOOLS` (#2110).
  */
-const WHOLE_UNIT_COMMAND =
-  /\b(?:clippy|vet|tsc|typecheck|mypy|pyright|rustfmt|phpstan|psalm|clang-tidy|sqlfluff-dbt)\b|\bcargo\s+(?:check|fmt)\b|\b(?:dart|flutter)\s+analyze\b/i;
+const WHOLE_UNIT_COMMAND = staticToolPattern((t) => Boolean(t.wholeUnit), ["vet", "typecheck"]);
 
 export const isWholeUnitCheck = (check: Check): boolean =>
   WHOLE_UNIT_COMMAND.test([check.id, check.executable, ...check.args].join(" "));
@@ -245,10 +251,11 @@ const FORMAT_CLAIM =
 /** A criterion that claims the code is lint-clean or passes a named linter. */
 const LINT_CLAIM =
   /\blint(?:-clean|s|ed|ers?|ing)?\b|\b(?:clippy|ruff\s+check|eslint|flake8|pylint|go\s+vet|rubocop|standardrb|ktlint|luacheck|selene|phpstan|psalm|shellcheck|clang-tidy|(?:dart|flutter)\s+analyze)\b/i;
-const FORMAT_COMMAND =
-  /\b(?:gofmt|fmt|format|prettier|biome|lint|pint|php-cs-fixer|stylua|shfmt|scalafmt\w*)\b/i;
-const LINT_COMMAND =
-  /\b(?:lint|eslint|biome|ruff|flake8|pylint|clippy|vet|rubocop|standardrb|ktlint|golangci-lint|luacheck|selene|phpstan|psalm|shellcheck|clang-tidy)\b|\b(?:dart|flutter)\s+analyze\b/i;
+const FORMAT_COMMAND = staticToolPattern(
+  (t) => t.kind === "formatter",
+  ["fmt", "format", "lint", "biome"],
+);
+const LINT_COMMAND = staticToolPattern((t) => t.kind === "linter", ["lint", "vet"]);
 
 /**
  * Whether the passing checks show a criterion's formatting or lint claim, or null when it makes

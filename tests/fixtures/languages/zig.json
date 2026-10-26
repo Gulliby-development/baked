@@ -38,6 +38,9 @@
     "packageContents": null,
     "numericLimits": [
       "integer overflow is a panic in safe builds"
+    ],
+    "staticTools": [
+      "zig fmt: formatter"
     ]
   }
 }

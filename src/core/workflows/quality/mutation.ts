@@ -7,6 +7,7 @@
  * (`mutation-tools.ts`) runs instead and its report maps to the same result. A gate that runs out
  * of its time budget is inconclusive for the mutants it did not run, never a failure.
  */
+import { staticToolOf } from "../static-tools.js";
 import { toolchainCommand } from "../toolchain.js";
 import { isNonCodeLine, maskNonCode } from "./code-mask.js";
 import { isTestCodePath } from "./duplication.js";
@@ -245,6 +246,8 @@ export function isTestCheck(check: { id: string; executable: string; args: strin
   const launched = toolchainCommand(check.executable, check.args);
   const build = buildToolRunsTests(launched.program, launched.args);
   if (build !== null) return build;
+  // A linter or formatter run on test files is no test run: `solhint 'test/**'`, `scalafmt --test` (#2110).
+  if (staticToolOf(launched.program, launched.args)) return false;
   // Pint's `--test` is its check mode, not a test run (#1491); node and deno take `--test` to run tests.
   const flag = (arg: string) => arg === "--test" && !/^(?:node|deno)$/.test(launched.program);
   const text = [check.id, check.executable, ...check.args.filter((arg) => !flag(arg))]

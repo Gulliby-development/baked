@@ -38,6 +38,11 @@ import { CALL_SYNTAX, callContext, functionsIn } from "../src/core/intelligence/
 import { TaskSchema } from "../src/core/workflows/schemas.js";
 import { MASK_SYNTAX, maskNonCode, stripComments } from "../src/core/workflows/quality/code-mask.js";
 import { PACKAGE_CONTENTS, packagingFields } from "../src/core/workflows/quality/package-contents.js";
+import { isStaticCheck, isWholeUnitCheck } from "../src/core/workflows/check-policy.js";
+import { isTestCheck } from "../src/core/workflows/quality/mutation.js";
+import { STATIC_TOOLS } from "../src/core/workflows/static-tools.js";
+import type { Check } from "../src/core/workflows/types.js";
+import { rowOf } from "../src/core/intelligence/language-records.js";
 
 // Language parity (#1717): every language-bound record has a row for every supported language,
 // and every row is exercised by the language's fixture project in `tests/fixtures/languages/`.
@@ -224,6 +229,22 @@ const RECORDS: Record<
       Object.entries(files).flatMap(([path, text]) => {
         const found = packagingFields(path, text);
         return found ? [`${path}: ${found.tool}${found.fields.length ? ` [${found.fields.join(", ")}]` : ""}`] : [];
+      }),
+  },
+  // How a check named after each of the language's linters, formatters and type checkers is
+  // classified when it runs on the test files (#2110): static, never a test check.
+  staticTools: {
+    record: STATIC_TOOLS,
+    run: (language) =>
+      (rowOf(STATIC_TOOLS, language) ?? []).map(({ tool, kind }) => {
+        const [executable = "", ...args] = tool.split(" ");
+        const check = { id: tool.replaceAll(" ", "-"), executable, args: [...args, "tests/"] } as unknown as Check;
+        const as = [
+          isStaticCheck(check) ? kind : "not static",
+          ...(isTestCheck(check) ? ["test"] : []),
+          ...(isWholeUnitCheck(check) ? ["whole unit"] : []),
+        ];
+        return `${tool}: ${as.join(", ")}`;
       }),
   },
   properties: {

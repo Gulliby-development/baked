@@ -1267,7 +1267,8 @@ interface GcBody {
 interface ImportBody {
   source: string;
   path: string;
-  featureId: string;
+  featureId?: string;
+  id?: string;
 }
 interface RedactBody {
   artifactId: string;
@@ -1332,6 +1333,7 @@ function cleanWorktrees(body: { dryRun?: boolean }) {
 
 function importCandidate(body: ImportBody) {
   if (!body.path.trim()) return invalid("Import source must be a local directory without symlinks");
+  if (body.source === "baked-export") return importPackage(body);
   return response(200, {
     candidateHash: DIGEST,
     warnings:
@@ -1341,6 +1343,38 @@ function importCandidate(body: ImportBody) {
           ]
         : [],
     unsupported: [],
+  });
+}
+
+/**
+ * An SDD package read back (#2208): a path ending in `.zip` or naming `run` is a run package, any
+ * other an initiative of three features of which one was accepted; `edited` is refused as changed.
+ */
+function importPackage(body: ImportBody) {
+  if (body.path.includes("edited"))
+    return response(400, {
+      error: {
+        code: "INVALID_DEFINITION",
+        message:
+          "The package changed after it was exported: specs/front/spec.md (missing or edited)",
+        details: { reason: "bad_package" },
+      },
+    });
+  if (/run|\.zip$/.test(body.path)) {
+    const id = body.id ?? "settings-dark-mode";
+    return response(200, {
+      kind: "run",
+      id,
+      seeded: [id],
+      unseeded: [],
+      run: { runId: `run-imported-${id}` },
+    });
+  }
+  return response(200, {
+    kind: "initiative",
+    id: body.id ?? "desktop-app",
+    seeded: ["shell"],
+    unseeded: ["screens", "packaging"],
   });
 }
 

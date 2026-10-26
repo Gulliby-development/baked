@@ -13,7 +13,13 @@ import {
   type WorktreeCleanup,
   type WorktreeReport,
 } from "../../client/runs.js";
-import { SDD_EXPORT_CAPABILITY } from "../../client/sdd-export.js";
+import {
+  type ImportedPackage,
+  importedSummary,
+  SDD_EXPORT_CAPABILITY,
+  SDD_IMPORT_CAPABILITY,
+  sddImport,
+} from "../../client/sdd-export.js";
 import { ExportPackageDialog } from "../../components/ExportPackageDialog.js";
 import { Alert } from "../../components/ui/alert.js";
 import { Button } from "../../components/ui/button.js";
@@ -288,10 +294,13 @@ export function RunMaintenance({ projectKey, data }: { projectKey: string; data:
 }
 
 type Open = "gc" | "import" | "worktrees" | null;
-const SOURCES: { value: ImportSource; label: string }[] = [
+/** `baked-export` reads back a package of Export package… (#2208); the others make a candidate. */
+type Source = ImportSource | "baked-export";
+const SOURCES: { value: Source; label: string }[] = [
   { value: "spec-kit", label: "Spec Kit (spec.md, spec.json, tasks.json, plan.md)" },
   { value: "ecc", label: "ECC agents" },
   { value: "markdown-edit", label: "Markdown folder" },
+  { value: "baked-export", label: "BAKED export package (folder or .zip)" },
 ];
 
 /**
@@ -315,10 +324,12 @@ export function RunsMaintenance({
   const [age, setAge] = useState(90);
   const [preview, setPreview] = useState<GcResult | null>(null);
   const [removed, setRemoved] = useState<GcResult | null>(null);
-  const [source, setSource] = useState<ImportSource>("spec-kit");
+  const [packagesOffered, setPackagesOffered] = useState(false);
+  const [source, setSource] = useState<Source>("spec-kit");
   const [path, setPath] = useState("");
   const [featureId, setFeatureId] = useState("");
   const [imported, setImported] = useState<ImportResult | null>(null);
+  const [importedPackage, setImportedPackage] = useState<ImportedPackage | null>(null);
 
   useEffect(() => {
     let live = true;
@@ -327,6 +338,7 @@ export function RunsMaintenance({
         if (!live) return;
         setOffered(caps.includes(RUN_MAINTENANCE_CAPABILITY));
         setWorktreesOffered(caps.includes(WORKTREES_CAPABILITY));
+        setPackagesOffered(caps.includes(SDD_IMPORT_CAPABILITY));
       },
       () => live && setOffered(false),
     );
@@ -342,6 +354,7 @@ export function RunsMaintenance({
     setPreview(null);
     setRemoved(null);
     setImported(null);
+    setImportedPackage(null);
     setUsage(null);
     setCleaned(null);
     setOpen(which);
@@ -376,15 +389,31 @@ export function RunsMaintenance({
       setCleaned(await runMaintenance.cleanWorktrees(projectKey, false));
       setUsage(await runMaintenance.worktrees(projectKey));
     });
+  const packageSource = source === "baked-export";
+  const done = imported !== null || importedPackage !== null;
   const importSubmit = () =>
     void run(async () => {
+      if (packageSource) {
+        if (!path.trim()) {
+          setError("Name the package folder or .zip archive.");
+          return;
+        }
+        setImportedPackage(
+          await sddImport.importPackage(projectKey, {
+            path: path.trim(),
+            ...(featureId.trim() ? { id: featureId.trim() } : {}),
+          }),
+        );
+        onChanged();
+        return;
+      }
       if (!path.trim() || !featureId.trim()) {
         setError("Name the folder and the feature ID.");
         return;
       }
       setImported(
         await runMaintenance.importCandidate(projectKey, {
-          source,
+          source: source as ImportSource,
           path: path.trim(),
           featureId: featureId.trim(),
         }),
@@ -501,11 +530,15 @@ export function RunsMaintenance({
       </FormDialog>
       <FormDialog
         open={open === "import"}
-        title="Import a spec or agents"
-        description="Reads a local folder into an inert candidate under .baked/workflow-imports. Nothing runs and no agent is enabled; pass an accepted spec, plan and tasks to a run as a candidate. Needs workflows.importsEnabled."
+        title={packageSource ? "Import an export package" : "Import a spec or agents"}
+        description={
+          packageSource
+            ? "Continues the work of a package written by Export package…: its manifest is checked, an initiative waits for the approval of its split (a run is created, not started), and each feature with an accepted spec starts at analysis with it."
+            : "Reads a local folder into an inert candidate under .baked/workflow-imports. Nothing runs and no agent is enabled; pass an accepted spec, plan and tasks to a run as a candidate. Needs workflows.importsEnabled."
+        }
         error={error}
         busy={busy}
-        submitLabel={imported ? null : "Import"}
+        submitLabel={done ? null : "Import"}
         onSubmit={importSubmit}
         onClose={() => setOpen(null)}
       >
@@ -515,10 +548,10 @@ export function RunsMaintenance({
             id="import-source"
             className={cn(fieldClass, "h-10")}
             value={source}
-            disabled={imported !== null}
-            onChange={(e) => setSource(e.target.value as ImportSource)}
+            disabled={done}
+            onChange={(e) => setSource(e.target.value as Source)}
           >
-            {SOURCES.map((s) => (
+            {SOURCES.filter((s) => packagesOffered || s.value !== "baked-export").map((s) => (
               <option key={s.value} value={s.value}>
                 {s.label}
               </option>
@@ -526,25 +559,32 @@ export function RunsMaintenance({
           </select>
         </div>
         <div className={FIELD}>
-          <Label htmlFor="import-path">Folder</Label>
+          <Label htmlFor="import-path">{packageSource ? "Folder or .zip archive" : "Folder"}</Label>
           <Input
             id="import-path"
             value={path}
-            placeholder="specs/feature"
-            disabled={imported !== null}
+            placeholder={packageSource ? "handoff/shop-export.zip" : "specs/feature"}
+            disabled={done}
             onChange={(e) => setPath(e.target.value)}
           />
         </div>
         <div className={FIELD}>
-          <Label htmlFor="import-feature">Feature ID</Label>
+          <Label htmlFor="import-feature">
+            {packageSource ? "New ID (optional, the package's by default)" : "Feature ID"}
+          </Label>
           <Input
             id="import-feature"
             value={featureId}
-            placeholder="imported-feature"
-            disabled={imported !== null}
+            placeholder={packageSource ? "" : "imported-feature"}
+            disabled={done}
             onChange={(e) => setFeatureId(e.target.value)}
           />
         </div>
+        {importedPackage && (
+          <span role="status" className="text-[13px]">
+            {importedSummary(importedPackage)}
+          </span>
+        )}
         {imported && (
           <div role="status" className="flex flex-col gap-1 text-[13px]">
             <span>
