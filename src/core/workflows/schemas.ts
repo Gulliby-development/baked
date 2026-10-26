@@ -592,6 +592,14 @@ export const PolicySchema = z
      * (derivation-audit.ts, #1851). Absent means `off`, so stored policies keep their hash.
      */
     derivationAuditCarry: z.enum(["off", "on"]).optional(),
+    /**
+     * `on` has a derivation return whose only blocking findings are `DERIVE-` rows amend those
+     * criteria in place: the spec author revises them by patch, and when the amended spec changes
+     * nothing but those criteria's text the plan and tasks are kept and only analyze runs again
+     * (derivation-audit.ts, #2219). Anything else falls back to the full return. Absent means
+     * `off`, so stored policies keep their hash.
+     */
+    derivationAmend: z.enum(["off", "on"]).optional(),
     /** Host-written audited acceptance rows and parameterized tests; absent means off (#1596). */
     rowsAsData: z.enum(["off", "on"]).optional(),
     /**
