@@ -41,6 +41,7 @@ interface Accepted {
   newUnownedDecisions?: number;
   newConflictFinishes?: number;
   newDeferDecisions?: number;
+  newSourceDefectRoutes?: number;
   newBaselineDecisions?: number;
   newShareStops?: number;
   newPoolGrowth?: number;
@@ -106,6 +107,7 @@ describe("bench-round traces replay without new forecast stops or growth (#1649)
           newUnownedDecisions: run.newUnownedDecisions,
           newConflictFinishes: run.newConflictFinishes,
           newDeferDecisions: run.newDeferDecisions,
+          newSourceDefectRoutes: run.newSourceDefectRoutes,
           newBaselineDecisions: run.newBaselineDecisions,
         }).toEqual({
           run: run.runId,
@@ -131,6 +133,7 @@ describe("bench-round traces replay without new forecast stops or growth (#1649)
           newUnownedDecisions: allowed?.newUnownedDecisions ?? 0,
           newConflictFinishes: allowed?.newConflictFinishes ?? 0,
           newDeferDecisions: allowed?.newDeferDecisions ?? 0,
+          newSourceDefectRoutes: allowed?.newSourceDefectRoutes ?? 0,
           newBaselineDecisions: allowed?.newBaselineDecisions ?? 0,
         });
       }
@@ -291,6 +294,8 @@ describe("initiative starts replay on rewound traces (#1707)", () => {
       expect(replay?.starts.find((b) => b.featureId === id)?.replayed).toBe("pass");
     }
     expect(plain?.starts.every((b) => b.shareWouldStop === null)).toBe(true);
+    // #2218: the dollar-cap park records no would-stop either; no round of the corpus ran short.
+    expect(plain?.starts.every((b) => b.capWouldStop === null)).toBe(true);
   }, 120000);
 
   test("#2061: every rewound start of R60 wheeltags reads the dollars its recorded share gate read", () => {
@@ -352,6 +357,8 @@ describe("initiative starts replay on rewound traces (#1707)", () => {
     const [replay] = replayInitiativeStarts(join(ROOT, "R62", "stepvet.sqlite.gz"));
     expect(replay?.finalUsd).toBe(26.33);
     expect(replay?.starts.filter((b) => b.shareWouldStop !== null).map((b) => b.featureId)).toEqual([]);
+    // #2218: nor the dollar-cap park, at measured features and at none.
+    expect(replay?.starts.filter((b) => b.capWouldStop !== null).map((b) => b.featureId)).toEqual([]);
   }, 120000);
 
   test("#2099: R67 ampwhy's dollar share gates record no would-stop before the dollar rate is measured", () => {

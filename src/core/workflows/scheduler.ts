@@ -456,7 +456,12 @@ import {
 } from "./initiatives/plan.js";
 import { InitiativeStore } from "./initiatives/store.js";
 import { featureWorkflowChoices } from "./initiatives/workflows.js";
-import { changeReach, correctiveSources, repairChangedFiles } from "./invalidation.js";
+import {
+  changeReach,
+  correctiveSources,
+  importedFiles,
+  repairChangedFiles,
+} from "./invalidation.js";
 import {
   commandMayBeRunning,
   mutationLeaseFor,
@@ -724,6 +729,13 @@ import {
   type TaskGraph,
   WorkflowSchema,
 } from "./schemas.js";
+import {
+  criterionExpected,
+  SOURCE_DEFECT_KIND,
+  type SourceDefectRecord,
+  sourceDefectDecision,
+  sourceDefectPath,
+} from "./source-defect.js";
 import { specSizeNote, specSizeProblems } from "./spec-size.js";
 import {
   ladderPath,
@@ -810,6 +822,7 @@ import {
 } from "./supplied-content.js";
 import {
   documentsOnly,
+  type FailureOwner,
   failureOwner,
   hasTaskGate,
   hostContentProblems,
@@ -12783,10 +12796,17 @@ ${note}`;
     // Ordinary ownership needs only the approved graph and task state. Read durable finding
     // evidence only when an unfinished repair could own this planned task's failure.
     if (!repairs.length)
-      return failureOwner(state.rootGraph ?? state.graph, rows, state.taskGates, task, output, {
-        ...options,
-        predecessors: state.repairPredecessors,
-      });
+      return this.sourceDefectOwner(
+        runId,
+        state,
+        task,
+        output,
+        rows,
+        failureOwner(state.rootGraph ?? state.graph, rows, state.taskGates, task, output, {
+          ...options,
+          predecessors: state.repairPredecessors,
+        }),
+      );
     const pendingFindings = this.store
       .findings(runId)
       .filter((row) => row.status === "open" || row.status === "confirmed")
@@ -12799,23 +12819,117 @@ ${note}`;
               .map((t) => ({ taskId: t.id, output: evidence }))
           : [];
       });
-    return failureOwner(state.graph, rows, state.taskGates, task, output, {
-      ...options,
-      pendingFindings,
-      predecessors: state.repairPredecessors,
-      holds: this.repairHolds(runId, state),
-      waitingFor: Object.fromEntries(
-        [
-          ...new Set([
-            ...Object.keys(state.waitingFor ?? {}),
-            ...Object.keys(state.deferredChecks ?? {}),
+    return this.sourceDefectOwner(
+      runId,
+      state,
+      task,
+      output,
+      rows,
+      failureOwner(state.graph, rows, state.taskGates, task, output, {
+        ...options,
+        pendingFindings,
+        predecessors: state.repairPredecessors,
+        holds: this.repairHolds(runId, state),
+        waitingFor: Object.fromEntries(
+          [
+            ...new Set([
+              ...Object.keys(state.waitingFor ?? {}),
+              ...Object.keys(state.deferredChecks ?? {}),
+            ]),
+          ].map((id) => [
+            id,
+            [...(state.waitingFor?.[id] ?? []), ...(state.deferredChecks?.[id] ?? [])],
           ]),
-        ].map((id) => [
-          id,
-          [...(state.waitingFor?.[id] ?? []), ...(state.deferredChecks?.[id] ?? [])],
-        ]),
-      ),
+        ),
+      }),
+    );
+  }
+  /**
+   * A planned test task's failure that the ordinary owner keeps with the task (`self`) while every
+   * expected value it prints is a literal of the task's criteria: the source a finished sibling of
+   * those criteria wrote returns something else (#2220, namesound soundex T003). The decision is
+   * recorded once per failure under `source-defect/tasks/`; with `sourceDefectRoute: "on"` the
+   * failure goes to that sibling as a `finished` owner, the way a stack frame in its source routes
+   * it (#1564): no continuation of the test task, and its corrective writes the source.
+   */
+  private sourceDefectOwner(
+    runId: string,
+    state: RuntimeState,
+    task: Task,
+    output: string,
+    rows: TaskRow[],
+    owner: FailureOwner,
+  ): FailureOwner {
+    if (owner.kind !== "self" || task.origin !== "planned" || !isTestTask(task) || !state.spec)
+      return owner;
+    const stored = this.store.run(runId).policy_json;
+    const parsed = stored ? PolicySchema.safeParse(JSON.parse(stored)) : null;
+    if (!parsed?.success) return owner;
+    const policy = parsed.data;
+    const graph = state.rootGraph ?? state.graph;
+    const cases = criterionCases(state.spec, task, {
+      checks: policy.checks,
+      tasks: graph?.tasks ?? [],
     });
+    const found = criterionExpected(output, cases);
+    if (!found.expected) return owner;
+    const done = new Set(
+      rows.filter((r) => ["implemented", "verified"].includes(r.status)).map((r) => r.id),
+    );
+    const carriers = (graph?.tasks ?? []).filter(
+      (t) =>
+        t.id !== task.id &&
+        t.origin === "planned" &&
+        t.profileId === task.profileId &&
+        done.has(t.id) &&
+        t.criterionIds.some((id) => found.criterionIds.includes(id)),
+    );
+    const candidates = [
+      ...new Set(
+        carriers.flatMap((t) =>
+          t.writes.filter((w) => w.action !== "delete" && !isTestPath(w.path)).map((w) => w.path),
+        ),
+      ),
+    ];
+    const ownTests = task.writes.filter((w) => w.action !== "delete").map((w) => w.path);
+    const named = failingFilesInOutput(output, [task]).filter((path) => ownTests.includes(path));
+    const files =
+      found.matched && candidates.length
+        ? importedFiles(
+            runRoot(this.store.workspace, state),
+            named.length ? named : ownTests,
+            candidates,
+          )
+        : [];
+    const owners = carriers
+      .filter((t) => t.writes.some((w) => files.includes(w.path)))
+      .map((t) => t.id);
+    const input = {
+      testTask: true,
+      self: true,
+      expected: found.expected,
+      matched: found.matched,
+      owners,
+      files,
+    };
+    const route = sourceDefectDecision(input);
+    const mode = policy.sourceDefectRoute === "on" ? "on" : "shadow";
+    const path = sourceDefectPath(task.id, hashBytes(failingLines(output)).slice(0, 12));
+    if (!this.store.latestArtifact(runId, path))
+      this.store.artifact(
+        runId,
+        SOURCE_DEFECT_KIND,
+        path,
+        canonical({
+          schemaVersion: 1,
+          taskId: task.id,
+          mode,
+          criterionIds: found.criterionIds,
+          ...input,
+          route,
+        } satisfies SourceDefectRecord),
+      );
+    return route && mode === "on" ? { kind: "finished", owners, files } : owner;
   }
   /**
    * The open correctives of a sibling test task's failed check whose failing tests import a source

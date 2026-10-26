@@ -3,6 +3,7 @@ import fc from "fast-check";
 import { canonical } from "../src/core/specs/hash.js";
 import { type CostForecast, costForecast, kindRatio } from "../src/core/workflows/cost-forecast.js";
 import { POOL_STEP, planCharge, planChargeTokens, poolExtensionDecision, poolForecast, tokenPool } from "../src/core/workflows/initiatives/token-pool.js";
+import { dollarCapPark, expectedSplitUsd, type ShareGateView } from "../src/core/workflows/initiatives/service.js";
 import type { RunPolicy } from "../src/core/workflows/schemas.js";
 import { type TaskKind, verificationTokens } from "../src/core/workflows/sizing.js";
 import type { AttemptUsageRecord } from "../src/core/workflows/step-budget.js";
@@ -575,6 +576,67 @@ describe("plan charge invariants (#2100)", () => {
       const plain = planCharge("shadow", ratio, limitCommitted, runs)!;
       expect(plain.usd).toBeNull();
       expect(plain.planCommittedTokens).toBe(charge.planCommittedTokens);
+    }), { numRuns: 300 });
+  });
+});
+
+describe("dollar cap park invariants (#2218)", () => {
+  const seed = fc.record({
+    capUsd: fc.double({ min: 1, max: 60, noNaN: true }),
+    heldShare: fc.double({ min: 0, max: 1, noNaN: true }),
+    releasedUsd: fc.double({ min: -5, max: 5, noNaN: true }),
+    lowUsd: fc.double({ min: 0.01, max: 10, noNaN: true }),
+    forecastUsd: fc.option(fc.double({ min: 0, max: 90, noNaN: true }), { nil: null }),
+  });
+  const viewOf = ({ capUsd, heldShare, releasedUsd, lowUsd, forecastUsd }: { capUsd: number; heldShare: number; releasedUsd: number; lowUsd: number; forecastUsd: number | null }) => {
+    const limitCommittedUsd = capUsd * heldShare;
+    const remainingUsd = Math.floor((capUsd - limitCommittedUsd) * 100) / 100;
+    const feature = { id: "next", state: "ready", share: { tokens: 1, calls: 1, activeMs: 1 }, need: null, needUsd: { low: lowUsd, high: lowUsd * 2 } };
+    return { feature, remainingUsd, limitCommittedUsd, view: {
+      initiativeId: "i", features: [feature],
+      budget: { remaining: { tokens: 1, calls: 1, activeMs: 1 },
+        cost: { capUsd, tolerance: 0, ceilingUsd: capUsd, spentUsd: 0, reservedUsd: 0, remainingUsd, forecastUsd, measuredFeatures: 3, forecastBinding: false, forecastMode: "enforce", forecastNotice: null, shareMode: "shadow" },
+        planCharge: { mode: "shadow", ratio: null, runs: [], limitCommittedTokens: 0, planCommittedTokens: 0, releasedTokens: 0,
+          usd: { taskRate: 1, limitCommittedUsd, planCommittedUsd: limitCommittedUsd - releasedUsd, releasedUsd } } },
+    } as unknown as ShareGateView };
+  };
+
+  test("the dollars left count each open run once, at its plan charge, and the remedy covers the low and the forecast", () => {
+    fc.assert(fc.property(seed, (s) => {
+      const { view, feature, remainingUsd } = viewOf(s);
+      const park = dollarCapPark(view, feature);
+      const left = Math.max(0, remainingUsd + s.releasedUsd);
+      if (park === null) {
+        expect(left).toBeGreaterThanOrEqual(s.lowUsd - 0.005);
+        return;
+      }
+      expect(park.leftUsd).toBeCloseTo(left, 1);
+      expect(park.leftUsd).toBeLessThan(s.lowUsd);
+      // In enforce `remainingUsd` already holds the charge: it is not counted a second time.
+      const enforced = { ...view, budget: { ...view.budget, planCharge: { ...view.budget.planCharge!, mode: "enforce" as const } } };
+      const again = dollarCapPark(enforced, feature);
+      if (again) expect(again.leftUsd).toBeCloseTo(Math.max(0, remainingUsd), 1);
+      // The extension starts the feature at its low, and pays for the forecast when one exists.
+      expect(park.suggestedUsd + park.leftUsd - s.capUsd).toBeGreaterThanOrEqual(s.lowUsd - 1e-6);
+      if (s.forecastUsd !== null) expect(park.suggestedUsd).toBeGreaterThanOrEqual(s.forecastUsd - 1e-6);
+    }), { numRuns: 300 });
+  });
+
+  test("the split's expected dollars lie between its lows and highs, and the features it says the cap pays for fit", () => {
+    const feature = fc.record({ low: fc.double({ min: 0.01, max: 10, noNaN: true }), span: fc.double({ min: 0, max: 10, noNaN: true }), at: fc.double({ min: 0, max: 3, noNaN: true }) });
+    fc.assert(fc.property(fc.array(feature, { minLength: 1, maxLength: 12 }), fc.double({ min: 0, max: 20, noNaN: true }), fc.double({ min: 0, max: 60, noNaN: true }), (features, spentUsd, remainingUsd) => {
+      const estimates = features.map((f) => ({ costUsd: { low: f.low, high: f.low + f.span }, tokens: { low: 1_000_000, high: 2_000_000 }, expectedTokens: Math.round(1_000_000 * f.at) }));
+      const e = expectedSplitUsd(estimates, { spentUsd, remainingUsd })!;
+      const lows = features.reduce((n, f) => n + f.low, 0);
+      const highs = features.reduce((n, f) => n + f.low + f.span, 0);
+      expect(e.waitingUsd).toBeGreaterThanOrEqual(lows - 1e-6);
+      expect(e.waitingUsd).toBeLessThanOrEqual(highs + 0.01);
+      expect(e.totalUsd).toBeGreaterThanOrEqual(spentUsd + lows - 1e-6);
+      expect(e.paid).toBeLessThanOrEqual(features.length);
+      const expectedOf = (i: number) => Math.min(features[i]!.low + features[i]!.span, Math.max(features[i]!.low, features[i]!.low * features[i]!.at));
+      const paidUsd = Array.from({ length: e.paid }, (_, i) => expectedOf(i)).reduce((n, x) => n + x, 0);
+      expect(paidUsd).toBeLessThanOrEqual(remainingUsd + 1e-6);
+      if (e.paid < features.length) expect(paidUsd + expectedOf(e.paid)).toBeGreaterThan(remainingUsd);
     }), { numRuns: 300 });
   });
 });
