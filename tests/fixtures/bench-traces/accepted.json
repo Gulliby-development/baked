@@ -90,5 +90,9 @@
   "R60/sketchfold-update.sqlite.gz#96e1f058-d1d0-4697-80f3-a084cc2d4dc1": {
     "newAutoApprovals": 1,
     "reason": "#1934: the update request names the version bump and the Cargo.lock line that follows it; a bounded lock (Cargo.lock, package-lock.json, uv.lock, Gemfile.lock) is now exempt from a person under requestedManifestEdits, and the manifest field check holds every other lock entry. The round, recorded before #1934, sent the plan to a person for Cargo.lock."
+  },
+  "R71/xmlvet.sqlite.gz#xmlvet": {
+    "newStartStops": 1,
+    "reason": "#2245: the plan charge is enforced with stopModes unset. canonical parks at 04:48 with 4.7M of the 30.0M pool left (scanner's plan priced its run at 11.75M against an 8.0M limit; it used 12.10M), the would-park the round recorded in shadow. It was true: the pool ran short 65 minutes later (outline-command needed 836,956 more at 05:53:56) with the tree idle. tests/forecast-replay-corpus.test.ts asserts the park and its extend remedy."
   }
 }

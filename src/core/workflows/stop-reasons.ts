@@ -76,10 +76,13 @@ export const STOP_REASONS = {
   "initiative-plan-charge": {
     label:
       "An initiative's token pool holds an open feature run with a sized plan at its plan's need instead of its run limit",
-    // Shadow by default (#2100, #2056): the charge can start a feature sooner or park one whose
-    // plan prices above its run limit, so it records `decision.would_release` first.
+    // Enforced by default (#2245): it shipped in shadow (#2100, #2056) and R70 and R71 recorded
+    // 39 `decision.would_release` records and one would-park, R71 xmlvet's canonical, which was
+    // true (the pool ran short 65 minutes later). A charge that parks a feature parks it with the
+    // share gate's extend remedy (#2042); `stopModes: { "initiative-plan-charge": "shadow" }`
+    // keeps open runs at their limits and records again.
     modes: STOP_MODES,
-    defaultMode: "shadow",
+    defaultMode: "enforce",
   },
   repeated_failure: {
     label: "A corrective's required checks fail exactly as the corrective's before it",
