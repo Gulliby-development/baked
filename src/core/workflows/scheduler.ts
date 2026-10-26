@@ -2494,8 +2494,26 @@ export class WorkflowScheduler {
                           scaffold: this.baselineScaffold(runId, state),
                           exists: (path) =>
                             existsSync(join(runRoot(this.store.workspace, state), path)),
+                          read: (path) => {
+                            try {
+                              return readFileSync(
+                                join(runRoot(this.store.workspace, state), path),
+                                "utf8",
+                              );
+                            } catch {
+                              return undefined;
+                            }
+                          },
                         },
                       );
+                if ("configWouldStop" in auto && auto.configWouldStop)
+                  recordWouldStop(this.store, runId, {
+                    reason: "check-config-approval",
+                    mode: auto.configWouldStop.mode,
+                    key: `plan-${digest}`,
+                    summary: `Auto-approval would need a person: ${auto.configWouldStop.problems.join("; ")}`,
+                    inputs: { problems: auto.configWouldStop.problems },
+                  });
                 if ("wouldStop" in auto && auto.wouldStop)
                   recordWouldStop(this.store, runId, {
                     reason: "approval-scope",
@@ -15860,18 +15878,26 @@ ${note}`;
         file: change.file,
         symbol: change.field,
         evidenceId,
-        claim: `Manifest ${change.file} changes ${change.field}, which the request does not name`,
-        ...(isBoundedLockPath(change.file)
+        claim: change.check
+          ? `Check config ${change.file} changes ${change.field}, which is not a tightening the request names`
+          : `Manifest ${change.file} changes ${change.field}, which the request does not name`,
+        ...(change.check
           ? {
               impact:
-                "The approval took this lock as the follow-up of the project's own version change (#1934); an entry other than the project's own changed without a person seeing it.",
-              suggestedFix: `Restore ${change.field} in ${change.file} to what it was before the run; the lock may change only the project's own entry.`,
+                "The approval took this edit as a tightening the request names (#2221); a setting that decides what a check enforces changed another way, so a check can pass without the code being fixed.",
+              suggestedFix: `Restore ${change.field} in ${change.file} to what it was before the run; change only the strictness settings the request names, in the stricter direction.`,
             }
-          : {
-              impact:
-                "The approval took this manifest edit as asked for by its path alone; a field that runs code or chooses where code comes from changed without a person seeing it.",
-              suggestedFix: `Restore ${change.field} in ${change.file} to what it was before the run, and change only the fields the request names.`,
-            }),
+          : isBoundedLockPath(change.file)
+            ? {
+                impact:
+                  "The approval took this lock as the follow-up of the project's own version change (#1934); an entry other than the project's own changed without a person seeing it.",
+                suggestedFix: `Restore ${change.field} in ${change.file} to what it was before the run; the lock may change only the project's own entry.`,
+              }
+            : {
+                impact:
+                  "The approval took this manifest edit as asked for by its path alone; a field that runs code or chooses where code comes from changed without a person seeing it.",
+                suggestedFix: `Restore ${change.field} in ${change.file} to what it was before the run, and change only the fields the request names.`,
+              }),
       }),
     );
   }

@@ -299,6 +299,14 @@ export const AutoApprovalSchema = z
      * the edit adds still blocks the run unless the request or spec names it (#802).
      */
     requestedManifestEdits: z.boolean().optional(),
+    /**
+     * Opt-in (#2221): an edit of an existing linter, formatter or type checker config
+     * (`CHECK_CONFIGS`: tsconfig, biome, .rubocop.yml, ruff.toml, .golangci.yml, ...) that the
+     * request names no longer needs a person when it only turns on strictness settings the request
+     * names. A plan's whole content is compared at approval; an implementer's edit is held to the
+     * same by the manifest field check after the run, and any loosening is a finding.
+     */
+    requestedCheckTightening: z.boolean().optional(),
   })
   .strict()
   .refine((value) => value.renewal || value.limits !== null, "Auto approval requires limits")

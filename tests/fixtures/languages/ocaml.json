@@ -4,6 +4,7 @@
     "dune-project": "(lang dune 3.0)\n"
   },
   "expected": {
+    "checkConfigs": [".ocamlformat: ocamlformat, read as text"],
     "tests": null,
     "testMarkers": null,
     "manifests": [
