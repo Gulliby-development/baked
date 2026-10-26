@@ -655,5 +655,5 @@ function autoApprovalText(policy: RunPolicy): string | null {
       : []),
   ];
   if (!parts.length) return null;
-  return `${parts.join(" or ")}${policy.autoApproval?.requestedManifestEdits ? "; manifest edits the request names included" : ""}${policy.autoApproval?.modelReview ? "; outside the limits by size or paths, the approval reviewer decides" : ""}`;
+  return `${parts.join(" or ")}${policy.autoApproval?.requestedManifestEdits ? "; manifest edits the request names included" : ""}${policy.autoApproval?.requestedCheckTightening ? "; check-config tightenings the request names included" : ""}${policy.autoApproval?.modelReview ? "; outside the limits by size or paths, the approval reviewer decides" : ""}`;
 }

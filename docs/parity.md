@@ -164,6 +164,7 @@ bun test tests/feature-parity.test.ts
 | Follow a delivered pull request's checks and review comments and start a run that fixes them | `/workflow` | `baked workflow follow` | `/v1/workflow/runs/:id/checks` | `project/runs` |
 | Revise a run after its instructions change | `/workflow` | `baked workflow candidate`, `baked workflow revise` | `/v1/workflow/runs/:id/candidate`, `/v1/workflow/runs/:id/revise` | `project/runs` |
 | Requested manifest edits, including Gradle and Gemfile, with dependency checks | `/workflow` | `baked workflow run` | `/v1/workflow/runs` | `project/runs` |
+| Check-config protection for every language, and requested tightenings of a linter or type checker config | `/workflow` | `baked workflow run` | `/v1/workflow/runs` | `project/runs` |
 | Approval reviewer: a model decides low-risk plans outside the auto approval limits | `/workflow` | `baked workflow run`, `baked quick`, `approval-review` | `/v1/workflow/runs` | `project/runs` |
 | Checks: list, edit, run now, suggestions | `/workflow` | `baked doctor` | `/v1/workflow/checks`, `/v1/workflow/checks/suggestions`, `/v1/workflow/checks/:id/run` | `project/gates` |
 | Gates from chat: list detected gates, save them on an approval, set them up with a run | `/coordinator` | `baked session`, `baked session coordinator send` | `/v1/sessions/:id/prompts` | `project/chat`, `project/coordinator` |

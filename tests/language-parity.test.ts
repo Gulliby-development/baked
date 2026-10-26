@@ -41,6 +41,7 @@ import { PACKAGE_CONTENTS, packagingFields } from "../src/core/workflows/quality
 import { isStaticCheck, isWholeUnitCheck } from "../src/core/workflows/check-policy.js";
 import { isTestCheck } from "../src/core/workflows/quality/mutation.js";
 import { STATIC_TOOLS } from "../src/core/workflows/static-tools.js";
+import { CHECK_CONFIGS, checkConfigOf } from "../src/core/workflows/quality/check-configs.js";
 import type { Check } from "../src/core/workflows/types.js";
 import { rowOf } from "../src/core/intelligence/language-records.js";
 
@@ -246,6 +247,18 @@ const RECORDS: Record<
         ];
         return `${tool}: ${as.join(", ")}`;
       }),
+  },
+  // The check-defining configs auto-approval protects and holds to named tightenings (#2221): each
+  // row's example file, the tool it is for, and how a plain edit of it reads ("loosens" for every
+  // change of a config read as text).
+  checkConfigs: {
+    record: CHECK_CONFIGS,
+    run: (language) =>
+      (rowOf(CHECK_CONFIGS, language) ?? []).map((config) => {
+        const found = checkConfigOf(config.example);
+        return `${config.example}: ${found?.tool ?? "unmatched"}${found === config ? "" : " (another row)"}${config.format === "text" ? ", read as text" : ""}`;
+      }),
+    never: ["unmatched"],
   },
   properties: {
     record: PROPERTY_LIBRARIES,

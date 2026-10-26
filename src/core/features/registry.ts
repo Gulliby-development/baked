@@ -1249,6 +1249,16 @@ export const FEATURES: readonly Feature[] = [
     desktop: ["project/runs: shared workflow approval and dependency findings"],
   },
   {
+    id: "requested-check-tightening",
+    group: "Workflow runs",
+    title:
+      "Check-config protection for every language, and requested tightenings of a linter or type checker config",
+    tui: ["/workflow: run with autoApproval.requestedCheckTightening in the policy"],
+    cli: ["baked workflow run: autoApproval.requestedCheckTightening in the policy"],
+    api: ["/v1/workflow/runs"],
+    desktop: ["project/runs: shared workflow approval and check-config findings"],
+  },
+  {
     id: "approval-review",
     group: "Workflow runs",
     title: "Approval reviewer: a model decides low-risk plans outside the auto approval limits",
