@@ -1321,6 +1321,17 @@ export const FEATURES: readonly Feature[] = [
     desktop: ["settings/chat: Code quality page"],
   },
   {
+    id: "source-defect-route",
+    group: "Workflow runs",
+    title: "Send a test task's wrong-value failure to the task that wrote the code under test",
+    tui: ["/code-quality"],
+    cli: notNeeded(
+      "quality.sourceDefectRoute in config.json; the route shows as the test task's corrective",
+    ),
+    api: ["/v1/settings: code-quality page"],
+    desktop: ["settings/chat: Code quality page"],
+  },
+  {
     id: "dependency-check-sast",
     group: "Workflow runs",
     title: "New dependencies looked up before checks; Semgrep on the run's diff",
