@@ -106,8 +106,9 @@ export const ModelRoutingSchema = z
      */
     critic: z.enum(CRITIC_MODES).optional(),
     /**
-     * Opt-in (#1173): when the run model is a Claude Code Opus model, the `specify` stage runs on
-     * `claude-code/sonnet` unless a stage route or `--route` names its model. Off by default.
+     * On by default (#1173): when the run model is a Claude Code Opus model, the `specify` stage
+     * runs on `claude-code/sonnet` unless a stage route or `--route` names its model. `false` turns
+     * it off, and a strict run (`--model-strict`) ignores it (#2217).
      */
     specifyOnSonnet: z.boolean().optional(),
     /**
@@ -132,6 +133,11 @@ export interface RoutingInputs {
   /** The run model: the tab's model or `--model`. */
   runModel: string;
   routing?: ModelRouting | undefined;
+  /**
+   * The run model overrides every configured and default-on route (`--model-strict`); only routes
+   * given for the run itself (`--route`) still apply. Every default-on route checks it (#2217).
+   */
+  strict?: boolean | undefined;
   /** Legacy `taskRouter.ember` / `taskRouter.verify`, used when the class is not configured. */
   legacy?: { coding?: string | undefined; review?: string | undefined };
 }
@@ -291,10 +297,15 @@ export function isClaudeCodeOpus(model: string): boolean {
 
 /**
  * On by default (#1173): Sonnet specs on Opus runs were accepted by analyze at once in 2 of 2
- * measured runs, and specify is 11 to 15 percent of a claude-code run on Opus. `false` turns it off.
+ * measured runs, and specify is 11 to 15 percent of a claude-code run on Opus. `false` turns it off,
+ * and a strict run ignores it, so the run model serves specify too (#2217).
  */
 function specifySonnetRoute(inputs: RoutingInputs): Resolved | undefined {
-  if (inputs.routing?.specifyOnSonnet === false || !isClaudeCodeOpus(inputs.runModel))
+  if (
+    inputs.strict ||
+    inputs.routing?.specifyOnSonnet === false ||
+    !isClaudeCodeOpus(inputs.runModel)
+  )
     return undefined;
   return { model: SPECIFY_SONNET_MODEL, source: "modelRouting.specifyOnSonnet" };
 }

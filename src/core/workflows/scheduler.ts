@@ -40,6 +40,7 @@ import { buildSafeEnv } from "../spawn.js";
 import { canonical, hashBytes, hashJson } from "../specs/hash.js";
 import { specPublication } from "../specs/render.js";
 import { validatePackage, workspacePath } from "../specs/validate.js";
+import { captureEndings, restoreEndings } from "../tools/line-endings.js";
 import {
   assertAcceptance,
   assertAcceptanceV2,
@@ -231,6 +232,16 @@ import {
   requestExemptPaths,
   withoutApprovalRemarks,
 } from "./auto-approval.js";
+import {
+  BASELINE_FIX_KIND,
+  type BaselineFailureInput,
+  type BaselineFailureRecord,
+  type BaselineRepairRecord,
+  baselineFailureDecision,
+  baselineFindings,
+  baselineFixPath,
+  baselineRepairPath,
+} from "./baseline-fix.js";
 import {
   adoptStoredLimits,
   budgetUsage,
@@ -1181,6 +1192,16 @@ export class WorkflowScheduler {
   /** Re-arms the active-time deadline after the policy's cap changed; set while a run is driven. */
   private rearmDeadline: () => void = () => {};
   /**
+   * Adopts the run's stored limits into the drive's copy and re-arms the active-time deadline
+   * when that raised `maxActiveMs` (#2216). Adoptions inside a reservation or a budget growth do
+   * not re-arm; the deadline reads the adopted limit when it fires and re-arms on what is left.
+   */
+  private adoptLimits(runId: string, policy: RunPolicy): void {
+    const before = policy.maxActiveMs;
+    adoptStoredLimits(this.store, runId, policy);
+    if (policy.maxActiveMs > before) this.rearmDeadline();
+  }
+  /**
    * Raises a driven run's host-derived limits in the stored policy before its deadline stops it:
    * an initiative's refresh of a feature run's share (#1958). Unset outside an initiative.
    */
@@ -1257,16 +1278,28 @@ export class WorkflowScheduler {
     const left = () => policy.maxActiveMs - activeBefore - (budgetClock.now() - started);
     // An initiative feature's limit is a share the initiative can raise: it is asked when the
     // deadline comes, not only between drives, when the run may be the only one left (#1958).
+    // The decision reads the limit after the adoption, never whether this callback raised it: a
+    // reservation or growth may already have adopted the raise into this copy, and R70 soundex
+    // stopped at its held 1,482,098 ms with 1,852,623 stored (#2216).
     const expire = (): void => {
-      const before = policy.maxActiveMs;
       try {
         this.growLimits?.(runId);
+        // Adopted without `adoptLimits`: this callback re-arms on what is left itself.
         adoptStoredLimits(this.store, runId, policy);
       } catch {
         // A timer callback must not throw: without the growth the stop stands.
       }
-      if (policy.maxActiveMs > before && left() > 0) timeout = arm();
-      else controller.abort(stopFault("deadline", "Active deadline exhausted"));
+      if (left() > 0) timeout = arm();
+      else {
+        const used = Math.round(policy.maxActiveMs - left());
+        controller.abort(
+          stopFault(
+            "deadline",
+            `Active deadline exhausted: ${String(used)} ms active of the stored ${String(policy.maxActiveMs)} ms limit`,
+            { activeMs: used, maxActiveMs: policy.maxActiveMs },
+          ),
+        );
+      }
     };
     const arm = () => executionTimeout(expire, Math.max(1, left()), budgetClock);
     let timeout = arm();
@@ -2556,6 +2589,7 @@ export class WorkflowScheduler {
                 state.planAhead = { ...state.planAhead, baselined: true };
               }
               await this.recordCheckBaseline(runId, state, policy, signal);
+              await this.repairBaselineFailures(runId, stepId, state, policy, signal);
               if (state.pendingTaskRepair.length) {
                 const ids = new Set(state.pendingTaskRepair);
                 const findings = this.store
@@ -4401,8 +4435,10 @@ export class WorkflowScheduler {
     state: RuntimeState,
     policy: RunPolicy,
     signal: AbortSignal,
+    /** Measure again after the host repaired a baseline failure (#2215), deciding nothing anew. */
+    again = false,
   ): Promise<void> {
-    if (this.store.latestArtifact(runId, CHECK_BASELINE_PATH)) return;
+    if (!again && this.store.latestArtifact(runId, CHECK_BASELINE_PATH)) return;
     const scaffold = this.baselineScaffold(runId, state);
     // On a scaffold only the required checks run, to learn which already fail (#934).
     const feature = policy.checks.filter(
@@ -4417,6 +4453,8 @@ export class WorkflowScheduler {
     const failures: Record<string, string> = {};
     // The diagnostics of each failing static check, for `staticBaseline: "relative"` (#1222).
     const debt: Record<string, string[]> = {};
+    // The output of each required check that fails before any change, for #2215's decision.
+    const failing: { check: Check; output: string }[] = [];
     if (fresh)
       for (const check of feature) {
         const root = runRoot(this.store.workspace, state);
@@ -4426,8 +4464,10 @@ export class WorkflowScheduler {
           root,
           runSandbox(policy, root, { gitWrite: root !== this.store.workspace }),
         );
-        if (result.status === "failed" && check.required && !result.truncated)
+        if (result.status === "failed" && check.required && !result.truncated) {
           failures[commandKey(check)] = failureSignature(result.output, root);
+          failing.push({ check, output: result.output });
+        }
         if (
           policy.staticBaseline === "relative" &&
           result.status === "failed" &&
@@ -4460,6 +4500,162 @@ export class WorkflowScheduler {
         }),
       ),
     );
+    if (!again) await this.decideBaselineFailures(runId, state, policy, failing, debt);
+  }
+  /**
+   * Decides, for each required check that failed before any change, whether the plan can repair
+   * it, the host can (`baselineFix: "on"`) or neither (#2215, baseline-fix.ts), and records the
+   * inputs as `baseline-fix/<check>.json`. A failure neither can repair records the
+   * `baseline_unrepairable` would-stop before the first task.
+   */
+  private async decideBaselineFailures(
+    runId: string,
+    state: RuntimeState,
+    policy: RunPolicy,
+    failing: { check: Check; output: string }[],
+    debt: Record<string, string[]>,
+  ): Promise<void> {
+    if (!failing.length) return;
+    const root = runRoot(this.store.workspace, state);
+    const planned = new Set(
+      ((state.rootGraph ?? state.graph)?.tasks ?? []).flatMap((t) => t.writes.map((w) => w.path)),
+    );
+    const tracked = new Set((await gitBaseline(root))?.tracked ?? []);
+    for (const { check, output } of failing) {
+      const found = baselineFindings(output, root, check.cwd);
+      const input: BaselineFailureInput = {
+        fileLocal: isStaticCheck(check) && !isTestCheck(check) && !isWholeUnitCheck(check),
+        fix: Boolean(check.fix),
+        findings: found.findings,
+        complete: found.complete,
+        correctable: found.correctable,
+        planned: found.files.filter((path) => planned.has(path)).length,
+        untracked: found.files.filter((path) => !tracked.has(path)).length,
+        enabled: policy.baselineFix === "on",
+        // The checks stage's `staticDebt` passes it: no stop to foresee (#1222).
+        exempt: Boolean(debt[commandKey(check)]?.length) && diagnosticCount(output) !== null,
+      };
+      const record: BaselineFailureRecord = {
+        checkId: check.id,
+        files: found.files,
+        ...input,
+        decision: baselineFailureDecision(input),
+      };
+      this.store.transaction(() =>
+        this.store.artifact(runId, BASELINE_FIX_KIND, baselineFixPath(check.id), canonical(record)),
+      );
+      if (record.decision === "would_stop") this.baselineWouldStop(runId, policy, record, null);
+    }
+  }
+  /** The `baseline_unrepairable` would-stop of a baseline failure (#2215), once per check. */
+  private baselineWouldStop(
+    runId: string,
+    policy: RunPolicy,
+    record: BaselineFailureRecord,
+    repair: BaselineRepairRecord | null,
+  ): void {
+    const mode = stopMode(policy, "baseline_unrepairable");
+    if (mode === "enforce") return;
+    const why = repair
+      ? repair.changed
+        ? "left the check failing, so its edit was put back"
+        : "changed nothing"
+      : !record.fix
+        ? "has no fix command"
+        : record.correctable < record.findings
+          ? `cannot correct ${String(record.findings - record.correctable)} of its ${String(record.findings)} findings`
+          : record.untracked
+            ? `may not run on ${String(record.untracked)} untracked files`
+            : "is off (baselineFix)";
+    const files = `${record.files.slice(0, 5).join(", ")}${record.files.length > 5 ? `, and ${String(record.files.length - 5)} more` : ""}`;
+    recordWouldStop(this.store, runId, {
+      reason: "baseline_unrepairable",
+      mode,
+      key: `check-${record.checkId}`,
+      summary: `baseline_failure: required check ${record.checkId} fails before any change on ${files}, which no task of the plan writes, and the host fixer ${why}; the run would stop before its first task instead of at the checks stage`,
+      inputs: { ...record, ...(repair ? { repair } : {}) },
+    });
+  }
+  /**
+   * Before the first task, runs the fixer of each required check whose baseline failure the host
+   * may repair (`decision: "repair"` in `baseline-fix/<check>.json`, #2215) on the files its
+   * output names: journaled as `apply_fix` edits, kept only when the check then passes, and put
+   * back otherwise. A kept repair measures the check baseline again; either way the result is
+   * `baseline-fix/<check>-repair.json`, and a failed repair records the would-stop.
+   */
+  private async repairBaselineFailures(
+    runId: string,
+    stepId: string,
+    state: RuntimeState,
+    policy: RunPolicy,
+    signal: AbortSignal,
+  ): Promise<void> {
+    if (policy.baselineFix !== "on") return;
+    if (!this.store.tasks(runId).every((task) => task.status === "pending")) return;
+    const root = runRoot(this.store.workspace, state);
+    let kept = false;
+    for (const check of policy.checks) {
+      const artifact = this.store.latestArtifact(runId, baselineFixPath(check.id));
+      if (!artifact || this.store.latestArtifact(runId, baselineRepairPath(check.id))) continue;
+      const record = JSON.parse(
+        this.store.readArtifact(runId, artifact.id),
+      ) as BaselineFailureRecord;
+      if (record.decision !== "repair") continue;
+      const files = record.files.filter((path) => existsSync(workspacePath(root, path)));
+      const original = new Map(
+        files.map((path) => [path, readFileSync(workspacePath(root, path))]),
+      );
+      const changed = await this.fixFiles(
+        runId,
+        stepId,
+        root,
+        policy,
+        [check],
+        new Map(files.map((path) => [path, undefined])),
+        signal,
+      );
+      const result = changed
+        ? await this.checks.measure(
+            check,
+            signal,
+            root,
+            runSandbox(policy, root, { gitWrite: root !== this.store.workspace }),
+          )
+        : null;
+      const passed = result?.status === "passed";
+      if (changed && !passed) {
+        const attempt = this.store.beginHostAttempt(runId, stepId);
+        for (const [path, bytes] of original) {
+          const absolute = workspacePath(root, path);
+          if (fileHash(absolute) === hashBytes(bytes)) continue;
+          const before = this.store.transaction(() => capturePreImage(this.store, runId, absolute));
+          this.journal.publish(runId, attempt, path, bytes, before, "file_patch", root);
+        }
+        this.store.transaction(() => this.store.finishAttempt(runId, attempt, "completed", 0));
+      }
+      const repair: BaselineRepairRecord = {
+        checkId: check.id,
+        files,
+        changed,
+        passed,
+        kept: passed,
+      };
+      this.store.transaction(() =>
+        this.store.artifact(
+          runId,
+          BASELINE_FIX_KIND,
+          baselineRepairPath(check.id),
+          canonical(repair),
+        ),
+      );
+      if (passed) kept = true;
+      else this.baselineWouldStop(runId, policy, record, repair);
+    }
+    if (!kept) return;
+    // The repaired check passes now: the checks stage compares with the repaired code.
+    await this.recordCheckBaseline(runId, state, policy, signal, true);
+    await this.snapshot(runId, state, policy, signal);
+    this.store.transaction(() => this.store.saveState(runId, state));
   }
   /**
    * Stops the run when a required check fails exactly as it did before any change (#934): the
@@ -6660,7 +6856,7 @@ ${note}`;
     report: SizingReport,
   ): void {
     // The drive's copy misses what the executor grew since: writing it back undid that (#1704).
-    adoptStoredLimits(this.store, runId, policy);
+    this.adoptLimits(runId, policy);
     const tokens = report.budgetAfter > policy.maxTotalTokens;
     const time = report.activeTime.after > policy.maxActiveMs;
     if (!tokens && !time) return;
@@ -13891,7 +14087,8 @@ ${note}`;
     root: string,
     policy: RunPolicy,
     fixable: Check[],
-    owners: Map<string, string>,
+    /** Path to the task that last writes it; undefined for a file no task writes (#2215). */
+    owners: Map<string, string | undefined>,
     signal: AbortSignal,
   ): Promise<boolean> {
     const paths = [...owners.keys()].filter((path) => fileHash(workspacePath(root, path)));
@@ -13948,6 +14145,8 @@ ${note}`;
               path,
               id: journal(path, check, images.get(path) ?? null),
             }));
+            // A fixer that writes text mode on Windows turns a LF file into CRLF (#2214).
+            const endings = captureEndings(paths.map((path) => workspacePath(root, path)));
             try {
               // A fixer that cannot fix everything exits non-zero; the rerun check decides.
               await executeCheckCommand(
@@ -13963,10 +14162,12 @@ ${note}`;
                 },
               );
             } catch (error) {
+              restoreEndings(endings);
               for (const effect of effects)
                 this.store.transaction(() => this.store.effectStatus(runId, effect.id, "unknown"));
               throw error;
             }
+            restoreEndings(endings);
             for (const effect of effects) {
               const target = workspacePath(root, effect.path);
               const after = fileHash(target);

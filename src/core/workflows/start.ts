@@ -171,6 +171,7 @@ export async function prepareStart(
     request.workflowId,
     loaded.definition.stages.map((stage) => stage.id),
     request.routes,
+    request.modelStrict === true,
   );
   const profiles = registry.list().map((p) => p.profile);
   if (request.modelStrict) routing.strict = true;
@@ -265,6 +266,7 @@ export async function prepareStart(
     defectClasses: policyDefectClasses,
     conflictFinish: policyConflictFinish,
     correctiveDefer: policyCorrectiveDefer,
+    baselineFix: policyBaselineFix,
     propertyTests: policyPropertyTests,
     allowOverlappingWrites,
     editDiagnostics: _editDiagnostics,
@@ -315,6 +317,7 @@ export async function prepareStart(
   const defectClasses = policyDefectClasses ?? config.quality?.defectClasses ?? "off";
   const conflictFinish = policyConflictFinish ?? config.quality?.conflictFinish ?? "off";
   const correctiveDefer = policyCorrectiveDefer ?? config.quality?.correctiveDefer ?? "off";
+  const baselineFix = policyBaselineFix ?? config.quality?.baselineFix ?? "off";
   const propertyTests =
     request.propertyTests ??
     policyPropertyTests ??
@@ -374,6 +377,7 @@ export async function prepareStart(
     ...(defectClasses === "on" ? { defectClasses } : {}),
     ...(conflictFinish === "on" ? { conflictFinish } : {}),
     ...(correctiveDefer === "on" ? { correctiveDefer } : {}),
+    ...(baselineFix === "on" ? { baselineFix } : {}),
     ...(propertyTests !== presetPropertyTests(preset) ? { propertyTests } : {}),
     ...(request.maxConcurrentWriters !== undefined
       ? { maxConcurrentWriters: request.maxConcurrentWriters }

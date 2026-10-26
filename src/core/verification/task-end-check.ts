@@ -33,7 +33,15 @@ const normalizePath = (path: string): string =>
 
 /** The located diagnostics of a check's output, with notes and summary lines left out. */
 export function diagnostics(output: string): Diagnostic[] {
-  const found: Diagnostic[] = [];
+  return headedDiagnostics(output).map(({ path, text }) => ({ path, text }));
+}
+
+/**
+ * The located diagnostics of a check's output with the output line that holds each one's header,
+ * which carries a tool's own markers (`[Correctable]`, `[*]`, `FIXABLE`).
+ */
+export function headedDiagnostics(output: string): (Diagnostic & { line: string })[] {
+  const found: (Diagnostic & { line: string })[] = [];
   let header: string | null = null;
   for (const line of output.replace(/\r\n?/g, "\n").split("\n")) {
     if (HEADER.test(line)) {
@@ -42,18 +50,18 @@ export function diagnostics(output: string): Diagnostic[] {
     }
     const arrow = ARROW.exec(line);
     if (arrow?.[1]) {
-      if (header) found.push({ path: normalizePath(arrow[1]), text: header });
+      if (header) found.push({ path: normalizePath(arrow[1]), text: header, line: header });
       header = null;
       continue;
     }
     const biome = BIOME.exec(line);
     if (biome?.[1] && biome[2]) {
-      found.push({ path: normalizePath(biome[1]), text: biome[2] });
+      found.push({ path: normalizePath(biome[1]), text: biome[2], line });
       continue;
     }
     const located = LOCATED.exec(line);
     if (located?.[1] && located[2] && !/^\s*note\b/i.test(located[2]))
-      found.push({ path: normalizePath(located[1]), text: located[2].trim() });
+      found.push({ path: normalizePath(located[1]), text: located[2].trim(), line });
   }
   return found;
 }
@@ -69,11 +77,15 @@ const samePath = (reported: string, path: string): boolean =>
 const WORKTREE_PREFIX = /^.*?\/\.baked\/worktrees\/[^/]+\/[^/]+\//;
 
 /** The located diagnostics of a check run in `root`, with absolute paths made workspace-relative. */
-const relativeDiagnostics = (output: string, root: string): Diagnostic[] => {
+const relativeDiagnostics = (output: string, root: string): Diagnostic[] =>
+  relativeHeaded(output, root).map(({ path, text }) => ({ path, text }));
+
+/** `headedDiagnostics` of a check run in `root`, with absolute paths made workspace-relative. */
+export const relativeHeaded = (output: string, root: string): (Diagnostic & { line: string })[] => {
   const prefix = `${normalizePath(root).replace(/\/$/, "")}/`;
   // The working copy behind the run's worktrees counts as the workspace too.
   const project = prefix.replace(/\.baked\/worktrees\/.*$/, "");
-  return diagnostics(output).map((d) => ({
+  return headedDiagnostics(output).map((d) => ({
     path: d.path.startsWith(prefix)
       ? d.path.slice(prefix.length)
       : WORKTREE_PREFIX.test(d.path)
@@ -82,6 +94,7 @@ const relativeDiagnostics = (output: string, root: string): Diagnostic[] => {
           ? d.path.slice(project.length)
           : d.path,
     text: d.text,
+    line: d.line,
   }));
 };
 

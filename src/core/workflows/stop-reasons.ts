@@ -111,6 +111,14 @@ export const STOP_REASONS = {
     modes: NOT_ENFORCED,
     defaultMode: "shadow",
   },
+  baseline_unrepairable: {
+    label:
+      "A required check fails before any change on files no task writes, and the host fixer cannot repair it",
+    // Shadow only until two bench rounds show no false would-stop (#2215); its promotion stops
+    // the run before its first task instead of at the checks stage after all of them.
+    modes: NOT_ENFORCED,
+    defaultMode: "shadow",
+  },
   cost: {
     label: "Spent and reserved dollars reach the cost cap",
     modes: ENFORCED,
