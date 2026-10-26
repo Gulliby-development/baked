@@ -264,7 +264,7 @@ describe("scenario: an open feature run with a sized plan is charged at its plan
   }
 
   test("in shadow the pool keeps holding f2's run limit and a would_release event records what its plan frees", async () => {
-    const { initiatives, driveUntil, events } = await sized();
+    const { initiatives, driveUntil, events } = await sized("shadow");
     const view = initiatives.view("values");
     const f2 = view.features.find((f) => f.id === "f2");
     const charge = view.budget.planCharge;
@@ -299,8 +299,9 @@ describe("scenario: an open feature run with a sized plan is charged at its plan
     expect(String(events()[0]?.summary)).toMatch(/^f2's plan prices its run at [\d.]+[kM] tokens \([\d.]+[kM] used\): holding that instead of its [\d.]+M limit frees [\d.]+M tokens of the pool\. In dollars it holds \$[\d.]+ at the task-call rate instead of \$[\d.]+, which frees \$[\d.]+ of the dollar budget\.$/);
   }, 120000);
 
-  test("in enforce the pool holds f2 at its plan charge, never below what it used, and the run still finishes", async () => {
-    const { initiatives, events, driveUntil } = await sized("enforce");
+  test("with stopModes unset (enforce since #2245) the pool holds f2 at its plan charge, never below what it used, and the run still finishes", async () => {
+    // The promotion: no stopModes entry enforces the charge, as `"enforce"` did before.
+    const { initiatives, events, driveUntil } = await sized();
     const view = initiatives.view("values");
     const charge = view.budget.planCharge;
     expect(charge?.mode).toBe("enforce");
