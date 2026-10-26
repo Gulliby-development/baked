@@ -66,7 +66,10 @@ jobs:
           - { os: windows-latest, shard: 1, shards: 3 }
           - { os: windows-latest, shard: 2, shards: 3 }
           - { os: windows-latest, shard: 3, shards: 3 }
-          - { os: macos-latest, shard: 1, shards: 1 }
+          # One macOS shard ran past the job's 30 minutes on main and in the queue once the suite grew
+          # (19 to 28 minutes before, still in the w* files at the limit on 2026-10-26).
+          - { os: macos-latest, shard: 1, shards: 2 }
+          - { os: macos-latest, shard: 2, shards: 2 }
     runs-on: ${{ matrix.os }}
     name: shard (${{ matrix.os }}, ${{ matrix.shard }}/${{ matrix.shards }})
     timeout-minutes: 30
