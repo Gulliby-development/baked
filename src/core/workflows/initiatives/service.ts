@@ -78,6 +78,7 @@ import { type InitiativeDriveState, initiativeDriveState } from "./drive-state.j
 import {
   calibrationLagText,
   estimateInitiative,
+  type FeatureEstimate,
   type FeatureRunSample,
   highCalibrationText,
   type InitiativeEstimate,
@@ -710,6 +711,136 @@ function dollarRaise(
   const needUsd = feature.needUsd;
   if (!needUsd || spare === null || spare >= needUsd.low) return null;
   return Math.ceil((needUsd.low - spare) * 100) / 100;
+}
+
+/** Why the initiative would pause on its dollar cap (`dollarCapPark`), with what answers it. */
+export interface DollarCapPark {
+  /** The recorded park reason, as an enforced park would set it on the initiative. */
+  parkReason: "dollar_cap";
+  summary: string;
+  /** The dollars left under the cap (the ceiling while uncalibrated) after the open runs' needs. */
+  leftUsd: number;
+  /** The starting feature's priced low estimate. */
+  lowUsd: number;
+  /** What the open runs' plan charges add to (positive) or free from (negative) their caps. */
+  openNeedUsd: number;
+  remainingTo: "cap" | "ceiling";
+  /** The cap that pays for the expected remaining work: the forecast, at least the shortfall. */
+  suggestedUsd: number;
+}
+
+/**
+ * Whether a starting feature's own low estimate exceeds the dollars left after the open runs'
+ * needs, so an enforced rule would pause the initiative (`dollar_cap`) instead of starting a
+ * feature that cannot finish (#2218). Bench round 70 (evalpin) started report-cli with $4.82 under
+ * the $30 cap against a $5.17 low while suite-runner still needed about $1.50 for its review:
+ * report-cli spent $4.38 on planning and suite-runner stopped about $0.50 short. Unlike
+ * `dollarShortfall`, the other waiting features' lows are not reserved: this is the start that no
+ * dollars left can pay for. An open run counts at its plan charge in dollars (`planChargeUsd`,
+ * #2124) both ways, whatever the `initiative-plan-charge` mode, and at its cap without one. It
+ * waits for the first measured feature and counts to the tolerance ceiling until the dollar rate is
+ * measured (`uncalibratedSlack`), as the dollar share does (#1714, #2099).
+ */
+export function dollarCapPark(
+  view: ShareGateView,
+  feature: Pick<FeatureView, "id"> & Partial<Pick<FeatureView, "needUsd">>,
+): DollarCapPark | null {
+  const cost = view.budget.cost;
+  const lowUsd = feature.needUsd?.low;
+  if (cost.measuredFeatures === 0 || !lowUsd) return null;
+  if (cost.capUsd === null || cost.ceilingUsd === null || cost.remainingUsd === null) return null;
+  const charge = view.budget.planCharge;
+  // In enforce `remainingUsd` already holds priced open runs at their charge.
+  const openNeedUsd = charge?.usd && charge.mode !== "enforce" ? -charge.usd.releasedUsd : 0;
+  const slack = uncalibratedSlack(cost);
+  const toCents = (n: number): number => Math.round(n * 100) / 100;
+  const leftUsd = toCents(Math.max(0, cost.remainingUsd + slack - openNeedUsd));
+  if (leftUsd >= lowUsd) return null;
+  const remainingTo = slack > 0 ? "ceiling" : "cap";
+  const shortfall = centsUp(cost.capUsd + lowUsd - leftUsd);
+  const suggestedUsd = Math.max(shortfall, centsUp(cost.forecastUsd ?? 0));
+  const open =
+    openNeedUsd > 0
+      ? ` after the open runs' plan needs (${usd(openNeedUsd)} above their caps)`
+      : openNeedUsd < 0
+        ? ` after the open runs' plan needs (${usd(-openNeedUsd)} below their caps)`
+        : "";
+  const limit =
+    remainingTo === "ceiling" ? `${usd(cost.ceilingUsd)} ceiling` : `${usd(cost.capUsd)} cap`;
+  const expected =
+    cost.forecastUsd !== null && suggestedUsd > shortfall
+      ? `, the ${usd(cost.forecastUsd)} the remaining work is expected to cost`
+      : "";
+  return {
+    parkReason: "dollar_cap",
+    summary: `The initiative's dollar cap cannot pay for ${feature.id}: ${usd(leftUsd)} is left under the ${limit}${open}, below its low estimate of ${usd(lowUsd)} (${usd(cost.spentUsd)} spent). The initiative would pause (dollar_cap) until baked workflow initiative extend ${view.initiativeId} --budget-usd ${suggestedUsd}${expected}.`,
+    leftUsd,
+    lowUsd,
+    openNeedUsd: toCents(openNeedUsd),
+    remainingTo,
+    suggestedUsd,
+  };
+}
+
+/** What a split's waiting features are expected to cost in dollars (`expectedSplitUsd`). */
+export interface ExpectedSplitUsd {
+  /** What is spent so far plus `waitingUsd`. */
+  totalUsd: number;
+  spentUsd: number;
+  /** The waiting features' expected dollars: their expected tokens at their own priced rate. */
+  waitingUsd: number;
+  /** The sum of the waiting features' priced low estimates. */
+  lowsUsd: number;
+  waiting: number;
+  /** How many waiting features, in plan order, the dollars left under the cap pay for. */
+  paid: number;
+  remainingUsd: number | null;
+}
+
+/**
+ * The expected dollars of a split's waiting features (#2218): each one's expected tokens (the
+ * estimate's point forecast, which the dollar forecast uses too) at the dollars per token of its
+ * priced range, held inside that range; null when a waiting feature is unpriced. `paid` counts the
+ * features the dollars left under the cap pay for at that cost, in plan order.
+ */
+export function expectedSplitUsd(
+  features: readonly (Pick<FeatureEstimate, "costUsd" | "tokens" | "expectedTokens"> | undefined)[],
+  cost: Pick<CostView, "spentUsd" | "remainingUsd">,
+): ExpectedSplitUsd | null {
+  if (!features.length) return null;
+  const each: { low: number; expected: number }[] = [];
+  for (const f of features) {
+    const range = f?.costUsd;
+    if (!f || !range || f.tokens.low <= 0) return null;
+    const atRate = (f.expectedTokens * range.low) / f.tokens.low;
+    each.push({ low: range.low, expected: Math.min(range.high, Math.max(range.low, atRate)) });
+  }
+  const waitingUsd = each.reduce((sum, f) => sum + f.expected, 0);
+  let left = cost.remainingUsd ?? Number.POSITIVE_INFINITY;
+  let paid = 0;
+  for (const f of each) {
+    if (f.expected > left) break;
+    left -= f.expected;
+    paid += 1;
+  }
+  return {
+    totalUsd: centsUp(cost.spentUsd + waitingUsd),
+    spentUsd: cost.spentUsd,
+    waitingUsd: centsUp(waitingUsd),
+    lowsUsd: centsUp(each.reduce((sum, f) => sum + f.low, 0)),
+    waiting: each.length,
+    paid,
+    remainingUsd: cost.remainingUsd,
+  };
+}
+
+/** The split approval's sentence on the expected dollars beside the lows (#2218). */
+function expectedSplitText(e: ExpectedSplitUsd): string {
+  const pays =
+    e.remainingUsd === null
+      ? ""
+      : ` The ${usd(e.remainingUsd)} left under the cap pays for about ${e.paid} of the ${e.waiting} at that cost.`;
+  return `The split is expected to cost about ${usd(e.totalUsd)} in all: ${usd(e.spentUsd)} spent and ${usd(e.waitingUsd)} for the ${e.waiting} waiting features at their expected cost, against ${usd(e.lowsUsd)} at their low estimates.${pays} A dollar budget that covers the whole split is about ${usd(e.totalUsd)}.`;
 }
 
 /**
@@ -2219,6 +2350,48 @@ export class InitiativeService {
     });
   }
 
+  /**
+   * A feature that starts although no dollars left after the open runs' needs pay for its low
+   * estimate (`dollarCapPark`, #2218): a `decision.would_stop` event of `initiative-dollar-cap`,
+   * once per feature. The rule is not enforced yet; its promotion pauses the initiative instead.
+   */
+  private noteCapWouldStop(id: string, view: InitiativeView, feature: FeatureView): void {
+    const settings = this.store.settings(this.store.get(id));
+    const mode = stopMode(settings.basePolicy, "initiative-dollar-cap");
+    if (mode === "enforce") return;
+    const park = dollarCapPark(view, feature);
+    if (!park) return;
+    const key = `cap-${feature.id}`;
+    const seen = this.store
+      .eventsOfType(id, "decision.would_stop")
+      .some(
+        (p) =>
+          (p as { reason?: string } | null)?.reason === "initiative-dollar-cap" &&
+          (p as { key?: string }).key === key,
+      );
+    if (seen) return;
+    const cost = view.budget.cost;
+    this.store.emit(id, "decision.would_stop", {
+      reason: "initiative-dollar-cap",
+      mode,
+      featureId: feature.id,
+      key,
+      parkReason: park.parkReason,
+      summary: park.summary,
+      remedy: { action: "extend", initiativeId: id, suggestedUsd: park.suggestedUsd },
+      inputs: {
+        leftUsd: park.leftUsd,
+        lowUsd: park.lowUsd,
+        openNeedUsd: park.openNeedUsd,
+        remainingUsd: cost.remainingUsd,
+        remainingTo: park.remainingTo,
+        spentUsd: cost.spentUsd,
+        forecastUsd: cost.forecastUsd,
+        measuredFeatures: cost.measuredFeatures,
+      },
+    });
+  }
+
   private async startFeature(id: string, featureId: string): Promise<boolean> {
     const row = this.store.get(id);
     const plan = this.approvedPlan(row);
@@ -2233,6 +2406,7 @@ export class InitiativeService {
     if (!sized) throw stopFault("budget-share", "No budget share is available");
     if (waiting) this.noteShareGate(current, waiting, "pass");
     if (waiting) this.noteShareWouldStop(id, current, waiting);
+    if (waiting) this.noteCapWouldStop(id, current, waiting);
     this.noteAdvisoryForecast(id, featureId, current.budget.cost);
     this.noteForecastWouldStop(row, featureId, current);
     const share = { ...sized, ...guardGrowth(current, featureId, settings.basePolicy) };
@@ -3203,7 +3377,17 @@ export class InitiativeService {
       estimate.tokens.high > limit
         ? `The estimate expects about ${tokenText(estimate.expectedTokens)} tokens${estimate.expectedTokens <= limit ? ", within" : ", above"} the shared budget (${tokenText(limit)}); its high end (${tokenText(estimate.tokens.high)} tokens; ${highCalibrationText(estimate.highCalibration)}) exceeds the shared budget.${calibrationLagText(estimate)}${reservations} Consider extending to ${estimate.withMargin} tokens, including margin, before approving, or approve with this risk.`
         : "";
-    const warning = [tokenWarning, ...dollarWarnings].filter(Boolean).join(" ");
+    // The lows alone read as what the split costs: R70 evalpin extended to their $30.11 sum while
+    // its seven features were expected to cost about $36.5 (#2218).
+    const expected = dollarWarnings.length
+      ? expectedSplitUsd(
+          waiting.map((f) => estimate.features.find((e) => e.featureId === f.id)),
+          view.budget.cost,
+        )
+      : null;
+    const warning = [tokenWarning, ...dollarWarnings, expected ? expectedSplitText(expected) : ""]
+      .filter(Boolean)
+      .join(" ");
     if (!warning) return message;
     // The amounts that answer the warnings (#2042): the token estimate with its margin, and a
     // dollar cap raised by what the warned shares miss of their low estimates.
