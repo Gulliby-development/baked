@@ -215,6 +215,30 @@ describe("the crash frame table (#2136)", () => {
     expect(edgeCrashDecision("inconclusive", output, ["src/storage.ts"])).toEqual({ decision: "finding", actual: 'error: Missing parameter "code"' });
   });
 
+  // The queue's macOS and Windows runners (#2153): the annotation escapes its message's line breaks
+  // as %0A, and with a long temp path the stack's own lines fell out of the 400-character tail; the
+  // frames inside the annotation are read as frames.
+  test.each([
+    ["macOS", "/private/var/folders/n6/hn37q6pj7sj_9dmqqc2113800000gn/T/baked-edge-crash-U1zN7e/src/storage.ts", "../../../../private/var/folders/n6/hn37q6pj7sj_9dmqqc2113800000gn/T/baked-edge-crash-U1zN7e/src/storage.ts"],
+    ["Windows", "D:\\a\\_temp\\tmp\\baked-edge-crash-LkCMVD\\src\\storage.ts", "..\\..\\_temp\\tmp\\baked-edge-crash-LkCMVD\\src\\storage.ts"],
+  ])("a crash whose stack is only in its %p annotation is a finding", (_, file, relative) => {
+    const frames = [`      at createLink (${file}:2:37)`, `      at ${file.replace(/src.storage\.ts$/, "[eval]")}:1:60`];
+    const output = [
+      "2 |   throw new Error('Missing parameter \"code\"');",
+      "                                    ^",
+      'error: Missing parameter "code"',
+      ...frames,
+      "",
+      `::error file=${relative},line=2,col=37,title=error: Missing parameter "code"::error: Missing parameter "code"%0A${frames.join("%0A")}`,
+      "",
+      "Bun v1.4.3",
+    ].join("\n");
+    const tail = outputTail(output);
+    expect(tail).not.toContain(frames[0]!.trim() + "\n");
+    expect(caseCrash({ status: "inconclusive", output }, ["src/storage.ts"])).toMatchObject({ crash: "finding", actual: 'error: Missing parameter "code"' });
+    expect(caseCrash({ status: "inconclusive", output }, ["src/other.ts"])).toMatchObject({ crash: "pass" });
+  });
+
   // CI runs with FORCE_COLOR, and Bun then colours `error` and the frame's path.
   test("a coloured crash is decided as the plain one", () => {
     const output = '\x1b[31merror\x1b[0m\x1b[2m:\x1b[0m Missing parameter "code"\n      \x1b[2mat\x1b[0m createLink (\x1b[36m/w/src/storage.ts\x1b[0m:70:10)\n';

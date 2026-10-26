@@ -216,15 +216,29 @@ function namesFile(frameFile: string, path: string, baseName: boolean): boolean 
   return baseName && own.split("/").at(-1) === file;
 }
 
-/** A GitHub Actions annotation, which Bun prints under `GITHUB_ACTIONS` in place of its error line. */
-const ACTIONS_ANNOTATION = /^::error\b[^:]*?\btitle=(?<title>.*?)::/;
+/**
+ * A GitHub Actions annotation, which Bun prints under `GITHUB_ACTIONS` in place of its error line:
+ * `::error file=…,title=<error line>::<message>`, the message's line breaks escaped as `%0A`. A
+ * tail can open inside one, so its `,title=` starts it as well as its `::error`.
+ */
+const ACTIONS_ANNOTATION = /(?:^::error\b[^:]*?\b|,)title=(?<title>.*?)::(?<message>.*)$/;
+
+const unescapeAnnotation = (text: string): string =>
+  text.replace(/%0D/gi, "").replace(/%0A/gi, "\n").replace(/%25/g, "%");
 
 // A runtime that colours its output (FORCE_COLOR, as on CI) wraps `error` and paths in escapes.
+// An annotation reads as its error line, then its message's lines, which hold the stack (#2136:
+// on macOS and Windows runners the stack's own lines fell out of the tail, the annotation's not).
 const outputLines = (output: string): string[] =>
   stripAnsi(output)
     .replace(/\r\n?/g, "\n")
     .split("\n")
-    .map((line) => ACTIONS_ANNOTATION.exec(line)?.groups?.title ?? line);
+    .flatMap((line) => {
+      const groups = ACTIONS_ANNOTATION.exec(line)?.groups;
+      if (!groups) return [line];
+      const message = unescapeAnnotation(groups.message ?? "").split("\n");
+      return [unescapeAnnotation(groups.title ?? ""), ...message.filter((l) => l.trim())];
+    });
 
 /** The frame lines of `output` that name one of `files`, by the frame table. */
 export function ownFrames(output: string, files: readonly string[]): string[] {
