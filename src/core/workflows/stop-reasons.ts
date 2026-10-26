@@ -45,6 +45,15 @@ export const STOP_REASONS = {
     modes: STOP_MODES,
     defaultMode: "enforce",
   },
+  "check-config-approval": {
+    label:
+      "A plan edits a linter, formatter or type checker config that auto-approval did not keep with a person before",
+    // Shadow by default (#2221): tsconfig and biome were always enforced; every other check
+    // config of `CHECK_CONFIGS` records a would-stop until two bench rounds show none false, and
+    // `stopModes: { "check-config-approval": "enforce" }` keeps them with a person now.
+    modes: STOP_MODES,
+    defaultMode: "shadow",
+  },
   "initiative-forecast": {
     label: "An initiative's cost or token forecast passes its budget",
     modes: STOP_MODES,

@@ -6,6 +6,7 @@
     "foundry.toml": "[profile.default]\n"
   },
   "expected": {
+    "checkConfigs": [".solhint.json: solhint", ".solhintignore: solhint, read as text"],
     "tests": [
       "test/Sum.t.sol",
       "src/Sum.t.sol"
