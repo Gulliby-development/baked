@@ -95,6 +95,11 @@ export const NUMERIC_LIMITS: LanguageRecord<readonly string[]> = {
     "casting a too large value or numeric string to [int] throws",
     "[decimal] holds 28 to 29 significant digits",
   ],
+  r: [
+    "integer (1L) arithmetic past 2147483647 gives NA with a warning, not an error; as.integer of a larger value is NA",
+    "numeric is a double: integers past 2^53 lose precision, and 0.1 + 0.2 == 0.3 is FALSE (compare with all.equal)",
+    "NA propagates through arithmetic and comparisons, and an if() on NA is an error",
+  ],
 };
 
 /** The taxonomy and the limits rows of `languages`, as the probe's input shows them. */

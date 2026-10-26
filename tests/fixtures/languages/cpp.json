@@ -48,6 +48,12 @@
     "packageContents": null,
     "numericLimits": [
       "signed integer overflow is undefined behavior; std::stoi throws past int"
+    ],
+    "staticTools": [
+      "clang-tidy: linter, whole unit",
+      "clang-format: formatter",
+      "cppcheck: linter",
+      "cpplint: linter"
     ]
   },
   "outputs": {

@@ -56,6 +56,7 @@ import {
   frozenInputAdvice,
   frozenInstructions,
 } from "./context.js";
+import { type HostRemedy, REMEDY_DECISION } from "./corrective-scope.js";
 import { refreshCriticOutcomes } from "./critic-outcomes.js";
 import { decideDelivery, isDeliveryRequest } from "./delivery.js";
 import { dependencyContracts, isHostRelease } from "./dependencies.js";
@@ -145,9 +146,11 @@ import {
   workflowsEnabled,
   writerPolicyProblem,
 } from "./schemas.js";
+import { IMPORT_SEED_ARTIFACT, seedState } from "./sdd-export/seed.js";
 import { providerResumeWaitMs, stallSettings } from "./stall.js";
 import { bindDefinition, type PreparedStart, prepareStart } from "./start.js";
 import { assertMutable } from "./state-machine.js";
+import { stopRecovery } from "./stop-detail.js";
 import { newId, WorkflowStore } from "./store.js";
 import type { StalledDriver } from "./supervisor.js";
 import { reusableImplementations } from "./task-graph.js";
@@ -436,6 +439,8 @@ export class NativeWorkflowService implements WorkflowService {
       slicedTests: {},
       freshTasks: {},
       widenedCorrections: [],
+      unownedRemedies: {},
+      personWidened: [],
       narrowedCorrections: {},
       taskBudgets: {},
       taskSteps: {},
@@ -486,6 +491,18 @@ export class NativeWorkflowService implements WorkflowService {
       planAhead:
         request.planAhead && request.baseCommit ? { released: false, baselined: false } : null,
     };
+    if (request.seed) {
+      // Only a workflow that specifies and plans can take the documents those stages made.
+      if (generated || (v2 && !produces(v2, "plan")))
+        throw new WorkflowFault(
+          "INVALID_DEFINITION",
+          `Workflow ${request.workflowId} has no spec and plan stages to start an imported feature from`,
+          { reason: "seed_unsupported" },
+        );
+      seedState(state, request.seed, request.featureId, hostDependencies, this.workspace);
+      state.stageIndex = 3;
+      state.position = restartPosition(canonical(workflow), true);
+    }
     return this.store.transaction(() => {
       const duplicate = this.store.previousCommand(request.commandId, request);
       if (duplicate) return duplicate;
@@ -535,6 +552,18 @@ export class NativeWorkflowService implements WorkflowService {
         const artifact = this.store.artifact(id, "diff", "diff/input.patch", diff.text);
         state.diff = { artifactId: artifact.id, hash: artifact.content_hash, files: diff.files };
         this.store.saveState(id, state);
+      }
+      if (request.seed && state.spec && state.plan !== null && state.graph) {
+        this.store.artifact(id, "spec", "spec.json", canonical(state.spec));
+        this.store.artifact(id, "plan", "plan.md", state.plan);
+        this.store.artifact(id, "tasks", "tasks.json", canonical(state.graph));
+        this.store.syncTasks(id, state.graph);
+        this.store.artifact(
+          id,
+          "import",
+          IMPORT_SEED_ARTIFACT,
+          canonical({ source: request.seed.source, featureId: request.seed.spec.featureId }),
+        );
       }
       this.saveEstimate(id, prepared, request.workflowId);
       const snapshot = this.store.snapshot(id);
@@ -1145,11 +1174,40 @@ export class NativeWorkflowService implements WorkflowService {
   async resume(
     runId: string,
     command: CommandIdentity,
-    options: { acceptWorkspace?: boolean } = {},
+    options: { acceptWorkspace?: boolean; remedy?: HostRemedy } = {},
   ): Promise<RunSnapshot> {
     this.enabled();
     const outside = options.acceptWorkspace ? await this.outsideChanges(runId) : null;
-    return this.resumeCommand(runId, command, outside);
+    return this.resumeCommand(runId, command, outside, options.remedy);
+  }
+  /**
+   * A person's answer to a corrective blocked on files it may not write (#2155): the remedy must
+   * be one the block offers. The corrective's next session applies that one host decision, as an
+   * enforced `corrective_unowned_file` would, and `decisions/unowned-TASK-COMMAND.json` records it.
+   */
+  private applyHostRemedy(runId: string, command: CommandIdentity, remedy: HostRemedy): void {
+    const offered = stopRecovery(this.store, runId)?.remedies.find((r) => r.action === remedy);
+    if (this.store.run(runId).status !== "blocked" || !offered?.taskId)
+      throw new WorkflowFault(
+        "STALE_DECISION",
+        `This run's block does not offer the remedy ${remedy}; see \`baked workflow status ${runId}\``,
+      );
+    const state = this.store.state(runId);
+    state.unownedRemedies[offered.taskId] = REMEDY_DECISION[remedy];
+    this.store.artifact(
+      runId,
+      "decision",
+      `decisions/unowned-${offered.taskId}-${command.commandId}.json`,
+      canonical({
+        approvedBy: "user",
+        commandId: command.commandId,
+        remedy,
+        taskId: offered.taskId,
+        paths: offered.paths ?? [],
+        ...(offered.owner ? { owner: offered.owner } : {}),
+      }),
+    );
+    this.store.saveState(runId, state);
   }
   /** A person's grant applies only to the operation refused by the current diagnostic. */
   async repair(runId: string, command: CommandIdentity, rounds = 1): Promise<RunSnapshot> {
@@ -1224,6 +1282,7 @@ export class NativeWorkflowService implements WorkflowService {
     runId: string,
     command: CommandIdentity,
     outside: Awaited<ReturnType<NativeWorkflowService["outsideChanges"]>> | null = null,
+    remedy?: HostRemedy,
   ): RunSnapshot {
     this.enabled();
     const body = {
@@ -1231,9 +1290,11 @@ export class NativeWorkflowService implements WorkflowService {
       ...command,
       action: "resume",
       ...(outside ? { acceptWorkspace: true } : {}),
+      ...(remedy ? { remedy } : {}),
     };
     return this.store.command(runId, command, body, () => {
       assertMutable(this.store.run(runId).status);
+      if (remedy) this.applyHostRemedy(runId, command, remedy);
       if (outside) this.acceptOutsideChanges(runId, outside);
       else this.assertNoRefusedEdit(runId);
       if (this.store.requests(runId).some(blocksRun))
@@ -1258,7 +1319,9 @@ export class NativeWorkflowService implements WorkflowService {
         }
       }
       const blocked = this.store.run(runId);
+      // A remedy changes what the next attempt does, so it is no repeat of the same attempt.
       if (
+        !remedy &&
         blocked.status === "blocked" &&
         blocked.reason === "invalid_output" &&
         !this.noteInvalidOutput(runId)
@@ -2022,6 +2085,8 @@ export class NativeWorkflowService implements WorkflowService {
         state.repairPredecessors = {};
         state.pendingTaskRepair = [];
         state.widenedCorrections = [];
+        state.unownedRemedies = {};
+        state.personWidened = [];
         state.narrowedCorrections = {};
         state.quickFixes = {};
         state.taskGates = {};
@@ -2580,6 +2645,8 @@ export class NativeWorkflowService implements WorkflowService {
       state.repairPredecessors = {};
       state.pendingTaskRepair = [];
       state.widenedCorrections = [];
+      state.unownedRemedies = {};
+      state.personWidened = [];
       state.narrowedCorrections = {};
       state.quickFixes = {};
       state.taskGates = {};

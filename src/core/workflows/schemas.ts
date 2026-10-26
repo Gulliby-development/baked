@@ -786,6 +786,12 @@ export const PolicySchema = z
          * it on its file count (`suppliedTaskPrice`, #2002). Absent means off.
          */
         suppliedDiff: z.boolean().optional(),
+        /**
+         * Weighs an initiative estimate's finished features by how recent their initiative is: a
+         * feature's weight halves for every this many initiatives started after its own
+         * (`recencyWeights`, #2150). Absent means every feature counts the same.
+         */
+        recencyHalfLife: z.number().positive().max(1_000).optional(),
       })
       .strict()
       .optional(),
@@ -1452,6 +1458,12 @@ export const WorkflowConfigSchema = z
      */
     planAhead: z.boolean().optional(),
     /**
+     * A planned-ahead feature whose spec names symbols an accepted upstream feature lacks asks
+     * that feature for the amendment at its release: the owner runs again with the request, and
+     * the feature waits for that result (#2157). Off by default.
+     */
+    upstreamAmendments: z.boolean().optional(),
+    /**
      * Whether an initiative whose token pool parks a feature, while the person's dollar cap has
      * room for the extension, records that the host would extend the pool (#2042): `shadow`, the
      * default, records a `decision.would_extend` event and changes nothing; `off` records nothing.
@@ -2117,6 +2129,11 @@ export interface StartRequest {
   presetChoice?: import("./preset-router.js").PresetChoice;
   /** Why the host built no auto approval for a run that asked for it (`RuntimeState`, #1467). */
   autoApprovalDeclined?: string;
+  /**
+   * Accepted spec, plan and tasks from an imported SDD package (#2208): the run starts at its
+   * analysis stage with them instead of specifying and planning again.
+   */
+  seed?: import("./sdd-export/seed.js").StartSeed;
 }
 export type Decision =
   | {

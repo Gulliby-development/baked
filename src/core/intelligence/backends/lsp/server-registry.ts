@@ -94,6 +94,8 @@ const SERVER_CANDIDATES: Record<string, ServerCandidate[]> = {
   ],
   // A release bundle started by PowerShell, not a program on PATH: see `SERVER_BUNDLES` (#2125).
   powershell: [{ command: "powershell-editor-services", args: [] }],
+  // The languageserver package from CRAN, started by R itself (#1500).
+  r: [{ command: "R", args: ["--no-echo", "-e", "languageserver::run()"] }],
 };
 
 /**

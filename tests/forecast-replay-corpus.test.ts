@@ -262,7 +262,8 @@ describe("initiative starts replay on rewound traces (#1707)", () => {
     const seen = new Map<string, { view: Parameters<typeof shareShortfall>[0]; feature: Parameters<typeof shareShortfall>[1] }>();
     const [replay] = replayInitiativeStarts(join(ROOT, "R59", "wheeltags.sqlite.gz"), {
       gate: (view, feature) => {
-        seen.set(feature.id, { view, feature });
+        // The first call is the start's own gate; a plan charge's replay calls it again (#2124).
+        if (!seen.has(feature.id)) seen.set(feature.id, { view, feature });
         return shareShortfall(view, feature);
       },
     });
@@ -309,7 +310,8 @@ describe("initiative starts replay on rewound traces (#1707)", () => {
     }
     const seen = new Map<string, ShareGateRecord["view"]["budget"]["cost"]>();
     const [replay] = replayInitiativeStarts(path, { gate: (view, feature) => {
-      seen.set(feature.id, view.budget.cost);
+      // The first call is the start's own gate; a plan charge's replay calls it again (#2124).
+      if (!seen.has(feature.id)) seen.set(feature.id, view.budget.cost);
       return shareShortfall(view, feature);
     } });
     expect(replay?.newStartStops).toBe(0);
@@ -327,7 +329,8 @@ describe("initiative starts replay on rewound traces (#1707)", () => {
     const seen = new Map<string, { view: Parameters<typeof shareShortfall>[0]; feature: Parameters<typeof shareShortfall>[1] }>();
     replayInitiativeStarts(join(ROOT, "R62", "stepvet.sqlite.gz"), {
       gate: (view, feature) => {
-        seen.set(feature.id, { view, feature });
+        // The first call is the start's own gate; a plan charge's replay calls it again (#2124).
+        if (!seen.has(feature.id)) seen.set(feature.id, { view, feature });
         return shareShortfall(view, feature);
       },
     });
@@ -591,6 +594,76 @@ describe("initiative feature ranges replay against what the features used (#1806
   }, 600000);
 });
 
+/** Finished features below and above the range of their initiative's first replayed start, by round. */
+function rangeMisses(options: { recencyHalfLife?: number } = {}) {
+  const rounds = new Map<number, { features: number; below: number; above: number }>();
+  for (const name of readdirSync(ROOT, { recursive: true, encoding: "utf8" }).filter((p) => p.endsWith(".sqlite.gz"))) {
+    const path = join(ROOT, name);
+    const replays = replayInitiativeStarts(path, options);
+    if (!replays.length) continue;
+    const { store, dispose } = openTrace(path);
+    const used = new Map<string, number>();
+    const finished = new Set<string>();
+    try {
+      for (const row of store.connection
+        .query("SELECT l.feature_id AS feature, r.token_usage AS tokens, r.status AS status FROM initiative_runs l JOIN runs r ON r.id=l.run_id")
+        .all() as { feature: string; tokens: number; status: string }[]) {
+        used.set(row.feature, (used.get(row.feature) ?? 0) + row.tokens);
+        if (row.status === "completed") finished.add(row.feature);
+      }
+    } finally {
+      dispose();
+    }
+    const round = Number(/R(\d+)/.exec(name)?.[1]);
+    const counts = rounds.get(round) ?? { features: 0, below: 0, above: 0 };
+    for (const replay of replays)
+      for (const f of replay.starts[0]?.estimate ?? []) {
+        const tokens = used.get(f.featureId);
+        if (tokens === undefined || !finished.has(f.featureId)) continue;
+        counts.features++;
+        if (tokens < f.low) counts.below++;
+        if (tokens > f.high) counts.above++;
+      }
+    rounds.set(round, counts);
+  }
+  const last = Math.max(...rounds.keys());
+  /** The rounds from `from` to `to`, both included. */
+  const sum = (from: number, to = last) =>
+    [...rounds]
+      .filter(([round]) => round >= from && round <= to)
+      .reduce((t, [, c]) => ({ features: t.features + c.features, below: t.below + c.below, above: t.above + c.above }), { features: 0, below: 0, above: 0 });
+  return { all: sum(0), window: sum(last - RANGE_WINDOW + 1), r63to68: sum(63, 68) };
+}
+
+/** Rounds of the rolling window a range backtest bounds too (#2150). */
+const RANGE_WINDOW = 6;
+const quarterBound = (features: number) => 0.25 + 2 * Math.sqrt((0.25 * 0.75) / features);
+
+describe("the size pools' ranges over the last rounds (#2150)", () => {
+  // The whole-corpus share hides a trend: rounds 63 to 68 put 24 of 60 finished features below
+  // their range (40%, above the 36.2% bound of 60), rounds 45 to 61 37 of 156 (24%). 20 of the 24
+  // were priced by the size pool, which weighs round 45's features as much as the last round's.
+  // `sizing.recencyHalfLife: 2` halves a feature's weight for every two initiatives started after
+  // its own: rounds 63 to 68 then put 20 of 60 (33.3%) below, and the whole corpus stays within
+  // its bounds. The rolling window is bounded by default too: with round 69 it is rounds 64 to
+  // 69, 16 of 59 below and 11 above, within the bounds without the weighting (12 and 18 with it).
+  // The weighting stays opt-in; this row keeps the figures that would justify switching it on.
+  test("rounds 63 to 68 miss their range above the bound by default and within it at a half-life of 2; the rolling window is bounded", () => {
+    const off = rangeMisses();
+    expect(off.r63to68.features).toBe(60);
+    expect(off.r63to68.below / off.r63to68.features).toBeGreaterThan(quarterBound(off.r63to68.features));
+    const on = rangeMisses({ recencyHalfLife: 2 });
+    for (const share of [on.r63to68, on.window, on.all]) {
+      expect(share.below / share.features).toBeLessThanOrEqual(quarterBound(share.features));
+      expect(share.above / share.features).toBeLessThanOrEqual(quarterBound(share.features));
+    }
+    expect(on.r63to68.below).toBeLessThan(off.r63to68.below);
+    // The standing guard: the last six rounds, as the whole corpus is, within the bounds by default.
+    expect(off.window.below / off.window.features).toBeLessThanOrEqual(quarterBound(off.window.features));
+    expect(off.window.above / off.window.features).toBeLessThanOrEqual(quarterBound(off.window.features));
+  }, 1200000);
+});
+
 describe("finding chains replay on recorded findings (#1981)", () => {
   // R62 md-site 8711b632 ran with chainRewrite off: six findings on `findDelimitedInline`, each the
   // next nesting of emphasis delimiter runs, and four correctives (T009-T012: 6.14M tokens, $5.92)
@@ -838,5 +911,29 @@ describe("the plan charge replays on recorded initiatives (#2100, #2056)", () =>
     const atPark = replay?.starts.find((s) => s.at === park)?.planCharge;
     expect(atPark).toMatchObject({ featureId: "select", replayed: "park", releasedTokens: 33_117 });
     expect(atPark?.runs.map((r) => r.featureId)).toEqual(["readcmd"]);
+  }, 600000);
+
+  test("#2124: in dollars R62 stepvet's open runs are held at their plans at the task-call rate, and no start moves", () => {
+    // Before #2124 an open run held max(spent + reserved, its maxCostUsd) of the dollar budget.
+    // At stepscmd's start, rewound to that moment (#2061), the runs held $21.11 of the $30 cap
+    // ($8.88 remaining, as the round's share gate recorded); lines' plan, priced at what the
+    // initiative's task calls paid ($1.00 per million), holds $2.22 of its $2.41 cap, and the
+    // four open runs together free $4.86. Before a task call is priced (lines' start) the runs
+    // keep their caps.
+    const [replay] = replayInitiativeStarts(join(ROOT, "R62", "stepvet.sqlite.gz"), { budgetAtStart: true });
+    expect(replay?.newStartStops).toBe(0);
+    expect(replay?.finalUsd).toBe(26.33);
+    const first = replay?.starts.find((s) => s.featureId === "lines")?.planCharge?.usd;
+    expect(first).toMatchObject({ taskRate: null, releasedUsd: 0 });
+    expect(first?.runs).toEqual([{ featureId: "base", limitUsd: 2.41, chargeUsd: null }]);
+    const steps = replay?.starts.find((s) => s.featureId === "stepscmd")?.planCharge;
+    expect(steps?.replayed).toBe("pass");
+    expect(steps?.usd?.taskRate! * 1e6).toBeCloseTo(1.0, 1);
+    expect(steps?.usd?.limitCommittedUsd).toBeCloseTo(21.11, 2);
+    expect(steps?.usd?.releasedUsd).toBeCloseTo(4.86, 2);
+    expect(steps?.usd?.runs.find((r) => r.featureId === "lines")).toEqual({ featureId: "lines", limitUsd: 2.41, chargeUsd: expect.closeTo(2.22, 2) });
+    for (const run of steps?.usd?.runs ?? []) expect(run.chargeUsd!).toBeLessThanOrEqual(run.limitUsd);
+    // Every rewound start has a dollar side, and the plan charge decides no start differently.
+    expect(replay?.starts.filter((s) => s.planCharge).every((s) => s.planCharge?.usd && s.planCharge.replayed === "pass")).toBe(true);
   }, 600000);
 });

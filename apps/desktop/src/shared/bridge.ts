@@ -68,6 +68,11 @@ export interface DesktopBridge {
    * saved path, or null when cancelled.
    */
   exportChat(key: string, sessionId: string, format: ChatExportFormat): Promise<string | null>;
+  /**
+   * Shows a file or folder the project's server wrote (an export package) in the system's file
+   * manager; refused for a path outside the project's folder.
+   */
+  showInFolder(key: string, path: string): Promise<void>;
   attention(): Promise<AttentionItem[]>;
   onAttention(listener: (items: AttentionItem[]) => void): () => void;
   settings(): Promise<AppSettings>;
@@ -110,6 +115,7 @@ export const IPC = {
   unsubscribe: "baked:api:unsubscribe",
   streamEvent: "baked:api:event",
   exportChat: "baked:chat:export",
+  showInFolder: "baked:show-in-folder",
   attention: "baked:attention",
   attentionChanged: "baked:attention:changed",
   settings: "baked:settings",

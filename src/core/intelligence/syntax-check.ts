@@ -33,6 +33,9 @@ const CHECKED_GRAMMARS: Record<string, string> = {
   ".py": "python",
   ".cs": "csharp",
   ".java": "java",
+  // r-lib's grammar flagged 20 of 2977 R files of the installed CRAN and base packages, each one
+  // R's own parse() rejects too (#1500).
+  ".r": "r",
   // Not `.sql`: one grammar covers many dialects (T-SQL, PL/pgSQL bodies, MySQL delimiters) and
   // refuses valid statements of each, so SQL is checked by the project's SQLFluff gate (#1499).
   // Not `.ps1`/`.psm1`: the tree-sitter grammar reported errors in 27 of 98 scripts of the

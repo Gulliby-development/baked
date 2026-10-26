@@ -1,4 +1,7 @@
-import type { RecoveryAdvice } from "../../../../../src/core/workflows/remedies-model.js";
+import type {
+  HostRemedy,
+  RecoveryAdvice,
+} from "../../../../../src/core/workflows/remedies-model.js";
 import type { RunSnapshot } from "../../shared/api.js";
 import { call } from "./api.js";
 
@@ -68,15 +71,19 @@ export const workflow = {
       requestId,
       answers,
     }),
-  /** `acceptWorkspace` keeps the files a person changed outside a run blocked on `input_changed`. */
+  /**
+   * `acceptWorkspace` keeps the files a person changed outside a run blocked on `input_changed`;
+   * `remedy` answers a corrective's block with the act its recovery offers (#2155).
+   */
   resume: (
     key: string,
     run: Pick<RunSnapshot, "runId" | "revision">,
-    options: { acceptWorkspace?: boolean } = {},
+    options: { acceptWorkspace?: boolean; remedy?: HostRemedy } = {},
   ) =>
     call<RunSnapshot>(key, "POST", runPath(run.runId, "resume"), {
       ...command(run),
       ...(options.acceptWorkspace ? { acceptWorkspace: true } : {}),
+      ...(options.remedy ? { remedy: options.remedy } : {}),
     }),
   repair: (key: string, run: Pick<RunSnapshot, "runId" | "revision">, rounds = 1) =>
     call<RunSnapshot>(key, "POST", runPath(run.runId, "repair"), { ...command(run), rounds }),

@@ -40,6 +40,7 @@ import {
   type ProjectMemoryView,
   projectMemoryView,
 } from "../core/workflows/project-memory.js";
+import type { HostRemedy } from "../core/workflows/remedies-model.js";
 import { ROLLBACK_ARTIFACT_KIND } from "../core/workflows/rollback.js";
 import {
   explainRoute,
@@ -54,6 +55,18 @@ import {
   type RunSnapshot,
   type RunState,
 } from "../core/workflows/schemas.js";
+import { describeSddExport, describeSddImport } from "../core/workflows/sdd-export/describe.js";
+import {
+  type ImportedPackage,
+  importSddPackage,
+  readSddPackage,
+} from "../core/workflows/sdd-export/import.js";
+import {
+  buildSddPackage,
+  defaultExportPath,
+  type WrittenSddPackage,
+  writeSddPackage,
+} from "../core/workflows/sdd-export/package.js";
 import { NativeWorkflowService } from "../core/workflows/service.js";
 import { stopDetail, stopRecovery } from "../core/workflows/stop-detail.js";
 import { wouldStopSummary } from "../core/workflows/stop-reasons.js";
@@ -451,8 +464,12 @@ export async function executeWorkflowCommand(
       });
     case "resume":
       // Keeps the files a person changed in the run's workspace as its baseline (#971).
+      // `--remedy` answers a corrective's block with the act it offers (#2155).
       await service.resume(runId, identity(), {
         acceptWorkspace: args.flags["accept-workspace"] === true,
+        ...(typeof args.flags.remedy === "string"
+          ? { remedy: args.flags.remedy as HostRemedy }
+          : {}),
       });
       onDrive?.(runId);
       return service.drive(runId, signal);
@@ -627,6 +644,18 @@ export async function executeWorkflowCommand(
             }));
     case "import": {
       const source = stringFlag(args, "source");
+      if (source === "baked-export")
+        return importSddPackage(
+          new InitiativeService(service),
+          readSddPackage(resolve(service.store.workspace, stringFlag(args, "path"))),
+          {
+            commandId: stringFlag(args, "command-id", newId()),
+            policy: PolicySchema.parse(service.config.workflows?.policy ?? defaultWorkflowPolicy),
+            workflowId: service.config.workflows?.defaultWorkflow ?? "sdd",
+            ownerLabel: stringFlag(args, "owner", "CLI"),
+            ...(typeof args.flags.id === "string" ? { id: args.flags.id } : {}),
+          },
+        );
       if (!["spec-kit", "ecc", "markdown-edit"].includes(source))
         throw new WorkflowFault("INVALID_DEFINITION", "Unknown importer");
       return artifacts.importCandidate({
@@ -643,6 +672,14 @@ export async function executeWorkflowCommand(
       );
     case "export-progress":
       return artifacts.exportProgress(runId);
+    case "export-package": {
+      const zip = args.flags.zip === true;
+      const out =
+        typeof args.flags.out === "string"
+          ? resolve(service.store.workspace, args.flags.out)
+          : defaultExportPath(service.store.workspace, runId, zip);
+      return writeSddPackage(buildSddPackage(service.store, runId), out, zip);
+    }
     case "usage": {
       service.store.run(runId);
       const markdown = args.flags.format === "md";
@@ -929,6 +966,7 @@ export async function runWorkflowCli(argv: string[]): Promise<number> {
       "artifacts",
       "export",
       "export-progress",
+      "export-package",
       "usage",
       "report",
       "outcomes",
@@ -1048,6 +1086,14 @@ export async function runWorkflowCli(argv: string[]): Promise<number> {
       process.stdout.write(formatCriticOutcomes(result as CriticOutcomes));
       return 0;
     }
+    if (args.command === "import" && args.flags.source === "baked-export" && !args.flags.json) {
+      process.stdout.write(`${describeSddImport(result as ImportedPackage)}\n`);
+      return 0;
+    }
+    if (args.command === "export-package" && !args.flags.json) {
+      process.stdout.write(`${describeSddExport(result as WrittenSddPackage)}\n`);
+      return 0;
+    }
     if (args.command === "memory" && !args.flags.json) {
       process.stdout.write(formatProjectMemory(result as ProjectMemoryView & { id?: string }));
       return 0;
@@ -1070,6 +1116,12 @@ export async function runWorkflowCli(argv: string[]): Promise<number> {
     process.stderr.write(
       `${JSON.stringify({ code: error instanceof WorkflowFault ? error.code : "ERROR", message: error instanceof Error ? error.message : String(error) })}\n`,
     );
+    // An export package is written or refused (1); an unknown ID or bad arguments exit 2 (#2206).
+    if (argv[0] === "export-package")
+      return error instanceof WorkflowFault &&
+        ["NOT_FOUND", "INVALID_DEFINITION"].includes(error.code)
+        ? 2
+        : 1;
     return error instanceof WorkflowFault &&
       [
         "REVISION_CONFLICT",

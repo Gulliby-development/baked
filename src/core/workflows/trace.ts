@@ -1998,8 +1998,10 @@ export interface StallLadderBoundary {
  * Walks the recovery ladder again over each stage's recorded attempts: an attempt whose last model
  * call got no first response is a stall, as is one whose turn lost its answer (`lostAnswer` in its
  * usage, #1957); one that completed ends the ladder. The route comes from
- * the run's routing record, the effort from the attempt's usage. Effects are not in a trace, so an
- * attempt that edited files before it stalled counts as one that did not.
+ * the run's routing record, the effort from the attempt's usage. The effects table is not in a
+ * trace, so an attempt that changed a file is one with a `pre_image` tool phase, which the tool
+ * policy emits as it prepares each file effect: the scheduler keeps the provider wait for such an
+ * attempt instead of climbing, and the next attempt starts the ladder again.
  */
 export function replayStallLadder(
   store: WorkflowStore,
@@ -2011,14 +2013,20 @@ export function replayStallLadder(
       "SELECT id, step_id, model_id, status FROM attempts WHERE run_id=? AND model_id IS NOT NULL ORDER BY started_at, rowid",
     )
     .all(runId) as { id: string; step_id: string; model_id: string; status: string }[];
+  const events = store.events(runId, 0, 1_000_000);
   const taken = new Map(
-    store
-      .events(runId, 0, 1_000_000)
-      .flatMap((event) =>
-        event.type === "attempt.recovery"
-          ? [[event.payload.attemptId, event.payload.rung] as const]
-          : [],
-      ),
+    events.flatMap((event) =>
+      event.type === "attempt.recovery"
+        ? [[event.payload.attemptId, event.payload.rung] as const]
+        : [],
+    ),
+  );
+  const changed = new Set(
+    events.flatMap((event) =>
+      event.type === "tool.phase" && event.payload.phase === "pre_image"
+        ? [event.payload.attemptId]
+        : [],
+    ),
   );
   const saved = store.latestArtifact(runId, "routing.json");
   const routing = saved
@@ -2054,6 +2062,17 @@ export function replayStallLadder(
       (usage.profileId ? routing.profiles?.[usage.profileId] : undefined);
     const models = entry ? [entry.model, ...(entry.fallback ?? [])] : [attempt.model_id];
     const effort = (usage.effort ?? entry?.effort) as RouteEffort | undefined;
+    if (changed.has(attempt.id)) {
+      ladders.delete(key);
+      boundaries.push({
+        attemptId: attempt.id,
+        stage,
+        model: attempt.model_id,
+        recorded: taken.get(attempt.id) ?? "none",
+        replayed: "none",
+      });
+      continue;
+    }
     const current = ladders.get(key);
     const next = rule(current, {
       model: attempt.model_id,
@@ -2266,7 +2285,7 @@ export interface InitiativeStartBoundary {
   /** The token pool's forecast the current code makes at this start, and its notice (#2042). */
   pool: Pick<
     TokenPoolView,
-    "limitTokens" | "usedTokens" | "forecastTokens" | "suggestedTokens" | "notice"
+    "limitTokens" | "usedTokens" | "forecastTokens" | "advice" | "suggestedTokens" | "notice"
   > | null;
   /**
    * The plan charge at this start (#2100, #2056): what the pool holds with open runs at their
@@ -2279,6 +2298,18 @@ export interface InitiativeStartBoundary {
     planCommittedTokens: number;
     releasedTokens: number;
     runs: { featureId: string; usedTokens: number; limitTokens: number; chargeTokens: number }[];
+    /**
+     * The dollar side (#2124): the task-call rate, what the dollar budget holds with open runs at
+     * their caps and with priced runs at their plan's tokens at that rate, and each priced run's
+     * amounts. Null without a dollar budget.
+     */
+    usd: {
+      taskRate: number | null;
+      limitCommittedUsd: number;
+      planCommittedUsd: number;
+      releasedUsd: number;
+      runs: { featureId: string; limitUsd: number; chargeUsd: number | null }[];
+    } | null;
     featureId: string | null;
     replayed: "pass" | "park" | null;
   } | null;
@@ -2497,6 +2528,8 @@ export function replayInitiativeStarts(
      * boundary with an empty `featureId` that never parks (#2042).
      */
     moments?: number[];
+    /** Sets the initiative's `sizing.recencyHalfLife`, to backtest the weighting (#2150). */
+    recencyHalfLife?: number;
   } = {},
 ): Omit<InitiativeReplay, "shareGate" | "newShareStops" | "poolGrowth" | "newPoolGrowth">[] {
   const gate = options.gate ?? shareShortfall;
@@ -2517,6 +2550,7 @@ export function replayInitiativeStarts(
     replayStarts(path, id, gate, options.priceSamples, historyTrace, {
       budgetAtStart: options.budgetAtStart !== false,
       moments: options.moments ?? [],
+      ...(options.recencyHalfLife ? { recencyHalfLife: options.recencyHalfLife } : {}),
     }),
   );
 }
@@ -2580,7 +2614,11 @@ function replayStarts(
   gate: ShareGate,
   priceSamples: PriceSamples | undefined,
   historyTrace: HistoryTrace,
-  { budgetAtStart, moments }: { budgetAtStart: boolean; moments: number[] },
+  {
+    budgetAtStart,
+    moments,
+    recencyHalfLife,
+  }: { budgetAtStart: boolean; moments: number[]; recencyHalfLife?: number },
 ): Omit<InitiativeReplay, "shareGate" | "newShareStops" | "poolGrowth" | "newPoolGrowth"> {
   const { store, workspace, dispose } = openTrace(path);
   const histories = new Map<string, ReturnType<typeof openTrace>>();
@@ -2590,9 +2628,19 @@ function replayStarts(
       .query("SELECT settings_json, decompose_run_id FROM initiatives WHERE id=?")
       .get(initiativeId) as { settings_json: string; decompose_run_id: string | null };
     const settings = JSON.parse(row.settings_json) as {
-      basePolicy?: { sizing?: { historyStores?: string[] } };
+      basePolicy?: { sizing?: { historyStores?: string[]; recencyHalfLife?: number } };
     };
     const missingHistory: string[] = [];
+    if (recencyHalfLife) {
+      settings.basePolicy = {
+        ...settings.basePolicy,
+        sizing: { ...settings.basePolicy?.sizing, recencyHalfLife },
+      };
+      db.run("UPDATE initiatives SET settings_json=? WHERE id=?", [
+        JSON.stringify(settings),
+        initiativeId,
+      ]);
+    }
     const sizing = settings.basePolicy?.sizing;
     if (sizing?.historyStores) {
       const mapped: string[] = [];
@@ -2766,6 +2814,7 @@ function replayStarts(
             limitTokens: view.budget.pool.limitTokens,
             usedTokens: view.budget.pool.usedTokens,
             forecastTokens: view.budget.pool.forecastTokens,
+            advice: view.budget.pool.advice,
             suggestedTokens: view.budget.pool.suggestedTokens,
             notice: view.budget.pool.notice,
           },
@@ -2822,6 +2871,16 @@ function replayPlanCharge(
       limitTokens,
       chargeTokens,
     })),
+    usd: charge.usd
+      ? {
+          ...charge.usd,
+          runs: charge.runs.map((r) => ({
+            featureId: r.featureId,
+            limitUsd: r.limitUsd ?? 0,
+            chargeUsd: r.chargeUsd ?? null,
+          })),
+        }
+      : null,
     featureId: target?.id ?? null,
     replayed: target
       ? gate(charged, { ...target, share: own?.share ?? null })

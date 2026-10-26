@@ -108,6 +108,8 @@ const FULL_CAPABILITIES = [
   "hooks-edit",
   "provider-switch",
   "chat-export",
+  "sdd-export",
+  "sdd-import",
   "chat-effort",
   "watch",
   "diagnostics",
@@ -303,6 +305,7 @@ export function createMockBridge(scenario: MockScenario = "default"): DesktopBri
       settings = { ...settings, ...patch };
       return settings;
     },
+    showInFolder: async () => {},
     openExternal: async (url) => {
       window.open(url, "_blank", "noopener");
     },

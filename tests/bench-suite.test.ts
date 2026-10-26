@@ -70,6 +70,8 @@ describe("bench suite tasks", () => {
     expect(validateTask("/nowhere/x", { policy: [] })).toContain("policy must be an object");
     // The nested-emphasis task measures finding chains with the rewrite on.
     expect(tasks.find((t) => t.id === "ts-bun-emphasis")?.policy).toEqual({ chainRewrite: "on" });
+    // The one-literal misquote task measures the host's misquote fix and its continuation (#2058).
+    expect(tasks.find((t) => t.id === "ts-bun-query-depth")?.policy).toEqual({ misquoteFix: "on" });
   });
 });
 

@@ -1,0 +1,32 @@
+{
+  "id": "r-testthat-roman",
+  "language": "r",
+  "toolchain": "testthat",
+  "requires": [
+    "Rscript"
+  ],
+  "allowedPaths": [
+    "R/**",
+    "tests/**",
+    "NAMESPACE",
+    "README.md"
+  ],
+  "checks": [
+    {
+      "id": "testthat",
+      "executable": "Rscript",
+      "args": [
+        "-e",
+        "testthat::test_local(reporter = testthat::CheckReporter$new())"
+      ]
+    },
+    {
+      "id": "lintr",
+      "executable": "Rscript",
+      "args": [
+        "-e",
+        "l <- lintr::lint_package(); for (x in l) cat(sprintf('%s:%d:%d: %s: [%s] %s\\n', x$filename, x$line_number, x$column_number, x$type, x$linter, x$message), sep = ''); quit(status = as.integer(length(l) > 0))"
+      ]
+    }
+  ]
+}

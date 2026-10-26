@@ -144,6 +144,7 @@ import {
 import { stopFault } from "./stop-reasons.js";
 import type { EffectRow, WorkflowStore } from "./store.js";
 import { failureOwnerNote } from "./task-graph.js";
+import { recordToolInputSignal } from "./tool-input-health.js";
 import { pureWorkflowTools, WorkflowToolPolicy } from "./tool-policy.js";
 import type { AgentExecutor, ExecutionRequest, ExecutionResponse, Task } from "./types.js";
 import { AcceptanceDraftSchema, AcceptanceWalkSchema } from "./v2/acceptance.js";
@@ -1175,6 +1176,17 @@ export class NativeAgentExecutor implements AgentExecutor {
                 "diagnostic",
                 `attempts/${request.attemptId}/invalid-${String(invalidSubmissions)}.json`,
                 canonical({ error: error.slice(0, 20_000), submitted: part.input ?? null }),
+              ),
+            );
+            // In shadow, the rung the recovery ladder would take once the model's invalid inputs
+            // in the run reach the threshold (#2149).
+            this.store.transaction(() =>
+              recordToolInputSignal(
+                this.store,
+                request.runId,
+                request.attemptId,
+                request.profile.model,
+                request.effort,
               ),
             );
           }

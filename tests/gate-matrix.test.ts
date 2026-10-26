@@ -1,3 +1,4 @@
+import { type ConvergenceGate, type ConvergenceGateFinding, convergenceGateDecision, convergenceReproCandidates, type GateFinding, gateFinding, type ReviewGate, reviewGateCandidates, reviewGateDecision } from "../src/core/workflows/review-gate.js";
 import { literalPropertyProblems, rowFiles, rowsArtifact } from "../src/core/workflows/acceptance-rows.js";
 import { clearBannedProperties } from "../src/core/verification/initiative-ownership.js";
 import { CALL_COST_MODELS, NEXT_CALL, perCallCostScenario } from "./helpers/per-call-cost-scenario.js";
@@ -48,7 +49,8 @@ import { executeCheckCommand, exitStatus, timedOutFailure } from "../src/core/ve
 import { gradleTestReport } from "../src/core/verification/test-reports.js";
 import { detectLanguages, touchesLanguageFiles } from "../src/core/workflows/language.js";
 import { baselineRegression, buildFailure, buildRunner, diagnosticCount, failedTests, failureSignature, testCount, testsRan } from "../src/core/verification/output-counts.js";
-import { pwshExecutable } from "../src/core/platform/index.js";
+import { pwshExecutable, rscriptExecutable } from "../src/core/platform/index.js";
+import { lintrRun, STYLER_CHECK, STYLER_FIX, testthatOn, testthatRun } from "../src/core/workflows/r-tools.js";
 import { PESTER_RUN, pesterOn } from "../src/core/workflows/pester.js";
 import { baselineDebt, baselineKeys } from "../src/core/verification/task-end-check.js";
 import { affectedTestCheck, plannedWrittenTests, writtenTestsCheck } from "../src/core/workflows/affected-tests.js";
@@ -2283,6 +2285,72 @@ describe("gate matrix: Pester and PSScriptAnalyzer (#1498)", () => {
   });
 });
 
+describe("gate matrix: testthat, lintr and styler (#1500)", () => {
+  const exe = rscriptExecutable();
+  const ids = (files: Record<string, string>) =>
+    detectGates(project(files)).map((s) => [s.check.id, s.check.args.at(-1), s.source, s.preselected]);
+  const TEST = 'test_that("adds", {\n  expect_equal(add_numbers(1, 2), 3)\n})\n';
+  test("a package gets testthat on the loaded package, lintr offered, styler offered; a scripts project tests its folder", () => {
+    expect(ids({ DESCRIPTION: "Package: sumr\n", "tests/testthat/test-sum.R": TEST })).toEqual([
+      ["testthat", testthatRun(true), "tests/testthat", true],
+      ["lintr", lintrRun(true), "DESCRIPTION", false],
+      ["styler", STYLER_CHECK, "DESCRIPTION", false],
+    ]);
+    expect(testthatRun(true)).toBe("testthat::test_local(reporter = testthat::CheckReporter$new())");
+    // lintr's own print writes GitHub annotations under GITHUB_ACTIONS; the gate writes its lines.
+    expect(lintrRun(true)).not.toContain("print(l)");
+    expect(lintrRun(true)).toContain("x$line_number");
+    expect(ids({ "tests/testthat/test-sum.R": TEST, ".lintr": "linters: linters_with_defaults()\n" })).toEqual([
+      ["testthat", "testthat::test_dir('tests/testthat', reporter = testthat::CheckReporter$new())", "tests/testthat", true],
+      ["lintr", lintrRun(false), ".lintr", true],
+      ["styler", STYLER_CHECK, ".lintr", false],
+    ]);
+    expect(ids({ "analysis.R": "x <- 1\n" })).toEqual([]);
+    const [testthat] = detectGates(project({ "tests/testthat/test-sum.R": TEST })).map((s) => s.check);
+    expect(testthat && [testthat.executable, testthat.args[0]]).toEqual([exe, "-e"]);
+  });
+
+  test("lintr and styler are static checks that cover each task's R files; styler's fixer styles the file", () => {
+    const checks = detectGates(project({ DESCRIPTION: "Package: sumr\n", "tests/testthat/test-sum.R": TEST })).map((s) => s.check);
+    const byId = (id: string) => checks.find((c) => c.id === id) as Check;
+    for (const id of ["lintr", "styler"]) expect([id, isStaticCheck(byId(id)), isWholeUnitCheck(byId(id))]).toEqual([id, true, false]);
+    expect(isStaticCheck(byId("testthat"))).toBe(false);
+    expect(fixerCommand(byId("styler").fix!, "R/sum.R")).toEqual({ executable: exe, args: ["-e", STYLER_FIX, "R/sum.R"] });
+    const covering = (path: string) =>
+      coveringChecks({ checks } as RunPolicy, { writes: [{ path, action: "create" }] }).map((c) => c.id);
+    expect(covering("R/sum.R")).toEqual(["lintr", "styler"]);
+    expect(covering("README.md")).toEqual([]);
+  });
+
+  test("the written-tests check runs only the task's testthat files, by testthat's name filter", () => {
+    const root = project({ DESCRIPTION: "Package: sumr\n", "tests/testthat/test-sum.R": TEST, "tests/testthat/test-diff.R": TEST });
+    const checks = detectGates(root).filter((s) => s.preselected).map((s) => s.check);
+    const written = writtenTestsCheck(root, checks, [{ path: "tests/testthat/test-diff.R", action: "create" }]);
+    expect(written?.args.at(-1)).toBe("testthat::test_local(reporter = testthat::CheckReporter$new(), filter = '^(diff)$')");
+    expect(testthatOn(["tests/testthat/test-a.b.R"], false)).toBe("testthat::test_dir('tests/testthat', reporter = testthat::CheckReporter$new(), filter = '^(a\\\\.b)$')");
+    const own = { ...(checks[0] as Check), args: ["-e", "devtools::test()"] };
+    expect(writtenTestsCheck(root, [own], [{ path: "tests/testthat/test-diff.R", action: "create" }])).toBeNull();
+  });
+
+  // Pasted from testthat 3.2.1 with the check reporter (UTF-8 locale); one more passing expectation in the second.
+  const RUN = "[ FAIL 1 | WARN 0 | SKIP 0 | PASS 1 ]\n\n\u2550\u2550 Failed tests \u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\n\u2500\u2500 Failure ('test-sum.R:2:3'): adds \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\nadd_numbers(1, 2) (`actual`) not equal to 3 (`expected`).\n\n  `actual`: -1\n`expected`:  3\n\n[ FAIL 1 | WARN 0 | SKIP 0 | PASS 1 ]\nError: Test failures\nExecution halted\n";
+  const GROWN = "[ FAIL 1 | WARN 0 | SKIP 0 | PASS 2 ]\n\n\u2550\u2550 Failed tests \u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\n\u2500\u2500 Failure ('test-sum.R:2:3'): adds \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\nadd_numbers(1, 2) (`actual`) not equal to 3 (`expected`).\n\n  `actual`: -1\n`expected`:  3\n\n[ FAIL 1 | WARN 0 | SKIP 0 | PASS 2 ]\nError: Test failures\nExecution halted\n";
+  const BUILD = "Error in `load_all()`:\n! Failed to load 'R/sum.R'\nCaused by error in `parse()`:\n! /work/app/R/sum.R:3:0: unexpected end of input\n1: add_numbers <- function(a, b) {\n2:   a +\n  ^\nBacktrace:\nExecution halted\n";
+  const LINTS =
+    "R/lint.R:2:3: style: [object_name_linter] Variable and function name style should match snake_case or symbols.\n  myVar = a+b\n  ^~~~~\nR/lint.R:2:9: error: [assignment_linter] Use <-, not =, for assignment.\n  myVar = a+b\n        ^\n";
+  test("testthat's counts, failed test and package that does not load; lintr and styler counts; a stable signature", () => {
+    expect(testCount(RUN)).toEqual({ tool: "testthat", count: 2 });
+    expect(testsRan(RUN)).toEqual({ tool: "testthat", count: 2 });
+    expect(failedTests(RUN)).toEqual({ tool: "testthat", names: ["adds"] });
+    expect(failureSignature(RUN, "/work/app")).toBe(failureSignature(GROWN, "/work/app"));
+    expect(failureSignature(RUN, "/work/app")).not.toBe(failureSignature(RUN.replaceAll("FAIL 1", "FAIL 2"), "/work/app").replace("x", "y"));
+    expect(buildRunner(BUILD)).toBe("testthat");
+    expect(buildRunner(RUN)).toBeNull();
+    expect(diagnosticCount(LINTS)).toEqual({ tool: "lintr", count: 2, errors: 1 });
+    expect(diagnosticCount("R/sum.R: would be reformatted by styler\n")).toEqual({ tool: "styler", count: 1, errors: 1 });
+  });
+});
+
 describe("gate matrix: python environments", () => {
   for (const [lockfile, runner, verb] of PYTHON_ENVIRONMENTS)
     cell("python", `${lockfile}: gates and the written-tests check run in the environment`, () => {
@@ -4328,6 +4396,40 @@ describe.skipIf(!toolchains)("gate matrix: toolchains", () => {
     const missing = await executeGate(root, { ...lint, args: [...lint.args.slice(0, -1), "Invoke-ScriptAnalyzer -Path ./lib -EnableExit"] }, signal);
     expect(missingPlannedPaths(missing.outputTail, [{ writes: [{ path: "lib/Diff.ps1", action: "create" }] } as Task])).toEqual(["lib/Diff.ps1"]);
   }, 300000);
+  test.skipIf(!available([[rscriptExecutable(), "-e", "library(testthat); library(lintr); library(styler)"]]))("Rscript: testthat, lintr and styler gates fail on a defect, styler's fixer repairs the file, and the written-tests check runs one file (#1500)", async () => {
+    const root = project({
+      DESCRIPTION: "Package: sumr\nVersion: 0.1.0\nTitle: Sum\nDescription: Sums.\nLicense: MIT\nSuggests: testthat (>= 3.0.0)\nConfig/testthat/edition: 3\n",
+      NAMESPACE: "export(add_numbers)\n",
+      ".lintr": "linters: linters_with_defaults()\n",
+      "R/sum.R": "add_numbers <- function(a, b) {\n  a - b\n}\n",
+      "R/style.R": "twice <- function(x) {\n  x*2\n}\n",
+      "tests/testthat/test-sum.R": 'test_that("adds", {\n  expect_equal(add_numbers(1, 2), 3)\n})\n',
+      "tests/testthat/test-twice.R": 'test_that("doubles", {\n  expect_equal(twice(2), 4)\n})\n',
+    });
+    const checks = detectGates(root).map((s) => s.check);
+    const byId = (id: string) => checks.find((c) => c.id === id) as Check;
+    const signal = new AbortController().signal;
+    const tests = await executeGate(root, byId("testthat"), signal);
+    expect(tests.status).toBe("failed");
+    expect(testCount(tests.outputTail)).toEqual({ tool: "testthat", count: 2 });
+    expect(failedTests(tests.outputTail)).toEqual({ tool: "testthat", names: ["adds"] });
+    const lint = await executeGate(root, byId("lintr"), signal);
+    expect(lint.status).toBe("failed");
+    expect(diagnosticCount(lint.outputTail)).toEqual({ tool: "lintr", count: 1, errors: 0 });
+    const style = await executeGate(root, byId("styler"), signal);
+    expect(style.status).toBe("failed");
+    expect(diagnosticCount(style.outputTail)).toEqual({ tool: "styler", count: 1, errors: 1 });
+    const fix = fixerCommand(byId("styler").fix!, "R/style.R");
+    expect(spawnSync(fix.executable, fix.args, { cwd: root, encoding: "utf8", timeout: 120000 }).status).toBe(0);
+    expect(readFileSync(join(root, "R/style.R"), "utf8")).toContain("x * 2");
+    expect((await executeGate(root, byId("styler"), signal)).status).toBe("passed");
+    expect((await executeGate(root, byId("lintr"), signal)).status).toBe("passed");
+    const written = writtenTestsCheck(root, [byId("testthat")], [{ path: "tests/testthat/test-twice.R", action: "create" }]);
+    if (!written) throw new Error("no written-tests check");
+    expect((await executeGate(root, written, signal)).status).toBe("passed");
+    writeFileSync(join(root, "R/sum.R"), "add_numbers <- function(a, b) {\n  a + b\n}\n");
+    expect((await executeGate(root, byId("testthat"), signal)).status).toBe("passed");
+  }, 300000);
   test("pytest executes host rows and fails a wrong harness (#1596)", () => {
     const root = project({});
     const spec = { ...fixtureSpec, criteria: [{ ...fixtureSpec.criteria[0]!, given: "a JSON value", when: "it is returned", then: 'Input | Expected\n{"ok":true,"value":null} | {"ok":true,"value":null}\n[12,24] | [12,24]' }] };
@@ -4674,5 +4776,75 @@ describe("gate matrix: no tests collected (#1864)", () => {
     expect(noTestsCollected("FAILED tests/test_tags.py::test_wheel - AssertionError\n1 failed in 0.02s")).toBe(false);
     expect(noTestsCollected(" 3 pass\n 0 fail\nRan 3 tests across 1 file.")).toBe(false);
     expect(noTestsCollected("test result: ok. 0 passed; 0 failed; 0 ignored")).toBe(false);
+  });
+});
+
+describe("review gate: a finding its reviewer marked noRepro (#2194)", () => {
+  // skillplumb 9cdc5669 (R69): N1 quoted a README example's error, said the example's setup was
+  // not run (noRepro) and still carried a repro, which printed the same error in the workspace.
+  const note = (over: Partial<GateFinding> = {}): GateFinding => ({
+    id: "N1",
+    severity: "low",
+    kind: "correctness",
+    basis: "spec",
+    confidence: 0.1,
+    repro: true,
+    sibling: false,
+    outcome: "reproduced",
+    noRepro: true,
+    ...over,
+  });
+  const gate = (findings: GateFinding[]): ReviewGate => ({
+    reviewer: "correctness",
+    required: true,
+    blocking: ["critical", "high", "medium", "low"],
+    severities: ["critical", "high", "medium"],
+    minConfidence: 0.8,
+    reproAvailable: true,
+    findings,
+  });
+  const convergence = (findings: ConvergenceGateFinding[]): ConvergenceGate => ({
+    severities: ["critical", "high", "medium"],
+    minConfidence: 0.8,
+    checksPass: true,
+    reproAvailable: true,
+    canRepro: true,
+    criteria: [],
+    failing: [],
+    findings,
+  });
+  const real = (over: Partial<GateFinding> = {}): GateFinding =>
+    note({ id: "F1", severity: "medium", confidence: 0.98, noRepro: false, ...over });
+
+  for (const [name, finding, repaired] of [
+    ["a 0.1-confidence note with noRepro, its repro reproduced", note(), []],
+    ["the same note with a self-contained repro (no noRepro)", note({ noRepro: false }), ["N1"]],
+    ["a gate recorded before the field", note({ noRepro: undefined }), ["N1"]],
+    ["a confirmed medium finding beside it", real(), ["F1"]],
+    ["a low spec finding with noRepro below the floor, reproduced", note({ confidence: 0.95 }), []],
+    ["the same low finding without noRepro", note({ confidence: 0.95, noRepro: false }), ["N1"]],
+  ] as const)
+    test(`${name}: repairs ${JSON.stringify(repaired)}`, () => {
+      expect(reviewGateDecision(gate([finding]))).toEqual([...repaired]);
+    });
+
+  test("the review does not even run the repro of a noRepro confidence-only note", () => {
+    expect(reviewGateCandidates(gate([note({ outcome: null }), real({ outcome: null })])).map((f) => f.id)).toEqual(["F1"]);
+  });
+
+  test("the converge stage does not repair on a noRepro confidence-only note", () => {
+    const converged = { testOrDoc: true, criterionIds: [] };
+    const findings = [{ ...note(), ...converged }];
+    // A high one is gated by its repro only for its confidence, so its repro does not run either.
+    expect(convergenceReproCandidates(convergence([{ ...note({ severity: "high" }), ...converged }]))).toEqual([]);
+    expect(convergenceGateDecision(convergence(findings)).verdicts.find((v) => v.id === "N1")?.verdict).not.toBe("repair");
+    const shown = [{ ...note({ noRepro: false, severity: "medium" }), ...converged }];
+    expect(convergenceGateDecision(convergence(shown)).verdicts.find((v) => v.id === "N1")?.verdict).toBe("repair");
+  });
+
+  test("gateFinding reads a blank noRepro as none", () => {
+    const finding = { id: "N1", severity: "low", kind: "correctness", claim: "c", confidence: 0.1, criterionIds: [] } as unknown as Parameters<typeof gateFinding>[0];
+    expect(gateFinding({ ...finding, noRepro: "  " }, false, "reproduced").noRepro).toBe(false);
+    expect(gateFinding({ ...finding, noRepro: "needs the README setup" }, false, "reproduced").noRepro).toBe(true);
   });
 });

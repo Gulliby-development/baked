@@ -198,6 +198,13 @@ export const RuntimeStateSchema = z
      */
     widenedCorrections: z.array(z.string()).default([]),
     /**
+     * A person's answer to a blocked corrective's unowned files, by task ID (#2155): the host
+     * decision its next session applies as if `corrective_unowned_file` were enforced, once.
+     */
+    unownedRemedies: z.record(z.string(), z.enum(["route", "widen", "park"])).default({}),
+    /** Paths a person let a corrective write through a `widen` remedy; acceptance reads them. */
+    personWidened: z.array(z.string()).default([]),
+    /**
      * The files the first attempt of a corrective task could write, by task ID, when that attempt
      * was limited to where its findings point; the run report shows them next to the full scope.
      */

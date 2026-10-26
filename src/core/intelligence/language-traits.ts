@@ -41,6 +41,8 @@ export const TEST_CONVENTIONS: LanguageRecord<RegExp> = {
   // own is `test_name.sql` or `name_test.sql`.
   sql: /(?:^|\/)test_[^/]*\.sql$|_test\.sql$/i,
   powershell: /\.Tests\.ps1$/i,
+  // testthat: `tests/testthat/test-sum.R`; `test_sum.R` is read too (#1500).
+  r: /(?:^|\/)test[-_][^/]*\.r$/i,
 };
 
 /**
@@ -83,6 +85,9 @@ export const TEST_MARKERS: LanguageRecord<RegExp> = {
   // pgTAP's plan and assertions, tSQLt's test classes and assertions.
   sql: /\b(?:plan|no_plan)\s*\(\s*\d*\s*\)|\bselect\s+\*?\s*(?:from\s+)?(?:ok|is|isnt|results_eq|throws_ok|lives_ok|has_table|has_column)\s*\(|\btSQLt\.\w+/i,
   powershell: none("Pester's `.Tests.ps1` suffix is never a plain word"),
+  r: none(
+    "testthat's `test-` prefix is never a domain word, and its files sit in `tests/testthat`",
+  ),
 };
 
 /** Build and package manifests by file name, one row per supported language. */
@@ -116,6 +121,8 @@ export const MANIFEST_NAMES: LanguageRecord<RegExp> = {
   sql: /^(?:dbt_project\.yml|\.sqlfluff)$/i,
   // Module manifests, PSScriptAnalyzer settings and PSDepend or PSResourceGet requirements.
   powershell: /^(?!PSScriptAnalyzerSettings\.psd1$)[^/]+\.psd1$/i,
+  // A package's DESCRIPTION (always upper case) and renv's lock file.
+  r: /^(?:DESCRIPTION|renv\.lock)$/,
 };
 
 /**

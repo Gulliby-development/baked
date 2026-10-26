@@ -439,6 +439,7 @@ const PROJECT_INDICATORS: Record<string, string[]> = {
   Dart: ["pubspec.yaml", "*.dart"],
   SQL: ["*.sql", ".sqlfluff", "dbt_project.yml"],
   PowerShell: ["*.ps1", "*.psm1", "*.psd1"],
+  R: ["DESCRIPTION", "renv.lock", "*.R", "*.r"],
 };
 
 /** Detect which languages are used in the current project */

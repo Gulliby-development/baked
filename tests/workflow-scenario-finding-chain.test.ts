@@ -573,6 +573,7 @@ const CONTAINER_MEMBER: Record<SupportedLanguage, readonly [container: string, m
   solidity: ["Vault", "Vault.withdraw"],
   sql: ["inventory", "inventory.stock_level"],
   powershell: ["Reader", "[Reader]::Read"],
+  r: ["Reader", "Reader$read"],
 };
 
 describe("a reviewer's link between a class and its member joins in every supported language (#2137)", () => {

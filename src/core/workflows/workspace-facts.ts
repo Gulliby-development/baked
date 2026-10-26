@@ -27,6 +27,9 @@ const SKIPPED = new Set([
   "__pycache__",
   // dbt's installed packages (#1499).
   "dbt_packages",
+  // R's project libraries: renv's and packrat's installed packages (#1500).
+  "renv",
+  "packrat",
 ]);
 const SCAN_LIMIT = 2000;
 const LISTED_LIMIT = 80;

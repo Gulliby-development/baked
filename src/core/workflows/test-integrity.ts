@@ -310,6 +310,8 @@ const SKIPS = new RegExp(
     // Pester: `It 'adds' -Skip { }`, `Describe 'x' -Skip:$true`, `Set-ItResult -Skipped` (#1498).
     String.raw`^\s*(?:It|Describe|Context)\b[^{\n]*\s-Skip\b`,
     String.raw`\bSet-ItResult\s+-(?:Skipped|Pending|Inconclusive)\b`,
+    // testthat: `skip("later")`, `skip_if(...)`, `skip_on_cran()` and the rest of the family (#1500).
+    String.raw`(?:^|[^.\w])skip(?:_if(?:_not)?|_on_\w+|_if_offline|_if_not_installed)?\s*\(`,
   ].join("|"),
   "g",
 );
@@ -348,6 +350,9 @@ const CAPABILITY = new RegExp(
     String.raw`\bProperties\.(?:isWin|isMac|isLinux)\b`,
     // Swift: `#if os(Linux)`, `#if canImport(Darwin)`, `.enabled(if:` with a platform (#1492).
     String.raw`#if\s+!?(?:os|canImport)\s*\(|\bProcessInfo\.processInfo\.(?:operatingSystem\w*|isOperatingSystemAtLeast)\b`,
+    // testthat's guards that name the platform or a missing capability, and R's platform checks.
+    String.raw`\bskip_(?:on_os|on_cran|on_ci|if_offline|if_not_installed)\s*\(`,
+    String.raw`\.Platform\$OS\.type\b|\bSys\.info\s*\(\s*\)\s*\[`,
   ].join("|"),
 );
 /** Lines above a skip that its guard condition may span. */
@@ -385,6 +390,8 @@ const SUPPRESSIONS = new RegExp(
     String.raw`#!?\[allow\(`,
     String.raw`@SuppressWarnings\b`,
     String.raw`//\s*nolint\b`,
+    // lintr: `# nolint`, `# nolint: object_name_linter.`, `# nolint start` (#1500).
+    String.raw`#\s*nolint\b`,
     String.raw`#pragma\s+warning\s+disable\b`,
     String.raw`@phpstan-ignore`,
     String.raw`@psalm-suppress\b`,

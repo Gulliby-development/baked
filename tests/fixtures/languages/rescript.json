@@ -51,6 +51,9 @@
     ],
     "numericLimits": [
       "int is 32-bit and wraps silently"
+    ],
+    "staticTools": [
+      "rescript format: formatter"
     ]
   }
 }

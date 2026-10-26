@@ -41,6 +41,7 @@ baked doctor                                     # check keys, models, checks an
 | [Harden](harden.md) | The `harden` preset that strengthens the tests of existing code |
 | [Doctor and estimate](doctor-and-estimate.md) | Checks before a run and the token and cost estimate |
 | [Code quality gates](code-quality.md) | Duplication and dead-code ratchet, the anti-slop rule pack, the dependency check, Semgrep, property-based tests and the mutation gate: defaults, run overrides and what the run report shows |
+| [SDD export package](sdd-export.md) | `baked workflow export-package`: the accepted specs, plans, tasks and graph of a run or initiative as folders (or a zip) another harness can read; `import --source baked-export` continues them in BAKED |
 | [Parallel worktrees](parallel-worktrees.md) | Task worktrees, several writers and the integrator |
 | [Example gate](examples/ai-acceptance-gate.json) | An `ai-acceptance` gate definition |
 

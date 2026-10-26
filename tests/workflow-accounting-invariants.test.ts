@@ -546,4 +546,35 @@ describe("plan charge invariants (#2100)", () => {
       expect(planAfter).toBe(charge.planCommittedTokens - ended.chargeTokens + ended.usedTokens);
     }), { numRuns: 300 });
   });
+  test("in dollars (#2124) the charge is never below what a run spent and reserved, and holds the cap while the task-call rate is unmeasured", () => {
+    const dollars = fc.record({
+      taskRate: fc.option(fc.double({ min: 1e-8, max: 2e-5, noNaN: true }), { nil: null }),
+      otherUsd: fc.double({ min: 0, max: 30, noNaN: true }),
+      usd: fc.array(fc.record({ used: fc.double({ min: 0, max: 10, noNaN: true }), cap: fc.double({ min: 0, max: 10, noNaN: true }) }), { minLength: 6, maxLength: 6 }),
+    });
+    fc.assert(fc.property(seed, dollars, ({ finished, unplanned, ratio, runs }, { taskRate, otherUsd, usd }) => {
+      const priced = runs.map((r, i) => ({ ...r, usedUsd: usd[i]!.used, limitUsd: Math.max(usd[i]!.used, usd[i]!.cap) }));
+      const limitCommittedUsd = otherUsd + priced.reduce((n, r) => n + r.limitUsd, 0);
+      const limitCommitted = finished + unplanned + runs.reduce((n, r) => n + held(r), 0);
+      const charge = planCharge("shadow", ratio, limitCommitted, priced, { taskRate, limitCommittedUsd })!;
+      for (const run of charge.runs) {
+        if (taskRate === null) expect(run.chargeUsd).toBeNull();
+        else {
+          expect(run.chargeUsd!).toBeGreaterThanOrEqual(run.usedUsd!);
+          expect(run.chargeUsd!).toBeCloseTo(Math.max(run.usedUsd!, run.chargeTokens * taskRate), 9);
+        }
+      }
+      const released = charge.runs.reduce((n, r) => n + (r.chargeUsd === null || r.chargeUsd === undefined ? 0 : r.limitUsd! - r.chargeUsd), 0);
+      expect(charge.usd!.releasedUsd).toBeCloseTo(released, 9);
+      expect(charge.usd!.limitCommittedUsd - charge.usd!.planCommittedUsd).toBeCloseTo(charge.usd!.releasedUsd, 9);
+      // The dollar budget never holds less than what every run spent and reserved.
+      const spent = otherUsd + priced.reduce((n, r) => n + r.usedUsd, 0);
+      expect(charge.usd!.planCommittedUsd).toBeGreaterThanOrEqual(spent - 1e-9);
+      if (taskRate === null) expect(charge.usd!.releasedUsd).toBe(0);
+      // Without a dollar budget there is no dollar side, and the tokens do not change.
+      const plain = planCharge("shadow", ratio, limitCommitted, runs)!;
+      expect(plain.usd).toBeNull();
+      expect(plain.planCommittedTokens).toBe(charge.planCommittedTokens);
+    }), { numRuns: 300 });
+  });
 });

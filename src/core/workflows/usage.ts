@@ -1,6 +1,7 @@
 import { findPricing } from "../llm/pricing.js";
 import type { AttemptUsageRecord, ToolBackendCount } from "./step-budget.js";
 import type { WorkflowStore } from "./store.js";
+import { type ToolInputCounts, toolInputCounts } from "./tool-input-health.js";
 
 export interface AttemptUsageRow {
   attemptId: string;
@@ -88,6 +89,8 @@ export interface RunUsageReport {
   toolBackends: ToolBackendCount[];
   /** Model tool calls of every attempt by tool, most tokens first. */
   tools: ToolStepTokens[];
+  /** Invalid and decoded tool inputs per model, most invalid first (#2149). */
+  toolInputs: ToolInputCounts[];
   attempts: AttemptUsageRow[];
 }
 
@@ -223,6 +226,7 @@ export function runUsage(
     ),
     toolBackends: mergeToolBackends(attempts.flatMap((attempt) => attempt.toolBackends)),
     tools: mergeToolTokens(attempts.flatMap((attempt) => attempt.tools)),
+    toolInputs: toolInputCounts(store, runId, new Set(attempts.map((a) => a.attemptId))),
     attempts:
       top === undefined
         ? attempts
