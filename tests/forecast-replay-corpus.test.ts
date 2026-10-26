@@ -7,7 +7,8 @@ import { forecastSamples } from "../src/core/workflows/stage-price.js";
 import { adaptiveFirstByteMs } from "../src/core/llm/provider-health.js";
 import { planApprovalDecision } from "../src/core/workflows/auto-approval.js";
 import { CAPACITY_PROBE, type SizingReport, type SizingSample, samplesFrom, testCaseRate } from "../src/core/workflows/sizing.js";
-import { type CallRate, chainCosts, openTrace, type PlanPriceReplay, replayChainEscalation, replayInitiativeStarts, replayPlanApprovals, replayPlanPrices, replayTrace, type TestSplitRule } from "../src/core/workflows/trace.js";
+import { type CallRate, chainCosts, openTrace, type PlanPriceReplay, replayChainEscalation, replayEdgeRecord, replayInitiativeStarts, replayPlanApprovals, replayPlanPrices, replayTrace, type TestSplitRule } from "../src/core/workflows/trace.js";
+import { type EdgeRecord, edgeCrashDecision } from "../src/core/verification/edge-inputs.js";
 
 // #1649, #1715: every recorded bench-round trace replays through the current host decisions: the
 // forecast and cap code, the per-call cost cap (#1740), the first-response deadline of each model
@@ -785,6 +786,37 @@ describe("repeated corrective failures replay on recorded chains (#1996)", () =>
     const counted = replayTrace(join(ROOT, "R64/cfgquill.sqlite.gz"), { repeatRule: (previous) => (previous ? "progress" : "first") });
     expect(counted.runs.reduce((n, r) => n + r.newRepeatStops, 0)).toBe(0);
   }, 120000);
+});
+
+describe("edge probe crashes replay on recorded cases (#2136)", () => {
+  test("R68 url-shortener T001: the two AC-007 crashes in src/storage.ts are findings of T001 once the record keeps their output", () => {
+    // R68 url-shortener 67c90258 is not in the corpus; this is its `probes/edge/T001.json`, which
+    // kept only status and reason, so its crash decisions cannot be replayed (null).
+    const reason = "The command exited 1 without printing the claimed actual value";
+    const r68: EdgeRecord = {
+      schemaVersion: 1,
+      taskId: "T001",
+      languages: ["typescript"],
+      cases: [
+        { criterionId: "AC-007", status: "inconclusive", reason, decision: "pass" },
+        { criterionId: "AC-007", status: "inconclusive", reason, decision: "pass" },
+      ],
+    };
+    expect(replayEdgeRecord("probes/edge/T001.json", r68).map((b) => [b.recorded, b.replayed, b.crashRecorded, b.crashReplayed])).toEqual([
+      ["pass", "pass", null, null],
+      ["pass", "pass", null, null],
+    ]);
+    // The same cases with the output the pilot's later probes printed, as the record keeps it now.
+    const output = 'error: Missing parameter "code"\n      at createLink (C:\\Users\\bench\\url-shortener\\src\\storage.ts:70:10)\n      at C:\\Users\\bench\\url-shortener\\[eval]:1:57\n\nBun v1.3.0 (Windows x64)\n';
+    const kept: EdgeRecord = { ...r68, files: ["src/server.ts", "src/storage.ts"], cases: r68.cases.map((c) => ({ ...c, outputTail: output, crash: "pass" })) };
+    const replayed = replayEdgeRecord("probes/edge/T001.json", kept);
+    // edgeDecision is unchanged; the crash rule turns both into findings of T001, the defect's owner.
+    expect(replayed.map((b) => [b.recorded, b.replayed, b.crashReplayed])).toEqual([
+      ["pass", "pass", "finding"],
+      ["pass", "pass", "finding"],
+    ]);
+    expect(edgeCrashDecision("inconclusive", output, kept.files!).actual).toBe('error: Missing parameter "code"');
+  });
 });
 
 describe("own-plan feature need replays on recorded initiatives (#2043)", () => {

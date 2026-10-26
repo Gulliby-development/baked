@@ -120,6 +120,13 @@ export const STOP_REASONS = {
     modes: NOT_ENFORCED,
     defaultMode: "shadow",
   },
+  edge_crash_finding: {
+    label: "A probed case crashes inside a file the probed code's task writes",
+    // Shadow only until two bench rounds show no false would-stop (#2136); its promotion makes
+    // the crash a finding of that task (its first error line as actual), corrected at once.
+    modes: NOT_ENFORCED,
+    defaultMode: "shadow",
+  },
   baseline_unrepairable: {
     label:
       "A required check fails before any change on files no task writes, and the host fixer cannot repair it",
