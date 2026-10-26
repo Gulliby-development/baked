@@ -34,16 +34,20 @@ const GO_MAIN = 'package main\n\nimport (\n\t"strings"\n\t"fmt"\n\t"os"\n)\n\nfu
 // A formatter counts as installed only when it leaves an already formatted LF sample unchanged: the
 // queue's Windows runner has rustfmt on its path, but it fails or rewrites line endings there, which
 // says nothing about the skeleton's order (#2222).
+// Every spawn is bounded: a synchronous spawn blocks the event loop, so the test timeout cannot stop
+// a tool that waits (the queue's macOS shard ran out of time on this file).
+const TOOL_TIMEOUT_MS = 20000;
 const SAMPLES: Record<string, string> = { rustfmt: "pub mod a;\n", gofmt: "package main\n" };
 const installed = (tool: string): boolean => {
   if (Bun.which(tool) === null) return false;
+  if (tool === "cargo" && spawnSync("cargo", ["fmt", "--version"], { encoding: "utf8", timeout: TOOL_TIMEOUT_MS }).status !== 0) return false;
   const sample = SAMPLES[tool === "cargo" ? "rustfmt" : tool];
   if (!sample) return true;
-  const run = spawnSync(tool === "cargo" ? "rustfmt" : tool, tool === "gofmt" ? [] : ["--edition", "2021"], { input: sample, encoding: "utf8" });
+  const run = spawnSync(tool === "cargo" ? "rustfmt" : tool, tool === "gofmt" ? [] : ["--edition", "2021"], { input: sample, encoding: "utf8", timeout: TOOL_TIMEOUT_MS });
   return run.status === 0 && run.stdout === sample;
 };
 const format = (tool: string, args: string[], input: string): string => {
-  const run = spawnSync(tool, args, { input, encoding: "utf8" });
+  const run = spawnSync(tool, args, { input, encoding: "utf8", timeout: TOOL_TIMEOUT_MS });
   if (run.status !== 0) throw new Error(`${tool} failed: ${run.stderr}`);
   return run.stdout;
 };
@@ -101,9 +105,9 @@ describe("skeleton content laid out as a fixed point of the formatter (#2222)", 
     for (const m of LAYERS) writeFileSync(join(root, "src", `${m}.rs`), "// filled later\n");
     const content = layOutForFormatter("src/lib.rs", LIB_RS)?.content ?? LIB_RS;
     writeFileSync(join(root, "src", "lib.rs"), content);
-    expect(spawnSync("cargo", ["fmt", "--check"], { cwd: root, encoding: "utf8" }).status).toBe(0);
+    expect(spawnSync("cargo", ["fmt", "--check"], { cwd: root, encoding: "utf8", timeout: TOOL_TIMEOUT_MS }).status).toBe(0);
     // The fixer the format gate runs changes nothing, so the spec's exact-content criterion holds.
-    spawnSync("cargo", ["fmt"], { cwd: root });
+    spawnSync("cargo", ["fmt"], { cwd: root, timeout: TOOL_TIMEOUT_MS });
     expect(readFileSync(join(root, "src", "lib.rs"), "utf8")).toBe(content);
   }, 60000);
 
