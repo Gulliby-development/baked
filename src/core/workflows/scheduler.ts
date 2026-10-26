@@ -140,6 +140,7 @@ import {
   outputShows,
   type ReproOutcome,
   reproCannotSeeCorrection,
+  reproCrash,
   reproExecutables,
   reproTool,
   runProbe,
@@ -768,15 +769,18 @@ import {
   type ConvergenceGate,
   type ConvergenceGateRecord,
   type ConvergenceVerdict,
+  convergenceGateCrashKeeps,
   convergenceGateDecision,
   convergenceGateFinding,
   convergenceReproCandidates,
+  type GateFinding,
   gateFinding,
   REVIEW_GATE_DIR,
   REVIEW_GATE_KIND,
   type ReviewGate,
   type ReviewGateRecord,
   reviewGateCandidates,
+  reviewGateCrashKeeps,
   reviewGateDecision,
 } from "./review-gate.js";
 import {
@@ -3142,19 +3146,27 @@ export class WorkflowScheduler {
                     canonical({ outcomes: Object.fromEntries(outcomes) }),
                   ),
                 );
-              for (const f of gate.findings) f.outcome = outcomes.get(f.id)?.status ?? null;
+              const crashes = this.reproCrashes(gate.findings, outcomes, review.findings);
               const decision = convergenceGateDecision(gate);
+              const gatePath = `${CONVERGENCE_GATE_DIR}${newId()}.json`;
               this.store.transaction(() =>
                 this.store.artifact(
                   runId,
                   CONVERGENCE_GATE_KIND,
-                  `${CONVERGENCE_GATE_DIR}${newId()}.json`,
+                  gatePath,
                   canonical({
                     schemaVersion: 1,
                     ...gate,
                     decision,
                   } satisfies ConvergenceGateRecord),
                 ),
+              );
+              this.reproCrashWouldStops(
+                runId,
+                policy,
+                gatePath,
+                convergenceGateCrashKeeps(gate),
+                crashes,
               );
               const verdictOf = new Map(decision.verdicts.map((v) => [v.id, v.verdict]));
               const ofVerdict = (verdict: ConvergenceVerdict) =>
@@ -13515,6 +13527,54 @@ ${note}`;
       });
   }
   /**
+   * Sets each gate finding's repro outcome and, for an inconclusive repro, the shadow crash
+   * decision against the finding's file (`reproCrash`, #2152). Returns each crash's actual by
+   * finding ID, for the would-stops.
+   */
+  private reproCrashes(
+    gated: GateFinding[],
+    outcomes: ReadonlyMap<string, ReproOutcome>,
+    findings: readonly Review["findings"][number][],
+  ): Map<string, { file: string | null; actual: string }> {
+    const files = new Map(findings.map((f) => [f.id, f.file ?? null]));
+    const actuals = new Map<string, { file: string | null; actual: string }>();
+    for (const f of gated) {
+      const outcome = outcomes.get(f.id);
+      f.outcome = outcome?.status ?? null;
+      const crash = reproCrash(outcome, files.get(f.id));
+      if (!crash) continue;
+      f.crash = crash.crash;
+      if (crash.actual !== null)
+        actuals.set(f.id, { file: files.get(f.id) ?? null, actual: crash.actual });
+    }
+    return actuals;
+  }
+  /**
+   * The `edge_crash_finding` would-stops of reviewer findings the repro gate kept notes although
+   * their repro crashed inside the finding's own file (#2152). Shadow, as the probes' (#2136).
+   */
+  private reproCrashWouldStops(
+    runId: string,
+    policy: RunPolicy,
+    gatePath: string,
+    keeps: readonly string[],
+    crashes: ReadonlyMap<string, { file: string | null; actual: string }>,
+  ): void {
+    const mode = stopMode(policy, "edge_crash_finding");
+    if (mode === "enforce") return;
+    for (const findingId of keeps) {
+      const crash = crashes.get(findingId);
+      if (!crash) continue;
+      recordWouldStop(this.store, runId, {
+        reason: "edge_crash_finding",
+        mode,
+        key: `${gatePath}#${findingId}`,
+        summary: `The repro of finding ${findingId} crashes inside ${crash.file ?? "its file"} (${crash.actual}): it would start a correction, not stay a note`,
+        inputs: { findingId, ...crash },
+      });
+    }
+  }
+  /**
    * The edge-input probe of a planned source task (#1808), once after it settled without
    * failures: the `edge-cases` profile is shown the task's criteria, files and the edge taxonomy
    * of its languages (edge-inputs.ts) and proposes extreme legal inputs; the host runs each
@@ -16655,13 +16715,14 @@ ${note}`;
               canonical({ dimension: reviewer.dimension, outcomes: Object.fromEntries(outcomes) }),
             ),
           );
-        for (const f of gate.findings) f.outcome = outcomes.get(f.id)?.status ?? null;
+        const crashes = this.reproCrashes(gate.findings, outcomes, result.findings);
         const decided = new Set(reviewGateDecision(gate));
+        const gatePath = `${REVIEW_GATE_DIR}${reviewer.key}-${newId()}.json`;
         this.store.transaction(() =>
           this.store.artifact(
             runId,
             REVIEW_GATE_KIND,
-            `${REVIEW_GATE_DIR}${reviewer.key}-${newId()}.json`,
+            gatePath,
             canonical({
               schemaVersion: 1,
               ...gate,
@@ -16669,6 +16730,7 @@ ${note}`;
             } satisfies ReviewGateRecord),
           ),
         );
+        this.reproCrashWouldStops(runId, policy, gatePath, reviewGateCrashKeeps(gate), crashes);
         const blocking = result.findings.filter((f) => decided.has(f.id));
         const repaired = new Set(blocking.map((f) => f.id));
         addReviewNotes(
