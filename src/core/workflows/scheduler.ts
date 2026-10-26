@@ -819,7 +819,13 @@ import { digestsSpec, mayDigestSpec, READ_CRITERION, readCriterionTool } from ".
 import { forgetProgress } from "./stall.js";
 import { statedRequest } from "./stated-request.js";
 import type { AttemptUsageRecord } from "./step-budget.js";
-import { type LeaseResource, newId, type TaskRow, type WorkflowStore } from "./store.js";
+import {
+  type LeaseResource,
+  newId,
+  type RequestRow,
+  type TaskRow,
+  type WorkflowStore,
+} from "./store.js";
 import {
   isSuppliedContentFinding,
   suppliedConflictCriteria,
@@ -1016,12 +1022,14 @@ interface QueuedRequest {
 
 /**
  * What the test-integrity guard reads as requirements: the request (its fenced examples
- * included), the spec and the plan. A literal any of them names is prescribed, not a test input:
- * the compact spec drops exact messages and directives a brief prescribes (#1284).
+ * included) with a person's accepted answers (`statedRequest`, #2270), the spec and the plan. A
+ * literal any of them names is prescribed, not a test input: the compact spec drops exact
+ * messages and directives a brief prescribes (#1284); a suppression they name verbatim is
+ * prescribed, not added.
  */
-function integrityRequirementText(state: RuntimeState): string {
+function integrityRequirementText(state: RuntimeState, requests: readonly RequestRow[]): string {
   return [
-    state.requestText || state.prompt,
+    statedRequest(state, requests),
     state.spec ? canonical(state.spec) : "",
     state.plan ?? "",
   ].join("\n");
@@ -10919,7 +10927,8 @@ ${note}`;
         ...amendments.flatMap((a) => a.paths),
       ]),
       testSources,
-      specText: integrityRequirementText(state),
+      specText: integrityRequirementText(state, this.store.requests(runId)),
+      settledSuppressions: this.settledSuppressions(runId),
     };
     const measures = measureTestIntegrity(changes, scanOptions);
     const found = integrityDecision(measures);
@@ -10960,6 +10969,23 @@ ${note}`;
       impact: "The tests no longer verify the behavior the spec requires",
       suggestedFix: integrityFix(finding),
     }));
+  }
+  /**
+   * The files whose suppression finding a person's spec conflict answer decided (#2270): R72
+   * evalpin's cli stub kept its `#[allow(unused_variables)]` under two answers that the request
+   * wins, and every later scan raised the same finding again from the diff.
+   */
+  private settledSuppressions(runId: string): Set<string> {
+    const decided = decidedFindingIds(this.store, runId);
+    if (!decided.size) return new Set();
+    return new Set(
+      this.store
+        .findings(runId)
+        .filter((f) => decided.has(f.id))
+        .map((f) => JSON.parse(f.body_json) as Review["findings"][number])
+        .filter((f) => f.file && f.claim.startsWith("Test integrity (suppression)"))
+        .map((f) => f.file as string),
+    );
   }
   /** Tests first is on and a person has not approved the tests yet. */
   private testsPending(state: RuntimeState, policy: RunPolicy): boolean {
@@ -11167,7 +11193,8 @@ ${note}`;
         ...tasks.flatMap((t) => t.writes.filter((w) => w.reason).map((w) => w.path)),
         ...this.amendments(runId).flatMap((a) => a.paths),
       ]),
-      specText: integrityRequirementText(state),
+      specText: integrityRequirementText(state, this.store.requests(runId)),
+      settledSuppressions: this.settledSuppressions(runId),
     };
     const measures = measureTestIntegrity(runChanges, scanOptions);
     const found = integrityDecision(measures);

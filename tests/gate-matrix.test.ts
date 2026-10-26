@@ -369,6 +369,17 @@ const STATIC_FIXES: Record<Stack, string[]> = {
   dotnet: ["dotnet-format"],
 };
 
+/** A suppression on a source file of each stack, as a brief may prescribe it (#2270). */
+const PRESCRIBED_SUPPRESSION: Record<Stack, { path: string; line: string }> = {
+  bun: { path: "src/cli.ts", line: "// biome-ignore lint/correctness/noUnusedFunctionParameters: prescribed stub" },
+  npm: { path: "src/cli.js", line: "// eslint-disable-next-line no-unused-vars" },
+  python: { path: "src/app/cli.py", line: "def run(args, io):  # noqa: ARG001" },
+  go: { path: "cli.go", line: "func Run(args []string) int { return 2 } //nolint:unparam" },
+  rust: { path: "src/cli.rs", line: "#[allow(unused_variables)]" },
+  maven: { path: "src/main/java/app/Cli.java", line: '@SuppressWarnings("unused")' },
+  dotnet: { path: "src/App/Cli.cs", line: "#pragma warning disable CS0168" },
+};
+
 /** A formatter gate on one written file, as a timed-out run of it is bisected (#2240). */
 const FORMAT_FILE: Record<Stack, { path: string; command: string | null }> = {
   // A package.json `lint` or `format` script runs whatever it names: no file-scoped form.
@@ -2860,6 +2871,18 @@ for (const stack of STACKS) {
       } else {
         expect(command).toBeNull();
       }
+    });
+
+    // evalpin foundation (R72): `#[allow(unused_variables)]` on the stub the brief prescribed was
+    // counted as an added suppression at every scan. A suppression the request names verbatim is
+    // prescribed; one it does not name, or names to forbid, still counts.
+    cell(stack, "prescribed suppression is not added (#2270)", () => {
+      const { path, line } = PRESCRIBED_SUPPRESSION[stack];
+      const changes = [{ path, before: null, after: `${line}\n` }];
+      const rules = (specText: string) => scanTestIntegrity(changes, { specText }).map((f) => f.rule);
+      expect(rules("Write the stub.")).toEqual(["suppression"]);
+      expect(rules(`Write the stub with ${line} on it.`)).toEqual([]);
+      expect(rules(`Write the stub. Never use ${line}.`)).toEqual(["suppression"]);
     });
 
     cell(stack, "timed-out-failure", () => {

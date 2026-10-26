@@ -301,3 +301,36 @@ test("each integrity scan is recorded, kept in a bench trace and replayed, and a
   ];
   expect(runOf(replayTrace(out, { integrityRule: stricter }))?.newIntegrityFindings).toBeGreaterThan(0);
 }, 60_000);
+
+// R72 evalpin foundation (#2270): the brief prescribed a cli stub that `cargo clippy -D warnings`
+// rejects, the implementer added `#[allow(unused_variables)]`, and every scan counted it as added
+// although a person answered twice that the request wins. A suppression the request, an accepted
+// answer, the spec or the plan names verbatim is prescribed; anything else still counts.
+const SPELLINGS: { path: string; line: string; body: string }[] = [
+  { path: "src/cli.rs", line: "#[allow(unused_variables)]", body: "pub fn run(args: &[String]) -> i32 { 2 }" },
+  { path: "tests/json.rs", line: "#![allow(clippy::type_complexity)]", body: "#[test]\nfn parses() { assert_eq!(1, 1); }" },
+  { path: "src/cli.ts", line: "// @ts-ignore: the brief's stub takes untyped args", body: "export const run = (args) => 2;" },
+  { path: "src/cli.py", line: "def run(args, io):  # noqa: ARG001", body: "    return 2" },
+  { path: "cli.go", line: "func Run(args []string) int { //nolint:unparam", body: "\treturn 2\n}" },
+  { path: "src/main/java/app/Cli.java", line: '@SuppressWarnings("unused")', body: "class Cli { int run(String[] args) { return 2; } }" },
+  { path: "src/App/Cli.cs", line: "#pragma warning disable CS0168", body: "class Cli { int Run(string[] args) => 2; }" },
+  { path: "lib/cli.rb", line: "# rubocop:disable Lint/UnusedMethodArgument", body: "def run(args) = 2" },
+];
+
+test.each(SPELLINGS)("a suppression the request names verbatim is prescribed: $line (#2270)", ({ path, line, body }) => {
+  const changes = [{ path, before: null, after: `${line}\n${body}\n` }];
+  const rules = (specText: string) => scanTestIntegrity(changes, { specText }).map((f) => f.rule);
+  // Not named: added.
+  expect(rules("Write the cli stub; it returns 2.")).toEqual(["suppression"]);
+  // Named, here in a person's accepted answer appended to the request: prescribed.
+  expect(rules(`Write the cli stub.\n{"SPEC-CONFLICT-T010":"The request wins: keep the stub with ${line}"}`)).toEqual([]);
+  // Named only to forbid it: still added.
+  expect(rules(`Write the cli stub. Do not add ${line} anywhere.`)).toEqual(["suppression"]);
+});
+
+test("a bare suppression marker is never prescribed, and a settled file is not scanned again (#2270)", () => {
+  const changes = [{ path: "src/cli.py", before: null, after: "def run(args):  # noqa\n    return 2\n" }];
+  expect(scanTestIntegrity(changes, { specText: "Use # noqa where the stub needs it." }).map((f) => f.rule)).toEqual(["suppression"]);
+  expect(scanTestIntegrity(changes, { settledSuppressions: new Set(["src/cli.py"]) })).toEqual([]);
+  expect(scanTestIntegrity(changes, { settledSuppressions: new Set(["src/other.py"]) }).map((f) => f.rule)).toEqual(["suppression"]);
+});
