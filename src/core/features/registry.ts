@@ -1547,7 +1547,7 @@ export const FEATURES: readonly Feature[] = [
     id: "initiative-budget-reserves",
     group: "Initiatives",
     title:
-      "Feature token shares and dollar growth protect low estimates; split approval warns on underfunded shares and states the expected total; shadow dollar-cap park; a started run's review and convergence reserved before waiting lows (shadow, workflows.stageReserve)",
+      "Feature token shares and dollar growth protect low estimates; split approval warns on underfunded shares, states the expected total and names the pool the dollar cap pays for; shadow dollar-cap park; a started run's review and convergence reserved before waiting lows (shadow, workflows.stageReserve)",
     tui: ["/workflow: initiatives, split approval warning and B to extend budget"],
     cli: [
       "baked workflow initiative show",
@@ -1563,7 +1563,7 @@ export const FEATURES: readonly Feature[] = [
     id: "initiative-token-pool-forecast",
     group: "Initiatives",
     title:
-      "Token pool forecast notice at the measured ratio, block amounts with a one-step extend, and the shadow pool extension inside the dollar cap",
+      "Token pool forecast notice at the measured ratio advising the pool the dollar cap pays for, block amounts with a one-step extend, and the shadow pool extension inside the dollar cap",
     tui: [
       "/workflow: initiatives, Token forecast line and B prefilled with the suggested extension",
     ],

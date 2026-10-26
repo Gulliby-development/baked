@@ -339,8 +339,10 @@ export interface TokenPoolView {
    */
   coverTokens: number;
   /**
-   * What the notice suggests extending the pool to: the forecast, and no less than what starts
-   * every waiting feature at its low estimate, rounded up; null while the forecast fits the pool.
+   * What the notice suggests extending the pool to; null while the forecast fits the pool. With a
+   * dollar cap that pays for more tokens than the pool at the measured rate, the tokens it pays for
+   * (`dollarTokens`, #2244); else the forecast, and no less than what starts every waiting
+   * feature at its low estimate, rounded up.
    */
   suggestedTokens: number | null;
   /** Dollars per million tokens the initiative paid so far; null before it spent both. */
@@ -360,13 +362,16 @@ export function tokenPool(inputs: PoolInputs): TokenPoolView {
   // The notice warns on the higher of the two forecasts: advice may run ahead of the blend.
   const noticed =
     forecastTokens === null ? null : Math.max(forecastTokens, advice?.forecastTokens ?? 0);
-  const suggestedTokens =
-    noticed !== null && noticed > limitTokens ? roundUp(Math.max(noticed, lows)) : null;
   const usdPerMillion =
     usedTokens > 0 && cost.spentUsd > 0 ? (cost.spentUsd / usedTokens) * 1_000_000 : null;
-  const capTokens =
-    cost.capUsd !== null && usdPerMillion !== null
-      ? Math.floor((cost.capUsd / usdPerMillion) * 1_000_000)
+  const capTokens = cost.capUsd === null ? null : tokensForUsd(cost.capUsd, usdPerMillion);
+  // Advice only (#2244): the ratio forecast swings with the heavy features (R71 xmlvet advised
+  // 31.6M at 1.7x and 50.9M at 3.1x for a round that used 35.8M), while what the cap pays for at
+  // the measured rate is the pool the person's own dollar limit already sets.
+  const byDollars = dollarTokens(capTokens, limitTokens);
+  const suggestedTokens =
+    noticed !== null && noticed > limitTokens
+      ? (byDollars ?? roundUp(Math.max(noticed, lows)))
       : null;
   const pool: TokenPoolView = {
     limitTokens,
@@ -394,9 +399,33 @@ export function tokenPool(inputs: PoolInputs): TokenPoolView {
       tokenText(advice.forecastTokens) !== tokenText(forecastTokens)
         ? `${tokenText(forecastTokens)} at the blended ${inputs.ratio.toFixed(1)}x that budget decisions use; `
         : "";
-    pool.notice = `${basis} the ${inputs.features} features need about ${tokenText(advice?.forecastTokens ?? forecastTokens)} tokens (${blended}${tokenText(usedTokens)} used); the shared pool is ${tokenText(limitTokens)}. Extend to ${tokenText(suggestedTokens)} (baked workflow initiative extend ${inputs.initiativeId} --tokens ${suggestedTokens})${dollarRoom(pool, cost)}.`;
+    const command = `baked workflow initiative extend ${inputs.initiativeId} --tokens ${suggestedTokens}`;
+    const extend =
+      byDollars !== null && cost.capUsd !== null && usdPerMillion !== null
+        ? `Extend to ${tokenText(suggestedTokens)}, what the ${usd(cost.capUsd)} cap pays for at ${usd(usdPerMillion)} per million, so the pool stops no feature before the dollar cap does (${command}).`
+        : `Extend to ${tokenText(suggestedTokens)} (${command})${dollarRoom(pool, cost)}.`;
+    pool.notice = `${basis} the ${inputs.features} features need about ${tokenText(advice?.forecastTokens ?? forecastTokens)} tokens (${blended}${tokenText(usedTokens)} used); the shared pool is ${tokenText(limitTokens)}. ${extend}`;
   }
   return pool;
+}
+
+/**
+ * The pool a dollar cap implies (#2244): the tokens the cap pays for at a measured or history
+ * price, rounded down to `POOL_STEP` so it stays inside the dollars, when that is above the pool;
+ * null without a cap, a price, or when the pool already holds that many. Advice reads it (the
+ * forecast notice, the split approval); no decision does.
+ */
+export function dollarTokens(capTokens: number | null, limitTokens: number): number | null {
+  if (capTokens === null) return null;
+  const tokens = roundDown(capTokens);
+  return tokens > limitTokens ? tokens : null;
+}
+
+/** The tokens `capUsd` pays for at `usdPerMillion`; null without a price that gives a count. */
+export function tokensForUsd(capUsd: number, usdPerMillion: number | null): number | null {
+  if (usdPerMillion === null || usdPerMillion <= 0) return null;
+  const tokens = Math.floor((capUsd / usdPerMillion) * 1_000_000);
+  return Number.isSafeInteger(tokens) ? tokens : null;
 }
 
 /** What the dollar cap says beside the pool, for a notice or a block message. */

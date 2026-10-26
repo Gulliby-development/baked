@@ -136,6 +136,7 @@ import {
 import {
   DEFAULT_EXTEND_WITHIN_DOLLARS,
   DEFAULT_STAGE_RESERVE,
+  dollarTokens,
   type ExtendWithinDollars,
   type PlanChargeView,
   type PoolExtension,
@@ -147,6 +148,7 @@ import {
   poolShortText,
   type TokenPoolView,
   tokenPool,
+  tokensForUsd,
 } from "./token-pool.js";
 import {
   type AmendmentAnswer,
@@ -841,6 +843,36 @@ export function expectedSplitUsd(
     paid,
     remainingUsd: cost.remainingUsd,
   };
+}
+
+/**
+ * The pool a split's dollar cap implies (#2244): the tokens used so far plus what the dollars left
+ * under the cap pay for at the price the estimate gives the waiting features (their priced low
+ * dollars over their low tokens), rounded down to the pool step; null without a cap or a priced
+ * waiting feature, or when the pool already holds that many. Advice only: the split approval
+ * names it.
+ */
+export function splitDollarPool(
+  view: {
+    budget: { used: Pick<UsageView, "tokens">; cost: Pick<CostView, "capUsd" | "spentUsd"> };
+  },
+  waiting: readonly (Pick<FeatureEstimate, "costUsd" | "tokens"> | undefined)[],
+  limitTokens: number,
+): { capUsd: number; usdPerMillion: number; tokens: number } | null {
+  const capUsd = view.budget.cost.capUsd;
+  if (capUsd === null) return null;
+  let usdLow = 0;
+  let tokensLow = 0;
+  for (const f of waiting) {
+    if (!f?.costUsd || f.tokens.low <= 0) continue;
+    usdLow += f.costUsd.low;
+    tokensLow += f.tokens.low;
+  }
+  if (usdLow <= 0 || tokensLow <= 0) return null;
+  const usdPerMillion = (usdLow / tokensLow) * 1_000_000;
+  const left = tokensForUsd(Math.max(0, capUsd - view.budget.cost.spentUsd), usdPerMillion);
+  const tokens = dollarTokens(left === null ? null : view.budget.used.tokens + left, limitTokens);
+  return tokens === null ? null : { capUsd, usdPerMillion, tokens };
 }
 
 /** The split approval's sentence on the expected dollars beside the lows (#2218). */
@@ -3483,10 +3515,21 @@ export class InitiativeService {
         ? "until its plan is sized"
         : "until the run ends";
     const reservations = ` The share gate holds a started feature's run limit (its start share) against the pool ${held}, not what it uses: an extension to the high end is for those reservations, the ${tokenText(estimate.expectedTokens)} above is what it expects to be used.`;
+    // The pool the dollar cap implies at the estimate's price for the waiting features (#2244): R71
+    // xmlvet's $30 paid for about 35M tokens against a 30.0M pool, the approval said nothing and
+    // the pool stopped every feature for 19.6 minutes with dollars left.
+    const byDollars = splitDollarPool(
+      view,
+      waiting.map((f) => estimate.features.find((e) => e.featureId === f.id)),
+      limit,
+    );
     const tokenWarning =
       estimate.tokens.high > limit
-        ? `The estimate expects about ${tokenText(estimate.expectedTokens)} tokens${estimate.expectedTokens <= limit ? ", within" : ", above"} the shared budget (${tokenText(limit)}); its high end (${tokenText(estimate.tokens.high)} tokens; ${highCalibrationText(estimate.highCalibration)}) exceeds the shared budget.${calibrationLagText(estimate)}${reservations} Consider extending to ${estimate.withMargin} tokens, including margin, before approving, or approve with this risk.`
+        ? `The estimate expects about ${tokenText(estimate.expectedTokens)} tokens${estimate.expectedTokens <= limit ? ", within" : ", above"} the shared budget (${tokenText(limit)}); its high end (${tokenText(estimate.tokens.high)} tokens; ${highCalibrationText(estimate.highCalibration)}) exceeds the shared budget.${calibrationLagText(estimate)}${reservations}${byDollars ? "" : ` Consider extending to ${estimate.withMargin} tokens, including margin, before approving, or approve with this risk.`}`
         : "";
+    const dollarPoolWarning = byDollars
+      ? `The ${usd(byDollars.capUsd)} cap pays for about ${tokenText(byDollars.tokens)} tokens at ${usd(byDollars.usdPerMillion)} per million, the estimate's price for the waiting features, more than the shared pool (${tokenText(limit)}): the pool, not the dollar cap, would stop features first. Consider extending the pool to ${byDollars.tokens} tokens, what the cap pays for, before approving, or approve with this risk.`
+      : "";
     // The lows alone read as what the split costs: R70 evalpin extended to their $30.11 sum while
     // its seven features were expected to cost about $36.5 (#2218).
     const expected = dollarWarnings.length
@@ -3495,7 +3538,12 @@ export class InitiativeService {
           view.budget.cost,
         )
       : null;
-    const warning = [tokenWarning, ...dollarWarnings, expected ? expectedSplitText(expected) : ""]
+    const warning = [
+      tokenWarning,
+      dollarPoolWarning,
+      ...dollarWarnings,
+      expected ? expectedSplitText(expected) : "",
+    ]
       .filter(Boolean)
       .join(" ");
     if (!warning) return message;
@@ -3504,14 +3552,22 @@ export class InitiativeService {
     const capUsd = view.budget.cost.capUsd;
     const suggestedUsd =
       !tokenWarning && dollarGap > 0 && capUsd !== null ? centsUp(capUsd + dollarGap) : null;
-    const amount = tokenWarning
-      ? ` --tokens ${estimate.withMargin}`
-      : ` --budget-usd ${suggestedUsd ?? "N"}`;
+    // With a dollar cap that pays for more than the pool, the pool it implies: tokens above it
+    // would go unpaid at that price, and below it the pool stops features first (#2244).
+    const suggestedTokens = byDollars
+      ? byDollars.tokens
+      : tokenWarning
+        ? estimate.withMargin
+        : null;
+    const amount =
+      suggestedTokens === null
+        ? ` --budget-usd ${suggestedUsd ?? "N"}`
+        : ` --tokens ${suggestedTokens}${suggestedUsd !== null ? ` --budget-usd ${suggestedUsd}` : ""}`;
     const extend = `Use baked workflow initiative extend ${row.id}${amount} --expected-revision ${row.revision}.`;
     return recoveryAdvice(`${warning} ${extend} ${message}`, `${warning} ${message}`, {
       action: "extend",
       initiativeId: row.id,
-      ...(tokenWarning ? { suggestedTokens: estimate.withMargin } : {}),
+      ...(suggestedTokens !== null ? { suggestedTokens } : {}),
       ...(suggestedUsd !== null ? { suggestedUsd } : {}),
     });
   }
