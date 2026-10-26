@@ -1,7 +1,7 @@
 import { canonical, hashJson } from "../specs/hash.js";
 import { growCostCapToForecast } from "./budget.js";
 import { costCeilingUsd, costToleranceOf, currentCostCap } from "./cost-tolerance.js";
-import { DEFAULT_STAGE_RANGES } from "./estimate.js";
+import { DEFAULT_STAGE_RANGES, type PlannedStage } from "./estimate.js";
 import { forecastStageCost, runForecastStages } from "./forecast-price.js";
 import { hostGrowth } from "./host-growth.js";
 import { PolicySchema, type RunPolicy } from "./schemas.js";
@@ -61,6 +61,27 @@ function latestSizing(store: WorkflowStore, runId: string): Partial<SizingReport
   return latest
     ? (JSON.parse(store.readArtifact(runId, latest.id)) as Partial<SizingReport>)
     : null;
+}
+
+/**
+ * The stages after a run's tasks stage (its final review and convergence) with the tokens the
+ * forecast prices them at: the verification budget (`verificationTokens`) split by each stage's
+ * default high. Empty without a tasks stage. The cost forecast and a started feature run's stage
+ * reserve (`stageReserve`, #2241) price what follows the last task the same way.
+ */
+export function verificationStages(
+  stages: PlannedStage[],
+): { id: string; models: string[]; tokens: number }[] {
+  const tasks = stages.findIndex((s) => s.type === "tasks");
+  if (tasks < 0) return [];
+  const later = stages.slice(tasks + 1).filter((s) => s.models.length);
+  const weights = later.map((s) => DEFAULT_STAGE_RANGES[s.id]?.high ?? 60_000);
+  const total = weights.reduce((sum, n) => sum + n, 0);
+  return later.map((s, i) => ({
+    id: s.id,
+    models: s.models,
+    tokens: total > 0 ? (verificationTokens() * (weights[i] ?? 0)) / total : 0,
+  }));
 }
 
 /**
@@ -124,16 +145,7 @@ export function costForecast(
     // `spentUsd` and `reservedUsd`: a continuation after a token cap needs only the rest (#1648).
     tokens: Math.max(0, mid(t) * (byKind.get(t.kind) ?? 1) - (committed.get(t.taskId) ?? 0)),
   }));
-  const later = stages.slice(stages.indexOf(tasks) + 1).filter((s) => s.models.length);
-  const weights = later.map((s) => DEFAULT_STAGE_RANGES[s.id]?.high ?? 60_000);
-  const total = weights.reduce((sum, n) => sum + n, 0);
-  costs.push(
-    ...later.map((s, i) => ({
-      id: s.id,
-      models: s.models,
-      tokens: total > 0 ? (verificationTokens() * (weights[i] ?? 0)) / total : 0,
-    })),
-  );
+  costs.push(...verificationStages(stages));
   const remainingTokens = Math.round(costs.reduce((sum, s) => sum + s.tokens, 0));
   const prices = runPrices(store, runId);
   const { spentUsd, reservedUsd } = store.costUsage(runId, undefined, prices);

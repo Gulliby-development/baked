@@ -12,6 +12,7 @@ import {
   type ShareGateView,
   shareShortfall,
 } from "../src/core/workflows/initiatives/service.js";
+import { stageReserveDecision } from "../src/core/workflows/initiatives/growth.js";
 import { adviceRatio, decisionRatio, HOST_POOL_GROWTHS, planCharge, poolExtensionDecision, poolForecast, tokenPool } from "../src/core/workflows/initiatives/token-pool.js";
 import { initiativeActions } from "../src/core/workflows/initiatives/view-model.js";
 import { openTrace, replayInitiativeStarts, replayPoolGrowth } from "../src/core/workflows/trace.js";
@@ -113,11 +114,19 @@ describe("scenario: the shared token pool names its amounts and would grow insid
     const inputs = { initiativeId: "x", limitTokens: 10, usedTokens: 5, committedTokens: 5, forecastTokens: 20, ratio: null, features: 1, waiting: [{ id: "a", low: 6, high: 8 }], cost: { capUsd: 30, ceilingUsd: 30, spentUsd: 1, remainingUsd: 29, forecastUsd: 2 } };
     const decision = poolExtensionDecision(inputs, tokenPool(inputs));
     expect(Object.keys(HOST_POOL_GROWTHS)).toContain(decision.reason);
-    for (const growth of Object.values(HOST_POOL_GROWTHS)) {
+    for (const [reason, growth] of Object.entries(HOST_POOL_GROWTHS)) {
       expect(growth.defaultMode).toBe("shadow");
-      expect(growth.modes as readonly string[]).not.toContain("on");
+      // Growing for real is opt-in only where its pull request says so (#2241's stage reserve);
+      // making it the default is a pull request of its own.
+      if (reason !== "stage-reserve") expect(growth.modes as readonly string[]).not.toContain("on");
       expect(growth.boundBy).toContain("--budget-usd");
     }
+    // A started feature run's remaining review and convergence (#2241): bounded by the
+    // initiative's dollar cap with its tolerance, recorded as `decision.would_extend` in shadow
+    // (tests/workflow-scenario-started-run-stage-reserve.test.ts).
+    const stages = stageReserveDecision({ runId: "r", featureId: "get-command", stages: ["review"], stageReserveUsd: 0.3, runSpentUsd: 1.29, runReservedUsd: 0, requestedUsd: 0.02, boundUsd: 1.54, runHeldUsd: 1.54, spareUsd: 0, initiative: { committedUsd: 29.12, capUsd: 30, ceilingUsd: 37.5 } });
+    expect(Object.keys(HOST_POOL_GROWTHS)).toContain(stages.reason);
+    expect(HOST_POOL_GROWTHS["stage-reserve"].modes).toEqual(["off", "shadow", "on"]);
   });
 
   test("replay: on the R66 trace the measured forecast warns before the park, and the host would extend at the park", () => {

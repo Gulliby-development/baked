@@ -276,6 +276,7 @@ export class NativeWorkflowService implements WorkflowService {
       executor ?? new NativeAgentExecutor(this.store, this.leases, config, this.rootContext),
     );
     this.scheduler.growLimits = (runId) => this.growLimits?.(runId);
+    this.store.reserveStages = (runId, requestedUsd) => this.reserveStages?.(runId, requestedUsd);
   }
   /**
    * Raises a run's host-derived limits before its deadline stops it: an initiative's feature run
@@ -288,6 +289,19 @@ export class NativeWorkflowService implements WorkflowService {
     if (this.store.readonly) return;
     this.initiatives ??= new InitiativeService(this);
     this.initiatives.growRun(runId);
+  };
+  /**
+   * Asked before a model call stops on a run's cost ceiling: an initiative's feature run that
+   * finished its tasks reserves its remaining review and convergence (#2241). Held by the service
+   * for the same reason as `growLimits`: every entry point that drives a run has it.
+   */
+  reserveStages: ((runId: string, requestedUsd: number) => void) | undefined = (
+    runId,
+    requestedUsd,
+  ) => {
+    if (this.store.readonly) return;
+    this.initiatives ??= new InitiativeService(this);
+    this.initiatives.reserveStages(runId, requestedUsd);
   };
   private initiatives: InitiativeService | null = null;
   private enabled(): void {

@@ -29,6 +29,7 @@ import { migration010 } from "./migrations/010.js";
 import { migration011 } from "./migrations/011.js";
 import { migration012 } from "./migrations/012.js";
 import { migration013 } from "./migrations/013.js";
+import { recoveryAdvice } from "./remedies-model.js";
 import { RepairBlockSchema } from "./repairable-schema.js";
 import {
   type AgentProfile,
@@ -46,6 +47,7 @@ import {
   type WorkflowEvent,
 } from "./schemas.js";
 import { costStageOf, type RunPrices, runPrices } from "./stage-price.js";
+import { stageReserve, stageSuggestedUsd } from "./stage-reserve.js";
 import { DEFAULT_STALL_SETTINGS, touchProgress } from "./stall.js";
 import type { AttemptUsageRecord } from "./step-budget.js";
 import { stopFault } from "./stop-reasons.js";
@@ -346,6 +348,7 @@ export function readStoreHistory(path: string): PastRun[] {
 }
 
 /** The snapshot field of a run's dollar cap, left out when the policy has none. */
+const usd = (n: number): string => `$${n.toFixed(2)}`;
 function costCapOf(policyJson: string): { maxCostUsd?: number } {
   const cap = (JSON.parse(policyJson) as { maxCostUsd?: unknown }).maxCostUsd;
   return typeof cap === "number" ? { maxCostUsd: cap } : {};
@@ -478,7 +481,34 @@ export class WorkflowStore {
     );
   }
   transaction<T>(action: () => T): T {
-    return this.db.transaction(action).immediate();
+    const outermost = this.settled === null;
+    if (outermost) this.settled = [];
+    try {
+      return this.db.transaction(action).immediate();
+    } finally {
+      if (outermost) {
+        const queued = this.settled ?? [];
+        this.settled = null;
+        for (const record of queued) {
+          try {
+            record();
+          } catch {
+            // A record of what the host would have done never fails the transaction it followed.
+          }
+        }
+      }
+    }
+  }
+  /** Records queued by `afterTransaction` while a transaction runs; null outside one. */
+  private settled: (() => void)[] | null = null;
+  /**
+   * Runs `record` once the outermost transaction ends, committed or rolled back, or at once
+   * outside one: a shadow decision taken while a model call is checked stays recorded when the
+   * check stops the call and rolls the transaction back (#2241).
+   */
+  afterTransaction(record: () => void): void {
+    if (this.settled) this.settled.push(record);
+    else record();
   }
   readTransaction<T>(action: () => T): T {
     return this.db.transaction(action).deferred();
@@ -1741,17 +1771,53 @@ export class WorkflowStore {
         model,
         maxCostUsd,
       });
-    const checked = this.costCapDecision(runId, stepId, policy, model, tokens, attemptId);
-    if (!checked || checked.decision !== "stop") return;
+    let checked = this.costCapDecision(runId, stepId, policy, model, tokens, attemptId);
+    if (checked?.decision !== "stop") return;
+    // A feature run past its tasks asks its initiative for its remaining stages first (#2241):
+    // in shadow that records the growth and the stop stands; `on` grows the stored bound, which
+    // the second decision adopts.
+    if (this.reserveStages) {
+      try {
+        this.reserveStages(runId, checked.requestedUsd);
+      } catch {
+        // Without the reserve the stop stands.
+      }
+      checked = this.costCapDecision(runId, stepId, policy, model, tokens, attemptId);
+      if (checked?.decision !== "stop") return;
+    }
     const { spentUsd, reservedUsd, requestedUsd, ceilingUsd } = checked;
-    throw stopFault(
-      "cost",
+    const message =
       ceilingUsd > (maxCostUsd ?? ceilingUsd)
         ? "The next model call would pass the run's cost ceiling (its cap and tolerance)"
-        : "The next model call would pass the run's cost cap",
-      { spentUsd, reservedUsd, requestedUsd, maxCostUsd, ceilingUsd },
-    );
+        : "The next model call would pass the run's cost cap";
+    // The block names the cap that pays for the run's remaining stages, so the answer is one
+    // command (#2241, as #2042 does for the pool).
+    const reserve = stageReserve(this, runId, policy);
+    const suggestedUsd = reserve ? stageSuggestedUsd(reserve, requestedUsd) : null;
+    const recovery =
+      suggestedUsd !== null && reserve
+        ? recoveryAdvice(
+            `${message}: ${usd(spentUsd)} spent with its ${reserve.stages.join(" and ")} (${usd(reserve.usd)}) still to run. Extend its cost cap to ${usd(suggestedUsd)} to finish it (baked workflow extend ${runId} --cost-usd ${suggestedUsd}).`,
+            `${message}: ${usd(spentUsd)} spent with its ${reserve.stages.join(" and ")} (${usd(reserve.usd)}) still to run; a cap of ${usd(suggestedUsd)} finishes it.`,
+            { action: "extend", runId, suggestedUsd },
+          )
+        : null;
+    throw stopFault("cost", message, {
+      spentUsd,
+      reservedUsd,
+      requestedUsd,
+      maxCostUsd,
+      ceilingUsd,
+      ...(recovery ? { suggestedUsd, recovery } : {}),
+    });
   }
+  /**
+   * Asked before a model call stops on the run's cost ceiling, with the call's dollars: an
+   * initiative's feature run that finished its tasks grows, or records that it would grow, its
+   * dollar bound by its remaining stages (`InitiativeService.reserveStages`, #2241). Installed by
+   * `NativeWorkflowService`, so every entry point that drives a run has it; unset elsewhere.
+   */
+  reserveStages: ((runId: string, requestedUsd: number) => void) | undefined;
   /**
    * What the run's open attempts reserve in dollars (`costUsage`), for a run with a cost cap and
    * a reservation: `canExtendRun` measures spent plus reserved against the cap, as the service does.
