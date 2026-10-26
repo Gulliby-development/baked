@@ -2671,6 +2671,12 @@ export function replayInitiativeStarts(
     moments?: number[];
     /** Sets the initiative's `sizing.recencyHalfLife`, to backtest the weighting (#2150). */
     recencyHalfLife?: number;
+    /**
+     * Sets entries of the initiative's base policy `stopModes`, to replay a round at the mode it
+     * ran in: a round before #2245 held open runs at their limits (`initiative-plan-charge` in
+     * shadow), and a replay without this entry takes the current default.
+     */
+    stopModes?: RunPolicy["stopModes"];
   } = {},
 ): Omit<InitiativeReplay, "shareGate" | "newShareStops" | "poolGrowth" | "newPoolGrowth">[] {
   const gate = options.gate ?? shareShortfall;
@@ -2692,6 +2698,7 @@ export function replayInitiativeStarts(
       budgetAtStart: options.budgetAtStart !== false,
       moments: options.moments ?? [],
       ...(options.recencyHalfLife ? { recencyHalfLife: options.recencyHalfLife } : {}),
+      ...(options.stopModes ? { stopModes: options.stopModes } : {}),
     }),
   );
 }
@@ -2759,7 +2766,13 @@ function replayStarts(
     budgetAtStart,
     moments,
     recencyHalfLife,
-  }: { budgetAtStart: boolean; moments: number[]; recencyHalfLife?: number },
+    stopModes,
+  }: {
+    budgetAtStart: boolean;
+    moments: number[];
+    recencyHalfLife?: number;
+    stopModes?: RunPolicy["stopModes"];
+  },
 ): Omit<InitiativeReplay, "shareGate" | "newShareStops" | "poolGrowth" | "newPoolGrowth"> {
   const { store, workspace, dispose } = openTrace(path);
   const histories = new Map<string, ReturnType<typeof openTrace>>();
@@ -2769,13 +2782,17 @@ function replayStarts(
       .query("SELECT settings_json, decompose_run_id FROM initiatives WHERE id=?")
       .get(initiativeId) as { settings_json: string; decompose_run_id: string | null };
     const settings = JSON.parse(row.settings_json) as {
-      basePolicy?: { sizing?: { historyStores?: string[]; recencyHalfLife?: number } };
+      basePolicy?: {
+        sizing?: { historyStores?: string[]; recencyHalfLife?: number };
+        stopModes?: RunPolicy["stopModes"];
+      };
     };
     const missingHistory: string[] = [];
-    if (recencyHalfLife) {
+    if (recencyHalfLife || stopModes) {
       settings.basePolicy = {
         ...settings.basePolicy,
-        sizing: { ...settings.basePolicy?.sizing, recencyHalfLife },
+        ...(recencyHalfLife ? { sizing: { ...settings.basePolicy?.sizing, recencyHalfLife } } : {}),
+        ...(stopModes ? { stopModes: { ...settings.basePolicy?.stopModes, ...stopModes } } : {}),
       };
       db.run("UPDATE initiatives SET settings_json=? WHERE id=?", [
         JSON.stringify(settings),

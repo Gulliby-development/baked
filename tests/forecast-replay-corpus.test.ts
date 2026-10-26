@@ -18,6 +18,12 @@ import { type EdgeRecord, edgeCrashDecision } from "../src/core/verification/edg
 // accepted.json lists it for that run or initiative with the reason: the pull request that changes
 // the decision says so in its diff.
 const ROOT = join(import.meta.dir, "fixtures", "bench-traces");
+/**
+ * The mode the rounds before #2245 ran the plan charge in: open runs held at their limits. A test
+ * that compares a replay with what a round's gate recorded replays it at that mode; one that asks
+ * what the current code decides takes the default (`enforce`).
+ */
+const RECORDED_PLAN_CHARGE = { stopModes: { "initiative-plan-charge": "shadow" as const } };
 
 interface Accepted {
   newStops?: number;
@@ -267,6 +273,7 @@ describe("initiative starts replay on rewound traces (#1707)", () => {
     // what was left.
     const seen = new Map<string, { view: Parameters<typeof shareShortfall>[0]; feature: Parameters<typeof shareShortfall>[1] }>();
     const [replay] = replayInitiativeStarts(join(ROOT, "R59", "wheeltags.sqlite.gz"), {
+      ...RECORDED_PLAN_CHARGE,
       gate: (view, feature) => {
         // The first call is the start's own gate; a plan charge's replay calls it again (#2124).
         if (!seen.has(feature.id)) seen.set(feature.id, { view, feature });
@@ -284,7 +291,7 @@ describe("initiative starts replay on rewound traces (#1707)", () => {
     // (#2061) the initiative had spent $12.90 and $14.75, and their caps grow to $4.32 and $2.40
     // against lows of $2.22 and $0.72. Replayed on the final spend ($17.69) and the caps runs grew
     // to later, they read short against the cap.
-    const [plain] = replayInitiativeStarts(join(ROOT, "R59", "wheeltags.sqlite.gz"));
+    const [plain] = replayInitiativeStarts(join(ROOT, "R59", "wheeltags.sqlite.gz"), RECORDED_PLAN_CHARGE);
     expect(plain?.finalUsd).toBe(17.69);
     for (const id of ["dead-command", "expand-command"]) {
       const start = seen.get(id)!;
@@ -317,7 +324,7 @@ describe("initiative starts replay on rewound traces (#1707)", () => {
       trace.dispose();
     }
     const seen = new Map<string, ShareGateRecord["view"]["budget"]["cost"]>();
-    const [replay] = replayInitiativeStarts(path, { gate: (view, feature) => {
+    const [replay] = replayInitiativeStarts(path, { ...RECORDED_PLAN_CHARGE, gate: (view, feature) => {
       // The first call is the start's own gate; a plan charge's replay calls it again (#2124).
       if (!seen.has(feature.id)) seen.set(feature.id, view.budget.cost);
       return shareShortfall(view, feature);
@@ -336,6 +343,7 @@ describe("initiative starts replay on rewound traces (#1707)", () => {
     // and were accepted, with $3.67 of the $30 left unspent.
     const seen = new Map<string, { view: Parameters<typeof shareShortfall>[0]; feature: Parameters<typeof shareShortfall>[1] }>();
     replayInitiativeStarts(join(ROOT, "R62", "stepvet.sqlite.gz"), {
+      ...RECORDED_PLAN_CHARGE,
       gate: (view, feature) => {
         // The first call is the start's own gate; a plan charge's replay calls it again (#2124).
         if (!seen.has(feature.id)) seen.set(feature.id, { view, feature });
@@ -938,6 +946,46 @@ describe("the plan charge replays on recorded initiatives (#2100, #2056)", () =>
     expect(atPark?.runs.map((r) => r.featureId)).toEqual(["readcmd"]);
   }, 600000);
 
+  test("#2245: enforced with stopModes unset, R71 xmlvet's canonical parks at 04:48 with 4.7M left and one extend remedy", () => {
+    // The promotion's true would-park (R71, shadow): at canonical's start the open runs held 20.6M
+    // of the 30.0M pool at their limits, and 25.3M at their sized plans' need. scanner's plan
+    // priced its run at 11.75M against an 8.0M limit (it used 12.10M); the share gate's size class
+    // had put its need at 1.87M-5.62M. The pool ran short 65 minutes later (outline-command needed
+    // 836,956 more at 05:53:56), so the park is early and true: the extension it asks for would
+    // have been made while the operator was there instead of with the tree idle. The trace's
+    // policy has no stopModes, so the replay takes the reason's default.
+    const advice: { feature: string; mode: string | undefined; remaining: number; advice: ReturnType<typeof shareShortfall> }[] = [];
+    const [replay] = replayInitiativeStarts(join(ROOT, "R71", "xmlvet.sqlite.gz"), {
+      budgetAtStart: true,
+      gate: (view, feature) => {
+        const verdict = shareShortfall(view, feature);
+        if (verdict) advice.push({ feature: feature.id, mode: view.budget.planCharge?.mode, remaining: view.budget.remaining.tokens, advice: verdict });
+        return verdict;
+      },
+    });
+    expect(replay?.newStartStops).toBe(1);
+    const canonical = replay?.starts.find((s) => s.featureId === "canonical");
+    expect(canonical?.replayed).toBe("park");
+    expect(new Date(canonical?.at ?? 0).toISOString().slice(11, 16)).toBe("04:48");
+    expect(canonical?.planCharge).toMatchObject({ limitCommittedTokens: 20_579_789, planCommittedTokens: 25_336_588, releasedTokens: -4_756_799, featureId: "canonical", replayed: "park" });
+    expect(canonical?.planCharge?.runs.find((r) => r.featureId === "scanner")).toEqual({ featureId: "scanner", usedTokens: 739_992, limitTokens: 8_000_000, chargeTokens: 11_749_743 });
+    // Every other start still passes, enforced.
+    expect(replay?.starts.filter((s) => s.featureId !== "canonical").every((s) => s.replayed === "pass")).toBe(true);
+    // The park is the share gate's own, in enforce: 4.7M left, and one extend remedy (#2042).
+    const park = advice.find((a) => a.feature === "canonical");
+    expect(park?.mode).toBe("enforce");
+    expect(park?.remaining).toBe(30_000_000 - 25_336_588);
+    expect(park?.advice?.summary).toStartWith("The shared budget is short: canonical has 25324 tokens available");
+    expect(park?.advice?.remedies).toEqual([{ action: "extend", initiativeId: "xmlvet", suggestedTokens: 36_900_000 }]);
+    // The other initiatives of the two rounds (their 39 would_release records) park no start
+    // enforced: no false would-park. Nor does R60 wheeltags, whose dead an overpriced plan parked
+    // before #2253.
+    for (const trace of ["R70/namesound", "R70/evalpin", "R71/evalpin", "R60/wheeltags"])
+      for (const other of replayInitiativeStarts(join(ROOT, `${trace}.sqlite.gz`), { budgetAtStart: true })) {
+        expect(other.newStartStops).toBe(0);
+        expect(other.starts.every((s) => s.planCharge === null || s.planCharge.replayed === "pass")).toBe(true);
+      }
+  }, 900000);
   test("#2253: R60 wheeltags parks no start with the charge, names held at its expected need; R71 xmlvet's canonical still parks", () => {
     // names' plan sized its run at 10.3M-14.1M against its 8.0M limit, unmeasured (ratio null);
     // it used 4.57M. At its high end the charged gate parked dead at 19:31:58 (154,373 short).

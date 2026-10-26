@@ -55,6 +55,10 @@ describe("stop reasons", () => {
     expect(STOP_REASONS["initiative-dollar-cap"].modes).toEqual(["shadow", "advisory"]);
     expect(STOP_REASONS["initiative-dollar-cap"].defaultMode).toBe("shadow");
     const parse = (stopModes: unknown) => PolicySchema.safeParse({ ...defaultWorkflowPolicy, stopModes }).success;
+    // Promoted (#2245) after R70 and R71: enforced with stopModes unset, shadow still on request.
+    expect(STOP_REASONS["initiative-plan-charge"].defaultMode).toBe("enforce");
+    expect(stopMode(defaultWorkflowPolicy, "initiative-plan-charge")).toBe("enforce");
+    expect(parse({ "initiative-plan-charge": "shadow" })).toBe(true);
     expect(parse({ "cost-forecast": "shadow", "approval-scope": "advisory" })).toBe(true);
     expect(parse({ cost: "shadow" })).toBe(false);
     expect(parse({ "run-budget": "advisory" })).toBe(false);
