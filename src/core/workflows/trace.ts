@@ -3490,13 +3490,43 @@ function replayRun(
   const finalUsd = store.costUsage(runId).spentUsd;
   const policyAt = policyAtOf(final, revisions);
   const rewind = runRewinder(store, runId);
+  // An attempt's reservation grows before each of its calls (`expandReservation`), and each raise
+  // is checked with the spend, the open reservations and the policy of that moment. Each raise
+  // emits `budget.updated` with the run's open reservation total after it. Read before a rewind
+  // drops the events.
+  const raises = (
+    db
+      .query(
+        "SELECT at, payload_json FROM events WHERE run_id=? AND type='budget.updated' ORDER BY seq",
+      )
+      .all(runId) as { at: number; payload_json: string }[]
+  ).flatMap((e) => {
+    const total = (JSON.parse(e.payload_json) as { reservedTokens?: unknown }).reservedTokens;
+    return typeof total === "number" ? [{ at: e.at, total }] : [];
+  });
+  // Each attempt's forecast check at its start and its cost-cap check, from the latest moment back
+  // to the earliest, so every rewind only removes what came after it.
+  const moments = priced
+    .flatMap((attempt, index) => {
+      const ended = attempt.ended_at ?? Number.POSITIVE_INFINITY;
+      // The last raise while the attempt ran: it held its largest reservation then, and the event's
+      // total is exactly what the run's open attempts held. Without one it reserved its largest at
+      // its start.
+      const raise = raises.findLast(
+        (e) => e.at >= attempt.started_at && e.at <= ended && e.total >= attempt.reserved_tokens,
+      );
+      return [
+        { index, at: raise?.at ?? attempt.started_at, total: raise?.total ?? null, cost: true },
+        { index, at: attempt.started_at, total: null, cost: false },
+      ];
+    })
+    .sort((a, b) => b.at - a.at || b.index - a.index || Number(b.cost) - Number(a.cost));
   const boundaries: ReplayBoundary[] = [];
-  const costCap: CostCapBoundary[] = [];
-  for (let i = priced.length - 1; i >= 0; i--) {
-    const attempt = priced[i];
+  const costCap: (CostCapBoundary & { index: number })[] = [];
+  for (const moment of moments) {
+    const attempt = priced[moment.index];
     if (!attempt) continue;
-    const t = attempt.started_at;
-    const next = priced[i + 1]?.started_at ?? Number.POSITIVE_INFINITY;
+    const t = moment.at;
     db.transaction(() => {
       rewind(t, attempt);
       db.run(
@@ -3505,36 +3535,64 @@ function replayRun(
       );
     })();
     const policy = policyAt(t);
-    // The attempt's reservation against the cost cap, as `reserve` checked it before the
-    // attempt started. Its tokens are the largest the attempt reserved (`expandReservation`
-    // checks a raise the same way, later and with more spent). A growth it writes is undone
-    // before the forecast replay.
-    const checked = store.costCapDecision(
-      runId,
-      attempt.step_id,
-      structuredClone(policy),
-      attempt.model_id,
-      attempt.reserved_tokens,
-      attempt.id,
-      callRate,
-    );
-    if (checked)
-      costCap.unshift({
-        attemptId: attempt.id,
-        at: t,
-        stage: costStageOf(store, runId, attempt.step_id),
-        model: attempt.model_id,
-        tokens: attempt.reserved_tokens,
-        replayed: checked.decision,
-        requestedUsd: checked.requestedUsd,
-        spentUsd: checked.spentUsd,
-        reservedUsd: checked.reservedUsd,
-        ceilingUsd: checked.ceilingUsd,
-      });
-    db.transaction(() => {
-      db.run("DELETE FROM artifacts WHERE run_id=? AND created_at>?", [runId, t]);
-      db.run("UPDATE runs SET policy_json=? WHERE id=?", [canonical(policy), runId]);
-    })();
+    if (moment.cost) {
+      // The attempt's largest reservation against the cost cap, as `reserve` or the raise to it
+      // in `expandReservation` checked it. At a raise the other open attempts held the event's
+      // total less this attempt's tokens; the trace keeps only their largest reservations, so
+      // they are scaled down to that total for the check and restored after it.
+      const others = db
+        .query(
+          "SELECT id, reserved_tokens AS tokens FROM attempts WHERE run_id=? AND id<>? AND usage_complete=0 AND model_id IS NOT NULL",
+        )
+        .all(runId, attempt.id) as { id: string; tokens: number }[];
+      const held = others.reduce((sum, a) => sum + a.tokens, 0);
+      const left =
+        moment.total === null ? held : Math.max(0, moment.total - attempt.reserved_tokens);
+      if (held > left)
+        for (const a of others)
+          db.run("UPDATE attempts SET reserved_tokens=? WHERE run_id=? AND id=?", [
+            Math.floor((a.tokens * left) / held),
+            runId,
+            a.id,
+          ]);
+      const checked = store.costCapDecision(
+        runId,
+        attempt.step_id,
+        structuredClone(policy),
+        attempt.model_id,
+        attempt.reserved_tokens,
+        attempt.id,
+        callRate,
+      );
+      if (checked)
+        costCap.push({
+          index: moment.index,
+          attemptId: attempt.id,
+          at: t,
+          stage: costStageOf(store, runId, attempt.step_id),
+          model: attempt.model_id,
+          tokens: attempt.reserved_tokens,
+          replayed: checked.decision,
+          requestedUsd: checked.requestedUsd,
+          spentUsd: checked.spentUsd,
+          reservedUsd: checked.reservedUsd,
+          ceilingUsd: checked.ceilingUsd,
+        });
+      // A growth the check writes is undone before the next check.
+      db.transaction(() => {
+        if (held > left)
+          for (const a of others)
+            db.run("UPDATE attempts SET reserved_tokens=? WHERE run_id=? AND id=?", [
+              a.tokens,
+              runId,
+              a.id,
+            ]);
+        db.run("DELETE FROM artifacts WHERE run_id=? AND created_at>?", [runId, t]);
+        db.run("UPDATE runs SET policy_json=? WHERE id=?", [canonical(policy), runId]);
+      })();
+      continue;
+    }
+    const next = priced[moment.index + 1]?.started_at ?? Number.POSITIVE_INFINITY;
     const forecast = costForecast(store, runId, policy);
     let replayed: ForecastDecision = "pass";
     const before = store.artifacts(runId).length;
@@ -3565,6 +3623,7 @@ function replayRun(
       spentUsd: forecast?.spentUsd ?? null,
     });
   }
+  costCap.sort((a, b) => a.index - b.index);
   const ratios: RunReplay["ratios"] = [];
   if (finalUsd > 0)
     for (const at of [0.25, 0.5, 0.75]) {
@@ -3582,7 +3641,7 @@ function replayRun(
     newGrowth: boundaries.filter((b) => b.replayed === "grow" && b.recorded === "pass").length,
     removedStops: boundaries.filter((b) => b.recorded === "stop" && b.replayed !== "stop").length,
     ratios,
-    costCap,
+    costCap: costCap.map(({ index: _, ...b }) => b),
     newCostStops: costCap.filter((b) => b.replayed === "stop").length,
   };
 }

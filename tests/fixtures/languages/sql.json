@@ -10,6 +10,7 @@
     "testsGrown": "sql/test_sum.sql .. \nFailed 1/3 subtests \n\nTest Summary Report\n-------------------\nsql/test_sum.sql (Wstat: 0 Tests: 3 Failed: 1)\n  Failed test:  3\nFiles=1, Tests=3,  0 wallclock secs ( 0.01 usr +  0.00 sys =  0.01 CPU)\nResult: FAIL\n"
   },
   "expected": {
+    "checkConfigs": [".sqlfluff: sqlfluff", ".sqlfluffignore: sqlfluff, read as text"],
     "tests": [
       "sql/test_sum.sql"
     ],

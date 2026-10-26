@@ -1,5 +1,5 @@
 import { hashJson } from "../specs/hash.js";
-import type { Analysis, RunPolicy, Spec } from "./schemas.js";
+import type { Analysis, RunPolicy, Spec, TaskGraph } from "./schemas.js";
 
 /**
  * The derivation audit (#1465, opt-in with `derivationAudit: "on"`). The spec author writes
@@ -53,6 +53,13 @@ export function derivationAuditCarryOn(
   policy: Pick<RunPolicy, "derivationAudit" | "derivationAuditCarry">,
 ): boolean {
   return policy.derivationAuditCarry === "on";
+}
+
+/** Whether a derivation return amends the criteria in place and keeps the plan (#2219). */
+export function derivationAmendOn(
+  policy: Pick<RunPolicy, "derivationAudit" | "derivationAmend">,
+): boolean {
+  return policy.derivationAmend === "on";
 }
 
 type Derivation = NonNullable<Analysis["derivations"]>[number];
@@ -282,3 +289,94 @@ export function derivationFindings(
 /** The note that sends rows the requirements do not give back to the spec author. */
 export const DERIVATION_RETURN_NOTE =
   "Derivation audit findings: these criterion rows do not follow from the requirements, which outrank the criteria. Correct each row in spec.json to the value the requirements give, or correct the requirement when the request itself states the row, and keep every other part of the spec unchanged:";
+
+/**
+ * A derivation amendment in flight (#2219): the criteria the return names, the rows the audit
+ * could not reproduce, and the hash of the spec with those criteria's given, when and then left
+ * out. The specify stage compares the amended spec against it to decide whether the plan stands.
+ */
+export interface DerivationAmend {
+  criterionIds: string[];
+  rows: string[];
+  baseline: string;
+}
+
+/** A criterion without its given, when and then. */
+function withoutText(criterion: Spec["criteria"][number]): unknown {
+  const { given: _given, when: _when, then: _then, ...kept } = criterion;
+  return kept;
+}
+
+/**
+ * The spec with the text of `criterionIds` left out, and its revision number: what an amendment
+ * of exactly those criteria leaves as it was.
+ */
+function amendMask(spec: Spec, criterionIds: readonly string[]): unknown {
+  const { revision: _revision, ...rest } = spec;
+  return {
+    ...rest,
+    criteria: spec.criteria.map((c) => (criterionIds.includes(c.id) ? withoutText(c) : c)),
+  };
+}
+
+/**
+ * Whether a blocking analysis outcome may be answered by an amendment (#2219): every blocking
+ * finding is a derivation audit finding (no ambiguity, coverage or other structural finding), and
+ * the rows it names are few enough for one bounded revision.
+ */
+export function amendableReturn(blocking: readonly { id: string }[], maxFindings: number): boolean {
+  return (
+    blocking.length > 0 && blocking.length <= maxFindings && blocking.every(isDerivationFinding)
+  );
+}
+
+/** The amendment the derivation return starts: the criteria its findings name and their rows. */
+export function startAmend(
+  spec: Spec,
+  derivations: Analysis["derivations"],
+  findings: readonly { id: string }[],
+): DerivationAmend {
+  const criterionIds = findings.map((f) => f.id.slice("DERIVE-".length));
+  return {
+    criterionIds,
+    rows: (derivations ?? [])
+      .filter((d) => !d.matches && criterionIds.includes(d.criterionId))
+      .map((d) => d.row),
+    baseline: hashJson(amendMask(spec, criterionIds)),
+  };
+}
+
+/**
+ * Whether the plan and tasks stand after the spec author amended the criteria (#2219), and why
+ * not when they do not. They stand when the amended spec differs from the one analyzed only in the
+ * given, when and then of the amended criteria (same criteria, ids, requirement ids, methods and
+ * requirement text, so no task's criterion list or writes can change), when no wrong row is
+ * copied into plan.md or tasks.json, and when no task carries rows of its own (`rowsAsData`).
+ */
+export function amendKeepsPlan(
+  amend: DerivationAmend,
+  spec: Spec,
+  plan: string | null,
+  graph: TaskGraph | null,
+  rowsAsData: boolean,
+): { keep: true } | { keep: false; reason: string } {
+  if (plan === null || !graph) return { keep: false, reason: "no plan to keep" };
+  if (rowsAsData) return { keep: false, reason: "tasks carry acceptance rows (rowsAsData)" };
+  if (hashJson(amendMask(spec, amend.criterionIds)) !== amend.baseline)
+    return {
+      keep: false,
+      reason: "the amendment changed more than the given, when and then of the amended criteria",
+    };
+  const tasks = JSON.stringify(graph.tasks);
+  const copied = amend.rows.filter(
+    (row) =>
+      row.trim().length > 0 &&
+      (plan.includes(row) || tasks.includes(JSON.stringify(row).slice(1, -1))),
+  );
+  if (copied.length)
+    return {
+      keep: false,
+      reason: `plan.md or tasks.json copies a corrected row: ${copied.map((r) => JSON.stringify(r)).join(", ")}`,
+    };
+  return { keep: true };
+}

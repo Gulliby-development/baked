@@ -6,6 +6,7 @@
     ".clang-format": "BasedOnStyle: LLVM\n"
   },
   "expected": {
+    "checkConfigs": [".clang-tidy: clang-tidy", ".clang-format: clang-format, read as text"],
     "tests": [
       "src/sum_test.c"
     ],

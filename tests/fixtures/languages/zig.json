@@ -5,6 +5,7 @@
     "build.zig": "const std = @import(\"std\");\n"
   },
   "expected": {
+    "checkConfigs": null,
     "tests": [
       "src/sum_test.zig"
     ],

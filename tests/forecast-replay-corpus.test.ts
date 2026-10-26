@@ -496,6 +496,21 @@ describe("the per-call cost cap replays on recorded reservations (#1740)", () =>
     expect(stops(() => 1)).toBeGreaterThan(0);
     expect(stops()).toBe(0);
   }, 120000);
+
+  test("R70 evalpin: a raised reservation is checked at its raise, with the open total of that moment", () => {
+    // suite-runner's correctness review reserved about 50k tokens at its start under a $5.37 cap and
+    // raised to 138,552 before its second call, after the initiative had let the cap grow to $5.69.
+    // Checked at the start with its largest reservation, both reviews were refused ($6.16 and $6.34
+    // against $5.91); the run checked them at $6.16 against $6.26 and $5.88 against $5.91.
+    const run = replayTrace(join(ROOT, "R70/evalpin.sqlite.gz")).runs.find((r) => r.featureId === "evalpin_suite-runner");
+    const reviews = run!.costCap.filter((b) => b.stage === "review");
+    expect(reviews.map((b) => [b.tokens, b.replayed, b.ceilingUsd])).toEqual([
+      [138552, "pass", 6.26],
+      [32883, "pass", 5.91],
+    ]);
+    expect(reviews[1]!.spentUsd + reviews[1]!.reservedUsd + reviews[1]!.requestedUsd).toBeCloseTo(5.88, 2);
+    expect(run!.newCostStops).toBe(0);
+  }, 120000);
 });
 
 describe("test task splits replay on recorded sizing reports (#1789)", () => {
