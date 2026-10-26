@@ -57,8 +57,12 @@ export function stageReserve(
   return { stages: remaining.map((s) => s.id), usd, spentUsd, reservedUsd };
 }
 
-/** Rounds dollars up to the cent, so a suggested cap always covers the need. */
-export const centsUp = (n: number): number => Math.ceil(Math.round(n * 1e6) / 1e4) / 100;
+/**
+ * Rounds dollars up to the cent, so a suggested cap always covers the need. The sum is first
+ * rounded to a billionth of a dollar, which drops float noise (0.1 + 0.2) without dropping a
+ * reservation of a few nanodollars that a millionth would round away.
+ */
+export const centsUp = (n: number): number => Math.ceil(Math.round(n * 1e9) / 1e7) / 100;
 
 /**
  * The dollar cap that lets a run finish its remaining stages (#2241): what it spent, what its open
