@@ -377,6 +377,8 @@ export interface QualityConfig {
   conflictFinish?: "off" | "on";
   /** Let a run go on with the ready tasks a blocked corrective does not hold, and end with its stop once they ran: `on` or `off` (default, recorded in shadow). */
   correctiveDefer?: "off" | "on";
+  /** Route a test task's failure whose expected values are its criteria's literals to the finished sibling that wrote the code under test: `on` or `off` (default, recorded in shadow). */
+  sourceDefectRoute?: "off" | "on";
   /** Property-based tests from marked criteria: `preset` or absent follows the workflow preset. */
   propertyTests?: "preset" | "auto" | "off";
 }

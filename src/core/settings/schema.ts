@@ -1169,6 +1169,28 @@ export const SETTINGS: readonly SettingDefinition[] = [
     ],
   },
   {
+    id: "quality.sourceDefectRoute",
+    page: "code-quality",
+    section: "Workflow runs",
+    label: "Send a test's wrong-value failure to the code's task",
+    help: "When a test task's failing assertions expect exactly the values the spec's criteria state, the code under test is what is wrong. With this on, the failure goes straight to the finished task that wrote that code, and its correction may edit the source, instead of the test task first trying again on tests it cannot fix.",
+    scopes: BOTH,
+    type: "enum",
+    default: "off",
+    options: [
+      {
+        value: "off",
+        label: "off",
+        help: "The test task keeps the failure; the host only records where it would have sent it.",
+      },
+      {
+        value: "on",
+        label: "on",
+        help: "Send the failure to the task that wrote the code under test at the first failing check.",
+      },
+    ],
+  },
+  {
     id: "quality.propertyTests",
     page: "code-quality",
     section: "Tests",

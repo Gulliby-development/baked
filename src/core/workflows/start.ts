@@ -265,6 +265,7 @@ export async function prepareStart(
     defectClasses: policyDefectClasses,
     conflictFinish: policyConflictFinish,
     correctiveDefer: policyCorrectiveDefer,
+    sourceDefectRoute: policySourceDefectRoute,
     propertyTests: policyPropertyTests,
     allowOverlappingWrites,
     editDiagnostics: _editDiagnostics,
@@ -315,6 +316,7 @@ export async function prepareStart(
   const defectClasses = policyDefectClasses ?? config.quality?.defectClasses ?? "off";
   const conflictFinish = policyConflictFinish ?? config.quality?.conflictFinish ?? "off";
   const correctiveDefer = policyCorrectiveDefer ?? config.quality?.correctiveDefer ?? "off";
+  const sourceDefectRoute = policySourceDefectRoute ?? config.quality?.sourceDefectRoute ?? "off";
   const propertyTests =
     request.propertyTests ??
     policyPropertyTests ??
@@ -374,6 +376,7 @@ export async function prepareStart(
     ...(defectClasses === "on" ? { defectClasses } : {}),
     ...(conflictFinish === "on" ? { conflictFinish } : {}),
     ...(correctiveDefer === "on" ? { correctiveDefer } : {}),
+    ...(sourceDefectRoute === "on" ? { sourceDefectRoute } : {}),
     ...(propertyTests !== presetPropertyTests(preset) ? { propertyTests } : {}),
     ...(request.maxConcurrentWriters !== undefined
       ? { maxConcurrentWriters: request.maxConcurrentWriters }

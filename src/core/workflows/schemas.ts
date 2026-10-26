@@ -719,6 +719,15 @@ export const PolicySchema = z
      */
     correctiveDefer: z.literal("on").optional(),
     /**
+     * The host's route of a test task's wrong-value failure (source-defect.ts, #2220): `on` hands
+     * a planned test task's failing check whose expected values are all literals of its criteria
+     * to the finished sibling that carries those criteria and wrote the source the tests import,
+     * as a stack frame in that source does: no continuation of the test task, and its corrective
+     * writes the source. Absent means shadow (the decision is recorded, the owner stays the test
+     * task), so stored policies keep their hash.
+     */
+    sourceDefectRoute: z.literal("on").optional(),
+    /**
      * The project's choices for the anti-slop rule pack (quality/rules.ts), which is always on:
      * rules turned off, severities changed and ast-grep rule files added. Absent means the
      * built-in pack as shipped, so stored policies keep their hash.

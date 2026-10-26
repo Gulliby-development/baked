@@ -155,6 +155,13 @@ import {
 import { PolicySchema, type RunPolicy } from "./schemas.js";
 import { NativeWorkflowService } from "./service.js";
 import { exceedsTestCapacity, type SizingReport } from "./sizing.js";
+import {
+  SOURCE_DEFECT_DIR,
+  SOURCE_DEFECT_KIND,
+  type SourceDefectRecord,
+  type SourceDefectRule,
+  sourceDefectDecision,
+} from "./source-defect.js";
 import { costStageOf, runPrices } from "./stage-price.js";
 import { type LadderRung, nextRung, type RecoveryPlacement } from "./stall-ladder.js";
 import { type ArtifactRow, WorkflowStore } from "./store.js";
@@ -221,6 +228,8 @@ const KEPT_ARTIFACTS = new Set([
   CONFLICT_FINISH_KIND,
   // Each blocked corrective's order decision: stop code, ready task ids, writers (#2109).
   DEFER_KIND,
+  // Each test task's wrong-value failure route: counts, task ids and paths, no literals (#2220).
+  SOURCE_DEFECT_KIND,
 ]);
 
 /** Tables that hold evidence, effects or prose the replay never reads. */
@@ -775,6 +784,57 @@ export interface RunReplay {
   correctiveDefers: CorrectiveDeferBoundary[];
   /** Blocked correctives the current rule runs independent work past, or not, differently. */
   newDeferDecisions: number;
+  /** Each test task's wrong-value failure route against the current rule (#2220). */
+  sourceDefects: SourceDefectBoundary[];
+  /** Test task failures the current rule routes to the source's task, or not, differently. */
+  newSourceDefectRoutes: number;
+}
+
+export interface SourceDefectBoundary {
+  taskId: string;
+  mode: SourceDefectRecord["mode"];
+  owners: string[];
+  recorded: boolean;
+  replayed: boolean;
+}
+
+/**
+ * Every route decision of a test task's failure a run recorded (`source-defect/tasks/`, #2220),
+ * decided again from its recorded counts, owners and files. Traces before #2220 record none.
+ */
+export function replaySourceDefects(
+  store: WorkflowStore,
+  runId: string,
+  decide: SourceDefectRule = sourceDefectDecision,
+): SourceDefectBoundary[] {
+  return store
+    .artifacts(runId)
+    .filter((a) => a.kind === SOURCE_DEFECT_KIND && a.logical_path.startsWith(SOURCE_DEFECT_DIR))
+    .flatMap((artifact) => {
+      let record: SourceDefectRecord;
+      try {
+        record = JSON.parse(store.readArtifact(runId, artifact.id));
+      } catch {
+        return [];
+      }
+      const input = {
+        testTask: record.testTask ?? false,
+        self: record.self ?? false,
+        expected: record.expected ?? 0,
+        matched: record.matched ?? 0,
+        owners: record.owners ?? [],
+        files: record.files ?? [],
+      };
+      return [
+        {
+          taskId: record.taskId,
+          mode: record.mode,
+          owners: input.owners,
+          recorded: record.route,
+          replayed: decide(input),
+        },
+      ];
+    });
 }
 
 export interface CorrectiveDeferBoundary {
@@ -3314,6 +3374,8 @@ function replayRun(
   | "newConflictFinishes"
   | "correctiveDefers"
   | "newDeferDecisions"
+  | "sourceDefects"
+  | "newSourceDefectRoutes"
 > | null {
   const db = store.connection;
   const run = store.run(runId);
@@ -3488,6 +3550,7 @@ export function replayTrace(
     unownedRule?: UnownedRule;
     conflictFinishRule?: ConflictFinishRule;
     correctiveDeferRule?: CorrectiveDeferRule;
+    sourceDefectRule?: SourceDefectRule;
   } = {},
 ): TraceReplay {
   // Initiative starts rewind their own copies of the trace, before the run replay rewinds this one.
@@ -3581,6 +3644,9 @@ export function replayTrace(
         replayCorrectiveDefers(store, runId, options.correctiveDeferRule),
       ]),
     );
+    const routes = new Map(
+      runIds.map((runId) => [runId, replaySourceDefects(store, runId, options.sourceDefectRule)]),
+    );
     const runs: RunReplay[] = [];
     for (const runId of runIds) {
       const firstByte = timings.get(runId) ?? [];
@@ -3613,6 +3679,7 @@ export function replayTrace(
       const correctiveScopes = scopes.get(runId) ?? [];
       const conflictFinishes = finishes.get(runId) ?? [];
       const correctiveDefers = defers.get(runId) ?? [];
+      const sourceDefects = routes.get(runId) ?? [];
       if (
         !replay.boundaries.length &&
         !firstByte.length &&
@@ -3632,7 +3699,8 @@ export function replayTrace(
         !evidenceDecisions.length &&
         !correctiveScopes.length &&
         !conflictFinishes.length &&
-        !correctiveDefers.length
+        !correctiveDefers.length &&
+        !sourceDefects.length
       )
         continue;
       runs.push({
@@ -3697,6 +3765,8 @@ export function replayTrace(
         newConflictFinishes: conflictFinishes.filter((b) => b.replayed !== b.recorded).length,
         correctiveDefers,
         newDeferDecisions: correctiveDefers.filter((b) => b.replayed !== b.recorded).length,
+        sourceDefects,
+        newSourceDefectRoutes: sourceDefects.filter((b) => b.replayed !== b.recorded).length,
       });
     }
     const gates = replayShareGate(store, options.shareGate);
