@@ -171,6 +171,7 @@ export async function prepareStart(
     request.workflowId,
     loaded.definition.stages.map((stage) => stage.id),
     request.routes,
+    request.modelStrict === true,
   );
   const profiles = registry.list().map((p) => p.profile);
   if (request.modelStrict) routing.strict = true;
