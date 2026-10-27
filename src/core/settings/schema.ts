@@ -1147,6 +1147,72 @@ export const SETTINGS: readonly SettingDefinition[] = [
     ],
   },
   {
+    id: "quality.correctiveDefer",
+    page: "code-quality",
+    section: "Workflow runs",
+    label: "Run independent work past a blocked correction",
+    help: "When a correction blocks, the tasks that read the files it would have fixed wait, and the run used to stop at once. With this on, the ready tasks the correction does not touch run first and the run then stops with the blocked correction, so a resume after the fix has less left to do.",
+    scopes: BOTH,
+    type: "enum",
+    default: "off",
+    options: [
+      {
+        value: "off",
+        label: "off",
+        help: "The run stops at the blocked correction; the host only records what could have run.",
+      },
+      {
+        value: "on",
+        label: "on",
+        help: "Run the independent ready tasks first, then stop with the blocked correction.",
+      },
+    ],
+  },
+  {
+    id: "quality.baselineFix",
+    page: "code-quality",
+    section: "Workflow runs",
+    label: "Repair lint debt from before the run",
+    help: "When a required lint or format check already fails before any change, on files no task of the plan writes, and its tool marks every finding as correctable, the host runs the check's fixer on those files before the first task. It keeps the edit only when the check then passes, and puts the files back otherwise.",
+    scopes: BOTH,
+    type: "enum",
+    default: "off",
+    options: [
+      {
+        value: "off",
+        label: "off",
+        help: "The host only records the failure; the run stops at the checks stage as before.",
+      },
+      {
+        value: "on",
+        label: "on",
+        help: "Run the fixer on the named files before the first task and keep a passing result.",
+      },
+    ],
+  },
+  {
+    id: "quality.sourceDefectRoute",
+    page: "code-quality",
+    section: "Workflow runs",
+    label: "Send a test's wrong-value failure to the code's task",
+    help: "When a test task's failing assertions expect exactly the values the spec's criteria state, the code under test is what is wrong. With this on, the failure goes straight to the finished task that wrote that code, and its correction may edit the source, instead of the test task first trying again on tests it cannot fix.",
+    scopes: BOTH,
+    type: "enum",
+    default: "off",
+    options: [
+      {
+        value: "off",
+        label: "off",
+        help: "The test task keeps the failure; the host only records where it would have sent it.",
+      },
+      {
+        value: "on",
+        label: "on",
+        help: "Send the failure to the task that wrote the code under test at the first failing check.",
+      },
+    ],
+  },
+  {
     id: "quality.propertyTests",
     page: "code-quality",
     section: "Tests",

@@ -2,8 +2,10 @@ import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import {
   ADAPTIVE_FIRST_BYTE_SAMPLES,
-  adaptiveFirstByteMs,
   type CallTiming,
+  type FirstByteInputs,
+  firstByteDeadline,
+  firstByteInputs,
   type SizedFirstByte,
 } from "./provider-health.js";
 
@@ -20,8 +22,12 @@ const KEPT = 50;
 export class FirstByteHistory {
   private readonly samples = new Map<string, SizedFirstByte[]>();
   private shared: Map<string, SizedFirstByte[]> | null = null;
-  /** Shapes whose last call ran out its adaptive deadline unanswered (#2041). */
-  private readonly expired = new Set<string>();
+  /**
+   * Shapes whose call ran out its adaptive deadline unanswered (#2041), with the largest prompt
+   * that did (0 when the call recorded no size). Only an answer to a prompt at least that large
+   * clears it (#2193).
+   */
+  private readonly expired = new Map<string, number>();
 
   constructor(private readonly sharedFile?: string) {}
 
@@ -33,10 +39,15 @@ export class FirstByteHistory {
     if (call.status !== undefined) return;
     const key = shapeKey(model, call.stage, call.effort);
     if (call.firstByteMs === null) {
-      if (call.limitMs !== undefined && call.durationMs >= call.limitMs) this.expired.add(key);
+      if (call.limitMs !== undefined && call.durationMs >= call.limitMs)
+        this.expired.set(key, Math.max(this.expired.get(key) ?? 0, call.promptChars ?? 0));
       return;
     }
-    this.expired.delete(key);
+    // A retry attempt opens with short calls of the same shape (a resumed turn's continuations
+    // answer in seconds): they say nothing about the large call that expired. R69 skillplumb's
+    // plan call (142k characters) expired three times at 180 s while each retry's first 8 s answer
+    // had cleared the ceiling before it (#2193).
+    if ((call.promptChars ?? 0) >= (this.expired.get(key) ?? 0)) this.expired.delete(key);
     const sample = {
       ms: call.firstByteMs,
       ...(call.promptChars !== undefined ? { chars: call.promptChars } : {}),
@@ -47,10 +58,10 @@ export class FirstByteHistory {
 
   /**
    * The first-response deadline of a call of this shape and prompt size (`adaptiveFirstByteMs`).
-   * After a call of the shape ran out its adaptive deadline unanswered, the next one gets the
-   * ceiling until one answers: the adaptive deadline is a guess from smaller calls, and the
-   * recovery ladder would otherwise repeat the same input under the same deadline (R66
-   * nodepluck syntax, five attempts cut off at 180 s, #2041).
+   * After a call of the shape ran out its adaptive deadline unanswered, every call of it gets the
+   * ceiling until one at least as large answers: the adaptive deadline is a guess from smaller
+   * calls, and the recovery ladder would otherwise repeat the same input under the same deadline
+   * (R66 nodepluck syntax, five attempts cut off at 180 s, #2041; R69 skillplumb plan, #2193).
    */
   deadline(
     ceilingMs: number,
@@ -58,12 +69,29 @@ export class FirstByteHistory {
     call: { stage?: string | undefined; effort?: string | undefined; promptChars?: number },
     shared = false,
   ): number {
-    if (this.expired.has(shapeKey(model, call.stage, call.effort))) return ceilingMs;
-    return adaptiveFirstByteMs(
-      ceilingMs,
-      this.healthy(model, call.stage, call.effort, shared),
-      call.promptChars,
-    );
+    return this.decide(ceilingMs, model, call, shared).ms;
+  }
+
+  /**
+   * `deadline` with what it was computed from, which the executor keeps in the call's timing
+   * (`deadlineInputs`): the shared answers and the history the process started with are not in
+   * the run's database, so a replay decides the call from these (#2283).
+   */
+  decide(
+    ceilingMs: number,
+    model: string,
+    call: { stage?: string | undefined; effort?: string | undefined; promptChars?: number },
+    shared = false,
+  ): { ms: number; inputs: FirstByteInputs } {
+    const key = shapeKey(model, call.stage, call.effort);
+    const healthy = this.healthy(model, call.stage, call.effort, shared);
+    const own = this.samples.get(key)?.length ?? 0;
+    const inputs: FirstByteInputs = {
+      ...firstByteInputs(healthy),
+      ...(healthy.length > own ? { shared: healthy.length - own } : {}),
+      ...(this.expired.has(key) ? { expired: true as const } : {}),
+    };
+    return { ms: firstByteDeadline(ceilingMs, inputs, call.promptChars), inputs };
   }
 
   /**

@@ -10,6 +10,7 @@ import {
   rowOf,
   SUPPORTED_LANGUAGES,
 } from "../../intelligence/language-records.js";
+import { isCheckConfigPath } from "./check-configs.js";
 import {
   cargoLockFields,
   gemfileLockFields,
@@ -514,6 +515,7 @@ export const DEPENDENCY_MANIFESTS: LanguageRecord<readonly ManifestReader[]> = {
   powershell: none(
     "PowerShell Gallery has no registry check yet; RequiredModules of a .psd1 are not read",
   ),
+  r: none("CRAN has no registry check yet; the Imports of DESCRIPTION are not read"),
 };
 
 const READERS: readonly ManifestReader[] = [
@@ -571,8 +573,12 @@ const fieldsOf = (path: string): ManifestReader["fields"] | undefined =>
     [...TOOLCHAIN_FILES, ...LOCK_FIELDS].find((file) => file.name.test(base(path)))
   )?.fields;
 
-/** Whether a path is a manifest, toolchain or lock file whose fields the field check reads. */
-export const hasExecutableFields = (path: string): boolean => fieldsOf(path) !== undefined;
+/**
+ * Whether a path is a manifest, toolchain or lock file whose fields the field check reads, or a
+ * check-defining config it holds to tightenings (#2221).
+ */
+export const hasExecutableFields = (path: string): boolean =>
+  fieldsOf(path) !== undefined || isCheckConfigPath(path);
 
 /** The executable fields of a manifest or toolchain file that differ between two versions of it (#1793). */
 export function manifestFieldChanges(path: string, before: string, after: string): string[] {

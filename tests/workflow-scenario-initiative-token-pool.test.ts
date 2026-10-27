@@ -12,9 +12,16 @@ import {
   type ShareGateView,
   shareShortfall,
 } from "../src/core/workflows/initiatives/service.js";
-import { HOST_POOL_GROWTHS, planCharge, poolExtensionDecision, tokenPool } from "../src/core/workflows/initiatives/token-pool.js";
+import { chargeHold, poolBoundDecision, refreshedGrowth, stageReserveDecision } from "../src/core/workflows/initiatives/growth.js";
+import type { InitiativePlan } from "../src/core/workflows/initiatives/plan.js";
+import { InitiativeService } from "../src/core/workflows/initiatives/service.js";
+import type { RunPolicy } from "../src/core/workflows/schemas.js";
+import { STOP_REASONS } from "../src/core/workflows/stop-reasons.js";
+import { newId } from "../src/core/workflows/store.js";
+import { fixturePolicy, workflowFixture } from "./helpers/workflow-fixture.js";
+import { adviceRatio, decisionRatio, HOST_POOL_GROWTHS, planCharge, poolExtensionDecision, poolForecast, tokenPool } from "../src/core/workflows/initiatives/token-pool.js";
 import { initiativeActions } from "../src/core/workflows/initiatives/view-model.js";
-import { openTrace, replayInitiativeStarts, replayPoolGrowth } from "../src/core/workflows/trace.js";
+import { openTrace, replayInitiativeStarts, replayPoolBounds, replayPoolGrowth } from "../src/core/workflows/trace.js";
 import { executeInitiativeCommand, parseInitiativeArgs } from "../src/headless/workflow-initiative.js";
 import { historyFixture, plannedForecastScenario } from "./helpers/initiative-planned-forecast.js";
 
@@ -113,11 +120,19 @@ describe("scenario: the shared token pool names its amounts and would grow insid
     const inputs = { initiativeId: "x", limitTokens: 10, usedTokens: 5, committedTokens: 5, forecastTokens: 20, ratio: null, features: 1, waiting: [{ id: "a", low: 6, high: 8 }], cost: { capUsd: 30, ceilingUsd: 30, spentUsd: 1, remainingUsd: 29, forecastUsd: 2 } };
     const decision = poolExtensionDecision(inputs, tokenPool(inputs));
     expect(Object.keys(HOST_POOL_GROWTHS)).toContain(decision.reason);
-    for (const growth of Object.values(HOST_POOL_GROWTHS)) {
+    for (const [reason, growth] of Object.entries(HOST_POOL_GROWTHS)) {
       expect(growth.defaultMode).toBe("shadow");
-      expect(growth.modes as readonly string[]).not.toContain("on");
+      // Growing for real is opt-in only where its pull request says so (#2241's stage reserve);
+      // making it the default is a pull request of its own.
+      if (reason !== "stage-reserve") expect(growth.modes as readonly string[]).not.toContain("on");
       expect(growth.boundBy).toContain("--budget-usd");
     }
+    // A started feature run's remaining review and convergence (#2241): bounded by the
+    // initiative's dollar cap with its tolerance, recorded as `decision.would_extend` in shadow
+    // (tests/workflow-scenario-started-run-stage-reserve.test.ts).
+    const stages = stageReserveDecision({ runId: "r", featureId: "get-command", stages: ["review"], stageReserveUsd: 0.3, runSpentUsd: 1.29, runReservedUsd: 0, requestedUsd: 0.02, boundUsd: 1.54, runHeldUsd: 1.54, spareUsd: 0, initiative: { committedUsd: 29.12, capUsd: 30, ceilingUsd: 37.5 } });
+    expect(Object.keys(HOST_POOL_GROWTHS)).toContain(stages.reason);
+    expect(HOST_POOL_GROWTHS["stage-reserve"].modes).toEqual(["off", "shadow", "on"]);
   });
 
   test("replay: on the R66 trace the measured forecast warns before the park, and the host would extend at the park", () => {
@@ -137,15 +152,18 @@ describe("scenario: the shared token pool names its amounts and would grow insid
     const lint = Date.UTC(2026, 9, 24, 14, 39, 39, 627);
     const [replay] = replayInitiativeStarts(R66, { budgetAtStart: true, moments: [syntax, lint] });
     const at = (t: number) => replay?.starts.find((s) => s.at === t)?.pool;
-    // With three measured features the blend weighs their 2.2x a third: 25.1M, under the pool.
-    expect(at(syntax)).toMatchObject({ limitTokens: POOL, usedTokens: 15_369_363, notice: null });
+    // With three measured features the blend weighs their 2.36x a third: 25.1M, under the pool. The
+    // notice advises at the raw ratio (#2062): 31.8M, 13 minutes before select parked.
+    expect(at(syntax)).toMatchObject({ limitTokens: POOL, usedTokens: 15_369_363, advice: { forecastTokens: 31_768_074, ratio: 2.36 }, suggestedTokens: 31_800_000 });
     expect(at(syntax)?.forecastTokens).toBeLessThan(POOL);
-    // With five, the measured 1.8x says 31.6M (the round used 33.25M): the notice, before the park.
-    expect(at(lint)?.notice).toBe("At the measured 1.8x of the estimates the 10 features need about 31.6M tokens (26.7M used); the shared pool is 30.0M. Extend to 32.4M (baked workflow initiative extend nodepluck --tokens 32400000); the $30.00 cap would pay for about 33.4M at $0.90 per million.");
-    // No start before then warned: the estimate's point forecast stayed under the pool.
-    expect(replay?.starts.filter((s) => s.at < lint && s.pool?.notice)).toEqual([]);
-    // The corpus gate replays starts on the final 38M budget, under which nothing warns.
-    const [final] = replayInitiativeStarts(R66);
+    expect(at(syntax)?.notice).toStartWith("At the measured 2.4x of the estimates the 10 features need about 31.8M tokens (25.1M at the blended 1.4x that budget decisions use; 15.4M used); the shared pool is 30.0M. Extend to 31.8M");
+    // At lint the blend says 1.8x and 31.6M; the raw 2.2x says 33.2M, and the round used 33.25M.
+    // The advice is what the $30 cap pays for at the measured rate (#2244), above both.
+    expect(at(lint)?.notice).toBe("At the measured 2.2x of the estimates the 10 features need about 33.2M tokens (31.6M at the blended 1.8x that budget decisions use; 26.7M used); the shared pool is 30.0M. Extend to 36.0M, what the $30.00 cap pays for at $0.83 per million, so the pool stops no feature before the dollar cap does (baked workflow initiative extend nodepluck --tokens 36000000).");
+    // No start before the third accepted feature warned: the estimate's point forecast stayed under the pool.
+    expect(replay?.starts.filter((s) => s.at < syntax && s.pool?.notice)).toEqual([]);
+    // Replayed on the final 38M budget, as the corpus gate did before #2061, nothing warns.
+    const [final] = replayInitiativeStarts(R66, { budgetAtStart: false });
     expect(final?.starts.some((s) => s.pool?.notice)).toBe(false);
   }, 180000);
 });
@@ -176,7 +194,8 @@ describe("scenario: a scripted initiative whose features cost more than their es
     expect(view.features.filter((f) => f.state === "accepted").map((f) => f.id)).toEqual(["f1", "f2"]);
     expect(view.next).toMatchObject({ kind: "start", featureId: "f3" });
     expect(view.budget.forecastNotice).toBe(view.budget.pool?.notice ?? "");
-    expect(view.budget.forecastNotice).toMatch(/^At the estimates so far the 5 features need about 7\.\dM tokens \(2\.9M used\); the shared pool is 7\.0M\. Extend to 7\.\dM \(baked workflow initiative extend values --tokens 7\d{6}\); the \$30\.00 cap would pay for about \d+\.\dM at \$\d\.\d\d per million\.$/);
+    // The $30 cap pays for more than the 7.0M pool: the notice advises what it pays for (#2244).
+    expect(view.budget.forecastNotice).toMatch(/^At the estimates so far the 5 features need about 7\.\dM tokens \(2\.9M used\); the shared pool is 7\.0M\. Extend to (\d+\.\d)M, what the \$30\.00 cap pays for at \$\d\.\d\d per million, so the pool stops no feature before the dollar cap does \(baked workflow initiative extend values --tokens \d+\)\.$/);
     const suggested = view.budget.pool?.suggestedTokens ?? 0;
     expect(suggested).toBeGreaterThan(7_000_000);
     // The TUI's B form and the desktop's one-click extend take the suggested pool.
@@ -262,7 +281,7 @@ describe("scenario: an open feature run with a sized plan is charged at its plan
   }
 
   test("in shadow the pool keeps holding f2's run limit and a would_release event records what its plan frees", async () => {
-    const { initiatives, driveUntil, events } = await sized();
+    const { initiatives, driveUntil, events } = await sized("shadow");
     const view = initiatives.view("values");
     const f2 = view.features.find((f) => f.id === "f2");
     const charge = view.budget.planCharge;
@@ -277,6 +296,14 @@ describe("scenario: an open feature run with a sized plan is charged at its plan
     expect(view.budget.pool?.committedTokens).toBe(charge?.limitCommittedTokens);
     expect(view.budget.remaining.tokens).toBe(30_000_000 - (charge?.limitCommittedTokens ?? 0));
     expect(view.budget.reserved.tokens).toBe((charge?.limitCommittedTokens ?? 0) - view.budget.used.tokens);
+    // #2124: in dollars the run is held at its plan's tokens at f1's task-call rate, never below
+    // what it spent and reserved, instead of its dollar cap; in shadow the remaining dollars stay.
+    const usd = charge?.usd;
+    expect(usd?.taskRate).toBeGreaterThan(0);
+    expect(run?.chargeUsd).toBeCloseTo(Math.max(run?.usedUsd ?? 0, (run?.chargeTokens ?? 0) * (usd?.taskRate ?? 0)), 9);
+    expect(run?.chargeUsd).toBeLessThan(run?.limitUsd ?? 0);
+    expect(usd?.releasedUsd).toBeCloseTo((run?.limitUsd ?? 0) - (run?.chargeUsd ?? 0), 9);
+    expect(view.budget.cost.remainingUsd).toBe(Math.floor((30 - (usd?.limitCommittedUsd ?? 0)) * 100) / 100);
     // The next drive records it once per run and plan, before it drives the run on.
     await driveUntil(() => true);
     await driveUntil(() => true);
@@ -284,11 +311,14 @@ describe("scenario: an open feature run with a sized plan is charged at its plan
       reason: "initiative-plan-charge", mode: "shadow", featureId: "f2", key: `run-${f2?.runId}-${run?.plan.high}`,
       releasedTokens: charge?.releasedTokens, wouldStart: false, wouldPark: false,
     })]);
-    expect(String(events()[0]?.summary)).toMatch(/^f2's plan prices its run at [\d.]+[kM] tokens \([\d.]+[kM] used\): holding that instead of its [\d.]+M limit frees [\d.]+M tokens of the pool\.$/);
+    expect(events()[0]?.releasedUsd).toBeGreaterThan(0);
+    expect(events()[0]?.usd).toMatchObject({ taskRate: usd?.taskRate });
+    expect(String(events()[0]?.summary)).toMatch(/^f2's plan prices its run at [\d.]+[kM] tokens \([\d.]+[kM] used\): holding that instead of its [\d.]+M limit frees [\d.]+M tokens of the pool\. In dollars it holds \$[\d.]+ at the task-call rate instead of \$[\d.]+, which frees \$[\d.]+ of the dollar budget\.$/);
   }, 120000);
 
-  test("in enforce the pool holds f2 at its plan charge, never below what it used, and the run still finishes", async () => {
-    const { initiatives, events, driveUntil } = await sized("enforce");
+  test("with stopModes unset (enforce since #2245) the pool holds f2 at its plan charge, never below what it used, and the run still finishes", async () => {
+    // The promotion: no stopModes entry enforces the charge, as `"enforce"` did before.
+    const { initiatives, events, driveUntil } = await sized();
     const view = initiatives.view("values");
     const charge = view.budget.planCharge;
     expect(charge?.mode).toBe("enforce");
@@ -297,6 +327,10 @@ describe("scenario: an open feature run with a sized plan is charged at its plan
     expect(view.budget.remaining.tokens).toBe(30_000_000 - (charge?.planCommittedTokens ?? 0));
     expect(view.budget.reserved.tokens).toBeGreaterThanOrEqual(0);
     for (const run of charge?.runs ?? []) expect(run.chargeTokens).toBeGreaterThanOrEqual(run.usedTokens);
+    // #2124: the dollar budget holds f2 at its plan charge in dollars too.
+    expect(charge?.usd?.releasedUsd).toBeGreaterThan(0);
+    expect(view.budget.cost.remainingUsd).toBe(Math.floor((30 - (charge?.usd?.planCommittedUsd ?? 0)) * 100) / 100);
+    for (const run of charge?.runs ?? []) expect(run.chargeUsd).toBeGreaterThanOrEqual(run.usedUsd ?? 0);
     // The waiting features share what the charge leaves: more than under the run's limit.
     const share = (v: InitiativeView) => v.features.filter((f) => f.share).reduce((n, f) => n + (f.share?.tokens ?? 0), 0);
     expect(share(view)).toBe(view.budget.remaining.tokens);
@@ -422,5 +456,185 @@ describe("scenario: R67 ampwhy's gates with open runs held at their plan's need 
     expect(advice?.summary).toStartWith("The shared budget is short: select has 644245 tokens available after reserving the other waiting features' low estimates");
     expect(advice?.summary).toContain("select needs 148160 more tokens to start; a pool of 33.1M");
     expect(advice?.remedies).toEqual([{ action: "extend", initiativeId: "nodepluck", suggestedTokens: 33_100_000 }]);
+  });
+});
+
+describe("scenario: the notice advises at the measured ratio, decisions keep the blend (#2062)", () => {
+  // Three accepted features used twice their 1M lows; three wait at 1M lows each.
+  const features = [
+    ...["f1", "f2", "f3"].map((id) => ({ id, accepted: true, skeleton: false, spent: 2_000_000, low: 1_000_000, expected: 1_500_000 })),
+    ...["f4", "f5", "f6"].map((id) => ({ id, accepted: false, skeleton: false, spent: 0, low: 1_000_000, expected: 1_500_000 })),
+  ];
+  const inputs = (forecast: NonNullable<ReturnType<typeof poolForecast>>, advice: boolean) => ({
+    initiativeId: "values",
+    limitTokens: 11_000_000,
+    usedTokens: 6_000_000,
+    committedTokens: 6_000_000,
+    forecastTokens: forecast.forecastTokens,
+    ratio: forecast.ratio,
+    ...(advice ? { advice: forecast.advice } : {}),
+    features: 6,
+    waiting: ["f4", "f5", "f6"].map((id) => ({ id, low: 1_000_000, high: 2_000_000 })),
+    cost: { capUsd: null, ceilingUsd: null, spentUsd: 0, remainingUsd: null, forecastUsd: null },
+  });
+
+  test("three measured features at 2x warn although the blend still fits the pool", () => {
+    // The blend weighs the measured 2x a third at three features: 1.33x.
+    expect(decisionRatio(6_000_000, 3_000_000, 3)).toBeCloseTo(4 / 3, 9);
+    expect(adviceRatio(6_000_000, 3_000_000, 3)).toBe(2);
+    expect(adviceRatio(6_000_000, 3_000_000, 2)).toBeNull();
+    const forecast = poolForecast(6_000_000, features);
+    expect(forecast).toEqual({ forecastTokens: 10_000_000, ratio: 1.33, advice: { forecastTokens: 12_000_000, ratio: 2 } });
+    const pool = tokenPool(inputs(forecast!, true));
+    expect(pool.notice).toBe("At the measured 2.0x of the estimates the 6 features need about 12.0M tokens (10.0M at the blended 1.3x that budget decisions use; 6.0M used); the shared pool is 11.0M. Extend to 12.0M (baked workflow initiative extend values --tokens 12000000).");
+    expect(pool.suggestedTokens).toBe(12_000_000);
+    // What a block or a park reads keeps the blend: the forecast fits, nothing is suggested.
+    expect(pool.forecastTokens).toBe(10_000_000);
+    expect(tokenPool(inputs(forecast!, false))).toMatchObject({ notice: null, suggestedTokens: null, advice: null });
+  });
+
+  test("the advice ratio is capped like the blend", () => {
+    expect(adviceRatio(60_000_000, 3_000_000, 3)).toBe(5);
+  });
+});
+
+// Bench round 73, flatelens (#2280): commands started with 28.54M of the 34.2M pool used and
+// $25.34 of the $30 cap spent (20 percent tolerance, $36 ceiling). Its plan was charged 31.20M
+// tokens and $24.08 (enforced plan charge, #2100), its growth bounds were raised to that charge,
+// and it used 12.92M: the initiative ended at 41.45M of its 34.2M pool, 21 percent over.
+describe("scenario: flatelens R73 commands' bounds stay inside the pool and the ceiling (#2280)", () => {
+  const LIMIT = 34_200_000;
+  const OTHERS = 28_540_000;
+  const CHARGE = 31_200_000;
+  const base: RunPolicy = { ...fixturePolicy, sizing: { maxRunTokens: 40_000_000, extendToTokens: 60_000_000 } };
+  const commands: RunPolicy = { ...fixturePolicy, maxTotalTokens: 4_650_000, maxCostUsd: 3.82, sizing: { maxRunTokens: 4_650_000, extendToTokens: 4_650_000, maxRunCostUsd: 3.82 } };
+  /** commands' bounds after a refresh with `held` and the room the pool and cap leave (none). */
+  const refreshed = (held: { tokens: number; usd: number }) =>
+    refreshedGrowth(commands, base, { ...held, calls: 0, activeMs: 0 }, { calls: 0, activeMs: 0 }, { tokens: 0, usd: 0, calls: 0, activeMs: 0 });
+
+  test("a charge above the pool raises the bounds no further than the 5.66M the pool has left", () => {
+    const hold = chargeHold({ charge: { tokens: CHARGE, usd: null }, own: { usedTokens: 0, usedUsd: 0 }, pool: { limitTokens: LIMIT, othersTokens: OTHERS, waitingLowTokens: 0 }, dollars: null });
+    expect(hold).toMatchObject({ tokens: LIMIT - OTHERS, cappedTokens: true });
+    const after = refreshed({ tokens: hold.tokens, usd: 3.82 });
+    expect(after?.sizing?.maxRunTokens).toBe(5_660_000);
+    expect(after?.sizing?.extendToTokens).toBe(5_660_000);
+    // The rule before #2280 held the charge: the run could take 31.2M with 5.66M left.
+    expect(refreshed({ tokens: CHARGE, usd: 3.82 })?.sizing?.maxRunTokens).toBe(CHARGE);
+    // The waiting features' lows come out of it too, and a run never holds less than it used.
+    expect(chargeHold({ charge: { tokens: CHARGE, usd: null }, own: { usedTokens: 0, usedUsd: 0 }, pool: { limitTokens: LIMIT, othersTokens: OTHERS, waitingLowTokens: 1_000_000 }, dollars: null }).tokens).toBe(4_660_000);
+    expect(chargeHold({ charge: { tokens: CHARGE, usd: null }, own: { usedTokens: 7_000_000, usedUsd: 0 }, pool: { limitTokens: LIMIT, othersTokens: OTHERS, waitingLowTokens: 0 }, dollars: null }).tokens).toBe(7_000_000);
+  });
+
+  test("a dollar charge above the ceiling raises the dollar bound no further than the ceiling leaves after the others", () => {
+    // $4.66 left under the $30 cap, $10.66 under the $36 ceiling; the charge was $24.08.
+    const hold = chargeHold({ charge: { tokens: CHARGE, usd: 24.08 }, own: { usedTokens: 0, usedUsd: 0 }, pool: { limitTokens: LIMIT, othersTokens: OTHERS, waitingLowTokens: 0 }, dollars: { ceilingUsd: 36, othersUsd: 25.34 } });
+    expect(hold).toMatchObject({ usd: 10.66, cappedUsd: true });
+    expect(refreshed({ tokens: hold.tokens, usd: hold.usd! })?.sizing?.maxRunCostUsd).toBe(10.66);
+    expect(refreshed({ tokens: CHARGE, usd: 24.08 })?.sizing?.maxRunCostUsd).toBe(24.08);
+    // Without a dollar cap there is nothing to hold the dollars to.
+    expect(chargeHold({ charge: { tokens: CHARGE, usd: 24.08 }, own: { usedTokens: 0, usedUsd: 0 }, pool: { limitTokens: LIMIT, othersTokens: OTHERS, waitingLowTokens: 0 }, dollars: null }).usd).toBe(24.08);
+  });
+
+  test("a charge that fits keeps today's bounds", () => {
+    // 10M used by the others, a 2M low waiting: 22.2M left for a run charged 15M and $8.
+    const hold = chargeHold({ charge: { tokens: 15_000_000, usd: 8 }, own: { usedTokens: 1_000_000, usedUsd: 0.5 }, pool: { limitTokens: LIMIT, othersTokens: 10_000_000, waitingLowTokens: 2_000_000 }, dollars: { ceilingUsd: 36, othersUsd: 12 } });
+    expect(hold).toEqual({ tokens: 15_000_000, usd: 8, cappedTokens: false, cappedUsd: false });
+  });
+
+  test("the shadow reason records a bound or an auto-extend hard ceiling above what the pool holds", () => {
+    expect(STOP_REASONS["initiative-pool-growth"]).toMatchObject({ defaultMode: "shadow", modes: ["shadow", "advisory"] });
+    // R73's auto-extend hard ceilings (33.56M) and its $24.08 bound, against 5.66M and $10.66.
+    const decision = poolBoundDecision({ runId: "r", featureId: "commands", limitTokens: LIMIT, othersUsedTokens: OTHERS, ceilingUsd: 36, othersSpentUsd: 25.34, tokens: [{ kind: "maxRunTokens", value: CHARGE }, { kind: "hardCeiling", value: 33_560_000 }], usd: [{ kind: "maxRunCostUsd", value: 24.08 }] });
+    expect(decision).toMatchObject({ reason: "initiative-pool-growth", wouldStop: true, holdTokens: 5_660_000, holdUsd: 10.66 });
+    expect(decision.over.map((b) => b.kind)).toEqual(["maxRunTokens", "hardCeiling", "maxRunCostUsd"]);
+    // The capped bounds pass.
+    expect(poolBoundDecision({ runId: "r", featureId: "commands", limitTokens: LIMIT, othersUsedTokens: OTHERS, ceilingUsd: 36, othersSpentUsd: 25.34, tokens: [{ kind: "maxRunTokens", value: 5_660_000 }], usd: [{ kind: "maxRunCostUsd", value: 10.66 }] }).wouldStop).toBe(false);
+  });
+
+  const plan: InitiativePlan = {
+    schemaVersion: 1, title: "Flatelens", goals: ["Create the CLI"], completionCriteria: ["The CLI is ready"],
+    features: ["core", "commands", "docs"].map((id) => ({
+      id, title: id, size: "medium", workflow: "sdd", boundary: { scope: id, paths: [`${id}.txt`] },
+      contract: `${id}.txt contains ready`, dependsOn: [], mandatory: true,
+    })),
+  };
+
+  test("the initiative refreshes commands' bounds to what the pool holds and records a planted bound above it", async () => {
+    const fixture = workflowFixture();
+    fixture.config.defaultModel = "anthropic/claude-sonnet-4-6";
+    cleanups.push(async () => fixture.dispose());
+    const initiatives = new InitiativeService(fixture.service);
+    const policy: RunPolicy = { ...fixturePolicy, maxTotalTokens: 4_650_000, maxAgentCalls: 1000, costForecast: "off", sizing: { maxRunTokens: 40_000_000, maxRunCostUsd: 100 } };
+    const view = await initiatives.start({ commandId: newId(), initiativeId: "flatelens", prompt: "Create the CLI", plan, policy, model: "anthropic/claude-sonnet-4-6", ownerLabel: "test", keepFeatures: true, featureAutoApproval: null, budget: { maxTotalTokens: LIMIT, maxAgentCalls: 1000, maxActiveMs: 21_600_000 }, costBudget: { maxCostUsd: 36, costTolerance: "off" } });
+    const request = view.pendingDecisions.find((d) => d.scope === "initiative")!;
+    await initiatives.approve("flatelens", { commandId: newId(), expectedRevision: view.revision }, { requestId: request.requestId, digest: request.digest });
+    const service = initiatives as unknown as { startFeature(id: string, featureId: string): Promise<boolean>; refreshGrowth(id: string, featureId: string, runId: string): void; view(id: string): InitiativeView };
+    expect(await service.startFeature("flatelens", "commands")).toBe(true);
+    const runId = initiatives.view("flatelens").features.find((f) => f.id === "commands")!.runId!;
+    const store = fixture.service.store;
+    // commands' start-time bounds in R73: its 4.65M share and $3.82.
+    const started = JSON.parse(store.run(runId).policy_json) as RunPolicy;
+    store.setPolicy(runId, { ...started, sizing: { ...started.sizing, maxRunTokens: 4_650_000, maxRunCostUsd: 3.82 } });
+    // The view at commands' start in R73: the others used 28.54M and spent $25.34, and the pool
+    // and the dollars hold commands at its enforced plan charge.
+    const real = service.view.bind(initiatives);
+    service.view = (id: string) => {
+      const v = real(id);
+      return {
+        ...v,
+        features: v.features.map((f) => (f.share !== null && f.id !== "commands" ? { ...f, need: { low: 0, high: 1_000_000 } } : f)),
+        budget: {
+          ...v.budget,
+          used: { ...v.budget.used, tokens: OTHERS },
+          reserved: { ...v.budget.reserved, tokens: CHARGE },
+          remaining: { ...v.budget.remaining, tokens: 0 },
+          cost: { ...v.budget.cost, ceilingUsd: 36, spentUsd: 25.34, reservedUsd: 24.08, remainingUsd: 0 },
+          planCharge: { mode: "enforce", ratio: 1.2, runs: [{ featureId: "commands", runId, usedTokens: 0, limitTokens: 4_650_000, plan: { low: 14_700_000, expected: 20_000_000, high: 26_100_000 }, chargeTokens: CHARGE, usedUsd: 0, limitUsd: 3.82, chargeUsd: 24.08 }], limitCommittedTokens: OTHERS + 4_650_000, planCommittedTokens: OTHERS + CHARGE, releasedTokens: 4_650_000 - CHARGE, usd: null },
+        },
+      } as InitiativeView;
+    };
+    service.refreshGrowth("flatelens", "commands", runId);
+    const refreshedPolicy = JSON.parse(store.run(runId).policy_json) as RunPolicy;
+    // The rule before #2280 raised them to the charge, 31.2M and $24.08.
+    expect(refreshedPolicy.sizing!.maxRunTokens!).toBe(LIMIT - OTHERS);
+    expect(refreshedPolicy.sizing!.maxRunCostUsd!).toBe(10.66);
+    const wouldStops = () => store.eventsOfType(runId, "decision.would_stop").filter((e) => e.type === "decision.would_stop" && e.payload.reason === "initiative-pool-growth");
+    expect(wouldStops()).toHaveLength(0);
+    // A bound above the pool, as R73's auto-extends left it, is recorded once with its inputs.
+    store.setPolicy(runId, { ...refreshedPolicy, sizing: { ...refreshedPolicy.sizing, maxRunTokens: CHARGE } });
+    service.refreshGrowth("flatelens", "commands", runId);
+    service.refreshGrowth("flatelens", "commands", runId);
+    const recorded = wouldStops();
+    expect(recorded).toHaveLength(1);
+    expect(recorded[0]!.payload).toMatchObject({ mode: "shadow", inputs: { limitTokens: LIMIT, othersUsedTokens: OTHERS, holdTokens: LIMIT - OTHERS } });
+  });
+});
+
+describe("replay: initiative-pool-growth on the recorded bounds (#2280)", () => {
+  const trace = (round: string, app: string) => join(import.meta.dir, "fixtures", "bench-traces", round, `${app}.sqlite.gz`);
+
+  test("R72 jvmsig never ran short of its pool: no run's bound passes it", () => {
+    const { store, dispose } = openTrace(trace("R72", "jvmsig"));
+    try {
+      expect(replayPoolBounds(store).flatMap((i) => i.poolBounds)).toEqual([]);
+    } finally {
+      dispose();
+    }
+  });
+
+  test("R71 xmlvet: cli-release, the last feature, took the base policy's 12M hard ceiling with 11.71M of the extended pool left", () => {
+    // No waiting feature had an estimate, so the token room was null and `refreshedGrowth` took
+    // the base ceilings. The run used 3.47M; the record is true and costs nothing in shadow.
+    const { store, dispose } = openTrace(trace("R71", "xmlvet"));
+    try {
+      const bounds = replayPoolBounds(store).flatMap((i) => i.poolBounds);
+      expect(bounds.map((b) => ({ featureId: b.featureId, over: b.over.map((o) => [o.kind, o.value]), holdTokens: b.holdTokens }))).toEqual([
+        { featureId: "cli-release", over: [["extendToTokens", 12_000_000]], holdTokens: 41_800_000 - 30_091_967 },
+      ]);
+      // The rule that never stops records nothing.
+      expect(replayPoolBounds(store, (inputs) => ({ ...poolBoundDecision(inputs), wouldStop: false })).flatMap((i) => i.poolBounds)).toEqual([]);
+    } finally {
+      dispose();
+    }
   });
 });

@@ -45,6 +45,15 @@ export const STOP_REASONS = {
     modes: STOP_MODES,
     defaultMode: "enforce",
   },
+  "check-config-approval": {
+    label:
+      "A plan edits a linter, formatter or type checker config that auto-approval did not keep with a person before",
+    // Shadow by default (#2221): tsconfig and biome were always enforced; every other check
+    // config of `CHECK_CONFIGS` records a would-stop until two bench rounds show none false, and
+    // `stopModes: { "check-config-approval": "enforce" }` keeps them with a person now.
+    modes: STOP_MODES,
+    defaultMode: "shadow",
+  },
   "initiative-forecast": {
     label: "An initiative's cost or token forecast passes its budget",
     modes: STOP_MODES,
@@ -55,12 +64,34 @@ export const STOP_REASONS = {
     modes: STOP_MODES,
     defaultMode: "shadow",
   },
+  "initiative-dollar-cap": {
+    label:
+      "No dollars left under an initiative's cap after its open runs' needs pay for a starting feature's low estimate",
+    // Shadow only until two bench rounds show no false would-stop (#2218, R70 evalpin's
+    // report-cli is a true one); its promotion adds `enforce` and pauses the initiative with the
+    // `dollar_cap` reason and its extend remedy instead of starting the feature.
+    modes: NOT_ENFORCED,
+    defaultMode: "shadow",
+  },
   "initiative-plan-charge": {
     label:
       "An initiative's token pool holds an open feature run with a sized plan at its plan's need instead of its run limit",
-    // Shadow by default (#2100, #2056): the charge can start a feature sooner or park one whose
-    // plan prices above its run limit, so it records `decision.would_release` first.
+    // Enforced by default (#2245): it shipped in shadow (#2100, #2056) and R70 and R71 recorded
+    // 39 `decision.would_release` records and one would-park, R71 xmlvet's canonical, which was
+    // true (the pool ran short 65 minutes later). A charge that parks a feature parks it with the
+    // share gate's extend remedy (#2042); `stopModes: { "initiative-plan-charge": "shadow" }`
+    // keeps open runs at their limits and records again.
     modes: STOP_MODES,
+    defaultMode: "enforce",
+  },
+  "initiative-pool-growth": {
+    label:
+      "An open feature run's growth bound is above what the initiative's token pool or dollar ceiling holds for it",
+    // Shadow only until two bench rounds show no false would-stop (#2280, R73 flatelens'
+    // commands grew to 12.9M with 5.7M left). A bound derived from a plan charge is capped at
+    // what the pool and the ceiling hold (`chargeHold`); this records any bound still above them
+    // (a start's, an auto-extend's hard ceiling). Its promotion stops or caps the run instead.
+    modes: NOT_ENFORCED,
     defaultMode: "shadow",
   },
   repeated_failure: {
@@ -99,6 +130,39 @@ export const STOP_REASONS = {
     label: "A finding comes back after its corrective changed no file",
     // Shadow only until two bench rounds show no false would-stop (#2137); its promotion asks for
     // an owner or scope decision instead of opening another corrective of the same finding.
+    modes: NOT_ENFORCED,
+    defaultMode: "shadow",
+  },
+  edge_crash_finding: {
+    label: "A probed case crashes inside a file the probed code's task writes",
+    // Shadow only until two bench rounds show no false would-stop (#2136); its promotion makes
+    // the crash a finding of that task (its first error line as actual), corrected at once.
+    modes: NOT_ENFORCED,
+    defaultMode: "shadow",
+  },
+  baseline_unrepairable: {
+    label:
+      "A required check fails before any change on files no task writes, and the host fixer cannot repair it",
+    // Shadow only until two bench rounds show no false would-stop (#2215); its promotion stops
+    // the run before its first task instead of at the checks stage after all of them.
+    modes: NOT_ENFORCED,
+    defaultMode: "shadow",
+  },
+  baseline_signature: {
+    label:
+      "A required check fails as before any change once durations, addresses, seeds and temporary paths are compared by shape",
+    // Shadow only until two bench rounds show no false would-stop (#2295); its promotion makes the
+    // shaped signature decide the `baseline_failure` stop (through `stopFault`) and the task-end
+    // excuse, where the live signature still tells two runs of one failure apart.
+    modes: NOT_ENFORCED,
+    defaultMode: "shadow",
+  },
+  ci_check_drift: {
+    label:
+      "A CI workflow or README the run wrote runs a gate command that no configured check runs as written",
+    // Shadow only until two bench rounds show no false would-stop (#2284, R73 evalpin's ci.yml ran
+    // `cargo clippy --all-targets`, its clippy check did not); its promotion makes the drift a
+    // finding of the task that wrote the file at the checks stage.
     modes: NOT_ENFORCED,
     defaultMode: "shadow",
   },

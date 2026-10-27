@@ -10,6 +10,7 @@
     "testsGrown": "FAILED tests/test_sum.py::test_sum - assert 3 == 4\n========= 1 failed, 3 passed in 0.15s =========\n"
   },
   "expected": {
+    "checkConfigs": ["ruff.toml: ruff", "mypy.ini: mypy", ".flake8: flake8", ".pylintrc: pylint", "pyrightconfig.json: pyright"],
     "tests": [
       "app/tests.py",
       "tests/test_props.py"
@@ -63,6 +64,17 @@
       "int(str) and str(int) refuse more than 4300 digits (sys.set_int_max_str_digits)",
       "decimal's default context rounds past 28 significant digits",
       "the console encoding may not encode non-ASCII output on Windows"
-    ]
+    ],
+    "staticTools": [
+      "ruff: linter",
+      "flake8: linter",
+      "pylint: linter",
+      "ruff format: formatter",
+      "black: formatter",
+      "isort: formatter",
+      "mypy: typechecker, whole unit",
+      "pyright: typechecker, whole unit"
+    ],
+    "sortedLists": null
   }
 }

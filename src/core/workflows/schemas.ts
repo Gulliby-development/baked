@@ -299,6 +299,14 @@ export const AutoApprovalSchema = z
      * the edit adds still blocks the run unless the request or spec names it (#802).
      */
     requestedManifestEdits: z.boolean().optional(),
+    /**
+     * Opt-in (#2221): an edit of an existing linter, formatter or type checker config
+     * (`CHECK_CONFIGS`: tsconfig, biome, .rubocop.yml, ruff.toml, .golangci.yml, ...) that the
+     * request names no longer needs a person when it only turns on strictness settings the request
+     * names. A plan's whole content is compared at approval; an implementer's edit is held to the
+     * same by the manifest field check after the run, and any loosening is a finding.
+     */
+    requestedCheckTightening: z.boolean().optional(),
   })
   .strict()
   .refine((value) => value.renewal || value.limits !== null, "Auto approval requires limits")
@@ -592,6 +600,14 @@ export const PolicySchema = z
      * (derivation-audit.ts, #1851). Absent means `off`, so stored policies keep their hash.
      */
     derivationAuditCarry: z.enum(["off", "on"]).optional(),
+    /**
+     * `on` has a derivation return whose only blocking findings are `DERIVE-` rows amend those
+     * criteria in place: the spec author revises them by patch, and when the amended spec changes
+     * nothing but those criteria's text the plan and tasks are kept and only analyze runs again
+     * (derivation-audit.ts, #2219). Anything else falls back to the full return. Absent means
+     * `off`, so stored policies keep their hash.
+     */
+    derivationAmend: z.enum(["off", "on"]).optional(),
     /** Host-written audited acceptance rows and parameterized tests; absent means off (#1596). */
     rowsAsData: z.enum(["off", "on"]).optional(),
     /**
@@ -712,6 +728,39 @@ export const PolicySchema = z
      */
     conflictFinish: z.literal("on").optional(),
     /**
+     * The host's order around a blocked corrective (corrective-defer.ts, #2109): `on` lets the
+     * drive run the ready tasks a corrective that blocked does not hold, keeping its hold on the
+     * rest, and end the run with its stop once nothing else can run. Absent means shadow (the
+     * decision is recorded, the run ends at the block), so stored policies keep their hash.
+     */
+    correctiveDefer: z.literal("on").optional(),
+    /**
+     * The skeleton layout of an initiative split (initiatives/skeleton-layout.ts, #2222): `on` puts
+     * a blank line before each skeleton line the language's formatter would sort elsewhere (rustfmt's
+     * `pub mod` lists, gofmt's import blocks), so the host-written content is a fixed point of the
+     * project's format check. Absent means shadow (the layout is recorded in a `split.skeleton_layout`
+     * event, the content stays as the decomposer wrote it), so stored policies keep their hash.
+     */
+    skeletonLayout: z.literal("on").optional(),
+    /**
+     * The host's route of a test task's wrong-value failure (source-defect.ts, #2220): `on` hands
+     * a planned test task's failing check whose expected values are all literals of its criteria
+     * to the finished sibling that carries those criteria and wrote the source the tests import,
+     * as a stack frame in that source does: no continuation of the test task, and its corrective
+     * writes the source. Absent means shadow (the decision is recorded, the owner stays the test
+     * task), so stored policies keep their hash.
+     */
+    sourceDefectRoute: z.literal("on").optional(),
+    /**
+     * The host's repair of a required check that fails before any change (baseline-fix.ts, #2215):
+     * `on` lets the host run the check's fixer on the files it names, before the first task, when
+     * no task writes them, git tracks them and every finding is marked correctable, and keep the
+     * edit only when the check then passes. Absent means off: the decision is recorded and a check
+     * no task can repair records the `baseline_unrepairable` would-stop, so stored policies keep
+     * their hash.
+     */
+    baselineFix: z.literal("on").optional(),
+    /**
      * The project's choices for the anti-slop rule pack (quality/rules.ts), which is always on:
      * rules turned off, severities changed and ast-grep rule files added. Absent means the
      * built-in pack as shipped, so stored policies keep their hash.
@@ -779,6 +828,12 @@ export const PolicySchema = z
          * it on its file count (`suppliedTaskPrice`, #2002). Absent means off.
          */
         suppliedDiff: z.boolean().optional(),
+        /**
+         * Weighs an initiative estimate's finished features by how recent their initiative is: a
+         * feature's weight halves for every this many initiatives started after its own
+         * (`recencyWeights`, #2150). Absent means every feature counts the same.
+         */
+        recencyHalfLife: z.number().positive().max(1_000).optional(),
       })
       .strict()
       .optional(),
@@ -1014,7 +1069,8 @@ export const ReproSchema = z
     stdin: z.string().max(65_536).optional(),
     /**
      * Input files written to a fresh temporary directory before the run, outside the workspace;
-     * `{files}` in an argument stands for that directory (`{files}/trace.txt`).
+     * `{files}` in an argument stands for that directory (`{files}/trace.txt`), and `{root}` in an
+     * argument or a file's content for the root of the workspace the repro runs in (#2279).
      */
     files: z
       .array(
@@ -1418,6 +1474,8 @@ export const MAX_PARALLEL_RUNS = 8;
 export const PLAN_PARALLEL_RUNS = 3;
 /** The modes of `workflows.extendWithinDollars` (#2042); see `initiatives/token-pool.ts`. */
 export const EXTEND_WITHIN_DOLLARS_MODES = ["off", "shadow"] as const;
+/** The modes of `workflows.stageReserve` (#2241); see `initiatives/growth.ts`. */
+export const STAGE_RESERVE_MODES = ["off", "shadow", "on"] as const;
 export const WorkflowConfigSchema = z
   .object({
     enabled: z.boolean().default(true),
@@ -1445,11 +1503,24 @@ export const WorkflowConfigSchema = z
      */
     planAhead: z.boolean().optional(),
     /**
+     * A planned-ahead feature whose spec names symbols an accepted upstream feature lacks asks
+     * that feature for the amendment at its release: the owner runs again with the request, and
+     * the feature waits for that result (#2157). Off by default.
+     */
+    upstreamAmendments: z.boolean().optional(),
+    /**
      * Whether an initiative whose token pool parks a feature, while the person's dollar cap has
      * room for the extension, records that the host would extend the pool (#2042): `shadow`, the
      * default, records a `decision.would_extend` event and changes nothing; `off` records nothing.
      */
     extendWithinDollars: z.enum(EXTEND_WITHIN_DOLLARS_MODES).optional(),
+    /**
+     * Whether a feature run that finished its tasks and would stop on its cost ceiling grows its
+     * dollar bound by the reserve of its remaining review and convergence, inside the initiative's
+     * dollar cap and tolerance (#2241): `shadow`, the default, records a `decision.would_extend`
+     * event and the run still stops; `on` grows the bound; `off` records nothing.
+     */
+    stageReserve: z.enum(STAGE_RESERVE_MODES).optional(),
     /**
      * Deadlines and stall limits (milliseconds): a tool call that never returns, a model attempt
      * with no progress, and how often a stalled run resumes by itself. Defaults in `stall.ts`.
@@ -2110,6 +2181,11 @@ export interface StartRequest {
   presetChoice?: import("./preset-router.js").PresetChoice;
   /** Why the host built no auto approval for a run that asked for it (`RuntimeState`, #1467). */
   autoApprovalDeclined?: string;
+  /**
+   * Accepted spec, plan and tasks from an imported SDD package (#2208): the run starts at its
+   * analysis stage with them instead of specifying and planning again.
+   */
+  seed?: import("./sdd-export/seed.js").StartSeed;
 }
 export type Decision =
   | {

@@ -10,6 +10,7 @@
     "testsGrown": "[ERROR] Tests run: 4, Failures: 1, Errors: 0, Skipped: 0\n"
   },
   "expected": {
+    "checkConfigs": ["detekt.yml: detekt", ".editorconfig: editorconfig", "checkstyle.xml: checkstyle", "pmd-ruleset.xml: pmd", "spotbugs-exclude.xml: spotbugs"],
     "tests": [
       "src/main/kotlin/SumSpec.kt",
       "src/test/kotlin/SumPropTest.kt"
@@ -57,6 +58,13 @@
     ],
     "numericLimits": [
       "Int and Long arithmetic overflow silently; toInt() fails past Int"
-    ]
+    ],
+    "staticTools": [
+      "ktlint: linter",
+      "detekt: linter",
+      "ktfmt: formatter",
+      "spotless: formatter"
+    ],
+    "sortedLists": null
   }
 }

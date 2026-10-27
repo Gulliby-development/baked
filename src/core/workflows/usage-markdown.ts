@@ -5,6 +5,7 @@
 
 import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
+import { toolInputsLine } from "./tool-input-health.js";
 import {
   interruptedTokensLine,
   type RunUsageReport,
@@ -230,6 +231,9 @@ export function runUsageMarkdown(report: RunUsageReport): string {
     `- Tokens: ${count(total.tokens)} (input ${count(total.input)}, output ${count(total.output)}, cache reads ${count(total.cacheRead)}, cache writes ${count(total.cacheWrite)})`,
     `- Estimated cost: ${cost(total.costUsd, total.unpriced)}`,
     ...(backends ? [`- Code intelligence: ${backends}`] : []),
+    ...(toolInputsLine(report.toolInputs ?? [])
+      ? [`- Tool inputs: ${toolInputsLine(report.toolInputs ?? [])}`]
+      : []),
     ...(interruptedTokensLine(report.attempts)
       ? [`- ${interruptedTokensLine(report.attempts)}`]
       : []),

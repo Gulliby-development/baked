@@ -143,6 +143,15 @@ describe("specify on Sonnet (#1173)", () => {
     ]);
   });
 
+  test("strict ignores specifyOnSonnet, set or unset, and --route specify still wins (#2217)", () => {
+    const strict = { ...opus, strict: true };
+    expect(resolveStageRoutes("sdd", stages, undefined, strict)).toEqual([]);
+    expect(resolveStageRoutes("sdd", stages, undefined, { ...strict, routing: on })).toEqual([]);
+    expect(resolveStageRoutes("sdd", stages, { specify: "claude-code/sonnet" }, strict)).toEqual([
+      { stageId: "specify", model: "claude-code/sonnet", source: "route override specify" },
+    ]);
+  });
+
   test("the project layer overrides the global one, and Opus models are recognized", () => {
     expect(mergeModelRouting({ specifyOnSonnet: true }, { specifyOnSonnet: false })?.specifyOnSonnet).toBe(false);
     expect(mergeModelRouting({ specifyOnSonnet: true }, { critic: "off" })?.specifyOnSonnet).toBe(true);

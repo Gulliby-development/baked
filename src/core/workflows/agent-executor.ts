@@ -42,6 +42,7 @@ import { canonical } from "../specs/hash.js";
 import { workspacePath } from "../specs/validate.js";
 import { withEditDiagnosticsMode } from "../tools/edit-diagnostics.js";
 import { buildTools } from "../tools/index.js";
+import { captureEndings, restoreEndings } from "../tools/line-endings.js";
 import { contentHash, deriveTool, withoutAstEditHint } from "../tools/tool-utils.js";
 import {
   buildCheckEnv,
@@ -144,6 +145,7 @@ import {
 import { stopFault } from "./stop-reasons.js";
 import type { EffectRow, WorkflowStore } from "./store.js";
 import { failureOwnerNote } from "./task-graph.js";
+import { recordToolInputSignal } from "./tool-input-health.js";
 import { pureWorkflowTools, WorkflowToolPolicy } from "./tool-policy.js";
 import type { AgentExecutor, ExecutionRequest, ExecutionResponse, Task } from "./types.js";
 import { AcceptanceDraftSchema, AcceptanceWalkSchema } from "./v2/acceptance.js";
@@ -1037,7 +1039,9 @@ export class NativeAgentExecutor implements AgentExecutor {
                 return [...new Set(paths)].reduceRight<() => Promise<unknown>>(
                   (inner, path) => () => guard.execute("edit_file", { path }, inner),
                   async () => {
-                    const result = await once();
+                    // A fixer that writes text mode on Windows turns a LF file into CRLF (#2214).
+                    const endings = captureEndings(paths.map((path) => workspacePath(root, path)));
+                    const result = await once().finally(() => restoreEndings(endings));
                     outputs.push(`${targets.join(", ")}: exit ${String(result.exitCode)}`);
                   },
                 )();
@@ -1175,6 +1179,17 @@ export class NativeAgentExecutor implements AgentExecutor {
                 "diagnostic",
                 `attempts/${request.attemptId}/invalid-${String(invalidSubmissions)}.json`,
                 canonical({ error: error.slice(0, 20_000), submitted: part.input ?? null }),
+              ),
+            );
+            // In shadow, the rung the recovery ladder would take once the model's invalid inputs
+            // in the run reach the threshold (#2149).
+            this.store.transaction(() =>
+              recordToolInputSignal(
+                this.store,
+                request.runId,
+                request.attemptId,
+                request.profile.model,
+                request.effort,
               ),
             );
           }
@@ -1988,8 +2003,9 @@ export class NativeAgentExecutor implements AgentExecutor {
       const shared = policy.sharedFirstByteHistory === "on";
       return withProviderHealth(resolved, request.profile.model, {
         stage: request.profile.output,
+        // The deadline's inputs go into the call's timing, so a replay decides it again (#2283).
         firstByteLimit: (ceilingMs, call) =>
-          history.deadline(ceilingMs, request.profile.model, call, shared),
+          history.decide(ceilingMs, request.profile.model, call, shared),
         timing: (call) => {
           watch.calls.push(call);
           history.record(request.profile.model, call, shared);

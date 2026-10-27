@@ -59,7 +59,10 @@ import {
   SafeId,
   specWritingRule,
 } from "../schemas.js";
+import type { StartSeed } from "../sdd-export/seed.js";
 import type { NativeWorkflowService, PlannedReroute } from "../service.js";
+import { sizingHistory, testCaseRate } from "../sizing.js";
+import { stageReserve } from "../stage-reserve.js";
 import { terminalStates } from "../state-machine.js";
 import { stopDetail, stopRecovery } from "../stop-detail.js";
 import { recordWouldStop, type StopMode, stopFault, stopMode } from "../stop-reasons.js";
@@ -76,6 +79,7 @@ import { type InitiativeDriveState, initiativeDriveState } from "./drive-state.j
 import {
   calibrationLagText,
   estimateInitiative,
+  type FeatureEstimate,
   type FeatureRunSample,
   highCalibrationText,
   type InitiativeEstimate,
@@ -83,9 +87,19 @@ import {
   MIN_CALIBRATION_FEATURES,
   SIZE_STAGE_FACTOR,
   SIZE_TASK_FACTOR,
+  testVolumeText,
 } from "./estimate.js";
-import { initiativePriceSamples } from "./forecast.js";
-import { costGrowthLimit, guardGrowth, openGuardRoom, refreshedGrowth } from "./growth.js";
+import { initiativePriceSamples, taskCallRate } from "./forecast.js";
+import {
+  chargeHold,
+  costGrowthLimit,
+  guardGrowth,
+  openGuardRoom,
+  poolBoundDecision,
+  type RunBound,
+  refreshedGrowth,
+  stageReserveDecision,
+} from "./growth.js";
 import {
   applySplitEdit,
   boundaryPathCounts,
@@ -110,6 +124,7 @@ import {
   topologicalOrder,
   validateInitiativePlan,
 } from "./plan.js";
+import { layOutSkeletons } from "./skeleton-layout.js";
 import {
   type BudgetLimitsValue,
   CostBudgetSchema,
@@ -123,6 +138,8 @@ import {
 } from "./store.js";
 import {
   DEFAULT_EXTEND_WITHIN_DOLLARS,
+  DEFAULT_STAGE_RESERVE,
+  dollarTokens,
   type ExtendWithinDollars,
   type PlanChargeView,
   type PoolExtension,
@@ -134,8 +151,17 @@ import {
   poolShortText,
   type TokenPoolView,
   tokenPool,
+  tokensForUsd,
 } from "./token-pool.js";
-import { upstreamSymbolGaps } from "./upstream-symbols.js";
+import {
+  type AmendmentAnswer,
+  type AmendmentRequest,
+  amendmentAnswer,
+  amendmentLines,
+  type UpstreamSymbolGap,
+  upstreamFiles,
+  upstreamSymbolGaps,
+} from "./upstream-symbols.js";
 import {
   assignFeatureWorkflows,
   documentedLightLeaf,
@@ -182,7 +208,15 @@ export interface InitiativeStartRequest {
   splitCriticalPath?: boolean;
   /** Let a small feature that others depend on run the light workflow with a host-made contract (#1664). */
   lightContracts?: boolean;
+  /**
+   * Accepted documents of features of `plan`, from an imported SDD package (#2208): a feature's
+   * first run starts at analysis with them while the approved split keeps the feature as imported.
+   */
+  seeds?: Record<string, StartSeed>;
 }
+
+/** The event that keeps the seeds of an imported initiative, with the digest of each feature. */
+export const IMPORTED_EVENT = "initiative.imported";
 
 /** What an initiative reroute did to one of its open runs (`initiative.rerouted` event). */
 export interface RerouteResult {
@@ -325,6 +359,11 @@ export interface FeatureView {
    * feature plans against, before its run starts and until its run is released onto their results.
    */
   plannedAhead?: string[];
+  /**
+   * Under `workflows.upstreamAmendments` (#2157): the amendments planned-ahead features asked of
+   * this feature at their release, and how the initiative answered each.
+   */
+  amendments?: (AmendmentRequest & { answer: AmendmentAnswer })[];
 }
 
 export interface NextAction {
@@ -575,7 +614,7 @@ export function shareShortfall(
       const highs = waiting.every((f) => f.needUsd)
         ? waiting.reduce((sum, f) => sum + (f.needUsd?.high ?? 0), 0)
         : null;
-      const raise = highs === null ? null : centsUp(cost.capUsd - (cost.remainingUsd ?? 0) + highs);
+      const raise = highs === null ? null : capCovering(cost, highs);
       const summary = `The shared dollar budget is exhausted: ${feature.id} would start with ${usd(feature.shareUsd ?? 0)} of the ${ceiling}, ${usd(cost.spentUsd)} spent.${raise !== null && raise > cost.capUsd ? ` A cap of ${usd(raise)} covers the high estimates of the waiting features.` : ""}`;
       return extendAdvice(id, summary, summary, {
         usd: raise !== null && raise > cost.capUsd ? raise : null,
@@ -586,7 +625,7 @@ export function shareShortfall(
     if (short && cost.shareMode === "enforce") {
       const raise = dollarRaise(view, feature);
       return extendAdvice(id, short, short, {
-        usd: raise === null ? null : centsUp(cost.capUsd + raise),
+        usd: raise,
         fallback: "--budget-usd N",
       });
     }
@@ -641,7 +680,8 @@ export function dollarShortfall(
       ? `${usd(cost.ceilingUsd)} ceiling`
       : `${usd(cost.capUsd ?? cost.ceilingUsd)} cap`;
   const within = uncalibratedSlack(cost) > 0 ? " within the ceiling" : "";
-  const raise = dollarRaise(view, feature) ?? 0;
+  const cap = dollarRaise(view, feature);
+  const raise = cap === null || cost.capUsd === null ? 0 : centsUp(cap - cost.capUsd);
   return `The shared dollar budget is short: ${feature.id} has ${usd(spare)} to grow into${within} after reserving the other waiting features' low estimates, below its estimate of ${usd(needUsd.low)}-${usd(needUsd.high)} (${usd(cost.spentUsd)} of the ${ceiling} spent); the dollar budget needs at least ${usd(raise)} more.`;
 }
 
@@ -676,16 +716,211 @@ export function shareSpareUsd(view: ShareGateView, featureId: string): number | 
   );
 }
 
-/** How many more dollars start `feature` at its priced low estimate; null when none are missing. */
+/**
+ * The cap that leaves `extraUsd` under it after what the initiative's runs committed (spent plus
+ * what open runs hold), for an `extend` remedy (#2282): with dollars left under the cap, the cap
+ * less them, so a remedy keeps the cents `remainingUsd` was floored to. `remainingUsd` is clamped at 0, so once
+ * the tolerance is spent (committed between the cap and the ceiling) a cap built from it hides
+ * the excess: R73 flatelens was told a $33.96 cap with $34.64 spent, which left docs at $0 again.
+ */
+export function capCovering(
+  cost: Pick<CostView, "capUsd" | "spentUsd" | "reservedUsd" | "remainingUsd">,
+  extraUsd: number,
+): number {
+  const cap = cost.capUsd ?? 0;
+  const committed =
+    cost.remainingUsd !== null && cost.remainingUsd > 0
+      ? cap - cost.remainingUsd
+      : Math.max(cap, cost.spentUsd + cost.reservedUsd);
+  return centsUp(committed + extraUsd);
+}
+
+/**
+ * The cap that starts `feature` at its priced low estimate (`shareSpareUsd`); null when no dollars
+ * are missing or there is no cap. Under it go what the runs committed (`capCovering`), the other
+ * waiting features' reserved lows as `costGrowthLimit` reserves them, and the low, less the
+ * tolerance band counted while uncalibrated. Raising the cap raises the ceiling by at least as
+ * much. Counted from the cap less the clamped spare, it fell short by what was committed past the
+ * cap (#2282).
+ */
 function dollarRaise(
   view: ShareGateView,
   feature: Pick<FeatureView, "id"> & Partial<Pick<FeatureView, "needUsd">>,
 ): number | null {
-  // Raising the cap by the gap raises the ceiling by at least as much.
+  const cost = view.budget.cost;
   const spare = shareSpareUsd(view, feature.id);
   const needUsd = feature.needUsd;
-  if (!needUsd || spare === null || spare >= needUsd.low) return null;
-  return Math.ceil((needUsd.low - spare) * 100) / 100;
+  if (!needUsd || spare === null || spare >= needUsd.low || cost.capUsd === null) return null;
+  const reserve = view.features
+    .filter((f) => f.share !== null && f.id !== feature.id)
+    .reduce((sum, f) => sum + (f.needUsd?.low ?? f.shareUsd ?? 0), 0);
+  return capCovering(cost, needUsd.low + reserve - uncalibratedSlack(cost));
+}
+
+/** Why the initiative would pause on its dollar cap (`dollarCapPark`), with what answers it. */
+export interface DollarCapPark {
+  /** The recorded park reason, as an enforced park would set it on the initiative. */
+  parkReason: "dollar_cap";
+  summary: string;
+  /** The dollars left under the cap (the ceiling while uncalibrated) after the open runs' needs. */
+  leftUsd: number;
+  /** The starting feature's priced low estimate. */
+  lowUsd: number;
+  /** What the open runs' plan charges add to (positive) or free from (negative) their caps. */
+  openNeedUsd: number;
+  remainingTo: "cap" | "ceiling";
+  /** The cap that pays for the expected remaining work: the forecast, at least the shortfall. */
+  suggestedUsd: number;
+}
+
+/**
+ * Whether a starting feature's own low estimate exceeds the dollars left after the open runs'
+ * needs, so an enforced rule would pause the initiative (`dollar_cap`) instead of starting a
+ * feature that cannot finish (#2218). Bench round 70 (evalpin) started report-cli with $4.82 under
+ * the $30 cap against a $5.17 low while suite-runner still needed about $1.50 for its review:
+ * report-cli spent $4.38 on planning and suite-runner stopped about $0.50 short. Unlike
+ * `dollarShortfall`, the other waiting features' lows are not reserved: this is the start that no
+ * dollars left can pay for. An open run counts at its plan charge in dollars (`planChargeUsd`,
+ * #2124) both ways, whatever the `initiative-plan-charge` mode, and at its cap without one. It
+ * waits for the first measured feature and counts to the tolerance ceiling until the dollar rate is
+ * measured (`uncalibratedSlack`), as the dollar share does (#1714, #2099).
+ */
+export function dollarCapPark(
+  view: ShareGateView,
+  feature: Pick<FeatureView, "id"> & Partial<Pick<FeatureView, "needUsd">>,
+): DollarCapPark | null {
+  const cost = view.budget.cost;
+  const lowUsd = feature.needUsd?.low;
+  if (cost.measuredFeatures === 0 || !lowUsd) return null;
+  if (cost.capUsd === null || cost.ceilingUsd === null || cost.remainingUsd === null) return null;
+  const charge = view.budget.planCharge;
+  // In enforce `remainingUsd` already holds priced open runs at their charge.
+  const openNeedUsd = charge?.usd && charge.mode !== "enforce" ? -charge.usd.releasedUsd : 0;
+  const slack = uncalibratedSlack(cost);
+  const toCents = (n: number): number => Math.round(n * 100) / 100;
+  const leftUsd = toCents(Math.max(0, cost.remainingUsd + slack - openNeedUsd));
+  if (leftUsd >= lowUsd) return null;
+  const remainingTo = slack > 0 ? "ceiling" : "cap";
+  // What must stay under the cap after the committed dollars: the low and the open runs' needs,
+  // less the band counted while uncalibrated (#2282), and at least the cap that lifts the
+  // cent-rounded `leftUsd` to the low, which the unrounded amounts can miss by half a cent.
+  const shortfall = Math.max(
+    capCovering(cost, lowUsd + openNeedUsd - slack),
+    centsUp(cost.capUsd + lowUsd - leftUsd),
+  );
+  const suggestedUsd = Math.max(shortfall, centsUp(cost.forecastUsd ?? 0));
+  const open =
+    openNeedUsd > 0
+      ? ` after the open runs' plan needs (${usd(openNeedUsd)} above their caps)`
+      : openNeedUsd < 0
+        ? ` after the open runs' plan needs (${usd(-openNeedUsd)} below their caps)`
+        : "";
+  const limit =
+    remainingTo === "ceiling" ? `${usd(cost.ceilingUsd)} ceiling` : `${usd(cost.capUsd)} cap`;
+  const expected =
+    cost.forecastUsd !== null && suggestedUsd > shortfall
+      ? `, the ${usd(cost.forecastUsd)} the remaining work is expected to cost`
+      : "";
+  return {
+    parkReason: "dollar_cap",
+    summary: `The initiative's dollar cap cannot pay for ${feature.id}: ${usd(leftUsd)} is left under the ${limit}${open}, below its low estimate of ${usd(lowUsd)} (${usd(cost.spentUsd)} spent). The initiative would pause (dollar_cap) until baked workflow initiative extend ${view.initiativeId} --budget-usd ${suggestedUsd}${expected}.`,
+    leftUsd,
+    lowUsd,
+    openNeedUsd: toCents(openNeedUsd),
+    remainingTo,
+    suggestedUsd,
+  };
+}
+
+/** What a split's waiting features are expected to cost in dollars (`expectedSplitUsd`). */
+export interface ExpectedSplitUsd {
+  /** What is spent so far plus `waitingUsd`. */
+  totalUsd: number;
+  spentUsd: number;
+  /** The waiting features' expected dollars: their expected tokens at their own priced rate. */
+  waitingUsd: number;
+  /** The sum of the waiting features' priced low estimates. */
+  lowsUsd: number;
+  waiting: number;
+  /** How many waiting features, in plan order, the dollars left under the cap pay for. */
+  paid: number;
+  remainingUsd: number | null;
+}
+
+/**
+ * The expected dollars of a split's waiting features (#2218): each one's expected tokens (the
+ * estimate's point forecast, which the dollar forecast uses too) at the dollars per token of its
+ * priced range, held inside that range; null when a waiting feature is unpriced. `paid` counts the
+ * features the dollars left under the cap pay for at that cost, in plan order.
+ */
+export function expectedSplitUsd(
+  features: readonly (Pick<FeatureEstimate, "costUsd" | "tokens" | "expectedTokens"> | undefined)[],
+  cost: Pick<CostView, "spentUsd" | "remainingUsd">,
+): ExpectedSplitUsd | null {
+  if (!features.length) return null;
+  const each: { low: number; expected: number }[] = [];
+  for (const f of features) {
+    const range = f?.costUsd;
+    if (!f || !range || f.tokens.low <= 0) return null;
+    const atRate = (f.expectedTokens * range.low) / f.tokens.low;
+    each.push({ low: range.low, expected: Math.min(range.high, Math.max(range.low, atRate)) });
+  }
+  const waitingUsd = each.reduce((sum, f) => sum + f.expected, 0);
+  let left = cost.remainingUsd ?? Number.POSITIVE_INFINITY;
+  let paid = 0;
+  for (const f of each) {
+    if (f.expected > left) break;
+    left -= f.expected;
+    paid += 1;
+  }
+  return {
+    totalUsd: centsUp(cost.spentUsd + waitingUsd),
+    spentUsd: cost.spentUsd,
+    waitingUsd: centsUp(waitingUsd),
+    lowsUsd: centsUp(each.reduce((sum, f) => sum + f.low, 0)),
+    waiting: each.length,
+    paid,
+    remainingUsd: cost.remainingUsd,
+  };
+}
+
+/**
+ * The pool a split's dollar cap implies (#2244): the tokens used so far plus what the dollars left
+ * under the cap pay for at the price the estimate gives the waiting features (their priced low
+ * dollars over their low tokens), rounded down to the pool step; null without a cap or a priced
+ * waiting feature, or when the pool already holds that many. Advice only: the split approval
+ * names it.
+ */
+export function splitDollarPool(
+  view: {
+    budget: { used: Pick<UsageView, "tokens">; cost: Pick<CostView, "capUsd" | "spentUsd"> };
+  },
+  waiting: readonly (Pick<FeatureEstimate, "costUsd" | "tokens"> | undefined)[],
+  limitTokens: number,
+): { capUsd: number; usdPerMillion: number; tokens: number } | null {
+  const capUsd = view.budget.cost.capUsd;
+  if (capUsd === null) return null;
+  let usdLow = 0;
+  let tokensLow = 0;
+  for (const f of waiting) {
+    if (!f?.costUsd || f.tokens.low <= 0) continue;
+    usdLow += f.costUsd.low;
+    tokensLow += f.tokens.low;
+  }
+  if (usdLow <= 0 || tokensLow <= 0) return null;
+  const usdPerMillion = (usdLow / tokensLow) * 1_000_000;
+  const left = tokensForUsd(Math.max(0, capUsd - view.budget.cost.spentUsd), usdPerMillion);
+  const tokens = dollarTokens(left === null ? null : view.budget.used.tokens + left, limitTokens);
+  return tokens === null ? null : { capUsd, usdPerMillion, tokens };
+}
+
+/** The split approval's sentence on the expected dollars beside the lows (#2218). */
+function expectedSplitText(e: ExpectedSplitUsd): string {
+  const pays =
+    e.remainingUsd === null
+      ? ""
+      : ` The ${usd(e.remainingUsd)} left under the cap pays for about ${e.paid} of the ${e.waiting} at that cost.`;
+  return `The split is expected to cost about ${usd(e.totalUsd)} in all: ${usd(e.spentUsd)} spent and ${usd(e.waitingUsd)} for the ${e.waiting} waiting features at their expected cost, against ${usd(e.lowsUsd)} at their low estimates.${pays} A dollar budget that covers the whole split is about ${usd(e.totalUsd)}.`;
 }
 
 /**
@@ -762,14 +997,26 @@ function splitTokens(byNeed: number[], lows: number[], remaining: number): numbe
  * the view records no plan charge or its limits, when the charge is already enforced (the view
  * is this one), or when it changes nothing. A record has no feature sizes: a split without an
  * estimate for every waiting feature weighs by their call shares, which `splitShares` divides
- * by size.
+ * by size. With a dollar side (#2124) the remaining dollars move by what the charge frees in
+ * dollars too.
  */
 export function planChargedGate(view: ShareGateView): ShareGateView | null {
   const charge = view.budget.planCharge;
   const limit = view.budget.limits?.maxTotalTokens;
-  if (!charge || charge.mode === "enforce" || charge.releasedTokens === 0 || limit === undefined)
+  const releasedUsd = charge?.usd?.releasedUsd ?? 0;
+  if (
+    !charge ||
+    charge.mode === "enforce" ||
+    (charge.releasedTokens === 0 && releasedUsd === 0) ||
+    limit === undefined
+  )
     return null;
   const tokens = Math.max(0, limit - charge.planCommittedTokens);
+  const cost = view.budget.cost;
+  const remainingUsd =
+    cost.capUsd === null || cost.remainingUsd === null || !charge.usd
+      ? cost.remainingUsd
+      : cents(Math.max(0, cost.capUsd - charge.usd.planCommittedUsd));
   const waiting = view.features.filter((f) => f.share !== null);
   const byNeed = waiting.every((f) => (f.need?.high ?? 0) > 0)
     ? waiting.map((f) => f.need?.high ?? 0)
@@ -786,6 +1033,7 @@ export function planChargedGate(view: ShareGateView): ShareGateView | null {
     budget: {
       ...view.budget,
       remaining: { ...view.budget.remaining, tokens },
+      cost: { ...cost, remainingUsd },
       ...(pool ? { pool: { ...pool, committedTokens: charge.planCommittedTokens } } : {}),
     },
     features: view.features.map((f) =>
@@ -843,7 +1091,8 @@ function stageWeights(
 }
 
 const usd = (n: number): string => `$${n.toFixed(2)}`;
-const cents = (n: number): number => Math.floor(n * 100) / 100;
+/** Down to the cent, as `centsUp` rounds up: 35.68 - 34.64 is 1.04, not 1.0399999 floored to 1.03. */
+const cents = (n: number): number => Math.floor(Math.round(n * 1e6) / 1e4) / 100;
 /** Up to the cent, for an amount a message suggests: it must cover what it names. */
 const centsUp = (n: number): number => Math.ceil(Math.round(n * 1e6) / 1e4) / 100;
 
@@ -884,7 +1133,7 @@ export function planBudget(settings: InitiativeSettings, plan: InitiativePlan): 
 export const MIN_SHARE = { maxTotalTokens: 1000, maxAgentCalls: 1, maxActiveMs: 1000 } as const;
 
 export const BUDGET_RULE =
-  "Each feature run starts with a share of the remaining shared budget, rounded down: remaining = limit - (usage of finished runs + the limits of open runs, decompose and superseded runs included; with stopModes initiative-plan-charge enforce, an open feature run whose plan is sized counts at the high end of its plan's need at the measured plan-to-actual ratio, never below its usage, instead of its limit), times the feature's weight, divided by the weights of the features of the approved plan without a run. Tokens are weighted by each feature's estimated need (the high end of its estimate), calls and time by size (small 1, medium 2, large 4). When the remaining pool covers the waiting features' low estimates, token shares reserve any lows that the weighted split would underfund and divide the rest by the same weights. A feature starts only if the remaining pool minus the other waiting features' low estimates covers its own low estimate. Otherwise it waits for a budget extension. A feature run grows its own budget only up to what remains after the low ends of the features still waiting. A starting feature's calls and active time are what remains less a floor for each other waiting feature (the base policy's per-run limit scaled by size, at most its share), never below its own share. A rebased run takes one more share of the same split. Agent calls per run are capped at 1000. With a dollar budget (--budget-usd), dollars use the original token weights and each feature run gets its share as its maxCostUsd with the initiative's costTolerance. Its cap may grow independently of tokens, only up to the remaining dollars less the priced low estimates of the other waiting features (their whole shares when unpriced). Split approval warns on dollar shares below their own priced lows; open runs hold their caps. No feature starts on less than $0.01, or once a feature is accepted and the projected total passes the cap and its tolerance.";
+  "Each feature run starts with a share of the remaining shared budget, rounded down: remaining = limit - (usage of finished runs + the limits of open runs, decompose and superseded runs included; an open feature run whose plan is sized counts at the high end of its plan's need at the measured plan-to-actual ratio, never below its usage, instead of its limit, unless stopModes sets initiative-plan-charge to shadow), times the feature's weight, divided by the weights of the features of the approved plan without a run. Tokens are weighted by each feature's estimated need (the high end of its estimate), calls and time by size (small 1, medium 2, large 4). When the remaining pool covers the waiting features' low estimates, token shares reserve any lows that the weighted split would underfund and divide the rest by the same weights. A feature starts only if the remaining pool minus the other waiting features' low estimates covers its own low estimate. Otherwise it waits for a budget extension. A feature run grows its own budget only up to what remains after the low ends of the features still waiting. A starting feature's calls and active time are what remains less a floor for each other waiting feature (the base policy's per-run limit scaled by size, at most its share), never below its own share. A rebased run takes one more share of the same split. Agent calls per run are capped at 1000. With a dollar budget (--budget-usd), dollars use the original token weights and each feature run gets its share as its maxCostUsd with the initiative's costTolerance. Its cap may grow independently of tokens, only up to the remaining dollars less the priced low estimates of the other waiting features (their whole shares when unpriced); a run that finished its tasks and would stop on its cost ceiling reserves its remaining review and convergence before those lows, inside the dollar cap and its tolerance (workflows.stageReserve: shadow, the default, records decision.would_extend; on grows the run's bound). Split approval warns on dollar shares below their own priced lows; open runs hold their caps. No feature starts on less than $0.01, or once a feature is accepted and the projected total passes the cap and its tolerance.";
 
 /** Digest a person approves for a plan revision: the plan, the budget and the frozen settings. */
 export function splitDigest(
@@ -1005,6 +1254,13 @@ export class InitiativeService {
         "INVALID_DEFINITION",
         `Feature issues name features the split does not have: ${unknown.join(", ")}`,
       );
+    const seeded = Object.keys(request.seeds ?? {});
+    const strays = seeded.filter((key) => !request.plan?.features.some((f) => f.id === key));
+    if (strays.length)
+      throw new WorkflowFault(
+        "INVALID_DEFINITION",
+        `Imported documents name features the split does not have: ${strays.join(", ")}`,
+      );
     if (request.plan) {
       const given = InitiativePlanSchema.parse(request.plan);
       const problems = validateInitiativePlan(given);
@@ -1020,6 +1276,18 @@ export class InitiativeService {
           decomposeRunId: null,
         });
         this.propose(id, plan, "user", null);
+        if (seeded.length) {
+          const proposed = this.store.plan(
+            this.store.revision(id, this.store.get(id).plan_revision),
+          );
+          this.store.emit(id, IMPORTED_EVENT, {
+            features: Object.fromEntries(
+              proposed.features
+                .filter((f) => request.seeds?.[f.id])
+                .map((f) => [f.id, { digest: featureDigest(f), seed: request.seeds?.[f.id] }]),
+            ),
+          });
+        }
         const view = this.view(id);
         this.store.saveCommand(request.commandId, id, body, view);
         return view;
@@ -1767,8 +2035,14 @@ export class InitiativeService {
     const state = this.workflows.store.state(row.decompose_run_id ?? "");
     if (!state.initiativePlan)
       throw new WorkflowFault("ARTIFACT_MISSING", "The decompose run has no initiative plan");
-    const decomposed = InitiativePlanSchema.parse(JSON.parse(state.initiativePlan));
+    const written = InitiativePlanSchema.parse(JSON.parse(state.initiativePlan));
     const settings = this.store.settings(row);
+    // Skeleton lines the project's formatter would sort get a blank line before them, so the
+    // host-written content stays a fixed point of the format check (#2222); in shadow (absent)
+    // the layout is only recorded.
+    const layout = layOutSkeletons(written);
+    const layoutMode = settings.basePolicy.skeletonLayout === "on" ? "on" : "shadow";
+    const decomposed = layoutMode === "on" ? layout.plan : written;
     // Small siblings share one run's fixed stages (#1352); the decomposer's prompt alone did not.
     // A feature that is only skeleton runs inside a dependent instead of a run of its own (#1662).
     const folded = settings.keepFeatures
@@ -1813,6 +2087,12 @@ export class InitiativeService {
       }
       this.store.setTitle(id, plan.title);
       this.propose(id, plan, "decomposer", null);
+      if (layout.files.length)
+        this.store.emit(id, "split.skeleton_layout", {
+          planRevision: this.store.get(id).plan_revision,
+          mode: layoutMode,
+          files: layout.files,
+        });
       if (floored.merged.length)
         this.store.emit(id, "split.merged", {
           planRevision: this.store.get(id).plan_revision,
@@ -1930,6 +2210,7 @@ export class InitiativeService {
       usedTokens: pool.usedTokens,
       forecastTokens: pool.forecastTokens,
       ratio: pool.ratio,
+      advice: pool.advice,
       suggestedTokens: pool.suggestedTokens,
       message: pool.notice,
     });
@@ -1985,29 +2266,53 @@ export class InitiativeService {
       ratio: charge.ratio,
       limitCommittedTokens: charge.limitCommittedTokens,
       planCommittedTokens: charge.planCommittedTokens,
-      runs: charge.runs.map(({ featureId, runId, usedTokens, limitTokens, chargeTokens }) => ({
-        featureId,
-        runId,
-        usedTokens,
-        limitTokens,
-        chargeTokens,
-      })),
+      ...(charge.usd ? { usd: charge.usd } : {}),
+      runs: charge.runs.map(
+        ({
+          featureId,
+          runId,
+          usedTokens,
+          limitTokens,
+          chargeTokens,
+          usedUsd,
+          limitUsd,
+          chargeUsd,
+        }) => ({
+          featureId,
+          runId,
+          usedTokens,
+          limitTokens,
+          chargeTokens,
+          ...(chargeUsd !== undefined ? { usedUsd, limitUsd, chargeUsd } : {}),
+        }),
+      ),
     };
     const amount = (n: number): string =>
       n >= 0 ? `frees ${tokenText(n)} tokens` : `adds ${tokenText(-n)} tokens`;
+    const dollars = (n: number): string => (n >= 0 ? `frees ${usd(n)}` : `adds ${usd(-n)}`);
     for (const run of charge.runs) {
+      // The dollar charge moves with the run's spending; its key changes with the plan only.
       const key = `run-${run.runId}-${run.plan.high}`;
       if (seen.has(key)) continue;
       const released = Math.max(run.usedTokens, run.limitTokens) - run.chargeTokens;
-      if (released === 0) continue;
+      const releasedUsd =
+        run.chargeUsd === null || run.chargeUsd === undefined
+          ? null
+          : cents((run.limitUsd ?? 0) - run.chargeUsd);
+      if (released === 0 && !releasedUsd) continue;
+      const usdText =
+        releasedUsd === null || run.chargeUsd === null || run.chargeUsd === undefined
+          ? ""
+          : ` In dollars it holds ${usd(run.chargeUsd)} at the task-call rate instead of ${usd(run.limitUsd ?? 0)}, which ${dollars(releasedUsd)} of the dollar budget.`;
       this.store.emit(id, "decision.would_release", {
         ...base,
         key,
         featureId: run.featureId,
         releasedTokens: released,
+        ...(releasedUsd !== null ? { releasedUsd } : {}),
         wouldStart: false,
         wouldPark: false,
-        summary: `${run.featureId}'s plan prices its run at ${tokenText(run.chargeTokens)} tokens (${tokenText(run.usedTokens)} used): holding that instead of its ${tokenText(run.limitTokens)} limit ${amount(released)} of the pool.`,
+        summary: `${run.featureId}'s plan prices its run at ${tokenText(run.chargeTokens)} tokens (${tokenText(run.usedTokens)} used): holding that instead of its ${tokenText(run.limitTokens)} limit ${amount(released)} of the pool.${usdText}`,
       });
     }
     if (!gate) return;
@@ -2138,6 +2443,48 @@ export class InitiativeService {
     });
   }
 
+  /**
+   * A feature that starts although no dollars left after the open runs' needs pay for its low
+   * estimate (`dollarCapPark`, #2218): a `decision.would_stop` event of `initiative-dollar-cap`,
+   * once per feature. The rule is not enforced yet; its promotion pauses the initiative instead.
+   */
+  private noteCapWouldStop(id: string, view: InitiativeView, feature: FeatureView): void {
+    const settings = this.store.settings(this.store.get(id));
+    const mode = stopMode(settings.basePolicy, "initiative-dollar-cap");
+    if (mode === "enforce") return;
+    const park = dollarCapPark(view, feature);
+    if (!park) return;
+    const key = `cap-${feature.id}`;
+    const seen = this.store
+      .eventsOfType(id, "decision.would_stop")
+      .some(
+        (p) =>
+          (p as { reason?: string } | null)?.reason === "initiative-dollar-cap" &&
+          (p as { key?: string }).key === key,
+      );
+    if (seen) return;
+    const cost = view.budget.cost;
+    this.store.emit(id, "decision.would_stop", {
+      reason: "initiative-dollar-cap",
+      mode,
+      featureId: feature.id,
+      key,
+      parkReason: park.parkReason,
+      summary: park.summary,
+      remedy: { action: "extend", initiativeId: id, suggestedUsd: park.suggestedUsd },
+      inputs: {
+        leftUsd: park.leftUsd,
+        lowUsd: park.lowUsd,
+        openNeedUsd: park.openNeedUsd,
+        remainingUsd: cost.remainingUsd,
+        remainingTo: park.remainingTo,
+        spentUsd: cost.spentUsd,
+        forecastUsd: cost.forecastUsd,
+        measuredFeatures: cost.measuredFeatures,
+      },
+    });
+  }
+
   private async startFeature(id: string, featureId: string): Promise<boolean> {
     const row = this.store.get(id);
     const plan = this.approvedPlan(row);
@@ -2152,6 +2499,7 @@ export class InitiativeService {
     if (!sized) throw stopFault("budget-share", "No budget share is available");
     if (waiting) this.noteShareGate(current, waiting, "pass");
     if (waiting) this.noteShareWouldStop(id, current, waiting);
+    if (waiting) this.noteCapWouldStop(id, current, waiting);
     this.noteAdvisoryForecast(id, featureId, current.budget.cost);
     this.noteForecastWouldStop(row, featureId, current);
     const share = { ...sized, ...guardGrowth(current, featureId, settings.basePolicy) };
@@ -2185,12 +2533,19 @@ export class InitiativeService {
       current.budget.cost.forecastBinding,
     );
     const declined = featureApprovalDeclined(settings, feature, false, policy);
+    const seed = previous ? null : this.importedSeed(id, settings, plan, feature);
     // A derived command ID makes a start after a crash return the same run instead of a second one.
     const snapshot = await this.workflows.start({
       commandId: `i-${hashJson({ id, featureId, previous, revision: row.approved_plan_revision }).slice(0, 48)}`,
       workflowId: featureWorkflowId(settings, feature),
       featureId: runFeature,
-      prompt: featurePrompt(row, plan, feature, upstream),
+      prompt: featurePrompt(
+        row,
+        plan,
+        feature,
+        upstream,
+        this.amendments(row).filter((a) => a.featureId === featureId && a.answer === "replan"),
+      ),
       initiativeBounds: {
         featureId,
         features: plan.features.map((f) => ({
@@ -2218,6 +2573,7 @@ export class InitiativeService {
       ...(lightContract(settings, feature, plan) ? { contract: feature.contract } : {}),
       ...(baseCommit ? { baseCommit, baseFiles: this.upstreamSpecs(id, feature, unfinished) } : {}),
       ...(baseCommit && unfinished.length ? { planAhead: true } : {}),
+      ...(seed ? { seed } : {}),
     });
     this.store.transaction(() => {
       if (this.store.links(id).some((l) => l.run_id === snapshot.runId)) return;
@@ -2231,6 +2587,28 @@ export class InitiativeService {
       );
     });
     return true;
+  }
+
+  /**
+   * The imported documents a feature's first run starts from (#2208): only while the approved
+   * split holds the feature as imported, and its workflow specifies and plans.
+   */
+  private importedSeed(
+    id: string,
+    settings: InitiativeSettings,
+    plan: InitiativePlan,
+    feature: InitiativeFeature,
+  ): StartSeed | null {
+    const imported = this.store.eventsOfType(id, IMPORTED_EVENT)[0] as
+      | { features: Record<string, { digest: string; seed: StartSeed }> }
+      | undefined;
+    const entry = imported?.features[feature.id];
+    if (!entry || entry.digest !== featureDigest(feature)) return null;
+    const workflow = this.workflowChoices(settings).find(
+      (c) => c.id === featureWorkflowId(settings, feature),
+    );
+    if (!workflow?.contract || lightContract(settings, feature, plan)) return null;
+    return entry.seed;
   }
 
   /**
@@ -2406,18 +2784,111 @@ export class InitiativeService {
     const charged = view.budget.planCharge;
     const own = charged?.mode === "enforce" ? charged.runs.find((r) => r.runId === runId) : null;
     const committed = this.committed(runId);
+    const used = this.usage(runId);
+    const cost = view.budget.cost;
+    const runCost = this.workflows.store.costUsage(runId);
+    // A charge is held only as far as the pool and the dollar ceiling can hold it (#2280).
+    const hold = own
+      ? chargeHold({
+          charge: { tokens: own.chargeTokens, usd: own.chargeUsd ?? null },
+          own: { usedTokens: used.tokens, usedUsd: runCost.spentUsd + runCost.reservedUsd },
+          pool: {
+            limitTokens: view.budget.limits.maxTotalTokens,
+            othersTokens: view.budget.used.tokens + view.budget.reserved.tokens - own.chargeTokens,
+            waitingLowTokens: waitingLowTokens(view, featureId),
+          },
+          dollars:
+            cost.ceilingUsd === null
+              ? null
+              : {
+                  ceilingUsd: cost.ceilingUsd,
+                  othersUsd: cost.spentUsd + cost.reservedUsd - (own.chargeUsd ?? 0),
+                },
+        })
+      : null;
     const held = {
       ...committed,
-      tokens: own ? own.chargeTokens : committed.tokens,
-      usd: this.committedUsd(runId),
+      tokens: hold ? hold.tokens : committed.tokens,
+      usd: hold?.usd ?? this.committedUsd(runId),
     };
-    const after = refreshedGrowth(policy, settings.basePolicy, held, this.usage(runId), {
+    const after = refreshedGrowth(policy, settings.basePolicy, held, used, {
       usd: spareUsd,
       tokens: spareTokens,
       calls: guard.calls,
       activeMs: guard.activeMs,
     });
-    if (!after) return;
+    if (after)
+      this.writeGrowth(runId, policy, after, "initiative-growth", {
+        featureId,
+        held,
+        ...(hold && own
+          ? { charge: { tokens: own.chargeTokens, usd: own.chargeUsd ?? null }, hold }
+          : {}),
+        spareUsd,
+        spareTokens,
+        guard,
+      });
+    this.recordPoolBound(view, featureId, runId, after ?? policy, settings.basePolicy);
+  }
+
+  /**
+   * Records an open feature run whose growth bound is above what the initiative's pool or dollar
+   * ceiling holds for it (`initiative-pool-growth`, shadow, #2280): its sizing ceilings, its
+   * dollar bound and the hard ceiling of its latest `auto-extend` growth, against the pool less
+   * what the other runs used and the ceiling less what they spent. Once per run and bound.
+   */
+  private recordPoolBound(
+    view: InitiativeView,
+    featureId: string,
+    runId: string,
+    policy: RunPolicy,
+    base: RunPolicy,
+  ): void {
+    const mode = stopMode(base, "initiative-pool-growth");
+    if (mode === "enforce") return;
+    const store = this.workflows.store;
+    const sizing = policy.sizing;
+    const tokens: RunBound[] = [];
+    if (typeof sizing?.maxRunTokens === "number")
+      tokens.push({ kind: "maxRunTokens", value: sizing.maxRunTokens });
+    if (typeof sizing?.extendToTokens === "number")
+      tokens.push({ kind: "extendToTokens", value: sizing.extendToTokens });
+    const hard = latestHardCeiling(store, runId);
+    if (hard !== null) tokens.push({ kind: "hardCeiling", value: hard });
+    const usd: RunBound[] =
+      sizing?.maxRunCostUsd !== undefined && policy.maxCostUsd !== null
+        ? [{ kind: "maxRunCostUsd", value: sizing.maxRunCostUsd }]
+        : [];
+    const cost = view.budget.cost;
+    const inputs = {
+      runId,
+      featureId,
+      limitTokens: view.budget.limits.maxTotalTokens,
+      othersUsedTokens: Math.max(0, view.budget.used.tokens - this.usage(runId).tokens),
+      ceilingUsd: cost.ceilingUsd,
+      othersSpentUsd: Math.max(0, cost.spentUsd - this.spentUsd(runId)),
+      tokens,
+      usd,
+    };
+    const decision = poolBoundDecision(inputs);
+    if (!decision.wouldStop) return;
+    recordWouldStop(store, runId, {
+      reason: decision.reason,
+      mode,
+      key: decision.over.map((b) => `${b.kind}-${String(b.value)}`).join("-"),
+      summary: `${decision.why} An enforced rule would hold the run at what the pool and the ceiling leave; an owner's extend raises them.`,
+      inputs: { ...inputs, holdTokens: decision.holdTokens, holdUsd: decision.holdUsd },
+    });
+  }
+
+  /** Stores a host growth of an open feature run's policy as a revision a renewal undoes. */
+  private writeGrowth(
+    runId: string,
+    policy: RunPolicy,
+    after: RunPolicy,
+    kind: "initiative-growth" | "stage-reserve",
+    inputs: Record<string, unknown>,
+  ): void {
     const store = this.workflows.store;
     const count = store
       .artifacts(runId)
@@ -2429,17 +2900,89 @@ export class InitiativeService {
         "policy-revision",
         `policy-revisions/initiative-${String(count + 1)}.json`,
         canonical({
-          kind: "initiative-growth",
+          kind,
           approvedBy: "sizing",
           previousPolicyHash: hashJson(policy),
           policyHash: hashJson(after),
           previous: Object.fromEntries(keys.map((key) => [key, policy[key] ?? null])),
           next: Object.fromEntries(keys.map((key) => [key, after[key] ?? null])),
-          inputs: { featureId, held, spareUsd, spareTokens, guard },
+          inputs,
         }),
       );
       store.setPolicy(runId, after);
     });
+  }
+
+  /**
+   * Asked before a feature run's model call stops on its cost ceiling (#2241): when the run
+   * finished its tasks and its remaining review and convergence fit under the initiative's dollar
+   * ceiling (`stageReserveDecision`), `workflows.stageReserve: shadow` (the default) records a
+   * `decision.would_extend` event once per bound and the stop stands; `on` raises the run's dollar
+   * growth bound to the stages' need as a host revision, and the call grows into it. Nothing for a
+   * run of no initiative or without a dollar cap.
+   */
+  reserveStages(runId: string, requestedUsd: number): void {
+    const mode = this.workflows.config.workflows?.stageReserve ?? DEFAULT_STAGE_RESERVE;
+    if (mode === "off" || !this.store.available()) return;
+    const id = this.store.initiativeOfRun(runId);
+    const featureId = id && this.store.links(id).find((l) => l.run_id === runId)?.feature_id;
+    if (!id || !featureId) return;
+    const store = this.workflows.store;
+    const run = store.run(runId);
+    if (terminalStates.includes(run.status)) return;
+    const policy = PolicySchema.parse(JSON.parse(run.policy_json));
+    const boundUsd = policy.sizing?.maxRunCostUsd;
+    if (boundUsd === undefined || policy.maxCostUsd === null) return;
+    const reserve = stageReserve(store, runId, policy);
+    if (!reserve) return;
+    const view = this.view(id);
+    const cost = view.budget.cost;
+    if (cost.capUsd === null || cost.ceilingUsd === null) return;
+    const inputs = {
+      runId,
+      featureId,
+      stages: reserve.stages,
+      stageReserveUsd: Math.round(reserve.usd * 10_000) / 10_000,
+      runSpentUsd: Math.round(reserve.spentUsd * 10_000) / 10_000,
+      runReservedUsd: Math.round(reserve.reservedUsd * 10_000) / 10_000,
+      requestedUsd: Math.round(requestedUsd * 10_000) / 10_000,
+      boundUsd,
+      runHeldUsd: this.committedUsd(runId),
+      spareUsd: costGrowthLimit(view, featureId),
+      initiative: {
+        committedUsd: cost.spentUsd + cost.reservedUsd,
+        capUsd: cost.capUsd,
+        ceilingUsd: cost.ceilingUsd,
+      },
+    };
+    const decision = stageReserveDecision(inputs);
+    if (!decision.wouldExtend || decision.toUsd === null) return;
+    if (mode === "shadow") {
+      // The stop that follows rolls the call's transaction back: the record is written after it.
+      const key = `${decision.reason}-${runId}-${boundUsd}`;
+      store.afterTransaction(() => {
+        const seen = this.store
+          .eventsOfType(id, "decision.would_extend")
+          .some((p) => (p as { key?: string } | null)?.key === key);
+        if (seen) return;
+        this.store.emit(id, "decision.would_extend", {
+          reason: decision.reason,
+          mode,
+          featureId,
+          runId,
+          key,
+          toUsd: decision.toUsd,
+          byUsd: decision.byUsd,
+          suggestedUsd: decision.suggestedUsd,
+          summary: `${decision.why} The run would continue instead of stopping on its cost ceiling.`,
+          inputs,
+        });
+      });
+      return;
+    }
+    const sizing = { ...policy.sizing, maxRunCostUsd: decision.toUsd };
+    const after = PolicySchema.parse({ ...policy, sizing });
+    this.writeGrowth(runId, policy, after, "stage-reserve", { ...inputs, why: decision.why });
   }
 
   /**
@@ -2462,6 +3005,11 @@ export class InitiativeService {
     if (!feature) return false;
     const baseCommit = await this.featureBase(id, feature, this.store.settings(row));
     if (!baseCommit) return false;
+    if (
+      this.workflows.config.workflows?.upstreamAmendments === true &&
+      (await this.amendUpstream(id, feature, runId, baseCommit))
+    )
+      return false;
     await this.workflows.releaseBase(
       runId,
       {
@@ -2488,21 +3036,7 @@ export class InitiativeService {
     plan: InitiativePlan | null,
     baseCommit: string,
   ): Promise<void> {
-    const spec = this.workflows.store.state(runId).spec;
-    if (!spec || !plan) return;
-    const files = plan.features
-      .filter((f) => feature.dependsOn.includes(f.id))
-      .flatMap((f) =>
-        f.boundary.paths.filter((p) => !isGlobPath(p)).map((path) => ({ featureId: f.id, path })),
-      );
-    if (!files.length) return;
-    const upstream = await Promise.all(
-      files.map(async (file) => {
-        const shown = await git(this.workflows.workspace, ["show", `${baseCommit}:${file.path}`]);
-        return { ...file, text: shown.code === 0 ? shown.stdout : null };
-      }),
-    );
-    const gaps = upstreamSymbolGaps(spec, upstream);
+    const gaps = await this.upstreamGaps(runId, feature, plan, baseCommit);
     const policy = PolicySchema.parse(JSON.parse(this.workflows.store.run(runId).policy_json));
     const mode = stopMode(policy, "upstream_symbol");
     // The reason is not enforced yet, so a policy can only choose shadow or advisory.
@@ -2514,6 +3048,93 @@ export class InitiativeService {
       summary: `The spec names upstream symbols the accepted code does not have: ${gaps.map((g) => `${g.ref} ${g.symbol} (${g.path}, ${g.featureId})`).join("; ")}`,
       inputs: { baseCommit, gaps },
     });
+  }
+
+  /** The upstream symbols a feature run's spec names that the code at `baseCommit` lacks (#2135). */
+  private async upstreamGaps(
+    runId: string,
+    feature: InitiativePlan["features"][number],
+    plan: InitiativePlan | null,
+    baseCommit: string,
+  ): Promise<UpstreamSymbolGap[]> {
+    const spec = this.workflows.store.state(runId).spec;
+    if (!spec || !plan) return [];
+    const files = upstreamFiles(plan, feature);
+    if (!files.length) return [];
+    const upstream = await Promise.all(
+      files.map(async (file) => {
+        const shown = await git(this.workflows.workspace, ["show", `${baseCommit}:${file.path}`]);
+        return { ...file, text: shown.code === 0 ? shown.stdout : null };
+      }),
+    );
+    return upstreamSymbolGaps(spec, upstream);
+  }
+
+  /** The amendment requests of the approved split (#2157), oldest first. */
+  private amendments(row: InitiativeRow): (AmendmentRequest & {
+    featureId: string;
+    answer: AmendmentAnswer;
+  })[] {
+    return this.store
+      .eventsOfType(row.id, "feature.amendment_requested")
+      .map(
+        (payload) =>
+          payload as AmendmentRequest & {
+            featureId: string;
+            planRevision: number | null;
+            answer: AmendmentAnswer;
+          },
+      )
+      .filter((e) => e.planRevision === row.approved_plan_revision)
+      .map(({ featureId, from, gaps, answer }) => ({ featureId, from, gaps, answer }));
+  }
+
+  /**
+   * A planned-ahead feature whose spec names upstream symbols the accepted code lacks asks their
+   * owners for an amendment before its release (#2157, R68 ewvet scanner). Each owner is asked
+   * once per split and answered by `amendmentAnswer`: an owner reopened for it runs again with the
+   * request in its prompt, and the feature stays held until that run is accepted, then releases
+   * onto its result (or is rebased when the owner's contract changed). True while it waits.
+   */
+  private async amendUpstream(
+    id: string,
+    feature: InitiativePlan["features"][number],
+    runId: string,
+    baseCommit: string,
+  ): Promise<boolean> {
+    const row = this.store.get(id);
+    const asked = this.amendments(row).filter((a) => a.from === feature.id);
+    const settled = (owner: string) => {
+      const link = this.store.current(id, owner);
+      return link !== null && this.workflows.store.run(link.run_id).status === "completed";
+    };
+    if (asked.some((a) => a.answer === "replan" && !settled(a.featureId))) return true;
+    const gaps = await this.upstreamGaps(runId, feature, this.approvedPlan(row), baseCommit);
+    let held = false;
+    for (const owner of [...new Set(gaps.map((g) => g.featureId))]) {
+      const link = this.store.current(id, owner);
+      const answer = amendmentAnswer({
+        ownerRunStatus: link ? this.workflows.store.run(link.run_id).status : null,
+        initiativeStatus: row.status,
+        requested: asked.some((a) => a.featureId === owner),
+      });
+      if (asked.some((a) => a.featureId === owner)) continue;
+      this.store.transaction(() => {
+        if (answer === "replan" && link)
+          this.store.supersede(id, link.run_id, `amended for ${feature.id}`);
+        this.store.emit(id, "feature.amendment_requested", {
+          featureId: owner,
+          from: feature.id,
+          runId,
+          planRevision: row.approved_plan_revision,
+          gaps: gaps.filter((g) => g.featureId === owner),
+          answer,
+        });
+      });
+      if (answer === "replan") held = true;
+    }
+    if (held) await this.settleSuperseded(id);
+    return held;
   }
 
   /** Superseded runs that are still open are cancelled, so they hold no publication or lease. */
@@ -2642,6 +3263,7 @@ export class InitiativeService {
         stages: (facts(workflowId)?.stages ?? []).map((stage) => ({ ...stage, models })),
         ...counts.get(feature.id),
         dependsOn: feature.dependsOn,
+        ...(feature.testCases ? { testCases: feature.testCases } : {}),
       };
     });
     const history = estimateHistory(
@@ -2685,6 +3307,17 @@ export class InitiativeService {
         overhead: row.decompose_run_id ? this.usage(row.decompose_run_id).tokens : 0,
       },
       parallelRuns: this.parallelRuns(settings, plan, facts),
+      ...(settings.basePolicy?.sizing?.recencyHalfLife
+        ? { recencyHalfLife: settings.basePolicy.sizing.recencyHalfLife }
+        : {}),
+      // Read only when the request demands a test volume: the sizing history opens every store.
+      ...(features.some((f) => f.testCases)
+        ? {
+            testCaseRate: testCaseRate(
+              sizingHistory(this.workflows.workspace, settings.basePolicy),
+            ),
+          }
+        : {}),
     });
     this.priceFeatureNeeds(row, estimate, history, accepted);
     return estimate;
@@ -2728,7 +3361,9 @@ export class InitiativeService {
       approved && features.some((f) => f.state !== "accepted")
         ? this.estimateOf(row, approved, accepted, 0)
         : null;
-    const charge = estimate ? this.planChargeOf(id, settings, estimate, byLimits.tokens) : null;
+    const charge = estimate
+      ? this.planChargeOf(id, settings, estimate, byLimits.tokens, runIds)
+      : null;
     // Only in enforce does the pool hold open runs with a sized plan at their plan charge (#2100).
     const committed =
       charge?.mode === "enforce" ? { ...byLimits, tokens: charge.planCommittedTokens } : byLimits;
@@ -2742,7 +3377,7 @@ export class InitiativeService {
       feature.need = needs?.get(feature.id) ?? null;
       feature.needUsd = estimate?.features.find((f) => f.featureId === feature.id)?.costUsd ?? null;
     }
-    const cost = this.costView(row, settings, plan, runIds, used, accepted, estimate);
+    const cost = this.costView(row, settings, plan, runIds, used, accepted, estimate, charge);
     const shares = splitShares(waitingForRun, remaining, cost.remainingUsd);
     for (const [index, feature] of waitingForRun.entries()) Object.assign(feature, shares[index]);
     const measured = estimate ? this.poolForecastOf(row.id, used.tokens, estimate, features) : null;
@@ -2756,6 +3391,7 @@ export class InitiativeService {
             measured?.forecastTokens ??
             (estimate ? Math.max(estimate.expectedTokens, used.tokens) : null),
           ratio: measured?.ratio ?? null,
+          advice: measured?.advice ?? null,
           features: features.length,
           waiting: waitingNeeds(waitingForRun),
           cost,
@@ -2889,9 +3525,14 @@ export class InitiativeService {
     used: UsageView,
     accepted: ReadonlySet<string>,
     estimate: InitiativeEstimate | null,
+    charge: PlanChargeView | null,
   ): CostView {
     const spentUsd = runIds.reduce((sum, runId) => sum + this.spentUsd(runId), 0);
-    const committedUsd = runIds.reduce((sum, runId) => sum + this.committedUsd(runId), 0);
+    // Only in enforce do the dollars hold priced open runs at their plan charge (#2124).
+    const committedUsd =
+      charge?.mode === "enforce" && charge.usd
+        ? charge.usd.planCommittedUsd
+        : runIds.reduce((sum, runId) => sum + this.committedUsd(runId), 0);
     const budget = settings.costBudget;
     const capUsd = budget?.maxCostUsd ?? null;
     const tolerance = budget
@@ -2940,7 +3581,6 @@ export class InitiativeService {
 
   /** Warn on the proposed revision before approval, including edits to an approved split. */
   private splitApprovalMessage(row: InitiativeRow, view: InitiativeView): string | RecoveryAdvice {
-    const message = `Approve the split (plan revision ${row.plan_revision}) or edit it.`;
     const plan = this.store.plan(this.store.revision(row.id, row.plan_revision));
     const accepted = new Set(
       view.features
@@ -2955,6 +3595,13 @@ export class InitiativeService {
         .map((f) => f.id),
     );
     const estimate = this.estimateOf(row, plan, accepted);
+    const tests = estimate.testVolume
+      ? `${testVolumeText(
+          estimate.testVolume,
+          estimate.features.filter((f) => f.basis !== "measured" && f.testCases),
+        )} `
+      : "";
+    const message = `${tests}Approve the split (plan revision ${row.plan_revision}) or edit it.`;
     const needs = this.featureNeeds(estimate);
     const waiting = plan.features
       .filter((f) => {
@@ -2984,25 +3631,59 @@ export class InitiativeService {
         ? "until its plan is sized"
         : "until the run ends";
     const reservations = ` The share gate holds a started feature's run limit (its start share) against the pool ${held}, not what it uses: an extension to the high end is for those reservations, the ${tokenText(estimate.expectedTokens)} above is what it expects to be used.`;
+    // The pool the dollar cap implies at the estimate's price for the waiting features (#2244): R71
+    // xmlvet's $30 paid for about 35M tokens against a 30.0M pool, the approval said nothing and
+    // the pool stopped every feature for 19.6 minutes with dollars left.
+    const byDollars = splitDollarPool(
+      view,
+      waiting.map((f) => estimate.features.find((e) => e.featureId === f.id)),
+      limit,
+    );
     const tokenWarning =
       estimate.tokens.high > limit
-        ? `The estimate expects about ${tokenText(estimate.expectedTokens)} tokens${estimate.expectedTokens <= limit ? ", within" : ", above"} the shared budget (${tokenText(limit)}); its high end (${tokenText(estimate.tokens.high)} tokens; ${highCalibrationText(estimate.highCalibration)}) exceeds the shared budget.${calibrationLagText(estimate)}${reservations} Consider extending to ${estimate.withMargin} tokens, including margin, before approving, or approve with this risk.`
+        ? `The estimate expects about ${tokenText(estimate.expectedTokens)} tokens${estimate.expectedTokens <= limit ? ", within" : ", above"} the shared budget (${tokenText(limit)}); its high end (${tokenText(estimate.tokens.high)} tokens; ${highCalibrationText(estimate.highCalibration)}) exceeds the shared budget.${calibrationLagText(estimate)}${reservations}${byDollars ? "" : ` Consider extending to ${estimate.withMargin} tokens, including margin, before approving, or approve with this risk.`}`
         : "";
-    const warning = [tokenWarning, ...dollarWarnings].filter(Boolean).join(" ");
+    const dollarPoolWarning = byDollars
+      ? `The ${usd(byDollars.capUsd)} cap pays for about ${tokenText(byDollars.tokens)} tokens at ${usd(byDollars.usdPerMillion)} per million, the estimate's price for the waiting features, more than the shared pool (${tokenText(limit)}): the pool, not the dollar cap, would stop features first. Consider extending the pool to ${byDollars.tokens} tokens, what the cap pays for, before approving, or approve with this risk.`
+      : "";
+    // The lows alone read as what the split costs: R70 evalpin extended to their $30.11 sum while
+    // its seven features were expected to cost about $36.5 (#2218).
+    const expected = dollarWarnings.length
+      ? expectedSplitUsd(
+          waiting.map((f) => estimate.features.find((e) => e.featureId === f.id)),
+          view.budget.cost,
+        )
+      : null;
+    const warning = [
+      tokenWarning,
+      dollarPoolWarning,
+      ...dollarWarnings,
+      expected ? expectedSplitText(expected) : "",
+    ]
+      .filter(Boolean)
+      .join(" ");
     if (!warning) return message;
     // The amounts that answer the warnings (#2042): the token estimate with its margin, and a
     // dollar cap raised by what the warned shares miss of their low estimates.
     const capUsd = view.budget.cost.capUsd;
     const suggestedUsd =
       !tokenWarning && dollarGap > 0 && capUsd !== null ? centsUp(capUsd + dollarGap) : null;
-    const amount = tokenWarning
-      ? ` --tokens ${estimate.withMargin}`
-      : ` --budget-usd ${suggestedUsd ?? "N"}`;
+    // With a dollar cap that pays for more than the pool, the pool it implies: tokens above it
+    // would go unpaid at that price, and below it the pool stops features first (#2244).
+    const suggestedTokens = byDollars
+      ? byDollars.tokens
+      : tokenWarning
+        ? estimate.withMargin
+        : null;
+    const amount =
+      suggestedTokens === null
+        ? ` --budget-usd ${suggestedUsd ?? "N"}`
+        : ` --tokens ${suggestedTokens}${suggestedUsd !== null ? ` --budget-usd ${suggestedUsd}` : ""}`;
     const extend = `Use baked workflow initiative extend ${row.id}${amount} --expected-revision ${row.revision}.`;
     return recoveryAdvice(`${warning} ${extend} ${message}`, `${warning} ${message}`, {
       action: "extend",
       initiativeId: row.id,
-      ...(tokenWarning ? { suggestedTokens: estimate.withMargin } : {}),
+      ...(suggestedTokens !== null ? { suggestedTokens } : {}),
       ...(suggestedUsd !== null ? { suggestedUsd } : {}),
     });
   }
@@ -3165,6 +3846,7 @@ export class InitiativeService {
     }
     const planAhead = this.planAhead(settings, plan, facts);
     const mergedFrom = new Map<string, string[]>();
+    const amendments = this.amendments(row);
     for (const payload of this.store.eventsOfType(row.id, "split.merged"))
       for (const entry of (payload as { merged: { featureId: string; from: string[] }[] }).merged)
         mergedFrom.set(entry.featureId, entry.from);
@@ -3201,6 +3883,9 @@ export class InitiativeService {
         mergedFrom: mergedFrom.get(feature.id) ?? [],
         ...(feature.serial ? { serial: feature.serial } : {}),
       };
+      const asked = amendments.filter((a) => a.featureId === feature.id);
+      if (asked.length)
+        view.amendments = asked.map(({ from, gaps, answer }) => ({ from, gaps, answer }));
       views.set(feature.id, view);
       if (!approved) continue;
       const upstream = feature.dependsOn.map((d) => views.get(d)).filter((u) => u !== undefined);
@@ -3579,13 +4264,15 @@ export class InitiativeService {
   /**
    * The plan charge of the initiative's open feature runs whose latest plan sizing priced them
    * (#2100, #2056), at the plan-to-actual ratio the estimate measured; null without one.
-   * `limitCommitted` is the pool's committed tokens with every open run at its limit.
+   * `limitCommitted` is the pool's committed tokens with every open run at its limit, and `runIds`
+   * every run the initiative's budgets count.
    */
   private planChargeOf(
     id: string,
     settings: InitiativeSettings,
     estimate: InitiativeEstimate,
     limitCommitted: number,
+    runIds: string[],
   ): PlanChargeView | null {
     const runs = this.store.links(id).flatMap((link) => {
       const run = this.workflows.store.run(link.run_id);
@@ -3593,6 +4280,7 @@ export class InitiativeService {
       const plan = plannedRunTokens(this.workflows.store, link.run_id);
       if (!plan) return [];
       const limit = limitsOf(PolicySchema.parse(JSON.parse(run.policy_json))).maxTotalTokens;
+      const { spentUsd, reservedUsd } = this.workflows.store.costUsage(link.run_id);
       return [
         {
           featureId: link.feature_id,
@@ -3600,14 +4288,31 @@ export class InitiativeService {
           usedTokens: this.usage(link.run_id).tokens,
           limitTokens: limit,
           plan,
+          ...(settings.costBudget
+            ? { usedUsd: spentUsd + reservedUsd, limitUsd: this.committedUsd(link.run_id) }
+            : {}),
         },
       ];
     });
+    // The dollar side holds a priced run at its plan's tokens times what the initiative's task
+    // calls paid per token (#2124): there is no measured plan-to-actual dollar ratio.
+    const dollars = settings.costBudget
+      ? {
+          taskRate: taskCallRate(
+            forecastSamples(
+              this.workflows.store,
+              this.store.links(id).map((l) => l.run_id),
+            ),
+          ),
+          limitCommittedUsd: runIds.reduce((sum, runId) => sum + this.committedUsd(runId), 0),
+        }
+      : undefined;
     return planCharge(
       stopMode(settings.basePolicy, "initiative-plan-charge"),
       estimate.planCalibration.ratio,
       limitCommitted,
       runs,
+      dollars,
     );
   }
 
@@ -3772,6 +4477,7 @@ function featureRunSamples(
           // A stub it created for a later feature counts at its share, not as a path (#1464).
           ...revision?.counts.get(feature.id),
           ...(source === "shared" ? { source } : {}),
+          startedAt: link.created_at,
         },
       ];
     });
@@ -3993,12 +4699,37 @@ export function growthLimit(
   view: Pick<ShareGateView, "budget" | "features">,
   featureId: string,
 ): number | null {
-  const waiting = view.features.filter((f) => f.share !== null);
-  if (!waiting.some((f) => f.need)) return null;
-  const reserve = waiting
-    .filter((f) => f.id !== featureId)
+  if (!view.features.some((f) => f.share !== null && f.need)) return null;
+  return Math.max(0, view.budget.remaining.tokens - waitingLowTokens(view, featureId));
+}
+
+/** The low token estimates of the features still waiting for a run, `featureId` aside. */
+function waitingLowTokens(view: Pick<ShareGateView, "features">, featureId: string): number {
+  return view.features
+    .filter((f) => f.share !== null && f.id !== featureId)
     .reduce((sum, f) => sum + (f.need?.low ?? 0), 0);
-  return Math.max(0, view.budget.remaining.tokens - reserve);
+}
+
+/** The hard ceiling of a run's latest `auto-extend` growth (`extendUnderAssume`); null without one. */
+function latestHardCeiling(store: WorkflowStore, runId: string): number | null {
+  const last = store
+    .artifacts(runId)
+    .filter(
+      (a) => a.kind === "policy-revision" && a.logical_path.startsWith("policy-revisions/auto-"),
+    )
+    .map((a) => {
+      try {
+        return JSON.parse(store.readArtifact(runId, a.id)) as {
+          kind?: string;
+          hardCeiling?: number;
+        };
+      } catch {
+        return {};
+      }
+    })
+    .filter((r) => r.kind === "auto-extend" && typeof r.hardCeiling === "number")
+    .at(-1);
+  return last?.hardCeiling ?? null;
 }
 
 /**
@@ -4069,6 +4800,7 @@ export function featurePrompt(
   plan: InitiativePlan,
   feature: InitiativeFeature,
   upstream: { feature: { id: string }; contract: AcceptedContract }[],
+  amendments: readonly AmendmentRequest[] = [],
 ): string {
   const others = plan.features.filter((f) => f.id !== feature.id);
   // A goal that counts spec criteria is a rule for writing specs, which no feature run can
@@ -4094,6 +4826,7 @@ export function featurePrompt(
       : "The split names no paths for this feature; stay within the boundary above.",
     `Contract this feature provides to the features that depend on it: ${feature.contract}`,
     ...(feature.skeleton?.length ? skeletonLines(plan, feature) : []),
+    ...amendmentLines(amendments),
   ];
   for (const { feature: dependency, contract } of upstream) {
     const definition = plan.features.find((f) => f.id === dependency.id);

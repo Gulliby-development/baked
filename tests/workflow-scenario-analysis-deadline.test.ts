@@ -1,10 +1,14 @@
 import { afterEach, describe, expect, test } from "bun:test";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { generateText } from "ai";
 import { FirstByteHistory } from "../src/core/llm/first-byte-history.js";
 import {
   ADAPTIVE_FIRST_BYTE_FLOOR_MS,
   adaptiveFirstByteMs,
   type CallTiming,
+  type FirstByteInputs,
   promptChars,
   providerFirstByteMs,
   ProviderUnreachableError,
@@ -63,7 +67,13 @@ function seeded(sized = true): FirstByteHistory {
 }
 
 /** One analysis call of `derivations` through the workflow executor's deadline and history. */
-async function analysis(history: FirstByteHistory, derivations: number, fault: Fault) {
+async function analysis(
+  history: FirstByteHistory,
+  derivations: number,
+  fault: Fault,
+  limit: (ceilingMs: number, call: { stage?: string; effort?: string; promptChars?: number }) =>
+    number | { ms: number; inputs: FirstByteInputs } = (ceilingMs, call) => history.deadline(ceilingMs, MODEL, call),
+) {
   const clock = awakeClock();
   const faulty = faultyModel("codex", fault);
   cleanups.push(() => {
@@ -75,7 +85,7 @@ async function analysis(history: FirstByteHistory, derivations: number, fault: F
   const pending = generateText({
     model: withProviderHealth(faulty.model, MODEL, {
       stage: SHAPE.stage,
-      firstByteLimit: (ceilingMs, call) => history.deadline(ceilingMs, MODEL, call),
+      firstByteLimit: limit,
       timing: (call) => {
         timings.push(call);
         history.record(MODEL, call);
@@ -210,4 +220,133 @@ describe("the adaptive deadline replays on recorded calls (#2041)", () => {
     expect(stops(before)).toEqual(["stop", "stop", "stop"]);
     expect(stops(replayFirstBytes(store, [run.runId]))).toEqual(["pass", "pass", "pass"]);
   }, 60_000);
+});
+
+// Bench round 69, skillplumb (#2193). The plan call (codex/gpt-6-astra, medium, 142,929
+// characters, a 23-task graph) ran out the 180 s floor three times. Each retry attempt opened with
+// a short call of the same shape that answered in about 8 s, which cleared the #2041 ceiling
+// before the large call, so attempts 2 and 3 recorded `limitMs: 180000` again. The shape had
+// answered at most 82 s for 181k characters; this call needed 205 s.
+describe("scenario: skillplumb R69, a retry's short first call does not clear the ceiling (#2193)", () => {
+  const ASTRA = "codex/gpt-6-astra";
+  const PLAN = { stage: "plan", effort: "medium" } as const;
+  const PLAN_CEILING = providerFirstByteMs("codex", PLAN);
+  const LARGE = 142_929;
+  const planned = () => {
+    const history = new FirstByteHistory();
+    for (const [chars, ms] of [[60_000, 31_000], [90_000, 44_000], [120_000, 58_000], [181_000, 82_000], [75_000, 36_000], [100_000, 47_000], [140_000, 66_000], [50_000, 25_000]] as const)
+      history.record(ASTRA, { provider: "codex", ...PLAN, firstByteMs: ms, durationMs: ms + 5_000, promptChars: chars });
+    return history;
+  };
+  const expire = (history: FirstByteHistory, promptChars?: number) =>
+    history.record(ASTRA, { provider: "codex", ...PLAN, firstByteMs: null, durationMs: 186_000, limitMs: ADAPTIVE_FIRST_BYTE_FLOOR_MS, ...(promptChars ? { promptChars } : {}) });
+  const answer = (history: FirstByteHistory, ms: number, promptChars?: number) =>
+    history.record(ASTRA, { provider: "codex", ...PLAN, firstByteMs: ms, durationMs: ms + 2_000, ...(promptChars ? { promptChars } : {}) });
+
+  test("the large plan call keeps the ceiling through the next attempt's short answers until it answers itself", () => {
+    const history = planned();
+    expect(history.deadline(PLAN_CEILING, ASTRA, { ...PLAN, promptChars: LARGE })).toBe(ADAPTIVE_FIRST_BYTE_FLOOR_MS);
+    expire(history, LARGE);
+    expect(history.deadline(PLAN_CEILING, ASTRA, { ...PLAN, promptChars: LARGE })).toBe(PLAN_CEILING);
+    // Attempt 2: its first call answers in 7.6 s, a continuation in 3 ms.
+    answer(history, 7_564, 12_000);
+    answer(history, 3, 13_000);
+    // Before #2193 the heavy call was back on the 180 s floor here.
+    expect(history.deadline(PLAN_CEILING, ASTRA, { ...PLAN, promptChars: LARGE })).toBe(PLAN_CEILING);
+    // The large call answers at 205 s: the shape adapts again, from a history that knows it.
+    answer(history, 205_334, LARGE);
+    const after = history.deadline(PLAN_CEILING, ASTRA, { ...PLAN, promptChars: LARGE });
+    expect(after).toBeLessThan(PLAN_CEILING);
+    expect(after).toBeGreaterThan(205_334);
+  });
+
+  test("a call without a recorded size neither clears a sized expiry nor keeps an unsized one", () => {
+    const sized = planned();
+    expire(sized, LARGE);
+    answer(sized, 8_000);
+    expect(sized.deadline(PLAN_CEILING, ASTRA, { ...PLAN, promptChars: LARGE })).toBe(PLAN_CEILING);
+    // An expiry recorded without a size (before #2041) clears on any answer, as it did.
+    const unsized = planned();
+    expire(unsized);
+    answer(unsized, 8_000);
+    expect(unsized.deadline(PLAN_CEILING, ASTRA, PLAN)).not.toBe(PLAN_CEILING);
+  });
+});
+
+// Bench round 73, flatelens inflate T004 (#2283). The implementation call of 167,595 characters
+// answered after 194 s under a recorded deadline of 290,666 ms, which the executor took from a
+// history the trace does not hold: its process was seeded when it started, and a shape with fewer
+// than 3 own answers is completed from the machine-wide shared file (#1880). The replay rebuilt
+// the history from the trace's calls alone (more own answers, all faster) and got 180,000 ms: a
+// new stop on a trace of a correct run. Here the process holds 2 own answers and 3 slower shared
+// ones; a third own answer from another process is in the trace before the large call.
+describe("scenario: flatelens R73, a deadline from shared history replays as recorded (#2283)", () => {
+  const OWN: [number, number][] = [
+    [40, 45_000],
+    [40, 48_000],
+  ];
+  const PARALLEL: [number, number] = [40, 50_000];
+
+  test("the recorded deadline's inputs reproduce it on replay; a trace without them does not stop", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "baked-first-byte-"));
+    cleanups.push(() => rmSync(dir, { recursive: true, force: true }));
+    const file = join(dir, "first-byte-history.json");
+    // Another workspace on the machine answered three analyses of 60 derivations in 100 s each.
+    const other = new FirstByteHistory(file);
+    for (let i = 0; i < 3; i++)
+      other.record(MODEL, { provider: "codex", ...SHAPE, firstByteMs: 100_000, durationMs: 100_000, promptChars: size(60) }, true);
+
+    // The executor's history: the workspace's two answers, completed from the shared file.
+    const history = new FirstByteHistory(file);
+    for (const [derivations, ms] of OWN)
+      history.record(MODEL, { provider: "codex", ...SHAPE, firstByteMs: ms, durationMs: ms, promptChars: size(derivations) });
+    const call = await analysis(history, 86, { kind: "slow", afterMs: 194_000 }, (ceilingMs, c) =>
+      history.decide(ceilingMs, MODEL, c, true),
+    );
+    await call.advance(196_000);
+    const { error, timings } = await call.outcome();
+    expect(error).toBeUndefined();
+    const large = timings[0] as CallTiming;
+    expect(large.limitMs).toBeGreaterThan(194_000);
+    expect(large.limitMs).toBeLessThan(CEILING);
+    expect(large.deadlineInputs).toMatchObject({ samples: 5, shared: 3, paceSamples: 5 });
+
+    const fx = workflowFixture();
+    cleanups.push(() => void fx.dispose());
+    const run = await fx.start();
+    await fx.service.drive(run.runId, new AbortController().signal);
+    await fx.approve(run.runId);
+    await fx.service.drive(run.runId, new AbortController().signal);
+    const { store } = fx.service;
+    const attempts = (
+      store.connection
+        .query("SELECT id FROM attempts WHERE run_id=? AND model_id IS NOT NULL ORDER BY started_at, rowid")
+        .all(run.runId) as { id: string }[]
+    ).slice(0, 3);
+    expect(attempts).toHaveLength(3);
+    const answer = ([derivations, ms]: [number, number]): CallTiming => ({ provider: "codex", ...SHAPE, firstByteMs: ms, durationMs: ms, promptChars: size(derivations) });
+    const write = (largeCall: CallTiming) => {
+      const recorded = [OWN.map(answer), [answer(PARALLEL)], [largeCall]];
+      store.transaction(() => {
+        attempts.forEach((attempt, i) =>
+          store.artifact(run.runId, "usage", `attempts/${attempt.id}/usage.json`, canonical({ calls: recorded[i] })),
+        );
+      });
+    };
+    const boundary = (boundaries: ReturnType<typeof replayFirstBytes>) =>
+      (boundaries.get(run.runId) ?? []).find((b) => b.attemptId === attempts[2]?.id);
+
+    write(large);
+    // Before #2283 the replay decided the call over the trace's own three faster answers alone.
+    const before = boundary(
+      replayFirstBytes(store, [run.runId], providerFirstByteMs, (h, ceilingMs, model, c) => h.deadline(ceilingMs, model, c)),
+    );
+    expect(before).toMatchObject({ limitMs: ADAPTIVE_FIRST_BYTE_FLOOR_MS, recorded: "pass", replayed: "stop" });
+    expect(boundary(replayFirstBytes(store, [run.runId]))).toMatchObject({ limitMs: large.limitMs, replayed: "pass" });
+
+    // A trace recorded before the inputs were kept: the recorded deadline is the call's floor.
+    const { deadlineInputs: _, ...older } = large;
+    write(older);
+    expect(boundary(replayFirstBytes(store, [run.runId]))).toMatchObject({ limitMs: large.limitMs, replayed: "pass" });
+  });
 });

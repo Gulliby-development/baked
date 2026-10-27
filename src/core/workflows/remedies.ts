@@ -4,6 +4,8 @@ import { REMEDY_ACTIONS, type RecoveryAdvice, type Remedy } from "./remedies-mod
 export {
   errorRecovery,
   extendSuggestion,
+  HOST_REMEDIES,
+  type HostRemedy,
   type RecoveryAdvice,
   type Remedy,
   recoveryAdvice,
@@ -21,6 +23,9 @@ export const RemedySchema = z.object({
   setting: z.string().optional(),
   suggestedTokens: z.number().int().positive().optional(),
   suggestedUsd: z.number().positive().optional(),
+  taskId: z.string().optional(),
+  paths: z.array(z.string()).optional(),
+  owner: z.string().optional(),
 }) satisfies z.ZodType<Remedy>;
 
 export const RecoveryAdviceSchema = z.object({

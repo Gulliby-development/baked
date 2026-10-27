@@ -9,6 +9,7 @@ import { IS_WIN } from "../platform/index.js";
 import { realPath } from "../projects/paths.js";
 import { runBoundedShell } from "./bounded-process.js";
 import { BUN_FMT } from "./bun-fmt.js";
+import { captureEndings, restoreEndings } from "./line-endings.js";
 
 // Format command per checkout root; `null` from setFormatCache disables formatting everywhere.
 const formatCommands = new Map<string, string | null>();
@@ -187,10 +188,12 @@ export async function autoFormatAfterEdit(
   const command = singleFileFormat(cmd, filePath);
   try {
     // A deadline that kills the whole tree: the formatter's own children must not hold the edit.
+    // A formatter that writes text mode on Windows turns a LF file into CRLF (#2214).
+    const endings = captureEndings([filePath]);
     const result = await runBoundedShell(command, {
       cwd: effectiveCwd,
       timeoutMs: FORMAT_TIMEOUT_MS,
-    });
+    }).finally(() => restoreEndings(endings));
     return !result.timedOut && result.exitCode === 0;
   } catch {
     return false;

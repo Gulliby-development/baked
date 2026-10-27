@@ -375,6 +375,12 @@ export interface QualityConfig {
   defectClasses?: "off" | "on";
   /** Let the host finish a task whose spec conflict it settled when the attempt's cases hold and its required checks pass: `on` or `off` (default, recorded in shadow). */
   conflictFinish?: "off" | "on";
+  /** Let a run go on with the ready tasks a blocked corrective does not hold, and end with its stop once they ran: `on` or `off` (default, recorded in shadow). */
+  correctiveDefer?: "off" | "on";
+  /** Route a test task's failure whose expected values are its criteria's literals to the finished sibling that wrote the code under test: `on` or `off` (default, recorded in shadow). */
+  sourceDefectRoute?: "off" | "on";
+  /** Before the first task, let the host run a required check's fixer on files no task writes when the check fails before any change with only correctable findings, and keep the edit when the check then passes: `on` or `off` (default). */
+  baselineFix?: "off" | "on";
   /** Property-based tests from marked criteria: `preset` or absent follows the workflow preset. */
   propertyTests?: "preset" | "auto" | "off";
 }

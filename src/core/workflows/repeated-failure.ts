@@ -1,6 +1,6 @@
-import { tmpdir } from "node:os";
 import stripAnsi from "strip-ansi";
 import { hashJson } from "../specs/hash.js";
+import { normalizeVolatile } from "../verification/volatile.js";
 
 /**
  * A corrective whose required checks fail exactly as the corrective before it in the same chain
@@ -52,43 +52,21 @@ export interface RepeatRecord {
 /** Compares two rounds' failing checks; `replayRepeatedFailures` takes another rule to replay. */
 export type RepeatRule = (previous: RepeatCheck[] | null, current: RepeatCheck[]) => RepeatDecision;
 
-// Wall-clock stamps and durations: go test's `0.012s`, bun's `[1.23ms]`, jest's `(5 ms)`,
-// pytest's `in 0.12s`, cargo's `finished in 0.00s`. A whole number with a unit stays, since it is
-// as often a value the test asserts (`expected 5s`).
-const TIMESTAMP = /\b\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(?:[.,]\d+)?(?:Z|[+-]\d{2}:?\d{2})?/g;
-const CLOCK = /\b\d{2}:\d{2}:\d{2}[.,]\d+\b/g;
-const DECIMAL_DURATION = /\b\d+\.\d+\s?(?:ns|µs|us|ms|s|m)\b/g;
-const BRACKETED_DURATION = /([[(])\s*\d+(?:\.\d+)?\s?(?:ns|µs|us|ms|s)\s*([\])])/g;
-const ADDRESS = /\b0x[0-9a-f]{6,}\b/gi;
-
-const tempRoots = (): string[] =>
-  [tmpdir().replaceAll("\\", "/"), "/tmp", "/var/folders", "/private/var/folders"].filter(
-    (root, index, all) => root.length > 1 && all.indexOf(root) === index,
-  );
-
 /**
  * A check's output with what changes between two runs of the same failure taken out: terminal
- * colors, line endings and trailing spaces, path separators, wall-clock stamps, durations,
- * temporary directories and memory addresses. Line and column positions stay, so a failure that
- * moved is progress, never a repeat. A check runner whose failing output carries another such
- * value adds its rule here, with the case in `tests/repeated-failure.test.ts` (two runs of each
- * toolchain's failing check hash equal).
+ * colors, line endings and trailing spaces, path separators, and the volatile values
+ * `normalizeVolatile` (`src/core/verification/volatile.ts`) takes out. Line and column positions
+ * stay, so a failure that moved is progress, never a repeat. A check runner whose failing output
+ * carries another such value adds its rule to `normalizeVolatile`, never here, with the case in
+ * `tests/repeated-failure.test.ts` (two runs of each toolchain's failing check hash equal through
+ * this function and both `failureSignature`s; every runner of `TEST_RUNNERS` has one, #2295).
  */
 export function normalizeCheckOutput(output: string): string {
-  let text = stripAnsi(output).replaceAll("\r\n", "\n").replaceAll("\r", "\n");
-  text = text.replaceAll("\\", "/");
-  for (const root of tempRoots()) {
-    const escaped = root.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    text = text.replace(new RegExp(`${escaped}/[^\\s:'"\`)]+`, "gi"), "<tmp>");
-  }
-  text = text.replace(/[A-Za-z]:\/Users\/[^/\s]+\/AppData\/Local\/Temp\/[^\s:'"`)]+/gi, "<tmp>");
-  text = text
-    .replace(TIMESTAMP, "<time>")
-    .replace(CLOCK, "<time>")
-    .replace(BRACKETED_DURATION, "$1<duration>$2")
-    .replace(DECIMAL_DURATION, "<duration>")
-    .replace(ADDRESS, "<address>");
-  return text
+  const text = stripAnsi(output)
+    .replaceAll("\r\n", "\n")
+    .replaceAll("\r", "\n")
+    .replaceAll("\\", "/");
+  return normalizeVolatile(text)
     .split("\n")
     .map((line) => line.trimEnd())
     .join("\n")

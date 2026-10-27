@@ -150,6 +150,7 @@ import {
   WorkingSetBody,
   WorktreeCleanBody,
 } from "./schemas.js";
+import { sddExportRoute } from "./sdd-export-routes.js";
 import { type SettingsSecretStore, settingsRoute } from "./settings-routes.js";
 import { setupRoute } from "./setup-routes.js";
 
@@ -197,6 +198,8 @@ export const CAPABILITIES = [
   "hooks-edit",
   "provider-switch",
   "chat-export",
+  "sdd-export",
+  "sdd-import",
   "chat-effort",
   "diagnostics",
   "gate-drafts",
@@ -383,6 +386,7 @@ function mutationArgs(action: Mutation, runId: string, raw: unknown): WorkflowAr
       return args({
         ...identity(body),
         ...(body.acceptWorkspace ? { "accept-workspace": true } : {}),
+        ...(body.remedy ? { remedy: body.remedy } : {}),
       });
     }
     case "pause":
@@ -1100,6 +1104,7 @@ export async function startApiServer(options: ApiServerOptions): Promise<ApiServ
     const routed =
       progressRoute({ ...ctx, tracker: progress }) ??
       (await chatRoute({ ...ctx, chat })) ??
+      (await sddExportRoute({ ...ctx, store: service.store })) ??
       (await initiativeRoute({ ...ctx, initiatives, launch: driveInitiative })) ??
       (await memoryRoute({ ...ctx, config: service.config, store: service.store })) ??
       criticOutcomesRoute({ ...ctx, config: service.config, store: service.store }) ??
@@ -1421,7 +1426,8 @@ export async function startApiServer(options: ApiServerOptions): Promise<ApiServ
           flags: {
             source: body.source,
             path: body.path,
-            feature: body.featureId,
+            ...(body.featureId ? { feature: body.featureId } : {}),
+            ...(body.id ? { id: body.id } : {}),
             "command-id": body.commandId ?? crypto.randomUUID(),
           },
         }),

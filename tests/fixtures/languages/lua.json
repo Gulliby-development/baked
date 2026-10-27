@@ -11,6 +11,7 @@
     "testsGrown": "++-\n2 successes / 1 failure / 0 errors / 0 pending : 0.001873 seconds\n\nFailure -> src/sum_spec.lua @ 5\nsum is commutative\nsrc/sum_spec.lua:6: Expected objects to be equal.\nPassed in:\n(number) 4\nExpected:\n(number) 5\n"
   },
   "expected": {
+    "checkConfigs": [".luacheckrc: luacheck, read as text", "stylua.toml: stylua, read as text", ".luarc.json: lua-language-server"],
     "tests": [
       "src/sum_spec.lua"
     ],
@@ -56,6 +57,12 @@
     "packageContents": null,
     "numericLimits": [
       "integers past 2^63 wrap; tonumber of a long digit string gives a float"
-    ]
+    ],
+    "staticTools": [
+      "luacheck: linter",
+      "selene: linter",
+      "stylua: formatter"
+    ],
+    "sortedLists": null
   }
 }

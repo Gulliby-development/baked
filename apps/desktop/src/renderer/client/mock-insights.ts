@@ -461,6 +461,7 @@ const initiativeRoutes: MockRoute = ({ key, method, path, body }) => {
   const action = match[2];
   if (method === "GET" && action === undefined) return response(200, view);
   if (method === "GET" && action === "estimate") return estimated(view);
+  if (action === "package") return packaged(view, (body ?? {}) as { zip?: boolean; out?: string });
   if (method !== "POST") return undefined;
   if (action === "drive") {
     // A drive takes the ready work of an idle initiative.
@@ -697,5 +698,41 @@ const usageRoutes: MockRoute = ({ method, path, query }) => {
     });
   return response(200, report);
 };
+
+/** `POST /v1/initiatives/ID/package`: refused before the split is approved, like the backend. */
+function packaged(view: InitiativeView, body: { zip?: boolean; out?: string }) {
+  if (view.approvedPlanRevision == null)
+    return response(409, {
+      error: {
+        code: "NOT_ACCEPTED",
+        message: `Initiative ${view.initiativeId} has no accepted plan yet; approve its split first`,
+      },
+    });
+  const zip = body.zip === true;
+  const out = body.out ?? `.baked/exports/${view.initiativeId}-export${zip ? ".zip" : ""}`;
+  const features = view.features.map((f) => ({
+    id: f.id,
+    title: f.title,
+    status: f.runStatus ?? "not_started",
+    runId: f.runId,
+    accepted: f.runId !== null,
+    dependsOn: f.dependsOn,
+    dir: f.runId !== null ? `specs/${f.id}` : null,
+  }));
+  return response(200, {
+    path: `C:\\Project\\BAKED\\${out.replaceAll("/", "\\")}`,
+    zip,
+    files: [
+      "AGENTS.md",
+      "graph.json",
+      "graph.md",
+      "initiative.json",
+      "initiative.md",
+      "manifest.json",
+      ...features.flatMap((f) => (f.dir ? [`${f.dir}/spec.md`, `${f.dir}/plan.md`] : [])),
+    ],
+    manifest: { kind: "initiative", id: view.initiativeId, title: view.title, features },
+  });
+}
 
 export const INSIGHTS_ROUTES: MockRoute[] = [initiativeRoutes, usageRoutes];

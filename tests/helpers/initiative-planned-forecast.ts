@@ -100,7 +100,7 @@ export async function historyFixture(featureUsd: number, mix: Mix = {}) {
 
 export async function plannedForecastScenario(
   count: number, firstUsd: number | Record<string, number>, histories: string[],
-  options: { forecastStop?: boolean; stopModes?: RunPolicy["stopModes"]; mix?: Mix; skeleton?: boolean; capUsd?: number | null; maxTotalTokens?: number; extendWithinDollars?: "off" | "shadow"; costTolerance?: number | "off" } = {},
+  options: { forecastStop?: boolean; stopModes?: RunPolicy["stopModes"]; mix?: Mix; skeleton?: boolean; capUsd?: number | null; maxTotalTokens?: number; extendWithinDollars?: "off" | "shadow"; costTolerance?: number | "off"; approve?: boolean } = {},
 ) {
   const skeleton = options.skeleton ?? true;
   const fixture = workflowFixture({ executor: (root) => new ScriptedExecutor(root, firstUsd, skeleton, options.mix) });
@@ -126,6 +126,8 @@ export async function plannedForecastScenario(
       ...(options.capUsd === null ? {} : { costBudget: { maxCostUsd: options.capUsd ?? 30, costTolerance: options.costTolerance ?? 0.25 } }),
     });
     const identity = () => ({ commandId: newId(), expectedRevision: initiatives.view("values").revision });
+    // `approve: false` stops at the split approval, before any feature run.
+    if (options.approve === false) return { fixture, initiatives, view, identity };
     const decision = view.pendingDecisions.find((d) => d.scope === "initiative")!;
     await initiatives.approve("values", identity(), { requestId: decision.requestId, digest: decision.digest });
     const controller = new AbortController();

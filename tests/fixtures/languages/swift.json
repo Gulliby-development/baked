@@ -2,9 +2,15 @@
   "files": {
     "Sources/Sum.swift": "func sum(_ a: Int, _ b: Int) -> Int {\n    fatalError(\"not implemented\")\n}\n",
     "Sources/SumTests.swift": "import XCTest\nlet three = sum(1, 2)\n// AC-001 example: (1, 2, 3)\n",
-    "Package.swift": "// swift-tools-version:5.9\n"
+    "Package.swift": "// swift-tools-version:5.9\n",
+    ".swift-format": "{}\n"
+  },
+  "outputs": {
+    "tests": "Test Suite 'All tests' started at 2026-10-25 02:56:10.091\nTest Case 'SumTests.testAdds' started at 2026-10-25 02:56:10.092\nTest Case 'SumTests.testAdds' passed (0.102 seconds)\nTest Case 'SumTests.testCommutes' started at 2026-10-25 02:56:10.194\n/w/Tests/SumTests/SumTests.swift:6: error: SumTests.testCommutes : XCTAssertEqual failed: (\"3\") is not equal to (\"4\")\nTest Case 'SumTests.testCommutes' failed (0.001 seconds)\nTest Suite 'All tests' failed at 2026-10-25 02:56:10.195\n\t Executed 2 tests, with 1 failure (0 unexpected) in 0.103 (0.103) seconds\n",
+    "testsGrown": "Test Suite 'All tests' started at 2026-10-25 02:56:10.091\nTest Case 'SumTests.testAdds' started at 2026-10-25 02:56:10.092\nTest Case 'SumTests.testAdds' passed (0.102 seconds)\nTest Case 'SumTests.testSubs' started at 2026-10-25 02:56:10.193\nTest Case 'SumTests.testSubs' passed (0.001 seconds)\nTest Case 'SumTests.testCommutes' started at 2026-10-25 02:56:10.194\n/w/Tests/SumTests/SumTests.swift:6: error: SumTests.testCommutes : XCTAssertEqual failed: (\"3\") is not equal to (\"4\")\nTest Case 'SumTests.testCommutes' failed (0.001 seconds)\nTest Suite 'All tests' failed at 2026-10-25 02:56:10.195\n\t Executed 3 tests, with 1 failure (0 unexpected) in 0.105 (0.106) seconds\n"
   },
   "expected": {
+    "checkConfigs": [".swiftlint.yml: swiftlint", ".swiftformat: swiftformat, read as text"],
     "tests": [
       "Sources/SumTests.swift"
     ],
@@ -18,8 +24,15 @@
     "placeholders": [
       "Sources/Sum.swift:2"
     ],
-    "gates": ["swift-build", "swift-test"],
-    "testRunners": null,
+    "gates": [
+      "swift-format",
+      "swift-build",
+      "swift-test"
+    ],
+    "testRunners": [
+      "swift 2",
+      "signature stable"
+    ],
     "mutation": null,
     "properties": null,
     "entryPoints": null,
@@ -32,10 +45,18 @@
       "Sources/SumTests.swift:3 comment",
       "Package.swift:1 comment"
     ],
-    "formatters": null,
+    "formatters": [
+      "swift-format-written: swift format lint --strict Sources/Sum.swift Sources/SumTests.swift Package.swift"
+    ],
     "packageContents": null,
     "numericLimits": [
       "integer overflow traps at runtime"
-    ]
+    ],
+    "staticTools": [
+      "swiftlint: linter",
+      "swiftformat: formatter",
+      "swift-format: formatter"
+    ],
+    "sortedLists": null
   }
 }

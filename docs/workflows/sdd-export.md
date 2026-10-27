@@ -1,0 +1,71 @@
+# SDD export package
+
+`baked workflow export-package` writes the accepted work of a run or an initiative as a plain spec-driven development (SDD) package: folders of Markdown and JSON that another coding agent, another harness or a person can read without BAKED. Put the package next to a checkout (or into it) and point the agent at its `AGENTS.md`.
+
+```sh
+baked workflow export-package RUN_ID                       # .baked/exports/RUN_ID-export/
+baked workflow export-package INITIATIVE_ID --zip          # .baked/exports/INITIATIVE_ID-export.zip
+baked workflow export-package INITIATIVE_ID --out ../handoff/payments --json
+```
+
+The command only reads the workflow database: no model call, no change to a run. It is not the same as `baked workflow export RUN_ID --destination DIR`, which writes the run's diagnostic report (`manifest.json` with requests, checks and findings) to attach to a bug report.
+
+## In the terminal app, the desktop app and the local API
+
+- Terminal app: on the run screen of a run whose plan is approved, **E** (export package) asks for a folder (**F**) or a zip archive (**Z**) and writes it to `.baked/exports/`; on an initiative with an approved split the same prompt opens with **Ctrl+E**. The result line names the path. `/workflow export-package ID [--zip] [--out PATH]` writes elsewhere.
+- Desktop app: **Export package…** on the run screen (once the plan is approved) and on the initiative screen (once the split is approved) opens a dialog: Folder or Zip archive, and the destination inside the project (`.baked/exports/ID-export` by default). After the export it shows the path with **Show in folder**. **Export report** next to it is the diagnostic report.
+- Local API: `POST /v1/workflow/runs/ID/package` and `POST /v1/initiatives/ID/package` with `{zip?, out?}` write it inside the project; `GET` on the same paths answers the package as one zip archive without writing it ([API](../desktop/api.md)). Nothing accepted yet is 409 `NOT_ACCEPTED`.
+
+## Layout
+
+```text
+<id>-export/
+  AGENTS.md            what the work is, the reading order and the status of each feature
+  manifest.json        format version, kind (run or initiative), Git HEAD, feature statuses, sha256 per file
+  initiative.md        initiative only: request, goals, completion criteria, features, budget, accepted plan revision
+  initiative.json      initiative only: the accepted plan revision as data
+  graph.json           features, their dependencies, their tasks and the tasks' dependencies
+  graph.md             the same graph as a Mermaid diagram
+  specs/<feature>/     spec.md, plan.md, tasks.md (Spec Kit layout) and spec.json, tasks.json (canonical)
+```
+
+A single run has the same layout without `initiative.*`, and its graph holds one feature. The files under `specs/<feature>/` are byte for byte what the run publishes in the workspace (`specPublication`), so `baked workflow import --source spec-kit --path <package>/specs/<feature>` reads them back with their IDs kept.
+
+`--zip` writes one archive with the same tree (forward-slash names, deflated, a fixed timestamp, so the same work always gives the same bytes). The default is a folder, which a Git diff can show.
+
+## What is exported
+
+- Only accepted work. An initiative needs an approved split: the package holds the approved plan revision, and a feature has a folder only when its current run's spec, plan and tasks were approved. A feature not started yet, or whose run still waits for approval, is listed with its status and no folder. A run is exported only once its spec, plan and tasks are approved.
+- No events, logs, traces, model call records or check output.
+- Before anything is written, every file is scanned for secrets (the scan of an artifact deploy: key formats, credential assignments, values of secret environment variables). A finding refuses the export and names the file and line, never the value.
+- A feature whose ID is a name Windows reserves (`con`, `nul`, `com1`, ...) gets the folder `<id>_`; `manifest.json` names each feature's folder.
+
+## Importing a package back
+
+```sh
+baked workflow import --source baked-export --path handoff/payments-export.zip
+baked workflow import --source baked-export --path handoff/payments-export --id payments-2 --json
+```
+
+`import --source baked-export` continues the work of a package in this checkout or another one. Nothing calls a model before a person decides:
+
+- The package is checked first: `manifest.json` must have format version 1, every file it lists must have its sha256, and no other file may be there. A package edited after the export is refused (`reason: "bad_package"`) and names the files.
+- An initiative package recreates the initiative from `initiative.json`: its request, the accepted plan as a `user` revision awaiting approval, and its budget. The split is validated and fitted to this project's workflows as any given split is; approve it (or edit it) as usual.
+- Once the split is approved, the first run of each feature that had a folder starts at its analysis stage with the exported spec, plan and tasks, instead of specifying and planning again: the plan is analyzed against this workspace and goes to a person for approval. A feature without a folder, a feature the split edit changed, or one whose workflow has no spec and plan stages (light) specifies and plans as usual.
+- A run package creates one run at its analysis stage and does not drive it; continue it with `baked workflow resume RUN_ID --expected-revision N` (the command prints both).
+- The initiative ID or run feature ID is the package's; `--id` names another one (needed when this project already has it). Spec and task IDs are kept; the spec's feature ID, its upstream contracts and the hashes are those of the new run, and the run records the package in `import/seed.json`.
+- The terminal app takes the same command as `/workflow import --source baked-export --path PATH`; on the desktop, **Import…** on the run list has the source **BAKED export package (folder or .zip)**; the local API takes `source: "baked-export"` on `POST /v1/workflow/import`.
+
+Importing does not need `workflows.importsEnabled`, which guards the candidates of the other importers: the package is BAKED's own and runs nothing before an approval.
+
+## Exit codes
+
+| Code | Meaning |
+| --- | --- |
+| 0 | The package was written; the path is printed (`--json`: path, manifest and file list) |
+| 1 | Refused: nothing accepted yet, a secret, or the destination already exists |
+| 2 | Unknown run or initiative ID, or bad arguments |
+
+## Format version
+
+`manifest.json` `formatVersion` is 1. A change to what a run or an initiative persists that changes the package (a new document of `specPublication`, a new initiative plan field, a new graph edge) updates the exporter in `src/core/workflows/sdd-export/`, bumps the version when the layout changes, and updates `tests/workflow-sdd-export.test.ts` (rule in `AGENTS.md`).

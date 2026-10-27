@@ -1,5 +1,6 @@
 import { hashJson } from "../../specs/hash.js";
 import { extendToOf, PolicySchema, type RunPolicy } from "../schemas.js";
+import { centsUp } from "../stage-reserve.js";
 import { sizeWeight } from "./plan.js";
 import type { InitiativeView, ShareGateView, UsageView } from "./service.js";
 
@@ -9,6 +10,9 @@ import type { InitiativeView, ShareGateView, UsageView } from "./service.js";
 // tests/workflow-scenario-initiative-guard-growth.test.ts.
 
 const cents = (n: number): number => Math.floor(n * 100) / 100;
+/** Whole cents down, with a sum's float error ($36 - $25.340000000000003) kept out of the floor. */
+const centsOf = (n: number): number => Math.floor(n * 100 + 1e-6) / 100;
+const usd = (n: number): string => `$${n.toFixed(2)}`;
 
 /**
  * The dollars a starting feature's cap may grow to independently of tokens: the remaining dollar
@@ -141,4 +145,219 @@ export function guardStep(used: number, limit: number, target: number): number {
   if (used < 0.8 * limit) return limit;
   const next = Math.min(target, Math.ceil(limit * 1.25));
   return next - limit < Math.max(1, limit * 0.01) ? limit : next;
+}
+
+/** What `stageReserveDecision` reads: the run at its stop and the initiative's dollar budget. */
+export interface StageReserveInputs {
+  runId: string;
+  featureId: string;
+  /** The run's remaining stages after its tasks and their priced reserve (`stageReserve`). */
+  stages: string[];
+  stageReserveUsd: number;
+  /** What the run spent, what its open attempts hold and what the call that would stop asks. */
+  runSpentUsd: number;
+  runReservedUsd: number;
+  requestedUsd: number;
+  /** The run's dollar growth bound now (`sizing.maxRunCostUsd`). */
+  boundUsd: number;
+  /** What the initiative holds for the run now (`committedUsd`: its cap, or spent and reserved). */
+  runHeldUsd: number;
+  /** The share of the initiative's dollars the run may grow into now (`costGrowthLimit`). */
+  spareUsd: number | null;
+  /**
+   * The initiative's dollars: what its runs spent and its open runs hold (`spentUsd` plus
+   * `reservedUsd` of its cost view), its cap, and the cap with its tolerance.
+   */
+  initiative: { committedUsd: number; capUsd: number; ceilingUsd: number };
+}
+
+/** The host's decision on a started run's remaining stages (#2241). */
+export interface StageReserveDecision {
+  reason: "stage-reserve";
+  wouldExtend: boolean;
+  /** The dollar cap that pays for the remaining stages (`stageSuggestedUsd`). */
+  suggestedUsd: number;
+  /** The bound after the growth; null when it would not grow. */
+  toUsd: number | null;
+  byUsd: number | null;
+  why: string;
+}
+
+/**
+ * Whether a feature run that finished its tasks and would stop on its cost ceiling grows its
+ * dollar bound to pay for its remaining review and convergence (#2241). A started run's tasks are
+ * sunk: its mandatory stages come before the low estimates of features that have not started
+ * (`costGrowthLimit` reserves those), as long as what the initiative spent and holds, with the
+ * run held at its spent plus the stages, stays under its ceiling (the cap with its tolerance). R71 xmlvet get-command stopped
+ * at its first review call with $1.29 spent while $28.87 of the $30 cap ($37.50 ceiling) was
+ * spent and cli-release's $3.13 low left it a room of 0; an operator extended it 25 minutes later.
+ */
+export function stageReserveDecision(inputs: StageReserveInputs): StageReserveDecision {
+  const reason = "stage-reserve" as const;
+  const own = inputs.runSpentUsd + inputs.runReservedUsd;
+  const extra = Math.max(inputs.requestedUsd, inputs.stageReserveUsd);
+  const suggestedUsd = centsUp(own + extra);
+  const stages = inputs.stages.join(" and ");
+  const no = (why: string): StageReserveDecision => ({
+    reason,
+    wouldExtend: false,
+    suggestedUsd,
+    toUsd: null,
+    byUsd: null,
+    why,
+  });
+  if (suggestedUsd <= inputs.boundUsd)
+    return no(`The run's ${usd(inputs.boundUsd)} bound already pays for its ${stages}.`);
+  const { initiative } = inputs;
+  // The run is held at its own need afterwards instead of what the initiative holds for it now.
+  const after = initiative.committedUsd - inputs.runHeldUsd + suggestedUsd;
+  if (after > initiative.ceilingUsd)
+    return no(
+      `The ${stages} (${usd(extra)}) would take the initiative to ${usd(after)}, above its ${usd(initiative.ceilingUsd)} ceiling.`,
+    );
+  const spare =
+    inputs.spareUsd === null
+      ? ""
+      : ` (${usd(inputs.spareUsd)} spare after the waiting features' lows)`;
+  return {
+    reason,
+    wouldExtend: true,
+    suggestedUsd,
+    toUsd: suggestedUsd,
+    byUsd: centsUp(suggestedUsd - inputs.boundUsd),
+    why: `${inputs.featureId} finished its tasks with ${usd(inputs.runSpentUsd)} spent and its ${stages} (${usd(extra)}) still to run; its bound would grow from ${usd(inputs.boundUsd)}${spare} to ${usd(suggestedUsd)}, the initiative staying at ${usd(after)} of its ${usd(initiative.ceilingUsd)} ceiling (${usd(initiative.capUsd)} cap).`,
+  };
+}
+
+/** What `chargeHold` reads: an open feature run's plan charge and what the initiative has left. */
+export interface ChargeHoldInputs {
+  /** The run's plan charge (`planChargeTokens`, `planChargeUsd`); usd null while unpriced. */
+  charge: { tokens: number; usd: number | null };
+  /** What the run used in tokens, and spent plus reserved in dollars. */
+  own: { usedTokens: number; usedUsd: number };
+  /**
+   * The token pool, what every other run of the initiative uses or holds (open runs at their
+   * charge or limit), and the low estimates of the other features still waiting for a run.
+   */
+  pool: { limitTokens: number; othersTokens: number; waitingLowTokens: number };
+  /** The dollar cap with its tolerance and what every other run spent or holds; null without a cap. */
+  dollars: { ceilingUsd: number; othersUsd: number } | null;
+}
+
+/** What an open feature run's growth bounds may start from (`held` in `refreshedGrowth`). */
+export interface ChargeHold {
+  tokens: number;
+  usd: number | null;
+  /** Whether the pool or the ceiling held the charge below itself. */
+  cappedTokens: boolean;
+  cappedUsd: boolean;
+}
+
+/**
+ * The part of an open feature run's plan charge that its growth bounds may start from (#2280): the
+ * charge, but no more than what the initiative can hold for the run, its own use plus the pool less
+ * what the other runs use or hold and the waiting features' lows in tokens, its own spend plus what
+ * the tolerance ceiling leaves after the other runs in dollars. A charge is a reservation: it
+ * counts in the pool before the run uses it, but read as the floor of a growth bound it turned an
+ * over-subscribed pool into permission. R73 flatelens' commands run started with 5.66M tokens and
+ * $4.66 left, was charged 31.2M and $24.08, grew its bounds to them and used 12.92M, taking the
+ * initiative 21 percent past its 34.2M pool and past its dollar cap.
+ */
+export function chargeHold(inputs: ChargeHoldInputs): ChargeHold {
+  const { charge, own, pool, dollars } = inputs;
+  const poolTokens = Math.max(
+    own.usedTokens,
+    Math.floor(pool.limitTokens - pool.othersTokens - pool.waitingLowTokens),
+  );
+  const tokens = Math.min(charge.tokens, poolTokens);
+  const ceilingUsd = dollars
+    ? Math.max(own.usedUsd, centsOf(dollars.ceilingUsd - dollars.othersUsd))
+    : null;
+  const usd =
+    charge.usd === null
+      ? null
+      : ceilingUsd === null
+        ? charge.usd
+        : Math.min(charge.usd, ceilingUsd);
+  return {
+    tokens,
+    usd,
+    cappedTokens: tokens < charge.tokens,
+    cappedUsd: usd !== null && charge.usd !== null && usd < charge.usd,
+  };
+}
+
+/** A growth bound of a feature run, by where it is kept. */
+export interface RunBound {
+  /** `maxRunTokens`, `extendToTokens`, `maxRunCostUsd` (its sizing) or `hardCeiling` (`auto-extend`). */
+  kind: string;
+  value: number;
+}
+
+/** What `poolBoundDecision` reads: an open feature run's bounds and the initiative's pool and ceiling. */
+export interface PoolBoundInputs {
+  runId: string;
+  featureId: string;
+  /** The token pool and what the other runs of the initiative used. */
+  limitTokens: number;
+  othersUsedTokens: number;
+  /** The dollar cap with its tolerance and what the other runs spent; null without a cap. */
+  ceilingUsd: number | null;
+  othersSpentUsd: number;
+  /** The run's token bounds and its dollar bound. */
+  tokens: RunBound[];
+  usd: RunBound[];
+}
+
+/** The `initiative-pool-growth` decision on one feature run (#2280). */
+export interface PoolBoundDecision {
+  reason: "initiative-pool-growth";
+  wouldStop: boolean;
+  /** The most the pool and the ceiling hold for the run if every other run stopped now. */
+  holdTokens: number;
+  holdUsd: number | null;
+  /** The bounds above them. */
+  over: (RunBound & { unit: "tokens" | "usd"; hold: number })[];
+  why: string;
+}
+
+/**
+ * Whether an open feature run's growth bound (its sizing ceilings, its dollar bound, or the hard
+ * ceiling of an `auto-extend` growth) is above what the initiative's pool or dollar ceiling holds
+ * for it even if every other run stopped now: the pool less what the others used, the ceiling less
+ * what they spent (#2280). A bound there lets the run take the initiative past a cap the person
+ * set. The `initiative-pool-growth` reason records it as a `decision.would_stop` in shadow; the
+ * inputs are what a replay reads (`replayPoolBounds`).
+ */
+export function poolBoundDecision(inputs: PoolBoundInputs): PoolBoundDecision {
+  const reason = "initiative-pool-growth" as const;
+  const holdTokens = Math.max(0, inputs.limitTokens - inputs.othersUsedTokens);
+  const holdUsd =
+    inputs.ceilingUsd === null
+      ? null
+      : Math.max(0, centsOf(inputs.ceilingUsd - inputs.othersSpentUsd));
+  const over = [
+    ...inputs.tokens
+      .filter((b) => b.value > holdTokens)
+      .map((b) => ({ ...b, unit: "tokens" as const, hold: holdTokens })),
+    ...(holdUsd === null
+      ? []
+      : inputs.usd
+          .filter((b) => b.value > holdUsd + 0.005)
+          .map((b) => ({ ...b, unit: "usd" as const, hold: holdUsd }))),
+  ];
+  const text = (b: (typeof over)[number]): string =>
+    b.unit === "usd"
+      ? `${b.kind} ${usd(b.value)} above the ${usd(b.hold)} the dollar ceiling leaves`
+      : `${b.kind} ${(b.value / 1e6).toFixed(2)}M tokens above the ${(b.hold / 1e6).toFixed(2)}M the pool leaves`;
+  return {
+    reason,
+    wouldStop: over.length > 0,
+    holdTokens,
+    holdUsd,
+    over,
+    why: over.length
+      ? `${inputs.featureId}'s growth bounds pass what the initiative holds for it: ${over.map(text).join("; ")}.`
+      : `${inputs.featureId}'s growth bounds fit the pool and the ceiling.`,
+  };
 }

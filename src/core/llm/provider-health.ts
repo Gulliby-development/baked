@@ -70,9 +70,32 @@ export function adaptiveFirstByteMs(
   healthy: readonly (number | SizedFirstByte)[],
   promptChars?: number,
 ): number {
-  if (ceilingMs <= ADAPTIVE_FIRST_BYTE_FLOOR_MS || healthy.length < ADAPTIVE_FIRST_BYTE_SAMPLES)
-    return ceilingMs;
-  let expected = p95(healthy.map((sample) => (typeof sample === "number" ? sample : sample.ms)));
+  return firstByteDeadline(ceilingMs, firstByteInputs(healthy), promptChars);
+}
+
+/**
+ * What an adaptive first-response deadline is computed from, kept in the call's timing so a
+ * replay decides the call from the same inputs (#2283): the executor's history also holds the
+ * machine-wide shared answers (#1880) and the answers it was seeded with when its process started,
+ * neither of which is in the run's database.
+ */
+export interface FirstByteInputs {
+  /** The healthy answers of the call's shape the deadline was taken from. */
+  samples: number;
+  /** How many of them came from the machine-wide shared file (#1880). */
+  shared?: number;
+  /** Their 95th-percentile first response, when there were any. */
+  p95Ms?: number;
+  /** How many of them recorded a prompt size, and the 95th percentile of their pace (#2041). */
+  paceSamples?: number;
+  p95PaceMsPerChar?: number;
+  /** A call of the shape ran out its adaptive deadline unanswered: the ceiling (#2193). */
+  expired?: true;
+}
+
+/** The inputs `firstByteDeadline` takes from a shape's healthy answers. */
+export function firstByteInputs(healthy: readonly (number | SizedFirstByte)[]): FirstByteInputs {
+  if (!healthy.length) return { samples: 0 };
   // A call larger than the ones its shape answered gets their slowest pace per prompt character
   // times its own size: a silent call's first byte is its whole answer, which grows with its
   // input. Bench round 66 (nodepluck syntax): an analysis of 86 derivations met the 180 s floor
@@ -82,8 +105,32 @@ export function adaptiveFirstByteMs(
       ? [sample.ms / sample.chars]
       : [],
   );
-  if (promptChars && paces.length >= ADAPTIVE_FIRST_BYTE_SAMPLES)
-    expected = Math.max(expected, p95(paces) * promptChars);
+  return {
+    samples: healthy.length,
+    p95Ms: p95(healthy.map((sample) => (typeof sample === "number" ? sample : sample.ms))),
+    ...(paces.length ? { paceSamples: paces.length, p95PaceMsPerChar: p95(paces) } : {}),
+  };
+}
+
+/** `adaptiveFirstByteMs` from its recorded inputs (`firstByteInputs`). */
+export function firstByteDeadline(
+  ceilingMs: number,
+  inputs: FirstByteInputs,
+  promptChars?: number,
+): number {
+  if (
+    inputs.expired ||
+    ceilingMs <= ADAPTIVE_FIRST_BYTE_FLOOR_MS ||
+    inputs.samples < ADAPTIVE_FIRST_BYTE_SAMPLES
+  )
+    return ceilingMs;
+  let expected = inputs.p95Ms ?? 0;
+  if (
+    promptChars &&
+    inputs.p95PaceMsPerChar !== undefined &&
+    (inputs.paceSamples ?? 0) >= ADAPTIVE_FIRST_BYTE_SAMPLES
+  )
+    expected = Math.max(expected, inputs.p95PaceMsPerChar * promptChars);
   return Math.min(
     ceilingMs,
     Math.max(ADAPTIVE_FIRST_BYTE_FLOOR_MS, Math.ceil(ADAPTIVE_FIRST_BYTE_FACTOR * expected)),
@@ -142,6 +189,11 @@ export interface CallTiming extends CallReasoning {
   durationMs: number;
   /** The first-response deadline the call had, when it was not the provider's fixed one (#1766). */
   limitMs?: number;
+  /**
+   * What the adaptive deadline (`limitMs`) was computed from (`firstByteInputs`, #2283); absent
+   * before #2283 and when the deadline was not adaptive.
+   */
+  deadlineInputs?: FirstByteInputs;
   /** The size of the call's prompt (`promptChars`), which the adaptive deadline scales by (#2041). */
   promptChars?: number;
   /** The HTTP status of a call the provider refused, and its `retry-after` header (#1729). */
@@ -200,11 +252,12 @@ export interface ProviderWatch {
   /**
    * The deadline of a call whose fixed one (`providerFirstByteMs`) is `ceilingMs`, from what the
    * same call shape took before (`adaptiveFirstByteMs`, #1766). Unused when `firstByteMs` is set.
+   * With its inputs, they are kept in the call's timing (`deadlineInputs`, #2283).
    */
   firstByteLimit?: (
     ceilingMs: number,
     call: CallReasoning & { provider: string; promptChars?: number },
-  ) => number;
+  ) => number | { ms: number; inputs: FirstByteInputs };
   /** Output kind of the workflow profile, also used by continuations and format correction. */
   stage?: string;
   /** Called once per call when it ends, with its timing. */
@@ -241,14 +294,17 @@ export function withProviderHealth(
         const ceilingMs = providerFirstByteMs(adapted.provider, reasoning);
         const size = promptChars(params.prompt);
         const sized = size !== undefined ? { promptChars: size } : {};
+        const limit =
+          watch.firstByteMs === undefined
+            ? watch.firstByteLimit?.(ceilingMs, {
+                provider: adapted.provider,
+                ...reasoning,
+                ...sized,
+              })
+            : undefined;
         const firstByteMs =
-          watch.firstByteMs ??
-          watch.firstByteLimit?.(ceilingMs, {
-            provider: adapted.provider,
-            ...reasoning,
-            ...sized,
-          }) ??
-          ceilingMs;
+          watch.firstByteMs ?? (typeof limit === "object" ? limit.ms : limit) ?? ceilingMs;
+        const deadlineInputs = typeof limit === "object" ? limit.inputs : undefined;
         const cancel = executionTimeout(
           () =>
             controller.abort(
@@ -403,6 +459,7 @@ export function withProviderHealth(
             firstByteMs: firstByteAt === null ? null : Math.ceil(firstByteAt - startedAt),
             durationMs: Math.ceil(executionClock.now() - startedAt),
             ...(firstByteMs !== ceilingMs ? { limitMs: firstByteMs } : {}),
+            ...(firstByteMs !== ceilingMs && deadlineInputs ? { deadlineInputs } : {}),
             ...sized,
             ...(typeof refusal?.statusCode === "number" ? { status: refusal.statusCode } : {}),
             ...(refusal?.responseHeaders?.["retry-after"]

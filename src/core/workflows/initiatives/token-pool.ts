@@ -1,7 +1,12 @@
 import { tokenText } from "../estimate.js";
-import { EXTEND_WITHIN_DOLLARS_MODES } from "../schemas.js";
+import { EXTEND_WITHIN_DOLLARS_MODES, STAGE_RESERVE_MODES } from "../schemas.js";
 import type { StopMode } from "../stop-reasons.js";
-import { calibrationRatio, ownPlanNeed, type PlannedRun } from "./estimate.js";
+import {
+  calibrationRatio,
+  MIN_CALIBRATION_FEATURES,
+  ownPlanNeed,
+  type PlannedRun,
+} from "./estimate.js";
 
 // The initiative's shared token pool beside the person's dollar cap (#2042). Part of the
 // cap-growth hot module (.github/hot-modules.json). Bench round 66 (nodepluck) parked select at
@@ -25,6 +30,17 @@ export type ExtendWithinDollars = (typeof EXTEND_WITHIN_DOLLARS_MODES)[number];
 export const DEFAULT_EXTEND_WITHIN_DOLLARS: ExtendWithinDollars = "shadow";
 
 /**
+ * Whether a feature run that finished its tasks grows its dollar bound by the reserve of its
+ * remaining review and convergence before its cost ceiling stops it (`workflows.stageReserve`,
+ * #2241, `stageReserveDecision` in `growth.ts`). `shadow`, the default, records a
+ * `decision.would_extend` initiative event and the run still stops; `on` (opt-in) grows the bound;
+ * `off` records nothing. Making `on` the default is its own pull request.
+ */
+export { STAGE_RESERVE_MODES };
+export type StageReserveMode = (typeof STAGE_RESERVE_MODES)[number];
+export const DEFAULT_STAGE_RESERVE: StageReserveMode = "shadow";
+
+/**
  * Every limit a person set that the host grows, or would grow, on its own, with the other cap the
  * person set that bounds it. A new growth registers here, ships in shadow and adds its case to
  * `tests/workflow-scenario-initiative-token-pool.test.ts`, which fails on a `decision.would_extend`
@@ -37,6 +53,14 @@ export const HOST_POOL_GROWTHS = {
     boundBy: "the dollar cap (--budget-usd) with its tolerance",
     modes: EXTEND_WITHIN_DOLLARS_MODES,
     defaultMode: DEFAULT_EXTEND_WITHIN_DOLLARS,
+  },
+  "stage-reserve": {
+    label:
+      "A feature run that finished its tasks would stop on its cost ceiling before its review and convergence",
+    grows: "the feature run's dollar growth bound (sizing.maxRunCostUsd)",
+    boundBy: "the initiative's dollar cap (--budget-usd) with its tolerance",
+    modes: STAGE_RESERVE_MODES,
+    defaultMode: DEFAULT_STAGE_RESERVE,
   },
 } as const;
 export type PoolGrowthReason = keyof typeof HOST_POOL_GROWTHS;
@@ -66,32 +90,64 @@ export interface ForecastFeature {
 }
 
 /**
+ * The ratio a budget decision scales the features still to run by (a block, a park, a growth):
+ * the measured actual-to-low ratio blended like the dollar re-forecast (`calibrationRatio`: a third
+ * at three accepted non-skeleton features, full weight at five), so three features do not decide
+ * alone. Null before three.
+ */
+export const decisionRatio = (measured: number, low: number, count: number): number | null =>
+  calibrationRatio(measured, low, count);
+
+/**
+ * The ratio advice scales them by (the forecast notice, #2062): the measured actual-to-low ratio
+ * itself from three accepted features, capped like the blend. A notice changes nothing, so it
+ * need not wait for the blend: in R66 nodepluck three features had used 2.2 times their lows at
+ * 14:27, the blend said 1.4x and a forecast under the pool, and the notice came 13 minutes later,
+ * 41 seconds before select parked. Null before three.
+ */
+export const adviceRatio = (measured: number, low: number, count: number): number | null =>
+  count < MIN_CALIBRATION_FEATURES
+    ? null
+    : calibrationRatio(measured, low, Number.MAX_SAFE_INTEGER);
+
+/** A pool forecast at one ratio. */
+export interface RatioForecast {
+  forecastTokens: number;
+  ratio: number;
+}
+
+/**
  * The pool's measured forecast (#2042): what was used plus each unfinished feature's low estimate
  * scaled by how far the accepted features landed above theirs (actual over the low the gate gave
- * them at their start), blended like the dollar re-forecast (`calibrationRatio`: from three
- * accepted non-skeleton features, with full weight at five), never below what a running feature
- * used. Null before three such features are accepted. In R66 nodepluck the accepted features had
- * used 2.33, 1.47, 0.93 and 4.07 times their low ends while the estimate's point forecast stayed
- * under the pool.
+ * them at their start), never below what a running feature used. `forecastTokens` and `ratio` are
+ * at the `decisionRatio`, which budget decisions read; `advice` is at the `adviceRatio`, which
+ * only the notice reads. Null before three accepted non-skeleton features. In R66 nodepluck the
+ * accepted features had used 2.33, 1.47, 0.93 and 4.07 times their low ends while the estimate's
+ * point forecast stayed under the pool.
  */
 export function poolForecast(
   usedTokens: number,
   features: readonly ForecastFeature[],
-): { forecastTokens: number; ratio: number } | null {
+): (RatioForecast & { advice: RatioForecast }) | null {
   const measured = features.filter((f) => f.accepted && !f.skeleton && f.low !== null && f.low > 0);
-  const ratio = calibrationRatio(
-    measured.reduce((sum, f) => sum + f.spent, 0),
-    measured.reduce((sum, f) => sum + (f.low ?? 0), 0),
-    measured.length,
-  );
-  if (ratio === null) return null;
-  const toRun = features
-    .filter((f) => !f.accepted)
-    .reduce(
-      (sum, f) => sum + Math.max(0, (f.low === null ? f.expected : f.low * ratio) - f.spent),
-      0,
-    );
-  return { forecastTokens: Math.round(usedTokens + toRun), ratio: Math.round(ratio * 100) / 100 };
+  const spent = measured.reduce((sum, f) => sum + f.spent, 0);
+  const lows = measured.reduce((sum, f) => sum + (f.low ?? 0), 0);
+  const blended = decisionRatio(spent, lows, measured.length);
+  const raw = adviceRatio(spent, lows, measured.length);
+  if (blended === null || raw === null) return null;
+  const at = (ratio: number): RatioForecast => ({
+    forecastTokens: Math.round(
+      usedTokens +
+        features
+          .filter((f) => !f.accepted)
+          .reduce(
+            (sum, f) => sum + Math.max(0, (f.low === null ? f.expected : f.low * ratio) - f.spent),
+            0,
+          ),
+    ),
+    ratio: Math.round(ratio * 100) / 100,
+  });
+  return { ...at(blended), advice: at(raw) };
 }
 
 /** An open feature run with a sized plan, as the plan charge reads it (#2100, #2056). */
@@ -105,6 +161,28 @@ export interface PlanChargeRun {
   plan: PlannedRun;
   /** What the plan charge holds for it (`planChargeTokens`). */
   chargeTokens: number;
+  /** The dollars the run spent plus what its attempts in flight reserved (#2124). */
+  usedUsd?: number;
+  /** What the dollar budget holds for it without the plan charge: max(usedUsd, its maxCostUsd). */
+  limitUsd?: number;
+  /**
+   * What the plan charge holds for it in dollars (`planChargeUsd`); null while the initiative's
+   * task-call rate is unmeasured or the run has no dollar limit, and it holds `limitUsd` then.
+   */
+  chargeUsd?: number | null;
+}
+
+/**
+ * The plan charge in dollars (#2124): the plan charge's tokens at the initiative's task-call rate
+ * (`taskCallRate`, #2124), never below what the run spent and reserved. Null without a measured
+ * rate: there is no plan-to-actual dollar ratio, and a run then holds its dollar limit, as before.
+ */
+export function planChargeUsd(
+  chargeTokens: number,
+  usedUsd: number,
+  rate: number | null,
+): number | null {
+  return rate === null ? null : Math.max(usedUsd, chargeTokens * rate);
 }
 
 /**
@@ -113,13 +191,25 @@ export interface PlanChargeRun {
  * the run used. One rule both ways: it frees what a start share holds above the plan (R67 ampwhy
  * held 30.5M at cli's gate while its runs had used 0.05M to 6.6M each) and adds what a plan prices
  * above the run's limit (#2056).
+ *
+ * One exception (#2253): while the ratio is unmeasured, a plan whose whole range sits above the
+ * run's limit (its low end above it) contradicts the size class that set the limit, and nothing
+ * yet says which one is right. The run is held at its plan's expected need then, still above its
+ * limit, not at the high end. R60 wheeltags' names was sized at 10.3M-14.1M against its 8.0M
+ * limit and used 4.57M; at its high end the charge parked dead. Of the corpus's 24 plans priced
+ * above their limits while unmeasured, names is the only one whose low end was above it; the high
+ * end stays where a plan straddles the limit (R71 xmlvet's scanner, 4.26M-11.75M against 8.0M,
+ * used 12.10M). The dollar charge (`planChargeUsd`) prices these tokens, so it follows.
  */
 export function planChargeTokens(
   usedTokens: number,
   plan: PlannedRun,
   ratio: number | null,
+  limitTokens: number,
 ): number {
-  return Math.max(usedTokens, ownPlanNeed(plan, ratio).high);
+  const need = ownPlanNeed(plan, ratio);
+  const contradicts = ratio === null && plan.low > limitTokens;
+  return Math.max(usedTokens, contradicts ? need.low : need.high);
 }
 
 /**
@@ -139,6 +229,17 @@ export interface PlanChargeView {
   planCommittedTokens: number;
   /** limitCommittedTokens - planCommittedTokens: positive frees tokens, negative adds them. */
   releasedTokens: number;
+  /**
+   * The dollar side (#2124), null without a dollar budget: the task-call rate the charges use,
+   * what all runs hold with each open run at max(used, cap) (`committedUsd`), the same with each
+   * priced run at its `chargeUsd`, and the difference (positive frees dollars).
+   */
+  usd: {
+    taskRate: number | null;
+    limitCommittedUsd: number;
+    planCommittedUsd: number;
+    releasedUsd: number;
+  } | null;
 }
 
 /**
@@ -149,15 +250,34 @@ export function planCharge(
   mode: StopMode,
   ratio: number | null,
   limitCommitted: number,
-  runs: readonly Omit<PlanChargeRun, "chargeTokens">[],
+  runs: readonly Omit<PlanChargeRun, "chargeTokens" | "chargeUsd">[],
+  dollars?: { taskRate: number | null; limitCommittedUsd: number },
 ): PlanChargeView | null {
   if (!runs.length) return null;
-  const charged = runs.map((run) => ({
-    ...run,
-    chargeTokens: planChargeTokens(run.usedTokens, run.plan, ratio),
-  }));
+  const charged = runs.map((run) => {
+    const chargeTokens = planChargeTokens(run.usedTokens, run.plan, ratio, run.limitTokens);
+    return {
+      ...run,
+      chargeTokens,
+      ...(dollars
+        ? {
+            chargeUsd:
+              run.usedUsd === undefined || run.limitUsd === undefined
+                ? null
+                : planChargeUsd(chargeTokens, run.usedUsd, dollars.taskRate),
+          }
+        : {}),
+    };
+  });
   const released = charged.reduce(
     (sum, run) => sum + Math.max(run.usedTokens, run.limitTokens) - run.chargeTokens,
+    0,
+  );
+  const releasedUsd = charged.reduce(
+    (sum, run) =>
+      run.chargeUsd === null || run.chargeUsd === undefined
+        ? sum
+        : sum + (run.limitUsd ?? 0) - run.chargeUsd,
     0,
   );
   return {
@@ -167,6 +287,14 @@ export function planCharge(
     limitCommittedTokens: limitCommitted,
     planCommittedTokens: limitCommitted - released,
     releasedTokens: released,
+    usd: dollars
+      ? {
+          taskRate: dollars.taskRate,
+          limitCommittedUsd: dollars.limitCommittedUsd,
+          planCommittedUsd: dollars.limitCommittedUsd - releasedUsd,
+          releasedUsd,
+        }
+      : null,
   };
 }
 
@@ -193,6 +321,11 @@ export interface PoolInputs {
   forecastTokens: number | null;
   /** The measured actual-to-low ratio that scales the features still to run; null before it. */
   ratio: number | null;
+  /**
+   * The forecast at the raw measured ratio (`poolForecast`'s `advice`), which only the notice
+   * reads (#2062); absent or null in a block, a park, a growth and records before it.
+   */
+  advice?: RatioForecast | null;
   /** Features of the split. */
   features: number;
   waiting: PoolFeature[];
@@ -204,7 +337,13 @@ export interface TokenPoolView {
   limitTokens: number;
   usedTokens: number;
   committedTokens: number;
+  /** The forecast at the decision ratio (`ratio`), which budget decisions read. */
   forecastTokens: number | null;
+  /**
+   * The forecast at the raw measured ratio, which the notice and its suggestion read (#2062); null
+   * before three features are measured, or where no notice is computed (a block, a park).
+   */
+  advice: RatioForecast | null;
   ratio: number | null;
   /**
    * The pool that starts every waiting feature at its high estimate beside what open runs hold,
@@ -212,8 +351,10 @@ export interface TokenPoolView {
    */
   coverTokens: number;
   /**
-   * What the notice suggests extending the pool to: the forecast, and no less than what starts
-   * every waiting feature at its low estimate, rounded up; null while the forecast fits the pool.
+   * What the notice suggests extending the pool to; null while the forecast fits the pool. With a
+   * dollar cap that pays for more tokens than the pool at the measured rate, the tokens it pays for
+   * (`dollarTokens`, #2244); else the forecast, and no less than what starts every waiting
+   * feature at its low estimate, rounded up.
    */
   suggestedTokens: number | null;
   /** Dollars per million tokens the initiative paid so far; null before it spent both. */
@@ -227,23 +368,29 @@ export interface TokenPoolView {
 /** The token pool, its forecast and what to extend it to (#2042). */
 export function tokenPool(inputs: PoolInputs): TokenPoolView {
   const { limitTokens, usedTokens, committedTokens, forecastTokens, cost } = inputs;
+  const advice = inputs.advice ?? null;
   const coverTokens = roundUp(committedTokens + inputs.waiting.reduce((sum, f) => sum + f.high, 0));
   const lows = committedTokens + inputs.waiting.reduce((sum, f) => sum + f.low, 0);
-  const suggestedTokens =
-    forecastTokens !== null && forecastTokens > limitTokens
-      ? roundUp(Math.max(forecastTokens, lows))
-      : null;
+  // The notice warns on the higher of the two forecasts: advice may run ahead of the blend.
+  const noticed =
+    forecastTokens === null ? null : Math.max(forecastTokens, advice?.forecastTokens ?? 0);
   const usdPerMillion =
     usedTokens > 0 && cost.spentUsd > 0 ? (cost.spentUsd / usedTokens) * 1_000_000 : null;
-  const capTokens =
-    cost.capUsd !== null && usdPerMillion !== null
-      ? Math.floor((cost.capUsd / usdPerMillion) * 1_000_000)
+  const capTokens = cost.capUsd === null ? null : tokensForUsd(cost.capUsd, usdPerMillion);
+  // Advice only (#2244): the ratio forecast swings with the heavy features (R71 xmlvet advised
+  // 31.6M at 1.7x and 50.9M at 3.1x for a round that used 35.8M), while what the cap pays for at
+  // the measured rate is the pool the person's own dollar limit already sets.
+  const byDollars = dollarTokens(capTokens, limitTokens);
+  const suggestedTokens =
+    noticed !== null && noticed > limitTokens
+      ? (byDollars ?? roundUp(Math.max(noticed, lows)))
       : null;
   const pool: TokenPoolView = {
     limitTokens,
     usedTokens,
     committedTokens,
     forecastTokens,
+    advice,
     ratio: inputs.ratio,
     coverTokens,
     suggestedTokens,
@@ -252,13 +399,45 @@ export function tokenPool(inputs: PoolInputs): TokenPoolView {
     notice: null,
   };
   if (forecastTokens !== null && suggestedTokens !== null) {
+    const ratio = advice?.ratio ?? inputs.ratio;
     const basis =
-      inputs.ratio !== null
-        ? `At the measured ${inputs.ratio.toFixed(1)}x of the estimates`
+      ratio !== null
+        ? `At the measured ${ratio.toFixed(1)}x of the estimates`
         : "At the estimates so far";
-    pool.notice = `${basis} the ${inputs.features} features need about ${tokenText(forecastTokens)} tokens (${tokenText(usedTokens)} used); the shared pool is ${tokenText(limitTokens)}. Extend to ${tokenText(suggestedTokens)} (baked workflow initiative extend ${inputs.initiativeId} --tokens ${suggestedTokens})${dollarRoom(pool, cost)}.`;
+    // Both forecasts, when the blend that budget decisions use says another figure (#2062).
+    const blended =
+      advice &&
+      inputs.ratio !== null &&
+      tokenText(advice.forecastTokens) !== tokenText(forecastTokens)
+        ? `${tokenText(forecastTokens)} at the blended ${inputs.ratio.toFixed(1)}x that budget decisions use; `
+        : "";
+    const command = `baked workflow initiative extend ${inputs.initiativeId} --tokens ${suggestedTokens}`;
+    const extend =
+      byDollars !== null && cost.capUsd !== null && usdPerMillion !== null
+        ? `Extend to ${tokenText(suggestedTokens)}, what the ${usd(cost.capUsd)} cap pays for at ${usd(usdPerMillion)} per million, so the pool stops no feature before the dollar cap does (${command}).`
+        : `Extend to ${tokenText(suggestedTokens)} (${command})${dollarRoom(pool, cost)}.`;
+    pool.notice = `${basis} the ${inputs.features} features need about ${tokenText(advice?.forecastTokens ?? forecastTokens)} tokens (${blended}${tokenText(usedTokens)} used); the shared pool is ${tokenText(limitTokens)}. ${extend}`;
   }
   return pool;
+}
+
+/**
+ * The pool a dollar cap implies (#2244): the tokens the cap pays for at a measured or history
+ * price, rounded down to `POOL_STEP` so it stays inside the dollars, when that is above the pool;
+ * null without a cap, a price, or when the pool already holds that many. Advice reads it (the
+ * forecast notice, the split approval); no decision does.
+ */
+export function dollarTokens(capTokens: number | null, limitTokens: number): number | null {
+  if (capTokens === null) return null;
+  const tokens = roundDown(capTokens);
+  return tokens > limitTokens ? tokens : null;
+}
+
+/** The tokens `capUsd` pays for at `usdPerMillion`; null without a price that gives a count. */
+export function tokensForUsd(capUsd: number, usdPerMillion: number | null): number | null {
+  if (usdPerMillion === null || usdPerMillion <= 0) return null;
+  const tokens = Math.floor((capUsd / usdPerMillion) * 1_000_000);
+  return Number.isSafeInteger(tokens) ? tokens : null;
 }
 
 /** What the dollar cap says beside the pool, for a notice or a block message. */

@@ -7,6 +7,8 @@ import {
   suggestionText,
 } from "../../core/workflows/remedies.js";
 
+const files = (remedy: Remedy): string => remedy.paths?.slice(0, 3).join(", ") || "the file";
+
 function label(remedy: Remedy): string {
   const run = remedy.runId ? `run ${remedy.runId}` : "the run";
   switch (remedy.action) {
@@ -39,6 +41,12 @@ function label(remedy: Remedy): string {
       return `Use /workflow deliver ${remedy.runId ?? "RUN_ID"}`;
     case "recover":
       return `Open ${run} and answer its recovery decision`;
+    case "route":
+      return `Open ${run} and press T to correct ${remedy.owner ?? "the owner"} first`;
+    case "widen":
+      return `Open ${run} and press W to let ${remedy.taskId ?? "the correction"} write ${files(remedy)}`;
+    case "upstream":
+      return `Open ${run} and press Q to ask feature ${remedy.owner ?? "upstream"} for the change`;
   }
 }
 

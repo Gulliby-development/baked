@@ -2,6 +2,7 @@ import { parseRouteOverrides } from "../core/llm/model-routing.js";
 import { BUDGET_PRESETS } from "../core/workflows/budget.js";
 import { MAX_CANDIDATES } from "../core/workflows/candidates.js";
 import { WorkflowFault } from "../core/workflows/errors.js";
+import { HOST_REMEDIES } from "../core/workflows/remedies-model.js";
 import { MAX_CONCURRENT_WRITERS, RunStatus } from "../core/workflows/schemas.js";
 
 const commands = [
@@ -23,6 +24,7 @@ const commands = [
   "import",
   "export",
   "export-progress",
+  "export-package",
   "gc",
   "redact",
   "recover",
@@ -110,6 +112,7 @@ const booleanFlags = new Set([
   "resume",
   "no-resume",
   "accept-workspace",
+  "zip",
 ]);
 /** `doctor` and `estimate` take the `run` options that change whether and how a run starts. */
 const preRunFlags = [
@@ -181,7 +184,7 @@ const commandFlags: Record<WorkflowCommand, string[]> = {
   status: [],
   list: ["feature", "limit", "cursor", "status"],
   repair: ["rounds", "expected-revision", "command-id", ...decisionResumeFlags],
-  resume: ["expected-revision", "command-id", "accept-workspace", "events", "after"],
+  resume: ["expected-revision", "command-id", "accept-workspace", "remedy", "events", "after"],
   approve: [
     "request",
     "digest",
@@ -207,9 +210,10 @@ const commandFlags: Record<WorkflowCommand, string[]> = {
   candidate: ["spec", "plan", "tasks", "policy", "workflow", "confirm-auto-approval", "command-id"],
   profiles: ["model"],
   artifacts: ["file"],
-  import: ["source", "path", "feature", "command-id"],
+  import: ["source", "path", "feature", "id", "command-id"],
   export: ["destination"],
   "export-progress": [],
+  "export-package": ["out", "zip"],
   gc: ["before", "dry-run"],
   redact: ["file", "reason"],
   recover: ["request", "effect", "resolution", "file", "expected-revision", "command-id"],
@@ -347,6 +351,11 @@ export function validateWorkflowArgs(result: WorkflowArgs): WorkflowArgs {
       if (!/^\d+(\.\d+)?$/.test(String(result.flags[name])) || !(value > 0))
         throw new WorkflowFault("INVALID_DEFINITION", `--${name} requires a positive number`);
     }
+  if ("remedy" in result.flags && !HOST_REMEDIES.some((remedy) => remedy === result.flags.remedy))
+    throw new WorkflowFault(
+      "INVALID_DEFINITION",
+      `--remedy takes ${HOST_REMEDIES.join(", ")}: the remedies a corrective's block offers`,
+    );
   if ("format" in result.flags && result.flags.format !== "md")
     throw new WorkflowFault("INVALID_DEFINITION", "--format takes md");
   if (result.command === "usage" && "output" in result.flags && !("format" in result.flags))
@@ -759,7 +768,18 @@ doctor [WORKFLOW] [--model ID] [--route STAGE=MODEL,...] [--policy FILE] [--work
 estimate [WORKFLOW] (same options as doctor)
   tokens and approximate cost per stage and per model, from earlier runs of this project
 import --source spec-kit|ecc|markdown-edit --path DIRECTORY --feature ID
+import --source baked-export --path DIRECTORY|ZIP [--id ID] [--json]
+  Continue the work of a package written by export-package: its manifest is checked, an
+  initiative is recreated awaiting the approval of its split (a run is created, not driven), and
+  each feature with accepted documents starts at analysis with its spec, plan and tasks.
+  --id names the new initiative or run feature (default: the package's)
 export RUN_ID --destination DIRECTORY    export-progress RUN_ID
+  export writes the run's diagnostic report (manifest.json) to attach to a bug report
+export-package RUN_ID|INITIATIVE_ID [--out PATH] [--zip] [--json]
+  Write the accepted spec, plan, tasks and graph of a run or an initiative as a plain SDD package
+  another coding agent can read: AGENTS.md, manifest.json, initiative.md/json, graph.json/md and
+  specs/FEATURE/. A folder by default (.baked/exports/ID-export), one zip archive with --zip.
+  Exit 1 when refused (nothing accepted yet, a secret, the path exists), 2 for an unknown ID
 usage RUN_ID [--model ID] [--stage NAME] [--top N] [--format md] [--output FILE]
   per-stage and per-attempt token and step usage; --format md renders tokens and estimated cost
   by stage and model as Markdown, printed or written to FILE (project-wide: baked usage)

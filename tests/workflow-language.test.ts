@@ -42,12 +42,17 @@ describe("project language", () => {
     expect(detectLanguages(workspace({ "calc.gemspec": "Gem::Specification.new\n" }))).toEqual(["ruby"]);
     expect(detectLanguages(workspace({ "pubspec.yaml": "name: calc\n" }))).toEqual(["dart"]);
     expect(detectLanguages(workspace({ "build.sbt": "" }))).toEqual(["scala"]);
+    expect(detectLanguages(workspace({ "Package.swift": "" }))).toEqual(["swift"]);
     expect(detectLanguages(workspace({ "package.json": "{}" }))).toEqual([]);
     // A module manifest or PSScriptAnalyzer settings (#1498); a script alone is not a project.
     expect(detectLanguages(workspace({ "Sum.psd1": "@{}" }))).toEqual(["powershell"]);
     expect(detectLanguages(workspace({ "PSScriptAnalyzerSettings.psd1": "@{}" }))).toEqual(["powershell"]);
     expect(detectLanguages(workspace({ "build.ps1": "" }))).toEqual([]);
     expect(touchesLanguageFiles(["src/Sum.psm1"])).toBe(true);
+    // An R package or an renv project (#1500).
+    expect(detectLanguages(workspace({ DESCRIPTION: "Package: sumr\n" }))).toEqual(["r"]);
+    expect(detectLanguages(workspace({ "renv.lock": "{}" }))).toEqual(["r"]);
+    expect(touchesLanguageFiles(["R/sum.R"])).toBe(true);
   });
   test(".NET solutions rank before projects", () => {
     expect(dotnetFiles(workspace({ "b.csproj": "", "a.sln": "", "c.slnx": "", "readme.md": "" }))).toEqual([

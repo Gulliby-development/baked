@@ -9,6 +9,7 @@
     "testsGrown": "[info] SumSuite:\n[info] - adds\n[info] - subtracts\n[info] - is commutative *** FAILED ***\n[info]   3 did not equal 4 (SumSuite.scala:7)\n[info] Run completed in 350 milliseconds.\n[info] Total number of tests run: 3\n[info] Suites: completed 1, aborted 0\n[info] Tests: succeeded 2, failed 1, canceled 0, ignored 0, pending 0\n[info] *** 1 TEST FAILED ***\n[error] Failed tests:\n[error] \tSumSuite\n[error] (Test / test) sbt.TestsFailedException: Tests unsuccessful\n[error] Total time: 11 s, completed Oct 25, 2026, 3:01:09 AM\n"
   },
   "expected": {
+    "checkConfigs": [".scalafmt.conf: scalafmt, read as text", ".scalafix.conf: scalafix, read as text", "scalastyle-config.xml: scalastyle"],
     "tests": [
       "src/main/scala/SumSuite.scala"
     ],
@@ -43,6 +44,11 @@
     "packageContents": ["build.sbt: sbt-jar"],
     "numericLimits": [
       "Int and Long arithmetic overflow silently; toInt fails past Int"
-    ]
+    ],
+    "staticTools": [
+      "scalafmt: formatter",
+      "scalafix: linter, whole unit"
+    ],
+    "sortedLists": null
   }
 }

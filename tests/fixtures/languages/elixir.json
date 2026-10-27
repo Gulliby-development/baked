@@ -5,6 +5,7 @@
     "mix.exs": "defmodule Fixture.MixProject do\nend\n"
   },
   "expected": {
+    "checkConfigs": [".credo.exs: credo, read as text", ".formatter.exs: mix format, read as text", ".dialyzer_ignore.exs: dialyzer, read as text"],
     "tests": [
       "lib/sum_test.exs"
     ],
@@ -33,6 +34,12 @@
     ],
     "formatters": null,
     "packageContents": ["mix.exs: hex"],
-    "numericLimits": null
+    "numericLimits": null,
+    "staticTools": [
+      "credo: linter",
+      "dialyzer: linter, whole unit",
+      "mix format: formatter"
+    ],
+    "sortedLists": null
   }
 }

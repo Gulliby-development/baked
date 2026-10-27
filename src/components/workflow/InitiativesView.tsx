@@ -23,6 +23,7 @@ import { useKeyboard } from "../../hooks/useTerminalEvents.js";
 import { HardShadow } from "../ui/BrutalBox.js";
 import { FocusTarget } from "../ui/FocusTarget.js";
 import { Hint, PremiumPopup, Section } from "../ui/index.js";
+import { type ExportChoice, exportChoice, exportPromptText } from "./export-package.js";
 import { errorHint, formatDuration, formatTokens } from "./format.js";
 import { InitiativeStartForm } from "./InitiativeStartForm.js";
 import { tuiErrorText, tuiRecoveryText } from "./remedies.js";
@@ -38,6 +39,8 @@ export interface InitiativesApi {
   info?(): Promise<Pick<WorkflowInfo, "workflows" | "defaultWorkflow">>;
   /** The estimate of an initiative's split; absent, the screen offers none. */
   estimate?(initiativeId: string): Promise<InitiativeEstimate | null>;
+  /** Writes the SDD export package; the line to show. Absent, the screen offers no export. */
+  exportPackage?(initiativeId: string, choice: ExportChoice): Promise<string>;
 }
 
 type Color = (t: ReturnType<typeof useTheme>) => string;
@@ -172,6 +175,8 @@ export function InitiativesPopup({
   const [cursor, setCursor] = useState(0);
   const [featureCursor, setFeatureCursor] = useState(0);
   const [confirm, setConfirm] = useState<InitiativeActionOption | null>(null);
+  // Ctrl+E on an initiative with an approved split asks for a folder or a zip (#2207).
+  const [exporting, setExporting] = useState(false);
   // The action waiting for text, such as a reject reason or a new title, and the text so far.
   const [typing, setTyping] = useState<{ option: InitiativeActionOption; text: string } | null>(
     null,
@@ -228,6 +233,7 @@ export function InitiativesPopup({
   const feature = features[Math.min(featureCursor, Math.max(0, features.length - 1))] ?? null;
   const driving = !!(selected && data?.driving.includes(selected.initiativeId));
   const actions = selected ? initiativeActions(selected, driving, feature, model) : [];
+  const canExport = !!api.exportPackage && selected?.approvedPlanRevision != null;
   useEffect(() => {
     if (cursor >= ordered.length && ordered.length) setCursor(ordered.length - 1);
   }, [ordered.length, cursor]);
@@ -287,6 +293,17 @@ export function InitiativesPopup({
       }
       return;
     }
+    if (exporting) {
+      event.preventDefault();
+      const choice = exportChoice(key);
+      if (choice) setExporting(false);
+      if (choice && choice !== "cancel" && selected && api.exportPackage)
+        void api.exportPackage(selected.initiativeId, choice).then(
+          (message) => setFlash({ kind: "ok", message }),
+          (err: unknown) => setFlash({ kind: "err", message: tuiErrorText(err) }),
+        );
+      return;
+    }
     if (confirm) {
       event.preventDefault();
       if (key === "y" && selected) {
@@ -337,6 +354,11 @@ export function InitiativesPopup({
       onOpenRun(selected.decompose.runId);
       return;
     }
+    if (key === "e" && event.ctrl && canExport) {
+      event.preventDefault();
+      setExporting(true);
+      return;
+    }
     if (key === "t" && api.estimate && features.length) {
       event.preventDefault();
       const id = selected.initiativeId;
@@ -364,13 +386,20 @@ export function InitiativesPopup({
       ? initiativeHints("input")
       : confirm
         ? initiativeHints("confirm")
-        : selected
+        : exporting
           ? [
-              ...initiativeHints("detail", actions, !!feature?.runId),
-              ...(selected.decompose ? [{ key: "O", label: "split run" }] : []),
-              ...(api.estimate && features.length ? [{ key: "T", label: "estimate" }] : []),
+              { key: "F", label: "folder" },
+              { key: "Z", label: "zip" },
+              { key: "N", label: "keep" },
             ]
-          : initiativeHints("list", [], false, !!api.start && !!data);
+          : selected
+            ? [
+                ...initiativeHints("detail", actions, !!feature?.runId),
+                ...(selected.decompose ? [{ key: "O", label: "split run" }] : []),
+                ...(api.estimate && features.length ? [{ key: "T", label: "estimate" }] : []),
+                ...(canExport ? [{ key: "Ctrl+E", label: "export package" }] : []),
+              ]
+            : initiativeHints("list", [], false, !!api.start && !!data);
   return (
     <PremiumPopup
       visible
@@ -437,6 +466,8 @@ export function InitiativesPopup({
               </box>
             </HardShadow>
           </box>
+        ) : exporting && selected ? (
+          <text fg={t.warning}>{exportPromptText(selected.initiativeId)}</text>
         ) : confirm ? (
           <text fg={t.warning}>{confirm.confirm}</text>
         ) : data === undefined ? (
@@ -708,6 +739,14 @@ export function InitiativeDetail({
                   <text fg={t.textMuted}>
                     {clip(
                       `Merged from ${f.mergedFrom.join(", ")}: too small for a run each`,
+                      width - 4,
+                    )}
+                  </text>
+                ) : null}
+                {f.amendments?.length ? (
+                  <text fg={t.textMuted}>
+                    {clip(
+                      `Amendments asked: ${f.amendments.map((a) => `${a.from} needs ${a.gaps.map((g) => g.symbol).join(", ")} (${a.answer === "replan" ? "re-planned for it" : "not reopened"})`).join("; ")}`,
                       width - 4,
                     )}
                   </text>

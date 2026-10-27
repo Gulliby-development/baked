@@ -3,7 +3,13 @@ import { canonical, hashJson } from "../specs/hash.js";
 import { siblingOwner } from "../verification/initiative-ownership.js";
 import { isStaticCheck } from "./check-policy.js";
 import { isTestCheck } from "./quality/mutation.js";
-import { type RecoveryAdvice, recoveryAdvice } from "./remedies.js";
+import {
+  HOST_REMEDIES,
+  type HostRemedy,
+  type RecoveryAdvice,
+  type Remedy,
+  recoveryAdvice,
+} from "./remedies.js";
 import { CorrectionSchema, type Repro, type Review, type RunPolicy } from "./schemas.js";
 import { stopMode } from "./stop-reasons.js";
 import type { WorkflowStore } from "./store.js";
@@ -50,7 +56,8 @@ export function checkRepairKind(
   return isStaticCheck(check) ? "diagnostics" : "build";
 }
 
-type ScopeState = Pick<RuntimeState, "repairScope" | "repairPredecessors" | "graph">;
+type ScopeState = Pick<RuntimeState, "repairScope" | "repairPredecessors" | "graph"> &
+  Partial<Pick<RuntimeState, "slicedTests">>;
 
 /** The files in a finding's repair scope that the failing task (its predecessor) itself writes. */
 export function ownScope(state: ScopeState, findingId: string): string[] {
@@ -63,14 +70,18 @@ export function ownScope(state: ScopeState, findingId: string): string[] {
 
 /**
  * The files a corrective of `finding` must be able to write: those its failed non-test check
- * names in the failing task's own files. Empty for a test check and every other finding.
+ * names in the failing task's own files, and for a failed test check the test file the failing
+ * task created whose later slice is pending, when the failure reaches no source (#2108). Empty
+ * for every other finding.
  */
 export function diagnosedFiles(
   state: ScopeState,
   policy: Pick<RunPolicy, "checks">,
   finding: Pick<Review["findings"][number], "id" | "claim">,
 ): string[] {
-  return checkRepairKind(policy, finding) ? ownScope(state, finding.id) : [];
+  return checkRepairKind(policy, finding)
+    ? ownScope(state, finding.id)
+    : (state.slicedTests?.[finding.id] ?? []);
 }
 
 /**
@@ -333,7 +344,9 @@ export function scopeRecord(
   evidence?: ScopeEvidence,
   unowned: UnownedRule = unownedRule,
 ): ScopeRecord | null {
-  const own = findings.filter((f) => checkRepairKind(policy, f));
+  const own = findings.filter(
+    (f) => checkRepairKind(policy, f) || diagnosedFiles(state, policy, f).length > 0,
+  );
   const writes = task.writes.filter((w) => w.action !== "delete").map((w) => w.path);
   // A failed check names its files through its diagnostics, which #2094 compares; every other
   // origin names them through the finding's file and its repro's output, and every attempt
@@ -352,7 +365,7 @@ export function scopeRecord(
       ]
     : [];
   if (!own.length && !named.length) return null;
-  const diagnosed = [...new Set(own.flatMap((f) => ownScope(state, f.id)))];
+  const diagnosed = [...new Set(own.flatMap((f) => diagnosedFiles(state, policy, f)))];
   const missing = rule(diagnosed, writes);
   const outside = evidence ? unownedPaths(state, task.id, named, writes, evidence, unowned) : [];
   return {
@@ -394,6 +407,8 @@ export interface ScopeEdit {
   /** The corrective the host opened for a routed path. */
   correctiveIds?: string[];
   hash: string | null;
+  /** A person chose the act through a remedy of the block, in shadow (#2155). */
+  approvedBy?: "user";
 }
 
 type WidenState = Pick<
@@ -467,11 +482,13 @@ export function hostWiden(
 /** Whether a `host-widen` link may add `path` (acceptance reads the same rule). */
 export function widenAuthorized(
   path: string,
-  state: Pick<RuntimeState, "rootGraph" | "initiativeBounds">,
+  state: Pick<RuntimeState, "rootGraph" | "initiativeBounds"> &
+    Partial<Pick<RuntimeState, "personWidened">>,
   policy: Pick<RunPolicy, "stopModes" | "costForecast" | "autoApproval">,
 ): boolean {
   return (
-    stopMode(policy, "corrective_unowned_file") === "enforce" &&
+    (stopMode(policy, "corrective_unowned_file") === "enforce" ||
+      (state.personWidened ?? []).includes(path)) &&
     !(state.rootGraph?.tasks ?? []).some((t) => t.writes.some((w) => w.path === path)) &&
     approvedPath(path, policy.autoApproval?.limits?.allowedPaths ?? [], state.initiativeBounds)
   );
@@ -514,6 +531,74 @@ export function unownedAdvice(runId: string, message: string, paths: string[]): 
     `${message} Change ${files} yourself and resume with \`baked workflow resume ${runId} --accept-workspace\`, or revise the plan so a task may write them (\`baked workflow revise ${runId}\`); a plain resume does not start the correction again while ${files} is unchanged.`,
     `A correction needs ${files} changed, which no task of the run may write. Change the files and accept the change, or revise the plan.`,
     { action: "accept-workspace", runId },
+    { action: "revise", runId },
+    { action: "cancel", runId },
+  );
+}
+
+/**
+ * A person's answer to a blocked corrective's unowned files (#2155), one per host decision a
+ * block can be answered with: `route` corrects the owner first, `widen` lets the corrective write
+ * the paths, `upstream` asks the owning initiative feature for the change (the host's `park`).
+ */
+export { HOST_REMEDIES, type HostRemedy };
+export const REMEDY_DECISION: Record<HostRemedy, "route" | "widen" | "park"> = {
+  route: "route",
+  widen: "widen",
+  upstream: "park",
+};
+
+/**
+ * The remedies a blocked corrective's last scope record offers: one per decision the host would
+ * take over its unowned files when enforced (route, widen, park), in `hostDecision`'s order. A
+ * record that fits, waits or refuses offers none.
+ */
+export function unownedRemedies(runId: string, record: ScopeRecord | undefined): Remedy[] {
+  const paths = record?.unowned ?? [];
+  return HOST_REMEDIES.flatMap((action): Remedy[] => {
+    const these = paths.filter((p) => p.decision === REMEDY_DECISION[action]);
+    if (!record || !these.length) return [];
+    const owner = action === "route" ? these[0]?.owner : these[0]?.feature;
+    return [
+      {
+        action,
+        runId,
+        taskId: record.taskId,
+        paths: these.map((p) => p.path),
+        ...(owner ? { owner } : {}),
+      },
+    ];
+  });
+}
+
+/**
+ * The advice of a corrective's block when its last scope record names unowned files a person can
+ * answer for (#2155): the act the host would take, as one command or click each, then a plain
+ * retry, a revision and a cancel. Undefined when the record offers no such remedy.
+ */
+export function unownedBlockAdvice(
+  runId: string,
+  message: string,
+  record: ScopeRecord | undefined,
+): RecoveryAdvice | undefined {
+  const remedies = unownedRemedies(runId, record);
+  if (!record || !remedies.length) return undefined;
+  const commands = remedies.map((r) => {
+    const files = (r.paths ?? []).slice(0, 5).join(", ");
+    const act =
+      r.action === "route"
+        ? `correct ${r.owner ?? "the owner"} first, which wrote ${files}`
+        : r.action === "widen"
+          ? `let ${record.taskId} write ${files}`
+          : `ask feature ${r.owner ?? "upstream"} to change ${files}`;
+    return `${act} (\`baked workflow resume ${runId} --remedy ${r.action}\`)`;
+  });
+  const choices = commands.join(", or ");
+  return recoveryAdvice(
+    `${message} ${record.taskId} cannot write files its evidence names: ${choices}.`,
+    `${record.taskId} cannot write ${[...new Set(remedies.flatMap((r) => r.paths ?? []))].slice(0, 5).join(", ")}. Choose how the run goes on.`,
+    ...remedies,
+    { action: "resume", runId },
     { action: "revise", runId },
     { action: "cancel", runId },
   );

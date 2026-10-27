@@ -1,3 +1,4 @@
+import stripAnsi from "strip-ansi";
 import { canonical, hashJson } from "../specs/hash.js";
 import { diagnosedFiles, diagnosticsOnly } from "../workflows/corrective-scope.js";
 import { WorkflowFault } from "../workflows/errors.js";
@@ -44,6 +45,7 @@ import { isFailedTestLine } from "./failed-test-line.js";
 import { noteSiblingFindings } from "./initiative-ownership.js";
 import { growingCounts } from "./output-counts.js";
 import { reproCannotSeeCorrection } from "./repro.js";
+import { normalizeVolatile } from "./volatile.js";
 
 /**
  * Planned tasks a correction of `task` may write for: those of the same profile that cover one of
@@ -304,15 +306,22 @@ const FAILURE_LINE =
  * What fails in a check's output, normalized so two runs of the same failure compare equal:
  * the failing test names and assertion lines, without timings, durations, absolute paths and
  * line numbers. A run going from six failing tests to one changes it; the same failure does not.
- * Empty when the output names nothing recognizable.
+ * Empty when the output names nothing recognizable. The volatile values (durations, seeds,
+ * addresses, temporary paths) come out through `normalizeVolatile`, the table the repeated-failure
+ * hash and the check baseline read (#2295); a new shape goes there, never into this function.
  */
 export function failureSignature(output: string): string {
-  const lines = output
+  const lines = stripAnsi(output)
     .replaceAll("\\", "/")
-    .split(/\r?\n/)
+    .split(/\r?\n|\r/)
     .filter((line) => FAILURE_LINE.test(line) || isFailedTestLine(line))
     .map((line) =>
-      line
+      normalizeVolatile(line.replace(/(?:[A-Za-z]:)?(?:\/[\w.@-]+)+\/([\w.-]+)/g, "$1"))
+        // A duration `normalizeVolatile` stood in, with its brackets: bun's `[<duration>]`,
+        // jest's `(<duration>)`, node-tap's `# time=<duration>`, CTest's `***Failed <duration>`.
+        .replace(/\b(Time elapsed|Duration):\s*<duration>/gi, "$1")
+        .replace(/\s*#\s*time=<duration>/g, "")
+        .replace(/[[(]<duration>(?: total)?[\])]|<duration>/g, "")
         .replace(/\[<?\s*[\d.]+\s*m?s\]/gi, "")
         .replace(/\(\d+(?:\.\d+)?\s*m?s\)/gi, "")
         // Go's package line ends with its elapsed time (`FAIL\tpkg\t0.212s`), which differs
@@ -326,7 +335,6 @@ export function failureSignature(output: string): string {
           /\b(Time elapsed|Duration):\s*<?\s*\d[\d.,]*\s*(?:ms|s|sec|m|min)\b(?:\s+\d[\d.,]*\s*(?:ms|s|sec)\b)*/gi,
           "$1",
         )
-        .replace(/(?:[A-Za-z]:)?(?:\/[\w.@-]+)+\/([\w.-]+)/g, "$1")
         .replace(/:\d+(?::\d+)?/g, "")
         .replace(/\s+/g, " ")
         .trim(),
@@ -410,6 +418,9 @@ export const MISSING_PATH_LINES: readonly { tool: string; line: RegExp }[] = [
   // PowerShell cmdlets (Invoke-ScriptAnalyzer, Pester's Get-ChildItem), absolute:
   // "Invoke-ScriptAnalyzer: Cannot find path '/w/tests' because it does not exist." (#1498)
   { tool: "pwsh", line: /\bCannot find path '([^'\n]+)' because it does not exist\b/ },
+  // R's normalizePath, under testthat's "No test files found":
+  // 'In normalizePath(path) : path[1]="tests/testthat": No such file or directory' (#1500)
+  { tool: "Rscript", line: /\bpath\[\d+\]="([^"\n]+)": No such file or directory/ },
 ];
 
 /** Whether RSpec's own `load` of the file named at `index` failed, a few lines below it. */

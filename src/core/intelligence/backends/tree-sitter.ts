@@ -203,6 +203,11 @@ const QUERIES: Record<string, string> = {
     (class_method_definition (simple_name) @name) @method
     (enum_statement (simple_name) @name) @type
   `,
+  // r-lib's grammar (vendored, #1500): a function is a value assigned to a name, by `<-`, `=` or
+  // `<<-` (`add <- function(a, b)`, `f = \(x) x`).
+  r: `
+    (binary_operator lhs: (identifier) @name rhs: (function_definition)) @func
+  `,
   tlaplus: `
     (operator_definition name: (identifier) @name) @func
     (function_definition name: (identifier) @name) @func
@@ -249,6 +254,7 @@ const GRAMMAR_FILES: Record<string, string> = {
   // Vendored in `vendor/tree-sitter/` (its README says where each comes from).
   sql: "tree-sitter-sql.wasm",
   powershell: "tree-sitter-powershell.wasm",
+  r: "tree-sitter-r.wasm",
   tlaplus: "tree-sitter-tlaplus.wasm",
   elisp: "tree-sitter-elisp.wasm",
 };

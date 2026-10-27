@@ -5,6 +5,7 @@
     "build.zig": "const std = @import(\"std\");\n"
   },
   "expected": {
+    "checkConfigs": null,
     "tests": [
       "src/sum_test.zig"
     ],
@@ -38,6 +39,10 @@
     "packageContents": null,
     "numericLimits": [
       "integer overflow is a panic in safe builds"
-    ]
+    ],
+    "staticTools": [
+      "zig fmt: formatter"
+    ],
+    "sortedLists": null
   }
 }

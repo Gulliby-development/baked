@@ -70,9 +70,11 @@ function commentLine(line: string): boolean {
     trimmed.startsWith("/*") ||
     trimmed.startsWith("*") ||
     trimmed.startsWith("<!--") ||
-    // `#[test]` and `#![allow]` are Rust attributes, not comments, and `#ifdef _WIN32` is the
-    // preprocessor guard of a C or C++ skip (#1490).
-    (trimmed.startsWith("#") && !/^#!?\[|^#(?:if|ifdef|ifndef|elif)\b/.test(trimmed))
+    // `#[test]` and `#![allow]` are Rust attributes, not comments; `#ifdef _WIN32` is the
+    // preprocessor guard of a C or C++ skip (#1490), and Swift's `#if os(Linux)`, `#elseif` and
+    // `#expect(...)` are code too (#1492).
+    (trimmed.startsWith("#") &&
+      !/^#!?\[|^#(?:if|ifdef|ifndef|elif|elseif)\b|^#(?:expect|require)\s*\(/.test(trimmed))
   );
 }
 
@@ -308,6 +310,8 @@ const SKIPS = new RegExp(
     // Pester: `It 'adds' -Skip { }`, `Describe 'x' -Skip:$true`, `Set-ItResult -Skipped` (#1498).
     String.raw`^\s*(?:It|Describe|Context)\b[^{\n]*\s-Skip\b`,
     String.raw`\bSet-ItResult\s+-(?:Skipped|Pending|Inconclusive)\b`,
+    // testthat: `skip("later")`, `skip_if(...)`, `skip_on_cran()` and the rest of the family (#1500).
+    String.raw`(?:^|[^.\w])skip(?:_if(?:_not)?|_on_\w+|_if_offline|_if_not_installed)?\s*\(`,
   ].join("|"),
   "g",
 );
@@ -344,6 +348,11 @@ const CAPABILITY = new RegExp(
     String.raw`\bPlatform\.(?:is[A-Z]\w*|operatingSystem)\b|\bkIsWeb\b`,
     // Scala: `scala.util.Properties.isWin` (#1496).
     String.raw`\bProperties\.(?:isWin|isMac|isLinux)\b`,
+    // Swift: `#if os(Linux)`, `#if canImport(Darwin)`, `.enabled(if:` with a platform (#1492).
+    String.raw`#if\s+!?(?:os|canImport)\s*\(|\bProcessInfo\.processInfo\.(?:operatingSystem\w*|isOperatingSystemAtLeast)\b`,
+    // testthat's guards that name the platform or a missing capability, and R's platform checks.
+    String.raw`\bskip_(?:on_os|on_cran|on_ci|if_offline|if_not_installed)\s*\(`,
+    String.raw`\.Platform\$OS\.type\b|\bSys\.info\s*\(\s*\)\s*\[`,
   ].join("|"),
 );
 /** Lines above a skip that its guard condition may span. */
@@ -381,6 +390,8 @@ const SUPPRESSIONS = new RegExp(
     String.raw`#!?\[allow\(`,
     String.raw`@SuppressWarnings\b`,
     String.raw`//\s*nolint\b`,
+    // lintr: `# nolint`, `# nolint: object_name_linter.`, `# nolint start` (#1500).
+    String.raw`#\s*nolint\b`,
     String.raw`#pragma\s+warning\s+disable\b`,
     String.raw`@phpstan-ignore`,
     String.raw`@psalm-suppress\b`,
@@ -396,11 +407,57 @@ const SUPPRESSIONS = new RegExp(
     String.raw`#\s*pragma\s+(?:GCC|clang)\s+diagnostic\s+ignored\b`,
     String.raw`//\s*ignore(?:_for_file)?:\s*\w`,
     String.raw`@nowarn\b|//\s*scalafix:(?:off|ok)\b|//\s*scalastyle:off\b`,
+    String.raw`//\s*swiftlint:disable\b|//\s*swift-format-ignore\b`,
     // PSScriptAnalyzer, and the same attribute in C#: `[Diagnostics.CodeAnalysis.SuppressMessageAttribute(...)]` (#1498).
     String.raw`\[(?:System\.)?(?:Diagnostics\.CodeAnalysis\.)?SuppressMessage(?:Attribute)?\s*\(`,
   ].join("|"),
   "g",
 );
+/** Words before a quoted suppression that forbid it rather than prescribe it. */
+const FORBIDS = /\b(?:not|never|no|without|avoid|forbid\w*|instead of|rather than)\b[^.;]{0,40}$/i;
+const collapse = (text: string) => text.replace(/\s+/g, " ").trim();
+
+/**
+ * Whether the request, spec or plan prescribes a suppression (#2270): the text from the
+ * suppression to the end of its line, or the whole line, occurs verbatim (whitespace collapsed)
+ * in `text`, not after a word that forbids it. A bare marker (`# noqa`, a bare `eslint-disable`) is never
+ * prescribed: a request that names one usually forbids it, and only one with its arguments
+ * (`#[allow(unused_variables)]`, `# noqa: E501`) names a specific suppression.
+ */
+export function prescribedSuppression(
+  line: string,
+  index: number,
+  marker: string,
+  text: string,
+): boolean {
+  const own = collapse(line.slice(index));
+  if (own.length <= marker.trim().length + 2) return false;
+  const prescribed = collapse(text);
+  // The whole line decides where it occurs, so a word before its code forbids it too.
+  const whole = collapse(line);
+  const candidate = prescribed.includes(whole) ? whole : own;
+  for (let at = prescribed.indexOf(candidate); at >= 0; at = prescribed.indexOf(candidate, at + 1))
+    if (!FORBIDS.test(prescribed.slice(Math.max(0, at - 60), at))) return true;
+  return false;
+}
+
+/**
+ * The suppressions on `lines` (string content blanked) that `text` does not prescribe, read
+ * against the same line of `raw`, so `@SuppressWarnings("unchecked")` keeps its argument.
+ */
+function unprescribedSuppressions(
+  lines: readonly string[],
+  raw: readonly string[],
+  text: string,
+): number {
+  let total = 0;
+  lines.forEach((line, index) => {
+    const source = raw.length === lines.length ? (raw[index] ?? line) : line;
+    for (const match of line.matchAll(SUPPRESSIONS))
+      if (!text || !prescribedSuppression(source, match.index ?? 0, match[0], text)) total++;
+  });
+  return total;
+}
 const ANY_TYPE = /\bas\s+any\b|:\s*any\b|<any>/g;
 const TEST_HOOKS = new RegExp(
   [
@@ -415,6 +472,8 @@ const TEST_HOOKS = new RegExp(
     String.raw`\bdefined\?\(\s*(?:RSpec|Minitest)\b`,
     // flutter test sets FLUTTER_TEST: `Platform.environment.containsKey('FLUTTER_TEST')` (#1494).
     String.raw`\bFLUTTER_TEST\b`,
+    // XCTest sets XCTestConfigurationFilePath on macOS (#1492).
+    String.raw`\bXCTestConfigurationFilePath\b|NSClassFromString\(\s*"XCTestCase"\s*\)`,
   ].join("|"),
   "g",
 );
@@ -490,8 +549,17 @@ export interface ScanOptions {
   protects?: ReadonlyMap<string, ReadonlyMap<string, string>>;
   /** Contents of test files the task can see, for literals that special-case test inputs. */
   testSources?: readonly string[];
-  /** Request, spec and plan text: a literal they name is a requirement, not a test input. */
+  /**
+   * Request (with a person's accepted answers), spec and plan text: a literal they name is a
+   * requirement, not a test input, and a suppression they name verbatim is prescribed, not added
+   * (#2270).
+   */
   specText?: string;
+  /**
+   * Files whose suppression finding a person settled in a spec conflict (#2270): their
+   * suppressions are not counted again at a later scan.
+   */
+  settledSuppressions?: ReadonlySet<string>;
   /** Also read the framework rows measured in shadow (`testConventions(path, true)`, #2147). */
   shadowTitles?: boolean;
 }
@@ -766,10 +834,12 @@ export function measureTestIntegrity(
       const checked = change.after !== null && !DOC_FILE.test(path);
       return {
         checked,
-        suppressions: checked
-          ? grew(SUPPRESSIONS, [blankBefore.split(/\r?\n/), blankAfter.split(/\r?\n/)]) +
-            (TS_FILE.test(path) ? grew(ANY_TYPE) : 0)
-          : 0,
+        suppressions:
+          checked && options.settledSuppressions?.has(path) !== true
+            ? unprescribedSuppressions(blankAfter.split(/\r?\n/), afterRaw.split(/\r?\n/), spec) -
+              unprescribedSuppressions(blankBefore.split(/\r?\n/), beforeRaw.split(/\r?\n/), spec) +
+              (TS_FILE.test(path) ? grew(ANY_TYPE) : 0)
+            : 0,
         bypass: checked ? grew(BYPASS, [beforeRaw.split(/\r?\n/), afterRaw.split(/\r?\n/)]) : 0,
       };
     };

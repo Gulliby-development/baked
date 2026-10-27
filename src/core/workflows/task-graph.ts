@@ -95,6 +95,7 @@ export function readyTasks(
   waitingFor: RuntimeState["waitingFor"] = {},
   predecessors: RuntimeState["repairPredecessors"] = {},
   holds: RepairHolds = {},
+  parked: readonly string[] = [],
 ): Task[] {
   const statuses = new Map(rows.map((r) => [r.id, r.status]));
   const ready = graph.tasks.filter(
@@ -130,12 +131,14 @@ export function readyTasks(
     : ready;
   // A task-level repair settles a known defect before downstream tasks test it again (#1612).
   // Keep unrelated work available to parallel writers, and retain dependency order on resume.
+  // A blocked repair the drive parked to run independent work first keeps its hold (#2109).
   const repairs = graph.tasks.filter(
     (t) =>
       t.origin === "repair" &&
-      ["pending", "running", "invalidated", "interrupted"].includes(
-        statuses.get(t.id) ?? "pending",
-      ) &&
+      (parked.includes(t.id) ||
+        ["pending", "running", "invalidated", "interrupted"].includes(
+          statuses.get(t.id) ?? "pending",
+        )) &&
       t.findingIds.some((id) =>
         graph.tasks.some(
           (base) =>

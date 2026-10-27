@@ -941,6 +941,64 @@ const all = (): MockRun[] => {
 };
 const find = (runId: string): MockRun | undefined => all().find((r) => r.runId === runId);
 
+/** Whether the run's spec, plan and tasks were approved: an accepted request, or a later stage. */
+const approved = (run: MockRun): boolean =>
+  run.requests.some((r) => r.kind === "approval" && r.status === "accepted") ||
+  run.status === "completed" ||
+  ["implement", "checks", "review", "converge", "learn"].includes(run.stageId ?? "");
+
+interface PackageBody {
+  zip?: boolean;
+  out?: string;
+}
+/** `GET|POST .../package`: refused before approval, like the backend (#2207). */
+function mockPackage(run: MockRun, method: string, body: PackageBody | undefined) {
+  if (!approved(run))
+    return response(409, {
+      error: {
+        code: "NOT_ACCEPTED",
+        message: `Run ${run.runId} has no accepted spec, plan and tasks yet; approve them first`,
+      },
+    });
+  const files = [
+    "AGENTS.md",
+    "graph.json",
+    "graph.md",
+    "manifest.json",
+    ...["plan.md", "spec.json", "spec.md", "tasks.json", "tasks.md"].map(
+      (f) => `specs/${run.featureId}/${f}`,
+    ),
+  ];
+  if (method === "GET") return response(200, files);
+  const zip = body?.zip === true;
+  const out = body?.out ?? `.baked/exports/${run.runId}-export${zip ? ".zip" : ""}`;
+  return response(200, {
+    path: `C:\\Project\\BAKED\\${out.replaceAll("/", "\\")}`,
+    zip,
+    files,
+    manifest: {
+      formatVersion: 1,
+      kind: "run",
+      id: run.runId,
+      title: run.featureId,
+      gitHead: null,
+      status: run.status,
+      features: [
+        {
+          id: run.featureId,
+          title: run.featureId,
+          status: run.status,
+          runId: run.runId,
+          accepted: true,
+          dependsOn: [],
+          dir: `specs/${run.featureId}`,
+        },
+      ],
+      files: {},
+    },
+  });
+}
+
 function snapshot(run: MockRun) {
   return {
     runId: run.runId,
@@ -950,7 +1008,7 @@ function snapshot(run: MockRun) {
     revision: run.revision,
     eventSeq: run.events.at(-1)?.seq ?? 0,
     stageId: run.stageId,
-    approvalDigest: null,
+    approvalDigest: approved(run) ? DIGEST : null,
     tokenUsage: run.tokenUsage,
     activeMs: run.activeMs,
     estimatedCostUsd: run.tokenUsage / 330_000,
@@ -1209,7 +1267,8 @@ interface GcBody {
 interface ImportBody {
   source: string;
   path: string;
-  featureId: string;
+  featureId?: string;
+  id?: string;
 }
 interface RedactBody {
   artifactId: string;
@@ -1274,6 +1333,7 @@ function cleanWorktrees(body: { dryRun?: boolean }) {
 
 function importCandidate(body: ImportBody) {
   if (!body.path.trim()) return invalid("Import source must be a local directory without symlinks");
+  if (body.source === "baked-export") return importPackage(body);
   return response(200, {
     candidateHash: DIGEST,
     warnings:
@@ -1283,6 +1343,38 @@ function importCandidate(body: ImportBody) {
           ]
         : [],
     unsupported: [],
+  });
+}
+
+/**
+ * An SDD package read back (#2208): a path ending in `.zip` or naming `run` is a run package, any
+ * other an initiative of three features of which one was accepted; `edited` is refused as changed.
+ */
+function importPackage(body: ImportBody) {
+  if (body.path.includes("edited"))
+    return response(400, {
+      error: {
+        code: "INVALID_DEFINITION",
+        message:
+          "The package changed after it was exported: specs/front/spec.md (missing or edited)",
+        details: { reason: "bad_package" },
+      },
+    });
+  if (/run|\.zip$/.test(body.path)) {
+    const id = body.id ?? "settings-dark-mode";
+    return response(200, {
+      kind: "run",
+      id,
+      seeded: [id],
+      unseeded: [],
+      run: { runId: `run-imported-${id}` },
+    });
+  }
+  return response(200, {
+    kind: "initiative",
+    id: body.id ?? "desktop-app",
+    seeded: ["shell"],
+    unseeded: ["screens", "packaging"],
   });
 }
 
@@ -1411,6 +1503,7 @@ const runRoutes: MockRoute = ({ key, method, path, query, body }) => {
       manifestHash: DIGEST,
     });
   if (method === "POST" && action === "redact") return redact(run, body as RedactBody);
+  if (action === "package") return mockPackage(run, method, body as PackageBody | undefined);
   if (method === "POST" && action)
     return mutate(run, action, (body ?? {}) as { requestId?: string; tokens?: number });
   if (method !== "GET") return undefined;

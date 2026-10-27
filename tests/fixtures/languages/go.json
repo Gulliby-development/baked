@@ -11,6 +11,7 @@
     "testsGrown": "=== RUN   TestAdds\n--- PASS: TestAdds (0.00s)\n=== RUN   TestSubtracts\n--- PASS: TestSubtracts (0.00s)\n=== RUN   TestSum\n    sum_test.go:9: got 3, want 4\n--- FAIL: TestSum (0.00s)\nFAIL\nFAIL\texample.com/fixture\t0.015s\n"
   },
   "expected": {
+    "checkConfigs": [".golangci.yml: golangci-lint", ".golangci.toml: golangci-lint", ".golangci.json: golangci-lint", "staticcheck.conf: staticcheck"],
     "tests": [
       "sum_test.go",
       "sum_prop_test.go"
@@ -62,6 +63,15 @@
     "numericLimits": [
       "strconv.ParseInt and Atoi fail past int64; int arithmetic wraps silently",
       "float64 formatting switches to exponent form for large values"
-    ]
+    ],
+    "staticTools": [
+      "go vet: linter, whole unit",
+      "golangci-lint: linter",
+      "staticcheck: linter",
+      "gofmt: formatter",
+      "go fmt: formatter",
+      "goimports: formatter"
+    ],
+    "sortedLists": ["main.go: gofmt blank line before 5"]
   }
 }

@@ -1,3 +1,5 @@
+import { statSync } from "node:fs";
+import { join } from "node:path";
 import { runSandbox, type SandboxRequest, SandboxUnavailableError } from "../security/sandbox.js";
 import { buildSafeEnv } from "../spawn.js";
 import { canonical, hashJson } from "../specs/hash.js";
@@ -36,7 +38,10 @@ export const executeCheckCommand = async (
       ? null
       : gradleTestReport(executable, args, options.cwd, started);
   return report
-    ? { ...result, output: `${result.output.replace(/\n*$/, "")}\n\n${report}\n` }
+    ? {
+        ...result,
+        output: `${result.output.replace(/\n*$/, "")}\n\n${report}\n`,
+      }
     : result;
 };
 
@@ -174,7 +179,12 @@ export class CheckRunner {
     reason: string,
     message: string,
     root: string = this.store.workspace,
-  ): Promise<{ status: "failed"; evidenceId: string; snapshotId: string; output: string }> {
+  ): Promise<{
+    status: "failed";
+    evidenceId: string;
+    snapshotId: string;
+    output: string;
+  }> {
     const generated = generatedPaths(JSON.parse(this.store.run(runId).policy_json) as RunPolicy);
     const files = await sourceManifest(root, generated);
     const evidence = this.store.transaction(() => {
@@ -234,7 +244,11 @@ export class CheckRunner {
     root: string,
     sandbox: SandboxRequest | null,
     timeoutMs: number = check.timeoutMs,
-  ): Promise<{ status: "passed" | "failed" | "inconclusive"; output: string; truncated: boolean }> {
+  ): Promise<{
+    status: "passed" | "failed" | "inconclusive";
+    output: string;
+    truncated: boolean;
+  }> {
     try {
       const executable = check.executable === "bun" ? process.execPath : check.executable;
       const result = await executeCheckCommand(this.processes, executable, check.args, {
@@ -287,41 +301,68 @@ export class CheckRunner {
         null,
       ),
     );
-    let result: ProcessResult;
     let reason = "exit";
-    try {
-      const env = buildCheckEnv(check);
-      const executable = check.executable === "bun" ? process.execPath : check.executable;
-      result = await executeCheckCommand(this.processes, executable, check.args, {
-        cwd: check.cwd === "." ? root : workspacePath(root, check.cwd),
-        env,
-        timeoutMs: check.timeoutMs,
-        signal,
-        onSpawn: (pid, scope) =>
-          this.store.transaction(() => this.store.recordProcess(runId, effectId, pid, scope)),
-        sandbox: runSandbox(policy, root, { gitWrite: root !== this.store.workspace }),
-      });
-    } catch (error) {
-      reason = error instanceof SandboxUnavailableError ? "sandbox_unavailable" : "spawn_error";
-      result = {
-        exitCode: null,
-        signal: null,
-        output: error instanceof Error ? error.message : String(error),
-        timedOut: false,
-        cancelled: signal.aborted,
-        truncated: false,
-        durationMs: 0,
-        ...(error instanceof SandboxUnavailableError && policy.sandbox
-          ? {
-              sandbox: {
-                backend: "none" as const,
-                mode: policy.sandbox,
-                network: false,
-                reason: error.reason,
-              },
-            }
-          : {}),
-      };
+    const execute = async (): Promise<ProcessResult> => {
+      try {
+        const env = buildCheckEnv(check);
+        const executable = check.executable === "bun" ? process.execPath : check.executable;
+        return await executeCheckCommand(this.processes, executable, check.args, {
+          cwd: check.cwd === "." ? root : workspacePath(root, check.cwd),
+          env,
+          timeoutMs: check.timeoutMs,
+          signal,
+          onSpawn: (pid, scope) =>
+            this.store.transaction(() => this.store.recordProcess(runId, effectId, pid, scope)),
+          sandbox: runSandbox(policy, root, {
+            gitWrite: root !== this.store.workspace,
+          }),
+        });
+      } catch (error) {
+        reason = error instanceof SandboxUnavailableError ? "sandbox_unavailable" : "spawn_error";
+        return {
+          exitCode: null,
+          signal: null,
+          output: error instanceof Error ? error.message : String(error),
+          timedOut: false,
+          cancelled: signal.aborted,
+          truncated: false,
+          durationMs: 0,
+          ...(error instanceof SandboxUnavailableError && policy.sandbox
+            ? {
+                sandbox: {
+                  backend: "none" as const,
+                  mode: policy.sandbox,
+                  network: false,
+                  reason: error.reason,
+                },
+              }
+            : {}),
+        };
+      }
+    };
+    // The first run of a check in a run builds the toolchain's cache (Go's GOCACHE, cargo's
+    // target, a Gradle daemon): on a cold Windows runner `go test` of one new file took 60 s to
+    // compile and ran in 5.6 s again, and the timeout sent a finished task back to its worker
+    // (#2162). A written-tests check that timed out without a result is therefore run once more
+    // when it has no earlier result in the run; a file that never ends times out again and fails.
+    const earlier = this.store.checks(runId).filter((c) => c.check_id === check.id);
+    const firstRun = !earlier.length;
+    let result = await execute();
+    if (
+      firstRun &&
+      result.timedOut &&
+      check.onTimeout === "failed" &&
+      !result.cancelled &&
+      !signal.aborted &&
+      !timedOutFailure(result.output)
+    ) {
+      const cold = result.durationMs;
+      result = await execute();
+      if (!result.timedOut)
+        result = {
+          ...result,
+          output: `${result.output}\n\nNote: ${check.id} timed out after ${String(cold)} ms on its first run in this run, which also builds the toolchain's cache, and was run once more.`,
+        };
     }
     // The test setup turns this on in CI, so a check that is slow only on one runner shows in the log (#1177).
     if (process.env.BAKED_TRACE_RUN_BLOCKS === "1" && result.durationMs > 3000)
@@ -368,6 +409,24 @@ export class CheckRunner {
           check.args.filter((arg) => /[/\\]|\.\w+$/.test(arg)).join(" ") || check.args.join(" ")
         } and did not finish within ${check.timeoutMs} ms, without printing a test result. These tests are too slow or never end. ${timeoutAdvice(check)}`,
       };
+    } else if (result.timedOut && !result.cancelled && !signal.aborted) {
+      // A formatter or linter is deterministic: a hang on files it passed earlier in the run, or
+      // one a run on each written file alone pins to a file, is the run's own work (#2240: rustfmt
+      // never finished on a 20-deep nested literal, and the inconclusive check blocked the run
+      // with nothing to repair). Without either it stays inconclusive (a cold toolchain, #1177).
+      const passed = earlier.some((c) => c.status === "passed");
+      const hanging = await this.hangingFile(
+        runId,
+        check,
+        root,
+        signal,
+        runSandbox(policy, root, { gitWrite: root !== this.store.workspace }),
+      );
+      if (passed || hanging) {
+        status = "failed";
+        reason = "timeout_slow";
+        result = { ...result, output: `${result.output}\n\n${timeoutSlowNote(check, hanging)}` };
+      } else reason = "timeout";
     } else if (result.timedOut) reason = "timeout";
     else if (result.cancelled) reason = "cancelled";
     else if (check.report === "json" && reason === "exit") {
@@ -385,7 +444,10 @@ export class CheckRunner {
     // timed out (#1426).
     const perTest = status === "failed" && !result.timedOut ? perTestTimeout(result.output) : null;
     if (perTest !== null)
-      result = { ...result, output: `${result.output}\n\n${perTestTimeoutNote(perTest)}` };
+      result = {
+        ...result,
+        output: `${result.output}\n\n${perTestTimeoutNote(perTest)}`,
+      };
     // `output` already holds stdout and stderr interleaved; storing them again tripled a 2 MB
     // pytest diff in one artifact (#993).
     const { stdout: _stdout, stderr: _stderr, ...recorded } = result;
@@ -423,8 +485,87 @@ export class CheckRunner {
       if (unstable) this.store.invalidateEvidence(runId, snapshot.id, "source_changed");
       return evidence;
     });
-    return { status, evidenceId, snapshotId: snapshot.id, output: result.output, reason };
+    return {
+      status,
+      evidenceId,
+      snapshotId: snapshot.id,
+      output: result.output,
+      reason,
+    };
   }
+  /**
+   * The first file the run wrote that the check's formatter, run on that file alone, does not
+   * finish within `BISECT_FILE_MS` (or the check's own timeout, when shorter): the largest
+   * `BISECT_FILES` code files of the check's language under its directory, one at a time. Null for
+   * a check with no file-scoped form (`fileScopedFormat`) or when every file finishes.
+   */
+  private async hangingFile(
+    runId: string,
+    check: Check,
+    root: string,
+    signal: AbortSignal,
+    sandbox: SandboxRequest | null,
+  ): Promise<string | null> {
+    // Loaded here: format-written reaches gate detection, which imports this module.
+    const { fileScopedFormat } = await import("../workflows/format-written.js");
+    const dir = check.cwd === "." ? root : workspacePath(root, check.cwd);
+    const prefix = check.cwd === "." ? "" : `${check.cwd.replace(/\\/g, "/").replace(/\/$/, "")}/`;
+    let tasks: { writes: { path: string; action: string }[] }[] = [];
+    try {
+      tasks = this.store.state(runId).graph?.tasks ?? [];
+    } catch {
+      return null;
+    }
+    const written = [
+      ...new Set(
+        tasks.flatMap((t) =>
+          t.writes.filter((w) => w.action !== "delete").map((w) => w.path.replace(/\\/g, "/")),
+        ),
+      ),
+    ]
+      .filter((path) => path.startsWith(prefix))
+      .map((path) => {
+        const local = path.slice(prefix.length);
+        const command = fileScopedFormat(check, dir, local);
+        const size = command
+          ? (statSync(join(dir, local), { throwIfNoEntry: false })?.size ?? 0)
+          : 0;
+        return { path, command, size };
+      })
+      .filter((file) => file.command && file.size > 0)
+      .sort((a, b) => b.size - a.size)
+      .slice(0, BISECT_FILES);
+    for (const file of written) {
+      if (signal.aborted || !file.command) return null;
+      const executable =
+        file.command.executable === "bun" ? process.execPath : file.command.executable;
+      try {
+        const alone = await executeCheckCommand(this.processes, executable, file.command.args, {
+          cwd: dir,
+          env: buildCheckEnv(check),
+          timeoutMs: Math.min(BISECT_FILE_MS, check.timeoutMs),
+          signal,
+          sandbox,
+        });
+        if (alone.timedOut && !alone.cancelled) return file.path;
+      } catch {
+        return null;
+      }
+    }
+    return null;
+  }
+}
+
+/** How many written files a timed-out formatter is run on alone, and how long each may take. */
+const BISECT_FILES = 5;
+const BISECT_FILE_MS = 20_000;
+
+/** What a check that timed out on the run's own work should change (#2240). */
+export function timeoutSlowNote(check: Check, hanging: string | null): string {
+  const timeout = `${check.id} did not finish within ${String(check.timeoutMs)} ms`;
+  if (hanging)
+    return `Note: ${timeout}. Run on each file the run wrote alone, the formatter does not finish on ${hanging} either: the tool hangs on its content (rustfmt on a data literal of deeply nested macro or tuple arguments). Restructure that code (build the nested value in steps, or a helper per level), or put the tool's skip marker on the item (\`#[rustfmt::skip]\` on the function in Rust); the fixer is not run on it.`;
+  return `Note: ${timeout}, although it passed earlier in this run. A file the run changed since makes the tool run far longer or never end: run the check's command on the files changed since its last pass, one at a time, and simplify the one it does not finish on.`;
 }
 
 /**

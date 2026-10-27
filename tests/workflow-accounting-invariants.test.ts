@@ -3,6 +3,8 @@ import fc from "fast-check";
 import { canonical } from "../src/core/specs/hash.js";
 import { type CostForecast, costForecast, kindRatio } from "../src/core/workflows/cost-forecast.js";
 import { POOL_STEP, planCharge, planChargeTokens, poolExtensionDecision, poolForecast, tokenPool } from "../src/core/workflows/initiatives/token-pool.js";
+import { chargeHold, poolBoundDecision, refreshedGrowth, stageReserveDecision } from "../src/core/workflows/initiatives/growth.js";
+import { dollarCapPark, expectedSplitUsd, type ShareGateView } from "../src/core/workflows/initiatives/service.js";
 import type { RunPolicy } from "../src/core/workflows/schemas.js";
 import { type TaskKind, verificationTokens } from "../src/core/workflows/sizing.js";
 import type { AttemptUsageRecord } from "../src/core/workflows/step-budget.js";
@@ -443,9 +445,17 @@ describe("token pool invariants (#2042)", () => {
       expect(pool.suggestedTokens !== null).toBe(over);
       expect(pool.notice !== null).toBe(over);
       if (pool.suggestedTokens !== null) {
-        expect(pool.suggestedTokens).toBeGreaterThanOrEqual(inputs.forecastTokens ?? 0);
-        expect(pool.suggestedTokens).toBeGreaterThanOrEqual(lows(inputs));
         expect(pool.suggestedTokens % POOL_STEP).toBe(0);
+        // A cap that pays for more than the pool advises what it pays for, never more (#2244).
+        const byDollars = pool.capTokens !== null && Math.floor(pool.capTokens / POOL_STEP) * POOL_STEP > inputs.limitTokens;
+        if (byDollars) {
+          expect(pool.suggestedTokens).toBe(Math.floor((pool.capTokens ?? 0) / POOL_STEP) * POOL_STEP);
+          expect(pool.suggestedTokens).toBeGreaterThan(inputs.limitTokens);
+          expect(pool.notice).toContain("so the pool stops no feature before the dollar cap does");
+        } else {
+          expect(pool.suggestedTokens).toBeGreaterThanOrEqual(inputs.forecastTokens ?? 0);
+          expect(pool.suggestedTokens).toBeGreaterThanOrEqual(lows(inputs));
+        }
       }
     }), { numRuns: 200 });
   });
@@ -520,10 +530,15 @@ describe("plan charge invariants (#2100)", () => {
       const limitCommitted = finished + unplanned + runs.reduce((n, r) => n + held(r), 0);
       const charge = planCharge("shadow", ratio, limitCommitted, runs);
       for (const run of charge?.runs ?? []) {
-        expect(run.chargeTokens).toBe(planChargeTokens(run.usedTokens, run.plan, ratio));
-        expect(run.chargeTokens).toBeGreaterThanOrEqual(run.plan.high);
-        const need = Math.max(run.plan.high, Math.round((run.plan.expected ?? run.plan.low) * (ratio ?? 1)));
+        expect(run.chargeTokens).toBe(planChargeTokens(run.usedTokens, run.plan, ratio, run.limitTokens));
+        const expected = Math.round((run.plan.expected ?? run.plan.low) * (ratio ?? 1));
+        // #2253: unmeasured, a plan whose low end is above the run's limit is held at its expected
+        // need (never below its low end, so still above the limit), not at its high end.
+        const contradicts = ratio === null && run.plan.low > run.limitTokens;
+        const need = contradicts ? Math.max(run.plan.low, expected) : Math.max(run.plan.high, expected);
         expect(run.chargeTokens).toBe(Math.max(run.usedTokens, need));
+        if (contradicts) expect(run.chargeTokens).toBeGreaterThan(run.limitTokens);
+        else expect(run.chargeTokens).toBeGreaterThanOrEqual(run.plan.high);
         if (need <= run.limitTokens) expect(run.chargeTokens).toBeLessThanOrEqual(held(run));
       }
       const fits = (charge?.runs ?? []).every((r) => r.chargeTokens <= held(r));
@@ -544,6 +559,188 @@ describe("plan charge invariants (#2100)", () => {
       const after = planCharge("shadow", ratio, limitCommitted - held(ended) + ended.usedTokens, rest);
       const planAfter = after?.planCommittedTokens ?? limitCommitted - held(ended) + ended.usedTokens;
       expect(planAfter).toBe(charge.planCommittedTokens - ended.chargeTokens + ended.usedTokens);
+    }), { numRuns: 300 });
+  });
+  test("in dollars (#2124) the charge is never below what a run spent and reserved, and holds the cap while the task-call rate is unmeasured", () => {
+    const dollars = fc.record({
+      taskRate: fc.option(fc.double({ min: 1e-8, max: 2e-5, noNaN: true }), { nil: null }),
+      otherUsd: fc.double({ min: 0, max: 30, noNaN: true }),
+      usd: fc.array(fc.record({ used: fc.double({ min: 0, max: 10, noNaN: true }), cap: fc.double({ min: 0, max: 10, noNaN: true }) }), { minLength: 6, maxLength: 6 }),
+    });
+    fc.assert(fc.property(seed, dollars, ({ finished, unplanned, ratio, runs }, { taskRate, otherUsd, usd }) => {
+      const priced = runs.map((r, i) => ({ ...r, usedUsd: usd[i]!.used, limitUsd: Math.max(usd[i]!.used, usd[i]!.cap) }));
+      const limitCommittedUsd = otherUsd + priced.reduce((n, r) => n + r.limitUsd, 0);
+      const limitCommitted = finished + unplanned + runs.reduce((n, r) => n + held(r), 0);
+      const charge = planCharge("shadow", ratio, limitCommitted, priced, { taskRate, limitCommittedUsd })!;
+      for (const run of charge.runs) {
+        if (taskRate === null) expect(run.chargeUsd).toBeNull();
+        else {
+          expect(run.chargeUsd!).toBeGreaterThanOrEqual(run.usedUsd!);
+          expect(run.chargeUsd!).toBeCloseTo(Math.max(run.usedUsd!, run.chargeTokens * taskRate), 9);
+        }
+      }
+      const released = charge.runs.reduce((n, r) => n + (r.chargeUsd === null || r.chargeUsd === undefined ? 0 : r.limitUsd! - r.chargeUsd), 0);
+      expect(charge.usd!.releasedUsd).toBeCloseTo(released, 9);
+      expect(charge.usd!.limitCommittedUsd - charge.usd!.planCommittedUsd).toBeCloseTo(charge.usd!.releasedUsd, 9);
+      // The dollar budget never holds less than what every run spent and reserved.
+      const spent = otherUsd + priced.reduce((n, r) => n + r.usedUsd, 0);
+      expect(charge.usd!.planCommittedUsd).toBeGreaterThanOrEqual(spent - 1e-9);
+      if (taskRate === null) expect(charge.usd!.releasedUsd).toBe(0);
+      // Without a dollar budget there is no dollar side, and the tokens do not change.
+      const plain = planCharge("shadow", ratio, limitCommitted, runs)!;
+      expect(plain.usd).toBeNull();
+      expect(plain.planCommittedTokens).toBe(charge.planCommittedTokens);
+    }), { numRuns: 300 });
+  });
+});
+
+describe("dollar cap park invariants (#2218)", () => {
+  const seed = fc.record({
+    capUsd: fc.double({ min: 1, max: 60, noNaN: true }),
+    heldShare: fc.double({ min: 0, max: 1, noNaN: true }),
+    releasedUsd: fc.double({ min: -5, max: 5, noNaN: true }),
+    lowUsd: fc.double({ min: 0.01, max: 10, noNaN: true }),
+    forecastUsd: fc.option(fc.double({ min: 0, max: 90, noNaN: true }), { nil: null }),
+  });
+  const viewOf = ({ capUsd, heldShare, releasedUsd, lowUsd, forecastUsd }: { capUsd: number; heldShare: number; releasedUsd: number; lowUsd: number; forecastUsd: number | null }) => {
+    const limitCommittedUsd = capUsd * heldShare;
+    const remainingUsd = Math.floor((capUsd - limitCommittedUsd) * 100) / 100;
+    const feature = { id: "next", state: "ready", share: { tokens: 1, calls: 1, activeMs: 1 }, need: null, needUsd: { low: lowUsd, high: lowUsd * 2 } };
+    return { feature, remainingUsd, limitCommittedUsd, view: {
+      initiativeId: "i", features: [feature],
+      budget: { remaining: { tokens: 1, calls: 1, activeMs: 1 },
+        cost: { capUsd, tolerance: 0, ceilingUsd: capUsd, spentUsd: 0, reservedUsd: 0, remainingUsd, forecastUsd, measuredFeatures: 3, forecastBinding: false, forecastMode: "enforce", forecastNotice: null, shareMode: "shadow" },
+        planCharge: { mode: "shadow", ratio: null, runs: [], limitCommittedTokens: 0, planCommittedTokens: 0, releasedTokens: 0,
+          usd: { taskRate: 1, limitCommittedUsd, planCommittedUsd: limitCommittedUsd - releasedUsd, releasedUsd } } },
+    } as unknown as ShareGateView };
+  };
+
+  test("the dollars left count each open run once, at its plan charge, and the remedy covers the low and the forecast", () => {
+    fc.assert(fc.property(seed, (s) => {
+      const { view, feature, remainingUsd } = viewOf(s);
+      const park = dollarCapPark(view, feature);
+      const left = Math.max(0, remainingUsd + s.releasedUsd);
+      if (park === null) {
+        expect(left).toBeGreaterThanOrEqual(s.lowUsd - 0.005);
+        return;
+      }
+      expect(park.leftUsd).toBeCloseTo(left, 1);
+      expect(park.leftUsd).toBeLessThan(s.lowUsd);
+      // In enforce `remainingUsd` already holds the charge: it is not counted a second time.
+      const enforced = { ...view, budget: { ...view.budget, planCharge: { ...view.budget.planCharge!, mode: "enforce" as const } } };
+      const again = dollarCapPark(enforced, feature);
+      if (again) expect(again.leftUsd).toBeCloseTo(Math.max(0, remainingUsd), 1);
+      // The extension starts the feature at its low, and pays for the forecast when one exists.
+      expect(park.suggestedUsd + park.leftUsd - s.capUsd).toBeGreaterThanOrEqual(s.lowUsd - 1e-6);
+      if (s.forecastUsd !== null) expect(park.suggestedUsd).toBeGreaterThanOrEqual(s.forecastUsd - 1e-6);
+    }), { numRuns: 300 });
+  });
+
+  test("the split's expected dollars lie between its lows and highs, and the features it says the cap pays for fit", () => {
+    const feature = fc.record({ low: fc.double({ min: 0.01, max: 10, noNaN: true }), span: fc.double({ min: 0, max: 10, noNaN: true }), at: fc.double({ min: 0, max: 3, noNaN: true }) });
+    fc.assert(fc.property(fc.array(feature, { minLength: 1, maxLength: 12 }), fc.double({ min: 0, max: 20, noNaN: true }), fc.double({ min: 0, max: 60, noNaN: true }), (features, spentUsd, remainingUsd) => {
+      const estimates = features.map((f) => ({ costUsd: { low: f.low, high: f.low + f.span }, tokens: { low: 1_000_000, high: 2_000_000 }, expectedTokens: Math.round(1_000_000 * f.at) }));
+      const e = expectedSplitUsd(estimates, { spentUsd, remainingUsd })!;
+      const lows = features.reduce((n, f) => n + f.low, 0);
+      const highs = features.reduce((n, f) => n + f.low + f.span, 0);
+      expect(e.waitingUsd).toBeGreaterThanOrEqual(lows - 1e-6);
+      expect(e.waitingUsd).toBeLessThanOrEqual(highs + 0.01);
+      expect(e.totalUsd).toBeGreaterThanOrEqual(spentUsd + lows - 1e-6);
+      expect(e.paid).toBeLessThanOrEqual(features.length);
+      const expectedOf = (i: number) => Math.min(features[i]!.low + features[i]!.span, Math.max(features[i]!.low, features[i]!.low * features[i]!.at));
+      const paidUsd = Array.from({ length: e.paid }, (_, i) => expectedOf(i)).reduce((n, x) => n + x, 0);
+      expect(paidUsd).toBeLessThanOrEqual(remainingUsd + 1e-6);
+      if (e.paid < features.length) expect(paidUsd + expectedOf(e.paid)).toBeGreaterThan(remainingUsd);
+    }), { numRuns: 300 });
+  });
+});
+
+// A started feature run's remaining stages (#2241): the growth pays for them and never takes the
+// initiative past its dollar ceiling.
+describe("stage reserve invariants (#2241)", () => {
+  const seed = fc.record({
+    runSpentUsd: fc.double({ min: 0, max: 20, noNaN: true }),
+    runReservedUsd: fc.double({ min: 0, max: 2, noNaN: true }),
+    requestedUsd: fc.double({ min: 0, max: 2, noNaN: true }),
+    stageReserveUsd: fc.double({ min: 0.001, max: 3, noNaN: true }),
+    boundOver: fc.double({ min: -1, max: 3, noNaN: true }),
+    othersUsd: fc.double({ min: 0, max: 60, noNaN: true }),
+    capUsd: fc.double({ min: 1, max: 60, noNaN: true }),
+    tolerance: fc.double({ min: 0, max: 0.5, noNaN: true }),
+  });
+
+  test("the grown bound covers spent, reserved and the stages, and the initiative stays under its ceiling", () => {
+    fc.assert(fc.property(seed, (s) => {
+      const boundUsd = Math.max(0.01, Math.round((s.runSpentUsd + s.runReservedUsd + s.boundOver) * 100) / 100);
+      const runHeldUsd = Math.max(boundUsd, s.runSpentUsd + s.runReservedUsd);
+      const ceilingUsd = s.capUsd * (1 + s.tolerance);
+      const inputs = { runId: "r", featureId: "f", stages: ["review", "converge"], stageReserveUsd: s.stageReserveUsd, runSpentUsd: s.runSpentUsd, runReservedUsd: s.runReservedUsd, requestedUsd: s.requestedUsd, boundUsd, runHeldUsd, spareUsd: 0, initiative: { committedUsd: s.othersUsd + runHeldUsd, capUsd: s.capUsd, ceilingUsd } };
+      const decision = stageReserveDecision(inputs);
+      const need = s.runSpentUsd + s.runReservedUsd + Math.max(s.requestedUsd, s.stageReserveUsd);
+      // The suggested cap always pays for the stages, by less than a cent more.
+      expect(decision.suggestedUsd).toBeGreaterThanOrEqual(need - 1e-9);
+      expect(decision.suggestedUsd - need).toBeLessThan(0.01 + 1e-9);
+      if (!decision.wouldExtend) {
+        expect(decision.toUsd).toBeNull();
+        return;
+      }
+      expect(decision.toUsd).toBe(decision.suggestedUsd);
+      expect(decision.toUsd!).toBeGreaterThan(boundUsd);
+      expect(s.othersUsd + decision.toUsd!).toBeLessThanOrEqual(ceilingUsd + 1e-9);
+    }), { numRuns: 300 });
+  });
+});
+
+describe("charge growth invariants (#2280)", () => {
+  const seed = fc.record({
+    limitTokens: fc.integer({ min: 1_000_000, max: 60_000_000 }),
+    othersTokens: fc.integer({ min: 0, max: 70_000_000 }),
+    waitingLowTokens: fc.integer({ min: 0, max: 10_000_000 }),
+    usedTokens: fc.integer({ min: 0, max: 20_000_000 }),
+    chargeTokens: fc.integer({ min: 0, max: 40_000_000 }),
+    boundTokens: fc.integer({ min: 10_000, max: 20_000_000 }),
+    ceilingUsd: fc.double({ min: 1, max: 60, noNaN: true }),
+    othersUsd: fc.double({ min: 0, max: 70, noNaN: true }),
+    usedUsd: fc.double({ min: 0, max: 20, noNaN: true }),
+    chargeUsd: fc.double({ min: 0, max: 40, noNaN: true }),
+    boundUsd: fc.double({ min: 0.01, max: 20, noNaN: true }),
+  });
+
+  test("used plus open runs' bounds never exceeds the pool or the ceiling unless a bound was already there or the run used it", () => {
+    fc.assert(fc.property(seed, (s) => {
+      const usedTokens = Math.min(s.usedTokens, s.chargeTokens);
+      const usedUsd = Math.min(s.usedUsd, s.chargeUsd);
+      const hold = chargeHold({
+        charge: { tokens: s.chargeTokens, usd: s.chargeUsd },
+        own: { usedTokens, usedUsd },
+        pool: { limitTokens: s.limitTokens, othersTokens: s.othersTokens, waitingLowTokens: s.waitingLowTokens },
+        dollars: { ceilingUsd: s.ceilingUsd, othersUsd: s.othersUsd },
+      });
+      // Never above the charge, never below what the run used.
+      expect(hold.tokens).toBeLessThanOrEqual(s.chargeTokens);
+      expect(hold.tokens).toBeGreaterThanOrEqual(usedTokens);
+      expect(hold.usd!).toBeLessThanOrEqual(s.chargeUsd);
+      expect(hold.usd!).toBeGreaterThanOrEqual(usedUsd);
+      // The pool counts the run at its charge: the room (growthLimit, costGrowthLimit) is what is
+      // left after it, the others and the lows.
+      const roomTokens = Math.max(0, s.limitTokens - s.othersTokens - s.chargeTokens - s.waitingLowTokens);
+      const roomUsd = Math.max(0, s.ceilingUsd - s.othersUsd - s.chargeUsd);
+      const policy: RunPolicy = { ...fixturePolicy, maxCostUsd: s.boundUsd, sizing: { maxRunTokens: s.boundTokens, extendToTokens: s.boundTokens, maxRunCostUsd: s.boundUsd } };
+      const base: RunPolicy = { ...fixturePolicy, sizing: { maxRunTokens: 100_000_000, extendToTokens: 100_000_000 } };
+      const after = refreshedGrowth(policy, base, { tokens: hold.tokens, usd: hold.usd!, calls: 0, activeMs: 0 }, { calls: 0, activeMs: 0 }, { tokens: roomTokens, usd: roomUsd, calls: 0, activeMs: 0 }) ?? policy;
+      for (const bound of [after.sizing!.maxRunTokens!, after.sizing!.extendToTokens!])
+        if (bound > s.boundTokens && bound > usedTokens) expect(s.othersTokens + s.waitingLowTokens + bound).toBeLessThanOrEqual(s.limitTokens);
+      const usd = after.sizing!.maxRunCostUsd!;
+      if (usd > s.boundUsd && usd > usedUsd + 0.01) expect(s.othersUsd + usd).toBeLessThanOrEqual(s.ceilingUsd + 0.01);
+    }), { numRuns: 300 });
+  });
+
+  test("a bound the shadow reason passes fits the pool less the others' use and the ceiling less their spend", () => {
+    fc.assert(fc.property(seed, (s) => {
+      const decision = poolBoundDecision({ runId: "r", featureId: "f", limitTokens: s.limitTokens, othersUsedTokens: s.othersTokens, ceilingUsd: s.ceilingUsd, othersSpentUsd: s.othersUsd, tokens: [{ kind: "maxRunTokens", value: s.boundTokens }], usd: [{ kind: "maxRunCostUsd", value: s.boundUsd }] });
+      const fits = s.othersTokens + s.boundTokens <= s.limitTokens && s.othersUsd + s.boundUsd <= s.ceilingUsd + 0.005;
+      if (fits) expect(decision.wouldStop).toBe(false);
+      if (s.othersTokens + s.boundTokens > s.limitTokens) expect(decision.wouldStop).toBe(true);
     }), { numRuns: 300 });
   });
 });

@@ -11,6 +11,7 @@
     "testsGrown": "  Failed SumTests.Commutes [9 ms]\nFailed!  - Failed:     1, Passed:     3, Skipped:     0, Total:     4, Duration: 15 ms\n"
   },
   "expected": {
+    "checkConfigs": [".editorconfig: editorconfig", "Analyzers.ruleset: code analysis ruleset", "stylecop.json: stylecop, read as text"],
     "tests": [
       "src/App.Tests/Checks.cs",
       "tests/App.Tests/Props.cs"
@@ -61,6 +62,11 @@
     "numericLimits": [
       "int arithmetic wraps unless checked; int.Parse fails past Int32",
       "decimal holds 28 to 29 significant digits"
-    ]
+    ],
+    "staticTools": [
+      "dotnet format: formatter",
+      "csharpier: formatter"
+    ],
+    "sortedLists": null
   }
 }

@@ -149,6 +149,7 @@ bun test tests/feature-parity.test.ts
 | Acceptance: criteria that need a person's evidence | `/workflow` | `baked workflow evidence` | `/v1/workflow/runs/:id/evidence` | `project/runs`, `attention` |
 | Recover a stuck side effect | `/workflow` | `baked workflow recover` | `/v1/workflow/runs/:id/recover` | `project/runs` |
 | Grant another repair at a refused limit | `/workflow` | `baked workflow repair` | `/v1/workflow/runs/:id/repair` | `project/runs`, `project/initiatives` |
+| Answer a corrective blocked on a file it may not write: correct the owner, widen, ask upstream | `/workflow` | `baked workflow resume`, `baked workflow status` | `/v1/workflow/runs/:id/resume` | `project/runs` |
 | Pause, resume, accept outside changes, cancel, extend, reroute, undo edits | `/workflow` | `baked workflow pause`, `baked workflow resume`, `baked workflow cancel` +3 | `/v1/workflow/runs/:id/pause`, `/v1/workflow/runs/:id/resume`, `/v1/workflow/runs/:id/cancel` +3 | `project/runs` |
 | Continue approved manifest edits using the run's file-patch hash history | `/workflow` | `baked workflow run`, `baked workflow resume` | `/v1/workflow/runs/:id/resume` | `project/runs` |
 | Adapter-aware provider deadlines and durable zero-token retry limits | `/workflow` | `baked workflow status`, `baked workflow resume` | `/v1/workflow/runs/:id` | `project/runs` |
@@ -163,12 +164,14 @@ bun test tests/feature-parity.test.ts
 | Follow a delivered pull request's checks and review comments and start a run that fixes them | `/workflow` | `baked workflow follow` | `/v1/workflow/runs/:id/checks` | `project/runs` |
 | Revise a run after its instructions change | `/workflow` | `baked workflow candidate`, `baked workflow revise` | `/v1/workflow/runs/:id/candidate`, `/v1/workflow/runs/:id/revise` | `project/runs` |
 | Requested manifest edits, including Gradle and Gemfile, with dependency checks | `/workflow` | `baked workflow run` | `/v1/workflow/runs` | `project/runs` |
+| Check-config protection for every language, and requested tightenings of a linter or type checker config | `/workflow` | `baked workflow run` | `/v1/workflow/runs` | `project/runs` |
 | Approval reviewer: a model decides low-risk plans outside the auto approval limits | `/workflow` | `baked workflow run`, `baked quick`, `approval-review` | `/v1/workflow/runs` | `project/runs` |
 | Checks: list, edit, run now, suggestions | `/workflow` | `baked doctor` | `/v1/workflow/checks`, `/v1/workflow/checks/suggestions`, `/v1/workflow/checks/:id/run` | `project/gates` |
 | Gates from chat: list detected gates, save them on an approval, set them up with a run | `/coordinator` | `baked session`, `baked session coordinator send` | `/v1/sessions/:id/prompts` | `project/chat`, `project/coordinator` |
 | Gates: list and confirm | `/workflow` | `baked workflow gates` | `/v1/workflow/gates`, `/v1/workflow/gates/confirm` | `project/gates` |
 | Duplication and dead-code ratchet | `/code-quality`, `/workflow` | `baked workflow run`, `baked workflow report` | `/v1/settings`, `/v1/workflow/runs`, `/v1/workflow/runs/:id/report` | `settings/chat` |
 | Anti-slop rule pack on the lines a run adds | `/code-quality`, `/workflow` | Not needed: rule choices and ast-grep files live in quality of config.json; baked workflow report shows the findings | `/v1/settings`, `/v1/workflow/runs/:id/report` | `settings/chat` |
+| Send a test task's wrong-value failure to the task that wrote the code under test | `/code-quality` | Not needed: quality.sourceDefectRoute in config.json; the route shows as the test task's corrective | `/v1/settings` | `settings/chat` |
 | New dependencies looked up before checks; Semgrep on the run's diff | `/code-quality`, `/workflow` | `baked workflow run`, `baked workflow report` | `/v1/settings`, `/v1/workflow/runs`, `/v1/workflow/runs/:id/report` | `settings/chat` |
 | Docs for the locked library versions a task uses | `/code-quality` | `baked workflow doctor` | `/v1/settings` | `settings/chat` |
 | Per-profile effort and compaction threshold (set in agent profile files) | `/workflow` | `baked workflow profiles`, `baked workflow route` | `/v1/workflow/profiles`, `/v1/workflow/route` | `settings/routing` |
@@ -187,21 +190,24 @@ bun test tests/feature-parity.test.ts
 | Usage across runs: days, by stage and model | `/workflow` | `baked usage`, `baked workflow usage` | `/v1/usage` | `project/usage` |
 | Export usage to Markdown to share | `/workflow` | `baked usage`, `baked workflow usage` | `/v1/usage`, `/v1/workflow/runs/:id/usage` | `project/usage` |
 | Import, export, gc and redact runs | `/workflow` | `baked workflow import`, `baked workflow export`, `baked workflow gc` +1 | `/v1/workflow/import`, `/v1/workflow/runs/:id/export`, `/v1/workflow/gc` +2 | `project/runs` |
+| Export a run or initiative as a portable SDD package (folder or zip) | `/workflow` | `baked workflow export-package` | `/v1/workflow/runs/:id/package`, `/v1/initiatives/:id/package` | `project/runs`, `project/initiatives` |
+| Import an SDD export package to continue its initiative or run; accepted features start at analysis | `/workflow` | `baked workflow import`, `baked-export` | `/v1/workflow/import` | `project/runs` |
 
 ### Initiatives
 
 | Feature | TUI | Headless CLI | serve API | Desktop |
 | --- | --- | --- | --- | --- |
-| Feature token shares and dollar growth protect low estimates; split approval warns on underfunded shares | `/workflow` | `baked workflow initiative show`, `baked workflow initiative extend` | `/v1/initiatives/:id`, `/v1/initiatives/:id/extend` | `project/initiatives` |
-| Token pool forecast notice, block amounts with a one-step extend, and the shadow pool extension inside the dollar cap | `/workflow` | `baked workflow initiative show`, `baked workflow initiative events`, `baked workflow initiative extend` | `/v1/initiatives/:id`, `/v1/initiatives/:id/events`, `/v1/initiatives/:id/extend` | `project/initiatives` |
+| Feature token shares and dollar growth protect low estimates; split approval warns on underfunded shares, states the expected total and names the pool the dollar cap pays for; shadow dollar-cap park; a started run's review and convergence reserved before waiting lows (shadow, workflows.stageReserve); a run's bounds start from its plan charge only as far as the pool and the ceiling hold it, and a bound above them is recorded (shadow, initiative-pool-growth) | `/workflow` | `baked workflow initiative show`, `baked workflow initiative extend`, `baked workflow initiative events` +2 | `/v1/initiatives/:id`, `/v1/initiatives/:id/extend` | `project/initiatives` |
+| Token pool forecast notice at the measured ratio advising the pool the dollar cap pays for, block amounts with a one-step extend, and the shadow pool extension inside the dollar cap | `/workflow` | `baked workflow initiative show`, `baked workflow initiative events`, `baked workflow initiative extend` | `/v1/initiatives/:id`, `/v1/initiatives/:id/events`, `/v1/initiatives/:id/extend` | `project/initiatives` |
 | Initiative deliverables have writable owners; deferred findings and mutation checks follow them | `/workflow` | `baked workflow report` | `/v1/workflow/runs/:id/report` | `project/runs` |
 | Start an initiative | `/workflow` | `baked workflow initiative` | `/v1/initiatives` | `project/initiatives` |
 | Initiative view: approve split, pause, resume, switch model | `/workflow` | `baked workflow initiative` | `/v1/initiatives/:id`, `/v1/initiatives/:id/events`, `/v1/initiatives/:id/approve` +3 | `project/initiatives`, `attention` |
 | An initiative whose ready work waits for a drive shows idle; a decision on its feature run names the drive | `/workflow` | `baked workflow answer`, `baked workflow initiative show`, `baked workflow initiative drive` | `/v1/initiatives/:id`, `/v1/initiatives/:id/drive`, `/v1/workflow/runs/:id/answer` | `project/initiatives` |
 | Reject, merge, split, rename, remove, re-plan, extend | `/workflow` | `baked workflow initiative` | `/v1/initiatives/:id/reject`, `/v1/initiatives/:id/merge`, `/v1/initiatives/:id/split` +4 | `project/initiatives` |
 | Each feature runs its own workflow, with a budget share by estimated need (by size without history) | `/workflow` | `baked workflow initiative set-workflow`, `baked workflow initiative set-size` | `/v1/initiatives/:id/configure` | `project/initiatives` |
-| Estimate a split: a difficulty level and a token range from run history | `/workflow` | `baked workflow initiative estimate` | `/v1/initiatives/:id/estimate` | `project/initiatives` |
+| Estimate a split: a difficulty level and a token range from run history, optionally weighted by recency, and the test volume the request demands | `/workflow` | `baked workflow initiative estimate` | `/v1/initiatives/:id/estimate` | `project/initiatives` |
 | Independent features run side by side in worktrees | `/workflow` | `baked workflow initiative drive`, `baked workflow initiative show` | `/v1/initiatives/:id` | `project/initiatives` |
+| A planned-ahead feature asks an accepted upstream feature for a missing symbol (workflows.upstreamAmendments) | `/workflow` | `baked workflow initiative show` | `/v1/initiatives/:id` | `project/initiatives` |
 | Review long dependency chains and merge small siblings by their dependents | `/workflow` | `baked workflow initiative start`, `baked workflow initiative show` | `/v1/initiatives`, `/v1/initiatives/:id` | `project/initiatives` |
 | Small features that others depend on run the light workflow with a host-made contract | `/workflow` | `baked workflow initiative start` | `/v1/initiatives` | `project/initiatives` |
 | A shared dollar cap with priced low reserves and central remaining-stage forecasts using shared history | `/workflow` | `baked workflow initiative start`, `baked workflow initiative extend`, `baked workflow initiative show` | `/v1/initiatives`, `/v1/initiatives/:id`, `/v1/initiatives/:id/extend` | `project/initiatives` |

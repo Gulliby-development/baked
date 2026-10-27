@@ -6,7 +6,8 @@ name: OS tests
 # key store handling, the workflow runtime, the test setup), nightly against main, and on demand.
 # On a pull request the `test (...)` checks pass at once: the queue tests the same change merged
 # with the current main before it lands. Windows is the slow platform, so its run is split into
-# shards that run side by side; `test (<os>)` reports the result of all of its shards.
+# shards that run side by side; `test (<os>)` reports the result of all of its shards. Files go to
+# shards by their measured time on that OS (scripts/test-shard-weights.json).
 
 on:
   pull_request:
@@ -39,7 +40,7 @@ jobs:
           BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
         run: |
           # A pull request that changes how these tests run still runs them, to prove the change.
-          if [ "$EVENT" = "pull_request" ] && ! git diff --name-only "$BASE_SHA" HEAD | grep -Eq '^(\.github/workflows/os-tests\.yml|scripts/(test-shard|flaky-ledger)\.ts)$'; then
+          if [ "$EVENT" = "pull_request" ] && ! git diff --name-only "$BASE_SHA" HEAD | grep -Eq '^(\.github/workflows/os-tests\.yml|scripts/(test-shard(-weights)?|flaky-ledger)\.ts|scripts/test-shard-weights\.json)$'; then
             echo "Pull request: these platforms run in the merge queue."
             echo "run=false" >> "$GITHUB_OUTPUT"
             exit 0
@@ -50,7 +51,7 @@ jobs:
           fi
           changed="$(git diff --name-only "$BASE_SHA" HEAD)"
           echo "$changed"
-          pattern='^(package\.json$|bun\.lock$|bunfig\.toml$|tsconfig\.json$|\.gitattributes$|\.github/workflows/os-tests\.yml$|scripts/(test-shard|flaky-ledger)\.ts$|tests/setup/|src/core/(platform|workflows|verification|tools|sessions|memory|hooks|security|utils|workers|git|checkpoints|mcp|terminal|projects)/|src/core/(spawn|process-tracker|secrets|cwd)\.ts$|src/headless/)'
+          pattern='^(package\.json$|bun\.lock$|bunfig\.toml$|tsconfig\.json$|\.gitattributes$|\.github/workflows/os-tests\.yml$|scripts/(test-shard(-weights)?|flaky-ledger)\.ts$|scripts/test-shard-weights\.json$|tests/setup/|src/core/(platform|workflows|verification|tools|sessions|memory|hooks|security|utils|workers|git|checkpoints|mcp|terminal|projects)/|src/core/(spawn|process-tracker|secrets|cwd)\.ts$|src/headless/)'
           if echo "$changed" | grep -Eq "$pattern"; then
             echo "run=true" >> "$GITHUB_OUTPUT"
           else
@@ -63,10 +64,18 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { os: windows-latest, shard: 1, shards: 3 }
-          - { os: windows-latest, shard: 2, shards: 3 }
-          - { os: windows-latest, shard: 3, shards: 3 }
-          - { os: macos-latest, shard: 1, shards: 1 }
+          # Each shard must finish inside the job's 30 minutes. Files used to go round-robin by name:
+          # on 2026-10-26 one Windows shard of three passed 30 minutes while another took 10, and a
+          # single macOS shard passed it too (#2259, #2261). They are now balanced by measured time
+          # (scripts/test-shard-weights.json); the replay corpus alone takes about 17 minutes on Windows.
+          - { os: windows-latest, shard: 1, shards: 5 }
+          - { os: windows-latest, shard: 2, shards: 5 }
+          - { os: windows-latest, shard: 3, shards: 5 }
+          - { os: windows-latest, shard: 4, shards: 5 }
+          - { os: windows-latest, shard: 5, shards: 5 }
+          - { os: macos-latest, shard: 1, shards: 3 }
+          - { os: macos-latest, shard: 2, shards: 3 }
+          - { os: macos-latest, shard: 3, shards: 3 }
     runs-on: ${{ matrix.os }}
     name: shard (${{ matrix.os }}, ${{ matrix.shard }}/${{ matrix.shards }})
     timeout-minutes: 30

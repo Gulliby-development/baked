@@ -23,6 +23,7 @@ import {
 
 export { type HighCalibration, highCalibrationText, MIN_HIGH_RATIO_SAMPLES };
 
+import type { TestCaseRate } from "../sizing.js";
 import { planWidth } from "./critical-path.js";
 import { type DurationForecast, durationText, msPerToken, scheduledMinutes } from "./duration.js";
 import type { FeatureSize } from "./plan.js";
@@ -107,6 +108,8 @@ export interface FeatureRunSample {
   initiativeId?: string;
   /** This project's store, or one of the policy's `sizing.historyStores`; absent means project. */
   source?: "project" | "shared";
+  /** When the feature's run was linked (epoch ms); absent in older callers, which count as newest. */
+  startedAt?: number;
 }
 
 /** A feature to estimate: its workflow and that workflow's stages. */
@@ -124,6 +127,8 @@ export interface FeatureToEstimate {
   skeleton?: number;
   /** The features it waits for, which order the wall-time forecast (#1557); absent means none. */
   dependsOn?: string[];
+  /** The test cases the request demands of it (`testCases` of the plan, #2055); absent when none. */
+  testCases?: number;
 }
 
 export type FeatureEstimateBasis =
@@ -158,11 +163,14 @@ export interface FeatureEstimate {
   placeholders?: number;
   /** Files of its skeleton the host writes, when it has any; they cost no tokens. */
   skeleton?: number;
+  /** The test cases the request demands of it, when it states any (#2055). */
+  testCases?: number;
   /** The tokens the feature run's plan sizing expects the run to use, once it has a plan. */
   planned?: PlannedRun;
   /**
    * What raised the range above the size-scaled forecast: the spec's criteria, the boundary's
-   * paths or the plan's sized tasks (each times its measured rate); absent when nothing did.
+   * paths, the plan's sized tasks or the request's test cases (each times its measured rate);
+   * absent when nothing did.
    */
   floor?: FeatureFloor;
   /** The fit over finished features of its size that placed it by its paths, when one did. */
@@ -173,7 +181,7 @@ export interface FeatureEstimate {
   minutes?: number;
 }
 
-export type FeatureFloor = "criteria" | "paths" | "plan";
+export type FeatureFloor = "criteria" | "paths" | "plan" | "tests";
 
 /**
  * What a feature run's latest plan sizing expects the whole run to use (`plannedRunTokens`): its
@@ -270,6 +278,12 @@ export interface InitiativeEstimate {
   highCalibration: HighCalibration | null;
   /** How this initiative's accepted features compared with their own plans (`ownPlanNeed`). */
   planCalibration: PlanCalibration;
+  /**
+   * The test cases the request demands across the features still to run and what each is priced
+   * at (`testCaseRate`): a feature with `testCases` is forecast at no less than its cases times
+   * `perCase` (#2055). Null when no feature carries test cases.
+   */
+  testVolume: ({ cases: number; features: number } & TestCaseRate) | null;
   /** Minutes still to run, summed and on the run slots; null without timed samples (#1557). */
   duration: DurationForecast | null;
   notes: string[];
@@ -438,6 +452,7 @@ function estimateFeature(
   feature: FeatureToEstimate,
   history: PastRun[],
   samples: FeatureRunSample[],
+  weights: ReadonlyMap<FeatureRunSample, number> | null = null,
 ): FeatureEstimate {
   const head = {
     featureId: feature.id,
@@ -448,6 +463,7 @@ function estimateFeature(
     ...(feature.paths ? { paths: feature.paths } : {}),
     ...(feature.placeholders ? { placeholders: feature.placeholders } : {}),
     ...(feature.skeleton ? { skeleton: feature.skeleton } : {}),
+    ...(feature.testCases ? { testCases: feature.testCases } : {}),
   };
   const hasTasks = feature.stages.some((s) => s.type === "tasks");
   // Finished feature runs of the same size measure the whole feature, split and all; those of the
@@ -470,7 +486,11 @@ function estimateFeature(
     sameWorkflow.length < 2 &&
     sized.length > sameWorkflow.length &&
     run.basis === "workflow-history";
-  const measured = ownRuns ? null : rangeOf(pool.map((s) => s.tokens));
+  const poolRange = (value: (s: FeatureRunSample) => number) =>
+    weights
+      ? weightedRangeOf(pool.map((s) => [value(s), weights.get(s) ?? 1]))
+      : rangeOf(pool.map(value));
+  const measured = ownRuns ? null : poolRange((s) => s.tokens);
   // A feature that names paths sits where its paths put it among them, with their spread around
   // the fit; never below the cheapest of them.
   const placeBy = (value: (s: FeatureRunSample) => number) => {
@@ -495,7 +515,7 @@ function estimateFeature(
       // Its tasks follow its paths the same way, so a two-path module does not plan six-path counts.
       tasks: hasTasks
         ? (placeBy((s) => s.taskCount)?.range ??
-          rangeOf(pool.map((s) => s.taskCount)) ?? { low: 0, high: 0 })
+          poolRange((s) => s.taskCount) ?? { low: 0, high: 0 })
         : { low: 0, high: 0 },
       basis: "initiative-history",
       samples: pool.length,
@@ -551,6 +571,22 @@ export function calibrationLagText(
   return ` The measured calibration is unmeasured until ${MIN_CALIBRATION_FEATURES} features are accepted (${estimate.progress.accepted} so far)${planned ? `; ${planned} features still to run are priced by their own plans` : ""}.`;
 }
 
+/**
+ * The test volume line of the estimate and the split request (#2055): the cases the request
+ * demands of the features still to run, and what a case is priced at.
+ */
+export function testVolumeText(
+  volume: NonNullable<InitiativeEstimate["testVolume"]>,
+  features: Pick<FeatureEstimate, "featureId" | "testCases">[],
+): string {
+  const each = features.map((f) => `${f.featureId} ${f.testCases}`).join(", ");
+  const from =
+    volume.basis === "defaults"
+      ? "the default allowance: no finished test task with cases yet"
+      : `as measured on ${volume.samples} finished test tasks${volume.basis === "project" ? " of this project" : ""}`;
+  return `The request demands ${volume.cases} test cases of ${volume.features} features (${each}); each feature is forecast at no less than ${rangeText(volume.perCase)} tokens per case, ${from}.`;
+}
+
 /** The estimate in one line for a screen: level, tasks, tokens, what to plan for, the budget. */
 export function estimateSummary(estimate: InitiativeEstimate): string {
   const fits = estimateBudgetText(
@@ -596,6 +632,7 @@ function reforecast(
   prior: FeatureEstimate[],
   progress: InitiativeProgress,
   samples: FeatureRunSample[],
+  perTestCase: TokenRange | null,
 ): {
   features: FeatureEstimate[];
   ratio: number | null;
@@ -704,11 +741,15 @@ function reforecast(
     // replace the paths: seqmill used 155k to 320k per criterion against 0.29M to 1.28M per path.
     const byCriteria = perCriterion && criteria ? scaled(perCriterion, criteria) : null;
     const byPaths = !byCriteria && perPath && pathWeight(f) ? scaled(perPath, pathWeight(f)) : null;
+    // The test cases the request demands of it, at what a case costs in this project's test
+    // tasks: R66 nodepluck's test tasks were 51.9 percent of the initiative (#2055).
+    const byTests = perTestCase && f.testCases ? scaled(perTestCase, f.testCases) : null;
     const floors = (
       [
         ["criteria", byCriteria],
         ["paths", byPaths],
         ["plan", planned ? ownPlanNeed(planned, planCalibration.ratio) : null],
+        ["tests", byTests],
       ] as const
     ).filter((entry): entry is readonly [FeatureFloor, TokenRange] => entry[1] !== null);
     const tokens = {
@@ -735,7 +776,7 @@ function reforecast(
     // stepvet used 1.32x its low end, R63 eolscope 1.05x. Only ever narrower than today's range,
     // and not where the feature's own spec, plan or a re-forecast of an overrun prices it.
     const bound =
-      highCalibration && !byCriteria && !planned && (scale === null || scale <= 1)
+      highCalibration && !byCriteria && !planned && !byTests && (scale === null || scale <= 1)
         ? Math.max(tokens.low, Math.round(tokens.low * highCalibration.high))
         : null;
     const ratios = bound !== null && bound < tokens.high;
@@ -780,6 +821,58 @@ function reforecast(
  * The estimate of `features` against the initiative's token budget. `history` is the project's
  * run history (`estimateHistory`); `samples` are finished feature runs of earlier initiatives.
  */
+/**
+ * Each finished feature's weight by how recent its initiative is (#2150): it halves for every
+ * `halfLife` initiatives whose first feature started after its initiative's first. In the
+ * bench-trace corpus the features of rounds 63 to 68 used less than those before: 24 of 60
+ * landed below the range their estimate gave them (40%, against 24% in rounds 45 to 61), 20 of
+ * them priced by the size pool, which weighed rounds 45 to 62 as much as the last. A sample
+ * without a start time, or without an initiative, counts as the newest.
+ */
+export function recencyWeights(
+  samples: readonly FeatureRunSample[],
+  halfLife: number,
+): Map<FeatureRunSample, number> {
+  const first = new Map<string, number>();
+  for (const s of samples)
+    if (s.initiativeId && s.startedAt !== undefined)
+      first.set(s.initiativeId, Math.min(first.get(s.initiativeId) ?? s.startedAt, s.startedAt));
+  const starts = [...first.values()];
+  return new Map(
+    samples.map((s) => {
+      const own = s.initiativeId ? first.get(s.initiativeId) : undefined;
+      const later = own === undefined ? 0 : starts.filter((t) => t > own).length;
+      return [s, 0.5 ** (later / halfLife)];
+    }),
+  );
+}
+
+/**
+ * `rangeOf` over weighted values: the middle half from four values on, at the weighted quartiles
+ * (each sorted value sits at the weight before it over the total less the last one's, so equal
+ * weights give `rangeOf`'s quartiles); fewer values take `rangeOf`.
+ */
+export function weightedRangeOf(points: readonly (readonly [number, number])[]): TokenRange | null {
+  const v = points.filter(([x, w]) => Number.isFinite(x) && x >= 0 && w > 0);
+  if (v.length < 4) return rangeOf(v.map(([x]) => x));
+  const sorted = [...v].sort((a, b) => a[0] - b[0]);
+  const span = sorted.reduce((t, [, w]) => t + w, 0) - (sorted.at(-1)?.[1] ?? 0);
+  let before = 0;
+  const at = sorted.map(([x, w]) => {
+    const p = { x, p: before / span };
+    before += w;
+    return p;
+  });
+  const q = (target: number) => {
+    const i = at.findIndex((a) => a.p >= target);
+    if (i <= 0) return at[Math.max(0, i)]?.x ?? 0;
+    const lo = at[i - 1] as { x: number; p: number };
+    const hi = at[i] as { x: number; p: number };
+    return lo.x + ((target - lo.p) / (hi.p - lo.p)) * (hi.x - lo.x);
+  };
+  return { low: Math.round(q(0.25)), high: Math.round(q(0.75)) };
+}
+
 export function estimateInitiative(input: {
   features: FeatureToEstimate[];
   history: PastRun[];
@@ -790,6 +883,10 @@ export function estimateInitiative(input: {
   progress?: InitiativeProgress;
   /** Feature runs the initiative may start at once, for the wall-time forecast; absent means 1. */
   parallelRuns?: number;
+  /** `sizing.recencyHalfLife`: weighs the size pools by `recencyWeights`; absent, all count the same. */
+  recencyHalfLife?: number;
+  /** What a test case costs (`testCaseRate`), for features with `testCases`; absent prices none. */
+  testCaseRate?: TestCaseRate;
 }): InitiativeEstimate {
   const margin = input.margin ?? ESTIMATE_MARGIN;
   const progress = input.progress ?? { features: {}, overhead: 0 };
@@ -803,9 +900,17 @@ export function estimateInitiative(input: {
     highCalibration,
     planCalibration,
   } = reforecast(
-    input.features.map((f) => estimateFeature(f, input.history, input.samples)),
+    input.features.map((f) =>
+      estimateFeature(
+        f,
+        input.history,
+        input.samples,
+        input.recencyHalfLife ? recencyWeights(input.samples, input.recencyHalfLife) : null,
+      ),
+    ),
     progress,
     input.samples,
+    input.testCaseRate?.perCase ?? null,
   );
   const overhead = { low: progress.overhead, high: progress.overhead };
   const summed = sum([overhead, ...features.map((f) => f.tokens)]);
@@ -902,6 +1007,16 @@ export function estimateInitiative(input: {
         ]
       : []),
   ];
+  const tested = features.filter((f) => f.basis !== "measured" && f.testCases);
+  const testVolume =
+    tested.length && input.testCaseRate
+      ? {
+          cases: tested.reduce((n, f) => n + (f.testCases ?? 0), 0),
+          features: tested.length,
+          ...input.testCaseRate,
+        }
+      : null;
+  if (testVolume) notes.push(testVolumeText(testVolume, tested));
   const timed = durationOf(input.features, features, input.samples, input.parallelRuns ?? 1);
   const fits = fitsOf(withMargin, tokens.low, input.maxTotalTokens);
   const budgetText = estimateBudgetText(
@@ -927,6 +1042,7 @@ export function estimateInitiative(input: {
     perPathSamples,
     highCalibration,
     planCalibration,
+    testVolume,
     duration: timed.duration,
     notes,
     label: `Estimate: level ${level}, about ${tasks.low}-${tasks.high} tasks, ${rangeText(tokens)} tokens, expected ${tokenText(expectedTokens)} (plan for ${tokenText(withMargin)} with a ${Math.round(margin * 100)}% margin)${spent ? `, ${tokenText(spent)} used with ${accepted} of ${features.length} features accepted` : ""}; ${budgetText}${timed.duration ? `; ${durationText(timed.duration)}` : ""}`,

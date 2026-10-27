@@ -951,7 +951,7 @@ export const FEATURES: readonly Feature[] = [
       "baked workflow status",
       "baked workflow report",
       "baked workflow artifacts: includes attempts/ID/context.json for task context",
-      "baked workflow usage",
+      "baked workflow usage: toolInputs (invalid and decoded tool inputs per model)",
     ],
     api: [
       "/v1/workflow/runs",
@@ -1077,6 +1077,19 @@ export const FEATURES: readonly Feature[] = [
     cli: ["baked workflow repair"],
     api: ["/v1/workflow/runs/:id/repair"],
     desktop: ["project/runs: One more repair", "project/initiatives: feature One more repair"],
+  },
+  {
+    id: "run-unowned-file-remedies",
+    group: "Workflow runs",
+    title:
+      "Answer a corrective blocked on a file it may not write: correct the owner, widen, ask upstream",
+    tui: ["/workflow: T, W or Q on the blocked run"],
+    cli: [
+      "baked workflow resume: --remedy route|widen|upstream",
+      "baked workflow status: recovery",
+    ],
+    api: ["/v1/workflow/runs/:id/resume: remedy"],
+    desktop: ["project/runs: Correct the owner first, Let it write, Ask feature"],
   },
   {
     id: "run-control",
@@ -1236,6 +1249,16 @@ export const FEATURES: readonly Feature[] = [
     desktop: ["project/runs: shared workflow approval and dependency findings"],
   },
   {
+    id: "requested-check-tightening",
+    group: "Workflow runs",
+    title:
+      "Check-config protection for every language, and requested tightenings of a linter or type checker config",
+    tui: ["/workflow: run with autoApproval.requestedCheckTightening in the policy"],
+    cli: ["baked workflow run: autoApproval.requestedCheckTightening in the policy"],
+    api: ["/v1/workflow/runs"],
+    desktop: ["project/runs: shared workflow approval and check-config findings"],
+  },
+  {
     id: "approval-review",
     group: "Workflow runs",
     title: "Approval reviewer: a model decides low-risk plans outside the auto approval limits",
@@ -1295,6 +1318,17 @@ export const FEATURES: readonly Feature[] = [
       "rule choices and ast-grep files live in quality of config.json; baked workflow report shows the findings",
     ),
     api: ["/v1/settings: code-quality page", "/v1/workflow/runs/:id/report"],
+    desktop: ["settings/chat: Code quality page"],
+  },
+  {
+    id: "source-defect-route",
+    group: "Workflow runs",
+    title: "Send a test task's wrong-value failure to the task that wrote the code under test",
+    tui: ["/code-quality"],
+    cli: notNeeded(
+      "quality.sourceDefectRoute in config.json; the route shows as the test task's corrective",
+    ),
+    api: ["/v1/settings: code-quality page"],
     desktop: ["settings/chat: Code quality page"],
   },
   {
@@ -1482,7 +1516,30 @@ export const FEATURES: readonly Feature[] = [
       "/v1/workflow/runs/:id/redact",
       "/v1/workflow/runs/:id/progress",
     ],
-    desktop: ["project/runs: Import, Clean up old runs; Export and Redact on a run"],
+    desktop: ["project/runs: Import, Clean up old runs; Export report and Redact on a run"],
+  },
+
+  {
+    id: "sdd-export-package",
+    group: "Workflow runs",
+    title: "Export a run or initiative as a portable SDD package (folder or zip)",
+    tui: [
+      "/workflow: E on an accepted run, Ctrl+E on an approved initiative",
+      "/workflow: export-package ID [--zip] [--out PATH]",
+    ],
+    cli: ["baked workflow export-package"],
+    api: ["/v1/workflow/runs/:id/package", "/v1/initiatives/:id/package"],
+    desktop: ["project/runs: Export package…", "project/initiatives: Export package…"],
+  },
+  {
+    id: "sdd-import-package",
+    group: "Workflow runs",
+    title:
+      "Import an SDD export package to continue its initiative or run; accepted features start at analysis",
+    tui: ["/workflow: import --source baked-export --path PATH [--id ID]"],
+    cli: ["baked workflow import", "baked-export"],
+    api: ["/v1/workflow/import: source baked-export"],
+    desktop: ["project/runs: Import… → BAKED export package"],
   },
 
   // Initiatives
@@ -1490,9 +1547,16 @@ export const FEATURES: readonly Feature[] = [
     id: "initiative-budget-reserves",
     group: "Initiatives",
     title:
-      "Feature token shares and dollar growth protect low estimates; split approval warns on underfunded shares",
+      "Feature token shares and dollar growth protect low estimates; split approval warns on underfunded shares, states the expected total and names the pool the dollar cap pays for; shadow dollar-cap park; a started run's review and convergence reserved before waiting lows (shadow, workflows.stageReserve); a run's bounds start from its plan charge only as far as the pool and the ceiling hold it, and a bound above them is recorded (shadow, initiative-pool-growth)",
     tui: ["/workflow: initiatives, split approval warning and B to extend budget"],
-    cli: ["baked workflow initiative show", "baked workflow initiative extend"],
+    cli: [
+      "baked workflow initiative show",
+      "baked workflow initiative extend",
+      "baked workflow initiative events: decision.would_stop initiative-dollar-cap",
+      "baked workflow initiative events: decision.would_extend stage-reserve",
+      "baked workflow status: wouldStop initiative-pool-growth",
+      "baked workflow show: a cost-ceiling block's extend remedy with suggestedUsd",
+    ],
     api: ["/v1/initiatives/:id: next.recovery, feature shares", "/v1/initiatives/:id/extend"],
     desktop: ["project/initiatives: split approval warning and Extend budget"],
   },
@@ -1500,17 +1564,17 @@ export const FEATURES: readonly Feature[] = [
     id: "initiative-token-pool-forecast",
     group: "Initiatives",
     title:
-      "Token pool forecast notice, block amounts with a one-step extend, and the shadow pool extension inside the dollar cap",
+      "Token pool forecast notice at the measured ratio advising the pool the dollar cap pays for, block amounts with a one-step extend, and the shadow pool extension inside the dollar cap",
     tui: [
       "/workflow: initiatives, Token forecast line and B prefilled with the suggested extension",
     ],
     cli: [
-      "baked workflow initiative show: budget.pool, budget.planCharge, budget.forecastNotice, next.recovery suggestedTokens",
+      "baked workflow initiative show: budget.pool, budget.planCharge (usd: dollar plan charge), budget.forecastNotice, next.recovery suggestedTokens",
       "baked workflow initiative events: budget.forecast_notice, decision.would_extend, decision.would_release",
       "baked workflow initiative extend",
     ],
     api: [
-      "/v1/initiatives/:id: budget.pool, budget.planCharge, budget.forecastNotice, next.recovery suggestedTokens",
+      "/v1/initiatives/:id: budget.pool, budget.planCharge (usd: dollar plan charge), budget.forecastNotice, next.recovery suggestedTokens",
       "/v1/initiatives/:id/events",
       "/v1/initiatives/:id/extend",
     ],
@@ -1603,7 +1667,8 @@ export const FEATURES: readonly Feature[] = [
   {
     id: "initiative-estimate",
     group: "Initiatives",
-    title: "Estimate a split: a difficulty level and a token range from run history",
+    title:
+      "Estimate a split: a difficulty level and a token range from run history, optionally weighted by recency, and the test volume the request demands",
     tui: ["/workflow: initiatives, T estimates the split"],
     cli: ["baked workflow initiative estimate"],
     api: ["/v1/initiatives/:id/estimate"],
@@ -1617,6 +1682,16 @@ export const FEATURES: readonly Feature[] = [
     cli: ["baked workflow initiative drive", "baked workflow initiative show"],
     api: ["/v1/initiatives/:id"],
     desktop: ["project/initiatives: the shared budget line shows up to N features at once"],
+  },
+  {
+    id: "initiative-upstream-amendments",
+    group: "Initiatives",
+    title:
+      "A planned-ahead feature asks an accepted upstream feature for a missing symbol (workflows.upstreamAmendments)",
+    tui: ["/workflow: initiatives, Amendments asked on the upstream feature"],
+    cli: ["baked workflow initiative show: features[].amendments"],
+    api: ["/v1/initiatives/:id: features[].amendments"],
+    desktop: ["project/initiatives: asked for ... · re-planned for it on the upstream feature"],
   },
   {
     id: "initiative-critical-path",

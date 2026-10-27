@@ -30,6 +30,8 @@ describe("missingPlannedPaths: the planned files under a path a gate says does n
     ["sqlfluff", "\nUser Error: Specified path does not exist. Check it/they exist(s): tests."],
     // Pasted from PowerShell 7.5, PSScriptAnalyzer 1.24 and Pester 5.9 (#1498).
     ["Invoke-ScriptAnalyzer", "Invoke-ScriptAnalyzer: Cannot find path '/work/app/tests' because it does not exist."],
+    // Pasted from R 4.3 and testthat 3.2 (#1500).
+    ["Rscript", "Error in `testthat::test_dir()`:\n! No test files found\nWarning message:\nIn normalizePath(path) : path[1]=\"tests\": No such file or directory\nExecution halted"],
     ["Invoke-Pester", "Get-ChildItem: Cannot find path 'C:\\work\\app\\tests\\' because it does not exist.\nSystem.Management.Automation.RuntimeException: No test files were found and no scriptblocks were provided."],
   ] as const)
     test(tool, () => expect(missingPlannedPaths(output, tasks)).toEqual(tests));

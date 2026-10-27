@@ -4,6 +4,7 @@
     "dune-project": "(lang dune 3.0)\n"
   },
   "expected": {
+    "checkConfigs": [".ocamlformat: ocamlformat, read as text"],
     "tests": null,
     "testMarkers": null,
     "manifests": [
@@ -30,6 +31,10 @@
     "packageContents": null,
     "numericLimits": [
       "int is 63-bit and wraps silently"
-    ]
+    ],
+    "staticTools": [
+      "ocamlformat: formatter"
+    ],
+    "sortedLists": null
   }
 }

@@ -10,6 +10,7 @@
     "testsGrown": "[ERROR] Tests run: 4, Failures: 1, Errors: 0, Skipped: 0\n"
   },
   "expected": {
+    "checkConfigs": ["checkstyle.xml: checkstyle", "pmd-ruleset.xml: pmd", "spotbugs-exclude.xml: spotbugs"],
     "tests": [
       "src/test/java/SumTest.java",
       "src/test/java/SumPropertyTest.java"
@@ -58,6 +59,14 @@
     "numericLimits": [
       "int and long arithmetic overflow silently; Integer.parseInt fails past int",
       "double formatting switches to exponent form for large values"
-    ]
+    ],
+    "staticTools": [
+      "checkstyle: linter",
+      "pmd: linter",
+      "spotbugs: linter, whole unit",
+      "spotless: formatter",
+      "google-java-format: formatter"
+    ],
+    "sortedLists": null
   }
 }

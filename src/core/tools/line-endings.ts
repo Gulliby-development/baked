@@ -1,5 +1,6 @@
-import { readdirSync, readFileSync, statSync } from "node:fs";
-import { dirname, join, parse } from "node:path";
+import { spawnSync } from "node:child_process";
+import { readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { basename, dirname, join, parse } from "node:path";
 
 export type LineEnding = "lf" | "crlf";
 
@@ -75,11 +76,66 @@ function editorconfigEnding(dir: string): LineEnding | null {
   return null;
 }
 
+const GIT_TIMEOUT_MS = 5_000;
+
+function git(dir: string, args: string[]): string | null {
+  try {
+    const proc = spawnSync("git", args, {
+      cwd: dir,
+      encoding: "utf-8",
+      timeout: GIT_TIMEOUT_MS,
+      windowsHide: true,
+    });
+    return proc.status === 0 ? proc.stdout : null;
+  } catch {
+    return null;
+  }
+}
+
+/** The `eol` attribute `.gitattributes` gives `name` in `dir` (`* text=auto eol=lf`), or null. */
+function attributeEnding(dir: string, name: string): LineEnding | null {
+  const out = git(dir, ["check-attr", "eol", "--", name]);
+  const m = out?.match(/: eol: (lf|crlf)\s*$/m);
+  return m ? (m[1] as LineEnding) : null;
+}
+
 /**
- * Ending for a file that does not exist yet: `.editorconfig` `end_of_line`, else the
- * dominant ending of a few sibling text files, else null (caller keeps the text as given).
+ * The ending the index holds for most tracked text files in `dir` (`git ls-files --eol`), when
+ * git checks them out as they are: with `core.autocrlf` true the working tree is CRLF on purpose
+ * and the siblings already show it.
  */
-export function detectNewFileLineEnding(dir: string): LineEnding | null {
+function indexEnding(dir: string): LineEnding | null {
+  const autocrlf = git(dir, ["config", "--get", "core.autocrlf"])?.trim().toLowerCase();
+  if (autocrlf === "true") return null;
+  const out = git(dir, ["ls-files", "--eol", "--", "."]);
+  if (!out) return null;
+  let crlf = 0;
+  let lf = 0;
+  for (const line of out.split("\n")) {
+    // `i/lf    w/crlf  attr/text=auto eol=lf\tpath`: the attribute may hold a space, the tab not.
+    const tab = line.indexOf("\t");
+    const path = tab < 0 ? "" : line.slice(tab + 1);
+    const index = line.split(" ", 1)[0];
+    if (!path || path.includes("/")) continue;
+    if (index === "i/crlf") crlf++;
+    else if (index === "i/lf") lf++;
+  }
+  if (crlf === 0 && lf === 0) return null;
+  return crlf > lf ? "crlf" : "lf";
+}
+
+/**
+ * Ending for a file that does not exist yet: the git policy first (the path's `eol` attribute,
+ * then the index ending of the tracked siblings), then `.editorconfig` `end_of_line`, else the
+ * dominant ending of a few sibling text files in the working tree, else null (caller keeps the
+ * text as given). The working tree alone misleads: a fixer that wrote one sibling CRLF on
+ * Windows made every new file of the directory CRLF in a `eol=lf` repository (#2214).
+ */
+export function detectNewFileLineEnding(dir: string, name?: string): LineEnding | null {
+  const attribute = name ? attributeEnding(dir, basename(name)) : null;
+  if (attribute) return attribute;
+  const indexed = indexEnding(dir);
+  if (indexed) return indexed;
   const configured = editorconfigEnding(dir);
   if (configured) return configured;
   let crlfFiles = 0;
@@ -104,4 +160,46 @@ export function detectNewFileLineEnding(dir: string): LineEnding | null {
   }
   if (crlfFiles === 0 && lfFiles === 0) return null;
   return crlfFiles > lfFiles ? "crlf" : "lf";
+}
+
+/** Each file's ending before a fixer runs: the ending of a file whose lines all end alike. */
+export type Endings = Map<string, LineEnding>;
+
+/** The uniform ending of each existing text file in `paths`; mixed, empty and binary files are left out. */
+export function captureEndings(paths: readonly string[]): Endings {
+  const endings: Endings = new Map();
+  for (const path of paths) {
+    try {
+      const text = readFileSync(path, "utf-8");
+      if (text.includes("\0")) continue;
+      const { crlf, lf } = countLineEndings(text);
+      if (crlf + lf > 0 && (crlf === 0 || lf === 0)) endings.set(path, crlf ? "crlf" : "lf");
+    } catch {
+      // not there yet
+    }
+  }
+  return endings;
+}
+
+/**
+ * Puts back the LF ending of each file a fixer or formatter rewrote with CRLF: Ruby on Windows
+ * writes text mode, so `rubocop -a` turns a LF file it corrects into CRLF, and cops that match a
+ * line's end are blind on the CRLF tree the checks see while the committed LF tree fails
+ * (namesound R70, #2214). Only that direction: a fixer that writes LF (`gofmt -w`) moves a file
+ * toward what git commits, and its check flags CRLF itself. Returns the paths it rewrote.
+ */
+export function restoreEndings(before: Endings): string[] {
+  const restored: string[] = [];
+  for (const [path, eol] of before) {
+    if (eol !== "lf") continue;
+    try {
+      const text = readFileSync(path, "utf-8");
+      if (!text.includes("\r\n")) continue;
+      writeFileSync(path, toLf(text));
+      restored.push(path);
+    } catch {
+      // removed by the fixer
+    }
+  }
+  return restored;
 }

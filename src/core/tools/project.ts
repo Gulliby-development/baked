@@ -4,7 +4,7 @@ import { dirname, join, resolve } from "node:path";
 import type { ToolResult } from "../../types/index.js";
 import { getCwd } from "../cwd.js";
 import { logBackgroundError } from "../diagnostics/errors.js";
-import { bunShellArgs, IS_WIN, pwshExecutable } from "../platform/index.js";
+import { bunShellArgs, IS_WIN, pwshExecutable, rscriptExecutable } from "../platform/index.js";
 import { chatSandbox, SandboxUnavailableError, sandboxNotice } from "../security/sandbox.js";
 import { buildSafeEnv } from "../spawn.js";
 import { executeCheckCommand } from "../verification/check-runner.js";
@@ -22,6 +22,7 @@ import { pythonEnvironment } from "../workflows/toolchain.js";
 import { FORMAT_TIMEOUT_MS, singleFileFormat } from "./auto-format.js";
 import { runBoundedShell } from "./bounded-process.js";
 import { BUN_FMT, bunFmtConfigured } from "./bun-fmt.js";
+import { captureEndings, restoreEndings } from "./line-endings.js";
 import { ruffSource as ruffConfigSource } from "./python-tooling.js";
 import { compressShellOutputFull } from "./shell-compress.js";
 import { saveTee, truncateWithTee } from "./tee.js";
@@ -270,7 +271,12 @@ async function detectToolchain(cwd: string): Promise<DetectedToolchain> {
     profile.lint = (await has(".swiftlint.yml")) ? "swiftlint" : null;
     profile.typecheck = "swift build";
     profile.run = "swift run";
-    profile.format = (await has(".swiftformat")) ? "swiftformat" : null;
+    // swift-format ships with the Swift 6 toolchain; SwiftFormat is a separate tool (#1492).
+    profile.format = (await has(".swift-format"))
+      ? "swift format format --in-place --recursive ."
+      : (await has(".swiftformat"))
+        ? "swiftformat"
+        : null;
     return profile;
   }
 
@@ -450,6 +456,19 @@ async function detectToolchain(cwd: string): Promise<DetectedToolchain> {
     const pwsh = pwshExecutable();
     profile.test = `${pwsh} -NoProfile -Command Invoke-Pester`;
     profile.lint = `${pwsh} -NoProfile -Command "Invoke-ScriptAnalyzer -Path . -Recurse -EnableExit"`;
+    return profile;
+  }
+
+  // R — a package (DESCRIPTION) or a project with testthat tests (#1500). The edit-time format is
+  // styler on the file, which Rscript passes to the expression after it.
+  if ((await has("DESCRIPTION")) || (await has("tests/testthat"))) {
+    const pkg = await has("DESCRIPTION");
+    const r = rscriptExecutable();
+    const quoted = r.includes(" ") ? `"${r}"` : r;
+    profile.test = `${quoted} -e "${pkg ? "testthat::test_local()" : "testthat::test_dir('tests/testthat')"}"`;
+    profile.lint = `${quoted} -e "${pkg ? "lintr::lint_package()" : "lintr::lint_dir('.')"}"`;
+    profile.build = pkg ? "R CMD build ." : null;
+    profile.format = `${quoted} -e "styler::style_file(commandArgs(TRUE))"`;
     return profile;
   }
 
@@ -1199,10 +1218,12 @@ export async function formatFile(filePath: string, cwd?: string): Promise<boolea
   // `/var` is `/private/var`) would look outside the project to it.
   const command = singleFileFormat(profile.formatFile, filePath);
   try {
+    // A formatter that writes text mode on Windows turns a LF file into CRLF (#2214).
+    const endings = captureEndings([filePath]);
     const result = await runBoundedShell(command, {
       cwd: effectiveCwd,
       timeoutMs: FORMAT_TIMEOUT_MS,
-    });
+    }).finally(() => restoreEndings(endings));
     return !result.timedOut && result.exitCode === 0;
   } catch {
     return false;

@@ -264,6 +264,25 @@ export function processTreeAlive(pid: number, sinceMs: number, scope?: string): 
 export const pwshExecutable = (): string =>
   IS_WIN && !commandExists("pwsh") ? "powershell" : "pwsh";
 
+/**
+ * `Rscript`, or on Windows without it on PATH the newest `Rscript.exe` under
+ * `%ProgramFiles%\R\R-<version>\bin`: R's Windows installer does not add R to PATH (#1500).
+ */
+export function rscriptExecutable(): string {
+  if (!IS_WIN || commandExists("Rscript")) return "Rscript";
+  const base = join(process.env.ProgramFiles ?? "C:\\Program Files", "R");
+  try {
+    const versions = readdirSync(base)
+      .filter((name) => /^R-\d+\.\d+\.\d+$/.test(name))
+      .sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
+    for (const version of versions.reverse()) {
+      const exe = join(base, version, "bin", "Rscript.exe");
+      if (existsSync(exe)) return exe;
+    }
+  } catch {}
+  return "Rscript";
+}
+
 export function commandExists(bin: string): boolean {
   if (IS_WIN) {
     const result = spawnSync("where", [bin], {

@@ -33,7 +33,7 @@ describe("stop reasons", () => {
   test("hard limits take only enforce; the forecasts and the approval scope take every mode", () => {
     for (const [id, reason] of Object.entries(STOP_REASONS)) {
       expect(reason.modes).toContain(reason.defaultMode);
-      if (!["cost-forecast", "approval-scope", "initiative-forecast", "initiative-dollar-share", "initiative-plan-charge", "repeated_failure", "corrective_scope", "corrective_unowned_file", "repeat_without_change", "upstream_symbol"].includes(id))
+      if (!["cost-forecast", "approval-scope", "initiative-forecast", "initiative-dollar-share", "initiative-dollar-cap", "initiative-plan-charge", "initiative-pool-growth", "repeated_failure", "corrective_scope", "corrective_unowned_file", "repeat_without_change", "edge_crash_finding", "upstream_symbol", "baseline_unrepairable", "baseline_signature", "check-config-approval", "ci_check_drift"].includes(id))
         expect(reason.modes).toEqual(["enforce"]);
     }
     expect(STOP_REASONS["cost-forecast"].modes).toEqual(STOP_MODES);
@@ -43,19 +43,48 @@ describe("stop reasons", () => {
     // Shadow until its promotion (#2137).
     expect(STOP_REASONS.repeat_without_change.modes).toEqual(["shadow", "advisory"]);
     expect(STOP_REASONS.repeat_without_change.defaultMode).toBe("shadow");
+    // Shadow until its promotion (#2136): a crash inside the probed task's file is not a finding yet.
+    expect(STOP_REASONS.edge_crash_finding.modes).toEqual(["shadow", "advisory"]);
+    expect(STOP_REASONS.edge_crash_finding.defaultMode).toBe("shadow");
     expect(STOP_REASONS.upstream_symbol.modes).toEqual(["shadow", "advisory"]);
     expect(STOP_REASONS.upstream_symbol.defaultMode).toBe("shadow");
+    // Shadow until its promotion (#2215): a required check failing at baseline outside the plan.
+    expect(STOP_REASONS.baseline_unrepairable.modes).toEqual(["shadow", "advisory"]);
+    expect(STOP_REASONS.baseline_unrepairable.defaultMode).toBe("shadow");
+    // Shadow until its promotion (#2295): a baseline failure matched only by its shaped signature.
+    expect(STOP_REASONS.baseline_signature.modes).toEqual(["shadow", "advisory"]);
+    expect(STOP_REASONS.baseline_signature.defaultMode).toBe("shadow");
+    // Shadow until its promotion (#2284): a delivered CI command no configured check runs.
+    expect(STOP_REASONS.ci_check_drift.modes).toEqual(["shadow", "advisory"]);
+    expect(STOP_REASONS.ci_check_drift.defaultMode).toBe("shadow");
+    // Shadow until its promotion (#2218): an initiative that would pause on its dollar cap.
+    expect(STOP_REASONS["initiative-dollar-cap"].modes).toEqual(["shadow", "advisory"]);
+    expect(STOP_REASONS["initiative-dollar-cap"].defaultMode).toBe("shadow");
+    // Shadow until its promotion (#2280): a feature run's bound above the pool or the ceiling.
+    expect(STOP_REASONS["initiative-pool-growth"].modes).toEqual(["shadow", "advisory"]);
+    expect(STOP_REASONS["initiative-pool-growth"].defaultMode).toBe("shadow");
     const parse = (stopModes: unknown) => PolicySchema.safeParse({ ...defaultWorkflowPolicy, stopModes }).success;
+    expect(parse({ ci_check_drift: "advisory" })).toBe(true);
+    expect(parse({ ci_check_drift: "enforce" })).toBe(false);
+    // Promoted (#2245) after R70 and R71: enforced with stopModes unset, shadow still on request.
+    expect(STOP_REASONS["initiative-plan-charge"].defaultMode).toBe("enforce");
+    expect(stopMode(defaultWorkflowPolicy, "initiative-plan-charge")).toBe("enforce");
+    expect(parse({ "initiative-plan-charge": "shadow" })).toBe(true);
     expect(parse({ "cost-forecast": "shadow", "approval-scope": "advisory" })).toBe(true);
     expect(parse({ cost: "shadow" })).toBe(false);
     expect(parse({ "run-budget": "advisory" })).toBe(false);
     expect(parse({ unknown: "shadow" })).toBe(false);
     expect(parse({ repeated_failure: "advisory" })).toBe(true);
     expect(parse({ repeated_failure: "enforce" })).toBe(false);
+    expect(parse({ baseline_unrepairable: "advisory" })).toBe(true);
+    expect(parse({ baseline_unrepairable: "enforce" })).toBe(false);
     // Shadow by default (#2133), enforceable through stopModes so its host decision can be turned on.
     expect(STOP_REASONS.corrective_unowned_file.defaultMode).toBe("shadow");
     expect(stopMode(defaultWorkflowPolicy, "corrective_unowned_file")).toBe("shadow");
     expect(parse({ corrective_unowned_file: "enforce" })).toBe(true);
+    // Shadow by default (#2221) for the check configs auto-approval did not protect before.
+    expect(stopMode(defaultWorkflowPolicy, "check-config-approval")).toBe("shadow");
+    expect(parse({ "check-config-approval": "enforce" })).toBe(true);
   });
 
   test("the mode is the explicit entry, else the legacy advisory forecast, else the default", () => {

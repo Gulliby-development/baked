@@ -6,6 +6,7 @@
     "foundry.toml": "[profile.default]\n"
   },
   "expected": {
+    "checkConfigs": [".solhint.json: solhint", ".solhintignore: solhint, read as text"],
     "tests": [
       "test/Sum.t.sol",
       "src/Sum.t.sol"
@@ -35,6 +36,12 @@
     "packageContents": null,
     "numericLimits": [
       "uint256 arithmetic reverts on overflow since 0.8; unchecked blocks wrap"
-    ]
+    ],
+    "staticTools": [
+      "solhint: linter",
+      "slither: linter, whole unit",
+      "forge fmt: formatter"
+    ],
+    "sortedLists": null
   }
 }

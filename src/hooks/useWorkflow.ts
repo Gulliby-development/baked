@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
+import { exportPackage } from "../components/workflow/export-package.js";
 import type { GatesApi } from "../components/workflow/GatesView.js";
 import type { InitiativesApi } from "../components/workflow/InitiativesView.js";
 import type { RoutingApi } from "../components/workflow/RoutingView.js";
@@ -347,6 +348,7 @@ export function workflowInitiativesApi(workspace: string): InitiativesApi {
     start: (input) => workflowSession(workspace).startInitiative(input),
     info: () => workflowSession(workspace).info(),
     estimate: (id) => workflowSession(workspace).initiativeEstimate(id),
+    exportPackage: (id, choice) => exportPackage(workflowSession(workspace), id, choice),
   };
 }
 

@@ -40,6 +40,7 @@ const bridge: DesktopBridge = {
   },
   exportChat: (key, sessionId, format) =>
     ipcRenderer.invoke(IPC.exportChat, key, sessionId, format),
+  showInFolder: (key, path) => ipcRenderer.invoke(IPC.showInFolder, key, path),
   attention: () => ipcRenderer.invoke(IPC.attention),
   onAttention: (listener) => listen(IPC.attentionChanged, listener),
   settings: () => ipcRenderer.invoke(IPC.settings),
