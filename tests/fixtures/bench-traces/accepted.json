@@ -103,5 +103,13 @@
   "R73/evalpin.sqlite.gz#evalpin": {
     "newPoolBoundStops": 1,
     "reason": "#2280: initiative-pool-growth (shadow) records delivery, the last feature: with no waiting feature estimated its token room was null and its refresh took the base policy's ceilings (8M, 12M hard) with 3.31M of the 23.9M pool left after the others' use at its gate. The bound really passed the pool (true record); it used 0.81M and the initiative stayed under its pool. Same null-room path as R71 xmlvet's cli-release, which chargeHold does not cover. #2294: the room is never null now, so the current code keeps delivery at its 3.31M share (tests/forecast-replay-corpus.test.ts); the record replays from the round's own revisions."
+  },
+  "R74/callmend.sqlite.gz#e2e109cd-03fb-4ea9-bc45-5f1e749a8a80": {
+    "newRepeatStops": 1,
+    "reason": "#1996 replay fallback: the json run recorded no repeats/ record, since no task-level corrective failed a required check; T010 and T011 were opened by test-integrity findings (test-count: T009 dropped spec/json/parser_spec.rb from 12 to 9 tests, T010 from 9 to 8). With no records the replay reads every basis-less finding with evidence as a check finding (findingRounds), and the two integrity findings share one impact stand-in on parser_spec.rb, so it decides T010 a repeat of T009. The live rule (recordRepeatedFailures) reads only findings whose claim names a check, so no live decision differs; the pattern is real (the literal-example restructure kept dropping tests, #2334)."
+  },
+  "R74/callmend.sqlite.gz#callmend": {
+    "newPoolBoundStops": 1,
+    "reason": "#2280: initiative-pool-growth (shadow) replays one feature run whose recorded bounds pass the initiative pool (30.04M tokens after the split-approval extension). The replay record is true; the initiative ended at 29.03M of that pool and USD 26.56 of the 30 cap, so nothing was exceeded. Same shape as the R73 evalpin delivery entry above (the last feature's room is not covered by chargeHold); not analysed further in R74."
   }
 }

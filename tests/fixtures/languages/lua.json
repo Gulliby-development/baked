@@ -72,6 +72,9 @@
       "selene: linter",
       "stylua: formatter"
     ],
-    "sortedLists": null
+    "sortedLists": null,
+    "dependencyDirs": [
+      "lua_modules: linked"
+    ]
   }
 }

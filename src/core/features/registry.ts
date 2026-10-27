@@ -1116,7 +1116,7 @@ export const FEATURES: readonly Feature[] = [
     id: "run-control",
     group: "Workflow runs",
     title: "Pause, resume, accept outside changes, cancel, extend, reroute, undo edits",
-    tui: ["/workflow"],
+    tui: ["/workflow", "/workflow: no retry the invalid-output repeat guard would refuse"],
     cli: [
       "baked workflow pause",
       "baked workflow resume",
@@ -1132,8 +1132,9 @@ export const FEATURES: readonly Feature[] = [
       "/v1/workflow/runs/:id/extend",
       "/v1/workflow/runs/:id/reroute",
       "/v1/workflow/runs/:id/undo",
+      "/v1/workflow/runs/:id: recovery of a repeated invalid output",
     ],
-    desktop: ["project/runs"],
+    desktop: ["project/runs", "project/runs: switch model instead of a refused retry"],
   },
   {
     id: "run-frozen-input-provenance",
