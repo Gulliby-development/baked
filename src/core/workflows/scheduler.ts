@@ -759,7 +759,7 @@ import {
   rungText,
   writeLadder,
 } from "./stall-ladder.js";
-import { recordWouldStop, stopFault, stopMode } from "./stop-reasons.js";
+import { costRefusalWait, recordWouldStop, stopFault, stopMode } from "./stop-reasons.js";
 import {
   repairUncoveredCriteria,
   UNCOVERED_SUBMISSIONS,
@@ -3508,6 +3508,10 @@ export class WorkflowScheduler {
           );
           return;
         }
+        // A cost refusal of a run past its tasks, at review or convergence, with a priced extend
+        // remedy would leave the run waiting on that remedy instead of blocked (#2249). Decided
+        // here, from the fault's recovery, for every stage at once; in shadow the run blocks.
+        if (!outerSignal.aborted) this.costRefusalWouldWait(runId, fault, diagnostic.id);
         this.store.transition(
           runId,
           outerSignal.aborted ? "paused" : "blocked",
@@ -4701,6 +4705,26 @@ export class WorkflowScheduler {
       );
       if (record.decision === "would_stop") this.baselineWouldStop(runId, policy, record, null);
     }
+  }
+  /**
+   * The `cost_refusal_wait` would-stop (#2249): the state a cost refusal of a run past its tasks
+   * would leave it in (`costRefusalWait`), once per stop, keyed by the stop's diagnostic so the
+   * initiative reads it for the run's current block (`costRefusalWaitOf`).
+   */
+  private costRefusalWouldWait(runId: string, fault: unknown, diagnosticId: string): void {
+    const run = this.store.run(runId);
+    const wait = costRefusalWait(fault, run.stage_id ?? null);
+    if (!wait) return;
+    const parsed = PolicySchema.safeParse(JSON.parse(run.policy_json));
+    const mode = parsed.success ? stopMode(parsed.data, "cost_refusal_wait") : "shadow";
+    if (mode === "enforce") return;
+    recordWouldStop(this.store, runId, {
+      reason: "cost_refusal_wait",
+      mode,
+      key: `stop-${diagnosticId}`,
+      summary: `The run would wait for its cost cap to be extended to $${wait.suggestedUsd.toFixed(2)} (baked workflow extend ${runId} --cost-usd ${wait.suggestedUsd}) at its ${wait.stageId ?? "next"} stage instead of blocking, and planned-ahead dependants would count it as waiting, not stalled.`,
+      inputs: { ...wait, diagnosticId },
+    });
   }
   /**
    * The `ci_check_drift` would-stops (#2284): each gate command of a CI workflow or root README
