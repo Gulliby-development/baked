@@ -75,6 +75,6 @@
       "mypy: typechecker, whole unit",
       "pyright: typechecker, whole unit"
     ],
-    "sortedLists": null
+    "sortedLists": ["src/pkg/__init__.py: ruff/isort \"# isort: split\" before 2"]
   }
 }

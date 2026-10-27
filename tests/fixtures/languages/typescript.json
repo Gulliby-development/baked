@@ -72,6 +72,6 @@
       "prettier: formatter",
       "tsc: typechecker, whole unit"
     ],
-    "sortedLists": null
+    "sortedLists": ["src/index.ts: biome organizeImports \"// order as written\" before 2"]
   }
 }

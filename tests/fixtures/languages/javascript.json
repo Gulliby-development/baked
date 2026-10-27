@@ -67,6 +67,6 @@
       "oxlint: linter",
       "prettier: formatter"
     ],
-    "sortedLists": null
+    "sortedLists": ["src/index.js: biome organizeImports \"// order as written\" before 2"]
   }
 }
