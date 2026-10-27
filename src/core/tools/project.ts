@@ -1209,7 +1209,11 @@ export function formatRoot(filePath: string): string | null {
  * Run the project's configured formatter on a single file.
  * Returns whether formatting was applied. Best-effort — failures return false.
  */
-export async function formatFile(filePath: string, cwd?: string): Promise<boolean> {
+export async function formatFile(
+  filePath: string,
+  cwd?: string,
+  timeoutMs = FORMAT_TIMEOUT_MS,
+): Promise<boolean> {
   const effectiveCwd = cwd ?? formatRoot(filePath) ?? process.cwd();
   const profile = await detectProfile(effectiveCwd);
   if (!profile.formatFile) return false;
@@ -1222,7 +1226,7 @@ export async function formatFile(filePath: string, cwd?: string): Promise<boolea
     const endings = captureEndings([filePath]);
     const result = await runBoundedShell(command, {
       cwd: effectiveCwd,
-      timeoutMs: FORMAT_TIMEOUT_MS,
+      timeoutMs,
     }).finally(() => restoreEndings(endings));
     return !result.timedOut && result.exitCode === 0;
   } catch {

@@ -612,11 +612,17 @@ export class StandaloneLspClient {
   /** Graceful shutdown */
   async stop(): Promise<void> {
     if (!this.process) return;
-    try {
-      await this.request("shutdown", null);
-      this.notify("exit", null);
-    } catch {
-      // Best effort
+    // A server still starting may never answer shutdown, and a fallback timer may not run in a
+    // worker being torn down: it is killed at once, so it does not keep its working directory
+    // busy (#2268).
+    const starting = !this.initialized;
+    if (!starting) {
+      try {
+        await this.request("shutdown", null);
+        this.notify("exit", null);
+      } catch {
+        // Best effort
+      }
     }
     // Kill the entire process tree (not just the direct child).
     // Some LSP wrappers (e.g. biome's Mason shim) use spawnSync to launch
@@ -626,16 +632,17 @@ export class StandaloneLspClient {
     const proc = this.process;
     const pid = proc?.pid;
     if (pid) {
+      const signal = starting ? "SIGKILL" : "SIGTERM";
       if (IS_WIN) {
         try {
-          platformKillTree(pid, "SIGTERM");
+          platformKillTree(pid, signal);
         } catch {}
       } else {
         try {
-          process.kill(-pid, "SIGTERM");
+          process.kill(-pid, signal);
         } catch {
           try {
-            proc.kill("SIGTERM");
+            proc.kill(signal);
           } catch {}
         }
       }
@@ -664,6 +671,8 @@ export class StandaloneLspClient {
     this.initialized = false;
     this.openDocuments.clear();
     this.diagnostics.clear();
+    // A start awaiting its handshake fails now instead of waiting forever.
+    for (const pending of this.pending.values()) pending.reject(new Error("LSP server stopped"));
     this.pending.clear();
   }
 }

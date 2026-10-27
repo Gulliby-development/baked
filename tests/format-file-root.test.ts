@@ -41,17 +41,18 @@ describe("formatting a file in a task worktree", () => {
     expect(formatRoot(join(main, "src", "a.ts"))).toBe(main);
   });
 
-  // Runs Biome twice, and formatFile allows each run 30 s for a cold start on a loaded Windows
-  // runner (#1177), so the test needs room for both.
+  // Runs Biome twice. Its first start through `bunx` on a loaded Windows runner took over the
+  // 30 s a format gets after an edit (#1177, #2265); this test is about the root it formats from,
+  // so the first run gets the room of a cold start, and the second one is warm.
   it("formats from the worktree even when called from the main checkout", async () => {
     const file = join(task, "src", "a.ts");
     writeFileSync(file, "export const a = {b:1}\n");
-    expect(await formatFile(file)).toBe(true);
+    expect(await formatFile(file, undefined, 80_000)).toBe(true);
     expect(readFileSync(file, "utf8")).toBe("export const a = { b: 1 };\n");
 
     const edited = join(task, "src", "b.ts");
     writeFileSync(edited, "export const b = {c:2}\n");
     expect(await autoFormatAfterEdit(edited, undefined, null)).toBe(true);
     expect(readFileSync(edited, "utf8")).toBe("export const b = { c: 2 };\n");
-  }, 90_000);
+  }, 150_000);
 });
