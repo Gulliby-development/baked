@@ -89,24 +89,55 @@ function Title({ call }: { call: ToolCall }) {
   );
 }
 
+/**
+ * Opens the document a tool call wrote in the chat's preview panel; returns null for calls that
+ * wrote none, or where the screen has no panel.
+ */
+export const PreviewOpener = createContext<((call: ToolCall) => (() => void) | null) | null>(null);
+
+function PreviewChip({ open }: { open: () => void }) {
+  return (
+    <button
+      type="button"
+      className={cn(CHIP_SMALL, "flex-none")}
+      title="Show it in the preview"
+      onClick={open}
+    >
+      <Icon name="eye" size={12} />
+      Preview
+    </button>
+  );
+}
+
 function ToolLine({ call }: { call: ToolCall }) {
   const [open, setOpen] = useState(false);
   const id = useId();
+  const preview = useContext(PreviewOpener)?.(call);
   const output = call.result ? (call.result.error ?? call.result.output) : "";
+  const line = (
+    <button
+      type="button"
+      className={cn(TOOL_LINE, preview && "min-w-0 flex-1")}
+      aria-expanded={open}
+      aria-controls={id}
+      onClick={() => setOpen((v) => !v)}
+    >
+      <Chevron open={open} />
+      <Status call={call} />
+      <Icon name={toolIcon(call.name)} size={13} className="flex-none text-dim-foreground" />
+      <Title call={call} />
+    </button>
+  );
   return (
     <div className="flex flex-col gap-1">
-      <button
-        type="button"
-        className={TOOL_LINE}
-        aria-expanded={open}
-        aria-controls={id}
-        onClick={() => setOpen((v) => !v)}
-      >
-        <Chevron open={open} />
-        <Status call={call} />
-        <Icon name={toolIcon(call.name)} size={13} className="flex-none text-dim-foreground" />
-        <Title call={call} />
-      </button>
+      {preview ? (
+        <div className="flex items-center gap-2">
+          {line}
+          <PreviewChip open={preview} />
+        </div>
+      ) : (
+        line
+      )}
       {open && (
         <pre id={id} className={`${TOOL_BODY} font-mono text-[12px]`}>
           {call.result ? output.trim() || "No output." : "Running…"}
@@ -119,6 +150,7 @@ function ToolLine({ call }: { call: ToolCall }) {
 function DiffCard({ call, diff }: { call: ToolCall; diff: ToolDiff }) {
   const [all, setAll] = useState(false);
   const failed = call.result && !call.result.success;
+  const preview = useContext(PreviewOpener)?.(call);
   const lines = all ? diff.lines : diff.lines.slice(0, DIFF_PREVIEW_LINES);
   const hidden = diff.lines.length - lines.length;
   return (
@@ -133,6 +165,7 @@ function DiffCard({ call, diff }: { call: ToolCall; diff: ToolDiff }) {
         {diff.created && <span className="text-dim-foreground">new file</span>}
         <span className="font-mono ml-auto text-[var(--ok)]">+{diff.added}</span>
         <span className="font-mono text-[var(--err)]">−{diff.removed}</span>
+        {preview && <PreviewChip open={preview} />}
         {(hidden > 0 || all) && (
           <button
             type="button"
