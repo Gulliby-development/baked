@@ -197,6 +197,7 @@ export const CAPABILITIES = [
   "hooks",
   "hooks-edit",
   "provider-switch",
+  "provider-limits",
   "chat-export",
   "sdd-export",
   "sdd-import",

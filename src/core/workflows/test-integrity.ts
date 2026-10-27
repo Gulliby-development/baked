@@ -1,6 +1,7 @@
 import { blankStringLiterals } from "../intelligence/comments.js";
 import { isTestFile, isTestFileAt } from "../intelligence/language-traits.js";
 import { hasShadowTitles, testConventions } from "../intelligence/test-frameworks.js";
+import { suppressionPattern } from "./quality/suppressions.js";
 import type { RunPolicy } from "./schemas.js";
 import type { Task } from "./types.js";
 
@@ -377,42 +378,8 @@ function unguardedSkips(path: string, lines: readonly string[], shadow = false):
   return total;
 }
 
-const SUPPRESSIONS = new RegExp(
-  [
-    String.raw`@ts-(?:ignore|nocheck|expect-error)\b`,
-    String.raw`\beslint-disable`,
-    String.raw`\bbiome-ignore\b`,
-    String.raw`#\s*type:\s*ignore\b`,
-    String.raw`#\s*noqa\b`,
-    // SQLFluff (#1499).
-    String.raw`--\s*noqa\b`,
-    String.raw`#\s*pragma:\s*no cover\b`,
-    String.raw`#!?\[allow\(`,
-    String.raw`@SuppressWarnings\b`,
-    String.raw`//\s*nolint\b`,
-    // lintr: `# nolint`, `# nolint: object_name_linter.`, `# nolint start` (#1500).
-    String.raw`#\s*nolint\b`,
-    String.raw`#pragma\s+warning\s+disable\b`,
-    String.raw`@phpstan-ignore`,
-    String.raw`@psalm-suppress\b`,
-    String.raw`@codeCoverageIgnore`,
-    String.raw`#\s*(?:rubocop|standard):(?:disable|todo)\b`,
-    // luacheck and selene (#1495).
-    String.raw`--\s*luacheck:\s*(?:ignore|no\s|push\s+ignore)`,
-    String.raw`--\s*selene:\s*allow\b`,
-    // ShellCheck (#1497).
-    String.raw`#\s*shellcheck\s+disable=`,
-    // clang-tidy, and GCC's and Clang's diagnostic pragmas (#1490).
-    String.raw`//\s*NOLINT(?:NEXTLINE|BEGIN)?\b`,
-    String.raw`#\s*pragma\s+(?:GCC|clang)\s+diagnostic\s+ignored\b`,
-    String.raw`//\s*ignore(?:_for_file)?:\s*\w`,
-    String.raw`@nowarn\b|//\s*scalafix:(?:off|ok)\b|//\s*scalastyle:off\b`,
-    String.raw`//\s*swiftlint:disable\b|//\s*swift-format-ignore\b`,
-    // PSScriptAnalyzer, and the same attribute in C#: `[Diagnostics.CodeAnalysis.SuppressMessageAttribute(...)]` (#1498).
-    String.raw`\[(?:System\.)?(?:Diagnostics\.CodeAnalysis\.)?SuppressMessage(?:Attribute)?\s*\(`,
-  ].join("|"),
-  "g",
-);
+/** Every suppression spelling of every language (#2274), counted in every file. */
+const SUPPRESSIONS = suppressionPattern(["lint", "ts-check", "coverage"]);
 /** Words before a quoted suppression that forbid it rather than prescribe it. */
 const FORBIDS = /\b(?:not|never|no|without|avoid|forbid\w*|instead of|rather than)\b[^.;]{0,40}$/i;
 const collapse = (text: string) => text.replace(/\s+/g, " ").trim();
@@ -458,6 +425,13 @@ function unprescribedSuppressions(
   });
   return total;
 }
+/** The suppressions in a file's `text` that `prescribed` does not name, string content left out. */
+export const suppressionsIn = (path: string, text: string, prescribed = ""): number =>
+  unprescribedSuppressions(
+    blankStringLiterals(path, text).split(/\r?\n/),
+    text.split(/\r?\n/),
+    prescribed,
+  );
 const ANY_TYPE = /\bas\s+any\b|:\s*any\b|<any>/g;
 const TEST_HOOKS = new RegExp(
   [

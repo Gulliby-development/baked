@@ -86,6 +86,15 @@ describe("tool deadlines", () => {
     expect(DEFAULT_STALL_SETTINGS.stepStallMs).toBeGreaterThan(569_000 * 2);
   });
 
+  // Hot module provider-timers (#2257): file tools return in seconds, so two minutes; commands
+  // (installs, builds, test suites) carry their own limits, so half an hour.
+  test("default deadlines are two minutes for file tools and thirty for commands", () => {
+    expect(toolDeadlineMs(DEFAULT_STALL_SETTINGS, "edit_file")).toBe(120_000);
+    expect(toolDeadlineMs(DEFAULT_STALL_SETTINGS, "read")).toBe(120_000);
+    expect(toolDeadlineMs(DEFAULT_STALL_SETTINGS, "shell")).toBe(1_800_000);
+    expect(toolDeadlineMs(stallSettings({}), "shell")).toBe(1_800_000);
+  });
+
   test("an edit whose follow-up work hangs is recorded as applied and journaled with its deadline", async () => {
     const fixture = stallFixture(async (request) => {
       const result = await guardOf(fixture, request, 100).execute(
