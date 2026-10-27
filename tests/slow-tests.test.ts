@@ -26,6 +26,22 @@ describe("slow-test report (#1656)", () => {
     expect(ownLimit(source, 7)).toBeNull();
   });
 
+  test("reads the limit of a curried test.each from its last call, not its table", () => {
+    const each = [
+      'test.each([["a", 1], ["b", 2]])("%s: rows", async (_name, n) => {',
+      "  expect(n).toBeGreaterThan(0);",
+      "}, 300_000);",
+      'test.each([["c", 5_000]])("%s: no limit", () => {});',
+      "test.each(",
+      '  [["d", 1]],',
+      ')("%s: table on its own lines", () => {',
+      "}, 60_000);",
+    ].join("\n");
+    expect(ownLimit(each, 1)).toBe(300_000);
+    expect(ownLimit(each, 4)).toBeNull();
+    expect(ownLimit(each, 5)).toBe(60_000);
+  });
+
   test("lists tests above half of their limit, the default or their own, and marks those above 80 percent", () => {
     const slow = slowTests(xml([["fast", 2, 0.2], ["own limit", 3, 70], ["plain", 7, 25]]), 30_000, () => source);
     expect(slow.map((t) => [t.name, t.limitMs, Math.round(t.share * 100)])).toEqual([

@@ -425,6 +425,7 @@ import {
   type FamilyRecord,
   familyDecision,
   observedValue,
+  recordRestoredRemovals,
   rewritesSymbol,
   symbolKey,
   taskChainRecord,
@@ -763,6 +764,7 @@ import {
   rungText,
   writeLadder,
 } from "./stall-ladder.js";
+import { siblingFallbacks, siblingNote, writeFallback } from "./stall-siblings.js";
 import { recordWouldStop, stopFault, stopMode } from "./stop-reasons.js";
 import {
   repairUncoveredCriteria,
@@ -871,6 +873,7 @@ import {
   integrityRecord,
   isTestPath,
   measureTestIntegrity,
+  prescribedExemptions,
   requestedTestRemovals,
   rewriteTargets,
   type ScanOptions,
@@ -5938,7 +5941,9 @@ export class WorkflowScheduler {
       : (recovery?.effort ?? route.effort);
     const fallbackIndex = placement.fallbackIndex ?? continued?.fallbackIndex ?? 0;
     const largerWindow = placement.largerWindow === true;
-    const profile = this.routed(runId, stepId, stageProfile, fallbackIndex, largerWindow);
+    const routedProfile = this.routed(runId, stepId, stageProfile, fallbackIndex, largerWindow);
+    // The ladder's derived fallback runs on a sibling model the route does not name (#2271).
+    const profile = recovery?.model ? { ...routedProfile, model: recovery.model } : routedProfile;
     // Under `context: auto` a step whose context does not fit tries the model's largest window
     // once, before the next model of the route (#1256).
     const upgrade = (): Promise<unknown> | null =>
@@ -6282,15 +6287,20 @@ export class WorkflowScheduler {
             error: error instanceof Error ? error.message : String(error),
           },
         ];
+        // Models of the same provider the run routes other checking calls to that answered a
+        // moment ago: the `next-model` rung takes one when the route names no later model (#2271).
+        const fallback = siblingFallbacks(this.store, runId, attempt, profile);
         const next = nextRung(recovery, {
           model: profile.model,
           models: route.models,
           fallbackIndex,
           effort,
+          ...(fallback ? { siblings: fallback.siblings } : {}),
         });
         if (next) {
-          const nextModel = route.models[next.fallbackIndex] ?? profile.model;
+          const nextModel = next.model ?? route.models[next.fallbackIndex] ?? profile.model;
           this.store.transaction(() => {
+            if (fallback) writeFallback(this.store, runId, fallback);
             writeLadder(this.store, runId, ladderAt, { steps, next });
             this.store.emit(runId, {
               type: "attempt.recovery",
@@ -6333,12 +6343,19 @@ export class WorkflowScheduler {
         }
         if (recovery || recoverable === "lost-answer") {
           this.store.transaction(() => {
+            if (fallback) writeFallback(this.store, runId, fallback);
             writeLadder(this.store, runId, ladderAt, { steps, exhausted: true });
             this.store.artifact(
               runId,
               "recovery",
               "provider/circuit.json",
-              canonical({ open: true, attemptId: attempt, ladder: steps.length }),
+              canonical({
+                open: true,
+                attemptId: attempt,
+                ladder: steps.length,
+                // A stalled ladder parks as `provider_stall` (#2271, `recordStallPark`).
+                ...(recoverable === "stall" ? { stall: true } : {}),
+              }),
             );
           });
           if (recoverable === "lost-answer") {
@@ -6362,7 +6379,7 @@ export class WorkflowScheduler {
           throw new WorkflowFault(
             "OUTPUT_INVALID",
             recoveryAdvice(
-              `${profile.id} got no model response on every rung of the recovery ladder: ${ladderSummary(steps)}. Automatic retries stopped. Check the provider, then resume (a new ladder starts) or reroute the run to another model.`,
+              `${profile.id} got no model response on every rung of the recovery ladder: ${ladderSummary(steps)}.${siblingNote(fallback)} Automatic retries stopped. Check the provider, then resume (a new ladder starts) or reroute the run to another model.`,
               `A stalled model call failed on ${steps.length} recovery rungs and needs your decision.`,
               { action: "resume", runId },
               { action: "reroute", runId },
@@ -7753,6 +7770,15 @@ ${note}`;
       // failing checks already pass, has nothing for a model to do: its task checks decide it,
       // and the checks stage covers the rest.
       if (hostWritten(task)) this.writeHostFiles(runId, child, state, policy, task);
+      // No session edits these files, so no scan runs; the record says why (#2277).
+      this.recordIntegrity(runId, `tasks/${task.id}`, {
+        ...integrityRecord("task", task.id, testIntegrityOf(policy), [], []),
+        skipped: hostWritten(task)
+          ? "host-written"
+          : task.writes.length === 0
+            ? "no-writes"
+            : "checks-passing",
+      });
       await this.snapshot(runId, state, policy, signal);
       this.store.transaction(() => {
         this.store.taskStatus(runId, task.id, "implemented", state.snapshotId);
@@ -8241,6 +8267,8 @@ ${note}`;
         this.store.taskStatus(runId, task.id, "implemented", state.snapshotId);
         this.store.saveState(runId, state);
       });
+      // Shadow (#2277): a corrective that puts back what the previous one removed.
+      recordRestoredRemovals(this.store, runId, policy, state.graph?.tasks ?? [], task.id);
       integrity = this.integrityFailures(runId, state, policy, task, root, beforeHashes, changed);
     }
     const taskFailures: Review["findings"] = [...integrity];
@@ -9839,6 +9867,10 @@ ${note}`;
     if (conflicts.length)
       await this.resolveConflicts(runId, state, policy, profiles, outcome, conflicts, signal);
     await this.snapshot(runId, state, policy, signal);
+    const integratedBefore = Object.fromEntries(
+      outcome.changed.map((p) => [p, outcome.before[p] ?? null]),
+    );
+    const patch = await this.taskPatch(runId, mainRoot, integratedBefore);
     this.store.transaction(() => {
       const diff = this.store.artifact(
         runId,
@@ -9846,8 +9878,9 @@ ${note}`;
         `tasks/${task.id}/diff.json`,
         canonical({
           changed: outcome.changed,
-          before: Object.fromEntries(outcome.changed.map((p) => [p, outcome.before[p] ?? null])),
+          before: integratedBefore,
           after: Object.fromEntries(outcome.changed.map((p) => [p, outcome.after[p] ?? null])),
+          patch,
           worktree: entry.path,
           integrated: Object.fromEntries(
             outcome.changed.map((p) => [p, state.expectedFiles?.[p] ?? null]),
@@ -9863,13 +9896,14 @@ ${note}`;
     const results = conflicts.length
       ? await this.recheck(runId, state, entry, policy, signal, mainRoot)
       : outcome.checks;
+    recordRestoredRemovals(this.store, runId, policy, state.graph?.tasks ?? [], task.id);
     const failures: Review["findings"] = this.integrityFailures(
       runId,
       state,
       policy,
       task,
       mainRoot,
-      Object.fromEntries(outcome.changed.map((p) => [p, outcome.before[p] ?? null])),
+      integratedBefore,
       outcome.changed,
     );
     if (this.testsPending(state, policy) && isTestTask(task)) {
@@ -11075,6 +11109,7 @@ ${note}`;
         measures,
         found,
         shadowTitleFindings(changes, scanOptions, found),
+        prescribedExemptions(changes, scanOptions.specText ?? "", found),
       ),
     );
     if (!found.length) return [];
@@ -11341,6 +11376,7 @@ ${note}`;
         measures,
         found,
         shadowTitleFindings(runChanges, scanOptions, found),
+        prescribedExemptions(runChanges, scanOptions.specText ?? "", found),
       ),
     );
     if (!found.length) return [];
