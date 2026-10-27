@@ -9,12 +9,17 @@ import {
   repeatedFailureDecision,
   repeatRecord,
 } from "../src/core/workflows/repeated-failure.js";
-import { TEST_RUNNERS } from "../src/core/verification/output-counts.js";
+import { failureSignature as failingLines, failuresCovered } from "../src/core/verification/convergence.js";
+import { shapedFailureSignature, TEST_RUNNERS, withinBaseline } from "../src/core/verification/output-counts.js";
+import { baselineSignatureDecision, signatureLines } from "../src/core/workflows/baseline-signature.js";
 
 // #1996: two runs of the same failing check hash equal, whatever toolchain prints them; a moved
 // position or another message is progress. A check runner whose failing output carries another
-// value that changes between runs adds its pair here with its normalization; a runner of
-// `TEST_RUNNERS` is named by the first word of its pair (#2281).
+// value that changes between runs adds its pair here with its normalization (in
+// `normalizeVolatile`, src/core/verification/volatile.ts); a runner of `TEST_RUNNERS` is named by
+// the first word of its pair (#2281). Every pair holds for the three readers of that table: the
+// repeated-failure hash, the check baseline's shaped signature and the check finding's failing
+// lines (#2295).
 const tmp = join(tmpdir(), "baked-check-x1").replaceAll("\\", "/");
 const busted = (time: string, address: string) =>
   `●◼\n0 successes / 1 failure / 0 errors / 0 pending : ${time} seconds\n\nFailure → spec/parse_spec.lua @ 3\nparse rejects empty input\nspec/parse_spec.lua:5: Expected objects to be the same.\nPassed in:\n(table: ${address}) {\n  [1] = 'x' }\nExpected:\n(table: ${address}) { }\n`;
@@ -129,5 +134,61 @@ describe("repeated failure hash (#1996)", () => {
     expect(first).toMatchObject({ taskId: "T005", previous: null, root: "T003", decision: "first", previousHash: null, firstDifference: null });
     const second = repeatRecord("T006", "T005", first, checks);
     expect(second).toMatchObject({ previous: "T005", root: "T003", decision: "repeat", previousHash: first.hash, firstDifference: null });
+  });
+});
+
+// #2295: the check baseline (`shapedFailureSignature`, compared by the `baseline_signature` reason)
+// and the check finding's failing lines (`failureSignature` of convergence.ts) read the same table
+// of volatile values as the repeated-failure hash, so a new runner's pair covers all three.
+describe("one table of volatile values for every failure comparison (#2295)", () => {
+  test.each(pairs)("two runs of the same %s failure have one baseline signature and one finding text", (_name, a, b) => {
+    expect(shapedFailureSignature(a, "/work")).toBe(shapedFailureSignature(b, "/work"));
+    expect(failingLines(a)).toBe(failingLines(b));
+    const input = {
+      legacy: { before: ["x"], after: ["y"] },
+      shaped: { before: signatureLines(shapedFailureSignature(a, "/work")), after: signatureLines(shapedFailureSignature(b, "/work")) },
+      subset: false,
+    };
+    expect(baselineSignatureDecision(input)).toBe("shaped");
+  });
+
+  test("a changed line, test name or asserted value still differs in the baseline signature", () => {
+    const lua = busted("0.015", "00000184D28BE670");
+    const jvm = gradle("8s");
+    const variants: [string, string][] = [
+      [lua, lua.replace("parse_spec.lua:5:", "parse_spec.lua:6:")],
+      [lua, lua.replace("parse rejects empty input", "parse rejects blank input")],
+      [jvm, jvm.replace("ParserTest.kt:12", "ParserTest.kt:13")],
+      [jvm, jvm.replace("rejectsEmpty()", "rejectsBlank()")],
+      ["expected timeout 5s, got 6s", "expected timeout 6s, got 6s"],
+      ["parse.ts:12:34 expected 1", "parse.ts:12:35 expected 1"],
+      ["test/parse_test.dart 7:5  main", "test/parse_test.dart 8:5  main"],
+      ["Expected: 12 ms", "Expected: 13 ms"],
+    ];
+    for (const [before, after] of variants) expect(shapedFailureSignature(before, "/work")).not.toBe(shapedFailureSignature(after, "/work"));
+    // The finding text leaves line numbers out by design, but keeps names and asserted values.
+    expect(failingLines("  ✕ rejects bad input (5 ms)")).not.toBe(failingLines("  ✕ rejects blank input (5 ms)"));
+    expect(failingLines("Expected: 12 ms")).not.toBe(failingLines("Expected: 13 ms"));
+  });
+
+  test("a failure that lost a diagnostic and changed its duration is within the baseline", () => {
+    const before = "src/a.py:1:1: F401 `os` imported but unused\nsrc/b.py:2:1: F401 `re` imported but unused\nFound 2 errors.\nFinished in 8s";
+    const after = "src/a.py:1:1: F401 `os` imported but unused\nFound 1 error.\nFinished in 1m 3s";
+    expect(withinBaseline(shapedFailureSignature(before, "/work"), shapedFailureSignature(after, "/work"))).toBe(true);
+    const shaped = { before: signatureLines(shapedFailureSignature(before, "/work")), after: signatureLines(shapedFailureSignature(after, "/work")) };
+    expect(baselineSignatureDecision({ legacy: shaped, shaped, subset: true })).toBe("both");
+    expect(baselineSignatureDecision({ legacy: shaped, shaped, subset: false })).toBe("neither");
+    // A diagnostic the baseline did not have is new.
+    const added = { ...shaped, after: [...shaped.after, "src/c.py:1:1: F401 `io` imported but unused"] };
+    expect(baselineSignatureDecision({ legacy: added, shaped: added, subset: true })).toBe("neither");
+  });
+
+  test("a finding that names CTest's, Swift's and node-tap's failure covers its next run", () => {
+    for (const name of ["ctest", "swift test", "tap (node-tap)"]) {
+      const [, a, b] = pairs.find(([n]) => n === name) ?? ["", "", ""];
+      const signature = failingLines(a);
+      expect(signature).not.toBe("");
+      expect(failuresCovered(b, [{ claim: "Required check tests failed", impact: `Implementation cannot be accepted. Failing: ${signature}` }])).toBe(true);
+    }
   });
 });

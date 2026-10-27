@@ -107,6 +107,7 @@ const FULL_CAPABILITIES = [
   "hooks",
   "hooks-edit",
   "provider-switch",
+  "provider-limits",
   "chat-export",
   "sdd-export",
   "sdd-import",

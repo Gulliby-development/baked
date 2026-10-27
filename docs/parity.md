@@ -85,6 +85,7 @@ bun test tests/feature-parity.test.ts
 | --- | --- | --- | --- | --- |
 | Provider API keys | `/keys` | `--set-key`, `--remove-key`, `--list-providers` | `/v1/providers`, `/v1/providers/:id/key` | `settings/providers` |
 | Sign in through the Codex or Claude Code CLI | `/codex`, `/codex login`, `/codex logout` +6 | `baked login`, `baked logout` | `/v1/providers/:id/login`, `/v1/providers/:id/login/code`, `/v1/providers/:id/logout` | `settings/providers` |
+| Subscription usage limits left (Codex, Claude Code, Copilot) | `/limits` | `baked limits` | `/v1/providers/limits` | `settings/providers` |
 | Switch Codex accounts | `/codex switch` | Not needed: scripts sign in once | `/v1/providers/:id/switch` | `settings/providers` |
 | Pick a model from the list | `/models`, `/providers` | `baked workflow models`, `--list-models`, `--model` | `/v1/models` | `project/chat` |
 | Default chat model (project or global) | `/model-scope` | Not needed: --model picks the model per run | `/v1/settings` | `settings/chat` |
