@@ -59,7 +59,7 @@ describe("post-edit format timeouts (#2242)", () => {
     expect(await autoFormatOutcome(file, undefined, null)).toEqual({ kind: "skipped-after-timeouts" });
     await Bun.sleep(300);
     expect(started()).toBe(before);
-  }, 30000);
+  });
 
   it("names a timeout of the probe and the write alike, and only a timeout", () => {
     const timeout = recordFormatTimeout("/w/tests/json.rs", "uv run ruff format", 30_000);
