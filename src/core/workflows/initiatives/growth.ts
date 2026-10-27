@@ -7,7 +7,9 @@ import type { InitiativeView, ShareGateView, UsageView } from "./service.js";
 // How much of the initiative's shared budget a feature run may grow into (#1931, #1958). Part of
 // the cap-growth hot module (.github/hot-modules.json): a per-run limit derived from an initiative
 // share is raised only through these helpers, and each has a case in
-// tests/workflow-scenario-initiative-guard-growth.test.ts.
+// tests/workflow-scenario-initiative-guard-growth.test.ts. An initiative run's token growth room
+// is never null: a path that derives a run's token bound from the initiative takes it from
+// `growthLimit` (service.ts), which stays at or under the pool left (#2294).
 
 const cents = (n: number): number => Math.floor(n * 100) / 100;
 /** Whole cents down, with a sum's float error ($36 - $25.340000000000003) kept out of the floor. */
@@ -74,7 +76,10 @@ export function guardGrowth(
  * initiative can spare now (`room`, from `costGrowthLimit`, `growthLimit` and `guardGrowth`), or
  * null when nothing rises (#1931). The dollar and token bounds are ceilings the run grows toward
  * on its own (`growCostCapToForecast`, `growBudgetOnProgress`); the base policy's ceilings still
- * hold, and a null token room (no waiting feature has an estimate) takes them, as a start does.
+ * hold. An initiative run's token room is never null (`growthLimit`, #2294): with no waiting
+ * feature estimated it is what remains less the waiting features' whole shares, so a last feature
+ * grows no further than the pool left. A null room (a caller without an initiative pool) takes
+ * the base ceilings.
  * Calls and active time are limits rather than bounds, and the initiative commits them at once,
  * so they rise only for a run that has used 80 percent of them, by a step (`guardStep`).
  */
