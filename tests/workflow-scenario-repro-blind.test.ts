@@ -32,6 +32,8 @@ describe("a repro blind to its correction (#2287)", () => {
     // A Windows root a string literal escapes is still the root.
     const win = "C:\\work\\app";
     expect(reproOutsidePaths(repro(["-e", `read(${JSON.stringify(`${win}\\src\\a.ts`)})`]), win)).toEqual([]);
+    const worktree = `${win}\\.baked\\worktrees\\r1\\T003`;
+    expect(reproOutsidePaths(repro(["-e", `read(${JSON.stringify(`${win}\\.baked\\worktrees\\r1\\main\\a.ts`)})`]), worktree)).toEqual([]);
   });
 
   test("blind only when it reproduces, the file changed, the output did not, and it reads outside the root", () => {

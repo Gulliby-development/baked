@@ -258,7 +258,11 @@ const NEUTRAL = /^(?:\/dev\/|\/proc\/|\{files\})/;
  * own placeholders and never count.
  */
 export function reproOutsidePaths(repro: Pick<Repro, "args" | "files">, root: string): string[] {
-  const own = slashes(root).replace(/\/$/, "").toLowerCase();
+  // The run's workspace holds every root of the run, its worktrees too (a spelling `rerootRepro`
+  // cannot rewrite, such as one a string literal escapes, still names the run's own code).
+  const own = (slashes(root).split("/.baked/worktrees/")[0] ?? slashes(root))
+    .replace(/\/$/, "")
+    .toLowerCase();
   // What the repro runs: another root of the run is rewritten to `root` first (#2279).
   const texts = [
     ...repro.args.map((arg) => rerootRepro(arg, root, false).text),
