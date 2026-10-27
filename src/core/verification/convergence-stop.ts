@@ -504,12 +504,17 @@ export const testOrDocFile = (file: string | null): boolean =>
  * (junitdigest 3e5be74b spent about 1.1M each on `time.After` in a test helper and `%q` in an
  * error message, #744), not a reason for another convergence round. A medium finding on a
  * criterion the review marks `fail` repairs: dirdrift-update 6b57dc61 completed with AC-008 (a
- * README example the brief ordered) failing (#801).
+ * README example the brief ordered) failing (#801). So does a low one on a file the request gives
+ * verbatim (`supplied`): the host holds the exact text, so a deviation the review rates low is no
+ * detail of how well the behavior is pinned. R74 ewvet-update completed with "changes requested"
+ * and AC-005 and AC-006 failing on a low `partial` finding, a doubled backslash in the request's
+ * verbatim README example, that was itself why they failed (#2332).
  */
 export function passesWithNotes(
   finding: Finding,
   coverage: Review["coverage"],
   checksPass: boolean,
+  supplied = false,
 ): boolean {
   return notesPass(
     {
@@ -517,6 +522,7 @@ export function passesWithNotes(
       kind: finding.kind,
       testOrDoc: testOrDocFile(finding.file),
       criterionIds: finding.criterionIds,
+      ...(supplied ? { supplied } : {}),
     },
     coverage.map((c) => ({
       criterionId: c.criterionId,
@@ -534,9 +540,16 @@ export interface NotesCriterion {
   evidence: number;
 }
 
-/** `passesWithNotes` on a finding's labels: no claim or path, so a bench trace keeps them (#1715). */
+/**
+ * `passesWithNotes` on a finding's labels: no claim or path, so a bench trace keeps them (#1715).
+ * `supplied` (absent in records before #2332) says the finding's file is one the request gives
+ * verbatim.
+ */
 export function notesPass(
-  finding: Pick<Finding, "severity" | "kind" | "criterionIds"> & { testOrDoc: boolean },
+  finding: Pick<Finding, "severity" | "kind" | "criterionIds"> & {
+    testOrDoc: boolean;
+    supplied?: boolean;
+  },
   criteria: readonly NotesCriterion[],
   checksPass: boolean,
 ): boolean {
@@ -545,8 +558,8 @@ export function notesPass(
   );
   return (
     checksPass &&
-    (finding.severity === "low" ||
-      (finding.severity === "medium" && finding.testOrDoc && !failing)) &&
+    !(failing && (finding.severity !== "low" || finding.supplied === true)) &&
+    (finding.severity === "low" || (finding.severity === "medium" && finding.testOrDoc)) &&
     (finding.kind === "partial" ||
       (finding.kind === "missing" && finding.testOrDoc) ||
       (finding.severity === "low" &&

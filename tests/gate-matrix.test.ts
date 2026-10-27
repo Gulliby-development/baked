@@ -71,7 +71,9 @@ import {
   fixerTierPaths,
   isStaticCheck,
   isWholeUnitCheck,
+  isWholeUnitFixer,
   styleClaimShown,
+  wholeUnitFixerCommand,
 } from "../src/core/workflows/check-policy.js";
 import { buildWrapper, cmakeGates, detectGates, executeGate, type GateToolchain } from "../src/core/workflows/gates.js";
 import { fileScopedFormat, formatWrittenChecks } from "../src/core/workflows/format-written.js";
@@ -858,6 +860,36 @@ describe("gate matrix: JVM build tools (#1749)", () => {
   });
   cell("maven", "sbt-test from build.sbt", () => {
     expect(ids({ "build.sbt": 'name := "fixture"\n' })).toEqual([["sbt-test", "sbt", "-batch test", "build.sbt"]]);
+  });
+  // #2121: Spotless and ktlint-gradle got no gate and no fixer; `check` failed on a format violation.
+  const SPOTLESS = 'plugins {\n    kotlin("jvm") version "2.2.20"\n    id("com.diffplug.spotless") version "8.0.0"\n}\nspotless { kotlin { ktlint() } }\n';
+  const KTLINT = 'plugins {\n    kotlin("jvm") version "2.2.20"\n    id("org.jlleitschuh.gradle.ktlint") version "14.2.0"\n}\n';
+  cell("maven", "Spotless and ktlint-gradle get their own gates with fixers; check leaves Spotless out (#2121)", () => {
+    expect(ids({ "build.gradle.kts": SPOTLESS })).toEqual([
+      ["spotless", "gradle", "--console=plain --warn spotlessCheck", "build.gradle.kts"],
+      ["gradle-check", "gradle", "--console=plain -q check -x spotlessCheck", "build.gradle.kts"],
+    ]);
+    // ktlint-gradle hangs each source set's task on `check` directly, so `-x ktlintCheck` would not leave it out.
+    expect(ids({ "build.gradle.kts": KTLINT })).toEqual([
+      ["ktlint", "gradle", "--console=plain --warn ktlintCheck", "build.gradle.kts"],
+      ["gradle-check", "gradle", "--console=plain -q check", "build.gradle.kts"],
+    ]);
+    // Applied through the version catalog or `apply plugin:`.
+    const catalog = { "build.gradle.kts": "plugins {\n    alias(libs.plugins.spotless)\n}\n", "gradle/libs.versions.toml": '[plugins]\nspotless = { id = "com.diffplug.spotless", version = "8.0.0" }\n' };
+    expect(ids(catalog).map(([id]) => id)).toEqual(["spotless", "gradle-check"]);
+    expect(ids({ "build.gradle": "apply plugin: 'org.jlleitschuh.gradle.ktlint'\n" }).map(([id]) => id)).toEqual(["ktlint", "gradle-check"]);
+    const [spotless] = detectGates(project({ "build.gradle.kts": SPOTLESS })).map((s) => s.check);
+    expect([isStaticCheck(spotless as Check), isWholeUnitCheck(spotless as Check), isTestCheck(spotless as Check)]).toEqual([true, false, false]);
+  });
+  cell("maven", "the Spotless and ktlint fixer tasks run once for all of a task's files, with no file argument (#2121)", () => {
+    for (const task of ["spotlessApply", "ktlintFormat"]) {
+      const fix = { executable: "gradle", args: ["--console=plain", "--warn", task] };
+      expect(isWholeUnitFixer(fix)).toBe(true);
+      expect(wholeUnitFixerCommand(fix, ["src/main/kotlin/A.kt", "src/main/kotlin/B.kt"])).toEqual(fix);
+      const wrapped = { executable: "cmd", args: ["/d", "/c", "gradlew.bat", "--console=plain", "--warn", task] };
+      expect([isWholeUnitFixer(wrapped), wholeUnitFixerCommand(wrapped, ["a.kt"])]).toEqual([true, wrapped]);
+    }
+    expect(isWholeUnitFixer({ executable: "gradle", args: ["check"] })).toBe(false);
   });
   cell("maven", "a Windows wrapper runs through cmd, which the check routing unwraps", () => {
     const root = project({ "gradlew.bat": "@echo off\n", "mvnw.cmd": "@echo off\n" });
@@ -4434,6 +4466,37 @@ describe.skipIf(!toolchains)("gate matrix: toolchains", () => {
     expect(passing.output).not.toContain("tests completed");
     expect(testCount(passing.output)).toEqual({ tool: "junit", count: 3 });
   }, 900000);
+  // #2121: the Spotless and ktlint gates against the real plugins: each fails with the violation and
+  // its file, its fixer clears it, and the test gate then passes.
+  test.skipIf(!available([["gradle", "--version"]]))("a real Gradle build's Spotless and ktlint gates fail, their fixers clear them (#2121)", async () => {
+    const root = project({
+      // ktlint-gradle's check also lints the build scripts, so they are ktlint-clean too.
+      "settings.gradle.kts": 'pluginManagement {\n    repositories {\n        gradlePluginPortal()\n        mavenCentral()\n    }\n}\nrootProject.name = "calc"\n',
+      // Both compilers target 17, which every JDK the build runs on emits (CI's JDK 25 is newer than
+      // the newest target Kotlin 2.2 knows).
+      "build.gradle.kts": 'import org.jetbrains.kotlin.gradle.dsl.JvmTarget\n\nplugins {\n    kotlin("jvm") version "2.2.20"\n    id("com.diffplug.spotless") version "8.0.0"\n    id("org.jlleitschuh.gradle.ktlint") version "14.2.0"\n}\nrepositories { mavenCentral() }\njava { targetCompatibility = JavaVersion.VERSION_17 }\nkotlin { compilerOptions { jvmTarget.set(JvmTarget.JVM_17) } }\nspotless { kotlin { ktlint() } }\n',
+      "src/main/kotlin/Calc.kt": "fun add(a:Int,b:Int):Int{\n    return a+b }\n",
+    });
+    const env = { ...process.env, GRADLE_USER_HOME: process.env.GRADLE_USER_HOME ?? join(homedir(), ".gradle") };
+    const gates = detectGates(root).map((s) => s.check);
+    expect(gates.map((c) => c.id)).toEqual(["spotless", "ktlint", "gradle-check"]);
+    const byId = (id: string) => gates.find((c) => c.id === id) as Check;
+    const run = (executable: string, args: string[]) => executeCheckCommand(new ProcessScope(), executable, args, { cwd: root, env, timeoutMs: 600_000, signal: new AbortController().signal, sandbox: null });
+    for (const id of ["spotless", "ktlint"]) {
+      const check = byId(id);
+      const failing = await run(check.executable, check.args);
+      expect([id, failing.exitCode]).toEqual([id, 1]);
+      expect(failing.output).toContain("Calc.kt");
+      expect(failing.output).toMatch(id === "spotless" ? /format violations/ : /Calc\.kt:1:\d+ /);
+      const fix = wholeUnitFixerCommand(check.fix!, ["src/main/kotlin/Calc.kt"]);
+      expect((await run(fix.executable, fix.args)).exitCode).toBe(0);
+      expect([id, (await run(check.executable, check.args)).exitCode]).toEqual([id, 0]);
+      writeFileSync(join(root, "src/main/kotlin/Calc.kt"), "fun add(a:Int,b:Int):Int{\n    return a+b }\n");
+    }
+    expect((await run(byId("spotless").executable, byId("spotless").fix!.args)).exitCode).toBe(0);
+    const check = await run(byId("gradle-check").executable, byId("gradle-check").args);
+    expect([check.exitCode, check.exitCode === 0 ? "" : check.output.slice(-2000)]).toEqual([0, ""]);
+  }, 900000);
   // #1493: the RSpec, Minitest and RuboCop parsers read what the installed tools print.
   test.skipIf(!available([["rspec", "--version"], ["ruby", "-e", "require 'minitest'"], ["rubocop", "--version"]]))("rspec, minitest and rubocop output reads as their parsers expect (#1493)", () => {
     const root = project({
@@ -5035,4 +5098,46 @@ describe("review gate: a finding its reviewer marked noRepro (#2194)", () => {
     expect(gateFinding({ ...finding, noRepro: "  " }, false, "reproduced").noRepro).toBe(false);
     expect(gateFinding({ ...finding, noRepro: "needs the README setup" }, false, "reproduced").noRepro).toBe(true);
   });
+});
+
+describe("convergence gate: a low note on a file the request gives verbatim (#2332)", () => {
+  // R74 ewvet-update: F1 (low, partial, README.md) said the README's printf example doubled a
+  // backslash the request's verbatim diff has once; AC-005 and AC-006 were `fail` because of it,
+  // and the notes rule accepted it, so the run completed with "changes requested".
+  const finding = (over: Partial<ConvergenceGateFinding> = {}): ConvergenceGateFinding => ({
+    id: "F1",
+    severity: "low",
+    kind: "partial",
+    basis: "spec",
+    confidence: 0.95,
+    repro: false,
+    sibling: false,
+    outcome: undefined,
+    noRepro: false,
+    testOrDoc: true,
+    criterionIds: ["AC-005", "AC-006"],
+    ...over,
+  });
+  const gate = (findings: ConvergenceGateFinding[], verdict: "pass" | "fail"): ConvergenceGate => ({
+    severities: ["critical", "high", "medium"],
+    minConfidence: 0.8,
+    checksPass: true,
+    reproAvailable: false,
+    canRepro: false,
+    criteria: ["AC-005", "AC-006"].map((criterionId) => ({ criterionId, verdict, evidence: 1 })),
+    failing: verdict === "fail" ? ["AC-005", "AC-006"] : [],
+    findings,
+  });
+  const verdictOf = (g: ConvergenceGate) => convergenceGateDecision(g).verdicts.find((v) => v.id === "F1")?.verdict;
+
+  for (const kind of ["partial", "missing", "correctness", "contradicts"] as const) {
+    test(`${kind}: repairs on a supplied file whose criteria fail, a note otherwise`, () => {
+      expect(verdictOf(gate([finding({ kind, supplied: true })], "fail"))).toBe("repair");
+      expect(convergenceGateDecision(gate([finding({ kind, supplied: true })], "fail")).failing).toEqual(["AC-005", "AC-006"]);
+      // A file the request does not give verbatim, and a record before the label, keep the rule.
+      expect(verdictOf(gate([finding({ kind })], "fail"))).toBe("notes");
+      // With its criteria passing a low finding on a supplied file is a review note.
+      expect(verdictOf(gate([finding({ kind, supplied: true })], "pass"))).toBe("note");
+    });
+  }
 });

@@ -104,6 +104,24 @@ describe("workflow reroute", () => {
     ).rejects.toThrow("independentReview");
   });
 
+  test("a strict run reroutes under the strict configuration its start used: no independence refusal or warning (#2230)", async () => {
+    const f = fixture();
+    const blocked = await blockedRun(f);
+    const strict = { ...routingOf(f.service, blocked.runId), strict: true };
+    f.service.store.artifact(blocked.runId, "routing", "routing.json", JSON.stringify(strict));
+    f.service.config.modelRouting = { roles: { reviewer: "review/model" }, independentReview: "require" };
+    // The strict start ignored modelRouting, so its reviewers share the run model; before the fix
+    // the reroute read `require` from the full configuration and refused the same layout.
+    const planned = await f.service.planReroute(blocked.runId, { model: "spare/model" });
+    expect(planned?.after.warnings ?? []).toEqual([]);
+    const rerouted = await f.service.reroute(blocked.runId, { commandId: newId(), expectedRevision: blocked.revision }, { model: "spare/model" });
+    expect(rerouted.status).toBe("blocked");
+    const record = routingOf(f.service, blocked.runId);
+    expect(record.strict).toBe(true);
+    expect(record.profiles.reviewer?.model).toBe("spare/model");
+    expect(record.profiles.implementer?.model).toBe("spare/model");
+  });
+
   test("start routes stay, and one on the old run model moves", () => {
     const previous: RoutingRecord = {
       schemaVersion: 1,

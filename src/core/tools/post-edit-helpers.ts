@@ -12,7 +12,7 @@ import {
 } from "../intelligence/post-edit.js";
 import { atomicWriteFile } from "../platform/index.js";
 import { displayPath } from "../utils/path-display.js";
-import { autoFormatAfterEdit } from "./auto-format.js";
+import { autoFormatOutcome, formatTimeoutNote } from "./auto-format.js";
 import { assertEditActive, boundedEditWork } from "./edit-deadline.js";
 import { configuredDiagnosticsTimeoutMs, editDiagnosticsMode } from "./edit-diagnostics.js";
 import { dropLastEdit, updateLastAfterHash } from "./edit-stack.js";
@@ -126,8 +126,11 @@ export async function appendAutoFormatResult(
 ): Promise<string> {
   let result = output;
   toolPhase("format");
-  const formatted = await autoFormatAfterEdit(filePath, undefined, before);
-  if (formatted) {
+  const outcome = await autoFormatOutcome(filePath, undefined, before);
+  // A formatter that ran out of time is said, not folded into "not formatted" (#2242).
+  const timeoutNote = formatTimeoutNote(outcome, displayPath(filePath));
+  if (timeoutNote) result += `\n${timeoutNote}`;
+  if (outcome.kind === "formatted") {
     const postFormatContent = await readFile(filePath, "utf-8");
     updateLastAfterHash(filePath, postFormatContent, tabId);
     const postLines = postFormatContent.split("\n").length;

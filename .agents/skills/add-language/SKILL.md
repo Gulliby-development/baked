@@ -94,6 +94,7 @@ Each line is a past bug. A new detector, parser or table row answers it before r
 35. **Words in a gate's args.** `isStaticCheck` reads the words of a gate's arguments (`check`, `lint`, `format`), so a test command that passes code with such a word (testthat's `reporter = 'check'`) is taken for a linter and the written-tests check skips it; name the thing another way (`CheckReporter$new()`) and give the gate a check-routing test (#1500).
 36. **Deterministic runner output.** A reporter that prints spinners or running counts (testthat's progress reporter) changes the output of every run; pick the plain reporter, so the failure signature and the failed-test lines stay stable (#1500).
 37. **One table, all languages.** When a fix for this language touches a shared rule, sweep it across every supported language (the [file-issue skill](../file-issue/SKILL.md), step 3), and prefer a table row over a wider regex.
+38. **Build-tool fixers without a file argument.** A fixer task that formats the whole source set and takes no file (Gradle's `spotlessApply`, `ktlintFormat`) is a whole-unit fixer (`isWholeUnitFixer`, `wholeUnitFixerCommand`): it runs once and is never given a path, which Gradle would read as a task name. A plugin that hangs its per-source-set tasks on `check` directly (ktlint-gradle) cannot be left out with `-x` on its lifecycle task; check with `gradle check -x TASK --dry-run` (#2121).
 
 ## 4. Tests
 

@@ -531,14 +531,27 @@ export class CheckRunner {
     } catch {
       return null;
     }
-    const written = [
+    const paths = [
       ...new Set(
         tasks.flatMap((t) =>
           t.writes.filter((w) => w.action !== "delete").map((w) => w.path.replace(/\\/g, "/")),
         ),
       ),
-    ]
-      .filter((path) => path.startsWith(prefix))
+    ].filter((path) => path.startsWith(prefix));
+    // The edit tools saw the formatter time out on one of them: name it without a bisect (#2242).
+    const { formatTimeoutsUnder } = await import("../tools/auto-format.js");
+    const known = new Set([
+      ...formatTimeoutsUnder(root).keys(),
+      // A task edits in its own worktree, `.baked/worktrees/<run>/<task>/`.
+      ...[
+        ...formatTimeoutsUnder(join(this.store.workspace, ".baked", "worktrees", runId)).keys(),
+      ].map((path) => path.slice(path.indexOf("/") + 1)),
+    ]);
+    const hung = paths.find(
+      (path) => known.has(path) && fileScopedFormat(check, dir, path.slice(prefix.length)),
+    );
+    if (hung) return hung;
+    const written = paths
       .map((path) => {
         const local = path.slice(prefix.length);
         const command = fileScopedFormat(check, dir, local);

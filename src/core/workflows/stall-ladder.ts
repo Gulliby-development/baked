@@ -29,6 +29,11 @@ export interface RecoveryPlacement {
   effort?: RouteEffort;
   /** Position in the route's model chain the attempt runs on. */
   fallbackIndex: number;
+  /**
+   * A model outside the route's chain the attempt runs on instead: a sibling of the stalled model
+   * on its provider that answered another call of the run's workspace a moment ago (#2271).
+   */
+  model?: string;
 }
 
 export interface LadderStep {
@@ -75,22 +80,43 @@ function codexNative(model: string): boolean {
 const provider = (model: string) => model.split("/")[0];
 
 /**
+ * The rungs in the order a call climbs them. When another model of the stalled model's provider
+ * answered a moment ago, the endpoint of this model is what is down, so the next model comes
+ * before the lower effort, which cannot help a model that does not answer (#2271).
+ */
+export function ladderOrder(siblings: readonly string[] | undefined): readonly LadderRung[] {
+  return siblings?.length
+    ? ["fresh-session", "other-transport", "next-model", "lower-effort"]
+    : LADDER_RUNGS;
+}
+
+/**
  * The first rung after `current` that changes something for this call, or null when none is left.
  * The next model prefers another provider: a stall can belong to the account or the transport.
+ * With no later model in the route's chain, it takes the first of `siblings`: models of the same
+ * provider the run routes other calls to that answered a moment ago (#2271, `siblingFallbacks`).
  */
 export function nextRung(
   current: RecoveryPlacement | undefined,
-  call: { model: string; models: string[]; fallbackIndex: number; effort: RouteEffort | undefined },
+  call: {
+    model: string;
+    models: string[];
+    fallbackIndex: number;
+    effort: RouteEffort | undefined;
+    siblings?: readonly string[];
+  },
 ): RecoveryPlacement | null {
-  const from = current ? LADDER_RUNGS.indexOf(current.rung) + 1 : 0;
+  const order = ladderOrder(call.siblings);
+  const from = current ? order.indexOf(current.rung) + 1 : 0;
   const base: RecoveryPlacement = {
     rung: "fresh-session",
     ...(current?.freshSession ? { freshSession: true } : {}),
     ...(current?.transport ? { transport: current.transport } : {}),
     ...((current?.effort ?? call.effort) ? { effort: current?.effort ?? call.effort } : {}),
     fallbackIndex: call.fallbackIndex,
+    ...(current?.model ? { model: current.model } : {}),
   };
-  for (const rung of LADDER_RUNGS.slice(from)) {
+  for (const rung of order.slice(from)) {
     if (rung === "fresh-session" && codexNative(call.model) && !base.freshSession)
       return { ...base, rung, freshSession: true };
     if (rung === "other-transport" && codexNative(call.model) && !base.transport)
@@ -106,6 +132,8 @@ export function nextRung(
       const pick = later.find(({ model }) => provider(model) !== provider(call.model)) ?? later[0];
       // A new model starts from its own route effort and transport.
       if (pick) return { rung, fallbackIndex: pick.index };
+      const sibling = call.siblings?.find((model) => model !== call.model);
+      if (sibling) return { rung, fallbackIndex: call.fallbackIndex, model: sibling };
     }
   }
   return null;
@@ -145,7 +173,100 @@ export function rungText(rung: LadderStep["rung"]): string {
 
 /** The rungs tried, for the stop text: "as routed on codex/a (190 s), fresh session ...". */
 export function ladderSummary(steps: LadderStep[]): string {
-  return steps
+  const total = ladderSeconds(steps);
+  return `${steps
     .map((step) => `${RUNG_TEXT[step.rung]} on ${step.modelId} (${step.seconds} s)`)
-    .join(", ");
+    .join(", ")}; ${formatLadderTime(total)} in all`;
+}
+
+/** The time every rung of a ladder waited, so a 19 minute climb is visible (#2271). */
+export function ladderSeconds(steps: readonly LadderStep[]): number {
+  return steps.reduce((sum, step) => sum + step.seconds, 0);
+}
+
+export function formatLadderTime(seconds: number): string {
+  return seconds < 120 ? `${seconds} s` : `${Math.round(seconds / 60)} min`;
+}
+
+/** Waits before the automatic resumes of a run parked after its ladder ran out on a stall. */
+export const STALL_PARK_DELAYS_S = [600, 1200, 1200] as const;
+export const STALL_PARK_ARTIFACT = "provider/stall-park.json";
+
+/**
+ * A run whose recovery ladder ran out on a stall, parked as `provider_stall` (#2271). In R72 the
+ * loop's plain resume 25 to 50 minutes later completed all three such runs, so the park would
+ * resume on its own after 10, then 20, then 20 minutes, and leave the fourth stop to a person. It
+ * ships in shadow: the decision is recorded and a person still resumes; its promotion is a pull
+ * request of its own after bench rounds show the would-resumes were right.
+ */
+export interface StallPark {
+  schemaVersion: 1;
+  reason: "provider_stall";
+  mode: "shadow";
+  /** The attempt whose ladder ran out, as the provider circuit records it. */
+  attemptId: string;
+  /** Parks in a row, this one included, with no completed attempt of the run between them. */
+  tries: number;
+  decision: { would_resume: boolean; afterSeconds?: number };
+  at: number;
+}
+
+export function stallParkDecision(tries: number): StallPark["decision"] {
+  const after = STALL_PARK_DELAYS_S[tries - 1];
+  return after === undefined
+    ? { would_resume: false }
+    : { would_resume: true, afterSeconds: after };
+}
+
+function latestJson<T>(store: WorkflowStore, runId: string, path: string): T | null {
+  const saved = store.latestArtifact(runId, path);
+  return saved ? (JSON.parse(store.readArtifact(runId, saved.id)) as T) : null;
+}
+
+/**
+ * The park of a run the provider circuit stopped after a stalled ladder, recorded once per stop:
+ * null when the circuit is closed or stopped for another reason (a lost answer, zero-token
+ * attempts).
+ */
+export function recordStallPark(
+  store: WorkflowStore,
+  runId: string,
+  now = Date.now(),
+): StallPark | null {
+  const circuit = latestJson<{ open: boolean; attemptId?: string; stall?: true }>(
+    store,
+    runId,
+    "provider/circuit.json",
+  );
+  if (!circuit?.open || !circuit.stall || !circuit.attemptId) return null;
+  const previous = latestJson<StallPark>(store, runId, STALL_PARK_ARTIFACT);
+  if (previous?.attemptId === circuit.attemptId) return previous;
+  const answeredSince =
+    previous &&
+    store
+      .attempts(runId)
+      .some((attempt) => attempt.status === "completed" && attempt.started_at > previous.at);
+  const tries = previous && !answeredSince ? previous.tries + 1 : 1;
+  const park: StallPark = {
+    schemaVersion: 1,
+    reason: "provider_stall",
+    mode: "shadow",
+    attemptId: circuit.attemptId,
+    tries,
+    decision: stallParkDecision(tries),
+    at: now,
+  };
+  store.artifact(runId, "recovery", STALL_PARK_ARTIFACT, canonical(park));
+  return park;
+}
+
+/** The park of the run's current circuit stop, for the run views and `baked serve`. */
+export function readStallPark(store: WorkflowStore, runId: string): StallPark | null {
+  const circuit = latestJson<{ open: boolean; attemptId?: string }>(
+    store,
+    runId,
+    "provider/circuit.json",
+  );
+  const park = latestJson<StallPark>(store, runId, STALL_PARK_ARTIFACT);
+  return circuit?.open && park && park.attemptId === circuit.attemptId ? park : null;
 }

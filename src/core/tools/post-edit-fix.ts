@@ -4,7 +4,7 @@ import { getCwd } from "../cwd.js";
 import { getIntelligenceClient, getIntelligenceRouter } from "../intelligence/index.js";
 import type { FormatEdit, RefactorResult } from "../intelligence/types.js";
 import { realPath } from "../projects/paths.js";
-import { autoFormatAfterEdit } from "./auto-format.js";
+import { autoFormatOutcome } from "./auto-format.js";
 import { pushEdit } from "./edit-stack.js";
 import { emitFileEdited } from "./file-events.js";
 
@@ -64,8 +64,15 @@ async function autoFixFile(
   // Priority: project formatter (authoritative) → LSP formatDocument → skip
   try {
     const preFormat = await readFile(absPath, "utf-8");
-    const formatted = await autoFormatAfterEdit(absPath, undefined, before);
-    if (formatted) {
+    const outcome = await autoFormatOutcome(absPath, undefined, before);
+    if (outcome.kind === "timed-out") {
+      // Said in the result, not dropped as "not formatted" (#2242).
+      const { formatter, timeoutMs } = outcome.timeout;
+      applied.push(
+        `not formatted: ${formatter} did not finish within ${String(Math.round(timeoutMs / 1000))} s`,
+      );
+    }
+    if (outcome.kind === "formatted") {
       // Re-read the file that the formatter wrote and push to edit stack
       const afterFormat = await readFile(absPath, "utf-8");
       if (afterFormat !== preFormat) {

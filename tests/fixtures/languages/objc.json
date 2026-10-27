@@ -4,6 +4,10 @@
     "Sources/SumTests.m": "#import \"Sum.h\"\n@implementation SumTests\n- (void)testSum { sum(1, 2); }\n@end\n// AC-001 example: (1, 2, 3)\n"
   },
   "expected": {
+    "memberSyntax": [
+      "Scanner delegates to Reader.IsEncodingToken.: Reader.IsEncodingToken",
+      "Scanner sends [Reader isEncodingToken:] for each token.: [Reader isEncodingToken]"
+    ],
     "suppressions": [
       "int x = y; // NOLINT(bugprone-narrowing-conversions): lint, linted, prescribable",
       "#pragma GCC diagnostic ignored \"-Wunused\": lint, linted, prescribable",
@@ -45,6 +49,9 @@
       "clang-format: formatter",
       "oclint: linter"
     ],
-    "sortedLists": ["Sources/Sum.m: clang-format \"// order as written\" before 2"]
+    "sortedLists": ["Sources/Sum.m: clang-format \"// order as written\" before 2"],
+    "dependencyDirs": [
+      "Pods: linked"
+    ]
   }
 }
