@@ -17,6 +17,7 @@ import { CHECK, STACK as COLUMN, LEDE, PANEL } from "../../lib/styles.js";
 import type { SettingsSection } from "../../router.js";
 import { useDesktop } from "../../store.js";
 import { GlobalCommands } from "./GlobalCommands.js";
+import { LimitsPanel } from "./LimitsPanel.js";
 import { externalUrl, signInView } from "./logic.js";
 import { type RoutingProject, RoutingSection } from "./RoutingSection.js";
 import {
@@ -644,6 +645,7 @@ function GlobalSettingsFor({
         </span>
       </div>
       {error && <Alert tone="error">{error}</Alert>}
+      {section === "providers" && <LimitsPanel projectKey={projectKey} />}
       {section === "providers" && <Providers projectKey={projectKey} />}
       {section === "routing" && <RoutingSection projects={projects} />}
       {section === "commands" && <GlobalCommands projectKey={projectKey} />}
