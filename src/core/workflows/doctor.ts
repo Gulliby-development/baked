@@ -6,6 +6,8 @@ import { getProvider } from "../llm/providers/index.js";
 import { detectSandbox, type SandboxDetection } from "../platform/sandbox.js";
 import { getProviderApiKey } from "../secrets.js";
 import { type SandboxMode, sandboxSettings } from "../security/sandbox.js";
+import { buildCheckEnv } from "../verification/check-runner.js";
+import { environmentSignaturesFor } from "../verification/environment-faults.js";
 import { defaultWorkflowPolicy } from "./defaults.js";
 import { WorkflowFault } from "./errors.js";
 import { estimateHistory, type PreRunEstimate, usdRangeText } from "./estimate.js";
@@ -18,13 +20,15 @@ import { reachableModels } from "./routing.js";
 import { PolicySchema, workflowsEnabled } from "./schemas.js";
 import { type PreparedStart, prepareStart } from "./start.js";
 import { WorkflowStore } from "./store.js";
+import { toolchainCommand } from "./toolchain.js";
 import { loadGateLibrary } from "./v2/library.js";
 
 /**
  * Pre-run diagnostics (`baked workflow doctor`). Run start refusals come from `prepareStart`
  * itself, so the doctor cannot drift from what a start would refuse; the remaining checks cover
  * what fails a run later: provider keys, missing check commands, a busy workspace, Git state and
- * a budget the run will probably exceed. Nothing here writes or runs a command other than Git.
+ * a budget the run will probably exceed. Nothing here writes or runs a command other than Git and
+ * the toolchain probes of `ENVIRONMENT_SIGNATURES` (`gradle -q help`, #2273).
  */
 
 export type DoctorStatus = "ok" | "warn" | "fail" | "skip";
@@ -88,7 +92,19 @@ export interface DoctorDeps {
   languageServers?(workspace: string): Promise<LspStatusView>;
   /** The OS sandbox backend; without it the doctor skips that line. */
   sandbox?(): SandboxDetection;
+  /**
+   * Runs a toolchain's environment probe (`gradle -q help`, #2273) with the checks' environment;
+   * without it the doctor skips those lines.
+   */
+  probe?(
+    command: { executable: string; args: string[] },
+    cwd: string,
+    env: NodeJS.ProcessEnv,
+  ): Promise<{ exitCode: number | null; output: string }>;
 }
+
+/** How long the doctor waits for one environment probe. */
+const ENVIRONMENT_PROBE_MS = 30_000;
 
 const PROBE_TIMEOUT_MS = 5000;
 
@@ -126,6 +142,25 @@ export const defaultDoctorDeps: DoctorDeps = {
     return Bun.which(command, { cwd }) ?? null;
   },
   sandbox: detectSandbox,
+  async probe(command, cwd, env) {
+    try {
+      const child = Bun.spawn([command.executable, ...command.args], {
+        cwd,
+        env,
+        stdin: "ignore",
+        stdout: "pipe",
+        stderr: "pipe",
+        timeout: ENVIRONMENT_PROBE_MS,
+      });
+      const [stdout, stderr] = await Promise.all([
+        new Response(child.stdout).text(),
+        new Response(child.stderr).text(),
+      ]);
+      return { exitCode: await child.exited, output: `${stdout}${stderr}` };
+    } catch (error) {
+      return { exitCode: null, output: error instanceof Error ? error.message : String(error) };
+    }
+  },
   async languageServers(workspace) {
     const { lspStatus } = await import("../intelligence/lsp-service.js");
     return lspStatus({ workspace });
@@ -394,6 +429,58 @@ function commandChecks(
   });
 }
 
+/**
+ * One line per toolchain probe the run's checks have (`ENVIRONMENT_SIGNATURES`, #2273): the probe
+ * runs once per program and folder, and a failure matching the toolchain's signature fails the
+ * line with the machine-level fix, since every check of that toolchain would fail the same way.
+ */
+async function environmentChecks(
+  workspace: string,
+  prepared: PreparedStart,
+  probe: NonNullable<DoctorDeps["probe"]>,
+): Promise<DoctorCheck[]> {
+  const lines: DoctorCheck[] = [];
+  const seen = new Set<string>();
+  for (const check of prepared.policy.checks) {
+    const cwd = check.cwd === "." ? workspace : join(workspace, check.cwd);
+    for (const signature of environmentSignaturesFor(check.executable, check.args)) {
+      const command = signature.probe
+        ? toolchainCommand(check.executable, check.args).launch([...signature.probe])
+        : null;
+      const key = command ? `${cwd}\0${command.executable}\0${command.args.join("\0")}` : "";
+      if (!command || seen.has(key) || !existsSync(cwd)) continue;
+      seen.add(key);
+      const shown = [command.executable, ...command.args].join(" ");
+      const result = await probe(command, cwd, buildCheckEnv(check));
+      if (result.exitCode === 0)
+        lines.push({
+          id: "environment",
+          status: "ok",
+          title: `${shown} runs on this machine`,
+          subject: check.id,
+        });
+      else if (signature.pattern.test(result.output))
+        lines.push({
+          id: "environment",
+          status: "fail",
+          title: `${shown} fails on this machine, so ${check.id} would fail for every task`,
+          detail: signature.problem,
+          fix: signature.fix,
+          subject: check.id,
+        });
+      else
+        lines.push({
+          id: "environment",
+          status: "warn",
+          title: `${shown} exited ${result.exitCode ?? "without a code"}`,
+          detail: result.output.trim().split("\n").slice(-3).join("\n").slice(0, 500),
+          subject: check.id,
+        });
+    }
+  }
+  return lines;
+}
+
 async function gitChecks(
   workspace: string,
   mode: PreparedStart["mode"] | null,
@@ -595,6 +682,7 @@ export async function runDoctor(
           fix: "Route review to another model (modelRouting.roles.reviewer or classes.review)",
         });
       checks.push(...commandChecks(workspace, prepared, deps.which));
+      if (deps.probe) checks.push(...(await environmentChecks(workspace, prepared, deps.probe)));
       for (const { profileId, grant } of unmatchedMcpGrants(
         config.mcpServers ?? [],
         prepared.profiles,
