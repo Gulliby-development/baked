@@ -6,6 +6,10 @@
     "foundry.toml": "[profile.default]\n"
   },
   "expected": {
+    "suppressions": [
+      "// solhint-disable-next-line no-console: lint, linted, prescribable",
+      "// slither-disable-next-line reentrancy-eth: lint, linted, prescribable"
+    ],
     "checkConfigs": [".solhint.json: solhint", ".solhintignore: solhint, read as text"],
     "tests": [
       "test/Sum.t.sol",

@@ -6,6 +6,12 @@
     ".clang-format": "BasedOnStyle: LLVM\n"
   },
   "expected": {
+    "suppressions": [
+      "int x = y; // NOLINT(bugprone-narrowing-conversions): lint, linted, prescribable",
+      "#pragma GCC diagnostic ignored \"-Wunused\": lint, linted, prescribable",
+      "#pragma warning(disable: 4996): lint, linted, prescribable",
+      "// cppcheck-suppress nullPointer: lint, linted, prescribable"
+    ],
     "checkConfigs": [".clang-tidy: clang-tidy", ".clang-format: clang-format, read as text"],
     "tests": [
       "src/sum_test.c"
@@ -52,7 +58,7 @@
       "cppcheck: linter",
       "cpplint: linter"
     ],
-    "sortedLists": null
+    "sortedLists": ["src/sum.c: clang-format \"// order as written\" before 2"]
   },
   "outputs": {
     "tests": "Test project /w/build\n    Start 1: sum_adds\n1/2 Test #1: sum_adds .........................   Passed    0.03 sec\n    Start 2: sum_commutes\n2/2 Test #2: sum_commutes .....................***Failed    0.01 sec\n\n\n50% tests passed, 1 tests failed out of 2\n\nTotal Test time (real) =   0.05 sec\n\nThe following tests FAILED:\n\t  2 - sum_commutes (Failed)\nErrors while running CTest\n",
