@@ -243,6 +243,62 @@ export function rerootRepro(
   return { text: out, rewritten: [...new Set(rewritten)] };
 }
 
+/**
+ * An absolute path in a repro's text: a Windows drive or a `/` and a name, after the start, a
+ * space, a quote, `=`, `(`, `,` or `;`. A URL's `//` after its scheme and a division are no path.
+ */
+const ABSOLUTE = /(?:^|[\s"'`=(,;])((?:[A-Za-z]:[\\/]|\/(?=[A-Za-z_.~]))[^\s"'`,;)]+)/g;
+/** Paths a probe names that no correction or build reads: devices and the host's input files. */
+const NEUTRAL = /^(?:\/dev\/|\/proc\/|\{files\})/;
+
+/**
+ * The absolute paths a repro's arguments and input files name outside `root`, the root it runs in
+ * (#2287): an installed copy of the package, a cached build output, a sibling checkout. The repro
+ * reads code there, which no correction in `root` changes. `{root}` and `{files}` are the host's
+ * own placeholders and never count.
+ */
+export function reproOutsidePaths(repro: Pick<Repro, "args" | "files">, root: string): string[] {
+  const own = slashes(root).replace(/\/$/, "").toLowerCase();
+  // What the repro runs: another root of the run is rewritten to `root` first (#2279).
+  const texts = [
+    ...repro.args.map((arg) => rerootRepro(arg, root, false).text),
+    ...(repro.files ?? []).map((f) => rerootRepro(f.content, root, true).text),
+  ];
+  const found = new Set<string>();
+  for (const text of texts)
+    for (const match of text.matchAll(ABSOLUTE)) {
+      const path = match[1] ?? "";
+      const spelled = slashes(path).toLowerCase();
+      if (NEUTRAL.test(path) || spelled === own || spelled.startsWith(`${own}/`)) continue;
+      found.add(path);
+    }
+  return [...found].sort();
+}
+
+/** What the blind-repro decision knows of one run of a finding's repro after a correction. */
+export interface ReproBlindInput {
+  status: ReproOutcome["status"];
+  /** The finding's file changed since the repro's previous run in this corrective task. */
+  fileChanged: boolean;
+  /** The output is byte for byte the previous run's. */
+  sameOutput: boolean;
+  /** How many absolute paths outside the root the repro names (`reproOutsidePaths`). */
+  outside: number;
+}
+
+/**
+ * Whether a repro is blind to the correction (#2287): it still reproduces, the attempt changed the
+ * finding's file, its output did not change by a byte, and it names a path outside the root it
+ * runs in. R73 evalpin `checks` b38e180d spent 2.45M tokens on a probe that built another copy of
+ * the code and printed the same bytes after every fix. Shadow: the outcome stays `reproduced`, and
+ * the `repro_blind` would-stop records what promoting it to `inconclusive` would change.
+ */
+export function reproBlind(input: ReproBlindInput): boolean {
+  return (
+    input.status === "reproduced" && input.fileChanged && input.sameOutput && input.outside > 0
+  );
+}
+
 export async function runRepro(
   processes: ProcessScope,
   requested: Repro,

@@ -140,9 +140,11 @@ import {
   missingReproAdvice,
   outputShows,
   type ReproOutcome,
+  reproBlind,
   reproCannotSeeCorrection,
   reproCrash,
   reproExecutables,
+  reproOutsidePaths,
   reproTool,
   runProbe,
   runRepro,
@@ -5415,6 +5417,38 @@ export class WorkflowScheduler {
     return body.files ?? {};
   }
   /**
+   * Each finding's output and file hash in the task's latest repro check before this one (#2287);
+   * empty before the first.
+   */
+  private previousReproCheck(
+    runId: string,
+    task: Task,
+  ): Map<string, { output: string; fileHash?: string }> {
+    const row = this.store
+      .artifacts(runId)
+      .filter((a) => a.logical_path.startsWith(`tasks/${task.id}/repro-check-`))
+      .at(-1);
+    if (!row) return new Map();
+    const body = JSON.parse(this.store.readArtifact(runId, row.id)) as {
+      outcomes?: { findingId?: unknown; output?: unknown; fileHash?: unknown }[];
+    };
+    return new Map(
+      (body.outcomes ?? []).flatMap((o) =>
+        typeof o.findingId === "string" && typeof o.output === "string"
+          ? [
+              [
+                o.findingId,
+                {
+                  output: o.output,
+                  ...(typeof o.fileHash === "string" ? { fileHash: o.fileHash } : {}),
+                },
+              ] as const,
+            ]
+          : [],
+      ),
+    );
+  }
+  /**
    * The repro check of a corrective task (#1158): runs the repro of each finding the task corrects
    * in `root` and describes the ones that still show the reported behavior. stmtsplit-update
    * T007 and T008 closed a reproduced finding as already_satisfied twice (546k tokens) while its
@@ -5460,7 +5494,12 @@ export class WorkflowScheduler {
     const writes = task.writes.map((w) => w.path);
     if (!repros.length) return undefined;
     return async (root, signal) => {
-      const outcomes: { findingId: string; repro: Repro; outcome: ReproOutcome }[] = [];
+      const outcomes: {
+        findingId: string;
+        repro: Repro;
+        outcome: ReproOutcome;
+        fileHash?: string;
+      }[] = [];
       // A correction that changed only the comments and docstrings of the finding's file cannot
       // change what its repro prints: the repro is evidence, not a gate (#1517).
       const evidenceOnly: string[] = [];
@@ -5476,6 +5515,7 @@ export class WorkflowScheduler {
             continue;
           }
         }
+        const text = typeof file === "string" ? readText(workspacePath(root, file)) : null;
         outcomes.push({
           findingId,
           repro,
@@ -5487,20 +5527,55 @@ export class WorkflowScheduler {
             sandbox: runSandbox(policy, root, { gitWrite: root !== this.store.workspace }),
             shadows: typeof file === "string" ? [file, ...writes] : writes,
           }),
+          ...(text !== null ? { fileHash: hashBytes(text) } : {}),
         });
       }
+      const path = `tasks/${task.id}/repro-check-${newId()}.json`;
+      // Shadow (#2287): a repro that prints the same bytes after the attempt changed the
+      // finding's file, and reads a path outside the root, cannot see the correction.
+      const previous = this.previousReproCheck(runId, task);
+      const blind = outcomes.filter(({ findingId, repro, outcome, fileHash }) => {
+        const before = previous.get(findingId);
+        return (
+          before !== undefined &&
+          reproBlind({
+            status: outcome.status,
+            fileChanged:
+              fileHash !== undefined &&
+              before.fileHash !== undefined &&
+              fileHash !== before.fileHash,
+            sameOutput: before.output === outcome.output,
+            outside: reproOutsidePaths(repro, root).length,
+          })
+        );
+      });
       this.store.transaction(() =>
         this.store.artifact(
           runId,
           "repro",
-          `tasks/${task.id}/repro-check-${newId()}.json`,
+          path,
           canonical({
             taskId: task.id,
-            outcomes: outcomes.map(({ findingId, outcome }) => ({ findingId, ...outcome })),
+            outcomes: outcomes.map(({ findingId, outcome, fileHash }) => ({
+              findingId,
+              ...outcome,
+              ...(fileHash ? { fileHash } : {}),
+            })),
             ...(evidenceOnly.length ? { evidenceOnly } : {}),
+            ...(blind.length ? { blind: blind.map((b) => b.findingId) } : {}),
           }),
         ),
       );
+      const mode = stopMode(policy, "repro_blind");
+      if (mode !== "enforce")
+        for (const { findingId, repro } of blind)
+          recordWouldStop(this.store, runId, {
+            reason: "repro_blind",
+            mode,
+            key: `${path}#${findingId}`,
+            summary: `Finding ${findingId}'s repro printed the same output after task ${task.id} changed the finding's file, and it reads ${reproOutsidePaths(repro, root).join(", ")} outside the root it runs in: it cannot see the correction, and would be inconclusive instead of reproduced.`,
+            inputs: { taskId: task.id, findingId, outside: reproOutsidePaths(repro, root) },
+          });
       return outcomes
         .filter(({ outcome }) => outcome.status === "reproduced")
         .map(
