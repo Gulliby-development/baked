@@ -709,8 +709,9 @@ export async function commitRunBranch(
       const blob = await required(root, ["hash-object", "-w", "--stdin", `--path=${path}`], {
         input: bytes,
       });
-      // A file the baseline has keeps its committed mode; a new file takes the working tree's.
-      const mode = modes.get(path) ?? gitMode(stat.mode);
+      // A file the baseline has keeps its committed mode; a new file takes the working tree's,
+      // or is executable when it starts with a shebang (#2331).
+      const mode = modes.get(path) ?? gitMode(stat.mode, bytes);
       updates.push(`${mode} ${blob}\t${path}\0`);
     }
     if (updates.length)

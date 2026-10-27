@@ -12,7 +12,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { dirname, join } from "node:path";
-import { git, internalPath, looksSecret } from "../workflows/delivery-git.js";
+import { fileHead, git, hasShebang, internalPath, looksSecret } from "../workflows/delivery-git.js";
 
 /**
  * - `ready`: the folder is the top level of a repository with a commit; nothing to do.
@@ -158,6 +158,19 @@ export async function initWorkspaceGit(workspace: string): Promise<GitInitResult
     // Escaped, so a name with `*` or `[` excludes only itself.
     appendFileSync(excludeFile, skipped.map((s) => `/${escapeExclude(s.path)}\n`).join(""));
   }
+  // A file this commit adds that starts with a shebang is executable, as a run's commits make it:
+  // a Windows working tree has no executable bit to stage (#2331).
+  const added = (
+    await required(workspace, ["diff", "--cached", "--name-only", "--diff-filter=A", "-z"])
+  )
+    .split("\0")
+    .filter((path) => path && hasShebang(fileHead(join(workspace, path))));
+  if (added.length)
+    await required(
+      workspace,
+      ["--literal-pathspecs", "update-index", "--chmod=+x", "-z", "--stdin"],
+      added.join("\0"),
+    );
   const identity = await Promise.all(
     ["user.name", "user.email"].map(
       async (key) => (await git(workspace, ["config", key])).stdout.trim() !== "",
