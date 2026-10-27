@@ -683,13 +683,17 @@ describe("the size pools' ranges over the last rounds (#2150)", () => {
   // its own: rounds 63 to 68 then put 20 of 60 (33.3%) below, and the whole corpus stays within
   // its bounds. The rolling window is bounded by default too: with round 69 it is rounds 64 to
   // 69, 16 of 59 below and 11 above, within the bounds without the weighting (12 and 18 with it).
-  // The weighting stays opt-in; this row keeps the figures that would justify switching it on.
+  // Round 73 turned the window against the weighting: rounds 68 to 73 put 27 of 72 features above
+  // their range with it (37.5%, above the 35.2% bound of 72; R73 alone 9 of 18: flatelens, the
+  // first Lua initiative, 6 of 8, evalpin 3 of 10) and 21 above, 10 below without it. The
+  // weighting stays opt-in and is not to be switched on on these figures: it fixes rounds 63 to
+  // 68 and the whole corpus, not the last six rounds.
   test("rounds 63 to 68 miss their range above the bound by default and within it at a half-life of 2; the rolling window is bounded", () => {
     const off = rangeMisses();
     expect(off.r63to68.features).toBe(60);
     expect(off.r63to68.below / off.r63to68.features).toBeGreaterThan(quarterBound(off.r63to68.features));
     const on = rangeMisses({ recencyHalfLife: 2 });
-    for (const share of [on.r63to68, on.window, on.all]) {
+    for (const share of [on.r63to68, on.all]) {
       expect(share.below / share.features).toBeLessThanOrEqual(quarterBound(share.features));
       expect(share.above / share.features).toBeLessThanOrEqual(quarterBound(share.features));
     }
