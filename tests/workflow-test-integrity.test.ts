@@ -1,4 +1,4 @@
-import { afterEach, expect, test } from "bun:test";
+import { afterEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -8,8 +8,10 @@ import {
   INTEGRITY_DIR,
   integrityDecision,
   isTestPath,
+  type FileChange,
   measureTestIntegrity,
   preexistingTest,
+  prescribedExemptions,
   recordedMeasures,
   scanTestIntegrity,
   testIntegrityOf,
@@ -333,4 +335,27 @@ test("a bare suppression marker is never prescribed, and a settled file is not s
   expect(scanTestIntegrity(changes, { specText: "Use # noqa where the stub needs it." }).map((f) => f.rule)).toEqual(["suppression"]);
   expect(scanTestIntegrity(changes, { settledSuppressions: new Set(["src/cli.py"]) })).toEqual([]);
   expect(scanTestIntegrity(changes, { settledSuppressions: new Set(["src/other.py"]) }).map((f) => f.rule)).toEqual(["suppression"]);
+});
+
+// #2277 (3): the other "added" counters read a created file from "" like the suppression count did
+// (#2270). A test hook or a verification bypass the request names verbatim, not to forbid it, is
+// prescribed; in shadow the scan only records the findings that exemption would clear.
+describe("a prescribed test hook or bypass is recorded as a shadow exemption (#2277)", () => {
+  const hook = { path: "src/env.ts", before: null, after: 'export const testing = process.env.NODE_ENV === "test";\n' };
+  const bypass = { path: "package.json", before: '{\n  "scripts": {\n    "test": "vitest run"\n  }\n}\n', after: '{\n  "scripts": {\n    "test": "vitest run --passWithNoTests"\n  }\n}\n' };
+  const found = (changes: FileChange[], specText = "") => scanTestIntegrity(changes, { specText });
+
+  test("named verbatim, the finding stays live and the exemption is recorded", () => {
+    const spec = 'Add `export const testing = process.env.NODE_ENV === "test";` to src/env.ts. The test script is "vitest run --passWithNoTests" until the first test lands.';
+    const live = found([hook, bypass], spec);
+    expect(live.map((f) => f.rule).sort()).toEqual(["test-hook", "verification-bypass"]);
+    expect(prescribedExemptions([hook, bypass], spec, live)).toEqual(live.map(({ rule, path }) => ({ rule, path })));
+  });
+
+  test("not named, named to forbid it, or a bare marker: no exemption", () => {
+    const live = found([hook, bypass]);
+    expect(prescribedExemptions([hook, bypass], "Write the env module.", live)).toEqual([]);
+    expect(prescribedExemptions([bypass], 'Never use "vitest run --passWithNoTests".', found([bypass]))).toEqual([]);
+    expect(prescribedExemptions([bypass], "Use --passWithNoTests.", found([bypass]))).toEqual([]);
+  });
 });

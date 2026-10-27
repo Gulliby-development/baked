@@ -11,6 +11,11 @@
     "testsGrown": "...F\n\nFinished in 0.00911 seconds (files took 0.1 seconds to load)\n4 examples, 1 failure\n\nFailed examples:\n\nrspec ./spec/sum_spec.rb:6 # sum is commutative\n"
   },
   "expected": {
+    "memberSyntax": [
+      "Scanner delegates to Reader.IsEncodingToken.: Reader.IsEncodingToken",
+      "Scanner calls Reader#encoding_token? per token.: Reader#encoding_token?",
+      "Scanner reads Reader::ENCODINGS.: Reader::ENCODINGS"
+    ],
     "suppressions": [
       "x = 1 # rubocop:disable Lint/UselessAssignment: lint, linted, prescribable"
     ],

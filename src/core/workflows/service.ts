@@ -119,6 +119,7 @@ import {
   type RouteChange,
   rerouteRecord,
   routeChanges,
+  strictRoutingConfig,
 } from "./routing.js";
 import {
   GATES_ARTIFACT,
@@ -2371,7 +2372,10 @@ export class NativeWorkflowService implements WorkflowService {
     if (!changes.length && after.runModel === before.runModel) return null;
     assertCostCapPriced(PolicySchema.parse(JSON.parse(row.policy_json)), after);
     const warnings: string[] = [];
-    const independence = independentReviewMode(this.config);
+    // A strict run checks independence on the configuration its start used (#2230).
+    const independence = independentReviewMode(
+      before.strict ? strictRoutingConfig(this.config) : this.config,
+    );
     if (independence !== "off") {
       const found = independenceWarnings(
         after,
