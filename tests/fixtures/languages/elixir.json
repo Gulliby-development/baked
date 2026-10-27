@@ -5,6 +5,10 @@
     "mix.exs": "defmodule Fixture.MixProject do\nend\n"
   },
   "expected": {
+    "suppressions": [
+      "# credo:disable-for-next-line Credo.Check.Readability.Specs: lint, linted, prescribable",
+      "@dialyzer {:nowarn_function, run: 1}: lint, linted, prescribable"
+    ],
     "checkConfigs": [".credo.exs: credo, read as text", ".formatter.exs: mix format, read as text", ".dialyzer_ignore.exs: dialyzer, read as text"],
     "tests": [
       "lib/sum_test.exs"
