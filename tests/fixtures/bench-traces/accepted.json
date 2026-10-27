@@ -94,5 +94,9 @@
   "R71/xmlvet.sqlite.gz#xmlvet": {
     "newStartStops": 1,
     "reason": "#2245: the plan charge is enforced with stopModes unset. canonical parks at 04:48 with 4.7M of the 30.0M pool left (scanner's plan priced its run at 11.75M against an 8.0M limit; it used 12.10M), the would-park the round recorded in shadow. It was true: the pool ran short 65 minutes later (outline-command needed 836,956 more at 05:53:56) with the tree idle. tests/forecast-replay-corpus.test.ts asserts the park and its extend remedy."
+  },
+  "R73/flatelens.sqlite.gz#d34ac224-7070-4a45-9d36-09ee86e24317": {
+    "newFirstByteStops": 1,
+    "reason": "#2283: attempt 855c7216 call 2 answered at 194 s; its recorded deadline (290,666 ms) came from the machine-wide shared first-response history, which a trace does not hold; the replay computes 180,000 ms from the trace's own calls. The fix records the deadline's inputs in the call timing and removes this entry."
   }
 }
