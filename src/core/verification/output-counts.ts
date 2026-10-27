@@ -1,6 +1,7 @@
 import { type LanguageRecord, none } from "../intelligence/language-records.js";
 import { isTestFile } from "../intelligence/language-traits.js";
 import type { Check } from "../workflows/types.js";
+import { normalizeVolatile } from "./volatile.js";
 
 /**
  * Counts read from check output, so an update run can compare a passing check with the same
@@ -1063,15 +1064,7 @@ export const growingCounts = (text: string): string =>
   GROWING_COUNTS.reduce((out, [pattern, to]) => out.replace(pattern, to), text);
 
 export function failureSignature(output: string, root: string): string {
-  const project = root.replace(/[\\/]\.baked[\\/]worktrees[\\/].*$/, "");
-  const text = output
-    // biome-ignore lint/suspicious/noControlCharactersInRegex: ANSI colour codes
-    .replace(/\u001b\[[0-9;]*m/g, "")
-    .replace(WORKTREE_PATH, "<root>")
-    .split(root)
-    .join("<root>")
-    .split(project)
-    .join("<root>")
+  const text = withoutWorkspace(output, root)
     .replace(/\d{4}-\d{2}-\d{2}T[\d:.]+Z?/g, "<time>")
     .replace(/\d+(\.\d+)?\s*(ms|s|sec|seconds|m)\b/g, "<duration>")
     .replace(/\[\d+(\.\d+)?(ms|s)\]/g, "<duration>")
@@ -1081,18 +1074,57 @@ export function failureSignature(output: string, root: string): string {
     .replace(
       /, completed [A-Z][a-z]{2} \d{1,2}, \d{4},? \d{1,2}:\d{2}:\d{2}(?: [AP]M)?/g,
       ", completed <time>",
-    )
-    // RuboCop: "Inspecting 3 files".
-    .replace(/\bInspecting \d+ files?\b/g, "Inspecting <n> file")
-    .replace(SUMMARY_COUNT, (_, verb: string, noun: string) => `${verb} <n> ${singular(noun)}`)
-    .replace(FILES_DONE, (_, noun: string, verb: string) => `<n> ${singular(noun)} ${verb}`)
-    .replace(/✖ \d+ problems? \(\d+ errors?, \d+ warnings?\)/g, "✖ <n> problems")
-    .split("\n")
-    .map((line) => line.trimEnd())
-    .filter(Boolean)
-    .join("\n")
-    .trim();
-  return growingCounts(text);
+    );
+  return withoutCounts(text);
+}
+
+/**
+ * `failureSignature` with its volatile values taken out by shape (`normalizeVolatile`, the table
+ * the repeated-failure hash reads) instead of by a few spellings (#2295): Gradle's `1m 3s`,
+ * dotnet's `< 1 ms`, CTest's padded columns, Maven's `01:05 min`, addresses with or without `0x`,
+ * seeds, run IDs and temporary paths compare equal, while a whole number with a unit that no word
+ * introduces as a time (`expected 5s`) stays, as an asserted value. Recorded beside the live
+ * signature in the check baseline (`shapes`); the `baseline_signature` reason records, in shadow,
+ * where it would match and the live one does not.
+ */
+export function shapedFailureSignature(output: string, root: string): string {
+  const text = withoutWorkspace(output, root)
+    .replaceAll("\r\n", "\n")
+    .replaceAll("\r", "\n")
+    .replaceAll("\\", "/");
+  return withoutCounts(normalizeVolatile(text));
+}
+
+/** The output without colours and with every worktree path of the project as `<root>`. */
+function withoutWorkspace(output: string, root: string): string {
+  const project = root.replace(/[\\/]\.baked[\\/]worktrees[\\/].*$/, "");
+  return (
+    output
+      // biome-ignore lint/suspicious/noControlCharactersInRegex: ANSI colour codes
+      .replace(/\u001b\[[0-9;]*m/g, "")
+      .replace(WORKTREE_PATH, "<root>")
+      .split(root)
+      .join("<root>")
+      .split(project)
+      .join("<root>")
+  );
+}
+
+/** The signature's counts that grow as tasks add files and tests, left out; blank lines dropped. */
+function withoutCounts(text: string): string {
+  return growingCounts(
+    text
+      // RuboCop: "Inspecting 3 files".
+      .replace(/\bInspecting \d+ files?\b/g, "Inspecting <n> file")
+      .replace(SUMMARY_COUNT, (_, verb: string, noun: string) => `${verb} <n> ${singular(noun)}`)
+      .replace(FILES_DONE, (_, noun: string, verb: string) => `<n> ${singular(noun)} ${verb}`)
+      .replace(/✖ \d+ problems? \(\d+ errors?, \d+ warnings?\)/g, "✖ <n> problems")
+      .split("\n")
+      .map((line) => line.trimEnd())
+      .filter(Boolean)
+      .join("\n")
+      .trim(),
+  );
 }
 
 /**

@@ -13,6 +13,11 @@ import type { InitiativePlan } from "./plan.js";
  * review rounds and a converge finding). These formatters sort only within a group of consecutive
  * declarations, so a blank line before each entry that would move keeps the order as written:
  * the change is whitespace only, so the spec, the plan and the review still see the same content.
+ * Formatters that sort across blank lines (ruff's and isort's import sorting, Biome's
+ * organizeImports, clang-format's include sorting) keep an order only at the tool's own split
+ * marker, so in a project whose configuration turns that sorting on, every entry of such a list
+ * after the first gets the marker before it (#2233). That adds a comment line, which the spec
+ * author and reviewers see in the skeleton like any other host content.
  */
 export interface SortedLists {
   /** The formatter whose default sorts these lists, for the record of what was laid out. */
@@ -25,8 +30,23 @@ export interface SortedLists {
   attached?: RegExp;
   /** The lines a list may stand between; absent: anywhere in the file. */
   block?: { open: RegExp; close: RegExp };
-  /** A file with a list in an order the formatter would change, for the language parity test. */
-  sample: { path: string; content: string };
+  /**
+   * The lines put before an entry instead of a blank line, for a formatter that sorts across
+   * blank lines and keeps an order only at a split marker. Every entry of a list after the first
+   * gets them, since sections and categories (stdlib before third-party, `<...>` before `"..."`)
+   * can move entries whose names are in order.
+   */
+  separator?: readonly string[];
+  /**
+   * Whether the project's configuration turns the sorting on, read through its files by path
+   * relative to the root; absent: the formatter's default sorts.
+   */
+  sorts?: (read: (name: string) => string | null) => boolean;
+  /**
+   * A file with a list in an order the formatter would change, for the language parity test, and
+   * the project files that turn the sorting on.
+   */
+  sample: { path: string; content: string; config?: Readonly<Record<string, string>> };
 }
 
 const VISIBILITY = String.raw`(?:pub(?:\s*\([^)]*\))?\s+)?`;
@@ -68,36 +88,116 @@ const go: SortedLists = {
   sample: { path: "main.go", content: 'package main\n\nimport (\n\t"strings"\n\t"fmt"\n)\n' },
 };
 
+/** The marker comment Biome and clang-format end a sorted chunk at, set apart by blank lines. */
+const ORDER_AS_WRITTEN = ["", "// order as written", ""];
+
+/** Ruff's selected rules (`select`, `extend-select`) include its isort rules. */
+const RUFF_ISORT = /\b(?:extend-)?select\s*=\s*\[[^\]]*"(?:I|I0|I00|I001|ALL)"/;
+
+const python: SortedLists = {
+  formatter: "ruff/isort",
+  // isort and ruff's I001 sort the top-level imports of a block across blank lines and comments,
+  // by section first; only `# isort: split` ends a block (ruff puts a blank line before it).
+  entry: (line) => {
+    const found = /^(?:from\s+(\S+)\s+import\b|import\s+(\S+))/.exec(line);
+    const key = found?.[1] ?? found?.[2];
+    return key ? { kind: "import", key } : null;
+  },
+  continues: (text) => (text.includes("(") && !text.includes(")")) || /\\\s*$/.test(text),
+  attached: /^#(?!\s*isort:\s*split\b)/,
+  separator: ["", "# isort: split"],
+  sorts: (read) =>
+    RUFF_ISORT.test(
+      `${read("pyproject.toml") ?? ""}\n${read("ruff.toml") ?? ""}\n${read(".ruff.toml") ?? ""}`,
+    ) ||
+    /^\s*\[tool\.isort\]/m.test(read("pyproject.toml") ?? "") ||
+    read(".isort.cfg") !== null ||
+    /^\s*\[(?:tool:)?isort\]/m.test(`${read("setup.cfg") ?? ""}\n${read("tox.ini") ?? ""}`),
+  sample: {
+    path: "src/pkg/__init__.py",
+    content: "from .text import *\nfrom .io import *\n",
+    config: { "pyproject.toml": '[tool.ruff.lint]\nselect = ["E", "I"]\n' },
+  },
+};
+
+const script: SortedLists = {
+  formatter: "biome organizeImports",
+  // Biome's organizeImports sorts imports and `export ... from` lines across blank lines; a
+  // detached comment ends the chunk. The gates run `biome format`, which keeps the order, so only a
+  // project whose scripts run `biome check` or `biome ci` sorts.
+  entry: (line) =>
+    /^(?:import|export)\s+(?:type\s+)?(?:[\w$*{]|\{)/.test(line) &&
+    !/^export\s+(?:type\s+)?\{[^}]*\}\s*;?\s*$/.test(line) &&
+    (/\bfrom\s*["']/.test(line) || /^(?:import|export)\s+(?:type\s+)?\{[^}]*$/.test(line))
+      ? { kind: "module", key: /\bfrom\s*["']([^"']+)/.exec(line)?.[1] ?? "" }
+      : null,
+  // A brace list over lines goes on to its `from`, or ends at its closing brace (a local export).
+  continues: (text) => !/\bfrom\s*["']/.test(text) && !text.includes("}"),
+  separator: ORDER_AS_WRITTEN,
+  sorts: (read) => {
+    const config = read("biome.json") ?? read("biome.jsonc");
+    if (config === null) return false;
+    if (/"organizeImports"\s*:\s*(?:"off"|\{\s*"enabled"\s*:\s*false)/.test(config)) return false;
+    return /\bbiome\s+(?:check|ci)\b/.test(read("package.json") ?? "");
+  },
+  sample: {
+    path: "src/index.ts",
+    content: 'export * from "./text";\nexport * from "./io";\n',
+    config: {
+      "biome.json": "{}\n",
+      "package.json": '{ "scripts": { "lint": "biome check ." } }\n',
+    },
+  },
+};
+
+/** clang-format sorts includes when the project has a config that does not turn SortIncludes off. */
+const clangSorts = (read: (name: string) => string | null): boolean => {
+  const config = read(".clang-format") ?? read("_clang-format");
+  return config !== null && !/^\s*SortIncludes:\s*(?:false|Never)\b/m.test(config);
+};
+const clang = (path: string, header: (name: string) => string): SortedLists => ({
+  formatter: "clang-format",
+  // SortIncludes sorts a block of `#include` lines; with IncludeBlocks: Regroup (Google style) it
+  // merges blocks across blank lines, but any other line, a comment included, ends a block.
+  entry: (line) => {
+    const found = /^\s*#\s*(?:include|import)\s*([<"][^>"]+[>"])/.exec(line);
+    return found?.[1] ? { kind: "include", key: found[1] } : null;
+  },
+  separator: ORDER_AS_WRITTEN,
+  sorts: clangSorts,
+  sample: {
+    path,
+    content: `${header("text")}\n${header("io")}\n`,
+    config: { ".clang-format": "BasedOnStyle: Google\n" },
+  },
+});
+
 const keeps = (formatter: string) => none(`${formatter} keeps the order of lines as written`);
 const across = (reason: string) =>
-  none(`${reason} across blank lines, so no whitespace layout keeps an order (#2233)`);
+  none(`${reason} across blank lines, with no split marker known to keep an order (#2233)`);
 
 /**
- * The lists each language's default formatter sorts within groups of consecutive lines. A language
- * whose formatter sorts across blank lines has no layout that keeps the order and is a `none` row
- * that says so; a language whose formatter keeps the order needs none.
+ * The lists each language's formatter sorts. Formatters that sort within groups of consecutive
+ * lines get a blank line before each entry they would move; those that sort across blank lines
+ * get their split marker (`separator`) when the project turns the sorting on (`sorts`). A
+ * language whose formatter sorts across blank lines without a marker that keeps an order is a
+ * `none` row that names it; a language whose formatter keeps the order needs none.
  */
 export const SORTED_LISTS: LanguageRecord<SortedLists> = {
   rust,
   go,
-  typescript: none(
-    "Prettier and `biome format`, the formatters the gates run, keep import and export order (#2233 for Biome's organizeImports)",
-  ),
-  javascript: none(
-    "Prettier and `biome format`, the formatters the gates run, keep import and export order (#2233 for Biome's organizeImports)",
-  ),
+  typescript: script,
+  javascript: { ...script, sample: { ...script.sample, path: "src/index.js" } },
   vue: keeps("Prettier"),
   svelte: keeps("Prettier"),
-  python: none(
-    "`ruff format` keeps import order; isort and ruff's opt-in I001 sort across blank lines (#2233)",
-  ),
+  python,
   java: across("google-java-format sorts imports"),
   kotlin: across("ktlint's import-ordering rule sorts imports"),
   scala: keeps("scalafmt without the opt-in import rewrites"),
   csharp: across("`dotnet format` sorts using directives"),
-  c: across("clang-format's SortIncludes may regroup includes (IncludeBlocks: Regroup)"),
-  cpp: across("clang-format's SortIncludes may regroup includes (IncludeBlocks: Regroup)"),
-  objc: across("clang-format's SortIncludes may regroup imports (IncludeBlocks: Regroup)"),
+  c: clang("src/sum.c", (name) => `#include "${name}.h"`),
+  cpp: clang("src/sum.cpp", (name) => `#include "${name}.hpp"`),
+  objc: clang("Sources/Sum.m", (name) => `#import "${name}.h"`),
   swift: across("swift-format's OrderedImports rule sorts imports"),
   php: across("php-cs-fixer's and Pint's ordered_imports sort use statements"),
   ruby: keeps("RuboCop's layout cops"),
@@ -131,21 +231,31 @@ function natural(a: string, b: string): number {
   return x.length - y.length;
 }
 
-/** A file's content with a blank line before each entry its formatter would move. */
+/** A file's content with a blank line (or a split marker) before each entry its formatter would move. */
 export interface LaidOut {
   content: string;
-  /** The 1-based lines of the original content a blank line now stands before. */
+  /** The 1-based lines of the original content a blank line or a split marker now stands before. */
   lines: number[];
   formatter: string;
+  /** The split marker put before those lines; absent: a blank line. */
+  marker?: string;
 }
 
 /**
  * The content laid out so the language's formatter keeps the order of every sorted list as
- * written, or null when the formatter would move nothing (or the language has no row).
+ * written, or null when the formatter would move nothing (or the language has no row). `read`
+ * gives the project's files by relative path, for a formatter that sorts only when configured to;
+ * without it such a formatter counts as not sorting.
  */
-export function layOutForFormatter(path: string, content: string): LaidOut | null {
+export function layOutForFormatter(
+  path: string,
+  content: string,
+  read?: (name: string) => string | null,
+): LaidOut | null {
   const row = rowOf(SORTED_LISTS, detectLanguageFromPath(path));
   if (!row) return null;
+  if (row.sorts && !(read && row.sorts(read))) return null;
+  const marker = row.separator?.find((line) => line.trim());
   const eol = content.includes("\r\n") ? "\r" : "";
   const source = content.split("\n");
   const out: string[] = [];
@@ -166,7 +276,8 @@ export function layOutForFormatter(path: string, content: string): LaidOut | nul
       [held, previous, inside] = [[], null, false];
       continue;
     }
-    if (row.attached?.test(line)) {
+    // A split marker already in the file ends the list, like any other line.
+    if (row.attached?.test(line) && line.trim() !== marker) {
       if (!held.length) heldFrom = i;
       held.push(line);
       continue;
@@ -184,15 +295,25 @@ export function layOutForFormatter(path: string, content: string): LaidOut | nul
       unit.push(source[++i] ?? "");
       text += `\n${source[i]}`;
     }
-    if (previous && previous.kind === entry.kind && !ascending(previous.key, entry.key)) {
-      out.push(eol);
+    if (
+      previous &&
+      previous.kind === entry.kind &&
+      (row.separator || !ascending(previous.key, entry.key))
+    ) {
+      out.push(...(row.separator ?? [""]).map((separator) => `${separator}${eol}`));
       lines.push(start + 1);
     }
     out.push(...unit);
     [held, previous] = [[], entry];
   }
   out.push(...held);
-  return lines.length ? { content: out.join("\n"), lines, formatter: row.formatter } : null;
+  if (!lines.length) return null;
+  return {
+    content: out.join("\n"),
+    lines,
+    formatter: row.formatter,
+    ...(marker ? { marker } : {}),
+  };
 }
 
 /** A skeleton file the layout changes, for the record of the split. */
@@ -201,13 +322,18 @@ export interface SkeletonLayout {
   path: string;
   formatter: string;
   lines: number[];
+  marker?: string;
 }
 
 /**
  * The split with every skeleton file laid out for its formatter, and the files that changed. A
- * file the layout would take past the host content limit keeps its content.
+ * file the layout would take past the host content limit keeps its content. `read` gives the
+ * project's files, for the formatters that sort only when the project configures them to.
  */
-export function layOutSkeletons(plan: InitiativePlan): {
+export function layOutSkeletons(
+  plan: InitiativePlan,
+  read?: (name: string) => string | null,
+): {
   plan: InitiativePlan;
   files: SkeletonLayout[];
 } {
@@ -215,13 +341,14 @@ export function layOutSkeletons(plan: InitiativePlan): {
   const features = plan.features.map((feature) => {
     if (!feature.skeleton?.length) return feature;
     const skeleton = feature.skeleton.map((file) => {
-      const laid = layOutForFormatter(file.path, file.content);
+      const laid = layOutForFormatter(file.path, file.content, read);
       if (!laid || laid.content.length > HOST_CONTENT_MAX_CHARS) return file;
       files.push({
         featureId: feature.id,
         path: file.path,
         formatter: laid.formatter,
         lines: laid.lines,
+        ...(laid.marker ? { marker: laid.marker } : {}),
       });
       return { ...file, content: laid.content };
     });

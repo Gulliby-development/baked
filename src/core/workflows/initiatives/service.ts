@@ -8,8 +8,8 @@ import { canRepairRun } from "../repairable.js";
  * readiness rules are the existing `contractHash` dependency mechanism.
  */
 
-import { existsSync, statSync } from "node:fs";
-import { basename, dirname } from "node:path";
+import { existsSync, readFileSync, statSync } from "node:fs";
+import { basename, dirname, join } from "node:path";
 import { ROUTING_ARTIFACT } from "../../llm/model-routing.js";
 import { getCachedProviderStatuses } from "../../llm/provider.js";
 import { availableVendorModels } from "../../llm/vendor-models.js";
@@ -2040,7 +2040,10 @@ export class InitiativeService {
     // Skeleton lines the project's formatter would sort get a blank line before them, so the
     // host-written content stays a fixed point of the format check (#2222); in shadow (absent)
     // the layout is only recorded.
-    const layout = layOutSkeletons(written);
+    const layout = layOutSkeletons(written, (name) => {
+      const path = join(this.workflows.workspace, name);
+      return existsSync(path) ? readFileSync(path, "utf8") : null;
+    });
     const layoutMode = settings.basePolicy.skeletonLayout === "on" ? "on" : "shadow";
     const decomposed = layoutMode === "on" ? layout.plan : written;
     // Small siblings share one run's fixed stages (#1352); the decomposer's prompt alone did not.

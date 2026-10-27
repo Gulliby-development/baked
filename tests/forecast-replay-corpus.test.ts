@@ -52,6 +52,7 @@ interface Accepted {
   newDeferDecisions?: number;
   newSourceDefectRoutes?: number;
   newBaselineDecisions?: number;
+  newSignatureDecisions?: number;
   newShareStops?: number;
   newPoolGrowth?: number;
   newPoolBoundStops?: number;
@@ -119,6 +120,7 @@ describe("bench-round traces replay without new forecast stops or growth (#1649)
           newDeferDecisions: run.newDeferDecisions,
           newSourceDefectRoutes: run.newSourceDefectRoutes,
           newBaselineDecisions: run.newBaselineDecisions,
+          newSignatureDecisions: run.newSignatureDecisions,
         }).toEqual({
           run: run.runId,
           newStops: allowed?.newStops ?? 0,
@@ -145,6 +147,7 @@ describe("bench-round traces replay without new forecast stops or growth (#1649)
           newDeferDecisions: allowed?.newDeferDecisions ?? 0,
           newSourceDefectRoutes: allowed?.newSourceDefectRoutes ?? 0,
           newBaselineDecisions: allowed?.newBaselineDecisions ?? 0,
+          newSignatureDecisions: allowed?.newSignatureDecisions ?? 0,
         });
       }
       // Run states before R52 counted the host's own test splits in `hostSplitTasks`, which the

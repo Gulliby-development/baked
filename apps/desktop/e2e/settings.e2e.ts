@@ -67,3 +67,15 @@ test("a global command is added, edited and deleted from Settings", async ({ app
   await page.getByRole("dialog").getByRole("button", { name: "Delete" }).click();
   await expect(list.getByText("Draft my weekly notes")).toBeHidden();
 });
+
+test("the Providers page shows how much of each subscription is left", async ({ app }) => {
+  const page = await app("#/settings/providers");
+  const panel = page.getByRole("region", { name: "Subscription limits" });
+  await expect(panel.getByRole("article", { name: "Codex" })).toContainText("62% left");
+  await expect(panel.getByRole("article", { name: "Codex" })).toContainText("resets in 2 h");
+  await expect(panel.getByRole("article", { name: "Claude Code" })).toContainText("seen 42 min ago");
+  await expect(panel.getByRole("article", { name: "GitHub Copilot" })).toContainText(
+    "0% left · 0 of 300",
+  );
+  await expect(panel.getByRole("article", { name: "GitHub Copilot" })).toContainText("unlimited");
+});

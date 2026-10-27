@@ -47,6 +47,7 @@ import { entryPointCommand } from "../src/core/verification/entry-points.js";
 import { noteSiblingFindings, ownerOfFinding } from "../src/core/verification/initiative-ownership.js";
 import { failureSignature as convergenceSignature, missingPlannedPaths, noTestsCollected } from "../src/core/verification/convergence.js";
 import { executeCheckCommand, exitStatus, timedOutFailure } from "../src/core/verification/check-runner.js";
+import { environmentFault, ENVIRONMENT_SIGNATURES } from "../src/core/verification/environment-faults.js";
 import { gradleTestReport } from "../src/core/verification/test-reports.js";
 import { detectLanguages, touchesLanguageFiles } from "../src/core/workflows/language.js";
 import { baselineRegression, buildFailure, buildRunner, diagnosticCount, failedTests, failureSignature, testCount, testsRan } from "../src/core/verification/output-counts.js";
@@ -72,7 +73,7 @@ import {
   isWholeUnitCheck,
   styleClaimShown,
 } from "../src/core/workflows/check-policy.js";
-import { buildWrapper, cmakeGates, detectGates, executeGate } from "../src/core/workflows/gates.js";
+import { buildWrapper, cmakeGates, detectGates, executeGate, type GateToolchain } from "../src/core/workflows/gates.js";
 import { fileScopedFormat, formatWrittenChecks } from "../src/core/workflows/format-written.js";
 import { type LayoutResult, layoutVerdict } from "../src/core/workflows/layout-check.js";
 import { addedDependencies, checkDependencies } from "../src/core/workflows/quality/dependencies.js";
@@ -1467,6 +1468,26 @@ const GRADLE_REPORT = `<?xml version="1.0" encoding="UTF-8"?>
   <system-err><![CDATA[]]></system-err>
 </testsuite>
 `;
+describe("gate matrix: environment signature (#2273)", () => {
+  const loopback = "* What went wrong:\njava.io.IOException: Unable to establish loopback connection\n\tat java.base/sun.nio.ch.PipeImpl.<init>(PipeImpl.java:93)\n";
+  const COMMANDS: Partial<Record<GateToolchain, [string, string[]]>> = {
+    gradle: process.platform === "win32" ? ["cmd", ["/d", "/c", "gradlew.bat", "check"]] : ["./gradlew", ["--console=plain", "-q", "check"]],
+    maven: ["mvn", ["-q", "verify"]],
+    sbt: ["sbt", ["test"]],
+  };
+  test.each(Object.entries(ENVIRONMENT_SIGNATURES))("%s", (toolchain, row) => {
+    if ("none" in row) {
+      expect(row.none.length).toBeGreaterThan(0);
+      return;
+    }
+    const [executable, args] = COMMANDS[toolchain as GateToolchain] ?? ["", []];
+    expect(environmentFault(executable, args, loopback)?.fix).toContain("jdk.net.unixdomain.tmpdir");
+    // A failing test of the project is the project's, and another program's output is not read.
+    expect(environmentFault(executable, args, "CalcTest > fails() FAILED\n")).toBeNull();
+    expect(environmentFault("npm", ["test"], loopback)).toBeNull();
+  });
+});
+
 describe("gate matrix: Gradle test reports and language review (#1489)", () => {
   const gradleProject = () =>
     project({
@@ -1490,6 +1511,33 @@ describe("gate matrix: Gradle test reports and language review (#1489)", () => {
     expect(gradleTestReport("gradle", ["check"], root, Date.now() + 60_000)).toBeNull();
     expect(gradleTestReport("mvn", ["verify"], root, Date.now() - 1000)).toBeNull();
     expect(gradleTestReport("cmd", ["/d", "/c", "gradlew.bat", "test"], root, Date.now() - 1000)).not.toBeNull();
+  });
+
+  test("a failed testcase keeps its message, type and the start of its text (#2272)", () => {
+    const stack = Array.from({ length: 14 }, (_, i) => `\tat CalcTest.frame${i}(CalcTest.kt:${i + 7})`).join("\n");
+    const xml = GRADLE_REPORT.replace(
+      /<failure [\s\S]*?<\/failure>/,
+      `<failure message="expected: &lt;&quot;a&gt;b&quot;&gt; but was: &lt;&quot;c&quot;&gt;" type="org.opentest4j.AssertionFailedError">org.opentest4j.AssertionFailedError: expected: &lt;"a&gt;b"&gt;\n${stack}\n</failure>`,
+    ).replace(
+      '<testcase name="later()" classname="CalcTest" time="0.0">\n    <skipped/>',
+      '<testcase name="crashes()" classname="CalcTest" time="0.0">\n    <error message="boom" type="java.lang.IllegalStateException"><![CDATA[java.lang.IllegalStateException: boom ]]]]><![CDATA[> <tag>\n\tat CalcTest.crashes(CalcTest.kt:12)]]></error>',
+    );
+    const root = project({ "build.gradle.kts": "plugins { java }\n", "build/test-results/test/TEST-CalcTest.xml": xml });
+    const report = gradleTestReport("gradle", ["-q", "check"], root, Date.now() - 1000) ?? "";
+    expect(report).toContain(
+      '<testcase classname="CalcTest" name="fails()"><failure message="expected: &lt;&quot;a&gt;b&quot;&gt; but was: &lt;&quot;c&quot;&gt;" type="org.opentest4j.AssertionFailedError">org.opentest4j.AssertionFailedError: expected: &lt;"a&gt;b"&gt;\n\tat CalcTest.frame0(CalcTest.kt:7)',
+    );
+    // Ten lines of text, then a mark that more were cut.
+    expect(report).toContain("\tat CalcTest.frame8(CalcTest.kt:15)\n\t...</failure>");
+    expect(report).not.toContain("frame9(");
+    // An <error> is a failure; its CDATA (with a `]]>` split across two sections) is escaped text.
+    expect(report).toContain(
+      '<testcase classname="CalcTest" name="crashes()"><failure message="boom" type="java.lang.IllegalStateException">java.lang.IllegalStateException: boom ]]&gt; &lt;tag&gt;\n\tat CalcTest.crashes(CalcTest.kt:12)</failure></testcase>',
+    );
+    expect(failedTests(report)).toEqual({ tool: "junit", names: ["CalcTest.fails()", "CalcTest.crashes()"] });
+    // A message longer than the cap is cut.
+    const long = project({ "build.gradle": "plugins { id 'java' }\n", "build/test-results/test/TEST-CalcTest.xml": GRADLE_REPORT.replace(/message="[^"]*"/, `message="${"x".repeat(900)}"`) });
+    expect(gradleTestReport("gradle", ["check"], long, Date.now() - 1000)).toContain(`message="${"x".repeat(500)}" type=`);
   });
 
   test.skipIf(process.platform === "win32")("executeCheckCommand appends the reports a Gradle run wrote", async () => {

@@ -73,6 +73,55 @@ function reportFiles(root: string, since: number): string[] {
 const attribute = (tag: string, name: string): string | undefined =>
   new RegExp(`\\s${name}="([^"]*)"`).exec(tag)?.[1];
 
+/** How much of a failure's message and text the appended block keeps (#2272). */
+const MESSAGE_CHARS = 500;
+const TEXT_LINES = 10;
+
+const decodeXml = (text: string) =>
+  text
+    .replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g, (_, raw: string) =>
+      raw.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;"),
+    )
+    .replace(/&(lt|gt|quot|apos|#\d+|#x[\da-f]+);/gi, (_, entity: string) => {
+      const named: Record<string, string> = { lt: "<", gt: ">", quot: '"', apos: "'" };
+      if (named[entity]) return named[entity];
+      return String.fromCodePoint(
+        Number.parseInt(entity.slice(/^#x/i.test(entity) ? 2 : 1), /^#x/i.test(entity) ? 16 : 10),
+      );
+    })
+    .replace(/&amp;/g, "&");
+const escapeXml = (text: string, quotes: boolean) => {
+  const escaped = text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  return quotes ? escaped.replace(/"/g, "&quot;") : escaped;
+};
+
+/**
+ * The `<failure>` of a failed testcase's body, with the report's `message` (cut at
+ * `MESSAGE_CHARS`), `type` and the first `TEXT_LINES` lines of its text, re-escaped. `gradle -q`
+ * prints no failure text, so a bare `<failure/>` gave the model only the test's name and cost a
+ * rerun per failing run: 19 runs in jvmsig, R72 (#2272). An `<error>` is written as a failure.
+ */
+function failureElement(body: string): string {
+  const match = /<(failure|error)\b([^>]*?)(?:\/>|>([\s\S]*?)<\/\1>)/.exec(body);
+  if (!match) return "<failure/>";
+  const message = attribute(match[2] ?? "", "message");
+  const type = attribute(match[2] ?? "", "type");
+  const lines = decodeXml(match[3] ?? "")
+    .replace(/\r\n?/g, "\n")
+    .trim()
+    .split("\n");
+  const text = lines.slice(0, TEXT_LINES).join("\n") + (lines.length > TEXT_LINES ? "\n\t..." : "");
+  const attributes = [
+    message === undefined
+      ? ""
+      : ` message="${escapeXml(decodeXml(message).slice(0, MESSAGE_CHARS), true)}"`,
+    type === undefined ? "" : ` type="${escapeXml(decodeXml(type), true)}"`,
+  ].join("");
+  return text
+    ? `<failure${attributes}>${escapeXml(text, false)}</failure>`
+    : `<failure${attributes}/>`;
+}
+
 /**
  * The totals of the Gradle test reports a run wrote in `cwd` since `since`, as a JUnit block, or
  * null when the command is not Gradle or wrote no report.
@@ -104,7 +153,7 @@ export function gradleTestReport(
     for (const test of xml.matchAll(/<testcase\b([^>]*?)(?:\/>|>([\s\S]*?)<\/testcase>)/g))
       if (/<(?:failure|error)\b/.test(test[2] ?? ""))
         failed.push(
-          `  <testcase classname="${attribute(test[1] ?? "", "classname") ?? ""}" name="${attribute(test[1] ?? "", "name") ?? ""}"><failure/></testcase>`,
+          `  <testcase classname="${attribute(test[1] ?? "", "classname") ?? ""}" name="${attribute(test[1] ?? "", "name") ?? ""}">${failureElement(test[2] ?? "")}</testcase>`,
         );
   }
   return [

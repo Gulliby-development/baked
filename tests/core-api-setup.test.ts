@@ -438,6 +438,16 @@ describe("local API setup and workflow additions", () => {
     expect((await call("/v1/providers/openai/key")).status).toBe(405);
   });
 
+  test("subscription limits list every provider that has one (#2300)", async () => {
+    const { get, send } = await setup();
+    type Row = { provider: string; state: string; windows: unknown[]; message: string };
+    const { limits } = await get<{ limits: Row[] }>("/v1/providers/limits");
+    expect(limits.map((l) => l.provider)).toEqual(["codex", "claude-code", "copilot"]);
+    expect(limits.find((l) => l.provider === "copilot")).toMatchObject({ state: "not-signed-in", windows: [] });
+    for (const l of limits) expect(l.message.length).toBeGreaterThan(0);
+    expect((await send("POST", "/v1/providers/limits", {})).status).toBe(405);
+  });
+
   test("a Copilot IDE login is reported as a detected source", async () => {
     const { get } = await setup();
     const dir = copilotConfigDir();
