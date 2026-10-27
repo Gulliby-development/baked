@@ -7,7 +7,7 @@ import { deployArtifact, planDeploy } from "../artifacts/deploy.js";
 import { ArtifactError, type ArtifactMeta, ArtifactStore } from "../artifacts/store.js";
 import { VercelError } from "../artifacts/vercel.js";
 import { applyKitToPage, designKitMode, KIT_CLASSES, pageIsUnstyled } from "../kit/index.js";
-import { isInside, realPath } from "../projects/paths.js";
+import { isInside, realPath, realPathOrParent } from "../projects/paths.js";
 
 const nullToUndef = <T>(v: T | null | undefined): T | undefined => v ?? undefined;
 
@@ -18,7 +18,7 @@ const summary = (a: ArtifactMeta): string => {
 
 /** An HTML file of the project; paths outside it are refused, symbolic links included. */
 function readProjectFile(cwd: string, path: string): string {
-  const file = realPath(resolve(cwd, path));
+  const file = realPathOrParent(resolve(cwd, path));
   if (!isInside(realPath(cwd), file))
     throw new ArtifactError("INVALID", `${path} is outside the project`);
   return readFileSync(file, "utf8");
