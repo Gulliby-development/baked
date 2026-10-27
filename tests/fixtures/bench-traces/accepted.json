@@ -106,7 +106,7 @@
   },
   "R74/callmend.sqlite.gz#e2e109cd-03fb-4ea9-bc45-5f1e749a8a80": {
     "newRepeatStops": 1,
-    "reason": "#2334: repeated-failure (shadow) records a would-stop at json T010 because it failed as T009 did: both correctives ended on the same test-count integrity finding in one family (literal-test-inputs) spread over several files. The repeat is real (true record); the run recovered after one extra repair (workflow repair) and finished. The chain of that family never formed because sameFamily needs the same file, so the finding chain did not escalate (#2334)."
+    "reason": "#1996 replay fallback: the json run recorded no repeats/ record, since no task-level corrective failed a required check; T010 and T011 were opened by test-integrity findings (test-count: T009 dropped spec/json/parser_spec.rb from 12 to 9 tests, T010 from 9 to 8). With no records the replay reads every basis-less finding with evidence as a check finding (findingRounds), and the two integrity findings share one impact stand-in on parser_spec.rb, so it decides T010 a repeat of T009. The live rule (recordRepeatedFailures) reads only findings whose claim names a check, so no live decision differs; the pattern is real (the literal-example restructure kept dropping tests, #2334)."
   },
   "R74/callmend.sqlite.gz#callmend": {
     "newPoolBoundStops": 1,
