@@ -369,8 +369,10 @@ describe("the host writes the request's verbatim content (#2333)", () => {
     expect((await hostApplyContents(root, section, { writes: [{ path: "README.md", action: "modify" }] }))[0]?.content).toBe("# Tool\n\n## Usage\n\nnew\n\n## License\n\nMIT\n");
   }, 60000);
 
-  for (const writers of [1, 2] as const)
-    test(`${String(writers)} writer(s): the applicable tasks run no implementer, the others do, and the records say applied`, async () => {
+  // Git for Windows sets `core.autocrlf=true`, so the run worktree's files are CRLF there; the host's
+  // write keeps the base's line ends, as an implementer's edit would.
+  for (const [writers, autocrlf] of [[1, false], [2, false], [2, true]] as const)
+    test(`${String(writers)} writer(s)${autocrlf ? ", autocrlf" : ""}: the applicable tasks run no implementer, the others do, and the records say applied`, async () => {
       const root = mkdtempSync(join(tmpdir(), "baked-host-apply-on-"));
       cleanups.push(() => rmSync(root, { recursive: true, force: true }));
       mkdirSync(join(root, "src"));
@@ -382,6 +384,7 @@ describe("the host writes the request's verbatim content (#2333)", () => {
         git(root, "config", "user.name", "Test User");
         git(root, "config", "user.email", "test@example.test");
         git(root, "config", "commit.gpgsign", "false");
+        git(root, "config", "core.autocrlf", String(autocrlf));
         writeFileSync(join(root, ".gitignore"), ".baked/\n");
         git(root, "add", ".");
         git(root, "commit", "-q", "-m", "Initial");
@@ -405,7 +408,8 @@ describe("the host writes the request's verbatim content (#2333)", () => {
       expect([...executor.attempts].sort()).toEqual(["T003", "T004"]);
       // The run's own tree: the workspace, or the run worktree with several writers.
       const tree = join(root, runRootPath(service.store, run.runId));
-      expect(readFileSync(join(tree, "src/a.ts"), "utf8")).toBe(content.T001?.[1] ?? "");
+      const a = content.T001?.[1] ?? "";
+      expect(readFileSync(join(tree, "src/a.ts"), "utf8")).toBe(autocrlf ? a.replaceAll("\n", "\r\n") : a);
       expect(readFileSync(join(tree, "src/b.ts"), "utf8")).toBe(content.T002?.[1] ?? "");
       const records = hostApplyRecords(service.store, run.runId);
       expect(records.map((r) => [r.taskId, r.mode, r.wouldApply, r.applied])).toEqual([
