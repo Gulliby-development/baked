@@ -4,6 +4,9 @@
     "dune-project": "(lang dune 3.0)\n"
   },
   "expected": {
+    "suppressions": [
+      "[@@@warning \"-32\"]: lint, linted, prescribable"
+    ],
     "checkConfigs": [".ocamlformat: ocamlformat, read as text"],
     "tests": null,
     "testMarkers": null,
