@@ -73,11 +73,13 @@
   },
   "R59/wheeltags.sqlite.gz#d2022e1b-485e-486c-8ecd-fd480f0161e0": {
     "newRecoveries": 1,
-    "reason": "#1877: a Codex stall that this recording waited out or retried in place now climbs the recovery ladder (fresh session first, then codex exec); the recorded call made no tool effects before it stalled."
+    "reason": "#1877: a Codex stall that this recording waited out or retried in place now climbs the recovery ladder (fresh session first, then codex exec); the recorded call made no tool effects before it stalled. #2336: the active-time cap is sized at the initiative's own pace, the median tokens per active minute of its finished feature runs, where that is slower than the history's; the round sized at the history's. The cap grows (sizing/plan-0.json 21 min at 135k to 25 min at 114k).",
+    "newActiveTimes": 1
   },
   "R62/stepvet.sqlite.gz#40060df8-bfac-4d9c-a5df-5904da9f92e6": {
     "newRecoveries": 6,
-    "reason": "#1956, #1957: six codex exec attempts of tagexpr (four analyze on sol, one on astra, one implement on luna) lost their answer to the readline split at U+2028 (#1956) and ended with \"Codex exec returned no final agent message\" and no first byte. The run classified them provider_unavailable, so no ladder rung was recorded (#1957); the replay reads an answer-less call as a stall and climbs, which also shifts the rung of the astra stall at 17:04 (fresh-session recorded, lower-effort replayed). Same commit as the runner (28b3ceea)."
+    "reason": "#1956, #1957: six codex exec attempts of tagexpr (four analyze on sol, one on astra, one implement on luna) lost their answer to the readline split at U+2028 (#1956) and ended with \"Codex exec returned no final agent message\" and no first byte. The run classified them provider_unavailable, so no ladder rung was recorded (#1957); the replay reads an answer-less call as a stall and climbs, which also shifts the rung of the astra stall at 17:04 (fresh-session recorded, lower-effort replayed). Same commit as the runner (28b3ceea). #2336: the active-time cap is sized at the initiative's own pace, the median tokens per active minute of its finished feature runs, where that is slower than the history's; the round sized at the history's. The cap grows (sizing/plan-0.json 35 min at 135k to 66 min at 71k; sizing/progress-33d1652c 35 min at 135k to 58 min at 71k). tagexpr stopped at the recorded 2,100,000 ms (#1958) and needed 2,457,115 ms.",
+    "newActiveTimes": 2
   },
   "R64/cfgquill.sqlite.gz#a843cc11-5b8d-4e91-8b46-dea39b078ae7": {
     "newRepeatStops": 1,
@@ -103,5 +105,113 @@
   "R73/evalpin.sqlite.gz#evalpin": {
     "newPoolBoundStops": 1,
     "reason": "#2280: initiative-pool-growth (shadow) records delivery, the last feature: with no waiting feature estimated its token room was null and its refresh took the base policy's ceilings (8M, 12M hard) with 3.31M of the 23.9M pool left after the others' use at its gate. The bound really passed the pool (true record); it used 0.81M and the initiative stayed under its pool. Same null-room path as R71 xmlvet's cli-release, which chargeHold does not cover."
+  },
+  "R48/recmill.sqlite.gz#296caac3-d295-4576-9f29-8bb1fe53339f": {
+    "newActiveTimes": 2,
+    "reason": "#2336: the active-time cap is sized at the initiative's own pace, the median tokens per active minute of its finished feature runs, where that is slower than the history's; the round sized at the history's. The cap grows (sizing/plan-0.json 27 min at 130k to 33 min at 106k; sizing/progress-cc56eed1 57 min at 130k to 69 min at 106k)."
+  },
+  "R48/recmill.sqlite.gz#29e106d1-f44c-48b1-9c98-e117e10caef8": {
+    "newActiveTimes": 2,
+    "reason": "#2336: the active-time cap is sized at the initiative's own pace, the median tokens per active minute of its finished feature runs, where that is slower than the history's; the round sized at the history's. The cap grows (sizing/plan-0.json 36 min at 137k to 49 min at 100k; sizing/plan-1.json 38 min at 137k to 52 min at 100k)."
+  },
+  "R48/recmill.sqlite.gz#2f2b9b63-0b11-4b6c-a685-8b55048c980e": {
+    "newActiveTimes": 1,
+    "reason": "#2336: the active-time cap is sized at the initiative's own pace, the median tokens per active minute of its finished feature runs, where that is slower than the history's; the round sized at the history's. The cap grows (sizing/plan-0.json 43 min at 130k to 52 min at 106k)."
+  },
+  "R48/recmill.sqlite.gz#51212270-7a0a-4b8c-842a-1c6bdea82ce5": {
+    "newActiveTimes": 1,
+    "reason": "#2336: the active-time cap is sized at the initiative's own pace, the median tokens per active minute of its finished feature runs, where that is slower than the history's; the round sized at the history's. The cap grows (sizing/plan-0.json 37 min at 130k to 45 min at 106k)."
+  },
+  "R48/recmill.sqlite.gz#a3ae3c19-bdb1-465f-8d36-88ead6729520": {
+    "newActiveTimes": 1,
+    "reason": "#2336: the active-time cap is sized at the initiative's own pace, the median tokens per active minute of its finished feature runs, where that is slower than the history's; the round sized at the history's. The cap grows (sizing/plan-0.json 37 min at 129k to 44 min at 109k)."
+  },
+  "R48/recmill.sqlite.gz#bcdaf1a7-6b8a-4774-a4ce-d1bf00de1243": {
+    "newActiveTimes": 1,
+    "reason": "#2336: the active-time cap is sized at the initiative's own pace, the median tokens per active minute of its finished feature runs, where that is slower than the history's; the round sized at the history's. The cap grows (sizing/plan-0.json 27 min at 137k to 37 min at 100k)."
+  },
+  "R48/recmill.sqlite.gz#ddaf1183-997d-4721-afa1-0b603a89c70e": {
+    "newActiveTimes": 4,
+    "reason": "#2336: the active-time cap is sized at the initiative's own pace, the median tokens per active minute of its finished feature runs, where that is slower than the history's; the round sized at the history's. The cap grows (sizing/progress-1c6d9eb6 60 min at 131k to 64 min at 106k; sizing/progress-8a3eec71 60 min at 131k to 62 min at 106k; sizing/progress-33f6e4e9 60 min at 130k to 70 min at 106k; sizing/progress-411d079c 60 min at 130k to 69 min at 106k)."
+  },
+  "R72/jvmsig.sqlite.gz#4fc417bc-6bf7-4f3b-a0bc-cf08c3a417e9": {
+    "newActiveTimes": 1,
+    "reason": "#2336: the active-time cap is sized at the initiative's own pace, the median tokens per active minute of its finished feature runs, where that is slower than the history's; the round sized at the history's. The cap grows (sizing/progress-de3d38dc 53 min at 134k to 60 min at 118k)."
+  },
+  "R69/ewvet.sqlite.gz#8f7e6999-7c6f-4f96-8683-c63a9d827099": {
+    "newActiveTimes": 1,
+    "reason": "#2336: the active-time cap is sized at the initiative's own pace, the median tokens per active minute of its finished feature runs, where that is slower than the history's; the round sized at the history's. The cap grows (sizing/plan-0.json 29 min at 136k to 33 min at 113k)."
+  },
+  "R70/namesound.sqlite.gz#3b78dec2-cdb3-4dce-b6df-1aebbb6efb0e": {
+    "newActiveTimes": 1,
+    "reason": "#2336: the active-time cap is sized at the initiative's own pace, the median tokens per active minute of its finished feature runs, where that is slower than the history's; the round sized at the history's. The cap grows (sizing/progress-ae844509 49 min at 135k to 88 min at 68k)."
+  },
+  "R51/sedstep.sqlite.gz#067f4828-b409-4f28-babb-cb1094cf4e94": {
+    "newActiveTimes": 1,
+    "reason": "#2336: the active-time cap is sized at the initiative's own pace, the median tokens per active minute of its finished feature runs, where that is slower than the history's; the round sized at the history's. The cap grows (sizing/plan-0.json 62 min at 137k to 78 min at 108k)."
+  },
+  "R67/ampwhy.sqlite.gz#564c6107-d0f7-4363-86d5-00accd433f7a": {
+    "newActiveTimes": 1,
+    "reason": "#2336: the active-time cap is sized at the initiative's own pace, the median tokens per active minute of its finished feature runs, where that is slower than the history's; the round sized at the history's. The cap grows (sizing/plan-0.json 24 min at 141k to 26 min at 75k)."
+  },
+  "R71/xmlvet.sqlite.gz#18b8b5eb-b758-49af-b716-7349f7fe16f4": {
+    "newActiveTimes": 1,
+    "reason": "#2336: the active-time cap is sized at the initiative's own pace, the median tokens per active minute of its finished feature runs, where that is slower than the history's; the round sized at the history's. The cap grows (sizing/plan-0.json 28 min at 134k to 54 min at 70k)."
+  },
+  "R71/xmlvet.sqlite.gz#4085ac6c-cb39-4cae-b635-21454d974675": {
+    "newActiveTimes": 1,
+    "reason": "#2336: the active-time cap is sized at the initiative's own pace, the median tokens per active minute of its finished feature runs, where that is slower than the history's; the round sized at the history's. The cap grows (sizing/plan-0.json 80 min at 134k to 119 min at 84k)."
+  },
+  "R71/xmlvet.sqlite.gz#6155997a-846c-4c05-b73e-3a4d72e2a314": {
+    "newActiveTimes": 1,
+    "reason": "#2336: the active-time cap is sized at the initiative's own pace, the median tokens per active minute of its finished feature runs, where that is slower than the history's; the round sized at the history's. The cap grows (sizing/plan-0.json 27 min at 135k to 35 min at 105k)."
+  },
+  "R71/xmlvet.sqlite.gz#6cbb88ac-4681-438e-966b-32decf9359b9": {
+    "newActiveTimes": 1,
+    "reason": "#2336: the active-time cap is sized at the initiative's own pace, the median tokens per active minute of its finished feature runs, where that is slower than the history's; the round sized at the history's. The cap grows (sizing/plan-0.json 28 min at 135k to 36 min at 105k)."
+  },
+  "R71/xmlvet.sqlite.gz#c1e5f1b7-8deb-4658-9a99-60ecd59ad8be": {
+    "newActiveTimes": 2,
+    "reason": "#2336: the active-time cap is sized at the initiative's own pace, the median tokens per active minute of its finished feature runs, where that is slower than the history's; the round sized at the history's. The cap grows (sizing/plan-0.json 24 min at 134k to 29 min at 70k; sizing/plan-1.json 28 min at 134k to 53 min at 70k)."
+  },
+  "R71/xmlvet.sqlite.gz#c565ac6b-2c42-419a-a00c-bbe7bb51252b": {
+    "newActiveTimes": 1,
+    "reason": "#2336: the active-time cap is sized at the initiative's own pace, the median tokens per active minute of its finished feature runs, where that is slower than the history's; the round sized at the history's. The cap grows (sizing/plan-1.json 27 min at 135k to 49 min at 70k)."
+  },
+  "R71/xmlvet.sqlite.gz#c893253c-f9ac-4224-a10f-1ca62b2abe16": {
+    "newActiveTimes": 3,
+    "reason": "#2336: the active-time cap is sized at the initiative's own pace, the median tokens per active minute of its finished feature runs, where that is slower than the history's; the round sized at the history's. The cap grows (sizing/progress-d4747cf0 75 min at 134k to 150 min at 67k; sizing/progress-a3cb245d 75 min at 134k to 150 min at 67k; sizing/progress-810022dc 93 min at 134k to 187 min at 67k)."
+  },
+  "R71/xmlvet.sqlite.gz#ceaf4406-80f7-40e9-bb1e-4f7701802561": {
+    "newActiveTimes": 2,
+    "reason": "#2336: the active-time cap is sized at the initiative's own pace, the median tokens per active minute of its finished feature runs, where that is slower than the history's; the round sized at the history's. The cap grows (sizing/plan-0.json 27 min at 135k to 34 min at 105k; sizing/plan-1.json 28 min at 135k to 36 min at 105k)."
+  },
+  "R73/evalpin.sqlite.gz#257dc8d9-9734-4fa6-a17c-451e21f7f3b8": {
+    "newActiveTimes": 1,
+    "reason": "#2336: the active-time cap is sized at the initiative's own pace, the median tokens per active minute of its finished feature runs, where that is slower than the history's; the round sized at the history's. The cap grows (sizing/plan-1.json 30 min at 132k to 31 min at 108k)."
+  },
+  "R73/evalpin.sqlite.gz#3d56318d-5cda-425d-a4a9-2a455c64372b": {
+    "newActiveTimes": 1,
+    "reason": "#2336: the active-time cap is sized at the initiative's own pace, the median tokens per active minute of its finished feature runs, where that is slower than the history's; the round sized at the history's. The cap grows (sizing/plan-0.json 70 min at 132k to 72 min at 100k)."
+  },
+  "R73/evalpin.sqlite.gz#7af3039e-c0cd-4412-8292-8f59a4b5fb04": {
+    "newActiveTimes": 1,
+    "reason": "#2336: the active-time cap is sized at the initiative's own pace, the median tokens per active minute of its finished feature runs, where that is slower than the history's; the round sized at the history's. The cap grows (sizing/plan-0.json 30 min at 132k to 35 min at 108k)."
+  },
+  "R56/hdrlens.sqlite.gz#114feab2-b63c-4501-aa92-f98fa4579818": {
+    "newActiveTimes": 1,
+    "reason": "#2336: the active-time cap is sized at the initiative's own pace, the median tokens per active minute of its finished feature runs, where that is slower than the history's; the round sized at the history's. The cap grows (sizing/progress-80f05003 43 min at 141k to 58 min at 104k)."
+  },
+  "R56/hdrlens.sqlite.gz#2e85dda1-000a-46e6-a533-66b45ab322a4": {
+    "newActiveTimes": 1,
+    "reason": "#2336: the active-time cap is sized at the initiative's own pace, the median tokens per active minute of its finished feature runs, where that is slower than the history's; the round sized at the history's. The cap grows (sizing/plan-0.json 52 min at 141k to 56 min at 112k)."
+  },
+  "R50/selwhy.sqlite.gz#74afee10-87ec-4848-8645-7a9c6aaec587": {
+    "newActiveTimes": 1,
+    "reason": "#2336: the active-time cap is sized at the initiative's own pace, the median tokens per active minute of its finished feature runs, where that is slower than the history's; the round sized at the history's. The cap grows (sizing/progress-7efcb7b0 31 min at 140k to 34 min at 129k)."
+  },
+  "R62/stepvet.sqlite.gz#fd692ae8-ef09-4f50-aff4-1d5850807d51": {
+    "newActiveTimes": 1,
+    "reason": "#2336: the active-time cap is sized at the initiative's own pace, the median tokens per active minute of its finished feature runs, where that is slower than the history's; the round sized at the history's. The cap grows (sizing/plan-0.json 60 min at 135k to 80 min at 71k)."
   }
 }

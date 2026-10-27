@@ -1601,6 +1601,27 @@ export const FEATURES: readonly Feature[] = [
     ],
   },
   {
+    id: "initiative-time-pool-forecast",
+    group: "Initiatives",
+    title:
+      "Feature runs sized at the initiative's measured pace, a shared-time forecast notice, and time amounts on extend remedies of pool and deadline blocks",
+    tui: [
+      "/workflow: initiatives, Time forecast line, B prefilled with the suggested time, and a feature run's deadline block naming Extend with its time",
+    ],
+    cli: [
+      "baked workflow initiative show: budget.time, budget.timeNotice, next.recovery suggestedTimeMs, features[].recovery extend suggestedTimeMs",
+      "baked workflow initiative events: budget.time_notice",
+      "baked workflow initiative extend: --time-ms",
+      "baked workflow extend: --time-ms, --resume",
+    ],
+    api: [
+      "/v1/initiatives/:id: budget.time, budget.timeNotice, next.recovery suggestedTimeMs",
+      "/v1/initiatives/:id/events",
+      "/v1/initiatives/:id/extend",
+    ],
+    desktop: ["project/initiatives: Time forecast line and one-click Extend to the suggested time"],
+  },
+  {
     id: "initiative-finding-ownership",
     group: "Initiatives",
     title:

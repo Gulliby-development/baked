@@ -413,6 +413,7 @@ export function ExtendDialog({ projectKey, view, onClose }: Props) {
   const [fields, setFields] = useState(() => ({
     ...budgetFields(view),
     ...(suggested?.tokens ? { tokens: String(suggested.tokens) } : {}),
+    ...(suggested?.timeMs ? { minutes: String(Math.ceil(suggested.timeMs / 60_000)) } : {}),
   }));
   const cap = view.budget.cost?.capUsd ?? null;
   const [dollars, setDollars] = useState(() =>

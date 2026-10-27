@@ -807,6 +807,7 @@ import {
   overCeilingOf,
   plannerSizing,
   rateHistory,
+  runPace,
   type SizingReport,
   samplesFrom,
   sizePlan,
@@ -6910,6 +6911,22 @@ export class WorkflowScheduler {
     );
   }
   /**
+   * Tokens per active minute of the other finished feature runs of the run's initiative, which
+   * size its active time once there are enough of them (`activePace`, #2336); none outside one.
+   */
+  private initiativeRates(runId: string): number[] {
+    const initiatives = new InitiativeStore(this.store);
+    const id = initiatives.initiativeOfRun(runId);
+    if (!id) return [];
+    const runs = new Set(initiatives.links(id).map((l) => l.run_id));
+    runs.delete(runId);
+    return [...runs].flatMap((other) => {
+      const row = this.store.run(other);
+      const pace = row.status === "completed" ? runPace(row.token_usage, row.active_ms) : null;
+      return pace === null ? [] : [pace];
+    });
+  }
+  /**
    * Prices the analyzed plan before it is approved (see sizing.ts). An oversized plan goes back to
    * the planner once with a split note; a plan still above the run ceiling waits for the user,
    * who can split the request into an initiative or answer to go on. Otherwise every sized task
@@ -6934,6 +6951,7 @@ export class WorkflowScheduler {
       model,
       loopShares: loopHistory(this.store.workspace, policy),
       tokenRates: rateHistory(this.store.workspace, policy),
+      ownRates: this.initiativeRates(runId),
       request: state.requestText || state.prompt,
     });
     this.store.transaction(() =>
@@ -7076,6 +7094,7 @@ ${note}`;
       model: this.sizingModel(runId, state.graph),
       loopShares: loopHistory(this.store.workspace, policy),
       tokenRates: rateHistory(this.store.workspace, policy),
+      ownRates: this.initiativeRates(runId),
       request: state.requestText || state.prompt,
     });
     this.store.transaction(() => {

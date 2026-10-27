@@ -161,6 +161,20 @@ export interface InitiativePool {
   notice: string | null;
 }
 
+/** The shared active time (`budget.time`, #2336): its forecast at the measured pace. */
+export interface InitiativeTime {
+  limitMs: number;
+  usedMs: number;
+  committedMs: number;
+  pace: { tokensPerMinute: number; basis: "initiative" | "history"; runs: number } | null;
+  forecastMs: number | null;
+  wallMs: number | null;
+  coverMs: number | null;
+  /** What the forecast suggests extending the time to; null while it fits. */
+  suggestedMs: number | null;
+  notice: string | null;
+}
+
 export type FeatureSize = "small" | "medium" | "large";
 
 /** `GET /v1/initiatives/:id`, as `baked workflow initiative show` prints it. */
@@ -207,6 +221,10 @@ export interface InitiativeView {
     pool?: InitiativePool | null;
     /** Set while the token forecast is above the pool; absent on older backends. */
     forecastNotice?: string | null;
+    /** The shared time's forecast at the measured pace (#2336); absent on older backends. */
+    time?: InitiativeTime | null;
+    /** Set while the time forecast is above the shared time; absent on older backends. */
+    timeNotice?: string | null;
   };
   next: InitiativeNext;
   drive?: InitiativeDrive | null;
