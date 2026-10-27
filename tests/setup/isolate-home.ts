@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, setDefaultTimeout } from "bun:test";
@@ -11,6 +11,14 @@ const profile = mkdtempSync(join(tmpdir(), "baked-test-home-"));
 for (const key of ["HOME", "USERPROFILE"]) process.env[key] = profile;
 for (const key of ["LOCALAPPDATA", "APPDATA"]) if (process.env[key] !== undefined) process.env[key] = join(profile, key);
 process.env.XDG_CONFIG_HOME = join(profile, ".config");
+// The per-user runtime directory belongs to the profile too. The .NET 10 CLI puts its named
+// mutexes (NuGet-Migrations) under $XDG_RUNTIME_DIR/.dotnet; on the ubuntu-26.04 runner image the
+// inherited /run/user/1001 cannot be opened (EACCES), and every `dotnet build` gate failed in its
+// first-run step before compiling anything.
+if (process.platform !== "win32") {
+  process.env.XDG_RUNTIME_DIR = join(profile, "run");
+  mkdirSync(process.env.XDG_RUNTIME_DIR, { mode: 0o700 });
+}
 // GitHub Models falls back to these tokens and to the GitHub CLI's login, which reads GH_CONFIG_DIR.
 for (const key of ["GITHUB_TOKEN", "GH_TOKEN"]) delete process.env[key];
 process.env.GH_CONFIG_DIR = join(profile, "gh");
