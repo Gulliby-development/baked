@@ -3990,6 +3990,8 @@ export function replayTrace(
     const runIds = (
       store.connection.query("SELECT id FROM runs ORDER BY created_at").all() as { id: string }[]
     ).map((r) => r.id);
+    // Growth bounds are read before the forecast replay rewinds each run's policy revisions.
+    const bounds = replayPoolBounds(store);
     // Call timings are read before the forecast replay rewinds each run's attempts.
     const timings = replayFirstBytes(
       store,
@@ -4212,7 +4214,6 @@ export function replayTrace(
     }
     const gates = replayShareGate(store, options.shareGate);
     const pools = replayPoolGrowth(store, options.poolGrowthRule);
-    const bounds = replayPoolBounds(store);
     const initiatives = [
       ...new Set([...starts.map((i) => i.initiativeId), ...gates.map((i) => i.initiativeId)]),
     ].map((initiativeId): InitiativeReplay => {
