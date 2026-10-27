@@ -2892,6 +2892,22 @@ describe("gate matrix: format-written check on a dirty repository (#1837)", () =
     expect(edited({ "package.json": pkg, "bun.lock": "", "biome.json": "{}", "src/a.ts": "a\nb\n" }, "src/a.ts", "a\n")).toEqual([]);
     expect(edited({ "go.mod": "module p\n\ngo 1.22\n", "a.go": "package p\nvar x=1\n" }, "a.go", "package p\n")).toEqual([]);
   });
+  // #2243: xmlvet R71 filled R/cli.R, a stub the skeleton wrote, and shipped it unstyled: an edited
+  // file was not checked by a formatter without a range form, and every stub a feature fills is an edit.
+  cell("bun", "format-written holds a skeleton stub filled by a later feature; a real edit stays range-only (#2243)", () => {
+    const ids = (files: Record<string, string>, path: string, before: string) => edited(files, path, before).map(([id, command]) => [id, command]);
+    const biome = { "package.json": pkg, "bun.lock": "", "biome.json": "{}", "src/cli.ts": "export const a=1\n" };
+    expect(ids(biome, "src/cli.ts", "// Filled by the cli feature.\n")).toEqual([["format-written", "bunx biome format src/cli.ts"]]);
+    expect(ids(biome, "src/cli.ts", "/* stub */\n\n")).toEqual([["format-written", "bunx biome format src/cli.ts"]]);
+    expect(ids(biome, "src/cli.ts", "export const b = 2;\n")).toEqual([]);
+    const dprint = { "package.json": pkg, "bun.lock": "", "dprint.json": "{}", "src/cli.ts": "export const a=1\n" };
+    expect(ids(dprint, "src/cli.ts", "// Filled by the cli feature.\n").map(([id]) => id)).toEqual(["format-written"]);
+    expect(ids(dprint, "src/cli.ts", "export const b = 2;\n")).toEqual([]);
+    const styler = { DESCRIPTION: "Package: xmlvet\n", "R/cli.R": "run <- function(x){\nx}\n" };
+    expect(ids(styler, "R/cli.R", "# Filled by the cli feature.\n").map(([id]) => id)).toEqual(["styler-written"]);
+    expect(ids(styler, "R/cli.R", "")).toHaveLength(1);
+    expect(ids(styler, "R/cli.R", "run <- function(x) x\n")).toEqual([]);
+  });
   cell("dotnet", "dotnet format left out: --include the written files, fixer dotnet format", () => {
     const files = { "App.csproj": "<Project Sdk=\"Microsoft.NET.Sdk\" />", "A.cs": "class A {}\n" };
     expect(scoped(files, ["A.cs"])).toEqual([["dotnet-format-written", "dotnet format --verify-no-changes --include A.cs", "dotnet format", true]]);
