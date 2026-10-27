@@ -10,6 +10,13 @@
     "testsGrown": "[ERROR] Tests run: 4, Failures: 1, Errors: 0, Skipped: 0\n"
   },
   "expected": {
+    "suppressions": [
+      "@SuppressWarnings(\"unchecked\"): lint, linted, prescribable",
+      "@SuppressFBWarnings(\"EI_EXPOSE_REP\"): lint, linted, prescribable",
+      "// CHECKSTYLE:OFF: lint, linted",
+      "int x = y; // NOPMD: lint, linted",
+      "// NOSONAR: lint, linted"
+    ],
     "checkConfigs": ["checkstyle.xml: checkstyle", "pmd-ruleset.xml: pmd", "spotbugs-exclude.xml: spotbugs"],
     "tests": [
       "src/test/java/SumTest.java",

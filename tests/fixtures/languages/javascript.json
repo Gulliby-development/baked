@@ -11,6 +11,14 @@
     "testsGrown": " FAIL  src/sum.test.js > sum\n Test Files  1 failed (1)\n      Tests  1 failed | 3 passed (4)\n"
   },
   "expected": {
+    "suppressions": [
+      "// @ts-expect-error legacy call: ts-check, prescribable",
+      "// eslint-disable-next-line no-console: lint, linted, prescribable",
+      "// biome-ignore lint/suspicious/noExplicitAny: legacy: lint, linted, prescribable",
+      "// oxlint-disable-next-line no-unused-vars: lint, linted, prescribable",
+      "// prettier-ignore: lint, linted",
+      "/* c8 ignore next */: coverage, prescribable"
+    ],
     "checkConfigs": ["tsconfig.json: tsconfig", "biome.json: biome", "jsconfig.json: jsconfig", ".eslintrc.json: eslint", ".eslintrc.yml: eslint", "eslint.config.js: eslint, read as text", ".oxlintrc.json: oxlint", ".prettierrc: prettier, read as text"],
     "tests": null,
     "testMarkers": null,

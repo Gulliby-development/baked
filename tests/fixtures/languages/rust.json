@@ -10,6 +10,10 @@
     "testsGrown": "test sum_commutes ... FAILED\ntest result: FAILED. 3 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s\n"
   },
   "expected": {
+    "suppressions": [
+      "#[expect(unused_variables)]: lint, linted, prescribable",
+      "#[cfg_attr(test, allow(dead_code))]: lint, linted, prescribable"
+    ],
     "checkConfigs": ["clippy.toml: clippy", "rustfmt.toml: rustfmt, read as text"],
     "tests": [
       "src/tests.rs",
