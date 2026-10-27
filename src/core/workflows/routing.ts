@@ -435,6 +435,20 @@ function sideModels(
 }
 
 /**
+ * The models the implementation side of a run routes to, fallback models included: a model a
+ * review may not move to (#2271, the stall ladder's derived fallback).
+ */
+export function implementationModels(
+  record: RoutingRecord,
+  definition: Definition,
+  policy: RunPolicy,
+  gates: ReadonlyMap<string, Gate>,
+  profiles: readonly AgentProfile[],
+): Set<string> {
+  return new Set(sideModels(record, definition, policy, gates, profiles).implementation.keys());
+}
+
+/**
  * `boundSides`, with the critic (#646) on the review side when `withCritic` is set: a
  * cross-provider route moves it with the reviewers, while the model-level warnings leave it out,
  * since a critic on the implementation's vendor does not run unless the policy asks for it.

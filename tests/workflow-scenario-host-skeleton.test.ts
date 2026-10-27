@@ -72,6 +72,10 @@ describe("scenario: tonemath core, a brief that fixes a 20-module skeleton (#146
     for (const w of skeletonWrites) expect(patched).toContain(w.path);
     // The skeleton task used no tokens.
     expect(store.tasks(run.runId).find((t) => t.id === "T001")?.status).toBe("verified");
+    // No session edited the skeleton, so its integrity scan did not run, and the record says why
+    // (#2277): R72 evalpin's host-written T001 had no record at all.
+    const record = store.artifacts(run.runId).find((a) => a.logical_path === "integrity/decisions/tasks/T001.json");
+    expect(record && JSON.parse(store.readArtifact(run.runId, record.id))).toMatchObject({ scope: "task", taskId: "T001", skipped: "host-written", measures: [], findings: [] });
   }, 60000);
 });
 
