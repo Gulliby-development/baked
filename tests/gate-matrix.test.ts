@@ -74,6 +74,7 @@ import {
   styleClaimShown,
 } from "../src/core/workflows/check-policy.js";
 import { buildWrapper, cmakeGates, detectGates, executeGate, type GateToolchain } from "../src/core/workflows/gates.js";
+import { committedTreeChecks } from "../src/core/workflows/committed-tree.js";
 import { fileScopedFormat, formatWrittenChecks } from "../src/core/workflows/format-written.js";
 import { type LayoutResult, layoutVerdict } from "../src/core/workflows/layout-check.js";
 import { addedDependencies, checkDependencies } from "../src/core/workflows/quality/dependencies.js";
@@ -831,6 +832,29 @@ describe("gate matrix: baseline failure outside the plan (#2215)", () => {
     expect(decide(output(["[Correctable] ", "[Correctable] ", "[Correctable] "]))).toBe("repair");
     expect(decide(output(["[Correctable] ", ""]))).toBe("would_stop");
   });
+});
+
+// #2225 (R70 namesound, follow-up of #2214): rubocop passed on a CRLF working tree whose
+// committed LF tree failed it. After a feature's commit the host runs each stack's required
+// file-local linters and formatters once more on a clean worktree of the commit; test suites and
+// whole-unit analyzers stay at the checks stage.
+const COMMITTED_TREE: Record<Stack, string[]> = {
+  bun: ["lint"],
+  npm: ["lint"],
+  python: ["ruff", "ruff-format"],
+  go: ["gofmt"],
+  // clippy and cargo fmt are whole-unit.
+  rust: [],
+  maven: [],
+  dotnet: ["dotnet-format"],
+};
+
+describe("gate matrix: checks run again on the committed tree (#2225)", () => {
+  for (const stack of Object.keys(FIXTURES) as Stack[])
+    cell(stack, "checks run again on the committed tree", () => {
+      const checks = detectGates(project(FIXTURES[stack].files)).map((s) => ({ ...s.check, required: true }));
+      expect([stack, committedTreeChecks(checks).map((c) => c.id)]).toEqual([stack, COMMITTED_TREE[stack]]);
+    });
 });
 
 // #1749: a Gradle project got no toolchain gate, a Maven project with a wrapper got `mvn` even
