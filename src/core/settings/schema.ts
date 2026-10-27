@@ -1169,6 +1169,28 @@ export const SETTINGS: readonly SettingDefinition[] = [
     ],
   },
   {
+    id: "quality.rustFormatWritten",
+    page: "code-quality",
+    section: "Workflow runs",
+    label: "Check Rust formatting at the end of each task",
+    help: "cargo fmt runs only in the checks stage, after the task that wrote a file has ended. With this on, each task's new Rust files are checked with rustfmt when the task ends and fixed with rustfmt, so a file rustfmt rejects or never finishes on is repaired by its own task. Files that declare modules out of line (mod name;) stay with cargo fmt.",
+    scopes: BOTH,
+    type: "enum",
+    default: "off",
+    options: [
+      {
+        value: "off",
+        label: "off",
+        help: "Rust formatting is checked by cargo fmt in the checks stage only.",
+      },
+      {
+        value: "on",
+        label: "on",
+        help: "Also check each task's new Rust files with rustfmt when the task ends.",
+      },
+    ],
+  },
+  {
     id: "quality.baselineFix",
     page: "code-quality",
     section: "Workflow runs",

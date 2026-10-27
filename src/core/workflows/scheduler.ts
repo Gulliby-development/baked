@@ -10695,8 +10695,14 @@ ${note}`;
     const written = this.writtenTestsCheck(runId, state, policy, task, root, own, changed);
     // The project's formatter on the code files the task wrote, and on the lines the run changed in
     // the files it edits, when the run's checks hold no formatter for them (#1837).
-    const formatted = formatWrittenChecks(root, policy.checks, task.writes, undefined, (path) =>
-      runBaseContent(this.store, runId, path),
+    const formatted = formatWrittenChecks(
+      root,
+      policy.checks,
+      task.writes,
+      undefined,
+      (path) => runBaseContent(this.store, runId, path),
+      undefined,
+      { rust: policy.rustFormatWritten === "on" },
     );
     const gated = [...own, ...(written ? [written] : []), ...formatted];
     const record = this.affectedRecord(state, task);
