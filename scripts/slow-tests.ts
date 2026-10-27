@@ -55,7 +55,8 @@ function callEnd(source: string, open: number): number {
 
 /**
  * The time limit a test passes as the last argument of its `test(...)` or `it(...)` call at
- * `line` (a number such as `120_000`), or null when it passes none or not as a literal.
+ * `line` (a number such as `120_000`), or of the last call of a curried `test.each(...)(...)`,
+ * or null when it passes none or not as a literal.
  */
 export function ownLimit(source: string, line: number): number | null {
   const lines = source.split("\n");
@@ -64,7 +65,10 @@ export function ownLimit(source: string, line: number): number | null {
   call.lastIndex = start;
   const found = call.exec(source);
   if (!found || found.index >= start + (lines[line - 1]?.length ?? 0)) return null;
-  const end = callEnd(source, found.index + found[0].length - 1);
+  let end = callEnd(source, found.index + found[0].length - 1);
+  // A curried call (`test.each(table)(name, fn, limit)`) takes its limit in the last call.
+  for (let next = /^\s*\(/.exec(source.slice(end)); end !== -1 && next; next = /^\s*\(/.exec(source.slice(end)))
+    end = callEnd(source, end + next[0].length - 1);
   if (end === -1) return null;
   const limit = /,\s*([\d_]+)\s*,?\s*\)$/.exec(source.slice(found.index, end))?.[1];
   return limit === undefined ? null : Number(limit.replaceAll("_", ""));

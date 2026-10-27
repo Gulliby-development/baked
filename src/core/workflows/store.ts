@@ -1498,6 +1498,18 @@ export class WorkflowStore {
     return this.db.query<AttemptRow, [string]>("SELECT * FROM attempts WHERE run_id=?").all(runId);
   }
   /**
+   * The models whose attempts in any run of the workspace completed at or after `since`, each with
+   * its latest end: the models of a provider that answered a moment ago (#2271).
+   */
+  answeredModels(since: number): Map<string, number> {
+    const rows = this.db
+      .query<{ model_id: string; ended: number }, [number]>(
+        "SELECT model_id, MAX(ended_at) AS ended FROM attempts WHERE status='completed' AND model_id IS NOT NULL AND ended_at>=? GROUP BY model_id",
+      )
+      .all(since);
+    return new Map(rows.map((row) => [row.model_id, row.ended]));
+  }
+  /**
    * The token count the run may not pass without a decision, or null without soft checkpoints.
    * Each accepted checkpoint moves the next one a full interval beyond what had been used.
    */

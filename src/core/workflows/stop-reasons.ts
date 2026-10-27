@@ -133,6 +133,13 @@ export const STOP_REASONS = {
     modes: NOT_ENFORCED,
     defaultMode: "shadow",
   },
+  corrective_restores_removed: {
+    label: "A corrective puts back what the previous corrective of the file removed",
+    // Shadow only until two bench rounds show no false would-stop (#2277); its promotion opens a
+    // spec conflict naming both correctives' findings instead of a third corrective.
+    modes: NOT_ENFORCED,
+    defaultMode: "shadow",
+  },
   edge_crash_finding: {
     label: "A probed case crashes inside a file the probed code's task writes",
     // Shadow only until two bench rounds show no false would-stop (#2136); its promotion makes
