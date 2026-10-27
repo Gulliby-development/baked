@@ -47,6 +47,7 @@ import { entryPointCommand } from "../src/core/verification/entry-points.js";
 import { noteSiblingFindings, ownerOfFinding } from "../src/core/verification/initiative-ownership.js";
 import { failureSignature as convergenceSignature, missingPlannedPaths, noTestsCollected } from "../src/core/verification/convergence.js";
 import { executeCheckCommand, exitStatus, timedOutFailure } from "../src/core/verification/check-runner.js";
+import { environmentFault, ENVIRONMENT_SIGNATURES } from "../src/core/verification/environment-faults.js";
 import { gradleTestReport } from "../src/core/verification/test-reports.js";
 import { detectLanguages, touchesLanguageFiles } from "../src/core/workflows/language.js";
 import { baselineRegression, buildFailure, buildRunner, diagnosticCount, failedTests, failureSignature, testCount, testsRan } from "../src/core/verification/output-counts.js";
@@ -72,7 +73,7 @@ import {
   isWholeUnitCheck,
   styleClaimShown,
 } from "../src/core/workflows/check-policy.js";
-import { buildWrapper, cmakeGates, detectGates, executeGate } from "../src/core/workflows/gates.js";
+import { buildWrapper, cmakeGates, detectGates, executeGate, type GateToolchain } from "../src/core/workflows/gates.js";
 import { fileScopedFormat, formatWrittenChecks } from "../src/core/workflows/format-written.js";
 import { type LayoutResult, layoutVerdict } from "../src/core/workflows/layout-check.js";
 import { addedDependencies, checkDependencies } from "../src/core/workflows/quality/dependencies.js";
@@ -1467,6 +1468,26 @@ const GRADLE_REPORT = `<?xml version="1.0" encoding="UTF-8"?>
   <system-err><![CDATA[]]></system-err>
 </testsuite>
 `;
+describe("gate matrix: environment signature (#2273)", () => {
+  const loopback = "* What went wrong:\njava.io.IOException: Unable to establish loopback connection\n\tat java.base/sun.nio.ch.PipeImpl.<init>(PipeImpl.java:93)\n";
+  const COMMANDS: Partial<Record<GateToolchain, [string, string[]]>> = {
+    gradle: process.platform === "win32" ? ["cmd", ["/d", "/c", "gradlew.bat", "check"]] : ["./gradlew", ["--console=plain", "-q", "check"]],
+    maven: ["mvn", ["-q", "verify"]],
+    sbt: ["sbt", ["test"]],
+  };
+  test.each(Object.entries(ENVIRONMENT_SIGNATURES))("%s", (toolchain, row) => {
+    if ("none" in row) {
+      expect(row.none.length).toBeGreaterThan(0);
+      return;
+    }
+    const [executable, args] = COMMANDS[toolchain as GateToolchain] ?? ["", []];
+    expect(environmentFault(executable, args, loopback)?.fix).toContain("jdk.net.unixdomain.tmpdir");
+    // A failing test of the project is the project's, and another program's output is not read.
+    expect(environmentFault(executable, args, "CalcTest > fails() FAILED\n")).toBeNull();
+    expect(environmentFault("npm", ["test"], loopback)).toBeNull();
+  });
+});
+
 describe("gate matrix: Gradle test reports and language review (#1489)", () => {
   const gradleProject = () =>
     project({
