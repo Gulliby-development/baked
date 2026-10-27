@@ -425,6 +425,7 @@ import {
   type FamilyRecord,
   familyDecision,
   observedValue,
+  recordRestoredRemovals,
   rewritesSymbol,
   symbolKey,
   taskChainRecord,
@@ -867,6 +868,7 @@ import {
   integrityRecord,
   isTestPath,
   measureTestIntegrity,
+  prescribedExemptions,
   requestedTestRemovals,
   rewriteTargets,
   type ScanOptions,
@@ -7741,6 +7743,15 @@ ${note}`;
       // failing checks already pass, has nothing for a model to do: its task checks decide it,
       // and the checks stage covers the rest.
       if (hostWritten(task)) this.writeHostFiles(runId, child, state, policy, task);
+      // No session edits these files, so no scan runs; the record says why (#2277).
+      this.recordIntegrity(runId, `tasks/${task.id}`, {
+        ...integrityRecord("task", task.id, testIntegrityOf(policy), [], []),
+        skipped: hostWritten(task)
+          ? "host-written"
+          : task.writes.length === 0
+            ? "no-writes"
+            : "checks-passing",
+      });
       await this.snapshot(runId, state, policy, signal);
       this.store.transaction(() => {
         this.store.taskStatus(runId, task.id, "implemented", state.snapshotId);
@@ -8229,6 +8240,8 @@ ${note}`;
         this.store.taskStatus(runId, task.id, "implemented", state.snapshotId);
         this.store.saveState(runId, state);
       });
+      // Shadow (#2277): a corrective that puts back what the previous one removed.
+      recordRestoredRemovals(this.store, runId, policy, state.graph?.tasks ?? [], task.id);
       integrity = this.integrityFailures(runId, state, policy, task, root, beforeHashes, changed);
     }
     const taskFailures: Review["findings"] = [...integrity];
@@ -9808,6 +9821,10 @@ ${note}`;
     if (conflicts.length)
       await this.resolveConflicts(runId, state, policy, profiles, outcome, conflicts, signal);
     await this.snapshot(runId, state, policy, signal);
+    const integratedBefore = Object.fromEntries(
+      outcome.changed.map((p) => [p, outcome.before[p] ?? null]),
+    );
+    const patch = await this.taskPatch(runId, mainRoot, integratedBefore);
     this.store.transaction(() => {
       const diff = this.store.artifact(
         runId,
@@ -9815,8 +9832,9 @@ ${note}`;
         `tasks/${task.id}/diff.json`,
         canonical({
           changed: outcome.changed,
-          before: Object.fromEntries(outcome.changed.map((p) => [p, outcome.before[p] ?? null])),
+          before: integratedBefore,
           after: Object.fromEntries(outcome.changed.map((p) => [p, outcome.after[p] ?? null])),
+          patch,
           worktree: entry.path,
           integrated: Object.fromEntries(
             outcome.changed.map((p) => [p, state.expectedFiles?.[p] ?? null]),
@@ -9832,13 +9850,14 @@ ${note}`;
     const results = conflicts.length
       ? await this.recheck(runId, state, entry, policy, signal, mainRoot)
       : outcome.checks;
+    recordRestoredRemovals(this.store, runId, policy, state.graph?.tasks ?? [], task.id);
     const failures: Review["findings"] = this.integrityFailures(
       runId,
       state,
       policy,
       task,
       mainRoot,
-      Object.fromEntries(outcome.changed.map((p) => [p, outcome.before[p] ?? null])),
+      integratedBefore,
       outcome.changed,
     );
     if (this.testsPending(state, policy) && isTestTask(task)) {
@@ -11044,6 +11063,7 @@ ${note}`;
         measures,
         found,
         shadowTitleFindings(changes, scanOptions, found),
+        prescribedExemptions(changes, scanOptions.specText ?? "", found),
       ),
     );
     if (!found.length) return [];
@@ -11310,6 +11330,7 @@ ${note}`;
         measures,
         found,
         shadowTitleFindings(runChanges, scanOptions, found),
+        prescribedExemptions(runChanges, scanOptions.specText ?? "", found),
       ),
     );
     if (!found.length) return [];

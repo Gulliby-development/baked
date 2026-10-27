@@ -1,8 +1,10 @@
+import { canonical } from "../specs/hash.js";
 import type { ReproOutcome } from "../verification/repro.js";
 import { type Repro, ReproSchema, type RunPolicy, type Spec } from "./schemas.js";
 import { recordWouldStop, stopMode } from "./stop-reasons.js";
 import type { WorkflowStore } from "./store.js";
 import { isTestPath } from "./test-integrity.js";
+import type { Task } from "./types.js";
 
 /**
  * Finding chains (#1959): a review that finds one defect class on one symbol one case at a time
@@ -32,6 +34,12 @@ import { isTestPath } from "./test-integrity.js";
  * claim on the same file) is the `repeat_without_change` would-stop (`unchangedRepeats`, shadow):
  * no further session can change what the last one left alone, and the next step is a decision on
  * the owner or the scope.
+ *
+ * A corrective whose edit puts back lines the previous corrective of the same file removed is the
+ * `corrective_restores_removed` would-stop (`restoredRemovals`, shadow, #2277): two host gates ask
+ * for opposite changes, and the next step is a spec conflict, not a third corrective. R72 evalpin
+ * foundation: T008 removed `#[allow(unused_variables)]` for the integrity guard, T009 put it back
+ * for `cargo clippy -D warnings`, and five correctives ran before the conflict opened.
  */
 
 /** Findings in a `repeatOf` chain on one file and symbol at which the next corrective rewrites it. */
@@ -46,6 +54,8 @@ export const CHAIN_TASKS_DIR = "chains/tasks/";
 export const CHAIN_BATTERY_DIR = "chains/battery/";
 /** The sibling probe of a rewrite corrective (#1969): `chains/family/<task>.json`. */
 export const CHAIN_FAMILY_DIR = "chains/family/";
+/** A corrective that restored what the previous one removed (#2277): `chains/restores/<task>.json`. */
+export const CHAIN_RESTORES_DIR = "chains/restores/";
 
 /**
  * A leading declaration keyword a reviewer may copy with the name (`struct reader`, `impl Reader`,
@@ -680,3 +690,178 @@ export const rewriteStep = (
   family && family.symbols.length > 1
     ? `\nThis finding is case ${ids.length} of the defect class ${family.name}${family.file ? ` in ${family.file}` : ""} (${ids.join(", ")}, on ${family.symbols.join(", ")}), each found after the last was patched. Do not patch this case: name the rule the class breaks, rewrite every place of that file that handles it (${family.symbols.join(", ")} and their siblings) from the algorithm its spec rows or a named reference algorithm give, and make every case of the battery in your input pass.`
     : `\nThis finding is case ${ids.length} of one defect class on ${symbol} (${ids.join(", ")}), each found after the last was patched. Do not patch this case: rewrite ${symbol} from the algorithm its spec rows or a named reference algorithm give, and make every case of the battery in your input pass.`;
+
+/** The lines a unified patch removes and adds, by the path of each file it changes. */
+export function patchLines(patch: string): Map<string, { removed: string[]; added: string[] }> {
+  const files = new Map<string, { removed: string[]; added: string[] }>();
+  const lines = patch.split("\n");
+  let current: { removed: string[]; added: string[] } | null = null;
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i] ?? "";
+    // A file's header is a `---` line followed by its `+++` line; a removed line that starts with
+    // `--` (an SQL or Lua comment) is not followed by one.
+    const next = lines[i + 1] ?? "";
+    if (line.startsWith("--- ") && next.startsWith("+++ ")) {
+      const to = next.slice(4).trim();
+      const from = line.slice(4).trim();
+      const path = (to === "/dev/null" ? from : to).replace(/^[ab]\//, "");
+      current = files.get(path) ?? { removed: [], added: [] };
+      files.set(path, current);
+      i++;
+      continue;
+    }
+    if (!current || line.startsWith("@@")) continue;
+    if (line.startsWith("-")) current.removed.push(line.slice(1));
+    else if (line.startsWith("+")) current.added.push(line.slice(1));
+  }
+  return files;
+}
+
+/** A line worth comparing: not blank and more than punctuation (`}`, `end`, `)`). */
+const meaningful = (line: string): boolean => /[\p{L}\p{N}]/u.test(line) && line.trim().length >= 4;
+
+/** A corrective's recorded edit: its task, the findings it corrected and its patch. */
+export interface CorrectiveEdit {
+  taskId: string;
+  findingIds: readonly string[];
+  patch: string;
+}
+
+/** Lines a corrective put back that the previous corrective of the same file removed (#2277). */
+export interface RestoredRemoval {
+  taskId: string;
+  findingIds: string[];
+  path: string;
+  /** The previous corrective of the file, which removed the lines. */
+  earlierTaskId: string;
+  earlierFindingIds: string[];
+  /** The restored lines, trimmed, in the order the later corrective added them. */
+  lines: string[];
+}
+
+/**
+ * The files on which `current` puts back lines that the latest earlier corrective of the same file
+ * removed (lines compared trimmed; a line that corrective moved, removing and adding it, is no
+ * removal). `earlier` holds the run's earlier correctives, oldest first.
+ */
+export function restoredRemovals(
+  current: CorrectiveEdit,
+  earlier: readonly CorrectiveEdit[],
+): RestoredRemoval[] {
+  const out: RestoredRemoval[] = [];
+  const edits = earlier.map((edit) => ({ edit, files: patchLines(edit.patch) }));
+  for (const [path, { added }] of patchLines(current.patch)) {
+    const previous = edits.filter(({ files }) => files.has(path)).at(-1);
+    const changed = previous?.files.get(path);
+    if (!previous || !changed) continue;
+    const kept = new Set(changed.added.map((line) => line.trim()));
+    const removed = new Set(
+      changed.removed
+        .map((line) => line.trim())
+        .filter((line) => meaningful(line) && !kept.has(line)),
+    );
+    const lines = [
+      ...new Set(added.map((line) => line.trim()).filter((line) => removed.has(line))),
+    ];
+    if (!lines.length) continue;
+    out.push({
+      taskId: current.taskId,
+      findingIds: [...current.findingIds],
+      path,
+      earlierTaskId: previous.edit.taskId,
+      earlierFindingIds: [...previous.edit.findingIds],
+      lines,
+    });
+  }
+  return out;
+}
+
+/** A task's patches over all its recorded sessions, joined, or null when it recorded none. */
+function taskPatch(store: WorkflowStore, runId: string, taskId: string): string | null {
+  const rows = store.artifacts(runId).filter((a) => a.logical_path === taskDiffPath(taskId));
+  if (!rows.length) return null;
+  return rows
+    .map((row) => {
+      try {
+        const body = JSON.parse(store.readArtifact(runId, row.id)) as { patch?: unknown };
+        return typeof body.patch === "string" ? body.patch : "";
+      } catch {
+        return "";
+      }
+    })
+    .join("\n");
+}
+
+/** The edits of the graph's correctives before `taskId` and of `taskId` itself, from the run's diffs. */
+function correctiveEdits(
+  store: WorkflowStore,
+  runId: string,
+  tasks: readonly Task[],
+  taskId: string,
+): { current: CorrectiveEdit | null; earlier: CorrectiveEdit[] } {
+  const correctives = tasks.filter((t) => t.origin !== "planned");
+  const at = correctives.findIndex((t) => t.id === taskId);
+  if (at < 0) return { current: null, earlier: [] };
+  const edit = (task: Task): CorrectiveEdit | null => {
+    const patch = taskPatch(store, runId, task.id);
+    return patch === null ? null : { taskId: task.id, findingIds: task.findingIds, patch };
+  };
+  const earlier = correctives
+    .slice(0, at)
+    .map(edit)
+    .filter((e): e is CorrectiveEdit => e !== null);
+  return { current: edit(correctives[at] as Task), earlier };
+}
+
+/**
+ * Records the `corrective_restores_removed` would-stop for each file on which a corrective put back
+ * what the previous corrective of the file removed (#2277), once per corrective and file, and the
+ * decision in `chains/restores/<task>.json` for the replay. Shadow: the run goes on as before.
+ */
+export function recordRestoredRemovals(
+  store: WorkflowStore,
+  runId: string,
+  policy: Pick<RunPolicy, "stopModes" | "costForecast">,
+  tasks: readonly Task[],
+  taskId: string,
+): RestoredRemoval[] {
+  const mode = stopMode(policy, "corrective_restores_removed");
+  if (mode === "enforce") return [];
+  const { current, earlier } = correctiveEdits(store, runId, tasks, taskId);
+  if (!current) return [];
+  const restored = restoredRemovals(current, earlier);
+  if (!restored.length) return [];
+  const path = `${CHAIN_RESTORES_DIR}${taskId}.json`;
+  if (!store.artifacts(runId).some((row) => row.logical_path === path))
+    store.transaction(() =>
+      store.artifact(
+        runId,
+        CHAIN_KIND,
+        path,
+        canonical({ schemaVersion: 1, taskId, mode, restored }),
+      ),
+    );
+  for (const item of restored)
+    recordWouldStop(store, runId, {
+      reason: "corrective_restores_removed",
+      mode,
+      key: `task-${item.taskId}-${item.path}`,
+      summary: `${item.taskId} put back in ${item.path} what ${item.earlierTaskId} removed (${item.lines.slice(0, 3).join(" | ")}): the findings of the two correctives ask for opposite changes, and the next step is a spec conflict naming both`,
+      inputs: { ...item },
+    });
+  return restored;
+}
+
+/** The restores a run's correctives would record on the current rule, for the replay (#2277). */
+export function replayRestoredRemovals(
+  store: WorkflowStore,
+  runId: string,
+  tasks: readonly Task[],
+): RestoredRemoval[] {
+  return tasks
+    .filter((t) => t.origin !== "planned")
+    .flatMap((task) => {
+      const { current, earlier } = correctiveEdits(store, runId, tasks, task.id);
+      return current ? restoredRemovals(current, earlier) : [];
+    });
+}

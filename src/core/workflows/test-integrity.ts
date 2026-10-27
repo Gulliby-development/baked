@@ -1081,6 +1081,15 @@ export interface IntegrityRecord {
    * records before #2147.
    */
   shadowTitles?: ShadowTitles;
+  /**
+   * Why a task's scan did not run (#2277): the host wrote its files with the content its plan fixed
+   * (`host-written`), it may write nothing (`no-writes`), or it is a correction whose failing checks
+   * already passed, so no session ran (`checks-passing`). Absent on a scan that ran. R72 evalpin's
+   * T001 and T006 had no record at all, which read as a scan that never happened.
+   */
+  skipped?: "host-written" | "no-writes" | "checks-passing";
+  /** The findings a prescribed test hook or verification bypass would clear (shadow, #2277). */
+  shadowPrescribed?: { rule: IntegrityRule; path: string }[];
 }
 
 /** What the shadow title rows would change of a scan (#2147). */
@@ -1099,6 +1108,7 @@ export function integrityRecord(
   measures: readonly IntegrityMeasure[],
   findings: readonly IntegrityFinding[],
   shadowTitles: ShadowTitles | null = null,
+  shadowPrescribed: readonly { rule: IntegrityRule; path: string }[] = [],
 ): IntegrityRecord {
   return {
     schemaVersion: 1,
@@ -1108,7 +1118,63 @@ export function integrityRecord(
     measures: recordedMeasures(measures),
     findings: findings.map(({ rule, path }) => ({ rule, path })),
     ...(shadowTitles ? { shadowTitles } : {}),
+    ...(shadowPrescribed.length ? { shadowPrescribed: [...shadowPrescribed] } : {}),
   };
+}
+
+/**
+ * The test-hook and verification-bypass findings that a prescribed exemption would clear (shadow,
+ * #2277): the request, an accepted answer, the spec or the plan names the hook or the bypass with
+ * the rest of its line verbatim, not to forbid it, as a prescribed suppression is (#2270), so a
+ * brief that asks for `vitest run --passWithNoTests` while no test exists, or for a
+ * `NODE_ENV === "test"` branch, is not gaming. Every occurrence is read on the file's raw lines,
+ * and a finding clears when no unprescribed one was added. Recorded with the scan, counted nowhere.
+ */
+export function prescribedExemptions(
+  changes: readonly FileChange[],
+  specText: string,
+  live: readonly IntegrityFinding[],
+): { rule: IntegrityRule; path: string }[] {
+  if (!specText) return [];
+  const patterns: Partial<Record<IntegrityRule, RegExp>> = {
+    "test-hook": TEST_HOOKS,
+    "verification-bypass": BYPASS,
+  };
+  const prescribed = collapse(specText);
+  const named = (candidate: string, marker: string) => {
+    if (candidate.length <= marker.length + 2) return false;
+    for (
+      let at = prescribed.indexOf(candidate);
+      at >= 0;
+      at = prescribed.indexOf(candidate, at + 1)
+    )
+      if (!FORBIDS.test(prescribed.slice(Math.max(0, at - 60), at))) return true;
+    return false;
+  };
+  // A hook's or a bypass's arguments come before it (`NODE_ENV === "test"`, `"vitest run
+  // --passWithNoTests"`), so the whole line, or the quoted command that holds it, is what a brief
+  // names; a bare marker is never prescribed.
+  const unprescribed = (text: string | null, pattern: RegExp) => {
+    let total = 0;
+    for (const line of (text ?? "").split(/\r?\n/))
+      for (const match of line.matchAll(pattern)) {
+        const at = match.index ?? 0;
+        const quote = Math.max(line.lastIndexOf('"', at), line.lastIndexOf("'", at));
+        const candidates = [line, line.slice(at), quote >= 0 ? line.slice(quote) : ""].map(
+          collapse,
+        );
+        if (!candidates.some((candidate) => named(candidate, match[0].trim()))) total++;
+      }
+    return total;
+  };
+  return live.flatMap(({ rule, path }) => {
+    const pattern = patterns[rule];
+    const change = changes.find((c) => c.path === path);
+    if (!pattern || !change || change.before === undefined) return [];
+    return unprescribed(change.after, pattern) - unprescribed(change.before, pattern) <= 0
+      ? [{ rule, path }]
+      : [];
+  });
 }
 
 /**
