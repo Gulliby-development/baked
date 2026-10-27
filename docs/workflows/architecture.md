@@ -245,7 +245,7 @@ Default sizes: 256 KiB per structured artifact, 2 MiB per text artifact, 10 MiB 
 
 ## 9. Workspace snapshots, locks and recovery
 
-The baseline contains the input manifest hash, the Git HEAD when present, the list of tracked and non-ignored files, their content hashes, presence/absence and symlink metadata. Initial dirty/untracked files are marked as user files. Without Git, the same filesystem manifest is used. `.baked`, node_modules and explicitly declared build outputs are not part of the source snapshot, but package manifests, lockfiles, configuration and check definitions are.
+The baseline contains the input manifest hash, the Git HEAD when present, the list of tracked and non-ignored files, their content hashes, presence/absence and symlink metadata. Initial dirty/untracked files are marked as user files. Without Git, the same filesystem manifest is used. `.baked`, node_modules, the dependency folders linked into a worktree (`DEPENDENCY_DIRS`, #2330) and explicitly declared build outputs are not part of the source snapshot, but package manifests, lockfiles, configuration and check definitions are.
 
 V1 chooses strict invalidation. Any change of the source manifest after a check makes feature checks and review stale. Selective reuse by dependency graph is postponed. Task checks may repeat more often; final feature checks run on a shared stable snapshot. For large repositories a hash cache speeds up reading, but final acceptance must check content and not rely only on a watcher or mtime.
 

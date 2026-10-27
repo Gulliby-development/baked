@@ -14,7 +14,6 @@ import {
   renameSync,
   rmSync,
   statSync,
-  symlinkSync,
   utimesSync,
   writeFileSync,
 } from "node:fs";
@@ -33,6 +32,7 @@ import {
   treeModes,
   treeShipsSpecs,
 } from "./delivery-git.js";
+import { ALL_DEPENDENCY_DIRS, isLinkedDependency, linkDependencies } from "./dependency-dirs.js";
 import { WorkflowFault } from "./errors.js";
 import type { WorkflowStore } from "./store.js";
 import type { RuntimeState, WorktreeState } from "./types.js";
@@ -311,18 +311,6 @@ export async function moveRunWorktree(
   await required(root, ["-c", `core.hooksPath=${hooks}`, "reset", "-q", "--hard", commit]);
 }
 
-/** Shares the project's top-level `node_modules` with the worktree so checks can run there. */
-export function linkDependencies(workspace: string, root: string): void {
-  const source = join(workspace, "node_modules");
-  const target = join(root, "node_modules");
-  if (!existsSync(source) || existsSync(target)) return;
-  try {
-    symlinkSync(source, target, process.platform === "win32" ? "junction" : "dir");
-  } catch {
-    // A missing link only makes checks that need dependencies fail in the worktree.
-  }
-}
-
 /**
  * Creates the run's worktree and branch from the current HEAD, or from the run's `worktreeBase`
  * when it has one, or adopts them after a crash between their creation and the state save. The
@@ -443,7 +431,8 @@ export async function runContentCommit(
       utimesSync(index, atime, mtime);
     } else await required(root, ["read-tree", "HEAD"], { env });
     // An exclude pathspec that names an ignored path fails the add ("paths are ignored"); the
-    // linked node_modules is a junction on Windows, which .gitignore already covers.
+    // linked node_modules is a junction on Windows, which .gitignore already covers. Git sees
+    // another linked dependency folder as a file, which a `vendor/` rule does not cover (#2330).
     // The project root (a run without its own worktree) has `.baked`, usually ignored too.
     const ignored = async (path: string) =>
       (await git(root, ["check-ignore", "-q", path])).code === 0;
@@ -457,6 +446,7 @@ export async function runContentCommit(
         ".",
         ...((await ignored(".baked")) ? [] : [":(exclude).baked"]),
         ...((await ignored("node_modules")) ? [] : [":(exclude)node_modules"]),
+        ...(await linkedUnignored(root, ignored)).map((dir) => `:(exclude)${dir}`),
       ],
       { env },
     );
@@ -474,8 +464,21 @@ export async function runContentCommit(
   }
 }
 
+/** The dependency folders linked into `root` that its ignore rules do not cover. */
+async function linkedUnignored(
+  root: string,
+  ignored: (path: string) => Promise<boolean>,
+): Promise<string[]> {
+  const linked = ALL_DEPENDENCY_DIRS.filter(
+    (dir) => dir !== "node_modules" && isLinkedDependency(root, dir),
+  );
+  const shown: string[] = [];
+  for (const dir of linked) if (!(await ignored(dir))) shown.push(dir);
+  return shown;
+}
+
 /**
- * Creates a task's worktree, detached at `base`, with the project's `node_modules` linked. A
+ * Creates a task's worktree, detached at `base`, with the project's dependency folders linked. A
  * worktree left by an interrupted attempt of the task is replaced: its edits were never
  * integrated, and recovery reconciled their effects before the run continued.
  */
@@ -709,8 +712,9 @@ export async function commitRunBranch(
       const blob = await required(root, ["hash-object", "-w", "--stdin", `--path=${path}`], {
         input: bytes,
       });
-      // A file the baseline has keeps its committed mode; a new file takes the working tree's.
-      const mode = modes.get(path) ?? gitMode(stat.mode);
+      // A file the baseline has keeps its committed mode; a new file takes the working tree's,
+      // or is executable when it starts with a shebang (#2331).
+      const mode = modes.get(path) ?? gitMode(stat.mode, bytes);
       updates.push(`${mode} ${blob}\t${path}\0`);
     }
     if (updates.length)

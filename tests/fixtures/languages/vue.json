@@ -9,6 +9,10 @@
     "testsGrown": " FAIL  src/sum.test.js > sum\n Test Files  1 failed (1)\n      Tests  1 failed | 3 passed (4)\n"
   },
   "expected": {
+    "memberSyntax": [
+      "Scanner delegates to Reader.IsEncodingToken.: Reader.IsEncodingToken",
+      "Scanner calls Reader#isEncodingToken per token.: Reader#isEncodingToken"
+    ],
     "suppressions": [
       "// @ts-expect-error legacy call: ts-check, prescribable",
       "// eslint-disable-next-line no-console: lint, linted, prescribable",
@@ -61,6 +65,9 @@
       "prettier: formatter",
       "vue-tsc: typechecker, whole unit"
     ],
-    "sortedLists": null
+    "sortedLists": null,
+    "dependencyDirs": [
+      "node_modules: linked"
+    ]
   }
 }

@@ -43,7 +43,7 @@ Implemented; see [several writers](runtime.md#several-writers). Deviations: no s
 - Policy: `maxConcurrentWriters` 1..4. A schema migration keeps 1 for existing definitions.
 - A task batch: tasks ready by the DAG that are pairwise disjoint by `writes.path` and by the directories they create. An overlap moves a task to the next batch.
 - Each task gets its own worktree `.baked/worktrees/<runId>/<taskId>` from the current head of the run branch and its own worker thread with `cwd` = worktree.
-- `node_modules` is attached to the worktree through a directory junction (Windows) or a symlink (POSIX); file symlinks on Windows may fail with EPERM.
+- The project's installed dependency folders (`node_modules`, `.venv`, Composer's `vendor` and the other rows of `DEPENDENCY_DIRS`, #2330) are attached to the worktree through a directory junction (Windows) or a symlink (POSIX); a folder the project tracks is checked out instead. File symlinks on Windows may fail with EPERM.
 - Task checks run in the task's worktree; a semaphore limits concurrent heavy checks.
 - Integration is sequential, in topological order: a task's changes are applied to the run branch, then feature checks run. A file change outside the task's `writes` rejects its result, as today.
 - Budget: tokens are reserved for the whole batch before it starts; when they are short, the batch shrinks.
