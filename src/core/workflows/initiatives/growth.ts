@@ -287,6 +287,13 @@ export function chargeHold(inputs: ChargeHoldInputs): ChargeHold {
   };
 }
 
+/**
+ * Whether a dollar amount is above a ceiling by more than the half-cent tolerance. It compares the
+ * unrounded amounts: the cent-floored hold could refuse a bound up to a cent below the ceiling, and
+ * the epsilon keeps a bound exactly half a cent above it inside despite float error (#2321).
+ */
+const passesCeiling = (amountUsd: number, ceilingUsd: number): boolean => amountUsd > ceilingUsd + 0.005 + 1e-9;
+
 /** A growth bound of a feature run, by where it is kept. */
 export interface RunBound {
   /** `maxRunTokens`, `extendToTokens`, `maxRunCostUsd` (its sizing) or `hardCeiling` (`auto-extend`). */
@@ -343,7 +350,7 @@ export function poolBoundDecision(inputs: PoolBoundInputs): PoolBoundDecision {
     ...(holdUsd === null
       ? []
       : inputs.usd
-          .filter((b) => b.value > holdUsd + 0.005)
+          .filter((b) => passesCeiling(inputs.othersSpentUsd + b.value, inputs.ceilingUsd!))
           .map((b) => ({ ...b, unit: "usd" as const, hold: holdUsd }))),
   ];
   const text = (b: (typeof over)[number]): string =>
