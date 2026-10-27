@@ -171,12 +171,78 @@ describe("the other frameworks add no type, so their block still ends the file (
     { mode: "inline", framework: "pytest", test: "tests/test_options.py" },
     { mode: "inline", framework: "go", package: "lanes", test: "lanes/options_test.go" },
     { mode: "inline", framework: "rust", test: "tests/options.rs" },
+    { mode: "inline", framework: "rspec", test: "spec/options_spec.rb" },
   ];
   for (const other of others)
     test(other.framework, () => {
       const file = inlineRowFile(other, rows);
       expect(file.nest).toBeUndefined();
       const written = withInlineRows(other.framework === "go" ? "package lanes\n" : "", file);
-      expect(written.trimEnd()).toEndWith(`${other.framework === "pytest" ? "#" : "//"} END acceptance rows`);
+      expect(written.trimEnd()).toEndWith(`${other.framework === "pytest" || other.framework === "rspec" ? "#" : "//"} END acceptance rows`);
     });
+});
+
+// #2335: PSR-1 keeps one class per PHP file, so the PHPUnit block is methods of the file's class.
+describe("PHPUnit rows in the file's own class (#2335)", () => {
+  const php: InlineRowTest = { mode: "inline", framework: "phpunit", package: "Lanes.Tests", test: "tests/OptionsTest.php" };
+  const file = inlineRowFile(php, rows);
+  const own = `<?php
+
+namespace Lanes\\Tests;
+
+use PHPUnit\\Framework\\TestCase;
+
+# A "{" in a comment, and class Fake { in a string, are not code.
+final class OptionsTest extends TestCase
+{
+    private const BRACE = '} class InText { a long single-quoted string with braces }';
+
+    #[\\PHPUnit\\Framework\\Attributes\\Test]
+    public function defaults(): void
+    {
+        $this->assertSame("}", self::BRACE[0]);
+    }
+
+    public static function acceptanceActual(mixed $input): mixed
+    {
+        return Options::parse($input);
+    }
+}
+`;
+
+  test("the rows are methods at the end of the file's own class, and a second write changes nothing", () => {
+    const written = withInlineRows(own, file);
+    expect(topLevelTypes(written)).toEqual(["final class OptionsTest"]);
+    expect(written).toContain(`Options::parse($input);\n    }\n\n    ${BEGIN}`);
+    expect(written).toContain("    public function test(): void\n    {");
+    expect(written.trimEnd()).toEndWith(`    ${END}\n}`);
+    expect(written.startsWith(own.slice(0, own.lastIndexOf("}")))).toBe(true);
+    expect(withInlineRows(written, file)).toBe(written);
+    expect(hasInlineRows(written, file)).toBe(true);
+  });
+
+  test("a block moved out of the class is put back inside", () => {
+    const written = withInlineRows(own, file);
+    const block = written.slice(written.indexOf(`    ${BEGIN}`), written.indexOf(END) + END.length + 1);
+    const outside = `${written.replace(block, "").trimEnd()}\n\n${block.replace(/^ {4}/gm, "")}`;
+    expect(hasInlineRows(outside, file)).toBe(false);
+    expect(withInlineRows(outside, file)).toBe(written);
+  });
+
+  test("a file with no class yet starts with the open tag, the namespace, the import and the class", () => {
+    const started = withInlineRows(null, file);
+    expect(started.startsWith("<?php\n\nnamespace Lanes\\Tests;\n\nuse PHPUnit\\Framework\\TestCase;\n\nfinal class OptionsTest extends TestCase\n{\n    // BEGIN")).toBe(true);
+    // The replay's harness without a class: the class is named in full, after the open tag.
+    const harness = withInlineRows("function helper(): int\n{\n    return 1;\n}\n", file);
+    expect(harness.startsWith("<?php\n\nfunction helper(): int")).toBe(true);
+    expect(harness).toContain("final class OptionsTest extends \\PHPUnit\\Framework\\TestCase\n{");
+  });
+
+  test("the written-tests run of the file is the file itself", () => {
+    const root = mkdtempSync(join(tmpdir(), "baked-rows-one-type-"));
+    cleanups.push(() => rmSync(root, { recursive: true, force: true }));
+    mkdirSync(dirname(join(root, php.test)), { recursive: true });
+    writeFileSync(join(root, php.test), withInlineRows(own, file));
+    expect(writtenTestsCheck(root, [check("php", ["vendor/bin/phpunit", "tests"])], [{ path: php.test, action: "modify" }])?.args).toEqual(["vendor/bin/phpunit", "./tests/OptionsTest.php"]);
+  });
 });
