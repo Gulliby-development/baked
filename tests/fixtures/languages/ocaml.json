@@ -38,6 +38,9 @@
     "staticTools": [
       "ocamlformat: formatter"
     ],
-    "sortedLists": null
+    "sortedLists": null,
+    "dependencyDirs": [
+      "_opam: linked"
+    ]
   }
 }

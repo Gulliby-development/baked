@@ -83,6 +83,10 @@
       "mypy: typechecker, whole unit",
       "pyright: typechecker, whole unit"
     ],
-    "sortedLists": ["src/pkg/__init__.py: ruff/isort \"# isort: split\" before 2"]
+    "sortedLists": ["src/pkg/__init__.py: ruff/isort \"# isort: split\" before 2"],
+    "dependencyDirs": [
+      ".venv: linked",
+      "venv: linked"
+    ]
   }
 }

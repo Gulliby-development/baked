@@ -7,7 +7,6 @@ import {
   rmdirSync,
   rmSync,
   statSync,
-  symlinkSync,
   unlinkSync,
   writeFileSync,
 } from "node:fs";
@@ -770,6 +769,7 @@ import {
 
 type Implementation = ReturnType<typeof ImplementationSchema.parse>;
 
+import { linkDependencies } from "./dependency-dirs.js";
 import { browserLayoutProbe, type LayoutProbe, layoutVerdict } from "./layout-check.js";
 import { planCostOf, planCostWarning } from "./plan-cost.js";
 import { EDIT_TOOLS } from "./progress-watch.js";
@@ -14991,8 +14991,8 @@ ${note}`;
     if (failure) record([], failure);
   }
   /**
-   * Runs `work` in a task worktree checked out from the run's current content, with `.venv`,
-   * `venv` and `node_modules` linked from the run, and removes it afterwards. The baseline replay
+   * Runs `work` in a task worktree checked out from the run's current content, with the
+   * project's dependency folders linked from the run (#2330), and removes it afterwards. The baseline replay
    * (#1945) and the package contents check (#1984) run their commands there, so nothing they
    * write reaches the run's tree after its snapshot. Returns why no copy could be made, else null.
    */
@@ -15033,19 +15033,7 @@ ${note}`;
             rmSync(join(specs, folder), { recursive: true, force: true });
         if (!readdirSync(specs).length) rmdirSync(specs);
       }
-      for (const linked of [".venv", "venv", "node_modules"]) {
-        const source = join(root, linked);
-        if (existsSync(source) && !existsSync(join(copy, linked)))
-          try {
-            symlinkSync(
-              source,
-              join(copy, linked),
-              process.platform === "win32" ? "junction" : "dir",
-            );
-          } catch {
-            // Without the link the copy's commands may fail to start; their output says so.
-          }
-      }
+      linkDependencies(root, copy);
       await work(copy, scope);
       return null;
     } finally {
@@ -15495,15 +15483,6 @@ ${note}`;
       return false;
     }
     const copy = join(this.store.workspace, path);
-    for (const name of [".venv", "venv"]) {
-      const source = join(root, name);
-      if (existsSync(source) && !existsSync(join(copy, name)))
-        try {
-          symlinkSync(source, join(copy, name), process.platform === "win32" ? "junction" : "dir");
-        } catch {
-          // Without the link the copy's baseline test run fails and the gate says so.
-        }
-    }
     const controller = new AbortController();
     const done = (async () => {
       try {

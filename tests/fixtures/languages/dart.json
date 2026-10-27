@@ -57,6 +57,7 @@
       "flutter analyze: linter, whole unit",
       "dart format: formatter"
     ],
-    "sortedLists": null
+    "sortedLists": null,
+    "dependencyDirs": null
   }
 }

@@ -44,6 +44,9 @@
       "dialyzer: linter, whole unit",
       "mix format: formatter"
     ],
-    "sortedLists": null
+    "sortedLists": null,
+    "dependencyDirs": [
+      "deps: linked"
+    ]
   }
 }

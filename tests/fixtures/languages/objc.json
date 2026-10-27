@@ -45,6 +45,9 @@
       "clang-format: formatter",
       "oclint: linter"
     ],
-    "sortedLists": ["Sources/Sum.m: clang-format \"// order as written\" before 2"]
+    "sortedLists": ["Sources/Sum.m: clang-format \"// order as written\" before 2"],
+    "dependencyDirs": [
+      "Pods: linked"
+    ]
   }
 }

@@ -60,6 +60,7 @@
       "shellcheck: linter",
       "shfmt: formatter"
     ],
-    "sortedLists": null
+    "sortedLists": null,
+    "dependencyDirs": null
   }
 }

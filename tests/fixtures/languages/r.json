@@ -61,6 +61,10 @@
       "NA propagates through arithmetic and comparisons, and an if() on NA is an error"
     ],
     "staticTools": ["lintr: linter", "styler: formatter"],
-    "sortedLists": null
+    "sortedLists": null,
+    "dependencyDirs": [
+      "renv/library: linked",
+      "packrat/lib: linked"
+    ]
   }
 }

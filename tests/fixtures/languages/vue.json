@@ -61,6 +61,9 @@
       "prettier: formatter",
       "vue-tsc: typechecker, whole unit"
     ],
-    "sortedLists": null
+    "sortedLists": null,
+    "dependencyDirs": [
+      "node_modules: linked"
+    ]
   }
 }

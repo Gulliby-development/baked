@@ -55,6 +55,7 @@
       "scalafmt: formatter",
       "scalafix: linter, whole unit"
     ],
-    "sortedLists": null
+    "sortedLists": null,
+    "dependencyDirs": null
   }
 }

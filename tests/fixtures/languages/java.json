@@ -74,6 +74,7 @@
       "spotless: formatter",
       "google-java-format: formatter"
     ],
-    "sortedLists": null
+    "sortedLists": null,
+    "dependencyDirs": null
   }
 }

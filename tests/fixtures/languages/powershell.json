@@ -63,6 +63,7 @@
       "ScriptAnalyzer: linter",
       "Invoke-Formatter: formatter"
     ],
-    "sortedLists": null
+    "sortedLists": null,
+    "dependencyDirs": null
   }
 }

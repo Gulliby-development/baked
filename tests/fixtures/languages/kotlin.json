@@ -71,6 +71,7 @@
       "ktfmt: formatter",
       "spotless: formatter"
     ],
-    "sortedLists": null
+    "sortedLists": null,
+    "dependencyDirs": null
   }
 }

@@ -47,6 +47,8 @@ import { SUPPRESSION_SPELLINGS } from "../src/core/workflows/quality/suppression
 import { suppressionsIn } from "../src/core/workflows/test-integrity.js";
 import type { Check } from "../src/core/workflows/types.js";
 import { rowOf } from "../src/core/intelligence/language-records.js";
+import { DEPENDENCY_DIRS, linkDependencies } from "../src/core/workflows/dependency-dirs.js";
+import { sourceManifest } from "../src/core/verification/snapshot.js";
 
 // Language parity (#1717): every language-bound record has a row for every supported language,
 // and every row is exercised by the language's fixture project in `tests/fixtures/languages/`.
@@ -299,6 +301,21 @@ const RECORDS: Record<
       });
     },
     never: ["no file of the language"],
+  },
+  // The language's dependency folders, installed in the fixture project, that a worktree or copy
+  // of it links, and whether the copy's source manifest leaves the link out (#2330).
+  dependencyDirs: {
+    record: DEPENDENCY_DIRS,
+    run: async (language, { files }) => {
+      const dirs = rowOf(DEPENDENCY_DIRS, language) ?? [];
+      const root = workspace({ ...files, ...Object.fromEntries(dirs.map((d) => [`${d}/installed`, ""])) });
+      const copy = workspace({});
+      const linked = linkDependencies(root, copy);
+      const manifest = Object.keys(await sourceManifest(copy));
+      const listed = linked.filter((d) => manifest.some((path) => path.startsWith(d)));
+      return [...linked.map((d) => `${d}: linked`), ...(listed.length ? ["in the manifest"] : [])];
+    },
+    never: ["in the manifest"],
   },
   properties: {
     record: PROPERTY_LIBRARIES,

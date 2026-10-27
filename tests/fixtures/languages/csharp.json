@@ -74,6 +74,7 @@
       "dotnet format: formatter",
       "csharpier: formatter"
     ],
-    "sortedLists": null
+    "sortedLists": null,
+    "dependencyDirs": null
   }
 }

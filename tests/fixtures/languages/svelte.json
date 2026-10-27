@@ -58,6 +58,9 @@
       "prettier: formatter",
       "svelte-check: typechecker, whole unit"
     ],
-    "sortedLists": null
+    "sortedLists": null,
+    "dependencyDirs": [
+      "node_modules: linked"
+    ]
   }
 }

@@ -70,6 +70,9 @@
       "php-cs-fixer: formatter",
       "phpcbf: formatter"
     ],
-    "sortedLists": null
+    "sortedLists": null,
+    "dependencyDirs": [
+      "vendor: linked"
+    ]
   }
 }

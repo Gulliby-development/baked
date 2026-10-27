@@ -67,6 +67,10 @@
       "standardrb: linter",
       "reek: linter"
     ],
-    "sortedLists": null
+    "sortedLists": null,
+    "dependencyDirs": [
+      "vendor/bundle: linked",
+      ".bundle: linked"
+    ]
   }
 }
