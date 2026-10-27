@@ -20,6 +20,7 @@ import type {
   WatchStatus,
 } from "./chat.js";
 import type { ApprovalRules, LaunchedView, ProjectBrief } from "./coordinator.js";
+import { MOCK_RELEASE_NOTES, MOCK_WHATS_NEW } from "./mock-files.js";
 import { type MockRoute, type MockStream, response } from "./mock-response.js";
 
 /**
@@ -177,6 +178,42 @@ function routerConversation(now: number): ChatMessage[] {
   ];
 }
 
+/** A session that wrote documents, so the preview panel opens with something to show. */
+function releaseConversation(now: number): ChatMessage[] {
+  const at = now - 90 * MINUTE;
+  return [
+    user(
+      "rn1",
+      "Write the 0.6 release notes as Markdown, make a small What's new page, and save it as an artifact.",
+      at,
+    ),
+    assistant("rn2", at + 3 * MINUTE, [
+      "I'll write the notes first, then the page, and save the page as an artifact.\n\n",
+      [
+        tool(
+          "rn-c1",
+          "write_file",
+          { path: "docs/release-notes-0.6.md", content: MOCK_RELEASE_NOTES },
+          "Wrote 27 lines",
+        ),
+        tool(
+          "rn-c2",
+          "write_file",
+          { path: "site/whats-new.html", content: MOCK_WHATS_NEW },
+          "Wrote 21 lines",
+        ),
+        tool(
+          "rn-c3",
+          "artifact",
+          { action: "save", path: "site/whats-new.html", id: "release-notes" },
+          'Saved artifact release-notes v2 "Release notes 0.3". Every project and chat can open or deploy it.',
+        ),
+      ],
+      "Both documents are open in the preview on the right. The page is also saved as the `release-notes` artifact, ready to deploy.",
+    ]),
+  ];
+}
+
 function shortConversation(now: number, ask: string, answer: string, minutesAgo: number) {
   const at = now - minutesAgo * MINUTE;
   return [
@@ -261,6 +298,11 @@ function seed(): Map<string, MockSession> {
     ),
     null,
   );
+  add("docs", "0b6e2f19-release", "Release notes 0.6", releaseConversation(now), {
+    usedTokens: 18_000,
+    windowTokens: 200_000,
+    percent: 9,
+  });
   add(
     "docs",
     "1d0e5b42-guide",

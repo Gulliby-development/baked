@@ -13,6 +13,14 @@
     "testsGrown": "src/a.test.ts:\n(fail) sum is commutative [1.20ms]\n\n 3 pass\n 1 fail\nRan 4 tests across 1 file. [15.00ms]\n"
   },
   "expected": {
+    "suppressions": [
+      "// @ts-expect-error legacy call: ts-check, prescribable",
+      "// eslint-disable-next-line no-console: lint, linted, prescribable",
+      "// biome-ignore lint/suspicious/noExplicitAny: legacy: lint, linted, prescribable",
+      "// oxlint-disable-next-line no-unused-vars: lint, linted, prescribable",
+      "// prettier-ignore: lint, linted",
+      "/* c8 ignore next */: coverage, prescribable"
+    ],
     "checkConfigs": ["tsconfig.json: tsconfig", "biome.json: biome", "jsconfig.json: jsconfig", ".eslintrc.json: eslint", ".eslintrc.yml: eslint", "eslint.config.js: eslint, read as text", ".oxlintrc.json: oxlint", ".prettierrc: prettier, read as text"],
     "tests": null,
     "testMarkers": null,
@@ -72,6 +80,6 @@
       "prettier: formatter",
       "tsc: typechecker, whole unit"
     ],
-    "sortedLists": null
+    "sortedLists": ["src/index.ts: biome organizeImports \"// order as written\" before 2"]
   }
 }

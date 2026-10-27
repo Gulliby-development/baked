@@ -148,6 +148,15 @@ export const FEATURES: readonly Feature[] = [
     desktop: ["project/chat: Export as Markdown or JSON in the chat menu"],
   },
   {
+    id: "chat-preview",
+    group: "Chat and sessions",
+    title: "Preview the Markdown and HTML documents and artifacts a chat produced, beside the chat",
+    tui: gap(2299, "a /preview popup for Markdown, the browser for HTML"),
+    cli: gap(2299, "baked preview <path>"),
+    api: ["/v1/files/preview", "/v1/files/open", "/v1/artifacts/:id/page"],
+    desktop: ["project/chat: Preview panel on the right"],
+  },
+  {
     id: "coordinator",
     group: "Chat and sessions",
     title: "Project coordinator chat with a durable project brief and read access to the project",
@@ -457,6 +466,15 @@ export const FEATURES: readonly Feature[] = [
     ],
     cli: ["baked login", "baked logout"],
     api: ["/v1/providers/:id/login", "/v1/providers/:id/login/code", "/v1/providers/:id/logout"],
+    desktop: ["settings/providers"],
+  },
+  {
+    id: "provider-limits",
+    group: "Models and providers",
+    title: "Subscription usage limits left (Codex, Claude Code, Copilot)",
+    tui: ["/limits"],
+    cli: ["baked limits"],
+    api: ["/v1/providers/limits"],
     desktop: ["settings/providers"],
   },
   {

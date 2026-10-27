@@ -82,6 +82,9 @@ export const COMMANDS_EDIT_CAPABILITY = "commands-edit";
 /** `POST /v1/providers/ID/switch` (Switch account for Codex and Claude Code). */
 export const PROVIDER_SWITCH_CAPABILITY = "provider-switch";
 
+/** `GET /v1/providers/limits` (Subscription limits on the Providers page). */
+export const PROVIDER_LIMITS_CAPABILITY = "provider-limits";
+
 /**
  * Whether a backend offers a capability: true or false from its health answer, null when the
  * health answer could not be read, so the caller has to try the endpoint and treat 404 as "no".
@@ -107,6 +110,9 @@ export const LSP_DIAGNOSE_CAPABILITY = "lsp-diagnose";
 
 /** `/v1/artifacts*` (the Artifacts section: HTML pages shared by every project, Vercel deploys). */
 export const ARTIFACTS_CAPABILITY = "artifacts";
+
+/** `/v1/files*` (the chat's preview panel: Markdown and HTML files of the project). */
+export const FILE_PREVIEW_CAPABILITY = "file-preview";
 
 /** `/v1/packages*` (the Packages section: install local packages into the project's baked/ folders). */
 export const PACKAGES_CAPABILITY = "packages";
