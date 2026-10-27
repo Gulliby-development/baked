@@ -91,8 +91,10 @@ describe("the expected text as a string literal of the test's language (#2101)",
   test.skipIf(Bun.which("rustc") === null)("Rust compiles the literal and prints the section", () => {
     const dir = scratch();
     writeFileSync(join(dir, "main.rs"), `fn main() { print!("{}", ${stringLiteral("rust", SECTION)}); }\n`);
-    run(["rustc", "-o", join(dir, "probe"), "main.rs"], dir);
-    expect(run([join(dir, "probe")], dir)).toBe(SECTION);
+    // rustc writes the binary as given; Windows runs only an `.exe`.
+    const exe = join(dir, process.platform === "win32" ? "probe.exe" : "probe");
+    run(["rustc", "-o", exe, "main.rs"], dir);
+    expect(run([exe], dir)).toBe(SECTION);
   }, 120_000);
 
   test("bash reads the ANSI-C literal back as the section", () => {
