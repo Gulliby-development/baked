@@ -1,5 +1,7 @@
 import { spawn } from "node:child_process";
+import { join } from "node:path";
 import { buildSafeEnv } from "../spawn.js";
+import { fileHead, hasShebang } from "../workflows/delivery-git.js";
 
 const encoder = new TextEncoder();
 
@@ -303,7 +305,18 @@ export async function gitRestore(
 
 export async function gitAdd(cwd: string, files: string[]): Promise<boolean> {
   const { ok } = await run(["add", ...files], cwd);
-  return ok;
+  if (!ok) return false;
+  // A staged new file that starts with a shebang is executable, as a run's commits make it: a
+  // Windows working tree has no executable bit to stage (#2331).
+  const added = await run(
+    ["diff", "--cached", "--name-only", "--relative", "--diff-filter=A", "-z"],
+    cwd,
+  );
+  const scripts = added.stdout
+    .split("\0")
+    .filter((path) => path && hasShebang(fileHead(join(cwd, path))));
+  if (scripts.length) await run(["update-index", "--chmod=+x", "--", ...scripts], cwd);
+  return true;
 }
 
 export async function gitPush(

@@ -68,6 +68,7 @@ import {
   writeSddPackage,
 } from "../core/workflows/sdd-export/package.js";
 import { NativeWorkflowService } from "../core/workflows/service.js";
+import { readStallPark } from "../core/workflows/stall-ladder.js";
 import { stopDetail, stopRecovery } from "../core/workflows/stop-detail.js";
 import { wouldStopSummary } from "../core/workflows/stop-reasons.js";
 import { newId } from "../core/workflows/store.js";
@@ -444,6 +445,7 @@ export async function executeWorkflowCommand(
         acceptance: walkThroughs(service.store, runId),
         forkStages: service.forkStages(runId),
         wouldStop: wouldStopSummary(service.store, runId),
+        stallPark: readStallPark(service.store, runId),
         hostApply: hostApplySummary(service.store, runId),
         recovery:
           snapshot.status === "blocked" || snapshot.status === "failed"

@@ -157,6 +157,23 @@ export function errorRecovery(error: unknown): RecoveryAdvice | undefined {
     : undefined;
 }
 
+/**
+ * A blocked `invalid_output` stop whose advice offers no plain resume: the repeat guard would
+ * refuse one (`repeatsInvalidOutput`), so the run views offer a switch of the model instead of a
+ * retry (#2201).
+ */
+export function retryRefused(
+  run: { status: string; reason?: string | null },
+  advice: RecoveryAdvice | null | undefined,
+): boolean {
+  return (
+    run.status === "blocked" &&
+    run.reason === "invalid_output" &&
+    !!advice?.remedies.length &&
+    !advice.remedies.some((remedy) => remedy.action === "resume")
+  );
+}
+
 export function renderRecovery(
   message: string,
   advice: RecoveryAdvice | null | undefined,

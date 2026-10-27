@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import { DEFAULT_CONFIG } from "../src/config/index.js";
 import { hashBytes, hashJson } from "../src/core/specs/hash.js";
+import { recordFormatTimeout, resetFormatCache } from "../src/core/tools/auto-format.js";
 import { CheckRunner } from "../src/core/verification/check-runner.js";
 import { defaultWorkflowPolicy } from "../src/core/workflows/defaults.js";
 import { ProcessScope } from "../src/core/workflows/process-scope.js";
@@ -25,6 +26,7 @@ const IS_WIN = process.platform === "win32";
 const bin = mkdtempSync(join(tmpdir(), "baked-fake-cargo-"));
 const fixes = join(bin, "fixes.log");
 const slowMark = join(bin, "SLOW");
+const rustfmtLog = join(bin, "rustfmt.log");
 const savedPath = process.env.PATH;
 afterAll(() => {
   process.env.PATH = savedPath;
@@ -56,6 +58,7 @@ exit 0
     join(bin, "rustfmt"),
     `#!/bin/sh
 for a; do f=$a; done
+echo "$f" >> '${rustfmtLog}'
 if grep -q DEEP "$f"; then exec sleep 30; fi
 exit 0
 `,
@@ -195,5 +198,22 @@ describe.skipIf(IS_WIN)("scenario: evalpin json a77894d4, a formatter that never
     expect([slow.status, slow.reason]).toEqual(["failed", "timeout_slow"]);
     expect(slow.output).toContain("although it passed earlier in this run");
     rmSync(slowMark);
+  }, 60000);
+
+  // #2242: the edit tools' post-edit format already timed out on the file, so the check names it
+  // without running the formatter on each written file again.
+  test("a file the edit tools' formatter timed out on is named without a bisect", async () => {
+    const { root, service, runId } = await approvedRun({ ...defaultWorkflowPolicy, checks: [fmt] });
+    cleanups.push(resetFormatCache);
+    mkdirSync(join(root, "tests"), { recursive: true });
+    writeFileSync(join(root, "tests/json.rs"), DEEP);
+    recordFormatTimeout(join(root, "tests/json.rs"), "rustfmt", 30_000);
+    writeFileSync(rustfmtLog, "");
+    const attempt = service.store.attempts(runId)[0]?.id ?? "";
+    const runner = new CheckRunner(service.store, new ProcessScope());
+    const slow = await runner.run(runId, attempt, fmt, new AbortController().signal, root);
+    expect([slow.status, slow.reason]).toEqual(["failed", "timeout_slow"]);
+    expect(slow.output).toContain("the formatter does not finish on tests/json.rs");
+    expect(readFileSync(rustfmtLog, "utf8")).toBe("");
   }, 60000);
 });

@@ -1,5 +1,5 @@
 /** Git plumbing for delivery. Nothing here touches the checkout, the index or HEAD of the user. */
-import { statSync } from "node:fs";
+import { closeSync, openSync, readSync, statSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { buildSafeEnv, processOutput } from "../spawn.js";
 
@@ -197,9 +197,33 @@ export function runSpecPath(
   return path.startsWith(`specs/${featureId}/`) || (prefix !== null && path.startsWith(prefix));
 }
 
-/** Mode of a file as Git stores it: executable or regular. */
-export function gitMode(mode: number): "100755" | "100644" {
-  return mode & 0o111 ? "100755" : "100644";
+/** Whether a file's first bytes are a shebang (`#!`), so it is run directly. */
+export function hasShebang(head: Uint8Array | null | undefined): boolean {
+  return !!head && head.length >= 2 && head[0] === 0x23 && head[1] === 0x21;
+}
+
+/**
+ * Mode of a new file as Git stores it: executable when the working tree says so or when it starts
+ * with a shebang. A Windows working tree has no executable bit, so a launcher a run wrote there
+ * (`exe/tool`, `bin/tool`, a `.sh` script) was committed `100644` and failed a Unix CI (#2331).
+ * Every path that commits a new file takes its mode from here.
+ */
+export function gitMode(mode: number, head?: Uint8Array | null): "100755" | "100644" {
+  return mode & 0o111 || hasShebang(head) ? "100755" : "100644";
+}
+
+/** The first bytes of a file, enough for `hasShebang`; null when it cannot be read. */
+export function fileHead(path: string): Uint8Array | null {
+  let fd: number | null = null;
+  try {
+    fd = openSync(path, "r");
+    const head = new Uint8Array(2);
+    return head.subarray(0, readSync(fd, head, 0, 2, 0));
+  } catch {
+    return null;
+  } finally {
+    if (fd !== null) closeSync(fd);
+  }
 }
 
 /** Modes keyed by literal path from one recursive, NUL-delimited ls-tree read. */
