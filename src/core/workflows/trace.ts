@@ -200,6 +200,7 @@ import {
 } from "./stall-ladder.js";
 import { readFallback } from "./stall-siblings.js";
 import { type ArtifactRow, WorkflowStore } from "./store.js";
+import { SUPPLIED_CHECK_KIND } from "./supplied-checks.js";
 import {
   INTEGRITY_DIR,
   INTEGRITY_KIND,
@@ -243,6 +244,8 @@ const KEPT_ARTIFACTS = new Set([
   REQUEST_CONFLICT_KIND,
   // Each planned task's host apply decision: its writes' supplied blocks and apply checks (#2023).
   HOST_APPLY_KIND,
+  // Each planned task's static checks on its supplied content: paths, lines, rule ids (#2275).
+  SUPPLIED_CHECK_KIND,
   // Each misquote settle's host-fix decision: occurrence counts and spelling flags, no text (#2047).
   MISQUOTE_FIX_KIND,
   // Each planned source task's edge-input probe: its cases' criteria and outcomes (#1808).

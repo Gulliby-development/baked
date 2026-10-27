@@ -270,6 +270,7 @@ import {
   selectCandidate,
 } from "./candidates.js";
 import {
+  coveringChecks,
   cwdPath,
   fixerCommand,
   fixerTierPaths,
@@ -761,6 +762,7 @@ import {
 } from "./stall-ladder.js";
 import { siblingFallbacks, siblingNote, writeFallback } from "./stall-siblings.js";
 import { recordWouldStop, stopFault, stopMode } from "./stop-reasons.js";
+import { SUPPLIED_CHECK_DIR, SUPPLIED_CHECK_KIND, suppliedCheckRecord } from "./supplied-checks.js";
 import {
   repairUncoveredCriteria,
   UNCOVERED_SUBMISSIONS,
@@ -18059,6 +18061,9 @@ ${note}`;
   ): Promise<void> {
     // Shadow (#2023): whether the host would apply the request's verbatim content itself.
     if (firstRun && task.origin === "planned") await this.recordHostApply(runId, state, task, root);
+    // Shadow (#2275): whether the request's verbatim content passes the project's static checks.
+    if (firstRun && task.origin === "planned")
+      await this.recordSuppliedChecks(runId, state, task, root);
   }
   /**
    * Records whether a task-level corrective can write the files its failed non-test check names in
@@ -18499,6 +18504,35 @@ ${note}`;
         path,
         canonical(hostApplyRecord(task.id, writes)),
       );
+    } catch {}
+  }
+  /**
+   * Records the project's static checks on a copy of the task's base with the request's verbatim
+   * content written in (`suppliedCheckRecord`, #2275), once per task. Shadow: the implementer
+   * still runs, and a failure to copy, apply or check never touches the run.
+   */
+  private async recordSuppliedChecks(
+    runId: string,
+    state: RuntimeState,
+    task: Task,
+    root: string,
+  ): Promise<void> {
+    const path = `${SUPPLIED_CHECK_DIR}${task.id}.json`;
+    if (this.store.latestArtifact(runId, path)) return;
+    try {
+      const policy = PolicySchema.parse(JSON.parse(this.store.run(runId).policy_json));
+      const record = await suppliedCheckRecord(
+        task.id,
+        task,
+        root,
+        state.requestText || state.prompt,
+        coveringChecks(policy, task),
+        (check, copy) =>
+          this.checks.measure(check, new AbortController().signal, copy, runSandbox(policy, copy)),
+        generatedPaths(policy),
+      );
+      if (!record) return;
+      this.store.artifact(runId, SUPPLIED_CHECK_KIND, path, canonical(record));
     } catch {}
   }
   /**
