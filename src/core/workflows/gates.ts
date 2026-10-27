@@ -1489,6 +1489,15 @@ const CI_KIND: [string, RegExp][] = [
   ["tests", /\b(?:test|tests|busted|rspec|phpunit|pest|ctest|bats|pester|prove)\b/i],
 ];
 
+/**
+ * The gate kind of a single CI or README command (`lint`, `typecheck`, `format`, `tests`), or
+ * nothing for a setup step, a command that needs a shell, or one that runs no gate.
+ */
+export function ciCommandKind(command: string): string | undefined {
+  if (SHELL_SYNTAX.test(command) || SETUP_COMMAND.test(command)) return undefined;
+  return CI_KIND.find(([, pattern]) => pattern.test(command))?.[0];
+}
+
 function runnerGates(workspace: string): GateSuggestion[] {
   const sources: { name: string; tool: string; names: string[] }[] = [];
   for (const name of ["Makefile", "GNUmakefile", "makefile"]) {
@@ -1537,8 +1546,7 @@ function runnerGates(workspace: string): GateSuggestion[] {
   }
   for (const file of files) {
     for (const command of workflowRunCommands(read(workflows, file) ?? "")) {
-      if (SHELL_SYNTAX.test(command) || SETUP_COMMAND.test(command)) continue;
-      const kind = CI_KIND.find(([, pattern]) => pattern.test(command))?.[0];
+      const kind = ciCommandKind(command);
       if (!kind || out.some((s) => s.check.id === kind)) continue;
       let words: string[];
       try {

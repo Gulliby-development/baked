@@ -279,6 +279,7 @@ import {
   writtenCodePaths,
 } from "./check-policy.js";
 import { failFastUnavailable } from "./check-preflight.js";
+import { CI_WORKFLOW, ciCheckDrift, ciCheckDriftSummary, README_FILE } from "./ci-check-drift.js";
 import {
   ASSUME_NOTE,
   assumeProblems,
@@ -4687,6 +4688,36 @@ export class WorkflowScheduler {
       );
       if (record.decision === "would_stop") this.baselineWouldStop(runId, policy, record, null);
     }
+  }
+  /**
+   * The `ci_check_drift` would-stops (#2284): each gate command of a CI workflow or root README
+   * the run changed that the checks about to run do not run as written, once per file and command.
+   * Called at the checks stage of both workflow versions, after the snapshot.
+   */
+  private ciCheckDriftWouldStop(
+    runId: string,
+    state: RuntimeState,
+    policy: RunPolicy,
+    checks: readonly Check[],
+  ): void {
+    const mode = stopMode(policy, "ci_check_drift");
+    if (mode === "enforce") return;
+    const root = runRoot(this.store.workspace, state);
+    const files = this.runChangedPaths(runId, state)
+      .filter((path) => CI_WORKFLOW.test(path) || README_FILE.test(path))
+      .flatMap((path) => {
+        const text = readText(workspacePath(root, path));
+        return text === null ? [] : [{ path, text }];
+      });
+    if (!files.length) return;
+    for (const drift of ciCheckDrift(files, checks))
+      recordWouldStop(this.store, runId, {
+        reason: "ci_check_drift",
+        mode,
+        key: `${drift.file}#${drift.command}`,
+        summary: ciCheckDriftSummary(drift),
+        inputs: { ...drift },
+      });
   }
   /** The `baseline_unrepairable` would-stop of a baseline failure (#2215), once per check. */
   private baselineWouldStop(
@@ -14318,6 +14349,7 @@ ${note}`;
     await this.snapshot(runId, state, policy, signal);
     const unsafe = await this.dependencyFindings(runId, state, policy);
     if (unsafe.length) return this.recordChecks(runId, state, unsafe);
+    this.ciCheckDriftWouldStop(runId, state, policy, policy.checks);
     const failures: Review["findings"] = [];
     const failedIds: string[] = [];
     const passedIds: string[] = [];
@@ -17080,6 +17112,12 @@ ${note}`;
       ...bound.filter((b) => b.check.required),
       ...bound.filter((b) => !b.check.required),
     ];
+    this.ciCheckDriftWouldStop(
+      runId,
+      state,
+      policy,
+      bound.map((b) => b.check),
+    );
     const failures: Review["findings"] = [];
     const failedIds: string[] = [];
     const passedIds: string[] = [];

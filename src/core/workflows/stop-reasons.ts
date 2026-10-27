@@ -138,6 +138,15 @@ export const STOP_REASONS = {
     modes: NOT_ENFORCED,
     defaultMode: "shadow",
   },
+  ci_check_drift: {
+    label:
+      "A CI workflow or README the run wrote runs a gate command that no configured check runs as written",
+    // Shadow only until two bench rounds show no false would-stop (#2284, R73 evalpin's ci.yml ran
+    // `cargo clippy --all-targets`, its clippy check did not); its promotion makes the drift a
+    // finding of the task that wrote the file at the checks stage.
+    modes: NOT_ENFORCED,
+    defaultMode: "shadow",
+  },
   cost: {
     label: "Spent and reserved dollars reach the cost cap",
     modes: ENFORCED,
