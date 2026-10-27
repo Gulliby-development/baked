@@ -98,6 +98,14 @@ calls it with a placeholder feature and prompt and reports a thrown fault as one
    (`Bun.which` from the command's cwd, or an existing path) and the cwd exists. Fail for a required check
    or gate, warn for an optional one. Commands are not executed: a full suite can take minutes and may have
    side effects.
+   - `environment`: a check whose toolchain has a probe in `ENVIRONMENT_SIGNATURES`
+     (`src/core/verification/environment-faults.ts`; Gradle's `gradle -q help`) runs it once per program
+     and folder, through the check's own launcher and environment, for up to 30 seconds. `ok` when it
+     exits 0; `fail`, with the machine-level fix, when its output matches the toolchain's signature (the
+     JDK's "Unable to establish loopback connection" on a short Windows TEMP: set
+     `JAVA_TOOL_OPTIONS=-Djdk.net.unixdomain.tmpdir=<short directory>` or TEMP and TMP to a short path),
+     since every run of the check would fail the same way; `warn` with the last lines of its output
+     otherwise (#2273).
 6. **sandbox.** The run's OS sandbox mode (the frozen policy's `sandbox`, or the `--sandbox` flag and the
    `sandbox` setting when the start failed) against the backend of this machine
    ([OS sandbox](../sandbox.md)): `ok` when off or when the backend works; `auto` without a backend is warn

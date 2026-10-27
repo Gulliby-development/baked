@@ -43,6 +43,8 @@ import { isTestCheck } from "../src/core/workflows/quality/mutation.js";
 import { STATIC_TOOLS } from "../src/core/workflows/static-tools.js";
 import { layOutForFormatter, SORTED_LISTS } from "../src/core/workflows/initiatives/skeleton-layout.js";
 import { CHECK_CONFIGS, checkConfigOf } from "../src/core/workflows/quality/check-configs.js";
+import { SUPPRESSION_SPELLINGS } from "../src/core/workflows/quality/suppressions.js";
+import { suppressionsIn } from "../src/core/workflows/test-integrity.js";
 import type { Check } from "../src/core/workflows/types.js";
 import { rowOf } from "../src/core/intelligence/language-records.js";
 
@@ -249,14 +251,18 @@ const RECORDS: Record<
         return `${tool}: ${as.join(", ")}`;
       }),
   },
-  // The lists a language's formatter sorts within groups of consecutive lines, and the lines of the
-  // row's sample a host-written skeleton gets a blank line before so the order stays (#2222).
+  // The lists a language's formatter sorts, and the lines of the row's sample a host-written
+  // skeleton gets a blank line (#2222) or the formatter's split marker (#2233) before so the order
+  // stays, in a project configured as the row's sample says.
   sortedLists: {
     record: SORTED_LISTS,
     run: (language) => {
       const row = rowOf(SORTED_LISTS, language);
-      const laid = row ? layOutForFormatter(row.sample.path, row.sample.content) : null;
-      return laid ? [`${row?.sample.path}: ${laid.formatter} blank line before ${laid.lines.join(", ")}`] : [];
+      const laid = row
+        ? layOutForFormatter(row.sample.path, row.sample.content, (name) => row.sample.config?.[name] ?? null)
+        : null;
+      const before = laid?.marker ? `"${laid.marker}"` : "blank line";
+      return laid ? [`${row?.sample.path}: ${laid.formatter} ${before} before ${laid.lines.join(", ")}`] : [];
     },
   },
   // The check-defining configs auto-approval protects and holds to named tightenings (#2221): each
@@ -270,6 +276,29 @@ const RECORDS: Record<
         return `${config.example}: ${found?.tool ?? "unmatched"}${found === config ? "" : " (another row)"}${config.format === "text" ? ", read as text" : ""}`;
       }),
     never: ["unmatched"],
+  },
+  // Each suppression spelling's example line, added to a file of the language (#2274): what the
+  // test-integrity guard counts and whether the lint-suppression quality rule reports it, and the
+  // same line inside a string literal, which is test data and no suppression (#1549).
+  suppressions: {
+    record: SUPPRESSION_SPELLINGS,
+    run: (language, { files }) => {
+      const [path] = ofLanguage(language, files)[0] ?? [];
+      if (!path) return ["no file of the language"];
+      return (rowOf(SUPPRESSION_SPELLINGS, language) ?? []).map(({ example, kind }) => {
+        const counted = suppressionsIn(path, `${example}\n`);
+        const quoted = suppressionsIn(path, `${JSON.stringify(example)}\n`);
+        const linted = checkBuiltinRules([{ path, content: `${example}\n`, before: null }], {}).some(
+          (finding) => finding.rule === "lint-suppression",
+        );
+        // Named verbatim by the request it is prescribed, unless it is a bare marker; named only to
+        // forbid it, it still counts (#2270).
+        const prescribed = suppressionsIn(path, `${example}\n`, `Keep ${example} on the stub.`) === 0;
+        const forbidden = suppressionsIn(path, `${example}\n`, `Do not add ${example} anywhere.`) === 0;
+        return `${example}: ${counted === 1 ? kind : `counted ${String(counted)}`}${linted ? ", linted" : ""}${prescribed ? ", prescribable" : ""}${quoted ? ", quoted counted" : ""}${forbidden ? ", forbidden not counted" : ""}`;
+      });
+    },
+    never: ["no file of the language"],
   },
   properties: {
     record: PROPERTY_LIBRARIES,
