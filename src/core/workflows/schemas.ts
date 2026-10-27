@@ -1590,6 +1590,7 @@ export const EventType = z.enum([
   "attempt.advisory",
   "attempt.recovery",
   "decision.would_stop",
+  "decision.would_resume",
   "task.state_changed",
   "artifact.committed",
   "check.finished",
@@ -1716,6 +1717,22 @@ export const EventSchema = z.discriminatedUnion("type", [
     .object({
       ...EventBase,
       type: z.literal("decision.would_stop"),
+      payload: z
+        .object({
+          reason: StopReasonIdSchema,
+          mode: z.enum(["shadow", "advisory"]),
+          key: z.string().max(200),
+          summary: z.string().max(1000),
+          inputs: z.record(z.string(), z.unknown()),
+        })
+        .strict(),
+    })
+    .strict(),
+  // A shadow reason would have resumed a blocked run (`host-resume-on-stored-limit`, #2226).
+  z
+    .object({
+      ...EventBase,
+      type: z.literal("decision.would_resume"),
       payload: z
         .object({
           reason: StopReasonIdSchema,

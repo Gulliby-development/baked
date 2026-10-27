@@ -759,7 +759,14 @@ import {
   rungText,
   writeLadder,
 } from "./stall-ladder.js";
-import { recordWouldStop, stopFault, stopMode } from "./stop-reasons.js";
+import {
+  LIMIT_BLOCK_PREFIX,
+  limitBlockOf,
+  noteStoredLimitResume,
+  recordWouldStop,
+  stopFault,
+  stopMode,
+} from "./stop-reasons.js";
 import {
   repairUncoveredCriteria,
   UNCOVERED_SUBMISSIONS,
@@ -1394,6 +1401,8 @@ export class WorkflowScheduler {
       }
     }, 100);
     let stepId: string | null = null;
+    // A block on the run's own limits, looked at again once its active time is recorded (#2226).
+    let limitBlocked = false;
     this.queued = [];
     try {
       if (!recoverRun(this.store, this.journal, runId)) return;
@@ -3508,6 +3517,29 @@ export class WorkflowScheduler {
           );
           return;
         }
+        // A block on the run's own active time, tokens or calls records the limits it decided
+        // on, so a stored limit that grows past its usage is seen (#2226).
+        const block = outerSignal.aborted
+          ? null
+          : limitBlockOf(
+              fault,
+              diagnostic.id,
+              {
+                maxActiveMs: policy.maxActiveMs,
+                maxTotalTokens: policy.maxTotalTokens,
+                maxAgentCalls: policy.maxAgentCalls,
+              },
+              this.store.run(runId),
+            );
+        if (block) {
+          this.store.artifact(
+            runId,
+            "recovery",
+            `${LIMIT_BLOCK_PREFIX}${diagnostic.id}.json`,
+            canonical(block),
+          );
+          limitBlocked = true;
+        }
         this.store.transition(
           runId,
           outerSignal.aborted ? "paused" : "blocked",
@@ -3538,6 +3570,14 @@ export class WorkflowScheduler {
       } finally {
         this.leases.release();
       }
+      // A stored limit raised between the deadline's stop and the block record (R70 soundex,
+      // #2226): recorded in shadow, the run stays blocked.
+      if (limitBlocked)
+        try {
+          noteStoredLimitResume(this.store, runId, "drive");
+        } catch {
+          // A shadow record never changes how the drive ends.
+        }
     }
   }
   /**

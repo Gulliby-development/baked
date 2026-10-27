@@ -33,7 +33,7 @@ describe("stop reasons", () => {
   test("hard limits take only enforce; the forecasts and the approval scope take every mode", () => {
     for (const [id, reason] of Object.entries(STOP_REASONS)) {
       expect(reason.modes).toContain(reason.defaultMode);
-      if (!["cost-forecast", "approval-scope", "initiative-forecast", "initiative-dollar-share", "initiative-dollar-cap", "initiative-plan-charge", "initiative-pool-growth", "repeated_failure", "corrective_scope", "corrective_unowned_file", "repeat_without_change", "edge_crash_finding", "upstream_symbol", "baseline_unrepairable", "baseline_signature", "check-config-approval", "ci_check_drift"].includes(id))
+      if (!["cost-forecast", "approval-scope", "initiative-forecast", "initiative-dollar-share", "initiative-dollar-cap", "initiative-plan-charge", "initiative-pool-growth", "repeated_failure", "corrective_scope", "corrective_unowned_file", "repeat_without_change", "edge_crash_finding", "upstream_symbol", "baseline_unrepairable", "baseline_signature", "check-config-approval", "ci_check_drift", "host-resume-on-stored-limit"].includes(id))
         expect(reason.modes).toEqual(["enforce"]);
     }
     expect(STOP_REASONS["cost-forecast"].modes).toEqual(STOP_MODES);
@@ -57,6 +57,9 @@ describe("stop reasons", () => {
     // Shadow until its promotion (#2284): a delivered CI command no configured check runs.
     expect(STOP_REASONS.ci_check_drift.modes).toEqual(["shadow", "advisory"]);
     expect(STOP_REASONS.ci_check_drift.defaultMode).toBe("shadow");
+    // Shadow until its promotion (#2226): a blocked run whose stored limits grew past its usage.
+    expect(STOP_REASONS["host-resume-on-stored-limit"].modes).toEqual(["shadow", "advisory"]);
+    expect(STOP_REASONS["host-resume-on-stored-limit"].defaultMode).toBe("shadow");
     // Shadow until its promotion (#2218): an initiative that would pause on its dollar cap.
     expect(STOP_REASONS["initiative-dollar-cap"].modes).toEqual(["shadow", "advisory"]);
     expect(STOP_REASONS["initiative-dollar-cap"].defaultMode).toBe("shadow");
