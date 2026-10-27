@@ -107,6 +107,7 @@ const FULL_CAPABILITIES = [
   "hooks",
   "hooks-edit",
   "provider-switch",
+  "provider-limits",
   "chat-export",
   "sdd-export",
   "sdd-import",
@@ -123,6 +124,7 @@ const FULL_CAPABILITIES = [
   "packages",
   "project-agents",
   "permission-modes",
+  "file-preview",
 ];
 /** What a backend from before the optional capability groups answers. */
 const OLDER_CAPABILITIES = ["workflow", "attention", "projects", "sessions", "setup"];

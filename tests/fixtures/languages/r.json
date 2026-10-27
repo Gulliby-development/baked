@@ -10,6 +10,9 @@
     "testsGrown": "[ FAIL 1 | WARN 0 | SKIP 0 | PASS 2 ]\n\n\u2550\u2550 Failed tests \u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\n\u2500\u2500 Failure ('test-sum.R:2:3'): adds \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\nadd_numbers(1, 2) (`actual`) not equal to 3 (`expected`).\n\n  `actual`: -1\n`expected`:  3\n\n[ FAIL 1 | WARN 0 | SKIP 0 | PASS 2 ]\nError: Test failures\nExecution halted\n"
   },
   "expected": {
+    "suppressions": [
+      "x <- 1 # nolint: object_name_linter.: lint, linted, prescribable"
+    ],
     "checkConfigs": [".lintr: lintr, read as text"],
     "tests": [
       "tests/testthat/test-sum.R"
