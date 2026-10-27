@@ -84,6 +84,9 @@
       "prettier: formatter",
       "tsc: typechecker, whole unit"
     ],
-    "sortedLists": ["src/index.ts: biome organizeImports \"// order as written\" before 2"]
+    "sortedLists": ["src/index.ts: biome organizeImports \"// order as written\" before 2"],
+    "dependencyDirs": [
+      "node_modules: linked"
+    ]
   }
 }

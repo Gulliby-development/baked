@@ -816,3 +816,41 @@ describe("parallel worktree runs", () => {
     expect((await fx.drive(second)).status).toBe("completed");
   });
 });
+
+describe("dependency folders in a worktree run (#2330)", () => {
+  // R74 ladlemath (PHP): only node_modules was linked into worktrees, so a Composer project had to
+  // commit vendor/ (1,816 files) for `vendor/bin/phpunit` to run there, and every snapshot hashed it.
+  test("an ignored Composer vendor/ is linked into the run worktree, its check passes there, and neither the snapshot nor the run's commit holds it", async () => {
+    const check = fixturePolicy.checks[0] as (typeof fixturePolicy.checks)[number];
+    const policy = {
+      ...fixturePolicy,
+      checks: [{ ...check, id: "phpunit", args: ["vendor/bin/phpunit.js"] }],
+    };
+    const fx = setup({ policy });
+    // The usual rule, with a slash: Git sees a linked folder as a file, which it does not cover.
+    writeFileSync(join(fx.root, ".gitignore"), ".baked/\nvendor/\n");
+    git(fx.root, "commit", "-q", "-am", "Ignore vendor");
+    mkdirSync(join(fx.root, "vendor/bin"), { recursive: true });
+    writeFileSync(
+      join(fx.root, "vendor/bin/phpunit.js"),
+      "if (await Bun.file('value.txt').text() !== 'ready') process.exit(1);\n",
+    );
+    const run = await fx.start("worktree");
+    const done = await fx.complete(run.runId);
+    expect(fx.service.store.run(run.runId).stop_detail ?? "").toBe("");
+    expect(done.status).toBe("completed");
+    const worktree = fx.service.store.state(run.runId).worktree;
+    const tree = join(fx.root, worktree?.path ?? "");
+    expect(existsSync(join(tree, "vendor/bin/phpunit.js"))).toBe(true);
+    const branch = git(fx.root, "ls-tree", "-r", "--name-only", worktree?.branch ?? "");
+    expect(branch.split("\n")).toContain("value.txt");
+    expect(branch).not.toContain("vendor");
+    const { db } = fx.service.store as unknown as {
+      db: { query(sql: string): { all(...args: string[]): { manifest_json: string }[] } };
+    };
+    const manifests = db.query("SELECT manifest_json FROM workspace_snapshots WHERE run_id = ?").all(run.runId);
+    expect(manifests.length).toBeGreaterThan(0);
+    for (const { manifest_json } of manifests) expect(manifest_json).not.toContain("vendor");
+    expect(status(fx.root)).toBe("");
+  }, 60000);
+});

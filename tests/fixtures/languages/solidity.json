@@ -49,6 +49,9 @@
       "slither: linter, whole unit",
       "forge fmt: formatter"
     ],
-    "sortedLists": null
+    "sortedLists": null,
+    "dependencyDirs": [
+      "node_modules: linked"
+    ]
   }
 }
