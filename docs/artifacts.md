@@ -14,7 +14,7 @@ A page saved without styles of its own (no `<style>` block or stylesheet link) g
 
 ## Terminal and desktop
 
-`/artifacts` lists the artifacts; picking one opens it in the browser. `/artifacts deploy ID` (or `ID prod`) asks the agent to deploy it, with the same confirmation. In the desktop app, Artifacts in every project's sidebar shows the list, a preview, Open in browser and Deploy preview… or Deploy to production…, which confirm in a dialog first; the local API is in [`desktop/api.md`](desktop/api.md#artifacts).
+`/artifacts` lists the artifacts; picking one opens it in the browser. `/artifacts deploy ID` (or `ID prod`) asks the agent to deploy it, with the same confirmation. In the desktop app, Artifacts in every project's sidebar shows the list, a preview, Open in browser and Deploy preview… or Deploy to production…, which confirm in a dialog first; the local API is in [`desktop/api.md`](desktop/api.md#artifacts). An artifact a desktop chat saves or deploys also opens in that chat's preview panel, beside the Markdown and HTML files the chat wrote ([`desktop/app.md`](desktop/app.md#screens)).
 
 ## Headless
 
