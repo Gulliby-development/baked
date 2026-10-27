@@ -1069,7 +1069,8 @@ export const ReproSchema = z
     stdin: z.string().max(65_536).optional(),
     /**
      * Input files written to a fresh temporary directory before the run, outside the workspace;
-     * `{files}` in an argument stands for that directory (`{files}/trace.txt`).
+     * `{files}` in an argument stands for that directory (`{files}/trace.txt`), and `{root}` in an
+     * argument or a file's content for the root of the workspace the repro runs in (#2279).
      */
     files: z
       .array(

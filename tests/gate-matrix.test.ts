@@ -42,7 +42,7 @@ import { join } from "node:path";
 import { syntaxErrors } from "../src/core/intelligence/syntax-check.js";
 import { criterionCases, missingCases, testsHold, writtenTestPaths } from "../src/core/verification/criteria-cases.js";
 import { INLINE_HARNESS, type InlineRowTest, inlineRowFile, withInlineRows } from "../src/core/workflows/acceptance-rows-inline.js";
-import { reproExecutables } from "../src/core/verification/repro.js";
+import { reproExecutables, rerootRepro } from "../src/core/verification/repro.js";
 import { entryPointCommand } from "../src/core/verification/entry-points.js";
 import { noteSiblingFindings, ownerOfFinding } from "../src/core/verification/initiative-ownership.js";
 import { failureSignature as convergenceSignature, missingPlannedPaths, noTestsCollected } from "../src/core/verification/convergence.js";
@@ -367,6 +367,17 @@ const STATIC_FIXES: Record<Stack, string[]> = {
   rust: ["cargo-fmt", "cargo-clippy"],
   maven: [],
   dotnet: ["dotnet-format"],
+};
+
+/** How a repro's probe project names the workspace's code, per stack (#2279). */
+const PROBE_REFERENCE: Record<Stack, (root: string) => string> = {
+  bun: (root) => `import { label } from "${root}/src/label.ts";`,
+  npm: (root) => `{"dependencies":{"app":"file:${root}"}}`,
+  python: (root) => `import sys\nsys.path.insert(0, "${root}/src")`,
+  go: (root) => `module probe\nrequire example.com/app v0.0.0\nreplace example.com/app => ${root}`,
+  rust: (root) => `[dependencies]\nevalpin = { path = "${root}" }`,
+  maven: (root) => `<dependency><scope>system</scope><systemPath>${root}/target/app.jar</systemPath></dependency>`,
+  dotnet: (root) => `<ProjectReference Include="${root}/src/App/App.csproj" />`,
 };
 
 /** A suppression on a source file of each stack, as a brief may prescribe it (#2270). */
@@ -2883,6 +2894,17 @@ for (const stack of STACKS) {
       expect(rules("Write the stub.")).toEqual(["suppression"]);
       expect(rules(`Write the stub with ${line} on it.`)).toEqual([]);
       expect(rules(`Write the stub. Never use ${line}.`)).toEqual(["suppression"]);
+    });
+
+    // evalpin checks (R73): a review's probe project named the review's worktree by its absolute
+    // path, so the corrective's run of the repro built the unchanged code and reproduced after the
+    // fix. The host points each stack's way of naming the workspace's code at the root it runs in.
+    cell(stack, "repro probe names the root it runs in (#2279)", () => {
+      const review = "/w/app/.baked/worktrees/r1/main";
+      const task = "/w/app/.baked/worktrees/r1/T003";
+      const content = PROBE_REFERENCE[stack](review);
+      expect(rerootRepro(content, task, true)).toEqual({ text: PROBE_REFERENCE[stack](task), rewritten: [review] });
+      expect(rerootRepro(PROBE_REFERENCE[stack]("{root}"), task, true).text).toBe(PROBE_REFERENCE[stack](task));
     });
 
     cell(stack, "timed-out-failure", () => {
