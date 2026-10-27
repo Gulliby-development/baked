@@ -148,6 +148,15 @@ export const STOP_REASONS = {
     modes: NOT_ENFORCED,
     defaultMode: "shadow",
   },
+  baseline_signature: {
+    label:
+      "A required check fails as before any change once durations, addresses, seeds and temporary paths are compared by shape",
+    // Shadow only until two bench rounds show no false would-stop (#2295); its promotion makes the
+    // shaped signature decide the `baseline_failure` stop (through `stopFault`) and the task-end
+    // excuse, where the live signature still tells two runs of one failure apart.
+    modes: NOT_ENFORCED,
+    defaultMode: "shadow",
+  },
   ci_check_drift: {
     label:
       "A CI workflow or README the run wrote runs a gate command that no configured check runs as written",

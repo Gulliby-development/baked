@@ -46,6 +46,14 @@ import {
   baselineFailureDecision,
   baselineFixPath,
 } from "./baseline-fix.js";
+import {
+  BASELINE_SIGNATURE_DIR,
+  BASELINE_SIGNATURE_KIND,
+  type BaselineSignatureDecision,
+  type BaselineSignatureRecord,
+  type BaselineSignatureRule,
+  baselineSignatureDecision,
+} from "./baseline-signature.js";
 import { callCostRate } from "./budget.js";
 import {
   CONFLICT_FINISH_DIR,
@@ -250,6 +258,8 @@ const KEPT_ARTIFACTS = new Set([
   DEFER_KIND,
   // Each baseline failure's repair decision: finding counts, file paths, the fix (#2215).
   BASELINE_FIX_KIND,
+  // Each baseline comparison of a failing required check: both signatures, line by line (#2295).
+  BASELINE_SIGNATURE_KIND,
   // Each test task's wrong-value failure route: counts, task ids and paths, no literals (#2220).
   SOURCE_DEFECT_KIND,
 ]);
@@ -825,6 +835,10 @@ export interface RunReplay {
   baselineFailures: BaselineFailureBoundary[];
   /** Baseline failures the current rule repairs, would stop on or leaves differently. */
   newBaselineDecisions: number;
+  /** Each baseline comparison of a failing required check against the current rule (#2295). */
+  baselineSignatures: BaselineSignatureBoundary[];
+  /** Baseline comparisons the current rule matches, by either signature, differently. */
+  newSignatureDecisions: number;
   /** Each test task's wrong-value failure route against the current rule (#2220). */
   sourceDefects: SourceDefectBoundary[];
   /** Test task failures the current rule routes to the source's task, or not, differently. */
@@ -879,6 +893,48 @@ export function replayBaselineFailures(
             enabled: record.enabled,
             ...(record.exempt !== undefined ? { exempt: record.exempt } : {}),
           }),
+        },
+      ];
+    });
+}
+
+export interface BaselineSignatureBoundary {
+  checkId: string;
+  at: BaselineSignatureRecord["at"];
+  recorded: BaselineSignatureDecision;
+  replayed: BaselineSignatureDecision;
+}
+
+/**
+ * Every baseline comparison a run recorded (`baseline-signature/<check>-<hash>.json`, #2295),
+ * decided again from its legacy and shaped signature lines, each a stand-in in a trace, so equal
+ * lines stay equal. Traces before #2295 record none.
+ */
+export function replayBaselineSignatures(
+  store: WorkflowStore,
+  runId: string,
+  decide: BaselineSignatureRule = baselineSignatureDecision,
+): BaselineSignatureBoundary[] {
+  return store
+    .artifacts(runId)
+    .filter(
+      (a) =>
+        a.kind === BASELINE_SIGNATURE_KIND && a.logical_path.startsWith(BASELINE_SIGNATURE_DIR),
+    )
+    .flatMap((artifact) => {
+      let record: BaselineSignatureRecord;
+      try {
+        record = JSON.parse(store.readArtifact(runId, artifact.id));
+      } catch {
+        return [];
+      }
+      if (!record.legacy || !record.shaped) return [];
+      return [
+        {
+          checkId: record.checkId,
+          at: record.at,
+          recorded: record.decision,
+          replayed: decide({ legacy: record.legacy, shaped: record.shaped, subset: record.subset }),
         },
       ];
     });
@@ -3749,6 +3805,8 @@ function replayRun(
   | "newDeferDecisions"
   | "baselineFailures"
   | "newBaselineDecisions"
+  | "baselineSignatures"
+  | "newSignatureDecisions"
   | "sourceDefects"
   | "newSourceDefectRoutes"
 > | null {
@@ -3987,6 +4045,8 @@ export function replayTrace(
     correctiveDeferRule?: CorrectiveDeferRule;
     /** Decides each recorded baseline failure again (#2215); the current rule by default. */
     baselineFailureRule?: BaselineFailureRule;
+    /** Decides each recorded baseline comparison again (#2295); the current rule by default. */
+    baselineSignatureRule?: BaselineSignatureRule;
     sourceDefectRule?: SourceDefectRule;
   } = {},
 ): TraceReplay {
@@ -4092,6 +4152,12 @@ export function replayTrace(
         replayBaselineFailures(store, runId, options.baselineFailureRule),
       ]),
     );
+    const signatures = new Map(
+      runIds.map((runId) => [
+        runId,
+        replayBaselineSignatures(store, runId, options.baselineSignatureRule),
+      ]),
+    );
     const routes = new Map(
       runIds.map((runId) => [runId, replaySourceDefects(store, runId, options.sourceDefectRule)]),
     );
@@ -4128,6 +4194,7 @@ export function replayTrace(
       const conflictFinishes = finishes.get(runId) ?? [];
       const correctiveDefers = defers.get(runId) ?? [];
       const baselineFailures = baselines.get(runId) ?? [];
+      const baselineSignatures = signatures.get(runId) ?? [];
       const sourceDefects = routes.get(runId) ?? [];
       if (
         !replay.boundaries.length &&
@@ -4150,6 +4217,7 @@ export function replayTrace(
         !conflictFinishes.length &&
         !correctiveDefers.length &&
         !baselineFailures.length &&
+        !baselineSignatures.length &&
         !sourceDefects.length
       )
         continue;
@@ -4219,6 +4287,8 @@ export function replayTrace(
         newDeferDecisions: correctiveDefers.filter((b) => b.replayed !== b.recorded).length,
         baselineFailures,
         newBaselineDecisions: baselineFailures.filter((b) => b.replayed !== b.recorded).length,
+        baselineSignatures,
+        newSignatureDecisions: baselineSignatures.filter((b) => b.replayed !== b.recorded).length,
         sourceDefects,
         newSourceDefectRoutes: sourceDefects.filter((b) => b.replayed !== b.recorded).length,
       });

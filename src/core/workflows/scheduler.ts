@@ -131,6 +131,7 @@ import {
   failedTests,
   failureSignature,
   outputCounts,
+  shapedFailureSignature,
   TEST_FILE,
   withinBaseline,
 } from "../verification/output-counts.js";
@@ -244,6 +245,14 @@ import {
   baselineFixPath,
   baselineRepairPath,
 } from "./baseline-fix.js";
+import {
+  BASELINE_SIGNATURE_KIND,
+  type BaselineSignatureInput,
+  type BaselineSignatureRecord,
+  baselineSignatureDecision,
+  baselineSignaturePath,
+  signatureLines,
+} from "./baseline-signature.js";
 import {
   adoptStoredLimits,
   budgetUsage,
@@ -4593,6 +4602,8 @@ export class WorkflowScheduler {
     const diagnostics: Record<string, string[]> = {};
     // The output of each required check that fails before any change, by command key.
     const failures: Record<string, string> = {};
+    // The same outputs through the shared table of volatile values, for `baseline_signature` (#2295).
+    const shapes: Record<string, string> = {};
     // The diagnostics of each failing static check, for `staticBaseline: "relative"` (#1222).
     const debt: Record<string, string[]> = {};
     // The output of each required check that fails before any change, for #2215's decision.
@@ -4608,6 +4619,7 @@ export class WorkflowScheduler {
         );
         if (result.status === "failed" && check.required && !result.truncated) {
           failures[commandKey(check)] = failureSignature(result.output, root);
+          shapes[commandKey(check)] = shapedFailureSignature(result.output, root);
           failing.push({ check, output: result.output });
         }
         if (
@@ -4638,6 +4650,7 @@ export class WorkflowScheduler {
           counts,
           diagnostics,
           failures,
+          ...(Object.keys(shapes).length ? { shapes } : {}),
           ...(Object.keys(debt).length ? { debt } : {}),
         }),
       ),
@@ -5024,6 +5037,12 @@ export class WorkflowScheduler {
     });
     return { criteria: ids, record };
   }
+  /**
+   * Whether a required check fails as it did before any change, on the live signature
+   * (`failureSignature`). Each comparison also records the shaped signatures' answer
+   * (`baseline-signature/`, #2295) and, where only they match, the `baseline_signature`
+   * would-stop: the live decision stays the legacy one until that reason is promoted.
+   */
   private failsAsBaseline(
     runId: string,
     state: RuntimeState,
@@ -5033,16 +5052,67 @@ export class WorkflowScheduler {
   ): boolean {
     const artifact = this.store.latestArtifact(runId, CHECK_BASELINE_PATH);
     if (!artifact) return false;
-    const before = (
-      JSON.parse(this.store.readArtifact(runId, artifact.id)) as {
-        failures?: Record<string, string>;
-      }
-    ).failures?.[commandKey(check)];
+    const baseline = JSON.parse(this.store.readArtifact(runId, artifact.id)) as {
+      failures?: Record<string, string>;
+      shapes?: Record<string, string>;
+    };
+    const before = baseline.failures?.[commandKey(check)];
     // A failure without output tells nothing about its cause, so it is never matched.
     if (!before) return false;
-    const after = failureSignature(output, runRoot(this.store.workspace, state));
+    const root = runRoot(this.store.workspace, state);
+    const after = failureSignature(output, root);
     // With `subset`, a failure that only lost diagnostics the baseline had is still that debt (#1913).
-    return before === after || (subset && withinBaseline(before, after));
+    const matched = before === after || (subset && withinBaseline(before, after));
+    const shaped = baseline.shapes?.[commandKey(check)];
+    if (shaped)
+      this.baselineSignatureWouldStop(runId, check, subset, {
+        legacy: { before: signatureLines(before), after: signatureLines(after) },
+        shaped: {
+          before: signatureLines(shaped),
+          after: signatureLines(shapedFailureSignature(output, root)),
+        },
+        subset,
+      });
+    return matched;
+  }
+  /**
+   * Records a baseline comparison's inputs (`baseline-signature/<check>-<hash>.json`, #2295) and,
+   * when only the shaped signatures match, the `baseline_signature` would-stop: once per check and
+   * path, the checks stage's `baseline_failure` stop or the task-end excuse.
+   */
+  private baselineSignatureWouldStop(
+    runId: string,
+    check: Check,
+    subset: boolean,
+    input: BaselineSignatureInput,
+  ): void {
+    const policy = PolicySchema.parse(JSON.parse(this.store.run(runId).policy_json));
+    const mode = stopMode(policy, "baseline_signature");
+    if (mode === "enforce") return;
+    const at = subset ? "task" : "checks";
+    const record: BaselineSignatureRecord = {
+      checkId: check.id,
+      at,
+      ...input,
+      decision: baselineSignatureDecision(input),
+    };
+    const path = baselineSignaturePath(check.id, input);
+    this.store.transaction(() => {
+      if (!this.store.latestArtifact(runId, path))
+        this.store.artifact(runId, BASELINE_SIGNATURE_KIND, path, canonical(record));
+    });
+    if (record.decision !== "shaped") return;
+    const what =
+      at === "checks"
+        ? "the checks stage would stop with baseline_failure instead of opening correctives"
+        : "the task's check would be excused instead of opening a correction";
+    recordWouldStop(this.store, runId, {
+      reason: "baseline_signature",
+      mode,
+      key: `${at}:check-${check.id}`,
+      summary: `baseline_signature: required check ${check.id} fails as it did before any change once durations, addresses, seeds and temporary paths are compared by shape, while the live signature tells the two runs apart; ${what}`,
+      inputs: { ...record, path },
+    });
   }
   /** The IDs of the required checks that failed before any change, from the check baseline. */
   private baselineFailingChecks(runId: string, policy: RunPolicy): string[] {
