@@ -52,6 +52,7 @@ interface Accepted {
   newBaselineDecisions?: number;
   newShareStops?: number;
   newPoolGrowth?: number;
+  newPoolBoundStops?: number;
   newStartStops?: number;
   newApprovalDeclines?: number;
   newAutoApprovals?: number;
@@ -168,11 +169,13 @@ describe("bench-round traces replay without new forecast stops or growth (#1649)
           initiative: initiative.initiativeId,
           newShareStops: initiative.newShareStops,
           newPoolGrowth: initiative.newPoolGrowth,
+          newPoolBoundStops: initiative.newPoolBoundStops,
           newStartStops: initiative.newStartStops,
         }).toEqual({
           initiative: initiative.initiativeId,
           newShareStops: allowed?.newShareStops ?? 0,
           newPoolGrowth: allowed?.newPoolGrowth ?? 0,
+          newPoolBoundStops: allowed?.newPoolBoundStops ?? 0,
           newStartStops: allowed?.newStartStops ?? 0,
         });
       }
