@@ -7,6 +7,12 @@
     ".clang-tidy": "Checks: '-*,bugprone-*'\n"
   },
   "expected": {
+    "suppressions": [
+      "int x = y; // NOLINT(bugprone-narrowing-conversions): lint, linted, prescribable",
+      "#pragma GCC diagnostic ignored \"-Wunused\": lint, linted, prescribable",
+      "#pragma warning(disable: 4996): lint, linted, prescribable",
+      "// cppcheck-suppress nullPointer: lint, linted, prescribable"
+    ],
     "checkConfigs": [".clang-tidy: clang-tidy", ".clang-format: clang-format, read as text"],
     "tests": [
       "src/sum_test.cpp"
