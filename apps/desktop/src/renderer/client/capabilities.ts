@@ -82,6 +82,9 @@ export const COMMANDS_EDIT_CAPABILITY = "commands-edit";
 /** `POST /v1/providers/ID/switch` (Switch account for Codex and Claude Code). */
 export const PROVIDER_SWITCH_CAPABILITY = "provider-switch";
 
+/** `GET /v1/providers/limits` (Subscription limits on the Providers page). */
+export const PROVIDER_LIMITS_CAPABILITY = "provider-limits";
+
 /**
  * Whether a backend offers a capability: true or false from its health answer, null when the
  * health answer could not be read, so the caller has to try the endpoint and treat 404 as "no".

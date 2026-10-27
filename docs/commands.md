@@ -91,6 +91,7 @@ The tables below list the commands the palette shows, generated from `src/core/c
 | Command | Does |
 | --- | --- |
 | `/keys` | Manage LLM provider API keys |
+| `/limits` | Show how much of each subscription's usage limit is left |
 | `/codex` | Show Codex login status |
 | `/codex login` | Log in to Codex with your ChatGPT subscription |
 | `/codex logout` | Log out of the current Codex account |

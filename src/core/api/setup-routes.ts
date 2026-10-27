@@ -50,6 +50,7 @@ import {
 } from "../llm/model-routing.js";
 import { checkProviders } from "../llm/provider.js";
 import { getProviderSecretEntries } from "../llm/providers/index.js";
+import { readUsageLimits } from "../llm/usage-limits.js";
 import { cachedVendorModels } from "../llm/vendor-models.js";
 import { listPackageSkills, type PackageSkill } from "../packages/packages.js";
 import { configDir as defaultConfigDir } from "../platform/index.js";
@@ -656,6 +657,10 @@ export async function setupRoute(ctx: SetupRouteContext): Promise<Response | nul
     return ctx.json(200, overview(body.workflow, body.model));
   }
 
+  if (path === "/v1/providers/limits") {
+    ctx.only("GET");
+    return ctx.json(200, { limits: await readUsageLimits() });
+  }
   if (path === "/v1/providers") {
     ctx.only("GET");
     const secrets = new Map(getProviderSecretEntries().map((e) => [e.providerId, e]));
