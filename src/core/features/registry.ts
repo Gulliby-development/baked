@@ -460,6 +460,15 @@ export const FEATURES: readonly Feature[] = [
     desktop: ["settings/providers"],
   },
   {
+    id: "provider-limits",
+    group: "Models and providers",
+    title: "Subscription usage limits left (Codex, Claude Code, Copilot)",
+    tui: ["/limits"],
+    cli: ["baked limits"],
+    api: ["/v1/providers/limits"],
+    desktop: ["settings/providers"],
+  },
+  {
     id: "codex-switch",
     group: "Models and providers",
     title: "Switch Codex accounts",

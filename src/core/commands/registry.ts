@@ -21,6 +21,7 @@ import { register as registerDebug } from "./debug.js";
 import { matchGitPrefix, register as registerGit } from "./git.js";
 import { register as registerGraph } from "./graph.js";
 import { register as registerHooks } from "./hooks.js";
+import { register as registerLimits } from "./limits.js";
 import { matchNavPrefix, register as registerNavigation } from "./navigation.js";
 import { register as registerPackages } from "./packages.js";
 import { register as registerProjects } from "./projects.js";
@@ -44,6 +45,7 @@ registerStorage(commandMap);
 registerClaims(commandMap);
 registerCodex(commandMap);
 registerClaudeCode(commandMap);
+registerLimits(commandMap);
 registerHooks(commandMap);
 registerCheckpoint(commandMap);
 registerWorkflow(commandMap);
@@ -500,6 +502,13 @@ const COMMAND_DEFS: CommandDef[] = [
     desc: "Manage LLM provider API keys",
     category: "Models",
     tags: ["api", "auth"],
+  },
+  {
+    cmd: "/limits",
+    ic: "gauge",
+    desc: "Show how much of each subscription's usage limit is left",
+    category: "Models",
+    tags: ["limits", "usage", "quota", "subscription", "codex", "claude", "copilot"],
   },
   {
     cmd: "/codex",
