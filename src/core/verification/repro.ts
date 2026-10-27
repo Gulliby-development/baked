@@ -267,7 +267,8 @@ export function reproOutsidePaths(repro: Pick<Repro, "args" | "files">, root: st
   const found = new Set<string>();
   for (const text of texts)
     for (const match of text.matchAll(ABSOLUTE)) {
-      const path = match[1] ?? "";
+      // A string literal in the probe's code spells a Windows separator `\\`.
+      const path = (match[1] ?? "").replace(/\\\\/g, "\\");
       const spelled = slashes(path).toLowerCase();
       if (NEUTRAL.test(path) || spelled === own || spelled.startsWith(`${own}/`)) continue;
       found.add(path);

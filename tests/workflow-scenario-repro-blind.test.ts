@@ -27,8 +27,11 @@ describe("a repro blind to its correction (#2287)", () => {
     expect(reproOutsidePaths(repro(["{files}/probe.ts", "/dev/null"], 'import "https://x.test/a"; const half = 4 /2;'), root)).toEqual([]);
     expect(reproOutsidePaths(repro(["run", "/usr/lib/node_modules/evalpin/dist/cli.js"], 'path = "C:\\\\Users\\\\me\\\\.cargo\\\\registry\\\\evalpin"'), root)).toEqual([
       "/usr/lib/node_modules/evalpin/dist/cli.js",
-      "C:\\\\Users\\\\me\\\\.cargo\\\\registry\\\\evalpin",
+      "C:\\Users\\me\\.cargo\\registry\\evalpin",
     ]);
+    // A Windows root a string literal escapes is still the root.
+    const win = "C:\\work\\app";
+    expect(reproOutsidePaths(repro(["-e", `read(${JSON.stringify(`${win}\\src\\a.ts`)})`]), win)).toEqual([]);
   });
 
   test("blind only when it reproduces, the file changed, the output did not, and it reads outside the root", () => {
