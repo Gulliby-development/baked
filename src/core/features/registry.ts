@@ -537,7 +537,10 @@ export const FEATURES: readonly Feature[] = [
     id: "post-edit-formatting",
     group: "Tools and code intelligence",
     title: "Automatic formatting preserves pre-existing formatting differences",
-    tui: ["/tools: edit and refactor tools probe the original text before formatting"],
+    tui: [
+      "/tools: edit and refactor tools probe the original text before formatting",
+      "/tools: a formatter that times out is named in the edit result, and skipped after two",
+    ],
     cli: ["--headless: the same core edit and refactor tools"],
     api: ["/v1/sessions/:id: agent turns use the same core tools"],
     desktop: ["project/chat: the same core edit and refactor tools"],

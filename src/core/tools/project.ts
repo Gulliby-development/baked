@@ -19,7 +19,7 @@ import {
 import { assertWorkspaceMutationAllowed } from "../workflows/leases.js";
 import { ProcessScope } from "../workflows/process-scope.js";
 import { pythonEnvironment } from "../workflows/toolchain.js";
-import { FORMAT_TIMEOUT_MS, singleFileFormat } from "./auto-format.js";
+import { formatTimeoutMs, recordFormatTimeout, singleFileFormat } from "./auto-format.js";
 import { runBoundedShell } from "./bounded-process.js";
 import { BUN_FMT, bunFmtConfigured } from "./bun-fmt.js";
 import { captureEndings, restoreEndings } from "./line-endings.js";
@@ -1220,10 +1220,12 @@ export async function formatFile(filePath: string, cwd?: string): Promise<boolea
   try {
     // A formatter that writes text mode on Windows turns a LF file into CRLF (#2214).
     const endings = captureEndings([filePath]);
-    const result = await runBoundedShell(command, {
-      cwd: effectiveCwd,
-      timeoutMs: FORMAT_TIMEOUT_MS,
-    }).finally(() => restoreEndings(endings));
+    const timeoutMs = formatTimeoutMs();
+    const result = await runBoundedShell(command, { cwd: effectiveCwd, timeoutMs }).finally(() =>
+      restoreEndings(endings),
+    );
+    // The post-edit format reads the record: a file the formatter hangs on is named once (#2242).
+    if (result.timedOut) recordFormatTimeout(filePath, profile.formatFile, timeoutMs);
     return !result.timedOut && result.exitCode === 0;
   } catch {
     return false;
