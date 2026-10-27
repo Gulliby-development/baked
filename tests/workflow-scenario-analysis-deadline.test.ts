@@ -1,10 +1,14 @@
 import { afterEach, describe, expect, test } from "bun:test";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { generateText } from "ai";
 import { FirstByteHistory } from "../src/core/llm/first-byte-history.js";
 import {
   ADAPTIVE_FIRST_BYTE_FLOOR_MS,
   adaptiveFirstByteMs,
   type CallTiming,
+  type FirstByteInputs,
   promptChars,
   providerFirstByteMs,
   ProviderUnreachableError,
@@ -63,7 +67,13 @@ function seeded(sized = true): FirstByteHistory {
 }
 
 /** One analysis call of `derivations` through the workflow executor's deadline and history. */
-async function analysis(history: FirstByteHistory, derivations: number, fault: Fault) {
+async function analysis(
+  history: FirstByteHistory,
+  derivations: number,
+  fault: Fault,
+  limit: (ceilingMs: number, call: { stage?: string; effort?: string; promptChars?: number }) =>
+    number | { ms: number; inputs: FirstByteInputs } = (ceilingMs, call) => history.deadline(ceilingMs, MODEL, call),
+) {
   const clock = awakeClock();
   const faulty = faultyModel("codex", fault);
   cleanups.push(() => {
@@ -75,7 +85,7 @@ async function analysis(history: FirstByteHistory, derivations: number, fault: F
   const pending = generateText({
     model: withProviderHealth(faulty.model, MODEL, {
       stage: SHAPE.stage,
-      firstByteLimit: (ceilingMs, call) => history.deadline(ceilingMs, MODEL, call),
+      firstByteLimit: limit,
       timing: (call) => {
         timings.push(call);
         history.record(MODEL, call);
@@ -260,5 +270,83 @@ describe("scenario: skillplumb R69, a retry's short first call does not clear th
     expire(unsized);
     answer(unsized, 8_000);
     expect(unsized.deadline(PLAN_CEILING, ASTRA, PLAN)).not.toBe(PLAN_CEILING);
+  });
+});
+
+// Bench round 73, flatelens inflate T004 (#2283). The implementation call of 167,595 characters
+// answered after 194 s under a recorded deadline of 290,666 ms, which the executor took from a
+// history the trace does not hold: its process was seeded when it started, and a shape with fewer
+// than 3 own answers is completed from the machine-wide shared file (#1880). The replay rebuilt
+// the history from the trace's calls alone (more own answers, all faster) and got 180,000 ms: a
+// new stop on a trace of a correct run. Here the process holds 2 own answers and 3 slower shared
+// ones; a third own answer from another process is in the trace before the large call.
+describe("scenario: flatelens R73, a deadline from shared history replays as recorded (#2283)", () => {
+  const OWN: [number, number][] = [
+    [40, 45_000],
+    [40, 48_000],
+  ];
+  const PARALLEL: [number, number] = [40, 50_000];
+
+  test("the recorded deadline's inputs reproduce it on replay; a trace without them does not stop", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "baked-first-byte-"));
+    cleanups.push(() => rmSync(dir, { recursive: true, force: true }));
+    const file = join(dir, "first-byte-history.json");
+    // Another workspace on the machine answered three analyses of 60 derivations in 100 s each.
+    const other = new FirstByteHistory(file);
+    for (let i = 0; i < 3; i++)
+      other.record(MODEL, { provider: "codex", ...SHAPE, firstByteMs: 100_000, durationMs: 100_000, promptChars: size(60) }, true);
+
+    // The executor's history: the workspace's two answers, completed from the shared file.
+    const history = new FirstByteHistory(file);
+    for (const [derivations, ms] of OWN)
+      history.record(MODEL, { provider: "codex", ...SHAPE, firstByteMs: ms, durationMs: ms, promptChars: size(derivations) });
+    const call = await analysis(history, 86, { kind: "slow", afterMs: 194_000 }, (ceilingMs, c) =>
+      history.decide(ceilingMs, MODEL, c, true),
+    );
+    await call.advance(196_000);
+    const { error, timings } = await call.outcome();
+    expect(error).toBeUndefined();
+    const large = timings[0] as CallTiming;
+    expect(large.limitMs).toBeGreaterThan(194_000);
+    expect(large.limitMs).toBeLessThan(CEILING);
+    expect(large.deadlineInputs).toMatchObject({ samples: 5, shared: 3, paceSamples: 5 });
+
+    const fx = workflowFixture();
+    cleanups.push(() => void fx.dispose());
+    const run = await fx.start();
+    await fx.service.drive(run.runId, new AbortController().signal);
+    await fx.approve(run.runId);
+    await fx.service.drive(run.runId, new AbortController().signal);
+    const { store } = fx.service;
+    const attempts = (
+      store.connection
+        .query("SELECT id FROM attempts WHERE run_id=? AND model_id IS NOT NULL ORDER BY started_at, rowid")
+        .all(run.runId) as { id: string }[]
+    ).slice(0, 3);
+    expect(attempts).toHaveLength(3);
+    const answer = ([derivations, ms]: [number, number]): CallTiming => ({ provider: "codex", ...SHAPE, firstByteMs: ms, durationMs: ms, promptChars: size(derivations) });
+    const write = (largeCall: CallTiming) => {
+      const recorded = [OWN.map(answer), [answer(PARALLEL)], [largeCall]];
+      store.transaction(() => {
+        attempts.forEach((attempt, i) =>
+          store.artifact(run.runId, "usage", `attempts/${attempt.id}/usage.json`, canonical({ calls: recorded[i] })),
+        );
+      });
+    };
+    const boundary = (boundaries: ReturnType<typeof replayFirstBytes>) =>
+      (boundaries.get(run.runId) ?? []).find((b) => b.attemptId === attempts[2]?.id);
+
+    write(large);
+    // Before #2283 the replay decided the call over the trace's own three faster answers alone.
+    const before = boundary(
+      replayFirstBytes(store, [run.runId], providerFirstByteMs, (h, ceilingMs, model, c) => h.deadline(ceilingMs, model, c)),
+    );
+    expect(before).toMatchObject({ limitMs: ADAPTIVE_FIRST_BYTE_FLOOR_MS, recorded: "pass", replayed: "stop" });
+    expect(boundary(replayFirstBytes(store, [run.runId]))).toMatchObject({ limitMs: large.limitMs, replayed: "pass" });
+
+    // A trace recorded before the inputs were kept: the recorded deadline is the call's floor.
+    const { deadlineInputs: _, ...older } = large;
+    write(older);
+    expect(boundary(replayFirstBytes(store, [run.runId]))).toMatchObject({ limitMs: large.limitMs, replayed: "pass" });
   });
 });

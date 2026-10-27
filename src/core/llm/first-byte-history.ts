@@ -2,8 +2,10 @@ import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import {
   ADAPTIVE_FIRST_BYTE_SAMPLES,
-  adaptiveFirstByteMs,
   type CallTiming,
+  type FirstByteInputs,
+  firstByteDeadline,
+  firstByteInputs,
   type SizedFirstByte,
 } from "./provider-health.js";
 
@@ -67,12 +69,29 @@ export class FirstByteHistory {
     call: { stage?: string | undefined; effort?: string | undefined; promptChars?: number },
     shared = false,
   ): number {
-    if (this.expired.has(shapeKey(model, call.stage, call.effort))) return ceilingMs;
-    return adaptiveFirstByteMs(
-      ceilingMs,
-      this.healthy(model, call.stage, call.effort, shared),
-      call.promptChars,
-    );
+    return this.decide(ceilingMs, model, call, shared).ms;
+  }
+
+  /**
+   * `deadline` with what it was computed from, which the executor keeps in the call's timing
+   * (`deadlineInputs`): the shared answers and the history the process started with are not in
+   * the run's database, so a replay decides the call from these (#2283).
+   */
+  decide(
+    ceilingMs: number,
+    model: string,
+    call: { stage?: string | undefined; effort?: string | undefined; promptChars?: number },
+    shared = false,
+  ): { ms: number; inputs: FirstByteInputs } {
+    const key = shapeKey(model, call.stage, call.effort);
+    const healthy = this.healthy(model, call.stage, call.effort, shared);
+    const own = this.samples.get(key)?.length ?? 0;
+    const inputs: FirstByteInputs = {
+      ...firstByteInputs(healthy),
+      ...(healthy.length > own ? { shared: healthy.length - own } : {}),
+      ...(this.expired.has(key) ? { expired: true as const } : {}),
+    };
+    return { ms: firstByteDeadline(ceilingMs, inputs, call.promptChars), inputs };
   }
 
   /**

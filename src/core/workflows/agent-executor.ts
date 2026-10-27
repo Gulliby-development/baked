@@ -2003,8 +2003,9 @@ export class NativeAgentExecutor implements AgentExecutor {
       const shared = policy.sharedFirstByteHistory === "on";
       return withProviderHealth(resolved, request.profile.model, {
         stage: request.profile.output,
+        // The deadline's inputs go into the call's timing, so a replay decides it again (#2283).
         firstByteLimit: (ceilingMs, call) =>
-          history.deadline(ceilingMs, request.profile.model, call, shared),
+          history.decide(ceilingMs, request.profile.model, call, shared),
         timing: (call) => {
           watch.calls.push(call);
           history.record(request.profile.model, call, shared);
