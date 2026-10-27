@@ -16,6 +16,9 @@
       "Scanner calls Reader#encoding_token? per token.: Reader#encoding_token?",
       "Scanner reads Reader::ENCODINGS.: Reader::ENCODINGS"
     ],
+    "suppressions": [
+      "x = 1 # rubocop:disable Lint/UselessAssignment: lint, linted, prescribable"
+    ],
     "checkConfigs": [".rubocop.yml: rubocop", ".standard.yml: standard"],
     "tests": [
       "spec/sum_spec.rb",

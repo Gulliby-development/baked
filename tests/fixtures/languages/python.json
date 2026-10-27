@@ -14,6 +14,14 @@
       "Scanner delegates to Reader.IsEncodingToken.: Reader.IsEncodingToken",
       "Scanner calls `reader.is_encoding_token` per token.: reader.is_encoding_token"
     ],
+    "suppressions": [
+      "x = f()  # type: ignore[attr-defined]: lint, linted, prescribable",
+      "import os  # noqa: F401: lint, linted, prescribable",
+      "x = f()  # pylint: disable=invalid-name: lint, linted, prescribable",
+      "x = f()  # pyright: ignore[reportGeneralTypeIssues]: lint, linted, prescribable",
+      "# mypy: ignore-errors: lint, linted",
+      "if debug:  # pragma: no cover: coverage"
+    ],
     "checkConfigs": ["ruff.toml: ruff", "mypy.ini: mypy", ".flake8: flake8", ".pylintrc: pylint", "pyrightconfig.json: pyright"],
     "tests": [
       "app/tests.py",

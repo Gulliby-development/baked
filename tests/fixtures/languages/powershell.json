@@ -14,6 +14,9 @@
       "Scanner calls [Reader]::IsEncodingToken for each token.: Reader::IsEncodingToken",
       "Scanner delegates to Reader.IsEncodingToken.: Reader.IsEncodingToken"
     ],
+    "suppressions": [
+      "[Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSAvoidUsingWriteHost', '')]: lint, linted, prescribable"
+    ],
     "checkConfigs": ["PSScriptAnalyzerSettings.psd1: PSScriptAnalyzer, read as text"],
     "tests": [
       "tests/Sum.Tests.ps1"

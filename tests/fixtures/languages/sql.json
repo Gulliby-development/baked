@@ -11,6 +11,9 @@
   },
   "expected": {
     "memberSyntax": null,
+    "suppressions": [
+      "SELECT * FROM t -- noqa: AM04: lint, linted, prescribable"
+    ],
     "checkConfigs": [".sqlfluff: sqlfluff", ".sqlfluffignore: sqlfluff, read as text"],
     "tests": [
       "sql/test_sum.sql"

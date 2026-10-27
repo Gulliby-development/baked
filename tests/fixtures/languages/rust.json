@@ -14,6 +14,10 @@
       "Scanner calls Reader::is_encoding_token.: Reader::is_encoding_token",
       "Scanner delegates to Reader.IsEncodingToken.: Reader.IsEncodingToken"
     ],
+    "suppressions": [
+      "#[expect(unused_variables)]: lint, linted, prescribable",
+      "#[cfg_attr(test, allow(dead_code))]: lint, linted, prescribable"
+    ],
     "checkConfigs": ["clippy.toml: clippy", "rustfmt.toml: rustfmt, read as text"],
     "tests": [
       "src/tests.rs",

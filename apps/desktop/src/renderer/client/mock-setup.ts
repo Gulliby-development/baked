@@ -33,6 +33,7 @@ import type {
   InstructionFile,
   ModelRouting,
   ProjectSummary,
+  ProviderLimits,
   ProviderStatus,
   Route,
   RouteContext,
@@ -407,6 +408,112 @@ let globalConfig: ConfigFile = {
   },
   telemetry: true,
 };
+
+/** Subscription limits as the backend reports them, with resets relative to now. */
+function providerLimits(): ProviderLimits[] {
+  const now = Date.now();
+  const at = (minutes: number) => new Date(now + minutes * 60_000).toISOString();
+  const seen = new Date(now - 42 * 60_000).toISOString();
+  return [
+    {
+      provider: "codex",
+      name: "Codex",
+      state: "ok",
+      source: "live",
+      observedAt: new Date(now).toISOString(),
+      plan: "pro",
+      windows: [
+        {
+          id: "primary",
+          label: "5-hour",
+          usedPercent: 38,
+          resetsAt: at(131),
+          windowMinutes: 300,
+          status: "ok",
+        },
+        {
+          id: "secondary",
+          label: "Weekly",
+          usedPercent: 84,
+          resetsAt: at(3 * 1440 + 260),
+          windowMinutes: 10080,
+          status: "warning",
+        },
+      ],
+      credits: null,
+      message: "Read from Codex just now.",
+    },
+    {
+      provider: "claude-code",
+      name: "Claude Code",
+      state: "ok",
+      source: "last-seen",
+      observedAt: seen,
+      plan: null,
+      windows: [
+        {
+          id: "five_hour",
+          label: "5-hour session",
+          usedPercent: 12.5,
+          resetsAt: at(214),
+          windowMinutes: 300,
+          status: "ok",
+        },
+        {
+          id: "seven_day",
+          label: "Weekly",
+          usedPercent: 57,
+          resetsAt: at(5 * 1440 + 30),
+          windowMinutes: 10080,
+          status: "ok",
+        },
+      ],
+      credits: null,
+      message: "Reported by Claude Code during BAKED's last turn on it.",
+    },
+    {
+      provider: "copilot",
+      name: "GitHub Copilot",
+      state: "ok",
+      source: "live",
+      observedAt: new Date(now).toISOString(),
+      plan: "individual_pro",
+      windows: [
+        {
+          id: "premium_interactions",
+          label: "Premium requests",
+          usedPercent: 100,
+          resetsAt: at(9 * 1440),
+          windowMinutes: null,
+          status: "limited",
+          remaining: 0,
+          entitlement: 300,
+          detail: "Paid overage allowed past the limit",
+        },
+        {
+          id: "chat",
+          label: "Chat",
+          usedPercent: 0,
+          resetsAt: null,
+          windowMinutes: null,
+          status: "ok",
+          unlimited: true,
+        },
+        {
+          id: "completions",
+          label: "Code completions",
+          usedPercent: 0,
+          resetsAt: null,
+          windowMinutes: null,
+          status: "ok",
+          unlimited: true,
+        },
+      ],
+      credits: null,
+      message: "Read from GitHub just now.",
+    },
+  ];
+}
 
 const providers: ProviderStatus[] = [
   { id: "anthropic", name: "Anthropic", configured: true, acceptsKey: true, source: "env" },
@@ -1994,6 +2101,8 @@ export const setupRoutes: MockRoute = (request) => {
     }
     case "GET /v1/providers":
       return response(200, { providers: providers });
+    case "GET /v1/providers/limits":
+      return response(200, { limits: providerLimits() });
     case "GET /v1/workflow/definitions":
       return response(
         200,

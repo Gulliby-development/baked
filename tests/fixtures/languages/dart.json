@@ -12,6 +12,9 @@
     "memberSyntax": [
       "Scanner delegates to Reader.IsEncodingToken.: Reader.IsEncodingToken"
     ],
+    "suppressions": [
+      "// ignore: avoid_print: lint, linted, prescribable"
+    ],
     "checkConfigs": ["analysis_options.yaml: dart analyze"],
     "tests": [
       "lib/sum_test.dart"

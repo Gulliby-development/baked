@@ -16,6 +16,10 @@
       "Scanner calls `reader.is_encoding_token` per token.: reader.is_encoding_token",
       "Scanner calls reader:is_encoding_token(token).: reader:is_encoding_token"
     ],
+    "suppressions": [
+      "local x = 1 -- luacheck: ignore 211: lint, linted, prescribable",
+      "-- selene: allow(unused_variable): lint, linted, prescribable"
+    ],
     "checkConfigs": [".luacheckrc: luacheck, read as text", "stylua.toml: stylua, read as text", ".luarc.json: lua-language-server"],
     "tests": [
       "src/sum_spec.lua"

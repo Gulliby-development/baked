@@ -7,6 +7,9 @@
     "memberSyntax": [
       "Scanner delegates to Reader.IsEncodingToken.: Reader.IsEncodingToken"
     ],
+    "suppressions": [
+      "[@@@warning \"-32\"]: lint, linted, prescribable"
+    ],
     "checkConfigs": [".ocamlformat: ocamlformat, read as text"],
     "tests": null,
     "testMarkers": null,

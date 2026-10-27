@@ -4,6 +4,7 @@ import { join } from "node:path";
 import type { JSONSchema7, LanguageModelV3Usage } from "@ai-sdk/provider";
 import { tmpDir } from "../../../platform/index.js";
 import { trackProcess } from "../../../process-tracker.js";
+import { recordClaudeRateLimit } from "../../usage-limits-record.js";
 import { onJsonLines, UnparsedLines } from "../json-lines.js";
 import { claudeCodeCommand, getClaudeCodeFlags } from "./cli.js";
 import { type ClaudeCodePromptParts, claudeCodeTurnContent } from "./prompt.js";
@@ -488,8 +489,12 @@ export class ClaudeCodeSessionRunner implements ClaudeCodeRunner {
   private handleLine(session: SessionState, line: string): void {
     const trimmed = line.trim();
     if (!trimmed.startsWith("{") || !session.pending) return;
-    const event = session.unparsed.parse<{ type?: string }>(trimmed);
+    const event = session.unparsed.parse<{ type?: string; rate_limit_info?: unknown }>(trimmed);
     if (!event) return;
+    if (event.type === "rate_limit_event") {
+      recordClaudeRateLimit(event.rate_limit_info);
+      return;
+    }
     const live = session.pending;
     const stream = event as { event?: { type?: string; delta?: { type?: string } } };
     if (

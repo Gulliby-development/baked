@@ -13,6 +13,12 @@
     "memberSyntax": [
       "Scanner calls Reader::is_encoding_token.: Reader::is_encoding_token"
     ],
+    "suppressions": [
+      "// @phpstan-ignore-next-line: lint, linted, prescribable",
+      "/** @psalm-suppress MixedAssignment */: lint, linted, prescribable",
+      "// phpcs:ignore Generic.Files.LineLength: lint, linted, prescribable",
+      "// @codeCoverageIgnoreStart: coverage, prescribable"
+    ],
     "checkConfigs": ["phpcs.xml: phpcs", "phpstan.neon: phpstan", "psalm.xml: psalm", ".php-cs-fixer.php: php-cs-fixer, read as text"],
     "tests": [
       "src/SumTest.php"

@@ -8,6 +8,12 @@
       "Scanner delegates to Reader.IsEncodingToken.: Reader.IsEncodingToken",
       "Scanner sends [Reader isEncodingToken:] for each token.: [Reader isEncodingToken]"
     ],
+    "suppressions": [
+      "int x = y; // NOLINT(bugprone-narrowing-conversions): lint, linted, prescribable",
+      "#pragma GCC diagnostic ignored \"-Wunused\": lint, linted, prescribable",
+      "#pragma warning(disable: 4996): lint, linted, prescribable",
+      "// cppcheck-suppress nullPointer: lint, linted, prescribable"
+    ],
     "checkConfigs": [".clang-tidy: clang-tidy", ".clang-format: clang-format, read as text"],
     "tests": [
       "Sources/SumTests.m"

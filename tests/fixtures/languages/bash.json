@@ -12,6 +12,9 @@
   },
   "expected": {
     "memberSyntax": null,
+    "suppressions": [
+      "# shellcheck disable=SC2086: lint, linted, prescribable"
+    ],
     "checkConfigs": [".shellcheckrc: shellcheck"],
     "tests": [
       "bin/sum_test.sh",

@@ -1492,6 +1492,33 @@ describe("gate matrix: Gradle test reports and language review (#1489)", () => {
     expect(gradleTestReport("cmd", ["/d", "/c", "gradlew.bat", "test"], root, Date.now() - 1000)).not.toBeNull();
   });
 
+  test("a failed testcase keeps its message, type and the start of its text (#2272)", () => {
+    const stack = Array.from({ length: 14 }, (_, i) => `\tat CalcTest.frame${i}(CalcTest.kt:${i + 7})`).join("\n");
+    const xml = GRADLE_REPORT.replace(
+      /<failure [\s\S]*?<\/failure>/,
+      `<failure message="expected: &lt;&quot;a&gt;b&quot;&gt; but was: &lt;&quot;c&quot;&gt;" type="org.opentest4j.AssertionFailedError">org.opentest4j.AssertionFailedError: expected: &lt;"a&gt;b"&gt;\n${stack}\n</failure>`,
+    ).replace(
+      '<testcase name="later()" classname="CalcTest" time="0.0">\n    <skipped/>',
+      '<testcase name="crashes()" classname="CalcTest" time="0.0">\n    <error message="boom" type="java.lang.IllegalStateException"><![CDATA[java.lang.IllegalStateException: boom ]]]]><![CDATA[> <tag>\n\tat CalcTest.crashes(CalcTest.kt:12)]]></error>',
+    );
+    const root = project({ "build.gradle.kts": "plugins { java }\n", "build/test-results/test/TEST-CalcTest.xml": xml });
+    const report = gradleTestReport("gradle", ["-q", "check"], root, Date.now() - 1000) ?? "";
+    expect(report).toContain(
+      '<testcase classname="CalcTest" name="fails()"><failure message="expected: &lt;&quot;a&gt;b&quot;&gt; but was: &lt;&quot;c&quot;&gt;" type="org.opentest4j.AssertionFailedError">org.opentest4j.AssertionFailedError: expected: &lt;"a&gt;b"&gt;\n\tat CalcTest.frame0(CalcTest.kt:7)',
+    );
+    // Ten lines of text, then a mark that more were cut.
+    expect(report).toContain("\tat CalcTest.frame8(CalcTest.kt:15)\n\t...</failure>");
+    expect(report).not.toContain("frame9(");
+    // An <error> is a failure; its CDATA (with a `]]>` split across two sections) is escaped text.
+    expect(report).toContain(
+      '<testcase classname="CalcTest" name="crashes()"><failure message="boom" type="java.lang.IllegalStateException">java.lang.IllegalStateException: boom ]]&gt; &lt;tag&gt;\n\tat CalcTest.crashes(CalcTest.kt:12)</failure></testcase>',
+    );
+    expect(failedTests(report)).toEqual({ tool: "junit", names: ["CalcTest.fails()", "CalcTest.crashes()"] });
+    // A message longer than the cap is cut.
+    const long = project({ "build.gradle": "plugins { id 'java' }\n", "build/test-results/test/TEST-CalcTest.xml": GRADLE_REPORT.replace(/message="[^"]*"/, `message="${"x".repeat(900)}"`) });
+    expect(gradleTestReport("gradle", ["check"], long, Date.now() - 1000)).toContain(`message="${"x".repeat(500)}" type=`);
+  });
+
   test.skipIf(process.platform === "win32")("executeCheckCommand appends the reports a Gradle run wrote", async () => {
     const root = project({ "build.gradle": "plugins { id 'java' }\n" });
     const xml = GRADLE_REPORT.replaceAll("'", "'\\''");

@@ -14,6 +14,13 @@
       "Scanner delegates to Reader.IsEncodingToken.: Reader.IsEncodingToken",
       "Scanner passes Reader::isEncodingToken as the filter.: Reader::isEncodingToken"
     ],
+    "suppressions": [
+      "@SuppressWarnings(\"unchecked\"): lint, linted, prescribable",
+      "@SuppressFBWarnings(\"EI_EXPOSE_REP\"): lint, linted, prescribable",
+      "// CHECKSTYLE:OFF: lint, linted",
+      "int x = y; // NOPMD: lint, linted",
+      "// NOSONAR: lint, linted"
+    ],
     "checkConfigs": ["checkstyle.xml: checkstyle", "pmd-ruleset.xml: pmd", "spotbugs-exclude.xml: spotbugs"],
     "tests": [
       "src/test/java/SumTest.java",

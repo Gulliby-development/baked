@@ -14,6 +14,13 @@
     "memberSyntax": [
       "Scanner delegates to Reader.IsEncodingToken.: Reader.IsEncodingToken"
     ],
+    "suppressions": [
+      "#pragma warning disable CS0168: lint, linted, prescribable",
+      "[Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSAvoidUsingWriteHost', '')]: lint, linted, prescribable",
+      "#nullable disable: lint, linted",
+      "// ReSharper disable once UnusedVariable: lint, linted, prescribable",
+      "// NOSONAR: lint, linted"
+    ],
     "checkConfigs": [".editorconfig: editorconfig", "Analyzers.ruleset: code analysis ruleset", "stylecop.json: stylecop, read as text"],
     "tests": [
       "src/App.Tests/Checks.cs",

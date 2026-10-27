@@ -13,6 +13,12 @@
       "Scanner delegates to Reader.IsEncodingToken.: Reader.IsEncodingToken",
       "Scanner calls Reader#isEncodingToken per token.: Reader#isEncodingToken"
     ],
+    "suppressions": [
+      "@nowarn(\"cat=deprecation\"): lint, linted, prescribable",
+      "// scalafix:off DisableSyntax.null: lint, linted, prescribable",
+      "// scalastyle:off: lint, linted",
+      "@SuppressWarnings(\"unchecked\"): lint, linted, prescribable"
+    ],
     "checkConfigs": [".scalafmt.conf: scalafmt, read as text", ".scalafix.conf: scalafix, read as text", "scalastyle-config.xml: scalastyle"],
     "tests": [
       "src/main/scala/SumSuite.scala"

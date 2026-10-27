@@ -15,6 +15,10 @@
       "Scanner delegates to Reader.IsEncodingToken.: Reader.IsEncodingToken",
       "Scanner calls reader.IsEncodingToken for each token.: reader.IsEncodingToken"
     ],
+    "suppressions": [
+      "x := f() //nolint:errcheck: lint, linted, prescribable",
+      "//lint:ignore SA1019 the old API is still needed: lint, linted, prescribable"
+    ],
     "checkConfigs": [".golangci.yml: golangci-lint", ".golangci.toml: golangci-lint", ".golangci.json: golangci-lint", "staticcheck.conf: staticcheck"],
     "tests": [
       "sum_test.go",
