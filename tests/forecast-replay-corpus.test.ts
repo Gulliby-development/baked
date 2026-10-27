@@ -2,13 +2,15 @@ import { describe, expect, test } from "bun:test";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join, relative } from "node:path";
 import { callCostRate, costRate } from "../src/core/workflows/budget.js";
+import { chargeHold, refreshedGrowth } from "../src/core/workflows/initiatives/growth.js";
 import { costGrowthLimit, dollarShortfall, type ShareGateRecord, shareShortfall } from "../src/core/workflows/initiatives/service.js";
 import { forecastSamples } from "../src/core/workflows/stage-price.js";
 import { adaptiveFirstByteMs } from "../src/core/llm/provider-health.js";
 import { planApprovalDecision } from "../src/core/workflows/auto-approval.js";
 import { CAPACITY_PROBE, type SizingReport, type SizingSample, samplesFrom, testCaseRate } from "../src/core/workflows/sizing.js";
-import { type CallRate, chainCosts, openTrace, type PlanPriceReplay, replayChainEscalation, replayEdgeRecord, replayInitiativeStarts, replayPlanApprovals, replayPlanPrices, replayTrace, type TestSplitRule } from "../src/core/workflows/trace.js";
+import { type CallRate, chainCosts, openTrace, type PlanPriceReplay, replayChainEscalation, replayEdgeRecord, replayInitiativeStarts, replayPlanApprovals, replayPlanPrices, replayPoolBounds, replayTrace, type TestSplitRule } from "../src/core/workflows/trace.js";
 import { type EdgeRecord, edgeCrashDecision } from "../src/core/verification/edge-inputs.js";
+import { fixturePolicy } from "./helpers/workflow-fixture.js";
 
 // #1649, #1715: every recorded bench-round trace replays through the current host decisions: the
 // forecast and cap code, the per-call cost cap (#1740), the first-response deadline of each model
@@ -52,6 +54,7 @@ interface Accepted {
   newBaselineDecisions?: number;
   newShareStops?: number;
   newPoolGrowth?: number;
+  newPoolBoundStops?: number;
   newStartStops?: number;
   newApprovalDeclines?: number;
   newAutoApprovals?: number;
@@ -168,11 +171,13 @@ describe("bench-round traces replay without new forecast stops or growth (#1649)
           initiative: initiative.initiativeId,
           newShareStops: initiative.newShareStops,
           newPoolGrowth: initiative.newPoolGrowth,
+          newPoolBoundStops: initiative.newPoolBoundStops,
           newStartStops: initiative.newStartStops,
         }).toEqual({
           initiative: initiative.initiativeId,
           newShareStops: allowed?.newShareStops ?? 0,
           newPoolGrowth: allowed?.newPoolGrowth ?? 0,
+          newPoolBoundStops: allowed?.newPoolBoundStops ?? 0,
           newStartStops: allowed?.newStartStops ?? 0,
         });
       }
@@ -1035,4 +1040,30 @@ describe("the plan charge replays on recorded initiatives (#2100, #2056)", () =>
     // Every rewound start has a dollar side, and the plan charge decides no start differently.
     expect(replay?.starts.filter((s) => s.planCharge).every((s) => s.planCharge?.usd && s.planCharge.replayed === "pass")).toBe(true);
   }, 600000);
+});
+
+describe("initiative-pool-growth replays on recorded growth bounds (#2280)", () => {
+  test("R73 flatelens commands: one would-stop, and the capped charge leaves its bounds at its share", () => {
+    const { store, dispose } = openTrace(join(ROOT, "R73", "flatelens.sqlite.gz"));
+    try {
+      const bounds = replayPoolBounds(store).flatMap((i) => i.poolBounds);
+      // Its first initiative-growth raised the 4.65M share to the base ceilings (8M, 12M) and $3.82 to
+      // $19.30 with 5.66M tokens and $10.66 under the ceiling left after the others at its gate.
+      expect(bounds.map((b) => ({ featureId: b.featureId, recorded: b.recorded, over: b.over.map((o) => [o.kind, o.value]), holdTokens: b.holdTokens, holdUsd: b.holdUsd }))).toEqual([
+        { featureId: "commands", recorded: false, over: [["maxRunTokens", 8_000_000], ["extendToTokens", 12_000_000], ["maxRunCostUsd", 19.3]], holdTokens: 34_200_000 - 28_535_132, holdUsd: 10.66 },
+      ]);
+    } finally {
+      dispose();
+    }
+    // The fix on initiative-1.json's recorded inputs: a 25.14M / $19.30 charge, 28.54M used by the
+    // others and docs' 1.01M low waiting, $25.34 spent under the $36 ceiling.
+    const hold = chargeHold({ charge: { tokens: 25_142_010, usd: 19.3 }, own: { usedTokens: 0, usedUsd: 0 }, pool: { limitTokens: 34_200_000, othersTokens: 28_535_132, waitingLowTokens: 1_012_900 }, dollars: { ceilingUsd: 36, othersUsd: 25.34 } });
+    expect(hold).toMatchObject({ tokens: 4_651_968, usd: 10.66, cappedTokens: true, cappedUsd: true });
+    const share = { ...fixturePolicy, maxTotalTokens: 4_651_968, maxCostUsd: 3.82, sizing: { maxRunTokens: 4_651_968, extendToTokens: 4_651_968, maxRunCostUsd: 3.82 } };
+    const base = { ...fixturePolicy, sizing: { maxRunTokens: 8_000_000, extendToTokens: 12_000_000 } };
+    const after = refreshedGrowth(share, base, { tokens: hold.tokens, usd: hold.usd!, calls: 0, activeMs: 0 }, { calls: 0, activeMs: 0 }, { tokens: 0, usd: 0, calls: 0, activeMs: 0 });
+    // The token bounds stay at the share (4.65M, what the pool left after docs' low); the dollar
+    // bound rises only to the $10.66 the ceiling leaves, not $19.30 to $24.08.
+    expect(after?.sizing).toMatchObject({ maxRunTokens: 4_651_968, extendToTokens: 4_651_968, maxRunCostUsd: 10.66 });
+  }, 120000);
 });

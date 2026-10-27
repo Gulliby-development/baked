@@ -84,6 +84,16 @@ export const STOP_REASONS = {
     modes: STOP_MODES,
     defaultMode: "enforce",
   },
+  "initiative-pool-growth": {
+    label:
+      "An open feature run's growth bound is above what the initiative's token pool or dollar ceiling holds for it",
+    // Shadow only until two bench rounds show no false would-stop (#2280, R73 flatelens'
+    // commands grew to 12.9M with 5.7M left). A bound derived from a plan charge is capped at
+    // what the pool and the ceiling hold (`chargeHold`); this records any bound still above them
+    // (a start's, an auto-extend's hard ceiling). Its promotion stops or caps the run instead.
+    modes: NOT_ENFORCED,
+    defaultMode: "shadow",
+  },
   repeated_failure: {
     label: "A corrective's required checks fail exactly as the corrective's before it",
     // Shadow only until two bench rounds show no false would-stop (#1996); its promotion is a

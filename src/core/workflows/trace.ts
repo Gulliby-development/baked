@@ -115,6 +115,12 @@ import {
 } from "./host-apply.js";
 import type { initiativePriceSamples } from "./initiatives/forecast.js";
 import {
+  type PoolBoundDecision,
+  type PoolBoundInputs,
+  poolBoundDecision,
+  type RunBound,
+} from "./initiatives/growth.js";
+import {
   dollarCapPark,
   dollarShortfall,
   type FeatureView,
@@ -2509,6 +2515,10 @@ export interface InitiativeReplay {
   poolGrowth: PoolGrowthBoundary[];
   /** Parks whose pool extension the current rule decides differently from the recording. */
   newPoolGrowth: number;
+  /** Feature runs whose growth bounds `initiative-pool-growth` decides again (#2280). */
+  poolBounds: PoolBoundBoundary[];
+  /** Runs it would record a would-stop for that the recording has none of. */
+  newPoolBoundStops: number;
   starts: InitiativeStartBoundary[];
   /** Features the recording started that the current gate parks on recomputed inputs. */
   newStartStops: number;
@@ -2630,6 +2640,163 @@ export function replayPoolGrowth(
   }));
 }
 
+/** One feature run whose recorded growth bounds `initiative-pool-growth` decides again (#2280). */
+export interface PoolBoundBoundary {
+  featureId: string;
+  runId: string;
+  /** The `feature.share_gate` pass the run started on. */
+  seq: number;
+  /** Whether the run recorded an `initiative-pool-growth` would-stop. */
+  recorded: boolean;
+  /** Whether the reason would stop, and the first bound above what the pool or ceiling held. */
+  wouldStop: boolean;
+  over: PoolBoundDecision["over"];
+  holdTokens: number;
+  holdUsd: number | null;
+}
+
+/**
+ * Every feature run of the trace's initiatives with its recorded growth bounds (`initiative-growth`
+ * revisions' sizing, `auto-extend` revisions' hard ceilings) decided again by `rule`
+ * (`poolBoundDecision`, the `initiative-pool-growth` shadow reason, #2280), against the pool less
+ * what the other runs had used at the run's start gate and the dollar ceiling less what they had
+ * spent. The others only use more later, so a bound above that is above the pool whatever they
+ * did; an owner's extension raises the pool and the ceiling from the revision it precedes. One
+ * boundary per run that would stop or recorded a would-stop; `newPoolBoundStops` counts the runs
+ * that would stop and recorded none.
+ */
+export function replayPoolBounds(
+  store: WorkflowStore,
+  rule: (inputs: PoolBoundInputs) => PoolBoundDecision = poolBoundDecision,
+): { initiativeId: string; poolBounds: PoolBoundBoundary[]; newPoolBoundStops: number }[] {
+  const db = store.connection;
+  const runs = db
+    .query(
+      "SELECT initiative_id, feature_id, run_id, created_at FROM initiative_runs ORDER BY initiative_id, created_at",
+    )
+    .all() as { initiative_id: string; feature_id: string; run_id: string; created_at: number }[];
+  const gates = db
+    .query(
+      "SELECT initiative_id, seq, at, payload_json FROM initiative_events WHERE type='feature.share_gate' ORDER BY initiative_id, seq",
+    )
+    .all() as { initiative_id: string; seq: number; at: number; payload_json: string }[];
+  const extensions = db
+    .query(
+      "SELECT initiative_id, at, payload_json FROM initiative_events WHERE type='budget.extended' ORDER BY initiative_id, seq",
+    )
+    .all() as { initiative_id: string; at: number; payload_json: string }[];
+  const byInitiative = new Map<string, PoolBoundBoundary[]>();
+  for (const run of runs) {
+    const gate = gates
+      .filter((g) => g.initiative_id === run.initiative_id && g.at <= run.created_at)
+      .map((g) => ({ ...g, record: JSON.parse(g.payload_json) as ShareGateRecord }))
+      .filter((g) => g.record.featureId === run.feature_id && g.record.verdict === "pass")
+      .at(-1);
+    const budget = gate?.record.view.budget as
+      | (ShareGateRecord["view"]["budget"] & {
+          used?: { tokens: number };
+          cost?: { ceilingUsd: number | null; capUsd: number | null; spentUsd: number };
+        })
+      | undefined;
+    const gateLimit = budget?.pool?.limitTokens ?? budget?.limits?.maxTotalTokens;
+    if (!gate || !budget?.used || gateLimit === undefined) continue;
+    const othersUsedTokens = budget.used.tokens;
+    const othersSpentUsd = budget.cost?.spentUsd ?? 0;
+    /** The pool and the ceiling at `at`: the gate's, raised by the extensions recorded since. */
+    const limitsAt = (at: number): { limitTokens: number; ceilingUsd: number | null } => {
+      let limitTokens = gateLimit;
+      let ceilingUsd = budget.cost?.ceilingUsd ?? null;
+      const capUsd = budget.cost?.capUsd ?? null;
+      for (const e of extensions) {
+        if (e.initiative_id !== run.initiative_id || e.at < gate.at || e.at > at) continue;
+        const p = JSON.parse(e.payload_json) as {
+          next?: { maxTotalTokens?: number };
+          nextCostUsd?: number | null;
+        };
+        limitTokens = Math.max(limitTokens, p.next?.maxTotalTokens ?? 0);
+        if (ceilingUsd !== null && capUsd && p.nextCostUsd)
+          ceilingUsd = Math.max(ceilingUsd, (ceilingUsd * p.nextCostUsd) / capUsd);
+      }
+      return { limitTokens, ceilingUsd };
+    };
+    const recorded = store
+      .eventsOfType(run.run_id, "decision.would_stop")
+      .some(
+        (e) => e.type === "decision.would_stop" && e.payload.reason === "initiative-pool-growth",
+      );
+    let first: PoolBoundBoundary | null = null;
+    for (const artifact of store.artifacts(run.run_id)) {
+      if (artifact.kind !== "policy-revision") continue;
+      let record: {
+        kind?: string;
+        hardCeiling?: number;
+        next?: {
+          sizing?: { maxRunTokens?: number; extendToTokens?: number; maxRunCostUsd?: number };
+        };
+      };
+      try {
+        record = JSON.parse(store.readArtifact(run.run_id, artifact.id));
+      } catch {
+        continue;
+      }
+      const tokens: RunBound[] = [];
+      const usd: RunBound[] = [];
+      if (record.kind === "initiative-growth") {
+        const sizing = record.next?.sizing ?? {};
+        if (typeof sizing.maxRunTokens === "number")
+          tokens.push({ kind: "maxRunTokens", value: sizing.maxRunTokens });
+        if (typeof sizing.extendToTokens === "number")
+          tokens.push({ kind: "extendToTokens", value: sizing.extendToTokens });
+        if (typeof sizing.maxRunCostUsd === "number")
+          usd.push({ kind: "maxRunCostUsd", value: sizing.maxRunCostUsd });
+      } else if (record.kind === "auto-extend" && typeof record.hardCeiling === "number")
+        tokens.push({ kind: "hardCeiling", value: record.hardCeiling });
+      else continue;
+      const decision = rule({
+        runId: run.run_id,
+        featureId: run.feature_id,
+        // `SELECT *` carries the row's time; `ArtifactRow` does not type it.
+        ...limitsAt((artifact as { created_at?: number }).created_at ?? Number.MAX_SAFE_INTEGER),
+        othersUsedTokens,
+        othersSpentUsd,
+        tokens,
+        usd,
+      });
+      if (!decision.wouldStop) continue;
+      first = {
+        featureId: run.feature_id,
+        runId: run.run_id,
+        seq: gate.seq,
+        recorded,
+        wouldStop: true,
+        over: decision.over,
+        holdTokens: decision.holdTokens,
+        holdUsd: decision.holdUsd,
+      };
+      break;
+    }
+    const boundaries = byInitiative.get(run.initiative_id) ?? [];
+    if (first) boundaries.push(first);
+    else if (recorded)
+      boundaries.push({
+        featureId: run.feature_id,
+        runId: run.run_id,
+        seq: gate.seq,
+        recorded,
+        wouldStop: false,
+        over: [],
+        holdTokens: 0,
+        holdUsd: null,
+      });
+    byInitiative.set(run.initiative_id, boundaries);
+  }
+  return [...byInitiative].map(([initiativeId, poolBounds]) => ({
+    initiativeId,
+    poolBounds,
+    newPoolBoundStops: poolBounds.filter((b) => b.wouldStop && !b.recorded).length,
+  }));
+}
+
 /** Measured stage usage for an initiative's prices; `initiativePriceSamples` unless a test passes an older one. */
 export type PriceSamples = typeof initiativePriceSamples;
 
@@ -2689,7 +2856,15 @@ export function replayInitiativeStarts(
      */
     stopModes?: RunPolicy["stopModes"];
   } = {},
-): Omit<InitiativeReplay, "shareGate" | "newShareStops" | "poolGrowth" | "newPoolGrowth">[] {
+): Omit<
+  InitiativeReplay,
+  | "shareGate"
+  | "newShareStops"
+  | "poolGrowth"
+  | "newPoolGrowth"
+  | "poolBounds"
+  | "newPoolBoundStops"
+>[] {
   const gate = options.gate ?? shareShortfall;
   const historyTrace = options.historyTrace ?? corpusHistoryTrace(dirname(dirname(path)));
   const probe = openTrace(path);
@@ -2784,7 +2959,15 @@ function replayStarts(
     recencyHalfLife?: number;
     stopModes?: RunPolicy["stopModes"];
   },
-): Omit<InitiativeReplay, "shareGate" | "newShareStops" | "poolGrowth" | "newPoolGrowth"> {
+): Omit<
+  InitiativeReplay,
+  | "shareGate"
+  | "newShareStops"
+  | "poolGrowth"
+  | "newPoolGrowth"
+  | "poolBounds"
+  | "newPoolBoundStops"
+> {
   const { store, workspace, dispose } = openTrace(path);
   const histories = new Map<string, ReturnType<typeof openTrace>>();
   try {
@@ -3818,6 +4001,8 @@ export function replayTrace(
     const runIds = (
       store.connection.query("SELECT id FROM runs ORDER BY created_at").all() as { id: string }[]
     ).map((r) => r.id);
+    // Growth bounds are read before the forecast replay rewinds each run's policy revisions.
+    const bounds = replayPoolBounds(store);
     // Call timings are read before the forecast replay rewinds each run's attempts.
     const timings = replayFirstBytes(
       store,
@@ -4051,6 +4236,9 @@ export function replayTrace(
         newShareStops: gate?.newShareStops ?? 0,
         poolGrowth: pool?.poolGrowth ?? [],
         newPoolGrowth: pool?.newPoolGrowth ?? 0,
+        poolBounds: bounds.find((i) => i.initiativeId === initiativeId)?.poolBounds ?? [],
+        newPoolBoundStops:
+          bounds.find((i) => i.initiativeId === initiativeId)?.newPoolBoundStops ?? 0,
         starts: [],
         newStartStops: 0,
         finalUsd: null,
