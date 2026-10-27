@@ -4,6 +4,12 @@
     "Sources/SumTests.m": "#import \"Sum.h\"\n@implementation SumTests\n- (void)testSum { sum(1, 2); }\n@end\n// AC-001 example: (1, 2, 3)\n"
   },
   "expected": {
+    "suppressions": [
+      "int x = y; // NOLINT(bugprone-narrowing-conversions): lint, linted, prescribable",
+      "#pragma GCC diagnostic ignored \"-Wunused\": lint, linted, prescribable",
+      "#pragma warning(disable: 4996): lint, linted, prescribable",
+      "// cppcheck-suppress nullPointer: lint, linted, prescribable"
+    ],
     "checkConfigs": [".clang-tidy: clang-tidy", ".clang-format: clang-format, read as text"],
     "tests": [
       "Sources/SumTests.m"
