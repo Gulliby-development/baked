@@ -799,8 +799,12 @@ export function dollarCapPark(
   if (leftUsd >= lowUsd) return null;
   const remainingTo = slack > 0 ? "ceiling" : "cap";
   // What must stay under the cap after the committed dollars: the low and the open runs' needs,
-  // less the band counted while uncalibrated.
-  const shortfall = capCovering(cost, lowUsd + openNeedUsd - slack);
+  // less the band counted while uncalibrated (#2282), and at least the cap that lifts the
+  // cent-rounded `leftUsd` to the low, which the unrounded amounts can miss by half a cent.
+  const shortfall = Math.max(
+    capCovering(cost, lowUsd + openNeedUsd - slack),
+    centsUp(cost.capUsd + lowUsd - leftUsd),
+  );
   const suggestedUsd = Math.max(shortfall, centsUp(cost.forecastUsd ?? 0));
   const open =
     openNeedUsd > 0
