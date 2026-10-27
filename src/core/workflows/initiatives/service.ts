@@ -611,7 +611,7 @@ export function shareShortfall(
       const highs = waiting.every((f) => f.needUsd)
         ? waiting.reduce((sum, f) => sum + (f.needUsd?.high ?? 0), 0)
         : null;
-      const raise = highs === null ? null : centsUp(cost.capUsd - (cost.remainingUsd ?? 0) + highs);
+      const raise = highs === null ? null : capCovering(cost, highs);
       const summary = `The shared dollar budget is exhausted: ${feature.id} would start with ${usd(feature.shareUsd ?? 0)} of the ${ceiling}, ${usd(cost.spentUsd)} spent.${raise !== null && raise > cost.capUsd ? ` A cap of ${usd(raise)} covers the high estimates of the waiting features.` : ""}`;
       return extendAdvice(id, summary, summary, {
         usd: raise !== null && raise > cost.capUsd ? raise : null,
@@ -622,7 +622,7 @@ export function shareShortfall(
     if (short && cost.shareMode === "enforce") {
       const raise = dollarRaise(view, feature);
       return extendAdvice(id, short, short, {
-        usd: raise === null ? null : centsUp(cost.capUsd + raise),
+        usd: raise,
         fallback: "--budget-usd N",
       });
     }
@@ -677,7 +677,8 @@ export function dollarShortfall(
       ? `${usd(cost.ceilingUsd)} ceiling`
       : `${usd(cost.capUsd ?? cost.ceilingUsd)} cap`;
   const within = uncalibratedSlack(cost) > 0 ? " within the ceiling" : "";
-  const raise = dollarRaise(view, feature) ?? 0;
+  const cap = dollarRaise(view, feature);
+  const raise = cap === null || cost.capUsd === null ? 0 : centsUp(cap - cost.capUsd);
   return `The shared dollar budget is short: ${feature.id} has ${usd(spare)} to grow into${within} after reserving the other waiting features' low estimates, below its estimate of ${usd(needUsd.low)}-${usd(needUsd.high)} (${usd(cost.spentUsd)} of the ${ceiling} spent); the dollar budget needs at least ${usd(raise)} more.`;
 }
 
@@ -712,16 +713,45 @@ export function shareSpareUsd(view: ShareGateView, featureId: string): number | 
   );
 }
 
-/** How many more dollars start `feature` at its priced low estimate; null when none are missing. */
+/**
+ * The cap that leaves `extraUsd` under it after what the initiative's runs committed (spent plus
+ * what open runs hold), for an `extend` remedy (#2282): with dollars left under the cap, the cap
+ * less them, so a remedy keeps the cents `remainingUsd` was floored to. `remainingUsd` is clamped at 0, so once
+ * the tolerance is spent (committed between the cap and the ceiling) a cap built from it hides
+ * the excess: R73 flatelens was told a $33.96 cap with $34.64 spent, which left docs at $0 again.
+ */
+export function capCovering(
+  cost: Pick<CostView, "capUsd" | "spentUsd" | "reservedUsd" | "remainingUsd">,
+  extraUsd: number,
+): number {
+  const cap = cost.capUsd ?? 0;
+  const committed =
+    cost.remainingUsd !== null && cost.remainingUsd > 0
+      ? cap - cost.remainingUsd
+      : Math.max(cap, cost.spentUsd + cost.reservedUsd);
+  return centsUp(committed + extraUsd);
+}
+
+/**
+ * The cap that starts `feature` at its priced low estimate (`shareSpareUsd`); null when no dollars
+ * are missing or there is no cap. Under it go what the runs committed (`capCovering`), the other
+ * waiting features' reserved lows as `costGrowthLimit` reserves them, and the low, less the
+ * tolerance band counted while uncalibrated. Raising the cap raises the ceiling by at least as
+ * much. Counted from the cap less the clamped spare, it fell short by what was committed past the
+ * cap (#2282).
+ */
 function dollarRaise(
   view: ShareGateView,
   feature: Pick<FeatureView, "id"> & Partial<Pick<FeatureView, "needUsd">>,
 ): number | null {
-  // Raising the cap by the gap raises the ceiling by at least as much.
+  const cost = view.budget.cost;
   const spare = shareSpareUsd(view, feature.id);
   const needUsd = feature.needUsd;
-  if (!needUsd || spare === null || spare >= needUsd.low) return null;
-  return Math.ceil((needUsd.low - spare) * 100) / 100;
+  if (!needUsd || spare === null || spare >= needUsd.low || cost.capUsd === null) return null;
+  const reserve = view.features
+    .filter((f) => f.share !== null && f.id !== feature.id)
+    .reduce((sum, f) => sum + (f.needUsd?.low ?? f.shareUsd ?? 0), 0);
+  return capCovering(cost, needUsd.low + reserve - uncalibratedSlack(cost));
 }
 
 /** Why the initiative would pause on its dollar cap (`dollarCapPark`), with what answers it. */
@@ -768,7 +798,9 @@ export function dollarCapPark(
   const leftUsd = toCents(Math.max(0, cost.remainingUsd + slack - openNeedUsd));
   if (leftUsd >= lowUsd) return null;
   const remainingTo = slack > 0 ? "ceiling" : "cap";
-  const shortfall = centsUp(cost.capUsd + lowUsd - leftUsd);
+  // What must stay under the cap after the committed dollars: the low and the open runs' needs,
+  // less the band counted while uncalibrated.
+  const shortfall = capCovering(cost, lowUsd + openNeedUsd - slack);
   const suggestedUsd = Math.max(shortfall, centsUp(cost.forecastUsd ?? 0));
   const open =
     openNeedUsd > 0
@@ -1052,7 +1084,8 @@ function stageWeights(
 }
 
 const usd = (n: number): string => `$${n.toFixed(2)}`;
-const cents = (n: number): number => Math.floor(n * 100) / 100;
+/** Down to the cent, as `centsUp` rounds up: 35.68 - 34.64 is 1.04, not 1.0399999 floored to 1.03. */
+const cents = (n: number): number => Math.floor(Math.round(n * 1e6) / 1e4) / 100;
 /** Up to the cent, for an amount a message suggests: it must cover what it names. */
 const centsUp = (n: number): number => Math.ceil(Math.round(n * 1e6) / 1e4) / 100;
 
