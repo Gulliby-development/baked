@@ -292,7 +292,8 @@ export function chargeHold(inputs: ChargeHoldInputs): ChargeHold {
  * unrounded amounts: the cent-floored hold could refuse a bound up to a cent below the ceiling, and
  * the epsilon keeps a bound exactly half a cent above it inside despite float error (#2321).
  */
-const passesCeiling = (amountUsd: number, ceilingUsd: number): boolean => amountUsd > ceilingUsd + 0.005 + 1e-9;
+const passesCeiling = (amountUsd: number, ceilingUsd: number): boolean =>
+  amountUsd > ceilingUsd + 0.005 + 1e-9;
 
 /** A growth bound of a feature run, by where it is kept. */
 export interface RunBound {
