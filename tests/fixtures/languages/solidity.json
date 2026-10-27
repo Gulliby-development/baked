@@ -6,6 +6,9 @@
     "foundry.toml": "[profile.default]\n"
   },
   "expected": {
+    "memberSyntax": [
+      "Scanner delegates to Reader.IsEncodingToken.: Reader.IsEncodingToken"
+    ],
     "suppressions": [
       "// solhint-disable-next-line no-console: lint, linted, prescribable",
       "// slither-disable-next-line reentrancy-eth: lint, linted, prescribable"
