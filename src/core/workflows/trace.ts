@@ -15,6 +15,7 @@ import {
 import {
   type CallReasoning,
   type CallTiming,
+  firstByteDeadline,
   providerFirstByteMs,
 } from "../llm/provider-health.js";
 import { canonical, hashBytes, hashJson } from "../specs/hash.js";
@@ -2067,14 +2068,24 @@ export type AdaptiveFirstByteRule = (
   model: string,
   call: CallTiming,
 ) => number;
+/**
+ * The current rule over the call's recorded inputs (`deadlineInputs`, #2283). A call recorded
+ * before them is decided over the trace's history, but never below the deadline it passed under:
+ * the executor's history also held the machine-wide shared answers (#1880) and the ones its
+ * process started with, which a trace does not keep (R73 flatelens: a 194 s answer under a
+ * recorded 290,666 ms deadline replayed against 180,000 ms).
+ */
 const adaptiveDeadline: AdaptiveFirstByteRule = (history, ceilingMs, model, call) =>
-  history.deadline(ceilingMs, model, call);
+  call.deadlineInputs
+    ? firstByteDeadline(ceilingMs, call.deadlineInputs, call.promptChars)
+    : Math.max(history.deadline(ceilingMs, model, call), call.limitMs ?? 0);
 
 /**
  * `replayFirstByte` for several runs of one workspace. A call that recorded an adaptive deadline
  * (`limitMs`) is decided by `adaptive` over a history of every earlier call of the trace, in the
  * order their attempts started, as the executor seeds its history from the workspace's usage
- * records; the other calls by `limit`. With `adaptive` null every call takes `limit`, as before
+ * records (the default rule reads the call's recorded `deadlineInputs` instead, #2283); the other
+ * calls by `limit`. With `adaptive` null every call takes `limit`, as before
  * #2041. Each call's prompt size is in its timing from #2041 on; older calls replay without it.
  */
 export function replayFirstBytes(
