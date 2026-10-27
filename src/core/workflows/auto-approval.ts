@@ -103,8 +103,8 @@ function needsPerson(write: Write, exists?: (path: string) => boolean, scaffold 
 /** A write that creates a manifest or check config not there yet, or edits one on a scaffold. */
 function newOrScaffold(
   write: Write,
-  exists?: (path: string) => boolean,
-  scaffold = false,
+  exists: ((path: string) => boolean) | undefined,
+  scaffold: boolean,
 ): boolean {
   if (!scaffoldFile(write.path)) return false;
   if (scaffold && write.action !== "delete") return true;

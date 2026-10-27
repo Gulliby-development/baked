@@ -140,6 +140,20 @@ describe("shared first-response history", () => {
     expect(new FirstByteHistory(file).healthy("codex/m", "spec", undefined, true).map((sample) => sample.ms)).toEqual([60_000, 70_000, 80_000, 90_000, 95_000]);
   });
 
+  // Hot module provider-timers (#2257): the oldest answer goes once a shape has 50.
+  test("keeps the latest 50 answers of a shape, in the workspace and in the shared file", () => {
+    const dir = mkdtempSync(join(tmpdir(), "baked-first-byte-"));
+    cleanups.push(() => rmSync(dir, { recursive: true, force: true }));
+    const file = join(dir, "first-byte-history.json");
+    const history = new FirstByteHistory(file);
+    const answers = Array.from({ length: 51 }, (_, index) => 1_000 + index);
+    for (const ms of answers) history.record("codex/m", answer("spec", ms), true);
+    const latest = answers.slice(1);
+    expect(history.healthy("codex/m", "spec").map((sample) => sample.ms)).toEqual(latest);
+    const shared = JSON.parse(readFileSync(file, "utf8")) as { shapes: Record<string, number[]> };
+    expect(shared.shapes["codex/m|spec|"]).toEqual(latest);
+  });
+
   test("an unreadable shared file is no history", () => {
     const dir = mkdtempSync(join(tmpdir(), "baked-first-byte-"));
     cleanups.push(() => rmSync(dir, { recursive: true, force: true }));
