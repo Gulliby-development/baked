@@ -44,6 +44,8 @@ const INLINE: Record<InlineRowTest["framework"], InlineRowTest> = {
   junit: { mode: "inline", framework: "junit", package: "com.ex.lint", test: "src/test/java/com/ex/lint/RulesTest.java" },
   rust: { mode: "inline", framework: "rust", test: "tests/rules.rs" },
   xunit: { mode: "inline", framework: "xunit", package: "Lint.Tests", test: "Lint.Tests/RulesTests.cs" },
+  rspec: { mode: "inline", framework: "rspec", test: "spec/rules_spec.rb" },
+  phpunit: { mode: "inline", framework: "phpunit", package: "Lint.Tests", test: "tests/RulesTest.php" },
 };
 
 /** A block's text with the line breaks and indentation of its own layout taken out. */
@@ -87,6 +89,16 @@ const PROJECTS: Partial<Record<InlineRowTest["framework"], { files: Record<strin
     existing: "fn acceptance_actual(input: &AcceptanceJson) -> AcceptanceJson {\n    input.clone()\n}\n",
     run: [["rustc", "--edition", "2021", "--test", "tests/rules.rs", "-o", "rules-test"], ["./rules-test"]],
   },
+  rspec: {
+    files: {},
+    existing: "# frozen_string_literal: true\n\ndef acceptance_actual(input)\n  input\nend\n",
+    run: [["rspec", "spec/rules_spec.rb"]],
+  },
+  phpunit: {
+    files: {},
+    existing: "<?php\n\nnamespace Lint\\Tests;\n\nuse PHPUnit\\Framework\\TestCase;\n\nfinal class RulesTest extends TestCase\n{\n    public static function acceptanceActual(mixed $input): mixed\n    {\n        return $input;\n    }\n}\n",
+    run: [["phpunit", "tests/RulesTest.php"]],
+  },
 };
 
 const has = (command: string[]) => {
@@ -101,6 +113,8 @@ const AVAILABLE: Record<string, boolean> = {
   bun: true,
   pytest: has(["python3", "-m", "pytest", "--version"]),
   rust: has(["rustc", "--version"]) && process.platform !== "win32",
+  rspec: Bun.which("rspec") !== null,
+  phpunit: Bun.which("phpunit") !== null,
 };
 
 describe("scenario: cfgquill lint R64, rows with a U+FEFF run in the project's own toolchain (#1995)", () => {

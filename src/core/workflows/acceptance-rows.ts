@@ -14,6 +14,11 @@ import {
   javaValue,
   jsonText,
   layoutFree,
+  phpNamespace,
+  phpString,
+  phpunitMethods,
+  rspecExamples,
+  rubyString,
   utf16Escape,
 } from "./acceptance-rows-inline.js";
 import type { AcceptanceRow } from "./acceptance-rows-model.js";
@@ -221,7 +226,7 @@ export function literalPropertyProblems(spec: Pick<Spec, "criteria">): string[] 
 }
 
 export const ROWS_NOTE =
-  'Acceptance rows as data is enabled. For pure call-and-compare tests with JSON Input | Expected tables (an optional Scenario column is a label), set rows to the criterion IDs and rowTest to {framework, harness: "relative harness path", test: "relative test path", data: "relative JSON path"}, adding package where the framework needs one. Declare all three paths in writes, with test and data created by this task. Write only the harness; the host writes the JSON rows and the parameterized test, preserving row IDs, and compares the harness result with each expected value as JSON. Frameworks and harness contracts: "bun": a .ts or .js harness exporting actual(input), which may be async, and a .test.ts test. "pytest": a .py harness defining actual(input) and a test_*.py test. "go": a .go harness defining func Actual(input any) (any, error) in the same directory as a _test.go test, with package set to the Go package name. "junit" (JUnit 5): a .java harness class, named after its file, with static Object actual(Object input) in the same package as a *Test.java test, both under the directories of package (the Java package); input is built from Map<String, Object>, List<Object>, Long, Double, String, Boolean and null. "rust": a test tests/<name>.rs and a harness .rs file (best under tests/support/) defining pub fn actual(input: serde_json::Value) -> serde_json::Value; the project needs serde_json, at least in [dev-dependencies]. "xunit": a .cs harness static class, named after its file, with public static object? Actual(System.Text.Json.Nodes.JsonNode? input) and a .cs test in a project that references xunit, with package set to the C# namespace of both. Inline mode, for a brief or boundary that fixes the test files (no new harness, test or data file, no new dependency): set rowTest to {mode: "inline", framework, test: "a test file this task writes"}, adding package for go (the Go package), junit (the Java package of the file\'s directory) and xunit (the C# namespace of the file\'s class). Do not add other paths for it. The host appends the rows and their parameterized test to the end of that file between BEGIN and END acceptance rows comments (Go: also an import block after the package clause; junit and xunit: as a class nested in the file\'s own class, before its closing brace, so the file keeps one top-level type), and restores the block if an edit drops it. In that file define the harness the block calls, next to the task\'s ordinary tests: "bun": function acceptanceActual(input), which may be async; "pytest": def acceptance_actual(input); "go": func acceptanceActual(input any) (any, error), one per package directory; "junit": static Object acceptanceActual(Object input) in the class named after the file; "rust": fn acceptance_actual(input: &AcceptanceJson) -> AcceptanceJson, where the host block defines AcceptanceJson (Null, Bool, Number(f64), String, Array, Object; as_f64, as_i64, as_str, as_array, get, and From for numbers, strings, bools, Vec and Option); "xunit": a static (public or internal) object? AcceptanceActual(System.Text.Json.Nodes.JsonNode? input) in the class named after the file. Prefer inline whenever the files of the file mode would be extra files the request does not allow. Keep stateful, process, file and non-JSON cases in ordinary agent-written tests. Do not mark a criterion unless its whole table fits one harness.';
+  'Acceptance rows as data is enabled. For pure call-and-compare tests with JSON Input | Expected tables (an optional Scenario column is a label), set rows to the criterion IDs and rowTest to {framework, harness: "relative harness path", test: "relative test path", data: "relative JSON path"}, adding package where the framework needs one. Declare all three paths in writes, with test and data created by this task. Write only the harness; the host writes the JSON rows and the parameterized test, preserving row IDs, and compares the harness result with each expected value as JSON. Frameworks and harness contracts: "bun": a .ts or .js harness exporting actual(input), which may be async, and a .test.ts test. "pytest": a .py harness defining actual(input) and a test_*.py test. "go": a .go harness defining func Actual(input any) (any, error) in the same directory as a _test.go test, with package set to the Go package name. "junit" (JUnit 5): a .java harness class, named after its file, with static Object actual(Object input) in the same package as a *Test.java test, both under the directories of package (the Java package); input is built from Map<String, Object>, List<Object>, Long, Double, String, Boolean and null. "rust": a test tests/<name>.rs and a harness .rs file (best under tests/support/) defining pub fn actual(input: serde_json::Value) -> serde_json::Value; the project needs serde_json, at least in [dev-dependencies]. "xunit": a .cs harness static class, named after its file, with public static object? Actual(System.Text.Json.Nodes.JsonNode? input) and a .cs test in a project that references xunit, with package set to the C# namespace of both. "rspec": a .rb harness defining actual(input) at its top level, which the host\'s test loads into a module of its own (its require_relative still resolves from its file), and a *_spec.rb test. "phpunit": a .php harness class, named after its file, with public static function actual(mixed $input): mixed, and a *Test.php test, which loads the harness with require_once; set package to the PHP namespace of both with dots for backslashes (App.Tests for App\\Tests), or leave it out for the global namespace; input is decoded with JSON objects as associative arrays. Inline mode, for a brief or boundary that fixes the test files (no new harness, test or data file, no new dependency): set rowTest to {mode: "inline", framework, test: "a test file this task writes"}, adding package for go (the Go package), junit (the Java package of the file\'s directory) and xunit (the C# namespace of the file\'s class). Do not add other paths for it. The host appends the rows and their parameterized test to the end of that file between BEGIN and END acceptance rows comments (Go: also an import block after the package clause; junit and xunit: as a class nested in the file\'s own class, before its closing brace, so the file keeps one top-level type; phpunit: as methods of the file\'s own class, before its closing brace), and restores the block if an edit drops it. In that file define the harness the block calls, next to the task\'s ordinary tests: "bun": function acceptanceActual(input), which may be async; "pytest": def acceptance_actual(input); "go": func acceptanceActual(input any) (any, error), one per package directory; "junit": static Object acceptanceActual(Object input) in the class named after the file; "rust": fn acceptance_actual(input: &AcceptanceJson) -> AcceptanceJson, where the host block defines AcceptanceJson (Null, Bool, Number(f64), String, Array, Object; as_f64, as_i64, as_str, as_array, get, and From for numbers, strings, bools, Vec and Option); "xunit": a static (public or internal) object? AcceptanceActual(System.Text.Json.Nodes.JsonNode? input) in the class named after the file; "rspec": def acceptance_actual(input) at the top level of the spec file, above the block; "phpunit": public static function acceptanceActual(mixed $input): mixed in the class named after the file. Prefer inline whenever the files of the file mode would be extra files the request does not allow. Keep stateful, process, file and non-JSON cases in ordinary agent-written tests. Do not mark a criterion unless its whole table fits one harness.';
 
 /** Told to the spec author, so the tables the planner may select are ones the host can read (#1660). */
 export const SPEC_ROWS_NOTE =
@@ -274,6 +279,13 @@ function testFileProblem(rowTest: RowTest): string | null {
       if (!IDENTIFIER.test(baseName(test, /\.cs$/)))
         return "need a C# class name as the test file name";
       return pkg ? null : "need package set to the C# namespace of the test class";
+    case "rspec":
+      return test.endsWith("_spec.rb") ? null : "need a *_spec.rb test";
+    case "phpunit":
+      if (!test.endsWith("Test.php")) return "need a *Test.php test";
+      return IDENTIFIER.test(baseName(test, /\.php$/))
+        ? null
+        : "need a PHP class name as the test file name";
   }
 }
 
@@ -317,6 +329,17 @@ function layoutProblem(rowTest: FileRowTest): string | null {
       if (![test, harness].every((path) => IDENTIFIER.test(baseName(path, /\.cs$/))))
         return "need C# class names as the harness and test file names";
       return pkg ? null : "need package set to the C# namespace of the harness and the test";
+    case "rspec":
+      // A harness named like a spec is loaded and run as one, and its actual defined on Object.
+      return test.endsWith("_spec.rb") && harness.endsWith(".rb") && !harness.endsWith("_spec.rb")
+        ? null
+        : "need a *_spec.rb test and a .rb harness that is not a spec";
+    case "phpunit":
+      if (!test.endsWith("Test.php") || !harness.endsWith(".php") || harness.endsWith("Test.php"))
+        return "need a *Test.php test and a .php harness that is not a test file";
+      return [test, harness].every((path) => IDENTIFIER.test(baseName(path, /\.php$/)))
+        ? null
+        : "need PHP class names as the harness and test file names";
   }
 }
 
@@ -528,6 +551,7 @@ const camel = (text: string): string =>
  * invisible character is written raw (#1995).
  */
 const csharpString = (text: string): string => escapeInvisible(JSON.stringify(text), utf16Escape);
+const relative = (from: string, to: string): string => posix.relative(posix.dirname(from), to);
 
 /**
  * One contract for every framework: the agent writes only the harness, and the host's test feeds
@@ -554,6 +578,24 @@ const TEMPLATES: Record<RowTest["framework"], Template> = {
   // A test project's output directory holds no source files, so the rows are a literal here too.
   xunit: ({ harness, test, package: pkg, rows }) =>
     `${header("//", harness)}using System.Collections.Generic;\nusing System.Text.Json;\nusing System.Text.Json.Nodes;\nusing Xunit;\n\nnamespace ${pkg}\n{\n    public class ${posix.basename(test, ".cs")}\n    {\n        private const string Rows = ${csharpString(jsonText(rows.map(({ id, input, expected }) => ({ id, input, expected }))))};\n\n        public static IEnumerable<object[]> Data()\n        {\n            foreach (var row in JsonNode.Parse(Rows)!.AsArray())\n                yield return new object[]\n                {\n                    (string)row!["id"]!,\n                    row["input"]?.ToJsonString() ?? "null",\n                    row["expected"]?.ToJsonString() ?? "null",\n                };\n        }\n\n        [Theory]\n        [MemberData(nameof(Data))]\n        public void AcceptanceRow(string id, string input, string expected)\n        {\n            var result = ${posix.basename(harness, ".cs")}.Actual(JsonNode.Parse(input));\n            var actual = JsonSerializer.SerializeToNode(result);\n            Assert.True(\n                JsonNode.DeepEquals(actual, JsonNode.Parse(expected)),\n                $"{id}: got {actual?.ToJsonString() ?? "null"}, want {expected}");\n        }\n    }\n}\n`,
+  // The harness is evaluated in a module of its own, so its actual is no method of every object
+  // and two harnesses never share a name; its own require_relative still resolves from its file.
+  // The magic comment first, as RuboCop's default asks (#2335).
+  rspec: ({ harness, test, data }) =>
+    `# frozen_string_literal: true\n\n${header("#", harness)}\nrequire 'json'\n\nacceptance_path = File.expand_path(${rubyString(relative(test, harness))}, __dir__)\nacceptance_module = Module.new\nacceptance_module.module_eval(File.read(acceptance_path), acceptance_path)\nacceptance_harness = Object.new.extend(acceptance_module)\nacceptance_rows = JSON.parse(File.read(File.expand_path(${rubyString(relative(test, data))}, __dir__)))\n\n${rspecExamples("acceptance_harness.actual")}\n`,
+  // One test over every row, so no data provider ties the file to a PHPUnit version; Pint's
+  // default preset leaves it as written (#2335).
+  phpunit: ({ harness, test, data, package: pkg }) => {
+    const methods = phpunitMethods(
+      `${posix.basename(harness, ".php")}::actual`,
+      "normal",
+      `    $text = (string) file_get_contents(__DIR__.${phpString(`/${relative(test, data)}`)});\n    $rows = json_decode($text, true, 512, JSON_THROW_ON_ERROR);`,
+    )
+      .split("\n")
+      .map((line) => (line ? `    ${line}` : line))
+      .join("\n");
+    return `<?php\n\n${header("//", harness)}\n${pkg ? `namespace ${phpNamespace(pkg)};\n\n` : ""}use PHPUnit\\Framework\\TestCase;\n\nrequire_once __DIR__.${phpString(`/${relative(test, harness)}`)};\n\nfinal class ${posix.basename(test, ".php")} extends TestCase\n{\n${methods}\n}\n`;
+  },
 };
 
 /** A file the host writes for a rows task: a whole file, or the blocks of an inline test file. */
