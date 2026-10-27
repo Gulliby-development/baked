@@ -18,6 +18,7 @@ import {
   HOOKS_EDIT_CAPABILITY,
   LIBRARY_CAPABILITY,
   offers,
+  PROVIDER_LIMITS_CAPABILITY,
   PROVIDER_SWITCH_CAPABILITY,
   ROUTING_CAPABILITY,
   RUN_MEMORY_CAPABILITY,
@@ -655,6 +656,34 @@ export interface HookDraft {
   scope: HookWriteScope;
 }
 
+/** A usage window of a subscription limit in `GET /v1/providers/limits`. */
+export interface LimitWindow {
+  id: string;
+  label: string;
+  /** 0-100, past 100 when usage ran over; null when unknown. */
+  usedPercent: number | null;
+  resetsAt: string | null;
+  windowMinutes: number | null;
+  status: "ok" | "warning" | "limited";
+  remaining?: number | null;
+  entitlement?: number | null;
+  unlimited?: boolean;
+  detail?: string;
+}
+
+/** One provider's subscription limits in `GET /v1/providers/limits`. */
+export interface ProviderLimits {
+  provider: "codex" | "claude-code" | "copilot";
+  name: string;
+  state: "ok" | "no-data" | "not-signed-in" | "error";
+  source: "live" | "last-seen" | null;
+  observedAt: string | null;
+  plan: string | null;
+  windows: LimitWindow[];
+  credits: { balance: string | null; unlimited: boolean } | null;
+  message: string;
+}
+
 /** `POST /v1/providers/ID/switch`. */
 export interface AccountSwitch {
   ok: boolean;
@@ -682,6 +711,11 @@ export const setup = {
   /** Whether the backend can switch a CLI provider's account in one step. */
   canSwitchAccount: async (key: string) =>
     offers(await capabilities(key), PROVIDER_SWITCH_CAPABILITY) === true,
+  /** How much of each subscription's usage limit is left (Codex, Claude Code, Copilot). */
+  limits: (key: string) =>
+    withCapability(key, PROVIDER_LIMITS_CAPABILITY, () =>
+      call<{ limits: ProviderLimits[] }>(key, "GET", "/v1/providers/limits"),
+    ),
   /** Signs the CLI's account out and starts a new sign-in, as `/codex switch` does. */
   switchAccount: (key: string, provider: string) =>
     withCapability(key, PROVIDER_SWITCH_CAPABILITY, () =>
