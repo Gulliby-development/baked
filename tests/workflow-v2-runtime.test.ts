@@ -1266,6 +1266,20 @@ describe("a low partial finding passes with notes", () => {
     }, 60000);
   }
 
+  // #2332, R74 ewvet-update: the request gives value.txt verbatim and the review's low partial
+  // finding there is why AC-001 fails; the notes rule does not settle it, a repair does.
+  test("on a file the request gives verbatim, a low partial finding whose criterion fails starts a repair", async () => {
+    const fixture = setup({ gaps: 1, gapSeverity: "low", gapKind: "partial" });
+    const prompt = ["Create ready value. Apply exactly this diff:", "```diff", "--- /dev/null", "+++ b/value.txt", "@@ -0,0 +1 @@", "+ready", "```"].join("\n");
+    const run = await fixture.start("sdd", prompt);
+    const final = await fixture.complete(run.runId);
+    expect(final.status).toBe("completed");
+    expect(fixture.service.store.run(run.runId).convergence_rounds).toBe(1);
+    expect(fixture.service.store.state(run.runId).limitations).toEqual([]);
+    const gates = replayConvergenceGates(fixture.service.store, run.runId);
+    expect(gates.flatMap((b) => b.recorded)).toEqual([{ id: "G1", verdict: "repair" }]);
+  }, 60000);
+
   // #1715: the convergence gate records its labels, criterion verdicts and evidence counts, never
   // a claim; a bench trace keeps the record and the replay corpus decides it again.
   test("each convergence gate is recorded, kept in a bench trace and replayed, and a rule change shows as new verdicts", async () => {
@@ -1342,6 +1356,13 @@ describe("passesWithNotes", () => {
       expect(passesWithNotes({ ...finding, kind, criterionIds: [] }, coverage, true)).toBe(false);
     }
     expect(passesWithNotes({ ...finding, kind: "unrequested" }, coverage, true)).toBe(false);
+  });
+  test("a low finding on a file the request gives verbatim does not settle a failing criterion (#2332)", () => {
+    for (const kind of ["partial", "correctness", "contradicts"] as const) {
+      expect(passesWithNotes({ ...finding, kind, file: "README.md" }, coverage, true, true)).toBe(false);
+      expect(passesWithNotes({ ...finding, kind, file: "README.md" }, [{ ...coverage[0]!, verdict: "pass" }], true, true)).toBe(true);
+    }
+    expect(passesWithNotes({ ...finding, kind: "missing", file: "README.md" }, coverage, true, true)).toBe(false);
   });
   test("a missing test or documentation gap passes like a partial one", () => {
     const met = [{ ...coverage[0]!, verdict: "pass" as const }];

@@ -813,6 +813,7 @@ import {
   sizingHistory,
   splitNote,
   splitTestTasks,
+  suppliedBlocks,
   withTestDependencies,
 } from "./sizing.js";
 import {
@@ -3129,6 +3130,10 @@ export class WorkflowScheduler {
                   );
                 }
               }
+              // A file the request gives verbatim: a low note there does not settle a failing
+              // criterion (#2332).
+              const supplied = (file: string | null): boolean =>
+                file !== null && suppliedBlocks(state.requestText || state.prompt, [file]).size > 0;
               // The gate's labels are recorded for the replay corpus (review-gate.ts, #1715).
               const gate: ConvergenceGate = {
                 severities,
@@ -3143,7 +3148,7 @@ export class WorkflowScheduler {
                 })),
                 failing: [...failing],
                 findings: review.findings.map((f) =>
-                  convergenceGateFinding(f, siblingNotes.has(f.id), undefined),
+                  convergenceGateFinding(f, siblingNotes.has(f.id), undefined, supplied(f.file)),
                 ),
               };
               // Below high severity, a correctness claim the host does not reproduce, and any claim
