@@ -842,6 +842,7 @@ import {
   type WorkflowStore,
 } from "./store.js";
 import {
+  exactTextContext,
   isSuppliedContentFinding,
   suppliedConflictCriteria,
   suppliedContentFindings,
@@ -3666,6 +3667,19 @@ export class WorkflowScheduler {
               : "An earlier attempt of this task reached its limit after edits it did not check, and these required checks failed on its files, with this output. Fix what fails, run the check with request_check, then submit.",
       },
     };
+  }
+  /**
+   * The request sections a test task compares exactly, as string literals of its language
+   * (`exactTextContext`, #2101), with `exactTextLiteral: "on"`.
+   */
+  private exactText(
+    runId: string,
+    state: RuntimeState,
+    policy: RunPolicy,
+    task: Task,
+  ): ReturnType<typeof exactTextContext> {
+    if (policy.exactTextLiteral !== "on" || !state.spec) return {};
+    return exactTextContext(statedRequest(state, this.store.requests(runId)), state.spec, task);
   }
   /** The finding a bounded misquote continuation corrects (#2058), while it is that attempt. */
   private misquoteContinue(
@@ -7912,6 +7926,7 @@ ${note}`;
               ...this.recurringContext(runId, state, task),
               ...this.cutOffChecks(runId, task.id),
               ...this.misquoteContinue(runId, state, task.id),
+              ...this.exactText(runId, state, policy, task),
               ...(focus.files.length
                 ? {
                     correctionFocus: {
@@ -9253,6 +9268,7 @@ ${note}`;
         ...this.earlierReadsContext(runId, task.id),
         ...this.cutOffChecks(runId, task.id),
         ...this.misquoteContinue(runId, state, task.id),
+        ...this.exactText(runId, state, policy, task),
       };
       const needed = reserveTokens(
         this.estimatePrompt(runId, state, policy, profile, extra),
