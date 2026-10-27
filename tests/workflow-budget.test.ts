@@ -1,9 +1,9 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { extensionFor, extensionText, headline, runActions } from "../src/components/workflow/format.js";
-import { type BudgetLimits, proposeExtension } from "../src/core/workflows/budget.js";
+import { type BudgetLimits, proposeExtension, reserveTokens } from "../src/core/workflows/budget.js";
 import { parseWorkflowArgs } from "../src/headless/workflow-parse.js";
 import { executeWorkflowCommand } from "../src/headless/workflow.js";
-import { PolicySchema } from "../src/core/workflows/schemas.js";
+import { type AgentProfile, PolicySchema } from "../src/core/workflows/schemas.js";
 import { newId } from "../src/core/workflows/store.js";
 import { type BudgetView, readWorkflowView } from "../src/core/workflows/view.js";
 import { fixturePolicy, workflowFixture } from "./helpers/workflow-fixture.js";
@@ -36,6 +36,20 @@ describe("budget extension proposal", () => {
     expect(runActions(snapshot, budget).map((a) => a.key)).toEqual(["B", "F", "U", "C"]);
     expect(runActions(snapshot, { ...budget, maxTokens: 50_000_000, tokens: 50_000_000, maxCalls: 1000, calls: 1000, maxActiveMs: 24 * 3600 * 1000, activeMs: 1 }).map((a) => a.key)).toEqual(["F", "U", "C"]);
     expect(headline(snapshot, [{ id: "plan", kind: "plan", status: "failed", generation: 0 }], false, budget).next).toContain("Press B to raise the limits (tokens 400k → 800k)");
+  });
+});
+
+// Hot module cap-growth (#2258): a call reserves a token for every three bytes of its prompt (code
+// and non-Latin text tokenize denser than four) plus its output, capped by the run limit.
+describe("token reservation of a call", () => {
+  test("is a third of the prompt's bytes, rounded up, plus the output limit", () => {
+    const profile = { maxOutputTokens: 8000 } as AgentProfile;
+    const policy = { ...fixturePolicy, maxTotalTokens: 400000 };
+    expect(reserveTokens("x".repeat(1200), profile, policy)).toBe(400 + 8000);
+    expect(reserveTokens("x".repeat(1201), profile, policy)).toBe(401 + 8000);
+    // Cyrillic letters take two bytes each.
+    expect(reserveTokens("я".repeat(300), profile, policy)).toBe(200 + 8000);
+    expect(reserveTokens("", profile, { ...policy, maxTotalTokens: 5000 })).toBe(5000);
   });
 });
 

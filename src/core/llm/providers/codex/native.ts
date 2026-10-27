@@ -12,6 +12,7 @@ import type {
 import { getCwd } from "../../../cwd.js";
 import { ProviderAnswerError } from "../../provider-answer.js";
 import { providerCallDetail } from "../../provider-health.js";
+import { recordCodexRateLimits } from "../../usage-limits-record.js";
 import { cliReasoningEffort } from "../cli-effort.js";
 import { imageUrl, promptImages } from "../prompt-images.js";
 import { type CodexAppServerConnection, startCodexAppServerSession } from "./client.js";
@@ -808,6 +809,10 @@ export class CodexAppServerSessions {
   }
 
   private onNotification(method: string, rawParams: unknown): void {
+    if (method === "account/rateLimits/updated") {
+      recordCodexRateLimits(rawParams);
+      return;
+    }
     const params = (rawParams ?? {}) as Record<string, unknown>;
     const retired = this.retired.get(String(params.threadId));
     if (retired) {
