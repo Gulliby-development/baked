@@ -103,5 +103,9 @@
   "R73/evalpin.sqlite.gz#evalpin": {
     "newPoolBoundStops": 1,
     "reason": "#2280: initiative-pool-growth (shadow) records delivery, the last feature: with no waiting feature estimated its token room was null and its refresh took the base policy's ceilings (8M, 12M hard) with 3.31M of the 23.9M pool left after the others' use at its gate. The bound really passed the pool (true record); it used 0.81M and the initiative stayed under its pool. Same null-room path as R71 xmlvet's cli-release, which chargeHold does not cover."
+  },
+  "R74/callmend.sqlite.gz#callmend": {
+    "newRepeatStops": 1,
+    "reason": "#2334: repeated-failure (shadow) records a would-stop at json T010 because it failed as T009 did: both correctives ended on the same test-count integrity finding in one family (literal-test-inputs) spread over several files. The repeat is real (true record); the run recovered after one extra repair (workflow repair) and finished. The chain of that family never formed because sameFamily needs the same file, so the finding chain did not escalate (#2334)."
   }
 }
