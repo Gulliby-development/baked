@@ -1123,6 +1123,15 @@ export const FEATURES: readonly Feature[] = [
     desktop: ["project/runs: Correct the owner first, Let it write, Ask feature"],
   },
   {
+    id: "run-accept-check-limitation",
+    group: "Workflow runs",
+    title: "Accept a required check that timed out twice as a known limitation",
+    tui: ["/workflow: L on the blocked run"],
+    cli: ["baked workflow resume: --remedy accept-limitation", "baked workflow status: recovery"],
+    api: ["/v1/workflow/runs/:id/resume: remedy"],
+    desktop: ["project/runs: Accept the check as a limitation"],
+  },
+  {
     id: "run-control",
     group: "Workflow runs",
     title: "Pause, resume, accept outside changes, cancel, extend, reroute, undo edits",

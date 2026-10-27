@@ -9,6 +9,7 @@ import { BATTERY_CASES } from "../workflows/finding-chain.js";
 import type { ProcessScope } from "../workflows/process-scope.js";
 import { ProbeSchema, type Repro, ReproSchema, type Review } from "../workflows/schemas.js";
 import type { HostTool } from "../workflows/types.js";
+import { fileArgs, recordCommandTimeout } from "./command-timeouts.js";
 import { caseCrash } from "./edge-inputs.js";
 import { entryPointCommand } from "./entry-points.js";
 import { confidenceOnlyNote } from "./findings.js";
@@ -399,7 +400,17 @@ async function executeRepro(
   });
   if (changedPaths(before, after).length)
     return inconclusive("The command changed source files; a repro must only read them");
-  if (result.timedOut) return inconclusive(`The command ran longer than ${REPRO_TIMEOUT_MS} ms`);
+  // The edge-input probe and run_repro name what hung and record it (#2358).
+  if (result.timedOut)
+    return inconclusive(
+      recordCommandTimeout({
+        source: "repro",
+        command: [repro.executable, ...repro.args],
+        files: [...fileArgs(repro.args), ...(options.shadows ?? [])],
+        root: options.root,
+        timeoutMs: REPRO_TIMEOUT_MS,
+      }).note,
+    );
   if (result.cancelled) return inconclusive("The command was cancelled");
   if (outputShows(result.output, repro.actual))
     return {
@@ -663,6 +674,17 @@ export async function runProbe(
     status: "ran",
     exitCode: result.exitCode,
     timedOut: result.timedOut,
+    ...(result.timedOut
+      ? {
+          reason: recordCommandTimeout({
+            source: "probe",
+            command: [probe.executable, ...probe.args],
+            files: fileArgs(probe.args),
+            root: options.root,
+            timeoutMs: REPRO_TIMEOUT_MS,
+          }).note,
+        }
+      : {}),
     output: result.output.slice(-OUTPUT_LIMIT),
   };
 }

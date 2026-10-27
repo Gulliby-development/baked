@@ -40,7 +40,7 @@ import {
   type ProjectMemoryView,
   projectMemoryView,
 } from "../core/workflows/project-memory.js";
-import type { HostRemedy } from "../core/workflows/remedies-model.js";
+import type { ResumeRemedy } from "../core/workflows/remedies-model.js";
 import { ROLLBACK_ARTIFACT_KIND } from "../core/workflows/rollback.js";
 import {
   explainRoute,
@@ -468,11 +468,12 @@ export async function executeWorkflowCommand(
       });
     case "resume":
       // Keeps the files a person changed in the run's workspace as its baseline (#971).
-      // `--remedy` answers a corrective's block with the act it offers (#2155).
+      // `--remedy` answers a corrective's block with the act it offers (#2155), or accepts a
+      // check that cannot run as a known limitation (#2358).
       await service.resume(runId, identity(), {
         acceptWorkspace: args.flags["accept-workspace"] === true,
         ...(typeof args.flags.remedy === "string"
-          ? { remedy: args.flags.remedy as HostRemedy }
+          ? { remedy: args.flags.remedy as ResumeRemedy }
           : {}),
       });
       onDrive?.(runId);

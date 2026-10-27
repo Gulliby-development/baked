@@ -11,6 +11,7 @@ import type { WorkflowStore } from "../workflows/store.js";
 import { withPerTestTimeout } from "../workflows/test-timeout.js";
 import { toolchainCommand } from "../workflows/toolchain.js";
 import type { Check } from "../workflows/types.js";
+import { type CommandTimeout, fileArgs, recordCommandTimeout } from "./command-timeouts.js";
 import { environmentFault, environmentNote } from "./environment-faults.js";
 import { isFailedTestLine } from "./failed-test-line.js";
 import { MISSING_GATE_REPORT, readGateReport, renderGateReport } from "./gate-report.js";
@@ -249,13 +250,16 @@ export class CheckRunner {
     status: "passed" | "failed" | "inconclusive";
     output: string;
     truncated: boolean;
+    /** The recorded timeout when the command ran out of time (#2358). */
+    timeout?: CommandTimeout;
   }> {
     try {
       const executable = check.executable === "bun" ? process.execPath : check.executable;
+      const limit = Math.min(check.timeoutMs, timeoutMs);
       const result = await executeCheckCommand(this.processes, executable, check.args, {
         cwd: check.cwd === "." ? root : workspacePath(root, check.cwd),
         env: buildCheckEnv(check),
-        timeoutMs: Math.min(check.timeoutMs, timeoutMs),
+        timeoutMs: limit,
         signal,
         sandbox,
       });
@@ -263,6 +267,22 @@ export class CheckRunner {
         result.timedOut || result.cancelled || result.exitCode === null
           ? "inconclusive"
           : exitStatus(check, result.exitCode, result.output);
+      // A baseline or poll that ran out of time names the command and its files (#2358).
+      if (result.timedOut && !result.cancelled && !signal.aborted) {
+        const timeout = recordCommandTimeout({
+          source: "measure",
+          command: [check.executable, ...check.args],
+          files: fileArgs(check.args),
+          root,
+          timeoutMs: limit,
+        });
+        return {
+          status,
+          output: `${result.output}\n\nNote: ${check.id}: ${timeout.note}.`,
+          truncated: result.truncated,
+          timeout,
+        };
+      }
       return { status, output: result.output, truncated: result.truncated };
     } catch {
       return { status: "inconclusive", output: "", truncated: false };
