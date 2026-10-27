@@ -3,6 +3,7 @@ import {
   useCallback,
   useEffect,
   useLayoutEffect,
+  useMemo,
   useReducer,
   useRef,
   useState,
@@ -10,6 +11,7 @@ import {
 import type { DesktopProject } from "../../../shared/api.js";
 import { ApiError } from "../../client/api.js";
 import {
+  ARTIFACTS_CAPABILITY,
   CHAT_EFFORT_CAPABILITY,
   CHAT_EXPORT_CAPABILITY,
   CHAT_UNDO_CAPABILITY,
@@ -19,6 +21,7 @@ import {
   COORDINATOR_SUMMARY_CAPABILITY,
   CUSTOM_COMMANDS_CAPABILITY,
   DIFF_STATS_CAPABILITY,
+  FILE_PREVIEW_CAPABILITY,
   IMAGES_CAPABILITY,
   PERMISSION_MODES_CAPABILITY,
   PLAN_MODE_CAPABILITY,
@@ -56,7 +59,7 @@ import { launchedSessionId } from "../coordinator/thread.js";
 import type { SectionProps } from "../sections.js";
 import { peekDraft, takeDraft } from "../start/drafts.js";
 import { BASE_MODES, Composer } from "./Composer.js";
-import { Conversation, ToolRenderer } from "./Conversation.js";
+import { Conversation, PreviewOpener, ToolRenderer } from "./Conversation.js";
 import { forkReportLines, rememberForkReport, rewindReportLines, takeForkReport } from "./fork.js";
 import {
   ChatHeader,
@@ -66,6 +69,8 @@ import {
   type WatchControl,
 } from "./Header.js";
 import { pendingText } from "./images.js";
+import { loadPreviewPrefs, PreviewPanel, savePreviewPrefs } from "./PreviewPanel.js";
+import { freshTarget, type PreviewTarget, previewTargets, targetForCall } from "./preview-model.js";
 import {
   emptyTranscript,
   isBusy,
@@ -565,6 +570,60 @@ export function SessionView({
       : undefined;
 
   const models = useChatModels(key);
+
+  // The preview panel: the Markdown and HTML documents the session produced. It opens by itself
+  // when the chat writes a new one, and on load when it was left open.
+  const previewKinds = useMemo(
+    () => ({
+      file: capabilities?.includes(FILE_PREVIEW_CAPABILITY) === true,
+      artifact: capabilities?.includes(ARTIFACTS_CAPABILITY) === true,
+    }),
+    [capabilities],
+  );
+  const targets = useMemo(
+    () =>
+      previewTargets(
+        transcript.live ? [...transcript.messages, transcript.live] : transcript.messages,
+      ).filter((t) => previewKinds[t.source.type]),
+    [transcript.messages, transcript.live, previewKinds],
+  );
+  const [previewPrefs, setPreviewPrefs] = useState(loadPreviewPrefs);
+  const [previewKey, setPreviewKey] = useState<string | null>(null);
+  const [freshKey, setFreshKey] = useState<string | null>(null);
+  const seenTargets = useRef<PreviewTarget[] | null>(null);
+  const changePreview = useCallback((next: Partial<typeof previewPrefs>) => {
+    setPreviewPrefs((prev) => {
+      const merged = { ...prev, ...next };
+      savePreviewPrefs(merged);
+      return merged;
+    });
+  }, []);
+  useEffect(() => {
+    if (load !== "ready" || capabilities === null) return;
+    const before = seenTargets.current;
+    seenTargets.current = targets;
+    // The documents of a loaded session are not news; only later changes bring the panel up.
+    if (before === null) return;
+    const fresh = freshTarget(before, targets);
+    if (!fresh) return;
+    setPreviewKey(fresh.key);
+    setFreshKey(fresh.key);
+    changePreview({ open: true });
+  }, [targets, load, capabilities, changePreview]);
+  const openPreview = useCallback(
+    (call: ToolCall) => {
+      const target = targetForCall(targets, call);
+      if (!target) return null;
+      return () => {
+        setPreviewKey(target);
+        setFreshKey(null);
+        changePreview({ open: true });
+      };
+    },
+    [targets, changePreview],
+  );
+  const previewShown = previewPrefs.open && targets.length > 0;
+
   const loadCommands = useCallback(
     () => setup.commands(key).then((result) => result.commands),
     [key],
@@ -590,162 +649,193 @@ export function SessionView({
   const session = transcript.session;
   const empty = !draft && load === "ready" && transcript.messages.length === 0 && !transcript.live;
   return (
-    <div data-chat className={CHAT}>
-      <ChatHeader
-        project={project}
-        title={coordinator ? "Coordinator" : draft ? "New chat" : (session?.title ?? "Chat")}
-        sessionId={draft ? null : sessionId}
-        coordinator={coordinator}
-        thread={!draft && Boolean(session?.parentId)}
-        {...(draft
-          ? {}
-          : {
-              context: transcript.context,
-              usage: transcript.usage,
-              model: session?.model ?? null,
-              filesEdited: transcript.filesEdited,
-              diff,
-              ...(compactControl ? { compact: compactControl } : {}),
-              ...(rewindControl ? { rewind: rewindControl } : {}),
-              ...(watchControl ? { watch: watchControl } : {}),
-              ...(summaryControl ? { summary: summaryControl } : {}),
-              ...(coordinator
-                ? {}
-                : {
-                    manage: {
-                      canExport: capabilities?.includes(CHAT_EXPORT_CAPABILITY) === true,
-                      deleteDisabled: turnRunning
-                        ? "Stop the running turn before deleting the chat"
-                        : null,
-                      ...(canHandOff ? { handOff } : {}),
-                    },
-                  }),
-            })}
-      />
-      <section className={SCROLL} aria-label="Conversation" ref={scroller} onScroll={onScroll}>
-        <div className={COLUMN} aria-live="off">
-          {load === "loading" && <Skeleton lines={5} label="Loading the session" />}
-          {load !== "loading" && load !== "ready" && <Alert tone="error">{load}</Alert>}
-          {(draft || empty) && transcript.pending.length === 0 && (
-            <div className="pt-12 px-2 pb-2 flex flex-col gap-[6px]">
-              <BlockIcon name="chat" className="mb-1" />
-              <p className={cn("m-0", EMPTY_TITLE)}>What should BAKED do in {project.name}?</p>
-              <p className="m-0 text-dim-foreground">
-                Describe a change, ask about the code, or paste an error. Tool approvals show up
-                here and in Needs you.
-              </p>
-            </div>
-          )}
-          {forkReport && (
-            <Alert role="status" className="flex items-start gap-3">
-              <Icon name="fork" size={15} className="mt-[2px] flex-none" />
-              <div className="min-w-0 flex-1">
-                {forkReport.map((line) => (
-                  <p key={line} className="m-0">
-                    {line}
-                  </p>
-                ))}
-              </div>
-            </Alert>
-          )}
-          <ConfirmDialog
-            open={confirmUndo}
-            title="Undo the last turn?"
-            confirmLabel="Undo"
-            onConfirm={() => rewind("undo")}
-            onClose={() => setConfirmUndo(false)}
-          >
-            It is dropped from the chat and the files it edited are restored; files changed since
-            then stay as they are. Redo puts it back until you send a new message.
-          </ConfirmDialog>
-          {rewindReport && (
-            <Alert role="status" className="flex items-start gap-3">
-              <Icon name="rewind" size={15} className="mt-[2px] flex-none" />
-              <div className="min-w-0 flex-1">
-                {rewindReport.map((line) => (
-                  <p key={line} className="m-0">
-                    {line}
-                  </p>
-                ))}
-              </div>
-              <Button variant="secondary" size="md" onClick={() => setRewindReport(null)}>
-                Dismiss
-              </Button>
-            </Alert>
-          )}
-          <ToolRenderer.Provider value={coordinator ? threadCardFor : null}>
-            <Conversation
-              transcript={transcript}
-              deciding={deciding}
-              forking={forking}
-              {...(draft || coordinator ? {} : { onFork: fork })}
-              {...(coordinator
-                ? {
-                    onEditSplit: editSplit,
-                    launchHref: (note: LaunchNote) => launchedHref(key, note),
-                    ...(launchActions ? { launchActions } : {}),
-                  }
-                : {})}
-              {...(canRewindTo && !draft && !rewinding
-                ? { onRewind: (checkpoint: number) => rewind("undo", checkpoint) }
-                : {})}
-              onApprove={(id, approve, digest) =>
-                decide(id, () => chat.approve(key, sessionId, id, approve, digest))
-              }
-              onAnswer={(id, answer) => decide(id, () => chat.answer(key, sessionId, id, answer))}
-              onReviewPlan={(id, review) =>
-                decide(id, () => chat.reviewPlan(key, sessionId, id, review))
-              }
-            />
-          </ToolRenderer.Provider>
-          {actionError && (
-            <p className="m-0 px-3 py-0 text-[13px] text-[var(--err)]" role="alert">
-              {actionError}
-            </p>
-          )}
-        </div>
-      </section>
-      <div className="flex justify-center px-6 pt-2 pb-5">
-        <Composer
-          key={seed.n}
-          busy={busy}
-          canStop={canStop}
-          model={draft ? draftModel : (session?.model ?? null)}
-          mode={draft ? draftMode : (session?.mode ?? "default")}
-          effort={draft ? draftEffort : (session?.effort ?? "default")}
-          {...(!draft && session?.efforts ? { efforts: session.efforts } : {})}
-          autoFocusKey={sessionId}
-          initialText={seed.n > 0 ? seed.text : initialText}
-          onSend={send}
-          onStop={interrupt}
-          onModel={(model) => update({ model })}
-          onMode={(mode) => update({ mode })}
-          {...(hasEffort ? { onEffort: (effort: ChatEffort) => update({ effort }) } : {})}
-          {...(hasPermissions
+    // `data-chat` lets the window's main area give the chat and its preview their full height.
+    <div data-chat className="flex flex-1 min-w-0 min-h-0">
+      <div className={CHAT}>
+        <ChatHeader
+          project={project}
+          title={coordinator ? "Coordinator" : draft ? "New chat" : (session?.title ?? "Chat")}
+          {...(targets.length > 0
             ? {
-                permissions: draft
-                  ? (draftPermissions ?? "auto")
-                  : (session?.permissions ?? "auto"),
-                onPermissions: (permissions: PermissionMode) => update({ permissions }),
-              }
-            : {})}
-          {...(!draft && !coordinator && session?.contextSizes && session.contextSizes.length > 1
-            ? {
-                contextSize: {
-                  sizes: session.contextSizes,
-                  tokens: session.contextTokens ?? null,
-                  onPick: (contextSize: number) => update({ contextSize }),
+                preview: {
+                  count: targets.length,
+                  open: previewShown,
+                  onToggle: () => changePreview({ open: !previewShown }),
                 },
               }
             : {})}
-          modes={modes}
-          models={models}
-          loadMentions={loadMentions}
-          {...(expandsCommands ? { loadCommands } : {})}
-          acceptsImages={acceptsImages}
-          voice={voice}
+          sessionId={draft ? null : sessionId}
+          coordinator={coordinator}
+          thread={!draft && Boolean(session?.parentId)}
+          {...(draft
+            ? {}
+            : {
+                context: transcript.context,
+                usage: transcript.usage,
+                model: session?.model ?? null,
+                filesEdited: transcript.filesEdited,
+                diff,
+                ...(compactControl ? { compact: compactControl } : {}),
+                ...(rewindControl ? { rewind: rewindControl } : {}),
+                ...(watchControl ? { watch: watchControl } : {}),
+                ...(summaryControl ? { summary: summaryControl } : {}),
+                ...(coordinator
+                  ? {}
+                  : {
+                      manage: {
+                        canExport: capabilities?.includes(CHAT_EXPORT_CAPABILITY) === true,
+                        deleteDisabled: turnRunning
+                          ? "Stop the running turn before deleting the chat"
+                          : null,
+                        ...(canHandOff ? { handOff } : {}),
+                      },
+                    }),
+              })}
         />
+        <section className={SCROLL} aria-label="Conversation" ref={scroller} onScroll={onScroll}>
+          <div className={COLUMN} aria-live="off">
+            {load === "loading" && <Skeleton lines={5} label="Loading the session" />}
+            {load !== "loading" && load !== "ready" && <Alert tone="error">{load}</Alert>}
+            {(draft || empty) && transcript.pending.length === 0 && (
+              <div className="pt-12 px-2 pb-2 flex flex-col gap-[6px]">
+                <BlockIcon name="chat" className="mb-1" />
+                <p className={cn("m-0", EMPTY_TITLE)}>What should BAKED do in {project.name}?</p>
+                <p className="m-0 text-dim-foreground">
+                  Describe a change, ask about the code, or paste an error. Tool approvals show up
+                  here and in Needs you.
+                </p>
+              </div>
+            )}
+            {forkReport && (
+              <Alert role="status" className="flex items-start gap-3">
+                <Icon name="fork" size={15} className="mt-[2px] flex-none" />
+                <div className="min-w-0 flex-1">
+                  {forkReport.map((line) => (
+                    <p key={line} className="m-0">
+                      {line}
+                    </p>
+                  ))}
+                </div>
+              </Alert>
+            )}
+            <ConfirmDialog
+              open={confirmUndo}
+              title="Undo the last turn?"
+              confirmLabel="Undo"
+              onConfirm={() => rewind("undo")}
+              onClose={() => setConfirmUndo(false)}
+            >
+              It is dropped from the chat and the files it edited are restored; files changed since
+              then stay as they are. Redo puts it back until you send a new message.
+            </ConfirmDialog>
+            {rewindReport && (
+              <Alert role="status" className="flex items-start gap-3">
+                <Icon name="rewind" size={15} className="mt-[2px] flex-none" />
+                <div className="min-w-0 flex-1">
+                  {rewindReport.map((line) => (
+                    <p key={line} className="m-0">
+                      {line}
+                    </p>
+                  ))}
+                </div>
+                <Button variant="secondary" size="md" onClick={() => setRewindReport(null)}>
+                  Dismiss
+                </Button>
+              </Alert>
+            )}
+            <PreviewOpener.Provider value={openPreview}>
+              <ToolRenderer.Provider value={coordinator ? threadCardFor : null}>
+                <Conversation
+                  transcript={transcript}
+                  deciding={deciding}
+                  forking={forking}
+                  {...(draft || coordinator ? {} : { onFork: fork })}
+                  {...(coordinator
+                    ? {
+                        onEditSplit: editSplit,
+                        launchHref: (note: LaunchNote) => launchedHref(key, note),
+                        ...(launchActions ? { launchActions } : {}),
+                      }
+                    : {})}
+                  {...(canRewindTo && !draft && !rewinding
+                    ? { onRewind: (checkpoint: number) => rewind("undo", checkpoint) }
+                    : {})}
+                  onApprove={(id, approve, digest) =>
+                    decide(id, () => chat.approve(key, sessionId, id, approve, digest))
+                  }
+                  onAnswer={(id, answer) =>
+                    decide(id, () => chat.answer(key, sessionId, id, answer))
+                  }
+                  onReviewPlan={(id, review) =>
+                    decide(id, () => chat.reviewPlan(key, sessionId, id, review))
+                  }
+                />
+              </ToolRenderer.Provider>
+            </PreviewOpener.Provider>
+            {actionError && (
+              <p className="m-0 px-3 py-0 text-[13px] text-[var(--err)]" role="alert">
+                {actionError}
+              </p>
+            )}
+          </div>
+        </section>
+        <div className="flex justify-center px-6 pt-2 pb-5">
+          <Composer
+            key={seed.n}
+            busy={busy}
+            canStop={canStop}
+            model={draft ? draftModel : (session?.model ?? null)}
+            mode={draft ? draftMode : (session?.mode ?? "default")}
+            effort={draft ? draftEffort : (session?.effort ?? "default")}
+            {...(!draft && session?.efforts ? { efforts: session.efforts } : {})}
+            autoFocusKey={sessionId}
+            initialText={seed.n > 0 ? seed.text : initialText}
+            onSend={send}
+            onStop={interrupt}
+            onModel={(model) => update({ model })}
+            onMode={(mode) => update({ mode })}
+            {...(hasEffort ? { onEffort: (effort: ChatEffort) => update({ effort }) } : {})}
+            {...(hasPermissions
+              ? {
+                  permissions: draft
+                    ? (draftPermissions ?? "auto")
+                    : (session?.permissions ?? "auto"),
+                  onPermissions: (permissions: PermissionMode) => update({ permissions }),
+                }
+              : {})}
+            {...(!draft && !coordinator && session?.contextSizes && session.contextSizes.length > 1
+              ? {
+                  contextSize: {
+                    sizes: session.contextSizes,
+                    tokens: session.contextTokens ?? null,
+                    onPick: (contextSize: number) => update({ contextSize }),
+                  },
+                }
+              : {})}
+            modes={modes}
+            models={models}
+            loadMentions={loadMentions}
+            {...(expandsCommands ? { loadCommands } : {})}
+            acceptsImages={acceptsImages}
+            voice={voice}
+          />
+        </div>
       </div>
+      {previewShown && (
+        <PreviewPanel
+          projectKey={key}
+          targets={targets}
+          selected={previewKey}
+          fresh={freshKey}
+          width={previewPrefs.width}
+          onSelect={(next) => {
+            setPreviewKey(next);
+            setFreshKey(null);
+          }}
+          onResize={(width) => changePreview({ width })}
+          onClose={() => changePreview({ open: false })}
+        />
+      )}
     </div>
   );
 }
