@@ -33,7 +33,7 @@ describe("stop reasons", () => {
   test("hard limits take only enforce; the forecasts and the approval scope take every mode", () => {
     for (const [id, reason] of Object.entries(STOP_REASONS)) {
       expect(reason.modes).toContain(reason.defaultMode);
-      if (!["cost-forecast", "approval-scope", "initiative-forecast", "initiative-dollar-share", "initiative-dollar-cap", "initiative-plan-charge", "repeated_failure", "corrective_scope", "corrective_unowned_file", "repeat_without_change", "edge_crash_finding", "upstream_symbol", "baseline_unrepairable", "check-config-approval", "ci_check_drift"].includes(id))
+      if (!["cost-forecast", "approval-scope", "initiative-forecast", "initiative-dollar-share", "initiative-dollar-cap", "initiative-plan-charge", "initiative-pool-growth", "repeated_failure", "corrective_scope", "corrective_unowned_file", "repeat_without_change", "edge_crash_finding", "upstream_symbol", "baseline_unrepairable", "check-config-approval", "ci_check_drift"].includes(id))
         expect(reason.modes).toEqual(["enforce"]);
     }
     expect(STOP_REASONS["cost-forecast"].modes).toEqual(STOP_MODES);
@@ -57,6 +57,9 @@ describe("stop reasons", () => {
     // Shadow until its promotion (#2218): an initiative that would pause on its dollar cap.
     expect(STOP_REASONS["initiative-dollar-cap"].modes).toEqual(["shadow", "advisory"]);
     expect(STOP_REASONS["initiative-dollar-cap"].defaultMode).toBe("shadow");
+    // Shadow until its promotion (#2280): a feature run's bound above the pool or the ceiling.
+    expect(STOP_REASONS["initiative-pool-growth"].modes).toEqual(["shadow", "advisory"]);
+    expect(STOP_REASONS["initiative-pool-growth"].defaultMode).toBe("shadow");
     const parse = (stopModes: unknown) => PolicySchema.safeParse({ ...defaultWorkflowPolicy, stopModes }).success;
     expect(parse({ ci_check_drift: "advisory" })).toBe(true);
     expect(parse({ ci_check_drift: "enforce" })).toBe(false);

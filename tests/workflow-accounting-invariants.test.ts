@@ -3,7 +3,7 @@ import fc from "fast-check";
 import { canonical } from "../src/core/specs/hash.js";
 import { type CostForecast, costForecast, kindRatio } from "../src/core/workflows/cost-forecast.js";
 import { POOL_STEP, planCharge, planChargeTokens, poolExtensionDecision, poolForecast, tokenPool } from "../src/core/workflows/initiatives/token-pool.js";
-import { stageReserveDecision } from "../src/core/workflows/initiatives/growth.js";
+import { chargeHold, poolBoundDecision, refreshedGrowth, stageReserveDecision } from "../src/core/workflows/initiatives/growth.js";
 import { dollarCapPark, expectedSplitUsd, type ShareGateView } from "../src/core/workflows/initiatives/service.js";
 import type { RunPolicy } from "../src/core/workflows/schemas.js";
 import { type TaskKind, verificationTokens } from "../src/core/workflows/sizing.js";
@@ -687,6 +687,60 @@ describe("stage reserve invariants (#2241)", () => {
       expect(decision.toUsd).toBe(decision.suggestedUsd);
       expect(decision.toUsd!).toBeGreaterThan(boundUsd);
       expect(s.othersUsd + decision.toUsd!).toBeLessThanOrEqual(ceilingUsd + 1e-9);
+    }), { numRuns: 300 });
+  });
+});
+
+describe("charge growth invariants (#2280)", () => {
+  const seed = fc.record({
+    limitTokens: fc.integer({ min: 1_000_000, max: 60_000_000 }),
+    othersTokens: fc.integer({ min: 0, max: 70_000_000 }),
+    waitingLowTokens: fc.integer({ min: 0, max: 10_000_000 }),
+    usedTokens: fc.integer({ min: 0, max: 20_000_000 }),
+    chargeTokens: fc.integer({ min: 0, max: 40_000_000 }),
+    boundTokens: fc.integer({ min: 10_000, max: 20_000_000 }),
+    ceilingUsd: fc.double({ min: 1, max: 60, noNaN: true }),
+    othersUsd: fc.double({ min: 0, max: 70, noNaN: true }),
+    usedUsd: fc.double({ min: 0, max: 20, noNaN: true }),
+    chargeUsd: fc.double({ min: 0, max: 40, noNaN: true }),
+    boundUsd: fc.double({ min: 0.01, max: 20, noNaN: true }),
+  });
+
+  test("used plus open runs' bounds never exceeds the pool or the ceiling unless a bound was already there or the run used it", () => {
+    fc.assert(fc.property(seed, (s) => {
+      const usedTokens = Math.min(s.usedTokens, s.chargeTokens);
+      const usedUsd = Math.min(s.usedUsd, s.chargeUsd);
+      const hold = chargeHold({
+        charge: { tokens: s.chargeTokens, usd: s.chargeUsd },
+        own: { usedTokens, usedUsd },
+        pool: { limitTokens: s.limitTokens, othersTokens: s.othersTokens, waitingLowTokens: s.waitingLowTokens },
+        dollars: { ceilingUsd: s.ceilingUsd, othersUsd: s.othersUsd },
+      });
+      // Never above the charge, never below what the run used.
+      expect(hold.tokens).toBeLessThanOrEqual(s.chargeTokens);
+      expect(hold.tokens).toBeGreaterThanOrEqual(usedTokens);
+      expect(hold.usd!).toBeLessThanOrEqual(s.chargeUsd);
+      expect(hold.usd!).toBeGreaterThanOrEqual(usedUsd);
+      // The pool counts the run at its charge: the room (growthLimit, costGrowthLimit) is what is
+      // left after it, the others and the lows.
+      const roomTokens = Math.max(0, s.limitTokens - s.othersTokens - s.chargeTokens - s.waitingLowTokens);
+      const roomUsd = Math.max(0, s.ceilingUsd - s.othersUsd - s.chargeUsd);
+      const policy: RunPolicy = { ...fixturePolicy, maxCostUsd: s.boundUsd, sizing: { maxRunTokens: s.boundTokens, extendToTokens: s.boundTokens, maxRunCostUsd: s.boundUsd } };
+      const base: RunPolicy = { ...fixturePolicy, sizing: { maxRunTokens: 100_000_000, extendToTokens: 100_000_000 } };
+      const after = refreshedGrowth(policy, base, { tokens: hold.tokens, usd: hold.usd!, calls: 0, activeMs: 0 }, { calls: 0, activeMs: 0 }, { tokens: roomTokens, usd: roomUsd, calls: 0, activeMs: 0 }) ?? policy;
+      for (const bound of [after.sizing!.maxRunTokens!, after.sizing!.extendToTokens!])
+        if (bound > s.boundTokens && bound > usedTokens) expect(s.othersTokens + s.waitingLowTokens + bound).toBeLessThanOrEqual(s.limitTokens);
+      const usd = after.sizing!.maxRunCostUsd!;
+      if (usd > s.boundUsd && usd > usedUsd + 0.01) expect(s.othersUsd + usd).toBeLessThanOrEqual(s.ceilingUsd + 0.01);
+    }), { numRuns: 300 });
+  });
+
+  test("a bound the shadow reason passes fits the pool less the others' use and the ceiling less their spend", () => {
+    fc.assert(fc.property(seed, (s) => {
+      const decision = poolBoundDecision({ runId: "r", featureId: "f", limitTokens: s.limitTokens, othersUsedTokens: s.othersTokens, ceilingUsd: s.ceilingUsd, othersSpentUsd: s.othersUsd, tokens: [{ kind: "maxRunTokens", value: s.boundTokens }], usd: [{ kind: "maxRunCostUsd", value: s.boundUsd }] });
+      const fits = s.othersTokens + s.boundTokens <= s.limitTokens && s.othersUsd + s.boundUsd <= s.ceilingUsd + 0.005;
+      if (fits) expect(decision.wouldStop).toBe(false);
+      if (s.othersTokens + s.boundTokens > s.limitTokens) expect(decision.wouldStop).toBe(true);
     }), { numRuns: 300 });
   });
 });

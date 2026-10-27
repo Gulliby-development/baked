@@ -93,10 +93,19 @@
   },
   "R71/xmlvet.sqlite.gz#xmlvet": {
     "newStartStops": 1,
-    "reason": "#2245: the plan charge is enforced with stopModes unset. canonical parks at 04:48 with 4.7M of the 30.0M pool left (scanner's plan priced its run at 11.75M against an 8.0M limit; it used 12.10M), the would-park the round recorded in shadow. It was true: the pool ran short 65 minutes later (outline-command needed 836,956 more at 05:53:56) with the tree idle. tests/forecast-replay-corpus.test.ts asserts the park and its extend remedy."
+    "newPoolBoundStops": 1,
+    "reason": "#2280: initiative-pool-growth (shadow) records cli-release, the last feature: with no waiting feature estimated its token room was null and its refresh took the base policy's 12M hard ceiling (extendToTokens) with 11.71M of the extended 41.8M pool left after the others' use at its start; it used 3.47M, so the record is true (the bound passes the pool) and costs nothing. #2245: the plan charge is enforced with stopModes unset. canonical parks at 04:48 with 4.7M of the 30.0M pool left (scanner's plan priced its run at 11.75M against an 8.0M limit; it used 12.10M), the would-park the round recorded in shadow. It was true: the pool ran short 65 minutes later (outline-command needed 836,956 more at 05:53:56) with the tree idle. tests/forecast-replay-corpus.test.ts asserts the park and its extend remedy."
   },
   "R73/flatelens.sqlite.gz#d34ac224-7070-4a45-9d36-09ee86e24317": {
     "newFirstByteStops": 1,
     "reason": "#2283: attempt 855c7216 call 2 answered at 194 s; its recorded deadline (290,666 ms) came from the machine-wide shared first-response history, which a trace does not hold; the replay computes 180,000 ms from the trace's own calls. The fix records the deadline's inputs in the call timing and removes this entry."
+  },
+  "R73/flatelens.sqlite.gz#flatelens": {
+    "newPoolBoundStops": 1,
+    "reason": "#2280: initiative-pool-growth (shadow) records commands, the issue's case: its first initiative-growth (charge 25.14M, $19.30) raised its 4.65M share to the base ceilings (8M, 12M) and $3.82 to $19.30 (then $24.08) with 5.66M tokens and $10.66 under the ceiling left after the others at its gate; it used 12.92M and the initiative ended at 41.45M of its 34.2M pool. True. With chargeHold its bounds stay at 4.65M and $10.66 (tests/forecast-replay-corpus.test.ts)."
+  },
+  "R73/evalpin.sqlite.gz#evalpin": {
+    "newPoolBoundStops": 1,
+    "reason": "#2280: initiative-pool-growth (shadow) records delivery, the last feature: with no waiting feature estimated its token room was null and its refresh took the base policy's ceilings (8M, 12M hard) with 3.31M of the 23.9M pool left after the others' use at its gate. The bound really passed the pool (true record); it used 0.81M and the initiative stayed under its pool. Same null-room path as R71 xmlvet's cli-release, which chargeHold does not cover."
   }
 }

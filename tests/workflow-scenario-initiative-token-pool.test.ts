@@ -12,10 +12,16 @@ import {
   type ShareGateView,
   shareShortfall,
 } from "../src/core/workflows/initiatives/service.js";
-import { stageReserveDecision } from "../src/core/workflows/initiatives/growth.js";
+import { chargeHold, poolBoundDecision, refreshedGrowth, stageReserveDecision } from "../src/core/workflows/initiatives/growth.js";
+import type { InitiativePlan } from "../src/core/workflows/initiatives/plan.js";
+import { InitiativeService } from "../src/core/workflows/initiatives/service.js";
+import type { RunPolicy } from "../src/core/workflows/schemas.js";
+import { STOP_REASONS } from "../src/core/workflows/stop-reasons.js";
+import { newId } from "../src/core/workflows/store.js";
+import { fixturePolicy, workflowFixture } from "./helpers/workflow-fixture.js";
 import { adviceRatio, decisionRatio, HOST_POOL_GROWTHS, planCharge, poolExtensionDecision, poolForecast, tokenPool } from "../src/core/workflows/initiatives/token-pool.js";
 import { initiativeActions } from "../src/core/workflows/initiatives/view-model.js";
-import { openTrace, replayInitiativeStarts, replayPoolGrowth } from "../src/core/workflows/trace.js";
+import { openTrace, replayInitiativeStarts, replayPoolBounds, replayPoolGrowth } from "../src/core/workflows/trace.js";
 import { executeInitiativeCommand, parseInitiativeArgs } from "../src/headless/workflow-initiative.js";
 import { historyFixture, plannedForecastScenario } from "./helpers/initiative-planned-forecast.js";
 
@@ -489,5 +495,146 @@ describe("scenario: the notice advises at the measured ratio, decisions keep the
 
   test("the advice ratio is capped like the blend", () => {
     expect(adviceRatio(60_000_000, 3_000_000, 3)).toBe(5);
+  });
+});
+
+// Bench round 73, flatelens (#2280): commands started with 28.54M of the 34.2M pool used and
+// $25.34 of the $30 cap spent (20 percent tolerance, $36 ceiling). Its plan was charged 31.20M
+// tokens and $24.08 (enforced plan charge, #2100), its growth bounds were raised to that charge,
+// and it used 12.92M: the initiative ended at 41.45M of its 34.2M pool, 21 percent over.
+describe("scenario: flatelens R73 commands' bounds stay inside the pool and the ceiling (#2280)", () => {
+  const LIMIT = 34_200_000;
+  const OTHERS = 28_540_000;
+  const CHARGE = 31_200_000;
+  const base: RunPolicy = { ...fixturePolicy, sizing: { maxRunTokens: 40_000_000, extendToTokens: 60_000_000 } };
+  const commands: RunPolicy = { ...fixturePolicy, maxTotalTokens: 4_650_000, maxCostUsd: 3.82, sizing: { maxRunTokens: 4_650_000, extendToTokens: 4_650_000, maxRunCostUsd: 3.82 } };
+  /** commands' bounds after a refresh with `held` and the room the pool and cap leave (none). */
+  const refreshed = (held: { tokens: number; usd: number }) =>
+    refreshedGrowth(commands, base, { ...held, calls: 0, activeMs: 0 }, { calls: 0, activeMs: 0 }, { tokens: 0, usd: 0, calls: 0, activeMs: 0 });
+
+  test("a charge above the pool raises the bounds no further than the 5.66M the pool has left", () => {
+    const hold = chargeHold({ charge: { tokens: CHARGE, usd: null }, own: { usedTokens: 0, usedUsd: 0 }, pool: { limitTokens: LIMIT, othersTokens: OTHERS, waitingLowTokens: 0 }, dollars: null });
+    expect(hold).toMatchObject({ tokens: LIMIT - OTHERS, cappedTokens: true });
+    const after = refreshed({ tokens: hold.tokens, usd: 3.82 });
+    expect(after?.sizing?.maxRunTokens).toBe(5_660_000);
+    expect(after?.sizing?.extendToTokens).toBe(5_660_000);
+    // The rule before #2280 held the charge: the run could take 31.2M with 5.66M left.
+    expect(refreshed({ tokens: CHARGE, usd: 3.82 })?.sizing?.maxRunTokens).toBe(CHARGE);
+    // The waiting features' lows come out of it too, and a run never holds less than it used.
+    expect(chargeHold({ charge: { tokens: CHARGE, usd: null }, own: { usedTokens: 0, usedUsd: 0 }, pool: { limitTokens: LIMIT, othersTokens: OTHERS, waitingLowTokens: 1_000_000 }, dollars: null }).tokens).toBe(4_660_000);
+    expect(chargeHold({ charge: { tokens: CHARGE, usd: null }, own: { usedTokens: 7_000_000, usedUsd: 0 }, pool: { limitTokens: LIMIT, othersTokens: OTHERS, waitingLowTokens: 0 }, dollars: null }).tokens).toBe(7_000_000);
+  });
+
+  test("a dollar charge above the ceiling raises the dollar bound no further than the ceiling leaves after the others", () => {
+    // $4.66 left under the $30 cap, $10.66 under the $36 ceiling; the charge was $24.08.
+    const hold = chargeHold({ charge: { tokens: CHARGE, usd: 24.08 }, own: { usedTokens: 0, usedUsd: 0 }, pool: { limitTokens: LIMIT, othersTokens: OTHERS, waitingLowTokens: 0 }, dollars: { ceilingUsd: 36, othersUsd: 25.34 } });
+    expect(hold).toMatchObject({ usd: 10.66, cappedUsd: true });
+    expect(refreshed({ tokens: hold.tokens, usd: hold.usd! })?.sizing?.maxRunCostUsd).toBe(10.66);
+    expect(refreshed({ tokens: CHARGE, usd: 24.08 })?.sizing?.maxRunCostUsd).toBe(24.08);
+    // Without a dollar cap there is nothing to hold the dollars to.
+    expect(chargeHold({ charge: { tokens: CHARGE, usd: 24.08 }, own: { usedTokens: 0, usedUsd: 0 }, pool: { limitTokens: LIMIT, othersTokens: OTHERS, waitingLowTokens: 0 }, dollars: null }).usd).toBe(24.08);
+  });
+
+  test("a charge that fits keeps today's bounds", () => {
+    // 10M used by the others, a 2M low waiting: 22.2M left for a run charged 15M and $8.
+    const hold = chargeHold({ charge: { tokens: 15_000_000, usd: 8 }, own: { usedTokens: 1_000_000, usedUsd: 0.5 }, pool: { limitTokens: LIMIT, othersTokens: 10_000_000, waitingLowTokens: 2_000_000 }, dollars: { ceilingUsd: 36, othersUsd: 12 } });
+    expect(hold).toEqual({ tokens: 15_000_000, usd: 8, cappedTokens: false, cappedUsd: false });
+  });
+
+  test("the shadow reason records a bound or an auto-extend hard ceiling above what the pool holds", () => {
+    expect(STOP_REASONS["initiative-pool-growth"]).toMatchObject({ defaultMode: "shadow", modes: ["shadow", "advisory"] });
+    // R73's auto-extend hard ceilings (33.56M) and its $24.08 bound, against 5.66M and $10.66.
+    const decision = poolBoundDecision({ runId: "r", featureId: "commands", limitTokens: LIMIT, othersUsedTokens: OTHERS, ceilingUsd: 36, othersSpentUsd: 25.34, tokens: [{ kind: "maxRunTokens", value: CHARGE }, { kind: "hardCeiling", value: 33_560_000 }], usd: [{ kind: "maxRunCostUsd", value: 24.08 }] });
+    expect(decision).toMatchObject({ reason: "initiative-pool-growth", wouldStop: true, holdTokens: 5_660_000, holdUsd: 10.66 });
+    expect(decision.over.map((b) => b.kind)).toEqual(["maxRunTokens", "hardCeiling", "maxRunCostUsd"]);
+    // The capped bounds pass.
+    expect(poolBoundDecision({ runId: "r", featureId: "commands", limitTokens: LIMIT, othersUsedTokens: OTHERS, ceilingUsd: 36, othersSpentUsd: 25.34, tokens: [{ kind: "maxRunTokens", value: 5_660_000 }], usd: [{ kind: "maxRunCostUsd", value: 10.66 }] }).wouldStop).toBe(false);
+  });
+
+  const plan: InitiativePlan = {
+    schemaVersion: 1, title: "Flatelens", goals: ["Create the CLI"], completionCriteria: ["The CLI is ready"],
+    features: ["core", "commands", "docs"].map((id) => ({
+      id, title: id, size: "medium", workflow: "sdd", boundary: { scope: id, paths: [`${id}.txt`] },
+      contract: `${id}.txt contains ready`, dependsOn: [], mandatory: true,
+    })),
+  };
+
+  test("the initiative refreshes commands' bounds to what the pool holds and records a planted bound above it", async () => {
+    const fixture = workflowFixture();
+    fixture.config.defaultModel = "anthropic/claude-sonnet-4-6";
+    cleanups.push(async () => fixture.dispose());
+    const initiatives = new InitiativeService(fixture.service);
+    const policy: RunPolicy = { ...fixturePolicy, maxTotalTokens: 4_650_000, maxAgentCalls: 1000, costForecast: "off", sizing: { maxRunTokens: 40_000_000, maxRunCostUsd: 100 } };
+    const view = await initiatives.start({ commandId: newId(), initiativeId: "flatelens", prompt: "Create the CLI", plan, policy, model: "anthropic/claude-sonnet-4-6", ownerLabel: "test", keepFeatures: true, featureAutoApproval: null, budget: { maxTotalTokens: LIMIT, maxAgentCalls: 1000, maxActiveMs: 21_600_000 }, costBudget: { maxCostUsd: 36, costTolerance: "off" } });
+    const request = view.pendingDecisions.find((d) => d.scope === "initiative")!;
+    await initiatives.approve("flatelens", { commandId: newId(), expectedRevision: view.revision }, { requestId: request.requestId, digest: request.digest });
+    const service = initiatives as unknown as { startFeature(id: string, featureId: string): Promise<boolean>; refreshGrowth(id: string, featureId: string, runId: string): void; view(id: string): InitiativeView };
+    expect(await service.startFeature("flatelens", "commands")).toBe(true);
+    const runId = initiatives.view("flatelens").features.find((f) => f.id === "commands")!.runId!;
+    const store = fixture.service.store;
+    // commands' start-time bounds in R73: its 4.65M share and $3.82.
+    const started = JSON.parse(store.run(runId).policy_json) as RunPolicy;
+    store.setPolicy(runId, { ...started, sizing: { ...started.sizing, maxRunTokens: 4_650_000, maxRunCostUsd: 3.82 } });
+    // The view at commands' start in R73: the others used 28.54M and spent $25.34, and the pool
+    // and the dollars hold commands at its enforced plan charge.
+    const real = service.view.bind(initiatives);
+    service.view = (id: string) => {
+      const v = real(id);
+      return {
+        ...v,
+        features: v.features.map((f) => (f.share !== null && f.id !== "commands" ? { ...f, need: { low: 0, high: 1_000_000 } } : f)),
+        budget: {
+          ...v.budget,
+          used: { ...v.budget.used, tokens: OTHERS },
+          reserved: { ...v.budget.reserved, tokens: CHARGE },
+          remaining: { ...v.budget.remaining, tokens: 0 },
+          cost: { ...v.budget.cost, ceilingUsd: 36, spentUsd: 25.34, reservedUsd: 24.08, remainingUsd: 0 },
+          planCharge: { mode: "enforce", ratio: 1.2, runs: [{ featureId: "commands", runId, usedTokens: 0, limitTokens: 4_650_000, plan: { low: 14_700_000, expected: 20_000_000, high: 26_100_000 }, chargeTokens: CHARGE, usedUsd: 0, limitUsd: 3.82, chargeUsd: 24.08 }], limitCommittedTokens: OTHERS + 4_650_000, planCommittedTokens: OTHERS + CHARGE, releasedTokens: 4_650_000 - CHARGE, usd: null },
+        },
+      } as InitiativeView;
+    };
+    service.refreshGrowth("flatelens", "commands", runId);
+    const refreshedPolicy = JSON.parse(store.run(runId).policy_json) as RunPolicy;
+    // The rule before #2280 raised them to the charge, 31.2M and $24.08.
+    expect(refreshedPolicy.sizing!.maxRunTokens!).toBe(LIMIT - OTHERS);
+    expect(refreshedPolicy.sizing!.maxRunCostUsd!).toBe(10.66);
+    const wouldStops = () => store.eventsOfType(runId, "decision.would_stop").filter((e) => e.type === "decision.would_stop" && e.payload.reason === "initiative-pool-growth");
+    expect(wouldStops()).toHaveLength(0);
+    // A bound above the pool, as R73's auto-extends left it, is recorded once with its inputs.
+    store.setPolicy(runId, { ...refreshedPolicy, sizing: { ...refreshedPolicy.sizing, maxRunTokens: CHARGE } });
+    service.refreshGrowth("flatelens", "commands", runId);
+    service.refreshGrowth("flatelens", "commands", runId);
+    const recorded = wouldStops();
+    expect(recorded).toHaveLength(1);
+    expect(recorded[0]!.payload).toMatchObject({ mode: "shadow", inputs: { limitTokens: LIMIT, othersUsedTokens: OTHERS, holdTokens: LIMIT - OTHERS } });
+  });
+});
+
+describe("replay: initiative-pool-growth on the recorded bounds (#2280)", () => {
+  const trace = (round: string, app: string) => join(import.meta.dir, "fixtures", "bench-traces", round, `${app}.sqlite.gz`);
+
+  test("R72 jvmsig never ran short of its pool: no run's bound passes it", () => {
+    const { store, dispose } = openTrace(trace("R72", "jvmsig"));
+    try {
+      expect(replayPoolBounds(store).flatMap((i) => i.poolBounds)).toEqual([]);
+    } finally {
+      dispose();
+    }
+  });
+
+  test("R71 xmlvet: cli-release, the last feature, took the base policy's 12M hard ceiling with 11.71M of the extended pool left", () => {
+    // No waiting feature had an estimate, so the token room was null and `refreshedGrowth` took
+    // the base ceilings. The run used 3.47M; the record is true and costs nothing in shadow.
+    const { store, dispose } = openTrace(trace("R71", "xmlvet"));
+    try {
+      const bounds = replayPoolBounds(store).flatMap((i) => i.poolBounds);
+      expect(bounds.map((b) => ({ featureId: b.featureId, over: b.over.map((o) => [o.kind, o.value]), holdTokens: b.holdTokens }))).toEqual([
+        { featureId: "cli-release", over: [["extendToTokens", 12_000_000]], holdTokens: 41_800_000 - 30_091_967 },
+      ]);
+      // The rule that never stops records nothing.
+      expect(replayPoolBounds(store, (inputs) => ({ ...poolBoundDecision(inputs), wouldStop: false })).flatMap((i) => i.poolBounds)).toEqual([]);
+    } finally {
+      dispose();
+    }
   });
 });

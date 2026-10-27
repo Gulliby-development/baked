@@ -91,9 +91,12 @@ import {
 } from "./estimate.js";
 import { initiativePriceSamples, taskCallRate } from "./forecast.js";
 import {
+  chargeHold,
   costGrowthLimit,
   guardGrowth,
   openGuardRoom,
+  poolBoundDecision,
+  type RunBound,
   refreshedGrowth,
   stageReserveDecision,
 } from "./growth.js";
@@ -2781,24 +2784,100 @@ export class InitiativeService {
     const charged = view.budget.planCharge;
     const own = charged?.mode === "enforce" ? charged.runs.find((r) => r.runId === runId) : null;
     const committed = this.committed(runId);
+    const used = this.usage(runId);
+    const cost = view.budget.cost;
+    const runCost = this.workflows.store.costUsage(runId);
+    // A charge is held only as far as the pool and the dollar ceiling can hold it (#2280).
+    const hold = own
+      ? chargeHold({
+          charge: { tokens: own.chargeTokens, usd: own.chargeUsd ?? null },
+          own: { usedTokens: used.tokens, usedUsd: runCost.spentUsd + runCost.reservedUsd },
+          pool: {
+            limitTokens: view.budget.limits.maxTotalTokens,
+            othersTokens: view.budget.used.tokens + view.budget.reserved.tokens - own.chargeTokens,
+            waitingLowTokens: waitingLowTokens(view, featureId),
+          },
+          dollars:
+            cost.ceilingUsd === null
+              ? null
+              : {
+                  ceilingUsd: cost.ceilingUsd,
+                  othersUsd: cost.spentUsd + cost.reservedUsd - (own.chargeUsd ?? 0),
+                },
+        })
+      : null;
     const held = {
       ...committed,
-      tokens: own ? own.chargeTokens : committed.tokens,
-      usd: own?.chargeUsd ?? this.committedUsd(runId),
+      tokens: hold ? hold.tokens : committed.tokens,
+      usd: hold?.usd ?? this.committedUsd(runId),
     };
-    const after = refreshedGrowth(policy, settings.basePolicy, held, this.usage(runId), {
+    const after = refreshedGrowth(policy, settings.basePolicy, held, used, {
       usd: spareUsd,
       tokens: spareTokens,
       calls: guard.calls,
       activeMs: guard.activeMs,
     });
-    if (!after) return;
-    this.writeGrowth(runId, policy, after, "initiative-growth", {
+    if (after)
+      this.writeGrowth(runId, policy, after, "initiative-growth", {
+        featureId,
+        held,
+        ...(hold && own
+          ? { charge: { tokens: own.chargeTokens, usd: own.chargeUsd ?? null }, hold }
+          : {}),
+        spareUsd,
+        spareTokens,
+        guard,
+      });
+    this.recordPoolBound(view, featureId, runId, after ?? policy, settings.basePolicy);
+  }
+
+  /**
+   * Records an open feature run whose growth bound is above what the initiative's pool or dollar
+   * ceiling holds for it (`initiative-pool-growth`, shadow, #2280): its sizing ceilings, its
+   * dollar bound and the hard ceiling of its latest `auto-extend` growth, against the pool less
+   * what the other runs used and the ceiling less what they spent. Once per run and bound.
+   */
+  private recordPoolBound(
+    view: InitiativeView,
+    featureId: string,
+    runId: string,
+    policy: RunPolicy,
+    base: RunPolicy,
+  ): void {
+    const mode = stopMode(base, "initiative-pool-growth");
+    if (mode === "enforce") return;
+    const store = this.workflows.store;
+    const sizing = policy.sizing;
+    const tokens: RunBound[] = [];
+    if (typeof sizing?.maxRunTokens === "number")
+      tokens.push({ kind: "maxRunTokens", value: sizing.maxRunTokens });
+    if (typeof sizing?.extendToTokens === "number")
+      tokens.push({ kind: "extendToTokens", value: sizing.extendToTokens });
+    const hard = latestHardCeiling(store, runId);
+    if (hard !== null) tokens.push({ kind: "hardCeiling", value: hard });
+    const usd: RunBound[] =
+      sizing?.maxRunCostUsd !== undefined && policy.maxCostUsd !== null
+        ? [{ kind: "maxRunCostUsd", value: sizing.maxRunCostUsd }]
+        : [];
+    const cost = view.budget.cost;
+    const inputs = {
+      runId,
       featureId,
-      held,
-      spareUsd,
-      spareTokens,
-      guard,
+      limitTokens: view.budget.limits.maxTotalTokens,
+      othersUsedTokens: Math.max(0, view.budget.used.tokens - this.usage(runId).tokens),
+      ceilingUsd: cost.ceilingUsd,
+      othersSpentUsd: Math.max(0, cost.spentUsd - this.spentUsd(runId)),
+      tokens,
+      usd,
+    };
+    const decision = poolBoundDecision(inputs);
+    if (!decision.wouldStop) return;
+    recordWouldStop(store, runId, {
+      reason: decision.reason,
+      mode,
+      key: decision.over.map((b) => `${b.kind}-${String(b.value)}`).join("-"),
+      summary: `${decision.why} An enforced rule would hold the run at what the pool and the ceiling leave; an owner's extend raises them.`,
+      inputs: { ...inputs, holdTokens: decision.holdTokens, holdUsd: decision.holdUsd },
     });
   }
 
@@ -4620,12 +4699,37 @@ export function growthLimit(
   view: Pick<ShareGateView, "budget" | "features">,
   featureId: string,
 ): number | null {
-  const waiting = view.features.filter((f) => f.share !== null);
-  if (!waiting.some((f) => f.need)) return null;
-  const reserve = waiting
-    .filter((f) => f.id !== featureId)
+  if (!view.features.some((f) => f.share !== null && f.need)) return null;
+  return Math.max(0, view.budget.remaining.tokens - waitingLowTokens(view, featureId));
+}
+
+/** The low token estimates of the features still waiting for a run, `featureId` aside. */
+function waitingLowTokens(view: Pick<ShareGateView, "features">, featureId: string): number {
+  return view.features
+    .filter((f) => f.share !== null && f.id !== featureId)
     .reduce((sum, f) => sum + (f.need?.low ?? 0), 0);
-  return Math.max(0, view.budget.remaining.tokens - reserve);
+}
+
+/** The hard ceiling of a run's latest `auto-extend` growth (`extendUnderAssume`); null without one. */
+function latestHardCeiling(store: WorkflowStore, runId: string): number | null {
+  const last = store
+    .artifacts(runId)
+    .filter(
+      (a) => a.kind === "policy-revision" && a.logical_path.startsWith("policy-revisions/auto-"),
+    )
+    .map((a) => {
+      try {
+        return JSON.parse(store.readArtifact(runId, a.id)) as {
+          kind?: string;
+          hardCeiling?: number;
+        };
+      } catch {
+        return {};
+      }
+    })
+    .filter((r) => r.kind === "auto-extend" && typeof r.hardCeiling === "number")
+    .at(-1);
+  return last?.hardCeiling ?? null;
 }
 
 /**
