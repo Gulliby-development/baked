@@ -10,6 +10,10 @@
     "testsGrown": "test sum_commutes ... FAILED\ntest result: FAILED. 3 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s\n"
   },
   "expected": {
+    "memberSyntax": [
+      "Scanner calls Reader::is_encoding_token.: Reader::is_encoding_token",
+      "Scanner delegates to Reader.IsEncodingToken.: Reader.IsEncodingToken"
+    ],
     "checkConfigs": ["clippy.toml: clippy", "rustfmt.toml: rustfmt, read as text"],
     "tests": [
       "src/tests.rs",

@@ -10,6 +10,10 @@
     "testsGrown": "FAILED tests/test_sum.py::test_sum - assert 3 == 4\n========= 1 failed, 3 passed in 0.15s =========\n"
   },
   "expected": {
+    "memberSyntax": [
+      "Scanner delegates to Reader.IsEncodingToken.: Reader.IsEncodingToken",
+      "Scanner calls `reader.is_encoding_token` per token.: reader.is_encoding_token"
+    ],
     "checkConfigs": ["ruff.toml: ruff", "mypy.ini: mypy", ".flake8: flake8", ".pylintrc: pylint", "pyrightconfig.json: pyright"],
     "tests": [
       "app/tests.py",

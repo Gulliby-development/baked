@@ -43,6 +43,7 @@ import { isTestCheck } from "../src/core/workflows/quality/mutation.js";
 import { STATIC_TOOLS } from "../src/core/workflows/static-tools.js";
 import { layOutForFormatter, SORTED_LISTS } from "../src/core/workflows/initiatives/skeleton-layout.js";
 import { CHECK_CONFIGS, checkConfigOf } from "../src/core/workflows/quality/check-configs.js";
+import { MEMBER_SYNTAX, upstreamSymbolGaps } from "../src/core/workflows/initiatives/upstream-symbols.js";
 import type { Check } from "../src/core/workflows/types.js";
 import { rowOf } from "../src/core/intelligence/language-records.js";
 
@@ -270,6 +271,29 @@ const RECORDS: Record<
         return `${config.example}: ${found?.tool ?? "unmatched"}${found === config ? "" : " (another row)"}${config.format === "text" ? ", read as text" : ""}`;
       }),
     never: ["unmatched"],
+  },
+  // Each member spelling's example, in a planned-ahead spec over an upstream file of the language
+  // named by the example's type (#2199): the symbol the upstream-symbol check reports while the
+  // file lacks the member, and whether it is quiet once the file defines it.
+  memberSyntax: {
+    record: MEMBER_SYNTAX,
+    run: (language, { files }) => {
+      const [sample] = ofLanguage(language, files)[0] ?? [];
+      if (!sample) return ["no file of the language"];
+      const ext = /\.[^./]+$/.exec(sample)?.[0] ?? "";
+      return (rowOf(MEMBER_SYNTAX, language) ?? []).map(({ pattern, example }) => {
+        const { type = "", member = "" } = new RegExp(pattern).exec(example)?.groups ?? {};
+        const path = `src/${type}${ext}`;
+        const spec = {
+          requirements: [{ id: "FR-001", text: example, priority: "must" as const, verification: "automated" as const, sourceRefs: [] }],
+          criteria: [],
+        };
+        const gaps = upstreamSymbolGaps(spec, [{ featureId: "upstream", path, text: "" }]).map((gap) => gap.symbol);
+        const defined = upstreamSymbolGaps(spec, [{ featureId: "upstream", path, text: `${member}\n` }]);
+        return `${example}: ${gaps.join(", ") || "not read"}${defined.length ? ", still a gap when defined" : ""}`;
+      });
+    },
+    never: ["no file of the language"],
   },
   properties: {
     record: PROPERTY_LIBRARIES,

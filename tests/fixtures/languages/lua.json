@@ -11,6 +11,11 @@
     "testsGrown": "++-\n2 successes / 1 failure / 0 errors / 0 pending : 0.001873 seconds\n\nFailure -> src/sum_spec.lua @ 5\nsum is commutative\nsrc/sum_spec.lua:6: Expected objects to be equal.\nPassed in:\n(number) 4\nExpected:\n(number) 5\n"
   },
   "expected": {
+    "memberSyntax": [
+      "Scanner delegates to Reader.IsEncodingToken.: Reader.IsEncodingToken",
+      "Scanner calls `reader.is_encoding_token` per token.: reader.is_encoding_token",
+      "Scanner calls reader:is_encoding_token(token).: reader:is_encoding_token"
+    ],
     "checkConfigs": [".luacheckrc: luacheck, read as text", "stylua.toml: stylua, read as text", ".luarc.json: lua-language-server"],
     "tests": [
       "src/sum_spec.lua"

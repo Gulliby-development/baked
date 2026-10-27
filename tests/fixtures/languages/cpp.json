@@ -7,6 +7,10 @@
     ".clang-tidy": "Checks: '-*,bugprone-*'\n"
   },
   "expected": {
+    "memberSyntax": [
+      "Scanner calls Reader::is_encoding_token.: Reader::is_encoding_token",
+      "Scanner delegates to Reader.IsEncodingToken.: Reader.IsEncodingToken"
+    ],
     "checkConfigs": [".clang-tidy: clang-tidy", ".clang-format: clang-format, read as text"],
     "tests": [
       "src/sum_test.cpp"

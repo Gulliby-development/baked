@@ -11,6 +11,9 @@
     "testsGrown": "  Failed SumTests.Commutes [9 ms]\nFailed!  - Failed:     1, Passed:     3, Skipped:     0, Total:     4, Duration: 15 ms\n"
   },
   "expected": {
+    "memberSyntax": [
+      "Scanner delegates to Reader.IsEncodingToken.: Reader.IsEncodingToken"
+    ],
     "checkConfigs": [".editorconfig: editorconfig", "Analyzers.ruleset: code analysis ruleset", "stylecop.json: stylecop, read as text"],
     "tests": [
       "src/App.Tests/Checks.cs",

@@ -11,6 +11,7 @@
     "testsGrown": "1..3\nok 1 adds\nok 2 subtracts\nnot ok 3 commutes\n# (in test file test/sum.bats, line 10)\n#   `[ \"$output\" = \"5\" ]' failed\n"
   },
   "expected": {
+    "memberSyntax": null,
     "checkConfigs": [".shellcheckrc: shellcheck"],
     "tests": [
       "bin/sum_test.sh",
