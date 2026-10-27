@@ -618,6 +618,12 @@ function WorkingSetChip({ project }: { project: DesktopProject }) {
   );
 }
 
+export interface PreviewControl {
+  count: number;
+  open: boolean;
+  onToggle: () => void;
+}
+
 export function ChatHeader({
   project,
   title,
@@ -632,6 +638,7 @@ export function ChatHeader({
   watch,
   summary,
   manage,
+  preview,
   coordinator = false,
   thread = false,
 }: {
@@ -654,6 +661,8 @@ export function ChatHeader({
   /** The coordinator's one-click digest; absent elsewhere and on older servers. */
   summary?: SummaryControl;
   manage?: ChatManageControl;
+  /** Shows and hides the preview panel once the chat produced a document. */
+  preview?: PreviewControl;
 }) {
   return (
     <header className="flex flex-wrap items-center gap-[10px] px-6 py-[10px] border-b-2 border-b-border bg-background">
@@ -700,6 +709,18 @@ export function ChatHeader({
         <WorkingSetChip project={project} />
         {rewind && <RewindChips rewind={rewind} />}
         {watch && <WatchChip watch={watch} />}
+        {preview && (
+          <button
+            type="button"
+            className={cn(CHIP, "aria-pressed:bg-main aria-pressed:text-main-foreground")}
+            aria-pressed={preview.open}
+            title={preview.open ? "Hide the preview" : "Show the documents this chat produced"}
+            onClick={preview.onToggle}
+          >
+            <Icon name="panel-right" size={13} />
+            Preview · {preview.count}
+          </button>
+        )}
         {sessionId !== null && !coordinator && (
           <a className={CHIP} href={projectHref(project.key, "chat", "new")}>
             <Icon name="new" size={13} />

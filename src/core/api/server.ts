@@ -104,6 +104,7 @@ import { chatMemoryRoute } from "./chat-memory-routes.js";
 import { chatErrorStatus, chatRoute } from "./chat-routes.js";
 import { type CheckRunRecord, checkRoute } from "./check-routes.js";
 import { diagnosticsRoute } from "./diagnostics-routes.js";
+import { fileRoute } from "./file-routes.js";
 import { gateRoute } from "./gate-routes.js";
 import { gitRoute } from "./git-routes.js";
 import { graphRoute } from "./graph-routes.js";
@@ -215,6 +216,7 @@ export const CAPABILITIES = [
   "packages",
   "project-agents",
   "permission-modes",
+  "file-preview",
 ] as const;
 export const DEFAULT_MAX_BODY_BYTES = 1024 * 1024;
 const EVENT_PAGE = 200;
@@ -256,6 +258,8 @@ export interface ApiServerOptions {
   vercel?: Partial<VercelOptions>;
   /** Opens an artifact's page in the browser; tests pass a fake. */
   openArtifact?: (path: string) => boolean;
+  /** Opens a previewed project document with the default app; tests pass a fake. */
+  openFile?: (path: string) => boolean;
   /** Receives one line per background drive failure. Defaults to stderr. */
   log?: (line: string) => void;
   /**
@@ -1131,6 +1135,11 @@ export async function startApiServer(options: ApiServerOptions): Promise<ApiServ
         config: () => service.config,
         ...(options.vercel ? { vercel: options.vercel } : {}),
         ...(options.openArtifact ? { open: options.openArtifact } : {}),
+      })) ??
+      (await fileRoute({
+        ...ctx,
+        workspace: service.workspace,
+        ...(options.openFile ? { open: options.openFile } : {}),
       })) ??
       (await packageRoute({
         ...ctx,

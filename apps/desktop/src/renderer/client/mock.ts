@@ -123,6 +123,7 @@ const FULL_CAPABILITIES = [
   "packages",
   "project-agents",
   "permission-modes",
+  "file-preview",
 ];
 /** What a backend from before the optional capability groups answers. */
 const OLDER_CAPABILITIES = ["workflow", "attention", "projects", "sessions", "setup"];
