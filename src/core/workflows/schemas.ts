@@ -706,6 +706,13 @@ export const PolicySchema = z
      */
     misquoteFix: z.literal("on").optional(),
     /**
+     * The host's apply of a task the request gives verbatim (host-apply.ts, #2333): `on` writes
+     * the task's files when `hostApplyDecision` would apply them and starts no implementer; its
+     * checks decide it. Absent means shadow (the decision is recorded, the implementer runs), so
+     * stored policies keep their hash.
+     */
+    hostApply: z.literal("on").optional(),
+    /**
      * The edge-input probe of a source task (edge-inputs.ts, #1808): `on` asks the `edge-cases`
      * profile once per planned source task that settled without failures for extreme legal inputs
      * its criteria allow; the host runs them through the project's entry points and a case that
