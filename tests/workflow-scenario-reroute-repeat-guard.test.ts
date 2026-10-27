@@ -1,5 +1,8 @@
 import { afterEach, describe, expect, test } from "bun:test";
+import { runActions } from "../src/components/workflow/format.js";
 import { errorRecovery } from "../src/core/workflows/remedies.js";
+import { retryRefused } from "../src/core/workflows/remedies-model.js";
+import { readWorkflowView } from "../src/core/workflows/view.js";
 import type { ExecutionRequest, RunSnapshot } from "../src/core/workflows/types.js";
 import { executeWorkflowCommand } from "../src/headless/workflow.js";
 import { parseWorkflowArgs } from "../src/headless/workflow-parse.js";
@@ -85,5 +88,34 @@ describe("scenario: commitbump-update 0894df2d, reroute --resume after a repeate
     expect(refused?.message).toContain(`baked workflow reroute ${runId} --route STAGE=MODEL --resume`);
     expectRecovery(refused?.message ?? "", errorRecovery(refused), "reroute");
     expect(errorRecovery(refused)?.remedies.map((r) => r.action)).toEqual(["reroute", "revise", "replan", "cancel"]);
+  });
+
+  test("the run views offer no retry the guard would refuse, and lead with switch model (#2201)", async () => {
+    const f = fixture();
+    const run = await f.start();
+    await f.service.drive(run.runId, signal());
+    // One stop: a plain retry gives the stage the diagnostic, so it is offered.
+    const once = readWorkflowView(f.service, run.runId);
+    expect(retryRefused(once.snapshot, once.details.recovery)).toBe(false);
+    expect(runActions(once.snapshot, null, "spare/model", false, once.details.recovery?.remedies ?? []).map((a) => a.action)).toContain("resume");
+    await f.resume(run.runId);
+    await f.service.drive(run.runId, signal());
+    // Two stops with one diagnostic: the view's advice is the refusal's, before anyone presses retry.
+    const twice = readWorkflowView(f.service, run.runId);
+    expect(twice.details.recovery?.remedies.map((r) => r.action)).toEqual(["reroute", "revise", "replan", "cancel"]);
+    const actions = runActions(twice.snapshot, null, "spare/model", false, twice.details.recovery?.remedies ?? []).map((a) => a.action);
+    expect(actions).not.toContain("resume");
+    expect(actions[0]).toBe("reroute");
+    expect(actions.filter((a) => a === "reroute")).toHaveLength(1);
+    const status = (await cli(f, ["status", run.runId])) as RunSnapshot & { recovery?: { remedies: { action: string }[] } };
+    expect(status.recovery?.remedies.map((r) => r.action)).toEqual(["reroute", "revise", "replan", "cancel"]);
+    // Reading the views wrote nothing: the guard still refuses a plain resume.
+    expect((await refusal(f, run.runId))?.code).toBe("STALE_DECISION");
+    // A reroute changes the input, so the views offer the retry again.
+    const revision = f.service.store.run(run.runId).revision;
+    await cli(f, ["reroute", run.runId, "--expected-revision", String(revision), "--route", "analyze=spare/model"]);
+    const rerouted = readWorkflowView(f.service, run.runId);
+    expect(rerouted.details.recovery?.remedies.map((r) => r.action) ?? []).not.toEqual(["reroute", "revise", "replan", "cancel"]);
+    expect(runActions(rerouted.snapshot, null, "spare/model", false, rerouted.details.recovery?.remedies ?? []).map((a) => a.action)).toContain("resume");
   });
 });

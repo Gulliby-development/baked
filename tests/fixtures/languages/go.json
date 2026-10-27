@@ -11,6 +11,10 @@
     "testsGrown": "=== RUN   TestAdds\n--- PASS: TestAdds (0.00s)\n=== RUN   TestSubtracts\n--- PASS: TestSubtracts (0.00s)\n=== RUN   TestSum\n    sum_test.go:9: got 3, want 4\n--- FAIL: TestSum (0.00s)\nFAIL\nFAIL\texample.com/fixture\t0.015s\n"
   },
   "expected": {
+    "memberSyntax": [
+      "Scanner delegates to Reader.IsEncodingToken.: Reader.IsEncodingToken",
+      "Scanner calls reader.IsEncodingToken for each token.: reader.IsEncodingToken"
+    ],
     "suppressions": [
       "x := f() //nolint:errcheck: lint, linted, prescribable",
       "//lint:ignore SA1019 the old API is still needed: lint, linted, prescribable"
@@ -76,6 +80,7 @@
       "go fmt: formatter",
       "goimports: formatter"
     ],
-    "sortedLists": ["main.go: gofmt blank line before 5"]
+    "sortedLists": ["main.go: gofmt blank line before 5"],
+    "dependencyDirs": null
   }
 }
