@@ -148,6 +148,7 @@ import {
 } from "./schemas.js";
 import { IMPORT_SEED_ARTIFACT, seedState } from "./sdd-export/seed.js";
 import { providerResumeWaitMs, stallSettings } from "./stall.js";
+import { recordStallPark } from "./stall-ladder.js";
 import { bindDefinition, type PreparedStart, prepareStart } from "./start.js";
 import { assertMutable } from "./state-machine.js";
 import { stopRecovery } from "./stop-detail.js";
@@ -694,8 +695,11 @@ export class NativeWorkflowService implements WorkflowService {
     this.growLimits?.(runId);
     for (;;) {
       const current = this.store.run(runId);
-      if (current.status === "blocked" && providerCircuitOpen(this.store, runId))
+      if (current.status === "blocked" && providerCircuitOpen(this.store, runId)) {
+        // In shadow: what the `provider_stall` park's automatic resume would do (#2271).
+        recordStallPark(this.store, runId);
         return this.store.snapshot(runId);
+      }
       if (current.status === "waiting" && current.reason === "provider") {
         if (await this.resumeReachableProvider(runId, signal)) continue;
         return this.store.snapshot(runId);
@@ -707,6 +711,7 @@ export class NativeWorkflowService implements WorkflowService {
       if (await this.resumeStalled(runId, signal)) continue;
       if (await this.resumeUnfinished(runId, signal)) continue;
       if (await this.resumeProviderOutage(runId, signal)) continue;
+      if (snapshot.status === "blocked") recordStallPark(this.store, runId);
       return snapshot;
     }
   }

@@ -1136,14 +1136,21 @@ export const FEATURES: readonly Feature[] = [
     id: "run-stall-ladder",
     group: "Workflow runs",
     title:
-      "Recovery ladder for a stalled model call: fresh session, other transport, lower effort, next model",
-    tui: ["/workflow: activity feed of the run view (attempt.recovery)"],
+      "Recovery ladder for a stalled model call: fresh session, other transport, lower effort, next model (a sibling of the provider that answered when the route names none), and the provider_stall park in shadow",
+    tui: [
+      "/workflow: activity feed of the run view (attempt.recovery)",
+      "/workflow: stop text with the ladder's total time and the sibling that answered",
+    ],
     cli: [
       "baked workflow run: --events stream",
       "baked workflow resume: --events stream and a new ladder",
+      "baked workflow status: stallPark",
     ],
-    api: ["/v1/workflow/runs/:id/events: attempt.recovery"],
-    desktop: ["project/runs: activity feed"],
+    api: ["/v1/workflow/runs/:id/events: attempt.recovery", "/v1/workflow/runs/:id: stallPark"],
+    desktop: [
+      "project/runs: activity feed",
+      "project/runs: stop text with the ladder's total time",
+    ],
   },
   {
     id: "run-execution-time",

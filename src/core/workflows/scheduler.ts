@@ -759,6 +759,7 @@ import {
   rungText,
   writeLadder,
 } from "./stall-ladder.js";
+import { siblingFallbacks, siblingNote, writeFallback } from "./stall-siblings.js";
 import { recordWouldStop, stopFault, stopMode } from "./stop-reasons.js";
 import {
   repairUncoveredCriteria,
@@ -5926,7 +5927,9 @@ export class WorkflowScheduler {
       : (recovery?.effort ?? route.effort);
     const fallbackIndex = placement.fallbackIndex ?? continued?.fallbackIndex ?? 0;
     const largerWindow = placement.largerWindow === true;
-    const profile = this.routed(runId, stepId, stageProfile, fallbackIndex, largerWindow);
+    const routedProfile = this.routed(runId, stepId, stageProfile, fallbackIndex, largerWindow);
+    // The ladder's derived fallback runs on a sibling model the route does not name (#2271).
+    const profile = recovery?.model ? { ...routedProfile, model: recovery.model } : routedProfile;
     // Under `context: auto` a step whose context does not fit tries the model's largest window
     // once, before the next model of the route (#1256).
     const upgrade = (): Promise<unknown> | null =>
@@ -6270,15 +6273,20 @@ export class WorkflowScheduler {
             error: error instanceof Error ? error.message : String(error),
           },
         ];
+        // Models of the same provider the run routes other checking calls to that answered a
+        // moment ago: the `next-model` rung takes one when the route names no later model (#2271).
+        const fallback = siblingFallbacks(this.store, runId, attempt, profile);
         const next = nextRung(recovery, {
           model: profile.model,
           models: route.models,
           fallbackIndex,
           effort,
+          ...(fallback ? { siblings: fallback.siblings } : {}),
         });
         if (next) {
-          const nextModel = route.models[next.fallbackIndex] ?? profile.model;
+          const nextModel = next.model ?? route.models[next.fallbackIndex] ?? profile.model;
           this.store.transaction(() => {
+            if (fallback) writeFallback(this.store, runId, fallback);
             writeLadder(this.store, runId, ladderAt, { steps, next });
             this.store.emit(runId, {
               type: "attempt.recovery",
@@ -6321,12 +6329,19 @@ export class WorkflowScheduler {
         }
         if (recovery || recoverable === "lost-answer") {
           this.store.transaction(() => {
+            if (fallback) writeFallback(this.store, runId, fallback);
             writeLadder(this.store, runId, ladderAt, { steps, exhausted: true });
             this.store.artifact(
               runId,
               "recovery",
               "provider/circuit.json",
-              canonical({ open: true, attemptId: attempt, ladder: steps.length }),
+              canonical({
+                open: true,
+                attemptId: attempt,
+                ladder: steps.length,
+                // A stalled ladder parks as `provider_stall` (#2271, `recordStallPark`).
+                ...(recoverable === "stall" ? { stall: true } : {}),
+              }),
             );
           });
           if (recoverable === "lost-answer") {
@@ -6350,7 +6365,7 @@ export class WorkflowScheduler {
           throw new WorkflowFault(
             "OUTPUT_INVALID",
             recoveryAdvice(
-              `${profile.id} got no model response on every rung of the recovery ladder: ${ladderSummary(steps)}. Automatic retries stopped. Check the provider, then resume (a new ladder starts) or reroute the run to another model.`,
+              `${profile.id} got no model response on every rung of the recovery ladder: ${ladderSummary(steps)}.${siblingNote(fallback)} Automatic retries stopped. Check the provider, then resume (a new ladder starts) or reroute the run to another model.`,
               `A stalled model call failed on ${steps.length} recovery rungs and needs your decision.`,
               { action: "resume", runId },
               { action: "reroute", runId },
