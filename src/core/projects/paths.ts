@@ -1,5 +1,5 @@
 import { realpathSync } from "node:fs";
-import { isAbsolute, relative, resolve } from "node:path";
+import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 
 /** The real path when it exists, else the resolved one, so symlinks cannot fake containment. */
 export function realPath(path: string): string {
@@ -7,6 +7,22 @@ export function realPath(path: string): string {
     return realpathSync(path);
   } catch {
     return resolve(path);
+  }
+}
+
+/**
+ * The real path of a file that may not exist yet: its nearest existing folder resolved through
+ * links, then the rest of the path as given. `realPath` falls back to the path as given, which on
+ * macOS keeps `/var/...` while the project's real root is `/private/var/...`, so a missing file
+ * would read as outside the project.
+ */
+export function realPathOrParent(path: string): string {
+  const full = resolve(path);
+  try {
+    return realpathSync(full);
+  } catch {
+    const parent = dirname(full);
+    return parent === full ? full : join(realPathOrParent(parent), basename(full));
   }
 }
 
