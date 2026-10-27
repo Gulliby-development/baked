@@ -11,6 +11,7 @@ import type { WorkflowStore } from "../workflows/store.js";
 import { withPerTestTimeout } from "../workflows/test-timeout.js";
 import { toolchainCommand } from "../workflows/toolchain.js";
 import type { Check } from "../workflows/types.js";
+import { environmentFault, environmentNote } from "./environment-faults.js";
 import { isFailedTestLine } from "./failed-test-line.js";
 import { MISSING_GATE_REPORT, readGateReport, renderGateReport } from "./gate-report.js";
 import { testsRan } from "./output-counts.js";
@@ -278,7 +279,7 @@ export class CheckRunner {
     evidenceId: string;
     snapshotId: string;
     output: string;
-    /** Why the status is what it is: `exit`, `spawn_error`, `timeout`, `cancelled`, `source_changed`. */
+    /** Why the status is what it is: `exit`, `spawn_error`, `timeout`, `cancelled`, `source_changed`, `environment_broken`. */
     reason: string;
   }> {
     const policy = JSON.parse(this.store.run(runId).policy_json) as RunPolicy;
@@ -438,6 +439,20 @@ export class CheckRunner {
       result = {
         ...result,
         output: `${result.output}\n\n${report ? renderGateReport(report) : MISSING_GATE_REPORT}`,
+      };
+    }
+    // A failure the machine causes (the JDK's loopback pipe on a short Windows TEMP, #2273) says
+    // nothing about the code: inconclusive, so no correction is opened for correct code.
+    const environment =
+      status === "failed" && reason === "exit"
+        ? environmentFault(check.executable, check.args, result.output)
+        : null;
+    if (environment) {
+      status = "inconclusive";
+      reason = "environment_broken";
+      result = {
+        ...result,
+        output: `${result.output}\n\n${environmentNote(check.id, environment)}`,
       };
     }
     // After the chain, so a JSON gate's report is still read when its log mentions a test that

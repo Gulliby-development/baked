@@ -49,6 +49,6 @@
       "clang-format: formatter",
       "oclint: linter"
     ],
-    "sortedLists": null
+    "sortedLists": ["Sources/Sum.m: clang-format \"// order as written\" before 2"]
   }
 }
