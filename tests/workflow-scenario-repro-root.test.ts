@@ -51,14 +51,14 @@ describe("scenario: evalpin checks T003, a repro bound to the review's worktree 
     const fixed = await run(probe(main), task);
     expect(fixed.status).toBe("refuted");
     expect(fixed.rewritten?.map((p) => p.replace(/\\/g, "/"))).toEqual([main.replace(/\\/g, "/")]);
-  }, 30_000);
+  });
 
   test("a probe that names the workspace runs against the worktree it runs in", async () => {
     const { base, task } = workspace();
     const outcome = await run(probe(base), task);
     expect(outcome.status).toBe("refuted");
     expect(outcome.rewritten?.length).toBe(1);
-  }, 30_000);
+  });
 
   test("{root} names the root the repro runs in", async () => {
     const { main, task } = workspace();
@@ -67,7 +67,7 @@ describe("scenario: evalpin checks T003, a repro bound to the review's worktree 
     const outcome = await run(repro, task);
     expect(outcome.status).toBe("refuted");
     expect(outcome.rewritten).toBeUndefined();
-  }, 30_000);
+  });
 });
 
 // Each language's way for a probe project to name the workspace's code: rewritten to the root the
