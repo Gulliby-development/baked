@@ -148,6 +148,15 @@ export const STOP_REASONS = {
     modes: NOT_ENFORCED,
     defaultMode: "shadow",
   },
+  upstream_baseline_debt: {
+    label:
+      "A required check fails on the base a feature starts its tasks from, in files an accepted upstream feature owns",
+    // Shadow only until two bench rounds show no false would-stop (#2228, R70 namesound docs); its
+    // promotion asks the upstream owner for an amendment (`amendmentAnswer`) instead of releasing
+    // or starting a feature that cannot pass.
+    modes: NOT_ENFORCED,
+    defaultMode: "shadow",
+  },
   baseline_signature: {
     label:
       "A required check fails as before any change once durations, addresses, seeds and temporary paths are compared by shape",
