@@ -7,6 +7,7 @@ import { sourceManifest } from "../verification/snapshot.js";
 import { relativeHeaded } from "../verification/task-end-check.js";
 import { isCodePath, isStaticCheck, isWholeUnitCheck } from "./check-policy.js";
 import { changedLineRanges, type LineRange } from "./format-written.js";
+import { crlfPatch } from "./host-apply.js";
 import { isTestCheck } from "./quality/mutation.js";
 import { suppliedBlocks } from "./sizing.js";
 import type { WorkflowStore } from "./store.js";
@@ -113,6 +114,8 @@ export function suppliedOffenses(
   return out.slice(0, OFFENSE_LIMIT);
 }
 
+const lf = (text: string) => text.replace(/\r\n/g, "\n");
+
 /** The supplied content of a task's code writes: the text each file has once it is written in. */
 async function suppliedContent(
   copy: string,
@@ -141,8 +144,18 @@ async function suppliedContent(
       writeFileSync(target, only.content);
     } else if (diffs.length === supplied.length) {
       const patch = join(copy, ".baked-supplied.patch");
-      writeFileSync(patch, diffs.join(""));
-      const applied = await runGit(["apply", "--recount", "-p1", patch], copy, 30_000);
+      // Git for Windows sets core.autocrlf: the copy holds the request's bytes, not CRLF ones.
+      const apply = async (text: string) => {
+        writeFileSync(patch, text);
+        return runGit(
+          ["-c", "core.autocrlf=false", "apply", "--recount", "-p1", patch],
+          copy,
+          30_000,
+        );
+      };
+      let applied = await apply(diffs.join(""));
+      // A base with CRLF ends takes the request's LF diff with CRLF hunk lines, as host apply does.
+      if (!applied.ok && before?.includes("\r\n")) applied = await apply(crlfPatch(diffs.join("")));
       removeScratch(patch);
       if (!applied.ok) return { skipped: `the diff for ${write.path} does not apply` };
     } else continue;
@@ -150,7 +163,8 @@ async function suppliedContent(
     files.push({
       path: write.path,
       kind: diffs.length ? "diff" : "file",
-      lines: changedLineRanges(before ?? "", after),
+      // A CRLF base and the request's LF content differ on every line, not on the request's lines.
+      lines: changedLineRanges(lf(before ?? ""), lf(after)),
       whole: before === null || !diffs.length,
     });
   }

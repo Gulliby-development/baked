@@ -114,6 +114,26 @@ describe("the project's static checks on the request's verbatim content (#2275)"
     );
   });
 
+  test("Git for Windows' core.autocrlf neither moves the request's lines nor counts the base's debt (#2275)", async () => {
+    const saved = { count: process.env.GIT_CONFIG_COUNT, key: process.env.GIT_CONFIG_KEY_0, value: process.env.GIT_CONFIG_VALUE_0 };
+    Object.assign(process.env, { GIT_CONFIG_COUNT: "1", GIT_CONFIG_KEY_0: "core.autocrlf", GIT_CONFIG_VALUE_0: "true" });
+    cleanups.push(() => {
+      for (const [name, value] of [["GIT_CONFIG_COUNT", saved.count], ["GIT_CONFIG_KEY_0", saved.key], ["GIT_CONFIG_VALUE_0", saved.value]] as const)
+        if (value === undefined) delete process.env[name];
+        else process.env[name] = value;
+    });
+    const root = workspace("baked-supplied-checks-crlf-", { "lib/group.rb": `${BASE}unless legacy\n  x\nend\n` });
+    const record = await suppliedCheckRecord("T001", modify, root, diffBrief(MODIFIER), [lint], runner().run);
+    expect(record?.files).toEqual([{ path: "lib/group.rb", kind: "diff", lines: [[2, 4]] }]);
+    expect(record?.conflict).toBe(false);
+    // A base with CRLF ends: the LF diff applies as host apply's CRLF form, and only its lines count.
+    const crlf = workspace("baked-supplied-checks-crlf-base-", { "lib/group.rb": `${BASE}unless legacy\n  x\nend\n`.replace(/\n/g, "\r\n") });
+    const whole = await suppliedCheckRecord("T001", modify, crlf, diffBrief(MODIFIER), [lint], runner().run);
+    expect(whole?.skipped).toBeNull();
+    expect(whole?.files).toEqual([{ path: "lib/group.rb", kind: "diff", lines: [[2, 4]] }]);
+    expect(whole?.checks).toEqual([{ checkId: "rubocop", status: "failed", offenses: [] }]);
+  });
+
   test("a clean block records no conflict after one run, and an offense the base already had on another line is not the request's", async () => {
     const debt = `${BASE}unless legacy\n  x\nend\n`;
     const root = workspace("baked-supplied-checks-clean-", { "lib/group.rb": debt });
