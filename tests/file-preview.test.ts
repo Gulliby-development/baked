@@ -69,6 +69,19 @@ describe("file preview (#2298)", () => {
     expect(code(() => readPreview(root, join(outside, "secret.md")))).toBe("INVALID");
   });
 
+  test("a project reached through a linked folder, as macOS's /var is /private/var, finds missing files missing", () => {
+    const real = project();
+    const links = project();
+    const alias = join(links, "alias");
+    symlinkSync(real, alias, "junction");
+    mkdirSync(join(real, "docs"));
+    writeFileSync(join(real, "docs", "plan.md"), "# Plan\n");
+    expect(readPreview(alias, "docs/plan.md").path).toBe("docs/plan.md");
+    expect(code(() => readPreview(alias, "missing.md"))).toBe("NOT_FOUND");
+    expect(code(() => readPreview(alias, "new/folder/missing.md"))).toBe("NOT_FOUND");
+    expect(code(() => readPreview(alias, "../outside.md"))).toBe("INVALID");
+  });
+
   test.if(fileSymlinksAvailable)("refuses links that leave the project or hide another kind", () => {
     const root = project();
     const outside = project();
