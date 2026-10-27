@@ -6,7 +6,7 @@
  */
 import { readFileSync, statSync } from "node:fs";
 import { resolve } from "node:path";
-import { displayPath, isInside, realPath } from "../projects/paths.js";
+import { displayPath, isInside, realPath, realPathOrParent } from "../projects/paths.js";
 import { type PreviewKind, previewKind } from "./preview-kinds.js";
 
 export { PREVIEW_KINDS, type PreviewKind, previewKind } from "./preview-kinds.js";
@@ -36,7 +36,7 @@ export class PreviewError extends Error {
 export function previewFile(workspace: string, path: string): string {
   const kind = previewKind(path);
   if (!kind) throw new PreviewError("INVALID", `${path} is not a Markdown or HTML file`);
-  const file = realPath(resolve(workspace, path));
+  const file = realPathOrParent(resolve(workspace, path));
   if (!isInside(realPath(workspace), file))
     throw new PreviewError("INVALID", `${path} is outside the project`);
   // The real path may end in another extension when the name is a link to another file.
