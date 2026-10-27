@@ -10,6 +10,7 @@ import {
 import { dirname, join } from "node:path";
 import { tmpDir } from "../platform/index.js";
 import type { SandboxRequest } from "../security/sandbox.js";
+import { linkDependencies } from "../workflows/dependency-dirs.js";
 import type { ProcessScope } from "../workflows/process-scope.js";
 import { entryPointCommand } from "./entry-points.js";
 import { REPRO_TIMEOUT_MS, removeScratch, reproEnv } from "./repro.js";
@@ -19,8 +20,6 @@ export const DOC_EXAMPLE_LIMIT = 8;
 /** Bytes of workspace files the host copies to run the examples in; a larger workspace runs none. */
 export const DOC_EXAMPLE_COPY_BYTES = 64 * 1024 * 1024;
 const OUTPUT_LIMIT = 2000;
-/** Directories a copy links instead of copying: installed dependencies a program imports. */
-const LINKED = ["node_modules", ".venv", "venv"];
 /** Directories compilers and bundlers write their output to; a source manifest never lists them. */
 const BUILD_DIRS = new Set(["bin", "obj", "target", "dist", "build", "out"]);
 const SHELL_LANGS = new Set(["", "sh", "bash", "shell", "console", "zsh", "terminal"]);
@@ -458,7 +457,7 @@ export function copyWorkspace(root: string, files: readonly string[]): string | 
     mkdirSync(dirname(join(copy, path)), { recursive: true });
     copyFileSync(join(root, path), join(copy, path));
   }
-  for (const name of LINKED) linkInto(root, copy, name);
+  linkDependencies(root, copy);
   return copy;
 }
 

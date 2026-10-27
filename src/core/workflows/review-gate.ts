@@ -156,6 +156,8 @@ export interface ConvergenceGateFinding extends GateFinding {
   /** The finding is on a test or documentation file. */
   testOrDoc: boolean;
   criterionIds: string[];
+  /** The finding's file is one the request gives verbatim (#2332); absent otherwise and before. */
+  supplied?: true;
 }
 
 export interface ConvergenceGate {
@@ -202,11 +204,13 @@ export function convergenceGateFinding(
   finding: Finding,
   sibling: boolean,
   outcome: ReproOutcome["status"] | undefined,
+  supplied = false,
 ): ConvergenceGateFinding {
   return {
     ...gateFinding(finding, sibling, outcome),
     testOrDoc: testOrDocFile(finding.file),
     criterionIds: [...finding.criterionIds],
+    ...(supplied ? { supplied: true as const } : {}),
   };
 }
 

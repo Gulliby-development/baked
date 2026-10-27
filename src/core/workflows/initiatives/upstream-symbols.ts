@@ -1,4 +1,12 @@
-import { basename } from "node:path";
+import { basename, dirname } from "node:path";
+import {
+  isSupportedLanguage,
+  type LanguageRecord,
+  none,
+  rowOf,
+  type SupportedLanguage,
+} from "../../intelligence/language-records.js";
+import { detectLanguageFromPath } from "../../intelligence/types.js";
 import type { Spec } from "../schemas.js";
 import type { InitiativePlan } from "./plan.js";
 
@@ -90,22 +98,152 @@ export interface UpstreamSymbolGap {
   path: string;
 }
 
-/** `Type.Member` in prose. */
-const MEMBER = /\b([A-Z][A-Za-z0-9_]*)\.([A-Za-z_][A-Za-z0-9_]*)\b/g;
+/**
+ * One way a language writes a member of a type, module or package in prose. `pattern` is a regular
+ * expression source whose `type` and `member` groups name them; `example` is a sentence it reads,
+ * for the language parity test.
+ */
+export interface MemberSpelling {
+  readonly pattern: string;
+  readonly example: string;
+}
+
+const spelling = (pattern: string, example: string): MemberSpelling => ({ pattern, example });
+const NAME = "[A-Za-z_][A-Za-z0-9_]*";
+/** `Reader.IsEncodingToken`: an uppercase type, module or class, read in every language. */
+const DOTTED = spelling(
+  String.raw`\b(?<type>[A-Z][A-Za-z0-9_]*)(?<sep>\.)(?<member>${NAME})\b`,
+  "Scanner delegates to Reader.IsEncodingToken.",
+);
+/** `Reader::new`, `reader::read`, `Reader::class`. */
+const PATH = spelling(
+  String.raw`\b(?<type>${NAME})(?<sep>::)(?<member>${NAME})\b`,
+  "Scanner calls Reader::is_encoding_token.",
+);
+/** `Reader#read`, as API docs write an instance method. */
+const HASH = spelling(
+  String.raw`\b(?<type>[A-Z][A-Za-z0-9_]*)(?<sep>#)(?<member>[A-Za-z_][A-Za-z0-9_]*[?!]?)`,
+  "Scanner calls Reader#isEncodingToken per token.",
+);
+/** `reader.read(...)` or `` `reader.read` ``: a lowercase module's function, called or quoted. */
+const MODULE_CALL = spelling(
+  String.raw`\b(?<type>[a-z_][a-z0-9_]*)(?<sep>\.)(?<member>${NAME})(?=\(|\x60)`,
+  "Scanner calls `reader.is_encoding_token` per token.",
+);
+
+/**
+ * How each language writes a member in prose (#2199): the upstream-symbol check reads the
+ * spellings of the languages of the upstream files, besides `Type.Member`, which every language's
+ * prose uses. A language without a qualified name for a member is a `none` row.
+ */
+export const MEMBER_SYNTAX: LanguageRecord<readonly MemberSpelling[]> = {
+  typescript: [DOTTED, HASH],
+  javascript: [DOTTED, HASH],
+  vue: [DOTTED, HASH],
+  svelte: [DOTTED, HASH],
+  python: [DOTTED, MODULE_CALL],
+  // An exported Go name is capitalized, so `lines.Line` is a package member however it is quoted.
+  go: [
+    DOTTED,
+    spelling(
+      String.raw`\b(?<type>[a-z][a-z0-9_]*)(?<sep>\.)(?<member>[A-Z][A-Za-z0-9_]*)\b`,
+      "Scanner calls reader.IsEncodingToken for each token.",
+    ),
+  ],
+  rust: [PATH, DOTTED],
+  java: [DOTTED, { ...PATH, example: "Scanner passes Reader::isEncodingToken as the filter." }],
+  kotlin: [DOTTED, { ...PATH, example: "Scanner passes Reader::isEncodingToken as the filter." }],
+  scala: [DOTTED, HASH],
+  csharp: [DOTTED],
+  c: none("C has no qualified member names: a header's functions carry a prefix (`reader_read`)"),
+  cpp: [PATH, DOTTED],
+  ruby: [
+    DOTTED,
+    { ...HASH, example: "Scanner calls Reader#encoding_token? per token." },
+    { ...PATH, example: "Scanner reads Reader::ENCODINGS." },
+  ],
+  php: [PATH],
+  swift: [DOTTED],
+  lua: [
+    DOTTED,
+    MODULE_CALL,
+    // A method call: `reader:read(...)`.
+    spelling(
+      String.raw`\b(?<type>${NAME})(?<sep>:)(?<member>${NAME})(?=\()`,
+      "Scanner calls reader:is_encoding_token(token).",
+    ),
+  ],
+  elixir: [DOTTED],
+  dart: [DOTTED],
+  zig: [DOTTED, MODULE_CALL],
+  bash: none("shell functions have no member syntax"),
+  ocaml: [DOTTED],
+  objc: [
+    DOTTED,
+    spelling(
+      String.raw`(?<sep>[-+]?\[)(?<type>[A-Z][A-Za-z0-9_]*)\s+(?<member>[a-z_][A-Za-z0-9_]*)`,
+      "Scanner sends [Reader isEncodingToken:] for each token.",
+    ),
+  ],
+  rescript: [DOTTED],
+  solidity: [DOTTED],
+  sql: none("SQL objects are qualified by schema or table, not by a file's type"),
+  powershell: [
+    spelling(
+      String.raw`\[(?:[A-Za-z_][\w.]*\.)?(?<type>${NAME})\](?<sep>::)(?<member>${NAME})`,
+      "Scanner calls [Reader]::IsEncodingToken for each token.",
+    ),
+    DOTTED,
+  ],
+  // `reader::read` for a package's function, `Reader$read` for an R6 method.
+  r: [
+    PATH,
+    spelling(
+      String.raw`\b(?<type>[A-Z][A-Za-z0-9_]*)(?<sep>\$)(?<member>${NAME})`,
+      "Scanner calls Reader$is_encoding_token for each token.",
+    ),
+  ],
+};
+
+/** The spellings read for upstream files of `languages`, `Type.Member` always, each once. */
+function memberPatterns(languages: Iterable<string>): RegExp[] {
+  const sources = new Set([DOTTED.pattern]);
+  for (const language of languages)
+    for (const { pattern } of rowOf(MEMBER_SYNTAX, language) ?? []) sources.add(pattern);
+  // A lookahead finds overlapping names, so `crate::reader::read` gives `reader::read` too.
+  return [...sources].map((source) => new RegExp(`(?=${source})`, "g"));
+}
+
+/** A file name's extension: `config.yaml`, `` `reader.py` `` name a file, not a member. */
+const FILE_EXTENSION =
+  /^(?:json|jsonc|ya?ml|toml|txt|md|csv|tsv|ini|cfg|conf|xml|html?|lock|log|env|sh|ps1|py|pyi|go|rs|ts|tsx|js|jsx|mjs|rb|php|lua|zig|sql|r|java|kt|kts|scala|cs|swift|dart|ex|exs|ml|res|sol|vue|svelte|c|h|cc|cpp|hpp|m)$/;
+
+const languagesOf = (paths: readonly string[]): SupportedLanguage[] =>
+  paths.map((path) => detectLanguageFromPath(path)).filter(isSupportedLanguage);
 /** "a public Reader helper", "Reader's public helper": a helper of a type, with no member named. */
 const HELPER = /\b(?:public\s+)?([A-Z][A-Za-z0-9_]*)(?:'s)?\s+(?:public\s+)?helper\b/g;
 
-const typeOf = (path: string) =>
-  basename(path)
+const nameOf = (name: string) =>
+  name
     .replace(/\.[^.]+$/, "")
     .replace(/[_-]/g, "")
     .toLowerCase();
+/**
+ * Whether a file is the type a spec names: its stem (`Reader.cs`, `reader.py`), or its folder,
+ * since a Go package, a Python package or a Rust module directory is named by it
+ * (`lines/parse.go` for `lines.Line`, #2199).
+ */
+const isTypeFile = (path: string, type: string) => {
+  const name = nameOf(type);
+  return nameOf(basename(path)) === name || nameOf(basename(dirname(path))) === name;
+};
 
 /**
  * The members a planned-ahead spec names on the files of its upstream features that the accepted
- * upstream code does not define (#2135). A type is matched to a file by its stem in any letter
- * case (`Reader` to `Reader.cs`, `reader.go`, `reader.py`), so it works in every language; a
- * member is looked up as a word in that file. A helper the spec names by its type alone is a gap
+ * upstream code does not define (#2135). A member is read by the spellings of the upstream files'
+ * languages (`MEMBER_SYNTAX`: `Reader::new`, `Reader#read`, `lines.Line`, #2199). A type is matched
+ * to a file by its stem or its folder in any letter case (`Reader` to `Reader.cs`, `reader.go`,
+ * `reader/mod.rs`), so it works in every language; a member is looked up as a word in that file. A helper the spec names by its type alone is a gap
  * too: nothing upstream decided it exists. `upstream` holds each upstream boundary file and its
  * text at the release base, null when absent.
  */
@@ -119,15 +257,19 @@ export function upstreamSymbolGaps(
     ...spec.requirements.map((r) => ({ ref: r.id, text: r.text })),
     ...spec.criteria.map((c) => ({ ref: c.id, text: `${c.given}\n${c.when}\n${c.then}` })),
   ];
+  const patterns = memberPatterns(languagesOf(upstream.map((file) => file.path)));
   for (const { ref, text } of texts) {
     const named = new Set<string>();
-    for (const [, type = "", member = ""] of text.matchAll(MEMBER)) {
-      const files = upstream.filter((file) => typeOf(file.path) === type.toLowerCase());
-      // `Reader.cs` is a file name, not a member.
+    const members = patterns.flatMap((pattern) => [...text.matchAll(pattern)]);
+    for (const { groups } of members) {
+      const { type = "", sep = ".", member = "" } = groups ?? {};
+      const files = upstream.filter((file) => isTypeFile(file.path, type));
+      // `Reader.cs` and `config.yaml` are file names, not members.
+      if (sep === "." && FILE_EXTENSION.test(member)) continue;
       if (!files.length || files.some((file) => file.path.endsWith(`.${member}`))) continue;
-      named.add(type.toLowerCase());
+      named.add(nameOf(type));
       if (files.some((file) => file.text !== null && wordIn(file.text, member))) continue;
-      const symbol = `${type}.${member}`;
+      const symbol = sep.endsWith("[") ? `${sep}${type} ${member}]` : `${type}${sep}${member}`;
       if (seen.has(symbol)) continue;
       seen.add(symbol);
       const file = files[0];
@@ -135,8 +277,8 @@ export function upstreamSymbolGaps(
     }
     for (const match of text.matchAll(HELPER)) {
       const type = match[1] ?? "";
-      const file = upstream.find((f) => typeOf(f.path) === type.toLowerCase());
-      if (!file || named.has(type.toLowerCase()) || seen.has(match[0])) continue;
+      const file = upstream.find((f) => isTypeFile(f.path, type));
+      if (!file || named.has(nameOf(type)) || seen.has(match[0])) continue;
       seen.add(match[0]);
       gaps.push({ ref, symbol: match[0], featureId: file.featureId, path: file.path });
     }

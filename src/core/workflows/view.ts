@@ -33,6 +33,7 @@ import {
   type WorkflowEvent,
 } from "./schemas.js";
 import type { NativeWorkflowService } from "./service.js";
+import { readStallPark } from "./stall-ladder.js";
 import { stopRecovery } from "./stop-detail.js";
 import { wouldStopSummary } from "./stop-reasons.js";
 import type { RunRow, StepRow, WorkflowStore } from "./store.js";
@@ -574,6 +575,8 @@ export function readWorkflowView(service: NativeWorkflowService, runId: string) 
       preflight: readCheckPreflight(store, runId),
       forkStages: service.forkStages(runId),
       wouldStop: wouldStopSummary(store, runId),
+      /** In shadow: the automatic resume a ladder that ran out on a stall would take (#2271). */
+      stallPark: readStallPark(store, runId),
     };
   });
 }
