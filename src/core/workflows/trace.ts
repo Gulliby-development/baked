@@ -129,6 +129,7 @@ import {
   type RunBound,
 } from "./initiatives/growth.js";
 import {
+  type CostView,
   dollarCapPark,
   dollarShortfall,
   type FeatureView,
@@ -2564,6 +2565,9 @@ export interface InitiativeStartBoundary {
   spentUsd: number;
   forecastUsd: number | null;
   ceilingUsd: number | null;
+  /** The dollar forecast at the measured ratio, and the dollar notice, at this start (#2186). */
+  advice: CostView["advice"];
+  forecastNotice: string | null;
   replayed: "pass" | "park";
   /** Each feature's token range in the estimate the current code makes at this start (#1806). */
   estimate: { featureId: string; low: number; high: number }[];
@@ -3302,6 +3306,8 @@ function replayStarts(
           spentUsd: cost.spentUsd,
           forecastUsd: cost.forecastUsd,
           ceilingUsd: cost.ceilingUsd,
+          advice: cost.advice ?? null,
+          forecastNotice: cost.forecastNotice,
           replayed: feature && gate(view, feature) ? "park" : "pass",
           estimate,
           tokens: whole ? { ...whole.tokens, expected: whole.expectedTokens } : null,
