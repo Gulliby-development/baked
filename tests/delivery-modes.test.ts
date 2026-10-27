@@ -1,7 +1,11 @@
 import { describe, expect, test } from "bun:test";
-import { readdirSync, readFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { gitAdd } from "../src/core/git/status.js";
 import { gitMode } from "../src/core/workflows/delivery-git.js";
+import { removeTempDir } from "./helpers/temp-dir.js";
 
 // #2331: a Windows working tree has no executable bit (mode 0644 here), so a new launcher took
 // `100644` and failed a Unix CI. A new file's mode also comes from its shebang.
@@ -48,5 +52,23 @@ describe("the mode of a new file (#2331)", () => {
       if (found) counts[name.replaceAll("\\", "/")] = found;
     }
     expect(counts).toEqual(allowed);
+  });
+});
+
+describe("staging with the git tool (#2331)", () => {
+  test("a staged new file with a shebang is executable, from a subfolder too", async () => {
+    const root = mkdtempSync(join(tmpdir(), "baked-git-add-modes-"));
+    try {
+      const git = (...args: string[]) => execFileSync("git", args, { cwd: root, encoding: "utf8" });
+      git("init", "-q");
+      mkdirSync(join(root, "exe"));
+      writeFileSync(join(root, "exe", "tool"), "#!/usr/bin/env ruby\nputs 1\n", { mode: 0o644 });
+      writeFileSync(join(root, "exe", "notes.txt"), "plain\n", { mode: 0o644 });
+      expect(await gitAdd(join(root, "exe"), ["."])).toBe(true);
+      expect(git("ls-files", "-s", "exe/tool")).toStartWith("100755 ");
+      expect(git("ls-files", "-s", "exe/notes.txt")).toStartWith("100644 ");
+    } finally {
+      await removeTempDir(root);
+    }
   });
 });
