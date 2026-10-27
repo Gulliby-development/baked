@@ -6,6 +6,7 @@
     ".clang-format": "BasedOnStyle: LLVM\n"
   },
   "expected": {
+    "memberSyntax": null,
     "suppressions": [
       "int x = y; // NOLINT(bugprone-narrowing-conversions): lint, linted, prescribable",
       "#pragma GCC diagnostic ignored \"-Wunused\": lint, linted, prescribable",

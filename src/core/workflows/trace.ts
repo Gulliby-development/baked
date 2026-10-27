@@ -191,7 +191,14 @@ import {
   sourceDefectDecision,
 } from "./source-defect.js";
 import { costStageOf, runPrices } from "./stage-price.js";
-import { type LadderRung, nextRung, type RecoveryPlacement } from "./stall-ladder.js";
+import {
+  type LadderRung,
+  nextRung,
+  type RecoveryPlacement,
+  type StallPark,
+  stallParkDecision,
+} from "./stall-ladder.js";
+import { readFallback } from "./stall-siblings.js";
 import { type ArtifactRow, WorkflowStore } from "./store.js";
 import {
   INTEGRITY_DIR,
@@ -2199,6 +2206,10 @@ export interface StallLadderBoundary {
   /** The rung the run took after this attempt (`attempt.recovery`), or none. */
   recorded: LadderRung | "none";
   replayed: LadderRung | "none";
+  /** The sibling model the replayed `next-model` rung takes, from the recorded decision (#2271). */
+  replayedModel?: string;
+  /** A stalled ladder that ran out: what its `provider_stall` park would do, in shadow (#2271). */
+  park?: StallPark["decision"];
 }
 
 /**
@@ -2243,6 +2254,7 @@ export function replayStallLadder(
       })
     : {};
   const ladders = new Map<string, RecoveryPlacement | undefined>();
+  const parks = new Map<string, number>();
   const boundaries: StallLadderBoundary[] = [];
   for (const attempt of attempts) {
     const stage = store.rootStage(runId, attempt.step_id);
@@ -2258,6 +2270,7 @@ export function replayStallLadder(
     const key = `${stage}:${usage.profileId ?? ""}`;
     if (attempt.status === "completed") {
       ladders.delete(key);
+      parks.delete(key);
       continue;
     }
     const last = usage.calls?.at(-1);
@@ -2281,19 +2294,27 @@ export function replayStallLadder(
       continue;
     }
     const current = ladders.get(key);
+    // The siblings the scheduler saw at this stall, so a replay takes the same derived fallback.
+    const siblings = readFallback(store, runId, attempt.id)?.siblings;
     const next = rule(current, {
       model: attempt.model_id,
       models,
       fallbackIndex: Math.max(0, models.indexOf(attempt.model_id)),
       effort,
+      ...(siblings ? { siblings } : {}),
     });
     ladders.set(key, next ?? undefined);
+    // As the scheduler: a ladder that ran out on a stall stops for the circuit and parks.
+    const tries = !next && current && stalled ? (parks.get(key) ?? 0) + 1 : 0;
+    if (tries) parks.set(key, tries);
     boundaries.push({
       attemptId: attempt.id,
       stage,
       model: attempt.model_id,
       recorded: taken.get(attempt.id) ?? "none",
       replayed: next?.rung ?? "none",
+      ...(next?.model ? { replayedModel: next.model } : {}),
+      ...(tries ? { park: stallParkDecision(tries) } : {}),
     });
   }
   return boundaries;

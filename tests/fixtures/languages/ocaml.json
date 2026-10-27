@@ -4,6 +4,9 @@
     "dune-project": "(lang dune 3.0)\n"
   },
   "expected": {
+    "memberSyntax": [
+      "Scanner delegates to Reader.IsEncodingToken.: Reader.IsEncodingToken"
+    ],
     "suppressions": [
       "[@@@warning \"-32\"]: lint, linted, prescribable"
     ],
