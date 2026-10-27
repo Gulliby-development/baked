@@ -251,14 +251,18 @@ const RECORDS: Record<
         return `${tool}: ${as.join(", ")}`;
       }),
   },
-  // The lists a language's formatter sorts within groups of consecutive lines, and the lines of the
-  // row's sample a host-written skeleton gets a blank line before so the order stays (#2222).
+  // The lists a language's formatter sorts, and the lines of the row's sample a host-written
+  // skeleton gets a blank line (#2222) or the formatter's split marker (#2233) before so the order
+  // stays, in a project configured as the row's sample says.
   sortedLists: {
     record: SORTED_LISTS,
     run: (language) => {
       const row = rowOf(SORTED_LISTS, language);
-      const laid = row ? layOutForFormatter(row.sample.path, row.sample.content) : null;
-      return laid ? [`${row?.sample.path}: ${laid.formatter} blank line before ${laid.lines.join(", ")}`] : [];
+      const laid = row
+        ? layOutForFormatter(row.sample.path, row.sample.content, (name) => row.sample.config?.[name] ?? null)
+        : null;
+      const before = laid?.marker ? `"${laid.marker}"` : "blank line";
+      return laid ? [`${row?.sample.path}: ${laid.formatter} ${before} before ${laid.lines.join(", ")}`] : [];
     },
   },
   // The check-defining configs auto-approval protects and holds to named tightenings (#2221): each
