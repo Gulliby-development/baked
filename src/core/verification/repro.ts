@@ -30,6 +30,11 @@ export interface ReproOutcome {
   reason: string;
   exitCode: number | null;
   output: string;
+  /**
+   * Absolute paths of another root of the run (the review's worktree, the workspace) that the
+   * repro's files or arguments named and the host replaced with the root it ran in (#2279).
+   */
+  rewritten?: string[];
 }
 
 const normalize = (text: string) => text.replace(/\r\n?/g, "\n").trim();
@@ -185,6 +190,59 @@ function throughEntryPoint(
     : { executable: command.executable, args: command.args };
 }
 
+/** The `.baked/worktrees/<run>/<name>` tail of a run worktree's root, anchored at its separator. */
+const WORKTREE_TAIL = /[\\/]\.baked[\\/]worktrees[\\/][^\\/"'`\s]+[\\/][^\\/"'`\s]+/g;
+const slashes = (path: string) => path.replace(/\\/g, "/");
+const escapeRegExp = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+/**
+ * The repro's text with `{root}` and every other root of the run replaced by `root`, the root the
+ * repro runs in (#2279). A reviewer writes a probe project against the code it read, by the
+ * absolute path of its own snapshot: R73 evalpin's `Cargo.toml` named `.../worktrees/<run>/main`
+ * while the corrective ran in `.../worktrees/<run>/T003`, so the probe built the unchanged code and
+ * reproduced after every fix (2.45M tokens). Another run worktree's root, and the workspace a
+ * worktree belongs to, are rewritten; the spelling keeps the text's slashes, and `{root}` in file
+ * content takes forward slashes, which every toolchain reads on Windows too.
+ */
+export function rerootRepro(
+  text: string,
+  root: string,
+  forContent: boolean,
+): { text: string; rewritten: string[] } {
+  const rewritten: string[] = [];
+  const own = slashes(root).toLowerCase();
+  const swap = (found: string) => {
+    if (slashes(found).toLowerCase() === own) return found;
+    rewritten.push(found);
+    return found.includes("\\") && !forContent ? root : slashes(root);
+  };
+  let out = text.replaceAll("{root}", forContent ? slashes(root) : root);
+  // The workspace the root belongs to (the root itself when it is no run worktree).
+  const workspace = slashes(root).split("/.baked/worktrees/")[0] ?? slashes(root);
+  // Each worktree of that workspace: a worktree tail right after the workspace's own spelling.
+  let joined = "";
+  let last = 0;
+  for (const match of out.matchAll(WORKTREE_TAIL)) {
+    const at = match.index ?? 0;
+    const start = at - workspace.length;
+    if (start < last || slashes(out.slice(start, at)).toLowerCase() !== workspace.toLowerCase())
+      continue;
+    const end = at + match[0].length;
+    joined += out.slice(last, start) + swap(out.slice(start, end));
+    last = end;
+  }
+  out = joined + out.slice(last);
+  // The workspace itself, when the repro runs in one of its worktrees.
+  if (workspace !== slashes(root)) {
+    const spelled = new RegExp(
+      `${escapeRegExp(workspace).replace(/\//g, "[\\\\/]")}(?![\\\\/]\\.baked[\\\\/]worktrees)(?=$|[\\\\/"'\`\\s])`,
+      "gi",
+    );
+    out = out.replace(spelled, swap);
+  }
+  return { text: out, rewritten: [...new Set(rewritten)] };
+}
+
 export async function runRepro(
   processes: ProcessScope,
   requested: Repro,
@@ -202,7 +260,29 @@ export async function runRepro(
     shadows?: readonly string[];
   },
 ): Promise<ReproOutcome> {
-  const repro = { ...requested, ...throughEntryPoint(requested, options) };
+  const rewritten = new Set<string>();
+  const reroot = (text: string, forContent: boolean) => {
+    const result = rerootRepro(text, options.root, forContent);
+    for (const path of result.rewritten) rewritten.add(path);
+    return result.text;
+  };
+  const rooted: Repro = {
+    ...requested,
+    args: requested.args.map((arg) => reroot(arg, false)),
+    ...(requested.files
+      ? { files: requested.files.map((f) => ({ ...f, content: reroot(f.content, true) })) }
+      : {}),
+  };
+  const repro = { ...rooted, ...throughEntryPoint(rooted, options) };
+  const outcome = await executeRepro(processes, repro, options);
+  return rewritten.size ? { ...outcome, rewritten: [...rewritten] } : outcome;
+}
+
+async function executeRepro(
+  processes: ProcessScope,
+  repro: Repro,
+  options: Parameters<typeof runRepro>[2],
+): Promise<ReproOutcome> {
   if (!options.executables.includes(repro.executable))
     return {
       status: "inconclusive",
