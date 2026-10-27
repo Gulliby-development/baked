@@ -28,6 +28,13 @@ import { isTestPath } from "./test-integrity.js";
  * class and the other a member of it (#2137): ewvet scanner F1 (`Scanner`) and F1-3..F1-6
  * (`Scanner.IsEncodingToken`, each `repeatOf: F1`) were chains of one.
  *
+ * A family also joins across files (#2334): two findings of one family on two test files, or on
+ * any two files when the reviewer links them with `repeatOf`. R74 callmend cmd F1
+ * (`stream_command_spec.rb`), F1-2 (`check_command_spec.rb`, `repeatOf: F1`) and F1-3
+ * (`cli_spec.rb`, `repeatOf: F1-2`), all `literal-test-inputs`, were chains of one each, one
+ * spec file per round. Such a chain's record names its files, and its corrective may write and
+ * sweeps each of them.
+ *
  * A corrective that changed no file and whose finding then comes back (`repeatOf` it, or the same
  * claim on the same file) is the `repeat_without_change` would-stop (`unchangedRepeats`, shadow):
  * no further session can change what the last one left alone, and the next step is a decision on
@@ -199,9 +206,18 @@ export function chainFindings(
   return all;
 }
 
-/** Same file and family, both named: the family half of the chain key (#2048). */
+/** One named family on two named files. */
+const linkedFamily = (a: ChainFinding, b: ChainFinding): boolean =>
+  a.family !== null && a.family === b.family && a.file !== null && b.file !== null;
+
+/**
+ * The family half of the chain key (#2048): one family on one file, or on two test files (#2334),
+ * where a class of test code spreads one spec file per round.
+ */
 const sameFamily = (a: ChainFinding, b: ChainFinding): boolean =>
-  a.family !== null && a.family === b.family && a.file !== null && a.file === b.file;
+  linkedFamily(a, b) &&
+  (a.file === b.file ||
+    (a.file !== null && b.file !== null && isTestPath(a.file) && isTestPath(b.file)));
 
 /** The chain key: the same file and either the same symbol or the same family (#2048). */
 const sameSpot = (a: ChainFinding, b: ChainFinding): boolean =>
@@ -212,12 +228,14 @@ const sameSpot = (a: ChainFinding, b: ChainFinding): boolean =>
 
 /**
  * Whether the reviewer's `repeatOf` link between `a` and `b` joins a chain (#2098): the chain key,
- * or the same named file when either finding names no symbol or one symbol contains the other (a
- * class and its member, `containsSymbol`, #2137). The host's own links (`familyLink`) keep the
- * key; a link between two unrelated symbols without a shared family stays unjoined.
+ * one family on any two files (#2334), or the same named file when either finding names no symbol
+ * or one symbol contains the other (a class and its member, `containsSymbol`, #2137). The host's
+ * own links (`familyLink`) keep the key; a link between two unrelated symbols without a shared
+ * family stays unjoined.
  */
 const explicitLink = (a: ChainFinding, b: ChainFinding): boolean =>
   sameSpot(a, b) ||
+  linkedFamily(a, b) ||
   (a.file !== null &&
     a.file === b.file &&
     (symbolKey(a.symbol) === "" ||
@@ -225,7 +243,8 @@ const explicitLink = (a: ChainFinding, b: ChainFinding): boolean =>
       containsSymbol(a.symbol, b.symbol)));
 
 /**
- * The latest finding recorded before `current` of `start`'s family and file that a correction
+ * The latest finding recorded before `current` of `start`'s family and file (or test files,
+ * `sameFamily`) that a correction
  * other than `start`'s already addressed (#2048): the case a family chain links to when the
  * reviewer's `repeatOf` does not. A finding of the same round has no corrective yet, so two
  * cases found together are not a chain.
@@ -253,10 +272,10 @@ function familyLink(
 
 /**
  * The chain of a finding on its file and symbol or family, oldest first and the finding last: its
- * `repeatOf` path while each link is on the same spot (`explicitLink`: the key, or one file when
- * either names no symbol, #2098), and, where that path ends, the latest earlier addressed finding
- * of its family on its file (`familyLink`). A finding without a symbol, a family or a same-file
- * `repeatOf` is a chain of one.
+ * `repeatOf` path while each link is on the same spot (`explicitLink`: the key, one family across
+ * files, or one file when either names no symbol, #2098, #2334), and, where that path ends, the
+ * latest earlier addressed finding of its family on its file or test files (`familyLink`). A
+ * finding without a symbol, a family or a same-file `repeatOf` is a chain of one.
  */
 export function findingChain(
   all: ReadonlyMap<string, ChainFinding>,
@@ -374,6 +393,8 @@ export interface ChainRecord {
   family?: string | null;
   /** The symbols of the chain's findings, oldest first, when they are not all `symbol`. */
   symbols?: string[];
+  /** The files of the chain's findings, oldest first, when they are not all `file` (#2334). */
+  files?: string[];
   chain: { id: string; repeatOf: string | null; repro: boolean }[];
   length: number;
   threshold: number;
@@ -551,6 +572,7 @@ export function chainRecord(
   decide: ChainRule = chainRewriteDecision,
 ): ChainRecord {
   const symbols = [...new Set(chain.map((f) => symbolKey(f.symbol)).filter(Boolean))];
+  const files = [...new Set(chain.flatMap((f) => (f.file ? [f.file] : [])))];
   const decision = decide(chain.length, policy);
   return {
     schemaVersion: 1,
@@ -561,6 +583,7 @@ export function chainRecord(
     symbol: symbolKey(finding.symbol) || (symbols.at(-1) ?? ""),
     family: finding.family,
     ...(symbols.length > 1 ? { symbols } : {}),
+    ...(files.length > 1 ? { files } : {}),
     chain: chain.map((f) => ({ id: f.id, repeatOf: f.repeatOf, repro: f.repro !== undefined })),
     length: chain.length,
     threshold: CHAIN_REWRITE_AT,
@@ -669,14 +692,25 @@ export const BATTERY_NOTE =
 
 /**
  * The last step of a rewrite corrective's description, in place of the repeat step. A family
- * chain (#2048) spans symbols: it names the class and every symbol, and the code of that class in
- * the file is rewritten.
+ * chain (#2048) spans symbols or files (#2334): it names the class, every symbol and every file,
+ * and the code of that class in those files is rewritten.
  */
 export const rewriteStep = (
   symbol: string,
   ids: readonly string[],
-  family?: { name: string; file: string | null; symbols: readonly string[] },
-): string =>
-  family && family.symbols.length > 1
+  family?: {
+    name: string;
+    file: string | null;
+    symbols: readonly string[];
+    files?: readonly string[];
+  },
+): string => {
+  const files = family?.files ?? [];
+  if (family && files.length > 1) {
+    const places = family.symbols.length ? `${family.symbols.join(", ")} and their siblings` : "";
+    return `\nThis finding is case ${ids.length} of the defect class ${family.name} in ${files.join(", ")} (${ids.join(", ")}${family.symbols.length ? `, on ${family.symbols.join(", ")}` : ""}), each found after the last was patched. Do not patch this case: name the rule the class breaks, rewrite every place of those files that handles it${places ? ` (${places})` : ""} from the algorithm its spec rows or a named reference algorithm give, and make every case of the battery in your input pass.`;
+  }
+  return family && family.symbols.length > 1
     ? `\nThis finding is case ${ids.length} of the defect class ${family.name}${family.file ? ` in ${family.file}` : ""} (${ids.join(", ")}, on ${family.symbols.join(", ")}), each found after the last was patched. Do not patch this case: name the rule the class breaks, rewrite every place of that file that handles it (${family.symbols.join(", ")} and their siblings) from the algorithm its spec rows or a named reference algorithm give, and make every case of the battery in your input pass.`
     : `\nThis finding is case ${ids.length} of one defect class on ${symbol} (${ids.join(", ")}), each found after the last was patched. Do not patch this case: rewrite ${symbol} from the algorithm its spec rows or a named reference algorithm give, and make every case of the battery in your input pass.`;
+};

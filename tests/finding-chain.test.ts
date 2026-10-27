@@ -104,6 +104,37 @@ describe("R68 ewvet scanner: a reviewer's repeatOf from a class to its member (#
   });
 });
 
+describe("R74 callmend cmd: one family on another spec file each round (#2334)", () => {
+  const F1 = finding("F1", { file: "spec/cmd/stream_command_spec.rb", family: "literal-test-inputs", repairTaskId: "T015" });
+  const F12 = finding("F1-2", { file: "spec/cmd/check_command_spec.rb", family: "literal-test-inputs", repeatOf: "F1", repairTaskId: "T016" });
+
+  test("F1-2 on check_command_spec.rb, repeatOf F1 on stream_command_spec.rb, is the second link: the old rule left it a chain of one", () => {
+    const all = byId([F1, F12]);
+    expect(findingChain(all, F12).map((f) => f.id)).toEqual(["F1", "F1-2"]);
+    const record = chainRecord("T016", F12, findingChain(all, F12), "on");
+    expect([record.decision, record.corrective, record.files]).toEqual(["rewrite", "test-sweep", ["spec/cmd/stream_command_spec.rb", "spec/cmd/check_command_spec.rb"]]);
+    expect(rewritesSymbol(record)).toBe(false);
+  });
+
+  test("the family alone joins two test files; a link across files needs one family", () => {
+    const unlinked = byId([F1, { ...F12, repeatOf: null }]);
+    expect(findingChain(unlinked, unlinked.get("F1-2") as ChainFinding)).toHaveLength(2);
+    const otherFamily = byId([F1, { ...F12, family: "missing-exit-code" }]);
+    expect(findingChain(otherFamily, otherFamily.get("F1-2") as ChainFinding)).toHaveLength(1);
+    const noFamily = byId([{ ...F1, family: null }, { ...F12, family: null }]);
+    expect(findingChain(noFamily, noFamily.get("F1-2") as ChainFinding)).toHaveLength(1);
+  });
+
+  test("two source files of one family join only by the reviewer's link", () => {
+    const source = (id: string, file: string, repeatOf: string | null) => finding(id, { file, family: "utf8-byte-offsets", symbol: null, repeatOf, repairTaskId: `T0${id.slice(1)}` });
+    const unlinked = byId([source("F1", "lib/a.rb", null), source("F2", "lib/b.rb", null)]);
+    expect(findingChain(unlinked, unlinked.get("F2") as ChainFinding)).toHaveLength(1);
+    const linked = byId([source("F1", "lib/a.rb", null), source("F2", "lib/b.rb", "F1")]);
+    expect(findingChain(linked, linked.get("F2") as ChainFinding)).toHaveLength(2);
+    expect(chainMembers(linked, findingChain(linked, linked.get("F2") as ChainFinding)).map((f) => f.id)).toEqual(["F1", "F2"]);
+  });
+});
+
 describe("R68 ewvet scanner: a finding back after its corrective changed no file (#2137)", () => {
   const file = { file: "src/Ewvet/Scan/Scanner.cs" };
   const F1 = finding("F1", { ...file, symbol: "Scanner", claim: "IsEncodingToken  misses the BOM", repairTaskId: "T010" });
