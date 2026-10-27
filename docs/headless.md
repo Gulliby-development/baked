@@ -85,9 +85,12 @@ baked --remove-key openai           # remove it again
 baked login                         # whether the Codex and Claude Code CLIs are installed and signed in
 baked login claude-code             # sign the CLI in with your subscription
 baked logout codex
+baked limits                        # how much of each subscription's usage limit is left
 ```
 
 `--remove-key` removes the saved key of a provider and says so when an environment variable still provides one. `baked login codex|claude-code` runs the same sign-in as `/codex login` and `/claude-code login` in the terminal UI: it prints the CLI's progress and the page to open on stderr and waits until the sign-in ends, with exit code 0 when signed in, 1 when it failed or the CLI is not installed, and 130 when interrupted. When the Claude Code sign-in page ends on a code, paste it into the terminal and press Enter: `baked login` passes it to the CLI. A CLI that is already signed in succeeds at once. `baked logout` runs the CLI's own logout. `--json` prints the `Login` object of the local API's [`GET /v1/providers/ID/login`](desktop/api.md); `baked login --json` prints `{providers: [{provider, installed, loggedIn, message, command}]}`. BAKED never reads or stores the CLI's tokens.
+
+`baked limits` shows how much of each subscription's usage limit is left, as `/limits` in the terminal UI and Subscription limits on the desktop's Providers and keys page do: a meter per window with when it resets, for Codex, Claude Code and GitHub Copilot ([subscription limits](providers.md#subscription-limits)). `--json` prints the answer of the local API's [`GET /v1/providers/limits`](desktop/api.md). It always exits 0; a provider that could not be read says why in its `message`.
 
 ## Forking a session
 

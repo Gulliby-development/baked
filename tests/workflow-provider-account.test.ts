@@ -3,11 +3,12 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DEFAULT_CONFIG } from "../src/config/index.js";
+import { ProviderUnreachableError } from "../src/core/llm/provider-health.js";
 import { defaultWorkflowPolicy } from "../src/core/workflows/defaults.js";
-import { accountRefusal, isCapacityError, isTransient, reportsLostTool, retryDelay, usageLimitReset } from "../src/core/workflows/retry.js";
+import { accountRefusal, isCapacityError, isTransient, recordProviderOutcome, reportsLostTool, retryDelay, usageLimitReset } from "../src/core/workflows/retry.js";
 import type { RunPolicy } from "../src/core/workflows/schemas.js";
 import { NativeWorkflowService } from "../src/core/workflows/service.js";
-import { newId } from "../src/core/workflows/store.js";
+import { newId, WorkflowStore } from "../src/core/workflows/store.js";
 import type { AgentExecutor } from "../src/core/workflows/types.js";
 
 const cleanups: (() => void)[] = [];
@@ -133,6 +134,12 @@ describe("provider account refusals", () => {
     expect(accountRefusal(daily)).toBe("limit");
     expect(Date.parse(usageLimitReset(daily) ?? "") - Date.now()).toBeGreaterThan(32_000_000);
     expect(accountRefusal({ statusCode: 429, message: "Too many requests", responseHeaders: { "retry-after": "7200" } })).toBe("limit");
+    // Hot module scheduler-retry (#2254): a wait of exactly an hour is still a rate limit.
+    const hour = { statusCode: 429, message: "Too many requests", responseHeaders: { "retry-after": "3600" } };
+    expect(accountRefusal(hour)).toBeNull();
+    expect(usageLimitReset(hour)).toBeNull();
+    expect(accountRefusal({ statusCode: 429, message: "Please wait 3600 seconds before retrying." })).toBeNull();
+    expect(accountRefusal({ statusCode: 429, message: "Please wait 3601 seconds before retrying." })).toBe("limit");
 
     const credits: Record<string, unknown>[] = [
       { statusCode: 400, message: "Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits." },
@@ -208,6 +215,24 @@ describe("provider account refusals", () => {
     expect(models).toEqual(["fixture/model", "spare/model"]);
     expect(final.status).toBe("blocked");
     expect(service.store.run(run.runId).reason).toBe("provider_account");
+  });
+});
+
+// Hot module scheduler-retry (#2254): an attempt the store does not have counts no outage, so the
+// provider circuit does not open on it.
+describe("provider outcome of an unknown attempt", () => {
+  test("is no failure, no stall and no wait", () => {
+    const dir = mkdtempSync(join(tmpdir(), "baked-provider-outcome-"));
+    const store = new WorkflowStore(dir);
+    cleanups.push(() => rmSync(dir, { recursive: true, force: true }));
+    cleanups.push(() => store.close());
+    const outage = new ProviderUnreachableError("codex/m");
+    expect(recordProviderOutcome(store, newId(), newId(), "implementer", undefined, outage)).toEqual({
+      failures: 0,
+      stalls: 0,
+      answered: 0,
+      waitedSeconds: null,
+    });
   });
 });
 
