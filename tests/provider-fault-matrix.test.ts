@@ -17,7 +17,8 @@ import {
 } from "../src/core/llm/provider-health.js";
 import { isStoreError } from "../src/core/workflows/host-error.js";
 import { accountRefusal, isRateLimit, isTransient, retryDelay } from "../src/core/workflows/retry.js";
-import { isStall, recoverableCall } from "../src/core/workflows/stall-ladder.js";
+import { isStall, nextRung, recoverableCall } from "../src/core/workflows/stall-ladder.js";
+import { siblingModels } from "../src/core/workflows/stall-siblings.js";
 import { WorkflowStore } from "../src/core/workflows/store.js";
 import { awakeClock } from "./helpers/awake-clock.js";
 import {
@@ -124,6 +125,33 @@ describe.each(FAULT_PROVIDERS.map((provider) => [provider]))("provider fault mat
     expect(isTransient(error)).toBe(true);
     // A stall, not a refused connection: a workflow stage climbs the recovery ladder (#1877).
     expect(isStall(error)).toBe(true);
+  });
+
+  test("a model that never answers while a sibling of its provider answered is an outage with a sibling: the ladder moves to it before a lower effort (#2271)", async () => {
+    const deadline = provider === "anthropic" ? 60 : 600;
+    const running = await start(provider, { kind: "hang" });
+    await running.advance((deadline + 2) * 1_000);
+    const { error } = await running.outcome();
+    expect(isStall(error)).toBe(true);
+    const sibling = `${provider}/sibling`;
+    const now = Date.now();
+    const siblings = siblingModels({
+      model: `${provider}/model`,
+      routed: [`${provider}/model`, sibling],
+      excluded: new Set(),
+      answered: new Map([[sibling, now - 120_000]]),
+      now,
+    });
+    expect(siblings).toEqual([sibling]);
+    // Climb from the first rung until the ladder leaves the model: whatever session or transport
+    // rungs the provider has, the next model comes before the effort is lowered.
+    const call = { model: `${provider}/model`, models: [`${provider}/model`], fallbackIndex: 0, effort: "high" as const, siblings };
+    let placement = nextRung(undefined, call);
+    while (placement && placement.rung !== "next-model") {
+      expect(placement.rung).not.toBe("lower-effort");
+      placement = nextRung(placement, call);
+    }
+    expect(placement).toEqual({ rung: "next-model", fallbackIndex: 0, model: sibling });
   });
 
   test("a call that never answers after three 50 s answers of its shape is an outage at the adaptive deadline (#1766)", async () => {

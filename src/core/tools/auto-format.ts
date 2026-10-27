@@ -4,7 +4,7 @@
  */
 
 import { existsSync, readFileSync } from "node:fs";
-import { dirname, extname, join } from "node:path";
+import { dirname, extname, isAbsolute, join, relative, sep } from "node:path";
 import { IS_WIN } from "../platform/index.js";
 import { realPath } from "../projects/paths.js";
 import { runBoundedShell } from "./bounded-process.js";
@@ -21,6 +21,89 @@ let formatOverride: string | null | undefined;
  * runners; later runs take well under a second (#1177, #1429).
  */
 export const FORMAT_TIMEOUT_MS = 30_000;
+let timeoutOverride: number | undefined;
+
+/** The format deadline in force: `FORMAT_TIMEOUT_MS`, or the one a test set with `setFormatCache`. */
+export function formatTimeoutMs(): number {
+  return timeoutOverride ?? FORMAT_TIMEOUT_MS;
+}
+
+/**
+ * A formatter that ran out of time on one file. A timed-out format left the file unformatted
+ * without a word to the model, and the next edit waited the whole deadline again (#2242).
+ */
+export interface FormatTimeout {
+  /** The file's real path. */
+  path: string;
+  /** The formatter's program, as the note names it (`rustfmt`, `prettier`). */
+  formatter: string;
+  timeoutMs: number;
+  /** Timed-out runs on this file in this process: the post-edit probe and the write alike. */
+  count: number;
+}
+
+/**
+ * After this many timeouts on one file, the post-edit format skips the file for the rest of the
+ * process: each attempt costs the whole deadline and the file's content keeps it hanging (#2242).
+ */
+export const FORMAT_TIMEOUT_SKIP_AFTER = 2;
+
+const formatTimeouts = new Map<string, FormatTimeout>();
+
+/** The program a format command runs, past `bunx`, `npx` and `uv run`-style launchers. */
+function formatterName(command: string): string {
+  const words = command.trim().split(/\s+/);
+  let i = 0;
+  if (/^(?:uv|poetry|pipenv)$/.test(words[0] ?? "") && words[1] === "run") i = 2;
+  else if (/^(?:bunx|npx)$/.test(words[0] ?? "")) i = 1;
+  return (words[i] ?? command).replace(/^.*[\\/]/, "");
+}
+
+/** Records a format of `filePath` that did not finish within `timeoutMs`; returns the record. */
+export function recordFormatTimeout(
+  filePath: string,
+  command: string,
+  timeoutMs: number,
+): FormatTimeout {
+  const path = realPath(filePath);
+  const known = formatTimeouts.get(path);
+  const record = {
+    path,
+    formatter: formatterName(command),
+    timeoutMs,
+    count: (known?.count ?? 0) + 1,
+  };
+  formatTimeouts.set(path, record);
+  return record;
+}
+
+/**
+ * The recorded format timeouts of a file, or undefined: the host fact a later check timeout reads
+ * to name the file the formatter hangs on without running it on each file again (#2242).
+ */
+export function formatTimeoutOf(filePath: string): FormatTimeout | undefined {
+  return formatTimeouts.get(realPath(filePath));
+}
+
+/**
+ * The recorded format timeouts of files under `dir`, by their path relative to it with forward
+ * slashes: the checks stage reads those of a run's worktrees (#2242).
+ */
+export function formatTimeoutsUnder(dir: string): Map<string, FormatTimeout> {
+  const root = realPath(dir);
+  const found = new Map<string, FormatTimeout>();
+  for (const [path, record] of formatTimeouts) {
+    const rel = relative(root, path);
+    if (rel && !rel.startsWith("..") && !isAbsolute(rel))
+      found.set(rel.split(sep).join("/"), record);
+  }
+  return found;
+}
+
+/** A format that finished drops the file's timeouts: its content no longer hangs the formatter. */
+function clearFormatTimeout(filePath: string): void {
+  formatTimeouts.delete(realPath(filePath));
+}
 
 function shellQuote(s: string): string {
   // POSIX: single-quote wrap; Windows cmd.exe: double-quote wrap (no special chars allowed in path-only args).
@@ -38,15 +121,24 @@ async function getFormatCommand(cwd: string): Promise<string | null> {
   return profile.formatFile;
 }
 
-/** Override cached format command (e.g. set to null in tests to skip formatting). */
-export function setFormatCache(cmd: string | null): void {
+/**
+ * Override cached format command (e.g. set to null in tests to skip formatting), and optionally
+ * the format deadline.
+ */
+export function setFormatCache(cmd: string | null, timeoutMs?: number): void {
   formatOverride = cmd;
+  timeoutOverride = timeoutMs;
 }
 
-/** Drops the override and the detected commands, so the next edit detects the formatter again. */
+/**
+ * Drops the override, the detected commands and the recorded timeouts, so the next edit detects
+ * the formatter again.
+ */
 export function resetFormatCache(): void {
   formatOverride = undefined;
+  timeoutOverride = undefined;
   formatCommands.clear();
+  formatTimeouts.clear();
 }
 
 /**
@@ -144,28 +236,47 @@ export function formatProbeCommand(command: string, filePath: string): string | 
   return null;
 }
 
+/**
+ * What the post-edit format did: `formatted`, `skipped` (no formatter, no pre-image, an unclean
+ * pre-image, or a failed run), `timed-out` with the record of this file's timeouts, or
+ * `skipped-after-timeouts` once the file reached `FORMAT_TIMEOUT_SKIP_AFTER` (#2242).
+ */
+export type AutoFormatOutcome =
+  | { kind: "formatted" | "skipped" | "skipped-after-timeouts" }
+  | { kind: "timed-out"; timeout: FormatTimeout };
+
 /** null means a new file; undefined means the caller has no pre-image. */
 export async function canAutoFormat(
   filePath: string,
   before: string | null | undefined,
   cwd?: string,
 ): Promise<boolean> {
-  if (before === null) return true;
-  if (before === undefined) return false;
+  return (await probeAutoFormat(filePath, before, cwd)).kind === "formatted";
+}
+
+/** The pre-image probe of `canAutoFormat`, with a timeout told apart from an unclean pre-image. */
+async function probeAutoFormat(
+  filePath: string,
+  before: string | null | undefined,
+  cwd?: string,
+): Promise<AutoFormatOutcome> {
+  if (before === null) return { kind: "formatted" };
+  if (before === undefined) return { kind: "skipped" };
   try {
     const { formatRoot } = await import("./project.js");
     const effectiveCwd = cwd ?? formatRoot(filePath) ?? process.cwd();
     const command = await getFormatCommand(effectiveCwd);
     const probe = command ? formatProbeCommand(command, filePath) : null;
-    if (!probe) return false;
-    const result = await runBoundedShell(probe, {
-      cwd: effectiveCwd,
-      timeoutMs: FORMAT_TIMEOUT_MS,
-      stdin: before,
-    });
-    return !result.timedOut && result.exitCode === 0 && result.stdout === before;
+    if (!command || !probe) return { kind: "skipped" };
+    const timeoutMs = formatTimeoutMs();
+    const result = await runBoundedShell(probe, { cwd: effectiveCwd, timeoutMs, stdin: before });
+    if (result.timedOut)
+      return { kind: "timed-out", timeout: recordFormatTimeout(filePath, command, timeoutMs) };
+    return result.exitCode === 0 && result.stdout === before
+      ? { kind: "formatted" }
+      : { kind: "skipped" };
   } catch {
-    return false;
+    return { kind: "skipped" };
   }
 }
 
@@ -178,11 +289,23 @@ export async function autoFormatAfterEdit(
   cwd?: string,
   before?: string | null,
 ): Promise<boolean> {
-  if (!(await canAutoFormat(filePath, before, cwd))) return false;
+  return (await autoFormatOutcome(filePath, cwd, before)).kind === "formatted";
+}
+
+/** `autoFormatAfterEdit` with a timeout and the skip after repeated timeouts told apart (#2242). */
+export async function autoFormatOutcome(
+  filePath: string,
+  cwd?: string,
+  before?: string | null,
+): Promise<AutoFormatOutcome> {
+  if ((formatTimeoutOf(filePath)?.count ?? 0) >= FORMAT_TIMEOUT_SKIP_AFTER)
+    return { kind: "skipped-after-timeouts" };
+  const probe = await probeAutoFormat(filePath, before, cwd);
+  if (probe.kind !== "formatted") return probe;
   const { formatRoot } = await import("./project.js");
   const effectiveCwd = cwd ?? formatRoot(filePath) ?? process.cwd();
   const cmd = await getFormatCommand(effectiveCwd);
-  if (!cmd) return false;
+  if (!cmd) return { kind: "skipped" };
 
   // A real path, as in `formatFile`: the formatter sees its working directory as a real path.
   const command = singleFileFormat(cmd, filePath);
@@ -190,12 +313,30 @@ export async function autoFormatAfterEdit(
     // A deadline that kills the whole tree: the formatter's own children must not hold the edit.
     // A formatter that writes text mode on Windows turns a LF file into CRLF (#2214).
     const endings = captureEndings([filePath]);
-    const result = await runBoundedShell(command, {
-      cwd: effectiveCwd,
-      timeoutMs: FORMAT_TIMEOUT_MS,
-    }).finally(() => restoreEndings(endings));
-    return !result.timedOut && result.exitCode === 0;
+    const timeoutMs = formatTimeoutMs();
+    const result = await runBoundedShell(command, { cwd: effectiveCwd, timeoutMs }).finally(() =>
+      restoreEndings(endings),
+    );
+    if (result.timedOut)
+      return { kind: "timed-out", timeout: recordFormatTimeout(filePath, cmd, timeoutMs) };
+    if (result.exitCode !== 0) return { kind: "skipped" };
+    clearFormatTimeout(filePath);
+    return { kind: "formatted" };
   } catch {
-    return false;
+    return { kind: "skipped" };
   }
+}
+
+/**
+ * What the edit result says about a post-edit format that timed out, or null for any other
+ * outcome. The second timeout on a file also says the edit tools stop formatting it (#2242).
+ */
+export function formatTimeoutNote(outcome: AutoFormatOutcome, shownPath: string): string | null {
+  if (outcome.kind !== "timed-out") return null;
+  const { formatter, timeoutMs, count } = outcome.timeout;
+  const seconds = Math.round(timeoutMs / 1000);
+  const note = `⚠ ${formatter} did not finish within ${String(seconds)} s on ${shownPath}, so the file was not formatted; a deeply nested literal or expression is the usual cause, and the project's format check will hang on it too. Build the nested value in steps or move it into a data file.`;
+  return count >= FORMAT_TIMEOUT_SKIP_AFTER
+    ? `${note} It timed out ${String(count)} times, so edits of this file are no longer formatted for the rest of the session.`
+    : note;
 }

@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { canExtendRun } from "../../../../../../src/core/workflows/extendable.js";
 import { reasonText } from "../../../../../../src/core/workflows/reasons.js";
+import { retryRefused } from "../../../../../../src/core/workflows/remedies-model.js";
 import { canRepairRun, repairText } from "../../../../../../src/core/workflows/repairable.js";
 import { attentionHash } from "../../../shared/attention.js";
 import { attentionApi } from "../../client/attention.js";
@@ -525,6 +526,12 @@ function Models({
               stays.
             </p>
           )}
+          {retryRefused(run, run.recovery) && (
+            <p className={WARN_NOTE}>
+              This stage stopped twice with the same diagnostic, so a retry would repeat it. Switch
+              it to another model to continue; completed work stays.
+            </p>
+          )}
           <label htmlFor="reroute-model" className={FIELD_LABEL}>
             Switch to model
           </label>
@@ -763,7 +770,8 @@ function StationCard({
   /** Requests wait for the user; they are shown above the station. */
   waiting: number;
   /** The run is blocked; why is shown above the station. */
-  blocked: boolean;
+  /** "repeated": a plain retry would repeat an invalid output (#2201). */
+  blocked: boolean | "repeated";
 }) {
   const takes = station.consumes;
   return (
@@ -815,15 +823,17 @@ function StationCard({
         <p className="m-0 text-[13px]">
           {waiting
             ? `${waiting} decision${waiting === 1 ? " waits" : "s wait"} for you above.`
-            : blocked && station.state !== "done"
-              ? "The run is blocked. Why it stopped is shown above: retry, switch the model or fork it."
-              : station.state === "current"
-                ? "Nothing is needed from you. This station is working."
-                : station.state === "failed"
-                  ? "This station failed. The activity and its sections below say why."
-                  : station.state === "done"
-                    ? "Done. Its results are in the sections below."
-                    : "Nothing yet. This station has not started."}
+            : blocked === "repeated" && station.state !== "done"
+              ? "The run stopped twice with the same diagnostic, so a retry would repeat it. Switch the model, revise or fork it."
+              : blocked && station.state !== "done"
+                ? "The run is blocked. Why it stopped is shown above: retry, switch the model or fork it."
+                : station.state === "current"
+                  ? "Nothing is needed from you. This station is working."
+                  : station.state === "failed"
+                    ? "This station failed. The activity and its sections below say why."
+                    : station.state === "done"
+                      ? "Done. Its results are in the sections below."
+                      : "Nothing yet. This station has not started."}
         </p>
       </div>
     </section>
@@ -1027,7 +1037,9 @@ function RunBody({
         loops={line.loops}
         contractState={contractState}
         waiting={pending.length}
-        blocked={run.status === "blocked"}
+        blocked={
+          run.status !== "blocked" ? false : retryRefused(run, run.recovery) ? "repeated" : true
+        }
       />
       <div className="flex flex-col gap-[18px] border-t-2 border-border pt-4">
         <div className="flex flex-wrap items-center gap-3">

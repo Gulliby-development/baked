@@ -199,8 +199,18 @@ export function fixerTierPaths(
  */
 export function isWholeUnitFixer(fix: { executable: string; args: string[] }): boolean {
   const { program, args } = toolchainCommand(fix.executable, fix.args);
-  return program === "cargo" && args.includes("fmt") && !args.includes("--");
+  return (
+    (program === "cargo" && args.includes("fmt") && !args.includes("--")) ||
+    gradleSourceSetFixer(program, args)
+  );
 }
+
+/**
+ * Gradle's Spotless and ktlint fixer tasks format every file of the source sets and take no file
+ * argument (Spotless names one file only by its absolute path), so they run once (#2121).
+ */
+const gradleSourceSetFixer = (program: string, args: readonly string[]): boolean =>
+  /^gradlew?$/.test(program) && args.some((arg) => /^(?:spotlessApply|ktlintFormat)$/.test(arg));
 
 /** The command that applies a whole-unit fixer to several files in one run. */
 /**
@@ -215,7 +225,8 @@ export function wholeUnitFixerCommand(
   fix: { executable: string; args: string[] },
   paths: readonly string[],
 ): { executable: string; args: string[] } {
-  const { args, launch } = toolchainCommand(fix.executable, fix.args);
+  const { program, args, launch } = toolchainCommand(fix.executable, fix.args);
+  if (gradleSourceSetFixer(program, args)) return launch([...args]) ?? fix;
   return (
     launch([...args, "--", ...paths]) ?? {
       executable: fix.executable,

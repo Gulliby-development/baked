@@ -7,7 +7,7 @@ import { rangeText, type StartEstimate } from "../../core/workflows/estimate.js"
 import { canExtendRun } from "../../core/workflows/extendable.js";
 import { detectGates } from "../../core/workflows/gates.js";
 import { reasonText } from "../../core/workflows/reasons.js";
-import type { HostRemedy, Remedy } from "../../core/workflows/remedies-model.js";
+import { type HostRemedy, type Remedy, retryRefused } from "../../core/workflows/remedies-model.js";
 import { canRepairRun, repairText } from "../../core/workflows/repairable.js";
 import type { RunSnapshot, WorkflowEvent } from "../../core/workflows/schemas.js";
 import type { Check } from "../../core/workflows/types.js";
@@ -301,6 +301,10 @@ export function runActions(
   const s = snapshot.status;
   if (snapshot.pendingRequestIds.length)
     actions.push({ key: "Enter", label: "decide", action: "decide" });
+  // An invalid output whose plain resume the repeat guard would refuse: its advice names no
+  // resume, so retry is not offered and switching the model leads (#2201).
+  const repeated = retryRefused(snapshot, { message: "", summary: "", remedies: [...remedies] });
+  if (repeated && switchTo) actions.push({ key: "M", label: "switch model", action: "reroute" });
   // A corrective's block on files it may not write: the act the host would take (#2155).
   if (s === "blocked")
     for (const remedy of remedies) {
@@ -323,7 +327,10 @@ export function runActions(
   if (
     s === "created" ||
     s === "paused" ||
-    (s === "blocked" && snapshot.reason !== "budget_exhausted" && !canRepairRun(snapshot))
+    (s === "blocked" &&
+      snapshot.reason !== "budget_exhausted" &&
+      !canRepairRun(snapshot) &&
+      !repeated)
   )
     actions.push({
       key: "R",
@@ -338,7 +345,11 @@ export function runActions(
   if (s === "running") actions.push({ key: "P", label: "pause", action: "pause" });
   if (offersExtend(snapshot, budget))
     actions.push({ key: "B", label: "raise limits", action: "extend" });
-  if (switchTo && (s === "created" || s === "paused" || s === "blocked" || s === "waiting"))
+  if (
+    switchTo &&
+    !repeated &&
+    (s === "created" || s === "paused" || s === "blocked" || s === "waiting")
+  )
     actions.push({ key: "M", label: "switch model", action: "reroute" });
   if (s === "blocked" || isTerminal(s)) actions.push({ key: "F", label: "fork", action: "fork" });
   // A delivered run's pull request checks; the read says when the run was not delivered.
