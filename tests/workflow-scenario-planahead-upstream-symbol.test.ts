@@ -128,6 +128,19 @@ describe("a planned-ahead feature asks the owner for the missing symbol (#2157)"
     expect(amendmentAnswer({ ownerRunStatus: "completed", initiativeStatus: "completed", requested: false })).toBe("none");
   });
 
+  // #2183: `write` only under the explicit value, for one symbol in one file no open feature owns.
+  test("under \"write\" one symbol in one file is written by the requester; otherwise the owner is re-planned", () => {
+    const gap = (symbol: string, path = "src/Reader.cs") => ({ ref: "FR-003", symbol, featureId: "reader", path });
+    const ask = { ownerRunStatus: "completed", initiativeStatus: "active", requested: false };
+    expect(amendmentAnswer({ ...ask, mode: "write", gaps: [gap("Reader.IsEncodingToken")] })).toBe("write");
+    // `true`, the #2157 value, keeps re-planning the owner.
+    expect(amendmentAnswer({ ...ask, mode: true, gaps: [gap("Reader.IsEncodingToken")] })).toBe("replan");
+    expect(amendmentAnswer({ ...ask, mode: "write", gaps: [gap("Reader.IsEncodingToken"), gap("Reader.Peek")] })).toBe("replan");
+    expect(amendmentAnswer({ ...ask, mode: "write", gaps: [gap("Reader.IsEncodingToken")], pathOpen: true })).toBe("replan");
+    expect(amendmentAnswer({ ...ask, mode: "write", requested: true, gaps: [gap("Reader.IsEncodingToken")] })).toBe("none");
+    expect(amendmentAnswer({ ...ask, mode: "write", ownerRunStatus: "running", gaps: [gap("Reader.IsEncodingToken")] })).toBe("none");
+  });
+
   test("the reopened owner's prompt names the requester, the symbol, the file and the clause", () => {
     const lines = amendmentLines([{ from: "scanner", gaps: [{ ref: "FR-003", symbol: "Reader.IsEncodingToken", featureId: "reader", path: "src/Reader.cs" }] }]);
     expect(lines.at(-1)).toBe("- scanner needs Reader.IsEncodingToken in src/Reader.cs (its FR-003).");

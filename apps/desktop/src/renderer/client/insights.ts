@@ -99,12 +99,13 @@ export interface InitiativeFeature {
   mergedFrom?: string[];
   /**
    * Amendments planned-ahead features asked of this one at their release, and the answer
-   * (`replan`: it ran again for them); absent when none or on older backends.
+   * (`replan`: it ran again for them; `write`: the asking feature wrote it, #2183); absent when
+   * none or on older backends.
    */
   amendments?: {
     from: string;
     gaps: { ref: string; symbol: string; featureId: string; path: string }[];
-    answer: "replan" | "none";
+    answer: "replan" | "write" | "none";
   }[];
   /** Boundary files whose content the split fixes; its run writes them with no agent. */
   skeleton?: { path: string; content: string }[];

@@ -1515,9 +1515,11 @@ export const WorkflowConfigSchema = z
     /**
      * A planned-ahead feature whose spec names symbols an accepted upstream feature lacks asks
      * that feature for the amendment at its release: the owner runs again with the request, and
-     * the feature waits for that result (#2157). Off by default.
+     * the feature waits for that result (#2157). Off by default. `"write"` also lets a gap of one
+     * symbol in one file, which no unfinished feature owns, be written by the feature itself: its
+     * boundary takes the file and its run plans again on the accepted result (#2183).
      */
-    upstreamAmendments: z.boolean().optional(),
+    upstreamAmendments: z.union([z.boolean(), z.literal("write")]).optional(),
     /**
      * Whether an initiative whose token pool parks a feature, while the person's dollar cap has
      * room for the extension, records that the host would extend the pool (#2042): `shadow`, the
