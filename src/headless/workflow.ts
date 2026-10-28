@@ -314,15 +314,11 @@ export async function executeWorkflowCommand(
    * only a drive advances it (#2024).
    */
   /**
-   * Resumes and drives the run after a change the command applied. At the workspace's parallel
-   * run cap the change stays and the run waits for a slot: the answer is the run with `queued`
-   * (exit 0), never the bare `WORKSPACE_BUSY` refusal (#2415).
+   * Drives the run after a change the command applied. At the workspace's parallel run cap the
+   * change stays and the run waits for a slot: the answer is the run with `queued` (exit 0),
+   * never the bare `WORKSPACE_BUSY` refusal (#2415).
    */
-  const resumeAfter = async (
-    revision: number,
-    change: string,
-  ): Promise<RunSnapshot & { queued?: QueuedResume }> => {
-    await service.resume(runId, { commandId: newId(), expectedRevision: revision });
+  const driveAfter = async (change: string): Promise<RunSnapshot & { queued?: QueuedResume }> => {
     onDrive?.(runId);
     try {
       return await service.drive(runId, signal);
@@ -332,6 +328,11 @@ export async function executeWorkflowCommand(
       process.stderr.write(`${queued.message}\n`);
       return { ...service.store.snapshot(runId), queued };
     }
+  };
+  /** Resumes the run after a change the command applied, then drives it (`driveAfter`). */
+  const resumeAfter = async (revision: number, change: string) => {
+    await service.resume(runId, { commandId: newId(), expectedRevision: revision });
+    return driveAfter(change);
   };
   const decideThenResume = async (decision: Decision): Promise<unknown> => {
     const decided = await service.decide(runId, identity(), decision);
@@ -518,6 +519,11 @@ export async function executeWorkflowCommand(
           ? { remedy: args.flags.remedy as ResumeRemedy }
           : {}),
       });
+      // A plain resume applied nothing else, so its refusal at the cap is the answer; a remedy
+      // or accepted workspace changes took effect and the run waits for a slot (#2415).
+      if (typeof args.flags.remedy === "string") return driveAfter("The remedy is recorded");
+      if (args.flags["accept-workspace"] === true)
+        return driveAfter("The workspace changes are accepted");
       onDrive?.(runId);
       return service.drive(runId, signal);
     case "pause":
@@ -542,8 +548,7 @@ export async function executeWorkflowCommand(
     case "repair": {
       const repaired = await service.repair(runId, identity(), Number(args.flags.rounds ?? 1));
       if (args.flags["no-resume"] === true) return repaired;
-      onDrive?.(runId);
-      return service.drive(runId, signal);
+      return driveAfter("The repair round is granted");
     }
     case "extend": {
       const number = (flag: string): number | undefined =>
