@@ -657,3 +657,52 @@ describe("scenario: the busted rows pass StyLua and luacheck as written (#2348)"
     });
   }
 });
+
+// #2348: rows as data for Minitest. Both templates pass RuboCop's defaults as written, the rows
+// are a class named after the test file, and a wrong harness fails each row by its id.
+const MINITEST_TEST = "# frozen_string_literal: true\n\nrequire 'minitest/autorun'\n\ndef acceptance_actual(input)\n  input\nend\n";
+const minitestInline: InlineRowTest = { mode: "inline", framework: "minitest", test: "test/platforms_test.rb" };
+const ruby = tool("ruby", "-e", "require 'minitest'");
+
+describe("scenario: the Minitest rows pass RuboCop as written (#2348)", () => {
+  const echo = rows.map((row) => ({ ...row, expected: row.input }));
+  const minitestFile = { framework: "minitest", harness: "lib/platforms/acceptance_harness.rb", test: "test/platforms_rows_test.rb", data: "test/fixtures/platforms_rows.json" };
+  const project = (cases = rows, harness = MINITEST_TEST) => {
+    const task = { id: "T003", rows: ["AC-003"], rowTest: minitestFile } as never;
+    const files = rowFiles(task, { tasks: [{ rows: ["AC-003"], rowTest: minitestFile }], rows: cases } as never);
+    return temp({
+      ...Object.fromEntries(files.map((file) => [file.path, file.content])),
+      [minitestFile.harness]: "# frozen_string_literal: true\n\ndef actual(input)\n  input\nend\n",
+      [minitestInline.test]: withInlineRows(harness, inlineRowFile(minitestInline, cases)),
+    });
+  };
+
+  test("no line over RuboCop's 120 columns", () => {
+    const texts = [fileMode(minitestFile)[minitestFile.test] ?? "", withInlineRows(MINITEST_TEST, inlineRowFile(minitestInline, rows))];
+    for (const text of texts) expect(text.split("\n").filter((line) => line.length > 120)).toEqual([]);
+  });
+
+  test.skipIf(!rubocop)("rubocop prints no offense for the file mode's test or the inline block", () => {
+    expect(run(project(), rubocop ?? "", "--format", "simple", minitestFile.test, minitestInline.test)).toStartWith("0 ");
+  });
+
+  test.skipIf(!ruby)("minitest: every row of both modes passes, and a wrong harness fails each row by its id", () => {
+    const root = project(echo);
+    for (const file of [minitestFile.test, minitestInline.test]) expect(run(root, "ruby", file)).toStartWith("0");
+    const wrong = MINITEST_TEST.replace("  input\n", "  [1, 2]\n");
+    const failed = run(project(echo, wrong), "ruby", minitestInline.test);
+    expect(failed).not.toStartWith("0");
+    for (const row of rows) expect(failed).toContain(`AcceptanceRowsPlatformsTest#test_${row.id} `);
+    for (const row of rows) expect(failed).toContain(`${row.id}: got [[1,2]]`);
+  });
+
+  test("StandardRB's double quotes: the layout is kept, and a changed row is put back", () => {
+    const file = inlineRowFile(minitestInline, rows);
+    const formatted = withInlineRows(MINITEST_TEST, file).replace(/'([^'"\\\n]*)'/g, '"$1"');
+    expect(formatted).not.toBe(withInlineRows(MINITEST_TEST, file));
+    expect(hasInlineRows(formatted, file)).toBe(true);
+    const tampered = formatted.replace("macosx_11_0_arm64", "macosx_12_0_arm64");
+    expect(hasInlineRows(tampered, file)).toBe(false);
+    expect(withInlineRows(tampered, file)).toContain("macosx_11_0_arm64");
+  });
+});
