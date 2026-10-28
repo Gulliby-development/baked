@@ -65,6 +65,7 @@ import {
   baselineSignatureDecision,
 } from "./baseline-signature.js";
 import { callCostRate } from "./budget.js";
+import { type CleanSizingShadow, cleanRates, cleanSizingShadow } from "./clean-pace.js";
 import {
   CONFLICT_FINISH_DIR,
   CONFLICT_FINISH_KIND,
@@ -959,6 +960,11 @@ export interface RunReplay {
   activeTimes: ActiveTimeBoundary[];
   /** Sizing reports whose active-time cap the current pace sets differently. */
   newActiveTimes: number;
+  /**
+   * Sizing reports whose recorded cap the clean pace would set differently (#2414, shadow): what
+   * making it the default changes; not an accepted-decision count.
+   */
+  cleanPaceChanges: number;
   /** Each written-tests run whose declared-class filter selected no test (#2363). */
   unselectedTests: UnselectedTestsBoundary[];
   /** Such runs the recording did not record a `written_tests_unselected` would-stop for. */
@@ -1001,6 +1007,11 @@ export interface ActiveTimeBoundary {
   report: string;
   recorded: { tokensPerMinute: number; basis: PaceBasis; after: number };
   replayed: { tokensPerMinute: number; basis: PaceBasis; after: number };
+  /**
+   * In shadow (#2414): the cap at the clean pace, from the rates the report recorded beside its
+   * pace (`cleanPace`), else from the trace's runs that completed before it (`cleanRates`).
+   */
+  clean: CleanSizingShadow | null;
 }
 
 /** Picks the pace that sizes a run's active time from the history's and the initiative's rates. */
@@ -1014,6 +1025,23 @@ export type ActivePaceRule = (
  * completed by `at`, for a sizing report recorded before #2336 kept them; empty outside an
  * initiative or in a trace without its tables.
  */
+/** The other runs of the run's initiative that had completed by `at`; empty outside one. */
+function initiativeRunsAt(store: WorkflowStore, runId: string, at: number): string[] {
+  try {
+    return (
+      store.connection
+        .query(
+          `SELECT DISTINCT r.id AS id FROM initiative_runs l JOIN runs r ON r.id=l.run_id
+         WHERE l.initiative_id IN (SELECT initiative_id FROM initiative_runs WHERE run_id=?) AND l.run_id<>? AND r.status='completed'
+         AND (SELECT MAX(e.at) FROM events e WHERE e.run_id=r.id AND e.type='run.state_changed' AND json_extract(e.payload_json,'$.to')='completed')<=?`,
+        )
+        .all(runId, runId, at) as { id: string }[]
+    ).map((r) => r.id);
+  } catch {
+    return [];
+  }
+}
+
 function initiativeRatesAt(store: WorkflowStore, runId: string, at: number): number[] {
   try {
     const rows = store.connection
@@ -1072,6 +1100,13 @@ export function replayActiveTimes(
         : { tokensPerMinute: time.tokensPerMinute, basis: time.basis, runs: time.runs });
     if (!history) return [];
     const chosen = pace(history, time.ownRates ?? initiativeRatesAt(store, runId, at));
+    const recordedClean = (report as { cleanPace?: CleanSizingShadow }).cleanPace;
+    const clean = cleanSizingShadow(
+      report,
+      recordedClean
+        ? { rates: recordedClean.rates, silentMs: recordedClean.silentMs }
+        : cleanRates(store, initiativeRunsAt(store, runId, at)),
+    );
     const after = activeTimeLimit({
       neededTokens: Math.min(report.runTokens + (report.repairReserve ?? 0), report.budgetAfter),
       tokensPerMinute: chosen.tokensPerMinute,
@@ -1083,6 +1118,7 @@ export function replayActiveTimes(
         report: path,
         recorded: { tokensPerMinute: time.tokensPerMinute, basis: time.basis, after: time.after },
         replayed: { tokensPerMinute: chosen.tokensPerMinute, basis: chosen.basis, after },
+        clean,
       },
     ];
   });
@@ -4150,6 +4186,7 @@ function replayRun(
   | "newSourceDefectRoutes"
   | "activeTimes"
   | "newActiveTimes"
+  | "cleanPaceChanges"
   | "unselectedTests"
   | "newUnselectedStops"
 > | null {
@@ -4659,6 +4696,8 @@ export function replayTrace(
         newSourceDefectRoutes: sourceDefects.filter((b) => b.replayed !== b.recorded).length,
         activeTimes,
         newActiveTimes: activeTimes.filter((b) => b.replayed.after !== b.recorded.after).length,
+        cleanPaceChanges: activeTimes.filter((b) => b.clean && b.clean.after !== b.recorded.after)
+          .length,
         unselectedTests,
         newUnselectedStops: unselectedTests.filter((b) => !b.recorded).length,
       });

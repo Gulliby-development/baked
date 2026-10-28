@@ -286,6 +286,12 @@ function sumUsage(steps: readonly StepLike[]): Partial<LanguageModelUsage> {
 }
 
 /** What the stall watchdog of one attempt knows: its progress, its tool in flight, its limits. */
+/** The summed `silentMs` of an attempt's calls for its usage record (#2414); empty when none. */
+function silentOf(calls: readonly CallTiming[]): { silentMs?: number } {
+  const silentMs = calls.reduce((sum, call) => sum + (call.silentMs ?? 0), 0);
+  return silentMs > 0 ? { silentMs } : {};
+}
+
 interface AttemptWatch {
   settings: StallSettings;
   lastAt: number;
@@ -1482,6 +1488,7 @@ export class NativeAgentExecutor implements AgentExecutor {
               ...(effort ? { effort } : {}),
               ...(webSearch ? { webSearch } : {}),
               ...(watch.calls.length ? { calls: watch.calls } : {}),
+              ...silentOf(watch.calls),
             }),
           ),
         );
@@ -2038,8 +2045,11 @@ export class NativeAgentExecutor implements AgentExecutor {
         pending: (buffered) => {
           if (buffered) watch.bufferedProviders++;
           const settle = request.providerPending?.();
+          let waiting = buffered;
+          // A call that responded and then ends unanswered settles twice (#2414).
           return (responded) => {
-            if (buffered) watch.bufferedProviders--;
+            if (waiting) watch.bufferedProviders--;
+            waiting = false;
             settle?.(responded);
           };
         },

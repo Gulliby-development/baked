@@ -303,6 +303,11 @@ export interface AttemptUsageRecord {
    * the size of the prompt it was sent, so the failure can be told apart without a rebuild.
    */
   lostAnswer?: AnswerEvidence & { message: string; promptBytes: number };
+  /**
+   * The waits before the first response of the attempt's answered calls (`CallTiming.silentMs`),
+   * summed: active time a provider did not answer in (#2414); absent when none.
+   */
+  silentMs?: number;
 }
 
 /** Calls of one tool answered by one backend (lsp with its server, tree-sitter, regex, repo-map). */
