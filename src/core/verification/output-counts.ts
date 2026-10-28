@@ -244,6 +244,8 @@ const PEST_SUMMARY = /^\s*Tests:\s+((?:\d+ \w+(?:, )?)+) \(\d+ assertions?\)/m;
  * report formats any runner can print (JUnit XML, TAP) last. `ran` is the share of `count` that
  * executed, skipped and ignored tests left out, or null where the summary does not tell (#1832).
  */
+const MAVEN_SUMMARY = /^\[\w+\] Tests run: (\d+), Failures: \d+, Errors: \d+, Skipped: (\d+)\s*$/gm;
+
 const TEST_COUNTERS: readonly {
   tool: TestRunner;
   count: (output: string) => number | null;
@@ -345,14 +347,12 @@ const TEST_COUNTERS: readonly {
   },
   {
     tool: "maven",
-    // Maven surefire: "Tests run: 12, Failures: 0, Errors: 0, Skipped: 0" (the summary, no time).
-    count: (o) =>
-      num(o.match(/^\[\w+\] Tests run: (\d+), Failures: \d+, Errors: \d+, Skipped: \d+\s*$/m)),
+    // Maven surefire: "Tests run: 12, Failures: 0, Errors: 0, Skipped: 0" (the summary, no time),
+    // one per module of a multi-module build, which are added up (#2378).
+    count: (o) => sum(o, MAVEN_SUMMARY),
     ran: (o) => {
-      const m = o.match(
-        /^\[\w+\] Tests run: (\d+), Failures: \d+, Errors: \d+, Skipped: (\d+)\s*$/m,
-      );
-      return m ? Number(m[1]) - Number(m[2]) : null;
+      const runs = [...o.matchAll(MAVEN_SUMMARY)];
+      return runs.length ? runs.reduce((total, m) => total + Number(m[1]) - Number(m[2]), 0) : null;
     },
   },
   {
