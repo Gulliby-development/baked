@@ -85,6 +85,11 @@ if (cliArgs[0] === "artifacts") {
   process.exit(await runArtifactsCli(cliArgs.slice(1)));
 }
 
+if (cliArgs[0] === "preview") {
+  const { runPreviewCli } = await import("./headless/preview.js");
+  process.exit(await runPreviewCli(cliArgs.slice(1)));
+}
+
 if (cliArgs[0] === "lsp") {
   const { runLspCli } = await import("./headless/lsp.js");
   process.exit(await runLspCli(cliArgs.slice(1)));

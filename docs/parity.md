@@ -52,7 +52,7 @@ bun test tests/feature-parity.test.ts
 | Session list, resume and rename | `/session history`, `/session rename` | `--resume`, `--session`, `baked session list` | `/v1/sessions`, `/v1/sessions/:id` | `project/chat` |
 | Delete a session | `/session history` | `baked session delete` | `/v1/sessions/:id` | `project/chat` |
 | Export a chat (Markdown, JSON, clipboard) | `/session export`, `/session export json`, `/session export clipboard` | `baked session export` | `/v1/sessions/:id/export` | `project/chat` |
-| Preview the Markdown and HTML documents and artifacts a chat produced, beside the chat | **Gap** [#2299](https://github.com/Gulliby-development/baked/issues/2299): a /preview popup for Markdown, the browser for HTML | **Gap** [#2299](https://github.com/Gulliby-development/baked/issues/2299): baked preview <path> | `/v1/files/preview`, `/v1/files/open`, `/v1/artifacts/:id/page` | `project/chat` |
+| Preview the Markdown and HTML documents and artifacts a chat produced, beside the chat | `/preview` | `baked preview`, `baked preview list` | `/v1/files/preview`, `/v1/files/open`, `/v1/artifacts/:id/page` | `project/chat` |
 | Project coordinator chat with a durable project brief and read access to the project | `/coordinator`, `/projects` | `baked session coordinator`, `baked session coordinator send`, `baked session coordinator launched` +2 | `/v1/coordinator`, `/v1/coordinator/brief`, `/v1/coordinator/launched` +2 | `project/coordinator`, `project/chat` |
 | Coordinator suggests, runs and follows workflows | `/coordinator` | `baked session coordinator send`, `baked session coordinator launched` | `/v1/sessions/:id/prompts`, `/v1/sessions/:id/events`, `/v1/coordinator/launched` | `project/coordinator`, `attention` |
 | Chat and coordinator set BAKED up on request: workflows, agent context, memory, skills, packages, hooks, MCP and language servers, each change on an approval card | `/coordinator`, `key Enter` | `baked session coordinator send`, `--prompt` | `/v1/sessions/:id/prompts` | `project/coordinator`, `project/chat` |
@@ -248,6 +248,5 @@ bun test tests/feature-parity.test.ts
 ### Open gaps by issue
 
 - [#407](https://github.com/Gulliby-development/baked/issues/407): Instruction files: view and edit content
-- [#2299](https://github.com/Gulliby-development/baked/issues/2299): Preview the Markdown and HTML documents and artifacts a chat produced, beside the chat
 
 <!-- parity:end -->
