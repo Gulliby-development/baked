@@ -222,6 +222,7 @@ describe("acceptance rows in every supported language (#1660)", () => {
     testthat: { framework: "testthat", harness: "R/harness.R", test: "tests/testthat/test-rows.R", data: "tests/testthat/fixtures/rows.json" },
     busted: { framework: "busted", harness: "spec/support/harness.lua", test: "spec/rows_spec.lua", data: "spec/fixtures/rows.json" },
     minitest: { framework: "minitest", harness: "lib/calc/harness.rb", test: "test/calc_rows_test.rb", data: "test/fixtures/rows.json" },
+    pest: { framework: "pest", harness: "tests/Support/harness.php", test: "tests/RowsTest.php", data: "tests/fixtures/rows.json" },
   };
 
   test("a Scenario column is a label the reader skips, and an audit may leave it out", () => {
@@ -264,6 +265,8 @@ describe("acceptance rows in every supported language (#1660)", () => {
       { ...layouts.busted!, harness: "spec/support/harness_spec.lua" },
       { ...layouts.minitest!, test: "test/calc_rows.rb" },
       { ...layouts.minitest!, harness: "test/support/harness_test.rb" },
+      { ...layouts.pest!, test: "tests/Rows.php" },
+      { ...layouts.pest!, harness: "tests/Support/HarnessTest.php" },
     ]) expect(rowPlanProblems(s, { ...graph, tasks: [withTest(rowTest)] }, enabled)).toHaveLength(1);
     const second = withTest({ ...layouts.go!, test: "calc/more_test.go", data: "calc/testdata/more.json" });
     expect(rowPlanProblems(s, { ...graph, tasks: [withTest(layouts.go!), { ...second, id: "T002" }] }, enabled).join()).toContain("one Go harness per package");
@@ -315,6 +318,10 @@ describe("acceptance rows in every supported language (#1660)", () => {
     const minitest = files("minitest")[1]!.content;
     expect(minitest).toContain("File.expand_path('../lib/calc/harness.rb', __dir__)");
     expect(minitest).toContain("AcceptanceRowsCalcRowsTest = Class.new(Minitest::Test) do");
+    // Pest's harness file returns its closure, so it defines no name.
+    const pest = files("pest")[1]!.content;
+    expect(pest).toContain("$acceptanceActual = require __DIR__.'/Support/harness.php';");
+    expect(pest).toContain("file_get_contents(__DIR__.'/fixtures/rows.json')");
     const rust = files("rust")[1]!.content;
     expect(rust).toContain('#[path = "support/harness.rs"]');
     expect(rust).toContain('include_str!("data/rows.json")');
@@ -358,6 +365,7 @@ describe("inline acceptance rows (#1763)", () => {
     testthat: { mode: "inline", framework: "testthat", test: "tests/testthat/test-calc.R" },
     busted: { mode: "inline", framework: "busted", test: "spec/calc_spec.lua" },
     minitest: { mode: "inline", framework: "minitest", test: "test/calc_test.rb" },
+    pest: { mode: "inline", framework: "pest", test: "tests/CalcTest.php" },
   };
   // The brief's one test file, already there: the plan names it and nothing else.
   const withInline = (rowTest: NonNullable<Task["rowTest"]>, action: "create" | "modify" = "modify"): Task => ({
@@ -388,6 +396,7 @@ describe("inline acceptance rows (#1763)", () => {
       { ...inline.testthat!, test: "tests/testthat/calc.R" },
       { ...inline.busted!, test: "spec/calc.lua" },
       { ...inline.minitest!, test: "test/calc.rb" },
+      { ...inline.pest!, test: "tests/Calc.php" },
     ] as NonNullable<Task["rowTest"]>[]) expect(refused([withInline(rowTest)])).toHaveLength(1);
     const second = { ...withInline({ ...inline.go!, test: "calc/more_test.go" } as NonNullable<Task["rowTest"]>), id: "T002" };
     expect(refused([withInline(inline.go!), second]).join()).toContain("one Go test file per package");
