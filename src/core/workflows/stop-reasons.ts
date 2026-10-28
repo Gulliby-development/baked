@@ -181,6 +181,15 @@ export const STOP_REASONS = {
     modes: NOT_ENFORCED,
     defaultMode: "shadow",
   },
+  committed_tree: {
+    label:
+      "A required static check that passed on the working tree fails on a clean worktree of the feature's commit",
+    // Shadow only until two bench rounds show no false would-stop (#2225, R70 namesound's rubocop
+    // passed on CRLF files whose committed LF form failed); its promotion makes the failure a
+    // finding of the feature that blocks its acceptance.
+    modes: NOT_ENFORCED,
+    defaultMode: "shadow",
+  },
   cost: {
     label: "Spent and reserved dollars reach the cost cap",
     modes: ENFORCED,
