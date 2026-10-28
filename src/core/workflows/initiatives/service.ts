@@ -1801,8 +1801,13 @@ export class InitiativeService {
           return;
         default: {
           const parked = view.features.find((f) => f.id === next.featureId);
-          if (next.kind === "blocked" && parked?.state === "ready" && shareShortfall(view, parked))
-            this.noteShareGate(view, parked, "park");
+          if (
+            next.kind === "blocked" &&
+            parked?.state === "ready" &&
+            shareShortfall(view, parked) &&
+            this.noteShareGate(view, parked, "park")
+          )
+            break;
           return;
         }
       }
@@ -1839,7 +1844,11 @@ export class InitiativeService {
         )[0];
         if (!ready || runnable(view).length >= view.parallelRuns) break;
         if (shareShortfall(view, ready)) {
-          this.noteShareGate(view, ready, "park");
+          // With extendWithinDollars on, the host grew the pool inside the dollar cap (#2060).
+          if (this.noteShareGate(view, ready, "park")) {
+            view = this.view(id);
+            continue;
+          }
           break;
         }
         if (this.forecastOver(row, view)) break;
@@ -2228,14 +2237,14 @@ export class InitiativeService {
     view: InitiativeView,
     feature: FeatureView,
     verdict: "pass" | "park",
-  ): void {
+  ): boolean {
     const id = view.initiativeId;
     if (verdict === "park") {
       const last = this.store
         .eventsOfType(id, "feature.share_gate")
         .filter((p) => (p as ShareGateRecord | null)?.featureId === feature.id)
         .at(-1) as ShareGateRecord | undefined;
-      if (last?.verdict === "park") return;
+      if (last?.verdict === "park") return false;
     }
     const gateView: ShareGateView = {
       initiativeId: id,
@@ -2297,8 +2306,53 @@ export class InitiativeService {
       this.noteTokenForecast(view, feature.id);
       this.noteTimeForecast(view, feature.id);
     }
-    if (growth?.wouldExtend) this.noteWouldExtend(gateView, feature.id, growth);
     this.notePlanCharge(view, { view: gateView, feature, verdict });
+    if (!growth?.wouldExtend) return false;
+    if (mode === "on") return this.extendWithinDollarsOn(gateView, feature.id, growth);
+    this.noteWouldExtend(gateView, feature.id, growth);
+    return false;
+  }
+
+  /**
+   * `extendWithinDollars: on` (#2060): the host applies the pool extension `poolExtensionDecision`
+   * sized, as a `budget.extended` event `by: "host"` with the reason, the amounts and the decision's
+   * inputs, so the parked feature starts. Only the token pool grows, never past what the decision
+   * allowed (the tokens the dollar cap pays for, with the dollar forecast within its ceiling), and
+   * only from the pool the decision read. True when the pool grew.
+   */
+  private extendWithinDollarsOn(
+    view: ShareGateView,
+    featureId: string,
+    growth: PoolExtension,
+  ): boolean {
+    const id = view.initiativeId;
+    const inputs = shareGatePool(view);
+    const row = this.store.get(id);
+    const current = this.limits(row);
+    if (
+      !inputs ||
+      growth.toTokens === null ||
+      current.maxTotalTokens !== inputs.limitTokens ||
+      growth.toTokens <= current.maxTotalTokens
+    )
+      return false;
+    const settings = this.store.settings(row);
+    const next = { ...current, maxTotalTokens: growth.toTokens };
+    this.store.transaction(() => {
+      this.store.setSettings(id, { ...settings, budget: next });
+      this.store.emit(id, "budget.extended", {
+        previous: current,
+        next,
+        by: "host",
+        reason: growth.reason,
+        featureId,
+        toTokens: growth.toTokens,
+        byTokens: growth.byTokens,
+        summary: `${growth.why} ${featureId} starts.`,
+        inputs,
+      });
+    });
+    return true;
   }
 
   /** `workflows.extendWithinDollars`: whether a token park records the host's extension (#2042). */
