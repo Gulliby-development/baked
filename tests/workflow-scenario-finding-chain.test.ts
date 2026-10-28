@@ -10,7 +10,8 @@ import { CHAIN_REWRITE_AT, type ChainFinding, type ChainRecord, chainMembers, ch
 import { type Check, type Repro, ReviewSchema, type RunPolicy, type Spec, type Task } from "../src/core/workflows/schemas.js";
 import { NativeWorkflowService } from "../src/core/workflows/service.js";
 import { newId } from "../src/core/workflows/store.js";
-import { chainCosts, exportTrace, openTrace, replayChainEscalation, replayTrace } from "../src/core/workflows/trace.js";
+import { chainCosts, exportTrace, openTrace, replayChainEscalation, replayFindingChains, replayTrace, scrubTrace } from "../src/core/workflows/trace.js";
+import { checkSites, keptSites, type SitesRecord } from "../src/core/verification/family-sites.js";
 import type { AgentExecutor, ExecutionRequest } from "../src/core/workflows/types.js";
 
 // Scenario of bench round 62 (#1959). md-site 8711b632 got six findings on `findDelimitedInline`,
@@ -47,6 +48,11 @@ const TEST_FILE = "inline.test.ts";
  */
 const SPEC_FILES = ["spec/cmd/stream_command_spec.rb", "spec/cmd/check_command_spec.rb", "spec/cli_spec.rb"] as const;
 
+/** The generated input of R74 callmend's specs, in Ruby: three backslashes by repetition. */
+const GENERATED = String.raw`"\\" * 3`;
+/** The same input as a literal example. */
+const LITERAL = String.raw`"\\\\\\"`;
+
 /** The symbols of report.py the family scenario's findings name, one per round. */
 const FAMILY_SYMBOLS = ["build_report", "_share", "render_table"] as const;
 
@@ -82,6 +88,17 @@ class ChainExecutor implements AgentExecutor {
    * a contradiction the host accepts as a known limitation (R74 F1-3 got no corrective).
    */
   crossFile = false;
+  /**
+   * With `crossFile`, the reviewer states the family's `sites` on all three spec files (#2343):
+   * the third holds the construct only in a comment, so the host drops it. A corrective fixes the
+   * reported file and every site its input lists; the reviewer flags any spec file still building
+   * its input, so a corrective that lists no sites leaves the next file for another round.
+   */
+  sites = false;
+  /** With `sites`, the reviewer states none: the corrective gets only the reported file. */
+  noSites = false;
+  /** The earlier findings each review was shown, in order. */
+  earlier: unknown[][] = [];
   /** The members of the class the reviewer finds, one per round. */
   members: readonly string[] = MEMBERS;
   /** A rewrite writes only the cases its battery holds, so a member it was not shown stays open. */
@@ -119,10 +136,17 @@ class ChainExecutor implements AgentExecutor {
           writeFileSync(path, "ready");
           if (this.testFile) writeFileSync(join(root, TEST_FILE), "test('inline', () => {});\n");
           if (this.crossFile)
-            for (const file of SPEC_FILES) {
+            for (const [index, file] of SPEC_FILES.entries()) {
               mkdirSync(dirname(join(root, file)), { recursive: true });
-              writeFileSync(join(root, file), 'it("streams") { expect(run("\\\\" * 3)).to eq(0) }\n');
+              writeFileSync(join(root, file), this.sites && index === 2 ? `it("streams") { expect(run(${LITERAL})).to eq(0) }\n# was: ${GENERATED}\n` : `it("streams") { expect(run(${GENERATED})).to eq(0) }\n`);
             }
+        }
+        else if (task && this.sites) {
+          this.corrections.push({ taskId: task.id, title: task.title, description: task.description, findingIds: task.findingIds });
+          // The reported file and every listed site get the literal input.
+          const listed = (task.description.split("Sites of this defect class")[1] ?? "").split("\n").flatMap((l) => l.match(/^- ([^:]+):/)?.[1] ?? []);
+          const reported = SPEC_FILES.filter((file) => task.description.includes(`${file} generates`));
+          for (const file of new Set([...reported, ...listed])) writeFileSync(join(root, file), `it("streams") { expect(run(${LITERAL})).to eq(0) }\n`);
         }
         else if (task) {
           const row = this.service?.store.latestArtifact(request.runId, `attempts/${request.attemptId}/context.json`);
@@ -165,6 +189,17 @@ class ChainExecutor implements AgentExecutor {
         break;
       }
       case "convergence": {
+        this.earlier.push((data.extra as { earlierFindings?: unknown[] }).earlierFindings ?? []);
+        if (this.sites) {
+          // A spec file that still builds its input in code (a commented one does not).
+          const open = SPEC_FILES.findIndex((file) => readFileSync(join(root, file), "utf8").startsWith(`it("streams") { expect(run(${GENERATED}`));
+          const file = SPEC_FILES[open];
+          const sites = SPEC_FILES.map((f, i) => ({ file: f, line: i === 2 ? 2 : 1, text: GENERATED }));
+          output = file
+            ? { schemaVersion: 1, snapshotHash: data.snapshotHash, verdict: "changes_requested", coverage: [{ criterionId: "AC-001", verdict: "fail", evidenceIds, explanation: "Generated input" }], findings: [{ id: `F${open + 1}`, kind: "partial", severity: "medium", basis: "spec", confidence: 0.9, requirementIds: ["FR-001"], criterionIds: ["AC-001"], file, symbol: null, family: "literal-test-inputs", ...(this.noSites ? {} : { sites }), evidenceIds, claim: `${file} generates its input with repetition instead of a literal example`, impact: "The test does not show the literal input the criteria name", suggestedFix: "Write the input as a literal example", repeatOf: null }] }
+            : pass;
+          break;
+        }
         const text = readFileSync(path, "utf8");
         const index = this.members.findIndex((m) => !text.includes(`case-${m}`));
         const marker = this.members[index];
@@ -195,7 +230,7 @@ class ChainExecutor implements AgentExecutor {
   }
 }
 
-async function drive(options: { policy?: Partial<RunPolicy>; quality?: { chainRewrite: "on" | "off"; chainProbe?: "on" | "off" }; breakFirstRewrite?: boolean; family?: boolean; testFile?: boolean; crossFile?: boolean; members?: readonly string[]; batteryOnly?: boolean; probe?: string[]; container?: boolean; emptyFirst?: boolean }) {
+async function drive(options: { policy?: Partial<RunPolicy>; quality?: { chainRewrite: "on" | "off"; chainProbe?: "on" | "off" }; breakFirstRewrite?: boolean; family?: boolean; testFile?: boolean; crossFile?: boolean; sites?: boolean; noSites?: boolean; members?: readonly string[]; batteryOnly?: boolean; probe?: string[]; container?: boolean; emptyFirst?: boolean }) {
   const root = mkdtempSync(join(tmpdir(), "baked-finding-chain-"));
   cleanups.push(() => rmSync(root, { recursive: true, force: true }));
   const executor = new ChainExecutor(root);
@@ -203,6 +238,8 @@ async function drive(options: { policy?: Partial<RunPolicy>; quality?: { chainRe
   executor.family = options.family ?? false;
   executor.testFile = options.testFile ?? false;
   executor.crossFile = options.crossFile ?? false;
+  executor.sites = options.sites ?? false;
+  executor.noSites = options.noSites ?? false;
   executor.members = options.members ?? MEMBERS;
   executor.batteryOnly = options.batteryOnly ?? false;
   executor.probe = options.probe ?? [];
@@ -614,6 +651,100 @@ describe("scenario: R74 callmend cmd, one defect family on three spec files (#23
   }, 120_000);
 });
 
+describe("scenario: R74 callmend cmd, a family finding that states every site of its pattern (#2343)", () => {
+  test("the corrective lists the two sites the host finds in code, drops the commented one, and no second literal-input round comes", async () => {
+    const { root, runId, done, executor, artifacts } = await drive({ quality: { chainRewrite: "on" }, crossFile: true, sites: true });
+    expect(done.status).toBe("completed");
+    expect(executor.corrections.map((c) => c.findingIds)).toEqual([["F1"]]);
+    const [only] = executor.corrections;
+    const listed = (only?.description.split("Sites of this defect class")[1] ?? "").split("\n").filter((l) => l.startsWith("- "));
+    expect(listed).toEqual([`- ${SPEC_FILES[0]}:1: ${GENERATED}`, `- ${SPEC_FILES[1]}:1: ${GENERATED}`]);
+    const [record, ...others] = artifacts("chains/sites/") as unknown as SitesRecord[];
+    expect(others).toEqual([]);
+    expect(record?.taskId).toBe(only?.taskId);
+    expect(record?.sites.map((s) => [s.file, s.verdict])).toEqual([[SPEC_FILES[0], "kept"], [SPEC_FILES[1], "kept"], [SPEC_FILES[2], "not_code"]]);
+    // The review after the corrective sees the sites its corrective was given.
+    expect(executor.earlier.at(-1)).toEqual([expect.objectContaining({ id: "F1", family: "literal-test-inputs", sites: [{ file: SPEC_FILES[0], line: 1, text: GENERATED }, { file: SPEC_FILES[1], line: 1, text: GENERATED }] })]);
+
+    // The trace keeps the sites and replays each check as the run decided it.
+    const dir = mkdtempSync(join(tmpdir(), "finding-sites-trace-"));
+    cleanups.push(() => rmSync(dir, { recursive: true, force: true }));
+    const out = join(dir, "run.sqlite.gz");
+    exportTrace(root, out);
+    expect(replayTrace(out).runs.find((r) => r.runId === runId)?.newChainDecisions).toBe(0);
+    const traced = openTrace(out);
+    cleanups.push(traced.dispose);
+    expect(replayFindingChains(traced.store, runId).filter((b) => b.kind === "site").map((b) => [b.recorded, b.replayed])).toEqual([["kept", "kept"], ["kept", "kept"], ["not_code", "not_code"]]);
+  }, 120_000);
+
+  test("without sites, the corrective fixes the reported file and the next file takes another round", async () => {
+    const { done, executor } = await drive({ quality: { chainRewrite: "on" }, crossFile: true, sites: true, policy: { clarification: "assume" }, noSites: true });
+    expect(done.status).toBe("completed");
+    expect(executor.corrections.map((c) => c.findingIds)).toEqual([["F1"], ["F2"]]);
+  }, 120_000);
+});
+
+/**
+ * A site in a comment of each comment syntax `MASK_SYNTAX` spells differently, beside the same
+ * text in code: the host keeps the code site and drops the commented one (#2343).
+ */
+const COMMENTED_SITES: readonly [file: string, code: string, comment: string][] = [
+  ["spec/a_spec.rb", 'x = "a" * 3', '# x = "a" * 3'],
+  ["tests/test_a.py", 'x = "a" * 3', '# x = "a" * 3'],
+  ["tests/test_b.py", 'x = "a" * 3', '"""\nx = "a" * 3\n"""'],
+  ["src/a.test.ts", 'const x = "a".repeat(3);', '// const x = "a".repeat(3);'],
+  ["spec/a_spec.lua", 'local x = string.rep("a", 3)', '-- local x = string.rep("a", 3)'],
+  ["tests/testthat/test-a.R", 'x <- strrep("a", 3)', '# x <- strrep("a", 3)'],
+  ["tests/ATest.php", '$x = str_repeat("a", 3);', '// $x = str_repeat("a", 3);'],
+  ["tests/BTest.php", '$x = str_repeat("a", 3);', '# $x = str_repeat("a", 3);'],
+];
+
+describe("the host's check of a family's sites (#2343)", () => {
+  const workspace = (files: Record<string, string>): string => {
+    const root = mkdtempSync(join(tmpdir(), "family-sites-"));
+    cleanups.push(() => rmSync(root, { recursive: true, force: true }));
+    for (const [file, text] of Object.entries(files)) {
+      mkdirSync(dirname(join(root, file)), { recursive: true });
+      writeFileSync(join(root, file), text);
+    }
+    return root;
+  };
+
+  for (const [file, code, comment] of COMMENTED_SITES)
+    test(`${file}: the site in code is kept and the one in a comment dropped`, () => {
+      const root = workspace({ [file]: `${comment}\n${code}\n` });
+      const commentLine = comment.split("\n").length === 1 ? 1 : 2;
+      const codeLine = comment.split("\n").length + 1;
+      const text = code.replace(/^(const|local) /, "").replace(/;$/, "");
+      const checks = checkSites(root, [{ id: "F1", sites: [{ file, line: codeLine, text }, { file, line: commentLine, text }] }], () => true);
+      expect(checks.map((c) => c.verdict)).toEqual(["kept", "kept"]);
+      // The commented copy alone, with the code line out of reach, is not a site.
+      const alone = workspace({ [file]: `${comment}\n\n\n\n\n\n${code}\n` });
+      expect(checkSites(alone, [{ id: "F1", sites: [{ file, line: commentLine, text }] }], () => true).map((c) => c.verdict)).toEqual(["not_code"]);
+    });
+
+  test("a site inside a string, off its line, in a missing or outside file, or unwritable is not kept, and one place is listed once", () => {
+    const root = workspace({ "spec/a_spec.rb": 'it "x * 3" do\n  expect(1).to eq(1)\nend\n\n\n\nx = "a" * 3\n' });
+    const checks = checkSites(root, [{ id: "F1", sites: [
+      { file: "spec/a_spec.rb", line: 1, text: "x * 3" },
+      { file: "spec/a_spec.rb", line: 2, text: '"a" * 3' },
+      { file: "spec/a_spec.rb", line: 7, text: '"a" * 3' },
+      { file: "spec/missing_spec.rb", line: 1, text: "x" },
+      { file: "../outside_spec.rb", line: 1, text: "x" },
+      { file: "spec/a_spec.rb", line: 6, text: '"a" * 3' },
+    ] }], () => true);
+    expect(checks.map((c) => [c.line, c.verdict, c.foundLine])).toEqual([[1, "not_code", undefined], [2, "not_on_line", undefined], [7, "kept", 7], [1, "no_file", undefined], [1, "no_file", undefined], [6, "kept", 7]]);
+    const refused = checkSites(root, [{ id: "F1", sites: [{ file: "spec/a_spec.rb", line: 7, text: '"a" * 3' }] }], () => false);
+    expect(refused.map((c) => c.verdict)).toEqual(["unwritable"]);
+    expect(keptSites(checks)).toEqual([{ file: "spec/a_spec.rb", line: 7, text: '"a" * 3' }]);
+  });
+
+  test("the trace export keeps a finding's sites as code", () => {
+    const sites = [{ file: "spec/a_spec.rb", line: 7, text: '"a" * 3' }];
+    expect(scrubTrace({ findings: [{ id: "F1", claim: "secret prose here", sites }] })).toEqual({ findings: [{ id: "F1", claim: expect.not.stringContaining("secret"), sites }] });
+  });
+});
+
 describe("the chain key across files: one family on test files, or a reviewer's link (#2334)", () => {
   const finding = (id: string, file: string, family: string | null, repairTaskId: string | null, repeatOf: string | null = null, symbol: string | null = null): ChainFinding => ({ id, file, symbol, family, repeatOf, repairTaskId, claim: id, severity: "high", status: "resolved", requirementIds: [], criterionIds: [] });
   const chainOf = (findings: ChainFinding[], id: string) => {
@@ -680,6 +811,8 @@ describe("the chain key across files: one family on test files, or a reviewer's 
     impact: "none",
     suggestedFix: "none",
     quote: "none",
+    // The family's sites (#2343) widen the corrective's input and writes, not the chain key.
+    sites: "none",
   };
 
   test("every field of a reviewer's finding has its place in the chain key", () => {

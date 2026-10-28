@@ -68,3 +68,12 @@ export function readPreview(workspace: string, path: string): PreviewDocument {
     modifiedAt: stat.mtime.toISOString(),
   };
 }
+
+/**
+ * The absolute file to open a previewable project path with the default app. Reads it first, so a
+ * missing or oversized file is refused the way a preview refuses it.
+ */
+export function openablePreview(workspace: string, path: string): string {
+  readPreview(workspace, path);
+  return previewFile(workspace, path);
+}

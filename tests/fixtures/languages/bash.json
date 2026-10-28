@@ -68,6 +68,7 @@
     "sortedLists": null,
     "dependencyDirs": null,
     "dependencyPrepare": null,
-    "worktreePathLimits": null
+    "worktreePathLimits": null,
+    "testClasses": null
   }
 }

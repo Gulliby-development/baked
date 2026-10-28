@@ -1,6 +1,6 @@
 import type {
-  HostRemedy,
   RecoveryAdvice,
+  ResumeRemedy,
 } from "../../../../../src/core/workflows/remedies-model.js";
 import type { RunSnapshot } from "../../shared/api.js";
 import { call } from "./api.js";
@@ -73,12 +73,13 @@ export const workflow = {
     }),
   /**
    * `acceptWorkspace` keeps the files a person changed outside a run blocked on `input_changed`;
-   * `remedy` answers a corrective's block with the act its recovery offers (#2155).
+   * `remedy` answers a block with the act its recovery offers: a corrective's (#2155), or
+   * `accept-limitation` for a required check that cannot run (#2358).
    */
   resume: (
     key: string,
     run: Pick<RunSnapshot, "runId" | "revision">,
-    options: { acceptWorkspace?: boolean; remedy?: HostRemedy } = {},
+    options: { acceptWorkspace?: boolean; remedy?: ResumeRemedy } = {},
   ) =>
     call<RunSnapshot>(key, "POST", runPath(run.runId, "resume"), {
       ...command(run),

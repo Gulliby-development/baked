@@ -87,6 +87,7 @@
     "sortedLists": ["main.go: gofmt blank line before 5"],
     "dependencyDirs": null,
     "dependencyPrepare": null,
-    "worktreePathLimits": null
+    "worktreePathLimits": null,
+    "testClasses": null
   }
 }

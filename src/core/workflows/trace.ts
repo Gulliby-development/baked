@@ -20,6 +20,7 @@ import {
 } from "../llm/provider-health.js";
 import { canonical, hashBytes, hashJson } from "../specs/hash.js";
 import { workspacePath } from "../specs/validate.js";
+import { replayUnselectedTests } from "../verification/check-runner.js";
 import {
   CASE_WALK_DIR,
   CASE_WALK_KIND,
@@ -36,6 +37,7 @@ import {
   edgeCrashDecision,
   edgeDecision,
 } from "../verification/edge-inputs.js";
+import { CHAIN_SITES_DIR, type SitesRecord, siteDecision } from "../verification/family-sites.js";
 import { generatedCaseDecision } from "../verification/generated-values.js";
 import type { ReproOutcome } from "../verification/repro.js";
 import { planApprovalDecision, requestedPathTokens } from "./auto-approval.js";
@@ -415,12 +417,28 @@ export function scrubTrace(
             // its suffix, so the fold keeps the replay exact).
             k === "outputTail" && typeof v === "string"
             ? foldHomeDirs(v)
-            : PROSE.has(k) || content.has(k)
-              ? replaced(k, v, standIns)
-              : scrubTrace(v, standIns, content, k),
+            : // A family's sites are code, and the host's site check replays on their text and
+              // the lines it read (#2343): kept, each string at most `SITE_TEXT_CHARS` long.
+              k === "sites" && Array.isArray(v)
+              ? keptCode(v)
+              : PROSE.has(k) || content.has(k)
+                ? replaced(k, v, standIns)
+                : scrubTrace(v, standIns, content, k),
     ]),
   );
 }
+
+/** The longest code string of a family site a trace keeps (#2343): a site's text or a line. */
+const SITE_TEXT_CHARS = 400;
+
+const keptCode = (value: unknown): unknown =>
+  typeof value === "string"
+    ? value.slice(0, SITE_TEXT_CHARS)
+    : Array.isArray(value)
+      ? value.map(keptCode)
+      : value && typeof value === "object"
+        ? Object.fromEntries(Object.entries(value).map(([k, v]) => [k, keptCode(v)]))
+        : value;
 
 /** A run state's request texts, whose named files the auto-approval replay reads (#1707). */
 const REQUEST_KEYS = new Set(["requestText", "prompt"]);
@@ -928,6 +946,42 @@ export interface RunReplay {
   activeTimes: ActiveTimeBoundary[];
   /** Sizing reports whose active-time cap the current pace sets differently. */
   newActiveTimes: number;
+  /** Each written-tests run whose declared-class filter selected no test (#2363). */
+  unselectedTests: UnselectedTestsBoundary[];
+  /** Such runs the recording did not record a `written_tests_unselected` would-stop for. */
+  newUnselectedStops: number;
+}
+
+export interface UnselectedTestsBoundary {
+  checkId: string;
+  command: string;
+  declared: string[];
+  /** Whether the run recorded the `written_tests_unselected` would-stop for the check. */
+  recorded: boolean;
+}
+
+/**
+ * Every recorded written-tests run that selected the classes its files declare and ran no test
+ * (#2363), decided again on the current rule, with whether the run recorded the would-stop. Traces
+ * before #2363 hold no check that names its declared classes.
+ */
+export function replayUnselectedTestRuns(
+  store: WorkflowStore,
+  runId: string,
+): UnselectedTestsBoundary[] {
+  const recorded = new Set(
+    store
+      .eventsOfType(runId, "decision.would_stop")
+      .flatMap((e) =>
+        e.type === "decision.would_stop" && e.payload.reason === "written_tests_unselected"
+          ? [String((e.payload.inputs as { checkId?: unknown } | undefined)?.checkId)]
+          : [],
+      ),
+  );
+  return replayUnselectedTests(store, runId).map((decision) => ({
+    ...decision,
+    recorded: recorded.has(decision.checkId),
+  }));
 }
 
 export interface ActiveTimeBoundary {
@@ -1852,7 +1906,7 @@ export interface FindingChainBoundary {
    * `crash` is a battery or sibling-probe case's shadow crash decision (#2136).
    */
   key: string;
-  kind: "rewrite" | "battery" | "family" | "crash";
+  kind: "rewrite" | "battery" | "family" | "crash" | "site";
   recorded: string;
   replayed: string;
 }
@@ -1918,6 +1972,23 @@ export function replayFindingChains(
           },
           ...crashes(record.cases, (index) => record.cases[index]?.file ?? null),
         ];
+      }
+      // A family site's check (#2343), on the lines it read; a missing file read none.
+      if (artifact.logical_path.startsWith(CHAIN_SITES_DIR)) {
+        const record = JSON.parse(store.readArtifact(runId, artifact.id)) as SitesRecord;
+        return record.sites.flatMap((site, index) => {
+          if (site.verdict === "no_file") return [];
+          const { verdict } = siteDecision(site.text, site.line, site.window);
+          return [
+            {
+              key: `${artifact.logical_path}#${String(index + 1)}`,
+              kind: "site" as const,
+              recorded: site.verdict,
+              replayed:
+                verdict === "kept" && site.verdict === "unwritable" ? site.verdict : verdict,
+            },
+          ];
+        });
       }
       if (artifact.logical_path.startsWith(CHAIN_FAMILY_DIR)) {
         const record = JSON.parse(store.readArtifact(runId, artifact.id)) as FamilyRecord;
@@ -4017,6 +4088,8 @@ function replayRun(
   | "newSourceDefectRoutes"
   | "activeTimes"
   | "newActiveTimes"
+  | "unselectedTests"
+  | "newUnselectedStops"
 > | null {
   const db = store.connection;
   const run = store.run(runId);
@@ -4374,6 +4447,9 @@ export function replayTrace(
     const paces = new Map(
       runIds.map((runId) => [runId, replayActiveTimes(store, runId, options.activePace)]),
     );
+    const unselected = new Map(
+      runIds.map((runId) => [runId, replayUnselectedTestRuns(store, runId)]),
+    );
     const runs: RunReplay[] = [];
     for (const runId of runIds) {
       const firstByte = timings.get(runId) ?? [];
@@ -4410,6 +4486,7 @@ export function replayTrace(
       const baselineSignatures = signatures.get(runId) ?? [];
       const sourceDefects = routes.get(runId) ?? [];
       const activeTimes = paces.get(runId) ?? [];
+      const unselectedTests = unselected.get(runId) ?? [];
       if (
         !replay.boundaries.length &&
         !firstByte.length &&
@@ -4433,7 +4510,8 @@ export function replayTrace(
         !baselineFailures.length &&
         !baselineSignatures.length &&
         !sourceDefects.length &&
-        !activeTimes.length
+        !activeTimes.length &&
+        !unselectedTests.length
       )
         continue;
       runs.push({
@@ -4508,6 +4586,8 @@ export function replayTrace(
         newSourceDefectRoutes: sourceDefects.filter((b) => b.replayed !== b.recorded).length,
         activeTimes,
         newActiveTimes: activeTimes.filter((b) => b.replayed.after !== b.recorded.after).length,
+        unselectedTests,
+        newUnselectedStops: unselectedTests.filter((b) => !b.recorded).length,
       });
     }
     const gates = replayShareGate(store, options.shareGate);

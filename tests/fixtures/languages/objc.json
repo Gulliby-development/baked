@@ -58,6 +58,7 @@
       "Pods: linked"
     ],
     "dependencyPrepare": null,
-    "worktreePathLimits": null
+    "worktreePathLimits": null,
+    "testClasses": null
   }
 }
