@@ -47,7 +47,7 @@ import { manageKnownProject, renameKnownProject } from "./project-actions.js";
 import { SettingsStore } from "./settings.js";
 import { ProjectSupervisor, type Stream } from "./supervisor.js";
 import { AppTray } from "./tray.js";
-import { closeAction, closeToTray } from "./tray-model.js";
+import { CloseRequests, closeAction, closeToTray } from "./tray-model.js";
 import { resolveVoiceDir, VoiceEngine, voiceFix } from "./voice.js";
 
 const devServerUrl = process.env.VITE_DEV_SERVER_URL;
@@ -83,6 +83,7 @@ const voice = new VoiceEngine(resolveVoiceDir(voiceLocation), voiceFix(voiceLoca
 let listed: Promise<unknown> = Promise.resolve();
 
 let window: BrowserWindow | null = null;
+const closeRequests = new CloseRequests();
 let quitting = false;
 const broadcast = (channel: string, ...args: unknown[]): void => {
   if (window && !window.isDestroyed()) window.webContents.send(channel, ...args);
@@ -421,6 +422,7 @@ function createWindow(): void {
     event.preventDefault();
     const current = window;
     if (!current) return;
+    const request = closeRequests.next();
     void closeToTray({
       window: current,
       showTray: () => tray.show(),
@@ -428,9 +430,13 @@ function createWindow(): void {
       projects: () => supervisor.refresh().catch(() => supervisor.projects()),
       decide: (projects) =>
         closeAction({ quitting, keepRunningInTray: settings.get().keepRunningInTray, projects }),
+      current: () => closeRequests.isCurrent(request),
     });
   });
-  window.on("show", () => tray.hide());
+  window.on("show", () => {
+    closeRequests.cancel();
+    tray.hide();
+  });
   window.on("maximize", () => broadcast(IPC.windowMaximized, true));
   window.on("unmaximize", () => broadcast(IPC.windowMaximized, false));
   window.on("closed", () => {
