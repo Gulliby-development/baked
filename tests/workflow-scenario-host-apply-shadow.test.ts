@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DEFAULT_CONFIG } from "../src/config/index.js";
 import { diffSections } from "../src/core/intelligence/call-context.js";
+import { runRootPath } from "../src/core/workflows/effects.js";
 import { hashBytes, hashJson } from "../src/core/specs/hash.js";
 import { defaultWorkflowPolicy } from "../src/core/workflows/defaults.js";
 import {
@@ -12,8 +13,10 @@ import {
   type HostApplyRecord,
   type HostApplyWrite,
   hostAppliableTasks,
+  hostApplyContents,
   hostApplyDecision,
   hostApplyInputs,
+  hostApplyText,
   hostApplyRecords,
   regionSections,
 } from "../src/core/workflows/host-apply.js";
@@ -337,4 +340,83 @@ describe("a verbatim Markdown section the host writes into its file (#2101)", ()
     expect(applyRegion(`${README}\n## Cleaning spaces\n\nA.\n\n## Cleaning spaces\n`, SECTION, region)).toBeNull();
     expect(regionSections(README, region)).toEqual([]);
   });
+});
+
+// #2333: R73 and R74 recorded 12 `wouldApply` decisions that matched the reference trees byte for
+// byte and one correct refusal; the sessions they would have skipped cost 29 to 74 percent of
+// idpeek-update's, ewvet-update's and xmlvet-update's tokens. Under `hostApply: "on"` the host
+// writes those tasks itself.
+describe("the host writes the request's verbatim content (#2333)", () => {
+  test("hostApplyContents gives each write's final text: a diff applied, a whole file, a section written in, a CRLF base", async () => {
+    const root = mkdtempSync(join(tmpdir(), "baked-host-apply-contents-"));
+    cleanups.push(() => rmSync(root, { recursive: true, force: true }));
+    mkdirSync(join(root, "src"));
+    writeFileSync(join(root, "src/a.ts"), A_BEFORE);
+    expect(await hostApplyContents(root, brief, { writes: [{ path: "src/a.ts", action: "modify" }, { path: "src/b.ts", action: "create" }] })).toEqual([
+      { path: "src/a.ts", content: "export const A = 1;\nexport const B = 3;\n" },
+      { path: "src/b.ts", content: "export const NEW = true;\n" },
+    ]);
+    // The base is left alone, and a diff that does not apply throws with its path.
+    expect(readFileSync(join(root, "src/a.ts"), "utf8")).toBe(A_BEFORE);
+    writeFileSync(join(root, "src/c.ts"), 'export const C = "different";\n');
+    await expect(hostApplyContents(root, brief, { writes: [{ path: "src/c.ts", action: "modify" }] })).rejects.toThrow("the diff for src/c.ts does not apply");
+    // A CRLF base takes the LF diff as CRLF hunk lines and keeps its line ends.
+    writeFileSync(join(root, "src/a.ts"), A_BEFORE.replaceAll("\n", "\r\n"));
+    expect((await hostApplyContents(root, brief, { writes: [{ path: "src/a.ts", action: "modify" }] }))[0]?.content).toBe("export const A = 1;\r\nexport const B = 3;\r\n");
+    // A Markdown section replaces the one section of its heading.
+    writeFileSync(join(root, "README.md"), "# Tool\n\n## Usage\n\nold\n\n## License\n\nMIT\n");
+    const section = ["Add this section to `README.md`:", "```markdown", "## Usage", "", "new", "```"].join("\n");
+    expect((await hostApplyContents(root, section, { writes: [{ path: "README.md", action: "modify" }] }))[0]?.content).toBe("# Tool\n\n## Usage\n\nnew\n\n## License\n\nMIT\n");
+  }, 60000);
+
+  // Git for Windows sets `core.autocrlf=true`, so the run worktree's files are CRLF there; the host's
+  // write keeps the base's line ends, as an implementer's edit would.
+  for (const [writers, autocrlf] of [[1, false], [2, false], [2, true]] as const)
+    test(`${String(writers)} writer(s)${autocrlf ? ", autocrlf" : ""}: the applicable tasks run no implementer, the others do, and the records say applied`, async () => {
+      const root = mkdtempSync(join(tmpdir(), "baked-host-apply-on-"));
+      cleanups.push(() => rmSync(root, { recursive: true, force: true }));
+      mkdirSync(join(root, "src"));
+      writeFileSync(join(root, "src/a.ts"), A_BEFORE);
+      writeFileSync(join(root, "src/c.ts"), 'export const C = "different";\n');
+      writeFileSync(join(root, "src/d.ts"), "export const D = 1;\n");
+      if (writers > 1) {
+        git(root, "init", "-q", "-b", "main");
+        git(root, "config", "user.name", "Test User");
+        git(root, "config", "user.email", "test@example.test");
+        git(root, "config", "commit.gpgsign", "false");
+        git(root, "config", "core.autocrlf", String(autocrlf));
+        writeFileSync(join(root, ".gitignore"), ".baked/\n");
+        git(root, "add", ".");
+        git(root, "commit", "-q", "-m", "Initial");
+      }
+      const on: RunPolicy = { ...policy, hostApply: "on" };
+      const executor = new ScriptedExecutor(root);
+      const config = { ...DEFAULT_CONFIG, defaultModel: "fixture/model", workflows: { enabled: true, importsEnabled: true, defaultWorkflow: "sdd", policy: on } };
+      const service = new NativeWorkflowService(root, config, executor);
+      cleanups.push(() => service.close());
+      const run = await service.start({ commandId: newId(), featureId: "fixture", workflowId: "sdd", prompt: brief, ownerLabel: "test", policy: on, ...(writers > 1 ? { executionMode: "worktree" as const, maxConcurrentWriters: writers } : {}) });
+      await service.drive(run.runId, new AbortController().signal);
+      const waiting = await service.get(run.runId);
+      const approval = service.store.requests(run.runId).find((r) => r.kind === "approval" && r.status === "pending");
+      if (!approval) throw new Error(`No approval request: ${waiting.status} ${waiting.reason}`);
+      expect((JSON.parse(approval.body_json) as { hostApply?: string }).hostApply).toBe(hostApplyText(["T001", "T002", "T003"], "on"));
+      await service.decide(run.runId, { commandId: newId(), expectedRevision: waiting.revision }, { kind: "approve", requestId: approval.id, digest: approval.digest });
+      const done = await service.drive(run.runId, new AbortController().signal);
+      expect(done.status).toBe("completed");
+
+      // T001's diff and T002's whole file are the host's; T003's stale diff and T004's prose are not.
+      expect([...executor.attempts].sort()).toEqual(["T003", "T004"]);
+      // The run's own tree: the workspace, or the run worktree with several writers.
+      const tree = join(root, runRootPath(service.store, run.runId));
+      const a = content.T001?.[1] ?? "";
+      expect(readFileSync(join(tree, "src/a.ts"), "utf8")).toBe(autocrlf ? a.replaceAll("\n", "\r\n") : a);
+      expect(readFileSync(join(tree, "src/b.ts"), "utf8")).toBe(content.T002?.[1] ?? "");
+      const records = hostApplyRecords(service.store, run.runId);
+      expect(records.map((r) => [r.taskId, r.mode, r.wouldApply, r.applied])).toEqual([
+        ["T001", "on", true, true],
+        ["T002", "on", true, true],
+        ["T003", "on", false, false],
+      ]);
+      expect(service.store.tasks(run.runId).filter((t) => ["T001", "T002"].includes(t.id)).map((t) => t.status)).toEqual(["verified", "verified"]);
+    }, 120000);
 });

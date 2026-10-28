@@ -4,7 +4,7 @@ import { canonical } from "../src/core/specs/hash.js";
 import { type CostForecast, costForecast, kindRatio } from "../src/core/workflows/cost-forecast.js";
 import { POOL_STEP, planCharge, planChargeTokens, poolExtensionDecision, poolForecast, tokenPool } from "../src/core/workflows/initiatives/token-pool.js";
 import { chargeHold, poolBoundDecision, refreshedGrowth, stageReserveDecision } from "../src/core/workflows/initiatives/growth.js";
-import { dollarCapPark, expectedSplitUsd, type ShareGateView } from "../src/core/workflows/initiatives/service.js";
+import { dollarCapPark, expectedSplitUsd, growthLimit, type ShareGateView } from "../src/core/workflows/initiatives/service.js";
 import type { RunPolicy } from "../src/core/workflows/schemas.js";
 import { type TaskKind, verificationTokens } from "../src/core/workflows/sizing.js";
 import type { AttemptUsageRecord } from "../src/core/workflows/step-budget.js";
@@ -742,6 +742,39 @@ describe("charge growth invariants (#2280)", () => {
       if (fits) expect(decision.wouldStop).toBe(false);
       if (s.othersTokens + s.boundTokens > s.limitTokens) expect(decision.wouldStop).toBe(true);
       if (s.othersUsd + s.boundUsd > s.ceilingUsd + 0.006) expect(decision.wouldStop).toBe(true);
+    }), { numRuns: 300 });
+  });
+});
+
+describe("token growth room invariants (#2294)", () => {
+  const seed = fc.record({
+    remainingTokens: fc.integer({ min: 0, max: 30_000_000 }),
+    heldTokens: fc.integer({ min: 10_000, max: 20_000_000 }),
+    boundTokens: fc.integer({ min: 10_000, max: 20_000_000 }),
+    waiting: fc.array(fc.record({ share: fc.integer({ min: 0, max: 10_000_000 }), low: fc.option(fc.integer({ min: 0, max: 10_000_000 })) }), { maxLength: 4 }),
+  });
+
+  test("an initiative run's token room is never null, and a raised bound never passes what it holds plus the pool left", () => {
+    fc.assert(fc.property(seed, (s) => {
+      const view = {
+        budget: { remaining: { tokens: s.remainingTokens, calls: 0, activeMs: 0 } },
+        features: [
+          { id: "run", share: null, need: null },
+          ...s.waiting.map((w, i) => ({ id: `w${i}`, share: { tokens: w.share, calls: 0, activeMs: 0 }, need: w.low === null ? null : { low: w.low, high: w.low } })),
+        ],
+      } as unknown as Pick<ShareGateView, "budget" | "features">;
+      const room = growthLimit(view, "run");
+      expect(room).not.toBeNull();
+      expect(room).toBeGreaterThanOrEqual(0);
+      expect(room).toBeLessThanOrEqual(s.remainingTokens);
+      // With nothing estimated, the waiting features keep their whole shares.
+      if (s.waiting.every((w) => w.low === null))
+        expect(room).toBe(Math.max(0, s.remainingTokens - s.waiting.reduce((sum, w) => sum + w.share, 0)));
+      const policy: RunPolicy = { ...fixturePolicy, sizing: { maxRunTokens: s.boundTokens, extendToTokens: s.boundTokens } };
+      const base: RunPolicy = { ...fixturePolicy, sizing: { maxRunTokens: 8_000_000, extendToTokens: 12_000_000 } };
+      const after = refreshedGrowth(policy, base, { tokens: s.heldTokens, usd: 0, calls: 0, activeMs: 0 }, { calls: 0, activeMs: 0 }, { tokens: room, usd: null, calls: 0, activeMs: 0 }) ?? policy;
+      for (const bound of [after.sizing!.maxRunTokens!, after.sizing!.extendToTokens!])
+        if (bound > s.boundTokens) expect(bound).toBeLessThanOrEqual(s.heldTokens + s.remainingTokens);
     }), { numRuns: 300 });
   });
 });

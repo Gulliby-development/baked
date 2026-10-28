@@ -1093,6 +1093,28 @@ export const SETTINGS: readonly SettingDefinition[] = [
     ],
   },
   {
+    id: "quality.hostApply",
+    page: "code-quality",
+    section: "Workflow runs",
+    label: "Host apply of verbatim content",
+    help: "When the request gives a task's every file verbatim (an exact diff, a whole file or a README section) and every diff applies to the task's base, the host writes the files itself and starts no implementer session; the task's checks decide it, and a failing check opens the usual correction.",
+    scopes: BOTH,
+    type: "enum",
+    default: "off",
+    options: [
+      {
+        value: "off",
+        label: "off",
+        help: "An implementer writes the files; the host only records whether it would apply them.",
+      },
+      {
+        value: "on",
+        label: "on",
+        help: "Write the request's verbatim content and skip the implementer when every diff applies.",
+      },
+    ],
+  },
+  {
     id: "quality.defectClasses",
     page: "code-quality",
     section: "Workflow runs",

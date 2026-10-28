@@ -290,10 +290,12 @@ export function upstreamSymbolGaps(
  * How the initiative answers a planned-ahead feature's request for an amendment of an accepted
  * upstream feature (#2157), under `workflows.upstreamAmendments`. `replan`: the owner runs again
  * from research (origin `replan`) with the request in its prompt, and the requesting feature waits
- * for that result; `none`: nothing is reopened and the release goes on as before (the
- * `upstream_symbol` would-stop is still recorded).
+ * for that result; `write` (#2183): the requesting feature writes the file itself, its boundary
+ * takes the path and its run plans again on the accepted result, so the owner does not run again;
+ * `none`: nothing is reopened and the release goes on as before (the `upstream_symbol` would-stop
+ * is still recorded).
  */
-export type AmendmentAnswer = "replan" | "none";
+export type AmendmentAnswer = "replan" | "write" | "none";
 
 export interface AmendmentInput {
   /** The status of the owner's current run; null when it has none. */
@@ -301,13 +303,26 @@ export interface AmendmentInput {
   initiativeStatus: string;
   /** The requesting feature already asked this owner under the approved split. */
   requested: boolean;
+  /** `workflows.upstreamAmendments`: `"write"` lets a small gap be written by the requester. */
+  mode?: boolean | "write";
+  /** Every gap the requesting feature has, across its owners. */
+  gaps?: readonly UpstreamSymbolGap[];
+  /** Another feature whose run is not finished owns the gap's file too. */
+  pathOpen?: boolean;
 }
 
-/** The one rule: reopen an owner whose run has finished, once per request, in a live initiative. */
+/**
+ * The one rule: reopen an owner whose run has finished, once per request, in a live initiative.
+ * Under `"write"` a gap of one symbol in one file, which no unfinished feature owns, is written by
+ * the requester instead: one helper added beside an accepted contract does not change it, and a
+ * whole owner run for it costs a feature run (#2183).
+ */
 export function amendmentAnswer(input: AmendmentInput): AmendmentAnswer {
   if (input.requested) return "none";
   if (input.initiativeStatus !== "active" && input.initiativeStatus !== "paused") return "none";
-  return input.ownerRunStatus === "completed" ? "replan" : "none";
+  if (input.ownerRunStatus !== "completed") return "none";
+  const gaps = input.gaps ?? [];
+  return input.mode === "write" && gaps.length === 1 && !input.pathOpen ? "write" : "replan";
 }
 
 /** A request an owner's reopened run gets in its prompt. */
