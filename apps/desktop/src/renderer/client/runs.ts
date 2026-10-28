@@ -159,6 +159,14 @@ export interface EventPayloads {
     summary: string;
     inputs: Record<string, unknown>;
   };
+  /** A shadow reason would have resumed a blocked run (#2226). */
+  "decision.would_resume": {
+    reason: string;
+    mode: "shadow" | "advisory";
+    key: string;
+    summary: string;
+    inputs: Record<string, unknown>;
+  };
   "task.state_changed": {
     taskId: string;
     from: string;

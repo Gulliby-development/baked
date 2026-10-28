@@ -65,7 +65,13 @@ import { sizingHistory, testCaseRate } from "../sizing.js";
 import { stageReserve } from "../stage-reserve.js";
 import { terminalStates } from "../state-machine.js";
 import { stopDetail, stopRecovery } from "../stop-detail.js";
-import { recordWouldStop, type StopMode, stopFault, stopMode } from "../stop-reasons.js";
+import {
+  noteStoredLimitResume,
+  recordWouldStop,
+  type StopMode,
+  stopFault,
+  stopMode,
+} from "../stop-reasons.js";
 import { newId, WorkflowStore } from "../store.js";
 import type { IssueSource } from "../types.js";
 import { HOST_AUTO_APPROVAL_CEILING, HostAutoApprovalSchema } from "../v2/definition.js";
@@ -1723,6 +1729,7 @@ export class InitiativeService {
       this.noteTokenForecast(view, null);
       this.noteTimeForecast(view, null);
       this.notePlanCharge(view, null);
+      this.noteStoredLimitResumes(view);
       const next = view.next;
       if (view.parallelRuns > 1 && (next.kind === "drive" || next.kind === "start")) {
         if (!(await this.driveFeatures(id, signal))) return;
@@ -1792,6 +1799,7 @@ export class InitiativeService {
       this.noteTokenForecast(view, null);
       this.noteTimeForecast(view, null);
       this.notePlanCharge(view, null);
+      this.noteStoredLimitResumes(view);
       for (;;) {
         const row = this.store.get(id);
         const ready = this.byPath(
@@ -2266,6 +2274,17 @@ export class InitiativeService {
   /** `workflows.extendWithinDollars`: whether a token park records the host's extension (#2042). */
   private extendWithinDollars(): ExtendWithinDollars {
     return this.workflows.config.workflows?.extendWithinDollars ?? DEFAULT_EXTEND_WITHIN_DOLLARS;
+  }
+
+  /**
+   * The driver round's look at its blocked feature runs (#2226): a run blocked on its own active
+   * time, tokens or calls whose stored limits grew past its usage after the block records one
+   * `decision.would_resume` (`noteStoredLimitResume`, shadow). It never resumes the run.
+   */
+  private noteStoredLimitResumes(view: InitiativeView): void {
+    for (const feature of view.features)
+      if (feature.state === "blocked" && feature.runId)
+        noteStoredLimitResume(this.workflows.store, feature.runId, "initiative-round");
   }
 
   /**
