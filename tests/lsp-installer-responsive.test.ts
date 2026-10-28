@@ -98,7 +98,8 @@ test("LSP popup renders and Escape closes it during loading", async () => {
     try {
       await act(async () => { await view.flush(); await view.renderOnce(); });
       const opened = view.captureCharFrame().includes("LSP Servers");
-      await act(async () => { await view.mockInput.pressEscape(); });
+      // A lone Escape is held 20 ms so it can be told apart from an escape sequence (#2266).
+      await act(async () => { view.mockInput.pressEscape(); await Bun.sleep(120); });
       for (let i = 0; i < 3; i++) {
         await act(async () => { await view.flush(); await view.renderOnce(); });
       }

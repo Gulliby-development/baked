@@ -81,7 +81,8 @@ for (const [width, height] of [[120, 40], [80, 24], [50, 20]]) {
     await act(async () => view.mockInput.pressEnter());
     const destination = await snapshot(view, "skills-destination", width!, height!);
     assert(destination.includes("Project") && destination.includes("Global"), "installation destinations must be visible");
-    await act(async () => view.mockInput.pressEscape());
+    // A lone Escape is held briefly; a Tab right after it would read as Alt+Tab (#2266).
+    await act(async () => { view.mockInput.pressEscape(); await Bun.sleep(120); });
     // Browsing must preserve the active skill without invoking installation.
     await act(async () => view.mockInput.pressTab());
     assert((await snapshot(view, "skills-installed", width!, height!)).includes("bread"));

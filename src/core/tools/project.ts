@@ -1209,7 +1209,11 @@ export function formatRoot(filePath: string): string | null {
  * Run the project's configured formatter on a single file.
  * Returns whether formatting was applied. Best-effort — failures return false.
  */
-export async function formatFile(filePath: string, cwd?: string): Promise<boolean> {
+export async function formatFile(
+  filePath: string,
+  cwd?: string,
+  timeoutMs = formatTimeoutMs(),
+): Promise<boolean> {
   const effectiveCwd = cwd ?? formatRoot(filePath) ?? process.cwd();
   const profile = await detectProfile(effectiveCwd);
   if (!profile.formatFile) return false;
@@ -1220,7 +1224,6 @@ export async function formatFile(filePath: string, cwd?: string): Promise<boolea
   try {
     // A formatter that writes text mode on Windows turns a LF file into CRLF (#2214).
     const endings = captureEndings([filePath]);
-    const timeoutMs = formatTimeoutMs();
     const result = await runBoundedShell(command, { cwd: effectiveCwd, timeoutMs }).finally(() =>
       restoreEndings(endings),
     );

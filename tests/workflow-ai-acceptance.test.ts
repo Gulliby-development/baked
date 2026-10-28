@@ -741,6 +741,7 @@ describe("AI acceptance gate", () => {
   });
 
   test("the listening sockets of a process and its descendants are read on this system", async () => {
+    const started = Date.now();
     const dir = mkdtempSync(join(tmpdir(), "baked-listen-"));
     const grandchild = join(dir, "grandchild.ts");
     writeFileSync(grandchild, 'const s = Bun.serve({ hostname: "0.0.0.0", port: 0, fetch: () => new Response("") });\nconsole.log(`wide ${s.port}`);\nsetInterval(() => {}, 1000);\n');
@@ -764,15 +765,19 @@ describe("AI acceptance gate", () => {
         }
       });
     });
+    // Each read starts PowerShell, which took seconds on a loaded Windows runner: forty reads
+    // overran the test's limit before an assertion could say what was read (#2267). The reads
+    // stop at a deadline inside the limit, so a failure shows the last result.
     let found: Awaited<ReturnType<typeof listeningSockets>> = [];
-    for (let attempt = 0; attempt < 40; attempt++) {
+    const deadline = started + 80_000;
+    do {
       found = await listeningSockets([child.pid ?? 0]);
       if (found?.some((l) => l.port === ports.wide) && found.some((l) => l.port === ports.local)) break;
       await Bun.sleep(250);
-    }
+    } while (Date.now() < deadline);
     expect(found).not.toBeNull();
     expect(found).toContainEqual({ port: ports.local as number, loopback: true });
     expect(found).toContainEqual({ port: ports.wide as number, loopback: false });
     expect(listenerViolations(found ?? [], [ports.local as number])).toEqual([`the application listens on port ${ports.wide} which is not granted`.replace(" which", ", which")]);
-  }, 60000);
+  }, 120_000);
 });
