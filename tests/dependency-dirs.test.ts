@@ -5,10 +5,16 @@ import { join } from "node:path";
 import { createSessionWorktree } from "../src/core/chat/session-worktree.js";
 import { sourceManifest } from "../src/core/verification/snapshot.js";
 import { copyWorkspace } from "../src/core/verification/doc-examples.js";
+import { isNoRow, SUPPORTED_LANGUAGES } from "../src/core/intelligence/language-records.js";
+import { unpreparedNote } from "../src/core/verification/environment-faults.js";
 import {
   ALL_DEPENDENCY_DIRS,
+  DEPENDENCY_PREPARE,
   isLinkedDependency,
   linkDependencies,
+  PREPARE_READERS,
+  readsPackages,
+  unpreparedDependencies,
 } from "../src/core/workflows/dependency-dirs.js";
 import type { WorkflowStore } from "../src/core/workflows/store.js";
 import {
@@ -140,5 +146,38 @@ describe("dependency folders in worktrees (#2330)", () => {
       expect(dir.startsWith("/")).toBe(false);
       expect(dir.split("/")).not.toContain("..");
     }
+  });
+});
+
+describe("unresolved packages of a worktree (#2372)", () => {
+  test("every language with a prepare command names the checks that load its packages", () => {
+    const prepared = SUPPORTED_LANGUAGES.filter((l) => !isNoRow(DEPENDENCY_PREPARE[l]));
+    expect(Object.keys(PREPARE_READERS).sort()).toEqual([...prepared].sort());
+  });
+
+  test("dart test and flutter analyze load packages; dart format does not", () => {
+    expect(readsPackages("dart", "dart", ["test", "--reporter", "expanded"])).toBe(true);
+    expect(readsPackages("dart", "flutter", ["--no-color", "analyze"])).toBe(true);
+    expect(readsPackages("dart", "dart", ["format", "--set-exit-if-changed", "."])).toBe(false);
+  });
+
+  test("a failed check counts as the machine's only in a worktree without its package config", () => {
+    const workspace = mkdtempSync(join(tmpdir(), "baked-unprepared-"));
+    roots.push(workspace);
+    const tree = join(workspace, "tree");
+    mkdirSync(tree);
+    for (const dir of [workspace, tree]) writeFileSync(join(dir, "pubspec.yaml"), "name: ladle\n");
+    expect(unpreparedDependencies(tree).map((u) => u.command)).toEqual([
+      ["dart", "pub", "get", "--offline"],
+    ]);
+    expect(unpreparedNote("dart-test", tree, workspace, "dart", ["test"])).toContain(
+      "Run `dart pub get` in the project",
+    );
+    expect(unpreparedNote("dart-format", tree, workspace, "dart", ["format", "."])).toBeNull();
+    // The working copy resolves its packages as its own tools do.
+    expect(unpreparedNote("dart-test", workspace, workspace, "dart", ["test"])).toBeNull();
+    mkdirSync(join(tree, ".dart_tool"));
+    writeFileSync(join(tree, ".dart_tool", "package_config.json"), "{}\n");
+    expect(unpreparedNote("dart-test", tree, workspace, "dart", ["test"])).toBeNull();
   });
 });

@@ -5,7 +5,7 @@ BAKED runs on Bun. Install dependencies with `bun install`, then start the termi
 ## Architecture
 
 - `src/boot.tsx` routes startup to the terminal UI or headless CLI.
-- `src/components/`, `src/hooks/`, and `src/stores/` implement the OpenTUI/React interface.
+- `src/components/`, `src/hooks/`, and `src/stores/` implement the OpenTUI/React interface. OpenTUI native resources such as syntax styles are owned by a renderer, so a component gets them from a hook (`useSyntaxStyle`) rather than a module-level singleton.
 - `src/core/agents/bake.ts` assembles the agent, prompts, tools, approvals, and execution modes.
 - `src/core/tools/` provides file operations, shell execution, Git, and code analysis.
 - `src/core/context/` and `src/core/intelligence/` maintain context, repository graphs, and standalone language servers.

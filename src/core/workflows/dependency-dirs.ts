@@ -1,6 +1,7 @@
 import {
   copyFileSync,
   existsSync,
+  linkSync,
   lstatSync,
   mkdirSync,
   readdirSync,
@@ -17,6 +18,7 @@ import {
   type NoRow,
   none,
   SUPPORTED_LANGUAGES,
+  type SupportedLanguage,
 } from "../intelligence/language-records.js";
 
 const JS = ["node_modules"] as const;
@@ -82,11 +84,14 @@ export const ALL_DEPENDENCY_DIRS: readonly string[] = [
  * folders in the worktree, entry by entry; `own` the entries copied there, with the workspace's
  * path in their text replaced by the worktree's. Every other entry is linked, and a link inside a
  * walked folder (an npm workspace package, `node_modules/app -> ../packages/app`) is made again
- * with the same target, so a relative one resolves inside the worktree.
+ * with the same target, so a relative one resolves inside the worktree. With `mirror`, the other
+ * entries are not linked but mirrored: folders made real and files hard-linked (copied where a hard
+ * link fails), for a folder whose packages find the project's files from their own real path (#2401).
  */
 export interface ProjectPaths {
   walk: readonly string[];
   own: readonly string[];
+  mirror?: boolean;
   /**
    * Entries (exact `/`-separated paths) left out of the worktree's folder: an installed copy of the
    * project itself (#2371), so a check loads the worktree's sources or fails clearly instead of
@@ -138,10 +143,15 @@ export const PROJECT_PATHS: Readonly<
       ? { walk: [".bin", "@*"], own: [] }
       : null,
   // Composer's autoloader resolves the project's namespaces from its own location (`$baseDir =
-  // dirname($vendorDir)`), and the `vendor/bin` proxies load it: R75 ladlemath-update (#2362).
+  // dirname($vendorDir)`), and the `vendor/bin` proxies load it: R75 ladlemath-update (#2362). A
+  // package's launcher finds the autoloader from its own real path too (phpstan requires
+  // `dirname(Phar::running(false)) . '/../../autoload.php'`, after the one of the working
+  // directory), so a linked package loaded the main workspace's autoloader a second time and PHP
+  // died on "Cannot redeclare class ComposerAutoloaderInit...": R76 ladlemath-update (#2401). The
+  // packages are mirrored, which costs a hard link per file, not a copy.
   vendor: (source) =>
     existsSync(join(source, "composer"))
-      ? { walk: [], own: ["composer", "autoload.php", "bin"] }
+      ? { walk: [], own: ["composer", "autoload.php", "bin"], mirror: true }
       : null,
   // An editable install of the project (`pip install -e .`, `uv sync`, `poetry install`).
   ".venv": (source, workspace) => (editableInstall(source, workspace) ? PYTHON_PATHS : null),
@@ -382,6 +392,28 @@ function linkEntry(source: string, target: string): void {
   else symlinkSync(source, target, folder ? "dir" : "file");
 }
 
+/**
+ * Mirrors `source` at `target`: folders real, files hard-linked (a copy across volumes or where the
+ * file system refuses), links made again. Code in the mirror sees the mirror as its real path.
+ */
+function mirror(source: string, target: string, workspace: string, root: string): void {
+  if (isLink(source)) {
+    relink(source, target, workspace, root);
+    return;
+  }
+  if (statSync(source).isDirectory()) {
+    mkdirSync(target, { recursive: true });
+    for (const name of entries(source))
+      mirror(join(source, name), join(target, name), workspace, root);
+    return;
+  }
+  try {
+    linkSync(source, target);
+  } catch {
+    copyFileSync(source, target);
+  }
+}
+
 /** Copies `source` to `target` (recursively), naming `root` in the text where it named `workspace`. */
 function copyOwn(source: string, target: string, workspace: string, root: string): void {
   if (isLink(source)) {
@@ -423,7 +455,7 @@ function relink(source: string, target: string, workspace: string, root: string)
   else symlinkSync(moved, target, folder ? "dir" : "file");
 }
 
-/** Builds `target` from `source` by `paths`: walked folders real, own entries copied, the rest linked. */
+/** Builds `target` from `source` by `paths`: walked folders real, own entries copied, the rest linked or mirrored. */
 function shadow(
   source: string,
   target: string,
@@ -447,6 +479,7 @@ function shadow(
     else if (isLink(from)) relink(from, to, workspace, root);
     else if (matches(paths.walk, path) && statSync(from).isDirectory())
       shadow(from, to, paths, workspace, root, path);
+    else if (paths.mirror) mirror(from, to, workspace, root);
     else linkEntry(from, to);
   }
   if (!at) writeFileSync(join(target, SHADOW_MARK), "");
@@ -507,11 +540,53 @@ export const WORKTREE_PATH_LIMITS: LanguageRecord<{
 
 /** How long a prepare command may take before the worktree goes on without it. */
 const PREPARE_MS = 120_000;
+/** How much of a failed prepare command's output a finding keeps. */
+const PREPARE_OUTPUT_CHARS = 2_000;
+
+/**
+ * The commands (program and subcommand) whose checks load the packages a language's prepare
+ * command resolves (#2372): when the command did not resolve them, a failure of such a check is
+ * the machine's, not the code's. A formatter reads no packages, so `dart format` is not one. Every
+ * language with a `DEPENDENCY_PREPARE` row has an entry; the parity test holds them equal.
+ */
+export const PREPARE_READERS: Readonly<
+  Partial<Record<SupportedLanguage, readonly (readonly [string, string])[]>>
+> = {
+  dart: [
+    ["dart", "test"],
+    ["dart", "analyze"],
+    ["dart", "run"],
+    ["flutter", "test"],
+    ["flutter", "analyze"],
+  ],
+};
+
+/** Whether `program args...` is a check that loads the packages of `language`. */
+export const readsPackages = (
+  language: SupportedLanguage,
+  program: string,
+  args: readonly string[],
+): boolean =>
+  (PREPARE_READERS[language] ?? []).some(
+    ([reader, sub]) => reader === program && args.find((a) => !a.startsWith("-")) === sub,
+  );
+
+/** A prepare command a worktree or copy still needs: it failed, timed out or could not start. */
+export interface UnpreparedDependencies {
+  language: SupportedLanguage;
+  command: string[];
+  /** The end of the command's output when it ran in this process and failed; null otherwise. */
+  output: string | null;
+}
+
+/** The output of the prepare commands that failed, by root and language, for the finding. */
+const failedOutput = new Map<string, string>();
+const outputKey = (root: string, language: string) => `${resolve(root)}\0${language}`;
 
 /**
  * Runs the prepare commands of `DEPENDENCY_PREPARE` in `root`. A command that is missing or fails
- * leaves the worktree as it is: its checks then report the unresolved packages. Returns the
- * commands that ran and succeeded.
+ * leaves the worktree as it is; `unpreparedDependencies` then names it, and the run records it once
+ * as an environment finding (#2372). Returns the commands that ran and succeeded.
  */
 export function prepareDependencies(root: string): string[][] {
   const ran: string[][] = [];
@@ -519,23 +594,63 @@ export function prepareDependencies(root: string): string[][] {
     const row = DEPENDENCY_PREPARE[language];
     if (isNoRow(row)) continue;
     const command = row(root);
-    const program = command && Bun.which(command[0] ?? "", { PATH: process.env.PATH ?? "" });
-    if (!command || !program) continue;
+    if (!command) continue;
+    const program = Bun.which(command[0] ?? "", { PATH: process.env.PATH ?? "" });
+    if (!program) {
+      failedOutput.set(outputKey(root, language), `${command[0]} is not on PATH`);
+      continue;
+    }
     const launch = /\.(?:bat|cmd)$/i.test(program) ? ["cmd", "/d", "/c", program] : [program];
     try {
       const result = Bun.spawnSync([...launch, ...command.slice(1)], {
         cwd: root,
         stdin: "ignore",
-        stdout: "ignore",
-        stderr: "ignore",
+        stdout: "pipe",
+        stderr: "pipe",
         timeout: PREPARE_MS,
       });
-      if (result.exitCode === 0) ran.push(command);
-    } catch {
-      // The worktree's checks name the packages they cannot resolve.
+      if (result.exitCode === 0) {
+        ran.push(command);
+        failedOutput.delete(outputKey(root, language));
+        continue;
+      }
+      const output = `${result.stdout.toString()}${result.stderr.toString()}`.trim();
+      failedOutput.set(
+        outputKey(root, language),
+        output.slice(-PREPARE_OUTPUT_CHARS) || `exit code ${String(result.exitCode)}`,
+      );
+    } catch (error) {
+      failedOutput.set(outputKey(root, language), String(error).slice(0, PREPARE_OUTPUT_CHARS));
     }
   }
   return ran;
+}
+
+/**
+ * The prepare commands `root` still needs (#2372): a row of `DEPENDENCY_PREPARE` that names a
+ * command means its packages are not resolved there. Read from the files, so a check of a
+ * worktree made by another process knows it too.
+ */
+export function unpreparedDependencies(root: string): UnpreparedDependencies[] {
+  const out: UnpreparedDependencies[] = [];
+  for (const language of SUPPORTED_LANGUAGES) {
+    const row = DEPENDENCY_PREPARE[language];
+    const command = isNoRow(row) ? null : row(root);
+    if (!command) continue;
+    out.push({
+      language,
+      command,
+      output: failedOutput.get(outputKey(root, language)) ?? null,
+    });
+  }
+  return out;
+}
+
+/** The one line a finding and a check's note give for packages a worktree could not resolve. */
+export function unpreparedProblem(unprepared: UnpreparedDependencies): string {
+  const command = unprepared.command.join(" ");
+  const online = unprepared.command.filter((part) => part !== "--offline").join(" ");
+  return `Dependencies not available offline: \`${command}\` could not resolve the packages in this worktree, so its checks that load packages fail on unresolved imports. Run \`${online}\` in the project once so the package cache has them.`;
 }
 
 /**

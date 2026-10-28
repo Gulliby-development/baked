@@ -4,6 +4,8 @@ import {
   addDefaultParsers,
   type FiletypeParserOptions,
   getTreeSitterClient,
+  type NativeResourceOwner,
+  type ResourceContext,
   SyntaxStyle,
   type ThemeTokenStyle,
 } from "@opentui/core";
@@ -175,10 +177,21 @@ const theme: ThemeTokenStyle[] = [
   { scope: ["markup.raw.block"], style: { foreground: "#aaa" } },
 ];
 
-let _syntaxStyle: SyntaxStyle | null = null;
-export function getSyntaxStyle(): SyntaxStyle {
-  if (!_syntaxStyle) _syntaxStyle = SyntaxStyle.fromTheme(theme);
-  return _syntaxStyle;
+/**
+ * The syntax style of a renderer (#2404). OpenTUI 0.6 gives every native resource an owner: a
+ * style can only be bound in the scene of the context that created it, so there is one per
+ * renderer's `nativeScene`, made on first use and kept while that context lives. A component gets
+ * it through `useSyntaxStyle` (`src/hooks/useSyntaxStyle.ts`).
+ */
+const syntaxStyles = new WeakMap<ResourceContext, SyntaxStyle>();
+export function getSyntaxStyle(owner: NativeResourceOwner): SyntaxStyle {
+  const context = owner.resourceContext;
+  let style = syntaxStyles.get(context);
+  if (!style || context.disposed) {
+    style = SyntaxStyle.fromTheme(theme, owner);
+    syntaxStyles.set(context, style);
+  }
+  return style;
 }
 
 let _tsClient: ReturnType<typeof getTreeSitterClient> | null = null;

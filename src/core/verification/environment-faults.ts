@@ -1,4 +1,9 @@
 import { type NoRow, none } from "../intelligence/language-records.js";
+import {
+  readsPackages,
+  unpreparedDependencies,
+  unpreparedProblem,
+} from "../workflows/dependency-dirs.js";
 import type { GateToolchain } from "../workflows/gates.js";
 import { toolchainCommand } from "../workflows/toolchain.js";
 
@@ -92,3 +97,26 @@ export function environmentFault(
 /** The note a check whose failure matches a signature gets under its output. */
 export const environmentNote = (checkId: string, signature: EnvironmentSignature) =>
   `Note: ${checkId} failed because of the machine, not the project's code, so it counts as inconclusive and opens no correction. ${signature.problem} ${signature.fix}`;
+
+/**
+ * The note for a failed check of a worktree or copy whose packages its prepare command could not
+ * resolve (#2372: `dart pub get --offline` with a package missing from the pub cache), or null.
+ * Such a check fails on unresolved imports whatever the code says, so it is inconclusive like a
+ * machine fault. The working copy itself resolves its packages as its tools do, so it never gets one.
+ */
+export function unpreparedNote(
+  checkId: string,
+  root: string,
+  workspace: string,
+  executable: string,
+  args: readonly string[],
+): string | null {
+  if (root === workspace) return null;
+  const command = toolchainCommand(executable, args);
+  const unprepared = unpreparedDependencies(root).find((u) =>
+    readsPackages(u.language, command.program, command.args),
+  );
+  return unprepared
+    ? `Note: ${checkId} failed in a worktree whose packages were not resolved, so it counts as inconclusive and opens no correction. ${unpreparedProblem(unprepared)}`
+    : null;
+}

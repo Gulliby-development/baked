@@ -19,7 +19,7 @@ import type { RunPolicy } from "../src/core/workflows/schemas.js";
 import { STOP_REASONS } from "../src/core/workflows/stop-reasons.js";
 import { newId } from "../src/core/workflows/store.js";
 import { fixturePolicy, workflowFixture } from "./helpers/workflow-fixture.js";
-import { adviceRatio, decisionRatio, HOST_POOL_GROWTHS, planCharge, poolExtensionDecision, poolForecast, tokenPool } from "../src/core/workflows/initiatives/token-pool.js";
+import { adviceRatio, decisionRatio, HOST_POOL_GROWTHS, type PoolGrowthReason, planCharge, poolExtensionDecision, poolForecast, tokenPool } from "../src/core/workflows/initiatives/token-pool.js";
 import { initiativeActions } from "../src/core/workflows/initiatives/view-model.js";
 import { openTrace, replayInitiativeStarts, replayPoolBounds, replayPoolGrowth } from "../src/core/workflows/trace.js";
 import { executeInitiativeCommand, parseInitiativeArgs } from "../src/headless/workflow-initiative.js";
@@ -122,9 +122,9 @@ describe("scenario: the shared token pool names its amounts and would grow insid
     expect(Object.keys(HOST_POOL_GROWTHS)).toContain(decision.reason);
     for (const [reason, growth] of Object.entries(HOST_POOL_GROWTHS)) {
       expect(growth.defaultMode).toBe("shadow");
-      // Growing for real is opt-in only where its pull request says so (#2241's stage reserve);
-      // making it the default is a pull request of its own.
-      if (reason !== "stage-reserve") expect(growth.modes as readonly string[]).not.toContain("on");
+      // Growing for real is opt-in only where its pull request says so (#2241's stage reserve,
+      // #2060's extension inside the dollar cap); making it the default is a pull request of its own.
+      if (!["stage-reserve", "extend-within-dollars"].includes(reason)) expect(growth.modes as readonly string[]).not.toContain("on");
       expect(growth.boundBy).toContain("--budget-usd");
     }
     // A started feature run's remaining review and convergence (#2241): bounded by the
@@ -143,6 +143,9 @@ describe("scenario: the shared token pool names its amounts and would grow insid
       const [nodepluck] = replayPoolGrowth(store);
       expect(nodepluck?.poolGrowth).toEqual([{ featureId: "select", seq: 28, recorded: "hold", replayed: "extend", limitTokens: POOL, toTokens: 33_100_000 }]);
       expect(nodepluck?.newPoolGrowth).toBe(1);
+      // With extendWithinDollars on (#2060) the host applies this extension: select starts on 33.1M
+      // (3.1M more) instead of waiting for the person's 38M; the rule is the same in every mode.
+      expect(HOST_POOL_GROWTHS["extend-within-dollars"]).toMatchObject({ modes: ["off", "shadow", "on"], defaultMode: "shadow" });
     } finally {
       dispose();
     }
@@ -215,7 +218,7 @@ describe("scenario: a park on the token pool suggests what the dollar cap pays f
 });
 
 describe("scenario: a scripted initiative whose features cost more than their estimates (#2042)", () => {
-  async function scenario(maxTotalTokens: number, featureUsd: number | Record<string, number>, options: { capUsd?: number | null; extendWithinDollars?: "off" | "shadow" } = {}) {
+  async function scenario(maxTotalTokens: number, featureUsd: number | Record<string, number>, options: { capUsd?: number | null; extendWithinDollars?: "off" | "shadow" | "on" } = {}) {
     const history = await historyFixture(1, { taskShare: 0.4 });
     cleanups.push(() => history.dispose());
     const result = await plannedForecastScenario(5, featureUsd, [history.root], { skeleton: false, maxTotalTokens, ...options });
@@ -292,6 +295,30 @@ describe("scenario: a scripted initiative whose features cost more than their es
     // Extending to the suggested amount starts f3.
     view = await initiatives.extendBudget("values", { commandId: "extend-to-suggested", expectedRevision: view.revision }, { maxTotalTokens: 9_500_000 });
     expect(view.next).toMatchObject({ kind: "start", featureId: "f3" });
+  }, 120000);
+
+  test("with extendWithinDollars on the host grows the pool inside the dollar cap and the parked feature starts (#2060)", async () => {
+    const { initiatives, driveOne, events } = await scenario(8_600_000, 2.2, { extendWithinDollars: "on" });
+    await driveOne();
+    const view = await driveOne();
+    // The same park as in shadow, decided the same way, and applied: f3 starts on the host's 9.5M.
+    const park = (events("feature.share_gate") as unknown as ShareGateRecord[]).find((g) => g.verdict === "park");
+    expect(park?.featureId).toBe("f3");
+    expect(park?.poolGrowth).toEqual({ mode: "on", wouldExtend: true, toTokens: 9_500_000, byTokens: 900_000 });
+    const decided = park ? poolGrowthOf(park.view, park.feature) : null;
+    const extended = events("budget.extended").filter((e) => e.by === "host");
+    expect(extended).toHaveLength(1);
+    expect(extended[0]).toMatchObject({ by: "host", reason: "extend-within-dollars", featureId: "f3", previous: { maxTotalTokens: 8_600_000 }, next: { maxTotalTokens: decided?.toTokens }, toTokens: 9_500_000, byTokens: 900_000 });
+    expect(extended[0]?.inputs).toMatchObject({ limitTokens: 8_600_000, waiting: [{ id: "f3" }, { id: "f4" }, { id: "f5" }], cost: { capUsd: 30 } });
+    expect(String(extended[0]?.summary)).toEndWith("f3 starts.");
+    // Every host growth is registered with the cap that bounds it, and its mode allows `on`.
+    expect(HOST_POOL_GROWTHS[extended[0]?.reason as PoolGrowthReason].modes).toContain("on");
+    // It never raised a dollar, call or time limit, and recorded no would-extend beside it.
+    expect(extended[0]?.next).toMatchObject({ maxAgentCalls: (extended[0]?.previous as { maxAgentCalls: number }).maxAgentCalls, maxActiveMs: (extended[0]?.previous as { maxActiveMs: number }).maxActiveMs });
+    expect(view.budget.cost.capUsd).toBe(30);
+    expect(view.budget.limits.maxTotalTokens).toBe(9_500_000);
+    expect(view.features.find((f) => f.id === "f3")?.runId).not.toBeNull();
+    expect(events("decision.would_extend").filter((e) => e.reason === "extend-within-dollars")).toEqual([]);
   }, 120000);
 
   test("with extendWithinDollars off, or with only a token pool, a park records no extension", async () => {

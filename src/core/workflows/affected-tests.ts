@@ -73,6 +73,8 @@ export function isTestFile(path: string): boolean {
   if (/\.luau?$/.test(name)) return LUA_TEST.test(name);
   // ExUnit files, which `mix test` runs by path (#2348).
   if (name.endsWith(".exs")) return name.endsWith("_test.exs");
+  // dart test files, which `dart test` and `flutter test` run by path (#1494, #2348).
+  if (name.endsWith(".dart")) return name.endsWith("_test.dart");
   // bats files (#1497).
   if (name.endsWith(".bats")) return true;
   if (!JS_FILE.test(name)) return false;

@@ -301,3 +301,42 @@ end
     expect(withInlineRows(null, file).trimEnd()).toEndWith(`  ${END_EX}\nend`);
   });
 });
+
+// #2348: package:test declares tests when main runs, so the Dart rows go in the file's own main,
+// before its closing brace, and their prefixed imports after the file's own.
+describe("Dart rows in the file's main (#2348)", () => {
+  const dart: InlineRowTest = { mode: "inline", framework: "dart", test: "test/options_test.dart" };
+  const file = inlineRowFile(dart, rows);
+  const own = `import 'package:lanes/options.dart';
+import 'package:test/test.dart';
+
+/// A '{' in a comment, and main() { in a string, are not code.
+const brace = '} main() { a string with braces }';
+
+Object? acceptanceActual(Object? input) => parse(input as List<Object?>);
+
+void main() {
+  group('defaults', () {
+    test('lanes {', () {
+      expect(parse(const []), 1);
+    });
+  });
+}
+`;
+
+  test("the imports follow the file's own and the rows end main; a second write changes nothing", () => {
+    const written = withInlineRows(own, file);
+    expect(written).toStartWith("import 'package:lanes/options.dart';\nimport 'package:test/test.dart';\n\n// BEGIN acceptance rows imports:");
+    expect(written).toContain("    });\n  });\n\n  // BEGIN acceptance rows:");
+    expect(written.trimEnd()).toEndWith("  // END acceptance rows\n}");
+    expect(withInlineRows(written, file)).toBe(written);
+    expect(hasInlineRows(written, file)).toBe(true);
+  });
+
+  test("a file with no main yet gets one around the block, after the imports", () => {
+    const started = withInlineRows(null, file);
+    expect(started).toStartWith("// BEGIN acceptance rows imports:");
+    expect(started).toContain("// END acceptance rows imports\n\nvoid main() {\n  // BEGIN acceptance rows:");
+    expect(withInlineRows("void main() {}\n", file)).toContain("void main() {\n  // BEGIN acceptance rows:");
+  });
+});

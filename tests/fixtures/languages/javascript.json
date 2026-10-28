@@ -89,6 +89,7 @@
     ],
     "dependencyPrepare": null,
     "worktreePathLimits": null,
-    "testClasses": null
+    "testClasses": null,
+    "testDeclarations": ["tests/sum.test.js: 3 tests"]
   }
 }

@@ -27,6 +27,7 @@ export const INLINE_HARNESS: Record<Framework, string> = {
   minitest: "acceptance_actual",
   pest: "$acceptanceActual",
   exunit: "acceptance_actual",
+  dart: "acceptanceActual",
 };
 
 /**
@@ -58,7 +59,7 @@ export interface InlineRowFile {
   /** The file the host starts when the test file does not exist yet. */
   skeleton: string;
   nest?: {
-    language: "java" | "csharp" | "php" | "elixir";
+    language: "java" | "csharp" | "php" | "elixir" | "dart";
     className: string;
     namespace?: string;
   };
@@ -155,7 +156,7 @@ const pythonString = (text: string): string => {
  * ruff and black keep its layout at any line length (#1927), and RuboCop's 120 columns hold it
  * indented. A row's id starts its first literal.
  */
-const literalChunks = (
+export const literalChunks = (
   rows: AcceptanceRow[],
   write: (text: string) => string,
   width = 74,
@@ -509,6 +510,30 @@ export const exunitRows = (rows: string, context: string, call: string): string 
 /** The module of an ExUnit test file, from its name: `CalcTest` for `calc_test.exs`. */
 export const exunitModule = (test: string): string => camel(posix.basename(test, ".exs"));
 
+/**
+ * A Dart string literal: single-quoted, as Effective Dart and `prefer_single_quotes` ask, with `$`
+ * escaped so nothing interpolates, and a character of `LITERAL_ESCAPED` written as `\u{...}`
+ * (#1995).
+ */
+export const dartString = (text: string): string =>
+  `'${escapeInvisible(text.replace(/[\\'$]/g, "\\$&"), (code) => `\\u{${code.toString(16)}}`)}'`;
+
+/** A Dart statement on one line when it fits dart format's 80 columns at `indent`, else split. */
+const dartLine = (indent: number, line: string, split: string): string =>
+  indent + line.length <= 80 ? line : split;
+
+/**
+ * What the Dart blocks share, in `main` at two spaces: one `test` per row, named by its id. The
+ * result goes through JSON as the expected value came, and `equals` compares collections by their
+ * entries and 2 with 2.0. The `reason` starts with the id and what it got, since dart test prints
+ * the test's name on a line with no failure word and the replay reads the row from a failure line.
+ * `json` and `test` are the prefixes of dart:convert and package:test, empty in the file mode.
+ */
+export const dartRows = (chunks: string[], json: string, test: string, call: string): string => {
+  const expect = `${test}expect(value, ${test}equals(row['expected']), reason: '$id: got $text');`;
+  return `final acceptanceText = [\n${chunks.map((chunk) => `  ${chunk},\n`).join("")}];\nfinal acceptanceRows = ${json}jsonDecode(acceptanceText.join());\nfor (final row in (acceptanceRows as List).cast<Map<String, Object?>>()) {\n  final id = row['id'] as String;\n  ${test}test(id, () {\n    final got = ${call}(row['input']);\n    final text = ${json}jsonEncode([got]);\n    final value = (${json}jsonDecode(text) as List)[0];\n    ${dartLine(6, expect, `${test}expect(\n      value,\n      ${test}equals(row['expected']),\n      reason: '$id: got $text',\n    );`)}\n  });\n}`;
+};
+
 /** The import of a PHP test file the host starts, so Pint finds no fully qualified name. */
 const PHPUNIT_USE = "use PHPUnit\\Framework\\TestCase;";
 
@@ -635,6 +660,26 @@ const TEMPLATES: Record<Framework, Template> = {
         .join(
           ",\n",
         )}\n]\n\n${exunitRows("JSON.decode!(Enum.join(@acceptance_text))", "", "acceptance_actual")}`,
+    ),
+  }),
+  // Tests are declared when main runs, so the rows go in the file's own main, before its closing
+  // brace; the imports are prefixed, so they never clash with the file's own (#2348).
+  dart: (_, rows) => ({
+    skeleton: "",
+    nest: { language: "dart", className: "main" },
+    head: block(
+      "dart",
+      "import 'dart:convert' as acceptance_json;\nimport 'package:test/test.dart' as acceptance_test;",
+      "acceptance rows imports",
+    ),
+    tail: block(
+      "dart",
+      dartRows(
+        literalChunks(rows, dartString),
+        "acceptance_json.",
+        "acceptance_test.",
+        "acceptanceActual",
+      ),
     ),
   }),
   // Methods of the file's own class, which PSR-1 keeps to one per file; the harness is its static
@@ -874,7 +919,7 @@ function sameBlock(text: string, file: string, path: string): boolean {
  * braces and declarations are found in code only. Java text blocks and C# verbatim, raw and
  * interpolated strings are literals too; an interpolation hole's own strings are skipped with it.
  */
-function codeOnly(text: string, language?: "java" | "csharp" | "php"): string {
+function codeOnly(text: string, language?: "java" | "csharp" | "php" | "dart"): string {
   const out = [...text];
   const blank = (from: number, to: number) => {
     for (let i = from; i < to; i++) if (out[i] !== "\n") out[i] = " ";
@@ -909,14 +954,17 @@ function codeOnly(text: string, language?: "java" | "csharp" | "php"): string {
       end = text.indexOf("\n", i) < 0 ? text.length : text.indexOf("\n", i);
     else if (ch === "/" && next === "*")
       end = text.indexOf("*/", i + 2) < 0 ? text.length : text.indexOf("*/", i + 2) + 2;
-    else if (text.startsWith('"""', i)) {
-      const quotes = /^"+/.exec(text.slice(i))?.[0] ?? '"""';
+    else if (text.startsWith('"""', i) || (language === "dart" && text.startsWith("'''", i))) {
+      const quotes = (ch === "'" ? /^'+/ : /^"+/).exec(text.slice(i))?.[0] ?? '"""';
       const close = text.indexOf(quotes, i + quotes.length);
       end = close < 0 ? text.length : close + quotes.length;
     } else if (ch === '"') {
       const prefix = text.slice(Math.max(0, i - 2), i);
       end = stringEnd(i, /@\$?$|\$@$/.test(prefix), /\$@?$|@\$$/.test(prefix));
-    } else if (language === "php" && (ch === "'" || (ch === "#" && next !== "["))) {
+    } else if (
+      (language === "php" && (ch === "'" || (ch === "#" && next !== "["))) ||
+      (language === "dart" && ch === "'")
+    ) {
       // A PHP single-quoted string, whatever its length, and a `#` comment (`#[` opens an attribute).
       const close =
         ch === "#"
@@ -956,6 +1004,15 @@ function primaryType(
 ): { open: number; end: number } | null {
   if (language === "elixir") return elixirModuleSpan(text, className);
   const code = codeOnly(text, language);
+  if (language === "dart") {
+    // A test file's own `main`, where package:test declares its tests.
+    const main =
+      /(?:^|\n)[ \t]*(?:void\s+|Future<void>\s+)?main\s*\([^)]*\)\s*(?:async\s*)?\{/.exec(code);
+    if (!main) return null;
+    const open = main.index + main[0].length - 1;
+    const end = closingBrace(code, open);
+    return end < 0 ? null : { open, end };
+  }
   const declared = (name: string) =>
     new RegExp(`\\b(?:class|record|struct|interface|enum)\\s+${name}\\b[^{;]*\\{`).exec(code);
   const found = declared(className) ?? declared("[A-Za-z_]\\w*");
@@ -1019,13 +1076,17 @@ function nested(
     const wrapper =
       nest.language === "elixir"
         ? `defmodule ${nest.className} do\n  use ExUnit.Case\nend\n`
-        : nest.language === "php"
-          ? `final class ${nest.className} extends ${head.includes(PHPUNIT_USE) ? "" : "\\PHPUnit\\Framework\\"}TestCase\n{\n}\n`
-          : nest.language === "java" || !nest.namespace || /^\s*namespace\s+[\w.]+\s*;/m.test(head)
-            ? nest.language === "java"
-              ? `class ${nest.className} {\n}\n`
-              : `public class ${nest.className}\n{\n}\n`
-            : `namespace ${nest.namespace}\n{\n    public class ${nest.className}\n    {\n    }\n}\n`;
+        : nest.language === "dart"
+          ? "void main() {\n}\n"
+          : nest.language === "php"
+            ? `final class ${nest.className} extends ${head.includes(PHPUNIT_USE) ? "" : "\\PHPUnit\\Framework\\"}TestCase\n{\n}\n`
+            : nest.language === "java" ||
+                !nest.namespace ||
+                /^\s*namespace\s+[\w.]+\s*;/m.test(head)
+              ? nest.language === "java"
+                ? `class ${nest.className} {\n}\n`
+                : `public class ${nest.className}\n{\n}\n`
+              : `namespace ${nest.namespace}\n{\n    public class ${nest.className}\n    {\n    }\n}\n`;
     // A PHP file starts with its open tag.
     const start = nest.language === "php" && !/^\s*<\?php/.test(head) ? `<?php\n\n${head}` : head;
     body = start.trim() ? `${start.replace(/\s+$/, "")}\n\n${wrapper}` : wrapper;
@@ -1045,7 +1106,7 @@ function nested(
     .sort((a, b) => a.length - b.length)[0];
   const unit = inner?.startsWith(base)
     ? inner.slice(base.length)
-    : nest.language === "elixir"
+    : nest.language === "elixir" || nest.language === "dart"
       ? "  "
       : "    ";
   const indented = file.tail
@@ -1078,17 +1139,23 @@ export function withInlineRows(existing: string | null, file: InlineRowFile): st
   )
     return existing;
   let text = existing ?? file.skeleton;
-  if (file.nest) return nested(text, file, file.nest);
   if (file.head) {
     const at = span(text, file.head);
     if (at) text = text.slice(0, at.from) + file.head + text.slice(at.to);
     else {
-      const clause = /^package\s+\w+[^\n]*\n?/m.exec(text);
+      // Go's imports follow the package clause, Dart's the file's last import or library directive.
+      const clause = file.path.endsWith(".dart")
+        ? [...text.matchAll(/^(?:import|export|library)\b[^\n]*;[ \t]*(?:\n|$)/gm)].at(-1)
+        : /^package\s+\w+[^\n]*\n?/m.exec(text);
       const offset = clause ? clause.index + clause[0].length : 0;
       const prefix = text.slice(0, offset);
-      text = `${prefix}${prefix && !prefix.endsWith("\n") ? "\n" : ""}\n${file.head}${text.slice(offset)}`;
+      const rest = text.slice(offset);
+      text = prefix
+        ? `${prefix}${prefix.endsWith("\n") ? "" : "\n"}\n${file.head}${rest}`
+        : `${file.head}${rest.trim() ? `\n${rest.replace(/^\n+/, "")}` : ""}`;
     }
   }
+  if (file.nest) return nested(text, file, file.nest);
   const at = span(text, file.tail);
   if (at) return text.slice(0, at.from) + file.tail + text.slice(at.to);
   const body = text.replace(/\s+$/, "");

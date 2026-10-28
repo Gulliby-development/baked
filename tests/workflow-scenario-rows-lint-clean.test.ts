@@ -812,3 +812,59 @@ describe("scenario: the ExUnit rows pass mix format as written (#2348)", () => {
     expect(withInlineRows(tampered, file)).toContain("macosx_11_0_arm64");
   });
 });
+
+// #2348: rows as data for Dart's package:test. Both templates are dart format's fixed point and
+// pass dart analyze, the inline block goes in the file's main, and a wrong harness fails each row
+// by its id.
+const dart = tool("dart", "--version");
+const DART_TEST = "import 'package:test/test.dart';\n\nObject? acceptanceActual(Object? input) => input;\n\nvoid main() {\n  test('own', () {\n    expect(1, 1);\n  });\n}\n";
+const dartInline: InlineRowTest = { mode: "inline", framework: "dart", test: "test/platforms_test.dart" };
+
+describe("scenario: the Dart rows pass dart format and dart analyze as written (#2348)", () => {
+  const echo = rows.map((row) => ({ ...row, expected: row.input }));
+  const dartFile = { framework: "dart", harness: "test/support/platforms_harness.dart", test: "test/platforms_rows_test.dart", data: "test/fixtures/platforms_rows.json" };
+  const project = (cases = rows, harness = DART_TEST) => {
+    const task = { id: "T003", rows: ["AC-003"], rowTest: dartFile } as never;
+    const files = rowFiles(task, { tasks: [{ rows: ["AC-003"], rowTest: dartFile }], rows: cases } as never);
+    return temp({
+      "pubspec.yaml": "name: wheeltags\nenvironment:\n  sdk: ^3.0.0\ndev_dependencies:\n  lints: any\n  test: any\n",
+      "analysis_options.yaml": "include: package:lints/recommended.yaml\n",
+      ...Object.fromEntries(files.map((file) => [file.path, file.content])),
+      [dartFile.harness]: "Object? actual(Object? input) => input;\n",
+      [dartInline.test]: withInlineRows(harness, inlineRowFile(dartInline, cases)),
+    });
+  };
+
+  test("no line over dart format's 80 columns but the block's first comment", () => {
+    const texts = [fileMode(dartFile)[dartFile.test] ?? "", withInlineRows(DART_TEST, inlineRowFile(dartInline, rows))];
+    for (const text of texts) expect(text.split("\n").filter((line) => line.length > 80 && !line.includes("BEGIN acceptance rows"))).toEqual([]);
+  });
+
+  test.skipIf(!dart)("dart format and dart analyze pass the file mode's test and the inline block", () => {
+    const root = project();
+    expect(run(root, "dart", "pub", "get")).toStartWith("0");
+    expect(run(root, "dart", "format", "--output=none", "--set-exit-if-changed", "test")).toStartWith("0");
+    expect(run(root, "dart", "analyze", "--fatal-infos", "test")).toStartWith("0");
+  });
+
+  test.skipIf(!dart)("dart test: every row of both modes passes, and a wrong harness fails each row by its id", () => {
+    const root = project(echo);
+    expect(run(root, "dart", "pub", "get")).toStartWith("0");
+    expect(run(root, "dart", "test", "test")).toStartWith("0");
+    const wrong = project(echo, DART_TEST.replace("=> input;", "=> [1, 2];"));
+    expect(run(wrong, "dart", "pub", "get")).toStartWith("0");
+    const failed = run(wrong, "dart", "test", dartInline.test);
+    expect(failed).not.toStartWith("0");
+    for (const row of rows) expect(failed).toContain(`${row.id}: got [[1,2]]`);
+  });
+
+  test("two-space wrapping of every argument: the layout is kept, and a changed row is put back", () => {
+    const file = inlineRowFile(dartInline, rows);
+    const formatted = withInlineRows(DART_TEST, file).replace("jsonDecode(acceptanceText.join());", "jsonDecode(\n    acceptanceText.join(),\n  );");
+    expect(formatted).not.toBe(withInlineRows(DART_TEST, file));
+    expect(hasInlineRows(formatted, file)).toBe(true);
+    const tampered = formatted.replace("macosx_11_0_arm64", "macosx_12_0_arm64");
+    expect(hasInlineRows(tampered, file)).toBe(false);
+    expect(withInlineRows(tampered, file)).toContain("macosx_11_0_arm64");
+  });
+});

@@ -18,7 +18,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { basename, dirname, join, resolve } from "node:path";
+import { basename, dirname, join, relative, resolve } from "node:path";
 import { canonical } from "../specs/hash.js";
 import { workspacePath } from "../specs/validate.js";
 import {
@@ -32,7 +32,13 @@ import {
   treeModes,
   treeShipsSpecs,
 } from "./delivery-git.js";
-import { ALL_DEPENDENCY_DIRS, isLinkedDependency, linkDependencies } from "./dependency-dirs.js";
+import {
+  ALL_DEPENDENCY_DIRS,
+  isLinkedDependency,
+  linkDependencies,
+  unpreparedDependencies,
+  unpreparedProblem,
+} from "./dependency-dirs.js";
 import { WorkflowFault } from "./errors.js";
 import type { WorkflowStore } from "./store.js";
 import type { RuntimeState, WorktreeState } from "./types.js";
@@ -44,6 +50,38 @@ export const taskWorktreePath = (runId: string, taskId: string): string =>
   `.baked/worktrees/${runId}/${taskId}`;
 /** The branch that carries a worktree run's accepted changes. */
 export const runBranch = (runId: string): string => `baked/wf/${runId}`;
+
+/** The run artifact that records packages a worktree's prepare command could not resolve (#2372). */
+export const UNPREPARED_FINDING = "environment/dependencies-unprepared.json";
+
+/**
+ * Links the project's dependency folders into a new worktree or copy of a run and, when a prepare
+ * command could not resolve its packages there, records that once for the run (#2372): its checks
+ * of that toolchain then count as inconclusive instead of opening corrections for correct code.
+ */
+export function linkRunDependencies(store: WorkflowStore, runId: string, root: string): string[] {
+  const linked = linkDependencies(store.workspace, root);
+  const unprepared = unpreparedDependencies(root);
+  if (unprepared.length && !store.latestArtifact(runId, UNPREPARED_FINDING))
+    store.transaction(() =>
+      store.artifact(
+        runId,
+        "diagnostic",
+        UNPREPARED_FINDING,
+        canonical({
+          kind: "environment",
+          worktree: relative(store.workspace, root).replaceAll("\\", "/"),
+          problems: unprepared.map((u) => ({
+            language: u.language,
+            command: u.command,
+            problem: unpreparedProblem(u),
+            output: u.output,
+          })),
+        }),
+      ),
+    );
+  return linked;
+}
 
 /** A run's worktree as the run screens show it; `present` turns false once delivery or a discard removed it. */
 export interface RunWorktreeView {
@@ -356,7 +394,7 @@ export async function ensureRunWorktree(
       ]);
     });
   }
-  linkDependencies(workspace, absolute);
+  linkRunDependencies(store, runId, absolute);
   await placeBaseFiles(workspace, { path }, baseHead, store.state(runId).baseFiles ?? []);
   const worktree: WorktreeState = {
     path,
@@ -511,7 +549,7 @@ export async function createTaskWorktree(
       base,
     ]),
   );
-  linkDependencies(workspace, absolute);
+  linkRunDependencies(store, runId, absolute);
   const source = store.state(runId).worktree;
   if (source) alignTaskFiles(join(workspace, source.path), absolute, files);
   return path;
