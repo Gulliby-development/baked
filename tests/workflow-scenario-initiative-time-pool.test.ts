@@ -67,20 +67,24 @@ class FeatureExecutor extends FixtureExecutor {
   }
 }
 
-/** Marks a run finished with `tokens` used over `minutes` of active time. */
-function finish(store: WorkflowStore, runId: string, tokens: number, minutes: number): void {
-  store.connection.run("UPDATE runs SET status='completed', token_usage=?, active_ms=? WHERE id=?", [
+/** Marks a run finished with `tokens` used over `minutes` of active time and `calls` agent calls. */
+function finish(store: WorkflowStore, runId: string, tokens: number, minutes: number, calls = 0): void {
+  store.connection.run("UPDATE runs SET status='completed', token_usage=?, active_ms=?, agent_calls=? WHERE id=?", [
     tokens,
     minutes * MINUTE,
+    calls,
     runId,
   ]);
 }
+
+/** The first wave's agent calls per run in the calls scenario: 100 calls per million tokens (#2345). */
+const OWN_CALLS = (OWN_PACE * 20) / 10_000;
 
 /**
  * An initiative whose first wave of three features finished at `OWN_PACE`, beside five earlier
  * runs of the project at `HISTORY_PACE`, with `timeMs` of shared active time.
  */
-async function ladle(workflow: "sdd" | "quick", timeMs: number, workflows: { timePoolGrowth?: "off" | "shadow" } = {}) {
+async function ladle(workflow: "sdd" | "quick", timeMs: number, calls = { limit: 10_000, perRun: 0 }, workflows: { timePoolGrowth?: "off" | "shadow" } = {}) {
   const policy: RunPolicy = {
     ...fixturePolicy,
     maxTotalTokens: 10_000_000,
@@ -108,7 +112,7 @@ async function ladle(workflow: "sdd" | "quick", timeMs: number, workflows: { tim
     ownerLabel: "test",
     keepFeatures: true,
     featureAutoApproval: null,
-    budget: { maxTotalTokens: 200_000_000, maxAgentCalls: 10_000, maxActiveMs: timeMs },
+    budget: { maxTotalTokens: 200_000_000, maxAgentCalls: calls.limit, maxActiveMs: timeMs },
   });
   const request = view.pendingDecisions.find((d) => d.scope === "initiative");
   if (!request) throw new Error("no split approval");
@@ -120,6 +124,7 @@ async function ladle(workflow: "sdd" | "quick", timeMs: number, workflows: { tim
   const starter = initiatives as unknown as {
     startFeature(id: string, featureId: string): Promise<boolean>;
     noteTimeForecast(view: InitiativeView, featureId: string | null): void;
+    noteCallsForecast(view: InitiativeView, featureId: string | null): void;
   };
   const runOf = (featureId: string): string => {
     const runId = initiatives.view("ladle").features.find((f) => f.id === featureId)?.runId;
@@ -128,7 +133,7 @@ async function ladle(workflow: "sdd" | "quick", timeMs: number, workflows: { tim
   };
   for (const id of FIRST_WAVE) {
     expect(await starter.startFeature("ladle", id)).toBe(true);
-    finish(store, runOf(id), OWN_PACE * 20, 20);
+    finish(store, runOf(id), OWN_PACE * 20, 20, calls.perRun);
   }
   return { fixture, store, initiatives, starter, runOf };
 }
@@ -232,7 +237,7 @@ describe("scenario: the shared time has a forecast, a notice and an amount (#233
   }, 60000);
 
   test("with timePoolGrowth off a time forecast past the limit records no would-extend (#2346)", async () => {
-    const { initiatives, starter } = await ladle("sdd", 61 * MINUTE, { timePoolGrowth: "off" });
+    const { initiatives, starter } = await ladle("sdd", 61 * MINUTE, undefined, { timePoolGrowth: "off" });
     starter.noteTimeForecast(initiatives.view("ladle"), null);
     expect(initiatives.store.eventsOfType("ladle", "budget.time_notice")).toHaveLength(1);
     expect(initiatives.store.eventsOfType("ladle", "decision.would_extend")).toEqual([]);
@@ -271,6 +276,47 @@ describe("scenario: the shared time has a forecast, a notice and an amount (#233
   }, 60000);
 });
 
+describe("scenario: the shared calls have a forecast, a notice and an amount (#2345)", () => {
+  test("a pool whose calls forecast passes its limit records the calls notice once per limit", async () => {
+    // 360 calls used by the first wave at 100 calls per million tokens; head's tokens pass 361.
+    const { initiatives, starter } = await ladle("sdd", 600 * MINUTE, { limit: 3 * OWN_CALLS + 1, perRun: OWN_CALLS });
+    const view = initiatives.view("ladle");
+    const calls = view.budget.calls;
+    expect(calls?.pace).toEqual({ callsPerMillion: 100, basis: "initiative", runs: 3 });
+    expect(calls?.usedCalls).toBe(3 * OWN_CALLS);
+    expect(calls?.forecastCalls).toBeGreaterThan(3 * OWN_CALLS + 1);
+    expect(calls?.suggestedCalls).toBeGreaterThan(calls?.forecastCalls ?? 0);
+    expect((calls?.suggestedCalls ?? 0) % 50).toBe(0);
+    expect(view.budget.callsNotice).toContain(`--calls ${calls?.suggestedCalls}`);
+    starter.noteCallsForecast(view, null);
+    starter.noteCallsForecast(initiatives.view("ladle"), null);
+    const events = initiatives.store.eventsOfType("ladle", "budget.calls_notice");
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({ limitCalls: 3 * OWN_CALLS + 1, suggestedCalls: calls?.suggestedCalls });
+  }, 60000);
+
+  test("the pool's block on spent calls carries suggestedCalls on its extend remedy", async () => {
+    // The first wave made every call of the limit: head would start with none (the start gate's block).
+    const { initiatives } = await ladle("sdd", 600 * MINUTE, { limit: 3 * OWN_CALLS, perRun: OWN_CALLS });
+    const view = initiatives.view("ladle");
+    const head = view.features.find((f) => f.id === "head");
+    expect(head?.share?.calls).toBe(0);
+    const block = head ? shareShortfall(view, head) : null;
+    const extend = block?.remedies.find((r) => r.action === "extend");
+    expect(extend?.suggestedCalls).toBeGreaterThan(3 * OWN_CALLS);
+    expect(extend?.suggestedCalls).toBe(Math.max(view.budget.calls?.suggestedCalls ?? 0, view.budget.calls?.coverCalls ?? 0));
+    expect(block?.message).toContain(`--calls ${extend?.suggestedCalls}`);
+    expect(RemedySchema.parse(extend)).toEqual(extend as Remedy);
+  }, 60000);
+
+  test("without finished runs that made calls, the calls have no pace and no notice", async () => {
+    const { initiatives } = await ladle("sdd", 600 * MINUTE);
+    const calls = initiatives.view("ladle").budget.calls;
+    expect(calls?.pace).toBeNull();
+    expect(calls?.notice).toBeNull();
+  }, 60000);
+});
+
 /**
  * Every budget dimension of the shared pool has a measured rate, a forecast notice and a suggested
  * amount on its `extend` remedy (AGENTS.md). A dimension still without them names the open issue
@@ -285,7 +331,7 @@ describe("every shared budget dimension forecasts and suggests (#2336, #2042)", 
     tokens: { limit: "maxTotalTokens", rate: ["pool", "ratio"], notice: ["pool", "notice"], remedy: "suggestedTokens" },
     time: { limit: "maxActiveMs", rate: ["time", "pace"], notice: ["time", "notice"], remedy: "suggestedTimeMs" },
     dollars: { limit: "capUsd", rate: ["pool", "usdPerMillion"], notice: ["cost", "forecastNotice"], remedy: "suggestedUsd" },
-    calls: { limit: "maxAgentCalls", pending: "#2345" },
+    calls: { limit: "maxAgentCalls", rate: ["calls", "pace"], notice: ["calls", "notice"], remedy: "suggestedCalls" },
   };
 
   test("each dimension has its rate, notice and remedy amount, or names the issue that adds them", async () => {

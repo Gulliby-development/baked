@@ -27,6 +27,7 @@ export const RemedySchema = z.object({
   suggestedTokens: z.number().int().positive().optional(),
   suggestedUsd: z.number().positive().optional(),
   suggestedTimeMs: z.number().int().positive().optional(),
+  suggestedCalls: z.number().int().positive().optional(),
   taskId: z.string().optional(),
   paths: z.array(z.string()).optional(),
   owner: z.string().optional(),

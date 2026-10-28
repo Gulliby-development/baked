@@ -4,6 +4,7 @@ import { canonical } from "../src/core/specs/hash.js";
 import { type CostForecast, costForecast, kindRatio } from "../src/core/workflows/cost-forecast.js";
 import { POOL_STEP, planCharge, planChargeTokens, poolExtensionDecision, poolForecast, timePoolExtensionDecision, tokenPool } from "../src/core/workflows/initiatives/token-pool.js";
 import { chargeHold, poolBoundDecision, refreshedGrowth, stageReserveDecision } from "../src/core/workflows/initiatives/growth.js";
+import { CALLS_STEP, callsPool, callsRaise } from "../src/core/workflows/initiatives/calls-pool.js";
 import { dollarCapPark, expectedSplitUsd, growthLimit, type ShareGateView } from "../src/core/workflows/initiatives/service.js";
 import type { RunPolicy } from "../src/core/workflows/schemas.js";
 import { type TaskKind, verificationTokens } from "../src/core/workflows/sizing.js";
@@ -819,6 +820,45 @@ describe("time pool growth invariants (#2346)", () => {
       expect(to).toBeLessThanOrEqual(decision.capMs ?? -1);
       expect(to % (15 * MIN) === 0 || to === inputs.suggestedMs).toBe(true);
       if (inputs.cost.capUsd !== null) expect(inputs.cost.forecastUsd ?? Infinity).toBeLessThanOrEqual(inputs.cost.ceilingUsd ?? -1);
+    }), { numRuns: 300 });
+  });
+});
+
+describe("calls pool invariants (#2345)", () => {
+  const callsSeed = fc.record({
+    limitCalls: fc.integer({ min: 1, max: 5_000 }),
+    usedCalls: fc.integer({ min: 0, max: 5_000 }),
+    heldCalls: fc.integer({ min: 0, max: 2_000 }),
+    usedTokens: fc.integer({ min: 0, max: 50_000_000 }),
+    forecast: fc.option(fc.integer({ min: 0, max: 80_000_000 }), { nil: null }),
+    callsPerMillion: fc.option(fc.integer({ min: 1, max: 500 }), { nil: null }),
+    waitingHighTokens: fc.integer({ min: 0, max: 20_000_000 }),
+  }).map((s) => ({
+    initiativeId: "calls",
+    limitCalls: s.limitCalls,
+    usedCalls: s.usedCalls,
+    committedCalls: s.usedCalls + s.heldCalls,
+    usedTokens: s.usedTokens,
+    forecastTokens: s.forecast === null ? null : Math.max(s.forecast, s.usedTokens),
+    pace: s.callsPerMillion === null ? null : { callsPerMillion: s.callsPerMillion, basis: "initiative" as const, runs: 2 },
+    waitingHighTokens: s.waitingHighTokens,
+    features: 3,
+  }));
+
+  test("the forecast never falls below the used calls; a suggestion is above the forecast and the limit, on the step", () => {
+    fc.assert(fc.property(callsSeed, (inputs) => {
+      const calls = callsPool(inputs);
+      if (calls.forecastCalls !== null) expect(calls.forecastCalls).toBeGreaterThanOrEqual(inputs.usedCalls);
+      if (calls.coverCalls !== null) expect(calls.coverCalls).toBeGreaterThanOrEqual(inputs.committedCalls);
+      expect(calls.notice !== null).toBe(calls.suggestedCalls !== null);
+      if (calls.suggestedCalls !== null) {
+        expect(calls.suggestedCalls % CALLS_STEP).toBe(0);
+        expect(calls.suggestedCalls).toBeGreaterThan(Math.max(inputs.limitCalls, calls.forecastCalls ?? 0) - 1);
+        expect(calls.notice).toContain(`--calls ${calls.suggestedCalls}`);
+      }
+      const raise = callsRaise(calls);
+      if (raise !== null) expect(raise).toBeGreaterThan(inputs.limitCalls);
+      if (inputs.pace === null) expect(calls.forecastCalls).toBeNull();
     }), { numRuns: 300 });
   });
 });
