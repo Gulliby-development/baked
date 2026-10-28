@@ -759,7 +759,8 @@ describe("scenario: the Pest rows pass Pint as written (#2348)", () => {
 // goes in the file's own module, and a wrong harness fails each row by its id.
 const mix = tool("mix", "--version");
 // JSON is in Elixir's standard library from 1.18.
-const elixirJson = tool("elixir", "-e", 'JSON.decode!("1")');
+// No quote or bare parentheses in the probe: on Windows `elixir` is `elixir.bat`, and cmd.exe refuses them.
+const elixirJson = tool("elixir", "-e", "{:ok, 1} = JSON.decode(~s(1))");
 const EXUNIT_TEST = "defmodule PlatformsTest do\n  use ExUnit.Case\n\n  defp acceptance_actual(input), do: input\nend\n";
 const exunitInline: InlineRowTest = { mode: "inline", framework: "exunit", test: "test/platforms_test.exs" };
 

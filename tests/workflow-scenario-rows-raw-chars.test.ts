@@ -154,7 +154,7 @@ const AVAILABLE: Record<string, boolean> = {
   minitest: has(["ruby", "-e", "require 'minitest'"]),
   pest: Bun.which("pest") !== null,
   // JSON is in Elixir's standard library from 1.18.
-  exunit: has(["elixir", "-e", 'JSON.decode!("1")']),
+  exunit: has(["elixir", "-e", "{:ok, 1} = JSON.decode(~s(1))"]),
 };
 
 describe("scenario: cfgquill lint R64, rows with a U+FEFF run in the project's own toolchain (#1995)", () => {
