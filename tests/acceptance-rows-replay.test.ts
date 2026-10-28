@@ -80,6 +80,7 @@ describe("which task replays which rows (#1617)", () => {
       args: ["-e", testthatOn(["tests/testthat/test-baked-replay-t001.R"], false)] },
     { framework: "busted", test: "spec/paths_spec.lua", run: check("busted", []), file: "spec/baked_replay_t001_spec.lua", args: ["./spec/baked_replay_t001_spec.lua"] },
     { framework: "minitest", test: "test/paths_test.rb", run: check("bundle", ["exec", "rake", "test"]), file: "test/baked_replay_t001_test.rb", args: ["exec", "rake", "test", "TEST=test/baked_replay_t001_test.rb"] },
+    { framework: "pest", test: "tests/PathsTest.php", run: check("php", ["vendor/bin/pest"]), file: "tests/BakedReplayT001Test.php", args: ["vendor/bin/pest", "./tests/BakedReplayT001Test.php"] },
   ] as const;
   test.each(FRAMEWORKS.map((f) => [f.framework, f]))("%s: the replay file runs on its own with the project's test command", (_name, f) => {
     const later = rowTask(f.framework, f.test, "package" in f ? f.package : undefined);
@@ -107,6 +108,7 @@ describe("reading a replay run (#1617)", () => {
     expect(replayResult("failed", "-- Failure ('test-baked-replay-t001.R:44:5'): AC-003:2 -------", rows).failed).toEqual(["AC-003:2"]);
     expect(replayResult("failed", "Failure -> spec/baked_replay_t001_spec.lua @ 24\nacceptance rows AC-003:1\nspec/baked_replay_t001_spec.lua:31: AC-003:1: got [3]", rows).failed).toEqual(["AC-003:1"]);
     expect(replayResult("failed", "  1) Failure:\nAcceptanceRowsBakedReplayT001Test#test_AC-003:2 [test/baked_replay_t001_test.rb:37]:\nAC-003:2: got [3].", rows).failed).toEqual(["AC-003:2"]);
+    expect(replayResult("failed", "   FAILED  Tests\\BakedReplayT001Test > AC-003:1\n  Failed asserting that 3 is identical to 4.", rows).failed).toEqual(["AC-003:1"]);
     expect(replayResult("failed", "src/paths.ts(3,1): error TS1005: ';' expected.", rows)).toMatchObject({ status: "error", failed: [] });
     expect(replayResult("inconclusive", "", rows).status).toBe("error");
   });

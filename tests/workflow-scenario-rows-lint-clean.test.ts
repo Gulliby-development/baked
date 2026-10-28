@@ -706,3 +706,51 @@ describe("scenario: the Minitest rows pass RuboCop as written (#2348)", () => {
     expect(withInlineRows(tampered, file)).toContain("macosx_11_0_arm64");
   });
 });
+
+// #2348: rows as data for Pest. Both templates pass Pint's default preset as written, their
+// closures keep every name to the file, and a wrong harness fails each row by its id.
+const pest = tool("pest", "--version");
+const PEST_TEST = "<?php\n\n$acceptanceActual = function (mixed $input): mixed {\n    return $input;\n};\n";
+const pestInline: InlineRowTest = { mode: "inline", framework: "pest", test: "tests/PlatformsTest.php" };
+
+describe("scenario: the Pest rows pass Pint as written (#2348)", () => {
+  const echo = rows.map((row) => ({ ...row, expected: row.input }));
+  const pestFile = { framework: "pest", harness: "tests/Support/platforms-harness.php", test: "tests/PlatformsRowsTest.php", data: "tests/fixtures/platforms_rows.json" };
+  const project = (cases = rows, harness = PEST_TEST) => {
+    const task = { id: "T003", rows: ["AC-003"], rowTest: pestFile } as never;
+    const files = rowFiles(task, { tasks: [{ rows: ["AC-003"], rowTest: pestFile }], rows: cases } as never);
+    return temp({
+      ...Object.fromEntries(files.map((file) => [file.path, file.content])),
+      [pestFile.harness]: "<?php\n\nreturn function (mixed $input): mixed {\n    return $input;\n};\n",
+      [pestInline.test]: withInlineRows(harness, inlineRowFile(pestInline, cases)),
+      // A second file with the same block: its closures and rows are its own.
+      "tests/OtherTest.php": withInlineRows(harness, inlineRowFile({ ...pestInline, test: "tests/OtherTest.php" }, cases)),
+    });
+  };
+
+  test("a file the host starts opens with its tag", () => {
+    expect(withInlineRows(null, inlineRowFile(pestInline, rows))).toStartWith("<?php\n\n// BEGIN acceptance rows:");
+    expect(fileMode(pestFile)[pestFile.test]).toStartWith("<?php\n");
+  });
+
+  test.skipIf(!pint)("pint --test passes the file mode's test and the inline block", () => {
+    expect(run(project(), pint ?? "", "--test", pestFile.test, pestInline.test)).toStartWith("0 ");
+  });
+
+  test.skipIf(!pest)("pest: every row of both modes passes, and a wrong harness fails each row by its id", () => {
+    expect(run(project(echo), pest ?? "", "tests")).toStartWith("0");
+    const failed = run(project(echo, PEST_TEST.replace("return $input;", "return [1, 2];")), pest ?? "", pestInline.test);
+    expect(failed).not.toStartWith("0");
+    for (const row of rows) expect(failed).toMatch(new RegExp(`FAILED .*PlatformsTest > ${row.id}`));
+  });
+
+  test("Pint's PER preset: the layout is kept, and a changed row is put back", () => {
+    const file = inlineRowFile(pestInline, rows);
+    const formatted = withInlineRows(PEST_TEST, file).replace(/(\S)\.(['$]|json_encode)/g, "$1 . $2").replace("function (mixed $value)", "function(mixed $value)");
+    expect(formatted).not.toBe(withInlineRows(PEST_TEST, file));
+    expect(hasInlineRows(formatted, file)).toBe(true);
+    const tampered = formatted.replace("macosx_11_0_arm64", "macosx_12_0_arm64");
+    expect(hasInlineRows(tampered, file)).toBe(false);
+    expect(withInlineRows(tampered, file)).toContain("macosx_11_0_arm64");
+  });
+});
