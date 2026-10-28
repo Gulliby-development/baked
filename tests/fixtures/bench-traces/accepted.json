@@ -111,5 +111,9 @@
   "R74/callmend.sqlite.gz#callmend": {
     "newPoolBoundStops": 1,
     "reason": "#2280: initiative-pool-growth (shadow) replays one feature run whose recorded bounds pass the initiative pool (30.04M tokens after the split-approval extension). The replay record is true; the initiative ended at 29.03M of that pool and USD 26.56 of the 30 cap, so nothing was exceeded. Same shape as the R73 evalpin delivery entry above (the last feature's room is not covered by chargeHold); not analysed further in R74."
+  },
+  "R74/ladlemath.sqlite.gz#ladlemath": {
+    "newStartStops": 1,
+    "reason": "Start gate (shadow) parks inspect, the 9th feature, after 3 accepted: tokens expected 29.4M (25.3M-36.3M) against the 30.0M pool with 13.0M used, and the pool notice's measured 2.7x need of 38.0M tokens (suggested extension 38.2M, what the $30 cap pays for). The record is true: the pool really ran out later (kitchen, recipe and inspect were blocked on the shared active time and the loop extended the pool to 40.1M tokens); the initiative finished at 35.0M tokens and USD 26.49 of the 30 cap, so a park at inspect's start would have stopped a run that the dollar cap allowed to finish. It stays shadow (no run was parked); a promotion of the start gate must not count this as a clean round."
   }
 }
