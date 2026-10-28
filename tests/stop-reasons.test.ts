@@ -33,7 +33,7 @@ describe("stop reasons", () => {
   test("hard limits take only enforce; the forecasts and the approval scope take every mode", () => {
     for (const [id, reason] of Object.entries(STOP_REASONS)) {
       expect(reason.modes).toContain(reason.defaultMode);
-      if (!["cost-forecast", "approval-scope", "initiative-forecast", "initiative-dollar-share", "initiative-dollar-cap", "initiative-plan-charge", "initiative-pool-growth", "repeated_failure", "corrective_scope", "corrective_unowned_file", "repeat_without_change", "corrective_restores_removed", "edge_crash_finding", "repro_blind", "upstream_symbol", "baseline_unrepairable", "baseline_signature", "check-config-approval", "ci_check_drift", "committed_tree", "host-resume-on-stored-limit", "cost_refusal_wait", "upstream_baseline_debt", "written_tests_unselected"].includes(id))
+      if (!["cost-forecast", "approval-scope", "initiative-forecast", "initiative-dollar-share", "initiative-dollar-cap", "initiative-plan-charge", "initiative-pool-growth", "repeated_failure", "corrective_scope", "corrective_unowned_file", "repeat_without_change", "corrective_restores_removed", "generated_case", "edge_crash_finding", "repro_blind", "upstream_symbol", "baseline_unrepairable", "baseline_signature", "check-config-approval", "ci_check_drift", "committed_tree", "host-resume-on-stored-limit", "cost_refusal_wait", "upstream_baseline_debt", "written_tests_unselected"].includes(id))
         expect(reason.modes).toEqual(["enforce"]);
     }
     expect(STOP_REASONS["cost-forecast"].modes).toEqual(STOP_MODES);
@@ -46,6 +46,9 @@ describe("stop reasons", () => {
     // Shadow until its promotion (#2277): a corrective that restores the previous one's removal.
     expect(STOP_REASONS.corrective_restores_removed.modes).toEqual(["shadow", "advisory"]);
     expect(STOP_REASONS.corrective_restores_removed.defaultMode).toBe("shadow");
+    // Shadow until its promotion (#2344): a test input built from generated values where literal examples are asked for.
+    expect(STOP_REASONS.generated_case.modes).toEqual(["shadow", "advisory"]);
+    expect(STOP_REASONS.generated_case.defaultMode).toBe("shadow");
     // Shadow until its promotion (#2136): a crash inside the probed task's file is not a finding yet.
     expect(STOP_REASONS.edge_crash_finding.modes).toEqual(["shadow", "advisory"]);
     expect(STOP_REASONS.edge_crash_finding.defaultMode).toBe("shadow");
