@@ -147,7 +147,8 @@ if (command === "export" && args.length === 2) {
             `new case refusals ${run.newCaseRefusals} in ${run.caseWalks.length} case walks, ` +
             `new gate repairs ${run.newGateRepairs} in ${run.reviewGates.length} review gates, ` +
             `convergence verdicts changed ${run.newConvergenceVerdicts} in ${run.convergenceGates.length} gates, ` +
-            `active-time caps changed ${run.newActiveTimes} of ${run.activeTimes.length} sizing reports` +
+            `active-time caps changed ${run.newActiveTimes} of ${run.activeTimes.length} sizing reports ` +
+            `(clean pace, shadow: ${run.cleanPaceChanges})` +
             (ratios ? `, forecast/final ${ratios}` : ""),
         );
         for (const b of run.boundaries.filter((b) => b.recorded !== b.replayed))
@@ -158,6 +159,10 @@ if (command === "export" && args.length === 2) {
         for (const b of run.activeTimes.filter((b) => b.recorded.after !== b.replayed.after))
           console.log(
             `    ${b.report}: active-time cap recorded ${b.recorded.after} ms at ${b.recorded.tokensPerMinute} tokens/min (${b.recorded.basis}), now ${b.replayed.after} ms at ${b.replayed.tokensPerMinute} (${b.replayed.basis})`,
+          );
+        for (const b of run.activeTimes.filter((b) => b.clean && b.clean.after !== b.recorded.after))
+          console.log(
+            `    ${b.report}: clean pace (shadow) would cap ${b.clean?.after} ms at ${b.clean?.tokensPerMinute} tokens/min (${b.clean?.basis}, ${b.clean?.rates.length} clean runs, ${b.clean?.silentMs} ms silent), recorded ${b.recorded.after} ms`,
           );
         for (const b of run.repeatedFailures.filter((b) => b.replayed === "repeat"))
           console.log(
