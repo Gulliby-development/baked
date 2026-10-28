@@ -3,7 +3,8 @@ import { memo, useEffect, useMemo, useState } from "react";
 import { computeDiff, type DiffLine, langFromPath } from "../../core/diff.js";
 import { icon } from "../../core/icons.js";
 import { useTheme } from "../../core/theme/index.js";
-import { getSyntaxStyle, getTSClient } from "../../core/utils/syntax.js";
+import { getTSClient } from "../../core/utils/syntax.js";
+import { useSyntaxStyle } from "../../hooks/useSyntaxStyle.js";
 
 const LARGE_DIFF_THRESHOLD = 50;
 
@@ -46,6 +47,7 @@ export const DiffView = memo(function DiffView({
   mode = "default",
 }: Props) {
   const t = useTheme();
+  const syntaxStyle = useSyntaxStyle();
   const [startLine, setStartLine] = useState(1);
   useEffect(() => {
     let cancelled = false;
@@ -144,7 +146,7 @@ export const DiffView = memo(function DiffView({
           wrapMode="word"
           syncScroll={viewMode === "split"}
           filetype={lang}
-          syntaxStyle={getSyntaxStyle()}
+          syntaxStyle={syntaxStyle}
           treeSitterClient={getTSClient()}
           showLineNumbers
           addedBg={t.diffAddedBg}

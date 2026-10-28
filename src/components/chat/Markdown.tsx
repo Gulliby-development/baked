@@ -1,6 +1,7 @@
 import { createContext, memo, useContext, useMemo } from "react";
 import { useTheme } from "../../core/theme/index.js";
-import { getSyntaxStyle, getTSClient } from "../../core/utils/syntax.js";
+import { getTSClient } from "../../core/utils/syntax.js";
+import { useSyntaxStyle } from "../../hooks/useSyntaxStyle.js";
 
 const CodeExpandedContext = createContext(false);
 export const CodeExpandedProvider = CodeExpandedContext.Provider;
@@ -49,7 +50,7 @@ interface Props {
 export const Markdown = memo(function Markdown({ text, streaming, role = "assistant" }: Props) {
   const t = useTheme();
   const verbose = useVerbose();
-  const syntaxStyle = getSyntaxStyle();
+  const syntaxStyle = useSyntaxStyle();
   const tsClient = getTSClient();
 
   const content = useMemo(

@@ -16,5 +16,6 @@ export { useGlobalKeyboard } from "./useGlobalKeyboard.js";
 export { useGroupedModels } from "./useGroupedModels.js";
 export { useMouse } from "./useMouse.js";
 export { useProviderModels } from "./useProviderModels.js";
+export { useSyntaxStyle } from "./useSyntaxStyle.js";
 export type { Tab, UseTabsReturn } from "./useTabs.js";
 export { useTabs } from "./useTabs.js";
