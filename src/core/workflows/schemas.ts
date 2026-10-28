@@ -104,7 +104,7 @@ export const SpecSchema = z
 export const HOST_CONTENT_MAX_CHARS = 4000;
 
 /** The test frameworks acceptance rows as data writes tests for. */
-const RowFramework = z.enum(["bun", "pytest", "go", "junit", "rust", "xunit"]);
+const RowFramework = z.enum(["bun", "pytest", "go", "junit", "rust", "xunit", "rspec", "phpunit"]);
 const RowPackage = z
   .string()
   .max(200)
@@ -147,7 +147,10 @@ export const TaskSchema = z
         z
           .object({
             framework: RowFramework,
-            /** The Go package, Java package or C# namespace of the harness and the host's test. */
+            /**
+             * The Go package, Java package, C# namespace or PHP namespace (dots for backslashes) of
+             * the harness and the host's test.
+             */
             package: RowPackage.optional(),
             harness: RelativePath,
             test: RelativePath,
@@ -727,6 +730,13 @@ export const PolicySchema = z
      * session opens), so stored policies keep their hash.
      */
     conflictFinish: z.literal("on").optional(),
+    /**
+     * The expected text a test task compares exactly, written by the host as a string literal of
+     * the test's language (supplied-content.ts, #2101): `on` gives the implementer each request
+     * section a criterion of the task compares exactly, escaped once by the host. Absent means
+     * off, so stored policies keep their hash.
+     */
+    exactTextLiteral: z.literal("on").optional(),
     /**
      * The host's order around a blocked corrective (corrective-defer.ts, #2109): `on` lets the
      * drive run the ready tasks a corrective that blocked does not hold, keeping its hold on the

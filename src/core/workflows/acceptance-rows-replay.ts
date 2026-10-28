@@ -1,6 +1,11 @@
 import { posix } from "node:path";
 import type { RowsArtifact } from "./acceptance-rows.js";
-import { INLINE_HARNESS, type InlineRowFile, inlineRowFile } from "./acceptance-rows-inline.js";
+import {
+  INLINE_HARNESS,
+  type InlineRowFile,
+  inlineRowFile,
+  phpNamespace,
+} from "./acceptance-rows-inline.js";
 import type { AcceptanceRow } from "./acceptance-rows-model.js";
 import { writtenCodePaths } from "./check-policy.js";
 import type { TaskGraph } from "./schemas.js";
@@ -25,9 +30,9 @@ export interface RowReplay {
   /** The block and path of the one-shot harness file. */
   file: InlineRowFile;
   framework: Framework;
-  /** The Go package, Java package or C# namespace of the harness file. */
+  /** The Go package, Java package, C# or PHP namespace of the harness file. */
   package?: string;
-  /** The class the harness defines (JUnit, xUnit), named after the file. */
+  /** The class the harness defines (JUnit, xUnit, PHPUnit), named after the file. */
   className?: string;
 }
 
@@ -40,6 +45,8 @@ const REPLAY_FILE: Record<Framework, (dir: string, id: string, test: string) => 
   rust: (_dir, id) => `tests/baked_replay_${id}.rs`,
   junit: (dir, id) => posix.join(dir, `BakedReplay${id.toUpperCase()}Test.java`),
   xunit: (dir, id) => posix.join(dir, `BakedReplay${id.toUpperCase()}Tests.cs`),
+  rspec: (dir, id) => posix.join(dir, `baked_replay_${id}_spec.rb`),
+  phpunit: (dir, id) => posix.join(dir, `BakedReplay${id.toUpperCase()}Test.php`),
 };
 
 const dependencies = (graph: Pick<TaskGraph, "tasks">, id: string): Set<string> => {
@@ -88,7 +95,7 @@ export function rowReplay(
     ),
     framework,
     ...(pkg ? { package: pkg } : {}),
-    ...(framework === "junit" || framework === "xunit"
+    ...(framework === "junit" || framework === "xunit" || framework === "phpunit"
       ? { className: posix.basename(path).replace(/\.\w+$/, "") }
       : {}),
   };
@@ -98,7 +105,9 @@ export function rowReplay(
 export function replayNote(replay: RowReplay): string {
   const where = [
     replay.package
-      ? `${replay.framework === "xunit" ? "namespace" : "package"} ${replay.package}`
+      ? replay.framework === "xunit" || replay.framework === "phpunit"
+        ? `namespace ${replay.framework === "phpunit" ? phpNamespace(replay.package) : replay.package}`
+        : `package ${replay.package}`
       : "",
     replay.className ? `class ${replay.className}` : "",
   ]
