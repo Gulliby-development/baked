@@ -21,6 +21,7 @@ import {
   isLinkedDependency,
   linkDependencies,
   PROJECT_PATHS,
+  parseLuaTable,
   SHADOW_MARK,
 } from "../src/core/workflows/dependency-dirs.js";
 import type { WorkflowStore } from "../src/core/workflows/store.js";
@@ -274,5 +275,116 @@ describe("scenario: Dart R75, a deep workspace (#2361)", () => {
     const [line] = worktreePathChecks(deep);
     expect(line).toMatchObject({ id: "worktree.path", status: "warn", subject: "dart test" });
     expect(line?.title).toContain("dart test fails over 120");
+  });
+});
+
+// #2371: LuaRocks, renv/packrat and opam install a *copy* of the project into the dependency
+// folder, so a worktree that links the folder loads the main workspace's last install. The
+// project's own entry is left out of the worktree's folder; the rest stays linked.
+describe.skipIf(IS_WIN)("dependency folders that hold an installed copy of the project (#2371)", () => {
+  const exists = (path: string) => existsSync(path) || isLinkSafe(path);
+  const isLinkSafe = (path: string) => {
+    try {
+      return lstatSync(path).isSymbolicLink();
+    } catch {
+      return false;
+    }
+  };
+
+  test("LuaRocks: the project's own rock is left out of lua_modules, other rocks stay linked", () => {
+    const f = project(
+      {
+        ".gitignore": ".baked/\nlua_modules/\n",
+        "ladle-1.0-1.rockspec": 'package = "ladle"\nversion = "1.0-1"\n',
+        "src/ladle/init.lua": "return 'main'\n",
+      },
+      (workspace) => {
+        const rocks = "lua_modules/lib/luarocks/rocks-5.4";
+        write(workspace, `${rocks}/manifest`, "repository = {}\n");
+        write(
+          workspace,
+          `${rocks}/ladle/1.0-1/rock_manifest`,
+          'rock_manifest = {\n   lua = {\n      ladle = {\n         ["init.lua"] = "aa",\n         ["sum.lua"] = "bb"\n      }\n   },\n   ["ladle-1.0-1.rockspec"] = "cc"\n}\n',
+        );
+        write(workspace, `${rocks}/inspect/3.1-1/rock_manifest`, "rock_manifest = { lua = { [\"inspect.lua\"] = \"dd\" } }\n");
+        write(workspace, "lua_modules/share/lua/5.4/ladle/init.lua", "return 'main install'\n");
+        write(workspace, "lua_modules/share/lua/5.4/ladle/sum.lua", "return 1\n");
+        write(workspace, "lua_modules/share/lua/5.4/inspect.lua", "return {}\n");
+      },
+    );
+    const tree = join(f.root, "lua_modules");
+    expect(isLinkSafe(tree)).toBe(false);
+    expect(exists(join(tree, "share/lua/5.4/ladle/init.lua"))).toBe(false);
+    expect(exists(join(tree, "share/lua/5.4/ladle/sum.lua"))).toBe(false);
+    expect(exists(join(tree, "lib/luarocks/rocks-5.4/ladle"))).toBe(false);
+    expect(realpathSync(join(tree, "share/lua/5.4/inspect.lua"))).toBe(
+      join(f.workspace, "lua_modules/share/lua/5.4/inspect.lua"),
+    );
+    expect(exists(join(tree, "lib/luarocks/rocks-5.4/inspect"))).toBe(true);
+    expect(isLinkedDependency(f.root, "lua_modules")).toBe(true);
+    // The main workspace keeps its install.
+    expect(existsSync(join(f.workspace, "lua_modules/share/lua/5.4/ladle/init.lua"))).toBe(true);
+  });
+
+  test("renv and packrat: the project's own package is left out of the library", () => {
+    const f = project(
+      { ".gitignore": ".baked/\nrenv/library/\npackrat/lib/\n", DESCRIPTION: "Package: ladle\nVersion: 0.1.0\n" },
+      (workspace) => {
+        const renv = "renv/library/R-4.3/x86_64-pc-linux-gnu";
+        write(workspace, `${renv}/ladle/DESCRIPTION`, "Package: ladle\n");
+        write(workspace, `${renv}/testthat/DESCRIPTION`, "Package: testthat\n");
+        const packrat = "packrat/lib/x86_64-pc-linux-gnu/4.3.1";
+        write(workspace, `${packrat}/ladle/DESCRIPTION`, "Package: ladle\n");
+        write(workspace, `${packrat}/rlang/DESCRIPTION`, "Package: rlang\n");
+      },
+    );
+    expect(exists(join(f.root, "renv/library/R-4.3/x86_64-pc-linux-gnu/ladle"))).toBe(false);
+    expect(isLinkSafe(join(f.root, "renv/library/R-4.3/x86_64-pc-linux-gnu/testthat"))).toBe(true);
+    expect(exists(join(f.root, "packrat/lib/x86_64-pc-linux-gnu/4.3.1/ladle"))).toBe(false);
+    expect(isLinkSafe(join(f.root, "packrat/lib/x86_64-pc-linux-gnu/4.3.1/rlang"))).toBe(true);
+  });
+
+  test("opam: the files the project's pinned package installed are left out of _opam", () => {
+    const f = project(
+      { ".gitignore": ".baked/\n_opam/\n", "ladle.opam": 'opam-version: "2.0"\n', "dune-project": "(lang dune 3.0)\n" },
+      (workspace) => {
+        write(
+          workspace,
+          "_opam/.opam-switch/install/ladle.changes",
+          'opam-version: "2.0"\nadded: [\n  "bin/ladle" {"F:md5=aa"}\n  "lib/ladle" {"D"}\n  "lib/ladle/META" {"F:md5=bb"}\n  "lib/ladle/ladle.cma" {"F:md5=cc"}\n]\n',
+        );
+        write(workspace, "_opam/bin/ladle", "main install\n");
+        write(workspace, "_opam/bin/dune", "dune\n");
+        write(workspace, "_opam/lib/ladle/META", "");
+        write(workspace, "_opam/lib/ladle/ladle.cma", "");
+        write(workspace, "_opam/lib/fmt/META", "");
+      },
+    );
+    const sw = join(f.root, "_opam");
+    expect(exists(join(sw, "bin/ladle"))).toBe(false);
+    expect(exists(join(sw, "lib/ladle/META"))).toBe(false);
+    expect(exists(join(sw, "lib/ladle/ladle.cma"))).toBe(false);
+    expect(isLinkSafe(join(sw, "bin/dune"))).toBe(true);
+    expect(isLinkSafe(join(sw, "lib/fmt"))).toBe(true);
+  });
+
+  test("a folder without the project's own install is still linked whole", () => {
+    const f = project(
+      { ".gitignore": ".baked/\nlua_modules/\n", "ladle-1.0-1.rockspec": 'package = "ladle"\n' },
+      (workspace) => write(workspace, "lua_modules/share/lua/5.4/inspect.lua", "return {}\n"),
+    );
+    expect(isLinkSafe(join(f.root, "lua_modules"))).toBe(true);
+  });
+
+  test("reads a rock_manifest as LuaRocks writes it", () => {
+    expect(
+      parseLuaTable(
+        'rock_manifest = {\n   bin = {\n      ladle = "11"\n   },\n   lua = {\n      ["ladle.lua"] = "22",\n      ladle = {\n         ["util.lua"] = "33"\n      }\n   },\n   ["ladle-1.0-1.rockspec"] = "44"\n}\n',
+      ),
+    ).toEqual({
+      bin: { ladle: "11" },
+      lua: { "ladle.lua": "22", ladle: { "util.lua": "33" } },
+      "ladle-1.0-1.rockspec": "44",
+    });
   });
 });

@@ -87,6 +87,12 @@ export const ALL_DEPENDENCY_DIRS: readonly string[] = [
 export interface ProjectPaths {
   walk: readonly string[];
   own: readonly string[];
+  /**
+   * Entries (exact `/`-separated paths) left out of the worktree's folder: an installed copy of the
+   * project itself (#2371), so a check loads the worktree's sources or fails clearly instead of
+   * running the main workspace's last install. Their parent folders are walked.
+   */
+  omit?: readonly string[];
 }
 
 /** The site-packages folders of a virtual environment, POSIX and Windows layouts. */
@@ -145,17 +151,167 @@ export const PROJECT_PATHS: Readonly<
   ),
   ".bundle": none("Bundler's config holds relative paths"),
   deps: none("Mix keeps dependencies only; the project compiles into _build"),
-  lua_modules: none("a rock of the project itself is a copy, not a path (follow-up #2371)"),
-  "renv/library": none(
-    "a package of the project itself is an installed copy, not a path (follow-up #2371)",
-  ),
-  "packrat/lib": none(
-    "a package of the project itself is an installed copy, not a path (follow-up #2371)",
-  ),
-  _opam: none("a pinned package of the project is an installed copy, not a path (follow-up #2371)"),
+  // `luarocks make --tree lua_modules` installs a copy of the project's own rock (#2371).
+  lua_modules: (source, workspace) => omitting(ownRockFiles(source, workspace)),
+  // `R CMD INSTALL .` / `devtools::install()` puts a copy of the project's package in the library.
+  "renv/library": (source, workspace) => omitting(ownRPackage(source, workspace)),
+  "packrat/lib": (source, workspace) => omitting(ownRPackage(source, workspace)),
+  // `opam pin add .` installs the project's packages into the local switch.
+  _opam: (source, workspace) => omitting(ownOpamFiles(source, workspace)),
   Pods: none("development pods are read relative to the Podfile"),
   dbt_packages: none("local packages are read relative to the project"),
 };
+
+const omitting = (omit: string[]): ProjectPaths | null =>
+  omit.length ? { walk: [], own: [], omit } : null;
+
+/** The first match of `pattern` in a file of the workspace root whose name ends in `suffix`. */
+function manifestValue(workspace: string, suffix: string, pattern: RegExp): string[] {
+  return entries(workspace)
+    .filter((name) => name.endsWith(suffix))
+    .flatMap((name) => {
+      try {
+        const found = pattern.exec(readFileSync(join(workspace, name), "utf8"));
+        return found?.[1] ? [found[1]] : [];
+      } catch {
+        return [];
+      }
+    });
+}
+
+/**
+ * The installed files of the project's own rock in a LuaRocks tree: its folder under
+ * `lib/luarocks/rocks-*` and the files its `rock_manifest` lists under `share/lua/*`, `lib/lua/*`
+ * and `bin`. The project's rock is the `package` of a rockspec in the workspace root.
+ */
+function ownRockFiles(source: string, workspace: string): string[] {
+  const names = new Set(
+    manifestValue(workspace, ".rockspec", /^\s*package\s*=\s*["']([^"']+)["']/m),
+  );
+  if (!names.size) return [];
+  const omit: string[] = [];
+  const luarocks = join(source, "lib", "luarocks");
+  for (const rocks of entries(luarocks).filter((d) => d === "rocks" || d.startsWith("rocks-"))) {
+    const version = rocks.slice("rocks-".length);
+    const versions = version ? [version] : entries(join(source, "share", "lua"));
+    for (const name of entries(join(luarocks, rocks)).filter((n) => names.has(n))) {
+      omit.push(`lib/luarocks/${rocks}/${name}`);
+      for (const release of entries(join(luarocks, rocks, name))) {
+        let manifest: LuaTable = {};
+        try {
+          manifest = parseLuaTable(
+            readFileSync(join(luarocks, rocks, name, release, "rock_manifest"), "utf8"),
+          );
+        } catch {
+          continue;
+        }
+        const listed = (key: string) => {
+          const value = manifest[key];
+          return typeof value === "object" ? luaTablePaths(value) : [];
+        };
+        for (const v of versions) {
+          omit.push(...listed("lua").map((file) => `share/lua/${v}/${file}`));
+          omit.push(...listed("lib").map((file) => `lib/lua/${v}/${file}`));
+        }
+        omit.push(...listed("bin").map((file) => `bin/${file}`));
+      }
+    }
+  }
+  return omit.filter((path) => existsSync(join(source, path)) || isLink(join(source, path)));
+}
+
+type LuaTable = { [key: string]: string | LuaTable };
+
+/**
+ * The `rock_manifest = { ... }` table LuaRocks writes: string keys (`name` or `["name"]`) whose
+ * values are an MD5 string or a nested table.
+ */
+export function parseLuaTable(text: string): LuaTable {
+  const tokens: string[] =
+    text.match(/\["(?:[^"\\]|\\.)*"\]|"(?:[^"\\]|\\.)*"|[A-Za-z_][\w.-]*|[{}=,]/g) ?? [];
+  let at = tokens.indexOf("{");
+  const unquote = (token: string) =>
+    token.replace(/^\[?"/, "").replace(/"\]?$/, "").replace(/\\(.)/g, "$1");
+  const table = (): LuaTable => {
+    const out: LuaTable = {};
+    at += 1;
+    while (at < tokens.length && tokens[at] !== "}") {
+      const key = tokens[at] ?? "";
+      if (key === ",") {
+        at += 1;
+        continue;
+      }
+      if (tokens[at + 1] !== "=") throw new Error(`rock_manifest: expected = after ${key}`);
+      at += 2;
+      if (tokens[at] === "{") out[unquote(key)] = table();
+      else out[unquote(key)] = unquote(tokens[at] ?? "");
+      at += 1;
+    }
+    return out;
+  };
+  if (at < 0) throw new Error("rock_manifest: no table");
+  return table();
+}
+
+function luaTablePaths(table: LuaTable, prefix = ""): string[] {
+  return Object.entries(table).flatMap(([key, value]) =>
+    typeof value === "object" ? luaTablePaths(value, `${prefix}${key}/`) : [`${prefix}${key}`],
+  );
+}
+
+/**
+ * The installed copy of the project's own R package in an renv or packrat library: a folder named
+ * as the `Package:` of the workspace's DESCRIPTION, with a DESCRIPTION of its own, up to three
+ * levels down (`R-4.3/x86_64-pc-linux-gnu/pkg`, `x86_64-pc-linux-gnu/4.3.1/pkg`).
+ */
+function ownRPackage(source: string, workspace: string): string[] {
+  const [name] = manifestValue(workspace, "DESCRIPTION", /^Package:\s*(\S+)/m);
+  if (!name) return [];
+  const found: string[] = [];
+  const visit = (dir: string, at: string, depth: number) => {
+    for (const entry of entries(dir)) {
+      const path = at ? `${at}/${entry}` : entry;
+      const full = join(dir, entry);
+      if (entry === name && existsSync(join(full, "DESCRIPTION"))) found.push(path);
+      else if (depth < 3 && !isLink(full) && isDirectory(full)) visit(full, path, depth + 1);
+    }
+  };
+  visit(source, "", 1);
+  return found;
+}
+
+/**
+ * The files the project's own opam packages installed into a local switch, from the switch's
+ * `.opam-switch/install/<name>.changes` record; without one, their `lib/<name>` folder. The
+ * project's packages are the `<name>.opam` files of the workspace root.
+ */
+function ownOpamFiles(source: string, workspace: string): string[] {
+  const names = entries(workspace)
+    .filter((n) => n.endsWith(".opam") && n.length > ".opam".length)
+    .map((n) => n.slice(0, -".opam".length));
+  const omit: string[] = [];
+  for (const name of names) {
+    let changes = "";
+    try {
+      changes = readFileSync(join(source, ".opam-switch", "install", `${name}.changes`), "utf8");
+    } catch {
+      // An older switch records no changes file.
+    }
+    const added = /added:\s*\[([\s\S]*?)\n\]/.exec(changes)?.[1] ?? "";
+    // Files and links the package added; folders stay (others may share them) and are walked.
+    for (const entry of added.matchAll(/"([^"]+)"\s*\{"([FL])/g)) if (entry[1]) omit.push(entry[1]);
+    if (!added && existsSync(join(source, "lib", name))) omit.push(`lib/${name}`);
+  }
+  return omit;
+}
+
+function isDirectory(path: string): boolean {
+  try {
+    return statSync(path).isDirectory();
+  } catch {
+    return false;
+  }
+}
 
 function entries(dir: string): string[] {
   try {
@@ -277,11 +433,17 @@ function shadow(
   at = "",
 ): void {
   mkdirSync(target, { recursive: true });
+  const omit = paths.omit ?? [];
   for (const name of entries(source)) {
     const path = at ? `${at}/${name}` : name;
     const from = join(source, name);
     const to = join(target, name);
-    if (matches(paths.own, path)) copyOwn(from, to, workspace, root);
+    if (omit.includes(path)) continue;
+    // A folder above an omitted entry is walked, so only that entry is left out.
+    const aboveOmitted = omit.some((o) => o.startsWith(`${path}/`));
+    if (aboveOmitted && !isLink(from) && statSync(from).isDirectory())
+      shadow(from, to, paths, workspace, root, path);
+    else if (matches(paths.own, path)) copyOwn(from, to, workspace, root);
     else if (isLink(from)) relink(from, to, workspace, root);
     else if (matches(paths.walk, path) && statSync(from).isDirectory())
       shadow(from, to, paths, workspace, root, path);

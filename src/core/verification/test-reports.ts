@@ -10,17 +10,60 @@ import { toolchainCommand } from "../workflows/toolchain.js";
  * appends their totals and failed tests to the output as one JUnit `<testsuites>` block, which the
  * `junit` test runner counts. A test task Gradle skipped as up to date writes no report, so it adds
  * nothing and the run compares nothing.
+ *
+ * Maven's surefire writes the same reports under each module's `target/surefire-reports/`, and
+ * `mvn -q` prints no summary either (#2378). A narrowed run (`-Dtest=`, with
+ * `-Dsurefire.failIfNoSpecifiedTests=false` so a module without the classes does not fail) that
+ * selected no test exits 0 and writes no report: Maven never skips surefire as up to date, so such
+ * a run is read as zero tests, which a check that must run tests fails on.
  */
 
-/** Gradle programs whose runs write the reports. */
-const GRADLE = new Set(["gradle", "gradlew"]);
+interface ReportLayout {
+  /** The folder a project or module builds into: `build`, `target`. */
+  build: string;
+  /** The reports folder under it. */
+  reports: string;
+  /** Whether the reports sit one folder deeper, per test task (Gradle's `test-results/<task>/`). */
+  perTask: boolean;
+}
+
+const LAYOUTS: Record<"gradle" | "maven", ReportLayout> = {
+  gradle: { build: "build", reports: "test-results", perTask: true },
+  maven: { build: "target", reports: "surefire-reports", perTask: false },
+};
+
+/** The programs whose runs write the reports. */
+const PROGRAMS: Record<string, keyof typeof LAYOUTS> = {
+  gradle: "gradle",
+  gradlew: "gradle",
+  mvn: "maven",
+  mvnw: "maven",
+};
 /** How deep under the check's folder a subproject's `build/` may be. */
 const MAX_DEPTH = 4;
-const SKIPPED_DIRS = new Set([".git", ".gradle", "node_modules", ".baked", "src"]);
+const SKIPPED_DIRS = new Set([".git", ".gradle", ".mvn", "node_modules", ".baked", "src"]);
 
-/** The JUnit XML report files under `root/.../build/test-results/` changed at or after `since`. */
-function reportFiles(root: string, since: number): string[] {
+/** The JUnit XML report files of `layout` under `root` changed at or after `since`. */
+function reportFiles(root: string, since: number, layout: ReportLayout): string[] {
   const found: string[] = [];
+  const collect = (dir: string) => {
+    let files: string[] = [];
+    try {
+      files = readdirSync(dir);
+    } catch {
+      return;
+    }
+    for (const file of files.sort()) {
+      if (!/^TEST-.*\.xml$/.test(file)) continue;
+      const path = join(dir, file);
+      try {
+        // File times have a coarse resolution on some file systems.
+        if (statSync(path).mtimeMs >= since - 2000) found.push(path);
+      } catch {
+        // Removed meanwhile.
+      }
+    }
+  };
   const walk = (dir: string, depth: number) => {
     let names: string[];
     try {
@@ -28,36 +71,22 @@ function reportFiles(root: string, since: number): string[] {
     } catch {
       return;
     }
-    if (names.includes("build")) {
-      const results = join(dir, "build", "test-results");
-      let tasks: string[] = [];
-      try {
-        tasks = readdirSync(results);
-      } catch {
-        // No tests ran in this project.
-      }
-      for (const task of tasks.sort()) {
-        let files: string[] = [];
+    if (names.includes(layout.build)) {
+      const results = join(dir, layout.build, layout.reports);
+      if (!layout.perTask) collect(results);
+      else {
+        let tasks: string[] = [];
         try {
-          files = readdirSync(join(results, task));
+          tasks = readdirSync(results);
         } catch {
-          continue;
+          // No tests ran in this project.
         }
-        for (const file of files.sort()) {
-          if (!/^TEST-.*\.xml$/.test(file)) continue;
-          const path = join(results, task, file);
-          try {
-            // File times have a coarse resolution on some file systems.
-            if (statSync(path).mtimeMs >= since - 2000) found.push(path);
-          } catch {
-            // Removed meanwhile.
-          }
-        }
+        for (const task of tasks.sort()) collect(join(results, task));
       }
     }
     if (depth >= MAX_DEPTH) return;
     for (const name of names.sort()) {
-      if (name === "build" || SKIPPED_DIRS.has(name) || name.startsWith(".")) continue;
+      if (name === layout.build || SKIPPED_DIRS.has(name) || name.startsWith(".")) continue;
       const path = join(dir, name);
       try {
         if (statSync(path).isDirectory()) walk(path, depth + 1);
@@ -123,18 +152,29 @@ function failureElement(body: string): string {
 }
 
 /**
- * The totals of the Gradle test reports a run wrote in `cwd` since `since`, as a JUnit block, or
- * null when the command is not Gradle or wrote no report.
+ * The totals of the Gradle or Maven test reports a run wrote in `cwd` since `since`, as a JUnit
+ * block, or null when the command is neither or wrote no report. A narrowed Maven run that exited
+ * 0 without a report gets a block of zero tests (#2378).
  */
-export function gradleTestReport(
+export function testReport(
   executable: string,
   args: readonly string[],
   cwd: string,
   since: number,
+  exitCode: number | null = null,
 ): string | null {
-  if (!GRADLE.has(toolchainCommand(executable, args).program)) return null;
-  const files = reportFiles(cwd, since);
-  if (!files.length) return null;
+  const tool = PROGRAMS[toolchainCommand(executable, args).program];
+  if (!tool) return null;
+  const files = reportFiles(cwd, since, LAYOUTS[tool]);
+  const where = `${LAYOUTS[tool].build}/${LAYOUTS[tool].reports}`;
+  if (!files.length)
+    return tool === "maven" && exitCode === 0 && args.some((arg) => arg.startsWith("-Dtest="))
+      ? [
+          `Maven test reports (none under ${where}, read by BAKED): the -Dtest selection ran no test class.`,
+          '<testsuites tests="0" skipped="0" failures="0" errors="0">',
+          "</testsuites>",
+        ].join("\n")
+      : null;
   const totals = { tests: 0, skipped: 0, failures: 0, errors: 0 };
   const failed: string[] = [];
   for (const file of files) {
@@ -157,7 +197,7 @@ export function gradleTestReport(
         );
   }
   return [
-    `Gradle test reports (${files.length} file${files.length === 1 ? "" : "s"} under build/test-results, read by BAKED):`,
+    `${tool === "maven" ? "Maven" : "Gradle"} test reports (${files.length} file${files.length === 1 ? "" : "s"} under ${where}, read by BAKED):`,
     `<testsuites tests="${totals.tests}" skipped="${totals.skipped}" failures="${totals.failures}" errors="${totals.errors}">`,
     ...failed,
     "</testsuites>",
