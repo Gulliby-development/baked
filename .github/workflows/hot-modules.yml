@@ -62,7 +62,7 @@ jobs:
         if: steps.hot.outputs.modules != ''
         env:
           TESTS: ${{ steps.hot.outputs.tests }}
-        run: bun test --timeout 30000 $TESTS tests/forecast-replay-corpus.test.ts tests/forecast-trace-replay.test.ts
+        run: bun test --timeout 30000 $TESTS tests/forecast-replay-corpus*.test.ts tests/forecast-trace-replay.test.ts
 
   mutation:
     if: github.event_name != 'pull_request'
