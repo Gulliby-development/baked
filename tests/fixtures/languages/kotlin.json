@@ -10,6 +10,10 @@
     "testsGrown": "[ERROR] Tests run: 4, Failures: 1, Errors: 0, Skipped: 0\n"
   },
   "expected": {
+    "memberSyntax": [
+      "Scanner delegates to Reader.IsEncodingToken.: Reader.IsEncodingToken",
+      "Scanner passes Reader::isEncodingToken as the filter.: Reader::isEncodingToken"
+    ],
     "suppressions": [
       "@file:Suppress(\"unused\"): lint, linted, prescribable",
       "@SuppressWarnings(\"unchecked\"): lint, linted, prescribable",
@@ -71,6 +75,9 @@
       "ktfmt: formatter",
       "spotless: formatter"
     ],
-    "sortedLists": null
+    "sortedLists": null,
+    "dependencyDirs": null,
+    "dependencyPrepare": null,
+    "worktreePathLimits": null
   }
 }

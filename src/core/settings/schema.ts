@@ -1093,6 +1093,28 @@ export const SETTINGS: readonly SettingDefinition[] = [
     ],
   },
   {
+    id: "quality.hostApply",
+    page: "code-quality",
+    section: "Workflow runs",
+    label: "Host apply of verbatim content",
+    help: "When the request gives a task's every file verbatim (an exact diff, a whole file or a README section) and every diff applies to the task's base, the host writes the files itself and starts no implementer session; the task's checks decide it, and a failing check opens the usual correction.",
+    scopes: BOTH,
+    type: "enum",
+    default: "off",
+    options: [
+      {
+        value: "off",
+        label: "off",
+        help: "An implementer writes the files; the host only records whether it would apply them.",
+      },
+      {
+        value: "on",
+        label: "on",
+        help: "Write the request's verbatim content and skip the implementer when every diff applies.",
+      },
+    ],
+  },
+  {
     id: "quality.defectClasses",
     page: "code-quality",
     section: "Workflow runs",
@@ -1147,6 +1169,28 @@ export const SETTINGS: readonly SettingDefinition[] = [
     ],
   },
   {
+    id: "quality.exactTextLiteral",
+    page: "code-quality",
+    section: "Workflow runs",
+    label: "Exact text as a ready string literal",
+    help: "When a test compares a section the request gives verbatim exactly (a README section, a help text), the host writes the section once as a string literal of the test's language, with every quote, backslash and interpolation escaped, and gives it to the test task to paste instead of retyping the text.",
+    scopes: BOTH,
+    type: "enum",
+    default: "off",
+    options: [
+      {
+        value: "off",
+        label: "off",
+        help: "The test task writes the expected text itself.",
+      },
+      {
+        value: "on",
+        label: "on",
+        help: "The test task gets the section as a ready string literal of its language.",
+      },
+    ],
+  },
+  {
     id: "quality.correctiveDefer",
     page: "code-quality",
     section: "Workflow runs",
@@ -1165,6 +1209,28 @@ export const SETTINGS: readonly SettingDefinition[] = [
         value: "on",
         label: "on",
         help: "Run the independent ready tasks first, then stop with the blocked correction.",
+      },
+    ],
+  },
+  {
+    id: "quality.rustFormatWritten",
+    page: "code-quality",
+    section: "Workflow runs",
+    label: "Check Rust formatting at the end of each task",
+    help: "cargo fmt runs only in the checks stage, after the task that wrote a file has ended. With this on, each task's new Rust files are checked with rustfmt when the task ends and fixed with rustfmt, so a file rustfmt rejects or never finishes on is repaired by its own task. Files that declare modules out of line (mod name;) stay with cargo fmt.",
+    scopes: BOTH,
+    type: "enum",
+    default: "off",
+    options: [
+      {
+        value: "off",
+        label: "off",
+        help: "Rust formatting is checked by cargo fmt in the checks stage only.",
+      },
+      {
+        value: "on",
+        label: "on",
+        help: "Also check each task's new Rust files with rustfmt when the task ends.",
       },
     ],
   },

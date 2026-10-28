@@ -9,6 +9,9 @@
     "testsGrown": "00:00 +0: loading test/sum_test.dart\n00:00 +0: test/sum_test.dart: adds\n00:00 +1: test/sum_test.dart: is commutative\n00:00 +1 -1: test/sum_test.dart: is commutative [E]\n  Expected: <4>\n    Actual: <3>\n\n00:00 +1 -1: test/sum_test.dart: subtracts\n00:01 +2 -1: Some tests failed.\n\nFailing tests:\n  test/sum_test.dart: is commutative\n"
   },
   "expected": {
+    "memberSyntax": [
+      "Scanner delegates to Reader.IsEncodingToken.: Reader.IsEncodingToken"
+    ],
     "suppressions": [
       "// ignore: avoid_print: lint, linted, prescribable"
     ],
@@ -57,6 +60,13 @@
       "flutter analyze: linter, whole unit",
       "dart format: formatter"
     ],
-    "sortedLists": null
+    "sortedLists": null,
+    "dependencyDirs": null,
+    "dependencyPrepare": [
+      "dart pub get --offline"
+    ],
+    "worktreePathLimits": [
+      "pubspec.yaml: dart test over 120 characters"
+    ]
   }
 }

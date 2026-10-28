@@ -43,10 +43,13 @@ import { isTestCheck } from "../src/core/workflows/quality/mutation.js";
 import { STATIC_TOOLS } from "../src/core/workflows/static-tools.js";
 import { layOutForFormatter, SORTED_LISTS } from "../src/core/workflows/initiatives/skeleton-layout.js";
 import { CHECK_CONFIGS, checkConfigOf } from "../src/core/workflows/quality/check-configs.js";
+import { MEMBER_SYNTAX, upstreamSymbolGaps } from "../src/core/workflows/initiatives/upstream-symbols.js";
 import { SUPPRESSION_SPELLINGS } from "../src/core/workflows/quality/suppressions.js";
 import { suppressionsIn } from "../src/core/workflows/test-integrity.js";
 import type { Check } from "../src/core/workflows/types.js";
 import { rowOf } from "../src/core/intelligence/language-records.js";
+import { DEPENDENCY_DIRS, DEPENDENCY_PREPARE, linkDependencies, WORKTREE_PATH_LIMITS } from "../src/core/workflows/dependency-dirs.js";
+import { sourceManifest } from "../src/core/verification/snapshot.js";
 
 // Language parity (#1717): every language-bound record has a row for every supported language,
 // and every row is exercised by the language's fixture project in `tests/fixtures/languages/`.
@@ -277,6 +280,29 @@ const RECORDS: Record<
       }),
     never: ["unmatched"],
   },
+  // Each member spelling's example, in a planned-ahead spec over an upstream file of the language
+  // named by the example's type (#2199): the symbol the upstream-symbol check reports while the
+  // file lacks the member, and whether it is quiet once the file defines it.
+  memberSyntax: {
+    record: MEMBER_SYNTAX,
+    run: (language, { files }) => {
+      const [sample] = ofLanguage(language, files)[0] ?? [];
+      if (!sample) return ["no file of the language"];
+      const ext = /\.[^./]+$/.exec(sample)?.[0] ?? "";
+      return (rowOf(MEMBER_SYNTAX, language) ?? []).map(({ pattern, example }) => {
+        const { type = "", member = "" } = new RegExp(pattern).exec(example)?.groups ?? {};
+        const path = `src/${type}${ext}`;
+        const spec = {
+          requirements: [{ id: "FR-001", text: example, priority: "must" as const, verification: "automated" as const, sourceRefs: [] }],
+          criteria: [],
+        };
+        const gaps = upstreamSymbolGaps(spec, [{ featureId: "upstream", path, text: "" }]).map((gap) => gap.symbol);
+        const defined = upstreamSymbolGaps(spec, [{ featureId: "upstream", path, text: `${member}\n` }]);
+        return `${example}: ${gaps.join(", ") || "not read"}${defined.length ? ", still a gap when defined" : ""}`;
+      });
+    },
+    never: ["no file of the language"],
+  },
   // Each suppression spelling's example line, added to a file of the language (#2274): what the
   // test-integrity guard counts and whether the lint-suppression quality rule reports it, and the
   // same line inside a string literal, which is test data and no suppression (#1549).
@@ -299,6 +325,39 @@ const RECORDS: Record<
       });
     },
     never: ["no file of the language"],
+  },
+  // The language's dependency folders, installed in the fixture project, that a worktree or copy
+  // of it links, and whether the copy's source manifest leaves the link out (#2330).
+  dependencyDirs: {
+    record: DEPENDENCY_DIRS,
+    run: async (language, { files }) => {
+      const dirs = rowOf(DEPENDENCY_DIRS, language) ?? [];
+      const root = workspace({ ...files, ...Object.fromEntries(dirs.map((d) => [`${d}/installed`, ""])) });
+      const copy = workspace({});
+      const linked = linkDependencies(root, copy);
+      const manifest = Object.keys(await sourceManifest(copy));
+      const listed = linked.filter((d) => manifest.some((path) => path.startsWith(d)));
+      return [...linked.map((d) => `${d}: linked`), ...(listed.length ? ["in the manifest"] : [])];
+    },
+    never: ["in the manifest"],
+  },
+  // The command that resolves the fixture project's packages in a new worktree or copy, when its
+  // resolution is a generated, ignored file that holds machine paths (#2361).
+  dependencyPrepare: {
+    record: DEPENDENCY_PREPARE,
+    run: (language, { files }) => {
+      const row = DEPENDENCY_PREPARE[language];
+      const command = isNoRow(row) ? null : row(workspace(files));
+      return command ? [command.join(" ")] : [];
+    },
+  },
+  // The fixture project's manifest that makes the doctor check a task worktree's path length (#2361).
+  worktreePathLimits: {
+    record: WORKTREE_PATH_LIMITS,
+    run: (language, { files }) => {
+      const row = WORKTREE_PATH_LIMITS[language];
+      return isNoRow(row) || !(row.manifest in files) ? [] : [`${row.manifest}: ${row.tool} over ${String(row.chars)} characters`];
+    },
   },
   properties: {
     record: PROPERTY_LIBRARIES,
@@ -351,7 +410,7 @@ describe("acceptance rows: every framework has the file and the inline mode (#17
   test.each(frameworks.map((framework) => [framework]))("%s", (framework) => {
     expect(INLINE_HARNESS[framework]).toBeTruthy();
     const pkg = framework === "go" ? "calc" : framework === "junit" ? "com.ex.calc" : "Calc.Tests";
-    const test = { bun: "tests/a.test.ts", pytest: "tests/test_a.py", go: "calc/a_test.go", junit: "src/test/java/com/ex/calc/ATest.java", rust: "tests/a.rs", xunit: "Calc.Tests/ATest.cs" }[framework];
+    const test = { bun: "tests/a.test.ts", pytest: "tests/test_a.py", go: "calc/a_test.go", junit: "src/test/java/com/ex/calc/ATest.java", rust: "tests/a.rs", xunit: "Calc.Tests/ATest.cs", rspec: "spec/a_spec.rb", phpunit: "tests/ATest.php" }[framework];
     const file = inlineRowFile({ mode: "inline", framework, test, package: pkg }, [{ id: "AC-001:1", criterionId: "AC-001", input: 1, expected: 2, source: "1 | 2" }]);
     expect(file.tail).toContain(INLINE_HARNESS[framework]);
     expect(file.tail).not.toMatch(/serde_json|import junit|org\.json|Newtonsoft/);

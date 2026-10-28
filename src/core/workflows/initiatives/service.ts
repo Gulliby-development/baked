@@ -65,7 +65,14 @@ import { sizingHistory, testCaseRate } from "../sizing.js";
 import { stageReserve } from "../stage-reserve.js";
 import { terminalStates } from "../state-machine.js";
 import { stopDetail, stopRecovery } from "../stop-detail.js";
-import { recordWouldStop, type StopMode, stopFault, stopMode } from "../stop-reasons.js";
+import {
+  costRefusalWaitOf,
+  noteStoredLimitResume,
+  recordWouldStop,
+  type StopMode,
+  stopFault,
+  stopMode,
+} from "../stop-reasons.js";
 import { newId, WorkflowStore } from "../store.js";
 import type { IssueSource } from "../types.js";
 import { HOST_AUTO_APPROVAL_CEILING, HostAutoApprovalSchema } from "../v2/definition.js";
@@ -137,6 +144,16 @@ import {
   InitiativeStore,
 } from "./store.js";
 import {
+  finishedRunPace,
+  initiativePace,
+  runTimeRaise,
+  type TimePoolView,
+  timePool,
+  timeRaise,
+} from "./time-pool.js";
+import {
+  affordableClause,
+  affordableTokens,
   DEFAULT_EXTEND_WITHIN_DOLLARS,
   DEFAULT_STAGE_RESERVE,
   dollarTokens,
@@ -278,6 +295,13 @@ export interface CostView {
    * without a cap, before a feature is accepted, or while nothing is priced.
    */
   forecastUsd: number | null;
+  /**
+   * The same forecast at the measured ratio itself (#2186): `forecastUsd` and the forecast stop
+   * read the estimate's blended ratio (`progress.ratio`), the notice reads this one
+   * (`progress.rawRatio`), as the token pool's `advice` does (#2062). Null while the two agree or
+   * before three features are measured; absent on events recorded before #2186.
+   */
+  advice?: { forecastUsd: number; ratio: number; blendedRatio: number } | null;
   /** Accepted features that are not a host-written skeleton: the forecast's measured samples. */
   measuredFeatures: number;
   /**
@@ -291,7 +315,10 @@ export interface CostView {
    * forecast above the ceiling records a `decision.would_stop` event and features keep starting.
    */
   forecastMode: StopMode;
-  /** Why a forecast above the ceiling does not stop the initiative yet; null otherwise. */
+  /**
+   * Why a forecast above the ceiling does not stop the initiative yet, or that `advice` is above
+   * it while the blend fits (#2186); null otherwise.
+   */
   forecastNotice: string | null;
   /**
    * The mode of the `initiative-dollar-share` stop reason (#1890): in `enforce` a feature whose
@@ -364,6 +391,22 @@ export interface FeatureView {
    * this feature at their release, and how the initiative answered each.
    */
   amendments?: (AmendmentRequest & { answer: AmendmentAnswer })[];
+  /**
+   * A blocked run's cost refusal past its tasks that would leave it waiting on its extend remedy
+   * (`cost_refusal_wait`, shadow, #2249): the state it would take and the cap that answers it.
+   */
+  costWait?: {
+    state: "waiting";
+    suggestedUsd: number;
+    stageId: string | null;
+    mode: Exclude<StopMode, "enforce">;
+  };
+  /**
+   * The unaccepted upstream features that hold this one by a stop nobody waits on (blocked or
+   * failed), so it counts as stalled behind them (`stalledUpstream`, #2249). An upstream whose
+   * block would wait on a priced extension (`costWait`) is waited on, not counted here.
+   */
+  stalledOn?: string[];
 }
 
 export interface NextAction {
@@ -451,6 +494,13 @@ export interface InitiativeView {
     planCharge: PlanChargeView | null;
     /** The token forecast's notice (`pool.notice`): set while the forecast is above the pool. */
     forecastNotice: string | null;
+    /**
+     * The shared active time's forecast at the measured pace and what to extend it to (#2336).
+     * Null before approval.
+     */
+    time: TimePoolView | null;
+    /** The time forecast's notice (`time.notice`): set while the forecast is above the limit. */
+    timeNotice: string | null;
     rule: string;
   };
   next: NextAction;
@@ -500,7 +550,7 @@ export interface ShareGateView {
    * events have none of them.
    */
   budget: Pick<InitiativeView["budget"], "remaining" | "cost"> &
-    Partial<Pick<InitiativeView["budget"], "limits" | "used" | "pool" | "planCharge">>;
+    Partial<Pick<InitiativeView["budget"], "limits" | "used" | "pool" | "planCharge" | "time">>;
   /** `shareUsd` and `needUsd` are recorded from #1890 on; older events have neither. */
   features: (Pick<FeatureView, "id" | "state" | "share" | "need"> &
     Partial<Pick<FeatureView, "shareUsd" | "needUsd">>)[];
@@ -560,11 +610,17 @@ function extendAdvice(
   initiativeId: string,
   message: string,
   summary: string,
-  amounts: { tokens?: number | null; usd?: number | null; fallback?: string },
+  amounts: {
+    tokens?: number | null;
+    usd?: number | null;
+    timeMs?: number | null;
+    fallback?: string;
+  },
 ): RecoveryAdvice {
   const flags = [
     ...(amounts.tokens ? [`--tokens ${amounts.tokens}`] : []),
     ...(amounts.usd ? [`--budget-usd ${amounts.usd}`] : []),
+    ...(amounts.timeMs ? [`--time-ms ${amounts.timeMs}`] : []),
   ];
   const command = [`baked workflow initiative extend ${initiativeId}`, ...flags];
   if (!flags.length && amounts.fallback) command.push(amounts.fallback);
@@ -573,6 +629,7 @@ function extendAdvice(
     initiativeId,
     ...(amounts.tokens ? { suggestedTokens: amounts.tokens } : {}),
     ...(amounts.usd ? { suggestedUsd: amounts.usd } : {}),
+    ...(amounts.timeMs ? { suggestedTimeMs: amounts.timeMs } : {}),
   });
 }
 
@@ -635,20 +692,34 @@ export function shareShortfall(
   const pool = inputs && tokenPool(inputs);
   if (shareTooSmall(share)) {
     const tokensShort = (share?.tokens ?? 0) < MIN_SHARE.maxTotalTokens;
-    const cover =
-      tokensShort && pool && pool.coverTokens > pool.limitTokens ? pool.coverTokens : null;
-    const summary = `The shared budget is exhausted: ${feature.id} would start with ${share?.tokens ?? 0} tokens, ${share?.calls ?? 0} calls and ${share?.activeMs ?? 0} ms.${cover ? ` A pool of ${tokenText(cover)} tokens covers the high estimates of the waiting features.` : ""}`;
-    return extendAdvice(id, summary, summary, { tokens: cover });
+    // The cover held to what the dollar cap pays for, or with the cap it needs (#2367).
+    const remedy = tokensShort && pool && inputs ? affordableTokens(pool, inputs) : null;
+    const cover = remedy ? pool?.coverTokens : null;
+    const capClause =
+      remedy && pool?.capTokens != null && pool.usdPerMillion !== null && cost.capUsd !== null
+        ? ` The ${usd(cost.capUsd)} cap would pay for about ${tokenText(pool.capTokens)} tokens at ${usd(pool.usdPerMillion)} per million${affordableClause(pool, remedy)}.`
+        : "";
+    // The shared time names its amount as the tokens do (#2336).
+    const timeMs =
+      (share?.activeMs ?? 0) < MIN_SHARE.maxActiveMs ? timeRaise(view.budget.time) : null;
+    const summary = `The shared budget is exhausted: ${feature.id} would start with ${share?.tokens ?? 0} tokens, ${share?.calls ?? 0} calls and ${share?.activeMs ?? 0} ms.${cover ? ` A pool of ${tokenText(cover)} tokens covers the high estimates of the waiting features.${capClause}` : ""}${timeMs ? ` A shared time of ${Math.round(timeMs / 60_000)} min covers ${view.budget.time?.suggestedMs ? "the time forecast at the measured pace" : "the high estimates of the waiting features at the measured pace"}.` : ""}`;
+    return extendAdvice(id, summary, summary, {
+      tokens: remedy?.tokens,
+      usd: remedy?.usd,
+      timeMs,
+    });
   }
   const available = growthLimit(view, feature.id);
   if (feature.need && available !== null && available < feature.need.low) {
     const base = `The shared budget is short: ${feature.id} has ${available} tokens available after reserving the other waiting features' low estimates, below its estimate of ${feature.need.low}-${feature.need.high}.`;
+    const remedy = pool && inputs ? affordableTokens(pool, inputs) : null;
     const detail =
       pool && inputs
-        ? ` ${poolShortText(pool, { id: feature.id, ...feature.need }, available, inputs.waiting, cost)}`
+        ? ` ${poolShortText(pool, { id: feature.id, ...feature.need }, available, inputs.waiting, cost, remedy)}`
         : "";
     return extendAdvice(id, `${base}${detail}`, `${base}${detail}`, {
-      tokens: pool ? pool.coverTokens : null,
+      tokens: remedy?.tokens ?? (pool ? pool.coverTokens : null),
+      usd: remedy?.usd,
     });
   }
   return null;
@@ -1096,6 +1167,34 @@ const cents = (n: number): number => Math.floor(Math.round(n * 1e6) / 1e4) / 100
 /** Up to the cent, for an amount a message suggests: it must cover what it names. */
 const centsUp = (n: number): number => Math.ceil(Math.round(n * 1e6) / 1e4) / 100;
 
+/**
+ * The estimate with each feature still to run at the measured ratio itself (`progress.rawRatio`)
+ * instead of the blend that priced it (its size's, else the overall one), never below its point
+ * forecast, for the dollar notice (#2186). A feature that a floor priced (its criteria, paths,
+ * plan or test cases) keeps its point forecast: the ratio does not scale a floor. Null when no
+ * feature changes.
+ */
+function rawRatioEstimate(
+  estimate: InitiativeEstimate,
+  accepted: ReadonlySet<string>,
+): InitiativeEstimate | null {
+  const { rawRatio, ratio, bySize } = estimate.progress;
+  if (rawRatio === null || ratio === null) return null;
+  let changed = false;
+  const features = estimate.features.map((f) => {
+    const blend = bySize[f.size] ?? ratio;
+    if (accepted.has(f.featureId) || f.floor || rawRatio <= blend) return f;
+    const expectedTokens = Math.max(
+      f.expectedTokens,
+      Math.round((f.expectedTokens / blend) * rawRatio),
+    );
+    if (expectedTokens === f.expectedTokens) return f;
+    changed = true;
+    return { ...f, expectedTokens };
+  });
+  return changed ? { ...estimate, features } : null;
+}
+
 /** The smallest dollar share a feature run can start with. */
 export const MIN_SHARE_USD = 0.01;
 
@@ -1133,7 +1232,7 @@ export function planBudget(settings: InitiativeSettings, plan: InitiativePlan): 
 export const MIN_SHARE = { maxTotalTokens: 1000, maxAgentCalls: 1, maxActiveMs: 1000 } as const;
 
 export const BUDGET_RULE =
-  "Each feature run starts with a share of the remaining shared budget, rounded down: remaining = limit - (usage of finished runs + the limits of open runs, decompose and superseded runs included; an open feature run whose plan is sized counts at the high end of its plan's need at the measured plan-to-actual ratio, never below its usage, instead of its limit, unless stopModes sets initiative-plan-charge to shadow), times the feature's weight, divided by the weights of the features of the approved plan without a run. Tokens are weighted by each feature's estimated need (the high end of its estimate), calls and time by size (small 1, medium 2, large 4). When the remaining pool covers the waiting features' low estimates, token shares reserve any lows that the weighted split would underfund and divide the rest by the same weights. A feature starts only if the remaining pool minus the other waiting features' low estimates covers its own low estimate. Otherwise it waits for a budget extension. A feature run grows its own budget only up to what remains after the low ends of the features still waiting. A starting feature's calls and active time are what remains less a floor for each other waiting feature (the base policy's per-run limit scaled by size, at most its share), never below its own share. A rebased run takes one more share of the same split. Agent calls per run are capped at 1000. With a dollar budget (--budget-usd), dollars use the original token weights and each feature run gets its share as its maxCostUsd with the initiative's costTolerance. Its cap may grow independently of tokens, only up to the remaining dollars less the priced low estimates of the other waiting features (their whole shares when unpriced); a run that finished its tasks and would stop on its cost ceiling reserves its remaining review and convergence before those lows, inside the dollar cap and its tolerance (workflows.stageReserve: shadow, the default, records decision.would_extend; on grows the run's bound). Split approval warns on dollar shares below their own priced lows; open runs hold their caps. No feature starts on less than $0.01, or once a feature is accepted and the projected total passes the cap and its tolerance.";
+  "Each feature run starts with a share of the remaining shared budget, rounded down: remaining = limit - (usage of finished runs + the limits of open runs, decompose and superseded runs included; an open feature run whose plan is sized counts at the high end of its plan's need at the measured plan-to-actual ratio, never below its usage, instead of its limit, unless stopModes sets initiative-plan-charge to shadow), times the feature's weight, divided by the weights of the features of the approved plan without a run. Tokens are weighted by each feature's estimated need (the high end of its estimate), calls and time by size (small 1, medium 2, large 4). When the remaining pool covers the waiting features' low estimates, token shares reserve any lows that the weighted split would underfund and divide the rest by the same weights. A feature starts only if the remaining pool minus the other waiting features' low estimates covers its own low estimate. Otherwise it waits for a budget extension. A feature run grows its own budget only up to what remains after the low ends of the features still waiting (their whole token shares when none has an estimate; what remains when none waits). A starting feature's calls and active time are what remains less a floor for each other waiting feature (the base policy's per-run limit scaled by size, at most its share), never below its own share. A rebased run takes one more share of the same split. Agent calls per run are capped at 1000. With a dollar budget (--budget-usd), dollars use the original token weights and each feature run gets its share as its maxCostUsd with the initiative's costTolerance. Its cap may grow independently of tokens, only up to the remaining dollars less the priced low estimates of the other waiting features (their whole shares when unpriced); a run that finished its tasks and would stop on its cost ceiling reserves its remaining review and convergence before those lows, inside the dollar cap and its tolerance (workflows.stageReserve: shadow, the default, records decision.would_extend; on grows the run's bound). Split approval warns on dollar shares below their own priced lows; open runs hold their caps. No feature starts on less than $0.01, or once a feature is accepted and the projected total passes the cap and its tolerance.";
 
 /** Digest a person approves for a plan revision: the plan, the budget and the frozen settings. */
 export function splitDigest(
@@ -1658,7 +1757,9 @@ export class InitiativeService {
     for (let step = 0; step < 500 && !signal.aborted; step++) {
       const view = this.view(id);
       this.noteTokenForecast(view, null);
+      this.noteTimeForecast(view, null);
       this.notePlanCharge(view, null);
+      this.noteStoredLimitResumes(view);
       const next = view.next;
       if (view.parallelRuns > 1 && (next.kind === "drive" || next.kind === "start")) {
         if (!(await this.driveFeatures(id, signal))) return;
@@ -1726,7 +1827,9 @@ export class InitiativeService {
     const fill = async (): Promise<void> => {
       let view = this.view(id);
       this.noteTokenForecast(view, null);
+      this.noteTimeForecast(view, null);
       this.notePlanCharge(view, null);
+      this.noteStoredLimitResumes(view);
       for (;;) {
         const row = this.store.get(id);
         const ready = this.byPath(
@@ -1754,7 +1857,11 @@ export class InitiativeService {
         // Bench round 60, wheeltags: names and targets waited 39 minutes with free slots (#1925).
         const released = await this.releasePlanned(id, feature.id, runId);
         if (released) started = true;
-        else if (before.has(runId)) continue;
+        else if (this.store.current(id, feature.id)?.run_id !== runId) {
+          // A `write` amendment replaced the run (#2183); the next fill drives its fork.
+          started = true;
+          continue;
+        } else if (before.has(runId)) continue;
         if (!before.has(runId)) before.set(runId, this.workflows.store.run(runId).revision);
         live.set(
           runId,
@@ -2139,6 +2246,7 @@ export class InitiativeService {
         used: view.budget.used,
         pool: view.budget.pool,
         ...(view.budget.planCharge ? { planCharge: view.budget.planCharge } : {}),
+        ...(view.budget.time ? { time: view.budget.time } : {}),
       },
       features: view.features.map((f) => ({
         id: f.id,
@@ -2185,7 +2293,10 @@ export class InitiativeService {
       },
     };
     this.store.emit(id, "feature.share_gate", record);
-    if (verdict === "pass") this.noteTokenForecast(view, feature.id);
+    if (verdict === "pass") {
+      this.noteTokenForecast(view, feature.id);
+      this.noteTimeForecast(view, feature.id);
+    }
     if (growth?.wouldExtend) this.noteWouldExtend(gateView, feature.id, growth);
     this.notePlanCharge(view, { view: gateView, feature, verdict });
   }
@@ -2193,6 +2304,17 @@ export class InitiativeService {
   /** `workflows.extendWithinDollars`: whether a token park records the host's extension (#2042). */
   private extendWithinDollars(): ExtendWithinDollars {
     return this.workflows.config.workflows?.extendWithinDollars ?? DEFAULT_EXTEND_WITHIN_DOLLARS;
+  }
+
+  /**
+   * The driver round's look at its blocked feature runs (#2226): a run blocked on its own active
+   * time, tokens or calls whose stored limits grew past its usage after the block records one
+   * `decision.would_resume` (`noteStoredLimitResume`, shadow). It never resumes the run.
+   */
+  private noteStoredLimitResumes(view: InitiativeView): void {
+    for (const feature of view.features)
+      if (feature.state === "blocked" && feature.runId)
+        noteStoredLimitResume(this.workflows.store, feature.runId, "initiative-round");
   }
 
   /**
@@ -2216,6 +2338,28 @@ export class InitiativeService {
       advice: pool.advice,
       suggestedTokens: pool.suggestedTokens,
       message: pool.notice,
+    });
+  }
+
+  /**
+   * A `budget.time_notice` event the first time a drive sees the time forecast above the shared
+   * time, once per limit (#2336), beside the token one.
+   */
+  private noteTimeForecast(view: InitiativeView, featureId: string | null): void {
+    const time = view.budget.time;
+    if (!time?.notice) return;
+    const noted = this.store
+      .eventsOfType(view.initiativeId, "budget.time_notice")
+      .some((p) => (p as { limitMs?: number } | null)?.limitMs === time.limitMs);
+    if (noted) return;
+    this.store.emit(view.initiativeId, "budget.time_notice", {
+      featureId,
+      limitMs: time.limitMs,
+      usedMs: time.usedMs,
+      forecastMs: time.forecastMs,
+      pace: time.pace,
+      suggestedMs: time.suggestedMs,
+      message: time.notice,
     });
   }
 
@@ -2342,8 +2486,8 @@ export class InitiativeService {
 
   /**
    * Records once for each count of measured features that a feature starts while the forecast
-   * is above the ceiling but not yet binding (#1659), so `initiative events` and
-   * `/v1/initiatives/ID/events` show the warning a stop used to give.
+   * is above the ceiling but not yet binding (#1659), or its advice at the measured ratio is
+   * (#2186), so `initiative events` and `/v1/initiatives/ID/events` show the warning.
    */
   private noteAdvisoryForecast(id: string, featureId: string, cost: CostView): void {
     if (cost.forecastNotice === null) return;
@@ -2357,6 +2501,7 @@ export class InitiativeService {
     this.store.emit(id, "cost.forecast_advisory", {
       featureId,
       forecastUsd: cost.forecastUsd,
+      ...(cost.advice ? { advice: cost.advice } : {}),
       ceilingUsd: cost.ceilingUsd,
       spentUsd: cost.spentUsd,
       measuredFeatures: cost.measuredFeatures,
@@ -2525,17 +2670,19 @@ export class InitiativeService {
       });
       return false;
     }
+    // A path the feature took by a `write` amendment is its own on every later run (#2183).
+    const own = this.ownFeature(row, feature);
     const policy = featurePolicy(
       settings,
       share,
-      feature,
+      own,
       false,
       growthLimit(current, featureId),
       waiting?.shareUsd ?? null,
       costGrowthLimit(current, featureId),
       current.budget.cost.forecastBinding,
     );
-    const declined = featureApprovalDeclined(settings, feature, false, policy);
+    const declined = featureApprovalDeclined(settings, own, false, policy);
     const seed = previous ? null : this.importedSeed(id, settings, plan, feature);
     // A derived command ID makes a start after a crash return the same run instead of a second one.
     const snapshot = await this.workflows.start({
@@ -2553,7 +2700,7 @@ export class InitiativeService {
         featureId,
         features: plan.features.map((f) => ({
           id: f.id,
-          ...f.boundary,
+          ...(f.id === featureId ? own : f).boundary,
           ...(f.testedBy ? { testedBy: f.testedBy } : {}),
           dependsOn: f.dependsOn,
         })),
@@ -3008,8 +3155,9 @@ export class InitiativeService {
     if (!feature) return false;
     const baseCommit = await this.featureBase(id, feature, this.store.settings(row));
     if (!baseCommit) return false;
+    const amendments = this.workflows.config.workflows?.upstreamAmendments;
     if (
-      this.workflows.config.workflows?.upstreamAmendments === true &&
+      (amendments === true || amendments === "write") &&
       (await this.amendUpstream(id, feature, runId, baseCommit))
     )
       return false;
@@ -3112,14 +3260,19 @@ export class InitiativeService {
       return link !== null && this.workflows.store.run(link.run_id).status === "completed";
     };
     if (asked.some((a) => a.answer === "replan" && !settled(a.featureId))) return true;
-    const gaps = await this.upstreamGaps(runId, feature, this.approvedPlan(row), baseCommit);
+    const plan = this.approvedPlan(row);
+    const gaps = await this.upstreamGaps(runId, feature, plan, baseCommit);
     let held = false;
+    let write: UpstreamSymbolGap | null = null;
     for (const owner of [...new Set(gaps.map((g) => g.featureId))]) {
       const link = this.store.current(id, owner);
       const answer = amendmentAnswer({
         ownerRunStatus: link ? this.workflows.store.run(link.run_id).status : null,
         initiativeStatus: row.status,
         requested: asked.some((a) => a.featureId === owner),
+        mode: this.workflows.config.workflows?.upstreamAmendments ?? false,
+        gaps,
+        pathOpen: gaps.some((gap) => this.pathOpen(id, plan, feature.id, gap)),
       });
       if (asked.some((a) => a.featureId === owner)) continue;
       this.store.transaction(() => {
@@ -3135,9 +3288,130 @@ export class InitiativeService {
         });
       });
       if (answer === "replan") held = true;
+      if (answer === "write") write = gaps[0] ?? null;
     }
     if (held) await this.settleSuperseded(id);
-    return held;
+    if (write) await this.writeAmendment(id, feature, runId, baseCommit, write.path);
+    return held || write !== null;
+  }
+
+  /**
+   * Whether a feature other than the requester and the gap's owner, whose run is not finished,
+   * owns the gap's file too: its run may still write it, so the requester does not (#2183).
+   */
+  private pathOpen(
+    id: string,
+    plan: InitiativePlan | null,
+    from: string,
+    gap: UpstreamSymbolGap,
+  ): boolean {
+    const path = gap.path.replaceAll("\\", "/").toLowerCase();
+    return (plan?.features ?? []).some((f) => {
+      if (f.id === from || f.id === gap.featureId) return false;
+      if (
+        !f.boundary.paths.some((glob) => matchGlob(path, glob.replaceAll("\\", "/").toLowerCase()))
+      )
+        return false;
+      const link = this.store.current(id, f.id);
+      return !link || this.workflows.store.run(link.run_id).status !== "completed";
+    });
+  }
+
+  /**
+   * A feature's boundary with the paths it took by `write` amendments under the approved split
+   * (#2183): the readers of its own boundary (tiered approval's allowed paths, `approvedPath`,
+   * the plan's boundary checks) then hold the upstream file it writes.
+   */
+  private ownFeature(row: InitiativeRow, feature: InitiativeFeature): InitiativeFeature {
+    const taken = this.amendments(row)
+      .filter((a) => a.from === feature.id && a.answer === "write")
+      .flatMap((a) => a.gaps.map((g) => g.path))
+      .filter((path) => !feature.boundary.paths.includes(path));
+    if (!taken.length) return feature;
+    return {
+      ...feature,
+      boundary: { ...feature.boundary, paths: [...feature.boundary.paths, ...new Set(taken)] },
+    };
+  }
+
+  /**
+   * The `write` answer to an amendment request (#2183): the requester's held run is cancelled and
+   * a fork of it starts again at its plan stage on the accepted result (`baseCommit`), released,
+   * with `path` in its own boundary and in tiered approval's allowed paths, so a task of its new
+   * plan declares the write. Its spec stays; the owner does not run again.
+   */
+  private async writeAmendment(
+    id: string,
+    feature: InitiativeFeature,
+    runId: string,
+    baseCommit: string,
+    path: string,
+  ): Promise<void> {
+    const row = this.store.get(id);
+    const settings = this.store.settings(row);
+    const own = this.ownFeature(row, feature);
+    const old = this.workflows.store.run(runId);
+    if (!terminalStates.includes(old.status))
+      await this.workflows.cancel(runId, { commandId: newId(), expectedRevision: old.revision });
+    const parent = PolicySchema.parse(JSON.parse(old.policy_json));
+    const limits = parent.autoApproval?.limits;
+    const auto = settings.featureAutoApproval;
+    const policy =
+      parent.autoApproval && limits
+        ? {
+            ...parent,
+            autoApproval: {
+              ...parent.autoApproval,
+              limits: {
+                ...limits,
+                ...(auto ? boundaryLimits(auto, own.boundary.paths) : {}),
+                allowedPaths: [...new Set([...(limits.allowedPaths ?? []), path])],
+              },
+            },
+          }
+        : parent;
+    const dependencies = this.upstreamContracts(id, feature, []).map((u) => ({
+      featureId: u.contract.featureId,
+      contractHash: u.contract.contractHash,
+    }));
+    const open = this.workflows.store.run(runId);
+    const snapshot = await this.workflows.rebase(
+      runId,
+      {
+        commandId: `w-${hashJson({ runId, path, baseCommit }).slice(0, 48)}`,
+        expectedRevision: open.revision,
+      },
+      {
+        dependencies,
+        policy,
+        baseCommit,
+        baseFiles: this.upstreamSpecs(id, feature, []),
+      },
+    );
+    this.workflows.store.transaction(() => {
+      const state = this.workflows.store.state(snapshot.runId);
+      const bounds = state.initiativeBounds;
+      if (bounds) {
+        state.initiativeBounds = {
+          ...bounds,
+          features: bounds.features.map((f) =>
+            f.id === feature.id ? { ...f, paths: own.boundary.paths } : f,
+          ),
+        };
+        this.workflows.store.saveState(snapshot.runId, state);
+      }
+    });
+    this.store.transaction(() => {
+      this.store.supersede(id, runId, `amended to write ${path}`);
+      this.store.link(
+        id,
+        feature.id,
+        snapshot.runId,
+        row.approved_plan_revision ?? 0,
+        featureDigest(feature),
+        "rebase",
+      );
+    });
   }
 
   /** Superseded runs that are still open are cancelled, so they hold no publication or lease. */
@@ -3400,6 +3674,36 @@ export class InitiativeService {
           cost,
         })
       : null;
+    const time = approved
+      ? timePool({
+          initiativeId: row.id,
+          limitMs: limits.maxActiveMs,
+          usedMs: used.activeMs,
+          committedMs: committed.activeMs,
+          usedTokens: used.tokens,
+          forecastTokens:
+            pool?.forecastTokens == null
+              ? null
+              : Math.max(pool.forecastTokens, pool.advice?.forecastTokens ?? 0),
+          pace: initiativePace(
+            this.store.links(id).flatMap((link) => {
+              const run = this.workflows.store.run(link.run_id);
+              const pace = finishedRunPace({
+                status: run.status,
+                tokens: run.token_usage,
+                activeMs: run.active_ms,
+              });
+              return pace === null ? [] : [pace];
+            }),
+            estimate?.duration
+              ? { msPerToken: estimate.duration.msPerToken, samples: estimate.duration.samples }
+              : null,
+          ),
+          waitingHighTokens: waitingForRun.reduce((sum, f) => sum + (f.need?.high ?? 0), 0),
+          features: features.length,
+          slots: this.parallelRuns(settings, plan, facts),
+        })
+      : null;
     const unstarted = waitingForRun.length;
     // The share of the feature that starts next, by the same order the drive starts them in.
     const nextShare =
@@ -3465,6 +3769,8 @@ export class InitiativeService {
         pool,
         planCharge: charge,
         forecastNotice: pool?.notice ?? null,
+        time,
+        timeNotice: time?.notice ?? null,
         rule: BUDGET_RULE,
       },
       next: { kind: "done", featureId: null, runId: null, message: "" },
@@ -3553,6 +3859,17 @@ export class InitiativeService {
     const round = (n: number): number => Math.round(n * 100) / 100;
     const ceilingUsd = capUsd === null ? null : round(capUsd * (1 + tolerance));
     const forecastUsd = left === null ? null : round(spentUsd + left);
+    // Advice prices the features still to run at the measured ratio instead of the blend (#2186).
+    const atRaw = left === null || estimate === null ? null : rawRatioEstimate(estimate, accepted);
+    const adviceLeft = atRaw && this.remainingFeatureCost(row, settings, atRaw, accepted);
+    const advice =
+      forecastUsd !== null && adviceLeft != null && round(spentUsd + adviceLeft) !== forecastUsd
+        ? {
+            forecastUsd: round(spentUsd + adviceLeft),
+            ratio: round(estimate?.progress.rawRatio ?? 1),
+            blendedRatio: round(estimate?.progress.ratio ?? 1),
+          }
+        : null;
     const measuredFeatures = estimate
       ? estimate.features.filter((f) => accepted.has(f.featureId) && !f.skeleton).length
       : accepted.size;
@@ -3561,6 +3878,13 @@ export class InitiativeService {
     const forecastMode = stopMode(settings.basePolicy, "initiative-forecast");
     const shareMode = stopMode(settings.basePolicy, "initiative-dollar-share");
     const over = forecastUsd !== null && ceilingUsd !== null && forecastUsd > ceilingUsd;
+    const adviceOver = advice !== null && ceilingUsd !== null && advice.forecastUsd > ceilingUsd;
+    // Both forecasts, the measured one first, as the token notice names them (#2062).
+    const forecastText =
+      advice && forecastUsd !== null
+        ? `At the measured ${advice.ratio.toFixed(1)}x of the estimates the cost forecast is ${usd(advice.forecastUsd)} (${usd(forecastUsd)} at the blended ${advice.blendedRatio.toFixed(1)}x that the forecast stop uses; ${usd(spentUsd)} spent)`
+        : `The cost forecast of ${usd(forecastUsd ?? 0)}`;
+    const aboveText = `${forecastText}${advice ? "," : " is"} above the ${usd(ceilingUsd ?? 0)} ceiling.`;
     return {
       capUsd,
       tolerance,
@@ -3569,16 +3893,19 @@ export class InitiativeService {
       reservedUsd: round(Math.max(0, committedUsd - spentUsd)),
       remainingUsd: capUsd === null ? null : cents(Math.max(0, capUsd - committedUsd)),
       forecastUsd,
+      advice,
       measuredFeatures,
       forecastBinding,
       forecastMode,
       shareMode,
       forecastNotice:
         over && !forecastBinding
-          ? `The cost forecast of ${usd(forecastUsd)} is above the ${usd(ceilingUsd)} ceiling. It is advisory until ${FORECAST_BINDING_FEATURES} features are measured (${measuredFeatures} so far): features keep starting while their spent and reserved dollars fit the budget.`
+          ? `${aboveText} It is advisory until ${FORECAST_BINDING_FEATURES} features are measured (${measuredFeatures} so far): features keep starting while their spent and reserved dollars fit the budget.`
           : over && forecastMode === "advisory"
-            ? `The cost forecast of ${usd(forecastUsd)} is above the ${usd(ceilingUsd)} ceiling. The forecast stop is advisory: features keep starting while their spent and reserved dollars fit the budget.`
-            : null,
+            ? `${aboveText} The forecast stop is advisory: features keep starting while their spent and reserved dollars fit the budget.`
+            : !over && adviceOver && advice
+              ? `${aboveText} The advice changes no decision: features keep starting while the blended forecast and their spent and reserved dollars fit the budget. A cap of ${usd(Math.ceil(advice.forecastUsd))} covers it (baked workflow initiative extend ${row.id} --budget-usd ${Math.ceil(advice.forecastUsd)}).`
+              : null,
     };
   }
 
@@ -3895,6 +4222,8 @@ export class InitiativeService {
       const waiting = upstream
         .filter((u) => u.state !== "accepted")
         .map((u) => `waits for ${u.id}'s contract (${u.id} is ${describe(u)})`);
+      const stalled = stalledUpstream(upstream);
+      if (stalled.length) view.stalledOn = stalled;
       const link = this.store.current(row.id, feature.id);
       if (!link) {
         const ahead =
@@ -4012,18 +4341,83 @@ export class InitiativeService {
           run.reason === "provider_account" || run.reason === "provider_policy"
             ? stopDetail(this.workflows.store, link.run_id)
             : null;
+        const deadline = this.deadlineExtension(row.id, link.run_id);
         view.blockers = [
-          `run ${link.run_id} is blocked (${run.reason})${refusal ? `: ${refusal.split("\n")[0]?.slice(0, 600)}` : ""}; resolve it with baked workflow ${canRepairRun(run) ? "repair" : "resume"} ${link.run_id}`,
+          deadline
+            ? `run ${link.run_id} is blocked (${run.reason}): ${deadline.message}`
+            : `run ${link.run_id} is blocked (${run.reason})${refusal ? `: ${refusal.split("\n")[0]?.slice(0, 600)}` : ""}; resolve it with baked workflow ${canRepairRun(run) ? "repair" : "resume"} ${link.run_id}`,
         ];
+        const wait = costRefusalWaitOf(this.workflows.store, link.run_id);
+        if (wait)
+          view.costWait = {
+            state: wait.state,
+            suggestedUsd: wait.suggestedUsd,
+            stageId: wait.stageId,
+            mode: wait.mode,
+          };
         const recorded = stopRecovery(this.workflows.store, link.run_id);
+        const remedies = recorded?.remedies ?? [{ action: "resume" as const, runId: link.run_id }];
         view.recovery = recoveryAdvice(
           view.blockers[0] ?? "",
-          `Run ${link.run_id} is blocked (${run.reason}).${recorded ? ` ${recorded.summary}` : ""}`,
-          ...(recorded?.remedies ?? [{ action: "resume" as const, runId: link.run_id }]),
+          `Run ${link.run_id} is blocked (${run.reason}).${deadline ? ` ${deadline.summary}` : recorded ? ` ${recorded.summary}` : ""}`,
+          // A plain resume stops again at once on a spent deadline (#2226): extend comes first.
+          ...(deadline
+            ? [
+                {
+                  action: "extend" as const,
+                  runId: link.run_id,
+                  suggestedTimeMs: deadline.timeMs,
+                },
+                ...remedies.filter((r) => r.action !== "extend"),
+              ]
+            : remedies),
         );
       } else view.state = run.status === "paused" ? "paused" : "in_progress";
     }
     return [...views.values()];
+  }
+
+  /**
+   * For a feature run blocked `budget_exhausted` on its active deadline (#2336): the active time
+   * that lets it finish at the measured pace (the initiative's own finished runs, else the run's
+   * own) and the command that applies it; null for any other block.
+   */
+  private deadlineExtension(
+    initiativeId: string,
+    runId: string,
+  ): { timeMs: number; message: string; summary: string } | null {
+    const row = this.workflows.store.run(runId);
+    if (row.status !== "blocked" || row.reason !== "budget_exhausted") return null;
+    const policy = PolicySchema.parse(JSON.parse(row.policy_json));
+    if (row.active_ms < policy.maxActiveMs) return null;
+    const own = this.store.links(initiativeId).flatMap((link) => {
+      if (link.run_id === runId) return [];
+      const other = this.workflows.store.run(link.run_id);
+      const pace = finishedRunPace({
+        status: other.status,
+        tokens: other.token_usage,
+        activeMs: other.active_ms,
+      });
+      return pace === null ? [] : [pace];
+    });
+    const pace =
+      initiativePace(own, null)?.tokensPerMinute ??
+      (row.active_ms > 0 ? (row.token_usage / row.active_ms) * 60_000 : null);
+    const timeMs = runTimeRaise({
+      activeMs: row.active_ms,
+      maxActiveMs: policy.maxActiveMs,
+      usedTokens: row.token_usage,
+      // The plan's need at its high end, as sizing priced it; else the run's token limit.
+      needTokens: plannedRunTokens(this.workflows.store, runId)?.high ?? policy.maxTotalTokens,
+      tokensPerMinute: pace,
+    });
+    const minutes = (ms: number): number => Math.round(ms / 60_000);
+    const summary = `Its active time ran out at ${minutes(row.active_ms)} of ${minutes(policy.maxActiveMs)} min; ${minutes(timeMs)} min lets it finish at the measured pace.`;
+    return {
+      timeMs,
+      summary,
+      message: `${summary} Extend it with baked workflow extend ${runId} --expected-revision ${row.revision} --time-ms ${timeMs} --resume`,
+    };
   }
 
   private runRequests(
@@ -4527,6 +4921,19 @@ function sharedFeatureRunSamples(paths: string[], history: PastRun[]): FeatureRu
 const featureWorkflowId = (settings: InitiativeSettings, feature: InitiativeFeature): string =>
   feature.workflow ?? settings.workflowId;
 
+/**
+ * The unaccepted upstream features a dependant counts as stalled behind (#2249): blocked or failed,
+ * unless a blocked one's cost refusal would wait on its priced extend remedy (`costWait`), which
+ * a planned-ahead feature waits for as it waits for acceptance.
+ */
+export function stalledUpstream(
+  upstream: readonly Pick<FeatureView, "id" | "state" | "costWait">[],
+): string[] {
+  return upstream
+    .filter((u) => (u.state === "blocked" && !u.costWait) || u.state === "failed")
+    .map((u) => u.id);
+}
+
 function describe(view: FeatureView): string {
   switch (view.state) {
     case "needs_decision":
@@ -4696,14 +5103,23 @@ const ZERO_LIMITS = { maxTotalTokens: 0, maxAgentCalls: 0, maxActiveMs: 0 };
  * What a starting feature may grow its run budget to: the shared budget that remains less the low
  * end of the estimate of every other feature still waiting for a run. Without it a run grew from
  * its share to its own planning floor and sizing ceiling and held that, so the features after it
- * started on what was left (#1311). Null when no feature has an estimate.
+ * started on what was left (#1311). Never null, as `costGrowthLimit` is not for dollars: when no
+ * waiting feature has an estimate, each other waiting feature reserves its whole token share, and
+ * with none waiting the room is what remains. A null room took the base policy's ceilings, and an
+ * initiative's last open feature never has a waiting feature: R73 evalpin's delivery grew to 8M
+ * and 12M with 3.31M of its 23.9M pool left (#2294).
  */
 export function growthLimit(
   view: Pick<ShareGateView, "budget" | "features">,
   featureId: string,
-): number | null {
-  if (!view.features.some((f) => f.share !== null && f.need)) return null;
-  return Math.max(0, view.budget.remaining.tokens - waitingLowTokens(view, featureId));
+): number {
+  const estimated = view.features.some((f) => f.share !== null && f.need);
+  const reserve = estimated
+    ? waitingLowTokens(view, featureId)
+    : view.features
+        .filter((f) => f.share !== null && f.id !== featureId)
+        .reduce((sum, f) => sum + (f.share?.tokens ?? 0), 0);
+  return Math.max(0, view.budget.remaining.tokens - reserve);
 }
 
 /** The low token estimates of the features still waiting for a run, `featureId` aside. */

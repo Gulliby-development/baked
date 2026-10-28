@@ -76,6 +76,36 @@ describe("a released feature's spec is checked against the accepted upstream cod
     });
   }
 
+  // #2199: the member spellings of the upstream files' languages, besides `Type.Member`.
+  const MEMBERS: [string, string, string, string, string][] = [
+    ["rust", "src/reader.rs", "pub fn read(text: &str) -> Vec<Token> { vec![] }\n", "Scanner calls reader::is_encoding_token per token.", "reader::is_encoding_token"],
+    ["rust, through a module path", "src/reader/mod.rs", "pub fn read() {}\n", "Scanner calls crate::reader::is_encoding_token.", "reader::is_encoding_token"],
+    ["cpp", "src/Reader.hpp", "class Reader { public: static void read(); };\n", "Scanner calls Reader::isEncodingToken().", "Reader::isEncodingToken"],
+    ["php", "src/Reader.php", "<?php\nfinal class Reader { public static function read(): array { return []; } }\n", "Scanner calls Reader::isEncodingToken() per token.", "Reader::isEncodingToken"],
+    ["ruby", "lib/reader.rb", "class Reader\n  def read = []\nend\n", "Scanner calls Reader#encoding_token? per token.", "Reader#encoding_token?"],
+    ["go, a package by its folder", "lines/parse.go", "package lines\n\nfunc Parse(text string) []string { return nil }\n", "Scanner splits with lines.Line values.", "lines.Line"],
+    ["python, a module function", "ewvet/reader.py", "def read(text):\n    return []\n", "Scanner calls `reader.is_encoding_token` per token.", "reader.is_encoding_token"],
+    ["r", "R/reader.R", "read <- function(text) list()\n", "Scanner calls reader::is_encoding_token per token.", "reader::is_encoding_token"],
+  ];
+  for (const [language, path, text, sentence, symbol] of MEMBERS)
+    test(`${language}: ${symbol} is read, and is quiet once the file defines it (#2199)`, () => {
+      const upstream = [{ featureId: "reader", path, text }];
+      expect(upstreamSymbolGaps(spec(sentence), upstream)).toEqual([{ ref: "FR-004", symbol, featureId: "reader", path }]);
+      const member = symbol.split(/::|#|\./).pop() ?? "";
+      expect(upstreamSymbolGaps(spec(sentence), [{ ...upstream[0], text: `${text}\n${member}\n` } as (typeof upstream)[0]])).toEqual([]);
+    });
+
+  test("spellings of languages the upstream does not use, and file names, are not members (#2199)", () => {
+    const upstream = [{ featureId: "reader", path: "ewvet/reader.py", text: "def read(text):\n    return []\n" }];
+    // `reader::x` is Rust or C++, `reader.IsX` Go: a Python upstream reads neither.
+    expect(upstreamSymbolGaps(spec("Scanner calls reader::is_encoding_token and reader.IsEncodingToken."), upstream)).toEqual([]);
+    // A quoted file name is no module function.
+    expect(upstreamSymbolGaps(spec("Scanner reads `reader.json` and `reader.toml`."), upstream)).toEqual([]);
+    // A shell upstream has no member syntax: `Reader.Member` is still read, as in every language.
+    const shell = [{ featureId: "reader", path: "lib/reader.sh", text: "read_all() { :; }\n" }];
+    expect(upstreamSymbolGaps(spec("Scanner calls Reader.IsEncodingToken."), shell).map((g) => g.symbol)).toEqual(["Reader.IsEncodingToken"]);
+  });
+
   test("the ewvet requirement, a helper named only by its type, is a gap", () => {
     const upstream = [{ featureId: "reader", path: "src/Reader.cs", text: LANGUAGES[0]?.[2] ?? "" }];
     const gaps = upstreamSymbolGaps(spec("Expose any needed encoding-token classification through a public Scanner facade that delegates to Reader's public helper."), upstream);
@@ -96,6 +126,19 @@ describe("a planned-ahead feature asks the owner for the missing symbol (#2157)"
     expect(amendmentAnswer({ ownerRunStatus: "running", initiativeStatus: "active", requested: false })).toBe("none");
     expect(amendmentAnswer({ ownerRunStatus: null, initiativeStatus: "active", requested: false })).toBe("none");
     expect(amendmentAnswer({ ownerRunStatus: "completed", initiativeStatus: "completed", requested: false })).toBe("none");
+  });
+
+  // #2183: `write` only under the explicit value, for one symbol in one file no open feature owns.
+  test("under \"write\" one symbol in one file is written by the requester; otherwise the owner is re-planned", () => {
+    const gap = (symbol: string, path = "src/Reader.cs") => ({ ref: "FR-003", symbol, featureId: "reader", path });
+    const ask = { ownerRunStatus: "completed", initiativeStatus: "active", requested: false };
+    expect(amendmentAnswer({ ...ask, mode: "write", gaps: [gap("Reader.IsEncodingToken")] })).toBe("write");
+    // `true`, the #2157 value, keeps re-planning the owner.
+    expect(amendmentAnswer({ ...ask, mode: true, gaps: [gap("Reader.IsEncodingToken")] })).toBe("replan");
+    expect(amendmentAnswer({ ...ask, mode: "write", gaps: [gap("Reader.IsEncodingToken"), gap("Reader.Peek")] })).toBe("replan");
+    expect(amendmentAnswer({ ...ask, mode: "write", gaps: [gap("Reader.IsEncodingToken")], pathOpen: true })).toBe("replan");
+    expect(amendmentAnswer({ ...ask, mode: "write", requested: true, gaps: [gap("Reader.IsEncodingToken")] })).toBe("none");
+    expect(amendmentAnswer({ ...ask, mode: "write", ownerRunStatus: "running", gaps: [gap("Reader.IsEncodingToken")] })).toBe("none");
   });
 
   test("the reopened owner's prompt names the requester, the symbol, the file and the clause", () => {

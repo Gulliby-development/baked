@@ -659,6 +659,11 @@ export function InitiativeDetail({
           {`Token forecast: ${view.budget.forecastNotice}`}
         </text>
       ) : null}
+      {view.budget.timeNotice ? (
+        <text fg={t.warning} wrapMode="word">
+          {`Time forecast: ${view.budget.timeNotice}`}
+        </text>
+      ) : null}
       {criticalPathText(view) ? (
         <text fg={t.textMuted}>{clip(criticalPathText(view) ?? "", width)}</text>
       ) : null}
@@ -746,7 +751,7 @@ export function InitiativeDetail({
                 {f.amendments?.length ? (
                   <text fg={t.textMuted}>
                     {clip(
-                      `Amendments asked: ${f.amendments.map((a) => `${a.from} needs ${a.gaps.map((g) => g.symbol).join(", ")} (${a.answer === "replan" ? "re-planned for it" : "not reopened"})`).join("; ")}`,
+                      `Amendments asked: ${f.amendments.map((a) => `${a.from} needs ${a.gaps.map((g) => g.symbol).join(", ")} (${a.answer === "replan" ? "re-planned for it" : a.answer === "write" ? `${a.from} writes it` : "not reopened"})`).join("; ")}`,
                       width - 4,
                     )}
                   </text>

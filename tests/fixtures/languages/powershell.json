@@ -10,6 +10,10 @@
     "testsGrown": "\nStarting discovery in 1 files.\nDiscovery found 4 tests in 231ms.\nRunning tests.\n[-] Get-Sum.is commutative 36ms (34ms|2ms)\n Expected 4, but got 3.\n at It 'is commutative' { Get-Sum -A 2 -B 1 | Should -Be 4 }, /work/fixture/tests/Sum.Tests.ps1:4\n at <ScriptBlock>, /work/fixture/tests/Sum.Tests.ps1:4\nTests completed in 735ms\nTests Passed: 2, Failed: 1, Skipped: 1, Inconclusive: 0, NotRun: 0\n"
   },
   "expected": {
+    "memberSyntax": [
+      "Scanner calls [Reader]::IsEncodingToken for each token.: Reader::IsEncodingToken",
+      "Scanner delegates to Reader.IsEncodingToken.: Reader.IsEncodingToken"
+    ],
     "suppressions": [
       "[Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSAvoidUsingWriteHost', '')]: lint, linted, prescribable"
     ],
@@ -63,6 +67,9 @@
       "ScriptAnalyzer: linter",
       "Invoke-Formatter: formatter"
     ],
-    "sortedLists": null
+    "sortedLists": null,
+    "dependencyDirs": null,
+    "dependencyPrepare": null,
+    "worktreePathLimits": null
   }
 }

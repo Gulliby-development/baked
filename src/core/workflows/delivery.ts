@@ -24,6 +24,7 @@ import { decidedChecks } from "../verification/host-passed.js";
 import { changedPaths } from "../verification/snapshot.js";
 import {
   classifyRemoteFailure,
+  fileHead,
   git,
   gitMode,
   gitWorktreePaths,
@@ -607,8 +608,13 @@ export async function prepareDelivery(
       action: atBase === null ? "add" : current === null ? "delete" : "modify",
       hash: current,
       // A modified file keeps its committed mode, so a platform without executable bits
-      // (Windows) cannot silently drop one; a new file takes the bit from the working tree.
-      mode: !stat ? null : atBase === null ? gitMode(stat.mode) : (modes.get(path) ?? "100644"),
+      // (Windows) cannot silently drop one; a new file takes the bit from the working tree, or
+      // from its shebang where the working tree has none (#2331).
+      mode: !stat
+        ? null
+        : atBase === null
+          ? gitMode(stat.mode, fileHead(absolute))
+          : (modes.get(path) ?? "100644"),
     });
   }
   if (dirty.length)
@@ -1576,7 +1582,7 @@ class DeliveryExecution {
         const stat = lstatSync(absolute);
         if (!stat.isSymbolicLink()) {
           bytes = readFileSync(absolute);
-          mode = gitMode(stat.mode);
+          mode = gitMode(stat.mode, bytes);
         } else mode = "symlink";
       } catch {
         bytes = null;

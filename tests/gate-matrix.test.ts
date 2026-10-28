@@ -71,10 +71,13 @@ import {
   fixerTierPaths,
   isStaticCheck,
   isWholeUnitCheck,
+  isWholeUnitFixer,
   styleClaimShown,
+  wholeUnitFixerCommand,
 } from "../src/core/workflows/check-policy.js";
 import { buildWrapper, cmakeGates, detectGates, executeGate, type GateToolchain } from "../src/core/workflows/gates.js";
-import { fileScopedFormat, formatWrittenChecks } from "../src/core/workflows/format-written.js";
+import { committedTreeChecks } from "../src/core/workflows/committed-tree.js";
+import { fileScopedFormat, formatWrittenChecks, rustFormatWrittenChecks } from "../src/core/workflows/format-written.js";
 import { type LayoutResult, layoutVerdict } from "../src/core/workflows/layout-check.js";
 import { addedDependencies, checkDependencies } from "../src/core/workflows/quality/dependencies.js";
 import {
@@ -241,6 +244,8 @@ describe("host-written acceptance rows in the case-walk and mutation gates (#159
     junit: { harness: "tests/Harness.java", test: "tests/RowsTest.java", package: "tests" },
     rust: { harness: "tests/harness.rs", test: "tests/rows.rs" },
     xunit: { harness: "tests/Harness.cs", test: "tests/RowsTest.cs", package: "Tests" },
+    rspec: { harness: "tests/harness.rb", test: "tests/rows_spec.rb" },
+    phpunit: { harness: "tests/Harness.php", test: "tests/RowsTest.php", package: "App.Tests" },
   } as const;
   test.each(Object.keys(layouts) as (keyof typeof layouts)[])("%s retains every case in its JSON data and keeps generated tests out of mutation proposals", async (framework) => {
     const root = mkdtempSync(join(tmpdir(), "baked-row-gate-"));
@@ -298,6 +303,8 @@ describe("gate matrix: inline rows block holds its own cells (#1997)", () => {
     junit: { mode: "inline", framework: "junit", package: "com.ex.calc", test: "src/test/java/com/ex/calc/CalcTest.java" },
     rust: { mode: "inline", framework: "rust", test: "tests/calc.rs" },
     xunit: { mode: "inline", framework: "xunit", package: "Calc.Tests", test: "Calc.Tests/CalcTest.cs" },
+    rspec: { mode: "inline", framework: "rspec", test: "spec/calc_spec.rb" },
+    phpunit: { mode: "inline", framework: "phpunit", package: "App.Tests", test: "tests/CalcTest.php" },
   };
   const shapes: [string, unknown][] = [
     ["two-line CRLF text", ["[a]\r\nb=1\r\n", {}]],
@@ -833,6 +840,29 @@ describe("gate matrix: baseline failure outside the plan (#2215)", () => {
   });
 });
 
+// #2225 (R70 namesound, follow-up of #2214): rubocop passed on a CRLF working tree whose
+// committed LF tree failed it. After a feature's commit the host runs each stack's required
+// file-local linters and formatters once more on a clean worktree of the commit; test suites and
+// whole-unit analyzers stay at the checks stage.
+const COMMITTED_TREE: Record<Stack, string[]> = {
+  bun: ["lint"],
+  npm: ["lint"],
+  python: ["ruff", "ruff-format"],
+  go: ["gofmt"],
+  // clippy and cargo fmt are whole-unit.
+  rust: [],
+  maven: [],
+  dotnet: ["dotnet-format"],
+};
+
+describe("gate matrix: checks run again on the committed tree (#2225)", () => {
+  for (const stack of Object.keys(FIXTURES) as Stack[])
+    cell(stack, "checks run again on the committed tree", () => {
+      const checks = detectGates(project(FIXTURES[stack].files)).map((s) => ({ ...s.check, required: true }));
+      expect([stack, committedTreeChecks(checks).map((c) => c.id)]).toEqual([stack, COMMITTED_TREE[stack]]);
+    });
+});
+
 // #1749: a Gradle project got no toolchain gate, a Maven project with a wrapper got `mvn` even
 // where only the wrapper builds, and an sbt project got nothing.
 describe("gate matrix: JVM build tools (#1749)", () => {
@@ -858,6 +888,36 @@ describe("gate matrix: JVM build tools (#1749)", () => {
   });
   cell("maven", "sbt-test from build.sbt", () => {
     expect(ids({ "build.sbt": 'name := "fixture"\n' })).toEqual([["sbt-test", "sbt", "-batch test", "build.sbt"]]);
+  });
+  // #2121: Spotless and ktlint-gradle got no gate and no fixer; `check` failed on a format violation.
+  const SPOTLESS = 'plugins {\n    kotlin("jvm") version "2.2.20"\n    id("com.diffplug.spotless") version "8.0.0"\n}\nspotless { kotlin { ktlint() } }\n';
+  const KTLINT = 'plugins {\n    kotlin("jvm") version "2.2.20"\n    id("org.jlleitschuh.gradle.ktlint") version "14.2.0"\n}\n';
+  cell("maven", "Spotless and ktlint-gradle get their own gates with fixers; check leaves Spotless out (#2121)", () => {
+    expect(ids({ "build.gradle.kts": SPOTLESS })).toEqual([
+      ["spotless", "gradle", "--console=plain --warn spotlessCheck", "build.gradle.kts"],
+      ["gradle-check", "gradle", "--console=plain -q check -x spotlessCheck", "build.gradle.kts"],
+    ]);
+    // ktlint-gradle hangs each source set's task on `check` directly, so `-x ktlintCheck` would not leave it out.
+    expect(ids({ "build.gradle.kts": KTLINT })).toEqual([
+      ["ktlint", "gradle", "--console=plain --warn ktlintCheck", "build.gradle.kts"],
+      ["gradle-check", "gradle", "--console=plain -q check", "build.gradle.kts"],
+    ]);
+    // Applied through the version catalog or `apply plugin:`.
+    const catalog = { "build.gradle.kts": "plugins {\n    alias(libs.plugins.spotless)\n}\n", "gradle/libs.versions.toml": '[plugins]\nspotless = { id = "com.diffplug.spotless", version = "8.0.0" }\n' };
+    expect(ids(catalog).map(([id]) => id)).toEqual(["spotless", "gradle-check"]);
+    expect(ids({ "build.gradle": "apply plugin: 'org.jlleitschuh.gradle.ktlint'\n" }).map(([id]) => id)).toEqual(["ktlint", "gradle-check"]);
+    const [spotless] = detectGates(project({ "build.gradle.kts": SPOTLESS })).map((s) => s.check);
+    expect([isStaticCheck(spotless as Check), isWholeUnitCheck(spotless as Check), isTestCheck(spotless as Check)]).toEqual([true, false, false]);
+  });
+  cell("maven", "the Spotless and ktlint fixer tasks run once for all of a task's files, with no file argument (#2121)", () => {
+    for (const task of ["spotlessApply", "ktlintFormat"]) {
+      const fix = { executable: "gradle", args: ["--console=plain", "--warn", task] };
+      expect(isWholeUnitFixer(fix)).toBe(true);
+      expect(wholeUnitFixerCommand(fix, ["src/main/kotlin/A.kt", "src/main/kotlin/B.kt"])).toEqual(fix);
+      const wrapped = { executable: "cmd", args: ["/d", "/c", "gradlew.bat", "--console=plain", "--warn", task] };
+      expect([isWholeUnitFixer(wrapped), wholeUnitFixerCommand(wrapped, ["a.kt"])]).toEqual([true, wrapped]);
+    }
+    expect(isWholeUnitFixer({ executable: "gradle", args: ["check"] })).toBe(false);
   });
   cell("maven", "a Windows wrapper runs through cmd, which the check routing unwraps", () => {
     const root = project({ "gradlew.bat": "@echo off\n", "mvnw.cmd": "@echo off\n" });
@@ -2860,12 +2920,52 @@ describe("gate matrix: format-written check on a dirty repository (#1837)", () =
     expect(edited({ "package.json": pkg, "bun.lock": "", "biome.json": "{}", "src/a.ts": "a\nb\n" }, "src/a.ts", "a\n")).toEqual([]);
     expect(edited({ "go.mod": "module p\n\ngo 1.22\n", "a.go": "package p\nvar x=1\n" }, "a.go", "package p\n")).toEqual([]);
   });
+  // #2243: xmlvet R71 filled R/cli.R, a stub the skeleton wrote, and shipped it unstyled: an edited
+  // file was not checked by a formatter without a range form, and every stub a feature fills is an edit.
+  cell("bun", "format-written holds a skeleton stub filled by a later feature; a real edit stays range-only (#2243)", () => {
+    const ids = (files: Record<string, string>, path: string, before: string) => edited(files, path, before).map(([id, command]) => [id, command]);
+    const biome = { "package.json": pkg, "bun.lock": "", "biome.json": "{}", "src/cli.ts": "export const a=1\n" };
+    expect(ids(biome, "src/cli.ts", "// Filled by the cli feature.\n")).toEqual([["format-written", "bunx biome format src/cli.ts"]]);
+    expect(ids(biome, "src/cli.ts", "/* stub */\n\n")).toEqual([["format-written", "bunx biome format src/cli.ts"]]);
+    expect(ids(biome, "src/cli.ts", "export const b = 2;\n")).toEqual([]);
+    const dprint = { "package.json": pkg, "bun.lock": "", "dprint.json": "{}", "src/cli.ts": "export const a=1\n" };
+    expect(ids(dprint, "src/cli.ts", "// Filled by the cli feature.\n").map(([id]) => id)).toEqual(["format-written"]);
+    expect(ids(dprint, "src/cli.ts", "export const b = 2;\n")).toEqual([]);
+    const styler = { DESCRIPTION: "Package: xmlvet\n", "R/cli.R": "run <- function(x){\nx}\n" };
+    expect(ids(styler, "R/cli.R", "# Filled by the cli feature.\n").map(([id]) => id)).toEqual(["styler-written"]);
+    expect(ids(styler, "R/cli.R", "")).toHaveLength(1);
+    expect(ids(styler, "R/cli.R", "run <- function(x) x\n")).toEqual([]);
+  });
   cell("dotnet", "dotnet format left out: --include the written files, fixer dotnet format", () => {
     const files = { "App.csproj": "<Project Sdk=\"Microsoft.NET.Sdk\" />", "A.cs": "class A {}\n" };
     expect(scoped(files, ["A.cs"])).toEqual([["dotnet-format-written", "dotnet format --verify-no-changes --include A.cs", "dotnet format", true]]);
   });
   cell("rust", "cargo fmt follows mod declarations: no file-scoped check (#842)", () => {
     expect(scoped({ "Cargo.toml": "[package]\nname = 'p'\n", "src/lib.rs": "" }, ["src/lib.rs"])).toEqual([]);
+  });
+  // #2248: cargo fmt runs only in the checks stage, so a file rustfmt hung on (#2240) showed after its
+  // task had ended. With `rustFormatWritten` the task's new files get rustfmt at the task's end.
+  cell("rust", "rustFormatWritten: rustfmt --check on the task's new files without out-of-line mods, beside cargo fmt (#2248)", () => {
+    const crate = { "Cargo.toml": "[package]\nname = 'p'\nedition = \"2021\"\n", "src/lib.rs": "mod parser;\n", "src/parser.rs": "pub fn p() {}\n", "tests/json.rs": "#[test]\nfn t() {}\n", "src/old.rs": "fn o() {}\n" };
+    const root = project(crate);
+    const writes = ["src/lib.rs", "src/parser.rs", "tests/json.rs"].map((path) => ({ path, action: "create" })).concat([{ path: "src/old.rs", action: "modify" }]);
+    const cargoFmt: Check = { id: "cargo-fmt", executable: "cargo", args: ["fmt", "--check"], cwd: ".", timeoutMs: 300000, required: true, scope: "feature", envNames: [], writes: [], fix: { executable: "cargo", args: ["fmt"] } };
+    const shown = (checks: Check[]) => checks.map((c) => [c.id, [c.executable, ...c.args].join(" "), [c.fix!.executable, ...c.fix!.args].join(" "), c.fixPaths]);
+    // lib.rs declares `mod parser;` (rustfmt would format parser.rs too); old.rs is an edit (no range form).
+    const expected = [["rustfmt-written", "/usr/bin/rustfmt --check --edition 2021 src/parser.rs tests/json.rs", "/usr/bin/rustfmt --edition 2021", ["src/parser.rs", "tests/json.rs"]]];
+    const which = (c: string) => `/usr/bin/${c}`;
+    const at = (check: Check) => ({ ...check, executable: "/usr/bin/cargo" });
+    expect(shown(rustFormatWrittenChecks(root, [at(cargoFmt)], writes, which, () => "fn o() {}\n"))).toEqual(expected);
+    // Off unless the policy asks; on, even with cargo fmt in the run's checks.
+    expect(formatWrittenChecks(root, [at(cargoFmt)], writes, which, () => "fn o() {}\n")).toEqual([]);
+    expect(shown(formatWrittenChecks(root, [at(cargoFmt)], writes, which, () => "fn o() {}\n", () => true, { rust: true }))).toEqual(expected);
+    // A file the run created is whole like a new one.
+    expect(shown(rustFormatWrittenChecks(root, [at(cargoFmt)], [{ path: "src/old.rs", action: "modify" }], which, () => null)).map(([id, command]) => [id, command])).toEqual([["rustfmt-written", "/usr/bin/rustfmt --check --edition 2021 src/old.rs"]]);
+    // No rustfmt on the PATH, or no cargo fmt gate: no check.
+    expect(rustFormatWrittenChecks(root, [cargoFmt], writes, () => null)).toEqual([]);
+    expect(rustFormatWrittenChecks(project({ "src/a.rs": "fn a() {}\n" }), [], [{ path: "src/a.rs", action: "create" }], which)).toEqual([]);
+    // Its file-scoped form, for a check that times out (#2240).
+    expect(fileScopedFormat(rustFormatWrittenChecks(root, [at(cargoFmt)], writes, which)[0]!, root, "tests/json.rs")).toEqual({ executable: "/usr/bin/rustfmt", args: ["--check", "--edition", "2021", "tests/json.rs"] });
   });
   cell("maven", "no Maven formatter gate is detected: no check", () => {
     expect(scoped({ "pom.xml": "<project/>", "src/main/java/A.java": "class A {}\n" }, ["src/main/java/A.java"])).toEqual([]);
@@ -4434,6 +4534,37 @@ describe.skipIf(!toolchains)("gate matrix: toolchains", () => {
     expect(passing.output).not.toContain("tests completed");
     expect(testCount(passing.output)).toEqual({ tool: "junit", count: 3 });
   }, 900000);
+  // #2121: the Spotless and ktlint gates against the real plugins: each fails with the violation and
+  // its file, its fixer clears it, and the test gate then passes.
+  test.skipIf(!available([["gradle", "--version"]]))("a real Gradle build's Spotless and ktlint gates fail, their fixers clear them (#2121)", async () => {
+    const root = project({
+      // ktlint-gradle's check also lints the build scripts, so they are ktlint-clean too.
+      "settings.gradle.kts": 'pluginManagement {\n    repositories {\n        gradlePluginPortal()\n        mavenCentral()\n    }\n}\nrootProject.name = "calc"\n',
+      // Both compilers target 17, which every JDK the build runs on emits (CI's JDK 25 is newer than
+      // the newest target Kotlin 2.2 knows).
+      "build.gradle.kts": 'import org.jetbrains.kotlin.gradle.dsl.JvmTarget\n\nplugins {\n    kotlin("jvm") version "2.2.20"\n    id("com.diffplug.spotless") version "8.0.0"\n    id("org.jlleitschuh.gradle.ktlint") version "14.2.0"\n}\nrepositories { mavenCentral() }\njava { targetCompatibility = JavaVersion.VERSION_17 }\nkotlin { compilerOptions { jvmTarget.set(JvmTarget.JVM_17) } }\nspotless { kotlin { ktlint() } }\n',
+      "src/main/kotlin/Calc.kt": "fun add(a:Int,b:Int):Int{\n    return a+b }\n",
+    });
+    const env = { ...process.env, GRADLE_USER_HOME: process.env.GRADLE_USER_HOME ?? join(homedir(), ".gradle") };
+    const gates = detectGates(root).map((s) => s.check);
+    expect(gates.map((c) => c.id)).toEqual(["spotless", "ktlint", "gradle-check"]);
+    const byId = (id: string) => gates.find((c) => c.id === id) as Check;
+    const run = (executable: string, args: string[]) => executeCheckCommand(new ProcessScope(), executable, args, { cwd: root, env, timeoutMs: 600_000, signal: new AbortController().signal, sandbox: null });
+    for (const id of ["spotless", "ktlint"]) {
+      const check = byId(id);
+      const failing = await run(check.executable, check.args);
+      expect([id, failing.exitCode]).toEqual([id, 1]);
+      expect(failing.output).toContain("Calc.kt");
+      expect(failing.output).toMatch(id === "spotless" ? /format violations/ : /Calc\.kt:1:\d+ /);
+      const fix = wholeUnitFixerCommand(check.fix!, ["src/main/kotlin/Calc.kt"]);
+      expect((await run(fix.executable, fix.args)).exitCode).toBe(0);
+      expect([id, (await run(check.executable, check.args)).exitCode]).toEqual([id, 0]);
+      writeFileSync(join(root, "src/main/kotlin/Calc.kt"), "fun add(a:Int,b:Int):Int{\n    return a+b }\n");
+    }
+    expect((await run(byId("spotless").executable, byId("spotless").fix!.args)).exitCode).toBe(0);
+    const check = await run(byId("gradle-check").executable, byId("gradle-check").args);
+    expect([check.exitCode, check.exitCode === 0 ? "" : check.output.slice(-2000)]).toEqual([0, ""]);
+  }, 900000);
   // #1493: the RSpec, Minitest and RuboCop parsers read what the installed tools print.
   test.skipIf(!available([["rspec", "--version"], ["ruby", "-e", "require 'minitest'"], ["rubocop", "--version"]]))("rspec, minitest and rubocop output reads as their parsers expect (#1493)", () => {
     const root = project({
@@ -5035,4 +5166,46 @@ describe("review gate: a finding its reviewer marked noRepro (#2194)", () => {
     expect(gateFinding({ ...finding, noRepro: "  " }, false, "reproduced").noRepro).toBe(false);
     expect(gateFinding({ ...finding, noRepro: "needs the README setup" }, false, "reproduced").noRepro).toBe(true);
   });
+});
+
+describe("convergence gate: a low note on a file the request gives verbatim (#2332)", () => {
+  // R74 ewvet-update: F1 (low, partial, README.md) said the README's printf example doubled a
+  // backslash the request's verbatim diff has once; AC-005 and AC-006 were `fail` because of it,
+  // and the notes rule accepted it, so the run completed with "changes requested".
+  const finding = (over: Partial<ConvergenceGateFinding> = {}): ConvergenceGateFinding => ({
+    id: "F1",
+    severity: "low",
+    kind: "partial",
+    basis: "spec",
+    confidence: 0.95,
+    repro: false,
+    sibling: false,
+    outcome: undefined,
+    noRepro: false,
+    testOrDoc: true,
+    criterionIds: ["AC-005", "AC-006"],
+    ...over,
+  });
+  const gate = (findings: ConvergenceGateFinding[], verdict: "pass" | "fail"): ConvergenceGate => ({
+    severities: ["critical", "high", "medium"],
+    minConfidence: 0.8,
+    checksPass: true,
+    reproAvailable: false,
+    canRepro: false,
+    criteria: ["AC-005", "AC-006"].map((criterionId) => ({ criterionId, verdict, evidence: 1 })),
+    failing: verdict === "fail" ? ["AC-005", "AC-006"] : [],
+    findings,
+  });
+  const verdictOf = (g: ConvergenceGate) => convergenceGateDecision(g).verdicts.find((v) => v.id === "F1")?.verdict;
+
+  for (const kind of ["partial", "missing", "correctness", "contradicts"] as const) {
+    test(`${kind}: repairs on a supplied file whose criteria fail, a note otherwise`, () => {
+      expect(verdictOf(gate([finding({ kind, supplied: true })], "fail"))).toBe("repair");
+      expect(convergenceGateDecision(gate([finding({ kind, supplied: true })], "fail")).failing).toEqual(["AC-005", "AC-006"]);
+      // A file the request does not give verbatim, and a record before the label, keep the rule.
+      expect(verdictOf(gate([finding({ kind })], "fail"))).toBe("notes");
+      // With its criteria passing a low finding on a supplied file is a review note.
+      expect(verdictOf(gate([finding({ kind, supplied: true })], "pass"))).toBe("note");
+    });
+  }
 });

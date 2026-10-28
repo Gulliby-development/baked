@@ -3,12 +3,12 @@ import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join, relative } from "node:path";
 import { callCostRate, costRate } from "../src/core/workflows/budget.js";
 import { chargeHold, refreshedGrowth } from "../src/core/workflows/initiatives/growth.js";
-import { costGrowthLimit, dollarShortfall, type ShareGateRecord, shareShortfall } from "../src/core/workflows/initiatives/service.js";
+import { costGrowthLimit, dollarShortfall, growthLimit, type ShareGateRecord, shareShortfall } from "../src/core/workflows/initiatives/service.js";
 import { forecastSamples } from "../src/core/workflows/stage-price.js";
 import { adaptiveFirstByteMs } from "../src/core/llm/provider-health.js";
 import { planApprovalDecision } from "../src/core/workflows/auto-approval.js";
 import { CAPACITY_PROBE, type SizingReport, type SizingSample, samplesFrom, testCaseRate } from "../src/core/workflows/sizing.js";
-import { type CallRate, chainCosts, openTrace, type PlanPriceReplay, replayChainEscalation, replayEdgeRecord, replayInitiativeStarts, replayPlanApprovals, replayPlanPrices, replayPoolBounds, replayTrace, type TestSplitRule } from "../src/core/workflows/trace.js";
+import { type CallRate, chainCosts, openTrace, type PlanPriceReplay, replayChainEscalation, replayEdgeRecord, replayInitiativeStarts, replayPlanApprovals, replayPlanPrices, replayActiveTimes, replayPoolBounds, replayTrace, type TestSplitRule } from "../src/core/workflows/trace.js";
 import { type EdgeRecord, edgeCrashDecision } from "../src/core/verification/edge-inputs.js";
 import { fixturePolicy } from "./helpers/workflow-fixture.js";
 
@@ -53,6 +53,7 @@ interface Accepted {
   newSourceDefectRoutes?: number;
   newBaselineDecisions?: number;
   newSignatureDecisions?: number;
+  newActiveTimes?: number;
   newShareStops?: number;
   newPoolGrowth?: number;
   newPoolBoundStops?: number;
@@ -121,6 +122,7 @@ describe("bench-round traces replay without new forecast stops or growth (#1649)
           newSourceDefectRoutes: run.newSourceDefectRoutes,
           newBaselineDecisions: run.newBaselineDecisions,
           newSignatureDecisions: run.newSignatureDecisions,
+          newActiveTimes: run.newActiveTimes,
         }).toEqual({
           run: run.runId,
           newStops: allowed?.newStops ?? 0,
@@ -148,6 +150,7 @@ describe("bench-round traces replay without new forecast stops or growth (#1649)
           newSourceDefectRoutes: allowed?.newSourceDefectRoutes ?? 0,
           newBaselineDecisions: allowed?.newBaselineDecisions ?? 0,
           newSignatureDecisions: allowed?.newSignatureDecisions ?? 0,
+          newActiveTimes: allowed?.newActiveTimes ?? 0,
         });
       }
       // Run states before R52 counted the host's own test splits in `hostSplitTasks`, which the
@@ -559,6 +562,22 @@ describe("test task splits replay on recorded sizing reports (#1789)", () => {
     const path = join(ROOT, "R52/url-shortener.sqlite.gz");
     expect(replayTrace(path, { testSplit: () => true }).runs.reduce((n, r) => n + r.newTestSplits, 0)).toBeGreaterThan(0);
     expect(replayTrace(path).runs.reduce((n, r) => n + r.newTestSplits, 0)).toBe(0);
+  }, 120000);
+
+  test("R62 stepvet: tagexpr's active time is sized at the initiative's own pace and covers what it used (#2336)", () => {
+    // tagexpr was sized at the history's 135k tokens per minute to 2,100,000 ms, stopped there
+    // (#1958) and finished at 2,457,115 ms after a raise; the initiative's finished runs had run at 71k.
+    const { store, dispose } = openTrace(join(ROOT, "R62/stepvet.sqlite.gz"));
+    try {
+      const runId = "40060df8-bfac-4d9c-a5df-5904da9f92e6";
+      const before = replayActiveTimes(store, runId, (history) => history);
+      expect(before.map((b) => b.replayed.after)).toEqual(before.map((b) => b.recorded.after));
+      const [plan] = replayActiveTimes(store, runId);
+      expect(plan).toMatchObject({ report: "sizing/plan-0.json", recorded: { basis: "history", after: 2_100_000 }, replayed: { basis: "initiative", tokensPerMinute: 71_173 } });
+      expect(plan?.replayed.after).toBeGreaterThan(store.run(runId).active_ms);
+    } finally {
+      dispose();
+    }
   }, 120000);
 
   test("R56 hdrlens: the stalled analyze call that waited for the provider now climbs the recovery ladder (#1877)", () => {
@@ -988,7 +1007,9 @@ describe("the plan charge replays on recorded initiatives (#2100, #2056)", () =>
     expect(park?.mode).toBe("enforce");
     expect(park?.remaining).toBe(30_000_000 - 25_336_588);
     expect(park?.advice?.summary).toStartWith("The shared budget is short: canonical has 25324 tokens available");
-    expect(park?.advice?.remedies).toEqual([{ action: "extend", initiativeId: "xmlvet", suggestedTokens: 36_900_000 }]);
+    // The 36.9M cover is held to the 35.8M the $30 cap pays for at the measured rate (#2367).
+    expect(park?.advice?.summary).toContain("so extend to 35.8M (35800000 tokens).");
+    expect(park?.advice?.remedies).toEqual([{ action: "extend", initiativeId: "xmlvet", suggestedTokens: 35_800_000 }]);
     // The other initiatives of the two rounds (their 39 would_release records) park no start
     // enforced: no false would-park. Nor does R60 wheeltags, whose dead an overpriced plan parked
     // before #2253.
@@ -1069,4 +1090,53 @@ describe("initiative-pool-growth replays on recorded growth bounds (#2280)", () 
     // bound rises only to the $10.66 the ceiling leaves, not $19.30 to $24.08.
     expect(after?.sizing).toMatchObject({ maxRunTokens: 4_651_968, extendToTokens: 4_651_968, maxRunCostUsd: 10.66 });
   }, 120000);
+
+  test("#2294: the last features of R71 xmlvet and R73 evalpin keep their bounds at the pool left", () => {
+    // Both started on all the pool had left with no other feature waiting; their recorded refreshes
+    // (spareTokens null) took the base ceilings. With a room that is never null, the view at their
+    // start gate, the run holding its share, leaves no room: the refresh raises nothing, so neither
+    // run's bound passes the pool and `initiative-pool-growth` has nothing to record there.
+    const base = { ...fixturePolicy, sizing: { maxRunTokens: 8_000_000, extendToTokens: 12_000_000 } };
+    for (const [round, app, featureId, share] of [["R71", "xmlvet", "cli-release", 6_630_531], ["R73", "evalpin", "delivery", 3_305_374]] as const) {
+      const { store, dispose } = openTrace(join(ROOT, round, `${app}.sqlite.gz`));
+      try {
+        const gate = (store.connection.query("SELECT payload_json FROM initiative_events WHERE type='feature.share_gate' ORDER BY seq").all() as { payload_json: string }[])
+          .map((g) => JSON.parse(g.payload_json) as ShareGateRecord)
+          .filter((g) => g.featureId === featureId && g.verdict === "pass")
+          .at(-1)!;
+        expect(gate.view.budget.remaining.tokens).toBe(share);
+        // Once its run holds its share, no feature waits and the pool has nothing left.
+        const open = { ...gate.view, budget: { ...gate.view.budget, remaining: { ...gate.view.budget.remaining, tokens: gate.view.budget.remaining.tokens - share } }, features: gate.view.features.map((f) => ({ ...f, share: null })) };
+        const room = growthLimit(open, featureId);
+        expect(room).toBe(0);
+        const policy = { ...fixturePolicy, maxTotalTokens: share, sizing: { maxRunTokens: share, extendToTokens: share } };
+        const held = { tokens: share, usd: 0, calls: 0, activeMs: 0 };
+        expect(refreshedGrowth(policy, base, held, { calls: 0, activeMs: 0 }, { tokens: room, usd: null, calls: 0, activeMs: 0 })).toBeNull();
+        // The recorded refresh with the null room raised them to the base ceilings.
+        expect(refreshedGrowth(policy, base, held, { calls: 0, activeMs: 0 }, { tokens: null, usd: null, calls: 0, activeMs: 0 })?.sizing).toMatchObject({ maxRunTokens: 8_000_000, extendToTokens: 12_000_000 });
+      } finally {
+        dispose();
+      }
+    }
+  }, 120000);
+});
+
+describe("the dollar notice replays at the measured ratio (#2186)", () => {
+  // The dollar notice prices the features still to run at the estimate's measured ratio itself
+  // (`progress.rawRatio`), the forecast and its stop at the blend. R66 nodepluck, rewound to
+  // syntax's acceptance (14:26:59) and lint's (14:39:39), the moments of #2062's token notice.
+  test("R66 nodepluck: the measured ratio's forecast is nearer the final $28.45, and no notice warns under the $37.50 ceiling", () => {
+    const syntax = Date.UTC(2026, 9, 24, 14, 26, 59, 558);
+    const lint = Date.UTC(2026, 9, 24, 14, 39, 39, 627);
+    const [replay] = replayInitiativeStarts(join(ROOT, "R66", "nodepluck.sqlite.gz"), { budgetAtStart: true, moments: [syntax, lint] });
+    expect(replay?.finalUsd).toBeCloseTo(28.45, 2);
+    const at = (t: number) => replay?.starts.find((s) => s.at === t);
+    // At syntax the blend weighs the measured 1.55x a third (1.18x, $23.41), at lint 1.45x two thirds.
+    expect(at(syntax)).toMatchObject({ spentUsd: 15.68, forecastUsd: 23.41, ceilingUsd: 37.5, advice: { forecastUsd: 24.25, ratio: 1.55, blendedRatio: 1.18 } });
+    expect(at(lint)).toMatchObject({ spentUsd: 22.29, forecastUsd: 25.83, advice: { forecastUsd: 26.15, ratio: 1.45, blendedRatio: 1.3 } });
+    // The round ended under its $30 cap: neither forecast passes the ceiling at any start, so
+    // nothing warns, and no start parks.
+    expect(replay?.starts.filter((s) => s.forecastNotice !== null)).toEqual([]);
+    expect(replay?.newStartStops).toBe(0);
+  }, 600000);
 });

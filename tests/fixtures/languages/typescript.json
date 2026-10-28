@@ -13,6 +13,10 @@
     "testsGrown": "src/a.test.ts:\n(fail) sum is commutative [1.20ms]\n\n 3 pass\n 1 fail\nRan 4 tests across 1 file. [15.00ms]\n"
   },
   "expected": {
+    "memberSyntax": [
+      "Scanner delegates to Reader.IsEncodingToken.: Reader.IsEncodingToken",
+      "Scanner calls Reader#isEncodingToken per token.: Reader#isEncodingToken"
+    ],
     "suppressions": [
       "// @ts-expect-error legacy call: ts-check, prescribable",
       "// eslint-disable-next-line no-console: lint, linted, prescribable",
@@ -80,6 +84,11 @@
       "prettier: formatter",
       "tsc: typechecker, whole unit"
     ],
-    "sortedLists": ["src/index.ts: biome organizeImports \"// order as written\" before 2"]
+    "sortedLists": ["src/index.ts: biome organizeImports \"// order as written\" before 2"],
+    "dependencyDirs": [
+      "node_modules: linked"
+    ],
+    "dependencyPrepare": null,
+    "worktreePathLimits": null
   }
 }

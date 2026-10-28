@@ -2,7 +2,7 @@
 /**
  * Usage traces of bench-round runs (#1649).
  *
- *   bun scripts/bench-trace.ts export <workspace> <out.sqlite.gz> [--run RUN_ID ...]
+ *   bun scripts/bench-trace.ts export <workspace> <out.sqlite.gz> [--run RUN_ID ...] [--max-mib N]
  *   bun scripts/bench-trace.ts replay <trace.sqlite.gz> ... [--json]
  *   bun scripts/bench-trace.ts latencies <trace.sqlite.gz> ... [--json]
  *   bun scripts/bench-trace.ts recordings <workspace> <out-dir> [--run RUN_ID ...]
@@ -10,7 +10,8 @@
  *
  * `export` writes the anonymised trace of a workspace's workflow database (see
  * src/core/workflows/trace.ts); the bench loop stores one per app per round under
- * tests/fixtures/bench-traces/RNN/. `replay` runs the forecast gate of the current code at every
+ * tests/fixtures/bench-traces/RNN/. A trace above 10 MiB gzipped (`--max-mib` sets another bound)
+ * is refused with its largest tables (#2338). `replay` runs the forecast gate of the current code at every
  * recorded attempt and prints the stops and cap growth that differ from the recorded run.
  * `latencies` prints the healthy first-byte percentiles and retry-after waits of the recorded
  * calls by provider, stage and effort: what the provider fault matrix tests limits against (#1729).
@@ -31,7 +32,7 @@ import {
 } from "../src/core/workflows/trace.js";
 
 const usage =
-  "Usage: bun scripts/bench-trace.ts export <workspace> <out.sqlite.gz> [--run RUN_ID ...]\n" +
+  "Usage: bun scripts/bench-trace.ts export <workspace> <out.sqlite.gz> [--run RUN_ID ...] [--max-mib N]\n" +
   "       bun scripts/bench-trace.ts replay <trace.sqlite.gz> ... [--json]\n" +
   "       bun scripts/bench-trace.ts latencies <trace.sqlite.gz> ... [--json]\n" +
   "       bun scripts/bench-trace.ts recordings <workspace> <out-dir> [--run RUN_ID ...]\n" +
@@ -41,9 +42,11 @@ const [command, ...rest] = process.argv.slice(2);
 const flags = rest.filter((a) => a.startsWith("--"));
 const args: string[] = [];
 const runIds: string[] = [];
+let maxMib: number | null = null;
 for (let i = 0; i < rest.length; i++) {
   const arg = rest[i] ?? "";
   if (arg === "--run") runIds.push(rest[++i] ?? "");
+  else if (arg === "--max-mib") maxMib = Number(rest[++i]);
   else if (!arg.startsWith("--")) args.push(arg);
 }
 
@@ -51,7 +54,10 @@ const usd = (n: number | null) => (n === null ? "-" : `$${n.toFixed(2)}`);
 
 if (command === "export" && args.length === 2) {
   const [workspace = "", out = ""] = args;
-  const result = exportTrace(workspace, out, runIds.length ? { runIds } : {});
+  const result = exportTrace(workspace, out, {
+    ...(runIds.length ? { runIds } : {}),
+    ...(maxMib !== null && Number.isFinite(maxMib) ? { maxBytes: maxMib * 1024 * 1024 } : {}),
+  });
   console.log(
     `${result.path}: ${result.runs} runs, ${result.initiatives} initiatives, ${(result.bytes / 1024).toFixed(0)} KiB`,
   );
@@ -104,7 +110,7 @@ if (command === "export" && args.length === 2) {
         console.log(`  ${run.featureId} ${run.runId}: ${run.chains.length} recorded chains`);
         for (const chain of run.chains)
           console.log(
-            `    ${chain.file ?? "-"} ${chain.family ? `family ${chain.family} (last ${chain.symbol})` : chain.symbol}: length ${chain.length} (${chain.findings.join(", ")}), ` +
+            `    ${chain.files?.join(", ") ?? chain.file ?? "-"} ${chain.family ? `family ${chain.family} (last ${chain.symbol})` : chain.symbol}: length ${chain.length} (${chain.findings.join(", ")}), ` +
               `correctives ${chain.tasks.map((t) => `${t.taskId} ${t.decision}`).join(", ")}, ` +
               `${chain.tokens} tokens, ${usd(chain.costUsd)}; battery ${chain.battery.runs} runs, ` +
               `${chain.battery.cases} cases (${chain.battery.reproduced} reproduced, ${chain.battery.refuted} refuted, ` +
@@ -140,13 +146,18 @@ if (command === "export" && args.length === 2) {
             `new integrity findings ${run.newIntegrityFindings} in ${run.integrity.length} scans, ` +
             `new case refusals ${run.newCaseRefusals} in ${run.caseWalks.length} case walks, ` +
             `new gate repairs ${run.newGateRepairs} in ${run.reviewGates.length} review gates, ` +
-            `convergence verdicts changed ${run.newConvergenceVerdicts} in ${run.convergenceGates.length} gates` +
+            `convergence verdicts changed ${run.newConvergenceVerdicts} in ${run.convergenceGates.length} gates, ` +
+            `active-time caps changed ${run.newActiveTimes} of ${run.activeTimes.length} sizing reports` +
             (ratios ? `, forecast/final ${ratios}` : ""),
         );
         for (const b of run.boundaries.filter((b) => b.recorded !== b.replayed))
           console.log(
             `    ${new Date(b.at).toISOString()} ${b.attemptId}: recorded ${b.recorded}, now ${b.replayed} ` +
               `(forecast ${usd(b.projectedUsd)}, ceiling ${usd(b.ceilingUsd)}, spent ${usd(b.spentUsd)})`,
+          );
+        for (const b of run.activeTimes.filter((b) => b.recorded.after !== b.replayed.after))
+          console.log(
+            `    ${b.report}: active-time cap recorded ${b.recorded.after} ms at ${b.recorded.tokensPerMinute} tokens/min (${b.recorded.basis}), now ${b.replayed.after} ms at ${b.replayed.tokensPerMinute} (${b.replayed.basis})`,
           );
         for (const b of run.repeatedFailures.filter((b) => b.replayed === "repeat"))
           console.log(

@@ -555,7 +555,10 @@ export const FEATURES: readonly Feature[] = [
     id: "post-edit-formatting",
     group: "Tools and code intelligence",
     title: "Automatic formatting preserves pre-existing formatting differences",
-    tui: ["/tools: edit and refactor tools probe the original text before formatting"],
+    tui: [
+      "/tools: edit and refactor tools probe the original text before formatting",
+      "/tools: a formatter that times out is named in the edit result, and skipped after two",
+    ],
     cli: ["--headless: the same core edit and refactor tools"],
     api: ["/v1/sessions/:id: agent turns use the same core tools"],
     desktop: ["project/chat: the same core edit and refactor tools"],
@@ -863,11 +866,21 @@ export const FEATURES: readonly Feature[] = [
     id: "host-apply-shadow",
     group: "Workflow runs",
     title:
-      "Shadow decision whether the host would apply a planned task's verbatim diffs, files and Markdown sections from the request itself, recorded per task with its apply check, with the host-appliable tasks at approval",
+      "Decision whether the host applies a planned task's verbatim diffs, files and Markdown sections from the request itself, recorded per task with its apply check (shadow, or with quality.hostApply on the host writes the files and skips the implementer), with the host-appliable tasks at approval",
     tui: ["/workflow: plan approval names the host-appliable tasks"],
     cli: ["baked workflow status: hostApply records and the approval's hostApply"],
     api: ["/v1/workflow/runs/:id: approval hostApply and host-apply artifacts"],
     desktop: ["project/runs: plan approval names the host-appliable tasks"],
+  },
+  {
+    id: "supplied-checks-shadow",
+    group: "Workflow runs",
+    title:
+      "Shadow run of the project's static checks on a planned task's verbatim content from the request, in a scratch copy before its first implementer session, recording each diagnostic on a supplied line as a request conflict",
+    tui: ["/workflow: run artifacts, supplied-checks/tasks/<task>.json"],
+    cli: ["baked workflow status: suppliedChecks records"],
+    api: ["/v1/workflow/runs/:id/artifacts: supplied-check artifacts"],
+    desktop: ["project/runs: run artifacts, supplied-checks/tasks/<task>.json"],
   },
   {
     id: "acceptance-rows-as-data",
@@ -1113,7 +1126,7 @@ export const FEATURES: readonly Feature[] = [
     id: "run-control",
     group: "Workflow runs",
     title: "Pause, resume, accept outside changes, cancel, extend, reroute, undo edits",
-    tui: ["/workflow"],
+    tui: ["/workflow", "/workflow: no retry the invalid-output repeat guard would refuse"],
     cli: [
       "baked workflow pause",
       "baked workflow resume",
@@ -1129,8 +1142,9 @@ export const FEATURES: readonly Feature[] = [
       "/v1/workflow/runs/:id/extend",
       "/v1/workflow/runs/:id/reroute",
       "/v1/workflow/runs/:id/undo",
+      "/v1/workflow/runs/:id: recovery of a repeated invalid output",
     ],
-    desktop: ["project/runs"],
+    desktop: ["project/runs", "project/runs: switch model instead of a refused retry"],
   },
   {
     id: "run-frozen-input-provenance",
@@ -1154,14 +1168,21 @@ export const FEATURES: readonly Feature[] = [
     id: "run-stall-ladder",
     group: "Workflow runs",
     title:
-      "Recovery ladder for a stalled model call: fresh session, other transport, lower effort, next model",
-    tui: ["/workflow: activity feed of the run view (attempt.recovery)"],
+      "Recovery ladder for a stalled model call: fresh session, other transport, lower effort, next model (a sibling of the provider that answered when the route names none), and the provider_stall park in shadow",
+    tui: [
+      "/workflow: activity feed of the run view (attempt.recovery)",
+      "/workflow: stop text with the ladder's total time and the sibling that answered",
+    ],
     cli: [
       "baked workflow run: --events stream",
       "baked workflow resume: --events stream and a new ladder",
+      "baked workflow status: stallPark",
     ],
-    api: ["/v1/workflow/runs/:id/events: attempt.recovery"],
-    desktop: ["project/runs: activity feed"],
+    api: ["/v1/workflow/runs/:id/events: attempt.recovery", "/v1/workflow/runs/:id: stallPark"],
+    desktop: [
+      "project/runs: activity feed",
+      "project/runs: stop text with the ladder's total time",
+    ],
   },
   {
     id: "run-execution-time",
@@ -1599,6 +1620,27 @@ export const FEATURES: readonly Feature[] = [
     desktop: [
       "project/initiatives: Token forecast line and one-click Extend to the suggested amount",
     ],
+  },
+  {
+    id: "initiative-time-pool-forecast",
+    group: "Initiatives",
+    title:
+      "Feature runs sized at the initiative's measured pace, a shared-time forecast notice, and time amounts on extend remedies of pool and deadline blocks",
+    tui: [
+      "/workflow: initiatives, Time forecast line, B prefilled with the suggested time, and a feature run's deadline block naming Extend with its time",
+    ],
+    cli: [
+      "baked workflow initiative show: budget.time, budget.timeNotice, next.recovery suggestedTimeMs, features[].recovery extend suggestedTimeMs",
+      "baked workflow initiative events: budget.time_notice",
+      "baked workflow initiative extend: --time-ms",
+      "baked workflow extend: --time-ms, --resume",
+    ],
+    api: [
+      "/v1/initiatives/:id: budget.time, budget.timeNotice, next.recovery suggestedTimeMs",
+      "/v1/initiatives/:id/events",
+      "/v1/initiatives/:id/extend",
+    ],
+    desktop: ["project/initiatives: Time forecast line and one-click Extend to the suggested time"],
   },
   {
     id: "initiative-finding-ownership",

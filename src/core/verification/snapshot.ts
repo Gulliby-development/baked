@@ -11,6 +11,7 @@ import {
   gitFileStamp,
   gitWorktreePaths,
 } from "../workflows/delivery-git.js";
+import { isLinkedDependency } from "../workflows/dependency-dirs.js";
 import { WorkflowFault } from "../workflows/errors.js";
 
 const decode = (bytes: Uint8Array): string => new TextDecoder().decode(bytes);
@@ -183,6 +184,15 @@ export async function sourceManifest(
       }
       if (ignored && !trackedPath) continue;
       const absolute = join(workspace, path);
+      // A dependency folder linked into a worktree is the project's installed packages, not its
+      // sources, whatever its ignore rule says of a link (#2330). One built entry by entry, since it
+      // holds paths of the project, is a real folder with a mark (#2362).
+      if (
+        (entry.isSymbolicLink() || entry.isDirectory()) &&
+        !trackedPath &&
+        isLinkedDependency(workspace, path)
+      )
+        continue;
       if (entry.isSymbolicLink()) {
         files[path] = `link:${hashBytes(await readlink(absolute))}`;
         continue;

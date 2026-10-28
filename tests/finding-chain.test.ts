@@ -1,5 +1,8 @@
 import { describe, expect, test } from "bun:test";
-import { batteryOf, type ChainFinding, chainMembers, chainRecord, chainRewriteDecision, chainSubject, correctiveChain, findingChain, rewritesSymbol, symbolKey, symbolPath, unchangedRepeats } from "../src/core/workflows/finding-chain.js";
+import { batteryOf, type ChainFinding, chainMembers, chainRecord, chainRewriteDecision, chainSubject, correctiveChain, findingChain, rewritesSymbol, patchLines, recordRestoredRemovals, replayRestoredRemovals, restoredRemovals, symbolKey, symbolPath, unchangedRepeats } from "../src/core/workflows/finding-chain.js";
+import type { RunPolicy } from "../src/core/workflows/schemas.js";
+import type { WorkflowStore } from "../src/core/workflows/store.js";
+import type { Task } from "../src/core/workflows/types.js";
 
 // The join rules of a finding chain. A new join rule adds a case here with a pair the older rule
 // failed to join (AGENTS.md).
@@ -104,6 +107,37 @@ describe("R68 ewvet scanner: a reviewer's repeatOf from a class to its member (#
   });
 });
 
+describe("R74 callmend cmd: one family on another spec file each round (#2334)", () => {
+  const F1 = finding("F1", { file: "spec/cmd/stream_command_spec.rb", family: "literal-test-inputs", repairTaskId: "T015" });
+  const F12 = finding("F1-2", { file: "spec/cmd/check_command_spec.rb", family: "literal-test-inputs", repeatOf: "F1", repairTaskId: "T016" });
+
+  test("F1-2 on check_command_spec.rb, repeatOf F1 on stream_command_spec.rb, is the second link: the old rule left it a chain of one", () => {
+    const all = byId([F1, F12]);
+    expect(findingChain(all, F12).map((f) => f.id)).toEqual(["F1", "F1-2"]);
+    const record = chainRecord("T016", F12, findingChain(all, F12), "on");
+    expect([record.decision, record.corrective, record.files]).toEqual(["rewrite", "test-sweep", ["spec/cmd/stream_command_spec.rb", "spec/cmd/check_command_spec.rb"]]);
+    expect(rewritesSymbol(record)).toBe(false);
+  });
+
+  test("the family alone joins two test files; a link across files needs one family", () => {
+    const unlinked = byId([F1, { ...F12, repeatOf: null }]);
+    expect(findingChain(unlinked, unlinked.get("F1-2") as ChainFinding)).toHaveLength(2);
+    const otherFamily = byId([F1, { ...F12, family: "missing-exit-code" }]);
+    expect(findingChain(otherFamily, otherFamily.get("F1-2") as ChainFinding)).toHaveLength(1);
+    const noFamily = byId([{ ...F1, family: null }, { ...F12, family: null }]);
+    expect(findingChain(noFamily, noFamily.get("F1-2") as ChainFinding)).toHaveLength(1);
+  });
+
+  test("two source files of one family join only by the reviewer's link", () => {
+    const source = (id: string, file: string, repeatOf: string | null) => finding(id, { file, family: "utf8-byte-offsets", symbol: null, repeatOf, repairTaskId: `T0${id.slice(1)}` });
+    const unlinked = byId([source("F1", "lib/a.rb", null), source("F2", "lib/b.rb", null)]);
+    expect(findingChain(unlinked, unlinked.get("F2") as ChainFinding)).toHaveLength(1);
+    const linked = byId([source("F1", "lib/a.rb", null), source("F2", "lib/b.rb", "F1")]);
+    expect(findingChain(linked, linked.get("F2") as ChainFinding)).toHaveLength(2);
+    expect(chainMembers(linked, findingChain(linked, linked.get("F2") as ChainFinding)).map((f) => f.id)).toEqual(["F1", "F2"]);
+  });
+});
+
 describe("R68 ewvet scanner: a finding back after its corrective changed no file (#2137)", () => {
   const file = { file: "src/Ewvet/Scan/Scanner.cs" };
   const F1 = finding("F1", { ...file, symbol: "Scanner", claim: "IsEncodingToken  misses the BOM", repairTaskId: "T010" });
@@ -128,5 +162,76 @@ describe("R68 ewvet scanner: a finding back after its corrective changed no file
     expect(unchangedRepeats(byId([changed, repeat]), [repeat], changedOf)).toEqual([]);
     expect(unchangedRepeats(byId([finding("F1", { ...F1, repairTaskId: "T099" }), repeat]), [repeat], changedOf)).toEqual([]);
     expect(unchangedRepeats(byId([F1, finding("F2", { ...file, claim: "Another defect", status: "open" })]), [{ id: "F2" }], changedOf)).toEqual([]);
+  });
+});
+
+// R72 evalpin foundation (#2277): T008 removed `#[allow(unused_variables)]` from the prescribed cli
+// stub for the integrity guard, T009 put it back for `cargo clippy -D warnings`, and five
+// correctives ran before the spec conflict opened. The second link is the contradiction.
+describe("a corrective that restores what the previous corrective removed (#2277)", () => {
+  const ALLOW = "#[allow(unused_variables)]";
+  const removeAllow = `--- a/src/cli.rs\n+++ b/src/cli.rs\n@@ -1,3 +1,2 @@\n-${ALLOW}\n pub fn run(args: &[String]) -> i32 {\n     2\n`;
+  const restoreAllow = `--- a/src/cli.rs\n+++ b/src/cli.rs\n@@ -1,2 +1,3 @@\n+${ALLOW}\n pub fn run(args: &[String]) -> i32 {\n     2\n`;
+  const T008 = { taskId: "T008", findingIds: ["F-integrity"], patch: removeAllow };
+  const T009 = { taskId: "T009", findingIds: ["F-clippy"], patch: restoreAllow };
+
+  test("T009 restoring T008's removal is one restore naming both correctives' findings", () => {
+    expect(restoredRemovals(T009, [T008])).toEqual([
+      { taskId: "T009", findingIds: ["F-clippy"], path: "src/cli.rs", earlierTaskId: "T008", earlierFindingIds: ["F-integrity"], lines: [ALLOW] },
+    ]);
+  });
+
+  test("only the latest earlier corrective of the file counts, and moved or trivial lines are no removal", () => {
+    // A later corrective of the file that kept the line out stands between them: T009 restores
+    // what T008b removed only if T008b removed it.
+    const unrelated = { taskId: "T008b", findingIds: ["F2"], patch: "--- a/src/cli.rs\n+++ b/src/cli.rs\n@@ -5 +5 @@\n-    let x = 1;\n+    let x = 2;\n" };
+    expect(restoredRemovals(T009, [T008, unrelated])).toEqual([]);
+    // A line the earlier corrective moved (removed and added) is not removed.
+    const moved = { ...T008, patch: `${removeAllow}@@ -9 +9 @@\n+${ALLOW}\n` };
+    expect(restoredRemovals(T009, [moved])).toEqual([]);
+    // A closing brace put back is no contradiction.
+    const brace = { taskId: "T001", findingIds: [], patch: "--- a/src/cli.rs\n+++ b/src/cli.rs\n@@ -3 +2 @@\n-}\n" };
+    expect(restoredRemovals({ ...T009, patch: "--- a/src/cli.rs\n+++ b/src/cli.rs\n@@ -2 +3 @@\n+}\n" }, [brace])).toEqual([]);
+    // Another file is another chain.
+    expect(restoredRemovals({ ...T009, patch: restoreAllow.replaceAll("src/cli.rs", "src/main.rs") }, [T008])).toEqual([]);
+  });
+
+  test("a removed line that starts with -- is a line, not a file header", () => {
+    const sql = "--- a/q.sql\n+++ b/q.sql\n@@ -1,2 +1 @@\n--- noqa: AM04\n SELECT 1\n";
+    expect(patchLines(sql).get("q.sql")).toEqual({ removed: ["-- noqa: AM04"], added: [] });
+    expect(patchLines("--- /dev/null\n+++ b/new.rs\n@@ -0,0 +1 @@\n+fn a() {}\n").get("new.rs")).toEqual({ removed: [], added: ["fn a() {}"] });
+  });
+
+  test("the run records the would-stop once, and the chain decision for the replay", () => {
+    const tasks = [
+      { id: "T001", origin: "planned", findingIds: [] },
+      { id: "T008", origin: "repair", findingIds: ["F-integrity"] },
+      { id: "T009", origin: "convergence", findingIds: ["F-clippy"] },
+    ] as unknown as Task[];
+    const artifacts: { id: string; kind: string; logical_path: string; body: string }[] = [
+      { id: "a1", kind: "diff", logical_path: "tasks/T008/diff.json", body: JSON.stringify({ changed: ["src/cli.rs"], patch: removeAllow }) },
+      { id: "a2", kind: "diff", logical_path: "tasks/T009/diff.json", body: JSON.stringify({ changed: ["src/cli.rs"], patch: restoreAllow }) },
+    ];
+    const events: { type: string; payload: Record<string, unknown> }[] = [];
+    const store = {
+      artifacts: () => artifacts,
+      readArtifact: (_: string, id: string) => artifacts.find((a) => a.id === id)?.body ?? "",
+      artifact: (_: string, kind: string, logical_path: string, body: string) => {
+        artifacts.push({ id: `a${artifacts.length + 1}`, kind, logical_path, body });
+        return { id: "x" };
+      },
+      transaction: <T>(fn: () => T) => fn(),
+      eventsOfType: (_: string, type: string) => events.filter((e) => e.type === type),
+      emit: (_: string, event: { type: string; payload: Record<string, unknown> }) => events.push(event),
+    } as unknown as WorkflowStore;
+    const policy = { stopModes: {} } as RunPolicy;
+    expect(recordRestoredRemovals(store, "r1", policy, tasks, "T008")).toEqual([]);
+    expect(recordRestoredRemovals(store, "r1", policy, tasks, "T009").map((r) => r.earlierTaskId)).toEqual(["T008"]);
+    recordRestoredRemovals(store, "r1", policy, tasks, "T009");
+    expect(events.map((e) => [e.payload.reason, e.payload.mode, e.payload.key])).toEqual([["corrective_restores_removed", "shadow", "task-T009-src/cli.rs"]]);
+    expect(artifacts.filter((a) => a.logical_path === "chains/restores/T009.json")).toHaveLength(1);
+    // A planned task is no corrective; the replay finds the same restore from the diffs alone.
+    expect(recordRestoredRemovals(store, "r1", policy, tasks, "T001")).toEqual([]);
+    expect(replayRestoredRemovals(store, "r1", tasks).map((r) => [r.taskId, r.earlierTaskId, r.path])).toEqual([["T009", "T008", "src/cli.rs"]]);
   });
 });

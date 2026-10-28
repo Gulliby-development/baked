@@ -10,6 +10,10 @@
     "testsGrown": "FAILED tests/test_sum.py::test_sum - assert 3 == 4\n========= 1 failed, 3 passed in 0.15s =========\n"
   },
   "expected": {
+    "memberSyntax": [
+      "Scanner delegates to Reader.IsEncodingToken.: Reader.IsEncodingToken",
+      "Scanner calls `reader.is_encoding_token` per token.: reader.is_encoding_token"
+    ],
     "suppressions": [
       "x = f()  # type: ignore[attr-defined]: lint, linted, prescribable",
       "import os  # noqa: F401: lint, linted, prescribable",
@@ -83,6 +87,12 @@
       "mypy: typechecker, whole unit",
       "pyright: typechecker, whole unit"
     ],
-    "sortedLists": ["src/pkg/__init__.py: ruff/isort \"# isort: split\" before 2"]
+    "sortedLists": ["src/pkg/__init__.py: ruff/isort \"# isort: split\" before 2"],
+    "dependencyDirs": [
+      ".venv: linked",
+      "venv: linked"
+    ],
+    "dependencyPrepare": null,
+    "worktreePathLimits": null
   }
 }

@@ -168,6 +168,52 @@ describe("scenario: the shared token pool names its amounts and would grow insid
   }, 180000);
 });
 
+// Bench round 75, maskback (#2367): the park of maps on a 24.0M pool suggested the 31.5M that
+// covers the waiting highs while the same message said the $30 cap pays for about 26.4M; the loop
+// read the sentence and extended to 26.4M. The R66 park at other measured rates stands in for it.
+describe("scenario: a park on the token pool suggests what the dollar cap pays for (#2367, R75 maskback)", () => {
+  const exhausted = { ...r66Park.feature, share: { tokens: 0, calls: 108, activeMs: 4_551_768 } };
+
+  test("a cover above the cap's tokens suggests the cap's tokens, rounded down, in the remedy and the message", () => {
+    // At $0.92 per million the $30 cap pays for about 32.5M, below the 33.1M cover.
+    const view = withPool(r66Park.view, 25_000_000);
+    const advice = shareShortfall(view, r66Park.feature);
+    expect(advice?.summary).toContain("covers the high estimates of select, cli, docs.");
+    expect(advice?.summary).toContain("would pay for about 32.5M tokens at $0.92 per million, so extend to 32.5M (32500000 tokens).");
+    expect(advice?.message).toEndWith("Raise it with baked workflow initiative extend nodepluck --tokens 32500000.");
+    expect(advice?.remedies).toEqual([{ action: "extend", initiativeId: "nodepluck", suggestedTokens: 32_500_000 }]);
+    expect(tuiRecoveryText(advice?.message ?? "", advice)).toContain("Press B to extend budget (to 32.5M tokens)");
+    expect(desktopRecoveryText(advice?.message ?? "", advice)).toContain("Choose Extend to 32.5M tokens");
+    // The remedy is the pool the host's own extension would grow to.
+    expect(poolGrowthOf(view, r66Park.feature)).toMatchObject({ toTokens: 32_500_000 });
+    // The exhausted pool names the same amount.
+    const empty = shareShortfall(view, exhausted);
+    expect(empty?.summary).toContain("A pool of 33.1M tokens covers the high estimates of the waiting features. The $30.00 cap would pay for about 32.5M tokens at $0.92 per million, so extend to 32.5M (32500000 tokens).");
+    expect(empty?.remedies[0]).toMatchObject({ action: "extend", suggestedTokens: 32_500_000 });
+    expect(empty?.remedies[0]?.suggestedUsd).toBeUndefined();
+  });
+
+  test("when the cap pays for too few tokens to start the waiting features, the remedy raises the cap with the pool", () => {
+    // At $1.15 per million the cap pays for about 26.0M, below the 30.0M pool: 33.1M costs $38.17.
+    const view = withPool(r66Park.view, 20_000_000);
+    const advice = shareShortfall(view, r66Park.feature);
+    expect(advice?.summary).toContain("would pay for about 26.0M tokens at $1.15 per million, too few to start the waiting features: a pool of 33.1M also needs a dollar cap of $38.17.");
+    expect(advice?.message).toEndWith("Raise it with baked workflow initiative extend nodepluck --tokens 33100000 --budget-usd 38.17.");
+    expect(advice?.remedies).toEqual([{ action: "extend", initiativeId: "nodepluck", suggestedTokens: 33_100_000, suggestedUsd: 38.17 }]);
+    expect(tuiRecoveryText(advice?.message ?? "", advice)).toContain("Press B to extend budget (to 33.1M tokens and $38.17)");
+    const empty = shareShortfall(view, exhausted);
+    expect(empty?.summary).toContain("The $30.00 cap would pay for about 26.0M tokens at $1.15 per million, too few to start the waiting features: a pool of 33.1M also needs a dollar cap of $38.17.");
+    expect(empty?.remedies[0]).toMatchObject({ suggestedTokens: 33_100_000, suggestedUsd: 38.17 });
+  });
+
+  test("a cover the cap pays for, or a pool with no dollar cap, suggests the cover", () => {
+    expect(shareShortfall(withPool(r66Park.view), r66Park.feature)?.remedies).toEqual([{ action: "extend", initiativeId: "nodepluck", suggestedTokens: 33_100_000 }]);
+    const tokensOnly = withPool(r66Park.view, 20_000_000, { capUsd: null, ceilingUsd: null, remainingUsd: null, forecastUsd: null });
+    expect(shareShortfall(tokensOnly, r66Park.feature)?.remedies).toEqual([{ action: "extend", initiativeId: "nodepluck", suggestedTokens: 33_100_000 }]);
+    expect(shareShortfall(tokensOnly, exhausted)?.remedies[0]).toMatchObject({ suggestedTokens: 33_100_000 });
+  });
+});
+
 describe("scenario: a scripted initiative whose features cost more than their estimates (#2042)", () => {
   async function scenario(maxTotalTokens: number, featureUsd: number | Record<string, number>, options: { capUsd?: number | null; extendWithinDollars?: "off" | "shadow" } = {}) {
     const history = await historyFixture(1, { taskShare: 0.4 });
@@ -551,6 +597,17 @@ describe("scenario: flatelens R73 commands' bounds stay inside the pool and the 
     expect(poolBoundDecision({ runId: "r", featureId: "commands", limitTokens: LIMIT, othersUsedTokens: OTHERS, ceilingUsd: 36, othersSpentUsd: 25.34, tokens: [{ kind: "maxRunTokens", value: 5_660_000 }], usd: [{ kind: "maxRunCostUsd", value: 10.66 }] }).wouldStop).toBe(false);
   });
 
+  test("a dollar bound within half a cent of the ceiling less the others' spend passes (#2321)", () => {
+    const decide = (ceilingUsd: number, othersSpentUsd: number, bound: number) =>
+      poolBoundDecision({ runId: "r", featureId: "commands", limitTokens: LIMIT, othersUsedTokens: 0, ceilingUsd, othersSpentUsd, tokens: [], usd: [{ kind: "maxRunCostUsd", value: bound }] }).wouldStop;
+    // fast-check seed 291173649: $1.665 against a $1.66 ceiling, exactly at the tolerance.
+    expect(decide(1.6600000000000001, 0, 1.665)).toBe(false);
+    // A ceiling with a fraction of a cent: $1.668 is under $1.669, though the cent-floored hold is $1.66.
+    expect(decide(1.669, 0, 1.668)).toBe(false);
+    expect(decide(36, 25.34, 10.665)).toBe(false);
+    expect(decide(36, 25.34, 10.67)).toBe(true);
+  });
+
   const plan: InitiativePlan = {
     schemaVersion: 1, title: "Flatelens", goals: ["Create the CLI"], completionCriteria: ["The CLI is ready"],
     features: ["core", "commands", "docs"].map((id) => ({
@@ -607,6 +664,76 @@ describe("scenario: flatelens R73 commands' bounds stay inside the pool and the 
     const recorded = wouldStops();
     expect(recorded).toHaveLength(1);
     expect(recorded[0]!.payload).toMatchObject({ mode: "shadow", inputs: { limitTokens: LIMIT, othersUsedTokens: OTHERS, holdTokens: LIMIT - OTHERS } });
+  });
+});
+
+describe("scenario: R73 evalpin's last feature grows no further than the pool left (#2294)", () => {
+  const LIMIT = 23_900_000;
+  const OTHERS = 20_594_626;
+  const SHARE = LIMIT - OTHERS;
+  const plan: InitiativePlan = {
+    schemaVersion: 1, title: "Evalpin", goals: ["Create the CLI"], completionCriteria: ["The CLI is ready"],
+    features: ["results", "commands", "delivery"].map((id) => ({
+      id, title: id, size: "medium", workflow: "sdd", boundary: { scope: id, paths: [`${id}.txt`] },
+      contract: `${id}.txt contains ready`, dependsOn: [], mandatory: true,
+    })),
+  };
+
+  test("with no feature waiting, delivery's refresh keeps its 3.31M bounds and records no would-stop", async () => {
+    const fixture = workflowFixture();
+    fixture.config.defaultModel = "anthropic/claude-sonnet-4-6";
+    cleanups.push(async () => fixture.dispose());
+    const initiatives = new InitiativeService(fixture.service);
+    const policy: RunPolicy = { ...fixturePolicy, maxAgentCalls: 1000, costForecast: "off", sizing: { maxRunTokens: 8_000_000, extendToTokens: 12_000_000 } };
+    const view = await initiatives.start({ commandId: newId(), initiativeId: "evalpin", prompt: "Create the CLI", plan, policy, model: "anthropic/claude-sonnet-4-6", ownerLabel: "test", keepFeatures: true, featureAutoApproval: null, budget: { maxTotalTokens: LIMIT, maxAgentCalls: 1000, maxActiveMs: 18_000_000 } });
+    const request = view.pendingDecisions.find((d) => d.scope === "initiative")!;
+    await initiatives.approve("evalpin", { commandId: newId(), expectedRevision: view.revision }, { requestId: request.requestId, digest: request.digest });
+    const service = initiatives as unknown as { startFeature(id: string, featureId: string): Promise<boolean>; refreshGrowth(id: string, featureId: string, runId: string): void; view(id: string): InitiativeView };
+    expect(await service.startFeature("evalpin", "delivery")).toBe(true);
+    const runId = initiatives.view("evalpin").features.find((f) => f.id === "delivery")!.runId!;
+    const store = fixture.service.store;
+    // delivery's start in R73: its share is all the pool had left after the others' 20.59M.
+    const started = JSON.parse(store.run(runId).policy_json) as RunPolicy;
+    store.setPolicy(runId, { ...started, maxTotalTokens: SHARE, sizing: { ...started.sizing, maxRunTokens: SHARE, extendToTokens: SHARE } });
+    // Every other feature is accepted: none waits for a run, so none has an estimate.
+    const real = service.view.bind(initiatives);
+    service.view = (id: string) => {
+      const v = real(id);
+      return {
+        ...v,
+        features: v.features.map((f) => ({ ...f, share: null, need: null })),
+        budget: {
+          ...v.budget,
+          used: { ...v.budget.used, tokens: OTHERS },
+          reserved: { ...v.budget.reserved, tokens: SHARE },
+          remaining: { ...v.budget.remaining, tokens: 0 },
+        },
+      } as InitiativeView;
+    };
+    service.refreshGrowth("evalpin", "delivery", runId);
+    const after = JSON.parse(store.run(runId).policy_json) as RunPolicy;
+    // The rule before #2294 took the base ceilings: 8M and 12M with 3.31M left.
+    expect(after.sizing).toMatchObject({ maxRunTokens: SHARE, extendToTokens: SHARE });
+    const wouldStops = store.eventsOfType(runId, "decision.would_stop").filter((e) => e.type === "decision.would_stop" && e.payload.reason === "initiative-pool-growth");
+    expect(wouldStops).toHaveLength(0);
+  });
+
+  test("an unestimated plan's first start grows to its share, not the base ceilings", async () => {
+    const fixture = workflowFixture();
+    fixture.config.defaultModel = "anthropic/claude-sonnet-4-6";
+    cleanups.push(async () => fixture.dispose());
+    const initiatives = new InitiativeService(fixture.service);
+    const policy: RunPolicy = { ...fixturePolicy, maxAgentCalls: 1000, costForecast: "off", sizing: { maxRunTokens: 8_000_000, extendToTokens: 12_000_000 } };
+    const view = await initiatives.start({ commandId: newId(), initiativeId: "evalpin", prompt: "Create the CLI", plan, policy, model: "anthropic/claude-sonnet-4-6", ownerLabel: "test", keepFeatures: true, featureAutoApproval: null, budget: { maxTotalTokens: 3_000_000, maxAgentCalls: 1000, maxActiveMs: 18_000_000 } });
+    const request = view.pendingDecisions.find((d) => d.scope === "initiative")!;
+    await initiatives.approve("evalpin", { commandId: newId(), expectedRevision: view.revision }, { requestId: request.requestId, digest: request.digest });
+    const service = initiatives as unknown as { startFeature(id: string, featureId: string): Promise<boolean> };
+    expect(initiatives.view("evalpin").features.every((f) => f.need === null)).toBe(true);
+    expect(await service.startFeature("evalpin", "commands")).toBe(true);
+    const runId = initiatives.view("evalpin").features.find((f) => f.id === "commands")!.runId!;
+    const started = JSON.parse(fixture.service.store.run(runId).policy_json) as RunPolicy;
+    // results and delivery reserve their whole 1M shares: commands grows to the 1M left of the 3M pool.
+    expect(started.sizing).toMatchObject({ maxRunTokens: 1_000_000, extendToTokens: 1_000_000 });
   });
 });
 

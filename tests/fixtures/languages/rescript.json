@@ -10,6 +10,9 @@
     "testsGrown": " FAIL  src/sum.test.js > sum\n Test Files  1 failed (1)\n      Tests  1 failed | 3 passed (4)\n"
   },
   "expected": {
+    "memberSyntax": [
+      "Scanner delegates to Reader.IsEncodingToken.: Reader.IsEncodingToken"
+    ],
     "suppressions": [
       "@@warning(\"-27\"): lint, linted, prescribable"
     ],
@@ -59,6 +62,11 @@
     "staticTools": [
       "rescript format: formatter"
     ],
-    "sortedLists": null
+    "sortedLists": null,
+    "dependencyDirs": [
+      "node_modules: linked"
+    ],
+    "dependencyPrepare": null,
+    "worktreePathLimits": null
   }
 }

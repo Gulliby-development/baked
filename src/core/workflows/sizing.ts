@@ -15,6 +15,7 @@ import { hostRowPaths, literalRows, rowsAsDataOn } from "./acceptance-rows.js";
 import { MAX_EXTENDED_MS } from "./budget.js";
 import { DEFAULT_STAGE_RANGES, historyStorePaths, rangeOf, type TokenRange } from "./estimate.js";
 import { type HostEdit, plannerGraph, recordGraphEdits } from "./host-edits.js";
+import { MIN_DURATION_SAMPLES } from "./initiatives/duration.js";
 import { extendToOf, type RunPolicy, SpecSchema, type TaskGraph } from "./schemas.js";
 import { DEFAULT_MAX_ATTEMPT_TOKENS } from "./step-budget.js";
 import type { WorkflowStore } from "./store.js";
@@ -676,8 +677,19 @@ const FENCE_LINE = /^ {0,3}(`{3,}|~{3,})(.*)$/;
  * shell comment`) ends nothing.
  */
 export function requestSections(request: string): Map<string, number> {
+  return new Map(
+    [...requestSectionTexts(request)].map(([title, text]) => [title, [...text].length]),
+  );
+}
+
+/**
+ * The text of each Markdown section of a request, by heading title (lower case), as
+ * `requestSections` measures it: from the heading line to the end of the section, trailing space
+ * trimmed. The first section of a title wins.
+ */
+export function requestSectionTexts(request: string): Map<string, string> {
   const lines = request.split(/\r?\n/);
-  const sections = new Map<string, number>();
+  const sections = new Map<string, string>();
   // The fences open at each line: the outer one a section may be quoted in, then its inner ones.
   const open: { char: string; length: number; info?: string }[] = [];
   const closes = (line: string, fence: { char: string; length: number }) => {
@@ -724,7 +736,7 @@ export function requestSections(request: string): Map<string, number> {
       }
       const text = lines.slice(i, end).join("\n").replace(/\s+$/, "");
       const title = (heading[2] ?? "").trim().toLowerCase();
-      if (!sections.has(title)) sections.set(title, [...text].length);
+      if (!sections.has(title)) sections.set(title, text);
     }
     step(open, line);
   }
@@ -741,8 +753,21 @@ export function exactTextChars(
   spec: SpecText,
   task: Pick<Task, "criterionIds">,
 ): number {
-  const sections = requestSections(request);
-  if (!sections.size) return 0;
+  return exactTextSections(request, spec, task).reduce((sum, s) => sum + [...s.text].length, 0);
+}
+
+/**
+ * The request's sections a task's criteria compare exactly (#2101): a section whose title a
+ * criterion of the task names, in a criterion that says the comparison is exact (`EXACT_TEXT`),
+ * with its text. Empty when there is none.
+ */
+export function exactTextSections(
+  request: string,
+  spec: SpecText,
+  task: Pick<Task, "criterionIds">,
+): { title: string; text: string }[] {
+  const sections = requestSectionTexts(request);
+  if (!sections.size) return [];
   const named = new Set<string>();
   for (const criterion of spec.criteria) {
     if (!task.criterionIds.includes(criterion.id)) continue;
@@ -752,7 +777,7 @@ export function exactTextChars(
     for (const title of sections.keys())
       if (title.length >= 3 && lower.includes(title)) named.add(title);
   }
-  return [...named].reduce((sum, title) => sum + (sections.get(title) ?? 0), 0);
+  return [...named].map((title) => ({ title, text: sections.get(title) ?? "" }));
 }
 
 /** A task priced from the lines the request supplies for it. */
@@ -893,8 +918,16 @@ export interface SizingReport {
    */
   activeTime: {
     tokensPerMinute: number;
-    basis: "history" | "default";
+    /** `initiative` when the initiative's own finished runs set the pace (#2336). */
+    basis: PaceBasis;
     runs: number;
+    /**
+     * The tokens per active minute of the initiative's other finished feature runs, rounded; empty
+     * outside an initiative. Absent in reports before #2336.
+     */
+    ownRates?: number[];
+    /** With basis `initiative`: the history's pace it was preferred to. */
+    history?: { tokensPerMinute: number; basis: "history" | "default"; runs: number };
     estimatedMs: number;
     before: number;
     after: number;
@@ -1165,6 +1198,12 @@ export function sizePlan(input: {
   loopShares?: readonly number[];
   /** Tokens per active minute of earlier runs (`rateHistory`); they set the time estimate. */
   tokenRates?: readonly number[];
+  /**
+   * Tokens per active minute of the finished feature runs of the run's initiative
+   * (`initiativeRates`); from `MIN_DURATION_SAMPLES` of them their median sets the time estimate
+   * before the history's (#2336).
+   */
+  ownRates?: readonly number[];
   /** Accepted criteria, including their quoted inputs and table rows. */
   spec?: SpecText | null;
   /** Price only these tasks while keeping the full graph for shared case ownership. */
@@ -1278,20 +1317,19 @@ export function sizePlan(input: {
         : `The run budget stays at ${budgetBefore} tokens, the policy's ceiling; the plan and its repair reserve of ${repairReserve} need about ${runTokens + repairReserve}`,
     );
   }
-  const rate = tokensPerMinute(input.tokenRates ?? []);
+  // Rounded as recorded, so a replay of the report picks the same pace.
+  const ownRates = (input.ownRates ?? [])
+    .filter((rate) => Number.isFinite(rate) && rate > 0)
+    .map((rate) => Math.round(rate));
+  const rate = activePace(input.tokenRates ?? [], ownRates);
   const needed = Math.min(runTokens + repairReserve, budgetAfter);
-  const estimatedMs = Math.round((needed / rate.tokensPerMinute) * 60_000);
   const timeBefore = input.policy.maxActiveMs;
-  const timeAfter =
-    maxRunTokens !== null && estimatedMs * (1 + ACTIVE_TIME_MARGIN) > timeBefore
-      ? Math.max(
-          timeBefore,
-          Math.min(
-            MAX_EXTENDED_MS,
-            Math.ceil((estimatedMs * (1 + ACTIVE_TIME_MARGIN)) / 60_000) * 60_000,
-          ),
-        )
-      : timeBefore;
+  const { estimatedMs, after: timeAfter } = activeTimeLimit({
+    neededTokens: needed,
+    tokensPerMinute: rate.tokensPerMinute,
+    maxActiveMs: timeBefore,
+    maxRunTokens,
+  });
   if (estimatedMs > timeBefore || timeAfter > timeBefore) {
     if (timeAfter > timeBefore && decision === "fits") decision = "raise-budget";
     reasons.push(
@@ -1347,7 +1385,7 @@ export function sizePlan(input: {
     budgetAfter,
     maxAttemptTokens,
     maxRunTokens,
-    activeTime: { ...rate, estimatedMs, before: timeBefore, after: timeAfter },
+    activeTime: { ...rate, ownRates, estimatedMs, before: timeBefore, after: timeAfter },
     decision,
     reasons,
     ...(overCeiling ? { overCeiling } : {}),
@@ -1356,10 +1394,101 @@ export function sizePlan(input: {
 
 const minutes = (ms: number): number => Math.round(ms / 60_000);
 
-const rateNote = (rate: { basis: "history" | "default"; runs: number }) =>
-  rate.basis === "history"
-    ? `the median of ${rate.runs} earlier runs`
-    : `the default until ${MIN_RATE_RUNS} runs are in history`;
+const rateNote = (rate: { basis: PaceBasis; runs: number }) =>
+  rate.basis === "initiative"
+    ? `the median of ${rate.runs} finished runs of this initiative`
+    : rate.basis === "history"
+      ? `the median of ${rate.runs} earlier runs`
+      : `the default until ${MIN_RATE_RUNS} runs are in history`;
+
+/** Where a run's tokens per active minute come from. */
+export type PaceBasis = "initiative" | "history" | "default";
+
+/**
+ * The active time a sized budget needs at a pace, and the active-time cap after sizing: the cap
+ * grows to the time plus `ACTIVE_TIME_MARGIN`, rounded up to the minute, under `MAX_EXTENDED_MS`
+ * and only under a `maxRunTokens` ceiling (#933). The bench replay decides it again from a sizing
+ * report's recorded inputs (`replayActiveTimes`).
+ */
+export function activeTimeLimit(input: {
+  neededTokens: number;
+  tokensPerMinute: number;
+  maxActiveMs: number;
+  maxRunTokens: number | null;
+}): { estimatedMs: number; after: number } {
+  const estimatedMs = Math.round((input.neededTokens / input.tokensPerMinute) * 60_000);
+  const before = input.maxActiveMs;
+  const after =
+    input.maxRunTokens !== null && estimatedMs * (1 + ACTIVE_TIME_MARGIN) > before
+      ? Math.max(
+          before,
+          Math.min(
+            MAX_EXTENDED_MS,
+            Math.ceil((estimatedMs * (1 + ACTIVE_TIME_MARGIN)) / 60_000) * 60_000,
+          ),
+        )
+      : before;
+  return { estimatedMs, after };
+}
+
+/**
+ * The pace that sizes a run's active time (#2336): the median of its initiative's own finished
+ * feature runs once there are `MIN_DURATION_SAMPLES` of them, when it is slower than the history's
+ * (`tokensPerMinute`); else the history's. R74 ladlemath ran at about 58k tokens per active minute
+ * while the median of 262 runs of every project stayed at 134k, so every feature run was sized at
+ * half the time it needed and three stopped on their active deadline. The history stays the prior
+ * a faster initiative does not go below: a cap too short stops a run for a person's extend, one too
+ * long costs nothing the token and dollar limits do not already bound. The history's rate is kept
+ * beside the initiative's, so a replay decides again from the record.
+ */
+export function activePace(
+  rates: readonly number[],
+  ownRates: readonly number[] = [],
+): {
+  tokensPerMinute: number;
+  basis: PaceBasis;
+  runs: number;
+  history?: { tokensPerMinute: number; basis: "history" | "default"; runs: number };
+} {
+  return paceOf(tokensPerMinute(rates), ownRates);
+}
+
+/** `activePace` on a history rate already reduced to its median (a recorded sizing report). */
+export function paceOf(
+  history: { tokensPerMinute: number; basis: "history" | "default"; runs: number },
+  ownRates: readonly number[],
+): ReturnType<typeof activePace> {
+  const own = ownPace(ownRates);
+  if (!own || own.tokensPerMinute >= history.tokensPerMinute) return history;
+  return { ...own, basis: "initiative", history };
+}
+
+/**
+ * The median tokens per active minute of an initiative's own finished feature runs, from
+ * `MIN_DURATION_SAMPLES` of them; null with fewer.
+ */
+export function ownPace(
+  ownRates: readonly number[],
+): { tokensPerMinute: number; runs: number } | null {
+  const own = ownRates.filter((rate) => Number.isFinite(rate) && rate > 0);
+  if (own.length < MIN_DURATION_SAMPLES) return null;
+  return { tokensPerMinute: Math.round(medianOf(own)), runs: own.length };
+}
+
+const medianOf = (values: readonly number[]): number => {
+  const sorted = [...values].sort((a, b) => a - b);
+  const mid = Math.floor(sorted.length / 2);
+  return sorted.length % 2 ? (sorted[mid] ?? 0) : ((sorted[mid - 1] ?? 0) + (sorted[mid] ?? 0)) / 2;
+};
+
+/**
+ * A finished run's tokens per active minute, or null when it ran too briefly to show a pace: the
+ * same floor as the history's (`tokenRatesFrom`).
+ */
+export function runPace(tokens: number, activeMs: number): number | null {
+  if (activeMs < MIN_RATE_MS || tokens < MIN_RATE_TOKENS) return null;
+  return tokens / (activeMs / 60_000);
+}
 
 /** The median tokens per active minute of at least `MIN_RATE_RUNS` runs, or the default. */
 export function tokensPerMinute(rates: readonly number[]): {
@@ -1370,11 +1499,7 @@ export function tokensPerMinute(rates: readonly number[]): {
   const usable = rates.filter((rate) => Number.isFinite(rate) && rate > 0);
   if (usable.length < MIN_RATE_RUNS)
     return { tokensPerMinute: DEFAULT_TOKENS_PER_MINUTE, basis: "default", runs: usable.length };
-  const sorted = [...usable].sort((a, b) => a - b);
-  const mid = Math.floor(sorted.length / 2);
-  const median =
-    sorted.length % 2 ? (sorted[mid] ?? 0) : ((sorted[mid - 1] ?? 0) + (sorted[mid] ?? 0)) / 2;
-  return { tokensPerMinute: Math.round(median), basis: "history", runs: usable.length };
+  return { tokensPerMinute: Math.round(medianOf(usable)), basis: "history", runs: usable.length };
 }
 
 /**
@@ -1737,7 +1862,11 @@ export function splitNote(
 /** The approval's line for the sized active time against the active-time cap (#933). */
 export function activeTimeText(time: SizingReport["activeTime"]): string {
   const rate = `${Math.round(time.tokensPerMinute / 1000)}k tokens per minute, ${
-    time.basis === "history" ? `the median of ${time.runs} runs` : "the default rate"
+    time.basis === "initiative"
+      ? `the median of ${time.runs} finished runs of this initiative`
+      : time.basis === "history"
+        ? `the median of ${time.runs} runs`
+        : "the default rate"
   }`;
   const cap =
     time.after > time.before

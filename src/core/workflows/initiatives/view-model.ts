@@ -5,7 +5,7 @@
  */
 import { z } from "zod";
 import { WorkflowFault } from "../errors.js";
-import { extendSuggestion, type RecoveryAdvice } from "../remedies.js";
+import { type ExtendAmounts, extendSuggestion, type RecoveryAdvice } from "../remedies.js";
 import { canRepairRun, repairText } from "../repairable.js";
 import { newId } from "../store.js";
 import { DRIVABLE_NEXT } from "./drive-state.js";
@@ -415,7 +415,11 @@ export function initiativeActions(
   if (canExtendBudget(view)) {
     const { limits, cost } = view.budget;
     // The amounts the block or the token forecast suggest, so Enter applies them (#2042).
-    const suggested = extendSuggestion(view.next.recovery, view.budget.pool?.suggestedTokens);
+    const suggested = extendSuggestion(
+      view.next.recovery,
+      view.budget.pool?.suggestedTokens,
+      view.budget.time?.suggestedMs,
+    );
     options.push({
       key: "B",
       label: "extend budget",
@@ -424,7 +428,7 @@ export function initiativeActions(
       input: {
         question: `Raise the shared budget: tokens [calls [time]] [$dollars], such as 8M 400 4h $40; - keeps a limit. Now ${limits.maxTotalTokens} tokens, ${limits.maxAgentCalls} calls, ${Math.round(limits.maxActiveMs / 60_000)}m${cost?.capUsd ? `, $${cost.capUsd.toFixed(2)}` : ""}.`,
         placeholder: `${Math.ceil((limits.maxTotalTokens * 1.5) / 1_000_000)}M`,
-        initial: suggestedText(suggested, limits.maxTotalTokens),
+        initial: suggestedText(suggested, limits),
         build: (text) => {
           const raised = parseBudgetText(text);
           if (!Object.keys(raised).length)
@@ -437,15 +441,18 @@ export function initiativeActions(
   return options;
 }
 
-/** The B form's prefilled answer from a suggestion: `33100000`, `- $31.50`, or empty. */
+/** The B form's prefilled answer from a suggestion: `33100000`, `- - 540m`, `- $31.50`, or empty. */
 function suggestedText(
-  suggested: { tokens?: number; usd?: number } | null,
-  limitTokens: number,
+  suggested: ExtendAmounts | null,
+  limits: { maxTotalTokens: number; maxActiveMs: number },
 ): string {
-  const tokens = suggested?.tokens && suggested.tokens > limitTokens ? suggested.tokens : null;
-  if (!tokens && !suggested?.usd) return "";
+  const tokens =
+    suggested?.tokens && suggested.tokens > limits.maxTotalTokens ? suggested.tokens : null;
+  const time = suggested?.timeMs && suggested.timeMs > limits.maxActiveMs ? suggested.timeMs : null;
+  if (!tokens && !time && !suggested?.usd) return "";
   return [
     tokens ? String(tokens) : "-",
+    ...(time ? ["-", `${Math.ceil(time / 60_000)}m`] : []),
     ...(suggested?.usd ? [`$${suggested.usd.toFixed(2)}`] : []),
   ].join(" ");
 }

@@ -129,6 +129,7 @@ import {
   type RunBound,
 } from "./initiatives/growth.js";
 import {
+  type CostView,
   dollarCapPark,
   dollarShortfall,
   type FeatureView,
@@ -182,7 +183,14 @@ import {
 } from "./review-gate.js";
 import { PolicySchema, type RunPolicy } from "./schemas.js";
 import { NativeWorkflowService } from "./service.js";
-import { exceedsTestCapacity, type SizingReport } from "./sizing.js";
+import {
+  activeTimeLimit,
+  exceedsTestCapacity,
+  type PaceBasis,
+  paceOf,
+  runPace,
+  type SizingReport,
+} from "./sizing.js";
 import {
   SOURCE_DEFECT_DIR,
   SOURCE_DEFECT_KIND,
@@ -191,8 +199,16 @@ import {
   sourceDefectDecision,
 } from "./source-defect.js";
 import { costStageOf, runPrices } from "./stage-price.js";
-import { type LadderRung, nextRung, type RecoveryPlacement } from "./stall-ladder.js";
+import {
+  type LadderRung,
+  nextRung,
+  type RecoveryPlacement,
+  type StallPark,
+  stallParkDecision,
+} from "./stall-ladder.js";
+import { readFallback } from "./stall-siblings.js";
 import { type ArtifactRow, WorkflowStore } from "./store.js";
+import { SUPPLIED_CHECK_KIND } from "./supplied-checks.js";
 import {
   INTEGRITY_DIR,
   INTEGRITY_KIND,
@@ -236,6 +252,8 @@ const KEPT_ARTIFACTS = new Set([
   REQUEST_CONFLICT_KIND,
   // Each planned task's host apply decision: its writes' supplied blocks and apply checks (#2023).
   HOST_APPLY_KIND,
+  // Each planned task's static checks on its supplied content: paths, lines, rule ids (#2275).
+  SUPPLIED_CHECK_KIND,
   // Each misquote settle's host-fix decision: occurrence counts and spelling flags, no text (#2047).
   MISQUOTE_FIX_KIND,
   // Each planned source task's edge-input probe: its cases' criteria and outcomes (#1808).
@@ -534,13 +552,63 @@ export function exportRecordings(
 }
 
 /**
+ * The bound of a gzipped trace: the corpus keeps every round's traces in the repository, and R74
+ * ladlemath's 42.5 MiB trace could not join it (#2338). `exportTrace` refuses a larger one and
+ * names the tables that made it so.
+ */
+export const TRACE_MAX_BYTES = 10 * 1024 * 1024;
+
+const mib = (bytes: number) => `${(bytes / 1024 / 1024).toFixed(1)} MiB`;
+
+/** The unpacked bytes of each table's text and blob values, largest first. */
+function tableSizes(path: string): { table: string; bytes: number }[] {
+  const db = new Database(path, { readonly: true });
+  try {
+    return [...tables(db)]
+      .map((table) => {
+        const sum = columns(db, table)
+          .map((c) => `COALESCE(SUM(LENGTH(CAST("${c}" AS BLOB))),0)`)
+          .join("+");
+        const row = db.query(`SELECT ${sum || "0"} AS n FROM "${table}"`).get() as { n: number };
+        return { table, bytes: row.n };
+      })
+      .sort((a, b) => b.bytes - a.bytes);
+  } finally {
+    db.close();
+  }
+}
+
+/**
+ * A run state without its file manifests (#2338): `expectedFiles` and each prior review's `files`
+ * hold a hash per tracked file in every revision of the state, 257 KB and 516 KB of R74
+ * ladlemath's largest state. No replay reads them; the reviews' findings stay for
+ * `stateFindings`. A state that does not parse is returned as it is.
+ */
+export function withoutFileManifests(text: string): string {
+  let state: Record<string, unknown>;
+  try {
+    state = JSON.parse(text) as Record<string, unknown>;
+  } catch {
+    return text;
+  }
+  if (!state || typeof state !== "object" || Array.isArray(state)) return text;
+  if (state.expectedFiles && typeof state.expectedFiles === "object") state.expectedFiles = {};
+  const prior = state.priorReviews;
+  if (prior && typeof prior === "object")
+    for (const entry of Object.values(prior as Record<string, unknown>))
+      if (entry && typeof entry === "object" && "files" in entry)
+        (entry as { files: unknown }).files = {};
+  return JSON.stringify(state);
+}
+
+/**
  * Writes the trace of the workflow database of `workspace` to `out`, gzip-compressed. The source
  * is opened read-only; `runIds` limits the trace to those runs (the default is every run).
  */
 export function exportTrace(
   workspace: string,
   out: string,
-  options: { runIds?: string[] } = {},
+  options: { runIds?: string[]; maxBytes?: number } = {},
 ): TraceExport {
   const source = workspacePath(workspace, ".baked/workflows.sqlite");
   if (!existsSync(source)) throw new Error(`No workflow database in ${workspace}`);
@@ -590,13 +658,13 @@ export function exportTrace(
         const readText = (a: (typeof artifacts)[number]): string | null => {
           if (!KEPT_ARTIFACTS.has(a.kind)) return null;
           try {
-            return (
+            const text =
               a.inline_content ??
               readFileSync(
                 workspacePath(workspace, (a.blob_path ?? "").replaceAll("\\", "/")),
                 "utf8",
-              )
-            );
+              );
+            return a.kind === "state" ? withoutFileManifests(text) : text;
           } catch {
             return null;
           }
@@ -692,6 +760,11 @@ export function exportTrace(
             ]);
         }
         if (present.has("runs")) db.exec("UPDATE runs SET owner_id=NULL");
+        // A snapshot's file manifest is a hash per file of the project; no replay reads one, and
+        // with a committed dependency tree they were most of a trace (#2338). The manifest hash
+        // stays, so two snapshots of the same files still compare equal.
+        if (present.has("workspace_snapshots"))
+          db.exec("UPDATE workspace_snapshots SET manifest_json='{}'");
       })();
       db.exec("VACUUM");
     } finally {
@@ -701,6 +774,13 @@ export function exportTrace(
     // The best compression: R60 wheeltags was 2.28 MB at the default level and 2.10 MB at this one,
     // against the corpus's 2 MB guide (#1937).
     const zipped = Bun.gzipSync(bytes, { level: 9 });
+    const limit = options.maxBytes ?? TRACE_MAX_BYTES;
+    if (zipped.length > limit) {
+      const sizes = tableSizes(copy).slice(0, 5);
+      throw new Error(
+        `The trace is ${mib(zipped.length)} gzipped, above its ${mib(limit)} bound. Largest tables unpacked: ${sizes.map((t) => `${t.table} ${mib(t.bytes)}`).join(", ")}`,
+      );
+    }
     mkdirSync(dirname(out), { recursive: true });
     writeFileSync(out, zipped);
     const counted = new Database(copy, { readonly: true });
@@ -843,6 +923,101 @@ export interface RunReplay {
   sourceDefects: SourceDefectBoundary[];
   /** Test task failures the current rule routes to the source's task, or not, differently. */
   newSourceDefectRoutes: number;
+  /** Each sizing report's active-time cap against the current pace rule (#2336). */
+  activeTimes: ActiveTimeBoundary[];
+  /** Sizing reports whose active-time cap the current pace sets differently. */
+  newActiveTimes: number;
+}
+
+export interface ActiveTimeBoundary {
+  report: string;
+  recorded: { tokensPerMinute: number; basis: PaceBasis; after: number };
+  replayed: { tokensPerMinute: number; basis: PaceBasis; after: number };
+}
+
+/** Picks the pace that sizes a run's active time from the history's and the initiative's rates. */
+export type ActivePaceRule = (
+  history: { tokensPerMinute: number; basis: "history" | "default"; runs: number },
+  ownRates: readonly number[],
+) => { tokensPerMinute: number; basis: PaceBasis };
+
+/**
+ * The tokens per active minute of the other feature runs of the run's initiative that had
+ * completed by `at`, for a sizing report recorded before #2336 kept them; empty outside an
+ * initiative or in a trace without its tables.
+ */
+function initiativeRatesAt(store: WorkflowStore, runId: string, at: number): number[] {
+  try {
+    const rows = store.connection
+      .query(
+        `SELECT DISTINCT r.id AS id, r.token_usage AS tokens, r.active_ms AS ms FROM initiative_runs l JOIN runs r ON r.id=l.run_id
+         WHERE l.initiative_id IN (SELECT initiative_id FROM initiative_runs WHERE run_id=?) AND l.run_id<>? AND r.status='completed'
+         AND (SELECT MAX(e.at) FROM events e WHERE e.run_id=r.id AND e.type='run.state_changed' AND json_extract(e.payload_json,'$.to')='completed')<=?`,
+      )
+      .all(runId, runId, at) as { id: string; tokens: number; ms: number }[];
+    return rows.flatMap((r) => {
+      const pace = runPace(r.tokens, r.ms);
+      return pace === null ? [] : [Math.round(pace)];
+    });
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Every plan and progress sizing report's active-time cap, decided again by `pace` and
+ * `activeTimeLimit` from what the report recorded: the tokens it sized (the run's price and repair
+ * reserve under the budget), the cap before, the `maxRunTokens` ceiling, the history's pace and the
+ * initiative's own rates. A report before #2336 recorded neither the own rates nor the history's
+ * pace beside an initiative's; its own rates are read from the trace's runs of the initiative that
+ * completed before it, and its recorded pace is the history's.
+ */
+export function replayActiveTimes(
+  store: WorkflowStore,
+  runId: string,
+  pace: ActivePaceRule = paceOf,
+): ActiveTimeBoundary[] {
+  const reports = store.connection
+    .query(
+      "SELECT id, logical_path AS path, created_at AS at FROM artifacts WHERE run_id=? AND (logical_path LIKE 'sizing/plan-%' OR logical_path LIKE 'sizing/progress-%') ORDER BY created_at, id",
+    )
+    .all(runId) as { id: string; path: string; at: number }[];
+  return reports.flatMap(({ id, path, at }) => {
+    let report: Partial<SizingReport>;
+    try {
+      report = JSON.parse(store.readArtifact(runId, id)) as Partial<SizingReport>;
+    } catch {
+      return [];
+    }
+    const time = report.activeTime;
+    if (
+      !time ||
+      typeof report.runTokens !== "number" ||
+      typeof report.budgetAfter !== "number" ||
+      report.maxRunTokens === undefined
+    )
+      return [];
+    const history =
+      time.history ??
+      (time.basis === "initiative"
+        ? null
+        : { tokensPerMinute: time.tokensPerMinute, basis: time.basis, runs: time.runs });
+    if (!history) return [];
+    const chosen = pace(history, time.ownRates ?? initiativeRatesAt(store, runId, at));
+    const after = activeTimeLimit({
+      neededTokens: Math.min(report.runTokens + (report.repairReserve ?? 0), report.budgetAfter),
+      tokensPerMinute: chosen.tokensPerMinute,
+      maxActiveMs: time.before,
+      maxRunTokens: report.maxRunTokens,
+    }).after;
+    return [
+      {
+        report: path,
+        recorded: { tokensPerMinute: time.tokensPerMinute, basis: time.basis, after: time.after },
+        replayed: { tokensPerMinute: chosen.tokensPerMinute, basis: chosen.basis, after },
+      },
+    ];
+  });
 }
 
 export interface BaselineFailureBoundary {
@@ -1877,6 +2052,8 @@ export function replayChainEscalation(
 /** One finding chain a run recorded under `chains/`, with what its correctives and battery did. */
 export interface ChainCost {
   file: string | null;
+  /** Every file of a chain across files (#2334), oldest first. */
+  files?: string[];
   symbol: string;
   /** The chain's family (#2048), which keys it with the file in place of the symbol; or null. */
   family: string | null;
@@ -1937,11 +2114,13 @@ export function chainCosts(store: WorkflowStore, runId: string): ChainCost[] {
     return { tokens, costUsd };
   };
   const key = (file: string | null, symbol: string) => `${file ?? ""}\0${symbol}`;
+  // A chain across files groups by its oldest file (#2334).
+  const fileOf = (record: ChainRecord) => record.files?.[0] ?? record.file;
   // A family chain spans symbols: its records group by file and family (#2048).
   const groupKey = (record: ChainRecord) =>
     record.family
-      ? `${record.file ?? ""}\0family\0${record.family}`
-      : key(record.file, record.symbol);
+      ? `${fileOf(record) ?? ""}\0family\0${record.family}`
+      : key(fileOf(record), record.symbol);
   const groups = new Map<string, ChainRecord[]>();
   for (const record of records)
     groups.set(groupKey(record), [...(groups.get(groupKey(record)) ?? []), record]);
@@ -1961,19 +2140,21 @@ export function chainCosts(store: WorkflowStore, runId: string): ChainCost[] {
       ...usage(taskId),
     }));
     const symbols = new Set(group.flatMap((r) => [r.symbol, ...(r.symbols ?? [])]));
+    const files = [...new Set(group.flatMap((r) => r.files ?? [r.file]))];
     const own = batteries
       .map((b) => ({
         decision: b.decision,
         cases: b.cases.filter((c) =>
           first.family
-            ? c.file === first.file && symbols.has(c.symbol)
-            : key(c.file, c.symbol) === key(first.file, first.symbol),
+            ? files.includes(c.file) && symbols.has(c.symbol)
+            : files.includes(c.file) && c.symbol === first.symbol,
         ),
       }))
       .filter((b) => b.cases.length);
     const cases = own.flatMap((b) => b.cases);
     return {
-      file: first.file,
+      file: fileOf(first),
+      ...(files.length > 1 ? { files: files.filter((f): f is string => f !== null) } : {}),
       symbol: first.symbol,
       family: first.family ?? null,
       length: longest.length,
@@ -2193,6 +2374,10 @@ export interface StallLadderBoundary {
   /** The rung the run took after this attempt (`attempt.recovery`), or none. */
   recorded: LadderRung | "none";
   replayed: LadderRung | "none";
+  /** The sibling model the replayed `next-model` rung takes, from the recorded decision (#2271). */
+  replayedModel?: string;
+  /** A stalled ladder that ran out: what its `provider_stall` park would do, in shadow (#2271). */
+  park?: StallPark["decision"];
 }
 
 /**
@@ -2237,6 +2422,7 @@ export function replayStallLadder(
       })
     : {};
   const ladders = new Map<string, RecoveryPlacement | undefined>();
+  const parks = new Map<string, number>();
   const boundaries: StallLadderBoundary[] = [];
   for (const attempt of attempts) {
     const stage = store.rootStage(runId, attempt.step_id);
@@ -2252,6 +2438,7 @@ export function replayStallLadder(
     const key = `${stage}:${usage.profileId ?? ""}`;
     if (attempt.status === "completed") {
       ladders.delete(key);
+      parks.delete(key);
       continue;
     }
     const last = usage.calls?.at(-1);
@@ -2275,19 +2462,27 @@ export function replayStallLadder(
       continue;
     }
     const current = ladders.get(key);
+    // The siblings the scheduler saw at this stall, so a replay takes the same derived fallback.
+    const siblings = readFallback(store, runId, attempt.id)?.siblings;
     const next = rule(current, {
       model: attempt.model_id,
       models,
       fallbackIndex: Math.max(0, models.indexOf(attempt.model_id)),
       effort,
+      ...(siblings ? { siblings } : {}),
     });
     ladders.set(key, next ?? undefined);
+    // As the scheduler: a ladder that ran out on a stall stops for the circuit and parks.
+    const tries = !next && current && stalled ? (parks.get(key) ?? 0) + 1 : 0;
+    if (tries) parks.set(key, tries);
     boundaries.push({
       attemptId: attempt.id,
       stage,
       model: attempt.model_id,
       recorded: taken.get(attempt.id) ?? "none",
       replayed: next?.rung ?? "none",
+      ...(next?.model ? { replayedModel: next.model } : {}),
+      ...(tries ? { park: stallParkDecision(tries) } : {}),
     });
   }
   return boundaries;
@@ -2478,6 +2673,9 @@ export interface InitiativeStartBoundary {
   spentUsd: number;
   forecastUsd: number | null;
   ceilingUsd: number | null;
+  /** The dollar forecast at the measured ratio, and the dollar notice, at this start (#2186). */
+  advice: CostView["advice"];
+  forecastNotice: string | null;
   replayed: "pass" | "park";
   /** Each feature's token range in the estimate the current code makes at this start (#1806). */
   estimate: { featureId: string; low: number; high: number }[];
@@ -3216,6 +3414,8 @@ function replayStarts(
           spentUsd: cost.spentUsd,
           forecastUsd: cost.forecastUsd,
           ceilingUsd: cost.ceilingUsd,
+          advice: cost.advice ?? null,
+          forecastNotice: cost.forecastNotice,
           replayed: feature && gate(view, feature) ? "park" : "pass",
           estimate,
           tokens: whole ? { ...whole.tokens, expected: whole.expectedTokens } : null,
@@ -3809,6 +4009,8 @@ function replayRun(
   | "newSignatureDecisions"
   | "sourceDefects"
   | "newSourceDefectRoutes"
+  | "activeTimes"
+  | "newActiveTimes"
 > | null {
   const db = store.connection;
   const run = store.run(runId);
@@ -4048,6 +4250,8 @@ export function replayTrace(
     /** Decides each recorded baseline comparison again (#2295); the current rule by default. */
     baselineSignatureRule?: BaselineSignatureRule;
     sourceDefectRule?: SourceDefectRule;
+    /** Picks the pace of each sizing report's active time again (#2336); the current rule by default. */
+    activePace?: ActivePaceRule;
   } = {},
 ): TraceReplay {
   // Initiative starts rewind their own copies of the trace, before the run replay rewinds this one.
@@ -4161,6 +4365,9 @@ export function replayTrace(
     const routes = new Map(
       runIds.map((runId) => [runId, replaySourceDefects(store, runId, options.sourceDefectRule)]),
     );
+    const paces = new Map(
+      runIds.map((runId) => [runId, replayActiveTimes(store, runId, options.activePace)]),
+    );
     const runs: RunReplay[] = [];
     for (const runId of runIds) {
       const firstByte = timings.get(runId) ?? [];
@@ -4196,6 +4403,7 @@ export function replayTrace(
       const baselineFailures = baselines.get(runId) ?? [];
       const baselineSignatures = signatures.get(runId) ?? [];
       const sourceDefects = routes.get(runId) ?? [];
+      const activeTimes = paces.get(runId) ?? [];
       if (
         !replay.boundaries.length &&
         !firstByte.length &&
@@ -4218,7 +4426,8 @@ export function replayTrace(
         !correctiveDefers.length &&
         !baselineFailures.length &&
         !baselineSignatures.length &&
-        !sourceDefects.length
+        !sourceDefects.length &&
+        !activeTimes.length
       )
         continue;
       runs.push({
@@ -4291,6 +4500,8 @@ export function replayTrace(
         newSignatureDecisions: baselineSignatures.filter((b) => b.replayed !== b.recorded).length,
         sourceDefects,
         newSourceDefectRoutes: sourceDefects.filter((b) => b.replayed !== b.recorded).length,
+        activeTimes,
+        newActiveTimes: activeTimes.filter((b) => b.replayed.after !== b.recorded.after).length,
       });
     }
     const gates = replayShareGate(store, options.shareGate);

@@ -1498,6 +1498,18 @@ export class WorkflowStore {
     return this.db.query<AttemptRow, [string]>("SELECT * FROM attempts WHERE run_id=?").all(runId);
   }
   /**
+   * The models whose attempts in any run of the workspace completed at or after `since`, each with
+   * its latest end: the models of a provider that answered a moment ago (#2271).
+   */
+  answeredModels(since: number): Map<string, number> {
+    const rows = this.db
+      .query<{ model_id: string; ended: number }, [number]>(
+        "SELECT model_id, MAX(ended_at) AS ended FROM attempts WHERE status='completed' AND model_id IS NOT NULL AND ended_at>=? GROUP BY model_id",
+      )
+      .all(since);
+    return new Map(rows.map((row) => [row.model_id, row.ended]));
+  }
+  /**
    * The token count the run may not pass without a decision, or null without soft checkpoints.
    * Each accepted checkpoint moves the next one a full interval beyond what had been used.
    */
@@ -1545,7 +1557,18 @@ export class WorkflowStore {
         row.active_ms >= policy.maxActiveMs ||
         (projected > policy.maxTotalTokens && !growBudgetOnProgress(this, runId, policy, projected))
       )
-        throw stopFault("run-budget", "Run agent/token/time budget exhausted");
+        // The usage and the request it refused let a later look at the stored limits tell
+        // whether they now hold the run (#2226).
+        throw stopFault("run-budget", "Run agent/token/time budget exhausted", {
+          activeMs: row.active_ms,
+          agentCalls: row.agent_calls,
+          usedTokens: row.token_usage,
+          reservedTokens: reserved,
+          requestedTokens: tokens,
+          maxActiveMs: policy.maxActiveMs,
+          maxAgentCalls: policy.maxAgentCalls,
+          maxTotalTokens: policy.maxTotalTokens,
+        });
       if (modelId) this.assertCostFits(runId, stepId, policy, modelId, tokens);
       this.assertBelowCheckpoint(runId, policy, row.token_usage + reserved + tokens);
       const id = newId();
@@ -1820,7 +1843,9 @@ export class WorkflowStore {
       requestedUsd,
       maxCostUsd,
       ceilingUsd,
-      ...(recovery ? { suggestedUsd, recovery } : {}),
+      // The stages still to run let the scheduler tell a refusal at review or convergence from
+      // one elsewhere (#2249).
+      ...(recovery && reserve ? { suggestedUsd, recovery, stages: reserve.stages } : {}),
     });
   }
   /**

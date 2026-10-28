@@ -99,12 +99,13 @@ export interface InitiativeFeature {
   mergedFrom?: string[];
   /**
    * Amendments planned-ahead features asked of this one at their release, and the answer
-   * (`replan`: it ran again for them); absent when none or on older backends.
+   * (`replan`: it ran again for them; `write`: the asking feature wrote it, #2183); absent when
+   * none or on older backends.
    */
   amendments?: {
     from: string;
     gaps: { ref: string; symbol: string; featureId: string; path: string }[];
-    answer: "replan" | "none";
+    answer: "replan" | "write" | "none";
   }[];
   /** Boundary files whose content the split fixes; its run writes them with no agent. */
   skeleton?: { path: string; content: string }[];
@@ -130,13 +131,18 @@ export interface InitiativeCost {
   remainingUsd: number | null;
   /** The projected total once a feature is accepted; null before that or without a cap. */
   forecastUsd: number | null;
+  /** The forecast at the measured ratio itself, which only the notice reads (#2186). */
+  advice?: { forecastUsd: number; ratio: number; blendedRatio: number } | null;
   /** Accepted features that are not a host-written skeleton. */
   measuredFeatures?: number;
   /** Whether a forecast above the ceiling stops the next feature. */
   forecastBinding?: boolean;
   /** The forecast stop's mode; outside `enforce` a binding forecast only records or advises. */
   forecastMode?: "shadow" | "advisory" | "enforce";
-  /** Why a forecast above the ceiling does not stop the initiative yet; null otherwise. */
+  /**
+   * Why a forecast above the ceiling does not stop the initiative yet, or that the measured
+   * ratio's forecast is above it (#2186); null otherwise.
+   */
   forecastNotice?: string | null;
 }
 
@@ -158,6 +164,20 @@ export interface InitiativePool {
   usdPerMillion: number | null;
   /** The tokens the dollar cap pays for at the measured rate; null without a cap or rate. */
   capTokens: number | null;
+  notice: string | null;
+}
+
+/** The shared active time (`budget.time`, #2336): its forecast at the measured pace. */
+export interface InitiativeTime {
+  limitMs: number;
+  usedMs: number;
+  committedMs: number;
+  pace: { tokensPerMinute: number; basis: "initiative" | "history"; runs: number } | null;
+  forecastMs: number | null;
+  wallMs: number | null;
+  coverMs: number | null;
+  /** What the forecast suggests extending the time to; null while it fits. */
+  suggestedMs: number | null;
   notice: string | null;
 }
 
@@ -207,6 +227,10 @@ export interface InitiativeView {
     pool?: InitiativePool | null;
     /** Set while the token forecast is above the pool; absent on older backends. */
     forecastNotice?: string | null;
+    /** The shared time's forecast at the measured pace (#2336); absent on older backends. */
+    time?: InitiativeTime | null;
+    /** Set while the time forecast is above the shared time; absent on older backends. */
+    timeNotice?: string | null;
   };
   next: InitiativeNext;
   drive?: InitiativeDrive | null;

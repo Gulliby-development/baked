@@ -687,7 +687,7 @@ describe("scenario: an initiative dollar budget (#1317)", () => {
     t.executor.usageStore = t.workflows.store;
     await startPriced(t, 3, { costBudget: { maxCostUsd: 3, costTolerance: 0.1 } });
     const view = await t.approveSplit();
-    expect(view.budget.cost).toEqual({ capUsd: 3, tolerance: 0.1, ceilingUsd: 3.3, spentUsd: 0, reservedUsd: 0, remainingUsd: 3, forecastUsd: null, measuredFeatures: 0, forecastBinding: false, forecastMode: "enforce", shareMode: "shadow", forecastNotice: null });
+    expect(view.budget.cost).toEqual({ capUsd: 3, tolerance: 0.1, ceilingUsd: 3.3, spentUsd: 0, reservedUsd: 0, remainingUsd: 3, forecastUsd: null, advice: null, measuredFeatures: 0, forecastBinding: false, forecastMode: "enforce", shareMode: "shadow", forecastNotice: null });
     // Without estimates, dollars follow the size weights: core 2, api 2, docs 1 of 5.
     expect(view.features.map((f) => [f.id, f.size, f.shareUsd])).toEqual([["core", "medium", 1.2], ["api", "medium", 1.2], ["docs", "small", 0.6]]);
     const driven = await t.drive();
@@ -1934,6 +1934,68 @@ describe("initiative runtime", () => {
       expect(t.workflows.store.eventsOfType(t.featureOf(view, "base").runId ?? "", "decision.would_stop")).toHaveLength(0);
     }, 120_000);
 
+    // A rubocop stand-in for #2228: each line of base.txt as committed is a correctable offense.
+    const lint = `const { execFileSync } = require("child_process");
+let text = "";
+try { text = execFileSync("git", ["show", "HEAD:base.txt"], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }); } catch {}
+const offenses = text.split("\\n").flatMap((line, i) => line.includes("ready") ? ["base.txt:" + (i + 1) + ":1: C: [Correctable] Style/Ready: Prefer done."] : []);
+console.log("Inspecting 1 file\\n\\nOffenses:\\n\\n" + offenses.join("\\n") + "\\n\\n1 file inspected, " + (offenses.length || "no") + " offense" + (offenses.length === 1 ? "" : "s") + " detected");
+process.exit(offenses.length ? 1 : 0);`;
+    const lintCheck = { id: "lint", executable: "bun", args: ["-e", lint], cwd: ".", timeoutMs: 10000, required: true, scope: "feature" as const, envNames: [], writes: [] };
+
+    // R70 namesound docs (#2228): docs, planned ahead, was released onto the accepted commands
+    // feature, whose rubocop debt already failed the required check. The check baseline stayed the
+    // one measured at approval on the provisional base, so nothing saw it before the tasks ran. The
+    // stand-in lints base.txt as committed, so base's own run (base.txt uncommitted) passes it.
+    test("on, a feature released onto upstream lint debt measures its check baseline there and blames the owner", async () => {
+      const t = setup(chain, 100, (root) => new AheadExecutor(root, chain));
+      repository(t.root);
+      t.executor.initiatives = t.initiatives;
+      t.executor.workflows = t.workflows;
+      Object.assign(t.workflows.config.workflows ?? {}, { planAhead: true });
+      await t.start({ plan: chain, policy: { ...policy, checks: [lintCheck], executionMode: "worktree" }, featureAutoApproval: { maxTasks: 5, maxFiles: 5 }, budget: { maxTotalTokens: 6_000_000, maxAgentCalls: 2000, maxActiveMs: 6_000_000 } });
+      await t.approveSplit();
+      const view = await t.drive();
+      const message = t.featureOf(view, "message").runId ?? "";
+      const store = t.workflows.store;
+      expect(store.state(message).planAhead).toEqual({ released: true, baselined: true });
+      const versions = store.artifacts(message).filter((a) => a.logical_path === "facts/check-baseline.json");
+      const failures = versions.map((a) => Object.keys((JSON.parse(store.readArtifact(message, a.id)) as { failures: Record<string, string> }).failures));
+      // Measured at approval on the provisional base (no base.txt), and again on the released one.
+      expect(failures[0]).toEqual([]);
+      expect(failures.at(-1)).toHaveLength(1);
+      const decided = store.latestArtifact(message, "baseline-fix/lint.json");
+      expect(JSON.parse(store.readArtifact(message, decided?.id ?? "")) as object).toMatchObject({ checkId: "lint", files: ["base.txt"], release: true });
+      // Shadow: the accepted owner of the failing file is named; nothing is held or reopened.
+      const stops = store.eventsOfType(message, "decision.would_stop").map((e) => e.payload as { reason: string; key: string; inputs: Record<string, unknown> });
+      expect(stops.filter((p) => p.reason === "upstream_baseline_debt")).toEqual([
+        expect.objectContaining({ key: "release-lint", inputs: expect.objectContaining({ checkId: "lint", release: true, owners: [{ featureId: "base", files: ["base.txt"] }] }) }),
+      ]);
+      expect(stops.find((p) => p.reason === "baseline_unrepairable")?.key).toBe("release-check-lint");
+      // base itself started on a base with no upstream, so nothing is blamed there. (Its own
+      // committed base.txt fails the stand-in, which only `committed_tree` (#2225) reports.)
+      const baseStops = store.eventsOfType(t.featureOf(view, "base").runId ?? "", "decision.would_stop").map((e) => (e.payload as { reason: string }).reason);
+      expect(baseStops.filter((reason) => reason !== "committed_tree")).toEqual([]);
+    }, 120_000);
+
+    // The same debt under a feature started normally on its accepted upstream (#2228 sweep): its
+    // only baseline is on that base, and the failure is blamed on the owner at the start.
+    test("off, a feature started on upstream lint debt blames the owner at its baseline", async () => {
+      const t = setup(chain, 100, (root) => new AheadExecutor(root, chain));
+      repository(t.root);
+      t.executor.initiatives = t.initiatives;
+      t.executor.workflows = t.workflows;
+      t.executor.holdMs = 0;
+      await t.start({ plan: chain, policy: { ...policy, checks: [lintCheck], executionMode: "worktree" }, featureAutoApproval: { maxTasks: 5, maxFiles: 5 }, budget: { maxTotalTokens: 6_000_000, maxAgentCalls: 2000, maxActiveMs: 6_000_000 } });
+      await t.approveSplit();
+      const view = await t.drive();
+      const message = t.featureOf(view, "message").runId ?? "";
+      const stops = t.workflows.store.eventsOfType(message, "decision.would_stop").map((e) => e.payload as { reason: string; key: string; inputs: Record<string, unknown> });
+      expect(stops.filter((p) => p.reason === "upstream_baseline_debt")).toEqual([
+        expect.objectContaining({ key: "start-lint", inputs: expect.objectContaining({ release: false, owners: [{ featureId: "base", files: ["base.txt"] }] }) }),
+      ]);
+    }, 120_000);
+
     // R68 ewvet (#2157): with upstream amendments on, the release asks base for the symbol: base
     // runs again (origin replan) with the request in its prompt, message waits for that result and
     // then releases onto it, and the request shows on base in the initiative view.
@@ -1976,6 +2038,57 @@ describe("initiative runtime", () => {
       expect(t.executor.writes["base.txt"]).toBe(2);
       expect(t.executor.seen.message).toContain("base.txt");
       expect(t.workflows.store.eventsOfType(t.featureOf(view, "message").runId ?? "", "decision.would_stop")).toHaveLength(0);
+    }, 180_000);
+
+    // #2183: under `upstreamAmendments: "write"` a gap of one symbol in one file is written by the
+    // asking feature: message's boundary takes base.txt, its run plans again on base's accepted
+    // result with a task that writes base.txt, and base does not run again.
+    test("on with upstream amendments \"write\", message writes the missing symbol into base.txt and base runs once", async () => {
+      class WritingExecutor extends AheadExecutor {
+        /** message's own boundary as each of its plans saw it. */
+        bounds: string[][] = [];
+        override async execute(request: ExecutionRequest) {
+          const state = request.profile.output === "plan" ? this.workflows?.store.state(request.runId) : null;
+          const bounds = state?.initiativeBounds;
+          if (bounds?.featureId === "message") {
+            const own = bounds.features.find((f) => f.id === "message")?.paths ?? [];
+            this.bounds.push(own);
+            // A plan may declare the write only once the boundary holds the file.
+            if (own.includes("base.txt")) this.extraWrites.message = "base.txt";
+          }
+          return super.execute(request);
+        }
+      }
+      const t = setup(chain, 100, (root) => new WritingExecutor(root, chain));
+      repository(t.root);
+      t.executor.initiatives = t.initiatives;
+      t.executor.workflows = t.workflows;
+      t.executor.requirements.message = "Message delegates to Base.isReady for the value.";
+      Object.assign(t.workflows.config.workflows ?? {}, { planAhead: true, upstreamAmendments: "write" });
+      await t.start({ plan: chain, policy: { ...policy, executionMode: "worktree" }, featureAutoApproval: { maxTasks: 5, maxFiles: 5 }, budget: { maxTotalTokens: 6_000_000, maxAgentCalls: 2000, maxActiveMs: 6_000_000 } });
+      await t.approveSplit();
+      let view = await t.drive();
+      for (let i = 0; i < 4 && view.status !== "completed"; i++) {
+        const waiting = view.pendingDecisions.find((d) => d.kind === "approval");
+        if (!waiting?.featureId) break;
+        await t.approveFeature(waiting.featureId);
+        view = await t.drive();
+      }
+      expect(view.status).toBe("completed");
+      // base ran once; message's held run was replaced by a fork that plans again.
+      const links = t.initiatives.store.links(view.initiativeId);
+      expect(links.filter((l) => l.feature_id === "base").map((l) => l.origin)).toEqual(["start"]);
+      expect(links.filter((l) => l.feature_id === "message").map((l) => l.origin)).toEqual(["start", "rebase"]);
+      expect(t.featureOf(view, "base").amendments).toEqual([
+        { from: "message", answer: "write", gaps: [{ ref: "FR-001", symbol: "Base.isReady", featureId: "base", path: "base.txt" }] },
+      ]);
+      expect(t.executor.bounds.at(-1)).toEqual(["message.txt", "base.txt"]);
+      // base wrote base.txt once, and message wrote it once after the amendment.
+      expect(t.executor.writes["base.txt"]).toBe(2);
+      const message = t.featureOf(view, "message").runId ?? "";
+      expect(t.workflows.store.state(message).graph?.tasks.flatMap((task) => task.writes.map((w) => w.path))).toContain("base.txt");
+      // Tiered approval allowed the write: no person was asked for message's plan.
+      expect(t.workflows.store.requests(message).find((r) => r.kind === "approval")?.actor).toBe("auto-approval");
     }, 180_000);
 
     // Bench round 60, wheeltags (#1932): every planned-ahead feature's first plan was refused for

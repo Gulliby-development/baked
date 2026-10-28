@@ -24,7 +24,8 @@ function label(remedy: Remedy): string {
       const amount = suggestionText(
         extendSuggestion({ message: "", summary: "", remedies: [remedy] }),
       );
-      if (!remedy.initiativeId) return "Press B to raise limits";
+      if (!remedy.initiativeId)
+        return amount ? `Press B to raise limits (to ${amount})` : "Press B to raise limits";
       return amount ? `Press B to extend budget (to ${amount})` : "Press B to extend budget";
     }
     case "replan":

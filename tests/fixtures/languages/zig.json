@@ -5,6 +5,10 @@
     "build.zig": "const std = @import(\"std\");\n"
   },
   "expected": {
+    "memberSyntax": [
+      "Scanner delegates to Reader.IsEncodingToken.: Reader.IsEncodingToken",
+      "Scanner calls `reader.is_encoding_token` per token.: reader.is_encoding_token"
+    ],
     "suppressions": null,
     "checkConfigs": null,
     "tests": [
@@ -44,6 +48,9 @@
     "staticTools": [
       "zig fmt: formatter"
     ],
-    "sortedLists": null
+    "sortedLists": null,
+    "dependencyDirs": null,
+    "dependencyPrepare": null,
+    "worktreePathLimits": null
   }
 }
