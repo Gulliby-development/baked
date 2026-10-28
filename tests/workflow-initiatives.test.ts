@@ -1972,8 +1972,10 @@ process.exit(offenses.length ? 1 : 0);`;
         expect.objectContaining({ key: "release-lint", inputs: expect.objectContaining({ checkId: "lint", release: true, owners: [{ featureId: "base", files: ["base.txt"] }] }) }),
       ]);
       expect(stops.find((p) => p.reason === "baseline_unrepairable")?.key).toBe("release-check-lint");
-      // base itself started on a base with no upstream, so nothing is blamed there.
-      expect(store.eventsOfType(t.featureOf(view, "base").runId ?? "", "decision.would_stop")).toHaveLength(0);
+      // base itself started on a base with no upstream, so nothing is blamed there. (Its own
+      // committed base.txt fails the stand-in, which only `committed_tree` (#2225) reports.)
+      const baseStops = store.eventsOfType(t.featureOf(view, "base").runId ?? "", "decision.would_stop").map((e) => (e.payload as { reason: string }).reason);
+      expect(baseStops.filter((reason) => reason !== "committed_tree")).toEqual([]);
     }, 120_000);
 
     // The same debt under a feature started normally on its accepted upstream (#2228 sweep): its
