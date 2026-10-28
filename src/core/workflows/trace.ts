@@ -20,6 +20,7 @@ import {
 } from "../llm/provider-health.js";
 import { canonical, hashBytes, hashJson } from "../specs/hash.js";
 import { workspacePath } from "../specs/validate.js";
+import { replayUnselectedTests } from "../verification/check-runner.js";
 import {
   CASE_WALK_DIR,
   CASE_WALK_KIND,
@@ -927,6 +928,42 @@ export interface RunReplay {
   activeTimes: ActiveTimeBoundary[];
   /** Sizing reports whose active-time cap the current pace sets differently. */
   newActiveTimes: number;
+  /** Each written-tests run whose declared-class filter selected no test (#2363). */
+  unselectedTests: UnselectedTestsBoundary[];
+  /** Such runs the recording did not record a `written_tests_unselected` would-stop for. */
+  newUnselectedStops: number;
+}
+
+export interface UnselectedTestsBoundary {
+  checkId: string;
+  command: string;
+  declared: string[];
+  /** Whether the run recorded the `written_tests_unselected` would-stop for the check. */
+  recorded: boolean;
+}
+
+/**
+ * Every recorded written-tests run that selected the classes its files declare and ran no test
+ * (#2363), decided again on the current rule, with whether the run recorded the would-stop. Traces
+ * before #2363 hold no check that names its declared classes.
+ */
+export function replayUnselectedTestRuns(
+  store: WorkflowStore,
+  runId: string,
+): UnselectedTestsBoundary[] {
+  const recorded = new Set(
+    store
+      .eventsOfType(runId, "decision.would_stop")
+      .flatMap((e) =>
+        e.type === "decision.would_stop" && e.payload.reason === "written_tests_unselected"
+          ? [String((e.payload.inputs as { checkId?: unknown } | undefined)?.checkId)]
+          : [],
+      ),
+  );
+  return replayUnselectedTests(store, runId).map((decision) => ({
+    ...decision,
+    recorded: recorded.has(decision.checkId),
+  }));
 }
 
 export interface ActiveTimeBoundary {
@@ -4011,6 +4048,8 @@ function replayRun(
   | "newSourceDefectRoutes"
   | "activeTimes"
   | "newActiveTimes"
+  | "unselectedTests"
+  | "newUnselectedStops"
 > | null {
   const db = store.connection;
   const run = store.run(runId);
@@ -4368,6 +4407,9 @@ export function replayTrace(
     const paces = new Map(
       runIds.map((runId) => [runId, replayActiveTimes(store, runId, options.activePace)]),
     );
+    const unselected = new Map(
+      runIds.map((runId) => [runId, replayUnselectedTestRuns(store, runId)]),
+    );
     const runs: RunReplay[] = [];
     for (const runId of runIds) {
       const firstByte = timings.get(runId) ?? [];
@@ -4404,6 +4446,7 @@ export function replayTrace(
       const baselineSignatures = signatures.get(runId) ?? [];
       const sourceDefects = routes.get(runId) ?? [];
       const activeTimes = paces.get(runId) ?? [];
+      const unselectedTests = unselected.get(runId) ?? [];
       if (
         !replay.boundaries.length &&
         !firstByte.length &&
@@ -4427,7 +4470,8 @@ export function replayTrace(
         !baselineFailures.length &&
         !baselineSignatures.length &&
         !sourceDefects.length &&
-        !activeTimes.length
+        !activeTimes.length &&
+        !unselectedTests.length
       )
         continue;
       runs.push({
@@ -4502,6 +4546,8 @@ export function replayTrace(
         newSourceDefectRoutes: sourceDefects.filter((b) => b.replayed !== b.recorded).length,
         activeTimes,
         newActiveTimes: activeTimes.filter((b) => b.replayed.after !== b.recorded.after).length,
+        unselectedTests,
+        newUnselectedStops: unselectedTests.filter((b) => !b.recorded).length,
       });
     }
     const gates = replayShareGate(store, options.shareGate);

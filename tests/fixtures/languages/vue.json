@@ -70,6 +70,7 @@
       "node_modules: linked"
     ],
     "dependencyPrepare": null,
-    "worktreePathLimits": null
+    "worktreePathLimits": null,
+    "testClasses": null
   }
 }

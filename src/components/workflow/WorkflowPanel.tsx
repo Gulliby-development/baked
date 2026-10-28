@@ -468,7 +468,12 @@ export function WorkflowPanel({
         .then((changes) => setConfirmAccept(changes.map((c) => c.path)))
         .catch((err: unknown) => setFlash({ kind: "err", message: tuiErrorText(err) }));
     else if (action.action === "repair") void act({ repair: snapshot.revision });
-    else if (action.action === "route" || action.action === "widen" || action.action === "upstream")
+    else if (
+      action.action === "route" ||
+      action.action === "widen" ||
+      action.action === "upstream" ||
+      action.action === "accept-limitation"
+    )
       void act({ remedy: action.action });
     else if (action.action === "checks") void readChecks(snapshot.runId);
     else if (action.action === "reviews") void readChecks(snapshot.runId, true);
