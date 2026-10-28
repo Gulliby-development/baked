@@ -12,6 +12,7 @@ import { tmpDir } from "../platform/index.js";
 import type { SandboxRequest } from "../security/sandbox.js";
 import { linkDependencies } from "../workflows/dependency-dirs.js";
 import type { ProcessScope } from "../workflows/process-scope.js";
+import { fileArgs, recordCommandTimeout } from "./command-timeouts.js";
 import { entryPointCommand } from "./entry-points.js";
 import { REPRO_TIMEOUT_MS, removeScratch, reproEnv } from "./repro.js";
 
@@ -587,9 +588,18 @@ export async function runDocExamples(
           continue;
         }
         if (result.timedOut || result.cancelled) {
+          // The documented line and the files the command names, recorded like a repro's (#2358).
           skip(
             result.timedOut
-              ? `The command ran longer than ${REPRO_TIMEOUT_MS} ms`
+              ? `${
+                  recordCommandTimeout({
+                    source: "doc-example",
+                    command: [program, ...args],
+                    files: [example.file, ...fileArgs(args)],
+                    root: options.root,
+                    timeoutMs: REPRO_TIMEOUT_MS,
+                  }).note
+                }, at line ${String(example.line)}`
               : "The command was cancelled",
           );
           continue;

@@ -63,6 +63,7 @@
     "dependencyDirs": null,
     "dependencyPrepare": null,
     "worktreePathLimits": null,
+    "testClasses": null,
     "testDeclarations": ["src/test/scala/SumSuite.scala: 2 tests, per class 2"]
   }
 }

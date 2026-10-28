@@ -84,6 +84,7 @@
     "dependencyDirs": null,
     "dependencyPrepare": null,
     "worktreePathLimits": null,
+    "testClasses": null,
     "testDeclarations": ["sum_test.go: 2 tests"]
   }
 }

@@ -552,7 +552,9 @@ import {
   GREENFIELD_NOTE,
   QUALITY_BASELINE_REPLAY,
   REPLAY_OUTPUT_CHARS,
+  replayCommand,
   replayEdits,
+  replayStopped,
   replayTargetRecords,
   replayTargets,
 } from "./quality/baseline-replay.js";
@@ -4729,6 +4731,8 @@ export class WorkflowScheduler {
     const debt: Record<string, string[]> = {};
     // The output of each required check that fails before any change, for #2215's decision.
     const failing: { check: Check; output: string }[] = [];
+    // The checks whose baseline ran out of time, with the command and files that did (#2358).
+    const timeouts: Record<string, string> = {};
     if (fresh)
       for (const check of feature) {
         const root = runRoot(this.store.workspace, state);
@@ -4738,6 +4742,7 @@ export class WorkflowScheduler {
           root,
           runSandbox(policy, root, { gitWrite: root !== this.store.workspace }),
         );
+        if (result.timeout) timeouts[commandKey(check)] = result.timeout.note;
         if (result.status === "failed" && check.required && !result.truncated) {
           failures[commandKey(check)] = failureSignature(result.output, root);
           shapes[commandKey(check)] = shapedFailureSignature(result.output, root);
@@ -4773,6 +4778,7 @@ export class WorkflowScheduler {
           failures,
           ...(Object.keys(shapes).length ? { shapes } : {}),
           ...(Object.keys(debt).length ? { debt } : {}),
+          ...(Object.keys(timeouts).length ? { timeouts } : {}),
         }),
       ),
     );
@@ -13691,6 +13697,8 @@ ${note}`;
   ): string | undefined {
     if (checked.status === "passed") checkEvidence.push(checked.evidenceId);
     if (!check.required || checked.status === "passed") return undefined;
+    if (checked.status === "inconclusive" && this.acceptedTimeout(runId, state, check.id))
+      return undefined;
     if (
       checked.status === "failed" &&
       checked.output &&
@@ -13994,13 +14002,26 @@ ${note}`;
     return new WorkflowFault(
       "OUTPUT_INVALID",
       recoveryAdvice(
-        `${message}: it timed out twice on the same workspace (snapshot ${snapshot}, evidence ${previous.evidence_id} and ${last.evidence_id}), so a plain resume runs it into the same timeout again. Run its command yourself to find what it does not finish on (a formatter on one file at a time), change that file or the tool and resume, or revise the run to change or drop the check (\`baked workflow revise ${runId}\`).`,
+        `${message}: it timed out twice on the same workspace (snapshot ${snapshot}, evidence ${previous.evidence_id} and ${last.evidence_id}), so a plain resume runs it into the same timeout again. Run its command yourself to find what it does not finish on (a formatter on one file at a time), change that file or the tool and resume, revise the run to change or drop the check (\`baked workflow revise ${runId}\`), or accept that ${checkId} cannot run as a known limitation of the run (\`baked workflow resume ${runId} --remedy accept-limitation\`).`,
         `${label} ${checkId} timed out twice on the same workspace and needs your decision.`,
         { action: "revise", runId },
         { action: "resume", runId },
+        { action: "accept-limitation", runId, checkId },
       ),
       { reason: "verification_failed", checkId, snapshot },
     );
+  }
+  /**
+   * Whether a required check's inconclusive result is a timeout a person accepted as a known
+   * limitation (#2358): the run goes on without it. Any other inconclusive result still stops.
+   */
+  private acceptedTimeout(runId: string, state: RuntimeState, checkId: string): boolean {
+    if (!state.acceptedCheckTimeouts.includes(checkId)) return false;
+    const last = this.store
+      .checks(runId)
+      .filter((c) => c.check_id === checkId)
+      .at(-1);
+    return last?.reason === "timeout";
   }
   /**
    * The critic of a run (#646), or null when it does not run: `critic: "off"` turns it off and
@@ -14952,7 +14973,12 @@ ${note}`;
           ? this.checkRegression(runId, state, check, result.output)
           : null;
       if (result.status === "passed" && !regression) passedIds.push(check.id);
-      if (result.status === "inconclusive" && check.required) inconclusive ??= check.id;
+      if (
+        result.status === "inconclusive" &&
+        check.required &&
+        !this.acceptedTimeout(runId, state, check.id)
+      )
+        inconclusive ??= check.id;
       if (
         result.status === "failed" &&
         check.required &&
@@ -15452,17 +15478,25 @@ ${note}`;
                 : "failed";
             return { status, output: outcome.output };
           };
-          const outcome = await run(check.args);
+          // The whole test set runs: cargo stopped after the first failing binary (#2364).
+          const command = replayCommand(check.executable, check.args);
+          const outcome = await run(command.args);
           const failed = failedTests(outcome.output);
           const build = outcome.status === "failed" ? buildFailure(outcome.output) : null;
+          const stopped = outcome.status === "failed" ? replayStopped(outcome.output) : null;
           // One target that does not build stops the aggregate command in cargo, pytest, dotnet
-          // and Maven, so the others run again per target (#2020).
+          // and Maven, so the others run again per target (#2020), as do the targets of a run that
+          // still stopped at its first failing one, when the check's command names that runner.
           const targets: BaselineReplayTarget[] = [];
-          const runner = build ? buildRunner(outcome.output) : null;
+          const runner = build
+            ? buildRunner(outcome.output)
+            : stopped && stopped === command.runner
+              ? stopped
+              : null;
           const prefix = check.cwd === "." ? "" : `${check.cwd.replace(/\/+$/, "")}/`;
           const runs = runner
             ? replayTargets(runner, {
-                args: check.args,
+                args: command.args,
                 tests: changedTests
                   .filter((path) => path.startsWith(prefix))
                   .map((path) => path.slice(prefix.length)),
@@ -15492,6 +15526,10 @@ ${note}`;
             failedTests: failed?.names ?? null,
             runner: failed?.tool ?? runner,
             output: outcome.output.slice(-REPLAY_OUTPUT_CHARS),
+            ...(command.args.some((arg, i) => arg !== check.args[i]) ||
+            command.args.length !== check.args.length
+              ? { args: command.args }
+              : {}),
             ...(build ? { buildFailed: true as const, buildErrors: build } : {}),
             ...(targets.length ? { targets } : {}),
           });
@@ -17713,7 +17751,7 @@ ${note}`;
       if (result.status === "passed" && !regression) passedIds.push(check.id);
       if (!check.required || (result.status === "passed" && !regression)) continue;
       if (result.status === "inconclusive") {
-        inconclusive ??= check.id;
+        if (!this.acceptedTimeout(runId, state, check.id)) inconclusive ??= check.id;
         continue;
       }
       if (!result.reason && !regression)

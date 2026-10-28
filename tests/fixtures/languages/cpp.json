@@ -70,6 +70,7 @@
     "dependencyDirs": null,
     "dependencyPrepare": null,
     "worktreePathLimits": null,
+    "testClasses": null,
     "testDeclarations": ["tests/sum_test.cpp: 2 tests"]
   },
   "outputs": {

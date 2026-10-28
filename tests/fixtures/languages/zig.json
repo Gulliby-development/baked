@@ -52,6 +52,7 @@
     "dependencyDirs": null,
     "dependencyPrepare": null,
     "worktreePathLimits": null,
+    "testClasses": null,
     "testDeclarations": ["src/sum_test.zig: 2 tests"]
   }
 }

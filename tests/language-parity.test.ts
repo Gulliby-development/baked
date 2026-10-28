@@ -16,7 +16,7 @@ import {
   TEST_CONVENTIONS,
   TEST_MARKERS,
 } from "../src/core/intelligence/language-traits.js";
-import { detectLanguageFromPath } from "../src/core/intelligence/types.js";
+import { detectLanguageFromPath, EXT_TO_LANGUAGE } from "../src/core/intelligence/types.js";
 import { declaredTests, TEST_DECLARATIONS } from "../src/core/intelligence/test-declarations.js";
 import {
   failureSignature,
@@ -34,6 +34,8 @@ import { PROPERTY_LIBRARIES, propertyTestKind } from "../src/core/workflows/qual
 import { checkBuiltinRules } from "../src/core/workflows/quality/rules.js";
 import { INLINE_HARNESS, inlineRowFile } from "../src/core/workflows/acceptance-rows-inline.js";
 import { TEST_GATES, testGateFlags } from "../src/core/workflows/test-gates.js";
+import { declaredTestClasses, TEST_CLASSES } from "../src/core/workflows/test-classes.js";
+import { writtenTestsCheck } from "../src/core/workflows/affected-tests.js";
 import { TreeSitterBackend } from "../src/core/intelligence/backends/tree-sitter.js";
 import { CALL_SYNTAX, callContext, functionsIn } from "../src/core/intelligence/call-context.js";
 import { TaskSchema } from "../src/core/workflows/schemas.js";
@@ -192,6 +194,23 @@ const RECORDS: Record<
       [...testGateFlags(ofLanguage(language, files).map(([path, text]) => ({ path, text })))].map(
         ([program, flags]) => `${program} ${flags.join(" ")}`,
       ),
+  },
+  // The test classes a written-tests run selects by name (#2363): the row's example, a file whose
+  // class is not named like it, and each test file of the fixture ("by its name" when it declares
+  // no type that holds a test, so the run falls back to the file's name).
+  testClasses: {
+    record: TEST_CLASSES,
+    run: (language, { files }) => {
+      const row = rowOf(TEST_CLASSES, language);
+      const classes = (path: string, text: string) =>
+        `${path}: ${(declaredTestClasses(path, text) ?? []).map((c) => c.name).join(", ") || "by its name"}`;
+      return [
+        ...(row ? [classes(row.example.path, row.example.text)] : []),
+        ...ofLanguage(language, files)
+          .filter(([path]) => isTestFile(path))
+          .map(([path, text]) => classes(path, text)),
+      ];
+    },
   },
   // The comment and string syntax the case walk and the integrity guards read code by (#1846): the
   // lines a string or a comment covers, marked `comment` when stripping comments alone blanks them.
@@ -425,9 +444,45 @@ describe("acceptance rows: every framework has the file and the inline mode (#17
   test.each(frameworks.map((framework) => [framework]))("%s", (framework) => {
     expect(INLINE_HARNESS[framework]).toBeTruthy();
     const pkg = framework === "go" ? "calc" : framework === "junit" ? "com.ex.calc" : "Calc.Tests";
-    const test = { bun: "tests/a.test.ts", pytest: "tests/test_a.py", go: "calc/a_test.go", junit: "src/test/java/com/ex/calc/ATest.java", rust: "tests/a.rs", xunit: "Calc.Tests/ATest.cs", rspec: "spec/a_spec.rb", phpunit: "tests/ATest.php" }[framework];
+    const test = { bun: "tests/a.test.ts", pytest: "tests/test_a.py", go: "calc/a_test.go", junit: "src/test/java/com/ex/calc/ATest.java", rust: "tests/a.rs", xunit: "Calc.Tests/ATest.cs", rspec: "spec/a_spec.rb", phpunit: "tests/ATest.php", testthat: "tests/testthat/test-a.R" }[framework];
     const file = inlineRowFile({ mode: "inline", framework, test, package: pkg }, [{ id: "AC-001:1", criterionId: "AC-001", input: 1, expected: 2, source: "1 | 2" }]);
     expect(file.tail).toContain(INLINE_HARNESS[framework]);
     expect(file.tail).not.toMatch(/serde_json|import junit|org\.json|Newtonsoft/);
+  });
+});
+
+// #2363: a written-tests run that selects tests by class (dotnet's `--filter`, maven's `-Dtest`,
+// gradle's `--tests`) names the classes a file declares, never the file's name. A language whose
+// test files such a runner takes has a `TEST_CLASSES` row, whose example's classes the filter names;
+// a new class-filter runner joins `CLASS_RUNNERS`, and this fails for each language it takes
+// without a row.
+describe("class-filter runners select the declared classes (#2363)", () => {
+  const CLASS_RUNNERS = [
+    { id: "tests", executable: "dotnet", args: ["test"] },
+    { id: "tests", executable: "mvn", args: ["test"] },
+    { id: "tests", executable: "gradle", args: ["test"] },
+  ].map((c) => ({ ...c, cwd: ".", envNames: [], timeoutMs: 300_000, required: true, scope: "feature", writes: [] }) as unknown as Check);
+  const extensionOf = (language: SupportedLanguage) =>
+    Object.entries(EXT_TO_LANGUAGE).find(([, l]) => l === language)?.[0] ?? `.${language}`;
+  test.each(SUPPORTED_LANGUAGES.map((language) => [language]))("%s", (language) => {
+    const row = rowOf(TEST_CLASSES, language);
+    const ext = extensionOf(language);
+    const paths = row ? [row.example.path] : [`src/test/${language}/com/example/UnitTest1${ext}`, `App.Tests/UnitTest1${ext}`];
+    for (const path of paths) {
+      const stem = path.slice(path.lastIndexOf("/") + 1).replace(/\.\w+$/, "");
+      const root = workspace({ [path]: row?.example.text ?? "" });
+      for (const runner of CLASS_RUNNERS) {
+        const args = writtenTestsCheck(root, [runner], [{ path, action: "create" }])?.args.join(" ") ?? "";
+        if (!row) {
+          expect({ runner: runner.executable, path, selectsByName: args.includes(stem) }).toEqual({ runner: runner.executable, path, selectsByName: false });
+          continue;
+        }
+        if (!args) continue;
+        const declared = (declaredTestClasses(path, row.example.text) ?? []).map((c) => c.name);
+        for (const name of declared) expect(args).toContain(name);
+        // Kotlin's `UnitTest1Kt` is a declared class; the file's name alone is not.
+        expect(declared.reduce((rest, name) => rest.replaceAll(name, ""), args)).not.toContain(stem);
+      }
+    }
   });
 });

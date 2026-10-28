@@ -65,6 +65,7 @@
     "dependencyDirs": null,
     "dependencyPrepare": null,
     "worktreePathLimits": null,
+    "testClasses": null,
     "testDeclarations": ["test/sum.bats: 2 tests"]
   }
 }

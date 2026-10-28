@@ -94,6 +94,7 @@
     ],
     "dependencyPrepare": null,
     "worktreePathLimits": null,
+    "testClasses": null,
     "testDeclarations": ["tests/test_sum.py: 3 tests, per class 2"]
   }
 }

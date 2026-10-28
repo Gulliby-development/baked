@@ -116,7 +116,8 @@ describe("the test run of a file with nested rows names the nested class (#1804)
     { name: "Gradle", run: check("./gradlew", ["test"]), test: java,
       args: ["test", "--tests", "com.ex.lanes.OptionsTest", "--tests", "com.ex.lanes.OptionsTest$AcceptanceRows"] },
     { name: "dotnet", run: check("dotnet", ["test"]), test: { mode: "inline", framework: "xunit", package: "Lanes.Tests", test: "Lanes.Tests/OptionsTests.cs" } as InlineRowTest,
-      args: ["test", "--filter", "FullyQualifiedName~OptionsTests.|FullyQualifiedName~OptionsTests+AcceptanceRows."] },
+      // By the namespace the file declares (#2363).
+      args: ["test", "--filter", "FullyQualifiedName~Lanes.Tests.OptionsTests.|FullyQualifiedName~Lanes.Tests.OptionsTests+AcceptanceRows."] },
   ];
   for (const layout of layouts)
     test(layout.name, () => {
@@ -172,13 +173,14 @@ describe("the other frameworks add no type, so their block still ends the file (
     { mode: "inline", framework: "go", package: "lanes", test: "lanes/options_test.go" },
     { mode: "inline", framework: "rust", test: "tests/options.rs" },
     { mode: "inline", framework: "rspec", test: "spec/options_spec.rb" },
+    { mode: "inline", framework: "testthat", test: "tests/testthat/test-options.R" },
   ];
   for (const other of others)
     test(other.framework, () => {
       const file = inlineRowFile(other, rows);
       expect(file.nest).toBeUndefined();
       const written = withInlineRows(other.framework === "go" ? "package lanes\n" : "", file);
-      expect(written.trimEnd()).toEndWith(`${other.framework === "pytest" || other.framework === "rspec" ? "#" : "//"} END acceptance rows`);
+      expect(written.trimEnd()).toEndWith(`${["pytest", "rspec", "testthat"].includes(other.framework) ? "#" : "//"} END acceptance rows`);
     });
 });
 

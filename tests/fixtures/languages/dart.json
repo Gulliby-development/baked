@@ -68,6 +68,7 @@
     "worktreePathLimits": [
       "pubspec.yaml: dart test over 120 characters"
     ],
+    "testClasses": null,
     "testDeclarations": ["test/sum_test.dart: 3 tests"]
   }
 }

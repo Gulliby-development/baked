@@ -63,6 +63,7 @@
     "dependencyDirs": null,
     "dependencyPrepare": null,
     "worktreePathLimits": null,
+    "testClasses": null,
     "testDeclarations": ["tests/test_sum.c: 2 tests"]
   },
   "outputs": {

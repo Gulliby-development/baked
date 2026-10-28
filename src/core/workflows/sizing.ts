@@ -600,7 +600,10 @@ export function markdownRegion(
  * The one reader of a request's verbatim blocks (#2002, #2023): for each path of `paths`, every
  * fenced unified diff hunk for it (`+++` headers, read by `changedLines` and `diffSections`) and
  * every fenced block attributed to it (`blockPath`). A path no block supplies is absent. Pricing
- * (`suppliedLines`) and the host's apply decision (`hostApplyDecision`) both read it.
+ * (`suppliedLines`) and the host's apply decision (`hostApplyDecision`) both read it. A fenced
+ * block of a path that also has a diff is context, not a supplied file, when it quotes the diff's
+ * lines or its prose calls it the old or new line (`quotesDiff`, #2366): the diff alone supplies
+ * the path, and a block that is neither still conflicts with it.
  */
 export function suppliedBlocks(
   request: string,
@@ -608,6 +611,7 @@ export function suppliedBlocks(
 ): Map<string, SuppliedBlock[]> {
   const wanted = new Set(paths.map(requestPath));
   const out = new Map<string, SuppliedBlock[]>();
+  const prose = new Map<SuppliedBlock, string>();
   const add = (path: string, block: SuppliedBlock) => {
     const key = requestPath(path);
     if (wanted.has(key) && block.lines > 0) out.set(key, [...(out.get(key) ?? []), block]);
@@ -629,15 +633,61 @@ export function suppliedBlocks(
     const path = blockPath(block, wanted);
     if (!path) continue;
     const region = markdownRegion(path, block.lines, block.prose);
-    add(path, {
+    const file: SuppliedBlock = {
       kind: "file",
       lines: block.lines.length,
       content: `${body}\n`,
-      whole: WHOLE_FILE.test(block.prose.trim().split("\n").at(-1) ?? ""),
+      whole: WHOLE_FILE.test(lastLine(block.prose)),
       ...(region ? { region } : {}),
-    });
+    };
+    prose.set(file, block.prose);
+    add(path, file);
+  }
+  // A path with a diff: the blocks that quote its change are context, and the diff wins (#2366).
+  for (const [path, blocks] of out) {
+    const lines = diffLines(blocks);
+    if (lines)
+      out.set(
+        path,
+        blocks.filter((b) => b.kind !== "file" || !quotesDiff(b.content, prose.get(b), lines)),
+      );
   }
   return out;
+}
+
+const lastLine = (prose: string): string => prose.trim().split("\n").at(-1) ?? "";
+
+/**
+ * Prose that introduces a fenced block as a line of the change, not as the file (#2366): "Old
+ * line:", "New lines:", "the line", or "Before:" / "After:" at its end.
+ */
+const QUOTED_LINE =
+  /\b(?:old|new|original|current|updated|changed|replacement)\s+lines?\b|\bthe\s+lines?\b|\b(?:before|after)(?:\s+the\s+change)?\s*:?\s*$/i;
+
+/** The text of every hunk line (added, removed or context) of a path's diffs; null without one. */
+function diffLines(blocks: readonly SuppliedBlock[]): Set<string> | null {
+  const patches = blocks.flatMap((b) => (b.kind === "diff" ? [b.patch] : []));
+  if (!patches.length) return null;
+  return new Set(
+    patches
+      .join("")
+      .split("\n")
+      .filter((line) => /^[ +-]/.test(line) && !/^(?:---|\+\+\+) /.test(line))
+      .map((line) => line.slice(1).trim()),
+  );
+}
+
+/**
+ * Whether a fenced block next to a diff of its path quotes the change rather than giving the file
+ * (#2366): the prose before it says it is the old or new line (`QUOTED_LINE`), or every non-blank
+ * line of it is a line of the diff. R75 evalpin-update quoted the old and new line of
+ * `tests/cli.rs` after "Exactly one existing test changes ... Old line:", the quote was read as
+ * the whole file next to the diff, and the host declined T002 for an implementer.
+ */
+function quotesDiff(content: string, prose: string | undefined, lines: ReadonlySet<string>) {
+  if (QUOTED_LINE.test(lastLine(prose ?? ""))) return true;
+  const quoted = content.split("\n").filter((line) => line.trim());
+  return quoted.length > 0 && quoted.every((line) => lines.has(line.trim()));
 }
 
 /**
