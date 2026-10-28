@@ -76,6 +76,7 @@
     "sortedLists": null,
     "dependencyDirs": [
       "vendor: linked"
-    ]
+    ],
+    "testClasses": null
   }
 }

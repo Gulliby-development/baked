@@ -91,6 +91,7 @@
     "dependencyDirs": [
       ".venv: linked",
       "venv: linked"
-    ]
+    ],
+    "testClasses": null
   }
 }

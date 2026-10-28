@@ -75,6 +75,7 @@
     "sortedLists": null,
     "dependencyDirs": [
       "lua_modules: linked"
-    ]
+    ],
+    "testClasses": null
   }
 }

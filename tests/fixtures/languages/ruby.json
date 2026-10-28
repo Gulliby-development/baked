@@ -76,6 +76,7 @@
     "dependencyDirs": [
       "vendor/bundle: linked",
       ".bundle: linked"
-    ]
+    ],
+    "testClasses": null
   }
 }

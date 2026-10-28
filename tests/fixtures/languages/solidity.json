@@ -52,6 +52,7 @@
     "sortedLists": null,
     "dependencyDirs": [
       "node_modules: linked"
-    ]
+    ],
+    "testClasses": null
   }
 }

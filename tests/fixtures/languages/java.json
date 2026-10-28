@@ -79,6 +79,11 @@
       "google-java-format: formatter"
     ],
     "sortedLists": null,
-    "dependencyDirs": null
+    "dependencyDirs": null,
+    "testClasses": [
+      "src/test/java/com/example/UnitTest1.java: com.example.FailureExceptionTest",
+      "src/test/java/SumTest.java: by its name",
+      "src/test/java/SumPropertyTest.java: SumPropertyTest"
+    ]
   }
 }

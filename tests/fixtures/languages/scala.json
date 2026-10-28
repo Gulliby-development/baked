@@ -60,6 +60,7 @@
       "scalafix: linter, whole unit"
     ],
     "sortedLists": null,
-    "dependencyDirs": null
+    "dependencyDirs": null,
+    "testClasses": null
   }
 }

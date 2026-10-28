@@ -87,6 +87,7 @@
     "sortedLists": ["src/index.ts: biome organizeImports \"// order as written\" before 2"],
     "dependencyDirs": [
       "node_modules: linked"
-    ]
+    ],
+    "testClasses": null
   }
 }

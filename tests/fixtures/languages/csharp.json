@@ -78,6 +78,11 @@
       "csharpier: formatter"
     ],
     "sortedLists": null,
-    "dependencyDirs": null
+    "dependencyDirs": null,
+    "testClasses": [
+      "Maskback.Tests/UnitTest1.cs: Maskback.Tests.FailureExceptionTests",
+      "src/App.Tests/Checks.cs: by its name",
+      "tests/App.Tests/Props.cs: by its name"
+    ]
   }
 }

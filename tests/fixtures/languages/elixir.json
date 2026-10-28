@@ -50,6 +50,7 @@
     "sortedLists": null,
     "dependencyDirs": [
       "deps: linked"
-    ]
+    ],
+    "testClasses": null
   }
 }

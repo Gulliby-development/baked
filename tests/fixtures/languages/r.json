@@ -69,6 +69,7 @@
     "dependencyDirs": [
       "renv/library: linked",
       "packrat/lib: linked"
-    ]
+    ],
+    "testClasses": null
   }
 }
