@@ -120,6 +120,7 @@ import {
   isGlobPath,
   mergeSmallSiblings,
   namedFiles,
+  planLanguage,
   planSizeProblem,
   type SplitEdit,
   SplitEditSchema,
@@ -3530,6 +3531,7 @@ export class InitiativeService {
     const facts = this.workflowFacts(settings);
     const models = settings.model ? [settings.model] : [];
     const counts = boundaryPathCounts(plan, row.prompt);
+    const language = planLanguage(plan);
     const features = plan.features.map((feature) => {
       const workflowId = featureWorkflowId(settings, feature);
       return {
@@ -3584,6 +3586,7 @@ export class InitiativeService {
         overhead: row.decompose_run_id ? this.usage(row.decompose_run_id).tokens : 0,
       },
       parallelRuns: this.parallelRuns(settings, plan, facts),
+      ...(language ? { language } : {}),
       ...(settings.basePolicy?.sizing?.recencyHalfLife
         ? { recencyHalfLife: settings.basePolicy.sizing.recencyHalfLife }
         : {}),
@@ -4848,14 +4851,22 @@ function featureRunSamples(
     const settings = initiatives.settings(row);
     const plans = new Map<
       number,
-      { plan: InitiativePlan; counts: ReturnType<typeof boundaryPathCounts> }
+      {
+        plan: InitiativePlan;
+        counts: ReturnType<typeof boundaryPathCounts>;
+        language: string | null;
+      }
     >();
     return initiatives.links(row.id).flatMap((link) => {
       const run = runs.get(link.run_id);
       if (run?.status !== "completed") return [];
       if (!plans.has(link.plan_revision)) {
         const plan = initiatives.plan(initiatives.revision(row.id, link.plan_revision));
-        plans.set(link.plan_revision, { plan, counts: boundaryPathCounts(plan, row.prompt) });
+        plans.set(link.plan_revision, {
+          plan,
+          counts: boundaryPathCounts(plan, row.prompt),
+          language: planLanguage(plan),
+        });
       }
       const revision = plans.get(link.plan_revision);
       const feature = revision?.plan.features.find((f) => f.id === link.feature_id);
@@ -4875,6 +4886,7 @@ function featureRunSamples(
           ...revision?.counts.get(feature.id),
           ...(source === "shared" ? { source } : {}),
           startedAt: link.created_at,
+          ...(revision?.language ? { language: revision.language } : {}),
         },
       ];
     });

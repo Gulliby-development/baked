@@ -78,6 +78,16 @@ export const MIN_HIGH_RATIO_INITIATIVES = 2;
 /** The upper quantile of the measured actual-to-low ratios that sets the high end. */
 export const HIGH_RATIO_QUANTILE = 0.9;
 
+/**
+ * Finished features of a language the size pool needs, the samples' and this initiative's accepted
+ * ones together, before a feature of that language is priced as any other (#2398). Until then the
+ * pool prices it from other languages' features, which ran on toolchains the host already handled,
+ * and its high end is at least its low end times the measured first-language ratio
+ * (`firstLanguageCalibrationOf`). From this many accepted features on the re-forecast scales the
+ * initiative by its own usage (`MIN_CALIBRATION_FEATURES`).
+ */
+export const NEW_LANGUAGE_FEATURES = 3;
+
 /** Tokens against path weight over finished features: `base + perPath * pathWeight`. */
 export interface PathFit {
   base: number;
@@ -110,6 +120,8 @@ export interface FeatureRunSample {
   source?: "project" | "shared";
   /** When the feature's run was linked (epoch ms); absent in older callers, which count as newest. */
   startedAt?: number;
+  /** The language its initiative's plan is written in (`planLanguage`); absent when it names no code. */
+  language?: string;
 }
 
 /** A feature to estimate: its workflow and that workflow's stages. */
@@ -177,6 +189,11 @@ export interface FeatureEstimate {
   pathFit?: PathFit;
   /** "ratios" when the measured actual-to-low ratios set the high end (`HighCalibration`). */
   highBasis?: "ratios";
+  /**
+   * True when its initiative's language is new to the size pool (`NEW_LANGUAGE_FEATURES`) and the
+   * measured first-language ratio raised its high end (#2398).
+   */
+  newLanguage?: true;
   /** Active minutes still to run: its expected tokens not used yet at the measured rate (#1557). */
   minutes?: number;
 }
@@ -282,6 +299,11 @@ export interface InitiativeEstimate {
   /** How this initiative's accepted features compared with their own plans (`ownPlanNeed`). */
   planCalibration: PlanCalibration;
   /**
+   * The language of the initiative while it is new to the size pool, with the actual-to-low ratios
+   * of first-language features that widen its features' high ends (#2398); absent otherwise.
+   */
+  newLanguage?: { language: string; features: number; calibration: HighCalibration };
+  /**
    * The test cases the request demands across the features still to run and what each is priced
    * at (`testCaseRate`): a feature with `testCases` is forecast at no less than its cases times
    * `perCase` (#2055). Null when no feature carries test cases.
@@ -338,47 +360,18 @@ export function highCalibrationOf(
   samples: FeatureRunSample[],
   accepted: { low: number; spent: number }[] = [],
 ): HighCalibration | null {
-  const rate = (s: FeatureRunSample) => s.tokens / pathWeight(s);
   const ratios: number[] = [];
   const initiatives = new Set<string>();
   // Per initiative, what its features used against the sum of their low ends: features of one
   // initiative miss in the same direction, so the total's spread is its own.
   const totals: number[] = [];
-  const groups = Map.groupBy(
-    samples.filter((s) => s.initiativeId && s.tokens > 0),
-    (s) => s.initiativeId ?? "",
-  );
-  for (const [id, own] of groups) {
+  for (const [id, own] of initiativeGroups(samples)) {
     const others = samples.filter((o) => o.initiativeId && o.initiativeId !== id);
-    if (!others.length) continue;
-    const rates = others.filter((o) => pathWeight(o) > 0).map(rate);
-    const lowest = rates.length >= MIN_CRITERIA_SAMPLES ? Math.min(...rates) : 0;
-    let used = 0;
-    let lows = 0;
-    for (const s of own) {
-      // No stages and no run history: the backtest prices by finished features only.
-      const priced = estimateFeature(
-        {
-          id: s.runId,
-          title: s.runId,
-          workflowId: s.workflowId,
-          size: s.size,
-          stages: [],
-          ...(s.paths ? { paths: s.paths } : {}),
-          ...(s.placeholders ? { placeholders: s.placeholders } : {}),
-          ...(s.skeleton ? { skeleton: s.skeleton } : {}),
-        },
-        [],
-        others,
-      );
-      const low = Math.max(priced.tokens.low, lowest * pathWeight(s));
-      if (low <= 0) continue;
-      ratios.push(s.tokens / low);
-      initiatives.add(id);
-      used += s.tokens;
-      lows += low;
-    }
-    if (lows > 0) totals.push(used / lows);
+    const measured = lowRatios(own, others);
+    if (!measured) continue;
+    ratios.push(...measured.ratios);
+    initiatives.add(id);
+    totals.push(measured.total);
   }
   // This initiative's accepted features, against the low end the earlier initiatives gave them.
   const own = accepted.filter((a) => a.low > 0 && a.spent > 0);
@@ -387,11 +380,104 @@ export function highCalibrationOf(
     initiatives.add("");
     totals.push(own.reduce((t, a) => t + a.spent, 0) / own.reduce((t, a) => t + a.low, 0));
   }
-  if (ratios.length < MIN_HIGH_RATIO_SAMPLES || initiatives.size < MIN_HIGH_RATIO_INITIATIVES)
+  return calibrationOf(ratios, initiatives.size, totals);
+}
+
+/**
+ * The actual-to-low ratios of finished features whose initiative's language was new to the pool
+ * when it started (fewer than `NEW_LANGUAGE_FEATURES` finished features of it in earlier
+ * initiatives), each priced from other languages' features alone, as the pool priced it (#2398).
+ * Null with fewer than `MIN_HIGH_RATIO_SAMPLES` of them from `MIN_HIGH_RATIO_INITIATIVES`
+ * initiatives. In the bench-trace corpus, 6 of the 8 features of R73 flatelens (the first Lua
+ * initiative) went above their high end, at 2.6 to 6.7 times their low end, and 7 of the 12 of R74
+ * ladlemath (the first PHP one), at 2.2 to 4.5 times.
+ */
+export function firstLanguageCalibrationOf(samples: FeatureRunSample[]): HighCalibration | null {
+  const groups = initiativeGroups(samples);
+  const firstStart = (own: FeatureRunSample[]) =>
+    Math.min(...own.map((s) => s.startedAt ?? Number.POSITIVE_INFINITY));
+  const ratios: number[] = [];
+  const totals: number[] = [];
+  let initiatives = 0;
+  for (const [id, own] of groups) {
+    const language = own[0]?.language;
+    if (!language) continue;
+    const start = firstStart(own);
+    const earlier = [...groups]
+      .filter(([other, features]) => other !== id && firstStart(features) < start)
+      .flatMap(([, features]) => features)
+      .filter((s) => s.language === language).length;
+    if (earlier >= NEW_LANGUAGE_FEATURES) continue;
+    const others = samples.filter(
+      (o) => o.initiativeId && o.initiativeId !== id && o.language && o.language !== language,
+    );
+    const measured = lowRatios(own, others);
+    if (!measured) continue;
+    ratios.push(...measured.ratios);
+    totals.push(measured.total);
+    initiatives++;
+  }
+  return calibrationOf(ratios, initiatives, totals);
+}
+
+/** Finished features with tokens, by initiative. */
+const initiativeGroups = (samples: FeatureRunSample[]) =>
+  Map.groupBy(
+    samples.filter((s) => s.initiativeId && s.tokens > 0),
+    (s) => s.initiativeId ?? "",
+  );
+
+/**
+ * Each of `own`'s features priced from `others` alone, as the estimate prices a feature still to
+ * run from earlier initiatives (their size and path fit, then the path floor at their lowest
+ * per-path rate), against what it used; and the features' total against their summed low ends.
+ */
+function lowRatios(
+  own: FeatureRunSample[],
+  others: FeatureRunSample[],
+): { ratios: number[]; total: number } | null {
+  if (!others.length) return null;
+  const rate = (s: FeatureRunSample) => s.tokens / pathWeight(s);
+  const rates = others.filter((o) => pathWeight(o) > 0).map(rate);
+  const lowest = rates.length >= MIN_CRITERIA_SAMPLES ? Math.min(...rates) : 0;
+  const ratios: number[] = [];
+  let used = 0;
+  let lows = 0;
+  for (const s of own) {
+    // No stages and no run history: the backtest prices by finished features only.
+    const priced = estimateFeature(
+      {
+        id: s.runId,
+        title: s.runId,
+        workflowId: s.workflowId,
+        size: s.size,
+        stages: [],
+        ...(s.paths ? { paths: s.paths } : {}),
+        ...(s.placeholders ? { placeholders: s.placeholders } : {}),
+        ...(s.skeleton ? { skeleton: s.skeleton } : {}),
+      },
+      [],
+      others,
+    );
+    const low = Math.max(priced.tokens.low, lowest * pathWeight(s));
+    if (low <= 0) continue;
+    ratios.push(s.tokens / low);
+    used += s.tokens;
+    lows += low;
+  }
+  return lows > 0 ? { ratios, total: used / lows } : null;
+}
+
+function calibrationOf(
+  ratios: number[],
+  initiatives: number,
+  totals: number[],
+): HighCalibration | null {
+  if (ratios.length < MIN_HIGH_RATIO_SAMPLES || initiatives < MIN_HIGH_RATIO_INITIATIVES)
     return null;
   return {
     samples: ratios.length,
-    initiatives: initiatives.size,
+    initiatives,
     low: ratioRound(Math.min(...ratios)),
     median: ratioRound(median(ratios)),
     high: ratioRound(quantileOf(ratios, HIGH_RATIO_QUANTILE)),
@@ -636,6 +722,7 @@ function reforecast(
   progress: InitiativeProgress,
   samples: FeatureRunSample[],
   perTestCase: TokenRange | null,
+  newLanguage: InitiativeEstimate["newLanguage"] | null,
 ): {
   features: FeatureEstimate[];
   ratio: number | null;
@@ -803,6 +890,13 @@ function reforecast(
         ),
       );
     }
+    // A language new to the pool overruns what other languages' features price it at: its high end
+    // covers the measured first-language ratios (#2398). Only the bound moves, not the expectation.
+    const firstLanguageHigh = newLanguage
+      ? Math.round(tokens.low * newLanguage.calibration.high)
+      : 0;
+    const widened = firstLanguageHigh > tokens.high;
+    if (widened) tokens.high = firstLanguageHigh;
     return {
       ...f,
       ...known,
@@ -811,6 +905,7 @@ function reforecast(
       basis: scale === null && !floor ? f.basis : "calibrated",
       ...(floor ? { floor } : {}),
       ...(ratios ? { highBasis: "ratios" as const } : {}),
+      ...(widened ? { newLanguage: true as const } : {}),
       spent,
     };
   });
@@ -887,6 +982,23 @@ export function weightedRangeOf(points: readonly (readonly [number, number])[]):
   return { low: Math.round(q(0.25)), high: Math.round(q(0.75)) };
 }
 
+/**
+ * The initiative's language while the pool has fewer than `NEW_LANGUAGE_FEATURES` finished
+ * features of it, counting the initiative's `accepted` ones, with the first-language ratios that
+ * widen its high ends; null for a language the pool knows, or without those ratios.
+ */
+export function newLanguageOf(
+  language: string | undefined,
+  samples: FeatureRunSample[],
+  accepted: number,
+): InitiativeEstimate["newLanguage"] | null {
+  if (!language) return null;
+  const features = samples.filter((s) => s.language === language).length + accepted;
+  if (features >= NEW_LANGUAGE_FEATURES) return null;
+  const calibration = firstLanguageCalibrationOf(samples);
+  return calibration && { language, features, calibration };
+}
+
 export function estimateInitiative(input: {
   features: FeatureToEstimate[];
   history: PastRun[];
@@ -901,9 +1013,16 @@ export function estimateInitiative(input: {
   recencyHalfLife?: number;
   /** What a test case costs (`testCaseRate`), for features with `testCases`; absent prices none. */
   testCaseRate?: TestCaseRate;
+  /** The language the initiative's plan is written in (`planLanguage`); absent prices none as new. */
+  language?: string;
 }): InitiativeEstimate {
   const margin = input.margin ?? ESTIMATE_MARGIN;
   const progress = input.progress ?? { features: {}, overhead: 0 };
+  const newLanguage = newLanguageOf(
+    input.language,
+    input.samples,
+    Object.values(progress.features).filter((f) => f.accepted).length,
+  );
   const {
     features,
     ratio,
@@ -926,6 +1045,7 @@ export function estimateInitiative(input: {
     progress,
     input.samples,
     input.testCaseRate?.perCase ?? null,
+    newLanguage,
   );
   const overhead = { low: progress.overhead, high: progress.overhead };
   const summed = sum([overhead, ...features.map((f) => f.tokens)]);
@@ -937,7 +1057,8 @@ export function estimateInitiative(input: {
     ? Math.round(
         summed.low -
           toRun.reduce((t, f) => t + f.tokens.low, 0) +
-          toRun.reduce((t, f) => t + f.tokens.low, 0) * Math.max(1, highCalibration.total.high),
+          toRun.reduce((t, f) => t + f.tokens.low, 0) *
+            Math.max(1, highCalibration.total.high, newLanguage?.calibration.total.high ?? 0),
       )
     : null;
   const tokens =
@@ -1008,6 +1129,11 @@ export function estimateInitiative(input: {
           `A feature still to run is forecast at most at its low end times ${highCalibration.high.toFixed(2)}, the ${Math.round(HIGH_RATIO_QUANTILE * 100)}th percentile of actual-to-low ratios (${highCalibrationText(highCalibration)}), and expected at the median ratio.`,
         ]
       : []),
+    ...(newLanguage && features.some((f) => f.basis !== "measured" && f.newLanguage)
+      ? [
+          `The pool has ${newLanguage.features} finished ${newLanguage.language} features, fewer than ${NEW_LANGUAGE_FEATURES}: a feature still to run is forecast at most at its low end times ${newLanguage.calibration.high.toFixed(2)}, the ${Math.round(HIGH_RATIO_QUANTILE * 100)}th percentile of what features of an initiative in a language new to the pool used against it (${highCalibrationText(newLanguage.calibration)}).`,
+        ]
+      : []),
     ...(perPath && features.some((f) => f.basis !== "measured" && f.placeholders && !f.criteria)
       ? [
           `A path a later feature also lists counts in full only in that feature, and at ${Math.round(PLACEHOLDER_SHARE * 100)}% as a placeholder in the earlier ones.`,
@@ -1057,6 +1183,7 @@ export function estimateInitiative(input: {
     perPathSamples,
     highCalibration,
     planCalibration,
+    ...(newLanguage ? { newLanguage } : {}),
     testVolume,
     duration: timed.duration,
     notes,
