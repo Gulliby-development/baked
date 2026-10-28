@@ -104,7 +104,17 @@ export const SpecSchema = z
 export const HOST_CONTENT_MAX_CHARS = 4000;
 
 /** The test frameworks acceptance rows as data writes tests for. */
-const RowFramework = z.enum(["bun", "pytest", "go", "junit", "rust", "xunit", "rspec", "phpunit"]);
+const RowFramework = z.enum([
+  "bun",
+  "pytest",
+  "go",
+  "junit",
+  "rust",
+  "xunit",
+  "rspec",
+  "phpunit",
+  "testthat",
+]);
 const RowPackage = z
   .string()
   .max(200)

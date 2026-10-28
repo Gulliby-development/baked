@@ -246,6 +246,7 @@ describe("host-written acceptance rows in the case-walk and mutation gates (#159
     xunit: { harness: "tests/Harness.cs", test: "tests/RowsTest.cs", package: "Tests" },
     rspec: { harness: "tests/harness.rb", test: "tests/rows_spec.rb" },
     phpunit: { harness: "tests/Harness.php", test: "tests/RowsTest.php", package: "App.Tests" },
+    testthat: { harness: "tests/harness.R", test: "tests/testthat/test-rows.R" },
   } as const;
   test.each(Object.keys(layouts) as (keyof typeof layouts)[])("%s retains every case in its JSON data and keeps generated tests out of mutation proposals", async (framework) => {
     const root = mkdtempSync(join(tmpdir(), "baked-row-gate-"));
@@ -258,7 +259,7 @@ describe("host-written acceptance rows in the case-walk and mutation gates (#159
       const graph = { schemaVersion: 1 as const, featureId: "fixture", revision: 1, specHash: "a".repeat(64), planHash: "b".repeat(64), tasks: [task] };
       const artifact = rowsArtifact(spec, graph, { schemaVersion: 1, inputHash: "a".repeat(64), verdict: "pass", findings: [] });
       const files = rowFiles(task, artifact);
-      mkdirSync(join(root, "tests"));
+      mkdirSync(join(root, "tests", "testthat"), { recursive: true });
       for (const generated of files) writeFileSync(join(root, generated.path), generated.content);
       const check = caseCheck(spec, task, { checks: [] });
       expect(check).toBeDefined();
@@ -305,6 +306,7 @@ describe("gate matrix: inline rows block holds its own cells (#1997)", () => {
     xunit: { mode: "inline", framework: "xunit", package: "Calc.Tests", test: "Calc.Tests/CalcTest.cs" },
     rspec: { mode: "inline", framework: "rspec", test: "spec/calc_spec.rb" },
     phpunit: { mode: "inline", framework: "phpunit", package: "App.Tests", test: "tests/CalcTest.php" },
+    testthat: { mode: "inline", framework: "testthat", test: "tests/testthat/test-calc.R" },
   };
   const shapes: [string, unknown][] = [
     ["two-line CRLF text", ["[a]\r\nb=1\r\n", {}]],

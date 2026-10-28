@@ -531,3 +531,67 @@ describe("scenario: the RSpec and PHPUnit rows pass RuboCop and Pint as written 
     expect(await rowFileProblems(temp(tampered), files)).not.toEqual([]);
   });
 });
+
+// #2348: rows as data for testthat. Both templates pass lintr's default linters, whose line length
+// is 80, and styler's tidyverse style as written, and run in testthat with jsonlite, which testthat
+// itself imports.
+const rscript = tool("Rscript", "-e", "library(testthat); library(jsonlite)");
+const lintr = rscript && tool("Rscript", "-e", "library(lintr)");
+const styler = rscript && tool("Rscript", "-e", "library(styler)");
+const TESTTHAT_TEST = "acceptance_actual <- function(input) {\n  input\n}\n";
+const testthatInline: InlineRowTest = { mode: "inline", framework: "testthat", test: "tests/testthat/test-platforms.R" };
+
+describe("scenario: the testthat rows pass lintr and styler as written (#2348)", () => {
+  // Rows a harness that returns its input meets.
+  const echo = rows.map((row) => ({ ...row, expected: row.input }));
+  const testthatFile = { framework: "testthat", harness: "R/platforms-harness.R", test: "tests/testthat/test-platforms-rows.R", data: "tests/testthat/fixtures/platforms-rows.json" };
+  const project = (cases = rows) => {
+    const task = { id: "T003", rows: ["AC-003"], rowTest: testthatFile } as never;
+    const files = rowFiles(task, { tasks: [{ rows: ["AC-003"], rowTest: testthatFile }], rows: cases } as never);
+    return temp({
+      ...Object.fromEntries(files.map((file) => [file.path, file.content])),
+      [testthatFile.harness]: "actual <- function(input) {\n  input\n}\n",
+      [testthatInline.test]: withInlineRows(TESTTHAT_TEST, inlineRowFile(testthatInline, cases)),
+    });
+  };
+
+  test("no line over lintr's 80 columns", () => {
+    const texts = [fileMode(testthatFile)[testthatFile.test] ?? "", withInlineRows(TESTTHAT_TEST, inlineRowFile(testthatInline, rows))];
+    for (const text of texts) expect(text.split("\n").filter((line) => line.length > 80)).toEqual([]);
+  });
+
+  test.skipIf(!lintr)("lintr: no lint in the file mode's test or the inline block", () => {
+    expect(run(project(), "Rscript", "-e", "l <- lintr::lint_dir('tests'); print(l); quit(status = length(l))")).toBe("0");
+  });
+
+  test.skipIf(!styler)("styler: neither test would be restyled", () => {
+    expect(run(project(), "Rscript", "-e", "r <- styler::style_dir('tests', dry = 'on'); quit(status = sum(r$changed))")).toStartWith("0");
+  });
+
+  test.skipIf(!rscript)("testthat: every row of both modes passes, and a wrong harness fails each row by its id", () => {
+    const root = project(echo);
+    const all = "testthat::test_dir('tests/testthat', stop_on_failure = TRUE)";
+    expect(run(root, "Rscript", "-e", all)).toStartWith("0");
+    writeFileSync(join(root, testthatInline.test), withInlineRows("acceptance_actual <- function(input) {\n  list(1, 2)\n}\n", inlineRowFile(testthatInline, echo)));
+    const failed = run(root, "Rscript", "-e", all);
+    expect(failed).not.toStartWith("0");
+    for (const row of rows) expect(failed).toContain(`): ${row.id}\n`);
+  });
+
+  // A formatter that indents by four spaces, and one that indents by tabs.
+  const restyled = [
+    { name: "four-space indentation", format: (text: string) => text.replace(/^( +)/gm, (spaces) => spaces.repeat(2)) },
+    { name: "tab indentation", format: (text: string) => text.replace(/^((?:  )+)/gm, (spaces) => "\t".repeat(spaces.length / 2)) },
+  ];
+  for (const style of restyled) {
+    const file = inlineRowFile(testthatInline, rows);
+    const formatted = style.format(withInlineRows(TESTTHAT_TEST, file));
+    test(`${style.name}: the layout is kept, and a changed row is put back`, () => {
+      expect(formatted).not.toBe(withInlineRows(TESTTHAT_TEST, file));
+      expect(hasInlineRows(formatted, file)).toBe(true);
+      const tampered = formatted.replace("macosx_11_0_arm64", "macosx_12_0_arm64");
+      expect(hasInlineRows(tampered, file)).toBe(false);
+      expect(withInlineRows(tampered, file)).toContain("macosx_11_0_arm64");
+    });
+  }
+});

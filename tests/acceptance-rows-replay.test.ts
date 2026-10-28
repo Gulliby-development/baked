@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import type { LanguageModelV3, LanguageModelV3CallOptions, LanguageModelV3GenerateResult } from "@ai-sdk/provider";
 import { getProvider } from "../src/core/llm/providers/index.js";
+import { testthatOn, testthatRun } from "../src/core/workflows/r-tools.js";
 import { withInlineRows } from "../src/core/workflows/acceptance-rows-inline.js";
 import type { AcceptanceRow } from "../src/core/workflows/acceptance-rows-model.js";
 import { type ReplayResult, replayNote, replayProblems, replayResult, rowReplay } from "../src/core/workflows/acceptance-rows-replay.js";
@@ -74,6 +75,9 @@ describe("which task replays which rows (#1617)", () => {
     // #2335: the spec file, and the PHPUnit test class that holds the block as its own methods.
     { framework: "rspec", test: "spec/paths_spec.rb", run: check("bundle", ["exec", "rspec"]), file: "spec/baked_replay_t001_spec.rb", args: ["exec", "rspec", "./spec/baked_replay_t001_spec.rb"] },
     { framework: "phpunit", package: "App.Tests", test: "tests/PathsTest.php", run: check("php", ["vendor/bin/phpunit", "tests"]), file: "tests/BakedReplayT001Test.php", args: ["vendor/bin/phpunit", "./tests/BakedReplayT001Test.php"] },
+    // #2348: testthat selects the one file by its filter on the name.
+    { framework: "testthat", test: "tests/testthat/test-paths.R", run: check("Rscript", ["-e", testthatRun(false)]), file: "tests/testthat/test-baked-replay-t001.R",
+      args: ["-e", testthatOn(["tests/testthat/test-baked-replay-t001.R"], false)] },
   ] as const;
   test.each(FRAMEWORKS.map((f) => [f.framework, f]))("%s: the replay file runs on its own with the project's test command", (_name, f) => {
     const later = rowTask(f.framework, f.test, "package" in f ? f.package : undefined);
@@ -97,6 +101,8 @@ describe("reading a replay run (#1617)", () => {
     expect(replayResult("failed", "FAILED tests/test_baked_replay_t001.py::test_acceptance_row[AC-003:2] - assert", rows).failed).toEqual(["AC-003:2"]);
     expect(replayResult("failed", "--- FAIL: TestAcceptanceRowsBakedReplayT001/AC-003:1 (0.00s)", rows).failed).toEqual(["AC-003:1"]);
     expect(replayResult("failed", 'AC-003:2: got Array([]), want Array([String("a"), String("b")])', rows).failed).toEqual(["AC-003:2"]);
+    // #2348: testthat names the failing test, which is the row's id.
+    expect(replayResult("failed", "-- Failure ('test-baked-replay-t001.R:44:5'): AC-003:2 -------", rows).failed).toEqual(["AC-003:2"]);
     expect(replayResult("failed", "src/paths.ts(3,1): error TS1005: ';' expected.", rows)).toMatchObject({ status: "error", failed: [] });
     expect(replayResult("inconclusive", "", rows).status).toBe("error");
   });
