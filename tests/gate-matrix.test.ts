@@ -247,6 +247,7 @@ describe("host-written acceptance rows in the case-walk and mutation gates (#159
     rspec: { harness: "tests/harness.rb", test: "tests/rows_spec.rb" },
     phpunit: { harness: "tests/Harness.php", test: "tests/RowsTest.php", package: "App.Tests" },
     testthat: { harness: "tests/harness.R", test: "tests/testthat/test-rows.R" },
+    busted: { harness: "tests/harness.lua", test: "tests/rows_spec.lua" },
   } as const;
   test.each(Object.keys(layouts) as (keyof typeof layouts)[])("%s retains every case in its JSON data and keeps generated tests out of mutation proposals", async (framework) => {
     const root = mkdtempSync(join(tmpdir(), "baked-row-gate-"));
@@ -307,6 +308,7 @@ describe("gate matrix: inline rows block holds its own cells (#1997)", () => {
     rspec: { mode: "inline", framework: "rspec", test: "spec/calc_spec.rb" },
     phpunit: { mode: "inline", framework: "phpunit", package: "App.Tests", test: "tests/CalcTest.php" },
     testthat: { mode: "inline", framework: "testthat", test: "tests/testthat/test-calc.R" },
+    busted: { mode: "inline", framework: "busted", test: "spec/calc_spec.lua" },
   };
   const shapes: [string, unknown][] = [
     ["two-line CRLF text", ["[a]\r\nb=1\r\n", {}]],

@@ -114,6 +114,7 @@ const RowFramework = z.enum([
   "rspec",
   "phpunit",
   "testthat",
+  "busted",
 ]);
 const RowPackage = z
   .string()
