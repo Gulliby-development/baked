@@ -139,9 +139,11 @@ import {
   missingReproAdvice,
   outputShows,
   type ReproOutcome,
+  reproBlind,
   reproCannotSeeCorrection,
   reproCrash,
   reproExecutables,
+  reproOutsidePaths,
   reproTool,
   runProbe,
   runRepro,
@@ -454,7 +456,10 @@ import { outputTail } from "./gates.js";
 import {
   HOST_APPLY_DIR,
   HOST_APPLY_KIND,
+  type HostApplyRecord,
   hostAppliableTasks,
+  hostApplyContents,
+  hostApplyDecision,
   hostApplyInputs,
   hostApplyRecord,
   hostApplyText,
@@ -2642,10 +2647,12 @@ export class WorkflowScheduler {
                   ...this.approvalCost(runId, policy),
                   // Tasks priced from the lines the request supplies say so (#2002).
                   ...estimateSourceOf(this.store, runId),
-                  // Tasks whose every write the request gives verbatim (#2023, shadow).
+                  // Tasks whose every write the request gives verbatim (#2023; written by the host
+                  // under `hostApply: "on"`, #2333).
                   ...((text) => (text ? { hostApply: text } : {}))(
                     hostApplyText(
                       hostAppliableTasks(state.requestText || state.prompt, state.graph),
+                      policy.hostApply === "on" ? "on" : "shadow",
                     ),
                   ),
                   ...(state.spec.deliverables
@@ -5490,6 +5497,38 @@ export class WorkflowScheduler {
     return body.files ?? {};
   }
   /**
+   * Each finding's output and file hash in the task's latest repro check before this one (#2287);
+   * empty before the first.
+   */
+  private previousReproCheck(
+    runId: string,
+    task: Task,
+  ): Map<string, { output: string; fileHash?: string }> {
+    const row = this.store
+      .artifacts(runId)
+      .filter((a) => a.logical_path.startsWith(`tasks/${task.id}/repro-check-`))
+      .at(-1);
+    if (!row) return new Map();
+    const body = JSON.parse(this.store.readArtifact(runId, row.id)) as {
+      outcomes?: { findingId?: unknown; output?: unknown; fileHash?: unknown }[];
+    };
+    return new Map(
+      (body.outcomes ?? []).flatMap((o) =>
+        typeof o.findingId === "string" && typeof o.output === "string"
+          ? [
+              [
+                o.findingId,
+                {
+                  output: o.output,
+                  ...(typeof o.fileHash === "string" ? { fileHash: o.fileHash } : {}),
+                },
+              ] as const,
+            ]
+          : [],
+      ),
+    );
+  }
+  /**
    * The repro check of a corrective task (#1158): runs the repro of each finding the task corrects
    * in `root` and describes the ones that still show the reported behavior. stmtsplit-update
    * T007 and T008 closed a reproduced finding as already_satisfied twice (546k tokens) while its
@@ -5535,7 +5574,12 @@ export class WorkflowScheduler {
     const writes = task.writes.map((w) => w.path);
     if (!repros.length) return undefined;
     return async (root, signal) => {
-      const outcomes: { findingId: string; repro: Repro; outcome: ReproOutcome }[] = [];
+      const outcomes: {
+        findingId: string;
+        repro: Repro;
+        outcome: ReproOutcome;
+        fileHash?: string;
+      }[] = [];
       // A correction that changed only the comments and docstrings of the finding's file cannot
       // change what its repro prints: the repro is evidence, not a gate (#1517).
       const evidenceOnly: string[] = [];
@@ -5551,6 +5595,7 @@ export class WorkflowScheduler {
             continue;
           }
         }
+        const text = typeof file === "string" ? readText(workspacePath(root, file)) : null;
         outcomes.push({
           findingId,
           repro,
@@ -5562,20 +5607,55 @@ export class WorkflowScheduler {
             sandbox: runSandbox(policy, root, { gitWrite: root !== this.store.workspace }),
             shadows: typeof file === "string" ? [file, ...writes] : writes,
           }),
+          ...(text !== null ? { fileHash: hashBytes(text) } : {}),
         });
       }
+      const path = `tasks/${task.id}/repro-check-${newId()}.json`;
+      // Shadow (#2287): a repro that prints the same bytes after the attempt changed the
+      // finding's file, and reads a path outside the root, cannot see the correction.
+      const previous = this.previousReproCheck(runId, task);
+      const blind = outcomes.filter(({ findingId, repro, outcome, fileHash }) => {
+        const before = previous.get(findingId);
+        return (
+          before !== undefined &&
+          reproBlind({
+            status: outcome.status,
+            fileChanged:
+              fileHash !== undefined &&
+              before.fileHash !== undefined &&
+              fileHash !== before.fileHash,
+            sameOutput: before.output === outcome.output,
+            outside: reproOutsidePaths(repro, root).length,
+          })
+        );
+      });
       this.store.transaction(() =>
         this.store.artifact(
           runId,
           "repro",
-          `tasks/${task.id}/repro-check-${newId()}.json`,
+          path,
           canonical({
             taskId: task.id,
-            outcomes: outcomes.map(({ findingId, outcome }) => ({ findingId, ...outcome })),
+            outcomes: outcomes.map(({ findingId, outcome, fileHash }) => ({
+              findingId,
+              ...outcome,
+              ...(fileHash ? { fileHash } : {}),
+            })),
             ...(evidenceOnly.length ? { evidenceOnly } : {}),
+            ...(blind.length ? { blind: blind.map((b) => b.findingId) } : {}),
           }),
         ),
       );
+      const mode = stopMode(policy, "repro_blind");
+      if (mode !== "enforce")
+        for (const { findingId, repro } of blind)
+          recordWouldStop(this.store, runId, {
+            reason: "repro_blind",
+            mode,
+            key: `${path}#${findingId}`,
+            summary: `Finding ${findingId}'s repro printed the same output after task ${task.id} changed the finding's file, and it reads ${reproOutsidePaths(repro, root).join(", ")} outside the root it runs in: it cannot see the correction, and would be inconclusive instead of reproduced.`,
+            inputs: { taskId: task.id, findingId, outside: reproOutsidePaths(repro, root) },
+          });
       return outcomes
         .filter(({ outcome }) => outcome.status === "reproduced")
         .map(
@@ -7824,11 +7904,13 @@ ${note}`;
       !checking &&
       (task.writes.length === 0 ||
         hostWritten(task) ||
+        (firstRun && (await this.hostApply(runId, child, state, policy, task))) ||
         (firstRun && (await this.correctionPassing(runId, child, state, policy, task, signal))))
     ) {
-      // A task that may not write, a task whose files the host writes, or a correction whose
-      // failing checks already pass, has nothing for a model to do: its task checks decide it,
-      // and the checks stage covers the rest.
+      // A task that may not write, a task whose files the host writes (planned content, or the
+      // request's verbatim content it applied, #2333), or a correction whose failing checks
+      // already pass, has nothing for a model to do: its task checks decide it, and the checks
+      // stage covers the rest.
       if (hostWritten(task)) this.writeHostFiles(runId, child, state, policy, task);
       // No session edits these files, so no scan runs; the record says why (#2277).
       this.recordIntegrity(runId, `tasks/${task.id}`, {
@@ -8443,7 +8525,24 @@ ${note}`;
       const ready = runnable;
       if (!checking && (await this.hostFirstReruns(runId, stepId, state, policy, signal, ready)))
         continue;
-      const single = checking ?? ready.find((t) => t.writes.length === 0 || hostWritten(t));
+      // A task the host may apply from the request's verbatim content (#2333) runs on this path,
+      // which applies it, never in a batch worker that would start a session.
+      const appliable =
+        policy.hostApply === "on" && state.graph
+          ? new Set(hostAppliableTasks(state.requestText || state.prompt, state.graph))
+          : new Set<string>();
+      const pending = new Set(
+        this.store
+          .tasks(runId)
+          .filter((t) => t.status === "pending")
+          .map((t) => t.id),
+      );
+      const single =
+        checking ??
+        ready.find(
+          (t) =>
+            t.writes.length === 0 || hostWritten(t) || (appliable.has(t.id) && pending.has(t.id)),
+        );
       signal.throwIfAborted();
       if (single) {
         await this.implementTask(
@@ -10926,7 +11025,7 @@ ${note}`;
     child: string,
     state: RuntimeState,
     policy: RunPolicy,
-    task: Task,
+    task: Pick<Task, "writes">,
   ): void {
     const root = runRoot(this.store.workspace, state);
     const attempt = this.store.reserve(runId, child, null, 0, policy);
@@ -18818,6 +18917,60 @@ ${note}`;
       );
     } catch {}
   }
+  /**
+   * Under `hostApply: "on"` (#2333), writes a planned task's files from the request's verbatim
+   * content before its first session when `hostApplyDecision` would apply them, through the run's
+   * journal as for a host-written task, and records `host-apply/tasks/<task>.json` with
+   * `applied`. True when the host wrote them: no implementer runs, the task checks decide it.
+   * False (and the implementer runs as before) when the policy is off, the request gives the task
+   * no verbatim block, the decision keeps the implementer, or the content cannot be computed.
+   */
+  private async hostApply(
+    runId: string,
+    child: string,
+    state: RuntimeState,
+    policy: RunPolicy,
+    task: Task,
+  ): Promise<boolean> {
+    if (policy.hostApply !== "on" || task.origin !== "planned") return false;
+    const path = `${HOST_APPLY_DIR}${task.id}.json`;
+    if (this.store.latestArtifact(runId, path)) return false;
+    const root = runRoot(this.store.workspace, state);
+    const request = state.requestText || state.prompt;
+    let record: HostApplyRecord;
+    let contents: { path: string; content: string }[] = [];
+    try {
+      const writes = await hostApplyInputs(root, request, task);
+      if (!writes) return false;
+      record = hostApplyRecord(task.id, writes, hostApplyDecision, "on");
+    } catch {
+      return false;
+    }
+    if (record.wouldApply)
+      try {
+        contents = await hostApplyContents(root, request, task);
+      } catch (error) {
+        record = {
+          ...record,
+          applied: false,
+          applyError: (error instanceof Error ? error.message : String(error)).slice(0, 300),
+        };
+      }
+    const applied = record.wouldApply && record.applied !== false;
+    if (applied) {
+      this.writeHostFiles(runId, child, state, policy, {
+        writes: contents.map((c) => ({
+          path: c.path,
+          action: "modify" as const,
+          content: c.content,
+        })),
+      });
+      record = { ...record, applied: true };
+    } else if (record.applied === undefined) record = { ...record, applied: false };
+    this.store.artifact(runId, HOST_APPLY_KIND, path, canonical(record));
+    return applied;
+  }
+
   /**
    * Records the project's static checks on a copy of the task's base with the request's verbatim
    * content written in (`suppliedCheckRecord`, #2275), once per task. Shadow: the implementer
