@@ -26,6 +26,7 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { directoryFixers, directoryFixerScenario } from "./helpers/directory-fixer-scenario.js";
 import { baselineCreatedFilesScenario, FIRST_RUN_OUTPUTS } from "./helpers/baseline-created-files-scenario.js";
 import { sourceManifest, TOOL_CACHES } from "../src/core/verification/snapshot.js";
+import { linkDependencies } from "../src/core/workflows/dependency-dirs.js";
 import { spawnSync } from "node:child_process";
 import {
   chmodSync,
@@ -1093,6 +1094,24 @@ describe("gate matrix: Composer (#1491)", () => {
     const json = (extra: object) => JSON.stringify({ name: "a/b", description: "x", ...extra });
     expect(manifestFieldChanges("composer.json", json({}), json({ description: "y" }))).toEqual([]);
     expect(manifestFieldChanges("composer.json", json({}), json({ scripts: { "post-install-cmd": "php x.php" }, autoload: { files: ["boot.php"] }, repositories: [{ type: "vcs", url: "https://example.test/x" }] }))).toEqual(["scripts.post-install-cmd", "autoload", "repositories"]);
+  });
+
+  // #2401 (R76 ladlemath-update): phpstan's launcher loads the autoloader next to its own package
+  // after the working directory's one; in a worktree whose packages were links, that was the main
+  // workspace's autoloader and PHP died on "Cannot declare class ComposerAutoloaderInit...".
+  test.skipIf(!Bun.which("php") || !Bun.which("composer"))("a vendor/bin gate runs once in a worktree copy of vendor/ (#2401)", () => {
+    const workspace = project({
+      "composer.json": JSON.stringify({ name: "a/b", autoload: { "psr-4": { "App\\": "src/" } } }),
+      "src/Sum.php": "<?php\nnamespace App;\nfinal class Sum {}\n",
+      "vendor/acme/analyser/bin/analyse": "<?php\nrequire_once getcwd() . '/vendor/autoload.php';\nrequire_once dirname(__DIR__, 3) . '/autoload.php';\necho class_exists('App\\\\Sum') ? 'analysed' : 'none';\n",
+      "vendor/bin/analyse": "<?php\ninclude __DIR__ . '/..'.'/acme/analyser/bin/analyse';\n",
+    });
+    expect(spawnSync("composer", ["dump-autoload", "--no-interaction", "--quiet"], { cwd: workspace }).status).toBe(0);
+    const copy = project({ "src/Sum.php": "<?php\nnamespace App;\nfinal class Sum {}\n" });
+    linkDependencies(workspace, copy);
+    const gate = spawnSync("php", ["vendor/bin/analyse"], { cwd: copy, encoding: "utf8" });
+    expect(`${gate.stdout}${gate.stderr}`).toBe("analysed");
+    expect(gate.status).toBe(0);
   });
 });
 
