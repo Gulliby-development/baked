@@ -477,6 +477,16 @@ describe("token pool invariants (#2042)", () => {
     }), { numRuns: 300 });
   });
 
+  test("with extendWithinDollars on the applied extension is final: the grown pool is never grown again (#2060)", () => {
+    fc.assert(fc.property(poolSeed, (inputs) => {
+      const decision = poolExtensionDecision(inputs, tokenPool(inputs));
+      if (!decision.wouldExtend || decision.toTokens === null) return;
+      const grown = { ...inputs, limitTokens: decision.toTokens };
+      const again = poolExtensionDecision(grown, tokenPool(grown));
+      expect(again.wouldExtend).toBe(false);
+    }), { numRuns: 300 });
+  });
+
   test("the measured forecast is never below what was used", () => {
     const feature = fc.record({
       accepted: fc.boolean(), skeleton: fc.boolean(), spent: fc.integer({ min: 0, max: 5_000_000 }),
