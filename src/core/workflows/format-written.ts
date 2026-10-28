@@ -8,6 +8,7 @@ import { cwdPath, isCodePath } from "./check-policy.js";
 import { unresolvedChecks } from "./check-preflight.js";
 import { detectGates } from "./gates.js";
 import { programName } from "./launcher.js";
+import { stripComments } from "./quality/code-mask.js";
 import { STYLER_CHECK_FILES, STYLER_FIX } from "./r-tools.js";
 import { toolchainCommand } from "./toolchain.js";
 import type { Check } from "./types.js";
@@ -486,6 +487,16 @@ export function changedLineRanges(before: string, after: string): LineRange[] {
     .filter(([start, end]) => start <= end);
 }
 
+/**
+ * Whether a file's base holds no code: blank, or comments only. An initiative's skeleton writes
+ * its modules as such stubs, so every later feature that fills one edits it; its text is BAKED's,
+ * not the project's formatting to keep, and a formatter with no range form (styler, Biome, dprint,
+ * shfmt) would otherwise hold none of it (xmlvet R71 shipped R/cli.R unstyled, #2243).
+ */
+export function isStub(path: string, base: string): boolean {
+  return stripComments(path, base).trim() === "";
+}
+
 /** A file a task wrote that the format-written checks hold: wholly, or only on `ranges`. */
 interface Written {
   path: string;
@@ -498,7 +509,7 @@ interface Written {
  * whose whole-tree gate the project offers but the run's checks leave out, on the language's
  * files only, required, with the formatter's write mode as the fixer, limited to those files
  * (`fixPaths`). A file the task creates, or one the run created (`base` gives null), is checked
- * whole. A file it edits is checked on the lines the run changed against `base` (its content before
+ * whole, and so is a file whose base holds no code (`isStub`). A file it edits is checked on the lines the run changed against `base` (its content before
  * the run's first write), by a formatter that formats a range; with no such formatter, or no base,
  * it is not checked. None for a file the checks already format (a check of the language's formatter
  * on it or a directory above it; a `format` script counts for the npm languages), and none whose
@@ -526,7 +537,7 @@ export function formatWrittenChecks(
       // run reformats lines the request left alone, which a brownfield review rejects (#1582).
       const before = base?.(write.path);
       if (before === undefined) continue;
-      if (before !== null) {
+      if (before !== null && !isStub(write.path, before)) {
         const text = readFileSync(absolute, "utf8");
         const ranges = changedLineRanges(before, text);
         if (!ranges.length) continue;

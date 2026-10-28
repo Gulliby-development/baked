@@ -301,6 +301,18 @@ import {
   scopedPlanBudget,
 } from "./clarification.js";
 import {
+  COMMITTED_TREE_KIND,
+  COMMITTED_TREE_PATH,
+  type CommittedTreeRecord,
+  type CommittedTreeResult,
+  committedTreeChecks,
+  committedTreeFailures,
+  EOL_GUARD_KIND,
+  EOL_GUARD_PATH,
+  eolMismatches,
+  parseLsFilesEol,
+} from "./committed-tree.js";
+import {
   CONFLICT_DECISION_PREFIX,
   conflictDecisions,
   decidedFindingIds,
@@ -842,6 +854,7 @@ import {
   type WorkflowStore,
 } from "./store.js";
 import {
+  exactTextContext,
   isSuppliedContentFinding,
   suppliedConflictCriteria,
   suppliedContentFindings,
@@ -953,6 +966,9 @@ type Severity = Review["findings"][number]["severity"];
 const MUTATION_COPY = "quality-mutation";
 /** The task worktree the baseline replay (#1945) runs in. */
 const BASELINE_REPLAY_COPY = "quality-baseline-replay";
+/** The clean worktree of a feature's commit its static checks run in again (#2225). */
+const COMMITTED_TREE_COPY = "committed-tree";
+const COMMITTED_TREE_OUTPUT_CHARS = 4000;
 /** How long one dependency listing of the baseline replay may run (#1954). */
 const RESOLUTION_TIMEOUT_MS = 180_000;
 /** The task worktree the package contents check (#1984) builds packages in. */
@@ -3666,6 +3682,19 @@ export class WorkflowScheduler {
               : "An earlier attempt of this task reached its limit after edits it did not check, and these required checks failed on its files, with this output. Fix what fails, run the check with request_check, then submit.",
       },
     };
+  }
+  /**
+   * The request sections a test task compares exactly, as string literals of its language
+   * (`exactTextContext`, #2101), with `exactTextLiteral: "on"`.
+   */
+  private exactText(
+    runId: string,
+    state: RuntimeState,
+    policy: RunPolicy,
+    task: Task,
+  ): ReturnType<typeof exactTextContext> {
+    if (policy.exactTextLiteral !== "on" || !state.spec) return {};
+    return exactTextContext(statedRequest(state, this.store.requests(runId)), state.spec, task);
   }
   /** The finding a bounded misquote continuation corrects (#2058), while it is that attempt. */
   private misquoteContinue(
@@ -7916,6 +7945,7 @@ ${note}`;
               ...this.recurringContext(runId, state, task),
               ...this.cutOffChecks(runId, task.id),
               ...this.misquoteContinue(runId, state, task.id),
+              ...this.exactText(runId, state, policy, task),
               ...(focus.files.length
                 ? {
                     correctionFocus: {
@@ -9257,6 +9287,7 @@ ${note}`;
         ...this.earlierReadsContext(runId, task.id),
         ...this.cutOffChecks(runId, task.id),
         ...this.misquoteContinue(runId, state, task.id),
+        ...this.exactText(runId, state, policy, task),
       };
       const needed = reserveTokens(
         this.estimatePrompt(runId, state, policy, profile, extra),
@@ -15041,13 +15072,16 @@ ${note}`;
    * Runs `work` in a task worktree checked out from the run's current content, with the
    * project's dependency folders linked from the run (#2330), and removes it afterwards. The baseline replay
    * (#1945) and the package contents check (#1984) run their commands there, so nothing they
-   * write reaches the run's tree after its snapshot. Returns why no copy could be made, else null.
+   * write reaches the run's tree after its snapshot. `commit`, when given, is checked out
+   * instead (the committed-tree check checks out the feature's commit, #2225). Returns why no copy
+   * could be made, else null.
    */
   private async inRunCopy(
     runId: string,
     state: RuntimeState,
     name: string,
     work: (copy: string, scope: ProcessScope) => Promise<void>,
+    commit?: string,
   ): Promise<string | null> {
     const root = runRoot(this.store.workspace, state);
     // The copy checks out the whole repository, so it stands in for the run only at its top.
@@ -15056,9 +15090,11 @@ ${note}`;
       return "no copy of the run could be made (the run is not at its repository's top)";
     let path: string;
     try {
-      const base = await runContentCommit(this.store, runId, {
-        path: relative(this.store.workspace, root),
-      });
+      const base =
+        commit ??
+        (await runContentCommit(this.store, runId, {
+          path: relative(this.store.workspace, root),
+        }));
       path = await createTaskWorktree(this.store, runId, name, base);
     } catch (error) {
       return `no copy of the run could be made: ${String(error).slice(0, 300)}`;
@@ -17917,6 +17953,7 @@ ${note}`;
     };
     settleSupersededEffects(this.store, runId);
     await this.commitAccepted(runId, state, acceptable);
+    await this.committedTreeCheck(runId, state, policy, signal);
     this.store.transaction(() => {
       acceptable();
       for (const task of this.store
@@ -17955,6 +17992,133 @@ ${note}`;
       this.store.bump(runId, this.store.run(runId).revision);
       this.store.transition(runId, "completed");
     });
+  }
+  /**
+   * The committed-tree check (#2225, committed-tree.ts), once per accepted commit of a worktree
+   * run, after `commitAccepted`: the files of the commit whose working ending differs from what a
+   * checkout of it gives go to `eol/guard.json`, and the file-local static required checks that
+   * passed on the accepted snapshot run once more in a clean worktree of the commit, recorded in
+   * `committed-tree/check.json`. A check that fails there records the `committed_tree`
+   * would-stop (shadow); acceptance goes on.
+   */
+  private async committedTreeCheck(
+    runId: string,
+    state: RuntimeState,
+    policy: RunPolicy,
+    signal: AbortSignal,
+  ): Promise<void> {
+    const worktree = state.worktree;
+    const commit = worktree?.commit;
+    const snapshotId = state.snapshotId;
+    if (!worktree || !commit || !snapshotId) return;
+    const mode = stopMode(policy, "committed_tree");
+    if (mode === "enforce") return;
+    const prior = this.store.latestArtifact(runId, COMMITTED_TREE_PATH);
+    if (
+      prior &&
+      (JSON.parse(this.store.readArtifact(runId, prior.id)) as CommittedTreeRecord).commit ===
+        commit
+    )
+      return;
+    const root = join(this.store.workspace, worktree.path);
+    const changed = await git(root, [
+      "diff",
+      "--name-only",
+      "-z",
+      "--no-renames",
+      worktree.baseHead,
+      commit,
+    ]);
+    const listed = await git(root, ["ls-files", "--eol", "-z"]);
+    if (changed.code === 0 && listed.code === 0) {
+      const autocrlf = (await git(root, ["config", "--bool", "core.autocrlf"])).stdout.trim();
+      const paths = eolMismatches(parseLsFilesEol(listed.stdout), {
+        autocrlf: autocrlf === "true",
+        paths: new Set(changed.stdout.split("\0").filter(Boolean)),
+      });
+      if (paths.length)
+        this.store.transaction(() =>
+          this.store.artifact(
+            runId,
+            EOL_GUARD_KIND,
+            EOL_GUARD_PATH,
+            canonical({ commit, snapshotId, autocrlf: autocrlf === "true", paths }),
+          ),
+        );
+    }
+    const passed = new Set(
+      this.store
+        .checks(runId)
+        .filter((c) => c.snapshot_id === snapshotId && c.status === "passed")
+        .map((c) => c.check_id),
+    );
+    const checks = committedTreeChecks(policy.checks).filter((check) => passed.has(check.id));
+    if (!checks.length) return;
+    const results: CommittedTreeResult[] = [];
+    const note = await this.inRunCopy(
+      runId,
+      state,
+      COMMITTED_TREE_COPY,
+      async (copy, scope) => {
+        for (const check of checks) {
+          signal.throwIfAborted();
+          try {
+            const outcome = await executeCheckCommand(
+              scope,
+              check.executable === "bun" ? process.execPath : check.executable,
+              check.args,
+              {
+                cwd: check.cwd === "." ? copy : workspacePath(copy, check.cwd),
+                env: buildCheckEnv(check),
+                timeoutMs: check.timeoutMs,
+                signal,
+                sandbox: runSandbox(policy, copy, { gitWrite: true }),
+              },
+            );
+            results.push(
+              outcome.timedOut
+                ? { checkId: check.id, status: "timeout" }
+                : outcome.exitCode === 0
+                  ? { checkId: check.id, status: "passed" }
+                  : {
+                      checkId: check.id,
+                      status: "failed",
+                      output: outcome.output.slice(-COMMITTED_TREE_OUTPUT_CHARS),
+                    },
+            );
+          } catch (error) {
+            signal.throwIfAborted();
+            results.push({
+              checkId: check.id,
+              status: "unavailable",
+              output: String(error).slice(0, COMMITTED_TREE_OUTPUT_CHARS),
+            });
+          }
+        }
+      },
+      commit,
+    );
+    const record: CommittedTreeRecord = {
+      commit,
+      snapshotId,
+      ...(note ? { note } : {}),
+      results,
+    };
+    this.store.transaction(() =>
+      this.store.artifact(runId, COMMITTED_TREE_KIND, COMMITTED_TREE_PATH, canonical(record)),
+    );
+    for (const checkId of committedTreeFailures(record))
+      recordWouldStop(this.store, runId, {
+        reason: "committed_tree",
+        mode,
+        key: `${commit}#${checkId}`,
+        summary: `committed_tree: required check ${checkId} passed on the working tree and fails on a clean worktree of the feature's commit ${commit.slice(0, 12)}; the feature would not be accepted`,
+        inputs: {
+          commit,
+          checkId,
+          output: record.results.find((r) => r.checkId === checkId)?.output ?? "",
+        },
+      });
   }
   /**
    * Commits the accepted result of a worktree run on its branch, once acceptance holds: the files
@@ -18793,6 +18957,7 @@ ${note}`;
     };
     settleSupersededEffects(this.store, runId);
     await this.commitAccepted(runId, state, acceptable);
+    await this.committedTreeCheck(runId, state, policy, signal);
     this.store.transaction(() => {
       acceptable();
       for (const task of this.store

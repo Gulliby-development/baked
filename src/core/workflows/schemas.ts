@@ -731,6 +731,13 @@ export const PolicySchema = z
      */
     conflictFinish: z.literal("on").optional(),
     /**
+     * The expected text a test task compares exactly, written by the host as a string literal of
+     * the test's language (supplied-content.ts, #2101): `on` gives the implementer each request
+     * section a criterion of the task compares exactly, escaped once by the host. Absent means
+     * off, so stored policies keep their hash.
+     */
+    exactTextLiteral: z.literal("on").optional(),
+    /**
      * The host's order around a blocked corrective (corrective-defer.ts, #2109): `on` lets the
      * drive run the ready tasks a corrective that blocked does not hold, keeping its hold on the
      * rest, and end the run with its stop once nothing else can run. Absent means shadow (the
