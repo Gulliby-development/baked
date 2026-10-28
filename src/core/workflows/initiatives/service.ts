@@ -3205,7 +3205,7 @@ export class InitiativeService {
         return { ...file, text: shown.code === 0 ? shown.stdout : null };
       }),
     );
-    return upstreamSymbolGaps(spec, upstream);
+    return upstreamSymbolGaps(spec, upstream, feature.boundary.paths);
   }
 
   /** The amendment requests of the approved split (#2157), oldest first. */
