@@ -49,6 +49,7 @@ const INLINE: Record<InlineRowTest["framework"], InlineRowTest> = {
   testthat: { mode: "inline", framework: "testthat", test: "tests/testthat/test-rules.R" },
   busted: { mode: "inline", framework: "busted", test: "spec/rules_spec.lua" },
   minitest: { mode: "inline", framework: "minitest", test: "test/rules_test.rb" },
+  pest: { mode: "inline", framework: "pest", test: "tests/RulesTest.php" },
 };
 
 /** A block's text with the line breaks and indentation of its own layout taken out. */
@@ -117,6 +118,11 @@ const PROJECTS: Partial<Record<InlineRowTest["framework"], { files: Record<strin
     existing: "# frozen_string_literal: true\n\nrequire 'minitest/autorun'\n\ndef acceptance_actual(input)\n  input\nend\n",
     run: [["ruby", "test/rules_test.rb"]],
   },
+  pest: {
+    files: {},
+    existing: "<?php\n\n$acceptanceActual = function (mixed $input): mixed {\n    return $input;\n};\n",
+    run: [["pest", "tests/RulesTest.php"]],
+  },
 };
 
 const has = (command: string[]) => {
@@ -136,6 +142,7 @@ const AVAILABLE: Record<string, boolean> = {
   testthat: has(["Rscript", "-e", "library(testthat); library(jsonlite)"]),
   busted: Bun.which("busted") !== null,
   minitest: has(["ruby", "-e", "require 'minitest'"]),
+  pest: Bun.which("pest") !== null,
 };
 
 describe("scenario: cfgquill lint R64, rows with a U+FEFF run in the project's own toolchain (#1995)", () => {

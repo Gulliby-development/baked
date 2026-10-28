@@ -28,8 +28,9 @@ const usd = (n: number): string => `$${n.toFixed(2)}`;
 /**
  * Whether the host grows the token pool on its own inside the person's dollar cap
  * (`workflows.extendWithinDollars`). `shadow`, the default, records the decision as a
- * `decision.would_extend` initiative event and changes nothing; `off` records nothing. Growing
- * the pool for real is its own pull request after bench rounds with no false would-extend.
+ * `decision.would_extend` initiative event and changes nothing; `on` (opt-in, #2060) applies the
+ * same decision as a `budget.extended` event `by: "host"` and the parked feature starts; `off`
+ * records nothing. Making `on` the default is its own pull request.
  */
 export { EXTEND_WITHIN_DOLLARS_MODES };
 export type ExtendWithinDollars = (typeof EXTEND_WITHIN_DOLLARS_MODES)[number];
