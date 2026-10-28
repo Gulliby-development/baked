@@ -200,6 +200,16 @@ export const STOP_REASONS = {
     modes: NOT_ENFORCED,
     defaultMode: "shadow",
   },
+  cost_refusal_wait: {
+    label:
+      "A run past its tasks refused a review or convergence call on its cost ceiling, with a priced extend remedy: it would wait for the extension instead of blocking",
+    // Shadow only until two bench rounds show no false would-stop (#2249, R71 xmlvet get-command
+    // blocked 24 minutes at its first review call while cli-release, planned ahead, waited on it).
+    // The run still blocks; its promotion leaves it `waiting` on a request a person answers with
+    // the extend remedy, and its planned-ahead dependants count it as waiting, not stalled.
+    modes: NOT_ENFORCED,
+    defaultMode: "shadow",
+  },
   cost: {
     label: "Spent and reserved dollars reach the cost cap",
     modes: ENFORCED,
@@ -351,6 +361,80 @@ export function wouldStopSummary(store: WorkflowStore, runId: string): WouldStop
     });
   }
   return [...byReason.values()];
+}
+
+/** The state a cost refusal of a run past its tasks would leave it in (#2249). */
+export interface CostRefusalWait {
+  state: "waiting";
+  /** The state the run takes today. */
+  instead: "blocked";
+  stageId: string | null;
+  /** The stages after the tasks still to run, as the fault priced them. */
+  stages: string[];
+  suggestedUsd: number;
+  spentUsd: number | null;
+  requestedUsd: number | null;
+  ceilingUsd: number | null;
+}
+
+/**
+ * What a cost refusal of a run past its tasks would leave the run as (#2249): `waiting` on the
+ * extend remedy its fault carries, instead of `blocked`. Decided only here, from the fault's
+ * recovery and the stage it stopped in, and called only by the scheduler's fault handler, never
+ * per stage: a review dimension, the review stage and convergence all reach it through the one
+ * `cost` fault `assertCostFits` throws. Null for any other stop, for a refusal without a priced
+ * `extend` remedy (the store names one only when the run finished its tasks and its remaining
+ * stages have a price) and for a stage outside the stages the fault says remain.
+ */
+export function costRefusalWait(fault: unknown, stageId: string | null): CostRefusalWait | null {
+  if (!(fault instanceof WorkflowFault) || fault.code !== "BUDGET_EXHAUSTED") return null;
+  const details = fault.details;
+  if (details.reason !== "cost") return null;
+  const recovery = details.recovery as { remedies?: unknown } | undefined;
+  const remedies = Array.isArray(recovery?.remedies) ? recovery.remedies : [];
+  const extend = remedies.find(
+    (r): r is { action: "extend"; suggestedUsd: number } =>
+      typeof r === "object" &&
+      r !== null &&
+      (r as { action?: unknown }).action === "extend" &&
+      typeof (r as { suggestedUsd?: unknown }).suggestedUsd === "number" &&
+      (r as { suggestedUsd: number }).suggestedUsd > 0,
+  );
+  if (!extend) return null;
+  const stages = Array.isArray(details.stages)
+    ? details.stages.filter((s): s is string => typeof s === "string")
+    : [];
+  if (stageId && stages.length && !stages.includes(stageId)) return null;
+  const num = (v: unknown) => (typeof v === "number" && Number.isFinite(v) ? v : null);
+  return {
+    state: "waiting",
+    instead: "blocked",
+    stageId,
+    stages,
+    suggestedUsd: extend.suggestedUsd,
+    spentUsd: num(details.spentUsd),
+    requestedUsd: num(details.requestedUsd),
+    ceilingUsd: num(details.ceilingUsd),
+  };
+}
+
+/** The `cost_refusal_wait` record of a blocked run's latest stop, or null (#2249). */
+export function costRefusalWaitOf(
+  store: WorkflowStore,
+  runId: string,
+): (CostRefusalWait & { mode: Exclude<StopMode, "enforce"> }) | null {
+  const latest = store
+    .artifacts(runId)
+    .filter((a) => a.kind === "diagnostic" && a.logical_path.startsWith("errors/"))
+    .at(-1);
+  if (!latest) return null;
+  for (const event of store.eventsOfType(runId, "decision.would_stop")) {
+    if (event.type !== "decision.would_stop") continue;
+    const { reason, key, mode, inputs } = event.payload;
+    if (reason === "cost_refusal_wait" && key === `stop-${latest.id}`)
+      return { ...(inputs as unknown as CostRefusalWait), mode };
+  }
+  return null;
 }
 
 /** The run's own limits a `budget_exhausted` block can be held by (#2226). */

@@ -1843,7 +1843,9 @@ export class WorkflowStore {
       requestedUsd,
       maxCostUsd,
       ceilingUsd,
-      ...(recovery ? { suggestedUsd, recovery } : {}),
+      // The stages still to run let the scheduler tell a refusal at review or convergence from
+      // one elsewhere (#2249).
+      ...(recovery && reserve ? { suggestedUsd, recovery, stages: reserve.stages } : {}),
     });
   }
   /**

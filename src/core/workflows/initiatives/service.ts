@@ -66,6 +66,7 @@ import { stageReserve } from "../stage-reserve.js";
 import { terminalStates } from "../state-machine.js";
 import { stopDetail, stopRecovery } from "../stop-detail.js";
 import {
+  costRefusalWaitOf,
   noteStoredLimitResume,
   recordWouldStop,
   type StopMode,
@@ -388,6 +389,22 @@ export interface FeatureView {
    * this feature at their release, and how the initiative answered each.
    */
   amendments?: (AmendmentRequest & { answer: AmendmentAnswer })[];
+  /**
+   * A blocked run's cost refusal past its tasks that would leave it waiting on its extend remedy
+   * (`cost_refusal_wait`, shadow, #2249): the state it would take and the cap that answers it.
+   */
+  costWait?: {
+    state: "waiting";
+    suggestedUsd: number;
+    stageId: string | null;
+    mode: Exclude<StopMode, "enforce">;
+  };
+  /**
+   * The unaccepted upstream features that hold this one by a stop nobody waits on (blocked or
+   * failed), so it counts as stalled behind them (`stalledUpstream`, #2249). An upstream whose
+   * block would wait on a priced extension (`costWait`) is waited on, not counted here.
+   */
+  stalledOn?: string[];
 }
 
 export interface NextAction {
@@ -4192,6 +4209,8 @@ export class InitiativeService {
       const waiting = upstream
         .filter((u) => u.state !== "accepted")
         .map((u) => `waits for ${u.id}'s contract (${u.id} is ${describe(u)})`);
+      const stalled = stalledUpstream(upstream);
+      if (stalled.length) view.stalledOn = stalled;
       const link = this.store.current(row.id, feature.id);
       if (!link) {
         const ahead =
@@ -4315,6 +4334,14 @@ export class InitiativeService {
             ? `run ${link.run_id} is blocked (${run.reason}): ${deadline.message}`
             : `run ${link.run_id} is blocked (${run.reason})${refusal ? `: ${refusal.split("\n")[0]?.slice(0, 600)}` : ""}; resolve it with baked workflow ${canRepairRun(run) ? "repair" : "resume"} ${link.run_id}`,
         ];
+        const wait = costRefusalWaitOf(this.workflows.store, link.run_id);
+        if (wait)
+          view.costWait = {
+            state: wait.state,
+            suggestedUsd: wait.suggestedUsd,
+            stageId: wait.stageId,
+            mode: wait.mode,
+          };
         const recorded = stopRecovery(this.workflows.store, link.run_id);
         const remedies = recorded?.remedies ?? [{ action: "resume" as const, runId: link.run_id }];
         view.recovery = recoveryAdvice(
@@ -4880,6 +4907,19 @@ function sharedFeatureRunSamples(paths: string[], history: PastRun[]): FeatureRu
 /** The workflow a feature's runs use: its own, or the initiative's default. */
 const featureWorkflowId = (settings: InitiativeSettings, feature: InitiativeFeature): string =>
   feature.workflow ?? settings.workflowId;
+
+/**
+ * The unaccepted upstream features a dependant counts as stalled behind (#2249): blocked or failed,
+ * unless a blocked one's cost refusal would wait on its priced extend remedy (`costWait`), which
+ * a planned-ahead feature waits for as it waits for acceptance.
+ */
+export function stalledUpstream(
+  upstream: readonly Pick<FeatureView, "id" | "state" | "costWait">[],
+): string[] {
+  return upstream
+    .filter((u) => (u.state === "blocked" && !u.costWait) || u.state === "failed")
+    .map((u) => u.id);
+}
 
 function describe(view: FeatureView): string {
   switch (view.state) {
