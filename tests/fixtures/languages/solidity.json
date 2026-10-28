@@ -59,6 +59,7 @@
     ],
     "dependencyPrepare": null,
     "worktreePathLimits": null,
-    "testClasses": null
+    "testClasses": null,
+    "testDeclarations": ["test/Sum.t.sol: 2 tests, per class 2"]
   }
 }

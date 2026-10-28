@@ -94,6 +94,7 @@
     ],
     "dependencyPrepare": null,
     "worktreePathLimits": null,
-    "testClasses": null
+    "testClasses": null,
+    "testDeclarations": ["tests/sum.test.ts: 3 tests"]
   }
 }

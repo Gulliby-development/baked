@@ -17,6 +17,7 @@ import {
   TEST_MARKERS,
 } from "../src/core/intelligence/language-traits.js";
 import { detectLanguageFromPath, EXT_TO_LANGUAGE } from "../src/core/intelligence/types.js";
+import { declaredTests, TEST_DECLARATIONS } from "../src/core/intelligence/test-declarations.js";
 import {
   failureSignature,
   TEST_RUNNERS,
@@ -111,6 +112,20 @@ const RECORDS: Record<
       ofLanguage(language, files)
         .filter(([path]) => isTestFile(path))
         .map(([path, text]) => `${path}: ${isTestContent(path, text) ? "test" : "source"}`),
+  },
+  // The tests the row's example declares, and each class's where the row groups them: what the
+  // brief's per-file and per-class test caps count (#2368). The examples hold a commented-out test.
+  testDeclarations: {
+    record: TEST_DECLARATIONS,
+    run: (language) => {
+      const row = rowOf(TEST_DECLARATIONS, language);
+      if (!row) return [];
+      const found = declaredTests(row.example.path, row.example.text);
+      if (!found) return ["not counted"];
+      const perClass = found.units.length ? `, per class ${found.units.join(", ")}` : "";
+      return [`${row.example.path}: ${String(found.tests)} tests${perClass}`];
+    },
+    never: ["not counted"],
   },
   manifests: {
     record: MANIFEST_NAMES,

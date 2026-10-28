@@ -51,6 +51,7 @@
     ],
     "dependencyPrepare": null,
     "worktreePathLimits": null,
-    "testClasses": null
+    "testClasses": null,
+    "testDeclarations": ["test/test_sum.ml: 2 tests"]
   }
 }

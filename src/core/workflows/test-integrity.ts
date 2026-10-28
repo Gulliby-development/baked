@@ -1,6 +1,7 @@
 import { blankStringLiterals } from "../intelligence/comments.js";
 import { isTestFile, isTestFileAt } from "../intelligence/language-traits.js";
 import { hasShadowTitles, testConventions } from "../intelligence/test-frameworks.js";
+import { capExcess, testCapsOf } from "../verification/test-cap.js";
 import { suppressionPattern } from "./quality/suppressions.js";
 import type { RunPolicy } from "./schemas.js";
 import type { Task } from "./types.js";
@@ -648,6 +649,13 @@ export type IntegrityMeasure = {
        */
       replacedTests?: number;
       replacedBy?: string[];
+      /**
+       * Tests above the brief's per-file or per-class cap before the change (#2368): a drop of
+       * that many is the cap's, not a removal. Absent from records before the rule and when 0.
+       */
+      capExcess?: number;
+      /** Assertions of the fewest-asserting removed tests the cap's drop covers. */
+      capAssertions?: number;
       /** Tests a correction of another finding added that the change leaves out (#1519). */
       lost: number;
       /** Removed test titles not counted in `lost`. */
@@ -760,6 +768,7 @@ export function measureTestIntegrity(
     for (const value of literals(source)) testLiterals.add(value);
   const spec = options.specText ?? "";
   const shadow = options.shadowTitles === true;
+  const caps = testCapsOf(spec);
   for (const change of changes) {
     const { path } = change;
     const reasoned = options.reasoned?.has(path) === true;
@@ -871,6 +880,21 @@ export function measureTestIntegrity(
       );
       const unclaimed = removed.filter((name) => !lost.some(([lostName]) => lostName === name));
       const strengthen = options.strengthens?.has(path) === true;
+      // The brief's cap lets a correction drop the tests above it (#2368).
+      const excess = capExcess(path, beforeRaw, caps);
+      const capAssertions = excess
+        ? spans
+            .filter((span) => removed.includes(span.name))
+            .map((span) =>
+              count(
+                codeLines(blankStringLiterals(path, before.slice(span.from, span.to).join("\n"))),
+                assertionForms,
+              ),
+            )
+            .sort((a, b) => a - b)
+            .slice(0, excess)
+            .reduce((sum, n) => sum + n, 0)
+        : 0;
       measures.push({
         ...base,
         form: "test",
@@ -883,6 +907,7 @@ export function measureTestIntegrity(
         ...(replaced.names.size
           ? { replacedTests: replaced.names.size, replacedBy: replaced.findingIds }
           : {}),
+        ...(excess ? { capExcess: excess, capAssertions } : {}),
         lost: lost.length,
         unclaimed: unclaimed.length,
         rewrite: options.rewrites?.has(path) === true,
@@ -958,17 +983,16 @@ export function integrityDecision(measures: readonly IntegrityMeasure[]): Integr
           keep: names?.keep ?? [],
         });
       const unclaimed = names?.unclaimed ?? [];
-      if (
-        !reasoned &&
-        !requestedFile &&
-        m.testsBefore - m.testsAfter > m.matchedTests + m.removedTests
-      )
+      const drop = m.testsBefore - m.testsAfter - m.matchedTests - m.removedTests;
+      // The part of the drop the brief's test cap covers (#2368).
+      const capDrop = Math.min(m.capExcess ?? 0, Math.max(0, drop));
+      if (!reasoned && !requestedFile && drop > (m.capExcess ?? 0))
         findings.push({
           rule: "test-count",
           path,
-          detail: `test count dropped from ${String(m.testsBefore)} to ${String(m.testsAfter)}${unclaimed.length ? ` (removed ${quoted(unclaimed)})` : ""}`,
+          detail: `test count dropped from ${String(m.testsBefore)} to ${String(m.testsAfter)}${unclaimed.length ? ` (removed ${quoted(unclaimed)})` : ""}${m.capExcess ? `; the brief's test cap covers only ${String(m.capExcess)} of the drop` : ""}`,
         });
-      else if (!reasoned && !requestedFile && !m.rewrite && !m.strengthen && m.unclaimed)
+      else if (!reasoned && !requestedFile && !m.rewrite && !m.strengthen && m.unclaimed > capDrop)
         // Equal totals hide a swap: a strong test replaced by a weaker one under another name.
         findings.push({
           rule: "test-removed",
@@ -982,7 +1006,8 @@ export function integrityDecision(measures: readonly IntegrityMeasure[]): Integr
         !reasoned &&
         !requestedFile &&
         !rewritten &&
-        m.assertsBefore - m.assertsAfter > m.matchedAssertions + m.removedAssertions
+        m.assertsBefore - m.assertsAfter >
+          m.matchedAssertions + m.removedAssertions + (capDrop ? (m.capAssertions ?? 0) : 0)
       )
         findings.push({
           rule: "assertions",

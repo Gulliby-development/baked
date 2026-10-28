@@ -83,6 +83,7 @@
     ],
     "dependencyPrepare": null,
     "worktreePathLimits": null,
-    "testClasses": null
+    "testClasses": null,
+    "testDeclarations": ["test/sum_test.rb: 2 tests, per class 2"]
   }
 }

@@ -45,6 +45,7 @@ interface Accepted {
   newMisquoteFixes?: number;
   newIntegrityFindings?: number;
   newCaseRefusals?: number;
+  newTestCapRefusals?: number;
   newGateRepairs?: number;
   newConvergenceVerdicts?: number;
   newEvidenceDecisions?: number;
@@ -104,6 +105,7 @@ describe("bench-round traces replay without new forecast stops or growth (#1649)
           newEdgeDecisions: run.newEdgeDecisions,
           newIntegrityFindings: run.newIntegrityFindings,
           newCaseRefusals: run.newCaseRefusals,
+          newTestCapRefusals: run.newTestCapRefusals,
           newGateRepairs: run.newGateRepairs,
           newConvergenceVerdicts: run.newConvergenceVerdicts,
           newEvidenceDecisions: run.newEvidenceDecisions,
@@ -133,6 +135,7 @@ describe("bench-round traces replay without new forecast stops or growth (#1649)
           newEdgeDecisions: allowed?.newEdgeDecisions ?? 0,
           newIntegrityFindings: allowed?.newIntegrityFindings ?? 0,
           newCaseRefusals: allowed?.newCaseRefusals ?? 0,
+          newTestCapRefusals: allowed?.newTestCapRefusals ?? 0,
           newGateRepairs: allowed?.newGateRepairs ?? 0,
           newConvergenceVerdicts: allowed?.newConvergenceVerdicts ?? 0,
           newEvidenceDecisions: allowed?.newEvidenceDecisions ?? 0,
