@@ -7,7 +7,11 @@ import { rangeText, type StartEstimate } from "../../core/workflows/estimate.js"
 import { canExtendRun } from "../../core/workflows/extendable.js";
 import { detectGates } from "../../core/workflows/gates.js";
 import { reasonText } from "../../core/workflows/reasons.js";
-import { type HostRemedy, type Remedy, retryRefused } from "../../core/workflows/remedies-model.js";
+import {
+  type Remedy,
+  type ResumeRemedy,
+  retryRefused,
+} from "../../core/workflows/remedies-model.js";
 import { canRepairRun, repairText } from "../../core/workflows/repairable.js";
 import type { RunSnapshot, WorkflowEvent } from "../../core/workflows/schemas.js";
 import type { Check } from "../../core/workflows/types.js";
@@ -243,7 +247,7 @@ export interface RunAction {
     | "checks"
     | "reviews"
     | "export-package"
-    | HostRemedy;
+    | ResumeRemedy;
 }
 /** The limits one "raise" decision would set, from the numbers the run screen already has. */
 export function extensionFor(budget: BudgetView): BudgetLimits | null {
@@ -323,6 +327,13 @@ export function runActions(
         });
       else if (remedy.action === "upstream")
         actions.push({ key: "Q", label: `ask ${remedy.owner ?? "upstream"}`, action: "upstream" });
+      // A required check that timed out twice on one workspace (#2358): a person's call only.
+      else if (remedy.action === "accept-limitation")
+        actions.push({
+          key: "L",
+          label: `accept ${remedy.checkId ?? "check"} as a limitation`,
+          action: "accept-limitation",
+        });
     }
   if (
     s === "created" ||

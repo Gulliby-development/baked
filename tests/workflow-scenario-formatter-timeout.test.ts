@@ -11,6 +11,7 @@ import { ProcessScope } from "../src/core/workflows/process-scope.js";
 import type { Check, RunPolicy, Spec, Task } from "../src/core/workflows/schemas.js";
 import { NativeWorkflowService } from "../src/core/workflows/service.js";
 import { newId } from "../src/core/workflows/store.js";
+import { runReport } from "../src/core/workflows/run-report.js";
 import { stopRecovery } from "../src/core/workflows/stop-detail.js";
 import type { AgentExecutor, ExecutionRequest } from "../src/core/workflows/types.js";
 import { expectRecovery } from "./helpers/workflow-remedies.js";
@@ -181,6 +182,40 @@ describe.skipIf(IS_WIN)("scenario: evalpin json a77894d4, a formatter that never
     expect(checkRuns(service, runId, "clippy").map((r) => r.reason)).toEqual(["timeout", "timeout"]);
     rmSync(slowMark);
   }, 90000);
+
+  // #2358: the person may accept that the check cannot run. The run completes with the check as a
+  // known limitation; the host never takes that decision itself.
+  test("a person accepts a check that timed out twice as a limitation, and the run completes without it", async () => {
+    const { service, runId } = await approvedRun({ ...defaultWorkflowPolicy, checks: [clippy] });
+    writeFileSync(slowMark, "");
+    cleanups.push(() => rmSync(slowMark, { force: true }));
+    await service.drive(runId, new AbortController().signal);
+    // Not offered on the first timeout, which may pass on a resume.
+    expect(stopRecovery(service.store, runId)?.remedies.map((r) => r.action) ?? []).not.toContain("accept-limitation");
+    await expect(
+      service.resume(runId, { commandId: newId(), expectedRevision: (await service.get(runId)).revision }, { remedy: "accept-limitation" }),
+    ).rejects.toThrow("does not offer the remedy accept-limitation");
+    await service.resume(runId, { commandId: newId(), expectedRevision: (await service.get(runId)).revision });
+    const again = await service.drive(runId, new AbortController().signal);
+    expect(again.status).toBe("blocked");
+    const offered = stopRecovery(service.store, runId)?.remedies.find((r) => r.action === "accept-limitation");
+    expect(offered).toMatchObject({ runId, checkId: "clippy" });
+    const errors = service.store.artifacts(runId).filter((a) => a.logical_path.startsWith("errors/"));
+    expect(service.store.readArtifact(runId, errors.at(-1)?.id ?? "")).toContain("--remedy accept-limitation");
+    // The check still hangs: with the limitation accepted its third timeout stops nothing.
+    await service.resume(runId, { commandId: newId(), expectedRevision: (await service.get(runId)).revision }, { remedy: "accept-limitation" });
+    const done = await service.drive(runId, new AbortController().signal);
+    expect([done.status, done.reason]).toEqual(["completed", "none"]);
+    expect(checkRuns(service, runId, "clippy").map((r) => r.reason)).toEqual(["timeout", "timeout", "timeout"]);
+    const state = service.store.state(runId);
+    expect(state.acceptedCheckTimeouts).toEqual(["clippy"]);
+    expect(state.limitations).toEqual([
+      expect.objectContaining({ findingId: "limitation-clippy", kind: "check_not_run", decidedBy: "user" }),
+    ]);
+    const decision = service.store.artifacts(runId).find((a) => a.logical_path.startsWith("decisions/limitation-clippy-"));
+    expect(decision).toBeDefined();
+    expect(runReport(service.store, runId)).toContain("Required check clippy could not run");
+  }, 120000);
 
   test("a check that passed earlier in the run and then times out is failed; a first timeout stays inconclusive", async () => {
     const { root, service, runId } = await approvedRun({ ...defaultWorkflowPolicy, checks: [clippy] });

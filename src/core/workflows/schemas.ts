@@ -279,6 +279,12 @@ export const CheckSchema = z
      * flags compile out and passed (bench round 56, #1832). Read from the runner's summary.
      */
     requireTests: z.boolean().optional(),
+    /**
+     * The test classes the host read from the files this check runs and selects by name (#2363):
+     * a run of them that executes no test is the host's selection, not the task's tests, and is
+     * recorded as a `written_tests_unselected` would-stop.
+     */
+    declaredTests: z.array(z.string().min(1).max(512)).optional(),
   })
   .strict();
 

@@ -9,7 +9,7 @@ import { CHAT_EFFORTS } from "../llm/provider-options.js";
 import { PERMISSION_MODES } from "../security/permission-mode.js";
 import { BUDGET_PRESETS } from "../workflows/budget.js";
 import { MAX_CANDIDATES } from "../workflows/candidates.js";
-import { HOST_REMEDIES } from "../workflows/remedies-model.js";
+import { RESUME_REMEDIES } from "../workflows/remedies-model.js";
 import { MAX_CONCURRENT_WRITERS, RunStatus, SafeId } from "../workflows/schemas.js";
 import { USAGE_DIMENSIONS } from "../workflows/usage.js";
 import { MAX_LOOP_ROUNDS } from "../workflows/v2/definition.js";
@@ -78,10 +78,10 @@ export const CommandBody = Command.strict();
 export const RepairBody = Command.extend({
   rounds: z.number().int().min(1).max(100).optional(),
 }).strict();
-/** `remedy` answers a corrective's block with the act its recovery offers (#2155). */
+/** `remedy` answers a block with the act its recovery offers: a corrective's (#2155) or `accept-limitation` (#2358). */
 export const ResumeBody = Command.extend({
   acceptWorkspace: z.boolean().optional(),
-  remedy: z.enum(HOST_REMEDIES).optional(),
+  remedy: z.enum(RESUME_REMEDIES).optional(),
 }).strict();
 /** `POST /v1/workflow/runs/RUN_ID/fork`: `fromStage` starts the fork at that stage (#855). */
 export const ForkBody = Command.extend({ fromStage: SafeId.optional() }).strict();

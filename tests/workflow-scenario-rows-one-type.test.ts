@@ -116,7 +116,8 @@ describe("the test run of a file with nested rows names the nested class (#1804)
     { name: "Gradle", run: check("./gradlew", ["test"]), test: java,
       args: ["test", "--tests", "com.ex.lanes.OptionsTest", "--tests", "com.ex.lanes.OptionsTest$AcceptanceRows"] },
     { name: "dotnet", run: check("dotnet", ["test"]), test: { mode: "inline", framework: "xunit", package: "Lanes.Tests", test: "Lanes.Tests/OptionsTests.cs" } as InlineRowTest,
-      args: ["test", "--filter", "FullyQualifiedName~OptionsTests.|FullyQualifiedName~OptionsTests+AcceptanceRows."] },
+      // By the namespace the file declares (#2363).
+      args: ["test", "--filter", "FullyQualifiedName~Lanes.Tests.OptionsTests.|FullyQualifiedName~Lanes.Tests.OptionsTests+AcceptanceRows."] },
   ];
   for (const layout of layouts)
     test(layout.name, () => {

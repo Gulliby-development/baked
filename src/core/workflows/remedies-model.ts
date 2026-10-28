@@ -17,11 +17,18 @@ export const REMEDY_ACTIONS = [
   "route",
   "widen",
   "upstream",
+  // A person's acceptance of a required check that cannot run (#2358): its timeouts become a
+  // known limitation of the run instead of a stop. Never applied by the host.
+  "accept-limitation",
 ] as const;
 
 /** The remedies that answer a corrective's block on files it may not write (#2155). */
 export const HOST_REMEDIES = ["route", "widen", "upstream"] as const;
 export type HostRemedy = (typeof HOST_REMEDIES)[number];
+
+/** The remedies `resume --remedy` takes: a corrective's host decisions and a check's limitation. */
+export const RESUME_REMEDIES = [...HOST_REMEDIES, "accept-limitation"] as const;
+export type ResumeRemedy = (typeof RESUME_REMEDIES)[number];
 
 export interface Remedy {
   action: (typeof REMEDY_ACTIONS)[number];
@@ -35,6 +42,8 @@ export interface Remedy {
   suggestedUsd?: number;
   /** For `extend`: the active-time limit in ms that answers the block (#2336). */
   suggestedTimeMs?: number;
+  /** For `accept-limitation`: the required check whose timeouts the run would accept. */
+  checkId?: string;
   /** For `route`, `widen` and `upstream`: the blocked corrective. */
   taskId?: string;
   /** For `route`, `widen` and `upstream`: the files the corrective may not write. */
@@ -128,6 +137,7 @@ export function recoveryOf(value: unknown): RecoveryAdvice | undefined {
       "setting",
       "taskId",
       "owner",
+      "checkId",
     ] as const) {
       const field = entry[key];
       if (field !== undefined && typeof field !== "string") return undefined;

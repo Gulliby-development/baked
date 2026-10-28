@@ -68,6 +68,7 @@
       "dbt_packages: linked"
     ],
     "dependencyPrepare": null,
-    "worktreePathLimits": null
+    "worktreePathLimits": null,
+    "testClasses": null
   }
 }

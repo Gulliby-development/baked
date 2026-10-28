@@ -11,10 +11,31 @@ import {
 } from "../../core/chat/coordinator-launch.js";
 import { parsePeerMessage } from "../../core/chat/peer-messages.js";
 import type { ChatPrompt } from "../../core/chat/sessions.js";
+import type { ThemeTokens } from "../../core/theme/index.js";
 import type { ChatMessage, LaunchNote } from "../../types/index.js";
 import { markdownLines } from "./markdown-lines.js";
 
 export type LineTone = "user" | "assistant" | "muted" | "tool" | "accent" | "warning" | "error";
+
+/** The theme color of a line tone. */
+export function toneColor(t: ThemeTokens, tone: LineTone): string {
+  switch (tone) {
+    case "user":
+      return t.accentUser;
+    case "assistant":
+      return t.textPrimary;
+    case "tool":
+      return t.textDim;
+    case "accent":
+      return t.brandSecondary;
+    case "warning":
+      return t.warning;
+    case "error":
+      return t.error;
+    case "muted":
+      return t.textMuted;
+  }
+}
 
 export interface ViewLine {
   text: string;

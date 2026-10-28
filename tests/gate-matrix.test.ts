@@ -4540,6 +4540,24 @@ describe.skipIf(!toolchains)("gate matrix: toolchains", () => {
     expect(passing.output).not.toContain("tests completed");
     expect(testCount(passing.output)).toEqual({ tool: "junit", count: 3 });
   }, 900000);
+  // #2363 (R75 maskback): the scaffold's UnitTest1.cs holds FailureExceptionTests. The written-tests
+  // check filters `dotnet test` by the class and namespace the file declares; the filter by the
+  // file's name matches no test.
+  test.skipIf(!available([["dotnet", "--version"]]))("dotnet: the written-tests check runs the class UnitTest1.cs declares (#2363)", async () => {
+    const root = project({
+      "Maskback.Tests/Maskback.Tests.csproj":
+        '<Project Sdk="Microsoft.NET.Sdk">\n  <PropertyGroup>\n    <TargetFramework>net8.0</TargetFramework>\n    <IsPackable>false</IsPackable>\n  </PropertyGroup>\n  <ItemGroup>\n    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.11.1" />\n    <PackageReference Include="xunit" Version="2.9.2" />\n    <PackageReference Include="xunit.runner.visualstudio" Version="2.8.2" />\n  </ItemGroup>\n  <ItemGroup>\n    <Using Include="Xunit" />\n  </ItemGroup>\n</Project>\n',
+      "Maskback.Tests/UnitTest1.cs":
+        'namespace Maskback.Tests;\n\npublic class FailureExceptionTests\n{\n    [Fact]\n    public void KeepsTheMessage() => Assert.Equal("boom", new System.Exception("boom").Message);\n}\n',
+    });
+    const tests = { id: "tests", executable: "dotnet", args: ["test", "Maskback.Tests/Maskback.Tests.csproj", "--nologo"], cwd: ".", envNames: [], timeoutMs: 600_000, required: true, scope: "feature", writes: [] } as Check;
+    const written = writtenTestsCheck(root, [tests], [{ path: "Maskback.Tests/UnitTest1.cs", action: "create" }]) as Check;
+    expect(written.args.at(-1)).toBe("FullyQualifiedName~Maskback.Tests.FailureExceptionTests.");
+    const declared = await executeGate(root, written, new AbortController().signal);
+    expect({ status: declared.status, output: declared.status === "passed" ? "" : declared.outputTail }).toEqual({ status: "passed", output: "" });
+    const byName = await executeGate(root, { ...written, args: [...written.args.slice(0, -1), "FullyQualifiedName~UnitTest1."] }, new AbortController().signal);
+    expect(byName.status).toBe("failed");
+  }, 900000);
   // #2121: the Spotless and ktlint gates against the real plugins: each fails with the violation and
   // its file, its fixer clears it, and the test gate then passes.
   test.skipIf(!available([["gradle", "--version"]]))("a real Gradle build's Spotless and ktlint gates fail, their fixers clear them (#2121)", async () => {
