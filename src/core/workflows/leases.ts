@@ -33,6 +33,8 @@ function runInWorktree(store: WorkflowStore, runId: string | null): boolean {
 export function executionLeaseFor(store: WorkflowStore, runId: string): LeaseResource {
   return runInWorktree(store, runId) ? `execution:${runId}` : "execution";
 }
+/** `details.reason` of the `WORKSPACE_BUSY` refusal at the parallel-run cap (#2415). */
+export const PARALLEL_CAP = "parallel_cap";
 export function isExecutionLease(resource: string): boolean {
   return resource === "execution" || resource.startsWith("execution:");
 }
@@ -200,6 +202,12 @@ export class WorkspaceLeases {
           throw new WorkflowFault(
             "WORKSPACE_BUSY",
             `${others.length} run${others.length === 1 ? " is" : "s are"} already executing in this workspace (workflows.maxParallelRuns is ${options.maxExecuting}): ${others.map((lease) => lease.run_id ?? lease.owner_id).join(", ")}`,
+            // The run was not started: a change committed before it stays (#2415, `queuedResume`).
+            {
+              reason: PARALLEL_CAP,
+              maxParallelRuns: options.maxExecuting,
+              executing: others.map((lease) => lease.run_id ?? lease.owner_id),
+            },
           );
       }
       const previous = this.store.lease(resource);

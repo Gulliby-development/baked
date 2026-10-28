@@ -298,14 +298,14 @@ A run snapshot also has `autoRetry`: `{at, attempt, of}` only while a run blocke
 
 The `body_json` of an `approval` request lists `writes`, `checks`, `profiles`, `deferredCriteria` and `assumptions`, and, when the spec lists the request's deliverables, `requestCoverage[]`: `{deliverable, requirementIds, criterionIds, outOfScope, mapped}` per deliverable, where `deliverable` and `outOfScope` quote the request and `mapped` is false for a deliverable nothing covers (see [request coverage](../workflows/runtime.md#request-coverage)).
 
-B adds the remaining `baked workflow` commands the screens need. Each takes `commandId` and `expectedRevision` like the other mutations. The CLI's `approve`, `answer` and `evidence` continue the run after the decision unless `--no-resume` is given; the API endpoints for the same decisions (`approve`, `answer`, `evidence`) only record it, and the client calls `resume`.
+B adds the remaining `baked workflow` commands the screens need. Each takes `commandId` and `expectedRevision` like the other mutations. The CLI's `approve`, `answer`, `evidence` and `recover` continue the run after the decision unless `--no-resume` is given; the API endpoints for the same decisions (`approve`, `answer`, `evidence`, `recover`) only record it, and the client calls `resume`.
 
 | Method and path | Body | CLI |
 | --- | --- | --- |
 | `POST /v1/workflow/runs/RUN_ID/continue` | `requestId` | `continue` (a token checkpoint, or one more repair round of a stopped convergence) |
 | `POST /v1/workflow/runs/RUN_ID/accept` | `requestId` | `accept` (accepts the findings of a stopped convergence as known limitations; `reject` stops it, see [stopped convergence](../workflows/runtime.md#stopped-convergence)) |
 | `POST /v1/workflow/runs/RUN_ID/evidence` | `requestId`, `evidence` (text), `accepted` | `evidence` (manual acceptance criterion) |
-| `POST /v1/workflow/runs/RUN_ID/recover` | `requestId`, `effectId`, `resolution: "record-applied" \| "record-not-applied" \| "retry" \| "cancel"`, `evidence` | `recover` |
+| `POST /v1/workflow/runs/RUN_ID/recover` | `requestId`, `effectId`, `resolution: "record-applied" \| "record-not-applied" \| "retry" \| "cancel"`, `evidence?` (what the person checked; without it the decision records a generated one-line note, #2415) | `recover` |
 | `POST /v1/workflow/runs/RUN_ID/fork` | `fromStage?` | `fork`; `fromStage` is one of the run's `forkStages` ([fork from a stage](../workflows/runtime.md)) |
 | `POST /v1/workflow/runs/RUN_ID/undo` | `path?` | `undo` |
 | `POST /v1/workflow/runs/RUN_ID/discard-worktree` | | `discard-worktree` |

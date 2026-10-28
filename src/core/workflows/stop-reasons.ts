@@ -246,6 +246,17 @@ export const STOP_REASONS = {
     modes: NOT_ENFORCED,
     defaultMode: "shadow",
   },
+  "host-settle-interrupted-check": {
+    label:
+      "A check's command of unknown outcome whose process is gone: the host would settle it as not applied and run the check again at its stage",
+    // Shadow only (#2415, R76 schemamask: the laptop slept mid-check and two feature runs sat
+    // `waiting interrupted_effect` for a person's `recover --resolution retry`). It records
+    // `decision.would_resume` from `noteInterruptedChecks` in recovery.ts and leaves the request
+    // with the person; settling for real is a pull request of its own after two bench rounds
+    // with no false would-resume.
+    modes: NOT_ENFORCED,
+    defaultMode: "shadow",
+  },
   cost_refusal_wait: {
     label:
       "A run past its tasks refused a review or convergence call on its cost ceiling, with a priced extend remedy: it would wait for the extension instead of blocking",
