@@ -2,7 +2,7 @@ import { parseRouteOverrides } from "../core/llm/model-routing.js";
 import { BUDGET_PRESETS } from "../core/workflows/budget.js";
 import { MAX_CANDIDATES } from "../core/workflows/candidates.js";
 import { WorkflowFault } from "../core/workflows/errors.js";
-import { HOST_REMEDIES } from "../core/workflows/remedies-model.js";
+import { RESUME_REMEDIES } from "../core/workflows/remedies-model.js";
 import { MAX_CONCURRENT_WRITERS, RunStatus } from "../core/workflows/schemas.js";
 
 const commands = [
@@ -351,10 +351,10 @@ export function validateWorkflowArgs(result: WorkflowArgs): WorkflowArgs {
       if (!/^\d+(\.\d+)?$/.test(String(result.flags[name])) || !(value > 0))
         throw new WorkflowFault("INVALID_DEFINITION", `--${name} requires a positive number`);
     }
-  if ("remedy" in result.flags && !HOST_REMEDIES.some((remedy) => remedy === result.flags.remedy))
+  if ("remedy" in result.flags && !RESUME_REMEDIES.some((remedy) => remedy === result.flags.remedy))
     throw new WorkflowFault(
       "INVALID_DEFINITION",
-      `--remedy takes ${HOST_REMEDIES.join(", ")}: the remedies a corrective's block offers`,
+      `--remedy takes ${RESUME_REMEDIES.join(", ")}: the remedies a block offers`,
     );
   if ("format" in result.flags && result.flags.format !== "md")
     throw new WorkflowFault("INVALID_DEFINITION", "--format takes md");
@@ -695,7 +695,9 @@ memory [list] [--json] | memory add --text TEXT | memory edit ID --text TEXT | m
   (retires a rule); restore brings an entry back as runs recorded it. Runs started afterwards read the result
 list [--feature ID] [--status STATUS] [--limit 20] [--cursor RUN_ID]
   --status accepts: ${RunStatus.options.join(", ")}
-resume RUN_ID --expected-revision N [--accept-workspace] [--events]
+resume RUN_ID --expected-revision N [--accept-workspace] [--remedy REMEDY] [--events]
+  --remedy answers a block with the act its recovery offers: route, widen or upstream for a
+  corrective's unowned files, accept-limitation for a required check that timed out twice
 approve RUN_ID --request ID --digest SHA256 --expected-revision N [--exclude-user-changes] [--no-resume]
   --exclude-user-changes is required when a worktree run's approved files have uncommitted changes in your working copy
 answer RUN_ID --request ID --answers-file FILE --expected-revision N [--no-resume]

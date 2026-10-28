@@ -19,6 +19,7 @@ import { INLINE_ROWS_BEGIN, INLINE_ROWS_CLASS } from "./acceptance-rows-inline.j
 import { isStaticCheck } from "./check-policy.js";
 import { PESTER_RUN, pesterOn } from "./pester.js";
 import { testthatOn, testthatRun } from "./r-tools.js";
+import { readTestClasses, type TestClass } from "./test-classes.js";
 import { testGateFlags, withGateFlags } from "./test-gates.js";
 import { toolchainCommand } from "./toolchain.js";
 import type { Check } from "./types.js";
@@ -138,11 +139,14 @@ export function holdsWrittenTests(
   return compiled ? !isTestFile(path) : !isWrittenTestFile(path);
 }
 
-/** The class a C#, Java or Kotlin test file declares, by the file-per-class convention. */
+/** A file's name without its extension: a Rust integration test's binary, and the class fallback. */
 const className = (path: string): string =>
   posix.basename(path.replaceAll("\\", "/")).replace(/\.\w+$/, "");
 
-/** The fully qualified JVM class of a file under `src/test/java` or `src/test/kotlin`. */
+/**
+ * The fully qualified JVM class of a file under `src/test/java` or `src/test/kotlin` by its path,
+ * for a file whose declared test classes were not read (#2363).
+ */
 const jvmClass = (path: string): string => {
   const normal = path.replaceAll("\\", "/").replace(/\.\w+$/, "");
   const at = normal.search(/src\/test\/(?:java|kotlin)\//);
@@ -348,6 +352,29 @@ const DART_VALUE_OPTION =
 const flagsOnly = (args: string[], values = VALUE_OPTION): string[] =>
   args.filter((arg, i) => arg.startsWith("-") || values.test(args[i - 1] ?? ""));
 
+/** The declared test classes of each test file, by workspace path (#2363). */
+type DeclaredClasses = ReadonlyMap<string, readonly TestClass[]>;
+
+/**
+ * The classes a runner that selects by class runs for a test file: the ones the file declares
+ * (`TEST_CLASSES`, #2363), each with its nested inline rows class when the block is in it, or else
+ * the class named after the file (`fallback`), with that class's nested rows class for a file in
+ * `rows`. maskback (bench round 75): `UnitTest1.cs` held `FailureExceptionTests`, and the filter by
+ * the file's name ran no test.
+ */
+function selectedClasses(
+  path: string,
+  declared: DeclaredClasses,
+  rows: ReadonlySet<string>,
+  fallback: (path: string) => string,
+  nested: (cls: string) => string,
+): string[] {
+  const found = declared.get(path);
+  if (found?.length) return found.flatMap((c) => [c.name, ...(c.rows ? [nested(c.name)] : [])]);
+  const own = fallback(path);
+  return [own, ...(rows.has(path) ? [nested(own)] : [])];
+}
+
 /**
  * A command that runs only `tests` with the runner of one of the policy's test checks, or null
  * when no check runs a test runner that takes test files (`bun test`, `vitest`, `jest`,
@@ -359,6 +386,7 @@ export function affectedTestCheck(
   all: string[],
   rows: ReadonlySet<string> = new Set(),
   gates: ReadonlyMap<string, string[]> = new Map(),
+  classes: DeclaredClasses = new Map(),
 ): Check | null {
   if (all.length === 0) return null;
   for (const check of checks) {
@@ -368,6 +396,12 @@ export function affectedTestCheck(
     const tests = all.filter((t) => t.startsWith(base)).map((t) => t.slice(base.length));
     if (!tests.length) continue;
     const files = tests.map((t) => `./${t}`);
+    const declared = new Map(
+      tests.flatMap((t) => {
+        const found = classes.get(`${base}${t}`);
+        return found?.length ? [[t, found] as const] : [];
+      }),
+    );
     const { program: name, args, launch } = toolchainCommand(check.executable, check.args);
     const js = files.filter((f) => JS_FILE.test(f));
     const py = files.filter((f) => PY_FILE.test(f));
@@ -448,6 +482,7 @@ export function affectedTestCheck(
         args,
         tests.filter((t) => isCompiledTestFile(t) || PESTER_FILE.test(t) || TESTTHAT_FILE.test(t)),
         new Set(tests.filter((t) => rows.has(`${base}${t}`))),
+        declared,
       );
       const gated =
         compiled && name === "cargo"
@@ -489,21 +524,22 @@ export function affectedTestCheck(
  */
 /**
  * `rows`: the files that hold an inline acceptance rows block, whose class (#1763) a filter by
- * the file's class would leave out (#1617).
+ * the file's class would leave out (#1617). `declared`: the test classes each file declares
+ * (#2363); a file without any is selected by its name.
  */
 function compiledTestArgs(
   name: string,
   args: string[],
   tests: string[],
   rows: ReadonlySet<string> = new Set(),
+  declared: DeclaredClasses = new Map(),
 ): string[] | null {
   if (name === "dotnet" && args[0] === "test") {
     const classes = tests
       .filter((t) => CS_FILE.test(t))
-      .flatMap((t) => [
-        className(t),
-        ...(rows.has(t) ? [INLINE_ROWS_CLASS.xunit(className(t))] : []),
-      ]);
+      .flatMap((t) => selectedClasses(t, declared, rows, className, INLINE_ROWS_CLASS.xunit))
+      // A partial class declared in two files is named once.
+      .filter((c, i, all) => all.indexOf(c) === i);
     if (!classes.length || args.includes("--filter")) return null;
     return [...args, "--filter", classes.map((c) => `FullyQualifiedName~${c}.`).join("|")];
   }
@@ -546,7 +582,8 @@ function compiledTestArgs(
   }
   const classes = tests
     .filter((t) => JVM_FILE.test(t))
-    .flatMap((t) => [jvmClass(t), ...(rows.has(t) ? [INLINE_ROWS_CLASS.junit(jvmClass(t))] : [])]);
+    .flatMap((t) => selectedClasses(t, declared, rows, jvmClass, INLINE_ROWS_CLASS.junit))
+    .filter((c, i, all) => all.indexOf(c) === i);
   if (!classes.length) return null;
   if (
     (name === "mvn" || name === "mvnw") &&
@@ -635,15 +672,22 @@ export function writtenTestsCheck(
     .filter((path) => existsSync(join(root, path)))
     // A source file named like a test (`PermTest.cs` without a test attribute) has no tests to run (#1848).
     .filter((path) => !isLanguageTestFile(path) || isTestFileAt(root, path));
+  const declared = readTestClasses(root, files);
   const gate = affectedTestCheck(
     checks,
     files,
     inlineRowFiles(root, files),
     gateFlags(root, files),
+    declared,
   );
   if (!gate) return null;
   const minCases = requiredCases(text);
   const timeoutMs = Math.min(gate.timeoutMs, WRITTEN_TESTS_TIMEOUT_MS);
+  const command = gate.args.join(" ");
+  const declaredTests = [...declared.values()]
+    .flat()
+    .map((c) => c.name)
+    .filter((name) => command.includes(name));
   return {
     ...gate,
     id: gate.id.replace(/-affected$/, "-written"),
@@ -651,6 +695,7 @@ export function writtenTestsCheck(
     timeoutMs,
     onTimeout: "failed",
     ...(minCases !== undefined ? { minCases } : {}),
+    ...(declaredTests.length ? { declaredTests } : {}),
   };
 }
 

@@ -62,7 +62,8 @@ describe("which task replays which rows (#1617)", () => {
   });
 
   // Every framework of the rows modes: the one-shot file is a test file the project's own test
-  // command runs on its own, and a JUnit or xUnit run names the block's class too.
+  // command runs on its own, and a JUnit or xUnit run names the block's class too, by the class
+  // and namespace or package the file declares (#2363).
   const FRAMEWORKS = [
     { framework: "bun", test: "tests/paths.test.ts", run: check("bun", ["test"]), file: "tests/baked-replay-t001.test.ts", args: ["test", "./tests/baked-replay-t001.test.ts"] },
     { framework: "pytest", test: "tests/test_paths.py", run: check("python3", ["-m", "pytest", "-q"]), file: "tests/test_baked_replay_t001.py", args: ["-m", "pytest", "-q", "./tests/test_baked_replay_t001.py"] },
@@ -71,7 +72,7 @@ describe("which task replays which rows (#1617)", () => {
     { framework: "junit", package: "com.ex.paths", test: "src/test/java/com/ex/paths/PathsTest.java", run: check("mvn", ["-q", "test"]), file: "src/test/java/com/ex/paths/BakedReplayT001Test.java",
       args: ["-q", "test", "-Dtest=com.ex.paths.BakedReplayT001Test,com.ex.paths.BakedReplayT001Test$AcceptanceRows", "-Dsurefire.failIfNoSpecifiedTests=false"] },
     { framework: "xunit", package: "Paths.Tests", test: "Paths.Tests/PathsTests.cs", run: check("dotnet", ["test"]), file: "Paths.Tests/BakedReplayT001Tests.cs",
-      args: ["test", "--filter", "FullyQualifiedName~BakedReplayT001Tests.|FullyQualifiedName~BakedReplayT001Tests+AcceptanceRows."] },
+      args: ["test", "--filter", "FullyQualifiedName~Paths.Tests.BakedReplayT001Tests.|FullyQualifiedName~Paths.Tests.BakedReplayT001Tests+AcceptanceRows."] },
     // #2335: the spec file, and the PHPUnit test class that holds the block as its own methods.
     { framework: "rspec", test: "spec/paths_spec.rb", run: check("bundle", ["exec", "rspec"]), file: "spec/baked_replay_t001_spec.rb", args: ["exec", "rspec", "./spec/baked_replay_t001_spec.rb"] },
     { framework: "phpunit", package: "App.Tests", test: "tests/PathsTest.php", run: check("php", ["vendor/bin/phpunit", "tests"]), file: "tests/BakedReplayT001Test.php", args: ["vendor/bin/phpunit", "./tests/BakedReplayT001Test.php"] },
@@ -91,7 +92,7 @@ describe("which task replays which rows (#1617)", () => {
     const root = mkdtempSync(join(tmpdir(), "baked-row-replay-unit-"));
     cleanups.push(() => rmSync(root, { recursive: true, force: true }));
     mkdirSync(dirname(join(root, f.file)), { recursive: true });
-    writeFileSync(join(root, f.file), withInlineRows(f.framework === "go" ? "package paths\n" : "", replay?.file as NonNullable<typeof replay>["file"]));
+    writeFileSync(join(root, f.file), withInlineRows(f.framework === "go" ? "package paths\n" : f.framework === "junit" ? "package com.ex.paths;\n" : "", replay?.file as NonNullable<typeof replay>["file"]));
     expect(writtenTestsCheck(root, [f.run], [{ path: f.file, action: "create" }])?.args).toEqual([...f.args]);
   });
 });

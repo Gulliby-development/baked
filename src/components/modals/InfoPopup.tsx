@@ -31,6 +31,16 @@ interface Props {
   onClose: () => void;
 }
 
+/** The popup's width in cells for a preferred `width` on a terminal `columns` wide. */
+export function infoPopupWidth(width: number | undefined, columns: number): number {
+  return fitPopupWidth(Math.min(width ?? 72, Math.max(56, Math.floor(columns * 0.8))), columns);
+}
+
+/** The columns a text line of the popup shows, so a caller can wrap its text up front. */
+export function infoPopupContentWidth(width: number | undefined, columns: number): number {
+  return Math.max(1, infoPopupWidth(width, columns) - 6);
+}
+
 export function InfoPopup({ visible, config, onClose }: Props) {
   const t = useTheme();
   const { width: tw, height: th } = useTerminalDimensions();
@@ -44,12 +54,9 @@ export function InfoPopup({ visible, config, onClose }: Props) {
     }
   }, [visible]);
 
-  const popupW = fitPopupWidth(
-    Math.min(config?.width ?? 72, Math.max(56, Math.floor(tw * 0.8))),
-    tw,
-  );
+  const popupW = infoPopupWidth(config?.width, tw);
   const popupH = fitPopupHeight(Math.min(32, Math.max(14, th - 4)), th);
-  const contentW = Math.max(1, popupW - 6);
+  const contentW = infoPopupContentWidth(config?.width, tw);
   const labelW = config?.labelWidth ?? 20;
   const viewportRows = Math.max(6, popupH - 9);
 

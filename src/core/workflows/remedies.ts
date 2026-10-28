@@ -7,8 +7,10 @@ export {
   extendSuggestion,
   HOST_REMEDIES,
   type HostRemedy,
+  RESUME_REMEDIES,
   type RecoveryAdvice,
   type Remedy,
+  type ResumeRemedy,
   recoveryAdvice,
   recoveryOf,
   renderRecovery,
@@ -28,6 +30,7 @@ export const RemedySchema = z.object({
   taskId: z.string().optional(),
   paths: z.array(z.string()).optional(),
   owner: z.string().optional(),
+  checkId: z.string().optional(),
 }) satisfies z.ZodType<Remedy>;
 
 export const RecoveryAdviceSchema = z.object({

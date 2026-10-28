@@ -48,6 +48,8 @@ function label(remedy: Remedy): string {
       return `Open ${run} and press W to let ${remedy.taskId ?? "the correction"} write ${files(remedy)}`;
     case "upstream":
       return `Open ${run} and press Q to ask feature ${remedy.owner ?? "upstream"} for the change`;
+    case "accept-limitation":
+      return `Open ${run} and press L to accept ${remedy.checkId ?? "the check"} as a limitation`;
   }
 }
 
