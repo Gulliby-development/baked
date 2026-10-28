@@ -236,6 +236,17 @@ export const STOP_REASONS = {
     modes: STOP_MODES,
     defaultMode: "shadow",
   },
+  silent_check_failure: {
+    label:
+      "A required check fails with no failure line of its toolchain in its output: the host would run it once more before opening a correction",
+    // Shadow by default (#2418, R76 hintsieve: `swift test` exited 4 with SwiftPM progress lines
+    // only, opened a 440k-token corrective whose diff was empty, and passed on the next run). The
+    // checks stage records `decision.would_rerun`. `stopModes: { silent_check_failure: "enforce" }`
+    // re-runs the check once: a pass is an inconclusive flake and opens nothing, a second failure
+    // opens the correction as before. Making that the default is a pull request of its own.
+    modes: STOP_MODES,
+    defaultMode: "shadow",
+  },
   "host-resume-on-stored-limit": {
     label:
       "A run blocked on its own active time, tokens or calls whose stored limits now exceed its usage: the host would resume it once",
@@ -654,6 +665,32 @@ export function noteStoredLimitResume(
           1000,
         ),
       inputs: { ...decision, at, diagnosticId: latest.id },
+    },
+  });
+  return true;
+}
+
+/**
+ * Records `decision.would_rerun` for a required check whose failure printed no failure line
+ * (`silent_check_failure`, shadow, #2418), once per check run. Returns whether it recorded now.
+ */
+export function recordWouldRerun(
+  store: WorkflowStore,
+  runId: string,
+  rerun: Omit<WouldStop, "reason">,
+): boolean {
+  const seen = store
+    .eventsOfType(runId, "decision.would_rerun")
+    .some((e) => e.type === "decision.would_rerun" && e.payload.key === rerun.key);
+  if (seen) return false;
+  store.emit(runId, {
+    type: "decision.would_rerun",
+    payload: {
+      reason: "silent_check_failure",
+      mode: rerun.mode,
+      key: rerun.key.slice(0, 200),
+      summary: rerun.summary.slice(0, 1000),
+      inputs: rerun.inputs,
     },
   });
   return true;

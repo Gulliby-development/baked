@@ -49,7 +49,8 @@ import { entryPointCommand } from "../src/core/verification/entry-points.js";
 import { noteSiblingFindings, ownerOfFinding } from "../src/core/verification/initiative-ownership.js";
 import { failureSignature as convergenceSignature, missingPlannedPaths, noTestsCollected } from "../src/core/verification/convergence.js";
 import { executeCheckCommand, exitStatus, ranNoTests, timedOutFailure } from "../src/core/verification/check-runner.js";
-import { environmentFault, ENVIRONMENT_SIGNATURES } from "../src/core/verification/environment-faults.js";
+import { environmentFault, ENVIRONMENT_SIGNATURES, silentFailure } from "../src/core/verification/environment-faults.js";
+import { SWIFT_COMPILE_ERROR, SWIFT_SYMLINK_WARNING_ONLY, SWIFT_TEST_FATAL_ERROR, SWIFT_TEST_SILENT_EXIT_4, SWIFT_TESTING_FAILURE } from "./fixtures/swiftpm-crash-outputs.js";
 import { testReport } from "../src/core/verification/test-reports.js";
 import { detectLanguages, touchesLanguageFiles } from "../src/core/workflows/language.js";
 import { baselineRegression, buildFailure, buildRunner, diagnosticCount, failedTests, failureSignature, testCount, testsRan } from "../src/core/verification/output-counts.js";
@@ -1585,21 +1586,36 @@ const GRADLE_REPORT = `<?xml version="1.0" encoding="UTF-8"?>
 `;
 describe("gate matrix: environment signature (#2273)", () => {
   const loopback = "* What went wrong:\njava.io.IOException: Unable to establish loopback connection\n\tat java.base/sun.nio.ch.PipeImpl.<init>(PipeImpl.java:93)\n";
-  const COMMANDS: Partial<Record<GateToolchain, [string, string[]]>> = {
-    gradle: process.platform === "win32" ? ["cmd", ["/d", "/c", "gradlew.bat", "check"]] : ["./gradlew", ["--console=plain", "-q", "check"]],
-    maven: ["mvn", ["-q", "verify"]],
-    sbt: ["sbt", ["test"]],
+  // Each toolchain with signatures: its command, a recorded machine failure with what its fix names,
+  // and failures of the project's code that are never the machine's.
+  const SAMPLES: Partial<Record<GateToolchain, { command: [string, string[]]; machine: string; fix: string; code: string[] }>> = {
+    gradle: { command: process.platform === "win32" ? ["cmd", ["/d", "/c", "gradlew.bat", "check"]] : ["./gradlew", ["--console=plain", "-q", "check"]], machine: loopback, fix: "jdk.net.unixdomain.tmpdir", code: ["CalcTest > fails() FAILED\n"] },
+    maven: { command: ["mvn", ["-q", "verify"]], machine: loopback, fix: "jdk.net.unixdomain.tmpdir", code: ["CalcTest > fails() FAILED\n"] },
+    sbt: { command: ["sbt", ["test"]], machine: loopback, fix: "jdk.net.unixdomain.tmpdir", code: ["CalcTest > fails() FAILED\n"] },
+    // #2418: SwiftPM's crash beside a sibling worktree's build (R76 hintsieve).
+    swift: { command: ["swift", ["test"]], machine: SWIFT_TEST_FATAL_ERROR, fix: "fewer Swift builds at once", code: [SWIFT_COMPILE_ERROR, SWIFT_TESTING_FAILURE, SWIFT_SYMLINK_WARNING_ONLY, SWIFT_TEST_SILENT_EXIT_4] },
   };
   test.each(Object.entries(ENVIRONMENT_SIGNATURES))("%s", (toolchain, row) => {
     if ("none" in row) {
-      expect(row.none.length).toBeGreaterThan(0);
+      // A `none` row says through which bench round and date nothing was observed (#2418).
+      expect(row.none).toMatch(/bench round \d+ \(\d{4}-\d{2}-\d{2}\)/);
       return;
     }
-    const [executable, args] = COMMANDS[toolchain as GateToolchain] ?? ["", []];
-    expect(environmentFault(executable, args, loopback)?.fix).toContain("jdk.net.unixdomain.tmpdir");
-    // A failing test of the project is the project's, and another program's output is not read.
-    expect(environmentFault(executable, args, "CalcTest > fails() FAILED\n")).toBeNull();
-    expect(environmentFault("npm", ["test"], loopback)).toBeNull();
+    const sample = SAMPLES[toolchain as GateToolchain];
+    if (!sample) throw new Error(`${toolchain} has signatures and no sample in this cell`);
+    const [executable, args] = sample.command;
+    expect(environmentFault(executable, args, sample.machine)?.fix).toContain(sample.fix);
+    // A failure of the project's code is the project's, and another program's output is not read.
+    for (const code of sample.code) expect(environmentFault(executable, args, code)).toBeNull();
+    expect(environmentFault("npm", ["test"], sample.machine)).toBeNull();
+  });
+  // #2418: a failure that prints no failure line of any toolchain is a re-run candidate of the
+  // checks stage (`silent_check_failure`); one that names a failure of the code is not.
+  test("a failure without a failure line is a re-run candidate", () => {
+    expect(silentFailure(SWIFT_TEST_SILENT_EXIT_4)).toBe(true);
+    expect(silentFailure("")).toBe(true);
+    for (const code of [SWIFT_COMPILE_ERROR, SWIFT_TESTING_FAILURE, SWIFT_TEST_FATAL_ERROR, "FAIL tests/a.test.ts > adds\n", "--- FAIL: TestAdd (0.00s)\nFAIL\n", "src/a.ts(3,1): error TS2304: Cannot find name 'x'.\n", "Would reformat: src/a.py\n1 file would be reformatted\n"])
+      expect(silentFailure(code)).toBe(false);
   });
 });
 
