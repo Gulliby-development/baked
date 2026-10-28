@@ -79,6 +79,8 @@
       "cargo fmt: formatter, whole unit"
     ],
     "sortedLists": ["src/lib.rs: rustfmt blank line before 2"],
-    "dependencyDirs": null
+    "dependencyDirs": null,
+    "dependencyPrepare": null,
+    "worktreePathLimits": null
   }
 }

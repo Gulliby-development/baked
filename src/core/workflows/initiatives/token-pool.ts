@@ -1,5 +1,6 @@
 import { tokenText } from "../estimate.js";
 import { EXTEND_WITHIN_DOLLARS_MODES, STAGE_RESERVE_MODES } from "../schemas.js";
+import { centsUp } from "../stage-reserve.js";
 import type { StopMode } from "../stop-reasons.js";
 import {
   calibrationRatio,
@@ -433,6 +434,42 @@ export function dollarTokens(capTokens: number | null, limitTokens: number): num
   return tokens > limitTokens ? tokens : null;
 }
 
+/**
+ * The pool a token block suggests (#2367): the waiting features' high-estimate cover, held to
+ * what the dollar cap pays for (rounded down) as the notice and the split approval hold it
+ * (#2244), and as the host's extension does. When the cap pays for too few tokens to start every
+ * waiting feature at its low estimate, the cover stays and `usd` names the cap that pays for it
+ * at the measured rate, so the remedy raises both. Null when the pool already covers the highs.
+ */
+export function affordableTokens(
+  pool: TokenPoolView,
+  inputs: Pick<PoolInputs, "limitTokens" | "committedTokens" | "waiting" | "cost">,
+): { tokens: number; usd: number | null } | null {
+  const cover = pool.coverTokens;
+  if (cover <= inputs.limitTokens) return null;
+  const { cost } = inputs;
+  if (pool.capTokens === null || cost.capUsd === null) return { tokens: cover, usd: null };
+  const tokens = Math.min(cover, roundDown(pool.capTokens));
+  const lows = inputs.waiting.reduce((sum, f) => sum + f.low, 0);
+  if (tokens > inputs.limitTokens && tokens - inputs.committedTokens >= lows)
+    return { tokens, usd: null };
+  const perToken = cost.spentUsd / pool.usedTokens;
+  return { tokens: cover, usd: Math.max(cost.capUsd, centsUp(cover * perToken)) };
+}
+
+/** What the cap's tokens mean for the remedy, after a sentence that names them (#2367). */
+export function affordableClause(
+  pool: TokenPoolView,
+  remedy: { tokens: number; usd: number | null } | null,
+): string {
+  if (!remedy) return "";
+  if (remedy.usd !== null)
+    return `, too few to start the waiting features: a pool of ${tokenText(remedy.tokens)} also needs a dollar cap of ${usd(remedy.usd)}`;
+  if (remedy.tokens < pool.coverTokens)
+    return `, so extend to ${tokenText(remedy.tokens)} (${remedy.tokens} tokens)`;
+  return "";
+}
+
 /** The tokens `capUsd` pays for at `usdPerMillion`; null without a price that gives a count. */
 export function tokensForUsd(capUsd: number, usdPerMillion: number | null): number | null {
   if (usdPerMillion === null || usdPerMillion <= 0) return null;
@@ -458,6 +495,7 @@ export function poolShortText(
   available: number,
   waiting: PoolFeature[],
   cost: PoolCost,
+  remedy: { tokens: number; usd: number | null } | null = null,
 ): string {
   const start = Math.max(0, parked.low - available);
   const names = waiting.map((f) => f.id).join(", ");
@@ -465,7 +503,7 @@ export function poolShortText(
   const dollars =
     cost.capUsd === null
       ? ""
-      : ` The dollar cap has ${usd(cost.remainingUsd ?? 0)} left (${usd(cost.spentUsd)} of ${usd(cost.capUsd)} spent${cost.forecastUsd !== null ? `, forecast ${usd(cost.forecastUsd)}` : ""})${pool.capTokens !== null && pool.usdPerMillion !== null ? ` and would pay for about ${tokenText(pool.capTokens)} tokens at ${usd(pool.usdPerMillion)} per million` : ""}.`;
+      : ` The dollar cap has ${usd(cost.remainingUsd ?? 0)} left (${usd(cost.spentUsd)} of ${usd(cost.capUsd)} spent${cost.forecastUsd !== null ? `, forecast ${usd(cost.forecastUsd)}` : ""})${pool.capTokens !== null && pool.usdPerMillion !== null ? ` and would pay for about ${tokenText(pool.capTokens)} tokens at ${usd(pool.usdPerMillion)} per million${affordableClause(pool, remedy)}` : ""}.`;
   return `${parked.id} needs ${start} more tokens to start; a pool of ${tokenText(cover)} (${cover} tokens, ${Math.max(0, cover - pool.limitTokens)} more than ${tokenText(pool.limitTokens)}) covers the high estimates of ${names}.${dollars}`;
 }
 

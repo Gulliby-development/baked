@@ -152,6 +152,8 @@ import {
   timeRaise,
 } from "./time-pool.js";
 import {
+  affordableClause,
+  affordableTokens,
   DEFAULT_EXTEND_WITHIN_DOLLARS,
   DEFAULT_STAGE_RESERVE,
   dollarTokens,
@@ -690,23 +692,34 @@ export function shareShortfall(
   const pool = inputs && tokenPool(inputs);
   if (shareTooSmall(share)) {
     const tokensShort = (share?.tokens ?? 0) < MIN_SHARE.maxTotalTokens;
-    const cover =
-      tokensShort && pool && pool.coverTokens > pool.limitTokens ? pool.coverTokens : null;
+    // The cover held to what the dollar cap pays for, or with the cap it needs (#2367).
+    const remedy = tokensShort && pool && inputs ? affordableTokens(pool, inputs) : null;
+    const cover = remedy ? pool?.coverTokens : null;
+    const capClause =
+      remedy && pool?.capTokens != null && pool.usdPerMillion !== null && cost.capUsd !== null
+        ? ` The ${usd(cost.capUsd)} cap would pay for about ${tokenText(pool.capTokens)} tokens at ${usd(pool.usdPerMillion)} per million${affordableClause(pool, remedy)}.`
+        : "";
     // The shared time names its amount as the tokens do (#2336).
     const timeMs =
       (share?.activeMs ?? 0) < MIN_SHARE.maxActiveMs ? timeRaise(view.budget.time) : null;
-    const summary = `The shared budget is exhausted: ${feature.id} would start with ${share?.tokens ?? 0} tokens, ${share?.calls ?? 0} calls and ${share?.activeMs ?? 0} ms.${cover ? ` A pool of ${tokenText(cover)} tokens covers the high estimates of the waiting features.` : ""}${timeMs ? ` A shared time of ${Math.round(timeMs / 60_000)} min covers ${view.budget.time?.suggestedMs ? "the time forecast at the measured pace" : "the high estimates of the waiting features at the measured pace"}.` : ""}`;
-    return extendAdvice(id, summary, summary, { tokens: cover, timeMs });
+    const summary = `The shared budget is exhausted: ${feature.id} would start with ${share?.tokens ?? 0} tokens, ${share?.calls ?? 0} calls and ${share?.activeMs ?? 0} ms.${cover ? ` A pool of ${tokenText(cover)} tokens covers the high estimates of the waiting features.${capClause}` : ""}${timeMs ? ` A shared time of ${Math.round(timeMs / 60_000)} min covers ${view.budget.time?.suggestedMs ? "the time forecast at the measured pace" : "the high estimates of the waiting features at the measured pace"}.` : ""}`;
+    return extendAdvice(id, summary, summary, {
+      tokens: remedy?.tokens,
+      usd: remedy?.usd,
+      timeMs,
+    });
   }
   const available = growthLimit(view, feature.id);
   if (feature.need && available !== null && available < feature.need.low) {
     const base = `The shared budget is short: ${feature.id} has ${available} tokens available after reserving the other waiting features' low estimates, below its estimate of ${feature.need.low}-${feature.need.high}.`;
+    const remedy = pool && inputs ? affordableTokens(pool, inputs) : null;
     const detail =
       pool && inputs
-        ? ` ${poolShortText(pool, { id: feature.id, ...feature.need }, available, inputs.waiting, cost)}`
+        ? ` ${poolShortText(pool, { id: feature.id, ...feature.need }, available, inputs.waiting, cost, remedy)}`
         : "";
     return extendAdvice(id, `${base}${detail}`, `${base}${detail}`, {
-      tokens: pool ? pool.coverTokens : null,
+      tokens: remedy?.tokens ?? (pool ? pool.coverTokens : null),
+      usd: remedy?.usd,
     });
   }
   return null;

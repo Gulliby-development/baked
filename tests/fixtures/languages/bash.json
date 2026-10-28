@@ -62,6 +62,8 @@
       "shfmt: formatter"
     ],
     "sortedLists": null,
-    "dependencyDirs": null
+    "dependencyDirs": null,
+    "dependencyPrepare": null,
+    "worktreePathLimits": null
   }
 }

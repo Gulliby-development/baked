@@ -76,6 +76,8 @@
     "sortedLists": null,
     "dependencyDirs": [
       "vendor: linked"
-    ]
+    ],
+    "dependencyPrepare": null,
+    "worktreePathLimits": null
   }
 }

@@ -69,6 +69,8 @@
     "dependencyDirs": [
       "renv/library: linked",
       "packrat/lib: linked"
-    ]
+    ],
+    "dependencyPrepare": null,
+    "worktreePathLimits": null
   }
 }

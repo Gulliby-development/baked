@@ -82,6 +82,8 @@
     "sortedLists": ["src/index.js: biome organizeImports \"// order as written\" before 2"],
     "dependencyDirs": [
       "node_modules: linked"
-    ]
+    ],
+    "dependencyPrepare": null,
+    "worktreePathLimits": null
   }
 }
