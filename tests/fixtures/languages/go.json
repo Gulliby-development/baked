@@ -81,6 +81,8 @@
       "goimports: formatter"
     ],
     "sortedLists": ["main.go: gofmt blank line before 5"],
-    "dependencyDirs": null
+    "dependencyDirs": null,
+    "dependencyPrepare": null,
+    "worktreePathLimits": null
   }
 }

@@ -66,6 +66,8 @@
     "sortedLists": null,
     "dependencyDirs": [
       "dbt_packages: linked"
-    ]
+    ],
+    "dependencyPrepare": null,
+    "worktreePathLimits": null
   }
 }

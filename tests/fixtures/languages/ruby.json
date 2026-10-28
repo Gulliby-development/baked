@@ -76,6 +76,8 @@
     "dependencyDirs": [
       "vendor/bundle: linked",
       ".bundle: linked"
-    ]
+    ],
+    "dependencyPrepare": null,
+    "worktreePathLimits": null
   }
 }

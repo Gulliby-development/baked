@@ -44,6 +44,8 @@
     "sortedLists": null,
     "dependencyDirs": [
       "_opam: linked"
-    ]
+    ],
+    "dependencyPrepare": null,
+    "worktreePathLimits": null
   }
 }

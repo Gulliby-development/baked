@@ -65,6 +65,8 @@
     "sortedLists": null,
     "dependencyDirs": [
       "node_modules: linked"
-    ]
+    ],
+    "dependencyPrepare": null,
+    "worktreePathLimits": null
   }
 }

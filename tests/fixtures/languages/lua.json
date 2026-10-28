@@ -75,6 +75,8 @@
     "sortedLists": null,
     "dependencyDirs": [
       "lua_modules: linked"
-    ]
+    ],
+    "dependencyPrepare": null,
+    "worktreePathLimits": null
   }
 }

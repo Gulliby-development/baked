@@ -1,6 +1,7 @@
 import { existsSync } from "node:fs";
 import { isAbsolute, join, resolve } from "node:path";
 import type { AppConfig } from "../../types/index.js";
+import { isNoRow, SUPPORTED_LANGUAGES } from "../intelligence/language-records.js";
 import type { LspStatusView } from "../intelligence/lsp-service.js";
 import { getProvider } from "../llm/providers/index.js";
 import { detectSandbox, type SandboxDetection } from "../platform/sandbox.js";
@@ -9,6 +10,7 @@ import { type SandboxMode, sandboxSettings } from "../security/sandbox.js";
 import { buildCheckEnv } from "../verification/check-runner.js";
 import { environmentSignaturesFor } from "../verification/environment-faults.js";
 import { defaultWorkflowPolicy } from "./defaults.js";
+import { WORKTREE_PATH_LIMITS } from "./dependency-dirs.js";
 import { WorkflowFault } from "./errors.js";
 import { estimateHistory, type PreRunEstimate, usdRangeText } from "./estimate.js";
 import { commandMayBeRunning, isExecutionLease, leaseOwnerAlive } from "./leases.js";
@@ -22,6 +24,7 @@ import { type PreparedStart, prepareStart } from "./start.js";
 import { WorkflowStore } from "./store.js";
 import { toolchainCommand } from "./toolchain.js";
 import { loadGateLibrary } from "./v2/library.js";
+import { taskWorktreePath } from "./worktree.js";
 
 /**
  * Pre-run diagnostics (`baked workflow doctor`). Run start refusals come from `prepareStart`
@@ -619,6 +622,33 @@ export function languageServerChecks(status: LspStatusView): DoctorCheck[] {
   ];
 }
 
+/** A task worktree path as deep as a real one, for the length check: a UUID run id and a task id. */
+const SAMPLE_TASK_WORKTREE = taskWorktreePath("00000000-0000-0000-0000-000000000000", "T0001");
+
+/** Warns when a task worktree's path is longer than a project language's test tool handles (#2361). */
+export function worktreePathChecks(workspace: string): DoctorCheck[] {
+  const path = join(workspace, SAMPLE_TASK_WORKTREE);
+  return SUPPORTED_LANGUAGES.flatMap((language) => {
+    const limit = WORKTREE_PATH_LIMITS[language];
+    if (
+      isNoRow(limit) ||
+      !existsSync(join(workspace, limit.manifest)) ||
+      path.length <= limit.chars
+    )
+      return [];
+    return [
+      {
+        id: "worktree.path",
+        status: "warn" as const,
+        title: `Task worktrees are ${path.length} characters deep; ${limit.tool} fails over ${limit.chars}`,
+        detail: `${path} is where a task's checks run.`,
+        fix: `Move the project to a shorter path (at most ${limit.chars - SAMPLE_TASK_WORKTREE.length - 1} characters) or run inline`,
+        subject: limit.tool,
+      },
+    ];
+  });
+}
+
 export async function runDoctor(
   workspace: string,
   config: AppConfig,
@@ -747,6 +777,7 @@ export async function runDoctor(
       checks.push(sandboxCheck(mode, deps.sandbox()));
     }
     checks.push(...(await gitChecks(workspace, prepared?.mode ?? null, deps.git)));
+    if (prepared?.mode !== "inline") checks.push(...worktreePathChecks(workspace));
     if (store) checks.push(leaseCheck(store));
     else if (problem)
       checks.push({
