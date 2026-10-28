@@ -80,6 +80,8 @@ export interface BaselineFailureRecord extends BaselineFailureInput {
   /** The files the findings name, workspace-relative. */
   files: string[];
   decision: BaselineFailureDecision;
+  /** Decided again on the base a planned-ahead run was released onto (#2228). */
+  release?: boolean;
 }
 
 /** What `baseline-fix/<check>-repair.json` records. */

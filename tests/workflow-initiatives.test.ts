@@ -1934,6 +1934,68 @@ describe("initiative runtime", () => {
       expect(t.workflows.store.eventsOfType(t.featureOf(view, "base").runId ?? "", "decision.would_stop")).toHaveLength(0);
     }, 120_000);
 
+    // A rubocop stand-in for #2228: each line of base.txt as committed is a correctable offense.
+    const lint = `const { execFileSync } = require("child_process");
+let text = "";
+try { text = execFileSync("git", ["show", "HEAD:base.txt"], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }); } catch {}
+const offenses = text.split("\\n").flatMap((line, i) => line.includes("ready") ? ["base.txt:" + (i + 1) + ":1: C: [Correctable] Style/Ready: Prefer done."] : []);
+console.log("Inspecting 1 file\\n\\nOffenses:\\n\\n" + offenses.join("\\n") + "\\n\\n1 file inspected, " + (offenses.length || "no") + " offense" + (offenses.length === 1 ? "" : "s") + " detected");
+process.exit(offenses.length ? 1 : 0);`;
+    const lintCheck = { id: "lint", executable: "bun", args: ["-e", lint], cwd: ".", timeoutMs: 10000, required: true, scope: "feature" as const, envNames: [], writes: [] };
+
+    // R70 namesound docs (#2228): docs, planned ahead, was released onto the accepted commands
+    // feature, whose rubocop debt already failed the required check. The check baseline stayed the
+    // one measured at approval on the provisional base, so nothing saw it before the tasks ran. The
+    // stand-in lints base.txt as committed, so base's own run (base.txt uncommitted) passes it.
+    test("on, a feature released onto upstream lint debt measures its check baseline there and blames the owner", async () => {
+      const t = setup(chain, 100, (root) => new AheadExecutor(root, chain));
+      repository(t.root);
+      t.executor.initiatives = t.initiatives;
+      t.executor.workflows = t.workflows;
+      Object.assign(t.workflows.config.workflows ?? {}, { planAhead: true });
+      await t.start({ plan: chain, policy: { ...policy, checks: [lintCheck], executionMode: "worktree" }, featureAutoApproval: { maxTasks: 5, maxFiles: 5 }, budget: { maxTotalTokens: 6_000_000, maxAgentCalls: 2000, maxActiveMs: 6_000_000 } });
+      await t.approveSplit();
+      const view = await t.drive();
+      const message = t.featureOf(view, "message").runId ?? "";
+      const store = t.workflows.store;
+      expect(store.state(message).planAhead).toEqual({ released: true, baselined: true });
+      const versions = store.artifacts(message).filter((a) => a.logical_path === "facts/check-baseline.json");
+      const failures = versions.map((a) => Object.keys((JSON.parse(store.readArtifact(message, a.id)) as { failures: Record<string, string> }).failures));
+      // Measured at approval on the provisional base (no base.txt), and again on the released one.
+      expect(failures[0]).toEqual([]);
+      expect(failures.at(-1)).toHaveLength(1);
+      const decided = store.latestArtifact(message, "baseline-fix/lint.json");
+      expect(JSON.parse(store.readArtifact(message, decided?.id ?? "")) as object).toMatchObject({ checkId: "lint", files: ["base.txt"], release: true });
+      // Shadow: the accepted owner of the failing file is named; nothing is held or reopened.
+      const stops = store.eventsOfType(message, "decision.would_stop").map((e) => e.payload as { reason: string; key: string; inputs: Record<string, unknown> });
+      expect(stops.filter((p) => p.reason === "upstream_baseline_debt")).toEqual([
+        expect.objectContaining({ key: "release-lint", inputs: expect.objectContaining({ checkId: "lint", release: true, owners: [{ featureId: "base", files: ["base.txt"] }] }) }),
+      ]);
+      expect(stops.find((p) => p.reason === "baseline_unrepairable")?.key).toBe("release-check-lint");
+      // base itself started on a base with no upstream, so nothing is blamed there. (Its own
+      // committed base.txt fails the stand-in, which only `committed_tree` (#2225) reports.)
+      const baseStops = store.eventsOfType(t.featureOf(view, "base").runId ?? "", "decision.would_stop").map((e) => (e.payload as { reason: string }).reason);
+      expect(baseStops.filter((reason) => reason !== "committed_tree")).toEqual([]);
+    }, 120_000);
+
+    // The same debt under a feature started normally on its accepted upstream (#2228 sweep): its
+    // only baseline is on that base, and the failure is blamed on the owner at the start.
+    test("off, a feature started on upstream lint debt blames the owner at its baseline", async () => {
+      const t = setup(chain, 100, (root) => new AheadExecutor(root, chain));
+      repository(t.root);
+      t.executor.initiatives = t.initiatives;
+      t.executor.workflows = t.workflows;
+      t.executor.holdMs = 0;
+      await t.start({ plan: chain, policy: { ...policy, checks: [lintCheck], executionMode: "worktree" }, featureAutoApproval: { maxTasks: 5, maxFiles: 5 }, budget: { maxTotalTokens: 6_000_000, maxAgentCalls: 2000, maxActiveMs: 6_000_000 } });
+      await t.approveSplit();
+      const view = await t.drive();
+      const message = t.featureOf(view, "message").runId ?? "";
+      const stops = t.workflows.store.eventsOfType(message, "decision.would_stop").map((e) => e.payload as { reason: string; key: string; inputs: Record<string, unknown> });
+      expect(stops.filter((p) => p.reason === "upstream_baseline_debt")).toEqual([
+        expect.objectContaining({ key: "start-lint", inputs: expect.objectContaining({ release: false, owners: [{ featureId: "base", files: ["base.txt"] }] }) }),
+      ]);
+    }, 120_000);
+
     // R68 ewvet (#2157): with upstream amendments on, the release asks base for the symbol: base
     // runs again (origin replan) with the request in its prompt, message waits for that result and
     // then releases onto it, and the request shows on base in the initiative view.

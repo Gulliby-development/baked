@@ -387,7 +387,7 @@ import {
   runSpecPath,
   shipsSpecs,
 } from "./delivery-git.js";
-import { dependencyContracts, pathsExistLater } from "./dependencies.js";
+import { dependencyContracts, pathsExistLater, upstreamOwners } from "./dependencies.js";
 import {
   amendableReturn,
   amendKeepsPlan,
@@ -2748,7 +2748,8 @@ export class WorkflowScheduler {
                 break;
               }
               if (state.planAhead && !state.planAhead.baselined) {
-                await this.takeBaseline(runId, state, policy, signal);
+                // The released base is not the provisional one: measure the checks again (#2228).
+                await this.takeBaseline(runId, state, policy, signal, true);
                 state.planAhead = { ...state.planAhead, baselined: true };
               }
               await this.recordCheckBaseline(runId, state, policy, signal);
@@ -4690,10 +4691,14 @@ export class WorkflowScheduler {
     state: RuntimeState,
     policy: RunPolicy,
     signal: AbortSignal,
-    /** Measure again after the host repaired a baseline failure (#2215), deciding nothing anew. */
-    again = false,
+    /**
+     * `repair`: measure again after the host repaired a baseline failure (#2215), deciding nothing
+     * anew. `release`: measure again on the base a planned-ahead run was released onto, and decide
+     * its failures there (#2228).
+     */
+    measure: "first" | "repair" | "release" = "first",
   ): Promise<void> {
-    if (!again && this.store.latestArtifact(runId, CHECK_BASELINE_PATH)) return;
+    if (measure === "first" && this.store.latestArtifact(runId, CHECK_BASELINE_PATH)) return;
     const scaffold = this.baselineScaffold(runId, state);
     // On a scaffold only the required checks run, to learn which already fail (#934).
     const feature = policy.checks.filter(
@@ -4759,7 +4764,8 @@ export class WorkflowScheduler {
         }),
       ),
     );
-    if (!again) await this.decideBaselineFailures(runId, state, policy, failing, debt);
+    if (measure !== "repair")
+      await this.decideBaselineFailures(runId, state, policy, failing, debt, measure === "release");
   }
   /**
    * Decides, for each required check that failed before any change, whether the plan can repair
@@ -4773,6 +4779,7 @@ export class WorkflowScheduler {
     policy: RunPolicy,
     failing: { check: Check; output: string }[],
     debt: Record<string, string[]>,
+    release: boolean,
   ): Promise<void> {
     if (!failing.length) return;
     const root = runRoot(this.store.workspace, state);
@@ -4799,12 +4806,54 @@ export class WorkflowScheduler {
         files: found.files,
         ...input,
         decision: baselineFailureDecision(input),
+        ...(release ? { release } : {}),
       };
       this.store.transaction(() =>
         this.store.artifact(runId, BASELINE_FIX_KIND, baselineFixPath(check.id), canonical(record)),
       );
       if (record.decision === "would_stop") this.baselineWouldStop(runId, policy, record, null);
+      // A run held on a provisional base has upstream stubs, not upstream code, to blame.
+      if (!state.planAhead || state.planAhead.released)
+        this.upstreamDebtWouldStop(
+          runId,
+          state,
+          policy,
+          record,
+          found.files.filter((path) => !planned.has(path)),
+        );
     }
+  }
+  /**
+   * The `upstream_baseline_debt` would-stop (#2228): a required check fails on the base an
+   * initiative feature run starts its tasks from, in files the boundary of an accepted upstream
+   * feature owns. R70 namesound docs, planned ahead, was released onto the commands feature's
+   * rubocop debt and paid 1.03M tokens before `baseline_failure`. Once per check and base.
+   */
+  private upstreamDebtWouldStop(
+    runId: string,
+    state: RuntimeState,
+    policy: RunPolicy,
+    record: BaselineFailureRecord,
+    files: string[],
+  ): void {
+    const mode = stopMode(policy, "upstream_baseline_debt");
+    if (mode === "enforce") return;
+    const owners = upstreamOwners(state, files);
+    if (!owners.length) return;
+    const base = state.worktree?.baseHead ?? null;
+    recordWouldStop(this.store, runId, {
+      reason: "upstream_baseline_debt",
+      mode,
+      key: `${record.release ? "release" : "start"}-${record.checkId}`,
+      summary: `required check ${record.checkId} fails before any change in files accepted upstream features own: ${owners.map((o) => `${o.featureId} (${o.files.slice(0, 5).join(", ")}${o.files.length > 5 ? ", ..." : ""})`).join("; ")}; the ${record.release ? "release" : "start"} would ask ${owners.length === 1 ? "that feature" : "those features"} for an amendment instead of running tasks on a base that cannot pass`,
+      inputs: {
+        checkId: record.checkId,
+        baseCommit: base,
+        release: record.release === true,
+        decision: record.decision,
+        owners,
+      },
+    });
   }
   /**
    * The `cost_refusal_wait` would-stop (#2249): the state a cost refusal of a run past its tasks
@@ -4880,7 +4929,7 @@ export class WorkflowScheduler {
     recordWouldStop(this.store, runId, {
       reason: "baseline_unrepairable",
       mode,
-      key: `check-${record.checkId}`,
+      key: `${record.release ? "release-" : ""}check-${record.checkId}`,
       summary: `baseline_failure: required check ${record.checkId} fails before any change on ${files}, which no task of the plan writes, and the host fixer ${why}; the run would stop before its first task instead of at the checks stage`,
       inputs: { ...record, ...(repair ? { repair } : {}) },
     });
@@ -4903,7 +4952,10 @@ export class WorkflowScheduler {
     if (!this.store.tasks(runId).every((task) => task.status === "pending")) return;
     const root = runRoot(this.store.workspace, state);
     let kept = false;
+    // A failure the latest check baseline no longer has (a released base, #2228) needs no repair.
+    const failing = new Set(this.baselineFailingChecks(runId, policy));
     for (const check of policy.checks) {
+      if (!failing.has(check.id)) continue;
       const artifact = this.store.latestArtifact(runId, baselineFixPath(check.id));
       if (!artifact || this.store.latestArtifact(runId, baselineRepairPath(check.id))) continue;
       const record = JSON.parse(
@@ -4962,7 +5014,7 @@ export class WorkflowScheduler {
     }
     if (!kept) return;
     // The repaired check passes now: the checks stage compares with the repaired code.
-    await this.recordCheckBaseline(runId, state, policy, signal, true);
+    await this.recordCheckBaseline(runId, state, policy, signal, "repair");
     await this.snapshot(runId, state, policy, signal);
     this.store.transaction(() => this.store.saveState(runId, state));
   }
@@ -5941,10 +5993,12 @@ export class WorkflowScheduler {
     state: RuntimeState,
     policy: RunPolicy,
     signal: AbortSignal,
+    /** The base a planned-ahead run was released onto (#2228): the check baseline is measured again. */
+    release = false,
   ): Promise<void> {
     await this.snapshot(runId, state, policy, signal);
     await this.measureQualityBaseline(runId, state, policy, signal);
-    await this.recordCheckBaseline(runId, state, policy, signal);
+    await this.recordCheckBaseline(runId, state, policy, signal, release ? "release" : "first");
     const before = state.expectedFiles ?? {};
     // Snapshots are stored by content, so an unchanged workspace keeps the first one's id.
     const snapshot = await this.snapshot(runId, state, policy, signal);
