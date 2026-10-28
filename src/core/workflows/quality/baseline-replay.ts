@@ -8,6 +8,7 @@
  */
 import { posix } from "node:path";
 import { buildFailure, FAILED_TESTS, type TestRunner } from "../../verification/output-counts.js";
+import { toolchainCommand } from "../toolchain.js";
 import type { ResolutionDiff } from "./dependency-resolution.js";
 import { isTestCodePath } from "./duplication.js";
 import type { ChangedFile } from "./rules.js";
@@ -27,6 +28,11 @@ export interface BaselineReplayCheck {
   runner: TestRunner | null;
   /** The end of the check's output. */
   output: string;
+  /**
+   * The arguments the replay ran when they differ from the check's own: its runner's flag that
+   * runs every target past a failing one, without the check's stop flags (`replayCommand`, #2364).
+   */
+  args?: string[];
   /**
    * Some or all tests did not build, collect or load on the code before the change, so they did
    * not run and are not in `failedTests`: an update's new tests that call an API the old code
@@ -136,6 +142,10 @@ function withArgs(args: readonly string[], extra: string[]): string[] {
   return at < 0 ? [...args, ...extra] : [...args.slice(0, at), ...extra, ...args.slice(at)];
 }
 
+/** Maven runs the other modules after one fails, Gradle the other projects (#2020, #2364). */
+const MAVEN_KEEP_GOING = ["--fail-at-end", "-fae"];
+const GRADLE_KEEP_GOING = ["--continue"];
+
 /** A rerun of the whole check with a flag that keeps going past a target that does not build. */
 const keepGoing =
   (...flags: string[]) =>
@@ -240,7 +250,7 @@ export const REPLAY_TARGETS: Record<
   phpunit: phpTestFiles,
   pest: phpTestFiles,
   // A module whose tests do not compile stops the build; --fail-at-end builds and tests the others.
-  maven: keepGoing("--fail-at-end", "-fae"),
+  maven: keepGoing(...MAVEN_KEEP_GOING),
   // RSpec runs no example once one spec file does not load: each spec file the run's tests are in,
   // on its own (`rspec spec/a_spec.rb`).
   rspec: ({ args, tests }) =>
@@ -258,7 +268,7 @@ export const REPLAY_TARGETS: Record<
           .filter((path) => /_test\.rb$|(?:^|\/)test_(?!helper\.rb$)[^/]*\.rb$/.test(path))
           .map((path) => ({ args: withArgs(args, [`TEST=${path}`]), paths: [path] })),
   // Gradle (JUnit output): --continue runs the other projects' tests after a compile failure.
-  junit: keepGoing("--continue"),
+  junit: keepGoing(...GRADLE_KEEP_GOING),
 };
 
 /**
@@ -275,6 +285,163 @@ export function replayTargets(runner: TestRunner | null, input: ReplayTargetInpu
   return row(input)
     .filter((run) => !same(run.args))
     .slice(0, REPLAY_TARGET_LIMIT);
+}
+
+/** How the replay's first run of a check keeps going past its first failing target (#2364). */
+export interface KeepGoingRow {
+  /** The programs that run this runner, behind launchers (`npx jest`, `python -m pytest`). */
+  programs: readonly string[];
+  /** The subcommand the program needs to run tests (`cargo test`, `go test`), when it has one. */
+  verbs?: readonly string[];
+  /** Flags that run every target past a failing one: the first is added unless one is given. */
+  flags?: readonly string[];
+  /** Flags that stop at a failure, removed: alone, with `=VALUE`, or followed by a count. */
+  stop?: readonly string[];
+  /**
+   * A line the runner prints when it stopped after the first failing target, so the replay runs
+   * the check per target when the run still stopped (`replayStopped`).
+   */
+  stopped?: RegExp;
+}
+
+const PHPUNIT_STOPS = [
+  "--stop-on-defect",
+  "--stop-on-error",
+  "--stop-on-failure",
+  "--stop-on-warning",
+  "--stop-on-risky",
+  "--stop-on-skipped",
+  "--stop-on-incomplete",
+  "--stop-on-deprecation",
+  "--stop-on-notice",
+];
+
+/**
+ * How the baseline replay runs a check's whole test set when the check's command names the runner
+ * (#2364): a `Record` over `TestRunner`, so a new runner lands with its row. Before, the replay ran
+ * the check as written, and `cargo test` stopped after the first test binary that failed, so the
+ * new tests of the binaries after it were neither failed nor marked as not run (R75 evalpin-update:
+ * diff_show.rs's 5 new tests were missing). A row adds the runner's keep-going flag and removes its
+ * stop flags, or says why its runner needs neither.
+ */
+export const REPLAY_KEEP_GOING: Record<TestRunner, KeepGoingRow | { none: string }> = {
+  bun: { programs: ["bun"], verbs: ["test"], stop: ["--bail"] },
+  jest: { programs: ["jest"], stop: ["--bail", "-b"] },
+  vitest: { programs: ["vitest"], stop: ["--bail"] },
+  // node-tap and Mocha (whose TAP reporter this runner reads) stop at the first failure on --bail.
+  tap: { programs: ["tap", "mocha"], stop: ["--bail", "-b"] },
+  // `--maxfail=0` also lifts an `-x` the project's own `addopts` sets: the last value wins.
+  pytest: {
+    programs: ["pytest", "py.test"],
+    flags: ["--maxfail=0"],
+    stop: ["-x", "--exitfirst", "--maxfail"],
+  },
+  // `cargo test` and `cargo nextest run` stop after the first test binary that fails.
+  cargo: {
+    programs: ["cargo"],
+    verbs: ["test", "nextest"],
+    flags: ["--no-fail-fast"],
+    stop: ["--fail-fast", "--max-fail"],
+    stopped: /^error: test failed, to rerun pass |^\s*Cancelling due to test failure/m,
+  },
+  dotnet: { none: "dotnet test runs every test project it is given, and has no stop flag" },
+  // The reactor stops at the first module with a failing test; surefire can stop within one.
+  maven: {
+    programs: ["mvn", "mvnw"],
+    flags: MAVEN_KEEP_GOING,
+    stop: ["--fail-fast", "-ff", "-Dsurefire.skipAfterFailureCount"],
+    stopped: /^\[ERROR\]\s+mvn .* -rf :\S+\s*$/m,
+  },
+  go: { programs: ["go"], verbs: ["test"], stop: ["-failfast", "--failfast"] },
+  phpunit: { programs: ["phpunit"], stop: PHPUNIT_STOPS },
+  pest: { programs: ["pest"], stop: ["--bail", ...PHPUNIT_STOPS] },
+  rspec: { programs: ["rspec"], stop: ["--fail-fast"] },
+  minitest: { programs: ["rails"], verbs: ["test"], stop: ["--fail-fast", "-f"] },
+  busted: { none: "busted runs every spec file and keeps going after a failure by default" },
+  ctest: { programs: ["ctest"], stop: ["--stop-on-failure"] },
+  gtest: { none: "a GoogleTest binary runs under its own name, which names no runner" },
+  dart: { none: "dart test runs every test file" },
+  sbt: { none: "sbt runs the other projects' tests when one fails" },
+  swift: { none: "swift test runs every test target" },
+  pester: { none: "Pester runs every test file; a stop is set in its configuration object" },
+  testthat: { none: "testthat runs every test file; a stop is set in R code" },
+  // Gradle stops at the first project whose test task fails, and --fail-fast within one.
+  junit: { programs: ["gradle", "gradlew"], flags: GRADLE_KEEP_GOING, stop: ["--fail-fast"] },
+};
+
+/** Programs that run another program named by their first word (`npx jest`, `bunx vitest`). */
+const PACKAGE_RUNNERS = new Set(["npx", "bunx", "pnpx"]);
+/** Package managers whose subcommand runs a named program (`pnpm exec jest`, `yarn dlx vitest`). */
+const PACKAGE_MANAGERS = new Set(["npm", "pnpm", "yarn", "bun"]);
+const PYTHONS = /^(?:python[\d.]*|py)$/;
+
+/** The program a command runs behind a package runner or `python -m`, and that program's arguments. */
+function named(program: string, args: readonly string[]): [string, readonly string[]] {
+  if (PACKAGE_RUNNERS.has(program)) {
+    const at = args.findIndex((arg) => !arg.startsWith("-"));
+    if (at >= 0) return [args[at] as string, args.slice(at + 1)];
+  }
+  if (PACKAGE_MANAGERS.has(program) && /^(?:exec|x|dlx)$/.test(args[0] ?? "") && args[1])
+    return [args[1], args.slice(2)];
+  if (PYTHONS.test(program) && args[0] === "-m" && args[1]) return [args[1], args.slice(2)];
+  return [program, args];
+}
+
+/** `args` without the stop flags before a `--` separator (`withArgs`). */
+function withoutFlags(args: readonly string[], stop: readonly string[]): string[] {
+  const end = args.includes("--") ? args.indexOf("--") : args.length;
+  const kept: string[] = [];
+  for (let i = 0; i < end; i++) {
+    const arg = args[i] as string;
+    if (stop.some((flag) => arg.startsWith(`${flag}=`))) continue;
+    if (!stop.includes(arg)) kept.push(arg);
+    else if (/^\d+$/.test(args[i + 1] ?? "")) i++;
+  }
+  return [...kept, ...args.slice(end)];
+}
+
+/**
+ * The arguments of the replay's first run of a check, and the runner its command names (#2364):
+ * the runner's `REPLAY_KEEP_GOING` row adds its keep-going flag and removes its stop flags, read
+ * from the command before it runs, since a stopped run's output never names what did not run. A
+ * command no row names, or one its launcher cannot pass the new words through, runs as written.
+ */
+export function replayCommand(
+  executable: string,
+  args: readonly string[],
+): { args: string[]; runner: TestRunner | null } {
+  const launched = toolchainCommand(executable, args);
+  const [program, rest] = named(launched.program, launched.args);
+  const verb = rest.find((arg) => !/^[-+]/.test(arg));
+  for (const [runner, row] of Object.entries(REPLAY_KEEP_GOING) as [
+    TestRunner,
+    KeepGoingRow | { none: string },
+  ][]) {
+    if ("none" in row || !row.programs.includes(program)) continue;
+    if (row.verbs && !row.verbs.includes(verb ?? "")) continue;
+    const kept = withoutFlags(launched.args, row.stop ?? []);
+    const flag = row.flags?.some((f) => kept.includes(f)) ? undefined : row.flags?.[0];
+    const next = flag ? withArgs(kept, [flag]) : kept;
+    const same =
+      next.length === launched.args.length && next.every((arg, i) => arg === launched.args[i]);
+    const command = same ? null : launched.launch(next);
+    return { args: command ? command.args : [...args], runner };
+  }
+  return { args: [...args], runner: null };
+}
+
+/**
+ * The runner whose "stopped after the first failing target" line (`REPLAY_KEEP_GOING`'s
+ * `stopped`) a replay's output has, so the replay runs that check per target as after a build
+ * failure (#2364): the fallback for a stop the row's flags did not lift. Null when none has.
+ */
+export function replayStopped(output: string): TestRunner | null {
+  for (const [runner, row] of Object.entries(REPLAY_KEEP_GOING) as [
+    TestRunner,
+    KeepGoingRow | { none: string },
+  ][])
+    if (!("none" in row) && row.stopped?.test(output)) return runner;
+  return null;
 }
 
 /**

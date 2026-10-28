@@ -17,7 +17,7 @@ import { canRepairRun, type RepairBlock } from "../src/core/workflows/repairable
 import { growthLimit, type InitiativeView, rebaseView, shareShortfall } from "../src/core/workflows/initiatives/service.js";
 import { estimateInitiative } from "../src/core/workflows/initiatives/estimate.js";
 import { hasExecutableFields, manifestFieldChanges } from "../src/core/workflows/quality/manifests.js";
-import { REPLAY_TARGETS, replayTargets } from "../src/core/workflows/quality/baseline-replay.js";
+import { REPLAY_TARGETS, replayCommand, replayTargets } from "../src/core/workflows/quality/baseline-replay.js";
 import { type BaselineFailureDecision, baselineFailureDecision, baselineFindings } from "../src/core/workflows/baseline-fix.js";
 import type { TestRunner } from "../src/core/verification/output-counts.js";
 import { unrequestedManifestFields } from "../src/core/workflows/quality/dependencies.js";
@@ -521,6 +521,29 @@ describe("gate matrix: baseline replay per test target (#2020)", () => {
     for (const stack of STACKS) expect({ stack, row: REPLAY_TARGETS[REPLAY_RUNNER[stack]] !== undefined }).toEqual({ stack, row: true });
     expect(STACKS.filter((stack) => typeof REPLAY_TARGETS[REPLAY_RUNNER[stack]] === "function").sort()).toEqual(["dotnet", "maven", "python", "rust"]);
   });
+});
+
+// #2364 (R75 evalpin-update): the replay ran `cargo test` as written, so it stopped after the first
+// failing test binary. The replay's first run of each stack's detected test gate, as the stack's
+// runner keeps going past a failing target: the gate's own arguments where it already does.
+const REPLAY_FIRST_RUN: Record<Stack, string> = {
+  // The package scripts run every test file and name no runner: run as written.
+  bun: "bun run test",
+  npm: "npm run test",
+  // `--maxfail=0` lifts an `-x` the project's addopts may set.
+  python: `${process.platform === "win32" ? "python" : "python3"} -m pytest -q --maxfail=0`,
+  go: "go test ./...",
+  rust: "cargo test --no-fail-fast",
+  maven: "mvn -B -q verify --fail-at-end",
+  dotnet: "dotnet test --nologo",
+};
+
+describe("gate matrix: baseline replay keeps going (#2364)", () => {
+  for (const stack of Object.keys(FIXTURES) as Stack[])
+    cell(stack, "baseline replay keeps going", () => {
+      const checks = detectGates(project(FIXTURES[stack].files)).map((s) => s.check).filter((c) => isTestCheck(c));
+      expect([stack, checks.map((c) => [c.executable, ...replayCommand(c.executable, c.args).args].join(" ")).join("; ")]).toEqual([stack, REPLAY_FIRST_RUN[stack]]);
+    });
 });
 
 // Dependency readers do not imply Gradle or Ruby gate detection support (#1489, #1552).
