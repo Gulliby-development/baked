@@ -10,7 +10,8 @@ import { ACTIVE_TIME_MARGIN, ownPace, type PaceBasis, runPace } from "../sizing.
 export const TIME_STEP_MS = 15 * 60_000;
 const roundUp = (ms: number): number => Math.ceil(ms / TIME_STEP_MS) * TIME_STEP_MS;
 const minutes = (ms: number): number => Math.round(ms / 60_000);
-const msFor = (tokens: number, tokensPerMinute: number): number =>
+/** The active time `tokens` take at `tokensPerMinute`. */
+export const msFor = (tokens: number, tokensPerMinute: number): number =>
   Math.round((tokens / tokensPerMinute) * 60_000);
 
 /** Tokens per active minute, with where it comes from. */

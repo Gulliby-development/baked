@@ -150,6 +150,7 @@ import {
   type ShareGateRecord,
   shareShortfall,
   shareSpareUsd,
+  timeShortfall,
 } from "./initiatives/service.js";
 import type { TokenPoolView } from "./initiatives/token-pool.js";
 import {
@@ -2874,6 +2875,18 @@ export interface InitiativeStartBoundary {
     suggestedUsd: number;
     finalUsd: number | null;
   } | null;
+  /**
+   * The `initiative-time-share` would-stop the current code records at this start (#2413): the
+   * shared time left after the other waiting features' lows is below the feature's low at the
+   * pace. Its promotion cites replayed starts whose features did not stop on their deadlines.
+   */
+  timeWouldStop: {
+    summary: string;
+    availableMs: number;
+    lowMs: number;
+    tokensPerMinute: number;
+    suggestedTimeMs: number;
+  } | null;
 }
 
 /**
@@ -3538,6 +3551,7 @@ function replayStarts(
         const whole = initiatives.estimate(initiativeId);
         const short = feature ? dollarShortfall(view, feature) : null;
         const park = feature ? dollarCapPark(view, feature) : null;
+        const timeShort = feature ? timeShortfall(view, feature) : null;
         const estimate = (whole?.features ?? []).map((f) => ({
           featureId: f.featureId,
           low: f.tokens.low,
@@ -3582,6 +3596,15 @@ function replayStarts(
                 openNeedUsd: park.openNeedUsd,
                 suggestedUsd: park.suggestedUsd,
                 finalUsd: finalUsd > 0 ? Math.round(finalUsd * 100) / 100 : null,
+              }
+            : null,
+          timeWouldStop: timeShort
+            ? {
+                summary: timeShort.summary,
+                availableMs: timeShort.availableMs,
+                lowMs: timeShort.needMs.low,
+                tokensPerMinute: timeShort.tokensPerMinute,
+                suggestedTimeMs: timeShort.suggestedTimeMs,
               }
             : null,
         });

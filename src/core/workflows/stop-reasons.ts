@@ -73,6 +73,15 @@ export const STOP_REASONS = {
     modes: NOT_ENFORCED,
     defaultMode: "shadow",
   },
+  "initiative-time-share": {
+    label:
+      "An initiative's shared time left after the other waiting features' low estimates is below a starting feature's low estimate at the measured pace",
+    // Shadow only (#2413): the pace counts silent provider time until #2414, which would make an
+    // enforced park as wrong as R76's time notices. Its promotion, after #2414 and two bench
+    // rounds with no false would-stop, adds `enforce` and parks the start with its extend remedy.
+    modes: NOT_ENFORCED,
+    defaultMode: "shadow",
+  },
   "initiative-plan-charge": {
     label:
       "An initiative's token pool holds an open feature run with a sized plan at its plan's need instead of its run limit",

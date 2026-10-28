@@ -1,6 +1,11 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import type { InitiativePlan } from "../src/core/workflows/initiatives/plan.js";
-import { InitiativeService, type InitiativeView, shareShortfall } from "../src/core/workflows/initiatives/service.js";
+import {
+  InitiativeService,
+  type InitiativeView,
+  shareShortfall,
+  timeShortfall,
+} from "../src/core/workflows/initiatives/service.js";
 import type { RunPolicy } from "../src/core/workflows/schemas.js";
 import { type Remedy, RemedySchema } from "../src/core/workflows/remedies.js";
 import { activeTimeLimit, type SizingReport } from "../src/core/workflows/sizing.js";
@@ -240,6 +245,63 @@ describe("scenario: the shared time has a forecast, a notice and an amount (#233
     expect(remedies[0]).toMatchObject({ runId: head });
     expect(remedies[0]?.suggestedTimeMs).toBeGreaterThan(limit);
     expect(feature?.blockers[0]).toContain(`--time-ms ${remedies[0]?.suggestedTimeMs} --resume`);
+  }, 60000);
+});
+
+// R76 schemamask (#2413): check, generation and validate started on 1.9 to 4.2 min of shared time
+// against lows of 9 to 30 min at the pace then. Each stopped on its active deadline within 4 min
+// and waited 16 to 26 min for a person. The share gate's floor is one second.
+describe("scenario: R76 schemamask, a feature starts on less time than its low estimate (#2413)", () => {
+  const timeWouldStops = (initiatives: InitiativeService) =>
+    initiatives.store
+      .eventsOfType("ladle", "decision.would_stop")
+      .filter((p) => (p as { reason?: string }).reason === "initiative-time-share") as {
+      mode: string;
+      featureId: string;
+      remedy: Remedy & { suggestedTimeMs: number };
+      inputs: { availableMs: number; needMs: { low: number } };
+    }[];
+  /** Head's estimate as schemamask's validate had it: 10 to 20 min at the initiative's 60k a minute. */
+  const HEAD_NEED = { low: 10 * OWN_PACE, high: 20 * OWN_PACE };
+  const estimated = (initiatives: InitiativeService): void => {
+    // The fixture's history is unsized, so its estimate is on defaults and names no need.
+    (initiatives as unknown as { featureNeeds(): Map<string, typeof HEAD_NEED> }).featureNeeds = () =>
+      new Map([["head", HEAD_NEED]]);
+  };
+
+  test("a start on a time share below its low records an initiative-time-share would-stop with the time that starts it", async () => {
+    // The first wave used 60 of 61 min: head's share is 1 min, its low at 60k a minute is longer.
+    const { initiatives, starter } = await ladle("sdd", 61 * MINUTE);
+    estimated(initiatives);
+    const view = initiatives.view("ladle");
+    const head = view.features.find((f) => f.id === "head");
+    if (!head) throw new Error("no head");
+    expect(head.need).toEqual(HEAD_NEED);
+    expect(head.share?.activeMs).toBeGreaterThan(1000);
+    expect(shareShortfall(view, head)).toBeNull();
+    const short = timeShortfall(view, head);
+    expect(short?.availableMs).toBe(1 * MINUTE);
+    expect(short?.needMs).toEqual({ low: 10 * MINUTE, high: 20 * MINUTE });
+
+    // Shadow: the start goes ahead and the would-stop is recorded once, with the remedy's amount.
+    expect(await starter.startFeature("ladle", "head")).toBe(true);
+    const events = timeWouldStops(initiatives);
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({ mode: "shadow", featureId: "head", remedy: { action: "extend" } });
+    expect(RemedySchema.safeParse(events[0]?.remedy).success).toBe(true);
+    const suggested = events[0]?.remedy.suggestedTimeMs ?? 0;
+    expect(suggested % (15 * MINUTE)).toBe(0);
+    expect(suggested - 61 * MINUTE).toBeGreaterThanOrEqual((short?.needMs.low ?? 0) - (short?.availableMs ?? 0));
+    expect(suggested).toBeGreaterThanOrEqual(view.budget.time?.suggestedMs ?? 0);
+  }, 60000);
+
+  test("a start whose time share covers its low records none", async () => {
+    const { initiatives, starter } = await ladle("sdd", 600 * MINUTE);
+    estimated(initiatives);
+    const head = initiatives.view("ladle").features.find((f) => f.id === "head");
+    expect(head ? timeShortfall(initiatives.view("ladle"), head) : "no head").toBeNull();
+    expect(await starter.startFeature("ladle", "head")).toBe(true);
+    expect(timeWouldStops(initiatives)).toHaveLength(0);
   }, 60000);
 });
 
