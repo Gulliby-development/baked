@@ -359,11 +359,12 @@ export function parseBudget(
  */
 export function suggestedExtension(
   view: Pick<InitiativeView, "budget" | "next">,
-): { tokens?: number; usd?: number; timeMs?: number } | null {
+): { tokens?: number; usd?: number; timeMs?: number; calls?: number } | null {
   const suggested = extendSuggestion(
     view.next.recovery,
     view.budget.pool?.suggestedTokens,
     view.budget.time?.suggestedMs,
+    view.budget.calls?.suggestedCalls,
   );
   const tokens =
     suggested?.tokens && suggested.tokens > view.budget.limits.maxTotalTokens
@@ -375,11 +376,16 @@ export function suggestedExtension(
     suggested?.timeMs && suggested.timeMs > view.budget.limits.maxActiveMs
       ? suggested.timeMs
       : undefined;
-  if (!tokens && !usd && !timeMs) return null;
+  const calls =
+    suggested?.calls && suggested.calls > view.budget.limits.maxAgentCalls
+      ? suggested.calls
+      : undefined;
+  if (!tokens && !usd && !timeMs && !calls) return null;
   return {
     ...(tokens ? { tokens } : {}),
     ...(usd ? { usd } : {}),
     ...(timeMs ? { timeMs } : {}),
+    ...(calls ? { calls } : {}),
   };
 }
 
