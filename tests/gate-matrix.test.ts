@@ -77,7 +77,7 @@ import {
 } from "../src/core/workflows/check-policy.js";
 import { buildWrapper, cmakeGates, detectGates, executeGate, type GateToolchain } from "../src/core/workflows/gates.js";
 import { committedTreeChecks } from "../src/core/workflows/committed-tree.js";
-import { fileScopedFormat, formatWrittenChecks } from "../src/core/workflows/format-written.js";
+import { fileScopedFormat, formatWrittenChecks, rustFormatWrittenChecks } from "../src/core/workflows/format-written.js";
 import { type LayoutResult, layoutVerdict } from "../src/core/workflows/layout-check.js";
 import { addedDependencies, checkDependencies } from "../src/core/workflows/quality/dependencies.js";
 import {
@@ -2942,6 +2942,30 @@ describe("gate matrix: format-written check on a dirty repository (#1837)", () =
   });
   cell("rust", "cargo fmt follows mod declarations: no file-scoped check (#842)", () => {
     expect(scoped({ "Cargo.toml": "[package]\nname = 'p'\n", "src/lib.rs": "" }, ["src/lib.rs"])).toEqual([]);
+  });
+  // #2248: cargo fmt runs only in the checks stage, so a file rustfmt hung on (#2240) showed after its
+  // task had ended. With `rustFormatWritten` the task's new files get rustfmt at the task's end.
+  cell("rust", "rustFormatWritten: rustfmt --check on the task's new files without out-of-line mods, beside cargo fmt (#2248)", () => {
+    const crate = { "Cargo.toml": "[package]\nname = 'p'\nedition = \"2021\"\n", "src/lib.rs": "mod parser;\n", "src/parser.rs": "pub fn p() {}\n", "tests/json.rs": "#[test]\nfn t() {}\n", "src/old.rs": "fn o() {}\n" };
+    const root = project(crate);
+    const writes = ["src/lib.rs", "src/parser.rs", "tests/json.rs"].map((path) => ({ path, action: "create" })).concat([{ path: "src/old.rs", action: "modify" }]);
+    const cargoFmt: Check = { id: "cargo-fmt", executable: "cargo", args: ["fmt", "--check"], cwd: ".", timeoutMs: 300000, required: true, scope: "feature", envNames: [], writes: [], fix: { executable: "cargo", args: ["fmt"] } };
+    const shown = (checks: Check[]) => checks.map((c) => [c.id, [c.executable, ...c.args].join(" "), [c.fix!.executable, ...c.fix!.args].join(" "), c.fixPaths]);
+    // lib.rs declares `mod parser;` (rustfmt would format parser.rs too); old.rs is an edit (no range form).
+    const expected = [["rustfmt-written", "/usr/bin/rustfmt --check --edition 2021 src/parser.rs tests/json.rs", "/usr/bin/rustfmt --edition 2021", ["src/parser.rs", "tests/json.rs"]]];
+    const which = (c: string) => `/usr/bin/${c}`;
+    const at = (check: Check) => ({ ...check, executable: "/usr/bin/cargo" });
+    expect(shown(rustFormatWrittenChecks(root, [at(cargoFmt)], writes, which, () => "fn o() {}\n"))).toEqual(expected);
+    // Off unless the policy asks; on, even with cargo fmt in the run's checks.
+    expect(formatWrittenChecks(root, [at(cargoFmt)], writes, which, () => "fn o() {}\n")).toEqual([]);
+    expect(shown(formatWrittenChecks(root, [at(cargoFmt)], writes, which, () => "fn o() {}\n", () => true, { rust: true }))).toEqual(expected);
+    // A file the run created is whole like a new one.
+    expect(shown(rustFormatWrittenChecks(root, [at(cargoFmt)], [{ path: "src/old.rs", action: "modify" }], which, () => null)).map(([id, command]) => [id, command])).toEqual([["rustfmt-written", "/usr/bin/rustfmt --check --edition 2021 src/old.rs"]]);
+    // No rustfmt on the PATH, or no cargo fmt gate: no check.
+    expect(rustFormatWrittenChecks(root, [cargoFmt], writes, () => null)).toEqual([]);
+    expect(rustFormatWrittenChecks(project({ "src/a.rs": "fn a() {}\n" }), [], [{ path: "src/a.rs", action: "create" }], which)).toEqual([]);
+    // Its file-scoped form, for a check that times out (#2240).
+    expect(fileScopedFormat(rustFormatWrittenChecks(root, [at(cargoFmt)], writes, which)[0]!, root, "tests/json.rs")).toEqual({ executable: "/usr/bin/rustfmt", args: ["--check", "--edition", "2021", "tests/json.rs"] });
   });
   cell("maven", "no Maven formatter gate is detected: no check", () => {
     expect(scoped({ "pom.xml": "<project/>", "src/main/java/A.java": "class A {}\n" }, ["src/main/java/A.java"])).toEqual([]);

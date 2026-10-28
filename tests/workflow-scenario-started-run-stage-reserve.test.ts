@@ -3,15 +3,18 @@ import { canonical } from "../src/core/specs/hash.js";
 import { WorkflowFault } from "../src/core/workflows/errors.js";
 import { refreshedGrowth, stageReserveDecision } from "../src/core/workflows/initiatives/growth.js";
 import type { InitiativePlan } from "../src/core/workflows/initiatives/plan.js";
-import { costGrowthLimit, InitiativeService, type InitiativeView } from "../src/core/workflows/initiatives/service.js";
+import { costGrowthLimit, type FeatureView, InitiativeService, type InitiativeView, stalledUpstream } from "../src/core/workflows/initiatives/service.js";
 import { HOST_POOL_GROWTHS } from "../src/core/workflows/initiatives/token-pool.js";
 import { NativeWorkflowService } from "../src/core/workflows/service.js";
 import type { RecoveryAdvice } from "../src/core/workflows/remedies.js";
 import type { RunPolicy, Task } from "../src/core/workflows/schemas.js";
+import { costRefusalWait, costRefusalWaitOf } from "../src/core/workflows/stop-reasons.js";
 import { stageReserve, stageSuggestedUsd } from "../src/core/workflows/stage-reserve.js";
+import { stopRecovery } from "../src/core/workflows/stop-detail.js";
 import { newId } from "../src/core/workflows/store.js";
 import type { AttemptUsageRecord } from "../src/core/workflows/step-budget.js";
-import { fixturePolicy, workflowFixture } from "./helpers/workflow-fixture.js";
+import type { ExecutionRequest } from "../src/core/workflows/types.js";
+import { FixtureExecutor, fixturePolicy, workflowFixture } from "./helpers/workflow-fixture.js";
 
 // #2241, R71 xmlvet get-command (quick workflow, $30 cap with the owner's 25 percent tolerance:
 // $37.50). T002 overran its price; seven call-growth steps chased the spend to a $1.54 bound, each
@@ -217,4 +220,92 @@ describe("scenario: a started run past its tasks reserves its review and converg
     stopOf(call);
     expect(extendEvents(initiatives)).toEqual([]);
   }, 120_000);
+});
+
+// #2249, item (d) of #2241: R71 get-command's refused review blocked `budget_exhausted` for 24
+// minutes 46 seconds while cli-release, planned ahead, waited on it as on a stalled upstream,
+// although the block named its one-command answer. The fault handler decides once, from the
+// fault's recovery, that such a refusal would leave the run waiting on that remedy (shadow), and
+// the initiative counts a dependant of that upstream as waiting, not stalled.
+
+/** The fixture executor on a priced model: each call's tokens are recorded as input, so they cost. */
+class PricedExecutor extends FixtureExecutor {
+  service?: NativeWorkflowService;
+  /** What the run had spent when its first review call ran. */
+  spentAtReview: number | null = null;
+  override async execute(request: ExecutionRequest) {
+    if (request.profile.output === "review" && this.spentAtReview === null)
+      this.spentAtReview = this.service?.store.costUsage(request.runId).spentUsd ?? null;
+    const result = await super.execute(request);
+    const tokens = result.inputTokens + result.outputTokens;
+    this.service?.store.artifact(request.runId, "usage", `attempts/${request.attemptId}/usage.json`, canonical(usage(tokens)));
+    return result;
+  }
+}
+
+async function refusedAtReview(policy: RunPolicy) {
+  const base = workflowFixture();
+  cleanups.push(base.dispose);
+  const executor = new PricedExecutor(base.root, (output) => (output === "implementation" ? 300_000 : 20_000));
+  const config = { ...base.config, defaultModel: MODEL, workflows: { ...base.config.workflows, policy } };
+  const service = new NativeWorkflowService(base.root, config, executor);
+  executor.service = service;
+  cleanups.push(async () => { await service.shutdown(); service.close(); });
+  const { runId } = await service.start({ commandId: newId(), featureId: "fixture", workflowId: "sdd", prompt: "Create ready value", ownerLabel: "test", policy });
+  for (let i = 0; i < 12; i++) {
+    const run = await service.get(runId);
+    if (run.status === "blocked" || run.status === "completed") break;
+    const request = service.store.requests(runId).find((r) => r.kind === "approval" && r.status === "pending");
+    if (request) await service.decide(runId, { commandId: newId(), expectedRevision: run.revision }, { kind: "approve", requestId: request.id, digest: request.digest });
+    else if (run.status === "paused" || run.status === "created") await service.resume(runId, { commandId: newId(), expectedRevision: run.revision });
+    await service.drive(runId, new AbortController().signal);
+  }
+  return { service, executor, runId };
+}
+
+const priced: RunPolicy = { ...fixturePolicy, maxTotalTokens: 20_000_000, costForecast: "off", costTolerance: "off", sizing: { maxRunTokens: 20_000_000 } };
+
+describe("scenario: a cost refusal at review would wait on its extend remedy (#2249)", () => {
+  test("shadow, the default, records the waiting state with the remedy's amount, the run still blocks, and a dependant is not stalled", async () => {
+    // Measure what the run spends up to its first review call, then cap it there.
+    const measured = await refusedAtReview(priced);
+    expect((await measured.service.get(measured.runId)).status).toBe("completed");
+    const spent = measured.executor.spentAtReview!;
+    expect(spent).toBeGreaterThan(0);
+    const { service, runId } = await refusedAtReview({ ...priced, maxCostUsd: Math.ceil(spent * 1e4) / 1e4 + 0.0001 });
+    const run = await service.get(runId);
+    // Shadow: the run blocks as before.
+    expect(run).toMatchObject({ status: "blocked", reason: "budget_exhausted" });
+    expect(service.store.run(runId).stage_id).toBe("review");
+    const recovery = stopRecovery(service.store, runId)!;
+    const extend = recovery.remedies.find((r) => r.action === "extend")!;
+    expect(extend.suggestedUsd).toBeGreaterThan(spent);
+    const stops = service.store.eventsOfType(runId, "decision.would_stop").map((e) => e.payload as { reason: string; mode: string; key: string; summary: string; inputs: Record<string, unknown> });
+    const wait = stops.filter((s) => s.reason === "cost_refusal_wait");
+    expect(wait).toHaveLength(1);
+    expect(wait[0]).toMatchObject({ mode: "shadow", inputs: { state: "waiting", instead: "blocked", stageId: "review", suggestedUsd: extend.suggestedUsd } });
+    expect(wait[0]!.inputs.stages).toContain("review");
+    expect(wait[0]!.summary).toContain(`baked workflow extend ${runId} --cost-usd ${extend.suggestedUsd}`);
+    // The initiative reads the record of the run's current block, and a planned-ahead dependant
+    // of that upstream waits for it rather than counting it as stalled.
+    const read = costRefusalWaitOf(service.store, runId);
+    expect(read).toMatchObject({ state: "waiting", suggestedUsd: extend.suggestedUsd, mode: "shadow" });
+    const upstream: Pick<FeatureView, "id" | "state" | "costWait"> = { id: "get-command", state: "blocked", costWait: { state: "waiting", suggestedUsd: read!.suggestedUsd, stageId: read!.stageId, mode: read!.mode } };
+    expect(stalledUpstream([upstream])).toEqual([]);
+    expect(stalledUpstream([{ ...upstream, costWait: undefined }])).toEqual(["get-command"]);
+  }, 180_000);
+
+  test("the decision covers every priced stage after the tasks and nothing else", () => {
+    const fault = (details: Record<string, unknown>) => new WorkflowFault("BUDGET_EXHAUSTED", "The next model call would pass the run's cost cap", { reason: "cost", ...details });
+    const recovery = { message: "m", summary: "s", remedies: [{ action: "extend", runId: "r", suggestedUsd: 2.6 }] };
+    // Every stage the fault priced (a review dimension's call runs in the review stage).
+    for (const stageId of ["review", "converge"])
+      expect(costRefusalWait(fault({ recovery, stages: ["review", "converge"], spentUsd: 1.29, requestedUsd: 0.02, ceilingUsd: 1.3 }), stageId)).toMatchObject({ state: "waiting", instead: "blocked", stageId, suggestedUsd: 2.6, spentUsd: 1.29 });
+    // A refusal at a task (no priced remedy: the run has not finished its tasks) blocks.
+    expect(costRefusalWait(fault({ spentUsd: 1 }), "implement")).toBeNull();
+    // A stage outside the priced ones, another reason, or a remedy without an amount blocks.
+    expect(costRefusalWait(fault({ recovery, stages: ["converge"] }), "review")).toBeNull();
+    expect(costRefusalWait(new WorkflowFault("BUDGET_EXHAUSTED", "x", { reason: "run-budget", recovery }), "review")).toBeNull();
+    expect(costRefusalWait(fault({ recovery: { ...recovery, remedies: [{ action: "extend", runId: "r" }] } }), "review")).toBeNull();
+  });
 });

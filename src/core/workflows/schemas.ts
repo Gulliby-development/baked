@@ -738,6 +738,13 @@ export const PolicySchema = z
      */
     conflictFinish: z.literal("on").optional(),
     /**
+     * The task-end rustfmt check (format-written.ts `rustFormatWrittenChecks`, #2248): `on` checks
+     * the Rust files a task creates with `rustfmt --check` at the end of that task, with rustfmt as
+     * the fixer, next to the checks stage's `cargo fmt`, so a file rustfmt rejects or hangs on is
+     * repaired by the task that wrote it. Absent is off, so stored policies keep their hash.
+     */
+    rustFormatWritten: z.literal("on").optional(),
+    /**
      * The expected text a test task compares exactly, written by the host as a string literal of
      * the test's language (supplied-content.ts, #2101): `on` gives the implementer each request
      * section a criterion of the task compares exactly, escaped once by the host. Absent means
@@ -1609,6 +1616,7 @@ export const EventType = z.enum([
   "attempt.advisory",
   "attempt.recovery",
   "decision.would_stop",
+  "decision.would_resume",
   "task.state_changed",
   "artifact.committed",
   "check.finished",
@@ -1735,6 +1743,22 @@ export const EventSchema = z.discriminatedUnion("type", [
     .object({
       ...EventBase,
       type: z.literal("decision.would_stop"),
+      payload: z
+        .object({
+          reason: StopReasonIdSchema,
+          mode: z.enum(["shadow", "advisory"]),
+          key: z.string().max(200),
+          summary: z.string().max(1000),
+          inputs: z.record(z.string(), z.unknown()),
+        })
+        .strict(),
+    })
+    .strict(),
+  // A shadow reason would have resumed a blocked run (`host-resume-on-stored-limit`, #2226).
+  z
+    .object({
+      ...EventBase,
+      type: z.literal("decision.would_resume"),
       payload: z
         .object({
           reason: StopReasonIdSchema,

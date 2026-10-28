@@ -8,7 +8,7 @@ import { forecastSamples } from "../src/core/workflows/stage-price.js";
 import { adaptiveFirstByteMs } from "../src/core/llm/provider-health.js";
 import { planApprovalDecision } from "../src/core/workflows/auto-approval.js";
 import { CAPACITY_PROBE, type SizingReport, type SizingSample, samplesFrom, testCaseRate } from "../src/core/workflows/sizing.js";
-import { type CallRate, chainCosts, openTrace, type PlanPriceReplay, replayChainEscalation, replayEdgeRecord, replayInitiativeStarts, replayPlanApprovals, replayPlanPrices, replayPoolBounds, replayTrace, type TestSplitRule } from "../src/core/workflows/trace.js";
+import { type CallRate, chainCosts, openTrace, type PlanPriceReplay, replayChainEscalation, replayEdgeRecord, replayInitiativeStarts, replayPlanApprovals, replayPlanPrices, replayActiveTimes, replayPoolBounds, replayTrace, type TestSplitRule } from "../src/core/workflows/trace.js";
 import { type EdgeRecord, edgeCrashDecision } from "../src/core/verification/edge-inputs.js";
 import { fixturePolicy } from "./helpers/workflow-fixture.js";
 
@@ -53,6 +53,7 @@ interface Accepted {
   newSourceDefectRoutes?: number;
   newBaselineDecisions?: number;
   newSignatureDecisions?: number;
+  newActiveTimes?: number;
   newShareStops?: number;
   newPoolGrowth?: number;
   newPoolBoundStops?: number;
@@ -121,6 +122,7 @@ describe("bench-round traces replay without new forecast stops or growth (#1649)
           newSourceDefectRoutes: run.newSourceDefectRoutes,
           newBaselineDecisions: run.newBaselineDecisions,
           newSignatureDecisions: run.newSignatureDecisions,
+          newActiveTimes: run.newActiveTimes,
         }).toEqual({
           run: run.runId,
           newStops: allowed?.newStops ?? 0,
@@ -148,6 +150,7 @@ describe("bench-round traces replay without new forecast stops or growth (#1649)
           newSourceDefectRoutes: allowed?.newSourceDefectRoutes ?? 0,
           newBaselineDecisions: allowed?.newBaselineDecisions ?? 0,
           newSignatureDecisions: allowed?.newSignatureDecisions ?? 0,
+          newActiveTimes: allowed?.newActiveTimes ?? 0,
         });
       }
       // Run states before R52 counted the host's own test splits in `hostSplitTasks`, which the
@@ -559,6 +562,22 @@ describe("test task splits replay on recorded sizing reports (#1789)", () => {
     const path = join(ROOT, "R52/url-shortener.sqlite.gz");
     expect(replayTrace(path, { testSplit: () => true }).runs.reduce((n, r) => n + r.newTestSplits, 0)).toBeGreaterThan(0);
     expect(replayTrace(path).runs.reduce((n, r) => n + r.newTestSplits, 0)).toBe(0);
+  }, 120000);
+
+  test("R62 stepvet: tagexpr's active time is sized at the initiative's own pace and covers what it used (#2336)", () => {
+    // tagexpr was sized at the history's 135k tokens per minute to 2,100,000 ms, stopped there
+    // (#1958) and finished at 2,457,115 ms after a raise; the initiative's finished runs had run at 71k.
+    const { store, dispose } = openTrace(join(ROOT, "R62/stepvet.sqlite.gz"));
+    try {
+      const runId = "40060df8-bfac-4d9c-a5df-5904da9f92e6";
+      const before = replayActiveTimes(store, runId, (history) => history);
+      expect(before.map((b) => b.replayed.after)).toEqual(before.map((b) => b.recorded.after));
+      const [plan] = replayActiveTimes(store, runId);
+      expect(plan).toMatchObject({ report: "sizing/plan-0.json", recorded: { basis: "history", after: 2_100_000 }, replayed: { basis: "initiative", tokensPerMinute: 71_173 } });
+      expect(plan?.replayed.after).toBeGreaterThan(store.run(runId).active_ms);
+    } finally {
+      dispose();
+    }
   }, 120000);
 
   test("R56 hdrlens: the stalled analyze call that waited for the provider now climbs the recovery ladder (#1877)", () => {

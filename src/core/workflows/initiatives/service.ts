@@ -65,7 +65,14 @@ import { sizingHistory, testCaseRate } from "../sizing.js";
 import { stageReserve } from "../stage-reserve.js";
 import { terminalStates } from "../state-machine.js";
 import { stopDetail, stopRecovery } from "../stop-detail.js";
-import { recordWouldStop, type StopMode, stopFault, stopMode } from "../stop-reasons.js";
+import {
+  costRefusalWaitOf,
+  noteStoredLimitResume,
+  recordWouldStop,
+  type StopMode,
+  stopFault,
+  stopMode,
+} from "../stop-reasons.js";
 import { newId, WorkflowStore } from "../store.js";
 import type { IssueSource } from "../types.js";
 import { HOST_AUTO_APPROVAL_CEILING, HostAutoApprovalSchema } from "../v2/definition.js";
@@ -136,6 +143,14 @@ import {
   type InitiativeSettings,
   InitiativeStore,
 } from "./store.js";
+import {
+  finishedRunPace,
+  initiativePace,
+  runTimeRaise,
+  type TimePoolView,
+  timePool,
+  timeRaise,
+} from "./time-pool.js";
 import {
   DEFAULT_EXTEND_WITHIN_DOLLARS,
   DEFAULT_STAGE_RESERVE,
@@ -374,6 +389,22 @@ export interface FeatureView {
    * this feature at their release, and how the initiative answered each.
    */
   amendments?: (AmendmentRequest & { answer: AmendmentAnswer })[];
+  /**
+   * A blocked run's cost refusal past its tasks that would leave it waiting on its extend remedy
+   * (`cost_refusal_wait`, shadow, #2249): the state it would take and the cap that answers it.
+   */
+  costWait?: {
+    state: "waiting";
+    suggestedUsd: number;
+    stageId: string | null;
+    mode: Exclude<StopMode, "enforce">;
+  };
+  /**
+   * The unaccepted upstream features that hold this one by a stop nobody waits on (blocked or
+   * failed), so it counts as stalled behind them (`stalledUpstream`, #2249). An upstream whose
+   * block would wait on a priced extension (`costWait`) is waited on, not counted here.
+   */
+  stalledOn?: string[];
 }
 
 export interface NextAction {
@@ -461,6 +492,13 @@ export interface InitiativeView {
     planCharge: PlanChargeView | null;
     /** The token forecast's notice (`pool.notice`): set while the forecast is above the pool. */
     forecastNotice: string | null;
+    /**
+     * The shared active time's forecast at the measured pace and what to extend it to (#2336).
+     * Null before approval.
+     */
+    time: TimePoolView | null;
+    /** The time forecast's notice (`time.notice`): set while the forecast is above the limit. */
+    timeNotice: string | null;
     rule: string;
   };
   next: NextAction;
@@ -510,7 +548,7 @@ export interface ShareGateView {
    * events have none of them.
    */
   budget: Pick<InitiativeView["budget"], "remaining" | "cost"> &
-    Partial<Pick<InitiativeView["budget"], "limits" | "used" | "pool" | "planCharge">>;
+    Partial<Pick<InitiativeView["budget"], "limits" | "used" | "pool" | "planCharge" | "time">>;
   /** `shareUsd` and `needUsd` are recorded from #1890 on; older events have neither. */
   features: (Pick<FeatureView, "id" | "state" | "share" | "need"> &
     Partial<Pick<FeatureView, "shareUsd" | "needUsd">>)[];
@@ -570,11 +608,17 @@ function extendAdvice(
   initiativeId: string,
   message: string,
   summary: string,
-  amounts: { tokens?: number | null; usd?: number | null; fallback?: string },
+  amounts: {
+    tokens?: number | null;
+    usd?: number | null;
+    timeMs?: number | null;
+    fallback?: string;
+  },
 ): RecoveryAdvice {
   const flags = [
     ...(amounts.tokens ? [`--tokens ${amounts.tokens}`] : []),
     ...(amounts.usd ? [`--budget-usd ${amounts.usd}`] : []),
+    ...(amounts.timeMs ? [`--time-ms ${amounts.timeMs}`] : []),
   ];
   const command = [`baked workflow initiative extend ${initiativeId}`, ...flags];
   if (!flags.length && amounts.fallback) command.push(amounts.fallback);
@@ -583,6 +627,7 @@ function extendAdvice(
     initiativeId,
     ...(amounts.tokens ? { suggestedTokens: amounts.tokens } : {}),
     ...(amounts.usd ? { suggestedUsd: amounts.usd } : {}),
+    ...(amounts.timeMs ? { suggestedTimeMs: amounts.timeMs } : {}),
   });
 }
 
@@ -647,8 +692,11 @@ export function shareShortfall(
     const tokensShort = (share?.tokens ?? 0) < MIN_SHARE.maxTotalTokens;
     const cover =
       tokensShort && pool && pool.coverTokens > pool.limitTokens ? pool.coverTokens : null;
-    const summary = `The shared budget is exhausted: ${feature.id} would start with ${share?.tokens ?? 0} tokens, ${share?.calls ?? 0} calls and ${share?.activeMs ?? 0} ms.${cover ? ` A pool of ${tokenText(cover)} tokens covers the high estimates of the waiting features.` : ""}`;
-    return extendAdvice(id, summary, summary, { tokens: cover });
+    // The shared time names its amount as the tokens do (#2336).
+    const timeMs =
+      (share?.activeMs ?? 0) < MIN_SHARE.maxActiveMs ? timeRaise(view.budget.time) : null;
+    const summary = `The shared budget is exhausted: ${feature.id} would start with ${share?.tokens ?? 0} tokens, ${share?.calls ?? 0} calls and ${share?.activeMs ?? 0} ms.${cover ? ` A pool of ${tokenText(cover)} tokens covers the high estimates of the waiting features.` : ""}${timeMs ? ` A shared time of ${Math.round(timeMs / 60_000)} min covers ${view.budget.time?.suggestedMs ? "the time forecast at the measured pace" : "the high estimates of the waiting features at the measured pace"}.` : ""}`;
+    return extendAdvice(id, summary, summary, { tokens: cover, timeMs });
   }
   const available = growthLimit(view, feature.id);
   if (feature.need && available !== null && available < feature.need.low) {
@@ -1696,7 +1744,9 @@ export class InitiativeService {
     for (let step = 0; step < 500 && !signal.aborted; step++) {
       const view = this.view(id);
       this.noteTokenForecast(view, null);
+      this.noteTimeForecast(view, null);
       this.notePlanCharge(view, null);
+      this.noteStoredLimitResumes(view);
       const next = view.next;
       if (view.parallelRuns > 1 && (next.kind === "drive" || next.kind === "start")) {
         if (!(await this.driveFeatures(id, signal))) return;
@@ -1764,7 +1814,9 @@ export class InitiativeService {
     const fill = async (): Promise<void> => {
       let view = this.view(id);
       this.noteTokenForecast(view, null);
+      this.noteTimeForecast(view, null);
       this.notePlanCharge(view, null);
+      this.noteStoredLimitResumes(view);
       for (;;) {
         const row = this.store.get(id);
         const ready = this.byPath(
@@ -2181,6 +2233,7 @@ export class InitiativeService {
         used: view.budget.used,
         pool: view.budget.pool,
         ...(view.budget.planCharge ? { planCharge: view.budget.planCharge } : {}),
+        ...(view.budget.time ? { time: view.budget.time } : {}),
       },
       features: view.features.map((f) => ({
         id: f.id,
@@ -2227,7 +2280,10 @@ export class InitiativeService {
       },
     };
     this.store.emit(id, "feature.share_gate", record);
-    if (verdict === "pass") this.noteTokenForecast(view, feature.id);
+    if (verdict === "pass") {
+      this.noteTokenForecast(view, feature.id);
+      this.noteTimeForecast(view, feature.id);
+    }
     if (growth?.wouldExtend) this.noteWouldExtend(gateView, feature.id, growth);
     this.notePlanCharge(view, { view: gateView, feature, verdict });
   }
@@ -2235,6 +2291,17 @@ export class InitiativeService {
   /** `workflows.extendWithinDollars`: whether a token park records the host's extension (#2042). */
   private extendWithinDollars(): ExtendWithinDollars {
     return this.workflows.config.workflows?.extendWithinDollars ?? DEFAULT_EXTEND_WITHIN_DOLLARS;
+  }
+
+  /**
+   * The driver round's look at its blocked feature runs (#2226): a run blocked on its own active
+   * time, tokens or calls whose stored limits grew past its usage after the block records one
+   * `decision.would_resume` (`noteStoredLimitResume`, shadow). It never resumes the run.
+   */
+  private noteStoredLimitResumes(view: InitiativeView): void {
+    for (const feature of view.features)
+      if (feature.state === "blocked" && feature.runId)
+        noteStoredLimitResume(this.workflows.store, feature.runId, "initiative-round");
   }
 
   /**
@@ -2258,6 +2325,28 @@ export class InitiativeService {
       advice: pool.advice,
       suggestedTokens: pool.suggestedTokens,
       message: pool.notice,
+    });
+  }
+
+  /**
+   * A `budget.time_notice` event the first time a drive sees the time forecast above the shared
+   * time, once per limit (#2336), beside the token one.
+   */
+  private noteTimeForecast(view: InitiativeView, featureId: string | null): void {
+    const time = view.budget.time;
+    if (!time?.notice) return;
+    const noted = this.store
+      .eventsOfType(view.initiativeId, "budget.time_notice")
+      .some((p) => (p as { limitMs?: number } | null)?.limitMs === time.limitMs);
+    if (noted) return;
+    this.store.emit(view.initiativeId, "budget.time_notice", {
+      featureId,
+      limitMs: time.limitMs,
+      usedMs: time.usedMs,
+      forecastMs: time.forecastMs,
+      pace: time.pace,
+      suggestedMs: time.suggestedMs,
+      message: time.notice,
     });
   }
 
@@ -3572,6 +3661,36 @@ export class InitiativeService {
           cost,
         })
       : null;
+    const time = approved
+      ? timePool({
+          initiativeId: row.id,
+          limitMs: limits.maxActiveMs,
+          usedMs: used.activeMs,
+          committedMs: committed.activeMs,
+          usedTokens: used.tokens,
+          forecastTokens:
+            pool?.forecastTokens == null
+              ? null
+              : Math.max(pool.forecastTokens, pool.advice?.forecastTokens ?? 0),
+          pace: initiativePace(
+            this.store.links(id).flatMap((link) => {
+              const run = this.workflows.store.run(link.run_id);
+              const pace = finishedRunPace({
+                status: run.status,
+                tokens: run.token_usage,
+                activeMs: run.active_ms,
+              });
+              return pace === null ? [] : [pace];
+            }),
+            estimate?.duration
+              ? { msPerToken: estimate.duration.msPerToken, samples: estimate.duration.samples }
+              : null,
+          ),
+          waitingHighTokens: waitingForRun.reduce((sum, f) => sum + (f.need?.high ?? 0), 0),
+          features: features.length,
+          slots: this.parallelRuns(settings, plan, facts),
+        })
+      : null;
     const unstarted = waitingForRun.length;
     // The share of the feature that starts next, by the same order the drive starts them in.
     const nextShare =
@@ -3637,6 +3756,8 @@ export class InitiativeService {
         pool,
         planCharge: charge,
         forecastNotice: pool?.notice ?? null,
+        time,
+        timeNotice: time?.notice ?? null,
         rule: BUDGET_RULE,
       },
       next: { kind: "done", featureId: null, runId: null, message: "" },
@@ -4088,6 +4209,8 @@ export class InitiativeService {
       const waiting = upstream
         .filter((u) => u.state !== "accepted")
         .map((u) => `waits for ${u.id}'s contract (${u.id} is ${describe(u)})`);
+      const stalled = stalledUpstream(upstream);
+      if (stalled.length) view.stalledOn = stalled;
       const link = this.store.current(row.id, feature.id);
       if (!link) {
         const ahead =
@@ -4205,18 +4328,83 @@ export class InitiativeService {
           run.reason === "provider_account" || run.reason === "provider_policy"
             ? stopDetail(this.workflows.store, link.run_id)
             : null;
+        const deadline = this.deadlineExtension(row.id, link.run_id);
         view.blockers = [
-          `run ${link.run_id} is blocked (${run.reason})${refusal ? `: ${refusal.split("\n")[0]?.slice(0, 600)}` : ""}; resolve it with baked workflow ${canRepairRun(run) ? "repair" : "resume"} ${link.run_id}`,
+          deadline
+            ? `run ${link.run_id} is blocked (${run.reason}): ${deadline.message}`
+            : `run ${link.run_id} is blocked (${run.reason})${refusal ? `: ${refusal.split("\n")[0]?.slice(0, 600)}` : ""}; resolve it with baked workflow ${canRepairRun(run) ? "repair" : "resume"} ${link.run_id}`,
         ];
+        const wait = costRefusalWaitOf(this.workflows.store, link.run_id);
+        if (wait)
+          view.costWait = {
+            state: wait.state,
+            suggestedUsd: wait.suggestedUsd,
+            stageId: wait.stageId,
+            mode: wait.mode,
+          };
         const recorded = stopRecovery(this.workflows.store, link.run_id);
+        const remedies = recorded?.remedies ?? [{ action: "resume" as const, runId: link.run_id }];
         view.recovery = recoveryAdvice(
           view.blockers[0] ?? "",
-          `Run ${link.run_id} is blocked (${run.reason}).${recorded ? ` ${recorded.summary}` : ""}`,
-          ...(recorded?.remedies ?? [{ action: "resume" as const, runId: link.run_id }]),
+          `Run ${link.run_id} is blocked (${run.reason}).${deadline ? ` ${deadline.summary}` : recorded ? ` ${recorded.summary}` : ""}`,
+          // A plain resume stops again at once on a spent deadline (#2226): extend comes first.
+          ...(deadline
+            ? [
+                {
+                  action: "extend" as const,
+                  runId: link.run_id,
+                  suggestedTimeMs: deadline.timeMs,
+                },
+                ...remedies.filter((r) => r.action !== "extend"),
+              ]
+            : remedies),
         );
       } else view.state = run.status === "paused" ? "paused" : "in_progress";
     }
     return [...views.values()];
+  }
+
+  /**
+   * For a feature run blocked `budget_exhausted` on its active deadline (#2336): the active time
+   * that lets it finish at the measured pace (the initiative's own finished runs, else the run's
+   * own) and the command that applies it; null for any other block.
+   */
+  private deadlineExtension(
+    initiativeId: string,
+    runId: string,
+  ): { timeMs: number; message: string; summary: string } | null {
+    const row = this.workflows.store.run(runId);
+    if (row.status !== "blocked" || row.reason !== "budget_exhausted") return null;
+    const policy = PolicySchema.parse(JSON.parse(row.policy_json));
+    if (row.active_ms < policy.maxActiveMs) return null;
+    const own = this.store.links(initiativeId).flatMap((link) => {
+      if (link.run_id === runId) return [];
+      const other = this.workflows.store.run(link.run_id);
+      const pace = finishedRunPace({
+        status: other.status,
+        tokens: other.token_usage,
+        activeMs: other.active_ms,
+      });
+      return pace === null ? [] : [pace];
+    });
+    const pace =
+      initiativePace(own, null)?.tokensPerMinute ??
+      (row.active_ms > 0 ? (row.token_usage / row.active_ms) * 60_000 : null);
+    const timeMs = runTimeRaise({
+      activeMs: row.active_ms,
+      maxActiveMs: policy.maxActiveMs,
+      usedTokens: row.token_usage,
+      // The plan's need at its high end, as sizing priced it; else the run's token limit.
+      needTokens: plannedRunTokens(this.workflows.store, runId)?.high ?? policy.maxTotalTokens,
+      tokensPerMinute: pace,
+    });
+    const minutes = (ms: number): number => Math.round(ms / 60_000);
+    const summary = `Its active time ran out at ${minutes(row.active_ms)} of ${minutes(policy.maxActiveMs)} min; ${minutes(timeMs)} min lets it finish at the measured pace.`;
+    return {
+      timeMs,
+      summary,
+      message: `${summary} Extend it with baked workflow extend ${runId} --expected-revision ${row.revision} --time-ms ${timeMs} --resume`,
+    };
   }
 
   private runRequests(
@@ -4719,6 +4907,19 @@ function sharedFeatureRunSamples(paths: string[], history: PastRun[]): FeatureRu
 /** The workflow a feature's runs use: its own, or the initiative's default. */
 const featureWorkflowId = (settings: InitiativeSettings, feature: InitiativeFeature): string =>
   feature.workflow ?? settings.workflowId;
+
+/**
+ * The unaccepted upstream features a dependant counts as stalled behind (#2249): blocked or failed,
+ * unless a blocked one's cost refusal would wait on its priced extend remedy (`costWait`), which
+ * a planned-ahead feature waits for as it waits for acceptance.
+ */
+export function stalledUpstream(
+  upstream: readonly Pick<FeatureView, "id" | "state" | "costWait">[],
+): string[] {
+  return upstream
+    .filter((u) => (u.state === "blocked" && !u.costWait) || u.state === "failed")
+    .map((u) => u.id);
+}
 
 function describe(view: FeatureView): string {
   switch (view.state) {

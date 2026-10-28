@@ -1557,7 +1557,18 @@ export class WorkflowStore {
         row.active_ms >= policy.maxActiveMs ||
         (projected > policy.maxTotalTokens && !growBudgetOnProgress(this, runId, policy, projected))
       )
-        throw stopFault("run-budget", "Run agent/token/time budget exhausted");
+        // The usage and the request it refused let a later look at the stored limits tell
+        // whether they now hold the run (#2226).
+        throw stopFault("run-budget", "Run agent/token/time budget exhausted", {
+          activeMs: row.active_ms,
+          agentCalls: row.agent_calls,
+          usedTokens: row.token_usage,
+          reservedTokens: reserved,
+          requestedTokens: tokens,
+          maxActiveMs: policy.maxActiveMs,
+          maxAgentCalls: policy.maxAgentCalls,
+          maxTotalTokens: policy.maxTotalTokens,
+        });
       if (modelId) this.assertCostFits(runId, stepId, policy, modelId, tokens);
       this.assertBelowCheckpoint(runId, policy, row.token_usage + reserved + tokens);
       const id = newId();
@@ -1832,7 +1843,9 @@ export class WorkflowStore {
       requestedUsd,
       maxCostUsd,
       ceilingUsd,
-      ...(recovery ? { suggestedUsd, recovery } : {}),
+      // The stages still to run let the scheduler tell a refusal at review or convergence from
+      // one elsewhere (#2249).
+      ...(recovery && reserve ? { suggestedUsd, recovery, stages: reserve.stages } : {}),
     });
   }
   /**
