@@ -17,7 +17,7 @@ import { canRepairRun, type RepairBlock } from "../src/core/workflows/repairable
 import { growthLimit, type InitiativeView, rebaseView, shareShortfall } from "../src/core/workflows/initiatives/service.js";
 import { estimateInitiative } from "../src/core/workflows/initiatives/estimate.js";
 import { hasExecutableFields, manifestFieldChanges } from "../src/core/workflows/quality/manifests.js";
-import { REPLAY_TARGETS, replayTargets } from "../src/core/workflows/quality/baseline-replay.js";
+import { REPLAY_TARGETS, replayCommand, replayTargets } from "../src/core/workflows/quality/baseline-replay.js";
 import { type BaselineFailureDecision, baselineFailureDecision, baselineFindings } from "../src/core/workflows/baseline-fix.js";
 import type { TestRunner } from "../src/core/verification/output-counts.js";
 import { unrequestedManifestFields } from "../src/core/workflows/quality/dependencies.js";
@@ -246,6 +246,8 @@ describe("host-written acceptance rows in the case-walk and mutation gates (#159
     xunit: { harness: "tests/Harness.cs", test: "tests/RowsTest.cs", package: "Tests" },
     rspec: { harness: "tests/harness.rb", test: "tests/rows_spec.rb" },
     phpunit: { harness: "tests/Harness.php", test: "tests/RowsTest.php", package: "App.Tests" },
+    testthat: { harness: "tests/harness.R", test: "tests/testthat/test-rows.R" },
+    busted: { harness: "tests/harness.lua", test: "tests/rows_spec.lua" },
   } as const;
   test.each(Object.keys(layouts) as (keyof typeof layouts)[])("%s retains every case in its JSON data and keeps generated tests out of mutation proposals", async (framework) => {
     const root = mkdtempSync(join(tmpdir(), "baked-row-gate-"));
@@ -258,7 +260,7 @@ describe("host-written acceptance rows in the case-walk and mutation gates (#159
       const graph = { schemaVersion: 1 as const, featureId: "fixture", revision: 1, specHash: "a".repeat(64), planHash: "b".repeat(64), tasks: [task] };
       const artifact = rowsArtifact(spec, graph, { schemaVersion: 1, inputHash: "a".repeat(64), verdict: "pass", findings: [] });
       const files = rowFiles(task, artifact);
-      mkdirSync(join(root, "tests"));
+      mkdirSync(join(root, "tests", "testthat"), { recursive: true });
       for (const generated of files) writeFileSync(join(root, generated.path), generated.content);
       const check = caseCheck(spec, task, { checks: [] });
       expect(check).toBeDefined();
@@ -305,6 +307,8 @@ describe("gate matrix: inline rows block holds its own cells (#1997)", () => {
     xunit: { mode: "inline", framework: "xunit", package: "Calc.Tests", test: "Calc.Tests/CalcTest.cs" },
     rspec: { mode: "inline", framework: "rspec", test: "spec/calc_spec.rb" },
     phpunit: { mode: "inline", framework: "phpunit", package: "App.Tests", test: "tests/CalcTest.php" },
+    testthat: { mode: "inline", framework: "testthat", test: "tests/testthat/test-calc.R" },
+    busted: { mode: "inline", framework: "busted", test: "spec/calc_spec.lua" },
   };
   const shapes: [string, unknown][] = [
     ["two-line CRLF text", ["[a]\r\nb=1\r\n", {}]],
@@ -519,6 +523,29 @@ describe("gate matrix: baseline replay per test target (#2020)", () => {
     for (const stack of STACKS) expect({ stack, row: REPLAY_TARGETS[REPLAY_RUNNER[stack]] !== undefined }).toEqual({ stack, row: true });
     expect(STACKS.filter((stack) => typeof REPLAY_TARGETS[REPLAY_RUNNER[stack]] === "function").sort()).toEqual(["dotnet", "maven", "python", "rust"]);
   });
+});
+
+// #2364 (R75 evalpin-update): the replay ran `cargo test` as written, so it stopped after the first
+// failing test binary. The replay's first run of each stack's detected test gate, as the stack's
+// runner keeps going past a failing target: the gate's own arguments where it already does.
+const REPLAY_FIRST_RUN: Record<Stack, string> = {
+  // The package scripts run every test file and name no runner: run as written.
+  bun: "bun run test",
+  npm: "npm run test",
+  // `--maxfail=0` lifts an `-x` the project's addopts may set.
+  python: `${process.platform === "win32" ? "python" : "python3"} -m pytest -q --maxfail=0`,
+  go: "go test ./...",
+  rust: "cargo test --no-fail-fast",
+  maven: "mvn -B -q verify --fail-at-end",
+  dotnet: "dotnet test --nologo",
+};
+
+describe("gate matrix: baseline replay keeps going (#2364)", () => {
+  for (const stack of Object.keys(FIXTURES) as Stack[])
+    cell(stack, "baseline replay keeps going", () => {
+      const checks = detectGates(project(FIXTURES[stack].files)).map((s) => s.check).filter((c) => isTestCheck(c));
+      expect([stack, checks.map((c) => [c.executable, ...replayCommand(c.executable, c.args).args].join(" ")).join("; ")]).toEqual([stack, REPLAY_FIRST_RUN[stack]]);
+    });
 });
 
 // Dependency readers do not imply Gradle or Ruby gate detection support (#1489, #1552).

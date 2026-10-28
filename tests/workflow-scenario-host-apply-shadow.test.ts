@@ -420,3 +420,53 @@ describe("the host writes the request's verbatim content (#2333)", () => {
       expect(service.store.tasks(run.runId).filter((t) => ["T001", "T002"].includes(t.id)).map((t) => t.status)).toEqual(["verified", "verified"]);
     }, 120000);
 });
+
+// Bench round 75 (#2366): evalpin-update's brief gave a diff for tests/cli.rs and quoted the one
+// changed test's old and new line in two `text` fences, after a prose line that named the path and
+// said "Exactly". The quote was read as the whole file next to the diff, so the host declined T002
+// ("both a fenced file and a diff") and an implementer spent 49.7k tokens on a one-line edit.
+const CLI_BEFORE = ["#[test]", "fn help_and_command_diagnostics_use_one_exact_io_call() {", "    assert_eq!(calls, 2);", "}", ""].join("\n");
+const cliDiff = ["```diff", "--- a/tests/cli.rs", "+++ b/tests/cli.rs", "@@ -1,4 +1,4 @@", " #[test]", " fn help_and_command_diagnostics_use_one_exact_io_call() {", "-    assert_eq!(calls, 2);", "+    assert_eq!(calls, 1);", " }", "```"];
+const evalpin = (quotes: string[]) => ["Apply this diff to `tests/cli.rs`:", ...cliDiff, ...quotes].join("\n");
+const quotedLines = [
+  "Exactly one existing test changes: `help_and_command_diagnostics_use_one_exact_io_call` in `tests/cli.rs` (line 3, its call count). Old line:",
+  "```text",
+  "    assert_eq!(calls, 2);",
+  "```",
+  "New line:",
+  "```text",
+  "    assert_eq!(calls, 1);",
+  "```",
+];
+
+describe("a quoted old or new line next to a diff of the same file (#2366)", () => {
+  test("quoted lines are context: the diff alone supplies the file, for pricing and the apply decision", () => {
+    const request = evalpin(quotedLines);
+    expect(suppliedBlocks(request, ["tests/cli.rs"]).get("tests/cli.rs")?.map((b) => b.kind)).toEqual(["diff"]);
+    // Pricing counts the diff's two changed lines, not the quoted line as a file.
+    expect(Object.fromEntries(suppliedLines(request, ["tests/cli.rs"]))).toEqual({ "tests/cli.rs": 2 });
+    // A quote whose lines are all in the diff is context whatever the prose says.
+    const plain = evalpin(["The changed line of `tests/cli.rs` must read exactly:", "```text", "    assert_eq!(calls, 1);", "```"]);
+    expect(suppliedLines(plain, ["tests/cli.rs"]).get("tests/cli.rs")).toBe(2);
+    // Without a diff for the path the same block is still a supplied file.
+    expect(suppliedBlocks(quotedLines.join("\n"), ["tests/cli.rs"]).get("tests/cli.rs")?.map((b) => b.kind)).toEqual(["file"]);
+  });
+
+  test("the host would apply the diff, and a true whole file next to the diff still declines", async () => {
+    const root = mkdtempSync(join(tmpdir(), "baked-host-quoted-"));
+    cleanups.push(() => rmSync(root, { recursive: true, force: true }));
+    mkdirSync(join(root, "tests"));
+    writeFileSync(join(root, "tests/cli.rs"), CLI_BEFORE);
+    const task = { writes: [{ path: "tests/cli.rs", action: "modify" as const }] };
+    const quoted = (await hostApplyInputs(root, evalpin(quotedLines), task)) ?? [];
+    expect(quoted).toEqual([{ path: "tests/cli.rs", action: "modify", files: 0, diffs: 1, whole: false, exists: true, applies: true }]);
+    expect(hostApplyDecision(quoted)).toEqual({ wouldApply: true, reason: null });
+    expect((await hostApplyContents(root, evalpin(quotedLines), task))[0]?.content).toBe(CLI_BEFORE.replace("calls, 2", "calls, 1"));
+    // A whole file that is not a quote of the diff still conflicts with it.
+    const whole = ["Replace `tests/cli.rs` with:", "```rust", "#[test]", "fn other() {}", "```"];
+    const both = (await hostApplyInputs(root, evalpin(whole), task)) ?? [];
+    expect(both[0]).toMatchObject({ files: 1, diffs: 1, whole: true });
+    expect(hostApplyDecision(both).reason).toBe("the request gives both a fenced file and a diff for tests/cli.rs");
+    expect(suppliedLines(evalpin(whole), ["tests/cli.rs"]).get("tests/cli.rs")).toBe(4);
+  }, 60000);
+});

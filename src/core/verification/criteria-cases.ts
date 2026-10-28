@@ -12,6 +12,12 @@ import type { Spec } from "../workflows/schemas.js";
 import { toolchainCommand } from "../workflows/toolchain.js";
 import type { Check, Task } from "../workflows/types.js";
 import { caseEvidence } from "./criteria-evidence.js";
+import {
+  type GeneratedKind,
+  type GeneratedValue,
+  generatedValues,
+  MAX_GENERATED_VALUES,
+} from "./generated-values.js";
 
 /**
  * The cases the criteria spell out, walked against the test files a task wrote (#1250). Bench
@@ -326,6 +332,11 @@ export interface CaseContext {
   hostRows?: readonly InlineRowFile[];
   /** Receives each walk's holds and refusals, for the run's record and its replay (#1715). */
   record?: (walk: CaseWalk & { refused: number[] }) => void;
+  /**
+   * The kinds of generated value the request or the task's criteria rule out for test inputs
+   * (`bannedGeneratedKinds`, #2344): the walk records each one in a test file that holds a case.
+   */
+  generatedKinds?: ReadonlySet<GeneratedKind>;
 }
 
 /**
@@ -340,6 +351,11 @@ export interface CaseWalk {
   /** Test files other tasks of the plan write, which may hold a case (#1886). */
   siblings: number;
   cases: { criterionId: string; row: boolean; held: boolean; sibling: boolean | null }[];
+  /**
+   * Test inputs built from generated values where literal examples are asked for, in the task's
+   * test files that hold a case (#2344): path, line and kind, no code. Absent without a ban.
+   */
+  generated?: GeneratedValue[];
 }
 
 /** Each task-end walk is recorded as `case-walk/tasks/<task>.json` (kind `case-walk`, kept in bench traces). */
@@ -351,6 +367,8 @@ export interface CaseWalkRecord extends CaseWalk {
   taskId: string;
   /** The cases (by index) the walk refused the task for. */
   refused: number[];
+  /** Whether the walk recorded the `generated_case` would-stop (#2344); absent before it. */
+  generatedStop?: boolean;
 }
 
 /** The cases (by index) the walk refuses the task for: those nothing holds. */
@@ -1495,6 +1513,17 @@ export function caseCheck(
         sibling: own[i] || (intact && c.row) || !others ? null : heldIn(c, others),
       })),
     };
+    // The generated values in the files that hold a case, where literal examples are asked for.
+    const kinds = context.generatedKinds;
+    if (kinds?.size)
+      walk.generated = paths
+        .flatMap((path, i) => {
+          const file = files[i];
+          return file && cases.some((c) => heldIn(c, [file]))
+            ? generatedValues(path, file.text, kinds)
+            : [];
+        })
+        .slice(0, MAX_GENERATED_VALUES);
     const refused = caseWalkDecision(walk);
     context.record?.({ ...walk, refused });
     const missing = refused.flatMap((i) => cases[i] ?? []);

@@ -4,7 +4,11 @@
     "lib/sum_test.exs": "ExUnit.start()\nSum.sum(1, 2)\n# AC-001 example: (1, 2, 3)\n",
     "mix.exs": "defmodule Fixture.MixProject do\nend\n"
   },
+  "generated": {
+    "test/gen_test.exs": "a = String.duplicate(\"\\\\\", 3)\nb = \"x#{a}\"\nlit = \"\\\\\\\\\\\\\"\n# d = String.duplicate(\"\\\\\", 3)\n"
+  },
   "expected": {
+    "generatedValues": ["test/gen_test.exs:1 repeat","test/gen_test.exs:2 interpolate"],
     "memberSyntax": [
       "Scanner delegates to Reader.IsEncodingToken.: Reader.IsEncodingToken"
     ],

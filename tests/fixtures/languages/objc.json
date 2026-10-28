@@ -3,7 +3,11 @@
     "Sources/Sum.m": "#import \"Sum.h\"\n@implementation Sum\n@end\n\nint sum(int a, int b) {\n  return a + b;\n}\n",
     "Sources/SumTests.m": "#import \"Sum.h\"\n@implementation SumTests\n- (void)testSum { sum(1, 2); }\n@end\n// AC-001 example: (1, 2, 3)\n"
   },
+  "generated": {
+    "Tests/GenTests.m": "NSString *b = [NSString stringWithFormat:@\"x%@\", a];\nNSString *lit = @\"\\\\\\\\\\\\\";\n// NSString *d = [NSString stringWithFormat:@\"x%@\", a];\n"
+  },
   "expected": {
+    "generatedValues": ["Tests/GenTests.m:1 format"],
     "memberSyntax": [
       "Scanner delegates to Reader.IsEncodingToken.: Reader.IsEncodingToken",
       "Scanner sends [Reader isEncodingToken:] for each token.: [Reader isEncodingToken]"

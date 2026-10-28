@@ -219,6 +219,8 @@ describe("acceptance rows in every supported language (#1660)", () => {
     xunit: { framework: "xunit", package: "Calc.Tests", harness: "Calc.Tests/Harness.cs", test: "Calc.Tests/RowsTest.cs", data: "Calc.Tests/rows.json" },
     rspec: { framework: "rspec", harness: "lib/calc/harness.rb", test: "spec/calc_rows_spec.rb", data: "spec/fixtures/rows.json" },
     phpunit: { framework: "phpunit", package: "App.Tests", harness: "tests/Support/Harness.php", test: "tests/RowsTest.php", data: "tests/fixtures/rows.json" },
+    testthat: { framework: "testthat", harness: "R/harness.R", test: "tests/testthat/test-rows.R", data: "tests/testthat/fixtures/rows.json" },
+    busted: { framework: "busted", harness: "spec/support/harness.lua", test: "spec/rows_spec.lua", data: "spec/fixtures/rows.json" },
   };
 
   test("a Scenario column is a label the reader skips, and an audit may leave it out", () => {
@@ -254,6 +256,11 @@ describe("acceptance rows in every supported language (#1660)", () => {
       { ...layouts.phpunit!, test: "tests/Rows.php" },
       { ...layouts.phpunit!, harness: "tests/Support/HarnessTest.php" },
       { ...layouts.phpunit!, harness: "tests/Support/my-harness.php" },
+      { ...layouts.testthat!, test: "tests/test-rows.R" },
+      { ...layouts.testthat!, harness: "tests/testthat/helper-harness.R" },
+      { ...layouts.testthat!, harness: "R/harness.py" },
+      { ...layouts.busted!, test: "spec/rows.lua" },
+      { ...layouts.busted!, harness: "spec/support/harness_spec.lua" },
     ]) expect(rowPlanProblems(s, { ...graph, tasks: [withTest(rowTest)] }, enabled)).toHaveLength(1);
     const second = withTest({ ...layouts.go!, test: "calc/more_test.go", data: "calc/testdata/more.json" });
     expect(rowPlanProblems(s, { ...graph, tasks: [withTest(layouts.go!), { ...second, id: "T002" }] }, enabled).join()).toContain("one Go harness per package");
@@ -291,6 +298,16 @@ describe("acceptance rows in every supported language (#1660)", () => {
     expect(php).toContain("require_once __DIR__.'/Support/Harness.php';");
     expect(php).toContain("final class RowsTest extends TestCase");
     expect(php).toContain("$actual = Harness::actual($row['input']);");
+    // #2348: testthat sources the harness into an environment of its own, from the test's directory.
+    const r = files("testthat")[1]!.content;
+    expect(r).toContain('test_path("../../R/harness.R")');
+    expect(r).toContain('test_path("fixtures/rows.json")');
+    expect(r).toContain("list(acceptance_harness$actual(acceptance_row$input))");
+    // busted runs from the project root, so the test finds its files from its own path.
+    const lua = files("busted")[1]!.content;
+    expect(lua).toContain('dofile(acceptance_dir .. "support/harness.lua")');
+    expect(lua).toContain('io.open(acceptance_dir .. "fixtures/rows.json", "rb")');
+    expect(lua).toContain("local got = acceptance_harness.actual(row.input)");
     const rust = files("rust")[1]!.content;
     expect(rust).toContain('#[path = "support/harness.rs"]');
     expect(rust).toContain('include_str!("data/rows.json")');
@@ -331,6 +348,8 @@ describe("inline acceptance rows (#1763)", () => {
     xunit: { mode: "inline", framework: "xunit", package: "Calc.Tests", test: "Calc.Tests/CalcTest.cs" },
     rspec: { mode: "inline", framework: "rspec", test: "spec/calc_spec.rb" },
     phpunit: { mode: "inline", framework: "phpunit", test: "tests/CalcTest.php" },
+    testthat: { mode: "inline", framework: "testthat", test: "tests/testthat/test-calc.R" },
+    busted: { mode: "inline", framework: "busted", test: "spec/calc_spec.lua" },
   };
   // The brief's one test file, already there: the plan names it and nothing else.
   const withInline = (rowTest: NonNullable<Task["rowTest"]>, action: "create" | "modify" = "modify"): Task => ({
@@ -358,6 +377,8 @@ describe("inline acceptance rows (#1763)", () => {
       { ...inline.xunit!, package: undefined },
       { ...inline.rspec!, test: "spec/calc.rb" },
       { ...inline.phpunit!, test: "tests/Calc.php" },
+      { ...inline.testthat!, test: "tests/testthat/calc.R" },
+      { ...inline.busted!, test: "spec/calc.lua" },
     ] as NonNullable<Task["rowTest"]>[]) expect(refused([withInline(rowTest)])).toHaveLength(1);
     const second = { ...withInline({ ...inline.go!, test: "calc/more_test.go" } as NonNullable<Task["rowTest"]>), id: "T002" };
     expect(refused([withInline(inline.go!), second]).join()).toContain("one Go test file per package");
