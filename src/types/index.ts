@@ -375,6 +375,8 @@ export interface QualityConfig {
   defectClasses?: "off" | "on";
   /** Let the host finish a task whose spec conflict it settled when the attempt's cases hold and its required checks pass: `on` or `off` (default, recorded in shadow). */
   conflictFinish?: "off" | "on";
+  /** Give a test task that compares a request section exactly the section as a string literal of its language, escaped by the host: `on` or `off` (default). */
+  exactTextLiteral?: "off" | "on";
   /** Let a run go on with the ready tasks a blocked corrective does not hold, and end with its stop once they ran: `on` or `off` (default, recorded in shadow). */
   correctiveDefer?: "off" | "on";
   /** Check the Rust files a task creates with rustfmt at the end of that task, with rustfmt as the fixer, beside the checks stage's cargo fmt (task-end Rust format check): `on` or `off` (default). */

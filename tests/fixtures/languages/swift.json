@@ -64,6 +64,7 @@
       "swiftformat: formatter",
       "swift-format: formatter"
     ],
-    "sortedLists": null
+    "sortedLists": null,
+    "dependencyDirs": null
   }
 }

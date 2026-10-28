@@ -1070,3 +1070,23 @@ describe("initiative-pool-growth replays on recorded growth bounds (#2280)", () 
     expect(after?.sizing).toMatchObject({ maxRunTokens: 4_651_968, extendToTokens: 4_651_968, maxRunCostUsd: 10.66 });
   }, 120000);
 });
+
+describe("the dollar notice replays at the measured ratio (#2186)", () => {
+  // The dollar notice prices the features still to run at the estimate's measured ratio itself
+  // (`progress.rawRatio`), the forecast and its stop at the blend. R66 nodepluck, rewound to
+  // syntax's acceptance (14:26:59) and lint's (14:39:39), the moments of #2062's token notice.
+  test("R66 nodepluck: the measured ratio's forecast is nearer the final $28.45, and no notice warns under the $37.50 ceiling", () => {
+    const syntax = Date.UTC(2026, 9, 24, 14, 26, 59, 558);
+    const lint = Date.UTC(2026, 9, 24, 14, 39, 39, 627);
+    const [replay] = replayInitiativeStarts(join(ROOT, "R66", "nodepluck.sqlite.gz"), { budgetAtStart: true, moments: [syntax, lint] });
+    expect(replay?.finalUsd).toBeCloseTo(28.45, 2);
+    const at = (t: number) => replay?.starts.find((s) => s.at === t);
+    // At syntax the blend weighs the measured 1.55x a third (1.18x, $23.41), at lint 1.45x two thirds.
+    expect(at(syntax)).toMatchObject({ spentUsd: 15.68, forecastUsd: 23.41, ceilingUsd: 37.5, advice: { forecastUsd: 24.25, ratio: 1.55, blendedRatio: 1.18 } });
+    expect(at(lint)).toMatchObject({ spentUsd: 22.29, forecastUsd: 25.83, advice: { forecastUsd: 26.15, ratio: 1.45, blendedRatio: 1.3 } });
+    // The round ended under its $30 cap: neither forecast passes the ceiling at any start, so
+    // nothing warns, and no start parks.
+    expect(replay?.starts.filter((s) => s.forecastNotice !== null)).toEqual([]);
+    expect(replay?.newStartStops).toBe(0);
+  }, 600000);
+});
