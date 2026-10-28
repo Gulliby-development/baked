@@ -168,6 +168,52 @@ describe("scenario: the shared token pool names its amounts and would grow insid
   }, 180000);
 });
 
+// Bench round 75, maskback (#2367): the park of maps on a 24.0M pool suggested the 31.5M that
+// covers the waiting highs while the same message said the $30 cap pays for about 26.4M; the loop
+// read the sentence and extended to 26.4M. The R66 park at other measured rates stands in for it.
+describe("scenario: a park on the token pool suggests what the dollar cap pays for (#2367, R75 maskback)", () => {
+  const exhausted = { ...r66Park.feature, share: { tokens: 0, calls: 108, activeMs: 4_551_768 } };
+
+  test("a cover above the cap's tokens suggests the cap's tokens, rounded down, in the remedy and the message", () => {
+    // At $0.92 per million the $30 cap pays for about 32.5M, below the 33.1M cover.
+    const view = withPool(r66Park.view, 25_000_000);
+    const advice = shareShortfall(view, r66Park.feature);
+    expect(advice?.summary).toContain("covers the high estimates of select, cli, docs.");
+    expect(advice?.summary).toContain("would pay for about 32.5M tokens at $0.92 per million, so extend to 32.5M (32500000 tokens).");
+    expect(advice?.message).toEndWith("Raise it with baked workflow initiative extend nodepluck --tokens 32500000.");
+    expect(advice?.remedies).toEqual([{ action: "extend", initiativeId: "nodepluck", suggestedTokens: 32_500_000 }]);
+    expect(tuiRecoveryText(advice?.message ?? "", advice)).toContain("Press B to extend budget (to 32.5M tokens)");
+    expect(desktopRecoveryText(advice?.message ?? "", advice)).toContain("Choose Extend to 32.5M tokens");
+    // The remedy is the pool the host's own extension would grow to.
+    expect(poolGrowthOf(view, r66Park.feature)).toMatchObject({ toTokens: 32_500_000 });
+    // The exhausted pool names the same amount.
+    const empty = shareShortfall(view, exhausted);
+    expect(empty?.summary).toContain("A pool of 33.1M tokens covers the high estimates of the waiting features. The $30.00 cap would pay for about 32.5M tokens at $0.92 per million, so extend to 32.5M (32500000 tokens).");
+    expect(empty?.remedies[0]).toMatchObject({ action: "extend", suggestedTokens: 32_500_000 });
+    expect(empty?.remedies[0]?.suggestedUsd).toBeUndefined();
+  });
+
+  test("when the cap pays for too few tokens to start the waiting features, the remedy raises the cap with the pool", () => {
+    // At $1.15 per million the cap pays for about 26.0M, below the 30.0M pool: 33.1M costs $38.17.
+    const view = withPool(r66Park.view, 20_000_000);
+    const advice = shareShortfall(view, r66Park.feature);
+    expect(advice?.summary).toContain("would pay for about 26.0M tokens at $1.15 per million, too few to start the waiting features: a pool of 33.1M also needs a dollar cap of $38.17.");
+    expect(advice?.message).toEndWith("Raise it with baked workflow initiative extend nodepluck --tokens 33100000 --budget-usd 38.17.");
+    expect(advice?.remedies).toEqual([{ action: "extend", initiativeId: "nodepluck", suggestedTokens: 33_100_000, suggestedUsd: 38.17 }]);
+    expect(tuiRecoveryText(advice?.message ?? "", advice)).toContain("Press B to extend budget (to 33.1M tokens and $38.17)");
+    const empty = shareShortfall(view, exhausted);
+    expect(empty?.summary).toContain("The $30.00 cap would pay for about 26.0M tokens at $1.15 per million, too few to start the waiting features: a pool of 33.1M also needs a dollar cap of $38.17.");
+    expect(empty?.remedies[0]).toMatchObject({ suggestedTokens: 33_100_000, suggestedUsd: 38.17 });
+  });
+
+  test("a cover the cap pays for, or a pool with no dollar cap, suggests the cover", () => {
+    expect(shareShortfall(withPool(r66Park.view), r66Park.feature)?.remedies).toEqual([{ action: "extend", initiativeId: "nodepluck", suggestedTokens: 33_100_000 }]);
+    const tokensOnly = withPool(r66Park.view, 20_000_000, { capUsd: null, ceilingUsd: null, remainingUsd: null, forecastUsd: null });
+    expect(shareShortfall(tokensOnly, r66Park.feature)?.remedies).toEqual([{ action: "extend", initiativeId: "nodepluck", suggestedTokens: 33_100_000 }]);
+    expect(shareShortfall(tokensOnly, exhausted)?.remedies[0]).toMatchObject({ suggestedTokens: 33_100_000 });
+  });
+});
+
 describe("scenario: a scripted initiative whose features cost more than their estimates (#2042)", () => {
   async function scenario(maxTotalTokens: number, featureUsd: number | Record<string, number>, options: { capUsd?: number | null; extendWithinDollars?: "off" | "shadow" } = {}) {
     const history = await historyFixture(1, { taskShare: 0.4 });
