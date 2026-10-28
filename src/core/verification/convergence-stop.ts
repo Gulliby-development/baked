@@ -3,6 +3,7 @@ import { hashJson } from "../specs/hash.js";
 import type { Review, RunPolicy } from "../workflows/schemas.js";
 import type { WorkflowStore } from "../workflows/store.js";
 import type { Limitation, RuntimeState } from "../workflows/types.js";
+import { type FamilySite, recordedSites } from "./family-sites.js";
 import { decidedChecks } from "./host-passed.js";
 
 type Finding = Review["findings"][number];
@@ -234,6 +235,7 @@ export function earlierFindings(
   symbol: string | null;
   family: string | null;
   claim: string;
+  sites?: FamilySite[];
 }[] {
   return store
     .findings(runId)
@@ -241,6 +243,10 @@ export function earlierFindings(
     .slice(-30)
     .map((row) => {
       const body = JSON.parse(row.body_json) as Partial<Finding>;
+      // The sites its corrective was given (#2343), so the next review can tell a site it fixed.
+      const sites = body.sites?.length
+        ? recordedSites(store, runId, row.repair_task_id ?? "", row.id)
+        : [];
       return {
         id: row.id,
         criterionIds: body.criterionIds ?? [],
@@ -248,6 +254,7 @@ export function earlierFindings(
         symbol: body.symbol ?? null,
         family: body.family ?? null,
         claim: (body.claim ?? "").slice(0, 300),
+        ...(sites.length ? { sites } : {}),
       };
     });
 }

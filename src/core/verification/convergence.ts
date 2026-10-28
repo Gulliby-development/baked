@@ -43,6 +43,7 @@ import {
 import { findingSetHash } from "./convergence-stop.js";
 import { canHold, requestedDeliverable } from "./deliverable-paths.js";
 import { isFailedTestLine } from "./failed-test-line.js";
+import { checkSites, keptSites, recordSites, type SiteCheck, sitesStep } from "./family-sites.js";
 import { noteSiblingFindings } from "./initiative-ownership.js";
 import { growingCounts } from "./output-counts.js";
 import { reproCannotSeeCorrection } from "./repro.js";
@@ -1169,6 +1170,7 @@ export function appendCorrections(
     ? chainFindings(store, runId, findings)
     : new Map();
   const chainRecords: ChainRecord[] = [];
+  const siteRecords: { taskId: string; findingIds: string[]; sites: SiteCheck[] }[] = [];
   const additions = [...groups].map(([key, group]) => {
     const id = `T${String(next++).padStart(3, "0")}`;
     const found = key.startsWith(SWEEP_KEY)
@@ -1180,6 +1182,23 @@ export function appendCorrections(
     if (record) chainRecords.push(record);
     // A rewrite of a family across files may write each file of its chain (#2334).
     if (record?.decision === "rewrite") for (const path of record.files ?? []) join(group, path);
+    // The sites a reviewer states for a family's pattern (#2343): each one the host finds in code
+    // joins its planned file to the corrective, and the corrective lists them all.
+    const stating = group.findings.filter((f) => chainable(f) && f.sites?.length);
+    const sites = stating.length
+      ? checkSites(runRoot(store.workspace, state), stating, (path) => {
+          join(group, path);
+          return writable(group).includes(path);
+        })
+      : [];
+    if (sites.length) {
+      siteRecords.push({ taskId: id, findingIds: stating.map((f) => f.id), sites });
+      for (const check of sites.filter((c) => c.verdict === "kept"))
+        state.repairScope[check.findingId] = unique([
+          ...(state.repairScope[check.findingId] ?? []),
+          check.file,
+        ]);
+    }
     const { base, bases, findings: grouped } = group;
     const ids = grouped.map((f) => f.id);
     const rewrite = rewritesSymbol(record) ? record : null;
@@ -1233,7 +1252,7 @@ export function appendCorrections(
             `${grouped.length > 1 ? `Finding ${finding.id}: ` : ""}${finding.claim}\nImpact: ${finding.impact}\nProposed fix: ${finding.suggestedFix}${reproStep(finding)}${(kind === "convergence" || reviewPass) && !sweep && !checkRunFinding(finding) ? lastStep(finding) : ""}`,
         )
         .join("\n\n")
-        .concat(sweep),
+        .concat(sweep, sitesStep(keptSites(sites))),
       dependsOn: [],
       origin: kind,
       findingIds: ids,
@@ -1264,6 +1283,8 @@ export function appendCorrections(
   );
   for (const record of chainRecords)
     store.artifact(runId, CHAIN_KIND, `${CHAIN_TASKS_DIR}${record.taskId}.json`, canonical(record));
+  for (const record of siteRecords)
+    recordSites(store, runId, record.taskId, record.findingIds, record.sites);
   // A finding back after its corrective changed no file (#2137, shadow); v1, v2 and a granted
   // round all open review and convergence correctives here.
   recordUnchangedRepeats(store, runId, policy, findings.filter(chainable));
