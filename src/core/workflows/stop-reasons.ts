@@ -148,6 +148,15 @@ export const STOP_REASONS = {
     modes: NOT_ENFORCED,
     defaultMode: "shadow",
   },
+  written_tests_unselected: {
+    label:
+      "A written-tests check selected by the test classes its files declare ran no test: the host's filter, not the task's tests",
+    // Shadow only until two bench rounds show no false would-stop (#2363, R75 maskback's
+    // `FullyQualifiedName~UnitTest1.` ran nothing for `FailureExceptionTests`); its promotion fails
+    // the check as the host's (inconclusive, the filter in its message) instead of a corrective.
+    modes: NOT_ENFORCED,
+    defaultMode: "shadow",
+  },
   edge_crash_finding: {
     label: "A probed case crashes inside a file the probed code's task writes",
     // Shadow only until two bench rounds show no false would-stop (#2136); its promotion makes

@@ -202,6 +202,11 @@ export const RuntimeStateSchema = z
      * decision its next session applies as if `corrective_unowned_file` were enforced, once.
      */
     unownedRemedies: z.record(z.string(), z.enum(["route", "widen", "park"])).default({}),
+    /**
+     * Required checks whose timeouts a person accepted as a known limitation (#2358): a check that
+     * times out again does not stop the run; every other inconclusive result still does.
+     */
+    acceptedCheckTimeouts: z.array(z.string()).default([]),
     /** Paths a person let a corrective write through a `widen` remedy; acceptance reads them. */
     personWidened: z.array(z.string()).default([]),
     /**

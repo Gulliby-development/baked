@@ -131,6 +131,7 @@ Without the terminal UI, `baked login codex|claude-code` and `baked logout ...` 
 | `/agents` | Only in a project that has [agents from other tools](workflows/runtime.md#workflows-from-a-projects-agents) (Claude Code, GitHub Copilot, OpenCode, Roo Code): lists them, edits one in `$EDITOR`, removes its file, and turns them into a workflow (keys 1-9 pick each agent's stage, `b` the base workflow, `r` whether the agent files go); `/agents convert [ID]` starts there, `/agents edit NAME` opens one |
 | `/tools` | Enable/disable tools for the agent |
 | `/artifacts` | [Artifacts](artifacts.md) shared by every project: pick one to open it in the browser; `/artifacts open ID` opens one, `/artifacts deploy ID [prod]` asks the agent to deploy it (it asks before it deploys) |
+| `/preview` | The Markdown and HTML files this chat wrote or edited and the [artifacts](artifacts.md) it saved or deployed, the latest change first. Picking a Markdown file shows it in a popup drawn like assistant text; an HTML file or an artifact opens in the browser. `/preview PATH` previews any `.md`, `.markdown`, `.mdx`, `.html` or `.htm` file of the project up to 2 MB; a path outside the project is refused. The desktop app shows the same documents in the chat's [preview panel](desktop/app.md#screens) |
 | `/watch` | Watch files: saved baked! and baked? comments start the agent; `/watch on` starts it in this tab, `/watch off` stops it, `/watch status` shows it ([watch mode](watch.md)) |
 
 ### Settings

@@ -103,6 +103,7 @@ import {
   renderProjectMemory,
 } from "./project-memory.js";
 import { recoveryAdvice } from "./remedies.js";
+import type { ResumeRemedy } from "./remedies-model.js";
 import { canRepairRun } from "./repairable.js";
 import {
   abortableDelay,
@@ -452,6 +453,7 @@ export class NativeWorkflowService implements WorkflowService {
       freshTasks: {},
       widenedCorrections: [],
       unownedRemedies: {},
+      acceptedCheckTimeouts: [],
       personWidened: [],
       narrowedCorrections: {},
       taskBudgets: {},
@@ -1191,7 +1193,7 @@ export class NativeWorkflowService implements WorkflowService {
   async resume(
     runId: string,
     command: CommandIdentity,
-    options: { acceptWorkspace?: boolean; remedy?: HostRemedy } = {},
+    options: { acceptWorkspace?: boolean; remedy?: ResumeRemedy } = {},
   ): Promise<RunSnapshot> {
     this.enabled();
     const outside = options.acceptWorkspace ? await this.outsideChanges(runId) : null;
@@ -1223,6 +1225,48 @@ export class NativeWorkflowService implements WorkflowService {
         paths: offered.paths ?? [],
         ...(offered.owner ? { owner: offered.owner } : {}),
       }),
+    );
+    this.store.saveState(runId, state);
+  }
+  /**
+   * A person's acceptance of a required check that timed out twice on one workspace (#2358): the
+   * block must offer it. The check's timeouts stop the run no more, the run report lists the check
+   * as a known limitation, and `decisions/limitation-CHECK-COMMAND.json` records the decision.
+   * The host never takes it on its own.
+   */
+  private acceptCheckLimitation(runId: string, command: CommandIdentity): void {
+    const offered = stopRecovery(this.store, runId)?.remedies.find(
+      (r) => r.action === "accept-limitation",
+    );
+    const checkId = offered?.checkId;
+    if (this.store.run(runId).status !== "blocked" || !checkId)
+      throw new WorkflowFault(
+        "STALE_DECISION",
+        `This run's block does not offer the remedy accept-limitation; see \`baked workflow status ${runId}\``,
+      );
+    const state = this.store.state(runId);
+    const runs = this.store.checks(runId).filter((c) => c.check_id === checkId);
+    const evidence = runs.slice(-2).map((c) => c.evidence_id);
+    if (!state.acceptedCheckTimeouts.includes(checkId)) state.acceptedCheckTimeouts.push(checkId);
+    const findingId = `limitation-${checkId}`;
+    if (!state.limitations.some((l) => l.findingId === findingId))
+      state.limitations.push({
+        findingId,
+        severity: "medium",
+        kind: "check_not_run",
+        criterionIds: [],
+        file: null,
+        symbol: null,
+        claim: `Required check ${checkId} could not run: it timed out twice on the same workspace (evidence ${evidence.join(" and ")}).`,
+        impact: `The delivered change is not verified by ${checkId}.`,
+        decidedBy: "user",
+        round: this.store.run(runId).convergence_rounds,
+      });
+    this.store.artifact(
+      runId,
+      "decision",
+      `decisions/limitation-${checkId}-${command.commandId}.json`,
+      canonical({ approvedBy: "user", commandId: command.commandId, checkId, evidence }),
     );
     this.store.saveState(runId, state);
   }
@@ -1299,7 +1343,7 @@ export class NativeWorkflowService implements WorkflowService {
     runId: string,
     command: CommandIdentity,
     outside: Awaited<ReturnType<NativeWorkflowService["outsideChanges"]>> | null = null,
-    remedy?: HostRemedy,
+    remedy?: ResumeRemedy,
   ): RunSnapshot {
     this.enabled();
     const body = {
@@ -1311,7 +1355,8 @@ export class NativeWorkflowService implements WorkflowService {
     };
     return this.store.command(runId, command, body, () => {
       assertMutable(this.store.run(runId).status);
-      if (remedy) this.applyHostRemedy(runId, command, remedy);
+      if (remedy === "accept-limitation") this.acceptCheckLimitation(runId, command);
+      else if (remedy) this.applyHostRemedy(runId, command, remedy);
       if (outside) this.acceptOutsideChanges(runId, outside);
       else this.assertNoRefusedEdit(runId);
       if (this.store.requests(runId).some(blocksRun))
@@ -2070,6 +2115,7 @@ export class NativeWorkflowService implements WorkflowService {
         state.pendingTaskRepair = [];
         state.widenedCorrections = [];
         state.unownedRemedies = {};
+        state.acceptedCheckTimeouts = [];
         state.personWidened = [];
         state.narrowedCorrections = {};
         state.quickFixes = {};
@@ -2633,6 +2679,7 @@ export class NativeWorkflowService implements WorkflowService {
       state.pendingTaskRepair = [];
       state.widenedCorrections = [];
       state.unownedRemedies = {};
+      state.acceptedCheckTimeouts = [];
       state.personWidened = [];
       state.narrowedCorrections = {};
       state.quickFixes = {};

@@ -1,9 +1,9 @@
 import {
   extendSuggestion,
-  HOST_REMEDIES,
-  type HostRemedy,
+  RESUME_REMEDIES,
   type RecoveryAdvice,
   type Remedy,
+  type ResumeRemedy,
   renderRecovery,
   suggestionText,
 } from "../../../../../src/core/workflows/remedies-model.js";
@@ -47,24 +47,33 @@ function label(remedy: Remedy): string {
       return `Open ${run} and choose Let ${remedy.taskId ?? "the correction"} write ${files(remedy)}`;
     case "upstream":
       return `Open ${run} and choose Ask feature ${remedy.owner ?? "upstream"} for the change`;
+    case "accept-limitation":
+      return `Open ${run} and choose Accept ${remedy.checkId ?? "the check"} as a limitation`;
   }
 }
 
-/** The remedies of a corrective's block on files it may not write, as buttons (#2155). */
+/**
+ * The remedies a resume applies, as buttons: a corrective's block on files it may not write
+ * (#2155) and a required check that cannot run (#2358).
+ */
 export const hostRemedies = (
   advice: RecoveryAdvice | null | undefined,
-): (Remedy & { action: HostRemedy })[] =>
-  (advice?.remedies ?? []).filter((r): r is Remedy & { action: HostRemedy } =>
-    HOST_REMEDIES.some((action) => action === r.action),
+): (Remedy & { action: ResumeRemedy })[] =>
+  (advice?.remedies ?? []).filter((r): r is Remedy & { action: ResumeRemedy } =>
+    RESUME_REMEDIES.some((action) => action === r.action),
   );
 
 export function remedyLabel(remedy: Remedy): string {
+  if (remedy.action === "accept-limitation")
+    return `Accept ${remedy.checkId ?? "the check"} as a limitation`;
   if (remedy.action === "route") return `Correct ${remedy.owner ?? "the owner"} first`;
   if (remedy.action === "widen") return `Let ${remedy.taskId ?? "it"} write ${files(remedy)}`;
   return `Ask feature ${remedy.owner ?? "upstream"}`;
 }
 
 export function remedyTitle(remedy: Remedy): string {
+  if (remedy.action === "accept-limitation")
+    return `${remedy.checkId ?? "The check"} timed out twice on the same files. Completes the run without it and lists it as a known limitation of the delivered change.`;
   const task = remedy.taskId ?? "The correction";
   if (remedy.action === "route")
     return `${task} cannot write ${files(remedy)}, which ${remedy.owner ?? "another task"} wrote. Opens a correction of ${remedy.owner ?? "that task"}; ${task} runs again after it.`;

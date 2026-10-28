@@ -7,10 +7,12 @@ import { workspacePath } from "../specs/validate.js";
 import { rootField } from "../workflows/effects.js";
 import type { ProcessResult, ProcessScope } from "../workflows/process-scope.js";
 import { generatedPaths, type RunPolicy } from "../workflows/schemas.js";
+import { recordWouldStop, stopMode } from "../workflows/stop-reasons.js";
 import type { WorkflowStore } from "../workflows/store.js";
 import { withPerTestTimeout } from "../workflows/test-timeout.js";
 import { toolchainCommand } from "../workflows/toolchain.js";
 import type { Check } from "../workflows/types.js";
+import { type CommandTimeout, fileArgs, recordCommandTimeout } from "./command-timeouts.js";
 import { environmentFault, environmentNote } from "./environment-faults.js";
 import { isFailedTestLine } from "./failed-test-line.js";
 import { MISSING_GATE_REPORT, readGateReport, renderGateReport } from "./gate-report.js";
@@ -80,6 +82,53 @@ export function listsFailures(check: Pick<Check, "executable" | "args">): boolea
  */
 export const ranNoTests = (check: Pick<Check, "requireTests">, output: string): boolean =>
   check.requireTests === true && testsRan(output)?.count === 0;
+
+/**
+ * The selection fault of a check that runs the test classes its files declare (#2363): it exited
+ * 0 and ran no test, so its filter selected none of them. Null otherwise. maskback (bench round
+ * 75) filtered `dotnet test` by a file's name while the file declared another class, and the task
+ * was sent back twice to keep a class the filter could find.
+ */
+export function unselectedTests(
+  check: Pick<Check, "id" | "executable" | "args" | "requireTests" | "declaredTests">,
+  exitCode: number | null,
+  output: string,
+): { checkId: string; command: string; declared: string[] } | null {
+  if (exitCode !== 0 || !check.declaredTests?.length || !ranNoTests(check, output)) return null;
+  return {
+    checkId: check.id,
+    command: [check.executable, ...check.args].join(" "),
+    declared: check.declaredTests,
+  };
+}
+
+/**
+ * The `written_tests_unselected` decisions of a run's recorded written-tests checks on the current
+ * rule, for the replay (#2363): each recorded check artifact's definition and output.
+ */
+export function replayUnselectedTests(
+  store: WorkflowStore,
+  runId: string,
+): NonNullable<ReturnType<typeof unselectedTests>>[] {
+  return store
+    .artifacts(runId)
+    .filter((row) => row.kind === "check" && /^checks\/[^/]+-written\//.test(row.logical_path))
+    .flatMap((row) => {
+      try {
+        const body = JSON.parse(store.readArtifact(runId, row.id)) as {
+          definition?: Check;
+          exitCode?: number | null;
+          output?: string;
+        };
+        const found = body.definition
+          ? unselectedTests(body.definition, body.exitCode ?? null, body.output ?? "")
+          : null;
+        return found ? [found] : [];
+      } catch {
+        return [];
+      }
+    });
+}
 
 /**
  * The status of a check's finished command: its exit code, the files a listing check names, and
@@ -249,13 +298,16 @@ export class CheckRunner {
     status: "passed" | "failed" | "inconclusive";
     output: string;
     truncated: boolean;
+    /** The recorded timeout when the command ran out of time (#2358). */
+    timeout?: CommandTimeout;
   }> {
     try {
       const executable = check.executable === "bun" ? process.execPath : check.executable;
+      const limit = Math.min(check.timeoutMs, timeoutMs);
       const result = await executeCheckCommand(this.processes, executable, check.args, {
         cwd: check.cwd === "." ? root : workspacePath(root, check.cwd),
         env: buildCheckEnv(check),
-        timeoutMs: Math.min(check.timeoutMs, timeoutMs),
+        timeoutMs: limit,
         signal,
         sandbox,
       });
@@ -263,6 +315,22 @@ export class CheckRunner {
         result.timedOut || result.cancelled || result.exitCode === null
           ? "inconclusive"
           : exitStatus(check, result.exitCode, result.output);
+      // A baseline or poll that ran out of time names the command and its files (#2358).
+      if (result.timedOut && !result.cancelled && !signal.aborted) {
+        const timeout = recordCommandTimeout({
+          source: "measure",
+          command: [check.executable, ...check.args],
+          files: fileArgs(check.args),
+          root,
+          timeoutMs: limit,
+        });
+        return {
+          status,
+          output: `${result.output}\n\nNote: ${check.id}: ${timeout.note}.`,
+          truncated: result.truncated,
+          timeout,
+        };
+      }
       return { status, output: result.output, truncated: result.truncated };
     } catch {
       return { status: "inconclusive", output: "", truncated: false };
@@ -371,6 +439,16 @@ export class CheckRunner {
         `[slow-check] ${check.id} ${result.durationMs}ms exit=${result.exitCode} timedOut=${result.timedOut} ${result.output.slice(0, 300)}\n`,
       );
     const vacuous = result.exitCode === 0 && ranNoTests(check, result.output);
+    const unselected = unselectedTests(check, result.exitCode, result.output);
+    const unselectedMode = unselected ? stopMode(policy, "written_tests_unselected") : null;
+    if (unselected && unselectedMode && unselectedMode !== "enforce")
+      recordWouldStop(this.store, runId, {
+        reason: "written_tests_unselected",
+        mode: unselectedMode,
+        key: `${check.id}-${hashJson(check.args).slice(0, 16)}`,
+        summary: `${check.id} ran no test of the classes its files declare (${unselected.declared.join(", ")}) under ${unselected.command}: the host's selection selected none, and the check would fail as the host's, not the task's`,
+        inputs: { ...unselected },
+      });
     const listed = result.exitCode === 0 && exitStatus(check, 0, result.output) === "failed";
     const note = vacuous
       ? noTestsNote(check)
