@@ -190,6 +190,15 @@ export const STOP_REASONS = {
     modes: NOT_ENFORCED,
     defaultMode: "shadow",
   },
+  supplied_drift: {
+    label:
+      "A file a task delivered differs from the block the request gives for it verbatim (a whole file, a Markdown section or an exact diff)",
+    // Shadow only until two bench rounds show no false would-stop (#2332, R74 ewvet-update's README
+    // printf example with a doubled backslash); its promotion makes the mismatch a finding of
+    // severity high on the task's file at the checks stage, which a repair task rewrites.
+    modes: NOT_ENFORCED,
+    defaultMode: "shadow",
+  },
   committed_tree: {
     label:
       "A required static check that passed on the working tree fails on a clean worktree of the feature's commit",
