@@ -442,7 +442,7 @@ describe("acceptance rows: every framework has the file and the inline mode (#17
   test.each(frameworks.map((framework) => [framework]))("%s", (framework) => {
     expect(INLINE_HARNESS[framework]).toBeTruthy();
     const pkg = framework === "go" ? "calc" : framework === "junit" ? "com.ex.calc" : "Calc.Tests";
-    const test = { bun: "tests/a.test.ts", pytest: "tests/test_a.py", go: "calc/a_test.go", junit: "src/test/java/com/ex/calc/ATest.java", rust: "tests/a.rs", xunit: "Calc.Tests/ATest.cs", rspec: "spec/a_spec.rb", phpunit: "tests/ATest.php", testthat: "tests/testthat/test-a.R", busted: "spec/a_spec.lua" }[framework];
+    const test = { bun: "tests/a.test.ts", pytest: "tests/test_a.py", go: "calc/a_test.go", junit: "src/test/java/com/ex/calc/ATest.java", rust: "tests/a.rs", xunit: "Calc.Tests/ATest.cs", rspec: "spec/a_spec.rb", phpunit: "tests/ATest.php", testthat: "tests/testthat/test-a.R", busted: "spec/a_spec.lua", minitest: "test/a_test.rb" }[framework];
     const file = inlineRowFile({ mode: "inline", framework, test, package: pkg }, [{ id: "AC-001:1", criterionId: "AC-001", input: 1, expected: 2, source: "1 | 2" }]);
     expect(file.tail).toContain(INLINE_HARNESS[framework]);
     expect(file.tail).not.toMatch(/serde_json|import junit|org\.json|Newtonsoft/);

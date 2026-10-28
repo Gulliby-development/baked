@@ -1652,6 +1652,26 @@ export const FEATURES: readonly Feature[] = [
     desktop: ["project/initiatives: Time forecast line and one-click Extend to the suggested time"],
   },
   {
+    id: "initiative-calls-pool-forecast",
+    group: "Initiatives",
+    title:
+      "A shared agent-calls forecast at the measured calls per token, its notice, and call amounts on extend remedies of share blocks",
+    tui: ["/workflow: initiatives, Calls forecast line, B prefilled with the suggested calls"],
+    cli: [
+      "baked workflow initiative show: budget.calls, budget.callsNotice, next.recovery suggestedCalls",
+      "baked workflow initiative events: budget.calls_notice",
+      "baked workflow initiative extend: --calls",
+    ],
+    api: [
+      "/v1/initiatives/:id: budget.calls, budget.callsNotice, next.recovery suggestedCalls",
+      "/v1/initiatives/:id/events",
+      "/v1/initiatives/:id/extend",
+    ],
+    desktop: [
+      "project/initiatives: Calls forecast line and one-click Extend to the suggested calls",
+    ],
+  },
+  {
     id: "initiative-finding-ownership",
     group: "Initiatives",
     title:

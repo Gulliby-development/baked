@@ -16,3 +16,17 @@ describe("tests that start a Codex app-server (#2161)", () => {
     expect(offenders).toEqual([]);
   });
 });
+
+// #2262, #2263, #2264: a disposed ContextManager keeps a handle in its directory a moment longer on
+// Windows, so mode-tool-gating's bare recursive rmSync failed with EBUSY in 14 queue runs.
+describe("tests that build a ContextManager (#2262)", () => {
+  test("remove their directories with removeTempDir, not a bare recursive rmSync", () => {
+    const offenders = readdirSync(join(import.meta.dir))
+      .filter((name) => /\.test\.tsx?$/.test(name))
+      .filter((name) => {
+        const text = readFileSync(join(import.meta.dir, name), "utf8");
+        return /new ContextManager\(/.test(text) && /\brmSync\([^)]*recursive/.test(text);
+      });
+    expect(offenders).toEqual([]);
+  });
+});

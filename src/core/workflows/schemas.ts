@@ -115,6 +115,7 @@ const RowFramework = z.enum([
   "phpunit",
   "testthat",
   "busted",
+  "minitest",
 ]);
 const RowPackage = z
   .string()
