@@ -355,6 +355,11 @@ export function fileScopedFormat(
       args: ["--check", ...(edition ? ["--edition", edition] : []), path],
     };
   }
+  // The task-end rustfmt check (`rustFormatWrittenCheck`) on one of its files.
+  if (language === "rust" && program === "rustfmt" && args.includes("--check")) {
+    const flags = args.filter((arg, i) => arg.startsWith("-") || args[i - 1] === "--edition");
+    return command([...flags, path]);
+  }
   const formatter = (rowOf(FILE_FORMATTERS, language) ?? []).find((f) => f.runs(program, args));
   return formatter ? command(formatter.check(args, [path])) : null;
 }
@@ -523,6 +528,19 @@ export function formatWrittenChecks(
   which?: (command: string, options: { PATH: string; cwd: string }) => string | null,
   base?: (path: string) => string | null | undefined,
   accepts: FlagProbe = helpListsFlag,
+  options: { rust?: boolean } = {},
+): Check[] {
+  const rust = options.rust ? rustFormatWrittenChecks(root, checks, writes, which, base) : [];
+  return [...formatWrittenOf(root, checks, writes, which, base, accepts), ...rust];
+}
+
+function formatWrittenOf(
+  root: string,
+  checks: readonly Check[],
+  writes: readonly { path: string; action: string }[],
+  which: ((command: string, options: { PATH: string; cwd: string }) => string | null) | undefined,
+  base: ((path: string) => string | null | undefined) | undefined,
+  accepts: FlagProbe,
 ): Check[] {
   const files = new Map<string, Written[]>();
   for (const write of writes) {
@@ -649,4 +667,55 @@ export function formatWrittenChecks(
     }
   }
   return out;
+}
+
+/** An out-of-line module declaration (`mod parser;`), which rustfmt follows into the module's file. */
+const OUT_OF_LINE_MOD = /^\s*(?:#\[[^\]]*\]\s*)*(?:pub(?:\s*\([^)]*\))?\s+)?mod\s+(?:r#)?\w+\s*;/m;
+
+/**
+ * The task-end rustfmt check (policy `rustFormatWritten`, #2248): `rustfmt --check --edition E` on
+ * the Rust files a task creates (or the run created), per edition, with `rustfmt --edition E` as
+ * the fixer, next to the cargo of the project's `cargo fmt` gate, even when the run's checks hold
+ * `cargo fmt`. That gate runs only in the checks stage, so a file rustfmt hangs on or rejects showed
+ * there, after its task had ended (#2240). rustfmt formats the modules a file declares out of line
+ * (`mod parser;`), which may be another task's or not written yet (#842), so such a file is left
+ * to the gate; an edited file too, since rustfmt has no stable range form (#1582).
+ */
+export function rustFormatWrittenChecks(
+  root: string,
+  checks: readonly Check[],
+  writes: readonly { path: string; action: string }[],
+  which?: (command: string, options: { PATH: string; cwd: string }) => string | null,
+  base?: (path: string) => string | null | undefined,
+): Check[] {
+  const gate = [...checks, ...detectGates(root).map((s) => s.check)].find((check) => {
+    const { program, args } = formatterCommand(check);
+    return program === "cargo" && args[0] === "fmt" && programName(check.executable) === "cargo";
+  });
+  if (!gate) return [];
+  const byEdition = new Map<string, string[]>();
+  for (const write of writes) {
+    if (write.action === "delete" || detectLanguageFromPath(write.path) !== "rust") continue;
+    if (write.action !== "create" && base?.(write.path) !== null) continue;
+    const absolute = join(root, write.path);
+    if (!existsSync(absolute) || cwdPath(gate, write.path).startsWith("../")) continue;
+    if (OUT_OF_LINE_MOD.test(stripComments(write.path, readFileSync(absolute, "utf8")))) continue;
+    const edition = cargoEdition(absolute) ?? "";
+    byEdition.set(edition, [...(byEdition.get(edition) ?? []), write.path]);
+  }
+  const rustfmt = gate.executable.replace(/cargo(\.exe)?$/i, "rustfmt$1");
+  const out = [...byEdition].map(([edition, paths], i): Check => {
+    const flags = edition ? ["--edition", edition] : [];
+    return {
+      ...gate,
+      id: `rustfmt-written${i ? `-${String(i + 1)}` : ""}`,
+      executable: rustfmt,
+      args: ["--check", ...flags, ...paths.map((path) => cwdPath(gate, path))],
+      fix: { executable: rustfmt, args: flags },
+      fixPaths: paths,
+      required: true,
+      timeoutMs: Math.min(gate.timeoutMs, FORMAT_WRITTEN_TIMEOUT_MS),
+    };
+  });
+  return unresolvedChecks(out, root, which).length ? [] : out;
 }

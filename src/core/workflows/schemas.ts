@@ -738,6 +738,13 @@ export const PolicySchema = z
      */
     conflictFinish: z.literal("on").optional(),
     /**
+     * The task-end rustfmt check (format-written.ts `rustFormatWrittenChecks`, #2248): `on` checks
+     * the Rust files a task creates with `rustfmt --check` at the end of that task, with rustfmt as
+     * the fixer, next to the checks stage's `cargo fmt`, so a file rustfmt rejects or hangs on is
+     * repaired by the task that wrote it. Absent is off, so stored policies keep their hash.
+     */
+    rustFormatWritten: z.literal("on").optional(),
+    /**
      * The expected text a test task compares exactly, written by the host as a string literal of
      * the test's language (supplied-content.ts, #2101): `on` gives the implementer each request
      * section a criterion of the task compares exactly, escaped once by the host. Absent means

@@ -268,6 +268,7 @@ export async function prepareStart(
     conflictFinish: policyConflictFinish,
     exactTextLiteral: policyExactTextLiteral,
     correctiveDefer: policyCorrectiveDefer,
+    rustFormatWritten: policyRustFormatWritten,
     sourceDefectRoute: policySourceDefectRoute,
     baselineFix: policyBaselineFix,
     propertyTests: policyPropertyTests,
@@ -322,6 +323,7 @@ export async function prepareStart(
   const conflictFinish = policyConflictFinish ?? config.quality?.conflictFinish ?? "off";
   const exactTextLiteral = policyExactTextLiteral ?? config.quality?.exactTextLiteral ?? "off";
   const correctiveDefer = policyCorrectiveDefer ?? config.quality?.correctiveDefer ?? "off";
+  const rustFormatWritten = policyRustFormatWritten ?? config.quality?.rustFormatWritten ?? "off";
   const sourceDefectRoute = policySourceDefectRoute ?? config.quality?.sourceDefectRoute ?? "off";
   const baselineFix = policyBaselineFix ?? config.quality?.baselineFix ?? "off";
   const propertyTests =
@@ -385,6 +387,7 @@ export async function prepareStart(
     ...(conflictFinish === "on" ? { conflictFinish } : {}),
     ...(exactTextLiteral === "on" ? { exactTextLiteral } : {}),
     ...(correctiveDefer === "on" ? { correctiveDefer } : {}),
+    ...(rustFormatWritten === "on" ? { rustFormatWritten } : {}),
     ...(sourceDefectRoute === "on" ? { sourceDefectRoute } : {}),
     ...(baselineFix === "on" ? { baselineFix } : {}),
     ...(propertyTests !== presetPropertyTests(preset) ? { propertyTests } : {}),
