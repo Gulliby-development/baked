@@ -62,6 +62,8 @@ class RootExecutor implements AgentExecutor {
   userCouldEdit: boolean | null = null;
   /** Reports the task blocked after its edit, leaving an edit the run can undo. */
   block = false;
+  /** What the edit writes to value.txt, with mode 0644 as a Windows working tree has it. */
+  content = "ready";
   constructor(private workspace: string) {}
   async execute(request: ExecutionRequest) {
     const root = request.root ?? this.workspace;
@@ -83,7 +85,7 @@ class RootExecutor implements AgentExecutor {
       root,
     );
     await guard.execute("edit_file", { path: "value.txt" }, async () =>
-      writeFileSync(join(root, "value.txt"), "ready"),
+      writeFileSync(join(root, "value.txt"), this.content, { mode: 0o644 }),
     );
     return {
       output: { schemaVersion: 1, taskId: request.task?.id, outcome: this.block ? "blocked" : "implemented", summary: "Wrote value", evidenceIds: [], unresolved: [] },
@@ -416,6 +418,30 @@ describe("workflow worktree execution", () => {
     // Planning again cannot read a removed worktree.
     const fault = await refusal(prepareDelivery(store, fx.config, run.runId, { pullRequest: false }));
     expect(fault.details.reason).toBe("worktree_missing");
+  });
+
+  // #2331: a Windows working tree has no executable bit, so a new launcher with a shebang was
+  // committed 100644 and failed `Lint/ScriptPermission` on a Unix CI. The edit writes 0644, as
+  // Windows reports it; the run branch, the delivery plan and the delivered commit say 100755.
+  test("a new file with a shebang is committed executable by the run branch and the delivery (#2331)", async () => {
+    const policy = { ...fixturePolicy, checks: [{ ...fixturePolicy.checks[0]!, args: ["-e", "if (!(await Bun.file('value.txt').text()).startsWith('#!')) process.exit(1)"] }] };
+    const fx = setup({ policy });
+    fx.executor.content = "#!/usr/bin/env ruby\nputs 'ready'\n";
+    const run = await fx.start("worktree");
+    expect((await fx.complete(run.runId)).status).toBe("completed");
+    const store = fx.service.store;
+    const worktree = store.state(run.runId).worktree;
+    expect(git(fx.root, "ls-tree", worktree?.commit ?? "", "--", "value.txt")).toStartWith("100755 ");
+    const prepared = await prepareDelivery(store, fx.config, run.runId, { local: true, now: 1700000000 });
+    expect(prepared.plan.files.find((f) => f.path === "value.txt")?.mode).toBe("100755");
+    await fx.service.decide(
+      run.runId,
+      { commandId: newId(), expectedRevision: store.run(run.runId).revision },
+      { kind: "approve", requestId: prepared.requestId, digest: prepared.digest },
+    );
+    const result = await executeDelivery(store, fx.config, run.runId, { expectedRevision: store.run(run.runId).revision, provider: null });
+    expect(git(fx.root, "ls-tree", result.commit ?? "", "--", "value.txt")).toStartWith("100755 ");
+    expect(git(fx.root, "ls-tree", result.commit ?? "", "--", "user.txt")).toStartWith("100644 ");
   });
 
   test("a worktree run is delivered locally into the checked-out branch with no remote (#1347)", async () => {
@@ -789,4 +815,42 @@ describe("parallel worktree runs", () => {
     expect((await running).status).toBe("completed");
     expect((await fx.drive(second)).status).toBe("completed");
   });
+});
+
+describe("dependency folders in a worktree run (#2330)", () => {
+  // R74 ladlemath (PHP): only node_modules was linked into worktrees, so a Composer project had to
+  // commit vendor/ (1,816 files) for `vendor/bin/phpunit` to run there, and every snapshot hashed it.
+  test("an ignored Composer vendor/ is linked into the run worktree, its check passes there, and neither the snapshot nor the run's commit holds it", async () => {
+    const check = fixturePolicy.checks[0] as (typeof fixturePolicy.checks)[number];
+    const policy = {
+      ...fixturePolicy,
+      checks: [{ ...check, id: "phpunit", args: ["vendor/bin/phpunit.js"] }],
+    };
+    const fx = setup({ policy });
+    // The usual rule, with a slash: Git sees a linked folder as a file, which it does not cover.
+    writeFileSync(join(fx.root, ".gitignore"), ".baked/\nvendor/\n");
+    git(fx.root, "commit", "-q", "-am", "Ignore vendor");
+    mkdirSync(join(fx.root, "vendor/bin"), { recursive: true });
+    writeFileSync(
+      join(fx.root, "vendor/bin/phpunit.js"),
+      "if (await Bun.file('value.txt').text() !== 'ready') process.exit(1);\n",
+    );
+    const run = await fx.start("worktree");
+    const done = await fx.complete(run.runId);
+    expect(fx.service.store.run(run.runId).stop_detail ?? "").toBe("");
+    expect(done.status).toBe("completed");
+    const worktree = fx.service.store.state(run.runId).worktree;
+    const tree = join(fx.root, worktree?.path ?? "");
+    expect(existsSync(join(tree, "vendor/bin/phpunit.js"))).toBe(true);
+    const branch = git(fx.root, "ls-tree", "-r", "--name-only", worktree?.branch ?? "");
+    expect(branch.split("\n")).toContain("value.txt");
+    expect(branch).not.toContain("vendor");
+    const { db } = fx.service.store as unknown as {
+      db: { query(sql: string): { all(...args: string[]): { manifest_json: string }[] } };
+    };
+    const manifests = db.query("SELECT manifest_json FROM workspace_snapshots WHERE run_id = ?").all(run.runId);
+    expect(manifests.length).toBeGreaterThan(0);
+    for (const { manifest_json } of manifests) expect(manifest_json).not.toContain("vendor");
+    expect(status(fx.root)).toBe("");
+  }, 60000);
 });

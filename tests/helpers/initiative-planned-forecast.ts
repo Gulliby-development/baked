@@ -100,7 +100,7 @@ export async function historyFixture(featureUsd: number, mix: Mix = {}) {
 
 export async function plannedForecastScenario(
   count: number, firstUsd: number | Record<string, number>, histories: string[],
-  options: { forecastStop?: boolean; stopModes?: RunPolicy["stopModes"]; mix?: Mix; skeleton?: boolean; capUsd?: number | null; maxTotalTokens?: number; extendWithinDollars?: "off" | "shadow"; costTolerance?: number | "off"; approve?: boolean } = {},
+  options: { forecastStop?: boolean; stopModes?: RunPolicy["stopModes"]; mix?: Mix; skeleton?: boolean; capUsd?: number | null; maxTotalTokens?: number; extendWithinDollars?: "off" | "shadow"; costTolerance?: number | "off"; approve?: boolean; globPaths?: boolean } = {},
 ) {
   const skeleton = options.skeleton ?? true;
   const fixture = workflowFixture({ executor: (root) => new ScriptedExecutor(root, firstUsd, skeleton, options.mix) });
@@ -111,7 +111,8 @@ export async function plannedForecastScenario(
     schemaVersion: 1, title: "Values", goals: ["Write values"], completionCriteria: ["Values exist"],
     features: Array.from({ length: count }, (_, i) => ({
       id: `f${i + 1}`, title: `Value ${i + 1}`, size: i ? "medium" : "small", workflow: "sdd",
-      boundary: { scope: "Write the value", paths: [`f${i + 1}.txt`] },
+      // A glob boundary has no literal paths, so no path rate floors the feature's estimate.
+      boundary: { scope: "Write the value", paths: [options.globPaths ? `f${i + 1}*.txt` : `f${i + 1}.txt`] },
       ...(!i && skeleton ? { skeleton: [{ path: "f1.txt", content: "ready" }] } : {}),
       contract: "The value is ready", dependsOn: i ? [`f${i}`] : [], mandatory: true,
     })),

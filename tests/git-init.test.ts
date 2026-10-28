@@ -107,3 +107,16 @@ describe("initializing Git for worktree runs", () => {
     expect(existsSync(join(inner, ".git"))).toBe(false);
   });
 });
+
+describe("the baseline of a folder with scripts (#2331)", () => {
+  test("a new file with a shebang is committed executable even when the folder has no executable bit", async () => {
+    const dir = folder();
+    if ((await workspaceGitState(dir)).kind !== "missing") return;
+    mkdirSync(join(dir, "bin"));
+    writeFileSync(join(dir, "bin", "tool"), "#!/usr/bin/env python3\nprint('hi')\n", { mode: 0o644 });
+    writeFileSync(join(dir, "main.py"), "print('hi')\n", { mode: 0o644 });
+    await initWorkspaceGit(dir);
+    expect(git(dir, "ls-tree", "HEAD", "--", "bin/tool")).toStartWith("100755 ");
+    expect(git(dir, "ls-tree", "HEAD", "--", "main.py")).toStartWith("100644 ");
+  });
+});

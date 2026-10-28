@@ -375,6 +375,8 @@ export interface QualityConfig {
   defectClasses?: "off" | "on";
   /** Let the host finish a task whose spec conflict it settled when the attempt's cases hold and its required checks pass: `on` or `off` (default, recorded in shadow). */
   conflictFinish?: "off" | "on";
+  /** Give a test task that compares a request section exactly the section as a string literal of its language, escaped by the host: `on` or `off` (default). */
+  exactTextLiteral?: "off" | "on";
   /** Let a run go on with the ready tasks a blocked corrective does not hold, and end with its stop once they ran: `on` or `off` (default, recorded in shadow). */
   correctiveDefer?: "off" | "on";
   /** Route a test task's failure whose expected values are its criteria's literals to the finished sibling that wrote the code under test: `on` or `off` (default, recorded in shadow). */
