@@ -459,3 +459,75 @@ describe("scenario: the junit templates are fixed points of google-java-format's
     expect(hasInlineRows(formatted, inline)).toBe(true);
   });
 });
+
+// #2335 (bench round 74, callmend in Ruby and ladlemath in PHP): no rows framework for RSpec or
+// PHPUnit, so every table row was written by the model. Both templates are fixed points of the
+// default RuboCop and Pint, and another style's layout of a block is not an edit.
+const rubocop = tool("rubocop", "--version");
+const pint = tool("pint", "--version");
+const RSPEC_SPEC = "# frozen_string_literal: true\n\ndef acceptance_actual(input)\n  input\nend\n";
+const PHPUNIT_TEST = "<?php\n\nnamespace Platforms\\Tests;\n\nuse PHPUnit\\Framework\\TestCase;\n\nfinal class PlatformsTest extends TestCase\n{\n    public static function acceptanceActual(mixed $input): mixed\n    {\n        return $input;\n    }\n}\n";
+const rspecInline: InlineRowTest = { mode: "inline", framework: "rspec", test: "spec/platforms_spec.rb" };
+const phpunitInline: InlineRowTest = { mode: "inline", framework: "phpunit", package: "Platforms.Tests", test: "tests/PlatformsTest.php" };
+
+describe("scenario: the RSpec and PHPUnit rows pass RuboCop and Pint as written (#2335)", () => {
+  const rspecFile = { framework: "rspec", harness: "lib/platforms/acceptance_harness.rb", test: "spec/platforms_rows_spec.rb", data: "spec/fixtures/platforms_rows.json" };
+  const phpunitFile = { framework: "phpunit", package: "Platforms.Tests", harness: "tests/Support/PlatformsHarness.php", test: "tests/PlatformsRowsTest.php", data: "tests/fixtures/platforms_rows.json" };
+
+  test("no line over RuboCop's 120 columns, and the PHP file opens with its tag", () => {
+    const ruby = [fileMode(rspecFile)[rspecFile.test] ?? "", withInlineRows(RSPEC_SPEC, inlineRowFile(rspecInline, rows))];
+    for (const text of ruby) expect(text.split("\n").filter((line) => line.length > 120)).toEqual([]);
+    expect(fileMode(phpunitFile)[phpunitFile.test]).toStartWith("<?php\n");
+    expect(withInlineRows(null, inlineRowFile(phpunitInline, rows))).toStartWith("<?php\n\nnamespace Platforms\\Tests;\n");
+  });
+
+  test.skipIf(!rubocop)("rspec: rubocop prints no offense for the file mode's test or the inline block", () => {
+    const root = temp({ ...fileMode(rspecFile), [rspecInline.test]: withInlineRows(RSPEC_SPEC, inlineRowFile(rspecInline, rows)) });
+    expect(run(root, rubocop ?? "", "--format", "simple", rspecFile.test, rspecInline.test)).toStartWith("0 ");
+  });
+
+  test.skipIf(!pint)("phpunit: pint --test passes the file mode's test, the inline block, and a file the host starts", () => {
+    const started = { ...phpunitInline, test: "tests/StartedTest.php" };
+    const root = temp({
+      ...fileMode(phpunitFile),
+      [phpunitInline.test]: withInlineRows(PHPUNIT_TEST, inlineRowFile(phpunitInline, rows)),
+      [started.test]: withInlineRows(null, inlineRowFile(started, rows)),
+    });
+    expect(run(root, pint ?? "", "--test", phpunitFile.test, phpunitInline.test, started.test)).toStartWith("0 ");
+  });
+
+  test("phpunit: the block is methods of the file's own class, and a second write changes nothing", () => {
+    const file = inlineRowFile(phpunitInline, rows);
+    const written = withInlineRows(PHPUNIT_TEST, file);
+    expect(written).toEndWith("    // END acceptance rows\n}\n");
+    expect(written.match(/^final class /gm)).toHaveLength(1);
+    expect(hasInlineRows(written, file)).toBe(true);
+    expect(withInlineRows(written, file)).toBe(written);
+  });
+
+  // StandardRB's double quotes, and PER's spaces around the concatenation operator.
+  const restyled = [
+    { name: "rspec, StandardRB: double quotes", test: rspecInline, harness: RSPEC_SPEC, format: (text: string) => text.replace(/'([^'"\\\n]*)'/g, '"$1"') },
+    { name: "phpunit, Pint's PER preset: spaced concatenation", test: phpunitInline, harness: PHPUNIT_TEST, format: (text: string) => text.replace(/(\S)\.(['$]|json_encode)/g, "$1 . $2").replace(/(['\])])\.(\S)/g, "$1 . $2") },
+  ];
+  for (const style of restyled) {
+    const file = inlineRowFile(style.test, rows);
+    const formatted = style.format(withInlineRows(style.harness, file));
+    test(`${style.name}: the layout is kept, and a changed row is put back`, () => {
+      expect(formatted).not.toBe(withInlineRows(style.harness, file));
+      expect(hasInlineRows(formatted, file)).toBe(true);
+      const tampered = formatted.replace("macosx_11_0_arm64", "macosx_12_0_arm64");
+      expect(hasInlineRows(tampered, file)).toBe(false);
+      expect(withInlineRows(tampered, file)).toContain("macosx_11_0_arm64");
+    });
+  }
+
+  test("the file mode's check accepts StandardRB's quotes of the RSpec test and refuses a changed path", async () => {
+    const files = rowFiles({ id: "T003", rows: ["AC-003"], rowTest: rspecFile } as never, { tasks: [{ rows: ["AC-003"], rowTest: rspecFile }], rows } as never);
+    const content = (path: string) => files.find((file) => file.path === path)?.content ?? "";
+    const formatted = { [rspecFile.data]: content(rspecFile.data), [rspecFile.test]: content(rspecFile.test).replace(/'([^'"\\\n]*)'/g, '"$1"') };
+    expect(await rowFileProblems(temp(formatted), files)).toEqual([]);
+    const tampered = { ...formatted, [rspecFile.test]: (formatted[rspecFile.test] ?? "").replace("platforms_rows.json", "other.json") };
+    expect(await rowFileProblems(temp(tampered), files)).not.toEqual([]);
+  });
+});

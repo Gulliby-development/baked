@@ -131,13 +131,18 @@ export interface InitiativeCost {
   remainingUsd: number | null;
   /** The projected total once a feature is accepted; null before that or without a cap. */
   forecastUsd: number | null;
+  /** The forecast at the measured ratio itself, which only the notice reads (#2186). */
+  advice?: { forecastUsd: number; ratio: number; blendedRatio: number } | null;
   /** Accepted features that are not a host-written skeleton. */
   measuredFeatures?: number;
   /** Whether a forecast above the ceiling stops the next feature. */
   forecastBinding?: boolean;
   /** The forecast stop's mode; outside `enforce` a binding forecast only records or advises. */
   forecastMode?: "shadow" | "advisory" | "enforce";
-  /** Why a forecast above the ceiling does not stop the initiative yet; null otherwise. */
+  /**
+   * Why a forecast above the ceiling does not stop the initiative yet, or that the measured
+   * ratio's forecast is above it (#2186); null otherwise.
+   */
   forecastNotice?: string | null;
 }
 

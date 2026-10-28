@@ -278,6 +278,13 @@ export interface CostView {
    * without a cap, before a feature is accepted, or while nothing is priced.
    */
   forecastUsd: number | null;
+  /**
+   * The same forecast at the measured ratio itself (#2186): `forecastUsd` and the forecast stop
+   * read the estimate's blended ratio (`progress.ratio`), the notice reads this one
+   * (`progress.rawRatio`), as the token pool's `advice` does (#2062). Null while the two agree or
+   * before three features are measured; absent on events recorded before #2186.
+   */
+  advice?: { forecastUsd: number; ratio: number; blendedRatio: number } | null;
   /** Accepted features that are not a host-written skeleton: the forecast's measured samples. */
   measuredFeatures: number;
   /**
@@ -291,7 +298,10 @@ export interface CostView {
    * forecast above the ceiling records a `decision.would_stop` event and features keep starting.
    */
   forecastMode: StopMode;
-  /** Why a forecast above the ceiling does not stop the initiative yet; null otherwise. */
+  /**
+   * Why a forecast above the ceiling does not stop the initiative yet, or that `advice` is above
+   * it while the blend fits (#2186); null otherwise.
+   */
   forecastNotice: string | null;
   /**
    * The mode of the `initiative-dollar-share` stop reason (#1890): in `enforce` a feature whose
@@ -1095,6 +1105,34 @@ const usd = (n: number): string => `$${n.toFixed(2)}`;
 const cents = (n: number): number => Math.floor(Math.round(n * 1e6) / 1e4) / 100;
 /** Up to the cent, for an amount a message suggests: it must cover what it names. */
 const centsUp = (n: number): number => Math.ceil(Math.round(n * 1e6) / 1e4) / 100;
+
+/**
+ * The estimate with each feature still to run at the measured ratio itself (`progress.rawRatio`)
+ * instead of the blend that priced it (its size's, else the overall one), never below its point
+ * forecast, for the dollar notice (#2186). A feature that a floor priced (its criteria, paths,
+ * plan or test cases) keeps its point forecast: the ratio does not scale a floor. Null when no
+ * feature changes.
+ */
+function rawRatioEstimate(
+  estimate: InitiativeEstimate,
+  accepted: ReadonlySet<string>,
+): InitiativeEstimate | null {
+  const { rawRatio, ratio, bySize } = estimate.progress;
+  if (rawRatio === null || ratio === null) return null;
+  let changed = false;
+  const features = estimate.features.map((f) => {
+    const blend = bySize[f.size] ?? ratio;
+    if (accepted.has(f.featureId) || f.floor || rawRatio <= blend) return f;
+    const expectedTokens = Math.max(
+      f.expectedTokens,
+      Math.round((f.expectedTokens / blend) * rawRatio),
+    );
+    if (expectedTokens === f.expectedTokens) return f;
+    changed = true;
+    return { ...f, expectedTokens };
+  });
+  return changed ? { ...estimate, features } : null;
+}
 
 /** The smallest dollar share a feature run can start with. */
 export const MIN_SHARE_USD = 0.01;
@@ -2346,8 +2384,8 @@ export class InitiativeService {
 
   /**
    * Records once for each count of measured features that a feature starts while the forecast
-   * is above the ceiling but not yet binding (#1659), so `initiative events` and
-   * `/v1/initiatives/ID/events` show the warning a stop used to give.
+   * is above the ceiling but not yet binding (#1659), or its advice at the measured ratio is
+   * (#2186), so `initiative events` and `/v1/initiatives/ID/events` show the warning.
    */
   private noteAdvisoryForecast(id: string, featureId: string, cost: CostView): void {
     if (cost.forecastNotice === null) return;
@@ -2361,6 +2399,7 @@ export class InitiativeService {
     this.store.emit(id, "cost.forecast_advisory", {
       featureId,
       forecastUsd: cost.forecastUsd,
+      ...(cost.advice ? { advice: cost.advice } : {}),
       ceilingUsd: cost.ceilingUsd,
       spentUsd: cost.spentUsd,
       measuredFeatures: cost.measuredFeatures,
@@ -3686,6 +3725,17 @@ export class InitiativeService {
     const round = (n: number): number => Math.round(n * 100) / 100;
     const ceilingUsd = capUsd === null ? null : round(capUsd * (1 + tolerance));
     const forecastUsd = left === null ? null : round(spentUsd + left);
+    // Advice prices the features still to run at the measured ratio instead of the blend (#2186).
+    const atRaw = left === null || estimate === null ? null : rawRatioEstimate(estimate, accepted);
+    const adviceLeft = atRaw && this.remainingFeatureCost(row, settings, atRaw, accepted);
+    const advice =
+      forecastUsd !== null && adviceLeft != null && round(spentUsd + adviceLeft) !== forecastUsd
+        ? {
+            forecastUsd: round(spentUsd + adviceLeft),
+            ratio: round(estimate?.progress.rawRatio ?? 1),
+            blendedRatio: round(estimate?.progress.ratio ?? 1),
+          }
+        : null;
     const measuredFeatures = estimate
       ? estimate.features.filter((f) => accepted.has(f.featureId) && !f.skeleton).length
       : accepted.size;
@@ -3694,6 +3744,13 @@ export class InitiativeService {
     const forecastMode = stopMode(settings.basePolicy, "initiative-forecast");
     const shareMode = stopMode(settings.basePolicy, "initiative-dollar-share");
     const over = forecastUsd !== null && ceilingUsd !== null && forecastUsd > ceilingUsd;
+    const adviceOver = advice !== null && ceilingUsd !== null && advice.forecastUsd > ceilingUsd;
+    // Both forecasts, the measured one first, as the token notice names them (#2062).
+    const forecastText =
+      advice && forecastUsd !== null
+        ? `At the measured ${advice.ratio.toFixed(1)}x of the estimates the cost forecast is ${usd(advice.forecastUsd)} (${usd(forecastUsd)} at the blended ${advice.blendedRatio.toFixed(1)}x that the forecast stop uses; ${usd(spentUsd)} spent)`
+        : `The cost forecast of ${usd(forecastUsd ?? 0)}`;
+    const aboveText = `${forecastText}${advice ? "," : " is"} above the ${usd(ceilingUsd ?? 0)} ceiling.`;
     return {
       capUsd,
       tolerance,
@@ -3702,16 +3759,19 @@ export class InitiativeService {
       reservedUsd: round(Math.max(0, committedUsd - spentUsd)),
       remainingUsd: capUsd === null ? null : cents(Math.max(0, capUsd - committedUsd)),
       forecastUsd,
+      advice,
       measuredFeatures,
       forecastBinding,
       forecastMode,
       shareMode,
       forecastNotice:
         over && !forecastBinding
-          ? `The cost forecast of ${usd(forecastUsd)} is above the ${usd(ceilingUsd)} ceiling. It is advisory until ${FORECAST_BINDING_FEATURES} features are measured (${measuredFeatures} so far): features keep starting while their spent and reserved dollars fit the budget.`
+          ? `${aboveText} It is advisory until ${FORECAST_BINDING_FEATURES} features are measured (${measuredFeatures} so far): features keep starting while their spent and reserved dollars fit the budget.`
           : over && forecastMode === "advisory"
-            ? `The cost forecast of ${usd(forecastUsd)} is above the ${usd(ceilingUsd)} ceiling. The forecast stop is advisory: features keep starting while their spent and reserved dollars fit the budget.`
-            : null,
+            ? `${aboveText} The forecast stop is advisory: features keep starting while their spent and reserved dollars fit the budget.`
+            : !over && adviceOver && advice
+              ? `${aboveText} The advice changes no decision: features keep starting while the blended forecast and their spent and reserved dollars fit the budget. A cap of ${usd(Math.ceil(advice.forecastUsd))} covers it (baked workflow initiative extend ${row.id} --budget-usd ${Math.ceil(advice.forecastUsd)}).`
+              : null,
     };
   }
 

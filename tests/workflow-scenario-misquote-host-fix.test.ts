@@ -7,6 +7,7 @@ import {
   misquoteFallback,
   misquoteFixDecision,
   misquoteFixPlan,
+  settleFallback,
 } from "../src/core/workflows/misquote-fix.js";
 import type { RunPolicy, Spec } from "../src/core/workflows/schemas.js";
 import { replayMisquoteFixes } from "../src/core/workflows/trace.js";
@@ -68,6 +69,13 @@ interface Scenario {
   clarification?: RunPolicy["clarification"];
   /** A task worktree with several writers: the batch worker settles the conflict. */
   parallel?: boolean;
+  /** Best-of-N: this many candidates of the task, each in its own worktree (#2181). */
+  candidates?: number;
+  /**
+   * The derivation audit and its re-audit verify AC-007's row, and the test copies it as written:
+   * the audited rows win (#2181).
+   */
+  audited?: boolean;
 }
 
 function git(cwd: string, ...args: string[]): void {
@@ -96,6 +104,11 @@ async function conflict(scenario: Scenario) {
       const code = graph.tasks[0] as Record<string, unknown> & { writes: { path: string; action: string }[] };
       graph.specHash = hashJson(spec);
       graph.tasks = [{ ...code, id: "T004", criterionIds: ["AC-001", "AC-007"], checkIds: ["unit"], writes: [...code.writes, { path: TEST, action: "create" }] }];
+      return out;
+    }
+    if (request.profile.output === "analysis" && scenario.audited) {
+      const out = await original(request);
+      out.output = { ...(out.output as object), derivations: [{ criterionId: "AC-007", row: `${ELEVEN} -> ${ERROR}`, recomputed: ERROR, matches: true, derivation: "Eleven segments are one past the limit of ten" }] };
       return out;
     }
     if (request.profile.output === "review" || request.profile.output === "convergence") {
@@ -130,7 +143,8 @@ async function conflict(scenario: Scenario) {
       outputTokens: 25,
     };
   };
-  if (scenario.parallel) {
+  const worktree = scenario.parallel || scenario.candidates !== undefined;
+  if (worktree) {
     git(root, "init", "-q", "-b", "main");
     git(root, "config", "user.name", "Test User");
     git(root, "config", "user.email", "test@example.test");
@@ -146,8 +160,8 @@ async function conflict(scenario: Scenario) {
     git(root, "add", ".");
     git(root, "commit", "-q", "-m", "Initial");
   }
-  const run = scenario.parallel
-    ? await service.start({ commandId: newId(), featureId: "fixture", workflowId: "sdd", prompt: "Create ready value", ownerLabel: "test", policy, executionMode: "worktree", maxConcurrentWriters: 2 })
+  const run = worktree
+    ? await service.start({ commandId: newId(), featureId: "fixture", workflowId: "sdd", prompt: "Create ready value", ownerLabel: "test", policy, executionMode: "worktree", ...(scenario.candidates ? { candidates: scenario.candidates } : { maxConcurrentWriters: 2 }) })
     : await fixture.start();
   for (let i = 0; i < 10; i++) {
     const current = await service.get(run.runId);
@@ -173,7 +187,7 @@ async function conflict(scenario: Scenario) {
     asked: service.store.requests(run.runId).filter((r) => r.kind === "clarification"),
     sessions: prompts.length,
     read,
-    test: scenario.parallel ? "" : readFileSync(join(root, TEST), "utf8"),
+    test: worktree ? "" : readFileSync(join(root, TEST), "utf8"),
     edits: service.store.effects(run.runId).filter((e) => e.kind === "file_patch" && (JSON.parse(e.intent_json) as { path: string }).path === TEST),
     replay: replayMisquoteFixes(service.store, run.runId),
     caps,
@@ -261,6 +275,41 @@ describe("scenario: nodepluck eval T004, a misquote conflict settled without a s
   }, 90_000);
 });
 
+describe("the other paths that restarted a full session after a one-assertion settle (#2181)", () => {
+  test("a best-of-N candidate's misquote is corrected on the host per candidate, before selection", async () => {
+    const result = await conflict({ misquoteFix: "on", first: tsTest(TEN), candidates: 2 });
+    // One session per candidate and none after selection: each candidate is a finished one.
+    expect(result.sessions).toBe(2);
+    for (const n of [1, 2])
+      expect(result.read(`conflicts/misquote/T004-c${n}.json`)).toMatchObject({ taskId: "T004", mode: "on", apply: true, checks: "passed", files: [TEST], fallback: null });
+    expect(result.read("conflicts/misquote/T004.json")).toBeNull();
+    expect(result.status).toBe("completed");
+  }, 90_000);
+
+  test("an audited-row settle that names one criterion continues at the bounded cap", async () => {
+    const result = await conflict({ misquoteFix: "on", first: tsTest(ELEVEN), value: "draft", audited: true });
+    expect(result.sessions).toBe(2);
+    expect(result.asked).toEqual([]);
+    expect(result.read("assumptions/conflicts/T004-audited.json")).not.toBeNull();
+    expect(result.read("conflicts/misquote/T004-audited.json")).toEqual({ taskId: "T004", settle: "audited", mode: "on", criterionIds: ["AC-007"], fallback: "continue" });
+    const continued = result.contexts.at(-1)?.misquoteContinue as { finding: string; failed: unknown; note: string } | undefined;
+    expect(continued?.finding).toContain("The audit-verified rows of AC-007 win");
+    expect(continued?.failed).toBeNull();
+    expect(continued?.note).toContain("the settled criterion row stands as written");
+    expect(result.caps.at(-1)).toBeLessThanOrEqual(MISQUOTE_CONTINUE_STEPS);
+    expect(result.status).toBe("completed");
+  }, 90_000);
+
+  test("without the policy field the audited-row decision is shadow: recorded, and the full session opens", async () => {
+    const result = await conflict({ first: tsTest(ELEVEN), value: "draft", audited: true });
+    expect(result.sessions).toBe(2);
+    expect(result.read("conflicts/misquote/T004-audited.json")).toMatchObject({ settle: "audited", mode: "shadow", fallback: "continue" });
+    expect(result.contexts.some((c) => c.misquoteContinue !== undefined)).toBe(false);
+    expect(result.caps.at(-1)).toBeGreaterThan(MISQUOTE_CONTINUE_STEPS);
+    expect(result.status).toBe("completed");
+  }, 90_000);
+});
+
 describe("the exact replacement in each language's test spelling (#2047)", () => {
   const forms: [string, (query: string) => string][] = [
     ["C#", (q) => `[Theory]\n[InlineData("${q}")]\npublic void Rejects(string query) => Assert.Throws<DepthError>(() => Evaluate(query));\n`],
@@ -297,6 +346,14 @@ describe("the exact replacement in each language's test spelling (#2047)", () =>
     expect(misquoteFallback({ sites, apply: true, checks: "passed" }, false)).toBeNull();
     expect(misquoteFallback({ sites, apply: false, checks: null }, true)).toBe("session");
     expect(misquoteFallback({ sites: [], apply: false, checks: null }, false)).toBe("session");
+  });
+
+  test("the settle fallback: one named criterion continues once, several open the session (#2181)", () => {
+    expect(settleFallback(["AC-007"], false)).toBe("continue");
+    expect(settleFallback(["AC-007", "AC-007"], false)).toBe("continue");
+    expect(settleFallback(["AC-007"], true)).toBe("session");
+    expect(settleFallback(["AC-006", "AC-007"], false)).toBe("session");
+    expect(settleFallback([], false)).toBe("session");
   });
 
   test("a spelling in two files counts as two", () => {

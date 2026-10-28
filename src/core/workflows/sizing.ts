@@ -676,8 +676,19 @@ const FENCE_LINE = /^ {0,3}(`{3,}|~{3,})(.*)$/;
  * shell comment`) ends nothing.
  */
 export function requestSections(request: string): Map<string, number> {
+  return new Map(
+    [...requestSectionTexts(request)].map(([title, text]) => [title, [...text].length]),
+  );
+}
+
+/**
+ * The text of each Markdown section of a request, by heading title (lower case), as
+ * `requestSections` measures it: from the heading line to the end of the section, trailing space
+ * trimmed. The first section of a title wins.
+ */
+export function requestSectionTexts(request: string): Map<string, string> {
   const lines = request.split(/\r?\n/);
-  const sections = new Map<string, number>();
+  const sections = new Map<string, string>();
   // The fences open at each line: the outer one a section may be quoted in, then its inner ones.
   const open: { char: string; length: number; info?: string }[] = [];
   const closes = (line: string, fence: { char: string; length: number }) => {
@@ -724,7 +735,7 @@ export function requestSections(request: string): Map<string, number> {
       }
       const text = lines.slice(i, end).join("\n").replace(/\s+$/, "");
       const title = (heading[2] ?? "").trim().toLowerCase();
-      if (!sections.has(title)) sections.set(title, [...text].length);
+      if (!sections.has(title)) sections.set(title, text);
     }
     step(open, line);
   }
@@ -741,8 +752,21 @@ export function exactTextChars(
   spec: SpecText,
   task: Pick<Task, "criterionIds">,
 ): number {
-  const sections = requestSections(request);
-  if (!sections.size) return 0;
+  return exactTextSections(request, spec, task).reduce((sum, s) => sum + [...s.text].length, 0);
+}
+
+/**
+ * The request's sections a task's criteria compare exactly (#2101): a section whose title a
+ * criterion of the task names, in a criterion that says the comparison is exact (`EXACT_TEXT`),
+ * with its text. Empty when there is none.
+ */
+export function exactTextSections(
+  request: string,
+  spec: SpecText,
+  task: Pick<Task, "criterionIds">,
+): { title: string; text: string }[] {
+  const sections = requestSectionTexts(request);
+  if (!sections.size) return [];
   const named = new Set<string>();
   for (const criterion of spec.criteria) {
     if (!task.criterionIds.includes(criterion.id)) continue;
@@ -752,7 +776,7 @@ export function exactTextChars(
     for (const title of sections.keys())
       if (title.length >= 3 && lower.includes(title)) named.add(title);
   }
-  return [...named].reduce((sum, title) => sum + (sections.get(title) ?? 0), 0);
+  return [...named].map((title) => ({ title, text: sections.get(title) ?? "" }));
 }
 
 /** A task priced from the lines the request supplies for it. */
