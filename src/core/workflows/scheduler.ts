@@ -4181,6 +4181,8 @@ export class WorkflowScheduler {
         ...(record.family && record.symbols
           ? { family: record.family, symbols: record.symbols }
           : {}),
+        // A family chain across files names each of them (#2334).
+        ...(record.family && record.files ? { family: record.family, files: record.files } : {}),
         findings: record.chain.map((f) => f.id),
         cases: batteryTable(members),
         spec: chainSpecRows(state.spec, members),
@@ -4350,6 +4352,8 @@ export class WorkflowScheduler {
             symbol: record.symbol,
             file: record.file,
             ...(record.family ? { family: record.family } : {}),
+            // Every file of a family chain across files, so the probe's cases reach each (#2334).
+            ...(record.files ? { files: record.files } : {}),
             cases: batteryTable(members),
             spec: chainSpecRows(state.spec, members),
             executables,

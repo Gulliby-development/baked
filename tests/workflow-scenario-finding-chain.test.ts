@@ -1,13 +1,13 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { DEFAULT_CONFIG } from "../src/config/index.js";
 import { hashBytes, hashJson } from "../src/core/specs/hash.js";
 import { defaultWorkflowPolicy } from "../src/core/workflows/defaults.js";
 import { SUPPORTED_LANGUAGES, type SupportedLanguage } from "../src/core/intelligence/language-records.js";
-import { CHAIN_REWRITE_AT, type ChainFinding, type ChainRecord, chainMembers, chainRecord, containsSymbol, type FamilyRecord, familyKey, findingChain, symbolKey } from "../src/core/workflows/finding-chain.js";
-import type { Check, Repro, RunPolicy, Spec, Task } from "../src/core/workflows/schemas.js";
+import { CHAIN_REWRITE_AT, type ChainFinding, type ChainRecord, chainMembers, chainRecord, containsSymbol, type FamilyRecord, familyKey, findingChain, rewriteStep, symbolKey } from "../src/core/workflows/finding-chain.js";
+import { type Check, type Repro, ReviewSchema, type RunPolicy, type Spec, type Task } from "../src/core/workflows/schemas.js";
 import { NativeWorkflowService } from "../src/core/workflows/service.js";
 import { newId } from "../src/core/workflows/store.js";
 import { chainCosts, exportTrace, openTrace, replayChainEscalation, replayTrace } from "../src/core/workflows/trace.js";
@@ -40,6 +40,13 @@ const reproFor = (marker: string): Repro => ({ executable: "bun", args: ["-e", `
 /** The planned test file of the test-file chain scenario (#2098). */
 const TEST_FILE = "inline.test.ts";
 
+/**
+ * The spec files of the cross-file family scenario (#2334), one finding per round: R74 callmend
+ * cmd F1, F1-2 and F1-3. The third is in another directory than the first two, so only the chain
+ * names it beside them.
+ */
+const SPEC_FILES = ["spec/cmd/stream_command_spec.rb", "spec/cmd/check_command_spec.rb", "spec/cli_spec.rb"] as const;
+
 /** The symbols of report.py the family scenario's findings name, one per round. */
 const FAMILY_SYMBOLS = ["build_report", "_share", "render_table"] as const;
 
@@ -68,6 +75,13 @@ class ChainExecutor implements AgentExecutor {
    * a test method with `repeatOf` the first, as R67 ampwhy F2 and F4 were (#2098).
    */
   testFile = false;
+  /**
+   * Each round's finding is on the next of `SPEC_FILES`, without a symbol or a repro, family
+   * `literal-test-inputs`, as R74 callmend cmd F1, F1-2 and F1-3 were (#2334). The second is
+   * `repeatOf: F1`; the third links by its family alone, since a second repeat without a repro is
+   * a contradiction the host accepts as a known limitation (R74 F1-3 got no corrective).
+   */
+  crossFile = false;
   /** The members of the class the reviewer finds, one per round. */
   members: readonly string[] = MEMBERS;
   /** A rewrite writes only the cases its battery holds, so a member it was not shown stays open. */
@@ -97,13 +111,18 @@ class ChainExecutor implements AgentExecutor {
     switch (request.profile.output) {
       case "research": output = { schemaVersion: 1, summary: "A fixture workspace", facts: [], unknowns: [], constraints: [], suggestedScope: ["inline.txt"] }; break;
       case "spec": output = spec; break;
-      case "plan": output = { schemaVersion: 1, markdown, taskGraph: { schemaVersion: 1, featureId: "fixture", revision: 1, specHash: hashJson(spec), planHash: hashBytes(markdown), tasks: [this.testFile ? { ...planned, writes: [...planned.writes, { path: TEST_FILE, action: "create" as const }] } : planned] } }; break;
+      case "plan": output = { schemaVersion: 1, markdown, taskGraph: { schemaVersion: 1, featureId: "fixture", revision: 1, specHash: hashJson(spec), planHash: hashBytes(markdown), tasks: [this.testFile ? { ...planned, writes: [...planned.writes, { path: TEST_FILE, action: "create" as const }] } : this.crossFile ? { ...planned, writes: [...planned.writes, ...SPEC_FILES.map((path) => ({ path, action: "create" as const }))] } : planned] } }; break;
       case "analysis": output = { schemaVersion: 1, inputHash: data.inputHash, verdict: "pass", findings: [] }; break;
       case "implementation": {
         const task = request.task;
         if (task?.origin === "planned") {
           writeFileSync(path, "ready");
           if (this.testFile) writeFileSync(join(root, TEST_FILE), "test('inline', () => {});\n");
+          if (this.crossFile)
+            for (const file of SPEC_FILES) {
+              mkdirSync(dirname(join(root, file)), { recursive: true });
+              writeFileSync(join(root, file), 'it("streams") { expect(run("\\\\" * 3)).to eq(0) }\n');
+            }
         }
         else if (task) {
           const row = this.service?.store.latestArtifact(request.runId, `attempts/${request.attemptId}/context.json`);
@@ -155,6 +174,8 @@ class ChainExecutor implements AgentExecutor {
           ? [{ id: `F${index + 1}-repeat`, kind: "correctness", severity: "high", basis: "spec", confidence: 0.99, requirementIds: ["FR-001"], criterionIds: ["AC-001"], file: "inline.txt", symbol: "findDelimitedInline", evidenceIds, claim: `Nested delimiter run case-${marker} is still parsed flat`, impact: "Wrong emphasis", suggestedFix: `Handle case-${marker}`, repro: reproFor(marker), repeatOf: `F${index + 1}` }]
           : marker && this.container
           ? [{ id: `F${index + 1}`, kind: "missing", severity: "high", basis: "spec", confidence: 0.99, requirementIds: ["FR-001"], criterionIds: ["AC-001"], file: "inline.txt", symbol: index ? "Scanner.IsEncodingToken" : "Scanner", evidenceIds, claim: `Nested delimiter run case-${marker} is parsed flat`, impact: "Wrong emphasis", suggestedFix: `Handle case-${marker}`, repro: reproFor(marker), repeatOf: index ? "F1" : null }]
+          : marker && this.crossFile
+          ? [{ id: index ? `F1-${index + 1}` : "F1", kind: "partial", severity: "medium", basis: "spec", confidence: 0.9, requirementIds: ["FR-001"], criterionIds: ["AC-001"], file: SPEC_FILES[index], symbol: null, family: "literal-test-inputs", evidenceIds, claim: `${SPEC_FILES[index]} generates its input for case-${marker} with a loop and interpolation instead of a literal example`, impact: "The test does not show the literal input the criteria name", suggestedFix: `Write case-${marker} as a literal example`, repeatOf: index === 1 ? "F1" : null }]
           : marker && this.testFile
           ? [{ id: `F${index + 1}`, kind: "partial", severity: "medium", basis: "spec", confidence: 0.9, requirementIds: ["FR-001"], criterionIds: ["AC-001"], file: TEST_FILE, symbol: index ? "nestedRunsInBothModes" : null, evidenceIds, claim: `The tests leave nested delimiter run case-${marker} unchecked`, impact: "A regression would pass", suggestedFix: `Assert case-${marker}`, repeatOf: index ? `F${index}` : null }]
           : marker
@@ -174,13 +195,14 @@ class ChainExecutor implements AgentExecutor {
   }
 }
 
-async function drive(options: { policy?: Partial<RunPolicy>; quality?: { chainRewrite: "on" | "off"; chainProbe?: "on" | "off" }; breakFirstRewrite?: boolean; family?: boolean; testFile?: boolean; members?: readonly string[]; batteryOnly?: boolean; probe?: string[]; container?: boolean; emptyFirst?: boolean }) {
+async function drive(options: { policy?: Partial<RunPolicy>; quality?: { chainRewrite: "on" | "off"; chainProbe?: "on" | "off" }; breakFirstRewrite?: boolean; family?: boolean; testFile?: boolean; crossFile?: boolean; members?: readonly string[]; batteryOnly?: boolean; probe?: string[]; container?: boolean; emptyFirst?: boolean }) {
   const root = mkdtempSync(join(tmpdir(), "baked-finding-chain-"));
   cleanups.push(() => rmSync(root, { recursive: true, force: true }));
   const executor = new ChainExecutor(root);
   executor.breakFirstRewrite = options.breakFirstRewrite ?? false;
   executor.family = options.family ?? false;
   executor.testFile = options.testFile ?? false;
+  executor.crossFile = options.crossFile ?? false;
   executor.members = options.members ?? MEMBERS;
   executor.batteryOnly = options.batteryOnly ?? false;
   executor.probe = options.probe ?? [];
@@ -539,6 +561,130 @@ describe("scenario: R68 ewvet scanner, a finding back after a corrective that ch
       }),
     ]);
   }, 60000);
+});
+
+describe("scenario: R74 callmend cmd, one defect family on three spec files (#2334)", () => {
+  // A repeat without a new repro is a contradiction stop; the `assume` rule grants the round R74 got.
+  test("with chainRewrite on, the three findings form a chain of 3: the second corrective is the chain's rewrite and its sweep lists every file of the family", async () => {
+    const { root, runId, done, executor, artifacts } = await drive({ quality: { chainRewrite: "on" }, policy: { clarification: "assume" }, crossFile: true });
+    expect(done.status).toBe("completed");
+    const [patch, second, third, ...rest] = executor.corrections;
+    expect(rest).toEqual([]);
+    expect([patch?.findingIds, second?.findingIds, third?.findingIds]).toEqual([["F1"], ["F1-2"], ["F1-3"]]);
+    expect(patch?.description).not.toContain("Class sweep");
+    // A rewrite of a test-file chain is the test sweep (#2098): it has no battery, since a
+    // literal-input finding has no repro, and the host runs none before the review.
+    for (const sweep of [second, third]) {
+      expect(sweep?.description).toContain("Class sweep: the review shows the defect in one test file");
+      expect(sweep?.description).not.toContain("This finding repeats");
+      expect(sweep?.battery).toBeUndefined();
+    }
+    const listed = (c: Correction | undefined) => (c?.description.split("Test files to sweep")[1] ?? "").split("\n").filter((l) => l.startsWith("- ")).map((l) => l.slice(2));
+    expect(listed(second)).toEqual([SPEC_FILES[0], SPEC_FILES[1]]);
+    // The third file is in another directory: only the chain names the first two beside it.
+    expect(listed(third)).toEqual([SPEC_FILES[0], SPEC_FILES[1], SPEC_FILES[2]]);
+    expect(artifacts("chains/battery/")).toEqual([]);
+    const decisions = artifacts("chains/tasks/") as unknown as ChainRecord[];
+    expect(decisions.map((d) => [d.taskId, d.findingId, d.chain.map((f) => f.id), d.length, d.family, d.files, d.decision, d.corrective])).toEqual([
+      [second?.taskId, "F1-2", ["F1", "F1-2"], 2, "literal-test-inputs", [SPEC_FILES[0], SPEC_FILES[1]], "rewrite", "test-sweep"],
+      [third?.taskId, "F1-3", ["F1", "F1-2", "F1-3"], 3, "literal-test-inputs", [...SPEC_FILES], "rewrite", "test-sweep"],
+    ]);
+
+    // The trace replays the chain as the run decided it.
+    const dir = mkdtempSync(join(tmpdir(), "finding-cross-file-trace-"));
+    cleanups.push(() => rmSync(dir, { recursive: true, force: true }));
+    const out = join(dir, "run.sqlite.gz");
+    exportTrace(root, out);
+    expect(replayTrace(out).runs.find((r) => r.runId === runId)?.newChainDecisions).toBe(0);
+    const traced = openTrace(out);
+    cleanups.push(traced.dispose);
+    const escalation = replayChainEscalation(traced.store, runId);
+    expect(escalation.steps.map((s) => [s.findingId, s.chain, s.decision, s.battery])).toEqual([["F1", ["F1"], "patch", []], ["F1-2", ["F1", "F1-2"], "rewrite", []], ["F1-3", ["F1", "F1-2", "F1-3"], "rewrite", []]]);
+    expect(chainCosts(traced.store, runId).map((c) => [c.file, c.files, c.family, c.length, c.findings])).toEqual([[SPEC_FILES[0], [...SPEC_FILES], "literal-test-inputs", 3, ["F1", "F1-2", "F1-3"]]]);
+  }, 120_000);
+
+  test("with chainRewrite off, the chain is recorded as a patch and every corrective repeats the earlier fix", async () => {
+    const { done, executor, artifacts } = await drive({ quality: { chainRewrite: "off" }, policy: { clarification: "assume" }, crossFile: true });
+    expect(done.status).toBe("completed");
+    expect(executor.corrections.map((c) => c.findingIds)).toEqual([["F1"], ["F1-2"], ["F1-3"]]);
+    expect(executor.corrections[1]?.description).toContain("This finding repeats F1");
+    expect(executor.corrections.some((c) => c.description.includes("Class sweep"))).toBe(false);
+    const decisions = artifacts("chains/tasks/") as unknown as ChainRecord[];
+    expect(decisions.map((d) => [d.findingId, d.length, d.decision, d.corrective])).toEqual([["F1-2", 2, "patch", undefined], ["F1-3", 3, "patch", undefined]]);
+  }, 120_000);
+});
+
+describe("the chain key across files: one family on test files, or a reviewer's link (#2334)", () => {
+  const finding = (id: string, file: string, family: string | null, repairTaskId: string | null, repeatOf: string | null = null, symbol: string | null = null): ChainFinding => ({ id, file, symbol, family, repeatOf, repairTaskId, claim: id, severity: "high", status: "resolved", requirementIds: [], criterionIds: [] });
+  const chainOf = (findings: ChainFinding[], id: string) => {
+    const all = new Map(findings.map((f) => [f.id, f]));
+    return findingChain(all, all.get(id) as ChainFinding).map((f) => f.id);
+  };
+
+  // R74 callmend cmd 9a6ada47 as the review linked them: T015 corrected F1, T016 F1-2; the
+  // stream_command_spec.rb findings between them name no family.
+  const r74 = [finding("F1", "spec/cmd/stream_command_spec.rb", "literal-test-inputs", "T015"), finding("F1-2", "spec/cmd/check_command_spec.rb", "literal-test-inputs", "T016", "F1"), finding("f3b4831a", "spec/cmd/stream_command_spec.rb", null, "T017"), finding("F1-3", "spec/cmd/cli_spec.rb", "literal-test-inputs", null, "F1-2")];
+
+  test("the R74 cmd findings are one chain: F1-2 is its second link and T016 a rewrite", () => {
+    expect(chainOf(r74, "F1-2")).toEqual(["F1", "F1-2"]);
+    expect(chainOf(r74, "F1-3")).toEqual(["F1", "F1-2", "F1-3"]);
+    const all = new Map(r74.map((f) => [f.id, f]));
+    const record = chainRecord("T016", all.get("F1-2") as ChainFinding, findingChain(all, all.get("F1-2") as ChainFinding), "on");
+    expect([record.decision, record.corrective, record.files]).toEqual(["rewrite", "test-sweep", ["spec/cmd/stream_command_spec.rb", "spec/cmd/check_command_spec.rb"]]);
+    // Without the reviewer's links, the family alone joins the test files.
+    const unlinked = r74.map((f) => ({ ...f, repeatOf: null }));
+    expect(chainOf(unlinked, "F1-3")).toEqual(["F1", "F1-2", "F1-3"]);
+  });
+
+  test("on source files only a reviewer's link joins two files, and only with one family", () => {
+    expect(chainOf([finding("F1", "lib/a.rb", "utf8-byte-offsets", "T010"), finding("F2", "lib/b.rb", "utf8-byte-offsets", "T011")], "F2")).toEqual(["F2"]);
+    expect(chainOf([finding("F1", "lib/a.rb", "utf8-byte-offsets", "T010"), finding("F2", "lib/b.rb", "utf8-byte-offsets", "T011", "F1")], "F2")).toEqual(["F1", "F2"]);
+    expect(chainOf([finding("F1", "lib/a.rb", "utf8-byte-offsets", "T010"), finding("F2", "lib/b.rb", "decimal-context-precision", "T011", "F1")], "F2")).toEqual(["F2"]);
+    expect(chainOf([finding("F1", "lib/a.rb", null, "T010"), finding("F2", "lib/b.rb", null, "T011", "F1")], "F2")).toEqual(["F2"]);
+    // A test file and a source file: a reviewer's link with one family.
+    expect(chainOf([finding("F1", "lib/a.rb", "utf8-byte-offsets", "T010"), finding("F2", "spec/a_spec.rb", "utf8-byte-offsets", "T011")], "F2")).toEqual(["F2"]);
+    expect(chainOf([finding("F1", "lib/a.rb", "utf8-byte-offsets", "T010"), finding("F2", "spec/a_spec.rb", "utf8-byte-offsets", "T011", "F1")], "F2")).toEqual(["F1", "F2"]);
+  });
+
+  test("a symbol rewrite across files holds both cases in its battery and names every file", () => {
+    const cases = [{ ...finding("F1", "lib/a.rb", "utf8-byte-offsets", "T010", null, "Reader#read"), repro: reproFor("a") }, { ...finding("F2", "lib/b.rb", "utf8-byte-offsets", "T011", "F1", "Writer#write"), repro: reproFor("b") }];
+    const all = new Map(cases.map((f) => [f.id, f]));
+    const chain = findingChain(all, all.get("F2") as ChainFinding);
+    expect(chainMembers(all, chain).map((f) => f.id)).toEqual(["F1", "F2"]);
+    const record = chainRecord("T012", all.get("F2") as ChainFinding, chain, "on");
+    expect([record.decision, record.corrective, record.files, record.symbols]).toEqual(["rewrite", undefined, ["lib/a.rb", "lib/b.rb"], ["read", "write"]]);
+    expect(rewriteStep("write", ["F1", "F2"], { name: "utf8-byte-offsets", file: "lib/b.rb", symbols: ["read", "write"], files: ["lib/a.rb", "lib/b.rb"] })).toContain("case 2 of the defect class utf8-byte-offsets in lib/a.rb, lib/b.rb (F1, F2, on read, write)");
+    expect(rewriteStep("lib/b.rb", ["F1", "F2"], { name: "utf8-byte-offsets", file: "lib/b.rb", symbols: [], files: ["lib/a.rb", "lib/b.rb"] })).toContain("in lib/a.rb, lib/b.rb (F1, F2), each found");
+  });
+
+  /**
+   * Each field of a reviewer's finding and its place in the chain key (AGENTS.md): a new field
+   * says here whether it keys or links a chain, and the key's readers read it, before it ships.
+   */
+  const FINDING_FIELDS: Record<string, "key" | "link" | "battery" | "none"> = {
+    id: "link",
+    file: "key",
+    symbol: "key",
+    family: "key",
+    repeatOf: "link",
+    repro: "battery",
+    requirementIds: "battery",
+    criterionIds: "battery",
+    severity: "battery",
+    claim: "none",
+    kind: "none",
+    basis: "none",
+    confidence: "none",
+    noRepro: "none",
+    evidenceIds: "none",
+    impact: "none",
+    suggestedFix: "none",
+    quote: "none",
+  };
+
+  test("every field of a reviewer's finding has its place in the chain key", () => {
+    expect(Object.keys(ReviewSchema.shape.findings.element.shape).sort()).toEqual(Object.keys(FINDING_FIELDS).sort());
+  });
 });
 
 /**

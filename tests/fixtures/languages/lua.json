@@ -76,6 +76,8 @@
     "dependencyDirs": [
       "lua_modules: linked"
     ],
+    "dependencyPrepare": null,
+    "worktreePathLimits": null,
     "testClasses": null
   }
 }

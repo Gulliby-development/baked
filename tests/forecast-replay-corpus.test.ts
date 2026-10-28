@@ -1010,7 +1010,9 @@ describe("the plan charge replays on recorded initiatives (#2100, #2056)", () =>
     expect(park?.mode).toBe("enforce");
     expect(park?.remaining).toBe(30_000_000 - 25_336_588);
     expect(park?.advice?.summary).toStartWith("The shared budget is short: canonical has 25324 tokens available");
-    expect(park?.advice?.remedies).toEqual([{ action: "extend", initiativeId: "xmlvet", suggestedTokens: 36_900_000 }]);
+    // The 36.9M cover is held to the 35.8M the $30 cap pays for at the measured rate (#2367).
+    expect(park?.advice?.summary).toContain("so extend to 35.8M (35800000 tokens).");
+    expect(park?.advice?.remedies).toEqual([{ action: "extend", initiativeId: "xmlvet", suggestedTokens: 35_800_000 }]);
     // The other initiatives of the two rounds (their 39 would_release records) park no start
     // enforced: no false would-park. Nor does R60 wheeltags, whose dead an overpriced plan parked
     // before #2253.

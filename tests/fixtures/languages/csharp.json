@@ -79,6 +79,8 @@
     ],
     "sortedLists": null,
     "dependencyDirs": null,
+    "dependencyPrepare": null,
+    "worktreePathLimits": null,
     "testClasses": [
       "Maskback.Tests/UnitTest1.cs: Maskback.Tests.FailureExceptionTests",
       "src/App.Tests/Checks.cs: by its name",

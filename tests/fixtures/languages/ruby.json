@@ -77,6 +77,8 @@
       "vendor/bundle: linked",
       ".bundle: linked"
     ],
+    "dependencyPrepare": null,
+    "worktreePathLimits": null,
     "testClasses": null
   }
 }

@@ -77,6 +77,8 @@
     "dependencyDirs": [
       "vendor: linked"
     ],
+    "dependencyPrepare": null,
+    "worktreePathLimits": null,
     "testClasses": null
   }
 }

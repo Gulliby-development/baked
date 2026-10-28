@@ -80,6 +80,8 @@
     ],
     "sortedLists": null,
     "dependencyDirs": null,
+    "dependencyPrepare": null,
+    "worktreePathLimits": null,
     "testClasses": [
       "src/test/java/com/example/UnitTest1.java: com.example.FailureExceptionTest",
       "src/test/java/SumTest.java: by its name",

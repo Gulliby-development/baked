@@ -80,6 +80,8 @@
     ],
     "sortedLists": ["src/lib.rs: rustfmt blank line before 2"],
     "dependencyDirs": null,
+    "dependencyPrepare": null,
+    "worktreePathLimits": null,
     "testClasses": null
   }
 }

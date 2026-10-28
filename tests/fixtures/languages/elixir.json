@@ -51,6 +51,8 @@
     "dependencyDirs": [
       "deps: linked"
     ],
+    "dependencyPrepare": null,
+    "worktreePathLimits": null,
     "testClasses": null
   }
 }

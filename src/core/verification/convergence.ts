@@ -28,6 +28,7 @@ import {
 } from "../workflows/schemas.js";
 import { namesRunDocument } from "../workflows/spec-amendment.js";
 import type { WorkflowStore } from "../workflows/store.js";
+import { isTestPath } from "../workflows/test-integrity.js";
 import type { RuntimeState, Task } from "../workflows/types.js";
 import { runRoot } from "../workflows/worktree.js";
 import {
@@ -1169,16 +1170,18 @@ export function appendCorrections(
     : new Map();
   const chainRecords: ChainRecord[] = [];
   const additions = [...groups].map(([key, group]) => {
-    const { base, bases, findings: grouped } = group;
     const id = `T${String(next++).padStart(3, "0")}`;
-    const ids = grouped.map((f) => f.id);
     const found = key.startsWith(SWEEP_KEY)
       ? null
-      : correctiveChain(known, grouped.filter(chainable));
+      : correctiveChain(known, group.findings.filter(chainable));
     const record = found
       ? chainRecord(id, found.finding, found.chain, policy.chainRewrite ?? "off")
       : null;
     if (record) chainRecords.push(record);
+    // A rewrite of a family across files may write each file of its chain (#2334).
+    if (record?.decision === "rewrite") for (const path of record.files ?? []) join(group, path);
+    const { base, bases, findings: grouped } = group;
+    const ids = grouped.map((f) => f.id);
     const rewrite = rewritesSymbol(record) ? record : null;
     // A repeat chain on a test file sweeps the test files instead of a symbol rewrite (#2098).
     const testChain = record?.corrective === "test-sweep";
@@ -1187,8 +1190,13 @@ export function appendCorrections(
         ? rewriteStep(
             chainSubject(rewrite),
             rewrite.chain.map((f) => f.id),
-            rewrite.family && rewrite.symbols
-              ? { name: rewrite.family, file: rewrite.file, symbols: rewrite.symbols }
+            rewrite.family && (rewrite.symbols || rewrite.files)
+              ? {
+                  name: rewrite.family,
+                  file: rewrite.file,
+                  symbols: rewrite.symbols ?? [],
+                  ...(rewrite.files ? { files: rewrite.files } : {}),
+                }
               : undefined,
           )
         : finding.repeatOf
@@ -1198,9 +1206,11 @@ export function appendCorrections(
       ? testSweepStep(sweepFiles(grouped, base.profileId, base, root))
       : testChain
         ? testSweepStep(
-            sweepTestFiles(grouped, root, base.profileId).filter((path) =>
-              writable(group).includes(path),
-            ),
+            // The chain's own test files first: a family spreads one spec file per round (#2334).
+            unique([
+              ...(record?.files ?? []).filter(isTestPath),
+              ...sweepTestFiles(grouped, root, base.profileId),
+            ]).filter((path) => writable(group).includes(path)),
           )
         : key.startsWith(SWEEP_KEY)
           ? sweepStep(

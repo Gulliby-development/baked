@@ -92,6 +92,8 @@
       ".venv: linked",
       "venv: linked"
     ],
+    "dependencyPrepare": null,
+    "worktreePathLimits": null,
     "testClasses": null
   }
 }

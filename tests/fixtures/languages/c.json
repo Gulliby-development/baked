@@ -61,6 +61,8 @@
     ],
     "sortedLists": ["src/sum.c: clang-format \"// order as written\" before 2"],
     "dependencyDirs": null,
+    "dependencyPrepare": null,
+    "worktreePathLimits": null,
     "testClasses": null
   },
   "outputs": {

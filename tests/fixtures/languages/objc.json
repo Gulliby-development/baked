@@ -53,6 +53,8 @@
     "dependencyDirs": [
       "Pods: linked"
     ],
+    "dependencyPrepare": null,
+    "worktreePathLimits": null,
     "testClasses": null
   }
 }
