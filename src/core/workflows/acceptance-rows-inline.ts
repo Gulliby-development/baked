@@ -23,6 +23,7 @@ export const INLINE_HARNESS: Record<Framework, string> = {
   rspec: "acceptance_actual",
   phpunit: "acceptanceActual",
   testthat: "acceptance_actual",
+  busted: "acceptance_actual",
 };
 
 /**
@@ -39,7 +40,7 @@ export const INLINE_ROWS_CLASS = {
  * The first line of a block, in any framework, indented when it is nested in a class. The words
  * after the colon may change (#2004): blocks written before still match.
  */
-export const INLINE_ROWS_BEGIN = /^[ \t]*(?:\/\/|#) BEGIN acceptance rows:/m;
+export const INLINE_ROWS_BEGIN = /^[ \t]*(?:\/\/|#|--) BEGIN acceptance rows:/m;
 
 /**
  * A host-written block of a test file: `tail` ends the file, `head` (Go imports) follows its
@@ -57,7 +58,11 @@ export interface InlineRowFile {
 }
 
 const comment = (framework: Framework): string =>
-  framework === "pytest" || framework === "rspec" || framework === "testthat" ? "#" : "//";
+  framework === "busted"
+    ? "--"
+    : framework === "pytest" || framework === "rspec" || framework === "testthat"
+      ? "#"
+      : "//";
 /**
  * Python's first line stays within ruff's and black's 88 columns, so its comment takes two (#1927),
  * and so does Java's, whose comment google-java-format wraps at 100 columns (#1961), and R's,
@@ -416,6 +421,30 @@ export const phpunitMethods = (call: string, normal: string, rows: string): stri
   `public function test(): void\n{\n${rows}\n    $failed = [];\n    foreach ($rows as $row) {\n        $actual = ${call}($row['input']);\n        $got = self::${normal}(json_decode(json_encode([$actual], JSON_THROW_ON_ERROR), true)[0]);\n        $want = self::${normal}($row['expected']);\n        if ($got !== $want) {\n            $failed[] = $row['id'].': got '.json_encode($got).', want '.json_encode($want);\n        }\n    }\n    $this->assertSame([], $failed, implode("\\n", $failed));\n}\n\n/** JSON numbers compare by value, so 2 and 2.0 are equal; objects compare by their entries. */\nprivate static function ${normal}(mixed $value): mixed\n{\n    if (is_float($value) && floor($value) === $value && abs($value) <= 9007199254740991) {\n        return (int) $value;\n    }\n    if (is_array($value)) {\n        $value = array_map(self::${normal}(...), $value);\n        ksort($value);\n    }\n\n    return $value;\n}`;
 
 /**
+ * A Lua string literal in the quotes StyLua's default (`AutoPreferDouble`) chooses: double, unless
+ * single quotes need fewer escapes. A character of `LITERAL_ESCAPED` is written as decimal escapes of
+ * its UTF-8 bytes, which Lua 5.1 and LuaJIT read too (#1995).
+ */
+export const luaString = (text: string): string => {
+  const quote = (text.match(/"/g)?.length ?? 0) > (text.match(/'/g)?.length ?? 0) ? "'" : '"';
+  const body = text.replace(quote === '"' ? /[\\"]/g : /[\\']/g, "\\$&");
+  return `${quote}${escapeInvisible(body, (code) =>
+    [...new TextEncoder().encode(String.fromCodePoint(code))].map((byte) => `\\${byte}`).join(""),
+  )}${quote}`;
+};
+
+/**
+ * What the busted blocks share: one `it` per row, named by its id, whose failure message starts
+ * with the id and says what it got, since busted prints the test's name on a line of its own and
+ * the replay reads the row from a failure line. dkjson decodes null as its own `null` value, so a null in a table is kept, and the
+ * result goes through JSON as the expected value came; `assert.same` compares tables by their
+ * entries. dkjson is no new dependency: busted itself requires it (#2348). Tabs, as StyLua's
+ * default indents.
+ */
+export const bustedRows = (call: string): string =>
+  `describe("acceptance rows", function()\n\tfor _, row in ipairs(acceptance_rows) do\n\t\tit(row.id, function()\n\t\t\tlocal got = ${call}(row.input)\n\t\t\tif got == nil then\n\t\t\t\tgot = acceptance_json.null\n\t\t\tend\n\t\t\tlocal text = acceptance_json.encode({ got })\n\t\t\tlocal value = acceptance_json.decode(text, 1, acceptance_json.null)[1]\n\t\t\tassert.same(row.expected, value, row.id .. ": got " .. text)\n\t\tend)\n\tend\nend)`;
+
+/**
  * What the testthat blocks share: one `test_that` per row, named by its id, so a failure line names
  * the row. The result goes through JSON as the expected value came, so a length-one vector is a
  * scalar, NULL is null and a named list an object, whose entries compare by name. jsonlite is no
@@ -531,6 +560,22 @@ const TEMPLATES: Record<Framework, Template> = {
       ),
     };
   },
+  // Locals of the spec file, so two spec files never share a name; the harness is a local
+  // function above the block.
+  busted: (_, rows) => ({
+    skeleton: "",
+    tail: block(
+      "busted",
+      `local acceptance_json = require("dkjson")\nlocal acceptance_text = {\n${literalChunks(
+        rows,
+        luaString,
+      )
+        .map((chunk) => `\t${chunk},\n`)
+        .join(
+          "",
+        )}}\nlocal acceptance_rows = acceptance_json.decode(table.concat(acceptance_text), 1, acceptance_json.null)\n\n${bustedRows("acceptance_actual")}`,
+    ),
+  }),
   // testthat runs each file in an environment of its own, so the block's names are the file's.
   testthat: (_, rows) => ({
     skeleton: "",

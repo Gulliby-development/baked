@@ -47,6 +47,7 @@ const INLINE: Record<InlineRowTest["framework"], InlineRowTest> = {
   rspec: { mode: "inline", framework: "rspec", test: "spec/rules_spec.rb" },
   phpunit: { mode: "inline", framework: "phpunit", package: "Lint.Tests", test: "tests/RulesTest.php" },
   testthat: { mode: "inline", framework: "testthat", test: "tests/testthat/test-rules.R" },
+  busted: { mode: "inline", framework: "busted", test: "spec/rules_spec.lua" },
 };
 
 /** A block's text with the line breaks and indentation of its own layout taken out. */
@@ -105,6 +106,11 @@ const PROJECTS: Partial<Record<InlineRowTest["framework"], { files: Record<strin
     existing: "acceptance_actual <- function(input) {\n  input\n}\n",
     run: [["Rscript", "-e", "testthat::test_dir('tests/testthat', stop_on_failure = TRUE)"]],
   },
+  busted: {
+    files: {},
+    existing: "local function acceptance_actual(input)\n\treturn input\nend\n",
+    run: [["busted", "spec/rules_spec.lua"]],
+  },
 };
 
 const has = (command: string[]) => {
@@ -122,6 +128,7 @@ const AVAILABLE: Record<string, boolean> = {
   rspec: Bun.which("rspec") !== null,
   phpunit: Bun.which("phpunit") !== null,
   testthat: has(["Rscript", "-e", "library(testthat); library(jsonlite)"]),
+  busted: Bun.which("busted") !== null,
 };
 
 describe("scenario: cfgquill lint R64, rows with a U+FEFF run in the project's own toolchain (#1995)", () => {
