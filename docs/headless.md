@@ -154,6 +154,8 @@ baked --headless --sandbox required "run the tests"
 
 `baked artifacts list|show|save|deploy|remove` manages the [artifacts](artifacts.md) shared by every project: HTML pages kept in the BAKED data folder. `deploy ID` prints what it would send to your Vercel account and deploys only with `--yes` (`--prod` for production).
 
+`baked preview PATH` prints a Markdown file of the project or opens an HTML file in the browser (`--print` prints its source, `--json` the document as `GET /v1/files/preview` answers it). The kinds, the 2 MB limit and the refusal of paths outside the project are the ones of the desktop chat's preview panel. `baked preview list [--session ID]` prints the Markdown and HTML files a saved session wrote and the artifacts it saved, the latest change first; it reads the most recently updated session unless `--session` names one. Exit code 2 is a bad argument or a path that is missing, outside the project or not Markdown or HTML; 1 is a file too large, an unreadable session or no browser.
+
 ## Packages
 
 ```sh
