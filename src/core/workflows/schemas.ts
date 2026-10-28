@@ -709,6 +709,13 @@ export const PolicySchema = z
      */
     misquoteFix: z.literal("on").optional(),
     /**
+     * The host's apply of a task the request gives verbatim (host-apply.ts, #2333): `on` writes
+     * the task's files when `hostApplyDecision` would apply them and starts no implementer; its
+     * checks decide it. Absent means shadow (the decision is recorded, the implementer runs), so
+     * stored policies keep their hash.
+     */
+    hostApply: z.literal("on").optional(),
+    /**
      * The edge-input probe of a source task (edge-inputs.ts, #1808): `on` asks the `edge-cases`
      * profile once per planned source task that settled without failures for extreme legal inputs
      * its criteria allow; the host runs them through the project's entry points and a case that
@@ -730,6 +737,13 @@ export const PolicySchema = z
      * session opens), so stored policies keep their hash.
      */
     conflictFinish: z.literal("on").optional(),
+    /**
+     * The task-end rustfmt check (format-written.ts `rustFormatWrittenChecks`, #2248): `on` checks
+     * the Rust files a task creates with `rustfmt --check` at the end of that task, with rustfmt as
+     * the fixer, next to the checks stage's `cargo fmt`, so a file rustfmt rejects or hangs on is
+     * repaired by the task that wrote it. Absent is off, so stored policies keep their hash.
+     */
+    rustFormatWritten: z.literal("on").optional(),
     /**
      * The expected text a test task compares exactly, written by the host as a string literal of
      * the test's language (supplied-content.ts, #2101): `on` gives the implementer each request
@@ -1516,9 +1530,11 @@ export const WorkflowConfigSchema = z
     /**
      * A planned-ahead feature whose spec names symbols an accepted upstream feature lacks asks
      * that feature for the amendment at its release: the owner runs again with the request, and
-     * the feature waits for that result (#2157). Off by default.
+     * the feature waits for that result (#2157). Off by default. `"write"` also lets a gap of one
+     * symbol in one file, which no unfinished feature owns, be written by the feature itself: its
+     * boundary takes the file and its run plans again on the accepted result (#2183).
      */
-    upstreamAmendments: z.boolean().optional(),
+    upstreamAmendments: z.union([z.boolean(), z.literal("write")]).optional(),
     /**
      * Whether an initiative whose token pool parks a feature, while the person's dollar cap has
      * room for the extension, records that the host would extend the pool (#2042): `shadow`, the
@@ -1601,6 +1617,7 @@ export const EventType = z.enum([
   "attempt.advisory",
   "attempt.recovery",
   "decision.would_stop",
+  "decision.would_resume",
   "task.state_changed",
   "artifact.committed",
   "check.finished",
@@ -1727,6 +1744,22 @@ export const EventSchema = z.discriminatedUnion("type", [
     .object({
       ...EventBase,
       type: z.literal("decision.would_stop"),
+      payload: z
+        .object({
+          reason: StopReasonIdSchema,
+          mode: z.enum(["shadow", "advisory"]),
+          key: z.string().max(200),
+          summary: z.string().max(1000),
+          inputs: z.record(z.string(), z.unknown()),
+        })
+        .strict(),
+    })
+    .strict(),
+  // A shadow reason would have resumed a blocked run (`host-resume-on-stored-limit`, #2226).
+  z
+    .object({
+      ...EventBase,
+      type: z.literal("decision.would_resume"),
       payload: z
         .object({
           reason: StopReasonIdSchema,

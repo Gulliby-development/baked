@@ -101,23 +101,51 @@ export function isHostRelease(request: { kind: string; body_json: string }): boo
  * of another feature's file is still refused. Every check of a plan against the workspace asks it.
  */
 export function pathsExistLater(state: RuntimeState): (path: string) => boolean {
+  if (!state.planAhead || state.planAhead.released) return () => false;
+  const patterns = upstreamBounds(state).flatMap((feature) => feature.patterns);
+  return (path) => patterns.some((pattern) => matchGlob(normalizePath(path), pattern));
+}
+
+/**
+ * The boundary patterns of each upstream feature a run's initiative feature pins, with their
+ * ancestors, which the release brings in too (#1965). Empty for a run outside an initiative.
+ */
+function upstreamBounds(state: RuntimeState): { featureId: string; patterns: string[] }[] {
   const bounds = state.initiativeBounds;
-  if (!state.planAhead || state.planAhead.released || !bounds) return () => false;
+  if (!bounds) return [];
   // A run's feature id is `<initiative>_<feature>`, and a feature key has no underscore.
   const upstream = new Set(
     (state.hostDependencies ?? state.spec?.dependencies ?? []).map((dependency) =>
       dependency.featureId.slice(dependency.featureId.lastIndexOf("_") + 1),
     ),
   );
-  // The release brings in the whole ancestor chain, not only the pinned features (#1965): a feature
-  // pinned on middle reads base's files too. Bounds saved before they carried `dependsOn` keep the
-  // pinned set alone.
+  // A feature pinned on middle reads base's files too. Bounds saved before they carried
+  // `dependsOn` keep the pinned set alone.
   const dependsOn = new Map(
     bounds.features.map((feature) => [feature.id, feature.dependsOn ?? []]),
   );
   for (const id of upstream) for (const parent of dependsOn.get(id) ?? []) upstream.add(parent);
-  const patterns = bounds.features
+  return bounds.features
     .filter((feature) => feature.id !== bounds.featureId && upstream.has(feature.id))
+    .map((feature) => ({ featureId: feature.id, patterns: feature.paths.map(normalizePath) }));
+}
+
+/**
+ * The upstream features whose boundary owns each of `paths` (#2228): a path the run's own
+ * feature boundary also lists is its own. Each owner with the paths it owns, in plan order.
+ */
+export function upstreamOwners(
+  state: RuntimeState,
+  paths: readonly string[],
+): { featureId: string; files: string[] }[] {
+  const own = (state.initiativeBounds?.features ?? [])
+    .filter((feature) => feature.id === state.initiativeBounds?.featureId)
     .flatMap((feature) => feature.paths.map(normalizePath));
-  return (path) => patterns.some((pattern) => matchGlob(normalizePath(path), pattern));
+  const matches = (path: string, patterns: string[]) =>
+    patterns.some((pattern) => matchGlob(normalizePath(path), pattern));
+  const outside = paths.filter((path) => !matches(path, own));
+  return upstreamBounds(state).flatMap(({ featureId, patterns }) => {
+    const files = outside.filter((path) => matches(path, patterns));
+    return files.length ? [{ featureId, files }] : [];
+  });
 }

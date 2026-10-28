@@ -139,9 +139,11 @@ import {
   missingReproAdvice,
   outputShows,
   type ReproOutcome,
+  reproBlind,
   reproCannotSeeCorrection,
   reproCrash,
   reproExecutables,
+  reproOutsidePaths,
   reproTool,
   runProbe,
   runRepro,
@@ -385,7 +387,7 @@ import {
   runSpecPath,
   shipsSpecs,
 } from "./delivery-git.js";
-import { dependencyContracts, pathsExistLater } from "./dependencies.js";
+import { dependencyContracts, pathsExistLater, upstreamOwners } from "./dependencies.js";
 import {
   amendableReturn,
   amendKeepsPlan,
@@ -454,7 +456,10 @@ import { outputTail } from "./gates.js";
 import {
   HOST_APPLY_DIR,
   HOST_APPLY_KIND,
+  type HostApplyRecord,
   hostAppliableTasks,
+  hostApplyContents,
+  hostApplyDecision,
   hostApplyInputs,
   hostApplyRecord,
   hostApplyText,
@@ -512,6 +517,10 @@ import {
   misquoteFinding,
   misquoteFixPlan,
   misquoteFixRecord,
+  SETTLE_CONTINUE_KIND,
+  type SettleContinueRecord,
+  type SettleKind,
+  settleFallback,
 } from "./misquote-fix.js";
 import { MAX_CONCURRENT_TASK_CHECKS, planBatch, Semaphore, unifiedDiff } from "./parallel.js";
 import {
@@ -773,7 +782,15 @@ import {
   writeLadder,
 } from "./stall-ladder.js";
 import { siblingFallbacks, siblingNote, writeFallback } from "./stall-siblings.js";
-import { recordWouldStop, stopFault, stopMode } from "./stop-reasons.js";
+import {
+  costRefusalWait,
+  LIMIT_BLOCK_PREFIX,
+  limitBlockOf,
+  noteStoredLimitResume,
+  recordWouldStop,
+  stopFault,
+  stopMode,
+} from "./stop-reasons.js";
 import { SUPPLIED_CHECK_DIR, SUPPLIED_CHECK_KIND, suppliedCheckRecord } from "./supplied-checks.js";
 import {
   repairUncoveredCriteria,
@@ -823,6 +840,7 @@ import {
   overCeilingOf,
   plannerSizing,
   rateHistory,
+  runPace,
   type SizingReport,
   samplesFrom,
   sizePlan,
@@ -1416,6 +1434,8 @@ export class WorkflowScheduler {
       }
     }, 100);
     let stepId: string | null = null;
+    // A block on the run's own limits, looked at again once its active time is recorded (#2226).
+    let limitBlocked = false;
     this.queued = [];
     try {
       if (!recoverRun(this.store, this.journal, runId)) return;
@@ -2638,10 +2658,12 @@ export class WorkflowScheduler {
                   ...this.approvalCost(runId, policy),
                   // Tasks priced from the lines the request supplies say so (#2002).
                   ...estimateSourceOf(this.store, runId),
-                  // Tasks whose every write the request gives verbatim (#2023, shadow).
+                  // Tasks whose every write the request gives verbatim (#2023; written by the host
+                  // under `hostApply: "on"`, #2333).
                   ...((text) => (text ? { hostApply: text } : {}))(
                     hostApplyText(
                       hostAppliableTasks(state.requestText || state.prompt, state.graph),
+                      policy.hostApply === "on" ? "on" : "shadow",
                     ),
                   ),
                   ...(state.spec.deliverables
@@ -2726,7 +2748,8 @@ export class WorkflowScheduler {
                 break;
               }
               if (state.planAhead && !state.planAhead.baselined) {
-                await this.takeBaseline(runId, state, policy, signal);
+                // The released base is not the provisional one: measure the checks again (#2228).
+                await this.takeBaseline(runId, state, policy, signal, true);
                 state.planAhead = { ...state.planAhead, baselined: true };
               }
               await this.recordCheckBaseline(runId, state, policy, signal);
@@ -3534,6 +3557,33 @@ export class WorkflowScheduler {
           );
           return;
         }
+        // A cost refusal of a run past its tasks, at review or convergence, with a priced extend
+        // remedy would leave the run waiting on that remedy instead of blocked (#2249). Decided
+        // here, from the fault's recovery, for every stage at once; in shadow the run blocks.
+        if (!outerSignal.aborted) this.costRefusalWouldWait(runId, fault, diagnostic.id);
+        // A block on the run's own active time, tokens or calls records the limits it decided
+        // on, so a stored limit that grows past its usage is seen (#2226).
+        const block = outerSignal.aborted
+          ? null
+          : limitBlockOf(
+              fault,
+              diagnostic.id,
+              {
+                maxActiveMs: policy.maxActiveMs,
+                maxTotalTokens: policy.maxTotalTokens,
+                maxAgentCalls: policy.maxAgentCalls,
+              },
+              this.store.run(runId),
+            );
+        if (block) {
+          this.store.artifact(
+            runId,
+            "recovery",
+            `${LIMIT_BLOCK_PREFIX}${diagnostic.id}.json`,
+            canonical(block),
+          );
+          limitBlocked = true;
+        }
         this.store.transition(
           runId,
           outerSignal.aborted ? "paused" : "blocked",
@@ -3564,6 +3614,14 @@ export class WorkflowScheduler {
       } finally {
         this.leases.release();
       }
+      // A stored limit raised between the deadline's stop and the block record (R70 soundex,
+      // #2226): recorded in shadow, the run stays blocked.
+      if (limitBlocked)
+        try {
+          noteStoredLimitResume(this.store, runId, "drive");
+        } catch {
+          // A shadow record never changes how the drive ends.
+        }
     }
   }
   /**
@@ -3714,12 +3772,20 @@ export class WorkflowScheduler {
     const record = JSON.parse(this.store.readArtifact(runId, artifact.id)) as {
       finding: string;
       failed: { id: string; output: string } | null;
+      /** The settle that continues the task (#2181); absent for a misquote. */
+      settle?: SettleKind;
     };
+    const one =
+      record.settle === "audited"
+        ? "the settled criterion row stands as written: keep its input and expected value in the test exactly as the criterion states them and make the code give them, not spec_conflict."
+        : record.settle === "request"
+          ? "the request wins over the one settled criterion: change only the assertion that follows it to what the request states, weaken no other test, and report implemented or already_satisfied when the tests already assert it."
+          : "copy each named criterion literal into the test exactly as the criterion states it, in place of the test's spelling.";
     return {
       misquoteContinue: {
         finding: record.finding,
         failed: record.failed,
-        note: `This attempt continues the task to correct one thing: copy each named criterion literal into the test exactly as the criterion states it, in place of the test's spelling. The rest of the task's files stand as the earlier attempt left them; do not survey the project again. ${record.failed ? "The host's own replacement of the spelling failed this required check, with this output; it was put back. " : ""}Run the task's checks with request_check, then submit. The attempt has a small step and token cap.`,
+        note: `This attempt continues the task to correct one thing: ${one} The rest of the task's files stand as the earlier attempt left them; do not survey the project again. ${record.failed ? "The host's own replacement of the spelling failed this required check, with this output; it was put back. " : ""}Run the task's checks with request_check, then submit. The attempt has a small step and token cap.`,
       },
     };
   }
@@ -4629,10 +4695,14 @@ export class WorkflowScheduler {
     state: RuntimeState,
     policy: RunPolicy,
     signal: AbortSignal,
-    /** Measure again after the host repaired a baseline failure (#2215), deciding nothing anew. */
-    again = false,
+    /**
+     * `repair`: measure again after the host repaired a baseline failure (#2215), deciding nothing
+     * anew. `release`: measure again on the base a planned-ahead run was released onto, and decide
+     * its failures there (#2228).
+     */
+    measure: "first" | "repair" | "release" = "first",
   ): Promise<void> {
-    if (!again && this.store.latestArtifact(runId, CHECK_BASELINE_PATH)) return;
+    if (measure === "first" && this.store.latestArtifact(runId, CHECK_BASELINE_PATH)) return;
     const scaffold = this.baselineScaffold(runId, state);
     // On a scaffold only the required checks run, to learn which already fail (#934).
     const feature = policy.checks.filter(
@@ -4698,7 +4768,8 @@ export class WorkflowScheduler {
         }),
       ),
     );
-    if (!again) await this.decideBaselineFailures(runId, state, policy, failing, debt);
+    if (measure !== "repair")
+      await this.decideBaselineFailures(runId, state, policy, failing, debt, measure === "release");
   }
   /**
    * Decides, for each required check that failed before any change, whether the plan can repair
@@ -4712,6 +4783,7 @@ export class WorkflowScheduler {
     policy: RunPolicy,
     failing: { check: Check; output: string }[],
     debt: Record<string, string[]>,
+    release: boolean,
   ): Promise<void> {
     if (!failing.length) return;
     const root = runRoot(this.store.workspace, state);
@@ -4738,12 +4810,74 @@ export class WorkflowScheduler {
         files: found.files,
         ...input,
         decision: baselineFailureDecision(input),
+        ...(release ? { release } : {}),
       };
       this.store.transaction(() =>
         this.store.artifact(runId, BASELINE_FIX_KIND, baselineFixPath(check.id), canonical(record)),
       );
       if (record.decision === "would_stop") this.baselineWouldStop(runId, policy, record, null);
+      // A run held on a provisional base has upstream stubs, not upstream code, to blame.
+      if (!state.planAhead || state.planAhead.released)
+        this.upstreamDebtWouldStop(
+          runId,
+          state,
+          policy,
+          record,
+          found.files.filter((path) => !planned.has(path)),
+        );
     }
+  }
+  /**
+   * The `upstream_baseline_debt` would-stop (#2228): a required check fails on the base an
+   * initiative feature run starts its tasks from, in files the boundary of an accepted upstream
+   * feature owns. R70 namesound docs, planned ahead, was released onto the commands feature's
+   * rubocop debt and paid 1.03M tokens before `baseline_failure`. Once per check and base.
+   */
+  private upstreamDebtWouldStop(
+    runId: string,
+    state: RuntimeState,
+    policy: RunPolicy,
+    record: BaselineFailureRecord,
+    files: string[],
+  ): void {
+    const mode = stopMode(policy, "upstream_baseline_debt");
+    if (mode === "enforce") return;
+    const owners = upstreamOwners(state, files);
+    if (!owners.length) return;
+    const base = state.worktree?.baseHead ?? null;
+    recordWouldStop(this.store, runId, {
+      reason: "upstream_baseline_debt",
+      mode,
+      key: `${record.release ? "release" : "start"}-${record.checkId}`,
+      summary: `required check ${record.checkId} fails before any change in files accepted upstream features own: ${owners.map((o) => `${o.featureId} (${o.files.slice(0, 5).join(", ")}${o.files.length > 5 ? ", ..." : ""})`).join("; ")}; the ${record.release ? "release" : "start"} would ask ${owners.length === 1 ? "that feature" : "those features"} for an amendment instead of running tasks on a base that cannot pass`,
+      inputs: {
+        checkId: record.checkId,
+        baseCommit: base,
+        release: record.release === true,
+        decision: record.decision,
+        owners,
+      },
+    });
+  }
+  /**
+   * The `cost_refusal_wait` would-stop (#2249): the state a cost refusal of a run past its tasks
+   * would leave it in (`costRefusalWait`), once per stop, keyed by the stop's diagnostic so the
+   * initiative reads it for the run's current block (`costRefusalWaitOf`).
+   */
+  private costRefusalWouldWait(runId: string, fault: unknown, diagnosticId: string): void {
+    const run = this.store.run(runId);
+    const wait = costRefusalWait(fault, run.stage_id ?? null);
+    if (!wait) return;
+    const parsed = PolicySchema.safeParse(JSON.parse(run.policy_json));
+    const mode = parsed.success ? stopMode(parsed.data, "cost_refusal_wait") : "shadow";
+    if (mode === "enforce") return;
+    recordWouldStop(this.store, runId, {
+      reason: "cost_refusal_wait",
+      mode,
+      key: `stop-${diagnosticId}`,
+      summary: `The run would wait for its cost cap to be extended to $${wait.suggestedUsd.toFixed(2)} (baked workflow extend ${runId} --cost-usd ${wait.suggestedUsd}) at its ${wait.stageId ?? "next"} stage instead of blocking, and planned-ahead dependants would count it as waiting, not stalled.`,
+      inputs: { ...wait, diagnosticId },
+    });
   }
   /**
    * The `ci_check_drift` would-stops (#2284): each gate command of a CI workflow or root README
@@ -4799,7 +4933,7 @@ export class WorkflowScheduler {
     recordWouldStop(this.store, runId, {
       reason: "baseline_unrepairable",
       mode,
-      key: `check-${record.checkId}`,
+      key: `${record.release ? "release-" : ""}check-${record.checkId}`,
       summary: `baseline_failure: required check ${record.checkId} fails before any change on ${files}, which no task of the plan writes, and the host fixer ${why}; the run would stop before its first task instead of at the checks stage`,
       inputs: { ...record, ...(repair ? { repair } : {}) },
     });
@@ -4822,7 +4956,10 @@ export class WorkflowScheduler {
     if (!this.store.tasks(runId).every((task) => task.status === "pending")) return;
     const root = runRoot(this.store.workspace, state);
     let kept = false;
+    // A failure the latest check baseline no longer has (a released base, #2228) needs no repair.
+    const failing = new Set(this.baselineFailingChecks(runId, policy));
     for (const check of policy.checks) {
+      if (!failing.has(check.id)) continue;
       const artifact = this.store.latestArtifact(runId, baselineFixPath(check.id));
       if (!artifact || this.store.latestArtifact(runId, baselineRepairPath(check.id))) continue;
       const record = JSON.parse(
@@ -4881,7 +5018,7 @@ export class WorkflowScheduler {
     }
     if (!kept) return;
     // The repaired check passes now: the checks stage compares with the repaired code.
-    await this.recordCheckBaseline(runId, state, policy, signal, true);
+    await this.recordCheckBaseline(runId, state, policy, signal, "repair");
     await this.snapshot(runId, state, policy, signal);
     this.store.transaction(() => this.store.saveState(runId, state));
   }
@@ -5458,6 +5595,38 @@ export class WorkflowScheduler {
     return body.files ?? {};
   }
   /**
+   * Each finding's output and file hash in the task's latest repro check before this one (#2287);
+   * empty before the first.
+   */
+  private previousReproCheck(
+    runId: string,
+    task: Task,
+  ): Map<string, { output: string; fileHash?: string }> {
+    const row = this.store
+      .artifacts(runId)
+      .filter((a) => a.logical_path.startsWith(`tasks/${task.id}/repro-check-`))
+      .at(-1);
+    if (!row) return new Map();
+    const body = JSON.parse(this.store.readArtifact(runId, row.id)) as {
+      outcomes?: { findingId?: unknown; output?: unknown; fileHash?: unknown }[];
+    };
+    return new Map(
+      (body.outcomes ?? []).flatMap((o) =>
+        typeof o.findingId === "string" && typeof o.output === "string"
+          ? [
+              [
+                o.findingId,
+                {
+                  output: o.output,
+                  ...(typeof o.fileHash === "string" ? { fileHash: o.fileHash } : {}),
+                },
+              ] as const,
+            ]
+          : [],
+      ),
+    );
+  }
+  /**
    * The repro check of a corrective task (#1158): runs the repro of each finding the task corrects
    * in `root` and describes the ones that still show the reported behavior. stmtsplit-update
    * T007 and T008 closed a reproduced finding as already_satisfied twice (546k tokens) while its
@@ -5503,7 +5672,12 @@ export class WorkflowScheduler {
     const writes = task.writes.map((w) => w.path);
     if (!repros.length) return undefined;
     return async (root, signal) => {
-      const outcomes: { findingId: string; repro: Repro; outcome: ReproOutcome }[] = [];
+      const outcomes: {
+        findingId: string;
+        repro: Repro;
+        outcome: ReproOutcome;
+        fileHash?: string;
+      }[] = [];
       // A correction that changed only the comments and docstrings of the finding's file cannot
       // change what its repro prints: the repro is evidence, not a gate (#1517).
       const evidenceOnly: string[] = [];
@@ -5519,6 +5693,7 @@ export class WorkflowScheduler {
             continue;
           }
         }
+        const text = typeof file === "string" ? readText(workspacePath(root, file)) : null;
         outcomes.push({
           findingId,
           repro,
@@ -5530,20 +5705,55 @@ export class WorkflowScheduler {
             sandbox: runSandbox(policy, root, { gitWrite: root !== this.store.workspace }),
             shadows: typeof file === "string" ? [file, ...writes] : writes,
           }),
+          ...(text !== null ? { fileHash: hashBytes(text) } : {}),
         });
       }
+      const path = `tasks/${task.id}/repro-check-${newId()}.json`;
+      // Shadow (#2287): a repro that prints the same bytes after the attempt changed the
+      // finding's file, and reads a path outside the root, cannot see the correction.
+      const previous = this.previousReproCheck(runId, task);
+      const blind = outcomes.filter(({ findingId, repro, outcome, fileHash }) => {
+        const before = previous.get(findingId);
+        return (
+          before !== undefined &&
+          reproBlind({
+            status: outcome.status,
+            fileChanged:
+              fileHash !== undefined &&
+              before.fileHash !== undefined &&
+              fileHash !== before.fileHash,
+            sameOutput: before.output === outcome.output,
+            outside: reproOutsidePaths(repro, root).length,
+          })
+        );
+      });
       this.store.transaction(() =>
         this.store.artifact(
           runId,
           "repro",
-          `tasks/${task.id}/repro-check-${newId()}.json`,
+          path,
           canonical({
             taskId: task.id,
-            outcomes: outcomes.map(({ findingId, outcome }) => ({ findingId, ...outcome })),
+            outcomes: outcomes.map(({ findingId, outcome, fileHash }) => ({
+              findingId,
+              ...outcome,
+              ...(fileHash ? { fileHash } : {}),
+            })),
             ...(evidenceOnly.length ? { evidenceOnly } : {}),
+            ...(blind.length ? { blind: blind.map((b) => b.findingId) } : {}),
           }),
         ),
       );
+      const mode = stopMode(policy, "repro_blind");
+      if (mode !== "enforce")
+        for (const { findingId, repro } of blind)
+          recordWouldStop(this.store, runId, {
+            reason: "repro_blind",
+            mode,
+            key: `${path}#${findingId}`,
+            summary: `Finding ${findingId}'s repro printed the same output after task ${task.id} changed the finding's file, and it reads ${reproOutsidePaths(repro, root).join(", ")} outside the root it runs in: it cannot see the correction, and would be inconclusive instead of reproduced.`,
+            inputs: { taskId: task.id, findingId, outside: reproOutsidePaths(repro, root) },
+          });
       return outcomes
         .filter(({ outcome }) => outcome.status === "reproduced")
         .map(
@@ -5787,10 +5997,12 @@ export class WorkflowScheduler {
     state: RuntimeState,
     policy: RunPolicy,
     signal: AbortSignal,
+    /** The base a planned-ahead run was released onto (#2228): the check baseline is measured again. */
+    release = false,
   ): Promise<void> {
     await this.snapshot(runId, state, policy, signal);
     await this.measureQualityBaseline(runId, state, policy, signal);
-    await this.recordCheckBaseline(runId, state, policy, signal);
+    await this.recordCheckBaseline(runId, state, policy, signal, release ? "release" : "first");
     const before = state.expectedFiles ?? {};
     // Snapshots are stored by content, so an unchanged workspace keeps the first one's id.
     const snapshot = await this.snapshot(runId, state, policy, signal);
@@ -6967,6 +7179,22 @@ export class WorkflowScheduler {
     );
   }
   /**
+   * Tokens per active minute of the other finished feature runs of the run's initiative, which
+   * size its active time once there are enough of them (`activePace`, #2336); none outside one.
+   */
+  private initiativeRates(runId: string): number[] {
+    const initiatives = new InitiativeStore(this.store);
+    const id = initiatives.initiativeOfRun(runId);
+    if (!id) return [];
+    const runs = new Set(initiatives.links(id).map((l) => l.run_id));
+    runs.delete(runId);
+    return [...runs].flatMap((other) => {
+      const row = this.store.run(other);
+      const pace = row.status === "completed" ? runPace(row.token_usage, row.active_ms) : null;
+      return pace === null ? [] : [pace];
+    });
+  }
+  /**
    * Prices the analyzed plan before it is approved (see sizing.ts). An oversized plan goes back to
    * the planner once with a split note; a plan still above the run ceiling waits for the user,
    * who can split the request into an initiative or answer to go on. Otherwise every sized task
@@ -6991,6 +7219,7 @@ export class WorkflowScheduler {
       model,
       loopShares: loopHistory(this.store.workspace, policy),
       tokenRates: rateHistory(this.store.workspace, policy),
+      ownRates: this.initiativeRates(runId),
       request: state.requestText || state.prompt,
     });
     this.store.transaction(() =>
@@ -7133,6 +7362,7 @@ ${note}`;
       model: this.sizingModel(runId, state.graph),
       loopShares: loopHistory(this.store.workspace, policy),
       tokenRates: rateHistory(this.store.workspace, policy),
+      ownRates: this.initiativeRates(runId),
       request: state.requestText || state.prompt,
     });
     this.store.transaction(() => {
@@ -7792,11 +8022,13 @@ ${note}`;
       !checking &&
       (task.writes.length === 0 ||
         hostWritten(task) ||
+        (firstRun && (await this.hostApply(runId, child, state, policy, task))) ||
         (firstRun && (await this.correctionPassing(runId, child, state, policy, task, signal))))
     ) {
-      // A task that may not write, a task whose files the host writes, or a correction whose
-      // failing checks already pass, has nothing for a model to do: its task checks decide it,
-      // and the checks stage covers the rest.
+      // A task that may not write, a task whose files the host writes (planned content, or the
+      // request's verbatim content it applied, #2333), or a correction whose failing checks
+      // already pass, has nothing for a model to do: its task checks decide it, and the checks
+      // stage covers the rest.
       if (hostWritten(task)) this.writeHostFiles(runId, child, state, policy, task);
       // No session edits these files, so no scan runs; the record says why (#2277).
       this.recordIntegrity(runId, `tasks/${task.id}`, {
@@ -8411,7 +8643,24 @@ ${note}`;
       const ready = runnable;
       if (!checking && (await this.hostFirstReruns(runId, stepId, state, policy, signal, ready)))
         continue;
-      const single = checking ?? ready.find((t) => t.writes.length === 0 || hostWritten(t));
+      // A task the host may apply from the request's verbatim content (#2333) runs on this path,
+      // which applies it, never in a batch worker that would start a session.
+      const appliable =
+        policy.hostApply === "on" && state.graph
+          ? new Set(hostAppliableTasks(state.requestText || state.prompt, state.graph))
+          : new Set<string>();
+      const pending = new Set(
+        this.store
+          .tasks(runId)
+          .filter((t) => t.status === "pending")
+          .map((t) => t.id),
+      );
+      const single =
+        checking ??
+        ready.find(
+          (t) =>
+            t.writes.length === 0 || hostWritten(t) || (appliable.has(t.id) && pending.has(t.id)),
+        );
       signal.throwIfAborted();
       if (single) {
         await this.implementTask(
@@ -8634,7 +8883,9 @@ ${note}`;
         this.leases.acquire(entry.lease(), runId, { isolated: true });
       }
       const outcomes = await Promise.all(
-        batch.map((entry) => this.runTaskWorker(runId, state, policy, entry, checks, signal)),
+        batch.map((entry, i) =>
+          this.runTaskWorker(runId, state, policy, entry, checks, signal, undefined, i + 1),
+        ),
       );
       const fatal = outcomes.find((outcome) => outcome.kind === "fatal");
       if (fatal) failure = fatal.error;
@@ -9340,6 +9591,8 @@ ${note}`;
     runSignal: AbortSignal,
     // Given on the batch path, which may settle a misquote in the worker (#2047); candidates do not.
     profiles?: AgentProfile[],
+    // A best-of-N candidate's number: the host may correct its misquote before selection (#2181).
+    candidate?: number,
   ): Promise<WorkerOutcome> {
     const { task } = entry;
     const root = join(this.store.workspace, entry.path);
@@ -9448,36 +9701,51 @@ ${note}`;
       // Check results the host ran to finish a stopped attempt, reused by the task checks.
       const hostChecked = new Map<string, WorkerCheck["checked"]>();
       if (result.outcome === "spec_conflict" && result.taskId === task.id) {
-        if ((policy.misquoteFix !== "on" && policy.conflictFinish !== "on") || !profiles)
-          return { kind: "conflict", entry, result };
-        // The host may correct a misquoted test itself (#2047), or finish a task whose conflict
-        // it settled (#2033), and go on with the task, so the conflict is settled here and not
-        // again in `settleOutcome`.
-        const fixed = await this.specConflict(
-          runId,
-          state,
-          policy,
-          profiles,
-          entry.child,
-          task,
-          result,
+        const fix: MisquoteFixContext = {
           root,
-          signal,
-          {
-            root,
-            attemptId: entry.attemptId,
-            run: async (check) => {
-              const checked = await checks.run(() =>
-                this.runTaskCheck(runId, entry.child, check, policy, signal, root),
-              );
-              hostChecked.set(hashJson(check), checked);
-              return checked;
-            },
-            changed: async () => (await currentChanges()).changed,
+          attemptId: entry.attemptId,
+          run: async (check) => {
+            const checked = await checks.run(() =>
+              this.runTaskCheck(runId, entry.child, check, policy, signal, root),
+            );
+            hostChecked.set(hashJson(check), checked);
+            return checked;
           },
-        );
-        if (!fixed) return { kind: "conflict", entry, result, settled: true };
-        result = fixed;
+          changed: async () => (await currentChanges()).changed,
+        };
+        // A candidate's misquote is decided per candidate, before selection (#2181): a host fix
+        // whose checks pass makes it a finished candidate; otherwise the conflict is settled at
+        // integration, as before.
+        if (candidate !== undefined) {
+          const fixed =
+            policy.misquoteFix === "on"
+              ? await this.candidateMisquoteFix(runId, state, policy, task, result, signal, fix, {
+                  candidate,
+                })
+              : null;
+          if (!fixed) return { kind: "conflict", entry, result };
+          result = fixed;
+        } else {
+          if ((policy.misquoteFix !== "on" && policy.conflictFinish !== "on") || !profiles)
+            return { kind: "conflict", entry, result };
+          // The host may correct a misquoted test itself (#2047), or finish a task whose conflict
+          // it settled (#2033), and go on with the task, so the conflict is settled here and not
+          // again in `settleOutcome`.
+          const fixed = await this.specConflict(
+            runId,
+            state,
+            policy,
+            profiles,
+            entry.child,
+            task,
+            result,
+            root,
+            signal,
+            fix,
+          );
+          if (!fixed) return { kind: "conflict", entry, result, settled: true };
+          result = fixed;
+        }
       }
       if (result.outcome === "implemented")
         await this.fixTaskFiles(runId, entry.child, root, policy, task, signal);
@@ -10737,8 +11005,14 @@ ${note}`;
     const written = this.writtenTestsCheck(runId, state, policy, task, root, own, changed);
     // The project's formatter on the code files the task wrote, and on the lines the run changed in
     // the files it edits, when the run's checks hold no formatter for them (#1837).
-    const formatted = formatWrittenChecks(root, policy.checks, task.writes, undefined, (path) =>
-      runBaseContent(this.store, runId, path),
+    const formatted = formatWrittenChecks(
+      root,
+      policy.checks,
+      task.writes,
+      undefined,
+      (path) => runBaseContent(this.store, runId, path),
+      undefined,
+      { rust: policy.rustFormatWritten === "on" },
     );
     const gated = [...own, ...(written ? [written] : []), ...formatted];
     const record = this.affectedRecord(state, task);
@@ -10875,7 +11149,7 @@ ${note}`;
     child: string,
     state: RuntimeState,
     policy: RunPolicy,
-    task: Task,
+    task: Pick<Task, "writes">,
   ): void {
     const root = runRoot(this.store.workspace, state);
     const attempt = this.store.reserve(runId, child, null, 0, policy);
@@ -11500,20 +11774,7 @@ ${note}`;
     if (contested && typeof contested === "object" && "branch" in contested)
       return this.finishedConflict(result, contested);
     // The host corrected a misquoted test itself and its checks pass: the task goes on (#2047).
-    if (contested && typeof contested === "object") {
-      const { conflictSides: _sides, ...attempt } = result;
-      return {
-        ...attempt,
-        outcome: "implemented",
-        summary:
-          `The host corrected the test's misquote of ${contested.criterionIds.join(", ")} (${contested.files.join(", ")}): it replaced the test's spelling with the criterion's literal as written, and the task's required checks pass on that edit (${contested.checks.join(", ")}). The attempt's account: ${result.summary}`.slice(
-            0,
-            15000,
-          ),
-        evidenceIds: [...new Set([...result.evidenceIds, ...contested.evidenceIds])],
-        unresolved: [],
-      };
-    }
+    if (contested && typeof contested === "object") return this.misquoteFixed(result, contested);
     if (contested) return null;
     if (this.settleCheckCommands(runId, state, child, task, policy, account, report)) return null;
     // A fully confident spec finding that explicitly names test removals outranks our guard,
@@ -12121,6 +12382,50 @@ ${note}`;
       unresolved: [],
     };
   }
+  /** The attempt's result once the host corrected its misquoted test (#2047). */
+  private misquoteFixed(result: Implementation, fixed: MisquoteFixed): Implementation {
+    const { conflictSides: _sides, ...attempt } = result;
+    return {
+      ...attempt,
+      outcome: "implemented",
+      summary:
+        `The host corrected the test's misquote of ${fixed.criterionIds.join(", ")} (${fixed.files.join(", ")}): it replaced the test's spelling with the criterion's literal as written, and the task's required checks pass on that edit (${fixed.checks.join(", ")}). The attempt's account: ${result.summary}`.slice(
+          0,
+          15000,
+        ),
+      evidenceIds: [...new Set([...result.evidenceIds, ...fixed.evidenceIds])],
+      unresolved: [],
+    };
+  }
+  /**
+   * A best-of-N candidate's misquote (#2181), decided on its own worktree before selection and
+   * recorded as `conflicts/misquote/TASK-cN.json`. Only the host's exact replacement applies: a
+   * candidate is not continued, so a candidate the host does not correct stays a conflict and the
+   * chosen one is settled at integration. Null then, and when its report names no misquote.
+   */
+  private async candidateMisquoteFix(
+    runId: string,
+    state: RuntimeState,
+    policy: RunPolicy,
+    task: Task,
+    result: Implementation,
+    signal: AbortSignal,
+    fix: MisquoteFixContext,
+    at: { candidate: number },
+  ): Promise<Implementation | null> {
+    const report = [result.summary, ...result.unresolved].join(" ");
+    const misquoted = this.contestedRows(
+      runId,
+      state,
+      task,
+      report,
+      fix.root,
+      policy.checks,
+    ).flatMap((r) => r.misquoted.map((m) => ({ ...m, id: r.criterion.id })));
+    if (!misquoted.length) return null;
+    const fixed = await this.misquoteFix(runId, state, policy, task, misquoted, signal, fix, at);
+    return fixed && !("continued" in fixed) ? this.misquoteFixed(result, fixed) : null;
+  }
   /**
    * The host's own correction of a misquoted test (#2047): decided by `misquoteFixDecision` on the
    * task's test files in the attempt's root and recorded under `conflicts/misquote/`. With
@@ -12136,6 +12441,7 @@ ${note}`;
     misquoted: Misquote[],
     signal: AbortSignal,
     fix?: MisquoteFixContext,
+    at?: { candidate: number },
   ): Promise<MisquoteFixed | MisquoteContinued | null> {
     const root = fix?.root ?? runRoot(this.store.workspace, state);
     const files = [...new Set([...writtenTestPaths(task), ...rowDataPaths(task)])].flatMap(
@@ -12150,7 +12456,11 @@ ${note}`;
     const plan = misquoteFixPlan(misquoted, files);
     const mode = policy.misquoteFix === "on" && fix ? "on" : "shadow";
     const record = misquoteFixRecord(task.id, mode, plan.sites);
-    const continued = (state.taskContinuations[task.id] ?? 0) > 0 || !!state.quickFixes[task.id];
+    // A candidate is not continued: its conflict is settled at integration (#2181).
+    const continued =
+      at !== undefined ||
+      (state.taskContinuations[task.id] ?? 0) > 0 ||
+      !!state.quickFixes[task.id];
     // A misquote the host does not correct goes to a bounded continuation of the task (#2058).
     const settle = (body: MisquoteFixRecord, failed: MisquoteContinued["failed"] = null) => {
       const fallback = misquoteFallback(body, continued);
@@ -12158,7 +12468,7 @@ ${note}`;
         this.store.artifact(
           runId,
           MISQUOTE_FIX_KIND,
-          `${MISQUOTE_FIX_DIR}${task.id}.json`,
+          `${MISQUOTE_FIX_DIR}${task.id}${at ? `-c${at.candidate}` : ""}.json`,
           canonical({ ...body, fallback }),
         ),
       );
@@ -12212,6 +12522,67 @@ ${note}`;
       checks: checks.map((c) => c.id),
       evidenceIds,
     };
+  }
+  /**
+   * The task's next attempt continues at the bounded misquote cap (#2058) with `finding`; one
+   * that does not finish, or reports a conflict again, falls back once to a full attempt
+   * (`fallBackFromQuickFix`). Called inside the settle's transaction.
+   */
+  private boundedContinuation(
+    runId: string,
+    state: RuntimeState,
+    policy: RunPolicy,
+    task: Task,
+    body: { finding: string; failed: MisquoteContinued["failed"]; settle?: SettleKind },
+  ): void {
+    state.quickFixes[task.id] = "quick";
+    state.taskSteps[task.id] = Math.min(MISQUOTE_CONTINUE_STEPS, policy.maxAgentSteps);
+    state.taskBudgets[task.id] = Math.min(
+      MISQUOTE_CONTINUE_TOKENS,
+      policy.maxAttemptTokens ?? MISQUOTE_CONTINUE_TOKENS,
+    );
+    this.store.artifact(
+      runId,
+      "recovery",
+      `tasks/${task.id}/misquote-continue.json`,
+      canonical({ taskId: task.id, ...body }),
+    );
+  }
+  /**
+   * An audited-row or request-wins settle that names one criterion (#2181) is continued at the
+   * bounded cap, decided by `settleFallback` and recorded as `conflicts/misquote/TASK-SETTLE.json`.
+   * Without `misquoteFix: "on"` the decision is shadow: recorded, and the full session opens.
+   * Called inside the settle's transaction.
+   */
+  private settleContinue(
+    runId: string,
+    state: RuntimeState,
+    policy: RunPolicy,
+    task: Task,
+    settle: SettleKind,
+    criterionIds: string[],
+    finding: string,
+  ): void {
+    const continued = (state.taskContinuations[task.id] ?? 0) > 0 || !!state.quickFixes[task.id];
+    const record: SettleContinueRecord = {
+      taskId: task.id,
+      settle,
+      mode: policy.misquoteFix === "on" ? "on" : "shadow",
+      criterionIds: [...new Set(criterionIds)],
+      fallback: settleFallback(criterionIds, continued),
+    };
+    this.store.artifact(
+      runId,
+      SETTLE_CONTINUE_KIND,
+      `${MISQUOTE_FIX_DIR}${task.id}-${settle}.json`,
+      canonical(record),
+    );
+    if (record.mode === "on" && record.fallback === "continue")
+      this.boundedContinuation(runId, state, policy, task, {
+        finding: finding.slice(0, 2000),
+        failed: null,
+        settle,
+      });
   }
   /**
    * The criteria a conflict report names, with the audit's verdicts and the literals the task's
@@ -12311,26 +12682,12 @@ ${note}`;
           misquotePath,
           canonical({ ...account, assumed: settled, misquoted }),
         );
-        if (fixed) {
-          // The next attempt is a bounded continuation with the one-line finding (#2058); one
-          // that does not finish falls back once to a full attempt (`fallBackFromQuickFix`).
-          state.quickFixes[task.id] = "quick";
-          state.taskSteps[task.id] = Math.min(MISQUOTE_CONTINUE_STEPS, policy.maxAgentSteps);
-          state.taskBudgets[task.id] = Math.min(
-            MISQUOTE_CONTINUE_TOKENS,
-            policy.maxAttemptTokens ?? MISQUOTE_CONTINUE_TOKENS,
-          );
-          this.store.artifact(
-            runId,
-            "recovery",
-            `tasks/${task.id}/misquote-continue.json`,
-            canonical({
-              taskId: task.id,
-              finding: misquoteFinding(misquoted),
-              failed: fixed.failed,
-            }),
-          );
-        }
+        // The next attempt is a bounded continuation with the one-line finding (#2058).
+        if (fixed)
+          this.boundedContinuation(runId, state, policy, task, {
+            finding: misquoteFinding(misquoted),
+            failed: fixed.failed,
+          });
         this.store.taskStatus(runId, task.id, "interrupted", null, { cause: "spec_conflict" });
         this.store.finishStep(runId, child, "failed");
       });
@@ -12397,6 +12754,15 @@ ${note}`;
           findingIds: task.findingIds,
           answer: `Settled by the derivation audit (${verifiedPath}): ${settled}.`,
         });
+        this.settleContinue(
+          runId,
+          state,
+          policy,
+          task,
+          "audited",
+          rows.map((r) => r.criterion.id),
+          `${settled}: ${rowsText}`,
+        );
         this.store.taskStatus(runId, task.id, "interrupted", null, { cause: "spec_conflict" });
         this.store.finishStep(runId, child, "failed");
       });
@@ -12747,6 +13113,7 @@ ${note}`;
         answer: `Settled for the request (${path}): ${settled}.`,
       });
       if (finished) return;
+      this.settleContinue(runId, state, policy, task, "request", overruled, settled);
       this.store.taskStatus(runId, task.id, "interrupted", null, { cause: "spec_conflict" });
       this.store.finishStep(runId, child, "failed");
     });
@@ -18674,6 +19041,60 @@ ${note}`;
       );
     } catch {}
   }
+  /**
+   * Under `hostApply: "on"` (#2333), writes a planned task's files from the request's verbatim
+   * content before its first session when `hostApplyDecision` would apply them, through the run's
+   * journal as for a host-written task, and records `host-apply/tasks/<task>.json` with
+   * `applied`. True when the host wrote them: no implementer runs, the task checks decide it.
+   * False (and the implementer runs as before) when the policy is off, the request gives the task
+   * no verbatim block, the decision keeps the implementer, or the content cannot be computed.
+   */
+  private async hostApply(
+    runId: string,
+    child: string,
+    state: RuntimeState,
+    policy: RunPolicy,
+    task: Task,
+  ): Promise<boolean> {
+    if (policy.hostApply !== "on" || task.origin !== "planned") return false;
+    const path = `${HOST_APPLY_DIR}${task.id}.json`;
+    if (this.store.latestArtifact(runId, path)) return false;
+    const root = runRoot(this.store.workspace, state);
+    const request = state.requestText || state.prompt;
+    let record: HostApplyRecord;
+    let contents: { path: string; content: string }[] = [];
+    try {
+      const writes = await hostApplyInputs(root, request, task);
+      if (!writes) return false;
+      record = hostApplyRecord(task.id, writes, hostApplyDecision, "on");
+    } catch {
+      return false;
+    }
+    if (record.wouldApply)
+      try {
+        contents = await hostApplyContents(root, request, task);
+      } catch (error) {
+        record = {
+          ...record,
+          applied: false,
+          applyError: (error instanceof Error ? error.message : String(error)).slice(0, 300),
+        };
+      }
+    const applied = record.wouldApply && record.applied !== false;
+    if (applied) {
+      this.writeHostFiles(runId, child, state, policy, {
+        writes: contents.map((c) => ({
+          path: c.path,
+          action: "modify" as const,
+          content: c.content,
+        })),
+      });
+      record = { ...record, applied: true };
+    } else if (record.applied === undefined) record = { ...record, applied: false };
+    this.store.artifact(runId, HOST_APPLY_KIND, path, canonical(record));
+    return applied;
+  }
+
   /**
    * Records the project's static checks on a copy of the task's base with the request's verbatim
    * content written in (`suppliedCheckRecord`, #2275), once per task. Shadow: the implementer

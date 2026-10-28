@@ -866,7 +866,7 @@ export const FEATURES: readonly Feature[] = [
     id: "host-apply-shadow",
     group: "Workflow runs",
     title:
-      "Shadow decision whether the host would apply a planned task's verbatim diffs, files and Markdown sections from the request itself, recorded per task with its apply check, with the host-appliable tasks at approval",
+      "Decision whether the host applies a planned task's verbatim diffs, files and Markdown sections from the request itself, recorded per task with its apply check (shadow, or with quality.hostApply on the host writes the files and skips the implementer), with the host-appliable tasks at approval",
     tui: ["/workflow: plan approval names the host-appliable tasks"],
     cli: ["baked workflow status: hostApply records and the approval's hostApply"],
     api: ["/v1/workflow/runs/:id: approval hostApply and host-apply artifacts"],
@@ -1620,6 +1620,27 @@ export const FEATURES: readonly Feature[] = [
     desktop: [
       "project/initiatives: Token forecast line and one-click Extend to the suggested amount",
     ],
+  },
+  {
+    id: "initiative-time-pool-forecast",
+    group: "Initiatives",
+    title:
+      "Feature runs sized at the initiative's measured pace, a shared-time forecast notice, and time amounts on extend remedies of pool and deadline blocks",
+    tui: [
+      "/workflow: initiatives, Time forecast line, B prefilled with the suggested time, and a feature run's deadline block naming Extend with its time",
+    ],
+    cli: [
+      "baked workflow initiative show: budget.time, budget.timeNotice, next.recovery suggestedTimeMs, features[].recovery extend suggestedTimeMs",
+      "baked workflow initiative events: budget.time_notice",
+      "baked workflow initiative extend: --time-ms",
+      "baked workflow extend: --time-ms, --resume",
+    ],
+    api: [
+      "/v1/initiatives/:id: budget.time, budget.timeNotice, next.recovery suggestedTimeMs",
+      "/v1/initiatives/:id/events",
+      "/v1/initiatives/:id/extend",
+    ],
+    desktop: ["project/initiatives: Time forecast line and one-click Extend to the suggested time"],
   },
   {
     id: "initiative-finding-ownership",

@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { guardStep, openGuardRoom, refreshedGrowth } from "../src/core/workflows/initiatives/growth.js";
 import type { InitiativePlan } from "../src/core/workflows/initiatives/plan.js";
-import { InitiativeService } from "../src/core/workflows/initiatives/service.js";
+import { featurePolicy, growthLimit, type InitiativeSettings, InitiativeService, type InitiativeView } from "../src/core/workflows/initiatives/service.js";
 import type { RunPolicy } from "../src/core/workflows/schemas.js";
 import { newId } from "../src/core/workflows/store.js";
 import type { ExecutionRequest } from "../src/core/workflows/types.js";
@@ -136,4 +136,55 @@ describe("scenario: the initiative answers a feature run's deadline with its sha
     fixture.service.growLimits?.(runOf("parser"));
     expect(store.artifacts(runOf("parser")).filter((a) => a.logical_path.startsWith("policy-revisions/initiative-"))).toHaveLength(0);
   }, 60000);
+});
+
+// Bench round 73, evalpin (#2294): delivery was the initiative's last open feature, so no feature
+// waited for a run and `growthLimit` returned null. `refreshedGrowth` read that as no limit and
+// raised delivery's bounds to the base policy's 8M and 12M with 3.31M of the 23.9M pool left.
+describe("scenario: an initiative run's token room is never null (#2294)", () => {
+  const base: RunPolicy = { ...fixturePolicy, sizing: { maxRunTokens: 8_000_000, extendToTokens: 12_000_000 } };
+  const waiting = (tokens: number) => ({ tokens, calls: 10, activeMs: 600_000 });
+  const viewOf = (remaining: number, features: { id: string; share: number | null; need?: { low: number; high: number } }[]) =>
+    ({
+      budget: { remaining: { tokens: remaining, calls: 100, activeMs: 3_600_000 }, cost: { remainingUsd: null } },
+      features: features.map((f) => ({ id: f.id, size: "medium", share: f.share === null ? null : waiting(f.share), shareUsd: null, need: f.need ?? null })),
+    }) as unknown as InitiativeView;
+
+  test("with no feature waiting the room is what the pool has left, and the last run grows no further", () => {
+    // delivery is open (no share); every other feature is accepted. Its 3,305,374 tokens are held.
+    const view = viewOf(0, [{ id: "commands", share: null }, { id: "delivery", share: null }]);
+    expect(growthLimit(view, "delivery")).toBe(0);
+    expect(growthLimit(viewOf(1_200_000, [{ id: "delivery", share: null }]), "delivery")).toBe(1_200_000);
+    const delivery: RunPolicy = { ...fixturePolicy, maxTotalTokens: 3_305_374, sizing: { maxRunTokens: 3_305_374, extendToTokens: 3_305_374 } };
+    const held = { tokens: 3_305_374, usd: 0, calls: 0, activeMs: 0 };
+    const room = { tokens: growthLimit(view, "delivery"), usd: null, calls: 0, activeMs: 0 };
+    // Nothing rises: the run already holds all the pool has left.
+    expect(refreshedGrowth(delivery, base, held, { calls: 0, activeMs: 0 }, room)).toBeNull();
+    // The rule before #2294 (a null room) took the base ceilings, 8.7M past the pool.
+    expect(refreshedGrowth(delivery, base, held, { calls: 0, activeMs: 0 }, { ...room, tokens: null })?.sizing).toMatchObject({ maxRunTokens: 8_000_000, extendToTokens: 12_000_000 });
+    // With room left it grows into it, and never past the base ceilings.
+    expect(refreshedGrowth(delivery, base, held, { calls: 0, activeMs: 0 }, { ...room, tokens: 1_000_000 })?.sizing).toMatchObject({ maxRunTokens: 4_305_374, extendToTokens: 4_305_374 });
+    expect(refreshedGrowth(delivery, base, held, { calls: 0, activeMs: 0 }, { ...room, tokens: 20_000_000 })?.sizing).toMatchObject({ maxRunTokens: 8_000_000, extendToTokens: 12_000_000 });
+  });
+
+  test("waiting features without estimates reserve their whole token shares", () => {
+    const view = viewOf(10_000_000, [{ id: "a", share: 4_000_000 }, { id: "b", share: 3_500_000 }, { id: "c", share: 2_500_000 }]);
+    expect(growthLimit(view, "a")).toBe(4_000_000);
+    expect(growthLimit(view, "b")).toBe(3_500_000);
+    // With an estimate the waiting features' lows decide, as before.
+    expect(growthLimit(viewOf(10_000_000, [{ id: "a", share: 4_000_000, need: { low: 1_000_000, high: 2_000_000 } }, { id: "b", share: 3_500_000 }]), "a")).toBe(10_000_000);
+    expect(growthLimit(viewOf(10_000_000, [{ id: "a", share: 4_000_000 }, { id: "b", share: 3_500_000, need: { low: 1_000_000, high: 2_000_000 } }]), "a")).toBe(9_000_000);
+  });
+
+  test("a start or a rebase on a plan without estimates grows no further than the pool leaves it", () => {
+    const settings = { basePolicy: base, costBudget: null, featureAutoApproval: null } as unknown as InitiativeSettings;
+    const feature = { id: "a", title: "a", size: "medium", boundary: { scope: "a", paths: ["a.txt"] }, contract: "a", dependsOn: [], mandatory: true } as unknown as Parameters<typeof featurePolicy>[2];
+    const view = viewOf(3_000_000, [{ id: "a", share: 1_000_000 }, { id: "b", share: 1_000_000 }, { id: "c", share: 1_000_000 }]);
+    for (const humanOnly of [false, true]) {
+      const policy = featurePolicy(settings, waiting(1_000_000), feature, humanOnly, growthLimit(view, "a"));
+      // Its share: b and c reserve theirs. A null room kept the base 8M and 12M.
+      expect(policy.sizing).toMatchObject({ maxRunTokens: 1_000_000, extendToTokens: 1_000_000 });
+    }
+    expect(featurePolicy(settings, waiting(1_000_000), feature, false, null).sizing).toMatchObject({ maxRunTokens: 8_000_000, extendToTokens: 12_000_000 });
+  });
 });

@@ -99,12 +99,13 @@ export interface InitiativeFeature {
   mergedFrom?: string[];
   /**
    * Amendments planned-ahead features asked of this one at their release, and the answer
-   * (`replan`: it ran again for them); absent when none or on older backends.
+   * (`replan`: it ran again for them; `write`: the asking feature wrote it, #2183); absent when
+   * none or on older backends.
    */
   amendments?: {
     from: string;
     gaps: { ref: string; symbol: string; featureId: string; path: string }[];
-    answer: "replan" | "none";
+    answer: "replan" | "write" | "none";
   }[];
   /** Boundary files whose content the split fixes; its run writes them with no agent. */
   skeleton?: { path: string; content: string }[];
@@ -166,6 +167,20 @@ export interface InitiativePool {
   notice: string | null;
 }
 
+/** The shared active time (`budget.time`, #2336): its forecast at the measured pace. */
+export interface InitiativeTime {
+  limitMs: number;
+  usedMs: number;
+  committedMs: number;
+  pace: { tokensPerMinute: number; basis: "initiative" | "history"; runs: number } | null;
+  forecastMs: number | null;
+  wallMs: number | null;
+  coverMs: number | null;
+  /** What the forecast suggests extending the time to; null while it fits. */
+  suggestedMs: number | null;
+  notice: string | null;
+}
+
 export type FeatureSize = "small" | "medium" | "large";
 
 /** `GET /v1/initiatives/:id`, as `baked workflow initiative show` prints it. */
@@ -212,6 +227,10 @@ export interface InitiativeView {
     pool?: InitiativePool | null;
     /** Set while the token forecast is above the pool; absent on older backends. */
     forecastNotice?: string | null;
+    /** The shared time's forecast at the measured pace (#2336); absent on older backends. */
+    time?: InitiativeTime | null;
+    /** Set while the time forecast is above the shared time; absent on older backends. */
+    timeNotice?: string | null;
   };
   next: InitiativeNext;
   drive?: InitiativeDrive | null;

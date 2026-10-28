@@ -33,7 +33,7 @@ describe("stop reasons", () => {
   test("hard limits take only enforce; the forecasts and the approval scope take every mode", () => {
     for (const [id, reason] of Object.entries(STOP_REASONS)) {
       expect(reason.modes).toContain(reason.defaultMode);
-      if (!["cost-forecast", "approval-scope", "initiative-forecast", "initiative-dollar-share", "initiative-dollar-cap", "initiative-plan-charge", "initiative-pool-growth", "repeated_failure", "corrective_scope", "corrective_unowned_file", "repeat_without_change", "corrective_restores_removed", "edge_crash_finding", "upstream_symbol", "baseline_unrepairable", "baseline_signature", "check-config-approval", "ci_check_drift", "committed_tree"].includes(id))
+      if (!["cost-forecast", "approval-scope", "initiative-forecast", "initiative-dollar-share", "initiative-dollar-cap", "initiative-plan-charge", "initiative-pool-growth", "repeated_failure", "corrective_scope", "corrective_unowned_file", "repeat_without_change", "corrective_restores_removed", "edge_crash_finding", "repro_blind", "upstream_symbol", "baseline_unrepairable", "baseline_signature", "check-config-approval", "ci_check_drift", "committed_tree", "host-resume-on-stored-limit", "cost_refusal_wait", "upstream_baseline_debt"].includes(id))
         expect(reason.modes).toEqual(["enforce"]);
     }
     expect(STOP_REASONS["cost-forecast"].modes).toEqual(STOP_MODES);
@@ -49,11 +49,16 @@ describe("stop reasons", () => {
     // Shadow until its promotion (#2136): a crash inside the probed task's file is not a finding yet.
     expect(STOP_REASONS.edge_crash_finding.modes).toEqual(["shadow", "advisory"]);
     expect(STOP_REASONS.edge_crash_finding.defaultMode).toBe("shadow");
+    expect(STOP_REASONS.repro_blind.modes).toEqual(["shadow", "advisory"]);
+    expect(STOP_REASONS.repro_blind.defaultMode).toBe("shadow");
     expect(STOP_REASONS.upstream_symbol.modes).toEqual(["shadow", "advisory"]);
     expect(STOP_REASONS.upstream_symbol.defaultMode).toBe("shadow");
     // Shadow until its promotion (#2215): a required check failing at baseline outside the plan.
     expect(STOP_REASONS.baseline_unrepairable.modes).toEqual(["shadow", "advisory"]);
     expect(STOP_REASONS.baseline_unrepairable.defaultMode).toBe("shadow");
+    // Shadow until its promotion (#2228): a baseline failure in files an upstream feature owns.
+    expect(STOP_REASONS.upstream_baseline_debt.modes).toEqual(["shadow", "advisory"]);
+    expect(STOP_REASONS.upstream_baseline_debt.defaultMode).toBe("shadow");
     // Shadow until its promotion (#2295): a baseline failure matched only by its shaped signature.
     expect(STOP_REASONS.baseline_signature.modes).toEqual(["shadow", "advisory"]);
     expect(STOP_REASONS.baseline_signature.defaultMode).toBe("shadow");
@@ -63,6 +68,12 @@ describe("stop reasons", () => {
     // Shadow until its promotion (#2225): a static check that fails on the feature's commit only.
     expect(STOP_REASONS.committed_tree.modes).toEqual(["shadow", "advisory"]);
     expect(STOP_REASONS.committed_tree.defaultMode).toBe("shadow");
+    // Shadow until its promotion (#2226): a blocked run whose stored limits grew past its usage.
+    expect(STOP_REASONS["host-resume-on-stored-limit"].modes).toEqual(["shadow", "advisory"]);
+    expect(STOP_REASONS["host-resume-on-stored-limit"].defaultMode).toBe("shadow");
+    // Shadow until its promotion (#2249): a cost refusal at review that would wait on its extend.
+    expect(STOP_REASONS.cost_refusal_wait.modes).toEqual(["shadow", "advisory"]);
+    expect(STOP_REASONS.cost_refusal_wait.defaultMode).toBe("shadow");
     // Shadow until its promotion (#2218): an initiative that would pause on its dollar cap.
     expect(STOP_REASONS["initiative-dollar-cap"].modes).toEqual(["shadow", "advisory"]);
     expect(STOP_REASONS["initiative-dollar-cap"].defaultMode).toBe("shadow");

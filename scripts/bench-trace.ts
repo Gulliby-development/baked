@@ -146,13 +146,18 @@ if (command === "export" && args.length === 2) {
             `new integrity findings ${run.newIntegrityFindings} in ${run.integrity.length} scans, ` +
             `new case refusals ${run.newCaseRefusals} in ${run.caseWalks.length} case walks, ` +
             `new gate repairs ${run.newGateRepairs} in ${run.reviewGates.length} review gates, ` +
-            `convergence verdicts changed ${run.newConvergenceVerdicts} in ${run.convergenceGates.length} gates` +
+            `convergence verdicts changed ${run.newConvergenceVerdicts} in ${run.convergenceGates.length} gates, ` +
+            `active-time caps changed ${run.newActiveTimes} of ${run.activeTimes.length} sizing reports` +
             (ratios ? `, forecast/final ${ratios}` : ""),
         );
         for (const b of run.boundaries.filter((b) => b.recorded !== b.replayed))
           console.log(
             `    ${new Date(b.at).toISOString()} ${b.attemptId}: recorded ${b.recorded}, now ${b.replayed} ` +
               `(forecast ${usd(b.projectedUsd)}, ceiling ${usd(b.ceilingUsd)}, spent ${usd(b.spentUsd)})`,
+          );
+        for (const b of run.activeTimes.filter((b) => b.recorded.after !== b.replayed.after))
+          console.log(
+            `    ${b.report}: active-time cap recorded ${b.recorded.after} ms at ${b.recorded.tokensPerMinute} tokens/min (${b.recorded.basis}), now ${b.replayed.after} ms at ${b.replayed.tokensPerMinute} (${b.replayed.basis})`,
           );
         for (const b of run.repeatedFailures.filter((b) => b.replayed === "repeat"))
           console.log(
