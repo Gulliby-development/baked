@@ -9,7 +9,11 @@
     "tests": "PHPUnit 11.5.0 by Sebastian Bergmann and contributors.\n\nRuntime:       PHP 8.3.6\n\n.F                                                                  2 / 2 (100%)\n\nTime: 00:00.012, Memory: 8.00 MB\n\nThere was 1 failure:\n\n1) App\\Tests\\SumTest::testCommutes\nFailed asserting that 4 is identical to 3.\n\n/repo/tests/SumTest.php:14\n\nFAILURES!\nTests: 2, Assertions: 2, Failures: 1.\n",
     "testsGrown": "PHPUnit 11.5.0 by Sebastian Bergmann and contributors.\n\nRuntime:       PHP 8.3.6\n\n..F                                                                 3 / 3 (100%)\n\nTime: 00:00.019, Memory: 8.00 MB\n\nThere was 1 failure:\n\n1) App\\Tests\\SumTest::testCommutes\nFailed asserting that 4 is identical to 3.\n\n/repo/tests/SumTest.php:14\n\nFAILURES!\nTests: 3, Assertions: 3, Failures: 1.\n"
   },
+  "generated": {
+    "tests/GenTest.php": "<?php\n$a = str_repeat(\"\\\\\", 3);\n$b = \"x{$a}\";\n$lit = \"\\\\\\\\\\\\\";\n// $d = str_repeat(\"\\\\\", 3);\n"
+  },
   "expected": {
+    "generatedValues": ["tests/GenTest.php:2 repeat","tests/GenTest.php:3 interpolate"],
     "memberSyntax": [
       "Scanner calls Reader::is_encoding_token.: Reader::is_encoding_token"
     ],

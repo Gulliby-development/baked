@@ -9,7 +9,11 @@
     "tests": "Test Suite 'All tests' started at 2026-10-25 02:56:10.091\nTest Case 'SumTests.testAdds' started at 2026-10-25 02:56:10.092\nTest Case 'SumTests.testAdds' passed (0.102 seconds)\nTest Case 'SumTests.testCommutes' started at 2026-10-25 02:56:10.194\n/w/Tests/SumTests/SumTests.swift:6: error: SumTests.testCommutes : XCTAssertEqual failed: (\"3\") is not equal to (\"4\")\nTest Case 'SumTests.testCommutes' failed (0.001 seconds)\nTest Suite 'All tests' failed at 2026-10-25 02:56:10.195\n\t Executed 2 tests, with 1 failure (0 unexpected) in 0.103 (0.103) seconds\n",
     "testsGrown": "Test Suite 'All tests' started at 2026-10-25 02:56:10.091\nTest Case 'SumTests.testAdds' started at 2026-10-25 02:56:10.092\nTest Case 'SumTests.testAdds' passed (0.102 seconds)\nTest Case 'SumTests.testSubs' started at 2026-10-25 02:56:10.193\nTest Case 'SumTests.testSubs' passed (0.001 seconds)\nTest Case 'SumTests.testCommutes' started at 2026-10-25 02:56:10.194\n/w/Tests/SumTests/SumTests.swift:6: error: SumTests.testCommutes : XCTAssertEqual failed: (\"3\") is not equal to (\"4\")\nTest Case 'SumTests.testCommutes' failed (0.001 seconds)\nTest Suite 'All tests' failed at 2026-10-25 02:56:10.195\n\t Executed 3 tests, with 1 failure (0 unexpected) in 0.105 (0.106) seconds\n"
   },
+  "generated": {
+    "Tests/GenTests.swift": "let a = String(repeating: \"\\\\\", count: 3)\nlet b = \"x\\(a)\"\nlet lit = \"\\\\\\\\\\\\\"\n// let d = String(repeating: \"\\\\\", count: 3)\n"
+  },
   "expected": {
+    "generatedValues": ["Tests/GenTests.swift:1 repeat","Tests/GenTests.swift:2 interpolate"],
     "memberSyntax": [
       "Scanner delegates to Reader.IsEncodingToken.: Reader.IsEncodingToken"
     ],

@@ -10,7 +10,11 @@
     "tests": "..F\n\nFinished in 0.00714 seconds (files took 0.09504 seconds to load)\n3 examples, 1 failure\n\nFailed examples:\n\nrspec ./spec/sum_spec.rb:6 # sum is commutative\n",
     "testsGrown": "...F\n\nFinished in 0.00911 seconds (files took 0.1 seconds to load)\n4 examples, 1 failure\n\nFailed examples:\n\nrspec ./spec/sum_spec.rb:6 # sum is commutative\n"
   },
+  "generated": {
+    "spec/gen_spec.rb": "a = \"\\\\\" * 3\nb = [0, 1].pack(\"C*\")\nc = \"x#{a}\"\n[1, 2].each { |n| run(n) }\nlit = \"\\\\\\\\\\\\\"\n# d = \"\\\\\" * 3\n"
+  },
   "expected": {
+    "generatedValues": ["spec/gen_spec.rb:1 repeat","spec/gen_spec.rb:2 pack","spec/gen_spec.rb:3 interpolate","spec/gen_spec.rb:4 loop"],
     "memberSyntax": [
       "Scanner delegates to Reader.IsEncodingToken.: Reader.IsEncodingToken",
       "Scanner calls Reader#encoding_token? per token.: Reader#encoding_token?",
