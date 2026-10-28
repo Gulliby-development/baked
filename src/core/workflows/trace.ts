@@ -3457,6 +3457,7 @@ function replayStarts(
     const runIds = (db.query("SELECT id FROM runs").all() as { id: string }[]).map((r) => r.id);
     const rewinders = new Map(runIds.map((runId) => [runId, runRewinder(store, runId)]));
     const policies = new Map(runIds.map((runId) => [runId, runPolicyAt(store, runId)]));
+    const activeTimes = new Map(runIds.map((runId) => [runId, runActiveAt(store, runId)]));
     const states = new Map(
       runIds.map((runId) => [
         runId,
@@ -3545,7 +3546,9 @@ function replayStarts(
           ]);
           // The run's tokens, dollars and policy as they stood then, not at its end (#2061).
           const policyAt = policies.get(runId);
-          if (budgetAtStart && policyAt) rewindRunBudget(db, runId, t, policyAt);
+          const activeAt = activeTimes.get(runId);
+          if (budgetAtStart && policyAt && activeAt)
+            rewindRunBudget(db, runId, t, policyAt, activeAt(t));
         }
         for (const runId of late) rewinders.delete(runId);
       })();
@@ -4036,20 +4039,57 @@ function runPolicyAt(store: WorkflowStore, runId: string): (t: number) => RunPol
 }
 
 /**
+ * A run's active time at any moment, read before a replay removes its later events (#2417): the
+ * `activeMs` its `budget.updated` events recorded, from 0 at its creation to its stored total at
+ * its last update, interpolated between two of them. The run row keeps only the final total, and
+ * the events come only with a reservation, so a moment between two reads the time in between.
+ */
+function runActiveAt(store: WorkflowStore, runId: string): (t: number) => number {
+  const run = store.run(runId);
+  const points = [
+    { at: run.created_at, ms: 0 },
+    ...(store.connection
+      .query(
+        "SELECT at, json_extract(payload_json, '$.activeMs') AS ms FROM events WHERE run_id=? AND type='budget.updated' AND json_extract(payload_json, '$.activeMs') IS NOT NULL ORDER BY seq",
+      )
+      .all(runId) as { at: number; ms: number }[]),
+    { at: Math.max(run.updated_at, run.created_at), ms: run.active_ms },
+  ];
+  return (t) => {
+    const next = points.findIndex((p) => p.at > t);
+    if (next === -1) return run.active_ms;
+    const after = points[next];
+    const before = points[next - 1];
+    if (!after || !before) return 0;
+    const span = after.at - before.at;
+    const share = span > 0 ? (t - before.at) / span : 1;
+    return Math.round(before.ms + Math.max(0, after.ms - before.ms) * share);
+  };
+}
+
+/**
  * A run's budget inputs as they stood at `t`, for a replay that rewound its attempts there (#2061):
- * the tokens and dollars of the attempts that had finished by then, and its policy then. The
- * stored token and dollar totals and the policy are the run's final ones; an initiative view
- * replayed on them sees every later spend and cap growth.
+ * the tokens and dollars of the attempts that had finished by then, the agent calls started by
+ * then, its active time then (`runActiveAt`), and its policy then. The stored totals and the
+ * policy are the run's final ones; an initiative view replayed on them sees every later spend and
+ * cap growth. With the final active time and calls, R76 schemamask's view at generation's start
+ * counted 14.0M ms used of the 18M shared time and 101 calls instead of the 9.4M and 70 its
+ * recorded gate read, and the replay parked generation and validate on a time share of 0 ms that
+ * the round never had (#2417).
  */
 function rewindRunBudget(
   db: Database,
   runId: string,
   t: number,
   policyAt: (t: number) => RunPolicy,
+  activeMs: number,
 ): void {
   db.run(
-    "UPDATE runs SET token_usage=(SELECT COALESCE(SUM(used_tokens), 0) FROM attempts WHERE run_id=? AND ended_at<=?), estimated_cost_microusd=NULL, policy_json=? WHERE id=?",
-    [runId, t, canonical(policyAt(t)), runId],
+    `UPDATE runs SET
+      token_usage=(SELECT COALESCE(SUM(used_tokens), 0) FROM attempts WHERE run_id=? AND ended_at<=?),
+      agent_calls=(SELECT COUNT(*) FROM attempts WHERE run_id=? AND model_id IS NOT NULL AND started_at<=?),
+      active_ms=?, estimated_cost_microusd=NULL, policy_json=? WHERE id=?`,
+    [runId, t, runId, t, activeMs, canonical(policyAt(t)), runId],
   );
 }
 

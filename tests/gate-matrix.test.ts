@@ -26,6 +26,7 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { directoryFixers, directoryFixerScenario } from "./helpers/directory-fixer-scenario.js";
 import { baselineCreatedFilesScenario, FIRST_RUN_OUTPUTS } from "./helpers/baseline-created-files-scenario.js";
 import { sourceManifest, TOOL_CACHES } from "../src/core/verification/snapshot.js";
+import { openTrace, replayInitiativeStarts } from "../src/core/workflows/trace.js";
 import { linkDependencies } from "../src/core/workflows/dependency-dirs.js";
 import { spawnSync } from "node:child_process";
 import {
@@ -5152,6 +5153,37 @@ test("#1631 one accepted skeleton keeps the initiative's planned forecast below 
   expect(forecastUsd).toBe(23.4);
   expect(shareShortfall(view, view.features[1]!)).toBeNull();
 });
+
+// #2417: the start replay rewound each open run's tokens, dollars and policy (#2061) but not its
+// active time and calls, so the time share a start gate read counted every later minute: R76
+// schemamask parked generation and validate on 0 ms of shared time the round never ran out of.
+test("#2417 the start gate on a rewound trace reads the used time and calls its recorded gate read", () => {
+  const path = join(import.meta.dir, "fixtures", "bench-traces", "R75", "maskback.sqlite.gz");
+  const trace = openTrace(path);
+  let recorded: Map<string, { verdict: string; used: { activeMs: number; calls: number } }>;
+  try {
+    recorded = new Map(
+      (trace.store.connection.query("SELECT payload_json FROM initiative_events WHERE type='feature.share_gate' ORDER BY seq").all() as { payload_json: string }[])
+        .map((r) => JSON.parse(r.payload_json) as { featureId: string; verdict: string; view: { budget: { used: { activeMs: number; calls: number } } } })
+        .map((r) => [r.featureId, { verdict: r.verdict, used: r.view.budget.used }]),
+    );
+  } finally {
+    trace.dispose();
+  }
+  const seen = new Map<string, { verdict: string; used: { activeMs: number; calls: number } }>();
+  replayInitiativeStarts(path, { budgetAtStart: true, gate: (view, feature) => {
+    const verdict = shareShortfall(view, feature);
+    if (!seen.has(feature.id)) seen.set(feature.id, { verdict: verdict ? "park" : "pass", used: view.budget.used ?? { activeMs: 0, calls: 0 } });
+    return verdict;
+  } });
+  for (const [id, gate] of recorded) {
+    const rewound = seen.get(id);
+    expect([id, rewound?.verdict]).toEqual([id, gate.verdict]);
+    // Linked seconds after its gate: the same time and calls within 3% (and a minute) and two.
+    expect([id, Math.abs((rewound?.used.activeMs ?? 0) - gate.used.activeMs) <= 0.03 * gate.used.activeMs + 60_000]).toEqual([id, true]);
+    expect([id, Math.abs((rewound?.used.calls ?? 0) - gate.used.calls) <= 2]).toEqual([id, true]);
+  }
+}, 300000);
 
 describe("repair-limit decisions (#1577)", () => {
   test.each(STACKS)("%s offers grants only for a recorded repair-limit stop", () => {
