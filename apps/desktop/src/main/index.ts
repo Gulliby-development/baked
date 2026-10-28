@@ -47,7 +47,7 @@ import { manageKnownProject, renameKnownProject } from "./project-actions.js";
 import { SettingsStore } from "./settings.js";
 import { ProjectSupervisor, type Stream } from "./supervisor.js";
 import { AppTray } from "./tray.js";
-import { closeAction } from "./tray-model.js";
+import { closeAction, closeToTray } from "./tray-model.js";
 import { resolveVoiceDir, VoiceEngine, voiceFix } from "./voice.js";
 
 const devServerUrl = process.env.VITE_DEV_SERVER_URL;
@@ -417,26 +417,18 @@ function createWindow(): void {
   else void window.loadFile(join(app.getAppPath(), "out", "renderer", "index.html"));
   window.on("close", (event) => {
     if (quitting || !settings.get().keepRunningInTray) return;
-    // Whether a run still works is read fresh; the list may be minutes old.
+    // Whether a run still works is read fresh (the list may be minutes old), after the window hid.
     event.preventDefault();
     const current = window;
-    void supervisor
-      .refresh()
-      .catch(() => supervisor.projects())
-      .then((projects) => {
-        if (!current || current.isDestroyed()) return;
-        const action = closeAction({
-          quitting,
-          keepRunningInTray: settings.get().keepRunningInTray,
-          projects,
-        });
-        if (action === "hide") {
-          current.hide();
-          tray.show();
-        } else {
-          current.destroy();
-        }
-      });
+    if (!current) return;
+    void closeToTray({
+      window: current,
+      showTray: () => tray.show(),
+      hideTray: () => tray.hide(),
+      projects: () => supervisor.refresh().catch(() => supervisor.projects()),
+      decide: (projects) =>
+        closeAction({ quitting, keepRunningInTray: settings.get().keepRunningInTray, projects }),
+    });
   });
   window.on("show", () => tray.hide());
   window.on("maximize", () => broadcast(IPC.windowMaximized, true));

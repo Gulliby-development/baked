@@ -14,6 +14,7 @@ import {
   badgeBitmap,
   badgeLabel,
   closeAction,
+  closeToTray,
   trayModel,
 } from "../src/main/tray-model.ts";
 import type { ApiResponse, AttentionItem, DesktopProject } from "../src/shared/api.ts";
@@ -135,6 +136,44 @@ describe("tray", () => {
       "close",
     );
     expect(closeAction({ ...on, quitting: true, projects: [project(true, 1)] })).toBe("close");
+  });
+
+  test("hides at once and keeps a window reopened while the list loads (#2391)", async () => {
+    const run = async (projects: DesktopProject[], reopen: boolean) => {
+      const log: string[] = [];
+      let visible = true;
+      let release: (list: DesktopProject[]) => void = () => {};
+      const pending = closeToTray({
+        window: {
+          hide: () => {
+            visible = false;
+            log.push("hide");
+          },
+          destroy: () => log.push("destroy"),
+          isVisible: () => visible,
+          isDestroyed: () => false,
+        },
+        showTray: () => log.push("tray"),
+        hideTray: () => log.push("untray"),
+        projects: () => new Promise((resolve) => (release = resolve)),
+        decide: (list) =>
+          closeAction({ quitting: false, keepRunningInTray: true, projects: list }),
+      });
+      // The window is hidden before the slow project list answers.
+      expect(log).toEqual(["hide", "tray"]);
+      if (reopen) visible = true;
+      release(projects);
+      return { action: await pending, log };
+    };
+    expect(await run([project(true, 1)], false)).toEqual({ action: "hide", log: ["hide", "tray"] });
+    expect(await run([project(true, 0)], false)).toEqual({
+      action: "close",
+      log: ["hide", "tray", "untray", "destroy"],
+    });
+    expect(await run([project(true, 0)], true)).toEqual({
+      action: "reopened",
+      log: ["hide", "tray"],
+    });
   });
 
   test("counts blocking items for the badge and menu", () => {
