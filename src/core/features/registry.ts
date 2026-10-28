@@ -1640,7 +1640,7 @@ export const FEATURES: readonly Feature[] = [
     ],
     cli: [
       "baked workflow initiative show: budget.time, budget.timeNotice, next.recovery suggestedTimeMs, features[].recovery extend suggestedTimeMs",
-      "baked workflow initiative events: budget.time_notice",
+      "baked workflow initiative events: budget.time_notice, decision.would_extend (time-pool, shadow)",
       "baked workflow initiative extend: --time-ms",
       "baked workflow extend: --time-ms, --resume",
     ],
