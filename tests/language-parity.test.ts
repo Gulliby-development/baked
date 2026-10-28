@@ -39,6 +39,7 @@ import { TreeSitterBackend } from "../src/core/intelligence/backends/tree-sitter
 import { CALL_SYNTAX, callContext, functionsIn } from "../src/core/intelligence/call-context.js";
 import { TaskSchema } from "../src/core/workflows/schemas.js";
 import { MASK_SYNTAX, maskNonCode, stripComments } from "../src/core/workflows/quality/code-mask.js";
+import { GENERATED_VALUE_SHAPES, generatedValues } from "../src/core/verification/generated-values.js";
 import { PACKAGE_CONTENTS, packagingFields } from "../src/core/workflows/quality/package-contents.js";
 import { isStaticCheck, isWholeUnitCheck } from "../src/core/workflows/check-policy.js";
 import { isTestCheck } from "../src/core/workflows/quality/mutation.js";
@@ -63,6 +64,8 @@ interface Fixture {
   files: Files;
   /** Check output the language's test runner prints: a failing run, and the same run with one more passing test. */
   outputs?: { tests: string; testsGrown: string };
+  /** A test file per language that builds inputs from generated values beside a literal twin and a commented copy (#2344). */
+  generated?: Files;
   expected: Record<string, string[] | null>;
 }
 
@@ -178,6 +181,16 @@ const RECORDS: Record<
     run: (language, { files }) =>
       [...testGateFlags(ofLanguage(language, files).map(([path, text]) => ({ path, text })))].map(
         ([program, flags]) => `${program} ${flags.join(" ")}`,
+      ),
+  },
+  // The generated test inputs the case walk records where literal examples are asked for (#2344):
+  // the fixture's `generated` file holds each kind its row spells, a literal twin and a commented
+  // copy, which are never marked.
+  generatedValues: {
+    record: GENERATED_VALUE_SHAPES,
+    run: (_, { generated = {} }) =>
+      Object.entries(generated).flatMap(([path, text]) =>
+        generatedValues(path, text, new Set(["repeat", "format", "interpolate", "pack", "loop"])).map((g) => `${g.path}:${g.line} ${g.kind}`),
       ),
   },
   // The test classes a written-tests run selects by name (#2363): the row's example, a file whose

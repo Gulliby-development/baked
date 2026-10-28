@@ -4,7 +4,11 @@
     "src/sum_test.zig": "const std = @import(\"std\");\ntest \"sum\" {\n    _ = sum(1, 2);\n}\n// AC-001 example: (1, 2, 3)\n",
     "build.zig": "const std = @import(\"std\");\n"
   },
+  "generated": {
+    "src/gen_test.zig": "const a = \"\\\\\" ** 3;\nconst lit = \"\\\\\\\\\\\\\";\n// const d = \"\\\\\" ** 3;\n"
+  },
   "expected": {
+    "generatedValues": ["src/gen_test.zig:1 repeat"],
     "memberSyntax": [
       "Scanner delegates to Reader.IsEncodingToken.: Reader.IsEncodingToken",
       "Scanner calls `reader.is_encoding_token` per token.: reader.is_encoding_token"

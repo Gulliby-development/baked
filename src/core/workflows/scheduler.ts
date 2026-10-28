@@ -81,6 +81,7 @@ import {
 import {
   CASE_WALK_DIR,
   CASE_WALK_KIND,
+  type CaseWalk,
   type CaseWalkRecord,
   type CriterionCase,
   caseCheck as criteriaCaseCheck,
@@ -110,6 +111,11 @@ import {
   validEvidenceNote,
 } from "../verification/evidence.js";
 import { fingerprint, requiresSecurityReview } from "../verification/findings.js";
+import {
+  bannedGeneratedKinds,
+  type GeneratedKind,
+  generatedCaseDecision,
+} from "../verification/generated-values.js";
 import {
   clearBannedProperties,
   clearBoundaryProperties,
@@ -544,7 +550,9 @@ import {
   GREENFIELD_NOTE,
   QUALITY_BASELINE_REPLAY,
   REPLAY_OUTPUT_CHARS,
+  replayCommand,
   replayEdits,
+  replayStopped,
   replayTargetRecords,
   replayTargets,
 } from "./quality/baseline-replay.js";
@@ -6305,8 +6313,10 @@ export class WorkflowScheduler {
               tasks: (state.rootGraph ?? state.graph)?.tasks ?? [],
               // The rows the host wrote are held by its intact blocks (#1997).
               hostRows: generatedRows.filter((file) => file.inline === true),
+              generatedKinds: this.bannedGeneratedKinds(state, task),
               record: (walk) =>
-                this.store.transaction(() =>
+                this.store.transaction(() => {
+                  const generatedStop = this.generatedCaseWouldStop(runId, policy, task, walk);
                   this.store.artifact(
                     runId,
                     CASE_WALK_KIND,
@@ -6315,9 +6325,10 @@ export class WorkflowScheduler {
                       schemaVersion: 1,
                       taskId: task.id,
                       ...walk,
+                      ...(walk.generated ? { generatedStop } : {}),
                     } satisfies CaseWalkRecord),
-                  ),
-                ),
+                  );
+                }),
               ...(policy.caseSourceProbe === "on"
                 ? { probe: this.caseSourceProbe(runId, state, policy, task, signal) }
                 : {}),
@@ -15410,17 +15421,25 @@ ${note}`;
                 : "failed";
             return { status, output: outcome.output };
           };
-          const outcome = await run(check.args);
+          // The whole test set runs: cargo stopped after the first failing binary (#2364).
+          const command = replayCommand(check.executable, check.args);
+          const outcome = await run(command.args);
           const failed = failedTests(outcome.output);
           const build = outcome.status === "failed" ? buildFailure(outcome.output) : null;
+          const stopped = outcome.status === "failed" ? replayStopped(outcome.output) : null;
           // One target that does not build stops the aggregate command in cargo, pytest, dotnet
-          // and Maven, so the others run again per target (#2020).
+          // and Maven, so the others run again per target (#2020), as do the targets of a run that
+          // still stopped at its first failing one, when the check's command names that runner.
           const targets: BaselineReplayTarget[] = [];
-          const runner = build ? buildRunner(outcome.output) : null;
+          const runner = build
+            ? buildRunner(outcome.output)
+            : stopped && stopped === command.runner
+              ? stopped
+              : null;
           const prefix = check.cwd === "." ? "" : `${check.cwd.replace(/\/+$/, "")}/`;
           const runs = runner
             ? replayTargets(runner, {
-                args: check.args,
+                args: command.args,
                 tests: changedTests
                   .filter((path) => path.startsWith(prefix))
                   .map((path) => path.slice(prefix.length)),
@@ -15450,6 +15469,10 @@ ${note}`;
             failedTests: failed?.names ?? null,
             runner: failed?.tool ?? runner,
             output: outcome.output.slice(-REPLAY_OUTPUT_CHARS),
+            ...(command.args.some((arg, i) => arg !== check.args[i]) ||
+            command.args.length !== check.args.length
+              ? { args: command.args }
+              : {}),
             ...(build ? { buildFailed: true as const, buildErrors: build } : {}),
             ...(targets.length ? { targets } : {}),
           });
@@ -15680,6 +15703,44 @@ ${note}`;
       this.store.artifact(runId, "quality", QUALITY_PROPERTY_LIBRARIES, canonical(libraries)),
     );
     return libraries;
+  }
+  /**
+   * The kinds of generated value a task's test inputs may not use (#2344): those the request or
+   * the task's criteria rule out by asking for literal examples (`bannedGeneratedKinds`).
+   */
+  private bannedGeneratedKinds(state: RuntimeState, task: Task): Set<GeneratedKind> {
+    const criteria = (state.spec?.criteria ?? [])
+      .filter((c) => task.criterionIds.includes(c.id))
+      .map((c) => `${c.given}\n${c.when}\n${c.then}`)
+      .join("\n");
+    return bannedGeneratedKinds(state.requestText || state.prompt, criteria);
+  }
+  /**
+   * The `generated_case` would-stop of a task-end case walk (#2344), once per task: the test
+   * files that hold a case build inputs from generated values where literal examples are asked
+   * for. Returns whether the walk would stop the task.
+   */
+  private generatedCaseWouldStop(
+    runId: string,
+    policy: RunPolicy,
+    task: Task,
+    walk: CaseWalk,
+  ): boolean {
+    if (!generatedCaseDecision(walk)) return false;
+    const mode = stopMode(policy, "generated_case");
+    if (mode === "enforce") return true;
+    const found = walk.generated ?? [];
+    recordWouldStop(this.store, runId, {
+      reason: "generated_case",
+      mode,
+      key: `task-${task.id}`,
+      summary: `${task.id}'s tests build inputs from generated values where literal examples are asked for: ${found
+        .slice(0, 5)
+        .map((g) => `${g.path}:${String(g.line)} (${g.kind})`)
+        .join(", ")}${found.length > 5 ? ", ..." : ""}; the case walk would refuse the task`,
+      inputs: { taskId: task.id, generated: found },
+    });
+    return true;
   }
   /** The run's property-test mode, with what the repository's own tests hold (#1872). */
   private propertyMode(runId: string, state: RuntimeState, policy: RunPolicy): PropertyTestsMode {
