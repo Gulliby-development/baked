@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { ChatEvent, ChatEventBody, SessionDetail } from "../src/renderer/client/chat.ts";
+import { pendingText } from "../src/renderer/screens/chat/images.ts";
 import {
   applyChatEvent,
   emptyTranscript,
@@ -221,6 +222,31 @@ describe("chat transcript", () => {
     });
     expect(state.pending).toEqual([]);
     expect(state.messages.map((m) => m.id)).toEqual(["u1", "u2"]);
+  });
+
+  test("a pending send with images clears when the server echoes it (#2386)", () => {
+    const image = { label: "image-1", base64: "AAAA", mediaType: "image/png" as const };
+    let state = reduceTranscript(fromDetail(detail()), {
+      type: "local-send",
+      text: pendingText("What colour?", 2),
+    });
+    state = applyChatEvent(state, {
+      type: "turn-start",
+      turnId: "t1",
+      message: { id: "u1", role: "user", content: "What colour?", timestamp: 1, images: [image, image] },
+      seq: 1,
+      at: 1,
+    });
+    expect(state.pending).toEqual([]);
+    state = reduceTranscript(state, { type: "local-send", text: pendingText("", 1) });
+    state = applyChatEvent(state, {
+      type: "steering",
+      turnId: "t1",
+      message: { id: "u2", role: "user", content: "", timestamp: 2, isSteering: true, images: [image] },
+      seq: 2,
+      at: 2,
+    });
+    expect(state.pending).toEqual([]);
   });
 
   test("a failed turn shows its error", () => {
