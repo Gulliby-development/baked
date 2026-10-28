@@ -551,6 +551,17 @@ describe("scenario: flatelens R73 commands' bounds stay inside the pool and the 
     expect(poolBoundDecision({ runId: "r", featureId: "commands", limitTokens: LIMIT, othersUsedTokens: OTHERS, ceilingUsd: 36, othersSpentUsd: 25.34, tokens: [{ kind: "maxRunTokens", value: 5_660_000 }], usd: [{ kind: "maxRunCostUsd", value: 10.66 }] }).wouldStop).toBe(false);
   });
 
+  test("a dollar bound within half a cent of the ceiling less the others' spend passes (#2321)", () => {
+    const decide = (ceilingUsd: number, othersSpentUsd: number, bound: number) =>
+      poolBoundDecision({ runId: "r", featureId: "commands", limitTokens: LIMIT, othersUsedTokens: 0, ceilingUsd, othersSpentUsd, tokens: [], usd: [{ kind: "maxRunCostUsd", value: bound }] }).wouldStop;
+    // fast-check seed 291173649: $1.665 against a $1.66 ceiling, exactly at the tolerance.
+    expect(decide(1.6600000000000001, 0, 1.665)).toBe(false);
+    // A ceiling with a fraction of a cent: $1.668 is under $1.669, though the cent-floored hold is $1.66.
+    expect(decide(1.669, 0, 1.668)).toBe(false);
+    expect(decide(36, 25.34, 10.665)).toBe(false);
+    expect(decide(36, 25.34, 10.67)).toBe(true);
+  });
+
   const plan: InitiativePlan = {
     schemaVersion: 1, title: "Flatelens", goals: ["Create the CLI"], completionCriteria: ["The CLI is ready"],
     features: ["core", "commands", "docs"].map((id) => ({

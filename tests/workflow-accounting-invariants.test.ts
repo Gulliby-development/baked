@@ -741,6 +741,7 @@ describe("charge growth invariants (#2280)", () => {
       const fits = s.othersTokens + s.boundTokens <= s.limitTokens && s.othersUsd + s.boundUsd <= s.ceilingUsd + 0.005;
       if (fits) expect(decision.wouldStop).toBe(false);
       if (s.othersTokens + s.boundTokens > s.limitTokens) expect(decision.wouldStop).toBe(true);
+      if (s.othersUsd + s.boundUsd > s.ceilingUsd + 0.006) expect(decision.wouldStop).toBe(true);
     }), { numRuns: 300 });
   });
 });

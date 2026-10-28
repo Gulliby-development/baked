@@ -10,7 +10,7 @@ import { DEFAULT_MIX } from "../src/core/workflows/estimate.js";
 import { PolicySchema, type Task } from "../src/core/workflows/schemas.js";
 import { DEFAULT_PER_FILE, verificationTokens } from "../src/core/workflows/sizing.js";
 import type { WorkflowStore } from "../src/core/workflows/store.js";
-import { exportTrace, openTrace, replayTrace } from "../src/core/workflows/trace.js";
+import { exportTrace, openTrace, replayTrace, withoutFileManifests } from "../src/core/workflows/trace.js";
 import type { ExecutionRequest } from "../src/core/workflows/types.js";
 import { FixtureExecutor, fixturePolicy, workflowFixture } from "./helpers/workflow-fixture.js";
 
@@ -65,7 +65,7 @@ class ScriptedExecutor extends FixtureExecutor {
 }
 
 /** A finished run whose code tasks used twice their price, under a cap that covers that. */
-async function recordedRun() {
+async function recordedRun(options: { files?: number } = {}) {
   const cap = Math.ceil((6 * CODE * 2 * price.input / 1e6 + verificationTokens() * reviewRate) * 1.3 * 100) / 100;
   const policy = {
     ...fixturePolicy, maxAgentCalls: 1000, maxTotalTokens: 10_000_000, maxCostUsd: cap, sizing: { maxRunTokens: 20_000_000 },
@@ -75,6 +75,12 @@ async function recordedRun() {
   cleanups.push(fixture.dispose);
   fixture.config.defaultModel = MODEL;
   fixture.executor.store = fixture.service.store;
+  // A project with a committed dependency tree, as R74 ladlemath's vendor/ (#2338).
+  for (let i = 0; i < (options.files ?? 0); i++) {
+    const path = join(fixture.root, "vendor", `pkg${i % 40}`, `File${i}.php`);
+    mkdirSync(dirname(path), { recursive: true });
+    writeFileSync(path, `<?php // ${i}\n`);
+  }
   const { runId } = await fixture.start();
   const planned = await fixture.service.drive(runId, new AbortController().signal);
   if (planned.status !== "waiting") throw new Error(`${planned.status} ${planned.reason} ${JSON.stringify(fixture.service.store.artifacts(runId).filter((a) => a.kind === "diagnostic").map((a) => fixture.service.store.readArtifact(runId, a.id).slice(0, 400)))}`);
@@ -158,4 +164,52 @@ describe("usage traces of recorded runs (#1649)", () => {
     expect(run.newStops).toBeGreaterThan(0);
     expect(run.boundaries.find((b) => b.replayed === "stop")?.projectedUsd).toBeGreaterThan(cap * 0.5);
   }, 60000);
+});
+
+describe("trace export size (#2338)", () => {
+  // R74 ladlemath committed vendor/ (1,827 tracked files): every snapshot manifest and every state
+  // revision's `expectedFiles` and prior reviews' `files` held a hash per file, and the trace was
+  // 42.5 MiB gzipped, too large for the corpus.
+  test("a run over 1,500 files exports no file manifest and replays as the run went", async () => {
+    const { fixture, runId, out } = await recordedRun({ files: 1500 });
+    const { store } = fixture.service;
+    const snapshot = store.state(runId).snapshotId;
+    expect(Object.keys(store.snapshotFiles(runId, snapshot ?? "") ?? {}).length).toBeGreaterThan(1500);
+    const exported = exportTrace(fixture.root, out);
+    expect(exported.bytes).toBeLessThan(5 * 1024 * 1024);
+    const raw = Buffer.from(Bun.gunzipSync(readFileSync(out)));
+    expect(raw.includes("vendor/pkg")).toBe(false);
+    const { store: traced, dispose } = openTrace(out);
+    try {
+      expect(traced.state(runId).expectedFiles).toEqual({});
+      expect(traced.snapshotFiles(runId, snapshot ?? "")).toEqual({});
+      expect(traced.snapshot(runId).status).toBe("completed");
+    } finally {
+      dispose();
+    }
+    const run = replayTrace(out).runs[0]!;
+    expect(run.boundaries.length).toBe(store.attempts(runId).filter((a) => a.model_id !== null).length);
+    expect([run.newStops, run.newGrowth, run.removedStops]).toEqual([0, 0, 0]);
+    expect(run.finalUsd).toBeCloseTo(store.costUsage(runId).spentUsd, 6);
+  }, 120000);
+
+  test("a trace above its bound is refused with the tables that make it large", async () => {
+    const { fixture, out } = await recordedRun();
+    expect(() => exportTrace(fixture.root, out, { maxBytes: 1024 })).toThrow(
+      /above its 0\.0 MiB bound\. Largest tables unpacked: \w+ /,
+    );
+  }, 60000);
+
+  test("a state keeps its review findings without the prior reviews' file manifests", () => {
+    const state = {
+      expectedFiles: { "a.php": "h1", "b.php": "h2" },
+      priorReviews: { spec: { review: { findings: [{ id: "F-1", claim: "x" }] }, files: { "a.php": "h1" }, snapshotId: "s1" } },
+    };
+    expect(JSON.parse(withoutFileManifests(JSON.stringify(state)))).toEqual({
+      expectedFiles: {},
+      priorReviews: { spec: { review: { findings: [{ id: "F-1", claim: "x" }] }, files: {}, snapshotId: "s1" } },
+    });
+    expect(JSON.parse(withoutFileManifests(JSON.stringify({ expectedFiles: null })))).toEqual({ expectedFiles: null });
+    expect(withoutFileManifests("not json")).toBe("not json");
+  });
 });
