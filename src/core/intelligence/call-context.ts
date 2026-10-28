@@ -372,7 +372,10 @@ export function changedLines(diff: string): Map<string, number[]> {
 export interface DiffSection {
   /** The new path, or the old one when the section deletes the file. */
   path: string;
-  /** The section with `--- a/<old>` and `+++ b/<new>` headers (or `/dev/null`) and its hunks. */
+  /**
+   * The section with `--- a/<old>` and `+++ b/<new>` headers (or `/dev/null`) and its hunks, after
+   * the section's own `index <old>..<new>` line when the diff has one (#2412).
+   */
   patch: string;
   deletes: boolean;
 }
@@ -381,8 +384,9 @@ export interface DiffSection {
  * Each file's section of a unified diff, split where `changedLines` starts a new file (a `--- `
  * line followed by `+++ `). Headers are rewritten to the `a/` and `b/` form, so a brief that writes
  * `--- src/x.ts` applies with `-p1` like one that writes `--- a/src/x.ts`; a diff timestamp after a
- * tab is dropped. Lines between hunks that are not hunk content (`diff --git`, `index`, prose) are
- * left out, and an empty line inside a hunk is an empty context line, as a markdown editor leaves
+ * tab is dropped. Lines between hunks that are not hunk content (`diff --git`, prose) are left out,
+ * except the section's `index` line, which names the pre-image blob the host checks a zero-context
+ * hunk's base against (`baseDrift`, #2412); git skips it before the headers. An empty line inside a hunk is an empty context line, as a markdown editor leaves
  * it. Hunk counts are kept as written: apply with `--recount` when a person wrote them.
  */
 export function diffSections(diff: string): DiffSection[] {
@@ -391,16 +395,28 @@ export function diffSections(diff: string): DiffSection[] {
     const path = (header.slice(4).split("\t")[0] ?? "").trim();
     return path === "/dev/null" || !path.startsWith(`${prefix}/`) ? path : path.slice(2);
   };
-  const sections: { from: string; to: string; lines: string[] }[] = [];
-  let current: { from: string; to: string; lines: string[] } | null = null;
+  type Section = { from: string; to: string; index: string | null; lines: string[] };
+  const sections: Section[] = [];
+  let current: Section | null = null;
   let hunks = false;
+  // The `index` line of the `diff --git` header the next `---` line belongs to.
+  let index: string | null = null;
   for (let i = 0; i < texts.length; i++) {
     const text = texts[i] as string;
     if (text.startsWith("--- ") && texts[i + 1]?.startsWith("+++ ")) {
-      current = { from: strip(text, "a"), to: strip(texts[i + 1] as string, "b"), lines: [] };
+      const to = strip(texts[i + 1] as string, "b");
+      current = { from: strip(text, "a"), to, index, lines: [] };
       sections.push(current);
       hunks = false;
+      index = null;
       i++;
+      continue;
+    }
+    if (text.startsWith("diff ")) index = null;
+    const blob = /^index ([0-9a-f]{4,}\.\.[0-9a-f]{4,})(?: \d+)?\s*$/.exec(text);
+    if (blob) {
+      index = `index ${blob[1]}`;
+      hunks = false;
       continue;
     }
     if (!current) continue;
@@ -414,13 +430,14 @@ export function diffSections(diff: string): DiffSection[] {
     else if (/^[ +\-\\]/.test(text)) current.lines.push(text);
     else hunks = false;
   }
-  return sections.flatMap(({ from, to, lines }): DiffSection[] => {
+  return sections.flatMap(({ from, to, index, lines }): DiffSection[] => {
     const deletes = to === "/dev/null";
     const path = deletes ? from : to;
     // Blank lines after the last hunk are the fence's layout, not context the file must have.
     while (lines.at(-1) === " ") lines.pop();
     if (!lines.length || path === "/dev/null") return [];
     const head = [
+      ...(index ? [index] : []),
       `--- ${from === "/dev/null" ? from : `a/${from}`}`,
       `+++ ${deletes ? to : `b/${to}`}`,
     ];
