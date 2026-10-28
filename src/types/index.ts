@@ -369,6 +369,8 @@ export interface QualityConfig {
   chainProbe?: "off" | "on";
   /** Let the host correct a test that misquotes a criterion literal itself, when the replacement is exact and the task's checks pass on it: `on` or `off` (default, recorded in shadow). */
   misquoteFix?: "off" | "on";
+  /** Let the host write a task the request gives verbatim (exact diffs, whole files, a README section) instead of starting an implementer, when every diff applies: `on` or `off` (default, recorded in shadow). */
+  hostApply?: "off" | "on";
   /** Before the test tasks, run extreme legal inputs a small call proposes against each planned source task's code; a failing one is corrected at once (edge-input probe): `on` or `off` (default). */
   edgeProbe?: "off" | "on";
   /** Keep a list of defect classes earlier runs corrected, by domain, in the BAKED data directory and show a run of the same domain its classes as examples (cross-run defect classes): `on` or `off` (default). */

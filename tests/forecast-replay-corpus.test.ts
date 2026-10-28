@@ -3,7 +3,7 @@ import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join, relative } from "node:path";
 import { callCostRate, costRate } from "../src/core/workflows/budget.js";
 import { chargeHold, refreshedGrowth } from "../src/core/workflows/initiatives/growth.js";
-import { costGrowthLimit, dollarShortfall, type ShareGateRecord, shareShortfall } from "../src/core/workflows/initiatives/service.js";
+import { costGrowthLimit, dollarShortfall, growthLimit, type ShareGateRecord, shareShortfall } from "../src/core/workflows/initiatives/service.js";
 import { forecastSamples } from "../src/core/workflows/stage-price.js";
 import { adaptiveFirstByteMs } from "../src/core/llm/provider-health.js";
 import { planApprovalDecision } from "../src/core/workflows/auto-approval.js";
@@ -1068,6 +1068,35 @@ describe("initiative-pool-growth replays on recorded growth bounds (#2280)", () 
     // The token bounds stay at the share (4.65M, what the pool left after docs' low); the dollar
     // bound rises only to the $10.66 the ceiling leaves, not $19.30 to $24.08.
     expect(after?.sizing).toMatchObject({ maxRunTokens: 4_651_968, extendToTokens: 4_651_968, maxRunCostUsd: 10.66 });
+  }, 120000);
+
+  test("#2294: the last features of R71 xmlvet and R73 evalpin keep their bounds at the pool left", () => {
+    // Both started on all the pool had left with no other feature waiting; their recorded refreshes
+    // (spareTokens null) took the base ceilings. With a room that is never null, the view at their
+    // start gate, the run holding its share, leaves no room: the refresh raises nothing, so neither
+    // run's bound passes the pool and `initiative-pool-growth` has nothing to record there.
+    const base = { ...fixturePolicy, sizing: { maxRunTokens: 8_000_000, extendToTokens: 12_000_000 } };
+    for (const [round, app, featureId, share] of [["R71", "xmlvet", "cli-release", 6_630_531], ["R73", "evalpin", "delivery", 3_305_374]] as const) {
+      const { store, dispose } = openTrace(join(ROOT, round, `${app}.sqlite.gz`));
+      try {
+        const gate = (store.connection.query("SELECT payload_json FROM initiative_events WHERE type='feature.share_gate' ORDER BY seq").all() as { payload_json: string }[])
+          .map((g) => JSON.parse(g.payload_json) as ShareGateRecord)
+          .filter((g) => g.featureId === featureId && g.verdict === "pass")
+          .at(-1)!;
+        expect(gate.view.budget.remaining.tokens).toBe(share);
+        // Once its run holds its share, no feature waits and the pool has nothing left.
+        const open = { ...gate.view, budget: { ...gate.view.budget, remaining: { ...gate.view.budget.remaining, tokens: gate.view.budget.remaining.tokens - share } }, features: gate.view.features.map((f) => ({ ...f, share: null })) };
+        const room = growthLimit(open, featureId);
+        expect(room).toBe(0);
+        const policy = { ...fixturePolicy, maxTotalTokens: share, sizing: { maxRunTokens: share, extendToTokens: share } };
+        const held = { tokens: share, usd: 0, calls: 0, activeMs: 0 };
+        expect(refreshedGrowth(policy, base, held, { calls: 0, activeMs: 0 }, { tokens: room, usd: null, calls: 0, activeMs: 0 })).toBeNull();
+        // The recorded refresh with the null room raised them to the base ceilings.
+        expect(refreshedGrowth(policy, base, held, { calls: 0, activeMs: 0 }, { tokens: null, usd: null, calls: 0, activeMs: 0 })?.sizing).toMatchObject({ maxRunTokens: 8_000_000, extendToTokens: 12_000_000 });
+      } finally {
+        dispose();
+      }
+    }
   }, 120000);
 });
 

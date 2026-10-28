@@ -262,6 +262,7 @@ export async function prepareStart(
     chainRewrite: policyChainRewrite,
     chainProbe: policyChainProbe,
     misquoteFix: policyMisquoteFix,
+    hostApply: policyHostApply,
     edgeProbe: policyEdgeProbe,
     defectClasses: policyDefectClasses,
     conflictFinish: policyConflictFinish,
@@ -315,6 +316,7 @@ export async function prepareStart(
   const chainRewrite = policyChainRewrite ?? config.quality?.chainRewrite ?? "off";
   const chainProbe = policyChainProbe ?? config.quality?.chainProbe ?? "off";
   const misquoteFix = policyMisquoteFix ?? config.quality?.misquoteFix ?? "off";
+  const hostApply = policyHostApply ?? config.quality?.hostApply ?? "off";
   const edgeProbe = policyEdgeProbe ?? config.quality?.edgeProbe ?? "off";
   const defectClasses = policyDefectClasses ?? config.quality?.defectClasses ?? "off";
   const conflictFinish = policyConflictFinish ?? config.quality?.conflictFinish ?? "off";
@@ -377,6 +379,7 @@ export async function prepareStart(
     ...(chainRewrite === "on" ? { chainRewrite } : {}),
     ...(chainProbe === "on" ? { chainProbe } : {}),
     ...(misquoteFix === "on" ? { misquoteFix } : {}),
+    ...(hostApply === "on" ? { hostApply } : {}),
     ...(edgeProbe === "on" ? { edgeProbe } : {}),
     ...(defectClasses === "on" ? { defectClasses } : {}),
     ...(conflictFinish === "on" ? { conflictFinish } : {}),

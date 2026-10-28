@@ -1177,7 +1177,7 @@ export function planBudget(settings: InitiativeSettings, plan: InitiativePlan): 
 export const MIN_SHARE = { maxTotalTokens: 1000, maxAgentCalls: 1, maxActiveMs: 1000 } as const;
 
 export const BUDGET_RULE =
-  "Each feature run starts with a share of the remaining shared budget, rounded down: remaining = limit - (usage of finished runs + the limits of open runs, decompose and superseded runs included; an open feature run whose plan is sized counts at the high end of its plan's need at the measured plan-to-actual ratio, never below its usage, instead of its limit, unless stopModes sets initiative-plan-charge to shadow), times the feature's weight, divided by the weights of the features of the approved plan without a run. Tokens are weighted by each feature's estimated need (the high end of its estimate), calls and time by size (small 1, medium 2, large 4). When the remaining pool covers the waiting features' low estimates, token shares reserve any lows that the weighted split would underfund and divide the rest by the same weights. A feature starts only if the remaining pool minus the other waiting features' low estimates covers its own low estimate. Otherwise it waits for a budget extension. A feature run grows its own budget only up to what remains after the low ends of the features still waiting. A starting feature's calls and active time are what remains less a floor for each other waiting feature (the base policy's per-run limit scaled by size, at most its share), never below its own share. A rebased run takes one more share of the same split. Agent calls per run are capped at 1000. With a dollar budget (--budget-usd), dollars use the original token weights and each feature run gets its share as its maxCostUsd with the initiative's costTolerance. Its cap may grow independently of tokens, only up to the remaining dollars less the priced low estimates of the other waiting features (their whole shares when unpriced); a run that finished its tasks and would stop on its cost ceiling reserves its remaining review and convergence before those lows, inside the dollar cap and its tolerance (workflows.stageReserve: shadow, the default, records decision.would_extend; on grows the run's bound). Split approval warns on dollar shares below their own priced lows; open runs hold their caps. No feature starts on less than $0.01, or once a feature is accepted and the projected total passes the cap and its tolerance.";
+  "Each feature run starts with a share of the remaining shared budget, rounded down: remaining = limit - (usage of finished runs + the limits of open runs, decompose and superseded runs included; an open feature run whose plan is sized counts at the high end of its plan's need at the measured plan-to-actual ratio, never below its usage, instead of its limit, unless stopModes sets initiative-plan-charge to shadow), times the feature's weight, divided by the weights of the features of the approved plan without a run. Tokens are weighted by each feature's estimated need (the high end of its estimate), calls and time by size (small 1, medium 2, large 4). When the remaining pool covers the waiting features' low estimates, token shares reserve any lows that the weighted split would underfund and divide the rest by the same weights. A feature starts only if the remaining pool minus the other waiting features' low estimates covers its own low estimate. Otherwise it waits for a budget extension. A feature run grows its own budget only up to what remains after the low ends of the features still waiting (their whole token shares when none has an estimate; what remains when none waits). A starting feature's calls and active time are what remains less a floor for each other waiting feature (the base policy's per-run limit scaled by size, at most its share), never below its own share. A rebased run takes one more share of the same split. Agent calls per run are capped at 1000. With a dollar budget (--budget-usd), dollars use the original token weights and each feature run gets its share as its maxCostUsd with the initiative's costTolerance. Its cap may grow independently of tokens, only up to the remaining dollars less the priced low estimates of the other waiting features (their whole shares when unpriced); a run that finished its tasks and would stop on its cost ceiling reserves its remaining review and convergence before those lows, inside the dollar cap and its tolerance (workflows.stageReserve: shadow, the default, records decision.would_extend; on grows the run's bound). Split approval warns on dollar shares below their own priced lows; open runs hold their caps. No feature starts on less than $0.01, or once a feature is accepted and the projected total passes the cap and its tolerance.";
 
 /** Digest a person approves for a plan revision: the plan, the budget and the frozen settings. */
 export function splitDigest(
@@ -1800,7 +1800,11 @@ export class InitiativeService {
         // Bench round 60, wheeltags: names and targets waited 39 minutes with free slots (#1925).
         const released = await this.releasePlanned(id, feature.id, runId);
         if (released) started = true;
-        else if (before.has(runId)) continue;
+        else if (this.store.current(id, feature.id)?.run_id !== runId) {
+          // A `write` amendment replaced the run (#2183); the next fill drives its fork.
+          started = true;
+          continue;
+        } else if (before.has(runId)) continue;
         if (!before.has(runId)) before.set(runId, this.workflows.store.run(runId).revision);
         live.set(
           runId,
@@ -2583,17 +2587,19 @@ export class InitiativeService {
       });
       return false;
     }
+    // A path the feature took by a `write` amendment is its own on every later run (#2183).
+    const own = this.ownFeature(row, feature);
     const policy = featurePolicy(
       settings,
       share,
-      feature,
+      own,
       false,
       growthLimit(current, featureId),
       waiting?.shareUsd ?? null,
       costGrowthLimit(current, featureId),
       current.budget.cost.forecastBinding,
     );
-    const declined = featureApprovalDeclined(settings, feature, false, policy);
+    const declined = featureApprovalDeclined(settings, own, false, policy);
     const seed = previous ? null : this.importedSeed(id, settings, plan, feature);
     // A derived command ID makes a start after a crash return the same run instead of a second one.
     const snapshot = await this.workflows.start({
@@ -2611,7 +2617,7 @@ export class InitiativeService {
         featureId,
         features: plan.features.map((f) => ({
           id: f.id,
-          ...f.boundary,
+          ...(f.id === featureId ? own : f).boundary,
           ...(f.testedBy ? { testedBy: f.testedBy } : {}),
           dependsOn: f.dependsOn,
         })),
@@ -3066,8 +3072,9 @@ export class InitiativeService {
     if (!feature) return false;
     const baseCommit = await this.featureBase(id, feature, this.store.settings(row));
     if (!baseCommit) return false;
+    const amendments = this.workflows.config.workflows?.upstreamAmendments;
     if (
-      this.workflows.config.workflows?.upstreamAmendments === true &&
+      (amendments === true || amendments === "write") &&
       (await this.amendUpstream(id, feature, runId, baseCommit))
     )
       return false;
@@ -3170,14 +3177,19 @@ export class InitiativeService {
       return link !== null && this.workflows.store.run(link.run_id).status === "completed";
     };
     if (asked.some((a) => a.answer === "replan" && !settled(a.featureId))) return true;
-    const gaps = await this.upstreamGaps(runId, feature, this.approvedPlan(row), baseCommit);
+    const plan = this.approvedPlan(row);
+    const gaps = await this.upstreamGaps(runId, feature, plan, baseCommit);
     let held = false;
+    let write: UpstreamSymbolGap | null = null;
     for (const owner of [...new Set(gaps.map((g) => g.featureId))]) {
       const link = this.store.current(id, owner);
       const answer = amendmentAnswer({
         ownerRunStatus: link ? this.workflows.store.run(link.run_id).status : null,
         initiativeStatus: row.status,
         requested: asked.some((a) => a.featureId === owner),
+        mode: this.workflows.config.workflows?.upstreamAmendments ?? false,
+        gaps,
+        pathOpen: gaps.some((gap) => this.pathOpen(id, plan, feature.id, gap)),
       });
       if (asked.some((a) => a.featureId === owner)) continue;
       this.store.transaction(() => {
@@ -3193,9 +3205,130 @@ export class InitiativeService {
         });
       });
       if (answer === "replan") held = true;
+      if (answer === "write") write = gaps[0] ?? null;
     }
     if (held) await this.settleSuperseded(id);
-    return held;
+    if (write) await this.writeAmendment(id, feature, runId, baseCommit, write.path);
+    return held || write !== null;
+  }
+
+  /**
+   * Whether a feature other than the requester and the gap's owner, whose run is not finished,
+   * owns the gap's file too: its run may still write it, so the requester does not (#2183).
+   */
+  private pathOpen(
+    id: string,
+    plan: InitiativePlan | null,
+    from: string,
+    gap: UpstreamSymbolGap,
+  ): boolean {
+    const path = gap.path.replaceAll("\\", "/").toLowerCase();
+    return (plan?.features ?? []).some((f) => {
+      if (f.id === from || f.id === gap.featureId) return false;
+      if (
+        !f.boundary.paths.some((glob) => matchGlob(path, glob.replaceAll("\\", "/").toLowerCase()))
+      )
+        return false;
+      const link = this.store.current(id, f.id);
+      return !link || this.workflows.store.run(link.run_id).status !== "completed";
+    });
+  }
+
+  /**
+   * A feature's boundary with the paths it took by `write` amendments under the approved split
+   * (#2183): the readers of its own boundary (tiered approval's allowed paths, `approvedPath`,
+   * the plan's boundary checks) then hold the upstream file it writes.
+   */
+  private ownFeature(row: InitiativeRow, feature: InitiativeFeature): InitiativeFeature {
+    const taken = this.amendments(row)
+      .filter((a) => a.from === feature.id && a.answer === "write")
+      .flatMap((a) => a.gaps.map((g) => g.path))
+      .filter((path) => !feature.boundary.paths.includes(path));
+    if (!taken.length) return feature;
+    return {
+      ...feature,
+      boundary: { ...feature.boundary, paths: [...feature.boundary.paths, ...new Set(taken)] },
+    };
+  }
+
+  /**
+   * The `write` answer to an amendment request (#2183): the requester's held run is cancelled and
+   * a fork of it starts again at its plan stage on the accepted result (`baseCommit`), released,
+   * with `path` in its own boundary and in tiered approval's allowed paths, so a task of its new
+   * plan declares the write. Its spec stays; the owner does not run again.
+   */
+  private async writeAmendment(
+    id: string,
+    feature: InitiativeFeature,
+    runId: string,
+    baseCommit: string,
+    path: string,
+  ): Promise<void> {
+    const row = this.store.get(id);
+    const settings = this.store.settings(row);
+    const own = this.ownFeature(row, feature);
+    const old = this.workflows.store.run(runId);
+    if (!terminalStates.includes(old.status))
+      await this.workflows.cancel(runId, { commandId: newId(), expectedRevision: old.revision });
+    const parent = PolicySchema.parse(JSON.parse(old.policy_json));
+    const limits = parent.autoApproval?.limits;
+    const auto = settings.featureAutoApproval;
+    const policy =
+      parent.autoApproval && limits
+        ? {
+            ...parent,
+            autoApproval: {
+              ...parent.autoApproval,
+              limits: {
+                ...limits,
+                ...(auto ? boundaryLimits(auto, own.boundary.paths) : {}),
+                allowedPaths: [...new Set([...(limits.allowedPaths ?? []), path])],
+              },
+            },
+          }
+        : parent;
+    const dependencies = this.upstreamContracts(id, feature, []).map((u) => ({
+      featureId: u.contract.featureId,
+      contractHash: u.contract.contractHash,
+    }));
+    const open = this.workflows.store.run(runId);
+    const snapshot = await this.workflows.rebase(
+      runId,
+      {
+        commandId: `w-${hashJson({ runId, path, baseCommit }).slice(0, 48)}`,
+        expectedRevision: open.revision,
+      },
+      {
+        dependencies,
+        policy,
+        baseCommit,
+        baseFiles: this.upstreamSpecs(id, feature, []),
+      },
+    );
+    this.workflows.store.transaction(() => {
+      const state = this.workflows.store.state(snapshot.runId);
+      const bounds = state.initiativeBounds;
+      if (bounds) {
+        state.initiativeBounds = {
+          ...bounds,
+          features: bounds.features.map((f) =>
+            f.id === feature.id ? { ...f, paths: own.boundary.paths } : f,
+          ),
+        };
+        this.workflows.store.saveState(snapshot.runId, state);
+      }
+    });
+    this.store.transaction(() => {
+      this.store.supersede(id, runId, `amended to write ${path}`);
+      this.store.link(
+        id,
+        feature.id,
+        snapshot.runId,
+        row.approved_plan_revision ?? 0,
+        featureDigest(feature),
+        "rebase",
+      );
+    });
   }
 
   /** Superseded runs that are still open are cancelled, so they hold no publication or lease. */
@@ -4775,14 +4908,23 @@ const ZERO_LIMITS = { maxTotalTokens: 0, maxAgentCalls: 0, maxActiveMs: 0 };
  * What a starting feature may grow its run budget to: the shared budget that remains less the low
  * end of the estimate of every other feature still waiting for a run. Without it a run grew from
  * its share to its own planning floor and sizing ceiling and held that, so the features after it
- * started on what was left (#1311). Null when no feature has an estimate.
+ * started on what was left (#1311). Never null, as `costGrowthLimit` is not for dollars: when no
+ * waiting feature has an estimate, each other waiting feature reserves its whole token share, and
+ * with none waiting the room is what remains. A null room took the base policy's ceilings, and an
+ * initiative's last open feature never has a waiting feature: R73 evalpin's delivery grew to 8M
+ * and 12M with 3.31M of its 23.9M pool left (#2294).
  */
 export function growthLimit(
   view: Pick<ShareGateView, "budget" | "features">,
   featureId: string,
-): number | null {
-  if (!view.features.some((f) => f.share !== null && f.need)) return null;
-  return Math.max(0, view.budget.remaining.tokens - waitingLowTokens(view, featureId));
+): number {
+  const estimated = view.features.some((f) => f.share !== null && f.need);
+  const reserve = estimated
+    ? waitingLowTokens(view, featureId)
+    : view.features
+        .filter((f) => f.share !== null && f.id !== featureId)
+        .reduce((sum, f) => sum + (f.share?.tokens ?? 0), 0);
+  return Math.max(0, view.budget.remaining.tokens - reserve);
 }
 
 /** The low token estimates of the features still waiting for a run, `featureId` aside. */

@@ -1,5 +1,5 @@
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { runGit } from "../git/status.js";
 import { tmpDir } from "../platform/index.js";
 import type { TaskGraph } from "./schemas.js";
@@ -19,7 +19,14 @@ import type { Task } from "./types.js";
  * each diff with `git apply --check` against the task's base in the run's root (changing no file),
  * and records `host-apply/tasks/<task>.json` (kind `host-apply`, kept in bench traces) with every
  * input and `wouldApply`. The implementer still runs. `replayHostApply` (`trace.ts`) decides each
- * record again; promoting the decision to skip the implementer is a pull request of its own.
+ * record again.
+ *
+ * With the policy's `hostApply: "on"` (setting `quality.hostApply`, #2333) a task the decision
+ * would apply skips its implementer: the host writes each file's final content
+ * (`hostApplyContents`) through the run's journal, as for a host-written task, and the task's
+ * checks decide it; a failing check opens the normal corrective. R73 and R74 had 12 `wouldApply`
+ * decisions, all byte-identical to the reference trees, and one correct refusal; the sessions
+ * cost 29 to 74 percent of those update runs' tokens.
  */
 export const HOST_APPLY_KIND = "host-apply";
 /** One record per planned task with a supplied write: `host-apply/tasks/<task>.json`. */
@@ -71,8 +78,15 @@ export interface HostApplyVerdict {
 /** What `host-apply/tasks/<task>.json` records: the decision's inputs and its verdict. */
 export interface HostApplyRecord extends HostApplyVerdict {
   taskId: string;
-  mode: "shadow";
+  /** `on` when the policy lets the host apply the task (#2333); `shadow` records only. */
+  mode: "shadow" | "on";
   writes: HostApplyWrite[];
+  /**
+   * In `on` mode: whether the host wrote the task's files and skipped its implementer. False with
+   * `applyError` when the decision said apply and the content could not be computed.
+   */
+  applied?: boolean;
+  applyError?: string;
 }
 
 /** Decides from the recorded writes; `replayHostApply` takes another rule to replay. */
@@ -152,7 +166,7 @@ export function regionSections(
  * A Markdown text with a section written in (#2101): in place of the one section of its heading,
  * or appended after a blank line when the text has none. The section's text ends in one newline
  * and is followed by a blank line before a next heading. Null when several sections share the
- * heading. What the host writes once the region decision is promoted; shadow until then.
+ * heading. What the host writes for a section under `hostApply: "on"` (#2333).
  */
 export function applyRegion(text: string, section: string, region: MarkdownRegion): string | null {
   const found = regionSections(text, region);
@@ -171,8 +185,9 @@ export function hostApplyRecord(
   taskId: string,
   writes: HostApplyWrite[],
   decide: HostApplyRule = hostApplyDecision,
+  mode: HostApplyRecord["mode"] = "shadow",
 ): HostApplyRecord {
-  return { taskId, mode: "shadow", writes, ...decide(writes) };
+  return { taskId, mode, writes, ...decide(writes) };
 }
 
 /**
@@ -297,6 +312,72 @@ export async function hostApplyInputs(
 }
 
 /**
+ * The content each write of a task has once the host applies the request's verbatim blocks to
+ * the task's base in `root` (#2333): a whole file as given, a Markdown section written in place
+ * of its heading's one section or appended (`applyRegion`), and diffs applied with `git apply` to
+ * a scratch copy of the file (CRLF hunk lines for a CRLF base, as the decision checked them;
+ * `core.autocrlf` off, so the bytes are the request's). Changes no file of `root`. Throws with
+ * the write that cannot be computed; call it only for a task `hostApplyDecision` would apply.
+ */
+export async function hostApplyContents(
+  root: string,
+  request: string,
+  task: Pick<Task, "writes">,
+): Promise<{ path: string; content: string }[]> {
+  const supplied = suppliedBlocks(
+    request,
+    task.writes.map((w) => w.path),
+  );
+  const out: { path: string; content: string }[] = [];
+  for (const write of task.writes) {
+    const blocks = supplied.get(write.path) ?? [];
+    const target = join(root, write.path);
+    const base = existsSync(target) ? readFileSync(target, "utf8") : null;
+    const [only] = blocks;
+    if (blocks.length === 1 && only?.kind === "file") {
+      const content =
+        base !== null && only.region ? applyRegion(base, only.content, only.region) : only.content;
+      if (content === null) throw new Error(`several sections of ${write.path} share the heading`);
+      out.push({ path: write.path, content });
+      continue;
+    }
+    const patch = blocks.flatMap((b) => (b.kind === "diff" ? [b.patch] : [])).join("");
+    if (!patch || blocks.some((b) => b.kind !== "diff"))
+      throw new Error(`no verbatim block to apply for ${write.path}`);
+    out.push({ path: write.path, content: await appliedPatch(write.path, base, patch) });
+  }
+  return out;
+}
+
+/** A file's text after `git apply` of its patch to a scratch copy of `base` (null: a new file). */
+async function appliedPatch(path: string, base: string | null, patch: string): Promise<string> {
+  const dir = mkdtempSync(join(tmpDir(), "baked-host-apply-"));
+  try {
+    const copy = join(dir, "tree");
+    const file = join(copy, path);
+    mkdirSync(dirname(file), { recursive: true });
+    if (base !== null) writeFileSync(file, base);
+    const apply = async (text: string) => {
+      writeFileSync(join(dir, "task.patch"), text);
+      return runGit(
+        ["-c", "core.autocrlf=false", "apply", "--recount", "-p1", join(dir, "task.patch")],
+        copy,
+        30_000,
+      );
+    };
+    let applied = await apply(patch);
+    if (!applied.ok && base?.includes("\r\n")) applied = await apply(crlfPatch(patch));
+    if (!applied.ok)
+      throw new Error(
+        `the diff for ${path} does not apply: ${applied.stderr.trim().split("\n").at(-1) ?? ""}`,
+      );
+    return readFileSync(file, "utf8");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+/**
  * Planned tasks whose every write the request supplies with one kind of verbatim block and none
  * deletes, for the plan approval (#2023). Reads the request only: whether a diff applies is
  * checked when the task starts, against its base then. Host-written tasks are left out.
@@ -321,10 +402,14 @@ export function hostAppliableTasks(request: string, graph: Pick<TaskGraph, "task
 }
 
 /** The approval's line naming the host-appliable tasks; null when there are none. */
-export function hostApplyText(taskIds: readonly string[]): string | null {
-  return taskIds.length
-    ? `Host-appliable from the request's verbatim content: ${taskIds.join(", ")} (shadow: the host records whether each would apply, and an implementer still runs)`
-    : null;
+export function hostApplyText(
+  taskIds: readonly string[],
+  mode: HostApplyRecord["mode"] = "shadow",
+): string | null {
+  if (!taskIds.length) return null;
+  return mode === "on"
+    ? `Host-applied from the request's verbatim content: ${taskIds.join(", ")} (the host writes each one whose diffs apply to its base when it starts, with no implementer session; its checks decide it)`
+    : `Host-appliable from the request's verbatim content: ${taskIds.join(", ")} (shadow: the host records whether each would apply, and an implementer still runs)`;
 }
 
 /** The run's recorded apply decisions, latest per task, in task order. */
@@ -348,10 +433,20 @@ export function hostApplyRecords(
 export function hostApplySummary(
   store: Pick<WorkflowStore, "artifacts" | "readArtifact">,
   runId: string,
-): { taskId: string; wouldApply: boolean; reason: string | null }[] {
-  return hostApplyRecords(store, runId).map(({ taskId, wouldApply, reason }) => ({
-    taskId,
-    wouldApply,
-    reason,
-  }));
+): {
+  taskId: string;
+  wouldApply: boolean;
+  reason: string | null;
+  applied?: boolean;
+  applyError?: string;
+}[] {
+  return hostApplyRecords(store, runId).map(
+    ({ taskId, wouldApply, reason, applied, applyError }) => ({
+      taskId,
+      wouldApply,
+      reason,
+      ...(applied !== undefined ? { applied } : {}),
+      ...(applyError ? { applyError } : {}),
+    }),
+  );
 }
