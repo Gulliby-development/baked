@@ -1792,7 +1792,11 @@ export class InitiativeService {
         // Bench round 60, wheeltags: names and targets waited 39 minutes with free slots (#1925).
         const released = await this.releasePlanned(id, feature.id, runId);
         if (released) started = true;
-        else if (before.has(runId)) continue;
+        else if (this.store.current(id, feature.id)?.run_id !== runId) {
+          // A `write` amendment replaced the run (#2183); the next fill drives its fork.
+          started = true;
+          continue;
+        } else if (before.has(runId)) continue;
         if (!before.has(runId)) before.set(runId, this.workflows.store.run(runId).revision);
         live.set(
           runId,
@@ -2564,17 +2568,19 @@ export class InitiativeService {
       });
       return false;
     }
+    // A path the feature took by a `write` amendment is its own on every later run (#2183).
+    const own = this.ownFeature(row, feature);
     const policy = featurePolicy(
       settings,
       share,
-      feature,
+      own,
       false,
       growthLimit(current, featureId),
       waiting?.shareUsd ?? null,
       costGrowthLimit(current, featureId),
       current.budget.cost.forecastBinding,
     );
-    const declined = featureApprovalDeclined(settings, feature, false, policy);
+    const declined = featureApprovalDeclined(settings, own, false, policy);
     const seed = previous ? null : this.importedSeed(id, settings, plan, feature);
     // A derived command ID makes a start after a crash return the same run instead of a second one.
     const snapshot = await this.workflows.start({
@@ -2592,7 +2598,7 @@ export class InitiativeService {
         featureId,
         features: plan.features.map((f) => ({
           id: f.id,
-          ...f.boundary,
+          ...(f.id === featureId ? own : f).boundary,
           ...(f.testedBy ? { testedBy: f.testedBy } : {}),
           dependsOn: f.dependsOn,
         })),
@@ -3047,8 +3053,9 @@ export class InitiativeService {
     if (!feature) return false;
     const baseCommit = await this.featureBase(id, feature, this.store.settings(row));
     if (!baseCommit) return false;
+    const amendments = this.workflows.config.workflows?.upstreamAmendments;
     if (
-      this.workflows.config.workflows?.upstreamAmendments === true &&
+      (amendments === true || amendments === "write") &&
       (await this.amendUpstream(id, feature, runId, baseCommit))
     )
       return false;
@@ -3151,14 +3158,19 @@ export class InitiativeService {
       return link !== null && this.workflows.store.run(link.run_id).status === "completed";
     };
     if (asked.some((a) => a.answer === "replan" && !settled(a.featureId))) return true;
-    const gaps = await this.upstreamGaps(runId, feature, this.approvedPlan(row), baseCommit);
+    const plan = this.approvedPlan(row);
+    const gaps = await this.upstreamGaps(runId, feature, plan, baseCommit);
     let held = false;
+    let write: UpstreamSymbolGap | null = null;
     for (const owner of [...new Set(gaps.map((g) => g.featureId))]) {
       const link = this.store.current(id, owner);
       const answer = amendmentAnswer({
         ownerRunStatus: link ? this.workflows.store.run(link.run_id).status : null,
         initiativeStatus: row.status,
         requested: asked.some((a) => a.featureId === owner),
+        mode: this.workflows.config.workflows?.upstreamAmendments ?? false,
+        gaps,
+        pathOpen: gaps.some((gap) => this.pathOpen(id, plan, feature.id, gap)),
       });
       if (asked.some((a) => a.featureId === owner)) continue;
       this.store.transaction(() => {
@@ -3174,9 +3186,130 @@ export class InitiativeService {
         });
       });
       if (answer === "replan") held = true;
+      if (answer === "write") write = gaps[0] ?? null;
     }
     if (held) await this.settleSuperseded(id);
-    return held;
+    if (write) await this.writeAmendment(id, feature, runId, baseCommit, write.path);
+    return held || write !== null;
+  }
+
+  /**
+   * Whether a feature other than the requester and the gap's owner, whose run is not finished,
+   * owns the gap's file too: its run may still write it, so the requester does not (#2183).
+   */
+  private pathOpen(
+    id: string,
+    plan: InitiativePlan | null,
+    from: string,
+    gap: UpstreamSymbolGap,
+  ): boolean {
+    const path = gap.path.replaceAll("\\", "/").toLowerCase();
+    return (plan?.features ?? []).some((f) => {
+      if (f.id === from || f.id === gap.featureId) return false;
+      if (
+        !f.boundary.paths.some((glob) => matchGlob(path, glob.replaceAll("\\", "/").toLowerCase()))
+      )
+        return false;
+      const link = this.store.current(id, f.id);
+      return !link || this.workflows.store.run(link.run_id).status !== "completed";
+    });
+  }
+
+  /**
+   * A feature's boundary with the paths it took by `write` amendments under the approved split
+   * (#2183): the readers of its own boundary (tiered approval's allowed paths, `approvedPath`,
+   * the plan's boundary checks) then hold the upstream file it writes.
+   */
+  private ownFeature(row: InitiativeRow, feature: InitiativeFeature): InitiativeFeature {
+    const taken = this.amendments(row)
+      .filter((a) => a.from === feature.id && a.answer === "write")
+      .flatMap((a) => a.gaps.map((g) => g.path))
+      .filter((path) => !feature.boundary.paths.includes(path));
+    if (!taken.length) return feature;
+    return {
+      ...feature,
+      boundary: { ...feature.boundary, paths: [...feature.boundary.paths, ...new Set(taken)] },
+    };
+  }
+
+  /**
+   * The `write` answer to an amendment request (#2183): the requester's held run is cancelled and
+   * a fork of it starts again at its plan stage on the accepted result (`baseCommit`), released,
+   * with `path` in its own boundary and in tiered approval's allowed paths, so a task of its new
+   * plan declares the write. Its spec stays; the owner does not run again.
+   */
+  private async writeAmendment(
+    id: string,
+    feature: InitiativeFeature,
+    runId: string,
+    baseCommit: string,
+    path: string,
+  ): Promise<void> {
+    const row = this.store.get(id);
+    const settings = this.store.settings(row);
+    const own = this.ownFeature(row, feature);
+    const old = this.workflows.store.run(runId);
+    if (!terminalStates.includes(old.status))
+      await this.workflows.cancel(runId, { commandId: newId(), expectedRevision: old.revision });
+    const parent = PolicySchema.parse(JSON.parse(old.policy_json));
+    const limits = parent.autoApproval?.limits;
+    const auto = settings.featureAutoApproval;
+    const policy =
+      parent.autoApproval && limits
+        ? {
+            ...parent,
+            autoApproval: {
+              ...parent.autoApproval,
+              limits: {
+                ...limits,
+                ...(auto ? boundaryLimits(auto, own.boundary.paths) : {}),
+                allowedPaths: [...new Set([...(limits.allowedPaths ?? []), path])],
+              },
+            },
+          }
+        : parent;
+    const dependencies = this.upstreamContracts(id, feature, []).map((u) => ({
+      featureId: u.contract.featureId,
+      contractHash: u.contract.contractHash,
+    }));
+    const open = this.workflows.store.run(runId);
+    const snapshot = await this.workflows.rebase(
+      runId,
+      {
+        commandId: `w-${hashJson({ runId, path, baseCommit }).slice(0, 48)}`,
+        expectedRevision: open.revision,
+      },
+      {
+        dependencies,
+        policy,
+        baseCommit,
+        baseFiles: this.upstreamSpecs(id, feature, []),
+      },
+    );
+    this.workflows.store.transaction(() => {
+      const state = this.workflows.store.state(snapshot.runId);
+      const bounds = state.initiativeBounds;
+      if (bounds) {
+        state.initiativeBounds = {
+          ...bounds,
+          features: bounds.features.map((f) =>
+            f.id === feature.id ? { ...f, paths: own.boundary.paths } : f,
+          ),
+        };
+        this.workflows.store.saveState(snapshot.runId, state);
+      }
+    });
+    this.store.transaction(() => {
+      this.store.supersede(id, runId, `amended to write ${path}`);
+      this.store.link(
+        id,
+        feature.id,
+        snapshot.runId,
+        row.approved_plan_revision ?? 0,
+        featureDigest(feature),
+        "rebase",
+      );
+    });
   }
 
   /** Superseded runs that are still open are cancelled, so they hold no publication or lease. */
