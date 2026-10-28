@@ -419,6 +419,7 @@ export function initiativeActions(
       view.next.recovery,
       view.budget.pool?.suggestedTokens,
       view.budget.time?.suggestedMs,
+      view.budget.calls?.suggestedCalls,
     );
     options.push({
       key: "B",
@@ -441,18 +442,23 @@ export function initiativeActions(
   return options;
 }
 
-/** The B form's prefilled answer from a suggestion: `33100000`, `- - 540m`, `- $31.50`, or empty. */
+/**
+ * The B form's prefilled answer from a suggestion: `33100000`, `- 600`, `- - 540m`, `- $31.50`,
+ * or empty.
+ */
 function suggestedText(
   suggested: ExtendAmounts | null,
-  limits: { maxTotalTokens: number; maxActiveMs: number },
+  limits: { maxTotalTokens: number; maxAgentCalls: number; maxActiveMs: number },
 ): string {
   const tokens =
     suggested?.tokens && suggested.tokens > limits.maxTotalTokens ? suggested.tokens : null;
+  const calls = suggested?.calls && suggested.calls > limits.maxAgentCalls ? suggested.calls : null;
   const time = suggested?.timeMs && suggested.timeMs > limits.maxActiveMs ? suggested.timeMs : null;
-  if (!tokens && !time && !suggested?.usd) return "";
+  if (!tokens && !calls && !time && !suggested?.usd) return "";
   return [
     tokens ? String(tokens) : "-",
-    ...(time ? ["-", `${Math.ceil(time / 60_000)}m`] : []),
+    ...(calls || time ? [calls ? String(calls) : "-"] : []),
+    ...(time ? [`${Math.ceil(time / 60_000)}m`] : []),
     ...(suggested?.usd ? [`$${suggested.usd.toFixed(2)}`] : []),
   ].join(" ");
 }

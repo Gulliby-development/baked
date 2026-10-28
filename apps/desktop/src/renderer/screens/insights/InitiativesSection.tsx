@@ -745,6 +745,7 @@ function Detail({ projectKey, id }: { projectKey: string; id: string }) {
                 ...(suggested.tokens ? { tokens: suggested.tokens } : {}),
                 ...(suggested.usd ? { costUsd: suggested.usd } : {}),
                 ...(suggested.timeMs ? { timeMs: suggested.timeMs } : {}),
+                ...(suggested.calls ? { calls: suggested.calls } : {}),
               }),
             )}
           >
@@ -771,6 +772,11 @@ function Detail({ projectKey, id }: { projectKey: string; id: string }) {
       {view.budget.timeNotice && (
         <p className="m-0 text-[12px] text-[var(--warn)]">
           Time forecast: {view.budget.timeNotice}
+        </p>
+      )}
+      {view.budget.callsNotice && (
+        <p className="m-0 text-[12px] text-[var(--warn)]">
+          Calls forecast: {view.budget.callsNotice}
         </p>
       )}
       {criticalPathLine(view) && (
