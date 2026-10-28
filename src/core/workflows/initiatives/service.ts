@@ -1171,7 +1171,7 @@ export function planBudget(settings: InitiativeSettings, plan: InitiativePlan): 
 export const MIN_SHARE = { maxTotalTokens: 1000, maxAgentCalls: 1, maxActiveMs: 1000 } as const;
 
 export const BUDGET_RULE =
-  "Each feature run starts with a share of the remaining shared budget, rounded down: remaining = limit - (usage of finished runs + the limits of open runs, decompose and superseded runs included; an open feature run whose plan is sized counts at the high end of its plan's need at the measured plan-to-actual ratio, never below its usage, instead of its limit, unless stopModes sets initiative-plan-charge to shadow), times the feature's weight, divided by the weights of the features of the approved plan without a run. Tokens are weighted by each feature's estimated need (the high end of its estimate), calls and time by size (small 1, medium 2, large 4). When the remaining pool covers the waiting features' low estimates, token shares reserve any lows that the weighted split would underfund and divide the rest by the same weights. A feature starts only if the remaining pool minus the other waiting features' low estimates covers its own low estimate. Otherwise it waits for a budget extension. A feature run grows its own budget only up to what remains after the low ends of the features still waiting. A starting feature's calls and active time are what remains less a floor for each other waiting feature (the base policy's per-run limit scaled by size, at most its share), never below its own share. A rebased run takes one more share of the same split. Agent calls per run are capped at 1000. With a dollar budget (--budget-usd), dollars use the original token weights and each feature run gets its share as its maxCostUsd with the initiative's costTolerance. Its cap may grow independently of tokens, only up to the remaining dollars less the priced low estimates of the other waiting features (their whole shares when unpriced); a run that finished its tasks and would stop on its cost ceiling reserves its remaining review and convergence before those lows, inside the dollar cap and its tolerance (workflows.stageReserve: shadow, the default, records decision.would_extend; on grows the run's bound). Split approval warns on dollar shares below their own priced lows; open runs hold their caps. No feature starts on less than $0.01, or once a feature is accepted and the projected total passes the cap and its tolerance.";
+  "Each feature run starts with a share of the remaining shared budget, rounded down: remaining = limit - (usage of finished runs + the limits of open runs, decompose and superseded runs included; an open feature run whose plan is sized counts at the high end of its plan's need at the measured plan-to-actual ratio, never below its usage, instead of its limit, unless stopModes sets initiative-plan-charge to shadow), times the feature's weight, divided by the weights of the features of the approved plan without a run. Tokens are weighted by each feature's estimated need (the high end of its estimate), calls and time by size (small 1, medium 2, large 4). When the remaining pool covers the waiting features' low estimates, token shares reserve any lows that the weighted split would underfund and divide the rest by the same weights. A feature starts only if the remaining pool minus the other waiting features' low estimates covers its own low estimate. Otherwise it waits for a budget extension. A feature run grows its own budget only up to what remains after the low ends of the features still waiting (their whole token shares when none has an estimate; what remains when none waits). A starting feature's calls and active time are what remains less a floor for each other waiting feature (the base policy's per-run limit scaled by size, at most its share), never below its own share. A rebased run takes one more share of the same split. Agent calls per run are capped at 1000. With a dollar budget (--budget-usd), dollars use the original token weights and each feature run gets its share as its maxCostUsd with the initiative's costTolerance. Its cap may grow independently of tokens, only up to the remaining dollars less the priced low estimates of the other waiting features (their whole shares when unpriced); a run that finished its tasks and would stop on its cost ceiling reserves its remaining review and convergence before those lows, inside the dollar cap and its tolerance (workflows.stageReserve: shadow, the default, records decision.would_extend; on grows the run's bound). Split approval warns on dollar shares below their own priced lows; open runs hold their caps. No feature starts on less than $0.01, or once a feature is accepted and the projected total passes the cap and its tolerance.";
 
 /** Digest a person approves for a plan revision: the plan, the budget and the frozen settings. */
 export function splitDigest(
@@ -4756,14 +4756,23 @@ const ZERO_LIMITS = { maxTotalTokens: 0, maxAgentCalls: 0, maxActiveMs: 0 };
  * What a starting feature may grow its run budget to: the shared budget that remains less the low
  * end of the estimate of every other feature still waiting for a run. Without it a run grew from
  * its share to its own planning floor and sizing ceiling and held that, so the features after it
- * started on what was left (#1311). Null when no feature has an estimate.
+ * started on what was left (#1311). Never null, as `costGrowthLimit` is not for dollars: when no
+ * waiting feature has an estimate, each other waiting feature reserves its whole token share, and
+ * with none waiting the room is what remains. A null room took the base policy's ceilings, and an
+ * initiative's last open feature never has a waiting feature: R73 evalpin's delivery grew to 8M
+ * and 12M with 3.31M of its 23.9M pool left (#2294).
  */
 export function growthLimit(
   view: Pick<ShareGateView, "budget" | "features">,
   featureId: string,
-): number | null {
-  if (!view.features.some((f) => f.share !== null && f.need)) return null;
-  return Math.max(0, view.budget.remaining.tokens - waitingLowTokens(view, featureId));
+): number {
+  const estimated = view.features.some((f) => f.share !== null && f.need);
+  const reserve = estimated
+    ? waitingLowTokens(view, featureId)
+    : view.features
+        .filter((f) => f.share !== null && f.id !== featureId)
+        .reduce((sum, f) => sum + (f.share?.tokens ?? 0), 0);
+  return Math.max(0, view.budget.remaining.tokens - reserve);
 }
 
 /** The low token estimates of the features still waiting for a run, `featureId` aside. */
