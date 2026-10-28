@@ -96,6 +96,13 @@ export class LspBackend implements IntelligenceBackend {
   private serverErrors = new Map<string, LspServerError>();
   /** Pending init promises for deduplication (keyed by langKey) */
   private pendingInits = new Map<string, Promise<StandaloneLspClient[]>>();
+  /**
+   * Clients whose process runs but whose handshake has not finished. Stopping the backend or the
+   * servers under a path stops these too: a server left starting kept its working directory busy
+   * on Windows after the backend was gone (#2268).
+   */
+  private startingClients = new Set<StandaloneLspClient>();
+  private disposed = false;
 
   async initialize(cwd: string): Promise<void> {
     this.cwd = cwd;
@@ -992,6 +999,11 @@ export class LspBackend implements IntelligenceBackend {
     for (const entry of this.standaloneClients) {
       if (isPathWithin(entry[1].workspaceRoot, path)) doomed.push(entry);
     }
+    const starting = [...this.startingClients].filter((c) => isPathWithin(c.workspaceRoot, path));
+    for (const client of starting) {
+      this.startingClients.delete(client);
+      await client.stop().catch(() => {});
+    }
     for (const [key, client] of doomed) {
       this.standaloneClients.delete(key);
       for (const [langKey, clients] of this.languageClients) {
@@ -1002,13 +1014,15 @@ export class LspBackend implements IntelligenceBackend {
       }
       await client.stop().catch(() => {});
     }
-    return doomed.length;
+    return doomed.length + starting.length;
   }
 
   dispose(): void {
-    for (const client of this.standaloneClients.values()) {
+    this.disposed = true;
+    for (const client of [...this.standaloneClients.values(), ...this.startingClients]) {
       client.stop().catch(() => {});
     }
+    this.startingClients.clear();
     this.standaloneClients.clear();
     this.languageClients.clear();
     this.failedServers.clear();
@@ -1134,13 +1148,23 @@ export class LspBackend implements IntelligenceBackend {
       }
 
       const client = new StandaloneLspClient(config, projectRoot);
+      this.startingClients.add(client);
       try {
         await client.start();
+        // Stopped while starting: the backend was disposed or its directory is about to go.
+        if (!this.startingClients.delete(client) || this.disposed) {
+          await client.stop().catch(() => {});
+          continue;
+        }
         this.standaloneClients.set(serverKey, client);
         this.failedServers.delete(serverKey);
         this.serverErrors.delete(config.command);
         clients.push(client);
       } catch (error) {
+        // A server that failed its handshake is still running: stop it, not just forget it.
+        const stopped = !this.startingClients.delete(client);
+        client.stop().catch(() => {});
+        if (stopped || this.disposed) continue;
         this.failedServers.set(serverKey, Date.now());
         this.serverErrors.set(config.command, {
           command: config.command,
