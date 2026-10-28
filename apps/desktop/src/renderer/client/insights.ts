@@ -181,6 +181,19 @@ export interface InitiativeTime {
   notice: string | null;
 }
 
+/** The shared agent calls (`budget.calls`, #2345): their forecast at the measured calls per token. */
+export interface InitiativeCalls {
+  limitCalls: number;
+  usedCalls: number;
+  committedCalls: number;
+  pace: { callsPerMillion: number; basis: "initiative" | "history"; runs: number } | null;
+  forecastCalls: number | null;
+  coverCalls: number | null;
+  /** What the forecast suggests extending the calls to; null while it fits. */
+  suggestedCalls: number | null;
+  notice: string | null;
+}
+
 export type FeatureSize = "small" | "medium" | "large";
 
 /** `GET /v1/initiatives/:id`, as `baked workflow initiative show` prints it. */
@@ -231,6 +244,10 @@ export interface InitiativeView {
     time?: InitiativeTime | null;
     /** Set while the time forecast is above the shared time; absent on older backends. */
     timeNotice?: string | null;
+    /** The shared calls' forecast at the measured calls per token (#2345); absent on older backends. */
+    calls?: InitiativeCalls | null;
+    /** Set while the calls forecast is above the shared calls; absent on older backends. */
+    callsNotice?: string | null;
   };
   next: InitiativeNext;
   drive?: InitiativeDrive | null;

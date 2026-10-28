@@ -80,6 +80,13 @@ import { loadDefinition } from "../v2/definitions.js";
 import { loadGateLibrary } from "../v2/library.js";
 import { autoApprovalPolicy } from "../v2/runtime.js";
 import { mergedBase, provisionalBase, worktreeBase } from "../worktree.js";
+import {
+  type CallsPoolView,
+  callsPool,
+  callsRaise,
+  finishedRunCallRate,
+  initiativeCallsPace,
+} from "./calls-pool.js";
 import { criticalPathSummary, planWidth, remainingPath } from "./critical-path.js";
 import { DECOMPOSE_WORKFLOW_ID } from "./decompose.js";
 import { type InitiativeDriveState, initiativeDriveState } from "./drive-state.js";
@@ -501,6 +508,13 @@ export interface InitiativeView {
     time: TimePoolView | null;
     /** The time forecast's notice (`time.notice`): set while the forecast is above the limit. */
     timeNotice: string | null;
+    /**
+     * The shared agent calls' forecast at the measured calls per token and what to extend them to
+     * (#2345). Null before approval.
+     */
+    calls: CallsPoolView | null;
+    /** The calls forecast's notice (`calls.notice`): set while the forecast is above the limit. */
+    callsNotice: string | null;
     rule: string;
   };
   next: NextAction;
@@ -550,7 +564,9 @@ export interface ShareGateView {
    * events have none of them.
    */
   budget: Pick<InitiativeView["budget"], "remaining" | "cost"> &
-    Partial<Pick<InitiativeView["budget"], "limits" | "used" | "pool" | "planCharge" | "time">>;
+    Partial<
+      Pick<InitiativeView["budget"], "limits" | "used" | "pool" | "planCharge" | "time" | "calls">
+    >;
   /** `shareUsd` and `needUsd` are recorded from #1890 on; older events have neither. */
   features: (Pick<FeatureView, "id" | "state" | "share" | "need"> &
     Partial<Pick<FeatureView, "shareUsd" | "needUsd">>)[];
@@ -614,11 +630,13 @@ function extendAdvice(
     tokens?: number | null;
     usd?: number | null;
     timeMs?: number | null;
+    calls?: number | null;
     fallback?: string;
   },
 ): RecoveryAdvice {
   const flags = [
     ...(amounts.tokens ? [`--tokens ${amounts.tokens}`] : []),
+    ...(amounts.calls ? [`--calls ${amounts.calls}`] : []),
     ...(amounts.usd ? [`--budget-usd ${amounts.usd}`] : []),
     ...(amounts.timeMs ? [`--time-ms ${amounts.timeMs}`] : []),
   ];
@@ -630,6 +648,7 @@ function extendAdvice(
     ...(amounts.tokens ? { suggestedTokens: amounts.tokens } : {}),
     ...(amounts.usd ? { suggestedUsd: amounts.usd } : {}),
     ...(amounts.timeMs ? { suggestedTimeMs: amounts.timeMs } : {}),
+    ...(amounts.calls ? { suggestedCalls: amounts.calls } : {}),
   });
 }
 
@@ -702,11 +721,15 @@ export function shareShortfall(
     // The shared time names its amount as the tokens do (#2336).
     const timeMs =
       (share?.activeMs ?? 0) < MIN_SHARE.maxActiveMs ? timeRaise(view.budget.time) : null;
-    const summary = `The shared budget is exhausted: ${feature.id} would start with ${share?.tokens ?? 0} tokens, ${share?.calls ?? 0} calls and ${share?.activeMs ?? 0} ms.${cover ? ` A pool of ${tokenText(cover)} tokens covers the high estimates of the waiting features.${capClause}` : ""}${timeMs ? ` A shared time of ${Math.round(timeMs / 60_000)} min covers ${view.budget.time?.suggestedMs ? "the time forecast at the measured pace" : "the high estimates of the waiting features at the measured pace"}.` : ""}`;
+    // The shared calls name their amount as the time does (#2345).
+    const calls =
+      (share?.calls ?? 0) < MIN_SHARE.maxAgentCalls ? callsRaise(view.budget.calls) : null;
+    const summary = `The shared budget is exhausted: ${feature.id} would start with ${share?.tokens ?? 0} tokens, ${share?.calls ?? 0} calls and ${share?.activeMs ?? 0} ms.${cover ? ` A pool of ${tokenText(cover)} tokens covers the high estimates of the waiting features.${capClause}` : ""}${timeMs ? ` A shared time of ${Math.round(timeMs / 60_000)} min covers ${view.budget.time?.suggestedMs ? "the time forecast at the measured pace" : "the high estimates of the waiting features at the measured pace"}.` : ""}${calls ? ` A limit of ${calls} calls covers ${view.budget.calls?.suggestedCalls ? "the calls forecast at the measured calls per token" : "the high estimates of the waiting features at the measured calls per token"}.` : ""}`;
     return extendAdvice(id, summary, summary, {
       tokens: remedy?.tokens,
       usd: remedy?.usd,
       timeMs,
+      calls,
     });
   }
   const available = growthLimit(view, feature.id);
@@ -1758,6 +1781,7 @@ export class InitiativeService {
       const view = this.view(id);
       this.noteTokenForecast(view, null);
       this.noteTimeForecast(view, null);
+      this.noteCallsForecast(view, null);
       this.notePlanCharge(view, null);
       this.noteStoredLimitResumes(view);
       const next = view.next;
@@ -1828,6 +1852,7 @@ export class InitiativeService {
       let view = this.view(id);
       this.noteTokenForecast(view, null);
       this.noteTimeForecast(view, null);
+      this.noteCallsForecast(view, null);
       this.notePlanCharge(view, null);
       this.noteStoredLimitResumes(view);
       for (;;) {
@@ -2247,6 +2272,7 @@ export class InitiativeService {
         pool: view.budget.pool,
         ...(view.budget.planCharge ? { planCharge: view.budget.planCharge } : {}),
         ...(view.budget.time ? { time: view.budget.time } : {}),
+        ...(view.budget.calls ? { calls: view.budget.calls } : {}),
       },
       features: view.features.map((f) => ({
         id: f.id,
@@ -2296,6 +2322,7 @@ export class InitiativeService {
     if (verdict === "pass") {
       this.noteTokenForecast(view, feature.id);
       this.noteTimeForecast(view, feature.id);
+      this.noteCallsForecast(view, feature.id);
     }
     if (growth?.wouldExtend) this.noteWouldExtend(gateView, feature.id, growth);
     this.notePlanCharge(view, { view: gateView, feature, verdict });
@@ -2360,6 +2387,28 @@ export class InitiativeService {
       pace: time.pace,
       suggestedMs: time.suggestedMs,
       message: time.notice,
+    });
+  }
+
+  /**
+   * A `budget.calls_notice` event the first time a drive sees the calls forecast above the shared
+   * calls, once per limit (#2345), beside the time one.
+   */
+  private noteCallsForecast(view: InitiativeView, featureId: string | null): void {
+    const calls = view.budget.calls;
+    if (!calls?.notice) return;
+    const noted = this.store
+      .eventsOfType(view.initiativeId, "budget.calls_notice")
+      .some((p) => (p as { limitCalls?: number } | null)?.limitCalls === calls.limitCalls);
+    if (noted) return;
+    this.store.emit(view.initiativeId, "budget.calls_notice", {
+      featureId,
+      limitCalls: calls.limitCalls,
+      usedCalls: calls.usedCalls,
+      forecastCalls: calls.forecastCalls,
+      pace: calls.pace,
+      suggestedCalls: calls.suggestedCalls,
+      message: calls.notice,
     });
   }
 
@@ -3704,6 +3753,33 @@ export class InitiativeService {
           slots: this.parallelRuns(settings, plan, facts),
         })
       : null;
+    const calls = approved
+      ? callsPool({
+          initiativeId: row.id,
+          limitCalls: limits.maxAgentCalls,
+          usedCalls: used.calls,
+          committedCalls: committed.calls,
+          usedTokens: used.tokens,
+          forecastTokens:
+            pool?.forecastTokens == null
+              ? null
+              : Math.max(pool.forecastTokens, pool.advice?.forecastTokens ?? 0),
+          pace: initiativeCallsPace(
+            this.store.links(id).flatMap((link) => {
+              const run = this.workflows.store.run(link.run_id);
+              const rate = finishedRunCallRate({
+                status: run.status,
+                tokens: run.token_usage,
+                calls: run.agent_calls,
+              });
+              return rate === null ? [] : [rate];
+            }),
+            estimate?.callsPace ?? null,
+          ),
+          waitingHighTokens: waitingForRun.reduce((sum, f) => sum + (f.need?.high ?? 0), 0),
+          features: features.length,
+        })
+      : null;
     const unstarted = waitingForRun.length;
     // The share of the feature that starts next, by the same order the drive starts them in.
     const nextShare =
@@ -3771,6 +3847,8 @@ export class InitiativeService {
         forecastNotice: pool?.notice ?? null,
         time,
         timeNotice: time?.notice ?? null,
+        calls,
+        callsNotice: calls?.notice ?? null,
         rule: BUDGET_RULE,
       },
       next: { kind: "done", featureId: null, runId: null, message: "" },
@@ -4870,6 +4948,7 @@ function featureRunSamples(
           tokens: run.tokens,
           taskCount: run.taskCount,
           activeMs: run.activeMs,
+          calls: run.calls,
           criteria: runStore.state(run.runId).spec?.criteria.length,
           // A stub it created for a later feature counts at its share, not as a path (#1464).
           ...revision?.counts.get(feature.id),

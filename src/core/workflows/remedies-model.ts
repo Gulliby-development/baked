@@ -42,6 +42,8 @@ export interface Remedy {
   suggestedUsd?: number;
   /** For `extend`: the active-time limit in ms that answers the block (#2336). */
   suggestedTimeMs?: number;
+  /** For `extend`: the shared agent-calls limit that answers the block (#2345). */
+  suggestedCalls?: number;
   /** For `accept-limitation`: the required check whose timeouts the run would accept. */
   checkId?: string;
   /** For `route`, `widen` and `upstream`: the blocked corrective. */
@@ -66,47 +68,60 @@ export function recoveryAdvice(
   return { message, summary, remedies };
 }
 
-/** The amounts an `extend` answer suggests: a token pool, a dollar cap, an active time in ms. */
+/**
+ * The amounts an `extend` answer suggests: a token pool, a dollar cap, an active time in ms, a
+ * shared agent-calls limit.
+ */
 export interface ExtendAmounts {
   tokens?: number;
   usd?: number;
   timeMs?: number;
+  calls?: number;
 }
 
 /**
  * The amounts an `extend` answer suggests (#2042): those on the block's remedy, else the token
- * forecast's suggested pool and the time forecast's suggested time (#2336). Null when nothing
- * names an amount. Front ends prefill their extend form with it, so the answer is one command or
- * one click.
+ * forecast's suggested pool, the time forecast's suggested time (#2336) and the calls forecast's
+ * suggested limit (#2345). Null when nothing names an amount. Front ends prefill their extend
+ * form with it, so the answer is one command or one click.
  */
 export function extendSuggestion(
   advice: RecoveryAdvice | null | undefined,
   poolSuggested?: number | null,
   timeSuggested?: number | null,
+  callsSuggested?: number | null,
 ): ExtendAmounts | null {
   const remedy = advice?.remedies.find(
-    (r) => r.action === "extend" && (r.suggestedTokens || r.suggestedUsd || r.suggestedTimeMs),
+    (r) =>
+      r.action === "extend" &&
+      (r.suggestedTokens || r.suggestedUsd || r.suggestedTimeMs || r.suggestedCalls),
   );
   if (remedy)
     return {
       ...(remedy.suggestedTokens ? { tokens: remedy.suggestedTokens } : {}),
       ...(remedy.suggestedUsd ? { usd: remedy.suggestedUsd } : {}),
       ...(remedy.suggestedTimeMs ? { timeMs: remedy.suggestedTimeMs } : {}),
+      ...(remedy.suggestedCalls ? { calls: remedy.suggestedCalls } : {}),
     };
-  if (!poolSuggested && !timeSuggested) return null;
+  if (!poolSuggested && !timeSuggested && !callsSuggested) return null;
   return {
     ...(poolSuggested ? { tokens: poolSuggested } : {}),
     ...(timeSuggested ? { timeMs: timeSuggested } : {}),
+    ...(callsSuggested ? { calls: callsSuggested } : {}),
   };
 }
 
-/** A suggested amount in words, for a remedy label: "33.1M tokens", "$31.50", "540 min" or all. */
+/**
+ * A suggested amount in words, for a remedy label: "33.1M tokens", "$31.50", "540 min",
+ * "600 calls" or several.
+ */
 export function suggestionText(suggestion: ExtendAmounts | null): string {
   if (!suggestion) return "";
   return [
     ...(suggestion.tokens ? [`${(suggestion.tokens / 1_000_000).toFixed(1)}M tokens`] : []),
     ...(suggestion.usd ? [`$${suggestion.usd.toFixed(2)}`] : []),
     ...(suggestion.timeMs ? [`${Math.round(suggestion.timeMs / 60_000)} min`] : []),
+    ...(suggestion.calls ? [`${suggestion.calls} calls`] : []),
   ].join(" and ");
 }
 
@@ -143,7 +158,12 @@ export function recoveryOf(value: unknown): RecoveryAdvice | undefined {
       if (field !== undefined && typeof field !== "string") return undefined;
       if (key in entry) remedy[key] = field;
     }
-    for (const key of ["suggestedTokens", "suggestedUsd", "suggestedTimeMs"] as const) {
+    for (const key of [
+      "suggestedTokens",
+      "suggestedUsd",
+      "suggestedTimeMs",
+      "suggestedCalls",
+    ] as const) {
       const field = entry[key];
       if (field === undefined) continue;
       if (typeof field !== "number" || !Number.isFinite(field) || field <= 0) return undefined;

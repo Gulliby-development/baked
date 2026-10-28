@@ -24,6 +24,7 @@ import {
 export { type HighCalibration, highCalibrationText, MIN_HIGH_RATIO_SAMPLES };
 
 import type { TestCaseRate } from "../sizing.js";
+import { callsPerToken, finishedRunCallRate } from "./calls-pool.js";
 import { planWidth } from "./critical-path.js";
 import { type DurationForecast, durationText, msPerToken, scheduledMinutes } from "./duration.js";
 import type { FeatureSize } from "./plan.js";
@@ -93,6 +94,8 @@ export interface FeatureRunSample {
   taskCount: number;
   /** The run's active time; absent in older callers, whose samples give no minutes (#1557). */
   activeMs?: number;
+  /** The run's agent calls; absent in older callers, whose samples give no calls pace (#2345). */
+  calls?: number;
   /** The acceptance criteria of the run's spec; absent before a spec exists. */
   criteria?: number;
   /** The paths of the feature's boundary in its plan that no later feature lists; absent or 0 when it named none. */
@@ -289,6 +292,11 @@ export interface InitiativeEstimate {
   testVolume: ({ cases: number; features: number } & TestCaseRate) | null;
   /** Minutes still to run, summed and on the run slots; null without timed samples (#1557). */
   duration: DurationForecast | null;
+  /**
+   * The median agent calls per token of finished feature runs (#2345), the calls forecast's
+   * fallback before the initiative has its own; null with too few.
+   */
+  callsPace: { rate: number; samples: number } | null;
   notes: string[];
   label: string;
 }
@@ -1059,6 +1067,19 @@ export function estimateInitiative(input: {
     planCalibration,
     testVolume,
     duration: timed.duration,
+    callsPace: callsPerToken(
+      input.samples.flatMap((sample) => {
+        const rate =
+          sample.calls === undefined
+            ? null
+            : finishedRunCallRate({
+                status: "completed",
+                tokens: sample.tokens,
+                calls: sample.calls,
+              });
+        return rate === null ? [] : [rate];
+      }),
+    ),
     notes,
     label: `Estimate: level ${level}, about ${tasks.low}-${tasks.high} tasks, ${rangeText(tokens)} tokens, expected ${tokenText(expectedTokens)} (plan for ${tokenText(withMargin)} with a ${Math.round(margin * 100)}% margin)${spent ? `, ${tokenText(spent)} used with ${accepted} of ${features.length} features accepted` : ""}; ${budgetText}${timed.duration ? `; ${durationText(timed.duration)}` : ""}`,
   };

@@ -24,6 +24,7 @@ export const INLINE_HARNESS: Record<Framework, string> = {
   phpunit: "acceptanceActual",
   testthat: "acceptance_actual",
   busted: "acceptance_actual",
+  minitest: "acceptance_actual",
 };
 
 /**
@@ -60,7 +61,10 @@ export interface InlineRowFile {
 const comment = (framework: Framework): string =>
   framework === "busted"
     ? "--"
-    : framework === "pytest" || framework === "rspec" || framework === "testthat"
+    : framework === "pytest" ||
+        framework === "rspec" ||
+        framework === "minitest" ||
+        framework === "testthat"
       ? "#"
       : "//";
 /**
@@ -413,6 +417,20 @@ export const rspecExamples = (call: string): string =>
   `RSpec.describe 'acceptance rows' do\n  acceptance_rows.each do |row|\n    id = row['id']\n    it id do\n      got = JSON.parse(JSON.generate([${call}(row['input'])]))[0]\n      want = row['expected']\n      expect(got).to eq(want), "#{id}: got #{JSON.generate([got])}, want #{JSON.generate([want])}"\n    end\n  end\nend`;
 
 /**
+ * What the Minitest blocks share: a test class assigned to a constant named after the file, so no
+ * two files share a class, whose block keeps the file's locals, with one test per row named by its
+ * id. The failure message starts with the id and what the harness got, since Minitest prints the
+ * test's name on a line of its own and the replay reads the row from a failure line. A null row
+ * uses `assert_nil`, as Minitest 6 asks (#2348).
+ */
+export const minitestRows = (name: string, call: string): string =>
+  `${name} = Class.new(Minitest::Test) do\n  acceptance_rows.each do |row|\n    id = row['id']\n    define_method("test_#{id}") do\n      got = JSON.parse(JSON.generate([${call}(row['input'])]))[0]\n      want = row['expected']\n      message = "#{id}: got #{JSON.generate([got])}"\n      want.nil? ? assert_nil(got, message) : assert_equal(want, got, message)\n    end\n  end\nend`;
+
+/** The constant of a Minitest rows class, from its test file's name. */
+export const minitestClass = (test: string): string =>
+  `AcceptanceRows${camel(posix.basename(test, ".rb"))}`;
+
+/**
  * The PHPUnit test method and its JSON normalizer, which both modes share. The method is named
  * `test`, which Pint's snake case and PHP-CS-Fixer's camel case both keep; it compares every row
  * and fails once, naming each failing row with what it got (#2335).
@@ -538,6 +556,23 @@ const TEMPLATES: Record<Framework, Template> = {
       )
         .map((chunk) => `    ${chunk}`)
         .join(",\n")}\n  ].join\n)\n\n${rspecExamples("acceptance_harness.call")}`,
+    ),
+  }),
+  // The harness captured as a Method when the file loads, as in RSpec, and the rows as a class of
+  // the file's own name, since Minitest loads every test file into one process. The file loads
+  // Minitest itself (a second require of minitest/autorun is RuboCop's Lint/DuplicateRequire).
+  minitest: ({ test }, rows) => ({
+    skeleton: "",
+    tail: block(
+      "minitest",
+      `require 'json'\n\nacceptance_harness = method(:acceptance_actual)\nacceptance_rows = JSON.parse(\n  [\n${literalChunks(
+        rows,
+        rubyString,
+      )
+        .map((chunk) => `    ${chunk}`)
+        .join(
+          ",\n",
+        )}\n  ].join\n)\n\n${minitestRows(minitestClass(test), "acceptance_harness.call")}`,
     ),
   }),
   // Methods of the file's own class, which PSR-1 keeps to one per file; the harness is its static

@@ -18,11 +18,12 @@ import { isFailedTestLine } from "./failed-test-line.js";
 import { MISSING_GATE_REPORT, readGateReport, renderGateReport } from "./gate-report.js";
 import { testsRan } from "./output-counts.js";
 import { changedPaths, sourceManifest } from "./snapshot.js";
-import { gradleTestReport } from "./test-reports.js";
+import { testReport } from "./test-reports.js";
 
 /**
  * Shared process execution for native checks and the legacy project formatter. A Gradle run gets
- * the totals of the test reports it wrote appended to its output (`gradleTestReport`, #1489).
+ * the totals of the test reports it wrote appended to its output (`testReport`, #1489), and so
+ * does a Maven run (#2378).
  */
 export const executeCheckCommand = async (
   scope: ProcessScope,
@@ -39,7 +40,7 @@ export const executeCheckCommand = async (
   const report =
     result.timedOut || result.cancelled
       ? null
-      : gradleTestReport(executable, args, options.cwd, started);
+      : testReport(executable, args, options.cwd, started, result.exitCode);
   return report
     ? {
         ...result,
