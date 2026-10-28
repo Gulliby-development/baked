@@ -220,7 +220,7 @@ export const RuntimeStateSchema = z
     activeTime: z
       .object({
         tokensPerMinute: z.number().nonnegative(),
-        basis: z.enum(["history", "default"]),
+        basis: z.enum(["initiative", "history", "default"]),
         runs: z.number().int().nonnegative(),
         estimatedMs: z.number().int().nonnegative(),
         before: z.number().int().positive(),

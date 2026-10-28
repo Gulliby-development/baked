@@ -782,7 +782,15 @@ import {
   writeLadder,
 } from "./stall-ladder.js";
 import { siblingFallbacks, siblingNote, writeFallback } from "./stall-siblings.js";
-import { costRefusalWait, recordWouldStop, stopFault, stopMode } from "./stop-reasons.js";
+import {
+  costRefusalWait,
+  LIMIT_BLOCK_PREFIX,
+  limitBlockOf,
+  noteStoredLimitResume,
+  recordWouldStop,
+  stopFault,
+  stopMode,
+} from "./stop-reasons.js";
 import { SUPPLIED_CHECK_DIR, SUPPLIED_CHECK_KIND, suppliedCheckRecord } from "./supplied-checks.js";
 import {
   repairUncoveredCriteria,
@@ -832,6 +840,7 @@ import {
   overCeilingOf,
   plannerSizing,
   rateHistory,
+  runPace,
   type SizingReport,
   samplesFrom,
   sizePlan,
@@ -1425,6 +1434,8 @@ export class WorkflowScheduler {
       }
     }, 100);
     let stepId: string | null = null;
+    // A block on the run's own limits, looked at again once its active time is recorded (#2226).
+    let limitBlocked = false;
     this.queued = [];
     try {
       if (!recoverRun(this.store, this.journal, runId)) return;
@@ -3549,6 +3560,29 @@ export class WorkflowScheduler {
         // remedy would leave the run waiting on that remedy instead of blocked (#2249). Decided
         // here, from the fault's recovery, for every stage at once; in shadow the run blocks.
         if (!outerSignal.aborted) this.costRefusalWouldWait(runId, fault, diagnostic.id);
+        // A block on the run's own active time, tokens or calls records the limits it decided
+        // on, so a stored limit that grows past its usage is seen (#2226).
+        const block = outerSignal.aborted
+          ? null
+          : limitBlockOf(
+              fault,
+              diagnostic.id,
+              {
+                maxActiveMs: policy.maxActiveMs,
+                maxTotalTokens: policy.maxTotalTokens,
+                maxAgentCalls: policy.maxAgentCalls,
+              },
+              this.store.run(runId),
+            );
+        if (block) {
+          this.store.artifact(
+            runId,
+            "recovery",
+            `${LIMIT_BLOCK_PREFIX}${diagnostic.id}.json`,
+            canonical(block),
+          );
+          limitBlocked = true;
+        }
         this.store.transition(
           runId,
           outerSignal.aborted ? "paused" : "blocked",
@@ -3579,6 +3613,14 @@ export class WorkflowScheduler {
       } finally {
         this.leases.release();
       }
+      // A stored limit raised between the deadline's stop and the block record (R70 soundex,
+      // #2226): recorded in shadow, the run stays blocked.
+      if (limitBlocked)
+        try {
+          noteStoredLimitResume(this.store, runId, "drive");
+        } catch {
+          // A shadow record never changes how the drive ends.
+        }
     }
   }
   /**
@@ -7079,6 +7121,22 @@ export class WorkflowScheduler {
     );
   }
   /**
+   * Tokens per active minute of the other finished feature runs of the run's initiative, which
+   * size its active time once there are enough of them (`activePace`, #2336); none outside one.
+   */
+  private initiativeRates(runId: string): number[] {
+    const initiatives = new InitiativeStore(this.store);
+    const id = initiatives.initiativeOfRun(runId);
+    if (!id) return [];
+    const runs = new Set(initiatives.links(id).map((l) => l.run_id));
+    runs.delete(runId);
+    return [...runs].flatMap((other) => {
+      const row = this.store.run(other);
+      const pace = row.status === "completed" ? runPace(row.token_usage, row.active_ms) : null;
+      return pace === null ? [] : [pace];
+    });
+  }
+  /**
    * Prices the analyzed plan before it is approved (see sizing.ts). An oversized plan goes back to
    * the planner once with a split note; a plan still above the run ceiling waits for the user,
    * who can split the request into an initiative or answer to go on. Otherwise every sized task
@@ -7103,6 +7161,7 @@ export class WorkflowScheduler {
       model,
       loopShares: loopHistory(this.store.workspace, policy),
       tokenRates: rateHistory(this.store.workspace, policy),
+      ownRates: this.initiativeRates(runId),
       request: state.requestText || state.prompt,
     });
     this.store.transaction(() =>
@@ -7245,6 +7304,7 @@ ${note}`;
       model: this.sizingModel(runId, state.graph),
       loopShares: loopHistory(this.store.workspace, policy),
       tokenRates: rateHistory(this.store.workspace, policy),
+      ownRates: this.initiativeRates(runId),
       request: state.requestText || state.prompt,
     });
     this.store.transaction(() => {
@@ -10887,8 +10947,14 @@ ${note}`;
     const written = this.writtenTestsCheck(runId, state, policy, task, root, own, changed);
     // The project's formatter on the code files the task wrote, and on the lines the run changed in
     // the files it edits, when the run's checks hold no formatter for them (#1837).
-    const formatted = formatWrittenChecks(root, policy.checks, task.writes, undefined, (path) =>
-      runBaseContent(this.store, runId, path),
+    const formatted = formatWrittenChecks(
+      root,
+      policy.checks,
+      task.writes,
+      undefined,
+      (path) => runBaseContent(this.store, runId, path),
+      undefined,
+      { rust: policy.rustFormatWritten === "on" },
     );
     const gated = [...own, ...(written ? [written] : []), ...formatted];
     const record = this.affectedRecord(state, task);

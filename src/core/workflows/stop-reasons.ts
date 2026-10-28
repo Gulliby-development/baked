@@ -190,6 +190,16 @@ export const STOP_REASONS = {
     modes: NOT_ENFORCED,
     defaultMode: "shadow",
   },
+  "host-resume-on-stored-limit": {
+    label:
+      "A run blocked on its own active time, tokens or calls whose stored limits now exceed its usage: the host would resume it once",
+    // Shadow only (#2226, R70 namesound soundex: the stored limit was raised 6 s after the
+    // deadline stopped the attempt and the run waited 29 minutes 52 seconds for an owner's
+    // plain resume). It records `decision.would_resume`; resuming for real is a pull request
+    // of its own after two bench rounds with no false would-resume.
+    modes: NOT_ENFORCED,
+    defaultMode: "shadow",
+  },
   cost_refusal_wait: {
     label:
       "A run past its tasks refused a review or convergence call on its cost ceiling, with a priced extend remedy: it would wait for the extension instead of blocking",
@@ -425,4 +435,180 @@ export function costRefusalWaitOf(
       return { ...(inputs as unknown as CostRefusalWait), mode };
   }
   return null;
+}
+
+/** The run's own limits a `budget_exhausted` block can be held by (#2226). */
+export type HeldLimit = "active" | "tokens" | "calls";
+
+/**
+ * What a `budget_exhausted` block on the run's own limits held, recorded at the block under
+ * `limit-blocks/<diagnostic id>.json` (#2226): the drive's limits it decided on, the run's usage
+ * and the call it refused.
+ */
+export interface LimitBlock {
+  /** The stop reason of the fault: the active-time deadline or the store's reservation. */
+  stop: "deadline" | "run-budget";
+  diagnosticId: string;
+  blockedAt: string;
+  limits: { maxActiveMs: number; maxTotalTokens: number; maxAgentCalls: number };
+  usage: { activeMs: number; usedTokens: number; reservedTokens: number; agentCalls: number };
+  /** Tokens the refused call asked for; 0 for a block that was not on tokens. */
+  requestedTokens: number;
+  held: HeldLimit[];
+}
+
+export const LIMIT_BLOCK_PREFIX = "limit-blocks/";
+
+/**
+ * The record of a block on the run's own active time, tokens or calls, or null for any other
+ * stop (#2226). `limits` are the drive's copy the stop decided on, `run` the run's row.
+ */
+export function limitBlockOf(
+  fault: unknown,
+  diagnosticId: string,
+  limits: LimitBlock["limits"],
+  run: { active_ms: number; token_usage: number; agent_calls: number },
+  at: Date = new Date(),
+): LimitBlock | null {
+  if (!(fault instanceof WorkflowFault) || fault.code !== "BUDGET_EXHAUSTED") return null;
+  const d = fault.details;
+  if (d.reason !== "deadline" && d.reason !== "run-budget") return null;
+  const num = (v: unknown) => (typeof v === "number" && Number.isFinite(v) ? v : 0);
+  const usage = {
+    activeMs: Math.max(run.active_ms, num(d.activeMs)),
+    usedTokens: Math.max(run.token_usage, num(d.usedTokens)),
+    reservedTokens: num(d.reservedTokens),
+    agentCalls: Math.max(run.agent_calls, num(d.agentCalls)),
+  };
+  const requestedTokens = num(d.requestedTokens);
+  const held: HeldLimit[] = [];
+  if (d.reason === "deadline" || usage.activeMs >= limits.maxActiveMs) held.push("active");
+  if (d.reason === "run-budget") {
+    if (usage.agentCalls >= limits.maxAgentCalls) held.push("calls");
+    if (usage.usedTokens + usage.reservedTokens + requestedTokens > limits.maxTotalTokens)
+      held.push("tokens");
+  }
+  if (!held.length) return null;
+  return {
+    stop: d.reason,
+    diagnosticId,
+    blockedAt: at.toISOString(),
+    limits,
+    usage,
+    requestedTokens: held.includes("tokens") ? requestedTokens : 0,
+    held,
+  };
+}
+
+/** The decision over a limit block and the run's stored limits and usage now (#2226). */
+export interface StoredLimitResume {
+  wouldResume: boolean;
+  held: HeldLimit[];
+  /** The stored limits now, against which the run's usage now is compared. */
+  stored: LimitBlock["limits"];
+  usage: { activeMs: number; usedTokens: number; agentCalls: number };
+  /** What the limits were when the run blocked. */
+  atBlock: LimitBlock["limits"];
+  requestedTokens: number;
+  blockedAt: string;
+}
+
+/**
+ * Whether the host would resume a run blocked on its own limits once (#2226): every stored limit
+ * now exceeds the run's usage, and the token limit also fits the call the block refused. Decided
+ * only here, from the block's record, the stored policy and the run's row, so the drive's block
+ * and the initiative's round decide alike.
+ */
+export function storedLimitResume(
+  block: LimitBlock,
+  stored: Pick<RunPolicy, "maxActiveMs" | "maxTotalTokens" | "maxAgentCalls">,
+  run: { active_ms: number; token_usage: number; agent_calls: number },
+): StoredLimitResume {
+  const usage = {
+    activeMs: Math.max(run.active_ms, block.usage.activeMs),
+    usedTokens: run.token_usage,
+    agentCalls: Math.max(run.agent_calls, block.usage.agentCalls),
+  };
+  const limits = {
+    maxActiveMs: stored.maxActiveMs,
+    maxTotalTokens: stored.maxTotalTokens,
+    maxAgentCalls: stored.maxAgentCalls,
+  };
+  const wouldResume =
+    limits.maxActiveMs > usage.activeMs &&
+    limits.maxAgentCalls > usage.agentCalls &&
+    limits.maxTotalTokens > usage.usedTokens &&
+    limits.maxTotalTokens >= usage.usedTokens + block.requestedTokens;
+  return {
+    wouldResume,
+    held: block.held,
+    stored: limits,
+    usage,
+    atBlock: block.limits,
+    requestedTokens: block.requestedTokens,
+    blockedAt: block.blockedAt,
+  };
+}
+
+/**
+ * Records `decision.would_resume` for a run blocked `budget_exhausted` on its own limits whose
+ * stored limits now exceed its usage (`host-resume-on-stored-limit`, shadow, #2226), once per
+ * block. Called where a blocked run is looked at again: the drive right after it blocks (a
+ * growth that landed between the timer's stop and the block record) and the initiative's round
+ * over its feature runs (a growth after the block). Never resumes. Returns whether it recorded.
+ */
+export function noteStoredLimitResume(
+  store: WorkflowStore,
+  runId: string,
+  at: "drive" | "initiative-round",
+): boolean {
+  const run = store.run(runId);
+  if (run.status !== "blocked" || run.reason !== "budget_exhausted") return false;
+  const artifacts = store.artifacts(runId);
+  const latest = artifacts
+    .filter((a) => a.kind === "diagnostic" && a.logical_path.startsWith("errors/"))
+    .at(-1);
+  if (!latest) return false;
+  const record = artifacts.find((a) => a.logical_path === `${LIMIT_BLOCK_PREFIX}${latest.id}.json`);
+  if (!record) return false;
+  const key = `stop-${latest.id}`;
+  const seen = store
+    .eventsOfType(runId, "decision.would_resume")
+    .some(
+      (e) =>
+        e.type === "decision.would_resume" &&
+        e.payload.reason === "host-resume-on-stored-limit" &&
+        e.payload.key === key,
+    );
+  if (seen) return false;
+  const policy = JSON.parse(run.policy_json) as RunPolicy;
+  const mode = stopMode(policy, "host-resume-on-stored-limit");
+  if (mode === "enforce") return false;
+  const block = JSON.parse(store.readArtifact(runId, record.id)) as LimitBlock;
+  const decision = storedLimitResume(block, policy, run);
+  if (!decision.wouldResume) return false;
+  const named = decision.held
+    .map((limit) =>
+      limit === "active"
+        ? `${String(decision.usage.activeMs)} ms active of the stored ${String(decision.stored.maxActiveMs)} ms limit (${String(decision.atBlock.maxActiveMs)} ms at the block)`
+        : limit === "calls"
+          ? `${String(decision.usage.agentCalls)} calls of the stored ${String(decision.stored.maxAgentCalls)} (${String(decision.atBlock.maxAgentCalls)} at the block)`
+          : `${String(decision.usage.usedTokens)} tokens and ${String(decision.requestedTokens)} asked of the stored ${String(decision.stored.maxTotalTokens)} (${String(decision.atBlock.maxTotalTokens)} at the block)`,
+    )
+    .join("; ");
+  store.emit(runId, {
+    type: "decision.would_resume",
+    payload: {
+      reason: "host-resume-on-stored-limit",
+      mode,
+      key,
+      summary:
+        `The host would resume the run once: its stored limits now exceed its usage (${named}).`.slice(
+          0,
+          1000,
+        ),
+      inputs: { ...decision, at, diagnosticId: latest.id },
+    },
+  });
+  return true;
 }

@@ -183,7 +183,14 @@ import {
 } from "./review-gate.js";
 import { PolicySchema, type RunPolicy } from "./schemas.js";
 import { NativeWorkflowService } from "./service.js";
-import { exceedsTestCapacity, type SizingReport } from "./sizing.js";
+import {
+  activeTimeLimit,
+  exceedsTestCapacity,
+  type PaceBasis,
+  paceOf,
+  runPace,
+  type SizingReport,
+} from "./sizing.js";
 import {
   SOURCE_DEFECT_DIR,
   SOURCE_DEFECT_KIND,
@@ -916,6 +923,101 @@ export interface RunReplay {
   sourceDefects: SourceDefectBoundary[];
   /** Test task failures the current rule routes to the source's task, or not, differently. */
   newSourceDefectRoutes: number;
+  /** Each sizing report's active-time cap against the current pace rule (#2336). */
+  activeTimes: ActiveTimeBoundary[];
+  /** Sizing reports whose active-time cap the current pace sets differently. */
+  newActiveTimes: number;
+}
+
+export interface ActiveTimeBoundary {
+  report: string;
+  recorded: { tokensPerMinute: number; basis: PaceBasis; after: number };
+  replayed: { tokensPerMinute: number; basis: PaceBasis; after: number };
+}
+
+/** Picks the pace that sizes a run's active time from the history's and the initiative's rates. */
+export type ActivePaceRule = (
+  history: { tokensPerMinute: number; basis: "history" | "default"; runs: number },
+  ownRates: readonly number[],
+) => { tokensPerMinute: number; basis: PaceBasis };
+
+/**
+ * The tokens per active minute of the other feature runs of the run's initiative that had
+ * completed by `at`, for a sizing report recorded before #2336 kept them; empty outside an
+ * initiative or in a trace without its tables.
+ */
+function initiativeRatesAt(store: WorkflowStore, runId: string, at: number): number[] {
+  try {
+    const rows = store.connection
+      .query(
+        `SELECT DISTINCT r.id AS id, r.token_usage AS tokens, r.active_ms AS ms FROM initiative_runs l JOIN runs r ON r.id=l.run_id
+         WHERE l.initiative_id IN (SELECT initiative_id FROM initiative_runs WHERE run_id=?) AND l.run_id<>? AND r.status='completed'
+         AND (SELECT MAX(e.at) FROM events e WHERE e.run_id=r.id AND e.type='run.state_changed' AND json_extract(e.payload_json,'$.to')='completed')<=?`,
+      )
+      .all(runId, runId, at) as { id: string; tokens: number; ms: number }[];
+    return rows.flatMap((r) => {
+      const pace = runPace(r.tokens, r.ms);
+      return pace === null ? [] : [Math.round(pace)];
+    });
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Every plan and progress sizing report's active-time cap, decided again by `pace` and
+ * `activeTimeLimit` from what the report recorded: the tokens it sized (the run's price and repair
+ * reserve under the budget), the cap before, the `maxRunTokens` ceiling, the history's pace and the
+ * initiative's own rates. A report before #2336 recorded neither the own rates nor the history's
+ * pace beside an initiative's; its own rates are read from the trace's runs of the initiative that
+ * completed before it, and its recorded pace is the history's.
+ */
+export function replayActiveTimes(
+  store: WorkflowStore,
+  runId: string,
+  pace: ActivePaceRule = paceOf,
+): ActiveTimeBoundary[] {
+  const reports = store.connection
+    .query(
+      "SELECT id, logical_path AS path, created_at AS at FROM artifacts WHERE run_id=? AND (logical_path LIKE 'sizing/plan-%' OR logical_path LIKE 'sizing/progress-%') ORDER BY created_at, id",
+    )
+    .all(runId) as { id: string; path: string; at: number }[];
+  return reports.flatMap(({ id, path, at }) => {
+    let report: Partial<SizingReport>;
+    try {
+      report = JSON.parse(store.readArtifact(runId, id)) as Partial<SizingReport>;
+    } catch {
+      return [];
+    }
+    const time = report.activeTime;
+    if (
+      !time ||
+      typeof report.runTokens !== "number" ||
+      typeof report.budgetAfter !== "number" ||
+      report.maxRunTokens === undefined
+    )
+      return [];
+    const history =
+      time.history ??
+      (time.basis === "initiative"
+        ? null
+        : { tokensPerMinute: time.tokensPerMinute, basis: time.basis, runs: time.runs });
+    if (!history) return [];
+    const chosen = pace(history, time.ownRates ?? initiativeRatesAt(store, runId, at));
+    const after = activeTimeLimit({
+      neededTokens: Math.min(report.runTokens + (report.repairReserve ?? 0), report.budgetAfter),
+      tokensPerMinute: chosen.tokensPerMinute,
+      maxActiveMs: time.before,
+      maxRunTokens: report.maxRunTokens,
+    }).after;
+    return [
+      {
+        report: path,
+        recorded: { tokensPerMinute: time.tokensPerMinute, basis: time.basis, after: time.after },
+        replayed: { tokensPerMinute: chosen.tokensPerMinute, basis: chosen.basis, after },
+      },
+    ];
+  });
 }
 
 export interface BaselineFailureBoundary {
@@ -3901,6 +4003,8 @@ function replayRun(
   | "newSignatureDecisions"
   | "sourceDefects"
   | "newSourceDefectRoutes"
+  | "activeTimes"
+  | "newActiveTimes"
 > | null {
   const db = store.connection;
   const run = store.run(runId);
@@ -4140,6 +4244,8 @@ export function replayTrace(
     /** Decides each recorded baseline comparison again (#2295); the current rule by default. */
     baselineSignatureRule?: BaselineSignatureRule;
     sourceDefectRule?: SourceDefectRule;
+    /** Picks the pace of each sizing report's active time again (#2336); the current rule by default. */
+    activePace?: ActivePaceRule;
   } = {},
 ): TraceReplay {
   // Initiative starts rewind their own copies of the trace, before the run replay rewinds this one.
@@ -4253,6 +4359,9 @@ export function replayTrace(
     const routes = new Map(
       runIds.map((runId) => [runId, replaySourceDefects(store, runId, options.sourceDefectRule)]),
     );
+    const paces = new Map(
+      runIds.map((runId) => [runId, replayActiveTimes(store, runId, options.activePace)]),
+    );
     const runs: RunReplay[] = [];
     for (const runId of runIds) {
       const firstByte = timings.get(runId) ?? [];
@@ -4288,6 +4397,7 @@ export function replayTrace(
       const baselineFailures = baselines.get(runId) ?? [];
       const baselineSignatures = signatures.get(runId) ?? [];
       const sourceDefects = routes.get(runId) ?? [];
+      const activeTimes = paces.get(runId) ?? [];
       if (
         !replay.boundaries.length &&
         !firstByte.length &&
@@ -4310,7 +4420,8 @@ export function replayTrace(
         !correctiveDefers.length &&
         !baselineFailures.length &&
         !baselineSignatures.length &&
-        !sourceDefects.length
+        !sourceDefects.length &&
+        !activeTimes.length
       )
         continue;
       runs.push({
@@ -4383,6 +4494,8 @@ export function replayTrace(
         newSignatureDecisions: baselineSignatures.filter((b) => b.replayed !== b.recorded).length,
         sourceDefects,
         newSourceDefectRoutes: sourceDefects.filter((b) => b.replayed !== b.recorded).length,
+        activeTimes,
+        newActiveTimes: activeTimes.filter((b) => b.replayed.after !== b.recorded.after).length,
       });
     }
     const gates = replayShareGate(store, options.shareGate);

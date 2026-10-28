@@ -744,6 +744,7 @@ function Detail({ projectKey, id }: { projectKey: string; id: string }) {
               insights.extendBudget(projectKey, v, {
                 ...(suggested.tokens ? { tokens: suggested.tokens } : {}),
                 ...(suggested.usd ? { costUsd: suggested.usd } : {}),
+                ...(suggested.timeMs ? { timeMs: suggested.timeMs } : {}),
               }),
             )}
           >
@@ -765,6 +766,11 @@ function Detail({ projectKey, id }: { projectKey: string; id: string }) {
       {view.budget.forecastNotice && (
         <p className="m-0 text-[12px] text-[var(--warn)]">
           Token forecast: {view.budget.forecastNotice}
+        </p>
+      )}
+      {view.budget.timeNotice && (
+        <p className="m-0 text-[12px] text-[var(--warn)]">
+          Time forecast: {view.budget.timeNotice}
         </p>
       )}
       {criticalPathLine(view) && (

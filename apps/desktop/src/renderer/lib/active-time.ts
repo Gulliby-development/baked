@@ -1,7 +1,8 @@
 /** Plan-time sizing's active-time estimate against the active-time cap (`sizing.ts` in the core). */
 export interface ActiveTime {
   tokensPerMinute: number;
-  basis: "history" | "default";
+  /** `initiative` when the initiative's own finished runs set the pace. */
+  basis: "initiative" | "history" | "default";
   runs: number;
   estimatedMs: number;
   before: number;
@@ -13,7 +14,11 @@ const minutes = (ms: number): number => Math.round(ms / 60_000);
 /** The approval's line for the sized active time (`activeTimeText` in the core). */
 export function activeTimeText(time: ActiveTime): string {
   const rate = `${Math.round(time.tokensPerMinute / 1000)}k tokens per minute, ${
-    time.basis === "history" ? `the median of ${time.runs} runs` : "the default rate"
+    time.basis === "initiative"
+      ? `the median of ${time.runs} finished runs of this initiative`
+      : time.basis === "history"
+        ? `the median of ${time.runs} runs`
+        : "the default rate"
   }`;
   const cap =
     time.after > time.before

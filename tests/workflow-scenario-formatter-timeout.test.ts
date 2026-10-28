@@ -216,4 +216,21 @@ describe.skipIf(IS_WIN)("scenario: evalpin json a77894d4, a formatter that never
     expect(slow.output).toContain("the formatter does not finish on tests/json.rs");
     expect(readFileSync(rustfmtLog, "utf8")).toBe("");
   }, 60000);
+
+  // #2248: with `rustFormatWritten` the hang shows at the end of the task that wrote the file, as a
+  // finding of that task, instead of in the checks stage after every task has ended.
+  test("rustFormatWritten: the task-end rustfmt check names the file it hangs on and the task's correction repairs it", async () => {
+    writeFileSync(fixes, "");
+    const { executor, service, runId } = await approvedRun({ ...defaultWorkflowPolicy, checks: [fmt], rustFormatWritten: "on" });
+    const done = await service.drive(runId, new AbortController().signal);
+    expect(done.status).toBe("completed");
+    const slow = checkRuns(service, runId, "rustfmt-written").find((r) => r.timedOut);
+    expect(slow?.reason).toBe("timeout_slow");
+    expect(slow?.output).toContain("tests/json.rs");
+    // The checks stage's cargo fmt never met the hanging file.
+    expect(checkRuns(service, runId, "fmt").some((r) => r.timedOut)).toBe(false);
+    const corrections = executor.attempts.filter((a) => a.origin !== "planned");
+    expect(corrections).toHaveLength(1);
+    expect(readFileSync(fixes, "utf8")).toBe("");
+  }, 90000);
 });
