@@ -67,7 +67,8 @@ jobs:
           # Each shard must finish inside the job's 30 minutes. Files used to go round-robin by name:
           # on 2026-10-26 one Windows shard of three passed 30 minutes while another took 10, and a
           # single macOS shard passed it too (#2259, #2261). They are now balanced by measured time
-          # (scripts/test-shard-weights.json); the replay corpus alone takes about 17 minutes on Windows.
+          # (scripts/test-shard-weights.json). On 2026-10-28 the replay corpus, one file of 15 to 30
+          # minutes, filled macOS shard 1 alone and passed 30 minutes twice; it is now four files.
           - { os: windows-latest, shard: 1, shards: 5 }
           - { os: windows-latest, shard: 2, shards: 5 }
           - { os: windows-latest, shard: 3, shards: 5 }

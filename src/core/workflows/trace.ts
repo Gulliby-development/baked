@@ -37,6 +37,8 @@ import {
   edgeCrashDecision,
   edgeDecision,
 } from "../verification/edge-inputs.js";
+import { CHAIN_SITES_DIR, type SitesRecord, siteDecision } from "../verification/family-sites.js";
+import { generatedCaseDecision } from "../verification/generated-values.js";
 import type { ReproOutcome } from "../verification/repro.js";
 import { planApprovalDecision, requestedPathTokens } from "./auto-approval.js";
 import {
@@ -415,12 +417,28 @@ export function scrubTrace(
             // its suffix, so the fold keeps the replay exact).
             k === "outputTail" && typeof v === "string"
             ? foldHomeDirs(v)
-            : PROSE.has(k) || content.has(k)
-              ? replaced(k, v, standIns)
-              : scrubTrace(v, standIns, content, k),
+            : // A family's sites are code, and the host's site check replays on their text and
+              // the lines it read (#2343): kept, each string at most `SITE_TEXT_CHARS` long.
+              k === "sites" && Array.isArray(v)
+              ? keptCode(v)
+              : PROSE.has(k) || content.has(k)
+                ? replaced(k, v, standIns)
+                : scrubTrace(v, standIns, content, k),
     ]),
   );
 }
+
+/** The longest code string of a family site a trace keeps (#2343): a site's text or a line. */
+const SITE_TEXT_CHARS = 400;
+
+const keptCode = (value: unknown): unknown =>
+  typeof value === "string"
+    ? value.slice(0, SITE_TEXT_CHARS)
+    : Array.isArray(value)
+      ? value.map(keptCode)
+      : value && typeof value === "object"
+        ? Object.fromEntries(Object.entries(value).map(([k, v]) => [k, keptCode(v)]))
+        : value;
 
 /** A run state's request texts, whose named files the auto-approval replay reads (#1707). */
 const REQUEST_KEYS = new Set(["requestText", "prompt"]);
@@ -1518,12 +1536,17 @@ export function replayCaseWalks(
       }
       if (record.schemaVersion !== 1) return [];
       const key = (i: number) => `${record.cases[i]?.criterionId ?? "?"}#${i}`;
+      // The walk's `generated_case` would-stop (#2344), on the generated values it recorded.
+      const generated = (stop: boolean | undefined) => (stop ? ["generated_case"] : []);
       return [
         {
           taskId: record.taskId,
           cases: record.cases.length,
-          recorded: record.refused.map(key),
-          replayed: decide(record).map(key),
+          recorded: [...record.refused.map(key), ...generated(record.generatedStop)],
+          replayed: [
+            ...decide(record).map(key),
+            ...generated(record.generated && generatedCaseDecision(record)),
+          ],
         },
       ];
     });
@@ -1883,7 +1906,7 @@ export interface FindingChainBoundary {
    * `crash` is a battery or sibling-probe case's shadow crash decision (#2136).
    */
   key: string;
-  kind: "rewrite" | "battery" | "family" | "crash";
+  kind: "rewrite" | "battery" | "family" | "crash" | "site";
   recorded: string;
   replayed: string;
 }
@@ -1949,6 +1972,23 @@ export function replayFindingChains(
           },
           ...crashes(record.cases, (index) => record.cases[index]?.file ?? null),
         ];
+      }
+      // A family site's check (#2343), on the lines it read; a missing file read none.
+      if (artifact.logical_path.startsWith(CHAIN_SITES_DIR)) {
+        const record = JSON.parse(store.readArtifact(runId, artifact.id)) as SitesRecord;
+        return record.sites.flatMap((site, index) => {
+          if (site.verdict === "no_file") return [];
+          const { verdict } = siteDecision(site.text, site.line, site.window);
+          return [
+            {
+              key: `${artifact.logical_path}#${String(index + 1)}`,
+              kind: "site" as const,
+              recorded: site.verdict,
+              replayed:
+                verdict === "kept" && site.verdict === "unwritable" ? site.verdict : verdict,
+            },
+          ];
+        });
       }
       if (artifact.logical_path.startsWith(CHAIN_FAMILY_DIR)) {
         const record = JSON.parse(store.readArtifact(runId, artifact.id)) as FamilyRecord;

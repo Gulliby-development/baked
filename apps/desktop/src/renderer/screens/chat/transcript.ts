@@ -14,6 +14,7 @@ import type {
   ToolCall,
   Usage,
 } from "../../client/chat.js";
+import { pendingText } from "./images.js";
 
 /**
  * The transcript of one chat session as the screen shows it: the saved messages from
@@ -184,6 +185,16 @@ function removeFirst(list: string[], text: string): string[] {
   return index < 0 ? list : [...list.slice(0, index), ...list.slice(index + 1)];
 }
 
+/**
+ * Drops the pending bubble an echoed user message stands for. The bubble was made with
+ * `pendingText`, which names the attached images, so a message with images is matched with that
+ * note too; it kept its "Sending…" bubble otherwise (#2386).
+ */
+function removeEchoed(list: string[], message: ChatMessage): string[] {
+  const shown = pendingText(message.content, message.images?.length ?? 0);
+  return list.includes(shown) ? removeFirst(list, shown) : removeFirst(list, message.content);
+}
+
 function liveMessage(state: Transcript, turnId: string, at: number): ChatMessage {
   return (
     state.live ?? {
@@ -249,7 +260,7 @@ function applyBody(state: Transcript, event: Exclude<ChatEvent, { type: "reset" 
       return {
         ...state,
         messages: known ? state.messages : [...state.messages, event.message],
-        pending: removeFirst(state.pending, event.message.content),
+        pending: removeEchoed(state.pending, event.message),
         live: null,
         turnId: event.turnId,
         turnUsage: null,
@@ -346,7 +357,7 @@ function applyBody(state: Transcript, event: Exclude<ChatEvent, { type: "reset" 
       return {
         ...state,
         messages: [...state.messages, event.message],
-        pending: removeFirst(state.pending, event.message.content),
+        pending: removeEchoed(state.pending, event.message),
       };
     }
     case "rewind":
