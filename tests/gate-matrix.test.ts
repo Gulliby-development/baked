@@ -243,6 +243,8 @@ describe("host-written acceptance rows in the case-walk and mutation gates (#159
     junit: { harness: "tests/Harness.java", test: "tests/RowsTest.java", package: "tests" },
     rust: { harness: "tests/harness.rs", test: "tests/rows.rs" },
     xunit: { harness: "tests/Harness.cs", test: "tests/RowsTest.cs", package: "Tests" },
+    rspec: { harness: "tests/harness.rb", test: "tests/rows_spec.rb" },
+    phpunit: { harness: "tests/Harness.php", test: "tests/RowsTest.php", package: "App.Tests" },
   } as const;
   test.each(Object.keys(layouts) as (keyof typeof layouts)[])("%s retains every case in its JSON data and keeps generated tests out of mutation proposals", async (framework) => {
     const root = mkdtempSync(join(tmpdir(), "baked-row-gate-"));
@@ -300,6 +302,8 @@ describe("gate matrix: inline rows block holds its own cells (#1997)", () => {
     junit: { mode: "inline", framework: "junit", package: "com.ex.calc", test: "src/test/java/com/ex/calc/CalcTest.java" },
     rust: { mode: "inline", framework: "rust", test: "tests/calc.rs" },
     xunit: { mode: "inline", framework: "xunit", package: "Calc.Tests", test: "Calc.Tests/CalcTest.cs" },
+    rspec: { mode: "inline", framework: "rspec", test: "spec/calc_spec.rb" },
+    phpunit: { mode: "inline", framework: "phpunit", package: "App.Tests", test: "tests/CalcTest.php" },
   };
   const shapes: [string, unknown][] = [
     ["two-line CRLF text", ["[a]\r\nb=1\r\n", {}]],
@@ -5098,4 +5102,46 @@ describe("review gate: a finding its reviewer marked noRepro (#2194)", () => {
     expect(gateFinding({ ...finding, noRepro: "  " }, false, "reproduced").noRepro).toBe(false);
     expect(gateFinding({ ...finding, noRepro: "needs the README setup" }, false, "reproduced").noRepro).toBe(true);
   });
+});
+
+describe("convergence gate: a low note on a file the request gives verbatim (#2332)", () => {
+  // R74 ewvet-update: F1 (low, partial, README.md) said the README's printf example doubled a
+  // backslash the request's verbatim diff has once; AC-005 and AC-006 were `fail` because of it,
+  // and the notes rule accepted it, so the run completed with "changes requested".
+  const finding = (over: Partial<ConvergenceGateFinding> = {}): ConvergenceGateFinding => ({
+    id: "F1",
+    severity: "low",
+    kind: "partial",
+    basis: "spec",
+    confidence: 0.95,
+    repro: false,
+    sibling: false,
+    outcome: undefined,
+    noRepro: false,
+    testOrDoc: true,
+    criterionIds: ["AC-005", "AC-006"],
+    ...over,
+  });
+  const gate = (findings: ConvergenceGateFinding[], verdict: "pass" | "fail"): ConvergenceGate => ({
+    severities: ["critical", "high", "medium"],
+    minConfidence: 0.8,
+    checksPass: true,
+    reproAvailable: false,
+    canRepro: false,
+    criteria: ["AC-005", "AC-006"].map((criterionId) => ({ criterionId, verdict, evidence: 1 })),
+    failing: verdict === "fail" ? ["AC-005", "AC-006"] : [],
+    findings,
+  });
+  const verdictOf = (g: ConvergenceGate) => convergenceGateDecision(g).verdicts.find((v) => v.id === "F1")?.verdict;
+
+  for (const kind of ["partial", "missing", "correctness", "contradicts"] as const) {
+    test(`${kind}: repairs on a supplied file whose criteria fail, a note otherwise`, () => {
+      expect(verdictOf(gate([finding({ kind, supplied: true })], "fail"))).toBe("repair");
+      expect(convergenceGateDecision(gate([finding({ kind, supplied: true })], "fail")).failing).toEqual(["AC-005", "AC-006"]);
+      // A file the request does not give verbatim, and a record before the label, keep the rule.
+      expect(verdictOf(gate([finding({ kind })], "fail"))).toBe("notes");
+      // With its criteria passing a low finding on a supplied file is a review note.
+      expect(verdictOf(gate([finding({ kind, supplied: true })], "pass"))).toBe("note");
+    });
+  }
 });

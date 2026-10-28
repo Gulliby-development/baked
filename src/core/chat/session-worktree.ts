@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { git } from "../workflows/delivery-git.js";
-import { linkDependencies } from "../workflows/worktree.js";
+import { linkDependencies } from "../workflows/dependency-dirs.js";
 
 /**
  * A chat session's own Git worktree (#897). An editing session the coordinator launches works in

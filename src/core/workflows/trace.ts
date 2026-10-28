@@ -200,6 +200,7 @@ import {
 } from "./stall-ladder.js";
 import { readFallback } from "./stall-siblings.js";
 import { type ArtifactRow, WorkflowStore } from "./store.js";
+import { SUPPLIED_CHECK_KIND } from "./supplied-checks.js";
 import {
   INTEGRITY_DIR,
   INTEGRITY_KIND,
@@ -243,6 +244,8 @@ const KEPT_ARTIFACTS = new Set([
   REQUEST_CONFLICT_KIND,
   // Each planned task's host apply decision: its writes' supplied blocks and apply checks (#2023).
   HOST_APPLY_KIND,
+  // Each planned task's static checks on its supplied content: paths, lines, rule ids (#2275).
+  SUPPLIED_CHECK_KIND,
   // Each misquote settle's host-fix decision: occurrence counts and spelling flags, no text (#2047).
   MISQUOTE_FIX_KIND,
   // Each planned source task's edge-input probe: its cases' criteria and outcomes (#1808).
@@ -541,13 +544,63 @@ export function exportRecordings(
 }
 
 /**
+ * The bound of a gzipped trace: the corpus keeps every round's traces in the repository, and R74
+ * ladlemath's 42.5 MiB trace could not join it (#2338). `exportTrace` refuses a larger one and
+ * names the tables that made it so.
+ */
+export const TRACE_MAX_BYTES = 10 * 1024 * 1024;
+
+const mib = (bytes: number) => `${(bytes / 1024 / 1024).toFixed(1)} MiB`;
+
+/** The unpacked bytes of each table's text and blob values, largest first. */
+function tableSizes(path: string): { table: string; bytes: number }[] {
+  const db = new Database(path, { readonly: true });
+  try {
+    return [...tables(db)]
+      .map((table) => {
+        const sum = columns(db, table)
+          .map((c) => `COALESCE(SUM(LENGTH(CAST("${c}" AS BLOB))),0)`)
+          .join("+");
+        const row = db.query(`SELECT ${sum || "0"} AS n FROM "${table}"`).get() as { n: number };
+        return { table, bytes: row.n };
+      })
+      .sort((a, b) => b.bytes - a.bytes);
+  } finally {
+    db.close();
+  }
+}
+
+/**
+ * A run state without its file manifests (#2338): `expectedFiles` and each prior review's `files`
+ * hold a hash per tracked file in every revision of the state, 257 KB and 516 KB of R74
+ * ladlemath's largest state. No replay reads them; the reviews' findings stay for
+ * `stateFindings`. A state that does not parse is returned as it is.
+ */
+export function withoutFileManifests(text: string): string {
+  let state: Record<string, unknown>;
+  try {
+    state = JSON.parse(text) as Record<string, unknown>;
+  } catch {
+    return text;
+  }
+  if (!state || typeof state !== "object" || Array.isArray(state)) return text;
+  if (state.expectedFiles && typeof state.expectedFiles === "object") state.expectedFiles = {};
+  const prior = state.priorReviews;
+  if (prior && typeof prior === "object")
+    for (const entry of Object.values(prior as Record<string, unknown>))
+      if (entry && typeof entry === "object" && "files" in entry)
+        (entry as { files: unknown }).files = {};
+  return JSON.stringify(state);
+}
+
+/**
  * Writes the trace of the workflow database of `workspace` to `out`, gzip-compressed. The source
  * is opened read-only; `runIds` limits the trace to those runs (the default is every run).
  */
 export function exportTrace(
   workspace: string,
   out: string,
-  options: { runIds?: string[] } = {},
+  options: { runIds?: string[]; maxBytes?: number } = {},
 ): TraceExport {
   const source = workspacePath(workspace, ".baked/workflows.sqlite");
   if (!existsSync(source)) throw new Error(`No workflow database in ${workspace}`);
@@ -597,13 +650,13 @@ export function exportTrace(
         const readText = (a: (typeof artifacts)[number]): string | null => {
           if (!KEPT_ARTIFACTS.has(a.kind)) return null;
           try {
-            return (
+            const text =
               a.inline_content ??
               readFileSync(
                 workspacePath(workspace, (a.blob_path ?? "").replaceAll("\\", "/")),
                 "utf8",
-              )
-            );
+              );
+            return a.kind === "state" ? withoutFileManifests(text) : text;
           } catch {
             return null;
           }
@@ -699,6 +752,11 @@ export function exportTrace(
             ]);
         }
         if (present.has("runs")) db.exec("UPDATE runs SET owner_id=NULL");
+        // A snapshot's file manifest is a hash per file of the project; no replay reads one, and
+        // with a committed dependency tree they were most of a trace (#2338). The manifest hash
+        // stays, so two snapshots of the same files still compare equal.
+        if (present.has("workspace_snapshots"))
+          db.exec("UPDATE workspace_snapshots SET manifest_json='{}'");
       })();
       db.exec("VACUUM");
     } finally {
@@ -708,6 +766,13 @@ export function exportTrace(
     // The best compression: R60 wheeltags was 2.28 MB at the default level and 2.10 MB at this one,
     // against the corpus's 2 MB guide (#1937).
     const zipped = Bun.gzipSync(bytes, { level: 9 });
+    const limit = options.maxBytes ?? TRACE_MAX_BYTES;
+    if (zipped.length > limit) {
+      const sizes = tableSizes(copy).slice(0, 5);
+      throw new Error(
+        `The trace is ${mib(zipped.length)} gzipped, above its ${mib(limit)} bound. Largest tables unpacked: ${sizes.map((t) => `${t.table} ${mib(t.bytes)}`).join(", ")}`,
+      );
+    }
     mkdirSync(dirname(out), { recursive: true });
     writeFileSync(out, zipped);
     const counted = new Database(copy, { readonly: true });

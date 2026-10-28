@@ -20,6 +20,8 @@ export const INLINE_HARNESS: Record<Framework, string> = {
   junit: "acceptanceActual",
   rust: "acceptance_actual",
   xunit: "AcceptanceActual",
+  rspec: "acceptance_actual",
+  phpunit: "acceptanceActual",
 };
 
 /**
@@ -50,10 +52,11 @@ export interface InlineRowFile {
   tail: string;
   /** The file the host starts when the test file does not exist yet. */
   skeleton: string;
-  nest?: { language: "java" | "csharp"; className: string; namespace?: string };
+  nest?: { language: "java" | "csharp" | "php"; className: string; namespace?: string };
 }
 
-const comment = (framework: Framework): string => (framework === "pytest" ? "#" : "//");
+const comment = (framework: Framework): string =>
+  framework === "pytest" || framework === "rspec" ? "#" : "//";
 /**
  * Python's first line stays within ruff's and black's 88 columns, so its comment takes two (#1927),
  * and so does Java's, whose comment google-java-format wraps at 100 columns (#1961).
@@ -129,11 +132,16 @@ const pythonString = (text: string): string => {
 };
 
 /**
- * The rows' JSON text as short string literals, one row per literal, a long row split over more,
- * each at most 74 columns with its quotes, so a list of them stays within 79 and ruff and black
- * keep its layout at any line length (#1927). A row's id starts its first literal.
+ * The rows' JSON text as short string literals written by `write`, one row per literal, a long row
+ * split over more, each at most 74 columns with its quotes, so a list of them stays within 79 and
+ * ruff and black keep its layout at any line length (#1927), and RuboCop's 120 columns hold it
+ * indented. A row's id starts its first literal.
  */
-const pythonChunks = (rows: AcceptanceRow[], width = 74): string[] => {
+const literalChunks = (
+  rows: AcceptanceRow[],
+  write: (text: string) => string,
+  width = 74,
+): string[] => {
   const items = rows.map(({ id, input, expected }) => jsonText({ id, input, expected }));
   const pieces = items.length
     ? items.map((item, i) => `${i ? "" : "["}${item}${i < items.length - 1 ? "," : "]"}`)
@@ -142,7 +150,7 @@ const pythonChunks = (rows: AcceptanceRow[], width = 74): string[] => {
   for (const piece of pieces) {
     let chunk = "";
     for (const ch of piece) {
-      if (chunk && pythonString(chunk + ch).length > width) {
+      if (chunk && write(chunk + ch).length > width) {
         chunks.push(chunk);
         chunk = "";
       }
@@ -150,8 +158,27 @@ const pythonChunks = (rows: AcceptanceRow[], width = 74): string[] => {
     }
     if (chunk) chunks.push(chunk);
   }
-  return chunks.map(pythonString);
+  return chunks.map(write);
 };
+
+/**
+ * A Ruby or PHP string literal: single-quoted, where only `\\` and `\'` are escapes, which is the
+ * quote RuboCop's and Pint's defaults choose. A text holding a character of `LITERAL_ESCAPED`, which
+ * a single-quoted literal can only hold raw, is double-quoted with `\u{...}` escapes (#1995), and
+ * its interpolation sigil (`#` in Ruby, `$` in PHP) escaped. The rows' JSON text (`jsonText`)
+ * never needs that.
+ */
+const singleQuoted =
+  (sigil: "#" | "$") =>
+  (text: string): string =>
+    text.search(LITERAL_ESCAPED) < 0
+      ? `'${text.replace(/[\\']/g, "\\$&")}'`
+      : `"${escapeInvisible(
+          text.replace(sigil === "#" ? /[\\"#]/g : /[\\"$]/g, "\\$&"),
+          (code) => `\\u{${code.toString(16)}}`,
+        )}"`;
+export const rubyString = singleQuoted("#");
+export const phpString = singleQuoted("$");
 
 /**
  * A Java string literal; control characters are octal escapes, never \u (read before lexing). A
@@ -362,6 +389,27 @@ type Template = (
   rows: AcceptanceRow[],
 ) => Omit<InlineRowFile, "path" | "inline">;
 
+/**
+ * What the RSpec blocks share: the rows as examples, each result compared as JSON data. No quote
+ * inside an interpolation, which StandardRB's double quotes would end the message at.
+ */
+export const rspecExamples = (call: string): string =>
+  `RSpec.describe 'acceptance rows' do\n  acceptance_rows.each do |row|\n    id = row['id']\n    it id do\n      got = JSON.parse(JSON.generate([${call}(row['input'])]))[0]\n      want = row['expected']\n      expect(got).to eq(want), "#{id}: got #{JSON.generate([got])}, want #{JSON.generate([want])}"\n    end\n  end\nend`;
+
+/**
+ * The PHPUnit test method and its JSON normalizer, which both modes share. The method is named
+ * `test`, which Pint's snake case and PHP-CS-Fixer's camel case both keep; it compares every row
+ * and fails once, naming each failing row with what it got (#2335).
+ */
+export const phpunitMethods = (call: string, normal: string, rows: string): string =>
+  `public function test(): void\n{\n${rows}\n    $failed = [];\n    foreach ($rows as $row) {\n        $actual = ${call}($row['input']);\n        $got = self::${normal}(json_decode(json_encode([$actual], JSON_THROW_ON_ERROR), true)[0]);\n        $want = self::${normal}($row['expected']);\n        if ($got !== $want) {\n            $failed[] = $row['id'].': got '.json_encode($got).', want '.json_encode($want);\n        }\n    }\n    $this->assertSame([], $failed, implode("\\n", $failed));\n}\n\n/** JSON numbers compare by value, so 2 and 2.0 are equal; objects compare by their entries. */\nprivate static function ${normal}(mixed $value): mixed\n{\n    if (is_float($value) && floor($value) === $value && abs($value) <= 9007199254740991) {\n        return (int) $value;\n    }\n    if (is_array($value)) {\n        $value = array_map(self::${normal}(...), $value);\n        ksort($value);\n    }\n\n    return $value;\n}`;
+
+/** The import of a PHP test file the host starts, so Pint finds no fully qualified name. */
+const PHPUNIT_USE = "use PHPUnit\\Framework\\TestCase;";
+
+/** A PHP namespace from a row package, which spells its separators as dots. */
+export const phpNamespace = (pkg: string): string => pkg.replaceAll(".", "\\");
+
 const TEMPLATES: Record<Framework, Template> = {
   // No type literal: a semicolon-free formatter drops its member separators (#1948). A destructured
   // parameter keeps its parentheses under any arrowParens option (#1961).
@@ -375,7 +423,7 @@ const TEMPLATES: Record<Framework, Template> = {
   // No import statement: below the file's own code one is E402 and an import block of its own for
   // isort (I001), and the formatter checks run on the whole file (#1927).
   pytest: (_, rows) => {
-    const text = pythonChunks(rows)
+    const text = literalChunks(rows, pythonString)
       .map((chunk) => `    ${chunk},\n`)
       .join("");
     return {
@@ -426,6 +474,40 @@ const TEMPLATES: Record<Framework, Template> = {
       tail: block(
         "xunit",
         `public class AcceptanceRows\n{\n    private const string Rows = ${quoted(data(rows))};\n\n    public static global::System.Collections.Generic.IEnumerable<object[]> Data()\n    {\n        foreach (var row in global::System.Text.Json.Nodes.JsonNode.Parse(Rows)!.AsArray())\n            yield return new object[]\n            {\n                (string)row!["id"]!,\n                row["input"]?.ToJsonString() ?? "null",\n                row["expected"]?.ToJsonString() ?? "null",\n            };\n    }\n\n    [global::Xunit.Theory]\n    [global::Xunit.MemberData(nameof(Data))]\n    public void AcceptanceRow(string id, string input, string expected)\n    {\n        var actual = global::System.Text.Json.JsonSerializer.SerializeToNode(global::${pkg}.${cls}.AcceptanceActual(global::System.Text.Json.Nodes.JsonNode.Parse(input)));\n        global::Xunit.Assert.True(\n            global::System.Text.Json.Nodes.JsonNode.DeepEquals(actual, global::System.Text.Json.Nodes.JsonNode.Parse(expected)),\n            $"{id}: got {actual?.ToJsonString() ?? "null"}, want {expected}");\n    }\n}`,
+      ),
+    };
+  },
+  // Top-level locals, which each spec file has its own of, and the harness captured as a Method
+  // when the file loads, so a later file that defines acceptance_actual again changes nothing here.
+  rspec: (_, rows) => ({
+    skeleton: "",
+    tail: block(
+      "rspec",
+      `require 'json'\n\nacceptance_harness = method(:acceptance_actual)\nacceptance_rows = JSON.parse(\n  [\n${literalChunks(
+        rows,
+        rubyString,
+      )
+        .map((chunk) => `    ${chunk}`)
+        .join(",\n")}\n  ].join\n)\n\n${rspecExamples("acceptance_harness.call")}`,
+    ),
+  }),
+  // Methods of the file's own class, which PSR-1 keeps to one per file; the harness is its static
+  // method, so two test files never share a name.
+  phpunit: ({ test, package: pkg }, rows) => {
+    const cls = className(test, ".php");
+    const text = literalChunks(rows, phpString)
+      .map((chunk) => `        ${chunk},\n`)
+      .join("");
+    return {
+      skeleton: `<?php\n${pkg ? `\nnamespace ${phpNamespace(pkg)};\n` : ""}\n${PHPUNIT_USE}\n`,
+      nest: { language: "php", className: cls },
+      tail: block(
+        "phpunit",
+        phpunitMethods(
+          "self::acceptanceActual",
+          "acceptanceNormal",
+          `    $text = implode('', [\n${text}    ]);\n    $rows = json_decode($text, true, 512, JSON_THROW_ON_ERROR);`,
+        ),
       ),
     };
   },
@@ -620,7 +702,7 @@ function sameBlock(text: string, file: string, path: string): boolean {
  * braces and declarations are found in code only. Java text blocks and C# verbatim, raw and
  * interpolated strings are literals too; an interpolation hole's own strings are skipped with it.
  */
-function codeOnly(text: string): string {
+function codeOnly(text: string, language?: "java" | "csharp" | "php"): string {
   const out = [...text];
   const blank = (from: number, to: number) => {
     for (let i = from; i < to; i++) if (out[i] !== "\n") out[i] = " ";
@@ -662,6 +744,13 @@ function codeOnly(text: string): string {
     } else if (ch === '"') {
       const prefix = text.slice(Math.max(0, i - 2), i);
       end = stringEnd(i, /@\$?$|\$@$/.test(prefix), /\$@?$|@\$$/.test(prefix));
+    } else if (language === "php" && (ch === "'" || (ch === "#" && next !== "["))) {
+      // A PHP single-quoted string, whatever its length, and a `#` comment (`#[` opens an attribute).
+      const close =
+        ch === "#"
+          ? /^#[^\n]*/.exec(text.slice(i))
+          : /^'(?:\\[\s\S]|[^'\\])*'?/.exec(text.slice(i));
+      end = i + (close?.[0].length ?? 1);
     } else if (ch === "'" && /[^A-Za-z0-9_]/.test(text[i - 1] ?? " ")) {
       const close = /^'(?:\\.|[^'\\\n]){1,8}'/.exec(text.slice(i));
       if (close) end = i + close[0].length;
@@ -688,8 +777,12 @@ function closingBrace(code: string, open: number): number {
  * The braces of the file's own type: the class, record or struct named after the file, or else
  * the first type the file declares. Null when the file declares none.
  */
-function primaryType(text: string, className: string): { open: number; end: number } | null {
-  const code = codeOnly(text);
+function primaryType(
+  text: string,
+  className: string,
+  language?: NonNullable<InlineRowFile["nest"]>["language"],
+): { open: number; end: number } | null {
+  const code = codeOnly(text, language);
   const declared = (name: string) =>
     new RegExp(`\\b(?:class|record|struct|interface|enum)\\s+${name}\\b[^{;]*\\{`).exec(code);
   const found = declared(className) ?? declared("[A-Za-z_]\\w*");
@@ -700,9 +793,9 @@ function primaryType(text: string, className: string): { open: number; end: numb
 }
 
 /** Whether the block of `file` lies in the braces of the file's own type. */
-function insideType(text: string, file: string, className: string): boolean {
+function insideType(text: string, file: string, nest: NonNullable<InlineRowFile["nest"]>): boolean {
   const lines = blockLines(text, file);
-  const type = primaryType(text, className);
+  const type = primaryType(text, nest.className, nest.language);
   if (!lines || !type) return false;
   const at = text.split("\n").slice(0, lines.from).join("\n").length + 1;
   return at > type.open && at < type.end;
@@ -729,18 +822,22 @@ function nested(
   nest: NonNullable<InlineRowFile["nest"]>,
 ): string {
   let body = withoutBlock(text, file.tail);
-  let type = primaryType(body, nest.className);
+  let type = primaryType(body, nest.className, nest.language);
   if (!type) {
     // No type yet: the host declares the file's class around the block.
     const head = body.replace(/\s+$/, "");
     const wrapper =
-      nest.language === "java" || !nest.namespace || /^\s*namespace\s+[\w.]+\s*;/m.test(head)
-        ? nest.language === "java"
-          ? `class ${nest.className} {\n}\n`
-          : `public class ${nest.className}\n{\n}\n`
-        : `namespace ${nest.namespace}\n{\n    public class ${nest.className}\n    {\n    }\n}\n`;
-    body = head ? `${head}\n\n${wrapper}` : wrapper;
-    type = primaryType(body, nest.className);
+      nest.language === "php"
+        ? `final class ${nest.className} extends ${head.includes(PHPUNIT_USE) ? "" : "\\PHPUnit\\Framework\\"}TestCase\n{\n}\n`
+        : nest.language === "java" || !nest.namespace || /^\s*namespace\s+[\w.]+\s*;/m.test(head)
+          ? nest.language === "java"
+            ? `class ${nest.className} {\n}\n`
+            : `public class ${nest.className}\n{\n}\n`
+          : `namespace ${nest.namespace}\n{\n    public class ${nest.className}\n    {\n    }\n}\n`;
+    // A PHP file starts with its open tag.
+    const start = nest.language === "php" && !/^\s*<\?php/.test(head) ? `<?php\n\n${head}` : head;
+    body = start.trim() ? `${start.replace(/\s+$/, "")}\n\n${wrapper}` : wrapper;
+    type = primaryType(body, nest.className, nest.language);
     if (!type) return body;
   }
   const { end } = type;
@@ -781,7 +878,7 @@ export function withInlineRows(existing: string | null, file: InlineRowFile): st
     existing !== null &&
     sameBlock(existing, file.tail, file.path) &&
     (!file.head || sameBlock(existing, file.head, file.path)) &&
-    (!file.nest || insideType(existing, file.tail, file.nest.className))
+    (!file.nest || insideType(existing, file.tail, file.nest))
   )
     return existing;
   let text = existing ?? file.skeleton;
@@ -800,7 +897,7 @@ export function withInlineRows(existing: string | null, file: InlineRowFile): st
   if (at) return text.slice(0, at.from) + file.tail + text.slice(at.to);
   const body = text.replace(/\s+$/, "");
   // Two blank lines before a top-level Python comment that follows a function (ruff, black).
-  const gap = file.tail.startsWith("#") ? "\n\n\n" : "\n\n";
+  const gap = file.path.endsWith(".py") ? "\n\n\n" : "\n\n";
   return body ? `${body}${gap}${file.tail}` : file.tail;
 }
 

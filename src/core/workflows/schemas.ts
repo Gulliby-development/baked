@@ -104,7 +104,7 @@ export const SpecSchema = z
 export const HOST_CONTENT_MAX_CHARS = 4000;
 
 /** The test frameworks acceptance rows as data writes tests for. */
-const RowFramework = z.enum(["bun", "pytest", "go", "junit", "rust", "xunit"]);
+const RowFramework = z.enum(["bun", "pytest", "go", "junit", "rust", "xunit", "rspec", "phpunit"]);
 const RowPackage = z
   .string()
   .max(200)
@@ -147,7 +147,10 @@ export const TaskSchema = z
         z
           .object({
             framework: RowFramework,
-            /** The Go package, Java package or C# namespace of the harness and the host's test. */
+            /**
+             * The Go package, Java package, C# namespace or PHP namespace (dots for backslashes) of
+             * the harness and the host's test.
+             */
             package: RowPackage.optional(),
             harness: RelativePath,
             test: RelativePath,

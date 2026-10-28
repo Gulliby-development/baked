@@ -1,8 +1,12 @@
+import { repeatedInvalidOutputAdvice, repeatsInvalidOutput } from "./invalid-output-repeat.js";
 import { type RecoveryAdvice, recoveryOf } from "./remedies.js";
 import type { WorkflowStore } from "./store.js";
 
 /** Advice belongs to the latest diagnostic, so a later stop cannot reuse a stale remedy. */
 export function stopRecovery(store: WorkflowStore, runId: string): RecoveryAdvice | undefined {
+  // A plain resume the repeat guard would refuse is not offered: the advice leads with a reroute
+  // (#2201), the same advice the refusal gives.
+  if (repeatsInvalidOutput(store, runId)) return repeatedInvalidOutputAdvice(runId);
   const latest = store
     .artifacts(runId)
     .filter((a) => a.kind === "diagnostic" && a.logical_path.startsWith("errors/"))

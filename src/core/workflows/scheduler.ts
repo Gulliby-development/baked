@@ -7,7 +7,6 @@ import {
   rmdirSync,
   rmSync,
   statSync,
-  symlinkSync,
   unlinkSync,
   writeFileSync,
 } from "node:fs";
@@ -271,6 +270,7 @@ import {
   selectCandidate,
 } from "./candidates.js";
 import {
+  coveringChecks,
   cwdPath,
   fixerCommand,
   fixerTierPaths,
@@ -762,6 +762,7 @@ import {
 } from "./stall-ladder.js";
 import { siblingFallbacks, siblingNote, writeFallback } from "./stall-siblings.js";
 import { recordWouldStop, stopFault, stopMode } from "./stop-reasons.js";
+import { SUPPLIED_CHECK_DIR, SUPPLIED_CHECK_KIND, suppliedCheckRecord } from "./supplied-checks.js";
 import {
   repairUncoveredCriteria,
   UNCOVERED_SUBMISSIONS,
@@ -772,6 +773,7 @@ import {
 
 type Implementation = ReturnType<typeof ImplementationSchema.parse>;
 
+import { linkDependencies } from "./dependency-dirs.js";
 import { browserLayoutProbe, type LayoutProbe, layoutVerdict } from "./layout-check.js";
 import { planCostOf, planCostWarning } from "./plan-cost.js";
 import { EDIT_TOOLS } from "./progress-watch.js";
@@ -815,6 +817,7 @@ import {
   sizingHistory,
   splitNote,
   splitTestTasks,
+  suppliedBlocks,
   withTestDependencies,
 } from "./sizing.js";
 import {
@@ -3132,6 +3135,10 @@ export class WorkflowScheduler {
                   );
                 }
               }
+              // A file the request gives verbatim: a low note there does not settle a failing
+              // criterion (#2332).
+              const supplied = (file: string | null): boolean =>
+                file !== null && suppliedBlocks(state.requestText || state.prompt, [file]).size > 0;
               // The gate's labels are recorded for the replay corpus (review-gate.ts, #1715).
               const gate: ConvergenceGate = {
                 severities,
@@ -3146,7 +3153,7 @@ export class WorkflowScheduler {
                 })),
                 failing: [...failing],
                 findings: review.findings.map((f) =>
-                  convergenceGateFinding(f, siblingNotes.has(f.id), undefined),
+                  convergenceGateFinding(f, siblingNotes.has(f.id), undefined, supplied(f.file)),
                 ),
               };
               // Below high severity, a correctness claim the host does not reproduce, and any claim
@@ -15031,8 +15038,8 @@ ${note}`;
     if (failure) record([], failure);
   }
   /**
-   * Runs `work` in a task worktree checked out from the run's current content, with `.venv`,
-   * `venv` and `node_modules` linked from the run, and removes it afterwards. The baseline replay
+   * Runs `work` in a task worktree checked out from the run's current content, with the
+   * project's dependency folders linked from the run (#2330), and removes it afterwards. The baseline replay
    * (#1945) and the package contents check (#1984) run their commands there, so nothing they
    * write reaches the run's tree after its snapshot. Returns why no copy could be made, else null.
    */
@@ -15073,19 +15080,7 @@ ${note}`;
             rmSync(join(specs, folder), { recursive: true, force: true });
         if (!readdirSync(specs).length) rmdirSync(specs);
       }
-      for (const linked of [".venv", "venv", "node_modules"]) {
-        const source = join(root, linked);
-        if (existsSync(source) && !existsSync(join(copy, linked)))
-          try {
-            symlinkSync(
-              source,
-              join(copy, linked),
-              process.platform === "win32" ? "junction" : "dir",
-            );
-          } catch {
-            // Without the link the copy's commands may fail to start; their output says so.
-          }
-      }
+      linkDependencies(root, copy);
       await work(copy, scope);
       return null;
     } finally {
@@ -15535,15 +15530,6 @@ ${note}`;
       return false;
     }
     const copy = join(this.store.workspace, path);
-    for (const name of [".venv", "venv"]) {
-      const source = join(root, name);
-      if (existsSync(source) && !existsSync(join(copy, name)))
-        try {
-          symlinkSync(source, join(copy, name), process.platform === "win32" ? "junction" : "dir");
-        } catch {
-          // Without the link the copy's baseline test run fails and the gate says so.
-        }
-    }
     const controller = new AbortController();
     const done = (async () => {
       try {
@@ -18079,6 +18065,9 @@ ${note}`;
   ): Promise<void> {
     // Shadow (#2023): whether the host would apply the request's verbatim content itself.
     if (firstRun && task.origin === "planned") await this.recordHostApply(runId, state, task, root);
+    // Shadow (#2275): whether the request's verbatim content passes the project's static checks.
+    if (firstRun && task.origin === "planned")
+      await this.recordSuppliedChecks(runId, state, task, root);
   }
   /**
    * Records whether a task-level corrective can write the files its failed non-test check names in
@@ -18519,6 +18508,35 @@ ${note}`;
         path,
         canonical(hostApplyRecord(task.id, writes)),
       );
+    } catch {}
+  }
+  /**
+   * Records the project's static checks on a copy of the task's base with the request's verbatim
+   * content written in (`suppliedCheckRecord`, #2275), once per task. Shadow: the implementer
+   * still runs, and a failure to copy, apply or check never touches the run.
+   */
+  private async recordSuppliedChecks(
+    runId: string,
+    state: RuntimeState,
+    task: Task,
+    root: string,
+  ): Promise<void> {
+    const path = `${SUPPLIED_CHECK_DIR}${task.id}.json`;
+    if (this.store.latestArtifact(runId, path)) return;
+    try {
+      const policy = PolicySchema.parse(JSON.parse(this.store.run(runId).policy_json));
+      const record = await suppliedCheckRecord(
+        task.id,
+        task,
+        root,
+        state.requestText || state.prompt,
+        coveringChecks(policy, task),
+        (check, copy) =>
+          this.checks.measure(check, new AbortController().signal, copy, runSandbox(policy, copy)),
+        generatedPaths(policy),
+      );
+      if (!record) return;
+      this.store.artifact(runId, SUPPLIED_CHECK_KIND, path, canonical(record));
     } catch {}
   }
   /**

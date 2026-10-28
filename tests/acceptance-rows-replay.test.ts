@@ -71,6 +71,9 @@ describe("which task replays which rows (#1617)", () => {
       args: ["-q", "test", "-Dtest=com.ex.paths.BakedReplayT001Test,com.ex.paths.BakedReplayT001Test$AcceptanceRows", "-Dsurefire.failIfNoSpecifiedTests=false"] },
     { framework: "xunit", package: "Paths.Tests", test: "Paths.Tests/PathsTests.cs", run: check("dotnet", ["test"]), file: "Paths.Tests/BakedReplayT001Tests.cs",
       args: ["test", "--filter", "FullyQualifiedName~BakedReplayT001Tests.|FullyQualifiedName~BakedReplayT001Tests+AcceptanceRows."] },
+    // #2335: the spec file, and the PHPUnit test class that holds the block as its own methods.
+    { framework: "rspec", test: "spec/paths_spec.rb", run: check("bundle", ["exec", "rspec"]), file: "spec/baked_replay_t001_spec.rb", args: ["exec", "rspec", "./spec/baked_replay_t001_spec.rb"] },
+    { framework: "phpunit", package: "App.Tests", test: "tests/PathsTest.php", run: check("php", ["vendor/bin/phpunit", "tests"]), file: "tests/BakedReplayT001Test.php", args: ["vendor/bin/phpunit", "./tests/BakedReplayT001Test.php"] },
   ] as const;
   test.each(FRAMEWORKS.map((f) => [f.framework, f]))("%s: the replay file runs on its own with the project's test command", (_name, f) => {
     const later = rowTask(f.framework, f.test, "package" in f ? f.package : undefined);

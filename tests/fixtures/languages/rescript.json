@@ -62,6 +62,9 @@
     "staticTools": [
       "rescript format: formatter"
     ],
-    "sortedLists": null
+    "sortedLists": null,
+    "dependencyDirs": [
+      "node_modules: linked"
+    ]
   }
 }
