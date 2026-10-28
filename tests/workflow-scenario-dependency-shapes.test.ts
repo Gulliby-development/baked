@@ -13,7 +13,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { delimiter, join } from "node:path";
+import { delimiter, join, relative } from "node:path";
 import { sourceManifest } from "../src/core/verification/snapshot.js";
 import { worktreePathChecks } from "../src/core/workflows/doctor.js";
 import {
@@ -114,14 +114,66 @@ describe.skipIf(!Bun.which("php") || !Bun.which("composer"))(
         ]);
       expect(where("Product")).toBe(join(f.root, "src", "Product.php"));
       expect(where("Sum")).toBe(join(f.root, "src", "Sum.php"));
-      // The installed packages are still the project's, not copies.
-      expect(lstatSync(join(f.root, "vendor/acme")).isSymbolicLink()).toBe(true);
+      // The installed packages are mirrored, not linked (#2401).
+      expect(lstatSync(join(f.root, "vendor/acme")).isSymbolicLink()).toBe(false);
+    });
+  },
+);
+
+// R76 ladlemath-update (#2401): with the packages linked, phpstan's launcher found the autoloader
+// from its real path in the main workspace and loaded it after the worktree's one, so PHP died on
+// "Cannot redeclare class ComposerAutoloaderInit..." and the phpstan check failed its baseline in
+// every worktree. The stand-in tool bootstraps the way phpstan.phar's bin does (the working
+// directory's autoloader, then the one next to its own package), installed by Composer from a
+// path repository with its real `vendor/bin` proxy.
+const LAUNCHER = `#!/usr/bin/env php
+<?php
+$cwd = getcwd() . '/vendor/autoload.php';
+if (is_file($cwd)) require_once $cwd;
+$own = dirname(__DIR__, 3) . '/autoload.php';
+if (is_file($own)) require_once $own;
+echo class_exists('App\\Sum') ? "analysed\n" : "no autoload\n";
+`;
+const TOOL_PROJECT = {
+  ...COMPOSER_FILES,
+  "composer.json": `${JSON.stringify(
+    {
+      name: "acme/ladlemath",
+      autoload: { "psr-4": { "App\\": "src/" } },
+      repositories: [
+        { type: "path", url: "tools/analyser", options: { symlink: false } },
+        { "packagist.org": false },
+      ],
+      "require-dev": { "acme/analyser": "*" },
+    },
+    null,
+    2,
+  )}\n`,
+  "tools/analyser/composer.json": `${JSON.stringify({ name: "acme/analyser", version: "1.0.0", bin: ["bin/analyse"] })}\n`,
+  "tools/analyser/bin/analyse": LAUNCHER,
+};
+
+describe.skipIf(!Bun.which("php") || !Bun.which("composer"))(
+  "scenario: ladlemath R76, a vendor/bin tool that loads the autoloader from its own path (#2401)",
+  () => {
+    test("runs once in the run worktree and in a task worktree", async () => {
+      const f = project(TOOL_PROJECT, (workspace) =>
+        run(workspace, ["composer", "install", "--no-interaction", "--quiet"]),
+      );
+      expect(run(f.workspace, ["php", "vendor/bin/analyse"])).toBe("analysed");
+      expect(run(f.root, ["php", "vendor/bin/analyse"])).toBe("analysed");
+      const base = await runContentCommit(f.store, f.runId, f.worktree);
+      const task = join(f.workspace, await createTaskWorktree(f.store, f.runId, "T001", base));
+      expect(run(task, ["php", "vendor/bin/analyse"])).toBe("analysed");
+      // The main workspace's packages are untouched by the worktree's removal.
+      expect((await removeTaskWorktree(f.workspace, relative(f.workspace, task))).removed).toBe(true);
+      expect(existsSync(join(f.workspace, "vendor/acme/analyser/bin/analyse"))).toBe(true);
     });
   },
 );
 
 describe("dependency folders that name the project (#2362)", () => {
-  test("Composer: vendor/composer and the autoloader are the worktree's own, packages linked", () => {
+  test("Composer: vendor/composer and the autoloader are the worktree's own, packages mirrored", () => {
     const f = project(COMPOSER_FILES, (workspace) => {
       write(workspace, "vendor/autoload.php", "<?php\nrequire_once __DIR__ . '/composer/autoload_real.php';\n");
       write(workspace, "vendor/composer/autoload_psr4.php", "<?php\n$baseDir = dirname(dirname(__DIR__));\n");
@@ -133,7 +185,9 @@ describe("dependency folders that name the project (#2362)", () => {
     expect(lstatSync(join(vendor, "composer")).isSymbolicLink()).toBe(false);
     expect(lstatSync(join(vendor, "autoload.php")).isSymbolicLink()).toBe(false);
     expect(lstatSync(join(vendor, "bin/phpunit")).isSymbolicLink()).toBe(false);
-    expect(lstatSync(join(vendor, "phpunit")).isSymbolicLink() || IS_WIN).toBe(true);
+    // Packages are mirrored: a real folder whose files are hard links of the workspace's (#2401).
+    expect(lstatSync(join(vendor, "phpunit")).isSymbolicLink()).toBe(false);
+    expect(lstatSync(join(vendor, "phpunit/phpunit/phpunit")).nlink).toBe(2);
     expect(isLinkedDependency(f.root, "vendor")).toBe(true);
   });
 

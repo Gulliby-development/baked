@@ -25,6 +25,7 @@ export const INLINE_HARNESS: Record<Framework, string> = {
   testthat: "acceptance_actual",
   busted: "acceptance_actual",
   minitest: "acceptance_actual",
+  pest: "$acceptanceActual",
 };
 
 /**
@@ -471,6 +472,14 @@ export const bustedRows = (call: string): string =>
 export const testthatRows = (call: string): string =>
   `acceptance_normal <- function(value) {\n  if (is.list(value) && !is.null(names(value))) {\n    value <- value[order(names(value))]\n  }\n  if (is.list(value)) {\n    value <- lapply(value, acceptance_normal)\n  }\n  value\n}\n\nfor (acceptance_row in acceptance_rows) {\n  test_that(acceptance_row$id, {\n    got <- jsonlite::fromJSON(\n      jsonlite::toJSON(\n        list(${call}(acceptance_row$input)),\n        auto_unbox = TRUE,\n        digits = NA,\n        null = "null"\n      ),\n      simplifyVector = FALSE\n    )[[1]]\n    expect_equal(\n      acceptance_normal(got),\n      acceptance_normal(acceptance_row$expected)\n    )\n  })\n}`;
 
+/**
+ * What the Pest blocks share: one `test` per row, named by its id, so Pest's FAILED line names the
+ * row. The harness and the JSON normalizer are closures in variables, which Pest's include of each
+ * test file keeps to that file, so no two files share a function name (#2348).
+ */
+export const pestRows = (): string =>
+  `$acceptanceNormal = function (mixed $value) use (&$acceptanceNormal): mixed {\n    // JSON numbers compare by value, so 2 and 2.0 are equal; objects compare by their entries.\n    if (is_float($value) && floor($value) === $value && abs($value) <= 9007199254740991) {\n        return (int) $value;\n    }\n    if (is_array($value)) {\n        $value = array_map($acceptanceNormal, $value);\n        ksort($value);\n    }\n\n    return $value;\n};\n\nforeach ($acceptanceRows as $acceptanceRow) {\n    test($acceptanceRow['id'], function () use ($acceptanceRow, $acceptanceActual, $acceptanceNormal) {\n        $actual = $acceptanceActual($acceptanceRow['input']);\n        $got = $acceptanceNormal(json_decode(json_encode([$actual], JSON_THROW_ON_ERROR), true)[0]);\n        expect($got)->toBe($acceptanceNormal($acceptanceRow['expected']));\n    });\n}`;
+
 /** The import of a PHP test file the host starts, so Pint finds no fully qualified name. */
 const PHPUNIT_USE = "use PHPUnit\\Framework\\TestCase;";
 
@@ -556,6 +565,16 @@ const TEMPLATES: Record<Framework, Template> = {
       )
         .map((chunk) => `    ${chunk}`)
         .join(",\n")}\n  ].join\n)\n\n${rspecExamples("acceptance_harness.call")}`,
+    ),
+  }),
+  // Closures in the file's own variables: Pest includes each test file in a scope of its own.
+  pest: (_, rows) => ({
+    skeleton: "<?php\n",
+    tail: block(
+      "pest",
+      `$acceptanceRows = json_decode(implode('', [\n${literalChunks(rows, phpString)
+        .map((chunk) => `    ${chunk},\n`)
+        .join("")}]), true, 512, JSON_THROW_ON_ERROR);\n\n${pestRows()}`,
     ),
   }),
   // The harness captured as a Method when the file loads, as in RSpec, and the rows as a class of

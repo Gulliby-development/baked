@@ -1,6 +1,7 @@
 import {
   copyFileSync,
   existsSync,
+  linkSync,
   lstatSync,
   mkdirSync,
   readdirSync,
@@ -83,11 +84,14 @@ export const ALL_DEPENDENCY_DIRS: readonly string[] = [
  * folders in the worktree, entry by entry; `own` the entries copied there, with the workspace's
  * path in their text replaced by the worktree's. Every other entry is linked, and a link inside a
  * walked folder (an npm workspace package, `node_modules/app -> ../packages/app`) is made again
- * with the same target, so a relative one resolves inside the worktree.
+ * with the same target, so a relative one resolves inside the worktree. With `mirror`, the other
+ * entries are not linked but mirrored: folders made real and files hard-linked (copied where a hard
+ * link fails), for a folder whose packages find the project's files from their own real path (#2401).
  */
 export interface ProjectPaths {
   walk: readonly string[];
   own: readonly string[];
+  mirror?: boolean;
   /**
    * Entries (exact `/`-separated paths) left out of the worktree's folder: an installed copy of the
    * project itself (#2371), so a check loads the worktree's sources or fails clearly instead of
@@ -139,10 +143,15 @@ export const PROJECT_PATHS: Readonly<
       ? { walk: [".bin", "@*"], own: [] }
       : null,
   // Composer's autoloader resolves the project's namespaces from its own location (`$baseDir =
-  // dirname($vendorDir)`), and the `vendor/bin` proxies load it: R75 ladlemath-update (#2362).
+  // dirname($vendorDir)`), and the `vendor/bin` proxies load it: R75 ladlemath-update (#2362). A
+  // package's launcher finds the autoloader from its own real path too (phpstan requires
+  // `dirname(Phar::running(false)) . '/../../autoload.php'`, after the one of the working
+  // directory), so a linked package loaded the main workspace's autoloader a second time and PHP
+  // died on "Cannot redeclare class ComposerAutoloaderInit...": R76 ladlemath-update (#2401). The
+  // packages are mirrored, which costs a hard link per file, not a copy.
   vendor: (source) =>
     existsSync(join(source, "composer"))
-      ? { walk: [], own: ["composer", "autoload.php", "bin"] }
+      ? { walk: [], own: ["composer", "autoload.php", "bin"], mirror: true }
       : null,
   // An editable install of the project (`pip install -e .`, `uv sync`, `poetry install`).
   ".venv": (source, workspace) => (editableInstall(source, workspace) ? PYTHON_PATHS : null),
@@ -383,6 +392,28 @@ function linkEntry(source: string, target: string): void {
   else symlinkSync(source, target, folder ? "dir" : "file");
 }
 
+/**
+ * Mirrors `source` at `target`: folders real, files hard-linked (a copy across volumes or where the
+ * file system refuses), links made again. Code in the mirror sees the mirror as its real path.
+ */
+function mirror(source: string, target: string, workspace: string, root: string): void {
+  if (isLink(source)) {
+    relink(source, target, workspace, root);
+    return;
+  }
+  if (statSync(source).isDirectory()) {
+    mkdirSync(target, { recursive: true });
+    for (const name of entries(source))
+      mirror(join(source, name), join(target, name), workspace, root);
+    return;
+  }
+  try {
+    linkSync(source, target);
+  } catch {
+    copyFileSync(source, target);
+  }
+}
+
 /** Copies `source` to `target` (recursively), naming `root` in the text where it named `workspace`. */
 function copyOwn(source: string, target: string, workspace: string, root: string): void {
   if (isLink(source)) {
@@ -424,7 +455,7 @@ function relink(source: string, target: string, workspace: string, root: string)
   else symlinkSync(moved, target, folder ? "dir" : "file");
 }
 
-/** Builds `target` from `source` by `paths`: walked folders real, own entries copied, the rest linked. */
+/** Builds `target` from `source` by `paths`: walked folders real, own entries copied, the rest linked or mirrored. */
 function shadow(
   source: string,
   target: string,
@@ -448,6 +479,7 @@ function shadow(
     else if (isLink(from)) relink(from, to, workspace, root);
     else if (matches(paths.walk, path) && statSync(from).isDirectory())
       shadow(from, to, paths, workspace, root, path);
+    else if (paths.mirror) mirror(from, to, workspace, root);
     else linkEntry(from, to);
   }
   if (!at) writeFileSync(join(target, SHADOW_MARK), "");

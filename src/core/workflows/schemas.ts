@@ -116,6 +116,7 @@ const RowFramework = z.enum([
   "testthat",
   "busted",
   "minitest",
+  "pest",
 ]);
 const RowPackage = z
   .string()
@@ -1535,7 +1536,7 @@ export const MAX_PARALLEL_RUNS = 8;
 /** The cap when `workflows.parallelRunsFromPlan` is on and `maxParallelRuns` is unset (#1822). */
 export const PLAN_PARALLEL_RUNS = 3;
 /** The modes of `workflows.extendWithinDollars` (#2042); see `initiatives/token-pool.ts`. */
-export const EXTEND_WITHIN_DOLLARS_MODES = ["off", "shadow"] as const;
+export const EXTEND_WITHIN_DOLLARS_MODES = ["off", "shadow", "on"] as const;
 /** The modes of `workflows.stageReserve` (#2241); see `initiatives/growth.ts`. */
 export const STAGE_RESERVE_MODES = ["off", "shadow", "on"] as const;
 export const WorkflowConfigSchema = z
