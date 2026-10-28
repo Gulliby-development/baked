@@ -28,7 +28,7 @@ import {
 import { issueStart } from "../workflows/issue-source.js";
 import { leaseOwnerAlive, recordWorkerExit } from "../workflows/leases.js";
 import { presetChoice } from "../workflows/preset-router.js";
-import { HOST_REMEDIES } from "../workflows/remedies-model.js";
+import { RESUME_REMEDIES } from "../workflows/remedies-model.js";
 import { ROLLBACK_ARTIFACT_KIND, type RollbackReport } from "../workflows/rollback.js";
 import { readRunFileDiff } from "../workflows/run-diff.js";
 import {
@@ -367,7 +367,7 @@ const ctx = createWorkerHandler(
       else if (typeof input === "object" && input !== null && "remedy" in input)
         // A person's answer to a corrective's block (#2155), then the run goes on.
         await runtime.resume(id, command, {
-          remedy: z.enum(HOST_REMEDIES).parse((input as { remedy: unknown }).remedy),
+          remedy: z.enum(RESUME_REMEDIES).parse((input as { remedy: unknown }).remedy),
         });
       else if (input === "resume") await runtime.resume(id, command);
       else if (input === "accept-workspace")
