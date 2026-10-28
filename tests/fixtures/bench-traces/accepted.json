@@ -94,7 +94,7 @@
   "R71/xmlvet.sqlite.gz#xmlvet": {
     "newStartStops": 1,
     "newPoolBoundStops": 1,
-    "reason": "#2280: initiative-pool-growth (shadow) records cli-release, the last feature: with no waiting feature estimated its token room was null and its refresh took the base policy's 12M hard ceiling (extendToTokens) with 11.71M of the extended 41.8M pool left after the others' use at its start; it used 3.47M, so the record is true (the bound passes the pool) and costs nothing. #2245: the plan charge is enforced with stopModes unset. canonical parks at 04:48 with 4.7M of the 30.0M pool left (scanner's plan priced its run at 11.75M against an 8.0M limit; it used 12.10M), the would-park the round recorded in shadow. It was true: the pool ran short 65 minutes later (outline-command needed 836,956 more at 05:53:56) with the tree idle. tests/forecast-replay-corpus.test.ts asserts the park and its extend remedy."
+    "reason": "#2280: initiative-pool-growth (shadow) records cli-release, the last feature: with no waiting feature estimated its token room was null and its refresh took the base policy's 12M hard ceiling (extendToTokens) with 11.71M of the extended 41.8M pool left after the others' use at its start; it used 3.47M, so the record is true (the bound passes the pool) and costs nothing. #2294: the room is never null now, so the current code keeps cli-release at the 6.63M it held (tests/forecast-replay-corpus.test.ts); the record replays from the round's own revisions. #2245: the plan charge is enforced with stopModes unset. canonical parks at 04:48 with 4.7M of the 30.0M pool left (scanner's plan priced its run at 11.75M against an 8.0M limit; it used 12.10M), the would-park the round recorded in shadow. It was true: the pool ran short 65 minutes later (outline-command needed 836,956 more at 05:53:56) with the tree idle. tests/forecast-replay-corpus.test.ts asserts the park and its extend remedy."
   },
   "R73/flatelens.sqlite.gz#flatelens": {
     "newPoolBoundStops": 1,
@@ -102,7 +102,7 @@
   },
   "R73/evalpin.sqlite.gz#evalpin": {
     "newPoolBoundStops": 1,
-    "reason": "#2280: initiative-pool-growth (shadow) records delivery, the last feature: with no waiting feature estimated its token room was null and its refresh took the base policy's ceilings (8M, 12M hard) with 3.31M of the 23.9M pool left after the others' use at its gate. The bound really passed the pool (true record); it used 0.81M and the initiative stayed under its pool. Same null-room path as R71 xmlvet's cli-release, which chargeHold does not cover."
+    "reason": "#2280: initiative-pool-growth (shadow) records delivery, the last feature: with no waiting feature estimated its token room was null and its refresh took the base policy's ceilings (8M, 12M hard) with 3.31M of the 23.9M pool left after the others' use at its gate. The bound really passed the pool (true record); it used 0.81M and the initiative stayed under its pool. Same null-room path as R71 xmlvet's cli-release, which chargeHold does not cover. #2294: the room is never null now, so the current code keeps delivery at its 3.31M share (tests/forecast-replay-corpus.test.ts); the record replays from the round's own revisions."
   },
   "R74/callmend.sqlite.gz#e2e109cd-03fb-4ea9-bc45-5f1e749a8a80": {
     "newRepeatStops": 1,
