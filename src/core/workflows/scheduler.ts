@@ -544,7 +544,9 @@ import {
   GREENFIELD_NOTE,
   QUALITY_BASELINE_REPLAY,
   REPLAY_OUTPUT_CHARS,
+  replayCommand,
   replayEdits,
+  replayStopped,
   replayTargetRecords,
   replayTargets,
 } from "./quality/baseline-replay.js";
@@ -15382,17 +15384,25 @@ ${note}`;
                 : "failed";
             return { status, output: outcome.output };
           };
-          const outcome = await run(check.args);
+          // The whole test set runs: cargo stopped after the first failing binary (#2364).
+          const command = replayCommand(check.executable, check.args);
+          const outcome = await run(command.args);
           const failed = failedTests(outcome.output);
           const build = outcome.status === "failed" ? buildFailure(outcome.output) : null;
+          const stopped = outcome.status === "failed" ? replayStopped(outcome.output) : null;
           // One target that does not build stops the aggregate command in cargo, pytest, dotnet
-          // and Maven, so the others run again per target (#2020).
+          // and Maven, so the others run again per target (#2020), as do the targets of a run that
+          // still stopped at its first failing one, when the check's command names that runner.
           const targets: BaselineReplayTarget[] = [];
-          const runner = build ? buildRunner(outcome.output) : null;
+          const runner = build
+            ? buildRunner(outcome.output)
+            : stopped && stopped === command.runner
+              ? stopped
+              : null;
           const prefix = check.cwd === "." ? "" : `${check.cwd.replace(/\/+$/, "")}/`;
           const runs = runner
             ? replayTargets(runner, {
-                args: check.args,
+                args: command.args,
                 tests: changedTests
                   .filter((path) => path.startsWith(prefix))
                   .map((path) => path.slice(prefix.length)),
@@ -15422,6 +15432,10 @@ ${note}`;
             failedTests: failed?.names ?? null,
             runner: failed?.tool ?? runner,
             output: outcome.output.slice(-REPLAY_OUTPUT_CHARS),
+            ...(command.args.some((arg, i) => arg !== check.args[i]) ||
+            command.args.length !== check.args.length
+              ? { args: command.args }
+              : {}),
             ...(build ? { buildFailed: true as const, buildErrors: build } : {}),
             ...(targets.length ? { targets } : {}),
           });
