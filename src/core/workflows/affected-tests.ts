@@ -71,6 +71,8 @@ export function isTestFile(path: string): boolean {
   // RSpec specs and Minitest files (#1493), busted specs (#1495).
   if (name.endsWith(".rb")) return name.endsWith("_spec.rb") || RB_TEST.test(name);
   if (/\.luau?$/.test(name)) return LUA_TEST.test(name);
+  // ExUnit files, which `mix test` runs by path (#2348).
+  if (name.endsWith(".exs")) return name.endsWith("_test.exs");
   // dart test files, which `dart test` and `flutter test` run by path (#1494, #2348).
   if (name.endsWith(".dart")) return name.endsWith("_test.dart");
   // bats files (#1497).
@@ -350,6 +352,10 @@ const VALUE_OPTION =
 const DART_VALUE_OPTION =
   /^(?:--(?:reporter|name|plain-name|tags|exclude-tags|platform|preset|concurrency|total-shards|shard-index|file-reporter)|-[rnNtxpPj])$/;
 
+/** mix test's options that take a value: `--only slow`, `--exclude db`, `--seed 0` (#2348). */
+const MIX_VALUE_OPTION =
+  /^--(?:only|exclude|include|seed|max-cases|max-failures|formatter|partitions|slowest|slowest-modules|repeat-until-failure|color)$/;
+
 /** Keeps a test runner's own flags and drops the paths or patterns a check named. */
 const flagsOnly = (args: string[], values = VALUE_OPTION): string[] =>
   args.filter((arg, i) => arg.startsWith("-") || values.test(args[i - 1] ?? ""));
@@ -380,7 +386,7 @@ function selectedClasses(
 /**
  * A command that runs only `tests` with the runner of one of the policy's test checks, or null
  * when no check runs a test runner that takes test files (`bun test`, `vitest`, `jest`,
- * `node --test`, `pytest`, `go test`, `rspec`, `rake test`, `dart test`, `phpunit`, `pest`, `busted`, `bats`, `sbt test`). Package scripts (`npm test`, `bun run test`) are not
+ * `node --test`, `pytest`, `go test`, `rspec`, `rake test`, `dart test`, `mix test`, `phpunit`, `pest`, `busted`, `bats`, `sbt test`). Package scripts (`npm test`, `bun run test`) are not
  * used: what they pass on is up to the script.
  */
 export function affectedTestCheck(
@@ -462,6 +468,10 @@ export function affectedTestCheck(
       // dart test and flutter test take test files (#1494).
       prefix = ["test", ...flagsOnly(args.slice(1), DART_VALUE_OPTION)];
       targets = files.filter((f) => f.endsWith("_test.dart"));
+    } else if (name === "mix" && args[0] === "test") {
+      // mix test takes test files by their path from the project root (#2348).
+      prefix = ["test", ...flagsOnly(args.slice(1), MIX_VALUE_OPTION)];
+      targets = tests.filter((t) => t.endsWith("_test.exs"));
     } else if (name === "sbt" && args.includes("test")) {
       // sbt runs test classes, not files: `testOnly *CalcSuite *CalcSpec`, one sbt command, by the
       // file names of the Scala tests (#1496).

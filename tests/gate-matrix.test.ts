@@ -251,6 +251,7 @@ describe("host-written acceptance rows in the case-walk and mutation gates (#159
     busted: { harness: "tests/harness.lua", test: "tests/rows_spec.lua" },
     minitest: { harness: "tests/harness.rb", test: "tests/rows_test.rb" },
     pest: { harness: "tests/harness.php", test: "tests/RowsTest.php" },
+    exunit: { harness: "tests/harness.exs", test: "tests/rows_test.exs" },
     dart: { harness: "tests/harness.dart", test: "tests/rows_test.dart" },
   } as const;
   test.each(Object.keys(layouts) as (keyof typeof layouts)[])("%s retains every case in its JSON data and keeps generated tests out of mutation proposals", async (framework) => {
@@ -315,6 +316,7 @@ describe("gate matrix: inline rows block holds its own cells (#1997)", () => {
     busted: { mode: "inline", framework: "busted", test: "spec/calc_spec.lua" },
     minitest: { mode: "inline", framework: "minitest", test: "test/calc_test.rb" },
     pest: { mode: "inline", framework: "pest", test: "tests/CalcTest.php" },
+    exunit: { mode: "inline", framework: "exunit", test: "test/calc_test.exs" },
     dart: { mode: "inline", framework: "dart", test: "test/calc_test.dart" },
   };
   const shapes: [string, unknown][] = [
@@ -2000,6 +2002,12 @@ describe("gate matrix: dart test, dart analyze and dart format (#1494)", () => {
     // A dart test file is a written test of its own (#2348).
     expect(isWrittenTestFile("test/calc_test.dart")).toBe(true);
     expect(isWrittenTestFile("lib/calc.dart")).toBe(false);
+  });
+
+  test("the affected tests run through mix test's file arguments (#2348)", () => {
+    const check = (executable: string, args: string[]): Check => ({ id: `${executable}-test`, executable, args, cwd: ".", timeoutMs: 600000, required: true, scope: "feature", envNames: [], writes: [] });
+    expect(affectedTestCheck([check("mix", ["test", "--exclude", "slow", "test/"])], ["test/calc_test.exs", "lib/calc.ex", "test/test_helper.exs"])?.args).toEqual(["test", "--exclude", "slow", "test/calc_test.exs"]);
+    expect(affectedTestCheck([check("mix", ["test"])], ["lib/calc.ex"])).toBeNull();
   });
 
   test("a new Dart file is held to dart format when the run leaves the gate out (#1837)", () => {
