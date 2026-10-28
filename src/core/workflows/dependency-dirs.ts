@@ -17,6 +17,7 @@ import {
   type NoRow,
   none,
   SUPPORTED_LANGUAGES,
+  type SupportedLanguage,
 } from "../intelligence/language-records.js";
 
 const JS = ["node_modules"] as const;
@@ -345,11 +346,53 @@ export const WORKTREE_PATH_LIMITS: LanguageRecord<{
 
 /** How long a prepare command may take before the worktree goes on without it. */
 const PREPARE_MS = 120_000;
+/** How much of a failed prepare command's output a finding keeps. */
+const PREPARE_OUTPUT_CHARS = 2_000;
+
+/**
+ * The commands (program and subcommand) whose checks load the packages a language's prepare
+ * command resolves (#2372): when the command did not resolve them, a failure of such a check is
+ * the machine's, not the code's. A formatter reads no packages, so `dart format` is not one. Every
+ * language with a `DEPENDENCY_PREPARE` row has an entry; the parity test holds them equal.
+ */
+export const PREPARE_READERS: Readonly<
+  Partial<Record<SupportedLanguage, readonly (readonly [string, string])[]>>
+> = {
+  dart: [
+    ["dart", "test"],
+    ["dart", "analyze"],
+    ["dart", "run"],
+    ["flutter", "test"],
+    ["flutter", "analyze"],
+  ],
+};
+
+/** Whether `program args...` is a check that loads the packages of `language`. */
+export const readsPackages = (
+  language: SupportedLanguage,
+  program: string,
+  args: readonly string[],
+): boolean =>
+  (PREPARE_READERS[language] ?? []).some(
+    ([reader, sub]) => reader === program && args.find((a) => !a.startsWith("-")) === sub,
+  );
+
+/** A prepare command a worktree or copy still needs: it failed, timed out or could not start. */
+export interface UnpreparedDependencies {
+  language: SupportedLanguage;
+  command: string[];
+  /** The end of the command's output when it ran in this process and failed; null otherwise. */
+  output: string | null;
+}
+
+/** The output of the prepare commands that failed, by root and language, for the finding. */
+const failedOutput = new Map<string, string>();
+const outputKey = (root: string, language: string) => `${resolve(root)}\0${language}`;
 
 /**
  * Runs the prepare commands of `DEPENDENCY_PREPARE` in `root`. A command that is missing or fails
- * leaves the worktree as it is: its checks then report the unresolved packages. Returns the
- * commands that ran and succeeded.
+ * leaves the worktree as it is; `unpreparedDependencies` then names it, and the run records it once
+ * as an environment finding (#2372). Returns the commands that ran and succeeded.
  */
 export function prepareDependencies(root: string): string[][] {
   const ran: string[][] = [];
@@ -357,23 +400,63 @@ export function prepareDependencies(root: string): string[][] {
     const row = DEPENDENCY_PREPARE[language];
     if (isNoRow(row)) continue;
     const command = row(root);
-    const program = command && Bun.which(command[0] ?? "", { PATH: process.env.PATH ?? "" });
-    if (!command || !program) continue;
+    if (!command) continue;
+    const program = Bun.which(command[0] ?? "", { PATH: process.env.PATH ?? "" });
+    if (!program) {
+      failedOutput.set(outputKey(root, language), `${command[0]} is not on PATH`);
+      continue;
+    }
     const launch = /\.(?:bat|cmd)$/i.test(program) ? ["cmd", "/d", "/c", program] : [program];
     try {
       const result = Bun.spawnSync([...launch, ...command.slice(1)], {
         cwd: root,
         stdin: "ignore",
-        stdout: "ignore",
-        stderr: "ignore",
+        stdout: "pipe",
+        stderr: "pipe",
         timeout: PREPARE_MS,
       });
-      if (result.exitCode === 0) ran.push(command);
-    } catch {
-      // The worktree's checks name the packages they cannot resolve.
+      if (result.exitCode === 0) {
+        ran.push(command);
+        failedOutput.delete(outputKey(root, language));
+        continue;
+      }
+      const output = `${result.stdout.toString()}${result.stderr.toString()}`.trim();
+      failedOutput.set(
+        outputKey(root, language),
+        output.slice(-PREPARE_OUTPUT_CHARS) || `exit code ${String(result.exitCode)}`,
+      );
+    } catch (error) {
+      failedOutput.set(outputKey(root, language), String(error).slice(0, PREPARE_OUTPUT_CHARS));
     }
   }
   return ran;
+}
+
+/**
+ * The prepare commands `root` still needs (#2372): a row of `DEPENDENCY_PREPARE` that names a
+ * command means its packages are not resolved there. Read from the files, so a check of a
+ * worktree made by another process knows it too.
+ */
+export function unpreparedDependencies(root: string): UnpreparedDependencies[] {
+  const out: UnpreparedDependencies[] = [];
+  for (const language of SUPPORTED_LANGUAGES) {
+    const row = DEPENDENCY_PREPARE[language];
+    const command = isNoRow(row) ? null : row(root);
+    if (!command) continue;
+    out.push({
+      language,
+      command,
+      output: failedOutput.get(outputKey(root, language)) ?? null,
+    });
+  }
+  return out;
+}
+
+/** The one line a finding and a check's note give for packages a worktree could not resolve. */
+export function unpreparedProblem(unprepared: UnpreparedDependencies): string {
+  const command = unprepared.command.join(" ");
+  const online = unprepared.command.filter((part) => part !== "--offline").join(" ");
+  return `Dependencies not available offline: \`${command}\` could not resolve the packages in this worktree, so its checks that load packages fail on unresolved imports. Run \`${online}\` in the project once so the package cache has them.`;
 }
 
 /**

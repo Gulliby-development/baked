@@ -13,7 +13,7 @@ import { withPerTestTimeout } from "../workflows/test-timeout.js";
 import { toolchainCommand } from "../workflows/toolchain.js";
 import type { Check } from "../workflows/types.js";
 import { type CommandTimeout, fileArgs, recordCommandTimeout } from "./command-timeouts.js";
-import { environmentFault, environmentNote } from "./environment-faults.js";
+import { environmentFault, environmentNote, unpreparedNote } from "./environment-faults.js";
 import { isFailedTestLine } from "./failed-test-line.js";
 import { MISSING_GATE_REPORT, readGateReport, renderGateReport } from "./gate-report.js";
 import { testsRan } from "./output-counts.js";
@@ -525,12 +525,17 @@ export class CheckRunner {
       status === "failed" && reason === "exit"
         ? environmentFault(check.executable, check.args, result.output)
         : null;
-    if (environment) {
+    // So is one in a worktree whose packages its prepare command could not resolve (#2372).
+    const unprepared =
+      status === "failed" && reason === "exit" && !environment
+        ? unpreparedNote(check.id, root, this.store.workspace, check.executable, check.args)
+        : null;
+    if (environment || unprepared) {
       status = "inconclusive";
       reason = "environment_broken";
       result = {
         ...result,
-        output: `${result.output}\n\n${environmentNote(check.id, environment)}`,
+        output: `${result.output}\n\n${environment ? environmentNote(check.id, environment) : unprepared}`,
       };
     }
     // After the chain, so a JSON gate's report is still read when its log mentions a test that
