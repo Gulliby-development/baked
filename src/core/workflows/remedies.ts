@@ -2,6 +2,7 @@ import { z } from "zod";
 import { REMEDY_ACTIONS, type RecoveryAdvice, type Remedy } from "./remedies-model.js";
 
 export {
+  type ExtendAmounts,
   errorRecovery,
   extendSuggestion,
   HOST_REMEDIES,
@@ -23,6 +24,7 @@ export const RemedySchema = z.object({
   setting: z.string().optional(),
   suggestedTokens: z.number().int().positive().optional(),
   suggestedUsd: z.number().positive().optional(),
+  suggestedTimeMs: z.number().int().positive().optional(),
   taskId: z.string().optional(),
   paths: z.array(z.string()).optional(),
   owner: z.string().optional(),

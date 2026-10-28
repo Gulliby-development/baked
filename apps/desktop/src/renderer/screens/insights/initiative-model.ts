@@ -353,22 +353,34 @@ export function parseBudget(
 }
 
 /**
- * The extension the block or the token forecast suggests (#2042), or null: the amounts on the
- * `extend` remedy of `next.recovery`, else the pool's suggested size, kept only where they raise
- * a limit.
+ * The extension the block or the forecasts suggest (#2042, #2336), or null: the amounts on the
+ * `extend` remedy of `next.recovery`, else the pool's and the shared time's suggested sizes, kept
+ * only where they raise a limit.
  */
 export function suggestedExtension(
   view: Pick<InitiativeView, "budget" | "next">,
-): { tokens?: number; usd?: number } | null {
-  const suggested = extendSuggestion(view.next.recovery, view.budget.pool?.suggestedTokens);
+): { tokens?: number; usd?: number; timeMs?: number } | null {
+  const suggested = extendSuggestion(
+    view.next.recovery,
+    view.budget.pool?.suggestedTokens,
+    view.budget.time?.suggestedMs,
+  );
   const tokens =
     suggested?.tokens && suggested.tokens > view.budget.limits.maxTotalTokens
       ? suggested.tokens
       : undefined;
   const cap = view.budget.cost?.capUsd ?? null;
   const usd = suggested?.usd && (cap === null || suggested.usd > cap) ? suggested.usd : undefined;
-  if (!tokens && !usd) return null;
-  return { ...(tokens ? { tokens } : {}), ...(usd ? { usd } : {}) };
+  const timeMs =
+    suggested?.timeMs && suggested.timeMs > view.budget.limits.maxActiveMs
+      ? suggested.timeMs
+      : undefined;
+  if (!tokens && !usd && !timeMs) return null;
+  return {
+    ...(tokens ? { tokens } : {}),
+    ...(usd ? { usd } : {}),
+    ...(timeMs ? { timeMs } : {}),
+  };
 }
 
 /** The budget fields filled with the initiative's current limits. */
