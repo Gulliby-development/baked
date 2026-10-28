@@ -533,7 +533,9 @@ function swiftCount(o: string, ran: boolean): number | null {
       /^Test Suite '(?:All tests|Selected tests)' (?:passed|failed) at .*\r?\n\s*Executed (\d+) tests?, with (?:(\d+) tests? skipped and )?\d+ failures?/gm,
     ),
   ].at(-1);
-  const testing = [...o.matchAll(/^. Test run with (\d+) tests?\b/gm)].at(-1);
+  // `u`: swift-testing on macOS may lead with an SF Symbol outside the BMP, two UTF-16 units, so
+  // XCTest's "Executed 0" beside it does not read as no test (#2419).
+  const testing = [...o.matchAll(/^. Test run with (\d+) tests?\b/gmu)].at(-1);
   if (!xctest && !testing) return null;
   const skipped = ran ? Number(xctest?.[2] ?? 0) + lines(o, /^. Test .+ skipped(?::|\.|$)/) : 0;
   return Number(xctest?.[1] ?? 0) + Number(testing?.[1] ?? 0) - skipped;
@@ -854,6 +856,58 @@ export function testsRan(output: string): OutputCount | null {
     if (count(output) !== null) return null;
   }
   return null;
+}
+
+/**
+ * The runners whose summary of zero tests, with exit 0, means the test target holds no test yet
+ * (#2419): `testsRan` reads it as 0, so a `requireTests` check fails, and `noTestsCollected` must
+ * know it. Each is recorded in the gate matrix's "no tests collected (#1864)" block. Swift 6.4 on
+ * an empty `.testTarget`: XCTest "Executed 0 tests, with 0 failures" and swift-testing "Test run
+ * with 0 tests in 0 suites passed"; busted 2.2 on a spec file without `it`: "0 successes / 0
+ * failures / 0 errors / 0 pending"; testthat 3.2 on a test file without `test_that`: "[ FAIL 0 |
+ * WARN 0 | SKIP 0 | PASS 0 ]"; Pester 5 on a `*.Tests.ps1` without `It`: "Tests Passed: 0,
+ * Failed: 0, Skipped: 0, Inconclusive: 0, NotRun: 0". cargo is left out: its "0 passed" is a test
+ * binary with no test in a crate that may have others (#1832).
+ */
+const EMPTY_SUMMARIES: ReadonlySet<TestRunner> = new Set(["swift", "busted", "testthat", "pester"]);
+
+/**
+ * The lines of runners without a counter here that say, with exit 0, that the run held no test
+ * (#2419), each with the line of the same runner that says another part of the run did hold
+ * tests (dune runs every test executable, Mix every umbrella app), which overrules it.
+ */
+const EMPTY_RUN_LINES: readonly { runner: string; line: RegExp; held?: RegExp }[] = [
+  // dotnet test (VSTest, SDK 8.0) on a test project without a test; another project's tests show
+  // in the summary `testCount` reads. Not "No test matches the given testcase filter", a narrowed
+  // run that selected nothing (#2378).
+  { runner: "dotnet", line: /^No test is available in \S/m },
+  // ExUnit (Elixir 1.14 to 1.18) prints no test count when it ran none: "0 failures".
+  {
+    runner: "exunit",
+    line: /^Finished in \d[\d.]* seconds?\b.*\r?\n0 failures\r?$/m,
+    held: /^[1-9]\d* [a-z]+, (?:\d+ [a-z]+, )*\d+ failures?\b/m,
+  },
+  // OUnit2 2.2 and Alcotest 1.7, the test libraries of `dune test`, on an empty suite.
+  { runner: "ounit", line: /^Ran: 0 tests in: /m, held: /^Ran: [1-9]\d* tests? in: /m },
+  {
+    runner: "alcotest",
+    line: /^Test Successful in \d[\d.]*s\. 0 tests? run\.\r?$/m,
+    held: /^(?:Test Successful|\d+ failures?!) in \d[\d.]*s\. [1-9]\d* tests? run\./m,
+  },
+];
+
+/**
+ * Whether a test run exited with a summary that says the test target holds no test (#2419), as
+ * opposed to tests that did not build or load (`buildFailure`) or a narrowed run that selected
+ * none (XCTest's "Selected tests", #2378).
+ */
+export function emptyTestRun(output: string): boolean {
+  if (buildFailure(output)) return false;
+  const counted = testCount(output);
+  if (counted && counted.count > 0) return false;
+  if (counted && EMPTY_SUMMARIES.has(counted.tool as TestRunner))
+    return !/^Test Suite 'Selected tests'/m.test(output);
+  return EMPTY_RUN_LINES.some(({ line, held }) => line.test(output) && !held?.test(output));
 }
 
 /** Reads the count of a kind from a check's output. */
