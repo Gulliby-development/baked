@@ -50,6 +50,7 @@ const INLINE: Record<InlineRowTest["framework"], InlineRowTest> = {
   busted: { mode: "inline", framework: "busted", test: "spec/rules_spec.lua" },
   minitest: { mode: "inline", framework: "minitest", test: "test/rules_test.rb" },
   pest: { mode: "inline", framework: "pest", test: "tests/RulesTest.php" },
+  dart: { mode: "inline", framework: "dart", test: "test/rules_test.dart" },
 };
 
 /** A block's text with the line breaks and indentation of its own layout taken out. */
@@ -123,6 +124,11 @@ const PROJECTS: Partial<Record<InlineRowTest["framework"], { files: Record<strin
     existing: "<?php\n\n$acceptanceActual = function (mixed $input): mixed {\n    return $input;\n};\n",
     run: [["pest", "tests/RulesTest.php"]],
   },
+  dart: {
+    files: { "pubspec.yaml": "name: rules\nenvironment:\n  sdk: ^3.0.0\ndev_dependencies:\n  test: any\n" },
+    existing: "Object? acceptanceActual(Object? input) => input;\n\nvoid main() {}\n",
+    run: [["dart", "pub", "get"], ["dart", "test", "test/rules_test.dart"], ["dart", "format", "--output=none", "--set-exit-if-changed", "test"], ["dart", "analyze", "--fatal-infos", "test"]],
+  },
 };
 
 const has = (command: string[]) => {
@@ -143,6 +149,7 @@ const AVAILABLE: Record<string, boolean> = {
   busted: Bun.which("busted") !== null,
   minitest: has(["ruby", "-e", "require 'minitest'"]),
   pest: Bun.which("pest") !== null,
+  dart: has(["dart", "--version"]),
 };
 
 describe("scenario: cfgquill lint R64, rows with a U+FEFF run in the project's own toolchain (#1995)", () => {

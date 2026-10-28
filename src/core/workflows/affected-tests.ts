@@ -71,6 +71,8 @@ export function isTestFile(path: string): boolean {
   // RSpec specs and Minitest files (#1493), busted specs (#1495).
   if (name.endsWith(".rb")) return name.endsWith("_spec.rb") || RB_TEST.test(name);
   if (/\.luau?$/.test(name)) return LUA_TEST.test(name);
+  // dart test files, which `dart test` and `flutter test` run by path (#1494, #2348).
+  if (name.endsWith(".dart")) return name.endsWith("_test.dart");
   // bats files (#1497).
   if (name.endsWith(".bats")) return true;
   if (!JS_FILE.test(name)) return false;

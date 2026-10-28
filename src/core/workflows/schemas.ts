@@ -117,6 +117,7 @@ const RowFramework = z.enum([
   "busted",
   "minitest",
   "pest",
+  "dart",
 ]);
 const RowPackage = z
   .string()

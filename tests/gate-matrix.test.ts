@@ -56,7 +56,7 @@ import { pwshExecutable, rscriptExecutable } from "../src/core/platform/index.js
 import { lintrRun, STYLER_CHECK, STYLER_FIX, testthatOn, testthatRun } from "../src/core/workflows/r-tools.js";
 import { PESTER_RUN, pesterOn } from "../src/core/workflows/pester.js";
 import { baselineDebt, baselineKeys } from "../src/core/verification/task-end-check.js";
-import { affectedTestCheck, plannedWrittenTests, writtenTestsCheck } from "../src/core/workflows/affected-tests.js";
+import { affectedTestCheck, isWrittenTestFile, plannedWrittenTests, writtenTestsCheck } from "../src/core/workflows/affected-tests.js";
 import { detectLanguages, touchesLanguageFiles } from "../src/core/workflows/language.js";
 import { launchedCommand } from "../src/core/workflows/launcher.js";
 import { toolchainCommand } from "../src/core/workflows/toolchain.js";
@@ -251,6 +251,7 @@ describe("host-written acceptance rows in the case-walk and mutation gates (#159
     busted: { harness: "tests/harness.lua", test: "tests/rows_spec.lua" },
     minitest: { harness: "tests/harness.rb", test: "tests/rows_test.rb" },
     pest: { harness: "tests/harness.php", test: "tests/RowsTest.php" },
+    dart: { harness: "tests/harness.dart", test: "tests/rows_test.dart" },
   } as const;
   test.each(Object.keys(layouts) as (keyof typeof layouts)[])("%s retains every case in its JSON data and keeps generated tests out of mutation proposals", async (framework) => {
     const root = mkdtempSync(join(tmpdir(), "baked-row-gate-"));
@@ -268,8 +269,8 @@ describe("host-written acceptance rows in the case-walk and mutation gates (#159
       const check = caseCheck(spec, task, { checks: [] });
       expect(check).toBeDefined();
       expect(await check?.(root)).toEqual([]);
-      // Java and C# tests hold the rows themselves, and the host refuses any change to that file.
-      if (framework === "junit" || framework === "xunit") expect(files[1]?.content).toMatch(/\b34L?\b.*\b68L?\b/);
+      // Java, C# and Dart tests hold the rows themselves, and the host refuses any change to that file.
+      if (framework === "junit" || framework === "xunit" || framework === "dart") expect(files[1]?.content).toMatch(/\b34L?\b.*\b68L?\b/);
       else {
         writeFileSync(join(root, "tests/rows.json"), JSON.stringify(artifact.rows.slice(0, 1)));
         expect((await check?.(root))?.join()).toContain("34");
@@ -314,6 +315,7 @@ describe("gate matrix: inline rows block holds its own cells (#1997)", () => {
     busted: { mode: "inline", framework: "busted", test: "spec/calc_spec.lua" },
     minitest: { mode: "inline", framework: "minitest", test: "test/calc_test.rb" },
     pest: { mode: "inline", framework: "pest", test: "tests/CalcTest.php" },
+    dart: { mode: "inline", framework: "dart", test: "test/calc_test.dart" },
   };
   const shapes: [string, unknown][] = [
     ["two-line CRLF text", ["[a]\r\nb=1\r\n", {}]],
@@ -1995,6 +1997,9 @@ describe("gate matrix: dart test, dart analyze and dart format (#1494)", () => {
     expect(affectedTestCheck([check("dart", ["test", "-r", "expanded", "test/"])], ["test/calc_test.dart", "lib/calc.dart"])?.args).toEqual(["test", "-r", "expanded", "./test/calc_test.dart"]);
     expect(affectedTestCheck([check("flutter", ["test"])], ["test/widget_test.dart"])?.args).toEqual(["test", "./test/widget_test.dart"]);
     expect(isStaticCheck(check("dart", ["test", "--reporter", "expanded"]))).toBe(false);
+    // A dart test file is a written test of its own (#2348).
+    expect(isWrittenTestFile("test/calc_test.dart")).toBe(true);
+    expect(isWrittenTestFile("lib/calc.dart")).toBe(false);
   });
 
   test("a new Dart file is held to dart format when the run leaves the gate out (#1837)", () => {
