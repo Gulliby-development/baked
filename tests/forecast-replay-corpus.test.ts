@@ -593,21 +593,23 @@ describe("test task splits replay on recorded sizing reports (#1789)", () => {
 describe("finding chains replay on recorded findings (#1981)", () => {
   // R62 md-site 8711b632 ran with chainRewrite off: six findings on `findDelimitedInline`, each the
   // next nesting of emphasis delimiter runs, and four correctives (T009-T012: 6.14M tokens, $5.92)
-  // that patched one case each. Its trace was exported before finding bodies were kept, so the
-  // review findings come from the run state's last two reviews (F1, F3, F4, F5) and the two
-  // convergence findings (F2, F4-2) are lost: the chain the trace shows starts at F3.
+  // that patched one case each. The trace was re-exported with finding bodies (#1988), so the two
+  // convergence findings (F2, F4-2) are in the chain too: F2 starts it and its second link, F3
+  // (corrective T011), is where the rewrite comes.
   test("R62 md-site: with chainRewrite on, the findDelimitedInline chain rewrites at its second link with its repros as the battery", () => {
     const { store, dispose } = openTrace(join(ROOT, "R62/md-site.sqlite.gz"));
     try {
       const runId = "8711b632-62b7-45ad-9100-15b034464379";
       const replay = replayChainEscalation(store, runId);
-      expect(replay.missingBodies).toEqual(["F2", "F4-2"]);
+      expect(replay.missingBodies).toEqual([]);
       expect(replay.steps.map((s) => [s.findingId, s.taskId, s.chain, s.decision, s.battery])).toEqual([
         ["F1", "T009", ["F1"], "patch", []],
-        // F3 repeats F2, whose body the trace lost: the chain ends there.
-        ["F3", "T011", ["F3"], "patch", []],
-        ["F4", null, ["F3", "F4"], "rewrite", ["F3", "F4"]],
-        ["F5", null, ["F3", "F4", "F5"], "rewrite", ["F3", "F4", "F5"]],
+        ["F2", "T010", ["F2"], "patch", []],
+        ["F3", "T011", ["F2", "F3"], "rewrite", ["F2", "F3"]],
+        ["F4", null, ["F2", "F3", "F4"], "rewrite", ["F2", "F3", "F4"]],
+        // F4-2 has no repro of its own, so its battery holds the cases before it.
+        ["F4-2", "T012", ["F2", "F3", "F4-2"], "rewrite", ["F2", "F3", "F4"]],
+        ["F5", null, ["F2", "F3", "F4", "F5"], "rewrite", ["F2", "F3", "F4", "F5"]],
       ]);
       // A battery holds only findings with a repro, so each link of the chain carries its case.
       expect(store.findings(runId).map((f) => f.id)).toEqual(["F1", "F2", "F3", "F4", "F4-2", "F5"]);

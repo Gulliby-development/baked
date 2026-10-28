@@ -33,7 +33,7 @@ describe("stop reasons", () => {
   test("hard limits take only enforce; the forecasts and the approval scope take every mode", () => {
     for (const [id, reason] of Object.entries(STOP_REASONS)) {
       expect(reason.modes).toContain(reason.defaultMode);
-      if (!["cost-forecast", "approval-scope", "initiative-forecast", "initiative-dollar-share", "initiative-dollar-cap", "initiative-plan-charge", "initiative-pool-growth", "repeated_failure", "corrective_scope", "corrective_unowned_file", "repeat_without_change", "corrective_restores_removed", "generated_case", "edge_crash_finding", "repro_blind", "upstream_symbol", "baseline_unrepairable", "baseline_signature", "check-config-approval", "ci_check_drift", "committed_tree", "host-resume-on-stored-limit", "cost_refusal_wait", "upstream_baseline_debt", "written_tests_unselected", "test_cap"].includes(id))
+      if (!["cost-forecast", "approval-scope", "initiative-forecast", "initiative-dollar-share", "initiative-dollar-cap", "initiative-plan-charge", "initiative-pool-growth", "repeated_failure", "corrective_scope", "corrective_unowned_file", "repeat_without_change", "corrective_restores_removed", "generated_case", "edge_crash_finding", "repro_blind", "upstream_symbol", "baseline_unrepairable", "baseline_signature", "check-config-approval", "ci_check_drift", "supplied_drift", "committed_tree", "host-resume-on-stored-limit", "cost_refusal_wait", "upstream_baseline_debt", "written_tests_unselected", "test_cap"].includes(id))
         expect(reason.modes).toEqual(["enforce"]);
     }
     expect(STOP_REASONS["cost-forecast"].modes).toEqual(STOP_MODES);
@@ -74,6 +74,9 @@ describe("stop reasons", () => {
     // Shadow until its promotion (#2284): a delivered CI command no configured check runs.
     expect(STOP_REASONS.ci_check_drift.modes).toEqual(["shadow", "advisory"]);
     expect(STOP_REASONS.ci_check_drift.defaultMode).toBe("shadow");
+    // Shadow until its promotion (#2332): a delivered file that leaves the request's verbatim block.
+    expect(STOP_REASONS.supplied_drift.modes).toEqual(["shadow", "advisory"]);
+    expect(STOP_REASONS.supplied_drift.defaultMode).toBe("shadow");
     // Shadow until its promotion (#2225): a static check that fails on the feature's commit only.
     expect(STOP_REASONS.committed_tree.modes).toEqual(["shadow", "advisory"]);
     expect(STOP_REASONS.committed_tree.defaultMode).toBe("shadow");
@@ -92,6 +95,8 @@ describe("stop reasons", () => {
     const parse = (stopModes: unknown) => PolicySchema.safeParse({ ...defaultWorkflowPolicy, stopModes }).success;
     expect(parse({ ci_check_drift: "advisory" })).toBe(true);
     expect(parse({ ci_check_drift: "enforce" })).toBe(false);
+    expect(parse({ supplied_drift: "advisory" })).toBe(true);
+    expect(parse({ supplied_drift: "enforce" })).toBe(false);
     // Promoted (#2245) after R70 and R71: enforced with stopModes unset, shadow still on request.
     expect(STOP_REASONS["initiative-plan-charge"].defaultMode).toBe("enforce");
     expect(stopMode(defaultWorkflowPolicy, "initiative-plan-charge")).toBe("enforce");

@@ -476,6 +476,7 @@ import {
   hostApplyDecision,
   hostApplyInputs,
   hostApplyRecord,
+  hostApplyRecords,
   hostApplyText,
 } from "./host-apply.js";
 import { HOST_ADDITIONS, HOST_EDITS_PATH, type HostEdit, recordGraphEdits } from "./host-edits.js";
@@ -893,6 +894,7 @@ import {
   suppliedConflictCriteria,
   suppliedContentFindings,
 } from "./supplied-content.js";
+import { suppliedDriftSummary, suppliedDrifts } from "./supplied-drift.js";
 import {
   documentsOnly,
   type FailureOwner,
@@ -4928,6 +4930,34 @@ export class WorkflowScheduler {
         summary: ciCheckDriftSummary(drift),
         inputs: { ...drift },
       });
+  }
+  /**
+   * The `supplied_drift` would-stops (#2332): each write of a task with a host-apply record whose
+   * delivered file leaves the block the request gives verbatim, once per task and file. Called at
+   * the checks stage of both workflow versions, after the snapshot; a failure to read records
+   * nothing.
+   */
+  private suppliedDriftWouldStop(runId: string, state: RuntimeState, policy: RunPolicy): void {
+    const mode = stopMode(policy, "supplied_drift");
+    if (mode === "enforce") return;
+    const graph = state.rootGraph ?? state.graph;
+    if (!graph) return;
+    try {
+      const records = hostApplyRecords(this.store, runId);
+      if (!records.length) return;
+      const root = runRoot(this.store.workspace, state);
+      const drifts = suppliedDrifts(state.requestText || state.prompt, records, graph, (path) =>
+        readText(workspacePath(root, path)),
+      );
+      for (const drift of drifts)
+        recordWouldStop(this.store, runId, {
+          reason: "supplied_drift",
+          mode,
+          key: `${drift.task}#${drift.path}`,
+          summary: suppliedDriftSummary(drift),
+          inputs: { ...drift },
+        });
+    } catch {}
   }
   /** The `baseline_unrepairable` would-stop of a baseline failure (#2215), once per check. */
   private baselineWouldStop(
@@ -14961,6 +14991,7 @@ ${note}`;
     const unsafe = await this.dependencyFindings(runId, state, policy);
     if (unsafe.length) return this.recordChecks(runId, state, unsafe);
     this.ciCheckDriftWouldStop(runId, state, policy, policy.checks);
+    this.suppliedDriftWouldStop(runId, state, policy);
     const failures: Review["findings"] = [];
     const failedIds: string[] = [];
     const passedIds: string[] = [];
@@ -17768,6 +17799,7 @@ ${note}`;
       policy,
       bound.map((b) => b.check),
     );
+    this.suppliedDriftWouldStop(runId, state, policy);
     const failures: Review["findings"] = [];
     const failedIds: string[] = [];
     const passedIds: string[] = [];
