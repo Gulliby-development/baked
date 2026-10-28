@@ -122,7 +122,7 @@ describe("initiative estimate", () => {
     const [a, b, c] = estimate.features;
     expect(a?.basis).toBe("measured");
     expect(a?.tokens).toEqual({ low: twice, high: twice });
-    expect(estimate.progress).toEqual({ spent: 500_000 + twice + 10, accepted: 1, ratio: null, bySize: {} });
+    expect(estimate.progress).toEqual({ spent: 500_000 + twice + 10, accepted: 1, ratio: null, rawRatio: null, bySize: {} });
     expect(b?.basis).toBe("defaults");
     expect(c?.tokens).toEqual(forecast);
     expect(estimate.tokens.high).toBe(500_000 + twice + 2 * forecast.high);

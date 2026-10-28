@@ -873,6 +873,16 @@ export const FEATURES: readonly Feature[] = [
     desktop: ["project/runs: plan approval names the host-appliable tasks"],
   },
   {
+    id: "supplied-checks-shadow",
+    group: "Workflow runs",
+    title:
+      "Shadow run of the project's static checks on a planned task's verbatim content from the request, in a scratch copy before its first implementer session, recording each diagnostic on a supplied line as a request conflict",
+    tui: ["/workflow: run artifacts, supplied-checks/tasks/<task>.json"],
+    cli: ["baked workflow status: suppliedChecks records"],
+    api: ["/v1/workflow/runs/:id/artifacts: supplied-check artifacts"],
+    desktop: ["project/runs: run artifacts, supplied-checks/tasks/<task>.json"],
+  },
+  {
     id: "acceptance-rows-as-data",
     group: "Workflow runs",
     title:

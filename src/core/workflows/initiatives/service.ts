@@ -286,6 +286,13 @@ export interface CostView {
    * without a cap, before a feature is accepted, or while nothing is priced.
    */
   forecastUsd: number | null;
+  /**
+   * The same forecast at the measured ratio itself (#2186): `forecastUsd` and the forecast stop
+   * read the estimate's blended ratio (`progress.ratio`), the notice reads this one
+   * (`progress.rawRatio`), as the token pool's `advice` does (#2062). Null while the two agree or
+   * before three features are measured; absent on events recorded before #2186.
+   */
+  advice?: { forecastUsd: number; ratio: number; blendedRatio: number } | null;
   /** Accepted features that are not a host-written skeleton: the forecast's measured samples. */
   measuredFeatures: number;
   /**
@@ -299,7 +306,10 @@ export interface CostView {
    * forecast above the ceiling records a `decision.would_stop` event and features keep starting.
    */
   forecastMode: StopMode;
-  /** Why a forecast above the ceiling does not stop the initiative yet; null otherwise. */
+  /**
+   * Why a forecast above the ceiling does not stop the initiative yet, or that `advice` is above
+   * it while the blend fits (#2186); null otherwise.
+   */
   forecastNotice: string | null;
   /**
    * The mode of the `initiative-dollar-share` stop reason (#1890): in `enforce` a feature whose
@@ -1121,6 +1131,34 @@ const cents = (n: number): number => Math.floor(Math.round(n * 1e6) / 1e4) / 100
 /** Up to the cent, for an amount a message suggests: it must cover what it names. */
 const centsUp = (n: number): number => Math.ceil(Math.round(n * 1e6) / 1e4) / 100;
 
+/**
+ * The estimate with each feature still to run at the measured ratio itself (`progress.rawRatio`)
+ * instead of the blend that priced it (its size's, else the overall one), never below its point
+ * forecast, for the dollar notice (#2186). A feature that a floor priced (its criteria, paths,
+ * plan or test cases) keeps its point forecast: the ratio does not scale a floor. Null when no
+ * feature changes.
+ */
+function rawRatioEstimate(
+  estimate: InitiativeEstimate,
+  accepted: ReadonlySet<string>,
+): InitiativeEstimate | null {
+  const { rawRatio, ratio, bySize } = estimate.progress;
+  if (rawRatio === null || ratio === null) return null;
+  let changed = false;
+  const features = estimate.features.map((f) => {
+    const blend = bySize[f.size] ?? ratio;
+    if (accepted.has(f.featureId) || f.floor || rawRatio <= blend) return f;
+    const expectedTokens = Math.max(
+      f.expectedTokens,
+      Math.round((f.expectedTokens / blend) * rawRatio),
+    );
+    if (expectedTokens === f.expectedTokens) return f;
+    changed = true;
+    return { ...f, expectedTokens };
+  });
+  return changed ? { ...estimate, features } : null;
+}
+
 /** The smallest dollar share a feature run can start with. */
 export const MIN_SHARE_USD = 0.01;
 
@@ -1158,7 +1196,7 @@ export function planBudget(settings: InitiativeSettings, plan: InitiativePlan): 
 export const MIN_SHARE = { maxTotalTokens: 1000, maxAgentCalls: 1, maxActiveMs: 1000 } as const;
 
 export const BUDGET_RULE =
-  "Each feature run starts with a share of the remaining shared budget, rounded down: remaining = limit - (usage of finished runs + the limits of open runs, decompose and superseded runs included; an open feature run whose plan is sized counts at the high end of its plan's need at the measured plan-to-actual ratio, never below its usage, instead of its limit, unless stopModes sets initiative-plan-charge to shadow), times the feature's weight, divided by the weights of the features of the approved plan without a run. Tokens are weighted by each feature's estimated need (the high end of its estimate), calls and time by size (small 1, medium 2, large 4). When the remaining pool covers the waiting features' low estimates, token shares reserve any lows that the weighted split would underfund and divide the rest by the same weights. A feature starts only if the remaining pool minus the other waiting features' low estimates covers its own low estimate. Otherwise it waits for a budget extension. A feature run grows its own budget only up to what remains after the low ends of the features still waiting. A starting feature's calls and active time are what remains less a floor for each other waiting feature (the base policy's per-run limit scaled by size, at most its share), never below its own share. A rebased run takes one more share of the same split. Agent calls per run are capped at 1000. With a dollar budget (--budget-usd), dollars use the original token weights and each feature run gets its share as its maxCostUsd with the initiative's costTolerance. Its cap may grow independently of tokens, only up to the remaining dollars less the priced low estimates of the other waiting features (their whole shares when unpriced); a run that finished its tasks and would stop on its cost ceiling reserves its remaining review and convergence before those lows, inside the dollar cap and its tolerance (workflows.stageReserve: shadow, the default, records decision.would_extend; on grows the run's bound). Split approval warns on dollar shares below their own priced lows; open runs hold their caps. No feature starts on less than $0.01, or once a feature is accepted and the projected total passes the cap and its tolerance.";
+  "Each feature run starts with a share of the remaining shared budget, rounded down: remaining = limit - (usage of finished runs + the limits of open runs, decompose and superseded runs included; an open feature run whose plan is sized counts at the high end of its plan's need at the measured plan-to-actual ratio, never below its usage, instead of its limit, unless stopModes sets initiative-plan-charge to shadow), times the feature's weight, divided by the weights of the features of the approved plan without a run. Tokens are weighted by each feature's estimated need (the high end of its estimate), calls and time by size (small 1, medium 2, large 4). When the remaining pool covers the waiting features' low estimates, token shares reserve any lows that the weighted split would underfund and divide the rest by the same weights. A feature starts only if the remaining pool minus the other waiting features' low estimates covers its own low estimate. Otherwise it waits for a budget extension. A feature run grows its own budget only up to what remains after the low ends of the features still waiting (their whole token shares when none has an estimate; what remains when none waits). A starting feature's calls and active time are what remains less a floor for each other waiting feature (the base policy's per-run limit scaled by size, at most its share), never below its own share. A rebased run takes one more share of the same split. Agent calls per run are capped at 1000. With a dollar budget (--budget-usd), dollars use the original token weights and each feature run gets its share as its maxCostUsd with the initiative's costTolerance. Its cap may grow independently of tokens, only up to the remaining dollars less the priced low estimates of the other waiting features (their whole shares when unpriced); a run that finished its tasks and would stop on its cost ceiling reserves its remaining review and convergence before those lows, inside the dollar cap and its tolerance (workflows.stageReserve: shadow, the default, records decision.would_extend; on grows the run's bound). Split approval warns on dollar shares below their own priced lows; open runs hold their caps. No feature starts on less than $0.01, or once a feature is accepted and the projected total passes the cap and its tolerance.";
 
 /** Digest a person approves for a plan revision: the plan, the budget and the frozen settings. */
 export function splitDigest(
@@ -2395,8 +2433,8 @@ export class InitiativeService {
 
   /**
    * Records once for each count of measured features that a feature starts while the forecast
-   * is above the ceiling but not yet binding (#1659), so `initiative events` and
-   * `/v1/initiatives/ID/events` show the warning a stop used to give.
+   * is above the ceiling but not yet binding (#1659), or its advice at the measured ratio is
+   * (#2186), so `initiative events` and `/v1/initiatives/ID/events` show the warning.
    */
   private noteAdvisoryForecast(id: string, featureId: string, cost: CostView): void {
     if (cost.forecastNotice === null) return;
@@ -2410,6 +2448,7 @@ export class InitiativeService {
     this.store.emit(id, "cost.forecast_advisory", {
       featureId,
       forecastUsd: cost.forecastUsd,
+      ...(cost.advice ? { advice: cost.advice } : {}),
       ceilingUsd: cost.ceilingUsd,
       spentUsd: cost.spentUsd,
       measuredFeatures: cost.measuredFeatures,
@@ -3638,6 +3677,17 @@ export class InitiativeService {
     const round = (n: number): number => Math.round(n * 100) / 100;
     const ceilingUsd = capUsd === null ? null : round(capUsd * (1 + tolerance));
     const forecastUsd = left === null ? null : round(spentUsd + left);
+    // Advice prices the features still to run at the measured ratio instead of the blend (#2186).
+    const atRaw = left === null || estimate === null ? null : rawRatioEstimate(estimate, accepted);
+    const adviceLeft = atRaw && this.remainingFeatureCost(row, settings, atRaw, accepted);
+    const advice =
+      forecastUsd !== null && adviceLeft != null && round(spentUsd + adviceLeft) !== forecastUsd
+        ? {
+            forecastUsd: round(spentUsd + adviceLeft),
+            ratio: round(estimate?.progress.rawRatio ?? 1),
+            blendedRatio: round(estimate?.progress.ratio ?? 1),
+          }
+        : null;
     const measuredFeatures = estimate
       ? estimate.features.filter((f) => accepted.has(f.featureId) && !f.skeleton).length
       : accepted.size;
@@ -3646,6 +3696,13 @@ export class InitiativeService {
     const forecastMode = stopMode(settings.basePolicy, "initiative-forecast");
     const shareMode = stopMode(settings.basePolicy, "initiative-dollar-share");
     const over = forecastUsd !== null && ceilingUsd !== null && forecastUsd > ceilingUsd;
+    const adviceOver = advice !== null && ceilingUsd !== null && advice.forecastUsd > ceilingUsd;
+    // Both forecasts, the measured one first, as the token notice names them (#2062).
+    const forecastText =
+      advice && forecastUsd !== null
+        ? `At the measured ${advice.ratio.toFixed(1)}x of the estimates the cost forecast is ${usd(advice.forecastUsd)} (${usd(forecastUsd)} at the blended ${advice.blendedRatio.toFixed(1)}x that the forecast stop uses; ${usd(spentUsd)} spent)`
+        : `The cost forecast of ${usd(forecastUsd ?? 0)}`;
+    const aboveText = `${forecastText}${advice ? "," : " is"} above the ${usd(ceilingUsd ?? 0)} ceiling.`;
     return {
       capUsd,
       tolerance,
@@ -3654,16 +3711,19 @@ export class InitiativeService {
       reservedUsd: round(Math.max(0, committedUsd - spentUsd)),
       remainingUsd: capUsd === null ? null : cents(Math.max(0, capUsd - committedUsd)),
       forecastUsd,
+      advice,
       measuredFeatures,
       forecastBinding,
       forecastMode,
       shareMode,
       forecastNotice:
         over && !forecastBinding
-          ? `The cost forecast of ${usd(forecastUsd)} is above the ${usd(ceilingUsd)} ceiling. It is advisory until ${FORECAST_BINDING_FEATURES} features are measured (${measuredFeatures} so far): features keep starting while their spent and reserved dollars fit the budget.`
+          ? `${aboveText} It is advisory until ${FORECAST_BINDING_FEATURES} features are measured (${measuredFeatures} so far): features keep starting while their spent and reserved dollars fit the budget.`
           : over && forecastMode === "advisory"
-            ? `The cost forecast of ${usd(forecastUsd)} is above the ${usd(ceilingUsd)} ceiling. The forecast stop is advisory: features keep starting while their spent and reserved dollars fit the budget.`
-            : null,
+            ? `${aboveText} The forecast stop is advisory: features keep starting while their spent and reserved dollars fit the budget.`
+            : !over && adviceOver && advice
+              ? `${aboveText} The advice changes no decision: features keep starting while the blended forecast and their spent and reserved dollars fit the budget. A cap of ${usd(Math.ceil(advice.forecastUsd))} covers it (baked workflow initiative extend ${row.id} --budget-usd ${Math.ceil(advice.forecastUsd)}).`
+              : null,
     };
   }
 
@@ -4838,14 +4898,23 @@ const ZERO_LIMITS = { maxTotalTokens: 0, maxAgentCalls: 0, maxActiveMs: 0 };
  * What a starting feature may grow its run budget to: the shared budget that remains less the low
  * end of the estimate of every other feature still waiting for a run. Without it a run grew from
  * its share to its own planning floor and sizing ceiling and held that, so the features after it
- * started on what was left (#1311). Null when no feature has an estimate.
+ * started on what was left (#1311). Never null, as `costGrowthLimit` is not for dollars: when no
+ * waiting feature has an estimate, each other waiting feature reserves its whole token share, and
+ * with none waiting the room is what remains. A null room took the base policy's ceilings, and an
+ * initiative's last open feature never has a waiting feature: R73 evalpin's delivery grew to 8M
+ * and 12M with 3.31M of its 23.9M pool left (#2294).
  */
 export function growthLimit(
   view: Pick<ShareGateView, "budget" | "features">,
   featureId: string,
-): number | null {
-  if (!view.features.some((f) => f.share !== null && f.need)) return null;
-  return Math.max(0, view.budget.remaining.tokens - waitingLowTokens(view, featureId));
+): number {
+  const estimated = view.features.some((f) => f.share !== null && f.need);
+  const reserve = estimated
+    ? waitingLowTokens(view, featureId)
+    : view.features
+        .filter((f) => f.share !== null && f.id !== featureId)
+        .reduce((sum, f) => sum + (f.share?.tokens ?? 0), 0);
+  return Math.max(0, view.budget.remaining.tokens - reserve);
 }
 
 /** The low token estimates of the features still waiting for a run, `featureId` aside. */

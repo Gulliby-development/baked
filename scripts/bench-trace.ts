@@ -2,7 +2,7 @@
 /**
  * Usage traces of bench-round runs (#1649).
  *
- *   bun scripts/bench-trace.ts export <workspace> <out.sqlite.gz> [--run RUN_ID ...]
+ *   bun scripts/bench-trace.ts export <workspace> <out.sqlite.gz> [--run RUN_ID ...] [--max-mib N]
  *   bun scripts/bench-trace.ts replay <trace.sqlite.gz> ... [--json]
  *   bun scripts/bench-trace.ts latencies <trace.sqlite.gz> ... [--json]
  *   bun scripts/bench-trace.ts recordings <workspace> <out-dir> [--run RUN_ID ...]
@@ -10,7 +10,8 @@
  *
  * `export` writes the anonymised trace of a workspace's workflow database (see
  * src/core/workflows/trace.ts); the bench loop stores one per app per round under
- * tests/fixtures/bench-traces/RNN/. `replay` runs the forecast gate of the current code at every
+ * tests/fixtures/bench-traces/RNN/. A trace above 10 MiB gzipped (`--max-mib` sets another bound)
+ * is refused with its largest tables (#2338). `replay` runs the forecast gate of the current code at every
  * recorded attempt and prints the stops and cap growth that differ from the recorded run.
  * `latencies` prints the healthy first-byte percentiles and retry-after waits of the recorded
  * calls by provider, stage and effort: what the provider fault matrix tests limits against (#1729).
@@ -31,7 +32,7 @@ import {
 } from "../src/core/workflows/trace.js";
 
 const usage =
-  "Usage: bun scripts/bench-trace.ts export <workspace> <out.sqlite.gz> [--run RUN_ID ...]\n" +
+  "Usage: bun scripts/bench-trace.ts export <workspace> <out.sqlite.gz> [--run RUN_ID ...] [--max-mib N]\n" +
   "       bun scripts/bench-trace.ts replay <trace.sqlite.gz> ... [--json]\n" +
   "       bun scripts/bench-trace.ts latencies <trace.sqlite.gz> ... [--json]\n" +
   "       bun scripts/bench-trace.ts recordings <workspace> <out-dir> [--run RUN_ID ...]\n" +
@@ -41,9 +42,11 @@ const [command, ...rest] = process.argv.slice(2);
 const flags = rest.filter((a) => a.startsWith("--"));
 const args: string[] = [];
 const runIds: string[] = [];
+let maxMib: number | null = null;
 for (let i = 0; i < rest.length; i++) {
   const arg = rest[i] ?? "";
   if (arg === "--run") runIds.push(rest[++i] ?? "");
+  else if (arg === "--max-mib") maxMib = Number(rest[++i]);
   else if (!arg.startsWith("--")) args.push(arg);
 }
 
@@ -51,7 +54,10 @@ const usd = (n: number | null) => (n === null ? "-" : `$${n.toFixed(2)}`);
 
 if (command === "export" && args.length === 2) {
   const [workspace = "", out = ""] = args;
-  const result = exportTrace(workspace, out, runIds.length ? { runIds } : {});
+  const result = exportTrace(workspace, out, {
+    ...(runIds.length ? { runIds } : {}),
+    ...(maxMib !== null && Number.isFinite(maxMib) ? { maxBytes: maxMib * 1024 * 1024 } : {}),
+  });
   console.log(
     `${result.path}: ${result.runs} runs, ${result.initiatives} initiatives, ${(result.bytes / 1024).toFixed(0)} KiB`,
   );
