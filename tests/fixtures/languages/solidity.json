@@ -52,6 +52,7 @@
     "sortedLists": null,
     "dependencyDirs": [
       "node_modules: linked"
-    ]
+    ],
+    "testDeclarations": ["test/Sum.t.sol: 2 tests, per class 2"]
   }
 }

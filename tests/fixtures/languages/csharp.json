@@ -78,6 +78,7 @@
       "csharpier: formatter"
     ],
     "sortedLists": null,
-    "dependencyDirs": null
+    "dependencyDirs": null,
+    "testDeclarations": ["Calc.Tests/SumTests.cs: 3 tests, per class 2, 1"]
   }
 }

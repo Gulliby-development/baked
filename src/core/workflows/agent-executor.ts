@@ -178,6 +178,8 @@ const MAX_SYNTAX_REFUSALS = 2;
 const MAX_REPRO_REFUSALS = 2;
 /** Submissions refused because the test files leave out a case the criteria quote (#1250). */
 const MAX_CASE_REFUSALS = 2;
+/** Submissions refused because a written test file declares more tests than the brief's cap (#2368). */
+const MAX_CAP_REFUSALS = 2;
 /** Submissions refused because a source task's code fails the audited rows (#1617). */
 const MAX_REPLAY_REFUSALS = 2;
 /** Refusals of one path by the file-hash check after which an attempt stops (#954). */
@@ -1216,6 +1218,8 @@ export class NativeAgentExecutor implements AgentExecutor {
       let lastSyntaxRefusal = "";
       let caseRefusals = 0;
       let lastCaseRefusal = "";
+      let capRefusals = 0;
+      let lastCapRefusal = "";
       let reproRefusals = 0;
       let replayRefusals = 0;
       let lastReplayRefusal = "";
@@ -1317,6 +1321,25 @@ export class NativeAgentExecutor implements AgentExecutor {
               return refuse(
                 missing,
                 "The criteria this task covers quote these cases, and the test files it writes do not contain them. Add a test for each one that checks the exact expected output and exit code, then call submit_result again with the complete result. If a case is already tested in another spelling, submit again unchanged: the same list is not refused twice.",
+              );
+            }
+          }
+          // A test file over the brief's per-file or per-class test cap goes back here, not to a
+          // reviewer finding and correctives the integrity guard then fights (#2368).
+          if (
+            !errors.length &&
+            request.testCapCheck &&
+            capRefusals < MAX_CAP_REFUSALS &&
+            outcome === "implemented"
+          ) {
+            const over = await request.testCapCheck(root);
+            const key = over.join("\n");
+            if (over.length && key !== lastCapRefusal) {
+              capRefusals++;
+              lastCapRefusal = key;
+              return refuse(
+                over,
+                "The brief caps the tests of a file or class, and these test files this task writes declare more. Merge related cases into one test (a table or a loop over the inputs) or move them to another test file this task writes, keeping every case checked, then call submit_result again with the complete result. If the cap does not apply to a listed file, submit again unchanged: the same list is not refused twice.",
               );
             }
           }

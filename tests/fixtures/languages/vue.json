@@ -68,6 +68,7 @@
     "sortedLists": null,
     "dependencyDirs": [
       "node_modules: linked"
-    ]
+    ],
+    "testDeclarations": null
   }
 }

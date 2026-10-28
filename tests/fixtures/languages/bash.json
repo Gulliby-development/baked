@@ -62,6 +62,7 @@
       "shfmt: formatter"
     ],
     "sortedLists": null,
-    "dependencyDirs": null
+    "dependencyDirs": null,
+    "testDeclarations": ["test/sum.bats: 2 tests"]
   }
 }

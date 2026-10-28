@@ -69,6 +69,7 @@
     "dependencyDirs": [
       "renv/library: linked",
       "packrat/lib: linked"
-    ]
+    ],
+    "testDeclarations": ["tests/testthat/test-sum.R: 2 tests"]
   }
 }

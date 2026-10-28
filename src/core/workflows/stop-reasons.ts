@@ -199,6 +199,17 @@ export const STOP_REASONS = {
     modes: NOT_ENFORCED,
     defaultMode: "shadow",
   },
+  test_cap: {
+    label:
+      "A test file a task writes declares more tests than the brief's per-file or per-class cap",
+    // Shadow by default (#2368, R75 latcell's commands spent 1.86M tokens on correctives over a
+    // cap of 12 `test(...)` blocks per file that only the reviewer checked): the task-end check
+    // records a would-stop per file or class over the cap. `stopModes: { test_cap: "enforce" }`
+    // sends the submission back naming the file, its count and the cap; making that the default
+    // is a pull request of its own after two bench rounds with no false would-stop.
+    modes: STOP_MODES,
+    defaultMode: "shadow",
+  },
   "host-resume-on-stored-limit": {
     label:
       "A run blocked on its own active time, tokens or calls whose stored limits now exceed its usage: the host would resume it once",

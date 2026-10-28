@@ -75,6 +75,7 @@
     "sortedLists": null,
     "dependencyDirs": [
       "lua_modules: linked"
-    ]
+    ],
+    "testDeclarations": ["spec/sum_spec.lua: 2 tests"]
   }
 }

@@ -66,6 +66,7 @@
     "sortedLists": null,
     "dependencyDirs": [
       "dbt_packages: linked"
-    ]
+    ],
+    "testDeclarations": null
   }
 }

@@ -65,6 +65,7 @@
     "sortedLists": null,
     "dependencyDirs": [
       "node_modules: linked"
-    ]
+    ],
+    "testDeclarations": ["__tests__/Sum_test.res: 2 tests"]
   }
 }

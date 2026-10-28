@@ -76,6 +76,7 @@
     "dependencyDirs": [
       "vendor/bundle: linked",
       ".bundle: linked"
-    ]
+    ],
+    "testDeclarations": ["test/sum_test.rb: 2 tests, per class 2"]
   }
 }

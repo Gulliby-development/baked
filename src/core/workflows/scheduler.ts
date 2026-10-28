@@ -163,6 +163,14 @@ import { addReviewNotes, noteReason } from "../verification/review-notes.js";
 import { changedPaths, gitBaseline, sourceManifest } from "../verification/snapshot.js";
 import { baselineDebt, baselineKeys, taskErrors } from "../verification/task-end-check.js";
 import {
+  TEST_CAP_DIR,
+  TEST_CAP_KIND,
+  type TestCapRecord,
+  testCapCheck,
+  testCapProblem,
+  testCapsOf,
+} from "../verification/test-cap.js";
+import {
   literalPropertyProblems,
   plannerRows,
   ROWS_ARTIFACT,
@@ -5628,6 +5636,59 @@ export class WorkflowScheduler {
    * T007 and T008 closed a reproduced finding as already_satisfied twice (546k tokens) while its
    * repro still reproduced. Undefined when no finding of the task has a repro the run can start.
    */
+  /**
+   * The task-end check of the brief's per-file and per-class test caps (#2368): the test files the
+   * task writes, counted by `TEST_DECLARATIONS` against the caps the request, spec and plan state.
+   * Each check is recorded for the replay; under the `test_cap` reason's shadow default a file or
+   * class over its cap records a would-stop and the submission is accepted, and `enforce` sends it
+   * back naming the file, its count and the cap.
+   */
+  private testCapCheck(
+    runId: string,
+    state: RuntimeState,
+    policy: RunPolicy,
+    task: Task,
+  ): ((root: string) => Promise<string[]>) | undefined {
+    const caps = testCapsOf(integrityRequirementText(state, this.store.requests(runId)));
+    const check = testCapCheck(caps, writtenTestPaths(task));
+    if (!check) return undefined;
+    const mode = stopMode(policy, "test_cap");
+    return async (root) => {
+      const { measures, refused } = await check(root);
+      this.store.transaction(() =>
+        this.store.artifact(
+          runId,
+          TEST_CAP_KIND,
+          `${TEST_CAP_DIR}${task.id}.json`,
+          canonical({
+            schemaVersion: 1,
+            taskId: task.id,
+            mode,
+            measures,
+            refused,
+          } satisfies TestCapRecord),
+        ),
+      );
+      const over = refused.flatMap((i) => measures[i] ?? []);
+      if (mode === "enforce") return over.map((m) => testCapProblem(m, caps));
+      for (const m of over)
+        recordWouldStop(this.store, runId, {
+          reason: "test_cap",
+          mode,
+          key: `${TEST_CAP_DIR}${task.id}.json#${m.path}${m.unit === undefined ? "" : `#${String(m.unit)}`}`,
+          summary: `${testCapProblem(m)} Task ${task.id}'s submission would go back to it before the review.`,
+          inputs: {
+            taskId: task.id,
+            path: m.path,
+            scope: m.scope,
+            ...(m.unit === undefined ? {} : { unit: m.unit }),
+            tests: m.tests,
+            cap: m.cap,
+          },
+        });
+      return [];
+    };
+  }
   private reproCheck(
     runId: string,
     policy: RunPolicy,
@@ -6322,6 +6383,10 @@ export class WorkflowScheduler {
           ...((await literalCaseCheck?.(root)) ?? []),
         ]
       : literalCaseCheck;
+    const capCheck =
+      task && profile.output === "implementation"
+        ? this.testCapCheck(runId, state, policy, task)
+        : undefined;
     // A digested spec (#1019) comes with the tool that reads its criteria in full.
     const digested =
       digestsSpec(state.spec, profile, policy) ||
@@ -6424,6 +6489,7 @@ export class WorkflowScheduler {
         ...(taskEndCheck ? { taskEndCheck } : {}),
         ...(reproCheck ? { reproCheck } : {}),
         ...(caseCheck ? { caseCheck } : {}),
+        ...(capCheck ? { testCapCheck: capCheck } : {}),
         ...(replay ? { rowReplay: replay } : {}),
         ...(task && task.origin !== "planned"
           ? { writtenTests: this.writtenTestWrites(runId, state, task) }

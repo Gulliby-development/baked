@@ -65,6 +65,7 @@
       "swift-format: formatter"
     ],
     "sortedLists": null,
-    "dependencyDirs": null
+    "dependencyDirs": null,
+    "testDeclarations": ["Tests/SumTests/SumTests.swift: 3 tests, per class 1, 2"]
   }
 }

@@ -37,6 +37,13 @@ import {
   edgeDecision,
 } from "../verification/edge-inputs.js";
 import type { ReproOutcome } from "../verification/repro.js";
+import {
+  TEST_CAP_DIR,
+  TEST_CAP_KIND,
+  type TestCapMeasure,
+  type TestCapRecord,
+  testCapDecision,
+} from "../verification/test-cap.js";
 import { planApprovalDecision, requestedPathTokens } from "./auto-approval.js";
 import {
   BASELINE_FIX_KIND,
@@ -262,6 +269,8 @@ const KEPT_ARTIFACTS = new Set([
   INTEGRITY_KIND,
   // Each task-end case walk: which cases a file held, no literals (#1715).
   CASE_WALK_KIND,
+  // Each task-end test cap check: per-file and per-class test counts and caps, no code (#2368).
+  TEST_CAP_KIND,
   // Each review's gate: the findings' labels and repro outcomes, no claims (#1715).
   REVIEW_GATE_KIND,
   // Each task-level corrective's write-scope precondition: diagnosed paths and writes (#2094).
@@ -885,6 +894,10 @@ export interface RunReplay {
   caseWalks: CaseWalkBoundary[];
   /** Cases the current rule refuses a task for that the recorded walk did not. */
   newCaseRefusals: number;
+  /** Each task-end test cap check's files and classes over their cap against the current rule (#2368). */
+  testCaps: TestCapBoundary[];
+  /** Files or classes the current rule finds over their cap that the recorded check did not. */
+  newTestCapRefusals: number;
   /** Each review's gate against the current rule (#1715). */
   reviewGates: ReviewGateBoundary[];
   /** Findings the current rule repairs that the recorded gate kept as notes. */
@@ -1487,6 +1500,53 @@ export function replayCaseWalks(
           cases: record.cases.length,
           recorded: record.refused.map(key),
           replayed: decide(record).map(key),
+        },
+      ];
+    });
+}
+
+export type TestCapRule = (measures: readonly TestCapMeasure[]) => number[];
+
+export interface TestCapBoundary {
+  taskId: string;
+  mode: TestCapRecord["mode"];
+  /** `path#scope#unit` of each count over its cap, as recorded and as the current rule decides. */
+  recorded: string[];
+  replayed: string[];
+}
+
+/**
+ * Every task-end test cap check a run recorded (`test-cap/tasks/`, #2368), decided again from its
+ * recorded counts. The counting reads code a trace does not keep, so a change to
+ * `TEST_DECLARATIONS` is not replayed, only which counts are over their cap. Traces before #2368
+ * record none.
+ */
+export function replayTestCaps(
+  store: WorkflowStore,
+  runId: string,
+  decide: TestCapRule = testCapDecision,
+): TestCapBoundary[] {
+  return store
+    .artifacts(runId)
+    .filter((a) => a.kind === TEST_CAP_KIND && a.logical_path.startsWith(TEST_CAP_DIR))
+    .flatMap((artifact) => {
+      let record: TestCapRecord;
+      try {
+        record = JSON.parse(store.readArtifact(runId, artifact.id));
+      } catch {
+        return [];
+      }
+      if (record.schemaVersion !== 1) return [];
+      const key = (i: number) => {
+        const m = record.measures[i];
+        return m ? `${m.path}#${m.scope}${m.unit === undefined ? "" : `#${String(m.unit)}`}` : "?";
+      };
+      return [
+        {
+          taskId: record.taskId,
+          mode: record.mode,
+          recorded: record.refused.map(key),
+          replayed: decide(record.measures).map(key),
         },
       ];
     });
@@ -3984,6 +4044,8 @@ function replayRun(
   | "newIntegrityFindings"
   | "caseWalks"
   | "newCaseRefusals"
+  | "testCaps"
+  | "newTestCapRefusals"
   | "reviewGates"
   | "newGateRepairs"
   | "convergenceGates"
@@ -4232,6 +4294,7 @@ export function replayTrace(
     edgeCrashRule?: EdgeCrashRule;
     integrityRule?: IntegrityRule;
     caseWalkRule?: CaseWalkRule;
+    testCapRule?: TestCapRule;
     reviewGateRule?: ReviewGateRule;
     convergenceGateRule?: ConvergenceGateRule;
     evidenceRule?: EvidenceRule;
@@ -4314,6 +4377,9 @@ export function replayTrace(
     const walks = new Map(
       runIds.map((runId) => [runId, replayCaseWalks(store, runId, options.caseWalkRule)]),
     );
+    const caps = new Map(
+      runIds.map((runId) => [runId, replayTestCaps(store, runId, options.testCapRule)]),
+    );
     const reviews = new Map(
       runIds.map((runId) => [runId, replayReviewGates(store, runId, options.reviewGateRule)]),
     );
@@ -4388,6 +4454,7 @@ export function replayTrace(
       const edgeProbes = edges.get(runId) ?? [];
       const integrity = scans.get(runId) ?? [];
       const caseWalks = walks.get(runId) ?? [];
+      const testCaps = caps.get(runId) ?? [];
       const reviewGates = reviews.get(runId) ?? [];
       const convergenceGates = converges.get(runId) ?? [];
       const evidenceDecisions = evidence.get(runId) ?? [];
@@ -4412,6 +4479,7 @@ export function replayTrace(
         !edgeProbes.length &&
         !integrity.length &&
         !caseWalks.length &&
+        !testCaps.length &&
         !reviewGates.length &&
         !convergenceGates.length &&
         !evidenceDecisions.length &&
@@ -4459,6 +4527,11 @@ export function replayTrace(
         ),
         caseWalks,
         newCaseRefusals: caseWalks.reduce(
+          (n, b) => n + b.replayed.filter((f) => !b.recorded.includes(f)).length,
+          0,
+        ),
+        testCaps,
+        newTestCapRefusals: testCaps.reduce(
           (n, b) => n + b.replayed.filter((f) => !b.recorded.includes(f)).length,
           0,
         ),

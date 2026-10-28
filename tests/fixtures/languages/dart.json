@@ -61,6 +61,7 @@
       "dart format: formatter"
     ],
     "sortedLists": null,
-    "dependencyDirs": null
+    "dependencyDirs": null,
+    "testDeclarations": ["test/sum_test.dart: 3 tests"]
   }
 }

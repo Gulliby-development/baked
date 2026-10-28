@@ -91,6 +91,7 @@
     "dependencyDirs": [
       ".venv: linked",
       "venv: linked"
-    ]
+    ],
+    "testDeclarations": ["tests/test_sum.py: 3 tests, per class 2"]
   }
 }

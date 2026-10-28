@@ -44,6 +44,7 @@
     "sortedLists": null,
     "dependencyDirs": [
       "_opam: linked"
-    ]
+    ],
+    "testDeclarations": ["test/test_sum.ml: 2 tests"]
   }
 }

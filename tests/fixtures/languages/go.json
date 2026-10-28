@@ -81,6 +81,7 @@
       "goimports: formatter"
     ],
     "sortedLists": ["main.go: gofmt blank line before 5"],
-    "dependencyDirs": null
+    "dependencyDirs": null,
+    "testDeclarations": ["sum_test.go: 2 tests"]
   }
 }

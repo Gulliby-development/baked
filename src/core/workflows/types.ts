@@ -649,6 +649,12 @@ export interface ExecutionRequest {
    */
   caseCheck?: (root: string) => Promise<string[]>;
   /**
+   * The written test files over the brief's per-file or per-class test cap (#2368): run on a
+   * submission that reports the task implemented. Empty while the `test_cap` reason is in shadow,
+   * which only records; the same list is not refused twice.
+   */
+  testCapCheck?: (root: string) => Promise<string[]>;
+  /**
    * The audited rows a source task's code must meet (#1617): `replay_rows` runs them through the
    * agent's harness, and a submission that reports the task implemented replays them again on
    * the files as they are. The same list is not refused twice.

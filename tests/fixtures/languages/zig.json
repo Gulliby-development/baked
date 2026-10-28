@@ -49,6 +49,7 @@
       "zig fmt: formatter"
     ],
     "sortedLists": null,
-    "dependencyDirs": null
+    "dependencyDirs": null,
+    "testDeclarations": ["src/sum_test.zig: 2 tests"]
   }
 }

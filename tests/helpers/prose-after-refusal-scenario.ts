@@ -8,7 +8,7 @@ import { NativeAgentExecutor } from "../../src/core/workflows/agent-executor.js"
 import type { ExecutionRequest } from "../../src/core/workflows/types.js";
 import { FixtureExecutor, fixturePolicy, workflowFixture } from "./workflow-fixture.js";
 
-export const refusalKinds = ["taskEndCheck", "caseCheck", "reproCheck", "syntax"] as const;
+export const refusalKinds = ["taskEndCheck", "caseCheck", "testCapCheck", "reproCheck", "syntax"] as const;
 type RefusalKind = (typeof refusalKinds)[number];
 const ERROR = "tests/frontmatter.property.test.ts:122: error TS2322: readonly expected tuples are incompatible with string[]";
 const usage = {
