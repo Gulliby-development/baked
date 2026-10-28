@@ -1925,11 +1925,12 @@ export class WorkflowStore {
       });
     });
   }
+  /**
+   * Adds active time; a negative amount takes back time a call that ended without an answer was
+   * charged while it looked answered (#2414), never below zero.
+   */
   addActiveTime(runId: string, ms: number): void {
-    this.db.run("UPDATE runs SET active_ms=active_ms+? WHERE id=?", [
-      Math.max(0, Math.ceil(ms)),
-      runId,
-    ]);
+    this.db.run("UPDATE runs SET active_ms=MAX(0, active_ms+?) WHERE id=?", [Math.ceil(ms), runId]);
   }
   /** Counts corrective tasks that spend no round: a task's own failed checks (#839). */
   addCorrectiveTasks(runId: string, count: number): void {

@@ -79,6 +79,17 @@ export interface TimePoolView {
   suggestedMs: number | null;
   /** Set when the forecast is above the limit. */
   notice: string | null;
+  /**
+   * In shadow (#2414): the pace without the finished runs' silent time (`cleanInitiativePace`),
+   * its inputs, and the forecast and suggestion it would give; the fields above decide.
+   */
+  cleanPace?: {
+    pace: ActivePace | null;
+    rates: number[];
+    silentMs: number;
+    forecastMs: number | null;
+    suggestedMs: number | null;
+  };
 }
 
 /** The shared time, its forecast at the measured pace and what to extend it to (#2336). */
@@ -148,4 +159,36 @@ export function runTimeRaise(run: {
     step,
     Math.ceil(((run.activeMs + left) * (1 + ACTIVE_TIME_MARGIN)) / 60_000) * 60_000,
   );
+}
+
+/** A feature run's time raise against what the initiative's shared time can still grant. */
+export interface HeldRunTime {
+  /** The raise, held to `grantMs`; null when the shared time has no room above the run's limit. */
+  timeMs: number | null;
+  /** The run's committed time plus the shared time's room: the most an extend of the run gets. */
+  grantMs: number;
+  /** The shared time that grants the whole raise, rounded up; null when it already does. */
+  poolMs: number | null;
+}
+
+/**
+ * Holds a feature run's time raise to what the initiative's shared time can grant (#2414), the
+ * time sibling of #2367's `affordableTokens`: the run's committed time (its limit, or its use above
+ * it) plus the room the shared time has left (limit less committed). R76 schemamask `io` was told
+ * to extend to 21.18M ms from its own stalled pace while the whole shared time was 18.0M ms.
+ */
+export function heldRunTime(
+  raiseMs: number,
+  run: { activeMs: number; maxActiveMs: number },
+  pool: { limitMs: number; committedMs: number },
+): HeldRunTime {
+  const own = Math.max(run.activeMs, run.maxActiveMs);
+  const grantMs = own + Math.max(0, pool.limitMs - pool.committedMs);
+  if (raiseMs <= grantMs) return { timeMs: raiseMs, grantMs, poolMs: null };
+  const held = Math.floor(grantMs / 60_000) * 60_000;
+  return {
+    timeMs: held > run.maxActiveMs ? held : null,
+    grantMs,
+    poolMs: roundUp(pool.limitMs + raiseMs - grantMs),
+  };
 }

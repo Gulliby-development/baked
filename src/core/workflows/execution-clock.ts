@@ -88,16 +88,26 @@ export class ExecutionBudgetClock {
     return now - skipped;
   }
 
-  /** A wait stage with no model work, always excluded. */
+  /**
+   * An unanswered call, or a wait stage with no model work (settled `false` alone). A first
+   * response (`true`) charges the wait; a later `false` says the call ended without an answer
+   * (no tokens, no tool call: a deadline, ladder or watchdog abort, a cancel), and its whole
+   * interval is excluded again (#2414).
+   */
   pending(): (responded: boolean) => void {
     const span: ExecutionSpan = { from: this.clock.now() };
     this.excluded.push(span);
-    let settled = false;
+    let state: "pending" | "responded" | "settled" = "pending";
     return (responded) => {
-      if (settled) return;
-      settled = true;
+      if (state === "settled" || (state === "responded" && responded)) return;
       span.to = this.clock.now();
-      if (responded) this.excluded.splice(this.excluded.indexOf(span), 1);
+      if (responded) {
+        this.excluded.splice(this.excluded.indexOf(span), 1);
+        state = "responded";
+        return;
+      }
+      if (state === "responded") this.excluded.push(span);
+      state = "settled";
     };
   }
 
@@ -105,26 +115,50 @@ export class ExecutionBudgetClock {
   track(): { pending: () => (responded: boolean) => void; finish: () => void } {
     let active: ExecutionSpan | undefined = { from: this.clock.now() };
     this.working.push(active);
-    let settle: ((responded: boolean) => void) | undefined;
+    let finished = false;
+    let open: ((responded: boolean) => void) | undefined;
+    const resume = (): void => {
+      if (finished) return;
+      active = { from: this.clock.now() };
+      this.working.push(active);
+    };
     return {
       pending: () => {
         const from = this.clock.now();
         if (active) active.to = from;
         active = undefined;
         const end = this.pending();
-        let settled = false;
-        settle = (responded) => {
-          if (settled) return;
-          settled = true;
+        let state: "pending" | "responded" | "settled" = "pending";
+        let answering: ExecutionSpan | undefined;
+        const settle = (responded: boolean): void => {
+          if (state === "settled" || (state === "responded" && responded)) return;
           end(responded);
-          active = { from: responded ? from : this.clock.now() };
-          this.working.push(active);
+          if (responded) {
+            state = "responded";
+            open = undefined;
+            if (finished) return;
+            answering = active = { from };
+            this.working.push(active);
+            return;
+          }
+          state = "settled";
+          open = undefined;
+          // The response that charged the wait was no answer: its working time goes too.
+          if (answering) {
+            if (answering.to === undefined) answering.to = this.clock.now();
+            this.working.splice(this.working.indexOf(answering), 1);
+            if (active === answering) active = undefined;
+          }
+          resume();
         };
+        open = settle;
         return settle;
       },
       finish: () => {
-        settle?.(false);
+        open?.(false);
         if (active) active.to = this.clock.now();
+        active = undefined;
+        finished = true;
       },
     };
   }

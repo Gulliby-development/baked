@@ -316,6 +316,7 @@ import {
   SCOPING_PLANNERS,
   scopedPlanBudget,
 } from "./clarification.js";
+import { cleanRates, cleanSizingShadow } from "./clean-pace.js";
 import {
   COMMITTED_TREE_KIND,
   COMMITTED_TREE_PATH,
@@ -1422,9 +1423,11 @@ export class WorkflowScheduler {
     // After a laptop sleep the first write can fail with a transient SQLite I/O or busy error; it
     // ran in a timer, so it killed the command with an uncaught exception (bench round 32, #1313).
     // The write is tried once more, and an interval still unrecorded goes with the next flush.
+    // A call that responded and then ended without an answer takes its time back (#2414): the
+    // correction is negative and goes to the row as well.
     const recordActive = (): void => {
       const add = Math.ceil(budgetClock.now() - started - recorded);
-      if (add <= 0) return;
+      if (add === 0) return;
       for (let tries = 2; tries > 0; tries--) {
         try {
           this.store.transaction(() => this.store.addActiveTime(runId, add));
@@ -7306,6 +7309,22 @@ export class WorkflowScheduler {
     });
   }
   /**
+   * A sizing report as recorded: with the active-time cap the clean pace would set beside it, in
+   * shadow (`cleanSizingShadow`, #2414); the report's own cap decides.
+   */
+  private sizingRecord(runId: string, report: SizingReport): string {
+    const initiatives = new InitiativeStore(this.store);
+    const id = initiatives.initiativeOfRun(runId);
+    const runs = id
+      ? initiatives
+          .links(id)
+          .map((l) => l.run_id)
+          .filter((r) => r !== runId)
+      : [];
+    const clean = cleanSizingShadow(report, cleanRates(this.store, [...new Set(runs)]));
+    return canonical(clean ? { ...report, cleanPace: clean } : report);
+  }
+  /**
    * Prices the analyzed plan before it is approved (see sizing.ts). An oversized plan goes back to
    * the planner once with a split note; a plan still above the run ceiling waits for the user,
    * who can split the request into an initiative or answer to go on. Otherwise every sized task
@@ -7338,7 +7357,7 @@ export class WorkflowScheduler {
         runId,
         "sizing",
         `sizing/plan-${String(state.sizingReplans)}.json`,
-        canonical(report),
+        this.sizingRecord(runId, report),
       ),
     );
     const split = report.decision === "split-tasks" || report.decision === "split-feature";
@@ -7477,7 +7496,7 @@ ${note}`;
       request: state.requestText || state.prompt,
     });
     this.store.transaction(() => {
-      this.store.artifact(runId, "sizing", path, canonical(report));
+      this.store.artifact(runId, "sizing", path, this.sizingRecord(runId, report));
       for (const task of report.tasks) state.taskBudgets[task.taskId] = task.attemptTokens;
       this.raiseBudget(runId, state, policy, report);
       this.store.saveState(runId, state);

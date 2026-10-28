@@ -17,6 +17,7 @@ import { matchGlob } from "../../platform/index.js";
 import { canonical, hashBytes, hashJson } from "../../specs/hash.js";
 import { specPublication } from "../../specs/render.js";
 import { type BudgetLimits, budgetUsage, limitsOf } from "../budget.js";
+import { cleanInitiativePace, cleanRates } from "../clean-pace.js";
 import { autoCostTolerance } from "../cost-tolerance.js";
 import { git } from "../delivery-git.js";
 import {
@@ -127,6 +128,7 @@ import {
   isGlobPath,
   mergeSmallSiblings,
   namedFiles,
+  planLanguage,
   planSizeProblem,
   type SplitEdit,
   SplitEditSchema,
@@ -152,10 +154,12 @@ import {
 } from "./store.js";
 import {
   finishedRunPace,
+  heldRunTime,
   initiativePace,
   msFor,
   runTimeRaise,
   TIME_STEP_MS,
+  type TimePoolInputs,
   type TimePoolView,
   timePool,
   timeRaise,
@@ -2496,6 +2500,7 @@ export class InitiativeService {
       pace: time.pace,
       suggestedMs: time.suggestedMs,
       message: time.notice,
+      ...(time.cleanPace ? { cleanPace: time.cleanPace } : {}),
     });
   }
 
@@ -3729,6 +3734,7 @@ export class InitiativeService {
     const facts = this.workflowFacts(settings);
     const models = settings.model ? [settings.model] : [];
     const counts = boundaryPathCounts(plan, row.prompt);
+    const language = planLanguage(plan);
     const features = plan.features.map((feature) => {
       const workflowId = featureWorkflowId(settings, feature);
       return {
@@ -3783,6 +3789,7 @@ export class InitiativeService {
         overhead: row.decompose_run_id ? this.usage(row.decompose_run_id).tokens : 0,
       },
       parallelRuns: this.parallelRuns(settings, plan, facts),
+      ...(language ? { language } : {}),
       ...(settings.basePolicy?.sizing?.recencyHalfLife
         ? { recencyHalfLife: settings.basePolicy.sizing.recencyHalfLife }
         : {}),
@@ -3873,8 +3880,11 @@ export class InitiativeService {
           cost,
         })
       : null;
-    const time = approved
-      ? timePool({
+    const duration = estimate?.duration
+      ? { msPerToken: estimate.duration.msPerToken, samples: estimate.duration.samples }
+      : null;
+    const timeInputs: TimePoolInputs | null = approved
+      ? {
           initiativeId: row.id,
           limitMs: limits.maxActiveMs,
           usedMs: used.activeMs,
@@ -3894,15 +3904,29 @@ export class InitiativeService {
               });
               return pace === null ? [] : [pace];
             }),
-            estimate?.duration
-              ? { msPerToken: estimate.duration.msPerToken, samples: estimate.duration.samples }
-              : null,
+            duration,
           ),
           waitingHighTokens: waitingForRun.reduce((sum, f) => sum + (f.need?.high ?? 0), 0),
           features: features.length,
           slots: this.parallelRuns(settings, plan, facts),
-        })
+        }
       : null;
+    const time = timeInputs ? timePool(timeInputs) : null;
+    // The clean pace's forecast beside the deciding one, in shadow (#2414).
+    if (time && timeInputs) {
+      const clean = cleanRates(
+        this.workflows.store,
+        this.store.links(id).map((l) => l.run_id),
+      );
+      const pace = cleanInitiativePace(clean.rates, duration);
+      const shadow = timePool({ ...timeInputs, pace });
+      time.cleanPace = {
+        pace,
+        ...clean,
+        forecastMs: shadow.forecastMs,
+        suggestedMs: shadow.suggestedMs,
+      };
+    }
     const calls = approved
       ? callsPool({
           initiativeId: row.id,
@@ -4588,14 +4612,28 @@ export class InitiativeService {
         view.recovery = recoveryAdvice(
           view.blockers[0] ?? "",
           `Run ${link.run_id} is blocked (${run.reason}).${deadline ? ` ${deadline.summary}` : recorded ? ` ${recorded.summary}` : ""}`,
-          // A plain resume stops again at once on a spent deadline (#2226): extend comes first.
+          // A plain resume stops again at once on a spent deadline (#2226): extend comes first,
+          // the run's up to what the shared time grants, then the shared time's (#2414).
           ...(deadline
             ? [
-                {
-                  action: "extend" as const,
-                  runId: link.run_id,
-                  suggestedTimeMs: deadline.timeMs,
-                },
+                ...(deadline.timeMs
+                  ? [
+                      {
+                        action: "extend" as const,
+                        runId: link.run_id,
+                        suggestedTimeMs: deadline.timeMs,
+                      },
+                    ]
+                  : []),
+                ...(deadline.poolMs
+                  ? [
+                      {
+                        action: "extend" as const,
+                        initiativeId: row.id,
+                        suggestedTimeMs: deadline.poolMs,
+                      },
+                    ]
+                  : []),
                 ...remedies.filter((r) => r.action !== "extend"),
               ]
             : remedies),
@@ -4608,12 +4646,14 @@ export class InitiativeService {
   /**
    * For a feature run blocked `budget_exhausted` on its active deadline (#2336): the active time
    * that lets it finish at the measured pace (the initiative's own finished runs, else the run's
-   * own) and the command that applies it; null for any other block.
+   * own) and the command that applies it; null for any other block. The amount is held to what
+   * the initiative's shared time can grant, and a larger one names the shared time's extend
+   * first (`heldRunTime`, #2414).
    */
   private deadlineExtension(
     initiativeId: string,
     runId: string,
-  ): { timeMs: number; message: string; summary: string } | null {
+  ): { timeMs: number | null; poolMs: number | null; message: string; summary: string } | null {
     const row = this.workflows.store.run(runId);
     if (row.status !== "blocked" || row.reason !== "budget_exhausted") return null;
     const policy = PolicySchema.parse(JSON.parse(row.policy_json));
@@ -4639,12 +4679,43 @@ export class InitiativeService {
       needTokens: plannedRunTokens(this.workflows.store, runId)?.high ?? policy.maxTotalTokens,
       tokensPerMinute: pace,
     });
-    const minutes = (ms: number): number => Math.round(ms / 60_000);
-    const summary = `Its active time ran out at ${minutes(row.active_ms)} of ${minutes(policy.maxActiveMs)} min; ${minutes(timeMs)} min lets it finish at the measured pace.`;
-    return {
+    const initiative = this.store.get(initiativeId);
+    const decompose = initiative.decompose_run_id;
+    const held = heldRunTime(
       timeMs,
+      { activeMs: row.active_ms, maxActiveMs: policy.maxActiveMs },
+      {
+        limitMs: this.limits(initiative).maxActiveMs,
+        committedMs: [
+          ...(decompose ? [decompose] : []),
+          ...this.store.links(initiativeId).map((l) => l.run_id),
+        ].reduce((sum, id) => sum + this.committed(id).activeMs, 0),
+      },
+    );
+    const minutes = (ms: number): number => Math.round(ms / 60_000);
+    const ran = `Its active time ran out at ${minutes(row.active_ms)} of ${minutes(policy.maxActiveMs)} min; ${minutes(timeMs)} min lets it finish at the measured pace`;
+    const runExtend = (ms: number): string =>
+      `baked workflow extend ${runId} --expected-revision ${row.revision} --time-ms ${ms} --resume`;
+    if (held.poolMs === null)
+      return {
+        timeMs,
+        poolMs: null,
+        summary: `${ran}.`,
+        message: `${ran}. Extend it with ${runExtend(timeMs)}`,
+      };
+    const poolExtend = `baked workflow initiative extend ${initiativeId} --time-ms ${held.poolMs}`;
+    const summary =
+      held.timeMs === null
+        ? `${ran}, and the shared time has no room left for it: it needs the shared time extended to ${minutes(held.poolMs)} min first.`
+        : `${ran}, and the shared time grants it ${minutes(held.timeMs)} min: the rest needs the shared time extended to ${minutes(held.poolMs)} min first.`;
+    return {
+      timeMs: held.timeMs,
+      poolMs: held.poolMs,
       summary,
-      message: `${summary} Extend it with baked workflow extend ${runId} --expected-revision ${row.revision} --time-ms ${timeMs} --resume`,
+      message:
+        held.timeMs === null
+          ? `${summary} Raise it with ${poolExtend}, then extend the run.`
+          : `${summary} Extend it with ${runExtend(held.timeMs)}, or raise the shared time first with ${poolExtend}.`,
     };
   }
 
@@ -5076,14 +5147,22 @@ function featureRunSamples(
     const settings = initiatives.settings(row);
     const plans = new Map<
       number,
-      { plan: InitiativePlan; counts: ReturnType<typeof boundaryPathCounts> }
+      {
+        plan: InitiativePlan;
+        counts: ReturnType<typeof boundaryPathCounts>;
+        language: string | null;
+      }
     >();
     return initiatives.links(row.id).flatMap((link) => {
       const run = runs.get(link.run_id);
       if (run?.status !== "completed") return [];
       if (!plans.has(link.plan_revision)) {
         const plan = initiatives.plan(initiatives.revision(row.id, link.plan_revision));
-        plans.set(link.plan_revision, { plan, counts: boundaryPathCounts(plan, row.prompt) });
+        plans.set(link.plan_revision, {
+          plan,
+          counts: boundaryPathCounts(plan, row.prompt),
+          language: planLanguage(plan),
+        });
       }
       const revision = plans.get(link.plan_revision);
       const feature = revision?.plan.features.find((f) => f.id === link.feature_id);
@@ -5104,6 +5183,7 @@ function featureRunSamples(
           ...revision?.counts.get(feature.id),
           ...(source === "shared" ? { source } : {}),
           startedAt: link.created_at,
+          ...(revision?.language ? { language: revision.language } : {}),
         },
       ];
     });

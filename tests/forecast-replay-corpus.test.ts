@@ -572,6 +572,12 @@ describe("test task splits replay on recorded sizing reports (#1789)", () => {
       const [plan] = replayActiveTimes(store, runId);
       expect(plan).toMatchObject({ report: "sizing/plan-0.json", recorded: { basis: "history", after: 2_100_000 }, replayed: { basis: "initiative", tokensPerMinute: 71_173 } });
       expect(plan?.replayed.after).toBeGreaterThan(store.run(runId).active_ms);
+      // #2414, shadow: the clean pace is replayed beside the deciding one from the five finished
+      // runs' first-response waits (5,746,801 ms, from their calls before `silentMs` was recorded).
+      // Without them the runs pass the history's pace, so it would keep 135k and the 2,100,000 ms
+      // cap: first-response latency is no stall, which the default switch (R78) must tell apart.
+      expect(plan?.clean).toMatchObject({ basis: "history", tokensPerMinute: 135_149, silentMs: 5_746_801, after: 2_100_000 });
+      expect(plan?.clean?.rates).toHaveLength(5);
     } finally {
       dispose();
     }

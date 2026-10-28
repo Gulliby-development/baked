@@ -52,6 +52,10 @@ describe("the size pools' ranges over the last rounds (#2150)", () => {
   // first Lua initiative, 6 of 8, evalpin 3 of 10) and 21 above, 10 below without it. The
   // weighting stays opt-in and is not to be switched on on these figures: it fixes rounds 63 to
   // 68 and the whole corpus, not the last six rounds.
+  // R74 ladlemath, the first PHP initiative, put 7 of its 12 features above their range, and
+  // rounds 70 to 75 at 31 of 90 above (the bound is 30.7). A language with fewer than three
+  // finished features in the pool now gets a high end from first-language ratios (#2398): 17 of
+  // 90 above, ladlemath 1, flatelens 4.
   test("rounds 63 to 68 miss their range above the bound by default and within it at a half-life of 2; the rolling window is bounded", () => {
     const off = rangeMisses();
     expect(off.r63to68.features).toBe(60);
