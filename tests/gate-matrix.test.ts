@@ -46,9 +46,9 @@ import { reproExecutables, rerootRepro } from "../src/core/verification/repro.js
 import { entryPointCommand } from "../src/core/verification/entry-points.js";
 import { noteSiblingFindings, ownerOfFinding } from "../src/core/verification/initiative-ownership.js";
 import { failureSignature as convergenceSignature, missingPlannedPaths, noTestsCollected } from "../src/core/verification/convergence.js";
-import { executeCheckCommand, exitStatus, timedOutFailure } from "../src/core/verification/check-runner.js";
+import { executeCheckCommand, exitStatus, ranNoTests, timedOutFailure } from "../src/core/verification/check-runner.js";
 import { environmentFault, ENVIRONMENT_SIGNATURES } from "../src/core/verification/environment-faults.js";
-import { gradleTestReport } from "../src/core/verification/test-reports.js";
+import { testReport } from "../src/core/verification/test-reports.js";
 import { detectLanguages, touchesLanguageFiles } from "../src/core/workflows/language.js";
 import { baselineRegression, buildFailure, buildRunner, diagnosticCount, failedTests, failureSignature, testCount, testsRan } from "../src/core/verification/output-counts.js";
 import { pwshExecutable, rscriptExecutable } from "../src/core/platform/index.js";
@@ -1589,7 +1589,7 @@ describe("gate matrix: Gradle test reports and language review (#1489)", () => {
     });
   test("a Gradle run's reports become a JUnit block the junit runner counts", () => {
     const root = gradleProject();
-    const report = gradleTestReport("./gradlew", ["--console=plain", "-q", "check"], root, Date.now() - 1000);
+    const report = testReport("./gradlew", ["--console=plain", "-q", "check"], root, Date.now() - 1000);
     expect(report).toContain('<testsuites tests="4" skipped="1" failures="1" errors="0">');
     const output = `> Task :test FAILED\n\nCalcTest > fails() FAILED\n    org.opentest4j.AssertionFailedError at CalcTest.kt:7\n\n${report}\n`;
     expect(testCount(output)).toEqual({ tool: "junit", count: 4 });
@@ -1599,9 +1599,35 @@ describe("gate matrix: Gradle test reports and language review (#1489)", () => {
     const grown = output.replace('tests="4"', 'tests="5"').replace("2 files", "3 files");
     expect(failureSignature(grown, root)).toBe(failureSignature(output, root));
     // Reports older than the run (a test task Gradle skipped as up to date) and other programs add nothing.
-    expect(gradleTestReport("gradle", ["check"], root, Date.now() + 60_000)).toBeNull();
-    expect(gradleTestReport("mvn", ["verify"], root, Date.now() - 1000)).toBeNull();
-    expect(gradleTestReport("cmd", ["/d", "/c", "gradlew.bat", "test"], root, Date.now() - 1000)).not.toBeNull();
+    expect(testReport("gradle", ["check"], root, Date.now() + 60_000)).toBeNull();
+    expect(testReport("mvn", ["verify"], root, Date.now() - 1000)).toBeNull();
+    expect(testReport("cmd", ["/d", "/c", "gradlew.bat", "test"], root, Date.now() - 1000)).not.toBeNull();
+  });
+
+  test("a Maven run's surefire reports are read the same way, and a narrowed run without one ran no test (#2378)", () => {
+    const report = GRADLE_REPORT.replaceAll("CalcTest", "com.example.SumTest");
+    const root = project({
+      "pom.xml": "<project><modelVersion>4.0.0</modelVersion><packaging>pom</packaging></project>\n",
+      "core/target/surefire-reports/TEST-com.example.SumTest.xml": report,
+      "web/pom.xml": "<project><modelVersion>4.0.0</modelVersion></project>\n",
+    });
+    const narrowed = ["-B", "-q", "test", "-Dtest=com.example.SumTest", "-Dsurefire.failIfNoSpecifiedTests=false"];
+    const found = testReport("mvn", narrowed, root, Date.now() - 1000, 1) ?? "";
+    expect(found).toContain("Maven test reports (1 file under target/surefire-reports, read by BAKED):");
+    expect(testsRan(found)).toEqual({ tool: "junit", count: 2 });
+    // The selection matched no class in any module: surefire exits 0 and writes no report.
+    const empty = project({ "pom.xml": "<project><modelVersion>4.0.0</modelVersion></project>\n" });
+    const none = testReport("mvn", narrowed, empty, Date.now() - 1000, 0) ?? "";
+    expect(testsRan(none)).toEqual({ tool: "junit", count: 0 });
+    expect(ranNoTests({ requireTests: true }, `\n\n${none}\n`)).toBe(true);
+    // A failed run, a run that is not narrowed and stale reports say nothing.
+    expect(testReport("mvn", narrowed, empty, Date.now() - 1000, 1)).toBeNull();
+    expect(testReport("mvn", ["-B", "-q", "test"], empty, Date.now() - 1000, 0)).toBeNull();
+    expect(testReport("mvn", narrowed, root, Date.now() + 60_000, 1)).toBeNull();
+    // `mvn` without -q prints a summary per module of a reactor: they add up.
+    const reactor = "[INFO] Tests run: 0, Failures: 0, Errors: 0, Skipped: 0\n[INFO] Tests run: 3, Failures: 0, Errors: 0, Skipped: 1\n";
+    expect(testsRan(reactor)).toEqual({ tool: "maven", count: 2 });
+    expect(testCount(reactor)).toEqual({ tool: "maven", count: 3 });
   });
 
   test("a failed testcase keeps its message, type and the start of its text (#2272)", () => {
@@ -1614,7 +1640,7 @@ describe("gate matrix: Gradle test reports and language review (#1489)", () => {
       '<testcase name="crashes()" classname="CalcTest" time="0.0">\n    <error message="boom" type="java.lang.IllegalStateException"><![CDATA[java.lang.IllegalStateException: boom ]]]]><![CDATA[> <tag>\n\tat CalcTest.crashes(CalcTest.kt:12)]]></error>',
     );
     const root = project({ "build.gradle.kts": "plugins { java }\n", "build/test-results/test/TEST-CalcTest.xml": xml });
-    const report = gradleTestReport("gradle", ["-q", "check"], root, Date.now() - 1000) ?? "";
+    const report = testReport("gradle", ["-q", "check"], root, Date.now() - 1000) ?? "";
     expect(report).toContain(
       '<testcase classname="CalcTest" name="fails()"><failure message="expected: &lt;&quot;a&gt;b&quot;&gt; but was: &lt;&quot;c&quot;&gt;" type="org.opentest4j.AssertionFailedError">org.opentest4j.AssertionFailedError: expected: &lt;"a&gt;b"&gt;\n\tat CalcTest.frame0(CalcTest.kt:7)',
     );
@@ -1628,7 +1654,7 @@ describe("gate matrix: Gradle test reports and language review (#1489)", () => {
     expect(failedTests(report)).toEqual({ tool: "junit", names: ["CalcTest.fails()", "CalcTest.crashes()"] });
     // A message longer than the cap is cut.
     const long = project({ "build.gradle": "plugins { id 'java' }\n", "build/test-results/test/TEST-CalcTest.xml": GRADLE_REPORT.replace(/message="[^"]*"/, `message="${"x".repeat(900)}"`) });
-    expect(gradleTestReport("gradle", ["check"], long, Date.now() - 1000)).toContain(`message="${"x".repeat(500)}" type=`);
+    expect(testReport("gradle", ["check"], long, Date.now() - 1000)).toContain(`message="${"x".repeat(500)}" type=`);
   });
 
   test.skipIf(process.platform === "win32")("executeCheckCommand appends the reports a Gradle run wrote", async () => {
@@ -4978,6 +5004,29 @@ describe.skipIf(!toolchains)("gate matrix: toolchains", () => {
         900_000,
       );
   }
+
+  // #2378: the written-tests check narrows Maven with -Dtest and failIfNoSpecifiedTests=false, so a
+  // selection that matches no class exits 0 under -q with no output; it ran no test and fails.
+  const maven = RUNNABLE.maven;
+  if (maven)
+    ((process.env.CI ? true : available(maven.needs)) ? cell : (s: Stack, name: string) => test.skip(`${name} (no toolchain)`, () => {}))(
+      "maven",
+      "maven: a narrowed run whose selection matches no test class fails the written-tests check",
+      async () => {
+        const root = project(maven.files);
+        const checks = detectGates(root)
+          .filter((s) => s.preselected)
+          .map((s) => s.check);
+        const check = writtenTestsCheck(root, checks, [{ path: maven.written ?? "", action: "create" }]);
+        if (!check) throw new Error("no written-tests check");
+        const missed = { ...check, args: check.args.map((arg) => (arg.startsWith("-Dtest=") ? "-Dtest=com.example.NestedOnlyTest" : arg)) };
+        const result = await executeGate(root, missed, new AbortController().signal);
+        expect(result.exitCode).toBe(0);
+        expect(result.status).toBe("failed");
+        expect(result.outputTail).toContain("the -Dtest selection ran no test class");
+      },
+      900_000,
+    );
 });
 
 // A gate's failed output can stop on a repair limit on every stack; the grant does not waive it.
