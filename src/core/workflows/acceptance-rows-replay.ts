@@ -51,6 +51,7 @@ const REPLAY_FILE: Record<Framework, (dir: string, id: string, test: string) => 
   busted: (dir, id) => posix.join(dir, `baked_replay_${id}_spec.lua`),
   minitest: (dir, id) => posix.join(dir, `baked_replay_${id}_test.rb`),
   pest: (dir, id) => posix.join(dir, `BakedReplay${id.toUpperCase()}Test.php`),
+  dart: (dir, id) => posix.join(dir, `baked_replay_${id}_test.dart`),
 };
 
 const dependencies = (graph: Pick<TaskGraph, "tasks">, id: string): Set<string> => {
