@@ -50,6 +50,7 @@ const INLINE: Record<InlineRowTest["framework"], InlineRowTest> = {
   busted: { mode: "inline", framework: "busted", test: "spec/rules_spec.lua" },
   minitest: { mode: "inline", framework: "minitest", test: "test/rules_test.rb" },
   pest: { mode: "inline", framework: "pest", test: "tests/RulesTest.php" },
+  exunit: { mode: "inline", framework: "exunit", test: "test/rules_test.exs" },
 };
 
 /** A block's text with the line breaks and indentation of its own layout taken out. */
@@ -123,6 +124,15 @@ const PROJECTS: Partial<Record<InlineRowTest["framework"], { files: Record<strin
     existing: "<?php\n\n$acceptanceActual = function (mixed $input): mixed {\n    return $input;\n};\n",
     run: [["pest", "tests/RulesTest.php"]],
   },
+  exunit: {
+    files: {
+      "mix.exs": "defmodule Rules.MixProject do\n  use Mix.Project\n\n  def project, do: [app: :rules, version: \"0.1.0\", deps: []]\nend\n",
+      ".formatter.exs": "[inputs: [\"{mix,.formatter}.exs\", \"test/**/*.exs\"]]\n",
+      "test/test_helper.exs": "ExUnit.start()\n",
+    },
+    existing: "defmodule RulesTest do\n  use ExUnit.Case\n\n  defp acceptance_actual(input), do: input\nend\n",
+    run: [["mix", "test"], ["mix", "format", "--check-formatted"]],
+  },
 };
 
 const has = (command: string[]) => {
@@ -143,6 +153,8 @@ const AVAILABLE: Record<string, boolean> = {
   busted: Bun.which("busted") !== null,
   minitest: has(["ruby", "-e", "require 'minitest'"]),
   pest: Bun.which("pest") !== null,
+  // JSON is in Elixir's standard library from 1.18.
+  exunit: has(["elixir", "-e", 'JSON.decode!("1")']),
 };
 
 describe("scenario: cfgquill lint R64, rows with a U+FEFF run in the project's own toolchain (#1995)", () => {

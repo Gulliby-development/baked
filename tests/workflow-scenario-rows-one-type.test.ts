@@ -251,3 +251,53 @@ final class OptionsTest extends TestCase
     expect(writtenTestsCheck(root, [check("php", ["vendor/bin/phpunit", "tests"])], [{ path: php.test, action: "modify" }])?.args).toEqual(["vendor/bin/phpunit", "./tests/OptionsTest.php"]);
   });
 });
+
+// #2348: the ExUnit block calls the module's own acceptance_actual, so it goes in that module,
+// before its `end`, and the file keeps the one module mix test names it by.
+describe("ExUnit rows in the file's own module (#2348)", () => {
+  const exunit: InlineRowTest = { mode: "inline", framework: "exunit", test: "test/options_test.exs" };
+  const file = inlineRowFile(exunit, rows);
+  const own = `defmodule Lanes.OptionsTest do
+  use ExUnit.Case
+
+  @doc """
+  end
+  """
+  describe "defaults" do
+    test "lanes" do
+      assert Lanes.Options.parse([]) == 1
+    end
+  end
+
+  defp acceptance_actual(input), do: Lanes.Options.parse(input)
+end
+
+defmodule Lanes.OptionsTest.Helper do
+  def lanes, do: 1
+end
+`;
+  const BEGIN_EX = "# BEGIN acceptance rows: cases from";
+  const END_EX = "# END acceptance rows";
+
+  test("the rows end the file's own module, and a second write changes nothing", () => {
+    const written = withInlineRows(own, file);
+    expect(written).toContain(`Lanes.Options.parse(input)\n\n  ${BEGIN_EX}`);
+    expect(written).toContain(`  ${END_EX}\nend\n\ndefmodule Lanes.OptionsTest.Helper do`);
+    expect(written).toContain('\n  for acceptance_row <- JSON.decode!(Enum.join(@acceptance_text)) do\n');
+    expect(withInlineRows(written, file)).toBe(written);
+    expect(hasInlineRows(written, file)).toBe(true);
+  });
+
+  test("a block moved out of the module is put back inside", () => {
+    const written = withInlineRows(own, file);
+    const block = written.slice(written.indexOf(`  ${BEGIN_EX}`), written.indexOf(END_EX) + END_EX.length + 1);
+    const outside = `${written.replace(block, "").replace(/\n\nend\n/, "\nend\n").trimEnd()}\n\n${block.replace(/^ {2}/gm, "")}`;
+    expect(hasInlineRows(outside, file)).toBe(false);
+    expect(withInlineRows(outside, file)).toBe(written);
+  });
+
+  test("a file with no module yet gets the module named after it around the block", () => {
+    expect(withInlineRows(null, file).startsWith(`defmodule OptionsTest do\n  use ExUnit.Case\n\n  ${BEGIN_EX}`)).toBe(true);
+    expect(withInlineRows(null, file).trimEnd()).toEndWith(`  ${END_EX}\nend`);
+  });
+});
