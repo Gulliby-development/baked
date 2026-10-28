@@ -133,6 +133,14 @@ export const STOP_REASONS = {
     modes: NOT_ENFORCED,
     defaultMode: "shadow",
   },
+  repro_blind: {
+    label:
+      "A corrective's repro prints the same output after the attempt changed the finding's file, and reads a path outside its root",
+    // Shadow only until a bench round shows no false would-stop (#2287); its promotion makes such
+    // a repro inconclusive for the attempt instead of reproduced, so it no longer sends it back.
+    modes: NOT_ENFORCED,
+    defaultMode: "shadow",
+  },
   corrective_restores_removed: {
     label: "A corrective puts back what the previous corrective of the file removed",
     // Shadow only until two bench rounds show no false would-stop (#2277); its promotion opens a
