@@ -53,6 +53,8 @@
     "dependencyDirs": [
       "Pods: linked"
     ],
+    "dependencyPrepare": null,
+    "worktreePathLimits": null,
     "testDeclarations": ["Tests/SumTests.m: 2 tests, per class 2"]
   }
 }

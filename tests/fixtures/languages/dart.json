@@ -62,6 +62,12 @@
     ],
     "sortedLists": null,
     "dependencyDirs": null,
+    "dependencyPrepare": [
+      "dart pub get --offline"
+    ],
+    "worktreePathLimits": [
+      "pubspec.yaml: dart test over 120 characters"
+    ],
     "testDeclarations": ["test/sum_test.dart: 3 tests"]
   }
 }

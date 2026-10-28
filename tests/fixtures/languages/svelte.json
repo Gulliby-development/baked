@@ -66,6 +66,8 @@
     "dependencyDirs": [
       "node_modules: linked"
     ],
+    "dependencyPrepare": null,
+    "worktreePathLimits": null,
     "testDeclarations": null
   }
 }

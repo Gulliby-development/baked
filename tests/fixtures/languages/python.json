@@ -92,6 +92,8 @@
       ".venv: linked",
       "venv: linked"
     ],
+    "dependencyPrepare": null,
+    "worktreePathLimits": null,
     "testDeclarations": ["tests/test_sum.py: 3 tests, per class 2"]
   }
 }

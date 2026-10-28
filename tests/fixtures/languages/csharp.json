@@ -79,6 +79,8 @@
     ],
     "sortedLists": null,
     "dependencyDirs": null,
+    "dependencyPrepare": null,
+    "worktreePathLimits": null,
     "testDeclarations": ["Calc.Tests/SumTests.cs: 3 tests, per class 2, 1"]
   }
 }

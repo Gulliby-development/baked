@@ -45,6 +45,8 @@
     "dependencyDirs": [
       "_opam: linked"
     ],
+    "dependencyPrepare": null,
+    "worktreePathLimits": null,
     "testDeclarations": ["test/test_sum.ml: 2 tests"]
   }
 }

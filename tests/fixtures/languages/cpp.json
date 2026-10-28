@@ -68,6 +68,8 @@
     ],
     "sortedLists": ["src/sum.cpp: clang-format \"// order as written\" before 2"],
     "dependencyDirs": null,
+    "dependencyPrepare": null,
+    "worktreePathLimits": null,
     "testDeclarations": ["tests/sum_test.cpp: 2 tests"]
   },
   "outputs": {

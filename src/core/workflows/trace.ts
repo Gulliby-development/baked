@@ -2112,6 +2112,8 @@ export function replayChainEscalation(
 /** One finding chain a run recorded under `chains/`, with what its correctives and battery did. */
 export interface ChainCost {
   file: string | null;
+  /** Every file of a chain across files (#2334), oldest first. */
+  files?: string[];
   symbol: string;
   /** The chain's family (#2048), which keys it with the file in place of the symbol; or null. */
   family: string | null;
@@ -2172,11 +2174,13 @@ export function chainCosts(store: WorkflowStore, runId: string): ChainCost[] {
     return { tokens, costUsd };
   };
   const key = (file: string | null, symbol: string) => `${file ?? ""}\0${symbol}`;
+  // A chain across files groups by its oldest file (#2334).
+  const fileOf = (record: ChainRecord) => record.files?.[0] ?? record.file;
   // A family chain spans symbols: its records group by file and family (#2048).
   const groupKey = (record: ChainRecord) =>
     record.family
-      ? `${record.file ?? ""}\0family\0${record.family}`
-      : key(record.file, record.symbol);
+      ? `${fileOf(record) ?? ""}\0family\0${record.family}`
+      : key(fileOf(record), record.symbol);
   const groups = new Map<string, ChainRecord[]>();
   for (const record of records)
     groups.set(groupKey(record), [...(groups.get(groupKey(record)) ?? []), record]);
@@ -2196,19 +2200,21 @@ export function chainCosts(store: WorkflowStore, runId: string): ChainCost[] {
       ...usage(taskId),
     }));
     const symbols = new Set(group.flatMap((r) => [r.symbol, ...(r.symbols ?? [])]));
+    const files = [...new Set(group.flatMap((r) => r.files ?? [r.file]))];
     const own = batteries
       .map((b) => ({
         decision: b.decision,
         cases: b.cases.filter((c) =>
           first.family
-            ? c.file === first.file && symbols.has(c.symbol)
-            : key(c.file, c.symbol) === key(first.file, first.symbol),
+            ? files.includes(c.file) && symbols.has(c.symbol)
+            : files.includes(c.file) && c.symbol === first.symbol,
         ),
       }))
       .filter((b) => b.cases.length);
     const cases = own.flatMap((b) => b.cases);
     return {
-      file: first.file,
+      file: fileOf(first),
+      ...(files.length > 1 ? { files: files.filter((f): f is string => f !== null) } : {}),
       symbol: first.symbol,
       family: first.family ?? null,
       length: longest.length,

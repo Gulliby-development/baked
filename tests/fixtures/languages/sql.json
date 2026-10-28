@@ -67,6 +67,8 @@
     "dependencyDirs": [
       "dbt_packages: linked"
     ],
+    "dependencyPrepare": null,
+    "worktreePathLimits": null,
     "testDeclarations": null
   }
 }

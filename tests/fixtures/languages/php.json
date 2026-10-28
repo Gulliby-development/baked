@@ -77,6 +77,8 @@
     "dependencyDirs": [
       "vendor: linked"
     ],
+    "dependencyPrepare": null,
+    "worktreePathLimits": null,
     "testDeclarations": ["tests/SumTest.php: 2 tests, per class 2"]
   }
 }

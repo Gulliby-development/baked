@@ -83,6 +83,8 @@
     "dependencyDirs": [
       "node_modules: linked"
     ],
+    "dependencyPrepare": null,
+    "worktreePathLimits": null,
     "testDeclarations": ["tests/sum.test.js: 3 tests"]
   }
 }

@@ -63,6 +63,8 @@
     ],
     "sortedLists": null,
     "dependencyDirs": null,
+    "dependencyPrepare": null,
+    "worktreePathLimits": null,
     "testDeclarations": ["test/sum.bats: 2 tests"]
   }
 }

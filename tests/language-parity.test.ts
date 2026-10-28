@@ -49,7 +49,7 @@ import { SUPPRESSION_SPELLINGS } from "../src/core/workflows/quality/suppression
 import { suppressionsIn } from "../src/core/workflows/test-integrity.js";
 import type { Check } from "../src/core/workflows/types.js";
 import { rowOf } from "../src/core/intelligence/language-records.js";
-import { DEPENDENCY_DIRS, linkDependencies } from "../src/core/workflows/dependency-dirs.js";
+import { DEPENDENCY_DIRS, DEPENDENCY_PREPARE, linkDependencies, WORKTREE_PATH_LIMITS } from "../src/core/workflows/dependency-dirs.js";
 import { sourceManifest } from "../src/core/verification/snapshot.js";
 
 // Language parity (#1717): every language-bound record has a row for every supported language,
@@ -355,6 +355,24 @@ const RECORDS: Record<
       return [...linked.map((d) => `${d}: linked`), ...(listed.length ? ["in the manifest"] : [])];
     },
     never: ["in the manifest"],
+  },
+  // The command that resolves the fixture project's packages in a new worktree or copy, when its
+  // resolution is a generated, ignored file that holds machine paths (#2361).
+  dependencyPrepare: {
+    record: DEPENDENCY_PREPARE,
+    run: (language, { files }) => {
+      const row = DEPENDENCY_PREPARE[language];
+      const command = isNoRow(row) ? null : row(workspace(files));
+      return command ? [command.join(" ")] : [];
+    },
+  },
+  // The fixture project's manifest that makes the doctor check a task worktree's path length (#2361).
+  worktreePathLimits: {
+    record: WORKTREE_PATH_LIMITS,
+    run: (language, { files }) => {
+      const row = WORKTREE_PATH_LIMITS[language];
+      return isNoRow(row) || !(row.manifest in files) ? [] : [`${row.manifest}: ${row.tool} over ${String(row.chars)} characters`];
+    },
   },
   properties: {
     record: PROPERTY_LIBRARIES,

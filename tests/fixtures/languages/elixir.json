@@ -51,6 +51,8 @@
     "dependencyDirs": [
       "deps: linked"
     ],
+    "dependencyPrepare": null,
+    "worktreePathLimits": null,
     "testDeclarations": ["test/sum_test.exs: 2 tests, per class 2"]
   }
 }

@@ -76,6 +76,8 @@
     "dependencyDirs": [
       "lua_modules: linked"
     ],
+    "dependencyPrepare": null,
+    "worktreePathLimits": null,
     "testDeclarations": ["spec/sum_spec.lua: 2 tests"]
   }
 }

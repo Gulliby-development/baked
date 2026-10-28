@@ -110,7 +110,7 @@ if (command === "export" && args.length === 2) {
         console.log(`  ${run.featureId} ${run.runId}: ${run.chains.length} recorded chains`);
         for (const chain of run.chains)
           console.log(
-            `    ${chain.file ?? "-"} ${chain.family ? `family ${chain.family} (last ${chain.symbol})` : chain.symbol}: length ${chain.length} (${chain.findings.join(", ")}), ` +
+            `    ${chain.files?.join(", ") ?? chain.file ?? "-"} ${chain.family ? `family ${chain.family} (last ${chain.symbol})` : chain.symbol}: length ${chain.length} (${chain.findings.join(", ")}), ` +
               `correctives ${chain.tasks.map((t) => `${t.taskId} ${t.decision}`).join(", ")}, ` +
               `${chain.tokens} tokens, ${usd(chain.costUsd)}; battery ${chain.battery.runs} runs, ` +
               `${chain.battery.cases} cases (${chain.battery.reproduced} reproduced, ${chain.battery.refuted} refuted, ` +

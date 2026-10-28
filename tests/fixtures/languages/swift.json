@@ -66,6 +66,8 @@
     ],
     "sortedLists": null,
     "dependencyDirs": null,
+    "dependencyPrepare": null,
+    "worktreePathLimits": null,
     "testDeclarations": ["Tests/SumTests/SumTests.swift: 3 tests, per class 1, 2"]
   }
 }
