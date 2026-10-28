@@ -1,7 +1,8 @@
 import type { ReactNode } from "react";
 import { langFromPath } from "../../core/diff.js";
 import { useTheme } from "../../core/theme/index.js";
-import { getSyntaxStyle, getTSClient } from "../../core/utils/syntax.js";
+import { getTSClient } from "../../core/utils/syntax.js";
+import { useSyntaxStyle } from "../../hooks/useSyntaxStyle.js";
 import type { ToolCall } from "../../types/index.js";
 
 /** Soft cap for tree-sitter — anything larger renders as plain text. */
@@ -94,7 +95,7 @@ function splitMultiFileOutput(output: string): Array<{ path: string; body: strin
 
 /** A code block rendered with the project's tree-sitter highlighter. */
 export function HighlightedCode({ content, lang }: { content: string; lang: string }) {
-  const syntaxStyle = getSyntaxStyle();
+  const syntaxStyle = useSyntaxStyle();
   const tsClient = getTSClient();
   if (content.length === 0) return null;
   const fenced = `\`\`\`${lang}\n${content}\n\`\`\``;
