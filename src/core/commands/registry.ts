@@ -24,6 +24,7 @@ import { register as registerHooks } from "./hooks.js";
 import { register as registerLimits } from "./limits.js";
 import { matchNavPrefix, register as registerNavigation } from "./navigation.js";
 import { register as registerPackages } from "./packages.js";
+import { register as registerPreview } from "./preview.js";
 import { register as registerProjects } from "./projects.js";
 import { matchSessionPrefix, register as registerSession } from "./session.js";
 import { register as registerStorage } from "./storage.js";
@@ -52,6 +53,7 @@ registerWorkflow(commandMap);
 registerProjects(commandMap);
 registerWatch(commandMap);
 registerArtifacts(commandMap);
+registerPreview(commandMap);
 registerPackages(commandMap);
 registerAgentContext(commandMap);
 registerAgents(commandMap);
@@ -661,6 +663,13 @@ const COMMAND_DEFS: CommandDef[] = [
     category: "Intelligence",
     tags: ["reset"],
     hidden: true,
+  },
+  {
+    cmd: "/preview",
+    ic: "file",
+    desc: "Preview the Markdown and HTML documents and artifacts this chat produced",
+    category: "Intelligence",
+    tags: ["markdown", "html", "document", "page", "view", "open"],
   },
   {
     cmd: "/artifacts",

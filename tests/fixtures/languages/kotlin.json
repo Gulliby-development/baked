@@ -78,6 +78,11 @@
     "sortedLists": null,
     "dependencyDirs": null,
     "dependencyPrepare": null,
-    "worktreePathLimits": null
+    "worktreePathLimits": null,
+    "testClasses": [
+      "src/test/kotlin/com/example/UnitTest1.kt: com.example.FailureExceptionTest, com.example.UnitTest1Kt",
+      "src/main/kotlin/SumSpec.kt: by its name",
+      "src/test/kotlin/SumPropTest.kt: by its name"
+    ]
   }
 }

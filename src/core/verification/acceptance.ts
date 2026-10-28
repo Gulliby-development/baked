@@ -186,8 +186,15 @@ function acceptance(
       .checks(runId)
       .filter((c) => c.check_id === checkId && c.snapshot_id === state.snapshotId)
       .at(-1);
+    // A check a person accepted as unable to run (#2358) holds with its last timeout.
+    const accepted =
+      last?.status === "inconclusive" &&
+      last.reason === "timeout" &&
+      state.acceptedCheckTimeouts.includes(checkId);
     const passed =
-      last?.status === "passed" || (last?.status === "failed" && debt.has(last.evidence_id));
+      last?.status === "passed" ||
+      (last?.status === "failed" && debt.has(last.evidence_id)) ||
+      accepted;
     if (!last || !passed || last.validity !== "current")
       throw new WorkflowFault(
         "OUTPUT_INVALID",

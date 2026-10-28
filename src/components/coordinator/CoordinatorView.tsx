@@ -4,7 +4,7 @@ import type { LocalCoordinator } from "../../core/chat/coordinator-host.js";
 import { launchLabel } from "../../core/chat/coordinator-launch.js";
 import { requestSummary } from "../../core/chat/coordinator-summary.js";
 import type { ChatPrompt, PromptAnswer } from "../../core/chat/sessions.js";
-import { type ThemeTokens, useTheme } from "../../core/theme/index.js";
+import { useTheme } from "../../core/theme/index.js";
 import {
   type CoordinatorSnapshot,
   takeSummaryOnOpen,
@@ -15,7 +15,6 @@ import { handleTextInputKey, PremiumPopup, Search } from "../ui/index.js";
 import { PopupViewport } from "../ui/PopupViewport.js";
 import {
   keyHints,
-  type LineTone,
   launchedHeading,
   launchedLines,
   messageLines,
@@ -23,6 +22,7 @@ import {
   promptLines,
   questionAnswer,
   SPLIT_EDIT_PREFIX,
+  toneColor,
   type ViewLine,
   wrap,
 } from "./model.js";
@@ -45,25 +45,6 @@ function keyed(lines: ViewLine[], prefix: string): (ViewLine & { key: string })[
   const out: (ViewLine & { key: string })[] = [];
   for (const line of lines) out.push({ ...line, key: `${prefix}${out.length}` });
   return out;
-}
-
-function toneColor(t: ThemeTokens, tone: LineTone): string {
-  switch (tone) {
-    case "user":
-      return t.accentUser;
-    case "assistant":
-      return t.textPrimary;
-    case "tool":
-      return t.textDim;
-    case "accent":
-      return t.brandSecondary;
-    case "warning":
-      return t.warning;
-    case "error":
-      return t.error;
-    case "muted":
-      return t.textMuted;
-  }
 }
 
 /** The project coordinator over the current tab: its conversation, launched work and prompts. */
