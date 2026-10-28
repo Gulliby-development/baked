@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { join, relative } from "node:path";
 import { callCostRate, costRate } from "../src/core/workflows/budget.js";
 import { chargeHold, refreshedGrowth } from "../src/core/workflows/initiatives/growth.js";
@@ -7,9 +7,10 @@ import { costGrowthLimit, dollarShortfall, growthLimit, type ShareGateRecord, sh
 import { forecastSamples } from "../src/core/workflows/stage-price.js";
 import { adaptiveFirstByteMs } from "../src/core/llm/provider-health.js";
 import { planApprovalDecision } from "../src/core/workflows/auto-approval.js";
-import { CAPACITY_PROBE, type SizingReport, type SizingSample, samplesFrom, testCaseRate } from "../src/core/workflows/sizing.js";
+import { CAPACITY_PROBE } from "../src/core/workflows/sizing.js";
 import { type CallRate, chainCosts, openTrace, type PlanPriceReplay, replayChainEscalation, replayEdgeRecord, replayInitiativeStarts, replayPlanApprovals, replayPlanPrices, replayActiveTimes, replayPoolBounds, replayTrace, type TestSplitRule } from "../src/core/workflows/trace.js";
 import { type EdgeRecord, edgeCrashDecision } from "../src/core/verification/edge-inputs.js";
+import { ROOT, traces } from "./helpers/replay-corpus.js";
 import { fixturePolicy } from "./helpers/workflow-fixture.js";
 
 // #1649, #1715: every recorded bench-round trace replays through the current host decisions: the
@@ -18,8 +19,9 @@ import { fixturePolicy } from "./helpers/workflow-fixture.js";
 // rewound and recomputed, and the plan auto-approval on the run state it was asked with (#1707). A
 // stop, cap growth, park or approval decision the recorded run did not make fails the suite, unless
 // accepted.json lists it for that run or initiative with the reason: the pull request that changes
-// the decision says so in its diff.
-const ROOT = join(import.meta.dir, "fixtures", "bench-traces");
+// the decision says so in its diff. The backtests that replay every initiative start of the corpus
+// take minutes each, so they live in files of their own to fit an `OS tests` shard: feature ranges
+// (forecast-replay-corpus-ranges), the size pools' ranges by round (-pools) and test volume (-volume).
 /**
  * The mode the rounds before #2245 ran the plan charge in: open runs held at their limits. A test
  * that compares a replay with what a round's gate recorded replays it at that mode; one that asks
@@ -63,17 +65,6 @@ interface Accepted {
   newApprovalDeclines?: number;
   newAutoApprovals?: number;
   reason: string;
-}
-
-function traces(dir: string): string[] {
-  if (!existsSync(dir)) return [];
-  return readdirSync(dir, { withFileTypes: true }).flatMap((entry) =>
-    entry.isDirectory()
-      ? traces(join(dir, entry.name))
-      : entry.name.endsWith(".sqlite.gz")
-        ? [join(dir, entry.name)]
-        : [],
-  ).sort();
 }
 
 const accepted = JSON.parse(readFileSync(join(ROOT, "accepted.json"), "utf8")) as Record<string, Accepted>;
@@ -599,141 +590,6 @@ describe("test task splits replay on recorded sizing reports (#1789)", () => {
   }, 120000);
 });
 
-describe("initiative feature ranges replay against what the features used (#1806, #1813)", () => {
-  // At each initiative's first replayed start, the features that used less than the low end of
-  // the range the current estimate gives them, and more than its high end. A feature's range is
-  // the middle half of comparable finished features, so a quarter of the features fall below it
-  // and a quarter above by construction. The bound is that quarter plus two standard errors of a
-  // share of n features (sqrt(0.25 * 0.75 / n)): a share at exactly a quarter fails about half the
-  // time by chance, as R57 did (33 of 130, 25.4%, modeplan's four cheap 4-path C# features below
-  // the medium pool's 1.19M; R51 sedstep, also C#, was above, so the language is no signal), while
-  // the first-quartile path floor #1806 removed (37 of 104, 36%, against 33.5%) still fails it.
-  // A share, not a count, so each round's new traces keep the bound (a count of 29 failed when R55
-  // added routeshadow's 2 of 10). R45-R54: a path floor at the first quartile put 37 of 104 below,
-  // 11 of R54 lanewalk's 12 as the round recorded; from the lowest rate 29 (28%, #1806); light
-  // features priced as runs of their own workflow 25 (24%) and lanewalk 5 (#1813).
-  // Only finished features count (a run of the feature completed): a blocked, paused or waiting
-  // run's tokens are a lower bound of what the feature costs, not its cost. R68 ewvet's codec and
-  // read-commands waited behind the blocked scanner after their plan stages (0.26M and 0.58M against
-  // low ends of 1.77M and 1.11M) and counted as below; with them and R58/R59 wheeltags' five blocked
-  // or paused features the share was 73 of 237 (30.8%), on finished features it is 66 of 228 (28.9%).
-  test("a quarter of the finished features start below their range and a quarter above it, within two standard errors", () => {
-    let lanewalk = 0;
-    let below = 0;
-    let above = 0;
-    let features = 0;
-    for (const path of readdirSync(ROOT, { recursive: true, encoding: "utf8" })
-      .filter((p) => p.endsWith(".sqlite.gz"))
-      .map((p) => join(ROOT, p))) {
-      const replays = replayInitiativeStarts(path);
-      if (!replays.length) continue;
-      const { store, dispose } = openTrace(path);
-      const used = new Map<string, number>();
-      const finished = new Set<string>();
-      try {
-        for (const row of store.connection
-          .query(
-            "SELECT l.feature_id AS feature, r.token_usage AS tokens, r.status AS status FROM initiative_runs l JOIN runs r ON r.id=l.run_id",
-          )
-          .all() as { feature: string; tokens: number; status: string }[]) {
-          used.set(row.feature, (used.get(row.feature) ?? 0) + row.tokens);
-          if (row.status === "completed") finished.add(row.feature);
-        }
-      } finally {
-        dispose();
-      }
-      for (const replay of replays)
-        for (const f of replay.starts[0]?.estimate ?? []) {
-          const tokens = used.get(f.featureId);
-          if (tokens === undefined || !finished.has(f.featureId)) continue;
-          features++;
-          if (tokens < f.low) below++;
-          if (tokens < f.low && path.endsWith("lanewalk.sqlite.gz")) lanewalk++;
-          if (tokens > f.high) above++;
-        }
-    }
-    expect(features).toBeGreaterThanOrEqual(104);
-    const bound = 0.25 + 2 * Math.sqrt((0.25 * 0.75) / features);
-    expect(below / features).toBeLessThanOrEqual(bound);
-    expect(above / features).toBeLessThanOrEqual(bound);
-    expect(lanewalk).toBeLessThanOrEqual(5);
-  }, 600000);
-});
-
-/** Finished features below and above the range of their initiative's first replayed start, by round. */
-function rangeMisses(options: { recencyHalfLife?: number } = {}) {
-  const rounds = new Map<number, { features: number; below: number; above: number }>();
-  for (const name of readdirSync(ROOT, { recursive: true, encoding: "utf8" }).filter((p) => p.endsWith(".sqlite.gz"))) {
-    const path = join(ROOT, name);
-    const replays = replayInitiativeStarts(path, options);
-    if (!replays.length) continue;
-    const { store, dispose } = openTrace(path);
-    const used = new Map<string, number>();
-    const finished = new Set<string>();
-    try {
-      for (const row of store.connection
-        .query("SELECT l.feature_id AS feature, r.token_usage AS tokens, r.status AS status FROM initiative_runs l JOIN runs r ON r.id=l.run_id")
-        .all() as { feature: string; tokens: number; status: string }[]) {
-        used.set(row.feature, (used.get(row.feature) ?? 0) + row.tokens);
-        if (row.status === "completed") finished.add(row.feature);
-      }
-    } finally {
-      dispose();
-    }
-    const round = Number(/R(\d+)/.exec(name)?.[1]);
-    const counts = rounds.get(round) ?? { features: 0, below: 0, above: 0 };
-    for (const replay of replays)
-      for (const f of replay.starts[0]?.estimate ?? []) {
-        const tokens = used.get(f.featureId);
-        if (tokens === undefined || !finished.has(f.featureId)) continue;
-        counts.features++;
-        if (tokens < f.low) counts.below++;
-        if (tokens > f.high) counts.above++;
-      }
-    rounds.set(round, counts);
-  }
-  const last = Math.max(...rounds.keys());
-  /** The rounds from `from` to `to`, both included. */
-  const sum = (from: number, to = last) =>
-    [...rounds]
-      .filter(([round]) => round >= from && round <= to)
-      .reduce((t, [, c]) => ({ features: t.features + c.features, below: t.below + c.below, above: t.above + c.above }), { features: 0, below: 0, above: 0 });
-  return { all: sum(0), window: sum(last - RANGE_WINDOW + 1), r63to68: sum(63, 68) };
-}
-
-/** Rounds of the rolling window a range backtest bounds too (#2150). */
-const RANGE_WINDOW = 6;
-const quarterBound = (features: number) => 0.25 + 2 * Math.sqrt((0.25 * 0.75) / features);
-
-describe("the size pools' ranges over the last rounds (#2150)", () => {
-  // The whole-corpus share hides a trend: rounds 63 to 68 put 24 of 60 finished features below
-  // their range (40%, above the 36.2% bound of 60), rounds 45 to 61 37 of 156 (24%). 20 of the 24
-  // were priced by the size pool, which weighs round 45's features as much as the last round's.
-  // `sizing.recencyHalfLife: 2` halves a feature's weight for every two initiatives started after
-  // its own: rounds 63 to 68 then put 20 of 60 (33.3%) below, and the whole corpus stays within
-  // its bounds. The rolling window is bounded by default too: with round 69 it is rounds 64 to
-  // 69, 16 of 59 below and 11 above, within the bounds without the weighting (12 and 18 with it).
-  // Round 73 turned the window against the weighting: rounds 68 to 73 put 27 of 72 features above
-  // their range with it (37.5%, above the 35.2% bound of 72; R73 alone 9 of 18: flatelens, the
-  // first Lua initiative, 6 of 8, evalpin 3 of 10) and 21 above, 10 below without it. The
-  // weighting stays opt-in and is not to be switched on on these figures: it fixes rounds 63 to
-  // 68 and the whole corpus, not the last six rounds.
-  test("rounds 63 to 68 miss their range above the bound by default and within it at a half-life of 2; the rolling window is bounded", () => {
-    const off = rangeMisses();
-    expect(off.r63to68.features).toBe(60);
-    expect(off.r63to68.below / off.r63to68.features).toBeGreaterThan(quarterBound(off.r63to68.features));
-    const on = rangeMisses({ recencyHalfLife: 2 });
-    for (const share of [on.r63to68, on.all]) {
-      expect(share.below / share.features).toBeLessThanOrEqual(quarterBound(share.features));
-      expect(share.above / share.features).toBeLessThanOrEqual(quarterBound(share.features));
-    }
-    expect(on.r63to68.below).toBeLessThan(off.r63to68.below);
-    // The standing guard: the last six rounds, as the whole corpus is, within the bounds by default.
-    expect(off.window.below / off.window.features).toBeLessThanOrEqual(quarterBound(off.window.features));
-    expect(off.window.above / off.window.features).toBeLessThanOrEqual(quarterBound(off.window.features));
-  }, 1200000);
-});
-
 describe("finding chains replay on recorded findings (#1981)", () => {
   // R62 md-site 8711b632 ran with chainRewrite off: six findings on `findDelimitedInline`, each the
   // next nesting of emphasis delimiter runs, and four correctives (T009-T012: 6.14M tokens, $5.92)
@@ -891,70 +747,6 @@ describe("own-plan feature need replays on recorded initiatives (#2043)", () => 
     // Before #2043: low 14,743,241, encode 1,381,658-3,513,129.
     expect(syntax?.tokens?.low).toBe(15_463_514);
     expect(syntax?.estimate.find((f) => f.featureId === "encode")).toEqual({ featureId: "encode", low: 2_101_931, high: 3_513_129 });
-  }, 600000);
-});
-
-/** Finished test tasks of a trace's initiative feature runs, with the cases their sizing reports recorded. */
-function featureTestTasks(path: string): Map<string, SizingSample[]> {
-  const { store, workspace, dispose } = openTrace(path);
-  try {
-    const cases = new Map<string, number>();
-    for (const { runId, id } of store.connection
-      .query("SELECT run_id AS runId, id FROM artifacts WHERE logical_path LIKE 'sizing/plan-%' ORDER BY created_at, id")
-      .all() as { runId: string; id: string }[])
-      for (const task of (JSON.parse(store.readArtifact(runId, id)) as Partial<SizingReport>).tasks ?? [])
-        if (task.kind === "test" && (task.cases ?? 0) > 0) cases.set(`${runId}/${task.taskId}`, task.cases ?? 0);
-    const features = new Map(
-      (store.connection.query("SELECT run_id AS runId, feature_id AS featureId FROM initiative_runs").all() as {
-        runId: string;
-        featureId: string;
-      }[]).map((r) => [r.runId, r.featureId]),
-    );
-    const byFeature = new Map<string, SizingSample[]>();
-    for (const sample of samplesFrom(join(workspace, ".baked", "workflows.sqlite"), "project")) {
-      const feature = features.get(sample.runId);
-      const count = cases.get(`${sample.runId}/${sample.taskId}`);
-      if (sample.kind !== "test" || !feature || !count) continue;
-      byFeature.set(feature, [...(byFeature.get(feature) ?? []), { ...sample, cases: count }]);
-    }
-    return byFeature;
-  } finally {
-    dispose();
-  }
-}
-
-describe("a brief's test volume replays on recorded test tasks (#2055)", () => {
-  // The traces' briefs are anonymized, so the cases each feature's sizing reports recorded stand in
-  // for the volume a brief demands. Each finished feature is priced from its initiative's other
-  // finished features (this project's runs, the rate's first basis): its test tasks' cases times
-  // the cheapest of their rates is a floor of its need, and a floor above what the feature's test
-  // tasks alone used is an overprice. A rate of single tasks would be no floor: they ran from 1,354
-  // tokens a case, so 509 cases of nodepluck floored at 0.69M of its 15.24M test tokens. Per run the
-  // floor binds: nodepluck's readcmd, 110 cases at 21,124 a case, is floored at 2.32M of the 4.04M
-  // its test tasks used and the 6.24M the feature used. Above its test tokens: 20 of 162 features.
-  test("a feature's test-volume floor stays under what its test tasks used, nodepluck's binds", () => {
-    let features = 0;
-    let above = 0;
-    let readcmd: { floor: number; tokens: number } | null = null;
-    for (const path of readdirSync(ROOT, { recursive: true, encoding: "utf8" })
-      .filter((p) => p.endsWith(".sqlite.gz"))
-      .map((p) => join(ROOT, p))) {
-      if (!replayInitiativeStarts(path).length) continue;
-      const tasks = featureTestTasks(path);
-      for (const [featureId, own] of tasks) {
-        const rate = testCaseRate([...tasks].filter(([id]) => id !== featureId).flatMap(([, s]) => s));
-        if (rate.basis !== "project") continue;
-        const cases = own.reduce((n, s) => n + (s.cases ?? 0), 0);
-        const tokens = own.reduce((n, s) => n + s.tokens, 0);
-        const floor = cases * rate.perCase.low;
-        features++;
-        if (floor > tokens) above++;
-        if (path.endsWith("nodepluck.sqlite.gz") && featureId === "readcmd") readcmd = { floor, tokens };
-      }
-    }
-    expect(features).toBeGreaterThanOrEqual(150);
-    expect(above / features).toBeLessThanOrEqual(0.25 + 2 * Math.sqrt((0.25 * 0.75) / features));
-    expect(readcmd).toEqual({ floor: 110 * 21_124, tokens: 4_044_583 });
   }, 600000);
 });
 
