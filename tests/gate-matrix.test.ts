@@ -529,7 +529,7 @@ const REPLAY_FIRST_RUN: Record<Stack, string> = {
   bun: "bun run test",
   npm: "npm run test",
   // `--maxfail=0` lifts an `-x` the project's addopts may set.
-  python: "python3 -m pytest -q --maxfail=0",
+  python: `${process.platform === "win32" ? "python" : "python3"} -m pytest -q --maxfail=0`,
   go: "go test ./...",
   rust: "cargo test --no-fail-fast",
   maven: "mvn -B -q verify --fail-at-end",
