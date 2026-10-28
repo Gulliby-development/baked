@@ -46,6 +46,7 @@ const INLINE: Record<InlineRowTest["framework"], InlineRowTest> = {
   xunit: { mode: "inline", framework: "xunit", package: "Lint.Tests", test: "Lint.Tests/RulesTests.cs" },
   rspec: { mode: "inline", framework: "rspec", test: "spec/rules_spec.rb" },
   phpunit: { mode: "inline", framework: "phpunit", package: "Lint.Tests", test: "tests/RulesTest.php" },
+  testthat: { mode: "inline", framework: "testthat", test: "tests/testthat/test-rules.R" },
 };
 
 /** A block's text with the line breaks and indentation of its own layout taken out. */
@@ -99,6 +100,11 @@ const PROJECTS: Partial<Record<InlineRowTest["framework"], { files: Record<strin
     existing: "<?php\n\nnamespace Lint\\Tests;\n\nuse PHPUnit\\Framework\\TestCase;\n\nfinal class RulesTest extends TestCase\n{\n    public static function acceptanceActual(mixed $input): mixed\n    {\n        return $input;\n    }\n}\n",
     run: [["phpunit", "tests/RulesTest.php"]],
   },
+  testthat: {
+    files: {},
+    existing: "acceptance_actual <- function(input) {\n  input\n}\n",
+    run: [["Rscript", "-e", "testthat::test_dir('tests/testthat', stop_on_failure = TRUE)"]],
+  },
 };
 
 const has = (command: string[]) => {
@@ -115,6 +121,7 @@ const AVAILABLE: Record<string, boolean> = {
   rust: has(["rustc", "--version"]) && process.platform !== "win32",
   rspec: Bun.which("rspec") !== null,
   phpunit: Bun.which("phpunit") !== null,
+  testthat: has(["Rscript", "-e", "library(testthat); library(jsonlite)"]),
 };
 
 describe("scenario: cfgquill lint R64, rows with a U+FEFF run in the project's own toolchain (#1995)", () => {
