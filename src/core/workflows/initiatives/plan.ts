@@ -4,6 +4,8 @@
  * person may apply before approving the split. Nothing here runs a model or a command.
  */
 import { z } from "zod";
+import { isCodeFile } from "../../intelligence/language-traits.js";
+import { detectLanguageFromPath } from "../../intelligence/types.js";
 import { matchGlob } from "../../platform/index.js";
 import { hashJson } from "../../specs/hash.js";
 import { canHold, deliverableKind, normalizePath } from "../../verification/deliverable-paths.js";
@@ -386,6 +388,25 @@ export function boundaryPathCounts(
       return [f.id, { paths: paths.length - placeholders - skeleton, placeholders, skeleton }];
     }),
   );
+}
+
+/**
+ * The language most code paths of the plan's boundaries are written in, the first of them on a
+ * tie; null when no boundary names a code file. The size pool reads it to price a language it has
+ * not measured yet (#2398).
+ */
+export function planLanguage(plan: Pick<InitiativePlan, "features">): string | null {
+  const counts = new Map<string, number>();
+  for (const feature of plan.features)
+    for (const path of feature.boundary.paths)
+      if (isCodeFile(path)) {
+        const language = detectLanguageFromPath(path);
+        counts.set(language, (counts.get(language) ?? 0) + 1);
+      }
+  let best: string | null = null;
+  for (const [language, count] of counts)
+    if (best === null || count > (counts.get(best) ?? 0)) best = language;
+  return best;
 }
 
 /** The boundary patterns of `a` that meet one of `b`'s. */

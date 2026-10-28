@@ -221,5 +221,33 @@
   "R74/callmend.sqlite.gz#callmend": {
     "newPoolBoundStops": 1,
     "reason": "#2280: initiative-pool-growth (shadow) replays one feature run whose recorded bounds pass the initiative pool (30.04M tokens after the split-approval extension). The replay record is true; the initiative ended at 29.03M of that pool and USD 26.56 of the 30 cap, so nothing was exceeded. Same shape as the R73 evalpin delivery entry above (the last feature's room is not covered by chargeHold); not analysed further in R74."
+  },
+  "R74/ladlemath.sqlite.gz#ladlemath": {
+    "newStartStops": 1,
+    "reason": "Start gate (shadow) parks inspect, the 9th feature, after 3 accepted: tokens expected 29.4M (25.3M-36.3M) against the 30.0M pool with 13.0M used, and the pool notice's measured 2.7x need of 38.0M tokens (suggested extension 38.2M, what the $30 cap pays for). The record is true: the pool really ran out later (kitchen, recipe and inspect were blocked on the shared active time and the loop extended the pool to 40.1M tokens); the initiative finished at 35.0M tokens and USD 26.49 of the 30 cap, so a park at inspect's start would have stopped a run that the dollar cap allowed to finish. It stays shadow (no run was parked); a promotion of the start gate must not count this as a clean round."
+  },
+  "R74/ladlemath.sqlite.gz#f373335e-31a0-4ff6-87bd-0852e2e1a631": {
+    "newActiveTimes": 2,
+    "reason": "#2336: the active-time cap is sized at the initiative's own pace, the median tokens per active minute of its finished feature runs, where that is slower than the history's; the round sized at the history's (the trace was recorded before #2336 merged). The cap grows (sizing/progress-3347e94b 62 min at 133k to 145 min at 42k; sizing/progress-ba691733 78 min at 133k to 150 min at 42k)."
+  },
+  "R74/ladlemath.sqlite.gz#31ed5904-8343-4bea-bb72-076642d2186b": {
+    "newActiveTimes": 1,
+    "reason": "#2336: the active-time cap is sized at the initiative's own pace, the median tokens per active minute of its finished feature runs, where that is slower than the history's; the round sized at the history's (the trace was recorded before #2336 merged). The cap grows (sizing/progress-3e891ace 78 min at 132k to 96 min at 65k)."
+  },
+  "R74/ladlemath.sqlite.gz#b88d99d9-2b0e-439a-bd81-59757d99add4": {
+    "newActiveTimes": 2,
+    "reason": "#2336: the active-time cap is sized at the initiative's own pace, the median tokens per active minute of its finished feature runs, where that is slower than the history's; the round sized at the history's (the trace was recorded before #2336 merged). The cap grows (sizing/plan-0.json 21 min at 134k to 35 min at 65k; sizing/progress-8cc61501 51 min at 132k to 59 min at 59k)."
+  },
+  "R74/ladlemath.sqlite.gz#ec1afdc2-2e2e-4f86-b16c-94f0d2e06f89": {
+    "newActiveTimes": 1,
+    "reason": "#2336: the active-time cap is sized at the initiative's own pace, the median tokens per active minute of its finished feature runs, where that is slower than the history's; the round sized at the history's (the trace was recorded before #2336 merged). The cap grows (sizing/plan-0.json 50 min at 132k to 53 min at 59k)."
+  },
+  "R74/ladlemath.sqlite.gz#6382f4d6-b1cf-48d8-85be-ed867dc064a7": {
+    "newActiveTimes": 1,
+    "reason": "#2336: the active-time cap is sized at the initiative's own pace, the median tokens per active minute of its finished feature runs, where that is slower than the history's; the round sized at the history's (the trace was recorded before #2336 merged). The cap grows (sizing/plan-0.json 30 min at 132k to 44 min at 65k)."
+  },
+  "R74/ladlemath.sqlite.gz#209bc8a0-7c09-4be5-afb0-259105b887df": {
+    "newActiveTimes": 1,
+    "reason": "#2336: the active-time cap is sized at the initiative's own pace, the median tokens per active minute of its finished feature runs, where that is slower than the history's; the round sized at the history's (the trace was recorded before #2336 merged). The cap grows (sizing/plan-0.json 60 min at 132k to 89 min at 65k)."
   }
 }
