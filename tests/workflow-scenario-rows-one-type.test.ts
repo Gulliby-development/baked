@@ -174,13 +174,14 @@ describe("the other frameworks add no type, so their block still ends the file (
     { mode: "inline", framework: "rspec", test: "spec/options_spec.rb" },
     { mode: "inline", framework: "testthat", test: "tests/testthat/test-options.R" },
     { mode: "inline", framework: "busted", test: "spec/options_spec.lua" },
+    { mode: "inline", framework: "minitest", test: "test/options_test.rb" },
   ];
   for (const other of others)
     test(other.framework, () => {
       const file = inlineRowFile(other, rows);
       expect(file.nest).toBeUndefined();
       const written = withInlineRows(other.framework === "go" ? "package lanes\n" : "", file);
-      expect(written.trimEnd()).toEndWith(`${other.framework === "busted" ? "--" : ["pytest", "rspec", "testthat"].includes(other.framework) ? "#" : "//"} END acceptance rows`);
+      expect(written.trimEnd()).toEndWith(`${other.framework === "busted" ? "--" : ["pytest", "rspec", "minitest", "testthat"].includes(other.framework) ? "#" : "//"} END acceptance rows`);
     });
 });
 
