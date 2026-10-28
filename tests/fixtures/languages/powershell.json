@@ -68,6 +68,8 @@
       "Invoke-Formatter: formatter"
     ],
     "sortedLists": null,
-    "dependencyDirs": null
+    "dependencyDirs": null,
+    "dependencyPrepare": null,
+    "worktreePathLimits": null
   }
 }

@@ -50,6 +50,8 @@
     "sortedLists": null,
     "dependencyDirs": [
       "deps: linked"
-    ]
+    ],
+    "dependencyPrepare": null,
+    "worktreePathLimits": null
   }
 }

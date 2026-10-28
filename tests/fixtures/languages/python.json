@@ -91,6 +91,8 @@
     "dependencyDirs": [
       ".venv: linked",
       "venv: linked"
-    ]
+    ],
+    "dependencyPrepare": null,
+    "worktreePathLimits": null
   }
 }
