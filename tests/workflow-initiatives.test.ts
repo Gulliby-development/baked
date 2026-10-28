@@ -2040,6 +2040,57 @@ process.exit(offenses.length ? 1 : 0);`;
       expect(t.workflows.store.eventsOfType(t.featureOf(view, "message").runId ?? "", "decision.would_stop")).toHaveLength(0);
     }, 180_000);
 
+    // #2183: under `upstreamAmendments: "write"` a gap of one symbol in one file is written by the
+    // asking feature: message's boundary takes base.txt, its run plans again on base's accepted
+    // result with a task that writes base.txt, and base does not run again.
+    test("on with upstream amendments \"write\", message writes the missing symbol into base.txt and base runs once", async () => {
+      class WritingExecutor extends AheadExecutor {
+        /** message's own boundary as each of its plans saw it. */
+        bounds: string[][] = [];
+        override async execute(request: ExecutionRequest) {
+          const state = request.profile.output === "plan" ? this.workflows?.store.state(request.runId) : null;
+          const bounds = state?.initiativeBounds;
+          if (bounds?.featureId === "message") {
+            const own = bounds.features.find((f) => f.id === "message")?.paths ?? [];
+            this.bounds.push(own);
+            // A plan may declare the write only once the boundary holds the file.
+            if (own.includes("base.txt")) this.extraWrites.message = "base.txt";
+          }
+          return super.execute(request);
+        }
+      }
+      const t = setup(chain, 100, (root) => new WritingExecutor(root, chain));
+      repository(t.root);
+      t.executor.initiatives = t.initiatives;
+      t.executor.workflows = t.workflows;
+      t.executor.requirements.message = "Message delegates to Base.isReady for the value.";
+      Object.assign(t.workflows.config.workflows ?? {}, { planAhead: true, upstreamAmendments: "write" });
+      await t.start({ plan: chain, policy: { ...policy, executionMode: "worktree" }, featureAutoApproval: { maxTasks: 5, maxFiles: 5 }, budget: { maxTotalTokens: 6_000_000, maxAgentCalls: 2000, maxActiveMs: 6_000_000 } });
+      await t.approveSplit();
+      let view = await t.drive();
+      for (let i = 0; i < 4 && view.status !== "completed"; i++) {
+        const waiting = view.pendingDecisions.find((d) => d.kind === "approval");
+        if (!waiting?.featureId) break;
+        await t.approveFeature(waiting.featureId);
+        view = await t.drive();
+      }
+      expect(view.status).toBe("completed");
+      // base ran once; message's held run was replaced by a fork that plans again.
+      const links = t.initiatives.store.links(view.initiativeId);
+      expect(links.filter((l) => l.feature_id === "base").map((l) => l.origin)).toEqual(["start"]);
+      expect(links.filter((l) => l.feature_id === "message").map((l) => l.origin)).toEqual(["start", "rebase"]);
+      expect(t.featureOf(view, "base").amendments).toEqual([
+        { from: "message", answer: "write", gaps: [{ ref: "FR-001", symbol: "Base.isReady", featureId: "base", path: "base.txt" }] },
+      ]);
+      expect(t.executor.bounds.at(-1)).toEqual(["message.txt", "base.txt"]);
+      // base wrote base.txt once, and message wrote it once after the amendment.
+      expect(t.executor.writes["base.txt"]).toBe(2);
+      const message = t.featureOf(view, "message").runId ?? "";
+      expect(t.workflows.store.state(message).graph?.tasks.flatMap((task) => task.writes.map((w) => w.path))).toContain("base.txt");
+      // Tiered approval allowed the write: no person was asked for message's plan.
+      expect(t.workflows.store.requests(message).find((r) => r.kind === "approval")?.actor).toBe("auto-approval");
+    }, 180_000);
+
     // Bench round 60, wheeltags (#1932): every planned-ahead feature's first plan was refused for
     // read hints on its upstream features' files, which its provisional base did not hold yet.
     test("on, message's plan may read base's files before base has written them", async () => {

@@ -621,6 +621,76 @@ describe("scenario: flatelens R73 commands' bounds stay inside the pool and the 
   });
 });
 
+describe("scenario: R73 evalpin's last feature grows no further than the pool left (#2294)", () => {
+  const LIMIT = 23_900_000;
+  const OTHERS = 20_594_626;
+  const SHARE = LIMIT - OTHERS;
+  const plan: InitiativePlan = {
+    schemaVersion: 1, title: "Evalpin", goals: ["Create the CLI"], completionCriteria: ["The CLI is ready"],
+    features: ["results", "commands", "delivery"].map((id) => ({
+      id, title: id, size: "medium", workflow: "sdd", boundary: { scope: id, paths: [`${id}.txt`] },
+      contract: `${id}.txt contains ready`, dependsOn: [], mandatory: true,
+    })),
+  };
+
+  test("with no feature waiting, delivery's refresh keeps its 3.31M bounds and records no would-stop", async () => {
+    const fixture = workflowFixture();
+    fixture.config.defaultModel = "anthropic/claude-sonnet-4-6";
+    cleanups.push(async () => fixture.dispose());
+    const initiatives = new InitiativeService(fixture.service);
+    const policy: RunPolicy = { ...fixturePolicy, maxAgentCalls: 1000, costForecast: "off", sizing: { maxRunTokens: 8_000_000, extendToTokens: 12_000_000 } };
+    const view = await initiatives.start({ commandId: newId(), initiativeId: "evalpin", prompt: "Create the CLI", plan, policy, model: "anthropic/claude-sonnet-4-6", ownerLabel: "test", keepFeatures: true, featureAutoApproval: null, budget: { maxTotalTokens: LIMIT, maxAgentCalls: 1000, maxActiveMs: 18_000_000 } });
+    const request = view.pendingDecisions.find((d) => d.scope === "initiative")!;
+    await initiatives.approve("evalpin", { commandId: newId(), expectedRevision: view.revision }, { requestId: request.requestId, digest: request.digest });
+    const service = initiatives as unknown as { startFeature(id: string, featureId: string): Promise<boolean>; refreshGrowth(id: string, featureId: string, runId: string): void; view(id: string): InitiativeView };
+    expect(await service.startFeature("evalpin", "delivery")).toBe(true);
+    const runId = initiatives.view("evalpin").features.find((f) => f.id === "delivery")!.runId!;
+    const store = fixture.service.store;
+    // delivery's start in R73: its share is all the pool had left after the others' 20.59M.
+    const started = JSON.parse(store.run(runId).policy_json) as RunPolicy;
+    store.setPolicy(runId, { ...started, maxTotalTokens: SHARE, sizing: { ...started.sizing, maxRunTokens: SHARE, extendToTokens: SHARE } });
+    // Every other feature is accepted: none waits for a run, so none has an estimate.
+    const real = service.view.bind(initiatives);
+    service.view = (id: string) => {
+      const v = real(id);
+      return {
+        ...v,
+        features: v.features.map((f) => ({ ...f, share: null, need: null })),
+        budget: {
+          ...v.budget,
+          used: { ...v.budget.used, tokens: OTHERS },
+          reserved: { ...v.budget.reserved, tokens: SHARE },
+          remaining: { ...v.budget.remaining, tokens: 0 },
+        },
+      } as InitiativeView;
+    };
+    service.refreshGrowth("evalpin", "delivery", runId);
+    const after = JSON.parse(store.run(runId).policy_json) as RunPolicy;
+    // The rule before #2294 took the base ceilings: 8M and 12M with 3.31M left.
+    expect(after.sizing).toMatchObject({ maxRunTokens: SHARE, extendToTokens: SHARE });
+    const wouldStops = store.eventsOfType(runId, "decision.would_stop").filter((e) => e.type === "decision.would_stop" && e.payload.reason === "initiative-pool-growth");
+    expect(wouldStops).toHaveLength(0);
+  });
+
+  test("an unestimated plan's first start grows to its share, not the base ceilings", async () => {
+    const fixture = workflowFixture();
+    fixture.config.defaultModel = "anthropic/claude-sonnet-4-6";
+    cleanups.push(async () => fixture.dispose());
+    const initiatives = new InitiativeService(fixture.service);
+    const policy: RunPolicy = { ...fixturePolicy, maxAgentCalls: 1000, costForecast: "off", sizing: { maxRunTokens: 8_000_000, extendToTokens: 12_000_000 } };
+    const view = await initiatives.start({ commandId: newId(), initiativeId: "evalpin", prompt: "Create the CLI", plan, policy, model: "anthropic/claude-sonnet-4-6", ownerLabel: "test", keepFeatures: true, featureAutoApproval: null, budget: { maxTotalTokens: 3_000_000, maxAgentCalls: 1000, maxActiveMs: 18_000_000 } });
+    const request = view.pendingDecisions.find((d) => d.scope === "initiative")!;
+    await initiatives.approve("evalpin", { commandId: newId(), expectedRevision: view.revision }, { requestId: request.requestId, digest: request.digest });
+    const service = initiatives as unknown as { startFeature(id: string, featureId: string): Promise<boolean> };
+    expect(initiatives.view("evalpin").features.every((f) => f.need === null)).toBe(true);
+    expect(await service.startFeature("evalpin", "commands")).toBe(true);
+    const runId = initiatives.view("evalpin").features.find((f) => f.id === "commands")!.runId!;
+    const started = JSON.parse(fixture.service.store.run(runId).policy_json) as RunPolicy;
+    // results and delivery reserve their whole 1M shares: commands grows to the 1M left of the 3M pool.
+    expect(started.sizing).toMatchObject({ maxRunTokens: 1_000_000, extendToTokens: 1_000_000 });
+  });
+});
+
 describe("replay: initiative-pool-growth on the recorded bounds (#2280)", () => {
   const trace = (round: string, app: string) => join(import.meta.dir, "fixtures", "bench-traces", round, `${app}.sqlite.gz`);
 
