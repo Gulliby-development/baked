@@ -172,7 +172,43 @@ export function misquoteFallback(
   continued: boolean,
 ): MisquoteFallback | null {
   if (record.apply && record.checks === "passed") return null;
-  return record.sites.length && !continued ? "continue" : "session";
+  return boundedFallback(record.sites.length > 0, continued);
+}
+
+/** The one fallback rule: a settle that names what to change continues once at the bounded cap. */
+const boundedFallback = (named: boolean, continued: boolean): MisquoteFallback =>
+  named && !continued ? "continue" : "session";
+
+/**
+ * The other settles of a spec conflict that change one assertion (#2181): the audit-verified rows
+ * win (`assumptions/conflicts/<task>-audited.json`) or the request wins
+ * (`assumptions/conflicts/<task>-request.json`). Each reopened the task at its full cap.
+ */
+export type SettleKind = "audited" | "request";
+export const SETTLE_CONTINUE_KIND = "settle-continue";
+
+/** What `conflicts/misquote/<task>-<settle>.json` records: the settle and its fallback. */
+export interface SettleContinueRecord {
+  taskId: string;
+  settle: SettleKind;
+  /** `shadow`: recorded only, the full session opens; `on`: the fallback applies. */
+  mode: "shadow" | "on";
+  /** The criteria the settle names (overrules, or keeps as written). */
+  criterionIds: string[];
+  fallback: MisquoteFallback;
+}
+
+/**
+ * The fallback of an audited-row or request-wins settle (#2181), by the rule of a misquote's: a
+ * settle that names one criterion changes one assertion, so the task's next attempt continues at
+ * `MISQUOTE_CONTINUE_STEPS` / `MISQUOTE_CONTINUE_TOKENS` with the settlement as its finding. A
+ * settle of several criteria, or of a task that already continued, opens the full session.
+ */
+export function settleFallback(
+  criterionIds: readonly string[],
+  continued: boolean,
+): MisquoteFallback {
+  return boundedFallback(new Set(criterionIds).size === 1, continued);
 }
 
 /** The one-line finding a misquote continuation gets: the criterion, its literal, the test's. */

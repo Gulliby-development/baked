@@ -247,11 +247,14 @@ export interface InitiativeEstimate {
    * The re-forecast once features are accepted (#1312): tokens used so far, how many features are
    * accepted, and the blended measured-to-planned ratio that scales the rest. Null until three
    * non-skeleton features are accepted. `bySize` applies the same sampling rule per size (#1338).
+   * `rawRatio` is the measured-to-planned ratio itself, unblended and capped like the blend, which
+   * only advice reads (#2186); null when `ratio` is.
    */
   progress: {
     spent: number;
     accepted: number;
     ratio: number | null;
+    rawRatio: number | null;
     bySize: Partial<Record<FeatureSize, number>>;
   };
   /**
@@ -636,6 +639,7 @@ function reforecast(
 ): {
   features: FeatureEstimate[];
   ratio: number | null;
+  rawRatio: number | null;
   bySize: Partial<Record<FeatureSize, number>>;
   perCriterion: TokenRange | null;
   perPath: TokenRange | null;
@@ -656,6 +660,15 @@ function reforecast(
     return calibrationRatio(measured, forecast, features.length);
   };
   const ratio = ratioOf(representative);
+  // The same ratio unblended, for advice only (#2186): decisions keep the blend.
+  const rawRatio =
+    ratio === null
+      ? null
+      : calibrationRatio(
+          representative.reduce((total, f) => total + used(f).spent, 0),
+          representative.reduce((total, f) => total + middle(f.tokens), 0),
+          Number.MAX_SAFE_INTEGER,
+        );
   // Accepted features against what their own plans expected: the ratio that scales the plan of a
   // feature still to run (`ownPlanNeed`).
   const withPlan = representative.filter((f) => (used(f).planned?.expected ?? 0) > 0);
@@ -808,6 +821,7 @@ function reforecast(
   return {
     features,
     ratio,
+    rawRatio,
     bySize,
     perCriterion,
     perPath,
@@ -893,6 +907,7 @@ export function estimateInitiative(input: {
   const {
     features,
     ratio,
+    rawRatio,
     bySize,
     perCriterion,
     perPath,
@@ -1036,7 +1051,7 @@ export function estimateInitiative(input: {
     budget: { maxTotalTokens: input.maxTotalTokens, fits },
     basis,
     features: timed.features,
-    progress: { spent, accepted, ratio, bySize },
+    progress: { spent, accepted, ratio, rawRatio, bySize },
     perCriterion,
     perPath,
     perPathSamples,

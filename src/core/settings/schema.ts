@@ -1169,6 +1169,28 @@ export const SETTINGS: readonly SettingDefinition[] = [
     ],
   },
   {
+    id: "quality.exactTextLiteral",
+    page: "code-quality",
+    section: "Workflow runs",
+    label: "Exact text as a ready string literal",
+    help: "When a test compares a section the request gives verbatim exactly (a README section, a help text), the host writes the section once as a string literal of the test's language, with every quote, backslash and interpolation escaped, and gives it to the test task to paste instead of retyping the text.",
+    scopes: BOTH,
+    type: "enum",
+    default: "off",
+    options: [
+      {
+        value: "off",
+        label: "off",
+        help: "The test task writes the expected text itself.",
+      },
+      {
+        value: "on",
+        label: "on",
+        help: "The test task gets the section as a ready string literal of its language.",
+      },
+    ],
+  },
+  {
     id: "quality.correctiveDefer",
     page: "code-quality",
     section: "Workflow runs",

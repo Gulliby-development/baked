@@ -76,6 +76,7 @@ import {
   wholeUnitFixerCommand,
 } from "../src/core/workflows/check-policy.js";
 import { buildWrapper, cmakeGates, detectGates, executeGate, type GateToolchain } from "../src/core/workflows/gates.js";
+import { committedTreeChecks } from "../src/core/workflows/committed-tree.js";
 import { fileScopedFormat, formatWrittenChecks } from "../src/core/workflows/format-written.js";
 import { type LayoutResult, layoutVerdict } from "../src/core/workflows/layout-check.js";
 import { addedDependencies, checkDependencies } from "../src/core/workflows/quality/dependencies.js";
@@ -243,6 +244,8 @@ describe("host-written acceptance rows in the case-walk and mutation gates (#159
     junit: { harness: "tests/Harness.java", test: "tests/RowsTest.java", package: "tests" },
     rust: { harness: "tests/harness.rs", test: "tests/rows.rs" },
     xunit: { harness: "tests/Harness.cs", test: "tests/RowsTest.cs", package: "Tests" },
+    rspec: { harness: "tests/harness.rb", test: "tests/rows_spec.rb" },
+    phpunit: { harness: "tests/Harness.php", test: "tests/RowsTest.php", package: "App.Tests" },
   } as const;
   test.each(Object.keys(layouts) as (keyof typeof layouts)[])("%s retains every case in its JSON data and keeps generated tests out of mutation proposals", async (framework) => {
     const root = mkdtempSync(join(tmpdir(), "baked-row-gate-"));
@@ -300,6 +303,8 @@ describe("gate matrix: inline rows block holds its own cells (#1997)", () => {
     junit: { mode: "inline", framework: "junit", package: "com.ex.calc", test: "src/test/java/com/ex/calc/CalcTest.java" },
     rust: { mode: "inline", framework: "rust", test: "tests/calc.rs" },
     xunit: { mode: "inline", framework: "xunit", package: "Calc.Tests", test: "Calc.Tests/CalcTest.cs" },
+    rspec: { mode: "inline", framework: "rspec", test: "spec/calc_spec.rb" },
+    phpunit: { mode: "inline", framework: "phpunit", package: "App.Tests", test: "tests/CalcTest.php" },
   };
   const shapes: [string, unknown][] = [
     ["two-line CRLF text", ["[a]\r\nb=1\r\n", {}]],
@@ -833,6 +838,29 @@ describe("gate matrix: baseline failure outside the plan (#2215)", () => {
     expect(decide(output(["[Correctable] ", "[Correctable] ", "[Correctable] "]))).toBe("repair");
     expect(decide(output(["[Correctable] ", ""]))).toBe("would_stop");
   });
+});
+
+// #2225 (R70 namesound, follow-up of #2214): rubocop passed on a CRLF working tree whose
+// committed LF tree failed it. After a feature's commit the host runs each stack's required
+// file-local linters and formatters once more on a clean worktree of the commit; test suites and
+// whole-unit analyzers stay at the checks stage.
+const COMMITTED_TREE: Record<Stack, string[]> = {
+  bun: ["lint"],
+  npm: ["lint"],
+  python: ["ruff", "ruff-format"],
+  go: ["gofmt"],
+  // clippy and cargo fmt are whole-unit.
+  rust: [],
+  maven: [],
+  dotnet: ["dotnet-format"],
+};
+
+describe("gate matrix: checks run again on the committed tree (#2225)", () => {
+  for (const stack of Object.keys(FIXTURES) as Stack[])
+    cell(stack, "checks run again on the committed tree", () => {
+      const checks = detectGates(project(FIXTURES[stack].files)).map((s) => ({ ...s.check, required: true }));
+      expect([stack, committedTreeChecks(checks).map((c) => c.id)]).toEqual([stack, COMMITTED_TREE[stack]]);
+    });
 });
 
 // #1749: a Gradle project got no toolchain gate, a Maven project with a wrapper got `mvn` even
@@ -2891,6 +2919,22 @@ describe("gate matrix: format-written check on a dirty repository (#1837)", () =
   cell("bun", "biome, dprint, gofmt and dotnet format take no range: an edited file is not checked", () => {
     expect(edited({ "package.json": pkg, "bun.lock": "", "biome.json": "{}", "src/a.ts": "a\nb\n" }, "src/a.ts", "a\n")).toEqual([]);
     expect(edited({ "go.mod": "module p\n\ngo 1.22\n", "a.go": "package p\nvar x=1\n" }, "a.go", "package p\n")).toEqual([]);
+  });
+  // #2243: xmlvet R71 filled R/cli.R, a stub the skeleton wrote, and shipped it unstyled: an edited
+  // file was not checked by a formatter without a range form, and every stub a feature fills is an edit.
+  cell("bun", "format-written holds a skeleton stub filled by a later feature; a real edit stays range-only (#2243)", () => {
+    const ids = (files: Record<string, string>, path: string, before: string) => edited(files, path, before).map(([id, command]) => [id, command]);
+    const biome = { "package.json": pkg, "bun.lock": "", "biome.json": "{}", "src/cli.ts": "export const a=1\n" };
+    expect(ids(biome, "src/cli.ts", "// Filled by the cli feature.\n")).toEqual([["format-written", "bunx biome format src/cli.ts"]]);
+    expect(ids(biome, "src/cli.ts", "/* stub */\n\n")).toEqual([["format-written", "bunx biome format src/cli.ts"]]);
+    expect(ids(biome, "src/cli.ts", "export const b = 2;\n")).toEqual([]);
+    const dprint = { "package.json": pkg, "bun.lock": "", "dprint.json": "{}", "src/cli.ts": "export const a=1\n" };
+    expect(ids(dprint, "src/cli.ts", "// Filled by the cli feature.\n").map(([id]) => id)).toEqual(["format-written"]);
+    expect(ids(dprint, "src/cli.ts", "export const b = 2;\n")).toEqual([]);
+    const styler = { DESCRIPTION: "Package: xmlvet\n", "R/cli.R": "run <- function(x){\nx}\n" };
+    expect(ids(styler, "R/cli.R", "# Filled by the cli feature.\n").map(([id]) => id)).toEqual(["styler-written"]);
+    expect(ids(styler, "R/cli.R", "")).toHaveLength(1);
+    expect(ids(styler, "R/cli.R", "run <- function(x) x\n")).toEqual([]);
   });
   cell("dotnet", "dotnet format left out: --include the written files, fixer dotnet format", () => {
     const files = { "App.csproj": "<Project Sdk=\"Microsoft.NET.Sdk\" />", "A.cs": "class A {}\n" };
