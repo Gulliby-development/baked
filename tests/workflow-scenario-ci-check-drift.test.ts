@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { ciCheckDrift, ciCheckDriftSummary, fileGateCommands, toolCommand } from "../src/core/workflows/ci-check-drift.js";
+import { ciCheckDrift, ciCheckDriftSummary, fileGateCommands, type ScriptTables, scriptTables, toolCommand } from "../src/core/workflows/ci-check-drift.js";
 import type { RunPolicy, TaskGraph } from "../src/core/workflows/schemas.js";
 import { newId } from "../src/core/workflows/store.js";
 import type { ExecutionRequest } from "../src/core/workflows/types.js";
@@ -100,33 +100,37 @@ describe("ciCheckDrift: CI commands against the configured checks (#2284)", () =
   });
 });
 
-/** A `cargo` stand-in that passes, so the clippy check runs without a Rust toolchain. */
-function cargoShim(): string {
+/** A `cargo` (or other program) stand-in that passes, so a check runs without its toolchain. */
+function cargoShim(program = "cargo"): string {
   const bin = mkdtempSync(join(tmpdir(), "baked-cargo-shim-"));
   cleanups.push(() => rmSync(bin, { recursive: true, force: true }));
-  const file = join(bin, process.platform === "win32" ? "cargo.cmd" : "cargo");
+  const file = join(bin, process.platform === "win32" ? `${program}.cmd` : program);
   writeFileSync(file, process.platform === "win32" ? "@exit /b 0\r\n" : "#!/bin/sh\nexit 0\n");
   if (process.platform !== "win32") chmodSync(file, 0o755);
   return file;
 }
 
-/** The fixture flow, whose one task also writes the delivered CI workflow. */
+/** The fixture flow, whose one task also writes the delivered CI workflow (or other files). */
 class DeliveryExecutor extends FixtureExecutor {
+  private files: Record<string, string>;
   constructor(
     private workspace: string,
-    private ci: string,
+    files: string | Record<string, string>,
   ) {
     super(workspace);
+    this.files = typeof files === "string" ? { [CI]: files } : files;
   }
   override async execute(request: ExecutionRequest) {
     const result = await super.execute(request);
     if (request.profile.output === "plan") {
       const graph = (result.output as { taskGraph: TaskGraph }).taskGraph;
-      graph.tasks[0]?.writes.push({ path: CI, action: "create" });
+      for (const path of Object.keys(this.files)) graph.tasks[0]?.writes.push({ path, action: "create" });
     }
     if (request.profile.output === "implementation") {
-      mkdirSync(join(this.workspace, ".github", "workflows"), { recursive: true });
-      writeFileSync(join(this.workspace, CI), this.ci);
+      for (const [path, text] of Object.entries(this.files)) {
+        mkdirSync(join(this.workspace, path, ".."), { recursive: true });
+        writeFileSync(join(this.workspace, path), text);
+      }
     }
     return result;
   }
@@ -187,5 +191,144 @@ describe("scenario: a run delivers a ci.yml whose clippy no check runs (#2284)",
     const { final, wouldStops } = await deliver(workflow("cargo clippy --offline -- -D warnings"));
     expect(wouldStops).toEqual([]);
     expect(final.status).toBe("completed");
+  });
+});
+
+// #2416, R76 url-shortener: the README said `bun run test`, package.json had `"test": "bun test"`
+// and the run's check was `bun test`; the reason read the README's tool as `bun run test` and
+// recorded a false would-stop with no check. Script runners now resolve through the script tables.
+const URL_SHORTENER_PACKAGE = { "package.json": JSON.stringify({ name: "url-shortener", scripts: { test: "bun test", typecheck: "tsc --noEmit", lint: "biome check ." } }) };
+const tablesFrom =
+  (byDir: Record<string, Record<string, string>>) =>
+  (dir: string): ScriptTables =>
+    scriptTables((name) => byDir[dir]?.[name] ?? null);
+const readme = (...lines: string[]) => `# project\n\n## Development\n\n\`\`\`sh\n${lines.join("\n")}\n\`\`\`\n`;
+
+describe("ciCheckDrift: script runners resolve through the project's scripts (#2416)", () => {
+  test("R76 url-shortener: README `bun run test` with \"test\": \"bun test\" against a `bun test` check records nothing", () => {
+    const scripts = tablesFrom({ ".": URL_SHORTENER_PACKAGE });
+    expect(ciCheckDrift([{ path: "README.md", text: readme("bun install", "bun run test", "bun run dev") }], [check("tests", "bun test")], scripts)).toEqual([]);
+  });
+
+  test("npm run lint with \"lint\": \"biome check .\" against a biome check, and the other way round", () => {
+    const scripts = tablesFrom({ ".": URL_SHORTENER_PACKAGE });
+    expect(ciCheckDrift([{ path: CI, text: workflow("npm run lint") }], [check("lint", "biome check .")], scripts)).toEqual([]);
+    expect(ciCheckDrift([{ path: CI, text: workflow("npx biome check .", "bunx tsc --noEmit") }], [check("lint", "npm run lint"), check("types", "bun run typecheck")], scripts)).toEqual([]);
+  });
+
+  test("a script that adds --max-warnings 0 the check lacks is a drift naming it and the script", () => {
+    const scripts = tablesFrom({ ".": { "package.json": JSON.stringify({ scripts: { lint: "eslint . --max-warnings 0" } }) } });
+    const drift = ciCheckDrift([{ path: CI, text: workflow("npm run lint") }], [check("lint", "npx eslint .")], scripts);
+    expect(drift).toEqual([{ file: CI, command: "npm run lint", tool: "eslint", script: "eslint . --max-warnings 0", check: { id: "lint", command: "npx eslint ." }, missing: ["--max-warnings", "0"] }]);
+    expect(ciCheckDriftSummary(drift[0]!)).toContain('runs "npm run lint" (script: "eslint . --max-warnings 0"), but check lint runs "npx eslint ." without --max-warnings 0');
+    // Words after the script name are the script's words too.
+    const passed = ciCheckDrift([{ path: CI, text: workflow("npm run lint -- --max-warnings 0") }], [check("lint", "npm run lint")], tablesFrom({ ".": { "package.json": JSON.stringify({ scripts: { lint: "eslint ." } }) } }));
+    expect(passed.map((d) => [d.tool, d.check?.id, d.missing])).toEqual([["eslint", "lint", ["--max-warnings", "0"]]]);
+  });
+
+  test("a script the host cannot read records nothing: unknown script, no package.json, several commands", () => {
+    const tests = [check("tests", "bun test")];
+    expect(ciCheckDrift([{ path: CI, text: workflow("npm run test:e2e") }], tests, tablesFrom({ ".": URL_SHORTENER_PACKAGE }))).toEqual([]);
+    expect(ciCheckDrift([{ path: "README.md", text: readme("bun run test") }], tests)).toEqual([]);
+    const compound = tablesFrom({ ".": { "package.json": JSON.stringify({ scripts: { test: "tsc && vitest run" } }) } });
+    expect(ciCheckDrift([{ path: CI, text: workflow("npm test") }], tests, compound)).toEqual([]);
+  });
+
+  test("a resolved gate script no check runs is still a drift with no check", () => {
+    const drift = ciCheckDrift([{ path: CI, text: workflow("bun run typecheck") }], [check("tests", "bun test")], tablesFrom({ ".": URL_SHORTENER_PACKAGE }));
+    expect(drift).toEqual([{ file: CI, command: "bun run typecheck", tool: "tsc", script: "tsc --noEmit", check: null, missing: [] }]);
+  });
+
+  test.each([
+    ["npm", "npm run test", "npm test"],
+    ["npm run-script", "npm run-script test", "npm test"],
+    ["npm test", "npm test", "npm run test"],
+    ["pnpm", "pnpm run test", "pnpm test"],
+    ["yarn", "yarn run test", "yarn test"],
+    ["bun", "bun run test", "npm test"],
+  ])("package.json scripts through %s: %s against a check of the underlying runner, and %s", (_name, command, other) => {
+    const scripts = tablesFrom({ ".": { "package.json": JSON.stringify({ scripts: { test: "vitest run --coverage" } }) } });
+    expect(ciCheckDrift([{ path: CI, text: workflow(command, other) }], [check("tests", "npx vitest run --coverage")], scripts)).toEqual([]);
+    // The script without the check's coverage is fine (the check is stricter); with more, a drift.
+    const stricter = tablesFrom({ ".": { "package.json": JSON.stringify({ scripts: { test: "vitest run --coverage --bail 1" } }) } });
+    expect(ciCheckDrift([{ path: CI, text: workflow(command) }], [check("tests", "npx vitest run --coverage")], stricter).map((d) => d.missing)).toEqual([["--bail", "1"]]);
+  });
+
+  test("bun test is Bun's own runner, never the test script", () => {
+    const scripts = tablesFrom({ ".": { "package.json": JSON.stringify({ scripts: { test: "vitest run" } }) } });
+    expect(ciCheckDrift([{ path: CI, text: workflow("bun test --coverage") }], [check("tests", "bun test")], scripts).map((d) => [d.tool, d.missing])).toEqual([["bun test", ["--coverage"]]]);
+  });
+
+  test("a check's own cwd decides its package.json", () => {
+    const scripts = tablesFrom({ ".": { "package.json": JSON.stringify({ scripts: { lint: "eslint ." } }) }, web: { "package.json": JSON.stringify({ scripts: { lint: "biome check ." } }) } });
+    const drift = ciCheckDrift([{ path: CI, text: workflow("npx biome check . --error-on-warnings") }], [{ ...check("web-lint", "npm run lint"), cwd: "web" }], scripts);
+    expect(drift.map((d) => [d.tool, d.check?.id, d.missing])).toEqual([["biome check", "web-lint", ["--error-on-warnings"]]]);
+  });
+
+  test("Composer: run-script, run, a bare script and a reference resolve; @php and callbacks do not", () => {
+    const composer = { "composer.json": JSON.stringify({ scripts: { test: "phpunit", "test:all": ["@test"], analyse: "@php vendor/bin/phpstan analyse", setup: "App\\Setup::run", lint: ["phpcs", "phpstan"] } }) };
+    const scripts = tablesFrom({ ".": composer });
+    const checks = [check("tests", "vendor/bin/phpunit")];
+    expect(ciCheckDrift([{ path: CI, text: workflow("composer run-script test", "composer run test", "composer test", "composer test:all") }], checks, scripts)).toEqual([]);
+    expect(ciCheckDrift([{ path: CI, text: workflow("composer analyse", "composer run-script lint") }], checks, scripts)).toEqual([]);
+    const stricter = tablesFrom({ ".": { "composer.json": JSON.stringify({ scripts: { test: "phpunit --stop-on-failure" } }) } });
+    expect(ciCheckDrift([{ path: CI, text: workflow("composer run-script test") }], checks, stricter).map((d) => [d.tool, d.missing])).toEqual([["phpunit", ["--stop-on-failure"]]]);
+  });
+
+  test("Deno: deno task through deno.json tasks, as a string or { command }", () => {
+    const scripts = tablesFrom({ ".": { "deno.json": JSON.stringify({ tasks: { lint: "deno lint", check: { command: "deno check main.ts", description: "types" } } }) } });
+    expect(ciCheckDrift([{ path: CI, text: workflow("deno task lint", "deno task check") }], [check("lint", "deno lint"), check("types", "deno check main.ts")], scripts)).toEqual([]);
+    expect(ciCheckDrift([{ path: CI, text: workflow("deno task lint") }], [check("lint", "deno lint --rules-exclude=no-explicit-any")], scripts)).toEqual([]);
+    expect(toolCommand("deno", ["task", "lint"])).toEqual({ tool: "deno task lint", words: [] });
+  });
+
+  test.each(["make lint", "just lint", "rake rubocop", "task lint"])("an opaque runner (%s) with no check running it records nothing", (command) => {
+    expect(ciCheckDrift([{ path: CI, text: workflow(command) }], [check("lint", "biome check .")], tablesFrom({ ".": URL_SHORTENER_PACKAGE }))).toEqual([]);
+  });
+
+  test("an opaque runner is compared with the same command; an opaque check hides only the no-check verdict", () => {
+    expect(ciCheckDrift([{ path: CI, text: workflow("make test ARGS=-race") }], [check("tests", "make test")]).map((d) => d.missing)).toEqual([["ARGS=-race"]]);
+    // A `make check` check may run clippy: no verdict that no check runs it.
+    expect(ciCheckDrift([{ path: CI, text: workflow("cargo clippy -- -D warnings") }], [check("all", "make check")])).toEqual([]);
+    // The R73 true positive stays: a check runs clippy without --all-targets.
+    expect(ciCheckDrift([{ path: CI, text: workflow("cargo clippy --all-targets") }], [check("all", "make check"), check("clippy", "cargo clippy")]).map((d) => d.missing)).toEqual([["--all-targets"]]);
+  });
+
+  test("a README drift says the documented command, not the delivered CI, can fail", () => {
+    const [drift] = ciCheckDrift([{ path: "README.md", text: readme("cargo clippy --all-targets") }], [check("clippy", "cargo clippy")]);
+    expect(ciCheckDriftSummary(drift!)).toEndWith("the documented command can fail on what no configured check ran");
+  });
+
+  test("scriptTables reads package.json and composer.json scripts and deno.json tasks; a broken manifest gives none", () => {
+    const files: Record<string, string> = { "package.json": '{"scripts":{"test":"bun test"}}', "composer.json": "{ not json", "deno.jsonc": '{"tasks":{"fmt":"deno fmt --check"}}' };
+    expect(scriptTables((name) => files[name] ?? null)).toEqual({ package: { test: "bun test" }, deno: { fmt: "deno fmt --check" } });
+    expect(scriptTables(() => '{"name":"x"}')).toEqual({ package: {}, composer: {}, deno: {} });
+  });
+});
+
+describe("scenario: a run delivers a README whose `bun run test` runs the `bun test` check (#2416)", () => {
+  test("R76 url-shortener: no ci_check_drift for a script the check runs, one for a script no check runs", async () => {
+    const bun = cargoShim("bun");
+    const policy: RunPolicy = {
+      ...fixturePolicy,
+      checks: [...fixturePolicy.checks, { id: "tests", executable: bun, args: ["test"], cwd: ".", timeoutMs: 10000, required: true, scope: "feature", envNames: [], writes: [] }],
+    };
+    const files = { ...URL_SHORTENER_PACKAGE, "README.md": readme("bun install", "bun run test", "bun run typecheck") };
+    const fixture = workflowFixture({ policy, executor: (root) => new DeliveryExecutor(root, files) });
+    cleanups.push(fixture.dispose);
+    const run = await fixture.service.start({ commandId: newId(), featureId: "fixture", workflowId: "sdd", prompt: "Create ready value and its README", ownerLabel: "test", policy });
+    let current = await fixture.service.drive(run.runId, new AbortController().signal);
+    for (let i = 0; i < 5 && current.status === "waiting"; i++) {
+      if (fixture.service.store.requests(run.runId).find((r) => r.status === "pending")?.kind !== "approval") break;
+      await fixture.approve(run.runId);
+      current = await fixture.service.drive(run.runId, new AbortController().signal);
+    }
+    const wouldStops = fixture.service.store
+      .eventsOfType(run.runId, "decision.would_stop")
+      .map((e) => e.payload as { reason: string; key: string; inputs: Record<string, unknown> })
+      .filter((p) => p.reason === "ci_check_drift");
+    // `bun run test` is the `bun test` check; `bun run typecheck` (tsc) is a gate no check runs.
+    expect(wouldStops.map((w) => [w.key, w.inputs.tool, w.inputs.script])).toEqual([["README.md#bun run typecheck", "tsc", "tsc --noEmit"]]);
+    expect((await fixture.service.get(run.runId)).status).toBe("completed");
   });
 });

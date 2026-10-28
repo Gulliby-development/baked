@@ -304,7 +304,13 @@ import {
   writtenCodePaths,
 } from "./check-policy.js";
 import { failFastUnavailable } from "./check-preflight.js";
-import { CI_WORKFLOW, ciCheckDrift, ciCheckDriftSummary, README_FILE } from "./ci-check-drift.js";
+import {
+  CI_WORKFLOW,
+  ciCheckDrift,
+  ciCheckDriftSummary,
+  README_FILE,
+  scriptTables,
+} from "./ci-check-drift.js";
 import {
   ASSUME_NOTE,
   assumeProblems,
@@ -4906,8 +4912,9 @@ export class WorkflowScheduler {
   }
   /**
    * The `ci_check_drift` would-stops (#2284): each gate command of a CI workflow or root README
-   * the run changed that the checks about to run do not run as written, once per file and command.
-   * Called at the checks stage of both workflow versions, after the snapshot.
+   * the run changed that the checks about to run do not run as written, once per file and command,
+   * both sides read through the package, Composer and Deno scripts they run (#2416). Called at the
+   * checks stage of both workflow versions, after the snapshot.
    */
   private ciCheckDriftWouldStop(
     runId: string,
@@ -4925,7 +4932,16 @@ export class WorkflowScheduler {
         return text === null ? [] : [{ path, text }];
       });
     if (!files.length) return;
-    for (const drift of ciCheckDrift(files, checks))
+    // Script runners resolve through the run's manifests: a check's in its `cwd` (#2416).
+    const scripts = (dir: string) =>
+      scriptTables((name) => {
+        try {
+          return readText(workspacePath(root, join(dir, name)));
+        } catch {
+          return null;
+        }
+      });
+    for (const drift of ciCheckDrift(files, checks, scripts))
       recordWouldStop(this.store, runId, {
         reason: "ci_check_drift",
         mode,
