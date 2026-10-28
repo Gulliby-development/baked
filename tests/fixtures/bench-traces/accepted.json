@@ -221,5 +221,9 @@
   "R74/callmend.sqlite.gz#callmend": {
     "newPoolBoundStops": 1,
     "reason": "#2280: initiative-pool-growth (shadow) replays one feature run whose recorded bounds pass the initiative pool (30.04M tokens after the split-approval extension). The replay record is true; the initiative ended at 29.03M of that pool and USD 26.56 of the 30 cap, so nothing was exceeded. Same shape as the R73 evalpin delivery entry above (the last feature's room is not covered by chargeHold); not analysed further in R74."
+  },
+  "R76/schemamask.sqlite.gz#6e22b3f0-9796-47e1-8f44-dce35a8ace05": {
+    "newRecoveries": 1,
+    "reason": "R76 schemamask_generation, plan attempt dc012388: a 17 s turn that used 69,597 tokens and failed when the laptop went to sleep (Codex app-server exited with code 4, a cancelled tool call). The recorded run (pin fcdc85ea) took no rung and blocked provider_unavailable; the replay on current main reads the attempt as a billed turn without a usable answer and takes the fresh-session rung, the intended treatment of #1957."
   }
 }
