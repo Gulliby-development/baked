@@ -13,7 +13,9 @@ import {
   BADGE_TEXT,
   badgeBitmap,
   badgeLabel,
+  CloseRequests,
   closeAction,
+  closeToTray,
   trayModel,
 } from "../src/main/tray-model.ts";
 import type { ApiResponse, AttentionItem, DesktopProject } from "../src/shared/api.ts";
@@ -135,6 +137,77 @@ describe("tray", () => {
       "close",
     );
     expect(closeAction({ ...on, quitting: true, projects: [project(true, 1)] })).toBe("close");
+  });
+
+  test("hides at once and keeps a window reopened while the list loads (#2391)", async () => {
+    const run = async (projects: DesktopProject[], reopen: boolean) => {
+      const log: string[] = [];
+      let visible = true;
+      let release: (list: DesktopProject[]) => void = () => {};
+      const pending = closeToTray({
+        window: {
+          hide: () => {
+            visible = false;
+            log.push("hide");
+          },
+          destroy: () => log.push("destroy"),
+          isVisible: () => visible,
+          isDestroyed: () => false,
+        },
+        showTray: () => log.push("tray"),
+        hideTray: () => log.push("untray"),
+        projects: () => new Promise((resolve) => (release = resolve)),
+        decide: (list) =>
+          closeAction({ quitting: false, keepRunningInTray: true, projects: list }),
+        current: () => true,
+      });
+      // The window is hidden before the slow project list answers.
+      expect(log).toEqual(["hide", "tray"]);
+      if (reopen) visible = true;
+      release(projects);
+      return { action: await pending, log };
+    };
+    expect(await run([project(true, 1)], false)).toEqual({ action: "hide", log: ["hide", "tray"] });
+    expect(await run([project(true, 0)], false)).toEqual({
+      action: "close",
+      log: ["hide", "tray", "untray", "destroy"],
+    });
+    expect(await run([project(true, 0)], true)).toEqual({
+      action: "stale",
+      log: ["hide", "tray"],
+    });
+  });
+
+  test("an older close cannot decide after the window was reopened and closed again", async () => {
+    const requests = new CloseRequests();
+    const log: string[] = [];
+    const window = {
+      hide: () => log.push("hide"),
+      destroy: () => log.push("destroy"),
+      isVisible: () => false,
+      isDestroyed: () => false,
+    };
+    const releases: ((list: DesktopProject[]) => void)[] = [];
+    const close = () => {
+      const id = requests.next();
+      return closeToTray({
+        window,
+        showTray: () => log.push("tray"),
+        hideTray: () => log.push("untray"),
+        projects: () => new Promise((resolve) => releases.push(resolve)),
+        decide: (list) =>
+          closeAction({ quitting: false, keepRunningInTray: true, projects: list }),
+        current: () => requests.isCurrent(id),
+      });
+    };
+    const first = close();
+    requests.cancel(); // shown again, a run starts
+    const second = close();
+    releases[0]?.([project(true, 0)]);
+    releases[1]?.([project(true, 1)]);
+    expect(await first).toBe("stale");
+    expect(await second).toBe("hide");
+    expect(log).not.toContain("destroy");
   });
 
   test("counts blocking items for the badge and menu", () => {

@@ -14,6 +14,57 @@ export function closeAction(options: {
   return options.projects.some((p) => p.open && p.overview.activeRuns > 0) ? "hide" : "close";
 }
 
+/** What `closeToTray` needs from the window, the tray and the project list. */
+export interface CloseToTray {
+  /** The window as it was when Close was pressed. */
+  window: { hide(): void; destroy(): void; isVisible(): boolean; isDestroyed(): boolean };
+  showTray(): void;
+  hideTray(): void;
+  /** The fresh project list, which can take seconds (it runs the CLI). */
+  projects(): Promise<DesktopProject[]>;
+  decide(projects: DesktopProject[]): "hide" | "close";
+  /** False once the window was shown again or closed again: this request's list is stale. */
+  current(): boolean;
+}
+
+/**
+ * Close requests of one window: a newer close, or showing the window, makes an earlier pending
+ * request stale, so its project list cannot decide for the newer one.
+ */
+export class CloseRequests {
+  private latest = 0;
+  next(): number {
+    this.latest += 1;
+    return this.latest;
+  }
+  cancel(): void {
+    this.latest += 1;
+  }
+  isCurrent(id: number): boolean {
+    return id === this.latest;
+  }
+}
+
+/**
+ * Closing with "keep running in tray" on: the window hides and the tray shows at once, and the
+ * fresh project list then decides whether the app really closes. A window shown again while the
+ * list loads (a toast or tray click) stays, and so does one closed again since; waiting for the list first kept the window up for
+ * seconds and hid it again after such a click (#2391).
+ */
+export async function closeToTray(close: CloseToTray): Promise<"hide" | "close" | "stale"> {
+  close.window.hide();
+  close.showTray();
+  const projects = await close.projects();
+  if (close.window.isDestroyed()) return "close";
+  if (!close.current() || close.window.isVisible()) return "stale";
+  const action = close.decide(projects);
+  if (action === "close") {
+    close.hideTray();
+    close.window.destroy();
+  }
+  return action;
+}
+
 export interface TrayModel {
   tooltip: string;
   /** The "N need you" menu entry; null when nothing blocks. */

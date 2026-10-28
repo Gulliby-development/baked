@@ -214,29 +214,72 @@ function memberPatterns(languages: Iterable<string>): RegExp[] {
   return [...sources].map((source) => new RegExp(`(?=${source})`, "g"));
 }
 
-/** A file name's extension: `config.yaml`, `` `reader.py` `` name a file, not a member. */
-const FILE_EXTENSION =
-  /^(?:json|jsonc|ya?ml|toml|txt|md|csv|tsv|ini|cfg|conf|xml|html?|lock|log|env|sh|ps1|py|pyi|go|rs|ts|tsx|js|jsx|mjs|rb|php|lua|zig|sql|r|java|kt|kts|scala|cs|swift|dart|ex|exs|ml|res|sol|vue|svelte|c|h|cc|cpp|hpp|m)$/;
+/** A .NET or MSBuild project file: its stem is the project's root namespace, not a type. */
+const PROJECT_EXTENSIONS = ["csproj", "fsproj", "vbproj", "sln", "slnx", "props", "targets"];
+const isProjectFile = (path: string) =>
+  PROJECT_EXTENSIONS.some((extension) => path.toLowerCase().endsWith(`.${extension}`));
+
+/**
+ * The extensions of files that are not a type's members: data, config and source files
+ * (`config.yaml`, `` `reader.py` ``), and binaries, archives, packages and project files
+ * (`Maskback.dll`, `Maskback.csproj`, R75 maskback, #2365). One list: a new kind of file joins it.
+ */
+const FILE_EXTENSIONS = [
+  ...["json", "jsonc", "yaml", "yml", "toml", "txt", "md", "csv", "tsv", "ini", "cfg", "conf"],
+  ...["xml", "html", "htm", "lock", "log", "env", "sh", "ps1"],
+  ...["py", "pyi", "go", "rs", "ts", "tsx", "js", "jsx", "mjs", "rb", "php", "lua", "zig", "sql"],
+  ...["r", "java", "kt", "kts", "scala", "cs", "fs", "fsi", "fsx", "vb", "swift", "dart", "ex"],
+  ...["exs", "ml", "res", "sol", "vue", "svelte", "c", "h", "cc", "cpp", "hpp", "m"],
+  ...["dll", "exe", "so", "dylib", "a", "o", "lib", "bin", "jar", "war", "whl", "gem", "nupkg"],
+  ...PROJECT_EXTENSIONS,
+];
+const FILE_EXTENSION = new RegExp(`^(?:${FILE_EXTENSIONS.join("|")})$`);
 
 const languagesOf = (paths: readonly string[]): SupportedLanguage[] =>
   paths.map((path) => detectLanguageFromPath(path)).filter(isSupportedLanguage);
 /** "a public Reader helper", "Reader's public helper": a helper of a type, with no member named. */
 const HELPER = /\b(?:public\s+)?([A-Z][A-Za-z0-9_]*)(?:'s)?\s+(?:public\s+)?helper\b/g;
 
-const nameOf = (name: string) =>
-  name
-    .replace(/\.[^.]+$/, "")
-    .replace(/[_-]/g, "")
-    .toLowerCase();
+/** A name compared in any letter case, without `_` and `-`. */
+const keyOf = (name: string) => name.replace(/[_-]/g, "").toLowerCase();
+/** A type's or a file's name: a file's last extension is dropped, a folder's name is whole. */
+const nameOf = (name: string) => keyOf(name.replace(/\.[^.]+$/, ""));
 /**
  * Whether a file is the type a spec names: its stem (`Reader.cs`, `reader.py`), or its folder,
  * since a Go package, a Python package or a Rust module directory is named by it
- * (`lines/parse.go` for `lines.Line`, #2199).
+ * (`lines/parse.go` for `lines.Line`, #2199). A folder name is compared whole: `tests/Maskback.Tests/`
+ * is no folder `Maskback` (R75 maskback, #2365).
  */
 const isTypeFile = (path: string, type: string) => {
   const name = nameOf(type);
-  return nameOf(basename(path)) === name || nameOf(basename(dirname(path))) === name;
+  return nameOf(basename(path)) === name || keyOf(basename(dirname(path))) === name;
 };
+
+/**
+ * Whether `Type.Member` is a namespace rather than a member of an upstream type (#2365): a path of
+ * the released feature's own boundary has `Type/Member` as a folder and a folder or file below it
+ * (`Maskback.Core` for `src/Maskback/Core/Scanner.cs`: the feature writes it), or `Type` is the
+ * stem of a project file (`Maskback.csproj`, the root namespace) and no other file's stem.
+ */
+function isNamespace(
+  type: string,
+  member: string,
+  upstream: readonly { path: string }[],
+  own: readonly string[],
+): boolean {
+  const pair = `${keyOf(type)}/${keyOf(member)}`;
+  const ownPair = own.some((path) => {
+    const segments = path.split("/");
+    const last = segments.length - 1;
+    const keys = segments.map((segment, i) => (i === last ? nameOf(segment) : keyOf(segment)));
+    return keys.some((key, i) => i < last && `${key}/${keys[i + 1]}` === pair);
+  });
+  if (ownPair) return true;
+  const stems = (paths: readonly string[]) =>
+    paths.filter((path) => nameOf(basename(path)) === nameOf(type));
+  const named = stems([...upstream.map((file) => file.path), ...own]);
+  return named.some(isProjectFile) && named.every(isProjectFile);
+}
 
 /**
  * The members a planned-ahead spec names on the files of its upstream features that the accepted
@@ -245,11 +288,13 @@ const isTypeFile = (path: string, type: string) => {
  * to a file by its stem or its folder in any letter case (`Reader` to `Reader.cs`, `reader.go`,
  * `reader/mod.rs`), so it works in every language; a member is looked up as a word in that file. A helper the spec names by its type alone is a gap
  * too: nothing upstream decided it exists. `upstream` holds each upstream boundary file and its
- * text at the release base, null when absent.
+ * text at the release base, null when absent; `own` is the released feature's boundary, whose
+ * folders name namespaces it writes itself, not upstream members (#2365).
  */
 export function upstreamSymbolGaps(
   spec: Pick<Spec, "requirements" | "criteria">,
   upstream: readonly { featureId: string; path: string; text: string | null }[],
+  own: readonly string[] = [],
 ): UpstreamSymbolGap[] {
   const gaps: UpstreamSymbolGap[] = [];
   const seen = new Set<string>();
@@ -267,6 +312,7 @@ export function upstreamSymbolGaps(
       // `Reader.cs` and `config.yaml` are file names, not members.
       if (sep === "." && FILE_EXTENSION.test(member)) continue;
       if (!files.length || files.some((file) => file.path.endsWith(`.${member}`))) continue;
+      if (sep === "." && isNamespace(type, member, upstream, own)) continue;
       named.add(nameOf(type));
       if (files.some((file) => file.text !== null && wordIn(file.text, member))) continue;
       const symbol = sep.endsWith("[") ? `${sep}${type} ${member}]` : `${type}${sep}${member}`;

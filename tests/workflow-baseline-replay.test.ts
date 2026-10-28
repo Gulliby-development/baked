@@ -1,14 +1,17 @@
 import { describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { BUILD_FAILURES, buildFailure, buildRunner, failedTests } from "../src/core/verification/output-counts.js";
+import { BUILD_FAILURES, buildFailure, buildRunner, FAILED_TESTS, failedTests, type TestRunner } from "../src/core/verification/output-counts.js";
 import {
   BASELINE_REPLAY_NOTE,
   type BaselineReplay,
   GREENFIELD_NOTE,
   QUALITY_BASELINE_REPLAY,
+  REPLAY_KEEP_GOING,
   REPLAY_TARGETS,
+  replayCommand,
   replayEdits,
+  replayStopped,
   replayTargetRecords,
   replayTargets,
 } from "../src/core/workflows/quality/baseline-replay.js";
@@ -172,7 +175,10 @@ describe("baseline replay (#1945)", () => {
       mkdirSync(join(root, "src"), { recursive: true });
       mkdirSync(join(root, "tests"), { recursive: true });
       writeFileSync(join(root, ".gitignore"), ".baked/\n");
-      for (const [path, content] of Object.entries(shape.files ?? {})) writeFileSync(join(root, path), content);
+      for (const [path, content] of Object.entries(shape.files ?? {})) {
+        writeFileSync(join(root, path), content);
+        if (content.startsWith("#!")) chmodSync(join(root, path), 0o755);
+      }
       if (!shape.greenfield) writeFileSync(join(root, "src/sign.ts"), OLD);
       if (!shape.greenfield)
         writeFileSync(
@@ -261,6 +267,70 @@ describe("baseline replay (#1945)", () => {
     // A runner that runs each file on its own is not run again.
     expect(record?.checks.find((c) => c.id === "unit")?.targets).toBeUndefined();
   }, 60_000);
+
+  // R75 evalpin-update (#2364): cargo stopped after tests/cli.rs failed, so the 5 new tests of
+  // tests/diff_show.rs never ran on the old code. Maven's reactor and Gradle stop the same way at
+  // the first module or project. Each stand-in prints what its tool prints: it runs the second
+  // target only with the tool's keep-going flag.
+  const standIn = (flag: string, first: string[], stop: string[], second: string[]) =>
+    [
+      "#!/bin/sh",
+      'if grep -q ": 1)" src/sign.ts; then echo "BUILD SUCCESS"; exit 0; fi',
+      ...first.map((line) => `echo '${line}'`),
+      `case " $* " in *" ${flag} "*) ;; *) ${stop.map((line) => `echo '${line}'; `).join("")}exit 1;; esac`,
+      ...second.map((line) => `echo '${line}'`),
+      "exit 1",
+      "",
+    ].join("\n");
+  const testcase = (classname: string, name: string) => `<testcase name="${name}" classname="${classname}"><failure message="expected"/></testcase>`;
+  const STOPS = [
+    {
+      toolchain: "rust (cargo)",
+      tool: "cargo",
+      line: "./cargo test",
+      replay: "./cargo test --no-fail-fast",
+      script: standIn(
+        "--no-fail-fast",
+        ["     Running tests/cli.rs (target/debug/deps/cli-1a2b)", "test help_and_command_diagnostics_use_one_exact_io_call ... FAILED", "test result: FAILED. 6 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out"],
+        ["error: test failed, to rerun pass `--test cli`"],
+        ["     Running tests/diff_show.rs (target/debug/deps/diff_show-3c4d)", "test shows_added_lines ... FAILED", "test shows_removed_lines ... FAILED", "test result: FAILED. 0 passed; 2 failed; 0 ignored; 0 measured; 0 filtered out", "error: 2 targets failed:"],
+      ),
+      failed: ["help_and_command_diagnostics_use_one_exact_io_call", "shows_added_lines", "shows_removed_lines"],
+    },
+    {
+      toolchain: "java and kotlin (Maven multi-module)",
+      tool: "mvnw",
+      line: "./mvnw -B verify",
+      replay: "./mvnw -B verify --fail-at-end",
+      script: standIn(
+        "--fail-at-end",
+        ["[ERROR] app.cli.CliTest.help -- Time elapsed: 0.01 s <<< FAILURE!", "[ERROR] Tests run: 3, Failures: 1, Errors: 0, Skipped: 0"],
+        ["[ERROR] After correcting the problems, you can resume the build with the command", "[ERROR]   mvn <args> -rf :cli"],
+        ["[ERROR] app.diff.DiffShowTest.addedLines -- Time elapsed: 0.01 s <<< FAILURE!", "[ERROR] Tests run: 2, Failures: 1, Errors: 0, Skipped: 0"],
+      ),
+      failed: ["app.cli.CliTest.help", "app.diff.DiffShowTest.addedLines"],
+    },
+    {
+      toolchain: "java and kotlin (Gradle)",
+      tool: "gradlew",
+      line: "./gradlew test",
+      replay: "./gradlew test --continue",
+      script: standIn("--continue", ["> Task :cli:test FAILED", testcase("app.cli.CliTest", "help")], ["BUILD FAILED in 2s"], ["> Task :diff:test FAILED", testcase("app.diff.DiffShowTest", "addedLines"), "BUILD FAILED in 3s"]),
+      failed: ["app.cli.CliTest.help", "app.diff.DiffShowTest.addedLines"],
+    },
+  ];
+
+  for (const row of STOPS)
+    test(`${row.toolchain}: a failing target no longer hides the failing tests of the targets after it`, async () => {
+      const first = fixturePolicy.checks[0] as Check;
+      const { record } = await replay(true, { files: { [row.tool]: row.script }, checks: [{ ...first, id: "stops", executable: "sh", args: ["-c", row.line] }] });
+      const check = record?.checks.find((c) => c.id === "stops");
+      expect(check).toMatchObject({ status: "failed", args: ["-c", row.replay] });
+      expect(check?.failedTests?.slice().sort()).toEqual(row.failed);
+      expect(check?.targets).toBeUndefined();
+      // A check the replay runs as written records no arguments of its own.
+      expect(record?.checks.find((c) => c.id === "unit")?.args).toBeUndefined();
+    }, 60_000);
 
   // R61 taskplan AC-005 (#1954): "baseline and updated dependency resolution identical" had no
   // evidence. The replay lists the resolution in its copy as delivered and after putting files back.
@@ -373,6 +443,62 @@ describe("baseline replay per test target (#2020)", () => {
   test("the spec author and the reviewers are told the replay holds per target", () => {
     expect(BASELINE_REPLAY_NOTE.spec).toContain("per target");
     expect(BASELINE_REPLAY_NOTE.review).toContain("targets");
+  });
+});
+
+/**
+ * The replay's first run of a check per runner (#2364): the check's command, and the arguments the
+ * replay runs instead, with the runner's keep-going flag and without its stop flags.
+ */
+const KEEP_GOING: { runner: TestRunner; executable: string; args: string[]; replay: string[] }[] = [
+  { runner: "cargo", executable: "cargo", args: ["test", "--all-features", "--", "--nocapture"], replay: ["test", "--all-features", "--no-fail-fast", "--", "--nocapture"] },
+  { runner: "cargo", executable: "cargo", args: ["nextest", "run", "--max-fail", "1"], replay: ["nextest", "run", "--no-fail-fast"] },
+  { runner: "cargo", executable: "cargo", args: ["test", "--no-fail-fast"], replay: ["test", "--no-fail-fast"] },
+  { runner: "maven", executable: "mvn", args: ["-B", "-ff", "verify"], replay: ["-B", "verify", "--fail-at-end"] },
+  { runner: "maven", executable: "./mvnw", args: ["-fae", "test", "-Dsurefire.skipAfterFailureCount=1"], replay: ["-fae", "test"] },
+  { runner: "junit", executable: "./gradlew", args: ["test", "--fail-fast"], replay: ["test", "--continue"] },
+  { runner: "pytest", executable: "python", args: ["-m", "pytest", "-x", "-q"], replay: ["-m", "pytest", "-q", "--maxfail=0"] },
+  { runner: "pytest", executable: "uv", args: ["run", "pytest", "--maxfail", "2"], replay: ["run", "pytest", "--maxfail=0"] },
+  { runner: "jest", executable: "npx", args: ["jest", "--bail", "--ci"], replay: ["jest", "--ci"] },
+  { runner: "vitest", executable: "pnpm", args: ["exec", "vitest", "run", "--bail=1"], replay: ["exec", "vitest", "run"] },
+  { runner: "bun", executable: "bun", args: ["test", "--bail"], replay: ["test"] },
+  { runner: "tap", executable: "mocha", args: ["-b", "--reporter", "tap"], replay: ["--reporter", "tap"] },
+  { runner: "go", executable: "go", args: ["test", "-failfast", "./..."], replay: ["test", "./..."] },
+  { runner: "phpunit", executable: "php", args: ["vendor/bin/phpunit", "--stop-on-failure", "tests"], replay: ["vendor/bin/phpunit", "tests"] },
+  { runner: "pest", executable: "vendor/bin/pest", args: ["--bail"], replay: [] },
+  { runner: "rspec", executable: "bundle", args: ["exec", "rspec", "--fail-fast=1"], replay: ["exec", "rspec"] },
+  { runner: "minitest", executable: "bin/rails", args: ["test", "--fail-fast"], replay: ["test"] },
+  { runner: "ctest", executable: "ctest", args: ["--test-dir", "build", "--stop-on-failure"], replay: ["--test-dir", "build"] },
+  { runner: "cargo", executable: "sh", args: ["-c", "cargo test -q"], replay: ["-c", "cargo test -q --no-fail-fast"] },
+];
+
+describe("baseline replay keeps going past the first failing target (#2364)", () => {
+  test("every runner has its row: flags and stop flags, or why it needs none", () => {
+    expect(Object.keys(REPLAY_KEEP_GOING).sort()).toEqual(Object.keys(FAILED_TESTS).sort());
+    for (const [runner, row] of Object.entries(REPLAY_KEEP_GOING))
+      expect({ runner, row: "none" in row ? row.none.length > 0 : row.programs.length > 0 && Boolean(row.flags?.length || row.stop?.length) }).toEqual({ runner, row: true });
+    const covered = new Set(KEEP_GOING.map((row) => row.runner));
+    expect(Object.entries(REPLAY_KEEP_GOING).filter(([runner, row]) => !("none" in row) && !covered.has(runner as TestRunner))).toEqual([]);
+  });
+
+  for (const row of KEEP_GOING)
+    test(`${row.runner}: ${row.executable} ${row.args.join(" ")}`, () => {
+      expect(replayCommand(row.executable, row.args)).toEqual({ args: row.replay, runner: row.runner });
+    });
+
+  test("a command that names no runner runs as written", () => {
+    expect(replayCommand("make", ["test"])).toEqual({ args: ["test"], runner: null });
+    expect(replayCommand("dotnet", ["test", "App.sln"])).toEqual({ args: ["test", "App.sln"], runner: null });
+    expect(replayCommand("cargo", ["clippy", "--fail-fast"])).toEqual({ args: ["clippy", "--fail-fast"], runner: null });
+    // A test binary's own `--` arguments are its own.
+    expect(replayCommand("npx", ["jest", "--", "--bail"]).args).toEqual(["jest", "--", "--bail"]);
+  });
+
+  test("a run that still stopped at its first failing target is read from its last lines", () => {
+    expect(replayStopped("test result: FAILED. 6 passed; 1 failed\nerror: test failed, to rerun pass `--test cli`")).toBe("cargo");
+    expect(replayStopped("        FAIL [   0.004s] app::cli help\n  Cancelling due to test failure: 3 tests still running")).toBe("cargo");
+    expect(replayStopped("[ERROR] After correcting the problems, you can resume the build with the command\n[ERROR]   mvn <args> -rf :core")).toBe("maven");
+    expect(replayStopped("error: 2 targets failed:\n    `--test cli`\n    `--test diff_show`")).toBeNull();
   });
 });
 

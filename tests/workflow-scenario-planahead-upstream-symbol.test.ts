@@ -118,6 +118,59 @@ describe("a released feature's spec is checked against the accepted upstream cod
   });
 });
 
+// Bench round 75, maskback (#2365): the test project folder `tests/Maskback.Tests/` read as a folder
+// `Maskback`, so the namespaces `Maskback.Core`, `Maskback.Fake` and `Maskback.Cmd`, which each
+// feature wrote itself under `src/Maskback/`, and the assembly `Maskback.dll` were recorded as
+// missing members of a type `Maskback`: 3 false would-stops in 3 of 4 released features.
+describe("namespaces, dotted folders and binary files are not upstream members (#2365)", () => {
+  const gapsOf = (sentence: string, upstream: { path: string; text: string }[], own: string[] = []) =>
+    upstreamSymbolGaps(spec(sentence), upstream.map((file) => ({ featureId: "base", ...file })), own).map((g) => g.symbol);
+
+  test("csharp: the maskback release records no gap for its namespaces or its assembly", () => {
+    const upstream = [{ path: "tests/Maskback.Tests/UnitTest1.cs", text: "namespace Maskback.Tests;\npublic class UnitTest1 { [Fact] public void Test1() {} }\n" }];
+    const own = ["src/Maskback/Core/Scanner.cs", "tests/Maskback.Tests/ScannerTests.cs"];
+    expect(gapsOf("Maskback.Core exposes the scanner; the process test runs Maskback.dll.", upstream, own)).toEqual([]);
+    // The namespace the feature writes itself, under an upstream folder that is named `Maskback`.
+    expect(gapsOf("Maskback.Cmd parses the arguments.", [{ path: "src/Maskback/Program.cs", text: "Console.WriteLine();\n" }], ["src/Maskback/Cmd/Cli.cs"])).toEqual([]);
+  });
+
+  test("go: a package by its folder still records a missing member", () => {
+    const upstream = [{ path: "lines/parse.go", text: "package lines\n\nfunc Parse(text string) []string { return nil }\n" }];
+    expect(gapsOf("Scanner splits with lines.Line values.", upstream, ["scanner/scan.go"])).toEqual(["lines.Line"]);
+  });
+
+  test("java and kotlin: a capitalised package the feature writes is not a member of the upstream folder", () => {
+    const java = [{ path: "src/main/java/com/maskback/App.java", text: "package com.maskback;\npublic final class App {}\n" }];
+    expect(gapsOf("Maskback.Cmd holds the command classes.", java, ["src/main/java/com/maskback/cmd/Cli.java"])).toEqual([]);
+    const kotlin = [{ path: "src/main/kotlin/maskback/App.kt", text: "package maskback\nfun main() {}\n" }];
+    expect(gapsOf("Maskback.Relay forwards the requests.", kotlin, ["src/main/kotlin/maskback/relay/Relay.kt"])).toEqual([]);
+    // A member the upstream package lacks, which the feature does not write, is still a gap.
+    expect(gapsOf("Maskback.Cmd holds the command classes.", java, ["src/main/java/com/other/Cli.java"])).toEqual(["Maskback.Cmd"]);
+  });
+
+  test("fsharp: the root namespace of a project file is not a type", () => {
+    const upstream = [
+      { path: "src/Maskback/Maskback.fsproj", text: "<Project Sdk=\"Microsoft.NET.Sdk\"></Project>\n" },
+      { path: "src/Maskback/Library.fs", text: "namespace Maskback\nmodule Library = let mask x = x\n" },
+    ];
+    expect(gapsOf("Maskback.Relay forwards the masked requests; Library.fs stays as is.", upstream)).toEqual([]);
+    // A type whose own source file shares the project's name keeps its members checked.
+    const typed = [...upstream, { path: "src/Maskback/Maskback.fs", text: "type Maskback() = member _.Run() = ()\n" }];
+    expect(gapsOf("Maskback.Relay forwards the masked requests.", typed)).toEqual(["Maskback.Relay"]);
+  });
+
+  test("python: a dotted `pkg.egg-info` folder is not the package", () => {
+    const upstream = [{ path: "src/maskback.egg-info/PKG-INFO", text: "Name: maskback\nVersion: 0.1.0\n" }];
+    expect(gapsOf("Maskback.Relay forwards the requests.", upstream)).toEqual([]);
+  });
+
+  test("binary, package and project files are not members", () => {
+    const upstream = [{ path: "src/Maskback/Program.cs", text: "Console.WriteLine();\n" }];
+    const files = ["dll", "exe", "so", "dylib", "jar", "war", "csproj", "fsproj", "vbproj", "sln", "slnx", "props", "targets", "whl", "gem", "nupkg", "a", "o", "lib", "bin", "fs"];
+    for (const extension of files) expect(gapsOf(`The build writes Maskback.${extension}.`, upstream)).toEqual([]);
+  });
+});
+
 describe("a planned-ahead feature asks the owner for the missing symbol (#2157)", () => {
   test("an owner whose run finished is reopened once, in a live initiative", () => {
     expect(amendmentAnswer({ ownerRunStatus: "completed", initiativeStatus: "active", requested: false })).toBe("replan");

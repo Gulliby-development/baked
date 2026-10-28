@@ -104,7 +104,17 @@ export const SpecSchema = z
 export const HOST_CONTENT_MAX_CHARS = 4000;
 
 /** The test frameworks acceptance rows as data writes tests for. */
-const RowFramework = z.enum(["bun", "pytest", "go", "junit", "rust", "xunit", "rspec", "phpunit"]);
+const RowFramework = z.enum([
+  "bun",
+  "pytest",
+  "go",
+  "junit",
+  "rust",
+  "xunit",
+  "rspec",
+  "phpunit",
+  "testthat",
+]);
 const RowPackage = z
   .string()
   .max(200)
@@ -1196,6 +1206,25 @@ export const ReviewSchema = z
              * case, spaces and punctuation). Null or absent when no class fits.
              */
             family: z.string().max(80).nullable().optional(),
+            /**
+             * Where the family's pattern appears, when the family is a pattern of the code text
+             * (inputs built by repetition, packing, interpolation or a loop in tests that must use
+             * literal examples): each site's file, line and the code on it (#2343). The host keeps
+             * a site whose text is code on that line (`checkSites`) and its corrective fixes and
+             * may write every kept site, so one corrective repairs the class.
+             */
+            sites: z
+              .array(
+                z
+                  .object({
+                    file: RelativePath,
+                    line: z.number().int().min(1),
+                    text: z.string().min(1).max(200),
+                  })
+                  .strict(),
+              )
+              .max(32)
+              .optional(),
             requirementIds: z.array(RequirementId),
             criterionIds: z.array(CriterionId),
             file: RelativePath.nullable(),
