@@ -6,7 +6,11 @@
     ".clang-format": "BasedOnStyle: LLVM\n",
     ".clang-tidy": "Checks: '-*,bugprone-*'\n"
   },
+  "generated": {
+    "src/gen_test.cpp": "std::string a(3, '\\\\');\nauto b = std::string(3, 'x');\nconst char *lit = \"\\\\\\\\\\\\\";\n// auto d = std::string(3, 'x');\n"
+  },
   "expected": {
+    "generatedValues": ["src/gen_test.cpp:2 repeat"],
     "memberSyntax": [
       "Scanner calls Reader::is_encoding_token.: Reader::is_encoding_token",
       "Scanner delegates to Reader.IsEncodingToken.: Reader.IsEncodingToken"

@@ -9,7 +9,11 @@
     "tests": "FAILED tests/test_sum.py::test_sum - assert 3 == 4\n========= 1 failed, 2 passed in 0.12s =========\n",
     "testsGrown": "FAILED tests/test_sum.py::test_sum - assert 3 == 4\n========= 1 failed, 3 passed in 0.15s =========\n"
   },
+  "generated": {
+    "tests/test_gen.py": "a = \"\\\\\" * 3\nb = f\"x{a}\"\nfor c in cases:\n    run(c)\nlit = \"\\\\\\\\\\\\\"\n# d = \"\\\\\" * 3\n"
+  },
   "expected": {
+    "generatedValues": ["tests/test_gen.py:1 repeat","tests/test_gen.py:2 format","tests/test_gen.py:3 loop"],
     "memberSyntax": [
       "Scanner delegates to Reader.IsEncodingToken.: Reader.IsEncodingToken",
       "Scanner calls `reader.is_encoding_token` per token.: reader.is_encoding_token"

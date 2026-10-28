@@ -81,6 +81,7 @@ import {
 import {
   CASE_WALK_DIR,
   CASE_WALK_KIND,
+  type CaseWalk,
   type CaseWalkRecord,
   type CriterionCase,
   caseCheck as criteriaCaseCheck,
@@ -110,6 +111,11 @@ import {
   validEvidenceNote,
 } from "../verification/evidence.js";
 import { fingerprint, requiresSecurityReview } from "../verification/findings.js";
+import {
+  bannedGeneratedKinds,
+  type GeneratedKind,
+  generatedCaseDecision,
+} from "../verification/generated-values.js";
 import {
   clearBannedProperties,
   clearBoundaryProperties,
@@ -6368,8 +6374,10 @@ export class WorkflowScheduler {
               tasks: (state.rootGraph ?? state.graph)?.tasks ?? [],
               // The rows the host wrote are held by its intact blocks (#1997).
               hostRows: generatedRows.filter((file) => file.inline === true),
+              generatedKinds: this.bannedGeneratedKinds(state, task),
               record: (walk) =>
-                this.store.transaction(() =>
+                this.store.transaction(() => {
+                  const generatedStop = this.generatedCaseWouldStop(runId, policy, task, walk);
                   this.store.artifact(
                     runId,
                     CASE_WALK_KIND,
@@ -6378,9 +6386,10 @@ export class WorkflowScheduler {
                       schemaVersion: 1,
                       taskId: task.id,
                       ...walk,
+                      ...(walk.generated ? { generatedStop } : {}),
                     } satisfies CaseWalkRecord),
-                  ),
-                ),
+                  );
+                }),
               ...(policy.caseSourceProbe === "on"
                 ? { probe: this.caseSourceProbe(runId, state, policy, task, signal) }
                 : {}),
@@ -15760,6 +15769,44 @@ ${note}`;
       this.store.artifact(runId, "quality", QUALITY_PROPERTY_LIBRARIES, canonical(libraries)),
     );
     return libraries;
+  }
+  /**
+   * The kinds of generated value a task's test inputs may not use (#2344): those the request or
+   * the task's criteria rule out by asking for literal examples (`bannedGeneratedKinds`).
+   */
+  private bannedGeneratedKinds(state: RuntimeState, task: Task): Set<GeneratedKind> {
+    const criteria = (state.spec?.criteria ?? [])
+      .filter((c) => task.criterionIds.includes(c.id))
+      .map((c) => `${c.given}\n${c.when}\n${c.then}`)
+      .join("\n");
+    return bannedGeneratedKinds(state.requestText || state.prompt, criteria);
+  }
+  /**
+   * The `generated_case` would-stop of a task-end case walk (#2344), once per task: the test
+   * files that hold a case build inputs from generated values where literal examples are asked
+   * for. Returns whether the walk would stop the task.
+   */
+  private generatedCaseWouldStop(
+    runId: string,
+    policy: RunPolicy,
+    task: Task,
+    walk: CaseWalk,
+  ): boolean {
+    if (!generatedCaseDecision(walk)) return false;
+    const mode = stopMode(policy, "generated_case");
+    if (mode === "enforce") return true;
+    const found = walk.generated ?? [];
+    recordWouldStop(this.store, runId, {
+      reason: "generated_case",
+      mode,
+      key: `task-${task.id}`,
+      summary: `${task.id}'s tests build inputs from generated values where literal examples are asked for: ${found
+        .slice(0, 5)
+        .map((g) => `${g.path}:${String(g.line)} (${g.kind})`)
+        .join(", ")}${found.length > 5 ? ", ..." : ""}; the case walk would refuse the task`,
+      inputs: { taskId: task.id, generated: found },
+    });
+    return true;
   }
   /** The run's property-test mode, with what the repository's own tests hold (#1872). */
   private propertyMode(runId: string, state: RuntimeState, policy: RunPolicy): PropertyTestsMode {

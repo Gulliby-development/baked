@@ -595,3 +595,65 @@ describe("scenario: the testthat rows pass lintr and styler as written (#2348)",
     });
   }
 });
+
+// #2348: rows as data for busted. Both templates are fixed points of StyLua's defaults (tabs, 120
+// columns, AutoPreferDouble quotes), pass luacheck with busted's globals, and run in busted with
+// dkjson, which busted itself requires.
+const busted = tool("busted", "--version");
+const stylua = tool("stylua", "--version");
+const luacheck = tool("luacheck", "--version");
+const BUSTED_SPEC = "local function acceptance_actual(input)\n\treturn input\nend\n";
+const bustedInline: InlineRowTest = { mode: "inline", framework: "busted", test: "spec/platforms_spec.lua" };
+
+describe("scenario: the busted rows pass StyLua and luacheck as written (#2348)", () => {
+  const echo = rows.map((row) => ({ ...row, expected: row.input }));
+  const bustedFile = { framework: "busted", harness: "spec/support/platforms_harness.lua", test: "spec/platforms_rows_spec.lua", data: "spec/fixtures/platforms_rows.json" };
+  const project = (cases = rows) => {
+    const task = { id: "T003", rows: ["AC-003"], rowTest: bustedFile } as never;
+    const files = rowFiles(task, { tasks: [{ rows: ["AC-003"], rowTest: bustedFile }], rows: cases } as never);
+    return temp({
+      ...Object.fromEntries(files.map((file) => [file.path, file.content])),
+      [bustedFile.harness]: "local M = {}\n\nfunction M.actual(input)\n\treturn input\nend\n\nreturn M\n",
+      [bustedInline.test]: withInlineRows(BUSTED_SPEC, inlineRowFile(bustedInline, cases)),
+    });
+  };
+
+  test("no line over 120 columns with a tab as four", () => {
+    const texts = [fileMode(bustedFile)[bustedFile.test] ?? "", withInlineRows(BUSTED_SPEC, inlineRowFile(bustedInline, rows))];
+    for (const text of texts) expect(text.split("\n").filter((line) => line.replaceAll("\t", "    ").length > 120)).toEqual([]);
+  });
+
+  test.skipIf(!stylua)("stylua --check: neither test would be reformatted", () => {
+    expect(run(project(), stylua ?? "", "--check", "spec")).toBe("0");
+  });
+
+  test.skipIf(!luacheck)("luacheck: no warning in either test", () => {
+    expect(run(project(), luacheck ?? "", "--std", "max+busted", "--no-color", "--formatter", "plain", "spec")).toBe("0");
+  });
+
+  test.skipIf(!busted)("busted: every row of both modes passes, and a wrong harness fails each row by its id", () => {
+    const root = project(echo);
+    expect(run(root, busted ?? "")).toStartWith("0");
+    writeFileSync(join(root, bustedInline.test), withInlineRows("local function acceptance_actual(_)\n\treturn { 1, 2 }\nend\n", inlineRowFile(bustedInline, echo)));
+    const failed = run(root, busted ?? "");
+    expect(failed).not.toStartWith("0");
+    for (const row of rows) expect(failed).toContain(`acceptance rows ${row.id}\n`);
+  });
+
+  // StyLua with spaces, and with single quotes preferred.
+  const restyled = [
+    { name: "StyLua, indent_type Spaces", format: (text: string) => text.replace(/^\t+/gm, (tabs) => "    ".repeat(tabs.length)) },
+    { name: "StyLua, AutoPreferSingle", format: (text: string) => text.replace(/(^\t|\(|, )"([^"'\\\n]*)"/gm, "$1'$2'") },
+  ];
+  for (const style of restyled) {
+    const file = inlineRowFile(bustedInline, rows);
+    const formatted = style.format(withInlineRows(BUSTED_SPEC, file));
+    test(`${style.name}: the layout is kept, and a changed row is put back`, () => {
+      expect(formatted).not.toBe(withInlineRows(BUSTED_SPEC, file));
+      expect(hasInlineRows(formatted, file)).toBe(true);
+      const tampered = formatted.replace("macosx_11_0_arm64", "macosx_12_0_arm64");
+      expect(hasInlineRows(tampered, file)).toBe(false);
+      expect(withInlineRows(tampered, file)).toContain("macosx_11_0_arm64");
+    });
+  }
+});

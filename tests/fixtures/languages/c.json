@@ -5,7 +5,11 @@
     "CMakeLists.txt": "cmake_minimum_required(VERSION 3.16)\nproject(fixture C)\nenable_testing()\nadd_executable(sum_test src/sum.c src/sum_test.c)\nadd_test(NAME sum_test COMMAND sum_test)\n",
     ".clang-format": "BasedOnStyle: LLVM\n"
   },
+  "generated": {
+    "src/gen_test.c": "memset(buf, '\\\\', 3);\nsnprintf(out, 8, \"x%s\", buf);\nconst char *lit = \"\\\\\\\\\\\\\";\n/* memset(buf, '\\\\', 3); */\n"
+  },
   "expected": {
+    "generatedValues": ["src/gen_test.c:1 repeat","src/gen_test.c:2 format"],
     "memberSyntax": null,
     "suppressions": [
       "int x = y; // NOLINT(bugprone-narrowing-conversions): lint, linted, prescribable",

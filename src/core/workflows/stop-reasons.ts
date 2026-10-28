@@ -141,6 +141,14 @@ export const STOP_REASONS = {
     modes: NOT_ENFORCED,
     defaultMode: "shadow",
   },
+  generated_case: {
+    label:
+      "A task's tests build their inputs from generated values where the request or a criterion asks for literal examples",
+    // Shadow only until a bench round shows its records true (#2344, R74 callmend); its promotion
+    // refuses the task at its case walk with the files and lines of the generated values.
+    modes: NOT_ENFORCED,
+    defaultMode: "shadow",
+  },
   corrective_restores_removed: {
     label: "A corrective puts back what the previous corrective of the file removed",
     // Shadow only until two bench rounds show no false would-stop (#2277); its promotion opens a

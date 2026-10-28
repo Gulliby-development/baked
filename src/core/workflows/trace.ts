@@ -38,6 +38,7 @@ import {
   edgeDecision,
 } from "../verification/edge-inputs.js";
 import { CHAIN_SITES_DIR, type SitesRecord, siteDecision } from "../verification/family-sites.js";
+import { generatedCaseDecision } from "../verification/generated-values.js";
 import type { ReproOutcome } from "../verification/repro.js";
 import {
   TEST_CAP_DIR,
@@ -1548,12 +1549,17 @@ export function replayCaseWalks(
       }
       if (record.schemaVersion !== 1) return [];
       const key = (i: number) => `${record.cases[i]?.criterionId ?? "?"}#${i}`;
+      // The walk's `generated_case` would-stop (#2344), on the generated values it recorded.
+      const generated = (stop: boolean | undefined) => (stop ? ["generated_case"] : []);
       return [
         {
           taskId: record.taskId,
           cases: record.cases.length,
-          recorded: record.refused.map(key),
-          replayed: decide(record).map(key),
+          recorded: [...record.refused.map(key), ...generated(record.generatedStop)],
+          replayed: [
+            ...decide(record).map(key),
+            ...generated(record.generated && generatedCaseDecision(record)),
+          ],
         },
       ];
     });

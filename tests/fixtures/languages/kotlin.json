@@ -9,7 +9,11 @@
     "tests": "[ERROR] Tests run: 3, Failures: 1, Errors: 0, Skipped: 0\n",
     "testsGrown": "[ERROR] Tests run: 4, Failures: 1, Errors: 0, Skipped: 0\n"
   },
+  "generated": {
+    "src/test/kotlin/GenTest.kt": "val a = \"\\\\\".repeat(3)\nval b = \"x${a}\"\nval lit = \"\\\\\\\\\\\\\"\n// val d = \"\\\\\".repeat(3)\n"
+  },
   "expected": {
+    "generatedValues": ["src/test/kotlin/GenTest.kt:1 repeat","src/test/kotlin/GenTest.kt:2 interpolate"],
     "memberSyntax": [
       "Scanner delegates to Reader.IsEncodingToken.: Reader.IsEncodingToken",
       "Scanner passes Reader::isEncodingToken as the filter.: Reader::isEncodingToken"
