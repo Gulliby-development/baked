@@ -311,7 +311,8 @@ export const runs = {
       requestId: string;
       effectId: string;
       resolution: RecoveryResolution;
-      evidence: string;
+      /** Optional (#2415): without it the decision records a generated note. */
+      evidence?: string;
     },
   ) =>
     call<RunSnapshot>(key, "POST", runPath(run.runId, "recover"), {

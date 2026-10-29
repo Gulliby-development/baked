@@ -363,7 +363,8 @@ export function DecisionPrompt({
         });
       return;
     }
-    if (request.kind === "recovery" && resolution && value) {
+    // The note is optional (#2415): an empty one records a generated note.
+    if (request.kind === "recovery" && resolution) {
       const body = parse<RecoveryBody>(request.body_json);
       if (body.effectId)
         onDecision({
@@ -371,7 +372,7 @@ export function DecisionPrompt({
           requestId: request.id,
           effectId: body.effectId,
           resolution,
-          evidence: value,
+          ...(value ? { evidence: value } : {}),
         });
     }
   };
@@ -936,7 +937,7 @@ export function DecisionPrompt({
         ))}
       </Section>
       {resolution ? (
-        input("Describe what you checked (process stopped, files observed), then Enter")
+        input("What you checked (process stopped, files observed), optional; then Enter")
       ) : (
         <Hint>Press 1–4 to choose an outcome.</Hint>
       )}

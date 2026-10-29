@@ -13,6 +13,7 @@ import { setCwd } from "../cwd.js";
 import { installGlobalFetch } from "../llm/http-agent.js";
 import { presetPolicy, scaledPolicy, startCostCap } from "../workflows/budget.js";
 import { defaultWorkflowPolicy } from "../workflows/defaults.js";
+import { WorkflowFault } from "../workflows/errors.js";
 import { estimateStart, readHistory } from "../workflows/estimate.js";
 import { assertWorkspaceFreeForGate, executeGate } from "../workflows/gates.js";
 import {
@@ -28,6 +29,7 @@ import {
 import { issueStart } from "../workflows/issue-source.js";
 import { leaseOwnerAlive, recordWorkerExit } from "../workflows/leases.js";
 import { presetChoice } from "../workflows/preset-router.js";
+import { queuedResume } from "../workflows/queued-resume.js";
 import { RESUME_REMEDIES } from "../workflows/remedies-model.js";
 import { ROLLBACK_ARTIFACT_KIND, type RollbackReport } from "../workflows/rollback.js";
 import { readRunFileDiff } from "../workflows/run-diff.js";
@@ -36,6 +38,7 @@ import {
   DecisionSchema,
   MAX_CONCURRENT_WRITERS,
   type RunPolicy,
+  type RunSnapshot,
   SafeId,
   workflowsEnabled,
 } from "../workflows/schemas.js";
@@ -59,6 +62,18 @@ import {
 } from "./intelligence-relay.js";
 import { createWorkerHandler } from "./rpc.js";
 import type { UndoResult } from "./workflow-client.js";
+
+/** What a run action applied before its drive, in the words of a queued answer (#2415). */
+function appliedChange(input: unknown): string {
+  if (input === "extend") return "The extension is applied";
+  if (typeof input === "object" && input !== null && "reroute" in input)
+    return "The new model is applied";
+  if (typeof input === "object" && input !== null && "remedy" in input)
+    return "The remedy is recorded";
+  if (typeof input === "object" && input !== null && "kind" in input)
+    return "The decision is recorded";
+  return "The resume is recorded";
+}
 
 let service: NativeWorkflowService | undefined;
 let initiatives: InitiativeService | undefined;
@@ -383,7 +398,18 @@ const ctx = createWorkerHandler(
           "remedy" in (input as object) ||
           DecisionSchema.parse(input).kind !== "reject")
       ) {
-        const driven = await runtime.drive(id, new AbortController().signal);
+        let driven: RunSnapshot;
+        try {
+          driven = await runtime.drive(id, new AbortController().signal);
+        } catch (error) {
+          // At the parallel-run cap the change stays and the run waits for a slot (#2415).
+          const queued = queuedResume(error, runtime.store, id, appliedChange(input));
+          if (!queued) throw error;
+          throw new WorkflowFault("WORKSPACE_BUSY", queued.message, {
+            reason: queued.reason,
+            queued,
+          });
+        }
         continueInitiativeOf(id);
         return driven;
       }
