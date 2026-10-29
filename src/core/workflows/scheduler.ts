@@ -19625,7 +19625,12 @@ ${note}`;
     const path = `${HOST_APPLY_DIR}${task.id}.json`;
     if (this.store.latestArtifact(runId, path)) return;
     try {
-      const writes = await hostApplyInputs(root, state.requestText || state.prompt, task);
+      const writes = await hostApplyInputs(
+        root,
+        state.requestText || state.prompt,
+        task,
+        state.graph,
+      );
       if (!writes) return;
       this.store.artifact(
         runId,
@@ -19658,7 +19663,7 @@ ${note}`;
     let record: HostApplyRecord;
     let contents: { path: string; content: string }[] = [];
     try {
-      const writes = await hostApplyInputs(root, request, task);
+      const writes = await hostApplyInputs(root, request, task, state.graph);
       if (!writes) return false;
       record = hostApplyRecord(task.id, writes, hostApplyDecision, "on");
     } catch {
@@ -19666,7 +19671,7 @@ ${note}`;
     }
     if (record.wouldApply)
       try {
-        contents = await hostApplyContents(root, request, task);
+        contents = await hostApplyContents(root, request, task, state.graph);
       } catch (error) {
         record = {
           ...record,
