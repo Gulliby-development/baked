@@ -2318,7 +2318,11 @@ export type Decision =
       kind: "recovery";
       effectId: string;
       resolution: "record-applied" | "record-not-applied" | "retry" | "cancel";
-      evidence: string;
+      /**
+       * What the person checked. Optional (#2415): without it the decision records a generated
+       * one-line note (`recoveryNote`), as only manual evidence needs a real file.
+       */
+      evidence?: string;
     };
 export const DecisionSchema: z.ZodType<Decision> = z.discriminatedUnion("kind", [
   z
@@ -2354,7 +2358,7 @@ export const DecisionSchema: z.ZodType<Decision> = z.discriminatedUnion("kind", 
       kind: z.literal("recovery"),
       effectId: SafeId,
       resolution: z.enum(["record-applied", "record-not-applied", "retry", "cancel"]),
-      evidence: Text,
+      evidence: Text.optional(),
     })
     .strict(),
 ]);

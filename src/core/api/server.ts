@@ -430,9 +430,9 @@ function mutationArgs(action: Mutation, runId: string, raw: unknown): WorkflowAr
           request: body.requestId,
           effect: body.effectId,
           resolution: body.resolution,
-          file: true,
+          ...(body.evidence === undefined ? {} : { file: true as const }),
         },
-        { file: body.evidence },
+        body.evidence === undefined ? undefined : { file: body.evidence },
       );
     }
     case "revise": {
