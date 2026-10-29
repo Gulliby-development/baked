@@ -201,9 +201,26 @@ export function isWholeUnitFixer(fix: { executable: string; args: string[] }): b
   const { program, args } = toolchainCommand(fix.executable, fix.args);
   return (
     (program === "cargo" && args.includes("fmt") && !args.includes("--")) ||
-    gradleSourceSetFixer(program, args)
+    takesNoFile(program, args)
   );
 }
+
+/** A fixer that takes no file argument: it runs once, as configured (#2121, #2436). */
+const takesNoFile = (program: string, args: readonly string[]): boolean =>
+  gradleSourceSetFixer(program, args) || sbtWholeFixer(program, args) || /^mvnw?$/.test(program);
+
+/**
+ * An sbt fixer whose last command takes no file: each sbt argument is a command, and only an
+ * `...Only` task (`scalafmtOnly`, `scalafixOnly`-style) takes the file as its own argument. R77
+ * pairwick configured `sbt --server -batch scalafmtAll`; the appended path made it `scalafmtAll
+ * <file>`, which sbt refuses before it formats anything (#2436). Such a fixer runs once, as given;
+ * so does a Maven fixer, whose arguments are goals and phases (`mvn spotless:apply <file>` fails
+ * on an unknown lifecycle phase).
+ */
+const sbtWholeFixer = (program: string, args: readonly string[]): boolean =>
+  program === "sbt" && !sbtFileTask(args);
+const sbtFileTask = (args: readonly string[]): boolean =>
+  /^\w+Only$/.test(args.at(-1)?.trim() ?? "");
 
 /**
  * Gradle's Spotless and ktlint fixer tasks format every file of the source sets and take no file
@@ -226,7 +243,7 @@ export function wholeUnitFixerCommand(
   paths: readonly string[],
 ): { executable: string; args: string[] } {
   const { program, args, launch } = toolchainCommand(fix.executable, fix.args);
-  if (gradleSourceSetFixer(program, args)) return launch([...args]) ?? fix;
+  if (takesNoFile(program, args)) return launch([...args]) ?? fix;
   return (
     launch([...args, "--", ...paths]) ?? {
       executable: fix.executable,
@@ -241,6 +258,7 @@ export function fixerCommand(
 ): { executable: string; args: string[] } {
   const { program: name, args, launch } = toolchainCommand(fix.executable, fix.args);
   const [first] = args;
+  if (takesNoFile(name, args)) return launch([...args]) ?? fix;
   const command =
     name === "cargo" && args.includes("fmt") && !args.includes("--")
       ? launch([...args, "--", path])
@@ -249,7 +267,7 @@ export function fixerCommand(
         : name === "dotnet" && first === "format" && !args.includes("--include")
           ? launch([...args, "--include", path])
           : // Each sbt argument is a command: the file goes with the task (`"scalafmtOnly a.scala"`).
-            name === "sbt" && args.length
+            name === "sbt"
             ? launch([...args.slice(0, -1), `${args.at(-1)} ${path}`])
             : launch([...args, path]);
   // A path a launcher cannot pass unchanged is given to the fixer's own command line.

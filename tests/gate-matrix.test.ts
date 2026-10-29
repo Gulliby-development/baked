@@ -1634,6 +1634,39 @@ describe("gate matrix: Windows batch tools run by their absolute path (#2432)", 
     });
 });
 
+describe("gate matrix: a fixer gets the file only when its command takes one (#2436)", () => {
+  // R77 pairwick: `sbt --server -batch scalafmtAll` got the file appended to its last command and
+  // sbt refused it, exit 1, on every run. A fixer whose command takes no file runs once, as given.
+  const rows: [string, string, string[], string, string[] | "whole"][] = [
+    ["TypeScript", "bunx", ["biome", "check", "--write"], "src/a.ts", ["biome", "check", "--write", "src/a.ts"]],
+    ["Python", "ruff", ["check", "--fix"], "src/app/a.py", ["check", "--fix", "src/app/a.py"]],
+    ["Go", "go", ["fmt"], "a.go", ["-w", "a.go"]],
+    ["Rust", "cargo", ["fmt"], "src/lib.rs", "whole"],
+    ["Java", "mvn", ["spotless:apply"], "src/main/java/A.java", "whole"],
+    ["Kotlin", "./gradlew", ["ktlintFormat"], "src/main/kotlin/A.kt", "whole"],
+    ["C#", "dotnet", ["format"], "src/App/A.cs", ["format", "--include", "src/App/A.cs"]],
+    ["Swift", "swift", ["format", "--in-place"], "Sources/App/A.swift", ["format", "--in-place", "Sources/App/A.swift"]],
+    ["Ruby", "bundle", ["exec", "rubocop", "-a"], "lib/a.rb", ["exec", "rubocop", "-a", "lib/a.rb"]],
+    ["PHP", "vendor/bin/pint", [], "src/A.php", ["src/A.php"]],
+    ["Lua", "stylua", [], "src/a.lua", ["src/a.lua"]],
+    ["Dart", "dart", ["format"], "lib/a.dart", ["format", "lib/a.dart"]],
+    ["R", "Rscript", ["-e", "styler::style_file(commandArgs(TRUE))", "--args"], "R/a.R", ["-e", "styler::style_file(commandArgs(TRUE))", "--args", "R/a.R"]],
+    ["Shell", "shfmt", ["-w"], "bin/a.sh", ["-w", "bin/a.sh"]],
+    ["C/C++", "clang-format", ["-i"], "src/a.cpp", ["-i", "src/a.cpp"]],
+    ["Elixir", "mix", ["format"], "lib/a.ex", ["format", "lib/a.ex"]],
+    ["Zig", "zig", ["fmt"], "src/a.zig", ["fmt", "src/a.zig"]],
+    ["Scala (scalafmtOnly)", "sbt", ["-batch", "scalafmtOnly"], "src/main/scala/A.scala", ["-batch", "scalafmtOnly src/main/scala/A.scala"]],
+    ["Scala (scalafmtAll)", "sbt.bat", ["--server", "-batch", "scalafmtAll"], "src/main/scala/A.scala", "whole"],
+  ];
+  for (const [language, executable, args, path, expected] of rows)
+    test(`${language}: ${[executable, ...args].join(" ")}`, () => {
+      const fix = { executable, args };
+      expect(isWholeUnitFixer(fix)).toBe(expected === "whole");
+      if (expected !== "whole") expect(fixerCommand(fix, path).args).toEqual(expected);
+      else if (executable !== "cargo") expect(fixerCommand(fix, path)).toEqual(fix);
+    });
+});
+
 describe("gate matrix: a path-comment signature listing is not the new file (#2438)", () => {
   // R77 trailspin: a fenced block named only by its first-line path comment, after prose that does
   // not say it is the whole file, lists signatures; the host does not write it as the file.
