@@ -60,7 +60,7 @@ function composerProject(ignoreRules = ".baked/\nvendor/\nvendor/bundle/\n.bundl
   write(workspace, "vendor/bin/phpunit", "#!/usr/bin/env php\n");
   write(workspace, "vendor/autoload.php", "<?php\n");
   const runId = "run-deps";
-  const path = worktreePath(runId);
+  const path = worktreePath(workspace, runId);
   git(workspace, "worktree", "add", "-q", "-b", "baked/run-deps", join(workspace, path));
   linkDependencies(workspace, join(workspace, path));
   const state = { worktree: { path, branch: "baked/run-deps", baseHead: "", commit: null } };

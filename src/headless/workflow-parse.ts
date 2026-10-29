@@ -647,8 +647,8 @@ run [WORKFLOW] --issue URL|OWNER/NAME#N|#N [--feature ID] [--prompt TEXT | --pro
   other configured class, role or stage route still wins, and the start warns which agents run on
   another model. --model-strict makes the
   model serve every class, role and stage of this run (only --route still overrides it)
-  --worktree runs the tasks in .baked/worktrees/RUN_ID/main on branch baked/wf/RUN_ID; your working copy is not changed
-  --writers N (1..4, with --worktree) implements up to N independent tasks at once, each in .baked/worktrees/RUN_ID/TASK_ID
+  --worktree runs the tasks in .baked/worktrees/RUN/main (RUN: the run id's first 8 hex digits) on branch baked/wf/RUN_ID; your working copy is not changed
+  --writers N (1..4, with --worktree) implements up to N independent tasks at once, each in .baked/worktrees/RUN/TASK_ID
   --candidates N (1..8, at most the policy's maxCandidates, default 4) implements each planned task
   N times in separate worktrees and keeps the best candidate (best-of-N); needs a worktree run
   (--worktree or the best-of-n workflow). Default: the tasks stage's candidates, then the policy's

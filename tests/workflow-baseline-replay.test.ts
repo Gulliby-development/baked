@@ -18,6 +18,7 @@ import {
 import { RESOLUTION_SOURCES, type ResolutionIo, replayResolution, resolutionDiff, UNCHANGED_RESOLUTION_NOTE } from "../src/core/workflows/quality/dependency-resolution.js";
 import type { Check, ExecutionRequest } from "../src/core/workflows/types.js";
 import { FixtureExecutor, fixturePolicy, workflowFixture } from "./helpers/workflow-fixture.js";
+import { runWorktreeDir } from "../src/core/workflows/worktree.js";
 
 // Bench rounds 60 and 61 (#1945). Update briefs asked for proof that the new tests fail on the code
 // before the change (taskplan, ignorewhy, tplfill, modeplan). No check of the run produced it, so
@@ -194,7 +195,7 @@ describe("baseline replay (#1945)", () => {
       expect(done.status).toBe("completed");
       // The run's own tree is untouched and the copy is gone.
       expect(readFileSync(join(root, "src/sign.ts"), "utf8")).toBe(shape.code ?? NEW);
-      expect(existsSync(join(root, ".baked/worktrees", run.runId, "quality-baseline-replay"))).toBe(false);
+      expect(existsSync(join(root, runWorktreeDir(root, run.runId), "quality-baseline-replay"))).toBe(false);
       const artifact = service.store.latestArtifact(run.runId, QUALITY_BASELINE_REPLAY);
       return {
         record: artifact ? (JSON.parse(service.store.readArtifact(run.runId, artifact.id)) as BaselineReplay) : null,

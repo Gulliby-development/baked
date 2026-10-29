@@ -826,7 +826,7 @@ export const PolicySchema = z
     /**
      * Where the run edits files. Absent means `inline`: the project working copy, as before this
      * field existed, so stored policies keep their hash. `worktree` runs the tasks in the Git
-     * worktree `.baked/worktrees/RUN_ID/main` on the branch `baked/wf/RUN_ID`. Part of the policy,
+     * worktree `.baked/worktrees/RUN/main` (`runWorktreeDir`) on the branch `baked/wf/RUN_ID`. Part of the policy,
      * so the approval digest covers it.
      */
     executionMode: z.enum(["inline", "worktree"]).optional(),

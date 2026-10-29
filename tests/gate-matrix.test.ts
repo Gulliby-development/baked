@@ -34,7 +34,7 @@ import { directoryFixers, directoryFixerScenario } from "./helpers/directory-fix
 import { baselineCreatedFilesScenario, FIRST_RUN_OUTPUTS } from "./helpers/baseline-created-files-scenario.js";
 import { sourceManifest, TOOL_CACHES } from "../src/core/verification/snapshot.js";
 import { openTrace, replayInitiativeStarts } from "../src/core/workflows/trace.js";
-import { linkDependencies } from "../src/core/workflows/dependency-dirs.js";
+import { linkDependencies, worktreePathRisks } from "../src/core/workflows/dependency-dirs.js";
 import { spawnSync } from "node:child_process";
 import {
   chmodSync,
@@ -1693,6 +1693,24 @@ describe("gate matrix: a fixer that cannot run is found before the first task (#
     expect(fixerProbeDecision({ exitCode: 1, timedOut: false, changed: false })).toBe("unusable");
     expect(fixerProbeDecision({ exitCode: 0, timedOut: false, changed: true })).toBe("usable");
     expect(STOP_REASONS.fixer_unusable.defaultMode).toBe("shadow");
+  });
+});
+
+describe("gate matrix: a test tool that cannot start below a deep worktree (#2454)", () => {
+  // R78 latcell-update: `dart test` on Windows fails to load every test file at a 94-character
+  // working directory. The row says where it was measured; the run records the shadow reason.
+  test("the Dart row, its platform and its shadow reason", () => {
+    const root = mkdtempSync(join(tmpdir(), "gm-wt-"));
+    try {
+      writeFileSync(join(root, "pubspec.yaml"), "name: latcell\n");
+      const deep = join(root, "x".repeat(100));
+      expect(worktreePathRisks(root, deep, "win32").map((r) => [r.language, r.tool, r.limit])).toEqual([["dart", "dart test", 88]]);
+      expect(worktreePathRisks(root, deep, "linux")).toEqual([]);
+      expect(worktreePathRisks(root, root.slice(0, 80), "win32")).toEqual([]);
+      expect(STOP_REASONS.worktree_environment.defaultMode).toBe("shadow");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });
 

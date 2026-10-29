@@ -624,11 +624,14 @@ export class CheckRunner {
     ].filter((path) => path.startsWith(prefix));
     // The edit tools saw the formatter time out on one of them: name it without a bisect (#2242).
     const { formatTimeoutsUnder } = await import("../tools/auto-format.js");
+    const { runWorktreeDir } = await import("../workflows/worktree.js");
     const known = new Set([
       ...formatTimeoutsUnder(root).keys(),
       // A task edits in its own worktree, `.baked/worktrees/<run>/<task>/`.
       ...[
-        ...formatTimeoutsUnder(join(this.store.workspace, ".baked", "worktrees", runId)).keys(),
+        ...formatTimeoutsUnder(
+          join(this.store.workspace, runWorktreeDir(this.store.workspace, runId)),
+        ).keys(),
       ].map((path) => path.slice(path.indexOf("/") + 1)),
     ]);
     const hung = paths.find(

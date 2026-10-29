@@ -21,6 +21,7 @@ import { WorkflowToolPolicy } from "../src/core/workflows/tool-policy.js";
 import type { AgentExecutor, ExecutionRequest } from "../src/core/workflows/types.js";
 import { parseWorkflowArgs } from "../src/headless/workflow-parse.js";
 import { FixtureExecutor, fixturePolicy, fixtureSpec } from "./helpers/workflow-fixture.js";
+import { runWorktreeDir } from "../src/core/workflows/worktree.js";
 
 const result = (index: number, fields: Partial<CandidateResult> = {}): CandidateResult => ({
   index,
@@ -295,9 +296,9 @@ describe("best-of-N runs", () => {
     const loser = fx.json<{ outcome: string; failedChecks: string[]; selected: boolean; patch: string }>(runId, "tasks/T001/candidates/1.json");
     expect(loser).toMatchObject({ outcome: "done", failedChecks: ["not-bad"], selected: false });
     expect(loser.patch).toContain("+bad");
-    const worktree = join(fx.root, `.baked/worktrees/${runId}/main`);
+    const worktree = join(fx.root, `${runWorktreeDir(fx.root, runId)}/main`);
     expect(readFileSync(join(worktree, "value.txt"), "utf8")).toBe("B");
-    for (const n of [1, 2, 3]) expect(existsSync(join(fx.root, `.baked/worktrees/${runId}/T001-c${String(n)}`))).toBe(false);
+    for (const n of [1, 2, 3]) expect(existsSync(join(fx.root, `${runWorktreeDir(fx.root, runId)}/T001-c${String(n)}`))).toBe(false);
     expect(fx.store.leases()).toEqual([]);
     const report = runReport(fx.store, runId);
     expect(report).toContain("## Best-of-N");
@@ -313,7 +314,7 @@ describe("best-of-N runs", () => {
     expect(selection).toMatchObject({ winner: 2, method: "critic" });
     expect(selection.finalists.sort()).toEqual([1, 2, 3]);
     expect(fx.json<{ score: number }>(runId, "tasks/T001/candidates/2.json").score).toBe(0.9);
-    expect(readFileSync(join(fx.root, `.baked/worktrees/${runId}/main/value.txt`), "utf8")).toBe("good");
+    expect(readFileSync(join(fx.root, `${runWorktreeDir(fx.root, runId)}/main/value.txt`), "utf8")).toBe("good");
   }, 120000);
 
   test("a distinguishing test picks the finalist that prints what the spec requires", async () => {
@@ -330,7 +331,7 @@ describe("best-of-N runs", () => {
     expect(selection.distinction.test.expected).toBe("good");
     expect(selection.distinction.matching).toEqual([2]);
     expect(selection.distinction.runs.map((r) => r.shows)).toEqual([false, true, false]);
-    expect(readFileSync(join(fx.root, `.baked/worktrees/${runId}/main/value.txt`), "utf8")).toBe("good");
+    expect(readFileSync(join(fx.root, `${runWorktreeDir(fx.root, runId)}/main/value.txt`), "utf8")).toBe("good");
   }, 120000);
 
   test("candidates run on the models candidateModels names", async () => {
