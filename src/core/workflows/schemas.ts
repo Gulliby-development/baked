@@ -826,7 +826,7 @@ export const PolicySchema = z
     /**
      * Where the run edits files. Absent means `inline`: the project working copy, as before this
      * field existed, so stored policies keep their hash. `worktree` runs the tasks in the Git
-     * worktree `.baked/worktrees/RUN_ID/main` on the branch `baked/wf/RUN_ID`. Part of the policy,
+     * worktree `.baked/worktrees/RUN/main` (`runWorktreeDir`) on the branch `baked/wf/RUN_ID`. Part of the policy,
      * so the approval digest covers it.
      */
     executionMode: z.enum(["inline", "worktree"]).optional(),
@@ -873,6 +873,14 @@ export const PolicySchema = z
          * it on its file count (`suppliedTaskPrice`, #2002). Absent means off.
          */
         suppliedDiff: z.boolean().optional(),
+        /**
+         * Prices a test task that transcribes rows the request prescribes for its file (a fenced
+         * block whose first line names the file and says it holds rows, `suppliedRows`) at the
+         * rows' characters when above its history price, and has the host split it into
+         * sequential row slices when they need more than one attempt (#2455). Absent means off:
+         * the rows are recorded in `sizing/plan-N.json` (`rowVolume`, mode `shadow`) only.
+         */
+        rowVolume: z.boolean().optional(),
         /**
          * Weighs an initiative estimate's finished features by how recent their initiative is: a
          * feature's weight halves for every this many initiatives started after its own

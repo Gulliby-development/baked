@@ -6,9 +6,11 @@ import type { RunState } from "./schemas.js";
 import type { WorkflowStore } from "./store.js";
 import {
   purgeWorktreeTrash,
+  RUN_MARKER,
   removeDirectory,
   removeRunWorktree,
   removeTaskWorktree,
+  worktreeDirRun,
 } from "./worktree.js";
 
 /** Where run and task worktrees live, relative to the project root. */
@@ -19,7 +21,7 @@ const TERMINAL: readonly RunState[] = ["completed", "failed", "cancelled"];
 /** The worktrees of one run on disk: its `main` worktree and the task worktrees of its writers. */
 export interface RunWorktreeUsage {
   runId: string;
-  /** The run's directory relative to the project root, `.baked/worktrees/RUN_ID`. */
+  /** The run's directory relative to the project root, `.baked/worktrees/<first 8 hex digits>`. */
   path: string;
   bytes: number;
   worktrees: { name: string; bytes: number }[];
@@ -99,12 +101,15 @@ export async function worktreeUsage(
   for (const entry of entries) {
     const directory = join(root, entry.name);
     const parts = await Promise.all(
-      readdirSync(directory).map(async (name) => ({
-        name,
-        bytes: await diskBytes(join(directory, name)),
-      })),
+      readdirSync(directory)
+        .filter((name) => name !== RUN_MARKER)
+        .map(async (name) => ({
+          name,
+          bytes: await diskBytes(join(directory, name)),
+        })),
     );
-    const run = runOf(store, entry.name);
+    const runId = worktreeDirRun(directory) ?? entry.name;
+    const run = runOf(store, runId);
     const status = run?.status ?? "orphan";
     const unsettled = run
       ? store
@@ -118,7 +123,7 @@ export async function worktreeUsage(
           ? "a delivery step is unsettled"
           : undefined;
     worktrees.push({
-      runId: entry.name,
+      runId,
       path: join(WORKTREES, entry.name).split("\\").join("/"),
       bytes: parts.reduce((sum, part) => sum + part.bytes, 0),
       worktrees: parts.sort((a, b) => b.bytes - a.bytes),

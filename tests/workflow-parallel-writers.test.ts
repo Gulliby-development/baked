@@ -20,6 +20,7 @@ import { WorkflowToolPolicy } from "../src/core/workflows/tool-policy.js";
 import type { AgentExecutor, ExecutionRequest, Task } from "../src/core/workflows/types.js";
 import { parseWorkflowArgs } from "../src/headless/workflow-parse.js";
 import { FixtureExecutor, fixturePolicy, fixtureSpec } from "./helpers/workflow-fixture.js";
+import { runWorktreeDir } from "../src/core/workflows/worktree.js";
 
 const cleanups: (() => void)[] = [];
 afterEach(() => {
@@ -273,7 +274,7 @@ function setup(plans: Plan[], expected: Record<string, string>, options: { overl
   };
   const batches = (runId: string) =>
     store.artifacts(runId).filter((a) => a.logical_path.startsWith("tasks/batches/")).map((a) => JSON.parse(store.readArtifact(runId, a.id)) as { tasks: string[]; deferredByOverlap: string[]; deferredByBudget: string[] });
-  const tree = (runId: string) => join(root, `.baked/worktrees/${runId}/main`);
+  const tree = (runId: string) => join(root, `${runWorktreeDir(root, runId)}/main`);
   const status = (task: string, runId: string) => store.tasks(runId).find((t) => t.id === task)?.status;
   const lastError = (runId: string) => {
     const diagnostic = store.artifacts(runId).filter((a) => a.kind === "diagnostic").at(-1);
@@ -306,8 +307,8 @@ describe("workflow parallel writers", () => {
     expect(done.status).toBe("completed");
     const [first, second] = ["T001", "T002"].map((id) => fx.executor.started.find((s) => s.taskId === id));
     expect(overlaps(first, second)).toBe(true);
-    expect(first?.root).toBe(join(fx.root, `.baked/worktrees/${run.runId}/T001`));
-    expect(second?.root).toBe(join(fx.root, `.baked/worktrees/${run.runId}/T002`));
+    expect(first?.root).toBe(join(fx.root, `${runWorktreeDir(fx.root, run.runId)}/T001`));
+    expect(second?.root).toBe(join(fx.root, `${runWorktreeDir(fx.root, run.runId)}/T002`));
     expect(fx.batches(run.runId).map((b) => b.tasks)).toEqual([["T001", "T002"]]);
     // Integrated into the run worktree and committed on the run branch; the working copy is untouched.
     expect(readFileSync(join(fx.tree(run.runId), "a.txt"), "utf8")).toBe("A");
@@ -322,12 +323,12 @@ describe("workflow parallel writers", () => {
     // Each effect is bound to the root it touched: the agent edits to the task worktree, the
     // integration to the run worktree, the task checks to the task worktree.
     const intents = fx.store.effects(run.runId).map((e) => ({ kind: e.kind, ...JSON.parse(e.intent_json) }) as { kind: string; path?: string; tool?: string; checkId?: string; root?: string });
-    expect(intents.find((i) => i.tool === "edit_file" && i.path === "a.txt")?.root).toBe(`.baked/worktrees/${run.runId}/T001`);
-    expect(intents.find((i) => i.tool === "integrate" && i.path === "b.txt")?.root).toBe(`.baked/worktrees/${run.runId}/main`);
+    expect(intents.find((i) => i.tool === "edit_file" && i.path === "a.txt")?.root).toBe(`${runWorktreeDir(fx.root, run.runId)}/T001`);
+    expect(intents.find((i) => i.tool === "integrate" && i.path === "b.txt")?.root).toBe(`${runWorktreeDir(fx.root, run.runId)}/main`);
     // (The checks stage runs every policy check again in the run worktree.)
-    expect(intents.filter((i) => i.checkId === "where").map((i) => i.root).sort()).toEqual([`.baked/worktrees/${run.runId}/T001`, `.baked/worktrees/${run.runId}/T002`, `.baked/worktrees/${run.runId}/main`]);
+    expect(intents.filter((i) => i.checkId === "where").map((i) => i.root).sort()).toEqual([`${runWorktreeDir(fx.root, run.runId)}/T001`, `${runWorktreeDir(fx.root, run.runId)}/T002`, `${runWorktreeDir(fx.root, run.runId)}/main`]);
     // Task worktrees are gone after integration and no lease is left.
-    expect(existsSync(join(fx.root, `.baked/worktrees/${run.runId}/T001`))).toBe(false);
+    expect(existsSync(join(fx.root, `${runWorktreeDir(fx.root, run.runId)}/T001`))).toBe(false);
     expect(git(fx.root, "worktree", "list")).not.toContain("/T00");
     expect(fx.store.leases()).toEqual([]);
   });
@@ -557,7 +558,7 @@ describe("workflow parallel writers", () => {
         if (!lose) return;
         lose = false;
         // Another owner, since gone, took the task worktree's lease: this worker has lost it.
-        const resource = `worktree:.baked/worktrees/${request.runId}/T002` as const;
+        const resource = `worktree:${runWorktreeDir(fx.root, request.runId)}/T002` as const;
         const held = fx.store.lease(resource);
         fx.store.transaction(() => fx.store.putLease({ resource, owner_id: "other-owner", owner_epoch: (held?.owner_epoch ?? 0) + 1, run_id: request.runId, expires_at: 0, process_identity_json: JSON.stringify({ pid: 2147483647 }) }));
       },
@@ -903,7 +904,7 @@ describe("workflow parallel writers", () => {
     expect(overlaps(a, b)).toBe(false);
     expect(fx.batches(run.runId)).toEqual([]);
     expect(fx.store.effects(run.runId).some((e) => JSON.parse(e.intent_json).tool === "integrate")).toBe(false);
-    expect(readdirNames(join(fx.root, ".baked/worktrees", run.runId))).toEqual(["main"]);
+    expect(readdirNames(join(fx.root, runWorktreeDir(fx.root, run.runId)))).toEqual(["RUN_ID", "main"]);
   });
 
   test("the writer count is part of the approval digest and needs worktree execution", async () => {

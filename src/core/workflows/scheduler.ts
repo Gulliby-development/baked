@@ -844,7 +844,7 @@ import {
 
 type Implementation = ReturnType<typeof ImplementationSchema.parse>;
 
-import { linkDependencies } from "./dependency-dirs.js";
+import { linkDependencies, worktreePathRisks } from "./dependency-dirs.js";
 import { browserLayoutProbe, type LayoutProbe, layoutVerdict } from "./layout-check.js";
 import { planCostOf, planCostWarning } from "./plan-cost.js";
 import { EDIT_TOOLS } from "./progress-watch.js";
@@ -1011,6 +1011,7 @@ import {
   commitRunBranch,
   createTaskWorktree,
   ensureRunWorktree,
+  releaseRunDir,
   removeTaskWorktree,
   runContentCommit,
   runRoot,
@@ -1406,7 +1407,10 @@ export class WorkflowScheduler {
     // stays free and other worktree runs can execute beside it.
     const inWorktree = executionModeOf(policy) === "worktree";
     this.mutation = inWorktree
-      ? mutationLeaseFor(this.store.workspace, join(this.store.workspace, worktreePath(runId)))
+      ? mutationLeaseFor(
+          this.store.workspace,
+          join(this.store.workspace, worktreePath(this.store.workspace, runId)),
+        )
       : "mutation";
     this.execution = inWorktree ? `execution:${runId}` : "execution";
     this.leases.acquire(this.execution, runId, { maxExecuting: this.maxParallelRuns });
@@ -2830,6 +2834,7 @@ export class WorkflowScheduler {
               await this.recordCheckBaseline(runId, state, policy, signal);
               await this.repairBaselineFailures(runId, stepId, state, policy, signal);
               await this.probeFixers(runId, state, policy, signal);
+              this.worktreePathWouldStop(runId, state, policy);
               if (state.pendingTaskRepair.length) {
                 const ids = new Set(state.pendingTaskRepair);
                 const findings = this.store
@@ -4767,14 +4772,20 @@ export class WorkflowScheduler {
     policy: RunPolicy,
     edits?: HostEdit[],
   ): TaskGraph {
-    const spec = this.store.state(runId).spec;
+    const state = this.store.state(runId);
+    const spec = state.spec;
     const report = sizePlan({
       graph,
       spec,
-      policy,
+      // The host split reads the request for its prescribed rows alone (#2455): a supplied task
+      // still goes back to the planner from the plan's sizing, as before (#2019).
+      policy: policy.sizing?.rowVolume
+        ? { ...policy, sizing: { ...policy.sizing, suppliedDiff: false } }
+        : policy,
       samples: sizingHistory(this.store.workspace, policy),
       spent: this.store.run(runId).token_usage,
       model: this.sizingModel(runId, graph),
+      ...(policy.sizing?.rowVolume ? { request: state.requestText || state.prompt } : {}),
     });
     const split = splitTestTasks(graph, report, spec, edits, policy.checks);
     if (!split) return graph;
@@ -5166,6 +5177,30 @@ export class WorkflowScheduler {
           });
       }
     });
+  }
+  /** The platform a run's checks run on; tests inject another. */
+  platform: NodeJS.Platform = process.platform;
+  /**
+   * Before the first task, records `worktree_environment` (#2454) when the deepest worktree a task's
+   * checks run in is longer than a project language's test tool handles on this platform.
+   */
+  private worktreePathWouldStop(runId: string, state: RuntimeState, policy: RunPolicy): void {
+    const mode = stopMode(policy, "worktree_environment");
+    if (mode === "enforce" || !state.worktree) return;
+    if (!this.store.tasks(runId).every((task) => task.status === "pending")) return;
+    const main = join(this.store.workspace, state.worktree.path);
+    const taskIds = (state.graph?.tasks ?? []).map((task) => task.id);
+    const deepest = [main, ...taskIds.map((id) => join(dirname(main), id))].reduce((a, b) =>
+      b.length > a.length ? b : a,
+    );
+    for (const risk of worktreePathRisks(main, deepest, this.platform))
+      recordWouldStop(this.store, runId, {
+        reason: "worktree_environment",
+        mode,
+        key: `language-${risk.language}`,
+        summary: `worktree_environment: a task's checks run in ${risk.path} (${String(risk.length)} characters), and ${risk.tool} fails to start over ${String(risk.limit)} characters on ${this.platform}; the run would stop before its first task instead of paying correctives that cannot shorten the path. Move the project to a shorter path or run inline`,
+        inputs: { ...risk, platform: this.platform },
+      });
   }
   /** The `baseline_unrepairable` would-stop of a baseline failure (#2215), once per check. */
   private baselineWouldStop(
@@ -16009,12 +16044,7 @@ ${note}`;
     } finally {
       await scope.stop();
       await removeTaskWorktree(this.store.workspace, path);
-      for (const folder of [dirname(copy), dirname(dirname(copy))])
-        try {
-          rmdirSync(folder);
-        } catch {
-          break;
-        }
+      releaseRunDir(this.store.workspace, path);
     }
   }
   /**
@@ -16516,13 +16546,8 @@ ${note}`;
         // Stopped with its run, or failed: an advisory score is only missing from the report.
       } finally {
         await removeTaskWorktree(this.store.workspace, path);
-        // An inline run leaves no worktree folder behind; rmdir only removes an empty folder.
-        for (const folder of [dirname(copy), dirname(dirname(copy))])
-          try {
-            rmdirSync(folder);
-          } catch {
-            break;
-          }
+        // An inline run leaves no worktree folder behind.
+        releaseRunDir(this.store.workspace, path);
       }
     })();
     this.backgroundMutations.set(runId, { controller, done });

@@ -36,7 +36,7 @@ function fixture(autocrlf: boolean) {
   git(workspace, "add", "-A");
   git(workspace, "commit", "-q", "-m", "base");
   const runId = "run-eol";
-  const path = worktreePath(runId);
+  const path = worktreePath(workspace, runId);
   git(workspace, "worktree", "add", "-q", "-b", "baked/run-eol", join(workspace, path));
   const lines = "export const a = 1;\nexport const b = 2;\n";
   mkdirSync(join(workspace, path, "test"), { recursive: true });

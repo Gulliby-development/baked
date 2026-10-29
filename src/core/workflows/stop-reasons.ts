@@ -236,6 +236,16 @@ export const STOP_REASONS = {
     modes: NOT_ENFORCED,
     defaultMode: "shadow",
   },
+  worktree_environment: {
+    label:
+      "A run's task worktree path is longer than a project language's test tool handles on this platform",
+    // Shadow only until two bench rounds show no false would-stop (#2454, R78 latcell-update's
+    // `dart test` at a 94-character worktree on Windows); its promotion stops the run before its
+    // first task with the path's length and the remedies, instead of paying correctives that
+    // cannot shorten a path.
+    modes: NOT_ENFORCED,
+    defaultMode: "shadow",
+  },
   supplied_drift: {
     label:
       "A file a task delivered differs from the block the request gives for it verbatim (a whole file, a Markdown section or an exact diff)",

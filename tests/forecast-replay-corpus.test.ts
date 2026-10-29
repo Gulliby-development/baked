@@ -7,8 +7,8 @@ import { costGrowthLimit, dollarShortfall, growthLimit, type ShareGateRecord, sh
 import { forecastSamples } from "../src/core/workflows/stage-price.js";
 import { adaptiveFirstByteMs } from "../src/core/llm/provider-health.js";
 import { planApprovalDecision } from "../src/core/workflows/auto-approval.js";
-import { CAPACITY_PROBE } from "../src/core/workflows/sizing.js";
-import { type CallRate, chainCosts, openTrace, type PlanPriceReplay, replayChainEscalation, replayEdgeRecord, replayInitiativeStarts, replayPlanApprovals, replayPlanPrices, replayActiveTimes, replayPoolBounds, replayTrace, type TestSplitRule } from "../src/core/workflows/trace.js";
+import { CAPACITY_PROBE, exceedsTestCapacity, rowVolumePrice } from "../src/core/workflows/sizing.js";
+import { type CallRate, chainCosts, openTrace, type PlanPriceReplay, replayChainEscalation, replayEdgeRecord, replayInitiativeStarts, replayPlanApprovals, replayPlanPrices, replayActiveTimes, replayPoolBounds, replayTestSplits, replayTrace, type TestSplitRule } from "../src/core/workflows/trace.js";
 import { type EdgeRecord, edgeCrashDecision } from "../src/core/verification/edge-inputs.js";
 import { ROOT, traces } from "./helpers/replay-corpus.js";
 import { fixturePolicy } from "./helpers/workflow-fixture.js";
@@ -592,6 +592,40 @@ describe("test task splits replay on recorded sizing reports (#1789)", () => {
     const path = join(ROOT, "R52/url-shortener.sqlite.gz");
     expect(replayTrace(path, { testSplit: () => true }).runs.reduce((n, r) => n + r.newTestSplits, 0)).toBeGreaterThan(0);
     expect(replayTrace(path).runs.reduce((n, r) => n + r.newTestSplits, 0)).toBe(0);
+  }, 120000);
+
+  test("#2455: row volume is a new sizing input; R77 trailspin replays unchanged, R78 deltaglue T007 splits by its rows", () => {
+    // No report before #2455 records row volume, so the case rule alone replays them: R77
+    // trailspin's prescribed-rows file (T005, fixtures_test.go) was kept whole and still is.
+    const { store, dispose } = openTrace(join(ROOT, "R77/trailspin.sqlite.gz"));
+    try {
+      const runs = (store.connection.query("SELECT id FROM runs").all() as { id: string }[]).map((r) => r.id);
+      const boundaries = runs.flatMap((runId) => replayTestSplits(store, runId));
+      expect(boundaries.length).toBeGreaterThan(0);
+      expect(boundaries.filter((b) => b.replayed !== b.recorded)).toEqual([]);
+      for (const runId of runs)
+        for (const artifact of store.artifacts(runId).filter((a) => a.logical_path.startsWith("sizing/plan-")))
+          expect(store.readArtifact(runId, artifact.id)).not.toContain("rowVolume");
+    } finally {
+      dispose();
+    }
+    // R78 deltaglue cli 4ee1c56f: T007 recorded at 2 cases, 341k-863k, capacity 87, cap 600k, kept
+    // whole, and the case rule still keeps it whole; it cost 6.89M without finishing. Its 63 rows
+    // of 20,123 characters are priced up to what it spent and split.
+    const deltaglue = openTrace(join(ROOT, "R78/deltaglue.sqlite.gz"));
+    try {
+      const [t007] = replayTestSplits(deltaglue.store, "4ee1c56f-52c4-4996-b90b-225ed96b111e").filter((b) => b.report === "sizing/plan-0.json" && b.taskId === "T007");
+      expect(t007).toMatchObject({ cases: 2, recorded: "whole", replayed: "whole" });
+      const report = deltaglue.store.latestArtifact("4ee1c56f-52c4-4996-b90b-225ed96b111e", "sizing/plan-0.json");
+      const recorded = JSON.parse(deltaglue.store.readArtifact("4ee1c56f-52c4-4996-b90b-225ed96b111e", report!.id));
+      expect(recorded.testTaskLimit.cases).toBe(87);
+      expect(exceedsTestCapacity(2, recorded.testTaskLimit, recorded.tasks.find((t: { taskId: string }) => t.taskId === "T007").estimate, recorded.maxAttemptTokens)).toBe(false);
+      const rows = rowVolumePrice(20_123, 63, recorded.maxAttemptTokens);
+      expect(rows.estimate.high).toBeGreaterThanOrEqual(6_887_546);
+      expect(rows.slices).toBeGreaterThan(1);
+    } finally {
+      deltaglue.dispose();
+    }
   }, 120000);
 
   test("R62 stepvet: tagexpr's active time is sized at the initiative's own pace and covers what it used (#2336)", () => {

@@ -70,7 +70,7 @@
       "dart pub get --offline"
     ],
     "worktreePathLimits": [
-      "pubspec.yaml: dart test over 120 characters"
+      "pubspec.yaml: dart test over 88 characters"
     ],
     "testClasses": null,
     "testDeclarations": ["test/sum_test.dart: 3 tests"]
