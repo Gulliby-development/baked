@@ -43,11 +43,11 @@ export interface ProcessResult {
 export const isWindowsBatch = (executable: string): boolean => /\.(cmd|bat)$/i.test(executable);
 
 /**
- * The program a Windows launch names: a bare command (`sbt.bat`, `gradle`, no directory) is looked
- * up on `path` from `cwd`, and the batch script it finds is named by its absolute path. cmd.exe
- * sets a script's `%~dp0` from the name it was given, so a script started by bare name through
- * `cmd /c "sbt.bat"` reads its own directory as the working directory: R77's sbt.bat looked for
- * `<worktree>\bin\sbt-launch.jar`. A name with a directory, or one not found, is kept.
+ * The program a Windows launch names (#2432): a bare batch name (`sbt.bat`, `npm.cmd`, no
+ * directory) is looked up on `path` from `cwd` and named by its absolute path. cmd.exe expands
+ * `%~dp0` of a script started as a quoted bare name to the working directory, so R77's `sbt.bat`
+ * looked for `<worktree>\bin\sbt-launch.jar`. A name with a directory, one not found, and a name
+ * without `.bat`/`.cmd` (which Bun resolves itself) are kept.
  */
 export function windowsProgram(
   executable: string,
@@ -55,9 +55,9 @@ export function windowsProgram(
   cwd: string,
   which: (bin: string, options: { PATH: string; cwd: string }) => string | null = Bun.which,
 ): string {
-  if (/[\\/]/.test(executable) || /^[a-z]:/i.test(executable)) return executable;
-  const found = which(executable, { PATH: path, cwd });
-  return found && isWindowsBatch(found) ? found : executable;
+  if (!isWindowsBatch(executable) || /[\\/]/.test(executable) || /^[a-z]:/i.test(executable))
+    return executable;
+  return which(executable, { PATH: path, cwd }) ?? executable;
 }
 
 /**
@@ -106,11 +106,10 @@ export class ProcessScope {
     options.signal.throwIfAborted();
     const started = executionClock.now();
     const scope = randomUUID();
-    const program =
-      process.platform === "win32" && !options.verbatim
-        ? windowsProgram(executable, options.env.PATH ?? options.env.Path ?? "", options.cwd)
-        : executable;
-    const batch = process.platform === "win32" && !options.verbatim && isWindowsBatch(program);
+    const batch = process.platform === "win32" && !options.verbatim && isWindowsBatch(executable);
+    const program = batch
+      ? windowsProgram(executable, options.env.PATH ?? options.env.Path ?? "", options.cwd)
+      : executable;
     const direct = batch ? windowsBatchInvocation(program, args) : { executable, args };
     // Wrapping follows the batch rewrite; the Windows launcher joins a verbatim line unquoted.
     const verbatim = (options.verbatim === true || batch) && process.platform === "win32";

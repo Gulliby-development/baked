@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { LspBackend, serverRootFor } from "../src/core/intelligence/backends/lsp/index.js";
-import { buildCheckEnv } from "../src/core/verification/check-runner.js";
+import { buildCheckEnv, executeCheckCommand } from "../src/core/verification/check-runner.js";
 import { runSandbox } from "../src/core/security/sandbox.js";
 import {
   isWindowsBatch,
@@ -62,48 +62,75 @@ describe("batch scripts on Windows", () => {
     }
   });
 
-  test("a bare batch name runs by the absolute path the PATH gives; a path or an executable is kept", () => {
+  test("a bare batch name runs by the absolute path the PATH gives; a path, an unknown name or a name without .bat/.cmd is kept (#2432)", () => {
     const found: Record<string, string> = {
       "sbt.bat": "C:\\sbt\\bin\\sbt.bat",
+      "npm.cmd": "C:\\node\\npm.cmd",
       gradle: "C:\\gradle\\bin\\gradle.bat",
-      git: "C:\\Git\\cmd\\git.exe",
     };
     const which = (bin: string) => found[bin] ?? null;
     expect(windowsProgram("sbt.bat", "C:\\sbt\\bin", "C:\\w", which)).toBe("C:\\sbt\\bin\\sbt.bat");
-    expect(windowsProgram("gradle", "C:\\gradle\\bin", "C:\\w", which)).toBe("C:\\gradle\\bin\\gradle.bat");
-    expect(windowsProgram("git", "", "C:\\w", which)).toBe("git");
+    expect(windowsProgram("npm.cmd", "C:\\node", "C:\\w", which)).toBe("C:\\node\\npm.cmd");
+    // Bun resolves an extensionless name itself and starts the script by its path.
+    expect(windowsProgram("gradle", "C:\\gradle\\bin", "C:\\w", which)).toBe("gradle");
     expect(windowsProgram("missing.cmd", "", "C:\\w", which)).toBe("missing.cmd");
     expect(windowsProgram("C:\\x\\sbt.bat", "", "C:\\w", which)).toBe("C:\\x\\sbt.bat");
     expect(windowsProgram(".\\gradlew.bat", "", "C:\\w", which)).toBe(".\\gradlew.bat");
   });
 
-  // R77: sbt.bat sets SBT_BIN_DIR=%~dp0, and cmd.exe gave a script started by its bare quoted name
-  // the working directory there, so sbt looked for <worktree>\bin\sbt-launch.jar.
-  for (const sandboxed of [false, true])
-    test.skipIf(process.platform !== "win32")(
-      `a batch script found on the PATH reads its own folder as %~dp0${sandboxed ? " in the sandbox" : ""}`,
-      async () => {
-        const tools = scratch();
-        const work = scratch();
-        mkdirSync(join(tools, "bin"));
-        writeFileSync(join(tools, "bin", "where-am-i.bat"), "@echo off\r\necho dir:%~dp0\r\n");
-        const env = { ...process.env, PATH: `${join(tools, "bin")};${process.env.PATH ?? process.env.Path ?? ""}` };
-        delete env.Path;
-        const scope = new ProcessScope();
-        try {
-          const result = await scope.execute("where-am-i.bat", [], {
-            cwd: work,
-            env,
-            timeoutMs: 60000,
-            signal: new AbortController().signal,
-            sandbox: sandboxed ? runSandbox({ sandbox: "auto", network: "deny" }, work) : null,
-          });
-          expect(result.output.toLowerCase()).toContain(`dir:${join(tools, "bin")}\\`.toLowerCase());
-        } finally {
-          await scope.stop();
-        }
-      },
-    );
+  // R77 pairwick (#2432): sbt.bat sets SBT_BIN_DIR=%~dp0, and cmd.exe expanded %~dp0 of a script
+  // started as a quoted bare name to the cwd, so sbt looked for <worktree>\bin\sbt-launch.jar.
+  // One fixture per launcher shape of the sweep, each started by its bare name from another cwd.
+  const shapes: [string, string][] = [
+    ["sbt.bat", "set SBT_BIN_DIR=%~dp0\r\necho home:%SBT_BIN_DIR%"],
+    ["mvn.cmd", 'set "MAVEN_HOME=%~dp0"\r\necho home:%MAVEN_HOME%'],
+    ["npm.cmd", 'echo home:%~dp0 "%~dp0\\node.exe"'],
+    ["composer.bat", 'echo home:%~dp0 "%~dp0composer.phar"'],
+    ["bundle.bat", 'echo home:%~dp0 "%~dp0ruby.exe" "%~dpn0"'],
+    ["mix.bat", 'echo home:%~dp0 "%~dp0\\elixir.bat"'],
+  ];
+  const launchers = () => {
+    const tools = scratch();
+    const work = scratch();
+    mkdirSync(join(tools, "bin"));
+    for (const [name, line] of shapes) writeFileSync(join(tools, "bin", name), `@echo off\r\n${line}\r\n`);
+    const env: NodeJS.ProcessEnv = { ...process.env, PATH: `${join(tools, "bin")};${process.env.PATH ?? process.env.Path ?? ""}` };
+    delete env.Path;
+    return { home: `home:${join(tools, "bin")}\\`.toLowerCase(), work, env };
+  };
+  const options = (work: string, env: NodeJS.ProcessEnv, sandboxed = false) => ({
+    cwd: work,
+    env,
+    timeoutMs: 60000,
+    signal: new AbortController().signal,
+    sandbox: sandboxed ? runSandbox({ sandbox: "auto", network: "deny" }, work) : null,
+  });
+
+  test.skipIf(process.platform !== "win32")("every launcher shape found on the PATH reads its own folder as %~dp0 (#2432)", async () => {
+    const { home, work, env } = launchers();
+    const scope = new ProcessScope();
+    try {
+      for (const [name] of shapes) {
+        const result = await scope.execute(name, [], options(work, env));
+        expect(`${name} ${result.output.toLowerCase()}`).toContain(`${name} ${home}`);
+      }
+    } finally {
+      await scope.stop();
+    }
+  });
+
+  test.skipIf(process.platform !== "win32")("a check, sandboxed or not, starts sbt.bat by its path (#2432)", async () => {
+    const { home, work, env } = launchers();
+    const scope = new ProcessScope();
+    try {
+      for (const sandboxed of [false, true]) {
+        const result = await executeCheckCommand(scope, "sbt.bat", ["--server", "-batch"], options(work, env, sandboxed));
+        expect(result.output.toLowerCase()).toContain(home);
+      }
+    } finally {
+      await scope.stop();
+    }
+  });
 
   test.skipIf(process.platform !== "win32")("does not run an injected command", async () => {
     const dir = scratch();

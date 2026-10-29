@@ -1619,7 +1619,7 @@ const GRADLE_REPORT = `<?xml version="1.0" encoding="UTF-8"?>
   <system-err><![CDATA[]]></system-err>
 </testsuite>
 `;
-describe("gate matrix: Windows batch tools run by their absolute path (R77 sbt.bat)", () => {
+describe("gate matrix: Windows batch tools run by their absolute path (#2432)", () => {
   // A check's batch tool found on the PATH goes to cmd.exe by its absolute path, sandboxed or not,
   // so the scripts that find their own files from %~dp0 (sbt's launcher jar, Gradle's and Maven's
   // homes, npm's node, Composer's phar, LuaRocks' wrappers) read their own folder.
