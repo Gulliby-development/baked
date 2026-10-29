@@ -1,4 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
+import { destroyTreeSitterClient } from "@opentui/core";
 import { testRender } from "@opentui/react/test-utils";
 import { act } from "react";
 import { DiffView } from "../src/components/chat/DiffView.js";
@@ -45,9 +46,9 @@ test("a renderer destroyed while the tree-sitter client starts leaves no unhandl
   process.on("unhandledRejection", onRejection);
   try {
     const first = getTSClient();
-    // Destroying a renderer destroys the process's tree-sitter client, mid-start here.
-    const view = await testRender(<Markdown text={"```ts\nconst a = 1;\n```\n"} />, { width: 40, height: 10 });
-    view.renderer.destroy();
+    // What the last renderer's destroy runs: the process's client goes, mid-start here. Called
+    // directly, since another test file's renderer may still be open in a shared process.
+    await destroyTreeSitterClient();
     await new Promise((resolve) => setTimeout(resolve, 50));
     expect(rejections.map(String)).not.toContain("Error: Client destroyed during initialization");
     expect(getTSClient()).not.toBe(first);
