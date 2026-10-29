@@ -345,6 +345,39 @@ describe("initiative starts replay on rewound traces (#1707)", () => {
     }
   }, 300000);
 
+  test("#2417: every rewound start of R75 maskback reads the active time and calls its recorded share gate read", () => {
+    // The rewind restored each run's tokens, dollars and policy (#2061) but left its active time
+    // and agent calls at their final totals, so an open run counted every minute and call it spent
+    // after the start: R76 schemamask's generation and validate read a time share of 0 ms and
+    // parked, and here detectors read 4.09M ms and 30 calls against the 0.80M and 8 its gate read.
+    const path = join(ROOT, "R75", "maskback.sqlite.gz");
+    const trace = openTrace(path);
+    let recorded: Map<string, NonNullable<ShareGateRecord["view"]["budget"]["used"]>>;
+    try {
+      recorded = new Map(
+        (trace.store.connection.query("SELECT payload_json FROM initiative_events WHERE type='feature.share_gate' ORDER BY seq").all() as { payload_json: string }[])
+          .map((r) => JSON.parse(r.payload_json) as ShareGateRecord)
+          .flatMap((r) => (r.verdict === "pass" && r.view.budget.used ? [[r.featureId, r.view.budget.used] as const] : [])),
+      );
+    } finally {
+      trace.dispose();
+    }
+    const seen = new Map<string, NonNullable<ShareGateRecord["view"]["budget"]["used"]>>();
+    const [replay] = replayInitiativeStarts(path, { budgetAtStart: true, gate: (view, feature) => {
+      if (!seen.has(feature.id) && view.budget.used) seen.set(feature.id, view.budget.used);
+      return shareShortfall(view, feature);
+    } });
+    expect(replay?.newStartStops).toBe(0);
+    expect(recorded.size).toBeGreaterThan(5);
+    for (const [id, used] of recorded) {
+      const rewound = seen.get(id);
+      // The start is linked a few seconds after its gate, and active time between two recorded
+      // reads is interpolated: within 3% and a minute of the gate's, and two calls.
+      expect([id, Math.abs((rewound?.activeMs ?? 0) - used.activeMs) <= 0.03 * used.activeMs + 60_000]).toEqual([id, true]);
+      expect([id, Math.abs((rewound?.calls ?? 0) - used.calls) <= 2]).toEqual([id, true]);
+    }
+  }, 300000);
+
   test("#1714: R62 stepvet's dollar share is not checked before a feature is measured", () => {
     // R62 recorded two initiative-dollar-share would-stops, lines and stepexpr, both at
     // measuredFeatures 0 with every waiting feature's low reserved. Both started anyway, finished
@@ -572,6 +605,12 @@ describe("test task splits replay on recorded sizing reports (#1789)", () => {
       const [plan] = replayActiveTimes(store, runId);
       expect(plan).toMatchObject({ report: "sizing/plan-0.json", recorded: { basis: "history", after: 2_100_000 }, replayed: { basis: "initiative", tokensPerMinute: 71_173 } });
       expect(plan?.replayed.after).toBeGreaterThan(store.run(runId).active_ms);
+      // #2414, shadow: the clean pace is replayed beside the deciding one from the five finished
+      // runs' first-response waits (5,746,801 ms, from their calls before `silentMs` was recorded).
+      // Without them the runs pass the history's pace, so it would keep 135k and the 2,100,000 ms
+      // cap: first-response latency is no stall, which the default switch (R78) must tell apart.
+      expect(plan?.clean).toMatchObject({ basis: "history", tokensPerMinute: 135_149, silentMs: 5_746_801, after: 2_100_000 });
+      expect(plan?.clean?.rates).toHaveLength(5);
     } finally {
       dispose();
     }

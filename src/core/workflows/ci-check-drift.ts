@@ -72,6 +72,8 @@ const SUBCOMMAND_TOOLS = new Set([
 ]);
 /** Package-manager and task-runner subcommands that run a named script (`npm run lint`). */
 const RUN_SCRIPT = new Set(["run", "run-script"]);
+/** Programs whose own subcommand runs a named script: `deno task lint` (#2416). */
+const SCRIPT_SUBCOMMAND: Record<string, string> = { deno: "task" };
 /** Program aliases: a wrapper script runs the same tool. */
 const ALIASES: Record<string, string> = { gradlew: "gradle", mvnw: "mvn", python3: "python" };
 
@@ -146,7 +148,8 @@ export function toolCommand(executable: string, args: readonly string[]): ToolCo
   if (SUBCOMMAND_TOOLS.has(program) && rest[0] && !rest[0].startsWith("-")) {
     tool.push(rest[0]);
     rest = rest.slice(1);
-    if (RUN_SCRIPT.has(tool[1] ?? "") && rest[0] && !rest[0].startsWith("-")) {
+    const runs = RUN_SCRIPT.has(tool[1] ?? "") || SCRIPT_SUBCOMMAND[program] === tool[1];
+    if (runs && rest[0] && !rest[0].startsWith("-")) {
       tool.push(rest[0]);
       rest = rest.slice(1);
     }
@@ -177,6 +180,172 @@ function parsedLine(line: string): ToolCommand | null {
   }
 }
 
+/**
+ * The script tables the host can read (#2416): `package.json` `scripts` (npm, pnpm, yarn, bun),
+ * `composer.json` `scripts` and `deno.json` `tasks`. A runner whose targets are not a table of
+ * command lines (make, just, rake, task) has none: its commands stay unresolved.
+ */
+export interface ScriptTables {
+  package?: Record<string, unknown>;
+  composer?: Record<string, unknown>;
+  deno?: Record<string, unknown>;
+}
+type ScriptTable = keyof ScriptTables;
+
+/** The script tables of a directory, from its manifests as `read` returns them (null: missing). */
+export function scriptTables(read: (name: string) => string | null): ScriptTables {
+  const field = (names: string[], key: string): Record<string, unknown> | undefined => {
+    for (const name of names) {
+      const text = read(name);
+      if (text === null) continue;
+      try {
+        const value = (JSON.parse(text) as Record<string, unknown>)?.[key];
+        return value && typeof value === "object" && !Array.isArray(value)
+          ? (value as Record<string, unknown>)
+          : {};
+      } catch {
+        return undefined;
+      }
+    }
+    return undefined;
+  };
+  const tables: ScriptTables = {};
+  const pkg = field(["package.json"], "scripts");
+  if (pkg) tables.package = pkg;
+  const composer = field(["composer.json"], "scripts");
+  if (composer) tables.composer = composer;
+  const deno = field(["deno.json", "deno.jsonc"], "tasks");
+  if (deno) tables.deno = deno;
+  return tables;
+}
+
+/**
+ * Script runners, one row per program (#2416): the subcommands that name a script (`npm run lint`),
+ * the bare script words the program also runs as a script (`npm test`; `*` for any name the table
+ * has, as `yarn lint` and `composer test` do), and the table it reads. `bun test` is Bun's own test
+ * runner, never the `test` script, so `bun` has no bare words. A new runner adds its row here and a
+ * case to `tests/workflow-scenario-ci-check-drift.test.ts`.
+ */
+const SCRIPT_RUNNERS: Record<
+  string,
+  { run: readonly string[]; bare: readonly string[] | "*"; table: ScriptTable }
+> = {
+  npm: { run: ["run", "run-script"], bare: ["test", "start", "stop", "restart"], table: "package" },
+  pnpm: { run: ["run", "run-script"], bare: "*", table: "package" },
+  yarn: { run: ["run", "run-script"], bare: "*", table: "package" },
+  bun: { run: ["run", "run-script"], bare: [], table: "package" },
+  deno: { run: ["task"], bare: [], table: "deno" },
+  composer: { run: ["run-script", "run"], bare: "*", table: "composer" },
+};
+/** Runners whose targets the host cannot read as command lines: never resolved (#2416). */
+const OPAQUE_RUNNERS = new Set(["make", "just", "rake", "task"]);
+
+/** A command as the comparison reads it: resolved through its script, or opaque. */
+interface Resolved {
+  /** The tool command it runs: the script's own command when it ran one. */
+  parsed: ToolCommand;
+  /** The script's command line, when the command ran a script the table names. */
+  script?: string;
+  /** A script runner whose script the host cannot read: no verdict without the same command. */
+  opaque: boolean;
+}
+
+/** A table's entry by a tool word, which `toolCommand` lower-cases: `testUnit` for `testunit`. */
+function entryOf(tables: ScriptTables, table: ScriptTable, name: string): unknown {
+  const entries = tables[table];
+  if (!entries) return undefined;
+  if (Object.hasOwn(entries, name)) return entries[name];
+  const keys = Object.keys(entries).filter((key) => key.toLowerCase() === name);
+  return keys.length === 1 ? entries[keys[0] ?? ""] : undefined;
+}
+
+/** The script a tool command runs, by table and name, or null when it runs no script. */
+function scriptOf(
+  parsed: ToolCommand,
+  tables: ScriptTables,
+): { table: ScriptTable; name: string } | null {
+  const [program = "", sub = "", name] = parsed.tool.split(" ");
+  const row = SCRIPT_RUNNERS[program];
+  if (!row) return null;
+  if (row.run.includes(sub)) return name ? { table: row.table, name } : null;
+  if (name) return null;
+  if (row.bare === "*")
+    return entryOf(tables, row.table, sub) !== undefined ? { table: row.table, name: sub } : null;
+  return row.bare.includes(sub) ? { table: row.table, name: sub } : null;
+}
+
+/** A script's single command line, or null when it is several, a callback or not a string. */
+function scriptLine(
+  value: unknown,
+  table: ScriptTable,
+  tables: ScriptTables,
+  depth: number,
+): string | null {
+  const entry =
+    table === "deno" && value && typeof value === "object" && !Array.isArray(value)
+      ? (value as { command?: unknown }).command
+      : value;
+  const one = Array.isArray(entry) ? (entry.length === 1 ? entry[0] : null) : entry;
+  if (typeof one !== "string") return null;
+  // A Composer reference to another script: `"@test:unit"`.
+  const ref = table === "composer" ? /^@([^\s]+)$/.exec(one.trim())?.[1] : undefined;
+  if (ref !== undefined)
+    return depth < 4
+      ? scriptLine(entryOf(tables, "composer", ref), table, tables, depth + 1)
+      : null;
+  // `@php ...` and the other Composer prefixes, and a PHP callback (`App\Setup::run`).
+  if (one.trim().startsWith("@") || (table === "composer" && /^[\w\\]+::\w+$/.test(one.trim())))
+    return null;
+  return one;
+}
+
+/** Shell syntax that makes a script more than one command: `tsc && vitest`, `a | b`. */
+const COMPOUND = /&&|\|\||[;|`<>]|\$\(|\r|\n/;
+
+/**
+ * A tool command resolved through the script tables (#2416): `bun run test` with `"test": "bun
+ * test"` is `bun test`, and words after the script name (`npm run lint -- --max-warnings 0`) are
+ * the script's words too. A script runner whose script the table does not name, or cannot be read as
+ * one command (several commands, a callback, no table), and `make`, `just`, `rake` and `task`
+ * targets are opaque.
+ */
+function resolved(parsed: ToolCommand, tables: ScriptTables): Resolved {
+  let current = parsed;
+  let script: string | undefined;
+  for (let depth = 0; depth < 4; depth++) {
+    const target = scriptOf(current, tables);
+    if (!target) {
+      const program = current.tool.split(" ")[0] ?? "";
+      const runner = SCRIPT_RUNNERS[program];
+      const [, sub = "", name] = current.tool.split(" ");
+      // A runner's script call the host cannot read: `npm run x` with no such script, `yarn lint`
+      // with no package.json to tell a script from a built-in command.
+      const opaque =
+        OPAQUE_RUNNERS.has(program) ||
+        (!!runner &&
+          (runner.run.includes(sub) || (runner.bare === "*" && !name && !tables[runner.table])));
+      return { parsed: current, ...(script === undefined ? {} : { script }), opaque };
+    }
+    const line = scriptLine(entryOf(tables, target.table, target.name), target.table, tables, 0);
+    if (line === null || COMPOUND.test(line)) return { parsed: current, opaque: true };
+    let words: string[];
+    try {
+      words = splitCommandLine(line);
+    } catch {
+      return { parsed: current, opaque: true };
+    }
+    // Leading environment assignments (`NODE_ENV=test jest`) are not the tool.
+    while (words[0] && /^\w+=/.test(words[0])) words = words.slice(1);
+    const extra = current.words[0] === "--" ? current.words.slice(1) : current.words;
+    const [executable, ...args] = words;
+    const next = executable ? toolCommand(executable, [...args, ...extra]) : null;
+    if (!next) return { parsed: current, opaque: true };
+    current = next;
+    script = line;
+  }
+  return { parsed: current, opaque: true };
+}
+
 /** The gate commands of a changed file: the `run:` steps of a CI workflow, a README's shell lines. */
 export function fileGateCommands(path: string, text: string): string[] {
   if (CI_WORKFLOW.test(path)) return workflowRunCommands(text);
@@ -197,8 +366,10 @@ export interface CiCheckDrift {
   file: string;
   /** The command as the file has it. */
   command: string;
-  /** Its tool: `cargo clippy`. */
+  /** Its tool, through the script it runs: `cargo clippy`, `bun test` for `bun run test`. */
   tool: string;
+  /** The script's command line, when the command runs a package or Composer script (#2416). */
+  script?: string;
   /** The closest configured check that runs the same tool, or null when none does. */
   check: { id: string; command: string } | null;
   /** The words of the file's command that check does not give the tool: `--all-targets`. */
@@ -214,35 +385,72 @@ const words = (check: Pick<Check, "executable" | "args">): string =>
  * `./...`, `--strict`), or, for a command of a gate kind (lint, type check, format check, tests),
  * no check runs its tool at all. Words a check adds are fine: the check is the stricter one. Word
  * order and output-only flags (`--offline`, `--color`) do not count.
+ *
+ * Both sides are compared through the scripts they run (#2416): `scripts` gives the script tables
+ * of a directory (the workspace root `.` for the files, a check's `cwd` for the check). A command
+ * whose script the host cannot read (`make lint`, `npm run x` with no table) is compared only with
+ * checks that run the same command; with none it records nothing, and neither does a gate command
+ * no check runs while some check is such an opaque runner, since that check may run it.
  */
 export function ciCheckDrift(
   files: readonly { path: string; text: string }[],
-  checks: readonly Pick<Check, "id" | "executable" | "args">[],
+  checks: readonly (Pick<Check, "id" | "executable" | "args"> & { cwd?: string })[],
+  scripts: (dir: string) => ScriptTables = () => ({}),
 ): CiCheckDrift[] {
+  const tablesOf = new Map<string, ScriptTables>();
+  const tables = (dir: string): ScriptTables => {
+    const key = dir.replace(/^\.\/?$/, "") || ".";
+    let found = tablesOf.get(key);
+    if (!found) {
+      found = scripts(key);
+      tablesOf.set(key, found);
+    }
+    return found;
+  };
   const configured = checks.flatMap((check) => {
     const parsed = toolCommand(check.executable, check.args);
-    return parsed ? [{ check, parsed }] : [];
+    return parsed ? [{ check, parsed, resolved: resolved(parsed, tables(check.cwd ?? ".")) }] : [];
   });
+  const opaqueCheck = configured.some((c) => c.resolved.opaque);
+  const root = tables(".");
   const out: CiCheckDrift[] = [];
   const seen = new Set<string>();
   for (const file of files) {
     for (const command of fileGateCommands(file.path, file.text)) {
-      const parsed = parsedLine(command);
-      if (!parsed) continue;
-      const same = configured.filter((c) => c.parsed.tool === parsed.tool);
-      if (!same.length && !ciCommandKind(command)) continue;
+      const raw = parsedLine(command);
+      if (!raw) continue;
+      const resolvedCommand = resolved(raw, root);
+      const parsed = resolvedCommand.parsed;
+      const same = resolvedCommand.opaque
+        ? configured.filter((c) => c.parsed.tool === raw.tool).map((c) => ({ ...c, cmp: c.parsed }))
+        : configured
+            .filter((c) => !c.resolved.opaque && c.resolved.parsed.tool === parsed.tool)
+            .map((c) => ({ ...c, cmp: c.resolved.parsed }));
+      const compared = resolvedCommand.opaque ? raw : parsed;
+      const gate =
+        ciCommandKind(command) ??
+        (resolvedCommand.script ? ciCommandKind(resolvedCommand.script) : undefined);
+      if (!same.length && (!gate || resolvedCommand.opaque || opaqueCheck)) continue;
       const key = `${file.path}\n${command}`;
       if (seen.has(key)) continue;
       seen.add(key);
+      const script = resolvedCommand.script === undefined ? {} : { script: resolvedCommand.script };
       if (!same.length) {
-        out.push({ file: file.path, command, tool: parsed.tool, check: null, missing: [] });
+        out.push({
+          file: file.path,
+          command,
+          tool: parsed.tool,
+          ...script,
+          check: null,
+          missing: [],
+        });
         continue;
       }
       const ranked = same
         .map((c) => {
-          const have = [...c.parsed.words];
+          const have = [...c.cmp.words];
           const missing: string[] = [];
-          for (const word of parsed.words) {
+          for (const word of compared.words) {
             const at = have.indexOf(word);
             if (at < 0) missing.push(word);
             else have.splice(at, 1);
@@ -255,7 +463,8 @@ export function ciCheckDrift(
       out.push({
         file: file.path,
         command,
-        tool: parsed.tool,
+        tool: compared.tool,
+        ...script,
         check: { id: best.c.check.id, command: words(best.c.check) },
         missing: best.missing,
       });
@@ -266,7 +475,15 @@ export function ciCheckDrift(
 
 /** The would-stop summary of one drift, in the words of the stop enforce would make. */
 export function ciCheckDriftSummary(drift: CiCheckDrift): string {
+  const runs =
+    drift.script === undefined
+      ? `"${drift.command}"`
+      : `"${drift.command}" (script: "${drift.script}")`;
+  // A README documents the gate; only a CI workflow is run on push (#2416).
+  const risk = CI_WORKFLOW.test(drift.file)
+    ? "the delivered CI can fail on what no configured check ran"
+    : "the documented command can fail on what no configured check ran";
   return drift.check
-    ? `ci_check_drift: ${drift.file} runs "${drift.command}", but check ${drift.check.id} runs "${drift.check.command}" without ${drift.missing.join(" ")}; the delivered CI can fail on what no configured check ran`
-    : `ci_check_drift: ${drift.file} runs "${drift.command}", and no configured check runs ${drift.tool}; the delivered CI can fail on what no configured check ran`;
+    ? `ci_check_drift: ${drift.file} runs ${runs}, but check ${drift.check.id} runs "${drift.check.command}" without ${drift.missing.join(" ")}; ${risk}`
+    : `ci_check_drift: ${drift.file} runs ${runs}, and no configured check runs ${drift.tool}; ${risk}`;
 }

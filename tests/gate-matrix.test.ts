@@ -14,7 +14,14 @@ import { evidencePaths, scopeRecord, stackFrames } from "../src/core/workflows/c
 import { cellSamples, cellSpec, omittedCellInput, withoutCellInput } from "./helpers/criteria-cell-fixtures.js";
 import { ProcessScope } from "../src/core/workflows/process-scope.js";
 import { canRepairRun, type RepairBlock } from "../src/core/workflows/repairable.js";
-import { growthLimit, type InitiativeView, rebaseView, shareShortfall } from "../src/core/workflows/initiatives/service.js";
+import {
+  growthLimit,
+  type InitiativeView,
+  rebaseView,
+  type ShareGateView,
+  shareShortfall,
+  timeShortfall,
+} from "../src/core/workflows/initiatives/service.js";
 import { estimateInitiative } from "../src/core/workflows/initiatives/estimate.js";
 import { hasExecutableFields, manifestFieldChanges } from "../src/core/workflows/quality/manifests.js";
 import { REPLAY_TARGETS, replayCommand, replayTargets } from "../src/core/workflows/quality/baseline-replay.js";
@@ -26,6 +33,7 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { directoryFixers, directoryFixerScenario } from "./helpers/directory-fixer-scenario.js";
 import { baselineCreatedFilesScenario, FIRST_RUN_OUTPUTS } from "./helpers/baseline-created-files-scenario.js";
 import { sourceManifest, TOOL_CACHES } from "../src/core/verification/snapshot.js";
+import { openTrace, replayInitiativeStarts } from "../src/core/workflows/trace.js";
 import { linkDependencies } from "../src/core/workflows/dependency-dirs.js";
 import { spawnSync } from "node:child_process";
 import {
@@ -48,7 +56,8 @@ import { entryPointCommand } from "../src/core/verification/entry-points.js";
 import { noteSiblingFindings, ownerOfFinding } from "../src/core/verification/initiative-ownership.js";
 import { failureSignature as convergenceSignature, missingPlannedPaths, noTestsCollected } from "../src/core/verification/convergence.js";
 import { executeCheckCommand, exitStatus, ranNoTests, timedOutFailure } from "../src/core/verification/check-runner.js";
-import { environmentFault, ENVIRONMENT_SIGNATURES } from "../src/core/verification/environment-faults.js";
+import { environmentFault, ENVIRONMENT_SIGNATURES, silentFailure } from "../src/core/verification/environment-faults.js";
+import { SWIFT_COMPILE_ERROR, SWIFT_SYMLINK_WARNING_ONLY, SWIFT_TEST_FATAL_ERROR, SWIFT_TEST_SILENT_EXIT_4, SWIFT_TESTING_FAILURE } from "./fixtures/swiftpm-crash-outputs.js";
 import { testReport } from "../src/core/verification/test-reports.js";
 import { detectLanguages, touchesLanguageFiles } from "../src/core/workflows/language.js";
 import { baselineRegression, buildFailure, buildRunner, diagnosticCount, failedTests, failureSignature, testCount, testsRan } from "../src/core/verification/output-counts.js";
@@ -56,7 +65,7 @@ import { pwshExecutable, rscriptExecutable } from "../src/core/platform/index.js
 import { lintrRun, STYLER_CHECK, STYLER_FIX, testthatOn, testthatRun } from "../src/core/workflows/r-tools.js";
 import { PESTER_RUN, pesterOn } from "../src/core/workflows/pester.js";
 import { baselineDebt, baselineKeys } from "../src/core/verification/task-end-check.js";
-import { affectedTestCheck, plannedWrittenTests, writtenTestsCheck } from "../src/core/workflows/affected-tests.js";
+import { affectedTestCheck, isWrittenTestFile, plannedWrittenTests, writtenTestsCheck } from "../src/core/workflows/affected-tests.js";
 import { detectLanguages, touchesLanguageFiles } from "../src/core/workflows/language.js";
 import { launchedCommand } from "../src/core/workflows/launcher.js";
 import { toolchainCommand } from "../src/core/workflows/toolchain.js";
@@ -133,6 +142,34 @@ test("#1643 initiative ceiling gate uses central stage prices from shared histor
     } finally { await fixture.dispose(); }
   } finally { await history.dispose(); }
 }, 60000);
+
+test("#2413 the start gate's time share: a start below its low estimate at the pace is short", () => {
+  // R76 schemamask's validate: 5 min of 300 left, a low of 1.1M tokens at 37k a minute (30 min),
+  // and one other waiting feature with a low of 0.4M (11 min).
+  const MIN = 60_000;
+  const pace = { tokensPerMinute: 37_000, basis: "initiative" as const, runs: 4 };
+  const time = { limitMs: 300 * MIN, usedMs: 280 * MIN, committedMs: 295 * MIN, pace, forecastMs: null, wallMs: null, coverMs: null, suggestedMs: null, notice: null };
+  const validate = { id: "validate", state: "ready", share: { tokens: 5_000_000, calls: 40, activeMs: 2 * MIN }, need: { low: 1_100_000, high: 2_300_000 } };
+  const other = { id: "report", state: "ready", share: { tokens: 3_000_000, calls: 40, activeMs: 3 * MIN }, need: { low: 400_000, high: 900_000 } };
+  const viewOf = (remainingMs: number, t: typeof time | null = time) =>
+    ({ initiativeId: "schemamask", budget: { remaining: { tokens: 8_000_000, calls: 80, activeMs: remainingMs }, ...(t ? { time: t } : {}) }, features: [validate, other] }) as unknown as ShareGateView;
+
+  const both = Math.round((1_100_000 / 37_000) * MIN) + Math.round((400_000 / 37_000) * MIN);
+  const short = timeShortfall(viewOf(5 * MIN), validate);
+  expect(short).toMatchObject({ availableMs: 0, tokensPerMinute: 37_000 });
+  expect(short?.needMs.low).toBe(Math.round((1_100_000 / 37_000) * MIN));
+  // The suggestion starts validate beside report's low, in whole 15 min steps.
+  expect((short?.suggestedTimeMs ?? 0) % (15 * MIN)).toBe(0);
+  expect((short?.suggestedTimeMs ?? 0) - 300 * MIN).toBeGreaterThanOrEqual(both - 5 * MIN);
+  expect(short?.summary).toContain("--time-ms");
+  // Exactly the lows of both: not short. One ms less: short.
+  expect(timeShortfall(viewOf(both), validate)).toBeNull();
+  expect(timeShortfall(viewOf(both - 1), validate)?.availableMs).toBe(both - 1 - Math.round((400_000 / 37_000) * MIN));
+  // Without a measured pace or an estimate the time share is not judged.
+  expect(timeShortfall(viewOf(5 * MIN, { ...time, pace: null }), validate)).toBeNull();
+  expect(timeShortfall(viewOf(5 * MIN, null), validate)).toBeNull();
+  expect(timeShortfall(viewOf(5 * MIN), { ...validate, need: null })).toBeNull();
+});
 
 /**
  * The gate matrix (#854): every supported stack against every quality gate's decision, without a
@@ -251,6 +288,8 @@ describe("host-written acceptance rows in the case-walk and mutation gates (#159
     busted: { harness: "tests/harness.lua", test: "tests/rows_spec.lua" },
     minitest: { harness: "tests/harness.rb", test: "tests/rows_test.rb" },
     pest: { harness: "tests/harness.php", test: "tests/RowsTest.php" },
+    exunit: { harness: "tests/harness.exs", test: "tests/rows_test.exs" },
+    dart: { harness: "tests/harness.dart", test: "tests/rows_test.dart" },
   } as const;
   test.each(Object.keys(layouts) as (keyof typeof layouts)[])("%s retains every case in its JSON data and keeps generated tests out of mutation proposals", async (framework) => {
     const root = mkdtempSync(join(tmpdir(), "baked-row-gate-"));
@@ -268,8 +307,8 @@ describe("host-written acceptance rows in the case-walk and mutation gates (#159
       const check = caseCheck(spec, task, { checks: [] });
       expect(check).toBeDefined();
       expect(await check?.(root)).toEqual([]);
-      // Java and C# tests hold the rows themselves, and the host refuses any change to that file.
-      if (framework === "junit" || framework === "xunit") expect(files[1]?.content).toMatch(/\b34L?\b.*\b68L?\b/);
+      // Java, C# and Dart tests hold the rows themselves, and the host refuses any change to that file.
+      if (framework === "junit" || framework === "xunit" || framework === "dart") expect(files[1]?.content).toMatch(/\b34L?\b.*\b68L?\b/);
       else {
         writeFileSync(join(root, "tests/rows.json"), JSON.stringify(artifact.rows.slice(0, 1)));
         expect((await check?.(root))?.join()).toContain("34");
@@ -314,6 +353,8 @@ describe("gate matrix: inline rows block holds its own cells (#1997)", () => {
     busted: { mode: "inline", framework: "busted", test: "spec/calc_spec.lua" },
     minitest: { mode: "inline", framework: "minitest", test: "test/calc_test.rb" },
     pest: { mode: "inline", framework: "pest", test: "tests/CalcTest.php" },
+    exunit: { mode: "inline", framework: "exunit", test: "test/calc_test.exs" },
+    dart: { mode: "inline", framework: "dart", test: "test/calc_test.dart" },
   };
   const shapes: [string, unknown][] = [
     ["two-line CRLF text", ["[a]\r\nb=1\r\n", {}]],
@@ -1580,21 +1621,36 @@ const GRADLE_REPORT = `<?xml version="1.0" encoding="UTF-8"?>
 `;
 describe("gate matrix: environment signature (#2273)", () => {
   const loopback = "* What went wrong:\njava.io.IOException: Unable to establish loopback connection\n\tat java.base/sun.nio.ch.PipeImpl.<init>(PipeImpl.java:93)\n";
-  const COMMANDS: Partial<Record<GateToolchain, [string, string[]]>> = {
-    gradle: process.platform === "win32" ? ["cmd", ["/d", "/c", "gradlew.bat", "check"]] : ["./gradlew", ["--console=plain", "-q", "check"]],
-    maven: ["mvn", ["-q", "verify"]],
-    sbt: ["sbt", ["test"]],
+  // Each toolchain with signatures: its command, a recorded machine failure with what its fix names,
+  // and failures of the project's code that are never the machine's.
+  const SAMPLES: Partial<Record<GateToolchain, { command: [string, string[]]; machine: string; fix: string; code: string[] }>> = {
+    gradle: { command: process.platform === "win32" ? ["cmd", ["/d", "/c", "gradlew.bat", "check"]] : ["./gradlew", ["--console=plain", "-q", "check"]], machine: loopback, fix: "jdk.net.unixdomain.tmpdir", code: ["CalcTest > fails() FAILED\n"] },
+    maven: { command: ["mvn", ["-q", "verify"]], machine: loopback, fix: "jdk.net.unixdomain.tmpdir", code: ["CalcTest > fails() FAILED\n"] },
+    sbt: { command: ["sbt", ["test"]], machine: loopback, fix: "jdk.net.unixdomain.tmpdir", code: ["CalcTest > fails() FAILED\n"] },
+    // #2418: SwiftPM's crash beside a sibling worktree's build (R76 hintsieve).
+    swift: { command: ["swift", ["test"]], machine: SWIFT_TEST_FATAL_ERROR, fix: "fewer Swift builds at once", code: [SWIFT_COMPILE_ERROR, SWIFT_TESTING_FAILURE, SWIFT_SYMLINK_WARNING_ONLY, SWIFT_TEST_SILENT_EXIT_4] },
   };
   test.each(Object.entries(ENVIRONMENT_SIGNATURES))("%s", (toolchain, row) => {
     if ("none" in row) {
-      expect(row.none.length).toBeGreaterThan(0);
+      // A `none` row says through which bench round and date nothing was observed (#2418).
+      expect(row.none).toMatch(/bench round \d+ \(\d{4}-\d{2}-\d{2}\)/);
       return;
     }
-    const [executable, args] = COMMANDS[toolchain as GateToolchain] ?? ["", []];
-    expect(environmentFault(executable, args, loopback)?.fix).toContain("jdk.net.unixdomain.tmpdir");
-    // A failing test of the project is the project's, and another program's output is not read.
-    expect(environmentFault(executable, args, "CalcTest > fails() FAILED\n")).toBeNull();
-    expect(environmentFault("npm", ["test"], loopback)).toBeNull();
+    const sample = SAMPLES[toolchain as GateToolchain];
+    if (!sample) throw new Error(`${toolchain} has signatures and no sample in this cell`);
+    const [executable, args] = sample.command;
+    expect(environmentFault(executable, args, sample.machine)?.fix).toContain(sample.fix);
+    // A failure of the project's code is the project's, and another program's output is not read.
+    for (const code of sample.code) expect(environmentFault(executable, args, code)).toBeNull();
+    expect(environmentFault("npm", ["test"], sample.machine)).toBeNull();
+  });
+  // #2418: a failure that prints no failure line of any toolchain is a re-run candidate of the
+  // checks stage (`silent_check_failure`); one that names a failure of the code is not.
+  test("a failure without a failure line is a re-run candidate", () => {
+    expect(silentFailure(SWIFT_TEST_SILENT_EXIT_4)).toBe(true);
+    expect(silentFailure("")).toBe(true);
+    for (const code of [SWIFT_COMPILE_ERROR, SWIFT_TESTING_FAILURE, SWIFT_TEST_FATAL_ERROR, "FAIL tests/a.test.ts > adds\n", "--- FAIL: TestAdd (0.00s)\nFAIL\n", "src/a.ts(3,1): error TS2304: Cannot find name 'x'.\n", "Would reformat: src/a.py\n1 file would be reformatted\n"])
+      expect(silentFailure(code)).toBe(false);
   });
 });
 
@@ -1995,6 +2051,15 @@ describe("gate matrix: dart test, dart analyze and dart format (#1494)", () => {
     expect(affectedTestCheck([check("dart", ["test", "-r", "expanded", "test/"])], ["test/calc_test.dart", "lib/calc.dart"])?.args).toEqual(["test", "-r", "expanded", "./test/calc_test.dart"]);
     expect(affectedTestCheck([check("flutter", ["test"])], ["test/widget_test.dart"])?.args).toEqual(["test", "./test/widget_test.dart"]);
     expect(isStaticCheck(check("dart", ["test", "--reporter", "expanded"]))).toBe(false);
+    // A dart test file is a written test of its own (#2348).
+    expect(isWrittenTestFile("test/calc_test.dart")).toBe(true);
+    expect(isWrittenTestFile("lib/calc.dart")).toBe(false);
+  });
+
+  test("the affected tests run through mix test's file arguments (#2348)", () => {
+    const check = (executable: string, args: string[]): Check => ({ id: `${executable}-test`, executable, args, cwd: ".", timeoutMs: 600000, required: true, scope: "feature", envNames: [], writes: [] });
+    expect(affectedTestCheck([check("mix", ["test", "--exclude", "slow", "test/"])], ["test/calc_test.exs", "lib/calc.ex", "test/test_helper.exs"])?.args).toEqual(["test", "--exclude", "slow", "test/calc_test.exs"]);
+    expect(affectedTestCheck([check("mix", ["test"])], ["lib/calc.ex"])).toBeNull();
   });
 
   test("a new Dart file is held to dart format when the run leaves the gate out (#1837)", () => {
@@ -5140,6 +5205,37 @@ test("#1631 one accepted skeleton keeps the initiative's planned forecast below 
   expect(shareShortfall(view, view.features[1]!)).toBeNull();
 });
 
+// #2417: the start replay rewound each open run's tokens, dollars and policy (#2061) but not its
+// active time and calls, so the time share a start gate read counted every later minute: R76
+// schemamask parked generation and validate on 0 ms of shared time the round never ran out of.
+test("#2417 the start gate on a rewound trace reads the used time and calls its recorded gate read", () => {
+  const path = join(import.meta.dir, "fixtures", "bench-traces", "R75", "maskback.sqlite.gz");
+  const trace = openTrace(path);
+  let recorded: Map<string, { verdict: string; used: { activeMs: number; calls: number } }>;
+  try {
+    recorded = new Map(
+      (trace.store.connection.query("SELECT payload_json FROM initiative_events WHERE type='feature.share_gate' ORDER BY seq").all() as { payload_json: string }[])
+        .map((r) => JSON.parse(r.payload_json) as { featureId: string; verdict: string; view: { budget: { used: { activeMs: number; calls: number } } } })
+        .map((r) => [r.featureId, { verdict: r.verdict, used: r.view.budget.used }]),
+    );
+  } finally {
+    trace.dispose();
+  }
+  const seen = new Map<string, { verdict: string; used: { activeMs: number; calls: number } }>();
+  replayInitiativeStarts(path, { budgetAtStart: true, gate: (view, feature) => {
+    const verdict = shareShortfall(view, feature);
+    if (!seen.has(feature.id)) seen.set(feature.id, { verdict: verdict ? "park" : "pass", used: view.budget.used ?? { activeMs: 0, calls: 0 } });
+    return verdict;
+  } });
+  for (const [id, gate] of recorded) {
+    const rewound = seen.get(id);
+    expect([id, rewound?.verdict]).toEqual([id, gate.verdict]);
+    // Linked seconds after its gate: the same time and calls within 3% (and a minute) and two.
+    expect([id, Math.abs((rewound?.used.activeMs ?? 0) - gate.used.activeMs) <= 0.03 * gate.used.activeMs + 60_000]).toEqual([id, true]);
+    expect([id, Math.abs((rewound?.used.calls ?? 0) - gate.used.calls) <= 2]).toEqual([id, true]);
+  }
+}, 300000);
+
 describe("repair-limit decisions (#1577)", () => {
   test.each(STACKS)("%s offers grants only for a recorded repair-limit stop", () => {
     const repairBlock: RepairBlock = { limit: "maxRepairRounds", scope: "round", required: 1, taskIds: [] };
@@ -5205,6 +5301,22 @@ describe("gate matrix: no tests collected (#1864)", () => {
     ["Swift (swift test)", "error: no tests found; create a target in the 'Tests' directory"],
     ["Dart (dart test)", "No tests ran."],
     ["Kotlin/Java (Gradle 9)", "There are test sources present and no filters are applied, but the test task did not discover any tests to execute."],
+    // #2419: a test target that exists and holds no test yet, exit 0. Swift 6.4.1 (Windows) on a
+    // `.testTarget` whose one file only imports the library, verbatim from the issue.
+    ["Swift (swift test, empty test target)", "Test Suite 'All tests' passed at 2026-10-28 21:31:05.697\n\t Executed 0 tests, with 0 failures (0 unexpected) in 0.0 (0.0) seconds\n◊ Test run started.\n√ Test run with 0 tests in 0 suites passed after 0.001 seconds.\n"],
+    // dotnet test, SDK 8.0.132, on an xunit project whose test class has no test (path shortened).
+    ["C# (dotnet test, no test in the project)", "Starting test execution, please wait...\nA total of 1 test files matched the specified pattern.\nNo test is available in /work/Lib.Tests/bin/Debug/net8.0/Lib.Tests.dll. Make sure that test discoverer & executors are registered and platform & framework version settings are appropriate and try again.\n"],
+    // mix test, Elixir 1.14, on a test module with no test: no test count in the summary.
+    ["Elixir (mix test, a module without tests)", "\nFinished in 0.01 seconds (0.00s async, 0.01s sync)\n0 failures\n\nRandomized with seed 441790\n"],
+    // dune test 3.14 on an empty OUnit2 2.2 suite and an empty Alcotest 1.7 suite (path shortened).
+    ["OCaml (dune test, OUnit2)", "\nRan: 0 tests in: 0.00 seconds.\nOK\n"],
+    ["OCaml (dune test, Alcotest)", "Testing `lib'.\nThis run has ID `SP3Q9ASA'.\n\n\nFull test results in `/work/_build/default/test/_build/_tests/lib'.\nTest Successful in 0.000s. 0 test run.\n"],
+    // busted 2.2 on a spec file without `it`, testthat 3.2 on a test file without `test_that`.
+    ["Lua (busted, a spec without tests)", "\n0 successes / 0 failures / 0 errors / 0 pending : 0.000165 seconds\n"],
+    ["R (testthat, a file without tests)", "[ FAIL 0 | WARN 0 | SKIP 0 | PASS 0 ]\n"],
+    // Pester 5 on a `*.Tests.ps1` without `It`: Write-PesterReport prints its summary whatever the
+    // count (Pester 5.7.1 src/functions/Output.ps1), in the shape the 5.9.1 cells below record.
+    ["PowerShell (Pester, a file without tests)", "Pester v5.9.1\n\nStarting discovery in 1 files.\nDiscovery found 0 tests in 12ms.\nRunning tests.\nTests completed in 30ms\nTests Passed: 0, Failed: 0, Skipped: 0, Inconclusive: 0, NotRun: 0\n"],
   ];
   for (const [stack, output] of NO_TESTS)
     test(`${stack}: no test collected`, () => expect(noTestsCollected(output)).toBe(true));
@@ -5212,6 +5324,26 @@ describe("gate matrix: no tests collected (#1864)", () => {
     expect(noTestsCollected("FAILED tests/test_tags.py::test_wheel - AssertionError\n1 failed in 0.02s")).toBe(false);
     expect(noTestsCollected(" 3 pass\n 0 fail\nRan 3 tests across 1 file.")).toBe(false);
     expect(noTestsCollected("test result: ok. 0 passed; 0 failed; 0 ignored")).toBe(false);
+  });
+  // #2419: a count above zero, a failure, a narrowed selection, a test file that did not load, or
+  // another part of the run that held tests is no empty target.
+  test("a zero-test line beside tests that ran, failed, did not load or were filtered is not 'no tests'", () => {
+    const xctest = (n: number) => `Test Suite 'All tests' passed at 2026-10-28 21:31:05.697\n\t Executed ${n} tests, with 0 failures (0 unexpected) in 0.0 (0.0) seconds\n`;
+    expect(noTestsCollected(xctest(12))).toBe(false);
+    expect(noTestsCollected("✘ Test run with 3 tests failed after 0.001 seconds with 1 issue.")).toBe(false);
+    // swift-testing only: XCTest has nothing, swift-testing ran three.
+    expect(noTestsCollected(`${xctest(0)}✔ Test run with 3 tests passed after 0.001 seconds.`)).toBe(false);
+    expect(noTestsCollected(`${xctest(0)}􀟈 Test run with 3 tests passed after 0.001 seconds.`)).toBe(false);
+    expect(noTestsCollected("Test Suite 'Selected tests' passed at 2026-10-28 21:31:05.697\n\t Executed 0 tests, with 0 failures (0 unexpected) in 0.0 (0.0) seconds\n")).toBe(false);
+    expect(noTestsCollected("/w/Tests/LibTests/LibTests.swift:6:27: error: cannot find 'sub' in scope")).toBe(false);
+    expect(noTestsCollected("No test is available in /w/A.Tests.dll. Make sure that test discoverer & executors are registered\nFailed!  - Failed:     1, Passed:     2, Skipped:     0, Total:     3, Duration: 12 ms - B.Tests.dll (net8.0)")).toBe(false);
+    expect(noTestsCollected("No test matches the given testcase filter `FullyQualifiedName~Sum` in /w/A.Tests.dll")).toBe(false);
+    expect(noTestsCollected("Finished in 0.01 seconds (0.00s async, 0.01s sync)\n3 tests, 1 failure\n")).toBe(false);
+    expect(noTestsCollected("==> a\nFinished in 0.01 seconds (0.00s async, 0.01s sync)\n0 failures\n==> b\nFinished in 0.02 seconds (0.00s async, 0.02s sync)\n2 tests, 1 failure\n")).toBe(false);
+    expect(noTestsCollected("Ran: 0 tests in: 0.00 seconds.\nOK\nRan: 4 tests in: 0.01 seconds.\nFAILED: Cases: 4 Tried: 4 Errors: 0 Failures: 1")).toBe(false);
+    expect(noTestsCollected("Test Successful in 0.000s. 0 test run.\n1 failure! in 0.001s. 3 tests run.")).toBe(false);
+    expect(noTestsCollected("0 successes / 0 failures / 1 error / 0 pending : 0.0002 seconds\nError -> spec/a_spec.lua:3: <name> expected near 'end'")).toBe(false);
+    expect(noTestsCollected("Discovery found 0 tests in 222ms.\nTests Passed: 0, Failed: 0, Skipped: 0, Inconclusive: 0, NotRun: 0\nContainer failed: 1\n  - /w/tests/Fold.Tests.ps1")).toBe(false);
   });
 });
 

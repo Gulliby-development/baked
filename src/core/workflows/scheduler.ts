@@ -103,6 +103,7 @@ import {
   edgeTaxonomy,
   printedValue,
 } from "../verification/edge-inputs.js";
+import { silentFailure } from "../verification/environment-faults.js";
 import {
   currentEvidence,
   evidenceHandle,
@@ -304,7 +305,13 @@ import {
   writtenCodePaths,
 } from "./check-policy.js";
 import { failFastUnavailable } from "./check-preflight.js";
-import { CI_WORKFLOW, ciCheckDrift, ciCheckDriftSummary, README_FILE } from "./ci-check-drift.js";
+import {
+  CI_WORKFLOW,
+  ciCheckDrift,
+  ciCheckDriftSummary,
+  README_FILE,
+  scriptTables,
+} from "./ci-check-drift.js";
 import {
   ASSUME_NOTE,
   assumeProblems,
@@ -316,6 +323,7 @@ import {
   SCOPING_PLANNERS,
   scopedPlanBudget,
 } from "./clarification.js";
+import { cleanRates, cleanSizingShadow } from "./clean-pace.js";
 import {
   COMMITTED_TREE_KIND,
   COMMITTED_TREE_PATH,
@@ -804,6 +812,7 @@ import {
   LIMIT_BLOCK_PREFIX,
   limitBlockOf,
   noteStoredLimitResume,
+  recordWouldRerun,
   recordWouldStop,
   stopFault,
   stopMode,
@@ -1422,9 +1431,11 @@ export class WorkflowScheduler {
     // After a laptop sleep the first write can fail with a transient SQLite I/O or busy error; it
     // ran in a timer, so it killed the command with an uncaught exception (bench round 32, #1313).
     // The write is tried once more, and an interval still unrecorded goes with the next flush.
+    // A call that responded and then ended without an answer takes its time back (#2414): the
+    // correction is negative and goes to the row as well.
     const recordActive = (): void => {
       const add = Math.ceil(budgetClock.now() - started - recorded);
-      if (add <= 0) return;
+      if (add === 0) return;
       for (let tries = 2; tries > 0; tries--) {
         try {
           this.store.transaction(() => this.store.addActiveTime(runId, add));
@@ -4903,8 +4914,9 @@ export class WorkflowScheduler {
   }
   /**
    * The `ci_check_drift` would-stops (#2284): each gate command of a CI workflow or root README
-   * the run changed that the checks about to run do not run as written, once per file and command.
-   * Called at the checks stage of both workflow versions, after the snapshot.
+   * the run changed that the checks about to run do not run as written, once per file and command,
+   * both sides read through the package, Composer and Deno scripts they run (#2416). Called at the
+   * checks stage of both workflow versions, after the snapshot.
    */
   private ciCheckDriftWouldStop(
     runId: string,
@@ -4922,7 +4934,16 @@ export class WorkflowScheduler {
         return text === null ? [] : [{ path, text }];
       });
     if (!files.length) return;
-    for (const drift of ciCheckDrift(files, checks))
+    // Script runners resolve through the run's manifests: a check's in its `cwd` (#2416).
+    const scripts = (dir: string) =>
+      scriptTables((name) => {
+        try {
+          return readText(workspacePath(root, join(dir, name)));
+        } catch {
+          return null;
+        }
+      });
+    for (const drift of ciCheckDrift(files, checks, scripts))
       recordWouldStop(this.store, runId, {
         reason: "ci_check_drift",
         mode,
@@ -7306,6 +7327,22 @@ export class WorkflowScheduler {
     });
   }
   /**
+   * A sizing report as recorded: with the active-time cap the clean pace would set beside it, in
+   * shadow (`cleanSizingShadow`, #2414); the report's own cap decides.
+   */
+  private sizingRecord(runId: string, report: SizingReport): string {
+    const initiatives = new InitiativeStore(this.store);
+    const id = initiatives.initiativeOfRun(runId);
+    const runs = id
+      ? initiatives
+          .links(id)
+          .map((l) => l.run_id)
+          .filter((r) => r !== runId)
+      : [];
+    const clean = cleanSizingShadow(report, cleanRates(this.store, [...new Set(runs)]));
+    return canonical(clean ? { ...report, cleanPace: clean } : report);
+  }
+  /**
    * Prices the analyzed plan before it is approved (see sizing.ts). An oversized plan goes back to
    * the planner once with a split note; a plan still above the run ceiling waits for the user,
    * who can split the request into an initiative or answer to go on. Otherwise every sized task
@@ -7338,7 +7375,7 @@ export class WorkflowScheduler {
         runId,
         "sizing",
         `sizing/plan-${String(state.sizingReplans)}.json`,
-        canonical(report),
+        this.sizingRecord(runId, report),
       ),
     );
     const split = report.decision === "split-tasks" || report.decision === "split-feature";
@@ -7477,7 +7514,7 @@ ${note}`;
       request: state.requestText || state.prompt,
     });
     this.store.transaction(() => {
-      this.store.artifact(runId, "sizing", path, canonical(report));
+      this.store.artifact(runId, "sizing", path, this.sizingRecord(runId, report));
       for (const task of report.tasks) state.taskBudgets[task.taskId] = task.attemptTokens;
       this.raiseBudget(runId, state, policy, report);
       this.store.saveState(runId, state);
@@ -14573,7 +14610,10 @@ ${note}`;
     const covered: { checkId: string; findingIds: string[] }[] = [];
     const handoffs: { checkId: string; evidenceId: string; owners: string[] }[] = [];
     for (const check of policy.checks.filter((c) => c.required && c.scope === "feature")) {
-      let checked = await this.runTaskCheck(runId, child, check, policy, signal, root);
+      const runOnce = () => this.runTaskCheck(runId, child, check, policy, signal, root);
+      const first = await runOnce();
+      let checked =
+        (await this.silentRerun(runId, policy, check, "reported-defect", first, runOnce)) ?? first;
       if (checked.status === "failed" && testsPending && noTestsCollected(checked.output ?? "")) {
         ran.push({ checkId: check.id, status: "no_tests", evidenceId: checked.evidenceId });
         continue;
@@ -14963,6 +15003,63 @@ ${note}`;
     }
   }
   /**
+   * A required check that failed on its exit code with no failure line of any toolchain in its
+   * output (`silentFailure`: a toolchain crash or kill under load, #2418) is run once more before
+   * it opens a correction. Under `silent_check_failure` in shadow (the default) this records
+   * `decision.would_rerun` and returns null, so the failure opens its correction as before. Under
+   * `enforce` it runs the check again, records `checks/<id>/rerun-<evidence>.json` and returns the
+   * second result: a pass makes the first an inconclusive flake that opens nothing, a second
+   * failure opens the correction as before. Null when the rule does not apply.
+   */
+  private async silentRerun<R>(
+    runId: string,
+    policy: RunPolicy,
+    check: Check,
+    stage: "checks" | "check-stage" | "reported-defect",
+    first: { status: string; evidenceId: string; output?: string; reason?: string },
+    again: () => Promise<R & { status: string; evidenceId: string; reason?: string }>,
+  ): Promise<R | null> {
+    if (
+      !check.required ||
+      first.status !== "failed" ||
+      first.reason !== "exit" ||
+      !silentFailure(first.output ?? "")
+    )
+      return null;
+    const mode = stopMode(policy, "silent_check_failure");
+    const outputTail = (first.output ?? "").slice(-600);
+    if (mode !== "enforce") {
+      recordWouldRerun(this.store, runId, {
+        mode,
+        key: `${check.id}-${first.evidenceId}`,
+        summary: `${check.id} failed with no failure line in its output (evidence ${first.evidenceId}): the host would run it once more before opening a correction.`,
+        inputs: { checkId: check.id, evidenceId: first.evidenceId, stage, outputTail },
+      });
+      return null;
+    }
+    const second = await again();
+    this.store.transaction(() =>
+      this.store.artifact(
+        runId,
+        "check-rerun",
+        `checks/${check.id}/rerun-${first.evidenceId}.json`,
+        canonical({
+          schemaVersion: 1,
+          checkId: check.id,
+          stage,
+          first: {
+            evidenceId: first.evidenceId,
+            status: second.status === "passed" ? "inconclusive" : "failed",
+            reason: "silent_failure",
+            outputTail,
+          },
+          rerun: { evidenceId: second.evidenceId, status: second.status },
+        }),
+      ),
+    );
+    return second;
+  }
+  /**
    * A finding "Required check X failed" is superseded by a later passing run of X: its evidence
    * no longer describes the files. Closing it keeps a corrective task that the passing run made
    * moot from being read as an open defect, whatever the other checks report.
@@ -14998,16 +15095,22 @@ ${note}`;
     // A failure is repaired first; the next pass reruns every check, the inconclusive one too.
     let inconclusive: string | undefined;
     for (const check of policy.checks) {
-      const attempt = this.store.reserve(runId, stepId, null, 0, policy);
-      const result = await this.checks.run(
-        runId,
-        attempt,
-        check,
-        signal,
-        runRoot(this.store.workspace, state),
-      );
-      this.store.transaction(() => this.store.finishAttempt(runId, attempt, "completed", 0));
-      failFastUnavailable(check, result);
+      const runOnce = async () => {
+        const attempt = this.store.reserve(runId, stepId, null, 0, policy);
+        const ran = await this.checks.run(
+          runId,
+          attempt,
+          check,
+          signal,
+          runRoot(this.store.workspace, state),
+        );
+        this.store.transaction(() => this.store.finishAttempt(runId, attempt, "completed", 0));
+        failFastUnavailable(check, ran);
+        return ran;
+      };
+      const first = await runOnce();
+      const result =
+        (await this.silentRerun(runId, policy, check, "checks", first, runOnce)) ?? first;
       const regression =
         result.status === "passed" && check.required
           ? this.checkRegression(runId, state, check, result.output)
@@ -17709,6 +17812,8 @@ ${note}`;
     output?: string;
     /** The gate timed out on the run's own work (`timeout_slow`, #2240): no fixer runs. */
     slow?: boolean;
+    /** The check runner's reason for the last attempt (`exit`, `timeout`, ...). */
+    checkReason?: string;
   }> {
     let attempts = 0;
     let unstable = false;
@@ -17760,6 +17865,7 @@ ${note}`;
           attempts,
           flaky: false,
           output: result.output,
+          checkReason: result.reason,
           ...(slow ? { slow } : {}),
         };
     }
@@ -17805,7 +17911,25 @@ ${note}`;
     const passedIds: string[] = [];
     let inconclusive: string | undefined;
     for (const { gate, check } of ordered) {
-      const run = await this.runCommandGate(runId, stepId, check, gate, policy, signal);
+      let run = await this.runCommandGate(runId, stepId, check, gate, policy, signal);
+      // A gate its own retries ran more than once is no one-off crash (#2418).
+      if (run.attempts === 1 && !run.reason) {
+        const first = run;
+        const again = await this.silentRerun(
+          runId,
+          policy,
+          check,
+          "check-stage",
+          { ...first, output: first.output ?? "", reason: first.checkReason },
+          () => this.runCommandGate(runId, stepId, check, gate, policy, signal),
+        );
+        if (again)
+          run = {
+            ...again,
+            attempts: first.attempts + again.attempts,
+            flaky: again.status === "passed",
+          };
+      }
       // Baseline lint debt under `staticBaseline: "relative"` passes here as it does at task end
       // and in the schema-1 checks stage (#1393).
       const result =

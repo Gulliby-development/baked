@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { runGit } from "../git/status.js";
@@ -32,10 +33,72 @@ export const HOST_APPLY_KIND = "host-apply";
 /** One record per planned task with a supplied write: `host-apply/tasks/<task>.json`. */
 export const HOST_APPLY_DIR = "host-apply/tasks/";
 /**
- * How the host checks a supplied diff: hand-written hunk counts are recounted, and the headers are
- * the `a/` and `b/` form `diffSections` writes.
+ * Whether a patch has a hunk with no context line, as `git diff -U0` writes them (#2412). A hunk of
+ * a new or deleted file has none in any diff and is not one.
  */
-export const APPLY_CHECK_ARGS = ["apply", "--check", "--recount", "-p1"] as const;
+export function zeroContextHunks(patch: string): boolean {
+  let whole = false;
+  let hunk: { context: boolean } | null = null;
+  const zero = () => hunk !== null && !hunk.context && !whole;
+  for (const line of patch.split("\n")) {
+    if (/^@@ -\d+(?:,\d+)? \+\d+(?:,\d+)? @@/.test(line)) {
+      if (zero()) return true;
+      hunk = { context: false };
+    } else if (/^(?:diff |index |--- |\+\+\+ )/.test(line)) {
+      if (zero()) return true;
+      hunk = null;
+      if (/^(?:--- |\+\+\+ )\/dev\/null\b/.test(line)) whole = true;
+      else if (line.startsWith("diff ") || line.startsWith("index ")) whole = false;
+    } else if (hunk && line.startsWith(" ")) hunk.context = true;
+  }
+  return zero();
+}
+
+/**
+ * The one place that builds `git apply`'s arguments for the request's diffs (#2412): the check
+ * against the task's base (`check`), host apply's scratch copy and the supplied-content checks.
+ * Hand-written hunk counts are recounted, and the headers are the `a/` and `b/` form
+ * `diffSections` writes. A patch with a zero-context hunk takes `--unidiff-zero`: without it git
+ * pins a hunk with neither leading nor trailing context to both ends of the file, so a pure
+ * addition lands at the end (and `--check` passes) and a replacement is refused. A patch whose
+ * every hunk has context keeps git's default, which still pins a hunk without trailing context to
+ * the end of the file.
+ */
+export function applyArgs(patch: string, check = false): string[] {
+  return [
+    "apply",
+    ...(check ? ["--check"] : []),
+    "--recount",
+    "-p1",
+    ...(zeroContextHunks(patch) ? ["--unidiff-zero"] : []),
+  ];
+}
+
+const blobHash = (algorithm: "sha1" | "sha256", bytes: Buffer): string =>
+  createHash(algorithm).update(`blob ${bytes.length}\0`).update(bytes).digest("hex");
+
+/**
+ * Why a zero-context patch cannot be trusted on the file at `path` in `root`; null when it can
+ * (#2412). With `--unidiff-zero` git places a hunk by its line numbers alone, so the base must be
+ * the diff's pre-image: the first `index <old>..<new>` line's old blob is matched (as a prefix)
+ * against the file's blob hash, of its bytes or of their LF form (a CRLF checkout of an LF blob),
+ * in SHA-1 or SHA-256. A patch with context in every hunk, without an `index` line, or for a file
+ * the base lacks is not checked.
+ */
+export function baseDrift(root: string, path: string, patch: string): string | null {
+  if (!zeroContextHunks(patch)) return null;
+  const old = /^index ([0-9a-f]{4,})\.\./m.exec(patch)?.[1];
+  const file = join(root, path);
+  if (!old || /^0+$/.test(old) || !existsSync(file)) return null;
+  const bytes = readFileSync(file);
+  const lf = Buffer.from(bytes.toString("utf8").replace(/\r\n/g, "\n"), "utf8");
+  const hashes = (["sha1", "sha256"] as const).flatMap((a) => [
+    blobHash(a, bytes),
+    blobHash(a, lf),
+  ]);
+  if (hashes.some((h) => h.startsWith(old))) return null;
+  return `the zero-context diff for ${path} names pre-image ${old}, and the base file is ${hashes[0]?.slice(0, old.length)}: its hunks are placed by line number only, so they apply only to that pre-image`;
+}
 /** The tail of git's refusal a record keeps. */
 const REFUSAL_CHARS = 300;
 
@@ -208,6 +271,17 @@ export function crlfPatch(patch: string): string {
     .join("\n");
 }
 
+/**
+ * The forms of a patch to try, in order, on a base (#2158, #2412): the request's LF form, then the
+ * CRLF form for a base with a CRLF line end. A zero-context patch on a CRLF base tries the CRLF form
+ * first: with no line to compare, its pure additions would apply in LF and leave mixed line ends.
+ */
+export function patchForms(patch: string, crlfBase: boolean): string[] {
+  const crlf = crlfBase ? crlfPatch(patch) : patch;
+  if (crlf === patch) return [patch];
+  return zeroContextHunks(patch) ? [crlf, patch] : [patch, crlf];
+}
+
 /** Whether the file at `path` in `root` has a CRLF line end. */
 function crlfFile(root: string, path: string): boolean {
   try {
@@ -218,7 +292,8 @@ function crlfFile(root: string, path: string): boolean {
 }
 
 /**
- * `git apply --check` of a write's patch against the task's base. The check compares bytes, so an
+ * `git apply --check` of a write's patch against the task's base, after `baseDrift` for a patch
+ * with a zero-context hunk (#2412). The check compares bytes, so an
  * LF diff from the brief fails on a CRLF base of the same content that git does not convert (git
  * already converts a `core.autocrlf=true` worktree): when the base file is CRLF, the patch with
  * CRLF hunk lines is checked too, and `eol: "crlf"` records that it applied that way (#2158).
@@ -228,11 +303,16 @@ async function applyWriteCheck(
   path: string,
   patch: string,
 ): Promise<{ applies: boolean; refusal?: string; eol?: "crlf" }> {
-  const check = await applyCheck(root, patch);
-  if (check.applies || !crlfFile(root, path)) return check;
-  const crlf = crlfPatch(patch);
-  if (crlf === patch) return check;
-  return (await applyCheck(root, crlf)).applies ? { applies: true, eol: "crlf" } : check;
+  const drift = baseDrift(root, path, patch);
+  if (drift) return { applies: false, refusal: drift.slice(-REFUSAL_CHARS) };
+  let refused: { applies: boolean; refusal?: string } | null = null;
+  for (const form of patchForms(patch, crlfFile(root, path))) {
+    const check = await applyCheck(root, form);
+    if (check.applies) return form === patch ? check : { applies: true, eol: "crlf" };
+    // The refusal of the request's own form is the one a record keeps.
+    if (form === patch || !refused) refused = check;
+  }
+  return refused ?? { applies: false };
 }
 
 /** Runs `git apply --check` for a patch in `root`; changes no file. */
@@ -247,7 +327,7 @@ async function applyCheck(
     // In a subdirectory of a repository git reads patch paths from the top: prefix them.
     const prefix = (await runGit(["rev-parse", "--show-prefix"], root)).stdout.trim();
     const result = await runGit(
-      [...APPLY_CHECK_ARGS, ...(prefix ? [`--directory=${prefix}`] : []), file],
+      [...applyArgs(patch, true), ...(prefix ? [`--directory=${prefix}`] : []), file],
       root,
       30_000,
     );
@@ -360,13 +440,14 @@ async function appliedPatch(path: string, base: string | null, patch: string): P
     const apply = async (text: string) => {
       writeFileSync(join(dir, "task.patch"), text);
       return runGit(
-        ["-c", "core.autocrlf=false", "apply", "--recount", "-p1", join(dir, "task.patch")],
+        ["-c", "core.autocrlf=false", ...applyArgs(text), join(dir, "task.patch")],
         copy,
         30_000,
       );
     };
-    let applied = await apply(patch);
-    if (!applied.ok && base?.includes("\r\n")) applied = await apply(crlfPatch(patch));
+    const [first, ...rest] = patchForms(patch, base?.includes("\r\n") ?? false);
+    let applied = await apply(first ?? patch);
+    for (const form of rest) if (!applied.ok) applied = await apply(form);
     if (!applied.ok)
       throw new Error(
         `the diff for ${path} does not apply: ${applied.stderr.trim().split("\n").at(-1) ?? ""}`,

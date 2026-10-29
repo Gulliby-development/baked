@@ -877,6 +877,28 @@ describe("workflow v2 scheduler", () => {
     expect(service.store.checks(run.runId).filter((c) => c.check_id === "second-time").map((c) => c.status)).toEqual(["failed", "passed"]);
   });
 
+  // #2418: a required gate that fails with no failure line (a toolchain crash under load) is run
+  // once more before it opens a correction when `silent_check_failure` is enforced.
+  test("V2-09 a required gate that fails silently is re-run once and its late pass is flaky", async () => {
+    const { start, complete, service, define, gate, root } = setup({}, { ...policy, stopModes: { silent_check_failure: "enforce" } });
+    // The run's check baseline runs each required gate once before the tasks (#934).
+    const counter = join(root, "..", `${basename(root)}-silent`);
+    cleanups.push(() => rmSync(counter, { force: true }));
+    gate(commandGate("crashes-once", ["-e", `const f=${JSON.stringify(counter)};const n=Number(await Bun.file(f).text().catch(()=>"0"))+1;await Bun.write(f,String(n));if(n===2){console.log("[24 / 31] HintSieveCoreTests-test-runner");process.exit(4)}`]));
+    define(quickFix((d) => ({
+      ...d,
+      stages: d.stages.map((s) => (s.type === "check" ? { ...s, gates: [{ gateId: "check" }, { gateId: "crashes-once" }] } : s)),
+    })));
+    const run = await start("custom-fix");
+    expect((await complete(run.runId)).status).toBe("completed");
+    const finished = ofType(events(service, run.runId), "gate.finished").map((e) => e.payload);
+    expect(finished.find((g) => g.gateId === "crashes-once")).toMatchObject({ status: "passed", attempts: 2, flaky: true });
+    expect(service.store.checks(run.runId).filter((c) => c.check_id === "crashes-once").map((c) => c.status)).toEqual(["failed", "passed"]);
+    const rerun = service.store.artifacts(run.runId).find((a) => a.logical_path.startsWith("checks/crashes-once/rerun-"));
+    expect(rerun && JSON.parse(service.store.readArtifact(run.runId, rerun.id))).toMatchObject({ stage: "check-stage", first: { status: "inconclusive" }, rerun: { status: "passed" } });
+    expect(service.store.tasks(run.runId).map((t) => t.id)).toEqual(["T001"]);
+  });
+
   test("V2-09 transition gates stop at the first required failure and block", async () => {
     const { start, complete, service, define, gate } = setup();
     gate(commandGate("gate-fails", ["-e", "process.exit(1)"]));

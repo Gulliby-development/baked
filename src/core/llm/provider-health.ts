@@ -203,6 +203,11 @@ export interface CallTiming extends CallReasoning {
   transport?: string;
   /** The call answered a tool call the model's open turn waited on, instead of starting a turn. */
   resumed?: boolean;
+  /**
+   * The wait before the first response of a call that answered, charged to active time; absent
+   * for a call that ended without an answer, whose whole interval is excluded (#2414).
+   */
+  silentMs?: number;
 }
 
 export class ProviderUnreachableError extends Error {
@@ -243,8 +248,10 @@ export function connectionError(error: unknown): boolean {
 
 export interface ProviderWatch {
   /**
-   * Tentatively withhold unanswered time. A real response charges it; an outage excludes it.
-   * `silent` says the call may reason silently (`silentReasoning`), so its quiet is not a stall.
+   * Tentatively withhold unanswered time. A real response charges it; an outage excludes it, and
+   * so does a call that responded but ends without an answer (no output, no tool call: a deadline,
+   * a watchdog, a cancel), settled `false` after its `true` (#2414). `silent` says the call may
+   * reason silently (`silentReasoning`), so its quiet is not a stall.
    */
   pending?: (silent: boolean) => (responded: boolean) => void;
   progress?: () => void;
@@ -288,6 +295,8 @@ export function withProviderHealth(
         const reasoning = { stage: watch.stage, ...callReasoning(params.providerOptions) };
         const settle = watch.pending?.(silentReasoning(adapted.provider, reasoning));
         let responded = false;
+        // Output or a tool call reached BAKED; an adapter's activity signal alone is no answer.
+        let answered = false;
         const startedAt = executionClock.now();
         let firstByteAt: number | null = null;
         let refusal: { statusCode?: unknown; responseHeaders?: Record<string, string> } | undefined;
@@ -359,6 +368,7 @@ export function withProviderHealth(
               const result = await adapted.doGenerate(options);
               signal.throwIfAborted();
               response();
+              answered = true;
               return result;
             }
             if (signal.aborted) void generated.stream.cancel().catch(() => {});
@@ -389,7 +399,10 @@ export function withProviderHealth(
                 blocks.set(part.id, block);
                 content.push(block);
               } else if (part.type === "text-delta" || part.type === "reasoning-delta") {
-                if (part.delta) response();
+                if (part.delta) {
+                  response();
+                  answered = true;
+                }
                 const block = blocks.get(part.id);
                 if (block) {
                   block.text += part.delta;
@@ -401,14 +414,19 @@ export function withProviderHealth(
               } else if (part.type === "finish") {
                 finish = part;
                 response();
+                answered = true;
               } else if (part.type === "tool-input-delta") {
-                if (part.delta) response();
+                if (part.delta) {
+                  response();
+                  answered = true;
+                }
               } else if (
                 part.type !== "tool-input-start" &&
                 part.type !== "tool-input-end" &&
                 part.type !== "raw"
               ) {
                 response();
+                answered = true;
                 content.push(part);
               }
             }
@@ -442,13 +460,15 @@ export function withProviderHealth(
           // A turn whose answer was lost before any output reached BAKED charges no active time,
           // as an outage does not: nothing usable arrived (#1957).
           if (
-            !responded &&
             !signal.aborted &&
             !(error instanceof ProviderUnreachableError) &&
             !lostAnswer(error)
           ) {
-            responded = true;
-            settle?.(true);
+            answered = true;
+            if (!responded) {
+              responded = true;
+              settle?.(true);
+            }
           }
           throw error;
         } finally {
@@ -457,6 +477,9 @@ export function withProviderHealth(
             provider: adapted.provider,
             ...reasoning,
             firstByteMs: firstByteAt === null ? null : Math.ceil(firstByteAt - startedAt),
+            ...(answered && firstByteAt !== null
+              ? { silentMs: Math.ceil(firstByteAt - startedAt) }
+              : {}),
             durationMs: Math.ceil(executionClock.now() - startedAt),
             ...(firstByteMs !== ceilingMs ? { limitMs: firstByteMs } : {}),
             ...(firstByteMs !== ceilingMs && deadlineInputs ? { deadlineInputs } : {}),
@@ -470,7 +493,7 @@ export function withProviderHealth(
           if (abort) signal.removeEventListener("abort", abort);
           responses.delete(signal);
           details.delete(signal);
-          if (!responded) settle?.(false);
+          if (!answered) settle?.(false);
           if (completed) reader?.releaseLock();
           else {
             void reader?.cancel().catch(() => {});

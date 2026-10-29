@@ -65,6 +65,7 @@ import {
   baselineSignatureDecision,
 } from "./baseline-signature.js";
 import { callCostRate } from "./budget.js";
+import { type CleanSizingShadow, cleanRates, cleanSizingShadow } from "./clean-pace.js";
 import {
   CONFLICT_FINISH_DIR,
   CONFLICT_FINISH_KIND,
@@ -150,6 +151,7 @@ import {
   type ShareGateRecord,
   shareShortfall,
   shareSpareUsd,
+  timeShortfall,
 } from "./initiatives/service.js";
 import type { TokenPoolView } from "./initiatives/token-pool.js";
 import {
@@ -959,6 +961,11 @@ export interface RunReplay {
   activeTimes: ActiveTimeBoundary[];
   /** Sizing reports whose active-time cap the current pace sets differently. */
   newActiveTimes: number;
+  /**
+   * Sizing reports whose recorded cap the clean pace would set differently (#2414, shadow): what
+   * making it the default changes; not an accepted-decision count.
+   */
+  cleanPaceChanges: number;
   /** Each written-tests run whose declared-class filter selected no test (#2363). */
   unselectedTests: UnselectedTestsBoundary[];
   /** Such runs the recording did not record a `written_tests_unselected` would-stop for. */
@@ -1001,6 +1008,11 @@ export interface ActiveTimeBoundary {
   report: string;
   recorded: { tokensPerMinute: number; basis: PaceBasis; after: number };
   replayed: { tokensPerMinute: number; basis: PaceBasis; after: number };
+  /**
+   * In shadow (#2414): the cap at the clean pace, from the rates the report recorded beside its
+   * pace (`cleanPace`), else from the trace's runs that completed before it (`cleanRates`).
+   */
+  clean: CleanSizingShadow | null;
 }
 
 /** Picks the pace that sizes a run's active time from the history's and the initiative's rates. */
@@ -1014,6 +1026,23 @@ export type ActivePaceRule = (
  * completed by `at`, for a sizing report recorded before #2336 kept them; empty outside an
  * initiative or in a trace without its tables.
  */
+/** The other runs of the run's initiative that had completed by `at`; empty outside one. */
+function initiativeRunsAt(store: WorkflowStore, runId: string, at: number): string[] {
+  try {
+    return (
+      store.connection
+        .query(
+          `SELECT DISTINCT r.id AS id FROM initiative_runs l JOIN runs r ON r.id=l.run_id
+         WHERE l.initiative_id IN (SELECT initiative_id FROM initiative_runs WHERE run_id=?) AND l.run_id<>? AND r.status='completed'
+         AND (SELECT MAX(e.at) FROM events e WHERE e.run_id=r.id AND e.type='run.state_changed' AND json_extract(e.payload_json,'$.to')='completed')<=?`,
+        )
+        .all(runId, runId, at) as { id: string }[]
+    ).map((r) => r.id);
+  } catch {
+    return [];
+  }
+}
+
 function initiativeRatesAt(store: WorkflowStore, runId: string, at: number): number[] {
   try {
     const rows = store.connection
@@ -1072,6 +1101,13 @@ export function replayActiveTimes(
         : { tokensPerMinute: time.tokensPerMinute, basis: time.basis, runs: time.runs });
     if (!history) return [];
     const chosen = pace(history, time.ownRates ?? initiativeRatesAt(store, runId, at));
+    const recordedClean = (report as { cleanPace?: CleanSizingShadow }).cleanPace;
+    const clean = cleanSizingShadow(
+      report,
+      recordedClean
+        ? { rates: recordedClean.rates, silentMs: recordedClean.silentMs }
+        : cleanRates(store, initiativeRunsAt(store, runId, at)),
+    );
     const after = activeTimeLimit({
       neededTokens: Math.min(report.runTokens + (report.repairReserve ?? 0), report.budgetAfter),
       tokensPerMinute: chosen.tokensPerMinute,
@@ -1083,6 +1119,7 @@ export function replayActiveTimes(
         report: path,
         recorded: { tokensPerMinute: time.tokensPerMinute, basis: time.basis, after: time.after },
         replayed: { tokensPerMinute: chosen.tokensPerMinute, basis: chosen.basis, after },
+        clean,
       },
     ];
   });
@@ -2874,6 +2911,18 @@ export interface InitiativeStartBoundary {
     suggestedUsd: number;
     finalUsd: number | null;
   } | null;
+  /**
+   * The `initiative-time-share` would-stop the current code records at this start (#2413): the
+   * shared time left after the other waiting features' lows is below the feature's low at the
+   * pace. Its promotion cites replayed starts whose features did not stop on their deadlines.
+   */
+  timeWouldStop: {
+    summary: string;
+    availableMs: number;
+    lowMs: number;
+    tokensPerMinute: number;
+    suggestedTimeMs: number;
+  } | null;
 }
 
 /**
@@ -3421,6 +3470,7 @@ function replayStarts(
     const runIds = (db.query("SELECT id FROM runs").all() as { id: string }[]).map((r) => r.id);
     const rewinders = new Map(runIds.map((runId) => [runId, runRewinder(store, runId)]));
     const policies = new Map(runIds.map((runId) => [runId, runPolicyAt(store, runId)]));
+    const activeTimes = new Map(runIds.map((runId) => [runId, runActiveAt(store, runId)]));
     const states = new Map(
       runIds.map((runId) => [
         runId,
@@ -3509,7 +3559,9 @@ function replayStarts(
           ]);
           // The run's tokens, dollars and policy as they stood then, not at its end (#2061).
           const policyAt = policies.get(runId);
-          if (budgetAtStart && policyAt) rewindRunBudget(db, runId, t, policyAt);
+          const activeAt = activeTimes.get(runId);
+          if (budgetAtStart && policyAt && activeAt)
+            rewindRunBudget(db, runId, t, policyAt, activeAt(t));
         }
         for (const runId of late) rewinders.delete(runId);
       })();
@@ -3538,6 +3590,7 @@ function replayStarts(
         const whole = initiatives.estimate(initiativeId);
         const short = feature ? dollarShortfall(view, feature) : null;
         const park = feature ? dollarCapPark(view, feature) : null;
+        const timeShort = feature ? timeShortfall(view, feature) : null;
         const estimate = (whole?.features ?? []).map((f) => ({
           featureId: f.featureId,
           low: f.tokens.low,
@@ -3582,6 +3635,15 @@ function replayStarts(
                 openNeedUsd: park.openNeedUsd,
                 suggestedUsd: park.suggestedUsd,
                 finalUsd: finalUsd > 0 ? Math.round(finalUsd * 100) / 100 : null,
+              }
+            : null,
+          timeWouldStop: timeShort
+            ? {
+                summary: timeShort.summary,
+                availableMs: timeShort.availableMs,
+                lowMs: timeShort.needMs.low,
+                tokensPerMinute: timeShort.tokensPerMinute,
+                suggestedTimeMs: timeShort.suggestedTimeMs,
               }
             : null,
         });
@@ -4000,20 +4062,57 @@ function runPolicyAt(store: WorkflowStore, runId: string): (t: number) => RunPol
 }
 
 /**
+ * A run's active time at any moment, read before a replay removes its later events (#2417): the
+ * `activeMs` its `budget.updated` events recorded, from 0 at its creation to its stored total at
+ * its last update, interpolated between two of them. The run row keeps only the final total, and
+ * the events come only with a reservation, so a moment between two reads the time in between.
+ */
+function runActiveAt(store: WorkflowStore, runId: string): (t: number) => number {
+  const run = store.run(runId);
+  const points = [
+    { at: run.created_at, ms: 0 },
+    ...(store.connection
+      .query(
+        "SELECT at, json_extract(payload_json, '$.activeMs') AS ms FROM events WHERE run_id=? AND type='budget.updated' AND json_extract(payload_json, '$.activeMs') IS NOT NULL ORDER BY seq",
+      )
+      .all(runId) as { at: number; ms: number }[]),
+    { at: Math.max(run.updated_at, run.created_at), ms: run.active_ms },
+  ];
+  return (t) => {
+    const next = points.findIndex((p) => p.at > t);
+    if (next === -1) return run.active_ms;
+    const after = points[next];
+    const before = points[next - 1];
+    if (!after || !before) return 0;
+    const span = after.at - before.at;
+    const share = span > 0 ? (t - before.at) / span : 1;
+    return Math.round(before.ms + Math.max(0, after.ms - before.ms) * share);
+  };
+}
+
+/**
  * A run's budget inputs as they stood at `t`, for a replay that rewound its attempts there (#2061):
- * the tokens and dollars of the attempts that had finished by then, and its policy then. The
- * stored token and dollar totals and the policy are the run's final ones; an initiative view
- * replayed on them sees every later spend and cap growth.
+ * the tokens and dollars of the attempts that had finished by then, the agent calls started by
+ * then, its active time then (`runActiveAt`), and its policy then. The stored totals and the
+ * policy are the run's final ones; an initiative view replayed on them sees every later spend and
+ * cap growth. With the final active time and calls, R76 schemamask's view at generation's start
+ * counted 14.0M ms used of the 18M shared time and 101 calls instead of the 9.4M and 70 its
+ * recorded gate read, and the replay parked generation and validate on a time share of 0 ms that
+ * the round never had (#2417).
  */
 function rewindRunBudget(
   db: Database,
   runId: string,
   t: number,
   policyAt: (t: number) => RunPolicy,
+  activeMs: number,
 ): void {
   db.run(
-    "UPDATE runs SET token_usage=(SELECT COALESCE(SUM(used_tokens), 0) FROM attempts WHERE run_id=? AND ended_at<=?), estimated_cost_microusd=NULL, policy_json=? WHERE id=?",
-    [runId, t, canonical(policyAt(t)), runId],
+    `UPDATE runs SET
+      token_usage=(SELECT COALESCE(SUM(used_tokens), 0) FROM attempts WHERE run_id=? AND ended_at<=?),
+      agent_calls=(SELECT COUNT(*) FROM attempts WHERE run_id=? AND model_id IS NOT NULL AND started_at<=?),
+      active_ms=?, estimated_cost_microusd=NULL, policy_json=? WHERE id=?`,
+    [runId, t, runId, t, activeMs, canonical(policyAt(t)), runId],
   );
 }
 
@@ -4150,6 +4249,7 @@ function replayRun(
   | "newSourceDefectRoutes"
   | "activeTimes"
   | "newActiveTimes"
+  | "cleanPaceChanges"
   | "unselectedTests"
   | "newUnselectedStops"
 > | null {
@@ -4659,6 +4759,8 @@ export function replayTrace(
         newSourceDefectRoutes: sourceDefects.filter((b) => b.replayed !== b.recorded).length,
         activeTimes,
         newActiveTimes: activeTimes.filter((b) => b.replayed.after !== b.recorded.after).length,
+        cleanPaceChanges: activeTimes.filter((b) => b.clean && b.clean.after !== b.recorded.after)
+          .length,
         unselectedTests,
         newUnselectedStops: unselectedTests.filter((b) => !b.recorded).length,
       });
