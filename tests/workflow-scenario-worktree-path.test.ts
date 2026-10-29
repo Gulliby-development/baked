@@ -109,11 +109,13 @@ describe("scenario: R78 latcell-update, dart test below a deep task worktree (#2
     expect(recorded[0]?.payload.mode).toBe("shadow");
   }, 60000);
 
-  test("the same project on Linux, or a shallow one on Windows, records nothing", async () => {
-    const deep = project({ "pubspec.yaml": "name: latcell\n" }, 70);
-    expect(deep.stops(await deep.run())).toHaveLength(0);
-    const shallow = project({ "pubspec.yaml": "name: latcell\n" });
-    shallow.service.scheduler.platform = "win32";
-    expect(shallow.stops(await shallow.run())).toHaveLength(0);
+  test("the same project on Linux, or a project without a Dart manifest on Windows, records nothing", async () => {
+    // The platform is set either way: the host's own (and its temporary folder's depth) must not decide.
+    const linux = project({ "pubspec.yaml": "name: latcell\n" }, 70);
+    linux.service.scheduler.platform = "linux";
+    expect(linux.stops(await linux.run())).toHaveLength(0);
+    const other = project({ "README.md": "# p\n" }, 70);
+    other.service.scheduler.platform = "win32";
+    expect(other.stops(await other.run())).toHaveLength(0);
   }, 60000);
 });

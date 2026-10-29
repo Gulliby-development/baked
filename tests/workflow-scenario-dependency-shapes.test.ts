@@ -318,7 +318,8 @@ describe.skipIf(IS_WIN)("scenario: Dart R75, a worktree resolves its packages (#
 
 describe("scenario: Dart R75, a deep workspace (#2361)", () => {
   test("the doctor warns a Dart project whose task worktrees are too deep for dart test", () => {
-    const shallow = mkdtempSync(join(tmpdir(), "d-"));
+    // A short base on POSIX: macOS's temporary folder alone is about 50 characters deep.
+    const shallow = mkdtempSync(join(process.platform === "win32" ? tmpdir() : "/tmp", "d-"));
     const deep = join(shallow, "x".repeat(80));
     roots.push(shallow);
     mkdirSync(deep);
