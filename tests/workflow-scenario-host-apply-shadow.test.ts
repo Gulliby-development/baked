@@ -290,6 +290,9 @@ describe("every pre-session shadow hook runs on both implementer paths (#2138)",
     const hooks = [...body("beforeSession").matchAll(/this\.(record\w+)\(/g)].map((m) => m[1]);
     expect(hooks).toEqual(["recordHostApply", "recordSuppliedChecks"]);
     expect(source.match(/this\.recordHostApply\(/g)).toHaveLength(1);
+    // A task that runs no session gets the supplied-content check before the host writes (#2456).
+    expect(source.match(/this\.recordSuppliedChecks\(/g)).toHaveLength(2);
+    expect(body("runTaskStep").includes("await this.recordSuppliedChecks(")).toBe(true);
     // A corrective's `start` scope record is unownedFile's (#2133): runTaskStep calls it, and
     // heldCorrectives before a batch.
     expect(body("runTaskStep").includes('this.unownedFile(runId, state, policy, task, root, "start")')).toBe(true);

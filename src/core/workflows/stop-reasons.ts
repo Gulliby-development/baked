@@ -218,6 +218,15 @@ export const STOP_REASONS = {
     modes: NOT_ENFORCED,
     defaultMode: "shadow",
   },
+  host_content_conflict: {
+    label:
+      "A task-level corrective the host writes itself would write its files with the content they already hold",
+    // Shadow only until two bench rounds show no false would-stop (#2456, R78 pairwick cli: three
+    // host correctives rewrote a Main.scala that scalafmt cannot parse); its promotion blocks the
+    // run at once with the conflict between the request's content and the project's check.
+    modes: NOT_ENFORCED,
+    defaultMode: "shadow",
+  },
   fixer_unusable: {
     label:
       "A required check's fixer fails and changes nothing on a file of the base, where its check passes",

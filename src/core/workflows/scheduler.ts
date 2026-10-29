@@ -8389,6 +8389,11 @@ ${note}`;
     let reported: { summary: string; unresolved: string[] } | undefined;
     let unresolvedAccount: { summary: string; unresolved: string[] } | undefined;
     const cutOffResults = new Map<string, WorkerCheck["checked"]>();
+    // Shadow (#2275, #2456): whether the request's or the plan's verbatim content passes the
+    // project's static checks, before the host writes it. A task whose files the host writes or
+    // applies runs no session, so `beforeSession` never sees it.
+    if (!checking && firstRun && task.origin === "planned" && task.writes.length)
+      await this.recordSuppliedChecks(runId, state, task, runRoot(this.store.workspace, state));
     if (
       !checking &&
       (task.writes.length === 0 ||
@@ -19158,6 +19163,7 @@ ${note}`;
       this.amendSpec(runId, state, fresh);
       const before = new Set(state.graph?.tasks.map((t) => t.id));
       appendCorrections(this.store, runId, state, policy, fresh, kind, scope);
+      if (scope === "task") this.hostRewriteWouldStop(runId, state, policy, before, fresh);
       if (scope === "task") {
         const evidence = this.scopeEvidence(
           runId,
@@ -19700,6 +19706,63 @@ ${note}`;
     return applied;
   }
 
+  /**
+   * Records `host_content_conflict` (#2456) for each new task-level corrective that the host writes
+   * itself with the content its files already hold: it cannot change the failing check, so the
+   * chain ends only at `maxTaskRepairs` as `no_progress`. R78 pairwick cli: the plan's `Main.scala`
+   * failed scalafmt's parser, its fixer failed seven times, and T010 to T012 wrote it again.
+   */
+  private hostRewriteWouldStop(
+    runId: string,
+    state: RuntimeState,
+    policy: RunPolicy,
+    before: ReadonlySet<string | undefined>,
+    findings: Review["findings"],
+  ): void {
+    const mode = stopMode(policy, "host_content_conflict");
+    if (mode === "enforce") return;
+    const root = runRoot(this.store.workspace, state);
+    for (const task of state.graph?.tasks.filter((t) => !before.has(t.id)) ?? []) {
+      if (!hostWritten(task)) continue;
+      const unchanged = task.writes.every(
+        (w) =>
+          fileHash(workspacePath(root, w.path)) === hashBytes(Buffer.from(w.content ?? "", "utf8")),
+      );
+      if (!unchanged) continue;
+      const paths = task.writes.map((w) => w.path).sort();
+      const fixers = failedFixerRuns(this.store, runId).filter((run) =>
+        run.targets.some((target) => paths.includes(target)),
+      );
+      const claims = findings
+        .filter((f) => f.file === null || paths.includes(f.file))
+        .map((f) => f.claim.split("\n")[0]?.slice(0, 300) ?? "")
+        .filter(Boolean);
+      const supplied = this.store.latestArtifact(runId, `${SUPPLIED_CHECK_DIR}${task.id}.json`);
+      recordWouldStop(this.store, runId, {
+        reason: "host_content_conflict",
+        mode,
+        key: `files-${paths.join(",")}`,
+        summary: `host_content_conflict: corrective ${task.id} would write ${paths.join(", ")} with the content they already hold, so it cannot change the failing check${claims.length ? ` (${claims[0]})` : ""}${fixers.length ? `, and ${String(fixers.length)} fixer run${fixers.length === 1 ? "" : "s"} on them failed without a change` : ""}; the run would stop with the conflict between the request's content and the project's check instead of opening host correctives until no_progress`,
+        inputs: {
+          taskId: task.id,
+          paths,
+          findings: findings.map((f) => f.id),
+          claims,
+          failedFixers: fixers.map((run) => ({
+            checkId: run.checkId,
+            command: run.command,
+            exitCode: run.exitCode,
+            output:
+              run.output
+                .split("\n")
+                .filter((line) => line.trim())
+                .at(-1) ?? "",
+          })),
+          ...(supplied ? { suppliedCheck: supplied.logical_path } : {}),
+        },
+      });
+    }
+  }
   /**
    * Records the project's static checks on a copy of the task's base with the request's verbatim
    * content written in (`suppliedCheckRecord`, #2275), once per task. Shadow: the implementer
