@@ -22,6 +22,17 @@ export function pythonEnvironment(has: (file: string) => boolean): [string, stri
   return PYTHON_ENVIRONMENTS.find((environment) => has(environment.lockfile))?.prefix ?? null;
 }
 
+/**
+ * The sbt task that runs every test of a build, by the sbt version `project/build.properties`
+ * names (#2440): sbt 2 runs `test` as `testQuick`, which skips the tests its content-addressed
+ * cache has seen pass, even in a fresh directory, so its full run is `testFull`; sbt 1 and a build
+ * that names no version keep `test`.
+ */
+export function sbtTestTask(buildProperties: string | null): "test" | "testFull" {
+  const major = /^[ \t]*sbt\.version[ \t]*[=:][ \t]*(\d+)\./m.exec(buildProperties ?? "")?.[1];
+  return Number(major ?? 0) >= 2 ? "testFull" : "test";
+}
+
 /** A Composer `vendor/bin` proxy script, which the PHP interpreter runs on every platform. */
 const COMPOSER_BIN = /^(?:\.[\\/])?vendor[\\/]bin[\\/][\w.-]+$/;
 

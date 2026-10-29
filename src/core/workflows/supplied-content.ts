@@ -46,6 +46,7 @@ export function suppliedTestFiles(
       const write = task.writes.find((w) => w.path === path);
       if (supplied.length !== 1 || block?.kind !== "file") return [];
       if (!block.whole && write?.action !== "create") return [];
+      if (block.listing) return []; // signatures, not the test file (#2438)
       return [{ path, content: block.content }];
     });
     if (tests.length && files.length === tests.length) out.set(task.id, files);

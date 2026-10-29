@@ -1,5 +1,6 @@
 import { maskNonCode } from "../workflows/quality/code-mask.js";
 import { type LanguageRecord, none, rowOf } from "./language-records.js";
+import { isTestContent, isTestFile, TEST_MARKERS } from "./language-traits.js";
 import { detectLanguageFromPath } from "./types.js";
 
 /**
@@ -18,6 +19,13 @@ export interface TestDeclarationRow {
    * one, are its tests for a per-class cap. Absent where tests are not grouped in classes.
    */
   unit?: RegExp;
+  /**
+   * Tests `test` does not count one by one, matched over the file's text: a framework that
+   * declares them in another form (Kotest's and ScalaTest's spec styles, Go's fuzz targets,
+   * fast-check's `test.prop`, PHPUnit's `#[Test]` methods). A file that matches declares tests for
+   * `declaresTest` (#2439); the caps do not count it.
+   */
+  spec?: RegExp;
   /** A test file of the language, counted by the parity fixture. */
   example: { path: string; text: string };
 }
@@ -34,13 +42,20 @@ const jsExample = (path: string) => ({
 test.each([[1, 2]])("pairs %d", (a, b) => {});
 `,
 });
+/**
+ * A test through a modifier `JS_TESTS` does not list (fast-check's `test.prop`, bun's and vitest's
+ * `test.skipIf(...)`, `test.runIf(...)`), and Deno's `Deno.test`.
+ */
+const JS_SPEC = /(?<![.\w$])(?:it|test)(?:\.\w+)+\s*[(`]|\bDeno\.test\s*\(/;
 const CLASS = /\bclass\s+\w+/g;
 
 export const TEST_DECLARATIONS: LanguageRecord<TestDeclarationRow> = {
-  typescript: { test: JS_TESTS, example: jsExample("tests/sum.test.ts") },
-  javascript: { test: JS_TESTS, example: jsExample("tests/sum.test.js") },
+  typescript: { test: JS_TESTS, spec: JS_SPEC, example: jsExample("tests/sum.test.ts") },
+  javascript: { test: JS_TESTS, spec: JS_SPEC, example: jsExample("tests/sum.test.js") },
   python: {
     test: /^[ \t]*(?:async[ \t]+)?def[ \t]+test\w*[ \t]*\(/gm,
+    // pytest-bdd's `scenarios("x.feature")` declares a test per scenario.
+    spec: /^[ \t]*scenarios[ \t]*\(/m,
     unit: /^[ \t]*class[ \t]+\w+/gm,
     example: {
       path: "tests/test_sum.py",
@@ -62,6 +77,8 @@ SOURCE = "def test_quoted(): pass"
   // Top-level test functions and testify suite methods; `t.Run` subtests and `TestMain` are not tests.
   go: {
     test: /^func[ \t]+(?:\([^)\n]*\)[ \t]*)?Test(?!Main\b)\w*[ \t]*\(/gm,
+    // A fuzz target runs its seed corpus as tests.
+    spec: /^func[ \t]+Fuzz\w*[ \t]*\(/m,
     example: {
       path: "sum_test.go",
       text: `package sum
@@ -83,6 +100,7 @@ func TestMain(m *testing.M) {}
   // `#[test]`, `#[tokio::test]` and `#[rstest]`; its `#[case]` rows are not tests of their own.
   rust: {
     test: /#\[(?:\w+::)*(?:test|rstest)\b/g,
+    spec: /#\[(?:\w+::)*(?:quickcheck|test_case)\b|\bquickcheck!\s*\{/,
     example: {
       path: "tests/sum.rs",
       text: `#[cfg(test)]
@@ -101,6 +119,9 @@ mod tests {
   java: {
     test: /@(?:Test|ParameterizedTest|RepeatedTest|TestFactory|TestTemplate)\b/g,
     unit: CLASS,
+    // A qualified annotation (`@org.junit.jupiter.api.Test`), jqwik's properties and examples,
+    // JUnit 3's `TestCase` subclasses.
+    spec: /@(?:[\w.]+\.)?(?:Test|ParameterizedTest|RepeatedTest|TestFactory|TestTemplate|Property|Example)\b|\bextends\s+TestCase\b/,
     example: {
       path: "src/test/java/SumTest.java",
       text: `import org.junit.jupiter.api.Test;
@@ -121,6 +142,8 @@ class SumTest {
   },
   kotlin: {
     test: /@(?:Test|ParameterizedTest|RepeatedTest|TestFactory)\b/g,
+    // A qualified annotation; Kotest's spec styles declare tests as strings and blocks, without one.
+    spec: /@(?:[\w.]+\.)?(?:Test|ParameterizedTest|RepeatedTest|TestFactory)\b|\b(?:Fun|String|Behavior|Should|Describe|Expect|Feature|Word|Free|Annotation)Spec\s*[({]/,
     unit: /\b(?:class|object)\s+\w+/g,
     example: {
       path: "src/test/kotlin/SumTest.kt",
@@ -140,6 +163,8 @@ class SumTest {
   },
   scala: {
     test: /(?<![.\w$])test\s*\(|@Test\b/g,
+    // ScalaTest's spec styles, specs2 and ScalaCheck properties.
+    spec: /\b(?:Any)?(?:FlatSpec|FunSpec|WordSpec|FreeSpec|FeatureSpec|PropSpec)(?:Like)?\b|\bSpecification\b|(?<![.\w$])property\s*\(/,
     unit: /\b(?:class|object)\s+\w+/g,
     example: {
       path: "src/test/scala/SumSuite.scala",
@@ -154,6 +179,8 @@ class SumTest {
   // xUnit, NUnit and MSTest test methods; `[InlineData]` and `[TestCase]` rows are not tests of their own.
   csharp: {
     test: /\[\s*(?:Fact|Theory|Test|TestMethod|DataTestMethod)\b/g,
+    // A qualified attribute (`[global::Xunit.Theory]`) and FsCheck's `[Property]`.
+    spec: /\[\s*(?:global::)?(?:[\w.]+\.)?(?:Fact|Theory|Test|TestMethod|DataTestMethod|Property)\b/,
     unit: CLASS,
     example: {
       path: "Calc.Tests/SumTests.cs",
@@ -223,6 +250,8 @@ TEST_F(SumFixture, Zero) { EXPECT_EQ(sum(0, 0), 0); }
   },
   ruby: {
     test: /^[ \t]*(?:it|specify|example|scenario|test)\b(?=[ \t]*[("'{]|[ \t]+do\b)|^[ \t]*def[ \t]+test_\w*/gm,
+    // Shared examples, an example named by a variable (`it id do`), a Minitest method defined in a loop.
+    spec: /^[ \t]*(?:it_behaves_like|it_should_behave_like|include_examples)\b|^[ \t]*(?:it|specify|test)[ \t]+[\w@:]|\bdefine_method[ \t]*\(?[ \t]*["':]test_/m,
     unit: /^[ \t]*class[ \t]+\w+/gm,
     example: {
       path: "test/sum_test.rb",
@@ -244,6 +273,8 @@ end
   },
   php: {
     test: /^[ \t]*(?:(?:public|protected|private|static|final)[ \t]+)*function[ \t]+test\w*[ \t]*\(|^[ \t]*(?:it|test)[ \t]*\(/gm,
+    // PHPUnit's `#[Test]` attribute and `@test` annotation on a method of any name.
+    spec: /#\[\s*(?:\\?PHPUnit\\Framework\\Attributes\\)?Test\b|@test\b/,
     unit: CLASS,
     example: {
       path: "tests/SumTest.php",
@@ -313,6 +344,8 @@ end)
   },
   elixir: {
     test: /^[ \t]*test[ \t]+"/gm,
+    // A test named by an expression (`test @row["id"] do`), StreamData's `property`, ExUnit's `doctest`.
+    spec: /^[ \t]*(?:test[ \t]+[@\w(]|property[ \t]+"|doctest[ \t]+\w)/m,
     unit: /^[ \t]*defmodule\b/gm,
     example: {
       path: "test/sum_test.exs",
@@ -335,6 +368,8 @@ end
   // package:test's `test` and flutter_test's `testWidgets` blocks; `group` is not a test.
   dart: {
     test: /(?<![.\w$])(?:test|testWidgets)[ \t]*\(/g,
+    // Through an import prefix: `import 'package:test/test.dart' as t;` then `t.test(...)`.
+    spec: /(?<=\w)\.(?:test|testWidgets)[ \t]*\(/,
     example: {
       path: "test/sum_test.dart",
       text: `import 'package:test/test.dart';
@@ -493,6 +528,8 @@ contract SumTest is Test {
   },
   r: {
     test: /\btest_that[ \t]*\(/g,
+    // testthat's BDD style, `describe("x", { it("y", ...) })`.
+    spec: /(?<![.\w])it[ \t]*\(/,
     example: {
       path: "tests/testthat/test-sum.R",
       text: `test_that("adds", {
@@ -536,3 +573,22 @@ export function declaredTests(path: string, text: string): DeclaredTests | null 
 
 const flags = (pattern: RegExp): string =>
   pattern.flags.includes("g") ? pattern.flags : `${pattern.flags}g`;
+
+/**
+ * Whether a test file declares a test its runner would run (#2439): a test the language's
+ * `TEST_DECLARATIONS` row counts in its code, or a form its `spec` matches. A test-tree file that
+ * declares none is a support file (fixtures, constants, a harness the tests load), and a name its
+ * language shares with domain code without a test marker is source (`isTestContent`, #1848):
+ * neither runs a test, so a check that requires tests must not run it alone. A language without a
+ * declarations row decides by its `TEST_MARKERS` row, or by the name where it has neither.
+ * trailspin (bench round 77): T005 wrote a constants-only `fixtures_test.go`, its tests-written
+ * check ran no test and failed, and the correction put a test into a file the request gave
+ * verbatim.
+ */
+export function declaresTest(path: string, text: string): boolean {
+  if (isTestFile(path) && !isTestContent(path, text)) return false;
+  const language = detectLanguageFromPath(path);
+  const row = rowOf(TEST_DECLARATIONS, language);
+  if (row) return (declaredTests(path, text)?.tests ?? 0) > 0 || row.spec?.test(text) === true;
+  return rowOf(TEST_MARKERS, language)?.test(text) ?? true;
+}

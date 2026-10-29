@@ -1886,9 +1886,12 @@ export function replayRequestConflicts(
 
 export interface RepeatedFailureBoundary {
   taskId: string;
-  /** The corrective whose failure this one was compared with, or null. */
+  /**
+   * The corrective whose failure this one was compared with, or null; for a task's unfinished end
+   * (#2437), the task itself when its previous unfinished end was compared.
+   */
   previous: string | null;
-  /** The first task of the chain; a chain records one would-stop. */
+  /** The first task of the chain, or `task-<id>` for a task's unfinished ends; each records one would-stop. */
   root: string;
   /** What the run recorded; null for a run from before #1996, decided from its findings. */
   recorded: RepeatDecision | null;
@@ -1958,27 +1961,35 @@ export function replayRepeatedFailures(
   runId: string,
   decide: RepeatRule = repeatedFailureDecision,
 ): RepeatedFailureBoundary[] {
+  // A corrective's record (one per task) and a task's unfinished ends (#2437, the latest per task,
+  // each decided against the end before it) are kept apart: neither is the other's round.
   const records = new Map<string, RepeatRecord>();
+  const unfinished = new Map<string, RepeatRecord>();
+  const boundaries = new Map<string, RepeatedFailureBoundary>();
   for (const artifact of store.artifacts(runId)) {
     if (artifact.kind !== REPEAT_KIND || !artifact.logical_path.startsWith(REPEAT_TASKS_DIR))
       continue;
+    let record: RepeatRecord;
     try {
-      const record = JSON.parse(store.readArtifact(runId, artifact.id)) as RepeatRecord;
-      records.set(record.taskId, record);
-    } catch {}
-  }
-  if (records.size)
-    return [...records.values()].map((record) => ({
+      record = JSON.parse(store.readArtifact(runId, artifact.id)) as RepeatRecord;
+    } catch {
+      continue;
+    }
+    const end = record.end === "unfinished";
+    const previous = record.previous
+      ? (end ? unfinished : records).get(record.previous)?.checks
+      : undefined;
+    (end ? unfinished : records).set(record.taskId, record);
+    boundaries.set(`${end ? "unfinished" : "chain"} ${record.taskId}`, {
       taskId: record.taskId,
       previous: record.previous,
-      root: record.root,
+      root: end ? `task-${record.taskId}` : record.root,
       recorded: record.decision,
-      replayed: decide(
-        record.previous ? (records.get(record.previous)?.checks ?? null) : null,
-        record.checks,
-      ),
+      replayed: decide(previous ?? null, record.checks),
       source: "record" as const,
-    }));
+    });
+  }
+  if (boundaries.size) return [...boundaries.values()];
   const rounds = new Map<string, { checks: RepeatCheck[]; root: string }>();
   return findingRounds(store, runId).map((round) => {
     const previous = round.corrected ? rounds.get(round.corrected) : undefined;

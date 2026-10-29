@@ -181,7 +181,7 @@ describe("affectedTestCheck", () => {
   test("affectedTestsFor maps a task's write paths to tests and the narrowed check", () => {
     const root = workspace({
       "src/store.ts": "export const store = 1;\n",
-      "src/store.test.ts": 'import { store } from "./store";\n',
+      "src/store.test.ts": 'import { test } from "bun:test";\nimport { store } from "./store";\n\ntest("store", () => {});\n',
     });
     const { tests: found, check: derived } = affectedTestsFor(
       root,
@@ -426,7 +426,7 @@ describe("the affected-test regression gate", () => {
   };
   const files = {
     "src/store.ts": "export const store = 1;\n",
-    "tests/store.test.ts": 'import { store } from "../src/store.js";\n',
+    "tests/store.test.ts": 'import { test } from "bun:test";\nimport { store } from "../src/store.js";\n\ntest("store", () => {});\n',
   };
   const signal = new AbortController().signal;
 

@@ -212,6 +212,7 @@ import {
   isCompiledTestFile,
   isWrittenTestFile,
   plannedWrittenTests,
+  runnableTestFiles,
   taskCaseText,
   writtenTestsCheck,
 } from "./affected-tests.js";
@@ -700,6 +701,7 @@ import {
   type RepeatRecord,
   repeatCheck,
   repeatRecord,
+  unfinishedRecord,
 } from "./repeated-failure.js";
 import {
   checkedSides,
@@ -1206,6 +1208,34 @@ export function ownCheckFailures(
   if (!result.unresolved.length || result.unresolved.length > 5) return false;
   return result.unresolved.every(
     (item) => (CHECK_FAILURE.test(item) && CHECK_KIND.test(item)) || RULE_CODE.test(item),
+  );
+}
+/** A task's unfinished end that failed as its previous unfinished end did (#2437). */
+interface UnfinishedRepeat {
+  taskId: string;
+  /** Unfinished ends in a row with the same failing output, this one included. */
+  ends: number;
+  checks: string[];
+}
+/**
+ * The block of an unfinished task whose failing checks repeat its previous unfinished end, with
+ * the repeat in its message and in the `resume` remedy's advice (#2437): R77 pairwick's resumes ran
+ * the same task into the same `scalafmt` failure, and the message named only the latest one.
+ */
+export function unfinishedRepeatFault(
+  fault: WorkflowFault,
+  runId: string,
+  repeat: UnfinishedRepeat | null,
+): WorkflowFault {
+  if (!repeat) return fault;
+  const checks = repeat.checks.join(", ");
+  const summary = `Task ${repeat.taskId} ended unfinished ${repeat.ends} times in a row with the same failing output of ${checks}.`;
+  const message = `${fault.message.replace(/[.\s]+$/, "")}. ${summary} A resume runs the task into the same failure again unless what makes ${checks} fail changes first (a toolchain or fixer the task cannot run, a rule it cannot satisfy).`;
+  const { recovery: _replaced, ...details } = fault.details;
+  return new WorkflowFault(
+    fault.code,
+    recoveryAdvice(message, summary, { action: "resume", runId }),
+    details,
   );
 }
 /** Whether a fault is a task's unfinished implementation (`OUTPUT_INVALID` with `unfinishedTask`). */
@@ -8601,7 +8631,7 @@ ${note}`;
         if (unowned) {
           this.store.transaction(() => {
             this.store.taskStatus(runId, task.id, "blocked");
-            this.recordUnfinished(runId, child, task.id, result, changed);
+            this.recordUnfinished(runId, policy, child, task.id, result, changed);
           });
           throw unowned.refuse;
         }
@@ -8647,17 +8677,21 @@ ${note}`;
           });
           return;
         }
-        this.store.transaction(() => {
+        const repeat = this.store.transaction(() => {
           this.store.taskStatus(runId, task.id, "blocked");
-          this.recordUnfinished(runId, child, task.id, result, changed);
+          return this.recordUnfinished(runId, policy, child, task.id, result, changed);
         });
         const refused = takeHashRefusals(root);
-        throw new WorkflowFault(
-          "OUTPUT_INVALID",
-          `Task ${task.id} did not complete its implementation${incompleteReason(result.unresolved)}${correctionReason(correction)}${refusedReason(refused)}`,
-          refused.length
-            ? { reason: "input_changed", paths: refused }
-            : { unfinishedTask: task.id },
+        throw unfinishedRepeatFault(
+          new WorkflowFault(
+            "OUTPUT_INVALID",
+            `Task ${task.id} did not complete its implementation${incompleteReason(result.unresolved)}${correctionReason(correction)}${refusedReason(refused)}`,
+            refused.length
+              ? { reason: "input_changed", paths: refused }
+              : { unfinishedTask: task.id },
+          ),
+          runId,
+          repeat,
         );
       }
       if (
@@ -9526,14 +9560,18 @@ ${note}`;
             outcome.error instanceof WorkflowFault &&
             outcome.error.details.unfinishedTask === entry.task.id &&
             outcome.account
-          )
-            this.recordUnfinished(
+          ) {
+            const repeat = this.recordUnfinished(
               runId,
+              policy,
               entry.child,
               entry.task.id,
               outcome.account,
               outcome.edits?.changed ?? [],
             );
+            if (failure === outcome.error)
+              failure = unfinishedRepeatFault(outcome.error, runId, repeat);
+          }
         }
         this.store.finishStep(runId, entry.child, "failed");
         if (again) this.store.saveState(runId, state);
@@ -9593,6 +9631,7 @@ ${note}`;
     runId: string,
     stepId: string,
     taskId: string,
+    lines = FAILED_CHECK_LINES,
   ): { id: string; output: string }[] {
     const last = new Map<string, { status: string; artifactId: string }>();
     for (const row of this.store.taskCheckRuns(runId, taskId))
@@ -9608,7 +9647,7 @@ ${note}`;
             .output ?? "",
         );
       } catch {}
-      failed.push({ id, output: output.split("\n").slice(0, FAILED_CHECK_LINES).join("\n") });
+      failed.push({ id, output: output.split("\n").slice(0, lines).join("\n") });
     }
     return failed;
   }
@@ -9619,11 +9658,12 @@ ${note}`;
    */
   private recordUnfinished(
     runId: string,
+    policy: RunPolicy,
     stepId: string,
     taskId: string,
     result: { summary: string; unresolved: string[] },
     changed: string[],
-  ): void {
+  ): UnfinishedRepeat | null {
     const failedChecks = this.failedChecksOf(runId, stepId, taskId);
     this.store.artifact(
       runId,
@@ -9639,6 +9679,59 @@ ${note}`;
         ...(failedChecks.length ? { failedChecks } : {}),
       }),
     );
+    return this.recordUnfinishedRepeat(runId, policy, stepId, taskId);
+  }
+  /**
+   * Records the failing checks of a task's unfinished end (`repeats/tasks/<task>.json`, #2437)
+   * and, when they fail exactly as the task's previous unfinished end did, the `repeated_failure`
+   * would-stop (key `task-<id>`, once per task). Shadow only: the run blocks and resumes as before;
+   * the repeat it returns goes into the block message and its `resume` remedy. R77 pairwick: three
+   * implement tasks ended unfinished on the same `scalafmt` failure attempt after attempt and resume
+   * after resume, and no corrective was ever opened for the chain comparison to see.
+   */
+  private recordUnfinishedRepeat(
+    runId: string,
+    policy: RunPolicy,
+    stepId: string,
+    taskId: string,
+  ): UnfinishedRepeat | null {
+    const tasks = this.store.state(runId).graph?.tasks ?? [];
+    const checks = this.failedChecksOf(runId, stepId, taskId, Number.POSITIVE_INFINITY).map(
+      ({ id, output }) => repeatCheck(id, output, failingFilesInOutput(output, tasks)),
+    );
+    const path = `${REPEAT_TASKS_DIR}${taskId}.json`;
+    const latest = this.store.latestArtifact(runId, path);
+    const previous = latest ? this.repeatRecordOf(runId, latest.id) : null;
+    const record = unfinishedRecord(taskId, previous, checks);
+    this.store.artifact(runId, REPEAT_KIND, path, canonical(record));
+    if (record.decision !== "repeat") return null;
+    const repeat = { taskId, ends: record.ends ?? 2, checks: checks.map((c) => c.id) };
+    const mode = stopMode(policy, "repeated_failure");
+    if (mode === "enforce") return repeat;
+    const files = [...new Set(checks.flatMap((c) => c.files))];
+    recordWouldStop(this.store, runId, {
+      reason: "repeated_failure",
+      mode,
+      key: `task-${taskId}`,
+      summary: `${taskId} ended unfinished ${repeat.ends} times in a row with the same failing output of ${repeat.checks.join(", ")}${files.length ? ` (${files.slice(0, 5).join(", ")})` : ""}: a resume would not start another model session`,
+      inputs: {
+        taskId,
+        ends: repeat.ends,
+        checks: repeat.checks,
+        files,
+        hash: record.hash,
+        firstDifference: record.firstDifference,
+      },
+    });
+    return repeat;
+  }
+  /** A `repeats/tasks/` record, or null when it does not parse. */
+  private repeatRecordOf(runId: string, artifactId: string): RepeatRecord | null {
+    try {
+      return JSON.parse(this.store.readArtifact(runId, artifactId)) as RepeatRecord;
+    } catch {
+      return null;
+    }
   }
   /** Records the one restart a task gets per run; false when it already had it. */
   private restartOnce(
@@ -11205,9 +11298,13 @@ ${note}`;
     if (record?.baseline !== "passed" || !record.checkId) return gated;
     const suite = record.checkId.replace(/-affected$/, "");
     if (own.some((c) => c.id === suite)) return gated;
+    // The affected tests that declare a test: a support file runs none (#2439).
     const gate = affectedTestCheck(
       policy.checks,
-      record.paths.filter((path) => existsSync(workspacePath(root, path))),
+      runnableTestFiles(
+        root,
+        record.paths.filter((path) => existsSync(workspacePath(root, path))),
+      ),
     );
     return gate ? [...gated, { ...gate, required: true }] : gated;
   }
@@ -19500,14 +19597,11 @@ ${note}`;
       const taskId = state.repairPredecessors[finding.id];
       if (taskId) byTask.set(taskId, [...(byTask.get(taskId) ?? []), finding]);
     }
+    // A task's unfinished ends (#2437) are no corrective round of its chain.
     const recordOf = (taskId: string): RepeatRecord | null => {
       const artifact = this.store.latestArtifact(runId, `${REPEAT_TASKS_DIR}${taskId}.json`);
-      if (!artifact) return null;
-      try {
-        return JSON.parse(this.store.readArtifact(runId, artifact.id)) as RepeatRecord;
-      } catch {
-        return null;
-      }
+      const record = artifact ? this.repeatRecordOf(runId, artifact.id) : null;
+      return record?.end === "unfinished" ? null : record;
     };
     for (const [taskId, own] of byTask) {
       const task = graph.tasks.find((t) => t.id === taskId);

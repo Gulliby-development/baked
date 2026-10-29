@@ -11,15 +11,25 @@
  *
  * The module is pure over the file system: it reads files and returns paths and commands; the
  * scheduler decides when to run them.
+ *
+ * A written-tests check runs only the files `runnableTestFiles` selects: the task's test files as
+ * they are in the worktree after its write (a host-written file included), each declaring a test
+ * by its language's rows (`declaresTest`: `TEST_DECLARATIONS`, then `TEST_MARKERS`), a test class
+ * or the inline rows block (#2439). A test-tree file that declares none (Go fixtures in
+ * a `_test.go` file, Minitest's `test_helper.rb`, a C# helper in a test project) is support: a
+ * task that writes only those gets no check that requires tests, and keeps its other checks. Every
+ * runner branch of `affectedTestCheck`, a new one included, takes its files from that selection
+ * and never decides by a helper's name; `tests/workflow-scenario-test-support-file.test.ts` fails
+ * for a supported language without a support-file case.
  */
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { basename, dirname, join, posix } from "node:path";
-import { isTestFile as isLanguageTestFile, isTestFileAt } from "../intelligence/language-traits.js";
+import { declaresTest } from "../intelligence/test-declarations.js";
 import { INLINE_ROWS_BEGIN, INLINE_ROWS_CLASS } from "./acceptance-rows-inline.js";
 import { isStaticCheck } from "./check-policy.js";
 import { PESTER_RUN, pesterOn } from "./pester.js";
 import { testthatOn, testthatRun } from "./r-tools.js";
-import { readTestClasses, type TestClass } from "./test-classes.js";
+import { declaredTestClasses, readTestClasses, type TestClass } from "./test-classes.js";
 import { testGateFlags, withGateFlags } from "./test-gates.js";
 import { toolchainCommand } from "./toolchain.js";
 import type { Check } from "./types.js";
@@ -52,8 +62,11 @@ const SKIPPED_DIRS = new Set([
 
 const JS_FILE = /\.(?:[cm]?[jt]sx?)$/;
 const PY_FILE = /\.py$/;
-/** A Minitest file: `*_test.rb` or `test_*.rb`. */
-const RB_TEST = /(?:_test|(?:^|\/)test_(?!helper\.rb$)[^/]*)\.rb$/;
+/**
+ * A Minitest file: `*_test.rb` or `test_*.rb`. `test_helper.rb` is one by its name; it declares no
+ * test, so `runnableTestFiles` leaves it out of a written-tests check (#2439).
+ */
+const RB_TEST = /(?:_test|(?:^|\/)test_[^/]*)\.rb$/;
 const GO_FILE = /\.go$/;
 const PHP_FILE = /\.php$/;
 /** A busted spec: `*_spec.lua`, or `*_test.lua` under a `.busted` pattern (#1495). */
@@ -90,7 +103,8 @@ const TESTTHAT_FILE = /(?:^|\/)tests\/testthat\/test[-_]?[^/]*\.r$/i;
 /**
  * Whether a path is a test file of a compiled stack the written-tests check runs (#1396): a C#
  * file named `*Test(s).cs` or under a `Tests` or `*.Tests` directory, a Rust integration test
- * directly in a `tests/` directory, or a Java or Kotlin file under `src/test/`.
+ * directly in a `tests/` directory, or a Java, Kotlin or Scala file under `src/test/` (Scala's
+ * through sbt's `testOnly`, #2439).
  */
 export function isCompiledTestFile(path: string): boolean {
   const normal = path.replaceAll("\\", "/");
@@ -108,7 +122,7 @@ export function isCompiledTestFile(path: string): boolean {
           ))
     );
   if (RS_FILE.test(name)) return parts.at(-2) === "tests";
-  return JVM_FILE.test(name) && /(?:^|\/)src\/test\//.test(normal);
+  return (JVM_FILE.test(name) || name.endsWith(".scala")) && /(?:^|\/)src\/test\//.test(normal);
 }
 
 /** Whether a task's written test file is one the written-tests check can run. */
@@ -472,13 +486,13 @@ export function affectedTestCheck(
       // mix test takes test files by their path from the project root (#2348).
       prefix = ["test", ...flagsOnly(args.slice(1), MIX_VALUE_OPTION)];
       targets = tests.filter((t) => t.endsWith("_test.exs"));
-    } else if (name === "sbt" && args.includes("test")) {
+    } else if (name === "sbt" && args.some((a) => a === "test" || a === "testFull")) {
       // sbt runs test classes, not files: `testOnly *CalcSuite *CalcSpec`, one sbt command, by the
-      // file names of the Scala tests (#1496).
+      // file names of the Scala tests (#1496), in place of `test` or sbt 2's `testFull` (#2440).
       const classes = tests
         .filter((t) => t.endsWith(".scala"))
         .map((t) => `*${basename(t, ".scala")}`);
-      prefix = args.filter((a) => a !== "test");
+      prefix = args.filter((a) => a !== "test" && a !== "testFull");
       targets = classes.length ? [`testOnly ${classes.join(" ")}`] : [];
     } else if (name === "go" && args[0] === "test") {
       prefix = withGateFlags(["test", ...flagsOnly(args.slice(1))], gates.get("go"), 1);
@@ -633,7 +647,10 @@ export function affectedTestsFor(
     tests,
     check: affectedTestCheck(
       checks,
-      tests.map((t) => t.path),
+      runnableTestFiles(
+        root,
+        tests.map((t) => t.path),
+      ),
     ),
   };
 }
@@ -665,6 +682,33 @@ function inlineRowFiles(root: string, files: readonly string[]): Set<string> {
   );
 }
 
+/**
+ * The test files of `paths` a written-tests check runs (#2439): those under `root` that declare a
+ * test (`declaresTest`), read after the task's write, so a file the host wrote is read as written.
+ * A support file (fixtures, constants, a helper) and a source file named like a test (`PermTest.cs`
+ * without a test attribute, #1848) run no test and are left out. A file that cannot be read keeps
+ * its name's verdict.
+ */
+export function runnableTestFiles(root: string, paths: readonly string[]): string[] {
+  return paths.filter((path) => {
+    const full = join(root, path);
+    if (!existsSync(full)) return false;
+    let text: string;
+    try {
+      text = readFileSync(full, "utf8");
+    } catch {
+      return true;
+    }
+    // The host's inline acceptance rows block (#1763) and a class the runner selects (#2363)
+    // are tests whatever form they are written in.
+    return (
+      INLINE_ROWS_BEGIN.test(text) ||
+      (declaredTestClasses(path, text)?.length ?? 0) > 0 ||
+      declaresTest(path, text)
+    );
+  });
+}
+
 /** How long the test files a task wrote may run on their own after it (#1271). */
 export const WRITTEN_TESTS_TIMEOUT_MS = 60_000;
 
@@ -678,12 +722,10 @@ export function writtenTestsCheck(
   writes: readonly { path: string; action: string }[],
   text = "",
 ): Check | null {
-  const files = writes
-    .filter((w) => w.action !== "delete" && isWrittenTestFile(w.path))
-    .map((w) => w.path)
-    .filter((path) => existsSync(join(root, path)))
-    // A source file named like a test (`PermTest.cs` without a test attribute) has no tests to run (#1848).
-    .filter((path) => !isLanguageTestFile(path) || isTestFileAt(root, path));
+  const files = runnableTestFiles(
+    root,
+    writes.filter((w) => w.action !== "delete" && isWrittenTestFile(w.path)).map((w) => w.path),
+  );
   const declared = readTestClasses(root, files);
   const gate = affectedTestCheck(
     checks,

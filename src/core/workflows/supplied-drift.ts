@@ -59,7 +59,7 @@ function lines(text: string): string[] {
  * file has at most once, or diffs that applied to the task's base.
  */
 export function comparableWrite(write: HostApplyWrite): boolean {
-  if (write.action === "delete") return false;
+  if (write.action === "delete" || write.listing) return false;
   if (write.files === 1 && !write.diffs) {
     if (write.region) return write.region.matches <= 1;
     return write.whole || !write.exists;
@@ -275,7 +275,8 @@ export function suppliedDrifts(
         continue;
       }
       const [block] = blocks;
-      if (blocks.length !== 1 || !block) continue;
+      // A listing is not the file's content (#2438): R77 trailspin's signatures drifted falsely.
+      if (blocks.length !== 1 || !block || (block.kind === "file" && block.listing)) continue;
       const drift = blockDrift(task.id, write.path, block, delivered);
       if (drift) out.push(drift);
     }

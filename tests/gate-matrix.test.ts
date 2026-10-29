@@ -71,7 +71,7 @@ import { launchedCommand } from "../src/core/workflows/launcher.js";
 import { toolchainCommand } from "../src/core/workflows/toolchain.js";
 import { type HostEdit, hostOnlyEvidence, plannerGraph } from "../src/core/workflows/host-edits.js";
 import { defaultWorkflowPolicy } from "../src/core/workflows/defaults.js";
-import { sizePlan, splitTestTasks } from "../src/core/workflows/sizing.js";
+import { sizePlan, splitTestTasks, suppliedBlocks } from "../src/core/workflows/sizing.js";
 import { withPerTestTimeout } from "../src/core/workflows/test-timeout.js";
 import { detectProfile } from "../src/core/tools/project.js";
 import { formatProbeCommand } from "../src/core/tools/auto-format.js";
@@ -1667,6 +1667,23 @@ describe("gate matrix: a fixer gets the file only when its command takes one (#2
     });
 });
 
+describe("gate matrix: a path-comment signature listing is not the new file (#2438)", () => {
+  // R77 trailspin: a fenced block named only by its first-line path comment, after prose that does
+  // not say it is the whole file, lists signatures; the host does not write it as the file.
+  const files: [string, string][] = [
+    ["internal/cli/cli.go", "//"], ["src/lib.rs", "//"], ["src/index.ts", "//"], ["src/Main.java", "//"], ["src/Program.cs", "//"],
+    ["src/Main.scala", "//"], ["Sources/App/App.swift", "//"], ["lib/calc.dart", "//"], ["src/calc.zig", "//"], ["src/calc.cpp", "//"],
+    ["src/calc/core.py", "#"], ["lib/calc.rb", "#"], ["lib/calc.ex", "#"], ["bin/run.sh", "#"], ["src/Calc.php", "//"],
+    ["scripts/Run.ps1", "#"], ["src/calc.lua", "--"], ["db/schema.sql", "--"],
+  ];
+  for (const [path, lead] of files)
+    test(`${path}: a ${lead} header block is a listing, and a whole-file one is not`, () => {
+      const block = ["```", `${lead} ${path}`, "signature", "```"];
+      expect(suppliedBlocks(["Shapes (fixed; tests call them):", ...block].join("\n"), [path]).get(path)).toMatchObject([{ kind: "file", listing: true }]);
+      expect(suppliedBlocks(["Write this file verbatim:", ...block].join("\n"), [path]).get(path)?.[0]).not.toHaveProperty("listing");
+    });
+});
+
 describe("gate matrix: environment signature (#2273)", () => {
   const loopback = "* What went wrong:\njava.io.IOException: Unable to establish loopback connection\n\tat java.base/sun.nio.ch.PipeImpl.<init>(PipeImpl.java:93)\n";
   // Each toolchain with signatures: its command, a recorded machine failure with what its fix names,
@@ -1935,7 +1952,10 @@ describe("gate matrix: Bundler lint, RSpec and Minitest (#1493)", () => {
     const check = (id: string, args: string[]): Check => ({ id, executable: "bundle", args, cwd: ".", timeoutMs: 600000, required: true, scope: "feature", envNames: [], writes: [] });
     expect(affectedTestCheck([check("rspec", ["exec", "rspec", "--format", "progress"])], ["spec/calc_spec.rb", "lib/calc.rb"])?.args).toEqual(["exec", "rspec", "--format", "progress", "./spec/calc_spec.rb"]);
     expect(affectedTestCheck([check("rake-test", ["exec", "rake", "test"])], ["test/calc_test.rb"])?.args).toEqual(["exec", "rake", "test", "TEST=test/calc_test.rb"]);
-    expect(affectedTestCheck([check("rake-test", ["exec", "rake", "test"])], ["test/a_test.rb", "test/test_helper.rb", "test/test_b.rb"])?.args).toEqual(["exec", "rake", "test", "TEST={test/a_test.rb,test/test_b.rb}"]);
+    // test_helper.rb declares no test: the written-tests selection leaves it out by its content, not its name (#2439).
+    const root = project({ "test/a_test.rb": "class ATest < Minitest::Test\n  def test_a; end\nend\n", "test/test_helper.rb": 'require "minitest/autorun"\n', "test/test_b.rb": 'test "b" do\nend\n' });
+    const writes = ["test/a_test.rb", "test/test_helper.rb", "test/test_b.rb"].map((path) => ({ path, action: "create" }));
+    expect(writtenTestsCheck(root, [check("rake-test", ["exec", "rake", "test"])], writes)?.args).toEqual(["exec", "rake", "test", "TEST={test/a_test.rb,test/test_b.rb}"]);
   });
 
   test("a new Ruby file is held to RuboCop's layout cops when the run leaves the gate out (#1837)", () => {
@@ -2273,6 +2293,42 @@ describe("gate matrix: sbt, munit, ScalaTest and scalafmt (#1496)", () => {
   test("the agent profile runs sbt in batch mode and scalafmt through its plugin", async () => {
     const profile = await detectProfile(project({ "build.sbt": "", ".scalafmt.conf": "", "project/plugins.sbt": 'addSbtPlugin("org.scalameta" % "sbt-scalafmt" % "2.5.4")\n' }));
     expect([profile.test, profile.lint, profile.format]).toEqual(["sbt -batch test", "sbt -batch scalafmtCheckAll", "sbt -batch scalafmtAll"]);
+  });
+});
+
+// #2440: sbt 2 (2.0.11, munit, R77 pairwick) runs `test` as `testQuick`, which skips the tests its
+// content-addressed cache has seen pass, even in a fresh directory; `testFull` on a build without
+// a test prints no summary at all. The output lines are the ones the issue records.
+const SBT2_TESTQUICK_ZERO = "[info] Passed: Total 0, Failed 0, Errors 0, Passed 0\n[info] No tests to run for Test / testQuick\n[success] elapsed time: 1 s\n";
+const SBT2_TESTFULL_NONE = "[success] elapsed time: 1 s\n";
+const SBT2_TESTFULL_ONE = "pairwick.XTests:\n  + adds 0.011s\n[info] Passed: Total 1, Failed 0, Errors 0, Passed 1\n[success] elapsed time: 4 s\n";
+describe("gate matrix: sbt 2 test shapes (#2440)", () => {
+  const sbt2Check: Check = { id: "sbt-test", executable: "sbt", args: ["-batch", "testFull"], cwd: ".", timeoutMs: 1200000, required: true, scope: "feature", envNames: [], writes: [] };
+  test("testQuick with zero tests ran none, and says nothing of the tests the build holds", () => {
+    expect([testsRan(SBT2_TESTQUICK_ZERO), noTestsCollected(SBT2_TESTQUICK_ZERO)]).toEqual([{ tool: "sbt", count: 0 }, false]);
+    expect(exitStatus({ ...sbt2Check, requireTests: true }, 0, SBT2_TESTQUICK_ZERO)).toBe("failed");
+    // A narrowed run that selected nothing still reads as no test collected (#1496).
+    expect(noTestsCollected("[info] Passed: Total 0, Failed 0, Errors 0, Passed 0\n[info] No tests to run for Test / testOnly\n")).toBe(true);
+  });
+
+  test("testFull with no test ran none; with one test it ran one", () => {
+    expect([testsRan(SBT2_TESTFULL_NONE), testCount(SBT2_TESTFULL_NONE), noTestsCollected(SBT2_TESTFULL_NONE)]).toEqual([{ tool: "sbt", count: 0 }, null, false]);
+    expect(exitStatus({ ...sbt2Check, requireTests: true }, 0, SBT2_TESTFULL_NONE)).toBe("failed");
+    expect(exitStatus(sbt2Check, 0, SBT2_TESTFULL_NONE)).toBe("passed");
+    expect([testsRan(SBT2_TESTFULL_ONE), testCount(SBT2_TESTFULL_ONE)]).toEqual([{ tool: "sbt", count: 1 }, { tool: "sbt", count: 1 }]);
+    expect(exitStatus({ ...sbt2Check, requireTests: true }, 0, SBT2_TESTFULL_ONE)).toBe("passed");
+    // A suite line without a summary does not tell, and sbt 1's success line reads like sbt 2's.
+    expect(testsRan("pairwick.XTests:\n  + adds 0.011s\n[success] elapsed time: 4 s\n")).toBeNull();
+    expect(testsRan("[success] Total time: 3 s, completed Oct 25, 2026, 2:40:35 AM\n")).toEqual({ tool: "sbt", count: 0 });
+  });
+
+  test("the gate and the agent profile run testFull on sbt 2 and test on sbt 1, and testFull narrows to testOnly", async () => {
+    const gateOf = (version: string) => detectGates(project({ "build.sbt": "", "project/build.properties": `sbt.version=${version}\n` })).map((s) => [s.check.args.join(" "), s.source]);
+    expect(gateOf("2.0.11")).toEqual([["-batch testFull", "project/build.properties"]]);
+    expect(gateOf("1.10.11")).toEqual([["-batch test", "build.sbt"]]);
+    expect((await detectProfile(project({ "build.sbt": "", "project/build.properties": "sbt.version = 2.0.0\n" }))).test).toBe("sbt -batch testFull");
+    expect(affectedTestCheck([sbt2Check], ["src/test/scala/pairwick/XTests.scala"])).toMatchObject({ id: "sbt-test-affected", args: ["-batch", "testOnly *XTests"], requireTests: true });
+    expect(isTestCheck({ ...sbt2Check, id: "unit" })).toBe(true);
   });
 });
 
