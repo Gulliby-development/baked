@@ -517,28 +517,63 @@ const requestPath = (path: string): string =>
   (path.split("\t")[0] ?? "").trim().replace(/^(?:\.\/)+/, "");
 
 /**
- * The one path of `wanted` a block is attributed to: named in the last line of prose before it
- * ("Replace `src/a.ts` with:"), or in a comment on its first line (`// src/a.ts`), with whether
- * only that comment names it (`byHeader`). Null when none or more than one is named.
+ * The path a fenced block's first line names in a comment (`# a.py`, `// src/a.ts`, `-- a.lua`,
+ * `; a.lisp`), or null. The token must look like a file path (an extension); words may follow it
+ * when it has a directory (`// src/frames.ts   (names and shapes are fixed)`) or when they open
+ * with punctuation (`# setup.py (entry point)`), so a comment such as `// Node.js helper` is not
+ * a path (#2453).
+ */
+export function headerPath(first: string | undefined): string | null {
+  const m = /^\s*(?:#|\/\/|--|;)\s*(\S+)(.*)$/.exec(first ?? "");
+  const token = m?.[1]?.replace(/[:,]$/, "") ?? "";
+  if (!/^(?:\.\/)*[\w.-]+(?:\/[\w.-]+)*\.[A-Za-z]\w*$/.test(token)) return null;
+  const rest = m?.[2]?.trim() ?? "";
+  return !rest || token.includes("/") || /^[([{\-\u2013\u2014:,;]/.test(rest)
+    ? requestPath(token)
+    : null;
+}
+
+/** Paths a piece of prose names: in backticks, or as a bare `dir/name.ext` token. */
+const namedPaths = (text: string): string[] =>
+  [
+    ...[...text.matchAll(/`([^`\s]+)`/g)].map((m) => m[1] as string),
+    ...[...text.matchAll(/[\w./-]+\.\w+/g)].map((m) => m[0]),
+  ].map(requestPath);
+
+/**
+ * The one path of `wanted` a block is attributed to (#2453). A comment on its first line that
+ * names a path (`headerPath`) decides alone: the block is that file's, and not for any wanted
+ * path when the header names another file; `byHeader` when the last line of prose before it does
+ * not name that path too. Otherwise the one path of `wanted` the last prose line names ("Replace
+ * `src/a.ts` with:"), among those ending in the header's name when the header is a bare file name
+ * (`# config.py`). Null when none or more than one is named.
  */
 function blockPath(
   block: Fence,
   wanted: ReadonlySet<string>,
 ): { path: string; byHeader: boolean } | null {
-  const last = block.prose.trim().split("\n").at(-1) ?? "";
-  const header = /^\s*(?:#|\/\/|--|;)\s*(\S+)\s*$/.exec(block.lines[0] ?? "")?.[1];
-  const inProse = [
-    ...[...last.matchAll(/`([^`\s]+)`/g)].map((m) => m[1] as string),
-    ...[...last.matchAll(/[\w./-]+\.\w+/g)].map((m) => m[0]),
-  ]
-    .map(requestPath)
-    .filter((path) => wanted.has(path));
-  const named = new Set([
-    ...inProse,
-    ...(header && wanted.has(requestPath(header)) ? [requestPath(header)] : []),
-  ]);
-  const path = named.size === 1 ? ([...named][0] as string) : null;
-  return path ? { path, byHeader: !inProse.length } : null;
+  const last = lastLine(block.prose);
+  const header = headerPath(block.lines[0]);
+  if (header && wanted.has(header))
+    return { path: header, byHeader: !namedPaths(last).includes(header) };
+  // A bare file name in the header (`# config.py`) still lets the prose say which directory.
+  const fits = (path: string) => !header || (!header.includes("/") && path.endsWith(`/${header}`));
+  const named = new Set(namedPaths(last).filter((path) => wanted.has(path) && fits(path)));
+  return named.size === 1 ? { path: [...named][0] as string, byHeader: false } : null;
+}
+
+/**
+ * The part of a block's last prose line that speaks about `path`, for `WHOLE_FILE` (#2453): the
+ * clauses (split at `;`, `:` and sentence ends) that name it, or, when none does, the clauses that
+ * name no path. R78 deltaglue's "... `src/assemble.ts`; tests check the whole stream" before the
+ * `// src/cli.ts` listing made the listing a whole file through a clause about other files.
+ */
+function pathClauses(prose: string, path: string): string {
+  const clauses = lastLine(prose).split(/[;:]|[.!?](?=\s|$)/);
+  const naming = clauses.filter((clause) => namedPaths(clause).includes(path));
+  return (naming.length ? naming : clauses.filter((clause) => !namedPaths(clause).length)).join(
+    " ",
+  );
 }
 
 /**
@@ -645,7 +680,7 @@ export function suppliedBlocks(
     if (!attributed) continue;
     const { path } = attributed;
     const region = markdownRegion(path, block.lines, block.prose);
-    const whole = WHOLE_FILE.test(lastLine(block.prose));
+    const whole = WHOLE_FILE.test(pathClauses(block.prose, path));
     const file: SuppliedBlock = {
       kind: "file",
       lines: block.lines.length,
