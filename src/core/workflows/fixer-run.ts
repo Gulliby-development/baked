@@ -119,3 +119,72 @@ export function failedFixerRuns(store: WorkflowStore, runId: string): FixerRun[]
 /** The note an attempt gets with the fixer runs of its task that failed (#2436). */
 export const FAILED_FIXERS_NOTE =
   "The host ran these checks' automatic fixers on this task's files, and each failed without changing them, with this output. A fixer that cannot run as configured (a wrong command line, a missing tool, a lock) will not fix the check: apply_fix fails the same way. Edit what the check's own output names, run the check with request_check, and name the fixer's error in your summary.";
+
+/** One preflight probe of a required check's fixer: `fixers/preflight/<check>.json` (#2442). */
+export const fixerProbePath = (checkId: string): string => `${FIXER_DIR}preflight/${checkId}.json`;
+
+/** What the preflight probe of one fixer found (#2442). */
+export interface FixerProbe {
+  checkId: string;
+  /** The tracked file the fixer ran on, in a copy of the run; null when none fits. */
+  file: string | null;
+  command: string[];
+  exitCode: number | null;
+  timedOut: boolean;
+  changed: boolean;
+  output: string;
+  /**
+   * `unusable`: the fixer failed and left the file as it was although its check passed before any
+   * change, so the fixer cannot run as configured; `usable`: it exited 0 or changed the file;
+   * `not_probed`: no tracked file of the plan's code kinds, or no copy of the run.
+   */
+  decision: "unusable" | "usable" | "not_probed";
+  /** Why it was not probed. */
+  note?: string;
+}
+
+/**
+ * The probe's decision: a fixer whose check passed on the base must exit 0 on a file of that base
+ * (it has nothing to fix); one that fails and changes nothing could not run (R77 pairwick's
+ * `sbt scalafmtAll <file>`). A check failing on the base is not probed, since a linter's `--fix`
+ * exits non-zero on what it cannot fix.
+ */
+export function fixerProbeDecision(
+  run: Pick<FixerRun, "exitCode" | "timedOut" | "changed">,
+): FixerProbe["decision"] {
+  return fixerFailed(run) && !run.changed ? "unusable" : "usable";
+}
+
+/** The would-stop summary of an unusable fixer. */
+export function fixerUnusableSummary(probe: FixerProbe): string {
+  const last =
+    probe.output
+      .split("\n")
+      .filter((line) => line.trim())
+      .at(-1) ?? "";
+  return `fixer_unusable: the fixer of required check ${probe.checkId} (${probe.command.join(" ")}) ${probe.timedOut ? "timed out" : `exited ${String(probe.exitCode)}`} on ${probe.file ?? "a tracked file"} and changed nothing, although the check passed before any change${last ? ` (${last.slice(0, 200)})` : ""}; the run would stop before its first task instead of letting tasks call a fixer that cannot run`;
+}
+
+/** The lines a block's diagnostic adds for the fixer runs that failed on the run's files. */
+export function failedFixersDiagnostic(runs: readonly FixerRun[]): string {
+  if (!runs.length) return "";
+  const lines = runs.slice(0, 5).map((run) => {
+    const last =
+      run.output
+        .split("\n")
+        .filter((line) => line.trim())
+        .at(-1) ?? "";
+    return `- ${run.checkId}: ${run.command.join(" ")} on ${run.targets.join(", ")}: ${run.timedOut ? "timed out" : `exit ${String(run.exitCode)}`}${last ? `: ${last.slice(0, 300)}` : ""}`;
+  });
+  const more = runs.length > 5 ? [`- and ${String(runs.length - 5)} more`] : [];
+  return `\n\nAutomatic fixers that failed without changing their files (fixers/failed.json, #2436):\n${[...lines, ...more].join("\n")}`;
+}
+
+/** `failedFixersDiagnostic` of the run's standing failures; empty when they cannot be read. */
+export function failedFixersBlockNote(store: WorkflowStore, runId: string): string {
+  try {
+    return failedFixersDiagnostic(failedFixerRuns(store, runId));
+  } catch {
+    return "";
+  }
+}

@@ -1,12 +1,12 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { LanguageModelV3, LanguageModelV3GenerateResult } from "@ai-sdk/provider";
 import { MockLanguageModelV3 } from "ai/test";
 import { getProvider } from "../src/core/llm/providers/index.js";
 import { NativeAgentExecutor } from "../src/core/workflows/agent-executor.js";
 import { fixerCommand, isWholeUnitFixer, wholeUnitFixerCommand } from "../src/core/workflows/check-policy.js";
-import { FAILED_FIXERS_PATH, FIXER_DIR, fixerOutput, FIXER_OUTPUT_LIMIT } from "../src/core/workflows/fixer-run.js";
+import { FAILED_FIXERS_PATH, FIXER_DIR, FIXER_OUTPUT_LIMIT, failedFixersDiagnostic, fixerOutput, fixerProbeDecision, fixerProbePath } from "../src/core/workflows/fixer-run.js";
 import type { RunPolicy } from "../src/core/workflows/schemas.js";
 import type { ExecutionRequest } from "../src/core/workflows/types.js";
 import { FixtureExecutor, fixturePolicy, workflowFixture } from "./helpers/workflow-fixture.js";
@@ -151,6 +151,11 @@ describe("a fixer that cannot run says why (#2436)", () => {
     const told = contexts.find((c) => c.failedFixers);
     expect(told?.failedFixers?.failed[0]?.checkId).toBe("fmt");
     expect(told?.failedFixers?.failed[0]?.output).toContain("Expected whitespace character");
+    // The block's diagnostic names the fixer and its output (#2442).
+    const diagnostics = artifacts.filter((a) => a.logical_path.startsWith("errors/")).map((a) => service.store.readArtifact(run.runId, a.id));
+    expect(diagnostics.length).toBeGreaterThan(0);
+    expect(diagnostics.at(-1)).toContain("Automatic fixers that failed without changing their files");
+    expect(diagnostics.at(-1)).toContain("Expected whitespace character");
     // What the attempt was sent is what its saved context records.
     expect(sent.length).toBeGreaterThan(0);
     for (const one of sent) {
@@ -197,5 +202,78 @@ describe("a fixer that cannot run says why (#2436)", () => {
     }
     expect(sites.length).toBeGreaterThanOrEqual(4);
     expect(sites.filter((site) => !site.endsWith("runFixer"))).toEqual([]);
+  });
+});
+
+function git(cwd: string, ...args: string[]): void {
+  const result = Bun.spawnSync(["git", ...args], { cwd, stdout: "pipe", stderr: "pipe" });
+  if (result.exitCode !== 0) throw new Error(`git ${args.join(" ")}: ${result.stderr.toString()}`);
+}
+
+// #2442: the fixer of a required check is run once before the first task, on a tracked file of the
+// plan's code kinds in a copy of the run. A fixer that fails and changes nothing there, while its
+// check passed before any change, cannot run as configured: the `fixer_unusable` would-stop.
+describe("a fixer that cannot run is found before the first task (#2442)", () => {
+  async function probe(fix: { executable: string; args: string[] }) {
+    const check = { ...fmt, scope: "feature" as const, args: ["-e", "process.exit(0)"], fix };
+    const policy: RunPolicy = { ...fixturePolicy, checks: [check, ...fixturePolicy.checks] };
+    const fixture = workflowFixture({ policy });
+    cleanups.push(fixture.dispose);
+    const { executor, service, root } = fixture;
+    git(root, "init", "-q", "-b", "main");
+    git(root, "config", "user.name", "Test User");
+    git(root, "config", "user.email", "test@example.test");
+    git(root, "config", "commit.gpgsign", "false");
+    mkdirSync(join(root, "src"));
+    writeFileSync(join(root, "src/a.ts"), "export const a = 1;\n");
+    writeFileSync(join(root, ".gitignore"), ".baked/\n");
+    git(root, "add", ".");
+    git(root, "commit", "-q", "-m", "Initial");
+    const original = executor.execute.bind(executor);
+    executor.execute = async (request: ExecutionRequest) => {
+      const out = await original(request);
+      if (request.profile.output === "plan") {
+        const plan = out.output as { taskGraph: { tasks: { writes: { path: string; action: string }[] }[] } };
+        plan.taskGraph.tasks[0]?.writes.push({ path: "src/a.ts", action: "modify" });
+      }
+      return out;
+    };
+    const run = await fixture.start();
+    await service.drive(run.runId, signal());
+    await fixture.approve(run.runId);
+    await service.drive(run.runId, signal());
+    const row = service.store.latestArtifact(run.runId, fixerProbePath("fmt"));
+    const record = row ? (JSON.parse(service.store.readArtifact(run.runId, row.id)) as { decision: string; file: string; exitCode: number; output: string }) : null;
+    const stops = service.store.eventsOfType(run.runId, "decision.would_stop").filter((e) => e.payload.reason === "fixer_unusable");
+    // The probe ran in a copy: the workspace file is as committed.
+    expect(readFileSync(join(root, "src/a.ts"), "utf8")).toBe("export const a = 1;\n");
+    return { record, stops };
+  }
+
+  test("a fixer that exits 1 and changes nothing records the would-stop, with its output", async () => {
+    const { record, stops } = await probe(brokenFix);
+    expect(record).toMatchObject({ decision: "unusable", file: "src/a.ts", exitCode: 1 });
+    expect(record?.output).toContain("Expected whitespace character");
+    expect(stops).toHaveLength(1);
+    expect(String(stops[0]?.payload.summary)).toContain("Expected whitespace character");
+  }, 60000);
+
+  test("a fixer that runs records usable and no would-stop", async () => {
+    const { record, stops } = await probe({ executable: "bun", args: ["-e", "0"] });
+    expect(record).toMatchObject({ decision: "usable", file: "src/a.ts", exitCode: 0 });
+    expect(stops).toHaveLength(0);
+  }, 60000);
+
+  test("the decision: failed and unchanged is unusable; a change or exit 0 is usable", () => {
+    expect(fixerProbeDecision({ exitCode: 1, timedOut: false, changed: false })).toBe("unusable");
+    expect(fixerProbeDecision({ exitCode: null, timedOut: true, changed: false })).toBe("unusable");
+    expect(fixerProbeDecision({ exitCode: 1, timedOut: false, changed: true })).toBe("usable");
+    expect(fixerProbeDecision({ exitCode: 0, timedOut: false, changed: false })).toBe("usable");
+  });
+
+  test("a block's diagnostic names the fixer runs that failed, with their last output line", () => {
+    const run = { checkId: "scalafmt", targets: ["src/A.scala"], command: ["sbt", "scalafmtAll"], exitCode: 1, timedOut: false, changed: false, output: "[error] Expected '/'" };
+    expect(failedFixersDiagnostic([run])).toContain("- scalafmt: sbt scalafmtAll on src/A.scala: exit 1: [error] Expected '/'");
+    expect(failedFixersDiagnostic([])).toBe("");
   });
 });
