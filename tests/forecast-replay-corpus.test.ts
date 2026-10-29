@@ -594,7 +594,7 @@ describe("test task splits replay on recorded sizing reports (#1789)", () => {
     expect(replayTrace(path).runs.reduce((n, r) => n + r.newTestSplits, 0)).toBe(0);
   }, 120000);
 
-  test("#2455: row volume is a new sizing input; R77 trailspin replays unchanged, R78 deltaglue T007's inputs split by rows", () => {
+  test("#2455: row volume is a new sizing input; R77 trailspin replays unchanged, R78 deltaglue T007 splits by its rows", () => {
     // No report before #2455 records row volume, so the case rule alone replays them: R77
     // trailspin's prescribed-rows file (T005, fixtures_test.go) was kept whole and still is.
     const { store, dispose } = openTrace(join(ROOT, "R77/trailspin.sqlite.gz"));
@@ -609,14 +609,23 @@ describe("test task splits replay on recorded sizing reports (#1789)", () => {
     } finally {
       dispose();
     }
-    // R78 deltaglue cli 4ee1c56f `sizing/plan-0.json` (not in the corpus): T007 at 2 cases,
-    // 341k-863k, capacity 87, cap 600k, kept whole; it cost 6.89M without finishing. Its 63 rows
+    // R78 deltaglue cli 4ee1c56f: T007 recorded at 2 cases, 341k-863k, capacity 87, cap 600k, kept
+    // whole, and the case rule still keeps it whole; it cost 6.89M without finishing. Its 63 rows
     // of 20,123 characters are priced up to what it spent and split.
-    const limit = { tokens: 1_240_000, cases: 87, criteria: 6 };
-    expect(exceedsTestCapacity(2, limit, { low: 341_000, high: 863_000 }, 600_000)).toBe(false);
-    const rows = rowVolumePrice(20_123, 63, 600_000);
-    expect(rows.estimate.high).toBeGreaterThanOrEqual(6_887_546);
-    expect(rows.slices).toBeGreaterThan(1);
+    const deltaglue = openTrace(join(ROOT, "R78/deltaglue.sqlite.gz"));
+    try {
+      const [t007] = replayTestSplits(deltaglue.store, "4ee1c56f-52c4-4996-b90b-225ed96b111e").filter((b) => b.report === "sizing/plan-0.json" && b.taskId === "T007");
+      expect(t007).toMatchObject({ cases: 2, recorded: "whole", replayed: "whole" });
+      const report = deltaglue.store.latestArtifact("4ee1c56f-52c4-4996-b90b-225ed96b111e", "sizing/plan-0.json");
+      const recorded = JSON.parse(deltaglue.store.readArtifact("4ee1c56f-52c4-4996-b90b-225ed96b111e", report!.id));
+      expect(recorded.testTaskLimit.cases).toBe(87);
+      expect(exceedsTestCapacity(2, recorded.testTaskLimit, recorded.tasks.find((t: { taskId: string }) => t.taskId === "T007").estimate, recorded.maxAttemptTokens)).toBe(false);
+      const rows = rowVolumePrice(20_123, 63, recorded.maxAttemptTokens);
+      expect(rows.estimate.high).toBeGreaterThanOrEqual(6_887_546);
+      expect(rows.slices).toBeGreaterThan(1);
+    } finally {
+      deltaglue.dispose();
+    }
   }, 120000);
 
   test("R62 stepvet: tagexpr's active time is sized at the initiative's own pace and covers what it used (#2336)", () => {
