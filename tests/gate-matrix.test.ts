@@ -1902,7 +1902,10 @@ describe("gate matrix: Bundler lint, RSpec and Minitest (#1493)", () => {
     const check = (id: string, args: string[]): Check => ({ id, executable: "bundle", args, cwd: ".", timeoutMs: 600000, required: true, scope: "feature", envNames: [], writes: [] });
     expect(affectedTestCheck([check("rspec", ["exec", "rspec", "--format", "progress"])], ["spec/calc_spec.rb", "lib/calc.rb"])?.args).toEqual(["exec", "rspec", "--format", "progress", "./spec/calc_spec.rb"]);
     expect(affectedTestCheck([check("rake-test", ["exec", "rake", "test"])], ["test/calc_test.rb"])?.args).toEqual(["exec", "rake", "test", "TEST=test/calc_test.rb"]);
-    expect(affectedTestCheck([check("rake-test", ["exec", "rake", "test"])], ["test/a_test.rb", "test/test_helper.rb", "test/test_b.rb"])?.args).toEqual(["exec", "rake", "test", "TEST={test/a_test.rb,test/test_b.rb}"]);
+    // test_helper.rb declares no test: the written-tests selection leaves it out by its content, not its name (#2439).
+    const root = project({ "test/a_test.rb": "class ATest < Minitest::Test\n  def test_a; end\nend\n", "test/test_helper.rb": 'require "minitest/autorun"\n', "test/test_b.rb": 'test "b" do\nend\n' });
+    const writes = ["test/a_test.rb", "test/test_helper.rb", "test/test_b.rb"].map((path) => ({ path, action: "create" }));
+    expect(writtenTestsCheck(root, [check("rake-test", ["exec", "rake", "test"])], writes)?.args).toEqual(["exec", "rake", "test", "TEST={test/a_test.rb,test/test_b.rb}"]);
   });
 
   test("a new Ruby file is held to RuboCop's layout cops when the run leaves the gate out (#1837)", () => {
