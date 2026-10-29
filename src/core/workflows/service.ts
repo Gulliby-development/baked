@@ -102,6 +102,7 @@ import {
   PROJECT_MEMORY_ARTIFACT,
   renderProjectMemory,
 } from "./project-memory.js";
+import { checkRecoveryNote, noteInterruptedChecks, withRecoveryNote } from "./recovery.js";
 import { recoveryAdvice } from "./remedies.js";
 import type { ResumeRemedy } from "./remedies-model.js";
 import { canRepairRun } from "./repairable.js";
@@ -1375,7 +1376,14 @@ export class NativeWorkflowService implements WorkflowService {
             this.store.request(runId, "recovery", this.store.run(runId).input_hash, {
               effectId: effect.id,
               intent: JSON.parse(effect.intent_json),
+              ...checkRecoveryNote(this.store, runId, effect.id),
             });
+          noteInterruptedChecks(
+            this.store,
+            runId,
+            uncertain.map((effect) => effect.id),
+            "resume",
+          );
           this.store.transition(runId, "waiting", "interrupted_effect");
           return;
         }
@@ -1609,7 +1617,9 @@ export class NativeWorkflowService implements WorkflowService {
       !this.store.requests(runId).some(blocksRun)
     );
   }
-  async decide(runId: string, command: CommandIdentity, decision: Decision): Promise<RunSnapshot> {
+  async decide(runId: string, command: CommandIdentity, given: Decision): Promise<RunSnapshot> {
+    // A recovery decision needs no evidence: it records a generated note instead (#2415).
+    const decision = withRecoveryNote(given);
     return this.store.command(runId, command, { runId, ...command, decision }, () => {
       const named = this.store.requests(runId).find((r) => r.id === decision.requestId);
       // The decision on an acceptance test is advisory work beside the run, at any status.
@@ -1814,15 +1824,8 @@ export class NativeWorkflowService implements WorkflowService {
             "WORKSPACE_BUSY",
             "Recovery must wait until the command process is confirmed stopped",
           );
-        if (
-          request.kind !== "recovery" ||
-          body.effectId !== decision.effectId ||
-          !decision.evidence.trim()
-        )
-          throw new WorkflowFault(
-            "STALE_DECISION",
-            "Recovery evidence required for the requested effect",
-          );
+        if (request.kind !== "recovery" || body.effectId !== decision.effectId)
+          throw new WorkflowFault("STALE_DECISION", "The recovery request is for another effect");
         const lease = this.store.lease(executionLeaseFor(this.store, runId));
         if (lease && leaseOwnerAlive(lease) !== false)
           throw new WorkflowFault(

@@ -464,13 +464,14 @@ function Recovery({
           className={STACK_FORM}
           onSubmit={(e) => {
             e.preventDefault();
-            if (!resolution || !evidence.trim()) return;
+            if (!resolution) return;
+            // What the person checked is optional (#2415): a retry has nothing to say.
             void decide(() =>
               runs.recover(projectKey, run, {
                 requestId: request.id,
                 effectId,
                 resolution,
-                evidence: evidence.trim(),
+                ...(evidence.trim() ? { evidence: evidence.trim() } : {}),
               }),
             );
           }}
@@ -491,7 +492,7 @@ function Recovery({
             ))}
           </fieldset>
           <label htmlFor={`recovery-evidence-${request.id}`} className={FIELD_LABEL}>
-            What you checked (process stopped, files observed)
+            What you checked (process stopped, files observed), optional
           </label>
           <textarea
             id={`recovery-evidence-${request.id}`}
@@ -502,12 +503,7 @@ function Recovery({
           />
           {error && <Alert tone="error">{error}</Alert>}
           <div className={ROW_ACTIONS}>
-            <Button
-              type="submit"
-              variant="primary"
-              size="md"
-              disabled={busy || !resolution || !evidence.trim()}
-            >
+            <Button type="submit" variant="primary" size="md" disabled={busy || !resolution}>
               Record outcome
             </Button>
           </div>

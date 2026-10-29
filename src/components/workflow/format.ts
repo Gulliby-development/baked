@@ -570,6 +570,11 @@ const HINTS: [RegExp, string][] = [
     "Raise the limits (B) to continue from where it stopped, or fork the run (F) with a fresh budget.",
   ],
   [/Unknown run/i, "The run no longer exists. Pick another one from the list."],
+  // A change applied at the parallel-run cap: kept, and the run waits for a slot (#2415).
+  [
+    /continues when a slot is free/i,
+    "Nothing else to do: the change is kept and the run starts when one of the executing runs ends.",
+  ],
   [
     /WORKSPACE_BUSY|already executing|workspace is busy/i,
     "Another run or edit holds the workspace. Wait or pause it first.",

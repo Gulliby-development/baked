@@ -261,7 +261,8 @@ export const RecoverBody = Command.extend({
   requestId: SafeId,
   effectId: SafeId,
   resolution: z.enum(["record-applied", "record-not-applied", "retry", "cancel"]),
-  evidence: z.string().min(1).max(200_000),
+  /** Optional (#2415): without it the decision records a generated one-line note. */
+  evidence: z.string().min(1).max(200_000).optional(),
 }).strict();
 export const ReviseBody = Command.extend({
   candidate: z.string().regex(/^[0-9a-f]{64}$/),

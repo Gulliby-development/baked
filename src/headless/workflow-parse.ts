@@ -67,6 +67,7 @@ export const DECISION_COMMANDS: readonly WorkflowCommand[] = [
   "evidence",
   "accept",
   "repair",
+  "recover",
 ];
 export interface WorkflowArgs {
   command: WorkflowCommand;
@@ -216,7 +217,15 @@ const commandFlags: Record<WorkflowCommand, string[]> = {
   "export-package": ["out", "zip"],
   gc: ["before", "dry-run"],
   redact: ["file", "reason"],
-  recover: ["request", "effect", "resolution", "file", "expected-revision", "command-id"],
+  recover: [
+    "request",
+    "effect",
+    "resolution",
+    "file",
+    "expected-revision",
+    "command-id",
+    ...decisionResumeFlags,
+  ],
   usage: ["model", "stage", "top", "format", "output"],
   report: ["output"],
   recording: ["output"],
@@ -734,8 +743,10 @@ revise RUN_ID --candidate SHA256 --expected-revision N [--resume [--events]]   (
   implementation; their checks run again.
   --resume resumes and drives the revised run in the same command (exit codes as resume)
 undo RUN_ID --expected-revision N [--path PATH]   (restore what unfinished or invalidated task edits changed, unless changed since)
-recover RUN_ID --request ID --effect ID --resolution record-applied|record-not-applied|retry|cancel --file EVIDENCE --expected-revision N
-  record-not-applied / record-applied settle the one effect and the run goes on; cancel CANCELS THE WHOLE RUN (prints a warning)
+recover RUN_ID --request ID --effect ID --resolution record-applied|record-not-applied|retry|cancel [--file EVIDENCE] --expected-revision N [--no-resume | --events [--after SEQ]]
+  record-not-applied / record-applied / retry settle the one effect and the run goes on (resumed in
+  the same command unless --no-resume); cancel CANCELS THE WHOLE RUN (prints a warning). --file is
+  optional: without it the decision records a one-line note
 definitions               list workflow definitions: sdd, the presets and baked/workflows/*.json
 validate (ID | --file FILE)   check a definition against the gate library; exit 1 with problems
 define ID --from PRESET   copy a preset or definition to baked/workflows/ID.json as a custom workflow
