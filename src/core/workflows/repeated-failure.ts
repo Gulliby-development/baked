@@ -17,6 +17,14 @@ import { normalizeVolatile } from "../verification/volatile.js";
  * stop reason `repeated_failure` (`stop-reasons.ts`) is in shadow mode: a corrective whose hash
  * equals the one of the corrective it corrects records `decision.would_stop` with both round ids,
  * once per chain. `replayRepeatedFailures` (`trace.ts`) decides each record again.
+ *
+ * A task that ends unfinished (`Task T001 did not complete its implementation`, the run blocked
+ * `invalid_output`) opens no corrective, so the chain comparison never sees it (#2437). R77
+ * pairwick: the implement tasks of three feature runs failed one `scalafmt` check 121 times
+ * across 143 attempts and their resumes, for 17.13M tokens, with no record. Each such end records
+ * `unfinishedRecord` at the same path, and an end that fails as the task's previous unfinished end
+ * did records the `repeated_failure` would-stop (key `task-<id>`) and names the repeat in the
+ * block message and its `resume` remedy.
  */
 export const REPEAT_KIND = "repeated-failure";
 /** One record per corrective whose required checks failed: `repeats/tasks/<task>.json`. */
@@ -47,6 +55,13 @@ export interface RepeatRecord {
   /** The offset of the first character where the two rounds' evidence differs; null when equal. */
   firstDifference: number | null;
   decision: RepeatDecision;
+  /**
+   * `unfinished`: the record of a task that ended unfinished (#2437), compared with the same
+   * task's previous unfinished end (`previous` is then the task itself); absent for a corrective's.
+   */
+  end?: "unfinished";
+  /** For an unfinished end: how many unfinished ends in a row, this one included, failed alike. */
+  ends?: number;
 }
 
 /** Compares two rounds' failing checks; `replayRepeatedFailures` takes another rule to replay. */
@@ -141,5 +156,28 @@ export function repeatRecord(
     previousHash: previous?.hash ?? null,
     firstDifference: previous ? firstDifference(previous.checks, checks) : null,
     decision: decide(previous?.checks ?? null, checks),
+  };
+}
+
+/**
+ * The record of a task's unfinished end, decided against the task's previous unfinished end
+ * (#2437). An end without a failing check records no checks and decides `first`: nothing failed
+ * to repeat, and the next end compares with it, so a failure that comes back after an end without
+ * one is not a repeat.
+ */
+export function unfinishedRecord(
+  taskId: string,
+  /** The task's latest record, when it is an unfinished end's. */
+  previous: RepeatRecord | null,
+  checks: RepeatCheck[],
+  decide: RepeatRule = repeatedFailureDecision,
+): RepeatRecord {
+  const before =
+    previous?.end === "unfinished" && previous.checks.length && checks.length ? previous : null;
+  const record = repeatRecord(taskId, null, before, checks, decide);
+  return {
+    ...record,
+    end: "unfinished",
+    ends: record.decision === "repeat" ? (before?.ends ?? 1) + 1 : 1,
   };
 }

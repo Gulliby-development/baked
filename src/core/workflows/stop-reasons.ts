@@ -104,9 +104,11 @@ export const STOP_REASONS = {
     defaultMode: "shadow",
   },
   repeated_failure: {
-    label: "A corrective's required checks fail exactly as the corrective's before it",
-    // Shadow only until two bench rounds show no false would-stop (#1996); its promotion is a
-    // pull request of its own that adds `enforce` and blocks the chain before the next session.
+    label:
+      "A corrective's required checks fail exactly as the corrective's before it, or a task ends unfinished on the same failing checks as its previous unfinished end",
+    // Shadow only until two bench rounds show no false would-stop (#1996, #2437); its promotion is
+    // a pull request of its own that adds `enforce` and blocks the chain, or the unfinished task's
+    // resume, before the next session.
     modes: NOT_ENFORCED,
     defaultMode: "shadow",
   },
