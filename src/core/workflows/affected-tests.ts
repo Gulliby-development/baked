@@ -472,13 +472,13 @@ export function affectedTestCheck(
       // mix test takes test files by their path from the project root (#2348).
       prefix = ["test", ...flagsOnly(args.slice(1), MIX_VALUE_OPTION)];
       targets = tests.filter((t) => t.endsWith("_test.exs"));
-    } else if (name === "sbt" && args.includes("test")) {
+    } else if (name === "sbt" && args.some((a) => a === "test" || a === "testFull")) {
       // sbt runs test classes, not files: `testOnly *CalcSuite *CalcSpec`, one sbt command, by the
-      // file names of the Scala tests (#1496).
+      // file names of the Scala tests (#1496), in place of `test` or sbt 2's `testFull` (#2440).
       const classes = tests
         .filter((t) => t.endsWith(".scala"))
         .map((t) => `*${basename(t, ".scala")}`);
-      prefix = args.filter((a) => a !== "test");
+      prefix = args.filter((a) => a !== "test" && a !== "testFull");
       targets = classes.length ? [`testOnly ${classes.join(" ")}`] : [];
     } else if (name === "go" && args[0] === "test") {
       prefix = withGateFlags(["test", ...flagsOnly(args.slice(1))], gates.get("go"), 1);

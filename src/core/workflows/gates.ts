@@ -29,7 +29,7 @@ import { lintrRun, STYLER_CHECK, STYLER_FIX, testthatRun } from "./r-tools.js";
 import { redactSecrets } from "./redaction.js";
 import { CheckSchema, SafeId } from "./schemas.js";
 import { staticToolPattern } from "./static-tools.js";
-import { pythonEnvironment } from "./toolchain.js";
+import { pythonEnvironment, sbtTestTask } from "./toolchain.js";
 import type { Check } from "./types.js";
 
 /** Gates are the project's `workflows.policy.checks`; this module is the only editor of that list. */
@@ -858,7 +858,8 @@ function gradleGates(workspace: string): GateSuggestion[] {
 }
 
 /**
- * sbt runs a Scala build's tests with `sbt test`; `-batch` keeps it from waiting for input. A build
+ * sbt runs a Scala build's tests with `sbt test`, or `sbt testFull` on sbt 2, whose `test` skips
+ * cached tests (`sbtTestTask`, #2440); `-batch` keeps it from waiting for input. A build
  * with the sbt-scalafmt plugin and a `.scalafmt.conf` checks formatting first (#1496): its fixer
  * formats the file it is given (`scalafmtOnly <file>`, one sbt command).
  */
@@ -867,6 +868,7 @@ function sbtGates(workspace: string): GateSuggestion[] {
   const scalafmt =
     has(workspace, ".scalafmt.conf") &&
     /"sbt-scalafmt"/.test(read(workspace, "project/plugins.sbt") ?? "");
+  const task = sbtTestTask(read(workspace, "project/build.properties"));
   return [
     ...(scalafmt
       ? [
@@ -882,9 +884,9 @@ function sbtGates(workspace: string): GateSuggestion[] {
         ]
       : []),
     {
-      check: gate("sbt-test", "sbt", ["-batch", "test"], 1200000),
-      source: "build.sbt",
-      reason: "sbt -batch test",
+      check: gate("sbt-test", "sbt", ["-batch", task], 1200000),
+      source: task === "testFull" ? "project/build.properties" : "build.sbt",
+      reason: `sbt -batch ${task}`,
       preselected: true,
     },
   ];
