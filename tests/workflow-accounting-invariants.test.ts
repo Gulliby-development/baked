@@ -2,7 +2,7 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import fc from "fast-check";
 import { canonical } from "../src/core/specs/hash.js";
 import { type CostForecast, costForecast, kindRatio } from "../src/core/workflows/cost-forecast.js";
-import { POOL_STEP, planCharge, planChargeTokens, poolExtensionDecision, poolForecast, tokenPool } from "../src/core/workflows/initiatives/token-pool.js";
+import { POOL_STEP, planCharge, planChargeTokens, poolExtensionDecision, poolForecast, timePoolExtensionDecision, tokenPool } from "../src/core/workflows/initiatives/token-pool.js";
 import { chargeHold, poolBoundDecision, refreshedGrowth, stageReserveDecision } from "../src/core/workflows/initiatives/growth.js";
 import { CALLS_STEP, callsPool, callsRaise } from "../src/core/workflows/initiatives/calls-pool.js";
 import { dollarCapPark, expectedSplitUsd, growthLimit, type ShareGateView } from "../src/core/workflows/initiatives/service.js";
@@ -786,6 +786,50 @@ describe("token growth room invariants (#2294)", () => {
       const after = refreshedGrowth(policy, base, { tokens: s.heldTokens, usd: 0, calls: 0, activeMs: 0 }, { calls: 0, activeMs: 0 }, { tokens: room, usd: null, calls: 0, activeMs: 0 }) ?? policy;
       for (const bound of [after.sizing!.maxRunTokens!, after.sizing!.extendToTokens!])
         if (bound > s.boundTokens) expect(bound).toBeLessThanOrEqual(s.heldTokens + s.remainingTokens);
+    }), { numRuns: 300 });
+  });
+});
+
+describe("time pool growth invariants (#2346)", () => {
+  const MIN = 60_000;
+  const seed = fc.record({
+    limitMs: fc.integer({ min: 30, max: 1_000 }).map((m) => m * MIN),
+    usedMs: fc.integer({ min: 0, max: 1_000 }).map((m) => m * MIN),
+    leftMs: fc.option(fc.integer({ min: 0, max: 1_500 }).map((m) => m * MIN), { nil: null }),
+    tokensPerMinute: fc.option(fc.integer({ min: 1_000, max: 300_000 }), { nil: null }),
+    limitTokens: fc.integer({ min: 1_000_000, max: 60_000_000 }),
+    usedTokens: fc.integer({ min: 0, max: 60_000_000 }),
+    capUsd: fc.option(fc.integer({ min: 1, max: 100 }), { nil: null }),
+    forecastUsd: fc.option(fc.double({ min: 0, max: 150, noNaN: true }), { nil: null }),
+  }).map((s) => {
+    const forecastMs = s.tokensPerMinute === null || s.leftMs === null ? null : s.usedMs + s.leftMs;
+    return {
+      initiativeId: "time",
+      limitMs: s.limitMs,
+      usedMs: s.usedMs,
+      forecastMs,
+      suggestedMs: forecastMs !== null && forecastMs > s.limitMs ? Math.ceil((forecastMs * 1.25) / (15 * MIN)) * 15 * MIN : null,
+      tokensPerMinute: s.tokensPerMinute,
+      limitTokens: s.limitTokens,
+      usedTokens: s.usedTokens,
+      cost: { capUsd: s.capUsd, ceilingUsd: s.capUsd === null ? null : s.capUsd * 1.25, forecastUsd: s.capUsd === null ? null : s.forecastUsd },
+    };
+  });
+
+  test("the time grows only past its limit, never past the suggestion, the token pool at the pace, or the dollar ceiling", () => {
+    fc.assert(fc.property(seed, (inputs) => {
+      const decision = timePoolExtensionDecision(inputs);
+      if (!decision.wouldExtend) {
+        expect(decision.toMs).toBeNull();
+        return;
+      }
+      const to = decision.toMs ?? 0;
+      expect(to).toBeGreaterThan(inputs.limitMs);
+      expect(decision.byMs).toBe(to - inputs.limitMs);
+      expect(to).toBeLessThanOrEqual(inputs.suggestedMs ?? -1);
+      expect(to).toBeLessThanOrEqual(decision.capMs ?? -1);
+      expect(to % (15 * MIN) === 0 || to === inputs.suggestedMs).toBe(true);
+      if (inputs.cost.capUsd !== null) expect(inputs.cost.forecastUsd ?? Infinity).toBeLessThanOrEqual(inputs.cost.ceilingUsd ?? -1);
     }), { numRuns: 300 });
   });
 });

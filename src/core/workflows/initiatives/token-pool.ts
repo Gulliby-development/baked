@@ -1,5 +1,9 @@
 import { tokenText } from "../estimate.js";
-import { EXTEND_WITHIN_DOLLARS_MODES, STAGE_RESERVE_MODES } from "../schemas.js";
+import {
+  EXTEND_WITHIN_DOLLARS_MODES,
+  STAGE_RESERVE_MODES,
+  TIME_POOL_GROWTH_MODES,
+} from "../schemas.js";
 import { centsUp } from "../stage-reserve.js";
 import type { StopMode } from "../stop-reasons.js";
 import {
@@ -8,6 +12,7 @@ import {
   ownPlanNeed,
   type PlannedRun,
 } from "./estimate.js";
+import { TIME_STEP_MS } from "./time-pool.js";
 
 // The initiative's shared token pool beside the person's dollar cap (#2042). Part of the
 // cap-growth hot module (.github/hot-modules.json). Bench round 66 (nodepluck) parked select at
@@ -43,6 +48,16 @@ export type StageReserveMode = (typeof STAGE_RESERVE_MODES)[number];
 export const DEFAULT_STAGE_RESERVE: StageReserveMode = "shadow";
 
 /**
+ * Whether the host would grow the initiative's shared active time on its own while the token pool
+ * and the dollar cap have room (`workflows.timePoolGrowth`, #2346, `timePoolExtensionDecision`).
+ * `shadow`, the default, records a `decision.would_extend` initiative event and changes nothing;
+ * `off` records nothing. Growing the time for real is its own pull request.
+ */
+export { TIME_POOL_GROWTH_MODES };
+export type TimePoolGrowthMode = (typeof TIME_POOL_GROWTH_MODES)[number];
+export const DEFAULT_TIME_POOL_GROWTH: TimePoolGrowthMode = "shadow";
+
+/**
  * Every limit a person set that the host grows, or would grow, on its own, with the other cap the
  * person set that bounds it. A new growth registers here, ships in shadow and adds its case to
  * `tests/workflow-scenario-initiative-token-pool.test.ts`, which fails on a `decision.would_extend`
@@ -63,6 +78,15 @@ export const HOST_POOL_GROWTHS = {
     boundBy: "the initiative's dollar cap (--budget-usd) with its tolerance",
     modes: STAGE_RESERVE_MODES,
     defaultMode: DEFAULT_STAGE_RESERVE,
+  },
+  "time-pool": {
+    label:
+      "The initiative's time forecast passes its shared active time while its tokens have room",
+    grows: "the shared active time (--time-ms)",
+    boundBy:
+      "the token pool (--budget-tokens) at the measured pace, and the dollar cap (--budget-usd) with its tolerance when set",
+    modes: TIME_POOL_GROWTH_MODES,
+    defaultMode: DEFAULT_TIME_POOL_GROWTH,
   },
 } as const;
 export type PoolGrowthReason = keyof typeof HOST_POOL_GROWTHS;
@@ -560,5 +584,84 @@ export function poolExtensionDecision(inputs: PoolInputs, pool = tokenPool(input
     toTokens,
     byTokens: toTokens - inputs.limitTokens,
     why: `The dollar forecast ${usd(cost.forecastUsd)} is within the ${usd(cost.ceilingUsd)} ceiling${pool.capTokens !== null ? ` and the ${usd(cost.capUsd)} cap pays for about ${tokenText(pool.capTokens)} tokens` : ""}: the pool would grow from ${tokenText(inputs.limitTokens)} to ${tokenText(toTokens)}.`,
+  };
+}
+
+/** What the time-pool growth reads (#2346): the shared time's forecast, the token pool, the dollars. */
+export interface TimePoolGrowthInputs {
+  initiativeId: string;
+  limitMs: number;
+  usedMs: number;
+  /** The time forecast at the measured pace (`budget.time`); null without a pace or a forecast. */
+  forecastMs: number | null;
+  /** What the time notice suggests; null while the forecast fits. */
+  suggestedMs: number | null;
+  /** The measured pace the forecast is at; null without one. */
+  tokensPerMinute: number | null;
+  limitTokens: number;
+  usedTokens: number;
+  cost: { capUsd: number | null; ceilingUsd: number | null; forecastUsd: number | null };
+}
+
+/** The host's decision on the shared time: whether it would extend it, and to what. */
+export interface TimePoolExtension {
+  reason: "time-pool";
+  wouldExtend: boolean;
+  /** The time the token pool still runs at the pace, beside the time used; null without a pace. */
+  capMs: number | null;
+  /** The time after the extension; null when it would not extend. */
+  toMs: number | null;
+  byMs: number | null;
+  why: string;
+}
+
+/**
+ * Whether the host would extend the initiative's shared active time (#2346): only while the time
+ * forecast at the measured pace passes the limit, the dollar forecast is within its ceiling (with
+ * a dollar cap set; measured, not before), and the token pool still has the tokens to run longer
+ * at that pace. The extension is the time notice's suggestion, held to the time used plus what the
+ * token pool's remaining tokens take at the pace (rounded down to `TIME_STEP_MS`). It never raises
+ * a token, call or dollar limit.
+ */
+export function timePoolExtensionDecision(inputs: TimePoolGrowthInputs): TimePoolExtension {
+  const reason = "time-pool" as const;
+  const pace = inputs.tokensPerMinute;
+  const capMs =
+    pace && pace > 0
+      ? inputs.usedMs +
+        Math.round((Math.max(0, inputs.limitTokens - inputs.usedTokens) / pace) * 60_000)
+      : null;
+  const no = (why: string): TimePoolExtension => ({
+    reason,
+    wouldExtend: false,
+    capMs,
+    toMs: null,
+    byMs: null,
+    why,
+  });
+  if (capMs === null || inputs.forecastMs === null) return no("No measured pace or forecast yet.");
+  if (inputs.suggestedMs === null || inputs.forecastMs <= inputs.limitMs)
+    return no("The time forecast fits the shared time.");
+  const { cost } = inputs;
+  if (cost.capUsd !== null) {
+    if (cost.forecastUsd === null) return no("No measured dollar forecast yet.");
+    if (cost.ceilingUsd !== null && cost.forecastUsd > cost.ceilingUsd)
+      return no(
+        `The dollar forecast ${usd(cost.forecastUsd)} is above the ${usd(cost.ceilingUsd)} ceiling.`,
+      );
+  }
+  const toMs = Math.min(inputs.suggestedMs, Math.floor(capMs / TIME_STEP_MS) * TIME_STEP_MS);
+  const min = (ms: number): number => Math.round(ms / 60_000);
+  if (toMs <= inputs.limitMs)
+    return no(
+      `The ${tokenText(inputs.limitTokens)} token pool runs out at about ${min(capMs)} min of active time at the pace, before more time would help.`,
+    );
+  return {
+    reason,
+    wouldExtend: true,
+    capMs,
+    toMs,
+    byMs: toMs - inputs.limitMs,
+    why: `The time forecast ${min(inputs.forecastMs)} min passes the shared ${min(inputs.limitMs)} min while the ${tokenText(inputs.limitTokens)} token pool runs about ${min(capMs)} min at the pace${cost.capUsd !== null && cost.forecastUsd !== null ? ` and the dollar forecast ${usd(cost.forecastUsd)} is within the ${usd(cost.ceilingUsd ?? cost.capUsd)} ceiling` : ""}: the shared time would grow from ${min(inputs.limitMs)} to ${min(toMs)} min.`,
   };
 }

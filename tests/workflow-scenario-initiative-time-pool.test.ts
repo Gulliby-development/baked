@@ -6,6 +6,8 @@ import {
   shareShortfall,
   timeShortfall,
 } from "../src/core/workflows/initiatives/service.js";
+import { HOST_POOL_GROWTHS } from "../src/core/workflows/initiatives/token-pool.js";
+import { replayTimePoolGrowth } from "../src/core/workflows/trace.js";
 import type { RunPolicy } from "../src/core/workflows/schemas.js";
 import { type Remedy, RemedySchema } from "../src/core/workflows/remedies.js";
 import { activeTimeLimit, type SizingReport } from "../src/core/workflows/sizing.js";
@@ -87,7 +89,7 @@ const OWN_CALLS = (OWN_PACE * 20) / 10_000;
  * An initiative whose first wave of three features finished at `OWN_PACE`, beside five earlier
  * runs of the project at `HISTORY_PACE`, with `timeMs` of shared active time.
  */
-async function ladle(workflow: "sdd" | "quick", timeMs: number, calls = { limit: 10_000, perRun: 0 }) {
+async function ladle(workflow: "sdd" | "quick", timeMs: number, calls = { limit: 10_000, perRun: 0 }, workflows: { timePoolGrowth?: "off" | "shadow" } = {}) {
   const policy: RunPolicy = {
     ...fixturePolicy,
     maxTotalTokens: 10_000_000,
@@ -98,6 +100,7 @@ async function ladle(workflow: "sdd" | "quick", timeMs: number, calls = { limit:
   };
   const fixture = workflowFixture({ policy, executor: (root) => new FeatureExecutor(root) });
   cleanups.push(fixture.dispose);
+  fixture.config.workflows = { ...fixture.config.workflows, ...workflows } as typeof fixture.config.workflows;
   const store = fixture.service.store;
   for (let i = 0; i < 5; i++) {
     const run = await fixture.start(`earlier-${i}`);
@@ -213,6 +216,36 @@ describe("scenario: the shared time has a forecast, a notice and an amount (#233
     const events = initiatives.store.eventsOfType("ladle", "budget.time_notice");
     expect(events).toHaveLength(1);
     expect(events[0]).toMatchObject({ limitMs: 61 * MINUTE, suggestedMs: time?.suggestedMs });
+  }, 60000);
+
+  test("a time forecast past the limit while the token pool has room records one shadow time-pool would-extend (#2346)", async () => {
+    const { store, initiatives, starter } = await ladle("sdd", 61 * MINUTE);
+    const view = initiatives.view("ladle");
+    starter.noteTimeForecast(view, null);
+    starter.noteTimeForecast(initiatives.view("ladle"), null);
+    // Once per time and token limit: the first wave's last start already passed 61 min.
+    const extends_ = initiatives.store.eventsOfType("ladle", "decision.would_extend") as Record<string, unknown>[];
+    expect(extends_).toHaveLength(1);
+    const inputs = extends_[0]?.inputs as { forecastMs: number; suggestedMs: number; usedMs: number };
+    expect(inputs).toMatchObject({ limitMs: 61 * MINUTE, tokensPerMinute: OWN_PACE, limitTokens: 200_000_000, cost: { capUsd: null } });
+    expect(inputs.forecastMs).toBeGreaterThan(61 * MINUTE);
+    // The 200M pool runs far longer at 60k a minute: the suggestion is not held back.
+    expect(extends_[0]).toMatchObject({ reason: "time-pool", mode: "shadow", key: `time-pool-${61 * MINUTE}-200000000`, toMs: inputs.suggestedMs, byMs: inputs.suggestedMs - 61 * MINUTE });
+    expect(String(extends_[0]?.summary)).toContain(`the shared time would grow from 61 to ${Math.round(inputs.suggestedMs / MINUTE)} min`);
+    expect(Object.keys(HOST_POOL_GROWTHS)).toContain(String(extends_[0]?.reason));
+    // Shadow changes no limit.
+    expect(initiatives.view("ladle").budget.limits.maxActiveMs).toBe(61 * MINUTE);
+    // The corpus hook decides the recorded share gates again: the same extensions, none new.
+    const [replayed] = replayTimePoolGrowth(store);
+    expect(replayed?.timeGrowth.some((b) => b.recorded === "extend" && b.replayed === "extend")).toBe(true);
+    expect(replayed?.newTimeGrowth).toBe(0);
+  }, 60000);
+
+  test("with timePoolGrowth off a time forecast past the limit records no would-extend (#2346)", async () => {
+    const { initiatives, starter } = await ladle("sdd", 61 * MINUTE, undefined, { timePoolGrowth: "off" });
+    starter.noteTimeForecast(initiatives.view("ladle"), null);
+    expect(initiatives.store.eventsOfType("ladle", "budget.time_notice")).toHaveLength(1);
+    expect(initiatives.store.eventsOfType("ladle", "decision.would_extend")).toEqual([]);
   }, 60000);
 
   test("the pool's block on spent time carries suggestedTimeMs on its extend remedy", async () => {

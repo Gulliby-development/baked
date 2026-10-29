@@ -169,6 +169,7 @@ import {
   affordableTokens,
   DEFAULT_EXTEND_WITHIN_DOLLARS,
   DEFAULT_STAGE_RESERVE,
+  DEFAULT_TIME_POOL_GROWTH,
   dollarTokens,
   type ExtendWithinDollars,
   type PlanChargeView,
@@ -179,7 +180,9 @@ import {
   poolExtensionDecision,
   poolForecast,
   poolShortText,
+  type TimePoolGrowthInputs,
   type TokenPoolView,
+  timePoolExtensionDecision,
   tokenPool,
   tokensForUsd,
 } from "./token-pool.js";
@@ -2488,6 +2491,7 @@ export class InitiativeService {
   private noteTimeForecast(view: InitiativeView, featureId: string | null): void {
     const time = view.budget.time;
     if (!time?.notice) return;
+    this.noteTimePoolGrowth(view, featureId);
     const noted = this.store
       .eventsOfType(view.initiativeId, "budget.time_notice")
       .some((p) => (p as { limitMs?: number } | null)?.limitMs === time.limitMs);
@@ -2501,6 +2505,36 @@ export class InitiativeService {
       suggestedMs: time.suggestedMs,
       message: time.notice,
       ...(time.cleanPace ? { cleanPace: time.cleanPace } : {}),
+    });
+  }
+
+  /**
+   * The host would extend the shared active time while the token pool and the dollar cap have
+   * room (`workflows.timePoolGrowth: shadow`, #2346): a `decision.would_extend` event with reason
+   * `time-pool`, the decision's amounts and its inputs, once per time and token limit. Nothing
+   * changes: the time stays as the person set it.
+   */
+  private noteTimePoolGrowth(view: InitiativeView, featureId: string | null): void {
+    const mode = this.workflows.config.workflows?.timePoolGrowth ?? DEFAULT_TIME_POOL_GROWTH;
+    if (mode === "off") return;
+    const inputs = timeGrowthInputs(view);
+    const growth = inputs ? timePoolExtensionDecision(inputs) : null;
+    if (!inputs || !growth?.wouldExtend) return;
+    const key = `${growth.reason}-${inputs.limitMs}-${inputs.limitTokens}`;
+    const seen = this.store
+      .eventsOfType(view.initiativeId, "decision.would_extend")
+      .some((p) => (p as { key?: string } | null)?.key === key);
+    if (seen) return;
+    this.store.emit(view.initiativeId, "decision.would_extend", {
+      reason: growth.reason,
+      mode,
+      featureId,
+      key,
+      toMs: growth.toMs,
+      byMs: growth.byMs,
+      capMs: growth.capMs,
+      summary: `${growth.why} No feature run would stop on the shared time first.`,
+      inputs,
     });
   }
 
@@ -5382,6 +5416,29 @@ function costPolicy(
     ...(forecastBinding || settings.basePolicy.costForecast === "off"
       ? {}
       : { costForecast: "advise" as const }),
+  };
+}
+
+/**
+ * The time-pool growth's inputs as a view or a share-gate record holds them (#2346): the shared
+ * time's forecast (`budget.time`), the token pool and the dollars; null before #2336 recorded the
+ * time or without a pool.
+ */
+export function timeGrowthInputs(
+  view: Pick<ShareGateView, "initiativeId"> & { budget: ShareGateView["budget"] },
+): TimePoolGrowthInputs | null {
+  const { time, pool, cost } = view.budget;
+  if (!time || !pool) return null;
+  return {
+    initiativeId: view.initiativeId,
+    limitMs: time.limitMs,
+    usedMs: time.usedMs,
+    forecastMs: time.forecastMs,
+    suggestedMs: time.suggestedMs,
+    tokensPerMinute: time.pace?.tokensPerMinute ?? null,
+    limitTokens: pool.limitTokens,
+    usedTokens: pool.usedTokens,
+    cost: { capUsd: cost.capUsd, ceilingUsd: cost.ceilingUsd, forecastUsd: cost.forecastUsd },
   };
 }
 
