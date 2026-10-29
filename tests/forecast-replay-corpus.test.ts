@@ -7,8 +7,8 @@ import { costGrowthLimit, dollarShortfall, growthLimit, type ShareGateRecord, sh
 import { forecastSamples } from "../src/core/workflows/stage-price.js";
 import { adaptiveFirstByteMs } from "../src/core/llm/provider-health.js";
 import { planApprovalDecision } from "../src/core/workflows/auto-approval.js";
-import { CAPACITY_PROBE } from "../src/core/workflows/sizing.js";
-import { type CallRate, chainCosts, openTrace, type PlanPriceReplay, replayChainEscalation, replayEdgeRecord, replayInitiativeStarts, replayPlanApprovals, replayPlanPrices, replayActiveTimes, replayPoolBounds, replayTrace, type TestSplitRule } from "../src/core/workflows/trace.js";
+import { CAPACITY_PROBE, exceedsTestCapacity, rowVolumePrice } from "../src/core/workflows/sizing.js";
+import { type CallRate, chainCosts, openTrace, type PlanPriceReplay, replayChainEscalation, replayEdgeRecord, replayInitiativeStarts, replayPlanApprovals, replayPlanPrices, replayActiveTimes, replayPoolBounds, replayTestSplits, replayTrace, type TestSplitRule } from "../src/core/workflows/trace.js";
 import { type EdgeRecord, edgeCrashDecision } from "../src/core/verification/edge-inputs.js";
 import { ROOT, traces } from "./helpers/replay-corpus.js";
 import { fixturePolicy } from "./helpers/workflow-fixture.js";
@@ -592,6 +592,31 @@ describe("test task splits replay on recorded sizing reports (#1789)", () => {
     const path = join(ROOT, "R52/url-shortener.sqlite.gz");
     expect(replayTrace(path, { testSplit: () => true }).runs.reduce((n, r) => n + r.newTestSplits, 0)).toBeGreaterThan(0);
     expect(replayTrace(path).runs.reduce((n, r) => n + r.newTestSplits, 0)).toBe(0);
+  }, 120000);
+
+  test("#2455: row volume is a new sizing input; R77 trailspin replays unchanged, R78 deltaglue T007's inputs split by rows", () => {
+    // No report before #2455 records row volume, so the case rule alone replays them: R77
+    // trailspin's prescribed-rows file (T005, fixtures_test.go) was kept whole and still is.
+    const { store, dispose } = openTrace(join(ROOT, "R77/trailspin.sqlite.gz"));
+    try {
+      const runs = (store.connection.query("SELECT id FROM runs").all() as { id: string }[]).map((r) => r.id);
+      const boundaries = runs.flatMap((runId) => replayTestSplits(store, runId));
+      expect(boundaries.length).toBeGreaterThan(0);
+      expect(boundaries.filter((b) => b.replayed !== b.recorded)).toEqual([]);
+      for (const runId of runs)
+        for (const artifact of store.artifacts(runId).filter((a) => a.logical_path.startsWith("sizing/plan-")))
+          expect(store.readArtifact(runId, artifact.id)).not.toContain("rowVolume");
+    } finally {
+      dispose();
+    }
+    // R78 deltaglue cli 4ee1c56f `sizing/plan-0.json` (not in the corpus): T007 at 2 cases,
+    // 341k-863k, capacity 87, cap 600k, kept whole; it cost 6.89M without finishing. Its 63 rows
+    // of 20,123 characters are priced up to what it spent and split.
+    const limit = { tokens: 1_240_000, cases: 87, criteria: 6 };
+    expect(exceedsTestCapacity(2, limit, { low: 341_000, high: 863_000 }, 600_000)).toBe(false);
+    const rows = rowVolumePrice(20_123, 63, 600_000);
+    expect(rows.estimate.high).toBeGreaterThanOrEqual(6_887_546);
+    expect(rows.slices).toBeGreaterThan(1);
   }, 120000);
 
   test("R62 stepvet: tagexpr's active time is sized at the initiative's own pace and covers what it used (#2336)", () => {

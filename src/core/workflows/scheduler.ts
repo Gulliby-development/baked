@@ -4767,14 +4767,20 @@ export class WorkflowScheduler {
     policy: RunPolicy,
     edits?: HostEdit[],
   ): TaskGraph {
-    const spec = this.store.state(runId).spec;
+    const state = this.store.state(runId);
+    const spec = state.spec;
     const report = sizePlan({
       graph,
       spec,
-      policy,
+      // The host split reads the request for its prescribed rows alone (#2455): a supplied task
+      // still goes back to the planner from the plan's sizing, as before (#2019).
+      policy: policy.sizing?.rowVolume
+        ? { ...policy, sizing: { ...policy.sizing, suppliedDiff: false } }
+        : policy,
       samples: sizingHistory(this.store.workspace, policy),
       spent: this.store.run(runId).token_usage,
       model: this.sizingModel(runId, graph),
+      ...(policy.sizing?.rowVolume ? { request: state.requestText || state.prompt } : {}),
     });
     const split = splitTestTasks(graph, report, spec, edits, policy.checks);
     if (!split) return graph;
