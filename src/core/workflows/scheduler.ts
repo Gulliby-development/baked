@@ -212,6 +212,7 @@ import {
   isCompiledTestFile,
   isWrittenTestFile,
   plannedWrittenTests,
+  runnableTestFiles,
   taskCaseText,
   writtenTestsCheck,
 } from "./affected-tests.js";
@@ -11259,9 +11260,13 @@ ${note}`;
     if (record?.baseline !== "passed" || !record.checkId) return gated;
     const suite = record.checkId.replace(/-affected$/, "");
     if (own.some((c) => c.id === suite)) return gated;
+    // The affected tests that declare a test: a support file runs none (#2439).
     const gate = affectedTestCheck(
       policy.checks,
-      record.paths.filter((path) => existsSync(workspacePath(root, path))),
+      runnableTestFiles(
+        root,
+        record.paths.filter((path) => existsSync(workspacePath(root, path))),
+      ),
     );
     return gate ? [...gated, { ...gate, required: true }] : gated;
   }
