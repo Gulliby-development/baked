@@ -351,6 +351,19 @@ async function applyCheck(
 }
 
 /**
+ * The paths the host reads a request's verbatim blocks for (#2453): every write of the graph, and
+ * the task's own. The plan approval (`hostAppliableTasks`), the record (`hostApplyInputs`) and the
+ * write (`hostApplyContents`) ask `suppliedBlocks` with this one set, so a block the prose names
+ * with several planned files is no task's in all three, not the task's when it alone asks.
+ */
+export function hostApplyPaths(
+  task: Pick<Task, "writes">,
+  graph?: Pick<TaskGraph, "tasks"> | null,
+): string[] {
+  return [...new Set([...(graph?.tasks ?? []), task].flatMap((t) => t.writes.map((w) => w.path)))];
+}
+
+/**
  * The inputs of a task's apply decision, read from the request and checked in `root` (the task's
  * base). Null when the request supplies none of the task's writes: nothing to decide.
  */
@@ -358,11 +371,9 @@ export async function hostApplyInputs(
   root: string,
   request: string,
   task: Pick<Task, "writes">,
+  graph?: Pick<TaskGraph, "tasks"> | null,
 ): Promise<HostApplyWrite[] | null> {
-  const supplied = suppliedBlocks(
-    request,
-    task.writes.map((w) => w.path),
-  );
+  const supplied = suppliedBlocks(request, hostApplyPaths(task, graph));
   if (!task.writes.some((w) => supplied.has(w.path))) return null;
   const writes: HostApplyWrite[] = [];
   for (const write of task.writes) {
@@ -415,11 +426,9 @@ export async function hostApplyContents(
   root: string,
   request: string,
   task: Pick<Task, "writes">,
+  graph?: Pick<TaskGraph, "tasks"> | null,
 ): Promise<{ path: string; content: string }[]> {
-  const supplied = suppliedBlocks(
-    request,
-    task.writes.map((w) => w.path),
-  );
+  const supplied = suppliedBlocks(request, hostApplyPaths(task, graph));
   const out: { path: string; content: string }[] = [];
   for (const write of task.writes) {
     const blocks = supplied.get(write.path) ?? [];
@@ -472,14 +481,13 @@ async function appliedPatch(path: string, base: string | null, patch: string): P
 
 /**
  * Planned tasks whose every write the request supplies with one kind of verbatim block and none
- * deletes, for the plan approval (#2023). Reads the request only: whether a diff applies is
- * checked when the task starts, against its base then. Host-written tasks are left out.
+ * deletes, for the plan approval (#2023). A listing (#2438) is no write's content, as for
+ * `hostApplyDecision`, and the blocks are read for `hostApplyPaths` (#2453). Reads the request
+ * only: whether a diff applies is checked when the task starts, against its base then.
+ * Host-written tasks are left out.
  */
 export function hostAppliableTasks(request: string, graph: Pick<TaskGraph, "tasks">): string[] {
-  const supplied = suppliedBlocks(
-    request,
-    graph.tasks.flatMap((t) => t.writes.map((w) => w.path)),
-  );
+  const supplied = suppliedBlocks(request, hostApplyPaths({ writes: [] }, graph));
   return graph.tasks.flatMap((task) => {
     if (task.origin !== "planned" || hostWritten(task) || !task.writes.length) return [];
     const every = task.writes.every((w) => {
@@ -487,7 +495,8 @@ export function hostAppliableTasks(request: string, graph: Pick<TaskGraph, "task
       return (
         w.action !== "delete" &&
         blocks.length > 0 &&
-        (blocks.every((b) => b.kind === "diff") || blocks.length === 1)
+        (blocks.every((b) => b.kind === "diff") ||
+          (blocks.length === 1 && !(blocks[0]?.kind === "file" && blocks[0].listing)))
       );
     });
     return every ? [task.id] : [];

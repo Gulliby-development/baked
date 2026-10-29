@@ -18,6 +18,7 @@ import {
   hostApplyContents,
   hostApplyDecision,
   hostApplyInputs,
+  hostApplyPaths,
   hostApplyText,
   hostApplyRecords,
   regionSections,
@@ -25,7 +26,7 @@ import {
 } from "../src/core/workflows/host-apply.js";
 import type { Check, RunPolicy, Spec, Task, TaskGraph } from "../src/core/workflows/schemas.js";
 import { NativeWorkflowService } from "../src/core/workflows/service.js";
-import { suppliedBlocks, suppliedLines } from "../src/core/workflows/sizing.js";
+import { headerPath, suppliedBlocks, suppliedLines } from "../src/core/workflows/sizing.js";
 import { newId } from "../src/core/workflows/store.js";
 import { suppliedTestFiles } from "../src/core/workflows/supplied-content.js";
 import { comparableWrite, suppliedDrifts } from "../src/core/workflows/supplied-drift.js";
@@ -655,4 +656,114 @@ describe("a path-comment signature listing is not a new file (#2438)", () => {
     const testGraph = { tasks: [{ id: "T002", origin: "planned", writes: [{ path: testPath, action: "create" }] }] } as unknown as Pick<TaskGraph, "tasks">;
     expect(suppliedTestFiles(testRequest, testGraph).size).toBe(0);
   });
+});
+
+// Bench round 78 (#2453): deltaglue's brief listed `src/cli.ts`'s shape (`// src/cli.ts`) after a
+// line whose prose named `src/frames.ts`, `src/chunks.ts` and `src/assemble.ts` and "the whole
+// stream". For a task that wrote `src/frames.ts` the reader took the cli.ts listing as the whole
+// of frames.ts, and under `hostApply: on` the host wrote it; the real frames listing, headed with
+// trailing words, was attributed to nothing. The block's own header comment now decides its path.
+const deltaglue = [
+  "## Shapes",
+  "",
+  "Tests import `src/frames.ts`, `src/chunks.ts` and `src/assemble.ts` and check the whole stream:",
+  "```ts",
+  "// src/cli.ts",
+  "export function run(argv: string[], out: (line: string) => void): number;",
+  "```",
+  "The frame codec:",
+  "```ts",
+  "// src/frames.ts   (names and shapes are fixed; tests call them)",
+  "export interface Frame { kind: number; body: Uint8Array }",
+  "export function encode(frame: Frame): Uint8Array;",
+  "```",
+].join("\n");
+const DELTAGLUE_PATHS = ["src/frames.ts", "src/chunks.ts", "src/assemble.ts", "src/cli.ts"];
+const deltaglueGraph = {
+  tasks: DELTAGLUE_PATHS.map((path, i) => ({ id: `T00${i + 1}`, origin: "planned", writes: [{ path, action: "create" }] })),
+} as unknown as Pick<TaskGraph, "tasks">;
+
+describe("a block's header comment names its file, whatever the prose names (#2453)", () => {
+  test("scenario: deltaglue's listings go to the files their headers name, as listings, for one path or all", async () => {
+    for (const asked of [...DELTAGLUE_PATHS.map((p) => [p]), DELTAGLUE_PATHS]) {
+      const supplied = suppliedBlocks(deltaglue, asked);
+      expect(supplied.has("src/chunks.ts")).toBe(false);
+      expect(supplied.has("src/assemble.ts")).toBe(false);
+      if (asked.includes("src/frames.ts")) {
+        expect(supplied.get("src/frames.ts")).toMatchObject([{ kind: "file", whole: false, listing: true }]);
+        expect(supplied.get("src/frames.ts")?.[0]).toMatchObject({ content: expect.stringContaining("export interface Frame") });
+      }
+      // "the whole stream" is a clause about other files: the cli.ts block is a listing too.
+      if (asked.includes("src/cli.ts")) expect(supplied.get("src/cli.ts")).toMatchObject([{ kind: "file", whole: false, listing: true }]);
+    }
+    const root = mkdtempSync(join(tmpdir(), "baked-host-deltaglue-"));
+    cleanups.push(() => rmSync(root, { recursive: true, force: true }));
+    for (const task of deltaglueGraph.tasks) {
+      const writes = await hostApplyInputs(root, deltaglue, task, deltaglueGraph);
+      expect(writes === null || !hostApplyDecision(writes).wouldApply).toBe(true);
+    }
+    expect(hostAppliableTasks(deltaglue, deltaglueGraph)).toEqual([]);
+    // The record R78 left for frames T001 (whole, unflagged) finds the frames listing: no drift.
+    const old = write({ path: "src/frames.ts", action: "create", files: 1, diffs: 0, whole: true, applies: null, exists: false });
+    const frames = { tasks: [{ id: "T001", origin: "planned", writes: [{ path: "src/frames.ts", action: "create" }] }] } as unknown as Pick<TaskGraph, "tasks">;
+    expect(suppliedDrifts(deltaglue, [{ taskId: "T001", mode: "on", writes: [old], wouldApply: true, reason: null }], frames, () => "export interface Frame {\n")).toEqual([]);
+  }, 60000);
+
+  test("one case per comment marker: Python and Ruby #, Go, Rust and TypeScript //, Lua --", () => {
+    for (const [lead, a, b] of [
+      ["#", "pkg/a.py", "pkg/b.py"],
+      ["#", "lib/a.rb", "lib/b.rb"],
+      ["//", "internal/a.go", "internal/b.go"],
+      ["//", "src/a.rs", "src/b.rs"],
+      ["//", "src/a.ts", "src/b.ts"],
+      ["--", "lua/a.lua", "lua/b.lua"],
+    ] as const) {
+      const request = [
+        `Tests import \`${b}\` and check the whole output:`,
+        "```",
+        `${lead} ${a}`,
+        "signature of a",
+        "```",
+        "Shapes of b:",
+        "```",
+        `${lead} ${b}   (names and shapes are fixed)`,
+        "signature of b",
+        "```",
+      ].join("\n");
+      for (const asked of [[b], [a], [a, b]]) {
+        const supplied = suppliedBlocks(request, asked);
+        if (asked.includes(b)) expect(supplied.get(b)).toMatchObject([{ kind: "file", listing: true, content: `${lead} ${b}   (names and shapes are fixed)\nsignature of b\n` }]);
+        if (asked.includes(a)) expect(supplied.get(a)).toMatchObject([{ kind: "file", listing: true, content: `${lead} ${a}\nsignature of a\n` }]);
+        expect([...supplied.keys()].every((path) => asked.includes(path))).toBe(true);
+      }
+    }
+  });
+
+  test("a header is a path-like first token; trailing words need a directory or punctuation", () => {
+    expect(headerPath("// src/frames.ts   (names and shapes are fixed)")).toBe("src/frames.ts");
+    expect(headerPath("# setup.py (entry point)")).toBe("setup.py");
+    expect(headerPath("-- ./db/schema.sql")).toBe("db/schema.sql");
+    expect(headerPath("; src/core.lisp")).toBe("src/core.lisp");
+    expect(headerPath("// Node.js helper for the stream")).toBeNull();
+    expect(headerPath("# Shapes of the API")).toBeNull();
+    expect(headerPath("#!/usr/bin/env python3")).toBeNull();
+    expect(headerPath("export const A = 1;")).toBeNull();
+    // A bare file name in the header lets the prose give the directory; a whole file still applies.
+    const request = ["Replace `src/config.py` with:", "```python", "# config.py", "DEBUG = False", "```"].join("\n");
+    expect(suppliedBlocks(request, ["src/config.py"]).get("src/config.py")).toMatchObject([{ kind: "file", whole: true }]);
+    expect(suppliedBlocks(request, ["src/config.py"]).get("src/config.py")?.[0]).not.toHaveProperty("listing");
+  });
+
+  test("the record and the plan approval read the blocks with one set of paths", async () => {
+    const root = mkdtempSync(join(tmpdir(), "baked-host-one-set-"));
+    cleanups.push(() => rmSync(root, { recursive: true, force: true }));
+    // The prose names two planned files: the block is neither's, whoever asks.
+    const request = ["Create `src/x.ts` and `src/y.ts`; both get exactly this content:", "```ts", "export {};", "```"].join("\n");
+    const graph = {
+      tasks: ["src/x.ts", "src/y.ts"].map((path, i) => ({ id: `T00${i + 1}`, origin: "planned", writes: [{ path, action: "create" }] })),
+    } as unknown as Pick<TaskGraph, "tasks">;
+    expect(hostAppliableTasks(request, graph)).toEqual([]);
+    for (const task of graph.tasks) expect(await hostApplyInputs(root, request, task, graph)).toBeNull();
+    expect(hostApplyPaths(graph.tasks[0] as Task, graph)).toEqual(["src/x.ts", "src/y.ts"]);
+  }, 60000);
 });
