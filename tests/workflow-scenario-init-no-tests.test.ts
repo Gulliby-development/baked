@@ -30,6 +30,11 @@ const pytestCheck = (noTests: string): Check => ({ id: "tests", executable: "bun
 const pytest = pytestCheck("collected 0 items\n\n===== no tests ran in 0.01s =====");
 // pytest with `testpaths = ["tests"]` and no tests/ directory yet: only a config warning (#1208).
 const pytestTestpaths = pytestCheck("===== warnings summary =====\n../_pytest/config/__init__.py:1474\n  PytestConfigWarning: No files were found in testpaths; consider removing or adjusting your testpaths configuration. Searching recursively from the current directory instead.\n\n===== 1 warning in 0.01s =====");
+// #2419: `swift test` on a test target that holds no test yet exits 0 and counts none (Swift 6.4.1,
+// recorded in the issue), so the check fails only by `requireTests`; it passes once the tests exist.
+const swiftEmpty = "Test Suite 'All tests' passed at 2026-10-28 21:31:05.697\n\t Executed 0 tests, with 0 failures (0 unexpected) in 0.0 (0.0) seconds\n◊ Test run started.\n√ Test run with 0 tests in 0 suites passed after 0.001 seconds.";
+const swiftRan = "Test Suite 'All tests' passed at 2026-10-28 21:31:06.101\n\t Executed 2 tests, with 0 failures (0 unexpected) in 0.002 (0.002) seconds\n◊ Test run started.\n√ Test run with 0 tests in 0 suites passed after 0.001 seconds.";
+const swiftTest: Check = { id: "tests", executable: "bun", args: ["-e", `console.log((await Bun.file('tests/test_globs.py').exists()) ? ${JSON.stringify(swiftRan)} : ${JSON.stringify(swiftEmpty)})`], cwd: ".", timeoutMs: 10000, required: true, requireTests: true, scope: "feature", envNames: [], writes: [] };
 const basePolicy: RunPolicy = { ...defaultWorkflowPolicy, maxRepairRounds: 2, checks: [pytest] };
 const planned = (id: string, path: string, dependsOn: string[] = []): Task => ({ id, title: `Write ${path}`, description: `Write ${path}`, requirementIds: ["FR-001"], criterionIds: ["AC-001"], dependsOn, profileId: "implementer", writes: [{ path, action: "create" }], readHints: [], checkIds: [], origin: "planned", findingIds: [], rationale: "Required behavior" });
 
@@ -108,6 +113,20 @@ describe("scenario: ignorewhy 84f2692e, __init__.py named by a module path and n
 
   test("pytest that only warns about missing testpaths routes no defect (#1208)", async () => {
     const policy = { ...basePolicy, checks: [pytestTestpaths] };
+    const { service, runId, done, executor } = await runScenario("Created pkg/globs.py; pkg/__init__.py should re-export match_glob, which T001 owns.", policy);
+    expect(done.status).toBe("completed");
+    expect(service.store.run(runId).corrective_tasks).toBe(0);
+    expect(executor.implemented).toEqual(["T001", "T002", "T003"]);
+    const defects = service.store.latestArtifact(runId, "tasks/defects/T002.json");
+    const record = JSON.parse(service.store.readArtifact(runId, defects?.id ?? "")) as { checks: { status: string }[]; findings: string[] };
+    expect(record.checks.map((c) => c.status)).toEqual(["no_tests"]);
+    expect(record.findings).toEqual([]);
+  });
+});
+
+describe("scenario: a Swift plan that writes its tests last, on an empty test target (#2419)", () => {
+  test("swift test that ran no test before the tests exist routes no defect", async () => {
+    const policy = { ...basePolicy, checks: [swiftTest] };
     const { service, runId, done, executor } = await runScenario("Created pkg/globs.py; pkg/__init__.py should re-export match_glob, which T001 owns.", policy);
     expect(done.status).toBe("completed");
     expect(service.store.run(runId).corrective_tasks).toBe(0);

@@ -40,6 +40,13 @@ import {
 import { CHAIN_SITES_DIR, type SitesRecord, siteDecision } from "../verification/family-sites.js";
 import { generatedCaseDecision } from "../verification/generated-values.js";
 import type { ReproOutcome } from "../verification/repro.js";
+import {
+  TEST_CAP_DIR,
+  TEST_CAP_KIND,
+  type TestCapMeasure,
+  type TestCapRecord,
+  testCapDecision,
+} from "../verification/test-cap.js";
 import { planApprovalDecision, requestedPathTokens } from "./auto-approval.js";
 import {
   BASELINE_FIX_KIND,
@@ -58,6 +65,7 @@ import {
   baselineSignatureDecision,
 } from "./baseline-signature.js";
 import { callCostRate } from "./budget.js";
+import { type CleanSizingShadow, cleanRates, cleanSizingShadow } from "./clean-pace.js";
 import {
   CONFLICT_FINISH_DIR,
   CONFLICT_FINISH_KIND,
@@ -144,6 +152,7 @@ import {
   shareShortfall,
   shareSpareUsd,
   timeGrowthInputs,
+  timeShortfall,
 } from "./initiatives/service.js";
 import {
   type TimePoolExtension,
@@ -271,6 +280,8 @@ const KEPT_ARTIFACTS = new Set([
   INTEGRITY_KIND,
   // Each task-end case walk: which cases a file held, no literals (#1715).
   CASE_WALK_KIND,
+  // Each task-end test cap check: per-file and per-class test counts and caps, no code (#2368).
+  TEST_CAP_KIND,
   // Each review's gate: the findings' labels and repro outcomes, no claims (#1715).
   REVIEW_GATE_KIND,
   // Each task-level corrective's write-scope precondition: diagnosed paths and writes (#2094).
@@ -910,6 +921,10 @@ export interface RunReplay {
   caseWalks: CaseWalkBoundary[];
   /** Cases the current rule refuses a task for that the recorded walk did not. */
   newCaseRefusals: number;
+  /** Each task-end test cap check's files and classes over their cap against the current rule (#2368). */
+  testCaps: TestCapBoundary[];
+  /** Files or classes the current rule finds over their cap that the recorded check did not. */
+  newTestCapRefusals: number;
   /** Each review's gate against the current rule (#1715). */
   reviewGates: ReviewGateBoundary[];
   /** Findings the current rule repairs that the recorded gate kept as notes. */
@@ -952,6 +967,11 @@ export interface RunReplay {
   activeTimes: ActiveTimeBoundary[];
   /** Sizing reports whose active-time cap the current pace sets differently. */
   newActiveTimes: number;
+  /**
+   * Sizing reports whose recorded cap the clean pace would set differently (#2414, shadow): what
+   * making it the default changes; not an accepted-decision count.
+   */
+  cleanPaceChanges: number;
   /** Each written-tests run whose declared-class filter selected no test (#2363). */
   unselectedTests: UnselectedTestsBoundary[];
   /** Such runs the recording did not record a `written_tests_unselected` would-stop for. */
@@ -994,6 +1014,11 @@ export interface ActiveTimeBoundary {
   report: string;
   recorded: { tokensPerMinute: number; basis: PaceBasis; after: number };
   replayed: { tokensPerMinute: number; basis: PaceBasis; after: number };
+  /**
+   * In shadow (#2414): the cap at the clean pace, from the rates the report recorded beside its
+   * pace (`cleanPace`), else from the trace's runs that completed before it (`cleanRates`).
+   */
+  clean: CleanSizingShadow | null;
 }
 
 /** Picks the pace that sizes a run's active time from the history's and the initiative's rates. */
@@ -1007,6 +1032,23 @@ export type ActivePaceRule = (
  * completed by `at`, for a sizing report recorded before #2336 kept them; empty outside an
  * initiative or in a trace without its tables.
  */
+/** The other runs of the run's initiative that had completed by `at`; empty outside one. */
+function initiativeRunsAt(store: WorkflowStore, runId: string, at: number): string[] {
+  try {
+    return (
+      store.connection
+        .query(
+          `SELECT DISTINCT r.id AS id FROM initiative_runs l JOIN runs r ON r.id=l.run_id
+         WHERE l.initiative_id IN (SELECT initiative_id FROM initiative_runs WHERE run_id=?) AND l.run_id<>? AND r.status='completed'
+         AND (SELECT MAX(e.at) FROM events e WHERE e.run_id=r.id AND e.type='run.state_changed' AND json_extract(e.payload_json,'$.to')='completed')<=?`,
+        )
+        .all(runId, runId, at) as { id: string }[]
+    ).map((r) => r.id);
+  } catch {
+    return [];
+  }
+}
+
 function initiativeRatesAt(store: WorkflowStore, runId: string, at: number): number[] {
   try {
     const rows = store.connection
@@ -1065,6 +1107,13 @@ export function replayActiveTimes(
         : { tokensPerMinute: time.tokensPerMinute, basis: time.basis, runs: time.runs });
     if (!history) return [];
     const chosen = pace(history, time.ownRates ?? initiativeRatesAt(store, runId, at));
+    const recordedClean = (report as { cleanPace?: CleanSizingShadow }).cleanPace;
+    const clean = cleanSizingShadow(
+      report,
+      recordedClean
+        ? { rates: recordedClean.rates, silentMs: recordedClean.silentMs }
+        : cleanRates(store, initiativeRunsAt(store, runId, at)),
+    );
     const after = activeTimeLimit({
       neededTokens: Math.min(report.runTokens + (report.repairReserve ?? 0), report.budgetAfter),
       tokensPerMinute: chosen.tokensPerMinute,
@@ -1076,6 +1125,7 @@ export function replayActiveTimes(
         report: path,
         recorded: { tokensPerMinute: time.tokensPerMinute, basis: time.basis, after: time.after },
         replayed: { tokensPerMinute: chosen.tokensPerMinute, basis: chosen.basis, after },
+        clean,
       },
     ];
   });
@@ -1553,6 +1603,53 @@ export function replayCaseWalks(
             ...decide(record).map(key),
             ...generated(record.generated && generatedCaseDecision(record)),
           ],
+        },
+      ];
+    });
+}
+
+export type TestCapRule = (measures: readonly TestCapMeasure[]) => number[];
+
+export interface TestCapBoundary {
+  taskId: string;
+  mode: TestCapRecord["mode"];
+  /** `path#scope#unit` of each count over its cap, as recorded and as the current rule decides. */
+  recorded: string[];
+  replayed: string[];
+}
+
+/**
+ * Every task-end test cap check a run recorded (`test-cap/tasks/`, #2368), decided again from its
+ * recorded counts. The counting reads code a trace does not keep, so a change to
+ * `TEST_DECLARATIONS` is not replayed, only which counts are over their cap. Traces before #2368
+ * record none.
+ */
+export function replayTestCaps(
+  store: WorkflowStore,
+  runId: string,
+  decide: TestCapRule = testCapDecision,
+): TestCapBoundary[] {
+  return store
+    .artifacts(runId)
+    .filter((a) => a.kind === TEST_CAP_KIND && a.logical_path.startsWith(TEST_CAP_DIR))
+    .flatMap((artifact) => {
+      let record: TestCapRecord;
+      try {
+        record = JSON.parse(store.readArtifact(runId, artifact.id));
+      } catch {
+        return [];
+      }
+      if (record.schemaVersion !== 1) return [];
+      const key = (i: number) => {
+        const m = record.measures[i];
+        return m ? `${m.path}#${m.scope}${m.unit === undefined ? "" : `#${String(m.unit)}`}` : "?";
+      };
+      return [
+        {
+          taskId: record.taskId,
+          mode: record.mode,
+          recorded: record.refused.map(key),
+          replayed: decide(record.measures).map(key),
         },
       ];
     });
@@ -2820,6 +2917,18 @@ export interface InitiativeStartBoundary {
     suggestedUsd: number;
     finalUsd: number | null;
   } | null;
+  /**
+   * The `initiative-time-share` would-stop the current code records at this start (#2413): the
+   * shared time left after the other waiting features' lows is below the feature's low at the
+   * pace. Its promotion cites replayed starts whose features did not stop on their deadlines.
+   */
+  timeWouldStop: {
+    summary: string;
+    availableMs: number;
+    lowMs: number;
+    tokensPerMinute: number;
+    suggestedTimeMs: number;
+  } | null;
 }
 
 /**
@@ -3446,6 +3555,7 @@ function replayStarts(
     const runIds = (db.query("SELECT id FROM runs").all() as { id: string }[]).map((r) => r.id);
     const rewinders = new Map(runIds.map((runId) => [runId, runRewinder(store, runId)]));
     const policies = new Map(runIds.map((runId) => [runId, runPolicyAt(store, runId)]));
+    const activeTimes = new Map(runIds.map((runId) => [runId, runActiveAt(store, runId)]));
     const states = new Map(
       runIds.map((runId) => [
         runId,
@@ -3534,7 +3644,9 @@ function replayStarts(
           ]);
           // The run's tokens, dollars and policy as they stood then, not at its end (#2061).
           const policyAt = policies.get(runId);
-          if (budgetAtStart && policyAt) rewindRunBudget(db, runId, t, policyAt);
+          const activeAt = activeTimes.get(runId);
+          if (budgetAtStart && policyAt && activeAt)
+            rewindRunBudget(db, runId, t, policyAt, activeAt(t));
         }
         for (const runId of late) rewinders.delete(runId);
       })();
@@ -3563,6 +3675,7 @@ function replayStarts(
         const whole = initiatives.estimate(initiativeId);
         const short = feature ? dollarShortfall(view, feature) : null;
         const park = feature ? dollarCapPark(view, feature) : null;
+        const timeShort = feature ? timeShortfall(view, feature) : null;
         const estimate = (whole?.features ?? []).map((f) => ({
           featureId: f.featureId,
           low: f.tokens.low,
@@ -3607,6 +3720,15 @@ function replayStarts(
                 openNeedUsd: park.openNeedUsd,
                 suggestedUsd: park.suggestedUsd,
                 finalUsd: finalUsd > 0 ? Math.round(finalUsd * 100) / 100 : null,
+              }
+            : null,
+          timeWouldStop: timeShort
+            ? {
+                summary: timeShort.summary,
+                availableMs: timeShort.availableMs,
+                lowMs: timeShort.needMs.low,
+                tokensPerMinute: timeShort.tokensPerMinute,
+                suggestedTimeMs: timeShort.suggestedTimeMs,
               }
             : null,
         });
@@ -4025,20 +4147,57 @@ function runPolicyAt(store: WorkflowStore, runId: string): (t: number) => RunPol
 }
 
 /**
+ * A run's active time at any moment, read before a replay removes its later events (#2417): the
+ * `activeMs` its `budget.updated` events recorded, from 0 at its creation to its stored total at
+ * its last update, interpolated between two of them. The run row keeps only the final total, and
+ * the events come only with a reservation, so a moment between two reads the time in between.
+ */
+function runActiveAt(store: WorkflowStore, runId: string): (t: number) => number {
+  const run = store.run(runId);
+  const points = [
+    { at: run.created_at, ms: 0 },
+    ...(store.connection
+      .query(
+        "SELECT at, json_extract(payload_json, '$.activeMs') AS ms FROM events WHERE run_id=? AND type='budget.updated' AND json_extract(payload_json, '$.activeMs') IS NOT NULL ORDER BY seq",
+      )
+      .all(runId) as { at: number; ms: number }[]),
+    { at: Math.max(run.updated_at, run.created_at), ms: run.active_ms },
+  ];
+  return (t) => {
+    const next = points.findIndex((p) => p.at > t);
+    if (next === -1) return run.active_ms;
+    const after = points[next];
+    const before = points[next - 1];
+    if (!after || !before) return 0;
+    const span = after.at - before.at;
+    const share = span > 0 ? (t - before.at) / span : 1;
+    return Math.round(before.ms + Math.max(0, after.ms - before.ms) * share);
+  };
+}
+
+/**
  * A run's budget inputs as they stood at `t`, for a replay that rewound its attempts there (#2061):
- * the tokens and dollars of the attempts that had finished by then, and its policy then. The
- * stored token and dollar totals and the policy are the run's final ones; an initiative view
- * replayed on them sees every later spend and cap growth.
+ * the tokens and dollars of the attempts that had finished by then, the agent calls started by
+ * then, its active time then (`runActiveAt`), and its policy then. The stored totals and the
+ * policy are the run's final ones; an initiative view replayed on them sees every later spend and
+ * cap growth. With the final active time and calls, R76 schemamask's view at generation's start
+ * counted 14.0M ms used of the 18M shared time and 101 calls instead of the 9.4M and 70 its
+ * recorded gate read, and the replay parked generation and validate on a time share of 0 ms that
+ * the round never had (#2417).
  */
 function rewindRunBudget(
   db: Database,
   runId: string,
   t: number,
   policyAt: (t: number) => RunPolicy,
+  activeMs: number,
 ): void {
   db.run(
-    "UPDATE runs SET token_usage=(SELECT COALESCE(SUM(used_tokens), 0) FROM attempts WHERE run_id=? AND ended_at<=?), estimated_cost_microusd=NULL, policy_json=? WHERE id=?",
-    [runId, t, canonical(policyAt(t)), runId],
+    `UPDATE runs SET
+      token_usage=(SELECT COALESCE(SUM(used_tokens), 0) FROM attempts WHERE run_id=? AND ended_at<=?),
+      agent_calls=(SELECT COUNT(*) FROM attempts WHERE run_id=? AND model_id IS NOT NULL AND started_at<=?),
+      active_ms=?, estimated_cost_microusd=NULL, policy_json=? WHERE id=?`,
+    [runId, t, runId, t, activeMs, canonical(policyAt(t)), runId],
   );
 }
 
@@ -4152,6 +4311,8 @@ function replayRun(
   | "newIntegrityFindings"
   | "caseWalks"
   | "newCaseRefusals"
+  | "testCaps"
+  | "newTestCapRefusals"
   | "reviewGates"
   | "newGateRepairs"
   | "convergenceGates"
@@ -4173,6 +4334,7 @@ function replayRun(
   | "newSourceDefectRoutes"
   | "activeTimes"
   | "newActiveTimes"
+  | "cleanPaceChanges"
   | "unselectedTests"
   | "newUnselectedStops"
 > | null {
@@ -4402,6 +4564,7 @@ export function replayTrace(
     edgeCrashRule?: EdgeCrashRule;
     integrityRule?: IntegrityRule;
     caseWalkRule?: CaseWalkRule;
+    testCapRule?: TestCapRule;
     reviewGateRule?: ReviewGateRule;
     convergenceGateRule?: ConvergenceGateRule;
     evidenceRule?: EvidenceRule;
@@ -4484,6 +4647,9 @@ export function replayTrace(
     const walks = new Map(
       runIds.map((runId) => [runId, replayCaseWalks(store, runId, options.caseWalkRule)]),
     );
+    const caps = new Map(
+      runIds.map((runId) => [runId, replayTestCaps(store, runId, options.testCapRule)]),
+    );
     const reviews = new Map(
       runIds.map((runId) => [runId, replayReviewGates(store, runId, options.reviewGateRule)]),
     );
@@ -4561,6 +4727,7 @@ export function replayTrace(
       const edgeProbes = edges.get(runId) ?? [];
       const integrity = scans.get(runId) ?? [];
       const caseWalks = walks.get(runId) ?? [];
+      const testCaps = caps.get(runId) ?? [];
       const reviewGates = reviews.get(runId) ?? [];
       const convergenceGates = converges.get(runId) ?? [];
       const evidenceDecisions = evidence.get(runId) ?? [];
@@ -4586,6 +4753,7 @@ export function replayTrace(
         !edgeProbes.length &&
         !integrity.length &&
         !caseWalks.length &&
+        !testCaps.length &&
         !reviewGates.length &&
         !convergenceGates.length &&
         !evidenceDecisions.length &&
@@ -4637,6 +4805,11 @@ export function replayTrace(
           (n, b) => n + b.replayed.filter((f) => !b.recorded.includes(f)).length,
           0,
         ),
+        testCaps,
+        newTestCapRefusals: testCaps.reduce(
+          (n, b) => n + b.replayed.filter((f) => !b.recorded.includes(f)).length,
+          0,
+        ),
         reviewGates,
         newGateRepairs: reviewGates.reduce(
           (n, b) => n + b.replayed.filter((f) => !b.recorded.includes(f)).length,
@@ -4671,6 +4844,8 @@ export function replayTrace(
         newSourceDefectRoutes: sourceDefects.filter((b) => b.replayed !== b.recorded).length,
         activeTimes,
         newActiveTimes: activeTimes.filter((b) => b.replayed.after !== b.recorded.after).length,
+        cleanPaceChanges: activeTimes.filter((b) => b.clean && b.clean.after !== b.recorded.after)
+          .length,
         unselectedTests,
         newUnselectedStops: unselectedTests.filter((b) => !b.recorded).length,
       });

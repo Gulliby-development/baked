@@ -7,7 +7,7 @@ import { sourceManifest } from "../verification/snapshot.js";
 import { relativeHeaded } from "../verification/task-end-check.js";
 import { isCodePath, isStaticCheck, isWholeUnitCheck } from "./check-policy.js";
 import { changedLineRanges, type LineRange } from "./format-written.js";
-import { crlfPatch } from "./host-apply.js";
+import { applyArgs, baseDrift, patchForms } from "./host-apply.js";
 import { isTestCheck } from "./quality/mutation.js";
 import { suppliedBlocks } from "./sizing.js";
 import type { WorkflowStore } from "./store.js";
@@ -143,19 +143,19 @@ async function suppliedContent(
       if (before !== null && !only.whole) continue;
       writeFileSync(target, only.content);
     } else if (diffs.length === supplied.length) {
+      // A zero-context diff applies only to its own pre-image, as host apply checks it (#2412).
+      const drift = baseDrift(copy, write.path, diffs.join(""));
+      if (drift) return { skipped: drift };
       const patch = join(copy, ".baked-supplied.patch");
       // Git for Windows sets core.autocrlf: the copy holds the request's bytes, not CRLF ones.
       const apply = async (text: string) => {
         writeFileSync(patch, text);
-        return runGit(
-          ["-c", "core.autocrlf=false", "apply", "--recount", "-p1", patch],
-          copy,
-          30_000,
-        );
+        return runGit(["-c", "core.autocrlf=false", ...applyArgs(text), patch], copy, 30_000);
       };
-      let applied = await apply(diffs.join(""));
       // A base with CRLF ends takes the request's LF diff with CRLF hunk lines, as host apply does.
-      if (!applied.ok && before?.includes("\r\n")) applied = await apply(crlfPatch(diffs.join("")));
+      const [first, ...rest] = patchForms(diffs.join(""), before?.includes("\r\n") ?? false);
+      let applied = await apply(first ?? "");
+      for (const form of rest) if (!applied.ok) applied = await apply(form);
       removeScratch(patch);
       if (!applied.ok) return { skipped: `the diff for ${write.path} does not apply` };
     } else continue;

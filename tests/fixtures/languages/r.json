@@ -76,6 +76,7 @@
     ],
     "dependencyPrepare": null,
     "worktreePathLimits": null,
-    "testClasses": null
+    "testClasses": null,
+    "testDeclarations": ["tests/testthat/test-sum.R: 2 tests"]
   }
 }

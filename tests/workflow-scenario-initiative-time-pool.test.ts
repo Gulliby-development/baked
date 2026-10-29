@@ -1,6 +1,11 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import type { InitiativePlan } from "../src/core/workflows/initiatives/plan.js";
-import { InitiativeService, type InitiativeView, shareShortfall } from "../src/core/workflows/initiatives/service.js";
+import {
+  InitiativeService,
+  type InitiativeView,
+  shareShortfall,
+  timeShortfall,
+} from "../src/core/workflows/initiatives/service.js";
 import { HOST_POOL_GROWTHS } from "../src/core/workflows/initiatives/token-pool.js";
 import { replayTimePoolGrowth } from "../src/core/workflows/trace.js";
 import type { RunPolicy } from "../src/core/workflows/schemas.js";
@@ -270,9 +275,178 @@ describe("scenario: the shared time has a forecast, a notice and an amount (#233
     const feature = initiatives.view("ladle").features.find((f) => f.id === "head");
     const remedies = feature?.recovery?.remedies ?? [];
     expect(remedies.map((r) => r.action)).toEqual(["extend", "resume"]);
+    // head holds the whole room of the 600 min shared time and its raise passes it: the extend it
+    // names first is the shared time's (#2414); with room it is the run's (the R76 cases below).
+    expect(remedies[0]).toMatchObject({ initiativeId: "ladle" });
+    expect(remedies[0]?.suggestedTimeMs).toBeGreaterThan(600 * MINUTE);
+    expect(feature?.blockers[0]).toContain(`initiative extend ladle --time-ms ${remedies[0]?.suggestedTimeMs}`);
+    expect(feature?.blockers[0]).toContain(`ran out at ${limit / MINUTE} of ${limit / MINUTE} min`);
+    expect(store.run(head).status).toBe("blocked");
+  }, 60000);
+});
+
+/** Records an attempt of `runId` that waited `silentMs` before its calls answered (#2414). */
+function silent(store: WorkflowStore, runId: string, silentMs: number): void {
+  store.transaction(() =>
+    store.artifact(runId, "usage", `attempts/${newId()}/usage.json`, JSON.stringify({ schemaVersion: 1, silentMs, steps: [] })),
+  );
+}
+
+describe("scenario: R76 hintsieve, the clean pace is recorded in shadow beside the deciding one (#2414)", () => {
+  test("the time notice records the clean pace and its inputs; its own pace still decides", async () => {
+    const { initiatives, store, runOf } = await ladle("sdd", 61 * MINUTE);
+    // kitchen and recipe each waited 12 minutes on a silent call that finally answered.
+    silent(store, runOf("kitchen"), 12 * MINUTE);
+    silent(store, runOf("recipe"), 12 * MINUTE);
+    const view = initiatives.view("ladle");
+    const time = view.budget.time;
+    expect(time?.pace).toEqual({ tokensPerMinute: OWN_PACE, basis: "initiative", runs: 3 });
+    // No history of other initiatives is measured here, so the shadow takes the clean median.
+    const clean = (OWN_PACE * 20) / 8;
+    expect(time?.cleanPace?.pace).toEqual({ tokensPerMinute: clean, basis: "initiative", runs: 3 });
+    expect(time?.cleanPace?.rates.toSorted()).toEqual([OWN_PACE, clean, clean].toSorted());
+    expect(time?.cleanPace?.silentMs).toBe(24 * MINUTE);
+    expect(time?.cleanPace?.forecastMs).toBeLessThan(time?.forecastMs ?? 0);
+    expect(view.budget.timeNotice).toContain(`At ${OWN_PACE / 1000}k tokens per active minute`);
+    // The notice the first wave raised recorded the clean pace beside the one that decided it.
+    const [event] = initiatives.store.eventsOfType("ladle", "budget.time_notice");
+    expect(event).toMatchObject({
+      pace: { tokensPerMinute: OWN_PACE, basis: "initiative", runs: 2 },
+      cleanPace: { pace: { tokensPerMinute: OWN_PACE, basis: "initiative", runs: 2 }, rates: [OWN_PACE, OWN_PACE], silentMs: 0 },
+    });
+  }, 60000);
+
+  test("from four finished runs the clean pace is their median without the silence; run sizing still decides as before", async () => {
+    const { fixture, initiatives, store, starter, runOf } = await ladle("sdd", 600 * MINUTE);
+    silent(store, runOf("kitchen"), 10 * MINUTE);
+    silent(store, runOf("recipe"), 10 * MINUTE);
+    expect(await starter.startFeature("ladle", "head")).toBe(true);
+    const head = runOf("head");
+    const report = await sized(fixture, head);
+    expect(report.activeTime).toMatchObject({ basis: "initiative", tokensPerMinute: OWN_PACE, runs: 3 });
+    const recorded = JSON.parse(store.readArtifact(head, store.latestArtifact(head, "sizing/plan-0.json")!.id)) as {
+      cleanPace?: { basis: string; tokensPerMinute: number; rates: number[]; silentMs: number; after: number };
+    };
+    // Three clean runs: the shadow keeps the history's pace.
+    expect(recorded.cleanPace).toMatchObject({ basis: "history", tokensPerMinute: HISTORY_PACE, silentMs: 20 * MINUTE });
+    expect(recorded.cleanPace?.rates.toSorted()).toEqual([OWN_PACE, OWN_PACE * 2, OWN_PACE * 2].toSorted());
+    finish(store, head, OWN_PACE * 20, 20);
+    const time = initiatives.view("ladle").budget.time;
+    expect(time?.pace).toEqual({ tokensPerMinute: OWN_PACE, basis: "initiative", runs: 4 });
+    expect(time?.cleanPace?.pace).toEqual({ tokensPerMinute: (OWN_PACE + OWN_PACE * 2) / 2, basis: "initiative", runs: 4 });
+  }, 60000);
+});
+
+describe("scenario: R76 schemamask io, a run block's time is held to what the shared time grants (#2414)", () => {
+  /** head blocked on its spent deadline, with the shared time `roomMs` above what is committed. */
+  async function blockedHead(roomMs: number) {
+    const made = await ladle("sdd", 600 * MINUTE);
+    const { fixture, store, initiatives, starter, runOf } = made;
+    expect(await starter.startFeature("ladle", "head")).toBe(true);
+    const head = runOf("head");
+    await sized(fixture, head);
+    await fixture.approve(head);
+    const limit = (JSON.parse(store.run(head).policy_json) as RunPolicy).maxActiveMs;
+    store.transaction(() => {
+      store.addActiveTime(head, limit - store.run(head).active_ms);
+      store.transition(head, "blocked", "budget_exhausted");
+    });
+    const committed = initiatives.view("ladle").budget.time?.committedMs ?? 0;
+    const row = initiatives.store.get("ladle");
+    const settings = initiatives.store.settings(row);
+    if (!settings.budget) throw new Error("no shared budget");
+    initiatives.store.setSettings("ladle", { ...settings, budget: { ...settings.budget, maxActiveMs: committed + roomMs } });
+    const feature = initiatives.view("ladle").features.find((f) => f.id === "head");
+    return { head, limit, poolLimit: committed + roomMs, feature, remedies: feature?.recovery?.remedies ?? [] };
+  }
+
+  test("a raise above the room suggests what the shared time grants and names the shared time's extend", async () => {
+    const { head, limit, poolLimit, feature, remedies } = await blockedHead(5 * MINUTE);
+    expect(remedies.map((r) => r.action)).toEqual(["extend", "extend", "resume"]);
+    const [run, pool] = remedies;
+    expect(run).toMatchObject({ runId: head });
+    // On main the run's suggestion was its own pace's whole raise, above the shared limit.
+    expect(run?.suggestedTimeMs).toBeLessThanOrEqual(poolLimit);
+    expect(run?.suggestedTimeMs).toBeLessThanOrEqual(limit + 5 * MINUTE);
+    expect(run?.suggestedTimeMs).toBeGreaterThan(limit);
+    expect(pool).toMatchObject({ initiativeId: "ladle" });
+    expect(pool?.suggestedTimeMs).toBeGreaterThan(poolLimit);
+    expect(feature?.blockers[0]).toContain(`baked workflow initiative extend ladle --time-ms ${pool?.suggestedTimeMs}`);
+    expect(feature?.blockers[0]).toContain(`--time-ms ${run?.suggestedTimeMs} --resume`);
+    for (const remedy of remedies) RemedySchema.parse(remedy);
+  }, 60000);
+
+  test("with no room the block names the shared time's extend first and no run amount", async () => {
+    const { poolLimit, feature, remedies } = await blockedHead(0);
+    expect(remedies.map((r) => r.action)).toEqual(["extend", "resume"]);
+    expect(remedies[0]).toMatchObject({ initiativeId: "ladle" });
+    expect(remedies[0]?.runId).toBeUndefined();
+    expect(remedies[0]?.suggestedTimeMs).toBeGreaterThan(poolLimit);
+    expect(feature?.blockers[0]).toContain("no room left");
+  }, 60000);
+
+  test("a raise within the room is unchanged", async () => {
+    const { head, limit, remedies } = await blockedHead(600 * MINUTE);
+    expect(remedies.map((r) => r.action)).toEqual(["extend", "resume"]);
     expect(remedies[0]).toMatchObject({ runId: head });
     expect(remedies[0]?.suggestedTimeMs).toBeGreaterThan(limit);
-    expect(feature?.blockers[0]).toContain(`--time-ms ${remedies[0]?.suggestedTimeMs} --resume`);
+  }, 60000);
+});
+
+// R76 schemamask (#2413): check, generation and validate started on 1.9 to 4.2 min of shared time
+// against lows of 9 to 30 min at the pace then. Each stopped on its active deadline within 4 min
+// and waited 16 to 26 min for a person. The share gate's floor is one second.
+describe("scenario: R76 schemamask, a feature starts on less time than its low estimate (#2413)", () => {
+  const timeWouldStops = (initiatives: InitiativeService) =>
+    initiatives.store
+      .eventsOfType("ladle", "decision.would_stop")
+      .filter((p) => (p as { reason?: string }).reason === "initiative-time-share") as {
+      mode: string;
+      featureId: string;
+      remedy: Remedy & { suggestedTimeMs: number };
+      inputs: { availableMs: number; needMs: { low: number } };
+    }[];
+  /** Head's estimate as schemamask's validate had it: 10 to 20 min at the initiative's 60k a minute. */
+  const HEAD_NEED = { low: 10 * OWN_PACE, high: 20 * OWN_PACE };
+  const estimated = (initiatives: InitiativeService): void => {
+    // The fixture's history is unsized, so its estimate is on defaults and names no need.
+    (initiatives as unknown as { featureNeeds(): Map<string, typeof HEAD_NEED> }).featureNeeds = () =>
+      new Map([["head", HEAD_NEED]]);
+  };
+
+  test("a start on a time share below its low records an initiative-time-share would-stop with the time that starts it", async () => {
+    // The first wave used 60 of 61 min: head's share is 1 min, its low at 60k a minute is longer.
+    const { initiatives, starter } = await ladle("sdd", 61 * MINUTE);
+    estimated(initiatives);
+    const view = initiatives.view("ladle");
+    const head = view.features.find((f) => f.id === "head");
+    if (!head) throw new Error("no head");
+    expect(head.need).toEqual(HEAD_NEED);
+    expect(head.share?.activeMs).toBeGreaterThan(1000);
+    expect(shareShortfall(view, head)).toBeNull();
+    const short = timeShortfall(view, head);
+    expect(short?.availableMs).toBe(1 * MINUTE);
+    expect(short?.needMs).toEqual({ low: 10 * MINUTE, high: 20 * MINUTE });
+
+    // Shadow: the start goes ahead and the would-stop is recorded once, with the remedy's amount.
+    expect(await starter.startFeature("ladle", "head")).toBe(true);
+    const events = timeWouldStops(initiatives);
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({ mode: "shadow", featureId: "head", remedy: { action: "extend" } });
+    expect(RemedySchema.safeParse(events[0]?.remedy).success).toBe(true);
+    const suggested = events[0]?.remedy.suggestedTimeMs ?? 0;
+    expect(suggested % (15 * MINUTE)).toBe(0);
+    expect(suggested - 61 * MINUTE).toBeGreaterThanOrEqual((short?.needMs.low ?? 0) - (short?.availableMs ?? 0));
+    expect(suggested).toBeGreaterThanOrEqual(view.budget.time?.suggestedMs ?? 0);
+  }, 60000);
+
+  test("a start whose time share covers its low records none", async () => {
+    const { initiatives, starter } = await ladle("sdd", 600 * MINUTE);
+    estimated(initiatives);
+    const head = initiatives.view("ladle").features.find((f) => f.id === "head");
+    expect(head ? timeShortfall(initiatives.view("ladle"), head) : "no head").toBeNull();
+    expect(await starter.startFeature("ladle", "head")).toBe(true);
+    expect(timeWouldStops(initiatives)).toHaveLength(0);
   }, 60000);
 });
 

@@ -315,6 +315,53 @@ test("time accounting keeps healthy parallel work and successful first-response 
 });
 
 
+test("a call that responds and then ends without an answer is excluded again, with its working time (#2414)", () => {
+  let time = 0;
+  const clock = new ExecutionBudgetClock({ now: () => time });
+  const a = clock.track();
+  time = 1000;
+  const call = a.pending();
+  time = 2000;
+  call(true);
+  time = 10_000;
+  expect(clock.now()).toBe(10_000);
+  call(false);
+  expect(clock.now()).toBe(1000);
+  call(true);
+  time = 12_000;
+  expect(clock.now()).toBe(3000);
+  // An answered call stays charged when its attempt ends.
+  const answered = a.pending();
+  time = 13_000;
+  answered(true);
+  a.finish();
+  expect(clock.now()).toBe(4000);
+  // A call settled after its attempt ended still gives its time back, and nothing restarts.
+  const b = clock.track();
+  const late = b.pending();
+  late(true);
+  time = 18_000;
+  b.finish();
+  expect(clock.now()).toBe(9000);
+  late(false);
+  expect(clock.now()).toBe(4000);
+});
+
+test("a stream whose adapter reports activity but delivers nothing settles false after true", async () => {
+  const settled: boolean[] = [];
+  const calls: CallTiming[] = [];
+  const parent = new AbortController();
+  const base = streaming(() => { throw new Error("Not implemented"); });
+  base.doGenerate = async (options) => {
+    providerResponded(options.abortSignal);
+    parent.abort(new Error("Active deadline exhausted"));
+    return new Promise(() => {});
+  };
+  await expect(generateText({ model: withProviderHealth(base, "fixture/model", { firstByteMs: 60_000, pending: () => (ok) => settled.push(ok), timing: (c) => calls.push(c) }), prompt: "Hi", maxRetries: 0, abortSignal: parent.signal })).rejects.toThrow();
+  expect(settled).toEqual([true, false]);
+  expect(calls[0]?.silentMs).toBeUndefined();
+});
+
 test("a completed call keeps the Codex conversation alive until its attempt ends", async () => {
   const parent = new AbortController();
   let providerSignal: AbortSignal | undefined;

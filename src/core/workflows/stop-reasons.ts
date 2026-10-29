@@ -73,6 +73,15 @@ export const STOP_REASONS = {
     modes: NOT_ENFORCED,
     defaultMode: "shadow",
   },
+  "initiative-time-share": {
+    label:
+      "An initiative's shared time left after the other waiting features' low estimates is below a starting feature's low estimate at the measured pace",
+    // Shadow only (#2413): the pace counts silent provider time until #2414, which would make an
+    // enforced park as wrong as R76's time notices. Its promotion, after #2414 and two bench
+    // rounds with no false would-stop, adds `enforce` and parks the start with its extend remedy.
+    modes: NOT_ENFORCED,
+    defaultMode: "shadow",
+  },
   "initiative-plan-charge": {
     label:
       "An initiative's token pool holds an open feature run with a sized plan at its plan's need instead of its run limit",
@@ -223,6 +232,28 @@ export const STOP_REASONS = {
     // passed on CRLF files whose committed LF form failed); its promotion makes the failure a
     // finding of the feature that blocks its acceptance.
     modes: NOT_ENFORCED,
+    defaultMode: "shadow",
+  },
+  test_cap: {
+    label:
+      "A test file a task writes declares more tests than the brief's per-file or per-class cap",
+    // Shadow by default (#2368, R75 latcell's commands spent 1.86M tokens on correctives over a
+    // cap of 12 `test(...)` blocks per file that only the reviewer checked): the task-end check
+    // records a would-stop per file or class over the cap. `stopModes: { test_cap: "enforce" }`
+    // sends the submission back naming the file, its count and the cap; making that the default
+    // is a pull request of its own after two bench rounds with no false would-stop.
+    modes: STOP_MODES,
+    defaultMode: "shadow",
+  },
+  silent_check_failure: {
+    label:
+      "A required check fails with no failure line of its toolchain in its output: the host would run it once more before opening a correction",
+    // Shadow by default (#2418, R76 hintsieve: `swift test` exited 4 with SwiftPM progress lines
+    // only, opened a 440k-token corrective whose diff was empty, and passed on the next run). The
+    // checks stage records `decision.would_rerun`. `stopModes: { silent_check_failure: "enforce" }`
+    // re-runs the check once: a pass is an inconclusive flake and opens nothing, a second failure
+    // opens the correction as before. Making that the default is a pull request of its own.
+    modes: STOP_MODES,
     defaultMode: "shadow",
   },
   "host-resume-on-stored-limit": {
@@ -643,6 +674,32 @@ export function noteStoredLimitResume(
           1000,
         ),
       inputs: { ...decision, at, diagnosticId: latest.id },
+    },
+  });
+  return true;
+}
+
+/**
+ * Records `decision.would_rerun` for a required check whose failure printed no failure line
+ * (`silent_check_failure`, shadow, #2418), once per check run. Returns whether it recorded now.
+ */
+export function recordWouldRerun(
+  store: WorkflowStore,
+  runId: string,
+  rerun: Omit<WouldStop, "reason">,
+): boolean {
+  const seen = store
+    .eventsOfType(runId, "decision.would_rerun")
+    .some((e) => e.type === "decision.would_rerun" && e.payload.key === rerun.key);
+  if (seen) return false;
+  store.emit(runId, {
+    type: "decision.would_rerun",
+    payload: {
+      reason: "silent_check_failure",
+      mode: rerun.mode,
+      key: rerun.key.slice(0, 200),
+      summary: rerun.summary.slice(0, 1000),
+      inputs: rerun.inputs,
     },
   });
   return true;
