@@ -5266,6 +5266,22 @@ describe("gate matrix: no tests collected (#1864)", () => {
     ["Swift (swift test)", "error: no tests found; create a target in the 'Tests' directory"],
     ["Dart (dart test)", "No tests ran."],
     ["Kotlin/Java (Gradle 9)", "There are test sources present and no filters are applied, but the test task did not discover any tests to execute."],
+    // #2419: a test target that exists and holds no test yet, exit 0. Swift 6.4.1 (Windows) on a
+    // `.testTarget` whose one file only imports the library, verbatim from the issue.
+    ["Swift (swift test, empty test target)", "Test Suite 'All tests' passed at 2026-10-28 21:31:05.697\n\t Executed 0 tests, with 0 failures (0 unexpected) in 0.0 (0.0) seconds\n◊ Test run started.\n√ Test run with 0 tests in 0 suites passed after 0.001 seconds.\n"],
+    // dotnet test, SDK 8.0.132, on an xunit project whose test class has no test (path shortened).
+    ["C# (dotnet test, no test in the project)", "Starting test execution, please wait...\nA total of 1 test files matched the specified pattern.\nNo test is available in /work/Lib.Tests/bin/Debug/net8.0/Lib.Tests.dll. Make sure that test discoverer & executors are registered and platform & framework version settings are appropriate and try again.\n"],
+    // mix test, Elixir 1.14, on a test module with no test: no test count in the summary.
+    ["Elixir (mix test, a module without tests)", "\nFinished in 0.01 seconds (0.00s async, 0.01s sync)\n0 failures\n\nRandomized with seed 441790\n"],
+    // dune test 3.14 on an empty OUnit2 2.2 suite and an empty Alcotest 1.7 suite (path shortened).
+    ["OCaml (dune test, OUnit2)", "\nRan: 0 tests in: 0.00 seconds.\nOK\n"],
+    ["OCaml (dune test, Alcotest)", "Testing `lib'.\nThis run has ID `SP3Q9ASA'.\n\n\nFull test results in `/work/_build/default/test/_build/_tests/lib'.\nTest Successful in 0.000s. 0 test run.\n"],
+    // busted 2.2 on a spec file without `it`, testthat 3.2 on a test file without `test_that`.
+    ["Lua (busted, a spec without tests)", "\n0 successes / 0 failures / 0 errors / 0 pending : 0.000165 seconds\n"],
+    ["R (testthat, a file without tests)", "[ FAIL 0 | WARN 0 | SKIP 0 | PASS 0 ]\n"],
+    // Pester 5 on a `*.Tests.ps1` without `It`: Write-PesterReport prints its summary whatever the
+    // count (Pester 5.7.1 src/functions/Output.ps1), in the shape the 5.9.1 cells below record.
+    ["PowerShell (Pester, a file without tests)", "Pester v5.9.1\n\nStarting discovery in 1 files.\nDiscovery found 0 tests in 12ms.\nRunning tests.\nTests completed in 30ms\nTests Passed: 0, Failed: 0, Skipped: 0, Inconclusive: 0, NotRun: 0\n"],
   ];
   for (const [stack, output] of NO_TESTS)
     test(`${stack}: no test collected`, () => expect(noTestsCollected(output)).toBe(true));
@@ -5273,6 +5289,26 @@ describe("gate matrix: no tests collected (#1864)", () => {
     expect(noTestsCollected("FAILED tests/test_tags.py::test_wheel - AssertionError\n1 failed in 0.02s")).toBe(false);
     expect(noTestsCollected(" 3 pass\n 0 fail\nRan 3 tests across 1 file.")).toBe(false);
     expect(noTestsCollected("test result: ok. 0 passed; 0 failed; 0 ignored")).toBe(false);
+  });
+  // #2419: a count above zero, a failure, a narrowed selection, a test file that did not load, or
+  // another part of the run that held tests is no empty target.
+  test("a zero-test line beside tests that ran, failed, did not load or were filtered is not 'no tests'", () => {
+    const xctest = (n: number) => `Test Suite 'All tests' passed at 2026-10-28 21:31:05.697\n\t Executed ${n} tests, with 0 failures (0 unexpected) in 0.0 (0.0) seconds\n`;
+    expect(noTestsCollected(xctest(12))).toBe(false);
+    expect(noTestsCollected("✘ Test run with 3 tests failed after 0.001 seconds with 1 issue.")).toBe(false);
+    // swift-testing only: XCTest has nothing, swift-testing ran three.
+    expect(noTestsCollected(`${xctest(0)}✔ Test run with 3 tests passed after 0.001 seconds.`)).toBe(false);
+    expect(noTestsCollected(`${xctest(0)}􀟈 Test run with 3 tests passed after 0.001 seconds.`)).toBe(false);
+    expect(noTestsCollected("Test Suite 'Selected tests' passed at 2026-10-28 21:31:05.697\n\t Executed 0 tests, with 0 failures (0 unexpected) in 0.0 (0.0) seconds\n")).toBe(false);
+    expect(noTestsCollected("/w/Tests/LibTests/LibTests.swift:6:27: error: cannot find 'sub' in scope")).toBe(false);
+    expect(noTestsCollected("No test is available in /w/A.Tests.dll. Make sure that test discoverer & executors are registered\nFailed!  - Failed:     1, Passed:     2, Skipped:     0, Total:     3, Duration: 12 ms - B.Tests.dll (net8.0)")).toBe(false);
+    expect(noTestsCollected("No test matches the given testcase filter `FullyQualifiedName~Sum` in /w/A.Tests.dll")).toBe(false);
+    expect(noTestsCollected("Finished in 0.01 seconds (0.00s async, 0.01s sync)\n3 tests, 1 failure\n")).toBe(false);
+    expect(noTestsCollected("==> a\nFinished in 0.01 seconds (0.00s async, 0.01s sync)\n0 failures\n==> b\nFinished in 0.02 seconds (0.00s async, 0.02s sync)\n2 tests, 1 failure\n")).toBe(false);
+    expect(noTestsCollected("Ran: 0 tests in: 0.00 seconds.\nOK\nRan: 4 tests in: 0.01 seconds.\nFAILED: Cases: 4 Tried: 4 Errors: 0 Failures: 1")).toBe(false);
+    expect(noTestsCollected("Test Successful in 0.000s. 0 test run.\n1 failure! in 0.001s. 3 tests run.")).toBe(false);
+    expect(noTestsCollected("0 successes / 0 failures / 1 error / 0 pending : 0.0002 seconds\nError -> spec/a_spec.lua:3: <name> expected near 'end'")).toBe(false);
+    expect(noTestsCollected("Discovery found 0 tests in 222ms.\nTests Passed: 0, Failed: 0, Skipped: 0, Inconclusive: 0, NotRun: 0\nContainer failed: 1\n  - /w/tests/Fold.Tests.ps1")).toBe(false);
   });
 });
 

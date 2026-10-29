@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
+import { createHash } from "node:crypto";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -173,6 +174,32 @@ describe("the project's static checks on the request's verbatim content (#2275)"
       ["rubocop", "failed"],
     ]);
     expect(runs).toEqual(["rubocop", "rubocop"]);
+  });
+});
+
+// Bench round 76 (#2412): a `git diff -U0` block applied without `--unidiff-zero` put a pure
+// addition at the end of the file and refused a replacement; the supplied-content check applies
+// the request's diff with host apply's arguments (`applyArgs`), so the lines it lints are the
+// request's at their @@ positions.
+const blob = (text: string) => createHash("sha1").update(`blob ${Buffer.byteLength(text)}\0`).update(text).digest("hex");
+const zeroBrief = (hunks: string[], base = BASE) =>
+  ["Apply exactly this diff (-U0), and keep `bundle exec rubocop` clean:", "```diff", "diff --git a/lib/group.rb b/lib/group.rb", `index ${blob(base).slice(0, 7)}..1234567 100644`, "--- a/lib/group.rb", "+++ b/lib/group.rb", ...hunks, "```"].join("\n");
+
+describe("a zero-context (-U0) supplied diff is checked at its @@ positions (#2412)", () => {
+  test("a pure addition and a replacement set the lines their headers name; a diff for another pre-image is skipped", async () => {
+    const root = workspace("baked-supplied-checks-u0-", { "lib/group.rb": `${BASE}# footer\n` });
+    const base = `${BASE}# footer\n`;
+    const added = await suppliedCheckRecord("T001", modify, root, zeroBrief(["@@ -1,0 +2,3 @@", ...UNLESS.map((l) => `+${l}`)], base), [lint], runner().run);
+    // Not appended after the footer (lines 5 to 7).
+    expect(added).toMatchObject({ files: [{ path: "lib/group.rb", kind: "diff", lines: [[2, 4]] }], skipped: null, conflict: true });
+    expect(added?.checks[0]?.offenses).toEqual([{ path: "lib/group.rb", line: 2, rule: "Style/IfUnlessModifier" }]);
+    const replaced = await suppliedCheckRecord("T001", modify, root, zeroBrief(["@@ -2 +2,3 @@", "-  parse(args)", ...UNLESS.map((l) => `+${l}`)], base), [lint], runner().run);
+    expect(replaced).toMatchObject({ files: [{ path: "lib/group.rb", kind: "diff", lines: [[2, 4]] }], skipped: null, conflict: true });
+    // The base is not the diff's pre-image: its line numbers would place the lines elsewhere.
+    const stale = await suppliedCheckRecord("T001", modify, root, zeroBrief(["@@ -1,0 +2,3 @@", ...UNLESS.map((l) => `+${l}`)]), [lint], runner().run);
+    expect(stale?.skipped).toStartWith(`the zero-context diff for lib/group.rb names pre-image ${blob(BASE).slice(0, 7)}`);
+    expect(stale?.checks).toEqual([]);
+    expect(readFileSync(join(root, "lib/group.rb"), "utf8")).toBe(base);
   });
 });
 
