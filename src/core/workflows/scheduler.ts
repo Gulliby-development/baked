@@ -11,7 +11,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { basename, dirname, join, relative } from "node:path";
+import { basename, dirname, extname, join, relative } from "node:path";
 import { codeWithoutComments } from "../intelligence/comments.js";
 import { detectLanguageFromPath } from "../intelligence/types.js";
 import { largerContextModel } from "../llm/context-sizes.js";
@@ -469,9 +469,15 @@ import {
 } from "./finding-chain.js";
 import {
   FAILED_FIXERS_NOTE,
+  FIXER_KIND,
+  type FixerProbe,
   type FixerResult,
   type FixerRun,
   failedFixerRuns,
+  failedFixersBlockNote,
+  fixerProbeDecision,
+  fixerProbePath,
+  fixerUnusableSummary,
   recordFixerRuns,
   runFixer,
 } from "./fixer-run.js";
@@ -1028,6 +1034,8 @@ const COMMITTED_TREE_OUTPUT_CHARS = 4000;
 const RESOLUTION_TIMEOUT_MS = 180_000;
 /** The task worktree the package contents check (#1984) builds packages in. */
 const PACKAGE_CONTENTS_COPY = "quality-package-contents";
+/** The copy of the run the preflight fixer probe runs in (#2442). */
+const FIXER_PROBE_COPY = "fixer-probe";
 const ALL_SEVERITIES: readonly Severity[] = ["critical", "high", "medium", "low"];
 const SERIOUS: readonly Severity[] = ["critical", "high"];
 
@@ -2821,6 +2829,7 @@ export class WorkflowScheduler {
               }
               await this.recordCheckBaseline(runId, state, policy, signal);
               await this.repairBaselineFailures(runId, stepId, state, policy, signal);
+              await this.probeFixers(runId, state, policy, signal);
               if (state.pendingTaskRepair.length) {
                 const ids = new Set(state.pendingTaskRepair);
                 const findings = this.store
@@ -3549,11 +3558,13 @@ export class WorkflowScheduler {
           "diagnostic",
           `errors/${newId()}.txt`,
           // A schema rejection keeps what the schema said, so a resume can tell the agent.
-          fault instanceof WorkflowFault && typeof fault.details.validation === "string"
+          (fault instanceof WorkflowFault && typeof fault.details.validation === "string"
             ? `${fault.message}\n${fault.details.validation}`
             : fault instanceof Error
               ? fault.message
-              : String(fault),
+              : String(fault)) +
+            // A fixer that cannot run is named in the block too, with its output (#2442).
+            failedFixersBlockNote(this.store, runId),
         );
         if (reason === "host_error") recordHostError(this.store, runId, diagnostic.id, fault);
         // A corrective that blocked on files it may not write offers the host's act as a
@@ -5044,6 +5055,117 @@ export class WorkflowScheduler {
           inputs: { ...drift },
         });
     } catch {}
+  }
+  /**
+   * Before the first task, runs the fixer of each required feature check that passed at the check
+   * baseline once, on a tracked file of the plan's code kinds in a copy of the run, and records
+   * `fixers/preflight/<check>.json` (#2442). A fixer that fails and changes nothing there cannot
+   * run as configured (R77 pairwick's `sbt scalafmtAll <file>`): the `fixer_unusable` would-stop.
+   */
+  private async probeFixers(
+    runId: string,
+    state: RuntimeState,
+    policy: RunPolicy,
+    signal: AbortSignal,
+  ): Promise<void> {
+    const mode = stopMode(policy, "fixer_unusable");
+    if (mode === "enforce") return;
+    if (!this.store.tasks(runId).every((task) => task.status === "pending")) return;
+    const artifact = this.store.latestArtifact(runId, CHECK_BASELINE_PATH);
+    if (!artifact) return;
+    const baseline = JSON.parse(this.store.readArtifact(runId, artifact.id)) as {
+      measured?: boolean;
+      failures?: Record<string, string>;
+    };
+    if (!baseline.measured) return;
+    const checks = policy.checks.filter(
+      (check) =>
+        check.required &&
+        check.fix &&
+        check.scope === "feature" &&
+        !(commandKey(check) in (baseline.failures ?? {})) &&
+        !this.store.latestArtifact(runId, fixerProbePath(check.id)),
+    );
+    const planned = (state.graph?.tasks ?? [])
+      .flatMap((task) => task.writes)
+      .filter((write) => write.action !== "delete" && isCodePath(write.path))
+      .map((write) => write.path);
+    if (!checks.length || !planned.length) return;
+    const probes: FixerProbe[] = [];
+    const skipped = (check: Check, note: string): FixerProbe => ({
+      checkId: check.id,
+      file: null,
+      command: [check.fix?.executable ?? "", ...(check.fix?.args ?? [])],
+      exitCode: null,
+      timedOut: false,
+      changed: false,
+      output: "",
+      decision: "not_probed",
+      note,
+    });
+    const failure = await this.inRunCopy(runId, state, FIXER_PROBE_COPY, async (copy, scope) => {
+      const listed = await git(copy, ["ls-files", "-z"]);
+      const tracked = listed.code === 0 ? listed.stdout.split("\0").filter(Boolean) : [];
+      const kinds = new Set(planned.map((path) => extname(path)));
+      // A file the plan modifies, else any tracked file of a kind the plan writes.
+      const file =
+        planned.find((path) => tracked.includes(path)) ??
+        tracked.find((path) => isCodePath(path) && kinds.has(extname(path))) ??
+        null;
+      for (const check of checks) {
+        signal.throwIfAborted();
+        const fix = check.fix;
+        if (!fix) continue;
+        if (!file) {
+          probes.push(skipped(check, "no tracked file of the plan's code kinds"));
+          continue;
+        }
+        const command = isWholeUnitFixer(fix)
+          ? wholeUnitFixerCommand(fix, [cwdPath(check, file)])
+          : fixerCommand(fix, cwdPath(check, file));
+        const target = workspacePath(copy, file);
+        const before = fileHash(target);
+        const result = await runFixer(scope, command, {
+          cwd: check.cwd === "." ? copy : workspacePath(copy, check.cwd),
+          env: buildCheckEnv(check),
+          timeoutMs: check.timeoutMs,
+          signal,
+          sandbox: runSandbox(policy, copy, { gitWrite: true }),
+        });
+        const run = {
+          exitCode: result.exitCode,
+          timedOut: result.timedOut,
+          changed: fileHash(target) !== before,
+        };
+        probes.push({
+          checkId: check.id,
+          file,
+          command: [command.executable, ...command.args],
+          ...run,
+          output: result.output,
+          decision: fixerProbeDecision(run),
+        });
+      }
+    });
+    if (failure) for (const check of checks) probes.push(skipped(check, failure));
+    this.store.transaction(() => {
+      for (const probe of probes) {
+        this.store.artifact(
+          runId,
+          FIXER_KIND,
+          fixerProbePath(probe.checkId),
+          canonical({ schemaVersion: 1, ...probe }),
+        );
+        if (probe.decision === "unusable")
+          recordWouldStop(this.store, runId, {
+            reason: "fixer_unusable",
+            mode,
+            key: `check-${probe.checkId}`,
+            summary: fixerUnusableSummary(probe),
+            inputs: { ...probe },
+          });
+      }
+    });
   }
   /** The `baseline_unrepairable` would-stop of a baseline failure (#2215), once per check. */
   private baselineWouldStop(

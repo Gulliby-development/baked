@@ -218,6 +218,15 @@ export const STOP_REASONS = {
     modes: NOT_ENFORCED,
     defaultMode: "shadow",
   },
+  fixer_unusable: {
+    label:
+      "A required check's fixer fails and changes nothing on a file of the base, where its check passes",
+    // Shadow only until two bench rounds show no false would-stop (#2442, R77 pairwick's
+    // `sbt scalafmtAll <file>`); its promotion stops the run before its first task with the
+    // fixer's output, instead of letting implementers call a fixer that cannot run.
+    modes: NOT_ENFORCED,
+    defaultMode: "shadow",
+  },
   supplied_drift: {
     label:
       "A file a task delivered differs from the block the request gives for it verbatim (a whole file, a Markdown section or an exact diff)",

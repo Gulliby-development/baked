@@ -71,6 +71,8 @@ import { launchedCommand } from "../src/core/workflows/launcher.js";
 import { toolchainCommand } from "../src/core/workflows/toolchain.js";
 import { type HostEdit, hostOnlyEvidence, plannerGraph } from "../src/core/workflows/host-edits.js";
 import { defaultWorkflowPolicy } from "../src/core/workflows/defaults.js";
+import { fixerProbeDecision } from "../src/core/workflows/fixer-run.js";
+import { STOP_REASONS } from "../src/core/workflows/stop-reasons.js";
 import { sizePlan, splitTestTasks, suppliedBlocks } from "../src/core/workflows/sizing.js";
 import { withPerTestTimeout } from "../src/core/workflows/test-timeout.js";
 import { detectProfile } from "../src/core/tools/project.js";
@@ -1682,6 +1684,16 @@ describe("gate matrix: a path-comment signature listing is not the new file (#24
       expect(suppliedBlocks(["Shapes (fixed; tests call them):", ...block].join("\n"), [path]).get(path)).toMatchObject([{ kind: "file", listing: true }]);
       expect(suppliedBlocks(["Write this file verbatim:", ...block].join("\n"), [path]).get(path)?.[0]).not.toHaveProperty("listing");
     });
+});
+
+describe("gate matrix: a fixer that cannot run is found before the first task (#2442)", () => {
+  // The preflight probe runs each detector fixer's own command line on one file of the base, where
+  // its check passes: exit 0 or a change is usable; a failure that changes nothing is not.
+  test("the probe's decision and its shadow reason", () => {
+    expect(fixerProbeDecision({ exitCode: 1, timedOut: false, changed: false })).toBe("unusable");
+    expect(fixerProbeDecision({ exitCode: 0, timedOut: false, changed: true })).toBe("usable");
+    expect(STOP_REASONS.fixer_unusable.defaultMode).toBe("shadow");
+  });
 });
 
 describe("gate matrix: environment signature (#2273)", () => {
