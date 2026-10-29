@@ -2243,6 +2243,42 @@ describe("gate matrix: sbt, munit, ScalaTest and scalafmt (#1496)", () => {
   });
 });
 
+// #2440: sbt 2 (2.0.11, munit, R77 pairwick) runs `test` as `testQuick`, which skips the tests its
+// content-addressed cache has seen pass, even in a fresh directory; `testFull` on a build without
+// a test prints no summary at all. The output lines are the ones the issue records.
+const SBT2_TESTQUICK_ZERO = "[info] Passed: Total 0, Failed 0, Errors 0, Passed 0\n[info] No tests to run for Test / testQuick\n[success] elapsed time: 1 s\n";
+const SBT2_TESTFULL_NONE = "[success] elapsed time: 1 s\n";
+const SBT2_TESTFULL_ONE = "pairwick.XTests:\n  + adds 0.011s\n[info] Passed: Total 1, Failed 0, Errors 0, Passed 1\n[success] elapsed time: 4 s\n";
+describe("gate matrix: sbt 2 test shapes (#2440)", () => {
+  const sbt2Check: Check = { id: "sbt-test", executable: "sbt", args: ["-batch", "testFull"], cwd: ".", timeoutMs: 1200000, required: true, scope: "feature", envNames: [], writes: [] };
+  test("testQuick with zero tests ran none, and says nothing of the tests the build holds", () => {
+    expect([testsRan(SBT2_TESTQUICK_ZERO), noTestsCollected(SBT2_TESTQUICK_ZERO)]).toEqual([{ tool: "sbt", count: 0 }, false]);
+    expect(exitStatus({ ...sbt2Check, requireTests: true }, 0, SBT2_TESTQUICK_ZERO)).toBe("failed");
+    // A narrowed run that selected nothing still reads as no test collected (#1496).
+    expect(noTestsCollected("[info] Passed: Total 0, Failed 0, Errors 0, Passed 0\n[info] No tests to run for Test / testOnly\n")).toBe(true);
+  });
+
+  test("testFull with no test ran none; with one test it ran one", () => {
+    expect([testsRan(SBT2_TESTFULL_NONE), testCount(SBT2_TESTFULL_NONE), noTestsCollected(SBT2_TESTFULL_NONE)]).toEqual([{ tool: "sbt", count: 0 }, null, false]);
+    expect(exitStatus({ ...sbt2Check, requireTests: true }, 0, SBT2_TESTFULL_NONE)).toBe("failed");
+    expect(exitStatus(sbt2Check, 0, SBT2_TESTFULL_NONE)).toBe("passed");
+    expect([testsRan(SBT2_TESTFULL_ONE), testCount(SBT2_TESTFULL_ONE)]).toEqual([{ tool: "sbt", count: 1 }, { tool: "sbt", count: 1 }]);
+    expect(exitStatus({ ...sbt2Check, requireTests: true }, 0, SBT2_TESTFULL_ONE)).toBe("passed");
+    // A suite line without a summary does not tell, and sbt 1's success line reads like sbt 2's.
+    expect(testsRan("pairwick.XTests:\n  + adds 0.011s\n[success] elapsed time: 4 s\n")).toBeNull();
+    expect(testsRan("[success] Total time: 3 s, completed Oct 25, 2026, 2:40:35 AM\n")).toEqual({ tool: "sbt", count: 0 });
+  });
+
+  test("the gate and the agent profile run testFull on sbt 2 and test on sbt 1, and testFull narrows to testOnly", async () => {
+    const gateOf = (version: string) => detectGates(project({ "build.sbt": "", "project/build.properties": `sbt.version=${version}\n` })).map((s) => [s.check.args.join(" "), s.source]);
+    expect(gateOf("2.0.11")).toEqual([["-batch testFull", "project/build.properties"]]);
+    expect(gateOf("1.10.11")).toEqual([["-batch test", "build.sbt"]]);
+    expect((await detectProfile(project({ "build.sbt": "", "project/build.properties": "sbt.version = 2.0.0\n" }))).test).toBe("sbt -batch testFull");
+    expect(affectedTestCheck([sbt2Check], ["src/test/scala/pairwick/XTests.scala"])).toMatchObject({ id: "sbt-test-affected", args: ["-batch", "testOnly *XTests"], requireTests: true });
+    expect(isTestCheck({ ...sbt2Check, id: "unit" })).toBe(true);
+  });
+});
+
 // #1492: a SwiftPM package got its build and test gates (#1753) but no test count, no format gate,
 // no skip markers of XCTest or swift-testing and no language review. The outputs below are pasted
 // from `swift test` and `swift format` of Swift 6.1.3 on Linux.

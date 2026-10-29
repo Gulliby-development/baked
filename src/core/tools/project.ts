@@ -18,7 +18,7 @@ import {
 } from "../workflows/gates.js";
 import { assertWorkspaceMutationAllowed } from "../workflows/leases.js";
 import { ProcessScope } from "../workflows/process-scope.js";
-import { pythonEnvironment } from "../workflows/toolchain.js";
+import { pythonEnvironment, sbtTestTask } from "../workflows/toolchain.js";
 import { formatTimeoutMs, recordFormatTimeout, singleFileFormat } from "./auto-format.js";
 import { runBoundedShell } from "./bounded-process.js";
 import { BUN_FMT, bunFmtConfigured } from "./bun-fmt.js";
@@ -426,7 +426,8 @@ async function detectToolchain(cwd: string): Promise<DetectedToolchain> {
     const scalafmt =
       (await has(".scalafmt.conf")) &&
       /"sbt-scalafmt"/.test(await readSafe(join(cwd, "project", "plugins.sbt")));
-    profile.test = "sbt -batch test";
+    // sbt 2's `test` skips cached tests; `testFull` runs them all (#2440).
+    profile.test = `sbt -batch ${sbtTestTask(await readSafe(join(cwd, "project", "build.properties")))}`;
     profile.build = "sbt -batch compile";
     profile.lint = scalafmt ? "sbt -batch scalafmtCheckAll" : null;
     profile.typecheck = "sbt -batch compile";

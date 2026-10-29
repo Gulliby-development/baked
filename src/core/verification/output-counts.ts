@@ -482,10 +482,16 @@ const TEST_COUNTERS: readonly {
       if (projects.length) return projects.reduce((n, t) => n + t.total + t.idle, 0);
       return scalatest(o, (m) => m.reduce((n, x) => n + x, 0));
     },
+    // sbt 2's `testFull` on a build without a test prints no summary, only "[success] elapsed
+    // time: 1 s" (#2440): a successful sbt run with neither a summary nor a suite line ran none.
+    // Only `ran` reads it, so a `requireTests` check fails; `count` stays null, since the line says
+    // nothing of the tests the build holds.
     ran: (o) => {
       const projects = sbtTotals(o);
       if (projects.length) return projects.reduce((n, t) => n + t.total, 0);
-      return scalatest(o, ([succeeded = 0, failed = 0]) => succeeded + failed);
+      const suites = scalatest(o, ([succeeded = 0, failed = 0]) => succeeded + failed);
+      if (suites !== null) return suites;
+      return SBT_SUCCESS.test(o) && !SBT_SUITE.test(withoutAnsi(o)) ? 0 : null;
     },
   },
   {
@@ -553,6 +559,13 @@ function sbtTotals(o: string): { total: number; idle: number }[] {
     }),
   );
 }
+/** The last line of an sbt run that succeeded: sbt 1's "Total time: 3 s", sbt 2's "elapsed time: 1 s". */
+const SBT_SUCCESS = /^\[success\] (?:Total|elapsed) time: /m;
+/**
+ * A test suite's heading line, as munit (`CalcSuite:`, its colours taken out) and ScalaTest
+ * (`[info] CalcSpec:`) print it before its tests (`pairwick.XTests:`).
+ */
+const SBT_SUITE = /^(?:\[info\] )?[A-Za-z_$][\w$.]*:\r?$/m;
 /** ScalaTest's own counts, summed over its "Tests: succeeded 2, failed 2, ..." lines. */
 function scalatest(o: string, count: (numbers: number[]) => number): number | null {
   const lines = [
