@@ -70,7 +70,7 @@ function project(files: Record<string, string>, installed: (workspace: string) =
   git(workspace, "commit", "-q", "-m", "base");
   installed(workspace);
   const runId = "run-shapes";
-  const path = worktreePath(runId);
+  const path = worktreePath(workspace, runId);
   git(workspace, "worktree", "add", "-q", "-b", "baked/run-shapes", join(workspace, path));
   const root = join(workspace, path);
   linkDependencies(workspace, root);
@@ -324,11 +324,13 @@ describe("scenario: Dart R75, a deep workspace (#2361)", () => {
     mkdirSync(deep);
     for (const dir of [shallow, deep]) write(dir, "pubspec.yaml", "name: ladle\n");
     write(shallow, "y".repeat(80) + "/package.json", "{}\n");
-    expect(worktreePathChecks(shallow)).toEqual([]);
-    expect(worktreePathChecks(join(shallow, "y".repeat(80)))).toEqual([]);
-    const [line] = worktreePathChecks(deep);
+    expect(worktreePathChecks(shallow, "win32")).toEqual([]);
+    expect(worktreePathChecks(join(shallow, "y".repeat(80)), "win32")).toEqual([]);
+    const [line] = worktreePathChecks(deep, "win32");
     expect(line).toMatchObject({ id: "worktree.path", status: "warn", subject: "dart test" });
-    expect(line?.title).toContain("dart test fails over 120");
+    expect(line?.title).toContain("dart test fails over 88");
+    // The limit was measured on Windows only (#2454).
+    expect(worktreePathChecks(deep, "linux")).toEqual([]);
   });
 });
 

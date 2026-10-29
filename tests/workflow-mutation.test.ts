@@ -20,6 +20,7 @@ import { runReport } from "../src/core/workflows/run-report.js";
 import type { WorkflowStore } from "../src/core/workflows/store.js";
 import type { ExecutionRequest } from "../src/core/workflows/types.js";
 import { FixtureExecutor, fixturePolicy, workflowFixture } from "./helpers/workflow-fixture.js";
+import { runWorktreeDir } from "../src/core/workflows/worktree.js";
 
 describe("mutants", () => {
   const booleanFile = (path: string, count: number) => ({
@@ -544,7 +545,7 @@ describe("mutation gate in a run", () => {
       // The review read the unmutated file.
       expect(seen.map((s) => s.sign)).toEqual(["export const sign = (n: number) => (n < 0 ? -1 : 1);\n"]);
       // The copy is gone and the run's own file was never mutated.
-      expect(existsSync(join(root, ".baked/worktrees", run.runId, "quality-mutation"))).toBe(false);
+      expect(existsSync(join(root, runWorktreeDir(root, run.runId), "quality-mutation"))).toBe(false);
       expect(readFileSync(join(root, "src/sign.ts"), "utf8")).toBe("export const sign = (n: number) => (n < 0 ? -1 : 1);\n");
       verify(runReport(service.store, run.runId));
       return seen;

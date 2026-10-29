@@ -27,7 +27,7 @@ export type IssueSource = z.infer<typeof IssueSourceSchema>;
 
 export const WorktreeStateSchema = z
   .object({
-    /** Path relative to the project root, `.baked/worktrees/RUN_ID/main`. */
+    /** Path relative to the project root, `.baked/worktrees/RUN/main` (`runWorktreeDir`). */
     path: z.string().min(1),
     branch: z.string().min(1),
     /** The baseline HEAD the branch was created from. */

@@ -20,7 +20,7 @@ import type { AgentExecutor, ExecutionRequest } from "../src/core/workflows/type
 import { sddWorkflow } from "../src/core/workflows/builtin/sdd.js";
 import { upgradeWorkflowV1 } from "../src/core/workflows/v2/upgrade.js";
 import { runReport } from "../src/core/workflows/run-report.js";
-import { worktreeView } from "../src/core/workflows/worktree.js";
+import { runWorktreeDir, worktreeView } from "../src/core/workflows/worktree.js";
 import { parseWorkflowArgs } from "../src/headless/workflow-parse.js";
 import { FixtureExecutor, fixturePolicy } from "./helpers/workflow-fixture.js";
 import { initWorkspaceGit } from "../src/core/git/init.js";
@@ -168,7 +168,7 @@ describe("workflow worktree execution", () => {
     expect(waiting.status).toBe("waiting");
     const worktree = fx.service.store.state(run.runId).worktree;
     expect(worktree).toMatchObject({
-      path: `.baked/worktrees/${run.runId}/main`,
+      path: `${runWorktreeDir(fx.root, run.runId)}/main`,
       branch: `baked/wf/${run.runId}`,
       baseHead: fx.head,
       commit: null,
@@ -346,14 +346,14 @@ describe("workflow worktree execution", () => {
     expect(existsSync(join(tree, "value.txt"))).toBe(false);
     expect(readFileSync(join(fx.root, "value.txt"), "utf8")).toBe("user draft\n");
     const restore = fx.service.store.effects(run.runId).filter((e) => JSON.parse(e.intent_json).tool === "rollback");
-    expect(restore.map((e) => JSON.parse(e.intent_json).root)).toEqual([`.baked/worktrees/${run.runId}/main`]);
+    expect(restore.map((e) => JSON.parse(e.intent_json).root)).toEqual([`${runWorktreeDir(fx.root, run.runId)}/main`]);
   });
 
   test("a dead owner's worktree lease is released by the v1 rules", async () => {
     const fx = setup();
     const run = await fx.start("worktree");
     const store = fx.service.store;
-    const resource = `worktree:.baked/worktrees/${run.runId}/main` as const;
+    const resource = `worktree:${runWorktreeDir(fx.root, run.runId)}/main` as const;
     const dead = JSON.stringify({ pid: 2147483647 });
     store.transaction(() => {
       store.putLease({ resource: "execution", owner_id: "dead-owner", owner_epoch: 1, run_id: run.runId, expires_at: 0, process_identity_json: dead });
@@ -548,7 +548,7 @@ describe("workflow worktree execution", () => {
     await fx.service.cancel(run.runId, identity());
     await fx.service.discardWorktree(run.runId, identity());
     expect(existsSync(tree)).toBe(false);
-    expect(existsSync(join(fx.root, ".baked", "worktrees", run.runId))).toBe(false);
+    expect(existsSync(join(fx.root, runWorktreeDir(fx.root, run.runId)))).toBe(false);
     expect(git(fx.root, "branch", "--list", `baked/wf/${run.runId}`)).toBe("");
     expect(store.artifacts(run.runId).some((a) => a.logical_path === "worktree/discarded.json")).toBe(true);
     // The record stays for history; the run screens stop offering the discard.
@@ -593,7 +593,7 @@ describe("workflow worktree execution", () => {
     const cleaned = await fx.service.cleanWorktrees(false);
     expect(cleaned.runIds).toEqual([run.runId]);
     expect(cleaned.warnings).toEqual([]);
-    expect(existsSync(join(fx.root, ".baked", "worktrees", run.runId))).toBe(false);
+    expect(existsSync(join(fx.root, runWorktreeDir(fx.root, run.runId)))).toBe(false);
     expect(git(fx.root, "branch", "--list", `baked/wf/${run.runId}`)).toContain(`baked/wf/${run.runId}`);
     expect(store.artifacts(run.runId).some((a) => a.logical_path === "worktree/cleaned.json")).toBe(true);
     expect((await fx.service.worktrees()).worktrees).toEqual([]);
@@ -795,7 +795,7 @@ describe("parallel worktree runs", () => {
     expect([a.status, b.status]).toEqual(["completed", "completed"]);
     expect(fx.executor.maxInFlight).toBe(2);
     for (const runId of [first, second]) {
-      const tree = join(fx.root, ".baked", "worktrees", runId, "main");
+      const tree = join(fx.root, runWorktreeDir(fx.root, runId), "main");
       expect(readFileSync(join(tree, "value.txt"), "utf8")).toBe("ready");
       expect(git(fx.root, "rev-parse", "--verify", `baked/wf/${runId}`)).not.toBe("");
     }
