@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
+import { createHash } from "node:crypto";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -8,6 +9,7 @@ import { runRootPath } from "../src/core/workflows/effects.js";
 import { hashBytes, hashJson } from "../src/core/specs/hash.js";
 import { defaultWorkflowPolicy } from "../src/core/workflows/defaults.js";
 import {
+  applyArgs,
   applyRegion,
   crlfPatch,
   type HostApplyRecord,
@@ -19,6 +21,7 @@ import {
   hostApplyText,
   hostApplyRecords,
   regionSections,
+  zeroContextHunks,
 } from "../src/core/workflows/host-apply.js";
 import type { Check, RunPolicy, Spec, Task } from "../src/core/workflows/schemas.js";
 import { NativeWorkflowService } from "../src/core/workflows/service.js";
@@ -147,7 +150,11 @@ class ScriptedExecutor implements AgentExecutor {
   attempts: string[] = [];
   /** src/a.ts as T001's implementer found it: the host's check left it alone. */
   aBefore = "";
-  constructor(private root: string) {}
+  constructor(
+    private root: string,
+    private graph: Task[] = tasks,
+    private files: Record<string, [string, string]> = content,
+  ) {}
   async execute(request: ExecutionRequest) {
     const data = JSON.parse(request.prompt.split("\n").at(-1) ?? "{}") as { inputHash: string; snapshotHash: string; extra: { evidence?: { id: string }[] } };
     const evidence = data.extra.evidence?.map((e) => e.id) ?? [];
@@ -155,15 +162,15 @@ class ScriptedExecutor implements AgentExecutor {
     switch (request.profile.output) {
       case "research": output = { schemaVersion: 1, summary: "A fixture workspace", facts: [], unknowns: [], constraints: [], suggestedScope: ["src"] }; break;
       case "spec": output = spec; break;
-      case "plan": output = { schemaVersion: 1, markdown, taskGraph: { schemaVersion: 1, featureId: "fixture", revision: 1, specHash: hashJson(spec), planHash: hashBytes(markdown), tasks } }; break;
+      case "plan": output = { schemaVersion: 1, markdown, taskGraph: { schemaVersion: 1, featureId: "fixture", revision: 1, specHash: hashJson(spec), planHash: hashBytes(markdown), tasks: this.graph } }; break;
       case "analysis": output = { schemaVersion: 1, inputHash: data.inputHash, verdict: "pass", findings: [] }; break;
       case "implementation": {
         const id = request.task?.id ?? "";
         // A batch worker edits its own task worktree.
         const root = request.root ?? this.root;
         this.attempts.push(id);
-        if (id === "T001") this.aBefore = readFileSync(join(root, "src/a.ts"), "utf8");
-        const [path, text] = content[id] ?? ["", ""];
+        if (id === "T001" && this.files === content) this.aBefore = readFileSync(join(root, "src/a.ts"), "utf8");
+        const [path, text] = this.files[id] ?? ["", ""];
         writeFileSync(join(root, path), text);
         output = { schemaVersion: 1, taskId: id, outcome: "implemented", summary: `Updated ${path}`, evidenceIds: [], unresolved: [] };
         break;
@@ -469,4 +476,126 @@ describe("a quoted old or new line next to a diff of the same file (#2366)", () 
     expect(hostApplyDecision(both).reason).toBe("the request gives both a fenced file and a diff for tests/cli.rs");
     expect(suppliedLines(evalpin(whole), ["tests/cli.rs"]).get("tests/cli.rs")).toBe(4);
   }, 60000);
+});
+
+// Bench round 76 (#2412): update briefs gave README diffs as `git diff -U0` output, so no context
+// line carried a non-ASCII character. Without `--unidiff-zero` git pins a hunk with neither leading
+// nor trailing context to both ends of the file: flatelens-update's two pure additions were appended
+// after the README's footer and reported as applied (a 96k corrective), and callmend-update's
+// replacing hunk was refused, so an implementer spent 86k tokens on a change the brief gave exactly.
+const README_BEFORE = ["# Tool", "", "Intro.", "", "## Usage", "", "run it", "", "Built with BAKED", ""].join("\n");
+const blob = (text: string) => createHash("sha1").update(`blob ${Buffer.byteLength(text)}\0`).update(text).digest("hex");
+/** A `git diff -U0` block for `path`, with its `diff --git` and `index` header. */
+const zeroDiff = (path: string, before: string, hunks: string[], index = blob(before).slice(0, 7)) =>
+  ["```diff", `diff --git a/${path} b/${path}`, `index ${index}..1234567 100644`, `--- a/${path}`, `+++ b/${path}`, ...hunks, "```"].join("\n");
+/** flatelens: two pure additions, in the middle of the file. */
+const ADDS = ["@@ -3,0 +4,2 @@", "+", "+More intro.", "@@ -7,0 +10 @@", "+run it twice"];
+const README_ADDED = ["# Tool", "", "Intro.", "", "More intro.", "", "## Usage", "", "run it", "run it twice", "", "Built with BAKED", ""].join("\n");
+/** callmend: a hunk that replaces a line. */
+const REPLACES = ["@@ -7 +7 @@", "-run it", "+run it now"];
+const README_REPLACED = README_BEFORE.replace("run it", "run it now");
+const readmeTask = { writes: [{ path: "README.md", action: "modify" as const }] };
+const brief0 = (diff: string) => `The README.md diff has no context lines (-U0): add the lines at the positions in its @@ headers.\n${diff}`;
+
+describe("a zero-context (-U0) diff applies at its @@ positions (#2412)", () => {
+  test("one helper builds git apply's arguments: --unidiff-zero only for a patch with a zero-context hunk", () => {
+    const normal = "--- a/x\n+++ b/x\n@@ -1,2 +1,2 @@\n a\n-b\n+c\n";
+    expect(applyArgs(normal, true)).toEqual(["apply", "--check", "--recount", "-p1"]);
+    expect(applyArgs(normal)).toEqual(["apply", "--recount", "-p1"]);
+    expect(applyArgs("index 1234567..89abcde 100644\n--- a/x\n+++ b/x\n@@ -2,0 +3 @@\n+X\n")).toEqual(["apply", "--recount", "-p1", "--unidiff-zero"]);
+    // A context line anywhere in the hunk is context; a new or deleted file's hunk is never zero-context.
+    expect(zeroContextHunks("--- a/x\n+++ b/x\n@@ -1,2 +1,3 @@\n a\n+b\n+c\n")).toBe(false);
+    expect(zeroContextHunks("--- /dev/null\n+++ b/x\n@@ -0,0 +1 @@\n+x\n")).toBe(false);
+    expect(zeroContextHunks("--- a/x\n+++ /dev/null\n@@ -1 +0,0 @@\n-x\n")).toBe(false);
+    // One zero-context hunk among context hunks is enough.
+    expect(zeroContextHunks("--- a/x\n+++ b/x\n@@ -1,2 +1,2 @@\n a\n-b\n+c\n@@ -9 +9 @@\n-y\n+z\n")).toBe(true);
+    // The diff's own index line is kept for the base check; git skips it before the headers.
+    expect(diffSections(zeroDiff("README.md", README_BEFORE, REPLACES).replace(/```(diff)?/g, ""))[0]?.patch).toBe(`index ${blob(README_BEFORE).slice(0, 7)}..1234567\n--- a/README.md\n+++ b/README.md\n@@ -7 +7 @@\n-run it\n+run it now\n`);
+  });
+
+  test("a pure addition lands at its header's line, a replacement applies, and the base is left alone", async () => {
+    const root = mkdtempSync(join(tmpdir(), "baked-host-apply-u0-"));
+    cleanups.push(() => rmSync(root, { recursive: true, force: true }));
+    writeFileSync(join(root, "README.md"), README_BEFORE);
+    const added = brief0(zeroDiff("README.md", README_BEFORE, ADDS));
+    expect(await hostApplyInputs(root, added, readmeTask)).toEqual([{ path: "README.md", action: "modify", files: 0, diffs: 1, whole: false, exists: true, applies: true }]);
+    // Not after the footer.
+    expect((await hostApplyContents(root, added, readmeTask))[0]?.content).toBe(README_ADDED);
+    const replaced = brief0(zeroDiff("README.md", README_BEFORE, REPLACES));
+    expect((await hostApplyInputs(root, replaced, readmeTask))?.[0]?.applies).toBe(true);
+    expect((await hostApplyContents(root, replaced, readmeTask))[0]?.content).toBe(README_REPLACED);
+    // Both in one diff, and a CRLF checkout of the same blob.
+    const both = brief0(zeroDiff("README.md", README_BEFORE, [...ADDS.slice(0, 3), ...REPLACES, ...ADDS.slice(3)]));
+    expect((await hostApplyContents(root, both, readmeTask))[0]?.content).toBe(README_ADDED.replace("run it\n", "run it now\n"));
+    writeFileSync(join(root, "README.md"), README_BEFORE.replaceAll("\n", "\r\n"));
+    expect((await hostApplyInputs(root, added, readmeTask))?.[0]).toMatchObject({ applies: true, eol: "crlf" });
+    expect((await hostApplyContents(root, added, readmeTask))[0]?.content).toBe(README_ADDED.replaceAll("\n", "\r\n"));
+    expect(readFileSync(join(root, "README.md"), "utf8")).toBe(README_BEFORE.replaceAll("\n", "\r\n"));
+  }, 60000);
+
+  test("a zero-context diff whose index pre-image is not the base declines with the hash; a context diff is not hash-checked", async () => {
+    const root = mkdtempSync(join(tmpdir(), "baked-host-apply-u0-drift-"));
+    cleanups.push(() => rmSync(root, { recursive: true, force: true }));
+    // An earlier change moved the Usage section down two lines: the diff's line numbers are stale.
+    const drifted = README_BEFORE.replace("Intro.\n", "Intro.\n\nSee also.\n");
+    writeFileSync(join(root, "README.md"), drifted);
+    const stale = brief0(zeroDiff("README.md", README_BEFORE, ADDS));
+    const inputs = (await hostApplyInputs(root, stale, readmeTask)) ?? [];
+    expect(inputs[0]).toMatchObject({ applies: false });
+    const old = blob(README_BEFORE).slice(0, 7);
+    expect(inputs[0]?.refusal).toBe(`the zero-context diff for README.md names pre-image ${old}, and the base file is ${blob(drifted).slice(0, 7)}: its hunks are placed by line number only, so they apply only to that pre-image`);
+    expect(hostApplyDecision(inputs).reason).toStartWith(`the diff for README.md does not apply to the task's base: the zero-context diff for README.md names pre-image ${old}`);
+    // Without an index line there is no pre-image to check: the line numbers decide.
+    const bare = stale.replace(/^index .*\n/m, "");
+    expect((await hostApplyInputs(root, bare, readmeTask))?.[0]?.applies).toBe(true);
+    // A normal-context diff with a stale index line applies as before, by its context.
+    const context = brief0(["```diff", "diff --git a/README.md b/README.md", "index 0123456..1234567 100644", "--- a/README.md", "+++ b/README.md", "@@ -7,5 +7,5 @@", " ## Usage", " ", "-run it", "+run it now", " ", " Built with BAKED", "```"].join("\n"));
+    expect((await hostApplyInputs(root, context, readmeTask))?.[0]?.applies).toBe(true);
+    expect((await hostApplyContents(root, context, readmeTask))[0]?.content).toBe(drifted.replace("run it", "run it now"));
+  }, 60000);
+
+  // The two R76 shapes through a run with `hostApply: "on"`: flatelens' pure additions in the
+  // README (T001) and callmend's replacing hunk (T002), plus a diff with context (T003).
+  test("scenario: under hostApply on, both -U0 shapes are host-applied at their positions, and a context diff is unchanged", async () => {
+    const root = mkdtempSync(join(tmpdir(), "baked-host-apply-u0-run-"));
+    cleanups.push(() => rmSync(root, { recursive: true, force: true }));
+    mkdirSync(join(root, "src"));
+    writeFileSync(join(root, "README.md"), README_BEFORE);
+    const LIB = ["def run(args)", "  parse(args)", "end", ""].join("\n");
+    writeFileSync(join(root, "src/lib.rb"), LIB);
+    writeFileSync(join(root, "src/a.ts"), A_BEFORE);
+    const request = [
+      brief0(zeroDiff("README.md", README_BEFORE, ADDS)),
+      "Change `src/lib.rb` (-U0):",
+      zeroDiff("src/lib.rb", LIB, ["@@ -2 +2 @@", "-  parse(args)", "+  parse(args, strict: true)"]),
+      "Then this one:",
+      ["```diff", "--- a/src/a.ts", "+++ b/src/a.ts", "@@ -1,2 +1,2 @@", " export const A = 1;", "-export const B = 2;", "+export const B = 3;", "```"].join("\n"),
+    ].join("\n");
+    const files: Record<string, [string, string]> = {
+      T001: ["README.md", README_ADDED],
+      T002: ["src/lib.rb", LIB.replace("parse(args)", "parse(args, strict: true)")],
+      T003: ["src/a.ts", "export const A = 1;\nexport const B = 3;\n"],
+    };
+    const graph = [planned("T001", "README.md", "modify"), planned("T002", "src/lib.rb", "modify"), planned("T003", "src/a.ts", "modify")];
+    const on: RunPolicy = { ...policy, hostApply: "on" };
+    const executor = new ScriptedExecutor(root, graph, files);
+    const config = { ...DEFAULT_CONFIG, defaultModel: "fixture/model", workflows: { enabled: true, importsEnabled: true, defaultWorkflow: "sdd", policy: on } };
+    const service = new NativeWorkflowService(root, config, executor);
+    cleanups.push(() => service.close());
+    const run = await service.start({ commandId: newId(), featureId: "fixture", workflowId: "sdd", prompt: request, ownerLabel: "test", policy: on });
+    await service.drive(run.runId, new AbortController().signal);
+    const waiting = await service.get(run.runId);
+    const approval = service.store.requests(run.runId).find((r) => r.kind === "approval" && r.status === "pending");
+    if (!approval) throw new Error(`No approval request: ${waiting.status} ${waiting.reason}`);
+    await service.decide(run.runId, { commandId: newId(), expectedRevision: waiting.revision }, { kind: "approve", requestId: approval.id, digest: approval.digest });
+    expect((await service.drive(run.runId, new AbortController().signal)).status).toBe("completed");
+    const records = hostApplyRecords(service.store, run.runId);
+    expect(records.map((r) => [r.taskId, r.wouldApply, r.applied, r.reason])).toEqual([
+      ["T001", true, true, null],
+      ["T002", true, true, null],
+      ["T003", true, true, null],
+    ]);
+    expect(executor.attempts).toEqual([]);
+    for (const [path, text] of Object.values(files)) expect(readFileSync(join(root, runRootPath(service.store, run.runId), path), "utf8")).toBe(text);
+  }, 120000);
 });

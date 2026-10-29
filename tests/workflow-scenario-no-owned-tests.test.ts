@@ -20,6 +20,9 @@ afterEach(async () => {
 /** pytest on a tree with no test: exit 5, whatever the plan does. */
 const pytestEmpty = { id: "tests", executable: "bun", args: ["-e", "console.log('collected 0 items\\n\\n============ no tests ran in 0.01s ============'); process.exit(5)"], cwd: ".", timeoutMs: 10000, required: true, scope: "feature" as const, envNames: [], writes: [] };
 const policy: RunPolicy = { ...fixturePolicy, checks: [fixturePolicy.checks[0]!, pytestEmpty] };
+/** `swift test` on a test target with no test yet (Swift 6.4.1, #2419): exit 0, and `requireTests` fails it. */
+const swiftEmpty = { ...pytestEmpty, args: ["-e", `console.log(${JSON.stringify("Test Suite 'All tests' passed at 2026-10-28 21:31:05.697\n\t Executed 0 tests, with 0 failures (0 unexpected) in 0.0 (0.0) seconds\n◊ Test run started.\n√ Test run with 0 tests in 0 suites passed after 0.001 seconds.")})`], requireTests: true };
+const swiftPolicy: RunPolicy = { ...fixturePolicy, checks: [fixturePolicy.checks[0]!, swiftEmpty] };
 
 /** The fixture's plan, plus a test file when `withTest` is set; implementation writes every planned file. */
 class PlanExecutor extends FixtureExecutor {
@@ -40,8 +43,8 @@ class PlanExecutor extends FixtureExecutor {
   }
 }
 
-async function run(withTest: boolean) {
-  const fixture = workflowFixture({ policy, executor: (root) => new PlanExecutor(root, withTest) });
+async function run(withTest: boolean, checks: RunPolicy = policy) {
+  const fixture = workflowFixture({ policy: checks, executor: (root) => new PlanExecutor(root, withTest) });
   cleanups.push(fixture.dispose);
   const started = await fixture.start();
   const drive = () => fixture.service.drive(started.runId, new AbortController().signal).catch((error: unknown) => ({ status: "faulted", error }));
@@ -70,6 +73,14 @@ test("a plan that writes a test still fails when the check collects none", async
   const { done, diagnostics } = await run(true);
   expect((done as { status: string }).status).not.toBe("completed");
   expect(diagnostics).toEqual([]);
+});
+
+test("a Swift test target with no test yet is not failed in a plan that writes none (#2419)", async () => {
+  const { done, diagnostics, claims, read } = await run(false, swiftPolicy);
+  expect(claims.filter((c) => c.includes("tests"))).toEqual([]);
+  expect((done as { status: string }).status).toBe("completed");
+  expect(diagnostics.length).toBeGreaterThan(0);
+  expect(read(diagnostics[0]!.id)).toContain("tests collected no test and this run's plan writes none");
 });
 
 // Bench round 59 (#1894): base, names and targets were accepted, and their reports still read

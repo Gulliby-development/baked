@@ -117,6 +117,7 @@ const RowFramework = z.enum([
   "busted",
   "minitest",
   "pest",
+  "exunit",
   "dart",
 ]);
 const RowPackage = z
@@ -1657,6 +1658,7 @@ export const EventType = z.enum([
   "attempt.recovery",
   "decision.would_stop",
   "decision.would_resume",
+  "decision.would_rerun",
   "task.state_changed",
   "artifact.committed",
   "check.finished",
@@ -1799,6 +1801,22 @@ export const EventSchema = z.discriminatedUnion("type", [
     .object({
       ...EventBase,
       type: z.literal("decision.would_resume"),
+      payload: z
+        .object({
+          reason: StopReasonIdSchema,
+          mode: z.enum(["shadow", "advisory"]),
+          key: z.string().max(200),
+          summary: z.string().max(1000),
+          inputs: z.record(z.string(), z.unknown()),
+        })
+        .strict(),
+    })
+    .strict(),
+  // A shadow reason would have re-run a failed check before its correction (`silent_check_failure`, #2418).
+  z
+    .object({
+      ...EventBase,
+      type: z.literal("decision.would_rerun"),
       payload: z
         .object({
           reason: StopReasonIdSchema,

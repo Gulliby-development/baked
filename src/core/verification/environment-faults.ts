@@ -6,6 +6,7 @@ import {
 } from "../workflows/dependency-dirs.js";
 import type { GateToolchain } from "../workflows/gates.js";
 import { toolchainCommand } from "../workflows/toolchain.js";
+import { buildFailure, diagnosticCount, failedTests } from "./output-counts.js";
 
 /**
  * Failures of a toolchain that come from the machine, not from the project's code (#2273). R72
@@ -43,8 +44,29 @@ const JDK_LOOPBACK = (
 });
 
 /**
+ * SwiftPM crashing on its own build directory (#2418, R76 hintsieve on Windows 11, Swift 6.4.1,
+ * task worktrees building at once): `error: Build failed` and `error: fatalError` with no compiler
+ * or XCTest `error:` line of a `.swift` file, and the same check passed 29 s later. The
+ * `warning: unable to create symbolic link at ...\.build\debug: encountered an I/O error (code:
+ * 512)` printed beside it is not the signature: SwiftPM prints it on builds that pass too.
+ */
+const SWIFTPM_CRASH: EnvironmentSignature = {
+  programs: ["swift"],
+  pattern:
+    // biome-ignore lint/suspicious/noControlCharactersInRegex: swiftc colours its `error:` (#1492)
+    /^(?![\s\S]*\.swift:\d+(?::\d+)?: (?:\u001b\[[0-9;]*m)*error)[\s\S]*\berror: Build failed\b[\s\S]*\berror: fatalError\b/,
+  problem:
+    "SwiftPM crashed (`error: fatalError`) without a compiler error: it does this when several packages or worktrees build on one disk at once and one cannot write its `.build` directory.",
+  fix: "Run fewer Swift builds at once (lower the run's parallel tasks or feature runs), or keep each worktree's `.build` on a fast local disk excluded from antivirus scanning.",
+};
+
+/** A `none` row's reason: the round and date through which nothing was observed (#2418). */
+const NONE_OBSERVED = "no machine-level failure observed through bench round 76 (2026-10-28)";
+
+/**
  * The machine-level failure signatures of each gate toolchain, or `none(reason)` for a toolchain
- * with no known one. A new toolchain gets a row (#2273).
+ * with no known one. A new toolchain gets a row (#2273), and a `none` row says through which
+ * bench round and date nothing was observed (#2418).
  */
 export const ENVIRONMENT_SIGNATURES: Readonly<
   Record<GateToolchain, readonly EnvironmentSignature[] | NoRow>
@@ -52,25 +74,25 @@ export const ENVIRONMENT_SIGNATURES: Readonly<
   gradle: [JDK_LOOPBACK(["gradle", "gradlew"], ["-q", "help"])],
   maven: [JDK_LOOPBACK(["mvn", "mvnw"])],
   sbt: [JDK_LOOPBACK(["sbt"])],
-  npm: none("no machine-level failure observed"),
-  python: none("no machine-level failure observed"),
-  go: none("no machine-level failure observed"),
-  cargo: none("no machine-level failure observed"),
-  dotnet: none("no machine-level failure observed"),
-  swift: none("no machine-level failure observed"),
-  mix: none("no machine-level failure observed"),
-  dart: none("no machine-level failure observed"),
-  zig: none("no machine-level failure observed"),
-  dune: none("no machine-level failure observed"),
-  bundler: none("no machine-level failure observed"),
-  luarocks: none("no machine-level failure observed"),
-  shell: none("no machine-level failure observed"),
-  composer: none("no machine-level failure observed"),
-  cmake: none("no machine-level failure observed"),
-  clang: none("no machine-level failure observed"),
-  sqlfluff: none("no machine-level failure observed"),
-  pwsh: none("no machine-level failure observed"),
-  rscript: none("no machine-level failure observed"),
+  npm: none(NONE_OBSERVED),
+  python: none(NONE_OBSERVED),
+  go: none(NONE_OBSERVED),
+  cargo: none(NONE_OBSERVED),
+  dotnet: none(NONE_OBSERVED),
+  swift: [SWIFTPM_CRASH],
+  mix: none(NONE_OBSERVED),
+  dart: none(NONE_OBSERVED),
+  zig: none(NONE_OBSERVED),
+  dune: none(NONE_OBSERVED),
+  bundler: none(NONE_OBSERVED),
+  luarocks: none(NONE_OBSERVED),
+  shell: none(NONE_OBSERVED),
+  composer: none(NONE_OBSERVED),
+  cmake: none(NONE_OBSERVED),
+  clang: none(NONE_OBSERVED),
+  sqlfluff: none(NONE_OBSERVED),
+  pwsh: none(NONE_OBSERVED),
+  rscript: none(NONE_OBSERVED),
 };
 
 const signatures = (): EnvironmentSignature[] =>
@@ -119,4 +141,26 @@ export function unpreparedNote(
   return unprepared
     ? `Note: ${checkId} failed in a worktree whose packages were not resolved, so it counts as inconclusive and opens no correction. ${unpreparedProblem(unprepared)}`
     : null;
+}
+
+/**
+ * A word of a failure a tool reports about the code: a failed test or assertion, a compiler, lint
+ * or format finding, an exception. A crash or kill of the tool itself prints none of them.
+ */
+const FAILURE_WORD =
+  /\b(?:errors?|fail(?:s|ed|ure|ures)?|fatal|panic(?:ked)?|exception|traceback|assert(?:ion)?|warn(?:ing|ings)?|reformat(?:ted)?|violations?|issues? found)\b/i;
+
+/**
+ * Whether a failed check's output holds no failure line of any toolchain (#2418): no failed test
+ * (`FAILED_TESTS`), no build failure (`BUILD_FAILURES`), no linter or type checker count and no
+ * line with a failure word. R76 hintsieve: `swift test` exited 4 after 27.7 s with only SwiftPM
+ * progress lines (`[24 / 31] HintSieveCoreTests-test-runner`), opened a 440k-token corrective with
+ * an empty diff, and the same tree passed on its next run. Such a failure says nothing about the
+ * code, so the checks stage re-runs it once before it opens a correction (`silent_check_failure`).
+ */
+export function silentFailure(output: string): boolean {
+  if (failedTests(output)?.names.length) return false;
+  if (buildFailure(output, 1)) return false;
+  if (diagnosticCount(output)?.count) return false;
+  return !FAILURE_WORD.test(output);
 }
