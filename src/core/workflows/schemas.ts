@@ -874,6 +874,14 @@ export const PolicySchema = z
          */
         suppliedDiff: z.boolean().optional(),
         /**
+         * Prices a test task that transcribes rows the request prescribes for its file (a fenced
+         * block whose first line names the file and says it holds rows, `suppliedRows`) at the
+         * rows' characters when above its history price, and has the host split it into
+         * sequential row slices when they need more than one attempt (#2455). Absent means off:
+         * the rows are recorded in `sizing/plan-N.json` (`rowVolume`, mode `shadow`) only.
+         */
+        rowVolume: z.boolean().optional(),
+        /**
          * Weighs an initiative estimate's finished features by how recent their initiative is: a
          * feature's weight halves for every this many initiatives started after its own
          * (`recencyWeights`, #2150). Absent means every feature counts the same.

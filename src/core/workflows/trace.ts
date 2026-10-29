@@ -206,6 +206,7 @@ import {
   exceedsTestCapacity,
   type PaceBasis,
   paceOf,
+  rowVolumePrice,
   runPace,
   type SizingReport,
 } from "./sizing.js";
@@ -3850,16 +3851,20 @@ export function replayTestSplits(
           cases: task.cases ?? 0,
           recorded: task.oversized ? ("split" as const) : ("whole" as const),
           // A rows task is decided as one from #1930 on; older reports did not mark it.
-          replayed: decide(
-            task.cases ?? 0,
-            report.testTaskLimit ?? null,
-            task.estimate,
-            cap,
-            true,
-            task.rowsTask ?? null,
-          )
-            ? ("split" as const)
-            : ("whole" as const),
+          // A task split into row slices (#2455) is decided on its rows, as it was recorded.
+          replayed:
+            decide(
+              task.cases ?? 0,
+              report.testTaskLimit ?? null,
+              task.estimate,
+              cap,
+              true,
+              task.rowsTask ?? null,
+            ) ||
+            (task.rowVolume?.mode === "on" &&
+              rowVolumePrice(task.rowVolume.chars, task.rowVolume.rows, cap).slices > 1)
+              ? ("split" as const)
+              : ("whole" as const),
         }))
     );
   });
