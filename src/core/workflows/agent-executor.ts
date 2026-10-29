@@ -44,12 +44,7 @@ import { withEditDiagnosticsMode } from "../tools/edit-diagnostics.js";
 import { buildTools } from "../tools/index.js";
 import { captureEndings, restoreEndings } from "../tools/line-endings.js";
 import { contentHash, deriveTool, withoutAstEditHint } from "../tools/tool-utils.js";
-import {
-  buildCheckEnv,
-  CheckRunner,
-  executeCheckCommand,
-  modelCheckOutput,
-} from "../verification/check-runner.js";
+import { buildCheckEnv, CheckRunner, modelCheckOutput } from "../verification/check-runner.js";
 import {
   PROBE_TRIES,
   probeTool,
@@ -77,6 +72,7 @@ import { fileHash, rootField } from "./effects.js";
 import { WorkflowFault } from "./errors.js";
 import { addsDoubledEscapes, escapeHintFor } from "./escape-hint.js";
 import { executionClock } from "./execution-clock.js";
+import { fixerFailed, runFixer } from "./fixer-run.js";
 import { keepOutside, restoreOutside } from "./fixer-scope.js";
 import { advertisedSchema, withHostConstants } from "./host-constants.js";
 import {
@@ -1025,15 +1021,14 @@ export class NativeAgentExecutor implements AgentExecutor {
               );
             let reverted: string[] = [];
             try {
-              const outputs: string[] = [];
-              const runFixer = async (
+              // Each fixer run's exit and output tail: a fixer that cannot run says why (#2436).
+              const outputs: { target: string; exitCode: number | null; output?: string }[] = [];
+              const fixOnce = async (
                 command: { executable: string; args: string[] },
                 targets: string[],
               ) => {
-                const executable =
-                  command.executable === "bun" ? process.execPath : command.executable;
                 const once = () =>
-                  executeCheckCommand(scope, executable, command.args, {
+                  runFixer(scope, command, {
                     cwd: check.cwd === "." ? root : workspacePath(root, check.cwd),
                     env: buildCheckEnv(check),
                     timeoutMs: check.timeoutMs,
@@ -1050,7 +1045,11 @@ export class NativeAgentExecutor implements AgentExecutor {
                     // A fixer that writes text mode on Windows turns a LF file into CRLF (#2214).
                     const endings = captureEndings(paths.map((path) => workspacePath(root, path)));
                     const result = await once().finally(() => restoreEndings(endings));
-                    outputs.push(`${targets.join(", ")}: exit ${String(result.exitCode)}`);
+                    outputs.push({
+                      target: targets.join(", "),
+                      exitCode: result.timedOut ? null : result.exitCode,
+                      ...(fixerFailed(result) && result.output ? { output: result.output } : {}),
+                    });
                   },
                 )();
               };
@@ -1059,7 +1058,7 @@ export class NativeAgentExecutor implements AgentExecutor {
                   if (isWholeUnitFixer(fix)) {
                     const code = fixerTierPaths(check, tier, codePaths);
                     if (!code.length) continue;
-                    await runFixer(
+                    await fixOnce(
                       wholeUnitFixerCommand(
                         fix,
                         code.map((path) => cwdPath(check, path)),
@@ -1070,7 +1069,7 @@ export class NativeAgentExecutor implements AgentExecutor {
                   }
                   // The fixer runs in the check's cwd, so it names the file from there.
                   for (const path of fixerTierPaths(check, tier, paths))
-                    await runFixer(fixerCommand(fix, cwdPath(check, path)), [path]);
+                    await fixOnce(fixerCommand(fix, cwdPath(check, path)), [path]);
                 }
               } finally {
                 // Also when a run throws: a whole-crate formatter may already have rewritten

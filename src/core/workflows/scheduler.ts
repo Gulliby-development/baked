@@ -466,6 +466,14 @@ import {
   symbolKey,
   taskChainRecord,
 } from "./finding-chain.js";
+import {
+  FAILED_FIXERS_NOTE,
+  type FixerResult,
+  type FixerRun,
+  failedFixerRuns,
+  recordFixerRuns,
+  runFixer,
+} from "./fixer-run.js";
 import { describeChange, keepOutside, restoreOutside, unjournaledOutside } from "./fixer-scope.js";
 import {
   FORK_SEED_ARTIFACT,
@@ -474,7 +482,7 @@ import {
   seedBytes,
 } from "./fork-stage.js";
 import { formatWrittenChecks } from "./format-written.js";
-import { outputTail } from "./gates.js";
+import { formatCommandLine, outputTail } from "./gates.js";
 import {
   HOST_APPLY_DIR,
   HOST_APPLY_KIND,
@@ -3747,6 +3755,33 @@ export class WorkflowScheduler {
         "written_tests"
     );
   }
+  /** The host fixer runs on the files a task writes that failed without a change (#2436). */
+  private failedFixers(
+    runId: string,
+    task: Task,
+  ): {
+    failedFixers?: {
+      failed: { checkId: string; command: string; exitCode: number | null; output: string }[];
+      note: string;
+    };
+  } {
+    const writes = new Set(task.writes.map((w) => w.path));
+    const failed = failedFixerRuns(this.store, runId).filter((run) =>
+      run.targets.some((path) => writes.has(path)),
+    );
+    if (!failed.length) return {};
+    return {
+      failedFixers: {
+        failed: failed.map((run) => ({
+          checkId: run.checkId,
+          command: formatCommandLine(run.command[0] ?? "", run.command.slice(1)),
+          exitCode: run.timedOut ? null : run.exitCode,
+          output: run.output,
+        })),
+        note: FAILED_FIXERS_NOTE,
+      },
+    };
+  }
   /** The required checks a task failed after an attempt was cut off (#1329), for its continuation. */
   private cutOffChecks(
     runId: string,
@@ -6484,6 +6519,7 @@ export class WorkflowScheduler {
           "battery",
           "correctionFocus",
           "cutOffChecks",
+          "failedFixers",
           "misquoteContinue",
           "earlierEdits",
           "earlierReads",
@@ -8324,6 +8360,7 @@ ${note}`;
               ...this.earlierReadsContext(runId, task.id),
               ...this.recurringContext(runId, state, task),
               ...this.cutOffChecks(runId, task.id),
+              ...this.failedFixers(runId, task),
               ...this.misquoteContinue(runId, state, task.id),
               ...this.exactText(runId, state, policy, task),
               ...(focus.files.length
@@ -9685,6 +9722,7 @@ ${note}`;
         ...this.previousAttempt(runId, task.id),
         ...this.earlierReadsContext(runId, task.id),
         ...this.cutOffChecks(runId, task.id),
+        ...this.failedFixers(runId, task),
         ...this.misquoteContinue(runId, state, task.id),
         ...this.exactText(runId, state, policy, task),
       };
@@ -15282,6 +15320,7 @@ ${note}`;
           null,
         ),
       );
+    const runs: FixerRun[] = [];
     try {
       try {
         for (const check of fixable) {
@@ -15299,20 +15338,17 @@ ${note}`;
             }));
             // A fixer that writes text mode on Windows turns a LF file into CRLF (#2214).
             const endings = captureEndings(paths.map((path) => workspacePath(root, path)));
+            let result: FixerResult;
             try {
-              // A fixer that cannot fix everything exits non-zero; the rerun check decides.
-              await executeCheckCommand(
-                scope,
-                command.executable === "bun" ? process.execPath : command.executable,
-                command.args,
-                {
-                  cwd: check.cwd === "." ? root : workspacePath(root, check.cwd),
-                  env: buildCheckEnv(check),
-                  timeoutMs: check.timeoutMs,
-                  signal,
-                  sandbox: runSandbox(policy, root, { gitWrite: root !== this.store.workspace }),
-                },
-              );
+              // A fixer that cannot fix everything exits non-zero; the rerun check decides, and
+              // the run's exit and output are recorded for the task's next attempt (#2436).
+              result = await runFixer(scope, command, {
+                cwd: check.cwd === "." ? root : workspacePath(root, check.cwd),
+                env: buildCheckEnv(check),
+                timeoutMs: check.timeoutMs,
+                signal,
+                sandbox: runSandbox(policy, root, { gitWrite: root !== this.store.workspace }),
+              });
             } catch (error) {
               restoreEndings(endings);
               for (const effect of effects)
@@ -15320,14 +15356,24 @@ ${note}`;
               throw error;
             }
             restoreEndings(endings);
+            let fixed = false;
             for (const effect of effects) {
               const target = workspacePath(root, effect.path);
               const after = fileHash(target);
               this.store.transaction(() => this.store.finishFileEffect(runId, effect.id, after));
               if (after === (images.get(effect.path) ?? null)) continue;
-              changed = true;
+              changed = fixed = true;
               images.set(effect.path, capturePreImage(this.store, runId, target));
             }
+            runs.push({
+              checkId: check.id,
+              targets,
+              command: [command.executable, ...command.args],
+              exitCode: result.exitCode,
+              timedOut: result.timedOut,
+              changed: fixed,
+              output: result.output,
+            });
             for (const other of paths) {
               if (targets.includes(other)) continue;
               const otherTarget = workspacePath(root, other);
@@ -15381,7 +15427,10 @@ ${note}`;
           "CAPABILITY_DENIED",
           `A check fixer changed files outside the run's tasks: ${outside.join(", ")}`,
         );
-      this.store.transaction(() => this.store.finishAttempt(runId, attempt, "completed", 0));
+      this.store.transaction(() => {
+        recordFixerRuns(this.store, runId, attempt, runs);
+        this.store.finishAttempt(runId, attempt, "completed", 0);
+      });
       return changed;
     } catch (error) {
       this.store.transaction(() => this.store.finishAttempt(runId, attempt, "failed", 0));
