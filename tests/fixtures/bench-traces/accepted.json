@@ -245,5 +245,9 @@
   "R74/ladlemath.sqlite.gz#209bc8a0-7c09-4be5-afb0-259105b887df": {
     "newActiveTimes": 1,
     "reason": "#2336: the active-time cap is sized at the initiative's own pace, the median tokens per active minute of its finished feature runs, where that is slower than the history's; the round sized at the history's (the trace was recorded before #2336 merged). The cap grows (sizing/plan-0.json 60 min at 132k to 89 min at 65k)."
+  },
+  "R76/schemamask.sqlite.gz#6e22b3f0-9796-47e1-8f44-dce35a8ace05": {
+    "newRecoveries": 1,
+    "reason": "R76 schemamask_generation, plan attempt dc012388: a 17 s turn that used 69,597 tokens and failed when the laptop went to sleep (Codex app-server exited with code 4, a cancelled tool call). The recorded run (pin fcdc85ea) took no rung and blocked provider_unavailable; the replay on current main reads the attempt as a billed turn without a usable answer and takes the fresh-session rung, the intended treatment of #1957."
   }
 }
