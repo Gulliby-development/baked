@@ -4,10 +4,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { LspBackend, serverRootFor } from "../src/core/intelligence/backends/lsp/index.js";
 import { buildCheckEnv } from "../src/core/verification/check-runner.js";
+import { runSandbox } from "../src/core/security/sandbox.js";
 import {
   isWindowsBatch,
   ProcessScope,
   windowsBatchInvocation,
+  windowsProgram,
 } from "../src/core/workflows/process-scope.js";
 import type { Check } from "../src/core/workflows/types.js";
 import { removeDirectory, removeTaskWorktree } from "../src/core/workflows/worktree.js";
@@ -59,6 +61,49 @@ describe("batch scripts on Windows", () => {
       await scope.stop();
     }
   });
+
+  test("a bare batch name runs by the absolute path the PATH gives; a path or an executable is kept", () => {
+    const found: Record<string, string> = {
+      "sbt.bat": "C:\\sbt\\bin\\sbt.bat",
+      gradle: "C:\\gradle\\bin\\gradle.bat",
+      git: "C:\\Git\\cmd\\git.exe",
+    };
+    const which = (bin: string) => found[bin] ?? null;
+    expect(windowsProgram("sbt.bat", "C:\\sbt\\bin", "C:\\w", which)).toBe("C:\\sbt\\bin\\sbt.bat");
+    expect(windowsProgram("gradle", "C:\\gradle\\bin", "C:\\w", which)).toBe("C:\\gradle\\bin\\gradle.bat");
+    expect(windowsProgram("git", "", "C:\\w", which)).toBe("git");
+    expect(windowsProgram("missing.cmd", "", "C:\\w", which)).toBe("missing.cmd");
+    expect(windowsProgram("C:\\x\\sbt.bat", "", "C:\\w", which)).toBe("C:\\x\\sbt.bat");
+    expect(windowsProgram(".\\gradlew.bat", "", "C:\\w", which)).toBe(".\\gradlew.bat");
+  });
+
+  // R77: sbt.bat sets SBT_BIN_DIR=%~dp0, and cmd.exe gave a script started by its bare quoted name
+  // the working directory there, so sbt looked for <worktree>\bin\sbt-launch.jar.
+  for (const sandboxed of [false, true])
+    test.skipIf(process.platform !== "win32")(
+      `a batch script found on the PATH reads its own folder as %~dp0${sandboxed ? " in the sandbox" : ""}`,
+      async () => {
+        const tools = scratch();
+        const work = scratch();
+        mkdirSync(join(tools, "bin"));
+        writeFileSync(join(tools, "bin", "where-am-i.bat"), "@echo off\r\necho dir:%~dp0\r\n");
+        const env = { ...process.env, PATH: `${join(tools, "bin")};${process.env.PATH ?? process.env.Path ?? ""}` };
+        delete env.Path;
+        const scope = new ProcessScope();
+        try {
+          const result = await scope.execute("where-am-i.bat", [], {
+            cwd: work,
+            env,
+            timeoutMs: 60000,
+            signal: new AbortController().signal,
+            sandbox: sandboxed ? runSandbox({ sandbox: "auto", network: "deny" }, work) : null,
+          });
+          expect(result.output.toLowerCase()).toContain(`dir:${join(tools, "bin")}\\`.toLowerCase());
+        } finally {
+          await scope.stop();
+        }
+      },
+    );
 
   test.skipIf(process.platform !== "win32")("does not run an injected command", async () => {
     const dir = scratch();

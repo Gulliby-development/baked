@@ -12,7 +12,7 @@ import { fixtureSpec, workflowFixture } from "./helpers/workflow-fixture.js";
 import { slicedCorrective } from "./helpers/sliced-corrective-scenario.js";
 import { evidencePaths, scopeRecord, stackFrames } from "../src/core/workflows/corrective-scope.js";
 import { cellSamples, cellSpec, omittedCellInput, withoutCellInput } from "./helpers/criteria-cell-fixtures.js";
-import { ProcessScope } from "../src/core/workflows/process-scope.js";
+import { ProcessScope, windowsBatchInvocation, windowsProgram } from "../src/core/workflows/process-scope.js";
 import { canRepairRun, type RepairBlock } from "../src/core/workflows/repairable.js";
 import {
   growthLimit,
@@ -1619,6 +1619,21 @@ const GRADLE_REPORT = `<?xml version="1.0" encoding="UTF-8"?>
   <system-err><![CDATA[]]></system-err>
 </testsuite>
 `;
+describe("gate matrix: Windows batch tools run by their absolute path (R77 sbt.bat)", () => {
+  // A check's batch tool found on the PATH goes to cmd.exe by its absolute path, sandboxed or not,
+  // so the scripts that find their own files from %~dp0 (sbt's launcher jar, Gradle's and Maven's
+  // homes, npm's node, Composer's phar, LuaRocks' wrappers) read their own folder.
+  const tools = ["sbt.bat", "gradle.bat", "mvn.cmd", "npm.cmd", "npx.cmd", "composer.bat", "busted.bat", "luacheck.bat"];
+  for (const tool of tools)
+    test(`${tool} starts as cmd.exe /c with its absolute path`, () => {
+      const path = `C:\\tools\\${tool.split(".")[0]}\\bin`;
+      const which = (bin: string) => (bin === tool ? `${path}\\${tool}` : null);
+      const program = windowsProgram(tool, path, "C:\\work\\worktree", which);
+      expect(program).toBe(`${path}\\${tool}`);
+      expect(windowsBatchInvocation(program, ["test"], "cmd.exe").args.at(-1)).toBe(`""${path}\\${tool}" "test""`);
+    });
+});
+
 describe("gate matrix: environment signature (#2273)", () => {
   const loopback = "* What went wrong:\njava.io.IOException: Unable to establish loopback connection\n\tat java.base/sun.nio.ch.PipeImpl.<init>(PipeImpl.java:93)\n";
   // Each toolchain with signatures: its command, a recorded machine failure with what its fix names,

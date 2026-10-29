@@ -43,6 +43,24 @@ export interface ProcessResult {
 export const isWindowsBatch = (executable: string): boolean => /\.(cmd|bat)$/i.test(executable);
 
 /**
+ * The program a Windows launch names: a bare command (`sbt.bat`, `gradle`, no directory) is looked
+ * up on `path` from `cwd`, and the batch script it finds is named by its absolute path. cmd.exe
+ * sets a script's `%~dp0` from the name it was given, so a script started by bare name through
+ * `cmd /c "sbt.bat"` reads its own directory as the working directory: R77's sbt.bat looked for
+ * `<worktree>\bin\sbt-launch.jar`. A name with a directory, or one not found, is kept.
+ */
+export function windowsProgram(
+  executable: string,
+  path: string,
+  cwd: string,
+  which: (bin: string, options: { PATH: string; cwd: string }) => string | null = Bun.which,
+): string {
+  if (/[\\/]/.test(executable) || /^[a-z]:/i.test(executable)) return executable;
+  const found = which(executable, { PATH: path, cwd });
+  return found && isWindowsBatch(found) ? found : executable;
+}
+
+/**
  * The cmd.exe invocation of a batch script: `cmd.exe /d /s /c "<quoted command line>"`, passed
  * verbatim. Every word is double-quoted, so `& | < > ^ ( )` stay literal. A character that cmd.exe
  * expands or ends a line on even inside quotes (`%`, `"`, a line break, is refused instead of
@@ -88,8 +106,12 @@ export class ProcessScope {
     options.signal.throwIfAborted();
     const started = executionClock.now();
     const scope = randomUUID();
-    const batch = process.platform === "win32" && !options.verbatim && isWindowsBatch(executable);
-    const direct = batch ? windowsBatchInvocation(executable, args) : { executable, args };
+    const program =
+      process.platform === "win32" && !options.verbatim
+        ? windowsProgram(executable, options.env.PATH ?? options.env.Path ?? "", options.cwd)
+        : executable;
+    const batch = process.platform === "win32" && !options.verbatim && isWindowsBatch(program);
+    const direct = batch ? windowsBatchInvocation(program, args) : { executable, args };
     // Wrapping follows the batch rewrite; the Windows launcher joins a verbatim line unquoted.
     const verbatim = (options.verbatim === true || batch) && process.platform === "win32";
     const launch = options.sandbox

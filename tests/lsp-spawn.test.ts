@@ -24,6 +24,12 @@ describe("language server launch", () => {
     expect(launch.args.at(-1)).toBe(`""C:\\npm\\typescript-language-server.CMD" "--stdio""`);
   });
 
+  test("runs a bare batch name by the absolute path the PATH gives, so its %~dp0 is its own folder", () => {
+    const which = (bin: string) => (bin === "jdtls.cmd" ? "C:\\m\\bin\\jdtls.cmd" : null);
+    const launch = lspLaunch("jdtls.cmd", ["-data", "C:\\ws"], { ...windows, which });
+    expect(launch.args.at(-1)).toBe(`""C:\\m\\bin\\jdtls.cmd" "-data" "C:\\ws""`);
+  });
+
   test("spawns executables and every POSIX command directly", () => {
     const exe = (bin: string) => `C:\\go\\bin\\${bin}.exe`;
     expect(lspLaunch("gopls", ["serve"], { ...windows, which: exe })).toEqual({
