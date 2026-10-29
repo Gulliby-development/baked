@@ -492,6 +492,10 @@ export function eventText(event: WorkflowEvent, stages: StageView[]): string | n
       return event.payload.mode === "advisory"
         ? `Would resume (advisory): ${event.payload.summary}`
         : null;
+    case "decision.would_rerun":
+      return event.payload.mode === "advisory"
+        ? `Would re-run (advisory): ${event.payload.summary}`
+        : null;
     case "attempt.recovery":
       return `Stalled agent call, recovery: ${event.payload.detail}`;
     case "attempt.advisory":

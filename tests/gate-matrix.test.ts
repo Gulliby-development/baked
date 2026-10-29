@@ -26,6 +26,7 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { directoryFixers, directoryFixerScenario } from "./helpers/directory-fixer-scenario.js";
 import { baselineCreatedFilesScenario, FIRST_RUN_OUTPUTS } from "./helpers/baseline-created-files-scenario.js";
 import { sourceManifest, TOOL_CACHES } from "../src/core/verification/snapshot.js";
+import { openTrace, replayInitiativeStarts } from "../src/core/workflows/trace.js";
 import { linkDependencies } from "../src/core/workflows/dependency-dirs.js";
 import { spawnSync } from "node:child_process";
 import {
@@ -48,7 +49,8 @@ import { entryPointCommand } from "../src/core/verification/entry-points.js";
 import { noteSiblingFindings, ownerOfFinding } from "../src/core/verification/initiative-ownership.js";
 import { failureSignature as convergenceSignature, missingPlannedPaths, noTestsCollected } from "../src/core/verification/convergence.js";
 import { executeCheckCommand, exitStatus, ranNoTests, timedOutFailure } from "../src/core/verification/check-runner.js";
-import { environmentFault, ENVIRONMENT_SIGNATURES } from "../src/core/verification/environment-faults.js";
+import { environmentFault, ENVIRONMENT_SIGNATURES, silentFailure } from "../src/core/verification/environment-faults.js";
+import { SWIFT_COMPILE_ERROR, SWIFT_SYMLINK_WARNING_ONLY, SWIFT_TEST_FATAL_ERROR, SWIFT_TEST_SILENT_EXIT_4, SWIFT_TESTING_FAILURE } from "./fixtures/swiftpm-crash-outputs.js";
 import { testReport } from "../src/core/verification/test-reports.js";
 import { detectLanguages, touchesLanguageFiles } from "../src/core/workflows/language.js";
 import { baselineRegression, buildFailure, buildRunner, diagnosticCount, failedTests, failureSignature, testCount, testsRan } from "../src/core/verification/output-counts.js";
@@ -251,6 +253,7 @@ describe("host-written acceptance rows in the case-walk and mutation gates (#159
     busted: { harness: "tests/harness.lua", test: "tests/rows_spec.lua" },
     minitest: { harness: "tests/harness.rb", test: "tests/rows_test.rb" },
     pest: { harness: "tests/harness.php", test: "tests/RowsTest.php" },
+    exunit: { harness: "tests/harness.exs", test: "tests/rows_test.exs" },
     dart: { harness: "tests/harness.dart", test: "tests/rows_test.dart" },
   } as const;
   test.each(Object.keys(layouts) as (keyof typeof layouts)[])("%s retains every case in its JSON data and keeps generated tests out of mutation proposals", async (framework) => {
@@ -315,6 +318,7 @@ describe("gate matrix: inline rows block holds its own cells (#1997)", () => {
     busted: { mode: "inline", framework: "busted", test: "spec/calc_spec.lua" },
     minitest: { mode: "inline", framework: "minitest", test: "test/calc_test.rb" },
     pest: { mode: "inline", framework: "pest", test: "tests/CalcTest.php" },
+    exunit: { mode: "inline", framework: "exunit", test: "test/calc_test.exs" },
     dart: { mode: "inline", framework: "dart", test: "test/calc_test.dart" },
   };
   const shapes: [string, unknown][] = [
@@ -1582,21 +1586,36 @@ const GRADLE_REPORT = `<?xml version="1.0" encoding="UTF-8"?>
 `;
 describe("gate matrix: environment signature (#2273)", () => {
   const loopback = "* What went wrong:\njava.io.IOException: Unable to establish loopback connection\n\tat java.base/sun.nio.ch.PipeImpl.<init>(PipeImpl.java:93)\n";
-  const COMMANDS: Partial<Record<GateToolchain, [string, string[]]>> = {
-    gradle: process.platform === "win32" ? ["cmd", ["/d", "/c", "gradlew.bat", "check"]] : ["./gradlew", ["--console=plain", "-q", "check"]],
-    maven: ["mvn", ["-q", "verify"]],
-    sbt: ["sbt", ["test"]],
+  // Each toolchain with signatures: its command, a recorded machine failure with what its fix names,
+  // and failures of the project's code that are never the machine's.
+  const SAMPLES: Partial<Record<GateToolchain, { command: [string, string[]]; machine: string; fix: string; code: string[] }>> = {
+    gradle: { command: process.platform === "win32" ? ["cmd", ["/d", "/c", "gradlew.bat", "check"]] : ["./gradlew", ["--console=plain", "-q", "check"]], machine: loopback, fix: "jdk.net.unixdomain.tmpdir", code: ["CalcTest > fails() FAILED\n"] },
+    maven: { command: ["mvn", ["-q", "verify"]], machine: loopback, fix: "jdk.net.unixdomain.tmpdir", code: ["CalcTest > fails() FAILED\n"] },
+    sbt: { command: ["sbt", ["test"]], machine: loopback, fix: "jdk.net.unixdomain.tmpdir", code: ["CalcTest > fails() FAILED\n"] },
+    // #2418: SwiftPM's crash beside a sibling worktree's build (R76 hintsieve).
+    swift: { command: ["swift", ["test"]], machine: SWIFT_TEST_FATAL_ERROR, fix: "fewer Swift builds at once", code: [SWIFT_COMPILE_ERROR, SWIFT_TESTING_FAILURE, SWIFT_SYMLINK_WARNING_ONLY, SWIFT_TEST_SILENT_EXIT_4] },
   };
   test.each(Object.entries(ENVIRONMENT_SIGNATURES))("%s", (toolchain, row) => {
     if ("none" in row) {
-      expect(row.none.length).toBeGreaterThan(0);
+      // A `none` row says through which bench round and date nothing was observed (#2418).
+      expect(row.none).toMatch(/bench round \d+ \(\d{4}-\d{2}-\d{2}\)/);
       return;
     }
-    const [executable, args] = COMMANDS[toolchain as GateToolchain] ?? ["", []];
-    expect(environmentFault(executable, args, loopback)?.fix).toContain("jdk.net.unixdomain.tmpdir");
-    // A failing test of the project is the project's, and another program's output is not read.
-    expect(environmentFault(executable, args, "CalcTest > fails() FAILED\n")).toBeNull();
-    expect(environmentFault("npm", ["test"], loopback)).toBeNull();
+    const sample = SAMPLES[toolchain as GateToolchain];
+    if (!sample) throw new Error(`${toolchain} has signatures and no sample in this cell`);
+    const [executable, args] = sample.command;
+    expect(environmentFault(executable, args, sample.machine)?.fix).toContain(sample.fix);
+    // A failure of the project's code is the project's, and another program's output is not read.
+    for (const code of sample.code) expect(environmentFault(executable, args, code)).toBeNull();
+    expect(environmentFault("npm", ["test"], sample.machine)).toBeNull();
+  });
+  // #2418: a failure that prints no failure line of any toolchain is a re-run candidate of the
+  // checks stage (`silent_check_failure`); one that names a failure of the code is not.
+  test("a failure without a failure line is a re-run candidate", () => {
+    expect(silentFailure(SWIFT_TEST_SILENT_EXIT_4)).toBe(true);
+    expect(silentFailure("")).toBe(true);
+    for (const code of [SWIFT_COMPILE_ERROR, SWIFT_TESTING_FAILURE, SWIFT_TEST_FATAL_ERROR, "FAIL tests/a.test.ts > adds\n", "--- FAIL: TestAdd (0.00s)\nFAIL\n", "src/a.ts(3,1): error TS2304: Cannot find name 'x'.\n", "Would reformat: src/a.py\n1 file would be reformatted\n"])
+      expect(silentFailure(code)).toBe(false);
   });
 });
 
@@ -2000,6 +2019,12 @@ describe("gate matrix: dart test, dart analyze and dart format (#1494)", () => {
     // A dart test file is a written test of its own (#2348).
     expect(isWrittenTestFile("test/calc_test.dart")).toBe(true);
     expect(isWrittenTestFile("lib/calc.dart")).toBe(false);
+  });
+
+  test("the affected tests run through mix test's file arguments (#2348)", () => {
+    const check = (executable: string, args: string[]): Check => ({ id: `${executable}-test`, executable, args, cwd: ".", timeoutMs: 600000, required: true, scope: "feature", envNames: [], writes: [] });
+    expect(affectedTestCheck([check("mix", ["test", "--exclude", "slow", "test/"])], ["test/calc_test.exs", "lib/calc.ex", "test/test_helper.exs"])?.args).toEqual(["test", "--exclude", "slow", "test/calc_test.exs"]);
+    expect(affectedTestCheck([check("mix", ["test"])], ["lib/calc.ex"])).toBeNull();
   });
 
   test("a new Dart file is held to dart format when the run leaves the gate out (#1837)", () => {
@@ -5144,6 +5169,37 @@ test("#1631 one accepted skeleton keeps the initiative's planned forecast below 
   expect(forecastUsd).toBe(23.4);
   expect(shareShortfall(view, view.features[1]!)).toBeNull();
 });
+
+// #2417: the start replay rewound each open run's tokens, dollars and policy (#2061) but not its
+// active time and calls, so the time share a start gate read counted every later minute: R76
+// schemamask parked generation and validate on 0 ms of shared time the round never ran out of.
+test("#2417 the start gate on a rewound trace reads the used time and calls its recorded gate read", () => {
+  const path = join(import.meta.dir, "fixtures", "bench-traces", "R75", "maskback.sqlite.gz");
+  const trace = openTrace(path);
+  let recorded: Map<string, { verdict: string; used: { activeMs: number; calls: number } }>;
+  try {
+    recorded = new Map(
+      (trace.store.connection.query("SELECT payload_json FROM initiative_events WHERE type='feature.share_gate' ORDER BY seq").all() as { payload_json: string }[])
+        .map((r) => JSON.parse(r.payload_json) as { featureId: string; verdict: string; view: { budget: { used: { activeMs: number; calls: number } } } })
+        .map((r) => [r.featureId, { verdict: r.verdict, used: r.view.budget.used }]),
+    );
+  } finally {
+    trace.dispose();
+  }
+  const seen = new Map<string, { verdict: string; used: { activeMs: number; calls: number } }>();
+  replayInitiativeStarts(path, { budgetAtStart: true, gate: (view, feature) => {
+    const verdict = shareShortfall(view, feature);
+    if (!seen.has(feature.id)) seen.set(feature.id, { verdict: verdict ? "park" : "pass", used: view.budget.used ?? { activeMs: 0, calls: 0 } });
+    return verdict;
+  } });
+  for (const [id, gate] of recorded) {
+    const rewound = seen.get(id);
+    expect([id, rewound?.verdict]).toEqual([id, gate.verdict]);
+    // Linked seconds after its gate: the same time and calls within 3% (and a minute) and two.
+    expect([id, Math.abs((rewound?.used.activeMs ?? 0) - gate.used.activeMs) <= 0.03 * gate.used.activeMs + 60_000]).toEqual([id, true]);
+    expect([id, Math.abs((rewound?.used.calls ?? 0) - gate.used.calls) <= 2]).toEqual([id, true]);
+  }
+}, 300000);
 
 describe("repair-limit decisions (#1577)", () => {
   test.each(STACKS)("%s offers grants only for a recorded repair-limit stop", () => {
