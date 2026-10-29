@@ -518,22 +518,27 @@ const requestPath = (path: string): string =>
 
 /**
  * The one path of `wanted` a block is attributed to: named in the last line of prose before it
- * ("Replace `src/a.ts` with:"), or in a comment on its first line (`// src/a.ts`). Null when none
- * or more than one is named.
+ * ("Replace `src/a.ts` with:"), or in a comment on its first line (`// src/a.ts`), with whether
+ * only that comment names it (`byHeader`). Null when none or more than one is named.
  */
-function blockPath(block: Fence, wanted: ReadonlySet<string>): string | null {
+function blockPath(
+  block: Fence,
+  wanted: ReadonlySet<string>,
+): { path: string; byHeader: boolean } | null {
   const last = block.prose.trim().split("\n").at(-1) ?? "";
   const header = /^\s*(?:#|\/\/|--|;)\s*(\S+)\s*$/.exec(block.lines[0] ?? "")?.[1];
-  const named = new Set(
-    [
-      ...[...last.matchAll(/`([^`\s]+)`/g)].map((m) => m[1] as string),
-      ...[...last.matchAll(/[\w./-]+\.\w+/g)].map((m) => m[0]),
-      ...(header ? [header] : []),
-    ]
-      .map(requestPath)
-      .filter((path) => wanted.has(path)),
-  );
-  return named.size === 1 ? ([...named][0] as string) : null;
+  const inProse = [
+    ...[...last.matchAll(/`([^`\s]+)`/g)].map((m) => m[1] as string),
+    ...[...last.matchAll(/[\w./-]+\.\w+/g)].map((m) => m[0]),
+  ]
+    .map(requestPath)
+    .filter((path) => wanted.has(path));
+  const named = new Set([
+    ...inProse,
+    ...(header && wanted.has(requestPath(header)) ? [requestPath(header)] : []),
+  ]);
+  const path = named.size === 1 ? ([...named][0] as string) : null;
+  return path ? { path, byHeader: !inProse.length } : null;
 }
 
 /**
@@ -559,6 +564,12 @@ export type SuppliedBlock =
       content: string;
       /** Whether the prose before it says it is the whole file (`WHOLE_FILE`). */
       whole: boolean;
+      /**
+       * Set when only a comment on its first line names the path and the prose does not say it is
+       * the whole file: an API listing as likely as a file (R77 trailspin's `// internal/cli/cli.go`
+       * signatures, #2438). The host neither writes it nor compares a delivery with it.
+       */
+      listing?: true;
       /** The Markdown section the block is, for a Markdown file (`markdownRegion`, #2101). */
       region?: MarkdownRegion;
     };
@@ -630,14 +641,17 @@ export function suppliedBlocks(
       }
       continue;
     }
-    const path = blockPath(block, wanted);
-    if (!path) continue;
+    const attributed = blockPath(block, wanted);
+    if (!attributed) continue;
+    const { path } = attributed;
     const region = markdownRegion(path, block.lines, block.prose);
+    const whole = WHOLE_FILE.test(lastLine(block.prose));
     const file: SuppliedBlock = {
       kind: "file",
       lines: block.lines.length,
       content: `${body}\n`,
-      whole: WHOLE_FILE.test(lastLine(block.prose)),
+      whole,
+      ...(attributed.byHeader && !whole ? { listing: true } : {}),
       ...(region ? { region } : {}),
     };
     prose.set(file, block.prose);

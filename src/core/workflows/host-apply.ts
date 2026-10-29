@@ -112,6 +112,11 @@ export interface HostApplyWrite {
   diffs: number;
   /** Whether the prose before the path's one fenced file says it is the whole file. */
   whole: boolean;
+  /**
+   * The path's one fenced file is named only by its first-line comment and not said to be whole
+   * (`SuppliedBlock.listing`, #2438). Absent in records before it.
+   */
+  listing?: boolean;
   /** Whether the path exists in the task's base. */
   exists: boolean;
   /** `git apply --check` of the path's hunks on the task's base; null without a diff. */
@@ -160,7 +165,8 @@ const no = (reason: string): HostApplyVerdict => ({ wouldApply: false, reason })
 /**
  * The one function that decides whether the host would apply a task's content itself (#2023):
  * every write has exactly one kind of verbatim block, none deletes, a fenced file for a path that
- * exists says it is the whole file, and every diff applies to the task's base. Otherwise an
+ * exists says it is the whole file, a fenced file that only its header comment names says so too
+ * (#2438), and every diff applies to the task's base. Otherwise an
  * implementer starts, with the first write that keeps it as the reason.
  */
 export const hostApplyDecision: HostApplyRule = (writes) => {
@@ -180,6 +186,11 @@ export const hostApplyDecision: HostApplyRule = (writes) => {
         );
       continue;
     }
+    // A new file too: a block only its header comment names may be the file's API listing (#2438).
+    if (w.files && w.listing)
+      return no(
+        `the fenced block for ${w.path} may be a listing, not the file: only its first-line comment names the path and the prose before it does not say it is the whole file`,
+      );
     if (w.files && w.exists && !w.whole)
       return no(
         `the fenced block for ${w.path}, which exists, may be an excerpt: the prose before it does not say it is the whole file`,
@@ -374,6 +385,7 @@ export async function hostApplyInputs(
       files: files.length,
       diffs: diffs.length,
       whole: only?.kind === "file" && only.whole,
+      ...(only?.kind === "file" && only.listing ? { listing: true } : {}),
       exists,
       applies: check ? check.applies : null,
       ...(check?.refusal ? { refusal: check.refusal } : {}),

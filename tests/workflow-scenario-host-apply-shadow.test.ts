@@ -23,10 +23,12 @@ import {
   regionSections,
   zeroContextHunks,
 } from "../src/core/workflows/host-apply.js";
-import type { Check, RunPolicy, Spec, Task } from "../src/core/workflows/schemas.js";
+import type { Check, RunPolicy, Spec, Task, TaskGraph } from "../src/core/workflows/schemas.js";
 import { NativeWorkflowService } from "../src/core/workflows/service.js";
 import { suppliedBlocks, suppliedLines } from "../src/core/workflows/sizing.js";
 import { newId } from "../src/core/workflows/store.js";
+import { suppliedTestFiles } from "../src/core/workflows/supplied-content.js";
+import { comparableWrite, suppliedDrifts } from "../src/core/workflows/supplied-drift.js";
 import { exportTrace, replayTrace } from "../src/core/workflows/trace.js";
 import type { AgentExecutor, ExecutionRequest } from "../src/core/workflows/types.js";
 
@@ -598,4 +600,59 @@ describe("a zero-context (-U0) diff applies at its @@ positions (#2412)", () => 
     expect(executor.attempts).toEqual([]);
     for (const [path, text] of Object.values(files)) expect(readFileSync(join(root, runRootPath(service.store, run.runId), path), "utf8")).toBe(text);
   }, 120000);
+});
+
+// Bench round 77 (#2438): trailspin's brief listed each Go file's exported signatures in a fenced
+// block whose first line was a path comment (`// internal/cli/cli.go`), after the prose "Files
+// (names and shapes are fixed; tests call them)". The host took the listing as the whole new file,
+// wrote six stubs that did not compile, and the run spent a corrective round replacing them.
+const LISTING = ["```go", "// internal/cli/cli.go", "func Run(args []string, stdout, stderr io.Writer) int", "func Usage() string", "```"];
+const trailspin = (prose: string) => [prose, ...LISTING].join("\n");
+const cliTask = { writes: [{ path: "internal/cli/cli.go", action: "create" as const }] };
+
+describe("a path-comment signature listing is not a new file (#2438)", () => {
+  test("only a header comment names the path, the prose does not say whole: a listing the host declines", async () => {
+    const root = mkdtempSync(join(tmpdir(), "baked-host-listing-"));
+    cleanups.push(() => rmSync(root, { recursive: true, force: true }));
+    const request = trailspin("Files (names and shapes are fixed; tests call them):");
+    expect(suppliedBlocks(request, ["internal/cli/cli.go"]).get("internal/cli/cli.go")).toMatchObject([{ kind: "file", listing: true }]);
+    const writes = (await hostApplyInputs(root, request, cliTask)) ?? [];
+    expect(writes).toEqual([{ path: "internal/cli/cli.go", action: "create", files: 1, diffs: 0, whole: false, exists: false, applies: null, listing: true }]);
+    expect(hostApplyDecision(writes).wouldApply).toBe(false);
+    expect(hostApplyDecision(writes).reason).toContain("may be a listing");
+    // The decision unit: the same create without the flag applies.
+    expect(hostApplyDecision([write({ path: "internal/cli/cli.go", action: "create", files: 1, diffs: 0, applies: null, exists: false, listing: true })]).wouldApply).toBe(false);
+    expect(hostApplyDecision([write({ path: "internal/cli/cli.go", action: "create", files: 1, diffs: 0, applies: null, exists: false })]).wouldApply).toBe(true);
+  }, 60000);
+
+  test("a header block whose prose says it is the whole file, or whose prose names the path, still applies", async () => {
+    const root = mkdtempSync(join(tmpdir(), "baked-host-listing-whole-"));
+    cleanups.push(() => rmSync(root, { recursive: true, force: true }));
+    for (const prose of ["Write this file verbatim:", "Create `internal/cli/cli.go` with:", "The complete contents:"]) {
+      const request = trailspin(prose);
+      expect(suppliedBlocks(request, ["internal/cli/cli.go"]).get("internal/cli/cli.go")?.[0]).not.toHaveProperty("listing");
+      expect(hostApplyDecision((await hostApplyInputs(root, request, cliTask)) ?? []).wouldApply).toBe(true);
+    }
+  }, 60000);
+
+  test("every header comment form marks a listing", () => {
+    for (const [path, lead] of [["tools/run.py", "#"], ["src/lib.rs", "//"], ["db/schema.sql", "--"], ["src/core.lisp", ";"]] as const) {
+      const request = ["Shapes:", "```", `${lead} ${path}`, "signature one", "```"].join("\n");
+      expect(suppliedBlocks(request, [path]).get(path)).toMatchObject([{ kind: "file", listing: true }]);
+    }
+  });
+
+  test("supplied drift and the supplied test files leave a listing out", () => {
+    const request = trailspin("Files (names and shapes are fixed; tests call them):");
+    const listing = write({ path: "internal/cli/cli.go", action: "create", files: 1, diffs: 0, applies: null, exists: false, listing: true });
+    expect(comparableWrite(listing)).toBe(false);
+    const graph = { tasks: [{ id: "T001", origin: "planned", writes: cliTask.writes }] } as unknown as Pick<TaskGraph, "tasks">;
+    // An older record without the flag still finds the block marked and records no drift.
+    const { listing: _drop, ...unflagged } = listing;
+    expect(suppliedDrifts(request, [{ taskId: "T001", mode: "shadow", writes: [unflagged], wouldApply: true, reason: null }], graph, () => "package cli\n")).toEqual([]);
+    const testPath = "internal/cli/cli_test.go";
+    const testRequest = ["Tests:", "```go", `// ${testPath}`, "func TestRun(t *testing.T)", "```"].join("\n");
+    const testGraph = { tasks: [{ id: "T002", origin: "planned", writes: [{ path: testPath, action: "create" }] }] } as unknown as Pick<TaskGraph, "tasks">;
+    expect(suppliedTestFiles(testRequest, testGraph).size).toBe(0);
+  });
 });

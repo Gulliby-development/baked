@@ -71,7 +71,7 @@ import { launchedCommand } from "../src/core/workflows/launcher.js";
 import { toolchainCommand } from "../src/core/workflows/toolchain.js";
 import { type HostEdit, hostOnlyEvidence, plannerGraph } from "../src/core/workflows/host-edits.js";
 import { defaultWorkflowPolicy } from "../src/core/workflows/defaults.js";
-import { sizePlan, splitTestTasks } from "../src/core/workflows/sizing.js";
+import { sizePlan, splitTestTasks, suppliedBlocks } from "../src/core/workflows/sizing.js";
 import { withPerTestTimeout } from "../src/core/workflows/test-timeout.js";
 import { detectProfile } from "../src/core/tools/project.js";
 import { formatProbeCommand } from "../src/core/tools/auto-format.js";
@@ -1631,6 +1631,23 @@ describe("gate matrix: Windows batch tools run by their absolute path (#2432)", 
       const program = windowsProgram(tool, path, "C:\\work\\worktree", which);
       expect(program).toBe(`${path}\\${tool}`);
       expect(windowsBatchInvocation(program, ["test"], "cmd.exe").args.at(-1)).toBe(`""${path}\\${tool}" "test""`);
+    });
+});
+
+describe("gate matrix: a path-comment signature listing is not the new file (#2438)", () => {
+  // R77 trailspin: a fenced block named only by its first-line path comment, after prose that does
+  // not say it is the whole file, lists signatures; the host does not write it as the file.
+  const files: [string, string][] = [
+    ["internal/cli/cli.go", "//"], ["src/lib.rs", "//"], ["src/index.ts", "//"], ["src/Main.java", "//"], ["src/Program.cs", "//"],
+    ["src/Main.scala", "//"], ["Sources/App/App.swift", "//"], ["lib/calc.dart", "//"], ["src/calc.zig", "//"], ["src/calc.cpp", "//"],
+    ["src/calc/core.py", "#"], ["lib/calc.rb", "#"], ["lib/calc.ex", "#"], ["bin/run.sh", "#"], ["src/Calc.php", "//"],
+    ["scripts/Run.ps1", "#"], ["src/calc.lua", "--"], ["db/schema.sql", "--"],
+  ];
+  for (const [path, lead] of files)
+    test(`${path}: a ${lead} header block is a listing, and a whole-file one is not`, () => {
+      const block = ["```", `${lead} ${path}`, "signature", "```"];
+      expect(suppliedBlocks(["Shapes (fixed; tests call them):", ...block].join("\n"), [path]).get(path)).toMatchObject([{ kind: "file", listing: true }]);
+      expect(suppliedBlocks(["Write this file verbatim:", ...block].join("\n"), [path]).get(path)?.[0]).not.toHaveProperty("listing");
     });
 });
 
