@@ -43,6 +43,24 @@ export interface ProcessResult {
 export const isWindowsBatch = (executable: string): boolean => /\.(cmd|bat)$/i.test(executable);
 
 /**
+ * The program a Windows launch names (#2432): a bare batch name (`sbt.bat`, `npm.cmd`, no
+ * directory) is looked up on `path` from `cwd` and named by its absolute path. cmd.exe expands
+ * `%~dp0` of a script started as a quoted bare name to the working directory, so R77's `sbt.bat`
+ * looked for `<worktree>\bin\sbt-launch.jar`. A name with a directory, one not found, and a name
+ * without `.bat`/`.cmd` (which Bun resolves itself) are kept.
+ */
+export function windowsProgram(
+  executable: string,
+  path: string,
+  cwd: string,
+  which: (bin: string, options: { PATH: string; cwd: string }) => string | null = Bun.which,
+): string {
+  if (!isWindowsBatch(executable) || /[\\/]/.test(executable) || /^[a-z]:/i.test(executable))
+    return executable;
+  return which(executable, { PATH: path, cwd }) ?? executable;
+}
+
+/**
  * The cmd.exe invocation of a batch script: `cmd.exe /d /s /c "<quoted command line>"`, passed
  * verbatim. Every word is double-quoted, so `& | < > ^ ( )` stay literal. A character that cmd.exe
  * expands or ends a line on even inside quotes (`%`, `"`, a line break, is refused instead of
@@ -89,7 +107,10 @@ export class ProcessScope {
     const started = executionClock.now();
     const scope = randomUUID();
     const batch = process.platform === "win32" && !options.verbatim && isWindowsBatch(executable);
-    const direct = batch ? windowsBatchInvocation(executable, args) : { executable, args };
+    const program = batch
+      ? windowsProgram(executable, options.env.PATH ?? options.env.Path ?? "", options.cwd)
+      : executable;
+    const direct = batch ? windowsBatchInvocation(program, args) : { executable, args };
     // Wrapping follows the batch rewrite; the Windows launcher joins a verbatim line unquoted.
     const verbatim = (options.verbatim === true || batch) && process.platform === "win32";
     const launch = options.sandbox

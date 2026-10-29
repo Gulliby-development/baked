@@ -19,9 +19,9 @@ import type { RunPolicy } from "../src/core/workflows/schemas.js";
 import { STOP_REASONS } from "../src/core/workflows/stop-reasons.js";
 import { newId } from "../src/core/workflows/store.js";
 import { fixturePolicy, workflowFixture } from "./helpers/workflow-fixture.js";
-import { adviceRatio, decisionRatio, HOST_POOL_GROWTHS, type PoolGrowthReason, planCharge, poolExtensionDecision, poolForecast, tokenPool } from "../src/core/workflows/initiatives/token-pool.js";
+import { adviceRatio, decisionRatio, HOST_POOL_GROWTHS, type PoolGrowthReason, timePoolExtensionDecision, planCharge, poolExtensionDecision, poolForecast, tokenPool } from "../src/core/workflows/initiatives/token-pool.js";
 import { initiativeActions } from "../src/core/workflows/initiatives/view-model.js";
-import { openTrace, replayInitiativeStarts, replayPoolBounds, replayPoolGrowth } from "../src/core/workflows/trace.js";
+import { openTrace, replayInitiativeStarts, replayPoolBounds, replayPoolGrowth, replayTimePoolGrowth } from "../src/core/workflows/trace.js";
 import { executeInitiativeCommand, parseInitiativeArgs } from "../src/headless/workflow-initiative.js";
 import { historyFixture, plannedForecastScenario } from "./helpers/initiative-planned-forecast.js";
 
@@ -789,6 +789,53 @@ describe("replay: initiative-pool-growth on the recorded bounds (#2280)", () => 
       expect(replayPoolBounds(store, (inputs) => ({ ...poolBoundDecision(inputs), wouldStop: false })).flatMap((i) => i.poolBounds)).toEqual([]);
     } finally {
       dispose();
+    }
+  });
+});
+
+describe("the shared time's host growth, in shadow (#2346)", () => {
+  const MIN = 60_000;
+  // 400 min used of 360, forecast 598 min at 58k a minute; the 30M pool has 12M left (207 min).
+  const base = { initiativeId: "ladle", limitMs: 360 * MIN, usedMs: 400 * MIN, forecastMs: 598 * MIN, suggestedMs: 750 * MIN, tokensPerMinute: 58_000, limitTokens: 30_000_000, usedTokens: 18_000_000, cost: { capUsd: 30, ceilingUsd: 37.5, forecastUsd: 26 } };
+
+  test("it is registered with the caps that bound it, shadow by default", () => {
+    expect(HOST_POOL_GROWTHS["time-pool"]).toMatchObject({ modes: ["off", "shadow"], defaultMode: "shadow" });
+    expect(HOST_POOL_GROWTHS["time-pool"].boundBy).toContain("--budget-tokens");
+  });
+
+  test("it extends to the notice's suggestion, held to what the token pool runs at the pace", () => {
+    const decision = timePoolExtensionDecision(base);
+    // 400 min used plus 12M tokens at 58k a minute (207 min) = 607 min, rounded down to 600.
+    expect(decision).toMatchObject({ reason: "time-pool", wouldExtend: true, toMs: 600 * MIN, byMs: 240 * MIN });
+    expect(decision.capMs).toBe(400 * MIN + Math.round((12_000_000 / 58_000) * MIN));
+    // A larger pool lets the whole suggestion through.
+    expect(timePoolExtensionDecision({ ...base, limitTokens: 60_000_000 })).toMatchObject({ wouldExtend: true, toMs: 750 * MIN });
+    // Without a dollar cap the token pool alone bounds it.
+    expect(timePoolExtensionDecision({ ...base, cost: { capUsd: null, ceilingUsd: null, forecastUsd: null } })).toMatchObject({ wouldExtend: true, toMs: 600 * MIN });
+  });
+
+  test("it holds while the time fits, without a pace, past the dollar ceiling, or with the token pool spent", () => {
+    const holds = [
+      { ...base, forecastMs: 300 * MIN, suggestedMs: null },
+      { ...base, tokensPerMinute: null, forecastMs: null, suggestedMs: null },
+      { ...base, cost: { capUsd: 30, ceilingUsd: 37.5, forecastUsd: null } },
+      { ...base, cost: { capUsd: 30, ceilingUsd: 37.5, forecastUsd: 40 } },
+      { ...base, usedMs: 350 * MIN, usedTokens: 30_000_000 },
+    ];
+    for (const inputs of holds) expect(timePoolExtensionDecision(inputs)).toMatchObject({ wouldExtend: false, toMs: null, byMs: null });
+  });
+
+  test("replay: R75's share gates with a shared time never passed it, so the rule records no extension", () => {
+    for (const app of ["latcell", "maskback"]) {
+      const { store, dispose } = openTrace(join(import.meta.dir, "fixtures", "bench-traces", "R75", `${app}.sqlite.gz`));
+      try {
+        const [replay] = replayTimePoolGrowth(store);
+        expect(replay?.timeGrowth.length).toBeGreaterThan(0);
+        expect(replay?.timeGrowth.every((b) => b.recorded === "hold" && b.replayed === "hold")).toBe(true);
+        expect(replay?.newTimeGrowth).toBe(0);
+      } finally {
+        dispose();
+      }
     }
   });
 });

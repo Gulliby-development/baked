@@ -1,6 +1,13 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import type { InitiativePlan } from "../src/core/workflows/initiatives/plan.js";
-import { InitiativeService, type InitiativeView, shareShortfall } from "../src/core/workflows/initiatives/service.js";
+import {
+  InitiativeService,
+  type InitiativeView,
+  shareShortfall,
+  timeShortfall,
+} from "../src/core/workflows/initiatives/service.js";
+import { HOST_POOL_GROWTHS } from "../src/core/workflows/initiatives/token-pool.js";
+import { replayTimePoolGrowth } from "../src/core/workflows/trace.js";
 import type { RunPolicy } from "../src/core/workflows/schemas.js";
 import { type Remedy, RemedySchema } from "../src/core/workflows/remedies.js";
 import { activeTimeLimit, type SizingReport } from "../src/core/workflows/sizing.js";
@@ -82,7 +89,7 @@ const OWN_CALLS = (OWN_PACE * 20) / 10_000;
  * An initiative whose first wave of three features finished at `OWN_PACE`, beside five earlier
  * runs of the project at `HISTORY_PACE`, with `timeMs` of shared active time.
  */
-async function ladle(workflow: "sdd" | "quick", timeMs: number, calls = { limit: 10_000, perRun: 0 }) {
+async function ladle(workflow: "sdd" | "quick", timeMs: number, calls = { limit: 10_000, perRun: 0 }, workflows: { timePoolGrowth?: "off" | "shadow" } = {}) {
   const policy: RunPolicy = {
     ...fixturePolicy,
     maxTotalTokens: 10_000_000,
@@ -93,6 +100,7 @@ async function ladle(workflow: "sdd" | "quick", timeMs: number, calls = { limit:
   };
   const fixture = workflowFixture({ policy, executor: (root) => new FeatureExecutor(root) });
   cleanups.push(fixture.dispose);
+  fixture.config.workflows = { ...fixture.config.workflows, ...workflows } as typeof fixture.config.workflows;
   const store = fixture.service.store;
   for (let i = 0; i < 5; i++) {
     const run = await fixture.start(`earlier-${i}`);
@@ -208,6 +216,36 @@ describe("scenario: the shared time has a forecast, a notice and an amount (#233
     const events = initiatives.store.eventsOfType("ladle", "budget.time_notice");
     expect(events).toHaveLength(1);
     expect(events[0]).toMatchObject({ limitMs: 61 * MINUTE, suggestedMs: time?.suggestedMs });
+  }, 60000);
+
+  test("a time forecast past the limit while the token pool has room records one shadow time-pool would-extend (#2346)", async () => {
+    const { store, initiatives, starter } = await ladle("sdd", 61 * MINUTE);
+    const view = initiatives.view("ladle");
+    starter.noteTimeForecast(view, null);
+    starter.noteTimeForecast(initiatives.view("ladle"), null);
+    // Once per time and token limit: the first wave's last start already passed 61 min.
+    const extends_ = initiatives.store.eventsOfType("ladle", "decision.would_extend") as Record<string, unknown>[];
+    expect(extends_).toHaveLength(1);
+    const inputs = extends_[0]?.inputs as { forecastMs: number; suggestedMs: number; usedMs: number };
+    expect(inputs).toMatchObject({ limitMs: 61 * MINUTE, tokensPerMinute: OWN_PACE, limitTokens: 200_000_000, cost: { capUsd: null } });
+    expect(inputs.forecastMs).toBeGreaterThan(61 * MINUTE);
+    // The 200M pool runs far longer at 60k a minute: the suggestion is not held back.
+    expect(extends_[0]).toMatchObject({ reason: "time-pool", mode: "shadow", key: `time-pool-${61 * MINUTE}-200000000`, toMs: inputs.suggestedMs, byMs: inputs.suggestedMs - 61 * MINUTE });
+    expect(String(extends_[0]?.summary)).toContain(`the shared time would grow from 61 to ${Math.round(inputs.suggestedMs / MINUTE)} min`);
+    expect(Object.keys(HOST_POOL_GROWTHS)).toContain(String(extends_[0]?.reason));
+    // Shadow changes no limit.
+    expect(initiatives.view("ladle").budget.limits.maxActiveMs).toBe(61 * MINUTE);
+    // The corpus hook decides the recorded share gates again: the same extensions, none new.
+    const [replayed] = replayTimePoolGrowth(store);
+    expect(replayed?.timeGrowth.some((b) => b.recorded === "extend" && b.replayed === "extend")).toBe(true);
+    expect(replayed?.newTimeGrowth).toBe(0);
+  }, 60000);
+
+  test("with timePoolGrowth off a time forecast past the limit records no would-extend (#2346)", async () => {
+    const { initiatives, starter } = await ladle("sdd", 61 * MINUTE, undefined, { timePoolGrowth: "off" });
+    starter.noteTimeForecast(initiatives.view("ladle"), null);
+    expect(initiatives.store.eventsOfType("ladle", "budget.time_notice")).toHaveLength(1);
+    expect(initiatives.store.eventsOfType("ladle", "decision.would_extend")).toEqual([]);
   }, 60000);
 
   test("the pool's block on spent time carries suggestedTimeMs on its extend remedy", async () => {
@@ -352,6 +390,63 @@ describe("scenario: R76 schemamask io, a run block's time is held to what the sh
     expect(remedies.map((r) => r.action)).toEqual(["extend", "resume"]);
     expect(remedies[0]).toMatchObject({ runId: head });
     expect(remedies[0]?.suggestedTimeMs).toBeGreaterThan(limit);
+  }, 60000);
+});
+
+// R76 schemamask (#2413): check, generation and validate started on 1.9 to 4.2 min of shared time
+// against lows of 9 to 30 min at the pace then. Each stopped on its active deadline within 4 min
+// and waited 16 to 26 min for a person. The share gate's floor is one second.
+describe("scenario: R76 schemamask, a feature starts on less time than its low estimate (#2413)", () => {
+  const timeWouldStops = (initiatives: InitiativeService) =>
+    initiatives.store
+      .eventsOfType("ladle", "decision.would_stop")
+      .filter((p) => (p as { reason?: string }).reason === "initiative-time-share") as {
+      mode: string;
+      featureId: string;
+      remedy: Remedy & { suggestedTimeMs: number };
+      inputs: { availableMs: number; needMs: { low: number } };
+    }[];
+  /** Head's estimate as schemamask's validate had it: 10 to 20 min at the initiative's 60k a minute. */
+  const HEAD_NEED = { low: 10 * OWN_PACE, high: 20 * OWN_PACE };
+  const estimated = (initiatives: InitiativeService): void => {
+    // The fixture's history is unsized, so its estimate is on defaults and names no need.
+    (initiatives as unknown as { featureNeeds(): Map<string, typeof HEAD_NEED> }).featureNeeds = () =>
+      new Map([["head", HEAD_NEED]]);
+  };
+
+  test("a start on a time share below its low records an initiative-time-share would-stop with the time that starts it", async () => {
+    // The first wave used 60 of 61 min: head's share is 1 min, its low at 60k a minute is longer.
+    const { initiatives, starter } = await ladle("sdd", 61 * MINUTE);
+    estimated(initiatives);
+    const view = initiatives.view("ladle");
+    const head = view.features.find((f) => f.id === "head");
+    if (!head) throw new Error("no head");
+    expect(head.need).toEqual(HEAD_NEED);
+    expect(head.share?.activeMs).toBeGreaterThan(1000);
+    expect(shareShortfall(view, head)).toBeNull();
+    const short = timeShortfall(view, head);
+    expect(short?.availableMs).toBe(1 * MINUTE);
+    expect(short?.needMs).toEqual({ low: 10 * MINUTE, high: 20 * MINUTE });
+
+    // Shadow: the start goes ahead and the would-stop is recorded once, with the remedy's amount.
+    expect(await starter.startFeature("ladle", "head")).toBe(true);
+    const events = timeWouldStops(initiatives);
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({ mode: "shadow", featureId: "head", remedy: { action: "extend" } });
+    expect(RemedySchema.safeParse(events[0]?.remedy).success).toBe(true);
+    const suggested = events[0]?.remedy.suggestedTimeMs ?? 0;
+    expect(suggested % (15 * MINUTE)).toBe(0);
+    expect(suggested - 61 * MINUTE).toBeGreaterThanOrEqual((short?.needMs.low ?? 0) - (short?.availableMs ?? 0));
+    expect(suggested).toBeGreaterThanOrEqual(view.budget.time?.suggestedMs ?? 0);
+  }, 60000);
+
+  test("a start whose time share covers its low records none", async () => {
+    const { initiatives, starter } = await ladle("sdd", 600 * MINUTE);
+    estimated(initiatives);
+    const head = initiatives.view("ladle").features.find((f) => f.id === "head");
+    expect(head ? timeShortfall(initiatives.view("ladle"), head) : "no head").toBeNull();
+    expect(await starter.startFeature("ladle", "head")).toBe(true);
+    expect(timeWouldStops(initiatives)).toHaveLength(0);
   }, 60000);
 });
 

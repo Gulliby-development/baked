@@ -12,9 +12,16 @@ import { fixtureSpec, workflowFixture } from "./helpers/workflow-fixture.js";
 import { slicedCorrective } from "./helpers/sliced-corrective-scenario.js";
 import { evidencePaths, scopeRecord, stackFrames } from "../src/core/workflows/corrective-scope.js";
 import { cellSamples, cellSpec, omittedCellInput, withoutCellInput } from "./helpers/criteria-cell-fixtures.js";
-import { ProcessScope } from "../src/core/workflows/process-scope.js";
+import { ProcessScope, windowsBatchInvocation, windowsProgram } from "../src/core/workflows/process-scope.js";
 import { canRepairRun, type RepairBlock } from "../src/core/workflows/repairable.js";
-import { growthLimit, type InitiativeView, rebaseView, shareShortfall } from "../src/core/workflows/initiatives/service.js";
+import {
+  growthLimit,
+  type InitiativeView,
+  rebaseView,
+  type ShareGateView,
+  shareShortfall,
+  timeShortfall,
+} from "../src/core/workflows/initiatives/service.js";
 import { estimateInitiative } from "../src/core/workflows/initiatives/estimate.js";
 import { hasExecutableFields, manifestFieldChanges } from "../src/core/workflows/quality/manifests.js";
 import { REPLAY_TARGETS, replayCommand, replayTargets } from "../src/core/workflows/quality/baseline-replay.js";
@@ -135,6 +142,34 @@ test("#1643 initiative ceiling gate uses central stage prices from shared histor
     } finally { await fixture.dispose(); }
   } finally { await history.dispose(); }
 }, 60000);
+
+test("#2413 the start gate's time share: a start below its low estimate at the pace is short", () => {
+  // R76 schemamask's validate: 5 min of 300 left, a low of 1.1M tokens at 37k a minute (30 min),
+  // and one other waiting feature with a low of 0.4M (11 min).
+  const MIN = 60_000;
+  const pace = { tokensPerMinute: 37_000, basis: "initiative" as const, runs: 4 };
+  const time = { limitMs: 300 * MIN, usedMs: 280 * MIN, committedMs: 295 * MIN, pace, forecastMs: null, wallMs: null, coverMs: null, suggestedMs: null, notice: null };
+  const validate = { id: "validate", state: "ready", share: { tokens: 5_000_000, calls: 40, activeMs: 2 * MIN }, need: { low: 1_100_000, high: 2_300_000 } };
+  const other = { id: "report", state: "ready", share: { tokens: 3_000_000, calls: 40, activeMs: 3 * MIN }, need: { low: 400_000, high: 900_000 } };
+  const viewOf = (remainingMs: number, t: typeof time | null = time) =>
+    ({ initiativeId: "schemamask", budget: { remaining: { tokens: 8_000_000, calls: 80, activeMs: remainingMs }, ...(t ? { time: t } : {}) }, features: [validate, other] }) as unknown as ShareGateView;
+
+  const both = Math.round((1_100_000 / 37_000) * MIN) + Math.round((400_000 / 37_000) * MIN);
+  const short = timeShortfall(viewOf(5 * MIN), validate);
+  expect(short).toMatchObject({ availableMs: 0, tokensPerMinute: 37_000 });
+  expect(short?.needMs.low).toBe(Math.round((1_100_000 / 37_000) * MIN));
+  // The suggestion starts validate beside report's low, in whole 15 min steps.
+  expect((short?.suggestedTimeMs ?? 0) % (15 * MIN)).toBe(0);
+  expect((short?.suggestedTimeMs ?? 0) - 300 * MIN).toBeGreaterThanOrEqual(both - 5 * MIN);
+  expect(short?.summary).toContain("--time-ms");
+  // Exactly the lows of both: not short. One ms less: short.
+  expect(timeShortfall(viewOf(both), validate)).toBeNull();
+  expect(timeShortfall(viewOf(both - 1), validate)?.availableMs).toBe(both - 1 - Math.round((400_000 / 37_000) * MIN));
+  // Without a measured pace or an estimate the time share is not judged.
+  expect(timeShortfall(viewOf(5 * MIN, { ...time, pace: null }), validate)).toBeNull();
+  expect(timeShortfall(viewOf(5 * MIN, null), validate)).toBeNull();
+  expect(timeShortfall(viewOf(5 * MIN), { ...validate, need: null })).toBeNull();
+});
 
 /**
  * The gate matrix (#854): every supported stack against every quality gate's decision, without a
@@ -1584,6 +1619,21 @@ const GRADLE_REPORT = `<?xml version="1.0" encoding="UTF-8"?>
   <system-err><![CDATA[]]></system-err>
 </testsuite>
 `;
+describe("gate matrix: Windows batch tools run by their absolute path (#2432)", () => {
+  // A check's batch tool found on the PATH goes to cmd.exe by its absolute path, sandboxed or not,
+  // so the scripts that find their own files from %~dp0 (sbt's launcher jar, Gradle's and Maven's
+  // homes, npm's node, Composer's phar, LuaRocks' wrappers) read their own folder.
+  const tools = ["sbt.bat", "gradle.bat", "mvn.cmd", "npm.cmd", "npx.cmd", "composer.bat", "busted.bat", "luacheck.bat"];
+  for (const tool of tools)
+    test(`${tool} starts as cmd.exe /c with its absolute path`, () => {
+      const path = `C:\\tools\\${tool.split(".")[0]}\\bin`;
+      const which = (bin: string) => (bin === tool ? `${path}\\${tool}` : null);
+      const program = windowsProgram(tool, path, "C:\\work\\worktree", which);
+      expect(program).toBe(`${path}\\${tool}`);
+      expect(windowsBatchInvocation(program, ["test"], "cmd.exe").args.at(-1)).toBe(`""${path}\\${tool}" "test""`);
+    });
+});
+
 describe("gate matrix: environment signature (#2273)", () => {
   const loopback = "* What went wrong:\njava.io.IOException: Unable to establish loopback connection\n\tat java.base/sun.nio.ch.PipeImpl.<init>(PipeImpl.java:93)\n";
   // Each toolchain with signatures: its command, a recorded machine failure with what its fix names,

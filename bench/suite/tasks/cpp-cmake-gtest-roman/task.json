@@ -8,6 +8,18 @@
     "c++",
     "clang-format"
   ],
+  "probes": [
+    {
+      "name": "GoogleTest",
+      "command": [
+        "cmake",
+        "-S",
+        "{task}/probe",
+        "-B",
+        "build"
+      ]
+    }
+  ],
   "allowedPaths": [
     "src/**",
     "tests/**",

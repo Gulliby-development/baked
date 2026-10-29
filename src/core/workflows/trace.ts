@@ -151,8 +151,15 @@ import {
   type ShareGateRecord,
   shareShortfall,
   shareSpareUsd,
+  timeGrowthInputs,
+  timeShortfall,
 } from "./initiatives/service.js";
-import type { TokenPoolView } from "./initiatives/token-pool.js";
+import {
+  type TimePoolExtension,
+  type TimePoolGrowthInputs,
+  type TokenPoolView,
+  timePoolExtensionDecision,
+} from "./initiatives/token-pool.js";
 import {
   MISQUOTE_FIX_DIR,
   MISQUOTE_FIX_KIND,
@@ -2910,6 +2917,18 @@ export interface InitiativeStartBoundary {
     suggestedUsd: number;
     finalUsd: number | null;
   } | null;
+  /**
+   * The `initiative-time-share` would-stop the current code records at this start (#2413): the
+   * shared time left after the other waiting features' lows is below the feature's low at the
+   * pace. Its promotion cites replayed starts whose features did not stop on their deadlines.
+   */
+  timeWouldStop: {
+    summary: string;
+    availableMs: number;
+    lowMs: number;
+    tokensPerMinute: number;
+    suggestedTimeMs: number;
+  } | null;
 }
 
 /**
@@ -3064,6 +3083,85 @@ export function replayPoolGrowth(
     initiativeId,
     poolGrowth,
     newPoolGrowth: poolGrowth.filter((b) => b.replayed !== b.recorded).length,
+  }));
+}
+
+/** One share gate whose recorded shared time the time-pool growth decides again (#2346). */
+export interface TimeGrowthBoundary {
+  featureId: string;
+  seq: number;
+  /** Whether a `time-pool` would-extend was recorded for this time and token limit. */
+  recorded: "extend" | "hold";
+  replayed: "extend" | "hold";
+  limitMs: number;
+  forecastMs: number | null;
+  toMs: number | null;
+}
+
+/**
+ * Every recorded share gate of the trace's initiatives with a shared time (#2336 on), decided again
+ * by `rule` (`timePoolExtensionDecision`): would the host extend the shared active time while the
+ * token pool and the dollar cap have room (#2346). A gate is `extend` as recorded when a `time-pool`
+ * `decision.would_extend` for its time and token limit came before it, or after it for its own
+ * feature before the next gate (the gate's own record; the event is once per limit).
+ */
+export function replayTimePoolGrowth(
+  store: WorkflowStore,
+  rule: (inputs: TimePoolGrowthInputs) => TimePoolExtension = timePoolExtensionDecision,
+): { initiativeId: string; timeGrowth: TimeGrowthBoundary[]; newTimeGrowth: number }[] {
+  const rows = store.connection
+    .query(
+      "SELECT initiative_id, seq, type, payload_json FROM initiative_events WHERE type IN ('feature.share_gate', 'decision.would_extend') ORDER BY initiative_id, seq",
+    )
+    .all() as { initiative_id: string; seq: number; type: string; payload_json: string }[];
+  const recorded = rows
+    .filter((r) => r.type === "decision.would_extend")
+    .map((r) => ({
+      initiativeId: r.initiative_id,
+      seq: r.seq,
+      ...(JSON.parse(r.payload_json) as {
+        reason?: string;
+        key?: string;
+        featureId?: string | null;
+      }),
+    }))
+    .filter((p) => p.reason === "time-pool");
+  const gateSeqs = rows.filter((r) => r.type === "feature.share_gate");
+  /** The seq of the initiative's next share gate: what the gate's own record came before. */
+  const nextGate = (row: { initiative_id: string; seq: number }): number =>
+    gateSeqs.find((g) => g.initiative_id === row.initiative_id && g.seq > row.seq)?.seq ??
+    Number.POSITIVE_INFINITY;
+  const byInitiative = new Map<string, TimeGrowthBoundary[]>();
+  for (const row of rows) {
+    if (row.type !== "feature.share_gate") continue;
+    const record = JSON.parse(row.payload_json) as ShareGateRecord;
+    const inputs = timeGrowthInputs(record.view);
+    if (!inputs) continue;
+    const decision = rule(inputs);
+    const key = `time-pool-${inputs.limitMs}-${inputs.limitTokens}`;
+    const boundaries = byInitiative.get(row.initiative_id) ?? [];
+    boundaries.push({
+      featureId: record.featureId,
+      seq: row.seq,
+      recorded: recorded.some(
+        (e) =>
+          e.initiativeId === row.initiative_id &&
+          e.key === key &&
+          (e.seq < row.seq || (e.featureId === record.featureId && e.seq < nextGate(row))),
+      )
+        ? "extend"
+        : "hold",
+      replayed: decision.wouldExtend ? "extend" : "hold",
+      limitMs: inputs.limitMs,
+      forecastMs: inputs.forecastMs,
+      toMs: decision.toMs,
+    });
+    byInitiative.set(row.initiative_id, boundaries);
+  }
+  return [...byInitiative].map(([initiativeId, timeGrowth]) => ({
+    initiativeId,
+    timeGrowth,
+    newTimeGrowth: timeGrowth.filter((b) => b.replayed !== b.recorded).length,
   }));
 }
 
@@ -3577,6 +3675,7 @@ function replayStarts(
         const whole = initiatives.estimate(initiativeId);
         const short = feature ? dollarShortfall(view, feature) : null;
         const park = feature ? dollarCapPark(view, feature) : null;
+        const timeShort = feature ? timeShortfall(view, feature) : null;
         const estimate = (whole?.features ?? []).map((f) => ({
           featureId: f.featureId,
           low: f.tokens.low,
@@ -3621,6 +3720,15 @@ function replayStarts(
                 openNeedUsd: park.openNeedUsd,
                 suggestedUsd: park.suggestedUsd,
                 finalUsd: finalUsd > 0 ? Math.round(finalUsd * 100) / 100 : null,
+              }
+            : null,
+          timeWouldStop: timeShort
+            ? {
+                summary: timeShort.summary,
+                availableMs: timeShort.availableMs,
+                lowMs: timeShort.needMs.low,
+                tokensPerMinute: timeShort.tokensPerMinute,
+                suggestedTimeMs: timeShort.suggestedTimeMs,
               }
             : null,
         });

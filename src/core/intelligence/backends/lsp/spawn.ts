@@ -1,5 +1,5 @@
 import { type ChildProcess, spawn } from "node:child_process";
-import { extname, isAbsolute } from "node:path";
+import { isAbsolute } from "node:path";
 import { findOnPath, IS_WIN, killTree } from "../../../platform/index.js";
 import { isWindowsBatch, windowsBatchInvocation } from "../../../workflows/process-scope.js";
 
@@ -14,7 +14,8 @@ export interface LspLaunch {
  * How a server command is spawned. Windows refuses to spawn a `.cmd` or `.bat` file directly
  * (EINVAL), and `baked lsp install` writes `.cmd` shims for Mason generic and pypi packages (jdtls),
  * as npm does for node servers: a batch script runs through cmd.exe instead. A bare command name
- * is looked up on the PATH first, since a `.cmd` found there has the same problem.
+ * is looked up on the PATH first, since a `.cmd` found there has the same problem, and a batch
+ * script runs by its absolute path, so its `%~dp0` names its own directory.
  */
 export function lspLaunch(
   command: string,
@@ -27,7 +28,8 @@ export function lspLaunch(
 ): LspLaunch {
   const windows = options.windows ?? IS_WIN;
   if (!windows) return { executable: command, args, verbatim: false };
-  const bare = !isAbsolute(command) && !/[\\/]/.test(command) && extname(command) === "";
+  // A bare `.cmd` name is resolved too: cmd.exe reads `%~dp0` from the name it is given.
+  const bare = !isAbsolute(command) && !/[\\/]/.test(command);
   const resolved = bare ? ((options.which ?? findOnPath)(command) ?? command) : command;
   if (!isWindowsBatch(resolved)) return { executable: command, args, verbatim: false };
   return { ...windowsBatchInvocation(resolved, args, options.comspec), verbatim: true };
