@@ -156,7 +156,9 @@ import {
   finishedRunPace,
   heldRunTime,
   initiativePace,
+  msFor,
   runTimeRaise,
+  TIME_STEP_MS,
   type TimePoolInputs,
   type TimePoolView,
   timePool,
@@ -855,6 +857,59 @@ function dollarRaise(
   return capCovering(cost, needUsd.low + reserve - uncalibratedSlack(cost));
 }
 
+/** Why a starting feature's share of the shared time is short (`timeShortfall`), with the amount that answers it. */
+export interface TimeShortfall {
+  summary: string;
+  /** The shared time left after the other waiting features' low estimates, in ms. */
+  availableMs: number;
+  /** The starting feature's low and high token estimates at the pace, in ms. */
+  needMs: { low: number; high: number };
+  tokensPerMinute: number;
+  /** The shared time that starts it at its low estimate beside the other lows, rounded up. */
+  suggestedTimeMs: number;
+}
+
+/**
+ * Whether the shared active time left after the other waiting features' low estimates (their low
+ * tokens at the measured pace) is below the starting feature's own low estimate, as the token gate
+ * asks of tokens (#2413); null when it covers it or the pace or the estimate is unknown. R76
+ * schemamask started check, generation and validate on 1.9 to 4.2 minutes of shared time against
+ * lows of 9 to 30 minutes at the pace then: each stopped on its active deadline within 4 minutes
+ * and waited 16 to 26 minutes for a person. The share gate's own floor is one second
+ * (`MIN_SHARE.maxActiveMs`). The `initiative-time-share` stop reason decides what a short start
+ * does; it is not enforced until the pace excludes silent provider time (#2414).
+ */
+export function timeShortfall(
+  view: ShareGateView,
+  feature: Pick<FeatureView, "id" | "need">,
+): TimeShortfall | null {
+  const time = view.budget.time;
+  const pace = time?.pace;
+  if (!time || !pace || pace.tokensPerMinute <= 0 || !feature.need) return null;
+  const at = (tokens: number): number => msFor(tokens, pace.tokensPerMinute);
+  const reserved = view.features
+    .filter((f) => f.share !== null && f.id !== feature.id && f.need)
+    .reduce((sum, f) => sum + at(f.need?.low ?? 0), 0);
+  const availableMs = Math.max(0, view.budget.remaining.activeMs - reserved);
+  const needMs = { low: at(feature.need.low), high: at(feature.need.high) };
+  if (availableMs >= needMs.low) return null;
+  const suggestedTimeMs = Math.max(
+    timeRaise(time) ?? 0,
+    Math.ceil(
+      (time.limitMs + reserved + needMs.low - view.budget.remaining.activeMs) / TIME_STEP_MS,
+    ) * TIME_STEP_MS,
+  );
+  const minutes = (ms: number): number => Math.round(ms / 60_000);
+  const share = Math.round(availableMs / 60_000);
+  return {
+    summary: `The shared time is short: ${feature.id} has ${share} min after reserving the other waiting features' low estimates, below its estimate of ${minutes(needMs.low)}-${minutes(needMs.high)} min at ${Math.round(pace.tokensPerMinute / 1000)}k tokens per active minute (${minutes(time.committedMs)} of ${minutes(time.limitMs)} min committed). A shared time of ${minutes(suggestedTimeMs)} min starts it (baked workflow initiative extend ${view.initiativeId} --time-ms ${suggestedTimeMs}).`,
+    availableMs,
+    needMs,
+    tokensPerMinute: pace.tokensPerMinute,
+    suggestedTimeMs,
+  };
+}
+
 /** Why the initiative would pause on its dollar cap (`dollarCapPark`), with what answers it. */
 export interface DollarCapPark {
   /** The recorded park reason, as an enforced park would set it on the initiative. */
@@ -1259,7 +1314,7 @@ export function planBudget(settings: InitiativeSettings, plan: InitiativePlan): 
 export const MIN_SHARE = { maxTotalTokens: 1000, maxAgentCalls: 1, maxActiveMs: 1000 } as const;
 
 export const BUDGET_RULE =
-  "Each feature run starts with a share of the remaining shared budget, rounded down: remaining = limit - (usage of finished runs + the limits of open runs, decompose and superseded runs included; an open feature run whose plan is sized counts at the high end of its plan's need at the measured plan-to-actual ratio, never below its usage, instead of its limit, unless stopModes sets initiative-plan-charge to shadow), times the feature's weight, divided by the weights of the features of the approved plan without a run. Tokens are weighted by each feature's estimated need (the high end of its estimate), calls and time by size (small 1, medium 2, large 4). When the remaining pool covers the waiting features' low estimates, token shares reserve any lows that the weighted split would underfund and divide the rest by the same weights. A feature starts only if the remaining pool minus the other waiting features' low estimates covers its own low estimate. Otherwise it waits for a budget extension. A feature run grows its own budget only up to what remains after the low ends of the features still waiting (their whole token shares when none has an estimate; what remains when none waits). A starting feature's calls and active time are what remains less a floor for each other waiting feature (the base policy's per-run limit scaled by size, at most its share), never below its own share. A rebased run takes one more share of the same split. Agent calls per run are capped at 1000. With a dollar budget (--budget-usd), dollars use the original token weights and each feature run gets its share as its maxCostUsd with the initiative's costTolerance. Its cap may grow independently of tokens, only up to the remaining dollars less the priced low estimates of the other waiting features (their whole shares when unpriced); a run that finished its tasks and would stop on its cost ceiling reserves its remaining review and convergence before those lows, inside the dollar cap and its tolerance (workflows.stageReserve: shadow, the default, records decision.would_extend; on grows the run's bound). Split approval warns on dollar shares below their own priced lows; open runs hold their caps. No feature starts on less than $0.01, or once a feature is accepted and the projected total passes the cap and its tolerance.";
+  "Each feature run starts with a share of the remaining shared budget, rounded down: remaining = limit - (usage of finished runs + the limits of open runs, decompose and superseded runs included; an open feature run whose plan is sized counts at the high end of its plan's need at the measured plan-to-actual ratio, never below its usage, instead of its limit, unless stopModes sets initiative-plan-charge to shadow), times the feature's weight, divided by the weights of the features of the approved plan without a run. Tokens are weighted by each feature's estimated need (the high end of its estimate), calls and time by size (small 1, medium 2, large 4). When the remaining pool covers the waiting features' low estimates, token shares reserve any lows that the weighted split would underfund and divide the rest by the same weights. A feature starts only if the remaining pool minus the other waiting features' low estimates covers its own low estimate. Otherwise it waits for a budget extension. With a measured pace, a start whose shared time left after the other waiting features' lows at that pace is below its own low records an initiative-time-share would-stop (shadow, #2413). A feature run grows its own budget only up to what remains after the low ends of the features still waiting (their whole token shares when none has an estimate; what remains when none waits). A starting feature's calls and active time are what remains less a floor for each other waiting feature (the base policy's per-run limit scaled by size, at most its share), never below its own share. A rebased run takes one more share of the same split. Agent calls per run are capped at 1000. With a dollar budget (--budget-usd), dollars use the original token weights and each feature run gets its share as its maxCostUsd with the initiative's costTolerance. Its cap may grow independently of tokens, only up to the remaining dollars less the priced low estimates of the other waiting features (their whole shares when unpriced); a run that finished its tasks and would stop on its cost ceiling reserves its remaining review and convergence before those lows, inside the dollar cap and its tolerance (workflows.stageReserve: shadow, the default, records decision.would_extend; on grows the run's bound). Split approval warns on dollar shares below their own priced lows; open runs hold their caps. No feature starts on less than $0.01, or once a feature is accepted and the projected total passes the cap and its tolerance.";
 
 /** Digest a person approves for a plan revision: the plan, the budget and the frozen settings. */
 export function splitDigest(
@@ -2741,6 +2796,46 @@ export class InitiativeService {
     });
   }
 
+  /**
+   * A feature that starts although the shared time left after the other waiting features' lows is
+   * below its own (`timeShortfall`, #2413): a `decision.would_stop` event of
+   * `initiative-time-share`, once per feature. Its promotion parks the start with the remedy.
+   */
+  private noteTimeWouldStop(id: string, view: InitiativeView, feature: FeatureView): void {
+    const settings = this.store.settings(this.store.get(id));
+    const mode = stopMode(settings.basePolicy, "initiative-time-share");
+    if (mode === "enforce") return;
+    const short = timeShortfall(view, feature);
+    if (!short) return;
+    const key = `time-${feature.id}`;
+    const seen = this.store
+      .eventsOfType(id, "decision.would_stop")
+      .some(
+        (p) =>
+          (p as { reason?: string } | null)?.reason === "initiative-time-share" &&
+          (p as { key?: string }).key === key,
+      );
+    if (seen) return;
+    this.store.emit(id, "decision.would_stop", {
+      reason: "initiative-time-share",
+      mode,
+      featureId: feature.id,
+      key,
+      summary: `${short.summary} ${feature.id} would not start.`,
+      remedy: { action: "extend", initiativeId: id, suggestedTimeMs: short.suggestedTimeMs },
+      inputs: {
+        availableMs: short.availableMs,
+        needMs: short.needMs,
+        tokensPerMinute: short.tokensPerMinute,
+        shareMs: feature.share?.activeMs ?? null,
+        remainingMs: view.budget.remaining.activeMs,
+        committedMs: view.budget.time?.committedMs ?? null,
+        limitMs: view.budget.time?.limitMs ?? null,
+        paceBasis: view.budget.time?.pace?.basis ?? null,
+      },
+    });
+  }
+
   private async startFeature(id: string, featureId: string): Promise<boolean> {
     const row = this.store.get(id);
     const plan = this.approvedPlan(row);
@@ -2756,6 +2851,7 @@ export class InitiativeService {
     if (waiting) this.noteShareGate(current, waiting, "pass");
     if (waiting) this.noteShareWouldStop(id, current, waiting);
     if (waiting) this.noteCapWouldStop(id, current, waiting);
+    if (waiting) this.noteTimeWouldStop(id, current, waiting);
     this.noteAdvisoryForecast(id, featureId, current.budget.cost);
     this.noteForecastWouldStop(row, featureId, current);
     const share = { ...sized, ...guardGrowth(current, featureId, settings.basePolicy) };
