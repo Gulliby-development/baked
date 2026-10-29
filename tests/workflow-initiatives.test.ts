@@ -49,7 +49,7 @@ import {
 import { workflowHelp } from "../src/headless/workflow-parse.js";
 import { WorkflowFault } from "../src/core/workflows/errors.js";
 import { acceptedContract, pathsExistLater } from "../src/core/workflows/dependencies.js";
-import { mergedBase, provisionalBase } from "../src/core/workflows/worktree.js";
+import { mergedBase, provisionalBase, runWorktreeDir } from "../src/core/workflows/worktree.js";
 import { prepareDelivery } from "../src/core/workflows/delivery.js";
 import { PLACEHOLDER_SHARE } from "../src/core/workflows/initiatives/estimate.js";
 import { criticalPathText } from "../src/core/workflows/initiatives/view-model.js";
@@ -2272,7 +2272,7 @@ process.exit(offenses.length ? 1 : 0);`;
       expect(message.pinned[0]?.contractHash).not.toBe(firstPin);
       expect(t.executor.writes["message.txt"]).toBe(1);
       expect(t.initiatives.events("values").some((e) => e.type === "feature.invalidated" && (e.payload as { runId: string }).runId === planned.runId)).toBe(true);
-      expect(readFileSync(join(t.root, ".baked", "worktrees", message.runId ?? "", "main", "base.txt"), "utf8")).toStartWith("ready v2");
+      expect(readFileSync(join(t.root, runWorktreeDir(t.root, message.runId ?? ""), "main", "base.txt"), "utf8")).toStartWith("ready v2");
     }, 120_000);
 
     test("the provisional base adds the unfinished features' stubs only where the base has no file", async () => {
