@@ -18,6 +18,12 @@ export interface SuiteTask {
   toolchain: string;
   /** Executables that must be on PATH; the runner skips the task without them. */
   requires: string[];
+  /**
+   * Libraries or other things `requires` cannot name: each probe is a command that exits 0 when
+   * the thing named is present (GoogleTest for a CMake task). The runner skips the task otherwise.
+   * It runs in an empty scratch folder; `{task}` in an argument stands for the task's directory.
+   */
+  probes?: { name: string; command: string[] }[];
   /** Paths the plan may write; a plan writing elsewhere is an unplanned intervention. */
   allowedPaths: string[];
   checks: SuiteCheck[];
@@ -75,6 +81,20 @@ export function suiteRoot(): string {
   return import.meta.dir;
 }
 
+/**
+ * What a task needs that this machine lacks: the `requires` executables `which` cannot find, then
+ * the names of the probes whose command fails.
+ */
+export function missingRequirements(
+  task: Pick<SuiteTask, "requires" | "probes">,
+  which: (exe: string) => string | null,
+  succeeds: (command: string[]) => boolean,
+): string[] {
+  const missing = task.requires.filter((exe) => !which(exe));
+  if (missing.length > 0) return missing;
+  return (task.probes ?? []).filter((p) => !succeeds(p.command)).map((p) => p.name);
+}
+
 /** Problems with one task directory; an empty list means the task is well-formed. */
 export function validateTask(dir: string, raw: unknown): string[] {
   const problems: string[] = [];
@@ -92,6 +112,19 @@ export function validateTask(dir: string, raw: unknown): string[] {
     if (!Array.isArray(v) || v.length === 0 || !v.every((x) => typeof x === "string" && x)) {
       problems.push(`${key} must be a non-empty list of strings`);
     }
+  }
+  if (t.probes !== undefined) {
+    const ok =
+      Array.isArray(t.probes) &&
+      t.probes.every(
+        (p: Record<string, unknown>) =>
+          typeof p?.name === "string" &&
+          p.name &&
+          Array.isArray(p.command) &&
+          p.command.length > 0 &&
+          p.command.every((x) => typeof x === "string" && x),
+      );
+    if (!ok) problems.push("probes must list { name, command } with a non-empty command");
   }
   if (!Array.isArray(t.checks) || t.checks.length === 0)
     problems.push("checks must list at least one check");
