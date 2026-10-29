@@ -1,6 +1,9 @@
 import { describe, expect, test } from "bun:test";
 import type { ModelMessage } from "@ai-sdk/provider-utils";
+import { modelCheckOutput } from "../src/core/verification/check-runner.js";
 import {
+  CHECK_TOOLS,
+  checkResultKey,
   NO_EDIT_STEPS,
   STEER_GRACE_STEPS,
   steeringNotice,
@@ -8,6 +11,7 @@ import {
   stillStuck,
   type WatchFinding,
   type WatchSignal,
+  type WatchStep,
   watchSteps,
 } from "../src/core/workflows/progress-watch.js";
 import {
@@ -75,6 +79,127 @@ describe("watchSteps", () => {
     expect(watchSteps([edit(), check("ok"), edit()], { mustEdit: true, spend: half })?.signal).toBe(
       "unchecked-spend",
     );
+  });
+});
+
+// #2437: the results as the tools return them, with what changes between two runs of the same
+// failure: a new evidence and snapshot id per check run, and timings in the output (sbt 2's
+// `elapsed time` line, R77 pairwick). A tool whose result the watcher compares (`CHECK_TOOLS`)
+// adds its real shape here; the test below fails without it.
+const sbtFailure = (run: number) =>
+  `[warn] /work/src/main/scala/pairwick/Rules.scala isn't formatted properly!\n[error] (Compile / scalafmtCheck) 1 files aren't formatted properly\n[error] elapsed time: ${run * 3 + 1} s, cache ${run * 10}%, ${run} disk cache hits, 3 onsite tasks`;
+const checkRun = (run: number) => {
+  const evidenceId = `ev_${run}`;
+  const output = sbtFailure(run);
+  return { status: "failed", evidenceId, snapshotId: `snap_${run}`, output, reason: "exit", ...modelCheckOutput(output, evidenceId) };
+};
+const REAL_SHAPES: Record<string, (run: number) => { input: unknown; output: unknown }> = {
+  // `{ ...CheckRunner.run(), ...modelCheckOutput() }` (agent-executor.ts).
+  request_check: (run) => ({ input: { checkId: "scalafmt" }, output: checkRun(run) }),
+  // `ProbeOutcome` (repro.ts).
+  run_probe: (run) => ({
+    input: { executable: "sbt", args: ["scalafmtCheck"] },
+    output: { status: "ran", exitCode: 1, timedOut: false, output: sbtFailure(run) },
+  }),
+  // The repro check's still-reproducing findings (scheduler.ts `reproCheck`).
+  run_repro: (run) => ({
+    input: {},
+    output: {
+      status: "reproduced",
+      findings: [`Finding F001 still reproduces: \`sbt run\` prints "1" where "2" is expected. Output:\n1\n[success] elapsed time: ${run + 2} s, cache ${run}%, ${run} disk cache hits`],
+    },
+  }),
+  // `ReplayResult` (acceptance-rows-replay.ts).
+  replay_rows: (run) => ({
+    input: { harness: "object Rules { def score(a: Int) = a }" },
+    output: { status: "failed", failed: ["AC-1.2"], output: `AC-1.2 failed: got 1\n[error] elapsed time: ${run} s, cache ${run * 5}%, 2 disk cache hits` },
+  }),
+  // `apply_fix`: the fixer's exits and the check it ran after them (agent-executor.ts).
+  apply_fix: (run) => ({
+    input: { checkId: "scalafmt" },
+    output: { fixed: ["src/main/scala/pairwick/Rules.scala: exit 1"], check: checkRun(run) },
+  }),
+};
+const realStep = (toolName: string, run: number): WatchStep => {
+  const shape = REAL_SHAPES[toolName];
+  if (!shape) throw new Error(`no real-shape case for ${toolName}`);
+  const { input, output } = shape(run);
+  return { toolCalls: [{ toolName, input }], toolResults: [{ toolName, input, output }] };
+};
+
+describe("same-failure on real check results (#2437)", () => {
+  // Maintainability: every tool the watcher compares has its real result shape here.
+  test("every CHECK_TOOLS entry has a real-shape case", () => {
+    expect([...CHECK_TOOLS, "apply_fix"].filter((tool) => !(tool in REAL_SHAPES))).toEqual([]);
+  });
+
+  test.each(Object.keys(REAL_SHAPES))("three %s results with new ids and timings steer, the next stops", (tool) => {
+    const runs = [1, 2, 3].map((run) => realStep(tool, run));
+    // The shapes differ run to run, as the tools return them.
+    expect(new Set(runs.map((step) => JSON.stringify(step.toolResults))).size).toBe(3);
+    expect(watchSteps(runs.slice(0, 2), { mustEdit: false })).toBeNull();
+    const finding = watchSteps(runs, { mustEdit: false });
+    expect(finding?.signal).toBe("same-failure");
+    // The step answering the steering is a grace; the same failure one step later is the stop.
+    expect(stillStuck(finding as WatchFinding, [...runs, realStep(tool, 4)], 3, WATCH_STOP_AFTER)).toBe("waiting");
+    expect(stillStuck(finding as WatchFinding, [...runs, realStep(tool, 4), realStep(tool, 5)], 3, WATCH_STOP_AFTER)).toBe(
+      "stuck",
+    );
+  });
+
+  test("a check result's key is its tool, check, status and normalized output", () => {
+    const key = (tool: string, run: number) => {
+      const { input, output } = (REAL_SHAPES[tool] as (run: number) => { input: unknown; output: unknown })(run);
+      return checkResultKey({ toolName: tool, input, output });
+    };
+    expect(key("request_check", 1)).toBe(key("request_check", 7));
+    // apply_fix's check is one more run of the same check.
+    expect(key("apply_fix", 1)).toBe(key("request_check", 2));
+    const failing = checkRun(1);
+    const other = (patch: object, input: unknown = { checkId: "scalafmt" }) =>
+      checkResultKey({ toolName: "request_check", input, output: { ...failing, ...patch } });
+    const base = other({});
+    expect(other({ output: failing.output.replace("Rules.scala", "Score.scala") })).not.toBe(base);
+    expect(other({ status: "passed" })).not.toBe(base);
+    expect(other({}, { checkId: "compile" })).not.toBe(base);
+    expect(checkResultKey({ toolName: "read", input: { path: "a" }, output: "x" })).toBeNull();
+    // An apply_fix that ran no check is no check result.
+    expect(checkResultKey({ toolName: "apply_fix", input: { checkId: "scalafmt" }, output: { fixed: [] } })).toBeNull();
+  });
+
+  // R77 pairwick: `apply_fix` returned the same failing scalafmt check again and again; as an
+  // edit it cleared the steering at once.
+  test("an apply_fix that returns the same failing check is no progress after the steering", () => {
+    const runs = [1, 2, 3].map((run) => realStep("request_check", run));
+    const finding = watchSteps(runs, { mustEdit: true }) as WatchFinding;
+    expect(finding.signal).toBe("same-failure");
+    expect(
+      stillStuck(finding, [...runs, realStep("apply_fix", 4), realStep("apply_fix", 5)], 3, WATCH_STOP_AFTER),
+    ).toBe("stuck");
+    // A hand edit still is progress.
+    expect(stillStuck(finding, [...runs, edit(), realStep("request_check", 5)], 3, WATCH_STOP_AFTER)).toBe("progress");
+  });
+
+  test("the step controller steers on three real results and stops on the next", () => {
+    const signals: [string, string][] = [];
+    const usage = { inputTokens: 100, outputTokens: 10, totalTokens: 110 };
+    const controller = new AttemptStepController({
+      maxSteps: 40,
+      maxTokens: 1_000_000,
+      submitTools: ["submit_result"],
+      fallbackStepTokens: 100,
+      watch: { mustEdit: true, onSignal: (f, action) => signals.push([f.signal, action]) },
+    });
+    const messages: ModelMessage[] = [{ role: "user", content: "task" }];
+    const steps = [1, 2, 3].map((run) => ({ usage, ...realStep("request_check", run) }));
+    controller.prepare({ stepNumber: 3, steps, messages });
+    expect(signals).toEqual([["same-failure", "steered"]]);
+    const later = [...steps, { usage, ...realStep("apply_fix", 4) }, { usage, ...realStep("request_check", 5) }];
+    expect(controller.prepare({ stepNumber: 5, steps: later, messages }).activeTools).toEqual(["submit_result"]);
+    expect(signals).toEqual([
+      ["same-failure", "steered"],
+      ["same-failure", "stopped"],
+    ]);
   });
 });
 
