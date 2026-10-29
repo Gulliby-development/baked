@@ -195,10 +195,17 @@ export function getSyntaxStyle(owner: NativeResourceOwner): SyntaxStyle {
 }
 
 let _tsClient: ReturnType<typeof getTreeSitterClient> | null = null;
+/**
+ * The process's tree-sitter client, started once per instance. A renderer destroyed while the
+ * client starts destroys it and rejects its initialization ("Client destroyed during
+ * initialization", an unhandled rejection that failed CI's Windows and macOS test shards); the
+ * next call then gets OpenTUI's new client instead of the destroyed one.
+ */
 export function getTSClient() {
-  if (!_tsClient) {
-    _tsClient = getTreeSitterClient();
-    _tsClient.initialize();
+  const client = getTreeSitterClient();
+  if (client !== _tsClient) {
+    _tsClient = client;
+    client.initialize().catch(() => undefined);
   }
-  return _tsClient;
+  return client;
 }
