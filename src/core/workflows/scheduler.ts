@@ -88,6 +88,7 @@ import {
   caseCheck as criteriaCaseCheck,
   criterionCases,
   missingCases,
+  type PrescribedRows,
   type RepairFinding,
   repairCaseTask,
   writtenTestPaths,
@@ -931,7 +932,10 @@ import {
 } from "./store.js";
 import {
   exactTextContext,
+  isNotPrescribedFinding,
   isSuppliedContentFinding,
+  notPrescribedFindings,
+  prescribedRowFiles,
   suppliedConflictCriteria,
   suppliedContentFindings,
 } from "./supplied-content.js";
@@ -2384,6 +2388,25 @@ export class WorkflowScheduler {
                   { checks: policy.checks },
                 ),
               ];
+              // A criterion literal no prescribed row holds, which the walk no longer demands from
+              // a task that writes only prescribed row files: a note for the spec author (#2501).
+              const notPrescribed = notPrescribedFindings(
+                spec,
+                graph,
+                statedRequest(state, this.store.requests(runId)),
+                { checks: policy.checks },
+              );
+              findings = [...findings.filter((f) => !isNotPrescribedFinding(f)), ...notPrescribed];
+              const notPrescribedMode = stopMode(policy, "case_not_prescribed");
+              if (notPrescribedMode !== "enforce")
+                for (const finding of notPrescribed)
+                  recordWouldStop(this.store, runId, {
+                    reason: "case_not_prescribed",
+                    mode: notPrescribedMode,
+                    key: `analysis-${finding.refs[1] ?? finding.id}`,
+                    summary: finding.description,
+                    inputs: { criterionId: finding.refs[1] ?? null, finding: finding.id },
+                  });
               // Analysis passes when no finding blocks: the rest are notes, whatever the model's verdict.
               const blocking = findings.some((f) => f.blocking);
               state.analysisPassed = !blocking && analysis.verdict !== "inconclusive";
@@ -6826,10 +6849,13 @@ export class WorkflowScheduler {
               tasks: (state.rootGraph ?? state.graph)?.tasks ?? [],
               // The rows the host wrote are held by its intact blocks (#1997).
               hostRows: generatedRows.filter((file) => file.inline === true),
+              // The rows the request prescribes, for files written yet or not (#2501).
+              prescribedRows: this.prescribedRows(runId, state),
               generatedKinds: this.bannedGeneratedKinds(state, task),
               refuseGenerated: stopMode(policy, "generated_case") === "enforce",
-              record: (walk) =>
+              record: (walk, cases) =>
                 this.store.transaction(() => {
+                  this.caseNotPrescribedWouldStop(runId, policy, task, walk, cases);
                   const generatedStop = this.generatedCaseWouldStop(runId, policy, task, walk);
                   this.store.artifact(
                     runId,
@@ -12944,6 +12970,7 @@ ${note}`;
         checks: policy.checks,
         tasks: (state.rootGraph ?? state.graph)?.tasks ?? [],
         hostRows: (files ?? []).filter((file) => file.inline === true),
+        prescribedRows: this.prescribedRows(runId, state),
       },
     );
     const cases = walk ? (await walk(fix.root)).length : 0;
@@ -16436,6 +16463,38 @@ ${note}`;
    * files that hold a case build inputs from generated values where literal examples are asked
    * for. Returns whether the walk would stop the task.
    */
+  /** The rows the request prescribes for each test file of the plan (`prescribedRowFiles`, #2501). */
+  private prescribedRows(runId: string, state: RuntimeState): PrescribedRows {
+    const graph = state.rootGraph ?? state.graph;
+    if (!graph) return new Map();
+    return prescribedRowFiles(statedRequest(state, this.store.requests(runId)), graph);
+  }
+  /**
+   * The `case_not_prescribed` would-stops of a walk (#2501): each case no prescribed row holds,
+   * which the walk did not demand from a task that writes only prescribed row files, once per task,
+   * criterion and literal, with both.
+   */
+  private caseNotPrescribedWouldStop(
+    runId: string,
+    policy: RunPolicy,
+    task: Task,
+    walk: CaseWalk,
+    cases: readonly CriterionCase[],
+  ): void {
+    const mode = stopMode(policy, "case_not_prescribed");
+    if (mode === "enforce") return;
+    for (const [i, c] of walk.cases.entries()) {
+      const found = cases[i];
+      if (c.prescribed !== "none" || !found) continue;
+      recordWouldStop(this.store, runId, {
+        reason: "case_not_prescribed",
+        mode,
+        key: `task-${task.id}-${found.criterionId}-${found.literal.slice(0, 120)}`,
+        summary: `${found.criterionId} cites ${JSON.stringify(found.literal)}, which no row the request prescribes holds; ${task.id} writes only prescribed row files (${writtenTestPaths(task).join(", ")}), so the case walk does not demand it`,
+        inputs: { taskId: task.id, criterionId: found.criterionId, literal: found.literal },
+      });
+    }
+  }
   private generatedCaseWouldStop(
     runId: string,
     policy: RunPolicy,

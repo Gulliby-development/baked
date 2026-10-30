@@ -307,6 +307,17 @@ export const STOP_REASONS = {
     modes: NOT_ENFORCED,
     defaultMode: "shadow",
   },
+  case_not_prescribed: {
+    label:
+      "A criterion cites a literal that no row the request prescribes holds, for a task that writes only prescribed row files",
+    // Shadow only (#2501): the case walk no longer refuses such a task (it cannot add a row to a
+    // file the request fixes row for row; R81 ratdec exact-cli T011 added one and a corrective
+    // removed it, 368k), and records the criterion and literal instead; analysis lists them as a
+    // note. Its promotion, after two bench rounds with no false would-stop, makes that analysis
+    // finding blocking, so the spec author removes the example row from the criterion.
+    modes: NOT_ENFORCED,
+    defaultMode: "shadow",
+  },
   committed_tree: {
     label:
       "A required static check that passed on the working tree fails on a clean worktree of the feature's commit",
