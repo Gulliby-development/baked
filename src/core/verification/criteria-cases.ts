@@ -15,6 +15,7 @@ import { caseEvidence } from "./criteria-evidence.js";
 import {
   type GeneratedKind,
   type GeneratedValue,
+  generatedCaseDecision,
   generatedValues,
   MAX_GENERATED_VALUES,
 } from "./generated-values.js";
@@ -338,6 +339,20 @@ export interface CaseContext {
    * (`bannedGeneratedKinds`, #2344): the walk records each one in a test file that holds a case.
    */
   generatedKinds?: ReadonlySet<GeneratedKind>;
+  /**
+   * Refuse the task for those generated values (`generated_case` enforced, #2469), naming each
+   * file and line; otherwise the walk only records them.
+   */
+  refuseGenerated?: boolean;
+}
+
+/** The refusal line of a walk's generated values (#2469): each file and line, and what to write. */
+export function generatedCaseRefusal(generated: readonly GeneratedValue[]): string {
+  const where = generated
+    .slice(0, 5)
+    .map((g) => `${g.path}:${String(g.line)} (${g.kind})`)
+    .join(", ");
+  return `The request or a criterion asks for literal examples, and these tests build their inputs or expected values from generated values: ${where}${generated.length > 5 ? `, and ${String(generated.length - 5)} more` : ""}. Write each case's input and expected value as a literal row (no interpolation, repetition, formatting or loops that build them).`;
 }
 
 /**
@@ -1543,7 +1558,11 @@ export function caseCheck(
     const refused = caseWalkDecision(walk);
     context.record?.({ ...walk, refused });
     const missing = refused.flatMap((i) => cases[i] ?? []);
-    return Promise.all(
+    const generatedLine =
+      context.refuseGenerated && walk.generated && generatedCaseDecision(walk)
+        ? [generatedCaseRefusal(walk.generated)]
+        : [];
+    const lines = await Promise.all(
       missing.map(
         async (c) =>
           (await context.probe?.(c, root)) ??
@@ -1560,6 +1579,7 @@ export function caseCheck(
               : `${c.criterionId} names ${JSON.stringify(c.literal)}, found only in an assertion message in ${paths.join(", ")}. Use it as a test input or expected value; the message alone is a decoy.`),
       ),
     );
+    return [...lines, ...generatedLine];
   };
 }
 

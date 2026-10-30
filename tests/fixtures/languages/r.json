@@ -10,10 +10,12 @@
     "testsGrown": "[ FAIL 1 | WARN 0 | SKIP 0 | PASS 2 ]\n\n\u2550\u2550 Failed tests \u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\n\u2500\u2500 Failure ('test-sum.R:2:3'): adds \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\nadd_numbers(1, 2) (`actual`) not equal to 3 (`expected`).\n\n  `actual`: -1\n`expected`:  3\n\n[ FAIL 1 | WARN 0 | SKIP 0 | PASS 2 ]\nError: Test failures\nExecution halted\n"
   },
   "generated": {
-    "tests/testthat/test-gen.R": "a <- strrep(\"\\\\\", 3)\nb <- paste0(\"x\", a)\nlit <- \"\\\\\\\\\\\\\"\n# d <- strrep(\"\\\\\", 3)\n"
+    "tests/testthat/test-gen.R": "a <- strrep(\"\\\\\", 3)\nb <- paste0(\"x\", a)\nlit <- \"\\\\\\\\\\\\\"\n# d <- strrep(\"\\\\\", 3)\n",
+    "tests/testthat/test-runtime.R": "dir <- tempdir()\nwant <- sprintf(\"bad: %s\", dir)\n"
   },
   "expected": {
     "generatedValues": ["tests/testthat/test-gen.R:1 repeat","tests/testthat/test-gen.R:2 format"],
+    "runtimePaths": ["tests/testthat/test-runtime.R: dir"],
     "memberSyntax": [
       "Scanner calls Reader::is_encoding_token.: Reader::is_encoding_token",
       "Scanner calls Reader$is_encoding_token for each token.: Reader$is_encoding_token"

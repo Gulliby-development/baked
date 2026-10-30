@@ -10,10 +10,12 @@
     "testsGrown": " FAIL  src/sum.test.js > sum\n Test Files  1 failed (1)\n      Tests  1 failed | 3 passed (4)\n"
   },
   "generated": {
-    "src/Gen_test.res": "let a = Js.String2.repeat(\"\\\\\", 3)\nlet b = `x${a}`\nlet lit = \"\\\\\\\\\\\\\"\n// let d = Js.String2.repeat(\"\\\\\", 3)\n"
+    "src/Gen_test.res": "let a = Js.String2.repeat(\"\\\\\", 3)\nlet b = `x${a}`\nlet lit = \"\\\\\\\\\\\\\"\n// let d = Js.String2.repeat(\"\\\\\", 3)\n",
+    "src/Runtime_test.res": "let dir = NodeJs.Os.tmpdir()\nlet want = `bad: ${dir}`\n"
   },
   "expected": {
     "generatedValues": ["src/Gen_test.res:1 repeat","src/Gen_test.res:2 interpolate"],
+    "runtimePaths": ["src/Runtime_test.res: dir"],
     "memberSyntax": [
       "Scanner delegates to Reader.IsEncodingToken.: Reader.IsEncodingToken"
     ],

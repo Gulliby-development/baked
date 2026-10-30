@@ -11,10 +11,12 @@
     "testsGrown": "=== RUN   TestAdds\n--- PASS: TestAdds (0.00s)\n=== RUN   TestSubtracts\n--- PASS: TestSubtracts (0.00s)\n=== RUN   TestSum\n    sum_test.go:9: got 3, want 4\n--- FAIL: TestSum (0.00s)\nFAIL\nFAIL\texample.com/fixture\t0.015s\n"
   },
   "generated": {
-    "gen_test.go": "package sum\n\nvar a = strings.Repeat(\"\\\\\", 3)\nvar b = fmt.Sprintf(\"x%s\", a)\nvar lit = \"\\\\\\\\\\\\\"\n// var d = strings.Repeat(\"\\\\\", 3)\n"
+    "gen_test.go": "package sum\n\nvar a = strings.Repeat(\"\\\\\", 3)\nvar b = fmt.Sprintf(\"x%s\", a)\nvar lit = \"\\\\\\\\\\\\\"\n// var d = strings.Repeat(\"\\\\\", 3)\n",
+    "runtime_test.go": "package sum\n\nfunc TestRuntime(t *testing.T) {\n\tdir := t.TempDir()\n\twant := fmt.Sprintf(\"bad: %s\", dir)\n\t_ = want\n}\n"
   },
   "expected": {
     "generatedValues": ["gen_test.go:3 repeat","gen_test.go:4 format"],
+    "runtimePaths": ["runtime_test.go: dir"],
     "memberSyntax": [
       "Scanner delegates to Reader.IsEncodingToken.: Reader.IsEncodingToken",
       "Scanner calls reader.IsEncodingToken for each token.: reader.IsEncodingToken"

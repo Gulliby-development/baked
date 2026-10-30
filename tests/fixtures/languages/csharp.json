@@ -11,10 +11,12 @@
     "testsGrown": "  Failed SumTests.Commutes [9 ms]\nFailed!  - Failed:     1, Passed:     3, Skipped:     0, Total:     4, Duration: 15 ms\n"
   },
   "generated": {
-    "tests/App.Tests/GenTests.cs": "var a = new string('\\\\', 3);\nvar b = $\"x{a}\";\nvar lit = \"\\\\\\\\\\\\\";\n// var d = new string('\\\\', 3);\n"
+    "tests/App.Tests/GenTests.cs": "var a = new string('\\\\', 3);\nvar b = $\"x{a}\";\nvar lit = \"\\\\\\\\\\\\\";\n// var d = new string('\\\\', 3);\n",
+    "tests/App.Tests/RuntimeTests.cs": "var dir = Path.GetTempPath();\nvar want = $\"bad: {dir}\";\n"
   },
   "expected": {
     "generatedValues": ["tests/App.Tests/GenTests.cs:1 repeat","tests/App.Tests/GenTests.cs:2 interpolate"],
+    "runtimePaths": ["tests/App.Tests/RuntimeTests.cs: dir"],
     "memberSyntax": [
       "Scanner delegates to Reader.IsEncodingToken.: Reader.IsEncodingToken"
     ],

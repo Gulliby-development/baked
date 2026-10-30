@@ -40,7 +40,7 @@ import { TreeSitterBackend } from "../src/core/intelligence/backends/tree-sitter
 import { CALL_SYNTAX, callContext, functionsIn } from "../src/core/intelligence/call-context.js";
 import { TaskSchema } from "../src/core/workflows/schemas.js";
 import { MASK_SYNTAX, maskNonCode, stripComments } from "../src/core/workflows/quality/code-mask.js";
-import { GENERATED_VALUE_SHAPES, generatedValues } from "../src/core/verification/generated-values.js";
+import { GENERATED_VALUE_SHAPES, generatedValues, RUNTIME_PATH_SOURCES, runtimePathNames } from "../src/core/verification/generated-values.js";
 import { PACKAGE_CONTENTS, packagingFields } from "../src/core/workflows/quality/package-contents.js";
 import { isStaticCheck, isWholeUnitCheck } from "../src/core/workflows/check-policy.js";
 import { isTestCheck } from "../src/core/workflows/quality/mutation.js";
@@ -207,6 +207,17 @@ const RECORDS: Record<
       Object.entries(generated).flatMap(([path, text]) =>
         generatedValues(path, text, new Set(["repeat", "format", "interpolate", "pack", "loop"])).map((g) => `${g.path}:${g.line} ${g.kind}`),
       ),
+  },
+  // The names a test file binds to a path made at run time (#2469): the fixture's `generated`
+  // runtime file builds a value from one by interpolation or format, which `generatedValues`
+  // above never marks.
+  runtimePaths: {
+    record: RUNTIME_PATH_SOURCES,
+    run: (_, { generated = {} }) =>
+      Object.entries(generated).flatMap(([path, text]) => {
+        const names = [...runtimePathNames(path, text)].sort();
+        return names.length ? [`${path}: ${names.join(", ")}`] : [];
+      }),
   },
   // The test classes a written-tests run selects by name (#2363): the row's example, a file whose
   // class is not named like it, and each test file of the fixture ("by its name" when it declares

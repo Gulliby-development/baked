@@ -4,10 +4,12 @@
     "Sources/SumTests.m": "#import \"Sum.h\"\n@implementation SumTests\n- (void)testSum { sum(1, 2); }\n@end\n// AC-001 example: (1, 2, 3)\n"
   },
   "generated": {
-    "Tests/GenTests.m": "NSString *b = [NSString stringWithFormat:@\"x%@\", a];\nNSString *lit = @\"\\\\\\\\\\\\\";\n// NSString *d = [NSString stringWithFormat:@\"x%@\", a];\n"
+    "Tests/GenTests.m": "NSString *b = [NSString stringWithFormat:@\"x%@\", a];\nNSString *lit = @\"\\\\\\\\\\\\\";\n// NSString *d = [NSString stringWithFormat:@\"x%@\", a];\n",
+    "Tests/RuntimeTests.m": "NSString *dir = NSTemporaryDirectory();\nNSString *want = [NSString stringWithFormat:@\"bad: %@\", dir];\n"
   },
   "expected": {
     "generatedValues": ["Tests/GenTests.m:1 format"],
+    "runtimePaths": ["Tests/RuntimeTests.m: dir"],
     "memberSyntax": [
       "Scanner delegates to Reader.IsEncodingToken.: Reader.IsEncodingToken",
       "Scanner sends [Reader isEncodingToken:] for each token.: [Reader isEncodingToken]"

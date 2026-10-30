@@ -14,6 +14,7 @@
   },
   "expected": {
     "generatedValues": ["sql/test_gen.sql:1 repeat"],
+    "runtimePaths": null,
     "memberSyntax": null,
     "suppressions": [
       "SELECT * FROM t -- noqa: AM04: lint, linted, prescribable"

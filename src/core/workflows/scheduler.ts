@@ -6758,6 +6758,7 @@ export class WorkflowScheduler {
               // The rows the host wrote are held by its intact blocks (#1997).
               hostRows: generatedRows.filter((file) => file.inline === true),
               generatedKinds: this.bannedGeneratedKinds(state, task),
+              refuseGenerated: stopMode(policy, "generated_case") === "enforce",
               record: (walk) =>
                 this.store.transaction(() => {
                   const generatedStop = this.generatedCaseWouldStop(runId, policy, task, walk);

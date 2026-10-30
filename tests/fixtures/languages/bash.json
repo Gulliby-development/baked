@@ -11,10 +11,12 @@
     "testsGrown": "1..3\nok 1 adds\nok 2 subtracts\nnot ok 3 commutes\n# (in test file test/sum.bats, line 10)\n#   `[ \"$output\" = \"5\" ]' failed\n"
   },
   "generated": {
-    "test/gen.bats": "a=$(printf '\\\\%.0s' 1 2 3)\nfor n in 1 2 3; do run \"$n\"; done\nlit='\\\\\\\\\\\\'\n# d=$(printf '\\\\%.0s' 1 2 3)\n"
+    "test/gen.bats": "a=$(printf '\\\\%.0s' 1 2 3)\nfor n in 1 2 3; do run \"$n\"; done\nlit='\\\\\\\\\\\\'\n# d=$(printf '\\\\%.0s' 1 2 3)\n",
+    "test/runtime.bats": "dir=$(mktemp -d)\nwant=\"bad: $dir\"\n"
   },
   "expected": {
     "generatedValues": ["test/gen.bats:1 format","test/gen.bats:1 interpolate","test/gen.bats:2 loop"],
+    "runtimePaths": ["test/runtime.bats: dir"],
     "memberSyntax": null,
     "suppressions": [
       "# shellcheck disable=SC2086: lint, linted, prescribable"

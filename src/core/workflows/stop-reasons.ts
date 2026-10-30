@@ -160,10 +160,16 @@ export const STOP_REASONS = {
   generated_case: {
     label:
       "A task's tests build their inputs from generated values where the request or a criterion asks for literal examples",
-    // Shadow only until a bench round shows its records true (#2344, R74 callmend); its promotion
-    // refuses the task at its case walk with the files and lines of the generated values.
-    modes: NOT_ENFORCED,
-    defaultMode: "shadow",
+    // Enforced (#2469) after R77 and R79 recorded only true would-stops (#2344): R79 deltaglue
+    // chunks T002's record preceded 8.28M tokens of correctives that a review finding opened for
+    // the same generated inputs. The case walk refuses the task with the files and lines of the
+    // generated values, in the session that wrote them; it applies only where the request or the
+    // task's criteria ask for literal examples (`bannedGeneratedKinds`). R78 deltaglue cli T008's
+    // record was false (expected stderr interpolating `mkdtemp` paths, the literal rows held), so a
+    // value built only from a path made at run time is no longer generated (`RUNTIME_PATH_SOURCES`).
+    // `shadow` records instead.
+    modes: STOP_MODES,
+    defaultMode: "enforce",
   },
   corrective_restores_removed: {
     label: "A corrective puts back what the previous corrective of the file removed",

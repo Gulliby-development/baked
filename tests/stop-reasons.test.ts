@@ -46,9 +46,9 @@ describe("stop reasons", () => {
     // Shadow until its promotion (#2277): a corrective that restores the previous one's removal.
     expect(STOP_REASONS.corrective_restores_removed.modes).toEqual(["shadow", "advisory"]);
     expect(STOP_REASONS.corrective_restores_removed.defaultMode).toBe("shadow");
-    // Shadow until its promotion (#2344): a test input built from generated values where literal examples are asked for.
-    expect(STOP_REASONS.generated_case.modes).toEqual(["shadow", "advisory"]);
-    expect(STOP_REASONS.generated_case.defaultMode).toBe("shadow");
+    // Enforced since #2469: a test input built from generated values where literal examples are asked for.
+    expect(STOP_REASONS.generated_case.modes).toEqual(["shadow", "advisory", "enforce"]);
+    expect(STOP_REASONS.generated_case.defaultMode).toBe("enforce");
     // Shadow until its promotion (#2136): a crash inside the probed task's file is not a finding yet.
     expect(STOP_REASONS.edge_crash_finding.modes).toEqual(["shadow", "advisory"]);
     expect(STOP_REASONS.edge_crash_finding.defaultMode).toBe("shadow");

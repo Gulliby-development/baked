@@ -10,10 +10,12 @@
     "testsGrown": "test sum_commutes ... FAILED\ntest result: FAILED. 3 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s\n"
   },
   "generated": {
-    "tests/gen.rs": "let a = \"\\\\\".repeat(3);\nlet b = format!(\"x{}\", a);\nlet lit = \"\\\\\\\\\\\\\";\n// let d = \"\\\\\".repeat(3);\n"
+    "tests/gen.rs": "let a = \"\\\\\".repeat(3);\nlet b = format!(\"x{}\", a);\nlet lit = \"\\\\\\\\\\\\\";\n// let d = \"\\\\\".repeat(3);\n",
+    "tests/runtime.rs": "let dir = tempdir().unwrap();\nlet p = dir.path().join(\"a.txt\");\nlet want = format!(\"bad: {}\", p.display());\n"
   },
   "expected": {
     "generatedValues": ["tests/gen.rs:1 repeat","tests/gen.rs:2 format"],
+    "runtimePaths": ["tests/runtime.rs: dir, p"],
     "memberSyntax": [
       "Scanner calls Reader::is_encoding_token.: Reader::is_encoding_token",
       "Scanner delegates to Reader.IsEncodingToken.: Reader.IsEncodingToken"
