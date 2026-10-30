@@ -2,12 +2,14 @@ import { type LanguageRecord, none, rowOf } from "../intelligence/language-recor
 import { detectLanguageFromPath } from "../intelligence/types.js";
 import {
   type CaseContext,
+  casePrescribed,
   criterionCases,
   missingCases,
+  type PrescribedRows,
   writtenTestPaths,
 } from "../verification/criteria-cases.js";
 import type { Analysis, Spec, TaskGraph } from "./schemas.js";
-import { exactTextSections, suppliedBlocks } from "./sizing.js";
+import { exactTextSections, suppliedBlocks, suppliedRows } from "./sizing.js";
 import type { Task } from "./types.js";
 
 /**
@@ -115,6 +117,81 @@ export function suppliedContentFindings(
       },
     ];
   });
+}
+
+/**
+ * The rows the request prescribes for each test file the plan writes (#2501), read only by
+ * `suppliedRows` (the one reader of row blocks): what the case walk reads for a file another task
+ * has not written yet, and for a literal no prescribed row holds.
+ */
+export function prescribedRowFiles(
+  request: string,
+  graph: Pick<TaskGraph, "tasks">,
+): PrescribedRows {
+  const paths = [...new Set(graph.tasks.flatMap((t) => writtenTestPaths(t)))];
+  return new Map([...suppliedRows(request, paths)].map(([path, block]) => [path, block.lines]));
+}
+
+export const NOT_PRESCRIBED_PREFIX = "NOT-PRESCRIBED-";
+
+/**
+ * One note per criterion that cites a literal no prescribed row of the feature holds, for a task
+ * that writes only prescribed row files (#2501): the task-end walk no longer demands it (the task
+ * cannot add a row to a file the request fixes row for row), so the spec author is told at
+ * analysis instead. R81 ratdec exact-cli AC-004 cited `["eval","--as","frac","7/3"]`, a row no
+ * block of the brief holds. A note while `case_not_prescribed` is in shadow; its promotion makes
+ * it blocking.
+ */
+export function notPrescribedFindings(
+  spec: Spec,
+  graph: Pick<TaskGraph, "tasks">,
+  request: string,
+  context: Pick<CaseContext, "checks">,
+): Analysis["findings"] {
+  const rows = prescribedRowFiles(request, graph);
+  if (!rows.size) return [];
+  const missing = new Map<string, { task: string; paths: string[]; literals: string[] }[]>();
+  for (const task of graph.tasks) {
+    const paths = writtenTestPaths(task);
+    const cases = criterionCases(spec, task, { checks: context.checks, tasks: graph.tasks });
+    for (const c of cases) {
+      if (casePrescribed(c, paths, rows) !== "none") continue;
+      const entries = missing.get(c.criterionId) ?? [];
+      let entry = entries.find((e) => e.task === task.id);
+      if (!entry) {
+        entry = { task: task.id, paths, literals: [] };
+        entries.push(entry);
+      }
+      if (!entry.literals.includes(c.literal)) entry.literals.push(c.literal);
+      missing.set(c.criterionId, entries);
+    }
+  }
+  return [...missing].flatMap(([criterionId, entries]) => {
+    if (!spec.criteria.some((c) => c.id === criterionId)) return [];
+    const listed = entries
+      .map(
+        (e) =>
+          `${e.literals.map((l) => JSON.stringify(l)).join(", ")} (task ${e.task} writes only ${e.paths.join(", ")})`,
+      )
+      .join("; ");
+    return [
+      {
+        id: `${NOT_PRESCRIBED_PREFIX}${criterionId}`,
+        kind: "inconsistency" as const,
+        refs: ["spec.json", criterionId],
+        description:
+          `Prescribed rows: ${criterionId} cites ${listed}, but the request prescribes the rows of those test files and none of its rows contains ${entries.length === 1 && entries[0]?.literals.length === 1 ? "that literal" : "those literals"}. The case walk does not demand it (case_not_prescribed). Remove the example from ${criterionId} or quote a row the request prescribes.`.slice(
+            0,
+            16000,
+          ),
+        blocking: false,
+      },
+    ];
+  });
+}
+
+export function isNotPrescribedFinding(finding: { id: string }): boolean {
+  return finding.id.startsWith(NOT_PRESCRIBED_PREFIX);
 }
 
 /** A report that says the content of a file is fixed: "verbatim", "exactly this content", "byte for byte". */
