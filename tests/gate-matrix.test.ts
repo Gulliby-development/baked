@@ -6,6 +6,7 @@ import { decoySamples, residualSamples, residualSpec } from "./helpers/criteria-
 import { evaluateAutoApproval, planScopeAdvice } from "../src/core/workflows/auto-approval.js";
 import { proseAfterRefusalScenario, refusalKinds } from "./helpers/prose-after-refusal-scenario.js";
 import { runScanner } from "../src/core/workflows/quality/rules.js";
+import { suppliedLineNumbers } from "../src/core/workflows/supplied-drift.js";
 import { suspendClock } from "./helpers/suspend-clock.js";
 import { caseCheck } from "../src/core/verification/criteria-cases.js";
 import { fixtureSpec, workflowFixture } from "./helpers/workflow-fixture.js";
@@ -5644,5 +5645,32 @@ describe("case walk gate: generated test inputs where literal examples are asked
         writeFileSync(join(root, path), `${literal}\n${counter}`);
         expect((await check(true))[0]).toMatch(new RegExp(`${path.replaceAll(".", "\\.")}:\\d+ \\((?:format|interpolate)\\)`));
       } finally { rmSync(root, { recursive: true, force: true }); }
+    });
+});
+
+describe("rule pack gate: lines the request gives verbatim are notes (#2489)", () => {
+  // R80 deltaglue cli: the brief's verbatim `src/main.ts` returned its sentinel from `catch`, the
+  // rule pack blocked it and corrective T025 needed a person to say "the brief controls".
+  const SAMPLES: [path: string, fence: string, code: string][] = [
+    ["src/main.ts", "ts", "try {\n  return parse(text);\n} catch {\n  return null;\n}\n"],
+    ["app/run.py", "python", "try:\n    run()\nexcept ValueError:\n    pass\n"],
+    ["lib/run.rb", "ruby", "begin\n  run\nrescue StandardError\nend\n"],
+  ];
+  for (const [path, fence, code] of SAMPLES)
+    test(`${path}: a match on the brief's block is a note, the same code in the run's own file blocks`, () => {
+      const brief = `Write \`${path}\` with exactly this content:\n\`\`\`${fence}\n${code.trimEnd()}\n\`\`\`\n`;
+      const own = path.replace(/(\.\w+)$/, "_own$1");
+      const findings = checkBuiltinRules(
+        [
+          { path, content: code, before: null, supplied: suppliedLineNumbers(brief, path, code) },
+          { path: own, content: code, before: null, supplied: suppliedLineNumbers(brief, own, code) },
+        ],
+        {},
+      ).filter((f) => f.severity === "error");
+      const of = (file: string) => findings.filter((f) => f.file === file).map((f) => [f.blocking, f.supplied ?? false]);
+      expect(of(path).length).toBeGreaterThan(0);
+      expect(of(path).every(([blocking, supplied]) => !blocking && supplied)).toBe(true);
+      expect(of(own).length).toBeGreaterThan(0);
+      expect(of(own).every(([blocking]) => blocking)).toBe(true);
     });
 });

@@ -86,6 +86,8 @@ export interface DuplicationResult {
   /** Whether the result blocks the run (`ratchet` and a count grew). */
   blocking: boolean;
   skipped?: string;
+  /** Copies and unused declarations left out as lines the request gives verbatim (#2489). */
+  supplied?: number;
 }
 
 // --- Reading -------------------------------------------------------------------------------
