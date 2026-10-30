@@ -89,6 +89,8 @@ export interface RuleFinding {
    * limitation instead of asking for another correction the rule cannot tell apart (#845).
    */
   kept?: true;
+  /** Every added line of the match is a line the request gives verbatim: a note (#2489). */
+  supplied?: true;
   source: "builtin" | "ast-grep";
 }
 
@@ -105,6 +107,8 @@ export interface ChangedFile {
   content: string;
   /** The file at baseline: null when the run created it, undefined when it is not known. */
   before: string | null | undefined;
+  /** The 0-based lines the request gives verbatim (`suppliedLineNumbers`, #2489): never blocking. */
+  supplied?: ReadonlySet<number>;
 }
 
 /**
@@ -172,6 +176,9 @@ export function checkBuiltinRules(files: ChangedFile[], settings: RuleSettings):
         const span = rule.match(rule.code ? code : lines, i, language);
         if (!span?.some((line) => changed.has(line))) continue;
         const severity = severityOf(settings, rule.id, rule.severity);
+        const supplied = span
+          .filter((line) => changed.has(line))
+          .every((line) => file.supplied?.has(line));
         out.push({
           rule: rule.id,
           severity,
@@ -180,7 +187,8 @@ export function checkBuiltinRules(files: ChangedFile[], settings: RuleSettings):
           text: (lines[i] ?? "").trim().slice(0, 200),
           message: rule.message,
           fix: rule.fix,
-          blocking: severity === "error" && file.before !== undefined,
+          blocking: severity === "error" && file.before !== undefined && !supplied,
+          ...(supplied ? { supplied: true as const } : {}),
           source: "builtin",
         });
       }
@@ -304,6 +312,7 @@ export async function checkAstGrepRules(
       const id = match.ruleId ?? ruleFile;
       if (!file || disabled.has(id) || !added.get(path)?.has(line)) continue;
       const severity = severityOf(settings, id, match.severity === "error" ? "error" : "warning");
+      const supplied = file.supplied?.has(line) === true;
       out.push({
         rule: id,
         severity,
@@ -312,7 +321,8 @@ export async function checkAstGrepRules(
         text: (match.lines ?? "").trim().split("\n")[0]?.slice(0, 200) ?? "",
         message: match.message ?? id,
         fix: match.note ?? "Change the code so the rule no longer matches.",
-        blocking: severity === "error" && file.before !== undefined,
+        blocking: severity === "error" && file.before !== undefined && !supplied,
+        ...(supplied ? { supplied: true as const } : {}),
         source: "ast-grep",
       });
     }

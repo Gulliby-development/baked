@@ -333,3 +333,37 @@ export function suppliedDriftSummary(
     return `${drift.task}'s plan content for ${drift.path}, which the host writes with no session, ${what}. Under hostApply "on" the host writes the request's bytes instead.`;
   return `${drift.task} delivered ${drift.path}, which ${what}. A repair task would rewrite it from the request's text.`;
 }
+
+/**
+ * The 0-based lines of a delivered file that the request gives verbatim for its path (#2489): a
+ * line whose trimmed text is a line of a fenced block attributed to the path, or an added line of
+ * its diff. A listing is not the file's content (#2438) and supplies nothing; blank lines are
+ * never supplied. Quality findings on these lines (the rule pack, Semgrep, the duplication
+ * ratchet) are notes: nobody may change them, so a corrective for them can only end in a person's
+ * clarification. R80 deltaglue cli: the brief's `src/main.ts` returned its contract's sentinel
+ * from two `catch` clauses, `catch-return-default` blocked line 10, and corrective T025 spent
+ * 313k tokens and a clarification to change nothing.
+ */
+export function suppliedLineNumbers(request: string, path: string, content: string): Set<number> {
+  const out = new Set<number>();
+  if (!request) return out;
+  const pool = new Set<string>();
+  for (const blocks of suppliedBlocks(request, [path]).values())
+    for (const block of blocks) {
+      const lines =
+        block.kind === "diff"
+          ? block.patch
+              .split("\n")
+              .filter((line) => line.startsWith("+") && !line.startsWith("+++ "))
+              .map((line) => line.slice(1))
+          : block.listing
+            ? []
+            : block.content.split("\n");
+      for (const line of lines) if (line.trim()) pool.add(line.trim());
+    }
+  if (!pool.size) return out;
+  content.split("\n").forEach((line, i) => {
+    if (line.trim() && pool.has(line.trim())) out.add(i);
+  });
+  return out;
+}

@@ -882,6 +882,12 @@ import {
   revisionNote,
 } from "./revision-patch.js";
 import {
+  ROW_BLOCK_DIR,
+  ROW_BLOCK_KIND,
+  rowBlockDriftSummary,
+  rowBlockDrifts,
+} from "./row-block-drift.js";
+import {
   codeTaskCheckProblems,
   estimateSourceOf,
   loopHistory,
@@ -930,6 +936,7 @@ import {
   type SuppliedDrift,
   suppliedDriftSummary,
   suppliedDrifts,
+  suppliedLineNumbers,
 } from "./supplied-drift.js";
 import {
   documentsOnly,
@@ -5171,6 +5178,45 @@ export class WorkflowScheduler {
           summary: suppliedDriftSummary(drift),
           inputs: { ...drift },
         });
+    } catch {}
+  }
+  /**
+   * The `row_block_drift` would-stops (#2486): each prescribed row of a test file the plan writes
+   * whose quoted literal the delivered file lacks, once per file and row, and the counts of each
+   * compared file under `row-blocks/<path>.json`. Called at the checks stage of both workflow
+   * versions, after the snapshot; a failure to read records nothing.
+   */
+  private rowBlockDriftWouldStop(runId: string, state: RuntimeState, policy: RunPolicy): void {
+    const mode = stopMode(policy, "row_block_drift");
+    if (mode === "enforce") return;
+    const graph = state.rootGraph ?? state.graph;
+    if (!graph) return;
+    try {
+      const root = runRoot(this.store.workspace, state);
+      const compared = rowBlockDrifts(
+        state.requestText || state.prompt,
+        graph,
+        (path) => readText(workspacePath(root, path)),
+        mode,
+      );
+      for (const { record, drifts } of compared) {
+        this.store.transaction(() =>
+          this.store.artifact(
+            runId,
+            ROW_BLOCK_KIND,
+            `${ROW_BLOCK_DIR}${record.path}.json`,
+            canonical(record),
+          ),
+        );
+        for (const drift of drifts)
+          recordWouldStop(this.store, runId, {
+            reason: "row_block_drift",
+            mode,
+            key: `${drift.path}#row-${drift.row}`,
+            summary: rowBlockDriftSummary(drift),
+            inputs: { ...drift },
+          });
+      }
     } catch {}
   }
   /**
@@ -15535,6 +15581,7 @@ ${note}`;
     if (unsafe.length) return this.recordChecks(runId, state, unsafe);
     this.ciCheckDriftWouldStop(runId, state, policy, policy.checks);
     this.suppliedDriftWouldStop(runId, state, policy);
+    this.rowBlockDriftWouldStop(runId, state, policy);
     const failures: Review["findings"] = [];
     const failedIds: string[] = [];
     const passedIds: string[] = [];
@@ -17241,18 +17288,22 @@ ${note}`;
     const planned = kept
       ? (JSON.parse(this.store.readArtifact(runId, kept.id)) as Record<string, string>)
       : {};
+    const request = state.requestText || state.prompt;
     const changed: ChangedFile[] = [];
     for (const path of changedPaths(before, files)) {
       if (!include(path) || files[path] === undefined) continue;
       const content = (await readCodeFiles(root, [path], include)).files.get(path);
       if (content === undefined) continue;
       const hash = before[path];
+      // Lines the request gives verbatim: their quality findings are notes (#2489).
+      const supplied = suppliedLineNumbers(request, path, content);
       changed.push({
         path,
         content,
         before: hash
           ? (planned[path] ?? readKept(this.store, runId, hash)?.toString("utf8") ?? undefined)
           : null,
+        ...(supplied.size ? { supplied } : {}),
       });
     }
     return changed;
@@ -17587,6 +17638,29 @@ ${note}`;
       new Set(changedPaths(before, files)),
       code.skipped,
     );
+    // A copy or unused declaration whose lines the request gives verbatim is a note (#2489).
+    const request = state.requestText || state.prompt;
+    const supplied = new Map<string, Set<number>>();
+    const verbatim = (file: string, start: number, end: number) => {
+      if (!supplied.has(file))
+        supplied.set(file, suppliedLineNumbers(request, file, code.files.get(file) ?? ""));
+      const lines = supplied.get(file) as Set<number>;
+      const text = (code.files.get(file) ?? "").split("\n");
+      // Blank lines are never supplied, and do not make a span the run's own.
+      for (let line = start; line <= end; line++)
+        if (text[line - 1]?.trim() && !lines.has(line - 1)) return false;
+      return lines.size > 0;
+    };
+    const notes = [
+      ...result.clones.filter((c) => verbatim(c.file, c.startLine, c.endLine)),
+      ...result.unused.filter((u) => verbatim(u.file, u.line, u.line)),
+    ];
+    if (notes.length) {
+      result.clones = result.clones.filter((c) => !notes.includes(c));
+      result.unused = result.unused.filter((u) => !notes.includes(u));
+      result.supplied = notes.length;
+      if (!result.clones.length && !result.unused.length) result.blocking = false;
+    }
     const evidenceId = this.store.transaction(() => {
       const artifact = this.store.artifact(
         runId,
@@ -18353,6 +18427,7 @@ ${note}`;
       bound.map((b) => b.check),
     );
     this.suppliedDriftWouldStop(runId, state, policy);
+    this.rowBlockDriftWouldStop(runId, state, policy);
     const failures: Review["findings"] = [];
     const failedIds: string[] = [];
     const passedIds: string[] = [];
