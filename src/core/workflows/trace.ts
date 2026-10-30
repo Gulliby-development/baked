@@ -47,6 +47,13 @@ import {
   type TestCapRecord,
   testCapDecision,
 } from "../verification/test-cap.js";
+import {
+  type AttemptCheckpoint,
+  checkpointPath,
+  checkpointWouldFinish,
+  type UnfinishedEnd,
+  usageStoppedBy,
+} from "./attempt-checkpoint.js";
 import { planApprovalDecision, requestedPathTokens } from "./auto-approval.js";
 import {
   BASELINE_FIX_KIND,
@@ -226,6 +233,7 @@ import {
   stallParkDecision,
 } from "./stall-ladder.js";
 import { readFallback } from "./stall-siblings.js";
+import type { AttemptUsageRecord } from "./step-budget.js";
 import { type ArtifactRow, WorkflowStore } from "./store.js";
 import { SUPPLIED_CHECK_KIND } from "./supplied-checks.js";
 import {
@@ -977,6 +985,69 @@ export interface RunReplay {
   unselectedTests: UnselectedTestsBoundary[];
   /** Such runs the recording did not record a `written_tests_unselected` would-stop for. */
   newUnselectedStops: number;
+  /** Each implementer attempt's green checkpoint against the current would-finish rule (#2470). */
+  attemptCheckpoints: AttemptCheckpointBoundary[];
+  /** Checkpoints the current rule records a `decision.would_finish` for that the recording did not. */
+  newWouldFinishes: number;
+}
+
+export interface AttemptCheckpointBoundary {
+  attemptId: string;
+  taskId: string | null;
+  /** How the attempt ended unfinished, from the recorded would-finish or its usage; null when it did not. */
+  stoppedBy: UnfinishedEnd | null;
+  /** Whether the run recorded the `decision.would_finish`. */
+  recorded: boolean;
+  replayed: boolean;
+}
+
+/** Decides an attempt's would-finish from its checkpoint and how it ended (`checkpointWouldFinish`). */
+export type CheckpointRule = typeof checkpointWouldFinish;
+
+/**
+ * Every recorded attempt checkpoint (`attempts/<attempt>/checkpoint.json`, #2470) decided again by
+ * `rule`, with whether the run recorded the would-finish. The end is the recorded would-finish's
+ * (a stall leaves no usage record of it), else the attempt's usage record's cap or watcher stop.
+ * Traces before #2470 hold no checkpoint.
+ */
+export function replayAttemptCheckpoints(
+  store: WorkflowStore,
+  runId: string,
+  rule: CheckpointRule = checkpointWouldFinish,
+): AttemptCheckpointBoundary[] {
+  const recorded = new Map<string, UnfinishedEnd | null>();
+  for (const e of store.eventsOfType(runId, "decision.would_finish"))
+    if (e.type === "decision.would_finish") {
+      const inputs = e.payload.inputs as { attemptId?: unknown; stoppedBy?: unknown };
+      if (typeof inputs.attemptId === "string")
+        recorded.set(
+          inputs.attemptId,
+          typeof inputs.stoppedBy === "string" ? (inputs.stoppedBy as UnfinishedEnd) : null,
+        );
+    }
+  const boundaries: AttemptCheckpointBoundary[] = [];
+  for (const attempt of store.attempts(runId)) {
+    const row = store.latestArtifact(runId, checkpointPath(attempt.id));
+    if (!row) continue;
+    const checkpoint = store.readArtifactJson<AttemptCheckpoint>(runId, row);
+    const usageRow = store.latestArtifact(runId, `attempts/${attempt.id}/usage.json`);
+    const usage = usageRow
+      ? store.readArtifactJson<AttemptUsageRecord>(runId, usageRow)
+      : undefined;
+    const stoppedBy = recorded.get(attempt.id) ?? usageStoppedBy(usage);
+    const decision = rule(checkpoint, {
+      stoppedBy,
+      totalTokens: usage?.totalTokens ?? attempt.used_tokens,
+    });
+    boundaries.push({
+      attemptId: attempt.id,
+      taskId: checkpoint.taskId,
+      stoppedBy,
+      recorded: recorded.has(attempt.id),
+      replayed: decision !== null,
+    });
+  }
+  return boundaries;
 }
 
 export interface UnselectedTestsBoundary {
@@ -4353,6 +4424,8 @@ function replayRun(
   | "cleanPaceChanges"
   | "unselectedTests"
   | "newUnselectedStops"
+  | "attemptCheckpoints"
+  | "newWouldFinishes"
 > | null {
   const db = store.connection;
   const run = store.run(runId);
@@ -4595,6 +4668,8 @@ export function replayTrace(
     sourceDefectRule?: SourceDefectRule;
     /** Picks the pace of each sizing report's active time again (#2336); the current rule by default. */
     activePace?: ActivePaceRule;
+    /** Decides each attempt checkpoint's would-finish again (#2470); the current rule by default. */
+    checkpointRule?: CheckpointRule;
   } = {},
 ): TraceReplay {
   // Initiative starts rewind their own copies of the trace, before the run replay rewinds this one.
@@ -4717,6 +4792,12 @@ export function replayTrace(
     const unselected = new Map(
       runIds.map((runId) => [runId, replayUnselectedTestRuns(store, runId)]),
     );
+    const checkpoints = new Map(
+      runIds.map((runId) => [
+        runId,
+        replayAttemptCheckpoints(store, runId, options.checkpointRule),
+      ]),
+    );
     const runs: RunReplay[] = [];
     for (const runId of runIds) {
       const firstByte = timings.get(runId) ?? [];
@@ -4755,6 +4836,7 @@ export function replayTrace(
       const sourceDefects = routes.get(runId) ?? [];
       const activeTimes = paces.get(runId) ?? [];
       const unselectedTests = unselected.get(runId) ?? [];
+      const attemptCheckpoints = checkpoints.get(runId) ?? [];
       if (
         !replay.boundaries.length &&
         !firstByte.length &&
@@ -4780,7 +4862,8 @@ export function replayTrace(
         !baselineSignatures.length &&
         !sourceDefects.length &&
         !activeTimes.length &&
-        !unselectedTests.length
+        !unselectedTests.length &&
+        !attemptCheckpoints.length
       )
         continue;
       runs.push({
@@ -4864,6 +4947,8 @@ export function replayTrace(
           .length,
         unselectedTests,
         newUnselectedStops: unselectedTests.filter((b) => !b.recorded).length,
+        attemptCheckpoints,
+        newWouldFinishes: attemptCheckpoints.filter((b) => b.replayed && !b.recorded).length,
       });
     }
     const gates = replayShareGate(store, options.shareGate);

@@ -55,6 +55,11 @@ import {
 import { changedPaths, sourceManifest } from "../verification/snapshot.js";
 import { type ReplayResult, replayProblems } from "./acceptance-rows-replay.js";
 import { affectedTestsFor, taskCaseText, writtenTestsCheck } from "./affected-tests.js";
+import {
+  CheckpointTracker,
+  recordCheckpointWouldFinish,
+  saveCheckpoint,
+} from "./attempt-checkpoint.js";
 import { assertAttemptFits, growBudgetOnProgress } from "./budget.js";
 import {
   cwdPath,
@@ -66,7 +71,7 @@ import {
   wholeUnitFixerCommand,
   writtenCodePaths,
 } from "./check-policy.js";
-import { splitWorkflowContext } from "./context.js";
+import { promptParts, splitWorkflowContext } from "./context.js";
 import { assertForecastFits } from "./cost-forecast.js";
 import { fileHash, rootField } from "./effects.js";
 import { WorkflowFault } from "./errors.js";
@@ -402,6 +407,8 @@ export class NativeAgentExecutor implements AgentExecutor {
         } catch {
           // A failed settlement leaves the effect for the recovery request.
         }
+        // A stall is an unfinished end too: it reads the attempt's checkpoint (#2470, shadow).
+        recordCheckpointWouldFinish(this.store, request.runId, request.attemptId, "stall");
         throw stall.signal.reason;
       }
       throw error;
@@ -562,6 +569,33 @@ export class NativeAgentExecutor implements AgentExecutor {
       // Tool calls of the attempt so far; history compaction keeps only the newest results.
       let toolCalls = 0;
       let edited = false;
+      // The latest state on which every required check of the task passed (#2470, shadow).
+      const checkpoint = request.checkpointChecks?.length
+        ? new CheckpointTracker(
+            {
+              attemptId: request.attemptId,
+              taskId: request.task?.id ?? null,
+              required: request.checkpointChecks,
+            },
+            (record) => {
+              try {
+                saveCheckpoint(this.store, request.runId, record);
+              } catch {
+                // A checkpoint is a shadow record: failing to keep it changes nothing.
+              }
+            },
+          )
+        : null;
+      // The checkpoint's journal position: the attempt's edits that applied, refused ones aside.
+      const journalPosition = () =>
+        this.store
+          .effects(request.runId)
+          .filter(
+            (e) =>
+              e.attempt_id === request.attemptId &&
+              e.kind === "file_patch" &&
+              (e.status === "applied" || e.status === "reconciled"),
+          ).length;
       // Files the attempt's edit tools named, for the tests-written check it requests (#1421).
       const editedPaths = new Set<string>();
       // Whether an edit added doubled backslash escapes, for the hint of a failed check (#1516).
@@ -829,6 +863,13 @@ export class NativeAgentExecutor implements AgentExecutor {
                 request.signal,
                 root,
               );
+              checkpoint?.check(
+                check.id,
+                result.status,
+                result.evidenceId,
+                journalPosition(),
+                budget.consumed(finished),
+              );
               const own =
                 result.status === "failed"
                   ? (request.attributeCheck?.(check, result.output) ?? null)
@@ -941,6 +982,7 @@ export class NativeAgentExecutor implements AgentExecutor {
                   reason: `Only ${PROBE_TRIES} repro runs are allowed per attempt`,
                 };
               const live = await reproCheck(root, request.signal);
+              checkpoint?.reproRan(live.length > 0, journalPosition());
               return live.length
                 ? { status: "reproduced", findings: live }
                 : { status: "fixed", findings: [] };
@@ -2026,6 +2068,8 @@ export class NativeAgentExecutor implements AgentExecutor {
     watch: AttemptWatch,
   ): LanguageModel {
     const calls = policy.modelCalls;
+    // The parts of an implementer's prompt go with its first call's timing (#2470).
+    const parts = request.profile.role === "implementer" ? promptParts(request.prompt) : null;
     const model = () => {
       const resolved = resolveModel(request.profile.model);
       const history = this.firstByteHistory();
@@ -2036,7 +2080,9 @@ export class NativeAgentExecutor implements AgentExecutor {
         firstByteLimit: (ceilingMs, call) =>
           history.decide(ceilingMs, request.profile.model, call, shared),
         timing: (call) => {
-          watch.calls.push(call);
+          watch.calls.push(
+            watch.calls.length === 0 && parts ? { ...call, promptParts: parts } : call,
+          );
           history.record(request.profile.model, call, shared);
         },
         // A call that may reason silently (a CLI adapter, or high effort on a provider whose

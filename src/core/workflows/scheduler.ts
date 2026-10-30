@@ -241,6 +241,11 @@ import {
 } from "./analysis-notes.js";
 import { approvalDigest } from "./approval.js";
 import { writeViaTemp } from "./atomic-write.js";
+import {
+  recordCheckpointWouldFinish,
+  type UnfinishedEnd,
+  usageStoppedBy,
+} from "./attempt-checkpoint.js";
 import { type CheckState, checkState, checksProgressed } from "./attempt-progress.js";
 import {
   APPROVAL_REVIEWER,
@@ -3942,7 +3947,10 @@ export class WorkflowScheduler {
     if (!(await currentPaths()).length) throw fault;
     if (this.capEndStops(runId, state, stepId, task)) {
       // A corrective the host may still finish on its edits (#1978) stops only when it cannot.
-      if (!defer || !this.hostFinishEvidence(runId, defer.policy, task)) throw fault;
+      if (!defer || !this.hostFinishEvidence(runId, defer.policy, task)) {
+        this.checkpointWouldFinish(runId, stepId);
+        throw fault;
+      }
       defer.stop(fault);
     }
     return {
@@ -3957,6 +3965,62 @@ export class WorkflowScheduler {
           : "The attempt used its token cap before it submitted a result; the next attempt continues from its edits.",
       ],
     };
+  }
+  /**
+   * The checks an implementer attempt's checkpoint waits for (#2470): the required checks the host
+   * would run to finish the task after a stop (`hostFinishEvidence`'s named checks and the gated
+   * task-end checks), as far as the attempt can run them itself with `request_check`.
+   */
+  private checkpointChecks(
+    runId: string,
+    state: RuntimeState,
+    policy: RunPolicy,
+    task: Task,
+    root: string,
+  ): string[] {
+    try {
+      const candidates = [
+        ...(this.hostFinishEvidence(runId, policy, task)?.named ?? []),
+        ...this.gatedChecks(runId, state, policy, task, root),
+      ];
+      return [
+        ...new Set(
+          candidates
+            .filter(
+              (c) =>
+                c.required && (task.checkIds.includes(c.id) || /-(?:affected|written)$/.test(c.id)),
+            )
+            .map((c) => c.id),
+        ),
+      ];
+    } catch {
+      return [];
+    }
+  }
+  /**
+   * An unfinished end of a step's latest attempt reads its checkpoint before the task blocks
+   * (#2470, shadow): `decision.would_finish` when its required checks failed on edits past a state
+   * on which they all passed. It changes nothing about the end.
+   */
+  private checkpointWouldFinish(runId: string, stepId: string): void {
+    const attempt = this.lastModelAttempt(runId, stepId);
+    if (!attempt) return;
+    const usage = this.store.latestArtifact(runId, `attempts/${attempt}/usage.json`);
+    recordCheckpointWouldFinish(
+      this.store,
+      runId,
+      attempt,
+      usageStoppedBy(
+        usage ? this.store.readArtifactJson<AttemptUsageRecord>(runId, usage) : undefined,
+      ),
+    );
+  }
+  /** The latest model attempt of a step: the host's check runs record attempts of their own. */
+  private lastModelAttempt(runId: string, stepId: string): string | undefined {
+    return this.store
+      .attempts(runId)
+      .filter((a) => a.step_id === stepId && a.model_id !== null)
+      .at(-1)?.id;
   }
   /** Whether `capEndResult` stops the run for this cap stop instead of continuing the task. */
   private capEndStops(runId: string, state: RuntimeState, stepId: string, task: Task): boolean {
@@ -4021,13 +4085,41 @@ export class WorkflowScheduler {
       ["blocked", "failed"].includes(result.outcome) ||
       (result.outcome === "implemented" && result.unresolved.length > 0);
     if (!unfinished) return null;
-    const record = this.lastAttemptUsage(runId, stepId);
-    const stoppedBy =
-      record?.finalizedBy ??
-      (record?.stopReason === "tokens" || record?.stopReason === "steps"
-        ? record.stopReason
-        : null);
+    const stoppedBy = usageStoppedBy(this.lastAttemptUsage(runId, stepId));
     if (!stoppedBy) return null;
+    // The host's check runs below add attempts of their own to the step.
+    const stopped = this.lastModelAttempt(runId, stepId);
+    const finished = await this.hostFinishStopped(
+      runId,
+      state,
+      policy,
+      stepId,
+      task,
+      result,
+      changed,
+      root,
+      signal,
+      run,
+      stoppedBy,
+    );
+    // The stopped attempt's end stands; its checkpoint records what the host would finish (#2470).
+    if (!finished && stopped) recordCheckpointWouldFinish(this.store, runId, stopped, stoppedBy);
+    return finished;
+  }
+  /** `hostFinishAfterStop` for an unfinished attempt its cap or the watcher stopped. */
+  private async hostFinishStopped(
+    runId: string,
+    state: RuntimeState,
+    policy: RunPolicy,
+    stepId: string,
+    task: Task,
+    result: Implementation,
+    changed: string[],
+    root: string,
+    signal: AbortSignal,
+    run: (check: Check) => Promise<WorkerCheck["checked"]>,
+    stoppedBy: UnfinishedEnd,
+  ): Promise<Implementation | null> {
     const evidence = this.hostFinishEvidence(runId, policy, task);
     if (!evidence) return null;
     // The carried edits keep the host's rows block, as the submit path requires (#1995): in R64
@@ -6634,6 +6726,16 @@ export class WorkflowScheduler {
       task && profile.output === "implementation"
         ? this.reproCheck(runId, policy, task)
         : undefined;
+    const checkpointChecks =
+      task && profile.output === "implementation"
+        ? this.checkpointChecks(
+            runId,
+            state,
+            policy,
+            task,
+            placement.root ?? runRoot(this.store.workspace, state),
+          )
+        : [];
     const literalCaseCheck =
       task && profile.output === "implementation"
         ? criteriaCaseCheck(
@@ -6781,6 +6883,7 @@ export class WorkflowScheduler {
         ...(validate ? { validate } : {}),
         ...(taskEndCheck ? { taskEndCheck } : {}),
         ...(reproCheck ? { reproCheck } : {}),
+        ...(checkpointChecks.length ? { checkpointChecks } : {}),
         ...(caseCheck ? { caseCheck } : {}),
         ...(capCheck ? { testCapCheck: capCheck } : {}),
         ...(replay ? { rowReplay: replay } : {}),

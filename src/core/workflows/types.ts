@@ -682,6 +682,11 @@ export interface ExecutionRequest {
    * that runs in the checks stage rather than after the task (#799); null for any other check.
    */
   attributeCheck?: (check: Check, output: string) => string[] | null;
+  /**
+   * The task's required checks the attempt can run with `request_check` (#2470): the latest state
+   * on which every one passed is kept as the attempt's checkpoint (`attempt-checkpoint.ts`).
+   */
+  checkpointChecks?: string[];
   /** Ownership advice for failed checks, including test updates and upstream defects. */
   failureOwner?: (output: string) => import("./task-graph.js").FailureOwner;
   /** Directory the agent reads, edits and checks in; defaults to the run's workspace. */
