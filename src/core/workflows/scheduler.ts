@@ -493,6 +493,7 @@ import { formatCommandLine, outputTail } from "./gates.js";
 import {
   HOST_APPLY_DIR,
   HOST_APPLY_KIND,
+  HOST_PLAN_CONTENT_DIR,
   type HostApplyRecord,
   hostAppliableTasks,
   hostApplyContents,
@@ -919,7 +920,12 @@ import {
   suppliedConflictCriteria,
   suppliedContentFindings,
 } from "./supplied-content.js";
-import { suppliedDriftSummary, suppliedDrifts } from "./supplied-drift.js";
+import {
+  planContentDrifts,
+  type SuppliedDrift,
+  suppliedDriftSummary,
+  suppliedDrifts,
+} from "./supplied-drift.js";
 import {
   documentsOnly,
   type FailureOwner,
@@ -8405,7 +8411,14 @@ ${note}`;
       // request's verbatim content it applied, #2333), or a correction whose failing checks
       // already pass, has nothing for a model to do: its task checks decide it, and the checks
       // stage covers the rest.
-      if (hostWritten(task)) this.writeHostFiles(runId, child, state, policy, task);
+      if (hostWritten(task))
+        this.writeHostFiles(
+          runId,
+          child,
+          state,
+          policy,
+          await this.suppliedPlanContent(runId, state, policy, task),
+        );
       // No session edits these files, so no scan runs; the record says why (#2277).
       this.recordIntegrity(runId, `tasks/${task.id}`, {
         ...integrityRecord("task", task.id, testIntegrityOf(policy), [], []),
@@ -19706,6 +19719,76 @@ ${note}`;
     return applied;
   }
 
+  /**
+   * The writes the host makes for a planned host-written task (#2472): the plan's content, except
+   * where the request gives the file verbatim and the plan's copy leaves it (`planContentDrifts`,
+   * the comparison `suppliedDrifts` makes of delivered files). Each such write records the
+   * `supplied_drift` would-stop and keeps the plan's copy; under `hostApply: "on"` the host writes
+   * the request's bytes instead (`hostApplyContents`). `host-apply/plan-content/<task>.json` keeps
+   * the drifts and the paths written from the request. A failure to read the request or apply its
+   * blocks writes the plan's content.
+   */
+  private async suppliedPlanContent(
+    runId: string,
+    state: RuntimeState,
+    policy: RunPolicy,
+    task: Task,
+  ): Promise<Pick<Task, "writes">> {
+    if (task.origin !== "planned") return task;
+    const root = runRoot(this.store.workspace, state);
+    const request = state.requestText || state.prompt;
+    const graph = state.graph ?? { tasks: [task] };
+    let drifts: SuppliedDrift[];
+    try {
+      const inputs = await hostApplyInputs(root, request, task, graph);
+      drifts = inputs ? planContentDrifts(request, task, inputs, graph) : [];
+    } catch {
+      return task;
+    }
+    if (!drifts.length) return task;
+    const on = policy.hostApply === "on";
+    const supplied = new Map<string, string>();
+    let applyError: string | undefined;
+    if (on)
+      try {
+        const drifted = task.writes.filter((w) => drifts.some((d) => d.path === w.path));
+        for (const c of await hostApplyContents(root, request, { writes: drifted }, graph))
+          supplied.set(c.path, c.content);
+      } catch (error) {
+        applyError = (error instanceof Error ? error.message : String(error)).slice(0, 300);
+      }
+    const path = `${HOST_PLAN_CONTENT_DIR}${task.id}.json`;
+    if (!this.store.latestArtifact(runId, path))
+      this.store.artifact(
+        runId,
+        HOST_APPLY_KIND,
+        path,
+        canonical({
+          taskId: task.id,
+          mode: on ? "on" : "shadow",
+          drifts,
+          written: [...supplied.keys()],
+          ...(applyError ? { applyError } : {}),
+        }),
+      );
+    const mode = stopMode(policy, "supplied_drift");
+    if (!supplied.size && mode !== "enforce")
+      for (const drift of drifts)
+        recordWouldStop(this.store, runId, {
+          reason: "supplied_drift",
+          mode,
+          key: `${drift.task}#${drift.path}`,
+          summary: suppliedDriftSummary(drift, "plan"),
+          inputs: { ...drift, source: "plan" },
+        });
+    if (!supplied.size) return task;
+    return {
+      writes: task.writes.map((w) => {
+        const content = supplied.get(w.path);
+        return content === undefined ? w : { ...w, content };
+      }),
+    };
+  }
   /**
    * Records `host_content_conflict` (#2456) for each new task-level corrective that the host writes
    * itself with the content its files already hold: it cannot change the failing check, so the

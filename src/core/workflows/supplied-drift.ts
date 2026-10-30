@@ -1,6 +1,7 @@
 import { type HostApplyRecord, type HostApplyWrite, regionSections } from "./host-apply.js";
 import type { TaskGraph } from "./schemas.js";
 import { type SuppliedBlock, suppliedBlocks } from "./sizing.js";
+import type { Task } from "./types.js";
 
 /**
  * Delivered files compared with the blocks the request gives verbatim (#2332, part 2). Bench round
@@ -284,8 +285,38 @@ export function suppliedDrifts(
   return out;
 }
 
-/** A drift in the words a stop would use. */
-export function suppliedDriftSummary(drift: SuppliedDrift): string {
+/**
+ * The writes of a host-written task whose plan content leaves the request's verbatim block for the
+ * file (#2472), compared as `suppliedDrifts` compares a delivered file, from the task's apply
+ * inputs (`hostApplyInputs`). R79 trailspin-update: the brief gave `summary_top_test.go` as a new
+ * file's diff, the planner retyped it into T003's `content` with one extra blank line, and the host
+ * wrote that copy with no session; `suppliedDrifts` reads only host apply records and never saw it.
+ */
+export function planContentDrifts(
+  request: string,
+  task: Pick<Task, "id" | "writes">,
+  inputs: HostApplyWrite[],
+  graph: Pick<TaskGraph, "tasks">,
+): SuppliedDrift[] {
+  const content = new Map(task.writes.map((w) => [w.path, w.content ?? null]));
+  const record: HostApplyRecord = {
+    taskId: task.id,
+    mode: "shadow",
+    writes: inputs,
+    wouldApply: false,
+    reason: null,
+  };
+  return suppliedDrifts(request, [record], graph, (path) => content.get(path) ?? null);
+}
+
+/**
+ * A drift in the words a stop would use: of a delivered file, or of a host-written task's plan
+ * content before the host writes it (`planContentDrifts`).
+ */
+export function suppliedDriftSummary(
+  drift: SuppliedDrift,
+  of: "delivered" | "plan" = "delivered",
+): string {
   const source =
     drift.block === "diff"
       ? `the request's verbatim diff (hunk ${drift.hunk ?? 1})`
@@ -298,5 +329,7 @@ export function suppliedDriftSummary(drift: SuppliedDrift): string {
       : drift.problem === "missing" && !drift.actual
         ? `lacks line ${drift.line} of ${source}: ${JSON.stringify(drift.expected)}`
         : `has ${JSON.stringify(drift.actual?.text ?? "")} at line ${drift.actual?.line ?? drift.line} where ${source} gives ${JSON.stringify(drift.expected)}`;
+  if (of === "plan")
+    return `${drift.task}'s plan content for ${drift.path}, which the host writes with no session, ${what}. Under hostApply "on" the host writes the request's bytes instead.`;
   return `${drift.task} delivered ${drift.path}, which ${what}. A repair task would rewrite it from the request's text.`;
 }

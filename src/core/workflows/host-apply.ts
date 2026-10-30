@@ -33,6 +33,12 @@ export const HOST_APPLY_KIND = "host-apply";
 /** One record per planned task with a supplied write: `host-apply/tasks/<task>.json`. */
 export const HOST_APPLY_DIR = "host-apply/tasks/";
 /**
+ * One record per planned host-written task whose plan content leaves the request's verbatim block
+ * for a file (#2472): `host-apply/plan-content/<task>.json`, with the drifts and the paths the host
+ * wrote from the request's bytes (under `hostApply: "on"`). Not a host apply record.
+ */
+export const HOST_PLAN_CONTENT_DIR = "host-apply/plan-content/";
+/**
  * Whether a patch has a hunk with no context line, as `git diff -U0` writes them (#2412). A hunk of
  * a new or deleted file has none in any diff and is not one.
  */
