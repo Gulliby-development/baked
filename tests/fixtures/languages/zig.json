@@ -10,6 +10,7 @@
   },
   "expected": {
     "generatedValues": ["src/gen_test.zig:1 repeat"],
+    "exampleBuild": ["zig build run; link zig-out, .zig-cache"],
     "runtimePaths": ["src/runtime_test.zig: tmp"],
     "memberSyntax": [
       "Scanner delegates to Reader.IsEncodingToken.: Reader.IsEncodingToken",

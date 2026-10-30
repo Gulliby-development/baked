@@ -13,6 +13,7 @@
   },
   "expected": {
     "generatedValues": ["src/Gen.svelte:2 repeat"],
+    "exampleBuild": null,
     "runtimePaths": ["src/Runtime.svelte: dir, file"],
     "memberSyntax": [
       "Scanner delegates to Reader.IsEncodingToken.: Reader.IsEncodingToken",

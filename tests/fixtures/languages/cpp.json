@@ -12,6 +12,7 @@
   },
   "expected": {
     "generatedValues": ["src/gen_test.cpp:2 repeat"],
+    "exampleBuild": null,
     "runtimePaths": ["src/runtime_test.cpp: dir"],
     "memberSyntax": [
       "Scanner calls Reader::is_encoding_token.: Reader::is_encoding_token",

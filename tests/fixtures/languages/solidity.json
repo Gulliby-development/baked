@@ -10,6 +10,7 @@
   },
   "expected": {
     "generatedValues": ["test/Gen.t.sol:1 format"],
+    "exampleBuild": null,
     "runtimePaths": null,
     "memberSyntax": [
       "Scanner delegates to Reader.IsEncodingToken.: Reader.IsEncodingToken"

@@ -14,6 +14,7 @@ import { linkDependencies } from "../workflows/dependency-dirs.js";
 import type { ProcessScope } from "../workflows/process-scope.js";
 import { fileArgs, recordCommandTimeout } from "./command-timeouts.js";
 import { entryPointCommand } from "./entry-points.js";
+import { commandShape, linkBuildOutput, prepareExampleBuild } from "./example-build.js";
 import { REPRO_TIMEOUT_MS, removeScratch, reproEnv } from "./repro.js";
 
 /** Examples the host runs per review stage; each runs for up to REPRO_TIMEOUT_MS. */
@@ -512,6 +513,9 @@ export async function runDocExamples(
 ): Promise<DocExampleResult[]> {
   const results: DocExampleResult[] = [];
   let ran = 0;
+  // A command shape that timed out once (a toolchain building from nothing) is not waited for
+  // again (#2505): R81 hintsieve's eight `swift run` examples each took the 30 s timeout.
+  const timedOut = new Map<string, DocExample>();
   for (const doc of docs) {
     const examples = extractExamples(doc.path, doc.text);
     if (!examples.length) continue;
@@ -543,10 +547,18 @@ export async function runDocExamples(
         const entry = options.executables.includes(example.argv[0] as string)
           ? null
           : entryPointCommand(options.root, example.argv, options.executables);
-        const [program, ...args] = (entry?.argv ?? example.argv) as [string, ...string[]];
+        const [program, ...entryArgs] = (entry?.argv ?? example.argv) as [string, ...string[]];
         if (!options.executables.includes(program)) {
           skip(
             `${program} is not a program the run's checks or their toolchains start (${options.executables.join(", ") || "none"})`,
+          );
+          continue;
+        }
+        const shape = commandShape([program, ...entryArgs]);
+        const earlier = timedOut.get(shape);
+        if (earlier) {
+          skip(
+            `an earlier example of ${shape} (${earlier.file}:${String(earlier.line)}) did not finish within ${String(REPRO_TIMEOUT_MS / 1000)} s, so this one is not waited for`,
           );
           continue;
         }
@@ -560,6 +572,9 @@ export async function runDocExamples(
           continue;
         }
         for (const dir of entry?.entry.link ?? []) linkInto(options.root, copy, dir);
+        // The build the checks made, reused instead of building in the copy (#2505).
+        const args = prepareExampleBuild([program, ...entryArgs], options.root, copy).slice(1);
+        linkBuildOutput([program, ...args], options.root, copy, BUILD_DIRS);
         // The files the document tells its reader to save before this example (#1849).
         for (const fixture of fixtures)
           if (fixture.line < example.line) writeFixture(copy, fixture);
@@ -587,6 +602,7 @@ export async function runDocExamples(
           );
           continue;
         }
+        if (result.timedOut) timedOut.set(shape, example);
         if (result.timedOut || result.cancelled) {
           // The documented line and the files the command names, recorded like a repro's (#2358).
           skip(

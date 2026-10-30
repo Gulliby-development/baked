@@ -11,6 +11,7 @@
   },
   "expected": {
     "generatedValues": ["src/gen_test.c:1 repeat","src/gen_test.c:2 format"],
+    "exampleBuild": null,
     "runtimePaths": ["src/runtime_test.c: dir"],
     "memberSyntax": null,
     "suppressions": [

@@ -16,6 +16,7 @@
   },
   "expected": {
     "generatedValues": ["tests/gen.test.js:1 repeat","tests/gen.test.js:2 interpolate","tests/gen.test.js:3 loop"],
+    "exampleBuild": null,
     "runtimePaths": ["tests/runtime.test.js: dir, file"],
     "memberSyntax": [
       "Scanner delegates to Reader.IsEncodingToken.: Reader.IsEncodingToken",

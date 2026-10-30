@@ -16,6 +16,7 @@
   },
   "expected": {
     "generatedValues": ["gen_test.go:3 repeat","gen_test.go:4 format"],
+    "exampleBuild": null,
     "runtimePaths": ["runtime_test.go: dir"],
     "memberSyntax": [
       "Scanner delegates to Reader.IsEncodingToken.: Reader.IsEncodingToken",
