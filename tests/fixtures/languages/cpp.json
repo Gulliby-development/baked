@@ -7,10 +7,12 @@
     ".clang-tidy": "Checks: '-*,bugprone-*'\n"
   },
   "generated": {
-    "src/gen_test.cpp": "std::string a(3, '\\\\');\nauto b = std::string(3, 'x');\nconst char *lit = \"\\\\\\\\\\\\\";\n// auto d = std::string(3, 'x');\n"
+    "src/gen_test.cpp": "std::string a(3, '\\\\');\nauto b = std::string(3, 'x');\nconst char *lit = \"\\\\\\\\\\\\\";\n// auto d = std::string(3, 'x');\n",
+    "src/runtime_test.cpp": "auto dir = std::filesystem::temp_directory_path();\nsnprintf(want, sizeof want, \"bad: %s\", dir.c_str());\n"
   },
   "expected": {
     "generatedValues": ["src/gen_test.cpp:2 repeat"],
+    "runtimePaths": ["src/runtime_test.cpp: dir"],
     "memberSyntax": [
       "Scanner calls Reader::is_encoding_token.: Reader::is_encoding_token",
       "Scanner delegates to Reader.IsEncodingToken.: Reader.IsEncodingToken"

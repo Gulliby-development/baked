@@ -102,6 +102,50 @@ describe("the task-end case walk records generated values in a file that holds a
   });
 });
 
+// #2469, R78 deltaglue cli T008: the shadow record named `tests/input.test.ts:173` and `:200`, two
+// interpolations in an extra real-process test that wrote files into a `mkdtemp` folder and built
+// the expected stderr from their paths. The criteria's literal rows were held elsewhere in the
+// file, so the record was false. A value built only from a path made at run time is not generated.
+describe("scenario: R78 deltaglue T008, an expected stderr built from a temporary path (#2469)", () => {
+  const T008 = { id: "T008", description: "Write the input tests.", criterionIds: ["AC-001"], writes: [{ path: "tests/input.test.ts", action: "create" as const }], dependsOn: [] };
+  const HELD = 'test("escape", () => {\n  expect(run("escape", "\\\\\\\\\\\\")).toBe("ok-7");\n});\n';
+  const R78 = [
+    'test("real files", () => {',
+    '  const dir = mkdtempSync(join(tmpdir(), "deltaglue-"));',
+    "  for (const item of invalid) {",
+    "    const path = join(dir, item.name);",
+    "    writeFileSync(path, Uint8Array.from(item.bytes));",
+    '    expect(program("check", path)).toEqual({',
+    '      code: 2, out: "", err: `deltaglue: ${path}: input is not valid UTF-8\\n`,',
+    "    });",
+    "  }",
+    '  const doubleBom = join(dir, "double-bom.txt");',
+    '  expect(program("check", doubleBom)).toEqual({ code: 1, out: "", err: `deltaglue: ${doubleBom}: stream ended without [DONE]\\n` });',
+    "});",
+    "",
+  ].join("\n");
+  const walkOf = async (text: string, refuseGenerated: boolean) => {
+    const walks: CaseWalk[] = [];
+    const check = caseCheck({ criteria: [CRITERION] }, T008, { checks: [], tasks: [T008], generatedKinds: bannedGeneratedKinds("Use the literal inputs", ""), refuseGenerated, record: (w) => walks.push(w) });
+    if (!check) throw new Error("no case check");
+    return { refusals: await check(workspace({ "tests/input.test.ts": text })), walk: walks[0] };
+  };
+
+  test("the temporary-path interpolations record nothing and are not refused", async () => {
+    const { refusals, walk } = await walkOf(`${HELD}${R78}`, true);
+    expect(walk?.cases.every((c) => c.held)).toBe(true);
+    expect(walk?.generated).toEqual([]);
+    expect(refusals).toEqual([]);
+  });
+
+  test("the same expected stderr built from a row's value is still refused by its line", async () => {
+    const rows = R78.replace("err: `deltaglue: ${path}:", "err: `deltaglue: ${item.name}:");
+    const { refusals, walk } = await walkOf(`${HELD}${rows}`, true);
+    expect(walk?.generated).toEqual([{ path: "tests/input.test.ts", line: 10, kind: "interpolate" }]);
+    expect(refusals).toEqual([generatedCaseRefusal(walk?.generated ?? [])]);
+  });
+});
+
 // Scripted scenario: the R74 callmend shape through a run. The criterion asks for a literal example
 // and the task's test builds it by repetition. In shadow the walk passes, records the
 // `generated_case` would-stop and opens nothing; enforced (#2469) the walk refuses the submission

@@ -10,10 +10,12 @@
     "testsGrown": "\nStarting discovery in 1 files.\nDiscovery found 4 tests in 231ms.\nRunning tests.\n[-] Get-Sum.is commutative 36ms (34ms|2ms)\n Expected 4, but got 3.\n at It 'is commutative' { Get-Sum -A 2 -B 1 | Should -Be 4 }, /work/fixture/tests/Sum.Tests.ps1:4\n at <ScriptBlock>, /work/fixture/tests/Sum.Tests.ps1:4\nTests completed in 735ms\nTests Passed: 2, Failed: 1, Skipped: 1, Inconclusive: 0, NotRun: 0\n"
   },
   "generated": {
-    "tests/Gen.Tests.ps1": "$a = '\\' * 3\n$b = \"x$a\"\n$lit = '\\\\\\'\n# $d = '\\' * 3\n"
+    "tests/Gen.Tests.ps1": "$a = '\\' * 3\n$b = \"x$a\"\n$lit = '\\\\\\'\n# $d = '\\' * 3\n",
+    "tests/Runtime.Tests.ps1": "$dir = [System.IO.Path]::GetTempPath()\n$want = \"bad: $dir\"\n"
   },
   "expected": {
     "generatedValues": ["tests/Gen.Tests.ps1:1 repeat","tests/Gen.Tests.ps1:2 interpolate"],
+    "runtimePaths": ["tests/Runtime.Tests.ps1: dir"],
     "memberSyntax": [
       "Scanner calls [Reader]::IsEncodingToken for each token.: Reader::IsEncodingToken",
       "Scanner delegates to Reader.IsEncodingToken.: Reader.IsEncodingToken"

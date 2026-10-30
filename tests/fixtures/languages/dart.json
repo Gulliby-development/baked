@@ -9,10 +9,12 @@
     "testsGrown": "00:00 +0: loading test/sum_test.dart\n00:00 +0: test/sum_test.dart: adds\n00:00 +1: test/sum_test.dart: is commutative\n00:00 +1 -1: test/sum_test.dart: is commutative [E]\n  Expected: <4>\n    Actual: <3>\n\n00:00 +1 -1: test/sum_test.dart: subtracts\n00:01 +2 -1: Some tests failed.\n\nFailing tests:\n  test/sum_test.dart: is commutative\n"
   },
   "generated": {
-    "test/gen_test.dart": "final a = '\\\\' * 3;\nfinal b = 'x${a}';\nfinal lit = '\\\\\\\\\\\\';\n// final d = '\\\\' * 3;\n"
+    "test/gen_test.dart": "final a = '\\\\' * 3;\nfinal b = 'x${a}';\nfinal lit = '\\\\\\\\\\\\';\n// final d = '\\\\' * 3;\n",
+    "test/runtime_test.dart": "final dir = Directory.systemTemp.createTempSync('rt');\nfinal want = 'bad: ${dir.path}';\n"
   },
   "expected": {
     "generatedValues": ["test/gen_test.dart:1 repeat","test/gen_test.dart:2 interpolate"],
+    "runtimePaths": ["test/runtime_test.dart: dir"],
     "memberSyntax": [
       "Scanner delegates to Reader.IsEncodingToken.: Reader.IsEncodingToken"
     ],

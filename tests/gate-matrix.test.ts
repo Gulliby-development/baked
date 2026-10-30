@@ -5596,20 +5596,27 @@ describe("convergence gate: a low note on a file the request gives verbatim (#23
 describe("case walk gate: generated test inputs where literal examples are asked for (#2469)", () => {
   // R79 deltaglue chunks: the brief asked for literal object rows and the tests interpolated them;
   // the shadow walk recorded `generated_case` and review's corrective cost 8.28M tokens. Enforced,
-  // the walk refuses the submission naming each generated line; a literal twin passes.
+  // the walk refuses the submission naming each generated line; a literal twin passes, and so does
+  // an expected value built from a temporary path (R78 deltaglue's false record).
   const criterion = { ...fixtureSpec.criteria[0]!, id: "AC-001", given: "three backslashes as a literal example", when: "the user runs `escape`", then: "it prints `ok-7`" };
   const LANGUAGES: [path: string, generated: string, literal: string][] = [
     ["tests/test_escape.py", 'def test_escape():\n    slashes = "\\\\" * 3\n    assert run("escape", slashes) == "ok-7"\n', 'def test_escape():\n    assert run("escape", "\\\\\\\\\\\\") == "ok-7"\n'],
     ["tests/escape.test.ts", 'test("escape", () => {\n  const slashes = "\\\\".repeat(3);\n  expect(run("escape", slashes)).toBe("ok-7");\n});\n', 'test("escape", () => {\n  expect(run("escape", "\\\\\\\\\\\\")).toBe("ok-7");\n});\n'],
     ["escape_test.go", 'func TestEscape(t *testing.T) {\n\tslashes := strings.Repeat("\\\\", 3)\n\tif run("escape", slashes) != "ok-7" {\n\t\tt.Fail()\n\t}\n}\n', 'func TestEscape(t *testing.T) {\n\tif run("escape", "\\\\\\\\\\\\") != "ok-7" {\n\t\tt.Fail()\n\t}\n}\n'],
   ];
+  /** Per file, a second test whose expected value interpolates a temporary path, and the same with a counter. */
+  const RUNTIME: Record<string, [runtime: string, counter: string]> = {
+    "tests/test_escape.py": ['def test_check(tmp_path):\n    p = tmp_path / "in.txt"\n    assert run("check", str(p)) == f"escape: {p}: ok"\n', 'def test_check():\n    assert run("check", "a") == f"escape: {n}: ok"\n'],
+    "tests/escape.test.ts": ['test("check", () => {\n  const dir = mkdtempSync(join(tmpdir(), "esc-"));\n  expect(run("check", dir)).toBe(`escape: ${dir}: ok`);\n});\n', 'test("check", () => {\n  expect(run("check", "a")).toBe(`escape: ${n}: ok`);\n});\n'],
+    "escape_test.go": ['func TestCheck(t *testing.T) {\n\tdir := t.TempDir()\n\tif run("check", dir) != fmt.Sprintf("escape: %s: ok", dir) {\n\t\tt.Fail()\n\t}\n}\n', 'func TestCheck(t *testing.T) {\n\tif run("check", "a") != fmt.Sprintf("escape: %d: ok", n) {\n\t\tt.Fail()\n\t}\n}\n'],
+  };
   for (const [path, generated, literal] of LANGUAGES)
     test(`${path}: refused by its line when enforced, recorded only in shadow, a literal twin passes`, async () => {
       const root = mkdtempSync(join(tmpdir(), "baked-generated-case-cell-"));
       try {
         const task = { id: "T001", criterionIds: ["AC-001"], writes: [{ path, action: "create" as const }], dependsOn: [] };
         const check = (refuseGenerated: boolean) =>
-          caseCheck({ criteria: [criterion] }, task, { checks: [], tasks: [task], generatedKinds: new Set(["repeat"] as const), refuseGenerated })!(root);
+          caseCheck({ criteria: [criterion] }, task, { checks: [], tasks: [task], generatedKinds: new Set(["repeat", "format", "interpolate"] as const), refuseGenerated })!(root);
         mkdirSync(join(root, path, ".."), { recursive: true });
         writeFileSync(join(root, path), generated);
         const [refusal, ...rest] = await check(true);
@@ -5618,6 +5625,12 @@ describe("case walk gate: generated test inputs where literal examples are asked
         expect(await check(false)).toEqual([]);
         writeFileSync(join(root, path), literal);
         expect(await check(true)).toEqual([]);
+        // #2469: a path made at run time cannot be written as a literal; a counter can.
+        const [runtime, counter] = RUNTIME[path]!;
+        writeFileSync(join(root, path), `${literal}\n${runtime}`);
+        expect(await check(true)).toEqual([]);
+        writeFileSync(join(root, path), `${literal}\n${counter}`);
+        expect((await check(true))[0]).toMatch(new RegExp(`${path.replaceAll(".", "\\.")}:\\d+ \\((?:format|interpolate)\\)`));
       } finally { rmSync(root, { recursive: true, force: true }); }
     });
 });

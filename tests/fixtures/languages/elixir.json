@@ -5,10 +5,12 @@
     "mix.exs": "defmodule Fixture.MixProject do\nend\n"
   },
   "generated": {
-    "test/gen_test.exs": "a = String.duplicate(\"\\\\\", 3)\nb = \"x#{a}\"\nlit = \"\\\\\\\\\\\\\"\n# d = String.duplicate(\"\\\\\", 3)\n"
+    "test/gen_test.exs": "a = String.duplicate(\"\\\\\", 3)\nb = \"x#{a}\"\nlit = \"\\\\\\\\\\\\\"\n# d = String.duplicate(\"\\\\\", 3)\n",
+    "test/runtime_test.exs": "dir = System.tmp_dir!()\nwant = \"bad: #{dir}\"\n"
   },
   "expected": {
     "generatedValues": ["test/gen_test.exs:1 repeat","test/gen_test.exs:2 interpolate"],
+    "runtimePaths": ["test/runtime_test.exs: dir"],
     "memberSyntax": [
       "Scanner delegates to Reader.IsEncodingToken.: Reader.IsEncodingToken"
     ],

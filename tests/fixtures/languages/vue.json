@@ -9,10 +9,12 @@
     "testsGrown": " FAIL  src/sum.test.js > sum\n Test Files  1 failed (1)\n      Tests  1 failed | 3 passed (4)\n"
   },
   "generated": {
-    "src/Gen.vue": "<script setup>\nconst a = \"\\\\\".repeat(3);\nconst lit = \"\\\\\\\\\\\\\";\n</script>\n"
+    "src/Gen.vue": "<script setup>\nconst a = \"\\\\\".repeat(3);\nconst lit = \"\\\\\\\\\\\\\";\n</script>\n",
+    "src/Runtime.vue": "<script setup>\nconst dir = mkdtempSync(join(tmpdir(), \"rt-\"));\nconst file = join(dir, \"a.txt\");\nconst want = `bad: ${file}`;\n</script>\n"
   },
   "expected": {
     "generatedValues": ["src/Gen.vue:2 repeat"],
+    "runtimePaths": ["src/Runtime.vue: dir, file"],
     "memberSyntax": [
       "Scanner delegates to Reader.IsEncodingToken.: Reader.IsEncodingToken",
       "Scanner calls Reader#isEncodingToken per token.: Reader#isEncodingToken"

@@ -10,10 +10,12 @@
     "testsGrown": "[ERROR] Tests run: 4, Failures: 1, Errors: 0, Skipped: 0\n"
   },
   "generated": {
-    "src/test/java/GenTest.java": "String a = \"\\\\\".repeat(3);\nString b = String.format(\"x%s\", a);\nString lit = \"\\\\\\\\\\\\\";\n// String d = \"\\\\\".repeat(3);\n"
+    "src/test/java/GenTest.java": "String a = \"\\\\\".repeat(3);\nString b = String.format(\"x%s\", a);\nString lit = \"\\\\\\\\\\\\\";\n// String d = \"\\\\\".repeat(3);\n",
+    "src/test/java/RuntimeTest.java": "Path dir = Files.createTempDirectory(\"rt\");\nPath p = dir.resolve(\"a.txt\");\nString want = String.format(\"bad: %s\", p);\n"
   },
   "expected": {
     "generatedValues": ["src/test/java/GenTest.java:1 repeat","src/test/java/GenTest.java:2 format"],
+    "runtimePaths": ["src/test/java/RuntimeTest.java: dir, p"],
     "memberSyntax": [
       "Scanner delegates to Reader.IsEncodingToken.: Reader.IsEncodingToken",
       "Scanner passes Reader::isEncodingToken as the filter.: Reader::isEncodingToken"
