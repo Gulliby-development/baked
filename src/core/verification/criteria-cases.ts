@@ -1098,6 +1098,24 @@ function linesHeld(unescaped: string, literal: string): boolean | null {
   return pattern.test(unescaped) || pattern.test(joinedStrings(unescaped));
 }
 
+/**
+ * Whether a test's text holds a text the request gives verbatim, both sides decoded until no
+ * escape layer is left (`canonicalText`): a quoted literal of a prescribed row (#2486), which the
+ * test may spell in its own language's string syntax, split into adjacent strings or a list of
+ * lines (`joinedStrings`), or, for several lines, as indented lines of a heredoc (`linesHeld`).
+ * Unlike `testsHold`, which accepts a criterion literal's tokens spread over the file, every
+ * character of the text counts: a row whose input lost its last event is not held.
+ */
+export function verbatimHeld(text: string, literal: string): boolean {
+  const wanted = canonicalText(literal);
+  if (!asciiTrim(wanted).replace(/\r?\n/g, "")) return true;
+  for (const source of [text, joinedStrings(text)]) {
+    const decoded = canonicalText(source);
+    if (decoded.includes(wanted) || linesHeld(decoded, wanted) === true) return true;
+  }
+  return false;
+}
+
 /** A row in tuple notation: `(6,d,1777,0777,"/tmp")`, three cells or more. */
 const TUPLE = /^\(([^()]*,[^()]*,[^()]*)\)$/;
 

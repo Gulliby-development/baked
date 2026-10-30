@@ -63,6 +63,7 @@ interface Accepted {
   newStartStops?: number;
   newUnselectedStops?: number;
   newWouldFinishes?: number;
+  newRowBlockDrifts?: number;
   newApprovalDeclines?: number;
   newAutoApprovals?: number;
   reason: string;
@@ -120,6 +121,7 @@ describe("bench-round traces replay without new forecast stops or growth (#1649)
           newActiveTimes: run.newActiveTimes,
           newUnselectedStops: run.newUnselectedStops,
           newWouldFinishes: run.newWouldFinishes,
+          newRowBlockDrifts: run.newRowBlockDrifts,
         }).toEqual({
           run: run.runId,
           newStops: allowed?.newStops ?? 0,
@@ -151,6 +153,7 @@ describe("bench-round traces replay without new forecast stops or growth (#1649)
           newActiveTimes: allowed?.newActiveTimes ?? 0,
           newUnselectedStops: allowed?.newUnselectedStops ?? 0,
           newWouldFinishes: allowed?.newWouldFinishes ?? 0,
+          newRowBlockDrifts: allowed?.newRowBlockDrifts ?? 0,
         });
       }
       // Run states before R52 counted the host's own test splits in `hostSplitTasks`, which the
