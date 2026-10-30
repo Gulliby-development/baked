@@ -885,6 +885,12 @@ import {
   revisionNote,
 } from "./revision-patch.js";
 import {
+  ROW_BLOCK_DIR,
+  ROW_BLOCK_KIND,
+  rowBlockDriftSummary,
+  rowBlockDrifts,
+} from "./row-block-drift.js";
+import {
   codeTaskCheckProblems,
   estimateSourceOf,
   loopHistory,
@@ -5174,6 +5180,45 @@ export class WorkflowScheduler {
           summary: suppliedDriftSummary(drift),
           inputs: { ...drift },
         });
+    } catch {}
+  }
+  /**
+   * The `row_block_drift` would-stops (#2486): each prescribed row of a test file the plan writes
+   * whose quoted literal the delivered file lacks, once per file and row, and the counts of each
+   * compared file under `row-blocks/<path>.json`. Called at the checks stage of both workflow
+   * versions, after the snapshot; a failure to read records nothing.
+   */
+  private rowBlockDriftWouldStop(runId: string, state: RuntimeState, policy: RunPolicy): void {
+    const mode = stopMode(policy, "row_block_drift");
+    if (mode === "enforce") return;
+    const graph = state.rootGraph ?? state.graph;
+    if (!graph) return;
+    try {
+      const root = runRoot(this.store.workspace, state);
+      const compared = rowBlockDrifts(
+        state.requestText || state.prompt,
+        graph,
+        (path) => readText(workspacePath(root, path)),
+        mode,
+      );
+      for (const { record, drifts } of compared) {
+        this.store.transaction(() =>
+          this.store.artifact(
+            runId,
+            ROW_BLOCK_KIND,
+            `${ROW_BLOCK_DIR}${record.path}.json`,
+            canonical(record),
+          ),
+        );
+        for (const drift of drifts)
+          recordWouldStop(this.store, runId, {
+            reason: "row_block_drift",
+            mode,
+            key: `${drift.path}#row-${drift.row}`,
+            summary: rowBlockDriftSummary(drift),
+            inputs: { ...drift },
+          });
+      }
     } catch {}
   }
   /**
@@ -15516,6 +15561,7 @@ ${note}`;
     if (unsafe.length) return this.recordChecks(runId, state, unsafe);
     this.ciCheckDriftWouldStop(runId, state, policy, policy.checks);
     this.suppliedDriftWouldStop(runId, state, policy);
+    this.rowBlockDriftWouldStop(runId, state, policy);
     const failures: Review["findings"] = [];
     const failedIds: string[] = [];
     const passedIds: string[] = [];
@@ -18334,6 +18380,7 @@ ${note}`;
       bound.map((b) => b.check),
     );
     this.suppliedDriftWouldStop(runId, state, policy);
+    this.rowBlockDriftWouldStop(runId, state, policy);
     const failures: Review["findings"] = [];
     const failedIds: string[] = [];
     const passedIds: string[] = [];

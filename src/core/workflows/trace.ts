@@ -206,6 +206,13 @@ import {
   type ReviewGateRecord,
   reviewGateDecision,
 } from "./review-gate.js";
+import {
+  ROW_BLOCK_DIR,
+  ROW_BLOCK_KIND,
+  type RowBlockRecord,
+  type RowBlockRule,
+  rowBlockDecision,
+} from "./row-block-drift.js";
 import { PolicySchema, type RunPolicy } from "./schemas.js";
 import { NativeWorkflowService } from "./service.js";
 import {
@@ -291,6 +298,8 @@ const KEPT_ARTIFACTS = new Set([
   CASE_WALK_KIND,
   // Each task-end test cap check: per-file and per-class test counts and caps, no code (#2368).
   TEST_CAP_KIND,
+  // Each checks-stage row block comparison: per prescribed row its literal counts, no text (#2486).
+  ROW_BLOCK_KIND,
   // Each review's gate: the findings' labels and repro outcomes, no claims (#1715).
   REVIEW_GATE_KIND,
   // Each task-level corrective's write-scope precondition: diagnosed paths and writes (#2094).
@@ -989,6 +998,51 @@ export interface RunReplay {
   attemptCheckpoints: AttemptCheckpointBoundary[];
   /** Checkpoints the current rule records a `decision.would_finish` for that the recording did not. */
   newWouldFinishes: number;
+  /** Each checks-stage comparison of a test file with its prescribed rows (#2486). */
+  rowBlocks: RowBlockBoundary[];
+  /** Rows the current rule says drift that the recorded comparison did not. */
+  newRowBlockDrifts: number;
+}
+
+export interface RowBlockBoundary {
+  path: string;
+  mode: RowBlockRecord["mode"];
+  /** The drifting rows (from 1), as recorded and as the current rule decides. */
+  recorded: number[];
+  replayed: number[];
+}
+
+/**
+ * Every checks-stage row block comparison a run recorded (`row-blocks/<path>.json`, #2486),
+ * decided again from its per-row counts. Whether a file holds a literal reads text a trace does not
+ * keep, so a change to the literal lookup (`verbatimHeld`) is covered by the scenario test, not
+ * replayed. Traces before #2486 record none.
+ */
+export function replayRowBlocks(
+  store: WorkflowStore,
+  runId: string,
+  decide: RowBlockRule = rowBlockDecision,
+): RowBlockBoundary[] {
+  return store
+    .artifacts(runId)
+    .filter((a) => a.kind === ROW_BLOCK_KIND && a.logical_path.startsWith(ROW_BLOCK_DIR))
+    .flatMap((artifact) => {
+      let record: RowBlockRecord;
+      try {
+        record = JSON.parse(store.readArtifact(runId, artifact.id));
+      } catch {
+        return [];
+      }
+      if (record.schemaVersion !== 1) return [];
+      return [
+        {
+          path: record.path,
+          mode: record.mode,
+          recorded: record.drifting,
+          replayed: decide(record.rows),
+        },
+      ];
+    });
 }
 
 export interface AttemptCheckpointBoundary {
@@ -4427,6 +4481,8 @@ function replayRun(
   | "newUnselectedStops"
   | "attemptCheckpoints"
   | "newWouldFinishes"
+  | "rowBlocks"
+  | "newRowBlockDrifts"
 > | null {
   const db = store.connection;
   const run = store.run(runId);
@@ -4671,6 +4727,8 @@ export function replayTrace(
     activePace?: ActivePaceRule;
     /** Decides each attempt checkpoint's would-finish again (#2470); the current rule by default. */
     checkpointRule?: CheckpointRule;
+    /** Decides each recorded row block comparison again (#2486); the current rule by default. */
+    rowBlockRule?: RowBlockRule;
   } = {},
 ): TraceReplay {
   // Initiative starts rewind their own copies of the trace, before the run replay rewinds this one.
@@ -4799,6 +4857,9 @@ export function replayTrace(
         replayAttemptCheckpoints(store, runId, options.checkpointRule),
       ]),
     );
+    const rowBlockReplays = new Map(
+      runIds.map((runId) => [runId, replayRowBlocks(store, runId, options.rowBlockRule)]),
+    );
     const runs: RunReplay[] = [];
     for (const runId of runIds) {
       const firstByte = timings.get(runId) ?? [];
@@ -4838,6 +4899,7 @@ export function replayTrace(
       const activeTimes = paces.get(runId) ?? [];
       const unselectedTests = unselected.get(runId) ?? [];
       const attemptCheckpoints = checkpoints.get(runId) ?? [];
+      const rowBlocks = rowBlockReplays.get(runId) ?? [];
       if (
         !replay.boundaries.length &&
         !firstByte.length &&
@@ -4864,7 +4926,8 @@ export function replayTrace(
         !sourceDefects.length &&
         !activeTimes.length &&
         !unselectedTests.length &&
-        !attemptCheckpoints.length
+        !attemptCheckpoints.length &&
+        !rowBlocks.length
       )
         continue;
       runs.push({
@@ -4950,6 +5013,11 @@ export function replayTrace(
         newUnselectedStops: unselectedTests.filter((b) => !b.recorded).length,
         attemptCheckpoints,
         newWouldFinishes: attemptCheckpoints.filter((b) => b.replayed && !b.recorded).length,
+        rowBlocks,
+        newRowBlockDrifts: rowBlocks.reduce(
+          (n, b) => n + b.replayed.filter((r) => !b.recorded.includes(r)).length,
+          0,
+        ),
       });
     }
     const gates = replayShareGate(store, options.shareGate);

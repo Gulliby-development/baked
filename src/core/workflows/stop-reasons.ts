@@ -278,6 +278,16 @@ export const STOP_REASONS = {
     modes: NOT_ENFORCED,
     defaultMode: "shadow",
   },
+  row_block_drift: {
+    label:
+      "A test file the run delivered lacks a quoted literal of a row the request prescribes for it",
+    // Shadow only until two bench rounds show no false would-stop (#2486, R80 deltaglue cli T010
+    // dropped row 2's final `data: [DONE]` event, ratdec core T014 rewrote a stdin row); its
+    // promotion makes the row a finding of severity high on the file at the checks stage, which a
+    // repair task restores from the request's row.
+    modes: NOT_ENFORCED,
+    defaultMode: "shadow",
+  },
   committed_tree: {
     label:
       "A required static check that passed on the working tree fails on a clean worktree of the feature's commit",
