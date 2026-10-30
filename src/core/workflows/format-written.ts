@@ -528,7 +528,9 @@ interface Written {
  * it is not checked. None for a file the checks already format (a check of the language's formatter
  * on it or a directory above it; a `format` script counts for the npm languages), and none whose
  * program does not resolve: a required check that cannot start
- * faults the run.
+ * faults the run. A file the task creates whose content the request supplies whole (`supplied`,
+ * #2504) is checked by an advisory `<gate>-supplied` check with no fixer: the formatter is
+ * recorded, the request's bytes are kept.
  */
 export function formatWrittenChecks(
   root: string,
@@ -537,10 +539,20 @@ export function formatWrittenChecks(
   which?: (command: string, options: { PATH: string; cwd: string }) => string | null,
   base?: (path: string) => string | null | undefined,
   accepts: FlagProbe = helpListsFlag,
-  options: { rust?: boolean } = {},
+  options: { rust?: boolean; supplied?: (path: string) => boolean } = {},
 ): Check[] {
-  const rust = options.rust ? rustFormatWrittenChecks(root, checks, writes, which, base) : [];
-  return [...formatWrittenOf(root, checks, writes, which, base, accepts), ...rust];
+  const supplied = options.supplied ?? (() => false);
+  // rustfmt has no advisory form here: a supplied file is left to the project's own gate.
+  const rust = options.rust
+    ? rustFormatWrittenChecks(
+        root,
+        checks,
+        writes.filter((w) => w.action !== "create" || !supplied(w.path)),
+        which,
+        base,
+      )
+    : [];
+  return [...formatWrittenOf(root, checks, writes, which, base, accepts, supplied), ...rust];
 }
 
 function formatWrittenOf(
@@ -550,6 +562,7 @@ function formatWrittenOf(
   which: ((command: string, options: { PATH: string; cwd: string }) => string | null) | undefined,
   base: ((path: string) => string | null | undefined) | undefined,
   accepts: FlagProbe,
+  supplied: (path: string) => boolean,
 ): Check[] {
   const files = new Map<string, Written[]>();
   for (const write of writes) {
@@ -625,7 +638,8 @@ function formatWrittenOf(
       // (`fixPaths` stay workspace paths, as the host matches them).
       const local = (path: string) => cwdPath(gate.check, path);
       const own = written.filter((w) => !local(w.path).startsWith("../"));
-      const whole = own.filter((w) => !w.edited).map((w) => w.path);
+      const created = own.filter((w) => !w.edited).map((w) => w.path);
+      const whole = created.filter((path) => !supplied(path));
       if (whole.length) {
         const check = scoped(
           `${gate.check.id}-written`,
@@ -634,6 +648,21 @@ function formatWrittenOf(
           whole,
         );
         if (check) found.push(check);
+      }
+      // A created file the request supplies whole keeps the request's bytes: the formatter is
+      // recorded on it, advisory and with no fixer (#2504).
+      const kept = created.filter((path) => supplied(path));
+      if (kept.length) {
+        const check = scoped(
+          `${gate.check.id}-supplied`,
+          formatter.check(command.args, kept.map(local)),
+          formatter.fix(fixArgs),
+          kept,
+        );
+        if (check) {
+          const { fix: _fix, fixPaths: _paths, ...advisory } = check;
+          found.push({ ...advisory, required: false });
+        }
       }
       const range = formatter.range;
       // A formatter release without the range flag checks no edited file, as one with no range.
