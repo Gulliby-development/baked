@@ -938,6 +938,7 @@ import {
   siblingCorrections,
 } from "./task-graph.js";
 import {
+  consolidateTargets,
   INTEGRITY_DIR,
   INTEGRITY_KIND,
   type IntegrityRecord,
@@ -11816,6 +11817,7 @@ ${note}`;
       removalFindings: corrective ? ownFindings : [],
       rewrites: task.origin === "planned" ? new Set() : rewriteTargets(ownFindings),
       strengthens: task.origin === "planned" ? new Set() : strengthenTargets(ownFindings),
+      consolidates: task.origin === "planned" ? new Set() : consolidateTargets(ownFindings),
       reasoned: new Set([
         ...task.writes
           .filter((w) => w.reason || (amending && isTestPath(w.path)))
@@ -12086,6 +12088,7 @@ ${note}`;
       removalFindings: corrected,
       rewrites: rewriteTargets(corrected),
       strengthens: strengthenTargets(corrected),
+      consolidates: consolidateTargets(corrected),
       reasoned: new Set([
         ...tasks.flatMap((t) => t.writes.filter((w) => w.reason).map((w) => w.path)),
         ...this.amendments(runId).flatMap((a) => a.paths),

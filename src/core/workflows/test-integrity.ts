@@ -517,6 +517,12 @@ export interface ScanOptions {
    */
   strengthens?: ReadonlySet<string>;
   /**
+   * Test files a correction's own spec finding asks to build from literal rows instead of
+   * generated inputs (#2467): fewer test functions are accepted while the file still declares a
+   * test and keeps at least nine tenths of its assertions, since a literal table merges tests.
+   */
+  consolidates?: ReadonlySet<string>;
+  /**
    * Tests that a correction of another finding added, by path and name, with who added them
    * (#1519): a change that leaves one out is reported unless a spec finding explicitly requests
    * its removal. Other conflicts still need a spec_conflict report.
@@ -662,6 +668,8 @@ export type IntegrityMeasure = {
       unclaimed: number;
       rewrite: boolean;
       strengthen: boolean;
+      /** A correction's finding asks for literal rows (#2467); absent from records before the rule. */
+      consolidate?: boolean;
       /** The file holds more expected literal text than before (read only under `strengthen`). */
       literalGrew: boolean;
       assertsBefore: number;
@@ -912,6 +920,7 @@ export function measureTestIntegrity(
         unclaimed: unclaimed.length,
         rewrite: options.rewrites?.has(path) === true,
         strengthen,
+        ...(options.consolidates?.has(path) ? { consolidate: true } : {}),
         literalGrew: strengthen && literalText(after) > literalText(before),
         assertsBefore: count(codeBefore, assertionForms),
         assertsAfter: count(codeAfter, assertionForms),
@@ -984,15 +993,26 @@ export function integrityDecision(measures: readonly IntegrityMeasure[]): Integr
         });
       const unclaimed = names?.unclaimed ?? [];
       const drop = m.testsBefore - m.testsAfter - m.matchedTests - m.removedTests;
+      // Literal rows the finding asked for merge tests into tables: the cases stay, the
+      // functions do not (#2467, R79 deltaglue chunks: 10 tests to 5, 66 assertions to 64).
+      const consolidated =
+        m.consolidate === true && m.testsAfter > 0 && m.assertsAfter * 10 >= m.assertsBefore * 9;
       // The part of the drop the brief's test cap covers (#2368).
       const capDrop = Math.min(m.capExcess ?? 0, Math.max(0, drop));
-      if (!reasoned && !requestedFile && drop > (m.capExcess ?? 0))
+      if (!reasoned && !requestedFile && !consolidated && drop > (m.capExcess ?? 0))
         findings.push({
           rule: "test-count",
           path,
           detail: `test count dropped from ${String(m.testsBefore)} to ${String(m.testsAfter)}${unclaimed.length ? ` (removed ${quoted(unclaimed)})` : ""}${m.capExcess ? `; the brief's test cap covers only ${String(m.capExcess)} of the drop` : ""}`,
         });
-      else if (!reasoned && !requestedFile && !m.rewrite && !m.strengthen && m.unclaimed > capDrop)
+      else if (
+        !reasoned &&
+        !requestedFile &&
+        !consolidated &&
+        !m.rewrite &&
+        !m.strengthen &&
+        m.unclaimed > capDrop
+      )
         // Equal totals hide a swap: a strong test replaced by a weaker one under another name.
         findings.push({
           rule: "test-removed",
@@ -1001,7 +1021,7 @@ export function integrityDecision(measures: readonly IntegrityMeasure[]): Integr
         });
       const kept =
         m.testsAfter + m.matchedTests + m.removedTests >= m.testsBefore && m.assertsAfter > 0;
-      const rewritten = kept && (m.rewrite || (m.strengthen && m.literalGrew));
+      const rewritten = consolidated || (kept && (m.rewrite || (m.strengthen && m.literalGrew)));
       if (
         !reasoned &&
         !requestedFile &&
@@ -1290,6 +1310,45 @@ export function strengthenTargets(
           (f.kind === "partial" ||
             f.kind === "missing" ||
             WEAK_TEST.test(`${f.claim}\n${f.suggestedFix}`)),
+      )
+      .map((f) => f.file as string),
+  );
+}
+
+/**
+ * A claim that a test builds its inputs or expectations where literal rows are asked: the shapes
+ * the `generated_case` walk reads (interpolation, loops, factories, computed expectations), or a
+ * request for literal or table rows (R79 deltaglue chunks F1: "The tests construct inputs and
+ * expected results rather than using the required literal object rows", #2467).
+ */
+const LITERAL_ROWS =
+  /\b(?:literal (?:object |table )?(?:rows?|tables?|inputs?|values?|cases?)|table[- ]driven|construct(?:s|ed|ing)? (?:the |their )?(?:inputs?|expected|cases?)|generat(?:e|es|ed|ing) (?:the |their )?(?:inputs?|cases?|values?|expectations?)|computed expectations?|interpolat(?:e|es|ed|ing|ion)|(?:built|builds?|building) (?:by|with|from) (?:a |an )?(?:loops?|factor(?:y|ies)|interpolation))\b/i;
+
+/**
+ * The test files a correction may consolidate into literal-row tests (#2467): a test file its
+ * spec-basis finding names when the finding says the tests generate what the request wants as
+ * literal rows. R79 deltaglue chunks: corrective T003 merged 10 generated tests into 5 literal
+ * tables (assertions 66 to 64); the guard's `test-count` finding opened T004, which restored the
+ * generated tests (8.28M tokens, two `attempt_cap` stops). The guard's own findings never qualify.
+ */
+export function consolidateTargets(
+  findings: readonly {
+    kind: string;
+    file: string | null;
+    claim: string;
+    suggestedFix: string;
+    basis?: string;
+  }[],
+): Set<string> {
+  return new Set(
+    findings
+      .filter(
+        (f) =>
+          f.file !== null &&
+          isTestPath(f.file) &&
+          !f.claim.startsWith("Test integrity") &&
+          f.basis !== "inferred" &&
+          LITERAL_ROWS.test(`${f.claim}\n${f.suggestedFix}`),
       )
       .map((f) => f.file as string),
   );

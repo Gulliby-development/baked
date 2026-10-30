@@ -114,7 +114,7 @@ import { ASSERTION_FAILURES } from "./helpers/assertion-failures.js";
 import { failureOwner } from "../src/core/workflows/task-graph.js";
 import { type Check, type RunPolicy, type RuntimeState, type Spec, type TaskGraph, uncontractedBuildCriteria } from "../src/core/workflows/schemas.js";
 import type { TaskRow, WorkflowStore } from "../src/core/workflows/store.js";
-import { scanTestIntegrity, testChanges } from "../src/core/workflows/test-integrity.js";
+import { consolidateTargets, scanTestIntegrity, testChanges } from "../src/core/workflows/test-integrity.js";
 import type { Task } from "../src/core/workflows/types.js";
 import {
   createTaskWorktree,
@@ -1711,6 +1711,18 @@ describe("gate matrix: a test tool that cannot start below a deep worktree (#245
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
+  });
+});
+
+describe("gate matrix: a requested literal-row consolidation is no test removal (#2467)", () => {
+  // R79 deltaglue chunks T003: a spec finding asked for literal rows, 10 generated tests became 5
+  // literal tables (66 assertions to 64), and the guard's test-count finding undid the finding.
+  test("the finding's file may merge tests while it keeps a test and nine tenths of its assertions", () => {
+    const before = Array.from({ length: 10 }, (_, i) => `test("c${i}", () => { expect(f(\`\${${i}}\`)).toBe("${i}"); expect(g(${i})).toBe(${i}); });\n`).join("");
+    const after = Array.from({ length: 5 }, (_, t) => `test("t${t}", () => { for (const [a, b] of [["${2 * t}", ${2 * t}], ["${2 * t + 1}", ${2 * t + 1}]] as const) { expect(f(a)).toBe(a); expect(g(b)).toBe(b); } expect(f("")).toBe(""); expect(g(0)).toBe(0); });\n`).join("");
+    const consolidates = consolidateTargets([{ kind: "correctness", file: "chunks.test.ts", claim: "The tests construct inputs rather than using the required literal object rows", suggestedFix: "Use literal rows" }]);
+    expect(scanTestIntegrity([{ path: "chunks.test.ts", before, after }], { consolidates }).map((f) => f.rule)).toEqual([]);
+    expect(scanTestIntegrity([{ path: "chunks.test.ts", before, after }], {}).map((f) => f.rule)).toContain("test-count");
   });
 });
 
