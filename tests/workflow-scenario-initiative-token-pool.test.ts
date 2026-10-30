@@ -321,6 +321,44 @@ describe("scenario: a scripted initiative whose features cost more than their es
     expect(events("decision.would_extend").filter((e) => e.reason === "extend-within-dollars")).toEqual([]);
   }, 120000);
 
+  test("with extendWithinDollars on a first-wave park records that the host waits for a measurement and names the manual extend (#2471, R79 deltaglue)", async () => {
+    // The 2.0M pool is below the 2.73M the five lows sum to: f1 parks at the first gate, before
+    // any feature is accepted, so there is no measured dollar forecast for `on` to act on.
+    const { initiatives, fixture, events } = await scenario(2_000_000, 2.2, { extendWithinDollars: "on" });
+    const view = await initiatives.drive("values", new AbortController().signal);
+    expect(view.next).toMatchObject({ kind: "blocked", featureId: "f1" });
+    expect(view.budget.cost.measuredFeatures).toBe(0);
+    const park = (events("feature.share_gate") as unknown as ShareGateRecord[]).find((g) => g.verdict === "park");
+    expect(park?.poolGrowth).toEqual({ mode: "on", hold: "no measurement", wouldExtend: false, toTokens: null, byTokens: null });
+    expect(events("budget.extended").filter((e) => e.by === "host")).toEqual([]);
+    expect(view.budget.limits.maxTotalTokens).toBe(2_000_000);
+    // The park message names the extend command, then why the host did not make it.
+    const hold = "extendWithinDollars: on waits for the first accepted feature's measured dollar forecast before the host grows the pool, so extend by hand with the command named here.";
+    expect(view.next.message).toContain("Raise it with baked workflow initiative extend values --tokens 5500000.");
+    expect(view.next.message).toEndWith(hold);
+    expect(view.next.recovery?.summary).toEndWith(hold);
+    expect(view.next.recovery?.remedies[0]).toEqual({ action: "extend", initiativeId: "values", suggestedTokens: 5_500_000 });
+    // The forecast notice, which names its own extend, says the same.
+    expect(view.budget.forecastNotice).toContain("(baked workflow initiative extend values --tokens");
+    expect(view.budget.forecastNotice).toEndWith(hold);
+    // Every surface reads the same text: the TUI and the desktop render the message, the CLI and
+    // the local API serve the view.
+    expect(tuiRecoveryText(view.next.message, view.next.recovery)).toContain(hold);
+    expect(desktopRecoveryText(view.next.message, view.next.recovery)).toContain(hold);
+    const shown = (await executeInitiativeCommand(initiatives, parseInitiativeArgs(["show", "values"]), new AbortController().signal)) as InitiativeView;
+    expect(shown.next.message).toEndWith(hold);
+    const server = await startApiServer({ service: fixture.service, log: () => {} });
+    cleanups.push(async () => { await server.stop(); });
+    const response = await fetch(`${server.url}/v1/initiatives/values`, { headers: { Authorization: `Bearer ${server.token}` } });
+    expect(((await response.json()) as InitiativeView).next.recovery?.summary).toEndWith(hold);
+    // In shadow the park records the same hold, and its message names no `on` it does not run in.
+    const shadow = await scenario(2_000_000, 2.2, { extendWithinDollars: "shadow" });
+    const shadowView = await shadow.initiatives.drive("values", new AbortController().signal);
+    const shadowPark = (shadow.events("feature.share_gate") as unknown as ShareGateRecord[]).find((g) => g.verdict === "park");
+    expect(shadowPark?.poolGrowth).toEqual({ mode: "shadow", hold: "no measurement", wouldExtend: false, toTokens: null, byTokens: null });
+    expect(shadowView.next.message).not.toContain("extendWithinDollars");
+  });
+
   test("with extendWithinDollars off, or with only a token pool, a park records no extension", async () => {
     for (const options of [{ extendWithinDollars: "off" as const }, { capUsd: null }]) {
       const { initiatives, driveOne, events } = await scenario(8_600_000, 2.2, options);

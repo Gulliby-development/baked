@@ -532,6 +532,12 @@ export function poolShortText(
   return `${parked.id} needs ${start} more tokens to start; a pool of ${tokenText(cover)} (${cover} tokens, ${Math.max(0, cover - pool.limitTokens)} more than ${tokenText(pool.limitTokens)}) covers the high estimates of ${names}.${dollars}`;
 }
 
+/**
+ * Why a pool growth with a dollar cap holds before the dollar forecast is measured (#2471): the
+ * share gate reads it to say that `extendWithinDollars: on` waits for the first accepted feature.
+ */
+export const NO_DOLLAR_FORECAST = "No measured dollar forecast yet.";
+
 /** The host's decision on a parked feature: whether it would extend the pool inside the dollar cap. */
 export interface PoolExtension {
   reason: PoolGrowthReason;
@@ -564,7 +570,7 @@ export function poolExtensionDecision(inputs: PoolInputs, pool = tokenPool(input
     return no("No dollar cap: a pool the person set alone is never grown.");
   if (pool.coverTokens <= inputs.limitTokens)
     return no("The pool already covers the waiting features.");
-  if (cost.forecastUsd === null) return no("No measured dollar forecast yet.");
+  if (cost.forecastUsd === null) return no(NO_DOLLAR_FORECAST);
   if (cost.forecastUsd > cost.ceilingUsd)
     return no(
       `The dollar forecast ${usd(cost.forecastUsd)} is above the ${usd(cost.ceilingUsd)} ceiling.`,
@@ -644,7 +650,7 @@ export function timePoolExtensionDecision(inputs: TimePoolGrowthInputs): TimePoo
     return no("The time forecast fits the shared time.");
   const { cost } = inputs;
   if (cost.capUsd !== null) {
-    if (cost.forecastUsd === null) return no("No measured dollar forecast yet.");
+    if (cost.forecastUsd === null) return no(NO_DOLLAR_FORECAST);
     if (cost.ceilingUsd !== null && cost.forecastUsd > cost.ceilingUsd)
       return no(
         `The dollar forecast ${usd(cost.forecastUsd)} is above the ${usd(cost.ceilingUsd)} ceiling.`,
