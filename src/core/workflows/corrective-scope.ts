@@ -185,8 +185,25 @@ export function stackFrames(output: string): string {
  * boundary holds it (an accepted upstream feature) with a request naming the path and the owner;
  * `wait` leaves it to the wait for an unfinished writer (`deferOnMissingArtifact`); `refuse`
  * blocks the corrective without another session. Shadow by default (`corrective_unowned_file`).
+ *
+ * `amend` (#2485) is the park's case that no person needs to answer: the evidence names only a
+ * test file of an upstream feature whose run is closed (accepted), so the file pins behavior this
+ * feature changes. R80 ratdec representations T007 parked on `test/stdin_test.exs` of the accepted
+ * core, and nothing could open a task on core. Enforced (`upstream_stale_file`, shadow by
+ * default), `hostAmend` adds the file to this feature's boundary and the corrective's writes;
+ * otherwise the park stands.
  */
-export type UnownedDecision = "wait" | "route" | "widen" | "park" | "refuse";
+export type UnownedDecision = "wait" | "route" | "amend" | "widen" | "park" | "refuse";
+
+/** The inputs of `amend` for a path another initiative feature owns (#2485). */
+export interface UpstreamInputs {
+  /** The feature's current run is completed: accepted, with no open run to change the file. */
+  closed: boolean;
+  /** The path is a test file (`isTestFileAt` under the run's root). */
+  testFile: boolean;
+  /** It is the only file the corrective's evidence names outside its writes. */
+  sole: boolean;
+}
 
 /** One named path outside a corrective's writes, with the inputs of its decision. */
 export interface UnownedPath {
@@ -199,6 +216,8 @@ export interface UnownedPath {
   feature: string | null;
   /** Whether the run's approved paths hold it: auto-approval's `allowedPaths`, the feature's boundary. */
   allowed: boolean;
+  /** For a path of another initiative feature: whether `amend` may take it (#2485). */
+  upstream?: UpstreamInputs;
   /** The file's content hash when recorded, null when it does not exist. */
   hash: string | null;
   decision: UnownedDecision;
@@ -212,7 +231,9 @@ export const unownedRule: UnownedRule = (input) =>
     : input.owner
       ? "route"
       : input.feature
-        ? "park"
+        ? input.upstream?.closed && input.upstream.testFile && input.upstream.sole
+          ? "amend"
+          : "park"
         : input.allowed
           ? "widen"
           : "refuse";
@@ -222,7 +243,7 @@ export function hostDecision(
   paths: readonly Pick<UnownedPath, "decision">[],
 ): UnownedDecision | "fits" {
   if (!paths.length) return "fits";
-  for (const decision of ["route", "park", "widen", "wait"] as const)
+  for (const decision of ["route", "amend", "park", "widen", "wait"] as const)
     if (paths.some((p) => p.decision === decision)) return decision;
   return "refuse";
 }
@@ -238,6 +259,10 @@ export interface ScopeEvidence {
   /** Auto-approval's `allowedPaths`, empty without limits. */
   allowedPaths: readonly string[];
   hash: (path: string) => string | null;
+  /** Whether an initiative feature's current run is completed (#2485); absent, none is. */
+  upstreamClosed?: (feature: string) => boolean;
+  /** Whether a path is a test file in the run's root (#2485); absent, none is. */
+  testFile?: (path: string) => boolean;
 }
 
 /** What `scope/tasks/<task>.json` records: the precondition's inputs and its decision. */
@@ -315,22 +340,30 @@ function unownedPaths(
   const writers = (path: string) =>
     tasks.filter((t) => t.writes.some((w) => w.path === path && w.action !== "delete"));
   const bounds = state.initiativeBounds ?? null;
-  return named
-    .filter((path) => !writes.includes(path))
-    .map((path) => {
-      const all = writers(path);
-      const input = {
-        path,
-        owner:
-          all.filter((t) => SETTLED.includes(status.get(t.id) ?? "pending")).at(-1)?.id ?? null,
-        openWriters: all
-          .filter((t) => !ENDED.includes(status.get(t.id) ?? "pending"))
-          .map((t) => t.id),
-        feature: siblingOwner(path, bounds)?.id ?? null,
-        allowed: approvedPath(path, evidence.allowedPaths, bounds),
-      };
-      return { ...input, hash: evidence.hash(path), decision: rule(input) };
-    });
+  const outside = named.filter((path) => !writes.includes(path));
+  return outside.map((path) => {
+    const all = writers(path);
+    const feature = siblingOwner(path, bounds)?.id ?? null;
+    const input = {
+      path,
+      owner: all.filter((t) => SETTLED.includes(status.get(t.id) ?? "pending")).at(-1)?.id ?? null,
+      openWriters: all
+        .filter((t) => !ENDED.includes(status.get(t.id) ?? "pending"))
+        .map((t) => t.id),
+      feature,
+      allowed: approvedPath(path, evidence.allowedPaths, bounds),
+      ...(feature
+        ? {
+            upstream: {
+              closed: evidence.upstreamClosed?.(feature) ?? false,
+              testFile: evidence.testFile?.(path) ?? false,
+              sole: outside.length === 1,
+            },
+          }
+        : {}),
+    };
+    return { ...input, hash: evidence.hash(path), decision: rule(input) };
+  });
 }
 
 /** The precondition of one corrective, decided on its findings and write scope. */
@@ -479,6 +512,36 @@ export function hostWiden(
   return widened.map((w) => w.path);
 }
 
+/**
+ * The `amend` act (#2485): a closed upstream feature's test file that pins behavior this feature
+ * changes joins this feature's boundary, so the approved paths hold it, and the corrective's
+ * writes through `hostWiden`'s `host-widen` link, which acceptance checks against that boundary.
+ * The caller journals each path with its hash before the edit (`scope/edits/`). Returns the paths
+ * added; with none the boundary is left as it was.
+ */
+export function hostAmend(
+  store: Pick<WorkflowStore, "artifact" | "syncTasks">,
+  runId: string,
+  state: WidenState,
+  policy: Pick<RunPolicy, "stopModes" | "costForecast" | "autoApproval">,
+  task: { id: string; findingIds: string[] },
+  paths: readonly { path: string; exists: boolean }[],
+): string[] {
+  const bounds = state.initiativeBounds;
+  if (!bounds || stopMode(policy, "upstream_stale_file") !== "enforce") return [];
+  state.initiativeBounds = {
+    ...bounds,
+    features: bounds.features.map((f) =>
+      f.id === bounds.featureId
+        ? { ...f, paths: [...new Set([...f.paths, ...paths.map((p) => p.path)])] }
+        : f,
+    ),
+  };
+  const added = hostWiden(store, runId, state, policy, task, paths);
+  if (!added.length) state.initiativeBounds = bounds;
+  return added;
+}
+
 /** Whether a `host-widen` link may add `path` (acceptance reads the same rule). */
 export function widenAuthorized(
   path: string,
@@ -510,6 +573,8 @@ export function unownedSummary(
   switch (decision) {
     case "route":
       return `${taskId} cannot write ${files}, which ${[...new Set(these.map((p) => p.owner))].join(", ")} wrote: a correction of the owner would be opened and ${taskId} would wait for it`;
+    case "amend":
+      return `${taskId} cannot write ${files}, a test of feature ${[...new Set(these.map((p) => p.feature))].join(", ")}, whose run is closed: the file would be added to this feature and ${taskId}'s writes instead of waiting for that feature`;
     case "park":
       return `${taskId} cannot write ${files}, which feature ${[...new Set(these.map((p) => p.feature))].join(", ")} owns: the run would wait for an upstream change of that feature`;
     case "widen":
@@ -548,6 +613,11 @@ export const REMEDY_DECISION: Record<HostRemedy, "route" | "widen" | "park"> = {
   upstream: "park",
 };
 
+/** Whether a remedy answers a decision: `upstream` also answers `amend`, a park's case (#2485). */
+export function remedyCovers(action: HostRemedy, decision: UnownedDecision): boolean {
+  return decision === REMEDY_DECISION[action] || (action === "upstream" && decision === "amend");
+}
+
 /**
  * The remedies a blocked corrective's last scope record offers: one per decision the host would
  * take over its unowned files when enforced (route, widen, park), in `hostDecision`'s order. A
@@ -556,7 +626,7 @@ export const REMEDY_DECISION: Record<HostRemedy, "route" | "widen" | "park"> = {
 export function unownedRemedies(runId: string, record: ScopeRecord | undefined): Remedy[] {
   const paths = record?.unowned ?? [];
   return HOST_REMEDIES.flatMap((action): Remedy[] => {
-    const these = paths.filter((p) => p.decision === REMEDY_DECISION[action]);
+    const these = paths.filter((p) => remedyCovers(action, p.decision));
     if (!record || !these.length) return [];
     const owner = action === "route" ? these[0]?.owner : these[0]?.feature;
     return [
