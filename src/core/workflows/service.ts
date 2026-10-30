@@ -59,7 +59,12 @@ import {
 import { type HostRemedy, REMEDY_DECISION } from "./corrective-scope.js";
 import { refreshCriticOutcomes } from "./critic-outcomes.js";
 import { decideDelivery, isDeliveryRequest } from "./delivery.js";
-import { dependencyContracts, isHostRelease } from "./dependencies.js";
+import {
+  applyReleasedCreates,
+  dependencyContracts,
+  isHostRelease,
+  releasedCreates,
+} from "./dependencies.js";
 import {
   checkLine,
   checkRoutingModels,
@@ -136,6 +141,7 @@ import {
 } from "./scheduler.js";
 import {
   type CommandIdentity,
+  CorrectionSchema,
   type Decision,
   executionModeOf,
   generatedPaths,
@@ -184,7 +190,13 @@ import {
   produces,
   stageKind,
 } from "./v2/runtime.js";
-import { moveRunWorktree, placeBaseFiles, removeRunWorktree, runRoot } from "./worktree.js";
+import {
+  moveRunWorktree,
+  placeBaseFiles,
+  removeRunWorktree,
+  runRoot,
+  trackedPaths,
+} from "./worktree.js";
 import {
   cleanWorktrees,
   type WorktreeCleanup,
@@ -2608,10 +2620,42 @@ export class NativeWorkflowService implements WorkflowService {
     if (from !== baseCommit) await moveRunWorktree(this.workspace, state.worktree, baseCommit);
     // Upstream specs of the features accepted since the provisional base (#2046); idempotent.
     await placeBaseFiles(this.workspace, state.worktree, baseCommit, baseFiles);
+    // A planned create of a file an accepted upstream feature wrote since the plan (#2514).
+    const before = await trackedPaths(this.workspace, from);
+    const after = await trackedPaths(this.workspace, baseCommit);
+    const released = state.graph
+      ? releasedCreates(state.graph, (path) => after.has(path) && !before.has(path))
+      : [];
     return this.store.command(runId, command, body, () => {
       const current = this.store.state(runId);
       if (!current.worktree || !current.planAhead)
         throw new WorkflowFault("STALE_DECISION", "The run changed during its release");
+      if (released.length && current.graph && current.approvalRoot) {
+        const next = applyReleasedCreates(current.graph, released);
+        const link = CorrectionSchema.parse({
+          schemaVersion: 1,
+          parentDigest: current.approvalRoot,
+          parentGraphHash: hashJson(current.graph),
+          rule: "host-release",
+          newGraphHash: hashJson(next),
+          findingIds: [],
+          taskIds: [...new Set(released.map((r) => r.taskId))],
+          roundKind: "release",
+          round: 1,
+          released,
+        });
+        const artifact = this.store.artifact(
+          runId,
+          "correction",
+          "corrections/release.json",
+          canonical(link),
+        );
+        current.correctionHashes.push(artifact.content_hash);
+        current.manifest.correctionHashes = [...current.correctionHashes];
+        current.graph = next;
+        current.manifest.effectiveGraphHash = hashJson(next);
+        this.store.syncTasks(runId, next);
+      }
       current.worktree = { ...current.worktree, baseHead: baseCommit };
       current.worktreeBase = baseCommit;
       current.baseFiles = baseFiles;
@@ -2622,7 +2666,12 @@ export class NativeWorkflowService implements WorkflowService {
         runId,
         "plan-ahead",
         "plan-ahead/release.json",
-        canonical({ from, to: baseCommit, requests: held.map((r) => r.id) }),
+        canonical({
+          from,
+          to: baseCommit,
+          requests: held.map((r) => r.id),
+          ...(released.length ? { modified: released } : {}),
+        }),
       );
       for (const request of held)
         this.store.decideRequest(

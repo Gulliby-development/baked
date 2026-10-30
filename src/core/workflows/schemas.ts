@@ -1455,13 +1455,15 @@ export const CorrectionSchema = z
     /**
      * `bounded-correction` adds corrective tasks inside the approved tasks' authority;
      * `host-widen` adds one path per finding to an existing corrective's writes when the frozen
-     * policy enforces `corrective_unowned_file` and the run's approved paths hold the path (#2133).
+     * policy enforces `corrective_unowned_file` and the run's approved paths hold the path (#2133);
+     * `host-release` turns a planned task's `create` of a path a planned-ahead run's release
+     * brought in (an accepted upstream feature wrote it) into `modify` (#2514). It has no findings.
      */
-    rule: z.enum(["bounded-correction", "host-widen"]),
+    rule: z.enum(["bounded-correction", "host-widen", "host-release"]),
     newGraphHash: Hash,
-    findingIds: z.array(SafeId).min(1),
+    findingIds: z.array(SafeId),
     taskIds: z.array(TaskId).min(1),
-    roundKind: z.enum(["repair", "review", "convergence"]),
+    roundKind: z.enum(["repair", "review", "convergence", "release"]),
     round: z.number().int().positive(),
     /** The writes a `host-widen` link adds, per corrective. */
     widened: z
@@ -1471,8 +1473,22 @@ export const CorrectionSchema = z
           .strict(),
       )
       .optional(),
+    /** The `create` writes a `host-release` link turns into `modify`. */
+    released: z
+      .array(z.object({ taskId: TaskId, path: RelativePath }).strict())
+      .min(1)
+      .optional(),
   })
-  .strict();
+  .strict()
+  .refine(
+    (c) =>
+      c.rule === "host-release"
+        ? c.released !== undefined && c.findingIds.length === 0 && c.roundKind === "release"
+        : c.findingIds.length > 0 && c.released === undefined && c.roundKind !== "release",
+    {
+      message: "Only a host-release correction lists released writes, and only it has no findings",
+    },
+  );
 /** One literal row of a criterion recomputed from the requirements (derivation-audit.ts). */
 export const DerivationSchema = z
   .object({
