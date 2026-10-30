@@ -618,7 +618,11 @@ function boundFree(literal: string, bound: ReadonlySet<string>): string[] | null
   return rest.replace(/[^\p{L}\p{N}_]/gu, "").length >= 2 ? [rest] : [];
 }
 
-/** Each shared case belongs to one test task. Unclaimed rows go to the last carrier (#1597). */
+/**
+ * Each shared case belongs to one test task. Unclaimed rows go to the last carrier (#1597). Host
+ * row slices of one file own a case by the rows they hold (#2466); other slices deal the cases no
+ * description names by their shares.
+ */
 function partitionCases(
   cases: CriterionCase[],
   task: CaseTask,
@@ -649,6 +653,17 @@ function partitionCases(
     const sliced = carriers.every(
       (t) => t.sizingSlice && t.sizingSlice.taskId === carriers[0]?.sizingSlice?.taskId,
     );
+    if (sliced && carriers.every((t) => t.sizingSlice?.rows?.length)) {
+      // Host row slices (#2466): a literal belongs to the first slice whose prescribed rows hold
+      // it, since each later slice appends to the same file and finds it there; a literal no row
+      // holds goes to the last slice, the only one whose file holds every row.
+      const texts = carriers.map((t) => t.sizingSlice?.rows?.join("\n") ?? "");
+      for (const row of rows) {
+        const holder = texts.findIndex((text) => !missingCases([row], [text]).length);
+        owners.set(row, (carriers[holder] ?? carriers.at(-1))?.id);
+      }
+      continue;
+    }
     const remaining: CriterionCase[] = [];
     for (const row of rows) {
       const named = carriers.filter((t) => !missingCases([row], [t.description ?? ""]).length);
