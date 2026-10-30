@@ -930,6 +930,7 @@ import {
   type SuppliedDrift,
   suppliedDriftSummary,
   suppliedDrifts,
+  suppliedLineNumbers,
 } from "./supplied-drift.js";
 import {
   documentsOnly,
@@ -17219,18 +17220,22 @@ ${note}`;
     const planned = kept
       ? (JSON.parse(this.store.readArtifact(runId, kept.id)) as Record<string, string>)
       : {};
+    const request = state.requestText || state.prompt;
     const changed: ChangedFile[] = [];
     for (const path of changedPaths(before, files)) {
       if (!include(path) || files[path] === undefined) continue;
       const content = (await readCodeFiles(root, [path], include)).files.get(path);
       if (content === undefined) continue;
       const hash = before[path];
+      // Lines the request gives verbatim: their quality findings are notes (#2489).
+      const supplied = suppliedLineNumbers(request, path, content);
       changed.push({
         path,
         content,
         before: hash
           ? (planned[path] ?? readKept(this.store, runId, hash)?.toString("utf8") ?? undefined)
           : null,
+        ...(supplied.size ? { supplied } : {}),
       });
     }
     return changed;
@@ -17565,6 +17570,29 @@ ${note}`;
       new Set(changedPaths(before, files)),
       code.skipped,
     );
+    // A copy or unused declaration whose lines the request gives verbatim is a note (#2489).
+    const request = state.requestText || state.prompt;
+    const supplied = new Map<string, Set<number>>();
+    const verbatim = (file: string, start: number, end: number) => {
+      if (!supplied.has(file))
+        supplied.set(file, suppliedLineNumbers(request, file, code.files.get(file) ?? ""));
+      const lines = supplied.get(file) as Set<number>;
+      const text = (code.files.get(file) ?? "").split("\n");
+      // Blank lines are never supplied, and do not make a span the run's own.
+      for (let line = start; line <= end; line++)
+        if (text[line - 1]?.trim() && !lines.has(line - 1)) return false;
+      return lines.size > 0;
+    };
+    const notes = [
+      ...result.clones.filter((c) => verbatim(c.file, c.startLine, c.endLine)),
+      ...result.unused.filter((u) => verbatim(u.file, u.line, u.line)),
+    ];
+    if (notes.length) {
+      result.clones = result.clones.filter((c) => !notes.includes(c));
+      result.unused = result.unused.filter((u) => !notes.includes(u));
+      result.supplied = notes.length;
+      if (!result.clones.length && !result.unused.length) result.blocking = false;
+    }
     const evidenceId = this.store.transaction(() => {
       const artifact = this.store.artifact(
         runId,

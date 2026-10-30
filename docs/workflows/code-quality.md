@@ -83,6 +83,8 @@ A rules check that finds the same rule on the same text in the same file after t
 
 Only the lines the run added count. Lines are compared with the file as it was at approval: the host keeps the planned code files when the plan is approved (`quality/baseline-files.json`) and falls back to the pre-image the run saved before its first edit. A line that only moved is not new. A changed file whose baseline is not known is still checked, but its matches are notes, never blocking.
 
+A line the request gives verbatim is not the run's to change: a line whose trimmed text is a line of a fenced block the request attributes to the file, or an added line of its diff (`suppliedLineNumbers`, #2489; a listing of signatures supplies nothing). A match whose added lines are all such lines is a note, recorded with `supplied: true`. The same holds for a Semgrep match on such a line and for a copy or unused declaration of the duplication ratchet whose lines are all supplied (counted in the result's `supplied`). In bench round 80 the brief gave deltaglue's `src/main.ts` verbatim, its `catch` clauses returned the contract's sentinel, `catch-return-default` blocked it, and corrective T025 spent 313k tokens and a person's clarification to change nothing. The same code in a file the run writes itself still blocks.
+
 A project shapes the pack in the `quality` block of `.baked/config.json` (or `~/.baked/config.json`):
 
 ```json
