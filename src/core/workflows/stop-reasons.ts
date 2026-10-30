@@ -90,6 +90,16 @@ export const STOP_REASONS = {
     modes: NOT_ENFORCED,
     defaultMode: "shadow",
   },
+  "initiative-row-owner": {
+    label:
+      "An initiative's split gives a prescribed row file to a feature although one of its rows cites a literal of a feature that depends on it",
+    // Shadow by default (#2487): the initiative records `decision.would_stop` when the split is
+    // proposed. `stopModes: { "initiative-row-owner": "enforce" }` returns the problem to the
+    // decomposer and refuses a split that still has it; making that the default is a pull request
+    // of its own after two bench rounds with no false would-stop.
+    modes: STOP_MODES,
+    defaultMode: "shadow",
+  },
   "initiative-plan-charge": {
     label:
       "An initiative's token pool holds an open feature run with a sized plan at its plan's need instead of its run limit",
