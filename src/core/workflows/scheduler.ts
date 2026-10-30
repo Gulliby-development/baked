@@ -4788,7 +4788,14 @@ export class WorkflowScheduler {
       model: this.sizingModel(runId, graph),
       ...(policy.sizing?.rowVolume ? { request: state.requestText || state.prompt } : {}),
     });
-    const split = splitTestTasks(graph, report, spec, edits, policy.checks);
+    const split = splitTestTasks(
+      graph,
+      report,
+      spec,
+      edits,
+      policy.checks,
+      policy.sizing?.rowVolume ? state.requestText || state.prompt : undefined,
+    );
     if (!split) return graph;
     const revision = this.store.state(runId).sizingReplans;
     this.store.transaction(() =>

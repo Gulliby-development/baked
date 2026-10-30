@@ -761,6 +761,8 @@ export interface SuppliedRows {
   rows: number;
   /** The characters of those lines. */
   chars: number;
+  /** Those lines, trimmed, in the block's order: the text a row slice owns (#2466). */
+  lines: string[];
 }
 
 /** A first line that says the block holds rows: `ProblemsTests in tests/p.test.ts (63 rows, ...)`. */
@@ -802,6 +804,7 @@ export function suppliedRows(request: string, paths: readonly string[]): Map<str
       header: before?.header ?? header,
       rows: (before?.rows ?? 0) + lines.length,
       chars: (before?.chars ?? 0) + lines.reduce((sum, line) => sum + [...line].length, 0),
+      lines: [...(before?.lines ?? []), ...lines.map((line) => line.trim())],
     });
   }
   return out;
@@ -1907,6 +1910,7 @@ export function splitTestTasks(
   spec?: SpecText | null,
   edits?: HostEdit[],
   checks: CaseContext["checks"] = [],
+  request?: string,
 ): TaskGraph | null {
   const oversized = new Set(
     report.tasks.filter((task) => task.oversized && task.kind === "test").map((t) => t.taskId),
@@ -1919,7 +1923,10 @@ export function splitTestTasks(
     if (!oversized.has(task.id) || task.sizingSlice || task.rows?.length) return [task];
     const byRows = report.tasks.find((t) => t.taskId === task.id)?.rowVolume;
     if (byRows?.mode === "on" && byRows.slices > 1) {
-      const split = rowSlices(task, byRows, () => `T${String(next++).padStart(3, "0")}`);
+      const lines = request
+        ? suppliedRows(request, [byRows.path]).get(requestPath(byRows.path))?.lines
+        : undefined;
+      const split = rowSlices(task, byRows, () => `T${String(next++).padStart(3, "0")}`, lines);
       parts.set(
         task.id,
         split.map((part) => part.id),
@@ -2089,17 +2096,25 @@ export function splitTestTasks(
  * A test task cut into sequential slices of the rows the request prescribes for its file (#2455):
  * each slice keeps the task's criteria and writes only its rows, the first creates the file (with
  * the task's other writes) and each later one appends to it and depends on the one before. Rows
- * are dealt out evenly in the block's order; a slice's share is its part of the rows.
+ * are dealt out evenly in the block's order; a slice's share is its part of the rows. Given the
+ * block's `lines`, each slice carries its own (`sizingSlice.rows`), so the case walk owns a criterion
+ * literal by the slice whose rows hold it (#2466).
  */
 function rowSlices(
   task: Task,
   volume: NonNullable<TaskSize["rowVolume"]>,
   nextId: () => string,
+  lines?: readonly string[],
 ): Task[] {
   const target = task.writes.find((write) => requestPath(write.path) === volume.path);
   if (!target) return [task];
   const count = volume.slices;
   const bound = (index: number) => Math.floor((index * volume.rows) / count);
+  // The task schema bounds a slice's rows; a block past it keeps the share rule.
+  const rowsFit =
+    lines?.length === volume.rows &&
+    volume.rows <= 2000 &&
+    lines.every((line) => line.length <= 16_000);
   const split: Task[] = [];
   let previous: string | null = null;
   for (let index = 0; index < count; index++) {
@@ -2119,7 +2134,13 @@ function rowSlices(
       title: `${task.title} (part ${index + 1} of ${count})`,
       writes: index === 0 ? task.writes : [{ ...target, action }],
       dependsOn: [...task.dependsOn, ...(previous ? [previous] : [])],
-      sizingSlice: { taskId: task.id, index, count, share: (last - first + 1) / volume.rows },
+      sizingSlice: {
+        taskId: task.id,
+        index,
+        count,
+        share: (last - first + 1) / volume.rows,
+        ...(rowsFit ? { rows: lines.slice(first - 1, last) } : {}),
+      },
       description: `${task.description.split(/\nSizing split (?:this task by file|this test file into slices):/)[0]}\n${SLICE_PART} write only rows ${first} to ${last} of the ${volume.rows} prescribed rows the request gives for ${target.path} in the block headed "${volume.header}", in their order; the other slices belong to the other parts of ${task.id}. Slice ${index + 1} of ${count}. ${order}`,
     });
     previous = id;
