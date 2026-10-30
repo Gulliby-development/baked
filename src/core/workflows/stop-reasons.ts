@@ -82,6 +82,14 @@ export const STOP_REASONS = {
     modes: NOT_ENFORCED,
     defaultMode: "shadow",
   },
+  "initiative-plan-share": {
+    label:
+      "A started initiative feature run's own sized plan needs more than its share of the token pool, before its first task",
+    // Shadow only (#2488): the run goes on under assume as before and the record names the
+    // extend that answers it. Its promotion adds `enforce` and parks the feature before its tasks.
+    modes: NOT_ENFORCED,
+    defaultMode: "shadow",
+  },
   "initiative-plan-charge": {
     label:
       "An initiative's token pool holds an open feature run with a sized plan at its plan's need instead of its run limit",

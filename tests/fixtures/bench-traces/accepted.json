@@ -100,7 +100,8 @@
   },
   "R73/flatelens.sqlite.gz#flatelens": {
     "newPoolBoundStops": 1,
-    "reason": "#2280: initiative-pool-growth (shadow) records commands, the issue's case: its first initiative-growth (charge 25.14M, $19.30) raised its 4.65M share to the base ceilings (8M, 12M) and $3.82 to $19.30 (then $24.08) with 5.66M tokens and $10.66 under the ceiling left after the others at its gate; it used 12.92M and the initiative ended at 41.45M of its 34.2M pool. True. With chargeHold its bounds stay at 4.65M and $10.66 (tests/forecast-replay-corpus.test.ts)."
+    "newPlanShare": 1,
+    "reason": "#2280: initiative-pool-growth (shadow) records commands, the issue's case: its first initiative-growth (charge 25.14M, $19.30) raised its 4.65M share to the base ceilings (8M, 12M) and $3.82 to $19.30 (then $24.08) with 5.66M tokens and $10.66 under the ceiling left after the others at its gate; it used 12.92M and the initiative ended at 41.45M of its 34.2M pool. True. With chargeHold its bounds stay at 4.65M and $10.66 (tests/forecast-replay-corpus.test.ts). #2488: the plan-time share gate records stream (shadow, initiative-plan-share would-stop): its plan needed about 2.9M against its 1.8M ceiling and the $30 cap paid for about 33.1M, too few beside the waiting commands and docs, so the pool would not grow inside the cap; the remedy names 39.4M with a $35.71 cap. The round, recorded before #2488, went on under assume."
   },
   "R73/evalpin.sqlite.gz#evalpin": {
     "newPoolBoundStops": 1,
@@ -249,5 +250,13 @@
   "R78/latcell-update-blocked2.sqlite.gz#7243d4f4-4e5d-4d96-8ee8-c04cc7c3d0ed": {
     "newRecoveries": 1,
     "reason": "R78 latcell-update second attempt (workspace latcellu), implement attempt f9c1f605 on codex/gpt-6-luna: a 204 s turn that used 75,752 tokens and ended failed without a usable answer. The recorded run (pin f1fa8b687) took no rung and the task was run again by the host; the replay on current main reads the attempt as a billed turn without a usable answer and takes the fresh-session rung, the intended treatment of #1957 (same class as the R76 schemamask entry). The run later blocked on the dart-test path-length fault, which this decision does not touch."
+  },
+  "R74/ladlemath.sqlite.gz#ladlemath": {
+    "newPlanShare": 1,
+    "reason": "#2488: the plan-time share gate (plan-share, shadow) records a would-extend for inspect: its plan needed about 4.4M against its 1.8M start share with the dollar forecast $22.36 inside the $37.50 ceiling; the pool would grow from 30.0M to 38.2M (the waiting highs' cover, inside the 38.3M the $30 cap pays for) and the run's ceiling to 4.4M before its first task. The round, recorded before #2488, held."
+  },
+  "R80/deltaglue.sqlite.gz#deltaglue": {
+    "newPlanShare": 1,
+    "reason": "#2488, the issue's case: cli's own plan needed about 16.0M against its 3.38M start share with frames and assembly accepted (dollar forecast $11.42 inside the $34.50 ceiling); the plan-time share gate (plan-share, shadow) records a would-extend of the pool from 7.1M to 20.2M inside the 27.3M the $30 cap pays for, and of the run's ceiling to 12.0M (the base policy's). The round, recorded before #2488, went on under assume and stopped budget_exhausted at 3.57M; the person extended the pool to 29.9M and the run to 12.0M. With extendWithinDollars on the host makes it before task 1."
   }
 }

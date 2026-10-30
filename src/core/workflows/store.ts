@@ -1863,6 +1863,13 @@ export class WorkflowStore {
    */
   tokenHold: ((runId: string) => number | null) | undefined;
   /**
+   * The plan-time share gate (`InitiativeService.planShareGate`, #2488): asked when a started
+   * initiative feature run's own plan sizing needs more than its ceiling, before its first task.
+   * True when the initiative grew the run's ceiling (and its pool), so the plan is sized again.
+   * Installed by `NativeWorkflowService` like `tokenHold`; unset elsewhere.
+   */
+  planShareGate: ((runId: string) => boolean) | undefined;
+  /**
    * What the run's open attempts reserve in dollars (`costUsage`), for a run with a cost cap and
    * a reservation: `canExtendRun` measures spent plus reserved against the cap, as the service does.
    */

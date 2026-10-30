@@ -7699,26 +7699,38 @@ export class WorkflowScheduler {
     if (!graph) return "continue";
     const samples = sizingHistory(this.store.workspace, policy);
     const model = this.sizingModel(runId, graph);
-    const report = sizePlan({
-      graph,
-      spec: state.spec,
-      policy,
-      samples,
-      spent: this.store.run(runId).token_usage,
-      model,
-      loopShares: loopHistory(this.store.workspace, policy),
-      tokenRates: rateHistory(this.store.workspace, policy),
-      ownRates: this.initiativeRates(runId),
-      request: state.requestText || state.prompt,
-    });
-    this.store.transaction(() =>
-      this.store.artifact(
-        runId,
-        "sizing",
-        `sizing/plan-${String(state.sizingReplans)}.json`,
-        this.sizingRecord(runId, report),
-      ),
-    );
+    const size = (): SizingReport => {
+      const sized = sizePlan({
+        graph,
+        spec: state.spec,
+        policy,
+        samples,
+        spent: this.store.run(runId).token_usage,
+        model,
+        loopShares: loopHistory(this.store.workspace, policy),
+        tokenRates: rateHistory(this.store.workspace, policy),
+        ownRates: this.initiativeRates(runId),
+        request: state.requestText || state.prompt,
+      });
+      this.store.transaction(() =>
+        this.store.artifact(
+          runId,
+          "sizing",
+          `sizing/plan-${String(state.sizingReplans)}.json`,
+          this.sizingRecord(runId, sized),
+        ),
+      );
+      return sized;
+    };
+    let report = size();
+    // The plan-time share gate (#2488): a feature run of an initiative whose own plan needs more
+    // than its ceiling asks the initiative, not the model, before its first task. With
+    // `extendWithinDollars: on` the pool and the ceiling grow together and the plan is sized again
+    // on the grown ceiling; otherwise the initiative records what it would do and nothing changes.
+    if (report.decision === "split-feature" && this.planShareGate(runId)) {
+      this.adoptLimits(runId, policy);
+      report = size();
+    }
     const split = report.decision === "split-tasks" || report.decision === "split-feature";
     if (split && state.sizingReplans === 0) {
       // v1 and v2 definitions alike go back to the plan stage (#2036); a v2 definition past its
@@ -7810,6 +7822,16 @@ ${note}`;
     state.activeTime = report.activeTime;
     this.raiseBudget(runId, state, policy, report);
     return "continue";
+  }
+  /** The initiative's plan-time share gate (`WorkflowStore.planShareGate`); false when it grew nothing. */
+  private planShareGate(runId: string): boolean {
+    if (!this.store.planShareGate) return false;
+    try {
+      return this.store.planShareGate(runId);
+    } catch {
+      // Without the gate the run goes on as sized.
+      return false;
+    }
   }
   /** Reprice unstarted tasks from completed, checked tasks of this run before the next batch. */
   private refreshTaskSizing(runId: string, state: RuntimeState, policy: RunPolicy): void {
