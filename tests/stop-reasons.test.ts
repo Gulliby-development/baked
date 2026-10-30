@@ -33,7 +33,7 @@ describe("stop reasons", () => {
   test("hard limits take only enforce; the forecasts and the approval scope take every mode", () => {
     for (const [id, reason] of Object.entries(STOP_REASONS)) {
       expect(reason.modes).toContain(reason.defaultMode);
-      if (!["cost-forecast", "approval-scope", "initiative-forecast", "initiative-dollar-share", "initiative-dollar-cap", "initiative-plan-charge", "initiative-pool-growth", "initiative-time-share", "repeated_failure", "corrective_scope", "corrective_unowned_file", "repeat_without_change", "corrective_restores_removed", "generated_case", "edge_crash_finding", "repro_blind", "upstream_symbol", "baseline_unrepairable", "baseline_signature", "check-config-approval", "ci_check_drift", "host_content_conflict", "fixer_unusable", "worktree_environment", "supplied_drift", "committed_tree", "host-resume-on-stored-limit", "cost_refusal_wait", "upstream_baseline_debt", "written_tests_unselected", "test_cap", "silent_check_failure", "host-settle-interrupted-check"].includes(id))
+      if (!["cost-forecast", "approval-scope", "initiative-forecast", "initiative-dollar-share", "initiative-dollar-cap", "initiative-plan-charge", "initiative-pool-growth", "initiative-time-share", "repeated_failure", "corrective_scope", "corrective_unowned_file", "repeat_without_change", "corrective_restores_removed", "generated_case", "edge_crash_finding", "repro_blind", "upstream_symbol", "baseline_unrepairable", "baseline_signature", "check-config-approval", "ci_check_drift", "host_content_conflict", "fixer_unusable", "worktree_environment", "supplied_drift", "committed_tree", "host-resume-on-stored-limit", "cost_refusal_wait", "upstream_baseline_debt", "written_tests_unselected", "test_cap", "silent_check_failure", "host-settle-interrupted-check", "attempt_green_checkpoint"].includes(id))
         expect(reason.modes).toEqual(["enforce"]);
     }
     expect(STOP_REASONS["cost-forecast"].modes).toEqual(STOP_MODES);
@@ -58,6 +58,9 @@ describe("stop reasons", () => {
     // Shadow by default (#2418): a policy may enforce the host's one re-run of a silent check failure.
     expect(STOP_REASONS.silent_check_failure.modes).toEqual(STOP_MODES);
     expect(STOP_REASONS.silent_check_failure.defaultMode).toBe("shadow");
+    // Shadow until its promotion (#2470): finishing a task from its attempt's green checkpoint.
+    expect(STOP_REASONS.attempt_green_checkpoint.modes).toEqual(["shadow", "advisory"]);
+    expect(STOP_REASONS.attempt_green_checkpoint.defaultMode).toBe("shadow");
     expect(STOP_REASONS.repro_blind.modes).toEqual(["shadow", "advisory"]);
     expect(STOP_REASONS.repro_blind.defaultMode).toBe("shadow");
     expect(STOP_REASONS.upstream_symbol.modes).toEqual(["shadow", "advisory"]);

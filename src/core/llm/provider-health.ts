@@ -196,6 +196,11 @@ export interface CallTiming extends CallReasoning {
   deadlineInputs?: FirstByteInputs;
   /** The size of the call's prompt (`promptChars`), which the adaptive deadline scales by (#2041). */
   promptChars?: number;
+  /**
+   * The size in characters of each part of an implementer attempt's workflow context, on its first
+   * call (`promptParts` in context.ts, #2470), so an oversized prompt says what it holds.
+   */
+  promptParts?: Record<string, number>;
   /** The HTTP status of a call the provider refused, and its `retry-after` header (#1729). */
   status?: number;
   retryAfter?: string;

@@ -291,6 +291,17 @@ export const STOP_REASONS = {
     modes: STOP_MODES,
     defaultMode: "shadow",
   },
+  attempt_green_checkpoint: {
+    label:
+      "An attempt ended unfinished after its required checks failed on edits past a state where every one passed: the host would finish the task from that state",
+    // Shadow only (#2470, R79 deltaglue chunks T004: every required check passed at 23:19:17,
+    // two more edits failed them and the attempt ended at its all-token cap at 23:19:40, the
+    // run's third `attempt_cap` block). It records `decision.would_finish` from the attempt's
+    // checkpoint; restoring that state and finishing the task is a pull request of its own after
+    // a bench round with no false would-finish.
+    modes: NOT_ENFORCED,
+    defaultMode: "shadow",
+  },
   "host-resume-on-stored-limit": {
     label:
       "A run blocked on its own active time, tokens or calls whose stored limits now exceed its usage: the host would resume it once",
@@ -746,6 +757,33 @@ export function recordWouldRerun(
       key: rerun.key.slice(0, 200),
       summary: rerun.summary.slice(0, 1000),
       inputs: rerun.inputs,
+    },
+  });
+  return true;
+}
+
+/**
+ * Records `decision.would_finish` for an attempt that ended unfinished after a state on which
+ * every required check passed (`attempt_green_checkpoint`, shadow, #2470), once per key. Returns
+ * whether it recorded now.
+ */
+export function recordWouldFinish(
+  store: WorkflowStore,
+  runId: string,
+  finish: Omit<WouldStop, "reason">,
+): boolean {
+  const seen = store
+    .eventsOfType(runId, "decision.would_finish")
+    .some((e) => e.type === "decision.would_finish" && e.payload.key === finish.key);
+  if (seen) return false;
+  store.emit(runId, {
+    type: "decision.would_finish",
+    payload: {
+      reason: "attempt_green_checkpoint",
+      mode: finish.mode,
+      key: finish.key.slice(0, 200),
+      summary: finish.summary.slice(0, 1000),
+      inputs: finish.inputs,
     },
   });
   return true;

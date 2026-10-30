@@ -1675,6 +1675,7 @@ export const EventType = z.enum([
   "decision.would_stop",
   "decision.would_resume",
   "decision.would_rerun",
+  "decision.would_finish",
   "task.state_changed",
   "artifact.committed",
   "check.finished",
@@ -1833,6 +1834,22 @@ export const EventSchema = z.discriminatedUnion("type", [
     .object({
       ...EventBase,
       type: z.literal("decision.would_rerun"),
+      payload: z
+        .object({
+          reason: StopReasonIdSchema,
+          mode: z.enum(["shadow", "advisory"]),
+          key: z.string().max(200),
+          summary: z.string().max(1000),
+          inputs: z.record(z.string(), z.unknown()),
+        })
+        .strict(),
+    })
+    .strict(),
+  // A shadow reason would have finished a task from its attempt's green checkpoint (`attempt_green_checkpoint`, #2470).
+  z
+    .object({
+      ...EventBase,
+      type: z.literal("decision.would_finish"),
       payload: z
         .object({
           reason: StopReasonIdSchema,

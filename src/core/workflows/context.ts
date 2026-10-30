@@ -178,6 +178,33 @@ export function splitWorkflowContext(text: string): { shared: string; own: strin
   if (end <= 0 || end === text.length - 1) return null;
   return { shared: text.slice(0, end + 1), own: text.slice(end + 1) };
 }
+/**
+ * The size in characters of each part of a workflow context (#2470): the instructions before the
+ * documents, each run-level document (request, spec, plan, graph, research) and each key of the
+ * attempt's own input (`extra`: the task, its files, evidence, findings). R79 deltaglue's
+ * first-call prompts held 177,609 characters at the median against 36,569 to 99,338 in the other
+ * apps of the round, and nothing recorded what they held. Null for a prompt that is not one.
+ */
+export function promptParts(text: string): Record<string, number> | null {
+  const last = text.lastIndexOf("\n");
+  const previous = last > 0 ? text.lastIndexOf("\n", last - 1) : -1;
+  if (previous < 0) return null;
+  try {
+    const documents = JSON.parse(text.slice(previous + 1, last)) as unknown;
+    const attempt = JSON.parse(text.slice(last + 1)) as { extra?: unknown };
+    if (!documents || typeof documents !== "object" || Array.isArray(documents)) return null;
+    const parts: Record<string, number> = { instructions: previous + 1 };
+    for (const [key, value] of Object.entries(documents))
+      parts[key] = canonical(value ?? null).length;
+    const extra = attempt?.extra;
+    if (extra && typeof extra === "object" && !Array.isArray(extra))
+      for (const [key, value] of Object.entries(extra))
+        parts[`extra.${key}`] = canonical(value ?? null).length;
+    return parts;
+  } catch {
+    return null;
+  }
+}
 export function buildWorkflowContext(
   state: RuntimeState,
   profile: AgentProfile,
