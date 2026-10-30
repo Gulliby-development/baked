@@ -5592,3 +5592,32 @@ describe("convergence gate: a low note on a file the request gives verbatim (#23
     });
   }
 });
+
+describe("case walk gate: generated test inputs where literal examples are asked for (#2469)", () => {
+  // R79 deltaglue chunks: the brief asked for literal object rows and the tests interpolated them;
+  // the shadow walk recorded `generated_case` and review's corrective cost 8.28M tokens. Enforced,
+  // the walk refuses the submission naming each generated line; a literal twin passes.
+  const criterion = { ...fixtureSpec.criteria[0]!, id: "AC-001", given: "three backslashes as a literal example", when: "the user runs `escape`", then: "it prints `ok-7`" };
+  const LANGUAGES: [path: string, generated: string, literal: string][] = [
+    ["tests/test_escape.py", 'def test_escape():\n    slashes = "\\\\" * 3\n    assert run("escape", slashes) == "ok-7"\n', 'def test_escape():\n    assert run("escape", "\\\\\\\\\\\\") == "ok-7"\n'],
+    ["tests/escape.test.ts", 'test("escape", () => {\n  const slashes = "\\\\".repeat(3);\n  expect(run("escape", slashes)).toBe("ok-7");\n});\n', 'test("escape", () => {\n  expect(run("escape", "\\\\\\\\\\\\")).toBe("ok-7");\n});\n'],
+    ["escape_test.go", 'func TestEscape(t *testing.T) {\n\tslashes := strings.Repeat("\\\\", 3)\n\tif run("escape", slashes) != "ok-7" {\n\t\tt.Fail()\n\t}\n}\n', 'func TestEscape(t *testing.T) {\n\tif run("escape", "\\\\\\\\\\\\") != "ok-7" {\n\t\tt.Fail()\n\t}\n}\n'],
+  ];
+  for (const [path, generated, literal] of LANGUAGES)
+    test(`${path}: refused by its line when enforced, recorded only in shadow, a literal twin passes`, async () => {
+      const root = mkdtempSync(join(tmpdir(), "baked-generated-case-cell-"));
+      try {
+        const task = { id: "T001", criterionIds: ["AC-001"], writes: [{ path, action: "create" as const }], dependsOn: [] };
+        const check = (refuseGenerated: boolean) =>
+          caseCheck({ criteria: [criterion] }, task, { checks: [], tasks: [task], generatedKinds: new Set(["repeat"] as const), refuseGenerated })!(root);
+        mkdirSync(join(root, path, ".."), { recursive: true });
+        writeFileSync(join(root, path), generated);
+        const [refusal, ...rest] = await check(true);
+        expect(rest).toEqual([]);
+        expect(refusal).toContain(`${path}:2 (repeat)`);
+        expect(await check(false)).toEqual([]);
+        writeFileSync(join(root, path), literal);
+        expect(await check(true)).toEqual([]);
+      } finally { rmSync(root, { recursive: true, force: true }); }
+    });
+});
