@@ -255,6 +255,15 @@ const swiftFormat: FileFormatter = {
   fix: () => ["format", "format", "--in-place"],
 };
 
+// No range: `mix format` formats whole files (#2490). It reads `.formatter.exs` from its directory
+// (the gate needs one) and formats the files it is given even when its `inputs` leave them out.
+const mixFormat: FileFormatter = {
+  runs: (program, args) =>
+    program === "mix" && args[0] === "format" && args.includes("--check-formatted"),
+  check: (_, files) => ["format", "--check-formatted", ...files],
+  fix: () => ["format"],
+};
+
 const NPM_FORMATTERS = [biome, prettier, dprint, bunFmt];
 
 /**
@@ -287,7 +296,7 @@ export const FILE_FORMATTERS: LanguageRecord<readonly FileFormatter[]> = {
   php: [pint, phpCsFixer],
   swift: [swiftFormat],
   lua: [stylua],
-  elixir: none("Mix has no gate detector yet (#1753)"),
+  elixir: [mixFormat],
   dart: [dartFormat],
   zig: none("zig build has no gate detector yet (#1753)"),
   bash: [shfmt],

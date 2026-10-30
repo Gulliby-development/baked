@@ -1602,6 +1602,91 @@ describe("gate matrix: SwiftPM, Mix, Dart, Zig, dune and Bundler (#1753)", () =>
   });
 });
 
+// #2490 (R80 ratdec, Elixir 1.20.4): the Mix gates (#1753) proposed `mix format` and `mix test`, but
+// no format-written check held an `.ex` file to the formatter and ExUnit's summary was not read, so
+// `requireTests` could not tell a run of no test. Measured with Elixir 1.14.0 (Ubuntu 24.04's
+// package): `mix test` and `mix format --check-formatted` below. Elixir 1.19 and 1.20 were not
+// installed; their summaries are built from ExUnit.CLIFormatter and ExUnit.Formatter of v1.19.5 and
+// v1.20.4 (print_summary, format_times), with the "Result: 1 passed", "Result: 0/1 passed" and
+// "Failed: 1 test" lines the R80 records show.
+const EXUNIT_FAILED = ".\n\n  1) test fails on purpose (SumTest)\n     test/sum_test.exs:8\n     Assertion with == failed\n     code:  assert Proj.hello() == :moon\n     left:  :world\n     right: :moon\n     stacktrace:\n       test/sum_test.exs:9: (test)\n\n\nFinished in 0.02 seconds (0.00s async, 0.02s sync)\n2 tests, 1 failure\n\nRandomized with seed 0\n";
+const EXUNIT_GROWN = ".\n\n  1) test fails on purpose (SumTest)\n     test/sum_test.exs:8\n     Assertion with == failed\n     code:  assert Proj.hello() == :moon\n     left:  :world\n     right: :moon\n     stacktrace:\n       test/sum_test.exs:9: (test)\n\n.\nFinished in 0.02 seconds (0.00s async, 0.02s sync)\n3 tests, 1 failure\n\nRandomized with seed 0\n";
+const EXUNIT_FINISHED = "\nFinished in 0.02 seconds (0.00s async, 0.02s sync)\n";
+const exunit20 = (summary: string) => `${EXUNIT_FINISHED}\n${summary}\n`;
+
+describe("gate matrix: Elixir format-written and ExUnit counts (#2490)", () => {
+  const MIX = { "mix.exs": "defmodule Calc.MixProject do\nend\n", ".formatter.exs": '[inputs: ["{mix,.formatter}.exs", "{config,lib,test}/**/*.{ex,exs}"]]\n' };
+  // mix format --check-formatted rejects it: "** (Mix) mix format failed due to --check-formatted."
+  const MISFORMATTED = "defmodule Sum do\n  def sum(a,b), do: a+b\nend\n";
+  const checks = (files: Record<string, string>) => detectGates(project(files)).map((s) => s.check);
+  const resolve = (command: string) => `/usr/bin/${command}`;
+  const shown = (checks: Check[]) => checks.map((c) => [c.id, [c.executable, ...c.args].join(" "), [c.fix?.executable, ...(c.fix?.args ?? [])].join(" ")]);
+
+  test("a misformatted .ex file a task creates is held to mix format --check-formatted, mix format its fixer", () => {
+    const root = project({ ...MIX, "lib/sum.ex": MISFORMATTED, "test/sum_test.exs": "defmodule SumTest do\n  use ExUnit.Case\nend\n" });
+    expect(shown(formatWrittenChecks(root, [], [{ path: "lib/sum.ex", action: "create" }, { path: "test/sum_test.exs", action: "create" }], resolve))).toEqual([
+      ["mix-format-written", "mix format --check-formatted lib/sum.ex test/sum_test.exs", "mix format"],
+    ]);
+    // mix format formats whole files only: an edited file with code before the run gets no check.
+    expect(formatWrittenChecks(root, [], [{ path: "lib/sum.ex", action: "modify" }], resolve, () => "defmodule Sum do\nend\n", () => true)).toEqual([]);
+    // Without a .formatter.exs there is no mix-format gate, so no check either.
+    expect(formatWrittenChecks(project({ "mix.exs": MIX["mix.exs"], "lib/sum.ex": MISFORMATTED }), [], [{ path: "lib/sum.ex", action: "create" }], resolve)).toEqual([]);
+    // The whole-tree gate in the run's checks covers the file; a timed-out gate is bisected per file.
+    const gate = checks(MIX).find((c) => c.id === "mix-format") as Check;
+    expect(formatWrittenChecks(root, [gate], [{ path: "lib/sum.ex", action: "create" }], resolve)).toEqual([]);
+    expect(fileScopedFormat(gate, root, "lib/sum.ex")).toEqual({ executable: "mix", args: ["format", "--check-formatted", "lib/sum.ex"] });
+  });
+
+  test("ExUnit's summary is counted: Elixir 1.20's Result line and 1.14's tests and failures", () => {
+    // Elixir 1.20: every test passed, one failed, several test types, and the idle ones left out.
+    expect([testCount(exunit20("Result: 1 passed")), testsRan(exunit20("Result: 1 passed"))]).toEqual([{ tool: "exunit", count: 1 }, { tool: "exunit", count: 1 }]);
+    expect(testsRan(exunit20("Result: 0/1 passed\nFailed: 1 test"))).toEqual({ tool: "exunit", count: 1 });
+    const mixed = exunit20("Result: 3/4 passed (1/1 doctest, 2/3 tests), 1 invalid, 1 skipped, 2 excluded\nFailed: 1 test");
+    expect([testCount(mixed), testsRan(mixed)]).toEqual([{ tool: "exunit", count: 8 }, { tool: "exunit", count: 4 }]);
+    // Elixir 1.14.0, measured: a failing run, then excluded, skipped and invalid tests, which the count holds.
+    expect([testCount(EXUNIT_FAILED), testsRan(EXUNIT_FAILED)]).toEqual([{ tool: "exunit", count: 2 }, { tool: "exunit", count: 2 }]);
+    const idle = "\nFinished in 0.01 seconds (0.00s async, 0.01s sync)\n1 doctest, 3 tests, 0 failures, 1 excluded, 1 skipped\n\nRandomized with seed 0\n";
+    expect([testCount(idle), testsRan(idle)]).toEqual([{ tool: "exunit", count: 4 }, { tool: "exunit", count: 2 }]);
+    const invalid = "?\n\n  0) SumTest: failure on setup_all callback, all tests have been invalidated\n     ** (RuntimeError) boom\n\n\nFinished in 0.01 seconds (0.00s async, 0.01s sync)\n1 test, 0 failures, 1 invalid\n\nRandomized with seed 0\n";
+    expect([testsRan(invalid), failedTests(invalid)]).toEqual([{ tool: "exunit", count: 0 }, { tool: "exunit", names: [] }]);
+    // Elixir 1.19 puts the excluded count in parentheses.
+    expect(testsRan(`${EXUNIT_FINISHED}3 tests, 0 failures (2 excluded)\n`)).toEqual({ tool: "exunit", count: 1 });
+    // An umbrella runs each app's tests: the summaries add up.
+    expect(testsRan(`==> a${EXUNIT_FINISHED}0 failures\n==> b${EXUNIT_FINISHED}2 tests, 1 failure\n`)).toEqual({ tool: "exunit", count: 2 });
+    // RSpec's "Finished in" line is not ExUnit's.
+    expect(testCount("Finished in 0.00714 seconds (files took 0.09504 seconds to load)\n5 examples, 1 failure, 2 pending\n")?.tool).toBe("rspec");
+  });
+
+  test("an ExUnit run of no test is an empty run in both shapes, and fails a check that must run tests", () => {
+    const empty14 = "\nFinished in 0.01 seconds (0.00s async, 0.01s sync)\n0 failures\n\nRandomized with seed 0\n";
+    const empty19 = `${EXUNIT_FINISHED}0 tests, 0 failures\n`;
+    const empty20 = exunit20("Result: 0 tests");
+    for (const output of [empty14, empty19, empty20]) {
+      expect(testsRan(output)).toEqual({ tool: "exunit", count: 0 });
+      expect(noTestsCollected(output)).toBe(true);
+      expect(ranNoTests({ requireTests: true }, output)).toBe(true);
+    }
+    // Every test excluded is a narrowed selection, not an empty target.
+    expect(noTestsCollected(`${EXUNIT_FINISHED}\nResult: 0 tests, 3 excluded\n`)).toBe(false);
+    expect(noTestsCollected("\nFinished in 0.02 seconds (0.00s async, 0.02s sync)\n1 doctest, 3 tests, 0 failures, 4 excluded\n")).toBe(false);
+    expect(noTestsCollected(`==> a${empty20}==> b${exunit20("Result: 2 passed")}`)).toBe(false);
+    expect(noTestsCollected(EXUNIT_FAILED)).toBe(false);
+  });
+
+  test("the failed tests are named, a test file that does not compile is a build failure, and one more passing test keeps the signature", () => {
+    expect(failedTests(EXUNIT_FAILED)).toEqual({ tool: "exunit", names: ["test fails on purpose (SumTest)"] });
+    expect(failedTests(`  1) doctest Calc.add/2 (1) (CalcTest)\n     test/calc_test.exs:3\n${exunit20("Result: 0/1 passed\nFailed: 1 doctest")}`)).toEqual({ tool: "exunit", names: ["doctest Calc.add/2 (1) (CalcTest)"] });
+    const broken = "\n== Compilation error in file test/a_test.exs ==\n** (CompileError) test/a_test.exs:5: undefined function sub/2 (expected ATest to define such a function or for it to be imported, but none are available)\n\n";
+    expect([buildRunner(broken), buildFailure(broken), buildRunner(EXUNIT_FAILED)]).toEqual(["exunit", ["== Compilation error in file test/a_test.exs =="], null]);
+    expect(testCount(EXUNIT_GROWN)).toEqual({ tool: "exunit", count: 3 });
+    expect(failureSignature(EXUNIT_GROWN, "/repo")).toBe(failureSignature(EXUNIT_FAILED, "/repo"));
+    expect(failureSignature(`Compiling 2 files (.ex)\nGenerated calc app\n${EXUNIT_FAILED}`, "/repo")).toBe(failureSignature(EXUNIT_FAILED, "/repo"));
+    const failed20 = (passed: number, total: number) => `  1) test fails (CalcTest)\n     test/calc_test.exs:8\n${exunit20(`Result: ${passed}/${total} passed\nFailed: 1 test`)}`;
+    expect(failureSignature(failed20(2, 3), "/repo")).toBe(failureSignature(failed20(1, 2), "/repo"));
+    expect(failureSignature(failed20(1, 3).replace("Failed: 1 test", "Failed: 2 tests"), "/repo")).not.toBe(failureSignature(failed20(1, 2), "/repo"));
+  });
+});
+
 // #1489: `gradle -q check` prints no test total, so a Gradle project's baseline compared nothing,
 // and a Gradle-only project got no language review. The report below is the shape Gradle 8 writes
 // to build/test-results/test/TEST-<class>.xml.
@@ -5454,6 +5539,10 @@ describe("gate matrix: no tests collected (#1864)", () => {
     ["C# (dotnet test, no test in the project)", "Starting test execution, please wait...\nA total of 1 test files matched the specified pattern.\nNo test is available in /work/Lib.Tests/bin/Debug/net8.0/Lib.Tests.dll. Make sure that test discoverer & executors are registered and platform & framework version settings are appropriate and try again.\n"],
     // mix test, Elixir 1.14, on a test module with no test: no test count in the summary.
     ["Elixir (mix test, a module without tests)", "\nFinished in 0.01 seconds (0.00s async, 0.01s sync)\n0 failures\n\nRandomized with seed 441790\n"],
+    // #2490: Elixir 1.19 counts zero tests, and 1.20 prints its Result line (ExUnit.CLIFormatter
+    // print_summary of v1.19.5 and v1.20.4).
+    ["Elixir 1.19 (mix test, a module without tests)", "\nFinished in 0.01 seconds (0.00s async, 0.01s sync)\n0 tests, 0 failures\n"],
+    ["Elixir 1.20 (mix test, a module without tests)", "\nFinished in 0.01 seconds (0.00s async, 0.01s sync)\n\nResult: 0 tests\n"],
     // dune test 3.14 on an empty OUnit2 2.2 suite and an empty Alcotest 1.7 suite (path shortened).
     ["OCaml (dune test, OUnit2)", "\nRan: 0 tests in: 0.00 seconds.\nOK\n"],
     ["OCaml (dune test, Alcotest)", "Testing `lib'.\nThis run has ID `SP3Q9ASA'.\n\n\nFull test results in `/work/_build/default/test/_build/_tests/lib'.\nTest Successful in 0.000s. 0 test run.\n"],
