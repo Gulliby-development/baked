@@ -890,6 +890,7 @@ import {
   ROW_BLOCK_KIND,
   rowBlockDriftSummary,
   rowBlockDrifts,
+  rowBlockExtraSummary,
 } from "./row-block-drift.js";
 import {
   codeTaskCheckProblems,
@@ -5213,8 +5214,9 @@ export class WorkflowScheduler {
   }
   /**
    * The `row_block_drift` would-stops (#2486): each prescribed row of a test file the plan writes
-   * whose quoted literal the delivered file lacks, once per file and row, and the counts of each
-   * compared file under `row-blocks/<path>.json`. Called at the checks stage of both workflow
+   * whose quoted literal the delivered file lacks, once per file and row; each row of the file
+   * beyond the block, added or duplicated (#2503), once per file, kind and line; and the counts of
+   * each compared file under `row-blocks/<path>.json`. Called at the checks stage of both workflow
    * versions, after the snapshot; a failure to read records nothing.
    */
   private rowBlockDriftWouldStop(runId: string, state: RuntimeState, policy: RunPolicy): void {
@@ -5230,7 +5232,7 @@ export class WorkflowScheduler {
         (path) => readText(workspacePath(root, path)),
         mode,
       );
-      for (const { record, drifts } of compared) {
+      for (const { record, drifts, extras } of compared) {
         this.store.transaction(() =>
           this.store.artifact(
             runId,
@@ -5246,6 +5248,14 @@ export class WorkflowScheduler {
             key: `${drift.path}#row-${drift.row}`,
             summary: rowBlockDriftSummary(drift),
             inputs: { ...drift },
+          });
+        for (const extra of extras)
+          recordWouldStop(this.store, runId, {
+            reason: "row_block_drift",
+            mode,
+            key: `${extra.path}#${extra.kind}-line-${extra.line}`,
+            summary: rowBlockExtraSummary(extra),
+            inputs: { ...extra },
           });
       }
     } catch {}

@@ -298,11 +298,12 @@ export const STOP_REASONS = {
   },
   row_block_drift: {
     label:
-      "A test file the run delivered lacks a quoted literal of a row the request prescribes for it",
+      "A test file the run delivered lacks a quoted literal of a row the request prescribes for it, or holds a row beyond them",
     // Shadow only until two bench rounds show no false would-stop (#2486, R80 deltaglue cli T010
-    // dropped row 2's final `data: [DONE]` event, ratdec core T014 rewrote a stdin row); its
-    // promotion makes the row a finding of severity high on the file at the checks stage, which a
-    // repair task restores from the request's row.
+    // dropped row 2's final `data: [DONE]` event, ratdec core T014 rewrote a stdin row; #2503, R81
+    // ratdec exact-cli T011 added a 14th row to 13 prescribed); its promotion makes the row a
+    // finding of severity high on the file at the checks stage, which a repair task restores from
+    // the request's row (or a host removal of the added line).
     modes: NOT_ENFORCED,
     defaultMode: "shadow",
   },

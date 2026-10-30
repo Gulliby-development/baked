@@ -215,7 +215,10 @@ import {
   ROW_BLOCK_KIND,
   type RowBlockRecord,
   type RowBlockRule,
+  type RowMoveRule,
+  type RowMoves,
   rowBlockDecision,
+  rowMoveDecision,
 } from "./row-block-drift.js";
 import { PolicySchema, type RunPolicy } from "./schemas.js";
 import { NativeWorkflowService } from "./service.js";
@@ -1006,6 +1009,8 @@ export interface RunReplay {
   rowBlocks: RowBlockBoundary[];
   /** Rows the current rule says drift that the recorded comparison did not. */
   newRowBlockDrifts: number;
+  /** File rows the current move rule says are added or duplicated that the recording did not (#2503). */
+  newRowBlockMoves: number;
 }
 
 export interface RowBlockBoundary {
@@ -1014,18 +1019,23 @@ export interface RowBlockBoundary {
   /** The drifting rows (from 1), as recorded and as the current rule decides. */
   recorded: number[];
   replayed: number[];
+  /** The file rows beyond the block (#2503), as recorded and as the current rule places them; null in records before it. */
+  moves: { recorded: RowMoves; replayed: RowMoves } | null;
 }
 
 /**
  * Every checks-stage row block comparison a run recorded (`row-blocks/<path>.json`, #2486),
- * decided again from its per-row counts. Whether a file holds a literal reads text a trace does not
- * keep, so a change to the literal lookup (`verbatimHeld`) is covered by the scenario test, not
- * replayed. Traces before #2486 record none.
+ * decided again from its per-row counts, and its file rows placed again from their matches (#2503).
+ * Whether a file holds a literal, and which prescribed rows a file row matches, read text a trace
+ * does not keep, so a change to the literal lookup (`verbatimHeld`) or the row matching is covered
+ * by the scenario test, not replayed. Traces before #2486 record none; records before #2503 keep
+ * no file rows (`moves` null).
  */
 export function replayRowBlocks(
   store: WorkflowStore,
   runId: string,
   decide: RowBlockRule = rowBlockDecision,
+  move: RowMoveRule = rowMoveDecision,
 ): RowBlockBoundary[] {
   return store
     .artifacts(runId)
@@ -1044,6 +1054,10 @@ export function replayRowBlocks(
           mode: record.mode,
           recorded: record.drifting,
           replayed: decide(record.rows),
+          moves:
+            record.fileRows && record.moves
+              ? { recorded: record.moves, replayed: move(record.fileRows) }
+              : null,
         },
       ];
     });
@@ -4647,6 +4661,7 @@ function replayRun(
   | "newWouldFinishes"
   | "rowBlocks"
   | "newRowBlockDrifts"
+  | "newRowBlockMoves"
 > | null {
   const db = store.connection;
   const run = store.run(runId);
@@ -4893,6 +4908,8 @@ export function replayTrace(
     checkpointRule?: CheckpointRule;
     /** Decides each recorded row block comparison again (#2486); the current rule by default. */
     rowBlockRule?: RowBlockRule;
+    /** Places each recorded file row against its block again (#2503); the current rule by default. */
+    rowMoveRule?: RowMoveRule;
   } = {},
 ): TraceReplay {
   // Initiative starts rewind their own copies of the trace, before the run replay rewinds this one.
@@ -5024,7 +5041,10 @@ export function replayTrace(
       ]),
     );
     const rowBlockReplays = new Map(
-      runIds.map((runId) => [runId, replayRowBlocks(store, runId, options.rowBlockRule)]),
+      runIds.map((runId) => [
+        runId,
+        replayRowBlocks(store, runId, options.rowBlockRule, options.rowMoveRule),
+      ]),
     );
     const runs: RunReplay[] = [];
     for (const runId of runIds) {
@@ -5184,6 +5204,12 @@ export function replayTrace(
           (n, b) => n + b.replayed.filter((r) => !b.recorded.includes(r)).length,
           0,
         ),
+        newRowBlockMoves: rowBlocks.reduce((n, b) => {
+          if (!b.moves) return n;
+          const recorded = [...b.moves.recorded.added, ...b.moves.recorded.duplicated];
+          const replayed = [...b.moves.replayed.added, ...b.moves.replayed.duplicated];
+          return n + replayed.filter((line) => !recorded.includes(line)).length;
+        }, 0),
       });
     }
     const gates = replayShareGate(store, options.shareGate);
