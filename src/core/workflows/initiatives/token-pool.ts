@@ -21,7 +21,7 @@ import { TIME_STEP_MS } from "./time-pool.js";
 
 /** Suggested pool sizes are rounded up to this step, so the answer is a short number. */
 export const POOL_STEP = 100_000;
-const roundUp = (n: number): number => Math.ceil(n / POOL_STEP) * POOL_STEP;
+export const roundUp = (n: number): number => Math.ceil(n / POOL_STEP) * POOL_STEP;
 const roundDown = (n: number): number => Math.floor(n / POOL_STEP) * POOL_STEP;
 const usd = (n: number): string => `$${n.toFixed(2)}`;
 
@@ -435,27 +435,55 @@ export function tokenPool(inputs: PoolInputs): TokenPoolView {
     capTokens,
     notice: null,
   };
-  if (forecastTokens !== null && suggestedTokens !== null) {
-    const ratio = advice?.ratio ?? inputs.ratio;
-    const basis =
-      ratio !== null
-        ? `At the measured ${ratio.toFixed(1)}x of the estimates`
-        : "At the estimates so far";
-    // Both forecasts, when the blend that budget decisions use says another figure (#2062).
-    const blended =
-      advice &&
-      inputs.ratio !== null &&
-      tokenText(advice.forecastTokens) !== tokenText(forecastTokens)
-        ? `${tokenText(forecastTokens)} at the blended ${inputs.ratio.toFixed(1)}x that budget decisions use; `
-        : "";
-    const command = `baked workflow initiative extend ${inputs.initiativeId} --tokens ${suggestedTokens}`;
-    const extend =
-      byDollars !== null && cost.capUsd !== null && usdPerMillion !== null
-        ? `Extend to ${tokenText(suggestedTokens)}, what the ${usd(cost.capUsd)} cap pays for at ${usd(usdPerMillion)} per million, so the pool stops no feature before the dollar cap does (${command}).`
-        : `Extend to ${tokenText(suggestedTokens)} (${command})${dollarRoom(pool, cost)}.`;
-    pool.notice = `${basis} the ${inputs.features} features need about ${tokenText(advice?.forecastTokens ?? forecastTokens)} tokens (${blended}${tokenText(usedTokens)} used); the shared pool is ${tokenText(limitTokens)}. ${extend}`;
-  }
+  if (forecastTokens !== null && suggestedTokens !== null)
+    pool.notice = poolNoticeText({
+      initiativeId: inputs.initiativeId,
+      features: inputs.features,
+      pool: { ...pool, forecastTokens },
+      suggestedTokens,
+      byDollars: byDollars !== null,
+      exactUsdPerMillion: usdPerMillion,
+      cost,
+    });
   return pool;
+}
+
+/**
+ * The forecast notice's sentence (#2042, #2244): what the features need beside the pool, and the
+ * one-line extend command. The split approval's budget preview ends with the same sentence (#2502).
+ */
+export function poolNoticeText(n: {
+  initiativeId: string;
+  features: number;
+  pool: Pick<
+    TokenPoolView,
+    "limitTokens" | "usedTokens" | "advice" | "ratio" | "capTokens" | "usdPerMillion"
+  > & { forecastTokens: number };
+  suggestedTokens: number;
+  /** Whether `suggestedTokens` is what the dollar cap pays for (`dollarTokens`). */
+  byDollars: boolean;
+  /** The unrounded price the cap's tokens were counted at. */
+  exactUsdPerMillion: number | null;
+  cost: PoolCost;
+}): string {
+  const { pool, cost, suggestedTokens } = n;
+  const { advice, forecastTokens } = pool;
+  const ratio = advice?.ratio ?? pool.ratio;
+  const basis =
+    ratio !== null
+      ? `At the measured ${ratio.toFixed(1)}x of the estimates`
+      : "At the estimates so far";
+  // Both forecasts, when the blend that budget decisions use says another figure (#2062).
+  const blended =
+    advice && pool.ratio !== null && tokenText(advice.forecastTokens) !== tokenText(forecastTokens)
+      ? `${tokenText(forecastTokens)} at the blended ${pool.ratio.toFixed(1)}x that budget decisions use; `
+      : "";
+  const command = `baked workflow initiative extend ${n.initiativeId} --tokens ${suggestedTokens}`;
+  const extend =
+    n.byDollars && cost.capUsd !== null && n.exactUsdPerMillion !== null
+      ? `Extend to ${tokenText(suggestedTokens)}, what the ${usd(cost.capUsd)} cap pays for at ${usd(n.exactUsdPerMillion)} per million, so the pool stops no feature before the dollar cap does (${command}).`
+      : `Extend to ${tokenText(suggestedTokens)} (${command})${dollarRoom(pool, cost)}.`;
+  return `${basis} the ${n.features} features need about ${tokenText(advice?.forecastTokens ?? forecastTokens)} tokens (${blended}${tokenText(pool.usedTokens)} used); the shared pool is ${tokenText(pool.limitTokens)}. ${extend}`;
 }
 
 /**
@@ -514,7 +542,10 @@ export function tokensForUsd(capUsd: number, usdPerMillion: number | null): numb
 }
 
 /** What the dollar cap says beside the pool, for a notice or a block message. */
-function dollarRoom(pool: TokenPoolView, cost: PoolCost): string {
+function dollarRoom(
+  pool: Pick<TokenPoolView, "capTokens" | "usdPerMillion">,
+  cost: PoolCost,
+): string {
   if (cost.capUsd === null) return "";
   if (pool.capTokens !== null && pool.usdPerMillion !== null)
     return `; the ${usd(cost.capUsd)} cap would pay for about ${tokenText(pool.capTokens)} at ${usd(pool.usdPerMillion)} per million`;
