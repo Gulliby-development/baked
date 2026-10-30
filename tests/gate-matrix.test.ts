@@ -5763,3 +5763,29 @@ describe("rule pack gate: lines the request gives verbatim are notes (#2489)", (
       expect(of(own).every(([blocking]) => blocking)).toBe(true);
     });
 });
+
+describe("format-written gate: a created file the request supplies whole is never rewritten (#2504)", () => {
+  // R81 seqmill-update: the fixer of `ruff-format-written` rewrapped a 51-line create diff to 87.
+  const PY = { "pyproject.toml": "[project]\nname = 'seqmill'\nversion = '0.1.0'\n\n[tool.ruff]\nline-length = 100\n", "tests/test_new.py": "x=1\n" };
+  const GO = { "go.mod": "module example.com/seqmill\n\ngo 1.22\n", "seq_test.go": "package seq\n" };
+  for (const [name, files, path] of [["python ruff", PY, "tests/test_new.py"], ["go gofmt", GO, "seq_test.go"]] as const)
+    test(`${name}: required with a fixer when the model writes it, advisory without one when supplied`, () => {
+      const root = mkdtempSync(join(tmpdir(), "baked-format-supplied-cell-"));
+      try {
+        for (const [p, text] of Object.entries(files)) {
+          mkdirSync(join(root, p, ".."), { recursive: true });
+          writeFileSync(join(root, p), text);
+        }
+        const writes = [{ path, action: "create" }];
+        const which = (c: string) => `/usr/bin/${c}`;
+        const [own] = formatWrittenChecks(root, [], writes, which);
+        expect(own).toMatchObject({ required: true, fixPaths: [path] });
+        expect(own?.fix).toBeDefined();
+        const [supplied, ...rest] = formatWrittenChecks(root, [], writes, which, undefined, undefined, { supplied: (p) => p === path });
+        expect(rest).toEqual([]);
+        expect(supplied?.id).toBe(own?.id.replace(/-written$/, "-supplied"));
+        expect(supplied).toMatchObject({ required: false, args: own?.args });
+        expect(supplied?.fix).toBeUndefined();
+      } finally { rmSync(root, { recursive: true, force: true }); }
+    });
+});

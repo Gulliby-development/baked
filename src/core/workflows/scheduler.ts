@@ -944,6 +944,7 @@ import {
   suppliedDriftSummary,
   suppliedDrifts,
   suppliedLineNumbers,
+  suppliesWhole,
 } from "./supplied-drift.js";
 import {
   documentsOnly,
@@ -11679,7 +11680,11 @@ ${note}`;
       undefined,
       (path) => runBaseContent(this.store, runId, path),
       undefined,
-      { rust: policy.rustFormatWritten === "on" },
+      {
+        rust: policy.rustFormatWritten === "on",
+        // A created file the request supplies whole keeps its bytes (#2504).
+        supplied: (path) => suppliesWhole(state.requestText || state.prompt, path),
+      },
     );
     const gated = [...own, ...(written ? [written] : []), ...formatted];
     const record = this.affectedRecord(state, task);
