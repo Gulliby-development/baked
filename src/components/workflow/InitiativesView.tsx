@@ -6,6 +6,7 @@ import {
 } from "../../core/workflows/initiatives/estimate.js";
 import { costText, type InitiativeStartInput } from "../../core/workflows/initiatives/forms.js";
 import type { FeatureView, InitiativeView } from "../../core/workflows/initiatives/service.js";
+import { splitPreviewLine } from "../../core/workflows/initiatives/split-preview.js";
 import {
   criticalPathText,
   type InitiativeAction,
@@ -657,6 +658,14 @@ export function InitiativeDetail({
       {view.budget.forecastNotice ? (
         <text fg={t.warning} wrapMode="word">
           {`Token forecast: ${view.budget.forecastNotice}`}
+        </text>
+      ) : null}
+      {view.budget.preview ? (
+        <text
+          fg={view.budget.preview.suggestedTokens === null ? t.textMuted : t.warning}
+          wrapMode="word"
+        >
+          {splitPreviewLine(view.budget.preview)}
         </text>
       ) : null}
       {view.budget.timeNotice ? (

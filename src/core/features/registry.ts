@@ -1632,6 +1632,22 @@ export const FEATURES: readonly Feature[] = [
     ],
   },
   {
+    id: "initiative-split-budget-preview",
+    group: "Initiatives",
+    title:
+      "Budget preview at the split approval: the proposed features' low, expected and high tokens, what the dollar cap pays for, the first share gate at the current pool and the one-line extend command (display only)",
+    tui: ["/workflow: initiatives, Budget before approval line and the split approval's extend"],
+    cli: [
+      "baked workflow initiative show: budget.preview, next.message ending with the extend command",
+      "baked workflow initiative events: request.created budgetPreview and text",
+    ],
+    api: [
+      "/v1/initiatives/:id: budget.preview, next.recovery suggestedTokens",
+      "/v1/initiatives/:id/events",
+    ],
+    desktop: ["project/initiatives: Budget before approval line beside Approve split"],
+  },
+  {
     id: "initiative-time-pool-forecast",
     group: "Initiatives",
     title:

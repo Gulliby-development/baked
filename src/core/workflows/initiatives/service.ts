@@ -142,6 +142,7 @@ import {
   validateInitiativePlan,
 } from "./plan.js";
 import { layOutSkeletons } from "./skeleton-layout.js";
+import type { SplitBudgetPreview } from "./split-preview.js";
 import {
   type BudgetLimitsValue,
   CostBudgetSchema,
@@ -184,7 +185,9 @@ import {
   planShareDecision,
   poolExtensionDecision,
   poolForecast,
+  poolNoticeText,
   poolShortText,
+  roundUp,
   type TimePoolGrowthInputs,
   type TokenPoolView,
   timePoolExtensionDecision,
@@ -214,6 +217,7 @@ import {
 } from "./workflows.js";
 
 export { costGrowthLimit, guardGrowth, refreshedGrowth } from "./growth.js";
+export type { SplitBudgetPreview } from "./split-preview.js";
 
 export interface InitiativeStartRequest {
   commandId: string;
@@ -529,6 +533,11 @@ export interface InitiativeView {
     calls: CallsPoolView | null;
     /** The calls forecast's notice (`calls.notice`): set while the forecast is above the limit. */
     callsNotice: string | null;
+    /**
+     * The proposed split's budget before approval (#2502): set while the initiative awaits a split
+     * approval, null otherwise. Display only: no decision reads it.
+     */
+    preview?: SplitBudgetPreview | null;
     rule: string;
   };
   next: NextAction;
@@ -1086,6 +1095,17 @@ export function splitDollarPool(
 ): { capUsd: number; usdPerMillion: number; tokens: number } | null {
   const capUsd = view.budget.cost.capUsd;
   if (capUsd === null) return null;
+  const usdPerMillion = splitDollarPrice(waiting);
+  if (usdPerMillion === null) return null;
+  const left = tokensForUsd(Math.max(0, capUsd - view.budget.cost.spentUsd), usdPerMillion);
+  const tokens = dollarTokens(left === null ? null : view.budget.used.tokens + left, limitTokens);
+  return tokens === null ? null : { capUsd, usdPerMillion, tokens };
+}
+
+/** The estimate's dollars per million tokens for the waiting features, at their lows (#2244). */
+function splitDollarPrice(
+  waiting: readonly (Pick<FeatureEstimate, "costUsd" | "tokens"> | undefined)[],
+): number | null {
   let usdLow = 0;
   let tokensLow = 0;
   for (const f of waiting) {
@@ -1093,11 +1113,7 @@ export function splitDollarPool(
     usdLow += f.costUsd.low;
     tokensLow += f.tokens.low;
   }
-  if (usdLow <= 0 || tokensLow <= 0) return null;
-  const usdPerMillion = (usdLow / tokensLow) * 1_000_000;
-  const left = tokensForUsd(Math.max(0, capUsd - view.budget.cost.spentUsd), usdPerMillion);
-  const tokens = dollarTokens(left === null ? null : view.budget.used.tokens + left, limitTokens);
-  return tokens === null ? null : { capUsd, usdPerMillion, tokens };
+  return usdLow > 0 && tokensLow > 0 ? (usdLow / tokensLow) * 1_000_000 : null;
 }
 
 /** The split approval's sentence on the expected dollars beside the lows (#2218). */
@@ -4104,6 +4120,148 @@ export class InitiativeService {
     return { initiativeId: id, status: view.status, next: view.next, drive: view.drive };
   }
 
+  /**
+   * The budget of a split awaiting approval (#2502), estimated on the proposed plan revision with
+   * its features as approval would make them: their lows, expected and high tokens, what the
+   * dollar cap pays for, and the share gate the first ready feature would meet at the current
+   * pool. Display only: nothing decides on it, and `extendWithinDollars: on` still waits for a
+   * measurement after approval (#2471).
+   */
+  private splitPreview(row: InitiativeRow, plan: InitiativePlan): SplitBudgetPreview {
+    const settings = this.store.settings(row);
+    const facts = this.workflowFacts(settings);
+    const features = this.featureViews(row, plan, true, facts);
+    const accepted = new Set(features.filter((f) => f.state === "accepted").map((f) => f.id));
+    const runIds = [
+      ...(row.decompose_run_id ? [row.decompose_run_id] : []),
+      ...this.store.links(row.id).map((l) => l.run_id),
+    ];
+    const used = runIds.map((runId) => this.usage(runId)).reduce(add, zero());
+    const committed = runIds.map((runId) => this.committed(runId)).reduce(add, zero());
+    const limits = this.limits(row);
+    const remaining = {
+      tokens: Math.max(0, limits.maxTotalTokens - committed.tokens),
+      calls: Math.max(0, limits.maxAgentCalls - committed.calls),
+      activeMs: Math.max(0, limits.maxActiveMs - committed.activeMs),
+    };
+    const estimate = this.estimateOf(row, plan, accepted);
+    // The features approval would start, with the needs and shares `view` gives them then.
+    const waiting = features.filter((f) => f.runId === null);
+    const needs = this.featureNeeds(estimate);
+    for (const feature of waiting) {
+      feature.need = needs.get(feature.id) ?? null;
+      feature.needUsd = estimate.features.find((f) => f.featureId === feature.id)?.costUsd ?? null;
+    }
+    const cost = this.costView(row, settings, plan, runIds, used, accepted, estimate, null);
+    const shares = splitShares(waiting, remaining, cost.remainingUsd);
+    for (const [index, feature] of waiting.entries()) Object.assign(feature, shares[index]);
+    const estimated = waiting.flatMap((f) => {
+      const found = estimate.features.find((e) => e.featureId === f.id);
+      return found ? [found] : [];
+    });
+    const byFeature = (pick: (e: FeatureEstimate) => number) =>
+      Object.fromEntries(estimated.map((e) => [e.featureId, pick(e)]));
+    const total = (values: Record<string, number>) =>
+      Object.values(values).reduce((sum, n) => sum + n, 0);
+    const lows = byFeature((e) => e.tokens.low);
+    const expected = byFeature((e) => Math.round(e.expectedTokens));
+    const high = byFeature((e) => e.tokens.high);
+    // The split approval's price (#2244), or what was paid so far without one.
+    const price =
+      splitDollarPrice(estimated) ??
+      (used.tokens > 0 && cost.spentUsd > 0 ? (cost.spentUsd / used.tokens) * 1_000_000 : null);
+    const left =
+      cost.capUsd === null || price === null
+        ? null
+        : tokensForUsd(Math.max(0, cost.capUsd - cost.spentUsd), price);
+    const capTokens = left === null ? null : used.tokens + left;
+    const limit = limits.maxTotalTokens;
+    const forecast = Math.max(estimate.expectedTokens, used.tokens);
+    const startsAll = committed.tokens + total(lows);
+    // The cap's pool when it also starts every waiting feature at its low, else the expected
+    // forecast: the lows alone are no pool (R81 ratdec's were 1.8x over and 2.7x under).
+    const byDollars = dollarTokens(capTokens, limit);
+    const suggestedTokens =
+      byDollars !== null && byDollars >= startsAll
+        ? byDollars
+        : forecast > limit || startsAll > limit
+          ? roundUp(Math.max(forecast, startsAll))
+          : null;
+    const pool = tokenPool({
+      initiativeId: row.id,
+      limitTokens: limit,
+      usedTokens: used.tokens,
+      committedTokens: committed.tokens,
+      forecastTokens: forecast,
+      ratio: null,
+      advice: null,
+      features: features.length,
+      waiting: waitingNeeds(waiting),
+      cost,
+    });
+    const gateView: ShareGateView = {
+      initiativeId: row.id,
+      budget: { remaining, cost, limits, used, pool },
+      features: features.map((f) => ({
+        id: f.id,
+        state: f.state,
+        share: f.share,
+        need: f.need,
+        shareUsd: f.shareUsd,
+        needUsd: f.needUsd ?? null,
+      })),
+    };
+    const first = this.byPath(
+      row,
+      waiting.filter((f) => f.state === "ready"),
+      this.parallelRuns(settings, plan, facts) > 1,
+    )[0];
+    const shortfall = first ? shareShortfall(gateView, first) : null;
+    return {
+      planRevision: row.plan_revision,
+      lows,
+      expected,
+      high,
+      sumLow: total(lows),
+      sumExpected: total(expected),
+      sumHigh: total(high),
+      limitTokens: limit,
+      capTokens,
+      usdPerMillion: price === null ? null : Math.round(price * 100) / 100,
+      firstGate: first
+        ? {
+            featureId: first.id,
+            verdict: shortfall ? "park" : "pass",
+            shareTokens: first.share?.tokens ?? null,
+            need: first.need,
+            reason: shortfall?.summary ?? null,
+          }
+        : null,
+      suggestedTokens,
+      // The post-approval forecast notice's sentence, so both read alike (#2042, #2244).
+      notice:
+        suggestedTokens === null
+          ? null
+          : poolNoticeText({
+              initiativeId: row.id,
+              features: features.length,
+              pool: {
+                limitTokens: limit,
+                usedTokens: used.tokens,
+                forecastTokens: forecast,
+                advice: null,
+                ratio: null,
+                capTokens,
+                usdPerMillion: price === null ? null : Math.round(price * 100) / 100,
+              },
+              suggestedTokens,
+              byDollars: suggestedTokens === byDollars,
+              exactUsdPerMillion: price,
+              cost,
+            }),
+    };
+  }
+
   /** What the initiative is, where every feature stands and why, and what happens next. */
   view(id: string): InitiativeView {
     const row = this.store.get(id);
@@ -4319,6 +4477,10 @@ export class InitiativeService {
         timeNotice: time?.notice ?? null,
         calls,
         callsNotice: calls?.notice ?? null,
+        preview:
+          row.status === "awaiting_approval" && latestPlan
+            ? this.splitPreview(row, latestPlan)
+            : null,
         rule: BUDGET_RULE,
       },
       next: { kind: "done", featureId: null, runId: null, message: "" },
@@ -4540,7 +4702,18 @@ export class InitiativeService {
     ]
       .filter(Boolean)
       .join(" ");
-    if (!warning) return message;
+    // The text ends with the budget preview's extend command (#2502), the forecast notice's own
+    // sentence, so the one extend before approval is exact rather than a guess.
+    const preview = view.budget.preview;
+    const notice = preview?.notice ? ` ${preview.notice}` : "";
+    if (!warning)
+      return preview?.notice && preview.suggestedTokens !== null
+        ? recoveryAdvice(`${message}${notice}`, `${message}${notice}`, {
+            action: "extend",
+            initiativeId: row.id,
+            suggestedTokens: preview.suggestedTokens,
+          })
+        : message;
     // The amounts that answer the warnings (#2042): the token estimate with its margin, and a
     // dollar cap raised by what the warned shares miss of their low estimates.
     const capUsd = view.budget.cost.capUsd;
@@ -4558,12 +4731,16 @@ export class InitiativeService {
         ? ` --budget-usd ${suggestedUsd ?? "N"}`
         : ` --tokens ${suggestedTokens}${suggestedUsd !== null ? ` --budget-usd ${suggestedUsd}` : ""}`;
     const extend = `Use baked workflow initiative extend ${row.id}${amount} --expected-revision ${row.revision}.`;
-    return recoveryAdvice(`${warning} ${extend} ${message}`, `${warning} ${message}`, {
-      action: "extend",
-      initiativeId: row.id,
-      ...(suggestedTokens !== null ? { suggestedTokens } : {}),
-      ...(suggestedUsd !== null ? { suggestedUsd } : {}),
-    });
+    return recoveryAdvice(
+      `${warning} ${extend} ${message}${notice}`,
+      `${warning} ${message}${notice}`,
+      {
+        action: "extend",
+        initiativeId: row.id,
+        ...(suggestedTokens !== null ? { suggestedTokens } : {}),
+        ...(suggestedUsd !== null ? { suggestedUsd } : {}),
+      },
+    );
   }
 
   private nextAction(row: InitiativeRow, view: InitiativeView): NextAction {
@@ -5403,7 +5580,22 @@ export class InitiativeService {
         ...(documented.added.length ? { documented: documented.added } : {}),
         ...(repaired.restored.length ? { restored: repaired.restored } : {}),
       });
-    this.store.request(id, revision, digest);
+    // The request carries the split's budget preview and its extend sentence (#2502). It is
+    // display only, so a preview that cannot be estimated never stops the proposal.
+    let preview: SplitBudgetPreview | null = null;
+    try {
+      preview = this.splitPreview(this.store.get(id), plan);
+    } catch {
+      preview = null;
+    }
+    this.store.request(
+      id,
+      revision,
+      digest,
+      preview
+        ? { budgetPreview: preview, ...(preview.notice ? { text: preview.notice } : {}) }
+        : {},
+    );
     this.store.setStatus(id, "awaiting_approval");
   }
 
