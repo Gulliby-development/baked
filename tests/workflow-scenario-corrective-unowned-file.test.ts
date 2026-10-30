@@ -8,6 +8,7 @@ import { evidencePaths, findingOrigin, hostDecision, SCOPE_EDITS_DIR, type Scope
 import { recoveryOf } from "../src/core/workflows/remedies.js";
 import { defaultWorkflowPolicy } from "../src/core/workflows/defaults.js";
 import type { Check, RunPolicy, Spec, Task } from "../src/core/workflows/schemas.js";
+import { InitiativeStore } from "../src/core/workflows/initiatives/store.js";
 import { NativeWorkflowService } from "../src/core/workflows/service.js";
 import { stopRecovery } from "../src/core/workflows/stop-detail.js";
 import { newId } from "../src/core/workflows/store.js";
@@ -114,6 +115,10 @@ interface Options {
   bounds?: NonNullable<RuntimeState["initiativeBounds"]>;
   /** The probe's failing output carries a stack frame in the defect's file. */
   frame?: boolean;
+  /** `stopModes.upstream_stale_file` (#2485); absent, its default. */
+  staleFile?: "enforce";
+  /** An initiative feature of `bounds` whose run is linked and completed (accepted, #2485). */
+  closedUpstream?: string;
 }
 
 async function drive(options: Options) {
@@ -139,7 +144,7 @@ async function drive(options: Options) {
     maxRepairRounds: 3,
     maxConvergenceRounds: 3,
     checks: [check],
-    ...(options.enforce ? { stopModes: { corrective_unowned_file: "enforce" as const } } : {}),
+    ...(options.enforce ? { stopModes: { corrective_unowned_file: "enforce" as const, ...(options.staleFile ? { upstream_stale_file: options.staleFile } : {}) } } : {}),
     ...(options.allowedPaths ? { autoApproval: { renewal: false, limits: { maxTasks: 1, maxFiles: 1, allowedPaths: options.allowedPaths, allowDelete: false, allowNewDependencies: false as const, maxTotalTokens: 1000 } } } : {}),
   };
   const executor = new ShortenerExecutor(root, defect, options.frame);
@@ -151,6 +156,16 @@ async function drive(options: Options) {
   if (options.bounds) {
     const state = service.store.state(started.runId);
     service.store.transaction(() => service.store.saveState(started.runId, { ...state, initiativeBounds: options.bounds ?? null }));
+  }
+  if (options.bounds && options.closedUpstream) {
+    // The upstream feature's run is accepted and closed: a completed run linked to the initiative
+    // beside this feature's run, as an initiative links them (#2485).
+    const upstream = await service.start({ commandId: newId(), featureId: options.closedUpstream, workflowId: "sdd", prompt: "The upstream feature", ownerLabel: "test", policy });
+    service.store.connection.run("UPDATE runs SET status='completed' WHERE id=?", [upstream.runId]);
+    const initiatives = new InitiativeStore(service.store);
+    initiatives.create({ id: "init-2485", title: "Layered CLI", prompt: "A layered CLI", status: "active", settings: { workflowId: "sdd", basePolicy: policy, budget: { maxTotalTokens: 4_000_000, maxAgentCalls: 400, maxActiveMs: 6_000_000 }, featureAutoApproval: null, model: null, ownerLabel: "test" } as never, decomposeRunId: null });
+    initiatives.link("init-2485", options.closedUpstream, upstream.runId, 1, "a".repeat(64), "start");
+    initiatives.link("init-2485", options.bounds.featureId, started.runId, 1, "b".repeat(64), "start");
   }
   const snapshot = await service.get(started.runId);
   const approval = service.store.requests(started.runId).find((r) => r.kind === "approval" && r.status === "pending");
@@ -283,6 +298,69 @@ describe("scenario: R68 url-shortener, a corrective whose evidence names another
 });
 
 // #2155: in shadow the person answers the block with the act the enforced host would take.
+// Bench round 80, ratdec (Elixir) representations 8aa34d83 (#2485). The accepted feature core
+// owned test/stdin_test.exs, whose row pinned `unsupported format` for `eval --as mixed` on stdin;
+// representations implemented that output, its feature-scope mix-test failed only on that row, and
+// its corrective T007 reported it. The host parked on a manual_evidence request (`upstream-T007`)
+// that only a hand edit of the run branch could answer: core's run was closed and no command opens
+// a task on it. Here the same shape on two stacks: the corrective's unresolved item names only a
+// test file of a closed upstream feature. Enforced (`upstream_stale_file`), the file joins this
+// feature and the corrective's writes and the run completes; in shadow the park stands and the
+// amend is a would-stop; a source file of the same upstream keeps the park.
+const STALE_STACKS = [
+  { language: "Elixir (ExUnit)", test: "test/stdin_test.exs", source: "lib/ratdec/format.ex", core: ["lib/**", "test/**"] },
+  { language: "Python (pytest)", test: "tests/core/test_stdin.py", source: "ratdec/format.py", core: ["ratdec/**", "tests/core/**"] },
+];
+const layered = (core: string[]) => ({ featureId: "representations", features: [{ id: "core", scope: "Core", paths: core }, { id: "representations", scope: "Representations", paths: ["src/storage.ts", "src/handler.ts", "tests/handler.test.ts"], dependsOn: ["core"] }] });
+
+describe("scenario: R80 ratdec, a downstream feature makes a closed upstream feature's test stale (#2485)", () => {
+  for (const stack of STALE_STACKS)
+    for (const worktree of stack.language.startsWith("Elixir") ? [false, true] : [false])
+      test(`${stack.language}, enforced (${worktree ? "batch workers" : "single writer"}): the stale test joins the feature and the corrective's writes, and the run completes without a person`, async () => {
+        const { root, runId, done, executor, service, wouldStops, records } = await drive({ enforce: true, staleFile: "enforce", defect: stack.test, bounds: layered(stack.core), closedUpstream: "core", worktree });
+        expect(service.store.requests(runId).filter((r) => r.kind === "manual_evidence")).toEqual([]);
+        expect(done.status).toBe("completed");
+        const correctives = implementations(executor).filter((c) => c.origin !== "planned");
+        expect(new Set(correctives.map((c) => c.taskId)).size).toBe(1);
+        expect(correctives.map((c) => c.writes?.includes(stack.test))).toEqual([false, true]);
+        const state = service.store.state(runId);
+        expect(state.initiativeBounds?.features.find((f) => f.id === "representations")?.paths).toContain(stack.test);
+        expect(state.initiativeBounds?.features.find((f) => f.id === "core")?.paths).toEqual(stack.core);
+        const links = service.store.artifacts(runId).filter((a) => a.kind === "correction").map((a) => JSON.parse(service.store.readArtifact(runId, a.id)) as { rule: string; widened?: { path: string }[] });
+        expect(links.find((l) => l.rule === "host-widen")?.widened?.map((w) => w.path)).toEqual([stack.test]);
+        const edits = service.store.latestArtifact(runId, `${SCOPE_EDITS_DIR}${correctives[0]?.taskId}.json`);
+        expect(JSON.parse(service.store.readArtifact(runId, edits?.id ?? "")) as ScopeEdit[]).toEqual([expect.objectContaining({ path: stack.test, decision: "amend", owner: "core", hash: expect.any(String) })]);
+        const result = records().filter((r) => r.at === "result").at(0);
+        expect(result?.unowned).toEqual([expect.objectContaining({ path: stack.test, feature: "core", upstream: { closed: true, testFile: true, sole: true }, decision: "amend" })]);
+        expect(wouldStops.filter((w) => w.reason === "upstream_stale_file")).toEqual([]);
+        expect(readFileSync(join(root, state.worktree?.path ?? "", stack.test), "utf8")).toContain("unprefixed");
+      }, 120_000);
+
+  for (const stack of STALE_STACKS) {
+    test(`${stack.language}, upstream_stale_file in shadow (the default): the park stands and the amend is a would-stop`, async () => {
+      const { runId, done, wouldStops, service, records } = await drive({ enforce: true, defect: stack.test, bounds: layered(stack.core), closedUpstream: "core" });
+      expect(done.status).toBe("waiting");
+      const request = service.store.requests(runId).find((r) => r.kind === "manual_evidence" && r.status === "pending");
+      expect((JSON.parse(request?.body_json ?? "{}") as { upstream: { paths: { path: string; feature: string }[] } }).upstream.paths).toEqual([{ path: stack.test, feature: "core" }]);
+      const stale = wouldStops.filter((w) => w.reason === "upstream_stale_file");
+      expect(stale.length).toBeGreaterThan(0);
+      expect(stale[0]?.summary).toContain(stack.test);
+      expect(records().some((r) => r.host === "amend")).toBe(true);
+      const edits = (JSON.parse(service.store.readArtifact(runId, service.store.artifacts(runId).find((a) => a.logical_path.startsWith(SCOPE_EDITS_DIR))?.id ?? "")) as ScopeEdit[]);
+      expect(edits.map((e) => [e.path, e.decision])).toEqual([[stack.test, "park"]]);
+    }, 120_000);
+
+    test(`${stack.language}, enforced, a source file of the closed upstream: the run still parks`, async () => {
+      const { runId, done, wouldStops, service, records } = await drive({ enforce: true, staleFile: "enforce", defect: stack.source, bounds: layered(stack.core), closedUpstream: "core" });
+      expect(done.status).toBe("waiting");
+      expect(service.store.requests(runId).some((r) => r.kind === "manual_evidence" && r.status === "pending")).toBe(true);
+      const result = records().find((r) => r.at === "result");
+      expect(result?.unowned).toEqual([expect.objectContaining({ path: stack.source, feature: "core", upstream: { closed: true, testFile: false, sole: true }, decision: "park" })]);
+      expect(wouldStops.filter((w) => w.reason === "upstream_stale_file")).toEqual([]);
+    }, 120_000);
+  }
+});
+
 describe("scenario: a person answers a blocked corrective's unowned file with a remedy (#2155)", () => {
   for (const worktree of [false, true])
     test(`shadow (${worktree ? "batch workers" : "single writer"}): the block offers route to T001, and applying it corrects T001 and the run completes`, async () => {
@@ -392,6 +470,11 @@ describe("scopeRecord reads the files every corrective origin names (#2133)", ()
     expect(unownedRule({ path: "src/scan/sql.ts", owner: null, openWriters: [], feature: null, allowed: true })).toBe("widen");
     expect(unownedRule({ path: "tests/handler.test.ts", owner: null, openWriters: ["T003"], feature: null, allowed: true })).toBe("wait");
     expect(unownedRule({ path: "vendor/lib.ts", owner: null, openWriters: [], feature: null, allowed: false })).toBe("refuse");
+    // #2485: only a lone test file of a closed upstream feature is amended; any missing input parks.
+    const upstream = { closed: true, testFile: true, sole: true };
+    expect(unownedRule({ path: "test/stdin_test.exs", owner: null, openWriters: [], feature: "core", allowed: false, upstream })).toBe("amend");
+    for (const missing of ["closed", "testFile", "sole"] as const) expect(unownedRule({ path: "test/stdin_test.exs", owner: null, openWriters: [], feature: "core", allowed: false, upstream: { ...upstream, [missing]: false } })).toBe("park");
+    expect(hostDecision([{ decision: "park" }, { decision: "amend" }])).toBe("amend");
     expect(hostDecision([{ decision: "refuse" }, { decision: "widen" }, { decision: "route" }])).toBe("route");
     expect(hostDecision([])).toBe("fits");
   });

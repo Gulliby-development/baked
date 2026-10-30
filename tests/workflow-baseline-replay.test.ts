@@ -46,6 +46,8 @@ const FAILURES = [
   { runner: "swift", output: "Test Case '-[AppTests.CalcTests testFails]' started.\n/w/Tests/AppTests/CalcTests.swift:7: error: -[AppTests.CalcTests testFails] : XCTAssertEqual failed: (\"3\") is not equal to (\"4\")\nTest Case '-[AppTests.CalcTests testFails]' failed (0.001 seconds).\n", name: "-[AppTests.CalcTests testFails]" },
   { runner: "sbt", output: "[info] CalcSpec:\n[info] - adds\n[info] - fails on purpose *** FAILED ***\n[info]   3 did not equal 4 (CalcSpec.scala:7)\n[info] Tests: succeeded 1, failed 1, canceled 0, ignored 0, pending 0\n", name: "CalcSpec: fails on purpose" },
   { runner: "testthat", output: "[ FAIL 1 | WARN 0 | SKIP 0 | PASS 3 ]\n\n══ Failed tests ════════\n── Failure ('test-parser.R:4:3'): keeps blank lines ────────\nlength(lines) (`actual`) not equal to 2 (`expected`).\n\n[ FAIL 1 | WARN 0 | SKIP 0 | PASS 3 ]\nError: Test failures", name: "keeps blank lines" },
+  // mix test, Elixir 1.14.0 (#2490).
+  { runner: "exunit", output: ".\n\n  1) test fails on purpose (SumTest)\n     test/sum_test.exs:8\n     Assertion with == failed\n     code:  assert Proj.hello() == :moon\n     left:  :world\n     right: :moon\n     stacktrace:\n       test/sum_test.exs:9: (test)\n\n\nFinished in 0.02 seconds (0.00s async, 0.02s sync)\n2 tests, 1 failure\n\nRandomized with seed 0\n", name: "test fails on purpose (SumTest)" },
   { runner: "pester", output: "Starting discovery in 1 files.\nDiscovery found 2 tests in 210ms.\nRunning tests.\n[-] Parser.keeps blank lines 41ms (38ms|3ms)\n Expected 2, but got 1.\nTests completed in 702ms\nTests Passed: 1, Failed: 1, Skipped: 0, Inconclusive: 0, NotRun: 0", name: "Parser.keeps blank lines" },
 ] as const;
 
@@ -78,6 +80,9 @@ const BUILD_ERRORS = [
   { runner: "junit", output: "> Task :compileTestJava FAILED\n/repo/src/test/java/app/StdinPatchTest.java:31: error: method run in class Applier cannot be applied to given types;\nBUILD FAILED in 2s", line: "> Task :compileTestJava FAILED" },
   // testthat 3.2 (#1500): the package does not load.
   { runner: "testthat", output: "Error in `load_all()`:\n! Failed to load 'R/fold.R'\nCaused by error in `parse()`:\n! /repo/R/fold.R:3:0: unexpected end of input\nExecution halted", line: "Error in `load_all()`:" },
+  // mix test, Elixir 1.14.0 (#2490): a test file that calls a function nothing defines does not
+  // compile, and no test runs.
+  { runner: "exunit", output: "\n== Compilation error in file test/a_test.exs ==\n** (CompileError) test/a_test.exs:5: undefined function sub/2 (expected ATest to define such a function or for it to be imported, but none are available)\n\n", line: "== Compilation error in file test/a_test.exs ==" },
   // Pester 5.9 (#1498): a test file that does not parse fails its discovery.
   { runner: "pester", output: "Starting discovery in 1 files.\n[-] Discovery in /repo/tests/Fold.Tests.ps1 failed with:\nSystem.Management.Automation.ParseException: At /repo/tests/Fold.Tests.ps1:1 char:14\nMissing closing '}' in statement block or type definition.\nDiscovery found 0 tests in 222ms.\nTests completed in 300ms\nTests Passed: 0, Failed: 0, Skipped: 0, Inconclusive: 0, NotRun: 0\nContainer failed: 1\n  - /repo/tests/Fold.Tests.ps1", line: "[-] Discovery in /repo/tests/Fold.Tests.ps1 failed with:" },
 ] as const;
@@ -413,6 +418,15 @@ describe("baseline replay per test target (#2020)", () => {
     expect(replayTargets("minitest", input(["-Itest", "test/a_test.rb"], ["test/a_test.rb"]))).toEqual([]);
   });
 
+  // mix test compiles every test file before it runs any (#2490).
+  test("elixir: each ExUnit test file on its own", () => {
+    expect(replayTargets("exunit", input(["test", "--exclude", "slow"], ["test/a_test.exs", "test/test_helper.exs", "test/support/case.ex", "test/b_test.exs"]))).toEqual([
+      { args: ["test", "--exclude", "slow", "test/a_test.exs"], paths: ["test/a_test.exs"] },
+      { args: ["test", "--exclude", "slow", "test/b_test.exs"], paths: ["test/b_test.exs"] },
+    ]);
+    expect(replayTargets("exunit", input(["test", "test/a_test.exs:12"], ["test/a_test.exs"]))).toEqual([]);
+  });
+
   test("go, bun, jest, vitest and tap already run each target on their own", () => {
     for (const runner of ["go", "bun", "jest", "vitest", "tap"] as const) expect(replayTargets(runner, input(["test", "./..."], ["a_test.go"]))).toEqual([]);
     expect(replayTargets(null, input(["test"]))).toEqual([]);
@@ -471,6 +485,7 @@ const KEEP_GOING: { runner: TestRunner; executable: string; args: string[]; repl
   { runner: "minitest", executable: "bin/rails", args: ["test", "--fail-fast"], replay: ["test"] },
   { runner: "ctest", executable: "ctest", args: ["--test-dir", "build", "--stop-on-failure"], replay: ["--test-dir", "build"] },
   { runner: "cargo", executable: "sh", args: ["-c", "cargo test -q"], replay: ["-c", "cargo test -q --no-fail-fast"] },
+  { runner: "exunit", executable: "mix", args: ["test", "--max-failures", "1", "--warnings-as-errors"], replay: ["test", "--warnings-as-errors"] },
 ];
 
 describe("baseline replay keeps going past the first failing target (#2364)", () => {

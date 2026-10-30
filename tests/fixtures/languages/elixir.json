@@ -2,7 +2,12 @@
   "files": {
     "lib/sum.ex": "defmodule Sum do\n  def sum(a, b) do\n    raise \"not implemented\"\n  end\nend\n",
     "lib/sum_test.exs": "ExUnit.start()\nSum.sum(1, 2)\n# AC-001 example: (1, 2, 3)\n",
-    "mix.exs": "defmodule Fixture.MixProject do\nend\n"
+    "mix.exs": "defmodule Fixture.MixProject do\nend\n",
+    ".formatter.exs": "[]\n"
+  },
+  "outputs": {
+    "tests": ".\n\n  1) test fails on purpose (SumTest)\n     test/sum_test.exs:8\n     Assertion with == failed\n     code:  assert Proj.hello() == :moon\n     left:  :world\n     right: :moon\n     stacktrace:\n       test/sum_test.exs:9: (test)\n\n\nFinished in 0.02 seconds (0.00s async, 0.02s sync)\n2 tests, 1 failure\n\nRandomized with seed 0\n",
+    "testsGrown": ".\n\n  1) test fails on purpose (SumTest)\n     test/sum_test.exs:8\n     Assertion with == failed\n     code:  assert Proj.hello() == :moon\n     left:  :world\n     right: :moon\n     stacktrace:\n       test/sum_test.exs:9: (test)\n\n.\nFinished in 0.02 seconds (0.00s async, 0.02s sync)\n3 tests, 1 failure\n\nRandomized with seed 0\n"
   },
   "generated": {
     "test/gen_test.exs": "a = String.duplicate(\"\\\\\", 3)\nb = \"x#{a}\"\nlit = \"\\\\\\\\\\\\\"\n# d = String.duplicate(\"\\\\\", 3)\n",
@@ -32,8 +37,8 @@
     "placeholders": [
       "lib/sum.ex:3"
     ],
-    "gates": ["mix-compile", "mix-test"],
-    "testRunners": null,
+    "gates": ["mix-format", "mix-compile", "mix-test"],
+    "testRunners": ["exunit 2", "signature stable"],
     "mutation": null,
     "properties": null,
     "entryPoints": null,
@@ -45,7 +50,7 @@
       "lib/sum.ex:3",
       "lib/sum_test.exs:3 comment"
     ],
-    "formatters": null,
+    "formatters": ["mix-format-written: mix format --check-formatted lib/sum.ex lib/sum_test.exs mix.exs .formatter.exs"],
     "packageContents": ["mix.exs: hex"],
     "numericLimits": null,
     "staticTools": [

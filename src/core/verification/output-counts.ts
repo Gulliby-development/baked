@@ -201,7 +201,8 @@ export type TestRunner =
   | "junit"
   | "tap"
   | "pester"
-  | "testthat";
+  | "testthat"
+  | "exunit";
 
 const TESTTHAT_SUMMARY = /^\[ FAIL (\d+) \| WARN (\d+) \| SKIP (\d+) \| PASS (\d+) \]/m;
 
@@ -503,6 +504,13 @@ const TEST_COUNTERS: readonly {
     count: (o) => swiftCount(o, false),
     ran: (o) => swiftCount(o, true),
   },
+  {
+    tool: "exunit",
+    // mix test (#2490): ExUnit's summary of Elixir 1.20 ("Result: 2/3 passed") or of 1.14 to 1.19
+    // ("3 tests, 1 failure"), after its "Finished in" line.
+    count: (o) => exunitCount(o, false),
+    ran: (o) => exunitCount(o, true),
+  },
   // A language without a parser of its own (#1488): a JUnit XML report printed to the output
   // (`--reporter=junit`), then TAP (busted, bats, prove, node:test, pgTAP).
   {
@@ -576,6 +584,61 @@ function scalatest(o: string, count: (numbers: number[]) => number): number | nu
   return lines.length ? lines.reduce((n, m) => n + count(m.slice(1).map(Number)), 0) : null;
 }
 
+/**
+ * ExUnit's "Finished in 0.03 seconds (0.00s async, 0.03s sync)" line, which Elixir 1.14 and later
+ * print before the summary ("(0.02s on load, ...)" when the load time is known); RSpec's "Finished
+ * in ... (files took ...)" is not it.
+ */
+const EXUNIT_FINISHED =
+  /^Finished in \d[\d.]* seconds \((?:\d[\d.]*s on load, )?\d[\d.]*s async, \d[\d.]*s sync\)/m;
+/**
+ * ExUnit's summary up to Elixir 1.19 (#2490): the tests by type, the failures, then the excluded,
+ * invalid and skipped counts, which the types' counts include. Elixir 1.14 to 1.18 print
+ * "1 doctest, 3 tests, 1 failure, 1 excluded, 1 skipped", and only "0 failures" for a run of no
+ * test; Elixir 1.19 prints "0 tests, 0 failures" there and the excluded as "3 tests, 0 failures
+ * (3 excluded)" (ExUnit.CLIFormatter, print_summary).
+ */
+const EXUNIT_SUMMARY =
+  /^((?:\d+ [a-z]+, )*)\d+ failures?((?:, \d+ (?:excluded|invalid|skipped))*)(?: \((\d+) excluded\))?\s*$/m;
+/**
+ * ExUnit's summary from Elixir 1.20 (#2490, R80 ratdec): "Result: 3 passed" when every test passed,
+ * "Result: 2/3 passed" with "Failed: 1 test" below it, "Result: 0 tests" when none ran, each with a
+ * per-type breakdown in parentheses when the run held several types ("(1 doctest, 2 tests)"), then
+ * ", 1 invalid", ", 1 skipped" and ", 2 excluded". The passed and failed tests are counted; the
+ * invalid, skipped and excluded ones are not (ExUnit.CLIFormatter, print_summary).
+ */
+const EXUNIT_RESULT =
+  /^Result: (?:0 tests|(\d+) passed|\d+\/(\d+) passed)(?: \([^)\n]*\))?((?:, \d+ (?:invalid|skipped|excluded))*)\s*$/m;
+
+/**
+ * ExUnit's counts summed over the summaries after each "Finished in" line, one per Mix project
+ * (`mix test` in an umbrella runs each app's tests): `ran` leaves out the excluded, invalid and
+ * skipped tests. Null when the output holds no ExUnit summary.
+ */
+function exunitCount(output: string, ran: boolean): number | null {
+  const o = withoutAnsi(output);
+  const parts = o.split(new RegExp(EXUNIT_FINISHED.source, "m")).slice(1);
+  if (!parts.length) return null;
+  let total: number | null = null;
+  for (const part of parts) {
+    const result = part.match(EXUNIT_RESULT);
+    const older = result ? null : part.match(EXUNIT_SUMMARY);
+    if (!result && !older) continue;
+    const idle = (text: string) => sum(text, /(\d+) (?:excluded|invalid|skipped)\b/g) ?? 0;
+    let found: number;
+    if (result) {
+      const executed = Number(result[1] ?? result[2] ?? 0);
+      found = ran ? executed : executed + idle(result[3] ?? "");
+    } else {
+      const all = sum(older?.[1] ?? "", /(\d+) [a-z]+, /g) ?? 0;
+      const skipped = idle(older?.[2] ?? "") + Number(older?.[3] ?? 0);
+      found = ran ? all - skipped : all;
+    }
+    total = (total ?? 0) + found;
+  }
+  return total;
+}
+
 /** The progress prefix of `dart test`: elapsed time, then passed `+N`, skipped `~N`, failed `-N`. */
 const DART_PROGRESS = String.raw`^[\d:]+ \+(\d+)(?: ~(\d+))?(?: -(\d+))?: `;
 /** The same prefix without its groups. */
@@ -616,7 +679,7 @@ export const TEST_RUNNERS: LanguageRecord<readonly TestRunner[]> = {
   php: ["phpunit", "pest"],
   swift: ["swift"],
   lua: ["busted", "tap"],
-  elixir: none('ExUnit\'s "N tests, M failures" summary is not read'),
+  elixir: ["exunit"],
   dart: ["dart"],
   zig: none("zig build test prints no count"),
   bash: ["tap"],
@@ -729,6 +792,14 @@ export const FAILED_TESTS: Record<TestRunner, (output: string) => string[]> = {
         return [attr("classname"), attr("name")].filter(Boolean).join(".");
       })
       .filter(Boolean),
+  // ExUnit, Elixir 1.14 to 1.20: "  1) test keeps blank lines (ParserTest)", also a doctest
+  // ("  2) doctest Parser.parse/1 (1) (ParserTest)"); not "  3) ParserTest: failure on setup_all
+  // callback, all tests have been invalidated", a module whose tests did not run.
+  exunit: (o) =>
+    captured(
+      withoutAnsi(o),
+      /^\s*\d+\) ((?:test|doctest|property|feature) .+ \([A-Z][\w.]*\))\s*$/gm,
+    ),
   // "not ok 3 - keeps blank lines", not a TODO or skipped test
   tap: (o) =>
     captured(o, /^not ok \d+(?: -)? (.+?)\s*$/gm).filter(
@@ -798,6 +869,10 @@ export const BUILD_FAILURES: Record<TestRunner, RegExp> = {
   // "[-] Discovery in /w/tests/Sum.Tests.ps1 failed with:", "[-] /w/tests/Sum.Tests.ps1 failed with:"
   // (a BeforeAll that throws), and the "Container failed: 2" summary.
   pester: /^(?:\[-\] (?:Discovery in )?\S+\.Tests\.ps1 failed with:|Container failed: \d+)$/,
+  // mix test compiles the test files before it runs any: "== Compilation error in file
+  // test/a_test.exs ==" (Elixir 1.14 measured; 1.20 prints the same line, Kernel.ParallelCompiler),
+  // also for a project file that does not compile.
+  exunit: /^== Compilation error in file \S+\.exs?(?::\d+)? ==$/,
   // The package did not load: "Error in `load_all()`:" then "! Failed to load 'R/sum.R'".
   testthat: /^(?:Error in `(?:pkgload::)?load_all\(\)`:|! Failed to load '.+')$/,
 };
@@ -879,27 +954,29 @@ export function testsRan(output: string): OutputCount | null {
  * with 0 tests in 0 suites passed"; busted 2.2 on a spec file without `it`: "0 successes / 0
  * failures / 0 errors / 0 pending"; testthat 3.2 on a test file without `test_that`: "[ FAIL 0 |
  * WARN 0 | SKIP 0 | PASS 0 ]"; Pester 5 on a `*.Tests.ps1` without `It`: "Tests Passed: 0,
- * Failed: 0, Skipped: 0, Inconclusive: 0, NotRun: 0". cargo is left out: its "0 passed" is a test
- * binary with no test in a crate that may have others (#1832).
+ * Failed: 0, Skipped: 0, Inconclusive: 0, NotRun: 0"; `mix test` on a test module without
+ * `test` (#2490): "0 failures" in Elixir 1.14 to 1.18, "0 tests, 0 failures" in 1.19 and "Result:
+ * 0 tests" in 1.20, summed over an umbrella's apps, so another app's tests overrule it. cargo is
+ * left out: its "0 passed" is a test binary with no test in a crate that may have others (#1832).
  */
-const EMPTY_SUMMARIES: ReadonlySet<TestRunner> = new Set(["swift", "busted", "testthat", "pester"]);
+const EMPTY_SUMMARIES: ReadonlySet<TestRunner> = new Set([
+  "swift",
+  "busted",
+  "testthat",
+  "pester",
+  "exunit",
+]);
 
 /**
  * The lines of runners without a counter here that say, with exit 0, that the run held no test
  * (#2419), each with the line of the same runner that says another part of the run did hold
- * tests (dune runs every test executable, Mix every umbrella app), which overrules it.
+ * tests (dune runs every test executable), which overrules it.
  */
 const EMPTY_RUN_LINES: readonly { runner: string; line: RegExp; held?: RegExp }[] = [
   // dotnet test (VSTest, SDK 8.0) on a test project without a test; another project's tests show
   // in the summary `testCount` reads. Not "No test matches the given testcase filter", a narrowed
   // run that selected nothing (#2378).
   { runner: "dotnet", line: /^No test is available in \S/m },
-  // ExUnit (Elixir 1.14 to 1.18) prints no test count when it ran none: "0 failures".
-  {
-    runner: "exunit",
-    line: /^Finished in \d[\d.]* seconds?\b.*\r?\n0 failures\r?$/m,
-    held: /^[1-9]\d* [a-z]+, (?:\d+ [a-z]+, )*\d+ failures?\b/m,
-  },
   // OUnit2 2.2 and Alcotest 1.7, the test libraries of `dune test`, on an empty suite.
   { runner: "ounit", line: /^Ran: 0 tests in: /m, held: /^Ran: [1-9]\d* tests? in: /m },
   {
@@ -1004,6 +1081,9 @@ const FILES_DONE =
  */
 const GROWING_COUNTS: [RegExp, string][] = [
   [/\bchecked \d+ source files?\b/g, "checked <n> source file"],
+  // ExUnit from Elixir 1.20 (#2490): "Result: 2/3 passed (1/1 doctest, 1/2 tests)"; its "Failed:
+  // 1 test" line keeps the failed count.
+  [/^Result: (?:\d+\/)?\d+ passed(?: \([^)\n]*\))?/gm, "Result: <n> passed"],
   [
     /\b\d+ (passed|skipped|deselected|xfailed|xpassed|warnings?|total|tests completed)\b/g,
     "<n> $1",
@@ -1016,6 +1096,13 @@ const GROWING_COUNTS: [RegExp, string][] = [
   // 1 skips" with its rates "2931.07 runs/s, 1465.53 assertions/s" (#1493).
   [/\b\d+ (examples?|pending|runs?|assertions?|skips?)\b(?!\/s)/g, "<n> $1"],
   [/\b[\d.]+ (runs|assertions)\/s\b/g, "<n> $1/s"],
+  // ExUnit up to Elixir 1.19 (#2490): "1 doctest, 3 tests, 1 failure", the failures kept; and the
+  // lines of Mix compiling what changed since its last run, which are progress.
+  [
+    /^(?:\d+ (?:tests?|doctests?|propert(?:y|ies)|features?), )+(\d+ failures?)\b/gm,
+    "<n> tests, $1",
+  ],
+  [/^(?:Compiling \d+ files? \(\.exs?\)|Generated \S+ app)\r?(?:\n|$)/gm, ""],
   // The random order seed of RSpec and Minitest: "Randomized with seed 1809", "--seed 1809".
   [/\b(seed|--seed) \d+\b/g, "$1 <n>"],
   // dart test prints a progress line as each test starts (#1494): only the failures, their
