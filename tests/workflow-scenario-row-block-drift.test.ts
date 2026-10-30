@@ -12,7 +12,13 @@ import {
   rowBlockExtraSummary,
   rowLiterals,
   rowMoveDecision,
+  rowRunFindings,
+  rowRunText,
 } from "../src/core/workflows/row-block-drift.js";
+import { runLengthCompare, runsHeld } from "../src/core/verification/byte-runs.js";
+import { testsHold, verbatimHeld } from "../src/core/verification/criteria-cases.js";
+import { misquotation } from "../src/core/workflows/conflict-rows.js";
+import { misquoteFixPlan } from "../src/core/workflows/misquote-fix.js";
 import type { RunPolicy, TaskGraph } from "../src/core/workflows/schemas.js";
 import { newId } from "../src/core/workflows/store.js";
 import { exportTrace, replayRowBlocks, replayTrace } from "../src/core/workflows/trace.js";
@@ -439,5 +445,248 @@ describe("scenario: R80, a run delivers a prescribed row file with one row chang
     expect(runOf(replayTrace(out))?.newRowBlockMoves).toBe(0);
     const added = (fileRows: readonly { line: number }[]) => ({ added: fileRows.map((r) => r.line), duplicated: [], reordered: [] });
     expect(runOf(replayTrace(out, { rowMoveRule: added }))?.newRowBlockMoves).toBeGreaterThanOrEqual(2);
+  });
+});
+
+// #2515: a long input given as a repeated byte run was compared verbatim, so 300 bytes were held
+// inside 303 and a run spelled in another notation was never matched as a whole. Bench round 82:
+// tinyflate (C) deflate run 82f19908 T007 wrote `tests/deflate_match_test.c` with 303 bytes of
+// 0x78 on line 11 where the brief prescribes 300, and 238 bytes of 0x71 on line 12 where it
+// prescribes 259; the failing check read as a source failure and every corrective rewrote a
+// correct `src/deflate.c` until the run ended `invalid_output`.
+const hexRun = (byte: string, count: number) => byte.repeat(count);
+const DEFLATE_PATH = "tests/deflate_match_test.c";
+const DEFLATE_BLOCK = [
+  `DeflateMatchTests in ${DEFLATE_PATH} (3 rows, { input_hex, output_hex })`,
+  '{ "616263", "4b4c4a0600" }',
+  `{ "${hexRun("78", 300)}", "abaa50120400" }`,
+  `{ "${hexRun("71", 259)}", "2b2c1c050400" }`,
+];
+const deflateTest = (x: number, q: number) =>
+  [
+    '#include <string.h>',
+    '#include "../src/deflate.h"',
+    '#include "check.h"',
+    "",
+    "struct row { const char *input_hex; const char *output_hex; };",
+    "",
+    "/* The prescribed rows, one test each. */",
+    "",
+    "static const struct row rows[] = {",
+    '  { "616263", "4b4c4a0600" },',
+    `  { "${hexRun("78", x)}", "abaa50120400" },`,
+    `  { "${hexRun("71", q)}", "2b2c1c050400" },`,
+    "};",
+    "",
+    "int main(void) { return check_rows(rows, sizeof rows / sizeof rows[0]); }",
+    "",
+  ].join("\n");
+const R82_TEST = deflateTest(303, 238);
+const R82_FAITHFUL = deflateTest(300, 259);
+const deflateRequest = ["Build tinyflate's deflate.", "", "The prescribed rows, one test each:", "", "```text", ...DEFLATE_BLOCK, "```", ""].join("\n");
+
+describe("#2515: a long byte run of a prescribed row is compared by its count", () => {
+  test("R82: the C test with 303 bytes of 0x78 and 238 of 0x71 drifts on rows 2 and 3, by 3 and 21 bytes, at lines 11 and 12", () => {
+    const [compared] = rowBlockDrifts(deflateRequest, graphOf(DEFLATE_PATH, "T007"), () => R82_TEST);
+    expect(compared?.record.drifting).toEqual([2, 3]);
+    expect(compared?.record.rows.map((r) => r.runs)).toEqual([
+      undefined,
+      [{ line: 11, byte: 0x78, prescribed: 300, found: 303 }],
+      [{ line: 12, byte: 0x71, prescribed: 259, found: 238 }],
+    ]);
+    expect(compared?.drifts.map((d) => [d.row, d.runs.map((r) => [r.line, r.bytes])])).toEqual([
+      [2, [[11, 3]]],
+      [3, [[12, 21]]],
+    ]);
+    // A row changed in place takes its row's place; nothing is added.
+    expect(compared?.record.moves).toEqual({ added: [], duplicated: [], reordered: [] });
+    expect(rowBlockDriftSummary(compared!.drifts[0]!)).toContain(
+      `the test's input literal differs from the criterion row by 3 bytes (${DEFLATE_PATH} line 11: 303 bytes of 0x78 where row 2 of the request's row block gives 300)`,
+    );
+    expect(rowRunText(compared!.drifts[1]!)).toBe(
+      `the test's input literal differs from the criterion row by 21 bytes (${DEFLATE_PATH} line 12: 238 bytes of 0x71 where row 3 of the request's row block gives 259)`,
+    );
+    const [faithful] = rowBlockDrifts(deflateRequest, graphOf(DEFLATE_PATH, "T007"), () => R82_FAITHFUL);
+    expect(faithful?.record.drifting).toEqual([]);
+    expect(faithful?.record.rows.every((r) => r.runs === undefined)).toBe(true);
+  });
+
+  // Each language's spelling of 303 bytes of 0x78 (the drifted count) against the row's 300, and
+  // of 300 (held). The C row is the R82 hex string; the others are the idioms tests use.
+  const RUN_SPELLINGS: Record<string, (n: number) => string[]> = {
+    c: (n) => [`  { "${hexRun("78", n)}", "abaa50120400" },`, `  { {${Array(n).fill("0x78").join(", ")}}, "abaa50120400" },`, `  memset(input, 0x78, ${n}); check(input, "abaa50120400");`],
+    cpp: (n) => [`  {"${"\\x78".repeat(n)}", "abaa50120400"},`],
+    python: (n) => [`    (bytes.fromhex("78" * ${n}), "abaa50120400"),`, `    (b"x" * ${n}, "abaa50120400"),`, `    (${n} * b"\\x78", "abaa50120400"),`],
+    typescript: (n) => [`  { input: "78".repeat(${n}), out: "abaa50120400" },`, `  { input: Buffer.alloc(${n}, 0x78), out: "abaa50120400" },`, `  { input: new Uint8Array(${n}).fill(0x78), out: "abaa50120400" },`],
+    rust: (n) => [`    (vec![0x78u8; ${n}], "abaa50120400"),`, `    (&[0x78; ${n}], "abaa50120400"),`, `    ("78".repeat(${n}), "abaa50120400"),`],
+    go: (n) => [`	{bytes.Repeat([]byte{0x78}, ${n}), "abaa50120400"},`, `	{strings.Repeat("78", ${n}), "abaa50120400"},`],
+    elixir: (n) => [`    row(:binary.copy(<<0x78>>, ${n}), "abaa50120400")`, `    row(String.duplicate("78", ${n}), "abaa50120400")`],
+    java: (n) => [`      Arguments.of("${hexRun("78", n)}", "abaa50120400"),`],
+  };
+  // The request may spell the row's run itself as an expression, too.
+  const PRESCRIBED = [`{ "${hexRun("78", 300)}", "abaa50120400" }`, '{ "78" * 300, "abaa50120400" }', "{ 0x78 × 300, \"abaa50120400\" }"];
+  for (const [language, spell] of Object.entries(RUN_SPELLINGS))
+    test(`${language}: 303 bytes of 0x78 drift from the row's 300 by 3 bytes in every spelling, and 300 are held`, () => {
+      for (const prescribed of PRESCRIBED)
+        for (const [i, line] of spell(303).entries()) {
+          const file = ["// rows", line, ""].join("\n");
+          expect(measureRows([prescribed], file)[0]?.runs, `${prescribed.slice(0, 20)} / ${line.slice(0, 40)}`).toEqual([{ line: 2, byte: 0x78, prescribed: 300, found: 303 }]);
+          const held = ["// rows", spell(300)[i] as string, ""].join("\n");
+          expect(measureRows([prescribed], held)[0]?.runs).toBeUndefined();
+          expect(verbatimHeld(held, hexRun("78", 300))).toBe(true);
+          expect(verbatimHeld(file, hexRun("78", 300))).toBe(false);
+        }
+    });
+
+  test("a short repeat is no run, and a run line that lines up with nothing leaves the verbatim lookup to decide", () => {
+    expect(runLengthCompare('{ "7878", "00" }', '{ "7878", "00" }')).toBeNull();
+    expect(runsHeld("no bytes here", hexRun("78", 300))).toBeNull();
+    // 300 bytes of 0x78 are not held inside 303 any more; a file with both counts holds the row.
+    expect(verbatimHeld(`"${hexRun("78", 303)}"`, hexRun("78", 300))).toBe(false);
+    expect(verbatimHeld(`"${hexRun("78", 303)}",\n"${hexRun("78", 300)}"`, hexRun("78", 300))).toBe(true);
+    // Short runs around a long one must match inside, and may go on at either end.
+    expect(runLengthCompare(`"01${hexRun("78", 300)}ff"`, `"01${hexRun("78", 300)}ff"`)).toMatchObject({ spans: 1, held: 1, drifts: [] });
+    expect(runLengthCompare(`"0001${hexRun("78", 300)}ffff"`, `"01${hexRun("78", 300)}ff"`)).toMatchObject({ held: 1 });
+    expect(runLengthCompare(`"02${hexRun("78", 300)}ff"`, `"01${hexRun("78", 300)}ff"`)).toMatchObject({ held: 0, drifts: [] });
+  });
+
+  test("the case walk and the misquote reading share the comparison", () => {
+    // `testsHold` is the case walk's lookup; it held 300 inside a 303-byte spaced list before.
+    const spaced = Array(300).fill("78").join(" ");
+    expect(testsHold(`{${Array(303).fill("0x78").join(", ")}}`, spaced)).toBe(false);
+    expect(testsHold(`{${Array(300).fill("0x78").join(", ")}}`, spaced)).toBe(true);
+    // `misquotation` names the test's spelling of the miscounted run, in its own notation.
+    expect(misquotation(hexRun("78", 300), [`check(bytes.fromhex("78" * 303))`])).toBe('"78" * 303');
+    expect(misquotation(hexRun("78", 300), [`check("${hexRun("78", 303)}")`])).toBe(`"${hexRun("78", 303)}"`);
+    expect(misquotation(hexRun("78", 300), [`check("${hexRun("78", 300)}")`])).toBeNull();
+    // The host's exact edit writes the row's count in the test's notation.
+    const files = [{ path: DEFLATE_PATH, text: R82_TEST }];
+    const plan = misquoteFixPlan([{ id: "AC-002", literal: hexRun("78", 300), quoted: `"${hexRun("78", 303)}"` }], files);
+    expect(plan.sites).toEqual([{ criterionId: "AC-002", occurrences: 1, unescaped: true, plain: true, held: true }]);
+    expect(plan.edits[0]?.after).toBe(deflateTest(300, 238));
+    const repeat = [{ path: "tests/test_deflate.py", text: 'ROWS = [(bytes.fromhex("78" * 303), "abaa50120400")]\n' }];
+    const fixed = misquoteFixPlan([{ id: "AC-002", literal: hexRun("78", 300), quoted: '"78" * 303' }], repeat);
+    expect(fixed.edits[0]?.after).toBe('ROWS = [(bytes.fromhex("78" * 300), "abaa50120400")]\n');
+    expect(fixed.sites[0]?.held).toBe(true);
+  });
+
+  test("a failing check's findings say the test differs; with the route on they go to the test's task only", () => {
+    const [compared] = rowBlockDrifts(deflateRequest, graphOf(DEFLATE_PATH, "T007"), () => R82_TEST);
+    const finding = (file: string | null) => ({ id: `F-${file}`, kind: "correctness" as const, severity: "high" as const, requirementIds: ["FR-001"], criterionIds: ["AC-001"], file, symbol: null, evidenceIds: ["E1"], claim: "Required check rows failed", impact: "Implementation cannot be accepted", suggestedFix: "Inspect command evidence E1 and correct the implementation within approved scope." });
+    const tasks = [
+      { id: "T006", writes: [{ path: "src/deflate.c", action: "create" as const }], requirementIds: ["FR-001"], criterionIds: ["AC-001"] },
+      { id: "T007", writes: [{ path: DEFLATE_PATH, action: "create" as const }], requirementIds: ["FR-002"], criterionIds: ["AC-002"] },
+    ];
+    const built = [finding("src/deflate.c"), finding(DEFLATE_PATH)];
+    let n = 0;
+    const shadow = rowRunFindings("rows", built, compared!.drifts, tasks, false, () => `N${++n}`);
+    expect(shadow.findings.map((f) => f.file)).toEqual(["src/deflate.c", DEFLATE_PATH]);
+    for (const f of shadow.findings) {
+      expect(f.suggestedFix.startsWith(`The test's input literal differs from the criterion row by 3 bytes (${DEFLATE_PATH} line 11: 303 bytes of 0x78 where row 2 of the request's row block gives 300); the test's input literal differs from the criterion row by 21 bytes (${DEFLATE_PATH} line 12: 238 bytes of 0x71 where row 3 of the request's row block gives 259).`)).toBe(true);
+      expect(f.suggestedFix).toContain("Inspect command evidence E1");
+    }
+    expect(shadow.record).toEqual({ schemaVersion: 1, checkId: "rows", mode: "shadow", tests: [DEFLATE_PATH], tasks: ["T007"], bytes: [3, 21], before: ["src/deflate.c", DEFLATE_PATH], after: [DEFLATE_PATH] });
+    const routed = rowRunFindings("rows", [finding("src/deflate.c")], compared!.drifts, tasks, true, () => `N${++n}`);
+    expect(routed.findings.map((f) => [f.file, f.requirementIds, f.criterionIds])).toEqual([[DEFLATE_PATH, ["FR-002"], ["AC-002"]]]);
+    expect(routed.findings[0]?.suggestedFix).toContain(`Edit ${DEFLATE_PATH} only; the other rows and the source stay as written.`);
+    expect(routed.record?.mode).toBe("on");
+    // No run drift: the findings stay as built and nothing is recorded.
+    const [faithful] = rowBlockDrifts(deflateRequest, graphOf(DEFLATE_PATH, "T007"), () => R82_FAITHFUL);
+    expect(rowRunFindings("rows", built, faithful!.drifts, tasks, true, () => "N")).toEqual({ findings: built, record: null });
+  });
+});
+
+/** The R82 flow: T001 writes the source, T002 the test file; a corrective writes it as given. */
+class DeflateExecutor extends FixtureExecutor {
+  constructor(
+    private workspace: string,
+    private content: string,
+  ) {
+    super(workspace);
+  }
+  override async execute(request: ExecutionRequest) {
+    const result = await super.execute(request);
+    if (request.profile.output === "plan") {
+      const graph = (result.output as { taskGraph: TaskGraph }).taskGraph;
+      const first = graph.tasks[0]!;
+      first.writes.push({ path: "src/deflate.c", action: "create" });
+      graph.tasks.push({ ...first, id: "T002", title: "Deflate rows", dependsOn: ["T001"], writes: [{ path: DEFLATE_PATH, action: "create" }] });
+    }
+    if (request.profile.output === "implementation") {
+      const write = (path: string, text: string) => {
+        mkdirSync(dirname(join(this.workspace, path)), { recursive: true });
+        writeFileSync(join(this.workspace, path), text);
+      };
+      if (request.task?.id === "T001") write("src/deflate.c", "int deflate(void) { return 0; }\n");
+      else if (request.task?.id === "T002") write(DEFLATE_PATH, this.content);
+      else write(DEFLATE_PATH, R82_FAITHFUL);
+    }
+    return result;
+  }
+}
+
+// The deflate rows check: fails while the test's rows are not the prescribed ones, naming the test
+// line and the source it exercises, as the R82 check output did.
+const ROWS_CHECK = {
+  id: "rows",
+  executable: "bun",
+  args: ["-e", `const t = await Bun.file(${JSON.stringify(DEFLATE_PATH)}).text(); if (t.includes("${hexRun("78", 301)}") || !t.includes("${hexRun("71", 259)}")) { console.log("${DEFLATE_PATH}:11: deflate_match row 2 output differs from src/deflate.c"); process.exit(1); }`],
+  cwd: ".",
+  timeoutMs: 10000,
+  required: true,
+  scope: "feature" as const,
+  envNames: [],
+  writes: [],
+};
+
+async function deliverDeflate(route: boolean) {
+  const policy: RunPolicy = { ...fixturePolicy, checks: [...fixturePolicy.checks, ROWS_CHECK], ...(route ? { rowRunRoute: "on" as const } : {}) };
+  const fixture = workflowFixture({ policy, executor: (root) => new DeflateExecutor(root, R82_TEST) });
+  cleanups.push(fixture.dispose);
+  const run = await fixture.service.start({ commandId: newId(), featureId: "fixture", workflowId: "sdd", prompt: `Create ready value.\n\n${deflateRequest}`, ownerLabel: "test", policy });
+  let current = await fixture.service.drive(run.runId, new AbortController().signal);
+  for (let i = 0; i < 8 && current.status === "waiting"; i++) {
+    if (fixture.service.store.requests(run.runId).find((r) => r.status === "pending")?.kind !== "approval") break;
+    await fixture.approve(run.runId);
+    current = await fixture.service.drive(run.runId, new AbortController().signal);
+  }
+  const store = fixture.service.store;
+  const findings = store
+    .findings(run.runId)
+    .map((f) => JSON.parse(f.body_json) as { file: string | null; claim: string; suggestedFix: string })
+    .filter((f) => f.claim === "Required check rows failed");
+  const wouldStops = store
+    .eventsOfType(run.runId, "decision.would_stop")
+    .map((e) => e.payload as { reason: string; key: string; inputs: { runs?: { line: number; bytes: number }[] } })
+    .filter((p) => p.reason === "row_block_drift");
+  const routes = store.artifacts(run.runId).filter((a) => a.logical_path === "row-runs/rows.json").map((a) => JSON.parse(store.readArtifact(run.runId, a.id)));
+  const prompts = fixture.executor.prompts.implementation ?? [];
+  return { final: await fixture.service.get(run.runId), findings, wouldStops, routes, prompts };
+}
+
+describe("scenario: R82, a test rewrites two prescribed long hex inputs with the wrong run length (#2515)", () => {
+  test("the checks stage records both runs, and the failing check's corrective says the test differs, naming line and byte", async () => {
+    const { final, findings, wouldStops, routes, prompts } = await deliverDeflate(false);
+    expect(wouldStops.map((w) => [w.key, w.inputs.runs?.map((r) => [r.line, r.bytes])])).toEqual([
+      [`${DEFLATE_PATH}#row-2`, [[11, 3]]],
+      [`${DEFLATE_PATH}#row-3`, [[12, 21]]],
+    ]);
+    expect(findings.length).toBeGreaterThan(0);
+    for (const f of findings)
+      expect(f.suggestedFix).toStartWith(`The test's input literal differs from the criterion row by 3 bytes (${DEFLATE_PATH} line 11: 303 bytes of 0x78 where row 2 of the request's row block gives 300); the test's input literal differs from the criterion row by 21 bytes (${DEFLATE_PATH} line 12: 238 bytes of 0x71 where row 3 of the request's row block gives 259).`);
+    // The corrective's brief carries it.
+    expect(prompts.some((p) => p.includes("differs from the criterion row by 21 bytes"))).toBe(true);
+    // Shadow: the findings keep their files (the source among them), and the route is recorded.
+    expect(findings.map((f) => f.file)).toContain("src/deflate.c");
+    expect(routes[0]).toMatchObject({ mode: "shadow", tests: [DEFLATE_PATH], bytes: [3, 21], after: [DEFLATE_PATH] });
+    expect(final.status).toBe("completed");
+  });
+
+  test("with rowRunRoute on, the correction goes to the test's task only, not src/deflate.c", async () => {
+    const { final, findings, routes } = await deliverDeflate(true);
+    expect(findings.map((f) => f.file)).toEqual([DEFLATE_PATH]);
+    expect(findings[0]?.suggestedFix).toContain(`the test's input literal differs from the criterion row by 21 bytes (${DEFLATE_PATH} line 12: 238 bytes of 0x71 where row 3 of the request's row block gives 259)`);
+    expect(routes[0]).toMatchObject({ mode: "on", tests: [DEFLATE_PATH] });
+    expect(final.status).toBe("completed");
   });
 });

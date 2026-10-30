@@ -1279,6 +1279,28 @@ export const SETTINGS: readonly SettingDefinition[] = [
     ],
   },
   {
+    id: "quality.rowRunRoute",
+    page: "code-quality",
+    section: "Workflow runs",
+    label: "Send a miscounted test row to the test's task",
+    help: "When a test file spells a long byte run of a row the request prescribes with another count (303 bytes of 0x78 where the row gives 300), a failing check is the test's fault, not the source's. With this on, the correction goes to the task that writes the test only. The correction always says which line and byte differ.",
+    scopes: BOTH,
+    type: "enum",
+    default: "off",
+    options: [
+      {
+        value: "off",
+        label: "off",
+        help: "The findings keep their files and name the miscount; the host records where it would have sent them.",
+      },
+      {
+        value: "on",
+        label: "on",
+        help: "Send the failing check's correction to the test's task only.",
+      },
+    ],
+  },
+  {
     id: "quality.propertyTests",
     page: "code-quality",
     section: "Tests",

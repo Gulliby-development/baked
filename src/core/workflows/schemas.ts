@@ -802,6 +802,14 @@ export const PolicySchema = z
      */
     sourceDefectRoute: z.literal("on").optional(),
     /**
+     * The route of a failing check's correction when a delivered test file counts a long byte run
+     * of a prescribed row differently (row-block-drift.ts `rowRunFindings`, #2515): `on` gives
+     * the correction to the task that writes the test file only, with the line, the byte and both
+     * counts. Absent means shadow (the route is recorded under `row-runs/`, the findings keep their
+     * files and only say it), so stored policies keep their hash.
+     */
+    rowRunRoute: z.literal("on").optional(),
+    /**
      * The host's repair of a required check that fails before any change (baseline-fix.ts, #2215):
      * `on` lets the host run the check's fixer on the files it names, before the first task, when
      * no task writes them, git tracks them and every finding is marked correctable, and keep the

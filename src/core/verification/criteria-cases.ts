@@ -11,6 +11,7 @@ import { propertyTestKind } from "../workflows/quality/properties.js";
 import type { Spec } from "../workflows/schemas.js";
 import { toolchainCommand } from "../workflows/toolchain.js";
 import type { Check, Task } from "../workflows/types.js";
+import { runsHeld } from "./byte-runs.js";
 import { caseEvidence } from "./criteria-evidence.js";
 import {
   type GeneratedKind,
@@ -1177,9 +1178,13 @@ function linesHeld(unescaped: string, literal: string): boolean | null {
  * test may spell in its own language's string syntax, split into adjacent strings or a list of
  * lines (`joinedStrings`), or, for several lines, as indented lines of a heredoc (`linesHeld`).
  * Unlike `testsHold`, which accepts a criterion literal's tokens spread over the file, every
- * character of the text counts: a row whose input lost its last event is not held.
+ * character of the text counts: a row whose input lost its last event is not held. A long byte
+ * run (a hex string, a byte list, a repeat) is decided by its count (`runsHeld`, #2515): 300
+ * bytes of `0x78` are not held by a test that spells 303, in whatever notation.
  */
 export function verbatimHeld(text: string, literal: string): boolean {
+  const runs = runsHeld(text, literal);
+  if (runs !== null) return runs;
   const wanted = canonicalText(literal);
   if (!asciiTrim(wanted).replace(/\r?\n/g, "")) return true;
   for (const source of [text, joinedStrings(text)]) {
@@ -1225,6 +1230,9 @@ const SIGNIFICANT_TOKEN =
  * Placeholders stand for test-specific values; case and token boundaries still matter.
  */
 export function testsHold(text: string, literal: string): boolean {
+  // A long byte run counts as a whole (#2515): its bytes as tokens would hold 300 inside 303.
+  const runs = runsHeld(text, literal);
+  if (runs !== null) return runs;
   const once = normalizeLiteral(literal);
   const twice = decodedTwice(once);
   return holds(text, literal, once) || (twice !== once && holds(text, literal, twice));
