@@ -204,6 +204,11 @@ export const TaskSchema = z
         index: z.number().int().nonnegative(),
         count: z.number().int().positive(),
         share: z.number().positive().max(1),
+        /**
+         * The prescribed rows this slice writes, when the host cut the file by its rows (#2466):
+         * the case walk gives a criterion literal to the slice whose rows hold it.
+         */
+        rows: z.array(Text).max(2000).optional(),
       })
       .strict()
       .optional(),

@@ -87,7 +87,7 @@ const chars = (count: number) => Array.from({ length: count }, (_, i) => [...row
 describe("the rows a request prescribes for a test file (#2455)", () => {
   test("a fenced block whose first line names the file and says it holds rows is read, header excluded", () => {
     const rows = suppliedRows(request("tests/x.test.ts", 60), ["tests/x.test.ts", "src/cli.ts"]);
-    expect(rows.get("tests/x.test.ts")).toEqual({ header: `XTests in tests/x.test.ts (60 rows, ${NOTATION})`, rows: 60, chars: chars(60) });
+    expect(rows.get("tests/x.test.ts")).toEqual({ header: `XTests in tests/x.test.ts (60 rows, ${NOTATION})`, rows: 60, chars: chars(60), lines: Array.from({ length: 60 }, (_, i) => row(i + 1)) });
     expect(rows.has("src/cli.ts")).toBe(false);
   });
 
