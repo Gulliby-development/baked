@@ -269,6 +269,15 @@ export const REPLAY_TARGETS: Record<
           .map((path) => ({ args: withArgs(args, [`TEST=${path}`]), paths: [path] })),
   // Gradle (JUnit output): --continue runs the other projects' tests after a compile failure.
   junit: keepGoing(...GRADLE_KEEP_GOING),
+  // mix test compiles every test file before it runs any, and one that does not compile stops the
+  // run (#2490): each test file the run's tests are in, on its own (`mix test test/a_test.exs`).
+  exunit: ({ args, tests }) =>
+    args.some((arg) => /\.exs(?::\d+)*$/.test(arg))
+      ? []
+      : tests
+          .filter((path) => path.endsWith("_test.exs"))
+          .sort()
+          .map((path) => ({ args: withArgs(args, [path]), paths: [path] })),
 };
 
 /**
@@ -367,6 +376,8 @@ export const REPLAY_KEEP_GOING: Record<TestRunner, KeepGoingRow | { none: string
   testthat: { none: "testthat runs every test file; a stop is set in R code" },
   // Gradle stops at the first project whose test task fails, and --fail-fast within one.
   junit: { programs: ["gradle", "gradlew"], flags: GRADLE_KEEP_GOING, stop: ["--fail-fast"] },
+  // ExUnit stops after `--max-failures N` failed tests (#2490).
+  exunit: { programs: ["mix"], verbs: ["test"], stop: ["--max-failures"] },
 };
 
 /** Programs that run another program named by their first word (`npx jest`, `bunx vitest`). */
