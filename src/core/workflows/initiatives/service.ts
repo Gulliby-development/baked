@@ -130,6 +130,7 @@ import {
   namedFiles,
   planLanguage,
   planSizeProblem,
+  rowOwnerProblems,
   type SplitEdit,
   SplitEditSchema,
   sequenceDocumentation,
@@ -2287,12 +2288,16 @@ export class InitiativeService {
         });
     const floored = { plan: siblings.plan, merged: [...folded.merged, ...siblings.merged] };
     const proposed = floored.plan;
+    const rowOwnerMode = stopMode(settings.basePolicy, "initiative-row-owner");
     let plan = proposed;
     let unfit: string | null = null;
     let lightened: { featureId: string; from: string; to: string }[] = [];
     let unavailable: string[] = [];
     try {
-      const ownership = testOwnershipProblems(proposed);
+      const ownership = testOwnershipProblems(proposed, {
+        request: state.requestText || state.prompt,
+        mode: rowOwnerMode,
+      });
       if (ownership.length) throw new WorkflowFault("OUTPUT_INVALID", ownership.join("\n"));
       plan = this.fitWorkflows(proposed, settings, true);
       // A small feature nothing depends on runs the light workflow: nobody pins its spec.
@@ -2337,7 +2342,41 @@ export class InitiativeService {
           // Small leaves that keep a spec workflow because quick cannot run a feature here.
           ...(unavailable.length ? { unavailable } : {}),
         });
+      // Enforced, testOwnershipProblems refused the split above; in shadow it is recorded (#2487).
+      if (rowOwnerMode !== "enforce")
+        this.noteRowOwnerWouldStop(id, plan, state.requestText || state.prompt, rowOwnerMode);
     });
+  }
+
+  /**
+   * A proposed split that gives a prescribed row file to a feature although a row needs a feature
+   * that depends on it (`rowOwnerProblems`, #2487): a `decision.would_stop` event of
+   * `initiative-row-owner` on the initiative, once per plan revision and file. Enforced, the same
+   * sentence goes back to the decomposer through `testOwnershipProblems` instead.
+   */
+  private noteRowOwnerWouldStop(
+    id: string,
+    plan: InitiativePlan,
+    request: string,
+    mode: Exclude<StopMode, "enforce">,
+  ): void {
+    const revision = this.store.get(id).plan_revision;
+    for (const found of rowOwnerProblems(plan, request))
+      this.store.emit(id, "decision.would_stop", {
+        reason: "initiative-row-owner",
+        mode,
+        featureId: found.owner,
+        key: `row-owner-r${revision}-${found.path}`,
+        summary: found.problem,
+        inputs: {
+          path: found.path,
+          owner: found.owner,
+          needs: found.needs,
+          row: found.row,
+          literal: found.literal,
+          rows: found.rows,
+        },
+      });
   }
 
   /** Starts a feature's run; false when its upstream results conflict and it waits for a person. */

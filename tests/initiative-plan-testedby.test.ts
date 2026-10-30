@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { type InitiativeFeature, type InitiativePlan, mergeSmallSiblings, testOwnershipProblems } from "../src/core/workflows/initiatives/plan.js";
+import { type InitiativeFeature, type InitiativePlan, mergeSmallSiblings, rowOwnerProblems, testOwnershipProblems } from "../src/core/workflows/initiatives/plan.js";
 
 // Bench round 58, wheeltags (Python, #1873). Asked to shorten a critical path in which front was
 // 39 percent, the decomposer moved the unit tests of base, names and targets into two features of
@@ -113,4 +113,53 @@ describe("testedBy names a later feature whose code the tests need (#1873)", () 
     expect(problems[0]).toContain("names has source paths but no writable test path, and testedBy names");
     expect(problems[0]).toContain("a feature of tests only");
   });
+});
+
+// Bench round 80, ratdec (Elixir, #2487): the plan gave all 16 rows of `test/stdin_test.exs` to
+// core, while the row `eval --as mixed` on stdin needs the mixed output representations writes.
+// Core's test check ran the row; a task rewrote it to pass and representations failed on it.
+describe("a prescribed row file whose rows a feature cannot all pass (#2487)", () => {
+  const fence = "```";
+  const rowBlock = (name: string, path: string, rows: string[]) => `${fence}text\n${name} in ${path} (${rows.length} rows: stdin | args | stdout)\n${rows.join("\n")}\n${fence}`;
+  // One row file per topic through one entry point; the split is by layer.
+  const layouts: [string, string[], string, string, string][] = [
+    ["Elixir", ["lib/ratdec/cli.ex", "lib/ratdec/rat.ex"], "lib/ratdec/format.ex", "test/stdin_test.exs", "test/mixed_test.exs"],
+    ["TypeScript", ["src/cli.ts", "src/rat.ts"], "src/format.ts", "tests/stdin.test.ts", "tests/mixed.test.ts"],
+    ["Go", ["internal/cli/cli.go", "internal/rat/rat.go"], "internal/format/format.go", "internal/cli/stdin_test.go", "internal/format/mixed_test.go"],
+    ["Python", ["src/ratdec/cli.py", "src/ratdec/rat.py"], "src/ratdec/format.py", "tests/test_stdin.py", "tests/test_mixed.py"],
+    ["Rust", ["src/cli.rs", "src/rat.rs"], "src/format.rs", "tests/stdin.rs", "tests/mixed.rs"],
+    ["C#", ["src/Ratdec/Cli.cs", "src/Ratdec/Rat.cs"], "src/Ratdec/Format.cs", "tests/Ratdec.Tests/StdinTests.cs", "tests/Ratdec.Tests/MixedTests.cs"],
+  ];
+  const request = (stdin: string, mixed: string) => [
+    "Build ratdec, an exact rational calculator.",
+    rowBlock("StdinTest", stdin, ["7/3 | eval | 7/3", "1/2+1/3 | eval | 5/6", "7/3 | eval --as mixed | 2 1/3"]),
+    rowBlock("MixedTest", mixed, ["| eval 7/3 --as mixed | 2 1/3", "| eval -7/3 --as mixed | -2 1/3"]),
+  ].join("\n\n");
+  const ratdec = (code: string[], format: string, stdin: string, mixed: string, stdinOwner: "core" | "representations") => plan([
+    // Core keeps a row file of its own topic either way.
+    feature("core", [...code, stdin.replace("stdin", "literals").replace("Stdin", "Literals"), ...(stdinOwner === "core" ? [stdin] : [])], [], { contract: "`ratdec eval` reads an expression on stdin and prints the exact fraction, `7/3`." }),
+    feature("representations", [format, mixed, ...(stdinOwner === "representations" ? [stdin] : [])], ["core"], { contract: "`--as mixed` prints a mixed number such as `2 1/3`; `ratdec eval` keeps its fraction output." }),
+    feature("docs", ["README.md"], ["core", "representations"], { contract: "The README documents `ratdec eval`." }),
+  ]);
+  for (const [language, code, format, stdin, mixed] of layouts) {
+    test(`${language}: the earlier feature owning a row file with a later feature's literal is refused when enforced`, () => {
+      const split = ratdec(code, format, stdin, mixed, "core");
+      const given = request(stdin, mixed);
+      const found = rowOwnerProblems(split, given);
+      expect(found).toEqual([expect.objectContaining({ path: stdin, owner: "core", needs: "representations", row: "7/3 | eval --as mixed | 2 1/3", literal: "--as mixed", rows: 1 })]);
+      const problems = testOwnershipProblems(split, { request: given, mode: "enforce" });
+      expect(problems).toEqual([`${stdin} holds a row that only representations can pass (\`7/3 | eval --as mixed | 2 1/3\` holds \`--as mixed\`, which the contract or scope of representations cites): give the file to representations (it depends on core), or ask for the row in the brief to be split into a file of representations.`]);
+      // Shadow (the default) leaves the split to the would-stop record.
+      expect(testOwnershipProblems(split, { request: given, mode: "shadow" })).toEqual([]);
+      expect(testOwnershipProblems(split)).toEqual([]);
+    });
+
+    test(`${language}: the row file given to the later feature, or rows of the owner's own literals, pass`, () => {
+      const given = request(stdin, mixed);
+      expect(testOwnershipProblems(ratdec(code, format, stdin, mixed, "representations"), { request: given, mode: "enforce" })).toEqual([]);
+      // Without the mixed row, the entry point both contracts cite is shared vocabulary, not a later feature's.
+      const frac = given.replace("\n7/3 | eval --as mixed | 2 1/3", "");
+      expect(testOwnershipProblems(ratdec(code, format, stdin, mixed, "core"), { request: frac, mode: "enforce" })).toEqual([]);
+    });
+  }
 });

@@ -8,10 +8,18 @@ import { isCodeFile } from "../../intelligence/language-traits.js";
 import { detectLanguageFromPath } from "../../intelligence/types.js";
 import { matchGlob } from "../../platform/index.js";
 import { hashJson } from "../../specs/hash.js";
+import {
+  literalCase,
+  normalizeLiteral,
+  quotedSpans,
+  testsHold,
+} from "../../verification/criteria-cases.js";
 import { canHold, deliverableKind, normalizePath } from "../../verification/deliverable-paths.js";
 import { isCodePath } from "../check-policy.js";
 import { WorkflowFault } from "../errors.js";
 import { HOST_CONTENT_MAX_CHARS, SafeId } from "../schemas.js";
+import { suppliedRows } from "../sizing.js";
+import type { StopMode } from "../stop-reasons.js";
 import { conditionalContractProblems } from "./upstream-symbols.js";
 
 /** An initiative holds at least this many features; a smaller request is a single run. */
@@ -151,18 +159,9 @@ export function planStructureProblems(plan: InitiativePlan): string[] {
  * two check-only features after front, so the base run shipped no test and blocked on an empty
  * test check after 622k tokens, and the path grew a feature longer (#1873).
  */
-export function testOwnershipProblems(plan: InitiativePlan): string[] {
+export function testOwnershipProblems(plan: InitiativePlan, rows?: RowOwnerInput): string[] {
   const problems: string[] = [];
-  const reaches = (id: string, target: string, seen = new Set<string>()): boolean => {
-    if (id === target) return true;
-    if (seen.has(id)) return false;
-    seen.add(id);
-    return (
-      plan.features
-        .find((feature) => feature.id === id)
-        ?.dependsOn.some((upstream) => reaches(upstream, target, seen)) ?? false
-    );
-  };
+  const reaches = (id: string, target: string) => reachesFeature(plan, id, target);
   for (const feature of plan.features) {
     const source = feature.boundary.paths.some(
       (path) =>
@@ -198,7 +197,118 @@ export function testOwnershipProblems(plan: InitiativePlan): string[] {
         `${feature.id} has source paths but no writable test path. Add tests to its boundary or set testedBy to a feature with test paths that depends on it, and leave those tests out of this feature's criteria.`,
       );
   }
+  // Enforced only on the policy's opt-in; in shadow the initiative records the would-stop (#2487).
+  if (rows?.mode === "enforce")
+    problems.push(...rowOwnerProblems(plan, rows.request).map((found) => found.problem));
   return problems;
+}
+
+/** Whether feature `id` is `target` or depends on it, directly or through other features. */
+function reachesFeature(
+  plan: InitiativePlan,
+  id: string,
+  target: string,
+  seen = new Set<string>(),
+): boolean {
+  if (id === target) return true;
+  if (seen.has(id)) return false;
+  seen.add(id);
+  return (
+    plan.features
+      .find((feature) => feature.id === id)
+      ?.dependsOn.some((upstream) => reachesFeature(plan, upstream, target, seen)) ?? false
+  );
+}
+
+/**
+ * The request a split was made from and the mode of the `initiative-row-owner` reason
+ * (`stopMode`): `testOwnershipProblems` returns the row-ownership problems only under `enforce`.
+ */
+export interface RowOwnerInput {
+  request: string;
+  mode: StopMode;
+}
+
+/** A prescribed row file given to a feature although one of its rows needs a later feature. */
+export interface RowOwnerProblem {
+  /** The prescribed row file (`suppliedRows`). */
+  path: string;
+  /** The feature whose boundary holds the file. */
+  owner: string;
+  /** The feature that depends on the owner and whose contract or scope cites the row's literal. */
+  needs: string;
+  /** The first such row, as the request gives it. */
+  row: string;
+  /** The literal the row holds (`testsHold`, the case walk's join of a row and a criterion). */
+  literal: string;
+  /** How many rows of the file need a later feature. */
+  rows: number;
+  /** The sentence the decomposer (enforced) or the would-stop record (shadow) carries. */
+  problem: string;
+}
+
+/**
+ * Prescribed row files whose rows a feature cannot all pass (#2487). For each test file of a
+ * boundary the request prescribes rows for (`suppliedRows`, the one reader of row blocks), a row
+ * that holds a literal a feature depending on the file's owner cites is a row only that later
+ * feature can pass. Before any spec exists a feature's criteria are what its contract and scope
+ * quote: their quoted literals that the case walk would demand (`literalCase`), held by the row as
+ * the case walk decides (`testsHold`). A literal the owner, an upstream or an unrelated feature
+ * also quotes is shared vocabulary (the entry point, a common flag), not the later feature's.
+ *
+ * Bench round 80 ratdec: the plan gave all 16 rows of `test/stdin_test.exs` to core, while the
+ * row `eval --as mixed` on stdin needs the mixed output that representations (which depends on
+ * core) implements. Core's required test check ran the row; T013 failed twice and T014 rewrote
+ * it (582k tokens), and representations then failed on the rewritten row (#2485, #2486).
+ */
+export function rowOwnerProblems(plan: InitiativePlan, request: string): RowOwnerProblem[] {
+  const paths = [
+    ...new Set(plan.features.flatMap((f) => f.boundary.paths.filter((p) => !GLOB.test(p)))),
+  ];
+  const prescribed = suppliedRows(request, paths);
+  if (!prescribed.size) return [];
+  const cited = new Map(
+    plan.features.map((feature) => [
+      feature.id,
+      quotedSpans(`${feature.contract}\n${feature.boundary.scope}`)
+        .filter((span) => literalCase(span.literal, span.code))
+        .map((span) => span.literal),
+    ]),
+  );
+  const found: RowOwnerProblem[] = [];
+  for (const [path, block] of prescribed)
+    for (const owner of plan.features) {
+      if (!owner.boundary.paths.some((pattern) => patternsMeet(path, pattern))) continue;
+      const later = plan.features.filter(
+        (f) => f.id !== owner.id && reachesFeature(plan, f.id, owner.id),
+      );
+      const shared = new Set(
+        plan.features
+          .filter((f) => !later.includes(f))
+          .flatMap((f) => (cited.get(f.id) ?? []).map(normalizeLiteral)),
+      );
+      for (const needs of later) {
+        const own = (cited.get(needs.id) ?? []).filter((l) => !shared.has(normalizeLiteral(l)));
+        const held = block.lines.flatMap((row) => {
+          const literal = own.find((l) => testsHold(row, l));
+          return literal === undefined ? [] : [{ row, literal }];
+        });
+        const first = held[0];
+        if (!first) continue;
+        const row = first.row.length > 120 ? `${first.row.slice(0, 117)}...` : first.row;
+        found.push({
+          path,
+          owner: owner.id,
+          needs: needs.id,
+          row: first.row,
+          literal: first.literal,
+          rows: held.length,
+          problem: `${path} holds ${held.length === 1 ? "a row" : `${held.length} rows`} that only ${needs.id} can pass (\`${row}\` holds \`${first.literal}\`, which the contract or scope of ${needs.id} cites): give the file to ${needs.id} (it depends on ${owner.id}), or ask for the row in the brief to be split into a file of ${needs.id}.`,
+        });
+        break;
+      }
+    }
+  return found;
 }
 
 /**
