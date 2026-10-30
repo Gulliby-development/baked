@@ -134,6 +134,18 @@ export const STOP_REASONS = {
     modes: STOP_MODES,
     defaultMode: "shadow",
   },
+  upstream_stale_file: {
+    label:
+      "A corrective's evidence names only a test file of a closed upstream initiative feature: amend it in this feature instead of parking for that feature",
+    // Shadow by default (#2485, R80 ratdec representations T007): the `amend` decision of
+    // `unownedRule` is recorded as a would-stop and the enforced `corrective_unowned_file` keeps
+    // its park. `stopModes: { upstream_stale_file: "enforce" }` (with `corrective_unowned_file`
+    // enforced, or a person's `upstream` remedy) adds the file to the feature's boundary and the
+    // corrective's writes (`hostAmend`); making that the default is a pull request of its own
+    // after two bench rounds with no false would-stop.
+    modes: STOP_MODES,
+    defaultMode: "shadow",
+  },
   upstream_symbol: {
     label:
       "A released planned-ahead feature's spec names a symbol of an upstream feature that the accepted upstream code does not have",

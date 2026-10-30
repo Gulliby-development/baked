@@ -13,6 +13,7 @@ import {
 import { tmpdir } from "node:os";
 import { basename, dirname, extname, join, relative } from "node:path";
 import { codeWithoutComments } from "../intelligence/comments.js";
+import { isTestFileAt } from "../intelligence/language-traits.js";
 import { detectLanguageFromPath } from "../intelligence/types.js";
 import { largerContextModel } from "../llm/context-sizes.js";
 import {
@@ -380,9 +381,11 @@ import {
 } from "./corrective-defer.js";
 import {
   evidencePaths,
+  hostAmend,
   hostDecision,
   hostWiden,
   outOfScopeAdvice,
+  remedyCovers,
   SCOPE_EDITS_DIR,
   SCOPE_KIND,
   SCOPE_TASKS_DIR,
@@ -19483,6 +19486,18 @@ ${note}`;
           inputs: { ...record },
         });
     }
+    // Shadow (#2485): the park whose file an `amend` would take into this feature instead.
+    if (record.host === "amend") {
+      const mode = stopMode(policy, "upstream_stale_file");
+      if (mode !== "enforce")
+        recordWouldStop(this.store, runId, {
+          reason: "upstream_stale_file",
+          mode,
+          key,
+          summary: unownedSummary(task.id, record.unowned ?? [], "amend"),
+          inputs: { ...record },
+        });
+    }
     return record;
   }
   /**
@@ -19522,6 +19537,15 @@ ${note}`;
         const absolute = inside(path);
         return absolute ? fileHash(absolute) : null;
       },
+      upstreamClosed: (feature) => {
+        const initiatives = new InitiativeStore(this.store);
+        const id = initiatives.initiativeOfRun(runId);
+        const link = id ? initiatives.current(id, feature) : null;
+        return (
+          !!link && link.run_id !== runId && this.store.run(link.run_id).status === "completed"
+        );
+      },
+      testFile: (path) => inside(path) !== null && isTestFileAt(root, path),
     };
   }
   /**
@@ -19576,17 +19600,22 @@ ${note}`;
       }
       const done = edits.find((e) => e.path === p.path);
       return (
-        (!person || p.decision === person) &&
+        (!person || remedyCovers(person === "park" ? "upstream" : person, p.decision)) &&
         (!done || (done.decision === "refuse" && p.decision === "refuse"))
       );
     });
-    const decision = hostDecision(candidates);
-    if (decision === "fits" || decision === "wait") return null;
-    const acting = candidates.filter((p) => p.decision === decision);
+    const decided = hostDecision(candidates);
+    if (decided === "fits" || decided === "wait") return null;
+    const acting = candidates.filter((p) => p.decision === decided);
+    // `amend` acts only under an enforced `upstream_stale_file`; otherwise the park stands (#2485).
+    let decision =
+      decided === "amend" && stopMode(policy, "upstream_stale_file") !== "enforce"
+        ? "park"
+        : decided;
     if (person) {
       // Applied once: a later block of the same corrective is the person's to answer again.
       delete state.unownedRemedies[task.id];
-      if (decision === "widen")
+      if (decision === "widen" || decision === "amend")
         state.personWidened = [...new Set([...state.personWidened, ...acting.map((p) => p.path)])];
       this.store.transaction(() => this.store.saveState(runId, state));
     }
@@ -19646,6 +19675,27 @@ ${note}`;
         return paths;
       });
       return added.length ? { cause: "widened_correction" } : null;
+    }
+    if (decision === "amend") {
+      // The closed upstream's test file joins this feature and the corrective's writes; without
+      // a widened path the park stands.
+      const added = this.store.transaction(() => {
+        const paths = hostAmend(
+          this.store,
+          runId,
+          state,
+          policy,
+          task,
+          acting.map((p) => ({ path: p.path, exists: p.hash !== null })),
+        );
+        if (!paths.length) return paths;
+        if (!state.widenedCorrections.includes(task.id)) state.widenedCorrections.push(task.id);
+        journal();
+        this.store.saveState(runId, state);
+        return paths;
+      });
+      if (added.length) return { cause: "widened_correction" };
+      decision = "park";
     }
     if (decision === "park") {
       const features = [...new Set(acting.map((p) => p.feature))].join(", ");
