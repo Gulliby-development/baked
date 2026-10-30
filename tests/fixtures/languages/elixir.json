@@ -15,6 +15,7 @@
   },
   "expected": {
     "generatedValues": ["test/gen_test.exs:1 repeat","test/gen_test.exs:2 interpolate"],
+    "exampleBuild": ["mix run --no-compile; link _build"],
     "runtimePaths": ["test/runtime_test.exs: dir"],
     "memberSyntax": [
       "Scanner delegates to Reader.IsEncodingToken.: Reader.IsEncodingToken"

@@ -9,6 +9,7 @@
   },
   "expected": {
     "generatedValues": ["test/test_gen.ml:1 repeat","test/test_gen.ml:2 format"],
+    "exampleBuild": ["dune exec --no-build; link _build"],
     "runtimePaths": ["test/test_runtime.ml: dir"],
     "memberSyntax": [
       "Scanner delegates to Reader.IsEncodingToken.: Reader.IsEncodingToken"

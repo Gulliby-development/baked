@@ -9,6 +9,7 @@
   },
   "expected": {
     "generatedValues": ["Tests/GenTests.m:1 format"],
+    "exampleBuild": null,
     "runtimePaths": ["Tests/RuntimeTests.m: dir"],
     "memberSyntax": [
       "Scanner delegates to Reader.IsEncodingToken.: Reader.IsEncodingToken",

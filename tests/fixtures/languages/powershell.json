@@ -15,6 +15,7 @@
   },
   "expected": {
     "generatedValues": ["tests/Gen.Tests.ps1:1 repeat","tests/Gen.Tests.ps1:2 interpolate"],
+    "exampleBuild": null,
     "runtimePaths": ["tests/Runtime.Tests.ps1: dir"],
     "memberSyntax": [
       "Scanner calls [Reader]::IsEncodingToken for each token.: Reader::IsEncodingToken",

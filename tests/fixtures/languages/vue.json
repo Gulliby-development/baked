@@ -14,6 +14,7 @@
   },
   "expected": {
     "generatedValues": ["src/Gen.vue:2 repeat"],
+    "exampleBuild": null,
     "runtimePaths": ["src/Runtime.vue: dir, file"],
     "memberSyntax": [
       "Scanner delegates to Reader.IsEncodingToken.: Reader.IsEncodingToken",

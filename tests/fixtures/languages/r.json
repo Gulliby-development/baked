@@ -15,6 +15,7 @@
   },
   "expected": {
     "generatedValues": ["tests/testthat/test-gen.R:1 repeat","tests/testthat/test-gen.R:2 format"],
+    "exampleBuild": null,
     "runtimePaths": ["tests/testthat/test-runtime.R: dir"],
     "memberSyntax": [
       "Scanner calls Reader::is_encoding_token.: Reader::is_encoding_token",

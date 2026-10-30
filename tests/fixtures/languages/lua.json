@@ -16,6 +16,7 @@
   },
   "expected": {
     "generatedValues": ["spec/gen_spec.lua:1 repeat","spec/gen_spec.lua:2 format"],
+    "exampleBuild": null,
     "runtimePaths": ["spec/runtime_spec.lua: dir"],
     "memberSyntax": [
       "Scanner delegates to Reader.IsEncodingToken.: Reader.IsEncodingToken",

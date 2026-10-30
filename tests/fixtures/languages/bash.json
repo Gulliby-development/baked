@@ -16,6 +16,7 @@
   },
   "expected": {
     "generatedValues": ["test/gen.bats:1 format","test/gen.bats:1 interpolate","test/gen.bats:2 loop"],
+    "exampleBuild": null,
     "runtimePaths": ["test/runtime.bats: dir"],
     "memberSyntax": null,
     "suppressions": [

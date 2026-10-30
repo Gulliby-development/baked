@@ -16,6 +16,7 @@
   },
   "expected": {
     "generatedValues": ["tests/App.Tests/GenTests.cs:1 repeat","tests/App.Tests/GenTests.cs:2 interpolate"],
+    "exampleBuild": ["dotnet run --no-build; link bin, obj"],
     "runtimePaths": ["tests/App.Tests/RuntimeTests.cs: dir"],
     "memberSyntax": [
       "Scanner delegates to Reader.IsEncodingToken.: Reader.IsEncodingToken"

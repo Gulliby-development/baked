@@ -14,6 +14,7 @@
   },
   "expected": {
     "generatedValues": ["src/test/scala/GenSpec.scala:1 repeat","src/test/scala/GenSpec.scala:2 interpolate"],
+    "exampleBuild": null,
     "runtimePaths": ["src/test/scala/RuntimeSpec.scala: dir"],
     "memberSyntax": [
       "Scanner delegates to Reader.IsEncodingToken.: Reader.IsEncodingToken",

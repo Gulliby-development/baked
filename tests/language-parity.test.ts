@@ -24,6 +24,7 @@ import {
   testCount,
 } from "../src/core/verification/output-counts.js";
 import { ENTRY_POINTS, projectEntryPoints } from "../src/core/verification/entry-points.js";
+import { EXAMPLE_BUILD } from "../src/core/verification/example-build.js";
 import { edgeTaxonomy, NUMERIC_LIMITS } from "../src/core/verification/edge-inputs.js";
 import { FILE_FORMATTERS, formatWrittenChecks } from "../src/core/workflows/format-written.js";
 import { detectGates, formatCommandLine, GATE_TOOLCHAINS } from "../src/core/workflows/gates.js";
@@ -169,6 +170,16 @@ const RECORDS: Record<
     record: ENTRY_POINTS,
     run: (_, { files }) =>
       projectEntryPoints(workspace(files)).map((e) => `${e.name}: ${e.launcher.join(" ")}`),
+  },
+  // How a documented example reuses the build the checks made (#2505): the toolchain's build-and-run
+  // command, the flags that skip its build, and the build directories linked into the copy.
+  exampleBuild: {
+    record: EXAMPLE_BUILD,
+    run: (language) => {
+      const row = EXAMPLE_BUILD[language];
+      if (isNoRow(row)) return [];
+      return [`${[row.program, ...row.subcommand, ...row.noBuild].join(" ")}; link ${row.link.join(", ")}`];
+    },
   },
   numericLimits: {
     record: NUMERIC_LIMITS,
