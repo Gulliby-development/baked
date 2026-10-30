@@ -175,10 +175,13 @@ import {
   type ExtendWithinDollars,
   NO_DOLLAR_FORECAST,
   type PlanChargeView,
+  type PlanShareDecision,
+  type PlanShareInputs,
   type PoolExtension,
   type PoolFeature,
   type PoolInputs,
   planCharge,
+  planShareDecision,
   poolExtensionDecision,
   poolForecast,
   poolShortText,
@@ -2398,27 +2401,7 @@ export class InitiativeService {
         .at(-1) as ShareGateRecord | undefined;
       if (last?.verdict === "park") return false;
     }
-    const gateView: ShareGateView = {
-      initiativeId: id,
-      budget: {
-        remaining: view.budget.remaining,
-        cost: view.budget.cost,
-        limits: view.budget.limits,
-        used: view.budget.used,
-        pool: view.budget.pool,
-        ...(view.budget.planCharge ? { planCharge: view.budget.planCharge } : {}),
-        ...(view.budget.time ? { time: view.budget.time } : {}),
-        ...(view.budget.calls ? { calls: view.budget.calls } : {}),
-      },
-      features: view.features.map((f) => ({
-        id: f.id,
-        state: f.state,
-        share: f.share,
-        need: f.need,
-        shareUsd: f.shareUsd,
-        needUsd: f.needUsd ?? null,
-      })),
-    };
+    const gateView = shareGateViewOf(view);
     const mode = this.extendWithinDollars();
     const growth = verdict === "park" && mode !== "off" ? poolGrowthOf(gateView, feature) : null;
     const hold = poolGrowthHold(growth, view.budget.cost);
@@ -3360,7 +3343,7 @@ export class InitiativeService {
     runId: string,
     policy: RunPolicy,
     after: RunPolicy,
-    kind: "initiative-growth" | "stage-reserve",
+    kind: "initiative-growth" | "stage-reserve" | "plan-share",
     inputs: Record<string, unknown>,
   ): void {
     const store = this.workflows.store;
@@ -3402,12 +3385,173 @@ export class InitiativeService {
     const links = id ? this.store.links(id) : [];
     if (!id || !links.some((l) => l.run_id === runId)) return null;
     const row = this.store.get(id);
+    return Math.max(0, this.limits(row).maxTotalTokens - this.othersUsedTokens(id, runId));
+  }
+
+  /** What every run of the initiative but `runId` used: the decompose run and every feature run. */
+  private othersUsedTokens(id: string, runId: string): number {
+    const row = this.store.get(id);
     const others = [
       ...(row.decompose_run_id ? [row.decompose_run_id] : []),
-      ...links.map((l) => l.run_id),
+      ...this.store.links(id).map((l) => l.run_id),
     ].filter((other) => other !== runId);
-    const othersUsed = others.reduce((sum, other) => sum + this.usage(other).tokens, 0);
-    return Math.max(0, this.limits(row).maxTotalTokens - othersUsed);
+    return others.reduce((sum, other) => sum + this.usage(other).tokens, 0);
+  }
+
+  /**
+   * The plan-time share gate (#2488), asked by the scheduler when a started feature run's own plan
+   * sizing needs more than its ceiling, before its first task: the initiative answers, not the
+   * model. `planShareDecision` decides whether the pool would grow inside the dollar cap with the
+   * run's ceiling. `extendWithinDollars: shadow` records a `decision.would_extend` of `plan-share`;
+   * `on` grows the pool (a `budget.extended` by `host`, reason `extend-within-dollars`, `gate:
+   * "plan-share"`) and the run's ceiling together and returns true, so the scheduler sizes the plan
+   * again; `off`, or a pool the cap cannot grow, records an `initiative-plan-share` would-stop with
+   * the extend that answers it, and the run goes on under assume as before. Once per run and ceiling.
+   */
+  planShareGate(runId: string): boolean {
+    if (!this.store.available()) return false;
+    const id = this.store.initiativeOfRun(runId);
+    const featureId = id && this.store.links(id).find((l) => l.run_id === runId)?.feature_id;
+    if (!id || !featureId) return false;
+    const store = this.workflows.store;
+    const run = store.run(runId);
+    if (terminalStates.includes(run.status)) return false;
+    const policy = PolicySchema.parse(JSON.parse(run.policy_json));
+    const ceiling = policy.sizing?.maxRunTokens;
+    const plan = plannedRunTokens(store, runId);
+    if (typeof ceiling !== "number" || !plan) return false;
+    const settings = this.store.settings(this.store.get(id));
+    const view = this.view(id);
+    const pool = shareGatePool(shareGateViewOf(view));
+    if (!pool) return false;
+    const used = this.usage(runId).tokens;
+    const charge = view.budget.planCharge;
+    const own = charge?.mode === "enforce" ? charge.runs.find((r) => r.runId === runId) : null;
+    const inputs: PlanShareInputs = {
+      runId,
+      featureId,
+      usedTokens: used,
+      limitTokens: policy.maxTotalTokens,
+      ceilingTokens: ceiling,
+      baseCeilingTokens: settings.basePolicy.sizing?.maxRunTokens ?? null,
+      plan,
+      planRatio: charge?.ratio ?? null,
+      heldTokens: own ? own.chargeTokens : Math.max(used, policy.maxTotalTokens),
+      othersUsedTokens: this.othersUsedTokens(id, runId),
+      pool,
+    };
+    const decision = planShareDecision(inputs);
+    if (!decision.over) return false;
+    const mode = this.extendWithinDollars();
+    const key = `${decision.reason}-${runId}-${ceiling}`;
+    const seen = (type: string) =>
+      this.store.eventsOfType(id, type).some((p) => (p as { key?: string } | null)?.key === key);
+    if (decision.wouldExtend && mode === "on")
+      return this.extendPlanShare(id, featureId, policy, settings.basePolicy, inputs, decision);
+    if (decision.wouldExtend && mode === "shadow") {
+      if (!seen("decision.would_extend"))
+        this.store.emit(id, "decision.would_extend", {
+          reason: decision.reason,
+          mode,
+          featureId,
+          runId,
+          key,
+          toTokens: decision.toTokens,
+          byTokens: decision.byTokens,
+          ceilingTokens: decision.ceilingTokens,
+          needTokens: decision.needTokens,
+          summary: `${decision.why} ${featureId} would run its tasks within its plan.`,
+          inputs,
+        });
+      return false;
+    }
+    const stop = stopMode(settings.basePolicy, "initiative-plan-share");
+    if (stop === "enforce" || seen("decision.would_stop")) return false;
+    // `on` waits for the first accepted feature's dollar forecast, as at a park (#2471).
+    const hold = mode === "on" ? poolGrowthHold(decision.extension, view.budget.cost) : null;
+    this.store.emit(id, "decision.would_stop", {
+      reason: "initiative-plan-share",
+      mode: stop,
+      featureId,
+      runId,
+      key,
+      ...(hold ? { hold } : {}),
+      summary: `${decision.why} ${featureId} would park before its tasks with the extend that answers it; it goes on under assume within its ${ceiling} tokens.${hold ? ` ${FIRST_WAVE_HOLD_TEXT}` : ""}`,
+      remedy: {
+        action: "extend",
+        initiativeId: id,
+        ...(decision.suggestedTokens !== null ? { suggestedTokens: decision.suggestedTokens } : {}),
+        ...(decision.suggestedUsd !== null ? { suggestedUsd: decision.suggestedUsd } : {}),
+      },
+      needTokens: decision.needTokens,
+      inputs,
+    });
+    return false;
+  }
+
+  /**
+   * `extendWithinDollars: on` at the plan-time share gate (#2488): the pool grows to the decision's
+   * `toTokens` as a host `budget.extended` and the run's ceiling to its `ceilingTokens` as a host
+   * policy revision, together, from the pool the decision read. True when both grew.
+   */
+  private extendPlanShare(
+    id: string,
+    featureId: string,
+    policy: RunPolicy,
+    base: RunPolicy,
+    inputs: PlanShareInputs,
+    decision: PlanShareDecision,
+  ): boolean {
+    const row = this.store.get(id);
+    const current = this.limits(row);
+    if (
+      decision.toTokens === null ||
+      decision.ceilingTokens === null ||
+      current.maxTotalTokens !== inputs.pool.limitTokens ||
+      decision.toTokens <= current.maxTotalTokens
+    )
+      return false;
+    const settings = this.store.settings(row);
+    const next = { ...current, maxTotalTokens: decision.toTokens };
+    const hard = extendToOf(base);
+    const sizing = {
+      ...policy.sizing,
+      maxRunTokens: decision.ceilingTokens,
+      ...(policy.sizing?.extendToTokens !== undefined && hard !== null
+        ? {
+            extendToTokens: Math.max(
+              policy.sizing.extendToTokens,
+              Math.min(hard, decision.ceilingTokens),
+            ),
+          }
+        : {}),
+    };
+    const after = PolicySchema.parse({ ...policy, sizing });
+    this.store.transaction(() => {
+      this.store.setSettings(id, { ...settings, budget: next });
+      this.store.emit(id, "budget.extended", {
+        previous: current,
+        next,
+        by: "host",
+        reason: "extend-within-dollars",
+        gate: decision.reason,
+        featureId,
+        runId: inputs.runId,
+        toTokens: decision.toTokens,
+        byTokens: decision.byTokens,
+        ceilingTokens: decision.ceilingTokens,
+        needTokens: decision.needTokens,
+        summary: `${decision.why} ${featureId} runs its tasks within its plan.`,
+        inputs,
+      });
+    });
+    this.writeGrowth(inputs.runId, policy, after, "plan-share", {
+      featureId,
+      ceilingTokens: decision.ceilingTokens,
+      poolTokens: decision.toTokens,
+      why: decision.why,
+    });
+    return true;
   }
 
   /**
@@ -5557,6 +5701,31 @@ export function timeGrowthInputs(
     limitTokens: pool.limitTokens,
     usedTokens: pool.usedTokens,
     cost: { capUsd: cost.capUsd, ceilingUsd: cost.ceilingUsd, forecastUsd: cost.forecastUsd },
+  };
+}
+
+/** What the share gate records of an initiative view (`ShareGateView`). */
+function shareGateViewOf(view: InitiativeView): ShareGateView {
+  return {
+    initiativeId: view.initiativeId,
+    budget: {
+      remaining: view.budget.remaining,
+      cost: view.budget.cost,
+      limits: view.budget.limits,
+      used: view.budget.used,
+      pool: view.budget.pool,
+      ...(view.budget.planCharge ? { planCharge: view.budget.planCharge } : {}),
+      ...(view.budget.time ? { time: view.budget.time } : {}),
+      ...(view.budget.calls ? { calls: view.budget.calls } : {}),
+    },
+    features: view.features.map((f) => ({
+      id: f.id,
+      state: f.state,
+      share: f.share,
+      need: f.need,
+      shareUsd: f.shareUsd,
+      needUsd: f.needUsd ?? null,
+    })),
   };
 }
 

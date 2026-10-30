@@ -156,12 +156,16 @@ import {
   planChargedGate,
   poolGrowthOf,
   type ShareGateRecord,
+  shareGatePool,
   shareShortfall,
   shareSpareUsd,
   timeGrowthInputs,
   timeShortfall,
 } from "./initiatives/service.js";
 import {
+  type PlanShareDecision,
+  type PlanShareInputs,
+  planShareDecision,
   type TimePoolExtension,
   type TimePoolGrowthInputs,
   type TokenPoolView,
@@ -175,7 +179,7 @@ import {
   misquoteFixDecision,
 } from "./misquote-fix.js";
 import { recordingOf } from "./model-recording.js";
-import { type PlanCostRate, planCostOf } from "./plan-cost.js";
+import { type PlanCostRate, planCostOf, plannedRunTokens } from "./plan-cost.js";
 import {
   REPEAT_KIND,
   REPEAT_TASKS_DIR,
@@ -3103,6 +3107,10 @@ export interface InitiativeReplay {
   poolBounds: PoolBoundBoundary[];
   /** Runs it would record a would-stop for that the recording has none of. */
   newPoolBoundStops: number;
+  /** Feature runs whose own plan needed more than their ceiling, the plan-time share gate decided again (#2488). */
+  planShare: PlanShareBoundary[];
+  /** Runs the current plan-time share gate decides differently from their record. */
+  newPlanShare: number;
   starts: InitiativeStartBoundary[];
   /** Features the recording started that the current gate parks on recomputed inputs. */
   newStartStops: number;
@@ -3222,6 +3230,158 @@ export function replayPoolGrowth(
     poolGrowth,
     newPoolGrowth: poolGrowth.filter((b) => b.replayed !== b.recorded).length,
   }));
+}
+
+/**
+ * One plan-time share gate decided again (#2488): a feature run whose own plan sizing needed more
+ * than its ceiling. `recorded` is what the run's record says (`extend` for a host extension or a
+ * would-extend, `hold` for a would-stop, `none` before #2488 recorded the gate); `replayed` is
+ * what `rule` decides on the same inputs.
+ */
+export interface PlanShareBoundary {
+  featureId: string;
+  runId: string;
+  recorded: "extend" | "hold" | "none";
+  replayed: "extend" | "hold" | "none";
+  needTokens: number;
+  ceilingTokens: number;
+  /** The pool and the run's ceiling it would grow to; null when it would not. */
+  toTokens: number | null;
+  toCeilingTokens: number | null;
+  suggestedTokens: number | null;
+}
+
+/**
+ * Every plan-time share gate of the trace's initiatives decided again by `rule`
+ * (`planShareDecision`, #2488). A run with a recorded gate replays its `inputs`. A run before
+ * #2488 whose latest plan sizing went on above its ceiling (`split-feature`) is decided on the
+ * share gate its feature passed to start (the pool, the dollars and the waiting features, its own
+ * feature taken out of them), its plan (`plannedRunTokens`) and the ceiling the sizing read; what
+ * the other runs used is the pool's used tokens at that gate. R80 deltaglue's cli replays as an
+ * extension inside the $30 cap.
+ */
+export function replayPlanShare(
+  store: WorkflowStore,
+  rule: (inputs: PlanShareInputs) => PlanShareDecision = planShareDecision,
+): { initiativeId: string; planShare: PlanShareBoundary[]; newPlanShare: number }[] {
+  const db = store.connection;
+  const events = db
+    .query(
+      "SELECT initiative_id, seq, type, payload_json FROM initiative_events WHERE type IN ('feature.share_gate', 'feature.run_linked', 'decision.would_extend', 'decision.would_stop', 'budget.extended') ORDER BY initiative_id, seq",
+    )
+    .all() as { initiative_id: string; seq: number; type: string; payload_json: string }[];
+  const byInitiative = new Map<string, PlanShareBoundary[]>();
+  const gates = new Map<string, ShareGateRecord>();
+  const recorded = new Map<string, { kind: "extend" | "hold"; inputs: PlanShareInputs }>();
+  const starts: {
+    initiativeId: string;
+    featureId: string;
+    runId: string;
+    gate: ShareGateRecord | null;
+  }[] = [];
+  for (const row of events) {
+    const payload = JSON.parse(row.payload_json) as Record<string, unknown>;
+    if (row.type === "feature.share_gate") {
+      const record = payload as unknown as ShareGateRecord;
+      if (record.verdict === "pass") gates.set(`${row.initiative_id}:${record.featureId}`, record);
+      continue;
+    }
+    if (row.type === "feature.run_linked") {
+      const featureId = String(payload.featureId);
+      starts.push({
+        initiativeId: row.initiative_id,
+        featureId,
+        runId: String(payload.runId),
+        gate: gates.get(`${row.initiative_id}:${featureId}`) ?? null,
+      });
+      continue;
+    }
+    const planShare =
+      (row.type === "decision.would_extend" && payload.reason === "plan-share") ||
+      (row.type === "decision.would_stop" && payload.reason === "initiative-plan-share") ||
+      (row.type === "budget.extended" && payload.gate === "plan-share");
+    if (planShare && payload.inputs && typeof payload.runId === "string")
+      recorded.set(payload.runId, {
+        kind: row.type === "decision.would_stop" ? "hold" : "extend",
+        inputs: payload.inputs as PlanShareInputs,
+      });
+  }
+  const settings = (id: string): RunPolicy["sizing"] => {
+    const row = db.query("SELECT settings_json FROM initiatives WHERE id=?").get(id) as {
+      settings_json: string;
+    } | null;
+    return row
+      ? (JSON.parse(row.settings_json) as { basePolicy?: RunPolicy }).basePolicy?.sizing
+      : undefined;
+  };
+  for (const start of starts) {
+    const own = recorded.get(start.runId);
+    const inputs = own?.inputs ?? earlierPlanShare(store, start, settings(start.initiativeId));
+    if (!inputs) continue;
+    const decision = rule(inputs);
+    const boundaries = byInitiative.get(start.initiativeId) ?? [];
+    boundaries.push({
+      featureId: start.featureId,
+      runId: start.runId,
+      recorded: own?.kind ?? "none",
+      replayed: !decision.over ? "none" : decision.wouldExtend ? "extend" : "hold",
+      needTokens: decision.needTokens,
+      ceilingTokens: inputs.ceilingTokens,
+      toTokens: decision.toTokens,
+      toCeilingTokens: decision.ceilingTokens,
+      suggestedTokens: decision.suggestedTokens,
+    });
+    byInitiative.set(start.initiativeId, boundaries);
+  }
+  return [...byInitiative].map(([initiativeId, planShare]) => ({
+    initiativeId,
+    planShare,
+    // Runs the current rule decides differently from their record; one before #2488 counts when
+    // the rule would act on it.
+    newPlanShare: planShare.filter((b) => b.replayed !== b.recorded).length,
+  }));
+}
+
+/**
+ * The plan-time share gate's inputs for a run recorded before #2488, or null when its latest plan
+ * sizing fits its ceiling or its feature's start gate holds no pool (see `replayPlanShare`).
+ */
+function earlierPlanShare(
+  store: WorkflowStore,
+  start: { featureId: string; runId: string; gate: ShareGateRecord | null },
+  base: RunPolicy["sizing"],
+): PlanShareInputs | null {
+  if (!start.gate) return null;
+  const latest = store
+    .artifacts(start.runId)
+    .filter((a) => a.kind === "sizing" && a.logical_path.startsWith("sizing/plan-"))
+    .at(-1);
+  if (!latest) return null;
+  const report = JSON.parse(store.readArtifact(start.runId, latest.id)) as {
+    decision?: string;
+    maxRunTokens?: number | null;
+    budgetBefore?: number;
+  };
+  const plan = plannedRunTokens(store, start.runId);
+  if (report.decision !== "split-feature" || typeof report.maxRunTokens !== "number" || !plan)
+    return null;
+  const view = start.gate.view;
+  const pool = shareGatePool(view);
+  if (!pool) return null;
+  return {
+    runId: start.runId,
+    featureId: start.featureId,
+    usedTokens: 0,
+    limitTokens: report.budgetBefore ?? report.maxRunTokens,
+    ceilingTokens: report.maxRunTokens,
+    baseCeilingTokens: base?.maxRunTokens ?? null,
+    plan,
+    planRatio: view.budget.planCharge?.ratio ?? null,
+    // The gate counted no run of the feature yet: its whole need joins the waiting features.
+    heldTokens: 0,
+    othersUsedTokens: pool.usedTokens,
+    pool: { ...pool, waiting: pool.waiting.filter((f) => f.id !== start.featureId) },
+  };
 }
 
 /** One share gate whose recorded shared time the time-pool growth decides again (#2346). */
@@ -3527,6 +3687,8 @@ export function replayInitiativeStarts(
   | "newPoolGrowth"
   | "poolBounds"
   | "newPoolBoundStops"
+  | "planShare"
+  | "newPlanShare"
 >[] {
   const gate = options.gate ?? shareShortfall;
   const historyTrace = options.historyTrace ?? corpusHistoryTrace(dirname(dirname(path)));
@@ -3630,6 +3792,8 @@ function replayStarts(
   | "newPoolGrowth"
   | "poolBounds"
   | "newPoolBoundStops"
+  | "planShare"
+  | "newPlanShare"
 > {
   const { store, workspace, dispose } = openTrace(path);
   const histories = new Map<string, ReturnType<typeof openTrace>>();
@@ -4744,6 +4908,8 @@ export function replayTrace(
     ).map((r) => r.id);
     // Growth bounds are read before the forecast replay rewinds each run's policy revisions.
     const bounds = replayPoolBounds(store);
+    // Plan sizings are read before the forecast replay rewinds each run's artifacts (#2488).
+    const plans = replayPlanShare(store);
     // Call timings are read before the forecast replay rewinds each run's attempts.
     const timings = replayFirstBytes(
       store,
@@ -5036,6 +5202,8 @@ export function replayTrace(
         poolBounds: bounds.find((i) => i.initiativeId === initiativeId)?.poolBounds ?? [],
         newPoolBoundStops:
           bounds.find((i) => i.initiativeId === initiativeId)?.newPoolBoundStops ?? 0,
+        planShare: plans.find((i) => i.initiativeId === initiativeId)?.planShare ?? [],
+        newPlanShare: plans.find((i) => i.initiativeId === initiativeId)?.newPlanShare ?? 0,
         starts: [],
         newStartStops: 0,
         finalUsd: null,

@@ -278,6 +278,7 @@ export class NativeWorkflowService implements WorkflowService {
     this.scheduler.growLimits = (runId) => this.growLimits?.(runId);
     this.store.reserveStages = (runId, requestedUsd) => this.reserveStages?.(runId, requestedUsd);
     this.store.tokenHold = (runId) => this.tokenHold?.(runId) ?? null;
+    this.store.planShareGate = (runId) => this.planShareGate?.(runId) ?? false;
   }
   /**
    * Raises a run's host-derived limits before its deadline stops it: an initiative's feature run
@@ -313,6 +314,16 @@ export class NativeWorkflowService implements WorkflowService {
     if (this.store.readonly) return null;
     this.initiatives ??= new InitiativeService(this);
     return this.initiatives.tokenHold(runId);
+  };
+  /**
+   * The plan-time share gate (#2488): a started initiative feature run whose plan needs more than
+   * its ceiling asks its initiative before its first task. Held by the service for the same
+   * reason as `growLimits`. A read-only store grows nothing.
+   */
+  planShareGate: ((runId: string) => boolean) | undefined = (runId) => {
+    if (this.store.readonly) return false;
+    this.initiatives ??= new InitiativeService(this);
+    return this.initiatives.planShareGate(runId);
   };
   private initiatives: InitiativeService | null = null;
   private enabled(): void {

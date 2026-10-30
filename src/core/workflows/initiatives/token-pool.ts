@@ -71,6 +71,17 @@ export const HOST_POOL_GROWTHS = {
     modes: EXTEND_WITHIN_DOLLARS_MODES,
     defaultMode: DEFAULT_EXTEND_WITHIN_DOLLARS,
   },
+  "plan-share": {
+    label:
+      "A started feature run's own sized plan needs more than its share of the initiative's token pool, before its first task",
+    grows:
+      "the shared token pool (--budget-tokens) and the feature run's token ceiling (sizing.maxRunTokens)",
+    boundBy:
+      "the dollar cap (--budget-usd) with its tolerance for the pool, and the grown pool less the other runs' use for the run (#2468)",
+    // The same opt-in as the share gate's extension: `on` acts at plan time too (#2488).
+    modes: EXTEND_WITHIN_DOLLARS_MODES,
+    defaultMode: DEFAULT_EXTEND_WITHIN_DOLLARS,
+  },
   "stage-reserve": {
     label:
       "A feature run that finished its tasks would stop on its cost ceiling before its review and convergence",
@@ -669,5 +680,120 @@ export function timePoolExtensionDecision(inputs: TimePoolGrowthInputs): TimePoo
     toMs,
     byMs: toMs - inputs.limitMs,
     why: `The time forecast ${min(inputs.forecastMs)} min passes the shared ${min(inputs.limitMs)} min while the ${tokenText(inputs.limitTokens)} token pool runs about ${min(capMs)} min at the pace${cost.capUsd !== null && cost.forecastUsd !== null ? ` and the dollar forecast ${usd(cost.forecastUsd)} is within the ${usd(cost.ceilingUsd ?? cost.capUsd)} ceiling` : ""}: the shared time would grow from ${min(inputs.limitMs)} to ${min(toMs)} min.`,
+  };
+}
+
+/**
+ * What the plan-time share gate reads (#2488): an initiative's feature run whose own plan sizing
+ * (`plannedRunTokens`) needs more than the run's ceiling, the run's tokens, and the pool beside it.
+ */
+export interface PlanShareInputs {
+  runId: string;
+  featureId: string;
+  /** The run's tokens used, its token limit and its sizing ceiling (`sizing.maxRunTokens`). */
+  usedTokens: number;
+  limitTokens: number;
+  ceilingTokens: number;
+  /** The base policy's per-run ceiling, which the run's ceiling never passes; null without one. */
+  baseCeilingTokens: number | null;
+  /** The run's latest plan sizing and the initiative's measured plan-to-actual ratio (#2043). */
+  plan: PlannedRun;
+  planRatio: number | null;
+  /** What the pool counts the run at now: its plan charge when enforced, else max(used, limit). */
+  heldTokens: number;
+  /** What every other run of the initiative used: the pool hold reads it (#2468). */
+  othersUsedTokens: number;
+  /** The token pool and the dollars as the share gate reads them (`shareGatePool`). */
+  pool: PoolInputs;
+}
+
+/** The plan-time share gate's decision (#2488). */
+export interface PlanShareDecision {
+  reason: "plan-share";
+  /** The plan's need as the pool charges it (`planChargeTokens`, on `ownPlanNeed`). */
+  needTokens: number;
+  /**
+   * True when the need is above the run's ceiling, the initiative could raise that ceiling (the
+   * base policy's ceiling is above it) and the pool does not cover the need beside the waiting
+   * features' high estimates: the run would stop on its share in the middle of its tasks.
+   */
+  over: boolean;
+  /** The pool's extension inside the dollar cap with the run's need beside the waiting features. */
+  extension: PoolExtension;
+  wouldExtend: boolean;
+  /** The pool after the extension and by how much; null when it would not extend. */
+  toTokens: number | null;
+  byTokens: number | null;
+  /** The run's ceiling after the extension, held to the grown pool less the others' use; null without one. */
+  ceilingTokens: number | null;
+  /** What an extend remedy names (`affordableTokens`): the pool, and the dollar cap it needs. */
+  suggestedTokens: number | null;
+  suggestedUsd: number | null;
+  why: string;
+}
+
+/**
+ * The plan-time share gate (#2488): a started feature run whose own plan needs more than its
+ * ceiling asks the initiative, not the model, before its first task. The run's need beyond what
+ * the pool already counts for it joins the waiting features, and the pool's extension is the
+ * share gate's own (`poolExtensionDecision`): a dollar cap, a measured dollar forecast within its
+ * ceiling, the tokens the cap pays for, every waiting low still covered. With it the run's
+ * ceiling grows to its need, held to the base policy's ceiling and to the grown pool less what
+ * the other runs used (`tokenHold`, #2468). R80 deltaglue's cli sized 17.46M against its 3.38M
+ * start share, went on under assume and stopped `budget_exhausted` with 17 of 24 tasks left
+ * while the $30 cap paid for about 24M.
+ */
+export function planShareDecision(inputs: PlanShareInputs): PlanShareDecision {
+  const reason = "plan-share" as const;
+  const needTokens = planChargeTokens(
+    inputs.usedTokens,
+    inputs.plan,
+    inputs.planRatio,
+    inputs.limitTokens,
+  );
+  const target = Math.min(inputs.baseCeilingTokens ?? Number.POSITIVE_INFINITY, needTokens);
+  const extra = Math.max(0, needTokens - inputs.heldTokens);
+  const pool: PoolInputs = {
+    ...inputs.pool,
+    waiting:
+      extra > 0
+        ? [...inputs.pool.waiting, { id: inputs.featureId, low: extra, high: extra }]
+        : inputs.pool.waiting,
+  };
+  const view = tokenPool(pool);
+  const extension = poolExtensionDecision(pool, view);
+  const remedy = affordableTokens(view, pool);
+  const over = target > inputs.ceilingTokens && remedy !== null;
+  const base = {
+    reason,
+    needTokens,
+    over,
+    extension,
+    suggestedTokens: remedy?.tokens ?? null,
+    suggestedUsd: remedy?.usd ?? null,
+  };
+  const no = (why: string): PlanShareDecision => ({
+    ...base,
+    wouldExtend: false,
+    toTokens: null,
+    byTokens: null,
+    ceilingTokens: null,
+    why,
+  });
+  const plan = `${inputs.featureId}'s plan needs about ${tokenText(needTokens)} tokens, above its ${tokenText(inputs.ceilingTokens)} ceiling`;
+  if (!over) return no(`${plan}: nothing the initiative's pool would change.`);
+  if (!extension.wouldExtend || extension.toTokens === null) return no(`${plan}. ${extension.why}`);
+  const ceilingTokens = Math.min(target, extension.toTokens - inputs.othersUsedTokens);
+  if (ceilingTokens <= inputs.ceilingTokens)
+    return no(
+      `${plan}. The grown pool of ${tokenText(extension.toTokens)} less the ${tokenText(inputs.othersUsedTokens)} the other runs used leaves the run no more room.`,
+    );
+  return {
+    ...base,
+    wouldExtend: true,
+    toTokens: extension.toTokens,
+    byTokens: extension.byTokens,
+    ceilingTokens,
+    why: `${plan}. ${extension.why} The run's ceiling would grow from ${tokenText(inputs.ceilingTokens)} to ${tokenText(ceilingTokens)} before its first task.`,
   };
 }

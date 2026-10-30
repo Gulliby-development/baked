@@ -33,7 +33,8 @@ export interface Mix {
 class ScriptedExecutor extends FixtureExecutor {
   store!: WorkflowStore;
   /** `featureUsd` by feature name (`f1`, `f2`, ...) spends a different amount per feature. */
-  constructor(root: string, private featureUsd: number | Record<string, number>, private skeleton = false, private mix: Mix = {}) { super(root); }
+  /** `tasks` by feature name plans that many tasks for it, each writing its own file (#2488). */
+  constructor(root: string, private featureUsd: number | Record<string, number>, private skeleton = false, private mix: Mix = {}, private tasks: Record<string, number> = {}) { super(root); }
   override async execute(request: ExecutionRequest) {
     const [documents, attempt] = request.prompt.split("\n").slice(-2);
     const data = { ...JSON.parse(documents ?? "{}"), ...JSON.parse(attempt ?? "{}") } as {
@@ -53,9 +54,12 @@ class ScriptedExecutor extends FixtureExecutor {
         const markdown = `# Plan\n## Context\nCreate ${path}.\n## Decisions\nDEC-001: FR-001 needs ready.\n## Components\n${path}\n## Data\nText\n## Verification\nCheck ready\n## Risks\nNone for fixture`;
         const writes = data.extra.hostFiles?.files.map((f) => ({ path: f.path, action: "create" })) ??
           [{ path, action: existsSync(join(request.root, path)) ? "modify" : "create" }];
+        const count = this.tasks[name] ?? 1;
+        const task = (k: number) => ({ id: `T${String(k + 1).padStart(3, "0")}`, title: "Write the value", description: "Write ready", requirementIds: ["FR-001"], criterionIds: ["AC-001"], dependsOn: [], profileId: "implementer",
+          writes: k ? [{ path: `${name}-${k + 1}.txt`, action: existsSync(join(request.root, `${name}-${k + 1}.txt`)) ? "modify" : "create" }] : writes, readHints: [], checkIds: [], origin: "planned", findingIds: [], rationale: "Required behavior" });
         result.output = { schemaVersion: 1, markdown, taskGraph: {
           schemaVersion: 1, featureId: spec.featureId, revision: 1, specHash: hashJson(spec), planHash: hashBytes(markdown),
-          tasks: [{ id: "T001", title: "Write the value", description: "Write ready", requirementIds: ["FR-001"], criterionIds: ["AC-001"], dependsOn: [], profileId: "implementer", writes, readHints: [], checkIds: [], origin: "planned", findingIds: [], rationale: "Required behavior" }],
+          tasks: Array.from({ length: count }, (_, k) => task(k)),
         } };
         break;
       }
@@ -100,10 +104,10 @@ export async function historyFixture(featureUsd: number, mix: Mix = {}) {
 
 export async function plannedForecastScenario(
   count: number, firstUsd: number | Record<string, number>, histories: string[],
-  options: { forecastStop?: boolean; stopModes?: RunPolicy["stopModes"]; mix?: Mix; skeleton?: boolean; capUsd?: number | null; maxTotalTokens?: number; extendWithinDollars?: "off" | "shadow" | "on"; costTolerance?: number | "off"; approve?: boolean; globPaths?: boolean } = {},
+  options: { forecastStop?: boolean; stopModes?: RunPolicy["stopModes"]; mix?: Mix; skeleton?: boolean; capUsd?: number | null; maxTotalTokens?: number; extendWithinDollars?: "off" | "shadow" | "on"; costTolerance?: number | "off"; approve?: boolean; globPaths?: boolean; tasks?: Record<string, number> } = {},
 ) {
   const skeleton = options.skeleton ?? true;
-  const fixture = workflowFixture({ executor: (root) => new ScriptedExecutor(root, firstUsd, skeleton, options.mix) });
+  const fixture = workflowFixture({ executor: (root) => new ScriptedExecutor(root, firstUsd, skeleton, options.mix, options.tasks) });
   fixture.executor.store = fixture.service.store;
   if (options.extendWithinDollars) fixture.config.workflows = { ...fixture.config.workflows, extendWithinDollars: options.extendWithinDollars };
   const initiatives = new InitiativeService(fixture.service);
