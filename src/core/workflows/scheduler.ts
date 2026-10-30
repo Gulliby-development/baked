@@ -2975,7 +2975,11 @@ export class WorkflowScheduler {
                     ? mergeSmallSiblings(plan, { byDependents: policy.criticalPath === "split" })
                         .plan
                     : plan;
-                return testOwnershipProblems(proposed);
+                // A row file with a later feature's row goes back only when enforced (#2487).
+                return testOwnershipProblems(proposed, {
+                  request: state.requestText || state.prompt,
+                  mode: stopMode(policy, "initiative-row-owner"),
+                });
               };
               const plan = InitiativePlanSchema.parse(
                 await this.call(

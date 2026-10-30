@@ -144,7 +144,7 @@ const SHAPE_WORDS = /^[A-Z]{2,}(?:[x\u00d7:,/-][A-Z]{2,})+$/;
  * `Msg`, "8 `Test` functions", the token shape `PARTxCOUNT`). A single capitalised word is a case
  * only where the criterion quotes it as a value ("prints `Usage`").
  */
-function literalCase(literal: string, code = false, value = false): boolean {
+export function literalCase(literal: string, code = false, value = false): boolean {
   const concrete = literal.replace(PLACEHOLDER, "");
   if (concrete.replace(/[^\p{L}\p{N}_]/gu, "").length < 2) return false;
   const trimmed = concrete.trim();

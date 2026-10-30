@@ -33,7 +33,7 @@ describe("stop reasons", () => {
   test("hard limits take only enforce; the forecasts and the approval scope take every mode", () => {
     for (const [id, reason] of Object.entries(STOP_REASONS)) {
       expect(reason.modes).toContain(reason.defaultMode);
-      if (!["cost-forecast", "approval-scope", "initiative-forecast", "initiative-dollar-share", "initiative-dollar-cap", "initiative-plan-charge", "initiative-pool-growth", "initiative-time-share", "repeated_failure", "corrective_scope", "corrective_unowned_file", "repeat_without_change", "corrective_restores_removed", "generated_case", "edge_crash_finding", "repro_blind", "upstream_symbol", "baseline_unrepairable", "baseline_signature", "check-config-approval", "ci_check_drift", "host_content_conflict", "fixer_unusable", "worktree_environment", "supplied_drift", "committed_tree", "host-resume-on-stored-limit", "cost_refusal_wait", "upstream_baseline_debt", "written_tests_unselected", "test_cap", "silent_check_failure", "host-settle-interrupted-check", "attempt_green_checkpoint"].includes(id))
+      if (!["cost-forecast", "approval-scope", "initiative-forecast", "initiative-dollar-share", "initiative-dollar-cap", "initiative-plan-charge", "initiative-pool-growth", "initiative-time-share", "initiative-row-owner", "repeated_failure", "corrective_scope", "corrective_unowned_file", "repeat_without_change", "corrective_restores_removed", "generated_case", "edge_crash_finding", "repro_blind", "upstream_symbol", "baseline_unrepairable", "baseline_signature", "check-config-approval", "ci_check_drift", "host_content_conflict", "fixer_unusable", "worktree_environment", "supplied_drift", "committed_tree", "host-resume-on-stored-limit", "cost_refusal_wait", "upstream_baseline_debt", "written_tests_unselected", "test_cap", "silent_check_failure", "host-settle-interrupted-check", "attempt_green_checkpoint"].includes(id))
         expect(reason.modes).toEqual(["enforce"]);
     }
     expect(STOP_REASONS["cost-forecast"].modes).toEqual(STOP_MODES);
@@ -55,6 +55,9 @@ describe("stop reasons", () => {
     // Shadow until its promotion (#2363): a written-tests filter that selects none of the declared classes.
     expect(STOP_REASONS.written_tests_unselected.modes).toEqual(["shadow", "advisory"]);
     expect(STOP_REASONS.written_tests_unselected.defaultMode).toBe("shadow");
+    // Shadow by default (#2487): a policy may enforce the split's prescribed row file ownership.
+    expect(STOP_REASONS["initiative-row-owner"].modes).toEqual(STOP_MODES);
+    expect(STOP_REASONS["initiative-row-owner"].defaultMode).toBe("shadow");
     // Shadow by default (#2418): a policy may enforce the host's one re-run of a silent check failure.
     expect(STOP_REASONS.silent_check_failure.modes).toEqual(STOP_MODES);
     expect(STOP_REASONS.silent_check_failure.defaultMode).toBe("shadow");
