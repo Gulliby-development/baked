@@ -1,6 +1,7 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import fc from "fast-check";
 import { canonical } from "../src/core/specs/hash.js";
+import { growBudgetOnProgress } from "../src/core/workflows/budget.js";
 import { type CostForecast, costForecast, kindRatio } from "../src/core/workflows/cost-forecast.js";
 import { POOL_STEP, planCharge, planChargeTokens, poolExtensionDecision, poolForecast, timePoolExtensionDecision, tokenPool } from "../src/core/workflows/initiatives/token-pool.js";
 import { chargeHold, poolBoundDecision, refreshedGrowth, stageReserveDecision } from "../src/core/workflows/initiatives/growth.js";
@@ -754,6 +755,52 @@ describe("charge growth invariants (#2280)", () => {
       if (s.othersTokens + s.boundTokens > s.limitTokens) expect(decision.wouldStop).toBe(true);
       if (s.othersUsd + s.boundUsd > s.ceilingUsd + 0.006) expect(decision.wouldStop).toBe(true);
     }), { numRuns: 300 });
+  });
+});
+
+describe("initiative token pool hold invariants (#2468)", () => {
+  const seed = fc.record({
+    poolTokens: fc.integer({ min: 1_000_000, max: 40_000_000 }),
+    othersUsed: fc.integer({ min: 0, max: 40_000_000 }),
+    ceiling: fc.integer({ min: 500_000, max: 20_000_000 }),
+    extendFactor: fc.double({ min: 1, max: 4, noNaN: true }),
+    startShare: fc.double({ min: 0.1, max: 1, noNaN: true }),
+    calls: fc.array(fc.integer({ min: 1, max: 5_000_000 }), { minLength: 1, maxLength: 6 }),
+  });
+
+  // The pool is a hard limit the person set: the host's own growth (auto-growth, planning growth,
+  // auto-extend) never takes a feature run's limit past what the pool leaves after the other runs,
+  // so the initiative's tokens never exceed the pool. A limit already past it does not move down.
+  test("initiative tokens never exceed the pool: a host growth stays under the pool less the others' use", async () => {
+    const store = fixture.service.store;
+    const installed = store.tokenHold;
+    try {
+      await fc.assert(
+        fc.asyncProperty(seed, async (s) => {
+          const { runId } = await fixture.start();
+          const hold = Math.max(0, s.poolTokens - s.othersUsed);
+          store.tokenHold = (id) => (id === runId ? hold : null);
+          store.transaction(() => store.transition(runId, "running"));
+          const start = Math.max(1, Math.floor(s.ceiling * s.startShare));
+          const policy: RunPolicy = { ...fixturePolicy, clarification: "assume", maxAgentCalls: 1000, maxTotalTokens: start, maxCostUsd: null, sizing: { maxRunTokens: s.ceiling, extendToTokens: Math.ceil(s.ceiling * s.extendFactor) } };
+          store.setPolicy(runId, policy);
+          const tasks = s.calls.map((_, i) => task(taskId(i)));
+          store.transaction(() => store.syncTasks(runId, { schemaVersion: 1, featureId: "fixture", revision: 1, specHash: "a".repeat(64), planHash: "b".repeat(64), tasks }));
+          const bound = Math.max(start, s.poolTokens - s.othersUsed);
+          for (const [i, over] of s.calls.entries()) {
+            store.transaction(() => store.taskStatus(runId, taskId(i), "implemented"));
+            growBudgetOnProgress(store, runId, policy, policy.maxTotalTokens + over);
+            const stored = (JSON.parse(store.run(runId).policy_json) as RunPolicy).maxTotalTokens;
+            expect(policy.maxTotalTokens).toBeLessThanOrEqual(bound);
+            expect(stored).toBeLessThanOrEqual(bound);
+            if (hold >= start) expect(s.othersUsed + stored).toBeLessThanOrEqual(s.poolTokens);
+          }
+        }),
+        { numRuns: RUNS },
+      );
+    } finally {
+      store.tokenHold = installed;
+    }
   });
 });
 

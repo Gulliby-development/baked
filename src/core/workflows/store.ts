@@ -1856,6 +1856,13 @@ export class WorkflowStore {
    */
   reserveStages: ((runId: string, requestedUsd: number) => void) | undefined;
   /**
+   * The most tokens a run's limit may reach by the host's own growth (`growBudgetOnProgress`,
+   * `raiseToStartEstimate`): for an initiative's feature run, its pool less what the other runs
+   * used (`InitiativeService.tokenHold`, #2468); null for a run of no initiative. Installed by
+   * `NativeWorkflowService` like `reserveStages`; unset elsewhere.
+   */
+  tokenHold: ((runId: string) => number | null) | undefined;
+  /**
    * What the run's open attempts reserve in dollars (`costUsage`), for a run with a cost cap and
    * a reservation: `canExtendRun` measures spent plus reserved against the cap, as the service does.
    */

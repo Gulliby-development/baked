@@ -1595,7 +1595,7 @@ export const FEATURES: readonly Feature[] = [
     id: "initiative-budget-reserves",
     group: "Initiatives",
     title:
-      "Feature token shares and dollar growth protect low estimates; split approval warns on underfunded shares, states the expected total and names the pool the dollar cap pays for; shadow dollar-cap park; a shadow would-stop when the shared time left is below a starting feature's low at the measured pace; a started run's review and convergence reserved before waiting lows (shadow, workflows.stageReserve); a run's bounds start from its plan charge only as far as the pool and the ceiling hold it, and a bound above them is recorded (shadow, initiative-pool-growth)",
+      "Feature token shares and dollar growth protect low estimates; split approval warns on underfunded shares, states the expected total and names the pool the dollar cap pays for; shadow dollar-cap park; a shadow would-stop when the shared time left is below a starting feature's low at the measured pace; a started run's review and convergence reserved before waiting lows (shadow, workflows.stageReserve); a run's bounds start from its plan charge only as far as the pool and the ceiling hold it, and a bound above them is recorded (shadow, initiative-pool-growth); a feature run's own token growth (auto-growth, auto-extend) stays under the pool less the other runs' use",
     tui: ["/workflow: initiatives, split approval warning and B to extend budget"],
     cli: [
       "baked workflow initiative show",

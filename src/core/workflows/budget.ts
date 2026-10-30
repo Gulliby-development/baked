@@ -436,8 +436,10 @@ export function growCostCapToForecast(
  * Called when a model call would pass the token budget. A run whose policy declares a ceiling
  * (`sizing.maxRunTokens`) grows its budget toward it, instead of stopping for an operator, while
  * it is making progress: at least one task is implemented or verified. The new budget covers the
- * call and is at least half again the old one, never above the ceiling; the growth is recorded as
- * a policy revision. Returns whether `policy.maxTotalTokens` now covers `projected`.
+ * call and is at least half again the old one, never above the ceiling nor, for an initiative's
+ * feature run, above what its pool leaves after the other runs (`WorkflowStore.tokenHold`, #2468);
+ * the growth is recorded as a policy revision. Returns whether `policy.maxTotalTokens` now covers
+ * `projected`.
  */
 export function growBudgetOnProgress(
   store: WorkflowStore,
@@ -450,25 +452,39 @@ export function growBudgetOnProgress(
   // Another worker of this run may have grown the stored budget already.
   adoptStoredLimits(store, runId, policy);
   if (projected <= policy.maxTotalTokens) return true;
-  if (policy.maxTotalTokens >= ceiling) return extendUnderAssume(store, runId, policy, projected);
+  const hold = store.tokenHold?.(runId) ?? null;
+  if (policy.maxTotalTokens >= ceiling)
+    return extendUnderAssume(store, runId, policy, projected, hold);
   const finished = store
     .tasks(runId)
     .filter((t) => t.status === "implemented" || t.status === "verified").length;
-  if (finished === 0) return growWhilePlanning(store, runId, policy, projected, ceiling);
+  if (finished === 0) return growWhilePlanning(store, runId, policy, projected, ceiling, hold);
   const next = Math.min(
     ceiling,
+    hold ?? Number.POSITIVE_INFINITY,
     Math.max(projected, Math.ceil(policy.maxTotalTokens * (1 + GROWTH_STEP))),
   );
   if (next <= policy.maxTotalTokens) return false;
   recordGrowth(store, runId, policy, next, "auto-growth", {
     projectedTokens: projected,
     finishedTasks: finished,
+    ...heldBy(hold),
   });
   if (projected <= policy.maxTotalTokens) return true;
   // A call that reaches the ceiling from below and still falls short extends past it now, under
   // the same rules: md-site eaeb51d6 grew to 6,000,000 for an attempt that needed 6,039,774 and
   // stopped `budget_exhausted` with the 9,000,000 hard limit unused (#1187).
-  return policy.maxTotalTokens >= ceiling && extendUnderAssume(store, runId, policy, projected);
+  return (
+    policy.maxTotalTokens >= ceiling && extendUnderAssume(store, runId, policy, projected, hold)
+  );
+}
+
+/**
+ * The pool hold a host growth of an initiative's feature run stayed under (`WorkflowStore.tokenHold`,
+ * #2468), as the revision records it; nothing for a run of no initiative.
+ */
+function heldBy(hold: number | null): { poolHoldTokens?: number } {
+  return hold === null ? {} : { poolHoldTokens: hold };
 }
 
 /**
@@ -488,6 +504,7 @@ function growWhilePlanning(
   policy: RunPolicy,
   projected: number,
   ceiling: number,
+  hold: number | null,
 ): boolean {
   const completedAttempts = store
     .attempts(runId)
@@ -509,12 +526,14 @@ function growWhilePlanning(
   if (completedAttempts <= (last?.completedAttempts ?? 0)) return false;
   const next = Math.min(
     ceiling,
+    hold ?? Number.POSITIVE_INFINITY,
     Math.max(projected, Math.ceil(policy.maxTotalTokens * (1 + GROWTH_STEP))),
   );
   if (next <= policy.maxTotalTokens) return false;
   recordGrowth(store, runId, policy, next, "planning-growth", {
     projectedTokens: projected,
     completedAttempts,
+    ...heldBy(hold),
   });
   return projected <= policy.maxTotalTokens;
 }
@@ -577,18 +596,27 @@ function affordableTokens(store: WorkflowStore, runId: string, policy: RunPolicy
  * still pays for (`affordableTokens`): the cap then stops the run, as a cost stop. Each extension
  * covers the call and adds at least a quarter of the ceiling, about one review round, and is
  * recorded as `kind: "auto-extend"`. junitdigest 3e5be74b stopped twice at the ceiling and was
- * cleared both times by an operator `extend` with no other choice to make (#747).
+ * cleared both times by an operator `extend` with no other choice to make (#747). An initiative's
+ * feature run grows no further than its pool leaves after the other runs (`hold`, from
+ * `WorkflowStore.tokenHold`): R79 deltaglue's chunks extended to 12.0M on a $25.51 bound that paid
+ * for 35.8M while the other features had used 1.86M of the 12.0M pool (#2468).
  */
 function extendUnderAssume(
   store: WorkflowStore,
   runId: string,
   policy: RunPolicy,
   projected: number,
+  hold: number | null,
 ): boolean {
   const tokenHard = extendToOf(policy);
   const ceiling = policy.sizing?.maxRunTokens ?? null;
   if (tokenHard === null || ceiling === null || policy.clarification !== "assume") return false;
-  const hard = Math.max(tokenHard, affordableTokens(store, runId, policy) ?? 0);
+  // An initiative's feature run grows no further than its pool leaves after the other runs: the
+  // run's dollar bound pays for more than the pool the person set (#2468).
+  const hard = Math.min(
+    Math.max(tokenHard, affordableTokens(store, runId, policy) ?? 0),
+    hold ?? Number.POSITIVE_INFINITY,
+  );
   if (policy.maxTotalTokens >= hard || projected > hard) return false;
   const progress = progressOf(store, runId);
   const last = store
@@ -625,6 +653,7 @@ function extendUnderAssume(
   recordGrowth(store, runId, policy, next, "auto-extend", {
     projectedTokens: projected,
     hardCeiling: hard,
+    ...heldBy(hold),
     ...progress,
   });
   return projected <= policy.maxTotalTokens;
@@ -712,8 +741,9 @@ export function raiseToStartEstimate(
   }
   const ceiling = policy.sizing?.maxRunTokens ?? null;
   if (ceiling === null || estimateHigh === null || store.tasks(runId).length > 0) return false;
-  const target = Math.min(ceiling, Math.ceil(estimateHigh));
+  const hold = store.tokenHold?.(runId) ?? null;
+  const target = Math.min(ceiling, hold ?? Number.POSITIVE_INFINITY, Math.ceil(estimateHigh));
   if (target <= policy.maxTotalTokens) return false;
-  recordGrowth(store, runId, policy, target, "planning-floor", { estimateHigh });
+  recordGrowth(store, runId, policy, target, "planning-floor", { estimateHigh, ...heldBy(hold) });
   return true;
 }

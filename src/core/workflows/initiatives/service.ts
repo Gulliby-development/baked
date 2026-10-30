@@ -3302,6 +3302,29 @@ export class InitiativeService {
   }
 
   /**
+   * The most tokens a feature run's limit may reach by the host's own growth: the initiative's
+   * token pool less what its other runs used (the decompose run and every other feature run,
+   * superseded ones too), the hold `poolBoundDecision` reads. The pool is a hard limit the person
+   * set, so the host never grows a run past it (#2468): R79 deltaglue's chunks auto-extended to
+   * 12.0M with 1.86M of the 12.0M pool used by the other features and took the initiative to
+   * 12.68M. Null for a run of no initiative. The workflow store asks it (`WorkflowStore.tokenHold`)
+   * before a host growth raises the run's token limit.
+   */
+  tokenHold(runId: string): number | null {
+    if (!this.store.available()) return null;
+    const id = this.store.initiativeOfRun(runId);
+    const links = id ? this.store.links(id) : [];
+    if (!id || !links.some((l) => l.run_id === runId)) return null;
+    const row = this.store.get(id);
+    const others = [
+      ...(row.decompose_run_id ? [row.decompose_run_id] : []),
+      ...links.map((l) => l.run_id),
+    ].filter((other) => other !== runId);
+    const othersUsed = others.reduce((sum, other) => sum + this.usage(other).tokens, 0);
+    return Math.max(0, this.limits(row).maxTotalTokens - othersUsed);
+  }
+
+  /**
    * Asked before a feature run's model call stops on its cost ceiling (#2241): when the run
    * finished its tasks and its remaining review and convergence fit under the initiative's dollar
    * ceiling (`stageReserveDecision`), `workflows.stageReserve: shadow` (the default) records a

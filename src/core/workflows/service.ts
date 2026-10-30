@@ -277,6 +277,7 @@ export class NativeWorkflowService implements WorkflowService {
     );
     this.scheduler.growLimits = (runId) => this.growLimits?.(runId);
     this.store.reserveStages = (runId, requestedUsd) => this.reserveStages?.(runId, requestedUsd);
+    this.store.tokenHold = (runId) => this.tokenHold?.(runId) ?? null;
   }
   /**
    * Raises a run's host-derived limits before its deadline stops it: an initiative's feature run
@@ -302,6 +303,16 @@ export class NativeWorkflowService implements WorkflowService {
     if (this.store.readonly) return;
     this.initiatives ??= new InitiativeService(this);
     this.initiatives.reserveStages(runId, requestedUsd);
+  };
+  /**
+   * The most tokens a run's limit may reach by the host's own growth: an initiative's feature run
+   * stays inside what the pool leaves after the other runs (#2468). Held by the service for the
+   * same reason as `growLimits`. A read-only store grows nothing, so it has no hold to read.
+   */
+  tokenHold: ((runId: string) => number | null) | undefined = (runId) => {
+    if (this.store.readonly) return null;
+    this.initiatives ??= new InitiativeService(this);
+    return this.initiatives.tokenHold(runId);
   };
   private initiatives: InitiativeService | null = null;
   private enabled(): void {

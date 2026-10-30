@@ -98,8 +98,13 @@ export const STOP_REASONS = {
       "An open feature run's growth bound is above what the initiative's token pool or dollar ceiling holds for it",
     // Shadow only until two bench rounds show no false would-stop (#2280, R73 flatelens'
     // commands grew to 12.9M with 5.7M left). A bound derived from a plan charge is capped at
-    // what the pool and the ceiling hold (`chargeHold`); this records any bound still above them
-    // (a start's, an auto-extend's hard ceiling). Its promotion stops or caps the run instead.
+    // what the pool and the ceiling hold (`chargeHold`), and the run's own token growth
+    // (auto-growth, planning growth, auto-extend) is held at the pool less the other runs' use,
+    // enforced since the pool is a limit the person set (`WorkflowStore.tokenHold`, #2468: R79
+    // deltaglue's chunks auto-extended past it, which this reason had recorded, a true record).
+    // This still records a bound above them (a start's sizing ceilings, a dollar bound, an
+    // auto-extend hard ceiling the other runs' later use passed). Its promotion stops or caps
+    // the run on those too.
     modes: NOT_ENFORCED,
     defaultMode: "shadow",
   },
