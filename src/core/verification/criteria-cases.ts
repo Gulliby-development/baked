@@ -32,7 +32,9 @@ import {
  * is never demanded of this one: text of a document another task writes, a test name a sibling
  * task's description names, or anything a task limited to a few changed lines does not name
  * (#1771, `ownedElsewhere`); nor is a case a test file another task writes already tests (#1886,
- * `siblingTestPaths`).
+ * `siblingTestPaths`), or one whose row the request prescribes for a file another task writes, or,
+ * for a task that writes only prescribed row files, one no prescribed row holds (#2501,
+ * `casePrescribed`).
  */
 
 /**
@@ -332,8 +334,17 @@ export interface CaseContext {
    * parameterized test replays every row, and `rowFileProblems` refuses a changed block.
    */
   hostRows?: readonly InlineRowFile[];
-  /** Receives each walk's holds and refusals, for the run's record and its replay (#1715). */
-  record?: (walk: CaseWalk & { refused: number[] }) => void;
+  /**
+   * The rows the request prescribes for each test file the plan writes (`prescribedRowFiles`,
+   * read by `suppliedRows`, #2501): which file of the feature may hold a criterion literal, whether
+   * its writer has written it yet or not. Without it the walk reads only the files on disk.
+   */
+  prescribedRows?: PrescribedRows;
+  /**
+   * Receives each walk's holds and refusals, for the run's record and its replay (#1715), and the
+   * walked cases by the same index, for a caller that records a case's literal outside the trace.
+   */
+  record?: (walk: CaseWalk & { refused: number[] }, cases: readonly CriterionCase[]) => void;
   /**
    * The kinds of generated value the request or the task's criteria rule out for test inputs
    * (`bannedGeneratedKinds`, #2344): the walk records each one in a test file that holds a case.
@@ -366,7 +377,20 @@ export interface CaseWalk {
   rowsIntact: boolean;
   /** Test files other tasks of the plan write, which may hold a case (#1886). */
   siblings: number;
-  cases: { criterionId: string; row: boolean; held: boolean; sibling: boolean | null }[];
+  cases: {
+    criterionId: string;
+    row: boolean;
+    held: boolean;
+    sibling: boolean | null;
+    /**
+     * For a case nothing on disk holds, where the request's prescribed rows put it (#2501): `own`,
+     * a row of a file this task writes (still demanded); `sibling`, only a row of a file another
+     * task writes (held by that task, written yet or not); `none`, no prescribed row, for a task
+     * whose test files are all prescribed row files (not demanded: it cannot add a row, and the
+     * `case_not_prescribed` record says so). Absent without prescribed rows.
+     */
+    prescribed?: CasePrescribed;
+  }[];
   /**
    * Test inputs built from generated values where literal examples are asked for, in the task's
    * test files that hold a case (#2344): path, line and kind, no code. Absent without a ban.
@@ -390,8 +414,57 @@ export interface CaseWalkRecord extends CaseWalk {
 /** The cases (by index) the walk refuses the task for: those nothing holds. */
 export function caseWalkDecision(walk: CaseWalk): number[] {
   return walk.cases.flatMap((c, i) =>
-    (walk.rowsIntact && c.row) || c.held || c.sibling === true ? [] : [i],
+    (walk.rowsIntact && c.row) ||
+    c.held ||
+    c.sibling === true ||
+    c.prescribed === "sibling" ||
+    c.prescribed === "none"
+      ? []
+      : [i],
   );
+}
+
+/** Where the request's prescribed rows put a case nothing on disk holds (#2501). */
+export type CasePrescribed = "own" | "sibling" | "none";
+
+/** The rows a request prescribes for each test file of the plan, by path as the request writes it. */
+export type PrescribedRows = ReadonlyMap<string, readonly string[]>;
+
+/** A path as the request writes it and `suppliedRows` keys it: no `./`. */
+const rowPath = (path: string): string => path.trim().replace(/^(?:\.\/)+/, "");
+
+/**
+ * Whether prescribed rows hold a case (#2501): the walk's own matcher on the rows' text, as a row
+ * slice owns a literal by the rows that hold it (#2466). The one test of a criterion literal
+ * against a request's row block; a new reader of prescribed rows for the walk goes through it.
+ */
+export function prescribedRowsHeld(c: CriterionCase, rows: readonly string[]): boolean {
+  return rows.length > 0 && missingCases([c], [rows.join("\n")]).length === 0;
+}
+
+/**
+ * Where the prescribed rows put a case that no file on disk holds (#2501), or undefined when the
+ * plan prescribes no rows or they say nothing about it. R81 ratdec exact-cli T007 was refused for
+ * six literals of T006's `test/literals_test.exs` before T006 had written it (377k tokens against
+ * about 100k for its sibling row tasks), and T011 for `["eval","--as","frac","7/3"]`, a row no
+ * block of the brief holds, so it added a 14th row to a file the request fixes at 13 and a
+ * corrective removed it (368k).
+ */
+export function casePrescribed(
+  c: CriterionCase,
+  own: readonly string[],
+  rows: PrescribedRows | undefined,
+): CasePrescribed | undefined {
+  if (!rows?.size) return undefined;
+  const mine = new Set(own.map(rowPath));
+  const files = [...rows];
+  const ownRows = files.filter(([path]) => mine.has(path));
+  if (ownRows.some(([, lines]) => prescribedRowsHeld(c, lines))) return "own";
+  if (files.some(([path, lines]) => !mine.has(path) && prescribedRowsHeld(c, lines)))
+    return "sibling";
+  // A task with a test file of its own choosing, or a property's drawn values, can still hold it.
+  const onlyRows = mine.size > 0 && ownRows.length === mine.size;
+  return onlyRows && !c.generated ? "none" : undefined;
 }
 
 /**
@@ -672,9 +745,9 @@ function partitionCases(
       // Host row slices (#2466): a literal belongs to the first slice whose prescribed rows hold
       // it, since each later slice appends to the same file and finds it there; a literal no row
       // holds goes to the last slice, the only one whose file holds every row.
-      const texts = carriers.map((t) => t.sizingSlice?.rows?.join("\n") ?? "");
+      const texts = carriers.map((t) => t.sizingSlice?.rows ?? []);
       for (const row of rows) {
-        const holder = texts.findIndex((text) => !missingCases([row], [text]).length);
+        const holder = texts.findIndex((lines) => prescribedRowsHeld(row, lines));
         owners.set(row, (carriers[holder] ?? carriers.at(-1))?.id);
       }
       continue;
@@ -1552,15 +1625,24 @@ export function caseCheck(
     // A case a sibling's test file already tests is not demanded again (#1886).
     const open = cases.some((c, i) => !own[i] && !(intact && c.row));
     const others = siblings.length && open ? await read(siblings) : null;
+    // The request's rows say which file holds a case, written yet or not (#2501).
+    const tests = writtenTestPaths(task);
     const walk: CaseWalk = {
       rowsIntact: intact,
       siblings: siblings.length,
-      cases: cases.map((c, i) => ({
-        criterionId: c.criterionId,
-        row: c.row === true,
-        held: own[i] === true,
-        sibling: own[i] || (intact && c.row) || !others ? null : heldIn(c, others),
-      })),
+      cases: cases.map((c, i) => {
+        const prescribed =
+          own[i] || (intact && c.row)
+            ? undefined
+            : casePrescribed(c, tests, context.prescribedRows);
+        return {
+          criterionId: c.criterionId,
+          row: c.row === true,
+          held: own[i] === true,
+          sibling: own[i] || (intact && c.row) || !others ? null : heldIn(c, others),
+          ...(prescribed ? { prescribed } : {}),
+        };
+      }),
     };
     // The generated values in the files that hold a case, where literal examples are asked for.
     const kinds = context.generatedKinds;
@@ -1574,7 +1656,7 @@ export function caseCheck(
         })
         .slice(0, MAX_GENERATED_VALUES);
     const refused = caseWalkDecision(walk);
-    context.record?.({ ...walk, refused });
+    context.record?.({ ...walk, refused }, cases);
     const missing = refused.flatMap((i) => cases[i] ?? []);
     const generatedLine =
       context.refuseGenerated && walk.generated && generatedCaseDecision(walk)
@@ -1608,7 +1690,8 @@ export function caseCheck(
  * R57 expenses-py T009 was refused for six CLI argument strings that T007's `tests/test_cli.py`
  * tested (about 435k tokens after the refusal), md-site T009 for four URL schemes the sibling
  * property test drew, url-shortener T004 for a code its sibling test spelled. The file must exist
- * in the attempt's workspace; one a sibling has not written yet holds nothing.
+ * in the attempt's workspace; one a sibling has not written yet holds nothing on disk, though the
+ * rows the request prescribes for it still hold their literals (`casePrescribed`, #2501).
  */
 function siblingTestPaths(
   task: CaseTask,
