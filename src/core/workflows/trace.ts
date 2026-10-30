@@ -1479,6 +1479,7 @@ export function replayCorrectiveScopes(
         openWriters: p.openWriters ?? [],
         feature: p.feature ?? null,
         allowed: p.allowed === true,
+        ...(p.upstream ? { upstream: p.upstream } : {}),
       }),
     }));
     return {
