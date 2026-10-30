@@ -172,6 +172,7 @@ import {
   DEFAULT_TIME_POOL_GROWTH,
   dollarTokens,
   type ExtendWithinDollars,
+  NO_DOLLAR_FORECAST,
   type PlanChargeView,
   type PoolExtension,
   type PoolFeature,
@@ -588,8 +589,9 @@ export interface ShareGateRecord {
   /**
    * On a park from #2042 on: whether the host would extend the token pool inside the dollar cap
    * (`workflows.extendWithinDollars`), and the mode it ran in. Absent before #2042 and when off.
+   * `hold` names why it held when only a measurement could change that (#2471).
    */
-  poolGrowth?: { mode: ExtendWithinDollars } & Pick<
+  poolGrowth?: { mode: ExtendWithinDollars; hold?: PoolGrowthHold } & Pick<
     PoolExtension,
     "wouldExtend" | "toTokens" | "byTokens"
   >;
@@ -604,6 +606,30 @@ function waitingNeeds(features: ShareGateView["features"]): PoolFeature[] {
     f.share !== null && f.need ? [{ id: f.id, low: f.need.low, high: f.need.high }] : [],
   );
 }
+
+/**
+ * Why the host's pool growth held at a park, when the person can do nothing but extend by hand
+ * (#2471): `no measurement` while no feature is accepted, so `poolExtensionDecision` has no
+ * measured dollar forecast and `extendWithinDollars: on` cannot act at a first-wave park.
+ */
+export type PoolGrowthHold = "no measurement";
+
+/** The hold of a park's pool growth (#2471), or null when the decision did not wait for a measurement. */
+export function poolGrowthHold(
+  growth: PoolExtension | null,
+  cost: Pick<ShareGateView["budget"]["cost"], "measuredFeatures">,
+): PoolGrowthHold | null {
+  return growth &&
+    !growth.wouldExtend &&
+    growth.why === NO_DOLLAR_FORECAST &&
+    cost.measuredFeatures === 0
+    ? "no measurement"
+    : null;
+}
+
+/** What a park and the forecast notice add while `extendWithinDollars: on` waits (#2471). */
+export const FIRST_WAVE_HOLD_TEXT =
+  "extendWithinDollars: on waits for the first accepted feature's measured dollar forecast before the host grows the pool, so extend by hand with the command named here.";
 
 /**
  * The token pool's inputs as a share-gate view holds them (#2042), or null in a record before
@@ -2356,6 +2382,7 @@ export class InitiativeService {
     };
     const mode = this.extendWithinDollars();
     const growth = verdict === "park" && mode !== "off" ? poolGrowthOf(gateView, feature) : null;
+    const hold = poolGrowthHold(growth, view.budget.cost);
     const record: ShareGateRecord = {
       featureId: feature.id,
       verdict,
@@ -2363,6 +2390,7 @@ export class InitiativeService {
         ? {
             poolGrowth: {
               mode,
+              ...(hold ? { hold } : {}),
               wouldExtend: growth.wouldExtend,
               toTokens: growth.toTokens,
               byTokens: growth.byTokens,
@@ -2442,6 +2470,25 @@ export class InitiativeService {
       });
     });
     return true;
+  }
+
+  /**
+   * A token park that `extendWithinDollars: on` cannot answer because no feature is measured yet
+   * (#2471, R79 deltaglue) says so beside the extend command it already names; any other park, or
+   * mode, is returned unchanged.
+   */
+  private withPoolGrowthHold(
+    view: InitiativeView,
+    feature: FeatureView,
+    advice: RecoveryAdvice | null,
+  ): RecoveryAdvice | null {
+    if (!advice || this.extendWithinDollars() !== "on") return advice;
+    if (!poolGrowthHold(poolGrowthOf(view, feature), view.budget.cost)) return advice;
+    return {
+      ...advice,
+      message: `${advice.message} ${FIRST_WAVE_HOLD_TEXT}`,
+      summary: `${advice.summary} ${FIRST_WAVE_HOLD_TEXT}`,
+    };
   }
 
   /** `workflows.extendWithinDollars`: whether a token park records the host's extension (#2042). */
@@ -3914,6 +3961,15 @@ export class InitiativeService {
           cost,
         })
       : null;
+    // The notice names an extend that `extendWithinDollars: on` cannot make yet (#2471).
+    if (
+      pool?.notice &&
+      this.extendWithinDollars() === "on" &&
+      cost.capUsd !== null &&
+      cost.forecastUsd === null &&
+      cost.measuredFeatures === 0
+    )
+      pool.notice = `${pool.notice} ${FIRST_WAVE_HOLD_TEXT}`;
     const duration = estimate?.duration
       ? { msPerToken: estimate.duration.msPerToken, samples: estimate.duration.samples }
       : null;
@@ -4417,7 +4473,7 @@ export class InitiativeService {
           view.features.filter((f) => f.state === "ready"),
           parallel,
         )[0] ?? feature;
-      const shortfall = shareShortfall(view, first);
+      const shortfall = this.withPoolGrowthHold(view, first, shareShortfall(view, first));
       if (shortfall) return action("blocked", shortfall, first);
       const over = this.forecastOver(row, view);
       if (over) return action("blocked", over, first);
