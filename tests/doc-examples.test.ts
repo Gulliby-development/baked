@@ -6,6 +6,7 @@ import {
   commandArgv,
   DOC_EXAMPLE_LIMIT,
   type DocExampleResult,
+  type DocTextProblem,
   extractExamples,
   extractFixtures,
   fences,
@@ -375,5 +376,45 @@ describe("review stage", () => {
     expect(fixture.executor.reviews.every((r) => r.maxSteps <= 16)).toBe(true);
     expect(fixture.executor.reviews.filter((r) => r.examples)).toHaveLength(1);
     expect(existsSync(join(fixture.root, "README.md"))).toBe(true);
+  });
+
+  test("the correctness reviewer gets the README's table code spans with a bare pipe (#2549)", async () => {
+    const readme = ["# tool", "", "| Filter | Syntax |", "| --- | --- |", "| upper | `{{name | upper}}` |", "| lower | `{{name \\| lower}}` |"].join("\n");
+    class ReadmeRun extends FixtureExecutor {
+      service: ReturnType<typeof workflowFixture>["service"] | null = null;
+      reviews: { dimension: string; text?: DocTextProblem[] }[] = [];
+      constructor(private dir: string) {
+        super(dir);
+      }
+      override async execute(request: ExecutionRequest) {
+        if (request.profile.output === "implementation" && this.service) {
+          const service = this.service;
+          const before = service.store.transaction(() => capturePreImage(service.store, request.runId, join(this.dir, "README.md")));
+          service.scheduler.journal.publish(request.runId, request.attemptId, "README.md", readme, before, "file_patch");
+        }
+        if (request.profile.output === "review") {
+          const data = JSON.parse(request.prompt.split("\n").at(-1) ?? "{}") as {
+            extra: { dimension: string; documentedText?: DocTextProblem[] };
+          };
+          this.reviews.push({ dimension: data.extra.dimension, ...(data.extra.documentedText ? { text: data.extra.documentedText } : {}) });
+        }
+        const result = await super.execute(request);
+        if (request.profile.output === "plan")
+          (result.output as { taskGraph: { tasks: { writes: { path: string; action: string }[] }[] } }).taskGraph.tasks[0]?.writes.push({ path: "README.md", action: "create" });
+        return result;
+      }
+    }
+    const fixture = workflowFixture({ executor: (root) => new ReadmeRun(root) });
+    cleanups.push(fixture.dispose);
+    fixture.executor.service = fixture.service;
+    const run = await fixture.start();
+    await fixture.service.drive(run.runId, new AbortController().signal);
+    await fixture.approve(run.runId);
+    await fixture.service.drive(run.runId, new AbortController().signal);
+    const correctness = fixture.executor.reviews.find((r) => r.dimension === "correctness");
+    expect(correctness?.text).toEqual([
+      { file: "README.md", line: 5, kind: "table_pipe", span: "{{name | upper}}", suggested: "{{name \\| upper}}" },
+    ]);
+    expect(fixture.executor.reviews.filter((r) => r.text)).toHaveLength(1);
   });
 });

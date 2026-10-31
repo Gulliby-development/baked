@@ -412,6 +412,112 @@ export function extractExamples(file: string, text: string): DocExample[] {
   return examples;
 }
 
+/**
+ * A defect in a document's prose or tables that no example run shows (#2549): a code span that
+ * keeps a source string literal's escapes (`\\{{` where the program reads `\{{`), or a table
+ * cell's code span with a bare `|`, which a Markdown renderer takes as a cell separator.
+ */
+export interface DocTextProblem {
+  file: string;
+  /** 1-based line of the span. */
+  line: number;
+  kind: "escaped_literal" | "table_pipe";
+  /** The code span's content as the document writes it. */
+  span: string;
+  /** What the span should say: the literal decoded, or the span with each bare `|` as `\|`. */
+  suggested: string;
+}
+
+/**
+ * The value of a source string literal's body, for the escapes the supported languages share: a
+ * backslash, a quote, an interpolation sign (`\$` in Dart, Kotlin, PHP and Groovy, `\#` in Ruby)
+ * and a backtick. Other escapes (`\n`, `\t`, `\u`) are left alone: a document may show them as
+ * the syntax its program reads.
+ */
+export const decodeLiteralEscapes = (body: string): string => body.replace(/\\([\\"'$#`])/g, "$1");
+
+/**
+ * The bodies of the escaped string literals a text quotes (`'\\{{'`, `"a\"b"`): a quoted string
+ * whose body decodes to something else. A raw literal (`r'..'`, `@".."`, `#".."#`, a triple
+ * quote) keeps its backslashes, so it is not one, and neither is an apostrophe inside a word.
+ */
+export function escapedLiterals(text: string): string[] {
+  const out = new Set<string>();
+  for (const m of text.matchAll(/(["'])((?:[^"'\\\n]|\\.|(?!\1)["'])*)\1/g)) {
+    const at = m.index ?? 0;
+    const before = text[at - 1] ?? "";
+    const after = text[at + m[0].length] ?? "";
+    const body = m[2] as string;
+    if (/[\w@#]/.test(before) || before === m[1] || after === m[1]) continue;
+    if (body.length >= 2 && decodeLiteralEscapes(body) !== body) out.add(body);
+  }
+  return [...out];
+}
+
+/** The 0-based lines of a text's fenced blocks, fences included. */
+function fencedLines(text: string): Set<number> {
+  const lines = new Set<number>();
+  for (const block of fences(text))
+    for (let i = block.start - 2; i <= block.start - 1 + block.lines.length; i++) lines.add(i);
+  return lines;
+}
+
+/** A Markdown table's separator row: `| --- | :-: |`. */
+const TABLE_SEPARATOR = /^\s*\|?\s*:?-+:?\s*(\|\s*:?-+:?\s*)*\|?\s*$/;
+
+/**
+ * The prose and table defects of a document that its example runs cannot show (#2549, R82
+ * slotprompt): a code span outside the fenced blocks that copies the body of an escaped string
+ * literal `sources` quotes (the spec, whose criteria quote values in the project's language)
+ * instead of the value it stands for, and a code span in a table row with an unescaped `|`. A
+ * code span shows its backslashes as they are, so `\\{{` in a span reads as two backslashes; a
+ * bare `|` in a table row splits the cell wherever it stands. Spec readers take their cells
+ * through the lenient `tableCells`, which keeps such a pipe; a reader's renderer does not.
+ */
+export function docTextProblems(file: string, text: string, sources = ""): DocTextProblem[] {
+  const literals = escapedLiterals(sources);
+  const fenced = fencedLines(text);
+  const lines = text.replace(/\r\n?/g, "\n").split("\n");
+  const problems: DocTextProblem[] = [];
+  const isRow = (i: number) => !fenced.has(i) && /^\s*\|/.test(lines[i] ?? "");
+  for (let i = 0; i < lines.length; i++) {
+    if (fenced.has(i)) continue;
+    const line = lines[i] as string;
+    // A header or body row of a table: its run of pipe-led lines has a separator row second.
+    let table = false;
+    if (isRow(i)) {
+      let first = i;
+      while (first > 0 && isRow(first - 1)) first--;
+      table = TABLE_SEPARATOR.test(lines[first + 1] ?? "") && i !== first + 1;
+    }
+    for (const m of line.matchAll(/(`+)(?!`)(.+?)(?<!`)\1(?!`)/g)) {
+      const span = m[2] as string;
+      const decoded = decodeLiteralEscapes(span);
+      const bare = span.trim();
+      if (
+        decoded !== span &&
+        bare.length >= 2 &&
+        literals.some(
+          (body) =>
+            (body.includes(bare) || bare.includes(body)) &&
+            // A value whose own text holds an escape (`\${name}` from `"\\${name}"`) is right.
+            !decodeLiteralEscapes(body).includes(bare),
+        )
+      )
+        problems.push({ file, line: i + 1, kind: "escaped_literal", span, suggested: decoded });
+      if (table && /(?<!\\)\|/.test(span))
+        problems.push({
+          file,
+          line: i + 1,
+          kind: "table_pipe",
+          span,
+          suggested: span.replace(/(?<!\\)\|/g, "\\|"),
+        });
+    }
+  }
+  return problems;
+}
+
 const outputLines = (text: string) => {
   const lines = text
     .replace(/\r\n?/g, "\n")
