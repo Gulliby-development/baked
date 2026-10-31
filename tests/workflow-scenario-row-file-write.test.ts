@@ -91,20 +91,92 @@ const SLOTPROMPT: WriteShape = {
   written: textFile(TEXT_ROWS),
 };
 
+// pnmforge (C++, R83) cli T004: nine rows for `tests/cli_test.cpp`, the two usage rows long runs of
+// `\n` escapes (1,412 characters) that attempt 1 spent 1.57M on. Five such rows here, braced rows in
+// a `std::vector`; the host writes the request's text, so every escape is the file's as given.
+const CLI_PATH = "tests/cli_test.cpp";
+const cliFile = (rows: string[]) =>
+  [
+    "#include <gtest/gtest.h>",
+    "",
+    '#include "cli.h"',
+    "",
+    "static const std::vector<CliRow> rows = {",
+    ...rows.map((r) => `    ${r},`),
+    "};",
+    "",
+    "TEST(CliTest, Rows) { checkRows(rows); }",
+    "",
+  ].join("\n");
+const USAGE = "usage: pnmforge <command> [options]\\n\\ncommands:\\n  info FILE          print the header\\n  invert IN OUT      invert every sample\\n  scale N IN OUT     scale by N\\n";
+const CLI_ROWS = [
+  '{{"--version"}, 0, "pnmforge 0.1.0\\n", ""}',
+  `{{"--help"}, 0, "${USAGE}", ""}`,
+  `{{}, 2, "", "${USAGE}"}`,
+  '{{"info", "missing.pnm"}, 1, "", "pnmforge: missing.pnm: cannot open\\n"}',
+  '{{"scale", "x", "a.pnm", "b.pnm"}, 2, "", "pnmforge: scale: \\"x\\" is not a number\\n"}',
+];
+const PNMFORGE: WriteShape = {
+  path: CLI_PATH,
+  reference: { path: "tests/scaffold_test.cpp", text: cliFile(['{{}, 0, "", ""}']) },
+  block: [`CliRows in ${CLI_PATH} (5 rows, {args, code, out, err})`, ...CLI_ROWS],
+  written: cliFile(CLI_ROWS),
+};
+
+// bytemerge (Java, R83) encoding: `Arguments.of(text, ids)` rows in a `Stream.of(`, the last row
+// closing the list (`));`). T006 (291k) corrected rows 6 and 8, whose Java escapes differed from
+// the request; model T003 delivered `256 \\ n \n` one escape layer off.
+const ENCODE_PATH = "src/test/java/bytemerge/EncodeIdsTest.java";
+const encodeFile = (rows: string[]) =>
+  [
+    "package bytemerge;",
+    "",
+    "class EncodeIdsTest {",
+    "  static Stream<Arguments> rows() {",
+    "    return Stream.of(",
+    ...rows.map((r, i) => `        ${r}${i === rows.length - 1 ? "));" : ","}`),
+    "  }",
+    "",
+    "  @ParameterizedTest",
+    '  @MethodSource("rows")',
+    "  void encodesIds(String text, String ids) {",
+    "    assertEquals(ids, Encoder.encodeIds(text).toString());",
+    "  }",
+    "}",
+    "",
+  ].join("\n");
+const ENCODE_ROWS = [
+  'Arguments.of("hello", "[104, 101, 108, 108, 111]")',
+  'Arguments.of("", "[]")',
+  'Arguments.of("a\\tb", "[97, 9, 98]")',
+  'Arguments.of("\\"q\\"", "[34, 113, 34]")',
+  'Arguments.of("\\u00e9", "[195, 169]")',
+  'Arguments.of("256 \\\\ n \\n", "[50, 53, 54, 32, 92, 32, 110, 32, 10]")',
+  'Arguments.of("\\0", "[0]")',
+  'Arguments.of("C:\\\\tmp\\\\new", "[67, 58, 92, 116, 109, 112, 92, 110, 101, 119]")',
+];
+const BYTEMERGE: WriteShape = {
+  path: ENCODE_PATH,
+  reference: { path: "src/test/java/bytemerge/ScaffoldTest.java", text: encodeFile(['Arguments.of("x", "[120]")', 'Arguments.of("y", "[121]")']) },
+  block: [`EncodeIdsTest in ${ENCODE_PATH} (8 rows, Arguments.of(text, ids))`, ...ENCODE_ROWS],
+  written: encodeFile(ENCODE_ROWS),
+};
+
 const rowsOf = (shape: WriteShape) => shape.block.slice(1);
 const plan = (shape: WriteShape, text = shape.reference.text, source: "file" | "reference" = "reference") =>
   rowFilePlan(shape.path, rowsOf(shape), { source, text });
 const OK: Omit<RowFileInputs, "count"> = { language: true, shape: "reference", runs: 1, oneLine: true, sameHead: true, arity: true, separated: true };
 
 describe("rowFilePlan: the host writes a prescribed row file from its shape (#2528)", () => {
-  for (const [name, shape] of Object.entries({ "c deflate": TINYFLATE, "c macro": INFLATE, "dart slotprompt": SLOTPROMPT }))
+  for (const [name, shape] of Object.entries({ "c deflate": TINYFLATE, "c macro": INFLATE, "dart slotprompt": SLOTPROMPT, "cpp pnmforge": PNMFORGE, "java bytemerge": BYTEMERGE }))
     test(`${name}: the reference's preamble and epilogue around one prescribed row per line`, () => {
       const { inputs, content } = plan(shape);
       expect(inputs).toEqual({ count: rowsOf(shape).length, ...OK });
       expect(content).toBe(shape.written);
       expect(rowFileRefusal(shape.path, inputs)).toBeNull();
       // Every row as the request gives it, on its own line: the long runs keep their 300 and 259 bytes.
-      for (const row of rowsOf(shape)) expect(content?.split("\n").some((l) => l.trim().replace(/[,;]$/, "") === row)).toBe(true);
+      // The last row of a Java `Stream.of(` keeps the list's close (`));`).
+      for (const row of rowsOf(shape)) expect(content?.split("\n").some((l) => l.trim().startsWith(row) && /^[)\]}]*[,;]?$/.test(l.trim().slice(row.length)))).toBe(true);
     });
 
   test("the file in the task's base is its own shape: every row is written as the request gives it", () => {
@@ -125,6 +197,25 @@ describe("rowFilePlan: the host writes a prescribed row file from its shape (#25
     expect(rowFilePlan("test/eval_rows_test.exs", rows, { source: "reference", text: shape }).content).toBe(
       ["  rows([", ...rows.slice(0, 2).map((r) => `    ${r},`), `    ${rows[2]}`, "  ])", ""].join("\n"),
     );
+  });
+
+  test("C++: gtest `Values(` rows keep the call's close on the last row; Catch2 table rows", () => {
+    const values = (rows: string[]) =>
+      ["INSTANTIATE_TEST_SUITE_P(", "    Rows, CliTest,", "    ::testing::Values(", ...rows.map((r, i) => `        ${r}${i === rows.length - 1 ? "));" : ","}`), ""].join("\n");
+    const typed = ['CliRow{{"--version"}, 0, "pnmforge 0.1.0\\n", ""}', `CliRow{{"--help"}, 0, "${USAGE}", ""}`, `CliRow{{}, 2, "", "${USAGE}"}`];
+    expect(rowFilePlan("tests/cli_test.cpp", typed, { source: "reference", text: values(['CliRow{{"a"}, 0, "", ""}', 'CliRow{{"b"}, 0, "", ""}']) }).content).toBe(values(typed));
+    const table = (rows: string[]) =>
+      ['TEST_CASE("header rows") {', "  auto [input, width, height] = GENERATE(table<std::string, int, int>({", ...rows.map((r) => `      ${r},`), "  }));", "  CHECK(parse_header(input) == Size{width, height});", "}", ""].join("\n");
+    const headers = ['{"P1\\n1 1\\n0\\n", 1, 1}', '{"P2\\n2 1\\n255\\n0 0\\n", 2, 1}', '{"P5\\n# c\\n3 2\\n255\\n", 3, 2}'];
+    expect(rowFilePlan("tests/header_test.cpp", headers, { source: "reference", text: table(['{"", 0, 0}']) }).content).toBe(table(headers));
+  });
+
+  test("Java: a `Stream.of(` with one row gives no separator between rows, its `));` closes the list", () => {
+    const one = BYTEMERGE.reference.text.replace('        Arguments.of("x", "[120]"),\n', "");
+    const { inputs } = rowFilePlan(ENCODE_PATH, rowsOf(BYTEMERGE), { source: "reference", text: one });
+    expect(rowFileRefusal(ENCODE_PATH, inputs)).toContain("no separator");
+    // One prescribed row takes the one row's place, close and all.
+    expect(rowFilePlan(ENCODE_PATH, rowsOf(BYTEMERGE).slice(0, 1), { source: "reference", text: one }).content).toBe(encodeFile(rowsOf(BYTEMERGE).slice(0, 1)));
   });
 
   test("a shape the host cannot read declines with its reason", () => {
@@ -185,6 +276,8 @@ const FORMATTERS: Record<string, { program: string; args: (file: string) => stri
   typescript: { program: "prettier", args: (f) => ["--write", "--log-level", "silent", f] },
   javascript: { program: "prettier", args: (f) => ["--write", "--log-level", "silent", f] },
   dart: { program: "dart", args: (f) => ["format", f] },
+  cpp: { program: "clang-format", args: (f) => ["-i", "-style=LLVM", f] },
+  java: { program: "google-java-format", args: (f) => ["-i", f] },
 };
 
 describe("the written row file is a fixed point of its language's formatter (#2528)", () => {
@@ -206,6 +299,31 @@ describe("the written row file is a fixed point of its language's formatter (#25
       expect(formatted).toBe(content ?? "");
     });
   }
+  // The C++ row forms besides the example's `std::vector`: a gtest `Values(` call (its last row
+  // closes the call) and a Catch2 `GENERATE(table<...>({...}))` list.
+  test.skipIf(!has("clang-format"))("clang-format leaves the C++ gtest Values and Catch2 table forms as written", () => {
+    const gtest = (rows: string[]) =>
+      ["#include <gtest/gtest.h>", "", '#include "cli.h"', "", "class CliTest : public ::testing::TestWithParam<CliRow> {};", "", "TEST_P(CliTest, Runs) { EXPECT_EQ(run(GetParam().args), GetParam().result()); }", "", "INSTANTIATE_TEST_SUITE_P(", "    Rows, CliTest,", "    ::testing::Values(", ...rows.map((r, i) => `        ${r}${i === rows.length - 1 ? "));" : ","}`), ""].join("\n");
+    const catch2 = (rows: string[]) =>
+      ["#include <catch2/catch_test_macros.hpp>", "#include <catch2/generators/catch_generators.hpp>", "", '#include "pnm.h"', "", 'TEST_CASE("header rows") {', "  auto [input, width, height] = GENERATE(table<std::string, int, int>({", ...rows.map((r) => `      ${r},`), "  }));", "  CHECK(parse_header(input) == Size{width, height});", "}", ""].join("\n");
+    const cases = [
+      { path: "tests/cli_test.cpp", file: gtest, shape: ['CliRow{{"--version"}, 0, "pnmforge 0.1.0\\n", ""}', 'CliRow{{"--help"}, 0, "usage: pnmforge <command> [options]\\n", ""}'], rows: ['CliRow{{"info", "missing.pnm"}, 1, "", "pnmforge: cannot open\\n"}', 'CliRow{{}, 2, "", "usage: pnmforge <command> [options]\\n"}', 'CliRow{{"scale", "x", "a.pnm", "b.pnm"}, 2, "", "pnmforge: bad N\\n"}'] },
+      { path: "tests/header_test.cpp", file: catch2, shape: ['{"P1\\n1 1\\n0\\n", 1, 1}'], rows: ['{"P2\\n2 1\\n255\\n0 0\\n", 2, 1}', '{"P5\\n# comment\\n3 2\\n255\\n", 3, 2}'] },
+    ];
+    const dir = mkdtempSync(join(tmpdir(), "baked-row-file-"));
+    cleanups.push(() => rmSync(dir, { recursive: true, force: true }));
+    for (const { path, file, shape, rows } of cases) {
+      const reference = file(shape);
+      const target = join(dir, path.slice(path.lastIndexOf("/") + 1));
+      // The shape is a fixed point itself, and so is the file written from it.
+      for (const text of [reference, rowFilePlan(path, rows, { source: "reference", text: reference }).content]) {
+        expect(text).toBe(text === reference ? reference : file(rows));
+        writeFileSync(target, text ?? "");
+        expect(spawnSync("clang-format", ["-i", "-style=LLVM", target]).status).toBe(0);
+        expect(readFileSync(target, "utf8")).toBe(text ?? "");
+      }
+    }
+  });
   test("the ruff formatter leaves the Python example as written", () => {
     if (!has("ruff")) return;
     const row = ROW_FILE_SHAPES.python;
@@ -297,7 +415,7 @@ async function deliver(shape: WriteShape, extra: Partial<RunPolicy>) {
 }
 
 describe("scenario: R82, a row-file task the host writes without a session (#2528)", () => {
-  for (const [language, shape] of Object.entries({ c: TINYFLATE, "c-macro": INFLATE, dart: SLOTPROMPT }))
+  for (const [language, shape] of Object.entries({ c: TINYFLATE, "c-macro": INFLATE, dart: SLOTPROMPT, cpp: PNMFORGE, java: BYTEMERGE }))
     test(`${language}: with rowFileWrite on the host writes ${shape.path} from the reference and no session opens for it`, async () => {
       const { final, file, sessions, record, skipped } = await deliver(shape, { rowFileWrite: "on" });
       expect(final.status).toBe("completed");

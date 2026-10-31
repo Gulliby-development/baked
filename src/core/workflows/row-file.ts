@@ -2,7 +2,7 @@ import { type LanguageRecord, none, rowOf } from "../intelligence/language-recor
 import { detectLanguageFromPath } from "../intelligence/types.js";
 import { stripComments } from "./quality/code-mask.js";
 import { CONTINUES, rowHead } from "./row-block-drift.js";
-import { restoredLine } from "./row-restore.js";
+import { restoredLine, rowSpan, rowTail } from "./row-restore.js";
 
 /**
  * The host's own write of a prescribed row file (#2528, step 2 of #2522). A task whose only content
@@ -42,7 +42,7 @@ export interface RowFileShape {
 const CALL_OR_LITERAL = /^\s*(?:[A-Za-z_][\w.]*\s*[({]|[[{(])/;
 
 const FOLLOW_UP =
-  "row files are host-written for C, Dart, TypeScript, JavaScript, Go, Python and Elixir first (#2528); this language's row notation and its formatter's fixed point are #2553";
+  "row files are host-written for C, C++, Dart, TypeScript, JavaScript, Go, Python, Elixir and Java first (#2528, #2553); this language's row notation and its formatter's fixed point are #2553";
 
 /**
  * One row per supported language (AGENTS.md: a new row notation adds its row here, a case to
@@ -202,9 +202,81 @@ export const ROW_FILE_SHAPES: LanguageRecord<RowFileShape> = {
       ],
     },
   },
-  cpp: none(FOLLOW_UP),
+  cpp: {
+    // A braced initialiser in a `std::vector`/array or a Catch2 `GENERATE(table<...>({...}))` list
+    // (`{{"--help"}, 0, "usage\\n", ""},`), a typed one in a gtest `::testing::Values(` call
+    // (`CliRow{...},`, the last row `CliRow{...}));`) or a `std::make_tuple(...)` row.
+    rowLine: /^\s*(?:[A-Za-z_:][\w:]*)?[{(]/,
+    example: {
+      path: "tests/cli_test.cpp",
+      reference: [
+        "#include <gtest/gtest.h>",
+        "",
+        '#include "cli.h"',
+        "",
+        "struct CliRow {",
+        "  std::vector<std::string> args;",
+        "  int code;",
+        "  std::string out;",
+        "  std::string err;",
+        "};",
+        "",
+        "static const std::vector<CliRow> rows = {",
+        '    {{"--version"}, 0, "pnmforge 0.1.0\\n", ""},',
+        "};",
+        "",
+        "TEST(CliTest, Rows) {",
+        "  for (const auto &row : rows)",
+        "    EXPECT_EQ(run(row.args), (Result{row.code, row.out, row.err}));",
+        "}",
+        "",
+      ].join("\n"),
+      // pnmforge (R83) `cli` T004: usage rows whose `\n` escapes are the file's text as given.
+      rows: [
+        '{{}, 2, "", "usage: pnmforge <command> [options]\\n"}',
+        '{{"--help"}, 0, "usage: pnmforge <command> [options]\\n", ""}',
+      ],
+    },
+  },
   rust: none(FOLLOW_UP),
-  java: none(FOLLOW_UP),
+  java: {
+    // `Arguments.of(...)` rows in a `Stream.of(` (the last row `Arguments.of(...));`). A JUnit
+    // `@CsvSource` row is a bare string, which `rowHead` reads no head from: #2553.
+    rowLine: CALL_OR_LITERAL,
+    example: {
+      path: "src/test/java/bytemerge/EncodeIdsTest.java",
+      reference: [
+        "package bytemerge;",
+        "",
+        "import static org.junit.jupiter.api.Assertions.assertEquals;",
+        "",
+        "import java.util.stream.Stream;",
+        "import org.junit.jupiter.params.ParameterizedTest;",
+        "import org.junit.jupiter.params.provider.Arguments;",
+        "import org.junit.jupiter.params.provider.MethodSource;",
+        "",
+        "class EncodeIdsTest {",
+        "  static Stream<Arguments> rows() {",
+        "    return Stream.of(",
+        '        Arguments.of("hello", "[104, 101, 108, 108, 111]"),',
+        '        Arguments.of("", "[]"));',
+        "  }",
+        "",
+        "  @ParameterizedTest",
+        '  @MethodSource("rows")',
+        "  void encodesIds(String text, String ids) {",
+        "    assertEquals(ids, Encoder.encodeIds(text).toString());",
+        "  }",
+        "}",
+        "",
+      ].join("\n"),
+      // bytemerge (R83) `encoding` T006: Java escapes written as the request gives them.
+      rows: [
+        'Arguments.of("256 \\\\ n \\n", "[50, 53, 54, 32, 92, 32, 110, 32, 10]")',
+        'Arguments.of("tab\\there", "[116, 97, 98, 9, 104, 101, 114, 101]")',
+      ],
+    },
+  },
   kotlin: none(FOLLOW_UP),
   scala: none(FOLLOW_UP),
   csharp: none(FOLLOW_UP),
@@ -267,39 +339,7 @@ export function rowFileRefusal(path: string, rows: RowFileInputs): string | null
  * the row's bracket does not close on the line. Strings are skipped with their escapes.
  */
 export function rowArity(line: string): number | null {
-  const head = rowHead(line);
-  const open = /[([{]$/.test(head) ? line.indexOf(head) + head.length - 1 : -1;
-  if (open < 0) return null;
-  let depth = 0;
-  let count = 0;
-  let content = false;
-  for (let i = open; i < line.length; i++) {
-    const ch = line[i] ?? "";
-    if (ch === '"' || ch === "'" || ch === "`") {
-      let j = i + 1;
-      while (j < line.length && line[j] !== ch) j += line[j] === "\\" ? 2 : 1;
-      if (j >= line.length) return null;
-      i = j;
-      if (depth === 1) content = true;
-      continue;
-    }
-    if ("([{".includes(ch)) {
-      depth++;
-      if (depth > 1) content = true;
-      continue;
-    }
-    if (")]}".includes(ch)) {
-      depth--;
-      if (depth === 0) return count + (content ? 1 : 0);
-      continue;
-    }
-    if (depth === 1 && ch === ",") {
-      // A trailing comma before the close adds no argument.
-      if (content) count++;
-      content = false;
-    } else if (depth === 1 && ch.trim()) content = true;
-  }
-  return null;
+  return rowSpan(line)?.count ?? null;
 }
 
 interface ShapeRun {
@@ -374,10 +414,12 @@ export function rowFilePlan(
   inputs.arity = arities.size === 1;
   const first = rowLines[0] ?? "";
   const last = rowLines[rowLines.length - 1] ?? "";
-  const separator = (line: string) => /([,;])\s*$/.exec(line)?.[1] ?? "";
   // The shape's line end (CRLF) is kept on every written row.
   const eol = (lines[run.rows[0] ?? 0] ?? "").endsWith("\r") ? "\r" : "";
-  inputs.separated = rows.length === 1 || rowLines.length > 1 || separator(first) !== "";
+  // One shape row gives the separator between rows only when nothing else follows its close: the
+  // `));` after a Java `Stream.of(` list's one row closes the list, it does not separate rows.
+  inputs.separated =
+    rows.length === 1 || rowLines.length > 1 || /^[,;]$/.test(rowTail(first) ?? "");
   if (!inputs.arity || !inputs.separated) return { inputs, content: null };
   const from = run.rows[0] ?? 0;
   const to = run.rows[run.rows.length - 1] ?? from;

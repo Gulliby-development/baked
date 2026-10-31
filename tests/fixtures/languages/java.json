@@ -95,6 +95,31 @@
       "src/test/java/SumPropertyTest.java: SumPropertyTest"
     ],
     "testDeclarations": ["src/test/java/SumTest.java: 2 tests, per class 2"],
-    "rowFileShapes": null
+    "rowFileShapes": [
+      "src/test/java/bytemerge/EncodeIdsTest.java",
+      "package bytemerge;",
+      "",
+      "import static org.junit.jupiter.api.Assertions.assertEquals;",
+      "",
+      "import java.util.stream.Stream;",
+      "import org.junit.jupiter.params.ParameterizedTest;",
+      "import org.junit.jupiter.params.provider.Arguments;",
+      "import org.junit.jupiter.params.provider.MethodSource;",
+      "",
+      "class EncodeIdsTest {",
+      "  static Stream<Arguments> rows() {",
+      "    return Stream.of(",
+      "        Arguments.of(\"256 \\\\ n \\n\", \"[50, 53, 54, 32, 92, 32, 110, 32, 10]\"),",
+      "        Arguments.of(\"tab\\there\", \"[116, 97, 98, 9, 104, 101, 114, 101]\"));",
+      "  }",
+      "",
+      "  @ParameterizedTest",
+      "  @MethodSource(\"rows\")",
+      "  void encodesIds(String text, String ids) {",
+      "    assertEquals(ids, Encoder.encodeIds(text).toString());",
+      "  }",
+      "}",
+      ""
+    ]
   }
 }
