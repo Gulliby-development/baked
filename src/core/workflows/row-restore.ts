@@ -195,11 +195,66 @@ export function respelledRunLine(text: string, row: string): string | null {
   return out === text ? null : out;
 }
 
-/** The prescribed `row` in place of the file line `text`: its indentation and separator kept. */
+/**
+ * A row line's top-level argument count (`{ "a", "b" }` 2, `row(x, [y, z])` 2) and the index just
+ * past the bracket that closes the row, or null when the row's bracket does not close on the line.
+ * Strings are skipped with their escapes.
+ */
+export function rowSpan(line: string): { count: number; end: number } | null {
+  const head = rowHead(line);
+  const open = /[([{]$/.test(head) ? line.indexOf(head) + head.length - 1 : -1;
+  if (open < 0) return null;
+  let depth = 0;
+  let count = 0;
+  let content = false;
+  for (let i = open; i < line.length; i++) {
+    const ch = line[i] ?? "";
+    if (ch === '"' || ch === "'" || ch === "`") {
+      let j = i + 1;
+      while (j < line.length && line[j] !== ch) j += line[j] === "\\" ? 2 : 1;
+      if (j >= line.length) return null;
+      i = j;
+      if (depth === 1) content = true;
+      continue;
+    }
+    if ("([{".includes(ch)) {
+      depth++;
+      if (depth > 1) content = true;
+      continue;
+    }
+    if (")]}".includes(ch)) {
+      depth--;
+      if (depth === 0) return { count: count + (content ? 1 : 0), end: i + 1 };
+      continue;
+    }
+    if (depth === 1 && ch === ",") {
+      // A trailing comma before the close adds no argument.
+      if (content) count++;
+      content = false;
+    } else if (depth === 1 && ch.trim()) content = true;
+  }
+  return null;
+}
+
+/** The text after a row line's closing bracket (`,`, `;`, or `));` closing the list too). */
+export function rowTail(line: string): string | null {
+  const end = rowSpan(line)?.end;
+  return end === undefined ? null : line.slice(end).trim();
+}
+
+/**
+ * The prescribed `row` in place of the file line `text`: its indentation and separator kept, and
+ * the brackets that close the list on the row's line (a Java `Stream.of(` or a gtest `Values(`
+ * call's last row, `Arguments.of(...));`, #2553) when the prescribed row is one closed row.
+ */
 export function restoredLine(text: string, row: string): string {
   const eol = text.endsWith("\r") ? "\r" : "";
   const body = eol ? text.slice(0, -1) : text;
   const indent = /^\s*/.exec(body)?.[0] ?? "";
+  const closers = rowTail(body) ?? "";
+  const own = row.trim();
+  if (/^[)\]}]+[,;]?$/.test(closers) && rowSpan(own)?.end === own.length)
+    return `${indent}${own}${closers}${eol}`;
   const separator = /([,;])\s*$/.exec(body)?.[1] ?? "";
   const tail = separator && !row.trimEnd().endsWith(separator) ? separator : "";
   return `${indent}${row.trim()}${tail}${eol}`;

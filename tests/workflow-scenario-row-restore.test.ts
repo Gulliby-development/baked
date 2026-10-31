@@ -222,6 +222,64 @@ const GO: RestoreShape = {
   restored: [2],
 };
 
+// pnmforge (C++, R83) cli: usage rows with `\n` escapes, here braced rows in a `std::vector`; the
+// drifted file lost the usage row's command lines.
+const PNM_PATH = "tests/cli_test.cpp";
+const PNM_USAGE = "usage: pnmforge <command> [options]\\n\\ncommands:\\n  info FILE\\n  invert IN OUT\\n";
+const pnmTest = (row2: string) =>
+  [
+    "#include <gtest/gtest.h>",
+    "",
+    '#include "cli.h"',
+    "",
+    "static const std::vector<CliRow> rows = {",
+    '    {{"--version"}, 0, "pnmforge 0.1.0\\n", ""},',
+    `    ${row2},`,
+    "};",
+    "",
+    "TEST(CliTest, Rows) { checkRows(rows); }",
+    "",
+  ].join("\n");
+const PNMFORGE: RestoreShape = {
+  path: PNM_PATH,
+  block: [
+    `CliRows in ${PNM_PATH} (2 rows, {args, code, out, err})`,
+    '{{"--version"}, 0, "pnmforge 0.1.0\\n", ""}',
+    `{{"--help"}, 0, "${PNM_USAGE}", ""}`,
+  ],
+  faithful: pnmTest(`{{"--help"}, 0, "${PNM_USAGE}", ""}`),
+  drifted: pnmTest('{{"--help"}, 0, "usage: pnmforge <command> [options]\\n", ""}'),
+  restored: [2],
+};
+
+// bytemerge (Java, R83) encoding: `Arguments.of` rows in a `Stream.of(`; the last row closes the
+// list on its line (`));`); the drifted last row lost a byte of its ids.
+const BYTE_PATH = "src/test/java/bytemerge/EncodeIdsTest.java";
+const byteTest = (row2: string) =>
+  [
+    "package bytemerge;",
+    "",
+    "class EncodeIdsTest {",
+    "  static Stream<Arguments> rows() {",
+    "    return Stream.of(",
+    '        Arguments.of("hello", "[104, 101, 108, 108, 111]"),',
+    `        ${row2}));`,
+    "  }",
+    "}",
+    "",
+  ].join("\n");
+const BYTEMERGE: RestoreShape = {
+  path: BYTE_PATH,
+  block: [
+    `EncodeIdsTest in ${BYTE_PATH} (2 rows, Arguments.of(text, ids))`,
+    'Arguments.of("hello", "[104, 101, 108, 108, 111]")',
+    'Arguments.of("256 \\\\ n \\n", "[50, 53, 54, 32, 92, 32, 110, 32, 10]")',
+  ],
+  faithful: byteTest('Arguments.of("256 \\\\ n \\n", "[50, 53, 54, 32, 92, 32, 110, 32, 10]")'),
+  drifted: byteTest('Arguments.of("256 \\\\ n \\n", "[50, 53, 54, 92, 32, 110, 32, 10]")'),
+  restored: [2],
+};
+
 /** One case per row notation the host restores (AGENTS.md: a new notation adds its case here). */
 const RESTORE_SHAPES: Record<string, RestoreShape> = {
   c: TINYFLATE,
@@ -230,6 +288,8 @@ const RESTORE_SHAPES: Record<string, RestoreShape> = {
   typescript: DELTAGLUE,
   elixir: RATDEC,
   go: GO,
+  cpp: PNMFORGE,
+  java: BYTEMERGE,
 };
 
 const requestOf = (shape: RestoreShape) =>
@@ -284,6 +344,9 @@ describe("rowRestorePlan: the host restores a changed prescribed row from the re
     expect(restoredLine('  { "1", "2" },', '{ "3", "4" }')).toBe('  { "3", "4" },');
     expect(restoredLine('\tROW("1");\r', 'ROW("3")')).toBe('\tROW("3");\r');
     expect(restoredLine("    row(1)", "row(2)")).toBe("    row(2)");
+    // The list's close on the last row's line stays (#2553: a Java `Stream.of(`, a gtest `Values(`).
+    expect(restoredLine('        Arguments.of("a", 1));', 'Arguments.of("b", 2)')).toBe('        Arguments.of("b", 2));');
+    expect(restoredLine("    CliRow{{}, 2, \"\", \"\"}));", 'CliRow{{"-h"}, 0, "u\\n", ""}')).toBe('    CliRow{{"-h"}, 0, "u\\n", ""}));');
   });
 
   test("rowRestores records sites and verdicts per file; the decision replays from the flags", () => {
