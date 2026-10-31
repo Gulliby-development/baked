@@ -239,6 +239,13 @@ const languagesOf = (paths: readonly string[]): SupportedLanguage[] =>
   paths.map((path) => detectLanguageFromPath(path)).filter(isSupportedLanguage);
 /** "a public Reader helper", "Reader's public helper": a helper of a type, with no member named. */
 const HELPER = /\b(?:public\s+)?([A-Z][A-Za-z0-9_]*)(?:'s)?\s+(?:public\s+)?helper\b/g;
+/**
+ * "the given Rows helper", "the supplied Rows helper": the phrase names a helper file the request
+ * hands over, not a member missing from it (#2566). R83 bytemerge: the spec's "the given Rows
+ * helper" was `Rows.java`, a verbatim block of the request that the upstream feature installed,
+ * and was recorded as a gap of that file.
+ */
+const GIVEN = /\b(?:given|supplied|provided|verbatim)\s+(?:public\s+)?$/i;
 
 /** A name compared in any letter case, without `_` and `-`. */
 const keyOf = (name: string) => name.replace(/[_-]/g, "").toLowerCase();
@@ -287,7 +294,8 @@ function isNamespace(
  * languages (`MEMBER_SYNTAX`: `Reader::new`, `Reader#read`, `lines.Line`, #2199). A type is matched
  * to a file by its stem or its folder in any letter case (`Reader` to `Reader.cs`, `reader.go`,
  * `reader/mod.rs`), so it works in every language; a member is looked up as a word in that file. A helper the spec names by its type alone is a gap
- * too: nothing upstream decided it exists. `upstream` holds each upstream boundary file and its
+ * too: nothing upstream decided it exists, unless the spec calls it given and its file is upstream
+ * (#2566). `upstream` holds each upstream boundary file and its
  * text at the release base, null when absent; `own` is the released feature's boundary, whose
  * folders name namespaces it writes itself, not upstream members (#2365).
  */
@@ -325,6 +333,8 @@ export function upstreamSymbolGaps(
       const type = match[1] ?? "";
       const file = upstream.find((f) => isTypeFile(f.path, type));
       if (!file || named.has(nameOf(type)) || seen.has(match[0])) continue;
+      if (file.text !== null && GIVEN.test(text.slice(Math.max(0, match.index - 40), match.index)))
+        continue;
       seen.add(match[0]);
       gaps.push({ ref, symbol: match[0], featureId: file.featureId, path: file.path });
     }
