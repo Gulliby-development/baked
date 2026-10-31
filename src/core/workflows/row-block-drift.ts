@@ -743,8 +743,15 @@ export function rowBlockDrifts(
   return out;
 }
 
-/** A drifting row in the words a stop would use. */
-export function rowBlockDriftSummary(drift: RowBlockDrift): string {
+/**
+ * A drifting row in the words a stop would use. `restore` is the verdict of the host's restore
+ * the run recorded for the row (`row-restores/<path>.json`, #2522, #2529): the host, not a repair
+ * task, would restore it, or put its restore back, or could not restore it in place.
+ */
+export function rowBlockDriftSummary(
+  drift: RowBlockDrift,
+  restore?: "would_restore" | "put_back" | "declined",
+): string {
   const lacks = drift.missing.map((m) => `"${m.text}"`).join(", ");
   const by = drift.tasks.length ? `${drift.tasks.join(", ")} delivered ` : "";
   const what = lacks ? `the file lacks ${lacks}` : "";
@@ -755,7 +762,15 @@ export function rowBlockDriftSummary(drift: RowBlockDrift): string {
       ? `line ${drift.differs.line}, the row's place, does not hold "${drift.differs.text}" (value ${drift.differs.token} of ${drift.differs.tokens}) where the row gives it`
       : "";
   const why = [what, runs, token].filter(Boolean).join("; ");
-  return `${by}${drift.path} without row ${drift.row} of the request's row block as given: ${why} (row: ${drift.text}). A repair task would restore the row from the request's text; the prescribed row wins over a test this run wrote.`;
+  const who =
+    restore === "would_restore"
+      ? "The host would restore the row from the request's text (rowRestore shadow)"
+      : restore === "put_back"
+        ? "The host restored the row from the request's text and put it back when a required check failed on the edit; a repair task would restore it"
+        : restore === "declined"
+          ? "The host cannot restore the row in place; a repair task would restore it from the request's text"
+          : "A repair task would restore the row from the request's text";
+  return `${by}${drift.path} without row ${drift.row} of the request's row block as given: ${why} (row: ${drift.text}). ${who}; the prescribed row wins over a test this run wrote.`;
 }
 
 /**

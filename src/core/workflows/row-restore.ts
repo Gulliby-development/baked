@@ -12,6 +12,7 @@ import {
 } from "./row-block-drift.js";
 import type { TaskGraph } from "./schemas.js";
 import { suppliedRows } from "./sizing.js";
+import type { Task } from "./types.js";
 
 /**
  * The host's own restore of a prescribed row a delivered test file changed (#2522). The host holds
@@ -83,12 +84,18 @@ export interface RowRestoreRecord {
   /**
    * Where the comparison ran when not at the checks stage (#2543): `resume`, a resume of a run
    * blocked `invalid_output` (recorded under `row-restores/resume/`, never written); `drive`,
-   * before the task-graph stage drives its tasks; `task`, at the start of a task's session.
-   * Absent at the checks stage (and in records before it).
+   * before the task-graph stage drives its tasks; `task`, at the start of a task's session;
+   * `task-end`, at a row-file task's end, before its own checks (#2529). Absent at the checks
+   * stage (and in records before it).
    */
-  at?: "resume" | "drive" | "task";
-  /** The tasks blocked when the run was resumed (`at: "resume"`); the task (`at: "task"`). */
+  at?: "resume" | "drive" | "task" | "task-end";
+  /**
+   * The tasks blocked when the run was resumed (`at: "resume"`); the task (`at: "task"` and
+   * `at: "task-end"`).
+   */
   blocked?: string[];
+  /** The best-of-N candidate whose worktree the task-end restore ran on (#2529). */
+  candidate?: number;
   /** The hash of the file the sites were read from (#2543): the same file records nothing new. */
   file?: string;
 }
@@ -395,6 +402,79 @@ export function rowRunRestores(
         before,
         after,
         drifts,
+      },
+    ];
+  });
+}
+
+/**
+ * The prescribed rows (from 1) of a file's block that `task` owns: every row, or only its slice's
+ * when the host cut the file into row slices (`sizingSlice.rows`, `rowSlices` in `sizing.ts`). A
+ * slice that does not carry its rows owns none, so nothing is restored for it before the checks
+ * stage, when the file is whole.
+ */
+export function ownedRows(task: Pick<Task, "sizingSlice">, lines: readonly string[]): Set<number> {
+  const slice = task.sizingSlice;
+  if (!slice) return new Set(lines.map((_, i) => i + 1));
+  const own = slice.rows?.map((row) => row.trim()) ?? [];
+  return new Set(lines.flatMap((line, i) => (own.includes(line.trim()) ? [i + 1] : [])));
+}
+
+/**
+ * The restore at a row-file task's end (#2529), before its own required checks run on the file:
+ * #2522 restores only at the checks stage, after every task ran, so a task whose task-scope rows
+ * check failed on a changed row went back to its session to copy the row again (R82 tinyflate
+ * deflate named row 8 drifting at T005 while the task kept going). The sites are
+ * `rowRestorePlan`'s for the files `task` writes and the rows it owns (`ownedRows`: a row slice
+ * restores only its own rows), the decision unchanged, so the replay reads the record as the
+ * checks stage's. Each result carries the file's hash for the record.
+ */
+export function taskRowRestores(
+  request: string,
+  task: Task,
+  read: (path: string) => string | null,
+  mode: RowRestoreRecord["mode"],
+): { record: RowRestoreRecord; before: string; after: string }[] {
+  const compared = rowBlockDrifts(request, { tasks: [task] }, read).filter(
+    (c) => c.record.delivered,
+  );
+  if (!compared.length) return [];
+  const blocks = suppliedRows(
+    request,
+    compared.map((c) => c.record.path),
+  );
+  return compared.flatMap(({ record: { path, tasks } }) => {
+    const block = blocks.get(path);
+    const before = read(path);
+    if (!block || before === null) return [];
+    const own = ownedRows(task, block.lines);
+    const plan = rowRestorePlan(block.lines, before, (sites) =>
+      rowRestoreDecision(sites.filter((s) => own.has(s.row))),
+    );
+    const sites = plan.sites.filter((s) => own.has(s.row));
+    if (!sites.length) return [];
+    const verdict = !plan.restore.length
+      ? "declined"
+      : mode === "on"
+        ? "restored"
+        : "would_restore";
+    return [
+      {
+        record: {
+          schemaVersion: 1,
+          path,
+          tasks,
+          mode,
+          sites,
+          restore: plan.restore,
+          verdict,
+          checks: null,
+          at: "task-end",
+          blocked: [task.id],
+          file: hashBytes(before),
+        },
+        before,
+        after: plan.after,
       },
     ];
   });
