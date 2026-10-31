@@ -108,5 +108,8 @@
     "@opentui/core-linux-x64": "0.6.6",
     "@opentui/core-win32-arm64": "0.6.6",
     "@opentui/core-win32-x64": "0.6.6"
+  },
+  "overrides": {
+    "minimatch": "^11.0.1"
   }
 }
