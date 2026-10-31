@@ -437,6 +437,12 @@ export interface CaseContext {
    */
   prescribedRows?: PrescribedRows;
   /**
+   * `skip` (`citedCases`, #2531): a case nothing holds whose literal describes rows instead of
+   * quoting one (`CriterionCase.cited`) is not demanded, for any task, and the walk record says
+   * so (`cited`). Absent demands it, except from a task that writes only prescribed row files.
+   */
+  citedCases?: "demand" | "skip";
+  /**
    * Receives each walk's holds and refusals, for the run's record and its replay (#1715), and the
    * walked cases by the same index, for a caller that records a case's literal outside the trace.
    */
@@ -488,6 +494,18 @@ export interface CaseWalk {
      * noted). Absent without prescribed rows.
      */
     prescribed?: CasePrescribed;
+    /**
+     * The same question asked row by row (#2544, shadow): a case of several values on one line is
+     * held by a prescribed row only when one row holds them all, not the rows' joined text.
+     * Present only where it answers differently from `prescribed`; the decision does not read it
+     * yet, and a `none` here is recorded `case_not_prescribed` with `kind: "per-row"`.
+     */
+    prescribedPerRow?: CasePrescribed;
+    /**
+     * Under `citedCases: "skip"` (#2531), what a case nothing holds describes instead of quoting
+     * a row (`CriterionCase.cited`): not demanded. Absent otherwise.
+     */
+    cited?: CitedKind;
   }[];
   /**
    * Test inputs built from generated values where literal examples are asked for, in the task's
@@ -509,11 +527,15 @@ export interface CaseWalkRecord extends CaseWalk {
   generatedStop?: boolean;
 }
 
-/** The cases (by index) the walk refuses the task for: those nothing holds. */
+/**
+ * The cases (by index) the walk refuses the task for: those nothing holds, except a literal that
+ * describes rows (`cited`, recorded only under `citedCases: "skip"`, #2531).
+ */
 export function caseWalkDecision(walk: CaseWalk): number[] {
   return walk.cases.flatMap((c, i) =>
     (walk.rowsIntact && c.row) ||
     c.held ||
+    c.cited !== undefined ||
     c.sibling === true ||
     c.prescribed === "sibling" ||
     c.prescribed === "none" ||
@@ -533,12 +555,31 @@ export type PrescribedRows = ReadonlyMap<string, readonly string[]>;
 const rowPath = (path: string): string => path.trim().replace(/^(?:\.\/)+/, "");
 
 /**
+ * Whether a case is several values on one line (an argument list with its output, a tuple): its
+ * significant tokens are more than one and it has no line break. A multi-line literal is one text
+ * that may run over several rows, and a single value is held by the joined rows as by one row.
+ */
+function multiValue(c: CriterionCase): boolean {
+  const text = normalizeLiteral(c.literal).trim();
+  return !/\n/.test(text) && (text.match(SIGNIFICANT_TOKEN)?.length ?? 0) > 1;
+}
+
+/**
  * Whether prescribed rows hold a case (#2501): the walk's own matcher on the rows' text, as a row
  * slice owns a literal by the rows that hold it (#2466). The one test of a criterion literal
  * against a request's row block; a new reader of prescribed rows for the walk goes through it.
+ * `perRow` (#2544, shadow) holds a multi-value case only when one row holds it: on the joined
+ * text, `["render","--var","a=1"]` of one row and the output `42` of another hold
+ * `render --var a=1 => 42`, which no row tests.
  */
-export function prescribedRowsHeld(c: CriterionCase, rows: readonly string[]): boolean {
-  return rows.length > 0 && missingCases([c], [rows.join("\n")]).length === 0;
+export function prescribedRowsHeld(
+  c: CriterionCase,
+  rows: readonly string[],
+  perRow = false,
+): boolean {
+  if (!rows.length) return false;
+  if (perRow && multiValue(c)) return rows.some((row) => missingCases([c], [row]).length === 0);
+  return missingCases([c], [rows.join("\n")]).length === 0;
 }
 
 /**
@@ -553,13 +594,14 @@ export function casePrescribed(
   c: CriterionCase,
   own: readonly string[],
   rows: PrescribedRows | undefined,
+  perRow = false,
 ): CasePrescribed | undefined {
   if (!rows?.size) return undefined;
   const mine = new Set(own.map(rowPath));
   const files = [...rows];
   const ownRows = files.filter(([path]) => mine.has(path));
-  if (ownRows.some(([, lines]) => prescribedRowsHeld(c, lines))) return "own";
-  if (files.some(([path, lines]) => !mine.has(path) && prescribedRowsHeld(c, lines)))
+  if (ownRows.some(([, lines]) => prescribedRowsHeld(c, lines, perRow))) return "own";
+  if (files.some(([path, lines]) => !mine.has(path) && prescribedRowsHeld(c, lines, perRow)))
     return "sibling";
   // A task with a test file of its own choosing, or a property's drawn values, can still hold it.
   const onlyRows = mine.size > 0 && ownRows.length === mine.size;
@@ -1757,16 +1799,19 @@ export function caseCheck(
       rowsIntact: intact,
       siblings: siblings.length,
       cases: cases.map((c, i) => {
-        const prescribed =
-          own[i] || (intact && c.row)
-            ? undefined
-            : casePrescribed(c, tests, context.prescribedRows);
+        const unheld = !own[i] && !(intact && c.row);
+        const prescribed = unheld ? casePrescribed(c, tests, context.prescribedRows) : undefined;
+        // The per-row answer, recorded beside the joined one while it is in shadow (#2544).
+        const perRow = prescribed && casePrescribed(c, tests, context.prescribedRows, true);
+        const cited = unheld && context.citedCases === "skip" ? c.cited : undefined;
         return {
           criterionId: c.criterionId,
           row: c.row === true,
           held: own[i] === true,
           sibling: own[i] || (intact && c.row) || !others ? null : heldIn(c, others),
           ...(prescribed ? { prescribed } : {}),
+          ...(perRow && perRow !== prescribed ? { prescribedPerRow: perRow } : {}),
+          ...(cited ? { cited } : {}),
         };
       }),
     };

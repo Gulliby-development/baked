@@ -647,6 +647,14 @@ export const PolicySchema = z
      */
     caseSourceProbe: z.enum(["off", "on"]).optional(),
     /**
+     * `skip` has the task-end case walk not refuse a test task for a criterion literal that
+     * describes rows instead of quoting one (`CriterionCase.cited`: a row count, a test file's
+     * name, a `LINE:COL: MESSAGE` envelope, a described character), and records it in the walk
+     * record; analysis then raises no `SUPPLIED-` finding for such a literal either (#2531).
+     * Absent means `demand`, so stored policies keep their hash.
+     */
+    citedCases: z.enum(["demand", "skip"]).optional(),
+    /**
      * `split` has the decomposer of an initiative split a feature that holds more than a third of
      * the critical path into features that run side by side, or say why it stays whole
      * (initiatives/critical-path.ts, #1522). Absent means `off`, so stored policies keep their hash.
