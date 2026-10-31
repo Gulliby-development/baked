@@ -2274,6 +2274,146 @@ process.exit(offenses.length ? 1 : 0);`;
       expect(await staleReleasedCreates(store, runId, state)).toEqual([]);
     }, 120_000);
 
+    // #2517, the mirror of #2514: message, planned ahead, modifies an upstream stub its
+    // provisional base tracks (stub.txt), and base's accepted result removes it. Released, the
+    // modify would be refused as "Modify target is missing"; the release turns it into a create.
+    class StubExecutor extends AheadExecutor {
+      /** While set, message's T001 ends invalid_output as a run released before #2517 would. */
+      failing = false;
+      actions: string[] = [];
+      denied: string[] = [];
+      override async execute(request: ExecutionRequest) {
+        const service = this.workflows;
+        const task = request.task;
+        if (request.profile.output === "plan") {
+          const result = await super.execute(request);
+          // base's plan removes the stub, as an accepted upstream deletes or renames a skeleton file.
+          const graph = (result.output as { taskGraph?: { featureId: string; tasks: { writes: { path: string; action: string }[] }[] } }).taskGraph;
+          if (graph?.featureId.endsWith("_base"))
+            for (const write of graph.tasks.flatMap((t) => t.writes)) if (write.path === "stub.txt") write.action = "delete";
+          return result;
+        }
+        if (request.profile.output === "implementation" && task?.writes[0]?.path === "base.txt") {
+          const result = await super.execute(request);
+          rmSync(join(request.root ?? "", "stub.txt"), { force: true });
+          return result;
+        }
+        if (request.profile.output !== "implementation" || task?.writes[0]?.path !== "message.txt" || !service)
+          return super.execute(request);
+        if (this.failing) throw new WorkflowFault("OUTPUT_INVALID", "Modify target is missing: stub.txt");
+        const root = request.root ?? "";
+        const runPolicy = PolicySchema.parse(JSON.parse(service.store.run(request.runId).policy_json));
+        const guard = new WorkflowToolPolicy(service.store, service.leases, request.runId, request.attemptId, request.profile, runPolicy, task, root);
+        for (const write of task.writes) {
+          this.actions.push(`${write.path}:${write.action}`);
+          try {
+            await guard.execute("edit_file", { path: write.path }, async () => writeFileSync(join(root, write.path), "ready v1 (message)"));
+          } catch (error) {
+            this.denied.push(error instanceof Error ? error.message : String(error));
+            throw new WorkflowFault("OUTPUT_INVALID", error instanceof Error ? error.message : String(error));
+          }
+        }
+        return { output: { schemaVersion: 1, taskId: task.id, outcome: "implemented", summary: "Wrote value", evidenceIds: [], unresolved: [] }, inputTokens: 50, outputTokens: 50 };
+      }
+    }
+    async function removedStub(failing: boolean) {
+      const stubbed = plan([feature("base", [], ["base.txt", "stub.txt"]), feature("message", ["base"], ["message.txt", "stub.txt", "README.md"]), feature("front", ["message"])]);
+      const t = setup(stubbed, 100, (root) => new StubExecutor(root, stubbed));
+      repository(t.root);
+      writeFileSync(join(t.root, "stub.txt"), "// Implementation is owned by a later feature.\n");
+      git(t.root, "add", "stub.txt");
+      git(t.root, "commit", "-q", "-m", "Skeleton");
+      t.executor.initiatives = t.initiatives;
+      t.executor.workflows = t.workflows;
+      t.executor.failing = failing;
+      t.executor.extraWrites.base = "stub.txt";
+      t.executor.extraWrites.message = "stub.txt";
+      // T002 modifies a file the released base still holds: no conversion.
+      t.executor.extraTasks.message = ["README.md"];
+      Object.assign(t.workflows.config.workflows ?? {}, { planAhead: true });
+      await t.start({ plan: stubbed, policy: { ...policy, executionMode: "worktree" }, featureAutoApproval: { maxTasks: 5, maxFiles: 5 }, budget: { maxTotalTokens: 6_000_000, maxAgentCalls: 2000, maxActiveMs: 6_000_000 } });
+      await t.approveSplit();
+      let view = await t.drive();
+      for (let i = 0; i < 4 && !["completed", "blocked"].includes(view.status); i++) {
+        const waiting = view.pendingDecisions.find((d) => d.kind === "approval");
+        if (!waiting?.featureId) break;
+        await t.approveFeature(waiting.featureId);
+        view = await t.drive();
+      }
+      return { t, view, runId: t.featureOf(view, "message").runId ?? "" };
+    }
+
+    test("on, a modify of an upstream stub the accepted upstream removed becomes a create at the release", async () => {
+      const { t, view, runId } = await removedStub(false);
+      expect(t.executor.denied).toEqual([]);
+      expect(view.status).toBe("completed");
+      const store = t.workflows.store;
+      const state = store.state(runId);
+      // Planned on the provisional base (stub.txt tracked): a modify; released, base removed it.
+      expect(state.rootGraph?.tasks.map((task) => task.writes.map((w) => `${w.path}:${w.action}`))).toEqual([["message.txt:create", "stub.txt:modify"], ["README.md:modify"]]);
+      expect(state.graph?.tasks.map((task) => task.writes.map((w) => `${w.path}:${w.action}`))).toEqual([["message.txt:create", "stub.txt:create"], ["README.md:modify"]]);
+      expect(t.executor.actions).toEqual(["message.txt:create", "stub.txt:create"]);
+      const link = store.latestArtifact(runId, "corrections/release.json");
+      expect(JSON.parse(store.readArtifact(runId, link?.id ?? "")) as object).toMatchObject({ rule: "host-release", released: [{ taskId: "T001", path: "stub.txt", action: "create" }] });
+      const release = store.latestArtifact(runId, "plan-ahead/release.json");
+      const record = JSON.parse(store.readArtifact(runId, release?.id ?? "")) as { created?: unknown; modified?: unknown };
+      expect(record.created).toEqual([{ taskId: "T001", path: "stub.txt", action: "create" }]);
+      expect(record.modified).toBeUndefined();
+      expect(git(t.root, "show", `baked/wf/${runId}:stub.txt`)).toBe("ready v1 (message)");
+      expect(await staleReleasedCreates(store, runId, state)).toEqual([]);
+      // Acceptance replays the link: a modify of a file the released base holds stays one.
+      const graph = state.graph;
+      if (!graph || !state.approvalRoot) throw new Error("message has no approved graph");
+      const forgedWrite = { taskId: "T002", path: "README.md", action: "create" as const };
+      const forged = applyReleasedCreates(graph, [forgedWrite]);
+      expect(forged.tasks[1]?.writes[0]?.action).toBe("create");
+      const tampered = store.transaction(() => store.artifact(runId, "correction", "corrections/release-2.json", canonical({
+        schemaVersion: 1, parentDigest: state.approvalRoot, parentGraphHash: hashJson(graph), rule: "host-release", newGraphHash: hashJson(forged),
+        findingIds: [], taskIds: ["T002"], roundKind: "release", round: 1, released: [forgedWrite],
+      })));
+      const runPolicy = PolicySchema.parse(JSON.parse(store.run(runId).policy_json));
+      expect(() => assertAcceptance(store, runId, { ...state, graph: forged, correctionHashes: [...state.correctionHashes, tampered.content_hash] }, runPolicy)).toThrow("Correction exceeds the approved authority");
+    }, 180_000);
+
+    test("on, a run released before #2517 keeps the modify of the removed stub until a resume converts it", async () => {
+      const { t, runId } = await removedStub(true);
+      const store = t.workflows.store;
+      expect(store.run(runId)).toMatchObject({ status: "blocked", reason: "invalid_output" });
+      // What a release before #2517 left: the planned modify, no host-release link.
+      store.transaction(() => {
+        const old = store.state(runId);
+        const link = store.latestArtifact(runId, "corrections/release.json");
+        old.correctionHashes = old.correctionHashes.filter((h) => h !== link?.content_hash);
+        old.manifest.correctionHashes = [...old.correctionHashes];
+        old.graph = structuredClone(old.rootGraph);
+        old.manifest.effectiveGraphHash = hashJson(old.graph);
+        if (old.graph) store.syncTasks(runId, old.graph);
+        store.saveState(runId, old);
+      });
+      expect(store.state(runId).graph?.tasks[0]?.writes.map((w) => w.action)).toEqual(["create", "modify"]);
+      const repeat = invalidOutputRepeat(store, runId);
+      store.transaction(() => {
+        const old = store.state(runId);
+        old.prompt += repeat?.note ?? "";
+        store.saveState(runId, old);
+        store.artifact(runId, "recovery", INVALID_OUTPUT_KEY, repeat?.key ?? "");
+      });
+      expect(repeatsInvalidOutput(store, runId)).toBe(true);
+      t.executor.failing = false;
+      const run = await t.workflows.get(runId);
+      await t.workflows.resume(runId, { commandId: newId(), expectedRevision: run.revision });
+      const view = await t.drive();
+      expect(t.executor.denied).toEqual([]);
+      expect(view.status).toBe("completed");
+      expect(t.executor.actions).toEqual(["message.txt:create", "stub.txt:create"]);
+      const state = store.state(runId);
+      expect(state.graph?.tasks[0]?.writes.map((w) => `${w.path}:${w.action}`)).toEqual(["message.txt:create", "stub.txt:create"]);
+      expect(releaseLinkCount(store, runId)).toBe(1);
+      expect(git(t.root, "show", `baked/wf/${runId}:stub.txt`)).toBe("ready v1 (message)");
+      // Converted once: a second look finds nothing left.
+      expect(await staleReleasedCreates(store, runId, state)).toEqual([]);
+    }, 180_000);
+
     // Bench round 61, manlens (#1946): roff and inline were accepted while document, planned ahead on
     // them and on render, still planned; their files were on neither its provisional base nor its
     // "later" set, and its first plan was refused for read hints on them.

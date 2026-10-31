@@ -1,5 +1,11 @@
 import { canonical, hashJson } from "../specs/hash.js";
-import { applyReleasedCreates, type ReleasedWrite, releasedCreates } from "./dependencies.js";
+import {
+  applyReleasedCreates,
+  type ReleasedWrite,
+  releasedCreates,
+  releasedFrom,
+  releasedModifies,
+} from "./dependencies.js";
 import { CorrectionSchema } from "./schemas.js";
 import type { WorkflowStore } from "./store.js";
 import type { RuntimeState } from "./types.js";
@@ -11,9 +17,11 @@ export const RELEASE_RECORD = "plan-ahead/release.json";
 /**
  * The planned creates of a released planned-ahead run that are still `create` although the
  * release brought their files in (#2514): tracked on the released base (`to`) and not on the
- * provisional one (`from`). A run released before #2514 kept them; its resume and every later
- * drive convert them (#2540). Empty for a run that is not released, has no release record, or
- * has nothing left to convert, so a second call converts nothing.
+ * provisional one (`from`); and the planned modifies still `modify` although the release removed
+ * their files (#2517): tracked on `from` and not on `to`. A run released before the conversion
+ * kept them; its resume and every later drive convert them (#2540). Empty for a run that is not
+ * released, has no release record, or has nothing left to convert, so a second call converts
+ * nothing.
  */
 export async function staleReleasedCreates(
   store: WorkflowStore,
@@ -31,7 +39,7 @@ export async function staleReleasedCreates(
   return releasedCreatesBetween(store.workspace, state, from, to);
 }
 
-/** `releasedCreates` of `state`'s graph for a release from `from` to `to`. */
+/** `releasedCreates` and `releasedModifies` of `state`'s graph for a release from `from` to `to`. */
 export async function releasedCreatesBetween(
   workspace: string,
   state: RuntimeState,
@@ -41,13 +49,17 @@ export async function releasedCreatesBetween(
   if (!state.graph) return [];
   const before = await trackedPaths(workspace, from);
   const after = await trackedPaths(workspace, to);
-  return releasedCreates(state.graph, (path) => after.has(path) && !before.has(path));
+  return [
+    ...releasedCreates(state.graph, (path) => after.has(path) && !before.has(path)),
+    ...releasedModifies(state.graph, (path) => before.has(path) && !after.has(path)),
+  ];
 }
 
 /**
- * Turns `released` into `modify` in `state` (not saved) as a `host-release` correction link that
- * acceptance replays (#2514). Writes no longer `create` in the graph are left out, so a repeat
- * converts nothing. Call it inside a store transaction. Returns the writes converted.
+ * Converts `released` in `state` (not saved) as a `host-release` correction link that acceptance
+ * replays: a create into `modify` (#2514), a modify into `create` (#2517). Writes whose action in
+ * the graph is no longer the one they convert from are left out, so a repeat converts nothing.
+ * Call it inside a store transaction. Returns the writes converted.
  */
 export function recordReleasedCreates(
   store: WorkflowStore,
@@ -61,7 +73,9 @@ export function recordReleasedCreates(
     graph.tasks.some(
       (t) =>
         t.id === r.taskId &&
-        t.writes.some((w) => w.path === r.path && w.action === "create" && w.content === undefined),
+        t.writes.some(
+          (w) => w.path === r.path && w.action === releasedFrom(r) && w.content === undefined,
+        ),
     ),
   );
   if (!due.length) return [];
