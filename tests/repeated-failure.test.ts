@@ -11,7 +11,7 @@ import {
   unfinishedRepeatRemedies,
 } from "../src/core/workflows/repeated-failure.js";
 import { WorkflowFault } from "../src/core/workflows/errors.js";
-import { invalidOutputDecision, invalidOutputKey } from "../src/core/workflows/invalid-output-repeat.js";
+import { invalidOutputBuildChange, invalidOutputDecision, invalidOutputKey } from "../src/core/workflows/invalid-output-repeat.js";
 import { errorRecovery } from "../src/core/workflows/remedies.js";
 import { unfinishedRepeatFault } from "../src/core/workflows/scheduler.js";
 import { writeRefusalOf } from "../src/core/workflows/write-refusals.js";
@@ -242,6 +242,26 @@ describe("invalid-output repeat decision (#2520)", () => {
     expect(invalidOutputDecision({ refusals: [], diagnostic: "d1", inputs, noted: true, previous })).toBe("repeat");
     expect(invalidOutputDecision({ refusals: [], diagnostic: "d2", inputs, noted: true, previous })).toBe("progress");
     expect(invalidOutputDecision({ refusals: [], diagnostic: "d1", inputs, noted: false, previous })).toBe("first");
+  });
+  // #2587: the build is an input of the key; a key from before it, which has none, differs.
+  test("another build, or a key without one, is progress; the same build repeats", () => {
+    const built = { routing: 1, build: "0.5.0+1c434312e0b7" };
+    const previous = invalidOutputKey({ refusals: [], diagnostic: "d1", inputs: { routing: 1, build: "0.5.0+7d1e0a52c4b9" } });
+    const facts = { refusals: [], diagnostic: "d1", inputs: built, noted: true, previous };
+    expect(invalidOutputDecision(facts)).toBe("progress");
+    expect(invalidOutputBuildChange(facts)).toEqual({ from: "0.5.0+7d1e0a52c4b9", to: built.build });
+    const same = invalidOutputKey({ refusals: [], diagnostic: "d1", inputs: built });
+    expect(invalidOutputDecision({ ...facts, previous: same })).toBe("repeat");
+    expect(invalidOutputBuildChange({ ...facts, previous: same })).toBeNull();
+    // A key from before #2587 and the pre-key fallback both have no build.
+    const legacy = invalidOutputKey({ refusals, diagnostic: "d1", inputs });
+    expect(invalidOutputDecision({ refusals, diagnostic: "d1", inputs: built, noted: false, previous: legacy })).toBe("progress");
+    expect(invalidOutputDecision({ ...facts, previous: null })).toBe("progress");
+    expect(invalidOutputBuildChange({ ...facts, previous: null })).toEqual({ from: null, to: built.build });
+    // Another input changed as well: the build is not why the resume passes.
+    expect(invalidOutputBuildChange({ ...facts, inputs: { ...built, routing: 2 } })).toBeNull();
+    // A record from before #2587 replays as it was decided.
+    expect(invalidOutputDecision({ refusals: [], diagnostic: "d1", inputs, noted: true, previous: null })).toBe("repeat");
   });
   test("a journaled refusal reads back as its code and path", () => {
     expect(writeRefusalOf("Create target already exists: lib/src/template.dart")).toEqual({ code: "exists", path: "lib/src/template.dart" });
