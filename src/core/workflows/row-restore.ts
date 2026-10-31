@@ -1,7 +1,9 @@
+import { hashBytes } from "../specs/hash.js";
 import {
   CONTINUES,
   measureFileRows,
   measureRows,
+  type RowBlockDrift,
   rowBlockDecision,
   rowBlockDrifts,
   rowHead,
@@ -71,6 +73,17 @@ export interface RowRestoreRecord {
   verdict: "would_restore" | "restored" | "put_back" | "declined";
   /** The writing task's required checks on the edit; null when the host did not edit. */
   checks: "passed" | "failed" | "none" | null;
+  /**
+   * Where the comparison ran when not at the checks stage (#2543): `resume`, a resume of a run
+   * blocked `invalid_output` (recorded under `row-restores/resume/`, never written); `drive`,
+   * before the task-graph stage drives its tasks; `task`, at the start of a task's session.
+   * Absent at the checks stage (and in records before it).
+   */
+  at?: "resume" | "drive" | "task";
+  /** The tasks blocked when the run was resumed (`at: "resume"`); the task (`at: "task"`). */
+  blocked?: string[];
+  /** The hash of the file the sites were read from (#2543): the same file records nothing new. */
+  file?: string;
 }
 
 /** The rows the host restores: each with a one-line file row in the row's notation that then holds. */
@@ -174,6 +187,83 @@ export function rowRestores(
         record: { schemaVersion: 1, path, tasks, mode, sites, restore, verdict, checks: null },
         before,
         after,
+      },
+    ];
+  });
+}
+
+/** Where the resume records its comparison of the miscounted rows (`rowRunRestores`, #2543). */
+export const ROW_RESTORE_RESUME_DIR = `${ROW_RESTORE_DIR}resume/`;
+
+/**
+ * The rows of the delivered test files whose long byte runs the file counts differently (#2515,
+ * `RowMeasure.runs`), outside the checks stage (#2543): on resume of a run blocked
+ * `invalid_output` and at the start of a task's session. R82 tinyflate deflate 82f19908 blocked at
+ * T007 on `tests/deflate_match_test.c` (303 bytes of `78` for the row's 300, 238 of `71` for 259);
+ * resumed after #2515 and #2522 it blocked again within a minute, because both run only at the
+ * checks stage, which a run blocked at a task never reaches. The sites are `rowRestorePlan`'s for
+ * those rows only (the restore of #2522, its decision unchanged), so the replay of the record
+ * reads them as the checks stage's. `paths` limits the files (all the graph writes when absent).
+ * Each result carries the run drifts its file has, restored or not, for the brief.
+ */
+export function rowRunRestores(
+  request: string,
+  graph: Pick<TaskGraph, "tasks">,
+  read: (path: string) => string | null,
+  mode: RowRestoreRecord["mode"],
+  paths?: readonly string[],
+): { record: RowRestoreRecord; before: string; after: string; drifts: RowBlockDrift[] }[] {
+  const plain = (path: string) => path.trim().replace(/^(?:\.\/)+/, "");
+  const wanted = paths?.map(plain);
+  // Only the wanted files are read and compared: this runs before every task's session.
+  const scoped = wanted
+    ? {
+        tasks: graph.tasks.map((t) => ({
+          ...t,
+          writes: t.writes.filter((w) => wanted.includes(plain(w.path))),
+        })),
+      }
+    : graph;
+  const compared = rowBlockDrifts(request, scoped, read).filter((c) => c.record.delivered);
+  const runs = compared.flatMap((c) => {
+    const drifts = c.drifts.filter((d) => d.runs.length);
+    return drifts.length ? [{ path: c.record.path, tasks: c.record.tasks, drifts }] : [];
+  });
+  if (!runs.length) return [];
+  const blocks = suppliedRows(
+    request,
+    runs.map((r) => r.path),
+  );
+  return runs.flatMap(({ path, tasks, drifts }) => {
+    const block = blocks.get(path);
+    const before = read(path);
+    if (!block || before === null) return [];
+    const rows = new Set(drifts.map((d) => d.row));
+    const plan = rowRestorePlan(block.lines, before, (sites) =>
+      rowRestoreDecision(sites.filter((s) => rows.has(s.row))),
+    );
+    const sites = plan.sites.filter((s) => rows.has(s.row));
+    const verdict = !plan.restore.length
+      ? "declined"
+      : mode === "on"
+        ? "restored"
+        : "would_restore";
+    return [
+      {
+        record: {
+          schemaVersion: 1,
+          path,
+          tasks,
+          mode,
+          sites,
+          restore: plan.restore,
+          verdict,
+          checks: null,
+          file: hashBytes(before),
+        },
+        before,
+        after: plan.after,
+        drifts,
       },
     ];
   });

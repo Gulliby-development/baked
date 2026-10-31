@@ -898,8 +898,16 @@ import {
   rowBlockDrifts,
   rowBlockExtraSummary,
   rowRunFindings,
+  rowRunText,
 } from "./row-block-drift.js";
-import { ROW_RESTORE_DIR, ROW_RESTORE_KIND, rowRestores } from "./row-restore.js";
+import {
+  ROW_RESTORE_DIR,
+  ROW_RESTORE_KIND,
+  ROW_RESTORE_RESUME_DIR,
+  type RowRestoreRecord,
+  rowRestores,
+  rowRunRestores,
+} from "./row-restore.js";
 import {
   codeTaskCheckProblems,
   estimateSourceOf,
@@ -2926,6 +2934,9 @@ export class WorkflowScheduler {
                   );
                 this.repair(runId, state, policy, findings, "repair", "task");
               }
+              // A resume of a run blocked at a task recorded the test files whose prescribed rows
+              // it miscounts (#2543): restored before any task runs, worktrees included.
+              await this.restoreRunRows(runId, stepId, state, policy, signal, "drive");
               if ((policy.maxConcurrentWriters > 1 || candidateCount(policy) > 1) && state.worktree)
                 await this.implementParallel(runId, stepId, state, policy, profiles, signal);
               else await this.implement(runId, stepId, state, policy, profiles, signal);
@@ -8702,6 +8713,21 @@ ${note}`;
     // applies runs no session, so `beforeSession` never sees it.
     if (!checking && firstRun && task.origin === "planned" && task.writes.length)
       await this.recordSuppliedChecks(runId, state, task, runRoot(this.store.workspace, state));
+    // The prescribed rows a test file of this task miscounts, restored before its session as a
+    // host edit of the stage (as the checks stage's restore is, so a correction the restore fixed
+    // still reads as passing), and the ones left named in its brief (#2543).
+    const rowRuns =
+      !checking && task.writes.length && !hostWritten(task)
+        ? await this.restoreRunRows(
+            runId,
+            this.store.steps(runId).find((s) => s.id === child)?.parent_step_id ?? child,
+            state,
+            policy,
+            signal,
+            "task",
+            task,
+          )
+        : [];
     if (
       !checking &&
       (task.writes.length === 0 ||
@@ -8788,7 +8814,16 @@ ${note}`;
             Object.fromEntries(inherited.map((path) => [path, earlier.get(path) ?? null])),
           )
         : "";
-      const focus = correctionFocus(this.store, runId, state, task);
+      const named = correctionFocus(this.store, runId, state, task);
+      // A correction narrowed to its findings' files may also write a test of its own whose
+      // prescribed row it miscounts (#2543).
+      const runTests = [...new Set(rowRuns.map((d) => d.path))].filter(
+        (path) => !named.files.includes(path) && task.writes.some((w) => w.path === path),
+      );
+      const focus =
+        named.files.length && runTests.length
+          ? { ...named, files: [...named.files, ...runTests] }
+          : named;
       const diagnostics = staticCorrection(this.store, runId, policy, task);
       const narrow = state.widenedCorrections.includes(task.id)
         ? null
@@ -8870,6 +8905,14 @@ ${note}`;
               ...this.failedFixers(runId, task),
               ...this.misquoteContinue(runId, state, task.id),
               ...this.exactText(runId, state, policy, task),
+              ...(rowRuns.length
+                ? {
+                    rowRuns: {
+                      findings: rowRuns.map(rowRunText),
+                      note: "A test file holds a prescribed row whose long byte run it counts differently from the request. Correct the test's literal to the row as the request gives it; the source is not what differs.",
+                    },
+                  }
+                : {}),
               ...(focus.files.length
                 ? {
                     correctionFocus: {
@@ -11960,38 +12003,17 @@ ${note}`;
     } catch {
       return;
     }
-    const write = (path: string, content: string) => {
-      const attempt = this.store.reserve(runId, stepId, null, 0, policy);
-      const absolute = workspacePath(root, path);
-      const before = this.store.transaction(() => capturePreImage(this.store, runId, absolute));
-      this.journal.publish(runId, attempt, path, Buffer.from(content), before, "file_patch", root);
-      this.store.transaction(() => this.store.finishAttempt(runId, attempt, "completed", 0));
-    };
     for (const { record, before, after } of planned) {
       let body = record;
       if (mode === "on" && record.restore.length) {
-        write(record.path, after);
         const writer = graph.tasks.find((t) => t.id === record.tasks.at(-1));
-        const checks = writer
-          ? this.gatedChecks(runId, state, policy, writer, root, [record.path]).filter(
-              (c) => c.required,
-            )
-          : [];
-        let passed = true;
-        for (const check of checks) {
-          signal.throwIfAborted();
-          const ran = await this.runTaskCheck(runId, stepId, check, policy, signal, root);
-          if (ran.status !== "passed") {
-            passed = false;
-            break;
-          }
-        }
-        if (!passed) write(record.path, before);
-        body = {
-          ...record,
-          verdict: passed ? "restored" : "put_back",
-          checks: !checks.length ? "none" : passed ? "passed" : "failed",
-        };
+        const checks = await this.writeRestoredRows(runId, stepId, state, policy, signal, {
+          path: record.path,
+          before,
+          after,
+          writer,
+        });
+        body = { ...record, verdict: checks === "failed" ? "put_back" : "restored", checks };
       }
       this.store.transaction(() =>
         this.store.artifact(
@@ -12002,6 +12024,143 @@ ${note}`;
         ),
       );
     }
+  }
+  /**
+   * Writes a file's restored rows as a journaled host edit and runs the writing task's required
+   * checks on it; when one fails the file is put back as it was (#2522, #2543). Returns how the
+   * checks went: `none` when the writer has no required check.
+   */
+  private async writeRestoredRows(
+    runId: string,
+    stepId: string,
+    state: RuntimeState,
+    policy: RunPolicy,
+    signal: AbortSignal,
+    edit: { path: string; before: string; after: string; writer: Task | undefined },
+  ): Promise<"passed" | "failed" | "none"> {
+    const root = runRoot(this.store.workspace, state);
+    const write = (content: string) => {
+      const attempt = this.store.reserve(runId, stepId, null, 0, policy);
+      const absolute = workspacePath(root, edit.path);
+      const before = this.store.transaction(() => capturePreImage(this.store, runId, absolute));
+      this.journal.publish(
+        runId,
+        attempt,
+        edit.path,
+        Buffer.from(content),
+        before,
+        "file_patch",
+        root,
+      );
+      this.store.transaction(() => this.store.finishAttempt(runId, attempt, "completed", 0));
+    };
+    write(edit.after);
+    const checks = edit.writer
+      ? this.gatedChecks(runId, state, policy, edit.writer, root, [edit.path]).filter(
+          (c) => c.required,
+        )
+      : [];
+    for (const check of checks) {
+      signal.throwIfAborted();
+      const ran = await this.runTaskCheck(runId, stepId, check, policy, signal, root);
+      if (ran.status !== "passed") {
+        write(edit.before);
+        return "failed";
+      }
+    }
+    return checks.length ? "passed" : "none";
+  }
+  /**
+   * The restore of a prescribed row whose long byte run a delivered test file counts differently,
+   * outside the checks stage (#2543, `rowRunRestores`): R82 tinyflate deflate 82f19908 blocked
+   * `invalid_output` at T007 on `tests/deflate_match_test.c` and, resumed, blocked again on the
+   * same literal, because the checks stage's comparison and restore never ran before the task's
+   * session. `drive`: before the task-graph stage drives its tasks, the files a resume recorded
+   * (`row-restores/resume/`). `task`: at the start of `task`'s session, the test files it writes
+   * and the files a resume recorded for it. Each restore is the checks stage's (`writeRestoredRows`,
+   * kept when the writing task's required checks pass), on by default; `rowRunRestore: "off"`
+   * records it in shadow. Recorded under `row-restores/<path>.json`; a file whose last record has
+   * the same content records nothing new, and one the host put back is not edited again. Returns
+   * the run drifts left in those files, for the task's brief. A failure to read records nothing.
+   */
+  private async restoreRunRows(
+    runId: string,
+    stepId: string,
+    state: RuntimeState,
+    policy: RunPolicy,
+    signal: AbortSignal,
+    at: "drive" | "task",
+    task?: Task,
+  ): Promise<RowBlockDrift[]> {
+    const graph = state.rootGraph ?? state.graph;
+    if (!graph) return [];
+    const resumed = this.store
+      .latestArtifacts(runId, `${ROW_RESTORE_RESUME_DIR}%`)
+      .flatMap((artifact) => {
+        try {
+          const record = JSON.parse(
+            this.store.readArtifact(runId, artifact.id),
+          ) as RowRestoreRecord;
+          return !task || record.blocked?.includes(task.id) ? [record.path] : [];
+        } catch {
+          return [];
+        }
+      });
+    const own = task ? task.writes.filter((w) => w.action !== "delete").map((w) => w.path) : [];
+    const paths = [...new Set([...own, ...resumed])];
+    if (!paths.length) return [];
+    const mode = policy.rowRunRestore === "off" ? "shadow" : "on";
+    const root = runRoot(this.store.workspace, state);
+    let planned: ReturnType<typeof rowRunRestores>;
+    try {
+      planned = rowRunRestores(
+        state.requestText || state.prompt,
+        graph,
+        (path) => readText(workspacePath(root, path)),
+        mode,
+        paths,
+      );
+    } catch {
+      return [];
+    }
+    const left: RowBlockDrift[] = [];
+    let kept = false;
+    for (const { record, before, after, drifts } of planned) {
+      const path = `${ROW_RESTORE_DIR}${record.path}.json`;
+      const latest = this.store.latestArtifact(runId, path);
+      let last: RowRestoreRecord | null = null;
+      try {
+        last = latest
+          ? (JSON.parse(this.store.readArtifact(runId, latest.id)) as RowRestoreRecord)
+          : null;
+      } catch {}
+      let body: RowRestoreRecord = { ...record, at, ...(task ? { blocked: [task.id] } : {}) };
+      const putBack = last?.file === record.file && last?.verdict === "put_back";
+      if (mode === "on" && record.restore.length && !putBack) {
+        const writer =
+          (task && own.some((p) => p.trim().replace(/^(?:\.\/)+/, "") === record.path)
+            ? task
+            : undefined) ?? graph.tasks.find((t) => t.id === record.tasks.at(-1));
+        const checks = await this.writeRestoredRows(runId, stepId, state, policy, signal, {
+          path: record.path,
+          before,
+          after,
+          writer,
+        });
+        body = { ...body, verdict: checks === "failed" ? "put_back" : "restored", checks };
+        if (checks !== "failed") {
+          kept = true;
+          left.push(...drifts.filter((d) => !record.restore.includes(d.row)));
+        } else left.push(...drifts);
+      } else left.push(...drifts);
+      if (putBack) continue;
+      const content = canonical(body);
+      if (latest?.content_hash === hashBytes(content)) continue;
+      this.store.transaction(() => this.store.artifact(runId, ROW_RESTORE_KIND, path, content));
+    }
+    // A correction whose failing checks the restore fixed reads a new snapshot (`correctionPassing`).
+    if (kept) await this.snapshot(runId, state, policy, signal);
+    return left;
   }
   private async runTaskCheck(
     runId: string,
