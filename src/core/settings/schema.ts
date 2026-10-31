@@ -1066,7 +1066,11 @@ export const SETTINGS: readonly SettingDefinition[] = [
     type: "enum",
     default: "off",
     options: [
-      { value: "off", label: "off", help: "The rewrite gets only the cases review found." },
+      {
+        value: "off",
+        label: "off",
+        help: "A first rewrite gets only the cases review found; a second rewrite of the same code still probes once.",
+      },
       { value: "on", label: "on", help: "Probe the class once and add the failing inputs." },
     ],
   },

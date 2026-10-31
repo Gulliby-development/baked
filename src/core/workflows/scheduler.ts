@@ -461,6 +461,7 @@ import {
 } from "./evidence-decisions.js";
 import { ExecutionBudgetClock, executionClock, executionTimeout } from "./execution-clock.js";
 import {
+  BATTERY_CASE_CLAIM,
   BATTERY_CASES,
   BATTERY_NOTE,
   type BatteryRecord,
@@ -477,9 +478,11 @@ import {
   chainSpecRows,
   chainSubject,
   type FamilyRecord,
+  familyCaseId,
   familyDecision,
   observedValue,
   recordRestoredRemovals,
+  rewriteDesign,
   rewritesSymbol,
   symbolKey,
   taskChainRecord,
@@ -4521,7 +4524,10 @@ export class WorkflowScheduler {
     if (task.origin === "planned") return {};
     const record = taskChainRecord(this.store, runId, task.id);
     if (!rewritesSymbol(record)) return {};
-    const members = batteryOf(chainFindings(this.store, runId), record);
+    const all = chainFindings(this.store, runId);
+    const members = batteryOf(all, record);
+    // A second rewrite carries the reviewer's latest suggested fix of the chain (#2568).
+    const design = rewriteDesign(all, record);
     return {
       battery: {
         symbol: record.symbol,
@@ -4536,6 +4542,7 @@ export class WorkflowScheduler {
         cases: batteryTable(members),
         spec: chainSpecRows(state.spec, members),
         note: BATTERY_NOTE,
+        ...(design ? { design } : {}),
       },
     };
   }
@@ -4646,7 +4653,7 @@ export class WorkflowScheduler {
         symbol: finding.symbol,
         ...(finding.family ? { family: finding.family } : {}),
         evidenceIds: [evidenceId],
-        claim: `Battery case ${finding.id} of ${chainSubject(record)} shows its reported behavior again after ${record.taskId}: ${finding.claim}`,
+        claim: `${BATTERY_CASE_CLAIM} ${finding.id} of ${chainSubject(record)} shows its reported behavior again after ${record.taskId}: ${finding.claim}`,
         impact: `${record.taskId} rewrote ${chainSubject(record)} for its chain of findings, and the host's battery run before the next review prints ${JSON.stringify(repro.actual)} again where the spec needs ${JSON.stringify(repro.expected)}. Output: ${outcome.output.slice(-400)}`,
         suggestedFix: `Make ${chainSubject(record)} pass every case of the battery, ${finding.id} included, without breaking the others.`,
         repro,
@@ -4663,7 +4670,9 @@ export class WorkflowScheduler {
    * chain's finding, so the battery the rewrite gets, its repro check and the battery before the
    * next review hold the class, not only the members review found one round at a time (R62
    * md-site: four more members of `findDelimitedInline`, one per round). Recorded under
-   * `chains/family/`; a failed call or an unusable case leaves the battery as it was.
+   * `chains/family/`; a failed call or an unusable case leaves the battery as it was. The second
+   * rewrite of one symbol or family (`repeat: "probe"`, #2568) probes whatever `chainProbe` says,
+   * shown the earlier rewrites' batteries with its own.
    */
   private async chainFamily(
     runId: string,
@@ -4674,10 +4683,11 @@ export class WorkflowScheduler {
     root: string,
     signal: AbortSignal,
   ): Promise<void> {
-    if (policy.chainProbe !== "on" || policy.chainRewrite !== "on" || task.origin === "planned")
-      return;
+    if (policy.chainRewrite !== "on" || task.origin === "planned") return;
     const record = taskChainRecord(this.store, runId, task.id);
     if (!rewritesSymbol(record)) return;
+    const second = record.repeat === "probe";
+    if (policy.chainProbe !== "on" && !second) return;
     if (this.store.latestArtifact(runId, `${CHAIN_FAMILY_DIR}${task.id}.json`)) return;
     const profile = ProfileSchema.array()
       .parse(JSON.parse(this.store.run(runId).profiles_json))
@@ -4685,7 +4695,19 @@ export class WorkflowScheduler {
     const executables = reproExecutables(policy.checks);
     const all = chainFindings(this.store, runId);
     const head = all.get(record.findingId);
-    const members = batteryOf(all, record);
+    // A second rewrite's probe is seeded with the earlier rewrites' batteries too (#2568).
+    const seededBy = second ? (record.rewrittenBy ?? []) : [];
+    const members = [
+      ...new Map(
+        [
+          ...seededBy.flatMap((id) => {
+            const earlier = taskChainRecord(this.store, runId, id);
+            return rewritesSymbol(earlier) ? batteryOf(all, earlier) : [];
+          }),
+          ...batteryOf(all, record),
+        ].map((f) => [f.id, f]),
+      ).values(),
+    ].slice(-BATTERY_CASES);
     if (!profile || !executables.length || !head || !members.length) return;
     const child = this.store.transaction(() => this.store.beginStep(runId, "chain-family", stepId));
     let proposed: { cases: Omit<Repro, "actual">[] };
@@ -4732,6 +4754,7 @@ export class WorkflowScheduler {
             file: head.file,
             symbol: record.symbol,
             shown: members.map((m) => m.id),
+            ...(seededBy.length ? { seededBy } : {}),
             cases: [],
           } satisfies FamilyRecord),
         );
@@ -4764,6 +4787,7 @@ export class WorkflowScheduler {
       file: head.file,
       symbol: record.symbol,
       shown: members.map((m) => m.id),
+      ...(seededBy.length ? { seededBy } : {}),
       cases: outcomes.map((o) => {
         // A case that crashes inside the chain's file is recorded in shadow (#2136).
         const { actual: _, ...crash } = caseCrash(o, [head.file]);
@@ -4803,7 +4827,7 @@ export class WorkflowScheduler {
         if (entry?.decision !== "join" || !probe) continue;
         const repro: Repro = { ...probe, actual: observedValue(outcome.output) };
         const finding: Review["findings"][number] = {
-          id: `${head.id}-family-${String(index + 1)}`,
+          id: familyCaseId(head.id, index + 1),
           kind: "correctness",
           severity: head.severity === "critical" ? "critical" : "high",
           basis: "spec",

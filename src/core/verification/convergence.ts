@@ -9,10 +9,13 @@ import {
   chainFindings,
   chainRecord,
   chainSubject,
+  chainTaskRecords,
   correctiveChain,
+  recordRewriteRepeats,
   recordUnchangedRepeats,
   rewriteStep,
   rewritesSymbol,
+  withRewrites,
 } from "../workflows/finding-chain.js";
 import { counterexampleOf } from "../workflows/quality/properties.js";
 import { recoveryAdvice } from "../workflows/remedies.js";
@@ -1175,6 +1178,12 @@ export function appendCorrections(
     ? chainFindings(store, runId, findings)
     : new Map();
   const chainRecords: ChainRecord[] = [];
+  // The run's earlier chain decisions, read once, for each record's count of rewrites (#2568).
+  let earlierChains: ChainRecord[] | null = null;
+  const earlier = (): ChainRecord[] => {
+    if (!earlierChains) earlierChains = chainTaskRecords(store, runId);
+    return earlierChains;
+  };
   const siteRecords: { taskId: string; findingIds: string[]; sites: SiteCheck[] }[] = [];
   const additions = [...groups].map(([key, group]) => {
     const id = `T${String(next++).padStart(3, "0")}`;
@@ -1182,7 +1191,10 @@ export function appendCorrections(
       ? null
       : correctiveChain(known, group.findings.filter(chainable));
     const record = found
-      ? chainRecord(id, found.finding, found.chain, policy.chainRewrite ?? "off")
+      ? withRewrites(chainRecord(id, found.finding, found.chain, policy.chainRewrite ?? "off"), [
+          ...earlier(),
+          ...chainRecords,
+        ])
       : null;
     if (record) chainRecords.push(record);
     // A rewrite of a family across files may write each file of its chain (#2334).
@@ -1293,6 +1305,8 @@ export function appendCorrections(
   // A finding back after its corrective changed no file (#2137, shadow); v1, v2 and a granted
   // round all open review and convergence correctives here.
   recordUnchangedRepeats(store, runId, policy, findings.filter(chainable));
+  // A finding after two rewrites of its symbol or family is the convergence ask (#2568, shadow).
+  recordRewriteRepeats(store, runId, policy, chainRecords);
   state.correctionHashes.push(artifact.content_hash);
   state.manifest.correctionHashes = [...state.correctionHashes];
   state.graph = graph;

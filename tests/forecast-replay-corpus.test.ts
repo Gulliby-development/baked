@@ -699,6 +699,16 @@ describe("finding chains replay on recorded findings (#1981)", () => {
         ["F4-2", "T012", ["F2", "F3", "F4-2"], "rewrite", ["F2", "F3", "F4"]],
         ["F5", null, ["F2", "F3", "F4", "F5"], "rewrite", ["F2", "F3", "F4", "F5"]],
       ]);
+      // The rewrite count (#2568): T012 (F4-2) is the second rewrite of findDelimitedInline, which
+      // probes and carries the reviewer's design, and F5 after T011 and T012 is the convergence ask.
+      expect(replay.steps.map((s) => [s.findingId, s.rewrites, s.repeat])).toEqual([
+        ["F1", 0, "none"],
+        ["F2", 0, "none"],
+        ["F3", 0, "none"],
+        ["F4", 1, "probe"],
+        ["F4-2", 1, "probe"],
+        ["F5", 2, "ask"],
+      ]);
       // A battery holds only findings with a repro, so each link of the chain carries its case.
       expect(store.findings(runId).map((f) => f.id)).toEqual(["F1", "F2", "F3", "F4", "F4-2", "F5"]);
       // Off, the same findings patch, as the round did, and nothing was recorded under chains/.
