@@ -83,6 +83,7 @@ import { isStoreError, recordHostError } from "./host-error.js";
 import { InitiativeService } from "./initiatives/service.js";
 import { InitiativeStore } from "./initiatives/store.js";
 import {
+  INVALID_OUTPUT_BUILD_CHANGE,
   INVALID_OUTPUT_KEY,
   invalidOutputRepeat,
   repeatedInvalidOutputAdvice,
@@ -1710,6 +1711,15 @@ export class NativeWorkflowService implements WorkflowService {
         } catch {}
       this.store.saveState(runId, state);
     }
+    // A resume on another build than the last one's tries what that build changed in the host
+    // checks, so it is one attempt even with the same diagnostic; record why it passed (#2587).
+    if (repeat.buildChange)
+      this.store.artifact(
+        runId,
+        "recovery",
+        INVALID_OUTPUT_BUILD_CHANGE,
+        canonical({ diagnosticId: repeat.record.diagnosticId, ...repeat.buildChange }),
+      );
     this.store.artifact(runId, "recovery", INVALID_OUTPUT_KEY, repeat.key);
     return true;
   }

@@ -21,6 +21,12 @@ import { dirname, resolve } from "node:path";
 import pkgJson from "../package.json";
 import { buildMachinePaths, stripAbsolutePaths } from "./strip-paths";
 
+/** The commit being built (`__BAKED_COMMIT__`, #2587); empty outside a git checkout. */
+function sourceCommit(): string {
+  const result = spawnSync(["git", "rev-parse", "--verify", "--quiet", "HEAD"], { stdout: "pipe", stderr: "ignore" });
+  return result.exitCode === 0 ? result.stdout.toString().trim() : "";
+}
+
 // Inlined into every native-lookup plugin so the runtime resolution honours
 // %LOCALAPPDATA% on Windows and ~/.baked on POSIX. Single source of truth
 // — mirrors src/core/platform/index.ts:configDir() at runtime. Update both
@@ -268,6 +274,8 @@ if (isCompile) {
     } as never,
     define: {
       __BAKED_COMPILED__: "true",
+      // The commit the binary is built from, for `runningBuild` (src/core/build-info.ts, #2587).
+      __BAKED_COMMIT__: JSON.stringify(sourceCommit()),
     },
   });
 
