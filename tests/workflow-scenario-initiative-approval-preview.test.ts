@@ -30,8 +30,9 @@ async function awaiting() {
   return result;
 }
 
+// The one amount is the high end with margin (19.1M), below what the cap pays for (21.4M, #2525).
 const NOTICE_END =
-  "Extend to 21.3M, what the $25.00 cap pays for at $1.17 per million, so the pool stops no feature before the dollar cap does (baked workflow initiative extend values --tokens 21300000).";
+  "Extend to 19.1M, the high end with margin (baked workflow initiative extend values --tokens 19145290); the $25.00 cap would pay for about 21.4M at $1.17 per million.";
 
 describe("scenario: the split approval previews the budget before approval (#2502)", () => {
   test("a 4.0M pool below the lows: the preview names the lows, the expected tokens, what the cap pays for and the park, and its amount starts the first feature", async () => {
@@ -43,21 +44,21 @@ describe("scenario: the split approval previews the budget before approval (#250
       planRevision: 1,
       limitTokens: 4_000_000,
       usdPerMillion: 1.17,
-      suggestedTokens: 21_300_000,
+      suggestedTokens: 19_145_290,
       firstGate: { featureId: "f1", verdict: "park" },
     });
     expect(Object.keys(preview?.lows ?? {})).toEqual(["f1", "f2", "f3"]);
     expect(preview?.sumLow).toBeGreaterThan(4_000_000);
     expect(preview?.sumExpected).toBeGreaterThan(preview?.sumLow ?? 0);
     expect(preview?.sumHigh).toBeGreaterThan(preview?.sumExpected ?? 0);
-    // The cap's pool, not the lows: it starts every waiting feature at its low.
+    // Above the lows: it starts every waiting feature at its low, and stays inside the cap's pool.
     expect(preview?.capTokens).toBeGreaterThanOrEqual(21_300_000);
     expect(preview?.suggestedTokens).toBeGreaterThan(preview?.sumLow ?? 0);
     expect(preview?.firstGate?.need?.low).toBe(preview?.lows.f1);
     expect(preview?.firstGate?.shareTokens).toBeLessThan(preview?.lows.f1 ?? 0);
     // The split approval ends with the forecast notice's sentence and its one-line command.
     expect(preview?.notice).toStartWith(
-      "At the estimates so far the 3 features need about 11.5M tokens",
+      "At the estimates so far the 3 features expect about 11.5M tokens and up to 15.3M at the high end",
     );
     expect(preview?.notice).toEndWith(NOTICE_END);
     expect(view.next.kind).toBe("await_split_approval");
@@ -67,7 +68,7 @@ describe("scenario: the split approval previews the budget before approval (#250
       ?.payload as { kind: string; budgetPreview: { suggestedTokens: number; sumLow: number }; text: string };
     expect(request.kind).toBe("split_approval");
     expect(request.budgetPreview).toMatchObject({
-      suggestedTokens: 21_300_000,
+      suggestedTokens: 19_145_290,
       sumLow: preview?.sumLow,
     });
     expect(request.text).toBe(preview?.notice ?? "");
@@ -77,7 +78,7 @@ describe("scenario: the split approval previews the budget before approval (#250
     await initiatives.extendBudget(
       "values",
       { commandId: newId(), expectedRevision: view.revision },
-      { maxTotalTokens: 21_300_000 },
+      { maxTotalTokens: 19_145_290 },
     );
     const extended = initiatives.view("values");
     expect(extended.budget.preview?.firstGate?.verdict).toBe("pass");
@@ -116,7 +117,7 @@ describe("scenario: the split approval previews the budget before approval (#250
         signal,
       )) as InitiativeView;
       expect(shown.budget.preview).toMatchObject({
-        suggestedTokens: 21_300_000,
+        suggestedTokens: 19_145_290,
         firstGate: { featureId: "f1", verdict: "park" },
       });
       expect(shown.next.message).toEndWith(NOTICE_END);
@@ -134,10 +135,10 @@ describe("scenario: the split approval previews the budget before approval (#250
     });
     const served = (await response.json()) as InitiativeView;
     expect(served.budget.preview).toEqual(initiatives.view("values").budget.preview);
-    expect(served.budget.preview?.suggestedTokens).toBe(21_300_000);
+    expect(served.budget.preview?.suggestedTokens).toBe(19_145_290);
     expect(served.next.message).toEndWith(NOTICE_END);
     expect(served.next.recovery?.remedies).toEqual([
-      { action: "extend", initiativeId: "values", suggestedTokens: 21_300_000 },
+      { action: "extend", initiativeId: "values", suggestedTokens: 19_145_290 },
     ]);
   });
 });

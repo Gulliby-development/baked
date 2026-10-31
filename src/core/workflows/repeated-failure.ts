@@ -24,7 +24,7 @@ import { normalizeVolatile } from "../verification/volatile.js";
  * across 143 attempts and their resumes, for 17.13M tokens, with no record. Each such end records
  * `unfinishedRecord` at the same path, and an end that fails as the task's previous unfinished end
  * did records the `repeated_failure` would-stop (key `task-<id>`) and names the repeat in the
- * block message and its `resume` remedy.
+ * block message, whose remedies then change an input instead of resuming (#2520).
  */
 export const REPEAT_KIND = "repeated-failure";
 /** One record per corrective whose required checks failed: `repeats/tasks/<task>.json`. */
@@ -62,6 +62,26 @@ export interface RepeatRecord {
   end?: "unfinished";
   /** For an unfinished end: how many unfinished ends in a row, this one included, failed alike. */
   ends?: number;
+  /**
+   * For an unfinished end that repeats: the remedies its block offered
+   * (`unfinishedRepeatRemedies` of `ends`, #2520); absent on a record from before.
+   */
+  remedies?: string[];
+}
+
+/** The remedies of a repeated unfinished end's block: each changes an input; no plain resume. */
+export const UNFINISHED_REPEAT_REMEDIES = ["reroute", "revise", "replan", "cancel"] as const;
+
+/**
+ * The remedies of an unfinished end's block, by how many ends in a row failed alike (#2520). From
+ * the second on, a resume runs the task into the same failure again, so none is offered: R82
+ * tinyflate deflate 82f19908 T007 was offered only `resume`, which spent 684k tokens on the same
+ * ctest failure. One end offers the resume.
+ */
+export function unfinishedRepeatRemedies(
+  ends: number,
+): ("resume" | (typeof UNFINISHED_REPEAT_REMEDIES)[number])[] {
+  return ends >= 2 ? [...UNFINISHED_REPEAT_REMEDIES] : ["resume"];
 }
 
 /** Compares two rounds' failing checks; `replayRepeatedFailures` takes another rule to replay. */

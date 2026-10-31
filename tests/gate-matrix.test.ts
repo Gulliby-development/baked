@@ -7,6 +7,7 @@ import { evaluateAutoApproval, planScopeAdvice } from "../src/core/workflows/aut
 import { proseAfterRefusalScenario, refusalKinds } from "./helpers/prose-after-refusal-scenario.js";
 import { runScanner } from "../src/core/workflows/quality/rules.js";
 import { suppliedLineNumbers } from "../src/core/workflows/supplied-drift.js";
+import { GATE_PREREQUISITES, pendingPrerequisite } from "../src/core/workflows/gate-prerequisites.js";
 import { suspendClock } from "./helpers/suspend-clock.js";
 import { caseCheck } from "../src/core/verification/criteria-cases.js";
 import { fixtureSpec, workflowFixture } from "./helpers/workflow-fixture.js";
@@ -5788,4 +5789,26 @@ describe("format-written gate: a created file the request supplies whole is neve
         expect(supplied?.fix).toBeUndefined();
       } finally { rmSync(root, { recursive: true, force: true }); }
     });
+});
+
+describe("prerequisite gate: a build gate run before configure in a fresh worktree (#2526)", () => {
+  // R82 tinyflate: `cmake-build` before `cmake-configure` failed "build is not a directory" 12 times.
+  test("every prerequisite names a gate the same detector offers, pending only while its marker is missing", () => {
+    const root = mkdtempSync(join(tmpdir(), "baked-prerequisite-cell-"));
+    try {
+      writeFileSync(join(root, "CMakeLists.txt"), "project(x C)\nenable_testing()\nadd_test(NAME t COMMAND t)\n");
+      writeFileSync(join(root, ".clang-tidy"), "Checks: '-*'\n");
+      writeFileSync(join(root, "main.c"), "int main(void) { return 0; }\n");
+      const offered = detectGates(root).map((g) => g.check);
+      for (const [id, row] of Object.entries(GATE_PREREQUISITES)) {
+        const check = offered.find((c) => c.id === id);
+        expect(check, id).toBeDefined();
+        expect(offered.map((c) => c.id), id).toContain(row.checkId);
+        if (check) expect(pendingPrerequisite(check, offered, root)?.check.id).toBe(row.checkId);
+      }
+      mkdirSync(join(root, "build"));
+      writeFileSync(join(root, "build/CMakeCache.txt"), "");
+      for (const check of offered) expect(pendingPrerequisite(check, offered, root)).toBeNull();
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
 });
