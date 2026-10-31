@@ -5,6 +5,7 @@ import {
   rowBlockDecision,
   rowBlockDrifts,
   rowHead,
+  rowPlaces,
 } from "./row-block-drift.js";
 import type { TaskGraph } from "./schemas.js";
 import { suppliedRows } from "./sizing.js";
@@ -20,7 +21,8 @@ import { suppliedRows } from "./sizing.js";
  *
  * At each checks stage, before the checks run, every prescribed row of a test file the plan writes
  * that drifts (`rowBlockDecision`) or that no file row holds while one takes its place (a changed
- * row, `FileRowMeasure.replaces`) is a site. The host restores a site's line from the request's
+ * row, `FileRowMeasure.replaces`) is a site, at the file line in its place (`rowPlaces`: the
+ * changed row, or the file row matched to a row the token comparison finds short, #2521). The host restores a site's line from the request's
  * text when (`rowRestoreDecision`): a file line takes the row's place; that file row is the one
  * line (nothing continues its strings); the line starts with the row's own head (`{`, `row(`,
  * `Arguments.of(`), so the request's notation is the file's; and, with the line replaced by the
@@ -101,13 +103,17 @@ export function rowRestorePlan(
   file: string,
   decide: RowRestoreRule = rowRestoreDecision,
 ): { sites: RowRestoreSite[]; restore: number[]; after: string } {
-  const drifting = new Set(rowBlockDecision(measureRows(rows, file)));
   const fileRows = measureFileRows(rows, file);
+  const drifting = new Set(rowBlockDecision(measureRows(rows, file, fileRows)));
+  // The file line in each row's place: the changed row that replaces it, or the file row matched
+  // to it that the token comparison found short (#2521: arguments dropped, a status changed).
+  const places = rowPlaces(fileRows);
   const lines = file.split("\n");
   const candidates = rows.flatMap((_, index) => {
     const row = index + 1;
-    const line = fileRows.find((r) => r.replaces === row)?.line ?? null;
-    return drifting.has(row) || line !== null ? [{ row, line }] : [];
+    const line = places.get(row) ?? null;
+    const replaced = fileRows.some((r) => r.replaces === row);
+    return drifting.has(row) || replaced ? [{ row, line }] : [];
   });
   const restoring = new Map<number, string>();
   const sites = candidates.map(({ row, line }): RowRestoreSite => {
@@ -120,11 +126,12 @@ export function rowRestorePlan(
     const sameHead = head !== "" && head === rowHead(prescribed);
     const restored = restoredLine(text, prescribed);
     const after = withLines(lines, new Map([[line, restored]]));
-    const still = rowBlockDecision(measureRows(rows, after));
+    const afterRows = measureFileRows(rows, after);
+    const still = rowBlockDecision(measureRows(rows, after, afterRows));
     const held =
       !still.includes(row) &&
       still.every((n) => drifting.has(n)) &&
-      measureFileRows(rows, after).some((r) => r.line === line && r.matches.includes(row));
+      afterRows.some((r) => r.line === line && r.matches.includes(row));
     restoring.set(row, restored);
     return { row, line, oneLine, sameHead, held };
   });

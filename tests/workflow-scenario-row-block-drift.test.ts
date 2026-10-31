@@ -7,6 +7,7 @@ import {
   measureRows,
   ROW_BLOCK_DIR,
   type RowMeasure,
+  rowBlockDecision,
   rowBlockDriftSummary,
   rowBlockDrifts,
   rowBlockExtraSummary,
@@ -14,7 +15,9 @@ import {
   rowMoveDecision,
   rowRunFindings,
   rowRunText,
+  rowTokens,
 } from "../src/core/workflows/row-block-drift.js";
+import { rowRestorePlan } from "../src/core/workflows/row-restore.js";
 import { runLengthCompare, runsHeld } from "../src/core/verification/byte-runs.js";
 import { testsHold, verbatimHeld } from "../src/core/verification/criteria-cases.js";
 import { misquotation } from "../src/core/workflows/conflict-rows.js";
@@ -688,5 +691,191 @@ describe("scenario: R82, a test rewrites two prescribed long hex inputs with the
     expect(findings[0]?.suggestedFix).toContain(`the test's input literal differs from the criterion row by 21 bytes (${DEFLATE_PATH} line 12: 238 bytes of 0x71 where row 3 of the request's row block gives 259)`);
     expect(routes[0]).toMatchObject({ mode: "on", tests: [DEFLATE_PATH] });
     expect(final.status).toBe("completed");
+  });
+});
+
+// #2521: a prescribed row's literals were looked up in the whole file, so a row delivered without
+// arguments another row holds, with a changed status code or with a swapped pair, was held. Bench
+// round 82 slotprompt (Dart) core c7536996 delivered rows 5 and 13 of `test/text_test.dart`
+// without the prescribed `'--var', 'a=1'`; `row-blocks/test/text_test.dart.json` recorded
+// `drifting: []` for all 17 rows and the reviewer's two correctives cost about 0.9M tokens. Each
+// row is now compared with the file row in its place as a token sequence.
+type DataRow = [args: string[], stdin: string, code: number, out: string, err: string];
+const TOKEN_ROWS: DataRow[] = [
+  [["render"], "hello", 0, "hello", ""],
+  [["render"], "{{ a }}", 2, "", "slotprompt: missing variable: a\\n"],
+  [["render", "--var", "a=1", "--var", "b=2"], "{{ a }} {{ b }}", 0, "1 2", ""],
+  [["render", "--var", "a=1"], "{{ a }}", 0, "1", ""],
+  [["render", "--strict"], "{{ b }}", 2, "", "slotprompt: missing variable: b\\n"],
+];
+const TOKEN_BLOCK = TOKEN_ROWS.map(([args, stdin, code, out, err]) => `row([${args.map(sq).join(", ")}], ${sq(stdin)}, ${code}, ${sq(out)}, ${sq(err)})`);
+const withRow = (at: number, row: DataRow) => TOKEN_ROWS.map((r, i) => (i === at - 1 ? row : r));
+/** The three R82 changes, each leaving every literal somewhere in the file: the row and its first differing token. */
+const TOKEN_DRIFTS: Record<string, { rows: DataRow[]; row: number; token: number }> = {
+  "arguments dropped that another row holds": { rows: withRow(4, [["render"], "{{ a }}", 0, "1", ""]), row: 4, token: 2 },
+  "a status code changed": { rows: withRow(5, [["render", "--strict"], "{{ b }}", 0, "", "slotprompt: missing variable: b\\n"]), row: 5, token: 4 },
+  "a pair swapped": { rows: withRow(3, [["render", "--var", "b=2", "--var", "a=1"], "{{ a }} {{ b }}", 0, "1 2", ""]), row: 3, token: 4 },
+};
+type TokenSpelling = (row: DataRow) => string;
+const TOKEN_SPELLINGS: Record<string, { row: TokenSpelling; file: (rows: string[]) => string }> = {
+  dart: {
+    row: ([a, i, c, o, e]) => `row([${a.map(sq).join(", ")}], ${sq(i)}, ${c}, ${sq(o)}, ${sq(e)});`,
+    file: (rows) => ["import 'package:test/test.dart';", "", "import 'row_case.dart';", "", "void main() {", "  group('text', () {", ...rows.map((r) => `    ${r}`), "  });", "}", ""].join("\n"),
+  },
+  c: {
+    row: ([a, i, c, o, e]) => `{ { ${a.map(dq).join(", ")}, NULL }, ${dq(i)}, ${c}, ${dq(o)}, ${dq(e)} },`,
+    file: (rows) => ['#include "check.h"', "", "static const struct row rows[] = {", ...rows.map((r) => `  ${r}`), "};", "", "int main(void) { return check_rows(rows, 5); }", ""].join("\n"),
+  },
+  elixir: {
+    row: ([a, i, c, o, e]) => `assert_row([${a.map(dq).join(", ")}], ${dq(i)}, ${c}, ${dq(o)}, ${dq(e)})`,
+    file: (rows) => ["defmodule Slotprompt.TextTest do", "  use ExUnit.Case, async: true", "  import Slotprompt.RowCase", "", '  test "text rows" do', ...rows.map((r) => `    ${r}`), "  end", "end", ""].join("\n"),
+  },
+  typescript: {
+    row: ([a, i, c, o, e]) => `{ args: [${a.map(dq).join(", ")}], stdin: ${dq(i)}, code: ${c}, out: ${dq(o)}, err: ${dq(e)} },`,
+    file: (rows) => ['import { expect, test } from "bun:test";', 'import { run } from "./helpers/run";', "", "const rows = [", ...rows.map((r) => `  ${r}`), "];", "", "for (const row of rows) test(row.args.join(\" \"), async () => expect(await run(row)).toEqual(row));", ""].join("\n"),
+  },
+  python: {
+    row: ([a, i, c, o, e]) => `([${a.map(dq).join(", ")}], ${dq(i)}, ${c}, ${dq(o)}, ${dq(e)}),`,
+    file: (rows) => ["import pytest", "", "ROWS = [", ...rows.map((r) => `    ${r}`), "]", "", '@pytest.mark.parametrize("args,stdin,code,out,err", ROWS)', "def test_row(args, stdin, code, out, err):", "    assert run(args, stdin) == (code, out, err)", ""].join("\n"),
+  },
+  go: {
+    row: ([a, i, c, o, e]) => `{[]string{${a.map(dq).join(", ")}}, ${dq(i)}, ${c}, ${dq(o)}, ${dq(e)}},`,
+    file: (rows) => ["package slotprompt", "", 'import "testing"', "", "var rows = []row{", ...rows.map((r) => `\t${r}`), "}", "", "func TestRows(t *testing.T) { checkRows(t, rows) }", ""].join("\n"),
+  },
+};
+const tokenRequest = (path: string) =>
+  ["Build slotprompt.", "", "The prescribed rows, one test each:", "", "```text", `TextTest in ${path} (5 rows, row(ARGS, STDIN, CODE, OUT, ERR))`, ...TOKEN_BLOCK, "```", ""].join("\n");
+
+describe("#2521: each prescribed row is compared with the file row in its place, token by token", () => {
+  for (const [language, spelling] of Object.entries(TOKEN_SPELLINGS)) {
+    const path = `test/text_test.${language}`;
+    const fileOf = (rows: DataRow[]) => spelling.file(rows.map(spelling.row));
+    test(`${language}: the file with every row as given compares each row on its own line and records no drift`, () => {
+      const [compared] = rowBlockDrifts(tokenRequest(path), graphOf(path), () => fileOf(TOKEN_ROWS));
+      expect(compared?.record.drifting).toEqual([]);
+      expect(compared?.record.rows.map((r) => [r.tokens, r.differs])).toEqual(TOKEN_ROWS.map((r) => [r[0].length + 4, undefined]));
+      const lines = fileOf(TOKEN_ROWS).split("\n");
+      expect(compared?.record.rows.map((r) => lines[(r.line ?? 0) - 1]?.trim())).toEqual(TOKEN_ROWS.map(spelling.row));
+    });
+    for (const [change, drift] of Object.entries(TOKEN_DRIFTS))
+      test(`${language}: ${change} drifts on that row at its first differing token, every literal still in the file`, () => {
+        const file = fileOf(drift.rows);
+        const [compared] = rowBlockDrifts(tokenRequest(path), graphOf(path), () => file);
+        // The whole-file lookup holds every literal: the R82 hole.
+        expect(compared?.record.rows.every((r) => !r.missing.length)).toBe(true);
+        expect(compared?.record.drifting).toEqual([drift.row]);
+        const measure = compared?.record.rows[drift.row - 1];
+        expect(measure?.differs).toBe(drift.token);
+        const line = file.split("\n").findIndex((l) => l.trim() === spelling.row(drift.rows[drift.row - 1]!)) + 1;
+        expect(compared?.drifts[0]?.differs).toMatchObject({ line, token: drift.token });
+        expect(rowBlockDriftSummary(compared!.drifts[0]!)).toContain(`line ${line}, the row's place, does not hold "${compared?.drifts[0]?.differs?.text}" (value ${drift.token} of`);
+      });
+  }
+
+  const BATS_PATH = "test/text.bats";
+  const bats = (rows: DataRow[]) =>
+    rows
+      .map(([a, i, c, o, e], n) => [`@test "text row ${n + 1}" {`, `  run_row ${dq(i)} ${a.map(dq).join(" ")}`, `  [ "$status" -eq ${c} ]`, `  [ "$output" = ${dq(o + e)} ]`, "}"].join("\n"))
+      .join("\n\n");
+  test("bats: a row spread over a `@test` is compared within its own lines: a dropped argument and a changed status drift, the file as given does not", () => {
+    const of = (rows: DataRow[]) => rowBlockDrifts(tokenRequest(BATS_PATH), graphOf(BATS_PATH), () => bats(rows))[0]?.record;
+    expect(of(TOKEN_ROWS)?.drifting).toEqual([]);
+    expect(of(TOKEN_ROWS)?.rows.every((r) => r.line !== undefined)).toBe(true);
+    for (const change of ["arguments dropped that another row holds", "a status code changed"]) {
+      const drift = TOKEN_DRIFTS[change]!;
+      expect(of(drift.rows)?.drifting).toEqual([drift.row]);
+    }
+    // The row's values are not on one line, so their order is not compared (a swapped pair is held).
+    expect(of(TOKEN_DRIFTS["a pair swapped"]!.rows)?.drifting).toEqual([]);
+  });
+
+  test("a row's tokens: heredocs dedented, quoted literals, numbers without their type suffix, booleans and nil; names and keys are not tokens", () => {
+    expect(rowTokens('assert_row(["eval"], "1/2\\n", 0, """\n    1/2\n    = 5/6\n    """, "")')).toEqual([
+      { quoted: true, text: "eval" },
+      { quoted: true, text: "1/2\\n" },
+      { quoted: false, text: "0" },
+      { quoted: true, text: "1/2\n= 5/6\n" },
+      { quoted: true, text: "" },
+    ]);
+    expect(rowTokens("list(c('a'), 0L, TRUE, -1, 0x7f, nil, code: 2, v2: 3i32)").map((t) => t.text)).toEqual(["a", "0", "-1", "0x7f", "nil", "2", "3"]);
+  });
+
+  test("a row no file row takes the place of keeps the whole-file lookup only; a long byte run is left to its count", () => {
+    expect(measureRows(['row(["a"], "", 0, "", "")'], 'assert_row(["a"], "x", 0, "y", "z")')).toEqual([{ row: 1, literals: 1, missing: [] }]);
+    const [runs] = rowBlockDrifts(deflateRequest, graphOf(DEFLATE_PATH), () => R82_FAITHFUL);
+    expect(runs?.record.rows.map((r) => r.tokens)).toEqual([2, undefined, undefined]);
+    expect(runs?.record.drifting).toEqual([]);
+  });
+
+  test("the replay decides the token drift from the record, and a rule that ignores it counts the difference", () => {
+    const [compared] = rowBlockDrifts(tokenRequest("test/text_test.dart"), graphOf("test/text_test.dart"), () =>
+      TOKEN_SPELLINGS.dart!.file(TOKEN_DRIFTS["arguments dropped that another row holds"]!.rows.map(TOKEN_SPELLINGS.dart!.row)),
+    );
+    const rows = compared?.record.rows ?? [];
+    expect(rowBlockDecision(rows)).toEqual([4]);
+    expect(rowBlockDecision(rows.map(({ differs: _, ...r }) => r))).toEqual([]);
+  });
+});
+
+// The R82 slotprompt shape: `test/text_test.dart`, 17 rows `row(ARGS, STDIN, CODE, OUT, ERR, ...EXTRA)`;
+// rows 5 and 13 were delivered without `'--var', 'a=1'`, which rows 2, 6, 9 and 16 also hold.
+const SLOT_TEXT_ROWS: [template: string, out: string, vars: string[]][] = [
+  ["hello", "hello", []],
+  ["{{ a }} and {{ a }}", "1 and 1", ["--var", "a=1"]],
+  ["{{ b }}", "x", ["--var", "b=x"]],
+  ["plain {{ b }}!", "plain x!", ["--var", "b=x"]],
+  ["{{ a }}", "1", ["--var", "a=1"]],
+  ["[{{ a }}]", "[1]", ["--var", "a=1"]],
+  ["{{ c }}", "", []],
+  ["{{a}}", "q", ["--var", "a=q"]],
+  ["<{{ a }}>", "<1>", ["--var", "a=1"]],
+  ["{{ b }}{{ b }}", "xx", ["--var", "b=x"]],
+  ["{{ a }} {{ b }}", "q x", ["--var", "a=q", "--var", "b=x"]],
+  ["no slots", "no slots", []],
+  ["{{ a }}.", "1.", ["--var", "a=1"]],
+  ["{{  b  }}", "x", ["--var", "b=x"]],
+  ["{{ d }}", "z", ["--var", "d=z"]],
+  ["({{ a }})", "(1)", ["--var", "a=1"]],
+  ["{{ a }}\\n", "1\\n", ["--var", "a=q", "--var", "a=1"]],
+];
+const slotRow = ([template, out, vars]: (typeof SLOT_TEXT_ROWS)[number], code = template === "{{ c }}" ? 2 : 0) =>
+  `row(['render'], '${template}', ${code}, '${out}', '${code ? "slotprompt: missing variable: c\\n" : ""}'${vars.map((v) => `, '${v}'`).join("")})`;
+const SLOT_TEXT_PATH = "test/text_test.dart";
+const slotTextTest = (rows: string[]) =>
+  ["import 'package:test/test.dart';", "", "import 'row_case.dart';", "", "void main() {", "  group('text', () {", ...rows.map((r) => `    ${r};`), "  });", "}", ""].join("\n");
+const SLOT_TEXT: Shape = {
+  path: SLOT_TEXT_PATH,
+  block: [`TextTest in ${SLOT_TEXT_PATH} (17 rows, row(ARGS, STDIN, CODE, OUT, ERR, ...VARS))`, ...SLOT_TEXT_ROWS.map((r) => slotRow(r))],
+  faithful: slotTextTest(SLOT_TEXT_ROWS.map((r) => slotRow(r))),
+  // R82 T007: rows 5 and 13 without their `--var` arguments.
+  drifted: slotTextTest(SLOT_TEXT_ROWS.map((r, i) => slotRow(i === 4 || i === 12 ? [r[0], r[1], []] : r))),
+  row: 5,
+  missing: [],
+  added: "",
+  addedLine: 0,
+};
+
+describe("scenario: R82 slotprompt, rows delivered without arguments other rows hold (#2521)", () => {
+  test("the checks stage records a shadow row_block_drift for rows 5 and 13 naming the dropped argument, and the run still completes", async () => {
+    const { final, wouldStops, fixture, runId } = await deliver(SLOT_TEXT, SLOT_TEXT.drifted);
+    expect(wouldStops.map((w) => w.key)).toEqual([`${SLOT_TEXT_PATH}#row-5`, `${SLOT_TEXT_PATH}#row-13`]);
+    const lines = SLOT_TEXT.drifted.split("\n");
+    for (const [stop, row] of [[wouldStops[0], 5], [wouldStops[1], 13]] as const) {
+      const line = lines.findIndex((l) => l.includes(`'${SLOT_TEXT_ROWS[row - 1]![0]}'`)) + 1;
+      expect(stop).toMatchObject({ mode: "shadow", inputs: { row, missing: [], differs: { line, token: 6, tokens: 7, text: "--var" } } });
+      expect(stop?.summary).toContain(`without row ${row} of the request's row block as given: line ${line}, the row's place, does not hold "--var" (value 6 of 7) where the row gives it`);
+    }
+    expect(final.status).toBe("completed");
+    const replayed = replayRowBlocks(fixture.service.store, runId);
+    expect(replayed.at(-1)?.recorded).toEqual([5, 13]);
+    expect(replayed.every((b) => JSON.stringify(b.recorded) === JSON.stringify(b.replayed))).toBe(true);
+  });
+
+  test("the file as given records nothing, and the host's restore (#2522) puts both rows back from the request", async () => {
+    const { wouldStops } = await deliver(SLOT_TEXT, SLOT_TEXT.faithful);
+    expect(wouldStops).toEqual([]);
+    const plan = rowRestorePlan(SLOT_TEXT.block.slice(1), SLOT_TEXT.drifted);
+    expect(plan.restore).toEqual([5, 13]);
+    expect(plan.after).toBe(SLOT_TEXT.faithful);
   });
 });
