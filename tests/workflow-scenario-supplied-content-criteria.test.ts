@@ -271,3 +271,98 @@ describe("a literal that describes rows is not a case to remove (#2524)", () => 
     expect(keys).toEqual(["analysis-AC-009"]);
   }, 60000);
 });
+
+// #2531: outside prescribed rows the walk still demanded a cited literal (#2524 applied
+// `CriterionCase.cited` only through `casePrescribed`), so a criterion that cites a supplied
+// verbatim test file's row count, its name or a `LINE:COL: MESSAGE` envelope raised a blocking
+// `SUPPLIED-` finding at analysis and a refusal at the task end, though no such file can hold
+// them as written. `citedCases: "skip"` (opt-in) has both leave such a literal out; the walk
+// records it as `cited`. A real missing literal is found either way.
+describe("cited literals outside prescribed rows, under citedCases (#2531)", () => {
+  const LANGUAGES = [
+    { name: "dart", fence: "dart", path: "test/filter_args_test.dart", row: (i: number) => `row(r'{{ v | f${i} }}', 'out${i}');`, file: (rows: string[]) => `import 'package:test/test.dart';\n\nvoid main() {\n${rows.map((r) => `  ${r}`).join("\n")}\n}` },
+    { name: "c", fence: "c", path: "tests/test_filter_args.c", row: (i: number) => `ROW("{{ v | f${i} }}", "out${i}");`, file: (rows: string[]) => `#include "rows.h"\n\nint main(void) {\n${rows.map((r) => `  ${r}`).join("\n")}\n  return 0;\n}` },
+    { name: "elixir", fence: "elixir", path: "test/filter_args_test.exs", row: (i: number) => `row("{{ v | f${i} }}", "out${i}")`, file: (rows: string[]) => `defmodule FilterArgsTest do\n  use ExUnit.Case\n${rows.map((r) => `  ${r}`).join("\n")}\nend` },
+    { name: "typescript", fence: "ts", path: "tests/filter_args.test.ts", row: (i: number) => `row("{{ v | f${i} }}", "out${i}");`, file: (rows: string[]) => `import { row } from "./rows";\n\n${rows.join("\n")}` },
+  ];
+  const CITED = ["12", "filter_args", String.raw`slotprompt: LINE:COL: MESSAGE\n`];
+  const citing = criterion("AC-007", "exactly the supplied `12` rows of `filter_args` run, and an unknown filter writes `slotprompt: LINE:COL: MESSAGE\\n` to stderr");
+  const missing = criterion("AC-008", "it prints `mdtoc version 2.1.0`");
+  function criterion(id: string, then: string): Spec["criteria"][number] {
+    return { id, requirementIds: ["FR-001"], given: "the supplied tests", when: "the filter tests run", then, method: "automated" };
+  }
+  for (const l of LANGUAGES) {
+    const content = l.file(Array.from({ length: 12 }, (_, i) => l.row(i)));
+    const request = `Add filters. Create \`${l.path}\` with exactly this content:\n\n\`\`\`${l.fence}\n${content}\n\`\`\`\n`;
+    const T001 = task("T001", [{ path: l.path, action: "create" }], ["AC-007", "AC-008"]);
+    const plan = graph([T001]);
+    const both: Spec = { ...fixtureSpec, criteria: [...fixtureSpec.criteria, citing, missing] };
+    const walk = async (citedCases?: "skip") => {
+      const root = mkdtempSync(join(tmpdir(), "baked-cited-skip-"));
+      cleanups.push(() => rmSync(root, { recursive: true, force: true }));
+      mkdirSync(dirname(join(root, l.path)), { recursive: true });
+      writeFileSync(join(root, l.path), `${content}\n`);
+      const walks: CaseWalk[] = [];
+      const literals: string[][] = [];
+      const check = caseCheck(both, T001, {
+        checks, tasks: plan.tasks, ...(citedCases ? { citedCases } : {}),
+        record: (w, cases) => { walks.push(w); literals.push(cases.map((c) => c.literal)); },
+      });
+      const refusals = (await check?.(root)) ?? ["no case check"];
+      const cited = (walks[0]?.cases ?? []).flatMap((c, i) => (c.cited ? [literals[0]?.[i]] : []));
+      return { refusals, cited };
+    };
+
+    test(`${l.name}: with citedCases skip, a cited count, name and envelope raise no SUPPLIED- finding and no refusal`, async () => {
+      const findings = suppliedContentFindings(both, plan, request, { checks, citedCases: "skip" });
+      expect(findings.map((f) => f.id)).toEqual(["SUPPLIED-AC-008"]);
+      const { refusals, cited } = await walk("skip");
+      expect(cited).toEqual(CITED);
+      expect(refusals).toHaveLength(1);
+      expect(refusals[0]).toContain('"mdtoc version 2.1.0"');
+    });
+
+    test(`${l.name}: off by default, the finding and the refusal stay`, async () => {
+      const findings = suppliedContentFindings(both, plan, request, { checks });
+      expect(findings.map((f) => f.id)).toEqual(["SUPPLIED-AC-007", "SUPPLIED-AC-008"]);
+      for (const literal of CITED) expect(findings[0]?.description).toContain(JSON.stringify(literal));
+      const { refusals, cited } = await walk();
+      expect(cited).toEqual([]);
+      expect(refusals).toHaveLength(CITED.length + 1);
+    });
+  }
+
+  test("the R64 mdtoc literal the supplied file lacks is found with the setting on", () => {
+    const findings = suppliedContentFindings(WRONG, graph([task("T004", [{ path: TEST, action: "create" }])]), REQUEST, { checks, citedCases: "skip" });
+    expect(findings.map((f) => f.id)).toEqual(["SUPPLIED-AC-006"]);
+  });
+
+  // Through the scheduler: `citedCases: "skip"` in the run's policy reaches analysis, which then
+  // asks the spec author nothing about a criterion that cites a test count of the supplied file.
+  test("scenario: the run's citedCases reaches the analysis finding", async () => {
+    const cites = spec("exactly the supplied `12` tests of `tests/version.test.ts` pass, and it prints `mdtoc 2.1.0`");
+    const asked = async (citedCases?: "skip") => {
+      const fixture = workflowFixture();
+      cleanups.push(fixture.dispose);
+      const { service, executor } = fixture;
+      const original = executor.execute.bind(executor);
+      executor.execute = async (request: ExecutionRequest) => {
+        if (request.profile.output === "spec") return { output: cites, inputTokens: 25, outputTokens: 25 };
+        const out = await original(request);
+        if (request.profile.output === "plan") {
+          const plan = out.output as { markdown: string; taskGraph: TaskGraph };
+          plan.taskGraph.specHash = hashJson(cites);
+          plan.taskGraph.planHash = hashBytes(plan.markdown);
+          plan.taskGraph.tasks = [{ ...(plan.taskGraph.tasks[0] as TaskGraph["tasks"][number]), id: "T001", criterionIds: ["AC-001", "AC-006"], writes: [{ path: "value.txt", action: "create" }, { path: TEST, action: "create" }] }];
+        }
+        return out;
+      };
+      const policy = { ...fixture.policy, ...(citedCases ? { citedCases } : {}) };
+      const run = await service.start({ commandId: newId(), featureId: "fixture", workflowId: "sdd", prompt: REQUEST, ownerLabel: "test", policy });
+      await service.drive(run.runId, new AbortController().signal);
+      return service.store.requests(run.runId).filter((r) => r.kind === "clarification").map((r) => r.body_json).join("\n");
+    };
+    expect(await asked()).toContain("Supplied content: AC-006");
+    expect(await asked("skip")).not.toContain("Supplied content");
+  }, 60000);
+});

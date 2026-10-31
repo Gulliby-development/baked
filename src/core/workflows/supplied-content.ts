@@ -56,12 +56,16 @@ export function suppliedTestFiles(
   return out;
 }
 
-/** One blocking finding per criterion whose literals a task's supplied test files do not hold. */
+/**
+ * One blocking finding per criterion whose literals a task's supplied test files do not hold.
+ * Under `citedCases: "skip"` (#2531) a literal that describes rows instead of quoting one
+ * (`CriterionCase.cited`) is left out, as the walk no longer demands it.
+ */
 export function suppliedContentFindings(
   spec: Spec,
   graph: Pick<TaskGraph, "tasks">,
   request: string,
-  context: Pick<CaseContext, "checks">,
+  context: Pick<CaseContext, "checks" | "citedCases">,
 ): Analysis["findings"] {
   const supplied = suppliedTestFiles(request, graph);
   const missing = new Map<string, { task: string; paths: string[]; literals: string[] }[]>();
@@ -75,6 +79,7 @@ export function suppliedContentFindings(
     ).filter(
       // A sibling that carries the criterion and writes its own test file may test the case.
       (c) =>
+        !(context.citedCases === "skip" && c.cited) &&
         !graph.tasks.some(
           (other) =>
             other.id !== task.id &&
@@ -134,6 +139,54 @@ export function prescribedRowFiles(
 
 export const NOT_PRESCRIBED_PREFIX = "NOT-PRESCRIBED-";
 
+/** Each case of each task with where the request's prescribed rows put it (`casePrescribed`). */
+function prescribedCases(
+  spec: Spec,
+  graph: Pick<TaskGraph, "tasks">,
+  request: string,
+  context: Pick<CaseContext, "checks">,
+  perRow = false,
+) {
+  const rows = prescribedRowFiles(request, graph);
+  if (!rows.size) return [];
+  return graph.tasks.flatMap((task) => {
+    const paths = writtenTestPaths(task);
+    // The rows give `citedKind` their counts: a criterion's "`12` rows" is no row's text (#2524).
+    const cases = criterionCases(spec, task, {
+      checks: context.checks,
+      tasks: graph.tasks,
+      prescribedRows: rows,
+    });
+    return cases.map((c) => ({
+      task,
+      paths,
+      c,
+      prescribed: casePrescribed(c, paths, rows),
+      ...(perRow ? { perRow: casePrescribed(c, paths, rows, true) } : {}),
+    }));
+  });
+}
+
+/**
+ * The cases `notPrescribedFindings` does not note because the prescribed rows hold them only
+ * spread over several rows (#2544, shadow): read row by row (`casePrescribed` with `perRow`), no
+ * row holds them. Recorded as `case_not_prescribed` with `kind: "per-row"` until a bench round
+ * compares both answers; nothing is noted or refused on them.
+ */
+export function perRowNotPrescribed(
+  spec: Spec,
+  graph: Pick<TaskGraph, "tasks">,
+  request: string,
+  context: Pick<CaseContext, "checks">,
+): { taskId: string; criterionId: string; literal: string }[] {
+  return prescribedCases(spec, graph, request, context, true).flatMap(
+    ({ task, c, prescribed, perRow }) =>
+      perRow === "none" && prescribed !== "none"
+        ? [{ taskId: task.id, criterionId: c.criterionId, literal: c.literal }]
+        : [],
+  );
+}
+
 /**
  * One note per criterion that cites a literal no prescribed row of the feature holds, for a task
  * that writes only prescribed row files (#2501): the task-end walk no longer demands it (the task
@@ -150,29 +203,18 @@ export function notPrescribedFindings(
   request: string,
   context: Pick<CaseContext, "checks">,
 ): Analysis["findings"] {
-  const rows = prescribedRowFiles(request, graph);
-  if (!rows.size) return [];
   const missing = new Map<string, { task: string; paths: string[]; literals: string[] }[]>();
-  for (const task of graph.tasks) {
-    const paths = writtenTestPaths(task);
-    // The rows give `citedKind` their counts: a criterion's "`12` rows" is no row's text (#2524).
-    const cases = criterionCases(spec, task, {
-      checks: context.checks,
-      tasks: graph.tasks,
-      prescribedRows: rows,
-    });
-    for (const c of cases) {
-      // `cited`, a count, a name, a placeholder or a described character, is no example to remove.
-      if (casePrescribed(c, paths, rows) !== "none") continue;
-      const entries = missing.get(c.criterionId) ?? [];
-      let entry = entries.find((e) => e.task === task.id);
-      if (!entry) {
-        entry = { task: task.id, paths, literals: [] };
-        entries.push(entry);
-      }
-      if (!entry.literals.includes(c.literal)) entry.literals.push(c.literal);
-      missing.set(c.criterionId, entries);
+  for (const { task, paths, c, prescribed } of prescribedCases(spec, graph, request, context)) {
+    // `cited`, a count, a name, a placeholder or a described character, is no example to remove.
+    if (prescribed !== "none") continue;
+    const entries = missing.get(c.criterionId) ?? [];
+    let entry = entries.find((e) => e.task === task.id);
+    if (!entry) {
+      entry = { task: task.id, paths, literals: [] };
+      entries.push(entry);
     }
+    if (!entry.literals.includes(c.literal)) entry.literals.push(c.literal);
+    missing.set(c.criterionId, entries);
   }
   return [...missing].flatMap(([criterionId, entries]) => {
     if (!spec.criteria.some((c) => c.id === criterionId)) return [];
@@ -220,7 +262,7 @@ export function suppliedConflictCriteria(
   graph: Pick<TaskGraph, "tasks">,
   request: string,
   report: { text: string; paths: readonly string[] },
-  context: Pick<CaseContext, "checks">,
+  context: Pick<CaseContext, "checks" | "citedCases">,
 ): string[] {
   const files = suppliedTestFiles(request, graph).get(task.id);
   if (!files) return [];

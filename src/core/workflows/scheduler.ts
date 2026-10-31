@@ -957,6 +957,7 @@ import {
   isNotPrescribedFinding,
   isSuppliedContentFinding,
   notPrescribedFindings,
+  perRowNotPrescribed,
   prescribedRowFiles,
   suppliedConflictCriteria,
   suppliedContentFindings,
@@ -2437,7 +2438,7 @@ export class WorkflowScheduler {
                   spec,
                   graph,
                   statedRequest(state, this.store.requests(runId)),
-                  { checks: policy.checks },
+                  { checks: policy.checks, citedCases: policy.citedCases },
                 ),
               ];
               // A criterion literal no prescribed row holds, which the walk no longer demands from
@@ -2457,7 +2458,27 @@ export class WorkflowScheduler {
                     mode: notPrescribedMode,
                     key: `analysis-${finding.refs[1] ?? finding.id}`,
                     summary: finding.description,
-                    inputs: { criterionId: finding.refs[1] ?? null, finding: finding.id },
+                    // `literal`: a quoted case no prescribed row holds, as against `per-row` (#2532).
+                    inputs: {
+                      criterionId: finding.refs[1] ?? null,
+                      finding: finding.id,
+                      kind: "literal",
+                    },
+                  });
+              // The cases only the joined rows hold, read row by row (#2544, shadow): recorded only.
+              if (notPrescribedMode !== "enforce")
+                for (const found of perRowNotPrescribed(
+                  spec,
+                  graph,
+                  statedRequest(state, this.store.requests(runId)),
+                  { checks: policy.checks },
+                ))
+                  recordWouldStop(this.store, runId, {
+                    reason: "case_not_prescribed",
+                    mode: notPrescribedMode,
+                    key: `analysis-per-row-${found.criterionId}-${found.taskId}-${found.literal.slice(0, 120)}`,
+                    summary: `${found.criterionId} cites ${JSON.stringify(found.literal)}, whose values the request's prescribed rows hold only spread over several rows; read row by row, no row holds it`,
+                    inputs: { ...found, kind: "per-row" },
                   });
               // Analysis passes when no finding blocks: the rest are notes, whatever the model's verdict.
               const blocking = findings.some((f) => f.blocking);
@@ -6958,6 +6979,7 @@ export class WorkflowScheduler {
               hostRows: generatedRows.filter((file) => file.inline === true),
               // The rows the request prescribes, for files written yet or not (#2501).
               prescribedRows: this.prescribedRows(runId, state),
+              ...(policy.citedCases ? { citedCases: policy.citedCases } : {}),
               generatedKinds: this.bannedGeneratedKinds(state, task),
               refuseGenerated: stopMode(policy, "generated_case") === "enforce",
               record: (walk, cases) =>
@@ -14013,7 +14035,7 @@ ${note}`;
           { tasks },
           request,
           { text: report, paths: [...pathsInOutput(report, tasks), ...sideTests(reported)] },
-          { checks: policy.checks },
+          { checks: policy.checks, citedCases: policy.citedCases },
         );
     const criteria = cited.length
       ? cited
@@ -16831,7 +16853,9 @@ ${note}`;
   /**
    * The `case_not_prescribed` would-stops of a walk (#2501): each case no prescribed row holds,
    * which the walk did not demand from a task that writes only prescribed row files, once per task,
-   * criterion and literal, with both.
+   * criterion and literal, with both. `inputs.kind` says which reader answered `none` (#2532):
+   * `literal` for the walk's own answer, `per-row` for the shadow reader that asks each row alone
+   * (#2544, `prescribedPerRow`) where the joined rows held the case.
    */
   private caseNotPrescribedWouldStop(
     runId: string,
@@ -16844,14 +16868,35 @@ ${note}`;
     if (mode === "enforce") return;
     for (const [i, c] of walk.cases.entries()) {
       const found = cases[i];
-      if (c.prescribed !== "none" || !found) continue;
-      recordWouldStop(this.store, runId, {
-        reason: "case_not_prescribed",
-        mode,
-        key: `task-${task.id}-${found.criterionId}-${found.literal.slice(0, 120)}`,
-        summary: `${found.criterionId} cites ${JSON.stringify(found.literal)}, which no row the request prescribes holds; ${task.id} writes only prescribed row files (${writtenTestPaths(task).join(", ")}), so the case walk does not demand it`,
-        inputs: { taskId: task.id, criterionId: found.criterionId, literal: found.literal },
-      });
+      if (!found) continue;
+      const literal = found.literal.slice(0, 120);
+      if (c.prescribed === "none")
+        recordWouldStop(this.store, runId, {
+          reason: "case_not_prescribed",
+          mode,
+          key: `task-${task.id}-${found.criterionId}-${literal}`,
+          summary: `${found.criterionId} cites ${JSON.stringify(found.literal)}, which no row the request prescribes holds; ${task.id} writes only prescribed row files (${writtenTestPaths(task).join(", ")}), so the case walk does not demand it`,
+          inputs: {
+            taskId: task.id,
+            criterionId: found.criterionId,
+            literal: found.literal,
+            kind: "literal",
+          },
+        });
+      else if (c.prescribedPerRow === "none")
+        recordWouldStop(this.store, runId, {
+          reason: "case_not_prescribed",
+          mode,
+          key: `task-${task.id}-per-row-${found.criterionId}-${literal}`,
+          summary: `${found.criterionId} cites ${JSON.stringify(found.literal)}, whose values the request's prescribed rows hold only spread over several rows; read row by row, no row holds it and the case walk would not demand it of ${task.id}`,
+          inputs: {
+            taskId: task.id,
+            criterionId: found.criterionId,
+            literal: found.literal,
+            kind: "per-row",
+            prescribed: c.prescribed ?? null,
+          },
+        });
     }
   }
   private generatedCaseWouldStop(

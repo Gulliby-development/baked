@@ -20,6 +20,8 @@ The chat settings that the terminal pickers edit (provider options, chat router 
 
 `workflows.policy.caseSourceProbe` accepts `"off"` or `"on"` and defaults to off. On has the task-end case walk run a criterion's quoted command before it refuses a test task for the command's expected output, and route a difference to the task that wrote the source. See [task-end case check](workflows/runtime.md#diagnostics-after-edits).
 
+`workflows.policy.citedCases` accepts `"demand"` or `"skip"` and defaults to demand. Skip has the task-end case walk not refuse a test task for a criterion literal that describes rows instead of quoting one (a row count, a test file's name, a `LINE:COL: MESSAGE` envelope, a described character) and record it in the walk record, and has analysis raise no `SUPPLIED-` finding for such a literal. See [task-end case check](workflows/runtime.md#diagnostics-after-edits).
+
 ```json
 {
   "defaultModel": "anthropic/claude-sonnet-4-5",
