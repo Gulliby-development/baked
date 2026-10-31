@@ -1405,6 +1405,12 @@ const add = (a: UsageView, b: UsageView): UsageView => ({
  */
 const DRIVES = new WeakMap<NativeWorkflowService, Map<string, AbortController>>();
 
+/**
+ * The plan-share holds already asked again in this process (#2523), by workflow service, keyed
+ * `initiative:run:measuredFeatures`: the gate is asked again once per accepted feature.
+ */
+const PLAN_SHARE_REASKS = new WeakMap<NativeWorkflowService, Set<string>>();
+
 export class InitiativeService {
   readonly store: InitiativeStore;
   private readonly active: Map<string, AbortController>;
@@ -1961,6 +1967,7 @@ export class InitiativeService {
       this.noteCallsForecast(view, null);
       this.notePlanCharge(view, null);
       this.noteStoredLimitResumes(view);
+      if (this.reaskPlanShare(id, () => view)) view = this.view(id);
       for (;;) {
         const row = this.store.get(id);
         const ready = this.byPath(
@@ -2408,7 +2415,11 @@ export class InitiativeService {
         .eventsOfType(id, "feature.share_gate")
         .filter((p) => (p as ShareGateRecord | null)?.featureId === feature.id)
         .at(-1) as ShareGateRecord | undefined;
-      if (last?.verdict === "park") return false;
+      // A park held for `no measurement` (#2471) is decided again once a feature is measured, the
+      // moment the hold lifts (#2523); the new record carries no hold, so it is decided once.
+      const lifted =
+        last?.poolGrowth?.hold === "no measurement" && view.budget.cost.measuredFeatures > 0;
+      if (last?.verdict === "park" && !lifted) return false;
     }
     const gateView = shareGateViewOf(view);
     const mode = this.extendWithinDollars();
@@ -3415,7 +3426,9 @@ export class InitiativeService {
    * `on` grows the pool (a `budget.extended` by `host`, reason `extend-within-dollars`, `gate:
    * "plan-share"`) and the run's ceiling together and returns true, so the scheduler sizes the plan
    * again; `off`, or a pool the cap cannot grow, records an `initiative-plan-share` would-stop with
-   * the extend that answers it, and the run goes on under assume as before. Once per run and ceiling.
+   * the extend that answers it, and the run goes on under assume as before. Once per run and ceiling;
+   * a would-stop held for `no measurement` is asked again when a feature is accepted (#2523,
+   * `reaskPlanShare`).
    */
   planShareGate(runId: string): boolean {
     if (!this.store.available()) return false;
@@ -3476,8 +3489,9 @@ export class InitiativeService {
     }
     const stop = stopMode(settings.basePolicy, "initiative-plan-share");
     if (stop === "enforce" || seen("decision.would_stop")) return false;
-    // `on` waits for the first accepted feature's dollar forecast, as at a park (#2471).
-    const hold = mode === "on" ? poolGrowthHold(decision.extension, view.budget.cost) : null;
+    // `on` waits for the first accepted feature's dollar forecast, as at a park (#2471); `shadow`
+    // records the same hold, and both are asked again once a feature is accepted (#2523).
+    const hold = mode !== "off" ? poolGrowthHold(decision.extension, view.budget.cost) : null;
     this.store.emit(id, "decision.would_stop", {
       reason: "initiative-plan-share",
       mode: stop,
@@ -3485,7 +3499,7 @@ export class InitiativeService {
       runId,
       key,
       ...(hold ? { hold } : {}),
-      summary: `${decision.why} ${featureId} would park before its tasks with the extend that answers it; it goes on under assume within its ${ceiling} tokens.${hold ? ` ${FIRST_WAVE_HOLD_TEXT}` : ""}`,
+      summary: `${decision.why} ${featureId} would park before its tasks with the extend that answers it; it goes on under assume within its ${ceiling} tokens.${hold && mode === "on" ? ` ${FIRST_WAVE_HOLD_TEXT}` : ""}`,
       remedy: {
         action: "extend",
         initiativeId: id,
@@ -3496,6 +3510,58 @@ export class InitiativeService {
       inputs,
     });
     return false;
+  }
+
+  /**
+   * The plan-time share gate asked again (#2523) for each open feature run whose
+   * `initiative-plan-share` would-stop held for `no measurement` and that no `plan-share`
+   * extension answered since, once per accepted feature: the hold lifts when the first feature is
+   * measured, and nothing else asks the gate of a run already past its plan sizing (the first
+   * wave's planned-ahead starts). With a measured dollar forecast `on` grows the pool and the
+   * run's ceiling together and `shadow` records its `decision.would_extend`. R82 tinyflate's
+   * deflate held at 22:21 and was never asked again after core was accepted at 22:25. True when
+   * the pool grew.
+   */
+  private reaskPlanShare(id: string, view: () => InitiativeView): boolean {
+    if (this.extendWithinDollars() === "off") return false;
+    const answered = new Set(
+      [
+        ...this.store
+          .eventsOfType(id, "decision.would_extend")
+          .filter((p) => (p as { reason?: string } | null)?.reason === "plan-share"),
+        ...this.store
+          .eventsOfType(id, "budget.extended")
+          .filter((p) => (p as { gate?: string } | null)?.gate === "plan-share"),
+      ].map((p) => (p as { runId?: string }).runId),
+    );
+    const held = new Set(
+      this.store.eventsOfType(id, "decision.would_stop").flatMap((p) => {
+        const stop = p as { reason?: string; hold?: string; runId?: unknown } | null;
+        return stop?.reason === "initiative-plan-share" &&
+          stop.hold === "no measurement" &&
+          typeof stop.runId === "string" &&
+          !answered.has(stop.runId)
+          ? [stop.runId]
+          : [];
+      }),
+    );
+    if (!held.size) return false;
+    const measured = view().budget.cost.measuredFeatures;
+    if (measured === 0) return false;
+    const asked = PLAN_SHARE_REASKS.get(this.workflows) ?? new Set<string>();
+    PLAN_SHARE_REASKS.set(this.workflows, asked);
+    let grew = false;
+    for (const runId of held) {
+      const key = `${id}:${runId}:${measured}`;
+      if (asked.has(key)) continue;
+      asked.add(key);
+      try {
+        grew = this.planShareGate(runId) || grew;
+      } catch {
+        // As at the scheduler's ask: without the gate the run goes on as sized.
+      }
+    }
+    return grew;
   }
 
   /**
@@ -3670,6 +3736,7 @@ export class InitiativeService {
       { baseCommit, baseFiles: this.upstreamSpecs(id, feature, []) },
     );
     this.store.emit(id, "feature.released", { featureId, runId, baseCommit });
+    this.reaskPlanShare(id, () => this.view(id));
     await this.checkUpstreamSymbols(runId, feature, this.approvedPlan(row), baseCommit);
     return true;
   }
