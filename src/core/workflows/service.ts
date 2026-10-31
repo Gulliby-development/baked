@@ -133,6 +133,7 @@ import {
   routeChanges,
   strictRoutingConfig,
 } from "./routing.js";
+import { repairRowClaims } from "./row-claim-repair.js";
 import { ROW_RESTORE_KIND, ROW_RESTORE_RESUME_DIR, rowRunRestores } from "./row-restore.js";
 import {
   GATES_ARTIFACT,
@@ -1228,7 +1229,42 @@ export class NativeWorkflowService implements WorkflowService {
     const outside = options.acceptWorkspace ? await this.outsideChanges(runId) : null;
     await this.convertStaleReleasedCreates(runId);
     this.recheckRowRuns(runId);
+    this.recheckRowClaims(runId);
     return this.resumeCommand(runId, command, outside, options.remedy);
+  }
+  /**
+   * A run blocked `invalid_output` that settled a conflict, recorded a decision or confirmed a
+   * finding against the request's prescribed rows before they were checked (R82 tinyflate deflate
+   * 82f19908 rev 56: `decisions/clarification-reaudited-T009.json` gives rows 7 and 8 306 and 283
+   * bytes for the request's 300 and 259, #2561) resumes into the same demand. The resume checks
+   * them against the request (`repairRowClaims`): each that contradicts a row records
+   * `conflicts/row-claims/resume-<ref>.json`, an input of the invalid-output repeat key; under
+   * `rowClaimCheck` on (absent) the decision is overridden, the finding refuted and the run's
+   * prompt names the rows as the request gives them. Not while the run executes; a failure to read
+   * records nothing.
+   */
+  private recheckRowClaims(runId: string): void {
+    const run = this.store.run(runId);
+    if (this.active.has(runId) || run.status !== "blocked" || run.reason !== "invalid_output")
+      return;
+    const state = this.store.state(runId);
+    const graph = state.rootGraph ?? state.graph;
+    if (!graph) return;
+    const mode =
+      PolicySchema.parse(JSON.parse(run.policy_json)).rowClaimCheck === "off" ? "shadow" : "on";
+    let repaired: ReturnType<typeof repairRowClaims>;
+    try {
+      repaired = repairRowClaims(this.store, runId, state.requestText || state.prompt, graph, mode);
+    } catch {
+      return;
+    }
+    if (!repaired.note) return;
+    const note = repaired.note;
+    this.store.transaction(() => {
+      const current = this.store.state(runId);
+      current.prompt += `\n${note}`;
+      this.store.saveState(runId, current);
+    });
   }
   /**
    * A planned-ahead run released before #2514 kept its planned creates of files the release

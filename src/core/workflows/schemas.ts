@@ -855,6 +855,18 @@ export const PolicySchema = z
      */
     rowEditGuard: z.literal("off").optional(),
     /**
+     * The check of a restatement of a prescribed row against the request's own text (row-claims.ts,
+     * #2561): a review finding or a skeptic's confirmation, a conflict's settlement, a recorded
+     * decision or settled conflict (checked on resume of a run blocked `invalid_output`) and a
+     * task's description that give a prescribed row's long run another count, or a re-audit that
+     * recomputes another expected value for it, lose to the request: the finding is refuted, the
+     * conflict is settled for the request's rows, the decision is overridden and the brief names
+     * the rows as given. On by default (absent), as `rowRunRestore`: it only keeps the request's
+     * own rows, and an opt-in would not reach a blocked run whose policy is frozen. `off` records
+     * the same under `conflicts/row-claims/` in shadow and changes nothing.
+     */
+    rowClaimCheck: z.literal("off").optional(),
+    /**
      * The host's repair of a required check that fails before any change (baseline-fix.ts, #2215):
      * `on` lets the host run the check's fixer on the files it names, before the first task, when
      * no task writes them, git tracks them and every finding is marked correctable, and keep the
