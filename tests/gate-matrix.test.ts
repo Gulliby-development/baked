@@ -7,6 +7,7 @@ import { evaluateAutoApproval, planScopeAdvice } from "../src/core/workflows/aut
 import { proseAfterRefusalScenario, refusalKinds } from "./helpers/prose-after-refusal-scenario.js";
 import { runScanner } from "../src/core/workflows/quality/rules.js";
 import { suppliedLineNumbers } from "../src/core/workflows/supplied-drift.js";
+import { upstreamSymbolGaps } from "../src/core/workflows/initiatives/upstream-symbols.js";
 import { GATE_PREREQUISITES, pendingPrerequisite } from "../src/core/workflows/gate-prerequisites.js";
 import { suspendClock } from "./helpers/suspend-clock.js";
 import { caseCheck } from "../src/core/verification/criteria-cases.js";
@@ -5811,4 +5812,19 @@ describe("prerequisite gate: a build gate run before configure in a fresh worktr
       for (const check of offered) expect(pendingPrerequisite(check, offered, root)).toBeNull();
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
+});
+
+describe("upstream symbol gate: a helper the request supplies is no missing member (#2566)", () => {
+  // R83 bytemerge training: "the given Rows helper" read as a gap of the supplied Rows.java.
+  const spec = (text: string) => ({ requirements: [{ id: "FR-001", text, priority: "must" as const, verification: "automated" as const, sourceRefs: [] }], criteria: [] });
+  for (const [language, path, text] of [
+    ["java", "src/test/java/bytemerge/Rows.java", "final class Rows { static String row(String s) { return s; } }\n"],
+    ["cpp", "tests/rows.hpp", "#pragma once\nstruct Rows { static int row(); };\n"],
+    ["python", "tests/rows.py", "def row(s):\n    return s\n"],
+  ] as const)
+    test(`${language}: given is no gap, an indefinite helper is`, () => {
+      const upstream = [{ featureId: "cli", path, text }];
+      expect(upstreamSymbolGaps(spec("Tests build rows with the given Rows helper."), upstream)).toEqual([]);
+      expect(upstreamSymbolGaps(spec("Rows gain a public Rows helper."), upstream)).toHaveLength(1);
+    });
 });

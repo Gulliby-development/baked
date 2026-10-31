@@ -112,6 +112,18 @@ describe("a released feature's spec is checked against the accepted upstream cod
     expect(gaps).toEqual([{ ref: "FR-004", symbol: "Reader's public helper", featureId: "reader", path: "src/Reader.cs" }]);
   });
 
+  // Bench round 83, bytemerge training (#2566): "the given Rows helper" named `Rows.java`, a verbatim
+  // block of the request the upstream `cli` feature installed, and was recorded as a gap of it.
+  test("a helper the spec calls given is its upstream file, not a gap; an indefinite one still is", () => {
+    const rows = { featureId: "cli", path: "src/test/java/io/github/gulliby/bytemerge/Rows.java", text: "final class Rows {\n  static String row(String s) { return s; }\n  static String reads(String s) { return s; }\n}\n" };
+    expect(upstreamSymbolGaps(spec("Each table test builds its rows with the given Rows helper."), [rows])).toEqual([]);
+    const harness = { featureId: "core", path: "tests/harness.hpp", text: "#pragma once\nstruct Harness { static int run(); };\n" };
+    expect(upstreamSymbolGaps(spec("The tests use the supplied Harness helper, verbatim below."), [harness])).toEqual([]);
+    expect(upstreamSymbolGaps(spec("Rows are read through a public Rows helper."), [rows]).map((g) => g.symbol)).toEqual(["public Rows helper"]);
+    // Called given, but the upstream file is not there: still a gap.
+    expect(upstreamSymbolGaps(spec("Each table test uses the given Rows helper."), [{ ...rows, text: null }]).map((g) => g.symbol)).toEqual(["Rows helper"]);
+  });
+
   test("a file name is not a member, and a type of no upstream file is not checked", () => {
     const upstream = [{ featureId: "reader", path: "src/Reader.cs", text: "class Reader {}" }];
     expect(upstreamSymbolGaps(spec("Scanner reads Reader.cs and calls Console.WriteLine."), upstream)).toEqual([]);
