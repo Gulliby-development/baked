@@ -782,6 +782,7 @@ import {
   readKept,
   runBaseContent,
   runWrittenHash,
+  taskEditsInPlace,
   UNFINISHED_BLOCK_PREFIX,
   uncommittedEdits,
 } from "./rollback.js";
@@ -8907,25 +8908,17 @@ ${note}`;
           : keepOutside(root, before, new Set(task.writes.map((w) => w.path)));
       const knownEffects = new Set(this.store.effects(runId).map((e) => e.id));
       // Edits of earlier attempts of this task that are still in place (a revision, a recovery
-      // or a failed attempt keeps them), by path, with the hash the path had before them.
-      const earlier = new Map<string, string | null>();
-      for (const edit of uncommittedEdits(this.store, runId, task.id)) {
-        const path = (JSON.parse(edit.intent_json) as { path: string }).path;
-        if (!earlier.has(path)) earlier.set(path, edit.before_hash);
-      }
-      const stillEdited = (): string[] =>
-        [...earlier].flatMap(([path, original]) =>
-          fileHash(workspacePath(root, path)) === original ? [] : [path],
-        );
-      const inherited = stillEdited();
+      // or a failed attempt keeps them), with the hash each path had before them; the batch
+      // worker counts the same lineage (#2585).
+      const stillEdited = (): string[] => [
+        ...taskEditsInPlace(this.store, runId, task.id, root).keys(),
+      ];
+      const earlier = taskEditsInPlace(this.store, runId, task.id, root);
+      const inherited = [...earlier.keys()];
       // The earlier attempt's own edits as a patch: a retry reads only the spans it still has
       // to change instead of every written file again.
       const earlierPatch = inherited.length
-        ? await this.taskPatch(
-            runId,
-            root,
-            Object.fromEntries(inherited.map((path) => [path, earlier.get(path) ?? null])),
-          )
+        ? await this.taskPatch(runId, root, Object.fromEntries(earlier))
         : "";
       const named = correctionFocus(this.store, runId, state, task);
       // A correction narrowed to its findings' files may also write a test of its own whose
@@ -10938,7 +10931,14 @@ ${note}`;
       leaseSignal.removeEventListener("abort", onLease);
     }
   }
-  /** The files a task's worker changed in its worktree: by its manifest and by the effect journal. */
+  /**
+   * The files a task's worker changed in its worktree: by its manifest, by the effect journal, and
+   * by the task's earlier edits in the run root that are still in place (#2585). The worktree's
+   * base carries the run root's files, so an earlier attempt's write (a row-file task's first
+   * session runs on the single-writer path, its retry here) is already in `before`; it counts as
+   * the single-writer path counts it (`taskEditsInPlace`). Edits carried from an earlier worktree
+   * are journaled again by `applyCarry`.
+   */
   private workerChanges(
     runId: string,
     entry: BatchEntry,
@@ -10947,7 +10947,18 @@ ${note}`;
     after: Record<string, string>,
   ): string[] {
     const journaled = this.workerJournaled(runId, entry, known);
-    return [...new Set([...changedPaths(before, after), ...journaled])].sort();
+    const inherited = taskEditsInPlace(
+      this.store,
+      runId,
+      entry.task.id,
+      join(this.store.workspace, entry.path),
+      {
+        root:
+          rootField(this.store.workspace, runRoot(this.store.workspace, this.store.state(runId)))
+            .root ?? "",
+      },
+    );
+    return [...new Set([...changedPaths(before, after), ...journaled, ...inherited.keys()])].sort();
   }
   /**
    * Puts back the files outside the task's writes that changed without a journaled edit of this

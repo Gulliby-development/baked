@@ -712,6 +712,84 @@ describe("scenario: R83, a session places the prescribed rows with place_rows an
   });
 });
 
+// #2585: R84 sseknit (Rust) 9e40f4b8 T008. Under `rowFileWrite: "on"` a row-file task's first
+// session runs on the single-writer path in the run root (the host tries its no-session write
+// first, #2528) and places the rows there; its retry is no longer pending, so with two writers it
+// runs in a batch worker whose worktree base already holds those rows. The worker counted only
+// its own manifest and journal, saw no change and refused the retry's result: "reported
+// implemented but changed none of its files". The task's earlier writes still in place count on
+// every path (`taskEditsInPlace`), whatever tool made them.
+const PLACE_PARSE_PATH = "tests/parse_rows.rs";
+const placeParseFile = (rows: string[]) =>
+  ["use sseknit::parse;", "", "struct Row {", "    input: &'static str,", "    events: &'static [&'static str],", "}", "", "const ROWS: &[Row] = &[", ...rows.map((r) => `    ${r},`), "];", "", "#[test]", "fn rows() {", "    for r in ROWS {", "        assert_eq!(parse(r.input), r.events);", "    }", "}", ""].join("\n");
+const PLACE_PARSE_ROWS = ['Row { input: "data: a\\n\\n", events: &["a"] }', 'Row { input: ": c\\n\\n", events: &[] }', 'Row { input: "data: x\\ndata: y\\n\\n", events: &["x\\ny"] }'];
+const PLACE_SSEKNIT: PlaceShape = {
+  path: PLACE_PARSE_PATH,
+  scaffold: placeParseFile([]),
+  line: 8,
+  block: [`ParseRows in ${PLACE_PARSE_PATH} (3 rows, Row { input, events })`, ...PLACE_PARSE_ROWS],
+  options: {},
+  written: placeParseFile(PLACE_PARSE_ROWS),
+};
+
+/** The place_rows executor in a Git repository, so the run can cut task worktrees. */
+class WorktreePlaceRowsExecutor extends PlaceRowsExecutor {
+  constructor(workspace: string, shape: PlaceShape) {
+    super(workspace, shape);
+    writeFileSync(join(workspace, ".gitignore"), ".baked/\n");
+    for (const args of [["init", "-q", "-b", "main"], ["config", "user.name", "Test User"], ["config", "user.email", "test@example.test"], ["config", "commit.gpgsign", "false"], ["config", "core.autocrlf", "false"], ["add", "."], ["commit", "-q", "-m", "Initial"]]) {
+      const result = spawnSync("git", args, { cwd: workspace, encoding: "utf8" });
+      if (result.status !== 0) throw new Error(`git ${args.join(" ")}: ${result.stderr}`);
+    }
+  }
+}
+
+describe("scenario: R84, a retry in a batch worker counts the rows its first session placed (#2585)", () => {
+  test("rust: the first session places the rows and ends unfinished; the retry only submits, and the task completes", async () => {
+    const shape = PLACE_SSEKNIT;
+    const policy: RunPolicy = { ...fixturePolicy, checks: [rowsCheck({ path: shape.path, block: shape.block } as WriteShape)], rowFileWrite: "on", clarification: "assume" };
+    const fixture = workflowFixture({ policy, executor: (root) => new WorktreePlaceRowsExecutor(root, shape) });
+    cleanups.push(fixture.dispose);
+    const native = new NativeAgentExecutor(fixture.service.store, fixture.service.leases, { ...fixture.config, repoMap: false });
+    cleanups.push(() => native.dispose());
+    fixture.executor.native = native;
+    const seen = scriptModel([
+      placeAll(shape),
+      // Unfinished: under clarification assume the host restarts the task.
+      () => call("submit_result", { schemaVersion: 1, taskId: "T001", outcome: "implemented", summary: "Placed the rows", evidenceIds: [], unresolved: ["the parser still has to read them"] }),
+      // The retry: the rows are in place, so it only submits.
+      submitRows(shape),
+      submitRows(shape),
+    ]);
+    const run = await fixture.service.start({ commandId: newId(), featureId: "fixture", workflowId: "sdd", prompt: placeRequest(shape), ownerLabel: "test", policy, executionMode: "worktree", maxConcurrentWriters: 2 });
+    let current = await fixture.service.drive(run.runId, new AbortController().signal);
+    for (let i = 0; i < 8 && current.status === "waiting"; i++) {
+      if (fixture.service.store.requests(run.runId).find((r) => r.status === "pending")?.kind !== "approval") break;
+      await fixture.approve(run.runId);
+      current = await fixture.service.drive(run.runId, new AbortController().signal);
+    }
+    const store = fixture.service.store;
+    const steps = store.steps(run.runId).filter((s) => s.stage_id === "task-T001");
+    const roots = store
+      .effects(run.runId)
+      .filter((e) => e.kind === "file_patch")
+      .map((e) => JSON.parse(e.intent_json) as { path: string; tool?: string; root?: string })
+      .filter((intent) => intent.path === shape.path && intent.tool === "edit_file")
+      .map((intent) => intent.root ?? "");
+    const refusals = store.artifacts(run.runId).filter((a) => a.logical_path.startsWith("errors/") && store.readArtifact(run.runId, a.id).includes("changed none of its files"));
+    // The rows were placed once, by the first session in the run root; the retry ran in its own
+    // task worktree.
+    expect(roots).toEqual([runRootPath(store, run.runId)]);
+    expect(store.artifacts(run.runId).some((a) => a.logical_path.startsWith("tasks/batches/"))).toBe(true);
+    expect(steps.length).toBeGreaterThanOrEqual(2);
+    // No refusal of the retry's result, and no third session: three model calls in all.
+    expect(refusals.map((a) => store.readArtifact(run.runId, a.id))).toEqual([]);
+    expect(seen.prompts).toHaveLength(3);
+    expect(current.status).toBe("completed");
+    expect(readFileSync(join(fixture.root, runRootPath(store, run.runId), shape.path), "utf8")).toBe(shape.written);
+  });
+});
+
 describe("placeRows: the request's rows after a line, from suppliedRows and restoredLine (#2564)", () => {
   const targets = new Map([[PLACE_CLI_PATH, PLACE_CLI_ROWS]]);
   const input = (rows: number[], line = 3, more: Partial<PlaceRowsInput> = {}): PlaceRowsInput => ({ path: PLACE_CLI_PATH, line, rows, ...more });

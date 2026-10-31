@@ -609,6 +609,15 @@ export class NativeAgentExecutor implements AgentExecutor {
           ).length;
       // Files the attempt's edit tools named, for the tests-written check it requests (#1421).
       const editedPaths = new Set<string>();
+      // A host tool's write on the session's behalf (place_rows, restore_file): through the edit
+      // guard as an edit_file of the path (the task's scope, the file's journal and pre-image, the
+      // prescribed-row guard), and an edit of the attempt as an edit tool's call is (#2585).
+      const hostEdit = (path: string, write: () => Promise<unknown>): Promise<unknown> =>
+        guard.execute("edit_file", { path }, async () => {
+          edited = true;
+          editedPaths.add(path);
+          return write();
+        });
       // Whether an edit added doubled backslash escapes, for the hint of a failed check (#1516).
       let doubledEscapes = false;
       // A tool call is progress while it runs (it has its own deadline); the last one names a stall.
@@ -1193,7 +1202,7 @@ export class NativeAgentExecutor implements AgentExecutor {
                 attemptId: request.attemptId,
               });
               if ("reason" in version) return { success: false, output: version.reason };
-              await guard.execute("edit_file", { path }, async () =>
+              await hostEdit(path, async () =>
                 writeFileSync(workspacePath(root, path), version.content),
               );
               broken.delete(path);
@@ -1262,13 +1271,9 @@ export class NativeAgentExecutor implements AgentExecutor {
                 const refused = placeRows(asked, placeTargets, current());
                 if ("refusal" in refused) return { success: false, output: refused.refusal };
                 await noteSyntaxBaseline("edit_file", { path });
-                // Through the edit guard, as an edit_file of the path: the task's scope, the
-                // file's journal and pre-image, and the prescribed-row guard (#2558).
-                const result = await guard.execute("edit_file", { path }, async () => {
+                const result = await hostEdit(path, async () => {
                   const planned = placeRows(asked, placeTargets, current());
                   if ("refusal" in planned) return { success: false, output: planned.refusal };
-                  edited = true;
-                  editedPaths.add(path);
                   writeFileSync(absolute, planned.content);
                   const [from, to] = planned.lines;
                   const [first] = planned.placed;

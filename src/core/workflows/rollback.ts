@@ -1,6 +1,7 @@
 import { chmodSync, existsSync, mkdirSync, readFileSync, statSync, unlinkSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { canonical, hashBytes } from "../specs/hash.js";
+import { workspacePath } from "../specs/validate.js";
 import { writeViaTemp } from "./atomic-write.js";
 import { effectFile, fileHash, intentRoot, runRootPath } from "./effects.js";
 import { WorkflowFault } from "./errors.js";
@@ -161,6 +162,34 @@ export function uncommittedEdits(
       (taskId === undefined || task.id === taskId)
     );
   });
+}
+
+/**
+ * The files a task's sessions changed that are still changed in `root`, each with the hash it had
+ * before the task's first edit of it: the paths of the task's uncommitted edits
+ * (`uncommittedEdits`: every journaled write, whatever tool made it, such as edit_file,
+ * multi_edit, place_rows, restore_file or a fixer) whose file in `root` no longer has that hash.
+ * A session's change is measured from the file the task started from, not from the root as the
+ * session found it, which already holds an earlier attempt's writes: a retry, a resume, or a
+ * batch worktree whose base carries the run root's files (#2585). `edits.root`, when given, keeps
+ * only the edits made in that intent root (`intentRoot`).
+ */
+export function taskEditsInPlace(
+  store: WorkflowStore,
+  runId: string,
+  taskId: string,
+  root: string,
+  edits?: { root: string },
+): Map<string, string | null> {
+  const original = new Map<string, string | null>();
+  for (const edit of uncommittedEdits(store, runId, taskId)) {
+    if (edits && intentRoot(edit.intent_json) !== edits.root) continue;
+    const path = pathOf(edit);
+    if (!original.has(path)) original.set(path, edit.before_hash);
+  }
+  for (const [path, hash] of original)
+    if (fileHash(workspacePath(root, path)) === hash) original.delete(path);
+  return original;
 }
 
 /**
