@@ -1,5 +1,6 @@
 import { hashJson } from "../specs/hash.js";
 import { widenAuthorized } from "../workflows/corrective-scope.js";
+import { applyReleasedCreates } from "../workflows/dependencies.js";
 import { WorkflowFault } from "../workflows/errors.js";
 import { LANGUAGE_REVIEW_PROFILE, touchesLanguageFiles } from "../workflows/language.js";
 import { CorrectionSchema, PolicySchema, type RunPolicy } from "../workflows/schemas.js";
@@ -132,6 +133,36 @@ function acceptance(
   for (const [index, correction] of links.entries()) {
     if (correction.parentDigest !== state.approvalRoot || correction.parentGraphHash !== graphHash)
       throw new WorkflowFault("STALE_DECISION", "Invalid correction chain");
+    if (correction.rule === "host-release") {
+      // A planned-ahead run's release turns planned creates of files it brought in into modifies
+      // (#2514): the same tasks and paths, nothing added or widened, each a file the baseline
+      // taken on the released base holds.
+      const released = correction.released ?? [];
+      const next = applyReleasedCreates(reconstructed, released);
+      const baselineId = state.manifest.baselineSnapshotId;
+      const baseline = (baselineId ? store.snapshotFiles(runId, baselineId) : null) ?? {};
+      if (
+        !state.planAhead?.released ||
+        released.some((r) => !(r.path in baseline)) ||
+        released.some(
+          (r) =>
+            !reconstructed.tasks.some(
+              (t) =>
+                t.id === r.taskId &&
+                t.origin === "planned" &&
+                correction.taskIds.includes(t.id) &&
+                t.writes.some(
+                  (w) => w.path === r.path && w.action === "create" && w.content === undefined,
+                ),
+            ),
+        ) ||
+        hashJson(next) !== correction.newGraphHash
+      )
+        throw new WorkflowFault("STALE_DECISION", "Correction exceeds the approved authority");
+      reconstructed.tasks = next.tasks;
+      graphHash = correction.newGraphHash;
+      continue;
+    }
     if (correction.rule === "host-widen") {
       frozen ??= PolicySchema.parse(JSON.parse(store.run(runId).policy_json));
       const policy = frozen;

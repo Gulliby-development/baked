@@ -1071,6 +1071,28 @@ export const SETTINGS: readonly SettingDefinition[] = [
     ],
   },
   {
+    id: "quality.rowRestore",
+    page: "code-quality",
+    section: "Workflow runs",
+    label: "Restore prescribed test rows",
+    help: "When a test file changes a row the request prescribes verbatim (a miscounted byte run, an omitted argument) and the file keeps that row on one line in the request's own notation, the host puts the request's row back in its place before the checks run and keeps the edit when the writing task's required checks pass, instead of a model session copying the row again.",
+    scopes: BOTH,
+    type: "enum",
+    default: "off",
+    options: [
+      {
+        value: "off",
+        label: "off",
+        help: "The file stays as written; the host only records which rows it would restore.",
+      },
+      {
+        value: "on",
+        label: "on",
+        help: "Restore the rows and keep the edit when the checks pass.",
+      },
+    ],
+  },
+  {
     id: "quality.misquoteFix",
     page: "code-quality",
     section: "Workflow runs",

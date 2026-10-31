@@ -149,3 +149,50 @@ export function upstreamOwners(
     return files.length ? [{ featureId, files }] : [];
   });
 }
+
+type Graph = NonNullable<RuntimeState["graph"]>;
+/** A planned write a `host-release` correction turns from `create` into `modify` (#2514). */
+export interface ReleasedWrite {
+  taskId: string;
+  path: string;
+}
+
+/**
+ * The planned `create` writes of a planned-ahead run (#1834) whose file its release brought in:
+ * `arrived` holds for a path the provisional base does not track and the released base does,
+ * which an accepted upstream feature wrote. The plan was checked on the provisional base, where
+ * the file was missing, so `create` was right then; on the released base the tool policy refuses
+ * it as "Create target already exists" (R82 slotprompt: blocks and filters planned
+ * lib/src/template.dart and render.dart before core was accepted, and T001 ended invalid_output).
+ * A write with host content is left alone: the host writes that file whole either way.
+ */
+export function releasedCreates(graph: Graph, arrived: (path: string) => boolean): ReleasedWrite[] {
+  return graph.tasks.flatMap((task) =>
+    task.origin === "planned"
+      ? task.writes
+          .filter((w) => w.action === "create" && w.content === undefined && arrived(w.path))
+          .map((w) => ({ taskId: task.id, path: w.path }))
+      : [],
+  );
+}
+
+/** `graph` with each of `released` as `modify`; the one rule acceptance replays (#2514). */
+export function applyReleasedCreates(graph: Graph, released: readonly ReleasedWrite[]): Graph {
+  const turned = (taskId: string, path: string) =>
+    released.some((r) => r.taskId === taskId && r.path === path);
+  return {
+    ...graph,
+    tasks: graph.tasks.map((task) =>
+      task.writes.some((w) => w.action === "create" && turned(task.id, w.path))
+        ? {
+            ...task,
+            writes: task.writes.map((w) =>
+              w.action === "create" && turned(task.id, w.path)
+                ? { ...w, action: "modify" as const }
+                : w,
+            ),
+          }
+        : task,
+    ),
+  };
+}

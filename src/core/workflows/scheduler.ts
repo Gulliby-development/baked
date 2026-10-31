@@ -896,6 +896,7 @@ import {
   rowBlockExtraSummary,
   rowRunFindings,
 } from "./row-block-drift.js";
+import { ROW_RESTORE_DIR, ROW_RESTORE_KIND, rowRestores } from "./row-restore.js";
 import {
   codeTaskCheckProblems,
   estimateSourceOf,
@@ -11894,6 +11895,78 @@ ${note}`;
     }
     this.store.transaction(() => this.store.finishAttempt(runId, attempt, "completed", 0));
   }
+  /**
+   * The checks stage's restore of the prescribed rows a delivered test file changed (#2522,
+   * `rowRestores`), before the snapshot and the checks: each file with a row the host would restore
+   * records `row-restores/<path>.json`. With `rowRestore: "on"` the host writes the restored lines
+   * as a journaled edit and runs the writing task's required checks on it; when one fails the file
+   * is put back as it was. A failure to read records nothing.
+   */
+  private async restoreRows(
+    runId: string,
+    stepId: string,
+    state: RuntimeState,
+    policy: RunPolicy,
+    signal: AbortSignal,
+  ): Promise<void> {
+    const graph = state.rootGraph ?? state.graph;
+    if (!graph) return;
+    const mode = policy.rowRestore === "on" ? "on" : "shadow";
+    const root = runRoot(this.store.workspace, state);
+    let planned: ReturnType<typeof rowRestores>;
+    try {
+      planned = rowRestores(
+        state.requestText || state.prompt,
+        graph,
+        (path) => readText(workspacePath(root, path)),
+        mode,
+      );
+    } catch {
+      return;
+    }
+    const write = (path: string, content: string) => {
+      const attempt = this.store.reserve(runId, stepId, null, 0, policy);
+      const absolute = workspacePath(root, path);
+      const before = this.store.transaction(() => capturePreImage(this.store, runId, absolute));
+      this.journal.publish(runId, attempt, path, Buffer.from(content), before, "file_patch", root);
+      this.store.transaction(() => this.store.finishAttempt(runId, attempt, "completed", 0));
+    };
+    for (const { record, before, after } of planned) {
+      let body = record;
+      if (mode === "on" && record.restore.length) {
+        write(record.path, after);
+        const writer = graph.tasks.find((t) => t.id === record.tasks.at(-1));
+        const checks = writer
+          ? this.gatedChecks(runId, state, policy, writer, root, [record.path]).filter(
+              (c) => c.required,
+            )
+          : [];
+        let passed = true;
+        for (const check of checks) {
+          signal.throwIfAborted();
+          const ran = await this.runTaskCheck(runId, stepId, check, policy, signal, root);
+          if (ran.status !== "passed") {
+            passed = false;
+            break;
+          }
+        }
+        if (!passed) write(record.path, before);
+        body = {
+          ...record,
+          verdict: passed ? "restored" : "put_back",
+          checks: !checks.length ? "none" : passed ? "passed" : "failed",
+        };
+      }
+      this.store.transaction(() =>
+        this.store.artifact(
+          runId,
+          ROW_RESTORE_KIND,
+          `${ROW_RESTORE_DIR}${record.path}.json`,
+          canonical(body),
+        ),
+      );
+    }
+  }
   private async runTaskCheck(
     runId: string,
     child: string,
@@ -15671,6 +15744,7 @@ ${note}`;
     signal: AbortSignal,
     fixed = false,
   ): Promise<Review["findings"]> {
+    await this.restoreRows(runId, stepId, state, policy, signal);
     await this.snapshot(runId, state, policy, signal);
     const unsafe = await this.dependencyFindings(runId, state, policy);
     if (unsafe.length) return this.recordChecks(runId, state, unsafe);
@@ -18537,6 +18611,7 @@ ${note}`;
     fixed = false,
   ): Promise<Review["findings"]> {
     if (v2.stage.type !== "check") return [];
+    await this.restoreRows(runId, stepId, state, policy, signal);
     await this.snapshot(runId, state, policy, signal);
     const unsafe = await this.dependencyFindings(runId, state, policy);
     if (unsafe.length) return this.recordChecks(runId, state, unsafe);
