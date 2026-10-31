@@ -91,6 +91,7 @@ import {
 } from "./calls-pool.js";
 import { criticalPathSummary, planWidth, remainingPath } from "./critical-path.js";
 import { DECOMPOSE_WORKFLOW_ID } from "./decompose.js";
+import { documentedSurfaceRate, documentsProgram, requestCommands } from "./documented-surface.js";
 import { type InitiativeDriveState, initiativeDriveState } from "./drive-state.js";
 import {
   calibrationLagText,
@@ -4098,6 +4099,7 @@ export class InitiativeService {
     const models = settings.model ? [settings.model] : [];
     const counts = boundaryPathCounts(plan, row.prompt);
     const language = planLanguage(plan);
+    const commands = requestCommands(row.prompt).length;
     const features = plan.features.map((feature) => {
       const workflowId = featureWorkflowId(settings, feature);
       return {
@@ -4109,6 +4111,7 @@ export class InitiativeService {
         ...counts.get(feature.id),
         dependsOn: feature.dependsOn,
         ...(feature.testCases ? { testCases: feature.testCases } : {}),
+        ...(commands && documentsProgram(feature) ? { documentedCommands: commands } : {}),
       };
     });
     const history = estimateHistory(
@@ -4136,16 +4139,17 @@ export class InitiativeService {
       if (planned) entry.planned = planned;
       spent[link.feature_id] = entry;
     }
+    const samples = [
+      ...featureRunSamples(this.store, this.workflows.store, history),
+      ...sharedFeatureRunSamples(
+        historyStorePaths(this.workflows.workspace, settings.basePolicy),
+        history,
+      ),
+    ].filter((s) => !own.has(s.runId));
     const estimate = estimateInitiative({
       features,
       history,
-      samples: [
-        ...featureRunSamples(this.store, this.workflows.store, history),
-        ...sharedFeatureRunSamples(
-          historyStorePaths(this.workflows.workspace, settings.basePolicy),
-          history,
-        ),
-      ].filter((s) => !own.has(s.runId)),
+      samples,
       maxTotalTokens: this.limits(row).maxTotalTokens,
       progress: {
         features: spent,
@@ -4162,6 +4166,16 @@ export class InitiativeService {
             testCaseRate: testCaseRate(
               sizingHistory(this.workflows.workspace, settings.basePolicy),
             ),
+          }
+        : {}),
+      // A documentation feature's listed commands (#2569): priced with `sizing.documentedSurface`,
+      // recorded on the feature's estimate in shadow otherwise.
+      ...(features.some((f) => f.documentedCommands)
+        ? {
+            documentedSurface: {
+              rate: documentedSurfaceRate(samples),
+              mode: settings.basePolicy?.sizing?.documentedSurface ? "on" : "shadow",
+            },
           }
         : {}),
     });
@@ -5705,6 +5719,7 @@ function featureRunSamples(
         language: string | null;
       }
     >();
+    const commands = requestCommands(row.prompt).length;
     return initiatives.links(row.id).flatMap((link) => {
       const run = runs.get(link.run_id);
       if (run?.status !== "completed") return [];
@@ -5736,6 +5751,7 @@ function featureRunSamples(
           ...(source === "shared" ? { source } : {}),
           startedAt: link.created_at,
           ...(revision?.language ? { language: revision.language } : {}),
+          ...(commands && documentsProgram(feature) ? { documentedCommands: commands } : {}),
         },
       ];
     });

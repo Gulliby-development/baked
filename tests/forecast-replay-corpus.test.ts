@@ -5,6 +5,8 @@ import { callCostRate, costRate } from "../src/core/workflows/budget.js";
 import { chargeHold, refreshedGrowth } from "../src/core/workflows/initiatives/growth.js";
 import { costGrowthLimit, dollarShortfall, growthLimit, type ShareGateRecord, shareShortfall } from "../src/core/workflows/initiatives/service.js";
 import { forecastSamples } from "../src/core/workflows/stage-price.js";
+import { documentedSurfaceRate } from "../src/core/workflows/initiatives/documented-surface.js";
+import { estimateInitiative } from "../src/core/workflows/initiatives/estimate.js";
 import { adaptiveFirstByteMs } from "../src/core/llm/provider-health.js";
 import { planApprovalDecision } from "../src/core/workflows/auto-approval.js";
 import { CAPACITY_PROBE, exceedsTestCapacity, rowVolumePrice } from "../src/core/workflows/sizing.js";
@@ -1027,4 +1029,38 @@ describe("the dollar notice replays at the measured ratio (#2186)", () => {
     expect(replay?.starts.filter((s) => s.forecastNotice !== null)).toEqual([]);
     expect(replay?.newStartStops).toBe(0);
   }, 600000);
+});
+
+describe("the documented surface backtests on R83's documentation features (#2569)", () => {
+  // A feature that documents the program is priced by the commands the request lists, plus one
+  // README correction round, with `sizing.documentedSurface` (shadow by default). R83 has no trace
+  // in the corpus, and the corpus traces carry no request text, so no recorded estimate moves; this
+  // row replays R83's numbers: bytemerge `documentation` (README and LICENSE of a 15-command
+  // program) priced in the small class at 380,968-883,972 and used 2,252,251; pnmforge `docs`
+  // (counted at 15 commands too) used 1.56M against 1.13M expected.
+  const stages = [{ id: "implement", type: "tasks", models: [] }];
+  const small = (runId: string, tokens: number) => ({ runId, workflowId: "sdd", size: "small" as const, tokens, taskCount: 3 });
+  const estimate = (mode?: "on" | "shadow") =>
+    estimateInitiative({
+      features: [
+        { id: "decoding", title: "decoding", workflowId: "sdd", size: "small", stages },
+        { id: "documentation", title: "documentation", workflowId: "sdd", size: "small", stages, documentedCommands: 15 },
+      ],
+      history: [],
+      samples: [small("statistics", 380_968), small("decoding", 883_972)],
+      maxTotalTokens: 30_000_000,
+      ...(mode ? { documentedSurface: { rate: documentedSurfaceRate([]), mode } } : {}),
+    });
+  const docs = (mode?: "on" | "shadow") => estimate(mode).features.find((f) => f.featureId === "documentation")?.tokens;
+  const inside = (r: { low: number; high: number } | undefined, actual: number) => r !== undefined && r.low <= actual && actual <= r.high;
+
+  test("today both actuals are above the high end; on, both land inside the range; shadow moves nothing", () => {
+    for (const actual of [2_252_251, 1_560_000]) {
+      expect(actual).toBeGreaterThan(docs()?.high ?? 0);
+      expect(inside(docs("on"), actual)).toBe(true);
+    }
+    expect(docs("shadow")).toEqual(docs());
+    // The miss shrinks from 2.5 times the high end to inside it, and the low end stays under the cheaper run.
+    expect(docs("on")).toEqual({ low: 1_560_000, high: 2_253_000 });
+  });
 });

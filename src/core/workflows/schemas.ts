@@ -952,6 +952,14 @@ export const PolicySchema = z
          */
         rowVolume: z.boolean().optional(),
         /**
+         * Prices a feature that documents the program (`documentsProgram`: a README, `docs/` or
+         * examples, beside legal files) at the commands the request lists times a per-command
+         * rate plus one README correction round, with the high end at the measured actual-to-low
+         * spread (`documentedSurfaceRate`, #2569). Absent means off: the price is recorded on the
+         * feature's estimate (`documentedSurface`, mode `shadow`) only.
+         */
+        documentedSurface: z.boolean().optional(),
+        /**
          * Weighs an initiative estimate's finished features by how recent their initiative is: a
          * feature's weight halves for every this many initiatives started after its own
          * (`recencyWeights`, #2150). Absent means every feature counts the same.
