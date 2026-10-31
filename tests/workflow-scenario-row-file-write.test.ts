@@ -3,7 +3,12 @@ import { spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import type { LanguageModelV3, LanguageModelV3GenerateResult } from "@ai-sdk/provider";
 import { isNoRow } from "../src/core/intelligence/language-records.js";
+import { getProvider } from "../src/core/llm/providers/index.js";
+import { hashBytes, hashJson } from "../src/core/specs/hash.js";
+import { PLACE_ROWS_DIR, type PlaceRowsInput, type PlaceRowsRecord, placeRows, placeRowTargets } from "../src/core/tools/place-rows.js";
+import { NativeAgentExecutor } from "../src/core/workflows/agent-executor.js";
 import { layoutFree } from "../src/core/workflows/acceptance-rows-inline.js";
 import { type HostApplyWrite, hostApplyDecision, hostApplyRecords, rowFileTasks } from "../src/core/workflows/host-apply.js";
 import { ROW_FILE_SHAPES, type RowFileInputs, rowArity, rowFilePlan, rowFileRefusal } from "../src/core/workflows/row-file.js";
@@ -11,9 +16,10 @@ import type { RunPolicy, TaskGraph } from "../src/core/workflows/schemas.js";
 import { runRootPath } from "../src/core/workflows/effects.js";
 import { newId } from "../src/core/workflows/store.js";
 import { INTEGRITY_DIR } from "../src/core/workflows/test-integrity.js";
-import { exportTrace, replayTrace } from "../src/core/workflows/trace.js";
+import { exportTrace, replayRowBlocks, replayTrace } from "../src/core/workflows/trace.js";
 import type { ExecutionRequest } from "../src/core/workflows/types.js";
-import { FixtureExecutor, fixturePolicy, workflowFixture } from "./helpers/workflow-fixture.js";
+import { FixtureExecutor, fixturePolicy, fixtureSpec, workflowFixture } from "./helpers/workflow-fixture.js";
+import { MockLanguageModelV3 } from "./helpers/workflow-model.js";
 
 // #2528 (step 2 of #2522): a task whose only content is the rows a request prescribes for a test
 // file opened a model session that transcribed them. Bench round 82: those tasks were 5.1M of the
@@ -346,4 +352,265 @@ describe("scenario: R82, a row-file task the host writes without a session (#252
     const before = replayTrace(out, { hostApplyRule: (writes) => hostApplyDecision(writes.map(({ rows: _, ...w }) => w)) }).runs.find((r) => r.runId === runId);
     expect(before?.newApplyDecisions).toBe(1);
   }, 120000);
+});
+
+// #2564: a row file whose language has no `ROW_FILE_SHAPES` row (C++ and Java, #2553), or whose
+// shape the host cannot read, still opened a session that retyped the rows through its edit tool.
+// Bench round 83: pnmforge (C++) `cli` T004 spent 2.74M tokens on nine rows, 1.57M of them on the
+// two usage rows through four escape layers; bytemerge (Java) `model` T003 failed `verify-written`
+// on a row one escape layer off. With `rowFileWrite: "on"` the session gets `place_rows`, which
+// inserts the request's rows from `suppliedRows` after a line of the file, and never types a row.
+
+const usage = {
+  inputTokens: { total: 1000, noCache: 1000, cacheRead: 0, cacheWrite: 0 },
+  outputTokens: { total: 100, text: 100, reasoning: 0 },
+};
+const call = (name: string, input: unknown): LanguageModelV3GenerateResult => ({
+  content: [{ type: "tool-call", toolCallId: crypto.randomUUID(), toolName: name, input: JSON.stringify(input) }],
+  finishReason: { unified: "tool-calls", raw: undefined },
+  usage,
+  warnings: [],
+});
+
+/** Route `openai/*` to a scripted model; returns the prompts and tool names it was sent. */
+function scriptModel(script: (() => LanguageModelV3GenerateResult)[]) {
+  const provider = getProvider("openai");
+  if (!provider) throw new Error("openai provider missing");
+  const original = provider.createModel;
+  const seen = { prompts: [] as string[], tools: [] as string[][] };
+  let index = 0;
+  const model = new MockLanguageModelV3({
+    doGenerate: async (options) => {
+      seen.prompts.push(JSON.stringify(options.prompt));
+      seen.tools.push((options.tools ?? []).map((t) => t.name));
+      const next = script[index++];
+      if (!next) throw new Error("script exhausted");
+      return next();
+    },
+  });
+  provider.createModel = () => model as LanguageModelV3;
+  cleanups.push(() => {
+    provider.createModel = original;
+  });
+  return seen;
+}
+
+interface PlaceShape {
+  path: string;
+  /** The file in the task's base: everything but the rows. */
+  scaffold: string;
+  /** The line of the scaffold the rows follow. */
+  line: number;
+  /** The request's fenced row block, header first. */
+  block: string[];
+  /** What the session passes besides path, line and rows. */
+  options: Record<string, string>;
+  /** The file once the rows are placed. */
+  written: string;
+  formatter?: { program: string; args: (file: string) => string[] };
+}
+
+// pnmforge (C++) cli: the usage rows carry `\n` escapes in the request's C++ notation.
+const CLI_PATH = "tests/cli_test.cpp";
+const cliFile = (rows: string[]) =>
+  ['#include "check.h"', "", "static const Row rows[] = {", ...rows.map((r) => `    ${r},`), "};", "", "int main() { return run_rows(rows); }", ""].join("\n");
+const CLI_ROWS = [
+  '{"--help", 0, "usage: pnmforge [--invert] [--scale N] FILE\\n"}',
+  '{"--version", 0, "pnmforge 1.0\\n"}',
+  '{"--scale", 2, "pnmforge: --scale needs a value\\n"}',
+];
+const PNMFORGE: PlaceShape = {
+  path: CLI_PATH,
+  scaffold: cliFile([]),
+  line: 3,
+  block: [`CliTests in ${CLI_PATH} (3 rows, { args, code, out })`, ...CLI_ROWS],
+  options: {},
+  written: cliFile(CLI_ROWS),
+  formatter: { program: "clang-format", args: (f) => ["-i", "-style=LLVM", f] },
+};
+
+// bytemerge (Java) encoding: `List.of(...)` takes no comma after its last row.
+const ENCODE_PATH = "src/test/java/bytemerge/EncodeIdsTest.java";
+const encodeFile = (rows: string[]) =>
+  [
+    "package bytemerge;",
+    "",
+    "import java.util.List;",
+    "",
+    "class EncodeIdsTest {",
+    "  record Row(String text, int[] ids) {}",
+    "",
+    "  static final List<Row> ROWS =",
+    "      List.of(",
+    ...rows.map((r, i) => `          ${r}${i === rows.length - 1 ? "" : ","}`),
+    "      );",
+    "}",
+    "",
+  ].join("\n");
+const ENCODE_ROWS = [
+  'new Row("ab", new int[] {97, 98})',
+  'new Row("a\\nb", new int[] {97, 10, 98})',
+  'new Row("256 \\\\ n", new int[] {256, 32, 92, 32, 110})',
+];
+const BYTEMERGE: PlaceShape = {
+  path: ENCODE_PATH,
+  scaffold: encodeFile([]),
+  line: 9,
+  block: [`EncodeIdsTest in ${ENCODE_PATH} (3 rows, new Row(text, ids))`, ...ENCODE_ROWS],
+  options: { indent: "          ", lastSeparator: "" },
+  written: encodeFile(ENCODE_ROWS),
+};
+
+/** Plans one task that places the rows in the scaffold and runs it through the real executor. */
+class PlaceRowsExecutor extends FixtureExecutor {
+  native: NativeAgentExecutor | null = null;
+  constructor(
+    workspace: string,
+    private shape: PlaceShape,
+  ) {
+    super(workspace);
+    mkdirSync(dirname(join(workspace, shape.path)), { recursive: true });
+    writeFileSync(join(workspace, shape.path), shape.scaffold);
+  }
+  override async execute(request: ExecutionRequest) {
+    if (request.profile.output === "plan") {
+      const markdown = "# Plan\n## Context\nRows.\n## Decisions\nDEC-001: FR-001 takes the rows.\n## Components\ntests\n## Data\nText\n## Verification\nCheck the rows\n## Risks\nNone for fixture";
+      const output = {
+        schemaVersion: 1,
+        markdown,
+        taskGraph: {
+          schemaVersion: 1, featureId: "fixture", revision: 1, specHash: hashJson(fixtureSpec), planHash: hashBytes(markdown),
+          tasks: [{ id: "T001", title: "Row file", description: `Place the prescribed rows in ${this.shape.path}`, requirementIds: ["FR-001"], criterionIds: ["AC-001"], dependsOn: [], profileId: "implementer", writes: [{ path: this.shape.path, action: "modify", reason: "the request prescribes its rows" }], readHints: [], checkIds: [], origin: "planned", findingIds: [], rationale: "Required behavior" }],
+        },
+      };
+      return { output, inputTokens: 25, outputTokens: 25 };
+    }
+    if (request.profile.output !== "implementation") return super.execute(request);
+    if (!this.native) throw new Error("native executor missing");
+    return this.native.execute({ ...request, profile: { ...request.profile, model: "openai/fixture-model" } });
+  }
+}
+
+const placeRequest = (shape: PlaceShape) =>
+  ["Place the prescribed rows.", "", "The prescribed rows, one test each:", "", "```text", ...shape.block, "```", ""].join("\n");
+const placeAll = (shape: PlaceShape) => () => call("place_rows", { path: shape.path, line: shape.line, rows: [1, shape.block.length - 1], ...shape.options });
+const submitRows = (shape: PlaceShape) => () =>
+  call("submit_result", { schemaVersion: 1, taskId: "T001", outcome: "implemented", summary: `Placed the rows of ${shape.path}`, evidenceIds: [], unresolved: [] });
+
+async function placeScenario(shape: PlaceShape, extra: Partial<RunPolicy>, script: (() => LanguageModelV3GenerateResult)[]) {
+  const asShape = { path: shape.path, block: shape.block } as WriteShape;
+  const policy: RunPolicy = { ...fixturePolicy, checks: [rowsCheck(asShape)], ...extra };
+  const fixture = workflowFixture({ policy, executor: (root) => new PlaceRowsExecutor(root, shape) });
+  cleanups.push(fixture.dispose);
+  const native = new NativeAgentExecutor(fixture.service.store, fixture.service.leases, { ...fixture.config, repoMap: false });
+  cleanups.push(() => native.dispose());
+  fixture.executor.native = native;
+  const seen = scriptModel(script);
+  const run = await fixture.service.start({ commandId: newId(), featureId: "fixture", workflowId: "sdd", prompt: placeRequest(shape), ownerLabel: "test", policy });
+  let current = await fixture.service.drive(run.runId, new AbortController().signal);
+  for (let i = 0; i < 8 && current.status === "waiting"; i++) {
+    if (fixture.service.store.requests(run.runId).find((r) => r.status === "pending")?.kind !== "approval") break;
+    await fixture.approve(run.runId);
+    current = await fixture.service.drive(run.runId, new AbortController().signal);
+  }
+  const store = fixture.service.store;
+  const tree = join(fixture.root, runRootPath(store, run.runId));
+  const record = store.latestArtifact(run.runId, `${PLACE_ROWS_DIR}T001.json`);
+  return {
+    final: await fixture.service.get(run.runId),
+    file: readFileSync(join(tree, shape.path), "utf8"),
+    seen,
+    record: record ? (JSON.parse(store.readArtifact(run.runId, record.id)) as PlaceRowsRecord) : undefined,
+    rowBlocks: replayRowBlocks(store, run.runId).filter((b) => b.path === shape.path),
+  };
+}
+
+describe("scenario: R83, a session places the prescribed rows with place_rows and never types one (#2564)", () => {
+  for (const [language, shape] of Object.entries({ cpp: PNMFORGE, java: BYTEMERGE }))
+    test(`${language}: with rowFileWrite on the session gets place_rows and the file holds the request's rows as written`, async () => {
+      const { final, file, seen, record, rowBlocks } = await placeScenario(shape, { rowFileWrite: "on" }, [placeAll(shape), submitRows(shape)]);
+      expect(seen.tools[0]).toContain("place_rows");
+      // The brief says the rows are placed, never typed.
+      expect(seen.prompts[0]).toContain("You must place them with place_rows and never type a row");
+      expect(seen.prompts[1]).toContain(`Placed rows 1 to 3 of the request's rows for ${shape.path} at lines ${shape.line + 1} to ${shape.line + 3}`);
+      expect(final.status).toBe("completed");
+      // One model call per scripted step: no edit_file, no correction.
+      expect(seen.prompts).toHaveLength(2);
+      expect(file).toBe(shape.written);
+      expect(record).toMatchObject({ mode: "on", offered: true, files: [{ path: shape.path, rows: 3 }] });
+      // The row-block comparison finds nothing to repair: no drift, no added, duplicated or moved row.
+      expect(rowBlocks.length).toBeGreaterThan(0);
+      for (const boundary of rowBlocks) {
+        expect(boundary.recorded).toEqual([]);
+        expect(boundary.moves?.recorded ?? { added: [], duplicated: [], reordered: [] }).toEqual({ added: [], duplicated: [], reordered: [] });
+      }
+      // The placed file is a fixed point of the language's formatter.
+      const formatter = shape.formatter;
+      if (formatter && has(formatter.program)) {
+        const dir = mkdtempSync(join(tmpdir(), "baked-place-rows-"));
+        cleanups.push(() => rmSync(dir, { recursive: true, force: true }));
+        const target = join(dir, shape.path.slice(shape.path.lastIndexOf("/") + 1));
+        writeFileSync(target, file);
+        expect(spawnSync(formatter.program, formatter.args(target), { cwd: dir }).status).toBe(0);
+        expect(readFileSync(target, "utf8")).toBe(file);
+      }
+    });
+
+  test("cpp: a row the request does not hold and a path that is not the row file are refused with the change to make", async () => {
+    const { final, file, seen } = await placeScenario(PNMFORGE, { rowFileWrite: "on" }, [
+      () => call("place_rows", { path: CLI_PATH, line: 3, rows: [1, 9] }),
+      () => call("place_rows", { path: "src/cli.cpp", line: 1, rows: [1, 3] }),
+      () => call("place_rows", { path: CLI_PATH, line: 3, rows: [1, 2] }),
+      // Row 2 is in the file: placing it again is refused, naming its line.
+      () => call("place_rows", { path: CLI_PATH, line: 5, rows: [2, 3] }),
+      () => call("place_rows", { path: CLI_PATH, line: 5, rows: [3] }),
+      submitRows(PNMFORGE),
+    ]);
+    expect(seen.prompts[1]).toContain(`The request prescribes rows 1 to 3 for ${CLI_PATH}; row 9 is not one of them. Call place_rows with rows [first, last] between 1 and 3.`);
+    expect(seen.prompts[2]).toContain(`src/cli.cpp is not a file this task's prescribed rows go in; place_rows writes the request's rows only into ${CLI_PATH}. Change src/cli.cpp with edit_file.`);
+    expect(seen.prompts[4]).toContain(`${CLI_PATH} already holds row 2 (line 5).`);
+    expect(final.status).toBe("completed");
+    expect(file).toBe(PNMFORGE.written);
+  });
+
+  test("java: shadow by default, the tool is not offered and place-rows records what would have been", async () => {
+    const typed = ENCODE_ROWS.map((r, i) => `          ${r}${i === ENCODE_ROWS.length - 1 ? "" : ","}`).join("\n");
+    const { final, file, seen, record } = await placeScenario(BYTEMERGE, {}, [
+      () => call("edit_file", { path: ENCODE_PATH, oldString: "      List.of(\n", newString: `      List.of(\n${typed}\n` }),
+      submitRows(BYTEMERGE),
+    ]);
+    expect(seen.tools[0]).not.toContain("place_rows");
+    expect(seen.prompts[0]).not.toContain("place_rows");
+    expect(record).toEqual({ schemaVersion: 1, taskId: "T001", mode: "shadow", offered: false, files: [{ path: ENCODE_PATH, rows: 3, shaped: expect.any(Boolean) }] });
+    expect(final.status).toBe("completed");
+    expect(file).toBe(BYTEMERGE.written);
+  });
+});
+
+describe("placeRows: the request's rows after a line, from suppliedRows and restoredLine (#2564)", () => {
+  const targets = new Map([[CLI_PATH, CLI_ROWS]]);
+  const input = (rows: number[], line = 3, more: Partial<PlaceRowsInput> = {}): PlaceRowsInput => ({ path: CLI_PATH, line, rows, ...more });
+  test("one row per line with the default indentation and separator, CRLF kept", () => {
+    expect(placeRows(input([1, 3]), targets, PNMFORGE.scaffold)).toMatchObject({ content: PNMFORGE.written, placed: [1, 2, 3], lines: [4, 6] });
+    expect(placeRows(input([1, 3]), targets, PNMFORGE.scaffold.replaceAll("\n", "\r\n"))).toMatchObject({ content: PNMFORGE.written.replaceAll("\n", "\r\n") });
+    // A tab-indented file gets a tab; the separator and the last row's separator are the caller's.
+    const tabbed = "var rows = []row{\n\t{\"x\"},\n}\n";
+    expect(placeRows({ path: "t_test.go", line: 2, rows: [1], separator: ";" }, new Map([["t_test.go", ['{"y"}']]]), tabbed)).toMatchObject({ content: 'var rows = []row{\n\t{"x"},\n\t{"y"};\n}\n' });
+    expect(placeRows(input([1, 2], 3, { indent: "  ", lastSeparator: "" }), targets, PNMFORGE.scaffold)).toMatchObject({
+      content: cliFile([]).replace("= {\n", `= {\n  ${CLI_ROWS[0]},\n  ${CLI_ROWS[1]}\n`),
+    });
+  });
+  test("refusals name the change the worker can make", () => {
+    const refusal = (result: ReturnType<typeof placeRows>) => ("refusal" in result ? result.refusal : null);
+    expect(refusal(placeRows(input([0, 2]), targets, PNMFORGE.scaffold))).toContain("row 0 is not one of them");
+    expect(refusal(placeRows(input([3, 1]), targets, PNMFORGE.scaffold))).toContain("end before they start");
+    expect(refusal(placeRows(input([1]), targets, null))).toContain("does not exist yet. Create it with edit_file");
+    expect(refusal(placeRows(input([1], 40), targets, PNMFORGE.scaffold))).toContain(`${CLI_PATH} has 6 lines; line 40 is not one of them`);
+    expect(refusal(placeRows({ ...input([1]), path: "src/cli.cpp" }, targets, ""))).toContain("is not a file this task's prescribed rows go in");
+  });
+  test("placeRowTargets reads the task's row files from suppliedRows only", () => {
+    const request = placeRequest(PNMFORGE);
+    expect([...placeRowTargets(request, { writes: [{ path: CLI_PATH, action: "modify" }, { path: "src/cli.cpp", action: "modify" }] })]).toEqual([[CLI_PATH, CLI_ROWS]]);
+    expect(placeRowTargets(request, { writes: [{ path: CLI_PATH, action: "delete" }] }).size).toBe(0);
+  });
 });

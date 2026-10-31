@@ -33,6 +33,7 @@ export const EDIT_TOOLS = new Set([
   "write_test",
   "apply_fix",
   "restore_file",
+  "place_rows",
 ]);
 /**
  * The tools whose result is a check result the watcher compares (`checkResultKey`); `apply_fix`

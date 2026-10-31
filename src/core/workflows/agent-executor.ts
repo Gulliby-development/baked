@@ -43,6 +43,16 @@ import { workspacePath } from "../specs/validate.js";
 import { withEditDiagnosticsMode } from "../tools/edit-diagnostics.js";
 import { buildTools } from "../tools/index.js";
 import { captureEndings, restoreEndings } from "../tools/line-endings.js";
+import {
+  PLACE_ROWS,
+  PLACE_ROWS_DIR,
+  PLACE_ROWS_KIND,
+  placeRows,
+  placeRowsDescription,
+  placeRowsInput,
+  placeRowsRecord,
+  placeRowTargets,
+} from "../tools/place-rows.js";
 import { contentHash, deriveTool, withoutAstEditHint } from "../tools/tool-utils.js";
 import { buildCheckEnv, CheckRunner, modelCheckOutput } from "../verification/check-runner.js";
 import {
@@ -1192,6 +1202,86 @@ export class NativeAgentExecutor implements AgentExecutor {
               };
             }),
         });
+      }
+      // The request's prescribed rows go into a row file by the host's text, never retyped (#2564):
+      // with `rowFileWrite: "on"` an implementer whose task writes such a file gets place_rows; in
+      // shadow `place-rows/<task>.json` records what it would have been offered.
+      const placeTask = request.task;
+      const placeTargets =
+        !request.hostTools &&
+        placeTask &&
+        request.profile.role === "implementer" &&
+        request.profile.allowedTools.includes("edit_file") &&
+        policy.allowedTools.includes("edit_file")
+          ? (() => {
+              try {
+                const state = this.store.state(request.runId);
+                return placeRowTargets(state.requestText || state.prompt, placeTask);
+              } catch {
+                return new Map<string, readonly string[]>();
+              }
+            })()
+          : new Map<string, readonly string[]>();
+      if (placeTask && placeTargets.size) {
+        const on = policy.rowFileWrite === "on";
+        const recordPath = `${PLACE_ROWS_DIR}${placeTask.id}.json`;
+        try {
+          if (!this.store.latestArtifact(request.runId, recordPath))
+            this.store.transaction(() =>
+              this.store.artifact(
+                request.runId,
+                PLACE_ROWS_KIND,
+                recordPath,
+                canonical(placeRowsRecord(placeTask.id, placeTargets, on)),
+              ),
+            );
+        } catch {
+          // A shadow record: failing to keep it changes nothing.
+        }
+        if (on)
+          available[PLACE_ROWS] = tool({
+            description: placeRowsDescription(placeTargets),
+            inputSchema: placeRowsInput,
+            execute: async (input) =>
+              track(PLACE_ROWS, async () => {
+                const path = guard.path(input.path);
+                const asked = { ...input, path };
+                const absolute = workspacePath(root, path);
+                const current = () => {
+                  try {
+                    return readFileSync(absolute, "utf8");
+                  } catch {
+                    return null;
+                  }
+                };
+                // A refused call writes nothing and leaves no edit in the journal.
+                const refused = placeRows(asked, placeTargets, current());
+                if ("refusal" in refused) return { success: false, output: refused.refusal };
+                await noteSyntaxBaseline("edit_file", { path });
+                // Through the edit guard, as an edit_file of the path: the task's scope, the
+                // file's journal and pre-image, and the prescribed-row guard (#2558).
+                const result = await guard.execute("edit_file", { path }, async () => {
+                  const planned = placeRows(asked, placeTargets, current());
+                  if ("refusal" in planned) return { success: false, output: planned.refusal };
+                  edited = true;
+                  editedPaths.add(path);
+                  writeFileSync(absolute, planned.content);
+                  const [from, to] = planned.lines;
+                  const [first] = planned.placed;
+                  const last = planned.placed.at(-1);
+                  return {
+                    success: true,
+                    output: `Placed ${planned.placed.length === 1 ? `row ${first}` : `rows ${first} to ${last}`} of the request's rows for ${path} at lines ${from} to ${to}, as the request writes them.`,
+                  };
+                });
+                return withSyntaxNote(result, async () => {
+                  const errors = await syntaxRegressions(path);
+                  if (errors.length) broken.set(path, errors);
+                  else broken.delete(path);
+                  return errors;
+                });
+              }),
+          });
       }
       const resultSchema = outputSchemas[request.profile.output];
       if (!resultSchema) throw new WorkflowFault("OUTPUT_INVALID", "Unknown profile output schema");

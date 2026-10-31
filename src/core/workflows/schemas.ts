@@ -755,9 +755,11 @@ export const PolicySchema = z
      * The host's write of a prescribed row file (row-file.ts, host-apply.ts, #2528): `on` lets the
      * host write a planned task's test file from its shape (the file in the task's base or the
      * task's `reference`) and the rows the request prescribes, when the host apply decision would
-     * write it, and start no session; the task's checks decide it. Absent means shadow (the
-     * decision is recorded under `host-apply/tasks/`, the session runs), so stored policies keep
-     * their hash.
+     * write it, and start no session; the task's checks decide it. A session that still writes
+     * such a file (no row shape for its language, a shape the host cannot read) gets `place_rows`
+     * (`src/core/tools/place-rows.ts`, #2564), which inserts the request's rows as written. Absent
+     * means shadow (the decision is recorded under `host-apply/tasks/`, the tool that would have
+     * been offered under `place-rows/`, the session runs), so stored policies keep their hash.
      */
     rowFileWrite: z.literal("on").optional(),
     /**

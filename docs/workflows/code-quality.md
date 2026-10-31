@@ -17,7 +17,7 @@ Quality gates of workflow runs measure the code a run writes beyond what its che
 | [Cross-run defect classes](runtime.md#cross-run-defect-classes) | `defectClasses` | `on` (absent is off) | off |
 | [Misquote host fix](runtime.md#test-integrity) | `misquoteFix` | `on` (absent is off, recorded in shadow) | off |
 | [Restore of a changed prescribed row](runtime.md#restoring-a-changed-prescribed-row) | `rowRestore` | `on` (absent is off, recorded in shadow) | off |
-| [Host-written prescribed row file](runtime.md#writing-a-prescribed-row-file-on-the-host) | `rowFileWrite` | `on` (absent is off, recorded in shadow) | off |
+| [Host-written prescribed row file, and `place_rows` for a session that writes one](runtime.md#writing-a-prescribed-row-file-on-the-host) | `rowFileWrite` | `on` (absent is off, recorded in shadow) | off |
 | [Host apply of verbatim content](runtime.md#plan-time-sizing) | `hostApply` | `on` (absent is off, recorded in shadow) | off |
 | [Edge-input probe](runtime.md#edge-input-probe) | `edgeProbe` | `on` (absent is off) | off |
 | [Settled conflict host finish](runtime.md#test-integrity) | `conflictFinish` | `on` (absent is off, recorded in shadow) | off |
