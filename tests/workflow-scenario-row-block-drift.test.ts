@@ -15,6 +15,7 @@ import {
   rowMoveDecision,
   rowRunFindings,
   rowRunText,
+  escapeLayers,
   rowTokens,
 } from "../src/core/workflows/row-block-drift.js";
 import { rowRestorePlan } from "../src/core/workflows/row-restore.js";
@@ -791,12 +792,12 @@ describe("#2521: each prescribed row is compared with the file row in its place,
   });
 
   test("a row's tokens: heredocs dedented, quoted literals, numbers without their type suffix, booleans and nil; names and keys are not tokens", () => {
-    expect(rowTokens('assert_row(["eval"], "1/2\\n", 0, """\n    1/2\n    = 5/6\n    """, "")')).toEqual([
-      { quoted: true, text: "eval" },
-      { quoted: true, text: "1/2\\n" },
-      { quoted: false, text: "0" },
-      { quoted: true, text: "1/2\n= 5/6\n" },
-      { quoted: true, text: "" },
+    expect(rowTokens('assert_row(["eval"], "1/2\\n", 0, """\n    1/2\n    = 5/6\n    """, \'\')')).toEqual([
+      { quoted: true, text: "eval", quote: '"' },
+      { quoted: true, text: "1/2\\n", quote: '"' },
+      { quoted: false, text: "0", quote: "" },
+      { quoted: true, text: "1/2\n= 5/6\n", quote: '"""' },
+      { quoted: true, text: "", quote: "'" },
     ]);
     expect(rowTokens("list(c('a'), 0L, TRUE, -1, 0x7f, nil, code: 2, v2: 3i32)").map((t) => t.text)).toEqual(["a", "0", "-1", "0x7f", "nil", "2", "3"]);
   });
@@ -878,5 +879,68 @@ describe("scenario: R82 slotprompt, rows delivered without arguments other rows 
     const plan = rowRestorePlan(SLOT_TEXT.block.slice(1), SLOT_TEXT.drifted);
     expect(plan.restore).toEqual([5, 13]);
     expect(plan.after).toBe(SLOT_TEXT.faithful);
+  });
+});
+
+// #2545: the per-row comparison decoded both sides until no escape layer was left, so a row the
+// file transcribed with a doubled escape was held. Bench round 82 slotprompt `dart-test-written`
+// failed on a row spelling `\\n` (a backslash and `n`) where the row gives `\n` (a line break), and
+// the failing check read as a source failure. A literal the file row quotes as the row does is
+// now compared with one escape layer decoded; a different quoting (#1997) keeps all layers.
+describe("#2545: the per-row comparison decodes one escape layer when the quoting is the same", () => {
+  const LAYER_ROW = 4;
+  const withOut = (out: string) => withRow(LAYER_ROW, [["render", "--var", "a=1"], "{{ a }}", 0, out, ""]);
+  const AS_GIVEN = withOut("1\\n");
+  const DOUBLED = withOut("1\\\\n");
+  const blockIn = (path: string, rows: string[]) =>
+    ["Build slotprompt.", "", "The prescribed rows, one test each:", "", "```text", `TextTest in ${path} (5 rows, row(ARGS, STDIN, CODE, OUT, ERR))`, ...rows, "```", ""].join("\n");
+  for (const [language, spelling] of Object.entries(TOKEN_SPELLINGS)) {
+    const path = `test/text_test.${language}`;
+    const compare = (block: string[], file: string) => rowBlockDrifts(blockIn(path, block), graphOf(path), () => file)[0];
+    test(`${language}: an output literal spelled \\\\n for the row's \\n drifts at that token with both layer counts; the row as given does not`, () => {
+      const file = spelling.file(DOUBLED.map(spelling.row));
+      const compared = compare(AS_GIVEN.map(spelling.row), file);
+      // The whole-file lookup decodes every layer and holds every literal: the R82 hole.
+      expect(compared?.record.rows.every((r) => !r.missing.length)).toBe(true);
+      expect(compared?.record.drifting).toEqual([LAYER_ROW]);
+      // The output is the row's last value but one (C's argument list adds a `NULL`).
+      const tokens = rowTokens(spelling.row(AS_GIVEN[LAYER_ROW - 1]!)).length;
+      expect(compared?.record.rows[LAYER_ROW - 1]).toMatchObject({ differs: tokens - 1, tokens, layers: { row: 1, file: 2 } });
+      const line = file.split("\n").findIndex((l) => l.trim() === spelling.row(DOUBLED[LAYER_ROW - 1]!)) + 1;
+      expect(compared?.drifts[0]?.differs).toEqual({ line, token: tokens - 1, tokens, text: "1\\n", layers: { row: 1, file: 2 } });
+      expect(compare(AS_GIVEN.map(spelling.row), spelling.file(AS_GIVEN.map(spelling.row)))?.record.drifting).toEqual([]);
+    });
+    test(`${language}: a JSON text the file quotes otherwise than the row (#1997) keeps all layers and is held`, () => {
+      // The file's own quote holds the JSON as is; the row's other quote escapes its inner quotes.
+      const fileQuote = spelling.row([[], "", 0, "", ""]).includes("''") ? "'" : '"';
+      const json = (quote: string, newline: string) =>
+        quote === "'" ? `{"out": "1${newline}"}` : `{\\"out\\": \\"1${newline}\\"}`;
+      const rowQuote = fileQuote === "'" ? '"' : "'";
+      const asRow = ([a, i, c, o, e]: DataRow) => `row([${a.map(sq).join(", ")}], ${sq(i)}, ${c}, ${rowQuote}${o}${rowQuote}, ${sq(e)})`;
+      const fileRows = withOut(json(fileQuote, "\\\\n"));
+      const block = withOut(json(rowQuote, "\\n")).map(asRow);
+      const compared = compare(block, spelling.file(fileRows.map(spelling.row)));
+      expect(compared?.record.rows[LAYER_ROW - 1]?.line).toBeDefined();
+      expect(compared?.record.drifting).toEqual([]);
+    });
+  }
+
+  test("escape layers: a line break one, a doubled escape two, JSON text in a string its own layer more", () => {
+    expect(["1", "1\\n", "1\\\\n", '{\\"a\\": \\"x\\\\ny\\"}', "\\012"].map(escapeLayers)).toEqual([0, 1, 2, 2, 1]);
+  });
+});
+
+describe("scenario: R82 slotprompt dart-test-written, a row transcribed with a doubled escape (#2545)", () => {
+  test("the checks stage records a shadow row_block_drift for row 17 at its output, with both layer counts, and the run still completes", async () => {
+    const drifted = slotTextTest(SLOT_TEXT_ROWS.map((r, i) => slotRow(i === 16 ? [r[0], "1\\\\n", r[2]] : r)));
+    const { final, wouldStops, fixture, runId } = await deliver(SLOT_TEXT, drifted);
+    expect(wouldStops.map((w) => w.key)).toEqual([`${SLOT_TEXT_PATH}#row-17`]);
+    const line = drifted.split("\n").findIndex((l) => l.includes("'1\\\\n'")) + 1;
+    expect(wouldStops[0]).toMatchObject({ mode: "shadow", inputs: { row: 17, missing: [], differs: { line, token: 4, tokens: 9, text: "1\\n", layers: { row: 1, file: 2 } } } });
+    expect(wouldStops[0]?.summary).toContain(`line ${line}, the row's place, does not hold "1\\n" (value 4 of 9) where the row gives it`);
+    expect(final.status).toBe("completed");
+    const replayed = replayRowBlocks(fixture.service.store, runId);
+    expect(replayed.at(-1)?.recorded).toEqual([17]);
+    expect(replayed.every((b) => JSON.stringify(b.recorded) === JSON.stringify(b.replayed))).toBe(true);
   });
 });

@@ -92,6 +92,20 @@
     "dependencyPrepare": null,
     "worktreePathLimits": null,
     "testClasses": null,
-    "testDeclarations": ["sum_test.go: 2 tests"]
+    "testDeclarations": ["sum_test.go: 2 tests"],
+    "rowFileShapes": [
+      "cmd/split_rows_test.go",
+      "package main",
+      "",
+      "import \"testing\"",
+      "",
+      "var rows = []struct{ in, out string }{",
+      "\t{\"a,b\", \"a|b\"},",
+      "\t{\"a,,b\", \"a||b\"},",
+      "}",
+      "",
+      "func TestRows(t *testing.T) { checkRows(t, rows) }",
+      ""
+    ]
   }
 }

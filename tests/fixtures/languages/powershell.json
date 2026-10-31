@@ -79,6 +79,7 @@
     "dependencyPrepare": null,
     "worktreePathLimits": null,
     "testClasses": null,
-    "testDeclarations": ["tests/Sum.Tests.ps1: 2 tests"]
+    "testDeclarations": ["tests/Sum.Tests.ps1: 2 tests"],
+    "rowFileShapes": null
   }
 }

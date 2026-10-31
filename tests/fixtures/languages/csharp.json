@@ -93,6 +93,7 @@
       "src/App.Tests/Checks.cs: by its name",
       "tests/App.Tests/Props.cs: by its name"
     ],
-    "testDeclarations": ["Calc.Tests/SumTests.cs: 3 tests, per class 2, 1"]
+    "testDeclarations": ["Calc.Tests/SumTests.cs: 3 tests, per class 2, 1"],
+    "rowFileShapes": null
   }
 }

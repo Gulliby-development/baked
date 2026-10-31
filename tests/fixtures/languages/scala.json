@@ -71,6 +71,7 @@
     "dependencyPrepare": null,
     "worktreePathLimits": null,
     "testClasses": null,
-    "testDeclarations": ["src/test/scala/SumSuite.scala: 2 tests, per class 2"]
+    "testDeclarations": ["src/test/scala/SumSuite.scala: 2 tests, per class 2"],
+    "rowFileShapes": null
   }
 }

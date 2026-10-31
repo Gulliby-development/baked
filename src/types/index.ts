@@ -371,6 +371,8 @@ export interface QualityConfig {
   misquoteFix?: "off" | "on";
   /** Let the host put a prescribed test row a delivered file changed back from the request's text, when the file keeps it on one line in the request's notation and the checks pass on it: `on` or `off` (default, recorded in shadow). */
   rowRestore?: "off" | "on";
+  /** Let the host write a test file whose only content is the rows the request prescribes, in the shape of the file in the task's base or its reference file, instead of a model session transcribing them: `on` or `off` (default, recorded in shadow). */
+  rowFileWrite?: "off" | "on";
   /** Let the host write a task the request gives verbatim (exact diffs, whole files, a README section) instead of starting an implementer, when every diff applies: `on` or `off` (default, recorded in shadow). */
   hostApply?: "off" | "on";
   /** Before the test tasks, run extreme legal inputs a small call proposes against each planned source task's code; a failing one is corrected at once (edge-input probe): `on` or `off` (default). */

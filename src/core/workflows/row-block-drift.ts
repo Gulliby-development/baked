@@ -4,7 +4,7 @@ import {
   runDiffText,
   runLengthCompare,
 } from "../verification/byte-runs.js";
-import { verbatimHeld } from "../verification/criteria-cases.js";
+import { normalizeLiteral, verbatimHeld } from "../verification/criteria-cases.js";
 import type { Review, TaskGraph } from "./schemas.js";
 import { suppliedRows } from "./sizing.js";
 
@@ -66,6 +66,16 @@ import { suppliedRows } from "./sizing.js";
  * A row that no file row takes the place of keeps only the whole-file lookup, and a row with a
  * long byte run is left to its count (#2515).
  *
+ * In that per-row comparison a quoted literal is compared by its value with one escape layer
+ * decoded (the language's own string decoding, #2545) when the row and the file row quote it with
+ * the same character; only when the quoting differs (a JSON string inside single quotes, #1997)
+ * are both sides decoded until no escape layer is left, as `verbatimHeld` does for the whole-file
+ * lookup and the case walk. Bench round 82: slotprompt `dart-test-written` failed on a transcribed
+ * row that spelled `arguments\\n` (a backslash and `n`) where the row gives `arguments\n` (a line
+ * break); all layers decoded, the two were one literal, the row was held and the failing check read
+ * as a source failure. Such a row now drifts at that token, with both layer counts
+ * (`RowMeasure.layers`).
+ *
  * The `row_block_drift` reason records each drifting row, and each added or duplicated row, as a
  * would-stop (shadow); a reordered row is only recorded. `row-blocks/<path>.json` records the
  * counts its decisions read (no text) for the replay.
@@ -96,6 +106,17 @@ export interface RowMeasure {
   tokens?: number;
   /** The first of them (from 1) the file row does not hold, or holds out of order; absent if none. */
   differs?: number;
+  /**
+   * When that token differs only by escape layers (#2545): how many the row's literal and the file
+   * row's literal decode through (`\\n` two, `\n` one); absent otherwise (and in records before it).
+   */
+  layers?: EscapeLayers;
+}
+
+/** The escape layers a row's literal and the file row's decode through (#2545). */
+export interface EscapeLayers {
+  row: number;
+  file: number;
 }
 
 /** A long run of a prescribed row that a file line counts differently (#2515). */
@@ -208,7 +229,14 @@ export interface RowBlockDrift {
    * The first token the file row in the row's place lacks or holds out of order (#2521): the
    * file line, the token's place in the row (from 1) of how many, as the request spells it (cut).
    */
-  differs: { line: number; token: number; tokens: number; text: string } | null;
+  differs: {
+    line: number;
+    token: number;
+    tokens: number;
+    text: string;
+    /** When the token differs only by escape layers (#2545). */
+    layers?: EscapeLayers;
+  } | null;
 }
 
 /** A long byte run of a row the file counts differently (#2515). */
@@ -295,6 +323,7 @@ export function measureRows(
             line: place,
             tokens: compared.tokens,
             ...(compared.differs !== null ? { differs: compared.differs } : {}),
+            ...(compared.layers ? { layers: compared.layers } : {}),
           }
         : {}),
     };
@@ -305,6 +334,8 @@ export function measureRows(
 export interface RowToken {
   quoted: boolean;
   text: string;
+  /** The quote it is spelled in (`'`, `"`, `"""`, `'''`, a backtick, #2545); empty for a bare value. */
+  quote: string;
 }
 
 const TOKEN = new RegExp(
@@ -329,11 +360,12 @@ const TOKEN = new RegExp(
  */
 export function rowTokens(text: string): RowToken[] {
   return [...text.matchAll(TOKEN)].map((m) => {
+    const quote = m[1] !== undefined ? '"""' : m[2] !== undefined ? "'''" : (m[0][0] ?? "");
     const heredoc = m[1] ?? m[2];
-    if (heredoc !== undefined) return { quoted: true, text: dedented(heredoc) };
+    if (heredoc !== undefined) return { quoted: true, text: dedented(heredoc), quote };
     const quoted = m[3] ?? m[4] ?? m[5];
-    if (quoted !== undefined) return { quoted: true, text: quoted };
-    return { quoted: false, text: m[6] ?? m[7] ?? "" };
+    if (quoted !== undefined) return { quoted: true, text: quoted, quote };
+    return { quoted: false, text: m[6] ?? m[7] ?? "", quote: "" };
   });
 }
 
@@ -373,26 +405,74 @@ function rowText(lines: readonly string[], line: number): { text: string; end: n
 const sameValue = (a: string, b: string) =>
   a === b || (Number(a) === Number(b) && !Number.isNaN(Number(a)));
 
-/** A literal of the row the file spells as given: decoded alike, a `<name>` standing for any text. */
-function sameRowLiteral(row: string, file: string): boolean {
-  if (new RegExp(PLACEHOLDER.source).test(row)) return literalHeld(file, row);
-  return row === file || sameLiteral(row, file);
+/** One escape layer of a literal, in one pass: the language's own string decoding (#2545). */
+const ESCAPE =
+  /\\(?:([0-3][0-7]{2})|u\{[\da-fA-F]{1,6}\}|u[\da-fA-F]{4}|x[\da-fA-F]{2}|[ntr"'`\\])/g;
+const decodedOnce = (text: string) =>
+  text.replace(ESCAPE, (spelling: string, octal: string | undefined) =>
+    octal !== undefined
+      ? String.fromCharCode(Number.parseInt(octal, 8))
+      : normalizeLiteral(spelling),
+  );
+
+/** How many escape layers a literal decodes through, at most four (as `verbatimHeld` decodes). */
+export function escapeLayers(literal: string): number {
+  let layers = 0;
+  let text = literal;
+  for (let next = decodedOnce(text); next !== text && layers < 4; next = decodedOnce(text)) {
+    text = next;
+    layers++;
+  }
+  return layers;
 }
 
-/** Whether file tokens from `at` spell the row's `token`: the last file token it takes, or null. */
-function tokenAt(token: RowToken, tokens: readonly RowToken[], at: number): number | null {
+/**
+ * A literal decoded by one layer, the backslashes left in its value kept as text: `verbatimHeld`
+ * then decodes nothing more, and still joins and trims as it does.
+ */
+const oneLayer = (text: string) => decodedOnce(text).replace(/\\/g, "\uE000");
+
+/**
+ * A literal of the row the file spells as given: decoded alike, a `<name>` standing for any text.
+ * `layered` (the same quoting, #2545): by one escape layer, else until none is left.
+ */
+function sameRowLiteral(row: string, file: string, layered = false): boolean {
+  if (new RegExp(PLACEHOLDER.source).test(row)) return literalHeld(file, row);
+  if (row === file) return true;
+  return layered ? sameLiteral(oneLayer(row), oneLayer(file)) : sameLiteral(row, file);
+}
+
+/**
+ * Whether file tokens from `at` spell the row's `token`: the last file token it takes, or null.
+ * `layered` (#2545): a literal the file quotes as the row does is compared by one escape layer.
+ */
+function tokenAt(
+  token: RowToken,
+  tokens: readonly RowToken[],
+  at: number,
+  layered = false,
+): number | null {
   const first = tokens[at];
   if (!first) return null;
   if (!token.quoted) return first.quoted ? null : sameValue(token.text, first.text) ? at : null;
   let joined = "";
+  let sameQuote = true;
   for (let end = at; end < tokens.length && end < at + JOINED; end++) {
     const next = tokens[end];
     if (!next?.quoted) break;
     joined += next.text;
-    if (sameRowLiteral(token.text, joined)) return end;
+    sameQuote &&= next.quote === token.quote;
+    if (sameRowLiteral(token.text, joined, layered && sameQuote)) return end;
   }
   return null;
 }
+
+/** The file tokens from `at` to `end` as one literal, as `tokenAt` joins them. */
+const joinedAt = (tokens: readonly RowToken[], at: number, end: number) =>
+  tokens
+    .slice(at, end + 1)
+    .map((t) => t.text)
+    .join("");
 
 /**
  * A prescribed row against the file row on line `place` (#2521): its token count and the first
@@ -400,6 +480,8 @@ function tokenAt(token: RowToken, tokens: readonly RowToken[], at: number): numb
  * token), or else, when the file row itself holds every token (one row per line), the first that
  * is out of the row's order. The row's own lines are the file row with its continued strings and
  * heredoc and the lines after it up to a blank line or the next file row (at most `ROW_TAIL`).
+ * In that order a literal the file row quotes as the row does is compared by one escape layer
+ * (#2545); one that differs only by escape layers drifts with both layer counts.
  * Null for a row with a long byte run (its count decides, #2515) or with no token.
  */
 function rowCompare(
@@ -407,7 +489,7 @@ function rowCompare(
   lines: readonly string[],
   place: number,
   starts: readonly number[],
-): { tokens: number; differs: number | null } | null {
+): { tokens: number; differs: number | null; layers?: EscapeLayers } | null {
   const want = rowTokens(row);
   if (!want.length || literalSpans(row).length) return null;
   const own = rowText(lines, place);
@@ -435,8 +517,21 @@ function rowCompare(
   let from = 0;
   for (const [i, token] of want.entries()) {
     let found: number | null = null;
-    for (let k = from; k < have.length && found === null; k++) found = tokenAt(token, have, k);
-    if (found === null) return { tokens: want.length, differs: i + 1 };
+    for (let k = from; k < have.length && found === null; k++)
+      found = tokenAt(token, have, k, true);
+    if (found === null) {
+      // The same literal with all layers decoded: it differs by escape layers only (#2545).
+      for (let k = from; k < have.length; k++) {
+        const end = tokenAt(token, have, k);
+        if (end === null) continue;
+        const layers = {
+          row: escapeLayers(token.text),
+          file: escapeLayers(joinedAt(have, k, end)),
+        };
+        return { tokens: want.length, differs: i + 1, layers };
+      }
+      return { tokens: want.length, differs: i + 1 };
+    }
     from = found + 1;
   }
   return { tokens: want.length, differs: null };
@@ -622,6 +717,7 @@ export function rowBlockDrifts(
                   token: measure.differs,
                   tokens: measure.tokens ?? 0,
                   text: cut(rowTokens(line)[measure.differs - 1]?.text ?? ""),
+                  ...(measure.layers ? { layers: measure.layers } : {}),
                 }
               : null,
         },

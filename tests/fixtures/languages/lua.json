@@ -86,6 +86,7 @@
     "dependencyPrepare": null,
     "worktreePathLimits": null,
     "testClasses": null,
-    "testDeclarations": ["spec/sum_spec.lua: 2 tests"]
+    "testDeclarations": ["spec/sum_spec.lua: 2 tests"],
+    "rowFileShapes": null
   }
 }
