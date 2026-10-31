@@ -1414,6 +1414,17 @@ export const FEATURES: readonly Feature[] = [
     desktop: ["settings/chat: Code quality page"],
   },
   {
+    id: "row-edit-guard",
+    group: "Workflow runs",
+    title: "Keep a test's prescribed rows through a task's edits",
+    tui: ["/code-quality"],
+    cli: notNeeded(
+      "quality.rowEditGuard in config.json; a put-back edit shows as the tool call's answer",
+    ),
+    api: ["/v1/settings: code-quality page"],
+    desktop: ["settings/chat: Code quality page"],
+  },
+  {
     id: "dependency-check-sast",
     group: "Workflow runs",
     title: "New dependencies looked up before checks; Semgrep on the run's diff",
