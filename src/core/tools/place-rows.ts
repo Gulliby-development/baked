@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { rowOf } from "../intelligence/language-records.js";
 import { detectLanguageFromPath } from "../intelligence/types.js";
+import { rowNotation } from "../workflows/row-block-drift.js";
 import { ROW_FILE_SHAPES } from "../workflows/row-file.js";
 import { restoredLine } from "../workflows/row-restore.js";
 import { suppliedRows } from "../workflows/sizing.js";
@@ -22,6 +23,12 @@ import type { Task } from "../workflows/types.js";
  * the request prescribes rows for (`placeRowTargets`); in shadow `place-rows/<task>.json` records
  * what would have been offered. A language with a `ROW_FILE_SHAPES` row keeps the host's write
  * first: a session opens for its file only when that write declines.
+ *
+ * It places only rows the request already writes in the file language's code (#2583). A row in
+ * the request's own notation (`run "cols" "3" stdin="…" => 0 "…" ""`, `rowNotation`) is a line no
+ * test framework parses: R84 wrapsmith T002 got such rows placed into a Pester file, Pester failed
+ * to parse it, and the run stuck. Such a row is refused with the change to make (write it as the
+ * framework's call with edit_file), and a task whose rows are all notation is not offered the tool.
  */
 
 export const PLACE_ROWS = "place_rows";
@@ -43,16 +50,41 @@ export function placeRowTargets(
   );
 }
 
+/**
+ * The targets by the form of their rows (#2583): `code`, the files with a row place_rows can insert
+ * (written in the file language's code); `notation`, each file's rows (from 1) in the request's own
+ * notation, which only the session can write, as the test framework's call.
+ */
+export function placeRowForms(targets: ReadonlyMap<string, readonly string[]>): {
+  code: Map<string, readonly string[]>;
+  notation: Map<string, number[]>;
+} {
+  const code = new Map<string, readonly string[]>();
+  const notation = new Map<string, number[]>();
+  for (const [path, rows] of targets) {
+    const own = rows.flatMap((row, i) => (rowNotation(row) ? [i + 1] : []));
+    if (own.length) notation.set(path, own);
+    if (own.length < rows.length) code.set(path, rows);
+  }
+  return { code, notation };
+}
+
 /** What a task was (or, in shadow, would have been) offered, once per task. */
 export interface PlaceRowsRecord {
   schemaVersion: 1;
   taskId: string;
   /** `on` with `rowFileWrite: "on"`, otherwise `shadow`. */
   mode: "on" | "shadow";
-  /** Whether the session got the tool: false in shadow (the would-record). */
+  /**
+   * Whether the session got the tool: false in shadow (the would-record), and when every target
+   * row is in the request's notation (#2583).
+   */
   offered: boolean;
-  /** Each target file, its prescribed row count, and whether its language has a row shape. */
-  files: { path: string; rows: number; shaped: boolean }[];
+  /**
+   * Each target file, its prescribed row count, whether its language has a row shape, and how many
+   * of its rows are in the request's notation (#2583; absent when none), which the tool refuses.
+   */
+  files: { path: string; rows: number; shaped: boolean; notation?: number }[];
 }
 
 export function placeRowsRecord(
@@ -60,15 +92,17 @@ export function placeRowsRecord(
   targets: ReadonlyMap<string, readonly string[]>,
   on: boolean,
 ): PlaceRowsRecord {
+  const { code, notation } = placeRowForms(targets);
   return {
     schemaVersion: 1,
     taskId,
     mode: on ? "on" : "shadow",
-    offered: on,
+    offered: on && code.size > 0,
     files: [...targets].map(([path, rows]) => ({
       path,
       rows: rows.length,
       shaped: rowOf(ROW_FILE_SHAPES, detectLanguageFromPath(path)) !== null,
+      ...(notation.get(path)?.length ? { notation: notation.get(path)?.length } : {}),
     })),
   };
 }
@@ -114,6 +148,16 @@ export function placeRowsDescription(targets: ReadonlyMap<string, readonly strin
   return `Insert the request's prescribed rows verbatim into ${files}: rows [first, last] go after the given line of the existing file, one row per line, in the request's order, exactly as the request writes them. Never type a prescribed row with edit_file or multi_edit: write everything else (imports, the row type, the list's opening and close, the harness calls) with edit_file, leaving the rows out, then place them with this tool. Give indent and separator when the defaults (the line's indentation, one level deeper after a line that opens the list; a comma after each row) do not fit the language.`;
 }
 
+/**
+ * The answer to rows in the request's notation (#2583): place_rows inserts only code, so the
+ * session writes each such row itself as the test framework's call.
+ */
+export function notationRefusal(path: string, rows: readonly number[], example: string): string {
+  const shown = example.length > 120 ? `${example.slice(0, 117)}...` : example;
+  const which = rows.length === 1 ? `row ${rows[0]}` : `rows ${rows.join(", ")}`;
+  return `${path}: the request gives ${which} in its own notation (${shown}), not as code of the file's language, and no test framework parses that line. place_rows inserts only rows the request writes as code. Write ${rows.length === 1 ? "this row" : "these rows"} yourself with edit_file as the test framework's call, one test per row in the request's order, with the row's arguments, input, expected exit code and output, each string in the language's own quoting and escapes.`;
+}
+
 /** The leading whitespace one nesting level adds in `lines`: a tab, or the smallest space run. */
 function indentUnit(lines: readonly string[]): string {
   let spaces = 0;
@@ -154,6 +198,10 @@ export function placeRows(
     return {
       refusal: `rows [${first}, ${last}] end before they start. Call place_rows with rows [first, last], first not after last.`,
     };
+  const span = Array.from({ length: last - first + 1 }, (_, i) => first + i);
+  const notation = span.filter((n) => rowNotation(rows[n - 1] ?? ""));
+  if (notation.length)
+    return { refusal: notationRefusal(path, notation, rows[(notation[0] ?? 1) - 1] ?? "") };
   if (text === null)
     return {
       refusal: `${path} does not exist yet. Create it with edit_file holding everything but the rows (imports, the row type, the list's opening and close, the harness calls), then call place_rows with the line the rows follow.`,
@@ -164,7 +212,7 @@ export function placeRows(
     return {
       refusal: `${path} has ${count} line${count === 1 ? "" : "s"}; line ${input.line} is not one of them. Give the line the rows follow (0 puts them before the first line).`,
     };
-  const placed = Array.from({ length: last - first + 1 }, (_, i) => first + i);
+  const placed = span;
   const held = placed.flatMap((n) => {
     const want = bare(rows[n - 1] ?? "");
     const at = lines.findIndex((l) => bare(l) === want);

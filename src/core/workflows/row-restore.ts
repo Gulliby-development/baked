@@ -8,6 +8,7 @@ import {
   rowBlockDecision,
   rowBlockDrifts,
   rowHead,
+  rowNotation,
   rowPlaces,
 } from "./row-block-drift.js";
 import type { TaskGraph } from "./schemas.js";
@@ -148,6 +149,9 @@ export interface RowEditBreak {
  * of the request's block for the file (`suppliedRows`) that held before (`rowBlockDecision` of
  * `measureRows`, the one comparison) and drifts after. A file the request prescribes no rows for,
  * a new file, or rows that did not hold before are no break, so a task writing its rows is free.
+ * Nor is a row only a line in the request's own notation held (`rowNotation`, #2583): R84
+ * wrapsmith's `place_rows` wrote `run "cols" … => 0 "…" ""` rows into a Pester file, and every
+ * edit that rewrote one as an executable `Row` call was put back, so the run could not recover.
  * R82 tinyflate 82f19908 rev 51: after the host restored rows 7 and 8, T007's implementer edited
  * them to 306/259, then 312/283 bytes, and changed their expected outputs to its encoder's.
  */
@@ -161,9 +165,18 @@ export function rowEditBreaks(
   const plainPath = path.trim().replace(/^(?:\.\/)+/, "");
   const block = suppliedRows(request, [plainPath]).get(plainPath);
   if (!block) return null;
-  const driftedBefore = new Set(rowBlockDecision(measureRows(block.lines, before)));
+  const beforeRows = measureFileRows(block.lines, before);
+  const driftedBefore = new Set(rowBlockDecision(measureRows(block.lines, before, beforeRows)));
+  // A row held only by a line in the request's notation (#2583: `run "cols" … => 0 "…" ""` that
+  // place_rows wrote into a Pester file) is no executable row: translating it is no break.
+  const places = rowPlaces(beforeRows);
+  const lines = before.split(/\r?\n/);
+  const notation = (n: number) => {
+    const at = places.get(n);
+    return at !== undefined && rowNotation(lines[at - 1] ?? "");
+  };
   const rows = rowBlockDecision(measureRows(block.lines, after)).filter(
-    (n) => !driftedBefore.has(n),
+    (n) => !driftedBefore.has(n) && !notation(n),
   );
   if (!rows.length) return null;
   const cut = (line: string) => (line.length > 160 ? `${line.slice(0, 157)}...` : line);
@@ -292,7 +305,12 @@ export function rowRestorePlan(
       return { row, line: null, oneLine: false, sameHead: false, held: false };
     const oneLine = !CONTINUES.test(lines[line] ?? "");
     const head = rowHead(text);
-    const sameHead = head !== "" && head === rowHead(prescribed);
+    // The request's notation is restored only over a line in that notation, never over code
+    // that shares its head (#2583: a Pester helper named `run`).
+    const sameHead =
+      head !== "" &&
+      head === rowHead(prescribed) &&
+      (!rowNotation(prescribed) || rowNotation(text));
     const restored = restoredLine(text, prescribed);
     const after = withLines(lines, new Map([[line, restored]]));
     const afterRows = measureFileRows(rows, after);
