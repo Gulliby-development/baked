@@ -573,6 +573,27 @@ describe("plan charge invariants (#2100)", () => {
       expect(planAfter).toBe(charge.planCommittedTokens - ended.chargeTokens + ended.usedTokens);
     }), { numRuns: 300 });
   });
+  test("#2534: at the expected point an unmeasured plan is held at its expected need, never below use nor above the high-end charge, and frees once", () => {
+    fc.assert(fc.property(seed, ({ finished, unplanned, ratio, runs }) => {
+      const limitCommitted = finished + unplanned + runs.reduce((n, r) => n + held(r), 0);
+      const high = planCharge("enforce", ratio, limitCommitted, runs)!;
+      const expected = planCharge("enforce", ratio, limitCommitted, runs, undefined, "expected")!;
+      expect(expected.point).toBe("expected");
+      for (const [i, run] of expected.runs.entries()) {
+        const atHigh = high.runs[i]!.chargeTokens;
+        expect(run.chargeTokens).toBe(planChargeTokens(run.usedTokens, run.plan, ratio, run.limitTokens, "expected"));
+        expect(run.chargeTokens).toBeGreaterThanOrEqual(run.usedTokens);
+        expect(run.chargeTokens).toBeLessThanOrEqual(atHigh);
+        // A measured ratio, or a plan without expected tasks, keeps the high end.
+        if (ratio !== null || run.plan.expected === undefined) expect(run.chargeTokens).toBe(atHigh);
+        else expect(run.chargeTokens).toBe(Math.max(run.usedTokens, run.plan.low, run.plan.expected));
+      }
+      expect(expected.releasedTokens).toBe(expected.runs.reduce((n, r) => n + held(r) - r.chargeTokens, 0));
+      expect(expected.limitCommittedTokens - expected.planCommittedTokens).toBe(expected.releasedTokens);
+      expect(expected.planCommittedTokens).toBeLessThanOrEqual(high.planCommittedTokens);
+      expect(expected.planCommittedTokens).toBeGreaterThanOrEqual(finished + runs.reduce((n, r) => n + r.usedTokens, 0));
+    }), { numRuns: 300 });
+  });
   test("in dollars (#2124) the charge is never below what a run spent and reserved, and holds the cap while the task-call rate is unmeasured", () => {
     const dollars = fc.record({
       taskRate: fc.option(fc.double({ min: 1e-8, max: 2e-5, noNaN: true }), { nil: null }),

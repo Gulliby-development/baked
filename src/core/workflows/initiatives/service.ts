@@ -172,11 +172,13 @@ import {
   affordableClause,
   affordableTokens,
   DEFAULT_EXTEND_WITHIN_DOLLARS,
+  DEFAULT_PLAN_CHARGE_EXPECTED,
   DEFAULT_STAGE_RESERVE,
   DEFAULT_TIME_POOL_GROWTH,
   dollarTokens,
   type ExtendWithinDollars,
   NO_DOLLAR_FORECAST,
+  type PlanChargeExpected,
   type PlanChargeView,
   type PlanShareDecision,
   type PlanShareInputs,
@@ -1236,6 +1238,21 @@ export function planChargedGate(view: ShareGateView): ShareGateView | null {
       f.share === null ? f : { ...f, share: { ...f.share, tokens: shares.get(f.id) ?? 0 } },
     ),
   };
+}
+
+/**
+ * The share gate with the open runs' unmeasured plans held at their expected need instead of
+ * their high end (`budget.planCharge.expected`, `workflows.planChargeExpected: shadow`, #2534):
+ * `planChargedGate` on that charge. Null without one, or while the pool does not hold the plan
+ * charge (`initiative-plan-charge` in shadow), where the gate compares the limits instead.
+ */
+export function expectedChargedGate(view: ShareGateView): ShareGateView | null {
+  const charge = view.budget.planCharge;
+  if (!charge?.expected || charge.mode !== "enforce") return null;
+  return planChargedGate({
+    ...view,
+    budget: { ...view.budget, planCharge: { ...charge.expected, mode: "shadow" } },
+  });
 }
 
 /**
@@ -2467,6 +2484,7 @@ export class InitiativeService {
       this.noteCallsForecast(view, feature.id);
     }
     this.notePlanCharge(view, { view: gateView, feature, verdict });
+    if (verdict === "park") this.noteExpectedCharge(gateView, feature);
     if (!growth?.wouldExtend) return false;
     if (mode === "on") return this.extendWithinDollarsOn(gateView, feature.id, growth);
     this.noteWouldExtend(gateView, feature.id, growth);
@@ -2537,6 +2555,11 @@ export class InitiativeService {
   /** `workflows.extendWithinDollars`: whether a token park records the host's extension (#2042). */
   private extendWithinDollars(): ExtendWithinDollars {
     return this.workflows.config.workflows?.extendWithinDollars ?? DEFAULT_EXTEND_WITHIN_DOLLARS;
+  }
+
+  /** Which plan point the pool holds unmeasured plans at (`workflows.planChargeExpected`, #2534). */
+  private planChargeExpected(): PlanChargeExpected {
+    return this.workflows.config.workflows?.planChargeExpected ?? DEFAULT_PLAN_CHARGE_EXPECTED;
   }
 
   /**
@@ -2768,6 +2791,53 @@ export class InitiativeService {
       wouldStart,
       wouldPark,
       summary: `Holding the open runs with a sized plan at their plan's need ${amount(charge.releasedTokens)}: ${tokenText(charged.budget.remaining.tokens)} of the ${tokenText(limit)} pool would remain and ${gate.feature.id} would ${wouldStart ? "start" : "not start"}.`,
+    });
+  }
+
+  /**
+   * `workflows.planChargeExpected: shadow` at a share gate that parks (#2534): when holding the
+   * open runs' unmeasured plans at their expected need instead of their high end
+   * (`budget.planCharge.expected`) would start the feature, a `decision.would_release` event with
+   * `point: "expected"` records it, once per feature. Nothing changes: the pool keeps the high end.
+   * R83 pnmforge parked geometry at minute 36 on charges of 18.98M of the 19.6M pool for runs that
+   * had used 4.7M, and it started at minute 66.
+   */
+  private noteExpectedCharge(gateView: ShareGateView, feature: FeatureView): void {
+    const charge = gateView.budget.planCharge;
+    const expected = charge?.expected;
+    if (!charge || !expected || charge.mode !== "enforce") return;
+    const id = gateView.initiativeId;
+    const key = `expected-start-${feature.id}`;
+    const seen = this.store
+      .eventsOfType(id, "decision.would_release")
+      .some((p) => (p as { key?: string } | null)?.key === key);
+    if (seen) return;
+    const charged = expectedChargedGate(gateView);
+    if (!charged) return;
+    const own = charged.features.find((f) => f.id === feature.id);
+    if (shareShortfall(charged, { ...feature, share: own?.share ?? null })) return;
+    const freed = charge.planCommittedTokens - expected.planCommittedTokens;
+    const limit = gateView.budget.limits?.maxTotalTokens ?? 0;
+    this.store.emit(id, "decision.would_release", {
+      reason: "initiative-plan-charge",
+      mode: "shadow",
+      point: "expected",
+      key,
+      featureId: feature.id,
+      ratio: expected.ratio,
+      planCommittedTokens: charge.planCommittedTokens,
+      expectedCommittedTokens: expected.planCommittedTokens,
+      releasedTokens: freed,
+      wouldStart: true,
+      wouldPark: false,
+      runs: expected.runs.map(({ featureId, runId, usedTokens, chargeTokens }) => ({
+        featureId,
+        runId,
+        usedTokens,
+        chargeTokens,
+        highTokens: charge.runs.find((r) => r.runId === runId)?.chargeTokens ?? chargeTokens,
+      })),
+      summary: `Holding the open runs' unmeasured plans at their expected need instead of their high end frees ${tokenText(freed)} tokens: ${tokenText(charged.budget.remaining.tokens)} of the ${tokenText(limit)} pool would remain and ${feature.id} would start (workflows.planChargeExpected: on).`,
     });
   }
 
@@ -3459,12 +3529,37 @@ export class InitiativeService {
       baseCeilingTokens: settings.basePolicy.sizing?.maxRunTokens ?? null,
       plan,
       planRatio: charge?.ratio ?? null,
+      ...(charge?.point ? { planPoint: charge.point } : {}),
       heldTokens: own ? own.chargeTokens : Math.max(used, policy.maxTotalTokens),
       othersUsedTokens: this.othersUsedTokens(id, runId),
       pool,
     };
     const decision = planShareDecision(inputs);
     if (!decision.over) return false;
+    // `planChargeExpected: shadow` (#2534): what the gate decides with the plans at their expected
+    // need, recorded beside the decision it makes; R82 tinyflate's deflate would not have asked.
+    const atExpected = charge?.expected;
+    const ownExpected =
+      atExpected && charge?.mode === "enforce"
+        ? atExpected.runs.find((r) => r.runId === runId)
+        : null;
+    const expectedDecision = atExpected
+      ? planShareDecision({
+          ...inputs,
+          planPoint: "expected",
+          ...(ownExpected ? { heldTokens: ownExpected.chargeTokens } : {}),
+        })
+      : null;
+    const expected =
+      expectedDecision && expectedDecision.needTokens !== decision.needTokens
+        ? {
+            expected: {
+              needTokens: expectedDecision.needTokens,
+              over: expectedDecision.over,
+              wouldExtend: expectedDecision.over && expectedDecision.wouldExtend,
+            },
+          }
+        : {};
     const mode = this.extendWithinDollars();
     const key = `${decision.reason}-${runId}-${ceiling}`;
     const seen = (type: string) =>
@@ -3483,6 +3578,7 @@ export class InitiativeService {
           byTokens: decision.byTokens,
           ceilingTokens: decision.ceilingTokens,
           needTokens: decision.needTokens,
+          ...expected,
           summary: `${decision.why} ${featureId} would run its tasks within its plan.`,
           inputs,
         });
@@ -3508,6 +3604,7 @@ export class InitiativeService {
         ...(decision.suggestedUsd !== null ? { suggestedUsd: decision.suggestedUsd } : {}),
       },
       needTokens: decision.needTokens,
+      ...expected,
       inputs,
     });
     return false;
@@ -5554,13 +5651,25 @@ export class InitiativeService {
           limitCommittedUsd: runIds.reduce((sum, runId) => sum + this.committedUsd(runId), 0),
         }
       : undefined;
-    return planCharge(
-      stopMode(settings.basePolicy, "initiative-plan-charge"),
-      estimate.planCalibration.ratio,
+    const mode = stopMode(settings.basePolicy, "initiative-plan-charge");
+    const ratio = estimate.planCalibration.ratio;
+    const expected = this.planChargeExpected();
+    const charge = planCharge(
+      mode,
+      ratio,
       limitCommitted,
       runs,
       dollars,
+      expected === "on" ? "expected" : "high",
     );
+    // `shadow` (#2534): the same charge at the plans' expected need, beside the one the pool holds.
+    if (!charge || expected !== "shadow") return charge;
+    const atExpected = planCharge(mode, ratio, limitCommitted, runs, dollars, "expected");
+    const differs =
+      atExpected !== null &&
+      (atExpected.planCommittedTokens !== charge.planCommittedTokens ||
+        (atExpected.usd?.planCommittedUsd ?? 0) !== (charge.usd?.planCommittedUsd ?? 0));
+    return differs ? { ...charge, expected: atExpected } : charge;
   }
 
   private limits(row: InitiativeRow): BudgetLimitsValue {
