@@ -26,6 +26,7 @@ export { type HighCalibration, highCalibrationText, MIN_HIGH_RATIO_SAMPLES };
 import type { TestCaseRate } from "../sizing.js";
 import { callsPerToken, finishedRunCallRate } from "./calls-pool.js";
 import { planWidth } from "./critical-path.js";
+import { type DocumentedSurfaceRate, documentedSurfacePrice } from "./documented-surface.js";
 import { type DurationForecast, durationText, msPerToken, scheduledMinutes } from "./duration.js";
 import type { FeatureSize } from "./plan.js";
 
@@ -125,6 +126,11 @@ export interface FeatureRunSample {
   startedAt?: number;
   /** The language its initiative's plan is written in (`planLanguage`); absent when it names no code. */
   language?: string;
+  /**
+   * The commands its initiative's request lists, for a feature that documents the program
+   * (`documentsProgram`); absent for any other feature (#2569).
+   */
+  documentedCommands?: number;
 }
 
 /** A feature to estimate: its workflow and that workflow's stages. */
@@ -144,6 +150,11 @@ export interface FeatureToEstimate {
   dependsOn?: string[];
   /** The test cases the request demands of it (`testCases` of the plan, #2055); absent when none. */
   testCases?: number;
+  /**
+   * The commands the request lists, for a feature that documents the program
+   * (`documentsProgram`, #2569); absent for any other feature or a request that lists none.
+   */
+  documentedCommands?: number;
 }
 
 export type FeatureEstimateBasis =
@@ -180,6 +191,15 @@ export interface FeatureEstimate {
   skeleton?: number;
   /** The test cases the request demands of it, when it states any (#2055). */
   testCases?: number;
+  /** The commands the request lists, when it documents the program (#2569). */
+  documentedCommands?: number;
+  /**
+   * What its documented surface prices it at (#2569): its commands times the per-command rate plus
+   * one README correction round, the high end at the measured actual-to-low spread when there is
+   * one. `mode` is `on` when `sizing.documentedSurface` floors the range by it, else `shadow`,
+   * recorded only.
+   */
+  documentedSurface?: { tokens: TokenRange; mode: "on" | "shadow" };
   /** The tokens the feature run's plan sizing expects the run to use, once it has a plan. */
   planned?: PlannedRun;
   /**
@@ -201,7 +221,7 @@ export interface FeatureEstimate {
   minutes?: number;
 }
 
-export type FeatureFloor = "criteria" | "paths" | "plan" | "tests";
+export type FeatureFloor = "criteria" | "paths" | "plan" | "tests" | "documented";
 
 /**
  * What a feature run's latest plan sizing expects the whole run to use (`plannedRunTokens`): its
@@ -209,6 +229,15 @@ export type FeatureFloor = "criteria" | "paths" | "plan" | "tests";
  */
 export interface PlannedRun extends TokenRange {
   expected?: number;
+}
+
+/**
+ * The rate a documentation feature's listed commands are priced at (`documentedSurfaceRate`) and
+ * whether it floors the estimate (`on`, with `sizing.documentedSurface`) or is recorded (`shadow`).
+ */
+export interface DocumentedSurface {
+  rate: DocumentedSurfaceRate;
+  mode: "on" | "shadow";
 }
 
 /**
@@ -561,6 +590,7 @@ function estimateFeature(
     ...(feature.placeholders ? { placeholders: feature.placeholders } : {}),
     ...(feature.skeleton ? { skeleton: feature.skeleton } : {}),
     ...(feature.testCases ? { testCases: feature.testCases } : {}),
+    ...(feature.documentedCommands ? { documentedCommands: feature.documentedCommands } : {}),
   };
   const hasTasks = feature.stages.some((s) => s.type === "tasks");
   // Finished feature runs of the same size measure the whole feature, split and all; those of the
@@ -684,6 +714,22 @@ export function testVolumeText(
   return `The request demands ${volume.cases} test cases of ${volume.features} features (${each}); each feature is forecast at no less than ${rangeText(volume.perCase)} tokens per case, ${from}.`;
 }
 
+/**
+ * The documented surface line of the estimate (#2569): the commands the documentation features
+ * still to run describe, and what a command and the README correction round are priced at.
+ */
+export function documentedSurfaceText(
+  rate: DocumentedSurfaceRate,
+  features: Pick<FeatureEstimate, "featureId" | "documentedCommands">[],
+): string {
+  const each = features.map((f) => `${f.featureId} ${f.documentedCommands}`).join(", ");
+  const from =
+    rate.basis === "defaults"
+      ? "the bench round 83 allowance: fewer than two finished documentation features with listed commands"
+      : `as measured on ${rate.samples} finished documentation features`;
+  return `A feature that documents the program is forecast at no less than ${rangeText(rate.perCommand)} tokens per command the request lists (${each}) plus ${tokenText(rate.correction)} for one README correction round, ${from}.`;
+}
+
 /** The estimate in one line for a screen: level, tasks, tokens, what to plan for, the budget. */
 export function estimateSummary(estimate: InitiativeEstimate): string {
   const fits = estimateBudgetText(
@@ -731,6 +777,7 @@ function reforecast(
   samples: FeatureRunSample[],
   perTestCase: TokenRange | null,
   newLanguage: InitiativeEstimate["newLanguage"] | null,
+  documented: DocumentedSurface | null = null,
 ): {
   features: FeatureEstimate[];
   ratio: number | null;
@@ -852,12 +899,20 @@ function reforecast(
     // The test cases the request demands of it, at what a case costs in this project's test
     // tasks: R66 nodepluck's test tasks were 51.9 percent of the initiative (#2055).
     const byTests = perTestCase && f.testCases ? scaled(perTestCase, f.testCases) : null;
+    // A feature that documents the program costs by the commands it describes and the review that
+    // runs each example, not by its README and LICENSE (#2569): R83 bytemerge's documentation was
+    // priced like a one-file command at 723k expected and used 2.25M. Recorded only in shadow.
+    const byDocs =
+      documented && f.documentedCommands
+        ? documentedSurfacePrice(f.documentedCommands, documented.rate)
+        : null;
     const floors = (
       [
         ["criteria", byCriteria],
         ["paths", byPaths],
         ["plan", planned ? ownPlanNeed(planned, planCalibration.ratio) : null],
         ["tests", byTests],
+        ["documented", documented?.mode === "on" ? byDocs : null],
       ] as const
     ).filter((entry): entry is readonly [FeatureFloor, TokenRange] => entry[1] !== null);
     const tokens = {
@@ -887,7 +942,9 @@ function reforecast(
       highCalibration && !byCriteria && !planned && !byTests && (scale === null || scale <= 1)
         ? Math.max(tokens.low, Math.round(tokens.low * highCalibration.high))
         : null;
-    const ratios = bound !== null && bound < tokens.high;
+    // A documented surface's high end is that spread whichever way it moves: its per-command rate
+    // has two samples, too few to bound it (#2569).
+    const ratios = bound !== null && (bound < tokens.high || floor === "documented");
     if (ratios && highCalibration) {
       tokens.high = bound;
       expectedTokens = Math.max(
@@ -914,6 +971,19 @@ function reforecast(
       ...(floor ? { floor } : {}),
       ...(ratios ? { highBasis: "ratios" as const } : {}),
       ...(widened ? { newLanguage: true as const } : {}),
+      ...(byDocs && documented
+        ? {
+            documentedSurface: {
+              tokens: {
+                low: byDocs.low,
+                high: highCalibration
+                  ? Math.max(byDocs.low, Math.round(byDocs.low * highCalibration.high))
+                  : byDocs.high,
+              },
+              mode: documented.mode,
+            },
+          }
+        : {}),
       spent,
     };
   });
@@ -1023,6 +1093,8 @@ export function estimateInitiative(input: {
   testCaseRate?: TestCaseRate;
   /** The language the initiative's plan is written in (`planLanguage`); absent prices none as new. */
   language?: string;
+  /** Prices features with `documentedCommands` (#2569); absent prices and records none. */
+  documentedSurface?: DocumentedSurface;
 }): InitiativeEstimate {
   const margin = input.margin ?? ESTIMATE_MARGIN;
   const progress = input.progress ?? { features: {}, overhead: 0 };
@@ -1054,6 +1126,7 @@ export function estimateInitiative(input: {
     input.samples,
     input.testCaseRate?.perCase ?? null,
     newLanguage,
+    input.documentedSurface ?? null,
   );
   const overhead = { low: progress.overhead, high: progress.overhead };
   const summed = sum([overhead, ...features.map((f) => f.tokens)]);
@@ -1166,6 +1239,11 @@ export function estimateInitiative(input: {
         }
       : null;
   if (testVolume) notes.push(testVolumeText(testVolume, tested));
+  const documented = features.filter(
+    (f) => f.basis !== "measured" && f.documentedSurface?.mode === "on",
+  );
+  if (documented.length && input.documentedSurface)
+    notes.push(documentedSurfaceText(input.documentedSurface.rate, documented));
   const timed = durationOf(input.features, features, input.samples, input.parallelRuns ?? 1);
   const fits = fitsOf(withMargin, tokens.low, input.maxTotalTokens);
   const budgetText = estimateBudgetText(

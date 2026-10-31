@@ -179,6 +179,16 @@ export const STOP_REASONS = {
     modes: NOT_ENFORCED,
     defaultMode: "shadow",
   },
+  chain_rewrite_repeat: {
+    label:
+      "A finding chain's next case comes after two rewrites of its symbol or family: the convergence ask instead of a third corrective",
+    // Shadow only until two bench rounds show no false would-stop (#2568, R83 md-site's
+    // `findDelimited`: T012 and T013 rewrote it and review found the next member); its promotion
+    // asks the person to converge with `rewrites` and the family, and the convergence gate reads
+    // `rewrites`, instead of opening the corrective.
+    modes: NOT_ENFORCED,
+    defaultMode: "shadow",
+  },
   repro_blind: {
     label:
       "A corrective's repro prints the same output after the attempt changed the finding's file, and reads a path outside its root",

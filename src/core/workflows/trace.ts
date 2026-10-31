@@ -132,6 +132,10 @@ import {
   familyDecision,
   familyKey,
   findingChain,
+  type RewriteRepeatRule,
+  rewriteRepeatDecision,
+  rewritesSymbol,
+  withRewrites,
 } from "./finding-chain.js";
 import {
   HOST_APPLY_KIND,
@@ -163,6 +167,7 @@ import {
   timeShortfall,
 } from "./initiatives/service.js";
 import {
+  type PlanChargeExpected,
   type PlanShareDecision,
   type PlanShareInputs,
   planShareDecision,
@@ -2297,10 +2302,12 @@ export function newRepeatStops(boundaries: readonly RepeatedFailureBoundary[]): 
 export interface FindingChainBoundary {
   /**
    * The corrective task of a rewrite decision, the battery record's path, or a probed case's.
-   * `crash` is a battery or sibling-probe case's shadow crash decision (#2136).
+   * `crash` is a battery or sibling-probe case's shadow crash decision (#2136). `rewrite_repeat`
+   * is a symbol rewrite's count of earlier rewrites (#2568): `none`, `probe` or `ask`, keyed
+   * `<task>#rewrites`.
    */
   key: string;
-  kind: "rewrite" | "battery" | "family" | "crash" | "site";
+  kind: "rewrite" | "rewrite_repeat" | "battery" | "family" | "crash" | "site";
   recorded: string;
   replayed: string;
 }
@@ -2315,9 +2322,15 @@ export interface FindingChainBoundary {
 export function replayFindingChains(
   store: WorkflowStore,
   runId: string,
-  rules: { chain?: ChainRule; battery?: BatteryRule; family?: FamilyRule } = {},
+  rules: {
+    chain?: ChainRule;
+    battery?: BatteryRule;
+    family?: FamilyRule;
+    rewriteRepeat?: RewriteRepeatRule;
+  } = {},
 ): FindingChainBoundary[] {
   const decideChain = rules.chain ?? chainRewriteDecision;
+  const decideRepeat = rules.rewriteRepeat ?? rewriteRepeatDecision;
   const decideBattery = rules.battery ?? batteryDecision;
   const decideFamily = rules.family ?? familyDecision;
   return store.artifacts(runId).flatMap((artifact): FindingChainBoundary[] => {
@@ -2332,6 +2345,17 @@ export function replayFindingChains(
             recorded: record.decision,
             replayed: decideChain(record.length, record.policy),
           },
+          // A symbol rewrite's count of earlier rewrites (#2568); records before it have none.
+          ...(rewritesSymbol(record) && record.rewrites !== undefined
+            ? [
+                {
+                  key: `${record.taskId}#rewrites`,
+                  kind: "rewrite_repeat" as const,
+                  recorded: record.repeat ?? "none",
+                  replayed: decideRepeat(record.rewrites),
+                },
+              ]
+            : []),
         ];
       }
       // A case's shadow crash decision (#2136), on its recorded output's tail and the chain's file.
@@ -2415,6 +2439,13 @@ export interface ChainEscalation {
   decision: "rewrite" | "patch";
   /** The findings whose repros a rewrite's battery holds, oldest first; empty for a patch. */
   battery: string[];
+  /**
+   * The earlier rewrites of the step's symbol or family (#2568): steps before it whose finding
+   * the run gave a corrective and which the policy rewrote.
+   */
+  rewrites: number;
+  /** What the count decides for a rewrite: `probe` at the second, `ask` after two; else `none`. */
+  repeat: "none" | "probe" | "ask";
 }
 
 export interface ChainEscalationReplay {
@@ -2473,6 +2504,8 @@ export function replayChainEscalation(
      * that declares families would have said on a run recorded before the field existed.
      */
     families?: Readonly<Record<string, string | null>>;
+    /** Decides each step's count of earlier rewrites (#2568); the current rule by default. */
+    rewriteRepeat?: RewriteRepeatRule;
   } = {},
 ): ChainEscalationReplay {
   const policy = options.policy ?? "on";
@@ -2495,19 +2528,26 @@ export function replayChainEscalation(
   }
   const steps: ChainEscalation[] = [];
   const known = new Map<string, ChainFinding>();
+  // The rewrites decided so far, for each step's count of earlier rewrites (#2568).
+  const rewrites: ChainRecord[] = [];
   for (const row of rows) {
     const finding = all.get(row.id);
     if (!finding || missing.has(row.id)) continue;
     known.set(row.id, finding);
     const chain = findingChain(known, finding);
     const decision = decide(chain.length, policy);
-    const battery =
-      decision === "rewrite" && chain.length >= CHAIN_REWRITE_AT
-        ? batteryOf(
-            known,
+    const record =
+      chain.length >= CHAIN_REWRITE_AT
+        ? withRewrites(
             chainRecord(row.repair_task_id ?? "", finding, chain, policy, decide),
-          ).map((f) => f.id)
-        : [];
+            rewrites,
+            options.rewriteRepeat,
+          )
+        : null;
+    const battery =
+      decision === "rewrite" && record ? batteryOf(known, record).map((f) => f.id) : [];
+    // Only a finding the run gave a corrective counts as a rewrite for the later ones.
+    if (record && rewritesSymbol(record) && row.repair_task_id) rewrites.push(record);
     steps.push({
       findingId: row.id,
       taskId: row.repair_task_id,
@@ -2515,6 +2555,8 @@ export function replayChainEscalation(
       family: finding.family,
       decision,
       battery,
+      rewrites: record?.rewrites ?? 0,
+      repeat: record?.repeat ?? "none",
     });
   }
   return { runId, steps, missingBodies: [...missing] };
@@ -3827,6 +3869,11 @@ export function replayInitiativeStarts(
      * shadow), and a replay without this entry takes the current default.
      */
     stopModes?: RunPolicy["stopModes"];
+    /**
+     * Sets `workflows.planChargeExpected` for the replay (#2534): `on` holds the open runs'
+     * unmeasured plans at their expected need, to backtest it against the default high end.
+     */
+    planChargeExpected?: PlanChargeExpected;
   } = {},
 ): Omit<
   InitiativeReplay,
@@ -3859,6 +3906,7 @@ export function replayInitiativeStarts(
       moments: options.moments ?? [],
       ...(options.recencyHalfLife ? { recencyHalfLife: options.recencyHalfLife } : {}),
       ...(options.stopModes ? { stopModes: options.stopModes } : {}),
+      ...(options.planChargeExpected ? { planChargeExpected: options.planChargeExpected } : {}),
     }),
   );
 }
@@ -3927,11 +3975,13 @@ function replayStarts(
     moments,
     recencyHalfLife,
     stopModes,
+    planChargeExpected,
   }: {
     budgetAtStart: boolean;
     moments: number[];
     recencyHalfLife?: number;
     stopModes?: RunPolicy["stopModes"];
+    planChargeExpected?: PlanChargeExpected;
   },
 ): Omit<
   InitiativeReplay,
@@ -4113,7 +4163,19 @@ function replayStarts(
       }
       const service = new NativeWorkflowService(
         workspace,
-        { ...DEFAULT_CONFIG, ...routingAt(db, t) },
+        {
+          ...DEFAULT_CONFIG,
+          ...routingAt(db, t),
+          // The replay reads only this setting of `workflows`; the rest stays unset, as before.
+          ...(planChargeExpected
+            ? {
+                workflows: {
+                  ...DEFAULT_CONFIG.workflows,
+                  planChargeExpected,
+                } as AppConfig["workflows"],
+              }
+            : {}),
+        },
         NO_AGENTS,
         true,
       );
@@ -5017,6 +5079,8 @@ export function replayTrace(
     chainRule?: ChainRule;
     batteryRule?: BatteryRule;
     familyRule?: FamilyRule;
+    /** Decides each chain record's count of earlier rewrites again (#2568). */
+    rewriteRepeatRule?: RewriteRepeatRule;
     repeatRule?: RepeatRule;
     requestConflictRule?: RequestConflictRule;
     hostApplyRule?: HostApplyRule;
@@ -5089,6 +5153,7 @@ export function replayTrace(
           ...(options.chainRule ? { chain: options.chainRule } : {}),
           ...(options.batteryRule ? { battery: options.batteryRule } : {}),
           ...(options.familyRule ? { family: options.familyRule } : {}),
+          ...(options.rewriteRepeatRule ? { rewriteRepeat: options.rewriteRepeatRule } : {}),
         }),
       ]),
     );

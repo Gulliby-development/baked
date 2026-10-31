@@ -13,7 +13,7 @@ Quality gates of workflow runs measure the code a run writes beyond what its che
 | [Baseline replay](#baseline-replay) | `baselineReplay` | `on` (absent is off) | off |
 | [Package contents](#package-contents) | `packageContents` | `on` (absent is off) | off |
 | [Finding chain rewrite](runtime.md#finding-chains) | `chainRewrite` | `on` (absent is off) | off |
-| [Finding chain sibling probe](runtime.md#finding-chains) | `chainProbe` | `on` (absent is off; needs `chainRewrite`) | off |
+| [Finding chain sibling probe](runtime.md#finding-chains) | `chainProbe` | `on` (absent is off; needs `chainRewrite`; the second rewrite of one symbol probes either way, #2568) | off |
 | [Cross-run defect classes](runtime.md#cross-run-defect-classes) | `defectClasses` | `on` (absent is off) | off |
 | [Misquote host fix](runtime.md#test-integrity) | `misquoteFix` | `on` (absent is off, recorded in shadow) | off |
 | [Restore of a changed prescribed row](runtime.md#restoring-a-changed-prescribed-row) | `rowRestore` | `on` (absent is off, recorded in shadow) | off |

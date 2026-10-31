@@ -5,6 +5,8 @@ import { callCostRate, costRate } from "../src/core/workflows/budget.js";
 import { chargeHold, refreshedGrowth } from "../src/core/workflows/initiatives/growth.js";
 import { costGrowthLimit, dollarShortfall, growthLimit, type ShareGateRecord, shareShortfall } from "../src/core/workflows/initiatives/service.js";
 import { forecastSamples } from "../src/core/workflows/stage-price.js";
+import { documentedSurfaceRate } from "../src/core/workflows/initiatives/documented-surface.js";
+import { estimateInitiative } from "../src/core/workflows/initiatives/estimate.js";
 import { adaptiveFirstByteMs } from "../src/core/llm/provider-health.js";
 import { planApprovalDecision } from "../src/core/workflows/auto-approval.js";
 import { CAPACITY_PROBE, exceedsTestCapacity, rowVolumePrice } from "../src/core/workflows/sizing.js";
@@ -699,6 +701,16 @@ describe("finding chains replay on recorded findings (#1981)", () => {
         ["F4-2", "T012", ["F2", "F3", "F4-2"], "rewrite", ["F2", "F3", "F4"]],
         ["F5", null, ["F2", "F3", "F4", "F5"], "rewrite", ["F2", "F3", "F4", "F5"]],
       ]);
+      // The rewrite count (#2568): T012 (F4-2) is the second rewrite of findDelimitedInline, which
+      // probes and carries the reviewer's design, and F5 after T011 and T012 is the convergence ask.
+      expect(replay.steps.map((s) => [s.findingId, s.rewrites, s.repeat])).toEqual([
+        ["F1", 0, "none"],
+        ["F2", 0, "none"],
+        ["F3", 0, "none"],
+        ["F4", 1, "probe"],
+        ["F4-2", 1, "probe"],
+        ["F5", 2, "ask"],
+      ]);
       // A battery holds only findings with a repro, so each link of the chain carries its case.
       expect(store.findings(runId).map((f) => f.id)).toEqual(["F1", "F2", "F3", "F4", "F4-2", "F5"]);
       // Off, the same findings patch, as the round did, and nothing was recorded under chains/.
@@ -907,6 +919,18 @@ describe("the plan charge replays on recorded initiatives (#2100, #2056)", () =>
         expect(other.starts.every((s) => s.planCharge === null || s.planCharge.replayed === "pass")).toBe(true);
       }
   }, 900000);
+  test("#2534: at the expected point (planChargeExpected on) R71 xmlvet's canonical starts: the corpus's one true park is lost, so on stays opt-in", () => {
+    // scanner's plan, 4.26M-11.75M against its 8.0M limit and unmeasured, is held at its expected
+    // need instead of its high end; it went on to use 12.10M, and the pool ran short 65 minutes
+    // after canonical's start. Every other replayed start of the corpus keeps its verdict.
+    const [replay] = replayInitiativeStarts(join(ROOT, "R71", "xmlvet.sqlite.gz"), { budgetAtStart: true, planChargeExpected: "on" });
+    const canonical = replay?.starts.find((s) => s.featureId === "canonical");
+    expect(canonical?.replayed).toBe("pass");
+    expect(canonical?.planCharge).toMatchObject({ limitCommittedTokens: 20_579_789, planCommittedTokens: 16_255_323, featureId: "canonical", replayed: "pass" });
+    const scanner = canonical?.planCharge?.runs.find((r) => r.featureId === "scanner");
+    expect(scanner?.chargeTokens).toBeLessThan(8_000_000);
+    expect(replay?.newStartStops).toBe(0);
+  }, 900000);
   test("#2253: R60 wheeltags parks no start with the charge, names held at its expected need; R71 xmlvet's canonical still parks", () => {
     // names' plan sized its run at 10.3M-14.1M against its 8.0M limit, unmeasured (ratio null);
     // it used 4.57M. At its high end the charged gate parked dead at 19:31:58 (154,373 short).
@@ -1027,4 +1051,38 @@ describe("the dollar notice replays at the measured ratio (#2186)", () => {
     expect(replay?.starts.filter((s) => s.forecastNotice !== null)).toEqual([]);
     expect(replay?.newStartStops).toBe(0);
   }, 600000);
+});
+
+describe("the documented surface backtests on R83's documentation features (#2569)", () => {
+  // A feature that documents the program is priced by the commands the request lists, plus one
+  // README correction round, with `sizing.documentedSurface` (shadow by default). R83 has no trace
+  // in the corpus, and the corpus traces carry no request text, so no recorded estimate moves; this
+  // row replays R83's numbers: bytemerge `documentation` (README and LICENSE of a 15-command
+  // program) priced in the small class at 380,968-883,972 and used 2,252,251; pnmforge `docs`
+  // (counted at 15 commands too) used 1.56M against 1.13M expected.
+  const stages = [{ id: "implement", type: "tasks", models: [] }];
+  const small = (runId: string, tokens: number) => ({ runId, workflowId: "sdd", size: "small" as const, tokens, taskCount: 3 });
+  const estimate = (mode?: "on" | "shadow") =>
+    estimateInitiative({
+      features: [
+        { id: "decoding", title: "decoding", workflowId: "sdd", size: "small", stages },
+        { id: "documentation", title: "documentation", workflowId: "sdd", size: "small", stages, documentedCommands: 15 },
+      ],
+      history: [],
+      samples: [small("statistics", 380_968), small("decoding", 883_972)],
+      maxTotalTokens: 30_000_000,
+      ...(mode ? { documentedSurface: { rate: documentedSurfaceRate([]), mode } } : {}),
+    });
+  const docs = (mode?: "on" | "shadow") => estimate(mode).features.find((f) => f.featureId === "documentation")?.tokens;
+  const inside = (r: { low: number; high: number } | undefined, actual: number) => r !== undefined && r.low <= actual && actual <= r.high;
+
+  test("today both actuals are above the high end; on, both land inside the range; shadow moves nothing", () => {
+    for (const actual of [2_252_251, 1_560_000]) {
+      expect(actual).toBeGreaterThan(docs()?.high ?? 0);
+      expect(inside(docs("on"), actual)).toBe(true);
+    }
+    expect(docs("shadow")).toEqual(docs());
+    // The miss shrinks from 2.5 times the high end to inside it, and the low end stays under the cheaper run.
+    expect(docs("on")).toEqual({ low: 1_560_000, high: 2_253_000 });
+  });
 });

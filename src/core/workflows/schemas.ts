@@ -731,7 +731,8 @@ export const PolicySchema = z
     /**
      * The sibling probe of a chain rewrite (#1969): `on` asks the `chain-family` profile once per
      * rewrite corrective for a family of inputs around the chain's repros; the host runs them and
-     * a failing case joins the chain's battery as a finding. Needs `chainRewrite`. Absent is off.
+     * a failing case joins the chain's battery as a finding. Needs `chainRewrite`. Absent is off,
+     * except for the second rewrite of one symbol or family, which probes either way (#2568).
      */
     chainProbe: z.literal("on").optional(),
     /**
@@ -951,6 +952,14 @@ export const PolicySchema = z
          * the rows are recorded in `sizing/plan-N.json` (`rowVolume`, mode `shadow`) only.
          */
         rowVolume: z.boolean().optional(),
+        /**
+         * Prices a feature that documents the program (`documentsProgram`: a README, `docs/` or
+         * examples, beside legal files) at the commands the request lists times a per-command
+         * rate plus one README correction round, with the high end at the measured actual-to-low
+         * spread (`documentedSurfaceRate`, #2569). Absent means off: the price is recorded on the
+         * feature's estimate (`documentedSurface`, mode `shadow`) only.
+         */
+        documentedSurface: z.boolean().optional(),
         /**
          * Weighs an initiative estimate's finished features by how recent their initiative is: a
          * feature's weight halves for every this many initiatives started after its own
@@ -1644,6 +1653,8 @@ export const EXTEND_WITHIN_DOLLARS_MODES = ["off", "shadow", "on"] as const;
 export const TIME_POOL_GROWTH_MODES = ["off", "shadow"] as const;
 /** The modes of `workflows.stageReserve` (#2241); see `initiatives/growth.ts`. */
 export const STAGE_RESERVE_MODES = ["off", "shadow", "on"] as const;
+/** The modes of `workflows.planChargeExpected` (#2534); see `initiatives/token-pool.ts`. */
+export const PLAN_CHARGE_EXPECTED_MODES = ["off", "shadow", "on"] as const;
 export const WorkflowConfigSchema = z
   .object({
     enabled: z.boolean().default(true),
@@ -1692,6 +1703,14 @@ export const WorkflowConfigSchema = z
      * event and the run still stops; `on` grows the bound; `off` records nothing.
      */
     stageReserve: z.enum(STAGE_RESERVE_MODES).optional(),
+    /**
+     * Which point of an open feature run's sized plan an initiative's token pool holds while no
+     * plan-to-actual ratio is measured (#2534): `shadow`, the default, holds the high end as before
+     * and records what holding the expected need would free (`budget.planCharge.expected`, and a
+     * `decision.would_release` at a share gate it would turn); `on` holds the expected need, never
+     * below what the run used; `off` records nothing.
+     */
+    planChargeExpected: z.enum(PLAN_CHARGE_EXPECTED_MODES).optional(),
     /**
      * Deadlines and stall limits (milliseconds): a tool call that never returns, a model attempt
      * with no progress, and how often a stalled run resumes by itself. Defaults in `stall.ts`.
