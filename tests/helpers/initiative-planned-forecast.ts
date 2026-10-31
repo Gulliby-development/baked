@@ -102,14 +102,36 @@ export async function historyFixture(featureUsd: number, mix: Mix = {}) {
   } catch (error) { await fixture.dispose(); throw error; }
 }
 
+function git(cwd: string, ...args: string[]): void {
+  const result = Bun.spawnSync(["git", ...args], { cwd, stdout: "pipe", stderr: "pipe" });
+  if (result.exitCode !== 0) throw new Error(`git ${args.join(" ")}: ${result.stderr.toString()}`);
+}
+
+/** A Git repository with one commit, for features that run in worktrees. */
+function repository(root: string): void {
+  git(root, "init", "-q", "-b", "main");
+  git(root, "config", "user.name", "Test User");
+  git(root, "config", "user.email", "test@example.test");
+  git(root, "config", "commit.gpgsign", "false");
+  writeFileSync(join(root, ".gitignore"), ".baked/\n");
+  writeFileSync(join(root, "README.md"), "# Values\n");
+  git(root, "add", ".");
+  git(root, "commit", "-q", "-m", "Initial");
+}
+
 export async function plannedForecastScenario(
   count: number, firstUsd: number | Record<string, number>, histories: string[],
-  options: { forecastStop?: boolean; stopModes?: RunPolicy["stopModes"]; mix?: Mix; skeleton?: boolean; capUsd?: number | null; maxTotalTokens?: number; extendWithinDollars?: "off" | "shadow" | "on"; costTolerance?: number | "off"; approve?: boolean; globPaths?: boolean; tasks?: Record<string, number> } = {},
+  options: { forecastStop?: boolean; stopModes?: RunPolicy["stopModes"]; mix?: Mix; skeleton?: boolean; capUsd?: number | null; maxTotalTokens?: number; extendWithinDollars?: "off" | "shadow" | "on"; costTolerance?: number | "off"; approve?: boolean; globPaths?: boolean; tasks?: Record<string, number>; planAhead?: boolean } = {},
 ) {
   const skeleton = options.skeleton ?? true;
   const fixture = workflowFixture({ executor: (root) => new ScriptedExecutor(root, firstUsd, skeleton, options.mix, options.tasks) });
   fixture.executor.store = fixture.service.store;
   if (options.extendWithinDollars) fixture.config.workflows = { ...fixture.config.workflows, extendWithinDollars: options.extendWithinDollars };
+  // Plan ahead (#1834) runs every feature in a worktree of a Git repository, two at once.
+  if (options.planAhead) {
+    repository(fixture.root);
+    fixture.config.workflows = { ...fixture.config.workflows, planAhead: true };
+  }
   const initiatives = new InitiativeService(fixture.service);
   const plan: InitiativePlan = {
     schemaVersion: 1, title: "Values", goals: ["Write values"], completionCriteria: ["Values exist"],
@@ -125,7 +147,7 @@ export async function plannedForecastScenario(
     let view = await initiatives.start({ commandId: newId(), initiativeId: "values", prompt: "Write values", ownerLabel: "test", model: MODEL,
       plan, keepFeatures: true, featureAutoApproval: { maxTasks: 5, maxFiles: 5 },
       ...(options.forecastStop ? { forecastStop: true } : {}),
-      policy: { ...fixturePolicy, clarification: "assume", checks: [{ ...fixturePolicy.checks[0]!, args: ["-e", "0"] }], sizing: { maxRunTokens: 50_000_000, historyStores: histories },
+      policy: { ...fixturePolicy, clarification: "assume", ...(options.planAhead ? { executionMode: "worktree" as const } : {}), checks: [{ ...fixturePolicy.checks[0]!, args: ["-e", "0"] }], sizing: { maxRunTokens: 50_000_000, historyStores: histories },
         ...(options.stopModes ? { stopModes: options.stopModes } : {}) },
       budget: { maxTotalTokens: options.maxTotalTokens ?? 100_000_000, maxAgentCalls: 1000, maxActiveMs: 21_600_000 },
       ...(options.capUsd === null ? {} : { costBudget: { maxCostUsd: options.capUsd ?? 30, costTolerance: options.costTolerance ?? 0.25 } }),

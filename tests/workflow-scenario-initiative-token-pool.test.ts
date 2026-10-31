@@ -5,6 +5,7 @@ import { suggestedExtension } from "../apps/desktop/src/renderer/screens/insight
 import { tuiRecoveryText } from "../src/components/workflow/remedies.js";
 import { startApiServer } from "../src/core/api/server.js";
 import {
+  FIRST_WAVE_HOLD_TEXT,
   type InitiativeView,
   planChargedGate,
   poolGrowthOf,
@@ -1002,5 +1003,116 @@ describe("scenario: a feature run's own plan above its share asks the initiative
     } finally {
       dispose();
     }
+  });
+});
+
+// Bench round 82, tinyflate (#2523): deflate, planned ahead beside core, sized its plan at 4.41M
+// against its 4.14M ceiling at 22:21:31, before any feature was accepted. The plan-time share gate
+// recorded an `initiative-plan-share` would-stop with `hold: "no measurement"` and was asked once
+// per run and ceiling, so nothing asked it again when core was accepted at 22:25, the moment the
+// hold lifted; deflate grew its own limit and finished inside the 19.6M pool, so the would-stop
+// was false. Here f1 and f2 start together under plan ahead, f2 plans 24 tasks, and f1's tasks
+// wait until f2 is sized, so f2's gate runs with no feature measured.
+describe("scenario: a share-gate hold for no measurement is asked again when the first feature is accepted (#2523, R82 tinyflate)", () => {
+  async function firstWaveScenario(extendWithinDollars: "shadow" | "on", maxTotalTokens: number, tasks: Record<string, number>) {
+    const history = await historyFixture(1, { taskShare: 0.4 });
+    cleanups.push(() => history.dispose());
+    const result = await plannedForecastScenario(4, 1, [history.root], { skeleton: false, globPaths: true, maxTotalTokens, extendWithinDollars, tasks, planAhead: true, approve: false });
+    cleanups.push(() => result.fixture.dispose());
+    const { initiatives, fixture } = result;
+    const store = fixture.service.store;
+    const runOf = (featureId: string) => initiatives.view("values").features.find((f) => f.id === featureId)?.runId ?? null;
+    // f1's first task waits until f2 has a run that is sized, or has parked without one.
+    let held = false;
+    const executor = fixture.executor as unknown as { execute: (request: { profile: { output: string }; runId: string }) => Promise<unknown> };
+    const execute = executor.execute.bind(executor);
+    executor.execute = async (request) => {
+      if (!held && request.runId === runOf("f1") && request.profile.output === "implementation") {
+        held = true;
+        const ready = () => {
+          const f2 = runOf("f2");
+          if (f2) return store.artifacts(f2).some((a) => a.logical_path.startsWith("sizing/"));
+          return initiatives.events("values").some((e) => e.type === "feature.share_gate" && (e.payload as ShareGateRecord).featureId === "f2");
+        };
+        for (const deadline = Date.now() + 20_000; !ready() && Date.now() < deadline; ) await Bun.sleep(20);
+      }
+      return execute(request);
+    };
+    const decision = result.view.pendingDecisions.find((d) => d.scope === "initiative");
+    await initiatives.approve("values", result.identity(), { requestId: decision?.requestId ?? "", digest: decision?.digest ?? "" });
+    let view = initiatives.view("values");
+    for (let i = 0; i < 6 && view.status !== "completed" && view.next.kind !== "blocked"; i++) view = await initiatives.drive("values", new AbortController().signal);
+    const all = initiatives.events("values");
+    const seq = (match: (type: string, payload: Record<string, unknown>) => boolean) => all.findIndex((e) => match(e.type, e.payload as Record<string, unknown>));
+    const events = (type: string) => all.filter((e) => e.type === type).map((e) => e.payload as Record<string, unknown>);
+    return { view, store, events, seq, runOf };
+  }
+  const isHold = (type: string, p: Record<string, unknown>) => type === "decision.would_stop" && p.reason === "initiative-plan-share" && p.hold === "no measurement";
+
+  test("on: the plan-share hold of a first-wave run grows the pool and its ceiling once the first feature is accepted", async () => {
+    const { view, store, events, seq, runOf } = await firstWaveScenario("on", 6_000_000, { f2: 24 });
+    const runId = runOf("f2") ?? "";
+    const [hold, ...more] = events("decision.would_stop").filter((e) => e.reason === "initiative-plan-share");
+    expect(more).toEqual([]);
+    expect(hold).toMatchObject({ featureId: "f2", runId, hold: "no measurement", inputs: { pool: { limitTokens: 6_000_000, cost: { measuredFeatures: 0 } } } });
+    expect(String(hold?.summary)).toEndWith(FIRST_WAVE_HOLD_TEXT);
+    // Asked again after f1 was accepted: the pool and f2's ceiling grow inside the dollar cap.
+    const extended = events("budget.extended").filter((e) => e.by === "host" && e.gate === "plan-share");
+    expect(extended).toHaveLength(1);
+    expect(extended[0]).toMatchObject({ reason: "extend-within-dollars", featureId: "f2", runId, previous: { maxTotalTokens: 6_000_000 }, inputs: { pool: { cost: { measuredFeatures: 1 } } } });
+    expect(extended[0]?.ceilingTokens as number).toBeGreaterThan((hold?.inputs as { ceilingTokens: number }).ceilingTokens);
+    expect(seq((type, p) => type === "budget.extended" && p.gate === "plan-share")).toBeGreaterThan(seq(isHold));
+    const revision = store.artifacts(runId).filter((a) => a.logical_path.startsWith("policy-revisions/initiative-")).map((a) => JSON.parse(store.readArtifact(runId, a.id)) as { kind: string; next: { sizing: { maxRunTokens: number } } });
+    expect(revision.find((r) => r.kind === "plan-share")?.next.sizing.maxRunTokens).toBe(extended[0]?.ceilingTokens as number);
+    // No stale would-stop remains: the run's latest plan-share record is the extension.
+    expect(replayPlanShare(store).flatMap((i) => i.planShare).find((b) => b.runId === runId)?.recorded).toBe("extend");
+    expect(view.budget.limits.maxTotalTokens).toBe(extended[0]?.toTokens as number);
+    expect(view.status).toBe("completed");
+  });
+
+  test("shadow: the same hold records the would-extend once the first feature is accepted, and changes nothing", async () => {
+    const { view, store, events, seq, runOf } = await firstWaveScenario("shadow", 6_000_000, { f2: 24 });
+    const runId = runOf("f2") ?? "";
+    const [hold] = events("decision.would_stop").filter((e) => e.reason === "initiative-plan-share");
+    expect(hold).toMatchObject({ featureId: "f2", runId, mode: "shadow", hold: "no measurement" });
+    // Shadow does not run `on`, so its summary names no `on` wait.
+    expect(String(hold?.summary)).not.toContain("extendWithinDollars");
+    const extend = events("decision.would_extend").filter((e) => e.reason === "plan-share");
+    expect(extend).toHaveLength(1);
+    expect(extend[0]).toMatchObject({ mode: "shadow", featureId: "f2", runId, inputs: { pool: { limitTokens: 6_000_000, cost: { measuredFeatures: 1 } } } });
+    expect(seq((type, p) => type === "decision.would_extend" && p.reason === "plan-share")).toBeGreaterThan(seq(isHold));
+    expect(replayPlanShare(store).flatMap((i) => i.planShare).find((b) => b.runId === runId)?.recorded).toBe("extend");
+    expect(events("budget.extended").filter((e) => e.by === "host")).toEqual([]);
+    expect(view.budget.limits.maxTotalTokens).toBe(6_000_000);
+  });
+
+  // The park path's one-shot hold (#2471) had the same shape: f2, ready under plan ahead, parked
+  // on the 3.0M pool with `hold: "no measurement"`, and a drive that retried it returned on the
+  // earlier park, so after f1 was accepted the initiative stayed blocked with the cap's room.
+  test("on: a first-wave park held for no measurement grows the pool and starts once the first feature is accepted", async () => {
+    const { view, events } = await firstWaveScenario("on", 3_000_000, {});
+    const parks = (events("feature.share_gate") as unknown as ShareGateRecord[]).filter((g) => g.featureId === "f2" && g.verdict === "park");
+    expect(parks.map((g) => g.poolGrowth)).toEqual([
+      { mode: "on", hold: "no measurement", wouldExtend: false, toTokens: null, byTokens: null },
+      { mode: "on", wouldExtend: true, toTokens: 3_500_000, byTokens: 500_000 },
+    ]);
+    expect(parks[1]?.view.budget.cost.measuredFeatures).toBe(1);
+    const extended = events("budget.extended").filter((e) => e.by === "host");
+    expect(extended).toHaveLength(1);
+    expect(extended[0]).toMatchObject({ reason: "extend-within-dollars", featureId: "f2", previous: { maxTotalTokens: 3_000_000 }, toTokens: 3_500_000 });
+    expect(view.status).toBe("completed");
+  });
+
+  test("shadow: the same park records the would-extend once the first feature is accepted, and stays parked", async () => {
+    const { view, events } = await firstWaveScenario("shadow", 3_000_000, {});
+    const parks = (events("feature.share_gate") as unknown as ShareGateRecord[]).filter((g) => g.featureId === "f2" && g.verdict === "park");
+    expect(parks.map((g) => g.poolGrowth)).toEqual([
+      { mode: "shadow", hold: "no measurement", wouldExtend: false, toTokens: null, byTokens: null },
+      { mode: "shadow", wouldExtend: true, toTokens: 3_500_000, byTokens: 500_000 },
+    ]);
+    expect(events("decision.would_extend").filter((e) => e.reason === "extend-within-dollars")).toEqual([expect.objectContaining({ featureId: "f2", toTokens: 3_500_000 })]);
+    expect(events("budget.extended").filter((e) => e.by === "host")).toEqual([]);
+    expect(view.next).toMatchObject({ kind: "blocked", featureId: "f2" });
+    expect(view.budget.limits.maxTotalTokens).toBe(3_000_000);
   });
 });
