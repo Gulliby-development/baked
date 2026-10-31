@@ -36,6 +36,8 @@ import {
 import { exportTrace, replayTrace } from "../src/core/workflows/trace.js";
 import { PolicySchema, type RunPolicy, type Spec } from "../src/core/workflows/schemas.js";
 import { WorkflowToolPolicy } from "../src/core/workflows/tool-policy.js";
+import { INVALID_OUTPUT_KEY, invalidOutputRepeat, repeatsInvalidOutput } from "../src/core/workflows/invalid-output-repeat.js";
+import { releaseLinkCount, staleReleasedCreates } from "../src/core/workflows/release-writes.js";
 import { RoutingRecordSchema } from "../src/core/llm/model-routing.js";
 import { exportTrace } from "../src/core/workflows/trace.js";
 import { NativeWorkflowService } from "../src/core/workflows/service.js";
@@ -2194,6 +2196,82 @@ process.exit(offenses.length ? 1 : 0);`;
       })));
       const runPolicy = PolicySchema.parse(JSON.parse(store.run(runId).policy_json));
       expect(() => assertAcceptance(store, runId, { ...state, graph: forged, correctionHashes: [...state.correctionHashes, tampered.content_hash] }, runPolicy)).toThrow("Correction exceeds the approved authority");
+    }, 120_000);
+
+    // R82 slotprompt blocks 733c7777 (#2540): released before #2516, its graph kept the creates of
+    // core's files; resumed on the fix, T001 was refused again ("Create target already exists"),
+    // and a plain resume of the same diagnostic is refused as a repeat. The resume converts.
+    test("on, a run released before the conversion keeps its creates until a resume converts them and T001 succeeds", async () => {
+      class BlockedExecutor extends AheadExecutor {
+        /** While set, message's T001 ends invalid_output as R82's did. */
+        failing = true;
+        actions: string[] = [];
+        override async execute(request: ExecutionRequest) {
+          const service = this.workflows;
+          const task = request.task;
+          if (request.profile.output !== "implementation" || task?.writes[0]?.path !== "message.txt" || !service)
+            return super.execute(request);
+          if (this.failing) throw new WorkflowFault("OUTPUT_INVALID", "Create target already exists: base.txt");
+          const root = request.root ?? "";
+          const runPolicy = PolicySchema.parse(JSON.parse(service.store.run(request.runId).policy_json));
+          const guard = new WorkflowToolPolicy(service.store, service.leases, request.runId, request.attemptId, request.profile, runPolicy, task, root);
+          for (const write of task.writes) {
+            this.actions.push(`${write.path}:${write.action}`);
+            try {
+              await guard.execute("edit_file", { path: write.path }, async () => writeFileSync(join(root, write.path), "ready v1 (message)"));
+            } catch (error) {
+              throw new WorkflowFault("OUTPUT_INVALID", error instanceof Error ? error.message : String(error));
+            }
+          }
+          return { output: { schemaVersion: 1, taskId: task.id, outcome: "implemented", summary: "Wrote value", evidenceIds: [], unresolved: [] }, inputTokens: 50, outputTokens: 50 };
+        }
+      }
+      const shared = plan([feature("base"), feature("message", ["base"], ["message.txt", "base.txt"]), feature("front", ["message"])]);
+      const t = setup(shared, 100, (root) => new BlockedExecutor(root, shared));
+      repository(t.root);
+      t.executor.initiatives = t.initiatives;
+      t.executor.workflows = t.workflows;
+      t.executor.extraWrites.message = "base.txt";
+      Object.assign(t.workflows.config.workflows ?? {}, { planAhead: true });
+      await t.start({ plan: shared, policy: { ...policy, executionMode: "worktree" }, featureAutoApproval: { maxTasks: 5, maxFiles: 5 }, budget: { maxTotalTokens: 6_000_000, maxAgentCalls: 2000, maxActiveMs: 6_000_000 } });
+      await t.approveSplit();
+      let view = await t.drive();
+      const runId = t.featureOf(view, "message").runId ?? "";
+      const store = t.workflows.store;
+      expect(store.run(runId)).toMatchObject({ status: "blocked", reason: "invalid_output" });
+      // What a release before #2516 left: the planned creates, no host-release link.
+      store.transaction(() => {
+        const old = store.state(runId);
+        const link = store.latestArtifact(runId, "corrections/release.json");
+        old.correctionHashes = old.correctionHashes.filter((h) => h !== link?.content_hash);
+        old.manifest.correctionHashes = [...old.correctionHashes];
+        old.graph = structuredClone(old.rootGraph);
+        old.manifest.effectiveGraphHash = hashJson(old.graph);
+        if (old.graph) store.syncTasks(runId, old.graph);
+        store.saveState(runId, old);
+      });
+      expect(store.state(runId).graph?.tasks[0]?.writes.map((w) => w.action)).toEqual(["create", "create"]);
+      // The bench loop resumed it before the fix: the same diagnostic again is a repeat now.
+      const repeat = invalidOutputRepeat(store, runId);
+      store.transaction(() => {
+        const old = store.state(runId);
+        old.prompt += repeat?.note ?? "";
+        store.saveState(runId, old);
+        store.artifact(runId, "recovery", INVALID_OUTPUT_KEY, repeat?.key ?? "");
+      });
+      expect(repeatsInvalidOutput(store, runId)).toBe(true);
+      t.executor.failing = false;
+      const run = await t.workflows.get(runId);
+      await t.workflows.resume(runId, { commandId: newId(), expectedRevision: run.revision });
+      view = await t.drive();
+      expect(view.status).toBe("completed");
+      expect(t.executor.actions).toEqual(["message.txt:create", "base.txt:modify"]);
+      const state = store.state(runId);
+      expect(state.graph?.tasks[0]?.writes.map((w) => `${w.path}:${w.action}`)).toEqual(["message.txt:create", "base.txt:modify"]);
+      expect(releaseLinkCount(store, runId)).toBe(1);
+      expect(git(t.root, "show", `baked/wf/${runId}:base.txt`)).toBe("ready v1 (message)");
+      // Converted once: a second look finds nothing left.
+      expect(await staleReleasedCreates(store, runId, state)).toEqual([]);
     }, 120_000);
 
     // Bench round 61, manlens (#1946): roff and inline were accepted while document, planned ahead on

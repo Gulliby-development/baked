@@ -59,12 +59,7 @@ import {
 import { type HostRemedy, REMEDY_DECISION } from "./corrective-scope.js";
 import { refreshCriticOutcomes } from "./critic-outcomes.js";
 import { decideDelivery, isDeliveryRequest } from "./delivery.js";
-import {
-  applyReleasedCreates,
-  dependencyContracts,
-  isHostRelease,
-  releasedCreates,
-} from "./dependencies.js";
+import { dependencyContracts, isHostRelease } from "./dependencies.js";
 import {
   checkLine,
   checkRoutingModels,
@@ -108,6 +103,11 @@ import {
   renderProjectMemory,
 } from "./project-memory.js";
 import { checkRecoveryNote, noteInterruptedChecks, withRecoveryNote } from "./recovery.js";
+import {
+  recordReleasedCreates,
+  releasedCreatesBetween,
+  staleReleasedCreates,
+} from "./release-writes.js";
 import { recoveryAdvice } from "./remedies.js";
 import type { ResumeRemedy } from "./remedies-model.js";
 import { canRepairRun } from "./repairable.js";
@@ -141,7 +141,6 @@ import {
 } from "./scheduler.js";
 import {
   type CommandIdentity,
-  CorrectionSchema,
   type Decision,
   executionModeOf,
   generatedPaths,
@@ -190,13 +189,7 @@ import {
   produces,
   stageKind,
 } from "./v2/runtime.js";
-import {
-  moveRunWorktree,
-  placeBaseFiles,
-  removeRunWorktree,
-  runRoot,
-  trackedPaths,
-} from "./worktree.js";
+import { moveRunWorktree, placeBaseFiles, removeRunWorktree, runRoot } from "./worktree.js";
 import {
   cleanWorktrees,
   type WorktreeCleanup,
@@ -1232,7 +1225,25 @@ export class NativeWorkflowService implements WorkflowService {
   ): Promise<RunSnapshot> {
     this.enabled();
     const outside = options.acceptWorkspace ? await this.outsideChanges(runId) : null;
+    await this.convertStaleReleasedCreates(runId);
     return this.resumeCommand(runId, command, outside, options.remedy);
+  }
+  /**
+   * A planned-ahead run released before #2514 kept its planned creates of files the release
+   * brought in, so its tasks were refused with "Create target already exists" (R82 slotprompt
+   * blocks, #2540). The resume converts them as the release does now, before the repeat guard
+   * reads the run's inputs: the conversion is an input change, so the retry is no repeat. Not
+   * while the run executes; idempotent.
+   */
+  private async convertStaleReleasedCreates(runId: string): Promise<void> {
+    if (this.active.has(runId) || this.store.run(runId).status === "running") return;
+    const stale = await staleReleasedCreates(this.store, runId, this.store.state(runId));
+    if (!stale.length) return;
+    this.store.transaction(() => {
+      const state = this.store.state(runId);
+      if (recordReleasedCreates(this.store, runId, state, stale).length)
+        this.store.saveState(runId, state);
+    });
   }
   /**
    * A person's answer to a corrective blocked on files it may not write (#2155): the remedy must
@@ -2621,41 +2632,12 @@ export class NativeWorkflowService implements WorkflowService {
     // Upstream specs of the features accepted since the provisional base (#2046); idempotent.
     await placeBaseFiles(this.workspace, state.worktree, baseCommit, baseFiles);
     // A planned create of a file an accepted upstream feature wrote since the plan (#2514).
-    const before = await trackedPaths(this.workspace, from);
-    const after = await trackedPaths(this.workspace, baseCommit);
-    const released = state.graph
-      ? releasedCreates(state.graph, (path) => after.has(path) && !before.has(path))
-      : [];
+    const stale = await releasedCreatesBetween(this.workspace, state, from, baseCommit);
     return this.store.command(runId, command, body, () => {
       const current = this.store.state(runId);
       if (!current.worktree || !current.planAhead)
         throw new WorkflowFault("STALE_DECISION", "The run changed during its release");
-      if (released.length && current.graph && current.approvalRoot) {
-        const next = applyReleasedCreates(current.graph, released);
-        const link = CorrectionSchema.parse({
-          schemaVersion: 1,
-          parentDigest: current.approvalRoot,
-          parentGraphHash: hashJson(current.graph),
-          rule: "host-release",
-          newGraphHash: hashJson(next),
-          findingIds: [],
-          taskIds: [...new Set(released.map((r) => r.taskId))],
-          roundKind: "release",
-          round: 1,
-          released,
-        });
-        const artifact = this.store.artifact(
-          runId,
-          "correction",
-          "corrections/release.json",
-          canonical(link),
-        );
-        current.correctionHashes.push(artifact.content_hash);
-        current.manifest.correctionHashes = [...current.correctionHashes];
-        current.graph = next;
-        current.manifest.effectiveGraphHash = hashJson(next);
-        this.store.syncTasks(runId, next);
-      }
+      const released = recordReleasedCreates(this.store, runId, current, stale);
       current.worktree = { ...current.worktree, baseHead: baseCommit };
       current.worktreeBase = baseCommit;
       current.baseFiles = baseFiles;
