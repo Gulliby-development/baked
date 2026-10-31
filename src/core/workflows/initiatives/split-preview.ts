@@ -37,9 +37,9 @@ export interface SplitBudgetPreview {
     reason: string | null;
   } | null;
   /**
-   * The pool to extend to before approving: what the dollar cap pays for when that also starts
-   * every waiting feature at its low estimate, else the expected forecast (never the lows alone:
-   * R81 ratdec's lows were 1.8x over and 2.7x under the actual use); null when the pool covers it.
+   * The pool to extend to before approving, the split approval's one amount (`splitExtension`,
+   * #2525): the high end with margin, held to what the dollar cap pays for; null when the pool
+   * covers the high end. The approval message and its `extend` remedy name the same amount.
    */
   suggestedTokens: number | null;
   /** The forecast notice's sentence with the one-line extend command; null without a suggestion. */
