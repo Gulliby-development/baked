@@ -3,7 +3,7 @@ import { spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { extractExamples, extractFixtures, missingInput, runDocExamples } from "../src/core/verification/doc-examples.js";
+import { docTextProblems, escapedLiterals, extractExamples, extractFixtures, missingInput, runDocExamples } from "../src/core/verification/doc-examples.js";
 import { entryPointCommand } from "../src/core/verification/entry-points.js";
 import { ProcessScope } from "../src/core/workflows/process-scope.js";
 import { reproEnv } from "../src/core/verification/repro.js";
@@ -250,4 +250,87 @@ func main() {
     });
     expect(results.map((r) => r.status)).toEqual(["match"]);
   }, 120000);
+});
+
+// Bench round 82 (#2549). slotprompt's README (Dart) copied the spec's literals as Dart source
+// spells them: prose and the filter table said `\\{{` and `\\,` where the template syntax is
+// `\{{` and `\,`, and the table's code spans held bare pipes (`{{name | upper}}`) that split the
+// cells. No example run reads prose or table cells, so every check passed.
+describe("scenario: slotprompt 0bf6dceb, a README that keeps the spec's string-literal escapes (#2549)", () => {
+  const spec = [
+    "Given the template '\\\\{{name}}', when it renders, then it prints the literal text {{name}}.",
+    "Given the value 'a,b' and the filter 'join:\\\\,', when it renders, then it prints a\\,b.",
+  ].join("\n");
+  const readme = [
+    "# slotprompt",
+    "",
+    "Write `\\\\{{` before a tag to print it as text.",
+    "",
+    "| Filter | Syntax | Effect |",
+    "| --- | --- | --- |",
+    "| upper | `{{name | upper}}` | upper case |",
+    "| join | `{{list \\| join:\\\\,}}` | joins with a comma |",
+    "",
+    `${fence}dart`,
+    "final template = '\\\\{{name}}';",
+    fence,
+  ].join("\n");
+
+  test("the doubled backslashes and the bare pipe are found; the Dart block is source and is left alone", () => {
+    expect(docTextProblems("README.md", readme, spec).map((p) => [p.line, p.kind, p.span, p.suggested])).toEqual([
+      [3, "escaped_literal", "\\\\{{", "\\{{"],
+      [7, "table_pipe", "{{name | upper}}", "{{name \\| upper}}"],
+      [8, "escaped_literal", "{{list \\| join:\\\\,}}", "{{list \\| join:\\,}}"],
+    ]);
+  });
+
+  test("the README as it should read has no problem", () => {
+    const fixed = readme.replace("`\\\\{{`", "`\\{{`").replace("{{name | upper}}", "{{name \\| upper}}").replace("join:\\\\,", "join:\\,");
+    expect(docTextProblems("README.md", fixed, spec)).toEqual([]);
+  });
+
+  test("a pipe outside a table and a code span the spec does not quote are not problems", () => {
+    const text = ["Pipe a value with `{{a | b}}`.", "", "Windows shares start with `\\\\server`."].join("\n");
+    expect(docTextProblems("README.md", text, spec)).toEqual([]);
+  });
+
+  // Each language's spec quotes the value in its own escaped literal; the README copies the body.
+  const languages: [string, string, string][] = [
+    ["typescript", '"\\\\${name}"', "\\${name}"],
+    ["javascript", "'it\\'s \\\\{{'", "it's \\{{"],
+    ["python", "'\\\\{{name}}'", "\\{{name}}"],
+    ["go", '"\\\\{{"', "\\{{"],
+    ["rust", '"\\\\d+"', "\\d+"],
+    ["java", '"\\\\d+\\\\s"', "\\d+\\s"],
+    ["kotlin", '"\\${user}"', "${user}"],
+    ["scala", '"\\\\s+"', "\\s+"],
+    ["csharp", '"\\\\{{"', "\\{{"],
+    ["c", '"C:\\\\tmp"', "C:\\tmp"],
+    ["cpp", '"a\\"b\\""', 'a"b"'],
+    ["ruby", '"\\#{name}"', "#{name}"],
+    ["php", '"\\$price"', "$price"],
+    ["swift", '"\\\\(name)"', "\\(name)"],
+    ["lua", '"%d\\\\n"', "%d\\n"],
+    ["elixir", '"\\#{x} \\\\"', "#{x} \\"],
+    ["dart", "'\\$name \\\\,'", "$name \\,"],
+    ["zig", '"\\\\x"', "\\x"],
+    ["bash", '"\\$HOME"', "$HOME"],
+    ["ocaml", '"\\\\t"', "\\t"],
+    ["r", '"\\\\."', "\\."],
+    ["solidity", '"\\\\0"', "\\0"],
+  ];
+  for (const [language, literal, value] of languages)
+    test(`${language}: a README span that keeps the literal's escapes is found and decoded`, () => {
+      const criterion = `Given the input ${literal}, when it runs, then it prints the input.`;
+      const body = literal.slice(1, -1);
+      const problems = docTextProblems("README.md", `The input \`${body}\` prints as itself.`, criterion);
+      expect(problems.map((p) => [p.kind, p.span, p.suggested])).toEqual([["escaped_literal", body, value]]);
+      expect(docTextProblems("README.md", `The input \`${value}\` prints as itself.`, criterion)).toEqual([]);
+    });
+
+  test("a raw literal keeps its backslashes, so a README that copies its body is right", () => {
+    const raw = ["python r'\\\\d'", "rust r#\"\\\\d\"#", "csharp @\"\\\\d\"", "dart r'\\\\d'", "swift #\"\\\\d\"#", "kotlin \"\"\"\\\\d\"\"\"", "go `\\\\d`"];
+    expect(escapedLiterals(raw.join("\n"))).toEqual([]);
+    expect(docTextProblems("README.md", "Match two backslashes and a digit with `\\\\d`.", raw.join("\n"))).toEqual([]);
+  });
 });

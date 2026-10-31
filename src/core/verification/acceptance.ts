@@ -1,6 +1,6 @@
 import { hashJson } from "../specs/hash.js";
 import { widenAuthorized } from "../workflows/corrective-scope.js";
-import { applyReleasedCreates } from "../workflows/dependencies.js";
+import { applyReleasedCreates, releasedFrom } from "../workflows/dependencies.js";
 import { WorkflowFault } from "../workflows/errors.js";
 import { LANGUAGE_REVIEW_PROFILE, touchesLanguageFiles } from "../workflows/language.js";
 import { CorrectionSchema, PolicySchema, type RunPolicy } from "../workflows/schemas.js";
@@ -135,15 +135,16 @@ function acceptance(
       throw new WorkflowFault("STALE_DECISION", "Invalid correction chain");
     if (correction.rule === "host-release") {
       // A planned-ahead run's release turns planned creates of files it brought in into modifies
-      // (#2514): the same tasks and paths, nothing added or widened, each a file the baseline
-      // taken on the released base holds.
+      // (#2514), and planned modifies of files it removed into creates (#2517): the same tasks
+      // and paths, nothing added or widened; a new modify is of a file the baseline taken on the
+      // released base holds, a new create of one it lacks.
       const released = correction.released ?? [];
       const next = applyReleasedCreates(reconstructed, released);
       const baselineId = state.manifest.baselineSnapshotId;
       const baseline = (baselineId ? store.snapshotFiles(runId, baselineId) : null) ?? {};
       if (
         !state.planAhead?.released ||
-        released.some((r) => !(r.path in baseline)) ||
+        released.some((r) => (r.action === "create") === r.path in baseline) ||
         released.some(
           (r) =>
             !reconstructed.tasks.some(
@@ -152,7 +153,8 @@ function acceptance(
                 t.origin === "planned" &&
                 correction.taskIds.includes(t.id) &&
                 t.writes.some(
-                  (w) => w.path === r.path && w.action === "create" && w.content === undefined,
+                  (w) =>
+                    w.path === r.path && w.action === releasedFrom(r) && w.content === undefined,
                 ),
             ),
         ) ||

@@ -1,9 +1,20 @@
 import { afterEach, describe, expect, test } from "bun:test";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
 import { hashBytes, hashJson } from "../src/core/specs/hash.js";
+import { type CaseWalk, caseCheck, citedKind } from "../src/core/verification/criteria-cases.js";
 import type { Spec, TaskGraph } from "../src/core/workflows/schemas.js";
 import { newId } from "../src/core/workflows/store.js";
 import { requestConflictDecision } from "../src/core/workflows/request-conflict.js";
-import { namesExactContent, suppliedConflictCriteria, suppliedContentFindings, suppliedTestFiles } from "../src/core/workflows/supplied-content.js";
+import {
+  namesExactContent,
+  notPrescribedFindings,
+  prescribedRowFiles,
+  suppliedConflictCriteria,
+  suppliedContentFindings,
+  suppliedTestFiles,
+} from "../src/core/workflows/supplied-content.js";
 import type { ExecutionRequest } from "../src/core/workflows/types.js";
 import { fixturePolicy, fixtureSpec, workflowFixture } from "./helpers/workflow-fixture.js";
 
@@ -121,4 +132,142 @@ describe("criteria against file content the request supplies verbatim (#2006)", 
       expect(requestConflictDecision({ ...input, criterionIds: [] })).toBe("none");
     });
   });
+});
+
+// #2524: the NOT-PRESCRIBED note (#2501, shadow `case_not_prescribed`) told the spec author to
+// remove literals that describe rows instead of quoting one. R82 slotprompt filters (a7c8cf04), 4 of
+// 4 records false: AC-008 cited its own row counts and test names (`12`, `filter_args`,
+// `filter_errors`, `17`, `52`), AC-002 the error envelope `slotprompt: LINE:COL: MESSAGE\n`,
+// AC-005 `default "\n"` "(backslash followed by letter n)", AC-004 the control characters `\^@`,
+// `\^_` and "U+0000 and U+001F". The case walk marks such a literal `cited`; R81's
+// `["eval","--as","frac","7/3"]`, a row no block of the brief holds, is still noted.
+describe("a literal that describes rows is not a case to remove (#2524)", () => {
+  const ARGS = "test/filter_args_test.dart";
+  const ERRORS = "test/filter_errors_test.dart";
+  const argRows = Array.from({ length: 12 }, (_, i) => `row(r'{{ v${i} | upper }}', {'v${i}': 'a${i}'}, 'A${i}'),`);
+  const errorRows = Array.from({ length: 5 }, (_, i) => `err(r'{{ v | nope${i} }}', 'slotprompt: 1:6: unknown filter "nope${i}"\\n'),`);
+  const block = (path: string, rows: string[]) => `\`\`\`dart\n// Rows in ${path} (${rows.length} rows)\n${rows.join("\n")}\n\`\`\``;
+  const REQUEST_R82 = `Add filters to slotprompt.\n\n${block(ARGS, argRows)}\n\n${block(ERRORS, errorRows)}\n`;
+  const criterion = (id: string, then: string, when = "the filter tests run"): Spec["criteria"][number] => ({
+    id, requirementIds: ["FR-001"], given: "the prescribed rows", when, then, method: "automated",
+  });
+  const R82: Spec["criteria"] = [
+    criterion("AC-008", "exactly the supplied `12` rows of `filter_args` and the rows of `filter_errors` run, `17` rows in all, and the suite runs its `52` tests"),
+    criterion("AC-002", String.raw`an unknown filter writes ` + "`" + String.raw`slotprompt: LINE:COL: MESSAGE\n` + "`" + " to stderr"),
+    criterion("AC-005", String.raw`with no argument the join separator value is ` + "`" + String.raw`default "\n"` + "`" + " (backslash followed by letter n)"),
+    criterion("AC-004", "| input | output |\n|---|---|\n| `\\^@` | `\\u0000` |\n| `\\^_` | `\\u001f` |\n\nthe escape filter covers \"U+0000 and U+001F\" and every control between"),
+  ];
+  const R81 = criterion("AC-009", "it exits 0", 'the user runs `["eval","--as","frac","7/3"]`');
+  const ids = [...R82, R81].map((c) => c.id);
+  const tasks = [task("T003", [{ path: ARGS, action: "create" }], ids), task("T004", [{ path: ERRORS, action: "create" }], ids)];
+  const r82Spec = (extra: Spec["criteria"] = []): Spec => ({ ...fixtureSpec, criteria: [...fixtureSpec.criteria, ...R82, ...extra] });
+
+  test("R82 slotprompt filters: the four criteria raise no note", () => {
+    expect(notPrescribedFindings(r82Spec(), graph(tasks), REQUEST_R82, { checks })).toEqual([]);
+  });
+
+  test("R81 exact-cli: a row the brief never prescribes is still noted beside them", () => {
+    const findings = notPrescribedFindings(r82Spec([R81]), graph(tasks), REQUEST_R82, { checks });
+    expect(findings.map((f) => f.id)).toEqual(["NOT-PRESCRIBED-AC-009"]);
+    expect(findings[0]?.description).toContain(JSON.stringify('["eval","--as","frac","7/3"]'));
+    expect(findings[0]?.blocking).toBe(false);
+  });
+
+  test("each R82 literal is cited, and how", () => {
+    const names = { names: new Set(["filter_args", "filter_errors"]), counts: new Set([12, 5, 17]) };
+    expect(citedKind("12", " rows of", names)).toBe("count");
+    expect(citedKind("52", " tests", names)).toBe("count");
+    expect(citedKind("17", ", and", names)).toBe("count");
+    expect(citedKind("filter_args", " and", names)).toBe("name");
+    expect(citedKind(String.raw`slotprompt: LINE:COL: MESSAGE\n`, " to stderr", names)).toBe("placeholder");
+    expect(citedKind(String.raw`default "\n"`, " (backslash followed by letter n)", names)).toBe("description");
+    expect(citedKind(String.raw`\^@`, "", names)).toBe("description");
+    expect(citedKind(String.raw`\u001f`, "", names)).toBe("description");
+    expect(citedKind("U+0000 and U+001F", " and every", names)).toBe("description");
+    // Literals of a row: a value, an argument list, a message, a lone upper-case word.
+    for (const literal of ['["eval","--as","frac","7/3"]', "3", "slotprompt: 1:6: unknown filter", "NAME", "default"])
+      expect(citedKind(literal, " is printed", names)).toBeUndefined();
+  });
+
+  // The task-end walk marks the same cases `cited`: not refused, as before, and no longer recorded
+  // as `case_not_prescribed`, which the scheduler records only for `none`.
+  test("the task-end walk marks them cited, not none", async () => {
+    const root = mkdtempSync(join(tmpdir(), "baked-cited-"));
+    cleanups.push(() => rmSync(root, { recursive: true, force: true }));
+    // The last carrier of the shared criteria owns their cases (#1597).
+    mkdirSync(dirname(join(root, ERRORS)), { recursive: true });
+    writeFileSync(join(root, ERRORS), `import 'package:test/test.dart';\n\nvoid main() {\n${errorRows.map((r) => `  ${r}`).join("\n")}\n}\n`);
+    const walks: CaseWalk[] = [];
+    const literals: string[][] = [];
+    const check = caseCheck(r82Spec([R81]), tasks[1] as TaskGraph["tasks"][number], {
+      checks, tasks, prescribedRows: prescribedRowFiles(REQUEST_R82, graph(tasks)),
+      record: (w, cases) => { walks.push(w); literals.push(cases.map((c) => c.literal)); },
+    });
+    expect(await check?.(root)).toEqual([]);
+    const by = (kind: string) => (walks[0]?.cases ?? []).flatMap((c, i) => (c.prescribed === kind ? [literals[0]?.[i]] : []));
+    expect(by("none")).toEqual(['["eval","--as","frac","7/3"]']);
+    expect(by("cited")).toEqual(expect.arrayContaining(["12", "filter_args", "17", "52", String.raw`slotprompt: LINE:COL: MESSAGE\n`, String.raw`default "\n"`, "U+0000 and U+001F", String.raw`\u0000`]));
+  });
+
+  // One case per language for the count, name and placeholder shapes; the R81 row is noted in each.
+  const LANGUAGES = [
+    { name: "dart", fence: "dart", args: "test/filter_args_test.dart", errors: "test/filter_errors_test.dart", header: (p: string, n: number) => `// Rows in ${p} (${n} rows)`, row: (i: number) => `row(r'{{ v | f${i} }}', 'out${i}'),` },
+    { name: "c", fence: "c", args: "tests/test_filter_args.c", errors: "tests/test_filter_errors.c", header: (p: string, n: number) => `/* Rows in ${p} (${n} rows) */`, row: (i: number) => `ROW("{{ v | f${i} }}", "out${i}"),` },
+    { name: "elixir", fence: "elixir", args: "test/filter_args_test.exs", errors: "test/filter_errors_test.exs", header: (p: string, n: number) => `# Rows in ${p} (${n} rows)`, row: (i: number) => `row("{{ v | f${i} }}", "out${i}")` },
+    { name: "typescript", fence: "ts", args: "tests/filter_args.test.ts", errors: "tests/filter_errors.test.ts", header: (p: string, n: number) => `// Rows in ${p} (${n} rows)`, row: (i: number) => `{ template: "{{ v | f${i} }}", out: "out${i}" },` },
+  ];
+  for (const l of LANGUAGES)
+    test(`${l.name}: counts, test names and a placeholder envelope raise no note; the R81 row does`, () => {
+      const rows = (from: number, n: number) => Array.from({ length: n }, (_, i) => l.row(from + i));
+      const fenced = (p: string, r: string[]) => `\`\`\`${l.fence}\n${l.header(p, r.length)}\n${r.join("\n")}\n\`\`\``;
+      const request = `Add filters.\n\n${fenced(l.args, rows(0, 3))}\n\n${fenced(l.errors, rows(3, 2))}\n`;
+      const spec: Spec = {
+        ...fixtureSpec,
+        criteria: [
+          criterion("AC-001", "the supplied `3` rows of `filter_args` and `2` of `filter_errors` run, `5` in all"),
+          criterion("AC-002", "an unknown filter prints `error: LINE:COL: unknown filter NAME`"),
+          R81,
+        ],
+      };
+      const plan = [task("T001", [{ path: l.args, action: "create" }], ["AC-001", "AC-002", "AC-009"]), task("T002", [{ path: l.errors, action: "create" }], ["AC-001", "AC-002", "AC-009"])];
+      const findings = notPrescribedFindings(spec, graph(plan), request, { checks });
+      expect(findings.map((f) => f.id)).toEqual(["NOT-PRESCRIBED-AC-009"]);
+    });
+
+  // Scripted R82 shape through the scheduler: analysis of the filters plan records no
+  // `case_not_prescribed` would-stop for the four criteria, only for the R81 row.
+  test("scenario: analysis records case_not_prescribed only for the row no block holds", async () => {
+    const fixture = workflowFixture();
+    cleanups.push(fixture.dispose);
+    const { service, executor } = fixture;
+    const full = r82Spec([R81]);
+    const original = executor.execute.bind(executor);
+    executor.execute = async (request: ExecutionRequest) => {
+      if (request.profile.output === "spec") return { output: full, inputTokens: 25, outputTokens: 25 };
+      const out = await original(request);
+      if (request.profile.output === "plan") {
+        const plan = out.output as { markdown: string; taskGraph: TaskGraph };
+        plan.taskGraph.specHash = hashJson(full);
+        plan.taskGraph.planHash = hashBytes(plan.markdown);
+        const [first] = plan.taskGraph.tasks;
+        if (!first) throw new Error("no planned task");
+        plan.taskGraph.tasks = [
+          // Two source tasks, so the row criteria are not broad (#1366: more than half the tasks).
+          { ...first, id: "T001", criterionIds: ["AC-001"], writes: [{ path: "value.txt", action: "create" }] },
+          { ...first, id: "T002", title: "Filters", criterionIds: ["AC-001"], writes: [{ path: "lib/src/filters.dart", action: "create" }] },
+          { ...first, id: "T003", title: "Filter args rows", criterionIds: ids, dependsOn: ["T001"], writes: [{ path: ARGS, action: "create" }] },
+          { ...first, id: "T004", title: "Filter error rows", criterionIds: ids, dependsOn: ["T001"], writes: [{ path: ERRORS, action: "create" }] },
+        ];
+      }
+      return out;
+    };
+    const run = await service.start({ commandId: newId(), featureId: "fixture", workflowId: "sdd", prompt: REQUEST_R82, ownerLabel: "test", policy: fixture.policy });
+    await service.drive(run.runId, new AbortController().signal);
+    const keys = service.store
+      .eventsOfType(run.runId, "decision.would_stop")
+      .map((e) => e.payload as { reason: string; key: string })
+      .filter((p) => p.reason === "case_not_prescribed" && p.key.startsWith("analysis-"))
+      .map((p) => p.key);
+    expect(keys).toEqual(["analysis-AC-009"]);
+  }, 60000);
 });

@@ -1508,9 +1508,16 @@ export const CorrectionSchema = z
           .strict(),
       )
       .optional(),
-    /** The `create` writes a `host-release` link turns into `modify`. */
+    /**
+     * The writes a `host-release` link converts: a `create` into `modify`, or, with
+     * `action: "create"`, a `modify` into `create` (#2517).
+     */
     released: z
-      .array(z.object({ taskId: TaskId, path: RelativePath }).strict())
+      .array(
+        z
+          .object({ taskId: TaskId, path: RelativePath, action: z.literal("create").optional() })
+          .strict(),
+      )
       .min(1)
       .optional(),
   })

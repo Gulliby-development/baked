@@ -215,6 +215,8 @@ describe("the case walk reads the request's prescribed rows (#2501)", () => {
         { criterionId: "AC-001", held: false, row: false, sibling: false, prescribed: "own" },
         { criterionId: "AC-001", held: false, row: false, sibling: false, prescribed: "sibling" },
         { criterionId: "AC-001", held: false, row: false, sibling: false, prescribed: "none" },
+        // A literal that describes rows (#2524) is no more demanded than `none`.
+        { criterionId: "AC-001", held: false, row: false, sibling: false, prescribed: "cited" },
       ],
     };
     expect(caseWalkDecision(record)).toEqual([0, 2]);

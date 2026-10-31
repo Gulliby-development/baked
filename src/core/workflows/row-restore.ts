@@ -1,4 +1,5 @@
 import { hashBytes } from "../specs/hash.js";
+import { respelled, runLengthCompare, runSpans } from "../verification/byte-runs.js";
 import {
   CONTINUES,
   measureFileRows,
@@ -54,6 +55,12 @@ export interface RowRestoreSite {
   sameHead: boolean;
   /** With the line restored the file holds the row, and no other row drifts that did not. */
   held: boolean;
+  /**
+   * The row's long byte runs the line counts differently, respelled with the row's counts in the
+   * line's own notation (`respelledRunLine`), hold the row, and no other row drifts that did not
+   * (#2551). Read only by the restore of miscounted runs (`rowRunRestores`); absent elsewhere.
+   */
+  respelled?: boolean;
 }
 
 export interface RowRestoreRecord {
@@ -90,8 +97,30 @@ export interface RowRestoreRecord {
 export type RowRestoreRule = (sites: readonly RowRestoreSite[]) => number[];
 export function rowRestoreDecision(sites: readonly RowRestoreSite[]): number[] {
   return sites.flatMap((s) =>
-    s.line !== null && s.oneLine && s.sameHead && s.held ? [s.row] : [],
+    s.line !== null && ((s.oneLine && s.sameHead && s.held) || s.respelled === true) ? [s.row] : [],
   );
+}
+
+/** A whole-line restore: the line is the row as the request gives it. */
+const wholeLine = (s: RowRestoreSite) => s.line !== null && s.oneLine && s.sameHead && s.held;
+
+/**
+ * The file line `text` with each long byte run of the prescribed `row` it counts differently
+ * spelled again with the row's count, in the line's own notation (`respelled`: a hex string or a
+ * byte list written out again, a repeat's count rewritten), the rest of the line kept (#2551).
+ * Null when the line has no such run or one cannot be rewritten exactly.
+ */
+export function respelledRunLine(text: string, row: string): string | null {
+  let out = text;
+  for (const span of runSpans(row)) {
+    for (const drift of runLengthCompare(out, span.spelling)?.drifts ?? []) {
+      const fixed = respelled(drift.spelling, span.spelling);
+      const at = out.indexOf(drift.spelling);
+      if (fixed === null || at < 0 || out.indexOf(drift.spelling, at + 1) >= 0) return null;
+      out = `${out.slice(0, at)}${fixed}${out.slice(at + drift.spelling.length)}`;
+    }
+  }
+  return out === text ? null : out;
 }
 
 /** The prescribed `row` in place of the file line `text`: its indentation and separator kept. */
@@ -239,15 +268,42 @@ export function rowRunRestores(
     const before = read(path);
     if (!block || before === null) return [];
     const rows = new Set(drifts.map((d) => d.row));
-    const plan = rowRestorePlan(block.lines, before, (sites) =>
-      rowRestoreDecision(sites.filter((s) => rows.has(s.row))),
+    const lines = before.split("\n");
+    const drifting = new Set(rowBlockDecision(measureRows(block.lines, before)));
+    // A line that is not the row in the request's notation (R82: `failed += row(ARGS(...), ...)`
+    // for the request's `run "deflate" ... stdin=... => ...`) keeps its notation and gets the
+    // row's counts only (#2551).
+    const respellings = new Map<number, string>();
+    const sites = rowRestorePlan(block.lines, before, () => [])
+      .sites.filter((s) => rows.has(s.row))
+      .map((site): RowRestoreSite => {
+        if (site.line === null || wholeLine(site)) return site;
+        const fixed = respelledRunLine(lines[site.line - 1] ?? "", block.lines[site.row - 1] ?? "");
+        if (fixed === null) return { ...site, respelled: false };
+        const still = rowBlockDecision(
+          measureRows(block.lines, withLines(lines, new Map([[site.line, fixed]]))),
+        );
+        const held = !still.includes(site.row) && still.every((n) => drifting.has(n));
+        if (held) respellings.set(site.row, fixed);
+        return { ...site, respelled: held };
+      });
+    const restore = rowRestoreDecision(sites);
+    const edits = new Map(
+      sites.flatMap((s) =>
+        s.line !== null && restore.includes(s.row)
+          ? [
+              [
+                s.line,
+                wholeLine(s)
+                  ? restoredLine(lines[s.line - 1] ?? "", block.lines[s.row - 1] ?? "")
+                  : (respellings.get(s.row) ?? ""),
+              ] as [number, string],
+            ]
+          : [],
+      ),
     );
-    const sites = plan.sites.filter((s) => rows.has(s.row));
-    const verdict = !plan.restore.length
-      ? "declined"
-      : mode === "on"
-        ? "restored"
-        : "would_restore";
+    const after = edits.size ? withLines(lines, edits) : before;
+    const verdict = !restore.length ? "declined" : mode === "on" ? "restored" : "would_restore";
     return [
       {
         record: {
@@ -256,13 +312,13 @@ export function rowRunRestores(
           tasks,
           mode,
           sites,
-          restore: plan.restore,
+          restore,
           verdict,
           checks: null,
           file: hashBytes(before),
         },
         before,
-        after: plan.after,
+        after,
         drifts,
       },
     ];

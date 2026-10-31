@@ -94,7 +94,13 @@ import {
   writtenTestPaths,
 } from "../verification/criteria-cases.js";
 import { canHold } from "../verification/deliverable-paths.js";
-import { type DocExampleResult, isDocFile, runDocExamples } from "../verification/doc-examples.js";
+import {
+  type DocExampleResult,
+  type DocTextProblem,
+  docTextProblems,
+  isDocFile,
+  runDocExamples,
+} from "../verification/doc-examples.js";
 import {
   caseCrash,
   EDGE_CASES,
@@ -1202,6 +1208,17 @@ const PLAN_BASE = "revisions/base/plan.json";
 const FINDING_FILES = "finding-files.json";
 /** Largest finding file kept for the comment-only comparison. */
 const FINDING_FILE_MAX = 1_000_000;
+/** A session's brief on the long runs of prescribed rows its test files miscount (#2543, #2551). */
+function rowRunContext(drifts: readonly RowBlockDrift[]): Record<string, unknown> {
+  return drifts.length
+    ? {
+        rowRuns: {
+          findings: drifts.map(rowRunText),
+          note: "A test file holds a prescribed row whose long byte run it counts differently from the request. Correct the test's literal to the row as the request gives it; the source is not what differs.",
+        },
+      }
+    : {};
+}
 /** A file's text, or null when it is missing, unreadable or larger than `FINDING_FILE_MAX`. */
 function readText(path: string): string | null {
   try {
@@ -8915,14 +8932,7 @@ ${note}`;
               ...this.failedFixers(runId, task),
               ...this.misquoteContinue(runId, state, task.id),
               ...this.exactText(runId, state, policy, task),
-              ...(rowRuns.length
-                ? {
-                    rowRuns: {
-                      findings: rowRuns.map(rowRunText),
-                      note: "A test file holds a prescribed row whose long byte run it counts differently from the request. Correct the test's literal to the row as the request gives it; the source is not what differs.",
-                    },
-                  }
-                : {}),
+              ...rowRunContext(rowRuns),
               ...(focus.files.length
                 ? {
                     correctionFocus: {
@@ -10358,6 +10368,7 @@ ${note}`;
         ...this.failedFixers(runId, task),
         ...this.misquoteContinue(runId, state, task.id),
         ...this.exactText(runId, state, policy, task),
+        ...this.rowRunNote(state, task),
       };
       const needed = reserveTokens(
         this.estimatePrompt(runId, state, policy, profile, extra),
@@ -12090,8 +12101,8 @@ ${note}`;
    * outside the checks stage (#2543, `rowRunRestores`): R82 tinyflate deflate 82f19908 blocked
    * `invalid_output` at T007 on `tests/deflate_match_test.c` and, resumed, blocked again on the
    * same literal, because the checks stage's comparison and restore never ran before the task's
-   * session. `drive`: before the task-graph stage drives its tasks, the files a resume recorded
-   * (`row-restores/resume/`). `task`: at the start of `task`'s session, the test files it writes
+   * session. `drive`: before the task-graph stage drives its tasks, every row file the graph
+   * writes (#2551: a parallel run's workers start in their own worktrees, after it). `task`: at the start of `task`'s session, the test files it writes
    * and the files a resume recorded for it. Each restore is the checks stage's (`writeRestoredRows`,
    * kept when the writing task's required checks pass), on by default; `rowRunRestore: "off"`
    * records it in shadow. Recorded under `row-restores/<path>.json`; a file whose last record has
@@ -12122,8 +12133,10 @@ ${note}`;
         }
       });
     const own = task ? task.writes.filter((w) => w.action !== "delete").map((w) => w.path) : [];
-    const paths = [...new Set([...own, ...resumed])];
-    if (!paths.length) return [];
+    // The drive compares every row file the graph writes, so the workers of a parallel run, whose
+    // sessions start in their own worktrees, take the restored file too (R82 82f19908 T007, #2551).
+    const paths = task ? [...new Set([...own, ...resumed])] : undefined;
+    if (paths && !paths.length) return [];
     const mode = policy.rowRunRestore === "off" ? "shadow" : "on";
     const root = runRoot(this.store.workspace, state);
     let planned: ReturnType<typeof rowRunRestores>;
@@ -12176,6 +12189,29 @@ ${note}`;
     // A correction whose failing checks the restore fixed reads a new snapshot (`correctionPassing`).
     if (kept) await this.snapshot(runId, state, policy, signal);
     return left;
+  }
+  /**
+   * A parallel worker's brief naming the long runs of prescribed rows that the test files it writes
+   * still count differently in the run root (#2551): its session starts in its own worktree, where
+   * the drive's restore came before it. Records nothing; a failure to read says nothing.
+   */
+  private rowRunNote(state: RuntimeState, task: Task): Record<string, unknown> {
+    const graph = state.rootGraph ?? state.graph;
+    if (!graph || !task.writes.length) return {};
+    try {
+      const root = runRoot(this.store.workspace, state);
+      return rowRunContext(
+        rowRunRestores(
+          state.requestText || state.prompt,
+          graph,
+          (path) => readText(workspacePath(root, path)),
+          "shadow",
+          task.writes.map((w) => w.path),
+        ).flatMap((r) => r.drifts),
+      );
+    } catch {
+      return {};
+    }
   }
   private async runTaskCheck(
     runId: string,
@@ -18227,12 +18263,7 @@ ${note}`;
         JSON.parse(this.store.readArtifact(runId, kept.id)) as { examples: DocExampleResult[] }
       ).examples;
     const root = runRoot(this.store.workspace, state);
-    const docs = [...journaledBaseHashes(this.store, runId).keys()]
-      .filter(isDocFile)
-      .flatMap((path) => {
-        const absolute = workspacePath(root, path);
-        return existsSync(absolute) ? [{ path, text: readFileSync(absolute, "utf8") }] : [];
-      });
+    const docs = this.changedDocs(runId, state);
     if (!docs.length) return [];
     const examples = await runDocExamples(this.processes, docs, {
       root,
@@ -18247,6 +18278,36 @@ ${note}`;
       this.store.artifact(runId, "diagnostic", logicalPath, canonical({ examples })),
     );
     return examples;
+  }
+  /** The documents (README and other Markdown) the run changed, as they are in its root. */
+  private changedDocs(runId: string, state: RuntimeState): { path: string; text: string }[] {
+    const root = runRoot(this.store.workspace, state);
+    return [...journaledBaseHashes(this.store, runId).keys()].filter(isDocFile).flatMap((path) => {
+      const absolute = workspacePath(root, path);
+      return existsSync(absolute) ? [{ path, text: readFileSync(absolute, "utf8") }] : [];
+    });
+  }
+  /**
+   * The prose and table defects of the documents the run changed (#2549): code spans that copy
+   * an escaped string literal of the spec instead of its value, and table code spans with a bare
+   * `|`. Evidence for the correctness reviewer, as the documented examples are; recorded per
+   * snapshot when there is any.
+   */
+  private documentedText(runId: string, state: RuntimeState, spec: Spec): DocTextProblem[] {
+    if (!state.snapshotId) return [];
+    const sources = [
+      ...spec.requirements.map((r) => r.text),
+      ...spec.criteria.flatMap((c) => [c.given, c.when, c.then]),
+    ].join("\n");
+    const problems = this.changedDocs(runId, state).flatMap((doc) =>
+      docTextProblems(doc.path, doc.text, sources),
+    );
+    const logicalPath = `reviews/doc-text-${state.snapshotId}.json`;
+    if (problems.length && !this.store.latestArtifact(runId, logicalPath))
+      this.store.transaction(() =>
+        this.store.artifact(runId, "diagnostic", logicalPath, canonical({ problems })),
+      );
+    return problems;
   }
   private async review(
     runId: string,
@@ -18288,6 +18349,9 @@ ${note}`;
     const references = state.graph ? fileReferences(state.graph) : {};
     const examples = reviewers.some((r) => r.dimension === "correctness")
       ? await this.documentedExamples(runId, state, policy, executables, signal)
+      : [];
+    const docText = reviewers.some((r) => r.dimension === "correctness")
+      ? this.documentedText(runId, state, reviewSpec)
       : [];
     const runReviewer = async (reviewer: Reviewer) => {
       // A review of this very snapshot that an earlier, interrupted round finished is kept.
@@ -18366,6 +18430,9 @@ ${note}`;
               ...(canRepro ? { reproTool: { name: "run_repro", programs: executables } } : {}),
               ...(reviewer.dimension === "correctness" && examples.length
                 ? { documentedExamples: examples }
+                : {}),
+              ...(reviewer.dimension === "correctness" && docText.length
+                ? { documentedText: docText }
                 : {}),
               ...(inventory ? { workspaceInventory: inventory } : {}),
               ...extra,
