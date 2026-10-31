@@ -737,8 +737,9 @@ export const PolicySchema = z
     /**
      * The host's restore of a prescribed row a delivered test file changed (row-restore.ts, #2522):
      * `on` lets the host replace the file line that takes a drifting row's place with the row as
-     * the request gives it, at the checks stage, and keep the edit when the writing task's required
-     * checks pass, instead of a session copying the row again. Absent means shadow (the decision is
+     * the request gives it, at the checks stage and at a row-file task's end (#2529, on the rows
+     * the task owns), and keep the edit when the writing task's required checks pass, instead of a
+     * session copying the row again. Absent means shadow (the decision is
      * recorded under `row-restores/`, the file stays as written), so stored policies keep their hash.
      */
     rowRestore: z.literal("on").optional(),

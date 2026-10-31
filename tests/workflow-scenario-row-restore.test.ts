@@ -7,16 +7,19 @@ import {
   type RowRestoreSite,
   restoredLine,
   rowRestoreDecision,
+  ownedRows,
   rowRestorePlan,
   rowRestores,
   respelledRunLine,
   rowRunRestores,
+  taskRowRestores,
 } from "../src/core/workflows/row-restore.js";
+import { rowBlockDrifts, rowBlockDriftSummary } from "../src/core/workflows/row-block-drift.js";
 import { runRoot } from "../src/core/workflows/worktree.js";
 import type { RunPolicy, TaskGraph } from "../src/core/workflows/schemas.js";
 import { newId } from "../src/core/workflows/store.js";
 import { replayRowRestores } from "../src/core/workflows/trace.js";
-import type { ExecutionRequest } from "../src/core/workflows/types.js";
+import type { ExecutionRequest, Task } from "../src/core/workflows/types.js";
 import { FixtureExecutor, fixturePolicy, workflowFixture } from "./helpers/workflow-fixture.js";
 
 // #2522: the host holds every row a request prescribes verbatim, yet a delivered test file that
@@ -762,4 +765,102 @@ describe("scenario: R82 tinyflate 82f19908, a parallel run blocked at the correc
     expect(runFile()).toBe(R82_RUN_FILE);
     expect(executor.briefs.at(-1)).toContain("differs from the criterion row by 21 bytes");
   }, 60000);
+});
+
+// #2529: #2522 restores only at the checks stage, after every task ran, so a row-file task whose
+// own task-scope rows check failed on a changed row went back to its session to copy the row
+// again before the checks stage restored it (R82 tinyflate deflate named row 8 drifting at T005
+// while the task kept going). The host now restores the rows a task owns at the task's end,
+// before its own checks, under the same `rowRestore` setting.
+const taskOf = (path: string, extra: Partial<Task> = {}) =>
+  ({ id: "T002", origin: "planned", writes: [{ path, action: "create" }], ...extra }) as unknown as Task;
+
+describe("taskRowRestores: the restore at a row-file task's end, on the rows it owns (#2529)", () => {
+  test("a whole task restores every changed row of its file; the record says task-end", () => {
+    const [planned] = taskRowRestores(requestOf(TINYFLATE), taskOf(DEFLATE_PATH), () => TINYFLATE.drifted, "on");
+    expect(planned?.record).toMatchObject({ at: "task-end", blocked: ["T002"], mode: "on", restore: [2, 3], verdict: "restored", tasks: ["T002"] });
+    expect(planned?.after).toBe(TINYFLATE.faithful);
+    const [shadow] = taskRowRestores(requestOf(TINYFLATE), taskOf(DEFLATE_PATH), () => TINYFLATE.drifted, "shadow");
+    expect(shadow?.record.verdict).toBe("would_restore");
+    expect(taskRowRestores(requestOf(TINYFLATE), taskOf(DEFLATE_PATH), () => TINYFLATE.faithful, "on")).toEqual([]);
+    // A task that does not write the row file has nothing to restore.
+    expect(taskRowRestores(requestOf(TINYFLATE), taskOf("src/deflate.c"), () => TINYFLATE.drifted, "on")).toEqual([]);
+  });
+
+  test("a row slice restores only its own rows", () => {
+    const rows = rowsOf(TINYFLATE);
+    const slice = (index: number, own: string[]) =>
+      taskOf(DEFLATE_PATH, { sizingSlice: { taskId: "T002", index, count: 2, share: own.length / rows.length, rows: own } });
+    const first = slice(0, rows.slice(0, 2));
+    const second = slice(1, rows.slice(2));
+    expect([...ownedRows(first, rows)]).toEqual([1, 2]);
+    expect([...ownedRows(second, rows)]).toEqual([3]);
+    const [one] = taskRowRestores(requestOf(TINYFLATE), first, () => TINYFLATE.drifted, "on");
+    expect(one?.record.restore).toEqual([2]);
+    expect(one?.record.sites.map((s) => s.row)).toEqual([2]);
+    // Row 3 is still the file's miscount: the other slice owns it.
+    expect(one?.after).toBe(deflateTest(300, 238));
+    const [two] = taskRowRestores(requestOf(TINYFLATE), second, () => TINYFLATE.drifted, "on");
+    expect(two?.record.restore).toEqual([3]);
+    expect(two?.after).toBe(deflateTest(303, 259));
+    // A slice that does not carry its rows owns none until the file is whole.
+    const bare = taskOf(DEFLATE_PATH, { sizingSlice: { taskId: "T002", index: 0, count: 2, share: 0.5 } });
+    expect(taskRowRestores(requestOf(TINYFLATE), bare, () => TINYFLATE.drifted, "on")).toEqual([]);
+  });
+
+  test("the drift's summary names the host when its restore is recorded", () => {
+    const [compared] = rowBlockDrifts(requestOf(SLOTPROMPT), graphOf(SLOT_PATH), () => SLOTPROMPT.drifted);
+    const drift = compared!.drifts[0]!;
+    expect(rowBlockDriftSummary(drift)).toContain("A repair task would restore the row");
+    expect(rowBlockDriftSummary(drift, "would_restore")).toContain("The host would restore the row from the request's text (rowRestore shadow)");
+    expect(rowBlockDriftSummary(drift, "would_restore")).not.toContain("A repair task");
+    expect(rowBlockDriftSummary(drift, "put_back")).toContain("put it back when a required check failed");
+    expect(rowBlockDriftSummary(drift, "declined")).toContain("The host cannot restore the row in place");
+  });
+});
+
+// The row-file task's own rows check: task-scope, so it runs at T002's end on the drifted file.
+const store = (fixture: { service: { store: { eventsOfType: (runId: string, type: string) => { payload: unknown }[] } } }, runId: string) =>
+  fixture.service.store
+    .eventsOfType(runId, "decision.would_stop")
+    .map((e) => e.payload as { reason: string; key: string; summary: string })
+    .filter((p) => p.reason === "row_block_drift");
+const ownRows = (shape: RestoreShape) => ({ check: { ...rowsCheck(shape), id: "own-rows", scope: "task" as const }, corrected: shape.faithful });
+
+describe("scenario: R82, a row-file task whose own rows check fails on a changed row (#2529)", () => {
+  for (const [language, shape] of Object.entries({ c: TINYFLATE, dart: SLOTPROMPT }))
+    test(`${language}: with rowRestore on the task finishes in one session with the host's restore at its end`, async () => {
+      const { final, file, sessions, records, wouldStops, fixture, runId } = await deliver(shape, true, ownRows(shape));
+      expect(final.status).toBe("completed");
+      // No second T002 session and no corrective copied the rows again.
+      expect(sessions).toEqual(["T001", "T002"]);
+      expect(file).toBe(shape.faithful);
+      expect(records[0]).toMatchObject({ at: "task-end", blocked: ["T002"], mode: "on", restore: shape.restored, verdict: "restored", checks: "passed" });
+      // The checks stage found the rows as given: nothing to restore, nothing drifts.
+      expect(records).toHaveLength(1);
+      expect(wouldStops).toEqual([]);
+      const replayed = replayRowRestores(fixture.service.store, runId);
+      expect(replayed.map((b) => [b.at, b.task, b.recorded, b.replayed])).toEqual([["task-end", "T002", shape.restored, shape.restored]]);
+    });
+
+  test("dart: shadow by default, the task end records would_restore and the file stays as written", async () => {
+    const { sessions, records, fixture, runId, wouldStops } = await deliver(SLOTPROMPT, false, ownRows(SLOTPROMPT));
+    expect(records[0]).toMatchObject({ at: "task-end", mode: "shadow", restore: [2], verdict: "would_restore", checks: null });
+    // The failing own check sent the task back to a session, as in R82.
+    expect(sessions.length).toBeGreaterThan(2);
+    expect(replayRowRestores(fixture.service.store, runId)[0]).toMatchObject({ at: "task-end", task: "T002", recorded: [2], replayed: [2] });
+    expect(wouldStops).toEqual([]);
+  });
+
+  test("c: the replay keys the task-end records apart from the checks stage's", async () => {
+    const { fixture, runId, wouldStops } = await deliver(TINYFLATE, false, undefined, { rowRunRestore: "off" });
+    const replayed = replayRowRestores(fixture.service.store, runId);
+    expect(replayed.find((b) => b.at === "task-end")).toMatchObject({ task: "T002", candidate: null, mode: "shadow", recorded: [2, 3] });
+    expect(replayed.find((b) => b.at === "checks")).toMatchObject({ task: null, mode: "shadow", recorded: [2, 3] });
+    // The checks stage's would-stop names the host's shadow restore, not a repair task.
+    const summaries = store(fixture, runId).filter((w) => w.key.startsWith(`${DEFLATE_PATH}#row-`));
+    expect(summaries.length).toBeGreaterThan(0);
+    for (const w of summaries) expect(w.summary).toContain("The host would restore the row");
+    expect(wouldStops.length).toBeGreaterThan(0);
+  });
 });
