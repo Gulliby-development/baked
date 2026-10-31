@@ -5808,7 +5808,28 @@ describe("prerequisite gate: a build gate run before configure in a fresh worktr
       }
       mkdirSync(join(root, "build"));
       writeFileSync(join(root, "build/CMakeCache.txt"), "");
-      for (const check of offered) expect(pendingPrerequisite(check, offered, root)).toBeNull();
+      for (const check of offered) {
+        const row = GATE_PREREQUISITES[check.id];
+        expect(pendingPrerequisite(check, offered, root)?.check.id ?? null, check.id).toBe(row && !row.marker ? row.checkId : null);
+      }
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+  // R83 pnmforge: `ctest` in a configured, unbuilt tree found no test executable (3 of 39), and after
+  // an edit ran the earlier build's binaries (#2565).
+  test("ctest before build: its prerequisite is the build, pending even in a built tree, and the build's is configure", () => {
+    const root = mkdtempSync(join(tmpdir(), "baked-prerequisite-cell-"));
+    try {
+      writeFileSync(join(root, "CMakeLists.txt"), "project(x C)\nenable_testing()\nadd_test(NAME t COMMAND t)\n");
+      const offered = detectGates(root).map((g) => g.check);
+      const ctest = offered.find((c) => c.id === "ctest");
+      const build = offered.find((c) => c.id === "cmake-build");
+      if (!ctest || !build) throw new Error("CMake gates not offered");
+      expect(pendingPrerequisite(ctest, offered, root)?.check.id).toBe("cmake-build");
+      expect(pendingPrerequisite(build, offered, root)?.check.id).toBe("cmake-configure");
+      mkdirSync(join(root, "build"));
+      writeFileSync(join(root, "build/CMakeCache.txt"), "");
+      expect(pendingPrerequisite(ctest, offered, root)?.check.id).toBe("cmake-build");
+      expect(pendingPrerequisite(build, offered, root)).toBeNull();
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
 });
