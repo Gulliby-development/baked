@@ -1345,6 +1345,28 @@ export const SETTINGS: readonly SettingDefinition[] = [
     ],
   },
   {
+    id: "quality.rowEditGuard",
+    page: "code-quality",
+    section: "Workflow runs",
+    label: "Keep a test's prescribed rows through a task's edits",
+    help: "When a task's edit of a test file makes a row the request prescribes no longer hold (a changed input, a changed expected output), the host puts the edit back and tells the task the rows are fixed by the request, so the task changes the source instead of fitting the test to its output.",
+    scopes: BOTH,
+    type: "enum",
+    default: "on",
+    options: [
+      {
+        value: "on",
+        label: "on",
+        help: "Put back an edit that changes a prescribed row the file held.",
+      },
+      {
+        value: "off",
+        label: "off",
+        help: "Let the edit stand; the checks stage still compares the rows.",
+      },
+    ],
+  },
+  {
     id: "quality.propertyTests",
     page: "code-quality",
     section: "Tests",

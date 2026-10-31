@@ -828,6 +828,15 @@ export const PolicySchema = z
      */
     rowRunRestore: z.literal("off").optional(),
     /**
+     * The guard on a session's edit of a prescribed-row test file (row-restore.ts `rowEditBreaks`,
+     * #2558): an edit after which a prescribed row the file held no longer holds (a changed input
+     * run, a changed expected output) is put back and the call answers that the request's rows are
+     * fixed. On by default (absent), as `rowRunRestore`: it only keeps the request's exact rows
+     * that the file already held, and an opt-in would not reach a blocked run whose policy is
+     * frozen. `off` lets the edit stand.
+     */
+    rowEditGuard: z.literal("off").optional(),
+    /**
      * The host's repair of a required check that fails before any change (baseline-fix.ts, #2215):
      * `on` lets the host run the check's fixer on the files it names, before the first task, when
      * no task writes them, git tracks them and every finding is marked correctable, and keep the

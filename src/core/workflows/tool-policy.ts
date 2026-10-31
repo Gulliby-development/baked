@@ -1,3 +1,4 @@
+import { readFileSync, writeFileSync } from "node:fs";
 import { isAbsolute, relative } from "node:path";
 import { workspacePath } from "../specs/validate.js";
 import { toolPhase, withToolPhases } from "../tools/tool-phase.js";
@@ -13,7 +14,9 @@ import {
 import { mutationLeaseFor, type WorkspaceLeases } from "./leases.js";
 import { isMcpToolName, toolListAllows } from "./mcp-grants.js";
 import { capturePreImage, createdByRunLineage, uncommittedEdits } from "./rollback.js";
+import { rowEditBreaks, rowEditBreakText } from "./row-restore.js";
 import type { AgentProfile, RunPolicy } from "./schemas.js";
+import { suppliedRows } from "./sizing.js";
 import {
   DEFAULT_STALL_SETTINGS,
   type StallSettings,
@@ -213,6 +216,22 @@ export class WorkflowToolPolicy {
     return path;
   }
   /**
+   * The request text when a session's edit of `path` is guarded for the prescribed rows it holds
+   * (#2558, `rowEditBreaks`): an `edit_file` or `multi_edit` of a test file the request prescribes
+   * rows for, unless the run's policy has `rowEditGuard: "off"`. Null otherwise.
+   */
+  private rowGuard(name: string, path: string): string | null {
+    if (!["edit_file", "multi_edit"].includes(name) || this.policy.rowEditGuard === "off")
+      return null;
+    try {
+      const state = this.store.state(this.runId);
+      const request = state.requestText || state.prompt;
+      return suppliedRows(request, [path]).size ? request : null;
+    } catch {
+      return null;
+    }
+  }
+  /**
    * The last of these writes when an earlier attempt of this task made it and nothing wrote the
    * path after it. A restart or continuation runs in a new attempt with an empty journal of its
    * own, so the file it inherits from its predecessor counts as one it made (#745).
@@ -410,10 +429,18 @@ export class WorkflowToolPolicy {
     );
     try {
       this.validate(name, args);
+      const rows = this.rowGuard(name, path);
+      const before = rows === null ? null : readTextOrNull(absolute);
       const result = await action();
+      // A session's edit that breaks a prescribed row the file held is put back (#2558).
+      const broken =
+        rows === null ? null : rowEditBreaks(rows, path, before, readTextOrNull(absolute));
+      if (broken && before !== null) writeFileSync(absolute, before);
       this.store.transaction(() =>
         this.store.finishFileEffect(this.runId, effectId, fileHash(absolute)),
       );
+      if (broken)
+        return { success: false, output: rowEditBreakText(broken), error: "prescribed_row" };
       return result;
     } catch (error) {
       if (error instanceof ToolDeadlineError) {
@@ -436,6 +463,15 @@ export class WorkflowToolPolicy {
       this.store.transaction(() => this.store.effectStatus(this.runId, effectId, "unknown"));
       throw error;
     }
+  }
+}
+
+/** A file's text, or null when it is missing or unreadable. */
+function readTextOrNull(path: string): string | null {
+  try {
+    return readFileSync(path, "utf8");
+  } catch {
+    return null;
   }
 }
 

@@ -104,6 +104,71 @@ export function rowRestoreDecision(sites: readonly RowRestoreSite[]): number[] {
 /** A whole-line restore: the line is the row as the request gives it. */
 const wholeLine = (s: RowRestoreSite) => s.line !== null && s.oneLine && s.sameHead && s.held;
 
+const QUOTED = /"((?:\\.|[^"\\])*)"/g;
+
+/**
+ * The file line `text` with each double-quoted literal replaced by the prescribed `row`'s literal
+ * in the same place, the rest of the line (its call, its separators, its unquoted values) kept
+ * (#2558): R82's `failed += row(ARGS("deflate", ...), "7878…", 0, "…\n", "");` for the request's
+ * `run "deflate" ... stdin="7878…" => 0 "…\n" ""`. Null when the two do not quote the same number
+ * of literals, or nothing changes.
+ */
+export function relitLine(text: string, row: string): string | null {
+  const want = [...row.matchAll(QUOTED)].map((m) => m[1] ?? "");
+  const have = [...text.matchAll(QUOTED)];
+  if (!want.length || want.length !== have.length) return null;
+  let out = "";
+  let at = 0;
+  for (const [i, m] of have.entries()) {
+    out += `${text.slice(at, m.index)}"${want[i]}"`;
+    at = (m.index ?? 0) + m[0].length;
+  }
+  out += text.slice(at);
+  return out === text ? null : out;
+}
+
+/** A session's edit of a prescribed-row test file that breaks a row the file held (#2558). */
+export interface RowEditBreak {
+  path: string;
+  /** The rows (from 1) held before the edit and not after. */
+  rows: number[];
+  /** The rows as the request gives them, cut, for the answer. */
+  texts: string[];
+}
+
+/**
+ * Whether an edit of `path` from `before` to `after` breaks a prescribed row the file held: a row
+ * of the request's block for the file (`suppliedRows`) that held before (`rowBlockDecision` of
+ * `measureRows`, the one comparison) and drifts after. A file the request prescribes no rows for,
+ * a new file, or rows that did not hold before are no break, so a task writing its rows is free.
+ * R82 tinyflate 82f19908 rev 51: after the host restored rows 7 and 8, T007's implementer edited
+ * them to 306/259, then 312/283 bytes, and changed their expected outputs to its encoder's.
+ */
+export function rowEditBreaks(
+  request: string,
+  path: string,
+  before: string | null,
+  after: string | null,
+): RowEditBreak | null {
+  if (before === null || after === null) return null;
+  const plainPath = path.trim().replace(/^(?:\.\/)+/, "");
+  const block = suppliedRows(request, [plainPath]).get(plainPath);
+  if (!block) return null;
+  const driftedBefore = new Set(rowBlockDecision(measureRows(block.lines, before)));
+  const rows = rowBlockDecision(measureRows(block.lines, after)).filter(
+    (n) => !driftedBefore.has(n),
+  );
+  if (!rows.length) return null;
+  const cut = (line: string) => (line.length > 160 ? `${line.slice(0, 157)}...` : line);
+  return { path: plainPath, rows, texts: rows.map((n) => cut(block.lines[n - 1] ?? "")) };
+}
+
+/** The answer to an edit `rowEditBreaks` put back. */
+export function rowEditBreakText(broken: RowEditBreak): string {
+  const which = broken.rows.map((n, i) => `row ${n} (${broken.texts[i]})`).join("; ");
+  return `Edit put back: it changed the request's prescribed ${broken.rows.length === 1 ? "row" : "rows"} of ${broken.path} that the file held: ${which}. The request fixes these rows, their inputs and expected outputs exactly; keep the test's literals as they are and change the source so it produces the expected output.`;
+}
+
 /**
  * The file line `text` with each long byte run of the prescribed `row` it counts differently
  * spelled again with the row's count, in the line's own notation (`respelled`: a hex string or a
@@ -278,12 +343,22 @@ export function rowRunRestores(
       .sites.filter((s) => rows.has(s.row))
       .map((site): RowRestoreSite => {
         if (site.line === null || wholeLine(site)) return site;
-        const fixed = respelledRunLine(lines[site.line - 1] ?? "", block.lines[site.row - 1] ?? "");
-        if (fixed === null) return { ...site, respelled: false };
-        const still = rowBlockDecision(
-          measureRows(block.lines, withLines(lines, new Map([[site.line, fixed]]))),
-        );
-        const held = !still.includes(site.row) && still.every((n) => drifting.has(n));
+        const line = site.line;
+        const text = lines[line - 1] ?? "";
+        const row = block.lines[site.row - 1] ?? "";
+        const holds = (fixed: string | null) => {
+          if (fixed === null) return false;
+          const still = rowBlockDecision(
+            measureRows(block.lines, withLines(lines, new Map([[line, fixed]]))),
+          );
+          return !still.includes(site.row) && still.every((n) => drifting.has(n));
+        };
+        // The run's count first; when the session also changed another literal of the row (R82
+        // rev 51: the expected output fitted to the code's), each literal back from the request
+        // by position (#2558).
+        const respelt = respelledRunLine(text, row);
+        const fixed = holds(respelt) ? respelt : relitLine(respelt ?? text, row);
+        const held = fixed !== null && holds(fixed);
         if (held) respellings.set(site.row, fixed);
         return { ...site, respelled: held };
       });
