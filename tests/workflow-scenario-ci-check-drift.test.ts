@@ -332,3 +332,49 @@ describe("scenario: a run delivers a README whose `bun run test` runs the `bun t
     expect((await fixture.service.get(run.runId)).status).toBe("completed");
   });
 });
+
+// Bench round 83, pnmforge docs (#2567): the README documented `clang-format -i src/*.cpp ...` (the
+// check's fixer) and `clang-format --dry-run --Werror src/*.cpp src/*.hpp tests/*.cpp tests/*.hpp`
+// (the check, with globs where the check lists 14 files): 2 of 2 `ci_check_drift` records false.
+describe("ciCheckDrift: a check's fixer form and globs over its files are no drift (#2567)", () => {
+  const readme = (...lines: string[]) => `# Project\n\n\`\`\`sh\n${lines.join("\n")}\n\`\`\`\n`;
+  const FILES = ["src/codec.cpp", "src/codec.hpp", "src/main.cpp", "tests/harness.hpp", "tests/scaffold_test.cpp"];
+  const clangFormat = { ...check("clang-format", `clang-format --dry-run --Werror ${FILES.join(" ")}`), fix: { executable: "clang-format", args: ["-i"] } };
+
+  test("C++ pnmforge: the fixer with globs and the check with globs over its files record nothing", () => {
+    const drift = ciCheckDrift(
+      [{ path: "README.md", text: readme("clang-format -i src/*.cpp src/*.hpp tests/*.cpp tests/*.hpp", "clang-format --dry-run --Werror src/*.cpp src/*.hpp tests/*.cpp tests/*.hpp") }],
+      [clangFormat],
+    );
+    expect(drift).toEqual([]);
+  });
+
+  test("a glob that misses a file the check lists still records", () => {
+    const drift = ciCheckDrift([{ path: "README.md", text: readme("clang-format --dry-run --Werror src/*.cpp src/*.hpp") }], [clangFormat]);
+    expect(drift.map((d) => [d.check?.id, d.missing])).toEqual([["clang-format", ["src/*.cpp", "src/*.hpp"]]]);
+  });
+
+  test("a recursive glob and a folder cover the files below them", () => {
+    expect(ciCheckDrift([{ path: "README.md", text: readme("clang-format --dry-run --Werror src/**/*.?pp tests/") }], [clangFormat])).toEqual([]);
+  });
+
+  const PAIRS: [string, ReturnType<typeof check> & { fix: { executable: string; args: string[] } }, string][] = [
+    ["Go", { ...check("gofmt", "gofmt -l ."), fix: { executable: "go", args: ["fmt", "./..."] } }, "go fmt ./..."],
+    ["Python", { ...check("ruff-format", "ruff format --check"), fix: { executable: "ruff", args: ["format"] } }, "ruff format"],
+    ["JavaScript", { ...check("prettier", "prettier --check ."), fix: { executable: "prettier", args: ["--write"] } }, "npx prettier --write ."],
+    ["TypeScript", { ...check("biome", "biome check"), fix: { executable: "biome", args: ["check", "--write"] } }, "bunx biome check --write ."],
+    ["Shell", { ...check("shfmt", "shfmt -d scripts/build.sh scripts/test.sh"), fix: { executable: "shfmt", args: ["-w"] } }, "shfmt -w scripts/*.sh"],
+    ["Rust", { ...check("fmt", "cargo fmt --all -- --check"), fix: { executable: "cargo", args: ["fmt"] } }, "cargo fmt"],
+    ["C#", { ...check("format", "dotnet format --verify-no-changes"), fix: { executable: "dotnet", args: ["format"] } }, "dotnet format"],
+  ];
+  for (const [language, gate, write] of PAIRS)
+    test(`${language}: the README's write form "${write}" is the check's fixer, not a drift`, () => {
+      expect(ciCheckDrift([{ path: "README.md", text: readme(write) }], [gate])).toEqual([]);
+    });
+
+  test("a write form with a flag neither the check nor its fixer has still records", () => {
+    const ruff = { ...check("ruff-format", "ruff format --check"), fix: { executable: "ruff", args: ["format"] } };
+    const drift = ciCheckDrift([{ path: "README.md", text: readme("ruff format --line-length 80") }], [ruff]);
+    expect(drift.map((d) => d.missing)).toEqual([["--line-length", "80"]]);
+  });
+});

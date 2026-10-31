@@ -7,6 +7,7 @@ import { evaluateAutoApproval, planScopeAdvice } from "../src/core/workflows/aut
 import { proseAfterRefusalScenario, refusalKinds } from "./helpers/prose-after-refusal-scenario.js";
 import { runScanner } from "../src/core/workflows/quality/rules.js";
 import { suppliedLineNumbers } from "../src/core/workflows/supplied-drift.js";
+import { ciCheckDrift } from "../src/core/workflows/ci-check-drift.js";
 import { upstreamSymbolGaps } from "../src/core/workflows/initiatives/upstream-symbols.js";
 import { GATE_PREREQUISITES, pendingPrerequisite } from "../src/core/workflows/gate-prerequisites.js";
 import { suspendClock } from "./helpers/suspend-clock.js";
@@ -5831,6 +5832,28 @@ describe("prerequisite gate: a build gate run before configure in a fresh worktr
       writeFileSync(join(root, "build/CMakeCache.txt"), "");
       expect(pendingPrerequisite(ctest, offered, root)?.check.id).toBe("cmake-build");
       expect(pendingPrerequisite(build, offered, root)).toBeNull();
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+});
+
+describe("ci check drift gate: a README's fixer form and globs over the check's files (#2567)", () => {
+  // R83 pnmforge docs: `clang-format -i src/*.cpp ...` and `clang-format --dry-run --Werror src/*.cpp ...`
+  // against the detected check listing its files were 2 false drifts.
+  test("the detected clang-format gate: its fixer and its globbed form are no drift, a narrower glob is", () => {
+    const root = mkdtempSync(join(tmpdir(), "baked-drift-cell-"));
+    try {
+      writeFileSync(join(root, ".clang-format"), "BasedOnStyle: LLVM\n");
+      writeFileSync(join(root, "CMakeLists.txt"), "project(x CXX)\n");
+      for (const path of ["src/codec.cpp", "src/codec.hpp", "tests/scaffold_test.cpp"]) {
+        mkdirSync(join(root, path, ".."), { recursive: true });
+        writeFileSync(join(root, path), "int x;\n");
+      }
+      const gate = detectGates(root).map((g) => g.check).find((c) => c.id === "clang-format");
+      if (!gate) throw new Error("clang-format gate not detected");
+      const readme = (line: string) => [{ path: "README.md", text: `\`\`\`sh\n${line}\n\`\`\`\n` }];
+      expect(ciCheckDrift(readme("clang-format -i src/*.cpp src/*.hpp tests/*.cpp"), [gate])).toEqual([]);
+      expect(ciCheckDrift(readme("clang-format --dry-run --Werror src/*.cpp src/*.hpp tests/*.cpp"), [gate])).toEqual([]);
+      expect(ciCheckDrift(readme("clang-format --dry-run --Werror src/*.cpp"), [gate])).toHaveLength(1);
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
 });

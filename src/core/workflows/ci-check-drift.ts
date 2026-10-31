@@ -379,6 +379,54 @@ export interface CiCheckDrift {
 const words = (check: Pick<Check, "executable" | "args">): string =>
   [check.executable, ...check.args].join(" ");
 
+/** A word with glob syntax: `src/*.cpp`, `tests/**\/*.py`, `src/?.c`. */
+const GLOB = /[*?[]/;
+/** A file or folder argument rather than a flag or a subcommand word: a path, a glob or a file name. */
+const isPathWord = (word: string) =>
+  !word.startsWith("-") && (GLOB.test(word) || /[/\\]/.test(word) || /\.[A-Za-z]\w*$/.test(word));
+/** A glob as a matcher of `/`-separated paths: `**` crosses folders, `*` and `?` do not. */
+function globMatcher(glob: string): RegExp {
+  let out = "";
+  const text = glob.replace(/^\.\//, "");
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i] ?? "";
+    if (c === "*" && text[i + 1] === "*") {
+      out += text[i + 2] === "/" ? "(?:.*/)?" : ".*";
+      i += text[i + 2] === "/" ? 2 : 1;
+    } else if (c === "*") out += "[^/]*";
+    else if (c === "?") out += "[^/]";
+    else out += c.replace(/[.+^${}()|[\]\\]/g, "\\$&");
+  }
+  return new RegExp(`^${out}$`);
+}
+
+/**
+ * The file and glob words of a command that cover the paths a check lists one by one (#2567): R83
+ * pnmforge's README ran `clang-format --dry-run --Werror src/*.cpp src/*.hpp tests/*.cpp
+ * tests/*.hpp` while the check listed its files at detection, and the globs read as four missing
+ * words. Covered when every listed path matches a glob or a path of the command; the command may
+ * name more files (the files written later have their own `-written` checks). Returns the
+ * command's path words to drop and the check's paths they cover, or null when a listed path is
+ * not covered, so the globs stay a drift.
+ */
+function coveredPaths(
+  command: readonly string[],
+  listed: readonly string[],
+): { drop: string[]; covered: string[] } | null {
+  const paths = command.filter(isPathWord);
+  if (!paths.some((word) => GLOB.test(word))) return null;
+  const files = listed.filter((word) => isPathWord(word) && !GLOB.test(word));
+  if (!files.length) return null;
+  const norm = (path: string) => path.replace(/\\/g, "/").replace(/^\.\//, "").replace(/\/+$/, "");
+  const matchers = paths.map((word) =>
+    GLOB.test(word)
+      ? globMatcher(norm(word))
+      : new RegExp(`^${norm(word).replace(/[.+^${}()|[\]\\*?]/g, "\\$&")}(?:/.*)?$`),
+  );
+  const uncovered = files.filter((file) => !matchers.some((m) => m.test(norm(file))));
+  return uncovered.length ? null : { drop: paths, covered: files };
+}
+
 /**
  * Each gate command of the changed files that the configured checks do not run as written: a
  * check runs its tool without some of its words (a flag, a scope such as `--all-targets`, `-race`,
@@ -394,7 +442,10 @@ const words = (check: Pick<Check, "executable" | "args">): string =>
  */
 export function ciCheckDrift(
   files: readonly { path: string; text: string }[],
-  checks: readonly (Pick<Check, "id" | "executable" | "args"> & { cwd?: string })[],
+  checks: readonly (Pick<Check, "id" | "executable" | "args"> & {
+    cwd?: string;
+    fix?: Check["fix"];
+  })[],
   scripts: (dir: string) => ScriptTables = () => ({}),
 ): CiCheckDrift[] {
   const tablesOf = new Map<string, ScriptTables>();
@@ -409,7 +460,17 @@ export function ciCheckDrift(
   };
   const configured = checks.flatMap((check) => {
     const parsed = toolCommand(check.executable, check.args);
-    return parsed ? [{ check, parsed, resolved: resolved(parsed, tables(check.cwd ?? ".")) }] : [];
+    if (!parsed) return [];
+    const own = { check, parsed, resolved: resolved(parsed, tables(check.cwd ?? ".")) };
+    // A check's fixer is the same gate in write mode (`clang-format -i`, `gofmt -w`, `cargo fmt`):
+    // a README that documents it documents the check's fix, not a drift from it (#2567). It runs
+    // on the check's files, so it is compared with them.
+    if (!check.fix) return [own];
+    const files = check.args.filter(isPathWord);
+    const fixed = toolCommand(check.fix.executable, [...check.fix.args, ...files]);
+    if (!fixed) return [own];
+    const fixer = { check, parsed: fixed, resolved: resolved(fixed, tables(check.cwd ?? ".")) };
+    return [own, fixer];
   });
   const opaqueCheck = configured.some((c) => c.resolved.opaque);
   const root = tables(".");
@@ -448,9 +509,15 @@ export function ciCheckDrift(
       }
       const ranked = same
         .map((c) => {
-          const have = [...c.cmp.words];
+          let have = [...c.cmp.words];
+          let mine = compared.words;
+          const cover = coveredPaths(mine, have);
+          if (cover) {
+            mine = mine.filter((word) => !cover.drop.includes(word));
+            have = have.filter((word) => !cover.covered.includes(word));
+          }
           const missing: string[] = [];
-          for (const word of compared.words) {
+          for (const word of mine) {
             const at = have.indexOf(word);
             if (at < 0) missing.push(word);
             else have.splice(at, 1);
