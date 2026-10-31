@@ -2681,13 +2681,16 @@ export class NativeWorkflowService implements WorkflowService {
     if (from !== baseCommit) await moveRunWorktree(this.workspace, state.worktree, baseCommit);
     // Upstream specs of the features accepted since the provisional base (#2046); idempotent.
     await placeBaseFiles(this.workspace, state.worktree, baseCommit, baseFiles);
-    // A planned create of a file an accepted upstream feature wrote since the plan (#2514).
+    // A planned create of a file an accepted upstream feature wrote since the plan (#2514), or a
+    // planned modify of one it removed (#2517).
     const stale = await releasedCreatesBetween(this.workspace, state, from, baseCommit);
     return this.store.command(runId, command, body, () => {
       const current = this.store.state(runId);
       if (!current.worktree || !current.planAhead)
         throw new WorkflowFault("STALE_DECISION", "The run changed during its release");
       const released = recordReleasedCreates(this.store, runId, current, stale);
+      const modified = released.filter((r) => r.action !== "create");
+      const created = released.filter((r) => r.action === "create");
       current.worktree = { ...current.worktree, baseHead: baseCommit };
       current.worktreeBase = baseCommit;
       current.baseFiles = baseFiles;
@@ -2702,7 +2705,8 @@ export class NativeWorkflowService implements WorkflowService {
           from,
           to: baseCommit,
           requests: held.map((r) => r.id),
-          ...(released.length ? { modified: released } : {}),
+          ...(modified.length ? { modified } : {}),
+          ...(created.length ? { created } : {}),
         }),
       );
       for (const request of held)
