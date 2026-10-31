@@ -9,7 +9,10 @@ import {
   rowRestoreDecision,
   rowRestorePlan,
   rowRestores,
+  respelledRunLine,
+  rowRunRestores,
 } from "../src/core/workflows/row-restore.js";
+import { runRoot } from "../src/core/workflows/worktree.js";
 import type { RunPolicy, TaskGraph } from "../src/core/workflows/schemas.js";
 import { newId } from "../src/core/workflows/store.js";
 import { replayRowRestores } from "../src/core/workflows/trace.js";
@@ -399,7 +402,8 @@ describe("scenario: R82, a run delivers a prescribed row file with rows changed 
   test("c: with rowRestore shadow, the correction's start restores the miscounted runs and no session opens for them (#2543)", async () => {
     const { final, sessions, records, file } = await deliver(TINYFLATE, false);
     expect(records[0]).toMatchObject({ mode: "shadow", verdict: "would_restore" });
-    expect(records.find((r) => (r as { at?: string }).at === "task")).toMatchObject({ mode: "on", restore: [2, 3], verdict: "restored" });
+    // Restored before the correction runs: by the drive's comparison of every row file (#2551).
+    expect(records.find((r) => (r as { at?: string }).at === "drive")).toMatchObject({ mode: "on", restore: [2, 3], verdict: "restored" });
     expect(file).toBe(TINYFLATE.faithful);
     expect(sessions).toEqual(["T001", "T002"]);
     expect(final.status).toBe("completed");
@@ -582,4 +586,180 @@ describe("scenario: R82 tinyflate, a run blocked invalid_output at a task resume
     await expect(fixture.resume(runId)).rejects.toThrow();
     expect(count()).toBe(1);
   });
+});
+
+// #2551: the #2543 restore never ran on the real run. R82 tinyflate deflate 82f19908's request
+// gives its rows as `run "deflate" "--level" "fixed" "--hex" stdin="7878…" => 0 "…\n" ""`, and
+// `tests/deflate_match_test.c` spells them `failed += row(ARGS("deflate", …), "7878…", 0, …);`:
+// the whole-line restore needs the request's notation (`sameHead`), so both miscounted rows were
+// declined, the resume recorded nothing, and T007 ran as a parallel worker (two writers), whose
+// session start had no restore. The host now rewrites only the miscounted run, in the file's own
+// notation (`respelledRunLine`), and the drive compares every row file before the workers start.
+const RUN_ROWS = [
+  'run "deflate" "--level" "fixed" "--hex" stdin="61616161" => 0 "4b040200\\n" ""',
+  `run "deflate" "--level" "fixed" "--hex" stdin="${hexRun("78", 300)}" => 0 "abaa50120400\\n" ""`,
+  `run "deflate" "--level" "fixed" "--hex" stdin="${hexRun("71", 259)}" => 0 "2b2c1c050400\\n" ""`,
+];
+const runRequest = ["Build it.", "", "```text", `deflate_match_test in ${DEFLATE_PATH} (3 rows)`, ...RUN_ROWS, "```", ""].join("\n");
+const byteOf = (b: string) => String.fromCharCode(Number.parseInt(b, 16));
+/** Spellings of a long repeated-byte input a test may use, by name (AGENTS.md: a new one adds its case). */
+const RUN_INPUTS: Record<string, (b: string, n: number) => string> = {
+  "c hex string (R82)": (b, n) => `"${hexRun(b, n)}"`,
+  "c upper-case hex": (b, n) => `"${hexRun(b.toUpperCase(), n)}"`,
+  "c byte list": (b, n) => `(const unsigned char[]){${Array.from({ length: n }, () => `0x${b}`).join(", ")}}`,
+  "c memset": (b, n) => `memset(buf, 0x${b}, ${n})`,
+  "python repeat": (b, n) => `"${byteOf(b)}" * ${n}`,
+  "hex repeat": (b, n) => `"${b}" * ${n}`,
+  "typescript repeat": (b, n) => `"${byteOf(b)}".repeat(${n})`,
+  "rust vec": (b, n) => `vec![0x${b}; ${n}]`,
+  "go strings.Repeat": (b, n) => `strings.Repeat("${byteOf(b)}", ${n})`,
+};
+const runTest = (spell: (b: string, n: number) => string, x: number, q: number) =>
+  [
+    '#include "harness.h"',
+    "",
+    "int main(void) {",
+    "    int failed = 0;",
+    '    failed += row(ARGS("deflate", "--level", "fixed", "--hex"), "61616161", 0, "4b040200\\n", "");',
+    `    failed += row(ARGS("deflate", "--level", "fixed", "--hex"), ${spell("78", x)}, 0, "abaa50120400\\n", "");`,
+    `    failed += row(ARGS("deflate", "--level", "fixed", "--hex"), ${spell("71", q)}, 0, "2b2c1c050400\\n", "");`,
+    "    return failed != 0;",
+    "}",
+    "",
+  ].join("\n");
+const R82_RUN_FILE = runTest(RUN_INPUTS["c hex string (R82)"]!, 303, 238);
+const R82_RUN_FAITHFUL = runTest(RUN_INPUTS["c hex string (R82)"]!, 300, 259);
+
+describe("rowRunRestores: a miscounted run in another row notation than the request's (#2551)", () => {
+  for (const [name, spell] of Object.entries(RUN_INPUTS))
+    test(`${name}: the run is respelled with the row's count, the rest of the line kept`, () => {
+      const graph = graphOf(DEFLATE_PATH, "T005");
+      const [found] = rowRunRestores(runRequest, graph, () => runTest(spell, 303, 238), "on");
+      expect(found?.record.sites.map((s) => [s.row, s.line, s.sameHead, s.respelled])).toEqual([
+        [2, 6, false, true],
+        [3, 7, false, true],
+      ]);
+      expect(found?.record).toMatchObject({ restore: [2, 3], verdict: "restored" });
+      expect(found?.after).toBe(runTest(spell, 300, 259));
+      // The replay decides the record's flags as recorded.
+      expect(rowRestoreDecision(found?.record.sites ?? [])).toEqual([2, 3]);
+    });
+
+  test("the R82 file: before #2551 the sites were declined (sameHead false, no respelled flag)", () => {
+    const [found] = rowRunRestores(runRequest, graphOf(DEFLATE_PATH, "T005"), () => R82_RUN_FILE, "shadow");
+    const withoutRespell = (found?.record.sites ?? []).map(({ respelled: _, ...site }) => site);
+    expect(rowRestoreDecision(withoutRespell)).toEqual([]);
+    expect(found?.record.verdict).toBe("would_restore");
+  });
+
+  test("respelledRunLine leaves a line with no miscounted run, or a run it cannot rewrite exactly", () => {
+    expect(respelledRunLine('row("61616161")', RUN_ROWS[0]!)).toBeNull();
+    // Two copies of the same miscounted spelling on one line: which one is the row's is unknown.
+    const twice = `row("${hexRun("78", 303)}", "${hexRun("78", 303)}")`;
+    expect(respelledRunLine(twice, RUN_ROWS[1]!)).toBeNull();
+  });
+});
+
+/** The R82 parallel run: T002 writes the row file, T003 (src and the test) blocks while it miscounts. */
+class ParallelRunExecutor extends FixtureExecutor {
+  sessions: string[] = [];
+  briefs: string[] = [];
+  constructor(private workspace: string, private checkId: string) {
+    super(workspace);
+  }
+  override async execute(request: ExecutionRequest) {
+    const result = await super.execute(request);
+    if (request.profile.output === "plan") {
+      const graph = (result.output as { taskGraph: TaskGraph }).taskGraph;
+      const first = graph.tasks[0]!;
+      graph.tasks.push(
+        { ...first, id: "T002", title: "Deflate match rows", dependsOn: ["T001"], writes: [{ path: DEFLATE_PATH, action: "create" }], checkIds: [] },
+        { ...first, id: "T003", title: "Deflate matcher", dependsOn: ["T002"], writes: [{ path: SRC_PATH, action: "create" }, { path: DEFLATE_PATH, action: "modify" }], checkIds: [this.checkId] },
+      );
+    }
+    if (request.profile.output !== "implementation") return result;
+    const id = request.task?.id ?? "";
+    const root = request.root ?? this.workspace;
+    this.sessions.push(id);
+    if (id === "T001") writeFileSync(join(root, "value.txt"), "ready");
+    if (id === "T002") {
+      mkdirSync(dirname(join(root, DEFLATE_PATH)), { recursive: true });
+      writeFileSync(join(root, DEFLATE_PATH), R82_RUN_FILE);
+    }
+    if (id !== "T003") return result;
+    this.briefs.push(request.prompt);
+    const test = readFileSync(join(root, DEFLATE_PATH), "utf8");
+    if (test === R82_RUN_FAITHFUL) {
+      mkdirSync(dirname(join(root, SRC_PATH)), { recursive: true });
+      writeFileSync(join(root, SRC_PATH), "int deflate(void) { return 0; }\n");
+      return result;
+    }
+    return { ...result, output: { schemaVersion: 1, taskId: id, outcome: "blocked", summary: BLOCKED_SUMMARY, evidenceIds: [], unresolved: [BLOCKED_SUMMARY] } };
+  }
+}
+
+describe("scenario: R82 tinyflate 82f19908, a parallel run blocked at the corrective resumes onto the request's counts (#2551)", () => {
+  async function parallelBlocked(extra: Partial<RunPolicy> = {}) {
+    const check = {
+      id: "deflate-rows",
+      executable: "bun",
+      args: ["-e", `const t = await Bun.file(${JSON.stringify(DEFLATE_PATH)}).text(); if (!t.includes('"${hexRun("78", 300)}"') || !t.includes('"${hexRun("71", 259)}"')) { console.log("${DEFLATE_PATH}:11: row failed"); process.exit(1); }`],
+      cwd: ".",
+      timeoutMs: 10000,
+      required: true,
+      scope: "task" as const,
+      envNames: [],
+      writes: [],
+    };
+    const policy: RunPolicy = { ...fixturePolicy, checks: [...fixturePolicy.checks, check], executionMode: "worktree", maxConcurrentWriters: 2, ...extra };
+    let executor: ParallelRunExecutor | undefined;
+    const fixture = workflowFixture({ policy, executor: (root) => (executor = new ParallelRunExecutor(root, check.id)) });
+    cleanups.push(fixture.dispose);
+    for (const args of [["init"], ["config", "user.email", "fixture@example.invalid"], ["config", "user.name", "Fixture"]])
+      expect(Bun.spawnSync(["git", ...args], { cwd: fixture.root }).exitCode).toBe(0);
+    writeFileSync(join(fixture.root, "README.md"), "# Fixture\n");
+    expect(Bun.spawnSync(["git", "add", "README.md"], { cwd: fixture.root }).exitCode).toBe(0);
+    expect(Bun.spawnSync(["git", "-c", "core.hooksPath=", "commit", "-m", "Fixture"], { cwd: fixture.root }).exitCode).toBe(0);
+    const { service } = fixture;
+    const run = await service.start({ commandId: newId(), featureId: "fixture", workflowId: "sdd", prompt: `Create ready value.\n\n${runRequest}`, ownerLabel: "test", policy, executionMode: "worktree", maxConcurrentWriters: 2 });
+    const drive = () => service.drive(run.runId, new AbortController().signal);
+    let current = await drive();
+    for (let i = 0; i < 8 && current.status === "waiting"; i++) {
+      if (service.store.requests(run.runId).find((r) => r.status === "pending")?.kind !== "approval") break;
+      await fixture.approve(run.runId);
+      current = await drive();
+    }
+    const runFile = () => readFileSync(join(runRoot(fixture.root, service.store.state(run.runId)), DEFLATE_PATH), "utf8");
+    const records = (prefix: string) =>
+      service.store
+        .artifacts(run.runId)
+        .filter((a) => a.logical_path === `${prefix}${DEFLATE_PATH}.json`)
+        .map((a) => JSON.parse(service.store.readArtifact(run.runId, a.id)) as RowRestoreRecord & { at?: string; blocked?: string[] });
+    return { fixture, runId: run.runId, executor: executor!, drive, runFile, records };
+  }
+
+  test("blocked invalid_output at T003 as in R82, resumed: the rows are recorded, restored before the worker starts, and T003 completes", async () => {
+    const { fixture, runId, executor, drive, runFile, records } = await parallelBlocked();
+    const { service } = fixture;
+    expect(service.store.run(runId)).toMatchObject({ status: "blocked", reason: "invalid_output" });
+    expect(runFile()).toBe(R82_RUN_FILE);
+    // T002 wrote the file after the drive's comparison: T003's worker brief names the miscount.
+    expect(executor.briefs[0]).toContain("the test's input literal differs from the criterion row by 3 bytes");
+    await fixture.resume(runId);
+    expect(records(`${ROW_RESTORE_DIR}resume/`).at(-1)).toMatchObject({ at: "resume", restore: [2, 3], blocked: ["T003"] });
+    const final = await drive();
+    expect(final.status).toBe("completed");
+    expect(runFile()).toBe(R82_RUN_FAITHFUL);
+    expect(records(ROW_RESTORE_DIR).find((r) => r.verdict === "restored")).toMatchObject({ at: "drive", mode: "on", restore: [2, 3] });
+    expect(executor.sessions.filter((s) => s === "T003")).toHaveLength(2);
+  }, 60000);
+
+  test("with rowRunRestore off the resumed worker's brief still names both miscounts", async () => {
+    const { fixture, runId, executor, drive, runFile } = await parallelBlocked({ rowRunRestore: "off" });
+    await fixture.resume(runId);
+    await drive();
+    expect(fixture.service.store.run(runId)).toMatchObject({ status: "blocked", reason: "invalid_output" });
+    expect(runFile()).toBe(R82_RUN_FILE);
+    expect(executor.briefs.at(-1)).toContain("differs from the criterion row by 21 bytes");
+  }, 60000);
 });

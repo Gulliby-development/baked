@@ -1207,6 +1207,17 @@ const PLAN_BASE = "revisions/base/plan.json";
 const FINDING_FILES = "finding-files.json";
 /** Largest finding file kept for the comment-only comparison. */
 const FINDING_FILE_MAX = 1_000_000;
+/** A session's brief on the long runs of prescribed rows its test files miscount (#2543, #2551). */
+function rowRunContext(drifts: readonly RowBlockDrift[]): Record<string, unknown> {
+  return drifts.length
+    ? {
+        rowRuns: {
+          findings: drifts.map(rowRunText),
+          note: "A test file holds a prescribed row whose long byte run it counts differently from the request. Correct the test's literal to the row as the request gives it; the source is not what differs.",
+        },
+      }
+    : {};
+}
 /** A file's text, or null when it is missing, unreadable or larger than `FINDING_FILE_MAX`. */
 function readText(path: string): string | null {
   try {
@@ -8911,14 +8922,7 @@ ${note}`;
               ...this.failedFixers(runId, task),
               ...this.misquoteContinue(runId, state, task.id),
               ...this.exactText(runId, state, policy, task),
-              ...(rowRuns.length
-                ? {
-                    rowRuns: {
-                      findings: rowRuns.map(rowRunText),
-                      note: "A test file holds a prescribed row whose long byte run it counts differently from the request. Correct the test's literal to the row as the request gives it; the source is not what differs.",
-                    },
-                  }
-                : {}),
+              ...rowRunContext(rowRuns),
               ...(focus.files.length
                 ? {
                     correctionFocus: {
@@ -10349,6 +10353,7 @@ ${note}`;
         ...this.failedFixers(runId, task),
         ...this.misquoteContinue(runId, state, task.id),
         ...this.exactText(runId, state, policy, task),
+        ...this.rowRunNote(state, task),
       };
       const needed = reserveTokens(
         this.estimatePrompt(runId, state, policy, profile, extra),
@@ -12081,8 +12086,8 @@ ${note}`;
    * outside the checks stage (#2543, `rowRunRestores`): R82 tinyflate deflate 82f19908 blocked
    * `invalid_output` at T007 on `tests/deflate_match_test.c` and, resumed, blocked again on the
    * same literal, because the checks stage's comparison and restore never ran before the task's
-   * session. `drive`: before the task-graph stage drives its tasks, the files a resume recorded
-   * (`row-restores/resume/`). `task`: at the start of `task`'s session, the test files it writes
+   * session. `drive`: before the task-graph stage drives its tasks, every row file the graph
+   * writes (#2551: a parallel run's workers start in their own worktrees, after it). `task`: at the start of `task`'s session, the test files it writes
    * and the files a resume recorded for it. Each restore is the checks stage's (`writeRestoredRows`,
    * kept when the writing task's required checks pass), on by default; `rowRunRestore: "off"`
    * records it in shadow. Recorded under `row-restores/<path>.json`; a file whose last record has
@@ -12113,8 +12118,10 @@ ${note}`;
         }
       });
     const own = task ? task.writes.filter((w) => w.action !== "delete").map((w) => w.path) : [];
-    const paths = [...new Set([...own, ...resumed])];
-    if (!paths.length) return [];
+    // The drive compares every row file the graph writes, so the workers of a parallel run, whose
+    // sessions start in their own worktrees, take the restored file too (R82 82f19908 T007, #2551).
+    const paths = task ? [...new Set([...own, ...resumed])] : undefined;
+    if (paths && !paths.length) return [];
     const mode = policy.rowRunRestore === "off" ? "shadow" : "on";
     const root = runRoot(this.store.workspace, state);
     let planned: ReturnType<typeof rowRunRestores>;
@@ -12167,6 +12174,29 @@ ${note}`;
     // A correction whose failing checks the restore fixed reads a new snapshot (`correctionPassing`).
     if (kept) await this.snapshot(runId, state, policy, signal);
     return left;
+  }
+  /**
+   * A parallel worker's brief naming the long runs of prescribed rows that the test files it writes
+   * still count differently in the run root (#2551): its session starts in its own worktree, where
+   * the drive's restore came before it. Records nothing; a failure to read says nothing.
+   */
+  private rowRunNote(state: RuntimeState, task: Task): Record<string, unknown> {
+    const graph = state.rootGraph ?? state.graph;
+    if (!graph || !task.writes.length) return {};
+    try {
+      const root = runRoot(this.store.workspace, state);
+      return rowRunContext(
+        rowRunRestores(
+          state.requestText || state.prompt,
+          graph,
+          (path) => readText(workspacePath(root, path)),
+          "shadow",
+          task.writes.map((w) => w.path),
+        ).flatMap((r) => r.drifts),
+      );
+    } catch {
+      return {};
+    }
   }
   private async runTaskCheck(
     runId: string,
