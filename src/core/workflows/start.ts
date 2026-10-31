@@ -274,6 +274,7 @@ export async function prepareStart(
     sourceDefectRoute: policySourceDefectRoute,
     rowRunRoute: policyRowRunRoute,
     rowRunRestore: policyRowRunRestore,
+    rowEditGuard: policyRowEditGuard,
     baselineFix: policyBaselineFix,
     propertyTests: policyPropertyTests,
     allowOverlappingWrites,
@@ -334,6 +335,8 @@ export async function prepareStart(
   const rowRunRoute = policyRowRunRoute ?? config.quality?.rowRunRoute ?? "off";
   // On by default (#2543): only `off` is kept, so stored policies keep their hash.
   const rowRunRestore = policyRowRunRestore ?? config.quality?.rowRunRestore ?? "on";
+  // On by default (#2558): only `off` is kept, so stored policies keep their hash.
+  const rowEditGuard = policyRowEditGuard ?? config.quality?.rowEditGuard ?? "on";
   const baselineFix = policyBaselineFix ?? config.quality?.baselineFix ?? "off";
   const propertyTests =
     request.propertyTests ??
@@ -402,6 +405,7 @@ export async function prepareStart(
     ...(sourceDefectRoute === "on" ? { sourceDefectRoute } : {}),
     ...(rowRunRoute === "on" ? { rowRunRoute } : {}),
     ...(rowRunRestore === "off" ? { rowRunRestore } : {}),
+    ...(rowEditGuard === "off" ? { rowEditGuard } : {}),
     ...(baselineFix === "on" ? { baselineFix } : {}),
     ...(propertyTests !== presetPropertyTests(preset) ? { propertyTests } : {}),
     ...(request.maxConcurrentWriters !== undefined

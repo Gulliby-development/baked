@@ -12187,7 +12187,11 @@ ${note}`;
       this.store.transaction(() => this.store.artifact(runId, ROW_RESTORE_KIND, path, content));
     }
     // A correction whose failing checks the restore fixed reads a new snapshot (`correctionPassing`).
-    if (kept) await this.snapshot(runId, state, policy, signal);
+    if (kept) {
+      await this.snapshot(runId, state, policy, signal);
+      // A session's edit guard reads the stored baseline: the restored file is the run's (#2558).
+      this.store.transaction(() => this.store.saveState(runId, state));
+    }
     return left;
   }
   /**

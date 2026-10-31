@@ -11,7 +11,11 @@ import {
   rowRestores,
   respelledRunLine,
   rowRunRestores,
+  relitLine,
+  rowEditBreaks,
 } from "../src/core/workflows/row-restore.js";
+import type { NativeWorkflowService } from "../src/core/workflows/service.js";
+import { WorkflowToolPolicy } from "../src/core/workflows/tool-policy.js";
 import { runRoot } from "../src/core/workflows/worktree.js";
 import type { RunPolicy, TaskGraph } from "../src/core/workflows/schemas.js";
 import { newId } from "../src/core/workflows/store.js";
@@ -629,6 +633,11 @@ const runTest = (spell: (b: string, n: number) => string, x: number, q: number) 
   ].join("\n");
 const R82_RUN_FILE = runTest(RUN_INPUTS["c hex string (R82)"]!, 303, 238);
 const R82_RUN_FAITHFUL = runTest(RUN_INPUTS["c hex string (R82)"]!, 300, 259);
+// R82 rev 51 (#2558): the implementer's own rows after the host's restore, inputs and outputs
+// fitted to its encoder.
+const R82_REV51_FILE = runTest(RUN_INPUTS["c hex string (R82)"]!, 312, 283)
+  .replace('0, "abaa50120400\\n"', '0, "ab1805640100\\n"')
+  .replace('0, "2b2c1c050400\\n"', '0, "2b1c05b80000\\n"');
 
 describe("rowRunRestores: a miscounted run in another row notation than the request's (#2551)", () => {
   for (const [name, spell] of Object.entries(RUN_INPUTS))
@@ -664,6 +673,13 @@ describe("rowRunRestores: a miscounted run in another row notation than the requ
 class ParallelRunExecutor extends FixtureExecutor {
   sessions: string[] = [];
   briefs: string[] = [];
+  /**
+   * #2558: R82 rev 51's T007 implementer, which after the host's restore edits the restored rows to
+   * its encoder's output (inputs 312/283 bytes, expected outputs changed) through the run's edit
+   * guard. The answers of those edits.
+   */
+  fit?: NativeWorkflowService;
+  answers: unknown[] = [];
   constructor(private workspace: string, private checkId: string) {
     super(workspace);
   }
@@ -688,6 +704,14 @@ class ParallelRunExecutor extends FixtureExecutor {
     }
     if (id !== "T003") return result;
     this.briefs.push(request.prompt);
+    if (this.fit && readFileSync(join(root, DEFLATE_PATH), "utf8") === R82_RUN_FAITHFUL) {
+      const policy = JSON.parse(this.fit.store.run(request.runId).policy_json) as RunPolicy;
+      const guard = new WorkflowToolPolicy(this.fit.store, this.fit.leases, request.runId, request.attemptId, request.profile, policy, request.task, root);
+      this.answers.push(await guard.execute("edit_file", { path: DEFLATE_PATH }, async () => {
+        writeFileSync(join(root, DEFLATE_PATH), R82_REV51_FILE);
+        return { success: true, output: "edited" };
+      }));
+    }
     const test = readFileSync(join(root, DEFLATE_PATH), "utf8");
     if (test === R82_RUN_FAITHFUL) {
       mkdirSync(dirname(join(root, SRC_PATH)), { recursive: true });
@@ -699,7 +723,7 @@ class ParallelRunExecutor extends FixtureExecutor {
 }
 
 describe("scenario: R82 tinyflate 82f19908, a parallel run blocked at the corrective resumes onto the request's counts (#2551)", () => {
-  async function parallelBlocked(extra: Partial<RunPolicy> = {}) {
+  async function parallelBlocked(extra: Partial<RunPolicy> = {}, fit = false) {
     const check = {
       id: "deflate-rows",
       executable: "bun",
@@ -715,6 +739,7 @@ describe("scenario: R82 tinyflate 82f19908, a parallel run blocked at the correc
     let executor: ParallelRunExecutor | undefined;
     const fixture = workflowFixture({ policy, executor: (root) => (executor = new ParallelRunExecutor(root, check.id)) });
     cleanups.push(fixture.dispose);
+    if (fit) executor!.fit = fixture.service;
     for (const args of [["init"], ["config", "user.email", "fixture@example.invalid"], ["config", "user.name", "Fixture"]])
       expect(Bun.spawnSync(["git", ...args], { cwd: fixture.root }).exitCode).toBe(0);
     writeFileSync(join(fixture.root, "README.md"), "# Fixture\n");
@@ -762,4 +787,60 @@ describe("scenario: R82 tinyflate 82f19908, a parallel run blocked at the correc
     expect(runFile()).toBe(R82_RUN_FILE);
     expect(executor.briefs.at(-1)).toContain("differs from the criterion row by 21 bytes");
   }, 60000);
+
+  test("#2558 (R82 rev 51): after the restore, the worker's edit of the restored rows is put back, the rows hold and T003 completes", async () => {
+    const { fixture, runId, executor, drive, runFile } = await parallelBlocked({}, true);
+    await fixture.resume(runId);
+    const final = await drive();
+    // The implementer fitted the rows to its encoder; the guard put the edit back and said why.
+    expect(executor.answers).toEqual([expect.objectContaining({ success: false, error: "prescribed_row" })]);
+    expect(String((executor.answers[0] as { output?: unknown }).output)).toContain("row 2");
+    expect(String((executor.answers[0] as { output?: unknown }).output)).toContain("change the source");
+    expect(final.status).toBe("completed");
+    expect(runFile()).toBe(R82_RUN_FAITHFUL);
+  }, 60000);
+
+  test("#2558: with rowEditGuard off the edit stands and T003 blocks again on its own rows, as on rev 51", async () => {
+    const { fixture, runId, executor, drive, runFile } = await parallelBlocked({ rowEditGuard: "off" }, true);
+    await fixture.resume(runId);
+    await drive();
+    expect(executor.answers).toEqual([{ success: true, output: "edited" }]);
+    expect(fixture.service.store.run(runId)).toMatchObject({ status: "blocked", reason: "invalid_output" });
+    // The host's restore in the run root is not what the worker's own (unguarded) edit left.
+    expect(runFile()).toBe(R82_RUN_FAITHFUL);
+  }, 60000);
+});
+
+describe("#2558: the rows a session changed after the host restored them", () => {
+  test("rowRunRestores restores the rev 51 rows (runs and fitted outputs), and a second pass changes nothing", () => {
+    const graph = graphOf(DEFLATE_PATH, "T005");
+    const [first] = rowRunRestores(runRequest, graph, () => R82_REV51_FILE, "on");
+    expect(first?.record).toMatchObject({ restore: [2, 3], verdict: "restored" });
+    expect(first?.record.sites.every((s) => s.respelled)).toBe(true);
+    expect(first?.after).toBe(R82_RUN_FAITHFUL);
+    // Idempotent: the restored file, the original miscount restored, and the restore restored again.
+    expect(rowRunRestores(runRequest, graph, () => first?.after ?? "", "on")).toEqual([]);
+    const [again] = rowRunRestores(runRequest, graph, () => R82_RUN_FILE, "on");
+    expect(again?.after).toBe(R82_RUN_FAITHFUL);
+    expect(rowRunRestores(runRequest, graph, () => again?.after ?? "", "on")).toEqual([]);
+  });
+
+  test("relitLine puts each quoted literal back by position, and only when both quote as many", () => {
+    const line = '    failed += row(ARGS("deflate", "--hex"), "7878", 0, "ab\\n", "");';
+    expect(relitLine(line, 'run "deflate" "--hex" stdin="7171" => 0 "cd\\n" ""')).toBe('    failed += row(ARGS("deflate", "--hex"), "7171", 0, "cd\\n", "");');
+    expect(relitLine(line, 'run "deflate" stdin="7171" => 0 "cd\\n" ""')).toBeNull();
+    expect(relitLine(line, 'run "deflate" "--hex" stdin="7878" => 0 "ab\\n" ""')).toBeNull();
+  });
+
+  test("rowEditBreaks: an edit that breaks a held row is a break; writing rows, other files and new files are not", () => {
+    expect(rowEditBreaks(runRequest, DEFLATE_PATH, R82_RUN_FAITHFUL, R82_REV51_FILE)).toMatchObject({ path: DEFLATE_PATH, rows: [2, 3] });
+    // The rows did not hold before (the miscount the host restores): fixing or keeping them is free.
+    expect(rowEditBreaks(runRequest, DEFLATE_PATH, R82_RUN_FILE, R82_REV51_FILE)).toBeNull();
+    expect(rowEditBreaks(runRequest, DEFLATE_PATH, R82_RUN_FILE, R82_RUN_FAITHFUL)).toBeNull();
+    // A test task writing its rows one by one.
+    const partial = R82_RUN_FAITHFUL.split("\n").filter((l) => !l.includes("7171")).join("\n");
+    expect(rowEditBreaks(runRequest, DEFLATE_PATH, partial, R82_RUN_FAITHFUL)).toBeNull();
+    expect(rowEditBreaks(runRequest, DEFLATE_PATH, null, R82_REV51_FILE)).toBeNull();
+    expect(rowEditBreaks(runRequest, SRC_PATH, "a", "b")).toBeNull();
+  });
 });
