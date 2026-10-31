@@ -356,6 +356,15 @@ export async function provisionalBase(
   }
 }
 
+/** The paths `commit` tracks. */
+export async function trackedPaths(workspace: string, commit: string): Promise<Set<string>> {
+  return new Set(
+    (await required(workspace, ["ls-tree", "-r", "-z", "--name-only", commit]))
+      .split("\0")
+      .filter(Boolean),
+  );
+}
+
 /**
  * Writes `files` into the run worktree as untracked files where `base` tracks no file at their
  * path and the worktree has none yet: what the host gives a run to read without it entering any
@@ -372,11 +381,7 @@ export async function placeBaseFiles(
 ): Promise<void> {
   if (!files.length) return;
   const root = join(workspace, worktree.path);
-  const tracked = new Set(
-    (await required(workspace, ["ls-tree", "-r", "-z", "--name-only", base]))
-      .split("\0")
-      .filter(Boolean),
-  );
+  const tracked = await trackedPaths(workspace, base);
   for (const file of files) {
     if (tracked.has(file.path) || internalPath(file.path)) continue;
     const absolute = workspacePath(root, file.path);

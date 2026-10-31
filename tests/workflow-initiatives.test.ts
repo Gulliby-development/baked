@@ -34,7 +34,8 @@ import {
   shareShortfall,
 } from "../src/core/workflows/initiatives/service.js";
 import { exportTrace, replayTrace } from "../src/core/workflows/trace.js";
-import type { RunPolicy, Spec } from "../src/core/workflows/schemas.js";
+import { PolicySchema, type RunPolicy, type Spec } from "../src/core/workflows/schemas.js";
+import { WorkflowToolPolicy } from "../src/core/workflows/tool-policy.js";
 import { RoutingRecordSchema } from "../src/core/llm/model-routing.js";
 import { exportTrace } from "../src/core/workflows/trace.js";
 import { NativeWorkflowService } from "../src/core/workflows/service.js";
@@ -48,7 +49,8 @@ import {
 } from "../src/headless/workflow-initiative.js";
 import { workflowHelp } from "../src/headless/workflow-parse.js";
 import { WorkflowFault } from "../src/core/workflows/errors.js";
-import { acceptedContract, pathsExistLater } from "../src/core/workflows/dependencies.js";
+import { acceptedContract, applyReleasedCreates, pathsExistLater } from "../src/core/workflows/dependencies.js";
+import { assertAcceptance } from "../src/core/verification/acceptance.js";
 import { mergedBase, provisionalBase, runWorktreeDir } from "../src/core/workflows/worktree.js";
 import { prepareDelivery } from "../src/core/workflows/delivery.js";
 import { PLACEHOLDER_SHARE } from "../src/core/workflows/initiatives/estimate.js";
@@ -2126,6 +2128,72 @@ process.exit(offenses.length ? 1 : 0);`;
       // or a downstream feature's files, and nothing once the run is released.
       expect(t.executor.later).toEqual({ "base.txt": true, "nobody.txt": false, "front.txt": false, "message.txt": false });
       expect(pathsExistLater(t.workflows.store.state(runId))("base.txt")).toBe(false);
+    }, 120_000);
+
+    // Bench round 82, slotprompt (#2514): blocks and filters were planned ahead while core was not
+    // in their workspace, so T001 kept `create` for core's lib/src/template.dart and render.dart.
+    // Released onto the accepted core, every edit_file was refused as "Create target already
+    // exists" and T001 ended invalid_output. The release turns such a create into a modify.
+    test("on, a create of a file the accepted upstream wrote becomes a modify at the release and the task's edits go through", async () => {
+      class GuardedExecutor extends AheadExecutor {
+        /** The actions message's T001 saw, and what the tool policy refused. */
+        actions: string[] = [];
+        denied: string[] = [];
+        override async execute(request: ExecutionRequest) {
+          const service = this.workflows;
+          const task = request.task;
+          if (request.profile.output !== "implementation" || task?.writes[0]?.path !== "message.txt" || !service)
+            return super.execute(request);
+          const root = request.root ?? "";
+          const runPolicy = PolicySchema.parse(JSON.parse(service.store.run(request.runId).policy_json));
+          const guard = new WorkflowToolPolicy(service.store, service.leases, request.runId, request.attemptId, request.profile, runPolicy, task, root);
+          for (const write of task.writes) {
+            this.actions.push(`${write.path}:${write.action}`);
+            try {
+              await guard.execute("edit_file", { path: write.path }, async () => writeFileSync(join(root, write.path), "ready v1 (message)"));
+            } catch (error) {
+              this.denied.push(error instanceof Error ? error.message : String(error));
+              throw error;
+            }
+          }
+          return { output: { schemaVersion: 1, taskId: task.id, outcome: "implemented", summary: "Wrote value", evidenceIds: [], unresolved: [] }, inputTokens: 50, outputTokens: 50 };
+        }
+      }
+      // message's boundary shares base.txt, as blocks' shared lib/src/template.dart with core.
+      const shared = plan([feature("base"), feature("message", ["base"], ["message.txt", "base.txt"]), feature("front", ["message"])]);
+      const t = setup(shared, 100, (root) => new GuardedExecutor(root, shared));
+      repository(t.root);
+      t.executor.initiatives = t.initiatives;
+      t.executor.workflows = t.workflows;
+      t.executor.extraWrites.message = "base.txt";
+      Object.assign(t.workflows.config.workflows ?? {}, { planAhead: true });
+      await t.start({ plan: shared, policy: { ...policy, executionMode: "worktree" }, featureAutoApproval: { maxTasks: 5, maxFiles: 5 }, budget: { maxTotalTokens: 6_000_000, maxAgentCalls: 2000, maxActiveMs: 6_000_000 } });
+      await t.approveSplit();
+      const view = await t.drive();
+      expect(t.executor.denied).toEqual([]);
+      expect(view.status).toBe("completed");
+      const runId = t.featureOf(view, "message").runId ?? "";
+      const store = t.workflows.store;
+      const state = store.state(runId);
+      // Planned on the provisional base (no base.txt): both creates; released, base.txt is base's.
+      expect(state.rootGraph?.tasks[0]?.writes.map((w) => `${w.path}:${w.action}`)).toEqual(["message.txt:create", "base.txt:create"]);
+      expect(state.graph?.tasks[0]?.writes.map((w) => `${w.path}:${w.action}`)).toEqual(["message.txt:create", "base.txt:modify"]);
+      expect(t.executor.actions).toEqual(["message.txt:create", "base.txt:modify"]);
+      const link = store.latestArtifact(runId, "corrections/release.json");
+      expect(JSON.parse(store.readArtifact(runId, link?.id ?? "")) as object).toMatchObject({ rule: "host-release", released: [{ taskId: "T001", path: "base.txt" }] });
+      const release = store.latestArtifact(runId, "plan-ahead/release.json");
+      expect(JSON.parse(store.readArtifact(runId, release?.id ?? "")) as object).toMatchObject({ modified: [{ taskId: "T001", path: "base.txt" }] });
+      expect(git(t.root, "show", `baked/wf/${runId}:base.txt`)).toBe("ready v1 (message)");
+      // Acceptance replays the link: a create of a file the released base did not hold stays one.
+      const graph = state.graph;
+      if (!graph || !state.approvalRoot) throw new Error("message has no approved graph");
+      const forged = applyReleasedCreates(graph, [{ taskId: "T001", path: "message.txt" }]);
+      const tampered = store.transaction(() => store.artifact(runId, "correction", "corrections/release-2.json", canonical({
+        schemaVersion: 1, parentDigest: state.approvalRoot, parentGraphHash: hashJson(graph), rule: "host-release", newGraphHash: hashJson(forged),
+        findingIds: [], taskIds: ["T001"], roundKind: "release", round: 1, released: [{ taskId: "T001", path: "message.txt" }],
+      })));
+      const runPolicy = PolicySchema.parse(JSON.parse(store.run(runId).policy_json));
+      expect(() => assertAcceptance(store, runId, { ...state, graph: forged, correctionHashes: [...state.correctionHashes, tampered.content_hash] }, runPolicy)).toThrow("Correction exceeds the approved authority");
     }, 120_000);
 
     // Bench round 61, manlens (#1946): roff and inline were accepted while document, planned ahead on

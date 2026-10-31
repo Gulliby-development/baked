@@ -2,9 +2,13 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { invalidOutputRepeat } from "../src/core/workflows/invalid-output-repeat.js";
 import { REPEAT_TASKS_DIR, type RepeatRecord } from "../src/core/workflows/repeated-failure.js";
 import type { RunPolicy } from "../src/core/workflows/schemas.js";
+import type { NativeWorkflowService } from "../src/core/workflows/service.js";
+import { stopRecovery } from "../src/core/workflows/stop-detail.js";
 import { newId } from "../src/core/workflows/store.js";
+import { WorkflowToolPolicy } from "../src/core/workflows/tool-policy.js";
 import { exportTrace, replayTrace } from "../src/core/workflows/trace.js";
 import type { ExecutionRequest } from "../src/core/workflows/types.js";
 import { FixtureExecutor, fixturePolicy, workflowFixture } from "./helpers/workflow-fixture.js";
@@ -152,4 +156,89 @@ describe("scenario: cfgquill lint a843cc11, a corrective chain repeating one fai
     expect(records[2]?.hash).toBe(records[0]?.hash ?? "");
     expect(wouldStops).toEqual([]);
   }, 90000);
+});
+
+// Scenario of bench round 82, slotprompt blocks 733c7777 and filters a7c8cf04 (#2520): the plan,
+// made before core existed, had a `create` write for a file core's release had written, so the
+// tool policy refused every edit ("Create target already exists"). Each attempt ended `blocked`
+// with a reason worded anew, the repeat guard keyed on that wording, and the run was resumed into
+// four attempts (852k tokens for blocks). Here value.txt exists before the run, the plan creates
+// it, and each attempt's edit goes through the tool policy and words its blocked reason anew.
+class RefusedExecutor extends FixtureExecutor {
+  service?: NativeWorkflowService;
+  attempts = 0;
+  constructor(private workspace: string) {
+    super(workspace);
+  }
+  override async execute(request: ExecutionRequest) {
+    if (request.profile.output !== "implementation") return super.execute(request);
+    const service = this.service;
+    if (!service) throw new Error("No service");
+    const root = request.root ?? this.workspace;
+    const guard = new WorkflowToolPolicy(service.store, service.leases, request.runId, request.attemptId, request.profile, fixturePolicy, request.task, root);
+    const refusal = await guard
+      .execute("edit_file", { path: "value.txt" }, async () => {
+        writeFileSync(join(root, "value.txt"), "ready");
+        return { success: true };
+      })
+      .then(() => "", (error: Error) => error.message);
+    const n = ++this.attempts;
+    const reasons = [
+      `The edit tool refuses value.txt (${refusal}); I cannot write the file.`,
+      "Writing value.txt is not possible: the host says the target already exists, so the task is blocked.",
+      `Attempt ${n}: value.txt cannot be created because it is present; please plan a modify instead.`,
+    ];
+    return {
+      output: { schemaVersion: 1, taskId: request.task?.id, outcome: "blocked", summary: `Blocked on value.txt, attempt ${n}`, evidenceIds: [], unresolved: [reasons[(n - 1) % reasons.length] ?? ""] },
+      inputTokens: 25,
+      outputTokens: 25,
+    };
+  }
+}
+
+describe("scenario: R82 slotprompt blocks 733c7777, one host refusal in new words each attempt (#2520)", () => {
+  test("the second stop on the same refused write repeats, whatever the blocked reason says, and offers no resume", async () => {
+    const fixture = workflowFixture({ executor: (root) => new RefusedExecutor(root) });
+    cleanups.push(fixture.dispose);
+    fixture.executor.service = fixture.service;
+    const { service, root } = fixture;
+    const run = await fixture.start();
+    await service.drive(run.runId, new AbortController().signal);
+    await fixture.approve(run.runId);
+    // Core's release writes value.txt after the plan was made and approved; the run takes it in
+    // as its baseline, as a released dependency's files are.
+    writeFileSync(join(root, "value.txt"), "written by core\n");
+    expect(await service.drive(run.runId, new AbortController().signal)).toMatchObject({ status: "blocked", reason: "input_changed" });
+    await service.resume(run.runId, { commandId: newId(), expectedRevision: (await service.get(run.runId)).revision }, { acceptWorkspace: true });
+    expect(await service.drive(run.runId, new AbortController().signal)).toMatchObject({ status: "blocked", reason: "invalid_output" });
+    const store = service.store;
+    const diagnostics = () => store.artifacts(run.runId).filter((a) => a.logical_path.startsWith("errors/")).map((a) => store.readArtifact(run.runId, a.id));
+    // One stop: a plain resume gives the task the diagnostic, so it is offered.
+    expect(invalidOutputRepeat(store, run.runId)?.repeats).toBe(false);
+    await fixture.resume(run.runId);
+    expect(await service.drive(run.runId, new AbortController().signal)).toMatchObject({ status: "blocked", reason: "invalid_output" });
+    // The two stops' diagnostics differ in wording; the host's refusal is the same.
+    const [first, second] = diagnostics();
+    expect(first).not.toBe(second);
+    const repeat = invalidOutputRepeat(store, run.runId);
+    expect(repeat?.repeats).toBe(true);
+    expect(repeat?.record.refusals).toEqual([{ code: "exists", path: "value.txt" }]);
+    // The views lead with a changed input and offer no resume; a plain resume is refused.
+    expect(stopRecovery(store, run.runId)?.remedies.map((r) => r.action)).toEqual(["reroute", "revise", "replan", "cancel"]);
+    const refused = await fixture.resume(run.runId).then(() => null, (error: Error & { code?: string }) => error);
+    expect(refused?.code).toBe("STALE_DECISION");
+
+    // Each stop's decision is recorded with its inputs and replays from the bench trace.
+    const dir = mkdtempSync(join(tmpdir(), "invalid-output-repeat-trace-"));
+    cleanups.push(() => rmSync(dir, { recursive: true, force: true }));
+    const out = join(dir, "run.sqlite.gz");
+    exportTrace(root, out);
+    const replayed = replayTrace(out).runs.find((r) => r.runId === run.runId);
+    const stops = replayed?.repeatedFailures.filter((b) => b.kind === "invalid-output") ?? [];
+    expect(stops.map((b) => [b.recorded, b.replayed])).toEqual([
+      ["first", "first"],
+      ["repeat", "repeat"],
+    ]);
+    expect(replayed?.newRepeatStops).toBe(0);
+  });
 });

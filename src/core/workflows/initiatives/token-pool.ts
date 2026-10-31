@@ -465,6 +465,11 @@ export function poolNoticeText(n: {
   /** The unrounded price the cap's tokens were counted at. */
   exactUsdPerMillion: number | null;
   cost: PoolCost;
+  /**
+   * The split approval's high end (#2525): the sentence then names it beside the expected tokens,
+   * and an amount that is not the cap's as the high end with margin (`splitExtension`).
+   */
+  highTokens?: number;
 }): string {
   const { pool, cost, suggestedTokens } = n;
   const { advice, forecastTokens } = pool;
@@ -482,8 +487,13 @@ export function poolNoticeText(n: {
   const extend =
     n.byDollars && cost.capUsd !== null && n.exactUsdPerMillion !== null
       ? `Extend to ${tokenText(suggestedTokens)}, what the ${usd(cost.capUsd)} cap pays for at ${usd(n.exactUsdPerMillion)} per million, so the pool stops no feature before the dollar cap does (${command}).`
-      : `Extend to ${tokenText(suggestedTokens)} (${command})${dollarRoom(pool, cost)}.`;
-  return `${basis} the ${n.features} features need about ${tokenText(advice?.forecastTokens ?? forecastTokens)} tokens (${blended}${tokenText(pool.usedTokens)} used); the shared pool is ${tokenText(pool.limitTokens)}. ${extend}`;
+      : `Extend to ${tokenText(suggestedTokens)}${n.highTokens !== undefined ? ", the high end with margin" : ""} (${command})${dollarRoom(pool, cost)}.`;
+  const expected = tokenText(advice?.forecastTokens ?? forecastTokens);
+  const need =
+    n.highTokens !== undefined
+      ? `expect about ${expected} tokens and up to ${tokenText(n.highTokens)} at the high end`
+      : `need about ${expected} tokens`;
+  return `${basis} the ${n.features} features ${need} (${blended}${tokenText(pool.usedTokens)} used); the shared pool is ${tokenText(pool.limitTokens)}. ${extend}`;
 }
 
 /**
@@ -496,6 +506,32 @@ export function dollarTokens(capTokens: number | null, limitTokens: number): num
   if (capTokens === null) return null;
   const tokens = roundDown(capTokens);
   return tokens > limitTokens ? tokens : null;
+}
+
+/**
+ * The one pool a split approval names (#2525), which its budget preview, its message and the
+ * message's `extend` remedy all read: the high-end need with margin, held to what the dollar cap
+ * pays for (`dollarTokens`); null when the pool already covers the high end, or when the cap pays
+ * for no more than the pool (a larger pool would go unpaid). Without a cap, or without a price
+ * that counts its tokens, the high end with margin. Advice only: no decision reads it.
+ */
+export function splitExtension(n: {
+  limitTokens: number;
+  /** The estimate's high end, with what is used so far. */
+  highTokens: number;
+  /** The high end plus its margin (`InitiativeEstimate.withMargin`). */
+  withMargin: number;
+  /** What the dollar cap pays for at the split's price; null without a cap or a price. */
+  capTokens: number | null;
+}): { tokens: number; byDollars: boolean } | null {
+  if (n.highTokens <= n.limitTokens) return null;
+  const need = Math.max(n.withMargin, n.highTokens);
+  if (n.capTokens === null) return { tokens: need, byDollars: false };
+  const byDollars = dollarTokens(n.capTokens, n.limitTokens);
+  if (byDollars === null) return null;
+  return byDollars < need
+    ? { tokens: byDollars, byDollars: true }
+    : { tokens: need, byDollars: false };
 }
 
 /**
