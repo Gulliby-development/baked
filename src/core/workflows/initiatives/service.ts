@@ -187,7 +187,7 @@ import {
   poolForecast,
   poolNoticeText,
   poolShortText,
-  roundUp,
+  splitExtension,
   type TimePoolGrowthInputs,
   type TokenPoolView,
   timePoolExtensionDecision,
@@ -1077,29 +1077,6 @@ export function expectedSplitUsd(
     paid,
     remainingUsd: cost.remainingUsd,
   };
-}
-
-/**
- * The pool a split's dollar cap implies (#2244): the tokens used so far plus what the dollars left
- * under the cap pay for at the price the estimate gives the waiting features (their priced low
- * dollars over their low tokens), rounded down to the pool step; null without a cap or a priced
- * waiting feature, or when the pool already holds that many. Advice only: the split approval
- * names it.
- */
-export function splitDollarPool(
-  view: {
-    budget: { used: Pick<UsageView, "tokens">; cost: Pick<CostView, "capUsd" | "spentUsd"> };
-  },
-  waiting: readonly (Pick<FeatureEstimate, "costUsd" | "tokens"> | undefined)[],
-  limitTokens: number,
-): { capUsd: number; usdPerMillion: number; tokens: number } | null {
-  const capUsd = view.budget.cost.capUsd;
-  if (capUsd === null) return null;
-  const usdPerMillion = splitDollarPrice(waiting);
-  if (usdPerMillion === null) return null;
-  const left = tokensForUsd(Math.max(0, capUsd - view.budget.cost.spentUsd), usdPerMillion);
-  const tokens = dollarTokens(left === null ? null : view.budget.used.tokens + left, limitTokens);
-  return tokens === null ? null : { capUsd, usdPerMillion, tokens };
 }
 
 /** The estimate's dollars per million tokens for the waiting features, at their lows (#2244). */
@@ -4177,16 +4154,16 @@ export class InitiativeService {
     const capTokens = left === null ? null : used.tokens + left;
     const limit = limits.maxTotalTokens;
     const forecast = Math.max(estimate.expectedTokens, used.tokens);
-    const startsAll = committed.tokens + total(lows);
-    // The cap's pool when it also starts every waiting feature at its low, else the expected
-    // forecast: the lows alone are no pool (R81 ratdec's were 1.8x over and 2.7x under).
-    const byDollars = dollarTokens(capTokens, limit);
-    const suggestedTokens =
-      byDollars !== null && byDollars >= startsAll
-        ? byDollars
-        : forecast > limit || startsAll > limit
-          ? roundUp(Math.max(forecast, startsAll))
-          : null;
+    // The one amount of the split approval (#2525): the high end with margin, held to what the
+    // cap pays for; none when the pool covers the high end (R82 slotprompt's 14.2M pool against
+    // 12.5M of highs was still told to extend to the cap's 23.5M).
+    const extension = splitExtension({
+      limitTokens: limit,
+      highTokens: estimate.tokens.high,
+      withMargin: estimate.withMargin,
+      capTokens,
+    });
+    const suggestedTokens = extension?.tokens ?? null;
     const pool = tokenPool({
       initiativeId: row.id,
       limitTokens: limit,
@@ -4255,9 +4232,10 @@ export class InitiativeService {
                 usdPerMillion: price === null ? null : Math.round(price * 100) / 100,
               },
               suggestedTokens,
-              byDollars: suggestedTokens === byDollars,
+              byDollars: extension?.byDollars === true,
               exactUsdPerMillion: price,
               cost,
+              highTokens: estimate.tokens.high,
             }),
     };
   }
@@ -4671,21 +4649,30 @@ export class InitiativeService {
         ? "until its plan is sized"
         : "until the run ends";
     const reservations = ` The share gate holds a started feature's run limit (its start share) against the pool ${held}, not what it uses: an extension to the high end is for those reservations, the ${tokenText(estimate.expectedTokens)} above is what it expects to be used.`;
-    // The pool the dollar cap implies at the estimate's price for the waiting features (#2244): R71
-    // xmlvet's $30 paid for about 35M tokens against a 30.0M pool, the approval said nothing and
-    // the pool stopped every feature for 19.6 minutes with dollars left.
-    const byDollars = splitDollarPool(
-      view,
-      waiting.map((f) => estimate.features.find((e) => e.featureId === f.id)),
-      limit,
-    );
+    // One amount answers the token warning (#2525): the budget preview's (`splitExtension`), the
+    // high end with margin held to what the dollar cap pays for. R82 tinyflate extended to the
+    // preview's 19.6M, what its $25 cap paid for, and was then told to extend to 29.6M "including
+    // margin", 50 percent above what the unchanged cap pays for.
+    const preview = view.budget.preview;
+    const suggestedPool = preview?.suggestedTokens ?? null;
+    const capPool = preview ? dollarTokens(preview.capTokens, preview.limitTokens) : null;
+    // The pool the dollar cap implies (#2244): R71 xmlvet's $30 paid for about 35M tokens against
+    // a 30.0M pool, the approval said nothing and the pool stopped every feature for 19.6 minutes
+    // with dollars left.
+    const byDollars = suggestedPool !== null && capPool === suggestedPool;
+    const capUsd = view.budget.cost.capUsd;
+    const unpaid =
+      suggestedPool === null && preview?.capTokens != null && capUsd !== null
+        ? ` The ${usd(capUsd)} cap pays for about ${tokenText(preview.capTokens)} tokens${preview.usdPerMillion !== null ? ` at ${usd(preview.usdPerMillion)} per million` : ""}, no more than the shared pool: a larger pool would go unpaid at that price, so approve with this risk or raise the dollar budget.`
+        : "";
     const tokenWarning =
       estimate.tokens.high > limit
-        ? `The estimate expects about ${tokenText(estimate.expectedTokens)} tokens${estimate.expectedTokens <= limit ? ", within" : ", above"} the shared budget (${tokenText(limit)}); its high end (${tokenText(estimate.tokens.high)} tokens; ${highCalibrationText(estimate.highCalibration)}) exceeds the shared budget.${calibrationLagText(estimate)}${reservations}${byDollars ? "" : ` Consider extending to ${estimate.withMargin} tokens, including margin, before approving, or approve with this risk.`}`
+        ? `The estimate expects about ${tokenText(estimate.expectedTokens)} tokens${estimate.expectedTokens <= limit ? ", within" : ", above"} the shared budget (${tokenText(limit)}); its high end (${tokenText(estimate.tokens.high)} tokens; ${highCalibrationText(estimate.highCalibration)}) exceeds the shared budget.${calibrationLagText(estimate)}${reservations}${unpaid}`
         : "";
-    const dollarPoolWarning = byDollars
-      ? `The ${usd(byDollars.capUsd)} cap pays for about ${tokenText(byDollars.tokens)} tokens at ${usd(byDollars.usdPerMillion)} per million, the estimate's price for the waiting features, more than the shared pool (${tokenText(limit)}): the pool, not the dollar cap, would stop features first. Consider extending the pool to ${byDollars.tokens} tokens, what the cap pays for, before approving, or approve with this risk.`
-      : "";
+    const dollarPoolWarning =
+      byDollars && capUsd !== null
+        ? `The ${usd(capUsd)} cap pays for about ${tokenText(suggestedPool)} tokens${preview?.usdPerMillion != null ? ` at ${usd(preview.usdPerMillion)} per million` : ""}, less than the high end with margin and more than the shared pool (${tokenText(limit)}): the pool, not the dollar cap, would stop features first.`
+        : "";
     // The lows alone read as what the split costs: R70 evalpin extended to their $30.11 sum while
     // its seven features were expected to cost about $36.5 (#2218).
     const expected = dollarWarnings.length
@@ -4704,7 +4691,6 @@ export class InitiativeService {
       .join(" ");
     // The text ends with the budget preview's extend command (#2502), the forecast notice's own
     // sentence, so the one extend before approval is exact rather than a guess.
-    const preview = view.budget.preview;
     const notice = preview?.notice ? ` ${preview.notice}` : "";
     if (!warning)
       return preview?.notice && preview.suggestedTokens !== null
@@ -4714,18 +4700,11 @@ export class InitiativeService {
             suggestedTokens: preview.suggestedTokens,
           })
         : message;
-    // The amounts that answer the warnings (#2042): the token estimate with its margin, and a
-    // dollar cap raised by what the warned shares miss of their low estimates.
-    const capUsd = view.budget.cost.capUsd;
+    // The amounts that answer the warnings (#2042): the preview's one pool (#2525), and a dollar
+    // cap raised by what the warned shares miss of their low estimates.
     const suggestedUsd =
       !tokenWarning && dollarGap > 0 && capUsd !== null ? centsUp(capUsd + dollarGap) : null;
-    // With a dollar cap that pays for more than the pool, the pool it implies: tokens above it
-    // would go unpaid at that price, and below it the pool stops features first (#2244).
-    const suggestedTokens = byDollars
-      ? byDollars.tokens
-      : tokenWarning
-        ? estimate.withMargin
-        : null;
+    const suggestedTokens = tokenWarning ? suggestedPool : null;
     const amount =
       suggestedTokens === null
         ? ` --budget-usd ${suggestedUsd ?? "N"}`
