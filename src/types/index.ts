@@ -395,6 +395,8 @@ export interface QualityConfig {
   rowRunRestore?: "off" | "on";
   /** Put back a session's edit after which a prescribed test row the file held no longer holds: `on` (default) or `off`. */
   rowEditGuard?: "off" | "on";
+  /** Check a finding, a conflict's settlement, a decision or a task's description that restates a prescribed test row against the request's text, the request winning: `on` (default) or `off` (recorded in shadow). */
+  rowClaimCheck?: "off" | "on";
   /** Before the first task, let the host run a required check's fixer on files no task writes when the check fails before any change with only correctable findings, and keep the edit when the check then passes: `on` or `off` (default). */
   baselineFix?: "off" | "on";
   /** Property-based tests from marked criteria: `preset` or absent follows the workflow preset. */

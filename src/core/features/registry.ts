@@ -1425,6 +1425,17 @@ export const FEATURES: readonly Feature[] = [
     desktop: ["settings/chat: Code quality page"],
   },
   {
+    id: "row-claim-check",
+    group: "Workflow runs",
+    title: "Check a restated test row against the request's text",
+    tui: ["/code-quality"],
+    cli: notNeeded(
+      "quality.rowClaimCheck in config.json; an override shows as a refuted finding or a settled conflict in baked workflow report",
+    ),
+    api: ["/v1/settings: code-quality page"],
+    desktop: ["settings/chat: Code quality page"],
+  },
+  {
     id: "dependency-check-sast",
     group: "Workflow runs",
     title: "New dependencies looked up before checks; Semgrep on the run's diff",

@@ -1389,6 +1389,28 @@ export const SETTINGS: readonly SettingDefinition[] = [
     ],
   },
   {
+    id: "quality.rowClaimCheck",
+    page: "code-quality",
+    section: "Workflow runs",
+    label: "Check a restated test row against the request's text",
+    help: "When a review finding, a conflict's settlement, a recorded decision or a task's description gives a test row the request prescribes another input length or expected value, the request's own text wins: the finding is refuted, the conflict is settled for the request's rows and the task is told the rows as the request gives them.",
+    scopes: BOTH,
+    type: "enum",
+    default: "on",
+    options: [
+      {
+        value: "on",
+        label: "on",
+        help: "The request's rows win over a restatement that contradicts them.",
+      },
+      {
+        value: "off",
+        label: "off",
+        help: "Record the contradiction only; the restatement stands.",
+      },
+    ],
+  },
+  {
     id: "quality.propertyTests",
     page: "code-quality",
     section: "Tests",

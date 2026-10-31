@@ -1,5 +1,6 @@
 import { canonical } from "../specs/hash.js";
 import { namesPlatformLimit } from "./analysis-notes.js";
+import { overriddenPaths, ROW_CLAIM_DIR, type RowClaimRecord } from "./row-claims.js";
 import type { WorkflowStore } from "./store.js";
 
 /** Where a person's answer to a task's spec conflict is recorded (#1350). */
@@ -33,11 +34,34 @@ export function recordConflictDecision(
   );
 }
 
-/** The run's spec conflict decisions, oldest first. */
+/**
+ * The decision and assumption paths a check of their rows against the request's text overrode
+ * (`conflicts/row-claims/`, #2561): a settled answer that contradicts a prescribed row of the
+ * request is no longer the run's.
+ */
+export function rowClaimOverrides(store: WorkflowStore, runId: string): Set<string> {
+  return overriddenPaths(
+    store
+      .artifacts(runId)
+      .filter((a) => a.logical_path.startsWith(ROW_CLAIM_DIR))
+      .flatMap((a) => {
+        try {
+          return [JSON.parse(store.readArtifact(runId, a.id)) as RowClaimRecord];
+        } catch {
+          return [];
+        }
+      }),
+  );
+}
+
+/** The run's spec conflict decisions, oldest first, without those the request's rows overrode. */
 export function conflictDecisions(store: WorkflowStore, runId: string): ConflictDecision[] {
+  const overridden = rowClaimOverrides(store, runId);
   return store
     .artifacts(runId)
-    .filter((a) => a.logical_path.startsWith(CONFLICT_DECISION_PREFIX))
+    .filter(
+      (a) => a.logical_path.startsWith(CONFLICT_DECISION_PREFIX) && !overridden.has(a.logical_path),
+    )
     .flatMap((a) => {
       try {
         const body = JSON.parse(store.readArtifact(runId, a.id)) as Partial<ConflictDecision>;
@@ -153,12 +177,15 @@ export interface SettledConflict {
  * and the review still asked for a loop over the whole interval (2.0M tokens of correctives).
  */
 export function settledConflicts(store: WorkflowStore, runId: string): SettledConflict[] {
+  // An assumption the request's rows overrode is no longer settled (#2561).
+  const overridden = rowClaimOverrides(store, runId);
   const rows = store
     .artifacts(runId)
     .filter(
       (a) =>
-        a.logical_path.startsWith(CONFLICT_ASSUMPTION_PREFIX) ||
-        a.logical_path.startsWith(DECLARED_LIMIT_PREFIX),
+        (a.logical_path.startsWith(CONFLICT_ASSUMPTION_PREFIX) ||
+          a.logical_path.startsWith(DECLARED_LIMIT_PREFIX)) &&
+        !overridden.has(a.logical_path),
     );
   // A path written again (a later attempt's limits) counts once, at its latest revision.
   const latest = rows.filter(

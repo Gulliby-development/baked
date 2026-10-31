@@ -3,6 +3,7 @@ import { canonical, hashBytes } from "../specs/hash.js";
 import { releaseLinkCount } from "./release-writes.js";
 import { type RecoveryAdvice, recoveryAdvice } from "./remedies.js";
 import { REPEAT_KIND, type RepeatDecision } from "./repeated-failure.js";
+import { ROW_CLAIM_RESUME_DIR } from "./row-claim-repair.js";
 import { ROW_RESTORE_RESUME_DIR } from "./row-restore.js";
 import type { WorkflowStore } from "./store.js";
 import { type WriteRefusal, writeRefusalOf } from "./write-refusals.js";
@@ -28,15 +29,20 @@ export const INVALID_OUTPUT_KEY = "invalid-output/repeat-key.json";
 export function invalidOutputInputs(
   store: WorkflowStore,
   runId: string,
-): { routing: number; release?: number; rows?: number } {
+): { routing: number; release?: number; rows?: number; claims?: number } {
   const release = releaseLinkCount(store, runId);
   const rows = store
     .artifacts(runId)
     .filter((a) => a.logical_path.startsWith(ROW_RESTORE_RESUME_DIR)).length;
+  // The restatements the resume checked against the request's rows (#2561).
+  const claims = store
+    .artifacts(runId)
+    .filter((a) => a.logical_path.startsWith(ROW_CLAIM_RESUME_DIR)).length;
   return {
     routing: store.latestArtifact(runId, ROUTING_ARTIFACT)?.revision ?? 0,
     ...(release ? { release } : {}),
     ...(rows ? { rows } : {}),
+    ...(claims ? { claims } : {}),
   };
 }
 
@@ -63,7 +69,7 @@ export interface InvalidOutputFacts {
   /** The hash of the diagnostic (its first 2000 characters): the key only without refusals. */
   diagnostic: string;
   /** `invalidOutputInputs`: the run inputs a person can change besides the prompt. */
-  inputs: { routing: number; release?: number; rows?: number };
+  inputs: { routing: number; release?: number; rows?: number; claims?: number };
   /** Whether the prompt already holds this diagnostic's note (a resume gave it). */
   noted: boolean;
   /** The key the last resume recorded (`INVALID_OUTPUT_KEY`); null when none did. */

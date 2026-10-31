@@ -358,6 +358,7 @@ import {
   type PlatformLimit,
   recordConflictDecision,
   recordDeclaredLimits,
+  rowClaimOverrides,
   settledConflicts,
 } from "./conflict-decisions.js";
 import {
@@ -442,6 +443,7 @@ import {
   derivationProblems,
   isDerivationFinding,
   startAmend,
+  unquotedDerivation,
   withCarried,
 } from "./derivation-audit.js";
 import { EffectJournal, fileHash, intentRoot, rootField } from "./effects.js";
@@ -908,6 +910,16 @@ import {
   rowRunText,
 } from "./row-block-drift.js";
 import {
+  derivationRowConflicts,
+  graphPaths,
+  ROW_CLAIM_DIR,
+  ROW_CLAIM_KIND,
+  type RowClaimConflict,
+  type RowClaimRecord,
+  rowClaimConflicts,
+  rowClaimNote,
+} from "./row-claims.js";
+import {
   ROW_RESTORE_DIR,
   ROW_RESTORE_KIND,
   ROW_RESTORE_RESUME_DIR,
@@ -1210,6 +1222,8 @@ const PLAN_BASE = "revisions/base/plan.json";
 const FINDING_FILES = "finding-files.json";
 /** Largest finding file kept for the comment-only comparison. */
 const FINDING_FILE_MAX = 1_000_000;
+/** Where a conflict settled for the request's prescribed rows is recorded (#2561). */
+const requestRowsPath = (taskId: string) => `assumptions/conflicts/${taskId}-request-rows.json`;
 /** A session's brief on the long runs of prescribed rows its test files miscount (#2543, #2551). */
 function rowRunContext(drifts: readonly RowBlockDrift[]): Record<string, unknown> {
   return drifts.length
@@ -8972,6 +8986,7 @@ ${note}`;
               ...this.misquoteContinue(runId, state, task.id),
               ...this.exactText(runId, state, policy, task),
               ...rowRunContext(rowRuns),
+              ...this.rowClaimContext(runId, state, policy, task),
               ...(focus.files.length
                 ? {
                     correctionFocus: {
@@ -12255,6 +12270,92 @@ ${note}`;
     return checks.length ? "passed" : "none";
   }
   /**
+   * A session's brief on the prescribed rows its task's description or findings restate otherwise
+   * than the request (#2561): R82 tinyflate T009's description, from a miscounted finding, asked to
+   * "restore the exact prescribed 306-byte x input" for the request's 300. Empty in shadow.
+   */
+  private rowClaimContext(
+    runId: string,
+    state: RuntimeState,
+    policy: RunPolicy,
+    task: Task,
+  ): Record<string, unknown> {
+    const ids = new Set(task.findingIds);
+    const findings = this.store
+      .findings(runId)
+      .filter((f) => ids.has(f.id))
+      .flatMap((f) => {
+        try {
+          const body = JSON.parse(f.body_json) as { claim?: unknown; suggestedFix?: unknown };
+          return [String(body.claim ?? ""), String(body.suggestedFix ?? "")];
+        } catch {
+          return [];
+        }
+      });
+    const text = [task.title, task.description, ...findings].join("\n");
+    const claims = this.rowClaims(runId, state, policy, "task", task.id, text, {
+      taskId: task.id,
+    });
+    return claims.on ? { rowClaims: { note: claims.note } } : {};
+  }
+  /**
+   * The prescribed rows a restatement contradicts (#2561, row-claims.ts): its run counts against
+   * the request's rows (`rowClaimConflicts`) and, for a re-audit, its recomputed expected values
+   * (`derivationRowConflicts`), both read from the request through `suppliedRows`. Each site with a
+   * contradiction records `conflicts/row-claims/<site>-<ref>.json`; the same record is not written
+   * again. `on` says the request's rows win (`rowClaimCheck` absent); in shadow the caller goes on
+   * as before.
+   */
+  private rowClaims(
+    runId: string,
+    state: RuntimeState,
+    policy: RunPolicy,
+    site: RowClaimRecord["site"],
+    ref: string,
+    text: string,
+    extra: {
+      taskId?: string;
+      derivations?: readonly { row: string; recomputed: string; matches: boolean }[];
+      overrides?: string[];
+    } = {},
+  ): { conflicts: RowClaimConflict[]; on: boolean; note: string } {
+    const request = state.requestText || state.prompt;
+    const paths = graphPaths(state.rootGraph ?? state.graph);
+    let conflicts: RowClaimConflict[] = [];
+    try {
+      conflicts = [
+        ...derivationRowConflicts(request, paths, extra.derivations ?? []),
+        ...rowClaimConflicts(request, paths, text),
+      ];
+    } catch {
+      return { conflicts: [], on: false, note: "" };
+    }
+    if (!conflicts.length) return { conflicts, on: false, note: "" };
+    const on = policy.rowClaimCheck !== "off";
+    const record: RowClaimRecord = {
+      schemaVersion: 1,
+      site,
+      ref,
+      ...(extra.taskId ? { taskId: extra.taskId } : {}),
+      mode: on ? "on" : "shadow",
+      conflicts,
+      verdict: on ? "overridden" : "would_override",
+      ...(on && extra.overrides?.length ? { overrides: extra.overrides } : {}),
+    };
+    const path = `${ROW_CLAIM_DIR}${site}-${ref.replace(/[^\w.-]+/g, "_")}.json`;
+    const body = canonical(record);
+    const latest = this.store.latestArtifact(runId, path);
+    if (!latest || this.store.readArtifact(runId, latest.id) !== body)
+      this.store.transaction(() => this.store.artifact(runId, ROW_CLAIM_KIND, path, body));
+    const source =
+      site === "finding" || site === "refutation"
+        ? `Finding ${ref}`
+        : site === "task"
+          ? `Task ${ref}`
+          : `The settlement of ${extra.taskId ?? ref}`;
+    return { conflicts, on, note: rowClaimNote(request, conflicts, source) };
+  }
+  /**
    * The restore of a prescribed row whose long byte run a delivered test file counts differently,
    * outside the checks stage (#2543, `rowRunRestores`): R82 tinyflate deflate 82f19908 blocked
    * `invalid_output` at T007 on `tests/deflate_match_test.c` and, resumed, blocked again on the
@@ -13914,7 +14015,8 @@ ${note}`;
       verified &&
       !misquoted.length &&
       !this.store.latestArtifact(runId, verifiedPath) &&
-      !this.store.latestArtifact(runId, reauditedPath)
+      !this.store.latestArtifact(runId, reauditedPath) &&
+      !this.store.latestArtifact(runId, requestRowsPath(task.id))
     ) {
       // The audit is the analyzer's own arithmetic, and the implementer ran the code: a second,
       // targeted audit against the report decides before the rows are trusted (#1788).
@@ -13930,8 +14032,35 @@ ${note}`;
         signal,
       );
       if (second === null) return false;
+      // A mismatch whose request quote the host could not find recomputed the row from a
+      // restatement: no conflict is decided on it (#2561). Where it contradicts a row the request
+      // prescribes, the request's row wins; otherwise the conflict is not settled here.
+      const unquoted = second.filter(
+        (d) => rows.some((r) => r.criterion.id === d.criterionId) && unquotedDerivation(d),
+      );
+      if (unquoted.length && policy.rowClaimCheck !== "off") {
+        const claims = this.rowClaims(
+          runId,
+          state,
+          policy,
+          "decision",
+          `${task.id}-unquoted`,
+          [report, ...unquoted.map((d) => d.derivation)].join("\n"),
+          { taskId: task.id, derivations: unquoted },
+        );
+        if (claims.on) {
+          this.settleForRequestRows(runId, state, child, task, account, report, claims.note);
+          return true;
+        }
+        if (second.every((d) => d.matches || unquotedDerivation(d))) return false;
+      }
       const disputed = rows.filter((r) =>
-        second.some((d) => d.criterionId === r.criterion.id && !d.matches),
+        second.some(
+          (d) =>
+            d.criterionId === r.criterion.id &&
+            !d.matches &&
+            (policy.rowClaimCheck === "off" || !unquotedDerivation(d)),
+        ),
       );
       if (disputed.length)
         return (
@@ -14062,6 +14191,41 @@ ${note}`;
     }
   }
   /**
+   * A conflict whose settlement would give a prescribed row other literals than the request's text
+   * (#2561): the request's rows win. Recorded as an assumption and a decision of the task, the
+   * task runs again under a note that names each row as the request gives it.
+   */
+  private settleForRequestRows(
+    runId: string,
+    state: RuntimeState,
+    child: string,
+    task: Task,
+    account: Record<string, unknown>,
+    report: string,
+    note: string,
+  ): void {
+    const path = requestRowsPath(task.id);
+    const settled = `The request's prescribed rows win: ${note}`;
+    this.store.transaction(() => {
+      this.store.artifact(
+        runId,
+        "diagnostic",
+        `tasks/conflicts/${task.id}.json`,
+        canonical(account),
+      );
+      this.store.artifact(runId, "assumption", path, canonical({ ...account, assumed: settled }));
+      recordConflictDecision(this.store, runId, {
+        requestId: `request-rows-${task.id}`,
+        taskId: task.id,
+        findingIds: task.findingIds,
+        answer: `Settled by the request's rows (${path}): ${settled}`,
+      });
+      this.store.taskStatus(runId, task.id, "interrupted", null, { cause: "spec_conflict" });
+      this.store.finishStep(runId, child, "failed");
+    });
+    state.prompt += `\nSettled spec conflict (${path}): task ${task.id} reported that the spec contradicts the code: ${report.slice(0, 1200)} ${settled} Report implemented or already_satisfied, not spec_conflict.`;
+  }
+  /**
    * The re-audit disagrees with the audited rows: the requirements win over them, as for a report
    * that names both (#1459), and the case walk stops demanding the overruled literals (#1788).
    */
@@ -14090,6 +14254,26 @@ ${note}`;
       )
       .join("; ");
     const settled = `The requirements ${requirementIds.join(", ")} win over the criteria ${criterionIds.join(", ")}: a second audit of the contested rows against the report recomputed ${recomputed.slice(0, 1500)}`;
+    // A settlement that gives a row the request prescribes other literals is not the requirements'
+    // to make: the request's own rows win (#2561, R82 tinyflate T009's "The settled clarification
+    // specifies 306 repeated x bytes ... This yields ab1805240200" for the request's 300 bytes and
+    // ab1805440300).
+    const claims = this.rowClaims(
+      runId,
+      state,
+      policy,
+      "decision",
+      `${task.id}-reaudited`,
+      `${settled}\n${report}`,
+      {
+        taskId: task.id,
+        derivations: derivations.filter((d) => criterionIds.includes(d.criterionId)),
+      },
+    );
+    if (claims.on) {
+      this.settleForRequestRows(runId, state, child, task, account, report, claims.note);
+      return null;
+    }
     const amendment: SpecAmendment = {
       findingId: `conflict-${task.id}`,
       criterionIds,
@@ -18822,9 +19006,25 @@ ${note}`;
         }
       }
     }
+    // A finding that gives a prescribed row other literals than the request's text is refuted by
+    // the host, before a skeptic is asked (#2561: R82 tinyflate's "the request supplies 306
+    // repeated x bytes" for the row's 300, confirmed by the skeptic, became two correctives).
+    const hostRefuted = new Set(
+      findings
+        .filter(
+          (f) =>
+            this.rowClaims(runId, state, policy, "finding", f.id, `${f.claim}\n${f.suggestedFix}`)
+              .on,
+        )
+        .map((f) => f.id),
+    );
+    if (hostRefuted.size)
+      this.store.transaction(() => {
+        for (const id of hostRefuted) this.store.findingStatus(runId, id, "refuted");
+      });
     for (const finding of findings.filter((f) => ["critical", "high"].includes(f.severity))) {
       const skeptic = owners.get(finding.id)?.skepticProfileId;
-      if (!skeptic) continue;
+      if (!skeptic || hostRefuted.has(finding.id)) continue;
       const child = this.store.transaction(() =>
         this.store.beginStep(runId, `skeptic-${fingerprint(finding).slice(0, 24)}`, stepId),
       );
@@ -18852,8 +19052,12 @@ ${note}`;
         result.evidenceIds,
         result.decision !== "inconclusive",
       );
+      // A confirmation that restates a prescribed row against the request's text confirms nothing.
+      const misread =
+        result.decision === "confirmed" &&
+        this.rowClaims(runId, state, policy, "refutation", finding.id, result.explanation).on;
       this.store.transaction(() => {
-        this.store.findingStatus(runId, finding.id, result.decision);
+        this.store.findingStatus(runId, finding.id, misread ? "refuted" : result.decision);
         this.store.finishStep(runId, child, "completed");
       });
       if (result.decision === "inconclusive")
@@ -21033,9 +21237,11 @@ ${note}`;
   }
   /** The run's spec amendments (`amendments/*.json`). */
   private amendments(runId: string): SpecAmendment[] {
+    // An amendment the request's rows overrode is no longer the spec's reading (#2561).
+    const overridden = rowClaimOverrides(this.store, runId);
     return this.store
       .artifacts(runId)
-      .filter((a) => a.logical_path.startsWith("amendments/"))
+      .filter((a) => a.logical_path.startsWith("amendments/") && !overridden.has(a.logical_path))
       .map((a) => JSON.parse(this.store.readArtifact(runId, a.id)) as SpecAmendment);
   }
   private async accept(
