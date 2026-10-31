@@ -102,6 +102,23 @@
     "dependencyPrepare": null,
     "worktreePathLimits": null,
     "testClasses": null,
-    "testDeclarations": ["tests/test_sum.py: 3 tests, per class 2"]
+    "testDeclarations": ["tests/test_sum.py: 3 tests, per class 2"],
+    "rowFileShapes": [
+      "tests/test_split_rows.py",
+      "import pytest",
+      "",
+      "from split import split",
+      "",
+      "ROWS = [",
+      "    (\"a,b\", [\"a\", \"b\"]),",
+      "    (\"a,,b\", [\"a\", \"\", \"b\"]),",
+      "]",
+      "",
+      "",
+      "@pytest.mark.parametrize((\"text\", \"out\"), ROWS)",
+      "def test_rows(text, out):",
+      "    assert split(text) == out",
+      ""
+    ]
   }
 }

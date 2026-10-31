@@ -76,6 +76,21 @@
       "pubspec.yaml: dart test over 88 characters"
     ],
     "testClasses": null,
-    "testDeclarations": ["test/sum_test.dart: 3 tests"]
+    "testDeclarations": ["test/sum_test.dart: 3 tests"],
+    "rowFileShapes": [
+      "test/text_test.dart",
+      "import 'package:slotprompt/slotprompt.dart';",
+      "import 'package:test/test.dart';",
+      "",
+      "import 'rows.dart';",
+      "",
+      "final rows = [",
+      "  row('Hello {{name}}', {'name': 'Ann'}, 'Hello Ann'),",
+      "  row('Price: \\${{p}}', {'p': '5'}, 'Price: \\$5'),",
+      "];",
+      "",
+      "void main() => runRows(rows, render);",
+      ""
+    ]
   }
 }

@@ -90,6 +90,7 @@
     "dependencyPrepare": null,
     "worktreePathLimits": null,
     "testClasses": null,
-    "testDeclarations": ["tests/sum.rs: 2 tests"]
+    "testDeclarations": ["tests/sum.rs: 2 tests"],
+    "rowFileShapes": null
   }
 }

@@ -94,6 +94,7 @@
       "src/test/java/SumTest.java: by its name",
       "src/test/java/SumPropertyTest.java: SumPropertyTest"
     ],
-    "testDeclarations": ["src/test/java/SumTest.java: 2 tests, per class 2"]
+    "testDeclarations": ["src/test/java/SumTest.java: 2 tests, per class 2"],
+    "rowFileShapes": null
   }
 }
