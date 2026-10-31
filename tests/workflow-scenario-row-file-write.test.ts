@@ -7,11 +7,14 @@ import type { LanguageModelV3, LanguageModelV3GenerateResult } from "@ai-sdk/pro
 import { isNoRow } from "../src/core/intelligence/language-records.js";
 import { getProvider } from "../src/core/llm/providers/index.js";
 import { hashBytes, hashJson } from "../src/core/specs/hash.js";
+import * as placeRowsModule from "../src/core/tools/place-rows.js";
 import { PLACE_ROWS_DIR, type PlaceRowsInput, type PlaceRowsRecord, placeRows, placeRowTargets } from "../src/core/tools/place-rows.js";
 import { NativeAgentExecutor } from "../src/core/workflows/agent-executor.js";
 import { layoutFree } from "../src/core/workflows/acceptance-rows-inline.js";
 import { type HostApplyWrite, hostApplyDecision, hostApplyRecords, rowFileTasks } from "../src/core/workflows/host-apply.js";
+import * as rowBlockModule from "../src/core/workflows/row-block-drift.js";
 import { ROW_FILE_SHAPES, type RowFileInputs, rowArity, rowFilePlan, rowFileRefusal } from "../src/core/workflows/row-file.js";
+import { ROW_RESTORE_DIR, type RowRestoreRecord, rowEditBreaks, rowRestorePlan } from "../src/core/workflows/row-restore.js";
 import type { RunPolicy, TaskGraph } from "../src/core/workflows/schemas.js";
 import { runRootPath } from "../src/core/workflows/effects.js";
 import { newId } from "../src/core/workflows/store.js";
@@ -615,9 +618,9 @@ const placeAll = (shape: PlaceShape) => () => call("place_rows", { path: shape.p
 const submitRows = (shape: PlaceShape) => () =>
   call("submit_result", { schemaVersion: 1, taskId: "T001", outcome: "implemented", summary: `Placed the rows of ${shape.path}`, evidenceIds: [], unresolved: [] });
 
-async function placeScenario(shape: PlaceShape, extra: Partial<RunPolicy>, script: (() => LanguageModelV3GenerateResult)[]) {
+async function placeScenario(shape: PlaceShape, extra: Partial<RunPolicy>, script: (() => LanguageModelV3GenerateResult)[], checks?: RunPolicy["checks"]) {
   const asShape = { path: shape.path, block: shape.block } as WriteShape;
-  const policy: RunPolicy = { ...fixturePolicy, checks: [rowsCheck(asShape)], ...extra };
+  const policy: RunPolicy = { ...fixturePolicy, checks: checks ?? [rowsCheck(asShape)], ...extra };
   const fixture = workflowFixture({ policy, executor: (root) => new PlaceRowsExecutor(root, shape) });
   cleanups.push(fixture.dispose);
   const native = new NativeAgentExecutor(fixture.service.store, fixture.service.leases, { ...fixture.config, repoMap: false });
@@ -640,6 +643,10 @@ async function placeScenario(shape: PlaceShape, extra: Partial<RunPolicy>, scrip
     seen,
     record: record ? (JSON.parse(store.readArtifact(run.runId, record.id)) as PlaceRowsRecord) : undefined,
     rowBlocks: replayRowBlocks(store, run.runId).filter((b) => b.path === shape.path),
+    restores: store
+      .artifacts(run.runId)
+      .filter((a) => a.logical_path.startsWith(ROW_RESTORE_DIR))
+      .map((a) => JSON.parse(store.readArtifact(run.runId, a.id)) as RowRestoreRecord),
   };
 }
 
@@ -730,5 +737,120 @@ describe("placeRows: the request's rows after a line, from suppliedRows and rest
     const request = placeRequest(PLACE_PNMFORGE);
     expect([...placeRowTargets(request, { writes: [{ path: PLACE_CLI_PATH, action: "modify" }, { path: "src/cli.cpp", action: "modify" }] })]).toEqual([[PLACE_CLI_PATH, PLACE_CLI_ROWS]]);
     expect(placeRowTargets(request, { writes: [{ path: PLACE_CLI_PATH, action: "delete" }] }).size).toBe(0);
+  });
+});
+
+// #2583: some requests give their rows in their own notation, not as code of the file's language.
+// Bench round 84 (`rowFileWrite: "on"`): wrapsmith (PowerShell) T002 got `place_rows`, which wrote
+// rows like `run "cols" "3" stdin=... => 0 "..." "",` into `tests/*.Tests.ps1`; Pester failed to
+// parse the file, and the prescribed-row edit guard put back every edit that rewrote a row as an
+// executable `Row` call (the translation spells `\n` as PowerShell's `` `n ``), so the run stuck.
+
+const WRAP_PATH = "tests/Cols.Tests.ps1";
+const wrapFile = (rows: string[]) => ['BeforeAll { . "$PSScriptRoot/Row.ps1" }', "", "Describe 'cols' {", ...rows.map((r) => `    ${r}`), "}", ""].join("\n");
+const WRAP_ROWS = ['run "cols" "3" stdin="abc def ghi\\n" => 0 "abc\\ndef\\nghi\\n" "",', 'run "cols" "5" stdin="a b c\\n" => 0 "a b c\\n" "",'];
+// The session's translation: Pester calls with PowerShell's own escapes.
+const WRAP_CALLS = ["Row @('cols', '3') -Stdin \"abc def ghi`n\" -Code 0 -Out \"abc`ndef`nghi`n\" -Err ''", "Row @('cols', '5') -Stdin \"a b c`n\" -Code 0 -Out \"a b c`n\" -Err ''"];
+const WRAPSMITH: PlaceShape = {
+  path: WRAP_PATH,
+  scaffold: wrapFile([]),
+  line: 3,
+  block: [`cols rows in ${WRAP_PATH} (2 rows)`, ...WRAP_ROWS],
+  options: { separator: "" },
+  written: wrapFile(WRAP_CALLS),
+};
+// The pester-written check's stand-in: a notation line is a ParseException; every row is a `Row` call.
+const pesterCheck = {
+  id: "pester-written",
+  executable: "bun",
+  args: ["-e", `const t = await Bun.file(${JSON.stringify(WRAP_PATH)}).text(); if (/^\\s*run\\s.*=>/m.test(t)) { console.log("ParseException: ${WRAP_PATH}"); process.exit(1); } if ((t.match(/^\\s*Row @\\(/gm) ?? []).length !== 2) { console.log("${WRAP_PATH}: a row is missing"); process.exit(1); }`],
+  cwd: ".",
+  timeoutMs: 10000,
+  required: true,
+  scope: "feature" as const,
+  envNames: [],
+  writes: [],
+};
+const translate = (from: string, to: string) => () => call("edit_file", { path: WRAP_PATH, oldString: from, newString: to });
+
+describe("scenario: R84 wrapsmith, rows in the request's notation are translated by the session, never placed (#2583)", () => {
+  test("powershell: place_rows is not offered for notation rows, and the session's Pester calls stand", async () => {
+    const { final, file, seen, record } = await placeScenario(
+      WRAPSMITH,
+      { rowFileWrite: "on" },
+      [translate("Describe 'cols' {\n", `Describe 'cols' {\n${WRAP_CALLS.map((c) => `    ${c}`).join("\n")}\n`), submitRows(WRAPSMITH)],
+      [pesterCheck],
+    );
+    expect(seen.tools[0]).not.toContain("place_rows");
+    expect(seen.prompts[0]).not.toContain("You must place them with place_rows");
+    expect(seen.prompts[0]).toContain(`The request gives the rows of ${WRAP_PATH} (every row) in its own notation`);
+    expect(seen.prompts[1]).not.toContain("Edit put back");
+    expect(record).toMatchObject({ mode: "on", offered: false, files: [{ path: WRAP_PATH, rows: 2, notation: 2 }] });
+    expect(final.status).toBe("completed");
+    expect(file).toBe(WRAPSMITH.written);
+    expect(file).not.toContain("=>");
+  });
+
+  test("powershell resume: a file holding the notation rows place_rows wrote is converted without a refusal or a restore", async () => {
+    const { final, file, seen, restores } = await placeScenario(
+      { ...WRAPSMITH, scaffold: wrapFile(WRAP_ROWS) },
+      { rowFileWrite: "on", rowRestore: "on" },
+      [translate(WRAP_ROWS[0] ?? "", WRAP_CALLS[0] ?? ""), translate(WRAP_ROWS[1] ?? "", WRAP_CALLS[1] ?? ""), submitRows(WRAPSMITH)],
+      [pesterCheck],
+    );
+    for (const prompt of seen.prompts.slice(1, 3)) expect(prompt).not.toContain("Edit put back");
+    expect(final.status).toBe("completed");
+    expect(file).toBe(WRAPSMITH.written);
+    // Nothing writes the request's notation back over the executable rows.
+    expect(restores.filter((r) => r.verdict === "restored" || r.verdict === "would_restore")).toEqual([]);
+  });
+
+  test("placeRows refuses a notation row with the change to make; code rows of the same task still place", () => {
+    const targets = new Map<string, readonly string[]>([[WRAP_PATH, WRAP_ROWS], [PLACE_CLI_PATH, PLACE_CLI_ROWS]]);
+    const refused = placeRows({ path: WRAP_PATH, line: 3, rows: [1, 2] }, targets, WRAPSMITH.scaffold);
+    expect("refusal" in refused ? refused.refusal : null).toContain(`${WRAP_PATH}: the request gives rows 1, 2 in its own notation`);
+    expect("refusal" in refused ? refused.refusal : null).toContain("Write these rows yourself with edit_file as the test framework's call");
+    expect(placeRows({ path: PLACE_CLI_PATH, line: 3, rows: [1, 3] }, targets, PLACE_PNMFORGE.scaffold)).toMatchObject({ content: PLACE_PNMFORGE.written });
+    const forms = placeRowsModule.placeRowForms(targets);
+    expect([...forms.code.keys()]).toEqual([PLACE_CLI_PATH]);
+    expect([...forms.notation]).toEqual([[WRAP_PATH, [1, 2]]]);
+  });
+
+  test("the edit guard lets a notation row become code, and still guards the code row afterwards", () => {
+    const request = placeRequest(WRAPSMITH);
+    expect(rowEditBreaks(request, WRAP_PATH, wrapFile(WRAP_ROWS), wrapFile([WRAP_CALLS[0] ?? "", WRAP_ROWS[1] ?? ""]))).toBeNull();
+    // A code row that holds the request's row is guarded as before: changing its output is put back.
+    const held = "Row @('cols', '5') -Stdin 'a b c' -Code 0 -Out 'a b c' -Err ''";
+    const rows = ['run "cols" "5" stdin="a b c" => 0 "a b c" ""'];
+    const plain = ["Prescribed.", "", "```text", `cols rows in ${WRAP_PATH} (1 row)`, ...rows, "```", ""].join("\n");
+    expect(rowEditBreaks(plain, WRAP_PATH, wrapFile([held]), wrapFile([held.replace("-Out 'a b c'", "-Out 'a b'")]))?.rows).toEqual([1]);
+  });
+
+  test("the whole-line restore never writes the request's notation over code that shares its head", () => {
+    // A Pester helper named after the notation: the same head, `run`, but PowerShell's own call.
+    const code = "run @('cols', '3') -Stdin \"abc def ghi`n\" -Code 0 -Out \"abc`ndef`nghi`n\" -Err ''";
+    const file = wrapFile([code, WRAP_ROWS[1] ?? ""]);
+    const plan = rowRestorePlan(WRAP_ROWS, file);
+    expect(plan.sites).toMatchObject([{ row: 1, line: 4, sameHead: false }]);
+    expect(plan.restore).toEqual([]);
+    expect(plan.after).toBe(file);
+  });
+
+  test("rowNotation tells the request's notation from code rows of every shape; the host write declines notation rows", () => {
+    for (const row of [...WRAP_ROWS, 'run "deflate" "--hex" stdin="7171" => 0 "cd\\n" ""', "run ls => 0 \"<dir>/out.txt\\n\"", "split \"a,b\" => \"a|b\""]) expect(rowBlockModule.rowNotation(row)).toBe(true);
+    const code = [
+      ...PLACE_CLI_ROWS,
+      ...PLACE_ENCODE_ROWS,
+      ...WRAP_CALLS,
+      ...Object.values(ROW_FILE_SHAPES).flatMap((shape) => (isNoRow(shape) ? [] : shape.example.rows)),
+      "yield 'cols 3' => ['cols', '3', 0, \"abc\\n\"],",
+      "['args' => ['cols'], 'code' => 0],",
+      '@test "cols 3" {',
+      'it "maps a => b" do',
+      "assert_row \"cols\" \"3\"",
+    ];
+    for (const row of code) expect([row, rowBlockModule.rowNotation(row)]).toEqual([row, false]);
+    // `rowFilePlan` needs every row to be a row line of the language, so notation rows decline.
+    for (const shape of [TINYFLATE, PNMFORGE, BYTEMERGE]) expect(rowFilePlan(shape.path, WRAP_ROWS, { source: "reference", text: shape.reference.text }).inputs.sameHead).toBe(false);
   });
 });

@@ -47,6 +47,7 @@ import {
   PLACE_ROWS,
   PLACE_ROWS_DIR,
   PLACE_ROWS_KIND,
+  placeRowForms,
   placeRows,
   placeRowsDescription,
   placeRowsInput,
@@ -1238,9 +1239,12 @@ export class NativeAgentExecutor implements AgentExecutor {
         } catch {
           // A shadow record: failing to keep it changes nothing.
         }
-        if (on)
+        // Only rows written as the file language's code are placed (#2583): a task whose rows are
+        // all in the request's notation translates them itself, and is not offered the tool.
+        const placeCode = placeRowForms(placeTargets).code;
+        if (on && placeCode.size)
           available[PLACE_ROWS] = tool({
-            description: placeRowsDescription(placeTargets),
+            description: placeRowsDescription(placeCode),
             inputSchema: placeRowsInput,
             execute: async (input) =>
               track(PLACE_ROWS, async () => {

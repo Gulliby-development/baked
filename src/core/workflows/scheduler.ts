@@ -41,7 +41,7 @@ import { canonical, hashBytes, hashJson } from "../specs/hash.js";
 import { specPublication } from "../specs/render.js";
 import { validatePackage, workspacePath } from "../specs/validate.js";
 import { captureEndings, restoreEndings } from "../tools/line-endings.js";
-import { placeRowTargets } from "../tools/place-rows.js";
+import { placeRowForms, placeRowTargets } from "../tools/place-rows.js";
 import {
   assertAcceptance,
   assertAcceptanceV2,
@@ -12020,18 +12020,35 @@ ${note}`;
   /**
    * For a task that writes a file the request prescribes rows for, under `rowFileWrite: "on"`
    * (#2564): the session places the rows with place_rows, from the request's text, and never types
-   * one. The executor offers the tool on the same targets (`placeRowTargets`).
+   * one. The executor offers the tool on the same targets (`placeRowTargets`). Rows in the
+   * request's own notation (`rowNotation`, #2583) are named for the session to translate instead.
    */
   private placeRowsContext(
     state: RuntimeState,
     policy: RunPolicy,
     task: Task,
-  ): { placeRows?: { files: { path: string; rows: number }[]; note: string } } {
+  ): {
+    placeRows?: { files: { path: string; rows: number }[]; note: string };
+    notationRows?: { files: { path: string; rows: number[] }[]; note: string };
+  } {
     if (policy.rowFileWrite !== "on") return {};
     const targets = placeRowTargets(state.requestText || state.prompt, task);
     if (!targets.size) return {};
-    const files = [...targets].map(([path, rows]) => ({ path, rows: rows.length }));
+    // Rows in the request's own notation are the session's to translate, never placed (#2583).
+    const { code, notation } = placeRowForms(targets);
+    const translated = [...notation].map(([path, rows]) => ({ path, rows }));
+    const notationRows = translated.length
+      ? {
+          notationRows: {
+            files: translated,
+            note: `The request gives the rows of ${translated.map((f) => `${f.path} (${f.rows.length === (targets.get(f.path)?.length ?? 0) ? "every row" : `rows ${f.rows.join(", ")}`})`).join(", ")} in its own notation (a command, its arguments and input, then => and the expected exit code and output), not as code of the file's language; no test framework parses those lines and place_rows does not insert them. Write each such row yourself with edit_file as the test framework's call, one test per row in the request's order, keeping every argument, input and expected value, each string in the language's own quoting and escapes.`,
+          },
+        }
+      : {};
+    if (!code.size) return notationRows;
+    const files = [...code].map(([path, rows]) => ({ path, rows: rows.length }));
     return {
+      ...notationRows,
       placeRows: {
         files,
         note: `The request prescribes the rows of ${files.map((f) => `${f.path} (${f.rows} rows)`).join(", ")}. You must place them with place_rows and never type a row: write everything else in the file with edit_file (imports, the row type, the list's opening and close, the harness calls), leaving the rows out, then call place_rows with the path, the line the rows follow and rows [first, last]. The host inserts the request's rows exactly as written, one per line in order; give indent and separator when the defaults (the line's indentation, one level deeper after a line that opens the list; a comma after each row) do not fit the language.`,

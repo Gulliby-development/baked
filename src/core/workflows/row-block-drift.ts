@@ -561,6 +561,37 @@ export function rowHead(line: string): string {
   return /^\s*([^\s"'`([{]*[([{]?)/.exec(line)?.[1] ?? "";
 }
 
+/**
+ * Whether a prescribed row is in the request's own notation rather than a language's code (#2583):
+ * a bare word, then a space (`run "cols" "3" stdin="…" => 0 "…" ""`), with a `=>` outside quotes
+ * and brackets that a value follows, not a bracket (PHP's `yield 'x' => [...]` stays code). A test
+ * framework cannot parse such a line: R84 wrapsmith's `place_rows` wrote these rows into a Pester
+ * file (ParseException), and the edit guard then refused the session's `Row` calls. Code rows
+ * (`{"a", 0}`, `Arguments.of(…)`, `row(…)`, `["a", ["a"]]`) start with a bracket or a call.
+ */
+export function rowNotation(row: string): boolean {
+  const text = row.trim();
+  const head = rowHead(text);
+  if (!/^[A-Za-z_][\w.-]*$/.test(head) || !/\s/.test(text[head.length] ?? "")) return false;
+  let depth = 0;
+  for (let i = head.length; i < text.length; i++) {
+    const ch = text[i] ?? "";
+    const quote =
+      ch === '"' || ch === "`" || (ch === "'" && !/[\p{L}\p{N}_]/u.test(text[i - 1] ?? ""));
+    if (quote) {
+      let j = i + 1;
+      while (j < text.length && text[j] !== ch) j += text[j] === "\\" ? 2 : 1;
+      i = j;
+      continue;
+    }
+    if ("([{".includes(ch)) depth++;
+    else if (")]}".includes(ch)) depth--;
+    else if (depth === 0 && ch === "=" && text[i + 1] === ">" && /\s/.test(text[i - 1] ?? ""))
+      return /^\s+[^\s([{]/.test(text.slice(i + 2));
+  }
+  return false;
+}
+
 /** A line that continues the previous line's strings: a quote or a concatenation operator first. */
 export const CONTINUES = /^\s*(?:["']|\+|<>|\.\.)/;
 
