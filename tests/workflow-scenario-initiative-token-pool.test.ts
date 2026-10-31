@@ -1097,9 +1097,15 @@ describe("scenario: a share-gate hold for no measurement is asked again when the
       { mode: "on", wouldExtend: true, toTokens: 3_500_000, byTokens: 500_000 },
     ]);
     expect(parks[1]?.view.budget.cost.measuredFeatures).toBe(1);
+    // f2's park grows the pool once, first. On a slower machine (Windows CI) f3 and f4 can reach
+    // their own parks later, after the measurement, and the host grows the pool for them too.
     const extended = events("budget.extended").filter((e) => e.by === "host");
-    expect(extended).toHaveLength(1);
+    expect(extended.filter((e) => e.featureId === "f2")).toHaveLength(1);
     expect(extended[0]).toMatchObject({ reason: "extend-within-dollars", featureId: "f2", previous: { maxTotalTokens: 3_000_000 }, toTokens: 3_500_000 });
+    // Every host growth answers a park decided with the measurement, never one held without it.
+    const decided = (events("feature.share_gate") as unknown as ShareGateRecord[]).filter((g) => g.poolGrowth?.wouldExtend);
+    expect(extended.map((e) => [e.featureId, e.toTokens])).toEqual(decided.map((g) => [g.featureId, g.poolGrowth?.toTokens]));
+    expect(decided.every((g) => g.view.budget.cost.measuredFeatures >= 1)).toBe(true);
     expect(view.status).toBe("completed");
   });
 
