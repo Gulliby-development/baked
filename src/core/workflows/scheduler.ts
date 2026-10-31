@@ -94,7 +94,13 @@ import {
   writtenTestPaths,
 } from "../verification/criteria-cases.js";
 import { canHold } from "../verification/deliverable-paths.js";
-import { type DocExampleResult, isDocFile, runDocExamples } from "../verification/doc-examples.js";
+import {
+  type DocExampleResult,
+  type DocTextProblem,
+  docTextProblems,
+  isDocFile,
+  runDocExamples,
+} from "../verification/doc-examples.js";
 import {
   caseCrash,
   EDGE_CASES,
@@ -18053,12 +18059,7 @@ ${note}`;
         JSON.parse(this.store.readArtifact(runId, kept.id)) as { examples: DocExampleResult[] }
       ).examples;
     const root = runRoot(this.store.workspace, state);
-    const docs = [...journaledBaseHashes(this.store, runId).keys()]
-      .filter(isDocFile)
-      .flatMap((path) => {
-        const absolute = workspacePath(root, path);
-        return existsSync(absolute) ? [{ path, text: readFileSync(absolute, "utf8") }] : [];
-      });
+    const docs = this.changedDocs(runId, state);
     if (!docs.length) return [];
     const examples = await runDocExamples(this.processes, docs, {
       root,
@@ -18073,6 +18074,36 @@ ${note}`;
       this.store.artifact(runId, "diagnostic", logicalPath, canonical({ examples })),
     );
     return examples;
+  }
+  /** The documents (README and other Markdown) the run changed, as they are in its root. */
+  private changedDocs(runId: string, state: RuntimeState): { path: string; text: string }[] {
+    const root = runRoot(this.store.workspace, state);
+    return [...journaledBaseHashes(this.store, runId).keys()].filter(isDocFile).flatMap((path) => {
+      const absolute = workspacePath(root, path);
+      return existsSync(absolute) ? [{ path, text: readFileSync(absolute, "utf8") }] : [];
+    });
+  }
+  /**
+   * The prose and table defects of the documents the run changed (#2549): code spans that copy
+   * an escaped string literal of the spec instead of its value, and table code spans with a bare
+   * `|`. Evidence for the correctness reviewer, as the documented examples are; recorded per
+   * snapshot when there is any.
+   */
+  private documentedText(runId: string, state: RuntimeState, spec: Spec): DocTextProblem[] {
+    if (!state.snapshotId) return [];
+    const sources = [
+      ...spec.requirements.map((r) => r.text),
+      ...spec.criteria.flatMap((c) => [c.given, c.when, c.then]),
+    ].join("\n");
+    const problems = this.changedDocs(runId, state).flatMap((doc) =>
+      docTextProblems(doc.path, doc.text, sources),
+    );
+    const logicalPath = `reviews/doc-text-${state.snapshotId}.json`;
+    if (problems.length && !this.store.latestArtifact(runId, logicalPath))
+      this.store.transaction(() =>
+        this.store.artifact(runId, "diagnostic", logicalPath, canonical({ problems })),
+      );
+    return problems;
   }
   private async review(
     runId: string,
@@ -18114,6 +18145,9 @@ ${note}`;
     const references = state.graph ? fileReferences(state.graph) : {};
     const examples = reviewers.some((r) => r.dimension === "correctness")
       ? await this.documentedExamples(runId, state, policy, executables, signal)
+      : [];
+    const docText = reviewers.some((r) => r.dimension === "correctness")
+      ? this.documentedText(runId, state, reviewSpec)
       : [];
     const runReviewer = async (reviewer: Reviewer) => {
       // A review of this very snapshot that an earlier, interrupted round finished is kept.
@@ -18192,6 +18226,9 @@ ${note}`;
               ...(canRepro ? { reproTool: { name: "run_repro", programs: executables } } : {}),
               ...(reviewer.dimension === "correctness" && examples.length
                 ? { documentedExamples: examples }
+                : {}),
+              ...(reviewer.dimension === "correctness" && docText.length
+                ? { documentedText: docText }
                 : {}),
               ...(inventory ? { workspaceInventory: inventory } : {}),
               ...extra,
