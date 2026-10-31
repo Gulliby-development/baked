@@ -1,5 +1,6 @@
+import { type RunDiff, runDiffText, runLengthCompare } from "../verification/byte-runs.js";
 import { verbatimHeld } from "../verification/criteria-cases.js";
-import type { TaskGraph } from "./schemas.js";
+import type { Review, TaskGraph } from "./schemas.js";
 import { suppliedRows } from "./sizing.js";
 
 /**
@@ -34,6 +35,18 @@ import { suppliedRows } from "./sizing.js";
  * later prescribed row is `reordered`. A test whose rows are not one per line (a bats `@test` per
  * row, Java `@CsvSource` strings) has no head that matches, and records no file rows.
  *
+ * A long byte run of a row (a hex string, a byte list, a repeat expression) is compared by its
+ * count (#2515, `runLengthCompare` in byte-runs.ts, the one comparison the literal lookup, the
+ * case walk and `misquotation` share). Bench round 82: tinyflate deflate T007 wrote
+ * `tests/deflate_match_test.c` with 303 bytes of `0x78` for a row's 300 and 238 bytes of `0x71`
+ * for another's 259; 300 bytes read verbatim are held inside 303, so nothing was recorded, the
+ * failing check read as a source failure and every corrective rewrote a correct `src/deflate.c`.
+ * A row whose run the file counts differently drifts with the file line, the byte and both
+ * counts (`RowMeasure.runs`), and a failing check of the same checks stage says so in its
+ * corrective (`rowRunFindings`): "the test's input literal differs from the criterion row by N
+ * bytes". With the policy field `rowRunRoute: "on"` the correction goes to the test's task only;
+ * absent, the route is recorded (`row-runs/<check>.json`) and the findings keep their files.
+ *
  * The `row_block_drift` reason records each drifting row, and each added or duplicated row, as a
  * would-stop (shadow); a reordered row is only recorded. `row-blocks/<path>.json` records the
  * counts its decisions read (no text) for the replay.
@@ -50,6 +63,17 @@ export interface RowMeasure {
   literals: number;
   /** Which of them (from 1) the delivered file does not hold. */
   missing: number[];
+  /**
+   * Its long byte runs the file counts differently (#2515): the file line, the byte and both
+   * counts; absent when there is none (and in records before it).
+   */
+  runs?: RowRunMeasure[];
+}
+
+/** A long run of a prescribed row that a file line counts differently (#2515). */
+export interface RowRunMeasure extends RunDiff {
+  /** The file line, from 1. */
+  line: number;
 }
 
 /** One row of the delivered file against the block (#2503): counts only, as the trace keeps them. */
@@ -91,10 +115,13 @@ export interface RowBlockRecord {
   moves?: RowMoves;
 }
 
-/** The rows that drift: those with a literal the delivered file does not hold. */
+/**
+ * The rows that drift: those with a literal the delivered file does not hold, or a long byte run
+ * it counts differently (#2515).
+ */
 export type RowBlockRule = (rows: readonly RowMeasure[]) => number[];
 export function rowBlockDecision(rows: readonly RowMeasure[]): number[] {
-  return rows.flatMap((r) => (r.missing.length ? [r.row] : []));
+  return rows.flatMap((r) => (r.missing.length || r.runs?.length ? [r.row] : []));
 }
 
 /** Places each file row: unmatched (added unless it replaces a row), repeated, or out of order. */
@@ -128,6 +155,17 @@ export interface RowBlockDrift {
   text: string;
   /** Each literal the file lacks, from 1, as the request spells it (cut). */
   missing: { literal: number; text: string }[];
+  /** Each long byte run the file counts differently (#2515), by the bytes it is off. */
+  runs: RowRunDrift[];
+}
+
+/** A long byte run of a row the file counts differently (#2515). */
+export interface RowRunDrift {
+  /** The file line, from 1. */
+  line: number;
+  /** How many bytes the file's literal differs from the row by. */
+  bytes: number;
+  diffs: RunDiff[];
 }
 
 /** A file row beyond the block (#2503): added, or a second copy of a prescribed row. */
@@ -179,8 +217,20 @@ export function measureRows(rows: readonly string[], file: string): RowMeasure[]
   return rows.map((line, index) => {
     const literals = rowLiterals(line).filter(meaningful);
     const missing = literals.flatMap((literal, i) => (literalHeld(file, literal) ? [] : [i + 1]));
-    return { row: index + 1, literals: literals.length, missing };
+    const runs = rowRuns(line, file).flatMap((d) =>
+      d.diffs.map((diff) => ({ line: d.line, ...diff })),
+    );
+    return { row: index + 1, literals: literals.length, missing, ...(runs.length ? { runs } : {}) };
   });
+}
+
+/** The long byte runs of a prescribed row the file counts differently (#2515). */
+function rowRuns(line: string, file: string): RowRunDrift[] {
+  return (runLengthCompare(file, line)?.drifts ?? []).map((d) => ({
+    line: d.line,
+    bytes: d.bytes,
+    diffs: d.diffs,
+  }));
 }
 
 /** A row of the delivered file: its first line, its head and its text with continued strings. */
@@ -346,6 +396,7 @@ export function rowBlockDrifts(
           row: n,
           text: cut(line),
           missing: measure.missing.map((i) => ({ literal: i, text: cut(literals[i - 1] ?? "") })),
+          runs: file === null ? [] : rowRuns(line, file),
         },
       ];
     });
@@ -373,7 +424,98 @@ export function rowBlockDrifts(
 export function rowBlockDriftSummary(drift: RowBlockDrift): string {
   const lacks = drift.missing.map((m) => `"${m.text}"`).join(", ");
   const by = drift.tasks.length ? `${drift.tasks.join(", ")} delivered ` : "";
-  return `${by}${drift.path} without row ${drift.row} of the request's row block as given: the file lacks ${lacks} (row: ${drift.text}). A repair task would restore the row from the request's text; the prescribed row wins over a test this run wrote.`;
+  const what = lacks ? `the file lacks ${lacks}` : "";
+  const runs = rowRunText(drift);
+  const why = [what, runs].filter(Boolean).join("; ");
+  return `${by}${drift.path} without row ${drift.row} of the request's row block as given: ${why} (row: ${drift.text}). A repair task would restore the row from the request's text; the prescribed row wins over a test this run wrote.`;
+}
+
+/**
+ * A row's long runs the file counts differently, plainly (#2515): `the test's input literal
+ * differs from the criterion row by 3 bytes (tests/deflate_match_test.c line 11: 303 bytes of
+ * 0x78 where row 1 of the request's row block gives 300)`. Empty when there is none.
+ */
+export function rowRunText(drift: Pick<RowBlockDrift, "path" | "row" | "runs">): string {
+  return drift.runs
+    .map(
+      (r) =>
+        `the test's input literal differs from the criterion row by ${r.bytes} byte${r.bytes === 1 ? "" : "s"} (${drift.path} line ${r.line}: ${r.diffs.map((d) => runDiffText(d, `row ${drift.row} of the request's row block`)).join(", ")})`,
+    )
+    .join("; ");
+}
+
+export const ROW_RUN_KIND = "row-run-route";
+export const ROW_RUN_DIR = "row-runs/";
+
+/** What `row-runs/<check>.json` records: a failing check's route with run drifts (#2515), no text. */
+export interface RowRunRouteRecord {
+  schemaVersion: 1;
+  checkId: string;
+  /** `shadow`: recorded, the findings keep their files; `on`: the test's task corrects. */
+  mode: "shadow" | "on";
+  /** The test files with a run drift, and the tasks that write them. */
+  tests: string[];
+  tasks: string[];
+  /** Each drift's bytes off, in order. */
+  bytes: number[];
+  /** The files of the check's findings as built, and those the route gives them (or would). */
+  before: (string | null)[];
+  after: (string | null)[];
+}
+
+/**
+ * A failing check's findings when the same checks stage found a long run of a prescribed row
+ * counted differently in a test file (#2515). Every finding's corrective says so first, in plain
+ * words with the line and the byte (it only adds what the host knows). With `route` (the policy
+ * field `rowRunRoute: "on"`), the findings go to the drifting test files only, each from the task
+ * that writes it, and the source findings are dropped; without it the route is only recorded.
+ * Null record when no drift has a run.
+ */
+export function rowRunFindings(
+  checkId: string,
+  findings: Review["findings"],
+  drifts: readonly RowBlockDrift[],
+  tasks: readonly Pick<
+    TaskGraph["tasks"][number],
+    "id" | "writes" | "requirementIds" | "criterionIds"
+  >[],
+  route: boolean,
+  newId: () => string,
+): { findings: Review["findings"]; record: RowRunRouteRecord | null } {
+  const runs = drifts.filter((d) => d.runs.length);
+  const [template] = findings;
+  if (!runs.length || !template) return { findings, record: null };
+  const said = runs.map(rowRunText).join("; ");
+  const note = `${said.charAt(0).toUpperCase()}${said.slice(1)}. Correct the test's literal to the row as the request gives it; the source is not what differs.`;
+  const tests = [...new Set(runs.map((d) => d.path))];
+  const routed: Review["findings"] = route
+    ? tests.map((path) => {
+        const own = findings.find((f) => f.file === path);
+        const owner = tasks.find((t) => t.writes.some((w) => plainPath(w.path) === path));
+        return {
+          ...(own ?? template),
+          id: own?.id ?? newId(),
+          file: path,
+          ...(owner
+            ? { requirementIds: owner.requirementIds, criterionIds: owner.criterionIds }
+            : {}),
+          suggestedFix: `${note} Edit ${path} only; the other rows and the source stay as written.`,
+        };
+      })
+    : findings.map((f) => ({ ...f, suggestedFix: `${note} ${f.suggestedFix}` }));
+  return {
+    findings: routed,
+    record: {
+      schemaVersion: 1,
+      checkId,
+      mode: route ? "on" : "shadow",
+      tests,
+      tasks: [...new Set(runs.flatMap((d) => d.tasks))],
+      bytes: runs.flatMap((d) => d.runs.map((r) => r.bytes)),
+      before: findings.map((f) => f.file),
+      after: tests,
+    },
+  };
 }
 
 /** A file row beyond the block in the words a stop would use (#2503). */

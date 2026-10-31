@@ -890,9 +890,13 @@ import {
 import {
   ROW_BLOCK_DIR,
   ROW_BLOCK_KIND,
+  ROW_RUN_DIR,
+  ROW_RUN_KIND,
+  type RowBlockDrift,
   rowBlockDriftSummary,
   rowBlockDrifts,
   rowBlockExtraSummary,
+  rowRunFindings,
 } from "./row-block-drift.js";
 import { ROW_RESTORE_DIR, ROW_RESTORE_KIND, rowRestores } from "./row-restore.js";
 import {
@@ -5240,13 +5244,19 @@ export class WorkflowScheduler {
    * whose quoted literal the delivered file lacks, once per file and row; each row of the file
    * beyond the block, added or duplicated (#2503), once per file, kind and line; and the counts of
    * each compared file under `row-blocks/<path>.json`. Called at the checks stage of both workflow
-   * versions, after the snapshot; a failure to read records nothing.
+   * versions, after the snapshot; a failure to read records nothing. Returns the drifting rows, so
+   * a failing check of the same stage can name a long byte run the test counts differently (#2515).
    */
-  private rowBlockDriftWouldStop(runId: string, state: RuntimeState, policy: RunPolicy): void {
+  private rowBlockDriftWouldStop(
+    runId: string,
+    state: RuntimeState,
+    policy: RunPolicy,
+  ): RowBlockDrift[] {
     const mode = stopMode(policy, "row_block_drift");
-    if (mode === "enforce") return;
+    if (mode === "enforce") return [];
     const graph = state.rootGraph ?? state.graph;
-    if (!graph) return;
+    if (!graph) return [];
+    const found: RowBlockDrift[] = [];
     try {
       const root = runRoot(this.store.workspace, state);
       const compared = rowBlockDrifts(
@@ -5256,6 +5266,7 @@ export class WorkflowScheduler {
         mode,
       );
       for (const { record, drifts, extras } of compared) {
+        found.push(...drifts);
         this.store.transaction(() =>
           this.store.artifact(
             runId,
@@ -5282,6 +5293,41 @@ export class WorkflowScheduler {
           });
       }
     } catch {}
+    return found;
+  }
+  /**
+   * A failing check's findings when this checks stage found a test file counting a long byte run
+   * of a prescribed row differently (#2515, `rowRunFindings`): each says so first, with the line
+   * and the byte; with `rowRunRoute: "on"` they go to the test's task only. The route, or the one
+   * it would take, is recorded under `row-runs/<check>.json`.
+   */
+  private rowRunFindings(
+    runId: string,
+    state: RuntimeState,
+    policy: RunPolicy,
+    checkId: string,
+    findings: Review["findings"],
+    drifts: readonly RowBlockDrift[],
+  ): Review["findings"] {
+    if (!drifts.some((d) => d.runs.length)) return findings;
+    const { findings: out, record } = rowRunFindings(
+      checkId,
+      findings,
+      drifts,
+      (state.rootGraph ?? state.graph)?.tasks ?? [],
+      policy.rowRunRoute === "on",
+      newId,
+    );
+    if (record)
+      this.store.transaction(() =>
+        this.store.artifact(
+          runId,
+          ROW_RUN_KIND,
+          `${ROW_RUN_DIR}${checkId}.json`,
+          canonical(record),
+        ),
+      );
+    return out;
   }
   /**
    * Before the first task, runs the fixer of each required feature check that passed at the check
@@ -15731,7 +15777,7 @@ ${note}`;
     if (unsafe.length) return this.recordChecks(runId, state, unsafe);
     this.ciCheckDriftWouldStop(runId, state, policy, policy.checks);
     this.suppliedDriftWouldStop(runId, state, policy);
-    this.rowBlockDriftWouldStop(runId, state, policy);
+    const rowDrifts = this.rowBlockDriftWouldStop(runId, state, policy);
     const failures: Review["findings"] = [];
     const failedIds: string[] = [];
     const passedIds: string[] = [];
@@ -15783,19 +15829,22 @@ ${note}`;
           state.graph?.tasks.find((t) => t.checkIds.includes(check.id)) ?? state.graph?.tasks[0];
         if (!task)
           throw new WorkflowFault("OUTPUT_INVALID", "Check failed without an associated task");
+        const found = failedCheckFindings(
+          check,
+          result.evidenceId,
+          result.output,
+          (state.rootGraph ?? state.graph)?.tasks ?? [],
+          task,
+          regression
+            ? `The check passed but ${regression.message} (evidence ${result.evidenceId}).`
+            : `Inspect command evidence ${result.evidenceId} and correct the implementation within approved scope.`,
+          newId,
+          regression?.diagnosticsOnly ? { severity: regression.severity } : undefined,
+        );
         failures.push(
-          ...failedCheckFindings(
-            check,
-            result.evidenceId,
-            result.output,
-            (state.rootGraph ?? state.graph)?.tasks ?? [],
-            task,
-            regression
-              ? `The check passed but ${regression.message} (evidence ${result.evidenceId}).`
-              : `Inspect command evidence ${result.evidenceId} and correct the implementation within approved scope.`,
-            newId,
-            regression?.diagnosticsOnly ? { severity: regression.severity } : undefined,
-          ),
+          ...(regression
+            ? found
+            : this.rowRunFindings(runId, state, policy, check.id, found, rowDrifts)),
         );
       }
     }
@@ -18610,7 +18659,7 @@ ${note}`;
       bound.map((b) => b.check),
     );
     this.suppliedDriftWouldStop(runId, state, policy);
-    this.rowBlockDriftWouldStop(runId, state, policy);
+    const rowDrifts = this.rowBlockDriftWouldStop(runId, state, policy);
     const failures: Review["findings"] = [];
     const failedIds: string[] = [];
     const passedIds: string[] = [];
@@ -18671,24 +18720,27 @@ ${note}`;
         requirementIds: task?.requirementIds ?? state.spec?.requirements.map((r) => r.id) ?? [],
         criterionIds: task?.criterionIds ?? [],
       };
+      const found = failedCheckFindings(
+        check,
+        result.evidenceId,
+        // A refused gate names the test it pinned, not a defect; keep it on the fallback.
+        result.reason ? "" : (result.output ?? ""),
+        (state.rootGraph ?? state.graph)?.tasks ?? [],
+        fallback,
+        result.reason
+          ? `${result.reason}: restore the approved test or promote a new one (evidence ${result.evidenceId}).`
+          : regression
+            ? `The check passed but ${regression.message} (evidence ${result.evidenceId}).`
+            : `Inspect command evidence ${result.evidenceId} and correct the implementation within approved scope.`,
+        newId,
+        !result.reason && regression?.diagnosticsOnly
+          ? { severity: regression.severity }
+          : undefined,
+      );
       failures.push(
-        ...failedCheckFindings(
-          check,
-          result.evidenceId,
-          // A refused gate names the test it pinned, not a defect; keep it on the fallback.
-          result.reason ? "" : (result.output ?? ""),
-          (state.rootGraph ?? state.graph)?.tasks ?? [],
-          fallback,
-          result.reason
-            ? `${result.reason}: restore the approved test or promote a new one (evidence ${result.evidenceId}).`
-            : regression
-              ? `The check passed but ${regression.message} (evidence ${result.evidenceId}).`
-              : `Inspect command evidence ${result.evidenceId} and correct the implementation within approved scope.`,
-          newId,
-          !result.reason && regression?.diagnosticsOnly
-            ? { severity: regression.severity }
-            : undefined,
-        ),
+        ...(result.reason || regression
+          ? found
+          : this.rowRunFindings(runId, state, policy, check.id, found, rowDrifts)),
       );
     }
     this.resolveCoveredFindings(runId, passedIds);

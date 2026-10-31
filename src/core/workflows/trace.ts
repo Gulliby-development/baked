@@ -219,6 +219,7 @@ import {
 import {
   ROW_BLOCK_DIR,
   ROW_BLOCK_KIND,
+  ROW_RUN_KIND,
   type RowBlockRecord,
   type RowBlockRule,
   type RowMoveRule,
@@ -322,6 +323,8 @@ const KEPT_ARTIFACTS = new Set([
   TEST_CAP_KIND,
   // Each checks-stage row block comparison: per prescribed row its literal counts, no text (#2486).
   ROW_BLOCK_KIND,
+  // Each failing check's route with a miscounted byte run: files, bytes off, no text (#2515).
+  ROW_RUN_KIND,
   // Each review's gate: the findings' labels and repro outcomes, no claims (#1715).
   REVIEW_GATE_KIND,
   // Each task-level corrective's write-scope precondition: diagnosed paths and writes (#2094).

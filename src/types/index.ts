@@ -387,6 +387,8 @@ export interface QualityConfig {
   rustFormatWritten?: "off" | "on";
   /** Route a test task's failure whose expected values are its criteria's literals to the finished sibling that wrote the code under test: `on` or `off` (default, recorded in shadow). */
   sourceDefectRoute?: "off" | "on";
+  /** Send a failing check's correction to the test's task when the test counts a long byte run of a prescribed row differently: `on` or `off` (default, recorded in shadow). */
+  rowRunRoute?: "off" | "on";
   /** Before the first task, let the host run a required check's fixer on files no task writes when the check fails before any change with only correctable findings, and keep the edit when the check then passes: `on` or `off` (default). */
   baselineFix?: "off" | "on";
   /** Property-based tests from marked criteria: `preset` or absent follows the workflow preset. */

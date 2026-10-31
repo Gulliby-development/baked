@@ -271,6 +271,7 @@ export async function prepareStart(
     correctiveDefer: policyCorrectiveDefer,
     rustFormatWritten: policyRustFormatWritten,
     sourceDefectRoute: policySourceDefectRoute,
+    rowRunRoute: policyRowRunRoute,
     baselineFix: policyBaselineFix,
     propertyTests: policyPropertyTests,
     allowOverlappingWrites,
@@ -327,6 +328,7 @@ export async function prepareStart(
   const correctiveDefer = policyCorrectiveDefer ?? config.quality?.correctiveDefer ?? "off";
   const rustFormatWritten = policyRustFormatWritten ?? config.quality?.rustFormatWritten ?? "off";
   const sourceDefectRoute = policySourceDefectRoute ?? config.quality?.sourceDefectRoute ?? "off";
+  const rowRunRoute = policyRowRunRoute ?? config.quality?.rowRunRoute ?? "off";
   const baselineFix = policyBaselineFix ?? config.quality?.baselineFix ?? "off";
   const propertyTests =
     request.propertyTests ??
@@ -392,6 +394,7 @@ export async function prepareStart(
     ...(correctiveDefer === "on" ? { correctiveDefer } : {}),
     ...(rustFormatWritten === "on" ? { rustFormatWritten } : {}),
     ...(sourceDefectRoute === "on" ? { sourceDefectRoute } : {}),
+    ...(rowRunRoute === "on" ? { rowRunRoute } : {}),
     ...(baselineFix === "on" ? { baselineFix } : {}),
     ...(propertyTests !== presetPropertyTests(preset) ? { propertyTests } : {}),
     ...(request.maxConcurrentWriters !== undefined
