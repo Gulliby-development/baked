@@ -5,6 +5,7 @@ import { buildSafeEnv } from "../spawn.js";
 import { canonical, hashJson } from "../specs/hash.js";
 import { workspacePath } from "../specs/validate.js";
 import { rootField } from "../workflows/effects.js";
+import { pendingPrerequisite } from "../workflows/gate-prerequisites.js";
 import type { ProcessResult, ProcessScope } from "../workflows/process-scope.js";
 import { generatedPaths, type RunPolicy } from "../workflows/schemas.js";
 import { recordWouldStop, stopMode } from "../workflows/stop-reasons.js";
@@ -352,6 +353,17 @@ export class CheckRunner {
     reason: string;
   }> {
     const policy = JSON.parse(this.store.run(runId).policy_json) as RunPolicy;
+    // A gate that reads another gate's output runs that gate first where its output is missing,
+    // a fresh task worktree (#2526); a prerequisite that does not pass is this check's result.
+    const prerequisite = pendingPrerequisite(check, policy.checks, root);
+    if (prerequisite) {
+      const ran = await this.run(runId, attemptId, prerequisite.check, signal, root);
+      if (ran.status !== "passed")
+        return {
+          ...ran,
+          output: `${check.id} reads what ${prerequisite.check.id} writes (${prerequisite.marker}), which this directory does not have, so the host ran ${prerequisite.check.id} first and it did not pass:\n\n${ran.output}`,
+        };
+    }
     const generated = generatedPaths(policy);
     for (const path of check.writes) workspacePath(root, path);
     const before = await sourceManifest(root, generated, signal);
