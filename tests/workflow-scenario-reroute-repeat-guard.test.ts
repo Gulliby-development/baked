@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { runActions } from "../src/components/workflow/format.js";
+import { invalidOutputInputs } from "../src/core/workflows/invalid-output-repeat.js";
 import { errorRecovery } from "../src/core/workflows/remedies.js";
 import { retryRefused } from "../src/core/workflows/remedies-model.js";
 import { readWorkflowView } from "../src/core/workflows/view.js";
@@ -117,5 +118,24 @@ describe("scenario: commitbump-update 0894df2d, reroute --resume after a repeate
     const rerouted = readWorkflowView(f.service, run.runId);
     expect(rerouted.details.recovery?.remedies.map((r) => r.action) ?? []).not.toEqual(["reroute", "revise", "replan", "cancel"]);
     expect(runActions(rerouted.snapshot, null, "spare/model", false, rerouted.details.recovery?.remedies ?? []).map((a) => a.action)).toContain("resume");
+  });
+
+  // #2540: a host-release link that converts a released run's stale creates changes the graph the
+  // stage runs on, so the resume after it is no repeat; the same stop again with no new link is.
+  test("a host-release link in the chain is an input change: one resume passes, the next repeat is refused", async () => {
+    const f = fixture();
+    const runId = await blockedTwice(f);
+    expect((await refusal(f, runId))?.code).toBe("STALE_DECISION");
+    const store = f.service.store;
+    store.transaction(() => {
+      const state = store.state(runId);
+      const link = store.artifact(runId, "correction", "corrections/release.json", JSON.stringify({ rule: "host-release" }));
+      state.correctionHashes.push(link.content_hash);
+      store.saveState(runId, state);
+    });
+    expect(invalidOutputInputs(store, runId)).toMatchObject({ release: 1 });
+    expect(await refusal(f, runId)).toBeNull();
+    expect(await f.service.drive(runId, signal())).toMatchObject({ status: "blocked", reason: "invalid_output" });
+    expect((await refusal(f, runId))?.code).toBe("STALE_DECISION");
   });
 });

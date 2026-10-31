@@ -172,6 +172,11 @@ import {
   timePoolExtensionDecision,
 } from "./initiatives/token-pool.js";
 import {
+  INVALID_OUTPUT_REPEATS_DIR,
+  type InvalidOutputRecord,
+  invalidOutputDecision,
+} from "./invalid-output-repeat.js";
+import {
   MISQUOTE_FIX_DIR,
   MISQUOTE_FIX_KIND,
   type MisquoteFixRecord,
@@ -188,6 +193,7 @@ import {
   type RepeatRecord,
   type RepeatRule,
   repeatedFailureDecision,
+  unfinishedRepeatRemedies,
 } from "./repeated-failure.js";
 import {
   REQUEST_CONFLICT_KIND,
@@ -213,6 +219,7 @@ import {
 import {
   ROW_BLOCK_DIR,
   ROW_BLOCK_KIND,
+  ROW_RUN_KIND,
   type RowBlockRecord,
   type RowBlockRule,
   type RowMoveRule,
@@ -220,6 +227,13 @@ import {
   rowBlockDecision,
   rowMoveDecision,
 } from "./row-block-drift.js";
+import {
+  ROW_RESTORE_DIR,
+  ROW_RESTORE_KIND,
+  type RowRestoreRecord,
+  type RowRestoreRule,
+  rowRestoreDecision,
+} from "./row-restore.js";
 import { PolicySchema, type RunPolicy } from "./schemas.js";
 import { NativeWorkflowService } from "./service.js";
 import {
@@ -297,6 +311,8 @@ const KEPT_ARTIFACTS = new Set([
   SUPPLIED_CHECK_KIND,
   // Each misquote settle's host-fix decision: occurrence counts and spelling flags, no text (#2047).
   MISQUOTE_FIX_KIND,
+  // Each checks-stage restore decision of a prescribed row file: per row its flags, no text (#2522).
+  ROW_RESTORE_KIND,
   // Each planned source task's edge-input probe: its cases' criteria and outcomes (#1808).
   EDGE_KIND,
   // Each test-integrity scan: per-file counts and flags, no code (#1715).
@@ -307,6 +323,8 @@ const KEPT_ARTIFACTS = new Set([
   TEST_CAP_KIND,
   // Each checks-stage row block comparison: per prescribed row its literal counts, no text (#2486).
   ROW_BLOCK_KIND,
+  // Each failing check's route with a miscounted byte run: files, bytes off, no text (#2515).
+  ROW_RUN_KIND,
   // Each review's gate: the findings' labels and repro outcomes, no claims (#1715).
   REVIEW_GATE_KIND,
   // Each task-level corrective's write-scope precondition: diagnosed paths and writes (#2094).
@@ -931,6 +949,10 @@ export interface RunReplay {
   misquoteFixes: MisquoteFixBoundary[];
   /** Misquote settles whose host-fix decision (apply or open a session) the current rule changes. */
   newMisquoteFixes: number;
+  /** Each checks-stage restore decision of a prescribed row file against the current rule (#2522). */
+  rowRestores: RowRestoreBoundary[];
+  /** Rows the current rule restores that the recorded decision did not (#2522). */
+  newRowRestores: number;
   /** Each case of a source task's edge-input probe against the current rule (#1808). */
   edgeProbes: EdgeProbeBoundary[];
   /**
@@ -1893,6 +1915,49 @@ export function replayMisquoteFixes(
     });
 }
 
+export interface RowRestoreBoundary {
+  path: string;
+  mode: RowRestoreRecord["mode"];
+  /** The rows the run restored (or would have, in shadow), and those the current rule restores. */
+  recorded: number[];
+  replayed: number[];
+  verdict: RowRestoreRecord["verdict"];
+}
+
+/**
+ * Every checks-stage row restore decision a run recorded (`row-restores/<path>.json`, #2522),
+ * decided again from its sites' flags. Whether a restored file holds the row reads text a trace
+ * does not keep, so a change to that is covered by `tests/workflow-scenario-row-restore.test.ts`.
+ * Traces before #2522 record none.
+ */
+export function replayRowRestores(
+  store: WorkflowStore,
+  runId: string,
+  decide: RowRestoreRule = rowRestoreDecision,
+): RowRestoreBoundary[] {
+  return store
+    .artifacts(runId)
+    .filter((a) => a.kind === ROW_RESTORE_KIND && a.logical_path.startsWith(ROW_RESTORE_DIR))
+    .flatMap((artifact) => {
+      let record: RowRestoreRecord;
+      try {
+        record = JSON.parse(store.readArtifact(runId, artifact.id));
+      } catch {
+        return [];
+      }
+      if (record.schemaVersion !== 1) return [];
+      return [
+        {
+          path: record.path,
+          mode: record.mode,
+          recorded: record.restore,
+          replayed: decide(record.sites),
+          verdict: record.verdict,
+        },
+      ];
+    });
+}
+
 export interface EdgeProbeBoundary {
   /** The probe record's path and the case's number. */
   key: string;
@@ -2043,6 +2108,14 @@ export interface RepeatedFailureBoundary {
   replayed: RepeatDecision;
   /** `record`: the `repeats/tasks/` records; `findings`: the stood-in check findings. */
   source: "record" | "findings";
+  /**
+   * `invalid-output`: an `invalid_output` stop's repeat decision (`repeats/invalid-output/`,
+   * #2520), keyed by its diagnostic in `taskId`, with the key it was compared with in `previous`;
+   * absent for a task's record.
+   */
+  kind?: "invalid-output";
+  /** A repeated unfinished end's remedies: those its block offered, and those replayed (#2520). */
+  remedies?: { recorded: string[]; replayed: string[] };
 }
 
 /**
@@ -2132,11 +2205,20 @@ export function replayRepeatedFailures(
       recorded: record.decision,
       replayed: decide(previous ?? null, record.checks),
       source: "record" as const,
+      ...(end && record.remedies
+        ? {
+            remedies: {
+              recorded: record.remedies,
+              replayed: unfinishedRepeatRemedies(record.ends ?? 2),
+            },
+          }
+        : {}),
     });
   }
-  if (boundaries.size) return [...boundaries.values()];
+  const stops = replayInvalidOutputRepeats(store, runId);
+  if (boundaries.size) return [...boundaries.values(), ...stops];
   const rounds = new Map<string, { checks: RepeatCheck[]; root: string }>();
-  return findingRounds(store, runId).map((round) => {
+  const found = findingRounds(store, runId).map((round): RepeatedFailureBoundary => {
     const previous = round.corrected ? rounds.get(round.corrected) : undefined;
     const root = previous?.root ?? round.corrected ?? round.taskId;
     rounds.set(round.taskId, { checks: round.checks, root });
@@ -2149,13 +2231,52 @@ export function replayRepeatedFailures(
       source: "findings" as const,
     };
   });
+  return [...found, ...stops];
 }
 
-/** Chains where the replay records a would-stop the run did not: one per chain, as the run does. */
+/**
+ * Each `invalid_output` stop's repeat decision (`repeats/invalid-output/`, #2520), decided again
+ * from its recorded inputs: the refused writes, the diagnostic's hash, the run inputs, whether the
+ * prompt held the note and the key the last resume recorded. Traces from before #2520 have none.
+ */
+function replayInvalidOutputRepeats(
+  store: WorkflowStore,
+  runId: string,
+): RepeatedFailureBoundary[] {
+  return store.artifacts(runId).flatMap((artifact): RepeatedFailureBoundary[] => {
+    if (
+      artifact.kind !== REPEAT_KIND ||
+      !artifact.logical_path.startsWith(INVALID_OUTPUT_REPEATS_DIR)
+    )
+      return [];
+    try {
+      const record = JSON.parse(store.readArtifact(runId, artifact.id)) as InvalidOutputRecord;
+      return [
+        {
+          taskId: record.diagnosticId,
+          previous: record.previous,
+          root: "invalid-output",
+          recorded: record.decision,
+          replayed: invalidOutputDecision(record),
+          source: "record",
+          kind: "invalid-output",
+        },
+      ];
+    } catch {
+      return [];
+    }
+  });
+}
+
+/**
+ * Chains where the replay records a would-stop the run did not: one per chain, as the run does.
+ * An `invalid_output` stop's repeat decision is no would-stop and is left out.
+ */
 export function newRepeatStops(boundaries: readonly RepeatedFailureBoundary[]): number {
-  const recorded = new Set(boundaries.filter((b) => b.recorded === "repeat").map((b) => b.root));
+  const chains = boundaries.filter((b) => b.kind === undefined);
+  const recorded = new Set(chains.filter((b) => b.recorded === "repeat").map((b) => b.root));
   return new Set(
-    boundaries.filter((b) => b.replayed === "repeat" && !recorded.has(b.root)).map((b) => b.root),
+    chains.filter((b) => b.replayed === "repeat" && !recorded.has(b.root)).map((b) => b.root),
   ).size;
 }
 
@@ -4625,6 +4746,8 @@ function replayRun(
   | "newApplyDecisions"
   | "misquoteFixes"
   | "newMisquoteFixes"
+  | "rowRestores"
+  | "newRowRestores"
   | "edgeProbes"
   | "newEdgeDecisions"
   | "integrity"
@@ -4885,6 +5008,8 @@ export function replayTrace(
     hostApplyRule?: HostApplyRule;
     poolGrowthRule?: PoolGrowthRule;
     misquoteFixRule?: MisquoteFixRule;
+    /** Decides each recorded row restore again (#2522); the current rule by default. */
+    rowRestoreRule?: RowRestoreRule;
     edgeRule?: EdgeRule;
     edgeCrashRule?: EdgeCrashRule;
     integrityRule?: IntegrityRule;
@@ -4967,6 +5092,9 @@ export function replayTrace(
     );
     const misquotes = new Map(
       runIds.map((runId) => [runId, replayMisquoteFixes(store, runId, options.misquoteFixRule)]),
+    );
+    const restores = new Map(
+      runIds.map((runId) => [runId, replayRowRestores(store, runId, options.rowRestoreRule)]),
     );
     const edges = new Map(
       runIds.map((runId) => [
@@ -5069,6 +5197,7 @@ export function replayTrace(
       const requestConflicts = requests.get(runId) ?? [];
       const hostApply = applies.get(runId) ?? [];
       const misquoteFixes = misquotes.get(runId) ?? [];
+      const rowRestores = restores.get(runId) ?? [];
       const edgeProbes = edges.get(runId) ?? [];
       const integrity = scans.get(runId) ?? [];
       const caseWalks = walks.get(runId) ?? [];
@@ -5097,6 +5226,7 @@ export function replayTrace(
         !requestConflicts.length &&
         !hostApply.length &&
         !misquoteFixes.length &&
+        !rowRestores.length &&
         !edgeProbes.length &&
         !integrity.length &&
         !caseWalks.length &&
@@ -5140,6 +5270,11 @@ export function replayTrace(
         newApplyDecisions: hostApply.filter((b) => b.replayed !== b.recorded).length,
         misquoteFixes,
         newMisquoteFixes: misquoteFixes.filter((b) => b.replayed !== b.recorded).length,
+        rowRestores,
+        newRowRestores: rowRestores.reduce(
+          (n, b) => n + b.replayed.filter((r) => !b.recorded.includes(r)).length,
+          0,
+        ),
         edgeProbes,
         newEdgeDecisions: edgeProbes.filter(
           (b) => b.replayed !== b.recorded || b.crashReplayed !== b.crashRecorded,

@@ -735,6 +735,14 @@ export const PolicySchema = z
      */
     misquoteFix: z.literal("on").optional(),
     /**
+     * The host's restore of a prescribed row a delivered test file changed (row-restore.ts, #2522):
+     * `on` lets the host replace the file line that takes a drifting row's place with the row as
+     * the request gives it, at the checks stage, and keep the edit when the writing task's required
+     * checks pass, instead of a session copying the row again. Absent means shadow (the decision is
+     * recorded under `row-restores/`, the file stays as written), so stored policies keep their hash.
+     */
+    rowRestore: z.literal("on").optional(),
+    /**
      * The host's apply of a task the request gives verbatim (host-apply.ts, #2333): `on` writes
      * the task's files when `hostApplyDecision` would apply them and starts no implementer; its
      * checks decide it. Absent means shadow (the decision is recorded, the implementer runs), so
@@ -801,6 +809,24 @@ export const PolicySchema = z
      * task), so stored policies keep their hash.
      */
     sourceDefectRoute: z.literal("on").optional(),
+    /**
+     * The route of a failing check's correction when a delivered test file counts a long byte run
+     * of a prescribed row differently (row-block-drift.ts `rowRunFindings`, #2515): `on` gives
+     * the correction to the task that writes the test file only, with the line, the byte and both
+     * counts. Absent means shadow (the route is recorded under `row-runs/`, the findings keep their
+     * files and only say it), so stored policies keep their hash.
+     */
+    rowRunRoute: z.literal("on").optional(),
+    /**
+     * The host's restore of a prescribed row whose long byte run a delivered test file counts
+     * differently, outside the checks stage (row-restore.ts `rowRunRestores`, #2543): on resume of
+     * a run blocked `invalid_output` and before a task's session, the host replaces the row's line
+     * with the row as the request gives it and keeps the edit when the writing task's required
+     * checks pass. On by default (absent): the edit is the request's exact text and is checked, and
+     * an opt-in would not reach a blocked run whose policy is frozen. `off` records the decision in
+     * shadow under `row-restores/` and the brief only names the miscount.
+     */
+    rowRunRestore: z.literal("off").optional(),
     /**
      * The host's repair of a required check that fails before any change (baseline-fix.ts, #2215):
      * `on` lets the host run the check's fixer on the files it names, before the first task, when
@@ -1455,13 +1481,15 @@ export const CorrectionSchema = z
     /**
      * `bounded-correction` adds corrective tasks inside the approved tasks' authority;
      * `host-widen` adds one path per finding to an existing corrective's writes when the frozen
-     * policy enforces `corrective_unowned_file` and the run's approved paths hold the path (#2133).
+     * policy enforces `corrective_unowned_file` and the run's approved paths hold the path (#2133);
+     * `host-release` turns a planned task's `create` of a path a planned-ahead run's release
+     * brought in (an accepted upstream feature wrote it) into `modify` (#2514). It has no findings.
      */
-    rule: z.enum(["bounded-correction", "host-widen"]),
+    rule: z.enum(["bounded-correction", "host-widen", "host-release"]),
     newGraphHash: Hash,
-    findingIds: z.array(SafeId).min(1),
+    findingIds: z.array(SafeId),
     taskIds: z.array(TaskId).min(1),
-    roundKind: z.enum(["repair", "review", "convergence"]),
+    roundKind: z.enum(["repair", "review", "convergence", "release"]),
     round: z.number().int().positive(),
     /** The writes a `host-widen` link adds, per corrective. */
     widened: z
@@ -1471,8 +1499,22 @@ export const CorrectionSchema = z
           .strict(),
       )
       .optional(),
+    /** The `create` writes a `host-release` link turns into `modify`. */
+    released: z
+      .array(z.object({ taskId: TaskId, path: RelativePath }).strict())
+      .min(1)
+      .optional(),
   })
-  .strict();
+  .strict()
+  .refine(
+    (c) =>
+      c.rule === "host-release"
+        ? c.released !== undefined && c.findingIds.length === 0 && c.roundKind === "release"
+        : c.findingIds.length > 0 && c.released === undefined && c.roundKind !== "release",
+    {
+      message: "Only a host-release correction lists released writes, and only it has no findings",
+    },
+  );
 /** One literal row of a criterion recomputed from the requirements (derivation-audit.ts). */
 export const DerivationSchema = z
   .object({

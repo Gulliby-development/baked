@@ -1,3 +1,4 @@
+import { runLengthCompare } from "../verification/byte-runs.js";
 import {
   type CaseContext,
   criterionCases,
@@ -79,6 +80,8 @@ function distance(a: string, b: string, limit: number): number {
  * (escapes aside) or no string is close, so a test that builds the value differently is left alone.
  */
 export function misquotation(literal: string, texts: string[]): string | null {
+  const runs = runMisquotation(literal, texts);
+  if (runs !== undefined) return runs;
   const wanted = spelling(literal).trim();
   if (wanted.length < 6 || texts.some((text) => spelling(text).includes(wanted))) return null;
   const limit = Math.max(1, Math.floor(wanted.length * 0.15));
@@ -89,6 +92,27 @@ export function misquotation(literal: string, texts: string[]): string | null {
       best = { quoted: value, score };
   }
   return best?.quoted ?? null;
+}
+
+/**
+ * A literal with a long byte run against the test files (#2515), decided by the run comparison
+ * the drift check and the case walk share (`runLengthCompare`): null when a file spells every
+ * run as given, the file's spelling of the nearest span when one counts a long run differently
+ * (303 bytes of `0x78` for 300: a misquote whatever the notation, though the edit distance of a
+ * 600-digit hex string to one 6 digits longer is small only by chance), and undefined when the
+ * literal spells no long run or no file lines up with it (the edit-distance reading decides).
+ */
+function runMisquotation(literal: string, texts: string[]): string | null | undefined {
+  let drift: { spelling: string; bytes: number } | null = null;
+  let compared = false;
+  for (const text of texts) {
+    const runs = runLengthCompare(text, literal);
+    if (!runs) return undefined;
+    compared = true;
+    if (runs.held === runs.spans) return null;
+    for (const d of runs.drifts) if (!drift || d.bytes < drift.bytes) drift = d;
+  }
+  return compared && drift ? drift.spelling : undefined;
 }
 
 /**

@@ -1380,6 +1380,29 @@ export const FEATURES: readonly Feature[] = [
     desktop: ["settings/chat: Code quality page"],
   },
   {
+    id: "row-run-route",
+    group: "Workflow runs",
+    title:
+      "Send a failing check to the test's task when the test miscounts a prescribed row's byte run",
+    tui: ["/code-quality"],
+    cli: notNeeded(
+      "quality.rowRunRoute in config.json; the route shows as the test task's corrective",
+    ),
+    api: ["/v1/settings: code-quality page"],
+    desktop: ["settings/chat: Code quality page"],
+  },
+  {
+    id: "row-run-restore",
+    group: "Workflow runs",
+    title: "Restore a miscounted prescribed test row on resume and before a task's session",
+    tui: ["/code-quality"],
+    cli: notNeeded(
+      "quality.rowRunRestore in config.json; the restore shows as a host edit of the test file",
+    ),
+    api: ["/v1/settings: code-quality page"],
+    desktop: ["settings/chat: Code quality page"],
+  },
+  {
     id: "dependency-check-sast",
     group: "Workflow runs",
     title: "New dependencies looked up before checks; Semgrep on the run's diff",

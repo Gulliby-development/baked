@@ -43,6 +43,7 @@ import { executingLeases } from "../leases.js";
 import { plannedRunTokens } from "../plan-cost.js";
 import { plannedStages } from "../pre-run.js";
 import { type RecoveryAdvice, recoveryAdvice } from "../remedies.js";
+import { retryRefused } from "../remedies-model.js";
 import {
   explicitModelConfig,
   reviewIndependence,
@@ -187,7 +188,7 @@ import {
   poolForecast,
   poolNoticeText,
   poolShortText,
-  roundUp,
+  splitExtension,
   type TimePoolGrowthInputs,
   type TokenPoolView,
   timePoolExtensionDecision,
@@ -554,6 +555,21 @@ export interface InitiativeStep {
   status: InitiativeView["status"];
   next: NextAction;
   drive: InitiativeDriveState | null;
+}
+
+/**
+ * How a blocked run's line tells a person to resolve it: the command, or, when its recorded advice
+ * offers no plain resume because one would repeat the stop (#2201, #2520), that advice's summary.
+ */
+function resolveWith(
+  run: { status: string; reason?: string | null },
+  runId: string,
+  recorded: RecoveryAdvice | undefined,
+  verb: "repair" | "resume",
+): string {
+  return verb === "resume" && recorded && retryRefused(run, recorded)
+    ? `a plain resume would repeat its stop: ${recorded.summary}`
+    : `resolve it with baked workflow ${verb} ${runId}`;
 }
 
 /** True when a feature would start with less than the smallest share a run can work with. */
@@ -1079,29 +1095,6 @@ export function expectedSplitUsd(
   };
 }
 
-/**
- * The pool a split's dollar cap implies (#2244): the tokens used so far plus what the dollars left
- * under the cap pay for at the price the estimate gives the waiting features (their priced low
- * dollars over their low tokens), rounded down to the pool step; null without a cap or a priced
- * waiting feature, or when the pool already holds that many. Advice only: the split approval
- * names it.
- */
-export function splitDollarPool(
-  view: {
-    budget: { used: Pick<UsageView, "tokens">; cost: Pick<CostView, "capUsd" | "spentUsd"> };
-  },
-  waiting: readonly (Pick<FeatureEstimate, "costUsd" | "tokens"> | undefined)[],
-  limitTokens: number,
-): { capUsd: number; usdPerMillion: number; tokens: number } | null {
-  const capUsd = view.budget.cost.capUsd;
-  if (capUsd === null) return null;
-  const usdPerMillion = splitDollarPrice(waiting);
-  if (usdPerMillion === null) return null;
-  const left = tokensForUsd(Math.max(0, capUsd - view.budget.cost.spentUsd), usdPerMillion);
-  const tokens = dollarTokens(left === null ? null : view.budget.used.tokens + left, limitTokens);
-  return tokens === null ? null : { capUsd, usdPerMillion, tokens };
-}
-
 /** The estimate's dollars per million tokens for the waiting features, at their lows (#2244). */
 function splitDollarPrice(
   waiting: readonly (Pick<FeatureEstimate, "costUsd" | "tokens"> | undefined)[],
@@ -1411,6 +1404,12 @@ const add = (a: UsageView, b: UsageView): UsageView => ({
  * neither starts a parallel drive nor reports a driven initiative as idle.
  */
 const DRIVES = new WeakMap<NativeWorkflowService, Map<string, AbortController>>();
+
+/**
+ * The plan-share holds already asked again in this process (#2523), by workflow service, keyed
+ * `initiative:run:measuredFeatures`: the gate is asked again once per accepted feature.
+ */
+const PLAN_SHARE_REASKS = new WeakMap<NativeWorkflowService, Set<string>>();
 
 export class InitiativeService {
   readonly store: InitiativeStore;
@@ -1968,6 +1967,7 @@ export class InitiativeService {
       this.noteCallsForecast(view, null);
       this.notePlanCharge(view, null);
       this.noteStoredLimitResumes(view);
+      if (this.reaskPlanShare(id, () => view)) view = this.view(id);
       for (;;) {
         const row = this.store.get(id);
         const ready = this.byPath(
@@ -2415,7 +2415,11 @@ export class InitiativeService {
         .eventsOfType(id, "feature.share_gate")
         .filter((p) => (p as ShareGateRecord | null)?.featureId === feature.id)
         .at(-1) as ShareGateRecord | undefined;
-      if (last?.verdict === "park") return false;
+      // A park held for `no measurement` (#2471) is decided again once a feature is measured, the
+      // moment the hold lifts (#2523); the new record carries no hold, so it is decided once.
+      const lifted =
+        last?.poolGrowth?.hold === "no measurement" && view.budget.cost.measuredFeatures > 0;
+      if (last?.verdict === "park" && !lifted) return false;
     }
     const gateView = shareGateViewOf(view);
     const mode = this.extendWithinDollars();
@@ -3422,7 +3426,9 @@ export class InitiativeService {
    * `on` grows the pool (a `budget.extended` by `host`, reason `extend-within-dollars`, `gate:
    * "plan-share"`) and the run's ceiling together and returns true, so the scheduler sizes the plan
    * again; `off`, or a pool the cap cannot grow, records an `initiative-plan-share` would-stop with
-   * the extend that answers it, and the run goes on under assume as before. Once per run and ceiling.
+   * the extend that answers it, and the run goes on under assume as before. Once per run and ceiling;
+   * a would-stop held for `no measurement` is asked again when a feature is accepted (#2523,
+   * `reaskPlanShare`).
    */
   planShareGate(runId: string): boolean {
     if (!this.store.available()) return false;
@@ -3483,8 +3489,9 @@ export class InitiativeService {
     }
     const stop = stopMode(settings.basePolicy, "initiative-plan-share");
     if (stop === "enforce" || seen("decision.would_stop")) return false;
-    // `on` waits for the first accepted feature's dollar forecast, as at a park (#2471).
-    const hold = mode === "on" ? poolGrowthHold(decision.extension, view.budget.cost) : null;
+    // `on` waits for the first accepted feature's dollar forecast, as at a park (#2471); `shadow`
+    // records the same hold, and both are asked again once a feature is accepted (#2523).
+    const hold = mode !== "off" ? poolGrowthHold(decision.extension, view.budget.cost) : null;
     this.store.emit(id, "decision.would_stop", {
       reason: "initiative-plan-share",
       mode: stop,
@@ -3492,7 +3499,7 @@ export class InitiativeService {
       runId,
       key,
       ...(hold ? { hold } : {}),
-      summary: `${decision.why} ${featureId} would park before its tasks with the extend that answers it; it goes on under assume within its ${ceiling} tokens.${hold ? ` ${FIRST_WAVE_HOLD_TEXT}` : ""}`,
+      summary: `${decision.why} ${featureId} would park before its tasks with the extend that answers it; it goes on under assume within its ${ceiling} tokens.${hold && mode === "on" ? ` ${FIRST_WAVE_HOLD_TEXT}` : ""}`,
       remedy: {
         action: "extend",
         initiativeId: id,
@@ -3503,6 +3510,58 @@ export class InitiativeService {
       inputs,
     });
     return false;
+  }
+
+  /**
+   * The plan-time share gate asked again (#2523) for each open feature run whose
+   * `initiative-plan-share` would-stop held for `no measurement` and that no `plan-share`
+   * extension answered since, once per accepted feature: the hold lifts when the first feature is
+   * measured, and nothing else asks the gate of a run already past its plan sizing (the first
+   * wave's planned-ahead starts). With a measured dollar forecast `on` grows the pool and the
+   * run's ceiling together and `shadow` records its `decision.would_extend`. R82 tinyflate's
+   * deflate held at 22:21 and was never asked again after core was accepted at 22:25. True when
+   * the pool grew.
+   */
+  private reaskPlanShare(id: string, view: () => InitiativeView): boolean {
+    if (this.extendWithinDollars() === "off") return false;
+    const answered = new Set(
+      [
+        ...this.store
+          .eventsOfType(id, "decision.would_extend")
+          .filter((p) => (p as { reason?: string } | null)?.reason === "plan-share"),
+        ...this.store
+          .eventsOfType(id, "budget.extended")
+          .filter((p) => (p as { gate?: string } | null)?.gate === "plan-share"),
+      ].map((p) => (p as { runId?: string }).runId),
+    );
+    const held = new Set(
+      this.store.eventsOfType(id, "decision.would_stop").flatMap((p) => {
+        const stop = p as { reason?: string; hold?: string; runId?: unknown } | null;
+        return stop?.reason === "initiative-plan-share" &&
+          stop.hold === "no measurement" &&
+          typeof stop.runId === "string" &&
+          !answered.has(stop.runId)
+          ? [stop.runId]
+          : [];
+      }),
+    );
+    if (!held.size) return false;
+    const measured = view().budget.cost.measuredFeatures;
+    if (measured === 0) return false;
+    const asked = PLAN_SHARE_REASKS.get(this.workflows) ?? new Set<string>();
+    PLAN_SHARE_REASKS.set(this.workflows, asked);
+    let grew = false;
+    for (const runId of held) {
+      const key = `${id}:${runId}:${measured}`;
+      if (asked.has(key)) continue;
+      asked.add(key);
+      try {
+        grew = this.planShareGate(runId) || grew;
+      } catch {
+        // As at the scheduler's ask: without the gate the run goes on as sized.
+      }
+    }
+    return grew;
   }
 
   /**
@@ -3677,6 +3736,7 @@ export class InitiativeService {
       { baseCommit, baseFiles: this.upstreamSpecs(id, feature, []) },
     );
     this.store.emit(id, "feature.released", { featureId, runId, baseCommit });
+    this.reaskPlanShare(id, () => this.view(id));
     await this.checkUpstreamSymbols(runId, feature, this.approvedPlan(row), baseCommit);
     return true;
   }
@@ -4177,16 +4237,16 @@ export class InitiativeService {
     const capTokens = left === null ? null : used.tokens + left;
     const limit = limits.maxTotalTokens;
     const forecast = Math.max(estimate.expectedTokens, used.tokens);
-    const startsAll = committed.tokens + total(lows);
-    // The cap's pool when it also starts every waiting feature at its low, else the expected
-    // forecast: the lows alone are no pool (R81 ratdec's were 1.8x over and 2.7x under).
-    const byDollars = dollarTokens(capTokens, limit);
-    const suggestedTokens =
-      byDollars !== null && byDollars >= startsAll
-        ? byDollars
-        : forecast > limit || startsAll > limit
-          ? roundUp(Math.max(forecast, startsAll))
-          : null;
+    // The one amount of the split approval (#2525): the high end with margin, held to what the
+    // cap pays for; none when the pool covers the high end (R82 slotprompt's 14.2M pool against
+    // 12.5M of highs was still told to extend to the cap's 23.5M).
+    const extension = splitExtension({
+      limitTokens: limit,
+      highTokens: estimate.tokens.high,
+      withMargin: estimate.withMargin,
+      capTokens,
+    });
+    const suggestedTokens = extension?.tokens ?? null;
     const pool = tokenPool({
       initiativeId: row.id,
       limitTokens: limit,
@@ -4255,9 +4315,10 @@ export class InitiativeService {
                 usdPerMillion: price === null ? null : Math.round(price * 100) / 100,
               },
               suggestedTokens,
-              byDollars: suggestedTokens === byDollars,
+              byDollars: extension?.byDollars === true,
               exactUsdPerMillion: price,
               cost,
+              highTokens: estimate.tokens.high,
             }),
     };
   }
@@ -4671,21 +4732,30 @@ export class InitiativeService {
         ? "until its plan is sized"
         : "until the run ends";
     const reservations = ` The share gate holds a started feature's run limit (its start share) against the pool ${held}, not what it uses: an extension to the high end is for those reservations, the ${tokenText(estimate.expectedTokens)} above is what it expects to be used.`;
-    // The pool the dollar cap implies at the estimate's price for the waiting features (#2244): R71
-    // xmlvet's $30 paid for about 35M tokens against a 30.0M pool, the approval said nothing and
-    // the pool stopped every feature for 19.6 minutes with dollars left.
-    const byDollars = splitDollarPool(
-      view,
-      waiting.map((f) => estimate.features.find((e) => e.featureId === f.id)),
-      limit,
-    );
+    // One amount answers the token warning (#2525): the budget preview's (`splitExtension`), the
+    // high end with margin held to what the dollar cap pays for. R82 tinyflate extended to the
+    // preview's 19.6M, what its $25 cap paid for, and was then told to extend to 29.6M "including
+    // margin", 50 percent above what the unchanged cap pays for.
+    const preview = view.budget.preview;
+    const suggestedPool = preview?.suggestedTokens ?? null;
+    const capPool = preview ? dollarTokens(preview.capTokens, preview.limitTokens) : null;
+    // The pool the dollar cap implies (#2244): R71 xmlvet's $30 paid for about 35M tokens against
+    // a 30.0M pool, the approval said nothing and the pool stopped every feature for 19.6 minutes
+    // with dollars left.
+    const byDollars = suggestedPool !== null && capPool === suggestedPool;
+    const capUsd = view.budget.cost.capUsd;
+    const unpaid =
+      suggestedPool === null && preview?.capTokens != null && capUsd !== null
+        ? ` The ${usd(capUsd)} cap pays for about ${tokenText(preview.capTokens)} tokens${preview.usdPerMillion !== null ? ` at ${usd(preview.usdPerMillion)} per million` : ""}, no more than the shared pool: a larger pool would go unpaid at that price, so approve with this risk or raise the dollar budget.`
+        : "";
     const tokenWarning =
       estimate.tokens.high > limit
-        ? `The estimate expects about ${tokenText(estimate.expectedTokens)} tokens${estimate.expectedTokens <= limit ? ", within" : ", above"} the shared budget (${tokenText(limit)}); its high end (${tokenText(estimate.tokens.high)} tokens; ${highCalibrationText(estimate.highCalibration)}) exceeds the shared budget.${calibrationLagText(estimate)}${reservations}${byDollars ? "" : ` Consider extending to ${estimate.withMargin} tokens, including margin, before approving, or approve with this risk.`}`
+        ? `The estimate expects about ${tokenText(estimate.expectedTokens)} tokens${estimate.expectedTokens <= limit ? ", within" : ", above"} the shared budget (${tokenText(limit)}); its high end (${tokenText(estimate.tokens.high)} tokens; ${highCalibrationText(estimate.highCalibration)}) exceeds the shared budget.${calibrationLagText(estimate)}${reservations}${unpaid}`
         : "";
-    const dollarPoolWarning = byDollars
-      ? `The ${usd(byDollars.capUsd)} cap pays for about ${tokenText(byDollars.tokens)} tokens at ${usd(byDollars.usdPerMillion)} per million, the estimate's price for the waiting features, more than the shared pool (${tokenText(limit)}): the pool, not the dollar cap, would stop features first. Consider extending the pool to ${byDollars.tokens} tokens, what the cap pays for, before approving, or approve with this risk.`
-      : "";
+    const dollarPoolWarning =
+      byDollars && capUsd !== null
+        ? `The ${usd(capUsd)} cap pays for about ${tokenText(suggestedPool)} tokens${preview?.usdPerMillion != null ? ` at ${usd(preview.usdPerMillion)} per million` : ""}, less than the high end with margin and more than the shared pool (${tokenText(limit)}): the pool, not the dollar cap, would stop features first.`
+        : "";
     // The lows alone read as what the split costs: R70 evalpin extended to their $30.11 sum while
     // its seven features were expected to cost about $36.5 (#2218).
     const expected = dollarWarnings.length
@@ -4704,7 +4774,6 @@ export class InitiativeService {
       .join(" ");
     // The text ends with the budget preview's extend command (#2502), the forecast notice's own
     // sentence, so the one extend before approval is exact rather than a guess.
-    const preview = view.budget.preview;
     const notice = preview?.notice ? ` ${preview.notice}` : "";
     if (!warning)
       return preview?.notice && preview.suggestedTokens !== null
@@ -4714,18 +4783,11 @@ export class InitiativeService {
             suggestedTokens: preview.suggestedTokens,
           })
         : message;
-    // The amounts that answer the warnings (#2042): the token estimate with its margin, and a
-    // dollar cap raised by what the warned shares miss of their low estimates.
-    const capUsd = view.budget.cost.capUsd;
+    // The amounts that answer the warnings (#2042): the preview's one pool (#2525), and a dollar
+    // cap raised by what the warned shares miss of their low estimates.
     const suggestedUsd =
       !tokenWarning && dollarGap > 0 && capUsd !== null ? centsUp(capUsd + dollarGap) : null;
-    // With a dollar cap that pays for more than the pool, the pool it implies: tokens above it
-    // would go unpaid at that price, and below it the pool stops features first (#2244).
-    const suggestedTokens = byDollars
-      ? byDollars.tokens
-      : tokenWarning
-        ? estimate.withMargin
-        : null;
+    const suggestedTokens = tokenWarning ? suggestedPool : null;
     const amount =
       suggestedTokens === null
         ? ` --budget-usd ${suggestedUsd ?? "N"}`
@@ -4782,7 +4844,7 @@ export class InitiativeService {
           return action(
             "blocked",
             recoveryAdvice(
-              `The decompose run is blocked (${run.reason}); resolve it with baked workflow resume ${run.runId}`,
+              `The decompose run is blocked (${run.reason}); ${resolveWith(run, run.runId, recorded, "resume")}`,
               `The decompose run is blocked (${run.reason}).${recorded ? ` ${recorded.summary}` : ""}`,
               ...(recorded?.remedies ?? [{ action: "resume" as const, runId: run.runId }]),
             ),
@@ -5067,10 +5129,11 @@ export class InitiativeService {
             ? stopDetail(this.workflows.store, link.run_id)
             : null;
         const deadline = this.deadlineExtension(row.id, link.run_id);
+        const recorded = stopRecovery(this.workflows.store, link.run_id);
         view.blockers = [
           deadline
             ? `run ${link.run_id} is blocked (${run.reason}): ${deadline.message}`
-            : `run ${link.run_id} is blocked (${run.reason})${refusal ? `: ${refusal.split("\n")[0]?.slice(0, 600)}` : ""}; resolve it with baked workflow ${canRepairRun(run) ? "repair" : "resume"} ${link.run_id}`,
+            : `run ${link.run_id} is blocked (${run.reason})${refusal ? `: ${refusal.split("\n")[0]?.slice(0, 600)}` : ""}; ${resolveWith(run, link.run_id, recorded, canRepairRun(run) ? "repair" : "resume")}`,
         ];
         const wait = costRefusalWaitOf(this.workflows.store, link.run_id);
         if (wait)
@@ -5080,7 +5143,8 @@ export class InitiativeService {
             stageId: wait.stageId,
             mode: wait.mode,
           };
-        const recorded = stopRecovery(this.workflows.store, link.run_id);
+        // A stop whose resume repeats it records advice without one (#2201, #2520); only a stop
+        // that recorded none falls back to the plain resume.
         const remedies = recorded?.remedies ?? [{ action: "resume" as const, runId: link.run_id }];
         view.recovery = recoveryAdvice(
           view.blockers[0] ?? "",

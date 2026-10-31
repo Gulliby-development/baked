@@ -103,6 +103,11 @@ import {
   renderProjectMemory,
 } from "./project-memory.js";
 import { checkRecoveryNote, noteInterruptedChecks, withRecoveryNote } from "./recovery.js";
+import {
+  recordReleasedCreates,
+  releasedCreatesBetween,
+  staleReleasedCreates,
+} from "./release-writes.js";
 import { recoveryAdvice } from "./remedies.js";
 import type { ResumeRemedy } from "./remedies-model.js";
 import { canRepairRun } from "./repairable.js";
@@ -128,6 +133,7 @@ import {
   routeChanges,
   strictRoutingConfig,
 } from "./routing.js";
+import { ROW_RESTORE_KIND, ROW_RESTORE_RESUME_DIR, rowRunRestores } from "./row-restore.js";
 import {
   GATES_ARTIFACT,
   SPEC_PUBLICATION_FILES,
@@ -1220,7 +1226,74 @@ export class NativeWorkflowService implements WorkflowService {
   ): Promise<RunSnapshot> {
     this.enabled();
     const outside = options.acceptWorkspace ? await this.outsideChanges(runId) : null;
+    await this.convertStaleReleasedCreates(runId);
+    this.recheckRowRuns(runId);
     return this.resumeCommand(runId, command, outside, options.remedy);
+  }
+  /**
+   * A planned-ahead run released before #2514 kept its planned creates of files the release
+   * brought in, so its tasks were refused with "Create target already exists" (R82 slotprompt
+   * blocks, #2540). The resume converts them as the release does now, before the repeat guard
+   * reads the run's inputs: the conversion is an input change, so the retry is no repeat. Not
+   * while the run executes; idempotent.
+   */
+  private async convertStaleReleasedCreates(runId: string): Promise<void> {
+    if (this.active.has(runId) || this.store.run(runId).status === "running") return;
+    const stale = await staleReleasedCreates(this.store, runId, this.store.state(runId));
+    if (!stale.length) return;
+    this.store.transaction(() => {
+      const state = this.store.state(runId);
+      if (recordReleasedCreates(this.store, runId, state, stale).length)
+        this.store.saveState(runId, state);
+    });
+  }
+  /**
+   * A run blocked `invalid_output` at a task resumes into that task's session, so the checks
+   * stage's comparison of a test file's prescribed rows never runs (R82 tinyflate deflate
+   * 82f19908 T007 blocked again on the same 303- and 238-byte runs, #2543). The resume compares
+   * the delivered files' rows run-length aware (`rowRunRestores`) and records each file with a
+   * miscounted row under `row-restores/resume/<path>.json`, naming the blocked tasks, before the
+   * repeat guard reads the run's inputs: the drive restores those rows before the tasks run, so
+   * the retry is no repeat. The same file content records nothing new. Not while the run
+   * executes; a failure to read records nothing.
+   */
+  private recheckRowRuns(runId: string): void {
+    const run = this.store.run(runId);
+    if (this.active.has(runId) || run.status !== "blocked" || run.reason !== "invalid_output")
+      return;
+    const state = this.store.state(runId);
+    const graph = state.rootGraph ?? state.graph;
+    if (!graph) return;
+    const root = runRoot(this.workspace, state);
+    let found: ReturnType<typeof rowRunRestores>;
+    try {
+      found = rowRunRestores(
+        state.requestText || state.prompt,
+        graph,
+        (path) => {
+          try {
+            return readFileSync(workspacePath(root, path), "utf8");
+          } catch {
+            return null;
+          }
+        },
+        "shadow",
+      );
+    } catch {
+      return;
+    }
+    const blocked = this.store
+      .tasks(runId)
+      .filter((t) => t.status === "blocked")
+      .map((t) => t.id);
+    for (const { record } of found) {
+      if (!record.restore.length) continue;
+      const path = `${ROW_RESTORE_RESUME_DIR}${record.path}.json`;
+      const body = canonical({ ...record, at: "resume", blocked });
+      const last = this.store.latestArtifact(runId, path);
+      if (last && last.content_hash === hashBytes(body)) continue;
+      this.store.transaction(() => this.store.artifact(runId, ROW_RESTORE_KIND, path, body));
+    }
   }
   /**
    * A person's answer to a corrective blocked on files it may not write (#2155): the remedy must
@@ -2608,10 +2681,13 @@ export class NativeWorkflowService implements WorkflowService {
     if (from !== baseCommit) await moveRunWorktree(this.workspace, state.worktree, baseCommit);
     // Upstream specs of the features accepted since the provisional base (#2046); idempotent.
     await placeBaseFiles(this.workspace, state.worktree, baseCommit, baseFiles);
+    // A planned create of a file an accepted upstream feature wrote since the plan (#2514).
+    const stale = await releasedCreatesBetween(this.workspace, state, from, baseCommit);
     return this.store.command(runId, command, body, () => {
       const current = this.store.state(runId);
       if (!current.worktree || !current.planAhead)
         throw new WorkflowFault("STALE_DECISION", "The run changed during its release");
+      const released = recordReleasedCreates(this.store, runId, current, stale);
       current.worktree = { ...current.worktree, baseHead: baseCommit };
       current.worktreeBase = baseCommit;
       current.baseFiles = baseFiles;
@@ -2622,7 +2698,12 @@ export class NativeWorkflowService implements WorkflowService {
         runId,
         "plan-ahead",
         "plan-ahead/release.json",
-        canonical({ from, to: baseCommit, requests: held.map((r) => r.id) }),
+        canonical({
+          from,
+          to: baseCommit,
+          requests: held.map((r) => r.id),
+          ...(released.length ? { modified: released } : {}),
+        }),
       );
       for (const request of held)
         this.store.decideRequest(

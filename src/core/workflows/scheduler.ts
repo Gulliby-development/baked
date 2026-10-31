@@ -534,6 +534,7 @@ import {
 } from "./initiatives/plan.js";
 import { InitiativeStore } from "./initiatives/store.js";
 import { featureWorkflowChoices } from "./initiatives/workflows.js";
+import { recordInvalidOutputDecision } from "./invalid-output-repeat.js";
 import {
   changeReach,
   correctiveSources,
@@ -708,6 +709,7 @@ import { DEFAULT_SAST_CONFIG, QUALITY_SAST, runSast, sastClaim, sastOf } from ".
 import { carriesOver, changedSince, previousRound } from "./re-review.js";
 import { preloadTaskFiles } from "./read-outline.js";
 import { recoverRun, requestRecovery, settleSupersededEffects } from "./recovery.js";
+import { recordReleasedCreates, staleReleasedCreates } from "./release-writes.js";
 import { type RecoveryAdvice, recoveryAdvice } from "./remedies.js";
 import { RepairBlockSchema } from "./repairable-schema.js";
 import {
@@ -718,6 +720,7 @@ import {
   repeatCheck,
   repeatRecord,
   unfinishedRecord,
+  unfinishedRepeatRemedies,
 } from "./repeated-failure.js";
 import {
   checkedSides,
@@ -888,10 +891,23 @@ import {
 import {
   ROW_BLOCK_DIR,
   ROW_BLOCK_KIND,
+  ROW_RUN_DIR,
+  ROW_RUN_KIND,
+  type RowBlockDrift,
   rowBlockDriftSummary,
   rowBlockDrifts,
   rowBlockExtraSummary,
+  rowRunFindings,
+  rowRunText,
 } from "./row-block-drift.js";
+import {
+  ROW_RESTORE_DIR,
+  ROW_RESTORE_KIND,
+  ROW_RESTORE_RESUME_DIR,
+  type RowRestoreRecord,
+  rowRestores,
+  rowRunRestores,
+} from "./row-restore.js";
 import {
   codeTaskCheckProblems,
   estimateSourceOf,
@@ -1256,8 +1272,11 @@ interface UnfinishedRepeat {
 }
 /**
  * The block of an unfinished task whose failing checks repeat its previous unfinished end, with
- * the repeat in its message and in the `resume` remedy's advice (#2437): R77 pairwick's resumes ran
- * the same task into the same `scalafmt` failure, and the message named only the latest one.
+ * the repeat in its message (#2437): R77 pairwick's resumes ran the same task into the same
+ * `scalafmt` failure, and the message named only the latest one. From the second end alike the
+ * remedies change an input and offer no plain resume (`unfinishedRepeatRemedies`, #2520): R82
+ * tinyflate deflate 82f19908 T007 was told a resume repeats the failure and offered only that
+ * resume, which spent 684k tokens on the same ctest failure.
  */
 export function unfinishedRepeatFault(
   fault: WorkflowFault,
@@ -1267,11 +1286,26 @@ export function unfinishedRepeatFault(
   if (!repeat) return fault;
   const checks = repeat.checks.join(", ");
   const summary = `Task ${repeat.taskId} ended unfinished ${repeat.ends} times in a row with the same failing output of ${checks}.`;
-  const message = `${fault.message.replace(/[.\s]+$/, "")}. ${summary} A resume runs the task into the same failure again unless what makes ${checks} fail changes first (a toolchain or fixer the task cannot run, a rule it cannot satisfy).`;
+  const head = `${fault.message.replace(/[.\s]+$/, "")}. ${summary}`;
   const { recovery: _replaced, ...details } = fault.details;
+  const actions = unfinishedRepeatRemedies(repeat.ends);
+  if (actions.includes("resume"))
+    return new WorkflowFault(
+      fault.code,
+      recoveryAdvice(
+        `${head} A resume runs the task into the same failure again unless what makes ${checks} fail changes first (a toolchain or fixer the task cannot run, a rule it cannot satisfy).`,
+        summary,
+        { action: "resume", runId },
+      ),
+      details,
+    );
   return new WorkflowFault(
     fault.code,
-    recoveryAdvice(message, summary, { action: "resume", runId }),
+    recoveryAdvice(
+      `${head} Another resume gives the task the same input and runs it into the same failure, so it is not offered. What must change is the input behind ${checks}: the model of the task's stage (\`baked workflow reroute ${runId} --route STAGE=MODEL --resume\`), the plan, tasks or tests that make ${checks} fail, such as a test file or a rule the task may not change (\`baked workflow revise ${runId}\`), or the initiative feature's plan (\`baked workflow initiative replan ID --feature F\`); otherwise cancel the run.`,
+      `${summary} Change the stage's model, the plan or the tests before trying again; a resume repeats the failure.`,
+      ...actions.map((action) => ({ action, runId })),
+    ),
     details,
   );
 }
@@ -2878,6 +2912,14 @@ export class WorkflowScheduler {
                 await this.takeBaseline(runId, state, policy, signal, true);
                 state.planAhead = { ...state.planAhead, baselined: true };
               }
+              // A run released before #2514 still holds creates of the files its release brought
+              // in; any drive converts them before its tasks (#2540). Idempotent.
+              const stale = await staleReleasedCreates(this.store, runId, state);
+              if (stale.length)
+                this.store.transaction(() => {
+                  if (recordReleasedCreates(this.store, runId, state, stale).length)
+                    this.store.saveState(runId, state);
+                });
               await this.recordCheckBaseline(runId, state, policy, signal);
               await this.repairBaselineFailures(runId, stepId, state, policy, signal);
               await this.probeFixers(runId, state, policy, signal);
@@ -2892,6 +2934,9 @@ export class WorkflowScheduler {
                   );
                 this.repair(runId, state, policy, findings, "repair", "task");
               }
+              // A resume of a run blocked at a task recorded the test files whose prescribed rows
+              // it miscounts (#2543): restored before any task runs, worktrees included.
+              await this.restoreRunRows(runId, stepId, state, policy, signal, "drive");
               if ((policy.maxConcurrentWriters > 1 || candidateCount(policy) > 1) && state.worktree)
                 await this.implementParallel(runId, stepId, state, policy, profiles, signal);
               else await this.implement(runId, stepId, state, policy, profiles, signal);
@@ -3623,6 +3668,8 @@ export class WorkflowScheduler {
             failedFixersBlockNote(this.store, runId),
         );
         if (reason === "host_error") recordHostError(this.store, runId, diagnostic.id, fault);
+        // The repeat decision a plain resume would meet, with its inputs, for the replay (#2520).
+        if (reason === "invalid_output") recordInvalidOutputDecision(this.store, runId);
         // A corrective that blocked on files it may not write offers the host's act as a
         // person's remedy, in shadow too (#2155).
         const recovery =
@@ -5217,13 +5264,19 @@ export class WorkflowScheduler {
    * whose quoted literal the delivered file lacks, once per file and row; each row of the file
    * beyond the block, added or duplicated (#2503), once per file, kind and line; and the counts of
    * each compared file under `row-blocks/<path>.json`. Called at the checks stage of both workflow
-   * versions, after the snapshot; a failure to read records nothing.
+   * versions, after the snapshot; a failure to read records nothing. Returns the drifting rows, so
+   * a failing check of the same stage can name a long byte run the test counts differently (#2515).
    */
-  private rowBlockDriftWouldStop(runId: string, state: RuntimeState, policy: RunPolicy): void {
+  private rowBlockDriftWouldStop(
+    runId: string,
+    state: RuntimeState,
+    policy: RunPolicy,
+  ): RowBlockDrift[] {
     const mode = stopMode(policy, "row_block_drift");
-    if (mode === "enforce") return;
+    if (mode === "enforce") return [];
     const graph = state.rootGraph ?? state.graph;
-    if (!graph) return;
+    if (!graph) return [];
+    const found: RowBlockDrift[] = [];
     try {
       const root = runRoot(this.store.workspace, state);
       const compared = rowBlockDrifts(
@@ -5233,6 +5286,7 @@ export class WorkflowScheduler {
         mode,
       );
       for (const { record, drifts, extras } of compared) {
+        found.push(...drifts);
         this.store.transaction(() =>
           this.store.artifact(
             runId,
@@ -5259,6 +5313,41 @@ export class WorkflowScheduler {
           });
       }
     } catch {}
+    return found;
+  }
+  /**
+   * A failing check's findings when this checks stage found a test file counting a long byte run
+   * of a prescribed row differently (#2515, `rowRunFindings`): each says so first, with the line
+   * and the byte; with `rowRunRoute: "on"` they go to the test's task only. The route, or the one
+   * it would take, is recorded under `row-runs/<check>.json`.
+   */
+  private rowRunFindings(
+    runId: string,
+    state: RuntimeState,
+    policy: RunPolicy,
+    checkId: string,
+    findings: Review["findings"],
+    drifts: readonly RowBlockDrift[],
+  ): Review["findings"] {
+    if (!drifts.some((d) => d.runs.length)) return findings;
+    const { findings: out, record } = rowRunFindings(
+      checkId,
+      findings,
+      drifts,
+      (state.rootGraph ?? state.graph)?.tasks ?? [],
+      policy.rowRunRoute === "on",
+      newId,
+    );
+    if (record)
+      this.store.transaction(() =>
+        this.store.artifact(
+          runId,
+          ROW_RUN_KIND,
+          `${ROW_RUN_DIR}${checkId}.json`,
+          canonical(record),
+        ),
+      );
+    return out;
   }
   /**
    * Before the first task, runs the fixer of each required feature check that passed at the check
@@ -8624,6 +8713,21 @@ ${note}`;
     // applies runs no session, so `beforeSession` never sees it.
     if (!checking && firstRun && task.origin === "planned" && task.writes.length)
       await this.recordSuppliedChecks(runId, state, task, runRoot(this.store.workspace, state));
+    // The prescribed rows a test file of this task miscounts, restored before its session as a
+    // host edit of the stage (as the checks stage's restore is, so a correction the restore fixed
+    // still reads as passing), and the ones left named in its brief (#2543).
+    const rowRuns =
+      !checking && task.writes.length && !hostWritten(task)
+        ? await this.restoreRunRows(
+            runId,
+            this.store.steps(runId).find((s) => s.id === child)?.parent_step_id ?? child,
+            state,
+            policy,
+            signal,
+            "task",
+            task,
+          )
+        : [];
     if (
       !checking &&
       (task.writes.length === 0 ||
@@ -8710,7 +8814,16 @@ ${note}`;
             Object.fromEntries(inherited.map((path) => [path, earlier.get(path) ?? null])),
           )
         : "";
-      const focus = correctionFocus(this.store, runId, state, task);
+      const named = correctionFocus(this.store, runId, state, task);
+      // A correction narrowed to its findings' files may also write a test of its own whose
+      // prescribed row it miscounts (#2543).
+      const runTests = [...new Set(rowRuns.map((d) => d.path))].filter(
+        (path) => !named.files.includes(path) && task.writes.some((w) => w.path === path),
+      );
+      const focus =
+        named.files.length && runTests.length
+          ? { ...named, files: [...named.files, ...runTests] }
+          : named;
       const diagnostics = staticCorrection(this.store, runId, policy, task);
       const narrow = state.widenedCorrections.includes(task.id)
         ? null
@@ -8792,6 +8905,14 @@ ${note}`;
               ...this.failedFixers(runId, task),
               ...this.misquoteContinue(runId, state, task.id),
               ...this.exactText(runId, state, policy, task),
+              ...(rowRuns.length
+                ? {
+                    rowRuns: {
+                      findings: rowRuns.map(rowRunText),
+                      note: "A test file holds a prescribed row whose long byte run it counts differently from the request. Correct the test's literal to the row as the request gives it; the source is not what differs.",
+                    },
+                  }
+                : {}),
               ...(focus.files.length
                 ? {
                     correctionFocus: {
@@ -10083,10 +10204,10 @@ ${note}`;
   /**
    * Records the failing checks of a task's unfinished end (`repeats/tasks/<task>.json`, #2437)
    * and, when they fail exactly as the task's previous unfinished end did, the `repeated_failure`
-   * would-stop (key `task-<id>`, once per task). Shadow only: the run blocks and resumes as before;
-   * the repeat it returns goes into the block message and its `resume` remedy. R77 pairwick: three
-   * implement tasks ended unfinished on the same `scalafmt` failure attempt after attempt and resume
-   * after resume, and no corrective was ever opened for the chain comparison to see.
+   * would-stop (key `task-<id>`, once per task). Shadow only: the run blocks as before; the repeat
+   * it returns goes into the block message, whose remedies change an input (#2520). R77 pairwick:
+   * three implement tasks ended unfinished on the same `scalafmt` failure attempt after attempt and
+   * resume after resume, and no corrective was ever opened for the chain comparison to see.
    */
   private recordUnfinishedRepeat(
     runId: string,
@@ -10101,7 +10222,12 @@ ${note}`;
     const path = `${REPEAT_TASKS_DIR}${taskId}.json`;
     const latest = this.store.latestArtifact(runId, path);
     const previous = latest ? this.repeatRecordOf(runId, latest.id) : null;
-    const record = unfinishedRecord(taskId, previous, checks);
+    const decided = unfinishedRecord(taskId, previous, checks);
+    // A repeat records the remedies its block offers, for the replay (#2520).
+    const record =
+      decided.decision === "repeat"
+        ? { ...decided, remedies: unfinishedRepeatRemedies(decided.ends ?? 2) }
+        : decided;
     this.store.artifact(runId, REPEAT_KIND, path, canonical(record));
     if (record.decision !== "repeat") return null;
     const repeat = { taskId, ends: record.ends ?? 2, checks: checks.map((c) => c.id) };
@@ -11847,6 +11973,194 @@ ${note}`;
       this.journal.publish(runId, attempt, write.path, content, before, "file_patch", root);
     }
     this.store.transaction(() => this.store.finishAttempt(runId, attempt, "completed", 0));
+  }
+  /**
+   * The checks stage's restore of the prescribed rows a delivered test file changed (#2522,
+   * `rowRestores`), before the snapshot and the checks: each file with a row the host would restore
+   * records `row-restores/<path>.json`. With `rowRestore: "on"` the host writes the restored lines
+   * as a journaled edit and runs the writing task's required checks on it; when one fails the file
+   * is put back as it was. A failure to read records nothing.
+   */
+  private async restoreRows(
+    runId: string,
+    stepId: string,
+    state: RuntimeState,
+    policy: RunPolicy,
+    signal: AbortSignal,
+  ): Promise<void> {
+    const graph = state.rootGraph ?? state.graph;
+    if (!graph) return;
+    const mode = policy.rowRestore === "on" ? "on" : "shadow";
+    const root = runRoot(this.store.workspace, state);
+    let planned: ReturnType<typeof rowRestores>;
+    try {
+      planned = rowRestores(
+        state.requestText || state.prompt,
+        graph,
+        (path) => readText(workspacePath(root, path)),
+        mode,
+      );
+    } catch {
+      return;
+    }
+    for (const { record, before, after } of planned) {
+      let body = record;
+      if (mode === "on" && record.restore.length) {
+        const writer = graph.tasks.find((t) => t.id === record.tasks.at(-1));
+        const checks = await this.writeRestoredRows(runId, stepId, state, policy, signal, {
+          path: record.path,
+          before,
+          after,
+          writer,
+        });
+        body = { ...record, verdict: checks === "failed" ? "put_back" : "restored", checks };
+      }
+      this.store.transaction(() =>
+        this.store.artifact(
+          runId,
+          ROW_RESTORE_KIND,
+          `${ROW_RESTORE_DIR}${record.path}.json`,
+          canonical(body),
+        ),
+      );
+    }
+  }
+  /**
+   * Writes a file's restored rows as a journaled host edit and runs the writing task's required
+   * checks on it; when one fails the file is put back as it was (#2522, #2543). Returns how the
+   * checks went: `none` when the writer has no required check.
+   */
+  private async writeRestoredRows(
+    runId: string,
+    stepId: string,
+    state: RuntimeState,
+    policy: RunPolicy,
+    signal: AbortSignal,
+    edit: { path: string; before: string; after: string; writer: Task | undefined },
+  ): Promise<"passed" | "failed" | "none"> {
+    const root = runRoot(this.store.workspace, state);
+    const write = (content: string) => {
+      const attempt = this.store.reserve(runId, stepId, null, 0, policy);
+      const absolute = workspacePath(root, edit.path);
+      const before = this.store.transaction(() => capturePreImage(this.store, runId, absolute));
+      this.journal.publish(
+        runId,
+        attempt,
+        edit.path,
+        Buffer.from(content),
+        before,
+        "file_patch",
+        root,
+      );
+      this.store.transaction(() => this.store.finishAttempt(runId, attempt, "completed", 0));
+    };
+    write(edit.after);
+    const checks = edit.writer
+      ? this.gatedChecks(runId, state, policy, edit.writer, root, [edit.path]).filter(
+          (c) => c.required,
+        )
+      : [];
+    for (const check of checks) {
+      signal.throwIfAborted();
+      const ran = await this.runTaskCheck(runId, stepId, check, policy, signal, root);
+      if (ran.status !== "passed") {
+        write(edit.before);
+        return "failed";
+      }
+    }
+    return checks.length ? "passed" : "none";
+  }
+  /**
+   * The restore of a prescribed row whose long byte run a delivered test file counts differently,
+   * outside the checks stage (#2543, `rowRunRestores`): R82 tinyflate deflate 82f19908 blocked
+   * `invalid_output` at T007 on `tests/deflate_match_test.c` and, resumed, blocked again on the
+   * same literal, because the checks stage's comparison and restore never ran before the task's
+   * session. `drive`: before the task-graph stage drives its tasks, the files a resume recorded
+   * (`row-restores/resume/`). `task`: at the start of `task`'s session, the test files it writes
+   * and the files a resume recorded for it. Each restore is the checks stage's (`writeRestoredRows`,
+   * kept when the writing task's required checks pass), on by default; `rowRunRestore: "off"`
+   * records it in shadow. Recorded under `row-restores/<path>.json`; a file whose last record has
+   * the same content records nothing new, and one the host put back is not edited again. Returns
+   * the run drifts left in those files, for the task's brief. A failure to read records nothing.
+   */
+  private async restoreRunRows(
+    runId: string,
+    stepId: string,
+    state: RuntimeState,
+    policy: RunPolicy,
+    signal: AbortSignal,
+    at: "drive" | "task",
+    task?: Task,
+  ): Promise<RowBlockDrift[]> {
+    const graph = state.rootGraph ?? state.graph;
+    if (!graph) return [];
+    const resumed = this.store
+      .latestArtifacts(runId, `${ROW_RESTORE_RESUME_DIR}%`)
+      .flatMap((artifact) => {
+        try {
+          const record = JSON.parse(
+            this.store.readArtifact(runId, artifact.id),
+          ) as RowRestoreRecord;
+          return !task || record.blocked?.includes(task.id) ? [record.path] : [];
+        } catch {
+          return [];
+        }
+      });
+    const own = task ? task.writes.filter((w) => w.action !== "delete").map((w) => w.path) : [];
+    const paths = [...new Set([...own, ...resumed])];
+    if (!paths.length) return [];
+    const mode = policy.rowRunRestore === "off" ? "shadow" : "on";
+    const root = runRoot(this.store.workspace, state);
+    let planned: ReturnType<typeof rowRunRestores>;
+    try {
+      planned = rowRunRestores(
+        state.requestText || state.prompt,
+        graph,
+        (path) => readText(workspacePath(root, path)),
+        mode,
+        paths,
+      );
+    } catch {
+      return [];
+    }
+    const left: RowBlockDrift[] = [];
+    let kept = false;
+    for (const { record, before, after, drifts } of planned) {
+      const path = `${ROW_RESTORE_DIR}${record.path}.json`;
+      const latest = this.store.latestArtifact(runId, path);
+      let last: RowRestoreRecord | null = null;
+      try {
+        last = latest
+          ? (JSON.parse(this.store.readArtifact(runId, latest.id)) as RowRestoreRecord)
+          : null;
+      } catch {}
+      let body: RowRestoreRecord = { ...record, at, ...(task ? { blocked: [task.id] } : {}) };
+      const putBack = last?.file === record.file && last?.verdict === "put_back";
+      if (mode === "on" && record.restore.length && !putBack) {
+        const writer =
+          (task && own.some((p) => p.trim().replace(/^(?:\.\/)+/, "") === record.path)
+            ? task
+            : undefined) ?? graph.tasks.find((t) => t.id === record.tasks.at(-1));
+        const checks = await this.writeRestoredRows(runId, stepId, state, policy, signal, {
+          path: record.path,
+          before,
+          after,
+          writer,
+        });
+        body = { ...body, verdict: checks === "failed" ? "put_back" : "restored", checks };
+        if (checks !== "failed") {
+          kept = true;
+          left.push(...drifts.filter((d) => !record.restore.includes(d.row)));
+        } else left.push(...drifts);
+      } else left.push(...drifts);
+      if (putBack) continue;
+      const content = canonical(body);
+      if (latest?.content_hash === hashBytes(content)) continue;
+      this.store.transaction(() => this.store.artifact(runId, ROW_RESTORE_KIND, path, content));
+    }
+    // A correction whose failing checks the restore fixed reads a new snapshot (`correctionPassing`).
+    if (kept) await this.snapshot(runId, state, policy, signal);
+    return left;
   }
   private async runTaskCheck(
     runId: string,
@@ -15625,12 +15939,13 @@ ${note}`;
     signal: AbortSignal,
     fixed = false,
   ): Promise<Review["findings"]> {
+    await this.restoreRows(runId, stepId, state, policy, signal);
     await this.snapshot(runId, state, policy, signal);
     const unsafe = await this.dependencyFindings(runId, state, policy);
     if (unsafe.length) return this.recordChecks(runId, state, unsafe);
     this.ciCheckDriftWouldStop(runId, state, policy, policy.checks);
     this.suppliedDriftWouldStop(runId, state, policy);
-    this.rowBlockDriftWouldStop(runId, state, policy);
+    const rowDrifts = this.rowBlockDriftWouldStop(runId, state, policy);
     const failures: Review["findings"] = [];
     const failedIds: string[] = [];
     const passedIds: string[] = [];
@@ -15682,19 +15997,22 @@ ${note}`;
           state.graph?.tasks.find((t) => t.checkIds.includes(check.id)) ?? state.graph?.tasks[0];
         if (!task)
           throw new WorkflowFault("OUTPUT_INVALID", "Check failed without an associated task");
+        const found = failedCheckFindings(
+          check,
+          result.evidenceId,
+          result.output,
+          (state.rootGraph ?? state.graph)?.tasks ?? [],
+          task,
+          regression
+            ? `The check passed but ${regression.message} (evidence ${result.evidenceId}).`
+            : `Inspect command evidence ${result.evidenceId} and correct the implementation within approved scope.`,
+          newId,
+          regression?.diagnosticsOnly ? { severity: regression.severity } : undefined,
+        );
         failures.push(
-          ...failedCheckFindings(
-            check,
-            result.evidenceId,
-            result.output,
-            (state.rootGraph ?? state.graph)?.tasks ?? [],
-            task,
-            regression
-              ? `The check passed but ${regression.message} (evidence ${result.evidenceId}).`
-              : `Inspect command evidence ${result.evidenceId} and correct the implementation within approved scope.`,
-            newId,
-            regression?.diagnosticsOnly ? { severity: regression.severity } : undefined,
-          ),
+          ...(regression
+            ? found
+            : this.rowRunFindings(runId, state, policy, check.id, found, rowDrifts)),
         );
       }
     }
@@ -18488,6 +18806,7 @@ ${note}`;
     fixed = false,
   ): Promise<Review["findings"]> {
     if (v2.stage.type !== "check") return [];
+    await this.restoreRows(runId, stepId, state, policy, signal);
     await this.snapshot(runId, state, policy, signal);
     const unsafe = await this.dependencyFindings(runId, state, policy);
     if (unsafe.length) return this.recordChecks(runId, state, unsafe);
@@ -18508,7 +18827,7 @@ ${note}`;
       bound.map((b) => b.check),
     );
     this.suppliedDriftWouldStop(runId, state, policy);
-    this.rowBlockDriftWouldStop(runId, state, policy);
+    const rowDrifts = this.rowBlockDriftWouldStop(runId, state, policy);
     const failures: Review["findings"] = [];
     const failedIds: string[] = [];
     const passedIds: string[] = [];
@@ -18569,24 +18888,27 @@ ${note}`;
         requirementIds: task?.requirementIds ?? state.spec?.requirements.map((r) => r.id) ?? [],
         criterionIds: task?.criterionIds ?? [],
       };
+      const found = failedCheckFindings(
+        check,
+        result.evidenceId,
+        // A refused gate names the test it pinned, not a defect; keep it on the fallback.
+        result.reason ? "" : (result.output ?? ""),
+        (state.rootGraph ?? state.graph)?.tasks ?? [],
+        fallback,
+        result.reason
+          ? `${result.reason}: restore the approved test or promote a new one (evidence ${result.evidenceId}).`
+          : regression
+            ? `The check passed but ${regression.message} (evidence ${result.evidenceId}).`
+            : `Inspect command evidence ${result.evidenceId} and correct the implementation within approved scope.`,
+        newId,
+        !result.reason && regression?.diagnosticsOnly
+          ? { severity: regression.severity }
+          : undefined,
+      );
       failures.push(
-        ...failedCheckFindings(
-          check,
-          result.evidenceId,
-          // A refused gate names the test it pinned, not a defect; keep it on the fallback.
-          result.reason ? "" : (result.output ?? ""),
-          (state.rootGraph ?? state.graph)?.tasks ?? [],
-          fallback,
-          result.reason
-            ? `${result.reason}: restore the approved test or promote a new one (evidence ${result.evidenceId}).`
-            : regression
-              ? `The check passed but ${regression.message} (evidence ${result.evidenceId}).`
-              : `Inspect command evidence ${result.evidenceId} and correct the implementation within approved scope.`,
-          newId,
-          !result.reason && regression?.diagnosticsOnly
-            ? { severity: regression.severity }
-            : undefined,
-        ),
+        ...(result.reason || regression
+          ? found
+          : this.rowRunFindings(runId, state, policy, check.id, found, rowDrifts)),
       );
     }
     this.resolveCoveredFindings(runId, passedIds);
