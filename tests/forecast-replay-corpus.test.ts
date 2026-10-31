@@ -907,6 +907,18 @@ describe("the plan charge replays on recorded initiatives (#2100, #2056)", () =>
         expect(other.starts.every((s) => s.planCharge === null || s.planCharge.replayed === "pass")).toBe(true);
       }
   }, 900000);
+  test("#2534: at the expected point (planChargeExpected on) R71 xmlvet's canonical starts: the corpus's one true park is lost, so on stays opt-in", () => {
+    // scanner's plan, 4.26M-11.75M against its 8.0M limit and unmeasured, is held at its expected
+    // need instead of its high end; it went on to use 12.10M, and the pool ran short 65 minutes
+    // after canonical's start. Every other replayed start of the corpus keeps its verdict.
+    const [replay] = replayInitiativeStarts(join(ROOT, "R71", "xmlvet.sqlite.gz"), { budgetAtStart: true, planChargeExpected: "on" });
+    const canonical = replay?.starts.find((s) => s.featureId === "canonical");
+    expect(canonical?.replayed).toBe("pass");
+    expect(canonical?.planCharge).toMatchObject({ limitCommittedTokens: 20_579_789, planCommittedTokens: 16_255_323, featureId: "canonical", replayed: "pass" });
+    const scanner = canonical?.planCharge?.runs.find((r) => r.featureId === "scanner");
+    expect(scanner?.chargeTokens).toBeLessThan(8_000_000);
+    expect(replay?.newStartStops).toBe(0);
+  }, 900000);
   test("#2253: R60 wheeltags parks no start with the charge, names held at its expected need; R71 xmlvet's canonical still parks", () => {
     // names' plan sized its run at 10.3M-14.1M against its 8.0M limit, unmeasured (ratio null);
     // it used 4.57M. At its high end the charged gate parked dead at 19:31:58 (154,373 short).

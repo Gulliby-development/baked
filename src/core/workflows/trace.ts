@@ -163,6 +163,7 @@ import {
   timeShortfall,
 } from "./initiatives/service.js";
 import {
+  type PlanChargeExpected,
   type PlanShareDecision,
   type PlanShareInputs,
   planShareDecision,
@@ -3827,6 +3828,11 @@ export function replayInitiativeStarts(
      * shadow), and a replay without this entry takes the current default.
      */
     stopModes?: RunPolicy["stopModes"];
+    /**
+     * Sets `workflows.planChargeExpected` for the replay (#2534): `on` holds the open runs'
+     * unmeasured plans at their expected need, to backtest it against the default high end.
+     */
+    planChargeExpected?: PlanChargeExpected;
   } = {},
 ): Omit<
   InitiativeReplay,
@@ -3859,6 +3865,7 @@ export function replayInitiativeStarts(
       moments: options.moments ?? [],
       ...(options.recencyHalfLife ? { recencyHalfLife: options.recencyHalfLife } : {}),
       ...(options.stopModes ? { stopModes: options.stopModes } : {}),
+      ...(options.planChargeExpected ? { planChargeExpected: options.planChargeExpected } : {}),
     }),
   );
 }
@@ -3927,11 +3934,13 @@ function replayStarts(
     moments,
     recencyHalfLife,
     stopModes,
+    planChargeExpected,
   }: {
     budgetAtStart: boolean;
     moments: number[];
     recencyHalfLife?: number;
     stopModes?: RunPolicy["stopModes"];
+    planChargeExpected?: PlanChargeExpected;
   },
 ): Omit<
   InitiativeReplay,
@@ -4113,7 +4122,19 @@ function replayStarts(
       }
       const service = new NativeWorkflowService(
         workspace,
-        { ...DEFAULT_CONFIG, ...routingAt(db, t) },
+        {
+          ...DEFAULT_CONFIG,
+          ...routingAt(db, t),
+          // The replay reads only this setting of `workflows`; the rest stays unset, as before.
+          ...(planChargeExpected
+            ? {
+                workflows: {
+                  ...DEFAULT_CONFIG.workflows,
+                  planChargeExpected,
+                } as AppConfig["workflows"],
+              }
+            : {}),
+        },
         NO_AGENTS,
         true,
       );

@@ -1644,6 +1644,8 @@ export const EXTEND_WITHIN_DOLLARS_MODES = ["off", "shadow", "on"] as const;
 export const TIME_POOL_GROWTH_MODES = ["off", "shadow"] as const;
 /** The modes of `workflows.stageReserve` (#2241); see `initiatives/growth.ts`. */
 export const STAGE_RESERVE_MODES = ["off", "shadow", "on"] as const;
+/** The modes of `workflows.planChargeExpected` (#2534); see `initiatives/token-pool.ts`. */
+export const PLAN_CHARGE_EXPECTED_MODES = ["off", "shadow", "on"] as const;
 export const WorkflowConfigSchema = z
   .object({
     enabled: z.boolean().default(true),
@@ -1692,6 +1694,14 @@ export const WorkflowConfigSchema = z
      * event and the run still stops; `on` grows the bound; `off` records nothing.
      */
     stageReserve: z.enum(STAGE_RESERVE_MODES).optional(),
+    /**
+     * Which point of an open feature run's sized plan an initiative's token pool holds while no
+     * plan-to-actual ratio is measured (#2534): `shadow`, the default, holds the high end as before
+     * and records what holding the expected need would free (`budget.planCharge.expected`, and a
+     * `decision.would_release` at a share gate it would turn); `on` holds the expected need, never
+     * below what the run used; `off` records nothing.
+     */
+    planChargeExpected: z.enum(PLAN_CHARGE_EXPECTED_MODES).optional(),
     /**
      * Deadlines and stall limits (milliseconds): a tool call that never returns, a model attempt
      * with no progress, and how often a stalled run resumes by itself. Defaults in `stall.ts`.
