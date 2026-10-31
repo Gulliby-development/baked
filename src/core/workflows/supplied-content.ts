@@ -140,7 +140,9 @@ export const NOT_PRESCRIBED_PREFIX = "NOT-PRESCRIBED-";
  * cannot add a row to a file the request fixes row for row), so the spec author is told at
  * analysis instead. R81 ratdec exact-cli AC-004 cited `["eval","--as","frac","7/3"]`, a row no
  * block of the brief holds. A note while `case_not_prescribed` is in shadow; its promotion makes
- * it blocking.
+ * it blocking. A literal that describes rows instead of quoting one (`CriterionCase.cited`: a row
+ * count, a test file's name, a `LINE:COL: MESSAGE` envelope, a `U+0000` description) is never
+ * noted (#2524): R82 slotprompt filters had 4 notes, all of that kind.
  */
 export function notPrescribedFindings(
   spec: Spec,
@@ -153,8 +155,14 @@ export function notPrescribedFindings(
   const missing = new Map<string, { task: string; paths: string[]; literals: string[] }[]>();
   for (const task of graph.tasks) {
     const paths = writtenTestPaths(task);
-    const cases = criterionCases(spec, task, { checks: context.checks, tasks: graph.tasks });
+    // The rows give `citedKind` their counts: a criterion's "`12` rows" is no row's text (#2524).
+    const cases = criterionCases(spec, task, {
+      checks: context.checks,
+      tasks: graph.tasks,
+      prescribedRows: rows,
+    });
     for (const c of cases) {
+      // `cited`, a count, a name, a placeholder or a described character, is no example to remove.
       if (casePrescribed(c, paths, rows) !== "none") continue;
       const entries = missing.get(c.criterionId) ?? [];
       let entry = entries.find((e) => e.task === task.id);

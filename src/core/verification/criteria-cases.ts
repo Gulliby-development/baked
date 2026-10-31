@@ -60,6 +60,12 @@ export interface CriterionCase {
    * value out (#2096).
    */
   length?: true;
+  /**
+   * The literal describes rows instead of quoting one (#2524): a count, a file or test name, a
+   * placeholder envelope or a described character (`citedKind`). No prescribed row can hold it,
+   * so a task that writes only prescribed row files is told nothing about it.
+   */
+  cited?: CitedKind;
 }
 
 /** Quoted spans: "...", `...` and the typographic double quotes. */
@@ -169,6 +175,95 @@ const LENGTH_CONTEXT =
   /\b(?:boundar(?:y|ies)|lengths?|long|limits?|characters?|chars?|sizes?|width|max(?:imum)?|min(?:imum)?|at (?:most|least)|up to|between)\b/i;
 /** A file name a criterion names: `UnitTest1.cs`, `tests/test_fields.py`. */
 const FILE_NAME = /^(?:[\w.-]+[/\\])*[\w-][\w.-]*\.[A-Za-z][A-Za-z0-9]{0,7}$/;
+
+/**
+ * What a cited criterion token is when it is not a row's text (#2524): `count`, a number of rows
+ * (`exactly the supplied \`12\` rows`); `name`, a file or test name of the plan (`filter_args`
+ * for `test/filter_args_test.dart`); `placeholder`, an envelope with upper-case placeholder words
+ * (`slotprompt: LINE:COL: MESSAGE\n`); `description`, a character described rather than written
+ * (`U+0000 and U+001F`, a lone control escape `\u0000` or caret notation `\^@`, `"\n"` followed
+ * by "(backslash followed by letter n)").
+ */
+export type CitedKind = "count" | "name" | "placeholder" | "description";
+
+/** What `citedKind` reads beside the literal: the plan's test file names and row counts. */
+export interface CitedNames {
+  /** Each test path the plan writes or the request prescribes rows for, its base name and stem. */
+  names: ReadonlySet<string>;
+  /** The row count of each prescribed file and their total. */
+  counts: ReadonlySet<number>;
+}
+
+/** Upper-case words a message or usage pattern uses for a value a row fills in. */
+const PLACEHOLDER_WORD =
+  /(?<![\p{L}\p{N}_])(?:LINE|LINENO|COL|COLUMN|MESSAGE|MSG|NAME|FILES?|PATH|DIR|VALUE|KEY|NUM|COUNT|TEXT|ARGS?|PATTERN|URL|PORT|HOST|INPUT|OUTPUT|OFFSET|INDEX|POS|REASON|DETAIL|TOKEN|FILTER|EXPR)(?![\p{L}\p{N}_])/gu;
+/** A number the words after it make a count of rows, cases or tests. */
+const COUNT_NOUN =
+  /^[\s`"']*(?:[\w-]+\s+){0,2}?(?:rows?|cases?|tests?|lines?|entries|records|examples|blocks?|files?)\b/i;
+/** A code point by its Unicode name: `U+0000`, `U+1F600`. */
+const CODE_POINT = /\bU\+[\dA-Fa-f]{4,6}\b/;
+/**
+ * One control character written as an escape or in caret notation: `\u0000`, `\x1f`, `\0`,
+ * `\^@`. A row spells it in its own language's escape, so the criterion's spelling describes it.
+ */
+const CONTROL_ESCAPE =
+  /^(?:\\u00[01][\dA-Fa-f]|\\u007[fF]|\\u\{[01]?[\dA-Fa-f]\}|\\x[01][\dA-Fa-f]|\\x7[fF]|\\0[0-7]{0,2}|\\?\^[@A-Z[\\\]^_?])$/;
+/** Prose right after a literal that spells out its characters: "(backslash followed by letter n)". */
+const SPELLED_OUT =
+  /^\s*\((?:an?\s+|the\s+)?(?:backslash|two characters|characters?|bytes?|code points?|U\+[\dA-Fa-f]{4})\b/i;
+
+/** A test path's names a criterion may cite: the path, its base name and its stem. */
+export function testFileNames(path: string): string[] {
+  const clean = path.trim().replace(/^(?:\.\/)+/, "");
+  const base = clean.split(/[/\\]/).at(-1) ?? clean;
+  const stem = base.replace(/\.[^.]+$/, "");
+  const bare = stem
+    .replace(/(?:[._-](?:test|spec|tests))+$|^(?:test|spec)_/i, "")
+    .replace(/Tests?$/, "");
+  return [...new Set([clean, base, stem, bare].filter((name) => name.length >= 2))];
+}
+
+/**
+ * Whether a criterion literal describes rows instead of quoting one (#2524), and how. R82
+ * slotprompt filters: 4 of 4 `case_not_prescribed` notes cited the criteria's own row counts and
+ * test names, the error envelope `slotprompt: LINE:COL: MESSAGE\n`, and control characters the
+ * criterion described in prose. `after` is the criterion text right after the literal.
+ */
+export function citedKind(
+  literal: string,
+  after: string,
+  cited: CitedNames,
+): CitedKind | undefined {
+  const text = asciiTrim(literal);
+  if (/^\d+$/.test(text)) {
+    const n = Number(text);
+    return cited.counts.has(n) || COUNT_NOUN.test(after) ? "count" : undefined;
+  }
+  if (cited.names.has(text)) return "name";
+  if (/[/\\]/.test(text) && FILE_NAME.test(text)) return "name";
+  if (CODE_POINT.test(text) || CONTROL_ESCAPE.test(text) || SPELLED_OUT.test(after))
+    return "description";
+  // A placeholder word beside other text: the envelope, not the literal itself (`NAME` alone).
+  const words = text.match(PLACEHOLDER_WORD) ?? [];
+  if (words.length && text.replace(PLACEHOLDER_WORD, "").replace(/[^\p{L}\p{N}]/gu, "").length)
+    return "placeholder";
+  return undefined;
+}
+
+/** The names and counts `citedKind` reads, from the plan's tasks and the prescribed rows. */
+function citedNames(task: CaseTask, context: CaseContext): CitedNames {
+  const paths = [
+    ...[task, ...(context.tasks ?? [])].flatMap((t) =>
+      t.writes ? writtenTestPaths({ writes: t.writes }) : [],
+    ),
+    ...(context.prescribedRows?.keys() ?? []),
+  ];
+  const counts = [...(context.prescribedRows?.values() ?? [])].map((lines) => lines.length);
+  return {
+    names: new Set(paths.flatMap(testFileNames)),
+    counts: new Set([...counts, ...(counts.length > 1 ? [counts.reduce((a, b) => a + b, 0)] : [])]),
+  };
+}
 
 /** A quoted output or argument value can be plain English, unlike a quoted scenario label. */
 const VALUE_CONTEXT =
@@ -388,7 +483,9 @@ export interface CaseWalk {
      * a row of a file this task writes (still demanded); `sibling`, only a row of a file another
      * task writes (held by that task, written yet or not); `none`, no prescribed row, for a task
      * whose test files are all prescribed row files (not demanded: it cannot add a row, and the
-     * `case_not_prescribed` record says so). Absent without prescribed rows.
+     * `case_not_prescribed` record says so); `cited`, the same for a literal that describes rows
+     * instead of quoting one (`CriterionCase.cited`, #2524: not demanded, and neither recorded nor
+     * noted). Absent without prescribed rows.
      */
     prescribed?: CasePrescribed;
   }[];
@@ -419,14 +516,15 @@ export function caseWalkDecision(walk: CaseWalk): number[] {
     c.held ||
     c.sibling === true ||
     c.prescribed === "sibling" ||
-    c.prescribed === "none"
+    c.prescribed === "none" ||
+    c.prescribed === "cited"
       ? []
       : [i],
   );
 }
 
 /** Where the request's prescribed rows put a case nothing on disk holds (#2501). */
-export type CasePrescribed = "own" | "sibling" | "none";
+export type CasePrescribed = "own" | "sibling" | "none" | "cited";
 
 /** The rows a request prescribes for each test file of the plan, by path as the request writes it. */
 export type PrescribedRows = ReadonlyMap<string, readonly string[]>;
@@ -465,7 +563,9 @@ export function casePrescribed(
     return "sibling";
   // A task with a test file of its own choosing, or a property's drawn values, can still hold it.
   const onlyRows = mine.size > 0 && ownRows.length === mine.size;
-  return onlyRows && !c.generated ? "none" : undefined;
+  if (!onlyRows || c.generated) return undefined;
+  // A count, a name, a placeholder or a described character is no row's text (#2524).
+  return c.cited ? "cited" : "none";
 }
 
 /**
@@ -530,7 +630,10 @@ export function criterionCases(
   const seen = new Set<string>();
   const plain = new Set<string>();
   const sets = closedSets(spec);
+  const names = citedNames(task, context);
   let bound = new Set<string>();
+  /** The criterion text after the span being added, for `citedKind` (#2524); none for a cell. */
+  let after = "";
   const add = (
     criterionId: string,
     literal: string,
@@ -553,7 +656,19 @@ export function criterionCases(
     const key = `${criterionId}:${normalizeLiteral(literal)}`;
     // A literal the criterion also quotes outside its table is not held by the rows alone.
     if (!row) plain.add(key);
-    if (seen.has(key)) return;
+    const cited = citedKind(literal, after, names);
+    if (seen.has(key)) {
+      // The criterion also quotes it as a row's text: a case like any other.
+      const earlier = cases.findIndex(
+        (c) => c.cited && `${c.criterionId}:${normalizeLiteral(c.literal)}` === key,
+      );
+      const found = cases[earlier];
+      if (found && !cited) {
+        const { cited: _cited, ...rest } = found;
+        cases[earlier] = rest;
+      }
+      return;
+    }
     if (isCheckCommand(literal, context.checks)) return;
     seen.add(key);
     const generated = spec.criteria.find((c) => c.id === criterionId)?.property !== undefined;
@@ -564,6 +679,7 @@ export function criterionCases(
       ...(generated ? { generated: true as const } : {}),
       ...(row ? { row: true as const } : {}),
       ...(length ? { length: true as const } : {}),
+      ...(cited ? { cited } : {}),
     });
   };
   const tasks = context.tasks ?? [];
@@ -586,6 +702,7 @@ export function criterionCases(
         const value = VALUE_CONTEXT.test(before);
         if (!literalCase(span.literal, span.code, value)) continue;
         const sentence = table.prose.slice(sentenceStart(table.prose, span.index), span.index);
+        after = table.prose.slice(span.index + span.raw.length);
         add(
           criterion.id,
           span.literal,
@@ -595,6 +712,7 @@ export function criterionCases(
           hostRows && inCell(span.index),
           span.code && !value && /^\d+$/.test(span.literal) && LENGTH_CONTEXT.test(sentence),
         );
+        after = "";
       }
       for (const input of table.inputs)
         add(criterion.id, input.literal, undefined, input.source, input.expected, hostRows);
