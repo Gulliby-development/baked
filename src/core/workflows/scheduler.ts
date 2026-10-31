@@ -709,6 +709,7 @@ import { DEFAULT_SAST_CONFIG, QUALITY_SAST, runSast, sastClaim, sastOf } from ".
 import { carriesOver, changedSince, previousRound } from "./re-review.js";
 import { preloadTaskFiles } from "./read-outline.js";
 import { recoverRun, requestRecovery, settleSupersededEffects } from "./recovery.js";
+import { recordReleasedCreates, staleReleasedCreates } from "./release-writes.js";
 import { type RecoveryAdvice, recoveryAdvice } from "./remedies.js";
 import { RepairBlockSchema } from "./repairable-schema.js";
 import {
@@ -2903,6 +2904,14 @@ export class WorkflowScheduler {
                 await this.takeBaseline(runId, state, policy, signal, true);
                 state.planAhead = { ...state.planAhead, baselined: true };
               }
+              // A run released before #2514 still holds creates of the files its release brought
+              // in; any drive converts them before its tasks (#2540). Idempotent.
+              const stale = await staleReleasedCreates(this.store, runId, state);
+              if (stale.length)
+                this.store.transaction(() => {
+                  if (recordReleasedCreates(this.store, runId, state, stale).length)
+                    this.store.saveState(runId, state);
+                });
               await this.recordCheckBaseline(runId, state, policy, signal);
               await this.repairBaselineFailures(runId, stepId, state, policy, signal);
               await this.probeFixers(runId, state, policy, signal);
