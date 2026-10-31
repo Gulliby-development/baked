@@ -367,6 +367,12 @@ describe("scenario: R82 tinyflate, a review finding that restates the request's 
     let reviews = 0;
     const sessions: string[] = [];
     executor.execute = async (request: ExecutionRequest) => {
+      // The skeptic confirms the miscount with evidence, as art-298 did.
+      if (request.profile.output === "refutation") {
+        const context = JSON.parse(request.prompt.split("\n").at(-1) ?? "{}") as { extra: { evidence?: { id: string }[] } };
+        const evidenceIds = (context.extra.evidence ?? []).map((e) => e.id).slice(0, 1);
+        return { output: { schemaVersion: 1, findingId: "F1", decision: "confirmed", evidenceIds, explanation: WRONG.skeptic }, inputTokens: 25, outputTokens: 25 };
+      }
       const out = await original(request);
       if (request.profile.output === "plan") {
         const graph = (out.output as { taskGraph: TaskGraph }).taskGraph;
@@ -385,7 +391,6 @@ describe("scenario: R82 tinyflate, a review finding that restates the request's 
           findings: [{ id: "F1", kind: "partial", severity: "high", basis: "spec", confidence: 1, noRepro: "This finding concerns exact source-literal transcription, not runtime behavior.", requirementIds: ["FR-001"], criterionIds: ["AC-001"], file: TEST, symbol: "main", evidenceIds: context.extra.evidence?.map((e) => e.id) ?? [], claim: WRONG.finding, impact: "The passing suite does not preserve the required rows.", suggestedFix: "Restore both input literals exactly as supplied." }],
         };
       }
-      if (request.profile.output === "refutation") out.output = { schemaVersion: 1, findingId: "F1", decision: "confirmed", evidenceIds: [], explanation: WRONG.skeptic };
       return out;
     };
     const run = await service.start({ commandId: newId(), featureId: "fixture", workflowId: "sdd", prompt: REQUEST, ownerLabel: "test", policy });
@@ -394,7 +399,8 @@ describe("scenario: R82 tinyflate, a review finding that restates the request's 
       await fixture.approve(run.runId);
       current = await service.drive(run.runId, signal());
     }
-    return { service, runId: run.runId, sessions, status: current.status };
+    const errors = service.store.artifacts(run.runId).filter((a) => a.logical_path.startsWith("errors/")).map((a) => service.store.readArtifact(run.runId, a.id));
+    return { service, runId: run.runId, sessions, status: current.status, errors };
   }
 
   test("the host refutes the finding against the request's rows, and no corrective rewrites the file", async () => {
@@ -406,11 +412,15 @@ describe("scenario: R82 tinyflate, a review finding that restates the request's 
     expect(status).toBe("completed");
   }, 90_000);
 
-  test("with rowClaimCheck off the record is shadow, the finding stands and the run does not complete", async () => {
-    const { service, runId, status } = await reviewed({ rowClaimCheck: "off" });
+  test("with rowClaimCheck off the record is shadow, the skeptic's confirmation stands and a corrective opens for the miscount", async () => {
+    const { service, runId, sessions, errors } = await reviewed({ rowClaimCheck: "off" });
     const record = service.store.latestArtifact(runId, `${ROW_CLAIM_DIR}finding-F1.json`);
     expect(record && JSON.parse(service.store.readArtifact(runId, record.id))).toMatchObject({ mode: "shadow", verdict: "would_override" });
-    expect(service.store.findings(runId).find((f) => f.id === "F1")?.status).not.toBe("refuted");
-    expect(status).not.toBe("completed");
+    // The refutation was valid: the run did not stop on it.
+    expect(errors.some((e) => e.includes("Invalid refutation result"))).toBe(false);
+    expect(errors).toEqual([]);
+    // The confirmed miscount opens a corrective session for the file, as T008 was at R82.
+    expect(service.store.findings(runId).find((f) => f.id === "F1")?.repair_task_id).toBe("T002");
+    expect(sessions).toEqual(["T001", "T002"]);
   }, 90_000);
 });
