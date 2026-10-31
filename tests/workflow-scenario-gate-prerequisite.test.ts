@@ -112,7 +112,7 @@ describe("scenario: tinyflate (bench round 82), a build gate run before configur
     expect(pendingPrerequisite(build, [configure, build], root)).toBeNull();
   });
 
-  test("every row names gates the CMake detector offers, and its marker is what configure writes", () => {
+  test("every row names gates the CMake detector offers, and a marker is what configure writes", () => {
     const root = mkdtempSync(join(tmpdir(), "baked-gate-prerequisite-"));
     cleanups.push(() => rmSync(root, { recursive: true, force: true }));
     writeFileSync(join(root, "CMakeLists.txt"), "project(x C)\nenable_testing()\nadd_test(NAME t COMMAND t)\n");
@@ -124,7 +124,66 @@ describe("scenario: tinyflate (bench round 82), a build gate run before configur
       expect(ids).toContain(id);
       expect(ids).toContain(row.checkId);
       const step = offered.find((c) => c.id === row.checkId);
-      expect(step?.args.join(" ")).toContain(`-B ${row.marker.split("/")[0]}`);
+      if (row.marker) expect(step?.args.join(" ")).toContain(`-B ${row.marker.split("/")[0]}`);
     }
+  });
+});
+
+// Scenario of bench round 83 (#2565). pnmforge (C++): 3 of 39 `ctest` runs in a configured but
+// unbuilt tree failed "Could not find executable <worktree>/build/Debug/<name>_test.exe", each a
+// failed required check the worker answered with a `cmake-build` call; and a `ctest` requested
+// after an edit ran the binaries of the earlier sources. Here the stand-in build "compiles"
+// src/value.txt into build/value_test, and the stand-in CTest runs it.
+const compile = command(
+  "cmake-build",
+  "const fs = require('node:fs'); if (!fs.existsSync('build/CMakeCache.txt')) { console.error('Error: build is not a directory'); process.exit(1); } fs.copyFileSync('src/value.txt', 'build/value_test'); console.log('[100%] Built target value_test');",
+);
+const ctest = command(
+  "ctest",
+  "const fs = require('node:fs'); if (!fs.existsSync('build/value_test')) { console.error('Could not find executable ' + process.cwd() + '/build/Debug/value_test.exe'); process.exit(8); } const v = fs.readFileSync('build/value_test', 'utf8').trim(); if (v !== 'ok') { console.log('1/1 Test #1: value ....***Failed got ' + v); process.exit(8); } console.log('100% tests passed, 0 tests failed out of 1');",
+);
+
+describe("scenario: pnmforge (bench round 83), ctest run without a current build (#2565)", () => {
+  test("in a fresh worktree ctest alone configures, builds and passes", async () => {
+    const { root, ran, recorded } = await runWith([configure, compile, ctest]);
+    mkdirSync(join(root, "src"));
+    writeFileSync(join(root, "src/value.txt"), "ok\n");
+    const checked = await ran(ctest);
+    expect(checked.status).toBe("passed");
+    expect(checked.output).not.toContain("Could not find executable");
+    expect(recorded()).toEqual([
+      ["cmake-configure", "passed"],
+      ["cmake-build", "passed"],
+      ["ctest", "passed"],
+    ]);
+  });
+
+  test("in a configured but unbuilt tree ctest builds first", async () => {
+    const { root, ran, recorded } = await runWith([configure, compile, ctest]);
+    mkdirSync(join(root, "src"));
+    writeFileSync(join(root, "src/value.txt"), "ok\n");
+    expect((await ran(configure)).status).toBe("passed");
+    expect((await ran(ctest)).status).toBe("passed");
+    expect(recorded().map(([id]) => id)).toEqual(["cmake-configure", "cmake-build", "ctest"]);
+  });
+
+  test("after an edit ctest alone runs the current sources, not the last build", async () => {
+    const { root, ran } = await runWith([configure, compile, ctest]);
+    mkdirSync(join(root, "src"));
+    writeFileSync(join(root, "src/value.txt"), "ok\n");
+    expect((await ran(ctest)).status).toBe("passed");
+    writeFileSync(join(root, "src/value.txt"), "broken\n");
+    const checked = await ran(ctest);
+    expect(checked.status).toBe("failed");
+    expect(checked.output).toContain("Failed got broken");
+  });
+
+  test("a build that fails is ctest's result, named as the build", async () => {
+    const { root, ran } = await runWith([configure, compile, ctest]);
+    mkdirSync(join(root, "src"));
+    const checked = await ran(ctest);
+    expect(checked.status).toBe("failed");
+    expect(checked.output).toContain("ctest runs what cmake-build builds");
+    expect(checked.output).not.toContain("Could not find executable");
   });
 });
