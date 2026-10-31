@@ -389,6 +389,8 @@ export interface QualityConfig {
   sourceDefectRoute?: "off" | "on";
   /** Send a failing check's correction to the test's task when the test counts a long byte run of a prescribed row differently: `on` or `off` (default, recorded in shadow). */
   rowRunRoute?: "off" | "on";
+  /** Restore a prescribed row whose long byte run a test counts differently on resume of a run blocked at a task and before a task's session, kept when the writing task's checks pass: `on` (default) or `off` (recorded in shadow, the brief names the miscount). */
+  rowRunRestore?: "off" | "on";
   /** Before the first task, let the host run a required check's fixer on files no task writes when the check fails before any change with only correctable findings, and keep the edit when the check then passes: `on` or `off` (default). */
   baselineFix?: "off" | "on";
   /** Property-based tests from marked criteria: `preset` or absent follows the workflow preset. */

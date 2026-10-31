@@ -818,6 +818,16 @@ export const PolicySchema = z
      */
     rowRunRoute: z.literal("on").optional(),
     /**
+     * The host's restore of a prescribed row whose long byte run a delivered test file counts
+     * differently, outside the checks stage (row-restore.ts `rowRunRestores`, #2543): on resume of
+     * a run blocked `invalid_output` and before a task's session, the host replaces the row's line
+     * with the row as the request gives it and keeps the edit when the writing task's required
+     * checks pass. On by default (absent): the edit is the request's exact text and is checked, and
+     * an opt-in would not reach a blocked run whose policy is frozen. `off` records the decision in
+     * shadow under `row-restores/` and the brief only names the miscount.
+     */
+    rowRunRestore: z.literal("off").optional(),
+    /**
      * The host's repair of a required check that fails before any change (baseline-fix.ts, #2215):
      * `on` lets the host run the check's fixer on the files it names, before the first task, when
      * no task writes them, git tracks them and every finding is marked correctable, and keep the

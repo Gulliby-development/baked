@@ -25,13 +25,14 @@ Quality gates of workflow runs measure the code a run writes beyond what its che
 | [Task-end Rust format check](runtime.md) | `rustFormatWritten` | `on` (absent is off) | off |
 | [Wrong-value test failure to the code's task](runtime.md#the-runs-own-edits-and-undo) | `sourceDefectRoute` | `on` (absent is off, recorded in shadow) | off |
 | [Miscounted test row to the test's task](runtime.md#delivered-test-files-against-the-requests-prescribed-rows) | `rowRunRoute` | `on` (absent is off, recorded in shadow) | off |
+| [Miscounted test row restored on resume and before a task](runtime.md#delivered-test-files-against-the-requests-prescribed-rows) | `rowRunRestore` | `off` (absent is on; off records in shadow) | on |
 | [Repair of lint debt from before the run](runtime.md#baseline-comparison-in-update-runs) | `baselineFix` | `on` (absent is off, recorded in shadow) | off |
 
 Where the defaults are set:
 
 - terminal UI: `/code-quality` (or **Code Quality** in `/settings`), saved to the project or the global config;
 - desktop: Settings, Chat settings, **Code quality** page;
-- local API: `PATCH /v1/settings` with `quality.duplication`, `quality.disabledRules`, `quality.registryLookups`, `quality.sast`, `quality.propertyTests`, `quality.mutation`, `quality.mutationEngine`, `quality.baselineReplay`, `quality.packageContents`, `quality.chainRewrite`, `quality.chainProbe`, `quality.defectClasses`, `quality.misquoteFix`, `quality.rowRestore`, `quality.hostApply`, `quality.edgeProbe`, `quality.conflictFinish`, `quality.exactTextLiteral`, `quality.rustFormatWritten`, `quality.correctiveDefer`, `quality.baselineFix` `quality.sourceDefectRoute` and `quality.rowRunRoute` ([chat settings](../desktop/api.md#chat-settings));
+- local API: `PATCH /v1/settings` with `quality.duplication`, `quality.disabledRules`, `quality.registryLookups`, `quality.sast`, `quality.propertyTests`, `quality.mutation`, `quality.mutationEngine`, `quality.baselineReplay`, `quality.packageContents`, `quality.chainRewrite`, `quality.chainProbe`, `quality.defectClasses`, `quality.misquoteFix`, `quality.rowRestore`, `quality.rowRunRestore`, `quality.hostApply`, `quality.edgeProbe`, `quality.conflictFinish`, `quality.exactTextLiteral`, `quality.rustFormatWritten`, `quality.correctiveDefer`, `quality.baselineFix` `quality.sourceDefectRoute` and `quality.rowRunRoute` ([chat settings](../desktop/api.md#chat-settings));
 - config file: `quality` in `.baked/config.json` or `~/.baked/config.json`.
 
 A run can override the default at start: `baked workflow run --duplication off|warn|ratchet`, `--sast auto|off`, `--property-tests auto|off` and `--mutation off|advisory|required`, or `duplication`, `sast`, `propertyTests` and `mutation` in `POST /v1/workflow/runs`. The order is the run flag, then the policy's own field (`--policy FILE` or `workflows.policy`), then the `quality` setting, then the built-in default.

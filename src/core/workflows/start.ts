@@ -272,6 +272,7 @@ export async function prepareStart(
     rustFormatWritten: policyRustFormatWritten,
     sourceDefectRoute: policySourceDefectRoute,
     rowRunRoute: policyRowRunRoute,
+    rowRunRestore: policyRowRunRestore,
     baselineFix: policyBaselineFix,
     propertyTests: policyPropertyTests,
     allowOverlappingWrites,
@@ -329,6 +330,8 @@ export async function prepareStart(
   const rustFormatWritten = policyRustFormatWritten ?? config.quality?.rustFormatWritten ?? "off";
   const sourceDefectRoute = policySourceDefectRoute ?? config.quality?.sourceDefectRoute ?? "off";
   const rowRunRoute = policyRowRunRoute ?? config.quality?.rowRunRoute ?? "off";
+  // On by default (#2543): only `off` is kept, so stored policies keep their hash.
+  const rowRunRestore = policyRowRunRestore ?? config.quality?.rowRunRestore ?? "on";
   const baselineFix = policyBaselineFix ?? config.quality?.baselineFix ?? "off";
   const propertyTests =
     request.propertyTests ??
@@ -395,6 +398,7 @@ export async function prepareStart(
     ...(rustFormatWritten === "on" ? { rustFormatWritten } : {}),
     ...(sourceDefectRoute === "on" ? { sourceDefectRoute } : {}),
     ...(rowRunRoute === "on" ? { rowRunRoute } : {}),
+    ...(rowRunRestore === "off" ? { rowRunRestore } : {}),
     ...(baselineFix === "on" ? { baselineFix } : {}),
     ...(propertyTests !== presetPropertyTests(preset) ? { propertyTests } : {}),
     ...(request.maxConcurrentWriters !== undefined

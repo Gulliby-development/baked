@@ -133,6 +133,7 @@ import {
   routeChanges,
   strictRoutingConfig,
 } from "./routing.js";
+import { ROW_RESTORE_KIND, ROW_RESTORE_RESUME_DIR, rowRunRestores } from "./row-restore.js";
 import {
   GATES_ARTIFACT,
   SPEC_PUBLICATION_FILES,
@@ -1226,6 +1227,7 @@ export class NativeWorkflowService implements WorkflowService {
     this.enabled();
     const outside = options.acceptWorkspace ? await this.outsideChanges(runId) : null;
     await this.convertStaleReleasedCreates(runId);
+    this.recheckRowRuns(runId);
     return this.resumeCommand(runId, command, outside, options.remedy);
   }
   /**
@@ -1244,6 +1246,54 @@ export class NativeWorkflowService implements WorkflowService {
       if (recordReleasedCreates(this.store, runId, state, stale).length)
         this.store.saveState(runId, state);
     });
+  }
+  /**
+   * A run blocked `invalid_output` at a task resumes into that task's session, so the checks
+   * stage's comparison of a test file's prescribed rows never runs (R82 tinyflate deflate
+   * 82f19908 T007 blocked again on the same 303- and 238-byte runs, #2543). The resume compares
+   * the delivered files' rows run-length aware (`rowRunRestores`) and records each file with a
+   * miscounted row under `row-restores/resume/<path>.json`, naming the blocked tasks, before the
+   * repeat guard reads the run's inputs: the drive restores those rows before the tasks run, so
+   * the retry is no repeat. The same file content records nothing new. Not while the run
+   * executes; a failure to read records nothing.
+   */
+  private recheckRowRuns(runId: string): void {
+    const run = this.store.run(runId);
+    if (this.active.has(runId) || run.status !== "blocked" || run.reason !== "invalid_output")
+      return;
+    const state = this.store.state(runId);
+    const graph = state.rootGraph ?? state.graph;
+    if (!graph) return;
+    const root = runRoot(this.workspace, state);
+    let found: ReturnType<typeof rowRunRestores>;
+    try {
+      found = rowRunRestores(
+        state.requestText || state.prompt,
+        graph,
+        (path) => {
+          try {
+            return readFileSync(workspacePath(root, path), "utf8");
+          } catch {
+            return null;
+          }
+        },
+        "shadow",
+      );
+    } catch {
+      return;
+    }
+    const blocked = this.store
+      .tasks(runId)
+      .filter((t) => t.status === "blocked")
+      .map((t) => t.id);
+    for (const { record } of found) {
+      if (!record.restore.length) continue;
+      const path = `${ROW_RESTORE_RESUME_DIR}${record.path}.json`;
+      const body = canonical({ ...record, at: "resume", blocked });
+      const last = this.store.latestArtifact(runId, path);
+      if (last && last.content_hash === hashBytes(body)) continue;
+      this.store.transaction(() => this.store.artifact(runId, ROW_RESTORE_KIND, path, body));
+    }
   }
   /**
    * A person's answer to a corrective blocked on files it may not write (#2155): the remedy must

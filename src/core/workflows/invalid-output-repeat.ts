@@ -3,6 +3,7 @@ import { canonical, hashBytes } from "../specs/hash.js";
 import { releaseLinkCount } from "./release-writes.js";
 import { type RecoveryAdvice, recoveryAdvice } from "./remedies.js";
 import { REPEAT_KIND, type RepeatDecision } from "./repeated-failure.js";
+import { ROW_RESTORE_RESUME_DIR } from "./row-restore.js";
 import type { WorkflowStore } from "./store.js";
 import { type WriteRefusal, writeRefusalOf } from "./write-refusals.js";
 
@@ -18,18 +19,24 @@ export const INVALID_OUTPUT_KEY = "invalid-output/repeat-key.json";
 
 /**
  * The run inputs besides the prompt that a person can change after an invalid output, for the
- * repeat key: the routing revision (a reroute), and the `host-release` links that converted a
- * released run's stale creates (`release`, only once there is one, so older keys still match,
- * #2540). A new way to change a run's input without the prompt adds its revision here (AGENTS.md).
+ * repeat key: the routing revision (a reroute), the `host-release` links that converted a
+ * released run's stale creates (`release`, #2540), and the resume records of a test file's
+ * miscounted prescribed rows (`rows`, `row-restores/resume/`, #2543: the host restores them before
+ * the blocked task's next session), each only once there is one, so older keys still match. A new
+ * way to change a run's input without the prompt adds its revision here (AGENTS.md).
  */
 export function invalidOutputInputs(
   store: WorkflowStore,
   runId: string,
-): { routing: number; release?: number } {
+): { routing: number; release?: number; rows?: number } {
   const release = releaseLinkCount(store, runId);
+  const rows = store
+    .artifacts(runId)
+    .filter((a) => a.logical_path.startsWith(ROW_RESTORE_RESUME_DIR)).length;
   return {
     routing: store.latestArtifact(runId, ROUTING_ARTIFACT)?.revision ?? 0,
     ...(release ? { release } : {}),
+    ...(rows ? { rows } : {}),
   };
 }
 
@@ -56,7 +63,7 @@ export interface InvalidOutputFacts {
   /** The hash of the diagnostic (its first 2000 characters): the key only without refusals. */
   diagnostic: string;
   /** `invalidOutputInputs`: the run inputs a person can change besides the prompt. */
-  inputs: { routing: number };
+  inputs: { routing: number; release?: number; rows?: number };
   /** Whether the prompt already holds this diagnostic's note (a resume gave it). */
   noted: boolean;
   /** The key the last resume recorded (`INVALID_OUTPUT_KEY`); null when none did. */

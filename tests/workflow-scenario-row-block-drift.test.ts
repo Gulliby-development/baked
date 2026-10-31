@@ -640,7 +640,8 @@ const ROWS_CHECK = {
 };
 
 async function deliverDeflate(route: boolean) {
-  const policy: RunPolicy = { ...fixturePolicy, checks: [...fixturePolicy.checks, ROWS_CHECK], ...(route ? { rowRunRoute: "on" as const } : {}) };
+  // The correction's own start would restore the miscounted rows (#2543); this case reads the route.
+  const policy: RunPolicy = { ...fixturePolicy, checks: [...fixturePolicy.checks, ROWS_CHECK], ...(route ? { rowRunRoute: "on" as const } : {}), rowRunRestore: "off" };
   const fixture = workflowFixture({ policy, executor: (root) => new DeflateExecutor(root, R82_TEST) });
   cleanups.push(fixture.dispose);
   const run = await fixture.service.start({ commandId: newId(), featureId: "fixture", workflowId: "sdd", prompt: `Create ready value.\n\n${deflateRequest}`, ownerLabel: "test", policy });

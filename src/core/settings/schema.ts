@@ -1323,6 +1323,28 @@ export const SETTINGS: readonly SettingDefinition[] = [
     ],
   },
   {
+    id: "quality.rowRunRestore",
+    page: "code-quality",
+    section: "Workflow runs",
+    label: "Restore a miscounted test row on resume and before a task",
+    help: "When a test file spells a long byte run of a row the request prescribes with another count (303 bytes of 0x78 where the row gives 300), the host puts the row back as the request gives it when a run blocked at a task is resumed and before each task's session, and keeps the edit only when the writing task's required checks pass. The checks stage's restore of other changed rows stays under its own setting.",
+    scopes: BOTH,
+    type: "enum",
+    default: "on",
+    options: [
+      {
+        value: "on",
+        label: "on",
+        help: "Restore the miscounted row from the request, checked by the writing task's required checks.",
+      },
+      {
+        value: "off",
+        label: "off",
+        help: "Leave the file as written; the host records what it would restore and the task's brief names the miscount.",
+      },
+    ],
+  },
+  {
     id: "quality.propertyTests",
     page: "code-quality",
     section: "Tests",
