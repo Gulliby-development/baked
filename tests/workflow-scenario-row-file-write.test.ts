@@ -411,27 +411,27 @@ interface PlaceShape {
 }
 
 // pnmforge (C++) cli: the usage rows carry `\n` escapes in the request's C++ notation.
-const CLI_PATH = "tests/cli_test.cpp";
-const cliFile = (rows: string[]) =>
+const PLACE_CLI_PATH = "tests/cli_test.cpp";
+const placeCliFile = (rows: string[]) =>
   ['#include "check.h"', "", "static const Row rows[] = {", ...rows.map((r) => `    ${r},`), "};", "", "int main() { return run_rows(rows); }", ""].join("\n");
-const CLI_ROWS = [
+const PLACE_CLI_ROWS = [
   '{"--help", 0, "usage: pnmforge [--invert] [--scale N] FILE\\n"}',
   '{"--version", 0, "pnmforge 1.0\\n"}',
   '{"--scale", 2, "pnmforge: --scale needs a value\\n"}',
 ];
-const PNMFORGE: PlaceShape = {
-  path: CLI_PATH,
-  scaffold: cliFile([]),
+const PLACE_PNMFORGE: PlaceShape = {
+  path: PLACE_CLI_PATH,
+  scaffold: placeCliFile([]),
   line: 3,
-  block: [`CliTests in ${CLI_PATH} (3 rows, { args, code, out })`, ...CLI_ROWS],
+  block: [`CliTests in ${PLACE_CLI_PATH} (3 rows, { args, code, out })`, ...PLACE_CLI_ROWS],
   options: {},
-  written: cliFile(CLI_ROWS),
+  written: placeCliFile(PLACE_CLI_ROWS),
   formatter: { program: "clang-format", args: (f) => ["-i", "-style=LLVM", f] },
 };
 
 // bytemerge (Java) encoding: `List.of(...)` takes no comma after its last row.
-const ENCODE_PATH = "src/test/java/bytemerge/EncodeIdsTest.java";
-const encodeFile = (rows: string[]) =>
+const PLACE_ENCODE_PATH = "src/test/java/bytemerge/EncodeIdsTest.java";
+const placeEncodeFile = (rows: string[]) =>
   [
     "package bytemerge;",
     "",
@@ -447,18 +447,18 @@ const encodeFile = (rows: string[]) =>
     "}",
     "",
   ].join("\n");
-const ENCODE_ROWS = [
+const PLACE_ENCODE_ROWS = [
   'new Row("ab", new int[] {97, 98})',
   'new Row("a\\nb", new int[] {97, 10, 98})',
   'new Row("256 \\\\ n", new int[] {256, 32, 92, 32, 110})',
 ];
-const BYTEMERGE: PlaceShape = {
-  path: ENCODE_PATH,
-  scaffold: encodeFile([]),
+const PLACE_BYTEMERGE: PlaceShape = {
+  path: PLACE_ENCODE_PATH,
+  scaffold: placeEncodeFile([]),
   line: 9,
-  block: [`EncodeIdsTest in ${ENCODE_PATH} (3 rows, new Row(text, ids))`, ...ENCODE_ROWS],
+  block: [`EncodeIdsTest in ${PLACE_ENCODE_PATH} (3 rows, new Row(text, ids))`, ...PLACE_ENCODE_ROWS],
   options: { indent: "          ", lastSeparator: "" },
-  written: encodeFile(ENCODE_ROWS),
+  written: placeEncodeFile(PLACE_ENCODE_ROWS),
 };
 
 /** Plans one task that places the rows in the scaffold and runs it through the real executor. */
@@ -526,7 +526,7 @@ async function placeScenario(shape: PlaceShape, extra: Partial<RunPolicy>, scrip
 }
 
 describe("scenario: R83, a session places the prescribed rows with place_rows and never types one (#2564)", () => {
-  for (const [language, shape] of Object.entries({ cpp: PNMFORGE, java: BYTEMERGE }))
+  for (const [language, shape] of Object.entries({ cpp: PLACE_PNMFORGE, java: PLACE_BYTEMERGE }))
     test(`${language}: with rowFileWrite on the session gets place_rows and the file holds the request's rows as written`, async () => {
       const { final, file, seen, record, rowBlocks } = await placeScenario(shape, { rowFileWrite: "on" }, [placeAll(shape), submitRows(shape)]);
       expect(seen.tools[0]).toContain("place_rows");
@@ -557,60 +557,60 @@ describe("scenario: R83, a session places the prescribed rows with place_rows an
     });
 
   test("cpp: a row the request does not hold and a path that is not the row file are refused with the change to make", async () => {
-    const { final, file, seen } = await placeScenario(PNMFORGE, { rowFileWrite: "on" }, [
-      () => call("place_rows", { path: CLI_PATH, line: 3, rows: [1, 9] }),
+    const { final, file, seen } = await placeScenario(PLACE_PNMFORGE, { rowFileWrite: "on" }, [
+      () => call("place_rows", { path: PLACE_CLI_PATH, line: 3, rows: [1, 9] }),
       () => call("place_rows", { path: "src/cli.cpp", line: 1, rows: [1, 3] }),
-      () => call("place_rows", { path: CLI_PATH, line: 3, rows: [1, 2] }),
+      () => call("place_rows", { path: PLACE_CLI_PATH, line: 3, rows: [1, 2] }),
       // Row 2 is in the file: placing it again is refused, naming its line.
-      () => call("place_rows", { path: CLI_PATH, line: 5, rows: [2, 3] }),
-      () => call("place_rows", { path: CLI_PATH, line: 5, rows: [3] }),
-      submitRows(PNMFORGE),
+      () => call("place_rows", { path: PLACE_CLI_PATH, line: 5, rows: [2, 3] }),
+      () => call("place_rows", { path: PLACE_CLI_PATH, line: 5, rows: [3] }),
+      submitRows(PLACE_PNMFORGE),
     ]);
-    expect(seen.prompts[1]).toContain(`The request prescribes rows 1 to 3 for ${CLI_PATH}; row 9 is not one of them. Call place_rows with rows [first, last] between 1 and 3.`);
-    expect(seen.prompts[2]).toContain(`src/cli.cpp is not a file this task's prescribed rows go in; place_rows writes the request's rows only into ${CLI_PATH}. Change src/cli.cpp with edit_file.`);
-    expect(seen.prompts[4]).toContain(`${CLI_PATH} already holds row 2 (line 5).`);
+    expect(seen.prompts[1]).toContain(`The request prescribes rows 1 to 3 for ${PLACE_CLI_PATH}; row 9 is not one of them. Call place_rows with rows [first, last] between 1 and 3.`);
+    expect(seen.prompts[2]).toContain(`src/cli.cpp is not a file this task's prescribed rows go in; place_rows writes the request's rows only into ${PLACE_CLI_PATH}. Change src/cli.cpp with edit_file.`);
+    expect(seen.prompts[4]).toContain(`${PLACE_CLI_PATH} already holds row 2 (line 5).`);
     expect(final.status).toBe("completed");
-    expect(file).toBe(PNMFORGE.written);
+    expect(file).toBe(PLACE_PNMFORGE.written);
   });
 
   test("java: shadow by default, the tool is not offered and place-rows records what would have been", async () => {
-    const typed = ENCODE_ROWS.map((r, i) => `          ${r}${i === ENCODE_ROWS.length - 1 ? "" : ","}`).join("\n");
-    const { final, file, seen, record } = await placeScenario(BYTEMERGE, {}, [
-      () => call("edit_file", { path: ENCODE_PATH, oldString: "      List.of(\n", newString: `      List.of(\n${typed}\n` }),
-      submitRows(BYTEMERGE),
+    const typed = PLACE_ENCODE_ROWS.map((r, i) => `          ${r}${i === PLACE_ENCODE_ROWS.length - 1 ? "" : ","}`).join("\n");
+    const { final, file, seen, record } = await placeScenario(PLACE_BYTEMERGE, {}, [
+      () => call("edit_file", { path: PLACE_ENCODE_PATH, oldString: "      List.of(\n", newString: `      List.of(\n${typed}\n` }),
+      submitRows(PLACE_BYTEMERGE),
     ]);
     expect(seen.tools[0]).not.toContain("place_rows");
     expect(seen.prompts[0]).not.toContain("place_rows");
-    expect(record).toEqual({ schemaVersion: 1, taskId: "T001", mode: "shadow", offered: false, files: [{ path: ENCODE_PATH, rows: 3, shaped: expect.any(Boolean) }] });
+    expect(record).toEqual({ schemaVersion: 1, taskId: "T001", mode: "shadow", offered: false, files: [{ path: PLACE_ENCODE_PATH, rows: 3, shaped: expect.any(Boolean) }] });
     expect(final.status).toBe("completed");
-    expect(file).toBe(BYTEMERGE.written);
+    expect(file).toBe(PLACE_BYTEMERGE.written);
   });
 });
 
 describe("placeRows: the request's rows after a line, from suppliedRows and restoredLine (#2564)", () => {
-  const targets = new Map([[CLI_PATH, CLI_ROWS]]);
-  const input = (rows: number[], line = 3, more: Partial<PlaceRowsInput> = {}): PlaceRowsInput => ({ path: CLI_PATH, line, rows, ...more });
+  const targets = new Map([[PLACE_CLI_PATH, PLACE_CLI_ROWS]]);
+  const input = (rows: number[], line = 3, more: Partial<PlaceRowsInput> = {}): PlaceRowsInput => ({ path: PLACE_CLI_PATH, line, rows, ...more });
   test("one row per line with the default indentation and separator, CRLF kept", () => {
-    expect(placeRows(input([1, 3]), targets, PNMFORGE.scaffold)).toMatchObject({ content: PNMFORGE.written, placed: [1, 2, 3], lines: [4, 6] });
-    expect(placeRows(input([1, 3]), targets, PNMFORGE.scaffold.replaceAll("\n", "\r\n"))).toMatchObject({ content: PNMFORGE.written.replaceAll("\n", "\r\n") });
+    expect(placeRows(input([1, 3]), targets, PLACE_PNMFORGE.scaffold)).toMatchObject({ content: PLACE_PNMFORGE.written, placed: [1, 2, 3], lines: [4, 6] });
+    expect(placeRows(input([1, 3]), targets, PLACE_PNMFORGE.scaffold.replaceAll("\n", "\r\n"))).toMatchObject({ content: PLACE_PNMFORGE.written.replaceAll("\n", "\r\n") });
     // A tab-indented file gets a tab; the separator and the last row's separator are the caller's.
     const tabbed = "var rows = []row{\n\t{\"x\"},\n}\n";
     expect(placeRows({ path: "t_test.go", line: 2, rows: [1], separator: ";" }, new Map([["t_test.go", ['{"y"}']]]), tabbed)).toMatchObject({ content: 'var rows = []row{\n\t{"x"},\n\t{"y"};\n}\n' });
-    expect(placeRows(input([1, 2], 3, { indent: "  ", lastSeparator: "" }), targets, PNMFORGE.scaffold)).toMatchObject({
-      content: cliFile([]).replace("= {\n", `= {\n  ${CLI_ROWS[0]},\n  ${CLI_ROWS[1]}\n`),
+    expect(placeRows(input([1, 2], 3, { indent: "  ", lastSeparator: "" }), targets, PLACE_PNMFORGE.scaffold)).toMatchObject({
+      content: placeCliFile([]).replace("= {\n", `= {\n  ${PLACE_CLI_ROWS[0]},\n  ${PLACE_CLI_ROWS[1]}\n`),
     });
   });
   test("refusals name the change the worker can make", () => {
     const refusal = (result: ReturnType<typeof placeRows>) => ("refusal" in result ? result.refusal : null);
-    expect(refusal(placeRows(input([0, 2]), targets, PNMFORGE.scaffold))).toContain("row 0 is not one of them");
-    expect(refusal(placeRows(input([3, 1]), targets, PNMFORGE.scaffold))).toContain("end before they start");
+    expect(refusal(placeRows(input([0, 2]), targets, PLACE_PNMFORGE.scaffold))).toContain("row 0 is not one of them");
+    expect(refusal(placeRows(input([3, 1]), targets, PLACE_PNMFORGE.scaffold))).toContain("end before they start");
     expect(refusal(placeRows(input([1]), targets, null))).toContain("does not exist yet. Create it with edit_file");
-    expect(refusal(placeRows(input([1], 40), targets, PNMFORGE.scaffold))).toContain(`${CLI_PATH} has 6 lines; line 40 is not one of them`);
+    expect(refusal(placeRows(input([1], 40), targets, PLACE_PNMFORGE.scaffold))).toContain(`${PLACE_CLI_PATH} has 6 lines; line 40 is not one of them`);
     expect(refusal(placeRows({ ...input([1]), path: "src/cli.cpp" }, targets, ""))).toContain("is not a file this task's prescribed rows go in");
   });
   test("placeRowTargets reads the task's row files from suppliedRows only", () => {
-    const request = placeRequest(PNMFORGE);
-    expect([...placeRowTargets(request, { writes: [{ path: CLI_PATH, action: "modify" }, { path: "src/cli.cpp", action: "modify" }] })]).toEqual([[CLI_PATH, CLI_ROWS]]);
-    expect(placeRowTargets(request, { writes: [{ path: CLI_PATH, action: "delete" }] }).size).toBe(0);
+    const request = placeRequest(PLACE_PNMFORGE);
+    expect([...placeRowTargets(request, { writes: [{ path: PLACE_CLI_PATH, action: "modify" }, { path: "src/cli.cpp", action: "modify" }] })]).toEqual([[PLACE_CLI_PATH, PLACE_CLI_ROWS]]);
+    expect(placeRowTargets(request, { writes: [{ path: PLACE_CLI_PATH, action: "delete" }] }).size).toBe(0);
   });
 });
