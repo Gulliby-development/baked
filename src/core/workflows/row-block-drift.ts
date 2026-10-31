@@ -194,12 +194,12 @@ interface FileRow {
  * A line's head: its first token up to and including its first bracket (`row(`, `assert_row(`,
  * `{`, `(`), or its first word (`run`); empty for a line that starts with a quote.
  */
-function rowHead(line: string): string {
+export function rowHead(line: string): string {
   return /^\s*([^\s"'`([{]*[([{]?)/.exec(line)?.[1] ?? "";
 }
 
 /** A line that continues the previous line's strings: a quote or a concatenation operator first. */
-const CONTINUES = /^\s*(?:["']|\+|<>|\.\.)/;
+export const CONTINUES = /^\s*(?:["']|\+|<>|\.\.)/;
 
 /** The delivered file as rows: each line with a head, with the lines that continue its strings. */
 function fileRowsOf(file: string): FileRow[] {

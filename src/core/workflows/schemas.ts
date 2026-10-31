@@ -735,6 +735,14 @@ export const PolicySchema = z
      */
     misquoteFix: z.literal("on").optional(),
     /**
+     * The host's restore of a prescribed row a delivered test file changed (row-restore.ts, #2522):
+     * `on` lets the host replace the file line that takes a drifting row's place with the row as
+     * the request gives it, at the checks stage, and keep the edit when the writing task's required
+     * checks pass, instead of a session copying the row again. Absent means shadow (the decision is
+     * recorded under `row-restores/`, the file stays as written), so stored policies keep their hash.
+     */
+    rowRestore: z.literal("on").optional(),
+    /**
      * The host's apply of a task the request gives verbatim (host-apply.ts, #2333): `on` writes
      * the task's files when `hostApplyDecision` would apply them and starts no implementer; its
      * checks decide it. Absent means shadow (the decision is recorded, the implementer runs), so
