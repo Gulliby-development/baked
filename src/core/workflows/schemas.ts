@@ -731,7 +731,8 @@ export const PolicySchema = z
     /**
      * The sibling probe of a chain rewrite (#1969): `on` asks the `chain-family` profile once per
      * rewrite corrective for a family of inputs around the chain's repros; the host runs them and
-     * a failing case joins the chain's battery as a finding. Needs `chainRewrite`. Absent is off.
+     * a failing case joins the chain's battery as a finding. Needs `chainRewrite`. Absent is off,
+     * except for the second rewrite of one symbol or family, which probes either way (#2568).
      */
     chainProbe: z.literal("on").optional(),
     /**
