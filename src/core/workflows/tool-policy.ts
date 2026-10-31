@@ -27,6 +27,7 @@ import type { EffectRow, WorkflowStore } from "./store.js";
 import { preexistingTest, testIntegrityOf } from "./test-integrity.js";
 import { isTestTask } from "./tests-first.js";
 import type { Task } from "./types.js";
+import { WRITE_REFUSALS } from "./write-refusals.js";
 
 export const pureWorkflowTools = new Set(["read", "navigate", "bake_find", "bake_impact"]);
 /** Characters of a failed call's error message kept in its `tool.finished` event. */
@@ -196,7 +197,7 @@ export class WorkflowToolPolicy {
       const count = (this.refusals.get(path) ?? 0) + 1;
       this.refusals.set(path, count);
       this.onRefusal?.(path, count);
-      throw new WorkflowFault("INPUT_CHANGED", `File changed outside this attempt: ${path}`);
+      throw new WorkflowFault("INPUT_CHANGED", `${WRITE_REFUSALS.changed}: ${path}`);
     }
     if (
       write.action === "create" &&
@@ -205,9 +206,9 @@ export class WorkflowToolPolicy {
       !reverted &&
       !createdByRunLineage(this.store, this.runId, path, existing)
     )
-      throw new WorkflowFault("INPUT_CHANGED", `Create target already exists: ${path}`);
+      throw new WorkflowFault("INPUT_CHANGED", `${WRITE_REFUSALS.exists}: ${path}`);
     if (write.action === "modify" && existing === null)
-      throw new WorkflowFault("INPUT_CHANGED", `Modify target is missing: ${path}`);
+      throw new WorkflowFault("INPUT_CHANGED", `${WRITE_REFUSALS.missing}: ${path}`);
     this.leases.assert(mutationLeaseFor(this.store.workspace, this.root));
     return path;
   }

@@ -141,8 +141,12 @@ describe("scenario: R77 pairwick, a task that ends unfinished twice on the same 
     expect(wouldStops[0]?.summary).toContain("T001 ended unfinished 2 times in a row with the same failing output of scalafmt");
     expect(message).toContain("Task T001 did not complete its implementation");
     expect(message).toContain("Task T001 ended unfinished 2 times in a row with the same failing output of scalafmt.");
-    expect(advice?.summary).toBe("Task T001 ended unfinished 2 times in a row with the same failing output of scalafmt.");
-    expect(advice?.remedies).toEqual([{ action: "resume", runId }]);
+    expect(advice?.summary).toContain("Task T001 ended unfinished 2 times in a row with the same failing output of scalafmt.");
+    // The message says a resume repeats the failure, so no resume is offered; each remedy changes
+    // an input, and the message names which (#2520, R82 tinyflate deflate 82f19908).
+    expect(advice?.remedies.map((r) => r.action)).toEqual(["reroute", "revise", "replan", "cancel"]);
+    expect(advice?.message).toContain("What must change is the input behind scalafmt");
+    expect(records[1]?.remedies).toEqual(["reroute", "revise", "replan", "cancel"]);
 
     // The decision replays from the bench trace.
     const dir = mkdtempSync(join(tmpdir(), "unfinished-repeat-trace-"));
@@ -150,7 +154,10 @@ describe("scenario: R77 pairwick, a task that ends unfinished twice on the same 
     const out = join(dir, "run.sqlite.gz");
     exportTrace(root, out);
     const replayed = replayTrace(out).runs.find((r) => r.runId === runId);
-    expect(replayed?.repeatedFailures.map((b) => [b.taskId, b.previous, b.root, b.recorded, b.replayed])).toEqual([["T001", "T001", "task-T001", "repeat", "repeat"]]);
+    const tasks = replayed?.repeatedFailures.filter((b) => b.kind === undefined) ?? [];
+    expect(tasks.map((b) => [b.taskId, b.previous, b.root, b.recorded, b.replayed])).toEqual([["T001", "T001", "task-T001", "repeat", "repeat"]]);
+    // The block's remedies replay from the recorded ends (#2520).
+    expect(tasks[0]?.remedies).toEqual({ recorded: ["reroute", "revise", "replan", "cancel"], replayed: ["reroute", "revise", "replan", "cancel"] });
     expect(replayed?.newRepeatStops).toBe(0);
     expect(readFileSync(join(root, "Rules.scala"), "utf8")).toContain("attempt");
   });

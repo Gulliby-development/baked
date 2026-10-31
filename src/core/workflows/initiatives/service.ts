@@ -43,6 +43,7 @@ import { executingLeases } from "../leases.js";
 import { plannedRunTokens } from "../plan-cost.js";
 import { plannedStages } from "../pre-run.js";
 import { type RecoveryAdvice, recoveryAdvice } from "../remedies.js";
+import { retryRefused } from "../remedies-model.js";
 import {
   explicitModelConfig,
   reviewIndependence,
@@ -554,6 +555,21 @@ export interface InitiativeStep {
   status: InitiativeView["status"];
   next: NextAction;
   drive: InitiativeDriveState | null;
+}
+
+/**
+ * How a blocked run's line tells a person to resolve it: the command, or, when its recorded advice
+ * offers no plain resume because one would repeat the stop (#2201, #2520), that advice's summary.
+ */
+function resolveWith(
+  run: { status: string; reason?: string | null },
+  runId: string,
+  recorded: RecoveryAdvice | undefined,
+  verb: "repair" | "resume",
+): string {
+  return verb === "resume" && recorded && retryRefused(run, recorded)
+    ? `a plain resume would repeat its stop: ${recorded.summary}`
+    : `resolve it with baked workflow ${verb} ${runId}`;
 }
 
 /** True when a feature would start with less than the smallest share a run can work with. */
@@ -4782,7 +4798,7 @@ export class InitiativeService {
           return action(
             "blocked",
             recoveryAdvice(
-              `The decompose run is blocked (${run.reason}); resolve it with baked workflow resume ${run.runId}`,
+              `The decompose run is blocked (${run.reason}); ${resolveWith(run, run.runId, recorded, "resume")}`,
               `The decompose run is blocked (${run.reason}).${recorded ? ` ${recorded.summary}` : ""}`,
               ...(recorded?.remedies ?? [{ action: "resume" as const, runId: run.runId }]),
             ),
@@ -5067,10 +5083,11 @@ export class InitiativeService {
             ? stopDetail(this.workflows.store, link.run_id)
             : null;
         const deadline = this.deadlineExtension(row.id, link.run_id);
+        const recorded = stopRecovery(this.workflows.store, link.run_id);
         view.blockers = [
           deadline
             ? `run ${link.run_id} is blocked (${run.reason}): ${deadline.message}`
-            : `run ${link.run_id} is blocked (${run.reason})${refusal ? `: ${refusal.split("\n")[0]?.slice(0, 600)}` : ""}; resolve it with baked workflow ${canRepairRun(run) ? "repair" : "resume"} ${link.run_id}`,
+            : `run ${link.run_id} is blocked (${run.reason})${refusal ? `: ${refusal.split("\n")[0]?.slice(0, 600)}` : ""}; ${resolveWith(run, link.run_id, recorded, canRepairRun(run) ? "repair" : "resume")}`,
         ];
         const wait = costRefusalWaitOf(this.workflows.store, link.run_id);
         if (wait)
@@ -5080,7 +5097,8 @@ export class InitiativeService {
             stageId: wait.stageId,
             mode: wait.mode,
           };
-        const recorded = stopRecovery(this.workflows.store, link.run_id);
+        // A stop whose resume repeats it records advice without one (#2201, #2520); only a stop
+        // that recorded none falls back to the plain resume.
         const remedies = recorded?.remedies ?? [{ action: "resume" as const, runId: link.run_id }];
         view.recovery = recoveryAdvice(
           view.blockers[0] ?? "",

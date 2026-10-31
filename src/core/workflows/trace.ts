@@ -172,6 +172,11 @@ import {
   timePoolExtensionDecision,
 } from "./initiatives/token-pool.js";
 import {
+  INVALID_OUTPUT_REPEATS_DIR,
+  type InvalidOutputRecord,
+  invalidOutputDecision,
+} from "./invalid-output-repeat.js";
+import {
   MISQUOTE_FIX_DIR,
   MISQUOTE_FIX_KIND,
   type MisquoteFixRecord,
@@ -188,6 +193,7 @@ import {
   type RepeatRecord,
   type RepeatRule,
   repeatedFailureDecision,
+  unfinishedRepeatRemedies,
 } from "./repeated-failure.js";
 import {
   REQUEST_CONFLICT_KIND,
@@ -2043,6 +2049,14 @@ export interface RepeatedFailureBoundary {
   replayed: RepeatDecision;
   /** `record`: the `repeats/tasks/` records; `findings`: the stood-in check findings. */
   source: "record" | "findings";
+  /**
+   * `invalid-output`: an `invalid_output` stop's repeat decision (`repeats/invalid-output/`,
+   * #2520), keyed by its diagnostic in `taskId`, with the key it was compared with in `previous`;
+   * absent for a task's record.
+   */
+  kind?: "invalid-output";
+  /** A repeated unfinished end's remedies: those its block offered, and those replayed (#2520). */
+  remedies?: { recorded: string[]; replayed: string[] };
 }
 
 /**
@@ -2132,11 +2146,20 @@ export function replayRepeatedFailures(
       recorded: record.decision,
       replayed: decide(previous ?? null, record.checks),
       source: "record" as const,
+      ...(end && record.remedies
+        ? {
+            remedies: {
+              recorded: record.remedies,
+              replayed: unfinishedRepeatRemedies(record.ends ?? 2),
+            },
+          }
+        : {}),
     });
   }
-  if (boundaries.size) return [...boundaries.values()];
+  const stops = replayInvalidOutputRepeats(store, runId);
+  if (boundaries.size) return [...boundaries.values(), ...stops];
   const rounds = new Map<string, { checks: RepeatCheck[]; root: string }>();
-  return findingRounds(store, runId).map((round) => {
+  const found = findingRounds(store, runId).map((round): RepeatedFailureBoundary => {
     const previous = round.corrected ? rounds.get(round.corrected) : undefined;
     const root = previous?.root ?? round.corrected ?? round.taskId;
     rounds.set(round.taskId, { checks: round.checks, root });
@@ -2149,13 +2172,52 @@ export function replayRepeatedFailures(
       source: "findings" as const,
     };
   });
+  return [...found, ...stops];
 }
 
-/** Chains where the replay records a would-stop the run did not: one per chain, as the run does. */
+/**
+ * Each `invalid_output` stop's repeat decision (`repeats/invalid-output/`, #2520), decided again
+ * from its recorded inputs: the refused writes, the diagnostic's hash, the run inputs, whether the
+ * prompt held the note and the key the last resume recorded. Traces from before #2520 have none.
+ */
+function replayInvalidOutputRepeats(
+  store: WorkflowStore,
+  runId: string,
+): RepeatedFailureBoundary[] {
+  return store.artifacts(runId).flatMap((artifact): RepeatedFailureBoundary[] => {
+    if (
+      artifact.kind !== REPEAT_KIND ||
+      !artifact.logical_path.startsWith(INVALID_OUTPUT_REPEATS_DIR)
+    )
+      return [];
+    try {
+      const record = JSON.parse(store.readArtifact(runId, artifact.id)) as InvalidOutputRecord;
+      return [
+        {
+          taskId: record.diagnosticId,
+          previous: record.previous,
+          root: "invalid-output",
+          recorded: record.decision,
+          replayed: invalidOutputDecision(record),
+          source: "record",
+          kind: "invalid-output",
+        },
+      ];
+    } catch {
+      return [];
+    }
+  });
+}
+
+/**
+ * Chains where the replay records a would-stop the run did not: one per chain, as the run does.
+ * An `invalid_output` stop's repeat decision is no would-stop and is left out.
+ */
 export function newRepeatStops(boundaries: readonly RepeatedFailureBoundary[]): number {
-  const recorded = new Set(boundaries.filter((b) => b.recorded === "repeat").map((b) => b.root));
+  const chains = boundaries.filter((b) => b.kind === undefined);
+  const recorded = new Set(chains.filter((b) => b.recorded === "repeat").map((b) => b.root));
   return new Set(
-    boundaries.filter((b) => b.replayed === "repeat" && !recorded.has(b.root)).map((b) => b.root),
+    chains.filter((b) => b.replayed === "repeat" && !recorded.has(b.root)).map((b) => b.root),
   ).size;
 }
 

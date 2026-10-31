@@ -8,7 +8,13 @@ import {
   repeatCheck,
   repeatedFailureDecision,
   repeatRecord,
+  unfinishedRepeatRemedies,
 } from "../src/core/workflows/repeated-failure.js";
+import { WorkflowFault } from "../src/core/workflows/errors.js";
+import { invalidOutputDecision, invalidOutputKey } from "../src/core/workflows/invalid-output-repeat.js";
+import { errorRecovery } from "../src/core/workflows/remedies.js";
+import { unfinishedRepeatFault } from "../src/core/workflows/scheduler.js";
+import { writeRefusalOf } from "../src/core/workflows/write-refusals.js";
 import { failureSignature as failingLines, failuresCovered } from "../src/core/verification/convergence.js";
 import { shapedFailureSignature, TEST_RUNNERS, withinBaseline } from "../src/core/verification/output-counts.js";
 import { baselineSignatureDecision, signatureLines } from "../src/core/workflows/baseline-signature.js";
@@ -192,5 +198,55 @@ describe("one table of volatile values for every failure comparison (#2295)", ()
       expect(signature).not.toBe("");
       expect(failuresCovered(b, [{ claim: "Required check tests failed", impact: `Implementation cannot be accepted. Failing: ${signature}` }])).toBe(true);
     }
+  });
+});
+
+// #2520: the block of a task that ended unfinished twice alike says a resume repeats the failure,
+// so it offers no resume; R82 tinyflate deflate 82f19908 T007 was offered only that resume.
+describe("unfinishedRepeatFault (#2520)", () => {
+  const fault = () => new WorkflowFault("OUTPUT_INVALID", "Task T007 did not complete its implementation: ctest fails", { unfinishedTask: "T007" });
+  test("from the second end alike the remedies change an input and leave resume out", () => {
+    const blocked = unfinishedRepeatFault(fault(), "run-1", { taskId: "T007", ends: 2, checks: ["ctest"] });
+    const advice = errorRecovery(blocked);
+    expect(advice?.remedies.map((r) => r.action)).toEqual(["reroute", "revise", "replan", "cancel"]);
+    expect(advice?.remedies.every((r) => r.runId === "run-1")).toBe(true);
+    expect(blocked.message).toContain("Task T007 ended unfinished 2 times in a row with the same failing output of ctest.");
+    expect(blocked.message).toContain("What must change is the input behind ctest");
+    expect(blocked.message).toContain("baked workflow reroute run-1 --route STAGE=MODEL --resume");
+    expect(blocked.details.unfinishedTask).toBe("T007");
+    expect(unfinishedRepeatRemedies(3)).toEqual(["reroute", "revise", "replan", "cancel"]);
+  });
+  test("without a repeat the fault stays as it was", () => {
+    const plain = fault();
+    expect(unfinishedRepeatFault(plain, "run-1", null)).toBe(plain);
+    expect(unfinishedRepeatRemedies(1)).toEqual(["resume"]);
+  });
+});
+
+// #2520: the invalid-output repeat key is built from the writes the host refused, never from the
+// model's wording; the diagnostic's hash keys only a stop without refusals.
+describe("invalid-output repeat decision (#2520)", () => {
+  const refusals = [{ code: "exists" as const, path: "lib/src/template.dart" }];
+  const inputs = { routing: 1 };
+  test("the same refusal under a new diagnostic repeats the last resume", () => {
+    const previous = invalidOutputKey({ refusals, diagnostic: "hash-of-first-wording", inputs });
+    expect(invalidOutputKey({ refusals, diagnostic: "hash-of-second-wording", inputs })).toBe(previous);
+    expect(invalidOutputDecision({ refusals, diagnostic: "hash-of-second-wording", inputs, noted: false, previous })).toBe("repeat");
+    expect(invalidOutputDecision({ refusals, diagnostic: "hash-of-second-wording", inputs, noted: false, previous: null })).toBe("first");
+    // A reroute changes the routing revision, so the same refusal is a new situation.
+    expect(invalidOutputDecision({ refusals, diagnostic: "x", inputs: { routing: 2 }, noted: false, previous })).toBe("progress");
+    expect(invalidOutputDecision({ refusals: [{ code: "exists", path: "lib/src/render.dart" }], diagnostic: "x", inputs, noted: false, previous })).toBe("progress");
+  });
+  test("without refusals the diagnostic keys the decision, as before", () => {
+    const previous = invalidOutputKey({ refusals: [], diagnostic: "d1", inputs });
+    expect(invalidOutputDecision({ refusals: [], diagnostic: "d1", inputs, noted: true, previous })).toBe("repeat");
+    expect(invalidOutputDecision({ refusals: [], diagnostic: "d2", inputs, noted: true, previous })).toBe("progress");
+    expect(invalidOutputDecision({ refusals: [], diagnostic: "d1", inputs, noted: false, previous })).toBe("first");
+  });
+  test("a journaled refusal reads back as its code and path", () => {
+    expect(writeRefusalOf("Create target already exists: lib/src/template.dart")).toEqual({ code: "exists", path: "lib/src/template.dart" });
+    expect(writeRefusalOf("File changed outside this attempt: a.ts")).toEqual({ code: "changed", path: "a.ts" });
+    expect(writeRefusalOf("Modify target is missing: b.ts")).toEqual({ code: "missing", path: "b.ts" });
+    expect(writeRefusalOf("oldString not found in a.ts")).toBeNull();
   });
 });

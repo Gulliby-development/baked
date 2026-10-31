@@ -534,6 +534,7 @@ import {
 } from "./initiatives/plan.js";
 import { InitiativeStore } from "./initiatives/store.js";
 import { featureWorkflowChoices } from "./initiatives/workflows.js";
+import { recordInvalidOutputDecision } from "./invalid-output-repeat.js";
 import {
   changeReach,
   correctiveSources,
@@ -718,6 +719,7 @@ import {
   repeatCheck,
   repeatRecord,
   unfinishedRecord,
+  unfinishedRepeatRemedies,
 } from "./repeated-failure.js";
 import {
   checkedSides,
@@ -1256,8 +1258,11 @@ interface UnfinishedRepeat {
 }
 /**
  * The block of an unfinished task whose failing checks repeat its previous unfinished end, with
- * the repeat in its message and in the `resume` remedy's advice (#2437): R77 pairwick's resumes ran
- * the same task into the same `scalafmt` failure, and the message named only the latest one.
+ * the repeat in its message (#2437): R77 pairwick's resumes ran the same task into the same
+ * `scalafmt` failure, and the message named only the latest one. From the second end alike the
+ * remedies change an input and offer no plain resume (`unfinishedRepeatRemedies`, #2520): R82
+ * tinyflate deflate 82f19908 T007 was told a resume repeats the failure and offered only that
+ * resume, which spent 684k tokens on the same ctest failure.
  */
 export function unfinishedRepeatFault(
   fault: WorkflowFault,
@@ -1267,11 +1272,26 @@ export function unfinishedRepeatFault(
   if (!repeat) return fault;
   const checks = repeat.checks.join(", ");
   const summary = `Task ${repeat.taskId} ended unfinished ${repeat.ends} times in a row with the same failing output of ${checks}.`;
-  const message = `${fault.message.replace(/[.\s]+$/, "")}. ${summary} A resume runs the task into the same failure again unless what makes ${checks} fail changes first (a toolchain or fixer the task cannot run, a rule it cannot satisfy).`;
+  const head = `${fault.message.replace(/[.\s]+$/, "")}. ${summary}`;
   const { recovery: _replaced, ...details } = fault.details;
+  const actions = unfinishedRepeatRemedies(repeat.ends);
+  if (actions.includes("resume"))
+    return new WorkflowFault(
+      fault.code,
+      recoveryAdvice(
+        `${head} A resume runs the task into the same failure again unless what makes ${checks} fail changes first (a toolchain or fixer the task cannot run, a rule it cannot satisfy).`,
+        summary,
+        { action: "resume", runId },
+      ),
+      details,
+    );
   return new WorkflowFault(
     fault.code,
-    recoveryAdvice(message, summary, { action: "resume", runId }),
+    recoveryAdvice(
+      `${head} Another resume gives the task the same input and runs it into the same failure, so it is not offered. What must change is the input behind ${checks}: the model of the task's stage (\`baked workflow reroute ${runId} --route STAGE=MODEL --resume\`), the plan, tasks or tests that make ${checks} fail, such as a test file or a rule the task may not change (\`baked workflow revise ${runId}\`), or the initiative feature's plan (\`baked workflow initiative replan ID --feature F\`); otherwise cancel the run.`,
+      `${summary} Change the stage's model, the plan or the tests before trying again; a resume repeats the failure.`,
+      ...actions.map((action) => ({ action, runId })),
+    ),
     details,
   );
 }
@@ -3623,6 +3643,8 @@ export class WorkflowScheduler {
             failedFixersBlockNote(this.store, runId),
         );
         if (reason === "host_error") recordHostError(this.store, runId, diagnostic.id, fault);
+        // The repeat decision a plain resume would meet, with its inputs, for the replay (#2520).
+        if (reason === "invalid_output") recordInvalidOutputDecision(this.store, runId);
         // A corrective that blocked on files it may not write offers the host's act as a
         // person's remedy, in shadow too (#2155).
         const recovery =
@@ -10083,10 +10105,10 @@ ${note}`;
   /**
    * Records the failing checks of a task's unfinished end (`repeats/tasks/<task>.json`, #2437)
    * and, when they fail exactly as the task's previous unfinished end did, the `repeated_failure`
-   * would-stop (key `task-<id>`, once per task). Shadow only: the run blocks and resumes as before;
-   * the repeat it returns goes into the block message and its `resume` remedy. R77 pairwick: three
-   * implement tasks ended unfinished on the same `scalafmt` failure attempt after attempt and resume
-   * after resume, and no corrective was ever opened for the chain comparison to see.
+   * would-stop (key `task-<id>`, once per task). Shadow only: the run blocks as before; the repeat
+   * it returns goes into the block message, whose remedies change an input (#2520). R77 pairwick:
+   * three implement tasks ended unfinished on the same `scalafmt` failure attempt after attempt and
+   * resume after resume, and no corrective was ever opened for the chain comparison to see.
    */
   private recordUnfinishedRepeat(
     runId: string,
@@ -10101,7 +10123,12 @@ ${note}`;
     const path = `${REPEAT_TASKS_DIR}${taskId}.json`;
     const latest = this.store.latestArtifact(runId, path);
     const previous = latest ? this.repeatRecordOf(runId, latest.id) : null;
-    const record = unfinishedRecord(taskId, previous, checks);
+    const decided = unfinishedRecord(taskId, previous, checks);
+    // A repeat records the remedies its block offers, for the replay (#2520).
+    const record =
+      decided.decision === "repeat"
+        ? { ...decided, remedies: unfinishedRepeatRemedies(decided.ends ?? 2) }
+        : decided;
     this.store.artifact(runId, REPEAT_KIND, path, canonical(record));
     if (record.decision !== "repeat") return null;
     const repeat = { taskId, ends: record.ends ?? 2, checks: checks.map((c) => c.id) };
