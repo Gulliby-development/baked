@@ -1,4 +1,4 @@
-import { canonical } from "../specs/hash.js";
+import { canonical, hashBytes, hashJson } from "../specs/hash.js";
 import {
   CONFLICT_ASSUMPTION_PREFIX,
   CONFLICT_DECISION_PREFIX,
@@ -7,15 +7,19 @@ import {
 import {
   derivationRowConflicts,
   graphPaths,
+  literalCorrections,
   ROW_CLAIM_DIR,
   ROW_CLAIM_KIND,
   type RowClaimConflict,
   type RowClaimRecord,
+  type RowTextEdit,
+  repairRowText,
   rowClaimConflicts,
   rowClaimNote,
 } from "./row-claims.js";
-import type { TaskGraph } from "./schemas.js";
+import type { Spec, TaskGraph } from "./schemas.js";
 import type { WorkflowStore } from "./store.js";
+import type { RuntimeState } from "./types.js";
 
 /** Where a conflict's spec amendment is recorded (`amendments/conflict-<task>.json`). */
 const AMENDMENT_PREFIX = "amendments/conflict-";
@@ -171,4 +175,107 @@ export function repairRowClaims(
     written,
     note: `Row claims overridden on resume (${ROW_CLAIM_DIR}): ${rowClaimNote(request, unique, `What this run settled earlier (${sources})`)}`,
   };
+}
+
+/** The run's row-claim records (`conflicts/row-claims/`), each at its latest revision. */
+export function rowClaimRecords(store: WorkflowStore, runId: string): RowClaimRecord[] {
+  const rows = store.artifacts(runId).filter((a) => a.logical_path.startsWith(ROW_CLAIM_DIR));
+  return rows
+    .filter((a, i) => !rows.slice(i + 1).some((b) => b.logical_path === a.logical_path))
+    .flatMap((a) => {
+      try {
+        const body = JSON.parse(store.readArtifact(runId, a.id)) as Partial<RowClaimRecord>;
+        return body.schemaVersion === 1 && Array.isArray(body.conflicts)
+          ? [body as RowClaimRecord]
+          : [];
+      } catch {
+        return [];
+      }
+    });
+}
+
+/** One field of the approved spec a repair rewrote from the request's rows. */
+export interface SpecRowRepair {
+  id: string;
+  field: "text" | "given" | "when" | "then";
+  before: string;
+  after: string;
+}
+
+/**
+ * The approved spec with each requirement's and criterion's stale citation of a prescribed row put
+ * back from the request (`repairRowText`, #2563): R82 tinyflate's spec kept citing `ab1805240200`
+ * (the stream of a 306-byte input) after the decision that gave it was overridden.
+ */
+export function repairSpecRows(
+  request: string,
+  paths: readonly string[],
+  spec: Spec,
+  literals: ReadonlyMap<string, string>,
+): { spec: Spec; repaired: SpecRowRepair[] } {
+  const repaired: SpecRowRepair[] = [];
+  const fix = (id: string, field: SpecRowRepair["field"], before: string): string => {
+    const { text } = repairRowText(request, paths, before, literals);
+    if (text !== before) repaired.push({ id, field, before, after: text });
+    return text;
+  };
+  return {
+    spec: {
+      ...spec,
+      requirements: spec.requirements.map((r) => ({ ...r, text: fix(r.id, "text", r.text) })),
+      criteria: spec.criteria.map((c) => ({
+        ...c,
+        given: fix(c.id, "given", c.given),
+        when: fix(c.id, "when", c.when),
+        // biome-ignore lint/suspicious/noThenProperty: Given/When/Then is the versioned acceptance-criterion contract.
+        then: fix(c.id, "then", c.then),
+      })),
+    },
+    repaired,
+  };
+}
+
+/** Where a repair of the run's spec and prompt from the request's rows is recorded (#2563). */
+export const ROW_SPEC_REPAIR_PREFIX = "spec-repairs/row-claims-";
+
+/**
+ * The run's own texts put back from the request's rows once a restatement of them was overridden
+ * (#2563): the approved spec's citations (`repairSpecRows`) and the settled notes of the run's
+ * prompt (`repairRowText`, the request itself unchanged). Only when the run holds an `on` record;
+ * the state is changed in place and the repair recorded under `spec-repairs/row-claims-<hash>.json`
+ * (an input of the invalid-output repeat key). Returns whether anything changed.
+ */
+export function repairRunRows(
+  store: WorkflowStore,
+  runId: string,
+  state: RuntimeState,
+  request: string,
+): boolean {
+  const records = rowClaimRecords(store, runId).filter((r) => r.mode === "on");
+  if (!records.length) return false;
+  const paths = graphPaths(state.rootGraph ?? state.graph);
+  const literals = literalCorrections(records);
+  const spec = state.spec ? repairSpecRows(request, paths, state.spec, literals) : null;
+  // The request at the head of the prompt is the request: only what follows it is repaired.
+  const head = state.prompt.startsWith(request) ? request.length : 0;
+  const prompt = repairRowText(request, paths, state.prompt.slice(head), literals);
+  const edits: RowTextEdit[] = prompt.edits;
+  if (!spec?.repaired.length && !edits.length) return false;
+  if (spec?.repaired.length) {
+    state.spec = spec.spec;
+    state.manifest.specHash = hashJson(spec.spec);
+  }
+  if (edits.length) state.prompt = state.prompt.slice(0, head) + prompt.text;
+  const body = canonical({
+    spec: spec?.repaired ?? [],
+    prompt: edits.map((e) => ({ before: e.before.slice(0, 400), after: e.after.slice(0, 400) })),
+    literals: Object.fromEntries(literals),
+  });
+  store.artifact(
+    runId,
+    "diagnostic",
+    `${ROW_SPEC_REPAIR_PREFIX}${hashBytes(body).slice(0, 16)}.json`,
+    body,
+  );
+  return true;
 }

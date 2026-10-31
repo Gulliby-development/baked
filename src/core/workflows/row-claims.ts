@@ -89,6 +89,8 @@ const ATTRIBUTES =
 const FILE_VERBS =
   /\b(?:contains?|contained|has|have|had|holds?|held|uses?|used|spells?|delivered|writes?|wrote|written|found|current(?:ly)?|now)\b/i;
 const SENTENCE = /(?<=[.;!?])\s+|\n+|:\s+/;
+/** A row a sentence names by its byte: `the q-row`, `the x input` (#2563). */
+const NAMED_ROW = /(?<![\w-])([A-Za-z0-9])(?:-|\s+)(?:row|input|run)s?\b/;
 const CLAUSE = /,\s*(?:but|while|whereas|yet)\b|\bbut\b|\binstead of\b|\brather than\b|\bnot\b/i;
 
 const byteOf = (spelled: string | undefined): number | null => {
@@ -127,7 +129,10 @@ export function runClaims(text: string): RunClaim[] {
     ).filter((u) => u.count >= LONG_RUN);
     if (!units.length) continue;
     const bytes = [...new Set(units.map((u) => u.byte).filter((b) => b !== null))];
-    const sentenceByte = bytes.length === 1 ? (bytes[0] ?? null) : null;
+    // A sentence that names no byte with a count may name its row by one ("the q-row", #2563).
+    const named = NAMED_ROW.exec(sentence)?.[1];
+    const sentenceByte =
+      bytes.length === 1 ? (bytes[0] ?? null) : !bytes.length && named ? named.charCodeAt(0) : null;
     const clauseStart = (at: number) => {
       let start = 0;
       for (const m of sentence.slice(0, at).matchAll(new RegExp(CLAUSE.source, "gi")))
@@ -315,4 +320,65 @@ export function rowClaimNote(
 /** The decision and assumption paths the request's rows overrode (`on` records only). */
 export function overriddenPaths(records: readonly RowClaimRecord[]): Set<string> {
   return new Set(records.filter((r) => r.mode === "on").flatMap((r) => r.overrides ?? []));
+}
+
+/** A sentence of the host's notes on a contradicted row (`rowClaimNote`, `rowClaimText`). */
+const HOST_NOTE =
+  /\bthe request gives\b|\bas the request gives it\b|the request's text wins|is the count of none of its rows' runs/;
+
+/** One sentence a repair rewrote (#2563). */
+export interface RowTextEdit {
+  before: string;
+  after: string;
+}
+
+/**
+ * The wrong expected values the run's overrides found, each with the request's (#2563): from the
+ * `literal` conflicts of `on` records, `ab1805240200` -> `ab1805440300` for R82 tinyflate row 7.
+ */
+export function literalCorrections(records: readonly RowClaimRecord[]): Map<string, string> {
+  const out = new Map<string, string>();
+  for (const record of records.filter((r) => r.mode === "on"))
+    for (const c of record.conflicts) {
+      if (c.kind !== "literal") continue;
+      const claimed = String(c.claimed).split(" ").filter(Boolean);
+      const given = String(c.prescribed)
+        .split(" ")
+        .map((g) => g.replace(/(?:\\n)+$/, ""))
+        .filter((g) => /^[0-9a-fA-F]{8,}$/.test(g));
+      if (claimed.length !== given.length) continue;
+      for (const [i, wrong] of claimed.entries()) out.set(wrong, given[i] ?? wrong);
+    }
+  return out;
+}
+
+/**
+ * A text with its restatements of the request's rows put back from the request (#2563): in each
+ * sentence a run count it attributes to the request that contradicts a row of one byte
+ * (`rowClaimConflicts`) is replaced by the row's count, and each wrong expected value of
+ * `literals` by the request's. The rest of the text is unchanged; `edits` lists the sentences.
+ */
+export function repairRowText(
+  request: string,
+  paths: readonly string[],
+  text: string,
+  literals: ReadonlyMap<string, string>,
+): { text: string; edits: RowTextEdit[] } {
+  const edits: RowTextEdit[] = [];
+  const parts = text.split(/((?<=[.;!?])\s+|\n+)/);
+  const out = parts.map((part, i) => {
+    // The host's own account of a contradiction quotes both sides; it stays as written.
+    if (i % 2 === 1 || !part || HOST_NOTE.test(part)) return part;
+    let next = part;
+    for (const c of rowClaimConflicts(request, paths, part))
+      if (c.kind === "run" && typeof c.prescribed === "number")
+        next = next.replace(
+          new RegExp(`(?<![\\w.])${c.claimed}(?![\\w.])`, "g"),
+          String(c.prescribed),
+        );
+    for (const [wrong, right] of literals) next = next.replaceAll(wrong, right);
+    if (next !== part) edits.push({ before: part, after: next });
+    return next;
+  });
+  return { text: out.join(""), edits };
 }
