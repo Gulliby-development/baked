@@ -98,6 +98,20 @@
     "dependencyPrepare": null,
     "worktreePathLimits": null,
     "testClasses": null,
-    "testDeclarations": ["tests/sum.test.ts: 3 tests"]
+    "testDeclarations": ["tests/sum.test.ts: 3 tests"],
+    "rowFileShapes": [
+      "tests/problems-rows.test.ts",
+      "import { expect, test } from \"bun:test\";",
+      "import { run } from \"./helpers/run\";",
+      "",
+      "const rows = [",
+      "  { args: [\"problems\"], code: 0, out: \"1\\n\" },",
+      "  { args: [\"problems\", \"--all\"], code: 0, out: \"2\\n\" },",
+      "];",
+      "",
+      "for (const row of rows)",
+      "  test(row.args.join(\" \"), async () => expect(await run(row)).toEqual(row));",
+      ""
+    ]
   }
 }

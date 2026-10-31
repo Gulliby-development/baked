@@ -93,6 +93,19 @@
     "dependencyPrepare": null,
     "worktreePathLimits": null,
     "testClasses": null,
-    "testDeclarations": ["tests/sum.test.js: 3 tests"]
+    "testDeclarations": ["tests/sum.test.js: 3 tests"],
+    "rowFileShapes": [
+      "test/split-rows.test.js",
+      "import { expect, test } from \"vitest\";",
+      "import { split } from \"../src/split.js\";",
+      "",
+      "const rows = [",
+      "  [\"a,b\", [\"a\", \"b\"]],",
+      "  [\"a,,b\", [\"a\", \"\", \"b\"]],",
+      "];",
+      "",
+      "test.each(rows)(\"split(%j)\", (input, out) => expect(split(input)).toEqual(out));",
+      ""
+    ]
   }
 }
