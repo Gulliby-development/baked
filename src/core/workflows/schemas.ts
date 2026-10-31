@@ -744,6 +744,15 @@ export const PolicySchema = z
      */
     rowRestore: z.literal("on").optional(),
     /**
+     * The host's write of a prescribed row file (row-file.ts, host-apply.ts, #2528): `on` lets the
+     * host write a planned task's test file from its shape (the file in the task's base or the
+     * task's `reference`) and the rows the request prescribes, when the host apply decision would
+     * write it, and start no session; the task's checks decide it. Absent means shadow (the
+     * decision is recorded under `host-apply/tasks/`, the session runs), so stored policies keep
+     * their hash.
+     */
+    rowFileWrite: z.literal("on").optional(),
+    /**
      * The host's apply of a task the request gives verbatim (host-apply.ts, #2333): `on` writes
      * the task's files when `hostApplyDecision` would apply them and starts no implementer; its
      * checks decide it. Absent means shadow (the decision is recorded, the implementer runs), so

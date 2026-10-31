@@ -71,7 +71,24 @@
     "dependencyPrepare": null,
     "worktreePathLimits": null,
     "testClasses": null,
-    "testDeclarations": ["tests/test_sum.c: 2 tests"]
+    "testDeclarations": ["tests/test_sum.c: 2 tests"],
+    "rowFileShapes": [
+      "tests/deflate_match_test.c",
+      "#include \"check.h\"",
+      "",
+      "struct row {",
+      "  const char *input_hex;",
+      "  const char *output_hex;",
+      "};",
+      "",
+      "static const struct row rows[] = {",
+      "    {\"616263\", \"4b4c4a0600\"},",
+      "    {\"7878787878\", \"abaa50120400\"},",
+      "};",
+      "",
+      "int main(void) { return check_rows(rows, sizeof rows / sizeof rows[0]); }",
+      ""
+    ]
   },
   "outputs": {
     "tests": "Test project /w/build\n    Start 1: sum_adds\n1/2 Test #1: sum_adds .........................   Passed    0.03 sec\n    Start 2: sum_commutes\n2/2 Test #2: sum_commutes .....................***Failed    0.01 sec\n\n\n50% tests passed, 1 tests failed out of 2\n\nTotal Test time (real) =   0.05 sec\n\nThe following tests FAILED:\n\t  2 - sum_commutes (Failed)\nErrors while running CTest\n",

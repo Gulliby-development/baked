@@ -36,6 +36,7 @@ import { checkBuiltinRules } from "../src/core/workflows/quality/rules.js";
 import { INLINE_HARNESS, inlineRowFile } from "../src/core/workflows/acceptance-rows-inline.js";
 import { TEST_GATES, testGateFlags } from "../src/core/workflows/test-gates.js";
 import { declaredTestClasses, TEST_CLASSES } from "../src/core/workflows/test-classes.js";
+import { ROW_FILE_SHAPES, rowFilePlan, rowFileRefusal } from "../src/core/workflows/row-file.js";
 import { writtenTestsCheck } from "../src/core/workflows/affected-tests.js";
 import { TreeSitterBackend } from "../src/core/intelligence/backends/tree-sitter.js";
 import { CALL_SYNTAX, callContext, functionsIn } from "../src/core/intelligence/call-context.js";
@@ -246,6 +247,19 @@ const RECORDS: Record<
           .map(([path, text]) => classes(path, text)),
       ];
     },
+  },
+  // The prescribed row file the host writes from the row's example shape and rows (#2528): the
+  // written file's lines, the shape's preamble and epilogue around one row per line.
+  rowFileShapes: {
+    record: ROW_FILE_SHAPES,
+    run: (language) => {
+      const row = rowOf(ROW_FILE_SHAPES, language);
+      if (!row) return [];
+      const { path, reference, rows } = row.example;
+      const { inputs, content } = rowFilePlan(path, rows, { source: "reference", text: reference });
+      return content === null ? ["declined", rowFileRefusal(path, inputs) ?? ""] : [path, ...content.split("\n")];
+    },
+    never: ["declined"],
   },
   // The comment and string syntax the case walk and the integrity guards read code by (#1846): the
   // lines a string or a comment covers, marked `comment` when stripping comments alone blanks them.
