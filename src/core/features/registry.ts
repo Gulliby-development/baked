@@ -1394,10 +1394,11 @@ export const FEATURES: readonly Feature[] = [
   {
     id: "row-file-write",
     group: "Workflow runs",
-    title: "Write a prescribed test row file on the host from its shape, without a session",
+    title:
+      "Write a prescribed test row file on the host from its shape, without a session, or place its rows from the request with place_rows",
     tui: ["/code-quality"],
     cli: notNeeded(
-      "quality.rowFileWrite in config.json; the write shows as the task's host-apply record and a host edit of the test file",
+      "quality.rowFileWrite in config.json; the write shows as the task's host-apply record and a host edit of the test file, a placed row as the session's place_rows call",
     ),
     api: ["/v1/settings: code-quality page"],
     desktop: ["settings/chat: Code quality page"],

@@ -41,6 +41,7 @@ import { canonical, hashBytes, hashJson } from "../specs/hash.js";
 import { specPublication } from "../specs/render.js";
 import { validatePackage, workspacePath } from "../specs/validate.js";
 import { captureEndings, restoreEndings } from "../tools/line-endings.js";
+import { placeRowTargets } from "../tools/place-rows.js";
 import {
   assertAcceptance,
   assertAcceptanceV2,
@@ -9041,6 +9042,7 @@ ${note}`;
                 : {}),
               ...this.affectedTestsContext(root, state, policy, task),
               ...this.writtenTestsContext(state, policy, task),
+              ...this.placeRowsContext(state, policy, scoped),
               ...(inherited.length
                 ? {
                     earlierEdits: {
@@ -10605,6 +10607,7 @@ ${note}`;
                   ...(earlierEdits ? { earlierEdits } : {}),
                   ...this.affectedTestsContext(root, state, policy, task),
                   ...this.writtenTestsContext(state, policy, task),
+                  ...this.placeRowsContext(state, policy, scoped),
                 }
               : entry.extra,
             signal,
@@ -12011,6 +12014,27 @@ ${note}`;
         checkId,
         paths,
         note: `After this task the host runs ${checkId}, required: the test files this task writes, on their own, within ${seconds} s. The host uses the same 30 s per-test default for this check and the full suite for bun test, jest and vitest, unless the project sets its own timeout. Run request_check ${checkId} once they are written and fix what fails before you submit: a test that fails or runs too long after you submit sends the task back to you with the output.`,
+      },
+    };
+  }
+  /**
+   * For a task that writes a file the request prescribes rows for, under `rowFileWrite: "on"`
+   * (#2564): the session places the rows with place_rows, from the request's text, and never types
+   * one. The executor offers the tool on the same targets (`placeRowTargets`).
+   */
+  private placeRowsContext(
+    state: RuntimeState,
+    policy: RunPolicy,
+    task: Task,
+  ): { placeRows?: { files: { path: string; rows: number }[]; note: string } } {
+    if (policy.rowFileWrite !== "on") return {};
+    const targets = placeRowTargets(state.requestText || state.prompt, task);
+    if (!targets.size) return {};
+    const files = [...targets].map(([path, rows]) => ({ path, rows: rows.length }));
+    return {
+      placeRows: {
+        files,
+        note: `The request prescribes the rows of ${files.map((f) => `${f.path} (${f.rows} rows)`).join(", ")}. You must place them with place_rows and never type a row: write everything else in the file with edit_file (imports, the row type, the list's opening and close, the harness calls), leaving the rows out, then call place_rows with the path, the line the rows follow and rows [first, last]. The host inserts the request's rows exactly as written, one per line in order; give indent and separator when the defaults (the line's indentation, one level deeper after a line that opens the list; a comma after each row) do not fit the language.`,
       },
     };
   }

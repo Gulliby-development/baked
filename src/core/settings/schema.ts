@@ -1101,7 +1101,7 @@ export const SETTINGS: readonly SettingDefinition[] = [
     page: "code-quality",
     section: "Workflow runs",
     label: "Host-written prescribed row files",
-    help: "When a planned task only writes a test file whose rows the request prescribes verbatim, the host writes the file itself: the shape (imports, the row type, the harness call) from the file already in the task's base or the task's reference file, and one prescribed row per line in the shape's own row notation. No model session transcribes the rows; the task's checks decide the file, and a failing check opens the normal correction.",
+    help: "When a planned task only writes a test file whose rows the request prescribes verbatim, the host writes the file itself: the shape (imports, the row type, the harness call) from the file already in the task's base or the task's reference file, and one prescribed row per line in the shape's own row notation. No model session transcribes the rows; the task's checks decide the file, and a failing check opens the normal correction. Where the host cannot write the file (a language without a row shape yet, a shape it cannot read), the session gets place_rows: it writes the rest of the file and the host inserts the request's rows exactly as written.",
     scopes: BOTH,
     type: "enum",
     default: "off",
@@ -1109,12 +1109,12 @@ export const SETTINGS: readonly SettingDefinition[] = [
       {
         value: "off",
         label: "off",
-        help: "A session writes the file; the host only records whether it would write it.",
+        help: "A session writes the file; the host only records whether it would write it, and whether the session would get place_rows.",
       },
       {
         value: "on",
         label: "on",
-        help: "Write the row file from its shape and start no session for it.",
+        help: "Write the row file from its shape and start no session for it; otherwise give the session place_rows.",
       },
     ],
   },
