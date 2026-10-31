@@ -354,14 +354,17 @@ export class CheckRunner {
   }> {
     const policy = JSON.parse(this.store.run(runId).policy_json) as RunPolicy;
     // A gate that reads another gate's output runs that gate first where its output is missing,
-    // a fresh task worktree (#2526); a prerequisite that does not pass is this check's result.
+    // a fresh task worktree (#2526), or every time when it must be current (#2565); a
+    // prerequisite that does not pass is this check's result.
     const prerequisite = pendingPrerequisite(check, policy.checks, root);
     if (prerequisite) {
       const ran = await this.run(runId, attemptId, prerequisite.check, signal, root);
       if (ran.status !== "passed")
         return {
           ...ran,
-          output: `${check.id} reads what ${prerequisite.check.id} writes (${prerequisite.marker}), which this directory does not have, so the host ran ${prerequisite.check.id} first and it did not pass:\n\n${ran.output}`,
+          output: prerequisite.marker
+            ? `${check.id} reads what ${prerequisite.check.id} writes (${prerequisite.marker}), which this directory does not have, so the host ran ${prerequisite.check.id} first and it did not pass:\n\n${ran.output}`
+            : `${check.id} runs what ${prerequisite.check.id} builds, so the host ran ${prerequisite.check.id} first to build the current sources and it did not pass:\n\n${ran.output}`,
         };
     }
     const generated = generatedPaths(policy);

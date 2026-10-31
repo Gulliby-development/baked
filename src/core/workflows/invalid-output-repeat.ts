@@ -3,7 +3,7 @@ import { canonical, hashBytes } from "../specs/hash.js";
 import { releaseLinkCount } from "./release-writes.js";
 import { type RecoveryAdvice, recoveryAdvice } from "./remedies.js";
 import { REPEAT_KIND, type RepeatDecision } from "./repeated-failure.js";
-import { ROW_CLAIM_RESUME_DIR } from "./row-claim-repair.js";
+import { ROW_CLAIM_RESUME_DIR, ROW_SPEC_REPAIR_PREFIX } from "./row-claim-repair.js";
 import { ROW_RESTORE_RESUME_DIR } from "./row-restore.js";
 import type { WorkflowStore } from "./store.js";
 import { type WriteRefusal, writeRefusalOf } from "./write-refusals.js";
@@ -34,10 +34,15 @@ export function invalidOutputInputs(
   const rows = store
     .artifacts(runId)
     .filter((a) => a.logical_path.startsWith(ROW_RESTORE_RESUME_DIR)).length;
-  // The restatements the resume checked against the request's rows (#2561).
+  // The restatements the resume checked against the request's rows (#2561), and the spec and
+  // prompt repairs that followed them (#2563).
   const claims = store
     .artifacts(runId)
-    .filter((a) => a.logical_path.startsWith(ROW_CLAIM_RESUME_DIR)).length;
+    .filter(
+      (a) =>
+        a.logical_path.startsWith(ROW_CLAIM_RESUME_DIR) ||
+        a.logical_path.startsWith(ROW_SPEC_REPAIR_PREFIX),
+    ).length;
   return {
     routing: store.latestArtifact(runId, ROUTING_ARTIFACT)?.revision ?? 0,
     ...(release ? { release } : {}),

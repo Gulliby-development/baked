@@ -133,7 +133,7 @@ import {
   routeChanges,
   strictRoutingConfig,
 } from "./routing.js";
-import { repairRowClaims } from "./row-claim-repair.js";
+import { repairRowClaims, repairRunRows } from "./row-claim-repair.js";
 import { ROW_RESTORE_KIND, ROW_RESTORE_RESUME_DIR, rowRunRestores } from "./row-restore.js";
 import {
   GATES_ARTIFACT,
@@ -1258,12 +1258,24 @@ export class NativeWorkflowService implements WorkflowService {
     } catch {
       return;
     }
-    if (!repaired.note) return;
     const note = repaired.note;
     this.store.transaction(() => {
       const current = this.store.state(runId);
-      current.prompt += `\n${note}`;
-      this.store.saveState(runId, current);
+      // Once a restatement is overridden, the spec's and the prompt's stale citations of the rows
+      // are put back from the request too (#2563: R82 rev 73 overrode the decision, and T009 still
+      // read ab1805240200 in the spec and 306 in the settled notes).
+      let changed = false;
+      if (mode === "on")
+        try {
+          changed = repairRunRows(
+            this.store,
+            runId,
+            current,
+            current.requestText || current.prompt,
+          );
+        } catch {}
+      if (note) current.prompt += `\n${note}`;
+      if (note || changed) this.store.saveState(runId, current);
     });
   }
   /**
@@ -1689,6 +1701,13 @@ export class NativeWorkflowService implements WorkflowService {
     const state = this.store.state(runId);
     if (!state.prompt.includes(repeat.note)) {
       state.prompt += repeat.note;
+      // A diagnostic that restates the request's rows otherwise is put back from them once the
+      // run overrode that restatement (#2563: R82 rev 73's T009 diagnostic, "restore the exact
+      // prescribed 306-byte x input").
+      if (PolicySchema.parse(JSON.parse(this.store.run(runId).policy_json)).rowClaimCheck !== "off")
+        try {
+          repairRunRows(this.store, runId, state, state.requestText || state.prompt);
+        } catch {}
       this.store.saveState(runId, state);
     }
     this.store.artifact(runId, "recovery", INVALID_OUTPUT_KEY, repeat.key);

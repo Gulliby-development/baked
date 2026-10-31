@@ -910,13 +910,16 @@ import {
   rowRunFindings,
   rowRunText,
 } from "./row-block-drift.js";
+import { repairRunRows, rowClaimRecords } from "./row-claim-repair.js";
 import {
   derivationRowConflicts,
   graphPaths,
+  literalCorrections,
   ROW_CLAIM_DIR,
   ROW_CLAIM_KIND,
   type RowClaimConflict,
   type RowClaimRecord,
+  repairRowText,
   rowClaimConflicts,
   rowClaimNote,
 } from "./row-claims.js";
@@ -4488,6 +4491,7 @@ export class WorkflowScheduler {
     runId: string,
     state: RuntimeState,
     task: Task,
+    repair: ((text: string) => string) | null = null,
   ): Record<string, unknown> {
     const earlier = recurringFindings(this.store, runId, task);
     // The same-file findings gate submit beside the recurring ones (`reproCheck`), so the worker
@@ -4504,7 +4508,7 @@ export class WorkflowScheduler {
         symbols: [...new Set(earlier.map((f) => f.symbol))],
         earlier: earlier.map((f) => ({
           id: f.id,
-          claim: f.claim,
+          claim: repair ? repair(f.claim) : f.claim,
           ...(f.repro ? { repro: f.repro } : {}),
           // The fix a repeated finding got, so this correction extends it instead of
           // rediscovering it (#1774).
@@ -4865,6 +4869,8 @@ export class WorkflowScheduler {
   private previousAttempt(
     runId: string,
     taskId: string,
+    // The account put back from the request's rows once a restatement of them was overridden.
+    repair: ((text: string) => string) | null = null,
   ): {
     previousAttempt?: {
       summary: string;
@@ -4883,10 +4889,11 @@ export class WorkflowScheduler {
       reason?: string;
     };
     if (!record.summary && !record.unresolved?.length && !record.failedChecks?.length) return {};
+    const fix = repair ?? ((text: string) => text);
     return {
       previousAttempt: {
-        summary: record.summary ?? "",
-        unresolved: record.unresolved ?? [],
+        summary: fix(record.summary ?? ""),
+        unresolved: (record.unresolved ?? []).map(fix),
         ...(record.failedChecks?.length ? { failedChecks: record.failedChecks } : {}),
         // Why the host restarted it, when that corrects the earlier session (#1516: a claim of no
         // edit tool from a session that edited).
@@ -8813,7 +8820,8 @@ ${note}`;
       (task.writes.length === 0 ||
         hostWritten(task) ||
         applied ||
-        (firstRun && (await this.correctionPassing(runId, child, state, policy, task, signal))))
+        (firstRun && (await this.correctionPassing(runId, child, state, policy, task, signal))) ||
+        (await this.staleRowCorrection(runId, child, state, policy, task, signal)))
     ) {
       // A task that may not write, a task whose files the host writes (planned content, or the
       // request's verbatim content it applied, #2333), or a correction whose failing checks
@@ -8911,7 +8919,12 @@ ${note}`;
         : narrowCorrectionWrites(task, focus.files, !diagnostics);
       // The task as this attempt may write it: a correction's first attempt only where its
       // findings point.
-      const scoped: Task = narrow ? { ...task, writes: narrow } : task;
+      const scoped: Task = this.rowRepairedTask(
+        runId,
+        state,
+        policy,
+        narrow ? { ...task, writes: narrow } : task,
+      );
       if (narrow) state.narrowedCorrections[task.id] ??= narrow.map((w) => w.path);
       const preloaded = await preloadTaskFiles(
         root,
@@ -8979,9 +8992,9 @@ ${note}`;
                 : {}),
               unresolvedMeans: UNRESOLVED_MEANING,
               ...(await this.libraryDocsContext(runId, policy, root, task)),
-              ...this.previousAttempt(runId, task.id),
+              ...this.previousAttempt(runId, task.id, this.rowRepairer(runId, state, policy)),
               ...this.earlierReadsContext(runId, task.id),
-              ...this.recurringContext(runId, state, task),
+              ...this.recurringContext(runId, state, task, this.rowRepairer(runId, state, policy)),
               ...this.cutOffChecks(runId, task.id),
               ...this.failedFixers(runId, task),
               ...this.misquoteContinue(runId, state, task.id),
@@ -10434,7 +10447,7 @@ ${note}`;
         }),
         ...fresh.extra,
         unresolvedMeans: UNRESOLVED_MEANING,
-        ...this.previousAttempt(runId, task.id),
+        ...this.previousAttempt(runId, task.id, this.rowRepairer(runId, state, policy)),
         ...this.earlierReadsContext(runId, task.id),
         ...this.cutOffChecks(runId, task.id),
         ...this.failedFixers(runId, task),
@@ -10527,7 +10540,12 @@ ${note}`;
             correctionFocus(this.store, runId, state, task).files,
             !staticCorrection(this.store, runId, policy, task),
           );
-      const scoped: Task = narrow ? { ...task, writes: narrow } : task;
+      const scoped: Task = this.rowRepairedTask(
+        runId,
+        state,
+        policy,
+        narrow ? { ...task, writes: narrow } : task,
+      );
       if (narrow) state.narrowedCorrections[task.id] ??= narrow.map((w) => w.path);
       const currentChanges = async (): Promise<{
         after: Record<string, string>;
@@ -10555,7 +10573,12 @@ ${note}`;
                   ...entry.extra,
                   task: scoped,
                   ...(await this.correctionContext(runId, state, policy, root, task, narrow)),
-                  ...this.recurringContext(runId, state, task),
+                  ...this.recurringContext(
+                    runId,
+                    state,
+                    task,
+                    this.rowRepairer(runId, state, policy),
+                  ),
                   ...(await this.libraryDocsContext(runId, policy, root, task)),
                   ...(earlierEdits ? { earlierEdits } : {}),
                   ...this.affectedTestsContext(root, state, policy, task),
@@ -11780,6 +11803,103 @@ ${note}`;
       ),
     );
     return true;
+  }
+  /**
+   * A correction made stale by an override of a restatement of the request's rows (#2563): every
+   * finding it corrects was refuted against the request's rows (`conflicts/row-claims/`), so what
+   * it was opened to do is not the request's. R82 tinyflate 82f19908 rev 73: the resume overrode
+   * T009's decision and refuted its finding F1-2 ("instead of the required 306"), the file held
+   * the request's 300/259 and ctest passed, and T009's session still restored 306. When the task's
+   * required checks pass on the files as they are, the host closes it (`tasks/<id>/stale-
+   * correction.json`, the passing runs as its evidence); otherwise its brief is rebuilt from the
+   * request's rows (`rowRepairer`). Every session, not only the first; `rowClaimCheck: "off"`
+   * keeps the correction.
+   */
+  private async staleRowCorrection(
+    runId: string,
+    child: string,
+    state: RuntimeState,
+    policy: RunPolicy,
+    task: Task,
+    signal: AbortSignal,
+  ): Promise<boolean> {
+    if (policy.rowClaimCheck === "off" || task.origin === "planned" || !task.findingIds.length)
+      return false;
+    if (uncommittedEdits(this.store, runId, task.id).length) return false;
+    const records = rowClaimRecords(this.store, runId).filter((r) => r.mode === "on");
+    if (!records.length) return false;
+    const covered = new Set(
+      records.flatMap((r) => [r.ref, r.ref.replace(/^finding-/, ""), r.taskId ?? ""]),
+    );
+    const findings = this.store.findings(runId).filter((f) => task.findingIds.includes(f.id));
+    if (
+      findings.length !== task.findingIds.length ||
+      !findings.every((f) => f.status === "refuted" && (covered.has(f.id) || covered.has(task.id)))
+    )
+      return false;
+    const checks = policy.checks.filter(
+      (c) => c.required && (!task.checkIds.length || task.checkIds.includes(c.id)),
+    );
+    if (!checks.length) return false;
+    const root = runRoot(this.store.workspace, state);
+    const evidenceIds: string[] = [];
+    for (const check of checks) {
+      const checked = await this.runTaskCheck(runId, child, check, policy, signal, root);
+      if (checked.status !== "passed") return false;
+      evidenceIds.push(checked.evidenceId);
+    }
+    this.store.transaction(() =>
+      this.store.artifact(
+        runId,
+        "diagnostic",
+        `tasks/${task.id}/stale-correction.json`,
+        canonical({
+          taskId: task.id,
+          findingIds: task.findingIds,
+          refutedBy: records
+            .filter((r) => task.findingIds.some((id) => covered.has(id)) || r.taskId === task.id)
+            .map((r) => r.ref),
+          checks: checks.map((c) => c.id),
+          evidenceIds,
+        }),
+      ),
+    );
+    return true;
+  }
+  /**
+   * The rewrite of a session's brief texts from the request's rows once the run overrode a
+   * restatement of them (#2563, `repairRowText`): a task's description, its last attempt's account
+   * and its recurring findings that still give a row the overridden counts or expected values.
+   * Null when the run holds no `on` record or `rowClaimCheck` is off.
+   */
+  private rowRepairer(
+    runId: string,
+    state: RuntimeState,
+    policy: RunPolicy,
+  ): ((text: string) => string) | null {
+    if (policy.rowClaimCheck === "off") return null;
+    const records = rowClaimRecords(this.store, runId).filter((r) => r.mode === "on");
+    if (!records.length) return null;
+    const request = state.requestText || state.prompt;
+    const paths = graphPaths(state.rootGraph ?? state.graph);
+    const literals = literalCorrections(records);
+    return (text) => {
+      try {
+        return repairRowText(request, paths, text, literals).text;
+      } catch {
+        return text;
+      }
+    };
+  }
+  /** The task with its title and description put back from the request's rows (#2563). */
+  private rowRepairedTask(runId: string, state: RuntimeState, policy: RunPolicy, task: Task): Task {
+    const repair = this.rowRepairer(runId, state, policy);
+    if (!repair) return task;
+    const title = repair(task.title);
+    const description = repair(task.description);
+    return title === task.title && description === task.description
+      ? task
+      : { ...task, title, description };
   }
   /**
    * A corrective task in its own worktree gets the files its findings point at, preloaded in
@@ -14246,6 +14366,10 @@ ${note}`;
       });
       this.store.taskStatus(runId, task.id, "interrupted", null, { cause: "spec_conflict" });
       this.store.finishStep(runId, child, "failed");
+      // The spec's and the prompt's citations of the rows follow the request too (#2563).
+      try {
+        repairRunRows(this.store, runId, state, state.requestText || state.prompt);
+      } catch {}
     });
     state.prompt += `\nSettled spec conflict (${path}): task ${task.id} reported that the spec contradicts the code: ${report.slice(0, 1200)} ${settled} Report implemented or already_satisfied, not spec_conflict.`;
   }

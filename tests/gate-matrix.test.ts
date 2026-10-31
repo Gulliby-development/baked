@@ -7,6 +7,7 @@ import { evaluateAutoApproval, planScopeAdvice } from "../src/core/workflows/aut
 import { proseAfterRefusalScenario, refusalKinds } from "./helpers/prose-after-refusal-scenario.js";
 import { runScanner } from "../src/core/workflows/quality/rules.js";
 import { suppliedLineNumbers } from "../src/core/workflows/supplied-drift.js";
+import { upstreamSymbolGaps } from "../src/core/workflows/initiatives/upstream-symbols.js";
 import { GATE_PREREQUISITES, pendingPrerequisite } from "../src/core/workflows/gate-prerequisites.js";
 import { suspendClock } from "./helpers/suspend-clock.js";
 import { caseCheck } from "../src/core/verification/criteria-cases.js";
@@ -5808,7 +5809,43 @@ describe("prerequisite gate: a build gate run before configure in a fresh worktr
       }
       mkdirSync(join(root, "build"));
       writeFileSync(join(root, "build/CMakeCache.txt"), "");
-      for (const check of offered) expect(pendingPrerequisite(check, offered, root)).toBeNull();
+      for (const check of offered) {
+        const row = GATE_PREREQUISITES[check.id];
+        expect(pendingPrerequisite(check, offered, root)?.check.id ?? null, check.id).toBe(row && !row.marker ? row.checkId : null);
+      }
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
+  // R83 pnmforge: `ctest` in a configured, unbuilt tree found no test executable (3 of 39), and after
+  // an edit ran the earlier build's binaries (#2565).
+  test("ctest before build: its prerequisite is the build, pending even in a built tree, and the build's is configure", () => {
+    const root = mkdtempSync(join(tmpdir(), "baked-prerequisite-cell-"));
+    try {
+      writeFileSync(join(root, "CMakeLists.txt"), "project(x C)\nenable_testing()\nadd_test(NAME t COMMAND t)\n");
+      const offered = detectGates(root).map((g) => g.check);
+      const ctest = offered.find((c) => c.id === "ctest");
+      const build = offered.find((c) => c.id === "cmake-build");
+      if (!ctest || !build) throw new Error("CMake gates not offered");
+      expect(pendingPrerequisite(ctest, offered, root)?.check.id).toBe("cmake-build");
+      expect(pendingPrerequisite(build, offered, root)?.check.id).toBe("cmake-configure");
+      mkdirSync(join(root, "build"));
+      writeFileSync(join(root, "build/CMakeCache.txt"), "");
+      expect(pendingPrerequisite(ctest, offered, root)?.check.id).toBe("cmake-build");
+      expect(pendingPrerequisite(build, offered, root)).toBeNull();
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+});
+
+describe("upstream symbol gate: a helper the request supplies is no missing member (#2566)", () => {
+  // R83 bytemerge training: "the given Rows helper" read as a gap of the supplied Rows.java.
+  const spec = (text: string) => ({ requirements: [{ id: "FR-001", text, priority: "must" as const, verification: "automated" as const, sourceRefs: [] }], criteria: [] });
+  for (const [language, path, text] of [
+    ["java", "src/test/java/bytemerge/Rows.java", "final class Rows { static String row(String s) { return s; } }\n"],
+    ["cpp", "tests/rows.hpp", "#pragma once\nstruct Rows { static int row(); };\n"],
+    ["python", "tests/rows.py", "def row(s):\n    return s\n"],
+  ] as const)
+    test(`${language}: given is no gap, an indefinite helper is`, () => {
+      const upstream = [{ featureId: "cli", path, text }];
+      expect(upstreamSymbolGaps(spec("Tests build rows with the given Rows helper."), upstream)).toEqual([]);
+      expect(upstreamSymbolGaps(spec("Rows gain a public Rows helper."), upstream)).toHaveLength(1);
+    });
 });
