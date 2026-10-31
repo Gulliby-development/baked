@@ -1917,6 +1917,15 @@ export function replayMisquoteFixes(
 
 export interface RowRestoreBoundary {
   path: string;
+  /**
+   * Where the restore was decided: `checks`, the checks stage (records without `at`); `task-end`,
+   * a row-file task's end (#2529, with `task` and any best-of-N `candidate`); `resume`, `drive`
+   * and `task` as #2543 records them.
+   */
+  at: NonNullable<RowRestoreRecord["at"]> | "checks";
+  /** The task whose end or session start recorded it; null at the checks stage and on resume. */
+  task: string | null;
+  candidate: number | null;
   mode: RowRestoreRecord["mode"];
   /** The rows the run restored (or would have, in shadow), and those the current rule restores. */
   recorded: number[];
@@ -1925,8 +1934,9 @@ export interface RowRestoreBoundary {
 }
 
 /**
- * Every checks-stage row restore decision a run recorded (`row-restores/<path>.json`, #2522),
- * decided again from its sites' flags. Whether a restored file holds the row reads text a trace
+ * Every row restore decision a run recorded (`row-restores/<path>.json`, #2522), decided again
+ * from its sites' flags, keyed by where it was decided (`at`: the checks stage, a task's end,
+ * #2529, or the sites of #2543). Whether a restored file holds the row reads text a trace
  * does not keep, so a change to that is covered by `tests/workflow-scenario-row-restore.test.ts`.
  * Traces before #2522 record none.
  */
@@ -1949,6 +1959,10 @@ export function replayRowRestores(
       return [
         {
           path: record.path,
+          at: record.at ?? "checks",
+          task:
+            record.at === "task" || record.at === "task-end" ? (record.blocked?.[0] ?? null) : null,
+          candidate: record.candidate ?? null,
           mode: record.mode,
           recorded: record.restore,
           replayed: decide(record.sites),
