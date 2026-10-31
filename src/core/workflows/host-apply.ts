@@ -2,9 +2,11 @@ import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { runGit } from "../git/status.js";
+import { detectLanguageFromPath } from "../intelligence/types.js";
 import { tmpDir } from "../platform/index.js";
+import { type RowFileInputs, rowFilePlan, rowFileRefusal } from "./row-file.js";
 import type { TaskGraph } from "./schemas.js";
-import { type MarkdownRegion, suppliedBlocks } from "./sizing.js";
+import { type MarkdownRegion, suppliedBlocks, suppliedRows } from "./sizing.js";
 import type { WorkflowStore } from "./store.js";
 import { hostWritten } from "./task-graph.js";
 import type { Task } from "./types.js";
@@ -141,6 +143,13 @@ export interface HostApplyWrite {
    * Absent for any other write, and in records before #2101.
    */
   region?: { level: number; matches: number };
+  /**
+   * The request prescribes rows for the path and gives no verbatim block of it (#2528): the inputs
+   * of the host's row file write (`rowFilePlan`), from the file in the task's base or the task's
+   * `reference`. Written only under `rowFileWrite: "on"`. Absent for any other write, and in
+   * records before #2528.
+   */
+  rows?: RowFileInputs;
 }
 
 export interface HostApplyVerdict {
@@ -172,13 +181,19 @@ const no = (reason: string): HostApplyVerdict => ({ wouldApply: false, reason })
  * The one function that decides whether the host would apply a task's content itself (#2023):
  * every write has exactly one kind of verbatim block, none deletes, a fenced file for a path that
  * exists says it is the whole file, a fenced file that only its header comment names says so too
- * (#2438), and every diff applies to the task's base. Otherwise an
- * implementer starts, with the first write that keeps it as the reason.
+ * (#2438), and every diff applies to the task's base. A test file the request prescribes rows for,
+ * with no verbatim block of it, is written from its shape when `rowFileRefusal` has no reason
+ * (#2528). Otherwise an implementer starts, with the first write that keeps it as the reason.
  */
 export const hostApplyDecision: HostApplyRule = (writes) => {
   if (!writes.length) return no("the task writes no file");
   for (const w of writes) {
     if (w.action === "delete") return no(`the task deletes ${w.path}`);
+    if (w.rows && !w.files && !w.diffs) {
+      const refusal = rowFileRefusal(w.path, w.rows);
+      if (refusal) return no(refusal);
+      continue;
+    }
     if (!w.files && !w.diffs) return no(`the request gives no verbatim block for ${w.path}`);
     if (w.files && w.diffs)
       return no(`the request gives both a fenced file and a diff for ${w.path}`);
@@ -376,14 +391,16 @@ export function hostApplyPaths(
 export async function hostApplyInputs(
   root: string,
   request: string,
-  task: Pick<Task, "writes">,
+  task: Pick<Task, "writes"> & { reference?: string | undefined },
   graph?: Pick<TaskGraph, "tasks"> | null,
 ): Promise<HostApplyWrite[] | null> {
   const supplied = suppliedBlocks(request, hostApplyPaths(task, graph));
-  if (!task.writes.some((w) => supplied.has(w.path))) return null;
+  const rows = prescribedRows(request, task, supplied);
+  if (!task.writes.some((w) => supplied.has(w.path) || rows.has(w.path))) return null;
   const writes: HostApplyWrite[] = [];
   for (const write of task.writes) {
     const blocks = supplied.get(write.path) ?? [];
+    const prescribed = rows.get(write.path);
     const files = blocks.filter((b) => b.kind === "file");
     const diffs = blocks.flatMap((b) => (b.kind === "diff" ? [b.patch] : []));
     const patch = diffs.join("");
@@ -415,9 +432,61 @@ export async function hostApplyInputs(
             },
           }
         : {}),
+      ...(prescribed && write.action !== "delete"
+        ? {
+            rows: rowFilePlan(
+              write.path,
+              prescribed,
+              rowFileShape(root, write.path, task.reference),
+            ).inputs,
+          }
+        : {}),
     });
   }
   return writes;
+}
+
+/**
+ * The prescribed rows of each write the request gives rows for and no verbatim block (#2528): the
+ * one reader of row blocks, `suppliedRows`.
+ */
+function prescribedRows(
+  request: string,
+  task: Pick<Task, "writes">,
+  supplied: ReadonlyMap<string, unknown>,
+): Map<string, string[]> {
+  const paths = task.writes.map((w) => w.path).filter((path) => !supplied.has(path));
+  const blocks = suppliedRows(request, paths);
+  return new Map(
+    paths.flatMap((path) => {
+      const block = blocks.get(path);
+      return block ? [[path, block.lines] as [string, string[]]] : [];
+    }),
+  );
+}
+
+/**
+ * The shape the host writes a row file in (#2528): the file in the task's base when it is there,
+ * otherwise the task's `reference` when it exists and is of the file's language; null when neither.
+ */
+export function rowFileShape(
+  root: string,
+  path: string,
+  reference: string | undefined,
+): { source: "file" | "reference"; text: string } | null {
+  const read = (p: string) => {
+    try {
+      return readFileSync(join(root, p), "utf8");
+    } catch {
+      return null;
+    }
+  };
+  const own = read(path);
+  if (own !== null) return { source: "file", text: own };
+  if (!reference || reference === path) return null;
+  if (detectLanguageFromPath(reference) !== detectLanguageFromPath(path)) return null;
+  const text = read(reference);
+  return text === null ? null : { source: "reference", text };
 }
 
 /**
@@ -431,13 +500,26 @@ export async function hostApplyInputs(
 export async function hostApplyContents(
   root: string,
   request: string,
-  task: Pick<Task, "writes">,
+  task: Pick<Task, "writes"> & { reference?: string | undefined },
   graph?: Pick<TaskGraph, "tasks"> | null,
 ): Promise<{ path: string; content: string }[]> {
   const supplied = suppliedBlocks(request, hostApplyPaths(task, graph));
+  const rows = prescribedRows(request, task, supplied);
   const out: { path: string; content: string }[] = [];
   for (const write of task.writes) {
     const blocks = supplied.get(write.path) ?? [];
+    // A prescribed row file, written from its shape (#2528).
+    const prescribed = rows.get(write.path);
+    if (prescribed && !blocks.length) {
+      const { content } = rowFilePlan(
+        write.path,
+        prescribed,
+        rowFileShape(root, write.path, task.reference),
+      );
+      if (content === null) throw new Error(`no shape to write the rows of ${write.path} in`);
+      out.push({ path: write.path, content });
+      continue;
+    }
     const target = join(root, write.path);
     const base = existsSync(target) ? readFileSync(target, "utf8") : null;
     const [only] = blocks;
@@ -506,6 +588,20 @@ export function hostAppliableTasks(request: string, graph: Pick<TaskGraph, "task
       );
     });
     return every ? [task.id] : [];
+  });
+}
+
+/**
+ * Planned tasks whose every write is a test file the request prescribes rows for and gives no
+ * verbatim block of (#2528), for the scheduler's path that writes them under `rowFileWrite: "on"`.
+ * Reads the request only: the shape is read when the task starts. Host-written tasks are left out.
+ */
+export function rowFileTasks(request: string, graph: Pick<TaskGraph, "tasks">): string[] {
+  const supplied = suppliedBlocks(request, hostApplyPaths({ writes: [] }, graph));
+  return graph.tasks.flatMap((task) => {
+    if (task.origin !== "planned" || hostWritten(task) || !task.writes.length) return [];
+    const rows = prescribedRows(request, task, supplied);
+    return task.writes.every((w) => w.action !== "delete" && rows.has(w.path)) ? [task.id] : [];
   });
 }
 

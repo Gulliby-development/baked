@@ -79,6 +79,7 @@
     "dependencyPrepare": null,
     "worktreePathLimits": null,
     "testClasses": null,
-    "testDeclarations": null
+    "testDeclarations": null,
+    "rowFileShapes": null
   }
 }

@@ -517,6 +517,7 @@ import {
   hostApplyRecord,
   hostApplyRecords,
   hostApplyText,
+  rowFileTasks,
 } from "./host-apply.js";
 import { HOST_ADDITIONS, HOST_EDITS_PATH, type HostEdit, recordGraphEdits } from "./host-edits.js";
 import { isStoreError, recordHostError } from "./host-error.js";
@@ -8767,11 +8768,19 @@ ${note}`;
             task,
           )
         : [];
+    // The host writes the task's files from the request: its verbatim content (#2333) or its
+    // prescribed rows in the file's shape (#2528).
+    const applied =
+      !checking &&
+      task.writes.length > 0 &&
+      !hostWritten(task) &&
+      firstRun &&
+      (await this.hostApply(runId, child, state, policy, task));
     if (
       !checking &&
       (task.writes.length === 0 ||
         hostWritten(task) ||
-        (firstRun && (await this.hostApply(runId, child, state, policy, task))) ||
+        applied ||
         (firstRun && (await this.correctionPassing(runId, child, state, policy, task, signal))))
     ) {
       // A task that may not write, a task whose files the host writes (planned content, or the
@@ -8789,11 +8798,12 @@ ${note}`;
       // No session edits these files, so no scan runs; the record says why (#2277).
       this.recordIntegrity(runId, `tasks/${task.id}`, {
         ...integrityRecord("task", task.id, testIntegrityOf(policy), [], []),
-        skipped: hostWritten(task)
-          ? "host-written"
-          : task.writes.length === 0
-            ? "no-writes"
-            : "checks-passing",
+        skipped:
+          hostWritten(task) || applied
+            ? "host-written"
+            : task.writes.length === 0
+              ? "no-writes"
+              : "checks-passing",
       });
       await this.snapshot(runId, state, policy, signal);
       this.store.transaction(() => {
@@ -9416,10 +9426,15 @@ ${note}`;
         continue;
       // A task the host may apply from the request's verbatim content (#2333) runs on this path,
       // which applies it, never in a batch worker that would start a session.
-      const appliable =
-        policy.hostApply === "on" && state.graph
-          ? new Set(hostAppliableTasks(state.requestText || state.prompt, state.graph))
-          : new Set<string>();
+      // So does a prescribed row file the host writes under `rowFileWrite: "on"` (#2528).
+      const appliable = new Set<string>([
+        ...(policy.hostApply === "on" && state.graph
+          ? hostAppliableTasks(state.requestText || state.prompt, state.graph)
+          : []),
+        ...(policy.rowFileWrite === "on" && state.graph
+          ? rowFileTasks(state.requestText || state.prompt, state.graph)
+          : []),
+      ]);
       const pending = new Set(
         this.store
           .tasks(runId)
@@ -20453,7 +20468,8 @@ ${note}`;
     policy: RunPolicy,
     task: Task,
   ): Promise<boolean> {
-    if (policy.hostApply !== "on" || task.origin !== "planned") return false;
+    const rowsOn = policy.rowFileWrite === "on";
+    if ((policy.hostApply !== "on" && !rowsOn) || task.origin !== "planned") return false;
     const path = `${HOST_APPLY_DIR}${task.id}.json`;
     if (this.store.latestArtifact(runId, path)) return false;
     const root = runRoot(this.store.workspace, state);
@@ -20463,6 +20479,10 @@ ${note}`;
     try {
       const writes = await hostApplyInputs(root, request, task, state.graph);
       if (!writes) return false;
+      // Each kind of write is the host's under its own setting (#2528): a prescribed row file under
+      // `rowFileWrite`, the request's verbatim content under `hostApply`. Otherwise the shadow
+      // record before the session (`recordHostApply`) keeps the decision.
+      if (!writes.every((w) => (w.rows ? rowsOn : policy.hostApply === "on"))) return false;
       record = hostApplyRecord(task.id, writes, hostApplyDecision, "on");
     } catch {
       return false;

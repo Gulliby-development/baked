@@ -66,6 +66,18 @@
     "dependencyPrepare": null,
     "worktreePathLimits": null,
     "testClasses": null,
-    "testDeclarations": ["test/sum_test.exs: 2 tests, per class 2"]
+    "testDeclarations": ["test/sum_test.exs: 2 tests, per class 2"],
+    "rowFileShapes": [
+      "test/eval_rows_test.exs",
+      "defmodule Ratdec.EvalRowsTest do",
+      "  use Ratdec.RowCase",
+      "",
+      "  rows([",
+      "    row([\"eval\"], \"7/3\\n\", 0, \"7/3\\n\", \"\"),",
+      "    row([\"eval\", \"--as\", \"mixed\"], \"7/3\\n\", 0, \"2 1/3\\n\", \"\")",
+      "  ])",
+      "end",
+      ""
+    ]
   }
 }

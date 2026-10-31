@@ -91,6 +91,7 @@
       "src/main/kotlin/SumSpec.kt: by its name",
       "src/test/kotlin/SumPropTest.kt: by its name"
     ],
-    "testDeclarations": ["src/test/kotlin/SumTest.kt: 2 tests, per class 2"]
+    "testDeclarations": ["src/test/kotlin/SumTest.kt: 2 tests, per class 2"],
+    "rowFileShapes": null
   }
 }

@@ -1093,6 +1093,28 @@ export const SETTINGS: readonly SettingDefinition[] = [
     ],
   },
   {
+    id: "quality.rowFileWrite",
+    page: "code-quality",
+    section: "Workflow runs",
+    label: "Host-written prescribed row files",
+    help: "When a planned task only writes a test file whose rows the request prescribes verbatim, the host writes the file itself: the shape (imports, the row type, the harness call) from the file already in the task's base or the task's reference file, and one prescribed row per line in the shape's own row notation. No model session transcribes the rows; the task's checks decide the file, and a failing check opens the normal correction.",
+    scopes: BOTH,
+    type: "enum",
+    default: "off",
+    options: [
+      {
+        value: "off",
+        label: "off",
+        help: "A session writes the file; the host only records whether it would write it.",
+      },
+      {
+        value: "on",
+        label: "on",
+        help: "Write the row file from its shape and start no session for it.",
+      },
+    ],
+  },
+  {
     id: "quality.misquoteFix",
     page: "code-quality",
     section: "Workflow runs",

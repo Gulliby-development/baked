@@ -263,6 +263,7 @@ export async function prepareStart(
     chainProbe: policyChainProbe,
     misquoteFix: policyMisquoteFix,
     rowRestore: policyRowRestore,
+    rowFileWrite: policyRowFileWrite,
     hostApply: policyHostApply,
     edgeProbe: policyEdgeProbe,
     defectClasses: policyDefectClasses,
@@ -321,6 +322,7 @@ export async function prepareStart(
   const chainProbe = policyChainProbe ?? config.quality?.chainProbe ?? "off";
   const misquoteFix = policyMisquoteFix ?? config.quality?.misquoteFix ?? "off";
   const rowRestore = policyRowRestore ?? config.quality?.rowRestore ?? "off";
+  const rowFileWrite = policyRowFileWrite ?? config.quality?.rowFileWrite ?? "off";
   const hostApply = policyHostApply ?? config.quality?.hostApply ?? "off";
   const edgeProbe = policyEdgeProbe ?? config.quality?.edgeProbe ?? "off";
   const defectClasses = policyDefectClasses ?? config.quality?.defectClasses ?? "off";
@@ -389,6 +391,7 @@ export async function prepareStart(
     ...(chainProbe === "on" ? { chainProbe } : {}),
     ...(misquoteFix === "on" ? { misquoteFix } : {}),
     ...(rowRestore === "on" ? { rowRestore } : {}),
+    ...(rowFileWrite === "on" ? { rowFileWrite } : {}),
     ...(hostApply === "on" ? { hostApply } : {}),
     ...(edgeProbe === "on" ? { edgeProbe } : {}),
     ...(defectClasses === "on" ? { defectClasses } : {}),
