@@ -6,6 +6,7 @@ import {
   rowOf,
   type SupportedLanguage,
 } from "../../intelligence/language-records.js";
+import { isTestFile } from "../../intelligence/language-traits.js";
 import { detectLanguageFromPath } from "../../intelligence/types.js";
 import type { Spec } from "../schemas.js";
 import type { InitiativePlan } from "./plan.js";
@@ -289,6 +290,43 @@ function isNamespace(
 }
 
 /**
+ * The files the plan and the released run know, sorted: every feature's boundary paths, skeleton
+ * files and implemented stubs, and `known`, the run's own (its host-written files, its tasks'
+ * writes, the files at the release base that a boundary covers). A spec's `Type.Member` whose
+ * member is one of these files' modules names that file, not a member of the type's file (#2619).
+ */
+export function plannedFiles(plan: InitiativePlan, known: readonly string[] = []): string[] {
+  const paths = plan.features.flatMap((feature) => [
+    ...feature.boundary.paths,
+    ...(feature.skeleton ?? []).map((file) => file.path),
+    ...(feature.implements ?? []),
+  ]);
+  return [...new Set([...paths, ...known])].sort();
+}
+
+/**
+ * A test module's name in every language's convention: `GroupsTest`, `FooTests`, `ReaderSpec`,
+ * `foo_test`, `reader_spec`. `NAMETest`, a request's placeholder for a family of test files, is one.
+ */
+const TEST_MODULE = /(?:[A-Za-z0-9]Tests?|[A-Za-z0-9]Specs?|_tests?|_spec)$/;
+
+/**
+ * Whether `Type.Member` names another file's module rather than a member of the type's file
+ * (#2619): the member is the stem of a file the plan knows, compared as `keyOf`
+ * (`Tokbill.GroupsTest` for `test/groups_test.exs`, `Tokbill.RowCase` for
+ * `test/support/row_case.ex`, `App.FooTests` for `FooTests.cs`, `app::foo_test` for
+ * `foo_test.rs`), or a test module's name while the plan has a test path. R85 tbl: all three
+ * `upstream_symbol` would-stops were test modules and the host-written test support module, read
+ * as missing members of the root module `lib/tokbill.ex`. The file list is the plan's, so it holds
+ * in every language.
+ */
+function isPlannedModule(member: string, planned: readonly string[]): boolean {
+  const key = keyOf(member);
+  if (planned.some((path) => !isGlob(path) && nameOf(basename(path)) === key)) return true;
+  return TEST_MODULE.test(member) && planned.some(isTestFile);
+}
+
+/**
  * The members a planned-ahead spec names on the files of its upstream features that the accepted
  * upstream code does not define (#2135). A member is read by the spellings of the upstream files'
  * languages (`MEMBER_SYNTAX`: `Reader::new`, `Reader#read`, `lines.Line`, #2199). A type is matched
@@ -297,12 +335,14 @@ function isNamespace(
  * too: nothing upstream decided it exists, unless the spec calls it given and its file is upstream
  * (#2566). `upstream` holds each upstream boundary file and its
  * text at the release base, null when absent; `own` is the released feature's boundary, whose
- * folders name namespaces it writes itself, not upstream members (#2365).
+ * folders name namespaces it writes itself, not upstream members (#2365). `planned` is every file
+ * the plan knows (`plannedFiles`): a member that is one of their modules is not a gap (#2619).
  */
 export function upstreamSymbolGaps(
   spec: Pick<Spec, "requirements" | "criteria">,
   upstream: readonly { featureId: string; path: string; text: string | null }[],
   own: readonly string[] = [],
+  planned: readonly string[] = [],
 ): UpstreamSymbolGap[] {
   const gaps: UpstreamSymbolGap[] = [];
   const seen = new Set<string>();
@@ -321,6 +361,7 @@ export function upstreamSymbolGaps(
       if (sep === "." && FILE_EXTENSION.test(member)) continue;
       if (!files.length || files.some((file) => file.path.endsWith(`.${member}`))) continue;
       if (sep === "." && isNamespace(type, member, upstream, own)) continue;
+      if (isPlannedModule(member, planned)) continue;
       named.add(nameOf(type));
       if (files.some((file) => file.text !== null && wordIn(file.text, member))) continue;
       const symbol = sep.endsWith("[") ? `${sep}${type} ${member}]` : `${type}${sep}${member}`;

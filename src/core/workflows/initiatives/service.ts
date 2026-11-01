@@ -10,6 +10,7 @@ import { canRepairRun } from "../repairable.js";
 
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
+import { isTestFile } from "../../intelligence/language-traits.js";
 import { ROUTING_ARTIFACT } from "../../llm/model-routing.js";
 import { getCachedProviderStatuses } from "../../llm/provider.js";
 import { availableVendorModels } from "../../llm/vendor-models.js";
@@ -119,6 +120,7 @@ import {
 } from "./growth.js";
 import {
   applySplitEdit,
+  boundaryCovers,
   boundaryPathCounts,
   type FeatureSize,
   featureDigest,
@@ -203,6 +205,7 @@ import {
   type AmendmentRequest,
   amendmentAnswer,
   amendmentLines,
+  plannedFiles,
   type UpstreamSymbolGap,
   upstreamFiles,
   upstreamSymbolGaps,
@@ -3873,7 +3876,8 @@ export class InitiativeService {
     plan: InitiativePlan | null,
     baseCommit: string,
   ): Promise<UpstreamSymbolGap[]> {
-    const spec = this.workflows.store.state(runId).spec;
+    const state = this.workflows.store.state(runId);
+    const spec = state.spec;
     if (!spec || !plan) return [];
     const files = upstreamFiles(plan, feature);
     if (!files.length) return [];
@@ -3883,7 +3887,27 @@ export class InitiativeService {
         return { ...file, text: shown.code === 0 ? shown.stdout : null };
       }),
     );
-    return upstreamSymbolGaps(spec, upstream, feature.boundary.paths);
+    // The files the run and the base know besides the plan's paths (#2619): host-written files,
+    // task writes, and the base's test files a boundary glob covers (`test/**` holds
+    // `test/support/row_case.ex`). Source files a glob covers stay out: `src/**` would make every
+    // stem of the tree a module and hide real gaps.
+    const tree = await git(this.workflows.workspace, [
+      "ls-tree",
+      "-r",
+      "-z",
+      "--name-only",
+      baseCommit,
+    ]);
+    const known = [
+      ...(state.hostFiles ?? []).map((file) => file.path),
+      ...[state.graph, state.rootGraph].flatMap(
+        (graph) => graph?.tasks.flatMap((task) => task.writes.map((write) => write.path)) ?? [],
+      ),
+      ...(tree.code === 0 ? tree.stdout.split("\0").filter(Boolean) : []).filter(
+        (path) => isTestFile(path) && plan.features.some((f) => boundaryCovers(f, path)),
+      ),
+    ];
+    return upstreamSymbolGaps(spec, upstream, feature.boundary.paths, plannedFiles(plan, known));
   }
 
   /** The amendment requests of the approved split (#2157), oldest first. */
