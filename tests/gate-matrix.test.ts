@@ -68,6 +68,7 @@ import { baselineRegression, buildFailure, buildRunner, diagnosticCount, failedT
 import { pwshExecutable, rscriptExecutable } from "../src/core/platform/index.js";
 import { lintrRun, STYLER_CHECK, STYLER_FIX, testthatOn, testthatRun } from "../src/core/workflows/r-tools.js";
 import { PESTER_RUN, pesterOn } from "../src/core/workflows/pester.js";
+import { PS_FORMAT_CHECK, PS_FORMAT_FIX } from "../src/core/workflows/ps-format.js";
 import { baselineDebt, baselineKeys } from "../src/core/verification/task-end-check.js";
 import { affectedTestCheck, isWrittenTestFile, plannedWrittenTests, writtenTestsCheck } from "../src/core/workflows/affected-tests.js";
 import { detectLanguages, touchesLanguageFiles } from "../src/core/workflows/language.js";
@@ -2811,12 +2812,14 @@ describe("gate matrix: Pester and PSScriptAnalyzer (#1498)", () => {
     expect(ids({ "tests/Sum.Tests.ps1": TEST })).toEqual([
       ["pester", "tests/*.Tests.ps1", true],
       ["psscriptanalyzer", "tests/*.Tests.ps1", false],
+      ["psformat", "tests/*.Tests.ps1", false],
     ]);
     expect(ids({ "Sum.Tests.ps1": TEST, "PSScriptAnalyzerSettings.psd1": "@{}\n" })).toEqual([
       ["pester", "*.Tests.ps1", true],
       ["psscriptanalyzer", "PSScriptAnalyzerSettings.psd1", true],
+      ["psformat", "PSScriptAnalyzerSettings.psd1", true],
     ]);
-    expect(ids({ "Sum.psd1": "@{ ModuleVersion = '1.0.0' }\n" })).toEqual([["psscriptanalyzer", "Sum.psd1", false]]);
+    expect(ids({ "Sum.psd1": "@{ ModuleVersion = '1.0.0' }\n" })).toEqual([["psscriptanalyzer", "Sum.psd1", false], ["psformat", "Sum.psd1", false]]);
     expect(ids({ "src/deep/Sum.ps1": "function Get-Sum {}\n" })).toEqual([]);
     const [pester] = detectGates(project({ "tests/Sum.Tests.ps1": TEST })).map((s) => s.check);
     expect(pester && [pester.executable, ...pester.args.slice(0, 3)]).toEqual([exe, "-NoProfile", "-NonInteractive", "-Command"]);
@@ -2842,8 +2845,22 @@ describe("gate matrix: Pester and PSScriptAnalyzer (#1498)", () => {
     });
     const covering = (path: string) =>
       coveringChecks({ checks } as RunPolicy, { writes: [{ path, action: "create" }] }).map((c) => c.id);
-    expect(covering("src/Sum.ps1")).toEqual(["psscriptanalyzer"]);
+    expect(covering("src/Sum.ps1")).toEqual(["psscriptanalyzer", "psformat"]);
     expect(covering("README.md")).toEqual([]);
+  });
+
+  test("the psformat gate runs Invoke-Formatter on each script, and its format-written row names the task's files (#2595)", () => {
+    const root = project({ "src/Sum.ps1": "function Get-Sum {}\n", "PSScriptAnalyzerSettings.psd1": "@{}\n" });
+    const format = detectGates(root).find((s) => s.check.id === "psformat")?.check as Check;
+    expect(format.args).toEqual(["-NoProfile", "-NonInteractive", "-Command", PS_FORMAT_CHECK]);
+    expect(fixerCommand(format.fix!, "src/Sum.ps1").args).toEqual(["-NoProfile", "-NonInteractive", "-Command", PS_FORMAT_FIX, "src/Sum.ps1"]);
+    // The project's settings, the CodeFormatting preset without them; UTF-8 with the file's own BOM state.
+    expect(PS_FORMAT_CHECK).toContain("$s.Settings = './PSScriptAnalyzerSettings.psd1'");
+    expect(PS_FORMAT_FIX).toContain("New-Object Text.UTF8Encoding $bom");
+    expect(PS_FORMAT_CHECK).not.toContain("WriteAllText");
+    const [written] = formatWrittenChecks(root, [], [{ path: "src/Sum.ps1", action: "create" }], (c) => `/usr/bin/${c}`);
+    expect(written && [written.id, written.args.slice(-2), written.fix?.args.at(-1), written.required]).toEqual(["psformat-written", [PS_FORMAT_CHECK, "src/Sum.ps1"], PS_FORMAT_FIX, true]);
+    expect(diagnosticCount("src/Sum.ps1: would be reformatted by Invoke-Formatter\ntests/A.Tests.ps1: would be reformatted by Invoke-Formatter\n")).toEqual({ tool: "invoke-formatter", count: 2, errors: 2 });
   });
 
   test("the written-tests check runs only the task's Pester files, and leaves a project's own script alone", () => {
@@ -5081,6 +5098,29 @@ describe.skipIf(!toolchains)("gate matrix: toolchains", () => {
     expect((await executeGate(root, lint, new AbortController().signal)).status).toBe("passed");
     const missing = await executeGate(root, { ...lint, args: ["lint", "tests"] }, new AbortController().signal);
     expect(missingPlannedPaths(missing.outputTail, [{ writes: [{ path: "tests/test_orders.sql", action: "create" }] } as Task])).toEqual(["tests/test_orders.sql"]);
+  }, 300000);
+  test.skipIf(!available([[pwshExecutable(), "-NoProfile", "-NonInteractive", "-Command", "Import-Module PSScriptAnalyzer"]]))("pwsh: the psformat gate fails on a mis-indented script, its fixer formats it without a BOM and keeps one a file had (#2595)", async () => {
+    const root = project({
+      // The settings file is formatted too, so it keeps the 4-space indent it asks for.
+      "PSScriptAnalyzerSettings.psd1": "@{\n    IncludeRules = @('PSUseConsistentIndentation')\n    Rules = @{ PSUseConsistentIndentation = @{ Enable = $true; IndentationSize = 4; Kind = 'space' } }\n}\n",
+      "src/Plain.ps1": "function Get-Plain {\n  param([int]$A)\n  $A\n}\n",
+      "src/Marked.ps1": "\uFEFFfunction Get-Marked {\n  param([int]$A)\n  $A\n}\n",
+    });
+    const format = detectGates(root).find((s) => s.check.id === "psformat")?.check;
+    if (!format?.fix) throw new Error("no psformat gate");
+    const signal = new AbortController().signal;
+    const before = await executeGate(root, format, signal);
+    expect(before.status).toBe("failed");
+    expect(diagnosticCount(before.outputTail)).toEqual({ tool: "invoke-formatter", count: 2, errors: 2 });
+    for (const path of ["src/Plain.ps1", "src/Marked.ps1"]) {
+      const fix = fixerCommand(format.fix, path);
+      expect(spawnSync(fix.executable, fix.args, { cwd: root, encoding: "utf8", timeout: 120000 }).status).toBe(0);
+      expect(readFileSync(join(root, path), "utf8")).toContain("\n    param([int]$A)\n");
+    }
+    const bom = (path: string) => readFileSync(join(root, path)).subarray(0, 3).equals(Buffer.from([0xef, 0xbb, 0xbf]));
+    expect([bom("src/Plain.ps1"), bom("src/Marked.ps1")]).toEqual([false, true]);
+    const after = await executeGate(root, format, signal);
+    expect({ status: after.status, output: after.outputTail }).toEqual({ status: "passed", output: after.outputTail });
   }, 300000);
   test.skipIf(!available([[pwshExecutable(), "-NoProfile", "-NonInteractive", "-Command", "Import-Module Pester -MinimumVersion 5.5; Import-Module PSScriptAnalyzer"]]))("pwsh: Pester and PSScriptAnalyzer gates fail on a defect, the analyzer's fixer repairs the file, and a missing path names its task (#1498)", async () => {
     const root = project({

@@ -38,7 +38,8 @@
     ],
     "gates": [
       "pester",
-      "psscriptanalyzer"
+      "psscriptanalyzer",
+      "psformat"
     ],
     "testRunners": [
       "pester 3",
@@ -62,7 +63,9 @@
       "Sum.psd1:1",
       "PSScriptAnalyzerSettings.psd1:1"
     ],
-    "formatters": null,
+    "formatters": [
+      "psformat-written: pwsh -NoProfile -NonInteractive -Command \"& { $s = @{}; if (Test-Path -LiteralPath ./PSScriptAnalyzerSettings.psd1) { $s.Settings = './PSScriptAnalyzerSettings.psd1' }; $files = if ($args.Count) { $args } else { Get-ChildItem -Recurse -File -Include *.ps1, *.psm1, *.psd1 | ForEach-Object { $_.FullName } }; $bad = 0; foreach ($f in $files) { $p = (Resolve-Path -LiteralPath $f).ProviderPath; $b = [IO.File]::ReadAllBytes($p); $bom = $b.Length -ge 3 -and $b[0] -eq 0xEF -and $b[1] -eq 0xBB -and $b[2] -eq 0xBF; $t = [IO.File]::ReadAllText($p); if (-not $t.Trim()) { continue }; $o = Invoke-Formatter -ScriptDefinition $t @s; if ($o -cne $t) { Write-Output ($f + ': would be reformatted by Invoke-Formatter'); $bad = 1 } }; exit $bad }\" src/Sum.ps1 tests/Sum.Tests.ps1 Sum.psd1 PSScriptAnalyzerSettings.psd1"
+    ],
     "packageContents": null,
     "numericLimits": [
       "[int] and [long] arithmetic past their range silently widens to [double] and loses integers past 2^53",
