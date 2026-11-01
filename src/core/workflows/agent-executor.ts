@@ -89,7 +89,7 @@ import { WorkflowFault } from "./errors.js";
 import { addsDoubledEscapes, escapeHintFor } from "./escape-hint.js";
 import { executionClock } from "./execution-clock.js";
 import { fixerFailed, runFixer } from "./fixer-run.js";
-import { keepOutside, restoreOutside } from "./fixer-scope.js";
+import { keepOutside, recordPutBack, restoreOutside } from "./fixer-scope.js";
 import { advertisedSchema, withHostConstants } from "./host-constants.js";
 import {
   accountIdentityMessage,
@@ -1075,12 +1075,16 @@ export class NativeAgentExecutor implements AgentExecutor {
             const codePaths = writtenCodePaths(task).filter(exists);
             const generated = generatedPaths(policy);
             const before = await sourceManifest(root, generated, request.signal);
-            const kept = keepOutside(root, before, new Set(paths));
+            // Every file the task writes is its own, also one that does not exist yet: the
+            // task's parallel edit may create it while the fixer runs, and a put-back would
+            // remove it as a file the fixer created (#2609).
+            const own = new Set(task.writes.map((w) => w.path));
+            const kept = keepOutside(root, before, own);
             const scope = new ProcessScope();
             // Unsignalled, so the put-back also runs after the call was aborted.
             const changedOutside = async () =>
               changedPaths(before, await sourceManifest(root, generated)).filter(
-                (p) => !paths.includes(p),
+                (p) => !own.has(p),
               );
             let reverted: string[] = [];
             try {
@@ -1138,7 +1142,13 @@ export class NativeAgentExecutor implements AgentExecutor {
                 // Also when a run throws: a whole-crate formatter may already have rewritten
                 // sibling files (bench round 13, mdrefs T010: five files left reformatted).
                 reverted = await changedOutside();
-                restoreOutside(root, kept, reverted);
+                recordPutBack(
+                  this.store,
+                  request.runId,
+                  request.attemptId,
+                  `apply_fix ${check.id}`,
+                  restoreOutside(root, kept, reverted),
+                );
               }
               const outside = await changedOutside();
               if (outside.length)
