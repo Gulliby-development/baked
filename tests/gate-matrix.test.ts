@@ -40,6 +40,7 @@ import { sourceManifest, TOOL_CACHES } from "../src/core/verification/snapshot.j
 import { openTrace, replayInitiativeStarts } from "../src/core/workflows/trace.js";
 import { linkDependencies, worktreePathRisks } from "../src/core/workflows/dependency-dirs.js";
 import { spawnSync } from "node:child_process";
+import { captureEndings, restoreEndings } from "../src/core/tools/line-endings.js";
 import {
   chmodSync,
   existsSync,
@@ -5081,6 +5082,24 @@ describe.skipIf(!toolchains)("gate matrix: toolchains", () => {
     expect((await executeGate(root, lint, new AbortController().signal)).status).toBe("passed");
     const missing = await executeGate(root, { ...lint, args: ["lint", "tests"] }, new AbortController().signal);
     expect(missingPlannedPaths(missing.outputTail, [{ writes: [{ path: "tests/test_orders.sql", action: "create" }] } as Task])).toEqual(["tests/test_orders.sql"]);
+  }, 300000);
+  test.skipIf(!available([[pwshExecutable(), "-NoProfile", "-NonInteractive", "-Command", "Import-Module PSScriptAnalyzer"]]))("pwsh: the analyzer's fixer through the host keeps each file's BOM state (#2592)", () => {
+    const root = project({
+      "src/Plain.ps1": "function Get-Item2 {\n  gci\n}\n",
+      "src/Marked.ps1": "\uFEFFfunction Get-Item3 {\n  gci\n}\n",
+    });
+    const lint = detectGates(root).find((s) => s.check.id === "psscriptanalyzer")?.check;
+    if (!lint?.fix) throw new Error("no analyzer gate");
+    const bom = (path: string) => readFileSync(join(root, path)).subarray(0, 3).equals(Buffer.from([0xef, 0xbb, 0xbf]));
+    for (const path of ["src/Plain.ps1", "src/Marked.ps1"]) {
+      const before = captureEndings([join(root, path)]);
+      const fix = fixerCommand(lint.fix, path);
+      expect(spawnSync(fix.executable, fix.args, { cwd: root, encoding: "utf8", timeout: 120000 }).status).toBe(0);
+      restoreEndings(before);
+      expect(readFileSync(join(root, path), "utf8")).toContain("Get-ChildItem");
+    }
+    expect(bom("src/Plain.ps1")).toBe(false);
+    expect(bom("src/Marked.ps1")).toBe(true);
   }, 300000);
   test.skipIf(!available([[pwshExecutable(), "-NoProfile", "-NonInteractive", "-Command", "Import-Module Pester -MinimumVersion 5.5; Import-Module PSScriptAnalyzer"]]))("pwsh: Pester and PSScriptAnalyzer gates fail on a defect, the analyzer's fixer repairs the file, and a missing path names its task (#1498)", async () => {
     const root = project({
