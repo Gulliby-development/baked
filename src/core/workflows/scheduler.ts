@@ -502,7 +502,13 @@ import {
   recordFixerRuns,
   runFixer,
 } from "./fixer-run.js";
-import { describeChange, keepOutside, restoreOutside, unjournaledOutside } from "./fixer-scope.js";
+import {
+  describeChange,
+  keepOutside,
+  recordPutBack,
+  restoreOutside,
+  unjournaledOutside,
+} from "./fixer-scope.js";
 import {
   FORK_SEED_ARTIFACT,
   FORK_SEEDED_ARTIFACT,
@@ -16902,7 +16908,13 @@ ${note}`;
         }
       } finally {
         // Also when a fixer run throws: a whole-crate formatter may already have rewritten files.
-        restoreOutside(root, kept, await changedOutside());
+        recordPutBack(
+          this.store,
+          runId,
+          attempt,
+          `fixer ${fixable.map((check) => check.id).join(", ")}`,
+          restoreOutside(root, kept, await changedOutside()),
+        );
       }
       // Judged on the whole pass too: `cargo fmt -- <path>` formats the whole crate, so the run on
       // an already formatted file can rewrite a later one, whose own run then finds nothing to do

@@ -121,6 +121,7 @@ import {
 } from "./retry.js";
 import {
   REFUSED_EDIT_PREFIX,
+  readKept,
   runWrittenHash,
   UNFINISHED_BLOCK_PREFIX,
   undoRunEdits,
@@ -1556,11 +1557,35 @@ export class NativeWorkflowService implements WorkflowService {
    * A plain resume after a stop by repeated hash refusals (#954) would start an attempt whose edits
    * of that file are refused again, while the run root still holds the refused content: that is a
    * decision for a person, keep the file or restore it (#1269). A file in a task worktree is
-   * rebuilt on resume, so only a refusal in the run root is held.
+   * rebuilt on resume, so only a refusal in the run root is held. The refusal is the one
+   * `outsideChanges` lists, so `--accept-workspace` can always keep what this refuses (#2609).
    */
   private assertNoRefusedEdit(runId: string): void {
+    const refused = this.heldRefusal(runId);
+    if (!refused) return;
+    const wrote = this.runWroteNote(runId, refused);
+    throw new WorkflowFault(
+      "STALE_DECISION",
+      recoveryAdvice(
+        `${refused.path} still differs from what the run recorded, so its edits would be refused again. ${wrote}Keep it as it is now with \`baked workflow resume ${runId} --accept-workspace\`, or put back the content the run wrote and resume`,
+        `${refused.path} still differs from what the run recorded. Keep these changes, or restore the content the run wrote before retrying.`,
+        { action: "accept-workspace", runId },
+      ),
+      { path: refused.path },
+    );
+  }
+  /**
+   * The refused file a stop by repeated hash refusals left in the run root, while the run root
+   * still holds the refused content. The one predicate of both the resume gate and
+   * `outsideChanges` (#2609): a file the run created and that is now missing, or a file the run
+   * changed that is back at its baseline, is no difference from the baseline, yet its edits are
+   * refused, so the difference check alone would never offer it to accept.
+   */
+  private heldRefusal(
+    runId: string,
+  ): { path: string; current: string | null; written: string | null | undefined } | null {
     const run = this.store.run(runId);
-    if (run.status !== "blocked" || run.reason !== "input_changed") return;
+    if (run.status !== "blocked" || run.reason !== "input_changed") return null;
     const diagnostic = this.store
       .artifacts(runId)
       .filter((a) => a.logical_path.startsWith("errors/"))
@@ -1568,25 +1593,45 @@ export class NativeWorkflowService implements WorkflowService {
     const last = diagnostic
       ? this.store.latestArtifact(runId, `${REFUSED_EDIT_PREFIX}${diagnostic.id}.json`)
       : null;
-    if (!last) return;
+    if (!last) return null;
     const refused = JSON.parse(this.store.readArtifact(runId, last.id)) as {
       path: string;
       root: string;
       hash: string | null;
     };
     const state = this.store.state(runId);
-    if (refused.root !== (state.worktree?.path ?? "")) return;
-    if (fileHash(workspacePath(runRoot(this.workspace, state), refused.path)) !== refused.hash)
-      return;
-    throw new WorkflowFault(
-      "STALE_DECISION",
-      recoveryAdvice(
-        `${refused.path} still differs from what the run recorded, so its edits would be refused again. Keep it with \`baked workflow resume ${runId} --accept-workspace\`, or put back the content the run wrote and resume`,
-        `${refused.path} still differs from what the run recorded. Keep these changes, or restore the content the run wrote before retrying.`,
-        { action: "accept-workspace", runId },
-      ),
-      { path: refused.path },
-    );
+    if (refused.root !== (state.worktree?.path ?? "")) return null;
+    const current = fileHash(workspacePath(runRoot(this.workspace, state), refused.path));
+    if (current !== refused.hash) return null;
+    return {
+      path: refused.path,
+      current,
+      written: runWrittenHash(this.store, runId, refused.path),
+    };
+  }
+  /**
+   * What the run last wrote to a held refused file, for the resume refusal: the person would
+   * otherwise have to rewrite a file the run made without knowing its content (#2609). The run
+   * keeps the content an edit overwrites, not the content it writes, so the written content can
+   * be named only when a later edit of the file kept it as its pre-image.
+   */
+  private runWroteNote(
+    runId: string,
+    refused: { path: string; current: string | null; written: string | null | undefined },
+  ): string {
+    if (refused.written === undefined || refused.written === refused.current) return "";
+    if (refused.written === null) return `The run last deleted ${refused.path}. `;
+    // Text content only: `artifacts --file` prints an artifact as text.
+    const row = this.store.latestArtifact(runId, `pre-images/${refused.written}`);
+    const kept =
+      row && readKept(this.store, runId, refused.written)
+        ? ` It is kept: \`baked workflow artifacts ${runId} --file ${row.id}\` prints it.`
+        : " The run did not keep that content.";
+    const now =
+      refused.current === null
+        ? `${refused.path} is missing now`
+        : `${refused.path} now has hash ${refused.current.slice(0, 12)}`;
+    return `The run last wrote ${refused.path} with hash ${refused.written.slice(0, 12)}, and ${now}.${kept} `;
   }
   /**
    * The source files that differ from what the run expects and that none of the run's own
@@ -1606,6 +1651,12 @@ export class NativeWorkflowService implements WorkflowService {
           .sort()
           .map((path) => ({ path, before: expected[path] ?? null, after: files[path] ?? null })),
       );
+      // The file the run's edits were refused on is a change to accept even when it matches the
+      // baseline (#2609): a file the run created and that is now missing has no baseline entry,
+      // yet a plain resume refuses on it.
+      const held = this.heldRefusal(runId);
+      if (held && !changes.some((change) => change.path === held.path))
+        changes.push({ path: held.path, before: expected[held.path] ?? null, after: held.current });
     }
     // A changed instruction or configuration file the run froze is accepted too (#1654), named
     // relative to the workspace when it lies there.
