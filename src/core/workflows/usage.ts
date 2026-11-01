@@ -21,9 +21,10 @@ export interface AttemptUsageRow {
   peakInputTokens: number | null;
   /**
    * Serialized size of the messages the attempt's first step sent, and the largest any step sent
-   * (#1978); null in attempts recorded before prompt sizes were.
+   * (#1978), with the first step's sections when recorded (#2597); null in attempts recorded
+   * before prompt sizes were.
    */
-  prompt: { firstBytes: number; largestBytes: number } | null;
+  prompt: NonNullable<AttemptUsageRecord["prompt"]> | null;
   /** Input tokens of every step, cache reads included; null without per-step usage. */
   inputTokens: number | null;
   outputTokens: number | null;

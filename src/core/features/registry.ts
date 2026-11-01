@@ -1380,6 +1380,18 @@ export const FEATURES: readonly Feature[] = [
     desktop: ["settings/chat: Code quality page"],
   },
   {
+    id: "language-pitfalls",
+    group: "Workflow runs",
+    title:
+      "Tell each implementer its language's pitfalls and the first error line of the run's other tasks' failing checks",
+    tui: ["/code-quality"],
+    cli: notNeeded(
+      "quality.languagePitfalls in config.json; the record shows as pitfalls/tasks/<task>.json",
+    ),
+    api: ["/v1/settings: code-quality page"],
+    desktop: ["settings/chat: Code quality page"],
+  },
+  {
     id: "row-run-route",
     group: "Workflow runs",
     title:

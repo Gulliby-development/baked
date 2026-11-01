@@ -277,6 +277,7 @@ export async function prepareStart(
     rowEditGuard: policyRowEditGuard,
     rowClaimCheck: policyRowClaimCheck,
     baselineFix: policyBaselineFix,
+    languagePitfalls: policyLanguagePitfalls,
     propertyTests: policyPropertyTests,
     allowOverlappingWrites,
     editDiagnostics: _editDiagnostics,
@@ -341,6 +342,7 @@ export async function prepareStart(
   // On by default (#2561): only `off` is kept, so stored policies keep their hash.
   const rowClaimCheck = policyRowClaimCheck ?? config.quality?.rowClaimCheck ?? "on";
   const baselineFix = policyBaselineFix ?? config.quality?.baselineFix ?? "off";
+  const languagePitfalls = policyLanguagePitfalls ?? config.quality?.languagePitfalls ?? "off";
   const propertyTests =
     request.propertyTests ??
     policyPropertyTests ??
@@ -411,6 +413,7 @@ export async function prepareStart(
     ...(rowEditGuard === "off" ? { rowEditGuard } : {}),
     ...(rowClaimCheck === "off" ? { rowClaimCheck } : {}),
     ...(baselineFix === "on" ? { baselineFix } : {}),
+    ...(languagePitfalls === "on" ? { languagePitfalls } : {}),
     ...(propertyTests !== presetPropertyTests(preset) ? { propertyTests } : {}),
     ...(request.maxConcurrentWriters !== undefined
       ? { maxConcurrentWriters: request.maxConcurrentWriters }

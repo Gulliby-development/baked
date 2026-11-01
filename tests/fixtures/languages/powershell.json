@@ -14,6 +14,7 @@
     "tests/Runtime.Tests.ps1": "$dir = [System.IO.Path]::GetTempPath()\n$want = \"bad: $dir\"\n"
   },
   "expected": {
+    "languagePitfalls": ["PowerShell"],
     "generatedValues": ["tests/Gen.Tests.ps1:1 repeat","tests/Gen.Tests.ps1:2 interpolate"],
     "exampleBuild": null,
     "runtimePaths": ["tests/Runtime.Tests.ps1: dir"],

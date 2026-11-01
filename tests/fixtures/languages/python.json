@@ -14,6 +14,7 @@
     "tests/test_runtime.py": "def test_runtime(tmp_path):\n    p = tmp_path / \"a.txt\"\n    want = f\"bad: {p}\"\n"
   },
   "expected": {
+    "languagePitfalls": null,
     "generatedValues": ["tests/test_gen.py:1 repeat","tests/test_gen.py:2 format","tests/test_gen.py:3 loop"],
     "exampleBuild": null,
     "runtimePaths": ["tests/test_runtime.py: p, tmp_path"],

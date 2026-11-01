@@ -1305,6 +1305,28 @@ export const SETTINGS: readonly SettingDefinition[] = [
     ],
   },
   {
+    id: "quality.languagePitfalls",
+    page: "code-quality",
+    section: "Workflow runs",
+    label: "Tell implementers their language's pitfalls and the run's traps",
+    help: "Each implementer step gets a short pitfalls note for the languages its task writes (the same table the language reviewer reads), and the first error line of every other task's failing checks in the run as a one-line rule, so a sibling task does not meet the same trap again.",
+    scopes: BOTH,
+    type: "enum",
+    default: "off",
+    options: [
+      {
+        value: "off",
+        label: "off",
+        help: "Implementers get neither; the host records what each step would have been told.",
+      },
+      {
+        value: "on",
+        label: "on",
+        help: "Put the pitfalls note and the run's traps into each implementer step's input.",
+      },
+    ],
+  },
+  {
     id: "quality.sourceDefectRoute",
     page: "code-quality",
     section: "Workflow runs",
