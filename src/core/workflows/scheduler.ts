@@ -449,6 +449,7 @@ import {
 } from "./derivation-audit.js";
 import { EffectJournal, fileHash, intentRoot, rootField } from "./effects.js";
 import { WorkflowFault } from "./errors.js";
+import { boundEvidence, checkFacts, type EvidenceBound } from "./evidence-budget.js";
 import {
   EVIDENCE_DECISION_KIND,
   EVIDENCE_DECISIONS_DIR,
@@ -1492,6 +1493,8 @@ export class WorkflowScheduler {
   /** How a `libraryDocs` MCP source is called; tests replace it. */
   mcpCall: McpCall = (server, tool, args) =>
     configuredMcpCall(this.store.workspace, server, tool, args);
+  /** What `evidenceContext` bounded, by the section it returned, for the attempt's record (#2617). */
+  private evidenceBounds = new WeakMap<object, EvidenceBound>();
   /** Best-of-N candidate steps that run on a model of `candidateModels` instead of their route. */
   private stepModels = new Map<string, string>();
   /** Advisory mutation gates running beside the review in a copy of the run (#1147), by run. */
@@ -7191,6 +7194,9 @@ export class WorkflowScheduler {
           root,
         );
       }
+      const sent = (extra as { evidence?: unknown } | null | undefined)?.evidence;
+      const evidenceBound =
+        sent && typeof sent === "object" ? this.evidenceBounds.get(sent) : undefined;
       const result = await this.execute({
         runId,
         attemptId: attempt,
@@ -7227,6 +7233,7 @@ export class WorkflowScheduler {
           ? { formatHints: this.formatHints(runId, state, profile.output, task) }
           : {}),
         ...(host ? { hostTools: host } : {}),
+        ...(evidenceBound ? { evidenceBound } : {}),
         ...(effort ? { effort } : {}),
         ...(recovery?.freshSession ? { freshSession: true } : {}),
         ...(recovery?.transport ? { transport: recovery.transport } : {}),
@@ -8559,7 +8566,10 @@ ${note}`;
   /**
    * Current evidence handed to an agent with its content. An implementer does not need the
    * research-phase file reads (up to 16 KB each, resent on every step); it reads what it edits
-   * itself and cites its own evidence. Reviewers and auditors get everything.
+   * itself and cites its own evidence. Reviewers and auditors get everything. The section is
+   * bounded (`boundEvidence`, #2617): a passing check is its status, repeated runs are listed once
+   * and the content stays within `EVIDENCE_BUDGET_CHARS`; what the bound did is kept for the
+   * attempt's `prompt` record (`evidenceBounds`).
    */
   private evidenceContext(
     runId: string,
@@ -8570,24 +8580,45 @@ ${note}`;
     // Short handles (E1..En) number every current entry, so an agent can cite them instead of
     // copying a 36-character id; the host resolves them.
     const handles = new Map(current.map((e, index) => [e.id, evidenceHandle(index)]));
-    return current
+    const selected = current
       .filter((e) => !options.only || options.only.has(e.id))
       .filter((e) => options.reads || e.kind !== "read")
-      .filter((e) => options.commands !== false || e.kind !== "command")
-      .map((e) => {
+      .filter((e) => options.commands !== false || e.kind !== "command");
+    const checks = new Map(
+      selected.some((e) => e.kind === "command")
+        ? this.store.checkDetails(runId).map((c) => [c.evidence_id, c])
+        : [],
+    );
+    const { entries, bound } = boundEvidence(
+      selected.map((e) => {
         const content = this.store.readArtifact(runId, e.artifact_id);
+        const handle = handles.get(e.id);
         // A read is replaced by what it read: its content is resent on every step of every later
         // agent, and cut at the limit it showed no file whole, so agents read the files again.
-        const handle = handles.get(e.id);
         if (e.kind === "read")
           return { id: e.id, handle, kind: e.kind, read: readSummary(content) };
+        const check = checks.get(e.id);
         return {
           id: e.id,
           handle,
           kind: e.kind,
           content: content.slice(0, e.kind === "diff" ? MAX_PATCH_CHARS + 4000 : 16000),
+          ...(check
+            ? {
+                check: {
+                  id: check.check_id,
+                  status: check.status,
+                  exitCode: check.exit_code,
+                  ...checkFacts(content),
+                },
+              }
+            : {}),
         };
-      });
+      }),
+      options.only ? { only: options.only } : {},
+    );
+    this.evidenceBounds.set(entries, bound);
+    return entries;
   }
   /**
    * The unified diff of a task's changes, from the content the run kept before each edit to the

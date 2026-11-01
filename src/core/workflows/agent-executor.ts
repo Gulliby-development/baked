@@ -110,7 +110,7 @@ import {
 } from "./model-recording.js";
 import { ProcessScope } from "./process-scope.js";
 import { EDIT_TOOLS } from "./progress-watch.js";
-import { largePrompt, promptSections } from "./prompt-sections.js";
+import { evidenceCut, largePrompt, promptSections } from "./prompt-sections.js";
 import { isTargetedRead, outlineLargeReads } from "./read-outline.js";
 import { settleInterruptedEdits } from "./recovery.js";
 import { recoveryAdvice } from "./remedies.js";
@@ -1639,8 +1639,13 @@ export class NativeAgentExecutor implements AgentExecutor {
       const model = this.attemptModel(request, policy, watch);
       const effort = sentEffort(provider.providerOptions);
       let promptNoticed = false;
-      const writeUsage = (usage: AttemptUsageRecord) =>
+      const writeUsage = (written: AttemptUsageRecord) =>
         this.store.transaction(() => {
+          // What the bound on the evidence section did travels with the prompt's sizes (#2617).
+          const usage =
+            written.prompt && request.evidenceBound
+              ? { ...written, prompt: { ...written.prompt, evidence: request.evidenceBound } }
+              : written;
           // A task attempt whose prompt is far larger than the run's first attempts names the
           // section that holds the bytes (#2597); recording only, nothing else changes.
           let large: ReturnType<typeof largePrompt> = null;
@@ -1654,7 +1659,12 @@ export class NativeAgentExecutor implements AgentExecutor {
             promptNoticed = true;
             this.store.emit(request.runId, {
               type: "attempt.large_prompt",
-              payload: { attemptId: request.attemptId, taskId: request.task?.id ?? null, ...large },
+              payload: {
+                attemptId: request.attemptId,
+                taskId: request.task?.id ?? null,
+                ...large,
+                ...(request.evidenceBound ? { evidence: evidenceCut(request.evidenceBound) } : {}),
+              },
             });
           }
           this.store.artifact(
