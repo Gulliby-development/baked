@@ -61,6 +61,7 @@ import { entryPointCommand } from "../src/core/verification/entry-points.js";
 import { noteSiblingFindings, ownerOfFinding } from "../src/core/verification/initiative-ownership.js";
 import { failureSignature as convergenceSignature, missingPlannedPaths, noTestsCollected } from "../src/core/verification/convergence.js";
 import { executeCheckCommand, exitStatus, ranNoTests, timedOutFailure } from "../src/core/verification/check-runner.js";
+import { emptyScriptNote, emptyTestScript } from "../src/core/verification/empty-test-script.js";
 import { environmentFault, ENVIRONMENT_SIGNATURES, silentFailure } from "../src/core/verification/environment-faults.js";
 import { SWIFT_COMPILE_ERROR, SWIFT_SYMLINK_WARNING_ONLY, SWIFT_TEST_FATAL_ERROR, SWIFT_TEST_SILENT_EXIT_4, SWIFT_TESTING_FAILURE } from "./fixtures/swiftpm-crash-outputs.js";
 import { testReport } from "../src/core/verification/test-reports.js";
@@ -5681,6 +5682,31 @@ describe("gate matrix: no tests collected (#1864)", () => {
     expect(noTestsCollected("Test Successful in 0.000s. 0 test run.\n1 failure! in 0.001s. 3 tests run.")).toBe(false);
     expect(noTestsCollected("0 successes / 0 failures / 1 error / 0 pending : 0.0002 seconds\nError -> spec/a_spec.lua:3: <name> expected near 'end'")).toBe(false);
     expect(noTestsCollected("Discovery found 0 tests in 222ms.\nTests Passed: 0, Failed: 0, Skipped: 0, Inconclusive: 0, NotRun: 0\nContainer failed: 1\n  - /w/tests/Fold.Tests.ps1")).toBe(false);
+  });
+
+  // #2611: a test check that runs one test script with its interpreter prints nothing a counter
+  // reads, so a script holding no code (php-wordcount's 0-byte `tests/run.php`) fails the check, and
+  // its note reads as no test collected. One row per language whose interpreter runs a test script.
+  test("a plain test script that holds no code ran no test, in every language that runs one", () => {
+    const SCRIPTS: [string, string[], string, string][] = [
+      ["php", ["tests/run.php"], "tests/run.php", "<?php\n// later\n"],
+      ["python3", ["tests/run.py"], "tests/run.py", "# later\n"],
+      ["node", ["tests/run.js"], "tests/run.js", "'use strict';\n"],
+      ["bun", ["run", "tests/run.ts"], "tests/run.ts", "// later\n"],
+      ["bash", ["tests/run.sh"], "tests/run.sh", "set -eu\n"],
+      ["ruby", ["tests/run.rb"], "tests/run.rb", "# later\n"],
+      ["perl", ["t/run.t"], "t/run.t", "use strict;\n"],
+      ["Rscript", ["tests/run.R"], "tests/run.R", "# later\n"],
+      ["lua", ["tests/run.lua"], "tests/run.lua", "-- later\n"],
+      ["pwsh", ["-File", "tests/run.ps1"], "tests/run.ps1", "<# later #>\n"],
+    ];
+    for (const [executable, args, path, text] of SCRIPTS) {
+      const check: Check = { id: "tests", executable, args, cwd: ".", timeoutMs: 30000, required: true, scope: "feature", envNames: [], writes: [] };
+      const root = project({ [path]: text });
+      expect([executable, emptyTestScript(check, root), exitStatus(check, 0, "", root)]).toEqual([executable, path, "failed"]);
+      expect(exitStatus(check, 0, "", project({ [path]: `${text}x\n` }))).toBe("passed");
+    }
+    expect(noTestsCollected(emptyScriptNote({ id: "php-tests" }, "tests/run.php"))).toBe(true);
   });
 });
 
