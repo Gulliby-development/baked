@@ -83,6 +83,7 @@
     "dependencyDirs": null,
     "dependencyPrepare": null,
     "worktreePathLimits": null,
+    "diagnosticFormats": null,
     "testClasses": null,
     "testDeclarations": ["tests/Sum.Tests.ps1: 2 tests"],
     "rowFileShapes": null

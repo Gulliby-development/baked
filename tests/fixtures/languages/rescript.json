@@ -77,6 +77,7 @@
     ],
     "dependencyPrepare": null,
     "worktreePathLimits": null,
+    "diagnosticFormats": ["/p/.baked/worktrees/e7760f1b/main/src/Evaluate.res: This has type: value"],
     "testClasses": null,
     "testDeclarations": ["__tests__/Sum_test.res: 2 tests"],
     "rowFileShapes": null

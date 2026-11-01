@@ -87,6 +87,7 @@
     ],
     "dependencyPrepare": null,
     "worktreePathLimits": null,
+    "diagnosticFormats": ["src/calc.lua: (W211) unused variable 'x'"],
     "testClasses": null,
     "testDeclarations": ["spec/sum_spec.lua: 2 tests"],
     "rowFileShapes": null

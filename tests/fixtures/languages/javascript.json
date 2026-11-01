@@ -94,6 +94,7 @@
     ],
     "dependencyPrepare": null,
     "worktreePathLimits": null,
+    "diagnosticFormats": ["src/a.js: error TS2322: Type 'string' is not assignable to type 'number'."],
     "testClasses": null,
     "testDeclarations": ["tests/sum.test.js: 3 tests"],
     "rowFileShapes": [

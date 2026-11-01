@@ -35,6 +35,8 @@ import { PROPERTY_LIBRARIES, propertyTestKind } from "../src/core/workflows/qual
 import { checkBuiltinRules } from "../src/core/workflows/quality/rules.js";
 import { INLINE_HARNESS, inlineRowFile } from "../src/core/workflows/acceptance-rows-inline.js";
 import { TEST_GATES, testGateFlags } from "../src/core/workflows/test-gates.js";
+import { DIAGNOSTIC_FORMATS, diagnostics } from "../src/core/verification/task-end-check.js";
+import { colour } from "./helpers/coloured-runner-output.js";
 import { declaredTestClasses, TEST_CLASSES } from "../src/core/workflows/test-classes.js";
 import { ROW_FILE_SHAPES, rowFilePlan, rowFileRefusal } from "../src/core/workflows/row-file.js";
 import { placeRows, ROW_INDENT } from "../src/core/tools/place-rows.js";
@@ -232,6 +234,19 @@ const RECORDS: Record<
         const names = [...runtimePathNames(path, text)].sort();
         return names.length ? [`${path}: ${names.join(", ")}`] : [];
       }),
+  },
+  // The located diagnostics the task-end whole-unit check reads from the language's compiler
+  // output (#2616): the row's example, read plain and coloured, each `path: message`.
+  diagnosticFormats: {
+    record: DIAGNOSTIC_FORMATS,
+    run: (language) => {
+      const row = rowOf(DIAGNOSTIC_FORMATS, language);
+      if (!row) return [];
+      const plain = diagnostics(row.example).map((d) => `${d.path}: ${d.text}`);
+      const coloured = diagnostics(colour(row.example)).map((d) => `${d.path}: ${d.text}`);
+      return JSON.stringify(plain) === JSON.stringify(coloured) ? plain : [...plain, "coloured output reads differently"];
+    },
+    never: ["coloured output reads differently"],
   },
   // The test classes a written-tests run selects by name (#2363): the row's example, a file whose
   // class is not named like it, and each test file of the fixture ("by its name" when it declares
