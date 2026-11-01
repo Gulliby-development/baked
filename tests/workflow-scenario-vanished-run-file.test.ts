@@ -37,6 +37,9 @@ function repository(root: string): void {
   git(root, "config", "user.name", "Test User");
   git(root, "config", "user.email", "test@example.test");
   git(root, "config", "commit.gpgsign", "false");
+  // Windows runners default to core.autocrlf=true, which would check user.txt out with CRLF and
+  // make the baseline differ from the "original\n" the put-back case writes.
+  git(root, "config", "core.autocrlf", "false");
   writeFileSync(join(root, ".gitignore"), ".baked/\n");
   writeFileSync(join(root, "user.txt"), "original\n");
   git(root, "add", ".");
