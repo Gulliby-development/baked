@@ -8,6 +8,7 @@ import { cwdPath, isCodePath } from "./check-policy.js";
 import { unresolvedChecks } from "./check-preflight.js";
 import { detectGates } from "./gates.js";
 import { programName } from "./launcher.js";
+import { PS_FORMAT_CHECK, PS_FORMAT_FIX } from "./ps-format.js";
 import { stripComments } from "./quality/code-mask.js";
 import { STYLER_CHECK_FILES, STYLER_FIX } from "./r-tools.js";
 import { toolchainCommand } from "./toolchain.js";
@@ -264,6 +265,19 @@ const mixFormat: FileFormatter = {
   fix: () => ["format"],
 };
 
+// No range: the psformat gate formats whole files (#2595). Invoke-Formatter has `-Range` (1-based
+// line and column) on a script's text, which a later range form could pass. Its gate is a
+// `pwsh -Command` script, which `formatsPath` reads as an operand, so the format-written check runs
+// on the files a task writes whether or not the run's checks hold the gate, as styler's does.
+/** The gate's host flags (`-NoProfile -NonInteractive -Command`), without its script. */
+const psHost = (args: readonly string[]) =>
+  args.filter((arg) => arg !== PS_FORMAT_CHECK && arg !== PS_FORMAT_FIX);
+const invokeFormatter: FileFormatter = {
+  runs: (program, args) => /^(?:pwsh|powershell)$/i.test(program) && args.includes(PS_FORMAT_CHECK),
+  check: (args, files) => [...psHost(args), PS_FORMAT_CHECK, ...files],
+  fix: (args) => [...psHost(args), PS_FORMAT_FIX],
+};
+
 const NPM_FORMATTERS = [biome, prettier, dprint, bunFmt];
 
 /**
@@ -306,9 +320,7 @@ export const FILE_FORMATTERS: LanguageRecord<readonly FileFormatter[]> = {
   sql: none(
     "SQLFluff's layout rules run in the `sqlfluff lint` gate, which covers each task's SQL files; `sqlfluff format` has no check mode",
   ),
-  powershell: none(
-    "PSScriptAnalyzer's Invoke-Formatter formats a script's text, not files; no gate runs it",
-  ),
+  powershell: [invokeFormatter],
   r: [styler],
 };
 

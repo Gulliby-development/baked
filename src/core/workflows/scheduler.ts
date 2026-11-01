@@ -5057,15 +5057,16 @@ export class WorkflowScheduler {
     const report = sizePlan({
       graph,
       spec,
-      // The host split reads the request for its prescribed rows alone (#2455): a supplied task
-      // still goes back to the planner from the plan's sizing, as before (#2019).
-      policy: policy.sizing?.rowVolume
-        ? { ...policy, sizing: { ...policy.sizing, suppliedDiff: false } }
-        : policy,
+      policy,
       samples: sizingHistory(this.store.workspace, policy),
       spent: this.store.run(runId).token_usage,
       model: this.sizingModel(runId, graph),
-      ...(policy.sizing?.rowVolume ? { request: state.requestText || state.prompt } : {}),
+      // The host split prices a task the request supplies as the plan's sizing does (#2594): from
+      // its supplied lines (`suppliedTaskPrice`), so a whole supplied file is never split here and
+      // then priced as one by every later report. It reads the prescribed rows too (#2455).
+      ...(policy.sizing?.rowVolume || policy.sizing?.suppliedDiff
+        ? { request: state.requestText || state.prompt }
+        : {}),
     });
     const split = splitTestTasks(
       graph,

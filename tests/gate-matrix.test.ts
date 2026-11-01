@@ -69,6 +69,7 @@ import { baselineRegression, buildFailure, buildRunner, diagnosticCount, failedT
 import { pwshExecutable, rscriptExecutable } from "../src/core/platform/index.js";
 import { lintrRun, STYLER_CHECK, STYLER_FIX, testthatOn, testthatRun } from "../src/core/workflows/r-tools.js";
 import { PESTER_RUN, pesterOn } from "../src/core/workflows/pester.js";
+import { PS_FORMAT_CHECK, PS_FORMAT_FIX } from "../src/core/workflows/ps-format.js";
 import { baselineDebt, baselineKeys } from "../src/core/verification/task-end-check.js";
 import { affectedTestCheck, isWrittenTestFile, plannedWrittenTests, writtenTestsCheck } from "../src/core/workflows/affected-tests.js";
 import { detectLanguages, touchesLanguageFiles } from "../src/core/workflows/language.js";
@@ -92,7 +93,7 @@ import {
   styleClaimShown,
   wholeUnitFixerCommand,
 } from "../src/core/workflows/check-policy.js";
-import { buildWrapper, cmakeGates, detectGates, executeGate, type GateToolchain } from "../src/core/workflows/gates.js";
+import { buildWrapper, cmakeGates, detectGates, executeGate, type GateToolchain, PSSA_LINT, pssaLint } from "../src/core/workflows/gates.js";
 import { committedTreeChecks } from "../src/core/workflows/committed-tree.js";
 import { fileScopedFormat, formatWrittenChecks, rustFormatWrittenChecks } from "../src/core/workflows/format-written.js";
 import { type LayoutResult, layoutVerdict } from "../src/core/workflows/layout-check.js";
@@ -2812,12 +2813,14 @@ describe("gate matrix: Pester and PSScriptAnalyzer (#1498)", () => {
     expect(ids({ "tests/Sum.Tests.ps1": TEST })).toEqual([
       ["pester", "tests/*.Tests.ps1", true],
       ["psscriptanalyzer", "tests/*.Tests.ps1", false],
+      ["psformat", "tests/*.Tests.ps1", false],
     ]);
     expect(ids({ "Sum.Tests.ps1": TEST, "PSScriptAnalyzerSettings.psd1": "@{}\n" })).toEqual([
       ["pester", "*.Tests.ps1", true],
       ["psscriptanalyzer", "PSScriptAnalyzerSettings.psd1", true],
+      ["psformat", "PSScriptAnalyzerSettings.psd1", true],
     ]);
-    expect(ids({ "Sum.psd1": "@{ ModuleVersion = '1.0.0' }\n" })).toEqual([["psscriptanalyzer", "Sum.psd1", false]]);
+    expect(ids({ "Sum.psd1": "@{ ModuleVersion = '1.0.0' }\n" })).toEqual([["psscriptanalyzer", "Sum.psd1", false], ["psformat", "Sum.psd1", false]]);
     expect(ids({ "src/deep/Sum.ps1": "function Get-Sum {}\n" })).toEqual([]);
     const [pester] = detectGates(project({ "tests/Sum.Tests.ps1": TEST })).map((s) => s.check);
     expect(pester && [pester.executable, ...pester.args.slice(0, 3)]).toEqual([exe, "-NoProfile", "-NonInteractive", "-Command"]);
@@ -2839,12 +2842,44 @@ describe("gate matrix: Pester and PSScriptAnalyzer (#1498)", () => {
     expect(lint.args.at(-1)).toContain("-Severity ParseError,Error,Warning -EnableExit");
     expect(fixerCommand(lint.fix!, "src/Sum.ps1")).toEqual({
       executable: exe,
-      args: ["-NoProfile", "-NonInteractive", "-Command", "Invoke-ScriptAnalyzer", "-Fix", "-Path", "src/Sum.ps1"],
+      args: ["-NoProfile", "-NonInteractive", "-Command", "Invoke-ScriptAnalyzer", "-Settings", "./PSScriptAnalyzerSettings.psd1", "-Fix", "-Path", "src/Sum.ps1"],
     });
     const covering = (path: string) =>
       coveringChecks({ checks } as RunPolicy, { writes: [{ path, action: "create" }] }).map((c) => c.id);
-    expect(covering("src/Sum.ps1")).toEqual(["psscriptanalyzer"]);
+    expect(covering("src/Sum.ps1")).toEqual(["psscriptanalyzer", "psformat"]);
     expect(covering("README.md")).toEqual([]);
+  });
+
+  test("the psformat gate runs Invoke-Formatter on each script, and its format-written row names the task's files (#2595)", () => {
+    const root = project({ "src/Sum.ps1": "function Get-Sum {}\n", "PSScriptAnalyzerSettings.psd1": "@{}\n" });
+    const format = detectGates(root).find((s) => s.check.id === "psformat")?.check as Check;
+    expect(format.args).toEqual(["-NoProfile", "-NonInteractive", "-Command", PS_FORMAT_CHECK]);
+    expect(fixerCommand(format.fix!, "src/Sum.ps1").args).toEqual(["-NoProfile", "-NonInteractive", "-Command", PS_FORMAT_FIX, "src/Sum.ps1"]);
+    // The project's settings, the CodeFormatting preset without them; UTF-8 with the file's own BOM state.
+    expect(PS_FORMAT_CHECK).toContain("$s.Settings = './PSScriptAnalyzerSettings.psd1'");
+    expect(PS_FORMAT_FIX).toContain("New-Object Text.UTF8Encoding $bom");
+    expect(PS_FORMAT_CHECK).not.toContain("WriteAllText");
+    const [written] = formatWrittenChecks(root, [], [{ path: "src/Sum.ps1", action: "create" }], (c) => `/usr/bin/${c}`);
+    expect(written && [written.id, written.args.slice(-2), written.fix?.args.at(-1), written.required]).toEqual(["psformat-written", [PS_FORMAT_CHECK, "src/Sum.ps1"], PS_FORMAT_FIX, true]);
+    expect(diagnosticCount("src/Sum.ps1: would be reformatted by Invoke-Formatter\ntests/A.Tests.ps1: would be reformatted by Invoke-Formatter\n")).toEqual({ tool: "invoke-formatter", count: 2, errors: 2 });
+  });
+
+  test("the lint and its fixer name a root settings file, since the analyzer finds it only next to each -Path (#2591)", async () => {
+    const commands = (files: Record<string, string>) => {
+      const lint = detectGates(project(files)).find((s) => s.check.id === "psscriptanalyzer")?.check as Check;
+      return { lint: lint.args.at(-1), fix: fixerCommand(lint.fix!, "src/Foo.ps1").args.slice(3) };
+    };
+    const SCRIPT = { "src/Foo.ps1": "function Get-Foo {}\n", "Foo.psd1": "@{ ModuleVersion = '1.0.0' }\n" };
+    expect(commands({ ...SCRIPT, "PSScriptAnalyzerSettings.psd1": "@{}\n" })).toEqual({
+      lint: pssaLint("PSScriptAnalyzerSettings.psd1"),
+      fix: ["Invoke-ScriptAnalyzer", "-Settings", "./PSScriptAnalyzerSettings.psd1", "-Fix", "-Path", "src/Foo.ps1"],
+    });
+    expect(pssaLint("PSScriptAnalyzerSettings.psd1")).toStartWith("Invoke-ScriptAnalyzer -Settings ./PSScriptAnalyzerSettings.psd1 -Path . -Recurse -Severity ParseError,Error,Warning -EnableExit | ");
+    // Without a settings file both keep the default rules and the current commands.
+    expect(commands(SCRIPT)).toEqual({ lint: PSSA_LINT, fix: ["Invoke-ScriptAnalyzer", "-Fix", "-Path", "src/Foo.ps1"] });
+    expect(PSSA_LINT).toStartWith("Invoke-ScriptAnalyzer -Path . -Recurse ");
+    expect((await detectProfile(project({ ...SCRIPT, "PSScriptAnalyzerSettings.psd1": "@{}\n" }))).lint).toContain("Invoke-ScriptAnalyzer -Settings ./PSScriptAnalyzerSettings.psd1 -Path . -Recurse");
+    expect((await detectProfile(project(SCRIPT))).lint).toContain('"Invoke-ScriptAnalyzer -Path . -Recurse -EnableExit"');
   });
 
   test("the written-tests check runs only the task's Pester files, and leaves a project's own script alone", () => {
@@ -5083,6 +5118,48 @@ describe.skipIf(!toolchains)("gate matrix: toolchains", () => {
     const missing = await executeGate(root, { ...lint, args: ["lint", "tests"] }, new AbortController().signal);
     expect(missingPlannedPaths(missing.outputTail, [{ writes: [{ path: "tests/test_orders.sql", action: "create" }] } as Task])).toEqual(["tests/test_orders.sql"]);
   }, 300000);
+  test.skipIf(!available([[pwshExecutable(), "-NoProfile", "-NonInteractive", "-Command", "Import-Module PSScriptAnalyzer"]]))("pwsh: the psformat gate fails on a mis-indented script, its fixer formats it without a BOM and keeps one a file had (#2595)", async () => {
+    const root = project({
+      // The settings file is formatted too, so it keeps the 4-space indent it asks for.
+      "PSScriptAnalyzerSettings.psd1": "@{\n    IncludeRules = @('PSUseConsistentIndentation')\n    Rules = @{ PSUseConsistentIndentation = @{ Enable = $true; IndentationSize = 4; Kind = 'space' } }\n}\n",
+      "src/Plain.ps1": "function Get-Plain {\n  param([int]$A)\n  $A\n}\n",
+      "src/Marked.ps1": "\uFEFFfunction Get-Marked {\n  param([int]$A)\n  $A\n}\n",
+    });
+    const format = detectGates(root).find((s) => s.check.id === "psformat")?.check;
+    if (!format?.fix) throw new Error("no psformat gate");
+    const signal = new AbortController().signal;
+    const before = await executeGate(root, format, signal);
+    expect(before.status).toBe("failed");
+    expect(diagnosticCount(before.outputTail)).toEqual({ tool: "invoke-formatter", count: 2, errors: 2 });
+    for (const path of ["src/Plain.ps1", "src/Marked.ps1"]) {
+      const fix = fixerCommand(format.fix, path);
+      expect(spawnSync(fix.executable, fix.args, { cwd: root, encoding: "utf8", timeout: 120000 }).status).toBe(0);
+      expect(readFileSync(join(root, path), "utf8")).toContain("\n    param([int]$A)\n");
+    }
+    const bom = (path: string) => readFileSync(join(root, path)).subarray(0, 3).equals(Buffer.from([0xef, 0xbb, 0xbf]));
+    expect([bom("src/Plain.ps1"), bom("src/Marked.ps1")]).toEqual([false, true]);
+    const after = await executeGate(root, format, signal);
+    expect({ status: after.status, output: after.outputTail }).toEqual({ status: "passed", output: after.outputTail });
+  }, 300000);
+  test.skipIf(!available([[pwshExecutable(), "-NoProfile", "-NonInteractive", "-Command", "Import-Module PSScriptAnalyzer"]]))("pwsh: the analyzer's fixer applies the root settings file's layout rules to a file in src/ (#2591)", async () => {
+    const root = project({
+      "PSScriptAnalyzerSettings.psd1":
+        "@{\n    IncludeRules = @('PSUseConsistentIndentation')\n    Rules = @{ PSUseConsistentIndentation = @{ Enable = $true; IndentationSize = 4; Kind = 'space' } }\n}\n",
+      "src/Foo.ps1": "function Get-Foo {\n  param([int]$A)\n  $A\n}\n",
+    });
+    const lint = detectGates(root).find((s) => s.check.id === "psscriptanalyzer")?.check;
+    if (!lint?.fix) throw new Error("no analyzer gate");
+    const signal = new AbortController().signal;
+    expect((await executeGate(root, lint, signal)).status).toBe("failed");
+    const before = readFileSync(join(root, "src/Foo.ps1"), "utf8");
+    const fix = fixerCommand(lint.fix, "src/Foo.ps1");
+    expect(spawnSync(fix.executable, fix.args, { cwd: root, encoding: "utf8", timeout: 120000 }).status).toBe(0);
+    expect(readFileSync(join(root, "src/Foo.ps1"), "utf8")).not.toBe(before);
+    // The settings file is analyzed too, so it keeps the 4-space indent it asks for. The output is
+    // in the comparison so a failure shows the finding.
+    const after = await executeGate(root, lint, signal);
+    expect({ status: after.status, output: after.outputTail }).toEqual({ status: "passed", output: after.outputTail });
+  }, 300000);
   test.skipIf(!available([[pwshExecutable(), "-NoProfile", "-NonInteractive", "-Command", "Import-Module PSScriptAnalyzer"]]))("pwsh: the analyzer's fixer through the host keeps each file's BOM state (#2592)", () => {
     const root = project({
       // A root module manifest: the analyzer gate is offered for it.
@@ -5911,7 +5988,7 @@ describe("ci check drift gate: the PowerShell gates' cmdlets and the project's o
       mkdirSync(join(root, "tests"), { recursive: true });
       writeFileSync(join(root, "tests/Wrap.Tests.ps1"), "Describe 'x' { It 'y' { 1 | Should -Be 1 } }\n");
       const gates = detectGates(root).map((g) => g.check);
-      expect(gates.map((c) => c.id)).toEqual(["pester", "psscriptanalyzer"]);
+      expect(gates.map((c) => c.id)).toEqual(["pester", "psscriptanalyzer", "psformat"]);
       const readme = (...lines: string[]) => [{ path: "README.md", text: `\`\`\`powershell\n${lines.join("\n")}\n\`\`\`\n` }];
       expect(ciCheckDrift(readme("Invoke-Pester", "Invoke-ScriptAnalyzer -Path . -Recurse", "Invoke-ScriptAnalyzer -Fix -Path FILE", "pwsh bin/wrapsmith.ps1 fill -w 60 < in.txt"), gates)).toEqual([]);
       expect(ciCheckDrift(readme("Invoke-ScriptAnalyzer -Path . -Recurse -IncludeDefaultRules"), gates).map((d) => d.missing)).toEqual([["-includedefaultrules"]]);

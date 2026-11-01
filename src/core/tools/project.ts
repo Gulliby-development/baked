@@ -448,7 +448,8 @@ async function detectToolchain(cwd: string): Promise<DetectedToolchain> {
   }
 
   // PowerShell — Pester and PSScriptAnalyzer (#1498). No edit-time format: Invoke-Formatter
-  // takes the script text, not a path.
+  // takes the script text, not a path; the psformat gate and its format-written row (#2595) hold
+  // the task's files to it.
   if (
     (await has("PSScriptAnalyzerSettings.psd1")) ||
     (await hasExt(".Tests.ps1")) ||
@@ -456,7 +457,11 @@ async function detectToolchain(cwd: string): Promise<DetectedToolchain> {
   ) {
     const pwsh = pwshExecutable();
     profile.test = `${pwsh} -NoProfile -Command Invoke-Pester`;
-    profile.lint = `${pwsh} -NoProfile -Command "Invoke-ScriptAnalyzer -Path . -Recurse -EnableExit"`;
+    // The analyzer finds its settings only next to each -Path, so a root file is named (#2591).
+    const settings = (await has("PSScriptAnalyzerSettings.psd1"))
+      ? "-Settings ./PSScriptAnalyzerSettings.psd1 "
+      : "";
+    profile.lint = `${pwsh} -NoProfile -Command "Invoke-ScriptAnalyzer ${settings}-Path . -Recurse -EnableExit"`;
     return profile;
   }
 

@@ -152,6 +152,10 @@ export function diagnosticCount(output: string): OutputCount | null {
   // styler through the gate: "R/sum.R: would be reformatted by styler" per file.
   const styled = lines(output, /: would be reformatted by styler$/);
   if (styled) return { tool: "styler", count: styled, errors: styled };
+  // Invoke-Formatter through the psformat gate (#2595): "src/A.ps1: would be reformatted by
+  // Invoke-Formatter" per file.
+  const psFormatted = lines(output, /: would be reformatted by Invoke-Formatter$/);
+  if (psFormatted) return { tool: "invoke-formatter", count: psFormatted, errors: psFormatted };
   // dotnet build: "    3 Warning(s)" and "    0 Error(s)"
   const warnings = output.match(/^\s*(\d+) Warning\(s\)/m);
   const errors = output.match(/^\s*(\d+) Error\(s\)/m);
