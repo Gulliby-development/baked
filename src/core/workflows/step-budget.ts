@@ -11,6 +11,7 @@ import {
   type WatchStep,
   watchSteps,
 } from "./progress-watch.js";
+import type { PromptSection } from "./prompt-sections.js";
 import { claimsLostTool } from "./retry.js";
 import type { ProfileCompaction } from "./schemas.js";
 
@@ -280,9 +281,11 @@ export interface AttemptUsageRecord {
   /**
    * Prompt size of the attempt (#1978): the serialized messages its first step sent and the
    * largest any step sent, so a corrective whose every call re-sends a large prompt shows it.
-   * Absent when no step was prepared, and in older records.
+   * Absent when no step was prepared, and in older records. `sections` (#2597) splits
+   * `firstBytes` by what holds the bytes (`promptSections` in prompt-sections.ts) and sums to it
+   * exactly; absent in older records.
    */
-  prompt?: { firstBytes: number; largestBytes: number };
+  prompt?: { firstBytes: number; largestBytes: number; sections?: PromptSection[] };
   /** Tool calls by the code intelligence backend that answered; absent when none reported one. */
   toolBackends?: ToolBackendCount[];
   /** The reasoning effort sent to the provider; absent when none was sent (#936). */
@@ -377,6 +380,8 @@ export class AttemptStepController {
   private compacting = false;
   /** Serialized size of the messages sent with each step, to estimate the next one. */
   private readonly sentBytes: number[] = [];
+  /** The messages the first prepared step sent, which `firstBytes` measures, for its sections. */
+  private firstMessages: readonly ModelMessage[] | undefined;
   /** The ceiling on all tokens, which `growCeiling` may raise during the attempt. */
   private ceiling: number | undefined;
   /** Whether the ceiling, not the attempt's own cap, finalized the attempt. */
@@ -409,6 +414,11 @@ export class AttemptStepController {
        * ceiling now, all tokens included.
        */
       growCeiling?: (tokens: number) => number;
+      /**
+       * Splits the messages the first step sent into named sections whose bytes sum to their
+       * serialized size (#2597); unset records no sections.
+       */
+      promptSections?: (messages: readonly ModelMessage[]) => PromptSection[];
       /** The profile's compaction settings; unset compacts from the first step. */
       compaction?: ProfileCompaction;
       /**
@@ -704,6 +714,7 @@ export class AttemptStepController {
         messages.splice(notice.at + offset, 0, { role: "user", content: notice.content });
     }
     this.sentBytes[input.stepNumber] = Buffer.byteLength(JSON.stringify(messages));
+    this.firstMessages ??= messages;
     if (!finalizing) return messages === input.messages ? {} : { messages };
     return { messages, activeTools: this.options.submitTools, toolChoice: "required" };
   }
@@ -754,7 +765,15 @@ export class AttemptStepController {
           }
         : {}),
       ...(sent.length
-        ? { prompt: { firstBytes: sent[0] ?? 0, largestBytes: Math.max(...sent) } }
+        ? {
+            prompt: {
+              firstBytes: sent[0] ?? 0,
+              largestBytes: Math.max(...sent),
+              ...(this.options.promptSections && this.firstMessages
+                ? { sections: this.options.promptSections(this.firstMessages) }
+                : {}),
+            },
+          }
         : {}),
       steps: steps.map((step, index) => ({
         inputTokens: step.usage.inputTokens ?? null,
