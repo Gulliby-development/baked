@@ -5103,7 +5103,7 @@ describe.skipIf(!toolchains)("gate matrix: toolchains", () => {
   test.skipIf(!available([[pwshExecutable(), "-NoProfile", "-NonInteractive", "-Command", "Import-Module PSScriptAnalyzer"]]))("pwsh: the analyzer's fixer applies the root settings file's layout rules to a file in src/ (#2591)", async () => {
     const root = project({
       "PSScriptAnalyzerSettings.psd1":
-        "@{\n  IncludeRules = @('PSUseConsistentIndentation')\n  Rules = @{ PSUseConsistentIndentation = @{ Enable = $true; IndentationSize = 4; Kind = 'space' } }\n}\n",
+        "@{\n    IncludeRules = @('PSUseConsistentIndentation')\n    Rules = @{ PSUseConsistentIndentation = @{ Enable = $true; IndentationSize = 4; Kind = 'space' } }\n}\n",
       "src/Foo.ps1": "function Get-Foo {\n  param([int]$A)\n  $A\n}\n",
     });
     const lint = detectGates(root).find((s) => s.check.id === "psscriptanalyzer")?.check;
@@ -5114,7 +5114,10 @@ describe.skipIf(!toolchains)("gate matrix: toolchains", () => {
     const fix = fixerCommand(lint.fix, "src/Foo.ps1");
     expect(spawnSync(fix.executable, fix.args, { cwd: root, encoding: "utf8", timeout: 120000 }).status).toBe(0);
     expect(readFileSync(join(root, "src/Foo.ps1"), "utf8")).not.toBe(before);
-    expect((await executeGate(root, lint, signal)).status).toBe("passed");
+    // The settings file is analyzed too, so it keeps the 4-space indent it asks for. The output is
+    // in the comparison so a failure shows the finding.
+    const after = await executeGate(root, lint, signal);
+    expect({ status: after.status, output: after.outputTail }).toEqual({ status: "passed", output: after.outputTail });
   }, 300000);
   test.skipIf(!available([[pwshExecutable(), "-NoProfile", "-NonInteractive", "-Command", "Import-Module Pester -MinimumVersion 5.5; Import-Module PSScriptAnalyzer"]]))("pwsh: Pester and PSScriptAnalyzer gates fail on a defect, the analyzer's fixer repairs the file, and a missing path names its task (#1498)", async () => {
     const root = project({
