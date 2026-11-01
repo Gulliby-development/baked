@@ -825,6 +825,70 @@ describe("initiative token pool hold invariants (#2468)", () => {
   });
 });
 
+describe("run limit refusal invariants (#2590)", () => {
+  const seed = fc.record({
+    ceiling: fc.integer({ min: 1_000_000, max: 10_000_000 }),
+    extendFactor: fc.double({ min: 1, max: 3, noNaN: true }),
+    finishedShare: fc.double({ min: 0.3, max: 0.95, noNaN: true }),
+    /** Tokens each open writer had used at the last extension, and used since. */
+    writers: fc.array(fc.record({ atExtend: fc.integer({ min: 0, max: 800_000 }), since: fc.integer({ min: 0, max: 800_000 }) }), { minLength: 1, maxLength: 4 }),
+    /** The step the last writer asks for, as a share of the ceiling: mostly past the extended limit. */
+    requestShare: fc.double({ min: 0.3, max: 2.5, noNaN: true }),
+  });
+
+  // With nothing finished since the last auto-extend, an attempt fails for the run limit only when
+  // the limit could not grow: the hard ceiling has no room for the step, or no open attempt used a
+  // token since the extension. Parallel writers in flight are progress (R84 md-site, #2590).
+  test("an attempt fails for the run limit only when the limit could not grow", async () => {
+    const store = fixture.service.store;
+    await fc.assert(
+      fc.asyncProperty(seed, async (s) => {
+        const { runId } = await fixture.start();
+        store.transaction(() => store.transition(runId, "running"));
+        const hard = Math.ceil(s.ceiling * s.extendFactor);
+        const policy: RunPolicy = { ...fixturePolicy, clarification: "assume", maxAgentCalls: 1000, maxTotalTokens: s.ceiling, maxCostUsd: null, sizing: { maxRunTokens: s.ceiling, extendToTokens: hard } };
+        store.setPolicy(runId, policy);
+        store.transaction(() => {
+          store.syncTasks(runId, { schemaVersion: 1, featureId: "fixture", revision: 1, specHash: "a".repeat(64), planHash: "b".repeat(64), tasks: [task("T001"), task("T002")] });
+          store.taskStatus(runId, "T001", "implemented");
+        });
+        const stepId = store.beginStep(runId, "fixture");
+        const done = store.reserve(runId, stepId, null, 1, policy);
+        store.finishAttempt(runId, done, "completed", Math.floor(s.ceiling * s.finishedShare));
+        const writers = s.writers.map((w) => {
+          const id = store.reserve(runId, stepId, null, 1, policy);
+          store.recordAttemptUsage(runId, id, w.atExtend);
+          return id;
+        });
+        // The extension at T001's finish, with the writers open at their first usage.
+        const extended = growBudgetOnProgress(store, runId, policy, s.ceiling + 1);
+        for (const [i, id] of writers.entries()) {
+          const w = s.writers[i] as { atExtend: number; since: number };
+          store.recordAttemptUsage(runId, id, w.atExtend + w.since);
+        }
+        const limit = policy.maxTotalTokens;
+        const request = Math.max(1, Math.floor(s.ceiling * s.requestShare));
+        // The other writers each hold their 1-token reservation.
+        const projected = store.run(runId).token_usage + writers.length - 1 + request;
+        let refused = false;
+        try {
+          store.expandReservation(runId, writers.at(-1) as string, request, policy);
+        } catch (error) {
+          expect((error as { code?: string }).code).toBe("BUDGET_EXHAUSTED");
+          refused = true;
+        }
+        // Without an extension, T001's finish is still progress since the start of the run.
+        const progress = extended ? s.writers.reduce((sum, w) => sum + w.since, 0) : 1;
+        if (refused) expect(projected > hard || limit >= hard || progress === 0).toBe(true);
+        else expect(projected).toBeLessThanOrEqual(policy.maxTotalTokens);
+        expect(policy.maxTotalTokens).toBeLessThanOrEqual(Math.max(limit, hard));
+      }),
+      // Each shrink starts a run on the shared fixture: report the first counterexample as found.
+      { numRuns: RUNS, endOnFailure: true },
+    );
+  });
+});
+
 describe("token growth room invariants (#2294)", () => {
   const seed = fc.record({
     remainingTokens: fc.integer({ min: 0, max: 30_000_000 }),
