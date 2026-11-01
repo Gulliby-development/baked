@@ -5085,6 +5085,8 @@ describe.skipIf(!toolchains)("gate matrix: toolchains", () => {
   }, 300000);
   test.skipIf(!available([[pwshExecutable(), "-NoProfile", "-NonInteractive", "-Command", "Import-Module PSScriptAnalyzer"]]))("pwsh: the analyzer's fixer through the host keeps each file's BOM state (#2592)", () => {
     const root = project({
+      // A root module manifest: the analyzer gate is offered for it.
+      "App.psd1": "@{ ModuleVersion = '1.0.0' }\n",
       "src/Plain.ps1": "function Get-Item2 {\n  gci\n}\n",
       "src/Marked.ps1": "\uFEFFfunction Get-Item3 {\n  gci\n}\n",
     });
