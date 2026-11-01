@@ -1921,7 +1921,13 @@ export function splitTestTasks(
   const origins = new Map<string, string>();
   const tasks = graph.tasks.flatMap((task) => {
     if (!oversized.has(task.id) || task.sizingSlice || task.rows?.length) return [task];
-    const byRows = report.tasks.find((t) => t.taskId === task.id)?.rowVolume;
+    // Decided once, before any cut (#2594): a task whose files the request supplies is split on
+    // its supplied lines alone, by file, never into row or criterion slices. Each slice of a
+    // supplied new file carried the whole diff; host apply wrote it at part 1 and declined the
+    // rest, and each declined part opened a session that found the work done.
+    const sized = report.tasks.find((t) => t.taskId === task.id);
+    const suppliedTask = sized?.basis === "supplied";
+    const byRows = suppliedTask ? undefined : sized?.rowVolume;
     if (byRows?.mode === "on" && byRows.slices > 1) {
       const lines = request
         ? suppliedRows(request, [byRows.path]).get(requestPath(byRows.path))?.lines
@@ -1934,7 +1940,6 @@ export function splitTestTasks(
       for (const part of split) origins.set(part.id, task.id);
       return split;
     }
-    const suppliedTask = report.tasks.some((t) => t.taskId === task.id && t.basis === "supplied");
     const files = task.writes.filter((write) => write.action !== "delete");
     const deletes = task.writes.filter((write) => write.action === "delete");
     const criteria = partCriteria(

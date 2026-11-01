@@ -1,14 +1,16 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DEFAULT_CONFIG } from "../src/config/index.js";
 import { hashBytes, hashJson } from "../src/core/specs/hash.js";
 import { defaultWorkflowPolicy } from "../src/core/workflows/defaults.js";
+import { hostApplyContents, hostApplyDecision, hostApplyInputs, hostApplyText } from "../src/core/workflows/host-apply.js";
 import type { Check, RunPolicy, Spec, Task, TaskGraph } from "../src/core/workflows/schemas.js";
 import { NativeWorkflowService } from "../src/core/workflows/service.js";
 import {
   estimateSourceText,
+  type SizingReport,
   SUPPLIED_PER_FILE,
   type SizingSample,
   sizePlan,
@@ -399,4 +401,131 @@ describe("scenario: a supplied-diff brief through the scheduler (#2002)", () => 
     expect(executor.outputs.filter((o) => o !== "research")).toEqual(["spec", "plan", "analysis", "plan", "analysis"]);
     expect(body.estimateSource).toBeUndefined();
   }, 60_000);
+});
+
+// Bench round 84 (#2594). stoptable-update (Java, sdd) supplied BoardSkipTest.java as one 151-line
+// new-file diff. The host split's report priced T003 by its cases, about 1.53M above one attempt's
+// 600k, and sliced it by criterion into T003/T005/T006/T007; the plan's report then priced every
+// slice from the same supplied diff (`basis: "supplied"`, 151 lines). Host apply wrote the whole
+// file at part 1 and declined parts 2 to 4 ("already exists in working directory"); each opened a
+// session that found the work done, 140k of the run's 465k tokens. skillplumb-update (Go) did the
+// same to sort_test.go. The split's report now prices a supplied task as the plan's does.
+const SUPPLIED_TESTS: [string, string, string, (i: number) => string][] = [
+  ["java (JUnit)", "src/test/java/com/stoptable/BoardSkipTest.java", "src/main/java/com/stoptable/Board.java", (i) => (i === 0 ? "package com.stoptable;" : `    @Test void skip${i}() { assertEquals(${i}, Board.skip(${i})); }`)],
+  ["go", "internal/cli/sort_test.go", "internal/cli/sort.go", (i) => (i === 0 ? "package cli" : `func TestSort${i}(t *testing.T) { if Sort(${i}) != ${i} { t.Fatal("sort") } }`)],
+];
+const boardSpec: Spec = {
+  ...spec,
+  featureId: "board",
+  criteria: ["AC-001", "AC-002", "AC-003", "AC-004"].map((id, i) => ({ id, requirementIds: ["FR-001"], given: `board ${i + 1}`, when: "a row is skipped", then: `the board shows row ${i + 2}`, method: "automated" as const })),
+};
+const boardMarkdown = markdown.replace("src/spdx.ts, src/cli.ts, src/license.ts, src/format.ts", "the board and its test");
+
+class BoardPlanner implements AgentExecutor {
+  outputs: string[] = [];
+  constructor(private code: string, private test: string) {}
+  async execute(request: ExecutionRequest) {
+    const data = JSON.parse(request.prompt.split("\n").at(-1) ?? "{}") as { inputHash: string };
+    this.outputs.push(request.profile.output);
+    const ids = boardSpec.criteria.map((c) => c.id);
+    const tasks = [
+      { ...planned("T001", [this.code], "create"), criterionIds: ids },
+      { ...planned("T002", [this.test], "create"), criterionIds: ids, dependsOn: ["T001"] },
+    ];
+    let output: unknown;
+    switch (request.profile.output) {
+      case "research": output = { schemaVersion: 1, summary: "A fixture workspace", facts: [], unknowns: [], constraints: [], suggestedScope: ["src"] }; break;
+      case "spec": output = boardSpec; break;
+      case "plan": output = { schemaVersion: 1, markdown: boardMarkdown, taskGraph: { schemaVersion: 1, featureId: "board", revision: 1, specHash: hashJson(boardSpec), planHash: hashBytes(boardMarkdown), tasks } }; break;
+      case "analysis": output = { schemaVersion: 1, inputHash: data.inputHash, verdict: "pass", findings: [] }; break;
+      default: throw new Error(`Unexpected profile ${request.profile.output}`);
+    }
+    return { output, inputTokens: 20, outputTokens: 30 };
+  }
+}
+
+const boardBrief = (path: string, line: (i: number) => string) =>
+  ["Add the skip rule. Create the test exactly as given:", "```diff", newFile(path, Array.from({ length: 150 }, (_, i) => line(i))), "```"].join("\n");
+
+async function runBoard(code: string, test: string, line: (i: number) => string) {
+  const root = mkdtempSync(join(tmpdir(), "baked-supplied-split-"));
+  cleanups.push(() => rmSync(root, { recursive: true, force: true }));
+  // No test history and a small cap: the default case price puts the test task above one attempt.
+  const runPolicy: RunPolicy = { ...defaultWorkflowPolicy, checks: [check], hostApply: "on", sizing: { maxAttemptTokens: 100_000, suppliedDiff: true } };
+  const config = { ...DEFAULT_CONFIG, defaultModel: "fixture/model", workflows: { enabled: true, importsEnabled: true, defaultWorkflow: "sdd", policy: runPolicy } };
+  const service = new NativeWorkflowService(root, config, new BoardPlanner(code, test));
+  cleanups.push(() => service.close());
+  const run = await service.start({ commandId: newId(), featureId: "board", workflowId: "sdd", prompt: boardBrief(test, line), ownerLabel: "test", policy: runPolicy });
+  await service.drive(run.runId, new AbortController().signal);
+  const read = (path: string) => {
+    const artifact = service.store.latestArtifact(run.runId, path);
+    return artifact ? JSON.parse(service.store.readArtifact(run.runId, artifact.id)) : null;
+  };
+  const approval = service.store.requests(run.runId).find((r) => r.kind === "approval" && r.status === "pending");
+  return { graph: service.store.state(run.runId).graph, read, body: JSON.parse(approval?.body_json ?? "{}") as { hostApply?: string } };
+}
+
+describe("scenario: stoptable-update and skillplumb-update R84, a supplied new test file split by sizing (#2594)", () => {
+  for (const [language, testPath, code, line] of SUPPLIED_TESTS) {
+    test(`${language}: the host split prices the supplied file from its lines, keeps the task whole and host apply takes it`, async () => {
+      const { graph: planned, read, body } = await runBoard(code, testPath, line);
+      // No `sizing-split`: one test task writes the whole file, with every criterion.
+      expect(read("sizing/split-0.json")).toBeNull();
+      expect(planned?.tasks.map((t) => [t.id, t.writes.map((w) => `${w.action} ${w.path}`), t.sizingSlice ?? null])).toEqual([
+        ["T001", [`create ${code}`], null],
+        ["T002", [`create ${testPath}`], null],
+      ]);
+      const report = read("sizing/plan-0.json") as SizingReport;
+      expect(report.tasks.find((t) => t.taskId === "T002")).toMatchObject({ kind: "test", basis: "supplied", suppliedLines: 150, oversized: false });
+      expect(read("sizing/plan-1.json")).toBeNull();
+      // One host-applied task: the supplied test file, written by the host when it starts.
+      expect(body.hostApply).toBe(hostApplyText(["T002"], "on"));
+    });
+  }
+
+  test("the split's own report reads the supplied basis: a supplied task is never cut into row or criterion slices", () => {
+    const [, path, , line] = SUPPLIED_TESTS[0] as (typeof SUPPLIED_TESTS)[number];
+    const task = { ...planned("T002", [path], "create"), criterionIds: ["AC-001", "AC-002", "AC-003", "AC-004"] };
+    const g = graph(task);
+    const p: RunPolicy = { ...defaultWorkflowPolicy, sizing: { maxAttemptTokens: 100_000, suppliedDiff: true } };
+    const report = sizePlan({ graph: g, policy: p, samples: [], spent: 0, spec: boardSpec, request: boardBrief(path, line) });
+    expect(report.tasks).toMatchObject([{ taskId: "T002", basis: "supplied", suppliedLines: 150, oversized: false }]);
+    // A report that still marks it oversized, with a row volume to cut, keeps the file whole.
+    const forced: SizingReport = {
+      ...report,
+      tasks: report.tasks.map((t) => ({ ...t, oversized: true, rowVolume: { path, header: "rows", rows: 150, chars: 90_000, estimate: { low: 100_000, high: 900_000 }, slices: 4, mode: "on" as const } })),
+    };
+    const split = splitTestTasks(g, forced, boardSpec);
+    expect(split?.tasks.map((t) => [t.id, t.criterionIds, t.sizingSlice ?? null])).toEqual([["T002", task.criterionIds, null]]);
+  });
+});
+
+describe("host apply of a split part whose new-file diff an earlier part applied (#2594)", () => {
+  for (const [language, path, , line] of SUPPLIED_TESTS) {
+    test(`${language}: the part is recorded as applied with the file as it is, not declined`, async () => {
+      const root = mkdtempSync(join(tmpdir(), "baked-host-apply-present-"));
+      cleanups.push(() => rmSync(root, { recursive: true, force: true }));
+      const brief = boardBrief(path, line);
+      const task = { writes: [{ path, action: "create" as const }] };
+      // Part 1: the diff applies to the base without the file.
+      const first = await hostApplyInputs(root, brief, task);
+      expect(first).toMatchObject([{ path, applies: true, exists: false }]);
+      const [written] = await hostApplyContents(root, brief, task);
+      mkdirSync(join(root, path, ".."), { recursive: true });
+      writeFileSync(join(root, path), written?.content ?? "");
+      // Part 2 carries the same diff: git refuses it, and the file already holds what it creates.
+      const part = { writes: [{ path, action: "modify" as const }] };
+      const second = await hostApplyInputs(root, brief, part);
+      expect(second).toMatchObject([{ path, applies: false, present: true }]);
+      expect(second?.[0]?.refusal).toContain("already exists");
+      expect(hostApplyDecision(second ?? [])).toEqual({ wouldApply: true, reason: null });
+      expect(await hostApplyContents(root, brief, part)).toEqual([{ path, content: written?.content ?? "" }]);
+      expect(readFileSync(join(root, path), "utf8")).toBe(written?.content ?? "");
+      // A file with other content is still refused.
+      writeFileSync(join(root, path), `${written?.content ?? ""}// edited\n`);
+      const edited = await hostApplyInputs(root, brief, part);
+      expect(edited?.[0]?.present).toBeUndefined();
+      expect(hostApplyDecision(edited ?? []).reason).toContain(`the diff for ${path} does not apply`);
+    });
+  }
 });
