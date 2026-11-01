@@ -2009,6 +2009,18 @@ export const EventSchema = z.discriminatedUnion("type", [
           medianBytes: z.number().int().nonnegative(),
           firstAttempts: z.number().int().positive(),
           largest: z.object({ name: z.string(), bytes: z.number().int().nonnegative() }).strict(),
+          // What the bound on the evidence section cut (#2617, `boundEvidence`).
+          evidence: z
+            .object({
+              budget: z.number().int().nonnegative(),
+              keptChars: z.number().int(),
+              collapsed: z.number().int().nonnegative(),
+              summarized: z.number().int().nonnegative(),
+              cutChars: z.number().int().nonnegative(),
+              cut: z.array(z.string()),
+            })
+            .strict()
+            .optional(),
         })
         .strict(),
     })

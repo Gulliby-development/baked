@@ -1,6 +1,7 @@
 import type { JSONValue } from "@ai-sdk/provider";
 import type { ModelMessage } from "@ai-sdk/provider-utils";
 import type { AnswerEvidence } from "../llm/provider-answer.js";
+import type { EvidenceBound } from "./evidence-budget.js";
 import {
   type BrokenFile,
   missingToolClaims,
@@ -283,9 +284,15 @@ export interface AttemptUsageRecord {
    * largest any step sent, so a corrective whose every call re-sends a large prompt shows it.
    * Absent when no step was prepared, and in older records. `sections` (#2597) splits
    * `firstBytes` by what holds the bytes (`promptSections` in prompt-sections.ts) and sums to it
-   * exactly; absent in older records.
+   * exactly; absent in older records. `evidence` (#2617) is what the bound on the input's evidence
+   * section did (`boundEvidence`); absent when the input had none, and in older records.
    */
-  prompt?: { firstBytes: number; largestBytes: number; sections?: PromptSection[] };
+  prompt?: {
+    firstBytes: number;
+    largestBytes: number;
+    sections?: PromptSection[];
+    evidence?: EvidenceBound;
+  };
   /** Tool calls by the code intelligence backend that answered; absent when none reported one. */
   toolBackends?: ToolBackendCount[];
   /** The reasoning effort sent to the provider; absent when none was sent (#936). */
