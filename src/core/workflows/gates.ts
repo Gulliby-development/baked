@@ -572,8 +572,23 @@ const PESTER_DIRS = ["tests", "Tests", "test", "Test"];
  * finding is one sorted `path:line:column: Severity Rule: message` line, since the rules run in
  * parallel and the default table cuts paths to file names.
  */
-export const PSSA_LINT =
-  "Invoke-ScriptAnalyzer -Path . -Recurse -Severity ParseError,Error,Warning -EnableExit | Sort-Object ScriptPath, Line, Column, RuleName | ForEach-Object { '{0}:{1}:{2}: {3} {4}: {5}' -f $_.ScriptPath, $_.Line, $_.Column, $_.Severity, $_.RuleName, $_.Message }";
+export const PSSA_LINT = pssaLint();
+
+/**
+ * The analyzer's lint with the project's root settings file stated, when it has one (#2591).
+ * PSScriptAnalyzer looks for `PSScriptAnalyzerSettings.psd1` only in the folder of each `-Path`
+ * and does not walk upward, so the fixer on `src/Foo.ps1` used the default rules while the lint on
+ * `.` used the root file; naming the file in both keeps the pair on one rule set.
+ */
+export function pssaLint(settings?: string): string {
+  const head = ["Invoke-ScriptAnalyzer", ...settingsArgs(settings)].join(" ");
+  return `${head} -Path . -Recurse -Severity ParseError,Error,Warning -EnableExit | Sort-Object ScriptPath, Line, Column, RuleName | ForEach-Object { '{0}:{1}:{2}: {3} {4}: {5}' -f $_.ScriptPath, $_.Line, $_.Column, $_.Severity, $_.RuleName, $_.Message }`;
+}
+
+/** `-Settings ./<file>` for a root analyzer settings file, relative to the check's cwd (#2591). */
+function settingsArgs(settings?: string): string[] {
+  return settings ? ["-Settings", `./${settings}`] : [];
+}
 
 /**
  * Pester tests and PSScriptAnalyzer for a PowerShell project (#1498): Pester when the project has
@@ -581,7 +596,8 @@ export const PSSA_LINT =
  * `PSScriptAnalyzerSettings.psd1`, and offered without one (not preselected) when it has a module
  * manifest or a script at its root, since the default rules may already fail on its code. The
  * analyzer reads one file at a time, so it covers each task's scripts, and its fixer
- * (`Invoke-ScriptAnalyzer -Fix -Path <file>`) takes the task's file.
+ * (`Invoke-ScriptAnalyzer -Fix -Path <file>`) takes the task's file; both name the root settings
+ * file with `-Settings` when there is one (#2591).
  */
 function pwshGates(workspace: string): GateSuggestion[] {
   const names = (dir: string): string[] => {
@@ -609,8 +625,11 @@ function pwshGates(workspace: string): GateSuggestion[] {
   if (settings || scripts || testDir !== undefined)
     out.push({
       check: {
-        ...gate("psscriptanalyzer", exe, [...PWSH, PSSA_LINT], 300000),
-        fix: { executable: exe, args: [...PWSH, "Invoke-ScriptAnalyzer", "-Fix", "-Path"] },
+        ...gate("psscriptanalyzer", exe, [...PWSH, pssaLint(settings)], 300000),
+        fix: {
+          executable: exe,
+          args: [...PWSH, "Invoke-ScriptAnalyzer", ...settingsArgs(settings), "-Fix", "-Path"],
+        },
       },
       source: settings ?? scripts ?? `${testDir || "."}/*.Tests.ps1`,
       reason: `${exe} -Command Invoke-ScriptAnalyzer -Recurse (fixer: Invoke-ScriptAnalyzer -Fix)`,
