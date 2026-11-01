@@ -12197,6 +12197,13 @@ ${note}`;
         rust: policy.rustFormatWritten === "on",
         // A created file the request supplies whole keeps its bytes (#2504).
         supplied: (path) => suppliesWhole(state.requestText || state.prompt, path),
+        // An edited file keeps the request's lines too (#2596).
+        suppliedLines: (path, text) =>
+          new Set(
+            [...suppliedLineNumbers(state.requestText || state.prompt, path, text)].map(
+              (index) => index + 1,
+            ),
+          ),
       },
     );
     const gated = [...own, ...(written ? [written] : []), ...formatted];

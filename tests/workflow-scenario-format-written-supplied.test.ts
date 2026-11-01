@@ -5,7 +5,7 @@ import { delimiter, dirname, join } from "node:path";
 import { SUPPORTED_LANGUAGES, isNoRow } from "../src/core/intelligence/language-records.js";
 import { detectLanguageFromPath } from "../src/core/intelligence/types.js";
 import { hashBytes, hashJson } from "../src/core/specs/hash.js";
-import { FILE_FORMATTERS, formatWrittenChecks } from "../src/core/workflows/format-written.js";
+import { FILE_FORMATTERS, formatWrittenChecks, rangesWithout } from "../src/core/workflows/format-written.js";
 import { newId } from "../src/core/workflows/store.js";
 import { suppliesWhole } from "../src/core/workflows/supplied-drift.js";
 import type { ExecutionRequest } from "../src/core/workflows/types.js";
@@ -121,8 +121,53 @@ describe("a created file the request supplies whole (#2504)", () => {
     });
 });
 
+describe("the changed lines a request supplies leave the format-written range (#2596)", () => {
+  test("rangesWithout splits a range around the supplied lines and keeps a line without a word", () => {
+    const text = "a\nb\nc\n}\ne\n";
+    expect(rangesWithout([[1, 5]], new Set([2, 4]), text)).toEqual([[1, 1], [3, 5]]);
+    expect(rangesWithout([[1, 2]], new Set([1, 2]), text)).toEqual([]);
+    expect(rangesWithout([[1, 3]], new Set(), text)).toEqual([[1, 3]]);
+  });
+
+  // R84 keeplint-update: the request's modify diff added a line over ruff's limit to
+  // tests/test_readme.py, `ruff format --range=66-67` rewrapped it, and supplied_drift then
+  // reported the file. Every language with a range formatter: an edited file whose changed lines
+  // the request supplies gets no range check; the same lines the model wrote do.
+  const fixtures = join(import.meta.dir, "fixtures", "languages");
+  for (const language of SUPPORTED_LANGUAGES) {
+    const row = FILE_FORMATTERS[language];
+    if (isNoRow(row) || !row.some((f) => f.range)) continue;
+    test(`${language}: supplied changed lines are left out of the range check`, () => {
+      const { files } = JSON.parse(readFileSync(join(fixtures, `${language}.json`), "utf8")) as { files: Record<string, string> };
+      const root = mkdtempSync(join(tmpdir(), "baked-format-supplied-lines-"));
+      try {
+        for (const [path, text] of Object.entries(files)) {
+          mkdirSync(dirname(join(root, path)), { recursive: true });
+          writeFileSync(join(root, path), text);
+        }
+        const path = Object.keys(files).find((p) => detectLanguageFromPath(p) === language && /\w/.test(files[p] ?? ""));
+        if (!path) throw new Error(`no ${language} file`);
+        const text = files[path] ?? "";
+        // The run added the file's last line with a word in it.
+        const lines = text.split("\n");
+        const added = lines.map((line, i) => (/\w/.test(line) ? i : -1)).filter((i) => i >= 0).at(-1) ?? 0;
+        const before = lines.filter((_, i) => i !== added).join("\n");
+        const writes = [{ path, action: "modify" }];
+        const which = (command: string) => `/usr/bin/${command}`;
+        const accepts = () => true;
+        const own = formatWrittenChecks(root, [], writes, which, () => before, accepts);
+        const supplied = formatWrittenChecks(root, [], writes, which, () => before, accepts, { suppliedLines: () => new Set([added + 1]) });
+        expect(own.some((c) => /-lines/.test(c.id))).toBe(true);
+        expect(supplied.filter((c) => /-lines/.test(c.id))).toEqual([]);
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    });
+  }
+});
+
 describe.skipIf(IS_WIN)("scenario: R81 seqmill-update, ruff format on a create diff the host applied (#2504)", () => {
-  async function scenario(prompt: string, content: string) {
+  async function scenario(prompt: string, content: string, path = "tests/test_new.py", action = "create") {
     const f = workflowFixture();
     try {
       for (const [path, text] of Object.entries(PROJECT)) {
@@ -134,13 +179,13 @@ describe.skipIf(IS_WIN)("scenario: R81 seqmill-update, ruff format on a create d
         const out = await original(request);
         if (request.profile.output === "plan") {
           const plan = out.output as { markdown: string; taskGraph: { specHash: string; planHash: string; tasks: { writes: { path: string; action: string }[] }[] } };
-          plan.taskGraph.tasks[0]?.writes.push({ path: "tests/test_new.py", action: "create" });
+          plan.taskGraph.tasks[0]?.writes.push({ path, action });
           plan.taskGraph.specHash = hashJson(fixtureSpec);
           plan.taskGraph.planHash = hashBytes(plan.markdown);
         }
         if (request.profile.output === "implementation") {
-          mkdirSync(join(f.root, "tests"), { recursive: true });
-          writeFileSync(join(f.root, "tests/test_new.py"), content);
+          mkdirSync(dirname(join(f.root, path)), { recursive: true });
+          writeFileSync(join(f.root, path), content);
         }
         return out;
       };
@@ -150,7 +195,7 @@ describe.skipIf(IS_WIN)("scenario: R81 seqmill-update, ruff format on a create d
       const view = await f.service.drive(run.runId, new AbortController().signal);
       const checks = f.service.store.artifacts(run.runId).map((a) => a.logical_path).filter((p) => p.includes("ruff-format"));
       const drift = f.service.store.eventsOfType(run.runId, "decision.would_stop").filter((e) => e.payload.reason === "supplied_drift");
-      return { view, delivered: readFileSync(join(f.root, "tests/test_new.py"), "utf8"), checks, drift };
+      return { view, delivered: readFileSync(join(f.root, path), "utf8"), checks, drift };
     } finally {
       await f.dispose();
     }
@@ -170,4 +215,5 @@ describe.skipIf(IS_WIN)("scenario: R81 seqmill-update, ruff format on a create d
     expect(view.status).toBe("completed");
     expect(delivered).toBe("x = 1\n");
   }, 60000);
+
 });

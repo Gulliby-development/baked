@@ -542,7 +542,9 @@ interface Written {
  * program does not resolve: a required check that cannot start
  * faults the run. A file the task creates whose content the request supplies whole (`supplied`,
  * #2504) is checked by an advisory `<gate>-supplied` check with no fixer: the formatter is
- * recorded, the request's bytes are kept.
+ * recorded, the request's bytes are kept. In a file it edits, the changed lines the request
+ * supplies (`suppliedLines`, 1-based, a verbatim diff's added lines) are left out of the range
+ * for the same reason (#2596).
  */
 export function formatWrittenChecks(
   root: string,
@@ -551,9 +553,14 @@ export function formatWrittenChecks(
   which?: (command: string, options: { PATH: string; cwd: string }) => string | null,
   base?: (path: string) => string | null | undefined,
   accepts: FlagProbe = helpListsFlag,
-  options: { rust?: boolean; supplied?: (path: string) => boolean } = {},
+  options: {
+    rust?: boolean;
+    supplied?: (path: string) => boolean;
+    suppliedLines?: (path: string, text: string) => ReadonlySet<number>;
+  } = {},
 ): Check[] {
   const supplied = options.supplied ?? (() => false);
+  const suppliedLines = options.suppliedLines ?? (() => new Set<number>());
   // rustfmt has no advisory form here: a supplied file is left to the project's own gate.
   const rust = options.rust
     ? rustFormatWrittenChecks(
@@ -564,7 +571,32 @@ export function formatWrittenChecks(
         base,
       )
     : [];
-  return [...formatWrittenOf(root, checks, writes, which, base, accepts, supplied), ...rust];
+  return [
+    ...formatWrittenOf(root, checks, writes, which, base, accepts, supplied, suppliedLines),
+    ...rust,
+  ];
+}
+
+/**
+ * `ranges` without the given 1-based lines, split where a line is taken out (#2596). A line with
+ * no letter or digit (`}`, `)`) stays: it is in every block, so it says nothing about who wrote it.
+ */
+export function rangesWithout(
+  ranges: readonly LineRange[],
+  lines: ReadonlySet<number>,
+  text: string,
+): LineRange[] {
+  if (!lines.size) return [...ranges];
+  const all = text.split("\n");
+  const out: [number, number][] = [];
+  for (const [start, end] of ranges)
+    for (let line = start; line <= end; line++) {
+      if (lines.has(line) && /\w/.test(all[line - 1] ?? "")) continue;
+      const last = out.at(-1);
+      if (last && last[1] === line - 1) last[1] = line;
+      else out.push([line, line]);
+    }
+  return out;
 }
 
 function formatWrittenOf(
@@ -575,6 +607,7 @@ function formatWrittenOf(
   base: ((path: string) => string | null | undefined) | undefined,
   accepts: FlagProbe,
   supplied: (path: string) => boolean,
+  suppliedLines: (path: string, text: string) => ReadonlySet<number>,
 ): Check[] {
   const files = new Map<string, Written[]>();
   for (const write of writes) {
@@ -591,7 +624,13 @@ function formatWrittenOf(
       if (before === undefined) continue;
       if (before !== null && !isStub(write.path, before)) {
         const text = readFileSync(absolute, "utf8");
-        const ranges = changedLineRanges(before, text);
+        // The lines the request supplies keep its bytes, as a supplied created file does (#2504):
+        // a range formatter that rewraps them makes `supplied_drift` report the file (#2596).
+        const ranges = rangesWithout(
+          changedLineRanges(before, text),
+          suppliedLines(write.path, text),
+          text,
+        );
         if (!ranges.length) continue;
         written = { path: write.path, edited: { ranges, text } };
       }

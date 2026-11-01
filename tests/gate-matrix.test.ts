@@ -5956,6 +5956,28 @@ describe("ci check drift gate: a README's fixer form and globs over the check's 
   });
 });
 
+describe("format-written range: the lines a supplied modify diff adds keep their bytes (#2596)", () => {
+  // R84 keeplint-update: `ruff format --range=66-67` rewrapped a supplied assert, then supplied_drift fired.
+  test("Python: the ruff range check leaves the supplied line out and keeps the model's", () => {
+    const root = mkdtempSync(join(tmpdir(), "baked-range-supplied-"));
+    try {
+      writeFileSync(join(root, "pyproject.toml"), "[project]\nname = 'keeplint'\nversion = '0.1.0'\n\n[tool.ruff]\nline-length = 100\n");
+      const before = "def test_readme():\n    readme = ''\n";
+      const after = `${before}    assert "keeplint FILE... [--format text|json] [--exit-zero] [--quiet] [--disable RULE]... [--only RULE]..." in readme\n    x=1\n`;
+      mkdirSync(join(root, "tests"), { recursive: true });
+      writeFileSync(join(root, "tests/test_readme.py"), after);
+      const writes = [{ path: "tests/test_readme.py", action: "modify" }];
+      const which = (command: string) => `/usr/bin/${command}`;
+      const ranges = (suppliedLines?: () => Set<number>) =>
+        formatWrittenChecks(root, [], writes, which, () => before, () => true, suppliedLines ? { suppliedLines } : {})
+          .filter((c) => c.id.startsWith("ruff-format-lines"))
+          .map((c) => c.args.find((a) => a.startsWith("--range")));
+      expect(ranges()).toEqual(["--range=3-5"]);
+      expect(ranges(() => new Set([3]))).toEqual(["--range=4-5"]);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+});
+
 describe("ci check drift gate: the PowerShell gates' cmdlets and the project's own program (#2593)", () => {
   // R84 wrapsmith docs: README `Invoke-Pester`, `Invoke-ScriptAnalyzer -Path . -Recurse`, the
   // fixer form and `pwsh bin/wrapsmith.ps1 ...` against the detected `pwsh -Command` gates: 4 false drifts.
