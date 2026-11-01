@@ -25,6 +25,7 @@ import { WorkflowFault } from "./errors.js";
 import { dotnetFiles } from "./language.js";
 import { PESTER_RUN } from "./pester.js";
 import { ProcessScope } from "./process-scope.js";
+import { PS_FORMAT_CHECK, PS_FORMAT_FIX } from "./ps-format.js";
 import { lintrRun, STYLER_CHECK, STYLER_FIX, testthatRun } from "./r-tools.js";
 import { redactSecrets } from "./redaction.js";
 import { CheckSchema, SafeId } from "./schemas.js";
@@ -633,6 +634,19 @@ function pwshGates(workspace: string): GateSuggestion[] {
       },
       source: settings ?? scripts ?? `${testDir || "."}/*.Tests.ps1`,
       reason: `${exe} -Command Invoke-ScriptAnalyzer -Recurse (fixer: Invoke-ScriptAnalyzer -Fix)`,
+      preselected: settings !== undefined,
+    });
+  // Layout through Invoke-Formatter, which ships with PSScriptAnalyzer (#2595): preselected with
+  // the settings file whose formatting rules it applies, offered without one (the CodeFormatting
+  // preset may already fail on the project's code).
+  if (settings || scripts || testDir !== undefined)
+    out.push({
+      check: {
+        ...gate("psformat", exe, [...PWSH, PS_FORMAT_CHECK], 300000),
+        fix: { executable: exe, args: [...PWSH, PS_FORMAT_FIX] },
+      },
+      source: settings ?? scripts ?? `${testDir || "."}/*.Tests.ps1`,
+      reason: `${exe} -Command Invoke-Formatter on each script (fixer: the same, written back)`,
       preselected: settings !== undefined,
     });
   return out;

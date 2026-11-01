@@ -448,7 +448,8 @@ async function detectToolchain(cwd: string): Promise<DetectedToolchain> {
   }
 
   // PowerShell — Pester and PSScriptAnalyzer (#1498). No edit-time format: Invoke-Formatter
-  // takes the script text, not a path.
+  // takes the script text, not a path; the psformat gate and its format-written row (#2595) hold
+  // the task's files to it.
   if (
     (await has("PSScriptAnalyzerSettings.psd1")) ||
     (await hasExt(".Tests.ps1")) ||
