@@ -1781,6 +1781,7 @@ export const EventType = z.enum([
   "attempt.finished",
   "attempt.advisory",
   "attempt.recovery",
+  "attempt.large_prompt",
   "decision.would_stop",
   "decision.would_resume",
   "decision.would_rerun",
@@ -1983,6 +1984,24 @@ export const EventSchema = z.discriminatedUnion("type", [
           transport: z.literal("exec").optional(),
           effort: z.string().optional(),
           detail: z.string().max(500),
+        })
+        .strict(),
+    })
+    .strict(),
+  // A task attempt's first prompt was more than three times the median first attempt of the run,
+  // with the section that holds the most bytes (#2597, `largePrompt` in prompt-sections.ts).
+  z
+    .object({
+      ...EventBase,
+      type: z.literal("attempt.large_prompt"),
+      payload: z
+        .object({
+          attemptId: SafeId,
+          taskId: SafeId.nullable(),
+          firstBytes: z.number().int().nonnegative(),
+          medianBytes: z.number().int().nonnegative(),
+          firstAttempts: z.number().int().positive(),
+          largest: z.object({ name: z.string(), bytes: z.number().int().nonnegative() }).strict(),
         })
         .strict(),
     })

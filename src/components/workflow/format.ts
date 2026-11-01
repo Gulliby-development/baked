@@ -6,6 +6,7 @@ import {
 import { rangeText, type StartEstimate } from "../../core/workflows/estimate.js";
 import { canExtendRun } from "../../core/workflows/extendable.js";
 import { detectGates } from "../../core/workflows/gates.js";
+import { largePromptText } from "../../core/workflows/prompt-sections.js";
 import { reasonText } from "../../core/workflows/reasons.js";
 import {
   type Remedy,
@@ -502,6 +503,8 @@ export function eventText(event: WorkflowEvent, stages: StageView[]): string | n
         : null;
     case "attempt.recovery":
       return `Stalled agent call, recovery: ${event.payload.detail}`;
+    case "attempt.large_prompt":
+      return largePromptText(event.payload);
     case "attempt.advisory":
       return `Progress watcher ${event.payload.action === "stopped" ? "stopped the agent call" : "warned the agent"}: ${event.payload.detail}`;
     case "task.state_changed":
