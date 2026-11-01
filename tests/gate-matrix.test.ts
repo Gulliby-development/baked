@@ -40,6 +40,7 @@ import { sourceManifest, TOOL_CACHES } from "../src/core/verification/snapshot.j
 import { openTrace, replayInitiativeStarts } from "../src/core/workflows/trace.js";
 import { linkDependencies, worktreePathRisks } from "../src/core/workflows/dependency-dirs.js";
 import { spawnSync } from "node:child_process";
+import { captureEndings, restoreEndings } from "../src/core/tools/line-endings.js";
 import {
   chmodSync,
   existsSync,
@@ -5119,6 +5120,26 @@ describe.skipIf(!toolchains)("gate matrix: toolchains", () => {
     const after = await executeGate(root, lint, signal);
     expect({ status: after.status, output: after.outputTail }).toEqual({ status: "passed", output: after.outputTail });
   }, 300000);
+  test.skipIf(!available([[pwshExecutable(), "-NoProfile", "-NonInteractive", "-Command", "Import-Module PSScriptAnalyzer"]]))("pwsh: the analyzer's fixer through the host keeps each file's BOM state (#2592)", () => {
+    const root = project({
+      // A root module manifest: the analyzer gate is offered for it.
+      "App.psd1": "@{ ModuleVersion = '1.0.0' }\n",
+      "src/Plain.ps1": "function Get-Item2 {\n  gci\n}\n",
+      "src/Marked.ps1": "\uFEFFfunction Get-Item3 {\n  gci\n}\n",
+    });
+    const lint = detectGates(root).find((s) => s.check.id === "psscriptanalyzer")?.check;
+    if (!lint?.fix) throw new Error("no analyzer gate");
+    const bom = (path: string) => readFileSync(join(root, path)).subarray(0, 3).equals(Buffer.from([0xef, 0xbb, 0xbf]));
+    for (const path of ["src/Plain.ps1", "src/Marked.ps1"]) {
+      const before = captureEndings([join(root, path)]);
+      const fix = fixerCommand(lint.fix, path);
+      expect(spawnSync(fix.executable, fix.args, { cwd: root, encoding: "utf8", timeout: 120000 }).status).toBe(0);
+      restoreEndings(before);
+      expect(readFileSync(join(root, path), "utf8")).toContain("Get-ChildItem");
+    }
+    expect(bom("src/Plain.ps1")).toBe(false);
+    expect(bom("src/Marked.ps1")).toBe(true);
+  }, 300000);
   test.skipIf(!available([[pwshExecutable(), "-NoProfile", "-NonInteractive", "-Command", "Import-Module Pester -MinimumVersion 5.5; Import-Module PSScriptAnalyzer"]]))("pwsh: Pester and PSScriptAnalyzer gates fail on a defect, the analyzer's fixer repairs the file, and a missing path names its task (#1498)", async () => {
     const root = project({
       "PSScriptAnalyzerSettings.psd1": "@{ Severity = @('Error', 'Warning') }\n",
@@ -5891,6 +5912,24 @@ describe("ci check drift gate: a README's fixer form and globs over the check's 
       expect(ciCheckDrift(readme("clang-format -i src/*.cpp src/*.hpp tests/*.cpp"), [gate])).toEqual([]);
       expect(ciCheckDrift(readme("clang-format --dry-run --Werror src/*.cpp src/*.hpp tests/*.cpp"), [gate])).toEqual([]);
       expect(ciCheckDrift(readme("clang-format --dry-run --Werror src/*.cpp"), [gate])).toHaveLength(1);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+});
+
+describe("ci check drift gate: the PowerShell gates' cmdlets and the project's own program (#2593)", () => {
+  // R84 wrapsmith docs: README `Invoke-Pester`, `Invoke-ScriptAnalyzer -Path . -Recurse`, the
+  // fixer form and `pwsh bin/wrapsmith.ps1 ...` against the detected `pwsh -Command` gates: 4 false drifts.
+  test("the detected Pester and analyzer gates match the README's cmdlets; a parameter they lack is a drift", () => {
+    const root = mkdtempSync(join(tmpdir(), "baked-drift-pwsh-"));
+    try {
+      writeFileSync(join(root, "PSScriptAnalyzerSettings.psd1"), "@{}\n");
+      mkdirSync(join(root, "tests"), { recursive: true });
+      writeFileSync(join(root, "tests/Wrap.Tests.ps1"), "Describe 'x' { It 'y' { 1 | Should -Be 1 } }\n");
+      const gates = detectGates(root).map((g) => g.check);
+      expect(gates.map((c) => c.id)).toEqual(["pester", "psscriptanalyzer"]);
+      const readme = (...lines: string[]) => [{ path: "README.md", text: `\`\`\`powershell\n${lines.join("\n")}\n\`\`\`\n` }];
+      expect(ciCheckDrift(readme("Invoke-Pester", "Invoke-ScriptAnalyzer -Path . -Recurse", "Invoke-ScriptAnalyzer -Fix -Path FILE", "pwsh bin/wrapsmith.ps1 fill -w 60 < in.txt"), gates)).toEqual([]);
+      expect(ciCheckDrift(readme("Invoke-ScriptAnalyzer -Path . -Recurse -IncludeDefaultRules"), gates).map((d) => d.missing)).toEqual([["-includedefaultrules"]]);
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
 });

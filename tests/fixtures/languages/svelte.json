@@ -12,6 +12,7 @@
     "src/Runtime.svelte": "<script>\nconst dir = mkdtempSync(join(tmpdir(), \"rt-\"));\nconst file = join(dir, \"a.txt\");\nconst want = `bad: ${file}`;\n</script>\n"
   },
   "expected": {
+    "languagePitfalls": null,
     "generatedValues": ["src/Gen.svelte:2 repeat"],
     "exampleBuild": null,
     "runtimePaths": ["src/Runtime.svelte: dir, file"],

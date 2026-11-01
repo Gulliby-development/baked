@@ -136,6 +136,14 @@ export interface EventPayloads {
     /** Why a failed attempt failed. */
     error?: { code: string; message: string };
   };
+  "attempt.large_prompt": {
+    attemptId: string;
+    taskId: string | null;
+    firstBytes: number;
+    medianBytes: number;
+    firstAttempts: number;
+    largest: { name: string; bytes: number };
+  };
   "attempt.advisory": {
     attemptId: string;
     signal: "repeated-reads" | "no-edits" | "same-failure" | "no-edit-tool" | "unchecked-spend";

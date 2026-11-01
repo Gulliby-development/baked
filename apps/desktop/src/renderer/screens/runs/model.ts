@@ -275,6 +275,15 @@ export function replay(events: readonly WorkflowEvent[], trace = emptyTrace()): 
         );
         break;
       }
+      case "attempt.large_prompt": {
+        const { taskId, firstBytes, medianBytes, largest } = event.payload;
+        const kb = (bytes: number) => `${Math.round(bytes / 1024)} KB`;
+        line(
+          `Large prompt${taskId ? ` for ${taskId}` : ""}: ${kb(firstBytes)} against a median first attempt of ${kb(medianBytes)}; largest section ${largest.name} (${kb(largest.bytes)})`,
+          "info",
+        );
+        break;
+      }
       case "attempt.advisory": {
         const stageId = attempts.get(event.payload.attemptId);
         const attempt = stageId ? `the ${stageLabel(stageId)} attempt` : "an attempt";

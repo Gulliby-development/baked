@@ -13,6 +13,7 @@
     "test/runtime_test.dart": "final dir = Directory.systemTemp.createTempSync('rt');\nfinal want = 'bad: ${dir.path}';\n"
   },
   "expected": {
+    "languagePitfalls": ["Dart"],
     "generatedValues": ["test/gen_test.dart:1 repeat","test/gen_test.dart:2 interpolate"],
     "exampleBuild": ["dart run; link .dart_tool"],
     "runtimePaths": ["test/runtime_test.dart: dir"],
