@@ -879,6 +879,13 @@ export const PolicySchema = z
      */
     baselineFix: z.literal("on").optional(),
     /**
+     * The implementer's pitfalls (pitfall-notes.ts, #2598): `on` gives an implementer step the
+     * `LANGUAGE_PITFALLS` notes of the languages its task writes and, as one-line rules, the first
+     * error line of the run's other tasks' failing checks. Absent means shadow: each step records
+     * what it would get under `pitfalls/tasks/`, so stored policies keep their hash.
+     */
+    languagePitfalls: z.literal("on").optional(),
+    /**
      * The project's choices for the anti-slop rule pack (quality/rules.ts), which is always on:
      * rules turned off, severities changed and ast-grep rule files added. Absent means the
      * built-in pack as shipped, so stored policies keep their hash.

@@ -14,6 +14,7 @@
     "tests/testthat/test-runtime.R": "dir <- tempdir()\nwant <- sprintf(\"bad: %s\", dir)\n"
   },
   "expected": {
+    "languagePitfalls": ["R"],
     "generatedValues": ["tests/testthat/test-gen.R:1 repeat","tests/testthat/test-gen.R:2 format"],
     "exampleBuild": null,
     "runtimePaths": ["tests/testthat/test-runtime.R: dir"],

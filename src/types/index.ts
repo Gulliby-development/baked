@@ -399,6 +399,8 @@ export interface QualityConfig {
   rowClaimCheck?: "off" | "on";
   /** Before the first task, let the host run a required check's fixer on files no task writes when the check fails before any change with only correctable findings, and keep the edit when the check then passes: `on` or `off` (default). */
   baselineFix?: "off" | "on";
+  /** Give each implementer step its languages' pitfalls note and the first error line of the run's other tasks' failing checks: `on` or `off` (default, recorded in shadow). */
+  languagePitfalls?: "off" | "on";
   /** Property-based tests from marked criteria: `preset` or absent follows the workflow preset. */
   propertyTests?: "preset" | "auto" | "off";
 }

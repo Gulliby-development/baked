@@ -14,6 +14,7 @@
     "src/test/java/RuntimeTest.java": "Path dir = Files.createTempDirectory(\"rt\");\nPath p = dir.resolve(\"a.txt\");\nString want = String.format(\"bad: %s\", p);\n"
   },
   "expected": {
+    "languagePitfalls": ["Java"],
     "generatedValues": ["src/test/java/GenTest.java:1 repeat","src/test/java/GenTest.java:2 format"],
     "exampleBuild": null,
     "runtimePaths": ["src/test/java/RuntimeTest.java: dir, p"],
