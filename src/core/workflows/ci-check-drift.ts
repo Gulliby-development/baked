@@ -473,14 +473,44 @@ export function fileGateCommands(path: string, text: string): string[] {
   if (CI_WORKFLOW.test(path)) return workflowRunCommands(text);
   if (!README_FILE.test(path)) return [];
   return fences(text)
-    .filter(
-      (f) =>
-        !f.diff &&
-        ["", "sh", "bash", "shell", "console", "zsh", "powershell", "pwsh"].includes(f.lang),
-    )
-    .flatMap((f) => f.lines)
-    .map((line) => line.trim().replace(/^[$>]\s+/, ""))
-    .filter((line) => line && !line.startsWith("#"));
+    .filter((f) => !f.diff && SHELL_FENCES.includes(f.lang))
+    .flatMap((f) => fenceCommands(f.lang, f.lines));
+}
+
+const SHELL_FENCES = ["", "sh", "bash", "shell", "console", "zsh", "powershell", "pwsh"];
+/** A shell prompt before a command: `$ `, `% `, `> `, `PS> `, `PS C:\app> `. */
+const PROMPT = /^(?:[$%>]|PS(?: [^>]*)?>)\s+/;
+/** Script files a README runs by path: `./scripts/check.sh`, `.\build.ps1`. */
+const SCRIPT_FILE = /\.(?:sh|bash|zsh|ps1|bat|cmd|exe)$/i;
+
+/**
+ * The commands of one README fence (#2620). In a `console` block, and in an untagged block where
+ * some line has a prompt, only the prompted lines are commands: the others are what they print. A
+ * shell-tagged block is a script, so each of its lines may be a command. A line is a command only
+ * when its first word can name a program (`looksLikeCommand`).
+ */
+function fenceCommands(lang: string, lines: readonly string[]): string[] {
+  const trimmed = lines.map((line) => line.trim());
+  const prompted = lang === "console" || (lang === "" && trimmed.some((line) => PROMPT.test(line)));
+  return trimmed
+    .filter((line) => !prompted || PROMPT.test(line))
+    .map((line) => line.replace(PROMPT, ""))
+    .filter((line) => line && !line.startsWith("#") && looksLikeCommand(line));
+}
+
+/**
+ * Whether a README line's first word can name a program (#2620): it starts with a letter, `.`, `/`
+ * or `~`, does not end in `:` (a label such as `Usage:` or a program's own `shardplan:` message),
+ * and is no file path other than a script. R85 shu (shardplan, Java): untagged blocks held the
+ * example timings file (`42.5 tests/test_db.py`), the program's output and its usage text, and 22 of
+ * 25 drift records named a number, a duration or `shardplan:` as a tool no check runs.
+ */
+export function looksLikeCommand(line: string): boolean {
+  const first = line.split(/\s+/)[0] ?? "";
+  if (!/^[A-Za-z./~]/.test(first) || first.endsWith(":")) return false;
+  // A path with a data or source extension is a file the block lists, not a program it runs.
+  if (/[/\\]/.test(first) && /\.[A-Za-z]\w*$/.test(first)) return SCRIPT_FILE.test(first);
+  return true;
 }
 
 export interface CiCheckDrift {

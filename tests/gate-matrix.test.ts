@@ -6020,6 +6020,16 @@ describe("ci check drift gate: the PowerShell gates' cmdlets and the project's o
       expect(ciCheckDrift(readme("Invoke-ScriptAnalyzer -Path . -Recurse -IncludeDefaultRules"), gates).map((d) => d.missing)).toEqual([["-includedefaultrules"]]);
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
+
+  // #2620: an untagged README block of sample data or program output names no tool; a console
+  // block's output lines under a prompted command are not commands either.
+  test("README sample data and output lines are no commands (#2620)", () => {
+    const readme = (lang: string, ...lines: string[]) => [{ path: "README.md", text: `\`\`\`${lang}\n${lines.join("\n")}\n\`\`\`\n` }];
+    const gate = { id: "verify", executable: "mvn", args: ["-B", "-q", "verify"], cwd: ".", timeoutMs: 600000, required: true, scope: "feature" as const, envNames: [], writes: [] };
+    expect(ciCheckDrift(readme("", "42.5 tests/test_db.py", "1500ms", "shardplan: 3 shards", "tests/test_db.py"), [gate])).toEqual([]);
+    expect(ciCheckDrift(readme("console", "$ mvn -B -q verify", "[INFO] BUILD SUCCESS"), [gate])).toEqual([]);
+    expect(ciCheckDrift(readme("", "mvn -B -q package"), [gate]).map((d) => d.tool)).toEqual(["mvn"]);
+  });
 });
 
 describe("upstream symbol gate: a helper the request supplies is no missing member (#2566)", () => {
