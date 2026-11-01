@@ -5858,6 +5858,24 @@ describe("ci check drift gate: a README's fixer form and globs over the check's 
   });
 });
 
+describe("ci check drift gate: the PowerShell gates' cmdlets and the project's own program (#2593)", () => {
+  // R84 wrapsmith docs: README `Invoke-Pester`, `Invoke-ScriptAnalyzer -Path . -Recurse`, the
+  // fixer form and `pwsh bin/wrapsmith.ps1 ...` against the detected `pwsh -Command` gates: 4 false drifts.
+  test("the detected Pester and analyzer gates match the README's cmdlets; a parameter they lack is a drift", () => {
+    const root = mkdtempSync(join(tmpdir(), "baked-drift-pwsh-"));
+    try {
+      writeFileSync(join(root, "PSScriptAnalyzerSettings.psd1"), "@{}\n");
+      mkdirSync(join(root, "tests"), { recursive: true });
+      writeFileSync(join(root, "tests/Wrap.Tests.ps1"), "Describe 'x' { It 'y' { 1 | Should -Be 1 } }\n");
+      const gates = detectGates(root).map((g) => g.check);
+      expect(gates.map((c) => c.id)).toEqual(["pester", "psscriptanalyzer"]);
+      const readme = (...lines: string[]) => [{ path: "README.md", text: `\`\`\`powershell\n${lines.join("\n")}\n\`\`\`\n` }];
+      expect(ciCheckDrift(readme("Invoke-Pester", "Invoke-ScriptAnalyzer -Path . -Recurse", "Invoke-ScriptAnalyzer -Fix -Path FILE", "pwsh bin/wrapsmith.ps1 fill -w 60 < in.txt"), gates)).toEqual([]);
+      expect(ciCheckDrift(readme("Invoke-ScriptAnalyzer -Path . -Recurse -IncludeDefaultRules"), gates).map((d) => d.missing)).toEqual([["-includedefaultrules"]]);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+});
+
 describe("upstream symbol gate: a helper the request supplies is no missing member (#2566)", () => {
   // R83 bytemerge training: "the given Rows helper" read as a gap of the supplied Rows.java.
   const spec = (text: string) => ({ requirements: [{ id: "FR-001", text, priority: "must" as const, verification: "automated" as const, sourceRefs: [] }], criteria: [] });
