@@ -223,7 +223,8 @@ describe("evidence inputs go through evidenceContext (#2617)", () => {
     const numbering = sources.flatMap(({ path, text }) =>
       text.split("\n").flatMap((line, index) => (/\bevidenceHandle\(/.test(line) && !/export const evidenceHandle/.test(line) ? [`${path}:${index + 1}`] : [])),
     );
-    expect(numbering.map((at) => at.split(":")[0])).toEqual(["core/verification/evidence.ts", "core/workflows/scheduler.ts"]);
+    // readdirSync order is the file system's (hash order on the Linux runners), so compare sorted.
+    expect(numbering.map((at) => at.split(":")[0]).sort()).toEqual(["core/verification/evidence.ts", "core/workflows/scheduler.ts"]);
     const scheduler = sources.find((s) => s.path === "core/workflows/scheduler.ts")?.text ?? "";
     const at = scheduler.indexOf("evidenceHandle(index)");
     // The one call in the scheduler is inside evidenceContext.
