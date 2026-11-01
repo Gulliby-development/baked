@@ -14,6 +14,7 @@ import { withPerTestTimeout } from "../workflows/test-timeout.js";
 import { toolchainCommand } from "../workflows/toolchain.js";
 import type { Check } from "../workflows/types.js";
 import { type CommandTimeout, fileArgs, recordCommandTimeout } from "./command-timeouts.js";
+import { emptyScriptNote, emptyTestScript } from "./empty-test-script.js";
 import { environmentFault, environmentNote, unpreparedNote } from "./environment-faults.js";
 import { isFailedTestLine } from "./failed-test-line.js";
 import { MISSING_GATE_REPORT, readGateReport, renderGateReport } from "./gate-report.js";
@@ -134,14 +135,19 @@ export function replayUnselectedTests(
 
 /**
  * The status of a check's finished command: its exit code, the files a listing check names, and
- * for a check that must run tests, whether any ran.
+ * for a check that must run tests, whether any ran. Given the directory the check ran in (`cwd`),
+ * a test check that runs one test script holding no code fails too (#2611).
  */
 export function exitStatus(
-  check: Pick<Check, "executable" | "args" | "requireTests">,
+  check: Pick<Check, "id" | "executable" | "args" | "requireTests">,
   exitCode: number,
   output: string,
+  cwd?: string,
 ): "passed" | "failed" {
-  return exitCode === 0 && !(listsFailures(check) && output.trim()) && !ranNoTests(check, output)
+  return exitCode === 0 &&
+    !(listsFailures(check) && output.trim()) &&
+    !ranNoTests(check, output) &&
+    !(cwd !== undefined && emptyTestScript(check, cwd))
     ? "passed"
     : "failed";
 }
@@ -306,8 +312,9 @@ export class CheckRunner {
     try {
       const executable = check.executable === "bun" ? process.execPath : check.executable;
       const limit = Math.min(check.timeoutMs, timeoutMs);
+      const cwd = check.cwd === "." ? root : workspacePath(root, check.cwd);
       const result = await executeCheckCommand(this.processes, executable, check.args, {
-        cwd: check.cwd === "." ? root : workspacePath(root, check.cwd),
+        cwd,
         env: buildCheckEnv(check),
         timeoutMs: limit,
         signal,
@@ -316,7 +323,7 @@ export class CheckRunner {
       const status =
         result.timedOut || result.cancelled || result.exitCode === null
           ? "inconclusive"
-          : exitStatus(check, result.exitCode, result.output);
+          : exitStatus(check, result.exitCode, result.output, cwd);
       // A baseline or poll that ran out of time names the command and its files (#2358).
       if (result.timedOut && !result.cancelled && !signal.aborted) {
         const timeout = recordCommandTimeout({
@@ -465,12 +472,17 @@ export class CheckRunner {
         summary: `${check.id} ran no test of the classes its files declare (${unselected.declared.join(", ")}) under ${unselected.command}: the host's selection selected none, and the check would fail as the host's, not the task's`,
         inputs: { ...unselected },
       });
-    const listed = result.exitCode === 0 && exitStatus(check, 0, result.output) === "failed";
+    const cwd = check.cwd === "." ? root : workspacePath(root, check.cwd);
+    // A test script that holds no code runs no test and prints nothing a counter reads (#2611).
+    const empty = result.exitCode === 0 && !vacuous ? emptyTestScript(check, cwd) : null;
+    const listed = result.exitCode === 0 && exitStatus(check, 0, result.output, cwd) === "failed";
     const note = vacuous
       ? noTestsNote(check)
-      : listed
-        ? listedNote(check)
-        : passedOutputNote(result.output, result.exitCode);
+      : empty
+        ? emptyScriptNote(check, empty)
+        : listed
+          ? listedNote(check)
+          : passedOutputNote(result.output, result.exitCode);
     if (note) result = { ...result, output: `${result.output}\n\n${note}` };
     const after = await sourceManifest(root, generated);
     const unstable = changedPaths(before, after).length > 0;
