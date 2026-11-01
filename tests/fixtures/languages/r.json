@@ -81,6 +81,7 @@
     ],
     "dependencyPrepare": null,
     "worktreePathLimits": null,
+    "diagnosticFormats": null,
     "testClasses": null,
     "testDeclarations": ["tests/testthat/test-sum.R: 2 tests"],
     "rowFileShapes": null

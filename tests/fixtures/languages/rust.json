@@ -91,6 +91,7 @@
     "dependencyDirs": null,
     "dependencyPrepare": null,
     "worktreePathLimits": null,
+    "diagnosticFormats": ["src/lib.rs: error[E0308]: mismatched types"],
     "testClasses": null,
     "testDeclarations": ["tests/sum.rs: 2 tests"],
     "rowFileShapes": null

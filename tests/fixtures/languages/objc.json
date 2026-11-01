@@ -64,6 +64,7 @@
     ],
     "dependencyPrepare": null,
     "worktreePathLimits": null,
+    "diagnosticFormats": ["src/Calc.m: error: use of undeclared identifier 'sub'"],
     "testClasses": null,
     "testDeclarations": ["Tests/SumTests.m: 2 tests, per class 2"],
     "rowFileShapes": null

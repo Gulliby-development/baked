@@ -79,6 +79,7 @@
     "dependencyDirs": null,
     "dependencyPrepare": null,
     "worktreePathLimits": null,
+    "diagnosticFormats": ["src/calc.cpp: error: no matching function for call to 'sub'"],
     "testClasses": null,
     "testDeclarations": ["tests/sum_test.cpp: 2 tests"],
     "rowFileShapes": [

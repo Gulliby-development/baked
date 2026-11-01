@@ -77,6 +77,7 @@
     "dependencyDirs": null,
     "dependencyPrepare": null,
     "worktreePathLimits": null,
+    "diagnosticFormats": ["/p/Sources/Calc/Calc.swift: error: cannot convert value of type 'String' to specified type 'Int'"],
     "testClasses": null,
     "testDeclarations": ["Tests/SumTests/SumTests.swift: 3 tests, per class 1, 2"],
     "rowFileShapes": null

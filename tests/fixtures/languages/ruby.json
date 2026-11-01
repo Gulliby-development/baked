@@ -88,6 +88,7 @@
     ],
     "dependencyPrepare": null,
     "worktreePathLimits": null,
+    "diagnosticFormats": ["lib/calc.rb: syntax error, unexpected end-of-input"],
     "testClasses": null,
     "testDeclarations": ["test/sum_test.rb: 2 tests, per class 2"],
     "rowFileShapes": null

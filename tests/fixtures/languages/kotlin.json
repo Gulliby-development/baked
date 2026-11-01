@@ -88,6 +88,10 @@
     "dependencyDirs": null,
     "dependencyPrepare": null,
     "worktreePathLimits": null,
+    "diagnosticFormats": [
+      "/p/src/main/kotlin/Calc.kt: Unresolved reference 'sub'.",
+      "/p/src/main/kotlin/Old.kt: Type mismatch: inferred type is String but Int was expected"
+    ],
     "testClasses": [
       "src/test/kotlin/com/example/UnitTest1.kt: com.example.FailureExceptionTest, com.example.UnitTest1Kt",
       "src/main/kotlin/SumSpec.kt: by its name",

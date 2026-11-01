@@ -72,7 +72,8 @@ import { pwshExecutable, rscriptExecutable } from "../src/core/platform/index.js
 import { lintrRun, STYLER_CHECK, STYLER_FIX, testthatOn, testthatRun } from "../src/core/workflows/r-tools.js";
 import { PESTER_RUN, pesterOn } from "../src/core/workflows/pester.js";
 import { PS_FORMAT_CHECK, PS_FORMAT_FIX } from "../src/core/workflows/ps-format.js";
-import { baselineDebt, baselineKeys } from "../src/core/verification/task-end-check.js";
+import { baselineDebt, baselineKeys, DIAGNOSTIC_FORMATS, diagnostics } from "../src/core/verification/task-end-check.js";
+import { isNoRow } from "../src/core/intelligence/language-records.js";
 import { affectedTestCheck, isWrittenTestFile, plannedWrittenTests, writtenTestsCheck } from "../src/core/workflows/affected-tests.js";
 import { detectLanguages, touchesLanguageFiles } from "../src/core/workflows/language.js";
 import { launchedCommand } from "../src/core/workflows/launcher.js";
@@ -5639,6 +5640,18 @@ describe("gate matrix: coloured runner output (#2615)", () => {
         expect([testCount(coloured), testsRan(coloured), failedTests(coloured), buildFailure(coloured)]).toEqual([testCount(plain), testsRan(plain), failedTests(plain), buildFailure(plain)]);
       }
     });
+});
+
+// #2616: the task-end whole-unit check reads a located diagnostic from every language's compiler
+// output in `DIAGNOSTIC_FORMATS`, coloured as the check printed it.
+describe("gate matrix: task-end diagnostic formats (#2616)", () => {
+  for (const [language, row] of Object.entries(DIAGNOSTIC_FORMATS))
+    if (!isNoRow(row))
+      test(`${language} (${row.tool}): a coloured error names its file and message`, () => {
+        const found = diagnostics(colour(row.example));
+        expect(found.length).toBeGreaterThan(0);
+        for (const d of found) expect([d.path.length > 0, /^\d/.test(d.text), d.path.includes(" ")]).toEqual([true, false, false]);
+      });
 });
 
 describe("gate matrix: no tests collected (#1864)", () => {

@@ -77,6 +77,7 @@
     ],
     "dependencyPrepare": null,
     "worktreePathLimits": null,
+    "diagnosticFormats": ["/p/src/App.svelte: Error: Type 'string' is not assignable to type 'number'. (ts)"],
     "testClasses": null,
     "testDeclarations": null,
     "rowFileShapes": null

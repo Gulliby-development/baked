@@ -91,6 +91,7 @@
     "dependencyDirs": null,
     "dependencyPrepare": null,
     "worktreePathLimits": null,
+    "diagnosticFormats": ["src/main/java/calc/Calc.java: error: incompatible types: String cannot be converted to int"],
     "testClasses": [
       "src/test/java/com/example/UnitTest1.java: com.example.FailureExceptionTest",
       "src/test/java/SumTest.java: by its name",

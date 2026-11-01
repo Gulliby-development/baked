@@ -56,6 +56,7 @@
     ],
     "dependencyPrepare": null,
     "worktreePathLimits": null,
+    "diagnosticFormats": ["bin/main.ml: Error: This expression has type string but an expression was expected of type int"],
     "testClasses": null,
     "testDeclarations": ["test/test_sum.ml: 2 tests"],
     "rowFileShapes": null

@@ -67,6 +67,10 @@
     ],
     "dependencyPrepare": null,
     "worktreePathLimits": null,
+    "diagnosticFormats": [
+      "lib/calc.ex: undefined function sub/2",
+      "lib/calc/old.ex: error: undefined variable \"x\""
+    ],
     "testClasses": null,
     "testDeclarations": ["test/sum_test.exs: 2 tests, per class 2"],
     "rowFileShapes": [

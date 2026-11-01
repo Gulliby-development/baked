@@ -93,6 +93,7 @@
     "dependencyDirs": null,
     "dependencyPrepare": null,
     "worktreePathLimits": null,
+    "diagnosticFormats": ["calc.go: undefined: sub"],
     "testClasses": null,
     "testDeclarations": ["sum_test.go: 2 tests"],
     "rowFileShapes": [

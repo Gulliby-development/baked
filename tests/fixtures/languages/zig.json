@@ -61,6 +61,7 @@
     "dependencyDirs": null,
     "dependencyPrepare": null,
     "worktreePathLimits": null,
+    "diagnosticFormats": ["src/main.zig: error: expected type 'u32', found '[]const u8'"],
     "testClasses": null,
     "testDeclarations": ["src/sum_test.zig: 2 tests"],
     "rowFileShapes": null

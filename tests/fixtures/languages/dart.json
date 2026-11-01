@@ -77,6 +77,7 @@
     "worktreePathLimits": [
       "pubspec.yaml: dart test over 88 characters"
     ],
+    "diagnosticFormats": ["lib/calc.dart: A value of type 'String' can't be assigned to a variable of type 'int'. - invalid_assignment"],
     "testClasses": null,
     "testDeclarations": ["test/sum_test.dart: 3 tests"],
     "rowFileShapes": [
