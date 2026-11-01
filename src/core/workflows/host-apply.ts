@@ -132,6 +132,12 @@ export interface HostApplyWrite {
   /** The last line of git's refusal when the hunks do not apply. */
   refusal?: string;
   /**
+   * The hunks do not apply because they create the file and the base already holds exactly the
+   * content they create (#2594): an earlier part of a split task applied the same diff. The write
+   * is done, not refused. Absent for any other write, and in records before #2594.
+   */
+  present?: true;
+  /**
    * `crlf` when the hunks applied only with CRLF line ends: the base file is CRLF and git does
    * not convert it (committed as CRLF, or `core.autocrlf=false`), and the brief's diff is LF (#2158).
    */
@@ -181,7 +187,8 @@ const no = (reason: string): HostApplyVerdict => ({ wouldApply: false, reason })
  * The one function that decides whether the host would apply a task's content itself (#2023):
  * every write has exactly one kind of verbatim block, none deletes, a fenced file for a path that
  * exists says it is the whole file, a fenced file that only its header comment names says so too
- * (#2438), and every diff applies to the task's base. A test file the request prescribes rows for,
+ * (#2438), and every diff applies to the task's base or creates a file the base already holds
+ * exactly (`present`, #2594). A test file the request prescribes rows for,
  * with no verbatim block of it, is written from its shape when `rowFileRefusal` has no reason
  * (#2528). Otherwise an implementer starts, with the first write that keeps it as the reason.
  */
@@ -216,7 +223,7 @@ export const hostApplyDecision: HostApplyRule = (writes) => {
       return no(
         `the fenced block for ${w.path}, which exists, may be an excerpt: the prose before it does not say it is the whole file`,
       );
-    if (w.diffs && w.applies !== true)
+    if (w.diffs && w.applies !== true && !w.present)
       return no(
         `the diff for ${w.path} does not apply to the task's base${w.refusal ? `: ${w.refusal}` : ""}`,
       );
@@ -411,6 +418,10 @@ export async function hostApplyInputs(
           : { applies: false }
         : null;
     const exists = existsSync(join(root, write.path));
+    const present =
+      check && !check.applies && exists
+        ? await createdContent(write.path, patch, readFileSync(join(root, write.path), "utf8"))
+        : null;
     const only = files.length === 1 ? files[0] : undefined;
     const region = only?.kind === "file" && exists && only.region ? only.region : null;
     writes.push({
@@ -423,6 +434,7 @@ export async function hostApplyInputs(
       exists,
       applies: check ? check.applies : null,
       ...(check?.refusal ? { refusal: check.refusal } : {}),
+      ...(present !== null ? { present: true as const } : {}),
       ...(check?.eol ? { eol: check.eol } : {}),
       ...(region
         ? {
@@ -533,9 +545,32 @@ export async function hostApplyContents(
     const patch = blocks.flatMap((b) => (b.kind === "diff" ? [b.patch] : [])).join("");
     if (!patch || blocks.some((b) => b.kind !== "diff"))
       throw new Error(`no verbatim block to apply for ${write.path}`);
-    out.push({ path: write.path, content: await appliedPatch(write.path, base, patch) });
+    // A file an earlier part of the task already created with this diff keeps its content (#2594).
+    const present = base !== null ? await createdContent(write.path, patch, base) : null;
+    out.push({
+      path: write.path,
+      content: present ?? (await appliedPatch(write.path, base, patch)),
+    });
   }
   return out;
+}
+
+/**
+ * `current` when `patch` creates the file at `path` with exactly that text (#2594), as when an
+ * earlier slice of a split task applied the same new-file diff; null for any other patch, a
+ * patch that does not apply to no file, or other text. Changes no file.
+ */
+async function createdContent(
+  path: string,
+  patch: string,
+  current: string,
+): Promise<string | null> {
+  if (!/^--- \/dev\/null\b/m.test(patch)) return null;
+  try {
+    return (await appliedPatch(path, null, patch)) === current ? current : null;
+  } catch {
+    return null;
+  }
 }
 
 /** A file's text after `git apply` of its patch to a scratch copy of `base` (null: a new file). */

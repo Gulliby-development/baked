@@ -101,6 +101,8 @@ describe("the verbatim reader and the apply decision (#2023)", () => {
     expect(hostApplyDecision([write({ applies: false, refusal: "error: patch failed: src/x.ts:1" })]).reason).toBe("the diff for src/x.ts does not apply to the task's base: error: patch failed: src/x.ts:1");
     expect(hostApplyDecision([write({}), write({ path: "src/y.ts", diffs: 0, applies: null })]).reason).toBe("the request gives no verbatim block for src/y.ts");
     expect(hostApplyDecision([write({ action: "delete" })]).reason).toBe("the task deletes src/x.ts");
+    // A new-file diff whose content the base already holds is done, not refused (#2594).
+    expect(hostApplyDecision([write({ applies: false, present: true, refusal: "error: src/x.ts: already exists in working directory" })])).toEqual({ wouldApply: true, reason: null });
   });
 
   test("the apply check changes no file, and a task without a supplied write has nothing to decide", async () => {
