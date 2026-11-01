@@ -1016,6 +1016,7 @@ import {
   type RepairHolds,
   readyTasks,
   siblingCorrections,
+  withoutEmptyHostContent,
 } from "./task-graph.js";
 import {
   consolidateTargets,
@@ -1160,6 +1161,8 @@ function planGraph(
   const apply = (kind: string, transform: (input: TaskGraph) => TaskGraph) => {
     graph = recordGraphEdits(graph, transform(graph), kind, edits);
   };
+  // Empty content on every write is a field left blank, not a file the host writes (#2610).
+  apply("empty-host-content", withoutEmptyHostContent);
   apply("approval-remarks", withoutApprovalRemarks);
   apply("acceptance-rows-off", (input) => withoutRowsWhenOff(input, policy, spec));
   apply("implementation-profile", (input) =>
@@ -2027,7 +2030,7 @@ export class WorkflowScheduler {
                 const problems = [
                   ...this.planProblems(runId, spec, submitted, policy, profiles),
                   ...codeTaskCheckProblems(submitted.taskGraph, policy),
-                  ...hostContentProblems(submitted.taskGraph),
+                  ...hostContentProblems(submitted.taskGraph, spec),
                   ...hostFileProblems(submitted.taskGraph, state.hostFiles),
                   ...testWriteProblems(
                     submitted.taskGraph,
