@@ -3,6 +3,8 @@ import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:f
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ciCheckDrift, ciCheckDriftSummary, fileGateCommands, type ScriptTables, scriptTables, toolCommand } from "../src/core/workflows/ci-check-drift.js";
+import { PSSA_LINT } from "../src/core/workflows/gates.js";
+import { PESTER_RUN } from "../src/core/workflows/pester.js";
 import type { RunPolicy, TaskGraph } from "../src/core/workflows/schemas.js";
 import { newId } from "../src/core/workflows/store.js";
 import type { ExecutionRequest } from "../src/core/workflows/types.js";
@@ -376,5 +378,75 @@ describe("ciCheckDrift: a check's fixer form and globs over its files are no dri
     const ruff = { ...check("ruff-format", "ruff format --check"), fix: { executable: "ruff", args: ["format"] } };
     const drift = ciCheckDrift([{ path: "README.md", text: readme("ruff format --line-length 80") }], [ruff]);
     expect(drift.map((d) => d.missing)).toEqual([["--line-length", "80"]]);
+  });
+});
+
+// Bench round 84, wrapsmith docs (#2593): the README documented `Invoke-Pester`, `Invoke-ScriptAnalyzer
+// -Path . -Recurse`, the analyzer's fixer `Invoke-ScriptAnalyzer -Fix -Path FILE` and the program
+// itself, `pwsh bin/wrapsmith.ps1 fill -w 60 < in.txt`; the checks run the cmdlets inside `pwsh
+// -Command`. 4 of 4 `ci_check_drift` records false.
+describe("ciCheckDrift: an interpreter's inline code and the project's own program (#2593)", () => {
+  const readme = (...lines: string[]) => `# Project\n\n\`\`\`powershell\n${lines.join("\n")}\n\`\`\`\n`;
+  const PWSH = ["-NoProfile", "-NonInteractive", "-Command"];
+  const pester = { id: "pester", executable: "pwsh", args: [...PWSH, PESTER_RUN] };
+  const analyzer = {
+    id: "psscriptanalyzer",
+    executable: "pwsh",
+    args: [...PWSH, PSSA_LINT],
+    fix: { executable: "pwsh", args: [...PWSH, "Invoke-ScriptAnalyzer", "-Fix", "-Path"] },
+  };
+  const settingsAnalyzer = {
+    ...analyzer,
+    args: [...PWSH, PSSA_LINT.replace("Invoke-ScriptAnalyzer ", "Invoke-ScriptAnalyzer -Settings ./PSScriptAnalyzerSettings.psd1 ")],
+    fix: { executable: "pwsh", args: [...PWSH, "Invoke-ScriptAnalyzer", "-Settings", "./PSScriptAnalyzerSettings.psd1", "-Fix", "-Path"] },
+  };
+
+  test("R84 wrapsmith: the README's cmdlets, the fixer form and the program's example record nothing", () => {
+    const text = readme("Invoke-Pester", "Invoke-ScriptAnalyzer -Path . -Recurse", "Invoke-ScriptAnalyzer -Fix -Path FILE", "pwsh bin/wrapsmith.ps1 fill -w 60 < in.txt");
+    expect(ciCheckDrift([{ path: "README.md", text }], [pester, analyzer])).toEqual([]);
+    expect(ciCheckDrift([{ path: "README.md", text }], [pester, settingsAnalyzer])).toEqual([]);
+    // PowerShell's parameters are case-insensitive.
+    expect(ciCheckDrift([{ path: "README.md", text: readme("invoke-scriptanalyzer -path . -recurse -enableexit") }], [analyzer])).toEqual([]);
+  });
+
+  test("a README cmdlet with a parameter the check does not pass still records", () => {
+    const drift = ciCheckDrift([{ path: "README.md", text: readme("Invoke-Pester -Output Detailed", "Invoke-ScriptAnalyzer -Path . -Recurse -Settings CodeFormatting") }], [pester, analyzer]);
+    expect(drift.map((d) => [d.check?.id, d.missing])).toEqual([
+      ["pester", ["-output", "Detailed"]],
+      ["psscriptanalyzer", ["-settings", "CodeFormatting"]],
+    ]);
+  });
+
+  test("the tool of the inline code, one row per interpreter; a pipeline's later commands are not the tool", () => {
+    expect(toolCommand("pwsh", [...PWSH, PSSA_LINT])?.tool).toBe("invoke-scriptanalyzer");
+    expect(toolCommand("pwsh", [...PWSH, PESTER_RUN])?.tool).toBe("invoke-pester");
+    expect(toolCommand("powershell.exe", ["-NoProfile", "-c", "& ./build.ps1 -Task Test"])).toEqual({ tool: "build", words: ["-task", "Test"] });
+    expect(toolCommand("Rscript", ["-e", "testthat::test_local()"])).toEqual({ tool: "testthat::test_local", words: [] });
+    expect(toolCommand("bash", ["-c", "shellcheck scripts/a.sh && echo ok"])).toEqual({ tool: "shellcheck", words: ["scripts/a.sh"] });
+    expect(toolCommand("sh", ["-c", "eslint --max-warnings 0"])).toEqual({ tool: "eslint", words: ["--max-warnings", "0"] });
+    expect(toolCommand("cmd", ["/d", "/c", "eslint", "src"])).toEqual({ tool: "eslint", words: ["src"] });
+    expect(toolCommand("python", ["-c", "import pytest; raise SystemExit(pytest.main())"])?.tool).toBe("import");
+    expect(toolCommand("node", ["-e", "process.exit(0)"])?.tool).toBe("process.exit(0)");
+  });
+
+  const INTERPRETERS: [string, ReturnType<typeof check>, string, string, string[]][] = [
+    ["PowerShell (Windows)", check("lint", "powershell -NoProfile -Command Invoke-ScriptAnalyzer -Path . -Recurse"), "Invoke-ScriptAnalyzer -Recurse", "Invoke-ScriptAnalyzer -Recurse -Fix", ["-fix"]],
+    ["R", check("testthat", "Rscript -e testthat::test_local()"), 'Rscript -e "testthat::test_local()"', 'Rscript -e "testthat::test_local(stop_on_failure=TRUE)"', ["stop_on_failure=TRUE"]],
+    ["Shell (bash -c)", { id: "shellcheck", executable: "bash", args: ["-c", "shellcheck -x scripts/a.sh"] }, "shellcheck scripts/a.sh", "shellcheck -S style scripts/a.sh", ["-S", "style"]],
+    ["Shell (sh -c)", { id: "eslint", executable: "sh", args: ["-c", "eslint ."] }, "eslint .", "eslint --max-warnings 0 .", ["--max-warnings", "0"]],
+    ["Windows cmd", { id: "eslint", executable: "cmd", args: ["/c", "eslint ."] }, "eslint .", "eslint --fix .", ["--fix"]],
+  ];
+  for (const [language, gate, same, differs, missing] of INTERPRETERS)
+    test(`${language}: the check through the interpreter matches the README's inner command, and a real difference records`, () => {
+      expect(ciCheckDrift([{ path: "README.md", text: readme(same) }], [gate])).toEqual([]);
+      expect(ciCheckDrift([{ path: "README.md", text: readme(differs) }], [gate]).map((d) => d.missing)).toEqual([missing]);
+    });
+
+  test("the project's own program is read as its script: compared with a check that runs it, never with the interpreter's other checks", () => {
+    expect(ciCheckDrift([{ path: "README.md", text: readme("pwsh bin/wrapsmith.ps1 fill -w 60") }], [pester])).toEqual([]);
+    expect(ciCheckDrift([{ path: "README.md", text: readme("python scripts/report.py --all", "node bin/cli.js --help", "ruby bin/app.rb") }], [check("pytest", "python -m pytest")])).toEqual([]);
+    const own = check("lint-script", "python scripts/lint.py --strict");
+    expect(ciCheckDrift([{ path: CI, text: workflow("python scripts/lint.py") }], [own])).toEqual([]);
+    expect(ciCheckDrift([{ path: CI, text: workflow("python scripts/lint.py --fix-all") }], [own]).map((d) => [d.check?.id, d.missing])).toEqual([["lint-script", ["--fix-all"]]]);
   });
 });

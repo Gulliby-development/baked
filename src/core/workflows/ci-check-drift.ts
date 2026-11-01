@@ -36,6 +36,69 @@ const WRAPPERS: Record<string, readonly string[]> = {
   py: ["-m"],
 };
 
+/**
+ * Interpreters with an inline-code flag, by program: the flags that take the code (#2593). A check
+ * that runs `pwsh -NoProfile -Command "Invoke-Pester ..."` runs the tool `invoke-pester`, which a
+ * README documents as `Invoke-Pester`; read as `pwsh` with the script as its words, every such
+ * line was a drift. The code runs to the first unquoted `|`, `;` or `&&`; the later commands of a
+ * pipeline shape its output. A new language whose gate runs through an interpreter's inline-code
+ * flag adds its row here and a case to `tests/workflow-scenario-ci-check-drift.test.ts`.
+ */
+const INLINE_CODE: Record<string, readonly string[]> = {
+  pwsh: ["-command", "-c"],
+  powershell: ["-command", "-c"],
+  rscript: ["-e"],
+  python: ["-c"],
+  py: ["-c"],
+  node: ["-e", "--eval"],
+  bash: ["-c"],
+  sh: ["-c"],
+  zsh: ["-c"],
+  cmd: ["/c"],
+};
+/** Interpreters whose code is case-insensitive: their parameters compare lower case. */
+const CASELESS = new Set(["pwsh", "powershell", "cmd"]);
+/** A PowerShell cmdlet or function name, `Verb-Noun`: `Invoke-Pester`, `Invoke-ScriptAnalyzer`. */
+const CMDLET = /^[A-Z][a-z]+-[A-Z][A-Za-z]+$/;
+/**
+ * Interpreters that run a script file given as their first word (#2593). `pwsh bin/app.ps1 fill`
+ * runs the project's own program, an example and not a gate: it is read as the script itself, as
+ * `./bin/app` is, so it is compared only with a check that runs the same script.
+ */
+const SCRIPT_INTERPRETERS = new Set([
+  "pwsh",
+  "powershell",
+  "python",
+  "py",
+  "node",
+  "ruby",
+  "php",
+  "perl",
+  "lua",
+  "rscript",
+  "bash",
+  "sh",
+  "zsh",
+  "elixir",
+]);
+
+/** The first command of an interpreter's inline code, cut at an unquoted `|`, `;` or `&&`. */
+function firstCommand(code: string): string {
+  let quote = "";
+  let depth = 0;
+  for (let i = 0; i < code.length; i++) {
+    const c = code[i] ?? "";
+    if (quote) {
+      if (c === quote) quote = "";
+    } else if (c === "'" || c === '"') quote = c;
+    else if (c === "{" || c === "(") depth++;
+    else if (c === "}" || c === ")") depth = Math.max(0, depth - 1);
+    else if (depth === 0 && (c === "|" || c === ";" || (c === "&" && code[i + 1] === "&")))
+      return code.slice(0, i).trim();
+  }
+  return code.trim();
+}
+
 /** Tools whose first word after the program names what it runs (`cargo clippy`, `go vet`). */
 const SUBCOMMAND_TOOLS = new Set([
   "cargo",
@@ -141,6 +204,8 @@ export function toolCommand(executable: string, args: readonly string[]): ToolCo
   const [first, ...restWords] = words;
   if (!first) return null;
   const program = programName(first);
+  const inline = inlineCode(program, restWords);
+  if (inline) return inline;
   let rest = restWords;
   const tool = [program];
   // A toolchain pick (`cargo +nightly clippy`) is not part of the gate.
@@ -167,7 +232,64 @@ export function toolCommand(executable: string, args: readonly string[]): ToolCo
     if (eq) out.push(flag, eq[2] ?? "");
     else out.push(word);
   }
-  return { tool: tool.join(" ").toLowerCase(), words: out };
+  // A PowerShell cmdlet (`Invoke-Pester`) takes its parameters in any case (#2593).
+  const words2 = CMDLET.test(first)
+    ? out.map((w) => (w.startsWith("-") ? w.toLowerCase() : w))
+    : out;
+  return { tool: tool.join(" ").toLowerCase(), words: words2 };
+}
+
+/**
+ * An interpreter's command read as what it runs (#2593): the tool of its inline code (`pwsh
+ * -Command "Invoke-Pester"` is `invoke-pester`), or the script file it is given first (`pwsh
+ * bin/app.ps1 fill` is `app fill`, as `./bin/app.ps1 fill` is). Null for any other command, which `toolCommand` reads itself.
+ */
+function inlineCode(program: string, rest: readonly string[]): ToolCommand | null {
+  const flags = INLINE_CODE[program];
+  let i = 0;
+  while (
+    i < rest.length &&
+    rest[i]?.startsWith("-") &&
+    !flags?.includes(rest[i]?.toLowerCase() ?? "")
+  )
+    i++;
+  if (program === "cmd")
+    while (
+      i < rest.length &&
+      rest[i]?.startsWith("/") &&
+      !flags?.includes(rest[i]?.toLowerCase() ?? "")
+    )
+      i++;
+  const flag = rest[i]?.toLowerCase() ?? "";
+  if (flags?.includes(flag)) {
+    // pwsh and cmd join every word after the flag into the code; the others take one word.
+    const joins = program === "pwsh" || program === "powershell" || program === "cmd";
+    const code = firstCommand((joins ? rest.slice(i + 1) : rest.slice(i + 1, i + 2)).join(" "));
+    let inner: string[];
+    try {
+      inner = splitCommandLine(code);
+    } catch {
+      inner = code.split(/\s+/).filter(Boolean);
+    }
+    // PowerShell's call operators (`& ./build.ps1`, `. ./tools.ps1`) are not the tool.
+    while (inner[0] === "&" || inner[0] === ".") inner = inner.slice(1);
+    const [head, ...args] = inner;
+    if (!head) return null;
+    // R code: `testthat::test_local()` is the tool `testthat::test_local`.
+    const call = program === "rscript" ? /^([\w.:]+)\((.*)\)$/s.exec(inner.join(" ")) : null;
+    const parsed = call
+      ? { tool: (call[1] ?? "").toLowerCase(), words: call[2] ? [call[2]] : [] }
+      : toolCommand(head, args);
+    if (!parsed || !CASELESS.has(program)) return parsed;
+    return {
+      tool: parsed.tool,
+      words: parsed.words.map((w) => (w.startsWith("-") ? w.toLowerCase() : w)),
+    };
+  }
+  const script = rest[i];
+  if (SCRIPT_INTERPRETERS.has(program) && script && !script.startsWith("-") && isPathWord(script))
+    return toolCommand(script, rest.slice(i + 1));
+  return null;
 }
 
 /** A command line read from a CI file or README, as a tool command. */
@@ -384,6 +506,8 @@ const GLOB = /[*?[]/;
 /** A file or folder argument rather than a flag or a subcommand word: a path, a glob or a file name. */
 const isPathWord = (word: string) =>
   !word.startsWith("-") && (GLOB.test(word) || /[/\\]/.test(word) || /\.[A-Za-z]\w*$/.test(word));
+/** A README's stand-in for a file argument: `FILE`, `<file>`, `PATH`. */
+const PLACEHOLDER = /^(?:<[^<>\s]+>|[A-Z][A-Z_]*)$/;
 /** A glob as a matcher of `/`-separated paths: `**` crosses folders, `*` and `?` do not. */
 function globMatcher(glob: string): RegExp {
   let out = "";
@@ -466,10 +590,19 @@ export function ciCheckDrift(
     // a README that documents it documents the check's fix, not a drift from it (#2567). It runs
     // on the check's files, so it is compared with them.
     if (!check.fix) return [own];
-    const files = check.args.filter(isPathWord);
+    // The check's file words, read through its tool (a `pwsh -Command` script is one argument), less
+    // the ones its fixer names itself (`-Settings ./PSScriptAnalyzerSettings.psd1`, #2593).
+    const fixWords = new Set(check.fix.args.flatMap((arg) => arg.split(/\s+/)));
+    const files = parsed.words.filter((word) => isPathWord(word) && !fixWords.has(word));
     const fixed = toolCommand(check.fix.executable, [...check.fix.args, ...files]);
     if (!fixed) return [own];
-    const fixer = { check, parsed: fixed, resolved: resolved(fixed, tables(check.cwd ?? ".")) };
+    const fixer = {
+      check,
+      parsed: fixed,
+      resolved: resolved(fixed, tables(check.cwd ?? ".")),
+      // A fixer that takes the task's file: the README's last word names it (`-Path FILE`, #2593).
+      takesFile: files.length === 0,
+    };
     return [own, fixer];
   });
   const opaqueCheck = configured.some((c) => c.resolved.opaque);
@@ -516,6 +649,14 @@ export function ciCheckDrift(
             mine = mine.filter((word) => !cover.drop.includes(word));
             have = have.filter((word) => !cover.covered.includes(word));
           }
+          const last = mine.at(-1);
+          if (
+            "takesFile" in c &&
+            c.takesFile &&
+            last &&
+            (isPathWord(last) || PLACEHOLDER.test(last))
+          )
+            mine = mine.slice(0, -1);
           const missing: string[] = [];
           for (const word of mine) {
             const at = have.indexOf(word);
