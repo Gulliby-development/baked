@@ -166,25 +166,90 @@ export function readyTasks(
 }
 
 /**
+ * Files a plan may fix as empty on purpose: a directory marker or a Python package's empty init.
+ * Any other empty content is a field the planner filled with nothing (#2610).
+ */
+const EMPTY_MARKER = /(?:^|\/)(?:\.gitkeep|\.keep|__init__\.py|py\.typed|\.nojekyll)$/;
+
+/** Whether a write carries content that is empty or only whitespace. */
+const emptyContent = (w: Task["writes"][number]): boolean =>
+  w.action !== "delete" && w.content !== undefined && w.content.trim() === "";
+
+/**
+ * Whether every write of the task carries empty content and not every one is a marker file
+ * (#2610). The quick planner of php-wordcount (run 25a8a2e3) gave `"content": ""` to the source,
+ * test and README writes of its one task; the host wrote three 0-byte files, no implementer ran,
+ * and the empty PHP test script passed its check. Such content counts as absent: an agent writes
+ * the files.
+ */
+export function emptyHostContent(task: Pick<Task, "writes">): boolean {
+  return (
+    task.writes.length > 0 &&
+    task.writes.every(emptyContent) &&
+    !task.writes.every((w) => EMPTY_MARKER.test(w.path))
+  );
+}
+
+/**
  * Whether the host writes the task's files itself: every write creates or replaces a file with
  * the content the plan fixed, so no agent attempt runs (#1460). A task that also deletes, or has a
- * write without content, is an agent task.
+ * write without content, is an agent task, and so is one whose content is all empty (#2610).
  */
 export function hostWritten(task: Pick<Task, "writes">): boolean {
   return (
     task.writes.length > 0 &&
-    task.writes.every((w) => w.action !== "delete" && w.content !== undefined)
+    task.writes.every((w) => w.action !== "delete" && w.content !== undefined) &&
+    !emptyHostContent(task)
   );
+}
+
+/**
+ * The graph with the empty content of `emptyHostContent` tasks taken out (#2610), so a plan that
+ * reaches the scheduler with it runs an implementer, and every reader of `write.content` sees an
+ * agent task.
+ */
+export function withoutEmptyHostContent<G extends Pick<TaskGraph, "tasks">>(graph: G): G {
+  if (!graph.tasks.some(emptyHostContent)) return graph;
+  return {
+    ...graph,
+    tasks: graph.tasks.map((task) =>
+      emptyHostContent(task)
+        ? { ...task, writes: task.writes.map(({ content: _empty, ...write }) => write) }
+        : task,
+    ),
+  };
 }
 
 /**
  * Plan problems of host-written content (#1460): a task that carries content on only some of its
  * writes, or on a delete, would have its content ignored and an agent write the files instead.
+ * Empty content is one too (#2610): on every write of a task, or on a test file or a path a
+ * requirement names in a host-written task, since the host would write an empty file and no agent
+ * would implement it. A marker file (.gitkeep, an empty __init__.py) may stay empty.
  */
-export function hostContentProblems(graph: Pick<TaskGraph, "tasks">): string[] {
+export function hostContentProblems(
+  graph: Pick<TaskGraph, "tasks">,
+  spec?: Pick<Spec, "requirements">,
+): string[] {
+  const named = (path: string) => spec?.requirements.some((r) => r.text.includes(path)) ?? false;
   return graph.tasks.flatMap((task) => {
+    if (emptyHostContent(task))
+      return [
+        `Task ${task.id} gives empty content to every write (${task.writes.map((w) => w.path).join(", ")}). Content means the host writes the file exactly as given and no agent runs, so the files would be empty. Leave content out so an agent writes the files.`,
+      ];
+    if (hostWritten(task)) {
+      const empty = task.writes.filter(
+        (w) =>
+          emptyContent(w) && !EMPTY_MARKER.test(w.path) && (isTestPath(w.path) || named(w.path)),
+      );
+      return empty.length
+        ? [
+            `Task ${task.id} gives empty content to ${empty.map((w) => w.path).join(", ")}, a test file or a file a requirement names; the host would write it empty and no agent would implement it. Leave content out of that write and put it in a task an agent runs, or give the file's whole content.`,
+          ]
+        : [];
+    }
     const carried = task.writes.filter((w) => w.content !== undefined);
-    if (!carried.length || hostWritten(task)) return [];
+    if (!carried.length) return [];
     return [
       `Task ${task.id} gives content to ${carried.map((w) => w.path).join(", ")} but not to every write, or deletes a file; the host writes a task's files only when every write carries its content and none deletes. Put the files with fixed content in a task of their own, or remove their content.`,
     ];
