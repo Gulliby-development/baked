@@ -41,7 +41,7 @@ import { canonical, hashBytes, hashJson } from "../specs/hash.js";
 import { specPublication } from "../specs/render.js";
 import { validatePackage, workspacePath } from "../specs/validate.js";
 import { captureEndings, restoreEndings } from "../tools/line-endings.js";
-import { placeRowForms, placeRowTargets } from "../tools/place-rows.js";
+import { INDENT_DEFAULT, placeRowForms, placeRowTargets } from "../tools/place-rows.js";
 import {
   assertAcceptance,
   assertAcceptanceV2,
@@ -12132,7 +12132,7 @@ ${note}`;
       ...notationRows,
       placeRows: {
         files,
-        note: `The request prescribes the rows of ${files.map((f) => `${f.path} (${f.rows} rows)`).join(", ")}. You must place them with place_rows and never type a row: write everything else in the file with edit_file (imports, the row type, the list's opening and close, the harness calls), leaving the rows out, then call place_rows with the path, the line the rows follow and rows [first, last]. The host inserts the request's rows exactly as written, one per line in order; give indent and separator when the defaults (the line's indentation, one level deeper after a line that opens the list; a comma after each row) do not fit the language.`,
+        note: `The request prescribes the rows of ${files.map((f) => `${f.path} (${f.rows} rows)`).join(", ")}. You must place them with place_rows and never type a row: write everything else in the file with edit_file (imports, the row type, the list's opening and close, the harness calls), leaving the rows out, then call place_rows with the path, the line the rows follow and rows [first, last]. The host inserts the request's rows exactly as written, one per line in order. The indent of a placed row is by default ${INDENT_DEFAULT}; a comma ends each row; give indent and separator when they do not fit the language or the request's layout. The result shows the first placed line; place_rows with reindent: true fixes the indentation of rows already placed.`,
       },
     };
   }

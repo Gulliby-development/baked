@@ -48,6 +48,7 @@ import {
   PLACE_ROWS_DIR,
   PLACE_ROWS_KIND,
   placeRowForms,
+  placeRowIndents,
   placeRows,
   placeRowsDescription,
   placeRowsInput,
@@ -1245,6 +1246,15 @@ export class NativeAgentExecutor implements AgentExecutor {
           : new Map<string, readonly string[]>();
       if (placeTask && placeTargets.size) {
         const on = policy.rowFileWrite === "on";
+        // The indentation the request writes its rows with, the default of a placed row (#2618).
+        const placeIndents = (() => {
+          try {
+            const state = this.store.state(request.runId);
+            return placeRowIndents(state.requestText || state.prompt, placeTask);
+          } catch {
+            return new Map<string, string>();
+          }
+        })();
         const recordPath = `${PLACE_ROWS_DIR}${placeTask.id}.json`;
         try {
           if (!this.store.latestArtifact(request.runId, recordPath))
@@ -1279,11 +1289,11 @@ export class NativeAgentExecutor implements AgentExecutor {
                   }
                 };
                 // A refused call writes nothing and leaves no edit in the journal.
-                const refused = placeRows(asked, placeTargets, current());
+                const refused = placeRows(asked, placeTargets, current(), placeIndents);
                 if ("refusal" in refused) return { success: false, output: refused.refusal };
                 await noteSyntaxBaseline("edit_file", { path });
                 const result = await hostEdit(path, async () => {
-                  const planned = placeRows(asked, placeTargets, current());
+                  const planned = placeRows(asked, placeTargets, current(), placeIndents);
                   if ("refusal" in planned) return { success: false, output: planned.refusal };
                   writeFileSync(absolute, planned.content);
                   const [from, to] = planned.lines;
@@ -1291,7 +1301,7 @@ export class NativeAgentExecutor implements AgentExecutor {
                   const last = planned.placed.at(-1);
                   return {
                     success: true,
-                    output: `Placed ${planned.placed.length === 1 ? `row ${first}` : `rows ${first} to ${last}`} of the request's rows for ${path} at lines ${from} to ${to}, as the request writes them.`,
+                    output: `${planned.reindented ? "Re-indented" : "Placed"} ${planned.placed.length === 1 ? `row ${first}` : `rows ${first} to ${last}`} of the request's rows for ${path} at lines ${from} to ${to}, as the request writes them. Line ${from} now reads ${JSON.stringify(planned.first)}; if its indentation does not fit the file, call place_rows with reindent: true and the indent.`,
                   };
                 });
                 return withSyntaxNote(result, async () => {

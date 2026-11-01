@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { rowOf } from "../intelligence/language-records.js";
+import { type LanguageRecord, none, rowOf } from "../intelligence/language-records.js";
 import { detectLanguageFromPath } from "../intelligence/types.js";
 import { rowNotation } from "../workflows/row-block-drift.js";
 import { ROW_FILE_SHAPES } from "../workflows/row-file.js";
@@ -49,6 +49,59 @@ export function placeRowTargets(
     }),
   );
 }
+
+/**
+ * The indentation the request writes each target's rows with (`SuppliedRows.indent`, #2618), for
+ * the files of `task` whose row block is indented past its header.
+ */
+export function placeRowIndents(request: string, task: Pick<Task, "writes">): Map<string, string> {
+  const paths = task.writes.filter((w) => w.action !== "delete").map((w) => w.path);
+  const blocks = suppliedRows(request, paths);
+  return new Map(
+    paths.flatMap((path) => {
+      const indent = blocks.get(path)?.indent;
+      return indent ? [[path, indent] as [string, string]] : [];
+    }),
+  );
+}
+
+/**
+ * The indentation one level of a row list takes in each language's formatter convention (#2618):
+ * the default of `place_rows` after a line that opens the list, when neither the request's rows
+ * nor the file show one. Bench round 85 csp (ReScript) `cli` T004 got eight rows with four spaces
+ * from the old fixed fallback against a request that wrote them with two; the corrective session
+ * cost 574k tokens. A `none` row falls back to four spaces.
+ */
+export const ROW_INDENT: LanguageRecord<string> = {
+  typescript: "  ",
+  javascript: "  ",
+  python: "    ",
+  go: "\t",
+  rust: "    ",
+  java: "    ",
+  kotlin: "    ",
+  scala: "  ",
+  csharp: "    ",
+  c: none("clang-format styles differ (LLVM two spaces, others four or tabs)"),
+  cpp: none("clang-format styles differ (LLVM two spaces, others four or tabs)"),
+  ruby: "  ",
+  php: "    ",
+  swift: "    ",
+  lua: none("StyLua indents with tabs, many projects with two spaces"),
+  elixir: "  ",
+  dart: "  ",
+  zig: "    ",
+  bash: "  ",
+  ocaml: "  ",
+  objc: none("clang-format styles differ (LLVM two spaces, Xcode four)"),
+  vue: none("a component's rows are tested from a TypeScript or JavaScript test file"),
+  svelte: none("a component's rows are tested from a TypeScript or JavaScript test file"),
+  rescript: "  ",
+  solidity: "    ",
+  sql: none("an SQL test file holds no row list to place rows into"),
+  powershell: "    ",
+  r: "  ",
+};
 
 /**
  * The targets by the form of their rows (#2583): `code`, the files with a row place_rows can insert
@@ -107,6 +160,10 @@ export function placeRowsRecord(
   };
 }
 
+/** The default indentation, as the description and the scheduler's note state it (#2618). */
+export const INDENT_DEFAULT =
+  "the line's own; after a line that opens the list, one level deeper, the level being the indentation of the request's own row lines, else the file's smallest indentation, else the language's convention (two spaces in TypeScript, JavaScript, Ruby, Scala, OCaml, R, Bash, Dart, Elixir and ReScript, a tab in Go, otherwise four spaces)";
+
 export const placeRowsInput = z
   .object({
     path: z.string().describe("The task's prescribed row file, which must already exist."),
@@ -125,8 +182,12 @@ export const placeRowsInput = z
       .regex(/^[ \t]*$/)
       .max(32)
       .optional()
+      .describe(`The indentation of each row line; by default ${INDENT_DEFAULT}.`),
+    reindent: z
+      .boolean()
+      .optional()
       .describe(
-        "The indentation of each row line; by default the line's own, one level deeper after a line that opens the list.",
+        "Re-indent rows [first, last] the file already holds (their lines equal the request's rows apart from leading whitespace) to indent, in place; line is not used. For a layout correction in one call.",
       ),
     separator: z
       .enum([",", ";", ""])
@@ -145,7 +206,7 @@ export type PlaceRowsInput = z.infer<typeof placeRowsInput>;
 /** The tool's description for a task with these targets. */
 export function placeRowsDescription(targets: ReadonlyMap<string, readonly string[]>): string {
   const files = [...targets].map(([path, rows]) => `${path} (rows 1 to ${rows.length})`).join(", ");
-  return `Insert the request's prescribed rows verbatim into ${files}: rows [first, last] go after the given line of the existing file, one row per line, in the request's order, exactly as the request writes them. Never type a prescribed row with edit_file or multi_edit: write everything else (imports, the row type, the list's opening and close, the harness calls) with edit_file, leaving the rows out, then place them with this tool. Give indent and separator when the defaults (the line's indentation, one level deeper after a line that opens the list; a comma after each row) do not fit the language.`;
+  return `Insert the request's prescribed rows verbatim into ${files}: rows [first, last] go after the given line of the existing file, one row per line, in the request's order, exactly as the request writes them. Never type a prescribed row with edit_file or multi_edit: write everything else (imports, the row type, the list's opening and close, the harness calls) with edit_file, leaving the rows out, then place them with this tool. Give indent and separator when the defaults do not fit the language or the request's layout: indent by default is ${INDENT_DEFAULT}; a comma ends each row. The result shows the first placed line with its indentation; to fix the indentation of rows already placed, call again with reindent: true and the indent they take.`;
 }
 
 /**
@@ -158,8 +219,8 @@ export function notationRefusal(path: string, rows: readonly number[], example: 
   return `${path}: the request gives ${which} in its own notation (${shown}), not as code of the file's language, and no test framework parses that line. place_rows inserts only rows the request writes as code. Write ${rows.length === 1 ? "this row" : "these rows"} yourself with edit_file as the test framework's call, one test per row in the request's order, with the row's arguments, input, expected exit code and output, each string in the language's own quoting and escapes.`;
 }
 
-/** The leading whitespace one nesting level adds in `lines`: a tab, or the smallest space run. */
-function indentUnit(lines: readonly string[]): string {
+/** The leading whitespace one nesting level adds in `lines`: a tab, the smallest space run, or none. */
+function indentUnit(lines: readonly string[]): string | undefined {
   let spaces = 0;
   for (const line of lines) {
     if (!line.trim()) continue;
@@ -167,7 +228,17 @@ function indentUnit(lines: readonly string[]): string {
     if (lead.startsWith("\t")) return "\t";
     if (lead.length && (!spaces || lead.length < spaces)) spaces = lead.length;
   }
-  return " ".repeat(spaces || 4);
+  return spaces ? " ".repeat(spaces) : undefined;
+}
+
+/**
+ * One level of `path`'s row list (#2618): the request's own row indentation, the file's smallest,
+ * the language's `ROW_INDENT`, and four spaces only where the language states none.
+ */
+function levelOf(path: string, requested: string | undefined, lines: readonly string[]): string {
+  return (
+    requested ?? indentUnit(lines) ?? rowOf(ROW_INDENT, detectLanguageFromPath(path)) ?? "    "
+  );
 }
 
 /** A row's text as a line holds it: trimmed, a trailing separator dropped. */
@@ -175,13 +246,18 @@ const bare = (text: string) => text.trim().replace(/[,;]$/, "").trimEnd();
 
 /**
  * The file with rows `input.rows` of `rows` placed after `input.line`, or the refusal with the
- * change the worker can make. `text` is the file's content, null when it does not exist.
+ * change the worker can make. `text` is the file's content, null when it does not exist. `indents`
+ * holds the indentation the request writes each target's rows with (`placeRowIndents`). `first` is
+ * the first placed (or re-indented) line as written, so the result can show its indentation.
  */
 export function placeRows(
   input: PlaceRowsInput,
   targets: ReadonlyMap<string, readonly string[]>,
   text: string | null,
-): { content: string; placed: number[]; lines: [number, number] } | { refusal: string } {
+  indents: ReadonlyMap<string, string> = new Map(),
+):
+  | { content: string; placed: number[]; lines: [number, number]; first: string; reindented?: true }
+  | { refusal: string } {
   const { path } = input;
   const rows = targets.get(path);
   if (!rows)
@@ -213,14 +289,20 @@ export function placeRows(
       refusal: `${path} has ${count} line${count === 1 ? "" : "s"}; line ${input.line} is not one of them. Give the line the rows follow (0 puts them before the first line).`,
     };
   const placed = span;
+  const at = new Map(
+    placed.map((n) => {
+      const want = bare(rows[n - 1] ?? "");
+      return [n, lines.findIndex((l) => bare(l) === want)] as const;
+    }),
+  );
   const held = placed.flatMap((n) => {
-    const want = bare(rows[n - 1] ?? "");
-    const at = lines.findIndex((l) => bare(l) === want);
-    return at < 0 ? [] : [`row ${n} (line ${at + 1})`];
+    const line = at.get(n) ?? -1;
+    return line < 0 ? [] : [`row ${n} (line ${line + 1})`];
   });
+  if (input.reindent) return reindented(input, lines, at, indents.get(path));
   if (held.length)
     return {
-      refusal: `${path} already holds ${held.join(", ")}. Place only the rows the file does not hold yet; to change a placed row, leave it as the request gives it.`,
+      refusal: `${path} already holds ${held.join(", ")}. Place only the rows the file does not hold yet; to change only the indentation of placed rows, call place_rows with reindent: true and their indent.`,
     };
   const anchor = input.line > 0 ? (lines[input.line - 1] ?? "") : "";
   const eol = (anchor || (lines[0] ?? "")).endsWith("\r") ? "\r" : "";
@@ -228,7 +310,8 @@ export function placeRows(
   // After a line that opens the list (`= {`, `List.of(`, `ROWS = [`) a row is one level deeper;
   // after a row or any other line it keeps that line's indentation.
   const opens = /[[({=]$/.test(anchor.trimEnd());
-  const indent = input.indent ?? (opens ? anchorIndent + indentUnit(lines) : anchorIndent);
+  const indent =
+    input.indent ?? (opens ? anchorIndent + levelOf(path, indents.get(path), lines) : anchorIndent);
   const separator = input.separator ?? ",";
   const lastSeparator = input.lastSeparator ?? separator;
   // The line form of a restored row: the template's indentation and separator around the row.
@@ -243,5 +326,43 @@ export function placeRows(
     content: lines.join("\n"),
     placed,
     lines: [input.line + 1, input.line + written.length],
+    first: (written[0] ?? "").replace(/\r$/, ""),
+  };
+}
+
+/**
+ * Rows the file already holds, re-indented in place (#2618): a layout correction in one call. Each
+ * row of the span must be held; its line keeps its text and separator and takes `input.indent`, by
+ * default the indentation of the line before the first held row, one level deeper when that line
+ * opens the list (the level from the request's rows, then the language, never the file's own).
+ */
+function reindented(
+  input: PlaceRowsInput,
+  lines: string[],
+  at: ReadonlyMap<number, number>,
+  requested: string | undefined,
+):
+  | { content: string; placed: number[]; lines: [number, number]; first: string; reindented: true }
+  | { refusal: string } {
+  const { path } = input;
+  const missing = [...at].filter(([, line]) => line < 0).map(([n]) => n);
+  if (missing.length)
+    return {
+      refusal: `${path} does not hold ${missing.length === 1 ? `row ${missing[0]}` : `rows ${missing.join(", ")}`} yet, so there is nothing to re-indent. Place ${missing.length === 1 ? "it" : "them"} with place_rows without reindent first.`,
+    };
+  const held = [...at.values()].sort((a, b) => a - b);
+  const top = held[0] ?? 0;
+  const before = lines[top - 1] ?? "";
+  const beforeIndent = /^[ \t]*/.exec(before)?.[0] ?? "";
+  const level = requested ?? rowOf(ROW_INDENT, detectLanguageFromPath(path)) ?? "    ";
+  const indent =
+    input.indent ?? (/[[({=]$/.test(before.trimEnd()) ? beforeIndent + level : beforeIndent);
+  for (const line of held) lines[line] = indent + (lines[line] ?? "").trimStart();
+  return {
+    content: lines.join("\n"),
+    placed: [...at.keys()],
+    lines: [top + 1, (held.at(-1) ?? top) + 1],
+    first: (lines[top] ?? "").replace(/\r$/, ""),
+    reindented: true,
   };
 }

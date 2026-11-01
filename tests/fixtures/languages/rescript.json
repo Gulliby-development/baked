@@ -14,6 +14,7 @@
     "src/Runtime_test.res": "let dir = NodeJs.Os.tmpdir()\nlet want = `bad: ${dir}`\n"
   },
   "expected": {
+    "rowIndent": ["\"  row(1),\""],
     "languagePitfalls": null,
     "generatedValues": ["src/Gen_test.res:1 repeat","src/Gen_test.res:2 interpolate"],
     "exampleBuild": null,

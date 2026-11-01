@@ -15,6 +15,7 @@
     "tests/App.Tests/RuntimeTests.cs": "var dir = Path.GetTempPath();\nvar want = $\"bad: {dir}\";\n"
   },
   "expected": {
+    "rowIndent": ["\"    row(1),\""],
     "languagePitfalls": ["C# and .NET"],
     "generatedValues": ["tests/App.Tests/GenTests.cs:1 repeat","tests/App.Tests/GenTests.cs:2 interpolate"],
     "exampleBuild": ["dotnet run --no-build; link bin, obj"],

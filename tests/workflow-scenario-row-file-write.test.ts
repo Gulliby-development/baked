@@ -790,6 +790,44 @@ describe("scenario: R84, a retry in a batch worker counts the rows its first ses
   });
 });
 
+// #2618: bench round 85 csp (ReScript) `cli` T004 created the file with `let rows = [`, `]` and the
+// harness call (no indented line) and called place_rows without indent; the eight rows landed with
+// four spaces against a request that wrote them with two (AC-007), and the correction cost 574k.
+const PLACE_CSP_PATH = "tests/CliTest.res";
+const placeCspFile = (rows: string[]) => ["let rows = [", ...rows.map((r) => `  ${r},`), "]", "", "Harness.run(rows)", ""].join("\n");
+const PLACE_CSP_ROWS = ['Harness.row(["--help"], 0, "usage: csp [--strict] FILE\\n")', 'Harness.row(["--version"], 0, "csp 1.0\\n")', 'Harness.row(["--nope"], 2, "csp: unknown option --nope\\n")'];
+const PLACE_CSP: PlaceShape = {
+  path: PLACE_CSP_PATH,
+  scaffold: placeCspFile([]),
+  line: 1,
+  block: [`CliTest in ${PLACE_CSP_PATH} (3 rows, one per line, two spaces of indentation)`, ...PLACE_CSP_ROWS.map((r) => `  ${r}`)],
+  options: {},
+  written: placeCspFile(PLACE_CSP_ROWS),
+};
+
+describe("scenario: R85, place_rows indents rows as the request writes them (#2618)", () => {
+  test("rescript: a frame without indented lines gets the request's two-space rows, and the result shows the first line", async () => {
+    const { final, file, seen } = await placeScenario(PLACE_CSP, { rowFileWrite: "on" }, [placeAll(PLACE_CSP), submitRows(PLACE_CSP)]);
+    expect(seen.prompts[0]).toContain("the indentation of the request's own row lines");
+    // The prompt is the serialized conversation: the echoed line's quotes show escaped once more.
+    expect(seen.prompts[1]).toContain('Line 2 now reads \\"  Harness.row(');
+    expect(final.status).toBe("completed");
+    expect(seen.prompts).toHaveLength(2);
+    expect(file).toBe(PLACE_CSP.written);
+  });
+
+  test("rescript: rows placed with four spaces are re-indented by one place_rows call", async () => {
+    const four = placeCspFile([]).replace("[\n", `[\n${PLACE_CSP_ROWS.map((r) => `    ${r},`).join("\n")}\n`);
+    const { final, file, seen } = await placeScenario({ ...PLACE_CSP, scaffold: four }, { rowFileWrite: "on" }, [
+      () => call("place_rows", { path: PLACE_CSP_PATH, line: 1, rows: [1, 3], reindent: true }),
+      submitRows(PLACE_CSP),
+    ]);
+    expect(seen.prompts[1]).toContain(`Re-indented rows 1 to 3 of the request's rows for ${PLACE_CSP_PATH} at lines 2 to 4`);
+    expect(final.status).toBe("completed");
+    expect(file).toBe(PLACE_CSP.written);
+  });
+});
+
 describe("placeRows: the request's rows after a line, from suppliedRows and restoredLine (#2564)", () => {
   const targets = new Map([[PLACE_CLI_PATH, PLACE_CLI_ROWS]]);
   const input = (rows: number[], line = 3, more: Partial<PlaceRowsInput> = {}): PlaceRowsInput => ({ path: PLACE_CLI_PATH, line, rows, ...more });

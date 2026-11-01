@@ -15,6 +15,7 @@
     "test/runtime.bats": "dir=$(mktemp -d)\nwant=\"bad: $dir\"\n"
   },
   "expected": {
+    "rowIndent": ["\"  row(1),\""],
     "languagePitfalls": null,
     "generatedValues": ["test/gen.bats:1 format","test/gen.bats:1 interpolate","test/gen.bats:2 loop"],
     "exampleBuild": null,

@@ -11,6 +11,7 @@
     "src/runtime_test.cpp": "auto dir = std::filesystem::temp_directory_path();\nsnprintf(want, sizeof want, \"bad: %s\", dir.c_str());\n"
   },
   "expected": {
+    "rowIndent": null,
     "languagePitfalls": ["C and C++"],
     "generatedValues": ["src/gen_test.cpp:2 repeat"],
     "exampleBuild": null,
