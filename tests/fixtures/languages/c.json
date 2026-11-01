@@ -10,6 +10,7 @@
     "src/runtime_test.c": "char *dir = mkdtemp(tmpl);\nsnprintf(want, sizeof want, \"bad: %s\", dir);\n"
   },
   "expected": {
+    "rowIndent": null,
     "languagePitfalls": ["C and C++"],
     "generatedValues": ["src/gen_test.c:1 repeat","src/gen_test.c:2 format"],
     "exampleBuild": null,

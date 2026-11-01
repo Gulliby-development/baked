@@ -14,6 +14,7 @@
     "test/runtime_test.exs": "dir = System.tmp_dir!()\nwant = \"bad: #{dir}\"\n"
   },
   "expected": {
+    "rowIndent": ["\"  row(1),\""],
     "languagePitfalls": null,
     "generatedValues": ["test/gen_test.exs:1 repeat","test/gen_test.exs:2 interpolate"],
     "exampleBuild": ["mix run --no-compile; link _build"],

@@ -15,6 +15,7 @@
     "runtime_test.go": "package sum\n\nfunc TestRuntime(t *testing.T) {\n\tdir := t.TempDir()\n\twant := fmt.Sprintf(\"bad: %s\", dir)\n\t_ = want\n}\n"
   },
   "expected": {
+    "rowIndent": ["\"\\trow(1),\""],
     "languagePitfalls": ["Go"],
     "generatedValues": ["gen_test.go:3 repeat","gen_test.go:4 format"],
     "exampleBuild": null,

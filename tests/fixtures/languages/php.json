@@ -14,6 +14,7 @@
     "tests/RuntimeTest.php": "<?php\n$dir = sys_get_temp_dir();\n$want = \"bad: $dir\";\n"
   },
   "expected": {
+    "rowIndent": ["\"    row(1),\""],
     "languagePitfalls": ["PHP"],
     "generatedValues": ["tests/GenTest.php:2 repeat","tests/GenTest.php:3 interpolate"],
     "exampleBuild": null,

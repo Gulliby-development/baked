@@ -14,6 +14,7 @@
     "tests/runtime.rs": "let dir = tempdir().unwrap();\nlet p = dir.path().join(\"a.txt\");\nlet want = format!(\"bad: {}\", p.display());\n"
   },
   "expected": {
+    "rowIndent": ["\"    row(1),\""],
     "languagePitfalls": ["Rust"],
     "generatedValues": ["tests/gen.rs:1 repeat","tests/gen.rs:2 format"],
     "exampleBuild": ["cargo run; link target"],

@@ -37,6 +37,7 @@ import { INLINE_HARNESS, inlineRowFile } from "../src/core/workflows/acceptance-
 import { TEST_GATES, testGateFlags } from "../src/core/workflows/test-gates.js";
 import { declaredTestClasses, TEST_CLASSES } from "../src/core/workflows/test-classes.js";
 import { ROW_FILE_SHAPES, rowFilePlan, rowFileRefusal } from "../src/core/workflows/row-file.js";
+import { placeRows, ROW_INDENT } from "../src/core/tools/place-rows.js";
 import { writtenTestsCheck } from "../src/core/workflows/affected-tests.js";
 import { TreeSitterBackend } from "../src/core/intelligence/backends/tree-sitter.js";
 import { CALL_SYNTAX, callContext, functionsIn } from "../src/core/intelligence/call-context.js";
@@ -261,6 +262,17 @@ const RECORDS: Record<
       return content === null ? ["declined", rowFileRefusal(path, inputs) ?? ""] : [path, ...content.split("\n")];
     },
     never: ["declined"],
+  },
+  // The indentation place_rows gives a row after a list's opening line when neither the request's
+  // rows nor the file show one (#2618): the placed line, quoted so its whitespace shows.
+  rowIndent: {
+    record: ROW_INDENT,
+    run: (language) => {
+      const ext = Object.entries(EXT_TO_LANGUAGE).find(([, l]) => l === language)?.[0] ?? `.${language}`;
+      const path = `tests/rows${ext}`;
+      const placed = placeRows({ path, line: 1, rows: [1] }, new Map([[path, ["row(1)"]]]), "rows = [\n]\n");
+      return "refusal" in placed ? [placed.refusal] : [JSON.stringify(placed.first)];
+    },
   },
   // The comment and string syntax the case walk and the integrity guards read code by (#1846): the
   // lines a string or a comment covers, marked `comment` when stripping comments alone blanks them.

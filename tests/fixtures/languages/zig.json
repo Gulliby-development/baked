@@ -9,6 +9,7 @@
     "src/runtime_test.zig": "var tmp = std.testing.tmpDir(.{});\nconst want = try std.fmt.allocPrint(std.testing.allocator, \"bad: {s}\", .{tmp.sub_path});\n"
   },
   "expected": {
+    "rowIndent": ["\"    row(1),\""],
     "languagePitfalls": null,
     "generatedValues": ["src/gen_test.zig:1 repeat"],
     "exampleBuild": ["zig build run; link zig-out, .zig-cache"],

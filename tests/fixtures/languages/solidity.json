@@ -9,6 +9,7 @@
     "test/Gen.t.sol": "bytes memory a = abi.encodePacked(x, x, x);\nstring memory lit = \"\\\\\\\\\\\\\";\n// bytes memory d = abi.encodePacked(x, x, x);\n"
   },
   "expected": {
+    "rowIndent": ["\"    row(1),\""],
     "languagePitfalls": null,
     "generatedValues": ["test/Gen.t.sol:1 format"],
     "exampleBuild": null,

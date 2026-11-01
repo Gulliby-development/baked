@@ -763,6 +763,23 @@ export interface SuppliedRows {
   chars: number;
   /** Those lines, trimmed, in the block's order: the text a row slice owns (#2466). */
   lines: string[];
+  /**
+   * The indentation the request writes its rows with, past the header's (#2618): the leading
+   * whitespace the row lines share, a tab or the smallest space run; absent when they have none.
+   * `place_rows` indents placed rows by it unless told otherwise.
+   */
+  indent?: string;
+}
+
+/** The whitespace every line of `rows` starts with past `header`'s: a tab, or the smallest space run. */
+function rowLayout(header: string, rows: readonly string[]): string | undefined {
+  const base = /^[ \t]*/.exec(header)?.[0] ?? "";
+  const leads = rows.map((line) => /^[ \t]*/.exec(line)?.[0] ?? "");
+  if (!leads.every((lead) => lead.startsWith(base) && lead.length > base.length)) return undefined;
+  const own = leads.map((lead) => lead.slice(base.length));
+  if (own.every((lead) => lead.startsWith("\t"))) return "\t";
+  const spaces = Math.min(...own.map((lead) => /^ */.exec(lead)?.[0].length ?? 0));
+  return spaces ? " ".repeat(spaces) : undefined;
 }
 
 /** A first line that says the block holds rows: `ProblemsTests in tests/p.test.ts (63 rows, ...)`. */
@@ -800,11 +817,13 @@ export function suppliedRows(request: string, paths: readonly string[]): Map<str
     const lines = block.lines.slice(first + 1).filter((line) => line.trim());
     if (!lines.length) continue;
     const before = out.get(path);
+    const indent = before ? before.indent : rowLayout(block.lines[first] ?? "", lines);
     out.set(path, {
       header: before?.header ?? header,
       rows: (before?.rows ?? 0) + lines.length,
       chars: (before?.chars ?? 0) + lines.reduce((sum, line) => sum + [...line].length, 0),
       lines: [...(before?.lines ?? []), ...lines.map((line) => line.trim())],
+      ...(indent ? { indent } : {}),
     });
   }
   return out;

@@ -17,6 +17,7 @@
     "tests/runtime.test.ts": "const dir = mkdtempSync(join(tmpdir(), \"rt-\"));\nconst file = join(dir, \"a.txt\");\nconst want = `bad: ${file}`;\n"
   },
   "expected": {
+    "rowIndent": ["\"  row(1),\""],
     "languagePitfalls": null,
     "generatedValues": ["tests/gen.test.ts:1 repeat","tests/gen.test.ts:2 interpolate","tests/gen.test.ts:3 loop"],
     "exampleBuild": null,
