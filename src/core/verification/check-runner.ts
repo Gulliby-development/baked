@@ -19,6 +19,7 @@ import { environmentFault, environmentNote, unpreparedNote } from "./environment
 import { isFailedTestLine } from "./failed-test-line.js";
 import { MISSING_GATE_REPORT, readGateReport, renderGateReport } from "./gate-report.js";
 import { testsRan } from "./output-counts.js";
+import { PLAIN_OUTPUT_ENV } from "./plain-output.js";
 import { changedPaths, sourceManifest } from "./snapshot.js";
 import { testReport } from "./test-reports.js";
 
@@ -51,9 +52,12 @@ export const executeCheckCommand = async (
     : result;
 };
 
-/** The environment every check and on-demand gate run gets: safe base plus the names it declares. */
+/**
+ * The environment every check and on-demand gate run gets: safe base, plain output
+ * (`PLAIN_OUTPUT_ENV`, #2615) and the names it declares.
+ */
 export function buildCheckEnv(check: Pick<Check, "envNames">): NodeJS.ProcessEnv {
-  const env: NodeJS.ProcessEnv = buildSafeEnv();
+  const env: NodeJS.ProcessEnv = { ...buildSafeEnv(), ...PLAIN_OUTPUT_ENV };
   for (const name of check.envNames)
     if (process.env[name] !== undefined) env[name] = process.env[name];
   // A build server a check leaves running keeps its working directory, and so a task worktree,

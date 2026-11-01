@@ -62,6 +62,7 @@ import { noteSiblingFindings, ownerOfFinding } from "../src/core/verification/in
 import { failureSignature as convergenceSignature, missingPlannedPaths, noTestsCollected } from "../src/core/verification/convergence.js";
 import { executeCheckCommand, exitStatus, ranNoTests, timedOutFailure } from "../src/core/verification/check-runner.js";
 import { emptyScriptNote, emptyTestScript } from "../src/core/verification/empty-test-script.js";
+import { colour, RUNNER_SUMMARIES } from "./helpers/coloured-runner-output.js";
 import { environmentFault, ENVIRONMENT_SIGNATURES, silentFailure } from "../src/core/verification/environment-faults.js";
 import { SWIFT_COMPILE_ERROR, SWIFT_SYMLINK_WARNING_ONLY, SWIFT_TEST_FATAL_ERROR, SWIFT_TEST_SILENT_EXIT_4, SWIFT_TESTING_FAILURE } from "./fixtures/swiftpm-crash-outputs.js";
 import { testReport } from "../src/core/verification/test-reports.js";
@@ -5624,6 +5625,22 @@ test("#1594 review and mutation gates route pathless deliverables without hiding
 
 // #1864: a required test check that collected no test, in a run whose plan writes none, is no
 // failure. Each stack's "no test" output is recognized; a real failure and a skipped-only run are not.
+// #2615: every runner `testCount` reads gives the same count, run count and failed tests on its
+// coloured output as on its plain output. `RUNNER_SUMMARIES` is typed by `TestRunner`, so a runner
+// added to the parsers needs its samples there before this compiles.
+describe("gate matrix: coloured runner output (#2615)", () => {
+  for (const [tool, sample] of Object.entries(RUNNER_SUMMARIES))
+    test(`${tool}: the coloured passing and failing summaries read as the plain ones`, () => {
+      expect(testCount(sample.passed)).toEqual({ tool, count: sample.total });
+      expect(testsRan(sample.passed)).toEqual({ tool, count: sample.ran });
+      for (const plain of [sample.passed, sample.failed]) {
+        const coloured = colour(plain);
+        expect(coloured).not.toBe(plain);
+        expect([testCount(coloured), testsRan(coloured), failedTests(coloured), buildFailure(coloured)]).toEqual([testCount(plain), testsRan(plain), failedTests(plain), buildFailure(plain)]);
+      }
+    });
+});
+
 describe("gate matrix: no tests collected (#1864)", () => {
   const NO_TESTS: [string, string][] = [
     ["Python (pytest, exit 5)", "collected 0 items\n\n============ no tests ran in 0.01s ============"],
