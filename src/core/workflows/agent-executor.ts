@@ -109,6 +109,7 @@ import {
 } from "./model-recording.js";
 import { ProcessScope } from "./process-scope.js";
 import { EDIT_TOOLS } from "./progress-watch.js";
+import { largePrompt, promptSections } from "./prompt-sections.js";
 import { isTargetedRead, outlineLargeReads } from "./read-outline.js";
 import { settleInterruptedEdits } from "./recovery.js";
 import { recoveryAdvice } from "./remedies.js";
@@ -1586,6 +1587,7 @@ export class NativeAgentExecutor implements AgentExecutor {
           return this.store.remainingTokens(request.runId, policy, request.attemptId);
         },
         submitTools,
+        promptSections: (messages) => promptSections(messages, request.prompt),
         fallbackStepTokens:
           request.profile.maxOutputTokens + Math.ceil(Buffer.byteLength(request.prompt) / 2),
         maxOutputTokens: request.profile.maxOutputTokens,
@@ -1616,8 +1618,25 @@ export class NativeAgentExecutor implements AgentExecutor {
       const meta = { profileId: request.profile.id, taskId: request.task?.id ?? null };
       const model = this.attemptModel(request, policy, watch);
       const effort = sentEffort(provider.providerOptions);
+      let promptNoticed = false;
       const writeUsage = (usage: AttemptUsageRecord) =>
-        this.store.transaction(() =>
+        this.store.transaction(() => {
+          // A task attempt whose prompt is far larger than the run's first attempts names the
+          // section that holds the bytes (#2597); recording only, nothing else changes.
+          let large: ReturnType<typeof largePrompt> = null;
+          try {
+            if (request.task && !promptNoticed)
+              large = largePrompt(this.store, request.runId, request.attemptId, usage.prompt);
+          } catch {
+            // An unreadable earlier record leaves the notice out; the usage is still written.
+          }
+          if (large) {
+            promptNoticed = true;
+            this.store.emit(request.runId, {
+              type: "attempt.large_prompt",
+              payload: { attemptId: request.attemptId, taskId: request.task?.id ?? null, ...large },
+            });
+          }
           this.store.artifact(
             request.runId,
             "usage",
@@ -1630,8 +1649,8 @@ export class NativeAgentExecutor implements AgentExecutor {
               ...(watch.calls.length ? { calls: watch.calls } : {}),
               ...silentOf(watch.calls),
             }),
-          ),
-        );
+          );
+        });
       // Usage is persisted as each step finishes, so a loop that throws keeps its real spend.
       const finished: Array<
         StepLike & { toolCalls: readonly { toolName: string; input?: unknown }[] }

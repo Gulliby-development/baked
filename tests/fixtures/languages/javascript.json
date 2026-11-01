@@ -15,6 +15,7 @@
     "tests/runtime.test.js": "const dir = mkdtempSync(join(tmpdir(), \"rt-\"));\nconst file = join(dir, \"a.txt\");\nconst want = `bad: ${file}`;\n"
   },
   "expected": {
+    "languagePitfalls": null,
     "generatedValues": ["tests/gen.test.js:1 repeat","tests/gen.test.js:2 interpolate","tests/gen.test.js:3 loop"],
     "exampleBuild": null,
     "runtimePaths": ["tests/runtime.test.js: dir, file"],

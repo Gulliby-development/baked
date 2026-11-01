@@ -879,6 +879,13 @@ export const PolicySchema = z
      */
     baselineFix: z.literal("on").optional(),
     /**
+     * The implementer's pitfalls (pitfall-notes.ts, #2598): `on` gives an implementer step the
+     * `LANGUAGE_PITFALLS` notes of the languages its task writes and, as one-line rules, the first
+     * error line of the run's other tasks' failing checks. Absent means shadow: each step records
+     * what it would get under `pitfalls/tasks/`, so stored policies keep their hash.
+     */
+    languagePitfalls: z.literal("on").optional(),
+    /**
      * The project's choices for the anti-slop rule pack (quality/rules.ts), which is always on:
      * rules turned off, severities changed and ast-grep rule files added. Absent means the
      * built-in pack as shipped, so stored policies keep their hash.
@@ -1781,6 +1788,7 @@ export const EventType = z.enum([
   "attempt.finished",
   "attempt.advisory",
   "attempt.recovery",
+  "attempt.large_prompt",
   "decision.would_stop",
   "decision.would_resume",
   "decision.would_rerun",
@@ -1983,6 +1991,24 @@ export const EventSchema = z.discriminatedUnion("type", [
           transport: z.literal("exec").optional(),
           effort: z.string().optional(),
           detail: z.string().max(500),
+        })
+        .strict(),
+    })
+    .strict(),
+  // A task attempt's first prompt was more than three times the median first attempt of the run,
+  // with the section that holds the most bytes (#2597, `largePrompt` in prompt-sections.ts).
+  z
+    .object({
+      ...EventBase,
+      type: z.literal("attempt.large_prompt"),
+      payload: z
+        .object({
+          attemptId: SafeId,
+          taskId: SafeId.nullable(),
+          firstBytes: z.number().int().nonnegative(),
+          medianBytes: z.number().int().nonnegative(),
+          firstAttempts: z.number().int().positive(),
+          largest: z.object({ name: z.string(), bytes: z.number().int().nonnegative() }).strict(),
         })
         .strict(),
     })

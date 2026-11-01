@@ -8,6 +8,7 @@
     "Tests/RuntimeTests.m": "NSString *dir = NSTemporaryDirectory();\nNSString *want = [NSString stringWithFormat:@\"bad: %@\", dir];\n"
   },
   "expected": {
+    "languagePitfalls": null,
     "generatedValues": ["Tests/GenTests.m:1 format"],
     "exampleBuild": null,
     "runtimePaths": ["Tests/RuntimeTests.m: dir"],

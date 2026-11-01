@@ -586,6 +586,14 @@ import {
 } from "./misquote-fix.js";
 import { MAX_CONCURRENT_TASK_CHECKS, planBatch, Semaphore, unifiedDiff } from "./parallel.js";
 import {
+  PITFALLS_DIR,
+  PITFALLS_KIND,
+  type PitfallsRecord,
+  pitfallsRecord,
+  type RunFailure,
+  trapRule,
+} from "./pitfall-notes.js";
+import {
   fileReferences,
   PLAN_CONSISTENCY_CHECKS,
   planConsistencyProblems,
@@ -6875,6 +6883,17 @@ export class WorkflowScheduler {
       defectClassesShown = classes;
       if (classes) extra = { ...(extra as Record<string, unknown>), defectClasses: classes };
     }
+    // The pitfalls of the task's languages and the run's traps (#2598): recorded for every
+    // implementer step, in its input only under `languagePitfalls: "on"`.
+    if (task && stageProfile.output === "implementation") {
+      const pitfalls = this.pitfallsFor(runId, state, policy, task);
+      if (pitfalls)
+        extra = {
+          ...(extra as Record<string, unknown>),
+          ...(pitfalls.notes.length ? { languagePitfalls: pitfalls.notes } : {}),
+          ...(pitfalls.traps.length ? { runTraps: pitfalls.traps.map(trapRule) } : {}),
+        };
+    }
     const replay =
       task && !generatedRows.length && stageProfile.output === "implementation"
         ? this.rowReplayFor(runId, state, policy, task)
@@ -10376,6 +10395,47 @@ ${note}`;
       },
     });
     return repeat;
+  }
+  /**
+   * Records what an implementer step of `task` is told of its languages' pitfalls and the run's
+   * traps (`pitfalls/tasks/<task>.json`, #2598), when it differs from the task's last record, and
+   * returns it when the step's input holds it (`languagePitfalls: "on"`) and it is not empty.
+   */
+  private pitfallsFor(
+    runId: string,
+    state: RuntimeState,
+    policy: RunPolicy,
+    task: Task,
+  ): PitfallsRecord | null {
+    const failures: RunFailure[] = [];
+    for (const other of state.graph?.tasks ?? []) {
+      if (other.id === task.id) continue;
+      for (const row of this.store.taskCheckRuns(runId, other.id)) {
+        if (row.status !== "failed") continue;
+        let output = "";
+        try {
+          output = String(
+            (JSON.parse(this.store.readArtifact(runId, row.artifact_id)) as { output?: unknown })
+              .output ?? "",
+          );
+        } catch {}
+        failures.push({ taskId: other.id, checkId: row.check_id, output });
+      }
+    }
+    const applied = policy.languagePitfalls === "on";
+    const record = pitfallsRecord(
+      task.id,
+      task.writes.map((w) => w.path),
+      failures,
+      applied,
+    );
+    if (!record.notes.length && !record.traps.length) return null;
+    const path = `${PITFALLS_DIR}${task.id}.json`;
+    const content = canonical(record);
+    const latest = this.store.latestArtifact(runId, path);
+    if (!latest || this.store.readArtifact(runId, latest.id) !== content)
+      this.store.afterTransaction(() => this.store.artifact(runId, PITFALLS_KIND, path, content));
+    return applied ? record : null;
   }
   /** A `repeats/tasks/` record, or null when it does not parse. */
   private repeatRecordOf(runId: string, artifactId: string): RepeatRecord | null {

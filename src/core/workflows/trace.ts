@@ -189,6 +189,7 @@ import {
   misquoteFixDecision,
 } from "./misquote-fix.js";
 import { recordingOf } from "./model-recording.js";
+import { PITFALLS_KIND } from "./pitfall-notes.js";
 import { type PlanCostRate, planCostOf, plannedRunTokens } from "./plan-cost.js";
 import {
   REPEAT_KIND,
@@ -308,6 +309,8 @@ const KEPT_ARTIFACTS = new Set([
   CHAIN_KIND,
   // Each failing corrective's required checks, normalized output stood in (#1996).
   REPEAT_KIND,
+  // Each implementer step's pitfalls notes and run traps, text stood in (#2598).
+  PITFALLS_KIND,
   // Each spec conflict's request decision: checked sides and re-audit verdicts, no quotes (#2016).
   REQUEST_CONFLICT_KIND,
   // Each planned task's host apply decision: its writes' supplied blocks and apply checks (#2023).
