@@ -8,6 +8,7 @@
     "test/test_runtime.ml": "let dir = Filename.get_temp_dir_name ()\nlet want = Printf.sprintf \"bad: %s\" dir\n"
   },
   "expected": {
+    "languagePitfalls": null,
     "generatedValues": ["test/test_gen.ml:1 repeat","test/test_gen.ml:2 format"],
     "exampleBuild": ["dune exec --no-build; link _build"],
     "runtimePaths": ["test/test_runtime.ml: dir"],

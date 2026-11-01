@@ -56,6 +56,7 @@ import type { Check } from "../src/core/workflows/types.js";
 import { rowOf } from "../src/core/intelligence/language-records.js";
 import { DEPENDENCY_DIRS, DEPENDENCY_PREPARE, linkDependencies, WORKTREE_PATH_LIMITS } from "../src/core/workflows/dependency-dirs.js";
 import { sourceManifest } from "../src/core/verification/snapshot.js";
+import { implementerPitfalls, LANGUAGE_PITFALLS } from "../src/core/agents/profiles/language-pitfalls.js";
 
 // Language parity (#1717): every language-bound record has a row for every supported language,
 // and every row is exercised by the language's fixture project in `tests/fixtures/languages/`.
@@ -441,6 +442,13 @@ const RECORDS: Record<
       const row = WORKTREE_PATH_LIMITS[language];
       return isNoRow(row) || !(row.manifest in files) ? [] : [`${row.manifest}: ${row.tool} over ${String(row.chars)} characters`];
     },
+  },
+  // The implementer's pitfalls note for the fixture's files of the language, by its label: the
+  // same table the language reviewer reads (#2598).
+  languagePitfalls: {
+    record: LANGUAGE_PITFALLS,
+    run: (language, { files }) =>
+      implementerPitfalls(ofLanguage(language, files).map(([path]) => path)).map((note) => note.slice(0, note.indexOf(":"))),
   },
   properties: {
     record: PROPERTY_LIBRARIES,

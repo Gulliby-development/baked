@@ -13,6 +13,7 @@
     "src/Runtime.vue": "<script setup>\nconst dir = mkdtempSync(join(tmpdir(), \"rt-\"));\nconst file = join(dir, \"a.txt\");\nconst want = `bad: ${file}`;\n</script>\n"
   },
   "expected": {
+    "languagePitfalls": null,
     "generatedValues": ["src/Gen.vue:2 repeat"],
     "exampleBuild": null,
     "runtimePaths": ["src/Runtime.vue: dir, file"],

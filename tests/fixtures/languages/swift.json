@@ -14,6 +14,7 @@
     "Tests/RuntimeTests.swift": "let dir = FileManager.default.temporaryDirectory\nlet want = \"bad: \\(dir.path)\"\n"
   },
   "expected": {
+    "languagePitfalls": ["Swift"],
     "generatedValues": ["Tests/GenTests.swift:1 repeat","Tests/GenTests.swift:2 interpolate"],
     "exampleBuild": ["swift run --skip-build; link .build"],
     "runtimePaths": ["Tests/RuntimeTests.swift: dir"],
