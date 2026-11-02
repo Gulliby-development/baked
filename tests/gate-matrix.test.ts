@@ -5717,13 +5717,18 @@ describe("gate matrix: host-published documents in a formatter report (#2641)", 
     expect(hostDocumentFailure({ id: "tests", executable: "bun", args: ["test"] }, REPORTS.prettier?.(DOCS) ?? "")).toBeNull();
   });
   // The formatters that read Markdown or JSON and run on the published documents, live where installed.
-  const LIVE: [string, string[]][] = [
-    ["prettier", ["prettier", "--check", "."]],
-    ["biome", [join(process.cwd(), "node_modules/.bin/biome"), "format", "."]],
-    ["bun fmt", [process.execPath, "fmt", "--no-script", "--check", "."]],
+  // Each with the probe that shows it is installed: a Bun before 1.4.4 has no `bun fmt`.
+  const LIVE: [string, string[], string[]][] = [
+    ["prettier", ["prettier", "--check", "."], ["--version"]],
+    ["biome", [join(process.cwd(), "node_modules/.bin/biome"), "format", "."], ["--version"]],
+    ["bun fmt", [process.execPath, "fmt", "--no-script", "--check", "."], ["fmt", "--help"]],
   ];
-  for (const [tool, command] of LIVE)
-    test.skipIf(spawnSync(command[0] ?? "", ["--version"], { stdio: "ignore" }).status !== 0)(`${tool}: its real report on the published documents`, () => {
+  const installed = (program: string, probe: string[]): boolean => {
+    const run = spawnSync(program, probe, { encoding: "utf8" });
+    return run.status === 0 && (probe[0] !== "fmt" || run.stdout.includes("--check"));
+  };
+  for (const [tool, command, probe] of LIVE)
+    test.skipIf(!installed(command[0] ?? "", probe))(`${tool}: its real report on the published documents`, () => {
       const root = mkdtempSync(join(tmpdir(), "baked-host-docs-"));
       try {
         mkdirSync(join(root, "specs/slk"), { recursive: true });
