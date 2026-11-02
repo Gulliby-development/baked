@@ -402,7 +402,11 @@ export async function hostApplyInputs(
   graph?: Pick<TaskGraph, "tasks"> | null,
 ): Promise<HostApplyWrite[] | null> {
   const supplied = suppliedBlocks(request, hostApplyPaths(task, graph));
-  const rows = prescribedRows(request, task, supplied);
+  const rows = prescribedRows(
+    request,
+    task.writes.map((w) => w.path),
+    supplied,
+  );
   if (!task.writes.some((w) => supplied.has(w.path) || rows.has(w.path))) return null;
   const writes: HostApplyWrite[] = [];
   for (const write of task.writes) {
@@ -459,15 +463,15 @@ export async function hostApplyInputs(
 }
 
 /**
- * The prescribed rows of each write the request gives rows for and no verbatim block (#2528): the
- * one reader of row blocks, `suppliedRows`.
+ * The prescribed rows of each path (a task's writes) the request gives rows for and no verbatim
+ * block (#2528): the one reader of row blocks, `suppliedRows`.
  */
 function prescribedRows(
   request: string,
-  task: Pick<Task, "writes">,
+  writes: readonly string[],
   supplied: ReadonlyMap<string, unknown>,
 ): Map<string, string[]> {
-  const paths = task.writes.map((w) => w.path).filter((path) => !supplied.has(path));
+  const paths = writes.filter((path) => !supplied.has(path));
   const blocks = suppliedRows(request, paths);
   return new Map(
     paths.flatMap((path) => {
@@ -516,7 +520,11 @@ export async function hostApplyContents(
   graph?: Pick<TaskGraph, "tasks"> | null,
 ): Promise<{ path: string; content: string }[]> {
   const supplied = suppliedBlocks(request, hostApplyPaths(task, graph));
-  const rows = prescribedRows(request, task, supplied);
+  const rows = prescribedRows(
+    request,
+    task.writes.map((w) => w.path),
+    supplied,
+  );
   const out: { path: string; content: string }[] = [];
   for (const write of task.writes) {
     const blocks = supplied.get(write.path) ?? [];
@@ -635,7 +643,11 @@ export function rowFileTasks(request: string, graph: Pick<TaskGraph, "tasks">): 
   const supplied = suppliedBlocks(request, hostApplyPaths({ writes: [] }, graph));
   return graph.tasks.flatMap((task) => {
     if (task.origin !== "planned" || hostWritten(task) || !task.writes.length) return [];
-    const rows = prescribedRows(request, task, supplied);
+    const rows = prescribedRows(
+      request,
+      task.writes.map((w) => w.path),
+      supplied,
+    );
     return task.writes.every((w) => w.action !== "delete" && rows.has(w.path)) ? [task.id] : [];
   });
 }
@@ -653,7 +665,38 @@ export function hostRowFileTasks(
   if (policy.rowFileWrite !== "on") return [];
   const byId = new Map(graph.tasks.map((task) => [task.id, task]));
   return rowFileTasks(request, graph).filter((id) =>
-    (byId.get(id)?.writes ?? []).every((w) => rowFileLanguage(w.path)),
+    (byId.get(id)?.writes ?? []).every((w) => hostWritesRowFile(w.path, policy)),
+  );
+}
+
+/**
+ * Whether the host writes a prescribed row file at `path` with no session (#2633, #2640): only
+ * under `rowFileWrite: "on"`, and only in a language with a `ROW_FILE_SHAPES` row; a session
+ * transcribes any other. Task-plan sizing (`hostRowFileTasks`) and the initiative budget preview
+ * (`hostRowFiles`) both ask it, so they cannot disagree on a file.
+ */
+export function hostWritesRowFile(path: string, policy: Pick<RunPolicy, "rowFileWrite">): boolean {
+  return policy.rowFileWrite === "on" && rowFileLanguage(path);
+}
+
+/**
+ * The prescribed row files among `paths` the host writes with no session, with their row counts
+ * (#2640): the files the request gives rows for and no verbatim block, read as the scheduler's
+ * `rowFileTasks` reads a task's writes (`prescribedRows`), that `hostWritesRowFile` takes. The
+ * initiative budget preview reads it before any task plan exists, as `hostRowFileTasks` prices
+ * their tasks once one does. Empty under shadow.
+ */
+export function hostRowFiles(
+  request: string,
+  paths: readonly string[],
+  policy: Pick<RunPolicy, "rowFileWrite">,
+): Map<string, number> {
+  if (policy.rowFileWrite !== "on") return new Map();
+  const rows = prescribedRows(request, paths, suppliedBlocks(request, paths));
+  return new Map(
+    [...rows]
+      .filter(([path]) => hostWritesRowFile(path, policy))
+      .map(([path, lines]) => [path, lines.length]),
   );
 }
 

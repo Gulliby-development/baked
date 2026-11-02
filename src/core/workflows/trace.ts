@@ -250,6 +250,7 @@ import {
   rowVolumePrice,
   runPace,
   type SizingReport,
+  suppliedRows,
 } from "./sizing.js";
 import {
   SOURCE_DEFECT_DIR,
@@ -3967,6 +3968,49 @@ function removeRuns(db: Database, tables: string[], runIds: Iterable<string>): v
   }
 }
 
+/**
+ * Restores the row blocks of an initiative's request in a trace (#2640): a trace keeps a stand-in
+ * for the request text, so `hostRowCases` would read no rows there. Each prescribed row file the
+ * trace's runs recorded at their checks (`row-blocks/<file>.json`, the rows `suppliedRows` read
+ * from the request) gets a block of that many placeholder rows, headed as a request heads one,
+ * unless the stand-in already gives the file rows. A file no run reached checks with has no
+ * record and stays unpriced as rows, so a replay never discounts more than the run had.
+ */
+export function restoreRowBlocks(db: Database, initiativeId: string): void {
+  const row = db.query("SELECT prompt FROM initiatives WHERE id=?").get(initiativeId) as {
+    prompt: string;
+  } | null;
+  if (!row) return;
+  const counts = new Map<string, number>();
+  for (const artifact of db
+    .query(
+      "SELECT a.inline_content AS content FROM artifacts a JOIN initiative_runs l ON l.run_id=a.run_id WHERE l.initiative_id=? AND a.logical_path LIKE 'row-blocks/%' ORDER BY a.created_at",
+    )
+    .all(initiativeId) as { content: string | null }[]) {
+    try {
+      const record = JSON.parse(artifact.content ?? "") as { path?: unknown; rows?: unknown };
+      if (typeof record.path === "string" && Array.isArray(record.rows))
+        counts.set(record.path, record.rows.length);
+    } catch {}
+  }
+  const given = suppliedRows(row.prompt, [...counts.keys()]);
+  const blocks = [...counts]
+    .filter(([path, rows]) => rows > 0 && !given.has(path))
+    .map(([path, rows]) =>
+      [
+        "```",
+        `Rows in ${path} (${rows} rows)`,
+        ...Array.from({ length: rows }, (_, i) => `row-${i + 1}`),
+        "```",
+      ].join("\n"),
+    );
+  if (!blocks.length) return;
+  db.run("UPDATE initiatives SET prompt=? WHERE id=?", [
+    [row.prompt, "Row blocks restored from the trace's records.", ...blocks].join("\n\n"),
+    initiativeId,
+  ]);
+}
+
 function replayStarts(
   path: string,
   initiativeId: string,
@@ -4008,8 +4052,12 @@ function replayStarts(
       basePolicy?: {
         sizing?: { historyStores?: string[]; recencyHalfLife?: number };
         stopModes?: RunPolicy["stopModes"];
+        rowFileWrite?: RunPolicy["rowFileWrite"];
       };
     };
+    // The estimate prices the rows the host writes from the request's row blocks (#2640), and a
+    // trace keeps no request text: the blocks are restored from the trace's own records first.
+    if (settings.basePolicy?.rowFileWrite === "on") restoreRowBlocks(db, initiativeId);
     const missingHistory: string[] = [];
     if (recencyHalfLife || stopModes) {
       settings.basePolicy = {
