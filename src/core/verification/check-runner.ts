@@ -19,7 +19,7 @@ import { environmentFault, environmentNote, unpreparedNote } from "./environment
 import { isFailedTestLine } from "./failed-test-line.js";
 import { MISSING_GATE_REPORT, readGateReport, renderGateReport } from "./gate-report.js";
 import { testsRan } from "./output-counts.js";
-import { PLAIN_OUTPUT_ENV } from "./plain-output.js";
+import { plainOutput, plainOutputEnv } from "./plain-output.js";
 import { changedPaths, sourceManifest } from "./snapshot.js";
 import { testReport } from "./test-reports.js";
 
@@ -54,10 +54,10 @@ export const executeCheckCommand = async (
 
 /**
  * The environment every check and on-demand gate run gets: safe base, plain output
- * (`PLAIN_OUTPUT_ENV`, #2615) and the names it declares.
+ * (`plainOutputEnv`, #2615, #2631) and the names it declares.
  */
 export function buildCheckEnv(check: Pick<Check, "envNames">): NodeJS.ProcessEnv {
-  const env: NodeJS.ProcessEnv = { ...buildSafeEnv(), ...PLAIN_OUTPUT_ENV };
+  const env: NodeJS.ProcessEnv = plainOutputEnv(buildSafeEnv());
   for (const name of check.envNames)
     if (process.env[name] !== undefined) env[name] = process.env[name];
   // A build server a check leaves running keeps its working directory, and so a task worktree,
@@ -193,9 +193,11 @@ const FAILED_TEST_LINES = 40;
  * stays in the check's evidence.
  */
 export function modelCheckOutput(
-  output: string,
+  raw: string,
   evidenceId?: string,
 ): { output: string; truncated?: true; outputChars?: number } {
+  // A tool that colours anyway costs the model no escape bytes (#2631).
+  const output = plainOutput(raw);
   if (output.length <= MODEL_OUTPUT_LIMIT) return { output };
   const middle = output.slice(OUTPUT_HEAD, output.length - OUTPUT_TAIL);
   const failed = [

@@ -1,4 +1,5 @@
 import { hashBytes } from "../specs/hash.js";
+import { plainOutput } from "../verification/plain-output.js";
 
 /**
  * The bound on the evidence section of an agent's input (#2617). R85 md-site: the implementer
@@ -52,7 +53,7 @@ const escaped = (text: string) => JSON.stringify(text).length - 2;
 /** The last line of a check's output that says something, at most `SUMMARY_CHARS` long. */
 function summaryLine(output: string): string {
   const line =
-    output
+    plainOutput(output)
       .split("\n")
       .map((l) => l.trim())
       .filter(Boolean)

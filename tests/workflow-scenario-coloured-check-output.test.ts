@@ -54,7 +54,7 @@ describe("scenario: R85 csp, coloured check output (#2615)", () => {
     process.env.CARGO_TERM_COLOR = "always";
     try {
       const env = buildCheckEnv(cargoCheck);
-      expect([env.NO_COLOR, env.FORCE_COLOR, env.CARGO_TERM_COLOR]).toEqual(["1", "0", "never"]);
+      expect([env.NO_COLOR, env.FORCE_COLOR, env.CARGO_TERM_COLOR]).toEqual(["1", undefined, "never"]);
       expect(buildCheckEnv({ ...cargoCheck, envNames: ["FORCE_COLOR"] }).FORCE_COLOR).toBe("1");
     } finally {
       for (const [name, value] of Object.entries(saved))

@@ -150,6 +150,7 @@ import {
   TEST_FILE,
   withinBaseline,
 } from "../verification/output-counts.js";
+import { plainJsonText } from "../verification/plain-output.js";
 import {
   carryNoRepro,
   missingReproAdvice,
@@ -8613,7 +8614,11 @@ ${note}`;
           id: e.id,
           handle,
           kind: e.kind,
-          content: content.slice(0, e.kind === "diff" ? MAX_PATCH_CHARS + 4000 : 16000),
+          // A check record's output without the escapes a tool printed anyway (#2631).
+          content: (e.kind === "command" ? plainJsonText(content) : content).slice(
+            0,
+            e.kind === "diff" ? MAX_PATCH_CHARS + 4000 : 16000,
+          ),
           ...(check
             ? {
                 check: {
