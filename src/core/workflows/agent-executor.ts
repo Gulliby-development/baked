@@ -89,6 +89,7 @@ import { fileHash, rootField } from "./effects.js";
 import { WorkflowFault } from "./errors.js";
 import { addsDoubledEscapes, escapeHintFor } from "./escape-hint.js";
 import { executionClock } from "./execution-clock.js";
+import { fixerPaths } from "./fixer-languages.js";
 import { fixerFailed, runFixer } from "./fixer-run.js";
 import { keepOutside, recordPutBack, restoreOutside } from "./fixer-scope.js";
 import { advertisedSchema, withHostConstants } from "./host-constants.js";
@@ -1124,7 +1125,8 @@ export class NativeAgentExecutor implements AgentExecutor {
               try {
                 for (const [tier, fix] of tiers.entries()) {
                   if (isWholeUnitFixer(fix)) {
-                    const code = fixerTierPaths(check, tier, codePaths);
+                    // Only the code files of the languages the fixer handles (#2632).
+                    const code = fixerPaths(fix, fixerTierPaths(check, tier, codePaths));
                     if (!code.length) continue;
                     await fixOnce(
                       wholeUnitFixerCommand(
@@ -1136,7 +1138,7 @@ export class NativeAgentExecutor implements AgentExecutor {
                     continue;
                   }
                   // The fixer runs in the check's cwd, so it names the file from there.
-                  for (const path of fixerTierPaths(check, tier, paths))
+                  for (const path of fixerPaths(fix, fixerTierPaths(check, tier, paths)))
                     await fixOnce(fixerCommand(fix, cwdPath(check, path)), [path]);
                 }
               } finally {

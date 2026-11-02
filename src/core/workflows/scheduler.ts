@@ -489,6 +489,7 @@ import {
   symbolKey,
   taskChainRecord,
 } from "./finding-chain.js";
+import { fixerPaths } from "./fixer-languages.js";
 import {
   FAILED_FIXERS_NOTE,
   FIXER_KIND,
@@ -5523,18 +5524,28 @@ export class WorkflowScheduler {
     const failure = await this.inRunCopy(runId, state, FIXER_PROBE_COPY, async (copy, scope) => {
       const listed = await git(copy, ["ls-files", "-z"]);
       const tracked = listed.code === 0 ? listed.stdout.split("\0").filter(Boolean) : [];
-      const kinds = new Set(planned.map((path) => extname(path)));
-      // A file the plan modifies, else any tracked file of a kind the plan writes.
-      const file =
-        planned.find((path) => tracked.includes(path)) ??
-        tracked.find((path) => isCodePath(path) && kinds.has(extname(path))) ??
-        null;
       for (const check of checks) {
         signal.throwIfAborted();
         const fix = check.fix;
         if (!fix) continue;
+        // A planned file of the languages the fixer handles (#2632): R86 binlayer probed ruff on a
+        // `.sql` file and recorded it unusable.
+        const own = fixerPaths(fix, planned);
+        const kinds = new Set(own.map((path) => extname(path)));
+        // A file the plan modifies, else any tracked file of a kind the plan writes.
+        const file =
+          own.find((path) => tracked.includes(path)) ??
+          tracked.find((path) => isCodePath(path) && kinds.has(extname(path))) ??
+          null;
         if (!file) {
-          probes.push(skipped(check, "no tracked file of the plan's code kinds"));
+          probes.push(
+            skipped(
+              check,
+              own.length
+                ? "no tracked file of the plan's code kinds"
+                : "the plan writes no code file of the fixer's languages",
+            ),
+          );
           continue;
         }
         const command = isWholeUnitFixer(fix)
@@ -16918,7 +16929,8 @@ ${note}`;
             ? paths.filter((path) => check.fixPaths?.includes(path))
             : paths;
           for (const [tier, fix] of fixerTiers(check).entries()) {
-            const files = fixerTierPaths(check, tier, own);
+            // A fixer runs only on the code files of the languages it handles (#2632).
+            const files = fixerPaths(fix, fixerTierPaths(check, tier, own));
             // A whole-unit formatter (`cargo fmt`) rewrites the whole crate whatever file it is
             // given: one run for all the code files instead of one per file (#1269, #842).
             if (isWholeUnitFixer(fix)) {

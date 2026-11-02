@@ -74,6 +74,7 @@ import { PESTER_RUN, pesterOn } from "../src/core/workflows/pester.js";
 import { PS_FORMAT_CHECK, PS_FORMAT_FIX } from "../src/core/workflows/ps-format.js";
 import { baselineDebt, baselineKeys, DIAGNOSTIC_FORMATS, diagnostics } from "../src/core/verification/task-end-check.js";
 import { isNoRow } from "../src/core/intelligence/language-records.js";
+import { fixerPaths } from "../src/core/workflows/fixer-languages.js";
 import { affectedTestCheck, isWrittenTestFile, plannedWrittenTests, writtenTestsCheck } from "../src/core/workflows/affected-tests.js";
 import { detectLanguages, touchesLanguageFiles } from "../src/core/workflows/language.js";
 import { launchedCommand } from "../src/core/workflows/launcher.js";
@@ -5640,6 +5641,30 @@ describe("gate matrix: coloured runner output (#2615)", () => {
         expect([testCount(coloured), testsRan(coloured), failedTests(coloured), buildFailure(coloured)]).toEqual([testCount(plain), testsRan(plain), failedTests(plain), buildFailure(plain)]);
       }
     });
+});
+
+// #2632: a fixer runs only on the code files of the languages it handles, whatever launcher the
+// gate puts in front of it; R86 binlayer ran ruff on `.sql` files and sqlfluff on `.py` files.
+describe("gate matrix: fixer languages (#2632)", () => {
+  const written = ["binlayer.py", "sql/05_layers.sql", "src/app.ts", "main.go", "README.md", "pyproject.toml"];
+  const cases: [string, string[], string[]][] = [
+    ["ruff", ["check", "--fix"], ["binlayer.py"]],
+    ["uv", ["run", "ruff", "format"], ["binlayer.py"]],
+    ["python3", ["-m", "black", "."], ["binlayer.py"]],
+    ["sqlfluff", ["fix"], ["sql/05_layers.sql"]],
+    ["poetry", ["run", "sqlfluff", "fix"], ["sql/05_layers.sql"]],
+    ["bunx", ["biome", "format", "--write"], ["src/app.ts"]],
+    ["pnpm", ["exec", "eslint", "--fix"], ["src/app.ts"]],
+    ["npx", ["prettier@3.6.0", "--write"], ["src/app.ts"]],
+    ["gofmt", ["-w"], ["main.go"]],
+  ];
+  for (const [executable, args, code] of cases)
+    test(`${[executable, ...args].join(" ")} gets ${code.join(", ")} and the non-code files`, () => {
+      expect(fixerPaths({ executable, args }, written)).toEqual(written.filter((path) => code.includes(path) || ["README.md", "pyproject.toml"].includes(path)));
+    });
+  test("a fixer without a row still gets every file", () => {
+    expect(fixerPaths({ executable: "dprint", args: ["fmt"] }, written)).toEqual(written);
+  });
 });
 
 // #2616: the task-end whole-unit check reads a located diagnostic from every language's compiler
