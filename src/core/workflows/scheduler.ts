@@ -881,6 +881,7 @@ import {
 } from "./stop-reasons.js";
 import { SUPPLIED_CHECK_DIR, SUPPLIED_CHECK_KIND, suppliedCheckRecord } from "./supplied-checks.js";
 import { taskToolProblems, toolsOfferedTo } from "./task-tools.js";
+import { transcriptDriftSummary, transcriptDrifts } from "./transcript-drift.js";
 import {
   repairUncoveredCriteria,
   UNCOVERED_SUBMISSIONS,
@@ -5386,6 +5387,31 @@ export class WorkflowScheduler {
           mode,
           key: `${drift.task}#${drift.path}`,
           summary: suppliedDriftSummary(drift),
+          inputs: { ...drift },
+        });
+    } catch {}
+  }
+  /**
+   * The `transcript_drift` would-stops (#2648): each document the plan writes that leaves a `$`
+   * transcript the request says it must hold exactly, once per document and block. Called at the
+   * checks stage of both workflow versions, after the snapshot; a failure to read records nothing.
+   */
+  private transcriptDriftWouldStop(runId: string, state: RuntimeState, policy: RunPolicy): void {
+    const mode = stopMode(policy, "transcript_drift");
+    if (mode === "enforce") return;
+    const graph = state.rootGraph ?? state.graph;
+    if (!graph) return;
+    try {
+      const root = runRoot(this.store.workspace, state);
+      const drifts = transcriptDrifts(state.requestText || state.prompt, graph, (path) =>
+        readText(workspacePath(root, path)),
+      );
+      for (const drift of drifts)
+        recordWouldStop(this.store, runId, {
+          reason: "transcript_drift",
+          mode,
+          key: `${drift.path}#block-${drift.block}`,
+          summary: transcriptDriftSummary(drift),
           inputs: { ...drift },
         });
     } catch {}
@@ -16731,6 +16757,7 @@ ${note}`;
     if (unsafe.length) return this.recordChecks(runId, state, unsafe);
     this.ciCheckDriftWouldStop(runId, state, policy, policy.checks);
     this.suppliedDriftWouldStop(runId, state, policy);
+    this.transcriptDriftWouldStop(runId, state, policy);
     const rowDrifts = this.rowBlockDriftWouldStop(runId, state, policy);
     const failures: Review["findings"] = [];
     const failedIds: string[] = [];
@@ -19701,6 +19728,7 @@ ${note}`;
       bound.map((b) => b.check),
     );
     this.suppliedDriftWouldStop(runId, state, policy);
+    this.transcriptDriftWouldStop(runId, state, policy);
     const rowDrifts = this.rowBlockDriftWouldStop(runId, state, policy);
     const failures: Review["findings"] = [];
     const failedIds: string[] = [];
