@@ -5817,7 +5817,7 @@ export class WorkflowScheduler {
     const files = hostDocumentFailure(
       check,
       output,
-      check.cwd === "." ? root : workspacePath(root, check.cwd),
+      !check.cwd || check.cwd === "." ? root : workspacePath(root, check.cwd),
     );
     if (!files) return null;
     const reason = `it failed only on documents the host publishes (${files.join(", ")}), which no task writes`;
