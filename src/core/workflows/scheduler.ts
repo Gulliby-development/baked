@@ -38,7 +38,7 @@ import { dataDir, matchGlob } from "../platform/index.js";
 import { runSandbox } from "../security/sandbox.js";
 import { buildSafeEnv } from "../spawn.js";
 import { canonical, hashBytes, hashJson } from "../specs/hash.js";
-import { specPublication } from "../specs/render.js";
+import { specPublication, specPublicationPath } from "../specs/render.js";
 import { validatePackage, workspacePath } from "../specs/validate.js";
 import { captureEndings, restoreEndings } from "../tools/line-endings.js";
 import { INDENT_DEFAULT, placeRowForms, placeRowTargets } from "../tools/place-rows.js";
@@ -126,6 +126,7 @@ import {
   type GeneratedKind,
   generatedCaseDecision,
 } from "../verification/generated-values.js";
+import { hostDocumentFailure } from "../verification/host-documents.js";
 import {
   clearBannedProperties,
   clearBoundaryProperties,
@@ -5796,6 +5797,39 @@ export class WorkflowScheduler {
       ),
     );
     return debt;
+  }
+  /**
+   * The host-published documents a failed formatter check reported, when they are all it reported
+   * (#2641): `hostDocumentFailure` read the check's output, and the failure is the host's, since no
+   * task writes `specs/` and the fixer runs only on a task's files. R87 slk: `prettier --check .`
+   * reported the five documents the run published, T005 ended unfinished twice with that output
+   * and the run blocked. Recorded as a `checks/host-published/` diagnostic that acceptance and every
+   * view read through `hostPassedChecks`; null when the check fails as usual.
+   */
+  private hostDocumentDebt(
+    runId: string,
+    state: RuntimeState,
+    check: Check,
+    output: string,
+    evidenceId: string,
+  ): string[] | null {
+    const root = runRoot(this.store.workspace, state);
+    const files = hostDocumentFailure(
+      check,
+      output,
+      !check.cwd || check.cwd === "." ? root : workspacePath(root, check.cwd),
+    );
+    if (!files) return null;
+    const reason = `it failed only on documents the host publishes (${files.join(", ")}), which no task writes`;
+    this.store.transaction(() =>
+      this.store.artifact(
+        runId,
+        "diagnostic",
+        `checks/host-published/${check.id}-${newId()}.json`,
+        canonical({ checkId: check.id, evidenceId, files, reason }),
+      ),
+    );
+    return files;
   }
   /**
    * Why a failed test check verified nothing that this run owns: the runner collected no test
@@ -15359,7 +15393,8 @@ ${note}`;
     if (
       checked.status === "failed" &&
       checked.output &&
-      this.staticDebt(runId, state, policy, check, checked.output, checked.evidenceId)
+      (this.staticDebt(runId, state, policy, check, checked.output, checked.evidenceId) ||
+        this.hostDocumentDebt(runId, state, check, checked.output, checked.evidenceId))
     )
       return undefined;
     // The check fails exactly as before any change and names no file the task writes: the task
@@ -16709,7 +16744,8 @@ ${note}`;
         result.status === "failed" &&
         check.required &&
         (this.staticDebt(runId, state, policy, check, result.output, result.evidenceId) ||
-          this.noOwnedTests(runId, state, check, result.output, result.evidenceId))
+          this.noOwnedTests(runId, state, check, result.output, result.evidenceId) ||
+          this.hostDocumentDebt(runId, state, check, result.output, result.evidenceId))
       ) {
         passedIds.push(check.id);
         continue;
@@ -19666,7 +19702,8 @@ ${note}`;
         check.required &&
         !run.reason &&
         (this.staticDebt(runId, state, policy, check, run.output ?? "", run.evidenceId) ||
-          this.noOwnedTests(runId, state, check, run.output ?? "", run.evidenceId))
+          this.noOwnedTests(runId, state, check, run.output ?? "", run.evidenceId) ||
+          this.hostDocumentDebt(runId, state, check, run.output ?? "", run.evidenceId))
           ? { ...run, status: "passed" as const }
           : run;
       this.recordGate(runId, state, gate.id, null, {
@@ -22043,10 +22080,8 @@ function answeredFinding(
 const declaredChecks = (policy: RunPolicy, task: Task): Check[] =>
   policy.checks.filter((check) => task.checkIds.includes(check.id));
 
-/** The documents a run publishes under `specs/<featureId>/` once its plan is ready. */
-export const SPEC_PUBLICATION_FILES = ["spec.json", "spec.md", "plan.md", "tasks.json", "tasks.md"];
-export const specPublicationPath = (featureId: string, name: string): string =>
-  `specs/${featureId}/${name}`;
+// The documents a run publishes under `specs/<featureId>/`, defined with their content (#2641).
+export { SPEC_PUBLICATION_FILES, specPublicationPath } from "../specs/render.js";
 /** Logical path of the gates a v2 run froze when it started. */
 export const GATES_ARTIFACT = "definition/gates.json";
 
