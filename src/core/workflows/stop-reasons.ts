@@ -306,6 +306,15 @@ export const STOP_REASONS = {
     modes: NOT_ENFORCED,
     defaultMode: "shadow",
   },
+  transcript_drift: {
+    label:
+      "A document the run delivered leaves a command transcript the request says it must hold exactly",
+    // Shadow only until two bench rounds show no false would-stop (#2648, R88 pokerank's README
+    // printf line with a doubled backslash, R87 citeseek the same); its promotion makes the line a
+    // finding the host proved on the document, which the review gate repairs in any round.
+    modes: NOT_ENFORCED,
+    defaultMode: "shadow",
+  },
   row_block_drift: {
     label:
       "A test file the run delivered lacks a quoted literal of a row the request prescribes for it, or holds a row beyond them",
