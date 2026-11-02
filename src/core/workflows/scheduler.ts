@@ -879,6 +879,7 @@ import {
   stopMode,
 } from "./stop-reasons.js";
 import { SUPPLIED_CHECK_DIR, SUPPLIED_CHECK_KIND, suppliedCheckRecord } from "./supplied-checks.js";
+import { taskToolProblems, toolsOfferedTo } from "./task-tools.js";
 import {
   repairUncoveredCriteria,
   UNCOVERED_SUBMISSIONS,
@@ -1332,7 +1333,14 @@ interface UnfinishedRepeat {
   /** Unfinished ends in a row with the same failing output, this one included. */
   ends: number;
   checks: string[];
+  /**
+   * What the worker of the latest end reported unresolved (#2643): the cause may be no check at
+   * all (R87 slackbar T005 had no run_probe while its block named the `format` check).
+   */
+  unresolved?: string[];
 }
+/** The unresolved notes a block message quotes, at most this many characters each. */
+const UNRESOLVED_NOTE_CHARS = 300;
 /**
  * The block of an unfinished task whose failing checks repeat its previous unfinished end, with
  * the repeat in its message (#2437): R77 pairwick's resumes ran the same task into the same
@@ -1348,7 +1356,14 @@ export function unfinishedRepeatFault(
 ): WorkflowFault {
   if (!repeat) return fault;
   const checks = repeat.checks.join(", ");
-  const summary = `Task ${repeat.taskId} ended unfinished ${repeat.ends} times in a row with the same failing output of ${checks}.`;
+  const notes = (repeat.unresolved ?? [])
+    .map((note) => note.trim())
+    .filter(Boolean)
+    .slice(0, 2)
+    .map((note) =>
+      note.length > UNRESOLVED_NOTE_CHARS ? `${note.slice(0, UNRESOLVED_NOTE_CHARS)}...` : note,
+    );
+  const summary = `Task ${repeat.taskId} ended unfinished ${repeat.ends} times in a row with the same failing output of ${checks}.${notes.length ? ` Its worker reported unresolved: ${notes.map((n) => `"${n}"`).join("; ")}.` : ""}`;
   const head = `${fault.message.replace(/[.\s]+$/, "")}. ${summary}`;
   const { recovery: _replaced, ...details } = fault.details;
   const actions = unfinishedRepeatRemedies(repeat.ends);
@@ -1365,7 +1380,7 @@ export function unfinishedRepeatFault(
   return new WorkflowFault(
     fault.code,
     recoveryAdvice(
-      `${head} Another resume gives the task the same input and runs it into the same failure, so it is not offered. What must change is the input behind ${checks}: the model of the task's stage (\`baked workflow reroute ${runId} --route STAGE=MODEL --resume\`), the plan, tasks or tests that make ${checks} fail, such as a test file or a rule the task may not change (\`baked workflow revise ${runId}\`), or the initiative feature's plan (\`baked workflow initiative replan ID --feature F\`); otherwise cancel the run.`,
+      `${head} Another resume gives the task the same input and runs it into the same failure, so it is not offered. What must change is the input behind ${checks}${notes.length ? " or behind what its worker reported unresolved (a tool the task is not offered, a case it cannot write)" : ""}: the model of the task's stage (\`baked workflow reroute ${runId} --route STAGE=MODEL --resume\`), the plan, tasks or tests that make ${checks} fail, such as a test file or a rule the task may not change (\`baked workflow revise ${runId}\`), or the initiative feature's plan (\`baked workflow initiative replan ID --feature F\`); otherwise cancel the run.`,
       `${summary} Change the stage's model, the plan or the tests before trying again; a resume repeats the failure.`,
       ...actions.map((action) => ({ action, runId })),
     ),
@@ -2043,6 +2058,7 @@ export class WorkflowScheduler {
                   ...this.planProblems(runId, spec, submitted, policy, profiles),
                   ...codeTaskCheckProblems(submitted.taskGraph, policy),
                   ...hostContentProblems(submitted.taskGraph, spec),
+                  ...taskToolProblems(submitted.taskGraph),
                   ...hostFileProblems(submitted.taskGraph, state.hostFiles),
                   ...testWriteProblems(
                     submitted.taskGraph,
@@ -6404,7 +6420,7 @@ export class WorkflowScheduler {
     policy: RunPolicy,
     task: Task,
   ): ((root: string, signal: AbortSignal) => Promise<string[]>) | undefined {
-    if (task.origin === "planned" || !task.findingIds.length) return undefined;
+    if (!toolsOfferedTo(task).has("run_repro")) return undefined;
     const executables = reproExecutables(policy.checks);
     // The repros of earlier findings on the same symbol are a regression set: a rewrite that
     // fixes this finding must not bring one of them back (#1330).
@@ -10407,7 +10423,7 @@ ${note}`;
         ...(failedChecks.length ? { failedChecks } : {}),
       }),
     );
-    return this.recordUnfinishedRepeat(runId, policy, stepId, taskId);
+    return this.recordUnfinishedRepeat(runId, policy, stepId, taskId, result.unresolved);
   }
   /**
    * Records the failing checks of a task's unfinished end (`repeats/tasks/<task>.json`, #2437)
@@ -10422,6 +10438,7 @@ ${note}`;
     policy: RunPolicy,
     stepId: string,
     taskId: string,
+    unresolved: string[] = [],
   ): UnfinishedRepeat | null {
     const tasks = this.store.state(runId).graph?.tasks ?? [];
     const checks = this.failedChecksOf(runId, stepId, taskId, Number.POSITIVE_INFINITY).map(
@@ -10438,7 +10455,12 @@ ${note}`;
         : decided;
     this.store.artifact(runId, REPEAT_KIND, path, canonical(record));
     if (record.decision !== "repeat") return null;
-    const repeat = { taskId, ends: record.ends ?? 2, checks: checks.map((c) => c.id) };
+    const repeat = {
+      taskId,
+      ends: record.ends ?? 2,
+      checks: checks.map((c) => c.id),
+      ...(unresolved.length ? { unresolved } : {}),
+    };
     const mode = stopMode(policy, "repeated_failure");
     if (mode === "enforce") return repeat;
     const files = [...new Set(checks.flatMap((c) => c.files))];
