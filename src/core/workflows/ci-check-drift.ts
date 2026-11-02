@@ -581,6 +581,54 @@ function coveredPaths(
   return uncovered.length ? null : { drop: paths, covered: files };
 }
 
+/** A path as `coveredPaths` and `narrowerPaths` compare it: `/`-separated, no `./`, no trailing `/` or `/...`. */
+const normPath = (path: string) =>
+  path
+    .replace(/\\/g, "/")
+    .replace(/^\.\//, "")
+    .replace(/\/\.\.\.$/, "")
+    .replace(/\/+$/, "");
+/**
+ * The positional words of `words`: not a flag, and not a flag's value. A word after a flag is its
+ * value unless `other` (the side compared with) has that flag as a switch, last or before a flag:
+ * the check's `gofmt -l .` makes `-l` a switch, so the README's `gofmt -l cmd` names a path.
+ */
+function positional(words: readonly string[], other: readonly string[] = []): string[] {
+  const switches = new Set(
+    other.filter((word, i) => /^-[^=]*$/.test(word) && (other[i + 1] ?? "-").startsWith("-")),
+  );
+  return words.filter((word, i) => {
+    if (word.startsWith("-")) return false;
+    const before = words[i - 1] ?? "";
+    return !/^-[^=]*$/.test(before) || switches.has(before);
+  });
+}
+
+/**
+ * The path words of a README command that a check's broader path covers (#2634): R86 binlayer's
+ * README ran `python -m sqlfluff lint sql` while the check ran `python -m sqlfluff lint .`, and
+ * `sql` read as a word the check lacks. The check's paths are its positional words the command
+ * does not share (a shared word is a subcommand such as `lint`). It covers the whole tree when it
+ * has none (`.` and `./` are dropped as the working directory, and a tool given no path runs
+ * there) or `./...`, and a folder when it names that folder or one above it. A command path
+ * outside every check path, a glob (#2567 reads those), a word that is no path (`ARGS=-race`)
+ * or a path above the check's directory stays missing. Returns the words to drop.
+ */
+function narrowerPaths(command: readonly string[], check: readonly string[]): string[] {
+  const scope = positional(check)
+    .filter((word) => !command.includes(word))
+    .map(normPath);
+  const whole = scope.length === 0 || scope.some((path) => path === "" || path === "...");
+  return positional(command, check).filter((word) => {
+    // A path, not an assignment (`ARGS=-race`) or an expression (`stop_on_failure=TRUE`).
+    if (check.includes(word) || GLOB.test(word) || !/^[\w.@+-][\w./\\@+-]*$/.test(word))
+      return false;
+    const path = normPath(word);
+    if (!path || /^(?:\/|[A-Za-z]:|\.\.(?:\/|$))/.test(path)) return false;
+    return whole || scope.some((dir) => path.startsWith(`${dir}/`));
+  });
+}
+
 /**
  * Each gate command of the changed files that the configured checks do not run as written: a
  * check runs its tool without some of its words (a flag, a scope such as `--all-targets`, `-race`,
@@ -687,6 +735,8 @@ export function ciCheckDrift(
             (isPathWord(last) || PLACEHOLDER.test(last))
           )
             mine = mine.slice(0, -1);
+          const narrower = narrowerPaths(mine, have);
+          if (narrower.length) mine = mine.filter((word) => !narrower.includes(word));
           const missing: string[] = [];
           for (const word of mine) {
             const at = have.indexOf(word);

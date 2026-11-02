@@ -6085,6 +6085,17 @@ describe("ci check drift gate: the PowerShell gates' cmdlets and the project's o
     expect(ciCheckDrift(readme("console", "$ mvn -B -q verify", "[INFO] BUILD SUCCESS"), [gate])).toEqual([]);
     expect(ciCheckDrift(readme("", "mvn -B -q package"), [gate]).map((d) => d.tool)).toEqual(["mvn"]);
   });
+
+  // #2634: a README command on a folder inside the check's broader path (`sqlfluff lint sql`
+  // against `sqlfluff lint .`) runs nothing the check does not; a folder outside it is a drift.
+  test("a README path inside the check's broader path is no drift (#2634)", () => {
+    const readme = (line: string) => [{ path: "README.md", text: `\`\`\`sh\n${line}\n\`\`\`\n` }];
+    const gate = (executable: string, ...args: string[]) => ({ id: "gate", executable, args, cwd: ".", timeoutMs: 600000, required: true, scope: "feature" as const, envNames: [], writes: [] });
+    expect(ciCheckDrift(readme("python -m sqlfluff lint sql"), [gate("python", "-m", "sqlfluff", "lint", ".")])).toEqual([]);
+    expect(ciCheckDrift(readme("eslint src"), [gate("eslint", ".")])).toEqual([]);
+    expect(ciCheckDrift(readme("go vet ./cmd/..."), [gate("go", "vet", "./...")])).toEqual([]);
+    expect(ciCheckDrift(readme("ruff check lib"), [gate("ruff", "check", "src")]).map((d) => d.missing)).toEqual([["lib"]]);
+  });
 });
 
 describe("upstream symbol gate: a helper the request supplies is no missing member (#2566)", () => {
