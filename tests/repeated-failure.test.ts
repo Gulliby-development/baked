@@ -216,6 +216,17 @@ describe("unfinishedRepeatFault (#2520)", () => {
     expect(blocked.details.unfinishedTask).toBe("T007");
     expect(unfinishedRepeatRemedies(3)).toEqual(["reroute", "revise", "replan", "cancel"]);
   });
+  // #2643: R87 slackbar T005 blocked naming `format` while its worker reported no run_probe.
+  test("the block names what the worker reported unresolved, clipped", () => {
+    const long = "x".repeat(400);
+    const blocked = unfinishedRepeatFault(fault(), "run-1", { taskId: "T005", ends: 2, checks: ["format"], unresolved: ["run_probe is not available in this environment", long, "third"] });
+    expect(blocked.message).toContain('Its worker reported unresolved: "run_probe is not available in this environment"; "' + "x".repeat(300) + '...".');
+    expect(blocked.message).not.toContain("third");
+    expect(blocked.message).toContain("or behind what its worker reported unresolved");
+    expect(errorRecovery(blocked)?.summary).toContain("run_probe is not available in this environment");
+    const quiet = unfinishedRepeatFault(fault(), "run-1", { taskId: "T005", ends: 2, checks: ["format"], unresolved: [" "] });
+    expect(quiet.message).not.toContain("reported unresolved");
+  });
   test("without a repeat the fault stays as it was", () => {
     const plain = fault();
     expect(unfinishedRepeatFault(plain, "run-1", null)).toBe(plain);

@@ -38,7 +38,7 @@ import { dataDir, matchGlob } from "../platform/index.js";
 import { runSandbox } from "../security/sandbox.js";
 import { buildSafeEnv } from "../spawn.js";
 import { canonical, hashBytes, hashJson } from "../specs/hash.js";
-import { specPublication } from "../specs/render.js";
+import { specPublication, specPublicationPath } from "../specs/render.js";
 import { validatePackage, workspacePath } from "../specs/validate.js";
 import { captureEndings, restoreEndings } from "../tools/line-endings.js";
 import { INDENT_DEFAULT, placeRowForms, placeRowTargets } from "../tools/place-rows.js";
@@ -126,6 +126,7 @@ import {
   type GeneratedKind,
   generatedCaseDecision,
 } from "../verification/generated-values.js";
+import { hostDocumentFailure } from "../verification/host-documents.js";
 import {
   clearBannedProperties,
   clearBoundaryProperties,
@@ -879,6 +880,7 @@ import {
   stopMode,
 } from "./stop-reasons.js";
 import { SUPPLIED_CHECK_DIR, SUPPLIED_CHECK_KIND, suppliedCheckRecord } from "./supplied-checks.js";
+import { taskToolProblems, toolsOfferedTo } from "./task-tools.js";
 import {
   repairUncoveredCriteria,
   UNCOVERED_SUBMISSIONS,
@@ -1332,7 +1334,14 @@ interface UnfinishedRepeat {
   /** Unfinished ends in a row with the same failing output, this one included. */
   ends: number;
   checks: string[];
+  /**
+   * What the worker of the latest end reported unresolved (#2643): the cause may be no check at
+   * all (R87 slackbar T005 had no run_probe while its block named the `format` check).
+   */
+  unresolved?: string[];
 }
+/** The unresolved notes a block message quotes, at most this many characters each. */
+const UNRESOLVED_NOTE_CHARS = 300;
 /**
  * The block of an unfinished task whose failing checks repeat its previous unfinished end, with
  * the repeat in its message (#2437): R77 pairwick's resumes ran the same task into the same
@@ -1348,7 +1357,14 @@ export function unfinishedRepeatFault(
 ): WorkflowFault {
   if (!repeat) return fault;
   const checks = repeat.checks.join(", ");
-  const summary = `Task ${repeat.taskId} ended unfinished ${repeat.ends} times in a row with the same failing output of ${checks}.`;
+  const notes = (repeat.unresolved ?? [])
+    .map((note) => note.trim())
+    .filter(Boolean)
+    .slice(0, 2)
+    .map((note) =>
+      note.length > UNRESOLVED_NOTE_CHARS ? `${note.slice(0, UNRESOLVED_NOTE_CHARS)}...` : note,
+    );
+  const summary = `Task ${repeat.taskId} ended unfinished ${repeat.ends} times in a row with the same failing output of ${checks}.${notes.length ? ` Its worker reported unresolved: ${notes.map((n) => `"${n}"`).join("; ")}.` : ""}`;
   const head = `${fault.message.replace(/[.\s]+$/, "")}. ${summary}`;
   const { recovery: _replaced, ...details } = fault.details;
   const actions = unfinishedRepeatRemedies(repeat.ends);
@@ -1365,7 +1381,7 @@ export function unfinishedRepeatFault(
   return new WorkflowFault(
     fault.code,
     recoveryAdvice(
-      `${head} Another resume gives the task the same input and runs it into the same failure, so it is not offered. What must change is the input behind ${checks}: the model of the task's stage (\`baked workflow reroute ${runId} --route STAGE=MODEL --resume\`), the plan, tasks or tests that make ${checks} fail, such as a test file or a rule the task may not change (\`baked workflow revise ${runId}\`), or the initiative feature's plan (\`baked workflow initiative replan ID --feature F\`); otherwise cancel the run.`,
+      `${head} Another resume gives the task the same input and runs it into the same failure, so it is not offered. What must change is the input behind ${checks}${notes.length ? " or behind what its worker reported unresolved (a tool the task is not offered, a case it cannot write)" : ""}: the model of the task's stage (\`baked workflow reroute ${runId} --route STAGE=MODEL --resume\`), the plan, tasks or tests that make ${checks} fail, such as a test file or a rule the task may not change (\`baked workflow revise ${runId}\`), or the initiative feature's plan (\`baked workflow initiative replan ID --feature F\`); otherwise cancel the run.`,
       `${summary} Change the stage's model, the plan or the tests before trying again; a resume repeats the failure.`,
       ...actions.map((action) => ({ action, runId })),
     ),
@@ -2043,6 +2059,7 @@ export class WorkflowScheduler {
                   ...this.planProblems(runId, spec, submitted, policy, profiles),
                   ...codeTaskCheckProblems(submitted.taskGraph, policy),
                   ...hostContentProblems(submitted.taskGraph, spec),
+                  ...taskToolProblems(submitted.taskGraph),
                   ...hostFileProblems(submitted.taskGraph, state.hostFiles),
                   ...testWriteProblems(
                     submitted.taskGraph,
@@ -5798,6 +5815,39 @@ export class WorkflowScheduler {
     return debt;
   }
   /**
+   * The host-published documents a failed formatter check reported, when they are all it reported
+   * (#2641): `hostDocumentFailure` read the check's output, and the failure is the host's, since no
+   * task writes `specs/` and the fixer runs only on a task's files. R87 slk: `prettier --check .`
+   * reported the five documents the run published, T005 ended unfinished twice with that output
+   * and the run blocked. Recorded as a `checks/host-published/` diagnostic that acceptance and every
+   * view read through `hostPassedChecks`; null when the check fails as usual.
+   */
+  private hostDocumentDebt(
+    runId: string,
+    state: RuntimeState,
+    check: Check,
+    output: string,
+    evidenceId: string,
+  ): string[] | null {
+    const root = runRoot(this.store.workspace, state);
+    const files = hostDocumentFailure(
+      check,
+      output,
+      !check.cwd || check.cwd === "." ? root : workspacePath(root, check.cwd),
+    );
+    if (!files) return null;
+    const reason = `it failed only on documents the host publishes (${files.join(", ")}), which no task writes`;
+    this.store.transaction(() =>
+      this.store.artifact(
+        runId,
+        "diagnostic",
+        `checks/host-published/${check.id}-${newId()}.json`,
+        canonical({ checkId: check.id, evidenceId, files, reason }),
+      ),
+    );
+    return files;
+  }
+  /**
    * Why a failed test check verified nothing that this run owns: the runner collected no test
    * (pytest exit 5, `bun test` "0 test files matching") and the run's plan writes no test file, so no
    * repair could make it pass. Bench round 58 (wheeltags): the decomposer gave the base feature's
@@ -6404,7 +6454,7 @@ export class WorkflowScheduler {
     policy: RunPolicy,
     task: Task,
   ): ((root: string, signal: AbortSignal) => Promise<string[]>) | undefined {
-    if (task.origin === "planned" || !task.findingIds.length) return undefined;
+    if (!toolsOfferedTo(task).has("run_repro")) return undefined;
     const executables = reproExecutables(policy.checks);
     // The repros of earlier findings on the same symbol are a regression set: a rewrite that
     // fixes this finding must not bring one of them back (#1330).
@@ -10407,7 +10457,7 @@ ${note}`;
         ...(failedChecks.length ? { failedChecks } : {}),
       }),
     );
-    return this.recordUnfinishedRepeat(runId, policy, stepId, taskId);
+    return this.recordUnfinishedRepeat(runId, policy, stepId, taskId, result.unresolved);
   }
   /**
    * Records the failing checks of a task's unfinished end (`repeats/tasks/<task>.json`, #2437)
@@ -10422,6 +10472,7 @@ ${note}`;
     policy: RunPolicy,
     stepId: string,
     taskId: string,
+    unresolved: string[] = [],
   ): UnfinishedRepeat | null {
     const tasks = this.store.state(runId).graph?.tasks ?? [];
     const checks = this.failedChecksOf(runId, stepId, taskId, Number.POSITIVE_INFINITY).map(
@@ -10438,7 +10489,12 @@ ${note}`;
         : decided;
     this.store.artifact(runId, REPEAT_KIND, path, canonical(record));
     if (record.decision !== "repeat") return null;
-    const repeat = { taskId, ends: record.ends ?? 2, checks: checks.map((c) => c.id) };
+    const repeat = {
+      taskId,
+      ends: record.ends ?? 2,
+      checks: checks.map((c) => c.id),
+      ...(unresolved.length ? { unresolved } : {}),
+    };
     const mode = stopMode(policy, "repeated_failure");
     if (mode === "enforce") return repeat;
     const files = [...new Set(checks.flatMap((c) => c.files))];
@@ -15359,7 +15415,8 @@ ${note}`;
     if (
       checked.status === "failed" &&
       checked.output &&
-      this.staticDebt(runId, state, policy, check, checked.output, checked.evidenceId)
+      (this.staticDebt(runId, state, policy, check, checked.output, checked.evidenceId) ||
+        this.hostDocumentDebt(runId, state, check, checked.output, checked.evidenceId))
     )
       return undefined;
     // The check fails exactly as before any change and names no file the task writes: the task
@@ -16709,7 +16766,8 @@ ${note}`;
         result.status === "failed" &&
         check.required &&
         (this.staticDebt(runId, state, policy, check, result.output, result.evidenceId) ||
-          this.noOwnedTests(runId, state, check, result.output, result.evidenceId))
+          this.noOwnedTests(runId, state, check, result.output, result.evidenceId) ||
+          this.hostDocumentDebt(runId, state, check, result.output, result.evidenceId))
       ) {
         passedIds.push(check.id);
         continue;
@@ -19666,7 +19724,8 @@ ${note}`;
         check.required &&
         !run.reason &&
         (this.staticDebt(runId, state, policy, check, run.output ?? "", run.evidenceId) ||
-          this.noOwnedTests(runId, state, check, run.output ?? "", run.evidenceId))
+          this.noOwnedTests(runId, state, check, run.output ?? "", run.evidenceId) ||
+          this.hostDocumentDebt(runId, state, check, run.output ?? "", run.evidenceId))
           ? { ...run, status: "passed" as const }
           : run;
       this.recordGate(runId, state, gate.id, null, {
@@ -22043,10 +22102,8 @@ function answeredFinding(
 const declaredChecks = (policy: RunPolicy, task: Task): Check[] =>
   policy.checks.filter((check) => task.checkIds.includes(check.id));
 
-/** The documents a run publishes under `specs/<featureId>/` once its plan is ready. */
-export const SPEC_PUBLICATION_FILES = ["spec.json", "spec.md", "plan.md", "tasks.json", "tasks.md"];
-export const specPublicationPath = (featureId: string, name: string): string =>
-  `specs/${featureId}/${name}`;
+// The documents a run publishes under `specs/<featureId>/`, defined with their content (#2641).
+export { SPEC_PUBLICATION_FILES, specPublicationPath } from "../specs/render.js";
 /** Logical path of the gates a v2 run froze when it started. */
 export const GATES_ARTIFACT = "definition/gates.json";
 

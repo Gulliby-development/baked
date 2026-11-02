@@ -57,13 +57,7 @@ import {
 } from "../tools/place-rows.js";
 import { contentHash, deriveTool, withoutAstEditHint } from "../tools/tool-utils.js";
 import { buildCheckEnv, CheckRunner, modelCheckOutput } from "../verification/check-runner.js";
-import {
-  PROBE_TRIES,
-  probeTool,
-  reproExecutables,
-  runProbe,
-  writesDocumentation,
-} from "../verification/repro.js";
+import { PROBE_TRIES, probeTool, reproExecutables, runProbe } from "../verification/repro.js";
 import { changedPaths, sourceManifest } from "../verification/snapshot.js";
 import { type ReplayResult, replayProblems } from "./acceptance-rows-replay.js";
 import { affectedTestsFor, taskCaseText, writtenTestsCheck } from "./affected-tests.js";
@@ -160,6 +154,7 @@ import {
 import { stopFault } from "./stop-reasons.js";
 import type { EffectRow, WorkflowStore } from "./store.js";
 import { failureOwnerNote } from "./task-graph.js";
+import { toolsOfferedTo } from "./task-tools.js";
 import { recordToolInputSignal } from "./tool-input-health.js";
 import { pureWorkflowTools, WorkflowToolPolicy } from "./tool-policy.js";
 import type { AgentExecutor, ExecutionRequest, ExecutionResponse, Task } from "./types.js";
@@ -937,7 +932,7 @@ export class NativeAgentExecutor implements AgentExecutor {
         request.profile.role === "implementer" &&
         request.profile.allowedTools.includes("run_probe") &&
         request.task &&
-        (request.task.origin !== "planned" || writesDocumentation(request.task.writes)) &&
+        toolsOfferedTo(request.task).has("run_probe") &&
         probeable.length > 0
       ) {
         let probes = 0;

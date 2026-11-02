@@ -62,6 +62,7 @@ import { noteSiblingFindings, ownerOfFinding } from "../src/core/verification/in
 import { failureSignature as convergenceSignature, missingPlannedPaths, noTestsCollected } from "../src/core/verification/convergence.js";
 import { CheckRunner, executeCheckCommand, exitStatus, ranNoTests, timedOutFailure } from "../src/core/verification/check-runner.js";
 import { emptyScriptNote, emptyTestScript } from "../src/core/verification/empty-test-script.js";
+import { FORMAT_FAILURE_READERS, hostDocumentFailure } from "../src/core/verification/host-documents.js";
 import { colour, RUNNER_SUMMARIES } from "./helpers/coloured-runner-output.js";
 import { environmentFault, ENVIRONMENT_SIGNATURES, silentFailure } from "../src/core/verification/environment-faults.js";
 import { SWIFT_COMPILE_ERROR, SWIFT_SYMLINK_WARNING_ONLY, SWIFT_TEST_FATAL_ERROR, SWIFT_TEST_SILENT_EXIT_4, SWIFT_TESTING_FAILURE } from "./fixtures/swiftpm-crash-outputs.js";
@@ -5688,6 +5689,60 @@ describe("gate matrix: fixer languages (#2632)", () => {
     });
   test("a fixer without a row still gets every file", () => {
     expect(fixerPaths({ executable: "dprint", args: ["fmt"] }, written)).toEqual(written);
+  });
+});
+
+// #2641: a whole-tree formatter check that reports only the documents the host publishes under
+// `specs/` (R87 slk: `prettier --check .` on the five files of the run's plan) is the host's
+// failure, read from each Markdown or JSON formatter's own report; one other file keeps it failed.
+describe("gate matrix: host-published documents in a formatter report (#2641)", () => {
+  const DOCS = ["specs/slk/plan.md", "specs/slk/spec.json"];
+  const REPORTS: Record<string, (files: string[]) => string> = {
+    prettier: (files) => ["$ prettier --check .", "Checking formatting...", ...files.map((f) => `[warn] ${f}`), `[warn] Code style issues found in ${files.length} files. Run Prettier with --write to fix.`, 'error: script "format:check" exited with code 1'].join("\n"),
+    "bun fmt": (files) => [...files, `${files.length} files need formatting. Run bun fmt to fix them.`].join("\n"),
+    biome: (files) => [...files.flatMap((f) => [`${f} format ━━━━━━━━━━━━━━━━━━━━`, "", "  × Formatter would have printed the following content:", ""]), `Checked 9 files in 4ms. No fixes applied.`, `Found ${files.length} errors.`, "format ━━━━━━━━━━━━━━━━━━━━", "  × Some errors were emitted while running checks."].join("\n"),
+    dprint: (files) => [...files.flatMap((f) => [`from ${f}:`, "  1 | -# Plan", "  1 | +# Plan", ""]), `Error: Found ${files.length} not formatted files.`].join("\n"),
+    "deno fmt": (files) => [...files.flatMap((f) => [`from /work/slk/${f}:`, "1 | -{\"a\":1}", "1 | +{ \"a\": 1 }", ""]), `error: Found ${files.length} not formatted files in 12 files`].join("\n"),
+  };
+  const gate = { id: "format", executable: "bun", args: ["run", "format:check"] };
+  for (const [tool, report] of Object.entries(REPORTS))
+    test(`${tool}: only the documents is the host's; a task file with them is a failure`, () => {
+      expect(hostDocumentFailure(gate, colour(report(DOCS)), "/work/slk")).toEqual(DOCS);
+      expect(hostDocumentFailure(gate, report([...DOCS, "src/App.vue"]), "/work/slk")).toBeNull();
+      expect(hostDocumentFailure(gate, report(["docs/specs/slk/plan.md"]), "/work/slk")).toBeNull();
+    });
+  test("a parse error, a count that does not match and a test check stay failures", () => {
+    expect(hostDocumentFailure(gate, `[warn] ${DOCS[0]}\n[error] src/a.ts: SyntaxError: Unexpected token\n[warn] Code style issues found in 1 file.`)).toBeNull();
+    expect(hostDocumentFailure(gate, `[warn] ${DOCS[0]}\n[warn] Code style issues found in 3 files.`)).toBeNull();
+    expect(hostDocumentFailure({ id: "tests", executable: "bun", args: ["test"] }, REPORTS.prettier?.(DOCS) ?? "")).toBeNull();
+  });
+  // The formatters that read Markdown or JSON and run on the published documents, live where installed.
+  // Each with the probe that shows it is installed: a Bun before 1.4.4 has no `bun fmt`.
+  const LIVE: [string, string[], string[]][] = [
+    ["prettier", ["prettier", "--check", "."], ["--version"]],
+    ["biome", [join(process.cwd(), "node_modules/.bin/biome"), "format", "."], ["--version"]],
+    ["bun fmt", [process.execPath, "fmt", "--no-script", "--check", "."], ["fmt", "--help"]],
+  ];
+  const installed = (program: string, probe: string[]): boolean => {
+    const run = spawnSync(program, probe, { encoding: "utf8" });
+    return run.status === 0 && (probe[0] !== "fmt" || run.stdout.includes("--check"));
+  };
+  for (const [tool, command, probe] of LIVE)
+    test.skipIf(!installed(command[0] ?? "", probe))(`${tool}: its real report on the published documents`, () => {
+      const root = mkdtempSync(join(tmpdir(), "baked-host-docs-"));
+      try {
+        mkdirSync(join(root, "specs/slk"), { recursive: true });
+        writeFileSync(join(root, "package.json"), "{}\n");
+        writeFileSync(join(root, "specs/slk/spec.json"), '{\n  "ids": [\n    "a",\n    "b"\n  ],\n    "x":1}\n');
+        const run = spawnSync(command[0] ?? "", command.slice(1), { cwd: root, encoding: "utf8", env: { ...process.env, NO_COLOR: "1" } });
+        expect(run.status).not.toBe(0);
+        expect(hostDocumentFailure(gate, `${run.stdout}\n${run.stderr}`, root)).toEqual(["specs/slk/spec.json"]);
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    });
+  test("every Markdown or JSON formatter the gates detect has a report reader", () => {
+    expect(Object.keys(FORMAT_FAILURE_READERS).sort()).toEqual(["biome", "bun fmt", "dprint, deno fmt", "prettier"]);
   });
 });
 
