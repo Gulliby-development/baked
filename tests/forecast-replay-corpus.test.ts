@@ -9,7 +9,7 @@ import { documentedSurfaceRate } from "../src/core/workflows/initiatives/documen
 import { estimateInitiative } from "../src/core/workflows/initiatives/estimate.js";
 import { adaptiveFirstByteMs } from "../src/core/llm/provider-health.js";
 import { planApprovalDecision } from "../src/core/workflows/auto-approval.js";
-import { CAPACITY_PROBE, exceedsTestCapacity, rowVolumePrice } from "../src/core/workflows/sizing.js";
+import { CAPACITY_PROBE, exceedsTestCapacity, multiFileSplit, rowVolumePrice, type SizingReport } from "../src/core/workflows/sizing.js";
 import { type CallRate, chainCosts, openTrace, type PlanPriceReplay, replayChainEscalation, replayEdgeRecord, replayInitiativeStarts, replayPlanApprovals, replayPlanPrices, replayActiveTimes, replayPoolBounds, replayTestSplits, replayTrace, type TestSplitRule } from "../src/core/workflows/trace.js";
 import { type EdgeRecord, edgeCrashDecision } from "../src/core/verification/edge-inputs.js";
 import { ROOT, traces } from "./helpers/replay-corpus.js";
@@ -644,6 +644,28 @@ describe("test task splits replay on recorded sizing reports (#1789)", () => {
       deltaglue.dispose();
     }
   }, 120000);
+
+  test("R74 callmend and R79 verhop documentation: a README and LICENSE task no longer splits (#2649)", () => {
+    // Both priced README.md and LICENSE at the sum of the files' high ends (668,278 and 658,362)
+    // against a 600,000 cap and went back to the planner; the files then cost 268,807 (callmend)
+    // and 614,482 over three tasks (verhop). On the expected price of the sum the task fits.
+    for (const [file, runId, expected] of [
+      ["R74/callmend.sqlite.gz", "1770c254-8a6f-497a-b774-555ccfccda00", 459_244],
+      ["R79/verhop.sqlite.gz", "f0a2962f-7432-40fa-9b78-4d65f9abf5df", 470_587],
+    ] as const) {
+      const { store, dispose } = openTrace(join(ROOT, file));
+      try {
+        const artifact = store.latestArtifact(runId, "sizing/plan-0.json");
+        const report = JSON.parse(store.readArtifact(runId, artifact?.id ?? "")) as SizingReport;
+        const [task] = report.tasks;
+        expect(report.decision).toBe("split-tasks");
+        expect(task).toMatchObject({ files: 2, oversized: true });
+        expect(multiFileSplit(task!.estimate, task!.files, 0, report.maxAttemptTokens)).toMatchObject({ rule: "expected", expected, byHigh: true, split: false });
+      } finally {
+        dispose();
+      }
+    }
+  });
 
   test("R62 stepvet: tagexpr's active time is sized at the initiative's own pace and covers what it used (#2336)", () => {
     // tagexpr was sized at the history's 135k tokens per minute to 2,100,000 ms, stopped there
