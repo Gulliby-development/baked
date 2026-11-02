@@ -18,6 +18,7 @@ import { emptyScriptNote, emptyTestScript } from "./empty-test-script.js";
 import { environmentFault, environmentNote, unpreparedNote } from "./environment-faults.js";
 import { isFailedTestLine } from "./failed-test-line.js";
 import { MISSING_GATE_REPORT, readGateReport, renderGateReport } from "./gate-report.js";
+import { hostDocumentFailure, hostDocumentNote } from "./host-documents.js";
 import { testsRan } from "./output-counts.js";
 import { plainOutput, plainOutputEnv } from "./plain-output.js";
 import { changedPaths, sourceManifest } from "./snapshot.js";
@@ -482,13 +483,21 @@ export class CheckRunner {
     // A test script that holds no code runs no test and prints nothing a counter reads (#2611).
     const empty = result.exitCode === 0 && !vacuous ? emptyTestScript(check, cwd) : null;
     const listed = result.exitCode === 0 && exitStatus(check, 0, result.output, cwd) === "failed";
+    // A formatter check that failed only on the documents the host publishes under `specs/`: the
+    // model reads why; the run's check decisions count it as passed (#2641).
+    const documents =
+      result.exitCode && !result.timedOut && !result.cancelled
+        ? hostDocumentFailure(check, result.output, cwd)
+        : null;
     const note = vacuous
       ? noTestsNote(check)
       : empty
         ? emptyScriptNote(check, empty)
         : listed
           ? listedNote(check)
-          : passedOutputNote(result.output, result.exitCode);
+          : documents
+            ? hostDocumentNote(check, documents)
+            : passedOutputNote(result.output, result.exitCode);
     if (note) result = { ...result, output: `${result.output}\n\n${note}` };
     const after = await sourceManifest(root, generated);
     const unstable = changedPaths(before, after).length > 0;

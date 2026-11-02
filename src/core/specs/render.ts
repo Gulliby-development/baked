@@ -55,6 +55,11 @@ export function renderTasks(graph: TaskGraph): string {
   ].join("\n");
 }
 
+/** The documents a run publishes under `specs/<featureId>/` once its plan is ready. */
+export const SPEC_PUBLICATION_FILES = ["spec.json", "spec.md", "plan.md", "tasks.json", "tasks.md"];
+export const specPublicationPath = (featureId: string, name: string): string =>
+  `specs/${featureId}/${name}`;
+
 /**
  * The content of each document a workflow run publishes under `specs/<featureId>/`
  * (`SPEC_PUBLICATION_FILES`). An initiative writes the same bytes into a dependent feature's base,
