@@ -380,6 +380,11 @@ function shapeRuns(
   return { runs, oneLine };
 }
 
+/** Whether the host writes row files of `path`'s language: its `ROW_FILE_SHAPES` row (#2633). */
+export function rowFileLanguage(path: string): boolean {
+  return rowOf(ROW_FILE_SHAPES, detectLanguageFromPath(path)) !== null;
+}
+
 /** The text of a prescribed row file from its shape, with the decision's inputs. */
 export function rowFilePlan(
   path: string,

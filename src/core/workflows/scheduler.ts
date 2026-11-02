@@ -530,6 +530,7 @@ import {
   hostApplyRecord,
   hostApplyRecords,
   hostApplyText,
+  hostRowFileTasks,
   rowFileTasks,
 } from "./host-apply.js";
 import { HOST_ADDITIONS, HOST_EDITS_PATH, type HostEdit, recordGraphEdits } from "./host-edits.js";
@@ -5079,6 +5080,8 @@ export class WorkflowScheduler {
       ...(policy.sizing?.rowVolume || policy.sizing?.suppliedDiff
         ? { request: state.requestText || state.prompt }
         : {}),
+      // A row file the host writes is never split by its rows: it needs no session (#2633).
+      hostRows: hostRowFileTasks(state.requestText || state.prompt, graph, policy),
     });
     const split = splitTestTasks(
       graph,
@@ -8030,6 +8033,7 @@ export class WorkflowScheduler {
         tokenRates: rateHistory(this.store.workspace, policy),
         ownRates: this.initiativeRates(runId),
         request: state.requestText || state.prompt,
+        hostRows: hostRowFileTasks(state.requestText || state.prompt, graph, policy),
       });
       this.store.transaction(() =>
         this.store.artifact(
@@ -8194,6 +8198,7 @@ ${note}`;
       tokenRates: rateHistory(this.store.workspace, policy),
       ownRates: this.initiativeRates(runId),
       request: state.requestText || state.prompt,
+      hostRows: hostRowFileTasks(state.requestText || state.prompt, state.graph, policy),
     });
     this.store.transaction(() => {
       this.store.artifact(runId, "sizing", path, this.sizingRecord(runId, report));
