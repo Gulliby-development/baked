@@ -4,8 +4,8 @@ import { dirname, join } from "node:path";
 import { runGit } from "../git/status.js";
 import { detectLanguageFromPath } from "../intelligence/types.js";
 import { tmpDir } from "../platform/index.js";
-import { type RowFileInputs, rowFilePlan, rowFileRefusal } from "./row-file.js";
-import type { TaskGraph } from "./schemas.js";
+import { type RowFileInputs, rowFileLanguage, rowFilePlan, rowFileRefusal } from "./row-file.js";
+import type { RunPolicy, TaskGraph } from "./schemas.js";
 import { type MarkdownRegion, suppliedBlocks, suppliedRows } from "./sizing.js";
 import type { WorkflowStore } from "./store.js";
 import { hostWritten } from "./task-graph.js";
@@ -638,6 +638,23 @@ export function rowFileTasks(request: string, graph: Pick<TaskGraph, "tasks">): 
     const rows = prescribedRows(request, task, supplied);
     return task.writes.every((w) => w.action !== "delete" && rows.has(w.path)) ? [task.id] : [];
   });
+}
+
+/**
+ * The tasks the host writes from their prescribed rows under `rowFileWrite: "on"`, as sizing prices
+ * them (#2633): the scheduler's own `rowFileTasks`, less a task with a file of a language that has
+ * no `ROW_FILE_SHAPES` row, which the host refuses and a session writes. Empty under shadow.
+ */
+export function hostRowFileTasks(
+  request: string,
+  graph: Pick<TaskGraph, "tasks">,
+  policy: Pick<RunPolicy, "rowFileWrite">,
+): string[] {
+  if (policy.rowFileWrite !== "on") return [];
+  const byId = new Map(graph.tasks.map((task) => [task.id, task]));
+  return rowFileTasks(request, graph).filter((id) =>
+    (byId.get(id)?.writes ?? []).every((w) => rowFileLanguage(w.path)),
+  );
 }
 
 /** The approval's line naming the host-appliable tasks; null when there are none. */
