@@ -483,3 +483,34 @@ describe("ciCheckDrift: README sample data and program output are no commands (#
   });
 });
 
+
+// Bench round 86 binlayer (#2634): the README documented `python -m sqlfluff lint sql` and the
+// check ran `python -m sqlfluff lint .`; `sql` read as a word the check lacks, though the check
+// lints `sql` and everything else. A README path inside a check's broader path is no drift.
+describe("ciCheckDrift: a README path inside the check's broader path is no drift (#2634)", () => {
+  const ROWS: [string, string][] = [
+    ["python -m sqlfluff lint sql", "python -m sqlfluff lint ."],
+    ["python -m ruff check src", "python -m ruff check ."],
+    ["ruff check src", "ruff check ."],
+    ["ruff check src tests", "ruff check ."],
+    ["python -m pytest tests", "python -m pytest -q"],
+    ["pytest tests/unit", "pytest"],
+    ["eslint src", "eslint ."],
+    ["gofmt -l cmd", "gofmt -l ."],
+    ["go vet ./cmd/...", "go vet ./..."],
+    ["ruff check src/app.py", "ruff check src"],
+    ["sqlfluff lint .", "sqlfluff lint ."],
+  ];
+  test.each(ROWS)("README `%s` against the check `%s` records nothing", (command, gate) => {
+    expect(ciCheckDrift([{ path: "README.md", text: readme(command) }], [check("gate", gate)])).toEqual([]);
+  });
+
+  test("a path outside the check's path, above its directory, or a flag the check lacks still records", () => {
+    const missing = (command: string, gate: string) => ciCheckDrift([{ path: "README.md", text: readme(command) }], [check("gate", gate)]).map((d) => d.missing);
+    expect(missing("ruff check lib", "ruff check src")).toEqual([["lib"]]);
+    expect(missing("ruff check ../shared", "ruff check .")).toEqual([["../shared"]]);
+    expect(missing("ruff check --select E src", "ruff check .")).toEqual([["--select", "E"]]);
+    expect(missing("sqlfluff lint --dialect postgres sql", "sqlfluff lint .")).toEqual([["--dialect", "postgres"]]);
+    expect(missing("go vet ./cmd/...", "go vet ./internal/...")).toEqual([["./cmd/..."]]);
+  });
+});
