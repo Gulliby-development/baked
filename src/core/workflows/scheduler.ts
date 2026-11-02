@@ -1003,6 +1003,7 @@ import {
   prescribedRowFiles,
   suppliedConflictCriteria,
   suppliedContentFindings,
+  suppliedFileContents,
 } from "./supplied-content.js";
 import {
   planContentDrifts,
@@ -7141,6 +7142,8 @@ export class WorkflowScheduler {
               hostRows: generatedRows.filter((file) => file.inline === true),
               // The rows the request prescribes, for files written yet or not (#2501).
               prescribedRows: this.prescribedRows(runId, state),
+              // The files it supplies verbatim, whose helpers a criterion may name (#2646).
+              suppliedFiles: this.suppliedFiles(runId, state),
               ...(policy.citedCases ? { citedCases: policy.citedCases } : {}),
               generatedKinds: this.bannedGeneratedKinds(state, task),
               refuseGenerated: stopMode(policy, "generated_case") === "enforce",
@@ -17582,6 +17585,12 @@ ${note}`;
     const graph = state.rootGraph ?? state.graph;
     if (!graph) return new Map();
     return prescribedRowFiles(statedRequest(state, this.store.requests(runId)), graph);
+  }
+  /** The content of the files the request supplies verbatim (`suppliedFileContents`, #2646). */
+  private suppliedFiles(runId: string, state: RuntimeState): string[] {
+    const graph = state.rootGraph ?? state.graph;
+    if (!graph) return [];
+    return suppliedFileContents(statedRequest(state, this.store.requests(runId)), graph);
   }
   /**
    * The `case_not_prescribed` would-stops of a walk (#2501): each case no prescribed row holds,
