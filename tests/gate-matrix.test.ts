@@ -60,7 +60,7 @@ import { reproExecutables, rerootRepro } from "../src/core/verification/repro.js
 import { entryPointCommand } from "../src/core/verification/entry-points.js";
 import { noteSiblingFindings, ownerOfFinding } from "../src/core/verification/initiative-ownership.js";
 import { failureSignature as convergenceSignature, missingPlannedPaths, noTestsCollected } from "../src/core/verification/convergence.js";
-import { executeCheckCommand, exitStatus, ranNoTests, timedOutFailure } from "../src/core/verification/check-runner.js";
+import { CheckRunner, executeCheckCommand, exitStatus, ranNoTests, timedOutFailure } from "../src/core/verification/check-runner.js";
 import { emptyScriptNote, emptyTestScript } from "../src/core/verification/empty-test-script.js";
 import { colour, RUNNER_SUMMARIES } from "./helpers/coloured-runner-output.js";
 import { environmentFault, ENVIRONMENT_SIGNATURES, silentFailure } from "../src/core/verification/environment-faults.js";
@@ -5630,6 +5630,30 @@ test("#1594 review and mutation gates route pathless deliverables without hiding
 // #2615: every runner `testCount` reads gives the same count, run count and failed tests on its
 // coloured output as on its plain output. `RUNNER_SUMMARIES` is typed by `TestRunner`, so a runner
 // added to the parsers needs its samples there before this compiles.
+// #2631: the check environment gives plain output for the real tools, under a parent that forces
+// colour as CI does. ruff reads any FORCE_COLOR value as "force", so the environment drops it.
+describe("gate matrix: plain output per tool (#2631)", () => {
+  const ruff = spawnSync("ruff", ["--version"], { stdio: "ignore" }).status === 0;
+  test.skipIf(!ruff)("ruff check and ruff format --check print no escape as checks", async () => {
+    const root = mkdtempSync(join(tmpdir(), "baked-plain-ruff-"));
+    const saved = process.env.FORCE_COLOR;
+    process.env.FORCE_COLOR = "1";
+    try {
+      writeFileSync(join(root, "a.py"), "import os\nx=1\n");
+      const runner = new CheckRunner(undefined as unknown as WorkflowStore, new ProcessScope());
+      for (const args of [["check", "."], ["format", "--check", "."]]) {
+        const check: Check = { id: "ruff", executable: "ruff", args, cwd: ".", timeoutMs: 60000, required: true, scope: "feature", envNames: [], writes: [] };
+        const result = await runner.measure(check, new AbortController().signal, root, null);
+        expect([args.join(" "), result.status, result.output.includes("\u001b")]).toEqual([args.join(" "), "failed", false]);
+      }
+    } finally {
+      if (saved === undefined) delete process.env.FORCE_COLOR;
+      else process.env.FORCE_COLOR = saved;
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
 describe("gate matrix: coloured runner output (#2615)", () => {
   for (const [tool, sample] of Object.entries(RUNNER_SUMMARIES))
     test(`${tool}: the coloured passing and failing summaries read as the plain ones`, () => {
