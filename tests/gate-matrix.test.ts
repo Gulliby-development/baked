@@ -63,6 +63,7 @@ import { failureSignature as convergenceSignature, missingPlannedPaths, noTestsC
 import { CheckRunner, executeCheckCommand, exitStatus, ranNoTests, timedOutFailure } from "../src/core/verification/check-runner.js";
 import { emptyScriptNote, emptyTestScript } from "../src/core/verification/empty-test-script.js";
 import { FORMAT_FAILURE_READERS, hostDocumentFailure } from "../src/core/verification/host-documents.js";
+import { transcriptDrifts } from "../src/core/workflows/transcript-drift.js";
 import { colour, RUNNER_SUMMARIES } from "./helpers/coloured-runner-output.js";
 import { environmentFault, ENVIRONMENT_SIGNATURES, silentFailure } from "../src/core/verification/environment-faults.js";
 import { SWIFT_COMPILE_ERROR, SWIFT_SYMLINK_WARNING_ONLY, SWIFT_TEST_FATAL_ERROR, SWIFT_TEST_SILENT_EXIT_4, SWIFT_TESTING_FAILURE } from "./fixtures/swiftpm-crash-outputs.js";
@@ -5695,6 +5696,26 @@ describe("gate matrix: fixer languages (#2632)", () => {
 // #2641: a whole-tree formatter check that reports only the documents the host publishes under
 // `specs/` (R87 slk: `prettier --check .` on the five files of the run's plan) is the host's
 // failure, read from each Markdown or JSON formatter's own report; one other file keeps it failed.
+// #2648: a `$` transcript the request says a document must hold exactly is compared with the
+// delivered document; a doubled backslash in one line (R88 pokerank JavaScript, R87 citeseek
+// Python) is a drift, the transcript as given is none.
+describe("gate matrix: transcripts a document must hold exactly (#2648)", () => {
+  const CASES: [string, string, string][] = [
+    ["javascript", "$ printf 'board 2c 7d\\nseat ann 100\\n' > hand.txt", "$ node bin/pokerank.js showdown hand.txt"],
+    ["python", "$ .venv\\Scripts\\activate", "$ python -m citeseek check refs.bib"],
+    ["shell", "$ printf 'a\\tb\\n' | ./cut.sh -f 2", "b"],
+  ];
+  for (const [language, first, second] of CASES)
+    test(`${language}: a doubled backslash is a drift, the transcript as given is none`, () => {
+      const request = `The README must hold this exactly as shown:\n\n\`\`\`console\n${first}\n${second}\n\`\`\`\n`;
+      const graph = { tasks: [{ id: "T002", writes: [{ path: "README.md", action: "create" }] }] } as unknown as Parameters<typeof transcriptDrifts>[1];
+      const doc = (line: string) => `# Tool\n\n\`\`\`console\n${line}\n${second}\n\`\`\`\n`;
+      expect(transcriptDrifts(request, graph, () => doc(first))).toEqual([]);
+      const doubled = first.replaceAll("\\", "\\\\");
+      expect(transcriptDrifts(request, graph, () => doc(doubled))).toMatchObject([{ problem: "differs", expected: first, actual: { line: 4, text: doubled } }]);
+    });
+});
+
 describe("gate matrix: host-published documents in a formatter report (#2641)", () => {
   const DOCS = ["specs/slk/plan.md", "specs/slk/spec.json"];
   const REPORTS: Record<string, (files: string[]) => string> = {
