@@ -366,3 +366,62 @@ describe("cited literals outside prescribed rows, under citedCases (#2531)", () 
     expect(await asked("skip")).not.toContain("Supplied content");
   }, 60000);
 });
+
+// #2646: R87 slackbar (92cd61a6), 6 of 6 `case_not_prescribed` records false. Five criteria glued
+// the table header to the sentence before it (`All 14 exact comparisons pass. Input | Scenario |
+// Expected result`), and the walk read the first cell as a literal; AC-006 named `cellsOf` and
+// `summaryText`, helpers the verbatim file exports, in code spans. Neither is noted now; a literal
+// no row holds still is.
+describe("a glued table header and a named helper are not cases to remove (#2646)", () => {
+  const ROWS = "tests/outcome.test.ts";
+  const HELPERS = "tests/helpers.ts";
+  const rows = ['row("[]", "empty", "ok"),', 'row("[1]", "one", "ok 1"),'];
+  const HELPER_FILE = 'export function cellsOf(text: string): string[] {\n  return text.split("|");\n}\n\nexport const summaryText = (n: number) => `${n} passed`;';
+  const request = (helpers = true) =>
+    `Add outcomes.\n\n\`\`\`ts\n// Rows in ${ROWS} (${rows.length} rows)\n${rows.join("\n")}\n\`\`\`\n${helpers ? `\nCreate \`${HELPERS}\` with exactly this content:\n\n\`\`\`ts\n${HELPER_FILE}\n\`\`\`\n` : ""}`;
+  const criterion = (id: string, then: string): Spec["criteria"][number] => ({
+    id, requirementIds: ["FR-001"], given: "the prescribed rows", when: "the outcome tests run", then, method: "automated",
+  });
+  const TABLE = "`[]` | empty | `ok`\n`[1]` | one | `ok 1`";
+  const GLUED = criterion("AC-004", `All 2 exact comparisons pass. Input | Scenario | Expected result\n${TABLE}`);
+  const SEPARATED = criterion("AC-005", `All 2 exact comparisons pass, including spacing. Input | Scenario | Expected result\n|---|---|---|\n${TABLE}`);
+  const HELPER = criterion("AC-006", "the rows compare through `cellsOf` and `summaryText`");
+  const ROWLESS = criterion("AC-009", "All 2 pass. Input | Scenario | Expected result\n`[]` | empty | `ok`\n`[7, 8]` | two | `ok 2`");
+  const ids = [GLUED, SEPARATED, HELPER, ROWLESS].map((c) => c.id);
+  const spec = (...criteria: Spec["criteria"]): Spec => ({ ...fixtureSpec, criteria: [...fixtureSpec.criteria, ...criteria] });
+  const rowTask = task("T003", [{ path: ROWS, action: "create" }], ids);
+  const helperTask = task("T002", [{ path: HELPERS, action: "create" }], []);
+
+  test("a header glued to a sentence, with or without a separator row, raises no note", () => {
+    expect(notPrescribedFindings(spec(GLUED, SEPARATED), graph([helperTask, rowTask]), request(), { checks })).toEqual([]);
+  });
+
+  test("a row no prescribed row holds is still noted under a glued header", () => {
+    const findings = notPrescribedFindings(spec(GLUED, ROWLESS), graph([helperTask, rowTask]), request(), { checks });
+    expect(findings.map((f) => f.id)).toEqual(["NOT-PRESCRIBED-AC-009"]);
+    expect(findings[0]?.description).toContain('"[7, 8]"');
+    expect(findings[0]?.description).not.toContain("All 2 pass");
+  });
+
+  test("a helper a verbatim file declares, named in a code span, raises no note", () => {
+    expect(notPrescribedFindings(spec(HELPER), graph([helperTask, rowTask]), request(), { checks })).toEqual([]);
+  });
+
+  test("so does one a planned write's content declares", () => {
+    const planned = task("T002", [{ path: HELPERS, action: "create", content: HELPER_FILE }], []);
+    expect(notPrescribedFindings(spec(HELPER), graph([planned, rowTask]), request(false), { checks })).toEqual([]);
+  });
+
+  test("a name no supplied or planned file declares is still noted", () => {
+    const findings = notPrescribedFindings(spec(HELPER), graph([helperTask, rowTask]), request(false), { checks });
+    expect(findings.map((f) => f.id)).toEqual(["NOT-PRESCRIBED-AC-006"]);
+  });
+
+  test("helper is a code span's exact identifier only", () => {
+    const names = { names: new Set<string>(), counts: new Set<number>(), helpers: new Set(["cellsOf", "summaryText"]) };
+    expect(citedKind("cellsOf", " and", names, true)).toBe("helper");
+    expect(citedKind("cellsOf", " and", names)).toBeUndefined();
+    expect(citedKind("cellsOf(x)", " and", names, true)).toBeUndefined();
+    expect(citedKind("cells", " and", names, true)).toBeUndefined();
+  });
+});

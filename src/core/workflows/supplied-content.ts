@@ -57,6 +57,18 @@ export function suppliedTestFiles(
 }
 
 /**
+ * The content of every file the plan writes that the request supplies verbatim (one fenced block,
+ * not a listing): what `citedKind` reads for a helper a criterion names in a code span (#2646).
+ */
+export function suppliedFileContents(request: string, graph: Pick<TaskGraph, "tasks">): string[] {
+  const paths = [...new Set(graph.tasks.flatMap((t) => t.writes.map((w) => w.path)))];
+  return [...suppliedBlocks(request, paths).values()].flatMap((blocks) => {
+    const [block] = blocks;
+    return blocks.length === 1 && block?.kind === "file" && !block.listing ? [block.content] : [];
+  });
+}
+
+/**
  * One blocking finding per criterion whose literals a task's supplied test files do not hold.
  * Under `citedCases: "skip"` (#2531) a literal that describes rows instead of quoting one
  * (`CriterionCase.cited`) is left out, as the walk no longer demands it.
@@ -72,7 +84,11 @@ export function suppliedContentFindings(
   for (const task of graph.tasks) {
     const files = supplied.get(task.id);
     if (!files) continue;
-    const cases = criterionCases(spec, task, { checks: context.checks, tasks: graph.tasks });
+    const cases = criterionCases(spec, task, {
+      checks: context.checks,
+      tasks: graph.tasks,
+      suppliedFiles: suppliedFileContents(request, graph),
+    });
     const open = missingCases(
       cases,
       files.map((f) => f.content),
@@ -149,6 +165,7 @@ function prescribedCases(
 ) {
   const rows = prescribedRowFiles(request, graph);
   if (!rows.size) return [];
+  const suppliedFiles = suppliedFileContents(request, graph);
   return graph.tasks.flatMap((task) => {
     const paths = writtenTestPaths(task);
     // The rows give `citedKind` their counts: a criterion's "`12` rows" is no row's text (#2524).
@@ -156,6 +173,7 @@ function prescribedCases(
       checks: context.checks,
       tasks: graph.tasks,
       prescribedRows: rows,
+      suppliedFiles,
     });
     return cases.map((c) => ({
       task,
