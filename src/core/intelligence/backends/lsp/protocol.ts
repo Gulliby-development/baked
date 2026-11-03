@@ -226,7 +226,9 @@ export function filePathToUri(path: string): string {
   // escapes from native Windows paths. No-op on POSIX.
   const native = windowsPath(path).replaceAll("\\", "/");
   const encoded = native.split("/").map(encodePathSegment).join("/");
-  return `file://${encoded}`;
+  // A drive path needs an empty authority (`file:///C:/x`, RFC 8089): in `file://C:/x` the drive
+  // is the host, and servers read it as the UNC path `\\C:\x`.
+  return /^[A-Za-z]:/.test(encoded) ? `file:///${encoded}` : `file://${encoded}`;
 }
 
 export function uriToFilePath(uri: string): string {
