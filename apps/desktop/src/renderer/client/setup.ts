@@ -18,6 +18,7 @@ import {
   HOOKS_EDIT_CAPABILITY,
   LIBRARY_CAPABILITY,
   offers,
+  PROVIDER_ACCOUNTS_CAPABILITY,
   PROVIDER_LIMITS_CAPABILITY,
   PROVIDER_SWITCH_CAPABILITY,
   ROUTING_CAPABILITY,
@@ -684,6 +685,36 @@ export interface ProviderLimits {
   message: string;
 }
 
+/** One labelled account of a provider in `GET /v1/providers/ID/accounts` (#2303). */
+export interface ProviderAccount {
+  id: string;
+  label: string;
+  /** Project folders this account may serve. */
+  allowedProjects: string[];
+  /** The project this backend serves may use it. */
+  allowed: boolean;
+  /** The project this backend serves uses it. */
+  active: boolean;
+  /** The folder its CLI keeps the sign-in in. */
+  home: string;
+  signIn: Omit<CliSignIn, "login">;
+  login: CliLogin | null;
+}
+
+/** `GET /v1/providers/ID/accounts`. */
+export interface ProviderAccounts {
+  provider: "codex" | "claude-code";
+  name: string;
+  project: string;
+  /** The account the project uses; null for the CLI's own sign-in. */
+  active: string | null;
+  accounts: ProviderAccount[];
+}
+
+/** `?account=ID` on a sign-in route, for one account's credential home. */
+const accountQuery = (account?: string): string =>
+  account ? `?account=${encodeURIComponent(account)}` : "";
+
 /** `POST /v1/providers/ID/switch`. */
 export interface AccountSwitch {
   ok: boolean;
@@ -716,6 +747,33 @@ export const setup = {
     withCapability(key, PROVIDER_LIMITS_CAPABILITY, () =>
       call<{ limits: ProviderLimits[] }>(key, "GET", "/v1/providers/limits"),
     ),
+  /** The labelled accounts of a provider and the one this project uses (#2303). */
+  accounts: (key: string, provider: string) =>
+    withCapability(key, PROVIDER_ACCOUNTS_CAPABILITY, () =>
+      call<ProviderAccounts>(key, "GET", `/v1/providers/${json(provider)}/accounts`),
+    ),
+  /** Whether the backend keeps several accounts per provider. */
+  canUseAccounts: async (key: string) =>
+    offers(await capabilities(key), PROVIDER_ACCOUNTS_CAPABILITY) === true,
+  addAccount: (key: string, provider: string, account: { id: string; label: string }) =>
+    call<ProviderAccounts>(key, "POST", `/v1/providers/${json(provider)}/accounts`, account),
+  updateAccount: (
+    key: string,
+    provider: string,
+    id: string,
+    change: { label?: string; allowedProjects?: string[] },
+  ) =>
+    call<ProviderAccounts>(
+      key,
+      "PATCH",
+      `/v1/providers/${json(provider)}/accounts/${json(id)}`,
+      change,
+    ),
+  removeAccount: (key: string, provider: string, id: string) =>
+    call<ProviderAccounts>(key, "DELETE", `/v1/providers/${json(provider)}/accounts/${json(id)}`),
+  /** Chooses the account this project uses; null goes back to the CLI's own sign-in. */
+  chooseAccount: (key: string, provider: string, id: string | null) =>
+    call<ProviderAccounts>(key, "PUT", `/v1/providers/${json(provider)}/account`, { account: id }),
   /** Signs the CLI's account out and starts a new sign-in, as `/codex switch` does. */
   switchAccount: (key: string, provider: string) =>
     withCapability(key, PROVIDER_SWITCH_CAPABILITY, () =>
@@ -902,23 +960,41 @@ export const setup = {
     ),
   removeProviderKey: (key: string, provider: string) =>
     call<null>(key, "DELETE", `/v1/providers/${json(provider)}/key`),
-  startLogin: (key: string, provider: string) =>
-    call<{ login: CliLogin }>(key, "POST", `/v1/providers/${json(provider)}/login`),
-  login: async (key: string, provider: string) => {
+  /** `account` acts for one of the provider's labelled accounts instead of the CLI's own sign-in. */
+  startLogin: (key: string, provider: string, account?: string) =>
+    call<{ login: CliLogin }>(
+      key,
+      "POST",
+      `/v1/providers/${json(provider)}/login${accountQuery(account)}`,
+    ),
+  login: async (key: string, provider: string, account?: string) => {
     const result = await call<{ login: CliLogin | null }>(
       key,
       "GET",
-      `/v1/providers/${json(provider)}/login`,
+      `/v1/providers/${json(provider)}/login${accountQuery(account)}`,
     );
-    noteLogin(provider, result.login);
+    noteLogin(account ? `${provider}:${account}` : provider, result.login);
     return result;
   },
-  submitLoginCode: (key: string, provider: string, code: string) =>
-    call<{ login: CliLogin }>(key, "POST", `/v1/providers/${json(provider)}/login/code`, { code }),
-  cancelLogin: (key: string, provider: string) =>
-    call<{ login: CliLogin | null }>(key, "DELETE", `/v1/providers/${json(provider)}/login`),
-  logout: (key: string, provider: string) =>
-    call<{ ok: boolean; message: string }>(key, "POST", `/v1/providers/${json(provider)}/logout`),
+  submitLoginCode: (key: string, provider: string, code: string, account?: string) =>
+    call<{ login: CliLogin }>(
+      key,
+      "POST",
+      `/v1/providers/${json(provider)}/login/code${accountQuery(account)}`,
+      { code },
+    ),
+  cancelLogin: (key: string, provider: string, account?: string) =>
+    call<{ login: CliLogin | null }>(
+      key,
+      "DELETE",
+      `/v1/providers/${json(provider)}/login${accountQuery(account)}`,
+    ),
+  logout: (key: string, provider: string, account?: string) =>
+    call<{ ok: boolean; message: string }>(
+      key,
+      "POST",
+      `/v1/providers/${json(provider)}/logout${accountQuery(account)}`,
+    ),
   definitions: (key: string) => call<WorkflowDefinition[]>(key, "GET", "/v1/workflow/definitions"),
   /**
    * Who runs each stage of a workflow and why; `model` is the run model to route against. Null

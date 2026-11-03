@@ -60,6 +60,7 @@ function openUrlInBrowser(url: string): boolean {
 export function runCodexBrowserLogin(
   onEvent?: (message: string) => void,
   onUrl?: (url: string) => void,
+  env?: NodeJS.ProcessEnv,
 ): {
   promise: Promise<void>;
   abort: () => void;
@@ -68,7 +69,7 @@ export function runCodexBrowserLogin(
   let aborted = false;
 
   const promise = (async () => {
-    const status = getCodexLoginStatus();
+    const status = getCodexLoginStatus(env);
     if (!status.installed) {
       throw new Error(status.message);
     }
@@ -77,7 +78,7 @@ export function runCodexBrowserLogin(
       return;
     }
 
-    session = await startCodexAppServerSession();
+    session = await startCodexAppServerSession(env ? { env } : {});
     if (aborted) {
       session.close();
       throw new Error("Codex login cancelled.");

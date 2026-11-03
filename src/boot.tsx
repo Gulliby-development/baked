@@ -116,6 +116,11 @@ if (cliArgs[0] === "limits") {
   process.exit(await runLimitsCli(cliArgs.slice(1)));
 }
 
+if (cliArgs[0] === "accounts") {
+  const { runAccountsCli } = await import("./headless/accounts.js");
+  process.exit(await runAccountsCli(cliArgs.slice(1)));
+}
+
 if (cliArgs[0] === "login" || cliArgs[0] === "logout") {
   const { runLoginCli } = await import("./headless/login.js");
   process.exit(await runLoginCli(cliArgs[0], cliArgs.slice(1)));

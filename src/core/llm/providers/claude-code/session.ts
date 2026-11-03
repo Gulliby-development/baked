@@ -4,7 +4,9 @@ import { join } from "node:path";
 import type { JSONSchema7, LanguageModelV3Usage } from "@ai-sdk/provider";
 import { tmpDir } from "../../../platform/index.js";
 import { trackProcess } from "../../../process-tracker.js";
+import { activeProviderAccount } from "../../provider-accounts.js";
 import { recordClaudeRateLimit } from "../../usage-limits-record.js";
+import { providerAccountEnv } from "../account-env.js";
 import { onJsonLines, UnparsedLines } from "../json-lines.js";
 import { claudeCodeCommand, getClaudeCodeFlags } from "./cli.js";
 import { type ClaudeCodePromptParts, claudeCodeTurnContent } from "./prompt.js";
@@ -137,6 +139,8 @@ export interface ClaudeCodeProcess {
 }
 
 export type ClaudeCodeProcessFactory = (options: {
+  /** The environment of the account the project uses (#2303); none for the CLI's own sign-in. */
+  env?: NodeJS.ProcessEnv;
   modelId: string;
   effort?: string;
   instructions: string;
@@ -145,6 +149,8 @@ export type ClaudeCodeProcessFactory = (options: {
 
 interface SessionState {
   process: ClaudeCodeProcess;
+  /** The Claude Code account the process runs on; null for the CLI's own sign-in. */
+  account: string | null;
   modelId: string;
   effort: string | undefined;
   instructions: string;
@@ -264,6 +270,7 @@ let workDirCounter = 0;
  * empty directory so no project CLAUDE.md reaches the prompt; BAKED sends its own context.
  */
 export const spawnClaudeCodeProcess: ClaudeCodeProcessFactory = ({
+  env,
   modelId,
   effort,
   instructions,
@@ -296,6 +303,7 @@ export const spawnClaudeCodeProcess: ClaudeCodeProcessFactory = ({
   ];
 
   const child = spawn(claudeCodeCommand(), args, {
+    ...(env ? { env } : {}),
     cwd: dir,
     stdio: ["pipe", "pipe", "pipe"],
     windowsHide: true,
@@ -388,8 +396,9 @@ export class ClaudeCodeSessionRunner implements ClaudeCodeRunner {
     call.abortSignal?.throwIfAborted();
     const keys = call.parts.messages.map(messageKey);
     const schemaKey = JSON.stringify(call.parts.schema);
-    const match = fresh ? null : this.findSession(call, keys, schemaKey);
-    const session = match?.session ?? this.startSession(call, schemaKey);
+    const account = activeProviderAccount("claude-code")?.id ?? null;
+    const match = fresh ? null : this.findSession(call, keys, schemaKey, account);
+    const session = match?.session ?? this.startSession(call, schemaKey, account);
     const fromIndex = match?.fromIndex ?? 0;
 
     session.busy = true;
@@ -427,10 +436,12 @@ export class ClaudeCodeSessionRunner implements ClaudeCodeRunner {
     call: ClaudeCodeCall,
     keys: string[],
     schemaKey: string,
+    account: string | null,
   ): { session: SessionState; fromIndex: number } | null {
     let best: { session: SessionState; fromIndex: number } | null = null;
     for (const session of this.sessions) {
       if (session.busy || session.closed || session.modelId !== call.modelId) continue;
+      if (session.account !== account) continue;
       if (session.effort !== call.effort) continue;
       if (session.instructions !== call.parts.instructions || session.schemaKey !== schemaKey)
         continue;
@@ -450,8 +461,13 @@ export class ClaudeCodeSessionRunner implements ClaudeCodeRunner {
     return best;
   }
 
-  private startSession(call: ClaudeCodeCall, schemaKey: string): SessionState {
+  private startSession(
+    call: ClaudeCodeCall,
+    schemaKey: string,
+    account: string | null,
+  ): SessionState {
     const proc = this.spawnProcess({
+      ...(account ? { env: providerAccountEnv("claude-code", { id: account }) } : {}),
       modelId: call.modelId,
       ...(call.effort ? { effort: call.effort } : {}),
       instructions: call.parts.instructions,
@@ -459,6 +475,7 @@ export class ClaudeCodeSessionRunner implements ClaudeCodeRunner {
     });
     const session: SessionState = {
       process: proc,
+      account,
       modelId: call.modelId,
       effort: call.effort,
       instructions: call.parts.instructions,

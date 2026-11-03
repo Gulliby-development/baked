@@ -87,6 +87,7 @@ bun test tests/feature-parity.test.ts
 | Sign in through the Codex or Claude Code CLI | `/codex`, `/codex login`, `/codex logout` +6 | `baked login`, `baked logout` | `/v1/providers/:id/login`, `/v1/providers/:id/login/code`, `/v1/providers/:id/logout` | `settings/providers` |
 | Subscription usage limits left (Codex, Claude Code, Copilot) | `/limits` | `baked limits` | `/v1/providers/limits` | `settings/providers` |
 | Switch Codex accounts | `/codex switch` | Not needed: scripts sign in once | `/v1/providers/:id/switch` | `settings/providers` |
+| Several accounts of one provider, chosen per project (Codex, Claude Code) | `/accounts`, `/accounts add`, `/accounts login` +3 | `baked accounts`, `baked login --account`, `baked logout --account` | `/v1/providers/:id/accounts`, `/v1/providers/:id/account` | `settings/providers` |
 | Pick a model from the list | `/models`, `/providers` | `baked workflow models`, `--list-models`, `--model` | `/v1/models` | `project/chat` |
 | Default chat model (project or global) | `/model-scope` | Not needed: --model picks the model per run | `/v1/settings` | `settings/chat` |
 | Provider options: thinking, speed, cache TTL, server compaction, tool streaming | `/provider-settings` | Not needed: set in config.json | `/v1/settings` | `settings/chat` |

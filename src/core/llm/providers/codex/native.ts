@@ -10,6 +10,7 @@ import type {
   SharedV2ProviderMetadata,
 } from "@ai-sdk/provider";
 import { getCwd } from "../../../cwd.js";
+import { activeProviderAccount } from "../../provider-accounts.js";
 import { ProviderAnswerError } from "../../provider-answer.js";
 import { providerCallDetail } from "../../provider-health.js";
 import { recordCodexRateLimits } from "../../usage-limits-record.js";
@@ -396,6 +397,8 @@ type Plan =
  */
 export class CodexAppServerSessions {
   private connection: Promise<CodexAppServerConnection> | null = null;
+  /** The Codex account the app-server was started for; null for the CLI's own sign-in. */
+  private connectionAccount: string | null = null;
   private threads: NativeThread[] = [];
   private unavailable = false;
   /**
@@ -657,14 +660,21 @@ export class CodexAppServerSessions {
   }
 
   private async getConnection(): Promise<CodexAppServerConnection> {
+    // The app-server runs in one account's home (#2303). When the project's account changed in
+    // Settings, the next step starts a new app-server once no step runs on the old one.
+    const account = activeProviderAccount("codex")?.id ?? null;
     if (this.connection) {
       const existing = await this.connection;
-      if (!existing.closed) return existing;
+      const moved =
+        account !== this.connectionAccount && !this.threads.some((t) => t.state === "running");
+      if (!existing.closed && !moved) return existing;
+      if (moved) this.close();
       this.connection = null;
       this.threads = [];
     }
     const pending = this.connect();
     this.connection = pending;
+    this.connectionAccount = account;
     try {
       const connection = await pending;
       connection.onNotification((method, params) => this.onNotification(method, params));

@@ -41,6 +41,7 @@ ${BOLD}Management:${RST}
   baked --set-key <provider> <key>                   Save an API key
   baked --remove-key <provider>                      Remove a saved API key
   baked login|logout <codex|claude-code>             Sign a subscription CLI in or out
+  baked accounts [--json]                            Several accounts of one provider, per project
   baked limits [--json]                              Subscription usage left (Codex, Claude, Copilot)
   baked --version                                    Show version
 

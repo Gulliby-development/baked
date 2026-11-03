@@ -86,11 +86,18 @@ baked login                         # whether the Codex and Claude Code CLIs are
 baked login claude-code             # sign the CLI in with your subscription
 baked logout codex
 baked limits                        # how much of each subscription's usage limit is left
+baked accounts                      # labelled accounts of Codex and Claude Code, and the one this project uses
+baked accounts add claude-code client --label "Client seat"
+baked login claude-code --account client
+baked accounts use claude-code client   # this project uses it (and may from now on)
+baked accounts use claude-code --default
 ```
 
 `--remove-key` removes the saved key of a provider and says so when an environment variable still provides one. `baked login codex|claude-code` runs the same sign-in as `/codex login` and `/claude-code login` in the terminal UI: it prints the CLI's progress and the page to open on stderr and waits until the sign-in ends, with exit code 0 when signed in, 1 when it failed or the CLI is not installed, and 130 when interrupted. When the Claude Code sign-in page ends on a code, paste it into the terminal and press Enter: `baked login` passes it to the CLI. A CLI that is already signed in succeeds at once. `baked logout` runs the CLI's own logout. `--json` prints the `Login` object of the local API's [`GET /v1/providers/ID/login`](desktop/api.md); `baked login --json` prints `{providers: [{provider, installed, loggedIn, message, command}]}`. BAKED never reads or stores the CLI's tokens.
 
 `baked limits` shows how much of each subscription's usage limit is left, as `/limits` in the terminal UI and Subscription limits on the desktop's Providers and keys page do: a meter per window with when it resets, for Codex, Claude Code and GitHub Copilot ([subscription limits](providers.md#subscription-limits)). `--json` prints the answer of the local API's [`GET /v1/providers/limits`](desktop/api.md). It always exits 0; a provider that could not be read says why in its `message`.
+
+`baked accounts` lists the [accounts](providers.md#several-accounts-of-one-provider) of Codex and Claude Code: each one's label, whether it is signed in, whether the current project may use it, and which account the project uses (the CLI's own sign-in when none). `add <provider> <id> --label <label>` adds one; `use <provider> <id>` makes the current project use it and allows it there; `use <provider> --default` goes back to the CLI's own sign-in; `allow <provider> <id> <folder>...` replaces the project folders an account may serve; `remove <provider> <id>` signs it out, deletes its credential home and sends the projects that used it back to the CLI's own sign-in. `--json` prints the answer of [`GET /v1/providers/:id/accounts`](desktop/api.md) per provider. `baked login|logout <provider> --account <id>` signs one account in or out in its own credential home. BAKED never switches accounts by itself.
 
 ## Forking a session
 

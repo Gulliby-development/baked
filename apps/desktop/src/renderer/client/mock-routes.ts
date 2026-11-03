@@ -1,4 +1,5 @@
 import type { RunSnapshot } from "../../shared/api.js";
+import { accountRoutes } from "./mock-accounts.js";
 import { agentRoutes } from "./mock-agents.js";
 import { artifactRoutes } from "./mock-artifacts.js";
 import { attentionRoutes } from "./mock-attention.js";
@@ -88,6 +89,7 @@ export const MOCK_ROUTES: MockRoute[] = [
   workflowRuns,
   projectSummary,
   instructionSave,
+  accountRoutes,
   startRoutes,
   setupRoutes,
   settingsRoutes,

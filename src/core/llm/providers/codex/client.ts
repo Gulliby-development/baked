@@ -111,9 +111,11 @@ export function isCodexInstalled(): boolean {
   }
 }
 
-export function getCodexLoginStatus(): CodexLoginStatus {
+/** `env` points Codex at an account's home (#2303); without it, the user's own Codex home. */
+export function getCodexLoginStatus(env?: NodeJS.ProcessEnv): CodexLoginStatus {
   try {
     const result = spawnSync(codexCommand(), ["login", "status"], {
+      ...(env ? { env } : {}),
       timeout: 5_000,
       encoding: "utf-8",
       stdio: ["ignore", "pipe", "pipe"],
@@ -146,9 +148,10 @@ export interface CodexLogoutResult {
   message: string;
 }
 
-export function logoutCodex(): CodexLogoutResult {
+export function logoutCodex(env?: NodeJS.ProcessEnv): CodexLogoutResult {
   try {
     const result = spawnSync(codexCommand(), ["logout"], {
+      ...(env ? { env } : {}),
       timeout: 15_000,
       encoding: "utf-8",
       stdio: ["ignore", "pipe", "pipe"],
@@ -169,8 +172,9 @@ export function logoutCodex(): CodexLogoutResult {
   }
 }
 
-export function assertCodexReady(): void {
-  const status = getCodexLoginStatus();
+/** `env` is the run's environment, pointing at the account the project uses (#2303). */
+export function assertCodexReady(env?: NodeJS.ProcessEnv): void {
+  const status = getCodexLoginStatus(env);
   if (!status.installed) {
     throw new Error(status.message);
   }
@@ -184,12 +188,13 @@ export function assertCodexReady(): void {
  * skills (#1462); model turns use it. Sign-in and model listing stay in the user's home.
  */
 export async function startCodexAppServerSession(
-  options: { experimentalApi?: boolean; isolated?: boolean } = {},
+  options: { experimentalApi?: boolean; isolated?: boolean; env?: NodeJS.ProcessEnv } = {},
 ): Promise<CodexAppServerConnection> {
+  const env = options.env ?? (options.isolated ? codexRunEnv() : undefined);
   const child = spawn(codexCommand(), ["app-server", "--listen", "stdio://"], {
     stdio: ["pipe", "pipe", "pipe"],
     windowsHide: true,
-    ...(options.isolated ? { env: codexRunEnv() } : {}),
+    ...(env ? { env } : {}),
   });
   trackProcess(child);
 

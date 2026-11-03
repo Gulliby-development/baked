@@ -85,6 +85,9 @@ export const PROVIDER_SWITCH_CAPABILITY = "provider-switch";
 /** `GET /v1/providers/limits` (Subscription limits on the Providers page). */
 export const PROVIDER_LIMITS_CAPABILITY = "provider-limits";
 
+/** `/v1/providers/ID/accounts*`, `PUT /v1/providers/ID/account` and `?account=` on sign-in (Accounts on the Providers page). */
+export const PROVIDER_ACCOUNTS_CAPABILITY = "provider-accounts";
+
 /**
  * Whether a backend offers a capability: true or false from its health answer, null when the
  * health answer could not be read, so the caller has to try the endpoint and treat 404 as "no".

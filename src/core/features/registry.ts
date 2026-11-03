@@ -487,6 +487,22 @@ export const FEATURES: readonly Feature[] = [
     desktop: ["settings/providers"],
   },
   {
+    id: "provider-accounts",
+    group: "Models and providers",
+    title: "Several accounts of one provider, chosen per project (Codex, Claude Code)",
+    tui: [
+      "/accounts",
+      "/accounts add",
+      "/accounts login",
+      "/accounts use",
+      "/accounts logout",
+      "/accounts remove",
+    ],
+    cli: ["baked accounts", "baked login --account", "baked logout --account"],
+    api: ["/v1/providers/:id/accounts", "/v1/providers/:id/account"],
+    desktop: ["settings/providers"],
+  },
+  {
     id: "model-picker",
     group: "Models and providers",
     title: "Pick a model from the list",
