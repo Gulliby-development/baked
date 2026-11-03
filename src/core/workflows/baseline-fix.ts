@@ -1,5 +1,6 @@
 import { posix } from "node:path";
 import { diagnosticCount } from "../verification/output-counts.js";
+import type { RunRoots } from "../verification/run-roots.js";
 import { relativeHeaded } from "../verification/task-end-check.js";
 
 /**
@@ -112,8 +113,9 @@ export function baselineFindings(
   output: string,
   root: string,
   cwd: string,
+  run?: RunRoots,
 ): { files: string[]; findings: number; correctable: number; complete: boolean } {
-  const found = relativeHeaded(output, root).map((d) => ({
+  const found = relativeHeaded(output, root, run).map((d) => ({
     ...d,
     // A tool prints paths from its own directory.
     path:

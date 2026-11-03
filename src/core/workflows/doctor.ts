@@ -8,6 +8,7 @@ import { getProviderApiKey } from "../secrets.js";
 import { type SandboxMode, sandboxSettings } from "../security/sandbox.js";
 import { buildCheckEnv } from "../verification/check-runner.js";
 import { environmentSignaturesFor } from "../verification/environment-faults.js";
+import { slashes } from "../verification/run-roots.js";
 import { defaultWorkflowPolicy } from "./defaults.js";
 import { worktreePathRisks } from "./dependency-dirs.js";
 import { WorkflowFault } from "./errors.js";
@@ -489,10 +490,11 @@ async function environmentChecks(
   return lines;
 }
 
-async function gitChecks(
+export async function gitChecks(
   workspace: string,
   mode: PreparedStart["mode"] | null,
   git: DoctorDeps["git"],
+  configuredRoot: string | null = null,
 ): Promise<DoctorCheck[]> {
   const inside = await git(["rev-parse", "--is-inside-work-tree"], workspace);
   if (inside.code !== 0 || inside.stdout.trim() !== "true")
@@ -528,9 +530,15 @@ async function gitChecks(
       : { id: "git.clean", status: "ok", title: "Working tree is clean" },
   );
   const worktrees = await git(["worktree", "list", "--porcelain"], workspace);
-  const prunable = worktrees.stdout
-    .split("\n\n")
-    .filter((entry) => /^prunable/m.test(entry) && /\.baked[\\/]worktrees/.test(entry)).length;
+  // Run worktrees under `workflows.worktreeRoot` count too (#2731).
+  const root = worktreeRootDir(workspace, configuredRoot);
+  const under = root && !worktreeRootProblem(workspace, root) ? `${slashes(root)}/` : null;
+  const prunable = worktrees.stdout.split("\n\n").filter((entry) => {
+    if (!/^prunable/m.test(entry)) return false;
+    if (/\.baked[\\/]worktrees/.test(entry)) return true;
+    const path = /^worktree (.+)$/m.exec(entry)?.[1];
+    return Boolean(under && path && `${slashes(path)}/`.startsWith(under));
+  }).length;
   if (prunable)
     checks.push({
       id: "git.worktrees",
@@ -791,7 +799,14 @@ export async function runDoctor(
         : (request.sandbox ?? sandboxSettings(workspace).effective);
       checks.push(sandboxCheck(mode, deps.sandbox()));
     }
-    checks.push(...(await gitChecks(workspace, prepared?.mode ?? null, deps.git)));
+    checks.push(
+      ...(await gitChecks(
+        workspace,
+        prepared?.mode ?? null,
+        deps.git,
+        config.workflows?.worktreeRoot ?? null,
+      )),
+    );
     if (prepared?.mode !== "inline")
       checks.push(
         ...worktreePathChecks(workspace, process.platform, config.workflows?.worktreeRoot ?? null),

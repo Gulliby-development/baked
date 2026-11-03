@@ -1,6 +1,7 @@
 import { existsSync, readdirSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { dirname, join, resolve, sep } from "node:path";
+import { runWorktreeAt } from "../../../verification/run-roots.js";
 import {
   type CallHierarchyResult,
   type CodeAction,
@@ -20,7 +21,6 @@ import {
   type TypeHierarchyResult,
   type TypeInfo,
 } from "../../types.js";
-
 import {
   type LspCallHierarchyItem,
   type LspDocumentSymbol,
@@ -1443,11 +1443,13 @@ const WORKTREE_SEGMENT = /[\\/]\.baked[\\/]worktrees[\\/]/;
 /**
  * A server never runs in a task worktree: a process whose working directory is a worktree keeps
  * the directory locked on Windows and blocks its removal. A root below `.baked/worktrees` maps to
- * the workspace the worktrees belong to; the server then sees the same project, rooted outside.
+ * the workspace the worktrees belong to; the server then sees the same project, rooted outside. A
+ * run worktree under `workflows.worktreeRoot` has no such segment and maps to the project its
+ * `.git` file names (`runWorktreeAt`, #2731).
  */
 export function serverRootFor(root: string, fallback: string): string {
   const match = WORKTREE_SEGMENT.exec(root);
-  if (!match) return root;
+  if (!match) return runWorktreeAt(root)?.project ?? root;
   const workspace = root.slice(0, match.index);
   return workspace.length > 0 ? workspace : fallback;
 }
