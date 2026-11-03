@@ -3,12 +3,14 @@ import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { LanguageModelV3, LanguageModelV3CallOptions, LanguageModelV3GenerateResult } from "@ai-sdk/provider";
 import { MockLanguageModelV3 } from "./helpers/workflow-model.js";
+import { findPricing } from "../src/core/llm/pricing.js";
 import { getProvider } from "../src/core/llm/providers/index.js";
 import { NativeAgentExecutor } from "../src/core/workflows/agent-executor.js";
 import { WorkflowFault } from "../src/core/workflows/errors.js";
 import { WorkspaceLeases } from "../src/core/workflows/leases.js";
 import { type AgentProfile, ProfileSchema, type RunPolicy } from "../src/core/workflows/schemas.js";
 import type { ExecutionRequest } from "../src/core/workflows/types.js";
+import { runUsage } from "../src/core/workflows/usage.js";
 import { FixtureExecutor, fixturePolicy, workflowFixture } from "./helpers/workflow-fixture.js";
 
 const cleanups: (() => void | Promise<void>)[] = [];
@@ -56,7 +58,7 @@ function scriptModel(script: LanguageModelV3GenerateResult[], choices: LanguageM
   return prompts;
 }
 
-async function nativeAttempt(output = "research") {
+async function nativeAttempt(output = "research", model = "openai/fixture-model") {
   const fixture = workflowFixture();
   cleanups.push(fixture.dispose);
   const { store } = fixture.service;
@@ -65,7 +67,7 @@ async function nativeAttempt(output = "research") {
   const profiles = ProfileSchema.array().parse(JSON.parse(store.run(run.runId).profiles_json));
   const researcher = profiles.find((p) => p.output === output);
   if (!researcher) throw new Error("research profile missing");
-  const profile: AgentProfile = { ...researcher, model: "openai/fixture-model" };
+  const profile: AgentProfile = { ...researcher, model };
   const stepId = store.beginStep(run.runId, "fixture");
   const attemptId = store.reserve(run.runId, stepId, profile.model, 2000, fixture.policy);
   const executor = new NativeAgentExecutor(store, new WorkspaceLeases(store), { ...fixture.config, repoMap: false });
@@ -158,6 +160,27 @@ describe("a step that ends without a tool call (executor)", () => {
     expect(prompts[1]).toContain("Research the fixture");
     expect(prompts[1]).toContain("without calling submit_result");
     expect(prompts[1]).not.toContain("Reformat this previous result");
+  });
+
+  test("records the correction attempt's usage, so the run's cost and baked usage price it (#2777)", async () => {
+    const priced = "openai/gpt-5";
+    const pricing = findPricing(priced)?.pricing;
+    if (!pricing) throw new Error("No fixture price");
+    scriptModel([proseStep("Not finished"), proseStep("Still not finished"), toolStep("submit_result", research)]);
+    const { executor, request, store, run, attemptId } = await nativeAttempt("research", priced);
+    await expect(executor.execute(request)).resolves.toMatchObject({ output: research });
+    // The executor's caller finishes the first attempt; the correction finished itself.
+    store.transaction(() => store.finishAttempt(run.runId, attemptId, "completed", 2200));
+    const correction = store.attempts(run.runId).find((a) => a.id !== attemptId);
+    expect(correction).toMatchObject({ model_id: priced, status: "completed", used_tokens: 1100 });
+    expect(store.latestArtifact(run.runId, `attempts/${correction?.id}/usage.json`)).not.toBeNull();
+    const step = (1000 * pricing.input + 100 * pricing.output) / 1e6;
+    const rows = runUsage(store, run.runId).attempts;
+    expect(rows.find((a) => a.attemptId === correction?.id)).toMatchObject({ inputTokens: 1000, outputTokens: 100, steps: 1 });
+    expect(rows.find((a) => a.attemptId === correction?.id)?.costUsd).toBeCloseTo(step, 9);
+    // Two steps in the first attempt and one in the correction: the run's dollars and its tokens agree.
+    expect(store.snapshot(run.runId).tokenUsage).toBe(3300);
+    expect(store.snapshot(run.runId).estimatedCostUsd).toBeCloseTo(3 * step, 9);
   });
 
   test("that ends on text again fails as prose_end and stores what the model said", async () => {

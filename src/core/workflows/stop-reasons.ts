@@ -420,6 +420,19 @@ export const STOP_REASONS = {
     modes: NOT_ENFORCED,
     defaultMode: "shadow",
   },
+  stream_output_limit: {
+    label:
+      "A model call's streamed output passes twice the profile's maxOutputTokens on a provider that takes no output limit (Codex)",
+    // Shadow by default (#2660, a follow-up of #2547: Codex sends no `max_output_tokens`, and
+    // #1479 ran a 10-minute response to the model's own limit). The Codex app-server adapter
+    // counts each step's streamed text and reasoning (`streamOutputDecision`) and the executor
+    // records `decision.would_stop` from the step's usage record. `stopModes: {
+    // stream_output_limit: "enforce" }` interrupts the turn and ends the step `length`, so the
+    // truncation notice applies; making that the default is a pull request of its own after two
+    // bench rounds with no false would-stop.
+    modes: STOP_MODES,
+    defaultMode: "shadow",
+  },
   cost: {
     label: "Spent and reserved dollars reach the cost cap",
     modes: ENFORCED,

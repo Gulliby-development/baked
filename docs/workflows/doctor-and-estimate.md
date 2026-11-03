@@ -174,7 +174,10 @@ The price table in `src/stores/statusbar.ts` moves to `src/core/llm/pricing.ts` 
 what it uses, so the status bar is unchanged). A new `findPricing(modelId)` returns `null` where the
 table has no entry or family match, so the estimate shows "price unknown" instead of inventing a number.
 Family matches (`gpt` priced as the newest GPT) and GitHub Copilot's request-multiplier prices are marked
-`approximate` per model. Free and local models price at zero.
+`approximate` per model. Free and local models price at zero. A table entry prices only the model it
+names and its dated or tagged releases (`-20250929`, `@20250929`, `-latest`, `[1m]`): a variant such as
+`gpt-5.4-nano` or `gpt-5.4-pro`, or a later version such as `claude-opus-4.6`, is not priced as `gpt-5.4`
+or `claude-opus-4`; it gets a family price marked `approximate`, or none.
 
 Attempts record `used_tokens` = input + output, where input already includes cache reads. The estimate
 prices a stage with a fixed mix of 60% uncached input, 30% cache reads and 10% output (agent loops re-send

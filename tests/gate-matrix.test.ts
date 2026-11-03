@@ -57,6 +57,7 @@ import { syntaxErrors } from "../src/core/intelligence/syntax-check.js";
 import { criterionCases, missingCases, testsHold, writtenTestPaths } from "../src/core/verification/criteria-cases.js";
 import { INLINE_HARNESS, type InlineRowTest, inlineRowFile, withInlineRows } from "../src/core/workflows/acceptance-rows-inline.js";
 import { reproExecutables, rerootRepro } from "../src/core/verification/repro.js";
+import { packageNeeds } from "../src/core/workflows/package-probe.js";
 import { entryPointCommand } from "../src/core/verification/entry-points.js";
 import { noteSiblingFindings, ownerOfFinding } from "../src/core/verification/initiative-ownership.js";
 import { failureSignature as convergenceSignature, missingPlannedPaths, noTestsCollected } from "../src/core/verification/convergence.js";
@@ -150,7 +151,7 @@ test("#1643 initiative ceiling gate uses central stage prices from shared histor
       expect(shareShortfall(over, view.features[1]!)?.message).toContain("above its $37.50 ceiling");
       const at = { ...view, budget: { ...view.budget, cost: { ...view.budget.cost, forecastUsd: 37.5, forecastBinding: true } } };
       expect(shareShortfall(at, view.features[1]!)).toBeNull();
-      const estimate = initiatives.estimate("values", 0);
+      const estimate = initiatives.estimate("values");
       expect(view.budget.cost.forecastUsd).toBeCloseTo(0.72 + estimate.features.slice(1)
         .reduce((sum, f) => sum + (f.costUsd!.low + f.costUsd!.high) / 2, 0), 2);
     } finally { await fixture.dispose(); }
@@ -2872,7 +2873,7 @@ describe("gate matrix: Pester and PSScriptAnalyzer (#1498)", () => {
     expect(PS_FORMAT_CHECK).toContain("$s.Settings = './PSScriptAnalyzerSettings.psd1'");
     expect(PS_FORMAT_FIX).toContain("New-Object Text.UTF8Encoding $bom");
     expect(PS_FORMAT_CHECK).not.toContain("WriteAllText");
-    const [written] = formatWrittenChecks(root, [], [{ path: "src/Sum.ps1", action: "create" }], (c) => `/usr/bin/${c}`);
+    const [written] = formatWrittenChecks(root, [], [{ path: "src/Sum.ps1", action: "create" }], (c) => `/usr/bin/${c}`, undefined, undefined, { packages: () => true });
     expect(written && [written.id, written.args.slice(-2), written.fix?.args.at(-1), written.required]).toEqual(["psformat-written", [PS_FORMAT_CHECK, "src/Sum.ps1"], PS_FORMAT_FIX, true]);
     expect(diagnosticCount("src/Sum.ps1: would be reformatted by Invoke-Formatter\ntests/A.Tests.ps1: would be reformatted by Invoke-Formatter\n")).toEqual({ tool: "invoke-formatter", count: 2, errors: 2 });
   });
@@ -2928,6 +2929,21 @@ describe("gate matrix: testthat, lintr and styler (#1500)", () => {
   const ids = (files: Record<string, string>) =>
     detectGates(project(files)).map((s) => [s.check.id, s.check.args.at(-1), s.source, s.preselected]);
   const TEST = 'test_that("adds", {\n  expect_equal(add_numbers(1, 2), 3)\n})\n';
+  // #2817: a Windows queue runner had Rscript and no styler; the required styler-written check
+  // failed every attempt. Each R gate's command names the package the probe asks about.
+  test("styler-written only where Rscript loads styler; each R gate names its package (#2817)", () => {
+    const files = { "tests/testthat/test-sum.R": TEST };
+    const written = (has: boolean) =>
+      formatWrittenChecks(project(files), [], [{ path: "tests/testthat/test-sum.R", action: "create" }], (c) => `/usr/bin/${c}`, undefined, undefined, { packages: () => has }).map((c) => c.id);
+    expect(written(false)).toEqual([]);
+    expect(written(true)).toEqual(["styler-written"]);
+    const gates = detectGates(project({ DESCRIPTION: "Package: sumr\n", ...files })).map((s) => s.check);
+    expect(gates.map((c) => [c.id, packageNeeds(c).map((n) => n.name)])).toEqual([
+      ["testthat", ["testthat"]],
+      ["lintr", ["lintr"]],
+      ["styler", ["styler"]],
+    ]);
+  });
   test("a package gets testthat on the loaded package, lintr offered, styler offered; a scripts project tests its folder", () => {
     expect(ids({ DESCRIPTION: "Package: sumr\n", "tests/testthat/test-sum.R": TEST })).toEqual([
       ["testthat", testthatRun(true), "tests/testthat", true],
@@ -3287,7 +3303,7 @@ describe("gate matrix: format-written check on a dirty repository (#1837)", () =
   // An edited file: only the lines the run changed against its content before the run (#1837, R57
   // zonevet), by a formatter that formats a range; none where the formatter cannot.
   const edited = (files: Record<string, string>, path: string, before: string) =>
-    formatWrittenChecks(project(files), [], [{ path, action: "modify" }], (c) => `/usr/bin/${c}`, (p) => (p === path ? before : undefined), () => true).map((c) => [
+    formatWrittenChecks(project(files), [], [{ path, action: "modify" }], (c) => `/usr/bin/${c}`, (p) => (p === path ? before : undefined), () => true, { packages: () => true }).map((c) => [
       c.id,
       [c.executable, ...c.args].join(" "),
       c.fix ? [c.fix.executable, ...c.fix.args].join(" ") : null,
@@ -5820,6 +5836,24 @@ describe("gate matrix: no tests collected (#1864)", () => {
   ];
   for (const [stack, output] of NO_TESTS)
     test(`${stack}: no test collected`, () => expect(noTestsCollected(output)).toBe(true));
+  // #2778: one part's "no tests" line beside another part that ran tests. go 1.24.7 (`go test
+  // ./...` failing, and passing from the test cache), Elixir 1.14 (umbrella `mix test`), and a
+  // Gradle multi-project build in its documented console output.
+  test("a part without tests beside a part that ran or failed tests is not 'no tests'", () => {
+    expect(noTestsCollected("--- FAIL: TestF (0.00s)\n    a_test.go:3: \nFAIL\nFAIL\texample.com/m/a\t0.003s\n?   \texample.com/m/b\t[no test files]\nFAIL")).toBe(false);
+    expect(noTestsCollected("FAIL\texample.com/m/a [build failed]\n?   \texample.com/m/b\t[no test files]\nFAIL")).toBe(false);
+    expect(noTestsCollected("ok  \texample.com/m/a\t(cached)\nok  \texample.com/m/c\t0.003s [no tests to run]")).toBe(false);
+    expect(noTestsCollected("==> a\n  1) test x (ATest)\n     apps/a/test/a_test.exs:3\n\nFinished in 0.01 seconds (0.00s async, 0.01s sync)\n1 test, 1 failure\n\nRandomized with seed 60860\n==> b\nThere are no tests to run")).toBe(false);
+    expect(noTestsCollected("> Task :lib:test FAILED\n\nLibTest > adds() FAILED\n    org.opentest4j.AssertionFailedError at LibTest.java:9\n\n2 tests completed, 1 failed\n\n> Task :app:test FAILED\nThere are test sources present and no filters are applied, but the test task did not discover any tests to execute.")).toBe(false);
+    // Every Go package without tests, or filtered to none, is still "no tests".
+    expect(noTestsCollected("?   \texample.com/m/b\t[no test files]\nok  \texample.com/m/a\t(cached) [no tests to run]")).toBe(true);
+  });
+  // #2778: `testsRan` takes a package's cached result as a package that ran tests.
+  test("go: a cached package beside one without test files did not run zero tests", () => {
+    expect(testsRan("ok  \texample.com/m/a\t(cached)\n?   \texample.com/m/b\t[no test files]")).toBeNull();
+    expect(testsRan("ok  \texample.com/m/a\t0.004s\tcoverage: 100.0% of statements\n?   \texample.com/m/b\t[no test files]")).toBeNull();
+    expect(testsRan("ok  \texample.com/m/a\t(cached) [no tests to run]\n?   \texample.com/m/b\t[no test files]")).toEqual({ tool: "go", count: 0 });
+  });
   test("a failing test and a passing run are not 'no tests'", () => {
     expect(noTestsCollected("FAILED tests/test_tags.py::test_wheel - AssertionError\n1 failed in 0.02s")).toBe(false);
     expect(noTestsCollected(" 3 pass\n 0 fail\nRan 3 tests across 1 file.")).toBe(false);
