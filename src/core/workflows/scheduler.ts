@@ -566,6 +566,7 @@ import {
   repairChangedFiles,
 } from "./invalidation.js";
 import {
+  commandLiveness,
   commandMayBeRunning,
   mutationLeaseFor,
   type WorkspaceLeases,
@@ -3701,6 +3702,9 @@ export class WorkflowScheduler {
       await this.processes.stop();
       const fault =
         signal.aborted && signal.reason instanceof WorkflowFault ? signal.reason : error;
+      // A recovery request checks command processes: read them before the write lock is taken.
+      const recovering = fault instanceof WorkflowFault && fault.code === "RECOVERY_REQUIRED";
+      using _liveness = commandLiveness(this.store, recovering ? [runId] : []);
       this.store.transaction(() => {
         if (stepId) {
           // Task, review and transition steps opened under the stage end with it (#1745).
