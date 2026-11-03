@@ -22,6 +22,7 @@ import {
   type LspTextEdit,
   type LspTypeHierarchyItem,
   type LspWorkspaceEdit,
+  uriToFilePath,
 } from "./protocol.js";
 import { excludeServerFiles, type LspServerConfig, serverProjectState } from "./server-registry.js";
 import { spawnLspServer } from "./spawn.js";
@@ -597,7 +598,7 @@ export class StandaloneLspClient {
   getRecentDiagnostics(limit = 20): Array<{ file: string; message: string; severity: number }> {
     const results: Array<{ file: string; message: string; severity: number }> = [];
     for (const [uri, diags] of this.diagnostics) {
-      const file = uri.replace("file://", "");
+      const file = uriToFilePath(uri);
       for (const d of diags) {
         if (results.length >= limit) return results;
         results.push({ file, message: d.message, severity: d.severity ?? 1 });
