@@ -611,7 +611,8 @@ describe("platform shim: process tree liveness", () => {
     mock.module("node:child_process", () => ({
       ...cp,
       spawnSync: (...args: Parameters<typeof cp.spawnSync>) => {
-        tableReads++;
+        // Only the process-table query counts: other modules may call spawnSync meanwhile.
+        if (String(args[0]).toLowerCase().startsWith("powershell")) tableReads++;
         return originalChildProcess.spawnSync(...args);
       },
     }));
