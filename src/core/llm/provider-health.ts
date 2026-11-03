@@ -213,6 +213,12 @@ export interface CallTiming extends CallReasoning {
    * for a call that ended without an answer, whose whole interval is excluded (#2414).
    */
   silentMs?: number;
+  /**
+   * The stall part of `silentMs`: what passed the deadline the call's shape had from its healthy
+   * answers, or the adaptive floor (`callStallMs` in workflows/clean-pace.ts, #2424). Set by the
+   * executor when above 0; a buffered provider's wait within it is model time.
+   */
+  stallMs?: number;
 }
 
 export class ProviderUnreachableError extends Error {

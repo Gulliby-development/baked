@@ -1,6 +1,9 @@
+import { ROUTING_ARTIFACT } from "../llm/model-routing.js";
+import { verificationStages } from "./cost-forecast.js";
 import { estimateHistory, historyStorePaths, type TokenRange } from "./estimate.js";
+import { forecastStageCost, runForecastStages } from "./forecast-price.js";
 import { initiativePriceSamples } from "./initiatives/forecast.js";
-import type { RunPolicy } from "./schemas.js";
+import { PolicySchema, type RunPolicy } from "./schemas.js";
 import { type SizingReport, taskTotal } from "./sizing.js";
 import { forecastRate, runPrices } from "./stage-price.js";
 import type { WorkflowStore } from "./store.js";
@@ -39,6 +42,13 @@ export interface PlanCost {
     rate?: PlanCostRate;
     otherModels?: boolean;
   } | null;
+  /**
+   * The final review and convergence after the tasks, priced as the cost forecast prices them
+   * (`verificationStages`: the verification budget on each stage's routed model). Null when the
+   * run has no routing or a stage's model has no price; absent on approvals recorded before
+   * #2776, which left it out while the forecast counted it.
+   */
+  review?: { usd: number; stages: string[] } | null;
 }
 
 export type PlanCostRate = "run" | "history" | "mix" | "default";
@@ -159,6 +169,26 @@ export function plannedRunTokens(
 }
 
 /**
+ * What the stages after the tasks (final review and convergence) will cost, priced exactly as the
+ * cost forecast prices them; null without routing or a price. The approval left them out while
+ * the forecast counted them, so a plan approved without a dollar warning could be stopped by the
+ * forecast once three tasks finished on their price (#2776).
+ */
+function reviewCost(
+  store: WorkflowStore,
+  runId: string,
+  samples: AttemptUsageRow[],
+): PlanCost["review"] {
+  if (!store.latestArtifact(runId, ROUTING_ARTIFACT)) return null;
+  const policy = PolicySchema.safeParse(JSON.parse(store.run(runId).policy_json));
+  if (!policy.success) return null;
+  const stages = verificationStages(runForecastStages(store, runId, policy.data));
+  if (!stages.length) return null;
+  const usd = forecastStageCost(samples, stages);
+  return usd === null ? null : { usd, stages: stages.map((s) => s.id) };
+}
+
+/**
  * The run's spend so far by model, and the latest plan sizing priced in dollars. With the run's
  * policy, the tasks are priced from the history before this run has paid for one.
  */
@@ -185,8 +215,9 @@ export function planCostOf(
     .map(([model, entry]) => ({ model, usd: entry.usd, stages: [...entry.stages] }))
     .sort((a, b) => b.usd - a.usd || a.model.localeCompare(b.model));
   const report = latestSizing(store, runId);
+  const { samples } = runPrices(store, runId);
   const priced = report?.model
-    ? rateOf(runPrices(store, runId).samples, historySamples(store, runId, policy), report.model)
+    ? rateOf(samples, historySamples(store, runId, policy), report.model)
     : null;
   return {
     planning: { usd: models.reduce((sum, m) => sum + m.usd, 0), complete, models },
@@ -202,6 +233,7 @@ export function planCostOf(
             ...(borrowedHistory(report) ? { otherModels: true } : {}),
           }
         : null,
+    review: reviewCost(store, runId, samples),
   };
 }
 
@@ -218,9 +250,9 @@ const OTHER_MODELS_TEXT =
 const usd = (n: number): string => (n < 10 ? `$${n.toFixed(2)}` : `$${Math.round(n)}`);
 
 /**
- * A warning for a plan approval when the plan's priced high end (planning so far and the planned
- * tasks) passes the run's dollar ceiling: its cap, or what the cap may grow to
- * (`sizing.maxRunCostUsd`), with its tolerance. Null when it fits or nothing is priced. Bench round
+ * A warning for a plan approval when the plan's priced high end (planning so far, the planned
+ * tasks and the final review and convergence the cost forecast counts, #2776) passes the run's
+ * dollar ceiling: its cap, or what the cap may grow to (`sizing.maxRunCostUsd`), with its tolerance. Null when it fits or nothing is priced. Bench round
  * 42 (fecsmith front): a plan priced $6.75-$11.29 against an $8 cap was approved without a word,
  * and the forecast stopped the run after five tasks (#1503).
  */
@@ -231,20 +263,27 @@ export function planCostWarning(
   growToUsd?: number,
 ): string | null {
   if (capUsd === null || !cost.implementation) return null;
-  const high = cost.planning.usd + cost.implementation.usd.high;
+  const high = cost.planning.usd + cost.implementation.usd.high + (cost.review?.usd ?? 0);
   const limit = Math.max(capUsd, growToUsd ?? 0);
   if (high <= limit * (1 + tolerance)) return null;
   const grows = limit > capUsd ? ` and the ${usd(limit)} it may grow to` : "";
   const band = tolerance > 0 ? " with its tolerance" : "";
-  return `The plan is priced up to ${usd(high)} with planning, above the run's ${usd(capUsd)} cap${grows}${band}: the cost forecast may stop the run before it finishes. Approve a smaller plan, or extend the run's cap.`;
+  const review = cost.review ? " and the final review" : "";
+  return `The plan is priced up to ${usd(high)} with planning${review}, above the run's ${usd(capUsd)} cap${grows}${band}: the cost forecast may stop the run before it finishes. Approve a smaller plan, or extend the run's cap.`;
 }
 
-/** The approval's line: `Planning so far about $X (model $Y, ...); the planned tasks about $A–$B on M`. */
+/**
+ * The approval's line: `Planning so far about $X (model $Y, ...); the planned tasks about $A–$B on
+ * M; the final review and convergence about $R`.
+ */
 export function planCostText(cost: PlanCost): string {
   const models = cost.planning.models.map((m) => `${m.model} ${usd(m.usd)}`).join(", ");
   const planning = `Planning so far about ${usd(cost.planning.usd)}${cost.planning.complete ? "" : " (partial: a model has no price)"}${models ? ` (${models})` : ""}`;
   const tasks = cost.implementation
     ? `; the planned tasks about ${usd(cost.implementation.usd.low)}–${usd(cost.implementation.usd.high)} on ${cost.implementation.model}${RATE_TEXT[cost.implementation.rate ?? "default"]}${cost.implementation.otherModels ? OTHER_MODELS_TEXT : ""}`
     : "";
-  return `${planning}${tasks}`;
+  const review = cost.review
+    ? `; the final review and convergence about ${usd(cost.review.usd)}`
+    : "";
+  return `${planning}${tasks}${review}`;
 }

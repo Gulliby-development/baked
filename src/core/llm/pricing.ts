@@ -182,6 +182,26 @@ const COPILOT_PRICING: Record<string, ModelPricing> = {
   "claude-opus-4.7-fast": M30,
 };
 
+/** Words that name a separately priced variant of a model: `gpt-5.4-pro`, `gpt-5.4-nano`, `o3-pro`. */
+const VARIANT_WORD = /^[-_.]?(?:pro|nano|mini|lite|fast|codex|max|turbo|ultra)(?![a-z])/;
+
+/**
+ * Whether the table entry `key` names the model `id` itself, not a variant or a later version of
+ * it. A dated or tagged release (`-20250929`, `-2024-08-06`, `@20250929`, `-latest`, `[1m]`,
+ * `-v1:0`) is the same model; `gpt-5.4-nano`, `claude-opus-4.6` and `claude-sonnet-4-7` are not
+ * `gpt-5.4`, `claude-opus-4` and `claude-sonnet-4`, and get a family price marked approximate.
+ */
+function namesModel(id: string, key: string): boolean {
+  for (let at = id.indexOf(key); at !== -1; at = id.indexOf(key, at + 1)) {
+    const rest = id.slice(at + key.length);
+    if (/^[a-z0-9]/.test(rest) || VARIANT_WORD.test(rest)) continue;
+    // After a key ending in a version number, `.5` or `-7` continues that number.
+    if (/\d$/.test(key) && /^(?:\.\d|-\d{1,2}(?![\d]))/.test(rest)) continue;
+    return true;
+  }
+  return false;
+}
+
 function matchCopilotPricing(model: string): ModelPricing | undefined {
   const entries = Object.entries(COPILOT_PRICING).sort((a, b) => b[0].length - a[0].length);
   for (const [key, pricing] of entries) {
@@ -223,13 +243,13 @@ export function findPricing(
   if (id.startsWith("github-models/")) {
     const model = id.slice("github-models/".length);
     for (const [key, pricing] of entries) {
-      if (model.includes(key)) return table(pricing);
+      if (namesModel(model, key)) return table(pricing);
     }
     return null;
   }
   // Sort by key length descending so "claude-opus-4-6" matches before "claude-opus-4"
   for (const [key, pricing] of entries) {
-    if (id.includes(key)) return table(pricing);
+    if (namesModel(id, key)) return table(pricing);
   }
   const family = (key: string) => approximate(MODEL_PRICING[key] ?? DEFAULT_PRICING);
   if (id.includes("fable") || id.includes("mythos")) return family("claude-fable-5");
