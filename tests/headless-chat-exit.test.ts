@@ -45,8 +45,10 @@ const model = new MockLanguageModelV3({
   },
 });
 
+// Bun keeps a module mock for the rest of the process, so later test files would get this model.
+const originalProvider = { ...realProvider };
 mock.module("../src/core/llm/provider.js", () => ({
-  ...realProvider,
+  ...originalProvider,
   resolveModel: () => model,
 }));
 
@@ -68,6 +70,8 @@ beforeAll(() => {
 });
 
 afterAll(async () => {
+  // mock.restore does not undo module replacements in Bun.
+  mock.module("../src/core/llm/provider.js", () => originalProvider);
   setCwd(previousCwd);
   await removeTempDir(dir);
 });
