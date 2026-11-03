@@ -26,7 +26,7 @@ import {
 } from "../src/core/workflows/host-apply.js";
 import type { Check, RunPolicy, Spec, Task, TaskGraph } from "../src/core/workflows/schemas.js";
 import { NativeWorkflowService } from "../src/core/workflows/service.js";
-import { headerPath, suppliedBlocks, suppliedLines } from "../src/core/workflows/sizing.js";
+import { declarationOnly, headerPath, suppliedBlocks, suppliedLines } from "../src/core/workflows/sizing.js";
 import { newId } from "../src/core/workflows/store.js";
 import { suppliedTestFiles } from "../src/core/workflows/supplied-content.js";
 import { comparableWrite, suppliedDrifts } from "../src/core/workflows/supplied-drift.js";
@@ -631,13 +631,19 @@ describe("a path-comment signature listing is not a new file (#2438)", () => {
     expect(hostApplyDecision([write({ path: "internal/cli/cli.go", action: "create", files: 1, diffs: 0, applies: null, exists: false })]).wouldApply).toBe(true);
   }, 60000);
 
-  test("a header block whose prose says it is the whole file, or whose prose names the path, still applies", async () => {
+  test("a header block whose prose says it is the whole file still applies; one whose prose only names the path is a listing (#2666)", async () => {
     const root = mkdtempSync(join(tmpdir(), "baked-host-listing-whole-"));
     cleanups.push(() => rmSync(root, { recursive: true, force: true }));
-    for (const prose of ["Write this file verbatim:", "Create `internal/cli/cli.go` with:", "The complete contents:"]) {
-      const request = trailspin(prose);
+    const file = (prose: string) => [prose, "```go", "// internal/cli/cli.go", "package cli", "", "func Usage() string {", '\treturn "usage: cli"', "}", "```"].join("\n");
+    for (const prose of ["Write this file verbatim:", "Create `internal/cli/cli.go` with exactly:", "The complete contents:"]) {
+      const request = file(prose);
       expect(suppliedBlocks(request, ["internal/cli/cli.go"]).get("internal/cli/cli.go")?.[0]).not.toHaveProperty("listing");
       expect(hostApplyDecision((await hostApplyInputs(root, request, cliTask)) ?? []).wouldApply).toBe(true);
+    }
+    // Naming the path is not saying the block is the file; and signatures are never the file.
+    for (const request of [file("Create `internal/cli/cli.go` with:"), trailspin("Write this file verbatim:")]) {
+      expect(suppliedBlocks(request, ["internal/cli/cli.go"]).get("internal/cli/cli.go")).toMatchObject([{ kind: "file", listing: true }]);
+      expect(hostApplyDecision((await hostApplyInputs(root, request, cliTask)) ?? []).wouldApply).toBe(false);
     }
   }, 60000);
 
@@ -771,4 +777,78 @@ describe("a block's header comment names its file, whatever the prose names (#24
     for (const task of graph.tasks) expect(await hostApplyInputs(root, request, task, graph)).toBeNull();
     expect(hostApplyPaths(graph.tasks[0] as Task, graph)).toEqual(["src/x.ts", "src/y.ts"]);
   }, 60000);
+});
+
+// Bench round 80 (#2666, second instance of #2462): deltaglue cli's brief gave `src/cli.ts`'s
+// shape as a `// src/cli.ts` block of declarations after prose that named `src/cli.ts` in passing.
+// The mention unset the listing, the host applied the stub under `hostApply: on`, lint failed, and
+// correctives T023 (374k) and T024 (777k) wrote the file. A mention is not evidence that the block
+// is the file, and a block of declarations without bodies never is.
+const R80_CLI = [
+  "Tests call only `src/cli.ts` and the program itself, plus the module `src/frames.ts` named below; nothing else is imported:",
+  "```ts",
+  "// src/cli.ts",
+  "export const USAGE: string;",
+  "export function run(args: string[], io: Io): number;",
+  "```",
+].join("\n");
+const r80Task = { writes: [{ path: "src/cli.ts", action: "create" as const }] };
+
+describe("a path-comment block is a listing unless its clause says whole; declarations alone are never the file (#2666)", () => {
+  test("scenario: R80 deltaglue cli's declarations, named in passing by the prose, are a listing the host declines", async () => {
+    const root = mkdtempSync(join(tmpdir(), "baked-host-r80-cli-"));
+    cleanups.push(() => rmSync(root, { recursive: true, force: true }));
+    expect(suppliedBlocks(R80_CLI, ["src/cli.ts"]).get("src/cli.ts")).toMatchObject([{ kind: "file", whole: false, listing: true }]);
+    const writes = (await hostApplyInputs(root, R80_CLI, r80Task)) ?? [];
+    expect(writes).toMatchObject([{ path: "src/cli.ts", action: "create", listing: true }]);
+    expect(hostApplyDecision(writes).wouldApply).toBe(false);
+    // The supplied_drift record R80 left for T002 (applied, unflagged) finds the listing: no drift.
+    const old = write({ path: "src/cli.ts", action: "create", files: 1, diffs: 0, applies: null, exists: false });
+    const graph = { tasks: [{ id: "T002", origin: "planned", writes: r80Task.writes }] } as unknown as Pick<TaskGraph, "tasks">;
+    expect(suppliedDrifts(R80_CLI, [{ taskId: "T002", mode: "on", writes: [old], wouldApply: true, reason: null }], graph, () => 'export const USAGE = "usage";\n')).toEqual([]);
+  }, 60000);
+
+  test("scenario: R78 deltaglue's cli listing after a clause about other files stays a listing", () => {
+    expect(suppliedBlocks(deltaglue, ["src/cli.ts"]).get("src/cli.ts")).toMatchObject([{ kind: "file", whole: false, listing: true }]);
+  });
+
+  test('"Create `src/cli.ts` with exactly:" before an implementation stays the file', async () => {
+    const root = mkdtempSync(join(tmpdir(), "baked-host-r80-whole-"));
+    cleanups.push(() => rmSync(root, { recursive: true, force: true }));
+    const request = ["Create `src/cli.ts` with exactly:", "```ts", "// src/cli.ts", 'export const USAGE = "usage: cli";', "export function run(args: string[]): number {", "  return args.length ? 0 : 2;", "}", "```"].join("\n");
+    const block = suppliedBlocks(request, ["src/cli.ts"]).get("src/cli.ts")?.[0];
+    expect(block).toMatchObject({ kind: "file", whole: true });
+    expect(block).not.toHaveProperty("listing");
+    expect(hostApplyDecision((await hostApplyInputs(root, request, r80Task)) ?? []).wouldApply).toBe(true);
+    // The same prose before declarations alone: still a listing.
+    const stub = R80_CLI.replace(/^.*$/m, "Create `src/cli.ts` with exactly:");
+    expect(suppliedBlocks(stub, ["src/cli.ts"]).get("src/cli.ts")).toMatchObject([{ kind: "file", whole: true, listing: true }]);
+  }, 60000);
+
+  test("a declaration-only block per language is a listing, whatever the prose; its implementation and the language's own declaration files are not", () => {
+    const cases: [string, string[], string[]][] = [
+      ["src/cli.ts", ["export const USAGE: string;", "export function run(args: string[]): number;"], ['export const USAGE = "u";', "export function run(args: string[]): number {", "  return 0;", "}"]],
+      ["internal/cli/cli.go", ["package cli", "", "func Run(args []string) int", "func Usage() string"], ["package cli", "", "func Run(args []string) int {", "\treturn 0", "}"]],
+      ["src/lib.rs", ["pub fn run(args: &[String]) -> i32;"], ["pub fn run(args: &[String]) -> i32 {", "    0", "}"]],
+      ["tools/cli.py", ["def run(args: list[str]) -> int: ...", "def usage() -> str:", "    ..."], ["def run(args: list[str]) -> int:", "    return 0"]],
+      ["src/Cli.java", ["public class Cli {", "  public static int run(String[] args);", "}"], ["public class Cli {", "  public static int run(String[] args) {", "    return 0;", "  }", "}"]],
+    ];
+    for (const [path, decls, impl] of cases) {
+      for (const prose of [`Replace \`${path}\` with:`, `Create \`${path}\` with exactly:`]) {
+        const ask = (lines: string[]) => suppliedBlocks([prose, "```", ...lines, "```"].join("\n"), [path]).get(path)?.[0];
+        expect(ask(decls)).toMatchObject({ kind: "file", listing: true });
+        expect(ask(impl)).not.toHaveProperty("listing");
+      }
+      expect(declarationOnly(path, decls)).toBe(true);
+      expect(declarationOnly(path, impl)).toBe(false);
+    }
+    // Declarations the language takes as content: a declaration file, a trait, an interface, a protocol, an ambient `declare`.
+    expect(declarationOnly("src/cli.d.ts", ["export function run(args: string[]): number;"])).toBe(false);
+    expect(declarationOnly("src/cli.ts", ["export declare function run(args: string[]): number;"])).toBe(false);
+    expect(declarationOnly("src/lib.rs", ["pub trait Runner {", "    fn run(&self) -> i32;", "}"])).toBe(false);
+    expect(declarationOnly("src/Cli.java", ["public interface Cli {", "  int run(String[] args);", "}"])).toBe(false);
+    expect(declarationOnly("tools/cli.py", ["class Runner(Protocol):", "    def run(self) -> int: ..."])).toBe(false);
+    expect(declarationOnly("tools/cli.pyi", ["def run(args: list[str]) -> int: ..."])).toBe(false);
+    expect(declarationOnly("include/cli.h", ["int run(int argc, char **argv);"])).toBe(false);
+  });
 });

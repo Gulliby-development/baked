@@ -1780,6 +1780,25 @@ describe("gate matrix: a path-comment signature listing is not the new file (#24
       const block = ["```", `${lead} ${path}`, "signature", "```"];
       expect(suppliedBlocks(["Shapes (fixed; tests call them):", ...block].join("\n"), [path]).get(path)).toMatchObject([{ kind: "file", listing: true }]);
       expect(suppliedBlocks(["Write this file verbatim:", ...block].join("\n"), [path]).get(path)?.[0]).not.toHaveProperty("listing");
+      // A prose line that only names the path does not make the block the file (#2666).
+      expect(suppliedBlocks([`Tests call \`${path}\`:`, ...block].join("\n"), [path]).get(path)).toMatchObject([{ kind: "file", listing: true }]);
+    });
+});
+
+describe("gate matrix: a declaration-only block is never the file (#2666)", () => {
+  // R80 deltaglue cli: declarations without bodies are the file's shape, even after "verbatim".
+  const cells: [string, string, string[]][] = [
+    ["TypeScript", "src/cli.ts", ["export const USAGE: string;", "export function run(args: string[]): number;"]],
+    ["JavaScript", "src/cli.js", ["export function run(args);"]],
+    ["Go", "internal/cli/cli.go", ["package cli", "func Run(args []string) int"]],
+    ["Rust", "src/lib.rs", ["pub fn run(args: &[String]) -> i32;"]],
+    ["Python", "tools/cli.py", ["def run(args: list[str]) -> int: ..."]],
+    ["Java", "src/Cli.java", ["public class Cli {", "  public static int run(String[] args);", "}"]],
+  ];
+  for (const [language, path, lines] of cells)
+    test(`${language}: ${path}`, () => {
+      const request = [`Write \`${path}\` verbatim:`, "```", ...lines, "```"].join("\n");
+      expect(suppliedBlocks(request, [path]).get(path)).toMatchObject([{ kind: "file", whole: true, listing: true }]);
     });
 });
 

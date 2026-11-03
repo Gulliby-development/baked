@@ -542,9 +542,9 @@ const namedPaths = (text: string): string[] =>
 
 /**
  * The one path of `wanted` a block is attributed to (#2453). A comment on its first line that
- * names a path (`headerPath`) decides alone: the block is that file's, and not for any wanted
- * path when the header names another file; `byHeader` when the last line of prose before it does
- * not name that path too. Otherwise the one path of `wanted` the last prose line names ("Replace
+ * names a path (`headerPath`) decides alone: the block is that file's (`byHeader`, whether or not
+ * the prose names the path too: a mention is not evidence that the block is the file, #2666), and
+ * not for any wanted path when the header names another file. Otherwise the one path of `wanted` the last prose line names ("Replace
  * `src/a.ts` with:"), among those ending in the header's name when the header is a bare file name
  * (`# config.py`). Null when none or more than one is named.
  */
@@ -552,10 +552,9 @@ function blockPath(
   block: Fence,
   wanted: ReadonlySet<string>,
 ): { path: string; byHeader: boolean } | null {
-  const last = lastLine(block.prose);
   const header = headerPath(block.lines[0]);
-  if (header && wanted.has(header))
-    return { path: header, byHeader: !namedPaths(last).includes(header) };
+  if (header && wanted.has(header)) return { path: header, byHeader: true };
+  const last = lastLine(block.prose);
   // A bare file name in the header (`# config.py`) still lets the prose say which directory.
   const fits = (path: string) => !header || (!header.includes("/") && path.endsWith(`/${header}`));
   const named = new Set(namedPaths(last).filter((path) => wanted.has(path) && fits(path)));
@@ -583,6 +582,60 @@ function pathClauses(prose: string, path: string): string {
 const WHOLE_FILE =
   /\b(?:replace[ds]?|overwrite|whole|full|entire|complete|contents?|exactly|verbatim)\b/i;
 
+/**
+ * A line that declares a value or function without its body or initializer (#2666): TypeScript
+ * and JavaScript `export const X: T;` and `export function f(): T;` (a `declare` line is ambient
+ * content and none of these), Go `func f() int` with no `{`, Rust `fn f();`, Java (and C) `int
+ * f(int x);`, and a one-line Python stub `def f(): ...`.
+ */
+const BODILESS_DECLARATION: readonly RegExp[] = [
+  /^\s*(?:export\s+)?(?:const|let|var)\s+[\w$]+\s*:[^=]*;\s*$/,
+  /^\s*(?:export\s+)?(?:default\s+)?(?:async\s+)?function\b[^{]*;\s*$/,
+  /^\s*func\s+(?:\([^)]*\)\s*)?\w+\s*(?:\[[^\]]*\])?\s*\([^{]*$/,
+  /^\s*(?:pub(?:\([\w:]+\))?\s+)?(?:const\s+)?(?:async\s+)?(?:unsafe\s+)?fn\s+\w+[^{]*;\s*$/,
+  /^\s*(?:(?:public|protected|private|static|final|synchronized|native)\s+)*(?!(?:return|throw|new|else|await|yield|delete|typeof)\b)[\w<>[\],.?]+\s+\w+\s*\([^)]*\)\s*(?:throws\s+[\w.,\s]+)?;\s*$/,
+  /^\s*(?:async\s+)?def\s+\w+\s*\(.*\)\s*(?:->.*)?:\s*\.\.\.\s*$/,
+];
+/**
+ * A line that gives a declaration its body or value: a function or method body opening, an
+ * initializer, a Python `def` whose next line is not `...` (checked in `declarationOnly`).
+ */
+const DECLARATION_BODY =
+  /\b(?:function|func|fn)\b[^;]*\{|^\s*(?:export\s+)?(?:const|let|var)\s+[\w$]+[^=]*=(?![=>])|\)\s*(?:throws\s+[\w.,\s]+)?\{|^\s*\).*\{\s*$|^\s*\{\s*$/;
+const PYTHON_DEF = /^\s*(?:async\s+)?def\s+\w+.*:\s*$/;
+/** Files whose content is declarations: TypeScript declaration files, Python stubs, C headers. */
+const DECLARATION_FILE = /\.d\.[cm]?ts$|\.pyi$|\.(?:h|hh|hpp|hxx)$/i;
+/**
+ * Where a bodiless declaration is the language's own content: a Java or C# interface or abstract
+ * class, a Rust trait or extern block, a Python protocol, overload or abstract method.
+ */
+const DECLARATION_CONTEXT =
+  /^\s*(?:(?:public|private|protected|internal|sealed|non-sealed|static)\s+)*(?:abstract\s+class|interface|@interface)\b|^\s*(?:pub(?:\([\w:]+\))?\s+)?(?:unsafe\s+)?(?:trait|extern)\b|\bProtocol\b|@(?:typing\.)?overload\b|@(?:abc\.)?abstractmethod\b/m;
+
+/**
+ * Whether a fenced block for `path` only declares, without bodies (#2666): at least one bodiless
+ * declaration (`BODILESS_DECLARATION`, or a Python `def` whose body is `...`) and no body or
+ * initializer. Such a block (R80 deltaglue's `// src/cli.ts` with `export const USAGE: string;`
+ * and `export function run(...): number;`) is a listing of the file's shape, never its content,
+ * whatever the prose says, unless the language takes declarations as content (`DECLARATION_FILE`,
+ * `DECLARATION_CONTEXT`).
+ */
+export function declarationOnly(path: string, lines: readonly string[]): boolean {
+  if (DECLARATION_FILE.test(path) || DECLARATION_CONTEXT.test(lines.join("\n"))) return false;
+  let declared = false;
+  for (const [i, line] of lines.entries()) {
+    if (PYTHON_DEF.test(line)) {
+      const next = lines.slice(i + 1).find((l) => l.trim());
+      if (next?.trim() !== "...") return false;
+      declared = true;
+      continue;
+    }
+    if (DECLARATION_BODY.test(line)) return false;
+    if (BODILESS_DECLARATION.some((re) => re.test(line))) declared = true;
+  }
+  return declared;
+}
+
 /** One verbatim block a request gives for a path (#2023). */
 export type SuppliedBlock =
   | {
@@ -600,9 +653,11 @@ export type SuppliedBlock =
       /** Whether the prose before it says it is the whole file (`WHOLE_FILE`). */
       whole: boolean;
       /**
-       * Set when only a comment on its first line names the path and the prose does not say it is
-       * the whole file: an API listing as likely as a file (R77 trailspin's `// internal/cli/cli.go`
-       * signatures, #2438). The host neither writes it nor compares a delivery with it.
+       * Set when a comment on its first line names the path and the prose's clause about it does
+       * not say it is the whole file, whether or not the prose names the path too (R77 trailspin's
+       * `// internal/cli/cli.go` signatures, #2438; R80 deltaglue's `// src/cli.ts`, #2666), or when
+       * the block only declares, without bodies (`declarationOnly`, #2666): an API listing, not
+       * the file. The host neither writes it nor compares a delivery with it.
        */
       listing?: true;
       /** The Markdown section the block is, for a Markdown file (`markdownRegion`, #2101). */
@@ -686,7 +741,9 @@ export function suppliedBlocks(
       lines: block.lines.length,
       content: `${body}\n`,
       whole,
-      ...(attributed.byHeader && !whole ? { listing: true } : {}),
+      ...((attributed.byHeader && !whole) || declarationOnly(path, block.lines)
+        ? { listing: true }
+        : {}),
       ...(region ? { region } : {}),
     };
     prose.set(file, block.prose);
