@@ -10,7 +10,8 @@ import { estimateInitiative } from "../src/core/workflows/initiatives/estimate.j
 import { adaptiveFirstByteMs } from "../src/core/llm/provider-health.js";
 import { planApprovalDecision } from "../src/core/workflows/auto-approval.js";
 import { CAPACITY_PROBE, exceedsTestCapacity, multiFileSplit, rowVolumePrice, type SizingReport } from "../src/core/workflows/sizing.js";
-import { type CallRate, chainCosts, openTrace, type PlanPriceReplay, replayChainEscalation, replayEdgeRecord, replayInitiativeStarts, replayPlanApprovals, replayPlanPrices, replayActiveTimes, replayPoolBounds, replayRowSplits, replayTestSplits, replayTrace, type TestSplitRule } from "../src/core/workflows/trace.js";
+import { type CallRate, chainCosts, openTrace, type PlanPriceReplay, replayChainEscalation, replayEdgeRecord, replayInitiativeStarts, replayPlanApprovals, replayPlanPrices, replayActiveTimes, replayPoolBounds, replayRequestConflicts, replayRowSplits, replayTestSplits, replayTrace, type TestSplitRule } from "../src/core/workflows/trace.js";
+import { REQUEST_CONFLICT_KIND, REQUEST_CONFLICTS_DIR, type RequestConflictRecord, requestConflictDecision, sliceForeignDecision } from "../src/core/workflows/request-conflict.js";
 import { type EdgeRecord, edgeCrashDecision } from "../src/core/verification/edge-inputs.js";
 import { ROOT, traces, traces as corpusTraces } from "./helpers/replay-corpus.js";
 import { fixturePolicy } from "./helpers/workflow-fixture.js";
@@ -715,7 +716,7 @@ describe("test task splits replay on recorded sizing reports (#1789)", () => {
         dispose();
       }
     }
-    // Only README and LICENSE tasks change, from split to whole (six documentation features). callmend's files then cost 268,807;
+    // Only README and LICENSE tasks change, from split to whole (seven documentation features). callmend's files then cost 268,807;
     // verhop's 614,482 over three tasks; manlens's 262,605.
     expect(changed).toEqual([
       "R61/manlens.sqlite.gz 25d4802d sizing/plan-0.json T001 README.md,LICENSE",
@@ -724,6 +725,7 @@ describe("test task splits replay on recorded sizing reports (#1789)", () => {
       "R75/maskback.sqlite.gz 13bb147b sizing/plan-0.json T001 README.md,LICENSE",
       "R77/trailspin.sqlite.gz ae89f897 sizing/plan-0.json T001 README.md,LICENSE",
       "R79/verhop.sqlite.gz f0a2962f sizing/plan-0.json T001 README.md,LICENSE",
+      "R83/pnmforge.sqlite.gz 1820f92d sizing/plan-0.json T001 README.md,LICENSE",
     ]);
     // R68 ewvet's three code files and the R50 md-site skeleton (4 code files and a README, expected
     // 478k, whose parts spent 1.23M) still split.
@@ -1175,5 +1177,43 @@ describe("the documented surface backtests on R83's documentation features (#256
     expect(docs("shadow")).toEqual(docs());
     // The miss shrinks from 2.5 times the high end to inside it, and the low end stays under the cheaper run.
     expect(docs("on")).toEqual({ low: 1_560_000, high: 2_253_000 });
+  });
+});
+
+describe("a row slice's conflict about another slice's literals replays on R79 verhop T004 (#2476)", () => {
+  // R79 verhop T004 wrote rows 1-7 of `tests/check.bats` (T007 rows 8-15) and reported three
+  // spec conflicts about AC-003 and AC-005; each was decided `none` (the request side unverified)
+  // and the third became the clarification a person answered with "AC-003 and AC-005 are satisfied
+  // by the union of both slices". Its first case walk refused 11 cases (AC-003 8, AC-005 3), the
+  // literals the answer puts in T007's rows.
+  test("the recorded reports replay unchanged; with the slice inputs each is slice-foreign, and in shadow still asks", () => {
+    const path = join(ROOT, "R79", "verhop.sqlite.gz");
+    const runId = "38314c6b-e9f4-4f01-8567-bc45b12133c7";
+    const { store, dispose } = openTrace(path);
+    try {
+      const own = replayRequestConflicts(store, runId).filter((b) => b.taskId === "T004");
+      // Records from before #2476 hold no slice inputs: nothing changes on replay.
+      expect(own.map((b) => [b.report, b.recorded, b.replayed, b.sliceForeign])).toEqual(
+        [1, 2, 3].map((report) => [report, "none", "none", { recorded: false, replayed: false }]),
+      );
+      const walk = store.artifacts(runId).find((a) => a.logical_path === "case-walk/tasks/T004.json");
+      const refused = (JSON.parse(store.readArtifact(runId, walk?.id ?? "")) as { refused: number[] }).refused.length;
+      expect(refused).toBe(11);
+      const records = store
+        .artifacts(runId)
+        .filter((a) => a.kind === REQUEST_CONFLICT_KIND && a.logical_path.startsWith(`${REQUEST_CONFLICTS_DIR}T004-`))
+        .map((a) => JSON.parse(store.readArtifact(runId, a.id)) as RequestConflictRecord);
+      expect(records).toHaveLength(3);
+      for (const record of records) {
+        const input = { ...record, slice: { taskId: "T004", missing: refused, foreign: refused, holders: ["T007"] } };
+        // The request does not settle them, so the enforced path still asks a person in shadow.
+        expect(requestConflictDecision({ ...input, reaudit: record.reaudit })).toBe("none");
+        expect(sliceForeignDecision(input, record.decision)).toBe(true);
+        // One literal of T004's own rows still missing keeps the report with the slice.
+        expect(sliceForeignDecision({ ...input, slice: { ...input.slice, foreign: refused - 1 } }, record.decision)).toBe(false);
+      }
+    } finally {
+      dispose();
+    }
   });
 });
