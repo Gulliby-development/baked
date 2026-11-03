@@ -304,6 +304,9 @@ describe("host-written acceptance rows in the case-walk and mutation gates (#159
     pest: { harness: "tests/harness.php", test: "tests/RowsTest.php" },
     exunit: { harness: "tests/harness.exs", test: "tests/rows_test.exs" },
     dart: { harness: "tests/harness.dart", test: "tests/rows_test.dart" },
+    kotlin: { harness: "tests/Harness.kt", test: "tests/RowsTest.kt", package: "tests" },
+    scalatest: { harness: "tests/Harness.scala", test: "tests/RowsSuite.scala" },
+    munit: { harness: "tests/Harness.scala", test: "tests/RowsSuite.scala", package: "tests" },
   } as const;
   test.each(Object.keys(layouts) as (keyof typeof layouts)[])("%s retains every case in its JSON data and keeps generated tests out of mutation proposals", async (framework) => {
     const root = mkdtempSync(join(tmpdir(), "baked-row-gate-"));
@@ -321,8 +324,9 @@ describe("host-written acceptance rows in the case-walk and mutation gates (#159
       const check = caseCheck(spec, task, { checks: [] });
       expect(check).toBeDefined();
       expect(await check?.(root)).toEqual([]);
-      // Java, C# and Dart tests hold the rows themselves, and the host refuses any change to that file.
-      if (framework === "junit" || framework === "xunit" || framework === "dart") expect(files[1]?.content).toMatch(/\b34L?\b.*\b68L?\b/);
+      // Java, C#, Dart, Kotlin and Scala tests hold the rows themselves, and the host refuses any
+      // change to that file.
+      if (["junit", "xunit", "dart", "kotlin", "scalatest", "munit"].includes(framework)) expect(files[1]?.content).toMatch(/\b34L?\b.*\b68L?\b/);
       else {
         writeFileSync(join(root, "tests/rows.json"), JSON.stringify(artifact.rows.slice(0, 1)));
         expect((await check?.(root))?.join()).toContain("34");
@@ -369,6 +373,9 @@ describe("gate matrix: inline rows block holds its own cells (#1997)", () => {
     pest: { mode: "inline", framework: "pest", test: "tests/CalcTest.php" },
     exunit: { mode: "inline", framework: "exunit", test: "test/calc_test.exs" },
     dart: { mode: "inline", framework: "dart", test: "test/calc_test.dart" },
+    kotlin: { mode: "inline", framework: "kotlin", package: "com.ex.calc", test: "src/test/kotlin/com/ex/calc/CalcTest.kt" },
+    scalatest: { mode: "inline", framework: "scalatest", test: "src/test/scala/CalcSuite.scala" },
+    munit: { mode: "inline", framework: "munit", test: "src/test/scala/CalcSuite.scala" },
   };
   const shapes: [string, unknown][] = [
     ["two-line CRLF text", ["[a]\r\nb=1\r\n", {}]],

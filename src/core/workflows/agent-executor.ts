@@ -140,9 +140,9 @@ import {
   touchProgress,
 } from "./stall.js";
 import {
-  ALL_TOKENS_FACTOR,
   AttemptStepController,
   type AttemptUsageRecord,
+  allTokensCapFor,
   DEFAULT_MAX_ATTEMPT_TOKENS,
   KEEP_RECENT_TOOL_MESSAGES,
   MIN_ATTEMPT_STEPS,
@@ -2354,7 +2354,7 @@ export const attemptCapFault = (
   cap: number,
   totals: { totalTokens: number; allTokensCap: number; ceilingTokens?: number } = {
     totalTokens: tokens,
-    allTokensCap: cap * ALL_TOKENS_FACTOR,
+    allTokensCap: allTokensCapFor(cap),
   },
 ): WorkflowFault => {
   const capKind =
