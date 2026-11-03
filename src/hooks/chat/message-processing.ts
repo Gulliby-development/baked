@@ -20,6 +20,18 @@ const PATH_ARG_KEYS = new Set([
   "target",
 ]);
 
+/**
+ * The arguments object of a tool-call part. AI SDK parts carry it in `input`; `args` is the
+ * pre-v5 field a session saved long ago may still hold.
+ */
+function toolCallInput(part: object): Record<string, unknown> | undefined {
+  const { input, args } = part as { input?: unknown; args?: unknown };
+  const value = input ?? args;
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : undefined;
+}
+
 export function reprimeContextFromMessages(cm: ContextManager, msgs: ModelMessage[]): void {
   try {
     for (const msg of msgs) {
@@ -30,9 +42,10 @@ export function reprimeContextFromMessages(cm: ContextManager, msgs: ModelMessag
       if (!Array.isArray(msg.content)) continue;
       for (const part of msg.content) {
         if (typeof part !== "object" || part === null) continue;
-        const typed = part as { type?: string; text?: string; args?: Record<string, unknown> };
-        if (typed.type === "tool-call" && typed.args && typeof typed.args === "object") {
-          for (const [key, val] of Object.entries(typed.args)) {
+        const typed = part as { type?: string; text?: string };
+        const callInput = typed.type === "tool-call" ? toolCallInput(part) : undefined;
+        if (callInput) {
+          for (const [key, val] of Object.entries(callInput)) {
             if (PATH_ARG_KEYS.has(key) && typeof val === "string" && val.length > 0) {
               cm.trackMentionedFile(val);
             }

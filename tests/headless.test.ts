@@ -429,3 +429,93 @@ describe("parseHeadlessArgs numeric options", () => {
 		expect(result!.type === "run" && result!.opts.maxSteps).toBe(7);
 	});
 });
+
+describe("parseHeadlessArgs --flag=value", () => {
+	test("every value option takes the --flag=value spelling like --flag value", async () => {
+		const spaced = await parseHeadlessArgs([
+			"--headless",
+			"--model",
+			"anthropic/claude-opus-4-6",
+			"--mode",
+			"plan",
+			"--sandbox",
+			"required",
+			"--cwd",
+			"C:\\work\\repo",
+			"--timeout",
+			"5000",
+			"--max-steps",
+			"3",
+			"--system",
+			"be brief",
+			"--include",
+			"a.ts",
+			"--image",
+			"b.png",
+			"--session",
+			"abc",
+			"--effort",
+			"high",
+			"--context",
+			"max",
+			"--permissions",
+			"full",
+			"hi",
+		]);
+		const equals = await parseHeadlessArgs([
+			"--headless",
+			"--model=anthropic/claude-opus-4-6",
+			"--mode=plan",
+			"--sandbox=required",
+			"--cwd=C:\\work\\repo",
+			"--timeout=5000",
+			"--max-steps=3",
+			"--system=be brief",
+			"--include=a.ts",
+			"--image=b.png",
+			"--session=abc",
+			"--effort=high",
+			"--context=max",
+			"--permissions=full",
+			"hi",
+		]);
+		expect(equals).toEqual(spaced);
+		expect(equals!.type === "run" && equals!.opts.mode).toBe("plan");
+		expect(equals!.type === "run" && equals!.opts.sandbox).toBe("required");
+	});
+
+	test("a value keeps later = signs", async () => {
+		const result = await parseHeadlessArgs(["--headless", "--system=a=b", "hi"]);
+		expect(result!.type === "run" && result!.opts.system).toBe("a=b");
+	});
+
+	test("--mode=<invalid> is rejected like --mode <invalid>", async () => {
+		try {
+			await parseHeadlessArgs(["--headless", "--mode=nope", "hi"]);
+		} catch {}
+		expect(exitCode).toBe(1);
+	});
+
+	test("--sandbox=<invalid> is rejected", async () => {
+		try {
+			await parseHeadlessArgs(["--headless", "--sandbox=nope", "hi"]);
+		} catch {}
+		expect(exitCode).toBe(1);
+	});
+
+	test("an empty --flag= value is an error, not a silent no-op", async () => {
+		try {
+			await parseHeadlessArgs(["--headless", "--mode=", "hi"]);
+		} catch {}
+		expect(exitCode).toBe(1);
+	});
+
+	test("chat options take --flag=value too", async () => {
+		const result = await parseHeadlessArgs(["--headless", "--chat", "--mode=architect", "--cwd=/r"]);
+		expect(result!.type).toBe("chat");
+		if (result!.type === "chat") {
+			expect(result!.opts.mode).toBe("architect");
+			expect(result!.opts.cwd).toBe("/r");
+		}
+	});
+});

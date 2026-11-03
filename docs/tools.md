@@ -73,7 +73,7 @@ Before an edit the file is snapshotted; an edit is refused if the file changed o
 
 ### Diagnostics after edits
 
-Once code intelligence has started, `edit_file`, `multi_edit`, `ast_edit` and `refactor` compare language-server diagnostics before and after each edit. The comparison covers the edited file and up to 8 files that import it, taken from the code graph (the same dependents `bake_impact` lists; in a workflow worktree they are looked up by their project path and checked inside the worktree). Diagnostics are matched by severity, code and message, so lines that an edit moves do not count as new. The tool result lists:
+Once code intelligence has started, `edit_file`, `multi_edit`, `ast_edit` and `refactor` compare language-server diagnostics before and after each edit. The comparison covers the edited file and up to 8 files that import it, taken from the code graph (the same dependents `bake_impact` lists; in a workflow worktree they are looked up by their project path and checked inside the worktree). Diagnostics are matched by severity, code and message, so lines that an edit moves do not count as new. Diagnostics published before a change was sent to the server are not taken as current for any file, open or not (servers such as gopls and rust-analyzer publish for files that are not open), until the server publishes for that file again or the wait ends. The tool result lists:
 
 - new errors in the edited file, with the language server's first quick fix when it offers one;
 - `CROSS-FILE ERRORS`: new errors in importing files, such as a caller that no longer matches a changed signature;
