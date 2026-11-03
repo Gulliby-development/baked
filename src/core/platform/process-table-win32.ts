@@ -34,6 +34,7 @@ function loadKernel32() {
     Process32NextW: { args: [T.u64, T.ptr], returns: T.i32 },
     OpenProcess: { args: [T.u32, T.i32, T.u32], returns: T.u64 },
     GetProcessTimes: { args: [T.u64, T.ptr, T.ptr, T.ptr, T.ptr], returns: T.i32 },
+    GetExitCodeProcess: { args: [T.u64, T.ptr], returns: T.i32 },
     CloseHandle: { args: [T.u64], returns: T.i32 },
   }).symbols;
 }
@@ -54,10 +55,23 @@ function load(): ReturnType<typeof loadKernel32> | null {
 
 const handleOf = (value: number | bigint): bigint => BigInt.asUintN(64, BigInt(value));
 
-function startedMs(k: NonNullable<typeof kernel32>, pid: number): number | null {
+const STILL_ACTIVE = 259;
+
+/**
+ * A listed process that has already exited, or its start time when it may still run (null when
+ * unreadable). A snapshot still lists a process that is being torn down for a moment after it
+ * exited, which read as a live descendant right after the test killed it.
+ */
+function inspect(k: NonNullable<typeof kernel32>, pid: number): "exited" | number | null {
   const handle = handleOf(k.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid));
   if (handle === 0n) return null;
   try {
+    const code = Buffer.alloc(4);
+    if (
+      k.GetExitCodeProcess(handle, code as unknown as Pointer) &&
+      code.readUInt32LE(0) !== STILL_ACTIVE
+    )
+      return "exited";
     const times = Buffer.alloc(32);
     const ok = k.GetProcessTimes(
       handle,
@@ -97,5 +111,10 @@ export function windowsProcessTree(pid: number): WindowsProcessTree | null {
   }
   // A snapshot always lists at least the System process and this one.
   if (count === 0) return null;
-  return { listed, children: childIds.map((id) => ({ id, startedMs: startedMs(k, id) })) };
+  const children: WindowsChild[] = [];
+  for (const id of childIds) {
+    const state = inspect(k, id);
+    if (state !== "exited") children.push({ id, startedMs: state });
+  }
+  return { listed: listed && inspect(k, pid) !== "exited", children };
 }
