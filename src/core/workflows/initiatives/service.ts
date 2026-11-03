@@ -41,6 +41,7 @@ import {
 } from "../estimate.js";
 import { forecastSamples, forecastStageCost, runForecastStages } from "../forecast-price.js";
 import { executingLeases } from "../leases.js";
+import { FEATURE_REQUEST_HEADING } from "../person-request.js";
 import { plannedRunTokens } from "../plan-cost.js";
 import { plannedStages } from "../pre-run.js";
 import { type RecoveryAdvice, recoveryAdvice } from "../remedies.js";
@@ -6324,6 +6325,7 @@ export function featurePrompt(
       "Other features of the initiative own this work; do not implement it here:",
       ...others.map((f) => `- ${f.id}: ${f.title}`),
     );
-  lines.push("", "The original request of the initiative:", row.prompt);
+  // The person's words begin after this heading; `requestSections` splits there (#2492).
+  lines.push("", FEATURE_REQUEST_HEADING, row.prompt);
   return lines.join("\n");
 }
