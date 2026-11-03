@@ -326,6 +326,16 @@ export const STOP_REASONS = {
     modes: NOT_ENFORCED,
     defaultMode: "shadow",
   },
+  unfinished_row_split: {
+    label:
+      "A test task ended unfinished twice with prescribed rows its file still lacks: the host would split it into slices of the missing rows instead of resuming it whole",
+    // Shadow only (#2458, R78 deltaglue cli T007: 63 prescribed rows, four unfinished ends and
+    // 6.89M tokens, each resume starting over with the whole task). It records
+    // `row-splits/tasks/<task>.json` and the would-stop; starting the slices of the missing rows is
+    // a pull request of its own after a bench round with no false decision.
+    modes: NOT_ENFORCED,
+    defaultMode: "shadow",
+  },
   case_not_prescribed: {
     label:
       "A criterion cites a literal that no row the request prescribes holds, for a task that writes only prescribed row files",

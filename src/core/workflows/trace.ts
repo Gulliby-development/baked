@@ -240,6 +240,14 @@ import {
   type RowRestoreRule,
   rowRestoreDecision,
 } from "./row-restore.js";
+import {
+  MIN_UNFINISHED_ENDS,
+  ROW_SPLIT_KIND,
+  type RowSplitRule,
+  type RowSplitVerdict,
+  rowSplitDecision,
+  rowSplitRecords,
+} from "./row-split.js";
 import { PolicySchema, type RunPolicy } from "./schemas.js";
 import { NativeWorkflowService } from "./service.js";
 import {
@@ -332,6 +340,8 @@ const KEPT_ARTIFACTS = new Set([
   TEST_CAP_KIND,
   // Each checks-stage row block comparison: per prescribed row its literal counts, no text (#2486).
   ROW_BLOCK_KIND,
+  // Each unfinished end's split decision of a rows test task: row numbers and counts, no text (#2458).
+  ROW_SPLIT_KIND,
   // Each failing check's route with a miscounted byte run: files, bytes off, no text (#2515).
   ROW_RUN_KIND,
   // Each review's gate: the findings' labels and repro outcomes, no claims (#1715).
@@ -1042,6 +1052,66 @@ export interface RunReplay {
   newRowBlockDrifts: number;
   /** File rows the current move rule says are added or duplicated that the recording did not (#2503). */
   newRowBlockMoves: number;
+  /** Each rows test task that ended unfinished, with its split decision (#2458). */
+  rowSplits: RowSplitBoundary[];
+  /** Recorded split decisions the current rule turns from resume into split (#2458). */
+  newRowSplits: number;
+}
+
+export interface RowSplitBoundary {
+  taskId: string;
+  /** The task's unfinished ends in `repeats/tasks/<task>.json` (#2437). */
+  ends: number;
+  /** The recorded decision; null for a task with no record (a trace before #2458). */
+  recorded: RowSplitVerdict["decision"] | null;
+  /** The current rule's decision on the recorded inputs; null without a record. */
+  replayed: RowSplitVerdict["decision"] | null;
+  /** Slices recorded and replayed; null without a record. */
+  slices: { recorded: number; replayed: number } | null;
+}
+
+/**
+ * Every split decision a run recorded at a task's unfinished end (`row-splits/tasks/<task>.json`,
+ * #2458), decided again from its inputs (ends, owned and missing rows, their characters, the
+ * cap), and every task with `MIN_UNFINISHED_ENDS` unfinished ends and no record (a trace before
+ * it, or a task without prescribed rows) as a boundary without a decision. Which rows a file holds
+ * reads text a trace does not keep, so a change to that is covered by
+ * `tests/workflow-scenario-unfinished-row-split.test.ts`, not replayed.
+ */
+export function replayRowSplits(
+  store: WorkflowStore,
+  runId: string,
+  decide: RowSplitRule = rowSplitDecision,
+): RowSplitBoundary[] {
+  const ends = new Map<string, number>();
+  for (const artifact of store.artifacts(runId)) {
+    if (artifact.kind !== REPEAT_KIND || !artifact.logical_path.startsWith(REPEAT_TASKS_DIR))
+      continue;
+    try {
+      const record = JSON.parse(store.readArtifact(runId, artifact.id)) as RepeatRecord;
+      if (record.end === "unfinished") ends.set(record.taskId, (ends.get(record.taskId) ?? 0) + 1);
+    } catch {}
+  }
+  const records = new Map(rowSplitRecords(store, runId).map((r) => [r.taskId, r]));
+  const tasks = [...new Set([...records.keys(), ...ends.keys()])].sort();
+  return tasks.flatMap((taskId): RowSplitBoundary[] => {
+    const record = records.get(taskId);
+    const count = record?.ends ?? ends.get(taskId) ?? 0;
+    if (!record)
+      return count >= MIN_UNFINISHED_ENDS
+        ? [{ taskId, ends: count, recorded: null, replayed: null, slices: null }]
+        : [];
+    const verdict = decide(record);
+    return [
+      {
+        taskId,
+        ends: count,
+        recorded: record.decision,
+        replayed: verdict.decision,
+        slices: { recorded: record.slices.length, replayed: verdict.slices.length },
+      },
+    ];
+  });
 }
 
 export interface RowBlockBoundary {
@@ -4912,6 +4982,8 @@ function replayRun(
   | "rowBlocks"
   | "newRowBlockDrifts"
   | "newRowBlockMoves"
+  | "rowSplits"
+  | "newRowSplits"
 > | null {
   const db = store.connection;
   const run = store.run(runId);
@@ -5164,6 +5236,8 @@ export function replayTrace(
     rowBlockRule?: RowBlockRule;
     /** Places each recorded file row against its block again (#2503); the current rule by default. */
     rowMoveRule?: RowMoveRule;
+    /** Decides each recorded unfinished-end split again (#2458); the current rule by default. */
+    rowSplitRule?: RowSplitRule;
   } = {},
 ): TraceReplay {
   // Initiative starts rewind their own copies of the trace, before the run replay rewinds this one.
@@ -5304,6 +5378,9 @@ export function replayTrace(
         replayRowBlocks(store, runId, options.rowBlockRule, options.rowMoveRule),
       ]),
     );
+    const rowSplitReplays = new Map(
+      runIds.map((runId) => [runId, replayRowSplits(store, runId, options.rowSplitRule)]),
+    );
     const runs: RunReplay[] = [];
     for (const runId of runIds) {
       const firstByte = timings.get(runId) ?? [];
@@ -5345,6 +5422,7 @@ export function replayTrace(
       const unselectedTests = unselected.get(runId) ?? [];
       const attemptCheckpoints = checkpoints.get(runId) ?? [];
       const rowBlocks = rowBlockReplays.get(runId) ?? [];
+      const rowSplits = rowSplitReplays.get(runId) ?? [];
       if (
         !replay.boundaries.length &&
         !firstByte.length &&
@@ -5373,7 +5451,8 @@ export function replayTrace(
         !activeTimes.length &&
         !unselectedTests.length &&
         !attemptCheckpoints.length &&
-        !rowBlocks.length
+        !rowBlocks.length &&
+        !rowSplits.length
       )
         continue;
       runs.push({
@@ -5475,6 +5554,9 @@ export function replayTrace(
           const replayed = [...b.moves.replayed.added, ...b.moves.replayed.duplicated];
           return n + replayed.filter((line) => !recorded.includes(line)).length;
         }, 0),
+        rowSplits,
+        newRowSplits: rowSplits.filter((b) => b.replayed === "split" && b.recorded === "resume")
+          .length,
       });
     }
     const gates = replayShareGate(store, options.shareGate);

@@ -805,6 +805,7 @@ import {
   UNFINISHED_BLOCK_PREFIX,
   uncommittedEdits,
 } from "./rollback.js";
+import { ROW_SPLIT_DIR, ROW_SPLIT_KIND, rowSplitRecord, rowSplitSummary } from "./row-split.js";
 import { runSubject } from "./run-title.js";
 import {
   type AgentProfile,
@@ -10486,7 +10487,65 @@ ${note}`;
         ...(failedChecks.length ? { failedChecks } : {}),
       }),
     );
-    return this.recordUnfinishedRepeat(runId, policy, stepId, taskId, result.unresolved);
+    const repeat = this.recordUnfinishedRepeat(runId, policy, stepId, taskId, result.unresolved);
+    this.recordRowSplit(runId, policy, taskId);
+    return repeat;
+  }
+  /**
+   * Records whether the host would split a test task that ended unfinished again into slices of
+   * the prescribed rows its file still lacks (`rowSplitRecord`, #2458), at each unfinished end
+   * after `recordUnfinishedRepeat` counted it, and the `unfinished_row_split` would-stop when it
+   * would. Shadow only: the resume takes the whole task as before, and a failure to read never
+   * touches the run.
+   */
+  private recordRowSplit(runId: string, policy: RunPolicy, taskId: string): void {
+    try {
+      const state = this.store.state(runId);
+      const task = state.graph?.tasks.find((t) => t.id === taskId);
+      if (!task) return;
+      const ends = this.store
+        .artifacts(runId)
+        .filter((a) => a.logical_path === `${REPEAT_TASKS_DIR}${taskId}.json`)
+        .filter((a) => this.repeatRecordOf(runId, a.id)?.end === "unfinished").length;
+      if (!ends) return;
+      const root = runRoot(this.store.workspace, state);
+      const record = rowSplitRecord(
+        task,
+        state.requestText || state.prompt,
+        ends,
+        (path) => {
+          try {
+            return readFileSync(workspacePath(root, path), "utf8");
+          } catch {
+            return null;
+          }
+        },
+        policy,
+      );
+      if (!record) return;
+      this.store.artifact(
+        runId,
+        ROW_SPLIT_KIND,
+        `${ROW_SPLIT_DIR}${taskId}.json`,
+        canonical(record),
+      );
+      const mode = stopMode(policy, "unfinished_row_split");
+      if (record.decision !== "split" || mode === "enforce") return;
+      recordWouldStop(this.store, runId, {
+        reason: "unfinished_row_split",
+        mode,
+        key: `task-${taskId}`,
+        summary: rowSplitSummary(record),
+        inputs: {
+          taskId,
+          path: record.path,
+          ends: record.ends,
+          rows: record.rows,
+          missing: record.missing.length,
+          slices: record.slices.map((slice) => slice.length),
+        },
+      });
+    } catch {}
   }
   /**
    * Records the failing checks of a task's unfinished end (`repeats/tasks/<task>.json`, #2437)
