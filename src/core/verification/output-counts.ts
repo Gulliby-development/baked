@@ -187,6 +187,7 @@ export type TestRunner =
   | "jest"
   | "vitest"
   | "pytest"
+  | "unittest"
   | "cargo"
   | "dotnet"
   | "maven"
@@ -259,7 +260,11 @@ const TEST_COUNTERS: readonly {
     tool: "bun",
     // bun test: "Ran 42 tests across 3 files." after " 40 pass", " 2 skip", " 0 fail"
     count: (o) => num(o.match(/^Ran (\d+) tests? across \d+ files?/m)),
-    ran: (o) => (/^Ran \d+ tests?/m.test(o) ? (sum(o, /^\s*(\d+) (?:pass|fail)$/gm) ?? 0) : null),
+    // Only bun's own line: unittest's "Ran 3 tests in 0.001s" read as bun with none run (#2737).
+    ran: (o) =>
+      /^Ran \d+ tests? across \d+ files?/m.test(o)
+        ? (sum(o, /^\s*(\d+) (?:pass|fail)$/gm) ?? 0)
+        : null,
   },
   {
     tool: "jest",
@@ -297,6 +302,13 @@ const TEST_COUNTERS: readonly {
         ? null
         : (sum(line, /(\d+) (?:passed|failed|xfailed|xpassed|errors?)\b/g) ?? 0);
     },
+  },
+  {
+    tool: "unittest",
+    // python -m unittest (#2737): "Ran 4 tests in 0.001s", then "OK (skipped=2)" or "FAILED
+    // (failures=1, errors=1, skipped=1)"; Python 3.12 and later say "NO TESTS RAN" (exit 5).
+    count: (o) => unittestCount(o, false),
+    ran: (o) => unittestCount(o, true),
   },
   {
     tool: "cargo",
@@ -544,6 +556,30 @@ const TEST_COUNTERS: readonly {
 
 const num = (match: RegExpMatchArray | null): number | null => (match ? Number(match[1]) : null);
 
+/** unittest's summary: "Ran 3 tests in 0.002s", a blank line, then its verdict and counts. */
+const UNITTEST_SUMMARY =
+  /^Ran (\d+) tests? in \d[\d.]*s\r?\n\r?\n(?:OK|FAILED|NO TESTS RAN)(?: \(([^)\n]*)\))?\s*$/gm;
+/**
+ * A test module unittest could not import, which it counts as a test: "ERROR: test_a
+ * (unittest.loader._FailedTest.test_a)" ("(unittest.loader._FailedTest)" before Python 3.11).
+ */
+const UNITTEST_LOAD_ERROR = /^ERROR: \S+ \(unittest\.loader\._FailedTest(?:\.\S+)?\)\s*$/;
+
+/**
+ * unittest's counts summed over its summaries (one per `python -m unittest` the check runs), a
+ * module that did not import left out: `ran` also leaves out the skipped tests, which unittest
+ * counts in "Ran N tests" and lists as "skipped=N".
+ */
+function unittestCount(o: string, ran: boolean): number | null {
+  const runs = [...o.matchAll(UNITTEST_SUMMARY)];
+  if (!runs.length) return null;
+  const total = runs.reduce((n, m) => n + Number(m[1]), 0) - lines(o, UNITTEST_LOAD_ERROR);
+  const skipped = ran
+    ? runs.reduce((n, m) => n + (num((m[2] ?? "").match(/\bskipped=(\d+)/)) ?? 0), 0)
+    : 0;
+  return Math.max(0, total - skipped);
+}
+
 function swiftCount(o: string, ran: boolean): number | null {
   const xctest = [
     ...o.matchAll(
@@ -669,7 +705,7 @@ export const TEST_RUNNERS: LanguageRecord<readonly TestRunner[]> = {
   vue: ["vitest", "jest"],
   svelte: ["vitest", "jest"],
   rescript: ["vitest", "jest"],
-  python: ["pytest"],
+  python: ["pytest", "unittest"],
   rust: ["cargo"],
   go: ["go"],
   csharp: ["dotnet"],
@@ -715,6 +751,10 @@ export const FAILED_TESTS: Record<TestRunner, (output: string) => string[]> = {
   vitest: (o) => captured(o, /^\s*FAIL\s+(\S.* > .+?)\s*$/gm),
   // "FAILED tests/test_parser.py::test_keeps_blank - AssertionError", also an ERROR at setup
   pytest: (o) => captured(o, /^(?:FAILED|ERROR) (\S+::\S+)/gm),
+  // "FAIL: test_bad (tests.test_a.T.test_bad)" or "ERROR: ...", a subtest's parameters after it
+  // ("(n=2)"), not a module that did not import
+  unittest: (o) =>
+    captured(o, /^(?:FAIL|ERROR): (\S+ \((?!unittest\.loader\._FailedTest\b)[\w.]+\))(?: .*)?$/gm),
   // "test parser::keeps_blank ... FAILED"
   cargo: (o) => captured(o, /^test (\S+) \.\.\. FAILED\s*$/gm),
   // "  Failed Parser.Tests.KeepsBlank [12 ms]"
@@ -827,6 +867,9 @@ export const BUILD_FAILURES: Record<TestRunner, RegExp> = {
   vitest: /^\s*(?:FAIL\s+\S+ \[ .+ \]|Error: (?:Failed to load|Transform failed).*)$/,
   // "ERROR collecting tests/test_parser.py", "E   ModuleNotFoundError: No module named 'parser'"
   pytest: /^(?:_* ?ERROR collecting .+|E\s+(?:ModuleNotFoundError|ImportError|SyntaxError): .+)$/,
+  // "ImportError: Failed to import test module: test_a" under "ERROR: test_a
+  // (unittest.loader._FailedTest.test_a)", for a missing import or a syntax error in the module.
+  unittest: /^ImportError: Failed to import test module: \S+$/,
   // "error[E0425]: cannot find function `fold` in this scope", "error: could not compile `cidrfold`"
   cargo: /^error(?:\[E\d+\]: .+|: could not compile .+)$/,
   // "Parser.cs(12,5): error CS1501: No overload for method 'Run' takes 7 arguments"
