@@ -1,6 +1,6 @@
 import { lowerEffort, type RouteEffort } from "../llm/model-routing.js";
 import { lostAnswer } from "../llm/provider-answer.js";
-import { ProviderUnreachableError } from "../llm/provider-health.js";
+import { isStall } from "../llm/provider-health.js";
 import { canonical, hashJson } from "../specs/hash.js";
 import type { WorkflowStore } from "./store.js";
 
@@ -53,14 +53,7 @@ export interface Ladder {
 }
 
 /** A call the provider never answered, as opposed to a refused or dropped connection. */
-export function isStall(error: unknown): boolean {
-  return (
-    error instanceof ProviderUnreachableError &&
-    /^(?:No model response within \d+ seconds|Provider stream ended without a response finish)$/.test(
-      error.message,
-    )
-  );
-}
+export { isStall };
 
 /**
  * A call the ladder climbs on: a stall, or a turn that finished with no usable answer (#1957). The

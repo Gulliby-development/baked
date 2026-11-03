@@ -149,11 +149,12 @@ import {
   KEEP_RECENT_TOOL_MESSAGES,
   MIN_ATTEMPT_STEPS,
   type StepLike,
+  stepOutputGuard,
   stepTokens,
   type ToolBackendCount,
   toolCallName,
 } from "./step-budget.js";
-import { stopFault } from "./stop-reasons.js";
+import { recordWouldStop, type StopMode, stopFault, stopMode } from "./stop-reasons.js";
 import type { EffectRow, WorkflowStore } from "./store.js";
 import { failureOwnerNote } from "./task-graph.js";
 import { toolsOfferedTo } from "./task-tools.js";
@@ -495,6 +496,12 @@ export class NativeAgentExecutor implements AgentExecutor {
       if (webSearch) provider.providerOptions = withCodexWebSearch(provider.providerOptions);
       if (request.freshSession || request.transport)
         provider.providerOptions = withCodexRecovery(provider.providerOptions, request);
+      // Codex takes no output limit: its adapter guards the stream in this mode (#2660).
+      if (request.profile.model.startsWith("codex/"))
+        provider.providerOptions = withCodexOutputGuard(
+          provider.providerOptions,
+          stopMode(policy, "stream_output_limit"),
+        );
       // Only a known window stops the attempt here; for a model nothing names, the 128k default is
       // a guess, and the provider's own rejection of an oversized input is handled by the scheduler.
       const window = knownModelContextWindow(request.profile.model);
@@ -1350,7 +1357,9 @@ export class NativeAgentExecutor implements AgentExecutor {
       }
       const resultSchema = outputSchemas[request.profile.output];
       if (!resultSchema) throw new WorkflowFault("OUTPUT_INVALID", "Unknown profile output schema");
-      const schema = withHostConstants(request.profile.output, resultSchema);
+      const schema = withHostConstants(request.profile.output, resultSchema, {
+        taskId: request.task?.id,
+      });
       // The model sees host fields as optional and validation still fills them (#1929).
       const { validate } = zodSchema(schema);
       const submitSchema = jsonSchema(
@@ -1702,6 +1711,7 @@ export class NativeAgentExecutor implements AgentExecutor {
               },
             });
           }
+          recordStreamOutputStops(this.store, request, usage);
           this.store.artifact(
             request.runId,
             "usage",
@@ -1790,6 +1800,7 @@ export class NativeAgentExecutor implements AgentExecutor {
         // automatic one after the newest message, so each step re-reads the earlier ones.
         const cacheTtl = this.config.cache?.ttl ?? "5m";
         let messages: ModelMessage[] = [opening];
+        let guardResumed = false;
         for (let recovery = 0; ; recovery++) {
           const earlier = [...finished];
           const generated = await generateText({
@@ -1858,6 +1869,24 @@ export class NativeAgentExecutor implements AgentExecutor {
             usage: sumUsage(finished),
             messages: [...messages.slice(1), ...generated.response.messages],
           };
+          // A step the enforced stream guard ended (`stream_output_limit`, #2660) has no tool call,
+          // so the loop stopped on it. The attempt goes on once in the same conversation, where the
+          // step controller adds the truncation notice for the `length` step, as for one cut at the
+          // provider's own cap.
+          const last = generated.steps.at(-1);
+          if (
+            !guardResumed &&
+            last &&
+            stepOutputGuard(last)?.decision === "stopped" &&
+            submitted === undefined &&
+            !request.signal.aborted &&
+            finished.length < request.maxSteps &&
+            !budget.overBudget(finished)
+          ) {
+            guardResumed = true;
+            messages = [opening, ...(result.messages ?? [])];
+            continue;
+          }
           // A status report after a refusal still needs work. Replay the exact refusal once with
           // all granted tools, in this attempt and within its original step and token limits.
           if (
@@ -2404,6 +2433,40 @@ export function codeWebSearchFor(
 /** Provider options with Codex's web search on, read by the Codex adapter (`codexWebSearch`). */
 export function withCodexWebSearch(options: ProviderOptions): ProviderOptions {
   return { ...options, codex: { ...options.codex, webSearch: true } };
+}
+
+/** The stream guard's mode (`stream_output_limit`), read by the Codex adapter (#2660). */
+export function withCodexOutputGuard(options: ProviderOptions, mode: StopMode): ProviderOptions {
+  return { ...options, codex: { ...options.codex, outputGuard: mode } };
+}
+
+/**
+ * A `decision.would_stop` for each step whose stream guard passed its limit in shadow or
+ * advisory (`stream_output_limit`, #2660), once per attempt and step, with the guard's inputs.
+ * An enforced stop needs no record: the step ended `length` and its usage record says `stopped`.
+ */
+export function recordStreamOutputStops(
+  store: WorkflowStore,
+  request: Pick<ExecutionRequest, "runId" | "attemptId" | "profile">,
+  usage: Pick<AttemptUsageRecord, "steps">,
+): void {
+  for (const [index, step] of usage.steps.entries()) {
+    const guard = step.outputGuard;
+    if (guard?.decision !== "would_stop" || guard.mode === "enforce") continue;
+    recordWouldStop(store, request.runId, {
+      reason: "stream_output_limit",
+      mode: guard.mode,
+      key: `attempt-${request.attemptId}-step-${index}`,
+      summary: `Step ${index + 1} of ${request.profile.id} on ${request.profile.model} streamed about ${guard.streamedTokens} output tokens, past ${guard.factor} times its ${guard.maxOutputTokens}-token limit; enforced, the turn would stop there and the step end as a truncated answer`,
+      inputs: {
+        attemptId: request.attemptId,
+        step: index,
+        profileId: request.profile.id,
+        model: request.profile.model,
+        ...guard,
+      },
+    });
+  }
 }
 
 /** The recovery ladder's session and transport rungs, read by the Codex adapter (#1877). */

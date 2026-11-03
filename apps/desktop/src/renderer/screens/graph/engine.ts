@@ -15,6 +15,7 @@ import { timer } from "d3-timer";
 import "d3-transition";
 import { type ZoomBehavior, zoom, zoomIdentity } from "d3-zoom";
 import type { GraphEdge, GraphFrame, GraphUnit, GraphView } from "../../client/graph.js";
+import { motionMs, reducedMotion } from "../../lib/motion.js";
 import {
   type Box,
   chipGrid,
@@ -95,10 +96,6 @@ const ACCENT = "var(--accent)";
 /** Light lines on a dark canvas read stronger, so faded links fade further there. */
 function fadedEdge(): string {
   return document.documentElement.dataset.theme === "dark" ? "0.035" : "0.07";
-}
-
-function reducedMotion(): boolean {
-  return window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false;
 }
 
 export class GraphEngine {
@@ -315,7 +312,7 @@ export class GraphEngine {
   }
 
   zoomBy(factor: number): void {
-    this.svg.transition().duration(250).call(this.zoomer.scaleBy, factor);
+    this.svg.transition().duration(motionMs(250)).call(this.zoomer.scaleBy, factor);
   }
 
   /** Zooms to a frame, or to everything when `id` is null. */
@@ -350,7 +347,7 @@ export class GraphEngine {
       .translate(-(x0 + x1) / 2, -(y0 + y1) / 2);
     this.svg
       .transition()
-      .duration(reducedMotion() ? 0 : 650)
+      .duration(motionMs(650))
       .ease(easeCubicInOut)
       .call(this.zoomer.transform, target);
   }

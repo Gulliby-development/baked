@@ -138,6 +138,7 @@ if (command === "export" && args.length === 2) {
           `  ${run.featureId} ${run.runId}: final ${usd(run.finalUsd)}, ${run.boundaries.length} attempts, ` +
             `new stops ${run.newStops}, new growth ${run.newGrowth}, stops removed ${run.removedStops}, ` +
             `first-response stops ${run.newFirstByteStops} of ${run.firstByte.length} calls, ` +
+            `stream output stops ${run.newStreamOutputStops} of ${run.streamOutputs.length} guarded steps, ` +
             `cost-cap refusals ${run.newCostStops} of ${run.costCap.length} attempts, ` +
             `new test splits ${run.newTestSplits} of ${run.testSplits.length} test tasks, ` +
             `new recovery rungs ${run.newRecoveries} of ${run.stallLadder.length} stalls, ` +
