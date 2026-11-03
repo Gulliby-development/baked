@@ -80,6 +80,24 @@
     "diagnosticFormats": ["/p/Sources/Calc/Calc.swift: error: cannot convert value of type 'String' to specified type 'Int'"],
     "testClasses": null,
     "testDeclarations": ["Tests/SumTests/SumTests.swift: 3 tests, per class 1, 2"],
-    "rowFileShapes": null
+    "rowFileShapes": [
+      "Tests/SplitTests/SplitRowsTests.swift",
+      "import Split",
+      "import XCTest",
+      "",
+      "final class SplitRowsTests: XCTestCase {",
+      "  let rows: [(String, [String])] = [",
+      "    (\"a,b\", [\"a\", \"b\"]),",
+      "    (\"a\\tb,\\\"c\\\"\", [\"a\\tb\", \"\\\"c\\\"\"]),",
+      "  ]",
+      "",
+      "  func testRows() {",
+      "    for (input, out) in rows {",
+      "      XCTAssertEqual(split(input), out)",
+      "    }",
+      "  }",
+      "}",
+      ""
+    ]
   }
 }

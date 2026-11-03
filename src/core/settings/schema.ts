@@ -65,6 +65,11 @@ export type SettingDefinition = SettingBase &
      * each with an optional `maxChars`; null means none. The whole source is one value.
      */
     | { type: "library-docs"; default: null }
+    /**
+     * A folder on the machine: absolute, starting with `~`, or relative to the project; null means
+     * unset. `placeholder` is an example value for the editors.
+     */
+    | { type: "path"; default: null; placeholder: string }
   );
 
 export type SettingType = SettingDefinition["type"];
@@ -145,7 +150,7 @@ export const SETTING_PAGES: readonly SettingPage[] = [
     id: "code-quality",
     title: "Code quality",
     description:
-      "Quality gates of workflow runs. New runs take these defaults and keep them until they finish.",
+      "Quality gates and worktrees of workflow runs. New runs take these defaults and keep them until they finish.",
     command: "/code-quality",
   },
   {
@@ -1464,6 +1469,17 @@ export const SETTINGS: readonly SettingDefinition[] = [
     scopes: BOTH,
     type: "library-docs",
     default: null,
+  },
+  {
+    id: "workflows.worktreeRoot",
+    page: "code-quality",
+    section: "Worktrees",
+    label: "Worktree folder",
+    help: "Where new worktree runs keep their worktrees: <folder>/<8 hex digits>/main, beside the project on its drive. Not set, they live in the project's .baked/worktrees. On Windows a short folder such as C:\\.bk keeps a task's checks under the path length a toolchain handles (dart test fails past about 90 characters). A run keeps the folder its worktree was created in.",
+    scopes: BOTH,
+    type: "path",
+    default: null,
+    placeholder: "C:\\.bk",
   },
   {
     id: "coordinator.workStyle",

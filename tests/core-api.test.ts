@@ -1,8 +1,8 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { type ApiServer, faultStatus, startApiServer } from "../src/core/api/server.js";
+import { API_METHODS, type ApiServer, faultStatus, startApiServer } from "../src/core/api/server.js";
 import { recordProjectOpen } from "../src/core/projects/known.js";
 import { ProjectService } from "../src/core/projects/service.js";
 import { parseServeArgs } from "../src/headless/serve.js";
@@ -193,8 +193,26 @@ describe("local core API", () => {
     const preflight = await fetch(`${server.url}/v1/health`, { method: "OPTIONS", headers: { Origin: "http://localhost:5173" } });
     expect(preflight.status).toBe(204);
     expect(preflight.headers.get("access-control-allow-headers")).toContain("Authorization");
+    // A browser on an allowed origin may PUT, as the checks, brief and hooks screens do (#2791).
+    const putPreflight = await fetch(`${server.url}/v1/workflow/checks`, {
+      method: "OPTIONS",
+      headers: { Origin: "http://localhost:5173", "Access-Control-Request-Method": "PUT" },
+    });
+    expect(putPreflight.status).toBe(204);
+    const advertised = (putPreflight.headers.get("access-control-allow-methods") ?? "").split(/,\s*/);
+    for (const method of ["GET", "POST", "PUT", "PATCH", "DELETE"]) expect(advertised).toContain(method);
     const foreignPreflight = await fetch(`${server.url}/v1/health`, { method: "OPTIONS", headers: { Origin: "https://evil.example" } });
     expect(foreignPreflight.status).toBe(403);
+  });
+
+  test("the preflight advertises every method a route accepts (#2791)", () => {
+    const dir = join(import.meta.dir, "..", "src", "core", "api");
+    const used = new Set<string>();
+    for (const file of readdirSync(dir).filter((name) => name.endsWith(".ts")))
+      for (const [, method] of readFileSync(join(dir, file), "utf8").matchAll(/"(GET|HEAD|POST|PUT|PATCH|DELETE)"/g))
+        if (method) used.add(method);
+    expect(used.has("PUT")).toBe(true);
+    expect([...used].filter((method) => !(API_METHODS as readonly string[]).includes(method))).toEqual([]);
   });
 
   test("health names the version and workspace; the token file is private and removed on stop", async () => {
