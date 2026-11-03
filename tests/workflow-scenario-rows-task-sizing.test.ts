@@ -47,6 +47,9 @@ const frameworks = [
   { framework: "junit", package: "app", test: "src/test/java/app/ExplainTest.java", other: "src/test/java/app/ExplainMoreTest.java" },
   { framework: "rust", test: "tests/explain.rs", other: "tests/explain_more.rs" },
   { framework: "xunit", package: "App.Tests", test: "tests/ExplainTests.cs", other: "tests/ExplainMoreTests.cs" },
+  { framework: "kotlin", package: "app", test: "src/test/kotlin/app/ExplainTest.kt", other: "src/test/kotlin/app/ExplainMoreTest.kt" },
+  { framework: "scalatest", test: "src/test/scala/app/ExplainSuite.scala", other: "src/test/scala/app/ExplainMoreSuite.scala" },
+  { framework: "munit", test: "src/test/scala/app/ExplainSuite.scala", other: "src/test/scala/app/ExplainMoreSuite.scala" },
 ] as const;
 type Framework = (typeof frameworks)[number];
 
