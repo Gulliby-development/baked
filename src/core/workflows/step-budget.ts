@@ -1,6 +1,7 @@
 import type { JSONValue } from "@ai-sdk/provider";
 import type { ModelMessage } from "@ai-sdk/provider-utils";
 import type { AnswerEvidence } from "../llm/provider-answer.js";
+import type { StreamOutputGuard } from "../llm/providers/output-limit.js";
 import type { EvidenceBound } from "./evidence-budget.js";
 import {
   type BrokenFile,
@@ -272,6 +273,12 @@ export interface AttemptStepUsage {
    * absent for a step the controller did not prepare and in older records.
    */
   sentBytes?: number;
+  /**
+   * What the stream guard saw on the step (Codex app-server, #2660): the limit, the streamed
+   * characters and the decision, which `replayStreamOutputs` decides again. Absent for a step no
+   * guard watched and in older records.
+   */
+  outputGuard?: StreamOutputGuard;
 }
 
 export interface AttemptUsageRecord {
@@ -353,6 +360,11 @@ export interface AttemptUsageRecord {
    * summed: active time a provider did not answer in (#2414); absent when none.
    */
   silentMs?: number;
+  /**
+   * The stall part of those waits (`CallTiming.stallMs`), summed: what the clean pace leaves out
+   * of active time (#2424); absent when none.
+   */
+  stallMs?: number;
 }
 
 /** Calls of one tool answered by one backend (lsp with its server, tree-sitter, regex, repo-map). */
@@ -398,6 +410,22 @@ export function stepWebSearchQueries(step: Pick<StepLike, "providerMetadata">): 
     ?.codex;
   const queries = codex?.webSearchQueries;
   return Array.isArray(queries) ? queries.map((q) => (typeof q === "string" ? q : "")) : [];
+}
+
+/** The stream guard's record of a step, when its provider watched the stream (Codex, #2660). */
+export function stepOutputGuard(
+  step: Pick<StepLike, "providerMetadata">,
+): StreamOutputGuard | undefined {
+  const guard = (step.providerMetadata as { codex?: { outputGuard?: unknown } } | undefined)?.codex
+    ?.outputGuard as Partial<StreamOutputGuard> | undefined;
+  if (
+    !guard ||
+    typeof guard.maxOutputTokens !== "number" ||
+    typeof guard.streamedChars !== "number" ||
+    (guard.decision !== "pass" && guard.decision !== "would_stop" && guard.decision !== "stopped")
+  )
+    return undefined;
+  return guard as StreamOutputGuard;
 }
 
 /**
@@ -790,6 +818,7 @@ export class AttemptStepController {
     const lost = unreported.reduce<number>((sum, n) => sum + (n ?? 0), 0);
     const searches = steps.map(stepWebSearchQueries);
     const queries = searches.flat();
+    const guards = steps.map(stepOutputGuard);
     const sent = steps
       .map((_, index) => this.sentBytes[index])
       .filter((bytes): bytes is number => bytes !== undefined);
@@ -845,6 +874,7 @@ export class AttemptStepController {
         ...(unreported[index] !== undefined ? { unreportedResponses: unreported[index] } : {}),
         ...(searches[index]?.length ? { webSearches: searches[index]?.length } : {}),
         ...(this.sentBytes[index] !== undefined ? { sentBytes: this.sentBytes[index] } : {}),
+        ...(guards[index] ? { outputGuard: guards[index] } : {}),
       })),
     };
   }

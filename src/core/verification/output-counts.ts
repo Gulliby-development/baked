@@ -187,6 +187,7 @@ export type TestRunner =
   | "jest"
   | "vitest"
   | "pytest"
+  | "unittest"
   | "cargo"
   | "dotnet"
   | "maven"
@@ -241,15 +242,32 @@ const ctestListed = (o: string, outcome: RegExp): string[] =>
     .map((m) => (m[1] ?? "").trim());
 /** GoogleTest's summary of a test binary: "[==========] 3 tests from 1 test suite ran. (0 ms total)". */
 const GTEST_SUMMARY = /^\[==========\] (\d+) tests? from \d+ test (?:suites?|cases?) ran\./m;
+/**
+ * A package of `go test` that holds tests: "ok  \texample.com/m/a\t0.004s", from the test cache
+ * "ok  \texample.com/m/a\t(cached)", with "\tcoverage: ..." after either, or a failed package
+ * "FAIL\texample.com/m/a\t0.003s" or "FAIL\texample.com/m/a [build failed]". The fields are
+ * tab-separated as `go test` prints them, so jest's "FAIL src/a.test.js" is not one. Not "ok ...
+ * [no tests to run]", a package whose tests the `-run` filter left out (#2778).
+ */
+const GO_PACKAGE_TESTED =
+  /^(?:ok\s+\S+\t(?:[\d.]+s|\(cached\))(?![^\n]*\[no tests to run\])|FAIL\t\S+[\t ])/m;
+/** Gradle's line under a failed test task: "3 tests completed, 1 failed" (also ", 1 skipped"). */
+const GRADLE_COMPLETED = /^\d+ tests? completed, \d+ failed\b/m;
 const PEST_SUMMARY = /^\s*Tests:\s+((?:\d+ \w+(?:, )?)+) \(\d+ assertions?\)/m;
+
+/**
+ * Surefire's summary of a module, "[INFO] Tests run: 12, Failures: 0, Errors: 0, Skipped: 0", with
+ * ", Flakes: 1" after it when a test failed and then passed on a rerun (`rerunFailingTestsCount`);
+ * `Tests run` counts that test once (#2782).
+ */
+const MAVEN_SUMMARY =
+  /^\[\w+\] Tests run: (\d+), Failures: \d+, Errors: \d+, Skipped: (\d+)(?:, Flakes: \d+)?\s*$/gm;
 
 /**
  * The summary parsers, in the order `testCount` tries them: a more specific summary first, the
  * report formats any runner can print (JUnit XML, TAP) last. `ran` is the share of `count` that
  * executed, skipped and ignored tests left out, or null where the summary does not tell (#1832).
  */
-const MAVEN_SUMMARY = /^\[\w+\] Tests run: (\d+), Failures: \d+, Errors: \d+, Skipped: (\d+)\s*$/gm;
-
 const TEST_COUNTERS: readonly {
   tool: TestRunner;
   count: (output: string) => number | null;
@@ -259,7 +277,11 @@ const TEST_COUNTERS: readonly {
     tool: "bun",
     // bun test: "Ran 42 tests across 3 files." after " 40 pass", " 2 skip", " 0 fail"
     count: (o) => num(o.match(/^Ran (\d+) tests? across \d+ files?/m)),
-    ran: (o) => (/^Ran \d+ tests?/m.test(o) ? (sum(o, /^\s*(\d+) (?:pass|fail)$/gm) ?? 0) : null),
+    // Only bun's own line: unittest's "Ran 3 tests in 0.001s" read as bun with none run (#2737).
+    ran: (o) =>
+      /^Ran \d+ tests? across \d+ files?/m.test(o)
+        ? (sum(o, /^\s*(\d+) (?:pass|fail)$/gm) ?? 0)
+        : null,
   },
   {
     tool: "jest",
@@ -304,6 +326,13 @@ const TEST_COUNTERS: readonly {
         ? null
         : (sum(line, /(\d+) (?:passed|failed|xfailed|xpassed|errors?)\b/g) ?? 0);
     },
+  },
+  {
+    tool: "unittest",
+    // python -m unittest (#2737): "Ran 4 tests in 0.001s", then "OK (skipped=2)" or "FAILED
+    // (failures=1, errors=1, skipped=1)"; Python 3.12 and later say "NO TESTS RAN" (exit 5).
+    count: (o) => unittestCount(o, false),
+    ran: (o) => unittestCount(o, true),
   },
   {
     tool: "cargo",
@@ -374,7 +403,7 @@ const TEST_COUNTERS: readonly {
     ran: (o) =>
       lines(o, /^=== RUN\s+[^/\s]+\s*$/) ||
       (/\[no tests? (?:to run|files)\]|^testing: warning: no tests to run/m.test(o) &&
-      !/^ok\s+\S+\s+[\d.]+s\s*$/m.test(o)
+      !GO_PACKAGE_TESTED.test(o)
         ? 0
         : null),
   },
@@ -552,6 +581,30 @@ const TEST_COUNTERS: readonly {
 
 const num = (match: RegExpMatchArray | null): number | null => (match ? Number(match[1]) : null);
 
+/** unittest's summary: "Ran 3 tests in 0.002s", a blank line, then its verdict and counts. */
+const UNITTEST_SUMMARY =
+  /^Ran (\d+) tests? in \d[\d.]*s\r?\n\r?\n(?:OK|FAILED|NO TESTS RAN)(?: \(([^)\n]*)\))?\s*$/gm;
+/**
+ * A test module unittest could not import, which it counts as a test: "ERROR: test_a
+ * (unittest.loader._FailedTest.test_a)" ("(unittest.loader._FailedTest)" before Python 3.11).
+ */
+const UNITTEST_LOAD_ERROR = /^ERROR: \S+ \(unittest\.loader\._FailedTest(?:\.\S+)?\)\s*$/;
+
+/**
+ * unittest's counts summed over its summaries (one per `python -m unittest` the check runs), a
+ * module that did not import left out: `ran` also leaves out the skipped tests, which unittest
+ * counts in "Ran N tests" and lists as "skipped=N".
+ */
+function unittestCount(o: string, ran: boolean): number | null {
+  const runs = [...o.matchAll(UNITTEST_SUMMARY)];
+  if (!runs.length) return null;
+  const total = runs.reduce((n, m) => n + Number(m[1]), 0) - lines(o, UNITTEST_LOAD_ERROR);
+  const skipped = ran
+    ? runs.reduce((n, m) => n + (num((m[2] ?? "").match(/\bskipped=(\d+)/)) ?? 0), 0)
+    : 0;
+  return Math.max(0, total - skipped);
+}
+
 function swiftCount(o: string, ran: boolean): number | null {
   const xctest = [
     ...o.matchAll(
@@ -677,7 +730,7 @@ export const TEST_RUNNERS: LanguageRecord<readonly TestRunner[]> = {
   vue: ["vitest", "jest"],
   svelte: ["vitest", "jest"],
   rescript: ["vitest", "jest"],
-  python: ["pytest"],
+  python: ["pytest", "unittest"],
   rust: ["cargo"],
   go: ["go"],
   csharp: ["dotnet"],
@@ -723,13 +776,28 @@ export const FAILED_TESTS: Record<TestRunner, (output: string) => string[]> = {
   vitest: (o) => captured(o, /^\s*FAIL\s+(\S.* > .+?)\s*$/gm),
   // "FAILED tests/test_parser.py::test_keeps_blank - AssertionError", also an ERROR at setup
   pytest: (o) => captured(o, /^(?:FAILED|ERROR) (\S+::\S+)/gm),
+  // "FAIL: test_bad (tests.test_a.T.test_bad)" or "ERROR: ...", a subtest's parameters after it
+  // ("(n=2)"), not a module that did not import
+  unittest: (o) =>
+    captured(o, /^(?:FAIL|ERROR): (\S+ \((?!unittest\.loader\._FailedTest\b)[\w.]+\))(?: .*)?$/gm),
   // "test parser::keeps_blank ... FAILED"
   cargo: (o) => captured(o, /^test (\S+) \.\.\. FAILED\s*$/gm),
   // "  Failed Parser.Tests.KeepsBlank [12 ms]"
   dotnet: (o) => captured(o, /^\s*Failed (\S+) \[/gm),
   // "[ERROR] app.ParserTest.keepsBlank -- Time elapsed: 0.01 s <<< FAILURE!" (surefire 3), or
   // "[ERROR] keepsBlank(app.ParserTest)  Time elapsed: 0.01 s  <<< ERROR!" (surefire 2)
-  maven: (o) => captured(o, /^\[ERROR\] (\S+?)(?: --)?\s+Time elapsed: .*<<< (?:FAILURE|ERROR)!/gm),
+  // A test surefire lists under "[WARNING] Flakes:" failed and then passed on a rerun (#2782).
+  maven: (o) => {
+    const flaky = new Set(
+      [
+        ...o.matchAll(/^\[WARNING\] Flakes: *\r?\n((?:\[\w+\] .*\r?\n?)*?)\[INFO\] *\r?$/gm),
+      ].flatMap((m) => captured(m[1] ?? "", /^\[WARNING\] (\S+)\s*$/gm)),
+    );
+    return captured(
+      o,
+      /^\[ERROR\] (\S+?)(?: --)?\s+Time elapsed: .*<<< (?:FAILURE|ERROR)!/gm,
+    ).filter((name) => !flaky.has(name));
+  },
   // "--- FAIL: TestKeepsBlank (0.00s)", subtests included
   go: (o) => captured(o, /^\s*--- FAIL: (\S+)/gm),
   // "1) Tests\\SumTest::testAdds" under "There was 1 failure:" or "There were 2 errors:", not
@@ -835,6 +903,9 @@ export const BUILD_FAILURES: Record<TestRunner, RegExp> = {
   vitest: /^\s*(?:FAIL\s+\S+ \[ .+ \]|Error: (?:Failed to load|Transform failed).*)$/,
   // "ERROR collecting tests/test_parser.py", "E   ModuleNotFoundError: No module named 'parser'"
   pytest: /^(?:_* ?ERROR collecting .+|E\s+(?:ModuleNotFoundError|ImportError|SyntaxError): .+)$/,
+  // "ImportError: Failed to import test module: test_a" under "ERROR: test_a
+  // (unittest.loader._FailedTest.test_a)", for a missing import or a syntax error in the module.
+  unittest: /^ImportError: Failed to import test module: \S+$/,
   // "error[E0425]: cannot find function `fold` in this scope", "error: could not compile `cidrfold`"
   cargo: /^error(?:\[E\d+\]: .+|: could not compile .+)$/,
   // "Parser.cs(12,5): error CS1501: No overload for method 'Run' takes 7 arguments"
@@ -957,6 +1028,23 @@ export function testsRan(raw: string): OutputCount | null {
     if (count(output) !== null) return null;
   }
   return null;
+}
+
+/**
+ * Whether a check's output shows that some part of the run holds tests (#2778): a summary that
+ * counts some, a test reported as failed, a `go test` package that ran tests or whose tests did
+ * not build, or a Gradle test task that completed some. A "no tests" line of another part (a Go
+ * package without test files, an umbrella app without tests, a Gradle project whose test task
+ * discovered none) then does not stand for the whole run.
+ */
+export function heldTests(raw: string): boolean {
+  const output = plainOutput(raw);
+  return (
+    (testCount(output)?.count ?? 0) > 0 ||
+    (failedTests(output)?.names.length ?? 0) > 0 ||
+    GO_PACKAGE_TESTED.test(output) ||
+    GRADLE_COMPLETED.test(output)
+  );
 }
 
 /**

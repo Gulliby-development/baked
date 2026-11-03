@@ -14,6 +14,13 @@ import { ProviderAnswerError } from "../../provider-answer.js";
 import { providerCallDetail } from "../../provider-health.js";
 import { recordCodexRateLimits } from "../../usage-limits-record.js";
 import { cliReasoningEffort } from "../cli-effort.js";
+import {
+  STREAM_OUTPUT_FACTOR,
+  type StreamGuardMode,
+  type StreamOutputGuard,
+  streamGuardMode,
+  streamOutputDecision,
+} from "../output-limit.js";
 import { imageUrl, promptImages } from "../prompt-images.js";
 import { type CodexAppServerConnection, startCodexAppServerSession } from "./client.js";
 import {
@@ -93,6 +100,11 @@ export interface CodexNativeRequest {
   webSearch?: boolean;
   /** Start a new thread instead of continuing one (`providerOptions.codex.freshThread`, #1877). */
   freshThread?: boolean;
+  /**
+   * The call's output limit and how the stream guard acts on it (`providerOptions.codex
+   * .outputGuard`, the `stream_output_limit` mode, #2660). Codex takes no limit of its own.
+   */
+  outputGuard?: { maxOutputTokens: number; mode: StreamGuardMode };
 }
 
 /**
@@ -159,8 +171,14 @@ export function buildCodexNativeRequest(
   const effort = cliReasoningEffort(options.providerOptions, "codex");
   const webSearch = codexWebSearch(options.providerOptions);
   const { freshThread } = codexRecovery(options.providerOptions);
+  const maxOutputTokens = options.maxOutputTokens;
+  const outputGuard =
+    maxOutputTokens !== undefined && Number.isFinite(maxOutputTokens) && maxOutputTokens >= 1
+      ? { maxOutputTokens, mode: streamGuardMode(options.providerOptions, "codex") }
+      : undefined;
   return {
     modelId,
+    ...(outputGuard ? { outputGuard } : {}),
     ...(effort ? { effort } : {}),
     ...(webSearch ? { webSearch } : {}),
     ...(freshThread ? { freshThread } : {}),
@@ -258,6 +276,48 @@ interface StepSink {
   unparsedBefore: number;
   /** Called once when the step finishes (true) or fails (false). */
   settled?: (finished: boolean) => void;
+  /** The stream guard of the step's output (#2660); absent when the call names no limit. */
+  guard?: StreamOutputGuard;
+}
+
+function startGuard(guard: NonNullable<CodexNativeRequest["outputGuard"]>): StreamOutputGuard {
+  const { limitTokens } = streamOutputDecision({
+    maxOutputTokens: guard.maxOutputTokens,
+    streamedChars: 0,
+  });
+  return {
+    mode: guard.mode,
+    maxOutputTokens: guard.maxOutputTokens,
+    factor: STREAM_OUTPUT_FACTOR,
+    limitTokens,
+    streamedChars: 0,
+    streamedTokens: 0,
+    decision: "pass",
+  };
+}
+
+/**
+ * Counts a streamed delta against the step's output guard (#2660). Returns true when an
+ * enforced guard ends the step here; in shadow and advisory the step goes on and its finish
+ * carries the would-stop.
+ */
+function guardDelta(sink: StepSink, delta: string): boolean {
+  const guard = sink.guard;
+  if (!guard || guard.decision === "stopped") return false;
+  guard.streamedChars += delta.length;
+  const decided = streamOutputDecision({
+    maxOutputTokens: guard.maxOutputTokens,
+    streamedChars: guard.streamedChars,
+    factor: guard.factor,
+  });
+  guard.streamedTokens = decided.streamedTokens;
+  if (!decided.over || guard.decision !== "pass") return false;
+  if (guard.mode !== "enforce") {
+    guard.decision = "would_stop";
+    return false;
+  }
+  guard.decision = "stopped";
+  return true;
 }
 
 /**
@@ -525,6 +585,7 @@ export class CodexAppServerSessions {
           unreported: this.abandoned,
           webSearches: [],
           unparsedBefore: connection.unparsed?.count ?? 0,
+          ...(request.outputGuard ? { guard: startGuard(request.outputGuard) } : {}),
           ...(probe
             ? {
                 settled: (finished: boolean) => {
@@ -667,7 +728,9 @@ export class CodexAppServerSessions {
     this.connection = pending;
     try {
       const connection = await pending;
-      connection.onNotification((method, params) => this.onNotification(method, params));
+      connection.onNotification((method, params) =>
+        this.onNotification(connection, method, params),
+      );
       connection.onServerRequest((method, id, params) =>
         this.onServerRequest(connection, method, id, params),
       );
@@ -808,7 +871,11 @@ export class CodexAppServerSessions {
     return true;
   }
 
-  private onNotification(method: string, rawParams: unknown): void {
+  private onNotification(
+    connection: CodexAppServerConnection,
+    method: string,
+    rawParams: unknown,
+  ): void {
     if (method === "account/rateLimits/updated") {
       recordCodexRateLimits(rawParams);
       return;
@@ -880,6 +947,7 @@ export class CodexAppServerSessions {
       }
       sink.streamed.add(itemId);
       controller.enqueue({ type: "text-delta", id, delta });
+      if (guardDelta(sink, delta)) this.stopAtOutputLimit(connection, thread);
     } else if (method === "item/reasoning/summaryTextDelta") {
       const itemId = String(params.itemId ?? "");
       const delta = typeof params.delta === "string" ? params.delta : "";
@@ -891,6 +959,7 @@ export class CodexAppServerSessions {
         controller.enqueue({ type: "reasoning-start", id });
       }
       controller.enqueue({ type: "reasoning-delta", id, delta });
+      if (guardDelta(sink, delta)) this.stopAtOutputLimit(connection, thread);
     } else if (method === "item/completed") {
       const item = params.item as
         | { type?: string; id?: unknown; text?: unknown; query?: unknown }
@@ -908,6 +977,7 @@ export class CodexAppServerSessions {
           controller.enqueue({ type: "text-start", id: fullId });
           controller.enqueue({ type: "text-delta", id: fullId, delta: item.text });
           controller.enqueue({ type: "text-end", id: fullId });
+          if (guardDelta(sink, item.text)) this.stopAtOutputLimit(connection, thread);
         }
       } else if (item?.type === "reasoning") {
         const id = sink.openReasoning.get(itemId);
@@ -961,6 +1031,20 @@ export class CodexAppServerSessions {
     sink.openText.clear();
   }
 
+  /**
+   * An enforced stream guard ends the step at the output it streamed (#2660): the step finishes
+   * `length` with that text, so the workflow's truncation notice applies, and the turn is
+   * interrupted. The thread is dropped like one BAKED leaves, so its late usage still counts and
+   * the next call starts a new thread with the conversation so far.
+   */
+  private stopAtOutputLimit(connection: CodexAppServerConnection, thread: NativeThread): void {
+    const sink = thread.sink;
+    if (!sink) return;
+    this.closeOpenParts(sink);
+    this.finishStep(thread, "length");
+    this.dropThread(connection, thread);
+  }
+
   private finishTurn(thread: NativeThread): void {
     this.finishStep(thread, "stop");
     thread.state = "idle";
@@ -995,6 +1079,7 @@ export class CodexAppServerSessions {
           ...(sink.webSearches.length
             ? { webSearches: sink.webSearches.length, webSearchQueries: sink.webSearches }
             : {}),
+          ...(sink.guard ? { outputGuard: { ...sink.guard } } : {}),
         },
       },
     });
