@@ -58,7 +58,7 @@ import { criterionCases, missingCases, testsHold, writtenTestPaths } from "../sr
 import { INLINE_HARNESS, type InlineRowTest, inlineRowFile, withInlineRows } from "../src/core/workflows/acceptance-rows-inline.js";
 import { reproExecutables, rerootRepro } from "../src/core/verification/repro.js";
 import { packageNeeds } from "../src/core/workflows/package-probe.js";
-import { redirectFixture } from "../src/core/verification/doc-examples.js";
+import { nodeUnderBun, redirectFixture } from "../src/core/verification/doc-examples.js";
 import { entryPointCommand } from "../src/core/verification/entry-points.js";
 import { noteSiblingFindings, ownerOfFinding } from "../src/core/verification/initiative-ownership.js";
 import { failureSignature as convergenceSignature, missingPlannedPaths, noTestsCollected } from "../src/core/verification/convergence.js";
@@ -3451,6 +3451,14 @@ for (const stack of STACKS) {
       expect(resolved?.entry.name).toBe("tool");
       expect(executables).toContain(resolved!.argv[0]!);
       expect(resolved!.argv.at(-1)).toBe("--help");
+    });
+
+    // R88 pokerank: a bun project's README wrote `node bin/pokerank.js ...` and none of it ran.
+    cell(stack, "a README's node example runs under the checks' runtime (#2678)", () => {
+      const executables = reproExecutables(preselected());
+      const runs = executables.includes("node") || nodeUnderBun(["node", "cli.js"], executables);
+      expect(runs).toBe(stack === "bun" || stack === "npm");
+      expect(nodeUnderBun(["node", "cli.js"], executables)).toBe(stack === "bun");
     });
 
     cell(stack, "edit-profile", async () => {
