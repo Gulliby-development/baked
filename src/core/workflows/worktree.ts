@@ -954,6 +954,11 @@ export async function commitRunBranch(
 /**
  * Removes a terminal run's worktree, and its branch when the user discards the result. Delivery
  * keeps the branch: it records the accepted commit the delivered one was built from.
+ *
+ * Same steps as `removeTaskWorktree` (#2806): the holders stop first, `git worktree remove` is only
+ * a first try, and the directory itself is what must go. Git refuses a worktree it no longer lists
+ * ("is not a working tree": the project folder moved, or a prune dropped its entry) and a file a
+ * Windows process holds; a removal that ended there left the worktree on disk for good.
  */
 export async function removeRunWorktree(
   store: WorkflowStore,
@@ -969,14 +974,14 @@ export async function removeRunWorktree(
     for (const entry of readdirSync(runDirectory))
       if (entry !== RUN_MARKER && join(runDirectory, entry) !== absolute)
         await removeTaskWorktree(workspace, join(dirname(worktree.path), entry));
+  await stopHolders(runDirectory);
   if (existsSync(absolute))
     await worktreeCommand(workspace, () =>
-      required(workspace, ["worktree", "remove", "--force", absolute]),
+      git(workspace, ["worktree", "remove", "--force", absolute]),
     );
-  await worktreeCommand(workspace, () => git(workspace, ["worktree", "prune"]));
-  await stopHolders(runDirectory);
   let left = await removeDirectory(runDirectory);
   if (left && moveAside(workspace, runDirectory)) left = null;
+  await worktreeCommand(workspace, () => git(workspace, ["worktree", "prune"]));
   if (left)
     throw new WorkflowFault(
       "INPUT_CHANGED",

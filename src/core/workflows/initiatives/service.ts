@@ -93,7 +93,12 @@ import {
 } from "./calls-pool.js";
 import { criticalPathSummary, planWidth, remainingPath } from "./critical-path.js";
 import { DECOMPOSE_WORKFLOW_ID } from "./decompose.js";
-import { documentedSurfaceRate, documentsProgram, requestCommands } from "./documented-surface.js";
+import {
+  boundaryKindOf,
+  documentedSurfaceRate,
+  documentsProgram,
+  requestCommands,
+} from "./documented-surface.js";
 import { type InitiativeDriveState, initiativeDriveState } from "./drive-state.js";
 import {
   calibrationLagText,
@@ -4151,13 +4156,18 @@ export class InitiativeService {
    * and a token range per feature and in total, from this project's run history. Null before a
    * split exists.
    */
-  estimate(id: string): InitiativeEstimate | null {
+  /**
+   * The estimate of the initiative's split. A caller that just took `view(id)` and changed nothing
+   * since passes it, so its accepted features are not computed a second time (the replay corpus
+   * takes both at every rewound start).
+   */
+  estimate(id: string, view?: Pick<InitiativeView, "features">): InitiativeEstimate | null {
     const row = this.store.get(id);
     const latest = row.plan_revision ? this.store.revision(id, row.plan_revision) : null;
     const plan = this.approvedPlan(row) ?? (latest ? this.store.plan(latest) : null);
     if (!plan) return null;
-    const accepted = this.view(id)
-      .features.filter((f) => f.state === "accepted")
+    const accepted = (view ?? this.view(id)).features
+      .filter((f) => f.state === "accepted")
       .map((f) => f.id);
     // Asked for rarely and right after runs finish, so it reads the store fresh.
     return this.estimateOf(row, plan, new Set(accepted), 0);
@@ -4239,6 +4249,7 @@ export class InitiativeService {
         dependsOn: feature.dependsOn,
         ...(testCases ? { testCases } : {}),
         ...(commands && documentsProgram(feature) ? { documentedCommands: commands } : {}),
+        ...boundaryKindOf(feature),
       };
     });
     const history = estimateHistory(
@@ -4287,6 +4298,7 @@ export class InitiativeService {
       ...(settings.basePolicy?.sizing?.recencyHalfLife
         ? { recencyHalfLife: settings.basePolicy.sizing.recencyHalfLife }
         : {}),
+      ...(settings.basePolicy?.sizing?.fewPathPrice ? { fewPathPrice: true } : {}),
       // Read only when the request demands a test volume: the sizing history opens every store.
       ...(features.some((f) => f.testCases)
         ? {

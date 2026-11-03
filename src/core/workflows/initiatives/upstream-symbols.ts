@@ -247,6 +247,21 @@ const HELPER = /\b(?:public\s+)?([A-Z][A-Za-z0-9_]*)(?:'s)?\s+(?:public\s+)?help
  * and was recorded as a gap of that file.
  */
 const GIVEN = /\b(?:given|supplied|provided|verbatim)\s+(?:public\s+)?$/i;
+/**
+ * "the unchanged Rows helper", "the existing Rows helper": a definite helper with no `public`, whose
+ * upstream file defines the type, names that file (#2837). R91 dagwalk: "Use the unchanged Rows
+ * helper through Cli.Run" named `tests/Dagwalk.Tests/Rows.cs`, which holds `class Rows`, and was
+ * recorded as a gap. "a public Rows helper" and "Reader's public helper" still ask for a member.
+ */
+const DEFINITE = /\bthe\s+(?:[a-z][a-z-]*\s+)?$/;
+/**
+ * Whether `text` defines `type`: a declaration keyword of any language before it. A file named for
+ * the type (`rows.py`) is that helper whatever it declares.
+ */
+const definesType = (text: string, type: string) =>
+  new RegExp(
+    `\\b(?:class|struct|record|interface|enum|module|object|trait|protocol|type|defmodule|namespace)\\s+${type}\\b`,
+  ).test(text);
 
 /** A name compared in any letter case, without `_` and `-`. */
 const keyOf = (name: string) => name.replace(/[_-]/g, "").toLowerCase();
@@ -267,13 +282,15 @@ const isTypeFile = (path: string, type: string) => {
  * Whether `Type.Member` is a namespace rather than a member of an upstream type (#2365): a path of
  * the released feature's own boundary has `Type/Member` as a folder and a folder or file below it
  * (`Maskback.Core` for `src/Maskback/Core/Scanner.cs`: the feature writes it), or `Type` is the
- * stem of a project file (`Maskback.csproj`, the root namespace) and no other file's stem.
+ * stem of a project file (`Maskback.csproj`, the root namespace) and no other file's stem, or
+ * `Type.Member` is a dotted folder or project stem of any upstream, own or planned path (#2837).
  */
 function isNamespace(
   type: string,
   member: string,
   upstream: readonly { path: string }[],
   own: readonly string[],
+  planned: readonly string[] = [],
 ): boolean {
   const pair = `${keyOf(type)}/${keyOf(member)}`;
   const ownPair = own.some((path) => {
@@ -283,6 +300,21 @@ function isNamespace(
     return keys.some((key, i) => i < last && `${key}/${keys[i + 1]}` === pair);
   });
   if (ownPair) return true;
+  // A dotted folder or project stem is the namespace whole: `tests/Dagwalk.Tests/` and
+  // `Dagwalk.Tests.csproj` for `Dagwalk.Tests` (R91 dagwalk, #2837).
+  const dotted = keyOf(`${type}.${member}`);
+  const paths = [...upstream.map((file) => file.path), ...own, ...planned];
+  if (
+    paths.some((path) => {
+      const segments = path.split("/");
+      const file = segments.pop() ?? "";
+      return (
+        segments.some((segment) => keyOf(segment) === dotted) ||
+        (isProjectFile(file) && nameOf(file) === dotted)
+      );
+    })
+  )
+    return true;
   const stems = (paths: readonly string[]) =>
     paths.filter((path) => nameOf(basename(path)) === nameOf(type));
   const named = stems([...upstream.map((file) => file.path), ...own]);
@@ -360,7 +392,7 @@ export function upstreamSymbolGaps(
       // `Reader.cs` and `config.yaml` are file names, not members.
       if (sep === "." && FILE_EXTENSION.test(member)) continue;
       if (!files.length || files.some((file) => file.path.endsWith(`.${member}`))) continue;
-      if (sep === "." && isNamespace(type, member, upstream, own)) continue;
+      if (sep === "." && isNamespace(type, member, upstream, own, planned)) continue;
       if (isPlannedModule(member, planned)) continue;
       named.add(nameOf(type));
       if (files.some((file) => file.text !== null && wordIn(file.text, member))) continue;
@@ -374,7 +406,14 @@ export function upstreamSymbolGaps(
       const type = match[1] ?? "";
       const file = upstream.find((f) => isTypeFile(f.path, type));
       if (!file || named.has(nameOf(type)) || seen.has(match[0])) continue;
-      if (file.text !== null && GIVEN.test(text.slice(Math.max(0, match.index - 40), match.index)))
+      const before = text.slice(Math.max(0, match.index - 40), match.index);
+      if (file.text !== null && GIVEN.test(before)) continue;
+      if (
+        file.text !== null &&
+        !/^public\s/.test(match[0]) &&
+        DEFINITE.test(before) &&
+        (definesType(file.text, type) || nameOf(basename(file.path)) === nameOf(type))
+      )
         continue;
       seen.add(match[0]);
       gaps.push({ ref, symbol: match[0], featureId: file.featureId, path: file.path });

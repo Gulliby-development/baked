@@ -17,7 +17,7 @@
 import { spawn } from "node:child_process";
 import { logBackgroundError } from "../diagnostics/errors.js";
 import { IS_WIN, shellInvocation } from "../platform/index.js";
-import { buildSafeEnv } from "../spawn.js";
+import { buildSafeEnv, onOutputHeld } from "../spawn.js";
 import { hasWorkspaceMutationContext } from "../workflows/leases.js";
 import { getHooks } from "./loader.js";
 import { matchesToolName, namesTool, toClaudeToolName } from "./tool-names.js";
@@ -296,11 +296,15 @@ function runCommandHook(
       });
     });
 
-    child.on("close", (code) => {
+    const done = (code: number | null) => {
       clearTimeout(timer);
+      cancelOutputHeld();
       abortSignal?.removeEventListener("abort", onAbort);
       settle(parseHookOutput(stdout, stderr, code ?? 1, input.hook_event_name));
-    });
+    };
+    // A hook that exits while a process it started holds its output must not wait out its timeout.
+    const cancelOutputHeld = onOutputHeld(child, done);
+    child.on("close", done);
 
     // Send input via stdin — handle write errors gracefully
     if (child.stdin) {

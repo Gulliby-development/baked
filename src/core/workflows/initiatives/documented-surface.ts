@@ -9,7 +9,7 @@
  */
 import { isTestFile } from "../../intelligence/language-traits.js";
 import type { TokenRange } from "../estimate.js";
-import type { FeatureRunSample } from "./estimate.js";
+import type { BoundaryKind, FeatureRunSample } from "./estimate.js";
 import { describesCode, type InitiativeFeature } from "./plan.js";
 
 /**
@@ -42,6 +42,9 @@ export interface DocumentedSurfaceRate {
 /** Files that ship beside a README and hold no code: a licence, a notice, the authors. */
 const LEGAL =
   /(?:^|\/)(?:licen[cs]e|copying|notice|authors|contributors|credits)(?:[.-][\w.-]*)?$/i;
+/** Whether every path of a feature's boundary is a legal file (`LEGAL`): a licence alone (#2640). */
+export const legalOnly = (feature: Pick<InitiativeFeature, "boundary">): boolean =>
+  feature.boundary.paths.length > 0 && feature.boundary.paths.every((path) => LEGAL.test(path));
 /** A test of the documentation itself, such as R65 uritpl's `tests/test_docs.py`. */
 const DOCS_TEST = /doc|readme|example/i;
 
@@ -59,6 +62,17 @@ export function documentsProgram(feature: Pick<InitiativeFeature, "boundary">): 
         describesCode(path) || LEGAL.test(path) || (isTestFile(path) && DOCS_TEST.test(path)),
     )
   );
+}
+
+/**
+ * What a feature's boundary holds where that prices it apart from its paths (#2640): legal files
+ * alone (`legalOnly`), or documentation of the program (`documentsProgram`); nothing for code.
+ */
+export function boundaryKindOf(feature: Pick<InitiativeFeature, "boundary">): {
+  boundaryKind?: BoundaryKind;
+} {
+  if (legalOnly(feature)) return { boundaryKind: "legal" };
+  return documentsProgram(feature) ? { boundaryKind: "documentation" } : {};
 }
 
 const SUBCOMMAND = /^[a-z][a-z0-9]*(?:[-_][a-z0-9]+)*$/;

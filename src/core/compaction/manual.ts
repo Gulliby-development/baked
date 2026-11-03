@@ -58,8 +58,9 @@ export function rehydrateWorkingState(wsm: WorkingStateManager, messages: ModelM
 
 /**
  * Splits a conversation into the messages to summarize and the `keepRecent` (or a few more)
- * kept verbatim. The cut never separates a tool call from its result, and the kept part starts
- * with a user message so it follows the summary's assistant acknowledgement.
+ * kept verbatim. The cut never separates a tool call from its result: the kept part starts with
+ * a user message when the step it starts at directly follows one, otherwise with the assistant
+ * message that owns the kept tool results (a step boundary inside a long agent turn).
  */
 export function splitForCompaction(
   core: ModelMessage[],
@@ -67,7 +68,14 @@ export function splitForCompaction(
 ): { older: ModelMessage[]; recent: ModelMessage[] } {
   let keepStart = Math.max(0, core.length - keepRecent);
   while (keepStart > 0 && core[keepStart]?.role === "tool") keepStart--;
-  if (keepStart > 0 && core[keepStart]?.role === "assistant") keepStart--;
+  // Step back to the user message only when it directly precedes; stepping back past an
+  // assistant onto the previous step's tool message would split that step's call from its result.
+  if (
+    keepStart > 0 &&
+    core[keepStart]?.role === "assistant" &&
+    core[keepStart - 1]?.role === "user"
+  )
+    keepStart--;
   return { older: core.slice(0, keepStart), recent: core.slice(keepStart) };
 }
 
@@ -134,9 +142,15 @@ export function v1CompactionPrompt(older: ModelMessage[], planContext = ""): str
   ].join("\n");
 }
 
+/** The assistant acknowledgement after the summary when the kept messages start with a user. */
+export const COMPACTION_ACK = "Continuing.";
+
 /**
- * The compacted conversation: the summary as a user message, an assistant acknowledgement, then
- * the kept messages without leading or orphaned tool results, which a provider would reject.
+ * The compacted conversation: the summary as a user message, then the kept messages without
+ * leading or orphaned tool results, which a provider would reject. When the kept messages start
+ * with a user message, an assistant acknowledgement goes between them to keep the alternation;
+ * when they start with an assistant step, that step follows the summary directly instead of
+ * being dropped, since the summary never saw it.
  */
 export function assembleCompacted(summary: string, recent: ModelMessage[]): ModelMessage[] {
   let validStart = 0;
@@ -144,8 +158,6 @@ export function assembleCompacted(summary: string, recent: ModelMessage[]): Mode
     if (recent[i]?.role === "tool") validStart = i + 1;
     else break;
   }
-  // After the acknowledgement (assistant), an assistant message would break the alternation.
-  if (validStart < recent.length && recent[validStart]?.role === "assistant") validStart++;
   const validRecent = validStart > 0 ? recent.slice(validStart) : recent;
   const sanitized: ModelMessage[] = [];
   for (const msg of validRecent) {
@@ -156,11 +168,15 @@ export function assembleCompacted(summary: string, recent: ModelMessage[]): Mode
     const lastUser = recent.findLast((m) => m.role === "user");
     if (lastUser) sanitized.push(lastUser);
   }
-  return [
-    { role: "user", content: summary },
-    { role: "assistant", content: "Continuing." },
-    ...sanitized,
-  ];
+  const head: ModelMessage[] = [{ role: "user", content: summary }];
+  if (sanitized[0]?.role !== "assistant") head.push({ role: "assistant", content: COMPACTION_ACK });
+  return [...head, ...sanitized];
+}
+
+/** The kept messages of a conversation `assembleCompacted` returned, without its summary head. */
+export function compactedTail(messages: ModelMessage[]): ModelMessage[] {
+  const ack = messages[1]?.role === "assistant" && messages[1].content === COMPACTION_ACK;
+  return messages.slice(ack ? 2 : 1);
 }
 
 /** Characters of a conversation's content, for estimating its tokens after compaction. */
