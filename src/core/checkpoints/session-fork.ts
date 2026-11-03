@@ -5,6 +5,7 @@
 import type { ModelMessage } from "ai";
 import type { SessionManager } from "../sessions/manager.js";
 import { rebuildCoreMessages } from "../sessions/rebuild.js";
+import { emptyTabUsage } from "../sessions/token-usage.js";
 import type { SessionMeta, TabMeta } from "../sessions/types.js";
 import {
   checkpointEndMessageId,
@@ -81,7 +82,7 @@ export async function forkSavedSession(input: SavedForkInput): Promise<SavedFork
     id: newTabId,
     label: `${tab.label}-fork`,
     sessionId: newId,
-    tokenUsage: { prompt: 0, completion: 0, total: 0, cacheRead: 0 },
+    tokenUsage: emptyTabUsage(),
     messageRange: { startLine: 0, endLine: messages.length },
     ...(copied.length > 0 ? { checkpointTags: copied } : {}),
   };

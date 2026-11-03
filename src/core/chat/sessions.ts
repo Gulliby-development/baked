@@ -93,6 +93,14 @@ import {
 } from "../security/permission-mode.js";
 import { SessionManager } from "../sessions/manager.js";
 import { rebuildCoreMessages as rebuildCore } from "../sessions/rebuild.js";
+import {
+  addTabUsage,
+  emptyTabUsage,
+  readTabUsage,
+  type StepTokens,
+  type TabTokenUsage,
+  tabInput,
+} from "../sessions/token-usage.js";
 import type { SessionMeta, TabMeta } from "../sessions/types.js";
 import { createSetupTool, SETUP_TOOL } from "../tools/baked-setup.js";
 import { watchOptions } from "../watch/config.js";
@@ -628,7 +636,8 @@ export class ChatSession {
   private effort: ChatEffort;
   private permissions: PermissionMode;
   private contextSize: ChatContextSize;
-  private usage: Usage;
+  /** What the conversation spent, in the saved meaning (`src/core/sessions/token-usage.ts`). */
+  private savedUsage: TabTokenUsage;
   private context: SessionDetail["context"] = null;
   private turn: TurnState | null = null;
   /** Why the last turn failed, until another turn starts. */
@@ -674,11 +683,22 @@ export class ChatSession {
     this.permissions = modes.permissions;
     this.effort = tab.effort ?? "default";
     this.contextSize = meta.kind === "coordinator" ? "max" : (tab.contextSize ?? "default");
-    this.usage = {
-      input: tab.tokenUsage.prompt,
-      output: tab.tokenUsage.completion,
-      cacheRead: tab.tokenUsage.cacheRead ?? 0,
+    this.savedUsage = readTabUsage(tab.tokenUsage, tab.activeModel);
+  }
+
+  /** The session's usage as the API reports it: `input` is the whole input, cached included. */
+  private get usage(): Usage {
+    return {
+      input: tabInput(this.savedUsage),
+      output: this.savedUsage.completion,
+      cacheRead: this.savedUsage.cacheRead,
     };
+  }
+
+  /** Adds a turn's or a compaction's usage, run on `modelId`, to the saved usage. */
+  private addUsage(modelId: string | null, step: StepTokens): void {
+    if (!modelId || step.input + step.output === 0) return;
+    this.savedUsage = addTabUsage(this.savedUsage, modelId, step);
   }
 
   get id(): string {
@@ -1151,11 +1171,12 @@ export class ChatSession {
           };
         }
         if (result.usage)
-          this.usage = {
-            input: this.usage.input + result.usage.inputTokens,
-            output: this.usage.output + result.usage.outputTokens,
-            cacheRead: this.usage.cacheRead + (result.usage.cacheReadTokens ?? 0),
-          };
+          this.addUsage(modelId, {
+            input: result.usage.inputTokens,
+            output: result.usage.outputTokens,
+            cacheRead: result.usage.cacheReadTokens ?? 0,
+            cacheWrite: result.usage.cacheWriteTokens ?? 0,
+          });
         note = `Compacted ${compacted} messages into a summary (${result.strategy} strategy).${
           this.context ? ` Context is now about ${this.context.percent}%.` : ""
         }`;
@@ -1493,6 +1514,9 @@ export class ChatSession {
       (toolCallId) => inputs.has(toolCallId),
     );
     const usage = emptyUsage();
+    /** The turn's model and cache writes, which the saved usage keeps per model (#2784). */
+    let turnModel: string | null = null;
+    let cacheWrite = 0;
     let steps = 0;
     /** When the current model step started; 0 until the model is called. */
     let stepStartedAt = 0;
@@ -1526,6 +1550,7 @@ export class ChatSession {
       if (!this.model) throw new Error("No model configured");
       if (blockedBy) throw new Error(`A UserPromptSubmit hook blocked the prompt: ${blockedBy}`);
       const model = this.runModel(this.model);
+      turnModel = model;
       // A `!` command that did not run leaves nothing to answer.
       if (!send) throw new SkipTurn();
       const { agent, contextWindow } = await this.owner.host.agent({
@@ -1611,6 +1636,7 @@ export class ChatSession {
             };
             const input = stepUsage.inputTokens ?? 0;
             const cacheRead = stepUsage.inputTokenDetails?.cacheReadTokens ?? 0;
+            cacheWrite += stepUsage.inputTokenDetails?.cacheWriteTokens ?? 0;
             recordModelCall({
               modelId: model,
               source: "main",
@@ -1710,11 +1736,7 @@ export class ChatSession {
       const tag = await snapshotTurnEnd(this.cwd, this.tagOwner, this.messages, text);
       if (tag) this.addCheckpointTag(tag);
     }
-    this.usage = {
-      input: this.usage.input + usage.input,
-      output: this.usage.output + usage.output,
-      cacheRead: this.usage.cacheRead + usage.cacheRead,
-    };
+    this.addUsage(turnModel, { ...usage, cacheWrite });
     const notice = followUp ? this.applyPlanFollowUp(followUp) : null;
     if (!notice?.execute && this.plan) this.setPlan(null);
     this.turnError = status === "failed" ? (error ?? "The turn failed.") : null;
@@ -1836,13 +1858,7 @@ export class ChatSession {
       contextSize:
         this.contextSize === "default" || this.isCoordinator ? undefined : this.contextSize,
       planMode: this.mode === "plan",
-      tokenUsage: {
-        ...this.tab.tokenUsage,
-        prompt: this.usage.input,
-        completion: this.usage.output,
-        total: this.usage.input + this.usage.output,
-        cacheRead: this.usage.cacheRead,
-      },
+      tokenUsage: this.savedUsage,
     };
     const derived = SessionManager.deriveTitle(this.messages);
     this.meta = {
@@ -2245,7 +2261,7 @@ export class ChatService {
           ...(input.contextSize && input.contextSize !== "default"
             ? { contextSize: input.contextSize }
             : {}),
-          tokenUsage: { prompt: 0, completion: 0, total: 0, cacheRead: 0 },
+          tokenUsage: emptyTabUsage(),
           messageRange: { startLine: 0, endLine: messages.length },
         },
       ],

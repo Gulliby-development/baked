@@ -32,6 +32,7 @@ import { resolveModel } from "../core/llm/provider.js";
 import { buildProviderOptions, withChatEffort } from "../core/llm/provider-options.js";
 import { disposeMCPManager } from "../core/mcp/index.js";
 import { SessionManager } from "../core/sessions/manager.js";
+import type { StepTokens } from "../core/sessions/token-usage.js";
 import { watchOptions } from "../core/watch/config.js";
 import { setActiveSessionId } from "../stores/session.js";
 import type {
@@ -259,6 +260,8 @@ interface TurnResult {
   output: string;
   steps: number;
   tokens: { input: number; output: number; cacheRead: number };
+  /** Input tokens written to the provider's cache (part of `tokens.input`). */
+  cacheWrite: number;
   toolCalls: string[];
   /** The turn's tool calls with their input and result, as the saved session records them. */
   calls: ToolCall[];
@@ -372,6 +375,8 @@ export async function streamTurn(
   const seenWarnings = reporting.seenWarnings ?? new Set<string>();
   let output = "";
   let steps = 0;
+  // Saved with the session (#2784), not reported in the events.
+  let cacheWrite = 0;
   const tokens = {
     input: 0,
     output: 0,
@@ -475,8 +480,9 @@ export async function streamTurn(
         const usage = part.usage as {
           inputTokens?: number;
           outputTokens?: number;
-          inputTokenDetails?: { cacheReadTokens?: number };
+          inputTokenDetails?: { cacheReadTokens?: number; cacheWriteTokens?: number };
         };
+        cacheWrite += usage.inputTokenDetails?.cacheWriteTokens ?? 0;
         tokens.lastStepInput = usage.inputTokens ?? 0;
         tokens.lastStepOutput = usage.outputTokens ?? 0;
         tokens.lastStepCacheRead = usage.inputTokenDetails?.cacheReadTokens ?? 0;
@@ -512,6 +518,7 @@ export async function streamTurn(
     output,
     steps,
     tokens,
+    cacheWrite,
     toolCalls,
     calls: [...calls.values()],
     filesEdited: [...filesEdited],
@@ -536,7 +543,7 @@ async function saveRun(
   env: AgentEnv,
   session: HeadlessSession,
   messages: ChatMessage[],
-  tokens: { input: number; output: number; cacheRead: number },
+  tokens: StepTokens,
   report: { showProgress: boolean; emit?: (event: HeadlessEvent) => void },
 ): Promise<string> {
   await saveHeadlessSession(env.sessionManager, session, {
@@ -742,12 +749,18 @@ export async function runPrompt(opts: HeadlessRunOptions, merged: AppConfig): Pr
       assistantMessage(turn),
     ];
     await endHeadlessTurn(session, env.cwd, chatMessages, typedPrompt);
-    const savedId = await saveRun(env, session, chatMessages, turn.tokens, {
-      showProgress,
-      ...(isEvents
-        ? { emit: (event) => writeEvent(event as unknown as Record<string, unknown>) }
-        : {}),
-    });
+    const savedId = await saveRun(
+      env,
+      session,
+      chatMessages,
+      { ...turn.tokens, cacheWrite: turn.cacheWrite },
+      {
+        showProgress,
+        ...(isEvents
+          ? { emit: (event) => writeEvent(event as unknown as Record<string, unknown>) }
+          : {}),
+      },
+    );
     if (showProgress) {
       const shortId = savedId.slice(0, 8);
       process.stderr.write(
@@ -1007,6 +1020,7 @@ export async function runChat(opts: HeadlessChatOptions, merged: AppConfig): Pro
   }
 
   const totalTokens = { input: 0, output: 0, cacheRead: 0 };
+  let totalCacheWrite = 0;
   // Files the resumed session and this chat edited, for the per-turn diff stats.
   const chatEdited = new Set(editedFiles(chatHistory));
   let turns = 0;
@@ -1016,7 +1030,8 @@ export async function runChat(opts: HeadlessChatOptions, merged: AppConfig): Pro
   async function cleanupAndExit(code: number): Promise<void> {
     let savedId: string | undefined;
     if (chatHistory.length > 0) {
-      savedId = await saveRun(env, session, chatHistory, totalTokens, {
+      const tokens = { ...totalTokens, cacheWrite: totalCacheWrite };
+      savedId = await saveRun(env, session, chatHistory, tokens, {
         showProgress,
         ...(isEvents ? { emit } : {}),
       });
@@ -1183,6 +1198,7 @@ export async function runChat(opts: HeadlessChatOptions, merged: AppConfig): Pro
     totalTokens.input += turn.tokens.input;
     totalTokens.output += turn.tokens.output;
     totalTokens.cacheRead += turn.tokens.cacheRead;
+    totalCacheWrite += turn.cacheWrite;
 
     if (isEvents) {
       emit({

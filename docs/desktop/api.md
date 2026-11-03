@@ -67,7 +67,7 @@ interface SessionDetail extends SessionSummary {
   messages: ChatMessage[];
   prompts: Prompt[];        // pending only
   queued: string[];         // messages waiting to be steered into the running turn
-  usage: { input: number; output: number; cacheRead: number };   // whole session
+  usage: { input: number; output: number; cacheRead: number };   // whole session; input includes cache reads and writes, also of turns the TUI or headless ran
   context: { usedTokens: number; windowTokens: number; percent: number } | null;
   filesEdited: string[];    // paths the session's edit tools wrote, as the tools named them
   plan: Plan | null;        // the plan being reviewed or carried out

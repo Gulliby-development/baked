@@ -22,13 +22,23 @@ export interface TabMeta {
   permissionMode?: PermissionMode;
   /** The conversation's context size; absent or `default` follows the chat's kind. */
   contextSize?: ChatContextSize;
+  /**
+   * What the tab spent. `prompt` is uncached input; the whole input is `prompt + cacheRead +
+   * cacheWrite`. Written and read through `src/core/sessions/token-usage.ts` (#2784).
+   */
   tokenUsage: {
     prompt: number;
     completion: number;
     total: number;
     cacheRead?: number;
+    cacheWrite?: number;
     subagentInput?: number;
     subagentOutput?: number;
+    /** Per model, `input` uncached. Absent on tabs headless or the API saved before #2784. */
+    modelBreakdown?: Record<
+      string,
+      { input: number; output: number; cacheRead: number; cacheWrite: number }
+    >;
   };
   messageRange: { startLine: number; endLine: number };
   /** Saved checkpoint git tags for session persistence */
