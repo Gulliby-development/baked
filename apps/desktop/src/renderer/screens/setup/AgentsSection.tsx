@@ -94,7 +94,7 @@ function AgentChip({
  * The workflow line the agents become: five stations over a moving belt, each agent above the
  * station it will fill. When the conversion is done the agents land and the stations light up.
  */
-function AgentLine({
+export function AgentLine({
   agents,
   choices,
   landed,
@@ -107,8 +107,8 @@ function AgentLine({
   let order = 0;
   return (
     <div className="flex min-w-0 flex-col gap-2">
-      <div className="overflow-x-auto pb-1">
-        <div className="grid min-w-[560px] grid-cols-5 gap-2.5">
+      <div className="overflow-x-auto pr-1 pb-1">
+        <div className="grid min-w-[440px] grid-cols-5 gap-2.5">
           {STATIONS.map((station, i) => {
             const here = byStage[station.stage];
             return (
@@ -136,7 +136,7 @@ function AgentLine({
           })}
         </div>
         <div
-          className="mt-2 h-3 min-w-[560px] animate-belt rounded-[9px] border-2 border-border bg-[repeating-linear-gradient(90deg,var(--bg-sunken)_0_14px,var(--line)_14px_18px)] bg-[length:18px_100%] motion-reduce:animate-none"
+          className="mt-2 h-3 min-w-[440px] animate-belt rounded-[9px] border-2 border-border bg-[repeating-linear-gradient(90deg,var(--bg-sunken)_0_14px,var(--line)_14px_18px)] bg-[length:18px_100%] motion-reduce:animate-none"
           aria-hidden="true"
         />
       </div>

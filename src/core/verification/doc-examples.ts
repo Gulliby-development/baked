@@ -655,7 +655,23 @@ export function redirectFixture(
   return null;
 }
 
-/** Writes a fixture into the copy unless the workspace already has a file there. */ /** Writes a fixture into the copy unless the workspace already has a file there. */
+/** The note of an example the host ran under bun in place of node. */
+export const UNDER_BUN = "ran with bun in place of node: the run's checks start bun, not node";
+
+/**
+ * Whether a documented `node` command runs under bun: the run's checks start bun and not node
+ * (#2678). R88 pokerank (plain JavaScript, `bun test` and `bunx eslint` checks) documented every
+ * example as `node bin/pokerank.js ...`, and the host ran none of them ("node is not a program the
+ * run's checks start"), so its README's broken first example passed. Bun runs a Node script as it
+ * is, and the checks already run the project's code with bun, so no program is added.
+ */
+export function nodeUnderBun(argv: readonly string[], executables: readonly string[]): boolean {
+  // `node --version` or `node -e ...` asks about node itself, which bun would answer for itself.
+  if (argv[0] !== "node" || !argv[1] || argv[1].startsWith("-")) return false;
+  return !executables.includes("node") && executables.includes("bun");
+}
+
+/** Writes a fixture into the copy unless the workspace already has a file there. */
 function writeFixture(copy: string, fixture: DocFixture): void {
   const target = join(copy, ...fixture.path.split("/"));
   if (existsSync(target)) return;
@@ -763,12 +779,15 @@ export async function runDocExamples(
           skip("The command needs a shell (a pipe, redirect, variable or glob)");
           continue;
         }
+        // A `node` example of a project whose checks start bun runs under bun (#2678).
+        const underBun = nodeUnderBun(example.argv, options.executables);
+        const argv = underBun ? ["bun", ...example.argv.slice(1)] : example.argv;
         // The project's own command runs through its toolchain (`routeshadow ...` as `cargo run
         // --bin routeshadow -- ...`, #1821).
-        const entry = options.executables.includes(example.argv[0] as string)
+        const entry = options.executables.includes(argv[0] as string)
           ? null
-          : entryPointCommand(options.root, example.argv, options.executables);
-        const [program, ...entryArgs] = (entry?.argv ?? example.argv) as [string, ...string[]];
+          : entryPointCommand(options.root, argv, options.executables);
+        const [program, ...entryArgs] = (entry?.argv ?? argv) as [string, ...string[]];
         if (!options.executables.includes(program)) {
           skip(
             `${program} is not a program the run's checks or their toolchains start (${options.executables.join(", ") || "none"})`,
@@ -874,6 +893,7 @@ export async function runDocExamples(
         results.push({
           ...base,
           ...(inputs.length ? { inputs } : {}),
+          ...(underBun ? { reason: UNDER_BUN } : {}),
           status: difference ? "mismatch" : "match",
           exitCode: result.exitCode,
           printed: result.output.slice(0, OUTPUT_LIMIT),
