@@ -21,6 +21,9 @@ import type { Spec } from "./schemas.js";
  * - `platform-limit`: a spec conflict whose one side is what the platform cannot do.
  * - `docs-example`: a documentation task torn between the rule for examples and the request's
  *   worked example.
+ * - `prescribed-rows`: a spec conflict about a test file whose rows the request prescribes,
+ *   answered with the row diff (`conflict-row-reply.ts`, #2493). Its evidence is the host's own
+ *   comparison of the file with the rows (`rowBlockDrifts`); it has no wording rule.
  *
  * Evidence is `verified` when a quote the request holds backs the finding (its `quote` field, its
  * request sides, or a span it quotes), or, for a platform limit, a line of a failing check's or a
@@ -38,7 +41,8 @@ export type EvidenceSite =
   | "analysis-request"
   | "review-request"
   | "platform-limit"
-  | "docs-example";
+  | "docs-example"
+  | "prescribed-rows";
 export type EvidenceState = "verified" | "unverified" | "absent";
 
 export interface EvidenceInput {

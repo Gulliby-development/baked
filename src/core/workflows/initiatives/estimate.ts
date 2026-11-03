@@ -75,6 +75,14 @@ export const MIN_PATH_FIT_SAMPLES = 4;
  */
 export const MIN_PATH_FIT_CORRELATION = 0.5;
 
+/**
+ * What a feature's boundary holds, where that prices it apart from its path count (#2640, with
+ * `sizing.fewPathPrice`): `documentation` documents the program (`documentsProgram`), which its
+ * documented surface prices and never its few files (#2569); `legal` is legal files alone (a
+ * `LICENSE`, `legalOnly`), which no session reads code for.
+ */
+export type BoundaryKind = "documentation" | "legal";
+
 /** Initiatives the `MIN_HIGH_RATIO_SAMPLES` measured ratios must come from. */
 export const MIN_HIGH_RATIO_INITIATIVES = 2;
 /** The upper quantile of the measured actual-to-low ratios that sets the high end. */
@@ -155,6 +163,8 @@ export interface FeatureToEstimate {
    * (`documentsProgram`, #2569); absent for any other feature or a request that lists none.
    */
   documentedCommands?: number;
+  /** What its boundary holds, where that prices it apart from its paths; absent for code. */
+  boundaryKind?: BoundaryKind;
 }
 
 export type FeatureEstimateBasis =
@@ -193,6 +203,8 @@ export interface FeatureEstimate {
   testCases?: number;
   /** The commands the request lists, when it documents the program (#2569). */
   documentedCommands?: number;
+  /** What its boundary holds, where that prices it apart from its paths (#2640). */
+  boundaryKind?: BoundaryKind;
   /**
    * What its documented surface prices it at (#2569): its commands times the per-command rate plus
    * one README correction round, the high end at the measured actual-to-low spread when there is
@@ -396,6 +408,7 @@ const ratioRound = (r: number): number => Math.round(r * 100) / 100;
 export function highCalibrationOf(
   samples: FeatureRunSample[],
   accepted: { low: number; spent: number }[] = [],
+  fewPaths = false,
 ): HighCalibration | null {
   const ratios: number[] = [];
   const initiatives = new Set<string>();
@@ -404,7 +417,7 @@ export function highCalibrationOf(
   const totals: number[] = [];
   for (const [id, own] of initiativeGroups(samples)) {
     const others = samples.filter((o) => o.initiativeId && o.initiativeId !== id);
-    const measured = lowRatios(own, others);
+    const measured = lowRatios(own, others, fewPaths);
     if (!measured) continue;
     ratios.push(...measured.ratios);
     initiatives.add(id);
@@ -429,7 +442,10 @@ export function highCalibrationOf(
  * initiative) went above their high end, at 2.6 to 6.7 times their low end, and 7 of the 12 of R74
  * ladlemath (the first PHP one), at 2.2 to 4.5 times.
  */
-export function firstLanguageCalibrationOf(samples: FeatureRunSample[]): HighCalibration | null {
+export function firstLanguageCalibrationOf(
+  samples: FeatureRunSample[],
+  fewPaths = false,
+): HighCalibration | null {
   const groups = initiativeGroups(samples);
   const firstStart = (own: FeatureRunSample[]) =>
     Math.min(...own.map((s) => s.startedAt ?? Number.POSITIVE_INFINITY));
@@ -448,7 +464,7 @@ export function firstLanguageCalibrationOf(samples: FeatureRunSample[]): HighCal
     const others = samples.filter(
       (o) => o.initiativeId && o.initiativeId !== id && o.language && o.language !== language,
     );
-    const measured = lowRatios(own, others);
+    const measured = lowRatios(own, others, fewPaths);
     if (!measured) continue;
     ratios.push(...measured.ratios);
     totals.push(measured.total);
@@ -472,6 +488,7 @@ const initiativeGroups = (samples: FeatureRunSample[]) =>
 function lowRatios(
   own: FeatureRunSample[],
   others: FeatureRunSample[],
+  fewPaths = false,
 ): { ratios: number[]; total: number } | null {
   if (!others.length) return null;
   const rate = (s: FeatureRunSample) => s.tokens / pathWeight(s);
@@ -495,6 +512,8 @@ function lowRatios(
       },
       [],
       others,
+      null,
+      fewPaths,
     );
     const low = Math.max(priced.tokens.low, lowest * pathWeight(s));
     if (low <= 0) continue;
@@ -579,6 +598,7 @@ function estimateFeature(
   history: PastRun[],
   samples: FeatureRunSample[],
   weights: ReadonlyMap<FeatureRunSample, number> | null = null,
+  fewPaths = false,
 ): FeatureEstimate {
   const head = {
     featureId: feature.id,
@@ -591,6 +611,7 @@ function estimateFeature(
     ...(feature.skeleton ? { skeleton: feature.skeleton } : {}),
     ...(feature.testCases ? { testCases: feature.testCases } : {}),
     ...(feature.documentedCommands ? { documentedCommands: feature.documentedCommands } : {}),
+    ...(feature.boundaryKind ? { boundaryKind: feature.boundaryKind } : {}),
   };
   const hasTasks = feature.stages.some((s) => s.type === "tasks");
   // Finished feature runs of the same size measure the whole feature, split and all; those of the
@@ -633,8 +654,9 @@ function estimateFeature(
   const byTokens = measured ? placeBy((s) => s.tokens) : null;
   const fit = byTokens?.fit;
   const placed = byTokens?.range;
+  const share = fewPaths && measured && !placed ? fewPathShare(feature, pool) : null;
   if (measured) {
-    const tokens = placed ?? measured;
+    const tokens = placed ?? (share ? scaled(measured, share) : measured);
     return {
       ...head,
       tokens,
@@ -674,6 +696,27 @@ function estimateFeature(
     basis,
     samples: basis === "defaults" ? 0 : run.samples,
   };
+}
+
+/**
+ * The share of its size pool's middle half a feature with few paths is priced at, when the pool
+ * gives no path fit (`sizing.fewPathPrice`, #2640): the square root of its path weight over the
+ * median path weight of the pool's features that name paths, for a feature below that median;
+ * null otherwise, and for a documentation feature, which its documented surface prices (#2569).
+ * Without a fit the pool's middle half priced a one-file feature like a feature of the pool's
+ * usual paths, and a host-written row file (#2640) or skeleton file it no longer counts could not
+ * move its low end: bench round 89 loopwatch's `license` (one `LICENSE`) had the small pool's
+ * 0.65M low end and used 0.16M, R86 binlayer's one-path medium features 1.11M and 0.78M-0.93M.
+ * The square root, not the ratio: over the median the ratio put rounds 45 to 80 at 58 features
+ * below their range and 85 above, past a quarter each way, and over the first quartile it put
+ * three of those binlayer features above their high end. The path floor still holds the low end.
+ */
+function fewPathShare(feature: FeatureToEstimate, pool: FeatureRunSample[]): number | null {
+  const weight = pathWeight(feature);
+  const named = pool.map(pathWeight).filter((w) => w > 0);
+  if (feature.boundaryKind === "documentation" || weight <= 0 || !named.length) return null;
+  const typical = median(named);
+  return weight < typical ? Math.sqrt(weight / typical) : null;
 }
 
 /** The expected value and measured spread the budget text words its warning by (#1982). */
@@ -778,6 +821,7 @@ function reforecast(
   perTestCase: TokenRange | null,
   newLanguage: InitiativeEstimate["newLanguage"] | null,
   documented: DocumentedSurface | null = null,
+  fewPaths = false,
 ): {
   features: FeatureEstimate[];
   ratio: number | null;
@@ -875,6 +919,7 @@ function reforecast(
       low: Math.max(f.tokens.low, sampleLowest * pathWeight(f)),
       spent: used(f).spent,
     })),
+    fewPaths,
   );
   const features = prior.map((f): FeatureEstimate => {
     const { spent, accepted: done, criteria, planned } = used(f);
@@ -889,7 +934,14 @@ function reforecast(
         spent,
       };
     const scale = bySize[f.size] ?? ratio;
-    const base = scale === null ? f.tokens : scaled(f.tokens, scale);
+    // A feature of legal files alone (a `LICENSE`) is priced at the path rate, not its size class
+    // (#2640): no session reads code for it, and R89 loopwatch's `license` used 0.16M against the
+    // small class's 0.65M low end, on the lowest path rate (158k) itself.
+    const legal =
+      fewPaths && f.boundaryKind === "legal" && perPath && pathWeight(f)
+        ? scaled(perPath, pathWeight(f))
+        : null;
+    const base = legal ?? (scale === null ? f.tokens : scaled(f.tokens, scale));
     // Floors from what is known of the feature itself: its spec's criteria, its boundary's paths,
     // and the run its plan sized, its tasks and what is spent around them (language's plan priced
     // 4.55 to 8.08 dollars of tasks while its estimate still said 2.65M tokens at most). Once the spec is written its criteria
@@ -1069,11 +1121,12 @@ export function newLanguageOf(
   language: string | undefined,
   samples: FeatureRunSample[],
   accepted: number,
+  fewPaths = false,
 ): InitiativeEstimate["newLanguage"] | null {
   if (!language) return null;
   const features = samples.filter((s) => s.language === language).length + accepted;
   if (features >= NEW_LANGUAGE_FEATURES) return null;
-  const calibration = firstLanguageCalibrationOf(samples);
+  const calibration = firstLanguageCalibrationOf(samples, fewPaths);
   return calibration && { language, features, calibration };
 }
 
@@ -1095,13 +1148,21 @@ export function estimateInitiative(input: {
   language?: string;
   /** Prices features with `documentedCommands` (#2569); absent prices and records none. */
   documentedSurface?: DocumentedSurface;
+  /**
+   * `sizing.fewPathPrice` (#2640): a feature with fewer paths than its size pool's median, in a
+   * pool with no path fit, at a share of the pool (`fewPathShare`), and a feature of legal files
+   * alone at the path rate. Absent, the size pool prices them as before.
+   */
+  fewPathPrice?: boolean;
 }): InitiativeEstimate {
+  const fewPaths = input.fewPathPrice === true;
   const margin = input.margin ?? ESTIMATE_MARGIN;
   const progress = input.progress ?? { features: {}, overhead: 0 };
   const newLanguage = newLanguageOf(
     input.language,
     input.samples,
     Object.values(progress.features).filter((f) => f.accepted).length,
+    fewPaths,
   );
   const {
     features,
@@ -1120,6 +1181,7 @@ export function estimateInitiative(input: {
         input.history,
         input.samples,
         input.recencyHalfLife ? recencyWeights(input.samples, input.recencyHalfLife) : null,
+        fewPaths,
       ),
     ),
     progress,
@@ -1127,6 +1189,7 @@ export function estimateInitiative(input: {
     input.testCaseRate?.perCase ?? null,
     newLanguage,
     input.documentedSurface ?? null,
+    fewPaths,
   );
   const overhead = { low: progress.overhead, high: progress.overhead };
   const summed = sum([overhead, ...features.map((f) => f.tokens)]);
