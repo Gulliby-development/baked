@@ -628,7 +628,11 @@ export class SessionManager {
       if (!updatedTabs.some((t) => t.id === k)) delete updatedCore[k];
     }
 
+    // Session-level fields this save does not own (kind, worktree, archived, parentId and any
+    // added later) are carried from the saved meta, never rebuilt field by field (#2809).
+    const { customTitle: _customTitle, projectId: _projectId, ...kept } = existingMeta ?? {};
     const updatedMeta: SessionMeta = {
+      ...kept,
       id: sessionId,
       title: existingMeta?.title ?? fallback.title,
       ...(existingMeta?.customTitle || fallback.customTitle
