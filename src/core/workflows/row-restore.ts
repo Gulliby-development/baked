@@ -211,12 +211,32 @@ export function respelledRunLine(text: string, row: string): string | null {
 /**
  * A row line's top-level argument count (`{ "a", "b" }` 2, `row(x, [y, z])` 2) and the index just
  * past the bracket that closes the row, or null when the row's bracket does not close on the line.
- * Strings are skipped with their escapes.
+ * Strings are skipped with their escapes. Besides a bracketed head (`{`, `row(`, `Arguments.of(`)
+ * it reads three forms (#2553): a struct literal after a bare name (Rust `Row { input: "a", events:
+ * &[] }`, its fields), an attribute row (Rust rstest `#[case("a", 0)]`, the inner call's arguments,
+ * the row ending past its `]`) and a command row (PowerShell `Row @('a') -Code 0`, its words).
  */
 export function rowSpan(line: string): { count: number; end: number } | null {
   const head = rowHead(line);
-  const open = /[([{]$/.test(head) ? line.indexOf(head) + head.length - 1 : -1;
-  if (open < 0) return null;
+  const at = line.indexOf(head);
+  if (head === "#[") {
+    const call = /^#\[[A-Za-z_]\w*\(/.exec(line.slice(at))?.[0];
+    if (!call) return bracketSpan(line, at + 1);
+    const inner = bracketSpan(line, at + call.length - 1);
+    return inner && line[inner.end] === "]" ? { count: inner.count, end: inner.end + 1 } : null;
+  }
+  if (/[([{]$/.test(head)) return bracketSpan(line, at + head.length - 1);
+  if (!/^[A-Za-z_][\w.:-]*$/.test(head)) return null;
+  const rest = line.slice(at + head.length);
+  const gap = /^\s+/.exec(rest)?.[0].length ?? 0;
+  if (!gap) return null;
+  const from = at + head.length + gap;
+  if (line[from] === "{") return bracketSpan(line, from);
+  return commandSpan(line, from);
+}
+
+/** The arguments of the bracket that opens at `open` and the index just past its close. */
+function bracketSpan(line: string, open: number): { count: number; end: number } | null {
   let depth = 0;
   let count = 0;
   let content = false;
@@ -247,6 +267,40 @@ export function rowSpan(line: string): { count: number; end: number } | null {
     } else if (depth === 1 && ch.trim()) content = true;
   }
   return null;
+}
+
+/**
+ * The words of a command row from `from` (`@('cols', '3') -Code 0 -Out "a`n"`: 5) and the index
+ * just past the last one; a trailing `,` or `;` is the row's separator, not a word. A double-quoted
+ * word escapes with a backtick (PowerShell), a single-quoted one has no escape. Null when a string
+ * or bracket does not close on the line, or a closing bracket has no opening one.
+ */
+function commandSpan(line: string, from: number): { count: number; end: number } | null {
+  let count = 0;
+  let end = from;
+  let depth = 0;
+  let word = false;
+  for (let i = from; i < line.length; i++) {
+    const ch = line[i] ?? "";
+    if (depth === 0 && /\s/.test(ch)) {
+      word = false;
+      continue;
+    }
+    if (depth === 0 && (ch === ";" || ch === ",") && !line.slice(i + 1).trim()) break;
+    if (!word && depth === 0) {
+      word = true;
+      count++;
+    }
+    if (ch === '"' || ch === "'") {
+      let j = i + 1;
+      while (j < line.length && line[j] !== ch) j += ch === '"' && line[j] === "`" ? 2 : 1;
+      if (j >= line.length) return null;
+      i = j;
+    } else if ("([{".includes(ch)) depth++;
+    else if (")]}".includes(ch) && --depth < 0) return null;
+    if (depth === 0) end = i + 1;
+  }
+  return depth === 0 && count ? { count, end } : null;
 }
 
 /** The text after a row line's closing bracket (`,`, `;`, or `));` closing the list too). */
