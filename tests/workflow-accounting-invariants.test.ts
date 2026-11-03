@@ -900,8 +900,8 @@ describe("run limit refusal invariants (#2590)", () => {
 
   // Before any task finishes, with no attempt completed since the last planning growth, an attempt
   // fails for the run limit only when the limit could not grow: the ceiling has no room for the
-  // step, or no open attempt used a token since that growth. A first wave of writers in flight is
-  // progress (#2607), and the budget never grows past the ceiling.
+  // step, or fewer than two open attempts used a token since that growth. A first wave of parallel
+  // writers in flight is progress (#2607), and the budget never grows past the ceiling.
   test("before a task finishes, an attempt fails for the run limit only when the limit could not grow", async () => {
     const store = fixture.service.store;
     await fc.assert(
@@ -939,7 +939,10 @@ describe("run limit refusal invariants (#2590)", () => {
           refused = true;
         }
         // Without a growth, the completed planning attempt is still progress since the start.
-        const progress = grown ? s.writers.reduce((sum, w) => sum + w.since, 0) : 1;
+        // In-flight tokens count only when more than one open writer spent them: one attempt
+        // alone still stops on its own budget (#1298).
+        const spending = s.writers.filter((w) => w.since > 0);
+        const progress = grown ? (spending.length > 1 ? spending.reduce((sum, w) => sum + w.since, 0) : 0) : 1;
         if (refused) expect(projected > s.ceiling || limit >= s.ceiling || progress === 0).toBe(true);
         else expect(projected).toBeLessThanOrEqual(policy.maxTotalTokens);
         expect(policy.maxTotalTokens).toBeLessThanOrEqual(Math.max(limit, s.ceiling));
