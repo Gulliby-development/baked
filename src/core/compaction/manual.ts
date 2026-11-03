@@ -9,6 +9,7 @@ import { generateText, type ModelMessage } from "ai";
 import { recordModelCall } from "../diagnostics/model-events.js";
 import { supportsTemperature } from "../llm/provider-options.js";
 import type { IOClient } from "../workers/io-client.js";
+import { toolResultText } from "./convo-text.js";
 import {
   extractFromAssistantMessage,
   extractFromToolCall,
@@ -79,9 +80,8 @@ function formatForSummary(m: ModelMessage, charLimit: number): string {
         if (typeof p === "object" && p !== null) {
           if ("text" in p) return String((p as { text: string }).text).slice(0, charLimit);
           if ("type" in p && (p as { type: string }).type === "tool-result") {
-            const tr = p as { toolName?: string; result?: unknown };
-            const resultStr = tr.result != null ? JSON.stringify(tr.result) : "null";
-            return `[tool-result: ${tr.toolName ?? "unknown"} → ${resultStr.slice(0, 8000)}]`;
+            const tr = p as { toolName?: string };
+            return `[tool-result: ${tr.toolName ?? "unknown"} → ${toolResultText(p).slice(0, 8000)}]`;
           }
         }
         return JSON.stringify(p).slice(0, 3000);
