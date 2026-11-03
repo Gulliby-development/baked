@@ -7,6 +7,7 @@ import {
   saveGlobalConfig,
   saveProjectConfig,
 } from "../src/config/index.js";
+import { readConfigObject } from "../src/core/workflows/routing-config.js";
 import { AppConfig } from "../src/types/index.js";
 import { existsSync, readFileSync, writeFileSync, unlinkSync, mkdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
@@ -222,6 +223,69 @@ describe("invalid config.json exits with error", () => {
       expect(output).toContain("invalid project config.json");
     } finally {
       stderrSpy.mockRestore();
+      rmSync(sandbox, { recursive: true, force: true });
+    }
+  });
+});
+
+// #2728: Windows PowerShell 5.1 and older Notepad save UTF-8 with a byte order mark.
+describe("config.json with a UTF-8 BOM", () => {
+  const BOM = "﻿";
+
+  test("loadConfig reads a global file that starts with a BOM", () => {
+    const sandbox = join(tmpdir(), `sf-bom-global-${process.pid}-${Date.now()}`);
+    const origHome = process.env.HOME;
+    const origLocal = process.env.LOCALAPPDATA;
+    process.env.HOME = sandbox;
+    process.env.LOCALAPPDATA = sandbox;
+    const exitSpy = spyOn(process, "exit").mockImplementation((code) => {
+      throw new Error(`EXIT_${code}`);
+    });
+    const stderrSpy = spyOn(process.stderr, "write").mockImplementation(() => true);
+    try {
+      const cfgDir =
+        process.platform === "win32" ? join(sandbox, "baked") : join(sandbox, ".baked");
+      mkdirSync(cfgDir, { recursive: true });
+      writeFileSync(join(cfgDir, "config.json"), `${BOM}{"defaultModel":"a/b"}`);
+      expect(loadConfig().defaultModel).toBe("a/b");
+      expect(exitSpy).not.toHaveBeenCalled();
+    } finally {
+      exitSpy.mockRestore();
+      stderrSpy.mockRestore();
+      if (origHome !== undefined) process.env.HOME = origHome;
+      else delete process.env.HOME;
+      if (origLocal !== undefined) process.env.LOCALAPPDATA = origLocal;
+      else delete process.env.LOCALAPPDATA;
+      rmSync(sandbox, { recursive: true, force: true });
+    }
+  });
+
+  test("loadProjectConfig and readConfigObject read a project file that starts with a BOM", () => {
+    const sandbox = join(tmpdir(), `sf-bom-proj-${process.pid}-${Date.now()}`);
+    const stderrSpy = spyOn(process.stderr, "write").mockImplementation(() => true);
+    try {
+      mkdirSync(join(sandbox, ".baked"), { recursive: true });
+      const file = join(sandbox, ".baked", "config.json");
+      writeFileSync(file, `${BOM}{"defaultModel":"a/b"}`);
+      expect(loadProjectConfig(sandbox)).toEqual({ defaultModel: "a/b" });
+      expect(readConfigObject(file)).toEqual({ defaultModel: "a/b" });
+      expect(stderrSpy).not.toHaveBeenCalled();
+    } finally {
+      stderrSpy.mockRestore();
+      rmSync(sandbox, { recursive: true, force: true });
+    }
+  });
+
+  test("saveProjectConfig keeps the other keys of a file that starts with a BOM", () => {
+    const sandbox = join(tmpdir(), `sf-bom-save-${process.pid}-${Date.now()}`);
+    try {
+      mkdirSync(join(sandbox, ".baked"), { recursive: true });
+      const file = join(sandbox, ".baked", "config.json");
+      writeFileSync(file, `${BOM}{"defaultModel":"a/b","retry":{"maxRetries":3}}`);
+      saveProjectConfig(sandbox, { retry: { baseDelayMs: 500 } });
+      const saved = JSON.parse(readFileSync(file, "utf-8"));
+      expect(saved).toEqual({ defaultModel: "a/b", retry: { maxRetries: 3, baseDelayMs: 500 } });
+    } finally {
       rmSync(sandbox, { recursive: true, force: true });
     }
   });
