@@ -99,6 +99,7 @@ import {
   repairCaseTask,
   writtenTestPaths,
 } from "../verification/criteria-cases.js";
+import { caseEvidence } from "../verification/criteria-evidence.js";
 import { canHold } from "../verification/deliverable-paths.js";
 import {
   copyWorkspace,
@@ -535,7 +536,7 @@ import {
   type ForkSeed,
   seedBytes,
 } from "./fork-stage.js";
-import { formatWrittenChecks } from "./format-written.js";
+import { formatWrittenChecks, runsFormatter } from "./format-written.js";
 import { formatCommandLine, outputTail } from "./gates.js";
 import {
   HOST_APPLY_DIR,
@@ -784,6 +785,8 @@ import {
   requestConflictPath,
   sidesSettle,
   sideTests,
+  sliceForeignDecision,
+  sliceForeignInput,
 } from "./request-conflict.js";
 import { deliverableProblems, repairDeliverables, requestCoverage } from "./request-coverage.js";
 import {
@@ -928,6 +931,7 @@ import {
   type ConvergenceVerdict,
   convergenceGateCrashKeeps,
   convergenceGateDecision,
+  convergenceGateDocKeeps,
   convergenceGateFinding,
   convergenceReproCandidates,
   type GateFinding,
@@ -939,6 +943,7 @@ import {
   reviewGateCandidates,
   reviewGateCrashKeeps,
   reviewGateDecision,
+  reviewGateDocKeeps,
 } from "./review-gate.js";
 import {
   applyRevision,
@@ -3572,6 +3577,13 @@ export class WorkflowScheduler {
                 gatePath,
                 convergenceGateCrashKeeps(gate),
                 crashes,
+              );
+              this.docFindingWouldStops(
+                runId,
+                policy,
+                gatePath,
+                convergenceGateDocKeeps(gate),
+                review.findings,
               );
               const verdictOf = new Map(decision.verdicts.map((v) => [v.id, v.verdict]));
               const ofVerdict = (verdict: ConvergenceVerdict) =>
@@ -13665,6 +13677,7 @@ ${note}`;
       result,
       account,
       report,
+      root,
       signal,
       fix,
     );
@@ -15074,6 +15087,7 @@ ${note}`;
     result: Implementation,
     account: Record<string, unknown>,
     report: string,
+    root: string,
     signal: AbortSignal,
     fix?: MisquoteFixContext,
   ): Promise<boolean | ConflictFinished> {
@@ -15138,6 +15152,8 @@ ${note}`;
       reaudit: null,
       reauditedBefore: earlier.some((r) => r.reaudit !== null),
     };
+    const slice = this.sliceForeign(spec, task, tasks, criteria, root, policy);
+    if (slice) input.slice = slice;
     let decision = requestConflictDecision(input);
     let derivations: NonNullable<Analysis["derivations"]> = [];
     if (decision === "reaudit") {
@@ -15161,20 +15177,40 @@ ${note}`;
       input.reaudit = reauditVerdicts(derivations, input.criterionIds, sections.person);
       decision = requestConflictDecision(input);
     }
+    const foreignSlice = sliceForeignDecision(input, decision);
     const record: RequestConflictRecord = {
       taskId: task.id,
       report: earlier.length + 1,
       ...input,
       decision,
+      ...(foreignSlice ? { sliceForeign: true as const } : {}),
     };
-    this.store.transaction(() =>
+    this.store.transaction(() => {
       this.store.artifact(
         runId,
         REQUEST_CONFLICT_KIND,
         `${REQUEST_CONFLICTS_DIR}${task.id}-${record.report}.json`,
         canonical(record),
-      ),
-    );
+      );
+      // A report about literals only another slice's rows hold (#2476): shadow until promoted, so
+      // the would-stop is recorded and the person is still asked.
+      if (foreignSlice && input.slice) {
+        const mode = stopMode(policy, "slice_foreign_conflict");
+        if (mode !== "enforce")
+          recordWouldStop(this.store, runId, {
+            reason: "slice_foreign_conflict",
+            mode,
+            key: `${task.id}-${record.report}`,
+            summary: `${task.id}'s spec conflict asks for ${input.slice.missing} literal${input.slice.missing === 1 ? "" : "s"} of ${input.criterionIds.join(", ")} that the rows of ${input.slice.holders.join(", ")} (slices of ${input.slice.taskId}) hold; the host would record it as slice-foreign and ask no one`,
+            inputs: {
+              taskId: task.id,
+              report: record.report,
+              criterionIds: input.criterionIds,
+              slice: input.slice,
+            },
+          });
+      }
+    });
     if (decision !== "request") return false;
     const bySides = sidesSettle(input.sides);
     const overruled = bySides
@@ -15351,6 +15387,34 @@ ${note}`;
    * Whether this run created a file: absent from the baseline snapshot, or, without one, created
    * by a task of the plan.
    */
+  /**
+   * The slice-foreign inputs of a row slice's spec conflict (#2476): the cited criteria's whole
+   * cases (no plan identity, so no slice split them yet), which of them the slice's test files on
+   * disk lack, by the walk's evidence, and which of those another slice owns by its rows.
+   */
+  private sliceForeign(
+    spec: Spec,
+    task: Task,
+    tasks: readonly Task[],
+    criteria: Spec["criteria"],
+    root: string,
+    policy: RunPolicy,
+  ): ReturnType<typeof sliceForeignInput> {
+    if (!task.sizingSlice?.rows?.length || !criteria.length) return undefined;
+    const cases = criterionCases(
+      { ...spec, criteria },
+      { criterionIds: criteria.map((c) => c.id), writes: task.writes },
+      { checks: policy.checks },
+    ).filter((c) => !c.cited);
+    const texts = writtenTestPaths(task).map((path) => {
+      try {
+        return caseEvidence(path, readFileSync(workspacePath(root, path), "utf8"));
+      } catch {
+        return "";
+      }
+    });
+    return sliceForeignInput(task, tasks, cases, (c) => missingCases([c], texts).length === 0);
+  }
   private createdByRun(runId: string, state: RuntimeState, path: string): boolean {
     const baselineId = state.manifest.baselineSnapshotId;
     const baseline = baselineId ? this.store.snapshotFiles(runId, baselineId) : null;
@@ -16340,6 +16404,32 @@ ${note}`;
     }
   }
   /**
+   * The `doc_finding_unrepaired` would-stops (#2835): documentation findings marked `noRepro` that
+   * the review or converge gate kept notes for their kind, where a `partial` one repairs (R91
+   * stopcut's README escapes with doubled backslashes). Shadow: the gate's decision is unchanged.
+   */
+  private docFindingWouldStops(
+    runId: string,
+    policy: RunPolicy,
+    gatePath: string,
+    keeps: readonly string[],
+    findings: readonly Review["findings"][number][],
+  ): void {
+    const mode = stopMode(policy, "doc_finding_unrepaired");
+    if (mode === "enforce") return;
+    for (const findingId of keeps) {
+      const finding = findings.find((f) => f.id === findingId);
+      if (!finding) continue;
+      recordWouldStop(this.store, runId, {
+        reason: "doc_finding_unrepaired",
+        mode,
+        key: `${gatePath}#${findingId}`,
+        summary: `Documentation finding ${findingId} (${finding.kind}, noRepro) on ${finding.file ?? "its file"} stays a note for its kind: as a partial finding it would start a correction`,
+        inputs: { findingId, kind: finding.kind, file: finding.file ?? null },
+      });
+    }
+  }
+  /**
    * The edge-input probe of a planned source task (#1808), once after it settled without
    * failures: the `edge-cases` profile is shown the task's criteria, files and the edge taxonomy
    * of its languages (edge-inputs.ts) and proposes extreme legal inputs; the host runs each
@@ -17001,7 +17091,8 @@ ${note}`;
    * `decision.would_rerun` and returns null, so the failure opens its correction as before. Under
    * `enforce` it runs the check again, records `checks/<id>/rerun-<evidence>.json` and returns the
    * second result: a pass makes the first an inconclusive flake that opens nothing, a second
-   * failure opens the correction as before. Null when the rule does not apply.
+   * failure opens the correction as before. Null when the rule does not apply, and for a check
+   * with a `fix` command or one that runs a formatter (#2829).
    */
   private async silentRerun<R>(
     runId: string,
@@ -17011,10 +17102,14 @@ ${note}`;
     first: { status: string; evidenceId: string; output?: string; reason?: string },
     again: () => Promise<R & { status: string; evidenceId: string; reason?: string }>,
   ): Promise<R | null> {
+    // A check with a fixer, or one that runs a formatter, fails by printing a diff or a file list
+    // that names no failure word; its fixer is the host's answer to it, not a second run (#2829).
     if (
       !check.required ||
       first.status !== "failed" ||
       first.reason !== "exit" ||
+      check.fix !== undefined ||
+      runsFormatter(check) ||
       !silentFailure(first.output ?? "")
     )
       return null;
@@ -19737,6 +19832,13 @@ ${note}`;
           ),
         );
         this.reproCrashWouldStops(runId, policy, gatePath, reviewGateCrashKeeps(gate), crashes);
+        this.docFindingWouldStops(
+          runId,
+          policy,
+          gatePath,
+          reviewGateDocKeeps(gate),
+          result.findings,
+        );
         const blocking = result.findings.filter((f) => decided.has(f.id));
         const repaired = new Set(blocking.map((f) => f.id));
         addReviewNotes(

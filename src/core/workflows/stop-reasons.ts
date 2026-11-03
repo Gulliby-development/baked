@@ -315,6 +315,15 @@ export const STOP_REASONS = {
     modes: NOT_ENFORCED,
     defaultMode: "shadow",
   },
+  doc_finding_unrepaired: {
+    label:
+      "A reviewer's documentation finding marked noRepro stays a note because its kind is correctness, where a partial one repairs",
+    // Shadow only until two bench rounds show no false would-stop (#2835, R91 stopcut's README
+    // escape reference with doubled backslashes, R90 holefit docs F1 and F3); its promotion makes
+    // the review and converge gates repair it as a `partial` finding (`docFindingRepairs`).
+    modes: NOT_ENFORCED,
+    defaultMode: "shadow",
+  },
   row_block_drift: {
     label:
       "A test file the run delivered lacks a quoted literal of a row the request prescribes for it, or holds a row beyond them",
@@ -334,6 +343,17 @@ export const STOP_REASONS = {
     // removed it, 368k), and records the criterion and literal instead; analysis lists them as a
     // note. Its promotion, after two bench rounds with no false would-stop, makes that analysis
     // finding blocking, so the spec author removes the example row from the criterion.
+    modes: NOT_ENFORCED,
+    defaultMode: "shadow",
+  },
+  slice_foreign_conflict: {
+    label:
+      "A host row slice's spec conflict asks for literals that only another slice's rows of the same file hold: the host would settle it without asking a person",
+    // Shadow only (#2476, R79 verhop T004: rows 1-7 of `tests/check.bats` reported three
+    // conflicts about AC-003 and AC-005 literals of rows 8-15, and a person answered the third
+    // with "satisfied by the union of both slices"). It records the would-stop beside the
+    // `conflicts/request/` record and the person is still asked; its promotion, after two bench
+    // rounds with no false would-stop, settles the report as slice-foreign with no clarification.
     modes: NOT_ENFORCED,
     defaultMode: "shadow",
   },
