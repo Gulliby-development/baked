@@ -141,16 +141,11 @@ jobs:
           SLOW_TESTS_FAIL: ${{ (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && '1' || '0' }}
           # A failed shard reruns each failed test alone and writes whether it is likely flaky.
           FLAKY_LEDGER: ${{ runner.temp }}/flaky-ledger.json
-          TARGETED: ${{ needs.scope.outputs.targeted }}
-          FILES: ${{ needs.scope.outputs.files }}
-        shell: bash
-        run: |
-          if [ "$TARGETED" = "true" ]; then
-            printf '%s\n' $FILES > "$RUNNER_TEMP/targeted.txt"
-            TEST_FILES="$RUNNER_TEMP/targeted.txt" bun scripts/test-shard.ts 1 1
-          else
-            bun scripts/test-shard.ts ${{ matrix.shard }} ${{ matrix.shards }}
-          fi
+          # A pull request's picked test files, which the first shard runs alone. The step keeps the runner's
+          # default shell: Git Bash on Windows would put GNU tar, which reads `D:\...` as a remote
+          # host, ahead of the system tar for every test.
+          TEST_FILES: ${{ needs.scope.outputs.targeted == 'true' && needs.scope.outputs.files || '' }}
+        run: bun scripts/test-shard.ts ${{ matrix.shard }} ${{ matrix.shards }}
       - name: Upload the flaky test ledger
         if: failure() && env.RUN == 'true'
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
