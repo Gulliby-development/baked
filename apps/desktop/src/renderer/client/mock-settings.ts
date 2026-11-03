@@ -68,6 +68,7 @@ function refuse(setting: SettingDefinition, value: unknown): string | null {
   if (value === null)
     return setting.type === "model" ||
       setting.type === "library-docs" ||
+      setting.type === "path" ||
       (setting.type === "number" && setting.nullable)
       ? null
       : "must be set";
@@ -76,6 +77,8 @@ function refuse(setting: SettingDefinition, value: unknown): string | null {
     (typeof value !== "object" || !("dir" in value || "mcp" in value))
   )
     return "must name a directory or an MCP tool";
+  if (setting.type === "path" && (typeof value !== "string" || !value.trim()))
+    return "must name a folder";
   if (setting.type === "enum" && !setting.options.some((o) => o.value === value))
     return "not an allowed value";
   if (

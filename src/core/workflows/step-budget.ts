@@ -343,8 +343,11 @@ export interface AttemptUsageRecord {
   /** Their queries in order, each cut to 200 characters, at most 50; absent when none. */
   webSearchQueries?: string[];
   /**
-   * The provider reported no tokens for any step, so these are estimated from the sizes of the
-   * request and the response (about 4 bytes a token); absent when the provider reported usage.
+   * The attempt's whole spend is an estimate, absent when the provider reported usage. Either no
+   * step reported tokens, so these come from the sizes of the request and the response (about 4
+   * bytes a token), or a call that reported none (output cap, lost answer) was charged as a step,
+   * and these sum every step including it. They overlap the steps: a price adds only the part the
+   * steps do not carry (`attemptCost`, #2669).
    */
   estimatedUsage?: { inputTokens: number; outputTokens: number };
   /**
