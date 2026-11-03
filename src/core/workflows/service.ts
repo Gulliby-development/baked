@@ -85,10 +85,13 @@ import { InitiativeStore } from "./initiatives/store.js";
 import {
   INVALID_OUTPUT_BUILD_CHANGE,
   INVALID_OUTPUT_KEY,
+  invalidOutputInputs,
+  invalidOutputKey,
   invalidOutputRepeat,
   repeatedInvalidOutputAdvice,
 } from "./invalid-output-repeat.js";
 import {
+  commandLiveness,
   commandProcessMayRun,
   executionLeaseFor,
   leaseOwnerAlive,
@@ -193,7 +196,13 @@ import {
   produces,
   stageKind,
 } from "./v2/runtime.js";
-import { moveRunWorktree, placeBaseFiles, removeRunWorktree, runRoot } from "./worktree.js";
+import {
+  moveRunWorktree,
+  placeBaseFiles,
+  removeRunWorktree,
+  runRoot,
+  worktreeRootDir,
+} from "./worktree.js";
 import {
   cleanWorktrees,
   type WorktreeCleanup,
@@ -646,7 +655,10 @@ export class NativeWorkflowService implements WorkflowService {
    */
   private async smokeChecks(prepared: PreparedStart): Promise<CheckSmoke[]> {
     const smoke = await smokeChecks(prepared.policy.checks, this.workspace);
-    const failed = smoke.filter((s) => s.status === "not_found" || s.status === "cannot_start");
+    const failed = smoke.filter(
+      (s) =>
+        s.status === "not_found" || s.status === "cannot_start" || s.status === "missing_package",
+    );
     const missing = failed.filter((s) => s.required);
     if (missing.length)
       throw new WorkflowFault(
@@ -966,6 +978,8 @@ export class NativeWorkflowService implements WorkflowService {
     const limit = stallSettings(this.config).autoResumes;
     const attempt = state.stallResumes + 1;
     const resumes = attempt <= limit;
+    // The resume below checks the gone driver's commands.
+    using _liveness = resumes ? this.deadOwnerLiveness(runId) : null;
     return this.store.transaction(() => {
       this.store.artifact(
         runId,
@@ -1162,6 +1176,7 @@ export class NativeWorkflowService implements WorkflowService {
     if (primary) this.primaryBusy = true;
     const scheduler = primary ? this.scheduler : this.lane();
     scheduler.maxParallelRuns = parallelRunCap(this.config);
+    scheduler.worktreeRoot = worktreeRootDir(this.workspace, this.config.workflows?.worktreeRoot);
     const promise = scheduler
       .drive(runId, controller.signal)
       .then(() => this.store.snapshot(runId));
@@ -1208,12 +1223,7 @@ export class NativeWorkflowService implements WorkflowService {
     command: CommandIdentity,
     status: "paused" | "cancelled",
   ): Promise<RunSnapshot> {
-    const result = this.store.command(runId, command, { runId, ...command, action: status }, () => {
-      assertMutable(this.store.run(runId).status);
-      this.store.transition(runId, status, "user_pause");
-      // A crashed owner must not keep the workspace locked for ordinary edits after the user stops the run.
-      if (!this.active.has(runId)) releaseDeadOwnerLeases(this.store, runId);
-    });
+    const result = this.stopCommand(runId, command, status);
     const active = this.active.get(runId);
     const providerWait = this.providerWaits.get(runId);
     providerWait?.controller.abort();
@@ -1221,6 +1231,26 @@ export class NativeWorkflowService implements WorkflowService {
     if (active) await active.promise;
     if (providerWait) await providerWait.promise;
     return result;
+  }
+  private stopCommand(
+    runId: string,
+    command: CommandIdentity,
+    status: "paused" | "cancelled",
+  ): RunSnapshot {
+    // A crashed owner's leases are released only once its commands are read as stopped, and
+    // that read runs before the write lock (see `commandLiveness`).
+    const crashed =
+      !this.active.has(runId) &&
+      this.store
+        .leases()
+        .some((lease) => lease.run_id === runId && leaseOwnerAlive(lease) === false);
+    using _liveness = commandLiveness(this.store, crashed ? [runId] : []);
+    return this.store.command(runId, command, { runId, ...command, action: status }, () => {
+      assertMutable(this.store.run(runId).status);
+      this.store.transition(runId, status, "user_pause");
+      // A crashed owner must not keep the workspace locked for ordinary edits after the user stops the run.
+      if (!this.active.has(runId)) releaseDeadOwnerLeases(this.store, runId);
+    });
   }
   async resume(
     runId: string,
@@ -1419,6 +1449,8 @@ export class NativeWorkflowService implements WorkflowService {
   /** A person's grant applies only to the operation refused by the current diagnostic. */
   async repair(runId: string, command: CommandIdentity, rounds = 1): Promise<RunSnapshot> {
     this.enabled();
+    // The resume inside the repair command checks a dead owner's commands.
+    using _liveness = this.deadOwnerLiveness(runId);
     return this.store.command(
       runId,
       command,
@@ -1499,6 +1531,7 @@ export class NativeWorkflowService implements WorkflowService {
       ...(outside ? { acceptWorkspace: true } : {}),
       ...(remedy ? { remedy } : {}),
     };
+    using _liveness = this.deadOwnerLiveness(runId);
     return this.store.command(runId, command, body, () => {
       assertMutable(this.store.run(runId).status);
       if (remedy === "accept-limitation") this.acceptCheckLimitation(runId, command);
@@ -1552,6 +1585,15 @@ export class NativeWorkflowService implements WorkflowService {
           this.store.taskStatus(runId, task.id, "pending");
       this.store.transition(runId, "paused", "none");
     });
+  }
+  /**
+   * A resume asks a person about the commands of an execution lease's dead owner, which reads
+   * their processes: this reads them before the command's write lock (see `commandLiveness`).
+   */
+  private deadOwnerLiveness(runId: string): Disposable {
+    const lease = this.store.lease(executionLeaseFor(this.store, runId));
+    const gone = lease?.run_id === runId && leaseOwnerAlive(lease) === false;
+    return commandLiveness(this.store, gone ? [runId] : []);
   }
   /**
    * A plain resume after a stop by repeated hash refusals (#954) would start an attempt whose edits
@@ -1751,14 +1793,21 @@ export class NativeWorkflowService implements WorkflowService {
     if (!repeat) return true;
     if (repeat.repeats) return false;
     const state = this.store.state(runId);
-    if (!state.prompt.includes(repeat.note)) {
+    // The key is recorded with the inputs the next attempt runs on: the repair of the note below
+    // is one of them (`claims`), so the same stop after it is a repeat (#2696).
+    let key = repeat.key;
+    if (!repeat.record.noted) {
       state.prompt += repeat.note;
       // A diagnostic that restates the request's rows otherwise is put back from them once the
       // run overrode that restatement (#2563: R82 rev 73's T009 diagnostic, "restore the exact
       // prescribed 306-byte x input").
       if (PolicySchema.parse(JSON.parse(this.store.run(runId).policy_json)).rowClaimCheck !== "off")
         try {
-          repairRunRows(this.store, runId, state, state.requestText || state.prompt);
+          if (repairRunRows(this.store, runId, state, state.requestText || state.prompt))
+            key = invalidOutputKey({
+              ...repeat.record,
+              inputs: invalidOutputInputs(this.store, runId),
+            });
         } catch {}
       this.store.saveState(runId, state);
     }
@@ -1771,7 +1820,7 @@ export class NativeWorkflowService implements WorkflowService {
         INVALID_OUTPUT_BUILD_CHANGE,
         canonical({ diagnosticId: repeat.record.diagnosticId, ...repeat.buildChange }),
       );
-    this.store.artifact(runId, "recovery", INVALID_OUTPUT_KEY, repeat.key);
+    this.store.artifact(runId, "recovery", INVALID_OUTPUT_KEY, key);
     return true;
   }
   /**
@@ -1831,6 +1880,9 @@ export class NativeWorkflowService implements WorkflowService {
   async decide(runId: string, command: CommandIdentity, given: Decision): Promise<RunSnapshot> {
     // A recovery decision needs no evidence: it records a generated note instead (#2415).
     const decision = withRecoveryNote(given);
+    // A recovery decision checks the run's command processes: read them before the write lock,
+    // since a Windows process-table read takes seconds and would block every other writer.
+    using _liveness = commandLiveness(this.store, decision.kind === "recovery" ? [runId] : []);
     return this.store.command(runId, command, { runId, ...command, decision }, () => {
       const named = this.store.requests(runId).find((r) => r.id === decision.requestId);
       // The decision on an acceptance test is advisory work beside the run, at any status.
@@ -3120,11 +3172,19 @@ export class NativeWorkflowService implements WorkflowService {
   }
   /** Run and task worktrees on disk with their size and run status (`baked workflow worktrees`). */
   worktrees(): Promise<WorktreeReport> {
-    return worktreeUsage(this.store, (runId) => this.active.has(runId));
+    return worktreeUsage(
+      this.store,
+      (runId) => this.active.has(runId),
+      worktreeRootDir(this.workspace, this.config.workflows?.worktreeRoot),
+    );
   }
   /** Removes the worktrees of ended and unknown runs; their branches stay. */
   cleanWorktrees(dryRun: boolean): Promise<WorktreeCleanup> {
-    return cleanWorktrees(this.store, { dryRun, isActive: (runId) => this.active.has(runId) });
+    return cleanWorktrees(this.store, {
+      dryRun,
+      isActive: (runId) => this.active.has(runId),
+      worktreeRoot: worktreeRootDir(this.workspace, this.config.workflows?.worktreeRoot),
+    });
   }
   events(runId: string, afterSeq: number, signal: AbortSignal) {
     return replayEvents(this.store, runId, afterSeq, signal);

@@ -16,6 +16,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { userHome } from "../platform/index.js";
+import { parseConfigJson } from "../utils/config-json.js";
 import type { HookEventName, HookRule, HooksConfig } from "./types.js";
 
 /** Who a hooks file belongs to: the user (home), the project, or the project's local overrides. */
@@ -68,7 +69,7 @@ function readSettingsFile(filePath: string): SettingsFile | null {
   if (!existsSync(filePath)) return null;
   try {
     const raw = readFileSync(filePath, "utf-8");
-    const parsed = JSON.parse(raw);
+    const parsed = parseConfigJson(raw);
     if (parsed && typeof parsed === "object") return parsed as SettingsFile;
     return null;
   } catch {

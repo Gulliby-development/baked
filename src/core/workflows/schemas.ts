@@ -119,6 +119,9 @@ const RowFramework = z.enum([
   "pest",
   "exunit",
   "dart",
+  "kotlin",
+  "scalatest",
+  "munit",
 ]);
 const RowPackage = z
   .string()
@@ -163,8 +166,8 @@ export const TaskSchema = z
           .object({
             framework: RowFramework,
             /**
-             * The Go package, Java package, C# namespace or PHP namespace (dots for backslashes) of
-             * the harness and the host's test.
+             * The Go package, Java or Kotlin package, Scala package, C# namespace or PHP namespace
+             * (dots for backslashes) of the harness and the host's test.
              */
             package: RowPackage.optional(),
             harness: RelativePath,
@@ -970,6 +973,14 @@ export const PolicySchema = z
          */
         documentedSurface: z.boolean().optional(),
         /**
+         * Prices a feature with fewer paths than its size pool's median, where the pool's tokens
+         * do not follow their paths (no path fit), at the square root of that path share of the
+         * pool's range, and a feature of legal files alone (a `LICENSE`) at the per-path rate
+         * (`fewPathShare`, #2640). Documentation features keep their price. Absent means off: the
+         * size pool prices them as features of its usual paths.
+         */
+        fewPathPrice: z.boolean().optional(),
+        /**
          * Weighs an initiative estimate's finished features by how recent their initiative is: a
          * feature's weight halves for every this many initiatives started after its own
          * (`recencyWeights`, #2150). Absent means every feature counts the same.
@@ -1720,6 +1731,14 @@ export const WorkflowConfigSchema = z
      * below what the run used; `off` records nothing.
      */
     planChargeExpected: z.enum(PLAN_CHARGE_EXPECTED_MODES).optional(),
+    /**
+     * The folder that holds new runs' worktrees, `<root>/<run's 8 hex digits>/main` (#2461):
+     * absolute, starting with `~`, or relative to the project. Unset, they live in the project's
+     * `.baked/worktrees`. A short folder such as `C:\.bk` keeps a task's checks under the path
+     * length a toolchain handles on Windows (`WORKTREE_PATH_LIMITS`). It must be on the project's
+     * drive; a run's worktree keeps the folder it was created in.
+     */
+    worktreeRoot: z.string().trim().min(1).max(240).optional(),
     /**
      * Deadlines and stall limits (milliseconds): a tool call that never returns, a model attempt
      * with no progress, and how often a stalled run resumes by itself. Defaults in `stall.ts`.

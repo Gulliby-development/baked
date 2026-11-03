@@ -14,6 +14,7 @@ import {
   usageFromResult,
 } from "../src/core/llm/providers/claude-code.js";
 import { getProvider } from "../src/core/llm/providers/index.js";
+import { claudeCodeEnv } from "../src/core/llm/providers/output-limit.js";
 import { detectModelFamily } from "../src/core/llm/provider-options.js";
 
 const TOOLS: LanguageModelV3CallOptions["tools"] = [
@@ -218,6 +219,42 @@ describe("claude-code provider", () => {
     await model.doGenerate({ ...SECOND, providerOptions: { "claude-code": { reasoningEffort: "low" } } });
     expect(efforts).toEqual(["high", "low"]);
     runner.close();
+  });
+
+  test("bounds each call at the profile's maxOutputTokens and keeps sessions apart by it (#2547)", async () => {
+    const { factory: inner, spawned } = fakeFactory([toolCallResult, stopResult, toolCallResult]);
+    const limits: Array<number | undefined> = [];
+    const factory: ClaudeCodeProcessFactory = (options) => {
+      limits.push(options.maxOutputTokens);
+      return inner(options);
+    };
+    const runner = new ClaudeCodeSessionRunner(factory);
+    const model = createClaudeCodeLanguageModel("haiku", runner);
+    // Smoke 2026-10-31: a reviewer step (cap 8,192) wrote 132,330 output tokens.
+    await model.doGenerate({ ...FIRST, maxOutputTokens: 8192 });
+    await model.doGenerate({ ...SECOND, maxOutputTokens: 8192 });
+    expect(spawned).toHaveLength(1);
+    await model.doGenerate({ ...SECOND, maxOutputTokens: 64_000 });
+    expect(spawned).toHaveLength(2);
+    expect(limits).toEqual([8192, 64_000]);
+    runner.close();
+  });
+
+  test("the spawned CLI reads the limit from CLAUDE_CODE_MAX_OUTPUT_TOKENS (#2547)", () => {
+    expect(claudeCodeEnv(8192, { PATH: "/bin" })).toEqual({
+      PATH: "/bin",
+      CLAUDE_CODE_MAX_OUTPUT_TOKENS: "8192",
+    });
+    // A higher limit in the person's environment does not lift the profile's cap.
+    expect(claudeCodeEnv(8192, { CLAUDE_CODE_MAX_OUTPUT_TOKENS: "128000" })).toEqual({
+      CLAUDE_CODE_MAX_OUTPUT_TOKENS: "8192",
+    });
+    // A lower one the person set stays.
+    expect(claudeCodeEnv(8192, { CLAUDE_CODE_MAX_OUTPUT_TOKENS: "4000" })).toEqual({
+      CLAUDE_CODE_MAX_OUTPUT_TOKENS: "4000",
+    });
+    const env = { PATH: "/bin" };
+    expect(claudeCodeEnv(undefined, env)).toBe(env);
   });
 
   test("starts a new session when the transcript does not extend one", async () => {

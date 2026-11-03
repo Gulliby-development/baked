@@ -337,7 +337,8 @@ export function parseCodexResponse(text: string): ParsedCodexResponse {
 
 export function collectWarnings(options: LanguageModelV2CallOptions): LanguageModelV2CallWarning[] {
   const warnings: LanguageModelV2CallWarning[] = [];
-  // BAKED sets maxOutputTokens on every agent; the CLI ignoring it is expected, not a warning.
+  // BAKED sets maxOutputTokens on every agent and Codex has no way to send it: `OUTPUT_LIMITS`
+  // (../output-limit.ts) records that, so it is not a warning on every call (#2547).
   for (const setting of [
     "temperature",
     "stopSequences",
