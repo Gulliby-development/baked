@@ -110,3 +110,33 @@ describe("scenario: a repro that reads an installed copy of the code (#2287)", (
     expect(stops[0]?.inputs).toMatchObject({ outside: [join(installed, "value.txt")] });
   }, 90_000);
 });
+
+describe("scenario: a policy that enforces repro_blind (#2287)", () => {
+  test("the blind repro is inconclusive for the attempt, so the correction is not sent back again", async () => {
+    const installed = mkdtempSync(join(tmpdir(), "baked-installed-"));
+    cleanups.push(() => rmSync(installed, { recursive: true, force: true }));
+    writeFileSync(join(installed, "value.txt"), "ready");
+    const enforced: RunPolicy = { ...policy, stopModes: { repro_blind: "enforce" } };
+    const fixture = workflowFixture({ policy: enforced, executor: (root) => new InstalledCopy(root, installed) });
+    cleanups.push(fixture.dispose);
+    const { service, executor } = fixture;
+    const run = await fixture.start();
+    await service.drive(run.runId, new AbortController().signal);
+    await fixture.approve(run.runId);
+    await service.drive(run.runId, new AbortController().signal);
+    // The second check sees the same bytes after the edit: the session's third try never runs.
+    expect(executor.corrections).toBe(2);
+    const checks = service.store
+      .artifacts(run.runId)
+      .filter((a) => /^tasks\/[^/]+\/repro-check-/.test(a.logical_path))
+      .map((a) => JSON.parse(service.store.readArtifact(run.runId, a.id)) as { outcomes: { status: string; reason: string }[]; blind?: string[] });
+    expect(checks.map((c) => c.outcomes[0]?.status)).toEqual(["reproduced", "inconclusive"]);
+    expect(checks[1]?.outcomes[0]?.reason).toContain("repro_blind");
+    expect(checks[1]?.blind).toHaveLength(1);
+    // Enforced, the reason acts instead of recording a would-stop.
+    const stops = service.store
+      .eventsOfType(run.runId, "decision.would_stop")
+      .filter((e) => e.type === "decision.would_stop" && e.payload.reason === "repro_blind");
+    expect(stops).toHaveLength(0);
+  }, 90_000);
+});

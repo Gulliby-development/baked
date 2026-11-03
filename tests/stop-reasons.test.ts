@@ -67,7 +67,8 @@ describe("stop reasons", () => {
     // Shadow until its promotion (#2470): finishing a task from its attempt's green checkpoint.
     expect(STOP_REASONS.attempt_green_checkpoint.modes).toEqual(["shadow", "advisory"]);
     expect(STOP_REASONS.attempt_green_checkpoint.defaultMode).toBe("shadow");
-    expect(STOP_REASONS.repro_blind.modes).toEqual(["shadow", "advisory"]);
+    // Shadow by default (#2287): a policy may make a blind repro inconclusive before its promotion.
+    expect(STOP_REASONS.repro_blind.modes).toEqual(STOP_MODES);
     expect(STOP_REASONS.repro_blind.defaultMode).toBe("shadow");
     expect(STOP_REASONS.upstream_symbol.modes).toEqual(["shadow", "advisory"]);
     expect(STOP_REASONS.upstream_symbol.defaultMode).toBe("shadow");
