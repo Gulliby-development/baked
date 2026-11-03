@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { canonical } from "../src/core/specs/hash.js";
 import { requestSettles, restrictsRequest } from "../src/core/workflows/analysis-notes.js";
+import { conflictRowEvidence } from "../src/core/workflows/conflict-row-reply.js";
 import { type EvidenceInput, evidenceDecision, platformEvidence, reportRequestEvidence } from "../src/core/workflows/evidence-decisions.js";
 import { type Review, ReviewSchema, type RunPolicy, type Spec } from "../src/core/workflows/schemas.js";
 import { specAmendmentOf } from "../src/core/workflows/spec-amendment.js";
@@ -127,6 +128,20 @@ describe("the evidence rule", () => {
     const request = "Document the tool. The README shows `envguard check .env` printing `MISSING DATABASE_URL (line 3)`.";
     expect(reportRequestEvidence(request, 'The rule for examples forbids writing "MISSING DATABASE_URL (line 3)" without running it.', undefined)).toBe("verified");
     expect(reportRequestEvidence(request, "The README example cannot be produced without its files.", [{ kind: "request", quote: "MISSING DATABASE_URL (line 9)" }])).toBe("unverified");
+  });
+
+  // #2493: the `prescribed-rows` site has no wording rule; its evidence is the host's comparison
+  // of the named file with the request's rows (`conflictRowEvidence`). Two phrasings of the same
+  // report decide alike, and a row file that keeps its rows (nothing to find) settles nothing.
+  test("a conflict about a prescribed-row file settles on the row comparison only, whatever the words", () => {
+    const drifting = [{ path: "tests/rows.test.ts", delivered: true, rows: 2, drifting: [2] }];
+    const kept = [{ path: "tests/rows.test.ts", delivered: true, rows: 2, drifting: [] }];
+    const rows = (files: typeof drifting, wording: boolean) =>
+      evidenceDecision({ site: "prescribed-rows", eligible: true, evidence: conflictRowEvidence(files), wording, fallback: false });
+    // "the request states row 2" (the old regex matches) and "row 2 is contradictory" (it does not).
+    expect([rows(drifting, true), rows(drifting, false)]).toEqual([true, true]);
+    expect([rows(kept, true), rows(kept, false)]).toEqual([false, false]);
+    expect(conflictRowEvidence([])).toBe("absent");
   });
 });
 

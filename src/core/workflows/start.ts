@@ -273,6 +273,7 @@ export async function prepareStart(
     rustFormatWritten: policyRustFormatWritten,
     sourceDefectRoute: policySourceDefectRoute,
     rowRunRoute: policyRowRunRoute,
+    conflictRowReply: policyConflictRowReply,
     rowRunRestore: policyRowRunRestore,
     rowEditGuard: policyRowEditGuard,
     rowClaimCheck: policyRowClaimCheck,
@@ -335,6 +336,7 @@ export async function prepareStart(
   const rustFormatWritten = policyRustFormatWritten ?? config.quality?.rustFormatWritten ?? "off";
   const sourceDefectRoute = policySourceDefectRoute ?? config.quality?.sourceDefectRoute ?? "off";
   const rowRunRoute = policyRowRunRoute ?? config.quality?.rowRunRoute ?? "off";
+  const conflictRowReply = policyConflictRowReply ?? config.quality?.conflictRowReply ?? "off";
   // On by default (#2543): only `off` is kept, so stored policies keep their hash.
   const rowRunRestore = policyRowRunRestore ?? config.quality?.rowRunRestore ?? "on";
   // On by default (#2558): only `off` is kept, so stored policies keep their hash.
@@ -409,6 +411,7 @@ export async function prepareStart(
     ...(rustFormatWritten === "on" ? { rustFormatWritten } : {}),
     ...(sourceDefectRoute === "on" ? { sourceDefectRoute } : {}),
     ...(rowRunRoute === "on" ? { rowRunRoute } : {}),
+    ...(conflictRowReply === "on" ? { conflictRowReply } : {}),
     ...(rowRunRestore === "off" ? { rowRunRestore } : {}),
     ...(rowEditGuard === "off" ? { rowEditGuard } : {}),
     ...(rowClaimCheck === "off" ? { rowClaimCheck } : {}),

@@ -839,6 +839,14 @@ export const PolicySchema = z
      */
     rowRunRoute: z.literal("on").optional(),
     /**
+     * The host's answer to a spec conflict about a test file whose rows the request prescribes
+     * (conflict-row-reply.ts, #2493): `on` lets the host compare the file with the rows and, when
+     * it drifts, reply with the row diff and keep the request side, instead of a model settle.
+     * Absent means shadow (the decision and the reply are recorded under `conflicts/rows/`, the
+     * conflict takes the other settles), so stored policies keep their hash.
+     */
+    conflictRowReply: z.literal("on").optional(),
+    /**
      * The host's restore of a prescribed row whose long byte run a delivered test file counts
      * differently, outside the checks stage (row-restore.ts `rowRunRestores`, #2543): on resume of
      * a run blocked `invalid_output` and before a task's session, the host replaces the row's line
