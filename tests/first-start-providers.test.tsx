@@ -2,6 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { testRender } from "@opentui/react/test-utils";
 import { act } from "react";
 import { SetupStep } from "../src/components/modals/wizard/steps/SetupStep";
+import { invalidateProviderModelCache } from "../src/core/llm/models";
 import { getProvider } from "../src/core/llm/providers/index";
 import type { ProviderDefinition } from "../src/core/llm/providers/types";
 import { soleReadyModel } from "../src/core/llm/ready-model";
@@ -15,8 +16,14 @@ afterEach(() => {
 function stub(id: string, methods: Partial<ProviderDefinition>) {
   const provider = getProvider(id) as ProviderDefinition;
   const saved = { ...provider };
+  // The model list is cached per provider for the whole process, so a stub must not see
+  // models another test fetched, nor leave its own behind.
+  invalidateProviderModelCache(id);
   Object.assign(provider, methods);
-  restores.push(() => Object.assign(provider, saved));
+  restores.push(() => {
+    Object.assign(provider, saved);
+    invalidateProviderModelCache(id);
+  });
 }
 
 function cli(id: string, ready: boolean): ProviderDefinition {
@@ -65,27 +72,20 @@ describe("first start", () => {
       />,
       { width: 100, height: 30 },
     );
-    const settle = async () => {
-      for (let i = 0; i < 4; i++)
+    // Renders until the frame shows what the step should reach; the bound only ends a run
+    // that never gets there, so a slow runner never decides the outcome (#1915).
+    const settle = async (until: () => boolean = () => false) => {
+      for (let i = 0; i < 400; i++) {
         await act(async () => {
           await Bun.sleep(5);
           await view.flush();
           await view.renderOnce();
         });
-    };
-    // The model list loads asynchronously; a busy runner can take longer than
-    // one settle, so wait for the text instead of a fixed number of frames.
-    const until = async (text: string) => {
-      const deadline = Date.now() + 5000;
-      while (Date.now() < deadline) {
-        await settle();
-        if (view.captureCharFrame().includes(text)) return;
-        await Bun.sleep(20);
+        if (i >= 3 && until()) return;
       }
-      throw new Error(`"${text}" never showed:\n${view.captureCharFrame()}`);
     };
     try {
-      await settle();
+      await settle(() => view.captureCharFrame().includes("✓ signed in"));
       const frame = view.captureCharFrame();
       const lines = frame.split("\n");
       const codexRow = lines.findIndex((line) => line.includes("Codex —"));
@@ -99,11 +99,12 @@ describe("first start", () => {
       await act(async () => {
         view.mockInput.pressEnter();
       });
-      await until("GPT Test");
+      await settle(() => view.captureCharFrame().includes("GPT Test"));
+      expect(view.captureCharFrame()).toContain("GPT Test");
       await act(async () => {
         view.mockInput.pressEnter();
       });
-      await settle();
+      await settle(() => selected === "codex/gpt-test");
       expect(selected).toBe("codex/gpt-test");
     } finally {
       await act(async () => {
