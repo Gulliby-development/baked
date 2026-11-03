@@ -7,7 +7,7 @@ import {
   sandboxEnv,
   sandboxLaunch,
 } from "../security/sandbox.js";
-import { OUTPUT_GRACE_MS } from "../spawn.js";
+import { OUTPUT_HELD_NOTE, onOutputHeld } from "../spawn.js";
 import { executionClock, executionTimeout } from "./execution-clock.js";
 
 function stopTree(child: ChildProcess, scope: string, force = false): void {
@@ -152,7 +152,7 @@ export class ProcessScope {
       let cancelled = false;
       let truncated = false;
       let hardKill: ReturnType<typeof setTimeout> | undefined;
-      let outputGrace: ReturnType<typeof setTimeout> | undefined;
+      let cancelOutputHeld: (() => void) | undefined;
       const stop = (): void => {
         stopTree(child, scope);
         hardKill ??= setTimeout(() => {
@@ -194,7 +194,7 @@ export class ProcessScope {
       const cleanup = (): void => {
         timer?.();
         if (hardKill) clearTimeout(hardKill);
-        if (outputGrace) clearTimeout(outputGrace);
+        cancelOutputHeld?.();
         this.children.delete(child);
         options.signal.removeEventListener("abort", abort);
       };
@@ -220,18 +220,10 @@ export class ProcessScope {
           ...(launch ? { sandbox: launch.applied } : {}),
         });
       };
-      child.once("exit", (exitCode, signal) => {
-        outputGrace = setTimeout(() => {
-          // Stops what the command left running where the platform can find it, then stops reading.
-          stopTree(child, scope, true);
-          child.stdout?.destroy();
-          child.stderr?.destroy();
-          finish(
-            exitCode,
-            signal,
-            "\n[baked] The command exited, but a process it started kept its output open; later output is not captured.",
-          );
-        }, OUTPUT_GRACE_MS);
+      cancelOutputHeld = onOutputHeld(child, (exitCode, signal) => {
+        // Stops what the command left running where the platform can find it.
+        stopTree(child, scope, true);
+        finish(exitCode, signal, `\n${OUTPUT_HELD_NOTE}`);
       });
       child.once("close", (exitCode, signal) => finish(exitCode, signal));
     });

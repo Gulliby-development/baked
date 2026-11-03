@@ -382,6 +382,36 @@ describe("SessionManager.saveTab", () => {
 		expect(loaded.meta.tabs[0]!.redoTurns).toHaveLength(1);
 	});
 
+	it("keeps the session's kind, worktree, archived flag and parent", async () => {
+		const meta: SessionMeta = {
+			...makeMeta(SID, [{ id: "tab-a" }]),
+			customTitle: "Launched",
+			kind: "coordinator",
+			worktree: { path: join(TEST_DIR, "wt"), branch: "baked/session-x", baseHead: "abc123" },
+			archived: true,
+			parentId: "coordinator-1",
+			projectId: "project-1",
+		};
+		await manager.saveSession(meta, new Map([["tab-a", [makeMessage("user", "A1")]]]));
+
+		await manager.saveTab(
+			SID,
+			makeTab("tab-a"),
+			[makeMessage("user", "A1"), makeMessage("assistant", "A2")],
+			undefined,
+			fallback("tab-a"),
+		);
+
+		const saved = manager.loadSession(SID)!.meta;
+		expect(saved.kind).toBe("coordinator");
+		expect(saved.worktree).toEqual(meta.worktree);
+		expect(saved.archived).toBe(true);
+		expect(saved.parentId).toBe("coordinator-1");
+		expect(saved.projectId).toBe("project-1");
+		expect(saved.customTitle).toBe("Launched");
+		expect(manager.listSessions()[0]).toMatchObject({ kind: "coordinator", archived: true, parentId: "coordinator-1" });
+	});
+
 	it("preserves core.json slots for non-target tabs", async () => {
 		const meta = makeMeta(SID, [{ id: "tab-a" }, { id: "tab-b" }]);
 		await manager.saveSession(
