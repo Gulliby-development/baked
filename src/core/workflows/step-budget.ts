@@ -336,8 +336,11 @@ export interface AttemptUsageRecord {
   /** Their queries in order, each cut to 200 characters, at most 50; absent when none. */
   webSearchQueries?: string[];
   /**
-   * The provider reported no tokens for any step, so these are estimated from the sizes of the
-   * request and the response (about 4 bytes a token); absent when the provider reported usage.
+   * The attempt's whole spend is an estimate, absent when the provider reported usage. Either no
+   * step reported tokens, so these come from the sizes of the request and the response (about 4
+   * bytes a token), or a call that reported none (output cap, lost answer) was charged as a step,
+   * and these sum every step including it. They overlap the steps: a price adds only the part the
+   * steps do not carry (`attemptCost`, #2669).
    */
   estimatedUsage?: { inputTokens: number; outputTokens: number };
   /**
@@ -350,6 +353,11 @@ export interface AttemptUsageRecord {
    * summed: active time a provider did not answer in (#2414); absent when none.
    */
   silentMs?: number;
+  /**
+   * The stall part of those waits (`CallTiming.stallMs`), summed: what the clean pace leaves out
+   * of active time (#2424); absent when none.
+   */
+  stallMs?: number;
 }
 
 /** Calls of one tool answered by one backend (lsp with its server, tree-sitter, regex, repo-map). */

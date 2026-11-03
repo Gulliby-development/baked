@@ -23,7 +23,13 @@ import { type PreparedStart, prepareStart } from "./start.js";
 import { WorkflowStore } from "./store.js";
 import { toolchainCommand } from "./toolchain.js";
 import { loadGateLibrary } from "./v2/library.js";
-import { WORKTREES_DIR } from "./worktree.js";
+import {
+  TASK_WORKTREE_TAIL,
+  WORKTREES_DIR,
+  worktreePathRemedy,
+  worktreeRootDir,
+  worktreeRootProblem,
+} from "./worktree.js";
 
 /**
  * Pre-run diagnostics (`baked workflow doctor`). Run start refusals come from `prepareStart`
@@ -621,24 +627,41 @@ export function languageServerChecks(status: LspStatusView): DoctorCheck[] {
   ];
 }
 
-/** A task worktree path as deep as a real one, for the length check: a run's 8 hex digits and a task id. */
-const SAMPLE_TASK_WORKTREE = `${WORKTREES_DIR}/00000000/T0001`;
-
-/** Warns when a task worktree's path is longer than a project language's test tool handles (#2361). */
+/**
+ * Warns when a task worktree's path is longer than a project language's test tool handles (#2361),
+ * under `workflows.worktreeRoot` when it is set (#2461), and when that folder cannot hold the
+ * project's worktrees.
+ */
 export function worktreePathChecks(
   workspace: string,
   platform: NodeJS.Platform = process.platform,
+  configuredRoot: string | null = null,
 ): DoctorCheck[] {
-  return worktreePathRisks(workspace, join(workspace, SAMPLE_TASK_WORKTREE), platform).map(
-    (risk) => ({
+  const root = worktreeRootDir(workspace, configuredRoot);
+  const problem = root ? worktreeRootProblem(workspace, root) : null;
+  const usable = root && !problem ? root : null;
+  const sample = join(usable ?? join(workspace, WORKTREES_DIR), TASK_WORKTREE_TAIL);
+  return [
+    ...(problem
+      ? [
+          {
+            id: "worktree.root",
+            status: "warn" as const,
+            title: "workflows.worktreeRoot cannot hold the project's worktrees",
+            detail: `${problem}; runs use ${WORKTREES_DIR}.`,
+            fix: "Set workflows.worktreeRoot to a folder outside the project on its drive",
+          },
+        ]
+      : []),
+    ...worktreePathRisks(workspace, sample, platform).map((risk) => ({
       id: "worktree.path",
       status: "warn" as const,
       title: `Task worktrees are ${risk.length} characters deep; ${risk.tool} fails over ${risk.limit}`,
       detail: `${risk.path} is where a task's checks run.`,
-      fix: `Move the project to a shorter path (at most ${risk.limit - SAMPLE_TASK_WORKTREE.length - 1} characters) or run inline`,
+      fix: worktreePathRemedy(risk.limit, platform, usable !== null),
       subject: risk.tool,
-    }),
-  );
+    })),
+  ];
 }
 
 export async function runDoctor(
@@ -769,7 +792,10 @@ export async function runDoctor(
       checks.push(sandboxCheck(mode, deps.sandbox()));
     }
     checks.push(...(await gitChecks(workspace, prepared?.mode ?? null, deps.git)));
-    if (prepared?.mode !== "inline") checks.push(...worktreePathChecks(workspace));
+    if (prepared?.mode !== "inline")
+      checks.push(
+        ...worktreePathChecks(workspace, process.platform, config.workflows?.worktreeRoot ?? null),
+      );
     if (store) checks.push(leaseCheck(store));
     else if (problem)
       checks.push({
