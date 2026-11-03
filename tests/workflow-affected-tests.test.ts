@@ -171,6 +171,28 @@ describe("affectedTestCheck", () => {
     ]);
   });
 
+  // #2725: one value-option table for every runner dropped the value of an option it did not list
+  // (`go test -timeout 30s` became `-timeout ./pkg`) and kept a path after one that takes none.
+  test.each([
+    ["go", ["test", "-timeout", "30s", "-count", "1", "./..."], ["test", "-timeout", "30s", "-count", "1", "./pkg/api"]],
+    ["go", ["test", "-run", "TestA", "-tags", "integration", "./..."], ["test", "-run", "TestA", "-tags", "integration", "./pkg/api"]],
+    ["pytest", ["-k", "not slow", "-n", "4", "-x", "tests"], ["-k", "not slow", "-n", "4", "-x", "./tests/test_api.py"]],
+    ["npx", ["vitest", "--reporter", "verbose"], ["vitest", "run", "--reporter", "verbose", "./tests/api.test.ts"]],
+    ["bun", ["test", "--preload", "./setup.ts"], ["test", "--preload", "./setup.ts", "./tests/api.test.ts"]],
+    ["jest", ["-o", "tests"], ["-o", "./tests/api.test.ts"]],
+    ["bats", ["-t", "test"], ["-t", "./test/sum.bats"]],
+    ["rspec", ["-c", "spec"], ["-c", "./spec/sum_spec.rb"]],
+    ["busted", ["-c", "spec"], ["-c", "./spec/sum_spec.lua"]],
+    ["phpunit", ["--group", "unit", "tests"], ["--group", "unit", "./tests/SumTest.php"]],
+    ["cargo", ["test", "--package", "core"], ["test", "--package", "core", "--test", "it"]],
+    ["cargo", ["test", "--manifest-path", "x/Cargo.toml"], ["test", "--manifest-path", "x/Cargo.toml", "--test", "it"]],
+    ["mvn", ["-pl", "core", "-q", "test"], ["-pl", "core", "-q", "test", "-Dtest=a.ATest", "-Dsurefire.failIfNoSpecifiedTests=false"]],
+    ["gradlew", ["-q", "test", "-x", "integrationTest"], ["-q", "-x", "integrationTest", "test", "--tests", "a.ATest"]],
+  ] as const)("%s %p keeps each option with its value", (executable, args, expected) => {
+    const files = [...tests, "test/sum.bats", "spec/sum_spec.rb", "spec/sum_spec.lua", "tests/SumTest.php", "tests/it.rs", "src/test/java/a/ATest.java"];
+    expect(affectedTestCheck([check("t", executable, [...args])], files)?.args).toEqual([...expected]);
+  });
+
   test("returns null for package scripts, other folders, or no matching tests", () => {
     expect(affectedTestCheck([check("t", "npm", ["test"])], tests)).toBeNull();
     expect(affectedTestCheck([check("t", "bun", ["test"], { cwd: "web" })], tests)).toBeNull();
