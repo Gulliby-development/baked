@@ -85,3 +85,19 @@ describe("agents model", () => {
     ).toBe("Workflow agents now runs 1 agent as its steps and removed 1 agent file.");
   });
 });
+
+describe("agent line at a 900px window", () => {
+  test("the stations and belt fit the 556px panel without scrolling sideways (#2684)", async () => {
+    const scope = globalThis as { window?: unknown };
+    scope.window = {};
+    const { createElement } = await import("react");
+    const { renderToStaticMarkup } = await import("react-dom/server");
+    const { AgentLine } = await import("../src/renderer/screens/setup/AgentsSection.tsx");
+    delete scope.window;
+    const html = renderToStaticMarkup(createElement(AgentLine, { agents, choices: suggested(agents), landed: false }));
+    const widths = [...html.matchAll(/min-w-\[(\d+)px\]/g)].map((m) => Number(m[1]));
+    expect(widths.length).toBeGreaterThan(0);
+    // 556px is the panel's inner width at 900px; the scroller keeps 4px for the last station's shadow.
+    for (const width of widths) expect(width).toBeLessThanOrEqual(556 - 4);
+  });
+});
