@@ -225,6 +225,9 @@ describe("acceptance rows in every supported language (#1660)", () => {
     pest: { framework: "pest", harness: "tests/Support/harness.php", test: "tests/RowsTest.php", data: "tests/fixtures/rows.json" },
     exunit: { framework: "exunit", harness: "test/support/harness.exs", test: "test/calc_rows_test.exs", data: "test/fixtures/rows.json" },
     dart: { framework: "dart", harness: "test/support/harness.dart", test: "test/calc_rows_test.dart", data: "test/fixtures/rows.json" },
+    kotlin: { framework: "kotlin", package: "com.ex.calc", harness: "src/test/kotlin/com/ex/calc/CalcHarness.kt", test: "src/test/kotlin/com/ex/calc/CalcRowsTest.kt", data: "src/test/resources/rows.json" },
+    scalatest: { framework: "scalatest", package: "com.ex.calc", harness: "src/test/scala/com/ex/calc/CalcHarness.scala", test: "src/test/scala/com/ex/calc/CalcRowsSuite.scala", data: "src/test/resources/rows.json" },
+    munit: { framework: "munit", harness: "src/test/scala/CalcHarness.scala", test: "src/test/scala/CalcRowsSuite.scala", data: "src/test/resources/rows.json" },
   };
 
   test("a Scenario column is a label the reader skips, and an audit may leave it out", () => {
@@ -273,6 +276,13 @@ describe("acceptance rows in every supported language (#1660)", () => {
       { ...layouts.exunit!, harness: "test/support/harness_test.exs" },
       { ...layouts.dart!, test: "test/calc_rows.dart" },
       { ...layouts.dart!, harness: "test/support/harness_test.dart" },
+      { ...layouts.kotlin!, test: "src/test/kotlin/com/ex/calc/CalcRows.kt" },
+      { ...layouts.kotlin!, harness: "src/test/kotlin/com/ex/calc/HarnessTest.kt" },
+      { ...layouts.kotlin!, harness: "src/main/kotlin/com/ex/calc/CalcHarness.kt" },
+      { ...layouts.kotlin!, harness: "src/test/kotlin/com/ex/calc/calc-harness.kt" },
+      { ...layouts.scalatest!, test: "src/test/scala/com/ex/calc/calc-rows.scala" },
+      { ...layouts.scalatest!, harness: "src/main/scala/com/ex/calc/CalcHarness.scala" },
+      { ...layouts.munit!, harness: "src/test/scala/CalcHarness.sc" },
     ]) expect(rowPlanProblems(s, { ...graph, tasks: [withTest(rowTest)] }, enabled)).toHaveLength(1);
     const second = withTest({ ...layouts.go!, test: "calc/more_test.go", data: "calc/testdata/more.json" });
     expect(rowPlanProblems(s, { ...graph, tasks: [withTest(layouts.go!), { ...second, id: "T002" }] }, enabled).join()).toContain("one Go harness per package");
@@ -337,6 +347,26 @@ describe("acceptance rows in every supported language (#1660)", () => {
     const dart = files("dart")[1]!.content;
     expect(dart).toContain("import 'support/harness.dart' as harness;");
     expect(dart).toContain("final got = harness.actual(row['input']);");
+    // #2410: Kotlin and Scala have no JSON reader in their standard library, so the rows are
+    // literals of the test, built by its own helpers, and the harness an object named after its file.
+    const kotlin = files("kotlin")[1]!.content;
+    expect(kotlin).toContain("package com.ex.calc\n\nimport org.junit.jupiter.api.Assertions");
+    expect(kotlin).toContain("class CalcRowsTest {");
+    expect(kotlin).toContain('row("AC-001:1", list(2L, 3L), 6L),');
+    expect(kotlin).toContain('row("AC-001:2", "a\\u2028b\\u0001", "a\\u2028b\\u0001"),');
+    expect(kotlin).toContain('row("AC-001:3", list(null), map("k" to list(1.5, null))),');
+    expect(kotlin).toContain("val got = normal(CalcHarness.actual(input))");
+    expect(kotlin).not.toContain("\u2028");
+    for (const name of ["scalatest", "munit"]) {
+      const scala = files(name)[1]!.content;
+      expect(scala).toContain('("AC-001:1", list(2L, 3L), 6L),');
+      expect(scala).toContain('("AC-001:3", list(null), map("k" -> list(1.5, null)))\n  )');
+      expect(scala).toContain("val got = normal(CalcHarness.actual(input))");
+      expect(scala).not.toContain("\u2028");
+    }
+    expect(files("scalatest")[1]!.content).toContain("package com.ex.calc\n\nimport org.scalatest.funsuite.AnyFunSuite\n\nclass CalcRowsSuite extends AnyFunSuite {");
+    expect(files("munit")[1]!.content).toContain("scala.\n\nimport munit.FunSuite\n\nclass CalcRowsSuite extends FunSuite {");
+    expect(files("munit")[1]!.content).toContain('assertEquals(got, normal(expected), s"$id: got $got")');
     const rust = files("rust")[1]!.content;
     expect(rust).toContain('#[path = "support/harness.rs"]');
     expect(rust).toContain('include_str!("data/rows.json")');
@@ -383,6 +413,9 @@ describe("inline acceptance rows (#1763)", () => {
     pest: { mode: "inline", framework: "pest", test: "tests/CalcTest.php" },
     exunit: { mode: "inline", framework: "exunit", test: "test/calc_test.exs" },
     dart: { mode: "inline", framework: "dart", test: "test/calc_test.dart" },
+    kotlin: { mode: "inline", framework: "kotlin", test: "src/test/kotlin/com/ex/calc/CalcTest.kt" },
+    scalatest: { mode: "inline", framework: "scalatest", test: "src/test/scala/com/ex/calc/CalcSuite.scala" },
+    munit: { mode: "inline", framework: "munit", test: "src/test/scala/CalcSuite.scala" },
   };
   // The brief's one test file, already there: the plan names it and nothing else.
   const withInline = (rowTest: NonNullable<Task["rowTest"]>, action: "create" | "modify" = "modify"): Task => ({
@@ -416,6 +449,10 @@ describe("inline acceptance rows (#1763)", () => {
       { ...inline.pest!, test: "tests/Calc.php" },
       { ...inline.exunit!, test: "test/calc.exs" },
       { ...inline.dart!, test: "test/calc.dart" },
+      { ...inline.kotlin!, test: "src/test/kotlin/com/ex/calc/Calc.kt" },
+      { ...inline.kotlin!, test: "src/test/kotlin/com/ex/calc/calc-test.kt" },
+      { ...inline.scalatest!, test: "src/test/scala/com/ex/calc/CalcSuite.sc" },
+      { ...inline.munit!, test: "src/test/scala/calc-suite.scala" },
     ] as NonNullable<Task["rowTest"]>[]) expect(refused([withInline(rowTest)])).toHaveLength(1);
     const second = { ...withInline({ ...inline.go!, test: "calc/more_test.go" } as NonNullable<Task["rowTest"]>), id: "T002" };
     expect(refused([withInline(inline.go!), second]).join()).toContain("one Go test file per package");

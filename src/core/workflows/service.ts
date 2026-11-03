@@ -85,6 +85,8 @@ import { InitiativeStore } from "./initiatives/store.js";
 import {
   INVALID_OUTPUT_BUILD_CHANGE,
   INVALID_OUTPUT_KEY,
+  invalidOutputInputs,
+  invalidOutputKey,
   invalidOutputRepeat,
   repeatedInvalidOutputAdvice,
 } from "./invalid-output-repeat.js";
@@ -193,7 +195,13 @@ import {
   produces,
   stageKind,
 } from "./v2/runtime.js";
-import { moveRunWorktree, placeBaseFiles, removeRunWorktree, runRoot } from "./worktree.js";
+import {
+  moveRunWorktree,
+  placeBaseFiles,
+  removeRunWorktree,
+  runRoot,
+  worktreeRootDir,
+} from "./worktree.js";
 import {
   cleanWorktrees,
   type WorktreeCleanup,
@@ -646,7 +654,10 @@ export class NativeWorkflowService implements WorkflowService {
    */
   private async smokeChecks(prepared: PreparedStart): Promise<CheckSmoke[]> {
     const smoke = await smokeChecks(prepared.policy.checks, this.workspace);
-    const failed = smoke.filter((s) => s.status === "not_found" || s.status === "cannot_start");
+    const failed = smoke.filter(
+      (s) =>
+        s.status === "not_found" || s.status === "cannot_start" || s.status === "missing_package",
+    );
     const missing = failed.filter((s) => s.required);
     if (missing.length)
       throw new WorkflowFault(
@@ -1162,6 +1173,7 @@ export class NativeWorkflowService implements WorkflowService {
     if (primary) this.primaryBusy = true;
     const scheduler = primary ? this.scheduler : this.lane();
     scheduler.maxParallelRuns = parallelRunCap(this.config);
+    scheduler.worktreeRoot = worktreeRootDir(this.workspace, this.config.workflows?.worktreeRoot);
     const promise = scheduler
       .drive(runId, controller.signal)
       .then(() => this.store.snapshot(runId));
@@ -1751,14 +1763,21 @@ export class NativeWorkflowService implements WorkflowService {
     if (!repeat) return true;
     if (repeat.repeats) return false;
     const state = this.store.state(runId);
-    if (!state.prompt.includes(repeat.note)) {
+    // The key is recorded with the inputs the next attempt runs on: the repair of the note below
+    // is one of them (`claims`), so the same stop after it is a repeat (#2696).
+    let key = repeat.key;
+    if (!repeat.record.noted) {
       state.prompt += repeat.note;
       // A diagnostic that restates the request's rows otherwise is put back from them once the
       // run overrode that restatement (#2563: R82 rev 73's T009 diagnostic, "restore the exact
       // prescribed 306-byte x input").
       if (PolicySchema.parse(JSON.parse(this.store.run(runId).policy_json)).rowClaimCheck !== "off")
         try {
-          repairRunRows(this.store, runId, state, state.requestText || state.prompt);
+          if (repairRunRows(this.store, runId, state, state.requestText || state.prompt))
+            key = invalidOutputKey({
+              ...repeat.record,
+              inputs: invalidOutputInputs(this.store, runId),
+            });
         } catch {}
       this.store.saveState(runId, state);
     }
@@ -1771,7 +1790,7 @@ export class NativeWorkflowService implements WorkflowService {
         INVALID_OUTPUT_BUILD_CHANGE,
         canonical({ diagnosticId: repeat.record.diagnosticId, ...repeat.buildChange }),
       );
-    this.store.artifact(runId, "recovery", INVALID_OUTPUT_KEY, repeat.key);
+    this.store.artifact(runId, "recovery", INVALID_OUTPUT_KEY, key);
     return true;
   }
   /**
@@ -3120,11 +3139,19 @@ export class NativeWorkflowService implements WorkflowService {
   }
   /** Run and task worktrees on disk with their size and run status (`baked workflow worktrees`). */
   worktrees(): Promise<WorktreeReport> {
-    return worktreeUsage(this.store, (runId) => this.active.has(runId));
+    return worktreeUsage(
+      this.store,
+      (runId) => this.active.has(runId),
+      worktreeRootDir(this.workspace, this.config.workflows?.worktreeRoot),
+    );
   }
   /** Removes the worktrees of ended and unknown runs; their branches stay. */
   cleanWorktrees(dryRun: boolean): Promise<WorktreeCleanup> {
-    return cleanWorktrees(this.store, { dryRun, isActive: (runId) => this.active.has(runId) });
+    return cleanWorktrees(this.store, {
+      dryRun,
+      isActive: (runId) => this.active.has(runId),
+      worktreeRoot: worktreeRootDir(this.workspace, this.config.workflows?.worktreeRoot),
+    });
   }
   events(runId: string, afterSeq: number, signal: AbortSignal) {
     return replayEvents(this.store, runId, afterSeq, signal);
