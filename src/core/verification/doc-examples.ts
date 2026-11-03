@@ -599,8 +599,8 @@ export function printfText(format: string): string | null {
       i += octal.length;
       continue;
     }
-    const escape = PRINTF_ESCAPES[next];
-    out += escape ?? `\\${next}`;
+    const escaped = PRINTF_ESCAPES[next];
+    out += escaped ?? `\\${next}`;
     i++;
   }
   return out;
