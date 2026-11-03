@@ -385,6 +385,12 @@ function openingMessage(prompt: string, ttl: CacheTTL): ModelMessage {
   };
 }
 
+/** A check result without the host's stream-ordered copy of its output (#2859). */
+const withoutSignature = <T extends { signatureOutput?: string }>({
+  signatureOutput: _signed,
+  ...rest
+}: T): Omit<T, "signatureOutput"> => rest;
+
 export class NativeAgentExecutor implements AgentExecutor {
   private readonly rootContext: SharedRootContext;
   private readonly ownsRootContext: boolean;
@@ -941,7 +947,7 @@ export class NativeAgentExecutor implements AgentExecutor {
               const hint =
                 result.status === "failed" ? escapeHintFor(result.output, doubledEscapes) : null;
               const shown = {
-                ...result,
+                ...withoutSignature(result),
                 ...modelCheckOutput(result.output, result.evidenceId),
                 ...(hint ? { escapeHint: hint } : {}),
               };
@@ -1208,7 +1214,10 @@ export class NativeAgentExecutor implements AgentExecutor {
               );
               return {
                 fixed: outputs,
-                check: { ...checked, ...modelCheckOutput(checked.output, checked.evidenceId) },
+                check: {
+                  ...withoutSignature(checked),
+                  ...modelCheckOutput(checked.output, checked.evidenceId),
+                },
                 ...(reverted.length
                   ? {
                       reverted,
