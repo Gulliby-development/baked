@@ -162,3 +162,37 @@ describe("edit diagnostics through a language server", () => {
     expect(readFileSync(lib, "utf-8")).toBe(original);
   });
 });
+
+describe("diagnostics a workspace-wide server published for a file that was not open", () => {
+  const dir = mkdtempSync(join(tmpdir(), "baked-closed-diags-"));
+  const lib = join(dir, "lib.ts");
+  const app = join(dir, "app.ts");
+  const fixture = join(import.meta.dir, "fixtures", "fake-diagnostics-lsp.ts");
+  const client = new StandaloneLspClient(
+    { command: process.execPath, args: [fixture, "--workspace"], language: "typescript" },
+    dir,
+  );
+
+  beforeAll(async () => {
+    writeFileSync(lib, "export function foo() {}\n");
+    writeFileSync(app, "use(foo)\n");
+    await client.start();
+  });
+
+  afterAll(async () => {
+    await client.stop();
+    // The language server process can still hold the directory on Windows just after it stops.
+    await removeTempDir(dir);
+  });
+
+  it("are not returned as current after a change the server has not answered yet", async () => {
+    // Only lib.ts is open; the server also publishes app.ts, clean while foo is exported.
+    expect(await client.getDiagnostics(lib)).toEqual([]);
+    await Bun.sleep(400);
+    // The edit removes foo while app.ts is still closed.
+    writeFileSync(lib, "export function bar() {}\n");
+    await client.ensureDocumentOpen(lib);
+    const diags = await client.getDiagnostics(app);
+    expect(diags.map((d) => d.message)).toEqual(["Module has no exported member 'foo'."]);
+  });
+});
