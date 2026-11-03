@@ -1026,6 +1026,8 @@ export async function runChat(opts: HeadlessChatOptions, merged: AppConfig): Pro
   let turns = 0;
   let aborted = false;
   let turnAbort = new AbortController();
+  // The exit code of the turn that ended the chat with an error (#2814); 0 while none has.
+  let failedExit = EXIT_OK;
 
   async function cleanupAndExit(code: number): Promise<void> {
     let savedId: string | undefined;
@@ -1162,10 +1164,16 @@ export async function runChat(opts: HeadlessChatOptions, merged: AppConfig): Pro
 
     env.contextManager.updateConversationContext(typed, totalTokens.input);
 
-    turnAbort = new AbortController();
-    if (opts.timeout) {
-      setTimeout(() => turnAbort.abort(), opts.timeout);
-    }
+    const abort = new AbortController();
+    turnAbort = abort;
+    // The timer aborts this turn only, and is cleared when it ends, so it cannot cut a later turn short.
+    let timedOut = false;
+    const timer = opts.timeout
+      ? setTimeout(() => {
+          timedOut = true;
+          abort.abort();
+        }, opts.timeout)
+      : undefined;
     if (opts.signal && !opts.signal.aborted) {
       const fwd = () => turnAbort.abort();
       opts.signal.addEventListener("abort", fwd, { once: true });
@@ -1184,9 +1192,16 @@ export async function runChat(opts: HeadlessChatOptions, merged: AppConfig): Pro
       emit,
       seenWarnings,
     });
+    clearTimeout(timer);
 
     unwatchSubagents();
     headlessStopHooks(session.id, env.cwd, turn);
+    // As in a single run, a turn its own --timeout aborted reports the timeout, after the hooks
+    // have treated it as interrupted.
+    if (timedOut && !aborted && turn.exitCode === EXIT_ABORT) {
+      turn.error = `Timeout after ${String(Math.round((opts.timeout ?? 0) / 1000))}s`;
+      turn.exitCode = EXIT_TIMEOUT;
+    }
     // Even partial output is valuable — save it
     if (turn.output) history.push({ role: "assistant" as const, content: turn.output });
     if (turn.output || turn.calls.length > 0) chatHistory.push(assistantMessage(turn));
@@ -1239,10 +1254,13 @@ export async function runChat(opts: HeadlessChatOptions, merged: AppConfig): Pro
       }
     }
 
-    if (turn.error) break;
+    if (turn.error) {
+      failedExit = turn.exitCode === EXIT_OK ? EXIT_ERROR : turn.exitCode;
+      break;
+    }
   }
 
-  await cleanupAndExit(aborted ? EXIT_ABORT : EXIT_OK);
+  await cleanupAndExit(aborted ? EXIT_ABORT : failedExit);
 }
 function getWorkerInfo(): { intelligence: string; io: string } | null {
   try {

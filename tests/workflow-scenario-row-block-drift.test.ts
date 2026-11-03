@@ -18,7 +18,7 @@ import {
   escapeLayers,
   rowTokens,
 } from "../src/core/workflows/row-block-drift.js";
-import { rowRestorePlan } from "../src/core/workflows/row-restore.js";
+import { rowEditBreaks, rowRestorePlan } from "../src/core/workflows/row-restore.js";
 import { runLengthCompare, runsHeld } from "../src/core/verification/byte-runs.js";
 import { testsHold, verbatimHeld } from "../src/core/verification/criteria-cases.js";
 import { misquotation } from "../src/core/workflows/conflict-rows.js";
@@ -942,5 +942,40 @@ describe("scenario: R82 slotprompt dart-test-written, a row transcribed with a d
     const replayed = replayRowBlocks(fixture.service.store, runId);
     expect(replayed.at(-1)?.recorded).toEqual([17]);
     expect(replayed.every((b) => JSON.stringify(b.recorded) === JSON.stringify(b.replayed))).toBe(true);
+  });
+});
+
+describe("#2704: a row the request gives twice drifts when the file holds it once", () => {
+  // Go split rows: rows 1 and 3 are the same row. Every literal of row 3 is in the file's copy of
+  // row 1, so the whole-file lookup finds nothing missing and no file row takes row 3's place.
+  const ROWS = ['{"a,b", "a|b"},', '{"a,,b", "a||b"},', '{"a,b", "a|b"},'];
+  const PATH = "split_test.go";
+  const goFile = (rows: string[]) =>
+    ["package split", "", "var rows = []struct{ in, out string }{", ...rows.map((r) => `\t${r}`), "}", ""].join("\n");
+  const goRequest = ["Build split.", "", "The prescribed rows, one test each:", "", "```text", `rows in ${PATH} (3 rows, {IN, OUT})`, ...ROWS, "```", ""].join("\n");
+
+  test("the file without the second copy records row 3 as drifting with the copy counts; with both copies nothing drifts", () => {
+    const dropped = goFile(ROWS.slice(0, 2));
+    const measures = measureRows(ROWS, dropped);
+    expect(measures.every((r) => !r.missing.length)).toBe(true);
+    expect(measures.map((r) => r.copy)).toEqual([{ nth: 1, given: 2, held: 1 }, undefined, { nth: 2, given: 2, held: 1 }]);
+    expect(rowBlockDecision(measures)).toEqual([3]);
+    expect(rowRestorePlan(ROWS, dropped).sites).toEqual([{ row: 3, line: null, oneLine: false, sameHead: false, held: false }]);
+    const [compared] = rowBlockDrifts(goRequest, graphOf(PATH), () => dropped);
+    expect(compared?.record.drifting).toEqual([3]);
+    expect(compared?.drifts[0]?.copy).toEqual({ nth: 2, given: 2, held: 1 });
+    expect(rowBlockDriftSummary(compared!.drifts[0]!)).toContain("the request gives the row 2 times and the file holds it 1 time");
+
+    const whole = goFile(ROWS);
+    expect(rowBlockDecision(measureRows(ROWS, whole))).toEqual([]);
+    expect(measureRows(ROWS, whole).map((r) => r.copy?.held)).toEqual([2, undefined, 2]);
+  });
+
+  test("a file with no rows the reader places (copies held by none) records no copy drift; the edit guard does not gate on it (record only)", () => {
+    // One string per row (a Java @CsvSource): every literal held, no file row read.
+    const strings = ['@CsvSource({', '  "a,b|a|b",', '  "a,,b|a||b",', "})"].join("\n");
+    expect(measureFileRows(ROWS, strings)).toEqual([]);
+    expect(rowBlockDecision(measureRows(ROWS, strings))).toEqual([]);
+    expect(rowEditBreaks(goRequest, PATH, goFile(ROWS), goFile(ROWS.slice(0, 2)))).toBeNull();
   });
 });
