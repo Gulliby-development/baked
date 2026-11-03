@@ -1,0 +1,1 @@
+Every caller of the case walk (`criterionCases`, `caseCheck`, `contestedRows` in `src/core/verification/criteria-cases.ts` and `src/core/workflows/conflict-rows.ts`) passes the run's policy checks in its `CaseContext`; `checks` is required, so `bun run typecheck` fails when a new caller leaves them out and would count host commands as test cases (#1762).
