@@ -1,5 +1,14 @@
 import { Database } from "bun:sqlite";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  copyFileSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { DEFAULT_CONFIG } from "../../config/index.js";
@@ -137,6 +146,7 @@ import {
   rewritesSymbol,
   withRewrites,
 } from "./finding-chain.js";
+import { withHistorySnapshot } from "./history-snapshot.js";
 import {
   HOST_APPLY_KIND,
   type HostApplyRule,
@@ -4245,70 +4255,74 @@ function replayStarts(
         true,
       );
       try {
-        const initiatives = new InitiativeService(service);
-        if (priceSamples) initiatives.priceSamples = priceSamples;
-        const view = initiatives.view(initiativeId);
-        const feature = view.features.find((f) => f.id === link.feature_id);
-        const cost = view.budget.cost;
-        const whole = initiatives.estimate(initiativeId);
-        const short = feature ? dollarShortfall(view, feature) : null;
-        const park = feature ? dollarCapPark(view, feature) : null;
-        const timeShort = feature ? timeShortfall(view, feature) : null;
-        const estimate = (whole?.features ?? []).map((f) => ({
-          featureId: f.featureId,
-          low: f.tokens.low,
-          high: f.tokens.high,
-        }));
-        starts.unshift({
-          featureId: link.feature_id,
-          at: t,
-          accepted: view.features.filter((f) => f.state === "accepted").length,
-          features: view.features.length,
-          spentUsd: cost.spentUsd,
-          forecastUsd: cost.forecastUsd,
-          ceilingUsd: cost.ceilingUsd,
-          advice: cost.advice ?? null,
-          forecastNotice: cost.forecastNotice,
-          replayed: feature && gate(view, feature) ? "park" : "pass",
-          estimate,
-          tokens: whole ? { ...whole.tokens, expected: whole.expectedTokens } : null,
-          pool: view.budget.pool && {
-            limitTokens: view.budget.pool.limitTokens,
-            usedTokens: view.budget.pool.usedTokens,
-            forecastTokens: view.budget.pool.forecastTokens,
-            advice: view.budget.pool.advice,
-            suggestedTokens: view.budget.pool.suggestedTokens,
-            notice: view.budget.pool.notice,
-          },
-          planCharge: replayPlanCharge(view, feature, gate),
-          shareWouldStop: short
-            ? {
-                summary: short,
-                spareUsd: shareSpareUsd(view, link.feature_id),
-                lowUsd: feature?.needUsd?.low ?? null,
-                measuredFeatures: cost.measuredFeatures,
-                finalUsd: finalUsd > 0 ? Math.round(finalUsd * 100) / 100 : null,
-              }
-            : null,
-          capWouldStop: park
-            ? {
-                summary: park.summary,
-                leftUsd: park.leftUsd,
-                lowUsd: park.lowUsd,
-                openNeedUsd: park.openNeedUsd,
-                suggestedUsd: park.suggestedUsd,
-                finalUsd: finalUsd > 0 ? Math.round(finalUsd * 100) / 100 : null,
-              }
-            : null,
-          timeWouldStop: timeShort
-            ? {
-                summary: timeShort.summary,
-                availableMs: timeShort.availableMs,
-                lowMs: timeShort.needMs.low,
-                tokensPerMinute: timeShort.tokensPerMinute,
-                suggestedTimeMs: timeShort.suggestedTimeMs,
-              }
-            : null,
+        // The history stores do not change until the next rewind: each is read once for the
+        // view, the estimate and the gates of this start.
+        withHistorySnapshot(() => {
+          const initiatives = new InitiativeService(service);
+          if (priceSamples) initiatives.priceSamples = priceSamples;
+          const view = initiatives.view(initiativeId);
+          const feature = view.features.find((f) => f.id === link.feature_id);
+          const cost = view.budget.cost;
+          const whole = initiatives.estimate(initiativeId, view);
+          const short = feature ? dollarShortfall(view, feature) : null;
+          const park = feature ? dollarCapPark(view, feature) : null;
+          const timeShort = feature ? timeShortfall(view, feature) : null;
+          const estimate = (whole?.features ?? []).map((f) => ({
+            featureId: f.featureId,
+            low: f.tokens.low,
+            high: f.tokens.high,
+          }));
+          starts.unshift({
+            featureId: link.feature_id,
+            at: t,
+            accepted: view.features.filter((f) => f.state === "accepted").length,
+            features: view.features.length,
+            spentUsd: cost.spentUsd,
+            forecastUsd: cost.forecastUsd,
+            ceilingUsd: cost.ceilingUsd,
+            advice: cost.advice ?? null,
+            forecastNotice: cost.forecastNotice,
+            replayed: feature && gate(view, feature) ? "park" : "pass",
+            estimate,
+            tokens: whole ? { ...whole.tokens, expected: whole.expectedTokens } : null,
+            pool: view.budget.pool && {
+              limitTokens: view.budget.pool.limitTokens,
+              usedTokens: view.budget.pool.usedTokens,
+              forecastTokens: view.budget.pool.forecastTokens,
+              advice: view.budget.pool.advice,
+              suggestedTokens: view.budget.pool.suggestedTokens,
+              notice: view.budget.pool.notice,
+            },
+            planCharge: replayPlanCharge(view, feature, gate),
+            shareWouldStop: short
+              ? {
+                  summary: short,
+                  spareUsd: shareSpareUsd(view, link.feature_id),
+                  lowUsd: feature?.needUsd?.low ?? null,
+                  measuredFeatures: cost.measuredFeatures,
+                  finalUsd: finalUsd > 0 ? Math.round(finalUsd * 100) / 100 : null,
+                }
+              : null,
+            capWouldStop: park
+              ? {
+                  summary: park.summary,
+                  leftUsd: park.leftUsd,
+                  lowUsd: park.lowUsd,
+                  openNeedUsd: park.openNeedUsd,
+                  suggestedUsd: park.suggestedUsd,
+                  finalUsd: finalUsd > 0 ? Math.round(finalUsd * 100) / 100 : null,
+                }
+              : null,
+            timeWouldStop: timeShort
+              ? {
+                  summary: timeShort.summary,
+                  availableMs: timeShort.availableMs,
+                  lowMs: timeShort.needMs.low,
+                  tokensPerMinute: timeShort.tokensPerMinute,
+                  suggestedTimeMs: timeShort.suggestedTimeMs,
+                }
+              : null,
+          });
         });
       } finally {
         service.close();
@@ -4625,6 +4639,44 @@ interface RevisionRecord {
   next: Record<string, unknown>;
 }
 
+/**
+ * Each trace decompressed and migrated once per process, keyed by its path, size and time (#2766).
+ * A replay opens a trace many times (each initiative's rewound starts, the run replay, the plan
+ * approvals, and every history store of its round for each of them), and gunzipping a large trace
+ * and migrating it again on each open was most of a corpus test's time: R71 xmlvet took 33.5 s of
+ * its 30 s limit on a macOS runner. `openTrace` copies the prepared file, so every caller still
+ * gets its own database to rewind.
+ */
+const PREPARED = new Map<string, { key: string; file: string }>();
+let preparedDir: string | null = null;
+let preparedCount = 0;
+
+function preparedTrace(path: string): string {
+  const stat = statSync(path);
+  const key = `${stat.size}:${stat.mtimeMs}`;
+  const known = PREPARED.get(path);
+  if (known?.key === key && existsSync(known.file)) return known.file;
+  if (!preparedDir || !existsSync(preparedDir)) {
+    const dir = mkdtempSync(join(tmpdir(), "baked-trace-cache-"));
+    preparedDir = dir;
+    process.once("exit", () => rmSync(dir, { recursive: true, force: true }));
+  }
+  const workspace = join(preparedDir, String(preparedCount++));
+  mkdirSync(join(workspace, ".baked"), { recursive: true });
+  const bytes = readFileSync(path);
+  const file = join(workspace, ".baked", "workflows.sqlite");
+  writeFileSync(file, path.endsWith(".gz") ? Bun.gunzipSync(bytes) : bytes);
+  // Opening it once applies the migrations; the checkpoint folds the WAL back into the file.
+  const store = new WorkflowStore(workspace);
+  try {
+    store.connection.exec("PRAGMA wal_checkpoint(TRUNCATE)");
+  } finally {
+    store.close();
+  }
+  PREPARED.set(path, { key, file });
+  return file;
+}
+
 /** Opens a trace in a scratch workspace; `dispose` removes it. */
 export function openTrace(path: string): {
   store: WorkflowStore;
@@ -4633,9 +4685,7 @@ export function openTrace(path: string): {
 } {
   const workspace = mkdtempSync(join(tmpdir(), "baked-replay-"));
   mkdirSync(join(workspace, ".baked"), { recursive: true });
-  const bytes = readFileSync(path);
-  const raw = path.endsWith(".gz") ? Bun.gunzipSync(bytes) : bytes;
-  writeFileSync(join(workspace, ".baked", "workflows.sqlite"), raw);
+  copyFileSync(preparedTrace(path), join(workspace, ".baked", "workflows.sqlite"));
   const store = new WorkflowStore(workspace);
   return {
     store,
