@@ -3,6 +3,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { changedLines, diffSections } from "../intelligence/call-context.js";
 import { isManifestFile, isTestFile } from "../intelligence/language-traits.js";
+import { hashBytes } from "../specs/hash.js";
 import { isTestOf } from "../verification/convergence.js";
 import {
   type CaseContext,
@@ -14,6 +15,7 @@ import { type Fence, fences } from "../verification/doc-examples.js";
 import { hostRowPaths, literalRows, rowsAsDataOn } from "./acceptance-rows.js";
 import { MAX_EXTENDED_MS } from "./budget.js";
 import { DEFAULT_STAGE_RANGES, historyStorePaths, rangeOf, type TokenRange } from "./estimate.js";
+import { historySnapshot } from "./history-snapshot.js";
 import { type HostEdit, plannerGraph, recordGraphEdits } from "./host-edits.js";
 import { MIN_DURATION_SAMPLES } from "./initiatives/duration.js";
 import { extendToOf, type RunPolicy, SpecSchema, type TaskGraph } from "./schemas.js";
@@ -170,6 +172,121 @@ function taskAction(task: Pick<Task, "writes">): SizingSample["action"] {
   return actions.size === 1 ? ([...actions][0] as WriteAction) : "mixed";
 }
 
+/** The rows of one run that its sizing samples are computed from (`samplesFrom`). */
+interface RunSampleRows {
+  id: string;
+  source: SizingSample["source"];
+  current: boolean;
+  policy: string | null;
+  content: string | null;
+  tasks: { id: string; definition_json: string; status: string }[];
+  byModel: { stage: string; model: string; tokens: number | null }[];
+}
+
+/**
+ * A run's samples by the hash of the rows they are computed from. Parsing the spec and pricing its
+ * cases (`pricedCaseCount`) is most of an estimate's cost, and the same finished runs are read
+ * again by every estimate: an initiative view, its estimate and each rewound start of the replay
+ * corpus (R71 xmlvet spent 30 s in it, #2766). A row that changes changes the key.
+ */
+const RUN_SAMPLES = new Map<string, SizingSample[]>();
+const RUN_SAMPLES_MAX = 2048;
+
+function runSamples(rows: RunSampleRows): SizingSample[] {
+  const key = hashBytes(JSON.stringify(rows));
+  let samples = RUN_SAMPLES.get(key);
+  if (!samples) {
+    samples = computeRunSamples(rows);
+    if (RUN_SAMPLES.size >= RUN_SAMPLES_MAX) {
+      const oldest = RUN_SAMPLES.keys().next().value;
+      if (oldest !== undefined) RUN_SAMPLES.delete(oldest);
+    }
+    RUN_SAMPLES.set(key, samples);
+  }
+  // Callers get their own objects: a cached sample is never shared with a caller that changes it.
+  return samples.map((sample) => ({ ...sample }));
+}
+
+function computeRunSamples({
+  id,
+  source,
+  current,
+  policy,
+  content,
+  tasks: taskRows,
+  byModel,
+}: RunSampleRows): SizingSample[] {
+  let spec: SpecText | null = null;
+  let checks: CaseContext["checks"] = [];
+  try {
+    if (policy) checks = (JSON.parse(policy) as Partial<Pick<RunPolicy, "checks">>).checks ?? [];
+  } catch {
+    // A run without a readable policy prices every quoted literal, as before #1762.
+  }
+  try {
+    if (content) spec = SpecSchema.safeParse(JSON.parse(content)).data ?? null;
+  } catch {
+    // Older stores and synthetic history may have no spec artifacts. Keep their file rates.
+  }
+  const tasks = taskRows.map((row) => ({
+    id: row.id,
+    status: row.status,
+    ...(JSON.parse(row.definition_json) as Pick<Task, "writes" | "origin"> &
+      Partial<Pick<Task, "criterionIds" | "description" | "dependsOn" | "sizingSlice">>),
+  }));
+  const samples: SizingSample[] = [];
+  const spent = new Map<string, number>();
+  const modelOf = new Map<string, { model: string; tokens: number }>();
+  for (const row of byModel) {
+    const tokens = row.tokens ?? 0;
+    spent.set(row.stage, (spent.get(row.stage) ?? 0) + tokens);
+    const top = modelOf.get(row.stage);
+    if (!top || tokens > top.tokens) modelOf.set(row.stage, { model: row.model, tokens });
+  }
+  const planned = tasks.filter((task) => task.origin === "planned");
+  const totals = new Map(planned.map((task) => [task.id, spent.get(`task-${task.id}`) ?? 0]));
+  for (const correction of tasks.filter(
+    (task) => task.origin !== "planned" && ["implemented", "verified"].includes(task.status),
+  )) {
+    const files = writtenFiles(correction);
+    const base = planned.find((task) => files.every((path) => writtenFiles(task).includes(path)));
+    if (base)
+      totals.set(base.id, (totals.get(base.id) ?? 0) + (spent.get(`task-${correction.id}`) ?? 0));
+  }
+  for (const task of planned) {
+    if (!["implemented", "verified"].includes(task.status)) continue;
+    const files = writtenFiles(task).length;
+    const tokens = totals.get(task.id) ?? 0;
+    if (files > 0 && tokens > 0)
+      samples.push({
+        runId: id,
+        taskId: task.id,
+        ...(current ? { current: true } : {}),
+        kind: taskKind(task),
+        action: taskAction(task),
+        source,
+        files,
+        tokens,
+        model: modelOf.get(`task-${task.id}`)?.model ?? null,
+        criteria: task.criterionIds?.length ?? 0,
+        ...(spec && task.criterionIds
+          ? {
+              cases: pricedCaseCount(
+                spec,
+                { ...task, criterionIds: task.criterionIds },
+                {
+                  checks,
+                  tasks: planned.map((t) => ({ ...t, criterionIds: t.criterionIds ?? [] })),
+                  includeBroad: true,
+                },
+              ),
+            }
+          : {}),
+      });
+  }
+  return samples;
+}
+
 /**
  * Finished tasks of a workflow store, read-only. A corrective task is not a sample of its own: its
  * tokens join the planned task of the same run that writes the same files, because getting that
@@ -178,6 +295,18 @@ function taskAction(task: Pick<Task, "writes">): SizingSample["action"] {
 export function samplesFrom(
   databasePath: string,
   source: SizingSample["source"] = "project",
+  currentRunId?: string,
+): SizingSample[] {
+  // Another project's store is read once per history snapshot (`withHistorySnapshot`).
+  if (source === "shared" && !currentRunId)
+    return historySnapshot(`samples:${databasePath}`, () => samplesNow(databasePath, source)).map(
+      (sample) => ({ ...sample }),
+    );
+  return samplesNow(databasePath, source, currentRunId);
+}
+function samplesNow(
+  databasePath: string,
+  source: SizingSample["source"],
   currentRunId?: string,
 ): SizingSample[] {
   if (!existsSync(databasePath)) return [];
@@ -189,25 +318,23 @@ export function samplesFrom(
       : db.query<{ id: string }, []>("SELECT id FROM runs WHERE status='completed'").all();
     const samples: SizingSample[] = [];
     for (const { id } of runs) {
-      let spec: SpecText | null = null;
-      let checks: CaseContext["checks"] = [];
+      let policy: string | null = null;
       try {
-        const policy = db
-          .query<{ policy_json: string }, [string]>("SELECT policy_json FROM runs WHERE id=?")
-          .get(id);
-        if (policy)
-          checks =
-            (JSON.parse(policy.policy_json) as Partial<Pick<RunPolicy, "checks">>).checks ?? [];
+        policy =
+          db
+            .query<{ policy_json: string }, [string]>("SELECT policy_json FROM runs WHERE id=?")
+            .get(id)?.policy_json ?? null;
       } catch {
         // A run without a readable policy prices every quoted literal, as before #1762.
       }
+      let content: string | null = null;
       try {
         const artifact = db
           .query<{ inline_content: string | null; blob_path: string | null }, [string]>(
             "SELECT inline_content, blob_path FROM artifacts WHERE run_id=? AND logical_path='spec.json' ORDER BY revision DESC LIMIT 1",
           )
           .get(id);
-        const content =
+        content =
           artifact?.inline_content ??
           (artifact?.blob_path
             ? readFileSync(
@@ -215,7 +342,6 @@ export function samplesFrom(
                 "utf8",
               )
             : null);
-        if (content) spec = SpecSchema.safeParse(JSON.parse(content)).data ?? null;
       } catch {
         // Older stores and synthetic history may have no spec artifacts. Keep their file rates.
       }
@@ -225,13 +351,7 @@ export function samplesFrom(
             ? "SELECT id, definition_json, status FROM tasks WHERE run_id=?"
             : "SELECT id, definition_json, status FROM tasks WHERE run_id=? AND status='verified'",
         )
-        .all(id)
-        .map((row) => ({
-          id: row.id,
-          status: row.status,
-          ...(JSON.parse(row.definition_json) as Pick<Task, "writes" | "origin"> &
-            Partial<Pick<Task, "criterionIds" | "description" | "dependsOn" | "sizingSlice">>),
-        }));
+        .all(id);
       const byModel = db
         .query<{ stage: string; model: string; tokens: number | null }, [string]>(
           `SELECT s.stage_id AS stage, a.model_id AS model, SUM(COALESCE(a.used_tokens,0)) AS tokens
@@ -240,60 +360,16 @@ export function samplesFrom(
            GROUP BY s.stage_id, a.model_id`,
         )
         .all(id);
-      const spent = new Map<string, number>();
-      const modelOf = new Map<string, { model: string; tokens: number }>();
-      for (const row of byModel) {
-        const tokens = row.tokens ?? 0;
-        spent.set(row.stage, (spent.get(row.stage) ?? 0) + tokens);
-        const top = modelOf.get(row.stage);
-        if (!top || tokens > top.tokens) modelOf.set(row.stage, { model: row.model, tokens });
-      }
-      const planned = tasks.filter((task) => task.origin === "planned");
-      const totals = new Map(planned.map((task) => [task.id, spent.get(`task-${task.id}`) ?? 0]));
-      for (const correction of tasks.filter(
-        (task) => task.origin !== "planned" && ["implemented", "verified"].includes(task.status),
-      )) {
-        const files = writtenFiles(correction);
-        const base = planned.find((task) =>
-          files.every((path) => writtenFiles(task).includes(path)),
-        );
-        if (base)
-          totals.set(
-            base.id,
-            (totals.get(base.id) ?? 0) + (spent.get(`task-${correction.id}`) ?? 0),
-          );
-      }
-      for (const task of planned) {
-        if (!["implemented", "verified"].includes(task.status)) continue;
-        const files = writtenFiles(task).length;
-        const tokens = totals.get(task.id) ?? 0;
-        if (files > 0 && tokens > 0)
-          samples.push({
-            runId: id,
-            taskId: task.id,
-            ...(currentRunId ? { current: true } : {}),
-            kind: taskKind(task),
-            action: taskAction(task),
-            source,
-            files,
-            tokens,
-            model: modelOf.get(`task-${task.id}`)?.model ?? null,
-            criteria: task.criterionIds?.length ?? 0,
-            ...(spec && task.criterionIds
-              ? {
-                  cases: pricedCaseCount(
-                    spec,
-                    { ...task, criterionIds: task.criterionIds },
-                    {
-                      checks,
-                      tasks: planned.map((t) => ({ ...t, criterionIds: t.criterionIds ?? [] })),
-                      includeBroad: true,
-                    },
-                  ),
-                }
-              : {}),
-          });
-      }
+      const rows: RunSampleRows = {
+        id,
+        source,
+        current: !!currentRunId,
+        policy,
+        content,
+        tasks,
+        byModel,
+      };
+      samples.push(...runSamples(rows));
     }
     return samples;
   } catch {
