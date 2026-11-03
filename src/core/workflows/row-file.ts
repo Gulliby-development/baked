@@ -42,7 +42,7 @@ export interface RowFileShape {
 const CALL_OR_LITERAL = /^\s*(?:[A-Za-z_][\w.]*\s*[({]|[[{(])/;
 
 const FOLLOW_UP =
-  "row files are host-written for C, C++, Dart, TypeScript, JavaScript, Go, Python, Elixir and Java first (#2528, #2553); this language's row notation and its formatter's fixed point are #2553";
+  "row files are host-written for C, C++, Dart, TypeScript, JavaScript, Go, Python, Elixir, Java, C#, Kotlin, Scala, PHP, R, OCaml, Zig, Objective-C and Solidity first (#2528, #2553); this language's row notation and its formatter's fixed point are #2553";
 
 /**
  * One row per supported language (AGENTS.md: a new row notation adds its row here, a case to
@@ -277,22 +277,294 @@ export const ROW_FILE_SHAPES: LanguageRecord<RowFileShape> = {
       ],
     },
   },
-  kotlin: none(FOLLOW_UP),
-  scala: none(FOLLOW_UP),
-  csharp: none(FOLLOW_UP),
+  kotlin: {
+    // `Arguments.of(...)` rows in a `listOf(` or `Stream.of(` (ktlint's trailing comma on each).
+    // A JUnit `@CsvSource` row is a bare string, which `rowHead` reads no head from (as for Java).
+    rowLine: CALL_OR_LITERAL,
+    example: {
+      path: "src/test/kotlin/wordcount/CountRowsTest.kt",
+      reference: [
+        "package wordcount",
+        "",
+        "import org.junit.jupiter.api.Assertions.assertEquals",
+        "import org.junit.jupiter.params.ParameterizedTest",
+        "import org.junit.jupiter.params.provider.Arguments",
+        "import org.junit.jupiter.params.provider.MethodSource",
+        "",
+        "class CountRowsTest {",
+        "    @ParameterizedTest",
+        '    @MethodSource("rows")',
+        "    fun countsWords(",
+        "        text: String,",
+        "        count: Int,",
+        "    ) {",
+        "        assertEquals(count, countWords(text))",
+        "    }",
+        "",
+        "    companion object {",
+        "        @JvmStatic",
+        "        fun rows() =",
+        "            listOf(",
+        '                Arguments.of("", 0),',
+        '                Arguments.of("a b", 2),',
+        "            )",
+        "    }",
+        "}",
+        "",
+      ].join("\n"),
+      // Kotlin's `\$` escapes a dollar in a string.
+      rows: ['Arguments.of("a\\tb\\nc", 3)', 'Arguments.of("\\$x \\"q\\"", 2)'],
+    },
+  },
+  scala: {
+    // Tuples in a `Seq(` (`("a", 0),`; scalafmt's default writes no comma after the last row).
+    rowLine: CALL_OR_LITERAL,
+    example: {
+      path: "src/test/scala/wordcount/CountRowsSuite.scala",
+      reference: [
+        "package wordcount",
+        "",
+        "import org.scalatest.funsuite.AnyFunSuite",
+        "",
+        "class CountRowsSuite extends AnyFunSuite {",
+        "  val rows = Seq(",
+        '    ("", 0),',
+        '    ("a b", 2)',
+        "  )",
+        "",
+        "  rows.foreach { case (text, count) =>",
+        '    test(s"count($text)") {',
+        "      assert(Words.count(text) == count)",
+        "    }",
+        "  }",
+        "}",
+        "",
+      ].join("\n"),
+      rows: ['("a\\tb\\nc", 3)', '("  lead \\"q\\"", 2)'],
+    },
+  },
+  csharp: {
+    // xUnit `[InlineData(...)]` attribute rows (no separator, so a shape of one such row declines),
+    // `TheoryData` initialiser rows (`{ "a", 0 },`) and `TheoryData` `Add(...);` rows. Other
+    // attributes (`[Theory]`) are not rows. An `[InlineData(` row's arguments are one argument of
+    // the bracket `rowArity` reads, so its argument count does not tell two row shapes apart.
+    rowLine: /^\s*(?:\[\s*InlineData\s*\(|\{|Add\s*\()/,
+    example: {
+      path: "tests/Wordcount.Tests/CountRowsTests.cs",
+      reference: [
+        "using Xunit;",
+        "",
+        "namespace Wordcount.Tests;",
+        "",
+        "public class CountRowsTests",
+        "{",
+        "    [Theory]",
+        '    [InlineData("", 0)]',
+        '    [InlineData("a b", 2)]',
+        "    public void CountsWords(string text, int count)",
+        "    {",
+        "        Assert.Equal(count, Words.Count(text));",
+        "    }",
+        "}",
+        "",
+      ].join("\n"),
+      // C# escapes written as the request gives them, one attribute per row.
+      rows: ['[InlineData("a\\tb\\nc", 3)]', '[InlineData("  lead \\"q\\"", 2)]'],
+    },
+  },
   ruby: none(FOLLOW_UP),
-  php: none(FOLLOW_UP),
+  php: {
+    // Arrays returned (or listed) by a PHPUnit data provider (`['a', 0],`). A keyed row
+    // (`'name' => [...]`) starts with a string and a `yield [...];` row with a word, which
+    // `rowHead` reads no bracket head from: those shapes decline.
+    rowLine: /^\s*\[/,
+    example: {
+      path: "tests/CountRowsTest.php",
+      reference: [
+        "<?php",
+        "",
+        "declare(strict_types=1);",
+        "",
+        "namespace Tests;",
+        "",
+        "use PHPUnit\\Framework\\Attributes\\DataProvider;",
+        "use PHPUnit\\Framework\\TestCase;",
+        "use Wordcount\\Words;",
+        "",
+        "final class CountRowsTest extends TestCase",
+        "{",
+        "    public static function rows(): array",
+        "    {",
+        "        return [",
+        "            ['', 0],",
+        "            ['a b', 2],",
+        "        ];",
+        "    }",
+        "",
+        "    #[DataProvider('rows')]",
+        "    public function testCountsWords(string $text, int $count): void",
+        "    {",
+        "        self::assertSame($count, Words::count($text));",
+        "    }",
+        "}",
+        "",
+      ].join("\n"),
+      // PHP: double quotes where the row has escapes, single quotes otherwise (pint).
+      rows: ['["a\\tb\\nc", 3]', "['  lead', 1]"],
+    },
+  },
   swift: none(FOLLOW_UP),
   lua: none(FOLLOW_UP),
-  zig: none(FOLLOW_UP),
+  zig: {
+    // Struct literals in a `std.testing` table (`.{ .text = "a", .count = 0 },` or a typed
+    // `Row{ ... },`), zig fmt's trailing comma after every row.
+    rowLine: /^\s*(?:\.|[A-Za-z_][\w.]*)?\{/,
+    example: {
+      path: "src/count_rows_test.zig",
+      reference: [
+        'const std = @import("std");',
+        'const words = @import("words.zig");',
+        "",
+        "const Row = struct { text: []const u8, count: usize };",
+        "",
+        "const rows = [_]Row{",
+        '    .{ .text = "", .count = 0 },',
+        '    .{ .text = "a b", .count = 2 },',
+        "};",
+        "",
+        'test "rows" {',
+        "    for (rows) |row| {",
+        "        try std.testing.expectEqual(row.count, words.count(row.text));",
+        "    }",
+        "}",
+        "",
+      ].join("\n"),
+      rows: ['.{ .text = "a\\tb\\nc", .count = 3 }', '.{ .text = "  lead \\"q\\"", .count = 2 }'],
+    },
+  },
   bash: none(FOLLOW_UP),
-  ocaml: none(FOLLOW_UP),
-  objc: none(FOLLOW_UP),
-  r: none(FOLLOW_UP),
+  ocaml: {
+    // Tuples in an alcotest row list, each closed by `;` (`("a", 0);`), the brackets on their own
+    // lines as ocamlformat writes a list longer than its margin.
+    rowLine: CALL_OR_LITERAL,
+    example: {
+      path: "test/test_count_rows.ml",
+      reference: [
+        "let rows =",
+        "  [",
+        '    ("", 0);',
+        '    ("a b", 2);',
+        "  ]",
+        "",
+        "let check (text, count) = Alcotest.(check int) text count (Words.count text)",
+        "",
+        "let test_rows () = List.iter check rows",
+        "",
+        'let () = Alcotest.run "count" [ ("rows", [ ("rows", `Quick, test_rows) ]) ]',
+        "",
+      ].join("\n"),
+      // Rows long enough that ocamlformat keeps the list vertical (one row per line).
+      rows: [
+        '("the quick brown fox jumps over the lazy dog", 9)',
+        '("tab\\tand\\nnewline \\"q\\"", 3)',
+      ],
+    },
+  },
+  objc: {
+    // XCTest rows as array or dictionary literals in an `@[` list (`@[ @"a", @"b" ],`), C struct
+    // initialisers (`{@"a", 0},`) or macro rows (`ROW(@"a", 0);`), clang-format's layout.
+    rowLine: /^\s*(?:@?[[{]|[A-Za-z_]\w*\s*\()/,
+    example: {
+      path: "Tests/HexRowsTests.m",
+      reference: [
+        "#import <XCTest/XCTest.h>",
+        "",
+        '#import "HexCodec.h"',
+        "",
+        "@interface HexRowsTests : XCTestCase",
+        "@end",
+        "",
+        "@implementation HexRowsTests",
+        "",
+        "- (void)testRows {",
+        "  NSArray<NSArray<NSString *> *> *rows = @[",
+        '    @[ @"", @"" ],',
+        '    @[ @"abc", @"616263" ],',
+        "  ];",
+        "  for (NSArray<NSString *> *row in rows) {",
+        "    XCTAssertEqualObjects([HexCodec encode:row[0]], row[1]);",
+        "  }",
+        "}",
+        "",
+        "@end",
+        "",
+      ].join("\n"),
+      rows: ['@[ @"a\\tb", @"610962" ]', '@[ @"\\"q\\"", @"227122" ]'],
+    },
+  },
+  r: {
+    // `list(...)` (or `c(...)`, `data.frame(...)`) call rows in a list (styler). A
+    // `tibble::tribble(` row is bare cells (`"a", 0,`) with no bracket of its own, which `rowHead`
+    // reads no head from: such a shape declines.
+    rowLine: CALL_OR_LITERAL,
+    example: {
+      path: "tests/testthat/test-count-rows.R",
+      reference: [
+        'test_that("words are counted", {',
+        "  rows <- list(",
+        '    list("", 0),',
+        '    list("a b", 2)',
+        "  )",
+        "  for (row in rows) {",
+        "    expect_equal(count_words(row[[1]]), row[[2]])",
+        "  }",
+        "})",
+        "",
+      ].join("\n"),
+      rows: ['list("a\\tb\\nc", 3)', 'list("  lead \\"q\\"", 2)'],
+    },
+  },
   vue: none("a Vue single-file component is not a test file of prescribed rows"),
   svelte: none("a Svelte component is not a test file of prescribed rows"),
   rescript: none(FOLLOW_UP),
-  solidity: none(FOLLOW_UP),
+  solidity: {
+    // Foundry rows pushed onto a storage array of structs in `setUp` (`rows.push(Row("a", 0));`) or
+    // helper call rows (`add("a", 0);`). A struct array literal names its length in its type
+    // (`Row[2] memory`), which rows of another count break, so the push form is the list form.
+    rowLine: CALL_OR_LITERAL,
+    example: {
+      path: "test/CountRows.t.sol",
+      reference: [
+        "// SPDX-License-Identifier: MIT",
+        "pragma solidity ^0.8.20;",
+        "",
+        'import {Test} from "forge-std/Test.sol";',
+        'import {Words} from "../src/Words.sol";',
+        "",
+        "contract CountRowsTest is Test {",
+        "    struct Row {",
+        "        string text;",
+        "        uint256 count;",
+        "    }",
+        "",
+        "    Row[] internal rows;",
+        "",
+        "    function setUp() public {",
+        '        rows.push(Row("", 0));',
+        '        rows.push(Row("a b", 2));',
+        "    }",
+        "",
+        "    function test_rows() public view {",
+        "        for (uint256 i = 0; i < rows.length; i++) {",
+        "            assertEq(Words.count(rows[i].text), rows[i].count);",
+        "        }",
+        "    }",
+        "}",
+        "",
+      ].join("\n"),
+      rows: ['rows.push(Row("a\\tb\\nc", 3))', 'rows.push(Row("  lead \\"q\\"", 2))'],
+    },
+  },
   sql: none("SQL tests (pgTAP) assert per statement, with no list of rows"),
   powershell: none(FOLLOW_UP),
 };

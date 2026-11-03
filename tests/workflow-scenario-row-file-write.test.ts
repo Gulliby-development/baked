@@ -287,6 +287,16 @@ const FORMATTERS: Record<string, { program: string; args: (file: string) => stri
   dart: { program: "dart", args: (f) => ["format", f] },
   cpp: { program: "clang-format", args: (f) => ["-i", "-style=LLVM", f] },
   java: { program: "google-java-format", args: (f) => ["-i", f] },
+  // #2553 part B. dotnet format and the R styler work on a folder or through R; the others in place.
+  csharp: { program: "dotnet", args: (f) => ["format", "whitespace", dirname(f), "--folder", "--include", f], probe: ["format", "--version"] },
+  kotlin: { program: "ktlint", args: (f) => ["--format", f] },
+  scala: { program: "scalafmt", args: (f) => ["--quiet", "--config-str", "version=3.8.3,runner.dialect=scala213", f] },
+  php: { program: "pint", args: (f) => ["--preset", "psr12", f] },
+  r: { program: "Rscript", args: (f) => ["-e", `styler::style_file(${JSON.stringify(f)})`], probe: ["-e", "library(styler)"] },
+  ocaml: { program: "ocamlformat", args: (f) => ["--enable-outside-detected-project", "-i", f] },
+  zig: { program: "zig", args: (f) => ["fmt", f], probe: ["version"] },
+  objc: { program: "clang-format", args: (f) => ["-i", "-style=LLVM", f] },
+  solidity: { program: "forge", args: (f) => ["fmt", f] },
 };
 
 describe("the written row file is a fixed point of its language's formatter (#2528)", () => {
@@ -473,6 +483,147 @@ describe("scenario: R82, a row-file task the host writes without a session (#252
     const before = replayTrace(out, { hostApplyRule: (writes) => hostApplyDecision(writes.map(({ rows: _, ...w }) => w)) }).runs.find((r) => r.runId === runId);
     expect(before?.newApplyDecisions).toBe(1);
   }, 120000);
+});
+
+// #2553 (part B): a row file in C#, Kotlin, Scala, PHP, R, OCaml, Zig, Objective-C or Solidity had
+// no `ROW_FILE_SHAPES` row, so the host declined with "the host does not write row files for
+// <path>'s language yet" and a session retyped the rows (R83-R85: 1M or more tokens per language a
+// round put through an initiative). Each case is the language's list form in its formatter's
+// layout: the scaffold's rows and the request's rows, the file written from the scaffold.
+const listFile = (before: string[], row: (r: string, last: boolean) => string, after: string[]) => (rows: string[]) =>
+  [...before, ...rows.map((r, i) => row(r, i === rows.length - 1)), ...after].join("\n");
+const listShape = (path: string, scaffold: string, file: (rows: string[]) => string, shapeRows: string[], rows: string[]): WriteShape => ({
+  path,
+  reference: { path: scaffold, text: file(shapeRows) },
+  block: [`Rows in ${path} (${rows.length} rows)`, ...rows],
+  written: file(rows),
+});
+const ROWS_B: Record<string, WriteShape> = {
+  // xUnit: one `[InlineData(...)]` attribute per row; the `[Theory]` above them is not a row.
+  csharp: listShape(
+    "tests/Wordcount.Tests/CountRowsTests.cs",
+    "tests/Wordcount.Tests/ScaffoldTests.cs",
+    listFile(["using Xunit;", "", "public class CountRowsTests", "{", "    [Theory]"], (r) => `    ${r}`, ["    public void Counts(string text, int count) => Assert.Equal(count, Words.Count(text));", "}", ""]),
+    ['[InlineData("", 0)]', '[InlineData("a", 1)]'],
+    ['[InlineData("", 0)]', '[InlineData("a b", 2)]', '[InlineData("tab\\there", 2)]', '[InlineData("\\"q\\" \\\\ x", 3)]'],
+  ),
+  // JUnit 5 in Kotlin: `Arguments.of(...)` rows in a `listOf(`, ktlint's trailing comma on each.
+  kotlin: listShape(
+    "src/test/kotlin/wordcount/CountRowsTest.kt",
+    "src/test/kotlin/wordcount/ScaffoldTest.kt",
+    listFile(["package wordcount", "", "object CountRows {", "    @JvmStatic", "    fun rows() =", "        listOf("], (r) => `            ${r},`, ["        )", "}", ""]),
+    ['Arguments.of("", 0)'],
+    ['Arguments.of("", 0)', 'Arguments.of("a b", 2)', 'Arguments.of("\\$x\\t\\"q\\"", 2)'],
+  ),
+  // ScalaTest: tuples in a `Seq(`, no comma after the last (scalafmt's default).
+  scala: listShape(
+    "src/test/scala/wordcount/CountRowsSuite.scala",
+    "src/test/scala/wordcount/ScaffoldSuite.scala",
+    listFile(["class CountRowsSuite extends AnyFunSuite {", "  val rows = Seq("], (r, last) => `    ${r}${last ? "" : ","}`, ["  )", "}", ""]),
+    ['("", 0)', '("a", 1)'],
+    ['("", 0)', '("a b", 2)', '("tab\\there", 2)', '("\\"q\\"", 1)'],
+  ),
+  // PHPUnit: arrays returned by a data provider.
+  php: listShape(
+    "tests/CountRowsTest.php",
+    "tests/ScaffoldTest.php",
+    listFile(["<?php", "", "final class CountRowsTest extends TestCase", "{", "    public static function rows(): array", "    {", "        return ["], (r) => `            ${r},`, ["        ];", "    }", "}", ""]),
+    ["['', 0]"],
+    ["['', 0]", "['a b', 2]", '["tab\\there", 2]', "['it\\'s', 1]"],
+  ),
+  // testthat: `list(...)` rows in a list (styler), no comma after the last.
+  r: listShape(
+    "tests/testthat/test-count-rows.R",
+    "tests/testthat/test-scaffold.R",
+    listFile(['test_that("words are counted", {', "  rows <- list("], (r, last) => `    ${r}${last ? "" : ","}`, ["  )", "  for (row in rows) expect_equal(count_words(row[[1]]), row[[2]])", "})", ""]),
+    ['list("", 0)', 'list("a", 1)'],
+    ['list("", 0)', 'list("a b", 2)', 'list("tab\\there", 2)', 'list("\\"q\\"", 1)'],
+  ),
+  // alcotest: tuples in a list, each closed by `;` (ocamlformat's vertical layout).
+  ocaml: listShape(
+    "test/test_count_rows.ml",
+    "test/test_scaffold.ml",
+    listFile(["let rows =", "  ["], (r) => `    ${r};`, ["  ]", "", 'let () = Alcotest.run "count" [ ("rows", List.map case rows) ]', ""]),
+    ['("", 0)'],
+    ['("", 0)', '("the quick brown fox jumps over the lazy dog", 9)', '("tab\\there", 2)', '("\\"q\\"", 1)'],
+  ),
+  // std.testing: struct literals in a table, zig fmt's trailing comma on each.
+  zig: listShape(
+    "src/count_rows_test.zig",
+    "src/scaffold_test.zig",
+    listFile(["const rows = [_]Row{"], (r) => `    ${r},`, ["};", "", 'test "rows" {', "    for (rows) |row| try std.testing.expectEqual(row.count, words.count(row.text));", "}", ""]),
+    ['.{ .text = "", .count = 0 }'],
+    ['.{ .text = "", .count = 0 }', '.{ .text = "a b", .count = 2 }', '.{ .text = "tab\\there", .count = 2 }', '.{ .text = "\\"q\\"", .count = 1 }'],
+  ),
+  // XCTest: array literals in an `@[` list (clang-format's layout).
+  objc: listShape(
+    "Tests/HexRowsTests.m",
+    "Tests/ScaffoldTests.m",
+    listFile(["@implementation HexRowsTests", "", "- (void)testRows {", "  NSArray<NSArray<NSString *> *> *rows = @["], (r) => `    ${r},`, ["  ];", "  for (NSArray<NSString *> *row in rows)", "    XCTAssertEqualObjects([HexCodec encode:row[0]], row[1]);", "}", "", "@end", ""]),
+    ['@[ @"", @"" ]'],
+    ['@[ @"", @"" ]', '@[ @"abc", @"616263" ]', '@[ @"a\\tb", @"610962" ]', '@[ @"\\"q\\"", @"227122" ]'],
+  ),
+  // Foundry: rows pushed onto a storage array of structs in `setUp`.
+  solidity: listShape(
+    "test/CountRows.t.sol",
+    "test/Scaffold.t.sol",
+    listFile(["contract CountRowsTest is Test {", "    Row[] internal rows;", "", "    function setUp() public {"], (r) => `        ${r};`, ["    }", "}", ""]),
+    ['rows.push(Row("", 0))'],
+    ['rows.push(Row("", 0))', 'rows.push(Row("a b", 2))', 'rows.push(Row("tab\\there", 2))', 'rows.push(Row("\\"q\\"", 1))'],
+  ),
+};
+
+describe("rowFilePlan: row files in C#, Kotlin, Scala, PHP, R, OCaml, Zig, Objective-C and Solidity (#2553)", () => {
+  for (const [language, shape] of Object.entries(ROWS_B))
+    test(`${language}: the scaffold's preamble and epilogue around one prescribed row per line`, () => {
+      const { inputs, content } = plan(shape);
+      expect(inputs).toEqual({ count: rowsOf(shape).length, ...OK });
+      expect(content).toBe(shape.written);
+      expect(rowFileRefusal(shape.path, inputs)).toBeNull();
+    });
+
+  test("C#: TheoryData initialiser rows and `Add(...)` rows", () => {
+    const theory = (rows: string[]) =>
+      ["public static TheoryData<string, int> Rows => new()", "{", ...rows.map((r) => `    ${r},`), "};", ""].join("\n");
+    const rows = ['{ "a b", 2 }', '{ "tab\\there", 2 }'];
+    expect(rowFilePlan("tests/CountRows.cs", rows, { source: "reference", text: theory(['{ "", 0 }']) }).content).toBe(theory(rows));
+    const add = (rows: string[]) =>
+      ["public class CountRows : TheoryData<string, int>", "{", "    public CountRows()", "    {", ...rows.map((r) => `        ${r};`), "    }", "}", ""].join("\n");
+    const added = ['Add("a b", 2)', 'Add("tab\\there", 2)'];
+    expect(rowFilePlan("tests/CountRows.cs", added, { source: "reference", text: add(['Add("", 0)']) }).content).toBe(add(added));
+  });
+
+  test("Kotlin: a JUnit `Stream.of(` list's last row keeps the list's close", () => {
+    const stream = (rows: string[]) =>
+      ["fun rows(): Stream<Arguments> =", "    Stream.of(", ...rows.map((r, i) => `        ${r}${i === rows.length - 1 ? ")" : ","}`), ""].join("\n");
+    const rows = ['Arguments.of("a b", 2)', 'Arguments.of("", 0)', 'Arguments.of("c", 1)'];
+    expect(rowFilePlan("src/test/kotlin/CountRowsTest.kt", rows, { source: "reference", text: stream(['Arguments.of("x", 1)', 'Arguments.of("y", 1)']) }).content).toBe(stream(rows));
+  });
+
+  test("forms with no one-line row head decline with their reason", () => {
+    const refusal = (path: string, text: string, rows: string[]) =>
+      rowFileRefusal(path, rowFilePlan(path, rows, { source: "reference", text }).inputs);
+    // A testthat `tibble::tribble(` row is bare cells: no bracket head, so no row line of R.
+    expect(refusal("tests/testthat/test-rows.R", 'rows <- tibble::tribble(\n  ~text, ~count,\n  "", 0,\n)\n', ['"a b", 2,'])).toContain("one row head");
+    // A PHP keyed provider row starts with its string key.
+    expect(refusal("tests/RowsTest.php", "return [\n    'empty' => ['', 0],\n];\n", ["'two' => ['a b', 2]"])).toContain("one row head");
+    // A C# attribute other than `[InlineData(` is not a row.
+    expect(refusal("tests/RowsTests.cs", "[Theory]\n[InlineData(\"\", 0)]\n[InlineData(\"a\", 1)]\n", ["[Fact]"])).toContain("one row head");
+  });
+});
+
+describe("scenario: a row file in the languages of #2553 part B, written by the host without a session", () => {
+  for (const [language, shape] of Object.entries(ROWS_B))
+    test(`${language}: with rowFileWrite on the host writes ${shape.path} from the scaffold and no session opens for it`, async () => {
+      const { final, file, sessions, record, skipped } = await deliver(shape, { rowFileWrite: "on" });
+      expect(final.status).toBe("completed");
+      // On main the host declines (`language: false`) and a session writes the file: T001, T002.
+      expect(sessions).toEqual(["T001"]);
+      expect(file).toBe(shape.written);
+      expect(record).toMatchObject({ mode: "on", wouldApply: true, applied: true });
+      expect(record?.writes[0]?.rows).toEqual({ count: rowsOf(shape).length, ...OK });
+      expect(skipped).toBe("host-written");
+    }, 120000);
 });
 
 // #2564: a row file whose language has no `ROW_FILE_SHAPES` row (C++ and Java, #2553), or whose
