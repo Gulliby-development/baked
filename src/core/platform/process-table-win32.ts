@@ -87,34 +87,62 @@ function inspect(k: NonNullable<typeof kernel32>, pid: number): "exited" | numbe
   }
 }
 
-/** Whether `pid` is listed, and its listed children with their start times; null when unreadable. */
-export function windowsProcessTree(pid: number): WindowsProcessTree | null {
-  const k = load();
-  if (!k) return null;
-  const snapshot = handleOf(k.CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0));
-  if (snapshot === INVALID_HANDLE_VALUE || snapshot === 0n) return null;
-  const childIds: number[] = [];
-  let listed = false;
-  let count = 0;
+/** Every listed process id with its parent id; null when the snapshot cannot be read. */
+function snapshot(k: NonNullable<typeof kernel32>): Map<number, number> | null {
+  const handle = handleOf(k.CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0));
+  if (handle === INVALID_HANDLE_VALUE || handle === 0n) return null;
+  const parents = new Map<number, number>();
   try {
     const entry = Buffer.alloc(ENTRY_SIZE);
     entry.writeUInt32LE(ENTRY_SIZE, 0);
     const at = entry as unknown as Pointer;
-    for (let ok = k.Process32FirstW(snapshot, at); ok; ok = k.Process32NextW(snapshot, at)) {
-      count++;
-      const id = entry.readUInt32LE(PROCESS_ID_OFFSET);
-      if (id === pid) listed = true;
-      else if (entry.readUInt32LE(PARENT_ID_OFFSET) === pid) childIds.push(id);
-    }
+    for (let ok = k.Process32FirstW(handle, at); ok; ok = k.Process32NextW(handle, at))
+      parents.set(entry.readUInt32LE(PROCESS_ID_OFFSET), entry.readUInt32LE(PARENT_ID_OFFSET));
   } finally {
-    k.CloseHandle(snapshot);
+    k.CloseHandle(handle);
   }
   // A snapshot always lists at least the System process and this one.
-  if (count === 0) return null;
-  const children: WindowsChild[] = [];
-  for (const id of childIds) {
-    const state = inspect(k, id);
-    if (state !== "exited") children.push({ id, startedMs: state });
+  return parents.size === 0 ? null : parents;
+}
+
+/** Whether `pid` is listed, and its listed children with their start times; null when unreadable. */
+export function windowsProcessTree(pid: number): WindowsProcessTree | null {
+  const k = load();
+  if (!k) return null;
+  return readProcessTree(
+    pid,
+    () => snapshot(k),
+    (id) => inspect(k, id),
+  );
+}
+
+type ProcessState = "exited" | number | null;
+
+/**
+ * The tree of `pid` from a process snapshot (id → parent id) and a per-process inspection;
+ * exported with injectable reads so the exit race is tested on every OS.
+ */
+export function readProcessTree(
+  pid: number,
+  readSnapshot: () => Map<number, number> | null,
+  inspectProcess: (id: number) => ProcessState,
+): WindowsProcessTree | null {
+  const first = readSnapshot();
+  if (!first) return null;
+  const states = new Map<number, ProcessState>();
+  for (const [id, parent] of first)
+    if (id === pid || parent === pid) states.set(id, inspectProcess(id));
+  // A process that exits between the snapshot and OpenProcess cannot be opened any more, which
+  // reads the same as one this user may not open. A second snapshot tells them apart: the exited
+  // one is no longer listed under the same parent, the protected one still is (#2840 flake).
+  if ([...states.values()].includes(null)) {
+    const second = readSnapshot();
+    if (second)
+      for (const [id, state] of states)
+        if (state === null && second.get(id) !== first.get(id)) states.set(id, "exited");
   }
-  return { listed: listed && inspect(k, pid) !== "exited", children };
+  const children: WindowsChild[] = [];
+  for (const [id, state] of states)
+    if (id !== pid && state !== "exited") children.push({ id, startedMs: state });
+  return { listed: states.has(pid) && states.get(pid) !== "exited", children };
 }
