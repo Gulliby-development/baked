@@ -1,5 +1,3 @@
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
 import { type LanguageRecord, none, rowOf, SUPPORTED_LANGUAGES } from "./language-records.js";
 import { detectLanguageFromPath, type Language } from "./types.js";
 
@@ -231,16 +229,4 @@ export function isTestContent(path: string, content: string | null | undefined):
   const ext = normalized.slice(normalized.lastIndexOf("."));
   if (tests.test(`${dir}probe${ext}`)) return true;
   return markers.test(content);
-}
-
-/** `isTestContent` of the file as it is under `root`, by the name alone when it does not exist. */
-export function isTestFileAt(root: string, path: string): boolean {
-  if (!isTestFile(path)) return false;
-  let content: string | null = null;
-  try {
-    content = readFileSync(join(root, path), "utf8");
-  } catch {
-    /* absent or unreadable: the name rule */
-  }
-  return isTestContent(path, content);
 }

@@ -1,5 +1,6 @@
 import { blankStringLiterals } from "../intelligence/comments.js";
-import { isTestFile, isTestFileAt } from "../intelligence/language-traits.js";
+import { isTestFile } from "../intelligence/language-traits.js";
+import { isTestFileAt } from "../intelligence/test-file-at.js";
 import { hasShadowTitles, testConventions } from "../intelligence/test-frameworks.js";
 import { capExcess, testCapsOf } from "../verification/test-cap.js";
 import { suppressionPattern } from "./quality/suppressions.js";
