@@ -2878,7 +2878,8 @@ export function replayFirstBytes(
   const boundaries = new Map<string, FirstByteBoundary[]>(runIds.map((runId) => [runId, []]));
   for (const { runId, attemptId, model, call, index, estimated } of calls) {
     // A refused call (a 429, say) answered before any deadline; it is the retry ladder's, not this.
-    if (call.status !== undefined) continue;
+    // So is one that ended in a provider error, such as a model at capacity (#2820).
+    if (call.status !== undefined || call.failure === "error") continue;
     const limitMs =
       adaptive && call.limitMs !== undefined
         ? adaptive(history, providerFirstByteMs(call.provider, call), model, call)
@@ -3044,7 +3045,10 @@ export function replayStallLadder(
     }
     const last = usage.calls?.at(-1);
     // A stall, or a turn that finished with no usable answer (#1957), which climbs the same way.
-    const stalled = !!last && last.firstByteMs === null && last.status === undefined;
+    // A call that ended in a provider error (the model at capacity) is the retry's, not a stall
+    // (#2820); a call recorded before its failure kind was is read by its timing alone.
+    const stalled =
+      !!last && last.firstByteMs === null && last.status === undefined && last.failure !== "error";
     if (attempt.status !== "failed" || (!stalled && usage.lostAnswer === undefined)) continue;
     const entry =
       (stage ? routing.stages?.[stage] : undefined) ??
@@ -3951,6 +3955,8 @@ export function replayInitiativeStarts(
     moments?: number[];
     /** Sets the initiative's `sizing.recencyHalfLife`, to backtest the weighting (#2150). */
     recencyHalfLife?: number;
+    /** Sets the initiative's `sizing.fewPathPrice`, to backtest it (#2640). */
+    fewPathPrice?: boolean;
     /**
      * Sets entries of the initiative's base policy `stopModes`, to replay a round at the mode it
      * ran in: a round before #2245 held open runs at their limits (`initiative-plan-charge` in
@@ -3999,6 +4005,7 @@ export function replayInitiativeStarts(
       budgetAtStart: options.budgetAtStart !== false,
       moments: options.moments ?? [],
       ...(options.recencyHalfLife ? { recencyHalfLife: options.recencyHalfLife } : {}),
+      ...(options.fewPathPrice ? { fewPathPrice: true } : {}),
       ...(options.stopModes ? { stopModes: options.stopModes } : {}),
       ...(options.planChargeExpected ? { planChargeExpected: options.planChargeExpected } : {}),
       firstStartOnly: options.firstStartOnly === true,
@@ -4112,6 +4119,7 @@ function replayStarts(
     budgetAtStart,
     moments,
     recencyHalfLife,
+    fewPathPrice,
     stopModes,
     planChargeExpected,
     firstStartOnly,
@@ -4119,6 +4127,7 @@ function replayStarts(
     budgetAtStart: boolean;
     moments: number[];
     recencyHalfLife?: number;
+    fewPathPrice?: boolean;
     stopModes?: RunPolicy["stopModes"];
     planChargeExpected?: PlanChargeExpected;
     firstStartOnly: boolean;
@@ -4143,7 +4152,7 @@ function replayStarts(
       .get(initiativeId) as { settings_json: string; decompose_run_id: string | null };
     const settings = JSON.parse(row.settings_json) as {
       basePolicy?: {
-        sizing?: { historyStores?: string[]; recencyHalfLife?: number };
+        sizing?: { historyStores?: string[]; recencyHalfLife?: number; fewPathPrice?: boolean };
         stopModes?: RunPolicy["stopModes"];
         rowFileWrite?: RunPolicy["rowFileWrite"];
       };
@@ -4152,10 +4161,18 @@ function replayStarts(
     // trace keeps no request text: the blocks are restored from the trace's own records first.
     if (settings.basePolicy?.rowFileWrite === "on") restoreRowBlocks(db, initiativeId);
     const missingHistory: string[] = [];
-    if (recencyHalfLife || stopModes) {
+    if (recencyHalfLife || fewPathPrice || stopModes) {
       settings.basePolicy = {
         ...settings.basePolicy,
-        ...(recencyHalfLife ? { sizing: { ...settings.basePolicy?.sizing, recencyHalfLife } } : {}),
+        ...(recencyHalfLife || fewPathPrice
+          ? {
+              sizing: {
+                ...settings.basePolicy?.sizing,
+                ...(recencyHalfLife ? { recencyHalfLife } : {}),
+                ...(fewPathPrice ? { fewPathPrice } : {}),
+              },
+            }
+          : {}),
         ...(stopModes ? { stopModes: { ...settings.basePolicy?.stopModes, ...stopModes } } : {}),
       };
       db.run("UPDATE initiatives SET settings_json=? WHERE id=?", [

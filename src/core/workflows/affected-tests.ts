@@ -373,9 +373,36 @@ export function affectedTests(root: string, sources: string[]): AffectedTest[] {
 /** The options of `python -m unittest` that take no value. */
 const UNITTEST_FLAG = /^-(?:[vqfbck]|-(?:verbose|quiet|failfast|buffer|catch|locals))$/;
 
-/** Options that take a value, busted's `-o TAP`, `-t unit`, `--exclude-tags slow`, `--lpath ./src/?.lua` (#1495) and bats' `-j 4`, `-f adds`, `--filter-tags unit` (#1497) among them. */
-const VALUE_OPTION =
-  /^(?:--(?:timeout|testTimeout|test-timeout|config|format|formatter|require|tag|out|seed|order|output|tags|exclude-tags|pattern|run|lpath|cpath|jobs|filter|filter-tags|report-formatter)|-[cotpmjfF])$/;
+/**
+ * Each runner's options that take their value as the next argument, so `flagsOnly` keeps the value
+ * with its option. One table for every runner gave `go test -timeout 30s` as `-timeout ./pkg`,
+ * `cargo test --package core` as `--package --test it`, `gradle check -x spotlessCheck` as
+ * `-x test` and `pytest -k slow` as `-k ./tests/test_a.py`, while bats' `-t` and RSpec's `-c`,
+ * which take none, kept the folder after them (#2725).
+ */
+const JS_VALUE_OPTION =
+  /^(?:--(?:timeout|testTimeout|test-timeout|config|reporter|reporters|preload|require|import|project|environment|env|shard|test-name-pattern|testNamePattern|testPathPattern|testPathIgnorePatterns|outputFile|root|dir|seed|pool|maxWorkers|max-concurrency|rerun-each|coverage-reporter|coverage-dir|test-reporter|test-reporter-destination|env-file|conditions)|-[ctr])$/;
+const PYTEST_VALUE_OPTION =
+  /^(?:--(?:timeout|timeout-method|config-file|rootdir|confcutdir|basetemp|maxfail|deselect|ignore|ignore-glob|durations|durations-min|junitxml|junit-xml|junit-prefix|cov|cov-report|cov-config|cov-fail-under|log-level|log-cli-level|log-file|log-format|tb|import-mode|dist|numprocesses|maxprocesses|override-ini|capture|color|reruns|reruns-delay|html|randomly-seed|pythonwarnings|cache-dir)|-[ckmnoprW])$/;
+/** Go's flags are spelt with one dash or two; `-v`, `-race` and `-failfast` take no value. */
+const GO_VALUE_OPTION =
+  /^--?(?:run|skip|count|timeout|tags|p|parallel|cpu|bench|benchtime|coverprofile|coverpkg|covermode|exec|o|vet|shuffle|fuzz|fuzztime|fuzzminimizetime|ldflags|gcflags|asmflags|mod|modfile|overlay|pgo|toolexec|outputdir|blockprofile|cpuprofile|memprofile|mutexprofile|trace|C)$/;
+const CARGO_VALUE_OPTION =
+  /^(?:--(?:package|manifest-path|features|target|target-dir|profile|jobs|color|message-format|exclude|config|lockfile-path|filterset|filter-expr|cargo-profile|test-threads|retries)|-[pFjZEP])$/;
+const MAVEN_VALUE_OPTION =
+  /^(?:-(?:pl|f|s|gs|P|rf|T|b|l|t)|--(?:projects|file|settings|global-settings|activate-profiles|resume-from|threads|builder|log-file|toolchains))$/;
+const GRADLE_VALUE_OPTION =
+  /^(?:-[xpbcgI]|--(?:exclude-task|project-dir|build-file|settings-file|gradle-user-home|init-script|console|warning-mode|max-workers|include-build|project-cache-dir|priority))$/;
+const RSPEC_VALUE_OPTION =
+  /^(?:--(?:format|out|require|tag|example|example-matches|pattern|exclude-pattern|seed|order|default-path|options|failure-exit-code|error-exit-code|deprecation-out)|-[ftoreEIP])$/;
+/** bats' `-j 4`, `-f adds`, `--filter-tags unit` (#1497); `-t` (TAP), `-p` and `-c` take none. */
+const BATS_VALUE_OPTION =
+  /^(?:--(?:jobs|filter|filter-tags|filter-status|formatter|report-formatter|output|setup-suite-file|gather-test-outputs-in|line-reference-format|code-quote-style)|-[jfFo])$/;
+/** busted's `-o TAP`, `-t unit`, `--exclude-tags slow`, `--lpath ./src/?.lua` (#1495); `-c` (coverage) takes none. */
+const BUSTED_VALUE_OPTION =
+  /^(?:--(?:output|tags|exclude-tags|lpath|cpath|pattern|exclude-pattern|run|config-file|seed|lang|loaders|helper|directory|filter|filter-out|repeat|name|Xoutput|Xhelper)|-[otmprCfe])$/;
+const PHPUNIT_VALUE_OPTION =
+  /^(?:--(?:configuration|filter|group|exclude-group|testsuite|exclude-testsuite|bootstrap|log-junit|log-teamcity|testdox-html|testdox-text|coverage-clover|coverage-html|coverage-xml|cache-directory|include-path|order-by|random-order-seed|test-suffix|covers|uses|extension|repeat|processes|shard)|-[cd])$/;
 /** dart test's options that take a value: `-r expanded`, `-t slow`, `-x slow`, `-p vm` (#1494). */
 const DART_VALUE_OPTION =
   /^(?:--(?:reporter|name|plain-name|tags|exclude-tags|platform|preset|concurrency|total-shards|shard-index|file-reporter)|-[rnNtxpPj])$/;
@@ -385,7 +412,7 @@ const MIX_VALUE_OPTION =
   /^--(?:only|exclude|include|seed|max-cases|max-failures|formatter|partitions|slowest|slowest-modules|repeat-until-failure|color)$/;
 
 /** Keeps a test runner's own flags and drops the paths or patterns a check named. */
-const flagsOnly = (args: string[], values = VALUE_OPTION): string[] =>
+const flagsOnly = (args: string[], values: RegExp): string[] =>
   args.filter((arg, i) => arg.startsWith("-") || values.test(args[i - 1] ?? ""));
 
 /** The declared test classes of each test file, by workspace path (#2363). */
@@ -444,24 +471,24 @@ export function affectedTestCheck(
     let prefix: string[] | null = null;
     let targets: string[] = [];
     if (name === "bun" && args[0] === "test") {
-      prefix = ["test", ...flagsOnly(args.slice(1))];
+      prefix = ["test", ...flagsOnly(args.slice(1), JS_VALUE_OPTION)];
       targets = js;
     } else if ((name === "npx" || name === "bunx") && /^(vitest|jest)$/.test(args[0] ?? "")) {
       const runner = args[0] as string;
-      const rest = flagsOnly(args.slice(1));
+      const rest = flagsOnly(args.slice(1), JS_VALUE_OPTION);
       prefix = runner === "vitest" ? [runner, "run", ...rest] : [runner, ...rest];
       targets = js;
     } else if (name === "vitest") {
-      prefix = ["run", ...flagsOnly(args)];
+      prefix = ["run", ...flagsOnly(args, JS_VALUE_OPTION)];
       targets = js;
     } else if (name === "jest" || (name === "node" && args.includes("--test"))) {
-      prefix = flagsOnly(args);
+      prefix = flagsOnly(args, JS_VALUE_OPTION);
       targets = js;
     } else if (name === "pytest" || name === "py.test") {
-      prefix = flagsOnly(args);
+      prefix = flagsOnly(args, PYTEST_VALUE_OPTION);
       targets = py;
     } else if (/^python[\d.]*$/.test(name) && args[0] === "-m" && args[1] === "pytest") {
-      prefix = ["-m", "pytest", ...flagsOnly(args.slice(2))];
+      prefix = ["-m", "pytest", ...flagsOnly(args.slice(2), PYTEST_VALUE_OPTION)];
       targets = py;
     } else if (/^python[\d.]*$/.test(name) && args[0] === "-m" && args[1] === "unittest") {
       // Discovery options (`discover -s tests -p ...`) take values and do not apply to named files.
@@ -469,19 +496,19 @@ export function affectedTestCheck(
       targets = py;
     } else if (name === "phpunit" || name === "pest") {
       // `php vendor/bin/phpunit tests`: the named files take the place of the test folder (#1491).
-      prefix = flagsOnly(args);
+      prefix = flagsOnly(args, PHPUNIT_VALUE_OPTION);
       targets = files.filter((f) => PHP_FILE.test(f));
     } else if (name === "bats") {
       // bats runs the `.bats` files it is given in place of its test folder (#1497).
-      prefix = flagsOnly(args);
+      prefix = flagsOnly(args, BATS_VALUE_OPTION);
       targets = files.filter((f) => f.endsWith(".bats"));
     } else if (name === "busted") {
       // busted runs the spec files it is given in place of its ROOT (`spec`) (#1495).
-      prefix = flagsOnly(args);
+      prefix = flagsOnly(args, BUSTED_VALUE_OPTION);
       targets = files.filter((f) => LUA_TEST.test(f));
     } else if (name === "rspec") {
       // RSpec takes spec files (#1493).
-      prefix = flagsOnly(args);
+      prefix = flagsOnly(args, RSPEC_VALUE_OPTION);
       targets = files.filter((f) => f.endsWith("_spec.rb"));
     } else if (
       name === "rake" &&
@@ -509,7 +536,11 @@ export function affectedTestCheck(
       prefix = args.filter((a) => a !== "test" && a !== "testFull");
       targets = classes.length ? [`testOnly ${classes.join(" ")}`] : [];
     } else if (name === "go" && args[0] === "test") {
-      prefix = withGateFlags(["test", ...flagsOnly(args.slice(1))], gates.get("go"), 1);
+      prefix = withGateFlags(
+        ["test", ...flagsOnly(args.slice(1), GO_VALUE_OPTION)],
+        gates.get("go"),
+        1,
+      );
       targets = [
         ...new Set(
           tests.filter((t) => GO_FILE.test(t)).map((t) => `./${dirname(t).replaceAll("\\", "/")}`),
@@ -586,13 +617,18 @@ function compiledTestArgs(
   if (name === "cargo" && args[0] === "nextest" && args[1] === "run") {
     const files = tests.filter((t) => RS_FILE.test(t)).map(className);
     if (!files.length) return null;
-    return ["nextest", "run", ...flagsOnly(args.slice(2)), ...files.flatMap((f) => ["--test", f])];
+    return [
+      "nextest",
+      "run",
+      ...flagsOnly(args.slice(2), CARGO_VALUE_OPTION),
+      ...files.flatMap((f) => ["--test", f]),
+    ];
   }
   if (name === "cargo" && args[0] === "test") {
     const files = tests.filter((t) => RS_FILE.test(t)).map(className);
     if (!files.length) return null;
     const end = args.indexOf("--");
-    const head = flagsOnly(end === -1 ? args.slice(1) : args.slice(1, end));
+    const head = flagsOnly(end === -1 ? args.slice(1) : args.slice(1, end), CARGO_VALUE_OPTION);
     return [
       "test",
       ...head,
@@ -631,7 +667,7 @@ function compiledTestArgs(
   ) {
     if (args.some((arg) => arg.startsWith("-Dtest="))) return null;
     return [
-      ...flagsOnly(args),
+      ...flagsOnly(args, MAVEN_VALUE_OPTION),
       "test",
       `-Dtest=${classes.join(",")}`,
       "-Dsurefire.failIfNoSpecifiedTests=false",
@@ -642,7 +678,11 @@ function compiledTestArgs(
     args.some((arg) => /^(?:test|check|build)$/.test(arg))
   ) {
     if (args.includes("--tests")) return null;
-    return [...flagsOnly(args), "test", ...classes.flatMap((c) => ["--tests", c])];
+    return [
+      ...flagsOnly(args, GRADLE_VALUE_OPTION),
+      "test",
+      ...classes.flatMap((c) => ["--tests", c]),
+    ];
   }
   return null;
 }
