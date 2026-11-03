@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { testRender } from "@opentui/react/test-utils";
 import { act } from "react";
 import { LlmSelector } from "../src/components/modals/LlmSelector";
-import { PROVIDER_CONFIGS } from "../src/core/llm/models";
+import { invalidateProviderModelCache, PROVIDER_CONFIGS } from "../src/core/llm/models";
 import { getProvider } from "../src/core/llm/providers/index";
 import type { ProviderDefinition } from "../src/core/llm/providers/types";
 
@@ -14,8 +14,14 @@ afterEach(() => {
 function stub(id: string, methods: Partial<ProviderDefinition>) {
 	const provider = getProvider(id) as ProviderDefinition;
 	const saved = { ...provider };
+	// The model list is cached per provider for the whole process, so a stub must not see
+	// models another test fetched, nor leave its own behind.
+	invalidateProviderModelCache(id);
 	Object.assign(provider, methods);
-	restores.push(() => Object.assign(provider, saved));
+	restores.push(() => {
+		Object.assign(provider, saved);
+		invalidateProviderModelCache(id);
+	});
 }
 
 describe("model picker", () => {
