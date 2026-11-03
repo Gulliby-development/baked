@@ -133,7 +133,11 @@ export async function readFileAt(cwd: string, ref: string, rel: string): Promise
   return r.ok ? r.stdout : null;
 }
 
-/** True when Git ignores the workspace path, so snapshots never contain it. */
+/**
+ * True when `git add -A` leaves the workspace path out, so snapshots never contain it: it matches
+ * an ignore rule and is not tracked. A tracked file that matches a rule is in every snapshot, so
+ * the check consults the index (no `--no-index`).
+ */
 export async function isIgnored(cwd: string, rel: string): Promise<boolean> {
-  return (await git(["check-ignore", "-q", "--no-index", "--", rel], cwd)).ok;
+  return (await git(["check-ignore", "-q", "--", rel], cwd)).ok;
 }
