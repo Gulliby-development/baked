@@ -48,10 +48,10 @@ describe("the preview prices prescribed rows the host writes at host cost (#2640
   });
 
   test("a language with no ROW_FILE_SHAPES row keeps the session price: a session writes its rows", () => {
-    // Rust has no row shape: the host refuses the file and a session transcribes it.
-    const rust = request({ "tests/core_test.rs": 20, "tests/test_rank.py": 12 });
-    const mixed = plan("tests/core_test.rs", "tests/test_rank.py");
-    expect(hostWritesRowFile("tests/core_test.rs", ON)).toBe(false);
+    // bash has no row shape (#2553): the host refuses the file and a session transcribes it.
+    const rust = request({ "tests/core_test.bats": 20, "tests/test_rank.py": 12 });
+    const mixed = plan("tests/core_test.bats", "tests/test_rank.py");
+    expect(hostWritesRowFile("tests/core_test.bats", ON)).toBe(false);
     expect(Object.fromEntries(hostRowCases(mixed, rust, ON))).toEqual({ rank: 12 });
     expect(boundaryPathCounts(mixed, rust, ON).get("core")).toEqual({ paths: 2, placeholders: 0, skeleton: 0 });
   });
@@ -66,8 +66,8 @@ describe("the preview prices prescribed rows the host writes at host cost (#2640
       id, title: id, description: `Write ${path}`, requirementIds: ["FR-001"], criterionIds: ["AC-001"], dependsOn: [], profileId: "implementer",
       writes: [{ path, action: "create" }], readHints: [], checkIds: ["tests"], origin: "planned", findingIds: [], rationale: "r",
     });
-    const rust = request({ "tests/core_test.rs": 20, "tests/test_rank.py": 12, "tests/test_cli.py": 4 });
-    const paths = ["tests/core_test.rs", "tests/test_rank.py", "tests/test_cli.py"];
+    const rust = request({ "tests/core_test.bats": 20, "tests/test_rank.py": 12, "tests/test_cli.py": 4 });
+    const paths = ["tests/core_test.bats", "tests/test_rank.py", "tests/test_cli.py"];
     const graph: Pick<TaskGraph, "tasks"> = { tasks: paths.map((p, i) => task(`T00${i + 1}`, p)) };
     const byTask = hostRowFileTasks(rust, graph, ON).map((id) => graph.tasks.find((t) => t.id === id)?.writes[0]?.path);
     expect(byTask).toEqual([...hostRowFiles(rust, paths, ON).keys()]);

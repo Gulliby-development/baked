@@ -8,6 +8,7 @@ import { cwdPath, isCodePath } from "./check-policy.js";
 import { unresolvedChecks } from "./check-preflight.js";
 import { detectGates } from "./gates.js";
 import { programName } from "./launcher.js";
+import { missingPackages, type PackageProbe, runPackageProbe } from "./package-probe.js";
 import { PS_FORMAT_CHECK, PS_FORMAT_FIX } from "./ps-format.js";
 import { stripComments } from "./quality/code-mask.js";
 import { STYLER_CHECK_FILES, STYLER_FIX } from "./r-tools.js";
@@ -557,6 +558,8 @@ export function formatWrittenChecks(
     rust?: boolean;
     supplied?: (path: string) => boolean;
     suppliedLines?: (path: string, text: string) => ReadonlySet<number>;
+    /** Whether the gate's program loads its formatter package (#2817); probed by default. */
+    packages?: PackageProbe;
   } = {},
 ): Check[] {
   const supplied = options.supplied ?? (() => false);
@@ -572,7 +575,17 @@ export function formatWrittenChecks(
       )
     : [];
   return [
-    ...formatWrittenOf(root, checks, writes, which, base, accepts, supplied, suppliedLines),
+    ...formatWrittenOf(
+      root,
+      checks,
+      writes,
+      which,
+      base,
+      accepts,
+      supplied,
+      suppliedLines,
+      options.packages ?? runPackageProbe,
+    ),
     ...rust,
   ];
 }
@@ -608,7 +621,10 @@ function formatWrittenOf(
   accepts: FlagProbe,
   supplied: (path: string) => boolean,
   suppliedLines: (path: string, text: string) => ReadonlySet<number>,
+  packages: PackageProbe,
 ): Check[] {
+  const needsMissing = (check: Check, cwd: string) =>
+    missingPackages(check, cwd, packages).length > 0;
   const files = new Map<string, Written[]>();
   for (const write of writes) {
     if (write.action === "delete" || !isCodePath(write.path)) continue;
@@ -684,6 +700,9 @@ function formatWrittenOf(
         !(helpCommand && accepts(helpCommand, join(root, gate.check.cwd ?? "."), available.flag))
       )
         continue;
+      // Rscript or pwsh on the PATH without styler or PSScriptAnalyzer fails every check and
+      // fixer just the same (#2817).
+      if (needsMissing(gate.check, join(root, gate.check.cwd ?? "."))) continue;
       const found: Check[] = [];
       // The check runs in the gate's cwd: it holds only the files under it, named from there
       // (`fixPaths` stay workspace paths, as the host matches them).

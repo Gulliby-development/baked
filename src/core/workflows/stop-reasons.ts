@@ -337,6 +337,17 @@ export const STOP_REASONS = {
     modes: NOT_ENFORCED,
     defaultMode: "shadow",
   },
+  slice_foreign_conflict: {
+    label:
+      "A host row slice's spec conflict asks for literals that only another slice's rows of the same file hold: the host would settle it without asking a person",
+    // Shadow only (#2476, R79 verhop T004: rows 1-7 of `tests/check.bats` reported three
+    // conflicts about AC-003 and AC-005 literals of rows 8-15, and a person answered the third
+    // with "satisfied by the union of both slices"). It records the would-stop beside the
+    // `conflicts/request/` record and the person is still asked; its promotion, after two bench
+    // rounds with no false would-stop, settles the report as slice-foreign with no clarification.
+    modes: NOT_ENFORCED,
+    defaultMode: "shadow",
+  },
   committed_tree: {
     label:
       "A required static check that passed on the working tree fails on a clean worktree of the feature's commit",
@@ -408,6 +419,19 @@ export const STOP_REASONS = {
     // The run still blocks; its promotion leaves it `waiting` on a request a person answers with
     // the extend remedy, and its planned-ahead dependants count it as waiting, not stalled.
     modes: NOT_ENFORCED,
+    defaultMode: "shadow",
+  },
+  stream_output_limit: {
+    label:
+      "A model call's streamed output passes twice the profile's maxOutputTokens on a provider that takes no output limit (Codex)",
+    // Shadow by default (#2660, a follow-up of #2547: Codex sends no `max_output_tokens`, and
+    // #1479 ran a 10-minute response to the model's own limit). The Codex app-server adapter
+    // counts each step's streamed text and reasoning (`streamOutputDecision`) and the executor
+    // records `decision.would_stop` from the step's usage record. `stopModes: {
+    // stream_output_limit: "enforce" }` interrupts the turn and ends the step `length`, so the
+    // truncation notice applies; making that the default is a pull request of its own after two
+    // bench rounds with no false would-stop.
+    modes: STOP_MODES,
     defaultMode: "shadow",
   },
   cost: {

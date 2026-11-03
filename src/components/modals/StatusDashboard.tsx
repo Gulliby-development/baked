@@ -15,6 +15,7 @@ import {
   computeTotalCostFromBreakdown,
   isModelFree,
   type LastDispatchSnapshot,
+  modelsByCost,
   type TokenUsage,
   useStatusBarStore,
   ZERO_USAGE,
@@ -644,9 +645,7 @@ function CostPane({
 }) {
   const t = useTheme();
   const su = scopedUsage;
-  const sortedBd = Object.entries(su.modelBreakdown ?? {}).sort(
-    ([, a], [, b]) => computeModelCost("", b) - computeModelCost("", a),
-  );
+  const sortedBd = modelsByCost(su.modelBreakdown ?? {});
   const allFree = sortedBd.length > 0 && sortedBd.every(([mid]) => isModelFree(mid));
   const totalCost =
     sortedBd.length > 0 ? computeTotalCostFromBreakdown(su.modelBreakdown ?? {}) : 0;
