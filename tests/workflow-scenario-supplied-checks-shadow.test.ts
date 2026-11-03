@@ -10,12 +10,15 @@ import { defaultWorkflowPolicy } from "../src/core/workflows/defaults.js";
 import type { Check, RunPolicy, Spec, Task } from "../src/core/workflows/schemas.js";
 import { NativeWorkflowService } from "../src/core/workflows/service.js";
 import { newId } from "../src/core/workflows/store.js";
+import { hostApplyDecision, hostApplyRecords, hostApplyVerdict } from "../src/core/workflows/host-apply.js";
 import {
   diagnosticRule,
+  type SuppliedCheckRecord,
   type SuppliedCheckRunner,
   suppliedCheckRecord,
   suppliedCheckRecords,
   suppliedCheckText,
+  suppliedCheckVeto,
 } from "../src/core/workflows/supplied-checks.js";
 import type { AgentExecutor, ExecutionRequest } from "../src/core/workflows/types.js";
 
@@ -259,4 +262,61 @@ describe("scenario: an update brief whose supplied diff fails the project's lint
     expect(record).toMatchObject({ taskId: "T001", mode: "shadow", conflict: true, skipped: null });
     expect(record?.checks.find((c) => c.checkId === "rubocop")?.offenses).toEqual([{ path: "lib/group.rb", line: 2, rule: "Style/IfUnlessModifier" }]);
   }, 120000);
+});
+
+// #2462: under `hostApply: "on"` the host wrote supplied content that the project's own lint
+// rejected, though the task's supplied-checks record had the conflict (R78 deltaglue frames, R80
+// deltaglue cli: correctives of 293k and 374k tokens). The `on` decision reads that record through
+// `suppliedCheckVeto`: a conflict keeps the implementer, and the host apply record names the check.
+describe("scenario: hostApply on does not write supplied content its supplied-checks record failed (#2462)", () => {
+  const deliver = async (brief: string) => {
+    const root = workspace("baked-supplied-checks-on-", { "lib/group.rb": BASE });
+    const on: RunPolicy = { ...policy, hostApply: "on" };
+    const executor = new ScriptedExecutor(root);
+    const config = { ...DEFAULT_CONFIG, defaultModel: "fixture/model", workflows: { enabled: true, importsEnabled: true, defaultWorkflow: "sdd", policy: on } };
+    const service = new NativeWorkflowService(root, config, executor);
+    cleanups.push(() => service.close());
+    const run = await service.start({ commandId: newId(), featureId: "fixture", workflowId: "sdd", prompt: brief, ownerLabel: "test", policy: on });
+    await service.drive(run.runId, new AbortController().signal);
+    const waiting = await service.get(run.runId);
+    const approval = service.store.requests(run.runId).find((r) => r.kind === "approval" && r.status === "pending");
+    if (!approval) throw new Error(`No approval request: ${waiting.status} ${waiting.reason}`);
+    await service.decide(run.runId, { commandId: newId(), expectedRevision: waiting.revision }, { kind: "approve", requestId: approval.id, digest: approval.digest });
+    const done = await service.drive(run.runId, new AbortController().signal);
+    const [apply] = hostApplyRecords(service.store, run.runId);
+    const [checked] = suppliedCheckRecords(service.store, run.runId);
+    return { done, executor, apply, checked, file: readFileSync(join(root, "lib/group.rb"), "utf8") };
+  };
+
+  test("a supplied diff that fails the linter is not host-applied: the implementer runs and the record names the check", async () => {
+    const { done, executor, apply, checked } = await deliver(diffBrief(UNLESS));
+    expect(done.status).toBe("completed");
+    expect(checked?.conflict).toBe(true);
+    expect(executor.attempts).toEqual(["T001"]);
+    expect(apply).toMatchObject({ taskId: "T001", mode: "on", wouldApply: false, applied: false });
+    expect(apply?.reason).toStartWith("supplied content fails rubocop at lib/group.rb:2 (Style/IfUnlessModifier)");
+    expect(apply?.suppliedConflict).toBe(apply?.reason ?? "");
+    // The replay hook reads the conflict too: the recorded decision replays the same.
+    expect(hostApplyVerdict(apply?.writes ?? [], apply?.suppliedConflict)).toEqual({ wouldApply: false, reason: apply?.reason ?? null });
+    expect(hostApplyDecision(apply?.writes ?? []).wouldApply).toBe(true);
+  }, 120000);
+
+  test("a supplied diff the linter passes is host-applied as before, with no implementer session", async () => {
+    const { done, executor, apply, checked, file } = await deliver(diffBrief(MODIFIER));
+    expect(done.status).toBe("completed");
+    expect(checked?.conflict).toBe(false);
+    expect(executor.attempts).toEqual([]);
+    expect(apply).toMatchObject({ taskId: "T001", mode: "on", wouldApply: true, applied: true, reason: null });
+    expect(apply?.suppliedConflict).toBeUndefined();
+    expect(file).toBe(["def run(args)", ...MODIFIER, "  parse(args)", "end", ""].join("\n"));
+  }, 120000);
+});
+
+describe("suppliedCheckVeto (#2462)", () => {
+  const record = (offenses: { path: string; line: number | null; rule: string | null }[]): SuppliedCheckRecord => ({ taskId: "T001", mode: "shadow", files: [], skipped: null, checks: [{ checkId: "lint", status: offenses.length ? "failed" : "passed", offenses }], conflict: offenses.length > 0 });
+  test("names the failing check and its first offense; no record or no conflict keeps the decision", () => {
+    expect(suppliedCheckVeto(null)).toBeNull();
+    expect(suppliedCheckVeto(record([]))).toBeNull();
+    expect(suppliedCheckVeto(record([{ path: "src/cli.ts", line: 2, rule: null }]))).toBe("supplied content fails lint at src/cli.ts:2: an implementer reconciles the request's content with the check");
+  });
 });
