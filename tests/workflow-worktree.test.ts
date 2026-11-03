@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { DEFAULT_CONFIG } from "../src/config/index.js";
 import { hashBytes, hashJson } from "../src/core/specs/hash.js";
 import { executeDelivery, prepareDelivery } from "../src/core/workflows/delivery.js";
-import { initiativeSpecPrefix, runSpecPath, treeShipsSpecs } from "../src/core/workflows/delivery-git.js";
+import { initiativeSpecPrefix, inSubmodule, runSpecPath, treeModes, treeShipsSpecs, treeSubmodules } from "../src/core/workflows/delivery-git.js";
 import { WorkflowFault } from "../src/core/workflows/errors.js";
 import {
   assertWorkspaceMutationAllowed,
@@ -20,7 +20,7 @@ import type { AgentExecutor, ExecutionRequest } from "../src/core/workflows/type
 import { sddWorkflow } from "../src/core/workflows/builtin/sdd.js";
 import { upgradeWorkflowV1 } from "../src/core/workflows/v2/upgrade.js";
 import { runReport } from "../src/core/workflows/run-report.js";
-import { runWorktreeDir, worktreeView } from "../src/core/workflows/worktree.js";
+import { commitRunBranch, runWorktreeDir, worktreeView } from "../src/core/workflows/worktree.js";
 import { parseWorkflowArgs } from "../src/headless/workflow-parse.js";
 import { FixtureExecutor, fixturePolicy } from "./helpers/workflow-fixture.js";
 import { initWorkspaceGit } from "../src/core/git/init.js";
@@ -853,4 +853,56 @@ describe("dependency folders in a worktree run (#2330)", () => {
     for (const { manifest_json } of manifests) expect(manifest_json).not.toContain("vendor");
     expect(status(fx.root)).toBe("");
   }, 60000);
+});
+
+describe("submodules on the run branch (#2798)", () => {
+  test("a file a task wrote inside a submodule never replaces the gitlink in the run's commit", async () => {
+    const fx = setup();
+    const library = mkdtempSync(join(tmpdir(), "baked-worktree-submodule-"));
+    cleanups.push(() => rmSync(library, { recursive: true, force: true }));
+    git(library, "init", "-q", "-b", "main");
+    writeFileSync(join(library, "a.txt"), "library\n");
+    git(library, "add", ".");
+    git(library, "-c", "user.name=Lib", "-c", "user.email=lib@example.test", "commit", "-q", "-m", "Library");
+    git(fx.root, "-c", "protocol.file.allow=always", "submodule", "add", "-q", library, "vendor/lib");
+    git(fx.root, "commit", "-q", "-m", "Add the library");
+    const gitlink = git(fx.root, "ls-tree", "HEAD", "--", "vendor/lib");
+    const run = await fx.start("worktree");
+    expect((await fx.complete(run.runId)).status).toBe("completed");
+    const store = fx.service.store;
+    const worktree = store.state(run.runId).worktree;
+    if (!worktree?.commit) throw new Error("The run committed nothing");
+    const tree = join(fx.root, worktree.path);
+    // `git worktree add` leaves the submodule's folder empty; a task can still write into it.
+    mkdirSync(join(tree, "vendor", "lib"), { recursive: true });
+    writeFileSync(join(tree, "vendor", "lib", "new.txt"), "patched\n");
+    writeFileSync(join(tree, "value.txt"), "again");
+    const commit = await commitRunBranch(
+      store,
+      run.runId,
+      { ...worktree, baseHead: worktree.commit },
+      ["value.txt", "vendor/lib/new.txt"],
+      "Second commit\n",
+    );
+    expect(commit).toMatch(/^[0-9a-f]{40}$/);
+    expect(git(fx.root, "ls-tree", commit ?? "", "--", "vendor/lib")).toBe(gitlink);
+    expect(git(fx.root, "show", `${commit}:value.txt`)).toBe("again");
+  }, 60000);
+
+  test("gitlinks are read from the tree and a path inside one is recognized", () => {
+    const output = [
+      "100644 blob 1111111111111111111111111111111111111111\t.gitmodules",
+      "160000 commit 2222222222222222222222222222222222222222\tvendor/lib",
+      "100755 blob 3333333333333333333333333333333333333333\tbin/tool",
+      "",
+    ].join("\0");
+    const submodules = treeSubmodules(output);
+    expect(submodules).toEqual(["vendor/lib"]);
+    expect(inSubmodule("vendor/lib", submodules)).toBe(true);
+    expect(inSubmodule("vendor/lib/new.txt", submodules)).toBe(true);
+    expect(inSubmodule("vendor/library/a.txt", submodules)).toBe(false);
+    expect(inSubmodule("bin/tool", submodules)).toBe(false);
+    // A gitlink is not a regular file to the mode reader.
+    expect([...treeModes(output).keys()]).toEqual([".gitmodules", "bin/tool"]);
+  });
 });

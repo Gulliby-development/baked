@@ -485,6 +485,35 @@ describe("Git delivery", () => {
     expect(internalPath(".github/workflows/ci.yml")).toBe(false);
   });
 
+  test("a file the run wrote inside a submodule is reported and the gitlink stays in the commit (#2798)", async () => {
+    const s = await completedRun();
+    const library = mkdtempSync(join(tmpdir(), "baked-delivery-submodule-"));
+    cleanups.push(() => rmSync(library, { recursive: true, force: true }));
+    git(library, "init", "-q", "-b", "main");
+    writeFileSync(join(library, "a.txt"), "library\n");
+    git(library, "add", ".");
+    git(library, "-c", "user.name=Lib", "-c", "user.email=lib@example.test", "commit", "-q", "-m", "Library");
+    git(s.root, "-c", "protocol.file.allow=always", "submodule", "add", "-q", library, "vendor/lib");
+    git(s.root, "commit", "-q", "-m", "Add the library");
+    const gitlink = git(s.root, "ls-tree", "HEAD", "--", "vendor/lib");
+    expect(gitlink).toStartWith("160000 commit ");
+    const store = s.fx.service.store;
+    const { attemptId } = store.transaction(() => store.beginExternalAttempt(s.runId, "fixture"));
+    const content = "patched\n";
+    writeFileSync(join(s.root, "vendor", "lib", "new.txt"), content);
+    store.transaction(() => {
+      const id = store.prepareEffect(s.runId, attemptId, "file_patch", { path: "vendor/lib/new.txt" }, null, hashBytes(content));
+      store.effectStatus(s.runId, id, "applied");
+    });
+    const prepared = await prepare(s, { pullRequest: false });
+    expect(prepared.plan.files.map((f) => f.path)).toEqual(["value.txt"]);
+    expect(prepared.plan.excluded).toContainEqual({ path: "vendor/lib/new.txt", reason: "submodule" });
+    await approve(s, prepared);
+    const result = await execute(s);
+    expect(git(s.root, "ls-tree", result.commit as string, "--", "vendor/lib")).toBe(gitlink);
+    expect(git(s.root, "show", `${result.commit}:value.txt`)).toBe("ready");
+  });
+
   test("a missing remote, a missing token and an existing branch are refused before any effect", async () => {
     const s = await completedRun();
     expect((await refusal(prepare(s, { remote: "upstream" }))).details.reason).toBe("missing_remote");
