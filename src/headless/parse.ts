@@ -63,6 +63,21 @@ ${BOLD}Automation:${RST}
 ${BOLD}Exit codes:${RST} 0=success, 1=error, 2=timeout, 130=abort
 `;
 
+/**
+ * A count option's value: a whole number of at least 1, written in digits only. `parseInt` would
+ * read `30s` as 30 (a 30 ms timeout) and `ten` as NaN (no cap at all), so anything else exits 1.
+ */
+function positiveInteger(flag: string, value: string | undefined): number {
+  const n = Number(value);
+  if (!value || !/^\d+$/.test(value) || !Number.isSafeInteger(n) || n < 1) {
+    process.stderr.write(
+      `${RED()}Error:${RST} ${flag} takes a whole number of at least 1, got "${value ?? ""}"\n`,
+    );
+    process.exit(EXIT_ERROR);
+  }
+  return n;
+}
+
 export async function parseHeadlessArgs(argv: string[]): Promise<HeadlessAction | null> {
   if (argv.includes("--version") || argv.includes("-v")) return { type: "version" };
   if (argv.includes("--list-providers")) return { type: "list-providers" };
@@ -172,9 +187,9 @@ export async function parseHeadlessArgs(argv: string[]): Promise<HeadlessAction 
     } else if (arg === "--quiet" || arg === "-q") {
       quiet = true;
     } else if (arg === "--max-steps" && argv[i + 1]) {
-      maxSteps = Number.parseInt(argv[++i] ?? "0", 10);
+      maxSteps = positiveInteger(arg, argv[++i]);
     } else if (arg === "--timeout" && argv[i + 1]) {
-      timeout = Number.parseInt(argv[++i] ?? "0", 10);
+      timeout = positiveInteger(arg, argv[++i]);
     } else if (arg === "--cwd" && argv[i + 1]) {
       cwd = argv[++i];
     } else if ((arg === "--session" || arg === "--resume" || arg === "-s") && argv[i + 1]) {
