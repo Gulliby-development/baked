@@ -258,5 +258,9 @@
   "R80/deltaglue.sqlite.gz#deltaglue": {
     "newPlanShare": 1,
     "reason": "#2488, the issue's case: cli's own plan needed about 16.0M against its 3.38M start share with frames and assembly accepted (dollar forecast $11.42 inside the $34.50 ceiling); the plan-time share gate (plan-share, shadow) records a would-extend of the pool from 7.1M to 20.2M inside the 27.3M the $30 cap pays for, and of the run's ceiling to 12.0M (the base policy's). The round, recorded before #2488, went on under assume and stopped budget_exhausted at 3.57M; the person extended the pool to 29.9M and the run to 12.0M. With extendWithinDollars on the host makes it before task 1."
+  },
+  "R89/namesound-update.sqlite.gz#3e63ee34-7434-4337-93bd-4d0fe0b9929f": {
+    "newRecoveries": 1,
+    "reason": "#2820: research attempt 85cd6609 ended at once with a provider error (\"Selected model is at capacity\"); its last call has no first byte and no status, and the trace was recorded before call timings carried `failure`, so the replay reads it as a stall. Calls recorded from #2820 on say `failure: \"error\"` and are not replayed as stalls."
   }
 }
