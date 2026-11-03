@@ -499,9 +499,10 @@ function heldBy(hold: number | null): { poolHoldTokens?: number } {
  * budget did not grow again until one re-finished (#1431).
  *
  * Tokens the open attempts used since the last such growth count as progress too, as they do for
- * an auto-extend (#2590), while the step stays under the ceiling, the pool hold and what the dollar
- * cap pays for: a first wave of parallel writers finishes no task and completes no attempt before
- * the budget runs out, so the growth one writer's step made left the others to fail
+ * an auto-extend (#2590), while more than one open attempt spent them and the step stays under the
+ * ceiling, the pool hold and what the dollar cap pays for. One attempt spending alone still stops
+ * on the run budget (#1298). A first wave of parallel writers finishes no task and completes no
+ * attempt before the budget runs out, so the growth one writer's step made left the others to fail
  * `BUDGET_EXHAUSTED` with the ceiling unused (#2607).
  */
 function growWhilePlanning(
@@ -537,8 +538,14 @@ function growWhilePlanning(
   );
   const affordable = affordableTokens(store, runId, policy);
   // Work in flight is progress only where the step fits under the ceiling, the pool hold and what
-  // the dollar cap pays for, as for an auto-extend (#2590).
+  // the dollar cap pays for, as for an auto-extend (#2590), and only for parallel writers: one
+  // attempt spending alone with nothing finished is not progress, so it still stops on the run
+  // budget (#1298).
+  const spending = Object.entries(openAttemptTokens).filter(
+    ([id, used]) => used > (last?.openAttemptTokens?.[id] ?? 0),
+  ).length;
   const inFlightProgress =
+    spending > 1 &&
     inFlightTokens > 0 &&
     projected <= Math.min(ceiling, hold ?? Number.POSITIVE_INFINITY) &&
     (affordable === null || projected <= affordable);
