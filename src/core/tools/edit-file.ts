@@ -296,6 +296,16 @@ async function applyEdit(
   return { success: true, output };
 }
 
+/** The file's text when it exists, else null. */
+async function readExisting(filePath: string): Promise<string | null> {
+  try {
+    return await readFile(filePath, "utf-8");
+  } catch (err: unknown) {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") return null;
+    throw err;
+  }
+}
+
 function resolveLineRange(
   content: string,
   oldStr: string,
@@ -332,7 +342,7 @@ export const editFileTool = {
       const oldStr = toLf(withoutCopiedBom(args.oldString));
       const newStr = toLf(withoutCopiedBom(args.newString));
 
-      // Create new file
+      // Create a new file, or replace an existing one whole (the only whole-file write a model has)
       if (oldStr === "") {
         const dir = dirname(filePath);
         let dirCreated = false;
@@ -342,14 +352,26 @@ export const editFileTool = {
           dirCreated = true;
         }
         await mkdir(dir, { recursive: true });
+        const previous = await readExisting(filePath);
+        if (previous !== null && args.ifHash && contentHash(previous) !== args.ifHash) {
+          const msg =
+            "ifHash mismatch — file changed since your last read. Re-read and retry with the new hash.";
+          return { success: false, output: msg, error: "concurrent modification" };
+        }
         const newEol = detectNewFileLineEnding(dir, filePath);
         const fileText = newEol ? withLineEnding(args.newString, newEol) : args.newString;
         assertEditActive();
+        // Replacing existing content is undoable like any other edit (#2793).
+        if (previous !== null) pushEdit(filePath, previous, fileText, args.tabId);
         toolPhase("write");
         await atomicWriteFile(filePath, fileText);
         emitFileEdited(filePath, fileText);
         const metrics = analyzeFile(newStr);
-        let out = `Created ${displayPath(filePath)} (lines: ${String(metrics.lineCount)}, imports: ${String(metrics.importCount)})`;
+        const counts = `lines: ${String(metrics.lineCount)}, imports: ${String(metrics.importCount)}`;
+        let out =
+          previous === null
+            ? `Created ${displayPath(filePath)} (${counts})`
+            : `Overwrote ${displayPath(filePath)} (${counts}; replaced ${String(analyzeFile(toLf(previous)).lineCount)} existing lines — undo_edit restores them)`;
         if (dirCreated) out += ` [directory created: ${dir}]`;
         out = await appendCloneHints(filePath, out);
         out += memoryHintComposite({

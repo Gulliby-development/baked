@@ -77,6 +77,7 @@ import {
   wholeUnitFixerCommand,
   writtenCodePaths,
 } from "./check-policy.js";
+import { callStallMs } from "./clean-pace.js";
 import { promptParts, splitWorkflowContext } from "./context.js";
 import { assertForecastFits } from "./cost-forecast.js";
 import { fileHash, rootField } from "./effects.js";
@@ -141,17 +142,19 @@ import {
 } from "./stall.js";
 import {
   AttemptStepController,
+  type AttemptStepUsage,
   type AttemptUsageRecord,
   allTokensCapFor,
   DEFAULT_MAX_ATTEMPT_TOKENS,
   KEEP_RECENT_TOOL_MESSAGES,
   MIN_ATTEMPT_STEPS,
   type StepLike,
+  stepOutputGuard,
   stepTokens,
   type ToolBackendCount,
   toolCallName,
 } from "./step-budget.js";
-import { stopFault } from "./stop-reasons.js";
+import { recordWouldStop, type StopMode, stopFault, stopMode } from "./stop-reasons.js";
 import type { EffectRow, WorkflowStore } from "./store.js";
 import { failureOwnerNote } from "./task-graph.js";
 import { toolsOfferedTo } from "./task-tools.js";
@@ -283,6 +286,32 @@ export function outputLimitUsage(
   return { inputTokens: Math.ceil(sentBytes / 4), outputTokens: maxOutputTokens };
 }
 
+/**
+ * The usage record of a format-correction attempt (#2777): its model calls as steps, so the run's
+ * cost, the dollar cap, `baked usage` and the bench reports price it like any other model attempt.
+ */
+export function correctionUsage(input: {
+  meta: { profileId: string; taskId: string | null };
+  steps: AttemptStepUsage[];
+  totalTokens: number;
+  maxTokens: number;
+  stopReason: "submitted" | "error" | "aborted";
+  effort?: string | undefined;
+}): AttemptUsageRecord {
+  return {
+    schemaVersion: 1,
+    profileId: input.meta.profileId,
+    taskId: input.meta.taskId,
+    maxSteps: 1,
+    maxTokens: input.maxTokens,
+    stopReason: input.stopReason,
+    finalizedBy: null,
+    totalTokens: input.totalTokens,
+    steps: input.steps,
+    ...(input.effort ? { effort: input.effort } : {}),
+  };
+}
+
 function sumUsage(steps: readonly StepLike[]): Partial<LanguageModelUsage> {
   const add = (a: number | undefined, b: number | undefined) =>
     a === undefined ? b : b === undefined ? a : a + b;
@@ -296,10 +325,20 @@ function sumUsage(steps: readonly StepLike[]): Partial<LanguageModelUsage> {
 }
 
 /** What the stall watchdog of one attempt knows: its progress, its tool in flight, its limits. */
-/** The summed `silentMs` of an attempt's calls for its usage record (#2414); empty when none. */
-function silentOf(calls: readonly CallTiming[]): { silentMs?: number } {
+/**
+ * The summed `silentMs` of an attempt's calls for its usage record (#2414), and the summed stall
+ * part of it (`stallMs`, #2424); each empty when none.
+ */
+function silentOf(calls: readonly CallTiming[]): { silentMs?: number; stallMs?: number } {
   const silentMs = calls.reduce((sum, call) => sum + (call.silentMs ?? 0), 0);
-  return silentMs > 0 ? { silentMs } : {};
+  const stallMs = calls.reduce((sum, call) => sum + (call.stallMs ?? 0), 0);
+  return { ...(silentMs > 0 ? { silentMs } : {}), ...(stallMs > 0 ? { stallMs } : {}) };
+}
+
+/** A call's timing with the stall part of its wait (`callStallMs`, #2424) when there is one. */
+function withStall(call: CallTiming): CallTiming {
+  const stallMs = callStallMs(call);
+  return stallMs > 0 ? { ...call, stallMs } : call;
 }
 
 interface AttemptWatch {
@@ -457,6 +496,12 @@ export class NativeAgentExecutor implements AgentExecutor {
       if (webSearch) provider.providerOptions = withCodexWebSearch(provider.providerOptions);
       if (request.freshSession || request.transport)
         provider.providerOptions = withCodexRecovery(provider.providerOptions, request);
+      // Codex takes no output limit: its adapter guards the stream in this mode (#2660).
+      if (request.profile.model.startsWith("codex/"))
+        provider.providerOptions = withCodexOutputGuard(
+          provider.providerOptions,
+          stopMode(policy, "stream_output_limit"),
+        );
       // Only a known window stops the attempt here; for a model nothing names, the 128k default is
       // a guess, and the provider's own rejection of an oversized input is handled by the scheduler.
       const window = knownModelContextWindow(request.profile.model);
@@ -1312,7 +1357,9 @@ export class NativeAgentExecutor implements AgentExecutor {
       }
       const resultSchema = outputSchemas[request.profile.output];
       if (!resultSchema) throw new WorkflowFault("OUTPUT_INVALID", "Unknown profile output schema");
-      const schema = withHostConstants(request.profile.output, resultSchema);
+      const schema = withHostConstants(request.profile.output, resultSchema, {
+        taskId: request.task?.id,
+      });
       // The model sees host fields as optional and validation still fills them (#1929).
       const { validate } = zodSchema(schema);
       const submitSchema = jsonSchema(
@@ -1664,6 +1711,7 @@ export class NativeAgentExecutor implements AgentExecutor {
               },
             });
           }
+          recordStreamOutputStops(this.store, request, usage);
           this.store.artifact(
             request.runId,
             "usage",
@@ -1752,6 +1800,7 @@ export class NativeAgentExecutor implements AgentExecutor {
         // automatic one after the newest message, so each step re-reads the earlier ones.
         const cacheTtl = this.config.cache?.ttl ?? "5m";
         let messages: ModelMessage[] = [opening];
+        let guardResumed = false;
         for (let recovery = 0; ; recovery++) {
           const earlier = [...finished];
           const generated = await generateText({
@@ -1820,6 +1869,24 @@ export class NativeAgentExecutor implements AgentExecutor {
             usage: sumUsage(finished),
             messages: [...messages.slice(1), ...generated.response.messages],
           };
+          // A step the enforced stream guard ended (`stream_output_limit`, #2660) has no tool call,
+          // so the loop stopped on it. The attempt goes on once in the same conversation, where the
+          // step controller adds the truncation notice for the `length` step, as for one cut at the
+          // provider's own cap.
+          const last = generated.steps.at(-1);
+          if (
+            !guardResumed &&
+            last &&
+            stepOutputGuard(last)?.decision === "stopped" &&
+            submitted === undefined &&
+            !request.signal.aborted &&
+            finished.length < request.maxSteps &&
+            !budget.overBudget(finished)
+          ) {
+            guardResumed = true;
+            messages = [opening, ...(result.messages ?? [])];
+            continue;
+          }
           // A status report after a refusal still needs work. Replay the exact refusal once with
           // all granted tools, in this attempt and within its original step and token limits.
           if (
@@ -2063,17 +2130,59 @@ export class NativeAgentExecutor implements AgentExecutor {
             .find((a) => a.id === request.attemptId)?.step_id;
           if (!step) throw new WorkflowFault("OUTPUT_INVALID", "Result attempt missing");
           const correctionPrompt = `Reformat this previous result using submit_result. Preserve its claims and evidence IDs. Do not implement or verify anything again.${request.formatHints ? `\n${request.formatHints}` : ""}\n${result.text.slice(0, 256 * 1024)}`;
+          const correctionReserve =
+            Math.ceil(Buffer.byteLength(correctionPrompt) / 2) +
+            request.profile.maxOutputTokens +
+            8192;
           const attempt = this.store.reserve(
             request.runId,
             step,
             request.profile.model,
-            Math.ceil(Buffer.byteLength(correctionPrompt) / 2) +
-              request.profile.maxOutputTokens +
-              8192,
+            correctionReserve,
             policy,
           );
           // Zero until the single correction step reports its usage.
           let correctionTokens = 0;
+          // The correction's model calls, recorded as its own usage.json so every cost view
+          // prices it like any other model attempt (#2777).
+          const correctionSteps: AttemptStepUsage[] = [];
+          const finishCorrection = (
+            status: "completed" | "failed" | "cancelled",
+            error?: unknown,
+          ) =>
+            this.store.transaction(() => {
+              this.store.artifact(
+                request.runId,
+                "usage",
+                `attempts/${attempt}/usage.json`,
+                canonical(
+                  correctionUsage({
+                    meta,
+                    steps: correctionSteps,
+                    totalTokens: correctionTokens,
+                    maxTokens: correctionReserve,
+                    stopReason:
+                      status === "completed"
+                        ? "submitted"
+                        : status === "cancelled"
+                          ? "aborted"
+                          : "error",
+                    effort,
+                  }),
+                ),
+              );
+              if (status === "completed")
+                this.store.finishAttempt(request.runId, attempt, status, correctionTokens);
+              else
+                this.store.finishAttempt(
+                  request.runId,
+                  attempt,
+                  status,
+                  correctionTokens,
+                  false,
+                  error,
+                );
+            });
           const refusalsBefore = refusals;
           try {
             let correctedText = "";
@@ -2094,6 +2203,18 @@ export class NativeAgentExecutor implements AgentExecutor {
                 // Counted per model call so a response that skips the tool is still charged.
                 onLanguageModelCallEnd: ({ usage, content }) => {
                   correctionTokens += stepTokens(usage, request.profile.maxOutputTokens);
+                  const tools = content.flatMap((part) =>
+                    part.type === "tool-call" ? [part.toolName] : [],
+                  );
+                  correctionSteps.push({
+                    inputTokens: usage.inputTokens ?? null,
+                    outputTokens: usage.outputTokens ?? null,
+                    cacheReadTokens: usage.inputTokenDetails?.cacheReadTokens ?? null,
+                    cacheWriteTokens: usage.inputTokenDetails?.cacheWriteTokens ?? null,
+                    toolCalls: tools.length,
+                    ...(tools.length ? { tools } : {}),
+                    compactedBytes: 0,
+                  });
                   correctedText = content
                     .flatMap((part) => (part.type === "text" ? [part.text] : []))
                     .join("");
@@ -2123,28 +2244,23 @@ export class NativeAgentExecutor implements AgentExecutor {
               );
             }
             submitted = schema.parse(submitted ?? JSON.parse(correctedText));
-            this.store.transaction(() =>
-              this.store.finishAttempt(request.runId, attempt, "completed", correctionTokens),
-            );
+            finishCorrection("completed");
           } catch (error) {
-            if (isOutputLimit(error) && !request.signal.aborted)
-              correctionTokens += stepTokens(
-                outputLimitUsage(
-                  Buffer.byteLength(request.prompt),
-                  request.profile.maxOutputTokens,
-                ),
+            if (isOutputLimit(error) && !request.signal.aborted) {
+              const usage = outputLimitUsage(
+                Buffer.byteLength(request.prompt),
                 request.profile.maxOutputTokens,
               );
-            this.store.transaction(() =>
-              this.store.finishAttempt(
-                request.runId,
-                attempt,
-                request.signal.aborted ? "cancelled" : "failed",
-                correctionTokens,
-                false,
-                error,
-              ),
-            );
+              correctionTokens += stepTokens(usage, request.profile.maxOutputTokens);
+              correctionSteps.push({
+                ...usage,
+                cacheReadTokens: null,
+                cacheWriteTokens: null,
+                toolCalls: 0,
+                compactedBytes: 0,
+              });
+            }
+            finishCorrection(request.signal.aborted ? "cancelled" : "failed", error);
             // A provider outage is not invalid output: the scheduler retries or falls back, and
             // retries a response past the output cap at a lower effort.
             if (isTransient(error) || isOutputLimit(error)) throw error;
@@ -2225,8 +2341,9 @@ export class NativeAgentExecutor implements AgentExecutor {
         firstByteLimit: (ceilingMs, call) =>
           history.decide(ceilingMs, request.profile.model, call, shared),
         timing: (call) => {
+          const timed = withStall(call);
           watch.calls.push(
-            watch.calls.length === 0 && parts ? { ...call, promptParts: parts } : call,
+            watch.calls.length === 0 && parts ? { ...timed, promptParts: parts } : timed,
           );
           history.record(request.profile.model, call, shared);
         },
@@ -2316,6 +2433,40 @@ export function codeWebSearchFor(
 /** Provider options with Codex's web search on, read by the Codex adapter (`codexWebSearch`). */
 export function withCodexWebSearch(options: ProviderOptions): ProviderOptions {
   return { ...options, codex: { ...options.codex, webSearch: true } };
+}
+
+/** The stream guard's mode (`stream_output_limit`), read by the Codex adapter (#2660). */
+export function withCodexOutputGuard(options: ProviderOptions, mode: StopMode): ProviderOptions {
+  return { ...options, codex: { ...options.codex, outputGuard: mode } };
+}
+
+/**
+ * A `decision.would_stop` for each step whose stream guard passed its limit in shadow or
+ * advisory (`stream_output_limit`, #2660), once per attempt and step, with the guard's inputs.
+ * An enforced stop needs no record: the step ended `length` and its usage record says `stopped`.
+ */
+export function recordStreamOutputStops(
+  store: WorkflowStore,
+  request: Pick<ExecutionRequest, "runId" | "attemptId" | "profile">,
+  usage: Pick<AttemptUsageRecord, "steps">,
+): void {
+  for (const [index, step] of usage.steps.entries()) {
+    const guard = step.outputGuard;
+    if (guard?.decision !== "would_stop" || guard.mode === "enforce") continue;
+    recordWouldStop(store, request.runId, {
+      reason: "stream_output_limit",
+      mode: guard.mode,
+      key: `attempt-${request.attemptId}-step-${index}`,
+      summary: `Step ${index + 1} of ${request.profile.id} on ${request.profile.model} streamed about ${guard.streamedTokens} output tokens, past ${guard.factor} times its ${guard.maxOutputTokens}-token limit; enforced, the turn would stop there and the step end as a truncated answer`,
+      inputs: {
+        attemptId: request.attemptId,
+        step: index,
+        profileId: request.profile.id,
+        model: request.profile.model,
+        ...guard,
+      },
+    });
+  }
 }
 
 /** The recovery ladder's session and transport rungs, read by the Codex adapter (#1877). */

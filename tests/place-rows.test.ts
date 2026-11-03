@@ -81,3 +81,73 @@ describe("place_rows indentation (#2618)", () => {
     expect(description).toContain("reindent: true");
   });
 });
+
+// #2703: a request may prescribe the same row twice (an idempotence check, a repeated input). place_rows
+// looked each row up as the first file line equal to it, so once row 1 was placed its duplicate
+// row 3 counted as held and was refused ("already holds row 3"), and `reindent` re-indented the
+// first copy twice and left the second as it was.
+describe("place_rows with a row the request prescribes twice", () => {
+  const D_PATH = "tests/dup.test.ts";
+  const D_ROWS = ['["a", 1]', '["b", 2]', '["a", 1]'];
+  const targets = new Map([[D_PATH, D_ROWS]]);
+  const dFrame = "const ROWS = [\n];\n";
+
+  test("the second copy is placed after the first one is", () => {
+    const first = placeRows({ path: D_PATH, line: 1, rows: [1, 2] }, targets, dFrame);
+    const content = "content" in first ? first.content : "";
+    expect(placeRows({ path: D_PATH, line: 3, rows: [3] }, targets, content)).toMatchObject({
+      content: 'const ROWS = [\n  ["a", 1],\n  ["b", 2],\n  ["a", 1],\n];\n',
+      lines: [4, 4],
+    });
+    // Both copies held: placing either again is refused.
+    const all = placeRows({ path: D_PATH, line: 1, rows: [1, 3] }, targets, dFrame);
+    const full = "content" in all ? all.content : "";
+    const again = placeRows({ path: D_PATH, line: 1, rows: [3] }, targets, full);
+    expect("refusal" in again ? again.refusal : null).toContain("already holds row 3 (line 4)");
+  });
+
+  test("reindent moves each copy once", () => {
+    const tabbed = 'const ROWS = [\n\t["a", 1],\n\t["b", 2],\n\t["a", 1],\n];\n';
+    expect(placeRows({ path: D_PATH, line: 0, rows: [1, 3], reindent: true, indent: "  " }, targets, tabbed)).toMatchObject({
+      content: 'const ROWS = [\n  ["a", 1],\n  ["b", 2],\n  ["a", 1],\n];\n',
+      lines: [2, 4],
+    });
+  });
+});
+
+// #2689: a row the request writes with its own trailing separator (R82 tinyflate's C statement rows
+// `failed += row(...);`, a Java row copied with its comma) got the default comma appended
+// (`...;,`, a C syntax error), and an explicit `lastSeparator: ""` kept the row's own comma, so the
+// last item of a `List.of(` call ended in `,`, a Java syntax error.
+describe("place_rows separators: a row's own trailing separator", () => {
+  const C_PATH = "tests/cli_test.c";
+  const C_ROWS = ['failed += row(ARGS("a"), "x", 0, "1\\n", "");', 'failed += row(ARGS("b"), "y", 0, "2\\n", "");'];
+  const cFrame = "int main(void) {\n  int failed = 0;\n  return failed;\n}\n";
+  const J_PATH = "src/test/java/CliTest.java";
+  const J_ROWS = ['new Row("a", 1),', 'new Row("b", 2),'];
+  const jFrame = "class CliTest {\n  static final List<Row> ROWS = List.of(\n  );\n}\n";
+
+  test("by default a row keeps its own separator and gets no second one", () => {
+    const placed = placeRows({ path: C_PATH, line: 2, rows: [1, 2] }, new Map([[C_PATH, C_ROWS]]), cFrame);
+    expect(placed).toMatchObject({
+      content: `int main(void) {\n  int failed = 0;\n  ${C_ROWS[0]}\n  ${C_ROWS[1]}\n  return failed;\n}\n`,
+      first: `  ${C_ROWS[0]}`,
+    });
+    // A row with no separator of its own still takes the default comma.
+    expect(placeRows({ path: PATH, line: 1, rows: [1] }, new Map([[PATH, ROWS]]), frame)).toMatchObject({ first: `  ${ROWS[0]},` });
+  });
+
+  test("an explicit separator or lastSeparator replaces the row's own", () => {
+    const targets = new Map([[J_PATH, J_ROWS]]);
+    expect(placeRows({ path: J_PATH, line: 2, rows: [1, 2], lastSeparator: "" }, targets, jFrame)).toMatchObject({
+      content: 'class CliTest {\n  static final List<Row> ROWS = List.of(\n    new Row("a", 1),\n    new Row("b", 2)\n  );\n}\n',
+    });
+    expect(placeRows({ path: C_PATH, line: 2, rows: [1], separator: "," }, new Map([[C_PATH, C_ROWS]]), cFrame)).toMatchObject({
+      first: `  ${C_ROWS[0]?.slice(0, -1)},`,
+    });
+  });
+
+  test("the description states the default separator", () => {
+    expect(placeRowsDescription(new Map([[PATH, ROWS]]))).toContain("the row's own trailing comma or semicolon, else a comma");
+  });
+});
