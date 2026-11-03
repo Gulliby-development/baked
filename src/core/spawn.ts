@@ -86,11 +86,16 @@ export const SAFE_STDIO: SpawnOptions["stdio"] = ["ignore", "pipe", "pipe"];
  *   so it has no controlling terminal and cannot read /dev/tty.
  *   Prevents tools like `security`, `ssh`, `sudo`, `gpg`, `pass`, etc.
  *   from prompting the user (and hanging) when stdin is closed.
- * - windowsHide: true → on Windows a detached child would otherwise open its own console window.
+ * - detached only on POSIX: on Windows a detached child has no console, so a console program it
+ *   starts (any command `cmd.exe /c` runs) gets a new console of its own and writes its output
+ *   there instead of into the pipes, while still inheriting the pipe handles (#2657; the LSP
+ *   spawn notes the same console behaviour). Tree kill on Windows goes through taskkill, so no process
+ *   group is needed there.
+ * - windowsHide: true → no console window flashes up for the child.
  */
 export const SAFE_SPAWN_OPTS: Pick<SpawnOptions, "stdio" | "detached" | "windowsHide"> = {
   stdio: SAFE_STDIO,
-  detached: true,
+  detached: !IS_WIN,
   windowsHide: true,
 };
 

@@ -15,8 +15,11 @@ import { removeTempDir } from "./helpers/temp-dir.js";
 // timeout kill cannot reach it once its parent is gone.
 
 const HOLD_MS = 20_000;
-/** Prints, starts a detached child that inherits stdout and stderr and sleeps, and exits at once. */
-const leaveHolder = `require("node:child_process").spawn(process.execPath, ["-e", "setTimeout(() => {}, ${HOLD_MS})"], { stdio: ["ignore", "inherit", "inherit"], detached: true }).unref(); console.log("parent done");`;
+/**
+ * Prints, starts a detached child that inherits stdout and stderr and sleeps, and exits at once.
+ * The child runs in the system temp folder, so it never holds a test's folder open on Windows.
+ */
+const leaveHolder = `require("node:child_process").spawn(process.execPath, ["-e", "setTimeout(() => {}, ${HOLD_MS})"], { cwd: require("node:os").tmpdir(), stdio: ["ignore", "inherit", "inherit"], detached: true }).unref(); console.log("parent done");`;
 
 const dirs: string[] = [];
 afterAll(async () => {
