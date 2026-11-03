@@ -2140,6 +2140,27 @@ export function splitTestTasks(
   return recordGraphEdits(graph, result, "sizing-split", edits, origins);
 }
 
+/** The task schema's bound on a description (`Text` in `schemas.ts`). */
+const DESCRIPTION_MAX = 16_000;
+
+/**
+ * A row slice's description with its own rows (#2477): the `SLICE_PART` line, then the slice's
+ * `sizingSlice.rows` verbatim in a fence longer than any backtick run they hold, so the implementer
+ * copies its rows instead of counting them out of the request's block. R79 verhop T004 and T007
+ * each had to find rows 1-7 and 8-15 of the 15 for `tests/check.bats`; a miscount writes another
+ * slice's rows. Rows that would pass the description's bound keep the numbers-only line.
+ */
+function sliceDescription(note: string, rows: readonly string[] | undefined): string {
+  if (!rows?.length) return note;
+  const runs = rows.flatMap((row) => (row.match(/`+/g) ?? []).map((run) => run.length));
+  const fence = "`".repeat(Math.max(3, ...runs.map((n) => n + 1)));
+  const described = `${note}\n${SLICE_ROWS}\n${fence}\n${rows.join("\n")}\n${fence}`;
+  return described.length <= DESCRIPTION_MAX ? described : note;
+}
+
+/** Opens the fenced rows a row slice's description carries (#2477). */
+export const SLICE_ROWS = "This slice's rows, verbatim, in their order:";
+
 /**
  * A test task cut into sequential slices of the rows the request prescribes for its file (#2455):
  * each slice keeps the task's criteria and writes only its rows, the first creates the file (with
@@ -2176,6 +2197,8 @@ function rowSlices(
           ? "Create the file with its harness and these rows."
           : "Add these rows to the file."
         : "Append these rows after the earlier slices' rows; keep the file's harness and every earlier row as they are.";
+    // One list feeds both the slice's data and its description, so they never disagree (#2477).
+    const rows = rowsFit ? lines.slice(first - 1, last) : undefined;
     split.push({
       ...task,
       id,
@@ -2187,9 +2210,12 @@ function rowSlices(
         index,
         count,
         share: (last - first + 1) / volume.rows,
-        ...(rowsFit ? { rows: lines.slice(first - 1, last) } : {}),
+        ...(rows ? { rows } : {}),
       },
-      description: `${task.description.split(/\nSizing split (?:this task by file|this test file into slices):/)[0]}\n${SLICE_PART} write only rows ${first} to ${last} of the ${volume.rows} prescribed rows the request gives for ${target.path} in the block headed "${volume.header}", in their order; the other slices belong to the other parts of ${task.id}. Slice ${index + 1} of ${count}. ${order}`,
+      description: sliceDescription(
+        `${task.description.split(/\nSizing split (?:this task by file|this test file into slices):/)[0]}\n${SLICE_PART} write only rows ${first} to ${last} of the ${volume.rows} prescribed rows the request gives for ${target.path} in the block headed "${volume.header}", in their order; the other slices belong to the other parts of ${task.id}. Slice ${index + 1} of ${count}. ${order}`,
+        rows,
+      ),
     });
     previous = id;
   }

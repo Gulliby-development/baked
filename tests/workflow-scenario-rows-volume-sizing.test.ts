@@ -7,6 +7,7 @@ import {
   ROW_VOLUME_NOTE,
   rowVolumePrice,
   SLICE_PART,
+  SLICE_ROWS,
   type SizingReport,
   type SizingSample,
   sizePlan,
@@ -204,6 +205,78 @@ describe("scenario: R78 deltaglue T007, a test file of prescribed rows priced by
   });
 });
 
+/** The rows a slice's description carries in its fenced block, or null when it has none. */
+const describedRows = (description: string): string[] | null => {
+  const at = description.indexOf(SLICE_ROWS);
+  if (at < 0) return null;
+  const [, fence = "", body = ""] = /^\n(`{3,})\n([\s\S]*?)\n\1$/.exec(description.slice(at + SLICE_ROWS.length)) ?? [];
+  return fence ? body.split("\n") : null;
+};
+
+// Bench round 79 verhop (#2477): T004's description said only "write only rows 1 to 7 of the 15
+// prescribed rows ... for tests/check.bats", so T004 and T007 each counted their rows out of the
+// request's block. A slice's description now carries its own rows, from the same lines as
+// `sizingSlice.rows`.
+describe("scenario: R79 verhop check.bats, a row slice's description holds its rows (#2477)", () => {
+  for (const [language, path] of LANGUAGES) {
+    test(`${language}: each slice's description holds its own rows, verbatim, and none of another slice's`, () => {
+      const plan = graph(planned("T007", path));
+      const req = request(path, 60);
+      const report = sizePlan({ graph: plan, policy: policy(true), samples: history, spent: 0, spec: spec(60), request: req });
+      const parts = splitTestTasks(plan, report, spec(60) as Spec, undefined, [], req)?.tasks.filter((t) => t.sizingSlice) ?? [];
+      expect(parts.length).toBeGreaterThanOrEqual(2);
+      const all = Array.from({ length: 60 }, (_, i) => row(i + 1));
+      for (const part of parts) {
+        const own = part.sizingSlice?.rows ?? [];
+        expect(own.length).toBeGreaterThan(0);
+        expect(describedRows(part.description)).toEqual(own);
+        expect(part.description.indexOf(SLICE_PART)).toBeLessThan(part.description.indexOf(SLICE_ROWS));
+        for (const other of all.filter((r) => !own.includes(r))) expect(part.description).not.toContain(other);
+        expect(part.description.length).toBeLessThanOrEqual(16_000);
+      }
+      expect(parts.flatMap((t) => describedRows(t.description) ?? [])).toEqual(all);
+    });
+  }
+
+  test("rows holding a backtick fence get a longer fence, so the block stays whole", () => {
+    const path = "tests/x.test.ts";
+    const fenced = (i: number) => `${row(i)} \`\`\`md\`\`\``;
+    const req = ["```text", `XTests in ${path} (60 rows, ${NOTATION})`, ...Array.from({ length: 60 }, (_, i) => fenced(i + 1)), "```"].join("\n");
+    const plan = graph(planned("T007", path));
+    const report = sizePlan({ graph: plan, policy: policy(true), samples: history, spent: 0, spec: spec(60), request: req });
+    const parts = splitTestTasks(plan, report, spec(60) as Spec, undefined, [], req)?.tasks.filter((t) => t.sizingSlice) ?? [];
+    expect(parts.length).toBeGreaterThanOrEqual(2);
+    for (const part of parts) {
+      expect(part.description).toContain(`${SLICE_ROWS}\n\`\`\`\`\n`);
+      expect(describedRows(part.description)).toEqual(part.sizingSlice?.rows ?? []);
+    }
+  });
+
+  test("rows that would pass the description's bound keep the numbers-only line; the slice still carries them", () => {
+    const path = "tests/x.test.ts";
+    const plan = graph(planned("T007", path, { description: `Write ${path}. ${"Keep each test to one assertion. ".repeat(440)}` }));
+    const req = request(path, 60);
+    const report = sizePlan({ graph: plan, policy: policy(true), samples: history, spent: 0, spec: spec(60), request: req });
+    const parts = splitTestTasks(plan, report, spec(60) as Spec, undefined, [], req)?.tasks.filter((t) => t.sizingSlice) ?? [];
+    expect(parts.length).toBeGreaterThanOrEqual(2);
+    for (const part of parts) {
+      expect(part.description).toContain(SLICE_PART);
+      expect(part.description).not.toContain(SLICE_ROWS);
+      expect(part.description.length).toBeLessThanOrEqual(16_000);
+      expect(part.sizingSlice?.rows?.length).toBeGreaterThan(0);
+    }
+  });
+
+  test("slices cut without the request's lines keep the numbers-only line", () => {
+    const path = "tests/x.test.ts";
+    const plan = graph(planned("T007", path));
+    const report = sizePlan({ graph: plan, policy: policy(true), samples: history, spent: 0, spec: spec(60), request: request(path, 60) });
+    const parts = splitTestTasks(plan, report, spec(60) as Spec)?.tasks.filter((t) => t.sizingSlice) ?? [];
+    expect(parts.length).toBeGreaterThanOrEqual(2);
+    expect(parts.every((t) => !t.description.includes(SLICE_ROWS) && !t.sizingSlice?.rows)).toBe(true);
+  });
+});
+
 class RowsPlanner extends FixtureExecutor {
   constructor(root: string, private path: string) { super(root); }
   override async execute(request: ExecutionRequest) {
@@ -238,6 +311,8 @@ describe("scenario: the run's host split reads the request's rows (#2455)", () =
     const parts = state.graph?.tasks.filter((t) => t.sizingSlice?.taskId === "T002") ?? [];
     expect(parts.length).toBeGreaterThanOrEqual(2);
     expect(parts.map((t) => t.writes[0]?.action)).toEqual(parts.map((_, i) => (i === 0 ? "create" : "modify")));
+    // Each slice reaches approval with its own rows in its description (#2477).
+    expect(parts.flatMap((t) => describedRows(t.description) ?? [])).toEqual(Array.from({ length: 60 }, (_, i) => row(i + 1)));
     expect(state.sizingReplans).toBe(0);
     expect(store.latestArtifact(runId, "sizing/split-0.json")).not.toBeNull();
     const report = JSON.parse(store.readArtifact(runId, store.latestArtifact(runId, "sizing/plan-0.json")!.id)) as SizingReport;
