@@ -1729,6 +1729,14 @@ export const WorkflowConfigSchema = z
      */
     planChargeExpected: z.enum(PLAN_CHARGE_EXPECTED_MODES).optional(),
     /**
+     * The folder that holds new runs' worktrees, `<root>/<run's 8 hex digits>/main` (#2461):
+     * absolute, starting with `~`, or relative to the project. Unset, they live in the project's
+     * `.baked/worktrees`. A short folder such as `C:\.bk` keeps a task's checks under the path
+     * length a toolchain handles on Windows (`WORKTREE_PATH_LIMITS`). It must be on the project's
+     * drive; a run's worktree keeps the folder it was created in.
+     */
+    worktreeRoot: z.string().trim().min(1).max(240).optional(),
+    /**
      * Deadlines and stall limits (milliseconds): a tool call that never returns, a model attempt
      * with no progress, and how often a stalled run resumes by itself. Defaults in `stall.ts`.
      */
