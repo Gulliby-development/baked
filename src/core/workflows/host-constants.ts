@@ -6,11 +6,19 @@
  * accepted spec's and plan's when the task graph is stored.
  */
 import { z } from "zod";
-import { normalizePlanIds, normalizeSpecIds } from "./host-ids.js";
+import { HOST_ID_FORMATS, normalizePlanIds, normalizeSpecIds } from "./host-ids.js";
 
 /** Stands in for a plan hash the model left out or got wrong; the scheduler binds the real one. */
 const PENDING_HASH = "0".repeat(64);
 const HASH = /^[a-f0-9]{64}$/;
+/** Stands in for a task id when the executor has no task to bind; the scheduler binds the real one. */
+const PENDING_TASK = "T000";
+
+/** What the host knows about the step a result is submitted for. */
+export interface HostContext {
+  /** The task a task step runs; its implementation result is that task's (#2828). */
+  taskId?: string | undefined;
+}
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
@@ -30,6 +38,9 @@ function schemaVersionOf(schema: z.ZodType): unknown {
 export const HOST_FIELDS: Readonly<Record<string, readonly string[]>> = {
   "*": ["schemaVersion"],
   analysis: ["inputHash"],
+  // A task step runs one task: a result labelled with another task's id is still this task's
+  // (windowfit 08da8647 T003 wrote T002 and its finished rows were rejected, #2828).
+  implementation: ["taskId"],
   plan: [
     "taskGraph.schemaVersion",
     "taskGraph.revision",
@@ -66,10 +77,22 @@ export function advertisedSchema(output: string, schema: z.ZodType): z.ZodType {
 }
 
 /** `value` with the host-known fields of an `output` result set. */
-export function fillHostConstants(output: string, version: unknown, value: unknown): unknown {
+export function fillHostConstants(
+  output: string,
+  version: unknown,
+  value: unknown,
+  host: HostContext = {},
+): unknown {
   if (!isRecord(value)) return value;
   const filled: Record<string, unknown> = { ...value };
   if (version !== undefined) filled.schemaVersion = version;
+  // The step's task is the result's; the scheduler binds it again for any executor (#2828).
+  if (output === "implementation")
+    filled.taskId =
+      host.taskId ??
+      (typeof filled.taskId === "string" && HOST_ID_FORMATS.task.pattern.test(filled.taskId)
+        ? filled.taskId
+        : PENDING_TASK);
   // The analysis is bound to the manifest the host gave it; a hand-copied hash (d0f55591 transposed
   // two characters) is replaced by the scheduler, so a missing or malformed one is no rejection.
   if (
@@ -95,7 +118,11 @@ export function fillHostConstants(output: string, version: unknown, value: unkno
 }
 
 /** The submission schema of an `output`: the result schema behind the host-known fields. */
-export function withHostConstants(output: string, schema: z.ZodType): z.ZodType {
+export function withHostConstants(
+  output: string,
+  schema: z.ZodType,
+  host: HostContext = {},
+): z.ZodType {
   const version = schemaVersionOf(schema);
-  return z.preprocess((value) => fillHostConstants(output, version, value), schema);
+  return z.preprocess((value) => fillHostConstants(output, version, value, host), schema);
 }

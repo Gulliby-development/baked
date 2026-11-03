@@ -391,6 +391,8 @@ export interface QualityConfig {
   sourceDefectRoute?: "off" | "on";
   /** Send a failing check's correction to the test's task when the test counts a long byte run of a prescribed row differently: `on` or `off` (default, recorded in shadow). */
   rowRunRoute?: "off" | "on";
+  /** Answer a spec conflict about a test file whose rows the request prescribes with the row diff, keeping the request's rows, instead of a model settle: `on` or `off` (default, recorded in shadow). */
+  conflictRowReply?: "off" | "on";
   /** Restore a prescribed row whose long byte run a test counts differently on resume of a run blocked at a task and before a task's session, kept when the writing task's checks pass: `on` (default) or `off` (recorded in shadow, the brief names the miscount). */
   rowRunRestore?: "off" | "on";
   /** Put back a session's edit after which a prescribed test row the file held no longer holds: `on` (default) or `off`. */
