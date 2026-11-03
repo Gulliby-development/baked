@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { statSync } from "node:fs";
+import { existsSync, statSync } from "node:fs";
 import { isAbsolute, join, relative, resolve } from "node:path";
 import type { ToolResult } from "../../types";
 import { getCwd } from "../cwd.js";
@@ -27,14 +27,17 @@ export function globMatcher(pattern: string): (relPath: string) => boolean {
 }
 
 /**
- * Every file under `root` that ripgrep would search: hidden and gitignored files left out.
- * The pattern is not passed as `--glob`, which overrides those rules for the files it matches.
- * Null when ripgrep cannot run.
+ * Runs a file-listing command in `root` and returns its paths, split on `separator`.
+ * Null when the command cannot run or exits with an error (exit 1 from ripgrep means no file).
  */
-function listFiles(root: string): Promise<string[] | null> {
+function runListing(
+  bin: string,
+  args: string[],
+  root: string,
+  separator: RegExp,
+): Promise<string[] | null> {
   return new Promise((done) => {
-    const rgBin = getVendoredPath("rg") ?? "rg";
-    const proc = spawn(rgBin, ["--files", "--", "."], {
+    const proc = spawn(bin, args, {
       cwd: root,
       timeout: 10_000,
       stdio: ["ignore", "pipe", "pipe"],
@@ -44,12 +47,11 @@ function listFiles(root: string): Promise<string[] | null> {
     proc.stdout.on("data", (data: Buffer) => chunks.push(data));
     proc.on("error", () => done(null));
     proc.on("close", (code: number | null) => {
-      // 1: no file at all; anything else is an error.
       if (code !== 0 && code !== 1) return done(null);
       const text = Buffer.concat(chunks).toString("utf-8");
       done(
         text
-          .split(/\r?\n/)
+          .split(separator)
           .filter(Boolean)
           .map((p) => p.replace(/^\.[\\/]/, "")),
       );
@@ -57,9 +59,34 @@ function listFiles(root: string): Promise<string[] | null> {
   });
 }
 
+/**
+ * Every file under `root` that ripgrep would search: hidden and gitignored files left out.
+ * The pattern is not passed as `--glob`, which overrides those rules for the files it matches.
+ * Null when ripgrep cannot run.
+ */
+function listFiles(root: string): Promise<string[] | null> {
+  return runListing(getVendoredPath("rg") ?? "rg", ["--files", "--", "."], root, /\r?\n/);
+}
+
+/**
+ * The same set from git when ripgrep is missing: tracked and untracked files that no ignore
+ * rule covers, hidden paths left out. Null outside a git work tree or when git cannot run.
+ */
+async function listGitFiles(root: string): Promise<string[] | null> {
+  const files = await runListing(
+    "git",
+    ["ls-files", "-z", "--cached", "--others", "--exclude-standard"],
+    root,
+    /\0/,
+  );
+  if (files === null) return null;
+  // --cached also lists tracked files deleted from disk; ls-files exits 0 with them.
+  return [...new Set(files)].filter((rel) => !SKIP_PARTS.test(rel) && existsSync(join(root, rel)));
+}
+
 const SKIP_PARTS = /(^|\/)(node_modules|\.[^/]*)(\/|$)/;
 
-/** In-process listing when ripgrep is missing: hidden paths and node_modules left out. */
+/** In-process listing outside git when ripgrep is missing: hidden paths and node_modules left out. */
 function scanFiles(root: string): string[] {
   try {
     return [...new Bun.Glob("**/*").scanSync({ cwd: root, onlyFiles: true, dot: false })].filter(
@@ -82,7 +109,7 @@ export const globTool = {
     const root = resolve(getCwd(), basePath);
     const matches = globMatcher(args.pattern);
 
-    const files = (await listFiles(root)) ?? scanFiles(root);
+    const files = (await listFiles(root)) ?? (await listGitFiles(root)) ?? scanFiles(root);
     const found: Array<{ path: string; mtime: number }> = [];
     for (const rel of files) {
       if (!matches(rel)) continue;
