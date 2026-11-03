@@ -1404,6 +1404,17 @@ export const FEATURES: readonly Feature[] = [
     desktop: ["settings/chat: Code quality page"],
   },
   {
+    id: "conflict-row-reply",
+    group: "Workflow runs",
+    title: "Answer a spec conflict about a prescribed-row test file with the row diff",
+    tui: ["/code-quality"],
+    cli: notNeeded(
+      "quality.conflictRowReply in config.json; the reply shows as the task's settled conflict",
+    ),
+    api: ["/v1/settings: code-quality page"],
+    desktop: ["settings/chat: Code quality page"],
+  },
+  {
     id: "row-file-write",
     group: "Workflow runs",
     title:
