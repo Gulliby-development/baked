@@ -20,7 +20,7 @@ import { IS_WIN, shellInvocation } from "../platform/index.js";
 import { buildSafeEnv } from "../spawn.js";
 import { hasWorkspaceMutationContext } from "../workflows/leases.js";
 import { getHooks } from "./loader.js";
-import { matchesToolName, toClaudeToolName } from "./tool-names.js";
+import { matchesToolName, namesTool, toClaudeToolName } from "./tool-names.js";
 import type {
   CommandHook,
   HookEventName,
@@ -74,21 +74,22 @@ export function getDisabledHookEvents(): ReadonlySet<string> {
  * Check if a hook's `if` condition matches the current tool input.
  *
  * Format: `ToolName(glob_pattern)` — e.g. `Bash(git *)`, `Edit(*.ts)`
- * The ToolName must match the current tool, and the glob pattern is tested
- * against the first string value in tool_input (typically `command` or `path`).
+ * The ToolName must name the current tool the way a matcher does (`namesTool`: `Edit` also covers
+ * `multi_edit`, `Write` covers `edit_file`) and may hold `-`, as MCP tool names do. The glob
+ * pattern is tested against the first string value in tool_input (typically `command` or `path`).
  *
  * Simple glob: `*` matches any sequence, `?` matches one char.
  */
 function matchesIfCondition(
   condition: string,
-  claudeToolName: string,
+  bakedToolName: string,
   toolInput?: Record<string, unknown>,
 ): boolean {
-  const m = condition.match(/^(\w+)\((.+)\)$/);
+  const m = condition.match(/^([\w-]+)\((.+)\)$/);
   if (!m) return true; // Malformed condition — don't block
 
   const [, condTool, pattern] = m;
-  if (condTool !== claudeToolName) return false;
+  if (!condTool || !namesTool(condTool, bakedToolName)) return false;
 
   // Find the first string value in tool input to match against
   if (!toolInput) return false;
@@ -415,8 +416,7 @@ export async function runHooks(opts: RunHooksOptions): Promise<HookResult> {
 
       // if: conditional — skip if condition doesn't match tool input
       if (hook.if && opts.toolName) {
-        const claudeName = toClaudeToolName(opts.toolName);
-        if (!matchesIfCondition(hook.if, claudeName, updatedInput ?? opts.toolInput)) continue;
+        if (!matchesIfCondition(hook.if, opts.toolName, updatedInput ?? opts.toolInput)) continue;
       }
 
       if (hook.async && !hasWorkspaceMutationContext()) {
