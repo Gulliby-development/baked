@@ -136,10 +136,12 @@ export class MCPManager {
     useMCPStore.getState().setServerStatus(name, "connecting");
 
     let client: MCPClient | null = null;
+    let pendingClient: Promise<MCPClient> | null = null;
+    let transport: ReturnType<MCPManager["createTransport"]> | null = null;
     // stdio = custom MCPTransport with start/send/close. HTTP/SSE = plain config object.
     let isCustomTransport = false;
     try {
-      const transport = this.createTransport(config);
+      transport = this.createTransport(config);
       isCustomTransport = typeof transport === "object" && "start" in transport;
       if (isCustomTransport && "onclose" in transport) {
         const originalOnclose = transport.onclose;
@@ -155,22 +157,23 @@ export class MCPManager {
 
       // Timeout the entire connect+tools handshake — a broken server shouldn't block the queue
       const connectTimeout = config.timeout ?? 30_000;
+      pendingClient = createMCPClient({
+        transport,
+        name: `baked-${name}`,
+        // For stdio: onUncaughtError triggers restart (process crashed).
+        // For http/sse: only log — transport errors are non-fatal (SSE probe 404, etc.)
+        onUncaughtError: isCustomTransport
+          ? (err) => {
+              if (this.disposed) return;
+              const msg = err instanceof Error ? err.message : String(err);
+              useMCPStore.getState().setServerStatus(name, "error", msg);
+              this.connections.delete(name);
+              this.scheduleRestart(config);
+            }
+          : undefined,
+      });
       client = await withTimeout(
-        createMCPClient({
-          transport,
-          name: `baked-${name}`,
-          // For stdio: onUncaughtError triggers restart (process crashed).
-          // For http/sse: only log — transport errors are non-fatal (SSE probe 404, etc.)
-          onUncaughtError: isCustomTransport
-            ? (err) => {
-                if (this.disposed) return;
-                const msg = err instanceof Error ? err.message : String(err);
-                useMCPStore.getState().setServerStatus(name, "error", msg);
-                this.connections.delete(name);
-                this.scheduleRestart(config);
-              }
-            : undefined,
-        }),
+        pendingClient,
         connectTimeout,
         `MCP server "${name}": connection timed out`,
       );
@@ -216,6 +219,16 @@ export class MCPManager {
         try {
           await client.close();
         } catch {}
+      } else if (pendingClient) {
+        // The handshake failed or timed out but keeps running: stop the server it started, and
+        // close a client that still answers late, so a slow server (npx fetching a package) is
+        // not left running next to each restart.
+        pendingClient.then(
+          (late) => late.close().catch(() => {}),
+          () => {},
+        );
+        if (transport && typeof transport === "object" && "close" in transport)
+          transport.close().catch(() => {});
       }
       const msg = err instanceof Error ? err.message : String(err);
       useMCPStore.getState().setServerStatus(name, "error", msg);

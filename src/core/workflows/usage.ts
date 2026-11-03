@@ -477,9 +477,13 @@ export function attemptCost(
   if (!usage) return null;
   const pricing = findPricing(model)?.pricing;
   if (!pricing) return null;
+  // `estimatedUsage` is the attempt's whole estimate and repeats any step that charged one (an
+  // output-cap stop or a lost answer): only the part its steps do not carry is priced (#2669).
+  const stepInput = usage.steps.reduce((sum, step) => sum + (step.inputTokens ?? 0), 0);
+  const stepOutput = usage.steps.reduce((sum, step) => sum + (step.outputTokens ?? 0), 0);
   let cost = usage.estimatedUsage
-    ? usage.estimatedUsage.inputTokens * pricing.input +
-      usage.estimatedUsage.outputTokens * pricing.output
+    ? Math.max(0, usage.estimatedUsage.inputTokens - stepInput) * pricing.input +
+      Math.max(0, usage.estimatedUsage.outputTokens - stepOutput) * pricing.output
     : 0;
   for (const step of usage.steps) {
     const input = step.inputTokens ?? 0;

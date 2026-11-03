@@ -10,6 +10,8 @@ export const SETUP = "flex min-w-0 flex-col gap-4 [&_input:disabled]:opacity-70"
 export const STACK = "flex min-w-0 flex-col gap-[10px]";
 export const ROW = "flex flex-wrap items-center gap-x-3 gap-y-[10px]";
 export const GROW = "min-w-0 flex-1";
+/** The text cell of a list row with actions: its basis makes the actions wrap below before the text breaks (#2682). */
+export const ROW_TEXT = "min-w-0 flex-[1_1_240px]";
 export const NOTE = "text-[12px]";
 export const WARN = "text-[var(--warn)]";
 export const OK = "text-[var(--ok)]";

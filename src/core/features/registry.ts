@@ -1404,6 +1404,17 @@ export const FEATURES: readonly Feature[] = [
     desktop: ["settings/chat: Code quality page"],
   },
   {
+    id: "conflict-row-reply",
+    group: "Workflow runs",
+    title: "Answer a spec conflict about a prescribed-row test file with the row diff",
+    tui: ["/code-quality"],
+    cli: notNeeded(
+      "quality.conflictRowReply in config.json; the reply shows as the task's settled conflict",
+    ),
+    api: ["/v1/settings: code-quality page"],
+    desktop: ["settings/chat: Code quality page"],
+  },
+  {
     id: "row-file-write",
     group: "Workflow runs",
     title:
@@ -1871,6 +1882,16 @@ export const FEATURES: readonly Feature[] = [
     cli: ["baked workflow initiative drive", "baked workflow initiative show"],
     api: ["/v1/initiatives/:id"],
     desktop: ["project/initiatives: the shared budget line shows up to N features at once"],
+  },
+  {
+    id: "parallel-cap-queued-resume",
+    group: "Initiatives",
+    title:
+      "A run resumed at the workspace's parallel-run cap keeps the change and waits for a free slot",
+    tui: ["/workflow: the change is kept and the run starts when one of the executing runs ends"],
+    cli: ["baked workflow extend: --resume", "baked workflow reroute: --resume"],
+    api: ["/v1/workflow/runs/:id/resume: queued", "/v1/workflow/runs/:id: queued"],
+    desktop: ["project/runs: Waiting for a free slot in the run header"],
   },
   {
     id: "initiative-upstream-amendments",

@@ -213,6 +213,29 @@ export interface CallTiming extends CallReasoning {
    * for a call that ended without an answer, whose whole interval is excluded (#2414).
    */
   silentMs?: number;
+  /**
+   * The stall part of `silentMs`: what passed the deadline the call's shape had from its healthy
+   * answers, or the adaptive floor (`callStallMs` in workflows/clean-pace.ts, #2424). Set by the
+   * executor when above 0; a buffered provider's wait within it is model time.
+   */
+  stallMs?: number;
+  /**
+   * How a call that threw ended (#2820): `stall` when the provider never answered in time or its
+   * stream ended without a finish (`isStall`), `error` for anything else it threw (a provider error
+   * such as "Selected model is at capacity", a refused or dropped connection). Absent for a call
+   * that completed or that the caller cancelled. The stall replay reads it: a call with no first
+   * byte that ended in an error is the retry's, not the recovery ladder's.
+   */
+  failure?: "stall" | "error";
+}
+
+/** The messages of a call the provider never answered (`isStall` in the recovery ladder). */
+export const STALL_MESSAGE =
+  /^(?:No model response within \d+ seconds|Provider stream ended without a response finish)$/;
+
+/** Whether `error` is a stall: a call the provider never answered, or whose stream ended unfinished. */
+export function isStall(error: unknown): boolean {
+  return error instanceof ProviderUnreachableError && STALL_MESSAGE.test(error.message);
 }
 
 export class ProviderUnreachableError extends Error {
@@ -305,6 +328,7 @@ export function withProviderHealth(
         const startedAt = executionClock.now();
         let firstByteAt: number | null = null;
         let refusal: { statusCode?: unknown; responseHeaders?: Record<string, string> } | undefined;
+        let failure: CallTiming["failure"];
         const ceilingMs = providerFirstByteMs(adapted.provider, reasoning);
         const size = promptChars(params.prompt);
         const sized = size !== undefined ? { promptChars: size } : {};
@@ -455,6 +479,11 @@ export function withProviderHealth(
           return result;
         } catch (error) {
           refusal = error as typeof refusal;
+          // The caller's own cancel is no failure of the call.
+          if (!params.abortSignal?.aborted)
+            failure = isStall(controller.signal.aborted ? controller.signal.reason : error)
+              ? "stall"
+              : "error";
           if (controller.signal.aborted) throw controller.signal.reason;
           if (!responded && !params.abortSignal?.aborted && connectionError(error))
             throw new ProviderUnreachableError(
@@ -490,6 +519,7 @@ export function withProviderHealth(
             ...(firstByteMs !== ceilingMs && deadlineInputs ? { deadlineInputs } : {}),
             ...sized,
             ...(typeof refusal?.statusCode === "number" ? { status: refusal.statusCode } : {}),
+            ...(failure ? { failure } : {}),
             ...(refusal?.responseHeaders?.["retry-after"]
               ? { retryAfter: refusal.responseHeaders["retry-after"] }
               : {}),

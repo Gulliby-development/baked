@@ -30,6 +30,29 @@ export function buildFullConvoText(messages: ModelMessage[], charBudget: number)
   return parts.join("\n\n");
 }
 
+/**
+ * The text of a tool-result part for a summary prompt. AI SDK parts carry it in `output`
+ * (`text`/`error-text` strings, `json`/`error-json` values, `content` parts); `result` is the
+ * pre-v5 field a session saved long ago may still hold.
+ */
+export function toolResultText(part: object): string {
+  const { output, result } = part as { output?: unknown; result?: unknown };
+  if (output === undefined || output === null)
+    return result != null ? JSON.stringify(result) : "null";
+  if (typeof output !== "object") return String(output);
+  const { type, value } = output as { type?: string; value?: unknown };
+  if ((type === "text" || type === "error-text") && typeof value === "string") return value;
+  if (type === "content" && Array.isArray(value))
+    return value
+      .map((p: { type?: string; text?: string }) =>
+        typeof p?.text === "string" ? p.text : `[${p?.type ?? "part"}]`,
+      )
+      .join("\n");
+  if (type === "execution-denied") return "[execution denied]";
+  if (value !== undefined) return JSON.stringify(value);
+  return JSON.stringify(output);
+}
+
 function messageTextFull(msg: ModelMessage): string | undefined {
   if (typeof msg.content === "string") return msg.content;
   if (Array.isArray(msg.content)) {
@@ -39,11 +62,10 @@ function messageTextFull(msg: ModelMessage): string | undefined {
         if ("text" in part) {
           texts.push(String((part as { text: string }).text));
         } else if ("type" in part) {
-          const typed = part as { type: string; toolName?: string; result?: unknown };
+          const typed = part as { type: string; toolName?: string };
           if (typed.type === "tool-result") {
-            const resultStr = typed.result != null ? JSON.stringify(typed.result) : "null";
             texts.push(
-              `[tool-result: ${typed.toolName ?? "unknown"} → ${resultStr.slice(0, 1500)}]`,
+              `[tool-result: ${typed.toolName ?? "unknown"} → ${toolResultText(part).slice(0, 1500)}]`,
             );
           } else if (typed.type === "tool-call") {
             texts.push(`[tool-call: ${typed.toolName ?? "unknown"}]`);

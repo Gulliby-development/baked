@@ -27,6 +27,7 @@ import {
 } from "../../components/ui/tone.js";
 import { tokens, usd } from "../../format.js";
 import { cn } from "../../lib/cn.js";
+import { scrollBehavior } from "../../lib/motion.js";
 import { LEDE, TABLE } from "../../lib/styles.js";
 import { projectHref } from "../../router.js";
 import { stageIconOf } from "../runs/line-model.js";
@@ -94,7 +95,9 @@ function stageIcon(stage: string): IconName {
 }
 
 function scrollTo(id: SectionId): void {
-  document.getElementById(`usage-${id}`)?.scrollIntoView({ behavior: "smooth", block: "start" });
+  document
+    .getElementById(`usage-${id}`)
+    ?.scrollIntoView({ behavior: scrollBehavior(), block: "start" });
 }
 
 function Section({

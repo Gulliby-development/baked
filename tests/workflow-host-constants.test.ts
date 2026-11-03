@@ -160,6 +160,19 @@ describe("the advertised submit_result schema (#1929)", () => {
     const added = Object.keys(plan.taskGraph).filter((key) => key !== "tasks");
     expect(added.every((key) => listed("plan").includes(`taskGraph.${key}`))).toBe(true);
   });
+
+  test("an implementation result's task id is the step's, whatever the model wrote (#2828)", () => {
+    const listed = [...(HOST_FIELDS["*"] ?? []), ...(HOST_FIELDS.implementation ?? [])];
+    const filled = fillHostConstants("implementation", 1, {}, { taskId: "T003" }) as object;
+    expect(Object.keys(filled).every((key) => listed.includes(key))).toBe(true);
+    expect(filled).toEqual({ schemaVersion: 1, taskId: "T003" });
+    // windowfit 08da8647: T003 copied T002 from the task before it.
+    expect(fillHostConstants("implementation", 1, { taskId: "T002" }, { taskId: "T003" })).toMatchObject({ taskId: "T003" });
+    // Without a task the scheduler binds it: a valid id is kept, a missing one is a placeholder.
+    expect(fillHostConstants("implementation", 1, { taskId: "T002" })).toMatchObject({ taskId: "T002" });
+    expect(fillHostConstants("implementation", 1, { taskId: "task three" })).toMatchObject({ taskId: "T000" });
+    expect(fillHostConstants("review", 1, { taskId: "T002" }, { taskId: "T003" })).toMatchObject({ taskId: "T002" });
+  });
 });
 
 describe("host-known fields of a submitted result", () => {

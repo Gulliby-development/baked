@@ -4,7 +4,11 @@ import { canonical, hashBytes } from "../specs/hash.js";
 import { releaseLinkCount } from "./release-writes.js";
 import { type RecoveryAdvice, recoveryAdvice } from "./remedies.js";
 import { REPEAT_KIND, type RepeatDecision } from "./repeated-failure.js";
-import { ROW_CLAIM_RESUME_DIR, ROW_SPEC_REPAIR_PREFIX } from "./row-claim-repair.js";
+import {
+  ROW_CLAIM_RESUME_DIR,
+  ROW_SPEC_REPAIR_PREFIX,
+  repairedRunText,
+} from "./row-claim-repair.js";
 import { ROW_RESTORE_RESUME_DIR } from "./row-restore.js";
 import type { WorkflowStore } from "./store.js";
 import { type WriteRefusal, writeRefusalOf } from "./write-refusals.js";
@@ -90,7 +94,10 @@ export interface InvalidOutputFacts {
   diagnostic: string;
   /** `invalidOutputInputs`: the run inputs a person can change besides the prompt. */
   inputs: InvalidOutputInputs;
-  /** Whether the prompt already holds this diagnostic's note (a resume gave it). */
+  /**
+   * Whether the prompt already holds this diagnostic's note (a resume gave it), as written or as
+   * the row repair rewrote it (`repairedRunText`).
+   */
   noted: boolean;
   /** The key the last resume recorded (`INVALID_OUTPUT_KEY`); null when none did. */
   previous: string | null;
@@ -233,11 +240,15 @@ export function invalidOutputRepeat(
   if (!diagnostic) return null;
   const note = `\n${INVALID_OUTPUT_NOTE}\n${canonical({ diagnostic })}`;
   const recorded = store.latestArtifact(runId, INVALID_OUTPUT_KEY);
+  // The note as given, or as the row repair rewrote it in the prompt (#2563, #2696).
+  const state = store.state(runId);
   const inputs: InvalidOutputFacts = {
     refusals: refusedWrites(store, runId, latest.id),
     diagnostic: hashBytes(diagnostic),
     inputs: invalidOutputInputs(store, runId),
-    noted: store.state(runId).prompt.includes(note),
+    noted:
+      state.prompt.includes(note) ||
+      state.prompt.includes(repairedRunText(store, runId, state, note)),
     previous: recorded ? store.readArtifact(runId, recorded.id) : null,
   };
   const key = invalidOutputKey(inputs);

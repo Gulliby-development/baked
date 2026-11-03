@@ -91,17 +91,17 @@ describe("scenario: R87 citeseek, the preview prices the rows the host writes at
   });
 
   test("a row file of a language the host writes no rows for keeps the session price", async () => {
-    // The same rows prescribed for Rust files: no `ROW_FILE_SHAPES` row, so a session writes them.
+    // The same rows prescribed for bats files: no `ROW_FILE_SHAPES` row (#2553), so a session writes them.
     const rust = (plan: InitiativePlan): InitiativePlan => ({
       ...plan,
-      features: plan.features.map((f) => ({ ...f, boundary: { ...f.boundary, paths: f.boundary.paths.map((p) => p.replace(/^tests\/(\w+)\.py$/, "tests/$1.rs")) } })),
+      features: plan.features.map((f) => ({ ...f, boundary: { ...f.boundary, paths: f.boundary.paths.map((p) => p.replace(/^tests\/(\w+)\.py$/, "tests/$1.bats")) } })),
     });
     const fixture = workflowFixture();
     cleanups.push(() => fixture.dispose());
     const initiatives = new InitiativeService(fixture.service);
     const of = async (id: string, policy: Pick<RunPolicy, "rowFileWrite">) => {
       await initiatives.start({
-        commandId: newId(), initiativeId: id, prompt: PROMPT.replaceAll(".py (", ".rs ("), ownerLabel: "test", plan: rust(split()), keepFeatures: true,
+        commandId: newId(), initiativeId: id, prompt: PROMPT.replaceAll(".py (", ".bats ("), ownerLabel: "test", plan: rust(split()), keepFeatures: true,
         featureAutoApproval: { maxTasks: 8, maxFiles: 40 },
         policy: { ...fixturePolicy, clarification: "assume", sizing: { maxRunTokens: 8_000_000 }, ...policy },
         budget: { maxTotalTokens: 8_000_000, maxAgentCalls: 1000, maxActiveMs: 21_600_000 },
