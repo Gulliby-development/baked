@@ -1,4 +1,5 @@
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { mergeConfigs, loadProjectConfig } from "../src/config/index.js";
@@ -563,4 +564,43 @@ describe("MCP edge cases", () => {
     const merged = mergeConfigs(makeGlobal({ mcpServers: global }), { mcpServers: project });
     expect(merged.mcpServers).toHaveLength(8);
   });
+});
+
+describe("MCPManager handshake timeout", () => {
+  beforeEach(resetStore);
+
+  const alive = (pid: number): boolean => {
+    try {
+      process.kill(pid, 0);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+
+  it("stops a stdio server that never answers initialize once the connect timeout fires", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "baked-mcp-silent-"));
+    const pidFile = join(dir, "pid");
+    const script = join(dir, "server.js");
+    // Never answers and keeps running after stdin closes, like an npx server still downloading.
+    writeFileSync(
+      script,
+      `require("node:fs").writeFileSync(${JSON.stringify(pidFile)}, String(process.pid)); process.stdin.resume(); setInterval(() => {}, 1000);`,
+    );
+    const { MCPManager } = await import("../src/core/mcp/manager.js");
+    const mgr = new MCPManager();
+    let pid = 0;
+    try {
+      await mgr.connectAll([{ name: "silent", command: process.execPath, args: [script], timeout: 2000 }]);
+      expect(useMCPStore.getState().servers.silent?.error ?? "").toContain("connection timed out");
+      pid = Number(readFileSync(pidFile, "utf-8"));
+      await mgr.dispose();
+      for (let i = 0; i < 100 && alive(pid); i++) await Bun.sleep(100);
+      expect(alive(pid)).toBe(false);
+    } finally {
+      await mgr.dispose();
+      if (pid && alive(pid)) process.kill(pid, "SIGKILL");
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 30_000);
 });
