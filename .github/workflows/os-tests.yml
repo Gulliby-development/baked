@@ -4,8 +4,10 @@ name: OS tests
 # Windows and macOS runners cost 2x and 10x Linux minutes in a private repository, so these run
 # in the merge queue for changes to platform-sensitive code (process, path, shell, filesystem and
 # key store handling, the workflow runtime, the test setup), nightly against main, and on demand.
-# On a pull request the `test (...)` checks pass at once: the queue tests the same change merged
-# with the current main before it lands. Windows is the slow platform, so its run is split into
+# On a pull request one job per platform runs only the tests scripts/pr-targeted-tests.ts picks:
+# the changed test files and the tests that name a changed source file. A failure there used to
+# surface first in the queue, where it ejected every pull request grouped behind it. A pull
+# request that changes nothing those tests cover passes `test (...)` at once. Windows is the slow platform, so its run is split into
 # shards that run side by side; `test (<os>)` reports the result of all of its shards. Files go to
 # shards by their measured time on that OS (scripts/test-shard-weights.json).
 
@@ -29,20 +31,34 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       run: ${{ steps.decide.outputs.run }}
+      targeted: ${{ steps.decide.outputs.targeted }}
+      files: ${{ steps.decide.outputs.files }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
           fetch-depth: 0
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        if: github.event_name == 'pull_request'
+        with:
+          bun-version: "1.4.3"
       - id: decide
         env:
           EVENT: ${{ github.event_name }}
           BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
         run: |
-          # A pull request that changes how these tests run still runs them, to prove the change.
-          if [ "$EVENT" = "pull_request" ] && ! git diff --name-only "$BASE_SHA" HEAD | grep -Eq '^(\.github/workflows/os-tests\.yml|scripts/(test-shard(-weights)?|flaky-ledger)\.ts|scripts/test-shard-weights\.json)$'; then
-            echo "Pull request: these platforms run in the merge queue."
-            echo "run=false" >> "$GITHUB_OUTPUT"
+          # A pull request that changes how these tests run still runs them all, to prove the change.
+          # Any other pull request runs the tests it changes or that name a file it changes.
+          if [ "$EVENT" = "pull_request" ] && ! git diff --name-only "$BASE_SHA" HEAD | grep -Eq '^(\.github/workflows/os-tests\.yml|scripts/(test-shard(-weights)?|flaky-ledger|pr-targeted-tests)\.ts|scripts/test-shard-weights\.json)$'; then
+            bun scripts/pr-targeted-tests.ts "$BASE_SHA" "$RUNNER_TEMP/targeted.txt"
+            if [ -s "$RUNNER_TEMP/targeted.txt" ]; then
+              echo "run=true" >> "$GITHUB_OUTPUT"
+              echo "targeted=true" >> "$GITHUB_OUTPUT"
+              echo "files=$(tr '\n' ' ' < "$RUNNER_TEMP/targeted.txt")" >> "$GITHUB_OUTPUT"
+            else
+              echo "Pull request: no test covers its changes; these platforms run in the merge queue."
+              echo "run=false" >> "$GITHUB_OUTPUT"
+            fi
             exit 0
           fi
           if [ "$EVENT" != "pull_request" ] && [ "$EVENT" != "merge_group" ]; then
@@ -51,7 +67,7 @@ jobs:
           fi
           changed="$(git diff --name-only "$BASE_SHA" HEAD)"
           echo "$changed"
-          pattern='^(package\.json$|bun\.lock$|bunfig\.toml$|tsconfig\.json$|\.gitattributes$|\.github/workflows/os-tests\.yml$|scripts/(test-shard(-weights)?|flaky-ledger)\.ts$|scripts/test-shard-weights\.json$|tests/setup/|src/core/(platform|workflows|verification|tools|sessions|memory|hooks|security|utils|workers|git|checkpoints|mcp|terminal|projects)/|src/core/(spawn|process-tracker|secrets|cwd)\.ts$|src/headless/)'
+          pattern='^(package\.json$|bun\.lock$|bunfig\.toml$|tsconfig\.json$|\.gitattributes$|\.github/workflows/os-tests\.yml$|scripts/(test-shard(-weights)?|flaky-ledger|pr-targeted-tests)\.ts$|scripts/test-shard-weights\.json$|tests/setup/|src/core/(platform|workflows|verification|tools|sessions|memory|hooks|security|utils|workers|git|checkpoints|mcp|terminal|projects)/|src/core/(spawn|process-tracker|secrets|cwd)\.ts$|src/headless/)'
           if echo "$changed" | grep -Eq "$pattern"; then
             echo "run=true" >> "$GITHUB_OUTPUT"
           else
@@ -80,20 +96,23 @@ jobs:
     runs-on: ${{ matrix.os }}
     name: shard (${{ matrix.os }}, ${{ matrix.shard }}/${{ matrix.shards }})
     timeout-minutes: 30
+    env:
+      # A pull request runs its picked tests in the first shard of each platform; the others skip.
+      RUN: ${{ needs.scope.outputs.run == 'true' && (needs.scope.outputs.targeted != 'true' || matrix.shard == 1) }}
     steps:
       - name: Skip
-        if: needs.scope.outputs.run != 'true'
+        if: env.RUN != 'true'
         run: echo "No platform-sensitive files changed, or this is a pull request; this platform runs in the merge queue and nightly."
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        if: needs.scope.outputs.run == 'true'
+        if: env.RUN == 'true'
         with:
           persist-credentials: false
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
-        if: needs.scope.outputs.run == 'true'
+        if: env.RUN == 'true'
         with:
           bun-version: "1.4.3"
       - name: Install
-        if: needs.scope.outputs.run == 'true'
+        if: env.RUN == 'true'
         run: bun install --frozen-lockfile
       # The tests put every repository, database and scratch file in the system temp directory. On
       # a Windows runner that is on C:, the OS disk, where a test of file and git work took 42 s in
@@ -102,7 +121,7 @@ jobs:
       # by the Administrators group, which the OS sandbox makes deny-only; the user's own ACE, as
       # in its profile's temp directory, keeps those files writable for a sandboxed command.
       - name: Keep temp files on the work disk
-        if: needs.scope.outputs.run == 'true' && runner.os == 'Windows'
+        if: env.RUN == 'true' && runner.os == 'Windows'
         shell: pwsh
         run: |
           $temp = Join-Path $env:RUNNER_TEMP "tmp"
@@ -112,7 +131,7 @@ jobs:
           "TEMP=$temp" >> $env:GITHUB_ENV
           "TMP=$temp" >> $env:GITHUB_ENV
       - name: Test
-        if: needs.scope.outputs.run == 'true'
+        if: env.RUN == 'true'
         env:
           # macOS ships sandbox-exec and Windows runs BAKED's restricted-token launcher, so the OS
           # sandbox integration tests must run on both.
@@ -122,9 +141,18 @@ jobs:
           SLOW_TESTS_FAIL: ${{ (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && '1' || '0' }}
           # A failed shard reruns each failed test alone and writes whether it is likely flaky.
           FLAKY_LEDGER: ${{ runner.temp }}/flaky-ledger.json
-        run: bun scripts/test-shard.ts ${{ matrix.shard }} ${{ matrix.shards }}
+          TARGETED: ${{ needs.scope.outputs.targeted }}
+          FILES: ${{ needs.scope.outputs.files }}
+        shell: bash
+        run: |
+          if [ "$TARGETED" = "true" ]; then
+            printf '%s\n' $FILES > "$RUNNER_TEMP/targeted.txt"
+            TEST_FILES="$RUNNER_TEMP/targeted.txt" bun scripts/test-shard.ts 1 1
+          else
+            bun scripts/test-shard.ts ${{ matrix.shard }} ${{ matrix.shards }}
+          fi
       - name: Upload the flaky test ledger
-        if: failure() && needs.scope.outputs.run == 'true'
+        if: failure() && env.RUN == 'true'
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: flaky-ledger-${{ matrix.os }}-${{ matrix.shard }}

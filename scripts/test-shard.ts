@@ -61,7 +61,12 @@ async function main() {
     process.exit(2);
   }
 
-  const files = testFiles();
+  // TEST_FILES names a file listing the test files to split instead of all of them: a pull
+  // request runs the ones scripts/pr-targeted-tests.ts picks.
+  const list = process.env.TEST_FILES;
+  const files = list
+    ? readFileSync(list, "utf8").split("\n").filter(Boolean)
+    : testFiles();
   const table = JSON.parse(readFileSync(join(import.meta.dir, "test-shard-weights.json"), "utf8"));
   const weights = weightsFor(process.platform, table);
   const shard = planShards(files, count, weights)[index - 1].map((file) => `./${file}`);
