@@ -33,7 +33,7 @@ describe("stop reasons", () => {
   test("hard limits take only enforce; the forecasts and the approval scope take every mode", () => {
     for (const [id, reason] of Object.entries(STOP_REASONS)) {
       expect(reason.modes).toContain(reason.defaultMode);
-      if (!["cost-forecast", "approval-scope", "initiative-forecast", "initiative-dollar-share", "initiative-dollar-cap", "initiative-plan-charge", "initiative-pool-growth", "initiative-time-share", "initiative-plan-share", "repeated_failure", "corrective_scope", "corrective_unowned_file", "repeat_without_change", "chain_rewrite_repeat", "corrective_restores_removed", "generated_case", "edge_crash_finding", "repro_blind", "upstream_symbol", "baseline_unrepairable", "baseline_signature", "check-config-approval", "ci_check_drift", "host_content_conflict", "fixer_unusable", "worktree_environment", "supplied_drift", "row_block_drift", "case_not_prescribed", "committed_tree", "host-resume-on-stored-limit", "cost_refusal_wait", "upstream_baseline_debt", "written_tests_unselected", "test_cap", "silent_check_failure", "host-settle-interrupted-check", "attempt_green_checkpoint", "upstream_stale_file", "initiative-row-owner"].includes(id))
+      if (!["cost-forecast", "approval-scope", "initiative-forecast", "initiative-dollar-share", "initiative-dollar-cap", "initiative-plan-charge", "initiative-pool-growth", "initiative-time-share", "initiative-plan-share", "repeated_failure", "corrective_scope", "corrective_unowned_file", "repeat_without_change", "chain_rewrite_repeat", "corrective_restores_removed", "generated_case", "edge_crash_finding", "repro_blind", "upstream_symbol", "baseline_unrepairable", "baseline_signature", "check-config-approval", "ci_check_drift", "host_content_conflict", "fixer_unusable", "worktree_environment", "supplied_drift", "transcript_drift", "row_block_drift", "case_not_prescribed", "committed_tree", "host-resume-on-stored-limit", "cost_refusal_wait", "upstream_baseline_debt", "written_tests_unselected", "test_cap", "silent_check_failure", "host-settle-interrupted-check", "attempt_green_checkpoint", "upstream_stale_file", "initiative-row-owner"].includes(id))
         expect(reason.modes).toEqual(["enforce"]);
     }
     expect(STOP_REASONS["cost-forecast"].modes).toEqual(STOP_MODES);
@@ -95,6 +95,8 @@ describe("stop reasons", () => {
     expect(STOP_REASONS.supplied_drift.modes).toEqual(["shadow", "advisory"]);
     expect(STOP_REASONS.supplied_drift.defaultMode).toBe("shadow");
     // Shadow until its promotion (#2486): a delivered test file that lacks a prescribed row's literal.
+    expect(STOP_REASONS.transcript_drift.modes).toEqual(["shadow", "advisory"]);
+    expect(STOP_REASONS.transcript_drift.defaultMode).toBe("shadow");
     expect(STOP_REASONS.row_block_drift.modes).toEqual(["shadow", "advisory"]);
     expect(STOP_REASONS.row_block_drift.defaultMode).toBe("shadow");
     // Shadow until its promotion (#2501): a criterion literal no prescribed row holds.
@@ -123,6 +125,8 @@ describe("stop reasons", () => {
     expect(parse({ ci_check_drift: "enforce" })).toBe(false);
     expect(parse({ supplied_drift: "advisory" })).toBe(true);
     expect(parse({ supplied_drift: "enforce" })).toBe(false);
+    expect(parse({ transcript_drift: "advisory" })).toBe(true);
+    expect(parse({ transcript_drift: "enforce" })).toBe(false);
     expect(parse({ row_block_drift: "advisory" })).toBe(true);
     expect(parse({ row_block_drift: "enforce" })).toBe(false);
     expect(parse({ case_not_prescribed: "enforce" })).toBe(false);
