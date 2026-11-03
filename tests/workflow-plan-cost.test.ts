@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, test } from "bun:test";
 import { planCostText as desktopPlanCostText } from "../apps/desktop/src/renderer/lib/plan-cost.js";
 import { findPricing } from "../src/core/llm/pricing.js";
 import { DEFAULT_MIX, type TokenMix } from "../src/core/workflows/estimate.js";
@@ -7,6 +7,10 @@ import { taskTotal, verificationTokens } from "../src/core/workflows/sizing.js";
 import { forecastRate, TASK_MIX } from "../src/core/workflows/stage-price.js";
 import type { AttemptUsageRecord } from "../src/core/workflows/step-budget.js";
 import type { ArtifactRow, AttemptRow, StepRow, WorkflowStore } from "../src/core/workflows/store.js";
+import { canonical } from "../src/core/specs/hash.js";
+import { costForecast } from "../src/core/workflows/cost-forecast.js";
+import type { RunPolicy, Task } from "../src/core/workflows/schemas.js";
+import { fixturePolicy, workflowFixture } from "./helpers/workflow-fixture.js";
 
 // stmtsplit e29347c1 (#1019): planning on claude cost $5.88 of $9.97, and the plan approval showed
 // neither. It now shows planning so far by model next to the tasks' price from sizing.
@@ -242,6 +246,7 @@ describe("plan approval cost (#1019)", () => {
     expect(planCostOf(makeStore([]), runId)).toEqual({
       planning: { usd: 0, complete: true, models: [] },
       implementation: null,
+      review: null,
     });
   });
 
@@ -314,5 +319,98 @@ describe("planCostWarning", () => {
     expect(planCostWarning({ ...cost, implementation: null }, 8, 0)).toBeNull();
     expect(planCostWarning(cost, null, 0)).toBeNull();
     expect(planCostWarning(cost, 8, 0, 9)).toContain("and the $9.00 it may grow to");
+  });
+});
+
+// #2776: the approval priced planning and the tasks while the cost forecast also counts the final
+// review and convergence (`verificationStages`). A plan approved without a dollar warning was then
+// stopped by the forecast once three tasks finished exactly on their price.
+describe("scenario: the plan approval prices the final review the cost forecast counts (#2776)", () => {
+  const cleanups: (() => Promise<void>)[] = [];
+  afterEach(async () => {
+    for (const cleanup of cleanups.splice(0).reverse()) await cleanup();
+  });
+
+  /** A finished attempt of `tokens` at a task loop's typical mix (`TASK_MIX`). */
+  function spend(store: WorkflowStore, runId: string, stage: string, policy: RunPolicy, tokens: number, mix: TokenMix) {
+    const stepId = store.beginStep(runId, stage);
+    const attempt = store.reserve(runId, stepId, SONNET, 1000, policy);
+    const usage: AttemptUsageRecord = {
+      schemaVersion: 1,
+      profileId: "implementer",
+      taskId: null,
+      maxSteps: 10,
+      maxTokens: 20_000_000,
+      stopReason: "submitted",
+      finalizedBy: null,
+      totalTokens: tokens,
+      steps: [
+        {
+          inputTokens: Math.round(tokens * (mix.input + mix.cacheRead)),
+          outputTokens: Math.round(tokens * mix.output),
+          cacheReadTokens: Math.round(tokens * mix.cacheRead),
+          toolCalls: 0,
+          compactedBytes: 0,
+        },
+      ],
+    };
+    store.transaction(() => {
+      store.artifact(runId, "usage", `attempts/${attempt}/usage.json`, canonical(usage));
+      store.finishAttempt(runId, attempt, "completed", tokens);
+    });
+  }
+
+  const task = (id: string): Task => ({ id, title: id, description: id, requirementIds: ["FR-001"], criterionIds: ["AC-001"], dependsOn: [], profileId: "implementer", writes: [{ path: `src/${id}.ts`, action: "create" }], readHints: [], checkIds: [], origin: "planned", findingIds: [], rationale: id });
+
+  test("a cap that covers planning and the tasks' high end but not the review is warned about, and the forecast passes it", async () => {
+    const policy: RunPolicy = { ...fixturePolicy, maxAgentCalls: 1000, maxTotalTokens: 16_000_000, maxCostUsd: null };
+    const made = workflowFixture({ policy });
+    made.config.defaultModel = SONNET;
+    cleanups.push(made.dispose);
+    const { store } = made.service;
+    const { runId } = await made.start();
+    store.transaction(() => store.transition(runId, "running"));
+    // Four tasks priced 300k-400k each; planning spent 600k uncached tokens.
+    const tasks = ["T001", "T002", "T003", "T004"].map(task);
+    store.transaction(() =>
+      store.syncTasks(runId, { schemaVersion: 1, featureId: "fixture", revision: 1, specHash: "a".repeat(64), planHash: "b".repeat(64), tasks }),
+    );
+    const estimate = { low: 300_000, high: 400_000 };
+    store.artifact(
+      runId,
+      "sizing",
+      "sizing/plan-1.json",
+      canonical({
+        schemaVersion: 3,
+        model: SONNET,
+        tasks: tasks.map((t) => ({ taskId: t.id, kind: "code", files: 1, estimate, attemptTokens: 400_000, attemptSteps: null, oversized: false })),
+        taskTokens: { low: 1_200_000, expected: 1_400_000, high: 1_600_000 },
+      }),
+    );
+    spend(store, runId, "plan", policy, 600_000, { input: 1, cacheRead: 0, output: 0 });
+
+    const cost = planCostOf(store, runId, policy);
+    const taskRate = rateAt(SONNET, TASK_MIX);
+    expect(cost.implementation?.usd.high).toBeCloseTo(1_600_000 * taskRate, 6);
+    // Review and convergence have no samples: the verification budget at the default mix.
+    expect(cost.review?.stages).toEqual(["review", "converge"]);
+    expect(cost.review?.usd).toBeCloseTo(verificationTokens() * defaultRate(SONNET), 6);
+    expect(planCostText(cost)).toEndWith(`; the final review and convergence about $${cost.review?.usd.toFixed(2)}`);
+    expect(desktopPlanCostText(cost)).toBe(planCostText(cost));
+
+    // The cap covers planning and the tasks' high end, and half the review.
+    const cap = cost.planning.usd + (cost.implementation?.usd.high ?? 0) + (cost.review?.usd ?? 0) / 2;
+    expect(planCostWarning(cost, cap, 0)).toContain("with planning and the final review, above the run's");
+
+    // Three tasks finish exactly on their midpoint at the priced mix: the forecast passes the cap.
+    const capped = { ...policy, maxCostUsd: cap };
+    store.setPolicy(runId, capped);
+    for (const t of tasks.slice(0, 3)) {
+      spend(store, runId, `task-${t.id}`, capped, 350_000, TASK_MIX);
+      store.transaction(() => store.taskStatus(runId, t.id, "implemented"));
+    }
+    const forecast = costForecast(store, runId, capped);
+    expect(forecast?.projectedUsd).toBeCloseTo(cost.planning.usd + 1_400_000 * taskRate + (cost.review?.usd ?? 0), 2);
+    expect(forecast?.projectedUsd ?? 0).toBeGreaterThan(cap);
   });
 });
