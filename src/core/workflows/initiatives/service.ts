@@ -93,7 +93,12 @@ import {
 } from "./calls-pool.js";
 import { criticalPathSummary, planWidth, remainingPath } from "./critical-path.js";
 import { DECOMPOSE_WORKFLOW_ID } from "./decompose.js";
-import { documentedSurfaceRate, documentsProgram, requestCommands } from "./documented-surface.js";
+import {
+  boundaryKindOf,
+  documentedSurfaceRate,
+  documentsProgram,
+  requestCommands,
+} from "./documented-surface.js";
 import { type InitiativeDriveState, initiativeDriveState } from "./drive-state.js";
 import {
   calibrationLagText,
@@ -4239,6 +4244,7 @@ export class InitiativeService {
         dependsOn: feature.dependsOn,
         ...(testCases ? { testCases } : {}),
         ...(commands && documentsProgram(feature) ? { documentedCommands: commands } : {}),
+        ...boundaryKindOf(feature),
       };
     });
     const history = estimateHistory(
@@ -4287,6 +4293,7 @@ export class InitiativeService {
       ...(settings.basePolicy?.sizing?.recencyHalfLife
         ? { recencyHalfLife: settings.basePolicy.sizing.recencyHalfLife }
         : {}),
+      ...(settings.basePolicy?.sizing?.fewPathPrice ? { fewPathPrice: true } : {}),
       // Read only when the request demands a test volume: the sizing history opens every store.
       ...(features.some((f) => f.testCases)
         ? {

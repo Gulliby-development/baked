@@ -970,6 +970,14 @@ export const PolicySchema = z
          */
         documentedSurface: z.boolean().optional(),
         /**
+         * Prices a feature with fewer paths than its size pool's median, where the pool's tokens
+         * do not follow their paths (no path fit), at the square root of that path share of the
+         * pool's range, and a feature of legal files alone (a `LICENSE`) at the per-path rate
+         * (`fewPathShare`, #2640). Documentation features keep their price. Absent means off: the
+         * size pool prices them as features of its usual paths.
+         */
+        fewPathPrice: z.boolean().optional(),
+        /**
          * Weighs an initiative estimate's finished features by how recent their initiative is: a
          * feature's weight halves for every this many initiatives started after its own
          * (`recencyWeights`, #2150). Absent means every feature counts the same.
