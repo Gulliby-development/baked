@@ -73,12 +73,16 @@ describe("first start", () => {
           await view.renderOnce();
         });
     };
-    // The model list arrives after an async fetch: on a loaded CI runner four 5 ms frames were not
-    // enough and the picker still showed its loading state (merge queue, 2026-11-03).
-    const settleUntil = async (done: () => boolean) => {
+    // The model list loads asynchronously; a busy runner can take longer than
+    // one settle, so wait for the text instead of a fixed number of frames.
+    const until = async (text: string) => {
       const deadline = Date.now() + 5000;
-      do await settle();
-      while (!done() && Date.now() < deadline);
+      while (Date.now() < deadline) {
+        await settle();
+        if (view.captureCharFrame().includes(text)) return;
+        await Bun.sleep(20);
+      }
+      throw new Error(`"${text}" never showed:\n${view.captureCharFrame()}`);
     };
     try {
       await settle();
@@ -95,12 +99,11 @@ describe("first start", () => {
       await act(async () => {
         view.mockInput.pressEnter();
       });
-      await settleUntil(() => view.captureCharFrame().includes("GPT Test"));
-      expect(view.captureCharFrame()).toContain("GPT Test");
+      await until("GPT Test");
       await act(async () => {
         view.mockInput.pressEnter();
       });
-      await settleUntil(() => selected !== undefined);
+      await settle();
       expect(selected).toBe("codex/gpt-test");
     } finally {
       await act(async () => {
