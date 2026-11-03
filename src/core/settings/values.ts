@@ -2,14 +2,18 @@
  * Reading and changing the settings of `schema.ts` against the global and project config layers.
  * File access stays with the caller, so the local API and tests share the same rules.
  */
+
+import { join } from "node:path";
 import { z } from "zod";
 import { getToolCatalog } from "../tools/constants.js";
+import { worktreePathChecks } from "../workflows/doctor.js";
 import {
   LibraryDocsSchema,
   type LibraryDocsSource,
   libraryDocsCheck,
 } from "../workflows/library-docs.js";
 import { qualityRuleCatalog } from "../workflows/quality/builtin-rules.js";
+import { TASK_WORKTREE_TAIL, worktreeRootDir } from "../workflows/worktree.js";
 import {
   readSettingPath,
   SETTING_PAGES,
@@ -54,6 +58,8 @@ export function settingValueSchema(setting: SettingDefinition): z.ZodType {
       return z.string().trim().min(1).max(4096);
     case "library-docs":
       return LibraryDocsSchema.nullable();
+    case "path":
+      return z.string().trim().min(1).max(240).nullable();
   }
 }
 
@@ -147,6 +153,11 @@ export function settingsView(layers: SettingsLayers): SettingsView {
     const { status, title, detail, fix } = libraryDocsCheck(layers.workspace, docs, servers ?? []);
     checks.libraryDocs = { status, title, ...(detail ? { detail } : {}), ...(fix ? { fix } : {}) };
   }
+  if (layers.workspace) {
+    const root = values["workflows.worktreeRoot"]?.value as string | null | undefined;
+    const check = worktreeRootCheck(layers.workspace, root ?? null);
+    if (check) checks["workflows.worktreeRoot"] = check;
+  }
   return {
     pages: SETTING_PAGES,
     settings: SETTINGS,
@@ -154,6 +165,34 @@ export function settingsView(layers: SettingsLayers): SettingsView {
     catalogs: { tools, "quality-rules": qualityRuleCatalog() },
     ...(Object.keys(checks).length ? { checks } : {}),
   };
+}
+
+/**
+ * The worktree folder as the doctor sees it (#2461): whether it can hold the project's worktrees
+ * and whether a task's checks there stay under a project toolchain's path limit. Null when it is
+ * unset and the default folder is deep enough.
+ */
+export function worktreeRootCheck(
+  workspace: string,
+  configured: string | null,
+  platform: NodeJS.Platform = process.platform,
+): SettingCheck | null {
+  const [first] = worktreePathChecks(workspace, platform, configured);
+  if (first)
+    return {
+      status: "warn",
+      title: first.title,
+      ...(first.detail ? { detail: first.detail } : {}),
+      ...(first.fix ? { fix: first.fix } : {}),
+    };
+  const root = worktreeRootDir(workspace, configured);
+  return root
+    ? {
+        status: "ok",
+        title: "New worktree runs keep their worktrees in this folder",
+        detail: `A task's checks run in ${join(root, TASK_WORKTREE_TAIL)}.`,
+      }
+    : null;
 }
 
 export interface SettingsChange {

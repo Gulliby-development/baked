@@ -63,6 +63,7 @@ import { failureSignature as convergenceSignature, missingPlannedPaths, noTestsC
 import { CheckRunner, executeCheckCommand, exitStatus, ranNoTests, timedOutFailure } from "../src/core/verification/check-runner.js";
 import { emptyScriptNote, emptyTestScript } from "../src/core/verification/empty-test-script.js";
 import { FORMAT_FAILURE_READERS, hostDocumentFailure } from "../src/core/verification/host-documents.js";
+import { transcriptDrifts } from "../src/core/workflows/transcript-drift.js";
 import { colour, RUNNER_SUMMARIES } from "./helpers/coloured-runner-output.js";
 import { environmentFault, ENVIRONMENT_SIGNATURES, silentFailure } from "../src/core/verification/environment-faults.js";
 import { SWIFT_COMPILE_ERROR, SWIFT_SYMLINK_WARNING_ONLY, SWIFT_TEST_FATAL_ERROR, SWIFT_TEST_SILENT_EXIT_4, SWIFT_TESTING_FAILURE } from "./fixtures/swiftpm-crash-outputs.js";
@@ -303,6 +304,9 @@ describe("host-written acceptance rows in the case-walk and mutation gates (#159
     pest: { harness: "tests/harness.php", test: "tests/RowsTest.php" },
     exunit: { harness: "tests/harness.exs", test: "tests/rows_test.exs" },
     dart: { harness: "tests/harness.dart", test: "tests/rows_test.dart" },
+    kotlin: { harness: "tests/Harness.kt", test: "tests/RowsTest.kt", package: "tests" },
+    scalatest: { harness: "tests/Harness.scala", test: "tests/RowsSuite.scala" },
+    munit: { harness: "tests/Harness.scala", test: "tests/RowsSuite.scala", package: "tests" },
   } as const;
   test.each(Object.keys(layouts) as (keyof typeof layouts)[])("%s retains every case in its JSON data and keeps generated tests out of mutation proposals", async (framework) => {
     const root = mkdtempSync(join(tmpdir(), "baked-row-gate-"));
@@ -320,8 +324,9 @@ describe("host-written acceptance rows in the case-walk and mutation gates (#159
       const check = caseCheck(spec, task, { checks: [] });
       expect(check).toBeDefined();
       expect(await check?.(root)).toEqual([]);
-      // Java, C# and Dart tests hold the rows themselves, and the host refuses any change to that file.
-      if (framework === "junit" || framework === "xunit" || framework === "dart") expect(files[1]?.content).toMatch(/\b34L?\b.*\b68L?\b/);
+      // Java, C#, Dart, Kotlin and Scala tests hold the rows themselves, and the host refuses any
+      // change to that file.
+      if (["junit", "xunit", "dart", "kotlin", "scalatest", "munit"].includes(framework)) expect(files[1]?.content).toMatch(/\b34L?\b.*\b68L?\b/);
       else {
         writeFileSync(join(root, "tests/rows.json"), JSON.stringify(artifact.rows.slice(0, 1)));
         expect((await check?.(root))?.join()).toContain("34");
@@ -368,6 +373,9 @@ describe("gate matrix: inline rows block holds its own cells (#1997)", () => {
     pest: { mode: "inline", framework: "pest", test: "tests/CalcTest.php" },
     exunit: { mode: "inline", framework: "exunit", test: "test/calc_test.exs" },
     dart: { mode: "inline", framework: "dart", test: "test/calc_test.dart" },
+    kotlin: { mode: "inline", framework: "kotlin", package: "com.ex.calc", test: "src/test/kotlin/com/ex/calc/CalcTest.kt" },
+    scalatest: { mode: "inline", framework: "scalatest", test: "src/test/scala/CalcSuite.scala" },
+    munit: { mode: "inline", framework: "munit", test: "src/test/scala/CalcSuite.scala" },
   };
   const shapes: [string, unknown][] = [
     ["two-line CRLF text", ["[a]\r\nb=1\r\n", {}]],
@@ -5695,6 +5703,26 @@ describe("gate matrix: fixer languages (#2632)", () => {
 // #2641: a whole-tree formatter check that reports only the documents the host publishes under
 // `specs/` (R87 slk: `prettier --check .` on the five files of the run's plan) is the host's
 // failure, read from each Markdown or JSON formatter's own report; one other file keeps it failed.
+// #2648: a `$` transcript the request says a document must hold exactly is compared with the
+// delivered document; a doubled backslash in one line (R88 pokerank JavaScript, R87 citeseek
+// Python) is a drift, the transcript as given is none.
+describe("gate matrix: transcripts a document must hold exactly (#2648)", () => {
+  const CASES: [string, string, string][] = [
+    ["javascript", "$ printf 'board 2c 7d\\nseat ann 100\\n' > hand.txt", "$ node bin/pokerank.js showdown hand.txt"],
+    ["python", "$ .venv\\Scripts\\activate", "$ python -m citeseek check refs.bib"],
+    ["shell", "$ printf 'a\\tb\\n' | ./cut.sh -f 2", "b"],
+  ];
+  for (const [language, first, second] of CASES)
+    test(`${language}: a doubled backslash is a drift, the transcript as given is none`, () => {
+      const request = `The README must hold this exactly as shown:\n\n\`\`\`console\n${first}\n${second}\n\`\`\`\n`;
+      const graph = { tasks: [{ id: "T002", writes: [{ path: "README.md", action: "create" }] }] } as unknown as Parameters<typeof transcriptDrifts>[1];
+      const doc = (line: string) => `# Tool\n\n\`\`\`console\n${line}\n${second}\n\`\`\`\n`;
+      expect(transcriptDrifts(request, graph, () => doc(first))).toEqual([]);
+      const doubled = first.replaceAll("\\", "\\\\");
+      expect(transcriptDrifts(request, graph, () => doc(doubled))).toMatchObject([{ problem: "differs", expected: first, actual: { line: 4, text: doubled } }]);
+    });
+});
+
 describe("gate matrix: host-published documents in a formatter report (#2641)", () => {
   const DOCS = ["specs/slk/plan.md", "specs/slk/spec.json"];
   const REPORTS: Record<string, (files: string[]) => string> = {
