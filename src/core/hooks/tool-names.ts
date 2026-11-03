@@ -86,6 +86,19 @@ export function toClaudeToolName(bakedToolName: string): string {
 }
 
 /**
+ * Whether one tool name, written either way, names this baked tool: its Claude Code name, its own
+ * name, or a Claude Code alias of it (`Write` and `Edit` name `edit_file`, `Edit` names
+ * `multi_edit`). Matchers and `if` conditions both resolve names through this.
+ */
+export function namesTool(name: string, bakedToolName: string): boolean {
+  return (
+    name === toClaudeToolName(bakedToolName) ||
+    name === bakedToolName ||
+    (CLAUDE_TO_baked[name]?.includes(bakedToolName) ?? false)
+  );
+}
+
+/**
  * Check if a tool name matches a Claude Code hook matcher pattern.
  *
  * Matcher rules (matching Claude Code behavior):
@@ -100,15 +113,7 @@ export function matchesToolName(matcher: string | undefined, bakedToolName: stri
 
   // Check if matcher is a simple exact/pipe-separated pattern
   if (/^[a-zA-Z0-9_|]+$/.test(matcher)) {
-    const names = matcher.split("|");
-    // Match against both Claude Code name AND baked name
-    return names.some(
-      (n) =>
-        n === claudeName ||
-        n === bakedToolName ||
-        // Also check if the matcher is a Claude name that maps to our tool
-        CLAUDE_TO_baked[n]?.includes(bakedToolName),
-    );
+    return matcher.split("|").some((n) => namesTool(n, bakedToolName));
   }
 
   // Regex matcher — test against both names
