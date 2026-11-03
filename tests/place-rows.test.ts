@@ -114,3 +114,40 @@ describe("place_rows with a row the request prescribes twice", () => {
     });
   });
 });
+
+// #2689: a row the request writes with its own trailing separator (R82 tinyflate's C statement rows
+// `failed += row(...);`, a Java row copied with its comma) got the default comma appended
+// (`...;,`, a C syntax error), and an explicit `lastSeparator: ""` kept the row's own comma, so the
+// last item of a `List.of(` call ended in `,`, a Java syntax error.
+describe("place_rows separators: a row's own trailing separator", () => {
+  const C_PATH = "tests/cli_test.c";
+  const C_ROWS = ['failed += row(ARGS("a"), "x", 0, "1\\n", "");', 'failed += row(ARGS("b"), "y", 0, "2\\n", "");'];
+  const cFrame = "int main(void) {\n  int failed = 0;\n  return failed;\n}\n";
+  const J_PATH = "src/test/java/CliTest.java";
+  const J_ROWS = ['new Row("a", 1),', 'new Row("b", 2),'];
+  const jFrame = "class CliTest {\n  static final List<Row> ROWS = List.of(\n  );\n}\n";
+
+  test("by default a row keeps its own separator and gets no second one", () => {
+    const placed = placeRows({ path: C_PATH, line: 2, rows: [1, 2] }, new Map([[C_PATH, C_ROWS]]), cFrame);
+    expect(placed).toMatchObject({
+      content: `int main(void) {\n  int failed = 0;\n  ${C_ROWS[0]}\n  ${C_ROWS[1]}\n  return failed;\n}\n`,
+      first: `  ${C_ROWS[0]}`,
+    });
+    // A row with no separator of its own still takes the default comma.
+    expect(placeRows({ path: PATH, line: 1, rows: [1] }, new Map([[PATH, ROWS]]), frame)).toMatchObject({ first: `  ${ROWS[0]},` });
+  });
+
+  test("an explicit separator or lastSeparator replaces the row's own", () => {
+    const targets = new Map([[J_PATH, J_ROWS]]);
+    expect(placeRows({ path: J_PATH, line: 2, rows: [1, 2], lastSeparator: "" }, targets, jFrame)).toMatchObject({
+      content: 'class CliTest {\n  static final List<Row> ROWS = List.of(\n    new Row("a", 1),\n    new Row("b", 2)\n  );\n}\n',
+    });
+    expect(placeRows({ path: C_PATH, line: 2, rows: [1], separator: "," }, new Map([[C_PATH, C_ROWS]]), cFrame)).toMatchObject({
+      first: `  ${C_ROWS[0]?.slice(0, -1)},`,
+    });
+  });
+
+  test("the description states the default separator", () => {
+    expect(placeRowsDescription(new Map([[PATH, ROWS]]))).toContain("the row's own trailing comma or semicolon, else a comma");
+  });
+});
