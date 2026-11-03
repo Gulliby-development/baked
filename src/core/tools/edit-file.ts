@@ -16,8 +16,11 @@ import {
   dominantLineEnding,
   type LineEnding,
   minorityLineCount,
+  splitBom,
   toLf,
+  withBom,
   withLineEnding,
+  withoutCopiedBom,
 } from "./line-endings.js";
 import {
   appendAutoFormatResult,
@@ -203,10 +206,14 @@ function correctIndentation(
     .join("\n");
 }
 
-/** The file as read from disk (`raw`) and the ending its edited text is written back with. */
+/**
+ * The file as read from disk (`raw`), and the ending and UTF-8 byte-order mark its edited text
+ * is written back with.
+ */
 interface DiskState {
   raw: string;
   eol: LineEnding;
+  bom: boolean;
 }
 
 async function applyEdit(
@@ -222,7 +229,7 @@ async function applyEdit(
   toolPhase("analyze");
   const beforeMetrics = analyzeFile(content);
   const afterMetrics = analyzeFile(updatedLf);
-  const updated = withLineEnding(updatedLf, disk.eol);
+  const updated = withBom(withLineEnding(updatedLf, disk.eol), disk.bom);
   const normalized = minorityLineCount(disk.raw);
 
   toolPhase("pre_diagnostics");
@@ -322,8 +329,8 @@ export const editFileTool = {
         return { success: false, output: msg, error: msg };
       }
 
-      const oldStr = toLf(args.oldString);
-      const newStr = toLf(args.newString);
+      const oldStr = toLf(withoutCopiedBom(args.oldString));
+      const newStr = toLf(withoutCopiedBom(args.newString));
 
       // Create new file
       if (oldStr === "") {
@@ -336,7 +343,7 @@ export const editFileTool = {
         }
         await mkdir(dir, { recursive: true });
         const newEol = detectNewFileLineEnding(dir, filePath);
-        const fileText = newEol ? withLineEnding(newStr, newEol) : args.newString;
+        const fileText = newEol ? withLineEnding(args.newString, newEol) : args.newString;
         assertEditActive();
         toolPhase("write");
         await atomicWriteFile(filePath, fileText);
@@ -365,8 +372,9 @@ export const editFileTool = {
       }
 
       const raw = await readFile(filePath, "utf-8");
-      const disk: DiskState = { raw, eol: dominantLineEnding(raw) };
-      const content = toLf(raw);
+      const body = splitBom(raw);
+      const disk: DiskState = { raw, eol: dominantLineEnding(raw), bom: body.bom };
+      const content = toLf(body.text);
       const lines = content.split("\n");
 
       // ═══════════════════════════════════════════════════════════════
