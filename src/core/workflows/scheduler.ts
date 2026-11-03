@@ -746,10 +746,12 @@ import { type RecoveryAdvice, recoveryAdvice } from "./remedies.js";
 import { RepairBlockSchema } from "./repairable-schema.js";
 import {
   REPEAT_KIND,
+  REPEAT_STOPS_DIR,
   REPEAT_TASKS_DIR,
   type RepeatCheck,
   type RepeatRecord,
   repeatCheck,
+  repeatedFailureFault,
   repeatRecord,
   unfinishedRecord,
   unfinishedRepeatRemedies,
@@ -10491,8 +10493,9 @@ ${note}`;
   /**
    * Records the failing checks of a task's unfinished end (`repeats/tasks/<task>.json`, #2437)
    * and, when they fail exactly as the task's previous unfinished end did, the `repeated_failure`
-   * would-stop (key `task-<id>`, once per task). Shadow only: the run blocks as before; the repeat
-   * it returns goes into the block message, whose remedies change an input (#2520). R77 pairwick:
+   * would-stop (key `task-<id>`, once per task) when the reason is not enforced. The run blocks
+   * either way: enforced (the default, #2010) the block is the stop itself, and the repeat it
+   * returns goes into the block message, whose remedies change an input (#2520). R77 pairwick:
    * three implement tasks ended unfinished on the same `scalafmt` failure attempt after attempt and
    * resume after resume, and no corrective was ever opened for the chain comparison to see.
    */
@@ -20683,11 +20686,14 @@ ${note}`;
     if (!fresh.length) return;
     if (scope === "task") {
       state.pendingTaskRepair = fresh.map((f) => f.id);
+      let stops: RepeatRecord[] = [];
       this.store.transaction(() => {
         this.store.saveState(runId, state);
         // Before the correction is counted, so a chain the round limit refuses records it too.
-        this.recordRepeatedFailures(runId, state, policy, fresh);
+        stops = this.recordRepeatedFailures(runId, state, policy, fresh);
       });
+      // Enforced (#2010): the chain blocks before the next corrective starts.
+      if (stops.length) throw repeatedFailureFault(runId, stops);
     }
     this.store.transaction(() => {
       this.amendSpec(runId, state, fresh);
@@ -21446,19 +21452,25 @@ ${note}`;
   }
   /**
    * Records each failing corrective's required checks (`repeats/tasks/<task>.json`, #1996) and,
-   * when they fail exactly as the corrective it corrects did, the `repeated_failure` stop reason's
-   * would-stop, once per chain. Shadow only: the correction is opened as before. cfgquill lint
-   * a843cc11 (bench round 64): T005, T006 and T007 failed gofmt with the same byte order mark
-   * error at the same position, and only `maxTaskRepairs` ended the chain after 4.8M tokens.
+   * when they fail exactly as the corrective it corrects did, decides the `repeated_failure` stop
+   * reason once per repeating corrective. Enforced (the default since #2010), it returns the
+   * repeating records, whose chains block before the next corrective starts, and records the stop
+   * (`repeats/stops/<task>.json`) with the chain's granted repairs, so a resume without a
+   * `workflow repair` grant blocks again; in shadow or advisory it records the would-stop and the
+   * correction is opened as before. cfgquill lint a843cc11 (bench round 64): T005, T006 and T007
+   * failed gofmt with the same byte order mark error at the same position, and only
+   * `maxTaskRepairs` ended the chain after 4.8M tokens.
    */
   private recordRepeatedFailures(
     runId: string,
     state: RuntimeState,
     policy: RunPolicy,
     findings: Review["findings"],
-  ): void {
+  ): RepeatRecord[] {
     const graph = state.graph;
-    if (!graph) return;
+    if (!graph) return [];
+    const mode = stopMode(policy, "repeated_failure");
+    const stops: RepeatRecord[] = [];
     const byTask = new Map<string, Review["findings"]>();
     for (const finding of findings) {
       const taskId = state.repairPredecessors[finding.id];
@@ -21472,7 +21484,14 @@ ${note}`;
     };
     for (const [taskId, own] of byTask) {
       const task = graph.tasks.find((t) => t.id === taskId);
-      if (!task || task.origin === "planned" || recordOf(taskId)) continue;
+      if (!task || task.origin === "planned") continue;
+      const recorded = recordOf(taskId);
+      if (recorded) {
+        // A resume after the enforced stop meets it again until a person grants a repair.
+        if (mode === "enforce" && this.repeatStopHolds(runId, state, recorded))
+          stops.push(recorded);
+        continue;
+      }
       const checks = own.flatMap((finding): RepeatCheck[] => {
         const id = taskCheckOfClaim(finding.claim) ?? checkOfClaim(finding.claim);
         if (!id) return [];
@@ -21496,8 +21515,21 @@ ${note}`;
         canonical(record),
       );
       if (record.decision !== "repeat" || !record.previous) continue;
-      const mode = stopMode(policy, "repeated_failure");
-      if (mode === "enforce") continue;
+      if (mode === "enforce") {
+        this.store.artifact(
+          runId,
+          REPEAT_KIND,
+          `${REPEAT_STOPS_DIR}${taskId}.json`,
+          canonical({
+            taskId,
+            root: record.root,
+            rounds: [record.previous, taskId],
+            grantedRepairs: state.extraTaskRepairs[record.root] ?? 0,
+          }),
+        );
+        stops.push(record);
+        continue;
+      }
       const positions = checks.flatMap((c) => c.files).slice(0, 5);
       recordWouldStop(this.store, runId, {
         reason: "repeated_failure",
@@ -21513,6 +21545,25 @@ ${note}`;
           firstDifference: record.firstDifference,
         },
       });
+    }
+    return stops;
+  }
+  /**
+   * Whether the enforced `repeated_failure` stop of a repeating corrective still holds: it was
+   * recorded and no `workflow repair` grant raised its chain's repairs since (#2010).
+   */
+  private repeatStopHolds(runId: string, state: RuntimeState, record: RepeatRecord): boolean {
+    if (record.decision !== "repeat" || !record.previous || record.end === "unfinished")
+      return false;
+    const artifact = this.store.latestArtifact(runId, `${REPEAT_STOPS_DIR}${record.taskId}.json`);
+    if (!artifact) return false;
+    try {
+      const stop = JSON.parse(this.store.readArtifact(runId, artifact.id)) as {
+        grantedRepairs?: number;
+      };
+      return (state.extraTaskRepairs[record.root] ?? 0) <= (stop.grantedRepairs ?? 0);
+    } catch {
+      return false;
     }
   }
   /**

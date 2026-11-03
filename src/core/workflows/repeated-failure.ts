@@ -1,6 +1,8 @@
 import stripAnsi from "strip-ansi";
 import { hashJson } from "../specs/hash.js";
 import { normalizeVolatile } from "../verification/volatile.js";
+import { WorkflowFault } from "./errors.js";
+import { recoveryAdvice } from "./remedies-model.js";
 
 /**
  * A corrective whose required checks fail exactly as the corrective before it in the same chain
@@ -14,9 +16,11 @@ import { normalizeVolatile } from "../verification/volatile.js";
  * Each corrective's failing required checks are recorded as `repeats/tasks/<task>.json` (kind
  * `repeated-failure`, kept in bench traces): per check its id, its output normalized by
  * `normalizeCheckOutput`, and the files the output names failing; the hash covers all three. The
- * stop reason `repeated_failure` (`stop-reasons.ts`) is in shadow mode: a corrective whose hash
- * equals the one of the corrective it corrects records `decision.would_stop` with both round ids,
- * once per chain. `replayRepeatedFailures` (`trace.ts`) decides each record again.
+ * stop reason `repeated_failure` (`stop-reasons.ts`) is enforced (#2010, after bench rounds R78 to
+ * R81 recorded no false would-stop): a corrective whose hash equals the one of the corrective it
+ * corrects blocks its chain before the next corrective starts (`repeatedFailureFault`), and the
+ * stop is kept as `repeats/stops/<task>.json`; in shadow it records `decision.would_stop` with both
+ * round ids, once per chain. `replayRepeatedFailures` (`trace.ts`) decides each record again.
  *
  * A task that ends unfinished (`Task T001 did not complete its implementation`, the run blocked
  * `invalid_output`) opens no corrective, so the chain comparison never sees it (#2437). R77
@@ -29,6 +33,12 @@ import { normalizeVolatile } from "../verification/volatile.js";
 export const REPEAT_KIND = "repeated-failure";
 /** One record per corrective whose required checks failed: `repeats/tasks/<task>.json`. */
 export const REPEAT_TASKS_DIR = "repeats/tasks/";
+/**
+ * One record per enforced `repeated_failure` stop, by the repeating corrective (#2010): its chain's
+ * root, both rounds and the chain's granted repairs (`extraTaskRepairs`) at the stop. A resume
+ * blocks again until a `workflow repair` grant raises them.
+ */
+export const REPEAT_STOPS_DIR = "repeats/stops/";
 /** The tail of each check's normalized output a record keeps and hashes. */
 export const REPEAT_OUTPUT_CHARS = 4000;
 
@@ -200,4 +210,52 @@ export function unfinishedRecord(
     end: "unfinished",
     ends: record.decision === "repeat" ? (before?.ends ?? 1) + 1 : 1,
   };
+}
+
+/** The first line of a check's recorded output that names a failing file, else its first line. */
+function failingLine(check: RepeatCheck): string {
+  const lines = check.text.split("\n").filter((line) => line.trim());
+  const named = lines.find((line) => check.files.some((file) => line.includes(file)));
+  const line = (named ?? lines[0] ?? "").trim();
+  return line.length > 200 ? `${line.slice(0, 199)}…` : line;
+}
+
+/**
+ * The enforced `repeated_failure` stop (#2010): the corrective chains whose latest corrective
+ * failed its required checks exactly as the corrective before it did. The message names each
+ * chain's checks, the first failing line of each (its file, line and column), both round ids and
+ * that the output did not change; a `workflow repair` grant lets the chain open one more
+ * corrective (`repairBlock` of limit `maxTaskRepairs` on the chain's root).
+ */
+export function repeatedFailureFault(runId: string, stops: readonly RepeatRecord[]): WorkflowFault {
+  const chains = stops.map((stop) => {
+    const lines = stop.checks.map((check) => {
+      const line = failingLine(check);
+      return line ? `${check.id} (${line})` : check.id;
+    });
+    return `${stop.taskId} failed ${lines.join(", ")} exactly as ${stop.previous ?? stop.root} did; the output did not change`;
+  });
+  const what = `repeated_failure: ${chains.join("; ")}. Another corrective would start from the same failure.`;
+  return new WorkflowFault(
+    "RECOVERY_REQUIRED",
+    recoveryAdvice(
+      `${what} Fix the cause by hand and grant one more repair with workflow repair, revise the plan, or fork the run.`,
+      `${what} A corrective that sees the same output repeats it.`,
+      { action: "repair", runId },
+      { action: "revise", runId },
+      { action: "fork", runId },
+    ),
+    {
+      reason: "no_progress",
+      stopReason: "repeated_failure",
+      rounds: stops.map((stop) => [stop.previous, stop.taskId]),
+      checks: [...new Set(stops.flatMap((stop) => stop.checks.map((check) => check.id)))],
+      repairBlock: {
+        limit: "maxTaskRepairs",
+        scope: "task",
+        required: 1,
+        taskIds: [...new Set(stops.map((stop) => stop.root))],
+      },
+    },
+  );
 }

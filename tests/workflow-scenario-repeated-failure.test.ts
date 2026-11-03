@@ -16,9 +16,10 @@ import { FixtureExecutor, fixturePolicy, workflowFixture } from "./helpers/workf
 // Scenario of bench round 64, cfgquill lint a843cc11 (#1996): the corrective chain T003 -> T005 ->
 // T006 -> T007 failed gofmt with the same `rules_test.go:26:2217: illegal byte order mark` each
 // round, and only `maxTaskRepairs` ended it, after T006 (1.42M tokens) and T007 (3.43M). Here a
-// task-scoped check prints what value.txt holds; each task writes its own scripted value. The
-// `repeated_failure` stop reason is in shadow mode: it records `decision.would_stop` at the second
-// identical corrective and the chain goes on as before.
+// task-scoped check prints what value.txt holds; each task writes its own scripted value. Enforced
+// (the default since #2010), the `repeated_failure` stop reason blocks the chain at the second
+// identical corrective, before another one starts; in shadow mode it records `decision.would_stop`
+// there and the chain goes on as before.
 
 const cleanups: (() => Promise<void> | void)[] = [];
 afterEach(async () => {
@@ -64,9 +65,10 @@ const checkScript = [
   "}",
 ].join("\n");
 
-async function chain(values: string[]) {
+async function chain(values: string[], stopModes: RunPolicy["stopModes"] = {}) {
   const policy: RunPolicy = {
     ...fixturePolicy,
+    stopModes,
     maxTaskRepairs: 3,
     checks: fixturePolicy.checks.map((c) => ({ ...c, scope: "task", args: ["-e", checkScript] })),
   };
@@ -85,12 +87,48 @@ async function chain(values: string[]) {
   const wouldStops = store
     .eventsOfType(run.runId, "decision.would_stop")
     .flatMap((e) => (e.type === "decision.would_stop" && e.payload.reason === "repeated_failure" ? [e.payload] : []));
-  return { ...fixture, runId: run.runId, stopped, records, wouldStops };
+  const corrected = () => store.tasks(run.runId).filter((t) => t.id !== "T001").map((t) => t.id);
+  return { ...fixture, runId: run.runId, stopped, records, wouldStops, corrected };
 }
 
 describe("scenario: cfgquill lint a843cc11, a corrective chain repeating one failure (#1996)", () => {
-  test("three correctives whose checks print the same output record a would-stop at the second", async () => {
-    const { stopped, records, wouldStops, root, runId } = await chain(["bom", "bom", "bom", "bom"]);
+  test("enforced, two correctives whose checks print the same output block the chain before a third starts", async () => {
+    const { stopped, records, wouldStops, runId, service, corrected, resume } = await chain(["bom", "bom", "bom", "bom"]);
+    expect(stopped).toMatchObject({ status: "blocked", reason: "no_progress" });
+    expect(records.map((r) => [r.taskId, r.previous, r.decision])).toEqual([
+      ["T002", null, "first"],
+      ["T003", "T002", "repeat"],
+    ]);
+    // No third corrective was opened, and no would-stop is recorded for an enforced stop.
+    expect(corrected()).toEqual(["T002", "T003"]);
+    expect(wouldStops).toEqual([]);
+    const store = service.store;
+    const lastError = () => {
+      const errors = store.artifacts(runId).filter((a) => a.logical_path.startsWith("errors/"));
+      return store.readArtifact(runId, errors.at(-1)?.id ?? "");
+    };
+    // The block names the check, the failing position, both rounds and that nothing changed.
+    expect(lastError()).toContain("repeated_failure: T003 failed check (value.txt:26:2217: bom) exactly as T002 did; the output did not change");
+    expect(stopped.repairBlock).toEqual({ limit: "maxTaskRepairs", scope: "task", required: 1, taskIds: ["T001"] });
+    expect(stopRecovery(store, runId)?.remedies.map((r) => r.action)).toEqual(["repair", "revise", "fork"]);
+    expect(store.latestArtifact(runId, "repeats/stops/T003.json")).not.toBeNull();
+
+    // A plain resume meets the same stop: no corrective starts.
+    await resume(runId);
+    const again = await service.drive(runId, new AbortController().signal);
+    expect(again).toMatchObject({ status: "blocked", reason: "no_progress" });
+    expect(corrected()).toEqual(["T002", "T003"]);
+
+    // A person's repair grant opens one more corrective; it repeats too and blocks again.
+    await service.repair(runId, { commandId: newId(), expectedRevision: again.revision });
+    const granted = await service.drive(runId, new AbortController().signal);
+    expect(granted).toMatchObject({ status: "blocked", reason: "no_progress" });
+    expect(corrected()).toEqual(["T002", "T003", "T004"]);
+    expect(lastError()).toContain("repeated_failure: T004 failed check (value.txt:26:2217: bom) exactly as T003 did");
+  }, 90000);
+
+  test("in shadow, three correctives whose checks print the same output record a would-stop at the second", async () => {
+    const { stopped, records, wouldStops, root, runId } = await chain(["bom", "bom", "bom", "bom"], { repeated_failure: "shadow" });
     // Shadow mode: the chain still ends where maxTaskRepairs ends it.
     expect(stopped.status).toBe("blocked");
     expect(stopped.reason).toBe("no_progress");
