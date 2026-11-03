@@ -531,10 +531,13 @@ const ROWS_B: Record<string, WriteShape> = {
     ["['', 0]"],
     ["['', 0]", "['a b', 2]", '["tab\\there", 2]', "['it\\'s', 1]"],
   ),
-  // testthat: `list(...)` rows in a list (styler), no comma after the last.
+  // testthat: `list(...)` rows in a list (styler), no comma after the last. Outside
+  // `tests/testthat`: that folder makes `detectGates` offer styler, and on a runner with Rscript
+  // (Windows) a `styler-written` check then runs on the host's file whether styler is installed
+  // or not, which this scenario is not about.
   r: listShape(
-    "tests/testthat/test-count-rows.R",
-    "tests/testthat/test-scaffold.R",
+    "tests/test-count-rows.R",
+    "tests/test-scaffold.R",
     listFile(['test_that("words are counted", {', "  rows <- list("], (r, last) => `    ${r}${last ? "" : ","}`, ["  )", "  for (row in rows) expect_equal(count_words(row[[1]]), row[[2]])", "})", ""]),
     ['list("", 0)', 'list("a", 1)'],
     ['list("", 0)', 'list("a b", 2)', 'list("tab\\there", 2)', 'list("\\"q\\"", 1)'],
