@@ -265,18 +265,25 @@ const TEST_COUNTERS: readonly {
     tool: "jest",
     // jest: "Tests:       1 failed, 2 skipped, 12 passed, 15 total"
     count: (o) => num(o.match(/^Tests:\s+.*?\b(\d+) total\b/m)),
+    // `--passWithNoTests` on a run that found no test prints no summary, only "No tests found,
+    // exiting with code 0", and exits 0 (#2699).
     ran: (o) => {
       const line = o.match(/^Tests:\s+(.*?\b\d+ total)\b/m)?.[1];
-      return line === undefined ? null : (sum(line, /(\d+) (?:passed|failed)\b/g) ?? 0);
+      if (line === undefined) return /^No tests found, exiting with code 0\s*$/m.test(o) ? 0 : null;
+      return sum(line, /(\d+) (?:passed|failed)\b/g) ?? 0;
     },
   },
   {
     tool: "vitest",
     // vitest: "      Tests  12 passed (12)" / "Tests  1 failed | 11 passed | 2 skipped (14)"
     count: (o) => num(o.match(/^\s*Tests\s+.*\((\d+)\)\s*$/m)),
+    // `--passWithNoTests` (or `passWithNoTests: true` in its config) on a run that found no test
+    // file: "No test files found, exiting with code 0", no summary, exit 0 (#2699).
     ran: (o) => {
       const line = o.match(/^\s*Tests\s+(.*)\(\d+\)\s*$/m)?.[1];
-      return line === undefined ? null : (sum(line, /(\d+) (?:passed|failed)\b/g) ?? 0);
+      if (line === undefined)
+        return /^No test files found, exiting with code 0\s*$/m.test(o) ? 0 : null;
+      return sum(line, /(\d+) (?:passed|failed)\b/g) ?? 0;
     },
   },
   {
@@ -393,9 +400,10 @@ const TEST_COUNTERS: readonly {
       const line = o.match(PEST_SUMMARY)?.[1];
       return line === undefined ? null : (sum(line, /(\d+) \w+/g) ?? 0);
     },
+    // A run that found no test prints "  INFO  No tests found." and no summary (#2699).
     ran: (o) => {
       const line = o.match(PEST_SUMMARY)?.[1];
-      if (line === undefined) return null;
+      if (line === undefined) return /^\s*INFO\s+No tests found\.\s*$/m.test(o) ? 0 : null;
       return (
         (sum(line, /(\d+) \w+/g) ?? 0) - (sum(line, /(\d+) (?:skipped|todos?|incomplete)\b/g) ?? 0)
       );
