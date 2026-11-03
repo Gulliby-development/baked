@@ -1357,7 +1357,9 @@ export class NativeAgentExecutor implements AgentExecutor {
       }
       const resultSchema = outputSchemas[request.profile.output];
       if (!resultSchema) throw new WorkflowFault("OUTPUT_INVALID", "Unknown profile output schema");
-      const schema = withHostConstants(request.profile.output, resultSchema);
+      const schema = withHostConstants(request.profile.output, resultSchema, {
+        taskId: request.task?.id,
+      });
       // The model sees host fields as optional and validation still fills them (#1929).
       const { validate } = zodSchema(schema);
       const submitSchema = jsonSchema(
