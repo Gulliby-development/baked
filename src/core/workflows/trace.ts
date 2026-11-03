@@ -3879,6 +3879,12 @@ export function replayInitiativeStarts(
      * unmeasured plans at their expected need, to backtest it against the default high end.
      */
     planChargeExpected?: PlanChargeExpected;
+    /**
+     * Computes the view and estimate only at each initiative's first replayed start, for a backtest
+     * that reads `starts[0]` alone (#2753). Every later start is still rewound through, so the
+     * first one reads the state a full replay gives it; the rest of `starts` is left out.
+     */
+    firstStartOnly?: boolean;
   } = {},
 ): Omit<
   InitiativeReplay,
@@ -3912,6 +3918,7 @@ export function replayInitiativeStarts(
       ...(options.recencyHalfLife ? { recencyHalfLife: options.recencyHalfLife } : {}),
       ...(options.stopModes ? { stopModes: options.stopModes } : {}),
       ...(options.planChargeExpected ? { planChargeExpected: options.planChargeExpected } : {}),
+      firstStartOnly: options.firstStartOnly === true,
     }),
   );
 }
@@ -4024,12 +4031,14 @@ function replayStarts(
     recencyHalfLife,
     stopModes,
     planChargeExpected,
+    firstStartOnly,
   }: {
     budgetAtStart: boolean;
     moments: number[];
     recencyHalfLife?: number;
     stopModes?: RunPolicy["stopModes"];
     planChargeExpected?: PlanChargeExpected;
+    firstStartOnly: boolean;
   },
 ): Omit<
   InitiativeReplay,
@@ -4129,7 +4138,10 @@ function replayStarts(
       ...links,
       ...moments.map((at) => ({ feature_id: "", run_id: "", created_at: at })),
     ].sort((a, b) => a.created_at - b.created_at);
-    for (const link of points.reverse()) {
+    points.reverse();
+    // The last boundary the loop reaches: the earliest one after the latest split revision.
+    const first = points.findLast((p) => revisedAt === null || revisedAt < p.created_at);
+    for (const link of points) {
       const t = link.created_at;
       if (revisedAt !== null && revisedAt >= t) break;
       db.transaction(() => {
@@ -4213,6 +4225,7 @@ function replayStarts(
         ).map((r) => r.id);
         if (later.length) hdb.transaction(() => removeRuns(hdb, runTables(hdb), later))();
       }
+      if (firstStartOnly && link !== first) continue;
       const service = new NativeWorkflowService(
         workspace,
         {

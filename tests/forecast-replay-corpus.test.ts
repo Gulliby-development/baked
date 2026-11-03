@@ -290,6 +290,21 @@ describe("initiative starts replay on rewound traces (#1707)", () => {
     expect(replay?.newStartStops).toBe(0);
   }, 120000);
 
+  test("#2753: a replay of the first start alone gives the first start a full replay gives", () => {
+    // The pools and ranges backtests read `starts[0]` only. The later starts are still rewound
+    // through, so the first start is priced on the same rewound trace, at either half-life.
+    for (const [trace, options] of [
+      ["R52/srcwhere", {}],
+      ["R62/stepvet", { recencyHalfLife: 2 }],
+    ] as const) {
+      const path = join(ROOT, `${trace}.sqlite.gz`);
+      const full = replayInitiativeStarts(path, options);
+      const first = replayInitiativeStarts(path, { ...options, firstStartOnly: true });
+      expect(full[0]?.starts.length).toBeGreaterThan(1);
+      expect(first.map((r) => r.starts)).toEqual(full.map((r) => r.starts.slice(0, 1)));
+    }
+  }, 120000);
+
   test("#1890: R59 wheeltags prices its waiting features at its own stage mix, and pick-command could grow past where it stopped", () => {
     // R59's accepted features paid $1.95 per million tokens. Their stage rates at the history's
     // stage weights say $2.67 at pick-command's start, so the waiting features reserved too much:
