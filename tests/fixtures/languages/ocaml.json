@@ -59,6 +59,20 @@
     "diagnosticFormats": ["bin/main.ml: Error: This expression has type string but an expression was expected of type int"],
     "testClasses": null,
     "testDeclarations": ["test/test_sum.ml: 2 tests"],
-    "rowFileShapes": null
+    "rowFileShapes": [
+      "test/test_count_rows.ml",
+      "let rows =",
+      "  [",
+      "    (\"the quick brown fox jumps over the lazy dog\", 9);",
+      "    (\"tab\\tand\\nnewline \\\"q\\\"\", 3);",
+      "  ]",
+      "",
+      "let check (text, count) = Alcotest.(check int) text count (Words.count text)",
+      "",
+      "let test_rows () = List.iter check rows",
+      "",
+      "let () = Alcotest.run \"count\" [ (\"rows\", [ (\"rows\", `Quick, test_rows) ]) ]",
+      ""
+    ]
   }
 }

@@ -97,6 +97,23 @@
       "tests/App.Tests/Props.cs: by its name"
     ],
     "testDeclarations": ["Calc.Tests/SumTests.cs: 3 tests, per class 2, 1"],
-    "rowFileShapes": null
+    "rowFileShapes": [
+      "tests/Wordcount.Tests/CountRowsTests.cs",
+      "using Xunit;",
+      "",
+      "namespace Wordcount.Tests;",
+      "",
+      "public class CountRowsTests",
+      "{",
+      "    [Theory]",
+      "    [InlineData(\"a\\tb\\nc\", 3)]",
+      "    [InlineData(\"  lead \\\"q\\\"\", 2)]",
+      "    public void CountsWords(string text, int count)",
+      "    {",
+      "        Assert.Equal(count, Words.Count(text));",
+      "    }",
+      "}",
+      ""
+    ]
   }
 }

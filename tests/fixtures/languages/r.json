@@ -84,6 +84,18 @@
     "diagnosticFormats": null,
     "testClasses": null,
     "testDeclarations": ["tests/testthat/test-sum.R: 2 tests"],
-    "rowFileShapes": null
+    "rowFileShapes": [
+      "tests/testthat/test-count-rows.R",
+      "test_that(\"words are counted\", {",
+      "  rows <- list(",
+      "    list(\"a\\tb\\nc\", 3),",
+      "    list(\"  lead \\\"q\\\"\", 2)",
+      "  )",
+      "  for (row in rows) {",
+      "    expect_equal(count_words(row[[1]]), row[[2]])",
+      "  }",
+      "})",
+      ""
+    ]
   }
 }
