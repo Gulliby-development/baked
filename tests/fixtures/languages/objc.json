@@ -67,6 +67,29 @@
     "diagnosticFormats": ["src/Calc.m: error: use of undeclared identifier 'sub'"],
     "testClasses": null,
     "testDeclarations": ["Tests/SumTests.m: 2 tests, per class 2"],
-    "rowFileShapes": null
+    "rowFileShapes": [
+      "Tests/HexRowsTests.m",
+      "#import <XCTest/XCTest.h>",
+      "",
+      "#import \"HexCodec.h\"",
+      "",
+      "@interface HexRowsTests : XCTestCase",
+      "@end",
+      "",
+      "@implementation HexRowsTests",
+      "",
+      "- (void)testRows {",
+      "  NSArray<NSArray<NSString *> *> *rows = @[",
+      "    @[ @\"a\\tb\", @\"610962\" ],",
+      "    @[ @\"\\\"q\\\"\", @\"227122\" ],",
+      "  ];",
+      "  for (NSArray<NSString *> *row in rows) {",
+      "    XCTAssertEqualObjects([HexCodec encode:row[0]], row[1]);",
+      "  }",
+      "}",
+      "",
+      "@end",
+      ""
+    ]
   }
 }
