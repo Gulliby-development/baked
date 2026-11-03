@@ -900,6 +900,7 @@ type Implementation = ReturnType<typeof ImplementationSchema.parse>;
 
 import { linkDependencies, worktreePathRisks } from "./dependency-dirs.js";
 import { browserLayoutProbe, type LayoutProbe, layoutVerdict } from "./layout-check.js";
+import { personRequest } from "./person-request.js";
 import { planCostOf, planCostWarning } from "./plan-cost.js";
 import { EDIT_TOOLS } from "./progress-watch.js";
 import {
@@ -13586,8 +13587,9 @@ ${note}`;
     const exampleInput: EvidenceInput = {
       site: "docs-example",
       eligible: assumes && writesOnlyDocs(task) && !this.settledBy(runId, "docs-example", task.id),
+      // The person's words only: a feature's framing is the host's own (#2492).
       evidence: reportRequestEvidence(
-        statedRequest(state, this.store.requests(runId)),
+        personRequest(state, this.store.requests(runId)).person,
         report,
         result.conflictSides,
       ),
@@ -13595,7 +13597,10 @@ ${note}`;
       fallback: first,
     };
     const example = evidenceDecision(exampleInput);
-    const assume = example || (first && namesRequestSide(report));
+    // A report whose request side quotes only the feature's framing offered evidence the host
+    // checked and found to be its own words: the wording fallback does not settle it (#2492).
+    const assume =
+      example || (first && !this.framedRequestSide(runId, task.id) && namesRequestSide(report));
     // One side is what the platform cannot do at all: no person can choose it, so the nearest
     // feasible behavior the task named holds (#1384). It settles on a platform side whose quote
     // a failing check or a probe of the task printed, on every report (#2032).
@@ -14581,7 +14586,8 @@ ${note}`;
       const derivations = (
         checkedDerivations(
           analysis.derivations,
-          statedRequest(state, this.store.requests(runId)),
+          // A quote of a feature's framing is the host's, not the request's (#2492).
+          personRequest(state, this.store.requests(runId)).person,
           audited,
         ) ?? []
       ).filter((d) => rows.some((r) => r.criterion.id === d.criterionId));
@@ -14745,6 +14751,27 @@ ${note}`;
     return null;
   }
   /**
+   * Whether the task's latest request conflict record holds a request side that only the host's
+   * framing of a feature holds (#2492): the scope fence quoted as if it were the person's words.
+   */
+  private framedRequestSide(runId: string, taskId: string): boolean {
+    const latest = this.store
+      .artifacts(runId)
+      .filter(
+        (a) =>
+          a.kind === REQUEST_CONFLICT_KIND &&
+          a.logical_path.startsWith(`${REQUEST_CONFLICTS_DIR}${taskId}-`),
+      )
+      .at(-1);
+    if (!latest) return false;
+    try {
+      const record = JSON.parse(this.store.readArtifact(runId, latest.id)) as RequestConflictRecord;
+      return record.sides.some((s) => s.kind === "request" && s.section === "framing");
+    } catch {
+      return false;
+    }
+  }
+  /**
    * A conflict between a criterion and what the request states, settled for the request on quotes
    * the host checked (#2016): the report's sides, or else a targeted re-audit of the cited criteria
    * against the request whose quotes are checked as well. Decided on every report of a task until
@@ -14770,6 +14797,10 @@ ${note}`;
     const spec = state.spec;
     const reported = result.conflictSides;
     const request = statedRequest(state, this.store.requests(runId));
+    // The sides and the re-audit's quotes are checked against the person's words only: for a
+    // feature of an initiative a quote of the host's framing (the scope fence) settles nothing
+    // (#2492, R80 ratdec core T014).
+    const sections = personRequest(state, this.store.requests(runId));
     const tasks = (state.rootGraph ?? state.graph)?.tasks ?? [task];
     const failing = this.failedCheckOutput(runId, task.id);
     const foreign = [
@@ -14814,7 +14845,7 @@ ${note}`;
         }
       });
     const input: RequestConflictInput = {
-      sides: checkedSides(spec, request, report, reported),
+      sides: checkedSides(spec, sections, report, reported),
       foreignTests: foreign.length,
       criterionIds: criteria.map((c) => c.id),
       ...(supplied.length ? { supplied: true } : {}),
@@ -14841,7 +14872,7 @@ ${note}`;
             path: `tasks/conflicts/${task.id}-request-reaudit.json`,
           },
         )) ?? [];
-      input.reaudit = reauditVerdicts(derivations, input.criterionIds, request);
+      input.reaudit = reauditVerdicts(derivations, input.criterionIds, sections.person);
       decision = requestConflictDecision(input);
     }
     const record: RequestConflictRecord = {
@@ -14876,7 +14907,8 @@ ${note}`;
     ];
     const quotes = bySides
       ? (reported ?? [])
-          .filter((s) => s.kind === "request")
+          // A quote of the feature's framing is not the request's words (#2492).
+          .filter((s, i) => s.kind === "request" && input.sides[i]?.section !== "framing")
           .map((s) => JSON.stringify(s.quote.slice(0, 600)))
           .join(", ")
       : derivations
