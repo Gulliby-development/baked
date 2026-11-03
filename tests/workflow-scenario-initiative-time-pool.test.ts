@@ -1,4 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
+import type { CallTiming } from "../src/core/llm/provider-health.js";
+import { callStallMs, cleanRates } from "../src/core/workflows/clean-pace.js";
 import type { InitiativePlan } from "../src/core/workflows/initiatives/plan.js";
 import {
   InitiativeService,
@@ -285,41 +287,60 @@ describe("scenario: the shared time has a forecast, a notice and an amount (#233
   }, 60000);
 });
 
-/** Records an attempt of `runId` that waited `silentMs` before its calls answered (#2414). */
-function silent(store: WorkflowStore, runId: string, silentMs: number): void {
+/**
+ * Records an attempt of `runId` whose calls answered after `waits` milliseconds each (#2414), as
+ * the executor does: each call's `silentMs` and stall part (`callStallMs`, #2424), summed on the
+ * usage record. `call` is the calls' deadline basis; none means the provider's fixed deadline.
+ */
+function silent(store: WorkflowStore, runId: string, waits: number[], call: Partial<CallTiming> = {}): void {
+  const calls: CallTiming[] = waits.map((wait) => {
+    const timing: CallTiming = { provider: "codex", firstByteMs: wait, durationMs: wait + 5_000, silentMs: wait, ...call };
+    const stallMs = callStallMs(timing);
+    return stallMs > 0 ? { ...timing, stallMs } : timing;
+  });
+  const silentMs = calls.reduce((sum, c) => sum + (c.silentMs ?? 0), 0);
+  const stallMs = calls.reduce((sum, c) => sum + (c.stallMs ?? 0), 0);
   store.transaction(() =>
-    store.artifact(runId, "usage", `attempts/${newId()}/usage.json`, JSON.stringify({ schemaVersion: 1, silentMs, steps: [] })),
+    store.artifact(
+      runId,
+      "usage",
+      `attempts/${newId()}/usage.json`,
+      JSON.stringify({ schemaVersion: 1, silentMs, ...(stallMs > 0 ? { stallMs } : {}), calls, steps: [] }),
+    ),
   );
 }
 
 describe("scenario: R76 hintsieve, the clean pace is recorded in shadow beside the deciding one (#2414)", () => {
   test("the time notice records the clean pace and its inputs; its own pace still decides", async () => {
     const { initiatives, store, runOf } = await ladle("sdd", 61 * MINUTE);
-    // kitchen and recipe each waited 12 minutes on a silent call that finally answered.
-    silent(store, runOf("kitchen"), 12 * MINUTE);
-    silent(store, runOf("recipe"), 12 * MINUTE);
+    // kitchen and recipe each waited 12 minutes on a silent call that finally answered, with no
+    // deadline basis of its shape: past the 3 minute floor, 9 minutes of each are a stall (#2424).
+    silent(store, runOf("kitchen"), [12 * MINUTE]);
+    silent(store, runOf("recipe"), [12 * MINUTE]);
     const view = initiatives.view("ladle");
     const time = view.budget.time;
     expect(time?.pace).toEqual({ tokensPerMinute: OWN_PACE, basis: "initiative", runs: 3 });
     // No history of other initiatives is measured here, so the shadow takes the clean median.
-    const clean = (OWN_PACE * 20) / 8;
+    const clean = Math.round((OWN_PACE * 20) / 11);
     expect(time?.cleanPace?.pace).toEqual({ tokensPerMinute: clean, basis: "initiative", runs: 3 });
     expect(time?.cleanPace?.rates.toSorted()).toEqual([OWN_PACE, clean, clean].toSorted());
     expect(time?.cleanPace?.silentMs).toBe(24 * MINUTE);
+    expect(time?.cleanPace?.stallMs).toBe(18 * MINUTE);
     expect(time?.cleanPace?.forecastMs).toBeLessThan(time?.forecastMs ?? 0);
     expect(view.budget.timeNotice).toContain(`At ${OWN_PACE / 1000}k tokens per active minute`);
     // The notice the first wave raised recorded the clean pace beside the one that decided it.
     const [event] = initiatives.store.eventsOfType("ladle", "budget.time_notice");
     expect(event).toMatchObject({
       pace: { tokensPerMinute: OWN_PACE, basis: "initiative", runs: 2 },
-      cleanPace: { pace: { tokensPerMinute: OWN_PACE, basis: "initiative", runs: 2 }, rates: [OWN_PACE, OWN_PACE], silentMs: 0 },
+      cleanPace: { pace: { tokensPerMinute: OWN_PACE, basis: "initiative", runs: 2 }, rates: [OWN_PACE, OWN_PACE], silentMs: 0, stallMs: 0 },
     });
   }, 60000);
 
-  test("from four finished runs the clean pace is their median without the silence; run sizing still decides as before", async () => {
+  test("from four finished runs the clean pace is their median without the stalls; run sizing still decides as before", async () => {
     const { fixture, initiatives, store, starter, runOf } = await ladle("sdd", 600 * MINUTE);
-    silent(store, runOf("kitchen"), 10 * MINUTE);
-    silent(store, runOf("recipe"), 10 * MINUTE);
+    // A 13 minute wait with no deadline basis: 10 minutes of it past the floor are a stall.
+    silent(store, runOf("kitchen"), [13 * MINUTE]);
+    silent(store, runOf("recipe"), [13 * MINUTE]);
     expect(await starter.startFeature("ladle", "head")).toBe(true);
     const head = runOf("head");
     const report = await sized(fixture, head);
@@ -328,12 +349,59 @@ describe("scenario: R76 hintsieve, the clean pace is recorded in shadow beside t
       cleanPace?: { basis: string; tokensPerMinute: number; rates: number[]; silentMs: number; after: number };
     };
     // Three clean runs: the shadow keeps the history's pace.
-    expect(recorded.cleanPace).toMatchObject({ basis: "history", tokensPerMinute: HISTORY_PACE, silentMs: 20 * MINUTE });
+    expect(recorded.cleanPace).toMatchObject({ basis: "history", tokensPerMinute: HISTORY_PACE, silentMs: 26 * MINUTE, stallMs: 20 * MINUTE });
     expect(recorded.cleanPace?.rates.toSorted()).toEqual([OWN_PACE, OWN_PACE * 2, OWN_PACE * 2].toSorted());
     finish(store, head, OWN_PACE * 20, 20);
     const time = initiatives.view("ladle").budget.time;
     expect(time?.pace).toEqual({ tokensPerMinute: OWN_PACE, basis: "initiative", runs: 4 });
     expect(time?.cleanPace?.pace).toEqual({ tokensPerMinute: (OWN_PACE + OWN_PACE * 2) / 2, basis: "initiative", runs: 4 });
+  }, 60000);
+});
+
+describe("scenario: R62 stepvet and R77 pairwick, a buffered provider's wait is model time, not a stall (#2424)", () => {
+  // Codex and Claude Code buffer their answer, so a call's wait before its first response is most
+  // of the model's time: R77 pairwick's clean rates, with 3.40M of its 8.60M active ms of such
+  // waits left out, were 2.1 to 2.4 times its real pace. Only the part past the call's own
+  // deadline basis is a stall.
+  /** A Codex shape with five healthy answers at a 95th percentile of 100 s: a 200 s basis. */
+  const BASIS: Partial<CallTiming> = { deadlineInputs: { samples: 5, p95Ms: 100_000 }, limitMs: 200_000 };
+
+  test("waits within their deadline basis keep the clean pace at the ordinary one; a wait past it gives only the excess", async () => {
+    const { initiatives, store, runOf } = await ladle("sdd", 61 * MINUTE);
+    // kitchen waited 16 of its 20 minutes on eight 2 minute first responses, all within the basis.
+    silent(store, runOf("kitchen"), Array(8).fill(2 * MINUTE), BASIS);
+    // recipe waited as long, and one of its calls answered 60 s past its 200 s basis.
+    silent(store, runOf("recipe"), [...Array(7).fill(2 * MINUTE), 260_000], BASIS);
+    const time = initiatives.view("ladle").budget.time;
+    expect(time?.pace).toEqual({ tokensPerMinute: OWN_PACE, basis: "initiative", runs: 3 });
+    expect(time?.cleanPace?.silentMs).toBe(34 * MINUTE + 20_000);
+    expect(time?.cleanPace?.stallMs).toBe(MINUTE);
+    expect(time?.cleanPace?.rates.toSorted()).toEqual([OWN_PACE, OWN_PACE, Math.round((OWN_PACE * 20) / 19)].toSorted());
+    // With no stall the clean pace is the ordinary one, and so is its forecast.
+    expect(time?.cleanPace?.pace).toEqual(time?.pace ?? null);
+    expect(time?.cleanPace?.forecastMs).toBe(time?.forecastMs ?? null);
+  }, 60000);
+
+  test("records before #2424 are read again: their calls' stall parts are taken from their timings", async () => {
+    const { store, runOf } = await ladle("sdd", 61 * MINUTE);
+    const record = (runId: string, usage: object) =>
+      store.transaction(() =>
+        store.artifact(runId, "usage", `attempts/${newId()}/usage.json`, JSON.stringify({ schemaVersion: 1, steps: [], ...usage })),
+      );
+    const wait = 13 * MINUTE;
+    // An #2414 record: the calls' `silentMs`, no `stallMs`.
+    record(runOf("kitchen"), { silentMs: wait, calls: [{ provider: "codex", firstByteMs: wait, durationMs: wait, silentMs: wait }] });
+    // A record before #2414: an answered call's wait is its `firstByteMs`; a refused call has none.
+    record(runOf("recipe"), {
+      calls: [
+        { provider: "codex", firstByteMs: wait, durationMs: wait },
+        { provider: "codex", firstByteMs: 2_000, durationMs: 2_000, status: 429 },
+      ],
+    });
+    // A summed wait with no calls cannot be told from model time: no stall.
+    record(runOf("inspect"), { silentMs: wait });
+    const clean = cleanRates(store, FIRST_WAVE.map(runOf));
+    expect(clean).toEqual({ rates: [OWN_PACE * 2, OWN_PACE * 2, OWN_PACE], silentMs: 3 * wait, stallMs: 20 * MINUTE });
   }, 60000);
 });
 
