@@ -757,11 +757,13 @@ function cargoGates(workspace: string): GateSuggestion[] {
   return [
     {
       check: {
-        ...gate("cargo-fmt", "cargo", ["fmt", "--check"], 120000),
+        // rustfmt reads neither NO_COLOR nor CARGO_TERM_COLOR and colours its diff under a colour
+        // TERM (R90 windowfit, #2830); `--color=never` is its own switch.
+        ...gate("cargo-fmt", "cargo", ["fmt", "--check", "--", "--color=never"], 120000),
         fix: { executable: "cargo", args: ["fmt"] },
       },
       source: "Cargo.toml",
-      reason: "cargo fmt --check (fixer: cargo fmt)",
+      reason: "cargo fmt --check -- --color=never (fixer: cargo fmt)",
       preselected: true,
     },
     {

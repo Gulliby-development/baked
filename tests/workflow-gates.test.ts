@@ -129,7 +129,7 @@ describe("gate detection by ecosystem", () => {
     expect(go[1]?.check.fix).toBeUndefined();
     const cargo = detectGates(workspace({ "Cargo.toml": '[package]\nname = "x"\n' }));
     expect(cargo.map((s) => s.check)).toMatchObject([
-      { id: "cargo-fmt", executable: "cargo", args: ["fmt", "--check"], fix: { executable: "cargo", args: ["fmt"] } },
+      { id: "cargo-fmt", executable: "cargo", args: ["fmt", "--check", "--", "--color=never"], fix: { executable: "cargo", args: ["fmt"] } },
       { id: "cargo-clippy", executable: "cargo", args: ["clippy", "--all-targets", "--", "-D", "warnings"] },
       { id: "cargo-test", executable: "cargo", args: ["test"] },
     ]);

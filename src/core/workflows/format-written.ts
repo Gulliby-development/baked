@@ -373,7 +373,7 @@ export function fileScopedFormat(
     const edition = cargoEdition(join(dir, path));
     return {
       executable: check.executable.replace(/cargo(\.exe)?$/i, "rustfmt$1"),
-      args: ["--check", ...(edition ? ["--edition", edition] : []), path],
+      args: ["--check", "--color=never", ...(edition ? ["--edition", edition] : []), path],
     };
   }
   // The task-end rustfmt check (`rustFormatWrittenCheck`) on one of its files.
@@ -799,7 +799,8 @@ export function rustFormatWrittenChecks(
       ...gate,
       id: `rustfmt-written${i ? `-${String(i + 1)}` : ""}`,
       executable: rustfmt,
-      args: ["--check", ...flags, ...paths.map((path) => cwdPath(gate, path))],
+      // rustfmt colours its diff under a colour TERM whatever NO_COLOR says (#2830).
+      args: ["--check", "--color=never", ...flags, ...paths.map((path) => cwdPath(gate, path))],
       fix: { executable: rustfmt, args: flags },
       fixPaths: paths,
       required: true,

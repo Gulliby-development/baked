@@ -477,7 +477,7 @@ const FORMAT_FILE: Record<Stack, { path: string; command: string | null }> = {
   npm: { path: "src/sum.js", command: null },
   python: { path: "src/app/sum.py", command: "ruff format --check src/app/sum.py" },
   go: { path: "sum.go", command: "gofmt -l sum.go" },
-  rust: { path: "tests/json.rs", command: "rustfmt --check --edition 2021 tests/json.rs" },
+  rust: { path: "tests/json.rs", command: "rustfmt --check --color=never --edition 2021 tests/json.rs" },
   // Maven formatters run inside `mvn verify`; no gate runs one alone.
   maven: { path: "src/main/java/app/Sum.java", command: null },
   dotnet: { path: "src/App/Sum.cs", command: "dotnet format --verify-no-changes --include src/App/Sum.cs" },
@@ -3377,7 +3377,7 @@ describe("gate matrix: format-written check on a dirty repository (#1837)", () =
     const cargoFmt: Check = { id: "cargo-fmt", executable: "cargo", args: ["fmt", "--check"], cwd: ".", timeoutMs: 300000, required: true, scope: "feature", envNames: [], writes: [], fix: { executable: "cargo", args: ["fmt"] } };
     const shown = (checks: Check[]) => checks.map((c) => [c.id, [c.executable, ...c.args].join(" "), [c.fix!.executable, ...c.fix!.args].join(" "), c.fixPaths]);
     // lib.rs declares `mod parser;` (rustfmt would format parser.rs too); old.rs is an edit (no range form).
-    const expected = [["rustfmt-written", "/usr/bin/rustfmt --check --edition 2021 src/parser.rs tests/json.rs", "/usr/bin/rustfmt --edition 2021", ["src/parser.rs", "tests/json.rs"]]];
+    const expected = [["rustfmt-written", "/usr/bin/rustfmt --check --color=never --edition 2021 src/parser.rs tests/json.rs", "/usr/bin/rustfmt --edition 2021", ["src/parser.rs", "tests/json.rs"]]];
     const which = (c: string) => `/usr/bin/${c}`;
     const at = (check: Check) => ({ ...check, executable: "/usr/bin/cargo" });
     expect(shown(rustFormatWrittenChecks(root, [at(cargoFmt)], writes, which, () => "fn o() {}\n"))).toEqual(expected);
@@ -3385,12 +3385,12 @@ describe("gate matrix: format-written check on a dirty repository (#1837)", () =
     expect(formatWrittenChecks(root, [at(cargoFmt)], writes, which, () => "fn o() {}\n")).toEqual([]);
     expect(shown(formatWrittenChecks(root, [at(cargoFmt)], writes, which, () => "fn o() {}\n", () => true, { rust: true }))).toEqual(expected);
     // A file the run created is whole like a new one.
-    expect(shown(rustFormatWrittenChecks(root, [at(cargoFmt)], [{ path: "src/old.rs", action: "modify" }], which, () => null)).map(([id, command]) => [id, command])).toEqual([["rustfmt-written", "/usr/bin/rustfmt --check --edition 2021 src/old.rs"]]);
+    expect(shown(rustFormatWrittenChecks(root, [at(cargoFmt)], [{ path: "src/old.rs", action: "modify" }], which, () => null)).map(([id, command]) => [id, command])).toEqual([["rustfmt-written", "/usr/bin/rustfmt --check --color=never --edition 2021 src/old.rs"]]);
     // No rustfmt on the PATH, or no cargo fmt gate: no check.
     expect(rustFormatWrittenChecks(root, [cargoFmt], writes, () => null)).toEqual([]);
     expect(rustFormatWrittenChecks(project({ "src/a.rs": "fn a() {}\n" }), [], [{ path: "src/a.rs", action: "create" }], which)).toEqual([]);
     // Its file-scoped form, for a check that times out (#2240).
-    expect(fileScopedFormat(rustFormatWrittenChecks(root, [at(cargoFmt)], writes, which)[0]!, root, "tests/json.rs")).toEqual({ executable: "/usr/bin/rustfmt", args: ["--check", "--edition", "2021", "tests/json.rs"] });
+    expect(fileScopedFormat(rustFormatWrittenChecks(root, [at(cargoFmt)], writes, which)[0]!, root, "tests/json.rs")).toEqual({ executable: "/usr/bin/rustfmt", args: ["--check", "--color=never", "--edition", "2021", "tests/json.rs"] });
   });
   cell("maven", "no Maven formatter gate is detected: no check", () => {
     expect(scoped({ "pom.xml": "<project/>", "src/main/java/A.java": "class A {}\n" }, ["src/main/java/A.java"])).toEqual([]);
@@ -5660,6 +5660,22 @@ describe("gate matrix: plain output per tool (#2631)", () => {
       else process.env.FORCE_COLOR = saved;
       rmSync(root, { recursive: true, force: true });
     }
+  });
+});
+
+// #2830: rustfmt reads neither NO_COLOR nor CARGO_TERM_COLOR and colours its diff under a colour
+// TERM (R90 windowfit). The Rust format gates pass its own switch, and a check command's output
+// comes back plain whatever the tool printed, so the stored result holds no escape codes.
+describe("gate matrix: tools that colour in spite of the plain-output environment (#2830)", () => {
+  cell("rust", "the cargo fmt gate passes rustfmt --color=never", () => {
+    const gate = detectGates(project({ "Cargo.toml": "[package]\nname = 'p'\n" })).find((s) => s.check.id === "cargo-fmt");
+    expect([gate?.check.executable, ...(gate?.check.args ?? [])].join(" ")).toBe("cargo fmt --check -- --color=never");
+    expect(gate?.check.fix).toEqual({ executable: "cargo", args: ["fmt"] });
+  });
+  cell("rust", "a coloured rustfmt diff comes back from the check command without escape codes", async () => {
+    const coloured = "Diff in src/main.rs:3:\n }\n\u001b(B\u001b[m\u001b[31m-\n\u001b[m\u000f\u001b[32m+\n\u001b[0m";
+    const result = await executeCheckCommand(new ProcessScope(), process.execPath, ["-e", `process.stdout.write(${JSON.stringify(coloured)})`], { cwd: tmpdir(), timeoutMs: 60000, signal: new AbortController().signal, sandbox: null });
+    expect(result.output).toBe("Diff in src/main.rs:3:\n }\n-\n+\n");
   });
 });
 

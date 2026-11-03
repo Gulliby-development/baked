@@ -27,7 +27,9 @@ import { testReport } from "./test-reports.js";
 /**
  * Shared process execution for native checks and the legacy project formatter. A Gradle run gets
  * the totals of the test reports it wrote appended to its output (`testReport`, #1489), and so
- * does a Maven run (#2378).
+ * does a Maven run (#2378). The output comes back without terminal escape codes (`plainOutput`):
+ * a tool that colours in spite of `plainOutputEnv` (rustfmt under a colour `TERM`, R90 windowfit,
+ * #2830) leaves no codes in the stored check result, its decision records or its prompts.
  */
 export const executeCheckCommand = async (
   scope: ProcessScope,
@@ -36,11 +38,17 @@ export const executeCheckCommand = async (
   options: Parameters<ProcessScope["execute"]>[2],
 ): Promise<ProcessResult> => {
   const started = Date.now();
-  const result = await scope.execute(
+  const raw = await scope.execute(
     executable,
     withPerTestTimeout({ executable, args }, options.cwd),
     options,
   );
+  const result: ProcessResult = {
+    ...raw,
+    output: plainOutput(raw.output),
+    ...(raw.stdout === undefined ? {} : { stdout: plainOutput(raw.stdout) }),
+    ...(raw.stderr === undefined ? {} : { stderr: plainOutput(raw.stderr) }),
+  };
   const report =
     result.timedOut || result.cancelled
       ? null
