@@ -57,13 +57,7 @@ import {
 } from "../tools/place-rows.js";
 import { contentHash, deriveTool, withoutAstEditHint } from "../tools/tool-utils.js";
 import { buildCheckEnv, CheckRunner, modelCheckOutput } from "../verification/check-runner.js";
-import {
-  PROBE_TRIES,
-  probeTool,
-  reproExecutables,
-  runProbe,
-  writesDocumentation,
-} from "../verification/repro.js";
+import { PROBE_TRIES, probeTool, reproExecutables, runProbe } from "../verification/repro.js";
 import { changedPaths, sourceManifest } from "../verification/snapshot.js";
 import { type ReplayResult, replayProblems } from "./acceptance-rows-replay.js";
 import { affectedTestsFor, taskCaseText, writtenTestsCheck } from "./affected-tests.js";
@@ -89,6 +83,7 @@ import { fileHash, rootField } from "./effects.js";
 import { WorkflowFault } from "./errors.js";
 import { addsDoubledEscapes, escapeHintFor } from "./escape-hint.js";
 import { executionClock } from "./execution-clock.js";
+import { fixerPaths } from "./fixer-languages.js";
 import { fixerFailed, runFixer } from "./fixer-run.js";
 import { keepOutside, recordPutBack, restoreOutside } from "./fixer-scope.js";
 import { advertisedSchema, withHostConstants } from "./host-constants.js";
@@ -145,9 +140,9 @@ import {
   touchProgress,
 } from "./stall.js";
 import {
-  ALL_TOKENS_FACTOR,
   AttemptStepController,
   type AttemptUsageRecord,
+  allTokensCapFor,
   DEFAULT_MAX_ATTEMPT_TOKENS,
   KEEP_RECENT_TOOL_MESSAGES,
   MIN_ATTEMPT_STEPS,
@@ -159,6 +154,7 @@ import {
 import { stopFault } from "./stop-reasons.js";
 import type { EffectRow, WorkflowStore } from "./store.js";
 import { failureOwnerNote } from "./task-graph.js";
+import { toolsOfferedTo } from "./task-tools.js";
 import { recordToolInputSignal } from "./tool-input-health.js";
 import { pureWorkflowTools, WorkflowToolPolicy } from "./tool-policy.js";
 import type { AgentExecutor, ExecutionRequest, ExecutionResponse, Task } from "./types.js";
@@ -936,7 +932,7 @@ export class NativeAgentExecutor implements AgentExecutor {
         request.profile.role === "implementer" &&
         request.profile.allowedTools.includes("run_probe") &&
         request.task &&
-        (request.task.origin !== "planned" || writesDocumentation(request.task.writes)) &&
+        toolsOfferedTo(request.task).has("run_probe") &&
         probeable.length > 0
       ) {
         let probes = 0;
@@ -1124,7 +1120,8 @@ export class NativeAgentExecutor implements AgentExecutor {
               try {
                 for (const [tier, fix] of tiers.entries()) {
                   if (isWholeUnitFixer(fix)) {
-                    const code = fixerTierPaths(check, tier, codePaths);
+                    // Only the code files of the languages the fixer handles (#2632).
+                    const code = fixerPaths(fix, fixerTierPaths(check, tier, codePaths));
                     if (!code.length) continue;
                     await fixOnce(
                       wholeUnitFixerCommand(
@@ -1136,7 +1133,7 @@ export class NativeAgentExecutor implements AgentExecutor {
                     continue;
                   }
                   // The fixer runs in the check's cwd, so it names the file from there.
-                  for (const path of fixerTierPaths(check, tier, paths))
+                  for (const path of fixerPaths(fix, fixerTierPaths(check, tier, paths)))
                     await fixOnce(fixerCommand(fix, cwdPath(check, path)), [path]);
                 }
               } finally {
@@ -2357,7 +2354,7 @@ export const attemptCapFault = (
   cap: number,
   totals: { totalTokens: number; allTokensCap: number; ceilingTokens?: number } = {
     totalTokens: tokens,
-    allTokensCap: cap * ALL_TOKENS_FACTOR,
+    allTokensCap: allTokensCapFor(cap),
   },
 ): WorkflowFault => {
   const capKind =

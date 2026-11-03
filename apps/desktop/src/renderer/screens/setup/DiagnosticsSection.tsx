@@ -506,95 +506,99 @@ function ModelEventsPanel({ projectKey }: { projectKey: string }) {
         </Empty>
       ) : (
         <>
-          <table className={TABLE} aria-label="Model totals">
-            <thead>
-              <tr>
-                <th>Model</th>
-                <th className="w-[30%]">Calls</th>
-                <th className="text-right">Errors</th>
-                <th className="text-right">Avg</th>
-                <th className="text-right">Input</th>
-                <th className="text-right">Output</th>
-                <th className="text-right">Cache read</th>
-              </tr>
-            </thead>
-            <tbody>
-              {view.models.map((m) => (
-                <tr key={m.modelId}>
-                  <td className="font-mono" title={m.modelId}>
-                    <span className="flex items-center gap-2">
-                      <Icon name="model" size={14} className="text-dim-foreground" />
-                      {shortModel(m.modelId)}
-                    </span>
-                  </td>
-                  <td>
-                    <span className="flex items-center gap-2">
-                      <span className="h-3 flex-1 overflow-hidden rounded-full border-2 border-border bg-secondary-background">
-                        <span
-                          className="block h-full border-r-2 border-border bg-fill-warn"
-                          style={{ width: `${String((m.calls / busiest) * 100)}%` }}
-                        />
-                      </span>
-                      <span className="w-8 text-right font-mono tabular-nums">{m.calls}</span>
-                    </span>
-                  </td>
-                  <td className={NUM}>
-                    {m.errors > 0 ? <Badge tone="err">{m.errors}</Badge> : "0"}
-                  </td>
-                  <td className={NUM}>{ms(m.avgMs)}</td>
-                  <td className={NUM}>{tokens(m.input)}</td>
-                  <td className={NUM}>{tokens(m.output)}</td>
-                  <td className={NUM}>{tokens(m.cacheRead)}</td>
+          <div className="min-w-0 max-w-full overflow-x-auto">
+            <table className={TABLE} aria-label="Model totals">
+              <thead>
+                <tr>
+                  <th>Model</th>
+                  <th className="w-[30%]">Calls</th>
+                  <th className="text-right">Errors</th>
+                  <th className="text-right">Avg</th>
+                  <th className="text-right">Input</th>
+                  <th className="text-right">Output</th>
+                  <th className="text-right">Cache read</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
-          <table className={TABLE} aria-label="Recent model calls">
-            <thead>
-              <tr>
-                <th>When</th>
-                <th>Model</th>
-                <th>Source</th>
-                <th className="text-right">Time</th>
-                <th className="text-right">In / out</th>
-                <th>Result</th>
-              </tr>
-            </thead>
-            <tbody>
-              {recent.map((ev) => (
-                <tr key={ev.id} className={cn(ev.state === "error" && "bg-[var(--diff-del)]")}>
-                  <td className="text-dim-foreground">{ago(ev.startedAt)}</td>
-                  <td className="font-mono" title={ev.modelId}>
-                    {shortModel(ev.modelId)}
-                  </td>
-                  <td>
-                    <Badge tone={SOURCE_TONE[ev.source]}>{ev.source}</Badge>
-                    {ev.runId && (
-                      <span className="ml-2 font-mono text-[12px] text-dim-foreground">
-                        {ev.runId.slice(0, 12)}
+              </thead>
+              <tbody>
+                {view.models.map((m) => (
+                  <tr key={m.modelId}>
+                    <td className="font-mono" title={m.modelId}>
+                      <span className="flex items-center gap-2">
+                        <Icon name="model" size={14} className="text-dim-foreground" />
+                        {shortModel(m.modelId)}
                       </span>
-                    )}
-                  </td>
-                  <td className={NUM}>{ms(ev.durationMs)}</td>
-                  <td className={NUM}>
-                    {ev.state === "ok"
-                      ? `${tokens(ev.input ?? 0)} / ${tokens(ev.output ?? 0)}`
-                      : "–"}
-                  </td>
-                  <td className={cn(WRAP, "max-w-[360px] whitespace-normal")}>
-                    {ev.state === "ok" ? (
-                      <Badge tone="ok">ok</Badge>
-                    ) : (
-                      <span className="flex items-start gap-2">
-                        <Badge tone="err">error</Badge>
-                        <span className="text-[12px]">{ev.errorMessage}</span>
+                    </td>
+                    <td>
+                      <span className="flex items-center gap-2">
+                        <span className="h-3 flex-1 overflow-hidden rounded-full border-2 border-border bg-secondary-background">
+                          <span
+                            className="block h-full border-r-2 border-border bg-fill-warn"
+                            style={{ width: `${String((m.calls / busiest) * 100)}%` }}
+                          />
+                        </span>
+                        <span className="w-8 text-right font-mono tabular-nums">{m.calls}</span>
                       </span>
-                    )}
-                  </td>
+                    </td>
+                    <td className={NUM}>
+                      {m.errors > 0 ? <Badge tone="err">{m.errors}</Badge> : "0"}
+                    </td>
+                    <td className={NUM}>{ms(m.avgMs)}</td>
+                    <td className={NUM}>{tokens(m.input)}</td>
+                    <td className={NUM}>{tokens(m.output)}</td>
+                    <td className={NUM}>{tokens(m.cacheRead)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <div className="min-w-0 max-w-full overflow-x-auto">
+            <table className={TABLE} aria-label="Recent model calls">
+              <thead>
+                <tr>
+                  <th>When</th>
+                  <th>Model</th>
+                  <th>Source</th>
+                  <th className="text-right">Time</th>
+                  <th className="text-right">In / out</th>
+                  <th>Result</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
+              </thead>
+              <tbody>
+                {recent.map((ev) => (
+                  <tr key={ev.id} className={cn(ev.state === "error" && "bg-[var(--diff-del)]")}>
+                    <td className="text-dim-foreground">{ago(ev.startedAt)}</td>
+                    <td className="font-mono" title={ev.modelId}>
+                      {shortModel(ev.modelId)}
+                    </td>
+                    <td>
+                      <Badge tone={SOURCE_TONE[ev.source]}>{ev.source}</Badge>
+                      {ev.runId && (
+                        <span className="ml-2 font-mono text-[12px] text-dim-foreground">
+                          {ev.runId.slice(0, 12)}
+                        </span>
+                      )}
+                    </td>
+                    <td className={NUM}>{ms(ev.durationMs)}</td>
+                    <td className={NUM}>
+                      {ev.state === "ok"
+                        ? `${tokens(ev.input ?? 0)} / ${tokens(ev.output ?? 0)}`
+                        : "–"}
+                    </td>
+                    <td className={cn(WRAP, "max-w-[360px] whitespace-normal")}>
+                      {ev.state === "ok" ? (
+                        <Badge tone="ok">ok</Badge>
+                      ) : (
+                        <span className="flex items-start gap-2">
+                          <Badge tone="err">error</Badge>
+                          <span className="text-[12px]">{ev.errorMessage}</span>
+                        </span>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         </>
       )}
     </Panel>

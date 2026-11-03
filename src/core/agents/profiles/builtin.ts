@@ -5,6 +5,7 @@ import {
   VIEWPORT_CRITERION,
 } from "../../workflows/host-required-criteria.js";
 import { ProfileSchema } from "../../workflows/schemas.js";
+import { plannedTaskToolsRule } from "../../workflows/task-tools.js";
 import { reviewPitfallClauses } from "./language-pitfalls.js";
 
 // A criterion about the raw bytes of an input channel cannot be seen through an in-memory seam the
@@ -46,6 +47,9 @@ export const REQUEST_QUOTE_REVIEW_RULE =
 export const INPUT_BYTES_ANALYZE_RULE =
   "A task that starts the built program as a process to test the raw bytes of an input channel is planned by a built-in rule; it is right only when the request and the spec allow tests that start a program. When they say the tests are hermetic, run in memory or start no other program, such a task contradicts the request: report it as a blocking inconsistency on tasks.json that asks to test the decoding function with the exact bytes instead, and never report the absence of a process test as a finding then.";
 
+/** The analysis's side of the planned-task tool rule (#2643). */
+export const PLANNED_TOOLS_ANALYZE_RULE = `${plannedTaskToolsRule()} A spec criterion or a task that relies on such a tool for a planned code task is a blocking inconsistency on spec.json or tasks.json.`;
+
 export const builtinProfiles = ProfileSchema.array().parse([
   {
     schemaVersion: 1,
@@ -66,7 +70,7 @@ export const builtinProfiles = ProfileSchema.array().parse([
   {
     schemaVersion: 1,
     id: "spec-reviewer",
-    version: "1.17.0",
+    version: "1.18.0",
     description: "Check document consistency",
     role: "planner",
     model: "$review",
@@ -77,6 +81,7 @@ export const builtinProfiles = ProfileSchema.array().parse([
       " Report every finding in this one analysis, so a person sees all of them in one request; a finding left for the next round costs another specify, plan and analyze cycle. Read the whole spec, plan and task graph before you submit, and report every blocking finding they hold, including ones an earlier version already had. extra.earlierFindings, when present, lists the blocking findings of earlier passes, which the artifacts were revised for: report one again only when the revised artifacts still have it, and report every other blocking finding in this same pass, because the returns are limited and a finding first raised on the last one is settled without another revision. The checks in executionContract.checks are the authoritative verification: a check that runs a superset of a command the spec names (for example the whole test suite for one test file) satisfies it, and a check from project instructions that concerns files no task writes (for example locale validation when no locale file changes) does not apply. The checks are the verification the operator chose for this run: when they are narrower than the project's usual verification (one test file instead of the whole suite, no build), that is deliberate and not a finding. Checks run after implementation, so missing check outcomes are never a finding. extra.workspaceFacts is the host inventory of the workspace and outranks research prose: never report that a file it lists does not exist, and treat research that says project files are absent as stale against it. extra.hostCounts holds the task and file counts the host computed from tasks.json: never report a difference between a count in plan.md and the task graph. A requirement's verification and a criterion's method take only automated, manual or post-release; automated covers a test, a command check and the reviewer reading a file or the code, so a criterion checked by reading a file is correctly automated and never a finding, and never ask for any other method (inspection, review, demonstration, analysis). extra.hostSplit, when present, maps a planned task to the parts the host split it into by file or sequential criterion slices after planning: plan.md names only the planned task, so never report a part as missing from plan.md, as a duplicate of its siblings or as lacking a test file of its own. Mark a finding blocking only when the spec or plan must change; everything else is a note, and a user answer in the request supersedes the research statement it contradicts. extra.derivationAudit, when present, lists criteria with literal input and expected rows: recompute every row from the requirements as its note says and record each in derivations; leave derivations out otherwise. Return AnalysisSchema. " +
       "extra.hostEdits records host changes as task, field, kind, before, after and appended text. Text listed in hostEdits is not the planner's; never report it as a planner inconsistency. Cite precise task fields and quote the evidence for each inconsistency so the host can verify ownership. A finding that also cites planner-authored text or a spec conflict still needs review. extra.hostAddedChecks lists covering static checks the host attaches after planning and derived -written/-affected test checks. They need not appear in the plan or executionContract.checks. " +
       INPUT_BYTES_ANALYZE_RULE +
+      ` ${PLANNED_TOOLS_ANALYZE_RULE}` +
       REQUEST_QUOTE_ANALYZE_RULE,
     skills: [],
     allowedTools: ["read", "read_criterion", "submit_result"],
@@ -135,7 +140,7 @@ export const builtinProfiles = ProfileSchema.array().parse([
   {
     schemaVersion: 1,
     id: "spec-author",
-    version: "1.20.0",
+    version: "1.21.0",
     description: "Write the specification",
     role: "spec-author",
     model: "$active",
@@ -150,6 +155,7 @@ export const builtinProfiles = ProfileSchema.array().parse([
       " When the request lists files whose whole content the split fixes (host-written stubs), quote that content exactly where a requirement or criterion names it, never reword it, and do not ask what it is." +
       " When extra.initiativeBounds is present, specify only the current feature's boundary. Do not require test or documentation files owned by a sibling. When testedBy names a sibling, that feature delivers the tests; keep this feature's criteria about its own behavior and leave test-delivery criteria to the owner." +
       ` ${SPEC_ID_RULE}` +
+      ` ${plannedTaskToolsRule()}` +
       " Return SpecSchema.",
     skills: [],
     allowedTools: ["read", "submit_artifact", "submit_result"],
@@ -160,7 +166,7 @@ export const builtinProfiles = ProfileSchema.array().parse([
   {
     schemaVersion: 1,
     id: "planner",
-    version: "1.13.0",
+    version: "1.14.0",
     description: "Plan and task dependencies",
     role: "planner",
     model: "$active",
@@ -169,7 +175,8 @@ export const builtinProfiles = ProfileSchema.array().parse([
       "Plan the changes from the accepted requirements and project facts. Return the plan and an acyclic task graph. The markdown must contain the sections Context, Decisions, Components, Data, Verification and Risks. Decisions use IDs like DEC-001 and reference FR/NFR IDs. Task ids are " +
       HOST_ID_FORMATS.task.examples +
       ", T002 and so on. Every task must list the requirement IDs of each criterion it covers. extra.workspaceFacts is the host inventory of files that already exist: a task modifies a listed file and creates only a file the inventory does not list. When its kind is empty or scaffold, the program the request describes is the work to do: the tasks create every deliverable the spec covers, the first ones lay down the skeleton the others build on (manifest, entry point, test setup), and no task inspects or verifies code that does not exist yet. In Rust, the task that creates a module file also writes the lib.rs, main.rs, mod.rs or parent module file (src/parser.rs for src/parser/lexer.rs) that declares it and adds its mod line there; never leave the registration of modules to a later task, because the crate compiles only declared modules and the earlier tasks' checks would never build them. When the request fixes a file's whole content (a module stub that holds only a comment, a registration file such as a lib.rs of its mod lines, an empty __init__.py or an index barrel), give that write its content: a task whose writes all carry content is written by the host without an agent and costs no tokens, so put every such file of the plan, together with the file that registers them, in one task of its own, which also satisfies the registration rule, and let later tasks modify them. Never give content to a file whose code still has to be written. Take paths and checks from the policy under approval; the Verification section names policy check IDs and adds no commands that are not policy checks. A task without writes runs no agent: only its task-scoped checks decide it, so do not plan verification-only tasks that repeat feature checks. When extra.sizing is present, follow extra.sizing.note: put tests in tasks of their own, keep each code task within extra.sizing.maxCodeFilesPerTask files, split large test files by their criteria and literal cases into sequential create/modify slices, and give tasks that can be built independently disjoint writes and no dependency between them, so they run in parallel. When extra.approvalLimits is present, the host approves the plan without a person only within it: at most maxTasks tasks and maxFiles distinct files, every write under allowedPaths, no deletions unless allowDelete, nothing in alwaysHuman. Plan within it whenever the requirements allow; write a file outside it only when the requirements need that file. Before a task adds a helper, search for one that already does the job (bake_find) and name its file in the task's readHints so the implementer reuses it instead of writing a copy. Give each task that writes code or tests a reference when the project has a file that shows the pattern to follow: an existing file of the same kind (a sibling module, handler or test file), found with bake_find, whose structure, naming, error handling and test style the new code should match; leave reference out when no such file exists, as in an empty workspace. " +
-      INPUT_BYTES_PLAN_RULE,
+      INPUT_BYTES_PLAN_RULE +
+      ` ${plannedTaskToolsRule()}`,
     skills: [],
     allowedTools: [
       "read",
@@ -186,13 +193,14 @@ export const builtinProfiles = ProfileSchema.array().parse([
   {
     schemaVersion: 1,
     id: "quick-planner",
-    version: "1.4.0",
+    version: "1.5.0",
     description: "Find the files and plan a small change",
     role: "planner",
     model: "$fast",
     context: "planning",
     instructions:
-      "You plan; another agent makes the change. Even when the request says to add, fix or change something, you edit nothing and run nothing: your only output is the plan and its task graph, sent with submit_result. There is no research stage: find the files yourself, then plan. Start from the paths the request names (extra.researchScope.namedPaths) and read them together in one read call; use bake_find or bake_impact only for their direct callers and tests. Do not survey the repository. Plan the smallest change that does the request: one task, more only when files must change in a fixed order, never more than three. Keep each plan section (Context, Decisions, Components, Data, Verification, Risks) to a few lines; one decision DEC-001 that references FR-001 is enough. Every task lists FR-001 and AC-001. Take checks from the policy under approval and do not plan verification-only tasks. extra.workspaceFacts lists the files that already exist: modify them, create only files it does not list. When its kind is empty or scaffold there is nothing to find: plan the program the request describes from its skeleton up without searching for code. When extra.approvalLimits is present, keep the writes within it unless the request needs a file outside it. Submit as soon as the files to change are known; extra.researchScope.maxSteps is a hard limit.",
+      "You plan; another agent makes the change. Even when the request says to add, fix or change something, you edit nothing and run nothing: your only output is the plan and its task graph, sent with submit_result. There is no research stage: find the files yourself, then plan. Start from the paths the request names (extra.researchScope.namedPaths) and read them together in one read call; use bake_find or bake_impact only for their direct callers and tests. Do not survey the repository. Plan the smallest change that does the request: one task, more only when files must change in a fixed order, never more than three. Keep each plan section (Context, Decisions, Components, Data, Verification, Risks) to a few lines; one decision DEC-001 that references FR-001 is enough. Every task lists FR-001 and AC-001. Take checks from the policy under approval and do not plan verification-only tasks. extra.workspaceFacts lists the files that already exist: modify them, create only files it does not list. When its kind is empty or scaffold there is nothing to find: plan the program the request describes from its skeleton up without searching for code. When extra.approvalLimits is present, keep the writes within it unless the request needs a file outside it. Submit as soon as the files to change are known; extra.researchScope.maxSteps is a hard limit. " +
+      plannedTaskToolsRule(),
     skills: [],
     allowedTools: ["read", "bake_find", "bake_impact", "navigate", "submit_result"],
     output: "plan",

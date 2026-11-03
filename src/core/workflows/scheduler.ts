@@ -38,10 +38,15 @@ import { dataDir, matchGlob } from "../platform/index.js";
 import { runSandbox } from "../security/sandbox.js";
 import { buildSafeEnv } from "../spawn.js";
 import { canonical, hashBytes, hashJson } from "../specs/hash.js";
-import { specPublication } from "../specs/render.js";
+import { specPublication, specPublicationPath } from "../specs/render.js";
 import { validatePackage, workspacePath } from "../specs/validate.js";
 import { captureEndings, restoreEndings } from "../tools/line-endings.js";
-import { INDENT_DEFAULT, placeRowForms, placeRowTargets } from "../tools/place-rows.js";
+import {
+  INDENT_DEFAULT,
+  placeRowForms,
+  placeRowTargets,
+  SEPARATOR_DEFAULT,
+} from "../tools/place-rows.js";
 import {
   assertAcceptance,
   assertAcceptanceV2,
@@ -96,6 +101,7 @@ import {
 } from "../verification/criteria-cases.js";
 import { canHold } from "../verification/deliverable-paths.js";
 import {
+  copyWorkspace,
   type DocExampleResult,
   type DocTextProblem,
   docTextProblems,
@@ -126,6 +132,7 @@ import {
   type GeneratedKind,
   generatedCaseDecision,
 } from "../verification/generated-values.js";
+import { hostDocumentFailure } from "../verification/host-documents.js";
 import {
   clearBannedProperties,
   clearBoundaryProperties,
@@ -150,11 +157,13 @@ import {
   TEST_FILE,
   withinBaseline,
 } from "../verification/output-counts.js";
+import { plainJsonText } from "../verification/plain-output.js";
 import {
   carryNoRepro,
   missingReproAdvice,
   outputShows,
   type ReproOutcome,
+  removeScratch,
   reproBlind,
   reproCannotSeeCorrection,
   reproCrash,
@@ -489,6 +498,7 @@ import {
   symbolKey,
   taskChainRecord,
 } from "./finding-chain.js";
+import { fixerPaths } from "./fixer-languages.js";
 import {
   FAILED_FIXERS_NOTE,
   FIXER_KIND,
@@ -530,6 +540,7 @@ import {
   hostApplyRecord,
   hostApplyRecords,
   hostApplyText,
+  hostRowFileTasks,
   rowFileTasks,
 } from "./host-apply.js";
 import { HOST_ADDITIONS, HOST_EDITS_PATH, type HostEdit, recordGraphEdits } from "./host-edits.js";
@@ -875,7 +886,15 @@ import {
   stopFault,
   stopMode,
 } from "./stop-reasons.js";
-import { SUPPLIED_CHECK_DIR, SUPPLIED_CHECK_KIND, suppliedCheckRecord } from "./supplied-checks.js";
+import {
+  SUPPLIED_CHECK_DIR,
+  SUPPLIED_CHECK_KIND,
+  type SuppliedCheckRecord,
+  suppliedCheckRecord,
+  suppliedCheckVeto,
+} from "./supplied-checks.js";
+import { taskToolProblems, toolsOfferedTo } from "./task-tools.js";
+import { transcriptDriftSummary, transcriptDrifts } from "./transcript-drift.js";
 import {
   repairUncoveredCriteria,
   UNCOVERED_SUBMISSIONS,
@@ -888,6 +907,7 @@ type Implementation = ReturnType<typeof ImplementationSchema.parse>;
 
 import { linkDependencies, worktreePathRisks } from "./dependency-dirs.js";
 import { browserLayoutProbe, type LayoutProbe, layoutVerdict } from "./layout-check.js";
+import { personRequest } from "./person-request.js";
 import { planCostOf, planCostWarning } from "./plan-cost.js";
 import { EDIT_TOOLS } from "./progress-watch.js";
 import {
@@ -998,6 +1018,7 @@ import {
   prescribedRowFiles,
   suppliedConflictCriteria,
   suppliedContentFindings,
+  suppliedFileContents,
 } from "./supplied-content.js";
 import {
   planContentDrifts,
@@ -1105,8 +1126,17 @@ import {
   runContentCommit,
   runRoot,
   userChangesInScope,
+  WORKTREES_DIR,
   worktreePath,
+  worktreePathRemedy,
 } from "./worktree.js";
+import {
+  pathSensitiveChecks,
+  WORKTREE_PROBE_PATH,
+  type WorktreeProbe,
+  type WorktreeProbeRecord,
+  worktreeProbeDecision,
+} from "./worktree-probe.js";
 
 /** Set by the test setup in CI: agent-call errors that block a run are printed with their stack (#1177). */
 const TRACE_RUN_BLOCKS = process.env.BAKED_TRACE_RUN_BLOCKS === "1";
@@ -1329,7 +1359,14 @@ interface UnfinishedRepeat {
   /** Unfinished ends in a row with the same failing output, this one included. */
   ends: number;
   checks: string[];
+  /**
+   * What the worker of the latest end reported unresolved (#2643): the cause may be no check at
+   * all (R87 slackbar T005 had no run_probe while its block named the `format` check).
+   */
+  unresolved?: string[];
 }
+/** The unresolved notes a block message quotes, at most this many characters each. */
+const UNRESOLVED_NOTE_CHARS = 300;
 /**
  * The block of an unfinished task whose failing checks repeat its previous unfinished end, with
  * the repeat in its message (#2437): R77 pairwick's resumes ran the same task into the same
@@ -1345,7 +1382,14 @@ export function unfinishedRepeatFault(
 ): WorkflowFault {
   if (!repeat) return fault;
   const checks = repeat.checks.join(", ");
-  const summary = `Task ${repeat.taskId} ended unfinished ${repeat.ends} times in a row with the same failing output of ${checks}.`;
+  const notes = (repeat.unresolved ?? [])
+    .map((note) => note.trim())
+    .filter(Boolean)
+    .slice(0, 2)
+    .map((note) =>
+      note.length > UNRESOLVED_NOTE_CHARS ? `${note.slice(0, UNRESOLVED_NOTE_CHARS)}...` : note,
+    );
+  const summary = `Task ${repeat.taskId} ended unfinished ${repeat.ends} times in a row with the same failing output of ${checks}.${notes.length ? ` Its worker reported unresolved: ${notes.map((n) => `"${n}"`).join("; ")}.` : ""}`;
   const head = `${fault.message.replace(/[.\s]+$/, "")}. ${summary}`;
   const { recovery: _replaced, ...details } = fault.details;
   const actions = unfinishedRepeatRemedies(repeat.ends);
@@ -1362,7 +1406,7 @@ export function unfinishedRepeatFault(
   return new WorkflowFault(
     fault.code,
     recoveryAdvice(
-      `${head} Another resume gives the task the same input and runs it into the same failure, so it is not offered. What must change is the input behind ${checks}: the model of the task's stage (\`baked workflow reroute ${runId} --route STAGE=MODEL --resume\`), the plan, tasks or tests that make ${checks} fail, such as a test file or a rule the task may not change (\`baked workflow revise ${runId}\`), or the initiative feature's plan (\`baked workflow initiative replan ID --feature F\`); otherwise cancel the run.`,
+      `${head} Another resume gives the task the same input and runs it into the same failure, so it is not offered. What must change is the input behind ${checks}${notes.length ? " or behind what its worker reported unresolved (a tool the task is not offered, a case it cannot write)" : ""}: the model of the task's stage (\`baked workflow reroute ${runId} --route STAGE=MODEL --resume\`), the plan, tasks or tests that make ${checks} fail, such as a test file or a rule the task may not change (\`baked workflow revise ${runId}\`), or the initiative feature's plan (\`baked workflow initiative replan ID --feature F\`); otherwise cancel the run.`,
       `${summary} Change the stage's model, the plan or the tests before trying again; a resume repeats the failure.`,
       ...actions.map((action) => ({ action, runId })),
     ),
@@ -1450,6 +1494,11 @@ export class WorkflowScheduler {
   private execution: LeaseResource = "execution";
   /** How many runs may execute in the workspace at once (`workflows.maxParallelRuns`). */
   maxParallelRuns = DEFAULT_MAX_PARALLEL_RUNS;
+  /**
+   * The folder a new run's worktree is created in (`workflows.worktreeRoot`, absolute, #2461); null
+   * for the project's `.baked/worktrees`. A run that has its worktree keeps it where it is.
+   */
+  worktreeRoot: string | null = null;
   /** The browser driver of AI acceptance gates; Playwright when unset. Tests inject a fake. */
   browserDriver: BrowserDriverOptions | undefined;
   /** The layout measurement of `layoutCheck` (#1262); Playwright when unset. Tests inject a fake. */
@@ -1533,7 +1582,11 @@ export class WorkflowScheduler {
     this.mutation = inWorktree
       ? mutationLeaseFor(
           this.store.workspace,
-          join(this.store.workspace, worktreePath(this.store.workspace, runId)),
+          join(
+            this.store.workspace,
+            this.store.state(runId).worktree?.path ??
+              worktreePath(this.store.workspace, runId, this.worktreeRoot),
+          ),
         )
       : "mutation";
     this.execution = inWorktree ? `execution:${runId}` : "execution";
@@ -1642,7 +1695,8 @@ export class WorkflowScheduler {
     this.queued = [];
     try {
       if (!recoverRun(this.store, this.journal, runId)) return;
-      if (executionModeOf(policy) === "worktree") await ensureRunWorktree(this.store, runId);
+      if (executionModeOf(policy) === "worktree")
+        await ensureRunWorktree(this.store, runId, this.worktreeRoot);
       this.restoreMutatedFiles(runId);
       this.store.transaction(() => {
         // A drive runs only once the run's requests are decided: a stage that ended waiting for
@@ -2040,6 +2094,7 @@ export class WorkflowScheduler {
                   ...this.planProblems(runId, spec, submitted, policy, profiles),
                   ...codeTaskCheckProblems(submitted.taskGraph, policy),
                   ...hostContentProblems(submitted.taskGraph, spec),
+                  ...taskToolProblems(submitted.taskGraph),
                   ...hostFileProblems(submitted.taskGraph, state.hostFiles),
                   ...testWriteProblems(
                     submitted.taskGraph,
@@ -3005,7 +3060,7 @@ export class WorkflowScheduler {
               await this.recordCheckBaseline(runId, state, policy, signal);
               await this.repairBaselineFailures(runId, stepId, state, policy, signal);
               await this.probeFixers(runId, state, policy, signal);
-              this.worktreePathWouldStop(runId, state, policy);
+              await this.worktreeEnvironment(runId, state, policy, signal);
               if (state.pendingTaskRepair.length) {
                 const ids = new Set(state.pendingTaskRepair);
                 const findings = this.store
@@ -5079,6 +5134,8 @@ export class WorkflowScheduler {
       ...(policy.sizing?.rowVolume || policy.sizing?.suppliedDiff
         ? { request: state.requestText || state.prompt }
         : {}),
+      // A row file the host writes is never split by its rows: it needs no session (#2633).
+      hostRows: hostRowFileTasks(state.requestText || state.prompt, graph, policy),
     });
     const split = splitTestTasks(
       graph,
@@ -5368,6 +5425,31 @@ export class WorkflowScheduler {
     } catch {}
   }
   /**
+   * The `transcript_drift` would-stops (#2648): each document the plan writes that leaves a `$`
+   * transcript the request says it must hold exactly, once per document and block. Called at the
+   * checks stage of both workflow versions, after the snapshot; a failure to read records nothing.
+   */
+  private transcriptDriftWouldStop(runId: string, state: RuntimeState, policy: RunPolicy): void {
+    const mode = stopMode(policy, "transcript_drift");
+    if (mode === "enforce") return;
+    const graph = state.rootGraph ?? state.graph;
+    if (!graph) return;
+    try {
+      const root = runRoot(this.store.workspace, state);
+      const drifts = transcriptDrifts(state.requestText || state.prompt, graph, (path) =>
+        readText(workspacePath(root, path)),
+      );
+      for (const drift of drifts)
+        recordWouldStop(this.store, runId, {
+          reason: "transcript_drift",
+          mode,
+          key: `${drift.path}#block-${drift.block}`,
+          summary: transcriptDriftSummary(drift),
+          inputs: { ...drift },
+        });
+    } catch {}
+  }
+  /**
    * The `row_block_drift` would-stops (#2486): each prescribed row of a test file the plan writes
    * whose quoted literal the delivered file lacks, once per file and row; each row of the file
    * beyond the block, added or duplicated (#2503), once per file, kind and line; and the counts of
@@ -5523,18 +5605,28 @@ export class WorkflowScheduler {
     const failure = await this.inRunCopy(runId, state, FIXER_PROBE_COPY, async (copy, scope) => {
       const listed = await git(copy, ["ls-files", "-z"]);
       const tracked = listed.code === 0 ? listed.stdout.split("\0").filter(Boolean) : [];
-      const kinds = new Set(planned.map((path) => extname(path)));
-      // A file the plan modifies, else any tracked file of a kind the plan writes.
-      const file =
-        planned.find((path) => tracked.includes(path)) ??
-        tracked.find((path) => isCodePath(path) && kinds.has(extname(path))) ??
-        null;
       for (const check of checks) {
         signal.throwIfAborted();
         const fix = check.fix;
         if (!fix) continue;
+        // A planned file of the languages the fixer handles (#2632): R86 binlayer probed ruff on a
+        // `.sql` file and recorded it unusable.
+        const own = fixerPaths(fix, planned);
+        const kinds = new Set(own.map((path) => extname(path)));
+        // A file the plan modifies, else any tracked file of a kind the plan writes.
+        const file =
+          own.find((path) => tracked.includes(path)) ??
+          tracked.find((path) => isCodePath(path) && kinds.has(extname(path))) ??
+          null;
         if (!file) {
-          probes.push(skipped(check, "no tracked file of the plan's code kinds"));
+          probes.push(
+            skipped(
+              check,
+              own.length
+                ? "no tracked file of the plan's code kinds"
+                : "the plan writes no code file of the fixer's languages",
+            ),
+          );
           continue;
         }
         const command = isWholeUnitFixer(fix)
@@ -5587,26 +5679,131 @@ export class WorkflowScheduler {
   /** The platform a run's checks run on; tests inject another. */
   platform: NodeJS.Platform = process.platform;
   /**
-   * Before the first task, records `worktree_environment` (#2454) when the deepest worktree a task's
-   * checks run in is longer than a project language's test tool handles on this platform.
+   * Before the first task, records `worktree_environment` (#2454) when a task's checks cannot run
+   * in the run's worktree for its path's length. A required check of a toolchain with a
+   * `WORKTREE_PATH_LIMITS` row is measured (#2461, `worktree-probe.ts`): one that failed in the
+   * worktree at the check baseline runs again in a short copy of the same tree, and failing deep
+   * while passing shallow decides; one that passed in the worktree clears its language whatever
+   * the row says. A language with no measured check falls back to the row's length estimate.
    */
-  private worktreePathWouldStop(runId: string, state: RuntimeState, policy: RunPolicy): void {
+  private async worktreeEnvironment(
+    runId: string,
+    state: RuntimeState,
+    policy: RunPolicy,
+    signal: AbortSignal,
+  ): Promise<void> {
     const mode = stopMode(policy, "worktree_environment");
     if (mode === "enforce" || !state.worktree) return;
     if (!this.store.tasks(runId).every((task) => task.status === "pending")) return;
     const main = join(this.store.workspace, state.worktree.path);
+    const rootSet = !state.worktree.path.startsWith(`${WORKTREES_DIR}/`);
     const taskIds = (state.graph?.tasks ?? []).map((task) => task.id);
     const deepest = [main, ...taskIds.map((id) => join(dirname(main), id))].reduce((a, b) =>
       b.length > a.length ? b : a,
     );
-    for (const risk of worktreePathRisks(main, deepest, this.platform))
+    const record = await this.probeWorktree(runId, main, policy, signal);
+    const measured = new Set(
+      record.probes.filter((p) => p.decision !== "not_probed").map((p) => p.language),
+    );
+    for (const probe of record.probes.filter((p) => p.decision === "environment"))
       recordWouldStop(this.store, runId, {
         reason: "worktree_environment",
         mode,
-        key: `language-${risk.language}`,
-        summary: `worktree_environment: a task's checks run in ${risk.path} (${String(risk.length)} characters), and ${risk.tool} fails to start over ${String(risk.limit)} characters on ${this.platform}; the run would stop before its first task instead of paying correctives that cannot shorten the path. Move the project to a shorter path or run inline`,
-        inputs: { ...risk, platform: this.platform },
+        key: `language-${probe.language}`,
+        summary: `worktree_environment: ${probe.checkId} (${probe.tool}) fails in the run's worktree ${probe.worktree} (${String(probe.worktreeLength)} characters) and passes on the same files in ${probe.copy ?? "a short copy"} (${String(probe.copyLength ?? 0)} characters) on ${this.platform}; the run would stop before its first task instead of paying correctives that cannot shorten the path. ${worktreePathRemedy(Math.min(probe.limit, probe.worktreeLength - 1), this.platform, rootSet)}`,
+        inputs: { ...probe, source: "probe", platform: this.platform },
       });
+    for (const risk of worktreePathRisks(main, deepest, this.platform))
+      if (!measured.has(risk.language))
+        recordWouldStop(this.store, runId, {
+          reason: "worktree_environment",
+          mode,
+          key: `language-${risk.language}`,
+          summary: `worktree_environment: a task's checks run in ${risk.path} (${String(risk.length)} characters), and ${risk.tool} fails to start over ${String(risk.limit)} characters on ${this.platform}; the run would stop before its first task instead of paying correctives that cannot shorten the path. ${worktreePathRemedy(risk.limit, this.platform, rootSet)}`,
+          inputs: { ...risk, source: "length", platform: this.platform },
+        });
+  }
+  /**
+   * The worktree preflight probe (#2461), once per run: its record when one exists, else each
+   * path-sensitive required check measured as `worktreeProbeDecision` says, recorded as
+   * `WORKTREE_PROBE_PATH`.
+   */
+  private async probeWorktree(
+    runId: string,
+    main: string,
+    policy: RunPolicy,
+    signal: AbortSignal,
+  ): Promise<WorktreeProbeRecord> {
+    const stored = this.store.latestArtifact(runId, WORKTREE_PROBE_PATH);
+    if (stored) return JSON.parse(this.store.readArtifact(runId, stored.id)) as WorktreeProbeRecord;
+    const record: WorktreeProbeRecord = { schemaVersion: 1, platform: this.platform, probes: [] };
+    const sensitive = pathSensitiveChecks(policy.checks, main, this.platform);
+    if (!sensitive.length) return record;
+    const artifact = this.store.latestArtifact(runId, CHECK_BASELINE_PATH);
+    const baseline = artifact
+      ? (JSON.parse(this.store.readArtifact(runId, artifact.id)) as {
+          measured?: boolean;
+          failures?: Record<string, string>;
+        })
+      : null;
+    let copy: string | null | undefined;
+    try {
+      for (const { check, language, tool, limit } of sensitive) {
+        signal.throwIfAborted();
+        const failure = baseline?.failures?.[commandKey(check)];
+        const inWorktree = !baseline?.measured
+          ? "not_measured"
+          : failure === undefined
+            ? "passed"
+            : "failed";
+        const probe: WorktreeProbe = {
+          checkId: check.id,
+          language,
+          tool,
+          limit,
+          worktree: main,
+          worktreeLength: main.length,
+          copy: null,
+          copyLength: null,
+          inWorktree,
+          inCopy: "not_run",
+          output: (failure ?? "").slice(-600),
+          decision: "not_probed",
+        };
+        if (inWorktree === "failed") {
+          if (copy === undefined) {
+            const listed = await git(main, ["ls-files", "-z"]);
+            copy =
+              listed.code === 0
+                ? copyWorkspace(main, listed.stdout.split("\0").filter(Boolean))
+                : null;
+          }
+          if (copy === null) probe.note = "the worktree's tracked files are too large to copy";
+          else if (copy.length >= main.length)
+            probe.note = "the temporary folder is no shorter than the worktree";
+          else {
+            const result = await this.checks.measure(
+              check,
+              signal,
+              copy,
+              runSandbox(policy, copy, { gitWrite: false }),
+            );
+            probe.copy = copy;
+            probe.copyLength = copy.length;
+            probe.inCopy = result.timeout ? "inconclusive" : result.status;
+            if (result.timeout) probe.note = result.timeout.note;
+          }
+        }
+        probe.decision = worktreeProbeDecision(probe.inWorktree, probe.inCopy);
+        record.probes.push(probe);
+      }
+    } finally {
+      if (copy) removeScratch(copy);
+    }
+    this.store.transaction(() =>
+      this.store.artifact(runId, "diagnostic", WORKTREE_PROBE_PATH, canonical(record)),
+    );
+    return record;
   }
   /** The `baseline_unrepairable` would-stop of a baseline failure (#2215), once per check. */
   private baselineWouldStop(
@@ -5781,6 +5978,39 @@ export class WorkflowScheduler {
       ),
     );
     return debt;
+  }
+  /**
+   * The host-published documents a failed formatter check reported, when they are all it reported
+   * (#2641): `hostDocumentFailure` read the check's output, and the failure is the host's, since no
+   * task writes `specs/` and the fixer runs only on a task's files. R87 slk: `prettier --check .`
+   * reported the five documents the run published, T005 ended unfinished twice with that output
+   * and the run blocked. Recorded as a `checks/host-published/` diagnostic that acceptance and every
+   * view read through `hostPassedChecks`; null when the check fails as usual.
+   */
+  private hostDocumentDebt(
+    runId: string,
+    state: RuntimeState,
+    check: Check,
+    output: string,
+    evidenceId: string,
+  ): string[] | null {
+    const root = runRoot(this.store.workspace, state);
+    const files = hostDocumentFailure(
+      check,
+      output,
+      !check.cwd || check.cwd === "." ? root : workspacePath(root, check.cwd),
+    );
+    if (!files) return null;
+    const reason = `it failed only on documents the host publishes (${files.join(", ")}), which no task writes`;
+    this.store.transaction(() =>
+      this.store.artifact(
+        runId,
+        "diagnostic",
+        `checks/host-published/${check.id}-${newId()}.json`,
+        canonical({ checkId: check.id, evidenceId, files, reason }),
+      ),
+    );
+    return files;
   }
   /**
    * Why a failed test check verified nothing that this run owns: the runner collected no test
@@ -6389,7 +6619,7 @@ export class WorkflowScheduler {
     policy: RunPolicy,
     task: Task,
   ): ((root: string, signal: AbortSignal) => Promise<string[]>) | undefined {
-    if (task.origin === "planned" || !task.findingIds.length) return undefined;
+    if (!toolsOfferedTo(task).has("run_repro")) return undefined;
     const executables = reproExecutables(policy.checks);
     // The repros of earlier findings on the same symbol are a regression set: a rewrite that
     // fixes this finding must not bring one of them back (#1330).
@@ -7076,6 +7306,8 @@ export class WorkflowScheduler {
               hostRows: generatedRows.filter((file) => file.inline === true),
               // The rows the request prescribes, for files written yet or not (#2501).
               prescribedRows: this.prescribedRows(runId, state),
+              // The files it supplies verbatim, whose helpers a criterion may name (#2646).
+              suppliedFiles: this.suppliedFiles(runId, state),
               ...(policy.citedCases ? { citedCases: policy.citedCases } : {}),
               generatedKinds: this.bannedGeneratedKinds(state, task),
               refuseGenerated: stopMode(policy, "generated_case") === "enforce",
@@ -8030,6 +8262,7 @@ export class WorkflowScheduler {
         tokenRates: rateHistory(this.store.workspace, policy),
         ownRates: this.initiativeRates(runId),
         request: state.requestText || state.prompt,
+        hostRows: hostRowFileTasks(state.requestText || state.prompt, graph, policy),
       });
       this.store.transaction(() =>
         this.store.artifact(
@@ -8194,6 +8427,7 @@ ${note}`;
       tokenRates: rateHistory(this.store.workspace, policy),
       ownRates: this.initiativeRates(runId),
       request: state.requestText || state.prompt,
+      hostRows: hostRowFileTasks(state.requestText || state.prompt, state.graph, policy),
     });
     this.store.transaction(() => {
       this.store.artifact(runId, "sizing", path, this.sizingRecord(runId, report));
@@ -8602,7 +8836,11 @@ ${note}`;
           id: e.id,
           handle,
           kind: e.kind,
-          content: content.slice(0, e.kind === "diff" ? MAX_PATCH_CHARS + 4000 : 16000),
+          // A check record's output without the escapes a tool printed anyway (#2631).
+          content: (e.kind === "command" ? plainJsonText(content) : content).slice(
+            0,
+            e.kind === "diff" ? MAX_PATCH_CHARS + 4000 : 16000,
+          ),
           ...(check
             ? {
                 check: {
@@ -10386,7 +10624,7 @@ ${note}`;
         ...(failedChecks.length ? { failedChecks } : {}),
       }),
     );
-    return this.recordUnfinishedRepeat(runId, policy, stepId, taskId);
+    return this.recordUnfinishedRepeat(runId, policy, stepId, taskId, result.unresolved);
   }
   /**
    * Records the failing checks of a task's unfinished end (`repeats/tasks/<task>.json`, #2437)
@@ -10401,6 +10639,7 @@ ${note}`;
     policy: RunPolicy,
     stepId: string,
     taskId: string,
+    unresolved: string[] = [],
   ): UnfinishedRepeat | null {
     const tasks = this.store.state(runId).graph?.tasks ?? [];
     const checks = this.failedChecksOf(runId, stepId, taskId, Number.POSITIVE_INFINITY).map(
@@ -10417,7 +10656,12 @@ ${note}`;
         : decided;
     this.store.artifact(runId, REPEAT_KIND, path, canonical(record));
     if (record.decision !== "repeat") return null;
-    const repeat = { taskId, ends: record.ends ?? 2, checks: checks.map((c) => c.id) };
+    const repeat = {
+      taskId,
+      ends: record.ends ?? 2,
+      checks: checks.map((c) => c.id),
+      ...(unresolved.length ? { unresolved } : {}),
+    };
     const mode = stopMode(policy, "repeated_failure");
     if (mode === "enforce") return repeat;
     const files = [...new Set(checks.flatMap((c) => c.files))];
@@ -12163,7 +12407,7 @@ ${note}`;
       ...notationRows,
       placeRows: {
         files,
-        note: `The request prescribes the rows of ${files.map((f) => `${f.path} (${f.rows} rows)`).join(", ")}. You must place them with place_rows and never type a row: write everything else in the file with edit_file (imports, the row type, the list's opening and close, the harness calls), leaving the rows out, then call place_rows with the path, the line the rows follow and rows [first, last]. The host inserts the request's rows exactly as written, one per line in order. The indent of a placed row is by default ${INDENT_DEFAULT}; a comma ends each row; give indent and separator when they do not fit the language or the request's layout. The result shows the first placed line; place_rows with reindent: true fixes the indentation of rows already placed.`,
+        note: `The request prescribes the rows of ${files.map((f) => `${f.path} (${f.rows} rows)`).join(", ")}. You must place them with place_rows and never type a row: write everything else in the file with edit_file (imports, the row type, the list's opening and close, the harness calls), leaving the rows out, then call place_rows with the path, the line the rows follow and rows [first, last]. The host inserts the request's rows exactly as written, one per line in order. The indent of a placed row is by default ${INDENT_DEFAULT}; the separator that ends each row is by default ${SEPARATOR_DEFAULT}; give indent and separator when they do not fit the language or the request's layout. The result shows the first placed line; place_rows with reindent: true fixes the indentation of rows already placed.`,
       },
     };
   }
@@ -13474,8 +13718,9 @@ ${note}`;
     const exampleInput: EvidenceInput = {
       site: "docs-example",
       eligible: assumes && writesOnlyDocs(task) && !this.settledBy(runId, "docs-example", task.id),
+      // The person's words only: a feature's framing is the host's own (#2492).
       evidence: reportRequestEvidence(
-        statedRequest(state, this.store.requests(runId)),
+        personRequest(state, this.store.requests(runId)).person,
         report,
         result.conflictSides,
       ),
@@ -13483,7 +13728,10 @@ ${note}`;
       fallback: first,
     };
     const example = evidenceDecision(exampleInput);
-    const assume = example || (first && namesRequestSide(report));
+    // A report whose request side quotes only the feature's framing offered evidence the host
+    // checked and found to be its own words: the wording fallback does not settle it (#2492).
+    const assume =
+      example || (first && !this.framedRequestSide(runId, task.id) && namesRequestSide(report));
     // One side is what the platform cannot do at all: no person can choose it, so the nearest
     // feasible behavior the task named holds (#1384). It settles on a platform side whose quote
     // a failing check or a probe of the task printed, on every report (#2032).
@@ -14469,7 +14717,8 @@ ${note}`;
       const derivations = (
         checkedDerivations(
           analysis.derivations,
-          statedRequest(state, this.store.requests(runId)),
+          // A quote of a feature's framing is the host's, not the request's (#2492).
+          personRequest(state, this.store.requests(runId)).person,
           audited,
         ) ?? []
       ).filter((d) => rows.some((r) => r.criterion.id === d.criterionId));
@@ -14633,6 +14882,27 @@ ${note}`;
     return null;
   }
   /**
+   * Whether the task's latest request conflict record holds a request side that only the host's
+   * framing of a feature holds (#2492): the scope fence quoted as if it were the person's words.
+   */
+  private framedRequestSide(runId: string, taskId: string): boolean {
+    const latest = this.store
+      .artifacts(runId)
+      .filter(
+        (a) =>
+          a.kind === REQUEST_CONFLICT_KIND &&
+          a.logical_path.startsWith(`${REQUEST_CONFLICTS_DIR}${taskId}-`),
+      )
+      .at(-1);
+    if (!latest) return false;
+    try {
+      const record = JSON.parse(this.store.readArtifact(runId, latest.id)) as RequestConflictRecord;
+      return record.sides.some((s) => s.kind === "request" && s.section === "framing");
+    } catch {
+      return false;
+    }
+  }
+  /**
    * A conflict between a criterion and what the request states, settled for the request on quotes
    * the host checked (#2016): the report's sides, or else a targeted re-audit of the cited criteria
    * against the request whose quotes are checked as well. Decided on every report of a task until
@@ -14658,6 +14928,10 @@ ${note}`;
     const spec = state.spec;
     const reported = result.conflictSides;
     const request = statedRequest(state, this.store.requests(runId));
+    // The sides and the re-audit's quotes are checked against the person's words only: for a
+    // feature of an initiative a quote of the host's framing (the scope fence) settles nothing
+    // (#2492, R80 ratdec core T014).
+    const sections = personRequest(state, this.store.requests(runId));
     const tasks = (state.rootGraph ?? state.graph)?.tasks ?? [task];
     const failing = this.failedCheckOutput(runId, task.id);
     const foreign = [
@@ -14702,7 +14976,7 @@ ${note}`;
         }
       });
     const input: RequestConflictInput = {
-      sides: checkedSides(spec, request, report, reported),
+      sides: checkedSides(spec, sections, report, reported),
       foreignTests: foreign.length,
       criterionIds: criteria.map((c) => c.id),
       ...(supplied.length ? { supplied: true } : {}),
@@ -14729,7 +15003,7 @@ ${note}`;
             path: `tasks/conflicts/${task.id}-request-reaudit.json`,
           },
         )) ?? [];
-      input.reaudit = reauditVerdicts(derivations, input.criterionIds, request);
+      input.reaudit = reauditVerdicts(derivations, input.criterionIds, sections.person);
       decision = requestConflictDecision(input);
     }
     const record: RequestConflictRecord = {
@@ -14764,7 +15038,8 @@ ${note}`;
     ];
     const quotes = bySides
       ? (reported ?? [])
-          .filter((s) => s.kind === "request")
+          // A quote of the feature's framing is not the request's words (#2492).
+          .filter((s, i) => s.kind === "request" && input.sides[i]?.section !== "framing")
           .map((s) => JSON.stringify(s.quote.slice(0, 600)))
           .join(", ")
       : derivations
@@ -15338,7 +15613,8 @@ ${note}`;
     if (
       checked.status === "failed" &&
       checked.output &&
-      this.staticDebt(runId, state, policy, check, checked.output, checked.evidenceId)
+      (this.staticDebt(runId, state, policy, check, checked.output, checked.evidenceId) ||
+        this.hostDocumentDebt(runId, state, check, checked.output, checked.evidenceId))
     )
       return undefined;
     // The check fails exactly as before any change and names no file the task writes: the task
@@ -16650,6 +16926,7 @@ ${note}`;
     if (unsafe.length) return this.recordChecks(runId, state, unsafe);
     this.ciCheckDriftWouldStop(runId, state, policy, policy.checks);
     this.suppliedDriftWouldStop(runId, state, policy);
+    this.transcriptDriftWouldStop(runId, state, policy);
     const rowDrifts = this.rowBlockDriftWouldStop(runId, state, policy);
     const failures: Review["findings"] = [];
     const failedIds: string[] = [];
@@ -16688,7 +16965,8 @@ ${note}`;
         result.status === "failed" &&
         check.required &&
         (this.staticDebt(runId, state, policy, check, result.output, result.evidenceId) ||
-          this.noOwnedTests(runId, state, check, result.output, result.evidenceId))
+          this.noOwnedTests(runId, state, check, result.output, result.evidenceId) ||
+          this.hostDocumentDebt(runId, state, check, result.output, result.evidenceId))
       ) {
         passedIds.push(check.id);
         continue;
@@ -16918,7 +17196,8 @@ ${note}`;
             ? paths.filter((path) => check.fixPaths?.includes(path))
             : paths;
           for (const [tier, fix] of fixerTiers(check).entries()) {
-            const files = fixerTierPaths(check, tier, own);
+            // A fixer runs only on the code files of the languages it handles (#2632).
+            const files = fixerPaths(fix, fixerTierPaths(check, tier, own));
             // A whole-unit formatter (`cargo fmt`) rewrites the whole crate whatever file it is
             // given: one run for all the code files instead of one per file (#1269, #842).
             if (isWholeUnitFixer(fix)) {
@@ -17502,6 +17781,12 @@ ${note}`;
     const graph = state.rootGraph ?? state.graph;
     if (!graph) return new Map();
     return prescribedRowFiles(statedRequest(state, this.store.requests(runId)), graph);
+  }
+  /** The content of the files the request supplies verbatim (`suppliedFileContents`, #2646). */
+  private suppliedFiles(runId: string, state: RuntimeState): string[] {
+    const graph = state.rootGraph ?? state.graph;
+    if (!graph) return [];
+    return suppliedFileContents(statedRequest(state, this.store.requests(runId)), graph);
   }
   /**
    * The `case_not_prescribed` would-stops of a walk (#2501): each case no prescribed row holds,
@@ -19612,6 +19897,7 @@ ${note}`;
       bound.map((b) => b.check),
     );
     this.suppliedDriftWouldStop(runId, state, policy);
+    this.transcriptDriftWouldStop(runId, state, policy);
     const rowDrifts = this.rowBlockDriftWouldStop(runId, state, policy);
     const failures: Review["findings"] = [];
     const failedIds: string[] = [];
@@ -19644,7 +19930,8 @@ ${note}`;
         check.required &&
         !run.reason &&
         (this.staticDebt(runId, state, policy, check, run.output ?? "", run.evidenceId) ||
-          this.noOwnedTests(runId, state, check, run.output ?? "", run.evidenceId))
+          this.noOwnedTests(runId, state, check, run.output ?? "", run.evidenceId) ||
+          this.hostDocumentDebt(runId, state, check, run.output ?? "", run.evidenceId))
           ? { ...run, status: "passed" as const }
           : run;
       this.recordGate(runId, state, gate.id, null, {
@@ -21141,7 +21428,15 @@ ${note}`;
       // `rowFileWrite`, the request's verbatim content under `hostApply`. Otherwise the shadow
       // record before the session (`recordHostApply`) keeps the decision.
       if (!writes.every((w) => (w.rows ? rowsOn : policy.hostApply === "on"))) return false;
-      record = hostApplyRecord(task.id, writes, hostApplyDecision, "on");
+      // Content the project's own file-scoped check rejects goes to an implementer (#2462): the
+      // task's supplied-checks record, made just before this, is read only through its veto.
+      record = hostApplyRecord(
+        task.id,
+        writes,
+        hostApplyDecision,
+        "on",
+        suppliedCheckVeto(this.suppliedCheckOf(runId, task.id)),
+      );
     } catch {
       return false;
     }
@@ -21295,6 +21590,16 @@ ${note}`;
           ...(supplied ? { suppliedCheck: supplied.logical_path } : {}),
         },
       });
+    }
+  }
+  /** The task's `supplied-checks/` record (#2275), or null when none was made or it is unreadable. */
+  private suppliedCheckOf(runId: string, taskId: string): SuppliedCheckRecord | null {
+    const artifact = this.store.latestArtifact(runId, `${SUPPLIED_CHECK_DIR}${taskId}.json`);
+    if (!artifact) return null;
+    try {
+      return JSON.parse(this.store.readArtifact(runId, artifact.id)) as SuppliedCheckRecord;
+    } catch {
+      return null;
     }
   }
   /**
@@ -22021,10 +22326,8 @@ function answeredFinding(
 const declaredChecks = (policy: RunPolicy, task: Task): Check[] =>
   policy.checks.filter((check) => task.checkIds.includes(check.id));
 
-/** The documents a run publishes under `specs/<featureId>/` once its plan is ready. */
-export const SPEC_PUBLICATION_FILES = ["spec.json", "spec.md", "plan.md", "tasks.json", "tasks.md"];
-export const specPublicationPath = (featureId: string, name: string): string =>
-  `specs/${featureId}/${name}`;
+// The documents a run publishes under `specs/<featureId>/`, defined with their content (#2641).
+export { SPEC_PUBLICATION_FILES, specPublicationPath } from "../specs/render.js";
 /** Logical path of the gates a v2 run froze when it started. */
 export const GATES_ARTIFACT = "definition/gates.json";
 

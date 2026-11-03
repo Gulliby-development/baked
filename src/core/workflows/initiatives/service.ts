@@ -41,6 +41,7 @@ import {
 } from "../estimate.js";
 import { forecastSamples, forecastStageCost, runForecastStages } from "../forecast-price.js";
 import { executingLeases } from "../leases.js";
+import { FEATURE_REQUEST_HEADING } from "../person-request.js";
 import { plannedRunTokens } from "../plan-cost.js";
 import { plannedStages } from "../pre-run.js";
 import { type RecoveryAdvice, recoveryAdvice } from "../remedies.js";
@@ -125,6 +126,7 @@ import {
   type FeatureSize,
   featureDigest,
   foldSkeletonFeatures,
+  hostRowCases,
   type InitiativeFeature,
   InitiativeId,
   type InitiativePlan,
@@ -4218,11 +4220,15 @@ export class InitiativeService {
     const settings = this.store.settings(row);
     const facts = this.workflowFacts(settings);
     const models = settings.model ? [settings.model] : [];
-    const counts = boundaryPathCounts(plan, row.prompt);
+    // The prescribed row files the host writes with no session are neither paths nor test cases
+    // a session pays for (#2640), as task-plan sizing prices their tasks at nothing (#2633).
+    const counts = boundaryPathCounts(plan, row.prompt, settings.basePolicy);
+    const hostRows = hostRowCases(plan, row.prompt, settings.basePolicy);
     const language = planLanguage(plan);
     const commands = requestCommands(row.prompt).length;
     const features = plan.features.map((feature) => {
       const workflowId = featureWorkflowId(settings, feature);
+      const testCases = Math.max(0, (feature.testCases ?? 0) - (hostRows.get(feature.id) ?? 0));
       return {
         id: feature.id,
         title: feature.title,
@@ -4231,7 +4237,7 @@ export class InitiativeService {
         stages: (facts(workflowId)?.stages ?? []).map((stage) => ({ ...stage, models })),
         ...counts.get(feature.id),
         dependsOn: feature.dependsOn,
-        ...(feature.testCases ? { testCases: feature.testCases } : {}),
+        ...(testCases ? { testCases } : {}),
         ...(commands && documentsProgram(feature) ? { documentedCommands: commands } : {}),
       };
     });
@@ -5860,7 +5866,7 @@ function featureRunSamples(
         const plan = initiatives.plan(initiatives.revision(row.id, link.plan_revision));
         plans.set(link.plan_revision, {
           plan,
-          counts: boundaryPathCounts(plan, row.prompt),
+          counts: boundaryPathCounts(plan, row.prompt, settings.basePolicy),
           language: planLanguage(plan),
         });
       }
@@ -6319,6 +6325,7 @@ export function featurePrompt(
       "Other features of the initiative own this work; do not implement it here:",
       ...others.map((f) => `- ${f.id}: ${f.title}`),
     );
-  lines.push("", "The original request of the initiative:", row.prompt);
+  // The person's words begin after this heading; `requestSections` splits there (#2492).
+  lines.push("", FEATURE_REQUEST_HEADING, row.prompt);
   return lines.join("\n");
 }

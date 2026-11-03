@@ -2,10 +2,12 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { hashJson } from "../src/core/specs/hash.js";
+import { FEATURE_REQUEST_HEADING, requestSections } from "../src/core/workflows/person-request.js";
+import { checkedSides, type RequestConflictRecord, requestConflictDecision } from "../src/core/workflows/request-conflict.js";
 import type { Analysis, RunPolicy, Spec } from "../src/core/workflows/schemas.js";
 import { newId } from "../src/core/workflows/store.js";
 import { replayConflictFinishes, replayRequestConflicts } from "../src/core/workflows/trace.js";
-import type { ExecutionRequest } from "../src/core/workflows/types.js";
+import type { ExecutionRequest, RuntimeState } from "../src/core/workflows/types.js";
 import { fixturePolicy, fixtureSpec, workflowFixture } from "./helpers/workflow-fixture.js";
 
 // Scenario of bench round 65, uritpl cli T003 (#2016). AC-005 gives `t.txt:1:6` for the template
@@ -64,7 +66,31 @@ interface Script {
   finish?: { mode?: "on"; value: string };
   /** The task also carries AC-006, whose literal the attempt's test lacks. */
   unheld?: boolean;
+  /** The run is feature `core` of an initiative, started from the host's feature prompt (#2492). */
+  feature?: boolean;
 }
+
+// The host's framing of a feature run, as `featurePrompt` composes it, around the person's request.
+const FENCE = "Other features of the initiative own this work; do not implement it here:";
+const FEATURE_PROMPT = [
+  'This run implements feature core ("Core checker") of the initiative I1 ("uritpl").',
+  "",
+  "Boundary of this feature: the check command and its tests",
+  "Paths this feature may write: **",
+  "",
+  FENCE,
+  "- representations: Other output formats",
+  "",
+  FEATURE_REQUEST_HEADING,
+  REQUEST,
+].join("\n");
+const FEATURE_BOUNDS: NonNullable<RuntimeState["initiativeBounds"]> = {
+  featureId: "core",
+  features: [
+    { id: "core", scope: "The check command and its tests", paths: ["**"] },
+    { id: "representations", scope: "Other output formats", paths: ["repr/**"] },
+  ],
+};
 
 const UNHELD: Spec["criteria"][number] = { id: "AC-006", requirementIds: ["FR-005"], given: "t.txt holds `{b}` on line 2", when: "uritpl check t.txt runs", then: "it prints `t.txt:2:2: UT101 unused variable \"b\"`", method: "automated" };
 
@@ -148,7 +174,7 @@ async function conflict(script: Script) {
       outputTokens: 25,
     };
   };
-  const started = await service.start({ commandId: newId(), featureId: "fixture", workflowId: "sdd", prompt: REQUEST, ownerLabel: "test", policy });
+  const started = await service.start({ commandId: newId(), featureId: "fixture", workflowId: "sdd", prompt: script.feature ? FEATURE_PROMPT : REQUEST, ownerLabel: "test", policy, ...(script.feature ? { initiativeBounds: FEATURE_BOUNDS } : {}) });
   for (let i = 0; i < 10; i++) {
     const current = await service.get(started.runId);
     if (["completed", "blocked", "failed"].includes(current.status)) break;
@@ -170,7 +196,7 @@ async function conflict(script: Script) {
     prompts,
     walks,
     read,
-    records: service.store.artifacts(started.runId).filter((a) => a.logical_path.startsWith("conflicts/request/")).map((a) => JSON.parse(service.store.readArtifact(started.runId, a.id)) as { report: number; decision: string; sides: { kind: string; verified: boolean }[]; reaudit: unknown }),
+    records: service.store.artifacts(started.runId).filter((a) => a.logical_path.startsWith("conflicts/request/")).map((a) => JSON.parse(service.store.readArtifact(started.runId, a.id)) as { report: number; decision: string; sides: { kind: string; verified: boolean; section?: string }[]; reaudit: unknown }),
     // The replay hook decides each recorded report again, with the current rule or another one.
     replay: (rule?: Parameters<typeof replayRequestConflicts>[2]) => replayRequestConflicts(service.store, started.runId, rule),
     finishes: (rule?: Parameters<typeof replayConflictFinishes>[2]) => replayConflictFinishes(service.store, started.runId, rule),
@@ -331,4 +357,74 @@ describe("scenario: uritpl cli T003, a criterion that contradicts the request's 
     expect(record).toMatchObject({ branch: "platform", settledBy: "assumptions/conflicts/T001.json", checks: null, finish: false });
     expect(record?.cases).toBeGreaterThan(0);
   }, 90_000);
+});
+
+// R80 ratdec core T014 (run 80719fcd, #2492): the conflict was settled "for the request" on a
+// quote of the host's own scope fence ("Other features of the initiative own this work; do not
+// implement it here: ..."), a line `featurePrompt` composes, not the person's brief. The next
+// attempt rewrote a prescribed row of test/stdin_test.exs and core was accepted. A request quote
+// is now checked against the person's words only: the original request and the accepted answers.
+describe("scenario: a feature's request side quotes the host's scope fence (#2492)", () => {
+  const FENCED = `AC-005 says column 6, but the request states the column belongs to another feature: "${FENCE}"`;
+
+  test("a quote of the fence settles nothing for the request, and the wording fallback does not either", async () => {
+    const result = await conflict({ feature: true, summaries: [FENCED], sides: [SIDES[0] as Side, { kind: "request", quote: FENCE }] });
+    expect(result.read("assumptions/conflicts/T001-request.json")).toBeNull();
+    // The request side is recorded as the framing's, never verified; the re-audit then decides.
+    expect(result.records[0]?.sides).toContainEqual({ kind: "request", ref: null, verified: false, source: "sides", section: "framing" });
+    expect(result.records[0]?.decision).toBe("none");
+    expect(result.reaudits).toBe(1);
+    // "the request states" in the report no longer settles the conflict on its wording.
+    expect(String(result.read("assumptions/conflicts/T001.json")?.assumed ?? "")).not.toContain("The request is authoritative");
+    expect(result.replay().map((b) => b.replayed)).toEqual(result.records.map((r) => r.decision));
+  }, 90_000);
+
+  test("the same conflict quoting the original request section still settles for the request", async () => {
+    const result = await conflict({ feature: true, summaries: [FIRST[0] ?? "", SECOND], sides: SIDES });
+    expect(result.asked).toEqual([]);
+    expect(result.read("assumptions/conflicts/T001-request.json")?.assumed).toContain("The request wins over AC-005");
+    expect(result.records[0]?.sides).toContainEqual({ kind: "request", ref: null, verified: true, source: "sides", section: "request" });
+    expect(result.records[0]?.decision).toBe("request");
+    expect(result.status).toBe("completed");
+  }, 90_000);
+
+  test("a re-audit quote of the fence does not overrule the criterion", async () => {
+    const result = await conflict({
+      feature: true,
+      summaries: [FIRST[0] ?? "", SECOND],
+      reaudit: { criterionId: "AC-005", row: WRONG, recomputed: RIGHT, matches: false, derivation: "Another feature owns it", quote: FENCE },
+    });
+    expect(result.read("assumptions/conflicts/T001-request.json")).toBeNull();
+    expect(result.records[0]).toMatchObject({ decision: "none", reaudit: [{ criterionId: "AC-005", matches: true, quoteVerified: false }] });
+  }, 90_000);
+});
+
+describe("the person's request of a feature prompt (#2492)", () => {
+  test("the framing is every line before the heading; a run outside an initiative has none", () => {
+    expect(requestSections(FEATURE_PROMPT, true)).toEqual({ framing: FEATURE_PROMPT.slice(0, FEATURE_PROMPT.indexOf(`\n${FEATURE_REQUEST_HEADING}`)), person: REQUEST });
+    expect(requestSections(FEATURE_PROMPT, false)).toEqual({ framing: "", person: FEATURE_PROMPT });
+    // A request that repeats the heading keeps the repeat: the host writes it once, last.
+    const repeated = `${FEATURE_PROMPT}\n${FEATURE_REQUEST_HEADING}\nmore`;
+    expect(requestSections(repeated, true).person).toBe(`${REQUEST}\n${FEATURE_REQUEST_HEADING}\nmore`);
+  });
+
+  // Every host-composed section of a feature prompt is framing: a new section `featurePrompt`
+  // adds before the heading joins this list, and its quote must not verify.
+  for (const [name, line] of [
+    ["scope fence", FENCE],
+    ["boundary", "Boundary of this feature: the check command and its tests"],
+    ["feature line", 'This run implements feature core ("Core checker")'],
+  ] as const)
+    test(`a quote of the ${name} is a framing side, never verified`, () => {
+      const sides = checkedSides(spec, requestSections(FEATURE_PROMPT, true), "", [{ kind: "request", quote: line }]);
+      expect(sides).toEqual([{ kind: "request", ref: null, verified: false, source: "sides", section: "framing" }]);
+    });
+
+  test("the R80 ratdec core T014 record replays as recorded; with its side read as framing it settles nothing", () => {
+    // conflicts/request/T014-1.json of run 80719fcd, as the R80 trace holds it (no quote kept).
+    const recorded: RequestConflictRecord = { criterionIds: [], decision: "request", foreignTests: 0, reaudit: null, reauditedBefore: false, report: 1, sides: [{ kind: "requirement", ref: "FR-004", source: "sides", verified: true }, { kind: "test", ref: "test/stdin_test.exs", source: "sides", verified: true }, { kind: "request", ref: null, source: "sides", verified: true }], taskId: "T014" };
+    expect(requestConflictDecision(recorded)).toBe("request");
+    const framed = { ...recorded, sides: recorded.sides.map((s) => (s.kind === "request" ? { ...s, verified: false, section: "framing" as const } : s)) };
+    expect(requestConflictDecision(framed)).toBe("none");
+  });
 });
