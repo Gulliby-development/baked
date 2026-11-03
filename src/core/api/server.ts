@@ -515,6 +515,8 @@ function startArgs(raw: unknown): WorkflowArgs {
   if (body.mutation) flags.mutation = body.mutation;
   if (body.propertyTests) flags["property-tests"] = body.propertyTests;
   if (body.modelStrict) flags["model-strict"] = true;
+  const accounts = Object.entries(body.accounts ?? {}).filter(([, id]) => id);
+  if (accounts.length) flags.account = accounts.map(([p, id]) => `${p}=${String(id)}`).join(",");
   if (body.sandbox) flags.sandbox = body.sandbox;
   if (body.policy !== undefined) flags.policy = true;
   if (body.budget) flags.budget = body.budget;

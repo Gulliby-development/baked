@@ -1,4 +1,11 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
+import {
+  ACCOUNT_PROVIDERS,
+  type AccountChoice,
+  type AccountProvider,
+  type ProjectAccountView,
+  projectAccounts,
+} from "../../core/llm/provider-accounts.js";
 import { useTheme } from "../../core/theme/index.js";
 import { BUDGET_PRESETS } from "../../core/workflows/budget.js";
 import { proposeWorkflow } from "../../core/workflows/preset-router.js";
@@ -41,12 +48,39 @@ const FIELDS = [
   "clarification",
   "tests",
   "strict",
+  "codex-account",
+  "claude-code-account",
   "start",
   // Keep the existing navigation through Start run unchanged.
   "rows",
 ] as const;
 type FieldId = (typeof FIELDS)[number];
 const PRESETS: BudgetPresetId[] = [...BUDGET_PRESETS];
+const ACCOUNT_FIELD: Record<AccountProvider, FieldId> = {
+  codex: "codex-account",
+  "claude-code": "claude-code-account",
+};
+const ACCOUNT_NAME: Record<AccountProvider, string> = { codex: "Codex", "claude-code": "Claude" };
+
+/** The project's accounts of each provider, or none when the config cannot be read. */
+function readAccounts(): Record<
+  AccountProvider,
+  { active: string | null; allowed: ProjectAccountView[] }
+> {
+  const out = {} as Record<
+    AccountProvider,
+    { active: string | null; allowed: ProjectAccountView[] }
+  >;
+  for (const provider of ACCOUNT_PROVIDERS) {
+    try {
+      const view = projectAccounts(provider);
+      out[provider] = { active: view.active, allowed: view.accounts.filter((a) => a.allowed) };
+    } catch {
+      out[provider] = { active: null, allowed: [] };
+    }
+  }
+  return out;
+}
 
 export function NewRunForm({
   active,
@@ -91,6 +125,10 @@ export function NewRunForm({
   const [rowsOverride, setRows] = useState<boolean | null>(null);
   // The run model replaces every configured route for this run (`--model-strict`).
   const [strict, setStrict] = useState(false);
+  // The accounts this run uses instead of the project's (`--account`); a provider not in it
+  // keeps the project's account. Offered only for providers with accounts the project may use.
+  const accounts = useMemo(readAccounts, []);
+  const [accountPick, setAccountPick] = useState<AccountChoice>({});
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const workflows = info?.workflows ?? ["sdd"];
@@ -133,7 +171,29 @@ export function NewRunForm({
     worktreeRefusal,
   ].filter((p): p is string => typeof p === "string");
   // The writer count applies only to worktree execution, so navigation skips it otherwise.
-  const fields = FIELDS.filter((f) => f !== "writers" || execution.worktree);
+  const cycle = <T,>(list: T[], value: T, delta: number): T =>
+    list[(list.indexOf(value) + delta + list.length) % list.length] ?? value;
+  const accountProviders = ACCOUNT_PROVIDERS.filter((p) => accounts[p].allowed.length > 0);
+  const fields = FIELDS.filter(
+    (f) =>
+      (f !== "writers" || execution.worktree) &&
+      !ACCOUNT_PROVIDERS.some((p) => ACCOUNT_FIELD[p] === f && !accountProviders.includes(p)),
+  );
+  const accountFocus = accountProviders.find((p) => ACCOUNT_FIELD[p] === focus) ?? null;
+  const cycleAccount = (provider: AccountProvider, delta: number): void => {
+    const ids: (string | undefined)[] = [undefined, ...accounts[provider].allowed.map((a) => a.id)];
+    const next = cycle(ids, accountPick[provider], delta);
+    setAccountPick(({ [provider]: _old, ...rest }) =>
+      next ? { ...rest, [provider]: next } : rest,
+    );
+  };
+  const accountValue = (provider: AccountProvider): string => {
+    const { active, allowed } = accounts[provider];
+    const picked = allowed.find((a) => a.id === accountPick[provider]);
+    if (picked) return `‹ ${picked.label} ›  this run only`;
+    const own = allowed.find((a) => a.id === active);
+    return `‹ project's ›  ${own ? own.label : "the CLI's own sign-in"}`;
+  };
 
   const move = (delta: number): void =>
     setFocus(
@@ -162,6 +222,7 @@ export function NewRunForm({
         ...(proposal ? { autoPreset: true } : {}),
         ...(strict ? { modelStrict: true } : {}),
         ...(typeof costCap === "number" ? { maxCostUsd: costCap } : {}),
+        ...(Object.keys(accountPick).length ? { accounts: accountPick } : {}),
       });
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -169,8 +230,6 @@ export function NewRunForm({
       setSubmitting(false);
     }
   };
-  const cycle = <T,>(list: T[], value: T, delta: number): T =>
-    list[(list.indexOf(value) + delta + list.length) % list.length] ?? value;
 
   useKeyboard((evt) => {
     if (!active) return;
@@ -194,7 +253,8 @@ export function NewRunForm({
       focus === "clarification" ||
       focus === "tests" ||
       focus === "rows" ||
-      focus === "strict";
+      focus === "strict" ||
+      accountFocus !== null;
     const choice = focus === "workflow" || focus === "budget" || toggle;
     if (
       (choice || focus === "writers") &&
@@ -212,6 +272,7 @@ export function NewRunForm({
       else if (focus === "rows") setRows(!rowsAsData);
       else if (focus === "tests") setTests(testIntegrity === "warn" ? "block" : "warn");
       else if (focus === "strict") setStrict(!strict);
+      else if (accountFocus) cycleAccount(accountFocus, delta);
       else setWriters(clampWriters(execution.writers + delta));
       return;
     }
@@ -416,6 +477,17 @@ export function NewRunForm({
             keyHint="←/→"
           />
         </FocusTarget>
+        {accountProviders.map((provider) => (
+          <FocusTarget key={provider} active={focus === ACCOUNT_FIELD[provider]}>
+            <Field
+              label={ACCOUNT_NAME[provider]}
+              labelWidth={10}
+              focused={focus === ACCOUNT_FIELD[provider]}
+              value={accountValue(provider)}
+              keyHint="←/→"
+            />
+          </FocusTarget>
+        ))}
         <Field
           label="Checks"
           labelWidth={10}

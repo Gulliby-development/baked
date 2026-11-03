@@ -675,7 +675,10 @@ export interface LimitWindow {
 /** One provider's subscription limits in `GET /v1/providers/limits`. */
 export interface ProviderLimits {
   provider: "codex" | "claude-code" | "copilot";
+  /** `Codex`, or `Codex · Employer` for one of its labelled accounts. */
   name: string;
+  /** The labelled account (#2303) these limits belong to; null for the CLI's own sign-in. */
+  account?: { id: string; label: string } | null;
   state: "ok" | "no-data" | "not-signed-in" | "error";
   source: "live" | "last-seen" | null;
   observedAt: string | null;

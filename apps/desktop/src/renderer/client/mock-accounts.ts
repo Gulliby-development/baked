@@ -1,6 +1,6 @@
 import type { ApiResponse } from "../../shared/api.js";
 import { type MockRoute, response } from "./mock-response.js";
-import type { CliLogin, ProviderAccount, ProviderAccounts } from "./setup.js";
+import type { CliLogin, ProviderAccount, ProviderAccounts, ProviderLimits } from "./setup.js";
 
 // Sample accounts of the Codex and Claude Code providers (#2303), one store for every project:
 // accounts live in the global config, and each project chooses its own.
@@ -47,6 +47,58 @@ const store: Record<ProviderAccounts["provider"], Stored[]> = {
     },
   ],
 };
+/**
+ * The limits row of every sample account, as `GET /v1/providers/limits` lists them after the
+ * CLI's own sign-in of their provider: a signed-in account shows its own subscription's windows.
+ */
+export function mockAccountLimits(provider: ProviderAccounts["provider"]): ProviderLimits[] {
+  const now = Date.now();
+  const at = (minutes: number) => new Date(now + minutes * 60_000).toISOString();
+  return store[provider].map((a, i): ProviderLimits => {
+    const base = {
+      provider,
+      name: `${NAMES[provider]} · ${a.label}`,
+      account: { id: a.id, label: a.label },
+      plan: null,
+      credits: null,
+    };
+    if (!a.loggedIn)
+      return {
+        ...base,
+        state: "not-signed-in",
+        source: null,
+        observedAt: null,
+        windows: [],
+        message: "This account has not signed in yet; sign it in under Providers.",
+      };
+    return {
+      ...base,
+      state: "ok",
+      source: "last-seen",
+      observedAt: new Date(now - (18 + i * 7) * 60_000).toISOString(),
+      windows: [
+        {
+          id: "five_hour",
+          label: "5-hour session",
+          usedPercent: 71 - i * 20,
+          resetsAt: at(96),
+          windowMinutes: 300,
+          status: "ok",
+        },
+        {
+          id: "seven_day",
+          label: "Weekly",
+          usedPercent: 33,
+          resetsAt: at(2 * 1440 + 75),
+          windowMinutes: 10080,
+          status: "ok",
+        },
+      ],
+      message: `Reported by ${NAMES[provider]} during BAKED's last turn on this account.`,
+    };
+  });
+}
+
 /** Project folder → provider → the account it uses. */
 const chosen = new Map<string, Partial<Record<ProviderAccounts["provider"], string>>>();
 

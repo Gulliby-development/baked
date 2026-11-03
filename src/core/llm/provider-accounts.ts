@@ -17,6 +17,7 @@
  * A project's own `.baked/config.json` is never read for them: a checkout must not be able to
  * grant itself someone's account.
  */
+import { AsyncLocalStorage } from "node:async_hooks";
 import { existsSync, mkdirSync, readFileSync, statSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { getCwd } from "../cwd.js";
@@ -372,9 +373,82 @@ function activeIn(
   return account?.allowedProjects.includes(project) ? account : null;
 }
 
+/** The account a run asked for per provider (`--account codex=work`); the rest keep the project's. */
+export type AccountChoice = Partial<Record<AccountProvider, string>>;
+
+const runAccounts = new AsyncLocalStorage<AccountChoice>();
+
+/**
+ * Runs `fn` with `choice` winning over the project's account for the providers it names: every
+ * model turn, login check and app-server it starts uses the chosen account. With no choice, `fn`
+ * runs as it is.
+ */
+export function runWithAccounts<T>(choice: AccountChoice | null | undefined, fn: () => T): T {
+  if (!choice || Object.keys(choice).length === 0) return fn();
+  return runAccounts.run(choice, fn);
+}
+
+/**
+ * Parses `codex=work,claude-code=client` (or repeated values) into a choice; refuses a provider
+ * that keeps no accounts, a malformed ID and a provider named twice.
+ */
+export function parseAccountChoice(values: string | readonly string[]): AccountChoice {
+  const choice: AccountChoice = {};
+  const parts = (typeof values === "string" ? [values] : values).flatMap((v) => v.split(","));
+  for (const part of parts) {
+    const text = part.trim();
+    if (!text) continue;
+    const [provider = "", id = "", ...rest] = text.split("=").map((x) => x.trim());
+    if (!isAccountProvider(provider) || rest.length)
+      throw new ProviderAccountError(
+        `Write the account as PROVIDER=ID with a provider of ${ACCOUNT_PROVIDERS.join(", ")}; got ${text}.`,
+      );
+    if (!ACCOUNT_ID.test(id))
+      throw new ProviderAccountError(`${id || "(empty)"} is not an account ID of ${provider}.`);
+    if (choice[provider] !== undefined && choice[provider] !== id)
+      throw new ProviderAccountError(
+        `${provider} is given two accounts: ${choice[provider]} and ${id}.`,
+      );
+    choice[provider] = id;
+  }
+  return choice;
+}
+
+/**
+ * The account `choice` names for `provider`, refused (never replaced by another account) when it
+ * does not exist or may not serve `folder`'s project.
+ */
+function chosenAccount(
+  provider: AccountProvider,
+  id: string,
+  accounts: ProviderAccount[],
+  project: string,
+): ProviderAccount {
+  const account = accounts.find((a) => a.id === id);
+  if (!account) throw new ProviderAccountError(`${provider} has no account ${id}.`, "NOT_FOUND");
+  if (!account.allowedProjects.includes(project))
+    throw new ProviderAccountError(
+      `Account ${account.label} of ${provider} is not allowed for ${project}; allow it for this project first.`,
+      "CONFLICT",
+    );
+  return account;
+}
+
+/** Checks every account of `choice` before a run starts on it: it exists and may serve the project. */
+export function checkAccountChoice(
+  choice: AccountChoice,
+  folder: string = getCwd(),
+  options: AccountStoreOptions = {},
+): void {
+  const project = projectRootOf(folder);
+  for (const [provider, id] of Object.entries(choice) as [AccountProvider, string][])
+    chosenAccount(provider, id, readProviderAccounts(provider, options).accounts, project);
+}
+
 /**
  * The account model turns of `provider` use in `folder`'s project, or null for the CLI's own
- * sign-in. Read on every turn so a change in Settings applies to the next one.
+ * sign-in: the one the run chose (`runWithAccounts`), else the project's. Read on every turn so
+ * a change in Settings applies to the next one.
  */
 export function activeProviderAccount(
   provider: AccountProvider,
@@ -382,6 +456,8 @@ export function activeProviderAccount(
   options: AccountStoreOptions = {},
 ): ProviderAccount | null {
   const { accounts, projectAccounts: chosen } = readProviderAccounts(provider, options);
+  const forced = runAccounts.getStore()?.[provider];
+  if (forced !== undefined) return chosenAccount(provider, forced, accounts, projectRootOf(folder));
   if (accounts.length === 0) return null;
   return activeIn(accounts, chosen, projectRootOf(folder));
 }

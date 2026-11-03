@@ -14,6 +14,9 @@ import {
   ACCOUNT_PROVIDERS,
   activeProviderAccount,
   addProviderAccount,
+  checkAccountChoice,
+  parseAccountChoice,
+  runWithAccounts,
   projectRootOf,
   readProviderAccounts,
   removeProviderAccount,
@@ -26,10 +29,20 @@ import {
   providerAccountHome,
 } from "../src/core/llm/providers/account-env.js";
 import { codexRunEnv } from "../src/core/llm/providers/codex/home.js";
+import {
+  LIMIT_READERS,
+  limitReads,
+  loadLimits,
+  recordClaudeRateLimit,
+  recordCodexRateLimits,
+} from "../src/core/llm/usage-limits.js";
 import { configDir, dataDir } from "../src/core/platform/index.js";
 import { realPath } from "../src/core/projects/paths.js";
 import { removeTempDir } from "./helpers/temp-dir.js";
-import { workflowFixture } from "./helpers/workflow-fixture.js";
+import { WorkflowFault } from "../src/core/workflows/errors.js";
+import { newId } from "../src/core/workflows/store.js";
+import type { ExecutionRequest } from "../src/core/workflows/types.js";
+import { FixtureExecutor, workflowFixture } from "./helpers/workflow-fixture.js";
 
 const ENV_KEYS = ["HOME", "USERPROFILE", "LOCALAPPDATA", "CODEX_HOME"] as const;
 let root = "";
@@ -244,5 +257,122 @@ describe("account sign-in (#2303)", () => {
     expect(((await removed.json()) as View).accounts).toEqual([]);
     expect(existsSync(providerAccountHome("codex", "work"))).toBe(false);
     expect((await call("/v1/providers/codex/accounts/work", "DELETE")).status).toBe(404);
+  });
+});
+
+describe("subscription limits per account (#2303)", () => {
+  test("each labelled account is read after its provider's own sign-in", () => {
+    addProviderAccount("claude-code", { id: "work", label: "Employer" });
+    addProviderAccount("claude-code", { id: "client", label: "Client" });
+    addProviderAccount("codex", { id: "home", label: "Personal" });
+    expect(limitReads().map((r) => `${r.reader.provider}@${r.account?.label ?? ""}`)).toEqual([
+      "codex@",
+      "codex@Personal",
+      "claude-code@",
+      "claude-code@Employer",
+      "claude-code@Client",
+      "copilot@",
+    ]);
+  });
+
+  test("an account that never signed in reads as not signed in, under its label", async () => {
+    const file = join(root, "usage-limits.json");
+    for (const provider of ACCOUNT_PROVIDERS) {
+      const reader = LIMIT_READERS.find((r) => r.provider === provider);
+      const limits = await reader?.read({ file, account: { id: "work", label: "Employer" } });
+      expect(limits).toMatchObject({
+        provider,
+        name: `${reader?.name} · Employer`,
+        account: { id: "work", label: "Employer" },
+        state: "not-signed-in",
+      });
+      // Reading never makes the account's credential home.
+      expect(existsSync(providerAccountHome(provider, "work"))).toBe(false);
+    }
+  });
+
+  test("a turn's report is kept under the account it ran on", () => {
+    const file = join(root, "usage-limits.json");
+    const window = (utilization: number) => ({
+      status: "allowed",
+      unifiedWindows: { five_hour: { utilization, resetsAt: 1 } },
+    });
+    recordClaudeRateLimit(window(0.1), file);
+    recordClaudeRateLimit(window(0.9), file, "work");
+    expect(loadLimits("claude-code", file)?.windows[0]?.usedPercent).toBe(10);
+    expect(loadLimits("claude-code", file, "work")?.windows[0]?.usedPercent).toBe(90);
+    recordCodexRateLimits({ rateLimits: { primary: { usedPercent: 40 } } }, file, "work");
+    expect(loadLimits("codex", file)).toBeNull();
+    expect(loadLimits("codex", file, "work")?.windows[0]?.usedPercent).toBe(40);
+  });
+});
+
+describe("a run on a chosen account (--account, #2303)", () => {
+  test("the flag value names one account per provider", () => {
+    expect(parseAccountChoice("codex=work, claude-code=client")).toEqual({
+      codex: "work",
+      "claude-code": "client",
+    });
+    expect(parseAccountChoice(["codex=work", "codex=work"])).toEqual({ codex: "work" });
+    expect(() => parseAccountChoice("copilot=work")).toThrow(/PROVIDER=ID/);
+    expect(() => parseAccountChoice("codex=Work!")).toThrow(/not an account ID/);
+    expect(() => parseAccountChoice("codex=a,codex=b")).toThrow(/two accounts/);
+  });
+
+  test("inside the run the chosen account wins over the project's; outside it nothing changes", () => {
+    const { project } = repoWithWorktree();
+    addProviderAccount("codex", { id: "work", label: "W", allowedProjects: [project] });
+    addProviderAccount("codex", { id: "client", label: "C", allowedProjects: [project] });
+    setProjectAccount("codex", project, "work");
+    const inRun = runWithAccounts({ codex: "client" }, () => activeProviderAccount("codex", project));
+    expect(inRun?.id).toBe("client");
+    expect(activeProviderAccount("codex", project)?.id).toBe("work");
+    // A provider the run did not name keeps the project's choice (here: the CLI's own sign-in).
+    expect(runWithAccounts({ codex: "client" }, () => activeProviderAccount("claude-code", project))).toBeNull();
+  });
+
+  test("an account that is missing or not allowed for the project is refused, never replaced", () => {
+    const { project } = repoWithWorktree();
+    addProviderAccount("codex", { id: "other", label: "Other" });
+    expect(() => checkAccountChoice({ codex: "nope" }, project)).toThrow(/has no account nope/);
+    expect(() => checkAccountChoice({ codex: "other" }, project)).toThrow(/not allowed/);
+    expect(() => runWithAccounts({ codex: "other" }, () => activeProviderAccount("codex", project))).toThrow(
+      /not allowed/,
+    );
+  });
+
+  test("every model call of a run started with an account runs on it, and the run keeps it", async () => {
+    const seen: (string | null)[] = [];
+    class AccountExecutor extends FixtureExecutor {
+      constructor(private readonly folder: string) {
+        super(folder);
+      }
+      override async execute(request: ExecutionRequest) {
+        seen.push(activeProviderAccount("codex", this.folder)?.id ?? null);
+        return super.execute(request);
+      }
+    }
+    const fixture = workflowFixture({ executor: (dir) => new AccountExecutor(dir) });
+    cleanups.push(fixture.dispose);
+    addProviderAccount("codex", { id: "work", label: "Work", allowedProjects: [fixture.root] });
+    const request = {
+      featureId: "fixture",
+      workflowId: "sdd",
+      prompt: "Create ready value",
+      ownerLabel: "test",
+      policy: fixture.policy,
+    };
+    const refused = await fixture.service
+      .start({ ...request, commandId: newId(), accounts: { codex: "missing" } })
+      .catch((error: unknown) => error);
+    expect(refused).toBeInstanceOf(WorkflowFault);
+    expect((refused as WorkflowFault).code).toBe("INVALID_REFERENCE");
+    const run = await fixture.service.start({ ...request, commandId: newId(), accounts: { codex: "work" } });
+    expect(fixture.service.store.state(run.runId).accounts).toEqual({ codex: "work" });
+    await fixture.service.drive(run.runId, new AbortController().signal);
+    expect(seen.length).toBeGreaterThan(0);
+    expect(new Set(seen)).toEqual(new Set(["work"]));
+    // Outside the run the project still uses the CLI's own sign-in.
+    expect(activeProviderAccount("codex", fixture.root)).toBeNull();
   });
 });

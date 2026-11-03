@@ -117,6 +117,8 @@ The native tools need a Codex CLI with the app-server `dynamicTools` API (checke
 
 A window whose reset passed since the report shows no percentage, since its usage started again. A Codex or Claude Code CLI signed in with an API key, and every API-key provider, is billed per token and has no limit to show. The last reports are kept in `usage-limits.json` in BAKED's data folder.
 
+Each [labelled account](#several-accounts-of-one-provider) of Codex or Claude Code has its own subscription, so its limits are listed on their own, after the CLI's own sign-in of that provider (`Claude Code · Client seat`): Codex is asked in the account's own home, and a Claude Code turn's report is kept under the account the turn ran on. An account that never signed in shows as not signed in. `GET /v1/providers/limits` gives each such entry `account: {id, label}`; the CLI's own sign-in has `account: null`.
+
 ## Several accounts of one provider
 
 One person often holds several distinct subscriptions of the same provider: a personal Claude plan, an employer's Claude Team seat and a client's seat given while staffed there; a personal ChatGPT plan and a business workspace. BAKED keeps each as a labelled **account** of Codex or Claude Code, with its own sign-in, and lets each project choose the one it uses (#2303).
@@ -127,7 +129,9 @@ One person often holds several distinct subscriptions of the same provider: a pe
 - **No round-robin.** BAKED does not switch between accounts by itself, not even when one runs out of usage: switching is your choice. Rotating several personal accounts to get past usage limits is against the providers' terms (OpenAI's Terms of Use forbid circumventing rate limits; Anthropic's consumer terms forbid making an account available to others), and a business seat comes under its organisation's data policies, so sending a client's code through another account can break a contract.
 - The accounts and the projects' choices live only in the global `config.json` under `providers.<id>` (`accounts: [{id, label, allowedProjects}]`, `projectAccounts: {"<project folder>": "<id>"}`); a project's own `.baked/config.json` cannot grant itself an account.
 
-Manage them with `baked accounts` ([headless](headless.md#keys-and-sign-in)), `/accounts` in the terminal UI, or Accounts under Settings > All projects > Providers and keys in the desktop app. The next model turn after a change uses the new account; a Codex app-server or Claude Code session started for the old account is not reused for it.
+Manage them with `baked accounts` ([headless](headless.md#keys-and-sign-in)), `/accounts` in the terminal UI, or Accounts under Settings > All projects > Providers and keys in the desktop app. The next model turn after a change uses the new account; a Codex app-server or Claude Code session started for the old account is not reused for it. Each account keeps its own Codex app-server, so runs on different accounts in one BAKED never share one.
+
+**One run on another account.** `baked workflow run --account claude-code=client` (or `baked quick ... --account codex=work`; several as `codex=work,claude-code=client`) runs every model turn of that provider in the run on the named account instead of the project's, on every resume too; the providers it does not name keep the project's account. The run records the choice (`accounts` in its state), so a resume after a restart stays on it. The account must exist and be allowed for the project, or the run does not start (`INVALID_REFERENCE`); a run whose account is later taken off the project stops at its next model turn instead of moving to another account. `POST /v1/workflow/runs` takes it as `accounts: {"claude-code": "client"}`, the TUI new-run form has a Codex and a Claude field (←/→) for the providers with accounts the project may use, and the desktop start form has a select per such provider under Oven settings.
 
 ## Finding the CLIs
 

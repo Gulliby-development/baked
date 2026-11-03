@@ -5,6 +5,7 @@ import { getCwd } from "../core/cwd.js";
 import { gitInitSummary, initWorkspaceGit } from "../core/git/init.js";
 import { loadModelCatalog } from "../core/llm/model-catalog.js";
 import { parseRouteOverrides, type RoutingEntry } from "../core/llm/model-routing.js";
+import { type AccountChoice, parseAccountChoice } from "../core/llm/provider-accounts.js";
 import { clarificationAnswers, clarificationKeys } from "../core/workflows/answers.js";
 import { WorkflowArtifacts } from "../core/workflows/artifacts.js";
 import { withModelReview } from "../core/workflows/auto-approval.js";
@@ -160,6 +161,17 @@ export function quickRunArgs(service: NativeWorkflowService, args: WorkflowArgs)
     },
   };
 }
+/** `--account codex=work,claude-code=client`, refused as a bad request when malformed. */
+const accountFlag = (value: string): AccountChoice => {
+  try {
+    return parseAccountChoice(value);
+  } catch (error) {
+    throw new WorkflowFault(
+      "INVALID_REFERENCE",
+      error instanceof Error ? error.message : String(error),
+    );
+  }
+};
 const modelFlag = (args: WorkflowArgs, config: AppConfig): string =>
   typeof args.flags.model === "string" ? args.flags.model : config.defaultModel;
 /** Profiles as a run with these flags would route them: an explicit `--model` serves `$active`. */
@@ -426,6 +438,9 @@ export async function executeWorkflowCommand(
           : {}),
         ...(args.flags.worktree === true ? { executionMode: "worktree" as const } : {}),
         ...(args.flags["model-strict"] === true ? { modelStrict: true } : {}),
+        ...(typeof args.flags.account === "string"
+          ? { accounts: accountFlag(args.flags.account) }
+          : {}),
         ...(typeof args.flags.route === "string"
           ? { routes: parseRouteOverrides(args.flags.route) }
           : {}),

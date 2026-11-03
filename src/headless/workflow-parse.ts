@@ -160,6 +160,7 @@ const commandFlags: Record<WorkflowCommand, string[]> = {
     "issue",
     "budget",
     "max-cost-usd",
+    "account",
     "approval-review",
     "auto-preset",
     "record-model-calls",
@@ -180,6 +181,7 @@ const commandFlags: Record<WorkflowCommand, string[]> = {
     "worktree",
     "route",
     "model-strict",
+    "account",
     "approval-review",
   ],
   status: [],
@@ -637,7 +639,7 @@ export function validateWorkflowArgs(result: WorkflowArgs): WorkflowArgs {
 }
 export const workflowHelp = `baked workflow <command> [options]
 
-run [WORKFLOW] --feature ID (--prompt TEXT | --prompt-file FILE) [--policy FILE] [--model ID [--model-strict]] [--route STAGE=MODEL,...] [--events] [--confirm-auto-approval HASH] [--worktree [--writers N]] [--candidates N] [--clarification ask|assume] [--sandbox off|auto|required] [--duplication off|warn|ratchet] [--sast auto|off] [--mutation off|advisory|required] [--property-tests auto|off] [--budget PRESET] [--max-cost-usd N] [--approval-review] [--record-model-calls] [--replay FILE]
+run [WORKFLOW] --feature ID (--prompt TEXT | --prompt-file FILE) [--policy FILE] [--model ID [--model-strict]] [--route STAGE=MODEL,...] [--events] [--confirm-auto-approval HASH] [--worktree [--writers N]] [--candidates N] [--clarification ask|assume] [--sandbox off|auto|required] [--duplication off|warn|ratchet] [--sast auto|off] [--mutation off|advisory|required] [--property-tests auto|off] [--budget PRESET] [--max-cost-usd N] [--account PROVIDER=ID,...] [--approval-review] [--record-model-calls] [--replay FILE]
 run [WORKFLOW] --issue URL|OWNER/NAME#N|#N [--feature ID] [--prompt TEXT | --prompt-file FILE] [other run options]
   --issue takes the request from a GitHub issue (its title and body; --prompt adds instructions)
   and names the feature issue-N-TITLE unless --feature is given; the delivery pull request says
@@ -666,6 +668,9 @@ run [WORKFLOW] --issue URL|OWNER/NAME#N|#N [--feature ID] [--prompt TEXT | --pro
   policy's sandbox and the sandbox setting
   --max-cost-usd N caps the run's model cost at N US dollars (the policy's maxCostUsd); every model
   the run can call needs a known price. The token budget still applies
+  --account PROVIDER=ID runs every model turn of PROVIDER (codex, claude-code) on that labelled
+  account instead of the one the project uses (see baked accounts), on every resume too. The
+  account must be allowed for the project, or the run does not start
   --approval-review lets the approval reviewer (a model) approve a low-risk plan that leaves the
   auto approval limits only by its task count, file count or paths; it needs autoApproval.limits.
   Always-human paths, deletions and the token limit still wait for you
@@ -692,7 +697,7 @@ propose TEXT... | --prompt TEXT | --prompt-file FILE [--json]
   The workflow and budget --auto-preset would pick for a request, with the reason: a review of
   existing changes (review-only), research without a change (spike), a failing check (fix-ci),
   a docs-only or small change (quick, quick budget), a large change (default, extended budget)
-quick TEXT... | --prompt-file FILE [--feature ID] [--model ID] [--route STAGE=MODEL,...] [--policy FILE] [--budget PRESET] [--events] [--worktree] [--confirm-auto-approval HASH] [--approval-review]
+quick TEXT... | --prompt-file FILE [--feature ID] [--model ID] [--route STAGE=MODEL,...] [--policy FILE] [--budget PRESET] [--events] [--worktree] [--confirm-auto-approval HASH] [--account PROVIDER=ID,...] [--approval-review]
   A small task without specification: one agent finds the files and plans, then approval,
   implementation, the policy checks and one correctness review. The feature ID is derived from
   the text. Runs workflows.quickWorkflow when set, otherwise the quick preset. Also: baked quick

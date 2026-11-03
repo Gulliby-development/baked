@@ -677,7 +677,7 @@ export class CodexAppServerSessions {
     this.connectionAccount = account;
     try {
       const connection = await pending;
-      connection.onNotification((method, params) => this.onNotification(method, params));
+      connection.onNotification((method, params) => this.onNotification(method, params, account));
       connection.onServerRequest((method, id, params) =>
         this.onServerRequest(connection, method, id, params),
       );
@@ -818,9 +818,9 @@ export class CodexAppServerSessions {
     return true;
   }
 
-  private onNotification(method: string, rawParams: unknown): void {
+  private onNotification(method: string, rawParams: unknown, account: string | null): void {
     if (method === "account/rateLimits/updated") {
-      recordCodexRateLimits(rawParams);
+      recordCodexRateLimits(rawParams, undefined, account);
       return;
     }
     const params = (rawParams ?? {}) as Record<string, unknown>;
@@ -1123,9 +1123,12 @@ async function collectStep(stream: ReadableStream<LanguageModelV2StreamPart>) {
  */
 export function createCodexNativeLanguageModel(
   modelId: string,
-  sessions: CodexAppServerSessions,
+  sessionsFor: CodexAppServerSessions | (() => CodexAppServerSessions),
   fallback: LanguageModelV2,
 ): LanguageModelV2 {
+  // Resolved per step: the account a step runs on decides which app-server serves it (#2303).
+  const pick = (): CodexAppServerSessions =>
+    typeof sessionsFor === "function" ? sessionsFor() : sessionsFor;
   return {
     specificationVersion: "v2",
     provider: "codex",
@@ -1133,7 +1136,7 @@ export function createCodexNativeLanguageModel(
     supportedUrls: {},
     async doStream(options) {
       if (codexRecovery(options.providerOptions).exec) return fallback.doStream(options);
-      const stream = await sessions.openStep(
+      const stream = await pick().openStep(
         buildCodexNativeRequest(modelId, options),
         options.abortSignal,
       );
@@ -1152,7 +1155,7 @@ export function createCodexNativeLanguageModel(
     },
     async doGenerate(options) {
       if (codexRecovery(options.providerOptions).exec) return fallback.doGenerate(options);
-      const stream = await sessions.openStep(
+      const stream = await pick().openStep(
         buildCodexNativeRequest(modelId, options),
         options.abortSignal,
       );
@@ -1163,9 +1166,19 @@ export function createCodexNativeLanguageModel(
   };
 }
 
-let defaultSessions: CodexAppServerSessions | null = null;
+/**
+ * One app-server per Codex account (#2303), so runs on different accounts in one process never
+ * share a connection; `""` is the CLI's own sign-in.
+ */
+const defaultSessions = new Map<string, CodexAppServerSessions>();
 
+/** The sessions of the account the current step runs on. */
 export function getDefaultCodexSessions(): CodexAppServerSessions {
-  defaultSessions ??= new CodexAppServerSessions();
-  return defaultSessions;
+  const key = activeProviderAccount("codex")?.id ?? "";
+  let sessions = defaultSessions.get(key);
+  if (!sessions) {
+    sessions = new CodexAppServerSessions();
+    defaultSessions.set(key, sessions);
+  }
+  return sessions;
 }

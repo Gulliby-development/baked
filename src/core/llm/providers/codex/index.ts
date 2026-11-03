@@ -54,7 +54,7 @@ export const codex: ProviderDefinition = {
     assertCodexReady(activeAccountEnv("codex"));
     const exec = createCodexLanguageModel(modelId, new CodexCliRunner());
     if (process.env.BAKED_CODEX_TRANSPORT === "exec") return exec;
-    return createCodexNativeLanguageModel(modelId, getDefaultCodexSessions(), exec);
+    return createCodexNativeLanguageModel(modelId, getDefaultCodexSessions, exec);
   },
   async fetchModels() {
     const status = getCodexLoginStatus();

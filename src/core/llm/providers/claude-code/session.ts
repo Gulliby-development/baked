@@ -509,7 +509,7 @@ export class ClaudeCodeSessionRunner implements ClaudeCodeRunner {
     const event = session.unparsed.parse<{ type?: string; rate_limit_info?: unknown }>(trimmed);
     if (!event) return;
     if (event.type === "rate_limit_event") {
-      recordClaudeRateLimit(event.rate_limit_info);
+      recordClaudeRateLimit(event.rate_limit_info, undefined, session.account);
       return;
     }
     const live = session.pending;
