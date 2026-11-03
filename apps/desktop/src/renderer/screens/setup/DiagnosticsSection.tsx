@@ -30,6 +30,7 @@ import {
 } from "../../components/ui/tone.js";
 import { ago, tokens } from "../../format.js";
 import { cn } from "../../lib/cn.js";
+import { scrollBehavior } from "../../lib/motion.js";
 import { LEDE, TABLE } from "../../lib/styles.js";
 import { projectHref } from "../../router.js";
 import type { SectionProps } from "../sections.js";
@@ -848,7 +849,7 @@ function Glance({ projectKey }: { projectKey: string }) {
             onClick={() =>
               document
                 .getElementById(`diagnostics-${id}`)
-                ?.scrollIntoView({ behavior: "smooth", block: "start" })
+                ?.scrollIntoView({ behavior: scrollBehavior(), block: "start" })
             }
           />
         );

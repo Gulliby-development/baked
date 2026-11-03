@@ -51,13 +51,7 @@ export function packingMs(count: number, reduced: boolean): number {
 }
 
 /** Whether the system asks for reduced motion; false outside a browser. */
-export function prefersReducedMotion(): boolean {
-  return (
-    typeof window !== "undefined" &&
-    typeof window.matchMedia === "function" &&
-    window.matchMedia("(prefers-reduced-motion: reduce)").matches
-  );
-}
+export { reducedMotion as prefersReducedMotion } from "../../lib/motion.js";
 
 export const wait = (ms: number): Promise<void> =>
   new Promise((resolve) => setTimeout(resolve, ms));

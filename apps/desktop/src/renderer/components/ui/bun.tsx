@@ -13,6 +13,7 @@ import {
   type PixelGrid,
 } from "../../../../../../src/core/utils/bake-art.js";
 import { cn } from "../../lib/cn.js";
+import { reducedMotion } from "../../lib/motion.js";
 
 // The mascot is the terminal's pixel bun (src/core/utils/bake-art.ts) drawn as SVG squares; the
 // colours that follow the theme are CSS variables, the crust ramp is the terminal's.
@@ -62,14 +63,6 @@ function runs(grid: PixelGrid): { x: number; y: number; w: number; color: string
   return out;
 }
 
-function prefersReducedMotion(): boolean {
-  return (
-    typeof window !== "undefined" &&
-    typeof window.matchMedia === "function" &&
-    window.matchMedia("(prefers-reduced-motion: reduce)").matches
-  );
-}
-
 /**
  * The bun at work. With `progress` it proofs: the dough rises and browns as the work advances;
  * without, it kneads. Reduced motion shows the awake bun standing still.
@@ -82,7 +75,7 @@ function BunScene({
   progress?: number | null;
   className?: string;
 }) {
-  const [still] = useState(prefersReducedMotion);
+  const [still] = useState(reducedMotion);
   const [elapsed, setElapsed] = useState(0);
   useEffect(() => {
     if (still) return;
