@@ -65,16 +65,20 @@ describe("first start", () => {
       />,
       { width: 100, height: 30 },
     );
-    const settle = async () => {
-      for (let i = 0; i < 4; i++)
+    // Renders until the frame shows what the step should reach; the bound only ends a run
+    // that never gets there, so a slow runner never decides the outcome (#1915).
+    const settle = async (until: () => boolean = () => false) => {
+      for (let i = 0; i < 400; i++) {
         await act(async () => {
           await Bun.sleep(5);
           await view.flush();
           await view.renderOnce();
         });
+        if (i >= 3 && until()) return;
+      }
     };
     try {
-      await settle();
+      await settle(() => view.captureCharFrame().includes("✓ signed in"));
       const frame = view.captureCharFrame();
       const lines = frame.split("\n");
       const codexRow = lines.findIndex((line) => line.includes("Codex —"));
@@ -88,12 +92,12 @@ describe("first start", () => {
       await act(async () => {
         view.mockInput.pressEnter();
       });
-      await settle();
+      await settle(() => view.captureCharFrame().includes("GPT Test"));
       expect(view.captureCharFrame()).toContain("GPT Test");
       await act(async () => {
         view.mockInput.pressEnter();
       });
-      await settle();
+      await settle(() => selected === "codex/gpt-test");
       expect(selected).toBe("codex/gpt-test");
     } finally {
       await act(async () => {
