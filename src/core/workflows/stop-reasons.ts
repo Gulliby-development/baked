@@ -129,11 +129,13 @@ export const STOP_REASONS = {
   repeated_failure: {
     label:
       "A corrective's required checks fail exactly as the corrective's before it, or a task ends unfinished on the same failing checks as its previous unfinished end",
-    // Shadow only until two bench rounds show no false would-stop (#1996, #2437); its promotion is
-    // a pull request of its own that adds `enforce` and blocks the chain, or the unfinished task's
-    // resume, before the next session.
-    modes: NOT_ENFORCED,
-    defaultMode: "shadow",
+    // Enforced (#2010) after R78 (3 would-stops, all true) and R79 to R81 (none false) on the
+    // check-output normalization of #2281 (#1996, #2437): a corrective that fails as the one
+    // before it blocks its chain before the next corrective starts, with the checks, the failing
+    // line and both rounds, until a `workflow repair` grant, a revise or a fork; a repeated
+    // unfinished end's block offers no resume (#2520). `shadow` records instead.
+    modes: STOP_MODES,
+    defaultMode: "enforce",
   },
   corrective_scope: {
     label: "A corrective cannot write a file its own failing check names",

@@ -42,7 +42,7 @@ const script = [
   "process.exit(1);",
 ].join("\n");
 const scalafmt: Check = { id: "scalafmt", executable: "bun", args: ["-e", script], cwd: ".", timeoutMs: 10000, required: true, scope: "task", envNames: [], writes: [] };
-const policy: RunPolicy = { ...defaultWorkflowPolicy, clarification: "assume", checks: [scalafmt, { ...scalafmt, id: "suite", scope: "feature" }] };
+const basePolicy: RunPolicy = { ...defaultWorkflowPolicy, clarification: "assume", checks: [scalafmt, { ...scalafmt, id: "suite", scope: "feature" }] };
 
 class ScriptedExecutor implements AgentExecutor {
   implementations = 0;
@@ -90,7 +90,8 @@ class ScriptedExecutor implements AgentExecutor {
   }
 }
 
-async function runScenario(lines: string[]) {
+async function runScenario(lines: string[], stopModes: RunPolicy["stopModes"] = { repeated_failure: "shadow" }) {
+  const policy = { ...basePolicy, stopModes };
   const root = mkdtempSync(join(tmpdir(), "baked-unfinished-repeat-"));
   cleanups.push(() => rmSync(root, { recursive: true, force: true }));
   const executor = new ScriptedExecutor(root, lines);
@@ -123,7 +124,7 @@ async function runScenario(lines: string[]) {
 describe("scenario: R77 pairwick, a task that ends unfinished twice on the same failing check (#2437)", () => {
   test("the second unfinished end records the repeated_failure would-stop and its block names the repeat", async () => {
     const { done, executor, root, runId, store, records, wouldStops, message, advice } = await runScenario(["object Rules{def score=1}"]);
-    // Shadow mode: the run blocks and resumes as before.
+    // Shadow mode (a policy's `stopModes`): the run blocks and resumes as before.
     expect(done).toMatchObject({ status: "blocked", reason: "invalid_output" });
     // The first attempt restarts once, the second blocks the run unfinished, the automatic resume
     // (`clarification: assume`) runs the task a third time into the same failure.
@@ -162,6 +163,16 @@ describe("scenario: R77 pairwick, a task that ends unfinished twice on the same 
     expect(tasks[0]?.remedies).toEqual({ recorded: ["reroute", "revise", "replan", "cancel"], replayed: ["reroute", "revise", "replan", "cancel"] });
     expect(replayed?.newRepeatStops).toBe(0);
     expect(readFileSync(join(root, "Rules.scala"), "utf8")).toContain("attempt");
+  });
+
+  test("enforced (the default since #2010), the second unfinished end blocks the same way and records no would-stop", async () => {
+    const { done, executor, records, wouldStops, advice } = await runScenario(["object Rules{def score=1}"], {});
+    expect(done).toMatchObject({ status: "blocked", reason: "invalid_output" });
+    expect(executor.implementations).toBe(3);
+    expect(records.map((r) => r.decision)).toEqual(["first", "repeat"]);
+    expect(wouldStops).toEqual([]);
+    expect(advice?.summary).toContain("Task T001 ended unfinished 2 times in a row with the same failing output of scalafmt.");
+    expect(advice?.remedies.map((r) => r.action)).toEqual(["reroute", "revise", "replan", "cancel"]);
   });
 
   test("an unfinished end whose failure changed records no would-stop", async () => {

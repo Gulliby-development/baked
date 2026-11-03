@@ -37,9 +37,9 @@ describe("stop reasons", () => {
         expect(reason.modes).toEqual(["enforce"]);
     }
     expect(STOP_REASONS["cost-forecast"].modes).toEqual(STOP_MODES);
-    // Shadow until its promotion (#1996): a policy cannot enforce it yet.
-    expect(STOP_REASONS.repeated_failure.modes).toEqual(["shadow", "advisory"]);
-    expect(STOP_REASONS.repeated_failure.defaultMode).toBe("shadow");
+    // Enforced since #2010: a corrective chain that fails byte for byte as its previous round.
+    expect(STOP_REASONS.repeated_failure.modes).toEqual(["shadow", "advisory", "enforce"]);
+    expect(STOP_REASONS.repeated_failure.defaultMode).toBe("enforce");
     // Shadow until its promotion (#2137).
     expect(STOP_REASONS.repeat_without_change.modes).toEqual(["shadow", "advisory"]);
     expect(STOP_REASONS.repeat_without_change.defaultMode).toBe("shadow");
@@ -141,8 +141,10 @@ describe("stop reasons", () => {
     expect(parse({ cost: "shadow" })).toBe(false);
     expect(parse({ "run-budget": "advisory" })).toBe(false);
     expect(parse({ unknown: "shadow" })).toBe(false);
+    // Promoted (#2010) after R78 to R81: enforced with stopModes unset, shadow still on request.
+    expect(stopMode(defaultWorkflowPolicy, "repeated_failure")).toBe("enforce");
     expect(parse({ repeated_failure: "advisory" })).toBe(true);
-    expect(parse({ repeated_failure: "enforce" })).toBe(false);
+    expect(parse({ repeated_failure: "shadow" })).toBe(true);
     expect(parse({ baseline_unrepairable: "advisory" })).toBe(true);
     expect(parse({ baseline_unrepairable: "enforce" })).toBe(false);
     // Shadow by default (#2133), enforceable through stopModes so its host decision can be turned on.
