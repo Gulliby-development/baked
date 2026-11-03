@@ -72,6 +72,16 @@ export function computeModelCost(modelId: string, usage: PerModelUsage): number 
   return Number.isFinite(cost) ? cost : 0;
 }
 
+/** The breakdown's models, most expensive first, each priced at its own rate (#2785). */
+export function modelsByCost(
+  breakdown: Record<string, PerModelUsage>,
+): [modelId: string, usage: PerModelUsage][] {
+  return Object.entries(breakdown)
+    .map(([modelId, usage]) => ({ modelId, usage, cost: computeModelCost(modelId, usage) }))
+    .sort((a, b) => b.cost - a.cost)
+    .map(({ modelId, usage }): [string, PerModelUsage] => [modelId, usage]);
+}
+
 /** Accumulate tokens for a specific model in the breakdown. Returns a new breakdown object. */
 export function accumulateModelUsage(
   breakdown: Record<string, PerModelUsage>,

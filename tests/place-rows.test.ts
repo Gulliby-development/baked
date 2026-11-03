@@ -82,6 +82,39 @@ describe("place_rows indentation (#2618)", () => {
   });
 });
 
+// #2703: a request may prescribe the same row twice (an idempotence check, a repeated input). place_rows
+// looked each row up as the first file line equal to it, so once row 1 was placed its duplicate
+// row 3 counted as held and was refused ("already holds row 3"), and `reindent` re-indented the
+// first copy twice and left the second as it was.
+describe("place_rows with a row the request prescribes twice", () => {
+  const D_PATH = "tests/dup.test.ts";
+  const D_ROWS = ['["a", 1]', '["b", 2]', '["a", 1]'];
+  const targets = new Map([[D_PATH, D_ROWS]]);
+  const dFrame = "const ROWS = [\n];\n";
+
+  test("the second copy is placed after the first one is", () => {
+    const first = placeRows({ path: D_PATH, line: 1, rows: [1, 2] }, targets, dFrame);
+    const content = "content" in first ? first.content : "";
+    expect(placeRows({ path: D_PATH, line: 3, rows: [3] }, targets, content)).toMatchObject({
+      content: 'const ROWS = [\n  ["a", 1],\n  ["b", 2],\n  ["a", 1],\n];\n',
+      lines: [4, 4],
+    });
+    // Both copies held: placing either again is refused.
+    const all = placeRows({ path: D_PATH, line: 1, rows: [1, 3] }, targets, dFrame);
+    const full = "content" in all ? all.content : "";
+    const again = placeRows({ path: D_PATH, line: 1, rows: [3] }, targets, full);
+    expect("refusal" in again ? again.refusal : null).toContain("already holds row 3 (line 4)");
+  });
+
+  test("reindent moves each copy once", () => {
+    const tabbed = 'const ROWS = [\n\t["a", 1],\n\t["b", 2],\n\t["a", 1],\n];\n';
+    expect(placeRows({ path: D_PATH, line: 0, rows: [1, 3], reindent: true, indent: "  " }, targets, tabbed)).toMatchObject({
+      content: 'const ROWS = [\n  ["a", 1],\n  ["b", 2],\n  ["a", 1],\n];\n',
+      lines: [2, 4],
+    });
+  });
+});
+
 // #2689: a row the request writes with its own trailing separator (R82 tinyflate's C statement rows
 // `failed += row(...);`, a Java row copied with its comma) got the default comma appended
 // (`...;,`, a C syntax error), and an explicit `lastSeparator: ""` kept the row's own comma, so the
