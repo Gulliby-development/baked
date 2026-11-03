@@ -96,6 +96,7 @@ import {
 } from "../verification/criteria-cases.js";
 import { canHold } from "../verification/deliverable-paths.js";
 import {
+  copyWorkspace,
   type DocExampleResult,
   type DocTextProblem,
   docTextProblems,
@@ -157,6 +158,7 @@ import {
   missingReproAdvice,
   outputShows,
   type ReproOutcome,
+  removeScratch,
   reproBlind,
   reproCannotSeeCorrection,
   reproCrash,
@@ -1112,8 +1114,17 @@ import {
   runContentCommit,
   runRoot,
   userChangesInScope,
+  WORKTREES_DIR,
   worktreePath,
+  worktreePathRemedy,
 } from "./worktree.js";
+import {
+  pathSensitiveChecks,
+  WORKTREE_PROBE_PATH,
+  type WorktreeProbe,
+  type WorktreeProbeRecord,
+  worktreeProbeDecision,
+} from "./worktree-probe.js";
 
 /** Set by the test setup in CI: agent-call errors that block a run are printed with their stack (#1177). */
 const TRACE_RUN_BLOCKS = process.env.BAKED_TRACE_RUN_BLOCKS === "1";
@@ -1471,6 +1482,11 @@ export class WorkflowScheduler {
   private execution: LeaseResource = "execution";
   /** How many runs may execute in the workspace at once (`workflows.maxParallelRuns`). */
   maxParallelRuns = DEFAULT_MAX_PARALLEL_RUNS;
+  /**
+   * The folder a new run's worktree is created in (`workflows.worktreeRoot`, absolute, #2461); null
+   * for the project's `.baked/worktrees`. A run that has its worktree keeps it where it is.
+   */
+  worktreeRoot: string | null = null;
   /** The browser driver of AI acceptance gates; Playwright when unset. Tests inject a fake. */
   browserDriver: BrowserDriverOptions | undefined;
   /** The layout measurement of `layoutCheck` (#1262); Playwright when unset. Tests inject a fake. */
@@ -1554,7 +1570,11 @@ export class WorkflowScheduler {
     this.mutation = inWorktree
       ? mutationLeaseFor(
           this.store.workspace,
-          join(this.store.workspace, worktreePath(this.store.workspace, runId)),
+          join(
+            this.store.workspace,
+            this.store.state(runId).worktree?.path ??
+              worktreePath(this.store.workspace, runId, this.worktreeRoot),
+          ),
         )
       : "mutation";
     this.execution = inWorktree ? `execution:${runId}` : "execution";
@@ -1663,7 +1683,8 @@ export class WorkflowScheduler {
     this.queued = [];
     try {
       if (!recoverRun(this.store, this.journal, runId)) return;
-      if (executionModeOf(policy) === "worktree") await ensureRunWorktree(this.store, runId);
+      if (executionModeOf(policy) === "worktree")
+        await ensureRunWorktree(this.store, runId, this.worktreeRoot);
       this.restoreMutatedFiles(runId);
       this.store.transaction(() => {
         // A drive runs only once the run's requests are decided: a stage that ended waiting for
@@ -3027,7 +3048,7 @@ export class WorkflowScheduler {
               await this.recordCheckBaseline(runId, state, policy, signal);
               await this.repairBaselineFailures(runId, stepId, state, policy, signal);
               await this.probeFixers(runId, state, policy, signal);
-              this.worktreePathWouldStop(runId, state, policy);
+              await this.worktreeEnvironment(runId, state, policy, signal);
               if (state.pendingTaskRepair.length) {
                 const ids = new Set(state.pendingTaskRepair);
                 const findings = this.store
@@ -5646,26 +5667,131 @@ export class WorkflowScheduler {
   /** The platform a run's checks run on; tests inject another. */
   platform: NodeJS.Platform = process.platform;
   /**
-   * Before the first task, records `worktree_environment` (#2454) when the deepest worktree a task's
-   * checks run in is longer than a project language's test tool handles on this platform.
+   * Before the first task, records `worktree_environment` (#2454) when a task's checks cannot run
+   * in the run's worktree for its path's length. A required check of a toolchain with a
+   * `WORKTREE_PATH_LIMITS` row is measured (#2461, `worktree-probe.ts`): one that failed in the
+   * worktree at the check baseline runs again in a short copy of the same tree, and failing deep
+   * while passing shallow decides; one that passed in the worktree clears its language whatever
+   * the row says. A language with no measured check falls back to the row's length estimate.
    */
-  private worktreePathWouldStop(runId: string, state: RuntimeState, policy: RunPolicy): void {
+  private async worktreeEnvironment(
+    runId: string,
+    state: RuntimeState,
+    policy: RunPolicy,
+    signal: AbortSignal,
+  ): Promise<void> {
     const mode = stopMode(policy, "worktree_environment");
     if (mode === "enforce" || !state.worktree) return;
     if (!this.store.tasks(runId).every((task) => task.status === "pending")) return;
     const main = join(this.store.workspace, state.worktree.path);
+    const rootSet = !state.worktree.path.startsWith(`${WORKTREES_DIR}/`);
     const taskIds = (state.graph?.tasks ?? []).map((task) => task.id);
     const deepest = [main, ...taskIds.map((id) => join(dirname(main), id))].reduce((a, b) =>
       b.length > a.length ? b : a,
     );
-    for (const risk of worktreePathRisks(main, deepest, this.platform))
+    const record = await this.probeWorktree(runId, main, policy, signal);
+    const measured = new Set(
+      record.probes.filter((p) => p.decision !== "not_probed").map((p) => p.language),
+    );
+    for (const probe of record.probes.filter((p) => p.decision === "environment"))
       recordWouldStop(this.store, runId, {
         reason: "worktree_environment",
         mode,
-        key: `language-${risk.language}`,
-        summary: `worktree_environment: a task's checks run in ${risk.path} (${String(risk.length)} characters), and ${risk.tool} fails to start over ${String(risk.limit)} characters on ${this.platform}; the run would stop before its first task instead of paying correctives that cannot shorten the path. Move the project to a shorter path or run inline`,
-        inputs: { ...risk, platform: this.platform },
+        key: `language-${probe.language}`,
+        summary: `worktree_environment: ${probe.checkId} (${probe.tool}) fails in the run's worktree ${probe.worktree} (${String(probe.worktreeLength)} characters) and passes on the same files in ${probe.copy ?? "a short copy"} (${String(probe.copyLength ?? 0)} characters) on ${this.platform}; the run would stop before its first task instead of paying correctives that cannot shorten the path. ${worktreePathRemedy(Math.min(probe.limit, probe.worktreeLength - 1), this.platform, rootSet)}`,
+        inputs: { ...probe, source: "probe", platform: this.platform },
       });
+    for (const risk of worktreePathRisks(main, deepest, this.platform))
+      if (!measured.has(risk.language))
+        recordWouldStop(this.store, runId, {
+          reason: "worktree_environment",
+          mode,
+          key: `language-${risk.language}`,
+          summary: `worktree_environment: a task's checks run in ${risk.path} (${String(risk.length)} characters), and ${risk.tool} fails to start over ${String(risk.limit)} characters on ${this.platform}; the run would stop before its first task instead of paying correctives that cannot shorten the path. ${worktreePathRemedy(risk.limit, this.platform, rootSet)}`,
+          inputs: { ...risk, source: "length", platform: this.platform },
+        });
+  }
+  /**
+   * The worktree preflight probe (#2461), once per run: its record when one exists, else each
+   * path-sensitive required check measured as `worktreeProbeDecision` says, recorded as
+   * `WORKTREE_PROBE_PATH`.
+   */
+  private async probeWorktree(
+    runId: string,
+    main: string,
+    policy: RunPolicy,
+    signal: AbortSignal,
+  ): Promise<WorktreeProbeRecord> {
+    const stored = this.store.latestArtifact(runId, WORKTREE_PROBE_PATH);
+    if (stored) return JSON.parse(this.store.readArtifact(runId, stored.id)) as WorktreeProbeRecord;
+    const record: WorktreeProbeRecord = { schemaVersion: 1, platform: this.platform, probes: [] };
+    const sensitive = pathSensitiveChecks(policy.checks, main, this.platform);
+    if (!sensitive.length) return record;
+    const artifact = this.store.latestArtifact(runId, CHECK_BASELINE_PATH);
+    const baseline = artifact
+      ? (JSON.parse(this.store.readArtifact(runId, artifact.id)) as {
+          measured?: boolean;
+          failures?: Record<string, string>;
+        })
+      : null;
+    let copy: string | null | undefined;
+    try {
+      for (const { check, language, tool, limit } of sensitive) {
+        signal.throwIfAborted();
+        const failure = baseline?.failures?.[commandKey(check)];
+        const inWorktree = !baseline?.measured
+          ? "not_measured"
+          : failure === undefined
+            ? "passed"
+            : "failed";
+        const probe: WorktreeProbe = {
+          checkId: check.id,
+          language,
+          tool,
+          limit,
+          worktree: main,
+          worktreeLength: main.length,
+          copy: null,
+          copyLength: null,
+          inWorktree,
+          inCopy: "not_run",
+          output: (failure ?? "").slice(-600),
+          decision: "not_probed",
+        };
+        if (inWorktree === "failed") {
+          if (copy === undefined) {
+            const listed = await git(main, ["ls-files", "-z"]);
+            copy =
+              listed.code === 0
+                ? copyWorkspace(main, listed.stdout.split("\0").filter(Boolean))
+                : null;
+          }
+          if (copy === null) probe.note = "the worktree's tracked files are too large to copy";
+          else if (copy.length >= main.length)
+            probe.note = "the temporary folder is no shorter than the worktree";
+          else {
+            const result = await this.checks.measure(
+              check,
+              signal,
+              copy,
+              runSandbox(policy, copy, { gitWrite: false }),
+            );
+            probe.copy = copy;
+            probe.copyLength = copy.length;
+            probe.inCopy = result.timeout ? "inconclusive" : result.status;
+            if (result.timeout) probe.note = result.timeout.note;
+          }
+        }
+        probe.decision = worktreeProbeDecision(probe.inWorktree, probe.inCopy);
+        record.probes.push(probe);
+      }
+    } finally {
+      if (copy) removeScratch(copy);
+    }
+    this.store.transaction(() =>
+      this.store.artifact(runId, "diagnostic", WORKTREE_PROBE_PATH, canonical(record)),
+    );
+    return record;
   }
   /** The `baseline_unrepairable` would-stop of a baseline failure (#2215), once per check. */
   private baselineWouldStop(

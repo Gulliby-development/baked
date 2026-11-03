@@ -193,7 +193,13 @@ import {
   produces,
   stageKind,
 } from "./v2/runtime.js";
-import { moveRunWorktree, placeBaseFiles, removeRunWorktree, runRoot } from "./worktree.js";
+import {
+  moveRunWorktree,
+  placeBaseFiles,
+  removeRunWorktree,
+  runRoot,
+  worktreeRootDir,
+} from "./worktree.js";
 import {
   cleanWorktrees,
   type WorktreeCleanup,
@@ -1162,6 +1168,7 @@ export class NativeWorkflowService implements WorkflowService {
     if (primary) this.primaryBusy = true;
     const scheduler = primary ? this.scheduler : this.lane();
     scheduler.maxParallelRuns = parallelRunCap(this.config);
+    scheduler.worktreeRoot = worktreeRootDir(this.workspace, this.config.workflows?.worktreeRoot);
     const promise = scheduler
       .drive(runId, controller.signal)
       .then(() => this.store.snapshot(runId));
@@ -3120,11 +3127,19 @@ export class NativeWorkflowService implements WorkflowService {
   }
   /** Run and task worktrees on disk with their size and run status (`baked workflow worktrees`). */
   worktrees(): Promise<WorktreeReport> {
-    return worktreeUsage(this.store, (runId) => this.active.has(runId));
+    return worktreeUsage(
+      this.store,
+      (runId) => this.active.has(runId),
+      worktreeRootDir(this.workspace, this.config.workflows?.worktreeRoot),
+    );
   }
   /** Removes the worktrees of ended and unknown runs; their branches stay. */
   cleanWorktrees(dryRun: boolean): Promise<WorktreeCleanup> {
-    return cleanWorktrees(this.store, { dryRun, isActive: (runId) => this.active.has(runId) });
+    return cleanWorktrees(this.store, {
+      dryRun,
+      isActive: (runId) => this.active.has(runId),
+      worktreeRoot: worktreeRootDir(this.workspace, this.config.workflows?.worktreeRoot),
+    });
   }
   events(runId: string, afterSeq: number, signal: AbortSignal) {
     return replayEvents(this.store, runId, afterSeq, signal);
