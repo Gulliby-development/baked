@@ -2505,7 +2505,13 @@ export class NativeWorkflowService implements WorkflowService {
           maxCostUsd: costCap,
           ...(autoApproval === undefined ? {} : { autoApproval }),
         });
-        if (limits.maxActiveMs > MAX_EXTENDED_MS || limits.maxTotalTokens > MAX_EXTENDED_TOKENS)
+        // The ceilings bound what one extension raises a limit to. A limit it keeps is not checked:
+        // a `checkpoints` run keeps its uncapped 1e9 tokens when its calls or cost cap grow (#2667).
+        if (
+          (limits.maxActiveMs > current.maxActiveMs && limits.maxActiveMs > MAX_EXTENDED_MS) ||
+          (limits.maxTotalTokens > current.maxTotalTokens &&
+            limits.maxTotalTokens > MAX_EXTENDED_TOKENS)
+        )
           throw new WorkflowFault(
             "INVALID_DEFINITION",
             "Requested limits are above the allowed ceiling",

@@ -107,10 +107,13 @@ export function budgetUsage(store: WorkflowStore, row: RunRow): BudgetUsage {
 
 /**
  * The extension offered after a budget stop: every limit that is used up, or at least 80% used,
- * doubles; the tokens double when nothing else explains the stop. Limits at their ceiling stay.
- * Returns null when no limit can be raised any further.
+ * doubles; the tokens double when nothing else explains the stop. Limits at or above their
+ * ceiling stay: the uncapped tokens of a `checkpoints` run (1e9) were "raised" to the 50M ceiling,
+ * and the extension was refused as a lowering (#2667). Returns null when no limit can be raised.
  */
 export function proposeExtension(current: BudgetLimits, usage: BudgetUsage): BudgetLimits | null {
+  const double = (value: number, ceiling: number): number =>
+    Math.max(value, Math.min(value * 2, ceiling));
   const taken = usage.tokens + usage.heldTokens + usage.inFlightTokens;
   const callsOut = usage.calls >= current.maxAgentCalls;
   const timeOut = usage.activeMs >= current.maxActiveMs;
@@ -119,14 +122,12 @@ export function proposeExtension(current: BudgetLimits, usage: BudgetUsage): Bud
   const raiseTokens = taken >= 0.8 * current.maxTotalTokens || (!callsOut && !timeOut);
   const next: BudgetLimits = {
     maxTotalTokens: raiseTokens
-      ? Math.min(current.maxTotalTokens * 2, MAX_EXTENDED_TOKENS)
+      ? double(current.maxTotalTokens, MAX_EXTENDED_TOKENS)
       : current.maxTotalTokens,
     maxAgentCalls: raiseCalls
-      ? Math.min(current.maxAgentCalls * 2, MAX_EXTENDED_CALLS)
+      ? double(current.maxAgentCalls, MAX_EXTENDED_CALLS)
       : current.maxAgentCalls,
-    maxActiveMs: raiseTime
-      ? Math.min(current.maxActiveMs * 2, MAX_EXTENDED_MS)
-      : current.maxActiveMs,
+    maxActiveMs: raiseTime ? double(current.maxActiveMs, MAX_EXTENDED_MS) : current.maxActiveMs,
   };
   return next.maxTotalTokens > current.maxTotalTokens ||
     next.maxAgentCalls > current.maxAgentCalls ||
