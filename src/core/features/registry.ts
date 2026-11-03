@@ -1467,6 +1467,20 @@ export const FEATURES: readonly Feature[] = [
     desktop: ["settings/chat: Code quality page"],
   },
   {
+    id: "worktree-root",
+    group: "Workflow runs",
+    title: "Folder for run worktrees, and a probe for path-length failures in them",
+    tui: ["/code-quality: Worktree folder"],
+    cli: [
+      "baked workflow run: --worktree-root DIR, or workflows.worktreeRoot in config.json",
+      "baked workflow quick: --worktree-root DIR",
+      "baked workflow doctor: --worktree-root DIR, checks the folder",
+      "baked workflow worktrees: --worktree-root DIR",
+    ],
+    api: ["/v1/settings: workflows.worktreeRoot, with its check"],
+    desktop: ["settings/chat: Code quality page"],
+  },
+  {
     id: "profile-effort-compaction",
     group: "Workflow runs",
     title: "Per-profile effort and compaction threshold (set in agent profile files)",
@@ -1857,6 +1871,16 @@ export const FEATURES: readonly Feature[] = [
     cli: ["baked workflow initiative drive", "baked workflow initiative show"],
     api: ["/v1/initiatives/:id"],
     desktop: ["project/initiatives: the shared budget line shows up to N features at once"],
+  },
+  {
+    id: "parallel-cap-queued-resume",
+    group: "Initiatives",
+    title:
+      "A run resumed at the workspace's parallel-run cap keeps the change and waits for a free slot",
+    tui: ["/workflow: the change is kept and the run starts when one of the executing runs ends"],
+    cli: ["baked workflow extend: --resume", "baked workflow reroute: --resume"],
+    api: ["/v1/workflow/runs/:id/resume: queued", "/v1/workflow/runs/:id: queued"],
+    desktop: ["project/runs: Waiting for a free slot in the run header"],
   },
   {
     id: "initiative-upstream-amendments",

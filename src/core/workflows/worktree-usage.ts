@@ -1,6 +1,6 @@
 import { existsSync, readdirSync } from "node:fs";
 import { lstat, readdir } from "node:fs/promises";
-import { join } from "node:path";
+import { basename, join, relative } from "node:path";
 import { canonical } from "../specs/hash.js";
 import type { RunState } from "./schemas.js";
 import type { WorkflowStore } from "./store.js";
@@ -11,6 +11,7 @@ import {
   removeRunWorktree,
   removeTaskWorktree,
   worktreeDirRun,
+  worktreeRootProblem,
 } from "./worktree.js";
 
 /** Where run and task worktrees live, relative to the project root. */
@@ -92,14 +93,28 @@ function worktreeOf(store: WorkflowStore, runId: string) {
 export async function worktreeUsage(
   store: WorkflowStore,
   isActive: (runId: string) => boolean = () => false,
+  /**
+   * `workflows.worktreeRoot`, absolute (#2461). Several projects may share it, so only the
+   * directories whose `RUN_MARKER` names a run of this project are listed there.
+   */
+  worktreeRoot: string | null = null,
 ): Promise<WorktreeReport> {
-  const root = join(store.workspace, WORKTREES);
   const worktrees: RunWorktreeUsage[] = [];
-  const entries = existsSync(root)
-    ? readdirSync(root, { withFileTypes: true }).filter((e) => e.isDirectory())
-    : [];
-  for (const entry of entries) {
-    const directory = join(root, entry.name);
+  const folders = (root: string, own: boolean) =>
+    existsSync(root)
+      ? readdirSync(root, { withFileTypes: true })
+          .filter((e) => e.isDirectory())
+          .map((e) => join(root, e.name))
+          .filter((directory) => !own || runOf(store, worktreeDirRun(directory) ?? "") !== null)
+      : [];
+  const directories = [
+    ...folders(join(store.workspace, WORKTREES), false),
+    ...(worktreeRoot && !worktreeRootProblem(store.workspace, worktreeRoot)
+      ? folders(worktreeRoot, true)
+      : []),
+  ];
+  for (const directory of [...new Set(directories)]) {
+    const entry = { name: basename(directory) };
     const parts = await Promise.all(
       readdirSync(directory)
         .filter((name) => name !== RUN_MARKER)
@@ -124,7 +139,7 @@ export async function worktreeUsage(
           : undefined;
     worktrees.push({
       runId,
-      path: join(WORKTREES, entry.name).split("\\").join("/"),
+      path: relative(store.workspace, directory).split("\\").join("/"),
       bytes: parts.reduce((sum, part) => sum + part.bytes, 0),
       worktrees: parts.sort((a, b) => b.bytes - a.bytes),
       status,
@@ -150,9 +165,13 @@ export async function worktreeUsage(
  */
 export async function cleanWorktrees(
   store: WorkflowStore,
-  options: { dryRun: boolean; isActive?: (runId: string) => boolean },
+  options: {
+    dryRun: boolean;
+    isActive?: (runId: string) => boolean;
+    worktreeRoot?: string | null;
+  },
 ): Promise<WorktreeCleanup> {
-  const report = await worktreeUsage(store, options.isActive);
+  const report = await worktreeUsage(store, options.isActive, options.worktreeRoot ?? null);
   const removable = report.worktrees.filter((w) => w.removable);
   const result: WorktreeCleanup = {
     runIds: removable.map((w) => w.runId),
