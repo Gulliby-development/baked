@@ -602,5 +602,5 @@ describe("MCPManager handshake timeout", () => {
       if (pid && alive(pid)) process.kill(pid, "SIGKILL");
       rmSync(dir, { recursive: true, force: true });
     }
-  }, 30_000);
+  });
 });
