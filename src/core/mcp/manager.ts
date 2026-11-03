@@ -239,11 +239,14 @@ export class MCPManager {
           (late) => late.close().catch(() => {}),
           () => {},
         );
+        // Awaited: a second close of a closing stdio transport returns before its child exits, so
+        // only this close waits for the server to stop (#2751, #2805).
         if (transport && typeof transport === "object" && "close" in transport)
-          transport.close().catch(() => {});
+          await transport.close().catch(() => {});
+      } else {
+        // A handshake that failed before any client existed: its transport's child still runs.
+        await starting?.close().catch(() => {});
       }
-      // A handshake that timed out never produced a client: its transport's child still runs.
-      await starting?.close().catch(() => {});
       const msg = err instanceof Error ? err.message : String(err);
       useMCPStore.getState().setServerStatus(name, "error", msg);
       // Only auto-restart stdio transports (local subprocesses that may have crashed).
