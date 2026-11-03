@@ -261,6 +261,54 @@ describe("saved session fork", () => {
     // The source session is untouched.
     expect(store.loadSession("source-session")?.tabMessages.get("tab-test")).toHaveLength(4);
   });
+
+  test("the fork is a session of its own: no worktree, parent, archived flag or coordinator kind", async () => {
+    const dir = repo();
+    const c = await conversation(dir);
+    const store = new SessionManager(dir);
+    const now = Date.now();
+    const worktree = { path: join(dir, "wt"), branch: "baked/session-source", baseHead: "abc123" };
+    await store.saveSession(
+      {
+        id: "source-session",
+        title: "Source",
+        cwd: dir,
+        startedAt: now,
+        updatedAt: now,
+        activeTabId: "tab-test",
+        bakeMode: "default",
+        kind: "coordinator",
+        worktree,
+        archived: true,
+        parentId: "coordinator-1",
+        tabs: [
+          {
+            id: "tab-test",
+            label: "TAB-1",
+            activeModel: "openai/gpt-test",
+            sessionId: "source-session",
+            planMode: false,
+            planRequest: null,
+            coAuthorCommits: false,
+            tokenUsage: { prompt: 5, completion: 5, total: 10 },
+            messageRange: { startLine: 0, endLine: c.messages.length },
+          },
+        ],
+      },
+      new Map([["tab-test", c.messages]]),
+    );
+    const result = await forkSavedSession({ store, cwd: dir, session: "source" });
+    const fork = store.loadSession(result.sessionId)?.meta;
+    expect(fork?.kind).toBeUndefined();
+    expect(fork?.worktree).toBeUndefined();
+    expect(fork?.archived).toBeUndefined();
+    expect(fork?.parentId).toBeUndefined();
+    // The fork is listed, and the coordinator is still the source.
+    const listed = store.listSessions();
+    expect(listed.find((s) => s.id === result.sessionId)?.archived).toBeUndefined();
+    expect(listed.filter((s) => s.kind === "coordinator").map((s) => s.id)).toEqual(["source-session"]);
+    expect(store.loadSession("source-session")?.meta.worktree).toEqual(worktree);
+  });
 });
 
 /** Each turn writes the file it is given and reports an edit_file call for it. */

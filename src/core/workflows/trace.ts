@@ -220,6 +220,7 @@ import {
   type RequestConflictRecord,
   type RequestConflictRule,
   requestConflictDecision,
+  sliceForeignDecision,
 } from "./request-conflict.js";
 import {
   CONVERGENCE_GATE_DIR,
@@ -2098,6 +2099,11 @@ export interface RequestConflictBoundary {
   report: number;
   recorded: RequestConflictDecision;
   replayed: RequestConflictDecision;
+  /**
+   * Whether the slice-foreign rule settles the report (#2476), recorded and replayed; false for a
+   * record from before #2476, which holds no slice inputs.
+   */
+  sliceForeign: { recorded: boolean; replayed: boolean };
 }
 
 /**
@@ -2130,12 +2136,22 @@ export function replayRequestConflicts(
         criterionIds: record.criterionIds ?? [],
         reaudit: record.reaudit ?? null,
         reauditedBefore: record.reauditedBefore ?? false,
+        ...(record.slice ? { slice: record.slice } : {}),
       };
       // The re-audit is a step of the decision: with its verdicts recorded, ask the rule with them.
       const first = decide({ ...input, reaudit: null });
       const replayed = first === "reaudit" && input.reaudit !== null ? decide(input) : first;
       return [
-        { taskId: record.taskId, report: record.report, recorded: record.decision, replayed },
+        {
+          taskId: record.taskId,
+          report: record.report,
+          recorded: record.decision,
+          replayed,
+          sliceForeign: {
+            recorded: record.sliceForeign === true,
+            replayed: sliceForeignDecision(input, replayed),
+          },
+        },
       ];
     });
 }
@@ -2878,7 +2894,8 @@ export function replayFirstBytes(
   const boundaries = new Map<string, FirstByteBoundary[]>(runIds.map((runId) => [runId, []]));
   for (const { runId, attemptId, model, call, index, estimated } of calls) {
     // A refused call (a 429, say) answered before any deadline; it is the retry ladder's, not this.
-    if (call.status !== undefined) continue;
+    // So is one that ended in a provider error, such as a model at capacity (#2820).
+    if (call.status !== undefined || call.failure === "error") continue;
     const limitMs =
       adaptive && call.limitMs !== undefined
         ? adaptive(history, providerFirstByteMs(call.provider, call), model, call)
@@ -3044,7 +3061,10 @@ export function replayStallLadder(
     }
     const last = usage.calls?.at(-1);
     // A stall, or a turn that finished with no usable answer (#1957), which climbs the same way.
-    const stalled = !!last && last.firstByteMs === null && last.status === undefined;
+    // A call that ended in a provider error (the model at capacity) is the retry's, not a stall
+    // (#2820); a call recorded before its failure kind was is read by its timing alone.
+    const stalled =
+      !!last && last.firstByteMs === null && last.status === undefined && last.failure !== "error";
     if (attempt.status !== "failed" || (!stalled && usage.lostAnswer === undefined)) continue;
     const entry =
       (stage ? routing.stages?.[stage] : undefined) ??

@@ -58,6 +58,7 @@ import { criterionCases, missingCases, testsHold, writtenTestPaths } from "../sr
 import { INLINE_HARNESS, type InlineRowTest, inlineRowFile, withInlineRows } from "../src/core/workflows/acceptance-rows-inline.js";
 import { reproExecutables, rerootRepro } from "../src/core/verification/repro.js";
 import { packageNeeds } from "../src/core/workflows/package-probe.js";
+import { nodeUnderBun, redirectFixture } from "../src/core/verification/doc-examples.js";
 import { entryPointCommand } from "../src/core/verification/entry-points.js";
 import { noteSiblingFindings, ownerOfFinding } from "../src/core/verification/initiative-ownership.js";
 import { failureSignature as convergenceSignature, missingPlannedPaths, noTestsCollected } from "../src/core/verification/convergence.js";
@@ -2562,7 +2563,8 @@ describe("gate matrix: swift test, XCTest, swift-testing and swift-format (#1492
     expect(fixerCommand(checks[0]!.fix!, "Sources/Calc/Calc.swift")).toEqual({ executable: "swift", args: ["format", "format", "--in-place", "Sources/Calc/Calc.swift"] });
     expect(detectGates(project({ "Package.swift": "" })).map((s) => s.check.id)).toEqual(["swift-build", "swift-test"]);
     const root = project(files);
-    expect(formatWrittenChecks(root, [], [{ path: "Sources/Calc/Calc.swift", action: "create" }], (c) => `/usr/bin/${c}`).map((c) => [c.id, [c.executable, ...c.args].join(" "), [c.fix!.executable, ...c.fix!.args].join(" ")])).toEqual([
+    // The toolchain bundles swift format (Swift 6): the probe is answered here, not by the runner's swift (#2817).
+    expect(formatWrittenChecks(root, [], [{ path: "Sources/Calc/Calc.swift", action: "create" }], (c) => `/usr/bin/${c}`, undefined, undefined, { packages: () => true }).map((c) => [c.id, [c.executable, ...c.args].join(" "), [c.fix!.executable, ...c.fix!.args].join(" ")])).toEqual([
       ["swift-format-written", "swift format lint --strict Sources/Calc/Calc.swift", "swift format format --in-place"],
     ]);
   });
@@ -3450,6 +3452,14 @@ for (const stack of STACKS) {
       expect(resolved?.entry.name).toBe("tool");
       expect(executables).toContain(resolved!.argv[0]!);
       expect(resolved!.argv.at(-1)).toBe("--help");
+    });
+
+    // R88 pokerank: a bun project's README wrote `node bin/pokerank.js ...` and none of it ran.
+    cell(stack, "a README's node example runs under the checks' runtime (#2678)", () => {
+      const executables = reproExecutables(preselected());
+      const runs = executables.includes("node") || nodeUnderBun(["node", "cli.js"], executables);
+      expect(runs).toBe(stack === "bun" || stack === "npm");
+      expect(nodeUnderBun(["node", "cli.js"], executables)).toBe(stack === "bun");
     });
 
     cell(stack, "edit-profile", async () => {
@@ -6264,5 +6274,22 @@ describe("upstream symbol gate: a helper the request supplies is no missing memb
       const upstream = [{ featureId: "cli", path, text }];
       expect(upstreamSymbolGaps(spec("Tests build rows with the given Rows helper."), upstream)).toEqual([]);
       expect(upstreamSymbolGaps(spec("Rows gain a public Rows helper."), upstream)).toHaveLength(1);
+    });
+});
+
+describe("documented-example fixture gate: a printf or echo line that writes the next example's input (#2693)", () => {
+  // R88 pokerank: `printf '...' > hand.txt` then `node bin/pokerank.js showdown hand.txt`.
+  const cases: [string, ReturnType<typeof redirectFixture>][] = [
+    ["printf 'board 2c 7d\\nseat ann\\n' > hand.txt", { path: "hand.txt", content: "board 2c 7d\nseat ann\n", append: false }],
+    ["printf 'a\\\\nb' > in/raw.txt", { path: "in/raw.txt", content: "a\\nb", append: false }],
+    ["printf '\\101\\t%%\\n' >> data.csv", { path: "data.csv", content: "A\t%\n", append: true }],
+    ['echo "seat ann" > seats.txt', { path: "seats.txt", content: "seat ann\n", append: false }],
+    ["printf '%s' x > out.txt", null],
+    ["echo -n x > out.txt", null],
+    ["printf 'x' > ../escape.txt", null],
+  ];
+  for (const [command, expected] of cases)
+    test(command, () => {
+      expect(redirectFixture(command)).toEqual(expected);
     });
 });
