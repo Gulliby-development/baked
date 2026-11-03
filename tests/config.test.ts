@@ -4,6 +4,7 @@ import {
   loadConfig,
   loadProjectConfig,
   mergeConfigs,
+  NESTED_KEYS,
   saveGlobalConfig,
   saveProjectConfig,
 } from "../src/config/index.js";
@@ -168,6 +169,25 @@ describe("config modelRouting merge", () => {
       independentReview: "warn",
     });
   });
+});
+
+// #2730: a project's nested object merges over the global one, field by field.
+describe("config nested keys merge project over global", () => {
+  test("a project watch block keeps the global watch fields it does not set", () => {
+    const base = { ...DEFAULT_CONFIG, watch: { marker: "ai", debounceMs: 500 } } as AppConfig;
+    const merged = mergeConfigs(base, { watch: { poll: true } });
+    expect(merged.watch).toEqual({ marker: "ai", debounceMs: 500, poll: true });
+  });
+
+  // `workflows` is replaced whole by a project block (readGates/writeGates).
+  for (const key of NESTED_KEYS.filter((k) => k !== "workflows")) {
+    test(`${key} merges field by field`, () => {
+      const base = { ...DEFAULT_CONFIG, [key]: { fromGlobal: 1 } } as unknown as AppConfig;
+      const layer = { [key]: { fromProject: 2 } } as unknown as Partial<AppConfig>;
+      const merged = mergeConfigs(base, layer) as unknown as Record<string, unknown>;
+      expect(merged[key]).toMatchObject({ fromGlobal: 1, fromProject: 2 });
+    });
+  }
 });
 
 describe("invalid config.json exits with error", () => {
