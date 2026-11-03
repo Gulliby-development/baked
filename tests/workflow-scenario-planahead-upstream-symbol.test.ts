@@ -171,6 +171,32 @@ describe("namespaces, dotted folders and binary files are not upstream members (
     expect(gapsOf("Maskback.Relay forwards the masked requests.", typed)).toEqual(["Maskback.Relay"]);
   });
 
+  // Bench round 91, dagwalk (#2837): the test project namespace `Dagwalk.Tests` (folder
+  // `tests/Dagwalk.Tests/`) read as a member `Tests` of `src/Dagwalk/Api.cs`, and "the unchanged
+  // Rows helper" as a gap of `Rows.cs`, which defines the class: 2 of 2 would-stops false.
+  test("csharp: a dotted test project folder is a namespace, and the unchanged helper its file", () => {
+    const upstream = [
+      { path: "src/Dagwalk/Api.cs", text: "namespace Dagwalk;\npublic static class Api { public static int Run() => 0; }\n" },
+      { path: "tests/Dagwalk.Tests/Rows.cs", text: "namespace Dagwalk.Tests;\npublic static class Rows { public static string[] Of(string s) => [s]; }\n" },
+    ];
+    const own = ["tests/Dagwalk.Tests/LevelsTests.cs"];
+    expect(gapsOf("Tests write using static Dagwalk.Tests.Rows, namespace Dagwalk.Tests, one matching public class.", upstream, own)).toEqual([]);
+    expect(gapsOf("Use the unchanged Rows helper through Cli.Run.", upstream, own)).toEqual([]);
+    expect(gapsOf("Use the existing Rows helper.", upstream, own)).toEqual([]);
+    // The type's file does not define it: still a gap. So is a member asked of it.
+    const bare = [upstream[0] as (typeof upstream)[0], { path: "tests/Dagwalk.Tests/Rows/Table.cs", text: "namespace Dagwalk.Tests;\npublic static class Table {}\n" }];
+    expect(gapsOf("Use the unchanged Rows helper.", bare, own)).toEqual(["Rows helper"]);
+    expect(gapsOf("Rows gain a public Rows helper.", upstream, own)).toEqual(["public Rows helper"]);
+    // A member of the type that the namespace folder does not name is still read.
+    expect(gapsOf("Levels calls Dagwalk.Walk for each node.", upstream, own)).toEqual(["Dagwalk.Walk"]);
+  });
+
+  test("fsharp: a dotted test project file is a namespace (#2837)", () => {
+    const upstream = [{ path: "src/Dagwalk/Api.fs", text: "module Dagwalk.Api\nlet run () = 0\n" }];
+    expect(gapsOf("Tests open Dagwalk.Tests.", upstream, ["tests/Dagwalk.Tests.fsproj"])).toEqual([]);
+    expect(gapsOf("Tests open Dagwalk.Tests.", upstream, ["tests/Other.Tests.fsproj"])).toEqual(["Dagwalk.Tests"]);
+  });
+
   test("python: a dotted `pkg.egg-info` folder is not the package", () => {
     const upstream = [{ path: "src/maskback.egg-info/PKG-INFO", text: "Name: maskback\nVersion: 0.1.0\n" }];
     expect(gapsOf("Maskback.Relay forwards the requests.", upstream)).toEqual([]);

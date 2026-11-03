@@ -57,6 +57,7 @@ import { syntaxErrors } from "../src/core/intelligence/syntax-check.js";
 import { criterionCases, missingCases, testsHold, writtenTestPaths } from "../src/core/verification/criteria-cases.js";
 import { INLINE_HARNESS, type InlineRowTest, inlineRowFile, withInlineRows } from "../src/core/workflows/acceptance-rows-inline.js";
 import { docFindingRepairs, documentationFinding, reproAllows, reproExecutables, rerootRepro } from "../src/core/verification/repro.js";
+import { packageNeeds } from "../src/core/workflows/package-probe.js";
 import { entryPointCommand } from "../src/core/verification/entry-points.js";
 import { noteSiblingFindings, ownerOfFinding } from "../src/core/verification/initiative-ownership.js";
 import { failureSignature as convergenceSignature, missingPlannedPaths, noTestsCollected } from "../src/core/verification/convergence.js";
@@ -2872,7 +2873,7 @@ describe("gate matrix: Pester and PSScriptAnalyzer (#1498)", () => {
     expect(PS_FORMAT_CHECK).toContain("$s.Settings = './PSScriptAnalyzerSettings.psd1'");
     expect(PS_FORMAT_FIX).toContain("New-Object Text.UTF8Encoding $bom");
     expect(PS_FORMAT_CHECK).not.toContain("WriteAllText");
-    const [written] = formatWrittenChecks(root, [], [{ path: "src/Sum.ps1", action: "create" }], (c) => `/usr/bin/${c}`);
+    const [written] = formatWrittenChecks(root, [], [{ path: "src/Sum.ps1", action: "create" }], (c) => `/usr/bin/${c}`, undefined, undefined, { packages: () => true });
     expect(written && [written.id, written.args.slice(-2), written.fix?.args.at(-1), written.required]).toEqual(["psformat-written", [PS_FORMAT_CHECK, "src/Sum.ps1"], PS_FORMAT_FIX, true]);
     expect(diagnosticCount("src/Sum.ps1: would be reformatted by Invoke-Formatter\ntests/A.Tests.ps1: would be reformatted by Invoke-Formatter\n")).toEqual({ tool: "invoke-formatter", count: 2, errors: 2 });
   });
@@ -2928,6 +2929,21 @@ describe("gate matrix: testthat, lintr and styler (#1500)", () => {
   const ids = (files: Record<string, string>) =>
     detectGates(project(files)).map((s) => [s.check.id, s.check.args.at(-1), s.source, s.preselected]);
   const TEST = 'test_that("adds", {\n  expect_equal(add_numbers(1, 2), 3)\n})\n';
+  // #2817: a Windows queue runner had Rscript and no styler; the required styler-written check
+  // failed every attempt. Each R gate's command names the package the probe asks about.
+  test("styler-written only where Rscript loads styler; each R gate names its package (#2817)", () => {
+    const files = { "tests/testthat/test-sum.R": TEST };
+    const written = (has: boolean) =>
+      formatWrittenChecks(project(files), [], [{ path: "tests/testthat/test-sum.R", action: "create" }], (c) => `/usr/bin/${c}`, undefined, undefined, { packages: () => has }).map((c) => c.id);
+    expect(written(false)).toEqual([]);
+    expect(written(true)).toEqual(["styler-written"]);
+    const gates = detectGates(project({ DESCRIPTION: "Package: sumr\n", ...files })).map((s) => s.check);
+    expect(gates.map((c) => [c.id, packageNeeds(c).map((n) => n.name)])).toEqual([
+      ["testthat", ["testthat"]],
+      ["lintr", ["lintr"]],
+      ["styler", ["styler"]],
+    ]);
+  });
   test("a package gets testthat on the loaded package, lintr offered, styler offered; a scripts project tests its folder", () => {
     expect(ids({ DESCRIPTION: "Package: sumr\n", "tests/testthat/test-sum.R": TEST })).toEqual([
       ["testthat", testthatRun(true), "tests/testthat", true],
@@ -3287,7 +3303,7 @@ describe("gate matrix: format-written check on a dirty repository (#1837)", () =
   // An edited file: only the lines the run changed against its content before the run (#1837, R57
   // zonevet), by a formatter that formats a range; none where the formatter cannot.
   const edited = (files: Record<string, string>, path: string, before: string) =>
-    formatWrittenChecks(project(files), [], [{ path, action: "modify" }], (c) => `/usr/bin/${c}`, (p) => (p === path ? before : undefined), () => true).map((c) => [
+    formatWrittenChecks(project(files), [], [{ path, action: "modify" }], (c) => `/usr/bin/${c}`, (p) => (p === path ? before : undefined), () => true, { packages: () => true }).map((c) => [
       c.id,
       [c.executable, ...c.args].join(" "),
       c.fix ? [c.fix.executable, ...c.fix.args].join(" ") : null,
@@ -6298,6 +6314,19 @@ describe("ci check drift gate: the PowerShell gates' cmdlets and the project's o
     expect(ciCheckDrift(readme("eslint src"), [gate("eslint", ".")])).toEqual([]);
     expect(ciCheckDrift(readme("go vet ./cmd/..."), [gate("go", "vet", "./...")])).toEqual([]);
     expect(ciCheckDrift(readme("ruff check lib"), [gate("ruff", "check", "src")]).map((d) => d.missing)).toEqual([["lib"]]);
+  });
+});
+
+describe("upstream symbol gate: a dotted test namespace and an unchanged helper are no gap (#2837)", () => {
+  // R91 dagwalk: `Dagwalk.Tests` and "the unchanged Rows helper" were 2 of 2 false would-stops.
+  const spec = (text: string) => ({ requirements: [{ id: "FR-001", text, priority: "must" as const, verification: "automated" as const, sourceRefs: [] }], criteria: [] });
+  test("csharp: no gap; a helper the file lacks still is one", () => {
+    const upstream = [
+      { featureId: "core", path: "src/Dagwalk/Api.cs", text: "namespace Dagwalk;\npublic static class Api {}\n" },
+      { featureId: "core", path: "tests/Dagwalk.Tests/Rows.cs", text: "namespace Dagwalk.Tests;\npublic static class Rows {}\n" },
+    ];
+    expect(upstreamSymbolGaps(spec("namespace Dagwalk.Tests; use the unchanged Rows helper."), upstream)).toEqual([]);
+    expect(upstreamSymbolGaps(spec("Rows gain a public Rows helper."), upstream)).toHaveLength(1);
   });
 });
 

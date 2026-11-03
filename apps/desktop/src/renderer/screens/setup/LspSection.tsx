@@ -33,6 +33,7 @@ import {
   LoadState,
   NOTE,
   ROW,
+  ROW_TEXT,
   SETUP,
   STACK,
   Tag,
@@ -43,7 +44,7 @@ import {
 /** How often the list refreshes while a server is starting. */
 const POLL_MS = 1500;
 
-function ServerRow({
+export function ServerRow({
   server,
   busy,
   installing,
@@ -68,7 +69,7 @@ function ServerRow({
           disabled={busy}
           onCheckedChange={(checked) => onToggle(checked)}
         />
-        <span className={cn(GROW, "flex flex-col gap-0.5")}>
+        <span className={cn(ROW_TEXT, "flex flex-col gap-0.5")}>
           <span className="flex flex-wrap items-center gap-2">
             <span className="font-mono font-semibold text-foreground">{server.id}</span>
             {server.languages.map((language) => (

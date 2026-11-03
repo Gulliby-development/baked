@@ -573,6 +573,7 @@ import {
   repairChangedFiles,
 } from "./invalidation.js";
 import {
+  commandLiveness,
   commandMayBeRunning,
   mutationLeaseFor,
   type WorkspaceLeases,
@@ -1337,6 +1338,18 @@ const CHECK_KIND =
   /test|lint|ruff|eslint|biome|clippy|flake8|mypy|pyright|tsc|typecheck|type check/i;
 /** A linter rule code such as Ruff's ISC004 or ESLint-style E501: naming one reports a violation. */
 const RULE_CODE = /\b[A-Z]{1,4}\d{3,4}\b/;
+/**
+ * A task step's result, bound to the task the step ran: `taskId` is a host field (#2828,
+ * `HOST_FIELDS`), so a result that names another task, such as windowfit 08da8647 T003's
+ * `T002` copied from the task before it, is this task's result and not a reason to reject it.
+ * Every task path parses here: planned tasks and correctives, batch workers, best-of-N
+ * candidates and integrators.
+ */
+export function taskImplementation(taskId: string, output: unknown): Implementation {
+  return ImplementationSchema.parse(
+    output && typeof output === "object" && !Array.isArray(output) ? { ...output, taskId } : output,
+  );
+}
 /**
  * A task that changed its files and reports, as unresolved, only failing tests or lint findings in
  * those files has done its work: the failures go to a corrective task like a failed task check,
@@ -3743,6 +3756,9 @@ export class WorkflowScheduler {
       await this.processes.stop();
       const fault =
         signal.aborted && signal.reason instanceof WorkflowFault ? signal.reason : error;
+      // A recovery request checks command processes: read them before the write lock is taken.
+      const recovering = fault instanceof WorkflowFault && fault.code === "RECOVERY_REQUIRED";
+      using _liveness = commandLiveness(this.store, recovering ? [runId] : []);
       this.store.transaction(() => {
         if (stepId) {
           // Task, review and transition steps opened under the stage end with it (#1745).
@@ -9289,7 +9305,8 @@ ${note}`;
       let result = this.settleSizeTargets(
         runId,
         task.id,
-        ImplementationSchema.parse(
+        taskImplementation(
+          task.id,
           await this.call(
             runId,
             child,
@@ -9386,7 +9403,7 @@ ${note}`;
           }),
         ),
       );
-      if (result.outcome === "spec_conflict" && result.taskId === task.id) {
+      if (result.outcome === "spec_conflict") {
         const attemptId = this.store
           .attempts(runId)
           .filter((a) => a.step_id === child)
@@ -9501,7 +9518,6 @@ ${note}`;
       }
       const ownFailures = ownCheckFailures(task, result, changed);
       if (
-        result.taskId !== task.id ||
         ["blocked", "failed"].includes(result.outcome) ||
         (result.unresolved.length > 0 && !ownFailures) ||
         correction !== true
@@ -10932,7 +10948,8 @@ ${note}`;
       let result = this.settleSizeTargets(
         runId,
         task.id,
-        ImplementationSchema.parse(
+        taskImplementation(
+          task.id,
           await this.call(
             runId,
             entry.child,
@@ -10997,7 +11014,7 @@ ${note}`;
       );
       // Check results the host ran to finish a stopped attempt, reused by the task checks.
       const hostChecked = new Map<string, WorkerCheck["checked"]>();
-      if (result.outcome === "spec_conflict" && result.taskId === task.id) {
+      if (result.outcome === "spec_conflict") {
         const fix: MisquoteFixContext = {
           root,
           attemptId: entry.attemptId,
@@ -11175,7 +11192,6 @@ ${note}`;
       if (correction instanceof WorkflowFault)
         return { kind: "rejected", entry, error: correction };
       if (
-        result.taskId !== task.id ||
         ["blocked", "failed"].includes(result.outcome) ||
         (result.unresolved.length > 0 && !ownCheckFailures(task, result, changed)) ||
         correction !== true
@@ -11763,7 +11779,8 @@ ${note}`;
     const result = this.settleSizeTargets(
       runId,
       task.id,
-      ImplementationSchema.parse(
+      taskImplementation(
+        task.id,
         await this.call(
           runId,
           entry.child,
@@ -11806,7 +11823,6 @@ ${note}`;
         `The integrator of ${task.id} changed files outside the conflict: ${outside.slice(0, 5).join(", ")}`,
       );
     if (
-      result.taskId !== task.id ||
       ["blocked", "failed", "spec_conflict"].includes(result.outcome) ||
       result.unresolved.length > 0
     ) {
@@ -12550,7 +12566,8 @@ ${note}`;
           t.id !== task.id &&
           !done(t.id) &&
           t.writes.some(
-            (w) => w.action !== "delete" && holdsWrittenTests(w.path, compiled, task.readHints),
+            (w) =>
+              w.action !== "delete" && holdsWrittenTests(w.path, compiled, task.readHints, root),
           ),
       )
     )
