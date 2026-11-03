@@ -653,8 +653,8 @@ describe.skipIf(!IS_WIN)("platform shim: Windows process table in process (#2839
     }));
     const since = Date.now();
     // The parent starts a long child, prints its PID and exits; Windows keeps the dead parent's
-    // PID on the orphan.
-    const script = `const c = Bun.spawn([process.execPath, "-e", "setTimeout(() => {}, 30000)"], { stdout: "ignore", stderr: "ignore" }); c.unref(); console.log(c.pid);`;
+    // PID on the orphan. `detached` keeps the child out of the parent's job, which kills it on exit.
+    const script = `const c = Bun.spawn([process.execPath, "-e", "setTimeout(() => {}, 30000)"], { stdout: "ignore", stderr: "ignore", detached: true }); c.unref(); console.log(c.pid);`;
     const parent = Bun.spawn([process.execPath, "-e", script], { stdout: "pipe", stderr: "ignore" });
     const orphan = Number((await new Response(parent.stdout).text()).trim());
     await parent.exited;
