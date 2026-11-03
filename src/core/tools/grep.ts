@@ -29,8 +29,19 @@ export const grepTool = {
     const searchPath = args.path ?? ".";
     const glob = args.glob;
 
+    // A path that is itself forbidden is refused outright, like read and edit_file do. The
+    // per-line filter below cannot catch it: ripgrep and grep print no file name when the
+    // search path is a single file, so `grep(path: ".env")` returned the secret lines bare.
+    const blocked = isForbidden(resolve(getCwd(), searchPath));
+    if (blocked) {
+      const msg = `Access denied: "${searchPath}" matches forbidden pattern "${blocked}".`;
+      return { success: false, output: msg, error: msg };
+    }
+
     const rgArgs = [
       "--line-number",
+      // Always name the file, so every hit line carries the path the forbidden filter checks.
+      "--with-filename",
       "--color=never",
       "--max-filesize=256K",
       "--max-columns=1000",
@@ -73,8 +84,13 @@ export const grepTool = {
         if (code === 0 || code === 1) {
           res(output || "No matches found.");
         } else {
-          const fallbackArgs = ["-rn", pattern, searchPath];
-          if (glob) fallbackArgs.push("--include", glob);
+          const fallbackArgs = [
+            "-rnH",
+            ...(glob ? ["--include", glob] : []),
+            "--",
+            pattern,
+            searchPath,
+          ];
 
           const grepProc = spawn("grep", fallbackArgs, {
             cwd: getCwd(),
