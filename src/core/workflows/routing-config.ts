@@ -7,6 +7,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import type { ModelRouting } from "../llm/model-routing.js";
 import { configDir as defaultConfigDir } from "../platform/index.js";
+import { parseConfigJson } from "../utils/config-json.js";
 import { ensurebakedDir } from "../utils/ensure-baked-dir.js";
 import { WorkflowFault } from "./errors.js";
 import {
@@ -28,7 +29,7 @@ export function routingConfigFiles(workspace: string, configDir?: string): Routi
 /** Reads a config file; a missing file is `{}`. */
 export function readConfigObject(path: string): Record<string, unknown> {
   if (!existsSync(path)) return {};
-  const parsed = JSON.parse(readFileSync(path, "utf8")) as unknown;
+  const parsed = parseConfigJson(readFileSync(path, "utf8")) as unknown;
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed))
     throw new Error(`${path} does not hold a JSON object`);
   return parsed as Record<string, unknown>;
