@@ -8,6 +8,7 @@ import { bunShellArgs, IS_WIN, pwshExecutable, rscriptExecutable } from "../plat
 import { chatSandbox, SandboxUnavailableError, sandboxNotice } from "../security/sandbox.js";
 import { buildSafeEnv } from "../spawn.js";
 import { executeCheckCommand } from "../verification/check-runner.js";
+import { plainOutputEnv } from "../verification/plain-output.js";
 import {
   clangFormatGates,
   cmakeGates,
@@ -1033,7 +1034,7 @@ export const projectTool = {
         const result = await executeCheckCommand(scope, executable, argv, {
           cwd,
           verbatim: true,
-          env: { ...buildSafeEnv(), FORCE_COLOR: "0", NO_COLOR: "1", ...args.env },
+          env: { ...plainOutputEnv(buildSafeEnv()), ...args.env },
           timeoutMs: args.timeout ?? getToolTimeoutMs(),
           signal: new AbortController().signal,
           sandbox: chatSandbox(getCwd(), [cwd]),

@@ -701,6 +701,11 @@ export interface ExecutionRequest {
    * the previous text: the snapshot hash and the evidence ids a result may cite.
    */
   formatHints?: string;
+  /**
+   * What the bound on the input's evidence section did (`boundEvidence`, #2617), recorded as
+   * `prompt.evidence` in the attempt's usage and named by its large-prompt notice.
+   */
+  evidenceBound?: import("./evidence-budget.js").EvidenceBound;
   /** Reasoning effort from the attempt's model route; unset keeps the configured default. */
   effort?: RouteEffort;
   /**

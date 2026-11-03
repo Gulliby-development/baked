@@ -11,6 +11,7 @@
     "src/runtime_test.cpp": "auto dir = std::filesystem::temp_directory_path();\nsnprintf(want, sizeof want, \"bad: %s\", dir.c_str());\n"
   },
   "expected": {
+    "rowIndent": null,
     "languagePitfalls": ["C and C++"],
     "generatedValues": ["src/gen_test.cpp:2 repeat"],
     "exampleBuild": null,
@@ -78,6 +79,7 @@
     "dependencyDirs": null,
     "dependencyPrepare": null,
     "worktreePathLimits": null,
+    "diagnosticFormats": ["src/calc.cpp: error: no matching function for call to 'sub'"],
     "testClasses": null,
     "testDeclarations": ["tests/sum_test.cpp: 2 tests"],
     "rowFileShapes": [

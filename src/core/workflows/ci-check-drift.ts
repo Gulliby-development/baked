@@ -473,14 +473,44 @@ export function fileGateCommands(path: string, text: string): string[] {
   if (CI_WORKFLOW.test(path)) return workflowRunCommands(text);
   if (!README_FILE.test(path)) return [];
   return fences(text)
-    .filter(
-      (f) =>
-        !f.diff &&
-        ["", "sh", "bash", "shell", "console", "zsh", "powershell", "pwsh"].includes(f.lang),
-    )
-    .flatMap((f) => f.lines)
-    .map((line) => line.trim().replace(/^[$>]\s+/, ""))
-    .filter((line) => line && !line.startsWith("#"));
+    .filter((f) => !f.diff && SHELL_FENCES.includes(f.lang))
+    .flatMap((f) => fenceCommands(f.lang, f.lines));
+}
+
+const SHELL_FENCES = ["", "sh", "bash", "shell", "console", "zsh", "powershell", "pwsh"];
+/** A shell prompt before a command: `$ `, `% `, `> `, `PS> `, `PS C:\app> `. */
+const PROMPT = /^(?:[$%>]|PS(?: [^>]*)?>)\s+/;
+/** Script files a README runs by path: `./scripts/check.sh`, `.\build.ps1`. */
+const SCRIPT_FILE = /\.(?:sh|bash|zsh|ps1|bat|cmd|exe)$/i;
+
+/**
+ * The commands of one README fence (#2620). In a `console` block, and in an untagged block where
+ * some line has a prompt, only the prompted lines are commands: the others are what they print. A
+ * shell-tagged block is a script, so each of its lines may be a command. A line is a command only
+ * when its first word can name a program (`looksLikeCommand`).
+ */
+function fenceCommands(lang: string, lines: readonly string[]): string[] {
+  const trimmed = lines.map((line) => line.trim());
+  const prompted = lang === "console" || (lang === "" && trimmed.some((line) => PROMPT.test(line)));
+  return trimmed
+    .filter((line) => !prompted || PROMPT.test(line))
+    .map((line) => line.replace(PROMPT, ""))
+    .filter((line) => line && !line.startsWith("#") && looksLikeCommand(line));
+}
+
+/**
+ * Whether a README line's first word can name a program (#2620): it starts with a letter, `.`, `/`
+ * or `~`, does not end in `:` (a label such as `Usage:` or a program's own `shardplan:` message),
+ * and is no file path other than a script. R85 shu (shardplan, Java): untagged blocks held the
+ * example timings file (`42.5 tests/test_db.py`), the program's output and its usage text, and 22 of
+ * 25 drift records named a number, a duration or `shardplan:` as a tool no check runs.
+ */
+export function looksLikeCommand(line: string): boolean {
+  const first = line.split(/\s+/)[0] ?? "";
+  if (!/^[A-Za-z./~]/.test(first) || first.endsWith(":")) return false;
+  // A path with a data or source extension is a file the block lists, not a program it runs.
+  if (/[/\\]/.test(first) && /\.[A-Za-z]\w*$/.test(first)) return SCRIPT_FILE.test(first);
+  return true;
 }
 
 export interface CiCheckDrift {
@@ -549,6 +579,54 @@ function coveredPaths(
   );
   const uncovered = files.filter((file) => !matchers.some((m) => m.test(norm(file))));
   return uncovered.length ? null : { drop: paths, covered: files };
+}
+
+/** A path as `coveredPaths` and `narrowerPaths` compare it: `/`-separated, no `./`, no trailing `/` or `/...`. */
+const normPath = (path: string) =>
+  path
+    .replace(/\\/g, "/")
+    .replace(/^\.\//, "")
+    .replace(/\/\.\.\.$/, "")
+    .replace(/\/+$/, "");
+/**
+ * The positional words of `words`: not a flag, and not a flag's value. A word after a flag is its
+ * value unless `other` (the side compared with) has that flag as a switch, last or before a flag:
+ * the check's `gofmt -l .` makes `-l` a switch, so the README's `gofmt -l cmd` names a path.
+ */
+function positional(words: readonly string[], other: readonly string[] = []): string[] {
+  const switches = new Set(
+    other.filter((word, i) => /^-[^=]*$/.test(word) && (other[i + 1] ?? "-").startsWith("-")),
+  );
+  return words.filter((word, i) => {
+    if (word.startsWith("-")) return false;
+    const before = words[i - 1] ?? "";
+    return !/^-[^=]*$/.test(before) || switches.has(before);
+  });
+}
+
+/**
+ * The path words of a README command that a check's broader path covers (#2634): R86 binlayer's
+ * README ran `python -m sqlfluff lint sql` while the check ran `python -m sqlfluff lint .`, and
+ * `sql` read as a word the check lacks. The check's paths are its positional words the command
+ * does not share (a shared word is a subcommand such as `lint`). It covers the whole tree when it
+ * has none (`.` and `./` are dropped as the working directory, and a tool given no path runs
+ * there) or `./...`, and a folder when it names that folder or one above it. A command path
+ * outside every check path, a glob (#2567 reads those), a word that is no path (`ARGS=-race`)
+ * or a path above the check's directory stays missing. Returns the words to drop.
+ */
+function narrowerPaths(command: readonly string[], check: readonly string[]): string[] {
+  const scope = positional(check)
+    .filter((word) => !command.includes(word))
+    .map(normPath);
+  const whole = scope.length === 0 || scope.some((path) => path === "" || path === "...");
+  return positional(command, check).filter((word) => {
+    // A path, not an assignment (`ARGS=-race`) or an expression (`stop_on_failure=TRUE`).
+    if (check.includes(word) || GLOB.test(word) || !/^[\w.@+-][\w./\\@+-]*$/.test(word))
+      return false;
+    const path = normPath(word);
+    if (!path || /^(?:\/|[A-Za-z]:|\.\.(?:\/|$))/.test(path)) return false;
+    return whole || scope.some((dir) => path.startsWith(`${dir}/`));
+  });
 }
 
 /**
@@ -657,6 +735,8 @@ export function ciCheckDrift(
             (isPathWord(last) || PLACEHOLDER.test(last))
           )
             mine = mine.slice(0, -1);
+          const narrower = narrowerPaths(mine, have);
+          if (narrower.length) mine = mine.filter((word) => !narrower.includes(word));
           const missing: string[] = [];
           for (const word of mine) {
             const at = have.indexOf(word);

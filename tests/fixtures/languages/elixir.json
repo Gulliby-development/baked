@@ -2,7 +2,7 @@
   "files": {
     "lib/sum.ex": "defmodule Sum do\n  def sum(a, b) do\n    raise \"not implemented\"\n  end\nend\n",
     "lib/sum_test.exs": "ExUnit.start()\nSum.sum(1, 2)\n# AC-001 example: (1, 2, 3)\n",
-    "mix.exs": "defmodule Fixture.MixProject do\nend\n",
+    "mix.exs": "defmodule Fixture.MixProject do\n  def project, do: [app: :sum, escript: [main_module: Sum.CLI]]\nend\n",
     ".formatter.exs": "[]\n"
   },
   "outputs": {
@@ -14,6 +14,7 @@
     "test/runtime_test.exs": "dir = System.tmp_dir!()\nwant = \"bad: #{dir}\"\n"
   },
   "expected": {
+    "rowIndent": ["\"  row(1),\""],
     "languagePitfalls": null,
     "generatedValues": ["test/gen_test.exs:1 repeat","test/gen_test.exs:2 interpolate"],
     "exampleBuild": ["mix run --no-compile; link _build"],
@@ -43,7 +44,7 @@
     "testRunners": ["exunit 2", "signature stable"],
     "mutation": null,
     "properties": null,
-    "entryPoints": null,
+    "entryPoints": ["sum: mix run -e Sum.CLI.main(System.argv()) --"],
     "testGates": null,
     "callGraph": [
       "sum called at lib/sum_test.exs:2"
@@ -66,6 +67,10 @@
     ],
     "dependencyPrepare": null,
     "worktreePathLimits": null,
+    "diagnosticFormats": [
+      "lib/calc.ex: undefined function sub/2",
+      "lib/calc/old.ex: error: undefined variable \"x\""
+    ],
     "testClasses": null,
     "testDeclarations": ["test/sum_test.exs: 2 tests, per class 2"],
     "rowFileShapes": [

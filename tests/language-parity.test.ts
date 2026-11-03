@@ -35,8 +35,11 @@ import { PROPERTY_LIBRARIES, propertyTestKind } from "../src/core/workflows/qual
 import { checkBuiltinRules } from "../src/core/workflows/quality/rules.js";
 import { INLINE_HARNESS, inlineRowFile } from "../src/core/workflows/acceptance-rows-inline.js";
 import { TEST_GATES, testGateFlags } from "../src/core/workflows/test-gates.js";
+import { DIAGNOSTIC_FORMATS, diagnostics } from "../src/core/verification/task-end-check.js";
+import { colour } from "./helpers/coloured-runner-output.js";
 import { declaredTestClasses, TEST_CLASSES } from "../src/core/workflows/test-classes.js";
 import { ROW_FILE_SHAPES, rowFilePlan, rowFileRefusal } from "../src/core/workflows/row-file.js";
+import { placeRows, ROW_INDENT } from "../src/core/tools/place-rows.js";
 import { writtenTestsCheck } from "../src/core/workflows/affected-tests.js";
 import { TreeSitterBackend } from "../src/core/intelligence/backends/tree-sitter.js";
 import { CALL_SYNTAX, callContext, functionsIn } from "../src/core/intelligence/call-context.js";
@@ -232,6 +235,19 @@ const RECORDS: Record<
         return names.length ? [`${path}: ${names.join(", ")}`] : [];
       }),
   },
+  // The located diagnostics the task-end whole-unit check reads from the language's compiler
+  // output (#2616): the row's example, read plain and coloured, each `path: message`.
+  diagnosticFormats: {
+    record: DIAGNOSTIC_FORMATS,
+    run: (language) => {
+      const row = rowOf(DIAGNOSTIC_FORMATS, language);
+      if (!row) return [];
+      const plain = diagnostics(row.example).map((d) => `${d.path}: ${d.text}`);
+      const coloured = diagnostics(colour(row.example)).map((d) => `${d.path}: ${d.text}`);
+      return JSON.stringify(plain) === JSON.stringify(coloured) ? plain : [...plain, "coloured output reads differently"];
+    },
+    never: ["coloured output reads differently"],
+  },
   // The test classes a written-tests run selects by name (#2363): the row's example, a file whose
   // class is not named like it, and each test file of the fixture ("by its name" when it declares
   // no type that holds a test, so the run falls back to the file's name).
@@ -261,6 +277,17 @@ const RECORDS: Record<
       return content === null ? ["declined", rowFileRefusal(path, inputs) ?? ""] : [path, ...content.split("\n")];
     },
     never: ["declined"],
+  },
+  // The indentation place_rows gives a row after a list's opening line when neither the request's
+  // rows nor the file show one (#2618): the placed line, quoted so its whitespace shows.
+  rowIndent: {
+    record: ROW_INDENT,
+    run: (language) => {
+      const ext = Object.entries(EXT_TO_LANGUAGE).find(([, l]) => l === language)?.[0] ?? `.${language}`;
+      const path = `tests/rows${ext}`;
+      const placed = placeRows({ path, line: 1, rows: [1] }, new Map([[path, ["row(1)"]]]), "rows = [\n]\n");
+      return "refusal" in placed ? [placed.refusal] : [JSON.stringify(placed.first)];
+    },
   },
   // The comment and string syntax the case walk and the integrity guards read code by (#1846): the
   // lines a string or a comment covers, marked `comment` when stripping comments alone blanks them.
@@ -501,10 +528,10 @@ describe("acceptance rows: every framework has the file and the inline mode (#17
   test.each(frameworks.map((framework) => [framework]))("%s", (framework) => {
     expect(INLINE_HARNESS[framework]).toBeTruthy();
     const pkg = framework === "go" ? "calc" : framework === "junit" ? "com.ex.calc" : "Calc.Tests";
-    const test = { bun: "tests/a.test.ts", pytest: "tests/test_a.py", go: "calc/a_test.go", junit: "src/test/java/com/ex/calc/ATest.java", rust: "tests/a.rs", xunit: "Calc.Tests/ATest.cs", rspec: "spec/a_spec.rb", phpunit: "tests/ATest.php", testthat: "tests/testthat/test-a.R", busted: "spec/a_spec.lua", minitest: "test/a_test.rb", pest: "tests/ATest.php", exunit: "test/a_test.exs", dart: "test/a_test.dart" }[framework];
+    const test = { bun: "tests/a.test.ts", pytest: "tests/test_a.py", go: "calc/a_test.go", junit: "src/test/java/com/ex/calc/ATest.java", rust: "tests/a.rs", xunit: "Calc.Tests/ATest.cs", rspec: "spec/a_spec.rb", phpunit: "tests/ATest.php", testthat: "tests/testthat/test-a.R", busted: "spec/a_spec.lua", minitest: "test/a_test.rb", pest: "tests/ATest.php", exunit: "test/a_test.exs", dart: "test/a_test.dart", kotlin: "src/test/kotlin/com/ex/calc/ATest.kt", scalatest: "src/test/scala/ASuite.scala", munit: "src/test/scala/ASuite.scala" }[framework];
     const file = inlineRowFile({ mode: "inline", framework, test, package: pkg }, [{ id: "AC-001:1", criterionId: "AC-001", input: 1, expected: 2, source: "1 | 2" }]);
     expect(file.tail).toContain(INLINE_HARNESS[framework]);
-    expect(file.tail).not.toMatch(/serde_json|import junit|org\.json|Newtonsoft/);
+    expect(file.tail).not.toMatch(/serde_json|import junit|org\.json|Newtonsoft|kotlinx\.serialization|circe|ujson/);
   });
 });
 

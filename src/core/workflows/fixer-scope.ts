@@ -1,5 +1,8 @@
 import { existsSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
+import { canonical } from "../specs/hash.js";
 import { workspacePath } from "../specs/validate.js";
+import { fileHash } from "./effects.js";
+import { newId, type WorkflowStore } from "./store.js";
 
 /**
  * Whole-project formatters (`cargo fmt`, `dotnet format`, a formatter given a directory) rewrite
@@ -20,21 +23,62 @@ export function keepOutside(
   return kept;
 }
 
+/** A file `restoreOutside` put back: its content restored, or removed as one the fixer created. */
+export interface PutBack {
+  path: string;
+  action: "restored" | "removed";
+  /** The hash the file had before it was put back. */
+  from: string | null;
+}
+
 /**
  * Puts back the files outside the fixer's scope that it changed: a kept file gets its content
- * back and a file the fixer created is removed.
+ * back and a file the fixer created is removed. Returns what it did, which the caller records
+ * with `recordPutBack`: these writes and unlinks have no effect row (#2609).
  */
 export function restoreOutside(
   root: string,
   kept: ReadonlyMap<string, Buffer>,
   outside: readonly string[],
-): void {
+): PutBack[] {
+  const done: PutBack[] = [];
   for (const path of outside) {
     const target = workspacePath(root, path);
     const content = kept.get(path);
-    if (content) writeFileSync(target, content);
-    else if (existsSync(target)) unlinkSync(target);
+    const from = fileHash(target);
+    if (content) {
+      writeFileSync(target, content);
+      done.push({ path, action: "restored", from });
+    } else if (existsSync(target)) {
+      unlinkSync(target);
+      done.push({ path, action: "removed", from });
+    }
   }
+  return done;
+}
+
+/**
+ * Records the files a host put-back restored or removed during an attempt, so a file that
+ * vanishes from a run's root names its source in the journal (#2609: README.md disappeared from a
+ * worktree with no effect recorded, and nothing could tell what removed it). Nothing is recorded
+ * when nothing was put back.
+ */
+export function recordPutBack(
+  store: WorkflowStore,
+  runId: string,
+  attemptId: string,
+  source: string,
+  done: readonly PutBack[],
+): void {
+  if (!done.length) return;
+  store.transaction(() =>
+    store.artifact(
+      runId,
+      "diagnostic",
+      `attempts/${attemptId}/put-back-${newId()}.json`,
+      canonical({ attemptId, source, files: done }),
+    ),
+  );
 }
 
 /**

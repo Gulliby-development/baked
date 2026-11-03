@@ -1,5 +1,5 @@
 import { statSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { runSandbox, type SandboxRequest, SandboxUnavailableError } from "../security/sandbox.js";
 import { buildSafeEnv } from "../spawn.js";
 import { canonical, hashJson } from "../specs/hash.js";
@@ -14,10 +14,13 @@ import { withPerTestTimeout } from "../workflows/test-timeout.js";
 import { toolchainCommand } from "../workflows/toolchain.js";
 import type { Check } from "../workflows/types.js";
 import { type CommandTimeout, fileArgs, recordCommandTimeout } from "./command-timeouts.js";
+import { emptyScriptNote, emptyTestScript } from "./empty-test-script.js";
 import { environmentFault, environmentNote, unpreparedNote } from "./environment-faults.js";
 import { isFailedTestLine } from "./failed-test-line.js";
 import { MISSING_GATE_REPORT, readGateReport, renderGateReport } from "./gate-report.js";
+import { hostDocumentFailure, hostDocumentNote } from "./host-documents.js";
 import { testsRan } from "./output-counts.js";
+import { plainOutput, plainOutputEnv } from "./plain-output.js";
 import { changedPaths, sourceManifest } from "./snapshot.js";
 import { testReport } from "./test-reports.js";
 
@@ -50,9 +53,12 @@ export const executeCheckCommand = async (
     : result;
 };
 
-/** The environment every check and on-demand gate run gets: safe base plus the names it declares. */
+/**
+ * The environment every check and on-demand gate run gets: safe base, plain output
+ * (`plainOutputEnv`, #2615, #2631) and the names it declares.
+ */
 export function buildCheckEnv(check: Pick<Check, "envNames">): NodeJS.ProcessEnv {
-  const env: NodeJS.ProcessEnv = buildSafeEnv();
+  const env: NodeJS.ProcessEnv = plainOutputEnv(buildSafeEnv());
   for (const name of check.envNames)
     if (process.env[name] !== undefined) env[name] = process.env[name];
   // A build server a check leaves running keeps its working directory, and so a task worktree,
@@ -134,14 +140,19 @@ export function replayUnselectedTests(
 
 /**
  * The status of a check's finished command: its exit code, the files a listing check names, and
- * for a check that must run tests, whether any ran.
+ * for a check that must run tests, whether any ran. Given the directory the check ran in (`cwd`),
+ * a test check that runs one test script holding no code fails too (#2611).
  */
 export function exitStatus(
-  check: Pick<Check, "executable" | "args" | "requireTests">,
+  check: Pick<Check, "id" | "executable" | "args" | "requireTests">,
   exitCode: number,
   output: string,
+  cwd?: string,
 ): "passed" | "failed" {
-  return exitCode === 0 && !(listsFailures(check) && output.trim()) && !ranNoTests(check, output)
+  return exitCode === 0 &&
+    !(listsFailures(check) && output.trim()) &&
+    !ranNoTests(check, output) &&
+    !(cwd !== undefined && emptyTestScript(check, cwd))
     ? "passed"
     : "failed";
 }
@@ -183,9 +194,11 @@ const FAILED_TEST_LINES = 40;
  * stays in the check's evidence.
  */
 export function modelCheckOutput(
-  output: string,
+  raw: string,
   evidenceId?: string,
 ): { output: string; truncated?: true; outputChars?: number } {
+  // A tool that colours anyway costs the model no escape bytes (#2631).
+  const output = plainOutput(raw);
   if (output.length <= MODEL_OUTPUT_LIMIT) return { output };
   const middle = output.slice(OUTPUT_HEAD, output.length - OUTPUT_TAIL);
   const failed = [
@@ -306,8 +319,9 @@ export class CheckRunner {
     try {
       const executable = check.executable === "bun" ? process.execPath : check.executable;
       const limit = Math.min(check.timeoutMs, timeoutMs);
+      const cwd = check.cwd === "." ? root : workspacePath(root, check.cwd);
       const result = await executeCheckCommand(this.processes, executable, check.args, {
-        cwd: check.cwd === "." ? root : workspacePath(root, check.cwd),
+        cwd,
         env: buildCheckEnv(check),
         timeoutMs: limit,
         signal,
@@ -316,7 +330,7 @@ export class CheckRunner {
       const status =
         result.timedOut || result.cancelled || result.exitCode === null
           ? "inconclusive"
-          : exitStatus(check, result.exitCode, result.output);
+          : exitStatus(check, result.exitCode, result.output, cwd);
       // A baseline or poll that ran out of time names the command and its files (#2358).
       if (result.timedOut && !result.cancelled && !signal.aborted) {
         const timeout = recordCommandTimeout({
@@ -465,12 +479,25 @@ export class CheckRunner {
         summary: `${check.id} ran no test of the classes its files declare (${unselected.declared.join(", ")}) under ${unselected.command}: the host's selection selected none, and the check would fail as the host's, not the task's`,
         inputs: { ...unselected },
       });
-    const listed = result.exitCode === 0 && exitStatus(check, 0, result.output) === "failed";
+    const cwd = check.cwd === "." ? root : workspacePath(root, check.cwd);
+    // A test script that holds no code runs no test and prints nothing a counter reads (#2611).
+    const empty = result.exitCode === 0 && !vacuous ? emptyTestScript(check, cwd) : null;
+    const listed = result.exitCode === 0 && exitStatus(check, 0, result.output, cwd) === "failed";
+    // A formatter check that failed only on the documents the host publishes under `specs/`: the
+    // model reads why; the run's check decisions count it as passed (#2641).
+    const documents =
+      result.exitCode && !result.timedOut && !result.cancelled
+        ? hostDocumentFailure(check, result.output, cwd)
+        : null;
     const note = vacuous
       ? noTestsNote(check)
-      : listed
-        ? listedNote(check)
-        : passedOutputNote(result.output, result.exitCode);
+      : empty
+        ? emptyScriptNote(check, empty)
+        : listed
+          ? listedNote(check)
+          : documents
+            ? hostDocumentNote(check, documents)
+            : passedOutputNote(result.output, result.exitCode);
     if (note) result = { ...result, output: `${result.output}\n\n${note}` };
     const after = await sourceManifest(root, generated);
     const unstable = changedPaths(before, after).length > 0;
@@ -640,14 +667,15 @@ export class CheckRunner {
     // The edit tools saw the formatter time out on one of them: name it without a bisect (#2242).
     const { formatTimeoutsUnder } = await import("../tools/auto-format.js");
     const { runWorktreeDir } = await import("../workflows/worktree.js");
+    // The run's own directory, wherever `workflows.worktreeRoot` put it (#2461).
+    const recorded = this.store.state(runId).worktree?.path;
+    const runDir = recorded ? dirname(recorded) : runWorktreeDir(this.store.workspace, runId);
     const known = new Set([
       ...formatTimeoutsUnder(root).keys(),
       // A task edits in its own worktree, `.baked/worktrees/<run>/<task>/`.
-      ...[
-        ...formatTimeoutsUnder(
-          join(this.store.workspace, runWorktreeDir(this.store.workspace, runId)),
-        ).keys(),
-      ].map((path) => path.slice(path.indexOf("/") + 1)),
+      ...[...formatTimeoutsUnder(join(this.store.workspace, runDir)).keys()].map((path) =>
+        path.slice(path.indexOf("/") + 1),
+      ),
     ]);
     const hung = paths.find(
       (path) => known.has(path) && fileScopedFormat(check, dir, path.slice(prefix.length)),

@@ -119,6 +119,9 @@ const RowFramework = z.enum([
   "pest",
   "exunit",
   "dart",
+  "kotlin",
+  "scalatest",
+  "munit",
 ]);
 const RowPackage = z
   .string()
@@ -163,8 +166,8 @@ export const TaskSchema = z
           .object({
             framework: RowFramework,
             /**
-             * The Go package, Java package, C# namespace or PHP namespace (dots for backslashes) of
-             * the harness and the host's test.
+             * The Go package, Java or Kotlin package, Scala package, C# namespace or PHP namespace
+             * (dots for backslashes) of the harness and the host's test.
              */
             package: RowPackage.optional(),
             harness: RelativePath,
@@ -1721,6 +1724,14 @@ export const WorkflowConfigSchema = z
      */
     planChargeExpected: z.enum(PLAN_CHARGE_EXPECTED_MODES).optional(),
     /**
+     * The folder that holds new runs' worktrees, `<root>/<run's 8 hex digits>/main` (#2461):
+     * absolute, starting with `~`, or relative to the project. Unset, they live in the project's
+     * `.baked/worktrees`. A short folder such as `C:\.bk` keeps a task's checks under the path
+     * length a toolchain handles on Windows (`WORKTREE_PATH_LIMITS`). It must be on the project's
+     * drive; a run's worktree keeps the folder it was created in.
+     */
+    worktreeRoot: z.string().trim().min(1).max(240).optional(),
+    /**
      * Deadlines and stall limits (milliseconds): a tool call that never returns, a model attempt
      * with no progress, and how often a stalled run resumes by itself. Defaults in `stall.ts`.
      */
@@ -2009,6 +2020,18 @@ export const EventSchema = z.discriminatedUnion("type", [
           medianBytes: z.number().int().nonnegative(),
           firstAttempts: z.number().int().positive(),
           largest: z.object({ name: z.string(), bytes: z.number().int().nonnegative() }).strict(),
+          // What the bound on the evidence section cut (#2617, `boundEvidence`).
+          evidence: z
+            .object({
+              budget: z.number().int().nonnegative(),
+              keptChars: z.number().int(),
+              collapsed: z.number().int().nonnegative(),
+              summarized: z.number().int().nonnegative(),
+              cutChars: z.number().int().nonnegative(),
+              cut: z.array(z.string()),
+            })
+            .strict()
+            .optional(),
         })
         .strict(),
     })

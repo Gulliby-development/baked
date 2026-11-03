@@ -13,6 +13,7 @@
     "src/test/scala/RuntimeSpec.scala": "val dir = Files.createTempDirectory(\"rt\")\nval want = s\"bad: $dir\"\n"
   },
   "expected": {
+    "rowIndent": ["\"  row(1),\""],
     "languagePitfalls": ["Scala"],
     "generatedValues": ["src/test/scala/GenSpec.scala:1 repeat","src/test/scala/GenSpec.scala:2 interpolate"],
     "exampleBuild": null,
@@ -71,6 +72,7 @@
     "dependencyDirs": null,
     "dependencyPrepare": null,
     "worktreePathLimits": null,
+    "diagnosticFormats": ["/p/src/main/scala/Calc.scala: type mismatch;"],
     "testClasses": null,
     "testDeclarations": ["src/test/scala/SumSuite.scala: 2 tests, per class 2"],
     "rowFileShapes": null

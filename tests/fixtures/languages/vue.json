@@ -13,6 +13,7 @@
     "src/Runtime.vue": "<script setup>\nconst dir = mkdtempSync(join(tmpdir(), \"rt-\"));\nconst file = join(dir, \"a.txt\");\nconst want = `bad: ${file}`;\n</script>\n"
   },
   "expected": {
+    "rowIndent": null,
     "languagePitfalls": null,
     "generatedValues": ["src/Gen.vue:2 repeat"],
     "exampleBuild": null,
@@ -79,6 +80,7 @@
     ],
     "dependencyPrepare": null,
     "worktreePathLimits": null,
+    "diagnosticFormats": ["src/App.vue: error TS2322: Type 'string' is not assignable to type 'number'."],
     "testClasses": null,
     "testDeclarations": null,
     "rowFileShapes": null

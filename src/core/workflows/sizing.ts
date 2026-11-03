@@ -763,6 +763,23 @@ export interface SuppliedRows {
   chars: number;
   /** Those lines, trimmed, in the block's order: the text a row slice owns (#2466). */
   lines: string[];
+  /**
+   * The indentation the request writes its rows with, past the header's (#2618): the leading
+   * whitespace the row lines share, a tab or the smallest space run; absent when they have none.
+   * `place_rows` indents placed rows by it unless told otherwise.
+   */
+  indent?: string;
+}
+
+/** The whitespace every line of `rows` starts with past `header`'s: a tab, or the smallest space run. */
+function rowLayout(header: string, rows: readonly string[]): string | undefined {
+  const base = /^[ \t]*/.exec(header)?.[0] ?? "";
+  const leads = rows.map((line) => /^[ \t]*/.exec(line)?.[0] ?? "");
+  if (!leads.every((lead) => lead.startsWith(base) && lead.length > base.length)) return undefined;
+  const own = leads.map((lead) => lead.slice(base.length));
+  if (own.every((lead) => lead.startsWith("\t"))) return "\t";
+  const spaces = Math.min(...own.map((lead) => /^ */.exec(lead)?.[0].length ?? 0));
+  return spaces ? " ".repeat(spaces) : undefined;
 }
 
 /** A first line that says the block holds rows: `ProblemsTests in tests/p.test.ts (63 rows, ...)`. */
@@ -800,11 +817,13 @@ export function suppliedRows(request: string, paths: readonly string[]): Map<str
     const lines = block.lines.slice(first + 1).filter((line) => line.trim());
     if (!lines.length) continue;
     const before = out.get(path);
+    const indent = before ? before.indent : rowLayout(block.lines[first] ?? "", lines);
     out.set(path, {
       header: before?.header ?? header,
       rows: (before?.rows ?? 0) + lines.length,
       chars: (before?.chars ?? 0) + lines.reduce((sum, line) => sum + [...line].length, 0),
       lines: [...(before?.lines ?? []), ...lines.map((line) => line.trim())],
+      ...(indent ? { indent } : {}),
     });
   }
   return out;
@@ -1177,6 +1196,11 @@ export interface SizingReport {
     extendToTokens: number | null;
     warning: string;
   };
+  /**
+   * Tasks the host writes from their prescribed rows under `rowFileWrite: "on"` (#2633), priced at
+   * nothing and absent from `tasks`. Absent when there are none, and in reports before it.
+   */
+  hostRows?: string[];
 }
 
 /** Tokens the final review and convergence are priced at, on top of the tasks. */
@@ -1442,6 +1466,12 @@ export function sizePlan(input: {
    * and with `sizing.rowVolume` the rows it prescribes for test files (`suppliedRows`, #2455).
    */
   request?: string | null;
+  /**
+   * Tasks the host writes from their prescribed rows with no session under `rowFileWrite: "on"`
+   * (`hostRowFileTasks`, #2633): priced at nothing, as a task whose writes carry their content, so
+   * neither their rows' price nor a row split reaches the plan's total or its verdict.
+   */
+  hostRows?: readonly string[];
 }): SizingReport {
   const rates = perFileRates(input.samples, input.model ?? null);
   const tests = testTaskRates(input.samples, input.model ?? null);
@@ -1460,9 +1490,10 @@ export function sizePlan(input: {
     ? suppliedRows(input.request, input.graph.tasks.flatMap(writtenFiles))
     : null;
   const rowMode = input.policy.sizing?.rowVolume ? "on" : "shadow";
+  const hostRows = new Set(input.hostRows ?? []);
   const tasks = input.graph.tasks
     .filter((task) => !input.taskIds || input.taskIds.has(task.id))
-    .filter((task) => writtenFiles(task).length > 0)
+    .filter((task) => writtenFiles(task).length > 0 && !hostRows.has(task.id))
     .map((task): TaskSize => {
       const kind = taskKind(task);
       const cases =
@@ -1531,6 +1562,10 @@ export function sizePlan(input: {
         ...(rowsTask ? { rowsTask } : {}),
       };
     });
+  // The host-written row files left unpriced, recorded so the report says why (#2633).
+  const hosted = input.graph.tasks
+    .filter((task) => hostRows.has(task.id) && (!input.taskIds || input.taskIds.has(task.id)))
+    .map((task) => task.id);
   const verification = verificationTokens();
   const taskTokens = taskTotal(tasks.map((task) => task.estimate));
   const priced = taskTokens.price + verification;
@@ -1646,6 +1681,7 @@ export function sizePlan(input: {
     decision,
     reasons,
     ...(overCeiling ? { overCeiling } : {}),
+    ...(hosted.length ? { hostRows: hosted } : {}),
   };
 }
 
@@ -1797,6 +1833,13 @@ export const ROWS_TASK_NOTE =
   "A rows task (rows and rowTest) is never sliced and stays whole whatever its price; its continuations finish it. If sizing names one as too large, keep only its rows criteria in it and move its other criteria into a test task of their own, writing another test file, that depends on it.";
 
 /**
+ * How sizing treats a test file the host writes from its prescribed rows, told to the planner under
+ * `rowFileWrite: "on"` (#2633), as the note says a task whose writes carry their content is free.
+ */
+export const ROW_FILE_NOTE =
+  "A test task whose only files are test files whose rows the request prescribes in a fenced block headed by the file's path is written by the host from those rows, with no session, and costs nothing when the host writes rows of its language.";
+
+/**
  * How sizing treats a test file whose rows the request prescribes, told to the planner under
  * `sizing.rowVolume` before it plans and in a split note (#2455), so it plans the file as one task
  * the host can slice by rows.
@@ -1818,7 +1861,7 @@ export function plannerSizing(
   const k = (kind: FileKind) => `${Math.round(highest(rates, kind) / 1000)}k`;
   return {
     maxCodeFilesPerTask,
-    note: `Give every task that writes code the policy's typecheck check, so its errors show in that task. Put tests in tasks of their own. A code file costs about ${k("code")} tokens, a documentation file about ${k("docs")}, a project manifest or solution file about ${k("manifest")}. ${tests.all && tests.hasCases ? `Finished test tasks cost a median ${Math.round(tests.all.perTask.low / 1000)}k and 90th percentile ${Math.round(tests.all.perTask.high / 1000)}k tokens per task; case counts select broad buckets, not a per-case historical rate.` : `Without history, allow ${DEFAULT_PER_CASE.low}-${DEFAULT_PER_CASE.high} tokens per literal case, at least the file allowance.`} Keep each code task to at most ${maxCodeFilesPerTask} files. A task whose writes all carry their content is written by the host and costs nothing, whatever its file count. Give independent tasks disjoint writes and no dependency between them; a test task depends on the code tasks whose criteria it covers. ${limit?.cases ? `Keep a test task whole up to ${CAPACITY_PROBE * limit.cases} literal cases (${CAPACITY_PROBE} times ${limit.cases}, the largest finished task handled): slices of one file cost more in total than the whole file. Split it only above that; the host itself splits a test task without rows whose price is above one attempt.` : "Keep a file with five or fewer literal cases in one task. Without observed case capacity, split a larger test file only when its default expected price exceeds the cap."} Split into sequential slices of whole criteria: create it first, then modify it, each slice depending on the previous. Preserve earlier slices and test only the assigned criteria. If one criterion alone exceeds the capacity, write and check its cases in batches inside the same attempt.${rowsAsDataOn(policy) ? ` ${ROWS_TASK_NOTE}` : ""}${policy.sizing?.rowVolume ? ` ${ROW_VOLUME_NOTE}` : ""}`,
+    note: `Give every task that writes code the policy's typecheck check, so its errors show in that task. Put tests in tasks of their own. A code file costs about ${k("code")} tokens, a documentation file about ${k("docs")}, a project manifest or solution file about ${k("manifest")}. ${tests.all && tests.hasCases ? `Finished test tasks cost a median ${Math.round(tests.all.perTask.low / 1000)}k and 90th percentile ${Math.round(tests.all.perTask.high / 1000)}k tokens per task; case counts select broad buckets, not a per-case historical rate.` : `Without history, allow ${DEFAULT_PER_CASE.low}-${DEFAULT_PER_CASE.high} tokens per literal case, at least the file allowance.`} Keep each code task to at most ${maxCodeFilesPerTask} files. A task whose writes all carry their content is written by the host and costs nothing, whatever its file count. Give independent tasks disjoint writes and no dependency between them; a test task depends on the code tasks whose criteria it covers. ${limit?.cases ? `Keep a test task whole up to ${CAPACITY_PROBE * limit.cases} literal cases (${CAPACITY_PROBE} times ${limit.cases}, the largest finished task handled): slices of one file cost more in total than the whole file. Split it only above that; the host itself splits a test task without rows whose price is above one attempt.` : "Keep a file with five or fewer literal cases in one task. Without observed case capacity, split a larger test file only when its default expected price exceeds the cap."} Split into sequential slices of whole criteria: create it first, then modify it, each slice depending on the previous. Preserve earlier slices and test only the assigned criteria. If one criterion alone exceeds the capacity, write and check its cases in batches inside the same attempt.${rowsAsDataOn(policy) ? ` ${ROWS_TASK_NOTE}` : ""}${policy.sizing?.rowVolume ? ` ${ROW_VOLUME_NOTE}` : ""}${policy.rowFileWrite === "on" ? ` ${ROW_FILE_NOTE}` : ""}`,
   };
 }
 

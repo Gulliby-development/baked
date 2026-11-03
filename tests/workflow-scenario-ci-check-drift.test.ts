@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { ciCheckDrift, ciCheckDriftSummary, fileGateCommands, type ScriptTables, scriptTables, toolCommand } from "../src/core/workflows/ci-check-drift.js";
+import { ciCheckDrift, ciCheckDriftSummary, fileGateCommands, looksLikeCommand, type ScriptTables, scriptTables, toolCommand } from "../src/core/workflows/ci-check-drift.js";
 import { PSSA_LINT } from "../src/core/workflows/gates.js";
 import { PESTER_RUN } from "../src/core/workflows/pester.js";
 import type { RunPolicy, TaskGraph } from "../src/core/workflows/schemas.js";
@@ -448,5 +448,69 @@ describe("ciCheckDrift: an interpreter's inline code and the project's own progr
     const own = check("lint-script", "python scripts/lint.py --strict");
     expect(ciCheckDrift([{ path: CI, text: workflow("python scripts/lint.py") }], [own])).toEqual([]);
     expect(ciCheckDrift([{ path: CI, text: workflow("python scripts/lint.py --fix-all") }], [own]).map((d) => [d.check?.id, d.missing])).toEqual([["lint-script", ["--fix-all"]]]);
+  });
+});
+
+// Scenario of bench round 85 shu (shardplan, Java, run ae303a00, #2620): 25 drift records, 22 false.
+// The README's untagged blocks held the example timings file, the program's output and its usage
+// text, and every line was read as a command whose first word was the tool.
+describe("ciCheckDrift: README sample data and program output are no commands (#2620)", () => {
+  const fence = (lang: string, ...lines: string[]) => `\`\`\`${lang}\n${lines.join("\n")}\n\`\`\`\n`;
+  const README = [
+    "# shardplan",
+    fence("", "42.5 tests/test_db.py", "3.2 tests/test_cli.py", "18 tests/test_api.py", "27.250 tests/test_parser.py", "0.8 tests/test_utils.py", "9.1 tests/test_auth.py"),
+    fence("", "42.500 tests/test_db.py", "shardplan: tests/test_db.py takes 42.500 s, longer than the target 30.000 s"),
+    fence("", "Usage:", "  -t, --target 1500ms   target shard time", "  -n 2                  shards", "  0.5s"),
+    fence("", "tests/test_db.py"),
+  ].join("\n");
+
+  test("the R85 blocks give no command, and so no drift record", () => {
+    expect(fileGateCommands("README.md", README)).toEqual([]);
+    expect(ciCheckDrift([{ path: "README.md", text: README }], [check("verify", "mvn -B -q verify")])).toEqual([]);
+  });
+
+  test("a console block's commands are its prompted lines; its output lines are not", () => {
+    const readme = fence("console", "$ gradle test", "BUILD SUCCESSFUL in 3s", "4 actionable tasks: 4 executed", "> gradle check");
+    expect(fileGateCommands("README.md", readme)).toEqual(["gradle test", "gradle check"]);
+    // An untagged block that prompts its commands reads the same way.
+    expect(fileGateCommands("README.md", fence("", "$ cargo test", "test result: ok. 4 passed", "PS> dotnet test"))).toEqual(["cargo test", "dotnet test"]);
+  });
+
+  test("an untagged block of commands without a prompt is still read, in every language", () => {
+    const commands = ["cargo test", "go test ./...", "pytest", "mvn verify", "dotnet test", "./gradlew build", "./scripts/check.sh --strict", "bun run test"];
+    expect(fileGateCommands("README.md", fence("", ...commands))).toEqual(commands);
+    expect(looksLikeCommand("src/main.rs --flag")).toBe(false);
+  });
+});
+
+
+// Bench round 86 binlayer (#2634): the README documented `python -m sqlfluff lint sql` and the
+// check ran `python -m sqlfluff lint .`; `sql` read as a word the check lacks, though the check
+// lints `sql` and everything else. A README path inside a check's broader path is no drift.
+describe("ciCheckDrift: a README path inside the check's broader path is no drift (#2634)", () => {
+  const ROWS: [string, string][] = [
+    ["python -m sqlfluff lint sql", "python -m sqlfluff lint ."],
+    ["python -m ruff check src", "python -m ruff check ."],
+    ["ruff check src", "ruff check ."],
+    ["ruff check src tests", "ruff check ."],
+    ["python -m pytest tests", "python -m pytest -q"],
+    ["pytest tests/unit", "pytest"],
+    ["eslint src", "eslint ."],
+    ["gofmt -l cmd", "gofmt -l ."],
+    ["go vet ./cmd/...", "go vet ./..."],
+    ["ruff check src/app.py", "ruff check src"],
+    ["sqlfluff lint .", "sqlfluff lint ."],
+  ];
+  test.each(ROWS)("README `%s` against the check `%s` records nothing", (command, gate) => {
+    expect(ciCheckDrift([{ path: "README.md", text: readme(command) }], [check("gate", gate)])).toEqual([]);
+  });
+
+  test("a path outside the check's path, above its directory, or a flag the check lacks still records", () => {
+    const missing = (command: string, gate: string) => ciCheckDrift([{ path: "README.md", text: readme(command) }], [check("gate", gate)]).map((d) => d.missing);
+    expect(missing("ruff check lib", "ruff check src")).toEqual([["lib"]]);
+    expect(missing("ruff check ../shared", "ruff check .")).toEqual([["../shared"]]);
+    expect(missing("ruff check --select E src", "ruff check .")).toEqual([["--select", "E"]]);
+    expect(missing("sqlfluff lint --dialect postgres sql", "sqlfluff lint .")).toEqual([["--dialect", "postgres"]]);
+    expect(missing("go vet ./cmd/...", "go vet ./internal/...")).toEqual([["./cmd/..."]]);
   });
 });

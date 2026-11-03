@@ -1,6 +1,7 @@
 import { type LanguageRecord, none } from "../intelligence/language-records.js";
 import { isTestFile } from "../intelligence/language-traits.js";
 import type { Check } from "../workflows/types.js";
+import { plainOutput } from "./plain-output.js";
 import { normalizeVolatile } from "./volatile.js";
 
 /**
@@ -45,7 +46,8 @@ const lines = (output: string, pattern: RegExp): number =>
  * The number of diagnostics a linter or type checker reported, by its summary line: errors and
  * warnings, with the errors among them where the tool says.
  */
-export function diagnosticCount(output: string): OutputCount | null {
+export function diagnosticCount(raw: string): OutputCount | null {
+  const output = plainOutput(raw);
   // Biome: "Checked 12 files in 3ms. No fixes applied." then "Found 2 warnings." / "Found 3 infos."
   // Infos are hints (`useTemplate`, an unsafe-fix suggestion): Biome itself exits 0 on them.
   if (/\bChecked \d+ files? in\b/.test(output)) {
@@ -80,10 +82,7 @@ export function diagnosticCount(output: string): OutputCount | null {
   if (psalm) return { tool: "psalm", count: Number(psalm[1]), errors: Number(psalm[1]) };
   if (/^No errors found!/m.test(output)) return { tool: "psalm", count: 0, errors: 0 };
   // luacheck (#1495): "Total: 2 warnings / 1 error in 3 files", in colour even without a terminal.
-  const luacheck = output
-    // biome-ignore lint/suspicious/noControlCharactersInRegex: ANSI colour codes
-    .replace(/\u001b\[[0-9;]*m/g, "")
-    .match(/^Total: (\d+) warnings? \/ (\d+) errors? in \d+ files?/m);
+  const luacheck = output.match(/^Total: (\d+) warnings? \/ (\d+) errors? in \d+ files?/m);
   if (luacheck)
     return {
       tool: "luacheck",
@@ -496,7 +495,7 @@ const TEST_COUNTERS: readonly {
       if (projects.length) return projects.reduce((n, t) => n + t.total, 0);
       const suites = scalatest(o, ([succeeded = 0, failed = 0]) => succeeded + failed);
       if (suites !== null) return suites;
-      return SBT_SUCCESS.test(o) && !SBT_SUITE.test(withoutAnsi(o)) ? 0 : null;
+      return SBT_SUCCESS.test(o) && !SBT_SUITE.test(plainOutput(o)) ? 0 : null;
     },
   },
   {
@@ -620,7 +619,7 @@ const EXUNIT_RESULT =
  * skipped tests. Null when the output holds no ExUnit summary.
  */
 function exunitCount(output: string, ran: boolean): number | null {
-  const o = withoutAnsi(output);
+  const o = plainOutput(output);
   const parts = o.split(new RegExp(EXUNIT_FINISHED.source, "m")).slice(1);
   if (!parts.length) return null;
   let total: number | null = null;
@@ -697,7 +696,6 @@ export const TEST_RUNNERS: LanguageRecord<readonly TestRunner[]> = {
 };
 
 // biome-ignore lint/suspicious/noControlCharactersInRegex: munit colours its output even without a terminal
-const withoutAnsi = (o: string): string => o.replace(/\u001b\[[0-9;]*m/g, "");
 
 const captured = (output: string, pattern: RegExp): string[] => [
   ...new Set([...output.matchAll(pattern)].map((m) => (m[1] ?? "").trim()).filter(Boolean)),
@@ -765,7 +763,7 @@ export const FAILED_TESTS: Record<TestRunner, (output: string) => string[]> = {
   // munit "==> X CalcSuite.fails on purpose  0.038s munit.ComparisonFailException: ...", and
   // ScalaTest "[info] - fails on purpose *** FAILED ***" under its "[info] CalcSpec:" header
   sbt: (o) => {
-    const text = withoutAnsi(o);
+    const text = plainOutput(o);
     const munit = captured(text, /^==> X (\S.*?)\s{2,}[\d.]+s\b/gm);
     let suite = "";
     const scalatest: string[] = [];
@@ -801,7 +799,7 @@ export const FAILED_TESTS: Record<TestRunner, (output: string) => string[]> = {
   // callback, all tests have been invalidated", a module whose tests did not run.
   exunit: (o) =>
     captured(
-      withoutAnsi(o),
+      plainOutput(o),
       /^\s*\d+\) ((?:test|doctest|property|feature) .+ \([A-Z][\w.]*\))\s*$/gm,
     ),
   // "not ok 3 - keeps blank lines", not a TODO or skipped test
@@ -884,7 +882,7 @@ export const BUILD_FAILURES: Record<TestRunner, RegExp> = {
 // Compilers color their diagnostics even when not on a terminal (swiftc 6.4 prints "error:" in
 // bold red, #1492), so the build-failure lines are read without ANSI colors.
 const buildLines = (output: string): string[] =>
-  withoutAnsi(output)
+  plainOutput(output)
     .split(/\r?\n/)
     .map((line) => line.trimEnd());
 
@@ -915,7 +913,8 @@ export function buildRunner(output: string): TestRunner | null {
  * prints `--- FAIL` lines and no count). Null when neither is in the output, so a caller cannot
  * read an empty list as "none failed".
  */
-export function failedTests(output: string): { tool: TestRunner; names: string[] } | null {
+export function failedTests(raw: string): { tool: TestRunner; names: string[] } | null {
+  const output = plainOutput(raw);
   const counted = testCount(output)?.tool as TestRunner | undefined;
   if (counted) return { tool: counted, names: FAILED_TESTS[counted](output) };
   for (const { tool } of TEST_COUNTERS) {
@@ -926,7 +925,8 @@ export function failedTests(output: string): { tool: TestRunner; names: string[]
 }
 
 /** The number of tests a runner ran, by its summary line. */
-export function testCount(output: string): OutputCount | null {
+export function testCount(raw: string): OutputCount | null {
+  const output = plainOutput(raw);
   for (const { tool, count } of TEST_COUNTERS) {
     const found = count(output);
     if (found !== null) return { tool, count: found };
@@ -941,7 +941,8 @@ export function testCount(output: string): OutputCount | null {
  * `#![cfg(feature = ...)]` file) prints "0 passed" with exit 0 (tonemath-update, bench round 56,
  * #1832).
  */
-export function testsRan(output: string): OutputCount | null {
+export function testsRan(raw: string): OutputCount | null {
+  const output = plainOutput(raw);
   for (const { tool, count, ran } of TEST_COUNTERS) {
     const found = ran(output);
     if (found !== null) return { tool, count: found };
@@ -995,7 +996,8 @@ const EMPTY_RUN_LINES: readonly { runner: string; line: RegExp; held?: RegExp }[
  * opposed to tests that did not build or load (`buildFailure`) or a narrowed run that selected
  * none (XCTest's "Selected tests", #2378).
  */
-export function emptyTestRun(output: string): boolean {
+export function emptyTestRun(raw: string): boolean {
+  const output = plainOutput(raw);
   if (buildFailure(output)) return false;
   const counted = testCount(output);
   if (counted && counted.count > 0) return false;
@@ -1256,16 +1258,12 @@ export function shapedFailureSignature(output: string, root: string): string {
 /** The output without colours and with every worktree path of the project as `<root>`. */
 function withoutWorkspace(output: string, root: string): string {
   const project = root.replace(/[\\/]\.baked[\\/]worktrees[\\/].*$/, "");
-  return (
-    output
-      // biome-ignore lint/suspicious/noControlCharactersInRegex: ANSI colour codes
-      .replace(/\u001b\[[0-9;]*m/g, "")
-      .replace(WORKTREE_PATH, "<root>")
-      .split(root)
-      .join("<root>")
-      .split(project)
-      .join("<root>")
-  );
+  return plainOutput(output)
+    .replace(WORKTREE_PATH, "<root>")
+    .split(root)
+    .join("<root>")
+    .split(project)
+    .join("<root>");
 }
 
 /** The signature's counts that grow as tasks add files and tests, left out; blank lines dropped. */

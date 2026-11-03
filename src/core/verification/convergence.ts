@@ -49,6 +49,7 @@ import { isFailedTestLine } from "./failed-test-line.js";
 import { checkSites, keptSites, recordSites, type SiteCheck, sitesStep } from "./family-sites.js";
 import { noteSiblingFindings } from "./initiative-ownership.js";
 import { emptyTestRun, growingCounts } from "./output-counts.js";
+import { plainOutput } from "./plain-output.js";
 import { reproCannotSeeCorrection } from "./repro.js";
 import { normalizeVolatile } from "./volatile.js";
 
@@ -364,7 +365,8 @@ export function failureSignature(output: string): string {
  * not one: `testQuick` (sbt 2's `test`) skips the tests its cache has seen pass, so the build may
  * hold tests; `testsRan` still reads its "Passed: Total 0" as none run (#2440).
  */
-export function noTestsCollected(output: string): boolean {
+export function noTestsCollected(raw: string): boolean {
+  const output = plainOutput(raw);
   return (
     emptyTestRun(output) ||
     /\bno tests ran\b|\bno tests were found!!!|^\[==========\] 0 tests from 0 test suites ran\.|\bno tests executed!|\bno test files found matching lua pattern\b|^1\.\.0(?:[ \t]+#.*)?$|\bcollected 0 items\b|\bno tests? (?:files? )?found\b|\bno test files\b|\bno files were found in testpaths\b|\b0 test files matching\b|\bdid not discover any tests to execute\b|\bno tests to run\b(?! for .*\btestQuick\b)|\bdid not match any directory\/file\b|\btest directory "?test"? not found\b|\bno examples found\b|\ball examples were filtered out\b|^0 runs, 0 assertions\b|\bthe default "test\/" directory doesn't exist\b|^Result: NOTESTS\b/im.test(

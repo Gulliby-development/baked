@@ -1799,7 +1799,12 @@ export async function executeGate(
               : "error"
             : result.exitCode === null
               ? "failed"
-              : exitStatus(parsed, result.exitCode, result.output),
+              : exitStatus(
+                  parsed,
+                  result.exitCode,
+                  result.output,
+                  parsed.cwd === "." ? workspace : workspacePath(workspace, parsed.cwd),
+                ),
       exitCode: result.exitCode,
       durationMs: result.durationMs,
       outputTail: outputTail(output),

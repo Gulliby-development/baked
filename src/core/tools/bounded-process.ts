@@ -1,4 +1,5 @@
 import { bunShellArgs, IS_WIN, killTree } from "../platform/index.js";
+import { plainOutputEnv } from "../verification/plain-output.js";
 
 export interface BoundedResult {
   exitCode: number | null;
@@ -30,7 +31,7 @@ export async function runBoundedShell(
     stderr: "pipe",
     // A process group of its own, so the group kill reaches the wrapper's children.
     ...(IS_WIN ? {} : { detached: true }),
-    env: { ...(options.env ?? process.env), FORCE_COLOR: "0", NO_COLOR: "1" },
+    env: plainOutputEnv({ ...(options.env ?? process.env) }),
   });
   const collected = Promise.all([
     new Response(proc.stdout).text(),

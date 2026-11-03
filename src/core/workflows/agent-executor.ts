@@ -48,6 +48,7 @@ import {
   PLACE_ROWS_DIR,
   PLACE_ROWS_KIND,
   placeRowForms,
+  placeRowIndents,
   placeRows,
   placeRowsDescription,
   placeRowsInput,
@@ -56,13 +57,7 @@ import {
 } from "../tools/place-rows.js";
 import { contentHash, deriveTool, withoutAstEditHint } from "../tools/tool-utils.js";
 import { buildCheckEnv, CheckRunner, modelCheckOutput } from "../verification/check-runner.js";
-import {
-  PROBE_TRIES,
-  probeTool,
-  reproExecutables,
-  runProbe,
-  writesDocumentation,
-} from "../verification/repro.js";
+import { PROBE_TRIES, probeTool, reproExecutables, runProbe } from "../verification/repro.js";
 import { changedPaths, sourceManifest } from "../verification/snapshot.js";
 import { type ReplayResult, replayProblems } from "./acceptance-rows-replay.js";
 import { affectedTestsFor, taskCaseText, writtenTestsCheck } from "./affected-tests.js";
@@ -88,8 +83,9 @@ import { fileHash, rootField } from "./effects.js";
 import { WorkflowFault } from "./errors.js";
 import { addsDoubledEscapes, escapeHintFor } from "./escape-hint.js";
 import { executionClock } from "./execution-clock.js";
+import { fixerPaths } from "./fixer-languages.js";
 import { fixerFailed, runFixer } from "./fixer-run.js";
-import { keepOutside, restoreOutside } from "./fixer-scope.js";
+import { keepOutside, recordPutBack, restoreOutside } from "./fixer-scope.js";
 import { advertisedSchema, withHostConstants } from "./host-constants.js";
 import {
   accountIdentityMessage,
@@ -109,7 +105,7 @@ import {
 } from "./model-recording.js";
 import { ProcessScope } from "./process-scope.js";
 import { EDIT_TOOLS } from "./progress-watch.js";
-import { largePrompt, promptSections } from "./prompt-sections.js";
+import { evidenceCut, largePrompt, promptSections } from "./prompt-sections.js";
 import { isTargetedRead, outlineLargeReads } from "./read-outline.js";
 import { settleInterruptedEdits } from "./recovery.js";
 import { recoveryAdvice } from "./remedies.js";
@@ -144,9 +140,9 @@ import {
   touchProgress,
 } from "./stall.js";
 import {
-  ALL_TOKENS_FACTOR,
   AttemptStepController,
   type AttemptUsageRecord,
+  allTokensCapFor,
   DEFAULT_MAX_ATTEMPT_TOKENS,
   KEEP_RECENT_TOOL_MESSAGES,
   MIN_ATTEMPT_STEPS,
@@ -158,6 +154,7 @@ import {
 import { stopFault } from "./stop-reasons.js";
 import type { EffectRow, WorkflowStore } from "./store.js";
 import { failureOwnerNote } from "./task-graph.js";
+import { toolsOfferedTo } from "./task-tools.js";
 import { recordToolInputSignal } from "./tool-input-health.js";
 import { pureWorkflowTools, WorkflowToolPolicy } from "./tool-policy.js";
 import type { AgentExecutor, ExecutionRequest, ExecutionResponse, Task } from "./types.js";
@@ -935,7 +932,7 @@ export class NativeAgentExecutor implements AgentExecutor {
         request.profile.role === "implementer" &&
         request.profile.allowedTools.includes("run_probe") &&
         request.task &&
-        (request.task.origin !== "planned" || writesDocumentation(request.task.writes)) &&
+        toolsOfferedTo(request.task).has("run_probe") &&
         probeable.length > 0
       ) {
         let probes = 0;
@@ -1075,12 +1072,16 @@ export class NativeAgentExecutor implements AgentExecutor {
             const codePaths = writtenCodePaths(task).filter(exists);
             const generated = generatedPaths(policy);
             const before = await sourceManifest(root, generated, request.signal);
-            const kept = keepOutside(root, before, new Set(paths));
+            // Every file the task writes is its own, also one that does not exist yet: the
+            // task's parallel edit may create it while the fixer runs, and a put-back would
+            // remove it as a file the fixer created (#2609).
+            const own = new Set(task.writes.map((w) => w.path));
+            const kept = keepOutside(root, before, own);
             const scope = new ProcessScope();
             // Unsignalled, so the put-back also runs after the call was aborted.
             const changedOutside = async () =>
               changedPaths(before, await sourceManifest(root, generated)).filter(
-                (p) => !paths.includes(p),
+                (p) => !own.has(p),
               );
             let reverted: string[] = [];
             try {
@@ -1119,7 +1120,8 @@ export class NativeAgentExecutor implements AgentExecutor {
               try {
                 for (const [tier, fix] of tiers.entries()) {
                   if (isWholeUnitFixer(fix)) {
-                    const code = fixerTierPaths(check, tier, codePaths);
+                    // Only the code files of the languages the fixer handles (#2632).
+                    const code = fixerPaths(fix, fixerTierPaths(check, tier, codePaths));
                     if (!code.length) continue;
                     await fixOnce(
                       wholeUnitFixerCommand(
@@ -1131,14 +1133,20 @@ export class NativeAgentExecutor implements AgentExecutor {
                     continue;
                   }
                   // The fixer runs in the check's cwd, so it names the file from there.
-                  for (const path of fixerTierPaths(check, tier, paths))
+                  for (const path of fixerPaths(fix, fixerTierPaths(check, tier, paths)))
                     await fixOnce(fixerCommand(fix, cwdPath(check, path)), [path]);
                 }
               } finally {
                 // Also when a run throws: a whole-crate formatter may already have rewritten
                 // sibling files (bench round 13, mdrefs T010: five files left reformatted).
                 reverted = await changedOutside();
-                restoreOutside(root, kept, reverted);
+                recordPutBack(
+                  this.store,
+                  request.runId,
+                  request.attemptId,
+                  `apply_fix ${check.id}`,
+                  restoreOutside(root, kept, reverted),
+                );
               }
               const outside = await changedOutside();
               if (outside.length)
@@ -1235,6 +1243,15 @@ export class NativeAgentExecutor implements AgentExecutor {
           : new Map<string, readonly string[]>();
       if (placeTask && placeTargets.size) {
         const on = policy.rowFileWrite === "on";
+        // The indentation the request writes its rows with, the default of a placed row (#2618).
+        const placeIndents = (() => {
+          try {
+            const state = this.store.state(request.runId);
+            return placeRowIndents(state.requestText || state.prompt, placeTask);
+          } catch {
+            return new Map<string, string>();
+          }
+        })();
         const recordPath = `${PLACE_ROWS_DIR}${placeTask.id}.json`;
         try {
           if (!this.store.latestArtifact(request.runId, recordPath))
@@ -1269,11 +1286,11 @@ export class NativeAgentExecutor implements AgentExecutor {
                   }
                 };
                 // A refused call writes nothing and leaves no edit in the journal.
-                const refused = placeRows(asked, placeTargets, current());
+                const refused = placeRows(asked, placeTargets, current(), placeIndents);
                 if ("refusal" in refused) return { success: false, output: refused.refusal };
                 await noteSyntaxBaseline("edit_file", { path });
                 const result = await hostEdit(path, async () => {
-                  const planned = placeRows(asked, placeTargets, current());
+                  const planned = placeRows(asked, placeTargets, current(), placeIndents);
                   if ("refusal" in planned) return { success: false, output: planned.refusal };
                   writeFileSync(absolute, planned.content);
                   const [from, to] = planned.lines;
@@ -1281,7 +1298,7 @@ export class NativeAgentExecutor implements AgentExecutor {
                   const last = planned.placed.at(-1);
                   return {
                     success: true,
-                    output: `Placed ${planned.placed.length === 1 ? `row ${first}` : `rows ${first} to ${last}`} of the request's rows for ${path} at lines ${from} to ${to}, as the request writes them.`,
+                    output: `${planned.reindented ? "Re-indented" : "Placed"} ${planned.placed.length === 1 ? `row ${first}` : `rows ${first} to ${last}`} of the request's rows for ${path} at lines ${from} to ${to}, as the request writes them. Line ${from} now reads ${JSON.stringify(planned.first)}; if its indentation does not fit the file, call place_rows with reindent: true and the indent.`,
                   };
                 });
                 return withSyntaxNote(result, async () => {
@@ -1619,8 +1636,13 @@ export class NativeAgentExecutor implements AgentExecutor {
       const model = this.attemptModel(request, policy, watch);
       const effort = sentEffort(provider.providerOptions);
       let promptNoticed = false;
-      const writeUsage = (usage: AttemptUsageRecord) =>
+      const writeUsage = (written: AttemptUsageRecord) =>
         this.store.transaction(() => {
+          // What the bound on the evidence section did travels with the prompt's sizes (#2617).
+          const usage =
+            written.prompt && request.evidenceBound
+              ? { ...written, prompt: { ...written.prompt, evidence: request.evidenceBound } }
+              : written;
           // A task attempt whose prompt is far larger than the run's first attempts names the
           // section that holds the bytes (#2597); recording only, nothing else changes.
           let large: ReturnType<typeof largePrompt> = null;
@@ -1634,7 +1656,12 @@ export class NativeAgentExecutor implements AgentExecutor {
             promptNoticed = true;
             this.store.emit(request.runId, {
               type: "attempt.large_prompt",
-              payload: { attemptId: request.attemptId, taskId: request.task?.id ?? null, ...large },
+              payload: {
+                attemptId: request.attemptId,
+                taskId: request.task?.id ?? null,
+                ...large,
+                ...(request.evidenceBound ? { evidence: evidenceCut(request.evidenceBound) } : {}),
+              },
             });
           }
           this.store.artifact(
@@ -2327,7 +2354,7 @@ export const attemptCapFault = (
   cap: number,
   totals: { totalTokens: number; allTokensCap: number; ceilingTokens?: number } = {
     totalTokens: tokens,
-    allTokensCap: cap * ALL_TOKENS_FACTOR,
+    allTokensCap: allTokensCapFor(cap),
   },
 ): WorkflowFault => {
   const capKind =

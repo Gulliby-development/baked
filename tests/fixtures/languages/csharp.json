@@ -15,6 +15,7 @@
     "tests/App.Tests/RuntimeTests.cs": "var dir = Path.GetTempPath();\nvar want = $\"bad: {dir}\";\n"
   },
   "expected": {
+    "rowIndent": ["\"    row(1),\""],
     "languagePitfalls": ["C# and .NET"],
     "generatedValues": ["tests/App.Tests/GenTests.cs:1 repeat","tests/App.Tests/GenTests.cs:2 interpolate"],
     "exampleBuild": ["dotnet run --no-build; link bin, obj"],
@@ -89,6 +90,7 @@
     "dependencyDirs": null,
     "dependencyPrepare": null,
     "worktreePathLimits": null,
+    "diagnosticFormats": ["src/Calc.cs: error CS0029: Cannot implicitly convert type 'string' to 'int' [/p/Calc.csproj]"],
     "testClasses": [
       "Maskback.Tests/UnitTest1.cs: Maskback.Tests.FailureExceptionTests",
       "src/App.Tests/Checks.cs: by its name",

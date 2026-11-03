@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { type InitiativePlan, planStructureProblems, validateInitiativePlan } from "../src/core/workflows/initiatives/plan.js";
-import { amendmentAnswer, amendmentLines, conditionalContractProblems, upstreamFiles, upstreamSymbolGaps } from "../src/core/workflows/initiatives/upstream-symbols.js";
+import { amendmentAnswer, amendmentLines, conditionalContractProblems, plannedFiles, upstreamFiles, upstreamSymbolGaps } from "../src/core/workflows/initiatives/upstream-symbols.js";
 import type { Spec } from "../src/core/workflows/schemas.js";
 
 // Bench round 68, ewvet (#2135): reader's contract said "If encoding needs auxiliary syntax
@@ -255,4 +255,79 @@ describe("a skeleton owner's stubs are not upstream code (#2192)", () => {
     ]);
     expect(upstreamSymbolGaps(spec("Scanner calls Reader.Read once per file."), files)).toEqual([]);
   });
+});
+
+// Bench round 85, tbl (Elixir, #2619): each release's spec named the test modules it writes
+// (`Tokbill.GroupsTest`) and the host-written test support module they use (`Tokbill.RowCase`,
+// `test/support/row_case.ex`). Neither is a member of the root module `lib/tokbill.ex`, and all 3
+// `upstream_symbol` would-stops of the round were false.
+describe("another file's module is not a member of the root module (#2619)", () => {
+  const ROOT = "defmodule Tokbill do\n  @moduledoc \"Token bills.\"\n  def main(args), do: Tokbill.CLI.main(args)\nend\n";
+  const elixir = (id: string, paths: string[], dependsOn: string[] = []) => ({ ...feature(id, paths[0] ?? "", `${id} works.`, dependsOn), boundary: { scope: id, paths } });
+  const tbl: InitiativePlan = {
+    schemaVersion: 1, title: "tbl", goals: ["Bill tokens"], completionCriteria: ["Bills are checked"],
+    features: [
+      elixir("cli", ["lib/tokbill.ex", "lib/tokbill/cli.ex", "test/support/row_case.ex", "test/test_helper.exs", "test/cli_test.exs"]),
+      elixir("rows", ["lib/tokbill/rows.ex", "test/rows_test.exs"], ["cli"]),
+      elixir("ledger", ["lib/tokbill/ledger.ex", "test/ledger_test.exs"], ["cli"]),
+      elixir("groups", ["lib/tokbill/groups.ex", "test/groups_test.exs", "test/top_test.exs"], ["cli"]),
+      elixir("check", ["lib/tokbill/check.ex", "test/check_test.exs", "test/warn_test.exs"], ["cli"]),
+      elixir("docs", ["README.md"], ["ledger", "groups", "check"]),
+    ],
+  };
+  const byId = (id: string) => tbl.features.find((f) => f.id === id) ?? tbl.features[0]!;
+  const release = (id: string, sentence: string) => {
+    const released = byId(id);
+    const upstream = upstreamFiles(tbl, released).map((file) => ({ ...file, text: file.path === "lib/tokbill.ex" ? ROOT : "" }));
+    return upstreamSymbolGaps(spec(sentence), upstream, released.boundary.paths, plannedFiles(tbl)).map((g) => `${g.symbol} (${g.path})`);
+  };
+
+  test("the three R85 releases record no gap; a member no file defines still is one", () => {
+    // ledger run 575887ab: `NAMETest` is the request's placeholder for the row suites.
+    expect(release("ledger", "Use the specified Tokbill.NAMETest modules and upstream Tokbill.RowCase wrapper.")).toEqual([]);
+    // groups run 48b3b4c8, check run ad0fb6fd.
+    expect(release("groups", "Tokbill.GroupsTest and Tokbill.TopTest use Tokbill.RowCase for every row.")).toEqual([]);
+    expect(release("check", "Tokbill.CheckTest and Tokbill.WarnTest build their rows with Tokbill.RowCase.")).toEqual([]);
+    // A module of another feature's source file is that file, not a member of the root module.
+    expect(release("check", "Tokbill.Check reads the totals of Tokbill.Ledger.")).toEqual([]);
+    expect(release("check", "Tokbill.CheckTest calls Tokbill.Missing for each row.")).toEqual(["Tokbill.Missing (lib/tokbill.ex)"]);
+    expect(release("ledger", "Ledger rows go through Tokbill.main and Tokbill.parse_rows.")).toEqual(["Tokbill.parse_rows (lib/tokbill.ex)"]);
+  });
+
+  test("a support file the plan covers only by a glob is known through the run's files", () => {
+    const globbed: InitiativePlan = { ...tbl, features: tbl.features.map((f) => (f.id === "cli" ? { ...f, boundary: { scope: "cli", paths: ["lib/tokbill.ex", "test/**"] } } : f)) };
+    const upstream = [{ featureId: "cli", path: "lib/tokbill.ex", text: ROOT }];
+    const gaps = (known: string[]) => upstreamSymbolGaps(spec("Rows use Tokbill.RowCase."), upstream, [], plannedFiles(globbed, known)).map((g) => g.symbol);
+    expect(gaps([])).toEqual(["Tokbill.RowCase"]);
+    expect(gaps(["test/support/row_case.ex"])).toEqual([]);
+  });
+
+  test("a test module's name is a gap when the plan has no test path", () => {
+    const upstream = [{ featureId: "cli", path: "lib/tokbill.ex", text: ROOT }];
+    expect(upstreamSymbolGaps(spec("Tokbill.GroupsTest holds the rows."), upstream, [], ["lib/tokbill.ex", "lib/tokbill/groups.ex"]).map((g) => g.symbol)).toEqual(["Tokbill.GroupsTest"]);
+  });
+
+  // The same `Package.Class`, `pkg.Name`, `mod::item` and `pkg.module` of a sibling file in every language.
+  const SIBLINGS: [string, string, string, string, string[]][] = [
+    ["java", "src/main/java/app/App.java", "public final class App { public static void main(String[] a) {} }\n", "App.FooTest covers App.RowCase rows.", ["src/test/java/app/FooTest.java", "src/test/java/app/RowCase.java"]],
+    ["kotlin", "src/main/kotlin/app/App.kt", "object App { fun main() {} }\n", "App.FooTest uses App.RowCase.", ["src/test/kotlin/app/FooTest.kt", "src/test/kotlin/app/RowCase.kt"]],
+    ["scala", "src/main/scala/app/App.scala", "object App { def main(a: Array[String]): Unit = () }\n", "App.FooSpec uses App.RowCase.", ["src/test/scala/app/FooSpec.scala", "src/test/scala/app/RowCase.scala"]],
+    ["csharp", "src/App/App.cs", "public static class App { public static void Main() {} }\n", "App.FooTests use App.RowCase.", ["tests/App.Tests/FooTests.cs", "tests/App.Tests/RowCase.cs"]],
+    ["go", "app/app.go", "package app\n\nfunc Run() {}\n", "Rows run through app.FooTest and app.RowCase.", ["app/foo_test.go", "app/row_case_test.go", "app/row_case.go"]],
+    ["rust", "src/app.rs", "pub fn run() {}\n", "Rows run through app::foo_test and app::row_case.", ["tests/foo_test.rs", "tests/row_case.rs"]],
+    ["python", "app/__init__.py", "def run():\n    pass\n", "Rows run through `app.row_case(...)` and `app.foo_test(...)`.", ["tests/test_foo.py", "app/row_case.py", "app/foo_test.py"]],
+    ["typescript", "src/app.ts", "export const App = { run() {} };\n", "App.RowCase builds the App.FooSpec rows.", ["src/row-case.ts", "tests/foo.spec.ts"]],
+    ["ruby", "lib/app.rb", "module App\n  def self.run; end\nend\n", "App::RowCase builds the App::FooTest rows.", ["test/row_case.rb", "test/foo_test.rb"]],
+    ["php", "src/App.php", "<?php\nfinal class App { public static function run(): void {} }\n", "App::RowCase builds the App::FooTest rows.", ["tests/RowCase.php", "tests/FooTest.php"]],
+  ];
+  for (const [language, path, text, sentence, siblings] of SIBLINGS)
+    test(`${language}: a sibling file's module is not a gap; a member no file defines is`, () => {
+      const upstream = [{ featureId: "base", path, text }];
+      const planned = [path, ...siblings];
+      expect(upstreamSymbolGaps(spec(sentence), upstream, [], planned)).toEqual([]);
+      // The same spelling with a member no file of the plan defines.
+      const missing = sentence.replace(/(::|\.)(?:RowCase|row_case)\b/, "$1MissingThing");
+      const symbol = missing.match(/\b\w+(?:::|\.)MissingThing/)?.[0];
+      expect(upstreamSymbolGaps(spec(missing), upstream, [], planned).map((g) => g.symbol)).toEqual([symbol]);
+    });
 });

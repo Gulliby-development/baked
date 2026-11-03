@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { hostSplitParts, isHostSplitNit } from "../src/core/workflows/analysis-notes.js";
 import { defaultWorkflowPolicy } from "../src/core/workflows/defaults.js";
+import { hostRowFileTasks } from "../src/core/workflows/host-apply.js";
 import type { RunPolicy, TaskGraph } from "../src/core/workflows/schemas.js";
 import { MAX_EXTENDED_MS } from "../src/core/workflows/budget.js";
 import {
@@ -87,6 +88,30 @@ const sample = (
 });
 
 describe("plan-time sizing", () => {
+  test("a row file the host writes is priced at nothing under rowFileWrite on, a session otherwise (#2633)", () => {
+    const path = "internal/rows_test.go";
+    const rows = Array.from({ length: 20 }, (_, i) => `{"in-${i}", "out-${i}", "an expected line of output ${i}"},`);
+    const request = ["```text", `RowTests in ${path} (20 rows, {in, out, want})`, ...rows, "```"].join("\n");
+    const plan = graph(task("T001", ["internal/rows.go"]), task("T002", [path], "planned", "create"));
+    const size = (rowFileWrite: boolean) => {
+      const sized: RunPolicy = {
+        ...policy({ rowVolume: true }),
+        ...(rowFileWrite ? { rowFileWrite: "on" as const } : {}),
+      };
+      return sizePlan({ graph: plan, policy: sized, samples: [], spent: 0, request, hostRows: hostRowFileTasks(request, plan, sized) });
+    };
+    const on = size(true);
+    const off = size(false);
+    expect(on.hostRows).toEqual(["T002"]);
+    expect(on.tasks.map((t) => t.taskId)).toEqual(["T001"]);
+    expect(off.hostRows).toBeUndefined();
+    const session = off.tasks.find((t) => t.taskId === "T002");
+    expect(session?.rowVolume).toMatchObject({ path, rows: 20, mode: "on" });
+    expect(off.taskTokens.expected - on.taskTokens.expected).toBeGreaterThanOrEqual(
+      (session?.estimate.low ?? Number.POSITIVE_INFINITY),
+    );
+  });
+
   test("a test task gets the test step cap; code tasks keep the profile's", () => {
     const report = sizePlan({
       graph: graph(task("T001", ["src/a.ts"]), task("T002", ["tests/a.test.ts"])),

@@ -17,6 +17,7 @@
     "tests/runtime.test.ts": "const dir = mkdtempSync(join(tmpdir(), \"rt-\"));\nconst file = join(dir, \"a.txt\");\nconst want = `bad: ${file}`;\n"
   },
   "expected": {
+    "rowIndent": ["\"  row(1),\""],
     "languagePitfalls": null,
     "generatedValues": ["tests/gen.test.ts:1 repeat","tests/gen.test.ts:2 interpolate","tests/gen.test.ts:3 loop"],
     "exampleBuild": null,
@@ -98,6 +99,7 @@
     ],
     "dependencyPrepare": null,
     "worktreePathLimits": null,
+    "diagnosticFormats": ["src/a.ts: error TS2322: Type 'string' is not assignable to type 'number'."],
     "testClasses": null,
     "testDeclarations": ["tests/sum.test.ts: 3 tests"],
     "rowFileShapes": [

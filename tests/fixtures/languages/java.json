@@ -14,6 +14,7 @@
     "src/test/java/RuntimeTest.java": "Path dir = Files.createTempDirectory(\"rt\");\nPath p = dir.resolve(\"a.txt\");\nString want = String.format(\"bad: %s\", p);\n"
   },
   "expected": {
+    "rowIndent": ["\"    row(1),\""],
     "languagePitfalls": ["Java"],
     "generatedValues": ["src/test/java/GenTest.java:1 repeat","src/test/java/GenTest.java:2 format"],
     "exampleBuild": null,
@@ -90,6 +91,7 @@
     "dependencyDirs": null,
     "dependencyPrepare": null,
     "worktreePathLimits": null,
+    "diagnosticFormats": ["src/main/java/calc/Calc.java: error: incompatible types: String cannot be converted to int"],
     "testClasses": [
       "src/test/java/com/example/UnitTest1.java: com.example.FailureExceptionTest",
       "src/test/java/SumTest.java: by its name",

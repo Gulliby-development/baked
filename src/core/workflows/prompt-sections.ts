@@ -1,6 +1,7 @@
 import type { ModelMessage } from "@ai-sdk/provider-utils";
 import { canonical } from "../specs/hash.js";
 import { ARTIFACT_LANGUAGE } from "./context.js";
+import type { EvidenceBound } from "./evidence-budget.js";
 import type { WorkflowStore } from "./store.js";
 
 /**
@@ -163,6 +164,30 @@ export interface LargePrompt {
   medianBytes: number;
   firstAttempts: number;
   largest: PromptSection;
+  /** What the bound on the evidence section cut (#2617); absent when the input had none. */
+  evidence?: EvidenceCut;
+}
+
+/** The part of an evidence bound a large-prompt notice reports (#2617). */
+export interface EvidenceCut {
+  budget: number;
+  keptChars: number;
+  collapsed: number;
+  summarized: number;
+  cutChars: number;
+  cut: string[];
+}
+
+/** The notice's view of what `boundEvidence` did. */
+export function evidenceCut(bound: EvidenceBound): EvidenceCut {
+  return {
+    budget: bound.budget,
+    keptChars: bound.keptChars,
+    collapsed: bound.collapsed,
+    summarized: bound.summarized,
+    cutChars: bound.cutChars,
+    cut: bound.cut,
+  };
 }
 
 /**
@@ -209,5 +234,9 @@ const kb = (bytes: number) => `${Math.round(bytes / 1024).toLocaleString("en-US"
 /** The progress line of a large-prompt notice. */
 export function largePromptText(notice: LargePrompt & { taskId: string | null }): string {
   const times = notice.medianBytes ? (notice.firstBytes / notice.medianBytes).toFixed(1) : "∞";
-  return `Large prompt${notice.taskId ? ` for ${notice.taskId}` : ""}: ${kb(notice.firstBytes)}, ${times} times the median first attempt (${kb(notice.medianBytes)}); largest section ${notice.largest.name} (${kb(notice.largest.bytes)})`;
+  const evidence = notice.evidence;
+  const bounded = evidence
+    ? `; evidence bounded to ${kb(evidence.budget)}: ${evidence.collapsed} repeats collapsed, ${evidence.summarized} passing checks summarized, ${kb(evidence.cutChars)} cut${evidence.cut.length ? ` from ${evidence.cut.join(", ")}` : ""}`
+    : "";
+  return `Large prompt${notice.taskId ? ` for ${notice.taskId}` : ""}: ${kb(notice.firstBytes)}, ${times} times the median first attempt (${kb(notice.medianBytes)}); largest section ${notice.largest.name} (${kb(notice.largest.bytes)})${bounded}`;
 }

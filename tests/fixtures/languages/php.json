@@ -14,6 +14,7 @@
     "tests/RuntimeTest.php": "<?php\n$dir = sys_get_temp_dir();\n$want = \"bad: $dir\";\n"
   },
   "expected": {
+    "rowIndent": ["\"    row(1),\""],
     "languagePitfalls": ["PHP"],
     "generatedValues": ["tests/GenTest.php:2 repeat","tests/GenTest.php:3 interpolate"],
     "exampleBuild": null,
@@ -87,6 +88,7 @@
     ],
     "dependencyPrepare": null,
     "worktreePathLimits": null,
+    "diagnosticFormats": null,
     "testClasses": null,
     "testDeclarations": ["tests/SumTest.php: 2 tests, per class 2"],
     "rowFileShapes": null

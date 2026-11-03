@@ -8,6 +8,7 @@
  */
 import { posix } from "node:path";
 import { buildFailure, FAILED_TESTS, type TestRunner } from "../../verification/output-counts.js";
+import { plainOutput } from "../../verification/plain-output.js";
 import { toolchainCommand } from "../toolchain.js";
 import type { ResolutionDiff } from "./dependency-resolution.js";
 import { isTestCodePath } from "./duplication.js";
@@ -466,7 +467,7 @@ export function replayTargetRecords(
   outcome: { status: "passed" | "failed" | "timeout"; output: string },
   toWorkspace: (path: string) => string,
 ): BaselineReplayTarget[] {
-  const names = FAILED_TESTS[run.runner](outcome.output);
+  const names = FAILED_TESTS[run.runner](plainOutput(outcome.output));
   const errors = outcome.status === "failed" ? (buildFailure(outcome.output, 1000) ?? []) : [];
   const target = (path: string, failed: string[], build: string[]): BaselineReplayTarget => ({
     path,

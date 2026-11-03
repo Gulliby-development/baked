@@ -617,6 +617,8 @@ export interface ProbeOutcome {
   exitCode?: number | null;
   timedOut?: boolean;
   output: string;
+  /** The source files a refused probe changed, with their hashes before and after it ran. */
+  changed?: { path: string; before: string | null; after: string | null }[];
 }
 
 /**
@@ -664,11 +666,19 @@ export async function runProbe(
     };
   }
   const after = await sourceManifest(options.root, options.generated);
-  if (changedPaths(before, after).length)
+  const changed = changedPaths(before, after);
+  // The change stays in place and has no effect row: the probe's record names the files, so a
+  // file that vanishes from the root can be traced to the probe that removed it (#2609).
+  if (changed.length)
     return {
       status: "refused",
       reason: "The command changed source files; a probe must only read them. Edit with edit_file.",
       output: result.output.slice(-OUTPUT_LIMIT),
+      changed: changed.map((path) => ({
+        path,
+        before: before[path] ?? null,
+        after: after[path] ?? null,
+      })),
     };
   return {
     status: "ran",
