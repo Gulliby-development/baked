@@ -353,6 +353,20 @@ function formatterCommand(check: Pick<Check, "executable" | "args">): {
 }
 
 /**
+ * Whether a check runs a formatter: a `FILE_FORMATTERS` row's, `cargo fmt`, `rustfmt` or `gofmt` in
+ * any mode (`-l`, `-d`). Such a check fails by printing a diff or a list of files, which names no
+ * failure word, so `silentRerun` must not read its failure as a toolchain crash (#2829).
+ */
+export function runsFormatter(check: Pick<Check, "executable" | "args">): boolean {
+  const { program, args } = formatterCommand(check);
+  if ((program === "cargo" && args[0] === "fmt") || program === "rustfmt" || program === "gofmt")
+    return true;
+  return Object.keys(FILE_FORMATTERS).some((language) =>
+    (rowOf(FILE_FORMATTERS, language) ?? []).some((f) => f.runs(program, args)),
+  );
+}
+
+/**
  * A formatter check's command on one file alone, run from the check's directory, so a whole-tree
  * run that timed out can name the file the formatter hangs on (#2240: rustfmt never finished on a
  * 20-deep nested literal). The language's `FILE_FORMATTERS` row, or for `cargo fmt` (which has no
