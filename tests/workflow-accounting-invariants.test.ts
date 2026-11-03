@@ -887,6 +887,66 @@ describe("run limit refusal invariants (#2590)", () => {
       { numRuns: RUNS, endOnFailure: true },
     );
   });
+
+  const planning = fc.record({
+    ceiling: fc.integer({ min: 2_000_000, max: 10_000_000 }),
+    limitShare: fc.double({ min: 0.2, max: 0.8, noNaN: true }),
+    plannedShare: fc.double({ min: 0.3, max: 0.9, noNaN: true }),
+    /** Tokens each open writer had used at the last planning growth, and used since. */
+    writers: fc.array(fc.record({ atGrowth: fc.integer({ min: 0, max: 800_000 }), since: fc.integer({ min: 0, max: 800_000 }) }), { minLength: 1, maxLength: 4 }),
+    /** The step the last writer asks for, as a share of the ceiling. */
+    requestShare: fc.double({ min: 0.05, max: 1.5, noNaN: true }),
+  });
+
+  // Before any task finishes, with no attempt completed since the last planning growth, an attempt
+  // fails for the run limit only when the limit could not grow: the ceiling has no room for the
+  // step, or no open attempt used a token since that growth. A first wave of writers in flight is
+  // progress (#2607), and the budget never grows past the ceiling.
+  test("before a task finishes, an attempt fails for the run limit only when the limit could not grow", async () => {
+    const store = fixture.service.store;
+    await fc.assert(
+      fc.asyncProperty(planning, async (s) => {
+        const { runId } = await fixture.start();
+        store.transaction(() => store.transition(runId, "running"));
+        const start = Math.floor(s.ceiling * s.limitShare);
+        const policy: RunPolicy = { ...fixturePolicy, maxAgentCalls: 1000, maxTotalTokens: start, maxCostUsd: null, sizing: { maxRunTokens: s.ceiling } };
+        store.setPolicy(runId, policy);
+        store.transaction(() => {
+          store.syncTasks(runId, { schemaVersion: 1, featureId: "fixture", revision: 1, specHash: "a".repeat(64), planHash: "b".repeat(64), tasks: [task("T001"), task("T002")] });
+        });
+        const stepId = store.beginStep(runId, "fixture");
+        const plan = store.reserve(runId, stepId, MODEL, 1, policy);
+        store.finishAttempt(runId, plan, "completed", Math.floor(start * s.plannedShare));
+        const writers = s.writers.map((w) => {
+          const id = store.reserve(runId, stepId, null, 1, policy);
+          store.recordAttemptUsage(runId, id, w.atGrowth);
+          return id;
+        });
+        // The planning growth the completed planning attempt allows, with the writers open.
+        const grown = growBudgetOnProgress(store, runId, policy, start + 1);
+        for (const [i, id] of writers.entries()) {
+          const w = s.writers[i] as { atGrowth: number; since: number };
+          store.recordAttemptUsage(runId, id, w.atGrowth + w.since);
+        }
+        const limit = policy.maxTotalTokens;
+        const request = Math.max(1, Math.floor(s.ceiling * s.requestShare));
+        const projected = store.run(runId).token_usage + writers.length - 1 + request;
+        let refused = false;
+        try {
+          store.expandReservation(runId, writers.at(-1) as string, request, policy);
+        } catch (error) {
+          expect((error as { code?: string }).code).toBe("BUDGET_EXHAUSTED");
+          refused = true;
+        }
+        // Without a growth, the completed planning attempt is still progress since the start.
+        const progress = grown ? s.writers.reduce((sum, w) => sum + w.since, 0) : 1;
+        if (refused) expect(projected > s.ceiling || limit >= s.ceiling || progress === 0).toBe(true);
+        else expect(projected).toBeLessThanOrEqual(policy.maxTotalTokens);
+        expect(policy.maxTotalTokens).toBeLessThanOrEqual(Math.max(limit, s.ceiling));
+      }),
+      { numRuns: RUNS, endOnFailure: true },
+    );
+  });
 });
 
 describe("token growth room invariants (#2294)", () => {

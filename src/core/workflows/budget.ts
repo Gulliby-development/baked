@@ -497,6 +497,12 @@ function heldBy(hold: number | null): { poolHoldTokens?: number } {
  * failing does not grow it. The same holds once a revise or a rejected tests-first task has
  * invalidated every finished task: the run re-plans with no task finished, and without this the
  * budget did not grow again until one re-finished (#1431).
+ *
+ * Tokens the open attempts used since the last such growth count as progress too, as they do for
+ * an auto-extend (#2590), while the step stays under the ceiling, the pool hold and what the dollar
+ * cap pays for: a first wave of parallel writers finishes no task and completes no attempt before
+ * the budget runs out, so the growth one writer's step made left the others to fail
+ * `BUDGET_EXHAUSTED` with the ceiling unused (#2607).
  */
 function growWhilePlanning(
   store: WorkflowStore,
@@ -519,11 +525,24 @@ function growWhilePlanning(
         JSON.parse(store.readArtifact(runId, a.id)) as {
           kind?: string;
           completedAttempts?: number;
+          openAttemptTokens?: Record<string, number>;
         },
     )
     .filter((r) => r.kind === "planning-growth")
     .at(-1);
-  if (completedAttempts <= (last?.completedAttempts ?? 0)) return false;
+  const { openAttemptTokens, inFlightTokens } = inFlightSince(
+    store,
+    runId,
+    last?.openAttemptTokens,
+  );
+  const affordable = affordableTokens(store, runId, policy);
+  // Work in flight is progress only where the step fits under the ceiling, the pool hold and what
+  // the dollar cap pays for, as for an auto-extend (#2590).
+  const inFlightProgress =
+    inFlightTokens > 0 &&
+    projected <= Math.min(ceiling, hold ?? Number.POSITIVE_INFINITY) &&
+    (affordable === null || projected <= affordable);
+  if (completedAttempts <= (last?.completedAttempts ?? 0) && !inFlightProgress) return false;
   const next = Math.min(
     ceiling,
     hold ?? Number.POSITIVE_INFINITY,
@@ -534,8 +553,34 @@ function growWhilePlanning(
     projectedTokens: projected,
     completedAttempts,
     ...heldBy(hold),
+    inFlightTokens,
+    openAttemptTokens,
+    ...(affordable !== null ? { affordableTokens: affordable } : {}),
   });
   return projected <= policy.maxTotalTokens;
+}
+
+/**
+ * The tokens each open attempt has used (`openAttemptTokens`) and what they used since `before`,
+ * the same map as a previous growth recorded it (`inFlightTokens`): work in flight that no finished
+ * task or completed attempt counts yet (#2590, #2607).
+ */
+function inFlightSince(
+  store: WorkflowStore,
+  runId: string,
+  before: Record<string, number> | undefined,
+): { openAttemptTokens: Record<string, number>; inFlightTokens: number } {
+  const openAttemptTokens = Object.fromEntries(
+    store
+      .attempts(runId)
+      .filter((a) => a.status === "running")
+      .map((a) => [a.id, a.used_tokens ?? 0]),
+  );
+  const inFlightTokens = Object.entries(openAttemptTokens).reduce(
+    (sum, [id, used]) => sum + Math.max(0, used - (before?.[id] ?? 0)),
+    0,
+  );
+  return { openAttemptTokens, inFlightTokens };
 }
 
 /** Share of the sizing ceiling one extension past it adds, at least: about one review round. */
@@ -647,15 +692,10 @@ function extendUnderAssume(
     continuedAttempts: last?.continuedAttempts ?? 0,
     resolvedFindings: last?.resolvedFindings ?? 0,
   };
-  const openAttemptTokens = Object.fromEntries(
-    store
-      .attempts(runId)
-      .filter((a) => a.status === "running")
-      .map((a) => [a.id, a.used_tokens ?? 0]),
-  );
-  const inFlightTokens = Object.entries(openAttemptTokens).reduce(
-    (sum, [id, used]) => sum + Math.max(0, used - (last?.openAttemptTokens?.[id] ?? 0)),
-    0,
+  const { openAttemptTokens, inFlightTokens } = inFlightSince(
+    store,
+    runId,
+    last?.openAttemptTokens,
   );
   const finishedProgress =
     progress.taskCompletions > before.taskCompletions ||
