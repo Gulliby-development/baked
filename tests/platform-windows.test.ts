@@ -600,3 +600,39 @@ describe("clipboard image read on Windows", () => {
     }
   });
 });
+
+describe("platform shim: process tree liveness", () => {
+  test("a live process answers without reading the process table, a stopped one is not alive (#2498)", async () => {
+    // On Windows the table is a PowerShell CIM query of a second or far more on a loaded host; a
+    // recovery check of a running command made five of them in a row and ran past its test's limit.
+    const { mock } = await import("bun:test");
+    const cp = await import("node:child_process");
+    let tableReads = 0;
+    mock.module("node:child_process", () => ({
+      ...cp,
+      spawnSync: (...args: Parameters<typeof cp.spawnSync>) => {
+        tableReads++;
+        return originalChildProcess.spawnSync(...args);
+      },
+    }));
+    const child = Bun.spawn([process.execPath, "-e", "setTimeout(() => {}, 30000)"], {
+      stdout: "ignore",
+      stderr: "ignore",
+    });
+    try {
+      const { processTreeAlive } = await import(`../src/core/platform/index.ts?t=${Date.now()}`);
+      const since = Date.now();
+      expect(processTreeAlive(child.pid, since)).toBe(true);
+      expect(tableReads).toBe(0);
+      child.kill();
+      await child.exited;
+      expect(processTreeAlive(child.pid, since)).toBe(false);
+    } finally {
+      child.kill();
+      await child.exited;
+      mock.restore();
+      // mock.restore does not undo module replacements in Bun.
+      mock.module("node:child_process", () => originalChildProcess);
+    }
+  });
+});

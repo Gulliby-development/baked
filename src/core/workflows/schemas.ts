@@ -119,6 +119,9 @@ const RowFramework = z.enum([
   "pest",
   "exunit",
   "dart",
+  "kotlin",
+  "scalatest",
+  "munit",
 ]);
 const RowPackage = z
   .string()
@@ -163,8 +166,8 @@ export const TaskSchema = z
           .object({
             framework: RowFramework,
             /**
-             * The Go package, Java package, C# namespace or PHP namespace (dots for backslashes) of
-             * the harness and the host's test.
+             * The Go package, Java or Kotlin package, Scala package, C# namespace or PHP namespace
+             * (dots for backslashes) of the harness and the host's test.
              */
             package: RowPackage.optional(),
             harness: RelativePath,

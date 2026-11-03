@@ -63,6 +63,35 @@ ${BOLD}Automation:${RST}
 ${BOLD}Exit codes:${RST} 0=success, 1=error, 2=timeout, 130=abort
 `;
 
+/** Options that take a value, as `--flag value` or `--flag=value`. */
+const VALUE_FLAGS = new Set([
+  "--model",
+  "--mode",
+  "--effort",
+  "--context",
+  "--max-steps",
+  "--timeout",
+  "--cwd",
+  "--session",
+  "--resume",
+  "-s",
+  "--system",
+  "--sandbox",
+  "--include",
+  "--image",
+  "--permissions",
+]);
+
+/** Splits `--flag=value` of a value option into `--flag value`, so both spellings parse alike. */
+function splitValueFlags(argv: string[]): string[] {
+  return argv.flatMap((arg) => {
+    const eq = arg.indexOf("=");
+    if (!arg.startsWith("--") || eq < 0) return [arg];
+    const flag = arg.slice(0, eq);
+    return VALUE_FLAGS.has(flag) ? [flag, arg.slice(eq + 1)] : [arg];
+  });
+}
+
 export async function parseHeadlessArgs(argv: string[]): Promise<HeadlessAction | null> {
   if (argv.includes("--version") || argv.includes("-v")) return { type: "version" };
   if (argv.includes("--list-providers")) return { type: "list-providers" };
@@ -132,23 +161,26 @@ export async function parseHeadlessArgs(argv: string[]): Promise<HeadlessAction 
   const images: string[] = [];
   const promptParts: string[] = [];
 
-  for (let i = 0; i < argv.length; i++) {
-    const arg = argv[i];
+  const args = splitValueFlags(argv);
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
     if (arg === "--headless") continue;
-    if (arg === "--model" && argv[i + 1]) {
-      modelId = argv[++i];
-    } else if (arg?.startsWith("--model=")) {
-      modelId = arg.slice("--model=".length);
-    } else if (arg === "--mode" && argv[i + 1]) {
-      const m = argv[++i] as BakeMode;
+    if (arg && VALUE_FLAGS.has(arg) && !args[i + 1]) {
+      process.stderr.write(`${RED()}Error:${RST} ${arg} requires a value\n`);
+      process.exit(EXIT_ERROR);
+    }
+    if (arg === "--model") {
+      modelId = args[++i];
+    } else if (arg === "--mode") {
+      const m = args[++i] as BakeMode;
       if (!VALID_MODES.includes(m)) {
         process.stderr.write(`${RED()}Error:${RST} Unknown mode "${m}"\n`);
         process.stderr.write(`Valid: ${VALID_MODES.join(", ")}\n`);
         process.exit(EXIT_ERROR);
       }
       mode = m;
-    } else if ((arg === "--effort" && argv[i + 1]) || arg?.startsWith("--effort=")) {
-      const value = arg === "--effort" ? argv[++i] : arg.slice("--effort=".length);
+    } else if (arg === "--effort") {
+      const value = args[++i];
       const matched = CHAT_EFFORTS.find((e) => e === value);
       if (!matched) {
         process.stderr.write(`${RED()}Error:${RST} Unknown effort "${value}"\n`);
@@ -156,8 +188,8 @@ export async function parseHeadlessArgs(argv: string[]): Promise<HeadlessAction 
         process.exit(EXIT_ERROR);
       }
       effort = matched;
-    } else if ((arg === "--context" && argv[i + 1]) || arg?.startsWith("--context=")) {
-      const value = arg === "--context" ? (argv[++i] ?? "") : arg.slice("--context=".length);
+    } else if (arg === "--context") {
+      const value = args[++i] ?? "";
       const parsed = parseContextSize(value);
       if (parsed === null) {
         process.stderr.write(`${RED()}Error:${RST} Unknown context size "${value}"\n`);
@@ -171,41 +203,37 @@ export async function parseHeadlessArgs(argv: string[]): Promise<HeadlessAction 
       events = true;
     } else if (arg === "--quiet" || arg === "-q") {
       quiet = true;
-    } else if (arg === "--max-steps" && argv[i + 1]) {
-      maxSteps = Number.parseInt(argv[++i] ?? "0", 10);
-    } else if (arg === "--timeout" && argv[i + 1]) {
-      timeout = Number.parseInt(argv[++i] ?? "0", 10);
-    } else if (arg === "--cwd" && argv[i + 1]) {
-      cwd = argv[++i];
-    } else if ((arg === "--session" || arg === "--resume" || arg === "-s") && argv[i + 1]) {
-      sessionId = argv[++i];
-    } else if (arg?.startsWith("--session=")) {
-      sessionId = arg.slice("--session=".length);
-    } else if (arg?.startsWith("--resume=")) {
-      sessionId = arg.slice("--resume=".length);
+    } else if (arg === "--max-steps") {
+      maxSteps = Number.parseInt(args[++i] ?? "0", 10);
+    } else if (arg === "--timeout") {
+      timeout = Number.parseInt(args[++i] ?? "0", 10);
+    } else if (arg === "--cwd") {
+      cwd = args[++i];
+    } else if (arg === "--session" || arg === "--resume" || arg === "-s") {
+      sessionId = args[++i];
     } else if (arg === "--save-session") {
       saveSession = true;
-    } else if (arg === "--system" && argv[i + 1]) {
-      system = argv[++i];
+    } else if (arg === "--system") {
+      system = args[++i];
     } else if (arg === "--no-repomap") {
       noRepomap = true;
-    } else if (arg === "--sandbox" && argv[i + 1]) {
-      const value = argv[++i];
+    } else if (arg === "--sandbox") {
+      const value = args[++i];
       if (!isSandboxMode(value)) {
         process.stderr.write(`${RED()}Error:${RST} --sandbox accepts off, auto or required\n`);
         process.exit(EXIT_ERROR);
       }
       sandbox = value;
-    } else if (arg === "--include" && argv[i + 1]) {
-      include.push(argv[++i] as string);
-    } else if (arg === "--image" && argv[i + 1]) {
-      images.push(argv[++i] as string);
+    } else if (arg === "--include") {
+      include.push(args[++i] as string);
+    } else if (arg === "--image") {
+      images.push(args[++i] as string);
     } else if (arg === "--diff") {
       diff = true;
     } else if (arg === "--approval-review") {
       approvalReview = true;
-    } else if ((arg === "--permissions" && argv[i + 1]) || arg?.startsWith("--permissions=")) {
-      const value = arg === "--permissions" ? argv[++i] : arg.slice("--permissions=".length);
+    } else if (arg === "--permissions") {
+      const value = args[++i];
       if (!isPermissionMode(value)) {
         process.stderr.write(`${RED()}Error:${RST} Unknown permission mode "${value}"\n`);
         process.stderr.write(`Valid: ${PERMISSION_MODES.join(", ")}\n`);
