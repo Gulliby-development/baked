@@ -241,6 +241,17 @@ const ctestListed = (o: string, outcome: RegExp): string[] =>
     .map((m) => (m[1] ?? "").trim());
 /** GoogleTest's summary of a test binary: "[==========] 3 tests from 1 test suite ran. (0 ms total)". */
 const GTEST_SUMMARY = /^\[==========\] (\d+) tests? from \d+ test (?:suites?|cases?) ran\./m;
+/**
+ * A package of `go test` that holds tests: "ok  \texample.com/m/a\t0.004s", from the test cache
+ * "ok  \texample.com/m/a\t(cached)", with "\tcoverage: ..." after either, or a failed package
+ * "FAIL\texample.com/m/a\t0.003s" or "FAIL\texample.com/m/a [build failed]". The fields are
+ * tab-separated as `go test` prints them, so jest's "FAIL src/a.test.js" is not one. Not "ok ...
+ * [no tests to run]", a package whose tests the `-run` filter left out (#2778).
+ */
+const GO_PACKAGE_TESTED =
+  /^(?:ok\s+\S+\t(?:[\d.]+s|\(cached\))(?![^\n]*\[no tests to run\])|FAIL\t\S+[\t ])/m;
+/** Gradle's line under a failed test task: "3 tests completed, 1 failed" (also ", 1 skipped"). */
+const GRADLE_COMPLETED = /^\d+ tests? completed, \d+ failed\b/m;
 const PEST_SUMMARY = /^\s*Tests:\s+((?:\d+ \w+(?:, )?)+) \(\d+ assertions?\)/m;
 
 /**
@@ -367,7 +378,7 @@ const TEST_COUNTERS: readonly {
     ran: (o) =>
       lines(o, /^=== RUN\s+[^/\s]+\s*$/) ||
       (/\[no tests? (?:to run|files)\]|^testing: warning: no tests to run/m.test(o) &&
-      !/^ok\s+\S+\s+[\d.]+s\s*$/m.test(o)
+      !GO_PACKAGE_TESTED.test(o)
         ? 0
         : null),
   },
@@ -949,6 +960,23 @@ export function testsRan(raw: string): OutputCount | null {
     if (count(output) !== null) return null;
   }
   return null;
+}
+
+/**
+ * Whether a check's output shows that some part of the run holds tests (#2778): a summary that
+ * counts some, a test reported as failed, a `go test` package that ran tests or whose tests did
+ * not build, or a Gradle test task that completed some. A "no tests" line of another part (a Go
+ * package without test files, an umbrella app without tests, a Gradle project whose test task
+ * discovered none) then does not stand for the whole run.
+ */
+export function heldTests(raw: string): boolean {
+  const output = plainOutput(raw);
+  return (
+    (testCount(output)?.count ?? 0) > 0 ||
+    (failedTests(output)?.names.length ?? 0) > 0 ||
+    GO_PACKAGE_TESTED.test(output) ||
+    GRADLE_COMPLETED.test(output)
+  );
 }
 
 /**
