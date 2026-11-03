@@ -1467,6 +1467,20 @@ export const FEATURES: readonly Feature[] = [
     desktop: ["settings/chat: Code quality page"],
   },
   {
+    id: "worktree-root",
+    group: "Workflow runs",
+    title: "Folder for run worktrees, and a probe for path-length failures in them",
+    tui: ["/code-quality: Worktree folder"],
+    cli: [
+      "baked workflow run: --worktree-root DIR, or workflows.worktreeRoot in config.json",
+      "baked workflow quick: --worktree-root DIR",
+      "baked workflow doctor: --worktree-root DIR, checks the folder",
+      "baked workflow worktrees: --worktree-root DIR",
+    ],
+    api: ["/v1/settings: workflows.worktreeRoot, with its check"],
+    desktop: ["settings/chat: Code quality page"],
+  },
+  {
     id: "profile-effort-compaction",
     group: "Workflow runs",
     title: "Per-profile effort and compaction threshold (set in agent profile files)",

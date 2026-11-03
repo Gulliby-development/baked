@@ -79,7 +79,7 @@ baked --headless --watch --permissions full --events
 
 ## Configuration
 
-`watch` in `~/.baked/config.json` or the project's `.baked/config.json`:
+`watch` in `~/.baked/config.json` or the project's `.baked/config.json`; a project's keys merge over the global ones, so a project may set only `watch.poll` and keep the global marker:
 
 | Key | Default | Meaning |
 | --- | --- | --- |

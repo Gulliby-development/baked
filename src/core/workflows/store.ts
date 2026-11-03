@@ -16,6 +16,7 @@ import { costCeilingUsd, costToleranceOf, currentCostCap } from "./cost-toleranc
 import { WorkflowFault } from "./errors.js";
 import type { PastRun } from "./estimate.js";
 import { executionClock } from "./execution-clock.js";
+import { historySnapshot } from "./history-snapshot.js";
 import { migration001 } from "./migrations/001.js";
 import { migration002 } from "./migrations/002.js";
 import { migration003 } from "./migrations/003.js";
@@ -335,6 +336,9 @@ function historyOf(db: Database, only?: string): PastRun[] {
  * only. A store that is missing, unreadable or of another schema gives no runs.
  */
 export function readStoreHistory(path: string): PastRun[] {
+  return [...historySnapshot(`history:${path}`, () => readStoreHistoryNow(path))];
+}
+function readStoreHistoryNow(path: string): PastRun[] {
   if (!existsSync(path)) return [];
   let db: Database | null = null;
   try {

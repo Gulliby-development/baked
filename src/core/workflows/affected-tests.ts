@@ -19,8 +19,10 @@
  * a `_test.go` file, Minitest's `test_helper.rb`, a C# helper in a test project) is support: a
  * task that writes only those gets no check that requires tests, and keeps its other checks. Every
  * runner branch of `affectedTestCheck`, a new one included, takes its files from that selection
- * and never decides by a helper's name; `tests/workflow-scenario-test-support-file.test.ts` fails
- * for a supported language without a support-file case.
+ * and never decides by a helper's name; the hold by another task's unfinished write
+ * (`holdsWrittenTests`) asks the same question (#2447).
+ * `tests/workflow-scenario-test-support-file.test.ts` fails for a supported language without a
+ * support-file case.
  */
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { basename, dirname, join, posix } from "node:path";
@@ -146,15 +148,27 @@ export function isDocumentationPath(path: string): boolean {
  * it may change code or data the tests load. Documentation does not, unless the test task reads
  * it (#1408: a README task after the tests suppressed the check and a hang reached the feature
  * gate). A compiled test project builds every test file in it, so there another task's test file
- * holds the check back too (#1396).
+ * holds the check back too (#1396). Another task's test file is told apart from a test-support
+ * file by the same question the check's selection asks (`runnableTestFiles`, #2447): a test-tree
+ * file under `root` that declares no test (Go fixtures in a `_test.go` file, a helper under
+ * `__tests__/`, Minitest's `test_helper.rb`) is support the tests may load, so it holds the check
+ * like a source file. A file not written yet, or with no `root`, keeps its name's verdict.
  */
 export function holdsWrittenTests(
   path: string,
   compiled: boolean,
   reads: readonly string[] = [],
+  root?: string,
 ): boolean {
   if (isDocumentationPath(path) && !reads.includes(path)) return false;
-  return compiled ? !isTestFile(path) : !isWrittenTestFile(path);
+  const named = compiled ? isTestFile(path) : isWrittenTestFile(path);
+  return !named || isTestSupportFile(root, path);
+}
+
+/** Whether a test-tree file under `root` exists and declares no test (#2439, #2447). */
+function isTestSupportFile(root: string | undefined, path: string): boolean {
+  if (root === undefined || !existsSync(join(root, path))) return false;
+  return runnableTestFiles(root, [path]).length === 0;
 }
 
 /** A file's name without its extension: a Rust integration test's binary, and the class fallback. */
@@ -668,11 +682,11 @@ function gateFlags(root: string, files: readonly string[]): Map<string, string[]
   );
 }
 
-/** The JUnit and xUnit test files that hold an inline acceptance rows block. */
+/** The JUnit (Java or Kotlin) and xUnit test files that hold an inline acceptance rows block. */
 function inlineRowFiles(root: string, files: readonly string[]): Set<string> {
   return new Set(
     files.filter((path) => {
-      if (!/\.(?:java|cs)$/.test(path)) return false;
+      if (!/\.(?:java|kt|cs)$/.test(path)) return false;
       try {
         return INLINE_ROWS_BEGIN.test(readFileSync(join(root, path), "utf8"));
       } catch {
