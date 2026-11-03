@@ -3951,6 +3951,8 @@ export function replayInitiativeStarts(
     moments?: number[];
     /** Sets the initiative's `sizing.recencyHalfLife`, to backtest the weighting (#2150). */
     recencyHalfLife?: number;
+    /** Sets the initiative's `sizing.fewPathPrice`, to backtest it (#2640). */
+    fewPathPrice?: boolean;
     /**
      * Sets entries of the initiative's base policy `stopModes`, to replay a round at the mode it
      * ran in: a round before #2245 held open runs at their limits (`initiative-plan-charge` in
@@ -3999,6 +4001,7 @@ export function replayInitiativeStarts(
       budgetAtStart: options.budgetAtStart !== false,
       moments: options.moments ?? [],
       ...(options.recencyHalfLife ? { recencyHalfLife: options.recencyHalfLife } : {}),
+      ...(options.fewPathPrice ? { fewPathPrice: true } : {}),
       ...(options.stopModes ? { stopModes: options.stopModes } : {}),
       ...(options.planChargeExpected ? { planChargeExpected: options.planChargeExpected } : {}),
       firstStartOnly: options.firstStartOnly === true,
@@ -4112,6 +4115,7 @@ function replayStarts(
     budgetAtStart,
     moments,
     recencyHalfLife,
+    fewPathPrice,
     stopModes,
     planChargeExpected,
     firstStartOnly,
@@ -4119,6 +4123,7 @@ function replayStarts(
     budgetAtStart: boolean;
     moments: number[];
     recencyHalfLife?: number;
+    fewPathPrice?: boolean;
     stopModes?: RunPolicy["stopModes"];
     planChargeExpected?: PlanChargeExpected;
     firstStartOnly: boolean;
@@ -4143,7 +4148,7 @@ function replayStarts(
       .get(initiativeId) as { settings_json: string; decompose_run_id: string | null };
     const settings = JSON.parse(row.settings_json) as {
       basePolicy?: {
-        sizing?: { historyStores?: string[]; recencyHalfLife?: number };
+        sizing?: { historyStores?: string[]; recencyHalfLife?: number; fewPathPrice?: boolean };
         stopModes?: RunPolicy["stopModes"];
         rowFileWrite?: RunPolicy["rowFileWrite"];
       };
@@ -4152,10 +4157,18 @@ function replayStarts(
     // trace keeps no request text: the blocks are restored from the trace's own records first.
     if (settings.basePolicy?.rowFileWrite === "on") restoreRowBlocks(db, initiativeId);
     const missingHistory: string[] = [];
-    if (recencyHalfLife || stopModes) {
+    if (recencyHalfLife || fewPathPrice || stopModes) {
       settings.basePolicy = {
         ...settings.basePolicy,
-        ...(recencyHalfLife ? { sizing: { ...settings.basePolicy?.sizing, recencyHalfLife } } : {}),
+        ...(recencyHalfLife || fewPathPrice
+          ? {
+              sizing: {
+                ...settings.basePolicy?.sizing,
+                ...(recencyHalfLife ? { recencyHalfLife } : {}),
+                ...(fewPathPrice ? { fewPathPrice } : {}),
+              },
+            }
+          : {}),
         ...(stopModes ? { stopModes: { ...settings.basePolicy?.stopModes, ...stopModes } } : {}),
       };
       db.run("UPDATE initiatives SET settings_json=? WHERE id=?", [
