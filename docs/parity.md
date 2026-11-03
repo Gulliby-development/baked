@@ -184,6 +184,7 @@ bun test tests/feature-parity.test.ts
 | Check a restated test row against the request's text | `/code-quality` | Not needed: quality.rowClaimCheck in config.json; an override shows as a refuted finding or a settled conflict in baked workflow report | `/v1/settings` | `settings/chat` |
 | New dependencies looked up before checks; Semgrep on the run's diff | `/code-quality`, `/workflow` | `baked workflow run`, `baked workflow report` | `/v1/settings`, `/v1/workflow/runs`, `/v1/workflow/runs/:id/report` | `settings/chat` |
 | Docs for the locked library versions a task uses | `/code-quality` | `baked workflow doctor` | `/v1/settings` | `settings/chat` |
+| Folder for run worktrees, and a probe for path-length failures in them | `/code-quality` | `baked workflow run`, `baked workflow quick`, `baked workflow doctor` +1 | `/v1/settings` | `settings/chat` |
 | Per-profile effort and compaction threshold (set in agent profile files) | `/workflow` | `baked workflow profiles`, `baked workflow route` | `/v1/workflow/profiles`, `/v1/workflow/route` | `settings/routing` |
 | Mutation gate with built-in budgets shared across changed files and installed tools | `/code-quality`, `/workflow` | `baked workflow run`, `baked workflow report` | `/v1/settings`, `/v1/workflow/runs`, `/v1/workflow/runs/:id/report` | `settings/chat` |
 | Property-based tests from marked acceptance criteria | `/code-quality`, `/workflow` | `baked workflow run`, `baked workflow report` | `/v1/settings`, `/v1/workflow/runs`, `/v1/workflow/runs/:id/report` | `settings/chat` |
