@@ -1,4 +1,5 @@
 import type { ConfigScope } from "../../components/layout/shared.js";
+import { promptText } from "../../components/ui/dialogs/index.js";
 import { loadConfig, loadEffectiveProjectConfig, mergeConfigs } from "../../config/index.js";
 import { existingWorkflowSession, reloadWorkflowSession } from "../../hooks/useWorkflow.js";
 import { useUIStore } from "../../stores/ui.js";
@@ -39,6 +40,7 @@ import {
   settingById,
   writeSettingPath,
 } from "../settings/schema.js";
+import { worktreeRootCheck } from "../settings/values.js";
 import { telemetryStatus } from "../telemetry.js";
 import { applyTheme, getThemeTokens, listThemes, useThemeStore } from "../theme/index.js";
 import { diagnosticsTimeoutMs } from "../tools/edit-diagnostics.js";
@@ -817,24 +819,41 @@ function handleCodeQuality(_input: string, ctx: CommandContext): void {
         : setting.help,
     };
   };
+  // A folder setting shows its value and the doctor's check of it (#2461).
+  const pathRow = (setting: SettingDefinition) => {
+    const value = currentValue(setting.id);
+    const check =
+      setting.id === "workflows.worktreeRoot"
+        ? worktreeRootCheck(process.cwd(), typeof value === "string" ? value : null)
+        : null;
+    return {
+      value: setting.id,
+      label: `${setting.label}: ${typeof value === "string" ? value : "not set"}`,
+      description: check
+        ? `${check.title}${check.detail ? `: ${check.detail}` : ""}${check.fix ? `. ${check.fix}` : ""}`
+        : setting.help,
+    };
+  };
   // A rule row is `SETTING_ID|RULE_ID`; other rows are the setting ID.
   const buildOptions = () =>
     settings.flatMap((setting) =>
       setting.type === "library-docs"
         ? [docsRow(setting)]
-        : setting.type === "string-list" && setting.catalog === "quality-rules"
-          ? qualityRuleCatalog().map((rule) => ({
-              value: `${setting.id}|${rule.name}`,
-              label: `Rule ${rule.name}: ${offList(setting.id).includes(rule.name) ? "off" : "on"}`,
-              description: rule.description,
-            }))
-          : [
-              {
-                value: setting.id,
-                label: `${setting.label}: ${String(currentValue(setting.id) ?? "")}`,
-                description: setting.help,
-              },
-            ],
+        : setting.type === "path"
+          ? [pathRow(setting)]
+          : setting.type === "string-list" && setting.catalog === "quality-rules"
+            ? qualityRuleCatalog().map((rule) => ({
+                value: `${setting.id}|${rule.name}`,
+                label: `Rule ${rule.name}: ${offList(setting.id).includes(rule.name) ? "off" : "on"}`,
+                description: rule.description,
+              }))
+            : [
+                {
+                  value: setting.id,
+                  label: `${setting.label}: ${String(currentValue(setting.id) ?? "")}`,
+                  description: setting.help,
+                },
+              ],
     );
   const next = (row: string): { id: string; value: unknown } | null => {
     const [id = "", rule] = row.split("|");
@@ -865,6 +884,29 @@ function handleCodeQuality(_input: string, ctx: CommandContext): void {
     scopeEnabled: true,
     initialScope: ctx.detectScope("quality"),
     onSelect: (row, scope) => {
+      const pathSetting = settingById(row);
+      if (pathSetting?.type === "path") {
+        void (async () => {
+          const current = currentValue(row);
+          const text = await promptText({
+            title: pathSetting.label,
+            message: "Absolute, starting with ~, or relative to the project. Empty unsets it.",
+            placeholder: pathSetting.placeholder,
+            initial: typeof current === "string" ? current : "",
+          });
+          if (text === null) return;
+          const value = text.trim() || undefined;
+          // Leaving the key out of the scope unsets it there.
+          ctx.saveToScope(patch(row, value), scope ?? "project");
+          effective = writeSettingPath(effective, row, value);
+          sysMsg(
+            ctx,
+            `${row} ${value ?? "unset"} (${scope ?? "project"}); new workflow runs use it`,
+          );
+          useUIStore.getState().updatePickerOptions(buildOptions());
+        })();
+        return;
+      }
       if (settingById(row)?.type === "library-docs") {
         void (async () => {
           const current = currentValue(row) as LibraryDocsSource | null;

@@ -9,10 +9,10 @@ import { documentedSurfaceRate } from "../src/core/workflows/initiatives/documen
 import { estimateInitiative } from "../src/core/workflows/initiatives/estimate.js";
 import { adaptiveFirstByteMs } from "../src/core/llm/provider-health.js";
 import { planApprovalDecision } from "../src/core/workflows/auto-approval.js";
-import { CAPACITY_PROBE, exceedsTestCapacity, rowVolumePrice } from "../src/core/workflows/sizing.js";
+import { CAPACITY_PROBE, exceedsTestCapacity, multiFileSplit, rowVolumePrice, type SizingReport } from "../src/core/workflows/sizing.js";
 import { type CallRate, chainCosts, openTrace, type PlanPriceReplay, replayChainEscalation, replayEdgeRecord, replayInitiativeStarts, replayPlanApprovals, replayPlanPrices, replayActiveTimes, replayPoolBounds, replayTestSplits, replayTrace, type TestSplitRule } from "../src/core/workflows/trace.js";
 import { type EdgeRecord, edgeCrashDecision } from "../src/core/verification/edge-inputs.js";
-import { ROOT, traces } from "./helpers/replay-corpus.js";
+import { ROOT, traces, traces as corpusTraces } from "./helpers/replay-corpus.js";
 import { fixturePolicy } from "./helpers/workflow-fixture.js";
 
 // #1649, #1715: every recorded bench-round trace replays through the current host decisions: the
@@ -288,6 +288,21 @@ describe("initiative starts replay on rewound traces (#1707)", () => {
     const ratios = replay!.starts.filter((b) => b.forecastUsd !== null).map((b) => b.forecastUsd! / replay!.finalUsd!);
     expect(Math.max(...ratios)).toBeLessThan(1.6);
     expect(replay?.newStartStops).toBe(0);
+  }, 120000);
+
+  test("#2753: a replay of the first start alone gives the first start a full replay gives", () => {
+    // The pools and ranges backtests read `starts[0]` only. The later starts are still rewound
+    // through, so the first start is priced on the same rewound trace, at either half-life.
+    for (const [trace, options] of [
+      ["R52/srcwhere", {}],
+      ["R62/stepvet", { recencyHalfLife: 2 }],
+    ] as const) {
+      const path = join(ROOT, `${trace}.sqlite.gz`);
+      const full = replayInitiativeStarts(path, options);
+      const first = replayInitiativeStarts(path, { ...options, firstStartOnly: true });
+      expect(full[0]?.starts.length).toBeGreaterThan(1);
+      expect(first.map((r) => r.starts)).toEqual(full.map((r) => r.starts.slice(0, 1)));
+    }
   }, 120000);
 
   test("#1890: R59 wheeltags prices its waiting features at its own stage mix, and pick-command could grow past where it stopped", () => {
@@ -645,6 +660,54 @@ describe("test task splits replay on recorded sizing reports (#1789)", () => {
     }
   }, 120000);
 
+  test("a multi-file task splits as before unless all its files are docs or text: the README and LICENSE tasks no longer split (#2649)", () => {
+    // Every recorded non-test, non-supplied task of two or more files, decided again by
+    // `multiFileSplit` on its recorded estimate and the paths of the plan sizing priced.
+    const changed: string[] = [];
+    const kept: string[] = [];
+    for (const path of corpusTraces(ROOT)) {
+      const { store, dispose } = openTrace(path);
+      try {
+        const reports = store.connection
+          .query("SELECT run_id AS runId, id, logical_path AS report, created_at AS at FROM artifacts WHERE logical_path LIKE 'sizing/plan-%' ORDER BY created_at, id")
+          .all() as { runId: string; id: string; report: string; at: number }[];
+        for (const { runId, id, report: name, at } of reports) {
+          const report = JSON.parse(store.readArtifact(runId, id)) as Partial<SizingReport>;
+          const plan = store.connection
+            .query("SELECT id FROM artifacts WHERE run_id=? AND logical_path='tasks.json' AND created_at<=? ORDER BY created_at DESC, id DESC LIMIT 1")
+            .get(runId, at) as { id: string } | null;
+          if (!plan || !report.tasks || typeof report.maxAttemptTokens !== "number") continue;
+          const graph = JSON.parse(store.readArtifact(runId, plan.id)) as { tasks: { id: string; writes: { path: string; action: string }[] }[] };
+          for (const task of report.tasks) {
+            if (task.kind === "test" || task.basis === "supplied" || task.files < 2) continue;
+            const paths = graph.tasks.find((t) => t.id === task.taskId)?.writes.filter((w) => w.action !== "delete").map((w) => w.path) ?? [];
+            if (paths.length !== task.files) continue;
+            const replayed = multiFileSplit(task.estimate, paths, report.maxAttemptTokens);
+            const label = `${relative(ROOT, path).replaceAll("\\", "/")} ${runId.slice(0, 8)} ${name} ${task.taskId}`;
+            if (replayed?.split !== task.oversized) changed.push(`${label} ${paths.join(",")}`);
+            else if (task.oversized) kept.push(label);
+          }
+        }
+      } finally {
+        dispose();
+      }
+    }
+    // Only README and LICENSE tasks change, from split to whole (six documentation features). callmend's files then cost 268,807;
+    // verhop's 614,482 over three tasks; manlens's 262,605.
+    expect(changed).toEqual([
+      "R61/manlens.sqlite.gz 25d4802d sizing/plan-0.json T001 README.md,LICENSE",
+      "R74/callmend.sqlite.gz 1770c254 sizing/plan-0.json T001 README.md,LICENSE",
+      "R75/latcell.sqlite.gz f4a5066f sizing/plan-0.json T001 README.md,LICENSE",
+      "R75/maskback.sqlite.gz 13bb147b sizing/plan-0.json T001 README.md,LICENSE",
+      "R77/trailspin.sqlite.gz ae89f897 sizing/plan-0.json T001 README.md,LICENSE",
+      "R79/verhop.sqlite.gz f0a2962f sizing/plan-0.json T001 README.md,LICENSE",
+    ]);
+    // R68 ewvet's three code files and the R50 md-site skeleton (4 code files and a README, expected
+    // 478k, whose parts spent 1.23M) still split.
+    expect(kept).toContain("R68/ewvet.sqlite.gz 82293901 sizing/plan-0.json T001");
+    expect(kept).toContain("R50/md-site.sqlite.gz 2a841b03 sizing/plan-0.json T001");
+  }, 300000);
+
   test("R62 stepvet: tagexpr's active time is sized at the initiative's own pace and covers what it used (#2336)", () => {
     // tagexpr was sized at the history's 135k tokens per minute to 2,100,000 ms, stopped there
     // (#1958) and finished at 2,457,115 ms after a raise; the initiative's finished runs had run at 71k.
@@ -656,12 +719,17 @@ describe("test task splits replay on recorded sizing reports (#1789)", () => {
       const [plan] = replayActiveTimes(store, runId);
       expect(plan).toMatchObject({ report: "sizing/plan-0.json", recorded: { basis: "history", after: 2_100_000 }, replayed: { basis: "initiative", tokensPerMinute: 71_173 } });
       expect(plan?.replayed.after).toBeGreaterThan(store.run(runId).active_ms);
-      // #2414, shadow: the clean pace is replayed beside the deciding one from the five finished
-      // runs' first-response waits (5,746,801 ms, from their calls before `silentMs` was recorded).
-      // Without them the runs pass the history's pace, so it would keep 135k and the 2,100,000 ms
-      // cap: first-response latency is no stall, which the default switch (R78) must tell apart.
-      expect(plan?.clean).toMatchObject({ basis: "history", tokensPerMinute: 135_149, silentMs: 5_746_801, after: 2_100_000 });
-      expect(plan?.clean?.rates).toHaveLength(5);
+      // #2414, shadow: the clean pace is replayed beside the deciding one from the finished runs'
+      // first-response waits (from their calls' `firstByteMs`, before `silentMs` was recorded).
+      // With the whole wait left out (6.84M ms on Codex, which buffers its answer) five runs passed
+      // the history's 135k and the shadow kept it and the 2,100,000 ms cap, undoing #2336. Only the
+      // stall part is left out now (#2424): 19,279 ms past the calls' deadline bases, so the seven
+      // clean rates keep the initiative's own pace and none of them beats the history's.
+      expect(plan?.clean).toMatchObject({ basis: "initiative", tokensPerMinute: 71_173, silentMs: 6_840_104, stallMs: 19_279 });
+      expect(plan?.clean?.rates).toHaveLength(7);
+      expect(plan?.clean?.after).toBe(plan?.replayed.after);
+      expect(plan?.clean?.after).toBeGreaterThan(store.run(runId).active_ms);
+      expect(plan?.clean?.rates.filter((rate) => rate > 135_149)).toEqual([]);
     } finally {
       dispose();
     }

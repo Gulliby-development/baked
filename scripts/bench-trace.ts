@@ -162,7 +162,7 @@ if (command === "export" && args.length === 2) {
           );
         for (const b of run.activeTimes.filter((b) => b.clean && b.clean.after !== b.recorded.after))
           console.log(
-            `    ${b.report}: clean pace (shadow) would cap ${b.clean?.after} ms at ${b.clean?.tokensPerMinute} tokens/min (${b.clean?.basis}, ${b.clean?.rates.length} clean runs, ${b.clean?.silentMs} ms silent), recorded ${b.recorded.after} ms`,
+            `    ${b.report}: clean pace (shadow) would cap ${b.clean?.after} ms at ${b.clean?.tokensPerMinute} tokens/min (${b.clean?.basis}, ${b.clean?.rates.length} clean runs, ${b.clean?.silentMs} ms silent, ${b.clean?.stallMs ?? "?"} ms of it stalled), recorded ${b.recorded.after} ms`,
           );
         for (const b of run.repeatedFailures.filter((b) => b.replayed === "repeat"))
           console.log(

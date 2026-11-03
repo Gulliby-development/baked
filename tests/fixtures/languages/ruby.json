@@ -91,6 +91,22 @@
     "diagnosticFormats": ["lib/calc.rb: syntax error, unexpected end-of-input"],
     "testClasses": null,
     "testDeclarations": ["test/sum_test.rb: 2 tests, per class 2"],
-    "rowFileShapes": null
+    "rowFileShapes": [
+      "test/split_rows_test.rb",
+      "require \"minitest/autorun\"",
+      "require_relative \"../lib/split\"",
+      "",
+      "class SplitRowsTest < Minitest::Test",
+      "  ROWS = [",
+      "    [\"a,b\", [\"a\", \"b\"]],",
+      "    [\"a\\tb,c\", [\"a\\tb\", \"c\"]]",
+      "  ].freeze",
+      "",
+      "  def test_rows",
+      "    ROWS.each { |input, out| assert_equal out, Split.split(input) }",
+      "  end",
+      "end",
+      ""
+    ]
   }
 }

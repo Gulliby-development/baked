@@ -150,7 +150,7 @@ test("#1643 initiative ceiling gate uses central stage prices from shared histor
       expect(shareShortfall(over, view.features[1]!)?.message).toContain("above its $37.50 ceiling");
       const at = { ...view, budget: { ...view.budget, cost: { ...view.budget.cost, forecastUsd: 37.5, forecastBinding: true } } };
       expect(shareShortfall(at, view.features[1]!)).toBeNull();
-      const estimate = initiatives.estimate("values", 0);
+      const estimate = initiatives.estimate("values");
       expect(view.budget.cost.forecastUsd).toBeCloseTo(0.72 + estimate.features.slice(1)
         .reduce((sum, f) => sum + (f.costUsd!.low + f.costUsd!.high) / 2, 0), 2);
     } finally { await fixture.dispose(); }
@@ -304,6 +304,9 @@ describe("host-written acceptance rows in the case-walk and mutation gates (#159
     pest: { harness: "tests/harness.php", test: "tests/RowsTest.php" },
     exunit: { harness: "tests/harness.exs", test: "tests/rows_test.exs" },
     dart: { harness: "tests/harness.dart", test: "tests/rows_test.dart" },
+    kotlin: { harness: "tests/Harness.kt", test: "tests/RowsTest.kt", package: "tests" },
+    scalatest: { harness: "tests/Harness.scala", test: "tests/RowsSuite.scala" },
+    munit: { harness: "tests/Harness.scala", test: "tests/RowsSuite.scala", package: "tests" },
   } as const;
   test.each(Object.keys(layouts) as (keyof typeof layouts)[])("%s retains every case in its JSON data and keeps generated tests out of mutation proposals", async (framework) => {
     const root = mkdtempSync(join(tmpdir(), "baked-row-gate-"));
@@ -321,8 +324,9 @@ describe("host-written acceptance rows in the case-walk and mutation gates (#159
       const check = caseCheck(spec, task, { checks: [] });
       expect(check).toBeDefined();
       expect(await check?.(root)).toEqual([]);
-      // Java, C# and Dart tests hold the rows themselves, and the host refuses any change to that file.
-      if (framework === "junit" || framework === "xunit" || framework === "dart") expect(files[1]?.content).toMatch(/\b34L?\b.*\b68L?\b/);
+      // Java, C#, Dart, Kotlin and Scala tests hold the rows themselves, and the host refuses any
+      // change to that file.
+      if (["junit", "xunit", "dart", "kotlin", "scalatest", "munit"].includes(framework)) expect(files[1]?.content).toMatch(/\b34L?\b.*\b68L?\b/);
       else {
         writeFileSync(join(root, "tests/rows.json"), JSON.stringify(artifact.rows.slice(0, 1)));
         expect((await check?.(root))?.join()).toContain("34");
@@ -369,6 +373,9 @@ describe("gate matrix: inline rows block holds its own cells (#1997)", () => {
     pest: { mode: "inline", framework: "pest", test: "tests/CalcTest.php" },
     exunit: { mode: "inline", framework: "exunit", test: "test/calc_test.exs" },
     dart: { mode: "inline", framework: "dart", test: "test/calc_test.dart" },
+    kotlin: { mode: "inline", framework: "kotlin", package: "com.ex.calc", test: "src/test/kotlin/com/ex/calc/CalcTest.kt" },
+    scalatest: { mode: "inline", framework: "scalatest", test: "src/test/scala/CalcSuite.scala" },
+    munit: { mode: "inline", framework: "munit", test: "src/test/scala/CalcSuite.scala" },
   };
   const shapes: [string, unknown][] = [
     ["two-line CRLF text", ["[a]\r\nb=1\r\n", {}]],
@@ -5813,6 +5820,24 @@ describe("gate matrix: no tests collected (#1864)", () => {
   ];
   for (const [stack, output] of NO_TESTS)
     test(`${stack}: no test collected`, () => expect(noTestsCollected(output)).toBe(true));
+  // #2778: one part's "no tests" line beside another part that ran tests. go 1.24.7 (`go test
+  // ./...` failing, and passing from the test cache), Elixir 1.14 (umbrella `mix test`), and a
+  // Gradle multi-project build in its documented console output.
+  test("a part without tests beside a part that ran or failed tests is not 'no tests'", () => {
+    expect(noTestsCollected("--- FAIL: TestF (0.00s)\n    a_test.go:3: \nFAIL\nFAIL\texample.com/m/a\t0.003s\n?   \texample.com/m/b\t[no test files]\nFAIL")).toBe(false);
+    expect(noTestsCollected("FAIL\texample.com/m/a [build failed]\n?   \texample.com/m/b\t[no test files]\nFAIL")).toBe(false);
+    expect(noTestsCollected("ok  \texample.com/m/a\t(cached)\nok  \texample.com/m/c\t0.003s [no tests to run]")).toBe(false);
+    expect(noTestsCollected("==> a\n  1) test x (ATest)\n     apps/a/test/a_test.exs:3\n\nFinished in 0.01 seconds (0.00s async, 0.01s sync)\n1 test, 1 failure\n\nRandomized with seed 60860\n==> b\nThere are no tests to run")).toBe(false);
+    expect(noTestsCollected("> Task :lib:test FAILED\n\nLibTest > adds() FAILED\n    org.opentest4j.AssertionFailedError at LibTest.java:9\n\n2 tests completed, 1 failed\n\n> Task :app:test FAILED\nThere are test sources present and no filters are applied, but the test task did not discover any tests to execute.")).toBe(false);
+    // Every Go package without tests, or filtered to none, is still "no tests".
+    expect(noTestsCollected("?   \texample.com/m/b\t[no test files]\nok  \texample.com/m/a\t(cached) [no tests to run]")).toBe(true);
+  });
+  // #2778: `testsRan` takes a package's cached result as a package that ran tests.
+  test("go: a cached package beside one without test files did not run zero tests", () => {
+    expect(testsRan("ok  \texample.com/m/a\t(cached)\n?   \texample.com/m/b\t[no test files]")).toBeNull();
+    expect(testsRan("ok  \texample.com/m/a\t0.004s\tcoverage: 100.0% of statements\n?   \texample.com/m/b\t[no test files]")).toBeNull();
+    expect(testsRan("ok  \texample.com/m/a\t(cached) [no tests to run]\n?   \texample.com/m/b\t[no test files]")).toEqual({ tool: "go", count: 0 });
+  });
   test("a failing test and a passing run are not 'no tests'", () => {
     expect(noTestsCollected("FAILED tests/test_tags.py::test_wheel - AssertionError\n1 failed in 0.02s")).toBe(false);
     expect(noTestsCollected(" 3 pass\n 0 fail\nRan 3 tests across 1 file.")).toBe(false);
