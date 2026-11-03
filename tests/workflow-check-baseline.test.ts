@@ -7,8 +7,10 @@ import {
   commandKey,
   failureSignature,
   diagnosticCount,
+  failedTests,
   outputCounts,
   testCount,
+  testsRan,
 } from "../src/core/verification/output-counts.js";
 import type { RunPolicy } from "../src/core/workflows/schemas.js";
 import { baselineDebt, baselineKeys } from "../src/core/verification/task-end-check.js";
@@ -56,6 +58,38 @@ describe("check output counts", () => {
     expect(testCount("[INFO] Tests run: 9, Failures: 0, Errors: 0, Skipped: 0")).toEqual({ tool: "maven", count: 9 });
     expect(testCount("=== RUN   TestA\n=== RUN   TestA/sub\n=== RUN   TestB\nPASS")).toEqual({ tool: "go", count: 2 });
     expect(testCount("ok  \texample.com/app\t0.01s")).toBeNull();
+  });
+
+  // #2782: surefire 3.2.5 with `-Dsurefire.rerunFailingTestsCount=2`, a test that fails once and
+  // then passes (BUILD SUCCESS), from the line after "T E S T S" (stack frames left out).
+  test("reads a Maven summary with flakes, and a flaky test that passed is not failed", () => {
+    const flaky = [
+      "[INFO] Running app.AppTest",
+      "[ERROR] Tests run: 2, Failures: 1, Errors: 0, Skipped: 0, Time elapsed: 0.071 s <<< FAILURE! -- in app.AppTest",
+      "[ERROR] app.AppTest.flaky -- Time elapsed: 0.007 s <<< FAILURE!",
+      "org.opentest4j.AssertionFailedError: expected: <true> but was: <false>",
+      "",
+      "[INFO] Running app.AppTest",
+      "[INFO] Tests run: 1, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 0.014 s -- in app.AppTest",
+      "[INFO] ",
+      "[INFO] Results:",
+      "[INFO] ",
+      "[WARNING] Flakes: ",
+      "[WARNING] app.AppTest.flaky",
+      "[ERROR]   Run 1: AppTest.flaky:6 expected: <true> but was: <false>",
+      "[INFO]   Run 2: PASS",
+      "[INFO] ",
+      "[INFO] ",
+      "[WARNING] Tests run: 2, Failures: 0, Errors: 0, Skipped: 0, Flakes: 1",
+      "[INFO] ",
+      "[INFO] BUILD SUCCESS",
+    ].join("\n");
+    expect(testCount(flaky)).toEqual({ tool: "maven", count: 2 });
+    expect(testsRan(flaky)).toEqual({ tool: "maven", count: 2 });
+    expect(failedTests(flaky)).toEqual({ tool: "maven", names: [] });
+    // A test that failed every rerun is still failed.
+    const failed = "[ERROR] app.AppTest.broken -- Time elapsed: 0.007 s <<< FAILURE!\n[INFO] Results:\n[INFO] \n[ERROR] Failures: \n[ERROR] app.AppTest.broken\n[ERROR]   Run 1: AppTest.broken:6 expected: <true> but was: <false>\n[ERROR]   Run 2: AppTest.broken:6 expected: <true> but was: <false>\n[INFO] \n[ERROR] Tests run: 2, Failures: 1, Errors: 0, Skipped: 0";
+    expect(failedTests(failed)).toEqual({ tool: "maven", names: ["app.AppTest.broken"] });
   });
 
   // A language without a parser of its own still gets the fewer-tests baseline (#1488).
@@ -158,6 +192,30 @@ describe("baseline comparison in update runs", () => {
     });
     const claims = fixture.service.store.findings(run.runId).map((f) => (JSON.parse(f.body_json) as { claim: string }).claim);
     expect(claims.filter((c) => c.startsWith("Required check lint"))).toEqual([]);
+    expect(fixture.service.store.run(run.runId).status).toBe("completed");
+  });
+
+  // #2782: surefire's summary of a module whose rerun test passed on a later run ends in
+  // ", Flakes: 1" (surefire 3.2.5, `-Dsurefire.rerunFailingTestsCount=2`, BUILD SUCCESS). The
+  // baseline of a two-module build read 9 tests, the run's read only the module without a flake.
+  test("a Maven module whose rerun test passed keeps its tests in the count (#2782)", async () => {
+    const summary = (core: string) => `[INFO] Reactor: core\n${core}\n[INFO] Reactor: web\n[INFO] Tests run: 5, Failures: 0, Errors: 0, Skipped: 0\n[INFO] BUILD SUCCESS`;
+    const plain = summary("[INFO] Tests run: 4, Failures: 0, Errors: 0, Skipped: 0");
+    const flaky = summary("[WARNING] Flakes: \n[WARNING] app.AppTest.flaky\n[ERROR]   Run 1: AppTest.flaky:6 expected: <true> but was: <false>\n[INFO]   Run 2: PASS\n[INFO] \n[INFO] \n[WARNING] Tests run: 4, Failures: 0, Errors: 0, Skipped: 0, Flakes: 1");
+    const maven = {
+      ...lint,
+      id: "tests",
+      args: ["-e", `console.log((await Bun.file('value.txt').exists()) ? ${JSON.stringify(flaky)} : ${JSON.stringify(plain)})`],
+    };
+    const fixture = workflowFixture({ policy: { ...fixturePolicy, checks: [...fixturePolicy.checks, maven] } });
+    cleanups.push(fixture.dispose);
+    mkdirSync(join(fixture.root, "src"));
+    writeFileSync(join(fixture.root, "src", "a.ts"), "export const a = 1;\n");
+    const run = await driveToChecks(fixture);
+
+    expect(baseline(fixture, run.runId)?.counts[commandKey(maven)]).toEqual([{ kind: "tests", tool: "maven", count: 9 }]);
+    const claims = fixture.service.store.findings(run.runId).map((f) => JSON.stringify(JSON.parse(f.body_json)));
+    expect(claims.filter((c) => c.includes("tests fell from"))).toEqual([]);
     expect(fixture.service.store.run(run.runId).status).toBe("completed");
   });
 

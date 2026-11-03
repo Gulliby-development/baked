@@ -43,7 +43,7 @@ for (const cohort of [...backtests, { id: "selwhy", count: 12, actualUsd: null }
         expect(view.budget.cost.forecastUsd!).toBeGreaterThan(cohort.actualUsd * 0.75);
         expect(view.budget.cost.forecastUsd!).toBeLessThan(cohort.actualUsd * 1.25);
       }
-      const estimate = initiatives.estimate("values", 0);
+      const estimate = initiatives.estimate("values");
       expect(estimate.progress.ratio).toBeNull();
       const remaining = estimate.features.slice(1);
       const centralUsd = remaining.reduce((sum, f) => sum + (f.costUsd!.low + f.costUsd!.high) / 2, 0);
