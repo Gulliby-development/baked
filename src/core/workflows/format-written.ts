@@ -8,6 +8,8 @@ import { cwdPath, isCodePath } from "./check-policy.js";
 import { unresolvedChecks } from "./check-preflight.js";
 import { detectGates } from "./gates.js";
 import { programName } from "./launcher.js";
+import { missingPackages, type PackageProbe, runPackageProbe } from "./package-probe.js";
+import { PS_FORMAT_CHECK, PS_FORMAT_FIX } from "./ps-format.js";
 import { stripComments } from "./quality/code-mask.js";
 import { STYLER_CHECK_FILES, STYLER_FIX } from "./r-tools.js";
 import { toolchainCommand } from "./toolchain.js";
@@ -264,6 +266,19 @@ const mixFormat: FileFormatter = {
   fix: () => ["format"],
 };
 
+// No range: the psformat gate formats whole files (#2595). Invoke-Formatter has `-Range` (1-based
+// line and column) on a script's text, which a later range form could pass. Its gate is a
+// `pwsh -Command` script, which `formatsPath` reads as an operand, so the format-written check runs
+// on the files a task writes whether or not the run's checks hold the gate, as styler's does.
+/** The gate's host flags (`-NoProfile -NonInteractive -Command`), without its script. */
+const psHost = (args: readonly string[]) =>
+  args.filter((arg) => arg !== PS_FORMAT_CHECK && arg !== PS_FORMAT_FIX);
+const invokeFormatter: FileFormatter = {
+  runs: (program, args) => /^(?:pwsh|powershell)$/i.test(program) && args.includes(PS_FORMAT_CHECK),
+  check: (args, files) => [...psHost(args), PS_FORMAT_CHECK, ...files],
+  fix: (args) => [...psHost(args), PS_FORMAT_FIX],
+};
+
 const NPM_FORMATTERS = [biome, prettier, dprint, bunFmt];
 
 /**
@@ -306,9 +321,7 @@ export const FILE_FORMATTERS: LanguageRecord<readonly FileFormatter[]> = {
   sql: none(
     "SQLFluff's layout rules run in the `sqlfluff lint` gate, which covers each task's SQL files; `sqlfluff format` has no check mode",
   ),
-  powershell: none(
-    "PSScriptAnalyzer's Invoke-Formatter formats a script's text, not files; no gate runs it",
-  ),
+  powershell: [invokeFormatter],
   r: [styler],
 };
 
@@ -530,7 +543,9 @@ interface Written {
  * program does not resolve: a required check that cannot start
  * faults the run. A file the task creates whose content the request supplies whole (`supplied`,
  * #2504) is checked by an advisory `<gate>-supplied` check with no fixer: the formatter is
- * recorded, the request's bytes are kept.
+ * recorded, the request's bytes are kept. In a file it edits, the changed lines the request
+ * supplies (`suppliedLines`, 1-based, a verbatim diff's added lines) are left out of the range
+ * for the same reason (#2596).
  */
 export function formatWrittenChecks(
   root: string,
@@ -539,9 +554,16 @@ export function formatWrittenChecks(
   which?: (command: string, options: { PATH: string; cwd: string }) => string | null,
   base?: (path: string) => string | null | undefined,
   accepts: FlagProbe = helpListsFlag,
-  options: { rust?: boolean; supplied?: (path: string) => boolean } = {},
+  options: {
+    rust?: boolean;
+    supplied?: (path: string) => boolean;
+    suppliedLines?: (path: string, text: string) => ReadonlySet<number>;
+    /** Whether the gate's program loads its formatter package (#2817); probed by default. */
+    packages?: PackageProbe;
+  } = {},
 ): Check[] {
   const supplied = options.supplied ?? (() => false);
+  const suppliedLines = options.suppliedLines ?? (() => new Set<number>());
   // rustfmt has no advisory form here: a supplied file is left to the project's own gate.
   const rust = options.rust
     ? rustFormatWrittenChecks(
@@ -552,7 +574,42 @@ export function formatWrittenChecks(
         base,
       )
     : [];
-  return [...formatWrittenOf(root, checks, writes, which, base, accepts, supplied), ...rust];
+  return [
+    ...formatWrittenOf(
+      root,
+      checks,
+      writes,
+      which,
+      base,
+      accepts,
+      supplied,
+      suppliedLines,
+      options.packages ?? runPackageProbe,
+    ),
+    ...rust,
+  ];
+}
+
+/**
+ * `ranges` without the given 1-based lines, split where a line is taken out (#2596). A line with
+ * no letter or digit (`}`, `)`) stays: it is in every block, so it says nothing about who wrote it.
+ */
+export function rangesWithout(
+  ranges: readonly LineRange[],
+  lines: ReadonlySet<number>,
+  text: string,
+): LineRange[] {
+  if (!lines.size) return [...ranges];
+  const all = text.split("\n");
+  const out: [number, number][] = [];
+  for (const [start, end] of ranges)
+    for (let line = start; line <= end; line++) {
+      if (lines.has(line) && /\w/.test(all[line - 1] ?? "")) continue;
+      const last = out.at(-1);
+      if (last && last[1] === line - 1) last[1] = line;
+      else out.push([line, line]);
+    }
+  return out;
 }
 
 function formatWrittenOf(
@@ -563,7 +620,11 @@ function formatWrittenOf(
   base: ((path: string) => string | null | undefined) | undefined,
   accepts: FlagProbe,
   supplied: (path: string) => boolean,
+  suppliedLines: (path: string, text: string) => ReadonlySet<number>,
+  packages: PackageProbe,
 ): Check[] {
+  const needsMissing = (check: Check, cwd: string) =>
+    missingPackages(check, cwd, packages).length > 0;
   const files = new Map<string, Written[]>();
   for (const write of writes) {
     if (write.action === "delete" || !isCodePath(write.path)) continue;
@@ -579,7 +640,13 @@ function formatWrittenOf(
       if (before === undefined) continue;
       if (before !== null && !isStub(write.path, before)) {
         const text = readFileSync(absolute, "utf8");
-        const ranges = changedLineRanges(before, text);
+        // The lines the request supplies keep its bytes, as a supplied created file does (#2504):
+        // a range formatter that rewraps them makes `supplied_drift` report the file (#2596).
+        const ranges = rangesWithout(
+          changedLineRanges(before, text),
+          suppliedLines(write.path, text),
+          text,
+        );
         if (!ranges.length) continue;
         written = { path: write.path, edited: { ranges, text } };
       }
@@ -633,6 +700,9 @@ function formatWrittenOf(
         !(helpCommand && accepts(helpCommand, join(root, gate.check.cwd ?? "."), available.flag))
       )
         continue;
+      // Rscript or pwsh on the PATH without styler or PSScriptAnalyzer fails every check and
+      // fixer just the same (#2817).
+      if (needsMissing(gate.check, join(root, gate.check.cwd ?? "."))) continue;
       const found: Check[] = [];
       // The check runs in the gate's cwd: it holds only the files under it, named from there
       // (`fixPaths` stay workspace paths, as the host matches them).

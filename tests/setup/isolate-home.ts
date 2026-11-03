@@ -27,6 +27,13 @@ process.env.BAKED_LOGIN_SHELL_PATH = "0";
 // Workflow workers raise native notifications when a run waits; a test run must not reach the
 // developer's notification centre. Workers inherit the environment.
 process.env.BAKED_NO_SYSTEM_NOTIFICATIONS = "1";
+// Every intelligence worker (a workflow fixture's NativeAgentExecutor, a ContextManager) warmed up
+// the language servers of the workspace's languages that the machine has on PATH: on the
+// windows-latest image that started LLVM's clangd for a C++ fixture, a real long-lived process on
+// a worker thread spawned while the run started its own children, and a C++ scenario hung to its
+// 90 s limit there only (#2656; rust-analyzer before it, #2268). A test that needs a server starts
+// it itself, with a fake on PATH. `WorkerClient` passes the environment to every worker it starts.
+process.env.BAKED_NO_LSP_WARMUP = "1";
 // Workflow stores skip the per-commit disk flush: a test's database is thrown away, and on a CI
 // runner with a throttled disk the flush made every event take seconds (#1177).
 process.env.BAKED_WORKFLOW_DB_SYNC = "normal";

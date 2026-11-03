@@ -179,6 +179,16 @@ export const STOP_REASONS = {
     modes: NOT_ENFORCED,
     defaultMode: "shadow",
   },
+  chain_rewrite_repeat: {
+    label:
+      "A finding chain's next case comes after two rewrites of its symbol or family: the convergence ask instead of a third corrective",
+    // Shadow only until two bench rounds show no false would-stop (#2568, R83 md-site's
+    // `findDelimited`: T012 and T013 rewrote it and review found the next member); its promotion
+    // asks the person to converge with `rewrites` and the family, and the convergence gate reads
+    // `rewrites`, instead of opening the corrective.
+    modes: NOT_ENFORCED,
+    defaultMode: "shadow",
+  },
   repro_blind: {
     label:
       "A corrective's repro prints the same output after the attempt changed the finding's file, and reads a path outside its root",
@@ -296,6 +306,15 @@ export const STOP_REASONS = {
     modes: NOT_ENFORCED,
     defaultMode: "shadow",
   },
+  transcript_drift: {
+    label:
+      "A document the run delivered leaves a command transcript the request says it must hold exactly",
+    // Shadow only until two bench rounds show no false would-stop (#2648, R88 pokerank's README
+    // printf line with a doubled backslash, R87 citeseek the same); its promotion makes the line a
+    // finding the host proved on the document, which the review gate repairs in any round.
+    modes: NOT_ENFORCED,
+    defaultMode: "shadow",
+  },
   row_block_drift: {
     label:
       "A test file the run delivered lacks a quoted literal of a row the request prescribes for it, or holds a row beyond them",
@@ -389,6 +408,19 @@ export const STOP_REASONS = {
     // The run still blocks; its promotion leaves it `waiting` on a request a person answers with
     // the extend remedy, and its planned-ahead dependants count it as waiting, not stalled.
     modes: NOT_ENFORCED,
+    defaultMode: "shadow",
+  },
+  stream_output_limit: {
+    label:
+      "A model call's streamed output passes twice the profile's maxOutputTokens on a provider that takes no output limit (Codex)",
+    // Shadow by default (#2660, a follow-up of #2547: Codex sends no `max_output_tokens`, and
+    // #1479 ran a 10-minute response to the model's own limit). The Codex app-server adapter
+    // counts each step's streamed text and reasoning (`streamOutputDecision`) and the executor
+    // records `decision.would_stop` from the step's usage record. `stopModes: {
+    // stream_output_limit: "enforce" }` interrupts the turn and ends the step `length`, so the
+    // truncation notice applies; making that the default is a pull request of its own after two
+    // bench rounds with no false would-stop.
+    modes: STOP_MODES,
     defaultMode: "shadow",
   },
   cost: {

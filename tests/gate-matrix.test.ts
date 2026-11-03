@@ -7,6 +7,8 @@ import { evaluateAutoApproval, planScopeAdvice } from "../src/core/workflows/aut
 import { proseAfterRefusalScenario, refusalKinds } from "./helpers/prose-after-refusal-scenario.js";
 import { runScanner } from "../src/core/workflows/quality/rules.js";
 import { suppliedLineNumbers } from "../src/core/workflows/supplied-drift.js";
+import { ciCheckDrift } from "../src/core/workflows/ci-check-drift.js";
+import { upstreamSymbolGaps } from "../src/core/workflows/initiatives/upstream-symbols.js";
 import { GATE_PREREQUISITES, pendingPrerequisite } from "../src/core/workflows/gate-prerequisites.js";
 import { suspendClock } from "./helpers/suspend-clock.js";
 import { caseCheck } from "../src/core/verification/criteria-cases.js";
@@ -38,6 +40,7 @@ import { sourceManifest, TOOL_CACHES } from "../src/core/verification/snapshot.j
 import { openTrace, replayInitiativeStarts } from "../src/core/workflows/trace.js";
 import { linkDependencies, worktreePathRisks } from "../src/core/workflows/dependency-dirs.js";
 import { spawnSync } from "node:child_process";
+import { captureEndings, restoreEndings } from "../src/core/tools/line-endings.js";
 import {
   chmodSync,
   existsSync,
@@ -54,10 +57,16 @@ import { syntaxErrors } from "../src/core/intelligence/syntax-check.js";
 import { criterionCases, missingCases, testsHold, writtenTestPaths } from "../src/core/verification/criteria-cases.js";
 import { INLINE_HARNESS, type InlineRowTest, inlineRowFile, withInlineRows } from "../src/core/workflows/acceptance-rows-inline.js";
 import { reproExecutables, rerootRepro } from "../src/core/verification/repro.js";
+import { packageNeeds } from "../src/core/workflows/package-probe.js";
+import { redirectFixture } from "../src/core/verification/doc-examples.js";
 import { entryPointCommand } from "../src/core/verification/entry-points.js";
 import { noteSiblingFindings, ownerOfFinding } from "../src/core/verification/initiative-ownership.js";
 import { failureSignature as convergenceSignature, missingPlannedPaths, noTestsCollected } from "../src/core/verification/convergence.js";
-import { executeCheckCommand, exitStatus, ranNoTests, timedOutFailure } from "../src/core/verification/check-runner.js";
+import { CheckRunner, executeCheckCommand, exitStatus, ranNoTests, timedOutFailure } from "../src/core/verification/check-runner.js";
+import { emptyScriptNote, emptyTestScript } from "../src/core/verification/empty-test-script.js";
+import { FORMAT_FAILURE_READERS, hostDocumentFailure } from "../src/core/verification/host-documents.js";
+import { transcriptDrifts } from "../src/core/workflows/transcript-drift.js";
+import { colour, RUNNER_SUMMARIES } from "./helpers/coloured-runner-output.js";
 import { environmentFault, ENVIRONMENT_SIGNATURES, silentFailure } from "../src/core/verification/environment-faults.js";
 import { SWIFT_COMPILE_ERROR, SWIFT_SYMLINK_WARNING_ONLY, SWIFT_TEST_FATAL_ERROR, SWIFT_TEST_SILENT_EXIT_4, SWIFT_TESTING_FAILURE } from "./fixtures/swiftpm-crash-outputs.js";
 import { testReport } from "../src/core/verification/test-reports.js";
@@ -66,7 +75,10 @@ import { baselineRegression, buildFailure, buildRunner, diagnosticCount, failedT
 import { pwshExecutable, rscriptExecutable } from "../src/core/platform/index.js";
 import { lintrRun, STYLER_CHECK, STYLER_FIX, testthatOn, testthatRun } from "../src/core/workflows/r-tools.js";
 import { PESTER_RUN, pesterOn } from "../src/core/workflows/pester.js";
-import { baselineDebt, baselineKeys } from "../src/core/verification/task-end-check.js";
+import { PS_FORMAT_CHECK, PS_FORMAT_FIX } from "../src/core/workflows/ps-format.js";
+import { baselineDebt, baselineKeys, DIAGNOSTIC_FORMATS, diagnostics } from "../src/core/verification/task-end-check.js";
+import { isNoRow } from "../src/core/intelligence/language-records.js";
+import { fixerPaths } from "../src/core/workflows/fixer-languages.js";
 import { affectedTestCheck, isWrittenTestFile, plannedWrittenTests, writtenTestsCheck } from "../src/core/workflows/affected-tests.js";
 import { detectLanguages, touchesLanguageFiles } from "../src/core/workflows/language.js";
 import { launchedCommand } from "../src/core/workflows/launcher.js";
@@ -89,7 +101,7 @@ import {
   styleClaimShown,
   wholeUnitFixerCommand,
 } from "../src/core/workflows/check-policy.js";
-import { buildWrapper, cmakeGates, detectGates, executeGate, type GateToolchain } from "../src/core/workflows/gates.js";
+import { buildWrapper, cmakeGates, detectGates, executeGate, type GateToolchain, PSSA_LINT, pssaLint } from "../src/core/workflows/gates.js";
 import { committedTreeChecks } from "../src/core/workflows/committed-tree.js";
 import { fileScopedFormat, formatWrittenChecks, rustFormatWrittenChecks } from "../src/core/workflows/format-written.js";
 import { type LayoutResult, layoutVerdict } from "../src/core/workflows/layout-check.js";
@@ -140,7 +152,7 @@ test("#1643 initiative ceiling gate uses central stage prices from shared histor
       expect(shareShortfall(over, view.features[1]!)?.message).toContain("above its $37.50 ceiling");
       const at = { ...view, budget: { ...view.budget, cost: { ...view.budget.cost, forecastUsd: 37.5, forecastBinding: true } } };
       expect(shareShortfall(at, view.features[1]!)).toBeNull();
-      const estimate = initiatives.estimate("values", 0);
+      const estimate = initiatives.estimate("values");
       expect(view.budget.cost.forecastUsd).toBeCloseTo(0.72 + estimate.features.slice(1)
         .reduce((sum, f) => sum + (f.costUsd!.low + f.costUsd!.high) / 2, 0), 2);
     } finally { await fixture.dispose(); }
@@ -294,6 +306,9 @@ describe("host-written acceptance rows in the case-walk and mutation gates (#159
     pest: { harness: "tests/harness.php", test: "tests/RowsTest.php" },
     exunit: { harness: "tests/harness.exs", test: "tests/rows_test.exs" },
     dart: { harness: "tests/harness.dart", test: "tests/rows_test.dart" },
+    kotlin: { harness: "tests/Harness.kt", test: "tests/RowsTest.kt", package: "tests" },
+    scalatest: { harness: "tests/Harness.scala", test: "tests/RowsSuite.scala" },
+    munit: { harness: "tests/Harness.scala", test: "tests/RowsSuite.scala", package: "tests" },
   } as const;
   test.each(Object.keys(layouts) as (keyof typeof layouts)[])("%s retains every case in its JSON data and keeps generated tests out of mutation proposals", async (framework) => {
     const root = mkdtempSync(join(tmpdir(), "baked-row-gate-"));
@@ -311,8 +326,9 @@ describe("host-written acceptance rows in the case-walk and mutation gates (#159
       const check = caseCheck(spec, task, { checks: [] });
       expect(check).toBeDefined();
       expect(await check?.(root)).toEqual([]);
-      // Java, C# and Dart tests hold the rows themselves, and the host refuses any change to that file.
-      if (framework === "junit" || framework === "xunit" || framework === "dart") expect(files[1]?.content).toMatch(/\b34L?\b.*\b68L?\b/);
+      // Java, C#, Dart, Kotlin and Scala tests hold the rows themselves, and the host refuses any
+      // change to that file.
+      if (["junit", "xunit", "dart", "kotlin", "scalatest", "munit"].includes(framework)) expect(files[1]?.content).toMatch(/\b34L?\b.*\b68L?\b/);
       else {
         writeFileSync(join(root, "tests/rows.json"), JSON.stringify(artifact.rows.slice(0, 1)));
         expect((await check?.(root))?.join()).toContain("34");
@@ -359,6 +375,9 @@ describe("gate matrix: inline rows block holds its own cells (#1997)", () => {
     pest: { mode: "inline", framework: "pest", test: "tests/CalcTest.php" },
     exunit: { mode: "inline", framework: "exunit", test: "test/calc_test.exs" },
     dart: { mode: "inline", framework: "dart", test: "test/calc_test.dart" },
+    kotlin: { mode: "inline", framework: "kotlin", package: "com.ex.calc", test: "src/test/kotlin/com/ex/calc/CalcTest.kt" },
+    scalatest: { mode: "inline", framework: "scalatest", test: "src/test/scala/CalcSuite.scala" },
+    munit: { mode: "inline", framework: "munit", test: "src/test/scala/CalcSuite.scala" },
   };
   const shapes: [string, unknown][] = [
     ["two-line CRLF text", ["[a]\r\nb=1\r\n", {}]],
@@ -2809,12 +2828,14 @@ describe("gate matrix: Pester and PSScriptAnalyzer (#1498)", () => {
     expect(ids({ "tests/Sum.Tests.ps1": TEST })).toEqual([
       ["pester", "tests/*.Tests.ps1", true],
       ["psscriptanalyzer", "tests/*.Tests.ps1", false],
+      ["psformat", "tests/*.Tests.ps1", false],
     ]);
     expect(ids({ "Sum.Tests.ps1": TEST, "PSScriptAnalyzerSettings.psd1": "@{}\n" })).toEqual([
       ["pester", "*.Tests.ps1", true],
       ["psscriptanalyzer", "PSScriptAnalyzerSettings.psd1", true],
+      ["psformat", "PSScriptAnalyzerSettings.psd1", true],
     ]);
-    expect(ids({ "Sum.psd1": "@{ ModuleVersion = '1.0.0' }\n" })).toEqual([["psscriptanalyzer", "Sum.psd1", false]]);
+    expect(ids({ "Sum.psd1": "@{ ModuleVersion = '1.0.0' }\n" })).toEqual([["psscriptanalyzer", "Sum.psd1", false], ["psformat", "Sum.psd1", false]]);
     expect(ids({ "src/deep/Sum.ps1": "function Get-Sum {}\n" })).toEqual([]);
     const [pester] = detectGates(project({ "tests/Sum.Tests.ps1": TEST })).map((s) => s.check);
     expect(pester && [pester.executable, ...pester.args.slice(0, 3)]).toEqual([exe, "-NoProfile", "-NonInteractive", "-Command"]);
@@ -2836,12 +2857,44 @@ describe("gate matrix: Pester and PSScriptAnalyzer (#1498)", () => {
     expect(lint.args.at(-1)).toContain("-Severity ParseError,Error,Warning -EnableExit");
     expect(fixerCommand(lint.fix!, "src/Sum.ps1")).toEqual({
       executable: exe,
-      args: ["-NoProfile", "-NonInteractive", "-Command", "Invoke-ScriptAnalyzer", "-Fix", "-Path", "src/Sum.ps1"],
+      args: ["-NoProfile", "-NonInteractive", "-Command", "Invoke-ScriptAnalyzer", "-Settings", "./PSScriptAnalyzerSettings.psd1", "-Fix", "-Path", "src/Sum.ps1"],
     });
     const covering = (path: string) =>
       coveringChecks({ checks } as RunPolicy, { writes: [{ path, action: "create" }] }).map((c) => c.id);
-    expect(covering("src/Sum.ps1")).toEqual(["psscriptanalyzer"]);
+    expect(covering("src/Sum.ps1")).toEqual(["psscriptanalyzer", "psformat"]);
     expect(covering("README.md")).toEqual([]);
+  });
+
+  test("the psformat gate runs Invoke-Formatter on each script, and its format-written row names the task's files (#2595)", () => {
+    const root = project({ "src/Sum.ps1": "function Get-Sum {}\n", "PSScriptAnalyzerSettings.psd1": "@{}\n" });
+    const format = detectGates(root).find((s) => s.check.id === "psformat")?.check as Check;
+    expect(format.args).toEqual(["-NoProfile", "-NonInteractive", "-Command", PS_FORMAT_CHECK]);
+    expect(fixerCommand(format.fix!, "src/Sum.ps1").args).toEqual(["-NoProfile", "-NonInteractive", "-Command", PS_FORMAT_FIX, "src/Sum.ps1"]);
+    // The project's settings, the CodeFormatting preset without them; UTF-8 with the file's own BOM state.
+    expect(PS_FORMAT_CHECK).toContain("$s.Settings = './PSScriptAnalyzerSettings.psd1'");
+    expect(PS_FORMAT_FIX).toContain("New-Object Text.UTF8Encoding $bom");
+    expect(PS_FORMAT_CHECK).not.toContain("WriteAllText");
+    const [written] = formatWrittenChecks(root, [], [{ path: "src/Sum.ps1", action: "create" }], (c) => `/usr/bin/${c}`, undefined, undefined, { packages: () => true });
+    expect(written && [written.id, written.args.slice(-2), written.fix?.args.at(-1), written.required]).toEqual(["psformat-written", [PS_FORMAT_CHECK, "src/Sum.ps1"], PS_FORMAT_FIX, true]);
+    expect(diagnosticCount("src/Sum.ps1: would be reformatted by Invoke-Formatter\ntests/A.Tests.ps1: would be reformatted by Invoke-Formatter\n")).toEqual({ tool: "invoke-formatter", count: 2, errors: 2 });
+  });
+
+  test("the lint and its fixer name a root settings file, since the analyzer finds it only next to each -Path (#2591)", async () => {
+    const commands = (files: Record<string, string>) => {
+      const lint = detectGates(project(files)).find((s) => s.check.id === "psscriptanalyzer")?.check as Check;
+      return { lint: lint.args.at(-1), fix: fixerCommand(lint.fix!, "src/Foo.ps1").args.slice(3) };
+    };
+    const SCRIPT = { "src/Foo.ps1": "function Get-Foo {}\n", "Foo.psd1": "@{ ModuleVersion = '1.0.0' }\n" };
+    expect(commands({ ...SCRIPT, "PSScriptAnalyzerSettings.psd1": "@{}\n" })).toEqual({
+      lint: pssaLint("PSScriptAnalyzerSettings.psd1"),
+      fix: ["Invoke-ScriptAnalyzer", "-Settings", "./PSScriptAnalyzerSettings.psd1", "-Fix", "-Path", "src/Foo.ps1"],
+    });
+    expect(pssaLint("PSScriptAnalyzerSettings.psd1")).toStartWith("Invoke-ScriptAnalyzer -Settings ./PSScriptAnalyzerSettings.psd1 -Path . -Recurse -Severity ParseError,Error,Warning -EnableExit | ");
+    // Without a settings file both keep the default rules and the current commands.
+    expect(commands(SCRIPT)).toEqual({ lint: PSSA_LINT, fix: ["Invoke-ScriptAnalyzer", "-Fix", "-Path", "src/Foo.ps1"] });
+    expect(PSSA_LINT).toStartWith("Invoke-ScriptAnalyzer -Path . -Recurse ");
+    expect((await detectProfile(project({ ...SCRIPT, "PSScriptAnalyzerSettings.psd1": "@{}\n" }))).lint).toContain("Invoke-ScriptAnalyzer -Settings ./PSScriptAnalyzerSettings.psd1 -Path . -Recurse");
+    expect((await detectProfile(project(SCRIPT))).lint).toContain('"Invoke-ScriptAnalyzer -Path . -Recurse -EnableExit"');
   });
 
   test("the written-tests check runs only the task's Pester files, and leaves a project's own script alone", () => {
@@ -2877,6 +2930,21 @@ describe("gate matrix: testthat, lintr and styler (#1500)", () => {
   const ids = (files: Record<string, string>) =>
     detectGates(project(files)).map((s) => [s.check.id, s.check.args.at(-1), s.source, s.preselected]);
   const TEST = 'test_that("adds", {\n  expect_equal(add_numbers(1, 2), 3)\n})\n';
+  // #2817: a Windows queue runner had Rscript and no styler; the required styler-written check
+  // failed every attempt. Each R gate's command names the package the probe asks about.
+  test("styler-written only where Rscript loads styler; each R gate names its package (#2817)", () => {
+    const files = { "tests/testthat/test-sum.R": TEST };
+    const written = (has: boolean) =>
+      formatWrittenChecks(project(files), [], [{ path: "tests/testthat/test-sum.R", action: "create" }], (c) => `/usr/bin/${c}`, undefined, undefined, { packages: () => has }).map((c) => c.id);
+    expect(written(false)).toEqual([]);
+    expect(written(true)).toEqual(["styler-written"]);
+    const gates = detectGates(project({ DESCRIPTION: "Package: sumr\n", ...files })).map((s) => s.check);
+    expect(gates.map((c) => [c.id, packageNeeds(c).map((n) => n.name)])).toEqual([
+      ["testthat", ["testthat"]],
+      ["lintr", ["lintr"]],
+      ["styler", ["styler"]],
+    ]);
+  });
   test("a package gets testthat on the loaded package, lintr offered, styler offered; a scripts project tests its folder", () => {
     expect(ids({ DESCRIPTION: "Package: sumr\n", "tests/testthat/test-sum.R": TEST })).toEqual([
       ["testthat", testthatRun(true), "tests/testthat", true],
@@ -3236,7 +3304,7 @@ describe("gate matrix: format-written check on a dirty repository (#1837)", () =
   // An edited file: only the lines the run changed against its content before the run (#1837, R57
   // zonevet), by a formatter that formats a range; none where the formatter cannot.
   const edited = (files: Record<string, string>, path: string, before: string) =>
-    formatWrittenChecks(project(files), [], [{ path, action: "modify" }], (c) => `/usr/bin/${c}`, (p) => (p === path ? before : undefined), () => true).map((c) => [
+    formatWrittenChecks(project(files), [], [{ path, action: "modify" }], (c) => `/usr/bin/${c}`, (p) => (p === path ? before : undefined), () => true, { packages: () => true }).map((c) => [
       c.id,
       [c.executable, ...c.args].join(" "),
       c.fix ? [c.fix.executable, ...c.fix.args].join(" ") : null,
@@ -5080,6 +5148,68 @@ describe.skipIf(!toolchains)("gate matrix: toolchains", () => {
     const missing = await executeGate(root, { ...lint, args: ["lint", "tests"] }, new AbortController().signal);
     expect(missingPlannedPaths(missing.outputTail, [{ writes: [{ path: "tests/test_orders.sql", action: "create" }] } as Task])).toEqual(["tests/test_orders.sql"]);
   }, 300000);
+  test.skipIf(!available([[pwshExecutable(), "-NoProfile", "-NonInteractive", "-Command", "Import-Module PSScriptAnalyzer"]]))("pwsh: the psformat gate fails on a mis-indented script, its fixer formats it without a BOM and keeps one a file had (#2595)", async () => {
+    const root = project({
+      // The settings file is formatted too, so it keeps the 4-space indent it asks for.
+      "PSScriptAnalyzerSettings.psd1": "@{\n    IncludeRules = @('PSUseConsistentIndentation')\n    Rules = @{ PSUseConsistentIndentation = @{ Enable = $true; IndentationSize = 4; Kind = 'space' } }\n}\n",
+      "src/Plain.ps1": "function Get-Plain {\n  param([int]$A)\n  $A\n}\n",
+      "src/Marked.ps1": "\uFEFFfunction Get-Marked {\n  param([int]$A)\n  $A\n}\n",
+    });
+    const format = detectGates(root).find((s) => s.check.id === "psformat")?.check;
+    if (!format?.fix) throw new Error("no psformat gate");
+    const signal = new AbortController().signal;
+    const before = await executeGate(root, format, signal);
+    expect(before.status).toBe("failed");
+    expect(diagnosticCount(before.outputTail)).toEqual({ tool: "invoke-formatter", count: 2, errors: 2 });
+    for (const path of ["src/Plain.ps1", "src/Marked.ps1"]) {
+      const fix = fixerCommand(format.fix, path);
+      expect(spawnSync(fix.executable, fix.args, { cwd: root, encoding: "utf8", timeout: 120000 }).status).toBe(0);
+      expect(readFileSync(join(root, path), "utf8")).toContain("\n    param([int]$A)\n");
+    }
+    const bom = (path: string) => readFileSync(join(root, path)).subarray(0, 3).equals(Buffer.from([0xef, 0xbb, 0xbf]));
+    expect([bom("src/Plain.ps1"), bom("src/Marked.ps1")]).toEqual([false, true]);
+    const after = await executeGate(root, format, signal);
+    expect({ status: after.status, output: after.outputTail }).toEqual({ status: "passed", output: after.outputTail });
+  }, 300000);
+  test.skipIf(!available([[pwshExecutable(), "-NoProfile", "-NonInteractive", "-Command", "Import-Module PSScriptAnalyzer"]]))("pwsh: the analyzer's fixer applies the root settings file's layout rules to a file in src/ (#2591)", async () => {
+    const root = project({
+      "PSScriptAnalyzerSettings.psd1":
+        "@{\n    IncludeRules = @('PSUseConsistentIndentation')\n    Rules = @{ PSUseConsistentIndentation = @{ Enable = $true; IndentationSize = 4; Kind = 'space' } }\n}\n",
+      "src/Foo.ps1": "function Get-Foo {\n  param([int]$A)\n  $A\n}\n",
+    });
+    const lint = detectGates(root).find((s) => s.check.id === "psscriptanalyzer")?.check;
+    if (!lint?.fix) throw new Error("no analyzer gate");
+    const signal = new AbortController().signal;
+    expect((await executeGate(root, lint, signal)).status).toBe("failed");
+    const before = readFileSync(join(root, "src/Foo.ps1"), "utf8");
+    const fix = fixerCommand(lint.fix, "src/Foo.ps1");
+    expect(spawnSync(fix.executable, fix.args, { cwd: root, encoding: "utf8", timeout: 120000 }).status).toBe(0);
+    expect(readFileSync(join(root, "src/Foo.ps1"), "utf8")).not.toBe(before);
+    // The settings file is analyzed too, so it keeps the 4-space indent it asks for. The output is
+    // in the comparison so a failure shows the finding.
+    const after = await executeGate(root, lint, signal);
+    expect({ status: after.status, output: after.outputTail }).toEqual({ status: "passed", output: after.outputTail });
+  }, 300000);
+  test.skipIf(!available([[pwshExecutable(), "-NoProfile", "-NonInteractive", "-Command", "Import-Module PSScriptAnalyzer"]]))("pwsh: the analyzer's fixer through the host keeps each file's BOM state (#2592)", () => {
+    const root = project({
+      // A root module manifest: the analyzer gate is offered for it.
+      "App.psd1": "@{ ModuleVersion = '1.0.0' }\n",
+      "src/Plain.ps1": "function Get-Item2 {\n  gci\n}\n",
+      "src/Marked.ps1": "\uFEFFfunction Get-Item3 {\n  gci\n}\n",
+    });
+    const lint = detectGates(root).find((s) => s.check.id === "psscriptanalyzer")?.check;
+    if (!lint?.fix) throw new Error("no analyzer gate");
+    const bom = (path: string) => readFileSync(join(root, path)).subarray(0, 3).equals(Buffer.from([0xef, 0xbb, 0xbf]));
+    for (const path of ["src/Plain.ps1", "src/Marked.ps1"]) {
+      const before = captureEndings([join(root, path)]);
+      const fix = fixerCommand(lint.fix, path);
+      expect(spawnSync(fix.executable, fix.args, { cwd: root, encoding: "utf8", timeout: 120000 }).status).toBe(0);
+      restoreEndings(before);
+      expect(readFileSync(join(root, path), "utf8")).toContain("Get-ChildItem");
+    }
+    expect(bom("src/Plain.ps1")).toBe(false);
+    expect(bom("src/Marked.ps1")).toBe(true);
+  }, 300000);
   test.skipIf(!available([[pwshExecutable(), "-NoProfile", "-NonInteractive", "-Command", "Import-Module Pester -MinimumVersion 5.5; Import-Module PSScriptAnalyzer"]]))("pwsh: Pester and PSScriptAnalyzer gates fail on a defect, the analyzer's fixer repairs the file, and a missing path names its task (#1498)", async () => {
     const root = project({
       "PSScriptAnalyzerSettings.psd1": "@{ Severity = @('Error', 'Warning') }\n",
@@ -5523,6 +5653,156 @@ test("#1594 review and mutation gates route pathless deliverables without hiding
 
 // #1864: a required test check that collected no test, in a run whose plan writes none, is no
 // failure. Each stack's "no test" output is recognized; a real failure and a skipped-only run are not.
+// #2615: every runner `testCount` reads gives the same count, run count and failed tests on its
+// coloured output as on its plain output. `RUNNER_SUMMARIES` is typed by `TestRunner`, so a runner
+// added to the parsers needs its samples there before this compiles.
+// #2631: the check environment gives plain output for the real tools, under a parent that forces
+// colour as CI does. ruff reads any FORCE_COLOR value as "force", so the environment drops it.
+describe("gate matrix: plain output per tool (#2631)", () => {
+  const ruff = spawnSync("ruff", ["--version"], { stdio: "ignore" }).status === 0;
+  test.skipIf(!ruff)("ruff check and ruff format --check print no escape as checks", async () => {
+    const root = mkdtempSync(join(tmpdir(), "baked-plain-ruff-"));
+    const saved = process.env.FORCE_COLOR;
+    process.env.FORCE_COLOR = "1";
+    try {
+      writeFileSync(join(root, "a.py"), "import os\nx=1\n");
+      const runner = new CheckRunner(undefined as unknown as WorkflowStore, new ProcessScope());
+      for (const args of [["check", "."], ["format", "--check", "."]]) {
+        const check: Check = { id: "ruff", executable: "ruff", args, cwd: ".", timeoutMs: 60000, required: true, scope: "feature", envNames: [], writes: [] };
+        const result = await runner.measure(check, new AbortController().signal, root, null);
+        expect([args.join(" "), result.status, result.output.includes("\u001b")]).toEqual([args.join(" "), "failed", false]);
+      }
+    } finally {
+      if (saved === undefined) delete process.env.FORCE_COLOR;
+      else process.env.FORCE_COLOR = saved;
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("gate matrix: coloured runner output (#2615)", () => {
+  for (const [tool, sample] of Object.entries(RUNNER_SUMMARIES))
+    test(`${tool}: the coloured passing and failing summaries read as the plain ones`, () => {
+      expect(testCount(sample.passed)).toEqual({ tool, count: sample.total });
+      expect(testsRan(sample.passed)).toEqual({ tool, count: sample.ran });
+      for (const plain of [sample.passed, sample.failed]) {
+        const coloured = colour(plain);
+        expect(coloured).not.toBe(plain);
+        expect([testCount(coloured), testsRan(coloured), failedTests(coloured), buildFailure(coloured)]).toEqual([testCount(plain), testsRan(plain), failedTests(plain), buildFailure(plain)]);
+      }
+    });
+});
+
+// #2632: a fixer runs only on the code files of the languages it handles, whatever launcher the
+// gate puts in front of it; R86 binlayer ran ruff on `.sql` files and sqlfluff on `.py` files.
+describe("gate matrix: fixer languages (#2632)", () => {
+  const written = ["binlayer.py", "sql/05_layers.sql", "src/app.ts", "main.go", "README.md", "pyproject.toml"];
+  const cases: [string, string[], string[]][] = [
+    ["ruff", ["check", "--fix"], ["binlayer.py"]],
+    ["uv", ["run", "ruff", "format"], ["binlayer.py"]],
+    ["python3", ["-m", "black", "."], ["binlayer.py"]],
+    ["sqlfluff", ["fix"], ["sql/05_layers.sql"]],
+    ["poetry", ["run", "sqlfluff", "fix"], ["sql/05_layers.sql"]],
+    ["bunx", ["biome", "format", "--write"], ["src/app.ts"]],
+    ["pnpm", ["exec", "eslint", "--fix"], ["src/app.ts"]],
+    ["npx", ["prettier@3.6.0", "--write"], ["src/app.ts"]],
+    ["gofmt", ["-w"], ["main.go"]],
+  ];
+  for (const [executable, args, code] of cases)
+    test(`${[executable, ...args].join(" ")} gets ${code.join(", ")} and the non-code files`, () => {
+      expect(fixerPaths({ executable, args }, written)).toEqual(written.filter((path) => code.includes(path) || ["README.md", "pyproject.toml"].includes(path)));
+    });
+  test("a fixer without a row still gets every file", () => {
+    expect(fixerPaths({ executable: "dprint", args: ["fmt"] }, written)).toEqual(written);
+  });
+});
+
+// #2641: a whole-tree formatter check that reports only the documents the host publishes under
+// `specs/` (R87 slk: `prettier --check .` on the five files of the run's plan) is the host's
+// failure, read from each Markdown or JSON formatter's own report; one other file keeps it failed.
+// #2648: a `$` transcript the request says a document must hold exactly is compared with the
+// delivered document; a doubled backslash in one line (R88 pokerank JavaScript, R87 citeseek
+// Python) is a drift, the transcript as given is none.
+describe("gate matrix: transcripts a document must hold exactly (#2648)", () => {
+  const CASES: [string, string, string][] = [
+    ["javascript", "$ printf 'board 2c 7d\\nseat ann 100\\n' > hand.txt", "$ node bin/pokerank.js showdown hand.txt"],
+    ["python", "$ .venv\\Scripts\\activate", "$ python -m citeseek check refs.bib"],
+    ["shell", "$ printf 'a\\tb\\n' | ./cut.sh -f 2", "b"],
+  ];
+  for (const [language, first, second] of CASES)
+    test(`${language}: a doubled backslash is a drift, the transcript as given is none`, () => {
+      const request = `The README must hold this exactly as shown:\n\n\`\`\`console\n${first}\n${second}\n\`\`\`\n`;
+      const graph = { tasks: [{ id: "T002", writes: [{ path: "README.md", action: "create" }] }] } as unknown as Parameters<typeof transcriptDrifts>[1];
+      const doc = (line: string) => `# Tool\n\n\`\`\`console\n${line}\n${second}\n\`\`\`\n`;
+      expect(transcriptDrifts(request, graph, () => doc(first))).toEqual([]);
+      const doubled = first.replaceAll("\\", "\\\\");
+      expect(transcriptDrifts(request, graph, () => doc(doubled))).toMatchObject([{ problem: "differs", expected: first, actual: { line: 4, text: doubled } }]);
+    });
+});
+
+describe("gate matrix: host-published documents in a formatter report (#2641)", () => {
+  const DOCS = ["specs/slk/plan.md", "specs/slk/spec.json"];
+  const REPORTS: Record<string, (files: string[]) => string> = {
+    prettier: (files) => ["$ prettier --check .", "Checking formatting...", ...files.map((f) => `[warn] ${f}`), `[warn] Code style issues found in ${files.length} files. Run Prettier with --write to fix.`, 'error: script "format:check" exited with code 1'].join("\n"),
+    "bun fmt": (files) => [...files, `${files.length} files need formatting. Run bun fmt to fix them.`].join("\n"),
+    biome: (files) => [...files.flatMap((f) => [`${f} format ━━━━━━━━━━━━━━━━━━━━`, "", "  × Formatter would have printed the following content:", ""]), `Checked 9 files in 4ms. No fixes applied.`, `Found ${files.length} errors.`, "format ━━━━━━━━━━━━━━━━━━━━", "  × Some errors were emitted while running checks."].join("\n"),
+    dprint: (files) => [...files.flatMap((f) => [`from ${f}:`, "  1 | -# Plan", "  1 | +# Plan", ""]), `Error: Found ${files.length} not formatted files.`].join("\n"),
+    "deno fmt": (files) => [...files.flatMap((f) => [`from /work/slk/${f}:`, "1 | -{\"a\":1}", "1 | +{ \"a\": 1 }", ""]), `error: Found ${files.length} not formatted files in 12 files`].join("\n"),
+  };
+  const gate = { id: "format", executable: "bun", args: ["run", "format:check"] };
+  for (const [tool, report] of Object.entries(REPORTS))
+    test(`${tool}: only the documents is the host's; a task file with them is a failure`, () => {
+      expect(hostDocumentFailure(gate, colour(report(DOCS)), "/work/slk")).toEqual(DOCS);
+      expect(hostDocumentFailure(gate, report([...DOCS, "src/App.vue"]), "/work/slk")).toBeNull();
+      expect(hostDocumentFailure(gate, report(["docs/specs/slk/plan.md"]), "/work/slk")).toBeNull();
+    });
+  test("a parse error, a count that does not match and a test check stay failures", () => {
+    expect(hostDocumentFailure(gate, `[warn] ${DOCS[0]}\n[error] src/a.ts: SyntaxError: Unexpected token\n[warn] Code style issues found in 1 file.`)).toBeNull();
+    expect(hostDocumentFailure(gate, `[warn] ${DOCS[0]}\n[warn] Code style issues found in 3 files.`)).toBeNull();
+    expect(hostDocumentFailure({ id: "tests", executable: "bun", args: ["test"] }, REPORTS.prettier?.(DOCS) ?? "")).toBeNull();
+  });
+  // The formatters that read Markdown or JSON and run on the published documents, live where installed.
+  // Each with the probe that shows it is installed: a Bun before 1.4.4 has no `bun fmt`.
+  const LIVE: [string, string[], string[]][] = [
+    ["prettier", ["prettier", "--check", "."], ["--version"]],
+    ["biome", [join(process.cwd(), "node_modules/.bin/biome"), "format", "."], ["--version"]],
+    ["bun fmt", [process.execPath, "fmt", "--no-script", "--check", "."], ["fmt", "--help"]],
+  ];
+  const installed = (program: string, probe: string[]): boolean => {
+    const run = spawnSync(program, probe, { encoding: "utf8" });
+    return run.status === 0 && (probe[0] !== "fmt" || run.stdout.includes("--check"));
+  };
+  for (const [tool, command, probe] of LIVE)
+    test.skipIf(!installed(command[0] ?? "", probe))(`${tool}: its real report on the published documents`, () => {
+      const root = mkdtempSync(join(tmpdir(), "baked-host-docs-"));
+      try {
+        mkdirSync(join(root, "specs/slk"), { recursive: true });
+        writeFileSync(join(root, "package.json"), "{}\n");
+        writeFileSync(join(root, "specs/slk/spec.json"), '{\n  "ids": [\n    "a",\n    "b"\n  ],\n    "x":1}\n');
+        const run = spawnSync(command[0] ?? "", command.slice(1), { cwd: root, encoding: "utf8", env: { ...process.env, NO_COLOR: "1" } });
+        expect(run.status).not.toBe(0);
+        expect(hostDocumentFailure(gate, `${run.stdout}\n${run.stderr}`, root)).toEqual(["specs/slk/spec.json"]);
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    });
+  test("every Markdown or JSON formatter the gates detect has a report reader", () => {
+    expect(Object.keys(FORMAT_FAILURE_READERS).sort()).toEqual(["biome", "bun fmt", "dprint, deno fmt", "prettier"]);
+  });
+});
+
+// #2616: the task-end whole-unit check reads a located diagnostic from every language's compiler
+// output in `DIAGNOSTIC_FORMATS`, coloured as the check printed it.
+describe("gate matrix: task-end diagnostic formats (#2616)", () => {
+  for (const [language, row] of Object.entries(DIAGNOSTIC_FORMATS))
+    if (!isNoRow(row))
+      test(`${language} (${row.tool}): a coloured error names its file and message`, () => {
+        const found = diagnostics(colour(row.example));
+        expect(found.length).toBeGreaterThan(0);
+        for (const d of found) expect([d.path.length > 0, /^\d/.test(d.text), d.path.includes(" ")]).toEqual([true, false, false]);
+      });
+});
+
 describe("gate matrix: no tests collected (#1864)", () => {
   const NO_TESTS: [string, string][] = [
     ["Python (pytest, exit 5)", "collected 0 items\n\n============ no tests ran in 0.01s ============"],
@@ -5557,6 +5837,24 @@ describe("gate matrix: no tests collected (#1864)", () => {
   ];
   for (const [stack, output] of NO_TESTS)
     test(`${stack}: no test collected`, () => expect(noTestsCollected(output)).toBe(true));
+  // #2778: one part's "no tests" line beside another part that ran tests. go 1.24.7 (`go test
+  // ./...` failing, and passing from the test cache), Elixir 1.14 (umbrella `mix test`), and a
+  // Gradle multi-project build in its documented console output.
+  test("a part without tests beside a part that ran or failed tests is not 'no tests'", () => {
+    expect(noTestsCollected("--- FAIL: TestF (0.00s)\n    a_test.go:3: \nFAIL\nFAIL\texample.com/m/a\t0.003s\n?   \texample.com/m/b\t[no test files]\nFAIL")).toBe(false);
+    expect(noTestsCollected("FAIL\texample.com/m/a [build failed]\n?   \texample.com/m/b\t[no test files]\nFAIL")).toBe(false);
+    expect(noTestsCollected("ok  \texample.com/m/a\t(cached)\nok  \texample.com/m/c\t0.003s [no tests to run]")).toBe(false);
+    expect(noTestsCollected("==> a\n  1) test x (ATest)\n     apps/a/test/a_test.exs:3\n\nFinished in 0.01 seconds (0.00s async, 0.01s sync)\n1 test, 1 failure\n\nRandomized with seed 60860\n==> b\nThere are no tests to run")).toBe(false);
+    expect(noTestsCollected("> Task :lib:test FAILED\n\nLibTest > adds() FAILED\n    org.opentest4j.AssertionFailedError at LibTest.java:9\n\n2 tests completed, 1 failed\n\n> Task :app:test FAILED\nThere are test sources present and no filters are applied, but the test task did not discover any tests to execute.")).toBe(false);
+    // Every Go package without tests, or filtered to none, is still "no tests".
+    expect(noTestsCollected("?   \texample.com/m/b\t[no test files]\nok  \texample.com/m/a\t(cached) [no tests to run]")).toBe(true);
+  });
+  // #2778: `testsRan` takes a package's cached result as a package that ran tests.
+  test("go: a cached package beside one without test files did not run zero tests", () => {
+    expect(testsRan("ok  \texample.com/m/a\t(cached)\n?   \texample.com/m/b\t[no test files]")).toBeNull();
+    expect(testsRan("ok  \texample.com/m/a\t0.004s\tcoverage: 100.0% of statements\n?   \texample.com/m/b\t[no test files]")).toBeNull();
+    expect(testsRan("ok  \texample.com/m/a\t(cached) [no tests to run]\n?   \texample.com/m/b\t[no test files]")).toEqual({ tool: "go", count: 0 });
+  });
   test("a failing test and a passing run are not 'no tests'", () => {
     expect(noTestsCollected("FAILED tests/test_tags.py::test_wheel - AssertionError\n1 failed in 0.02s")).toBe(false);
     expect(noTestsCollected(" 3 pass\n 0 fail\nRan 3 tests across 1 file.")).toBe(false);
@@ -5581,6 +5879,31 @@ describe("gate matrix: no tests collected (#1864)", () => {
     expect(noTestsCollected("Test Successful in 0.000s. 0 test run.\n1 failure! in 0.001s. 3 tests run.")).toBe(false);
     expect(noTestsCollected("0 successes / 0 failures / 1 error / 0 pending : 0.0002 seconds\nError -> spec/a_spec.lua:3: <name> expected near 'end'")).toBe(false);
     expect(noTestsCollected("Discovery found 0 tests in 222ms.\nTests Passed: 0, Failed: 0, Skipped: 0, Inconclusive: 0, NotRun: 0\nContainer failed: 1\n  - /w/tests/Fold.Tests.ps1")).toBe(false);
+  });
+
+  // #2611: a test check that runs one test script with its interpreter prints nothing a counter
+  // reads, so a script holding no code (php-wordcount's 0-byte `tests/run.php`) fails the check, and
+  // its note reads as no test collected. One row per language whose interpreter runs a test script.
+  test("a plain test script that holds no code ran no test, in every language that runs one", () => {
+    const SCRIPTS: [string, string[], string, string][] = [
+      ["php", ["tests/run.php"], "tests/run.php", "<?php\n// later\n"],
+      ["python3", ["tests/run.py"], "tests/run.py", "# later\n"],
+      ["node", ["tests/run.js"], "tests/run.js", "'use strict';\n"],
+      ["bun", ["run", "tests/run.ts"], "tests/run.ts", "// later\n"],
+      ["bash", ["tests/run.sh"], "tests/run.sh", "set -eu\n"],
+      ["ruby", ["tests/run.rb"], "tests/run.rb", "# later\n"],
+      ["perl", ["t/run.t"], "t/run.t", "use strict;\n"],
+      ["Rscript", ["tests/run.R"], "tests/run.R", "# later\n"],
+      ["lua", ["tests/run.lua"], "tests/run.lua", "-- later\n"],
+      ["pwsh", ["-File", "tests/run.ps1"], "tests/run.ps1", "<# later #>\n"],
+    ];
+    for (const [executable, args, path, text] of SCRIPTS) {
+      const check: Check = { id: "tests", executable, args, cwd: ".", timeoutMs: 30000, required: true, scope: "feature", envNames: [], writes: [] };
+      const root = project({ [path]: text });
+      expect([executable, emptyTestScript(check, root), exitStatus(check, 0, "", root)]).toEqual([executable, path, "failed"]);
+      expect(exitStatus(check, 0, "", project({ [path]: `${text}x\n` }))).toBe("passed");
+    }
+    expect(noTestsCollected(emptyScriptNote({ id: "php-tests" }, "tests/run.php"))).toBe(true);
   });
 });
 
@@ -5808,7 +6131,156 @@ describe("prerequisite gate: a build gate run before configure in a fresh worktr
       }
       mkdirSync(join(root, "build"));
       writeFileSync(join(root, "build/CMakeCache.txt"), "");
-      for (const check of offered) expect(pendingPrerequisite(check, offered, root)).toBeNull();
+      for (const check of offered) {
+        const row = GATE_PREREQUISITES[check.id];
+        expect(pendingPrerequisite(check, offered, root)?.check.id ?? null, check.id).toBe(row && !row.marker ? row.checkId : null);
+      }
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
+  // R83 pnmforge: `ctest` in a configured, unbuilt tree found no test executable (3 of 39), and after
+  // an edit ran the earlier build's binaries (#2565).
+  test("ctest before build: its prerequisite is the build, pending even in a built tree, and the build's is configure", () => {
+    const root = mkdtempSync(join(tmpdir(), "baked-prerequisite-cell-"));
+    try {
+      writeFileSync(join(root, "CMakeLists.txt"), "project(x C)\nenable_testing()\nadd_test(NAME t COMMAND t)\n");
+      const offered = detectGates(root).map((g) => g.check);
+      const ctest = offered.find((c) => c.id === "ctest");
+      const build = offered.find((c) => c.id === "cmake-build");
+      if (!ctest || !build) throw new Error("CMake gates not offered");
+      expect(pendingPrerequisite(ctest, offered, root)?.check.id).toBe("cmake-build");
+      expect(pendingPrerequisite(build, offered, root)?.check.id).toBe("cmake-configure");
+      mkdirSync(join(root, "build"));
+      writeFileSync(join(root, "build/CMakeCache.txt"), "");
+      expect(pendingPrerequisite(ctest, offered, root)?.check.id).toBe("cmake-build");
+      expect(pendingPrerequisite(build, offered, root)).toBeNull();
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+});
+
+describe("ci check drift gate: a README's fixer form and globs over the check's files (#2567)", () => {
+  // R83 pnmforge docs: `clang-format -i src/*.cpp ...` and `clang-format --dry-run --Werror src/*.cpp ...`
+  // against the detected check listing its files were 2 false drifts.
+  test("the detected clang-format gate: its fixer and its globbed form are no drift, a narrower glob is", () => {
+    const root = mkdtempSync(join(tmpdir(), "baked-drift-cell-"));
+    try {
+      writeFileSync(join(root, ".clang-format"), "BasedOnStyle: LLVM\n");
+      writeFileSync(join(root, "CMakeLists.txt"), "project(x CXX)\n");
+      for (const path of ["src/codec.cpp", "src/codec.hpp", "tests/scaffold_test.cpp"]) {
+        mkdirSync(join(root, path, ".."), { recursive: true });
+        writeFileSync(join(root, path), "int x;\n");
+      }
+      const gate = detectGates(root).map((g) => g.check).find((c) => c.id === "clang-format");
+      if (!gate) throw new Error("clang-format gate not detected");
+      const readme = (line: string) => [{ path: "README.md", text: `\`\`\`sh\n${line}\n\`\`\`\n` }];
+      expect(ciCheckDrift(readme("clang-format -i src/*.cpp src/*.hpp tests/*.cpp"), [gate])).toEqual([]);
+      expect(ciCheckDrift(readme("clang-format --dry-run --Werror src/*.cpp src/*.hpp tests/*.cpp"), [gate])).toEqual([]);
+      expect(ciCheckDrift(readme("clang-format --dry-run --Werror src/*.cpp"), [gate])).toHaveLength(1);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+});
+
+describe("format-written range: the lines a supplied modify diff adds keep their bytes (#2596)", () => {
+  // R84 keeplint-update: `ruff format --range=66-67` rewrapped a supplied assert, then supplied_drift fired.
+  test("Python: the ruff range check leaves the supplied line out and keeps the model's", () => {
+    const root = mkdtempSync(join(tmpdir(), "baked-range-supplied-"));
+    try {
+      writeFileSync(join(root, "pyproject.toml"), "[project]\nname = 'keeplint'\nversion = '0.1.0'\n\n[tool.ruff]\nline-length = 100\n");
+      const before = "def test_readme():\n    readme = ''\n";
+      const after = `${before}    assert "keeplint FILE... [--format text|json] [--exit-zero] [--quiet] [--disable RULE]... [--only RULE]..." in readme\n    x=1\n`;
+      mkdirSync(join(root, "tests"), { recursive: true });
+      writeFileSync(join(root, "tests/test_readme.py"), after);
+      const writes = [{ path: "tests/test_readme.py", action: "modify" }];
+      const which = (command: string) => `/usr/bin/${command}`;
+      const ranges = (suppliedLines?: () => Set<number>) =>
+        formatWrittenChecks(root, [], writes, which, () => before, () => true, suppliedLines ? { suppliedLines } : {})
+          .filter((c) => c.id.startsWith("ruff-format-lines"))
+          .map((c) => c.args.find((a) => a.startsWith("--range")));
+      expect(ranges()).toEqual(["--range=3-5"]);
+      expect(ranges(() => new Set([3]))).toEqual(["--range=4-5"]);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+});
+
+describe("ci check drift gate: the PowerShell gates' cmdlets and the project's own program (#2593)", () => {
+  // R84 wrapsmith docs: README `Invoke-Pester`, `Invoke-ScriptAnalyzer -Path . -Recurse`, the
+  // fixer form and `pwsh bin/wrapsmith.ps1 ...` against the detected `pwsh -Command` gates: 4 false drifts.
+  test("the detected Pester and analyzer gates match the README's cmdlets; a parameter they lack is a drift", () => {
+    const root = mkdtempSync(join(tmpdir(), "baked-drift-pwsh-"));
+    try {
+      writeFileSync(join(root, "PSScriptAnalyzerSettings.psd1"), "@{}\n");
+      mkdirSync(join(root, "tests"), { recursive: true });
+      writeFileSync(join(root, "tests/Wrap.Tests.ps1"), "Describe 'x' { It 'y' { 1 | Should -Be 1 } }\n");
+      const gates = detectGates(root).map((g) => g.check);
+      expect(gates.map((c) => c.id)).toEqual(["pester", "psscriptanalyzer", "psformat"]);
+      const readme = (...lines: string[]) => [{ path: "README.md", text: `\`\`\`powershell\n${lines.join("\n")}\n\`\`\`\n` }];
+      expect(ciCheckDrift(readme("Invoke-Pester", "Invoke-ScriptAnalyzer -Path . -Recurse", "Invoke-ScriptAnalyzer -Fix -Path FILE", "pwsh bin/wrapsmith.ps1 fill -w 60 < in.txt"), gates)).toEqual([]);
+      expect(ciCheckDrift(readme("Invoke-ScriptAnalyzer -Path . -Recurse -IncludeDefaultRules"), gates).map((d) => d.missing)).toEqual([["-includedefaultrules"]]);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  // #2620: an untagged README block of sample data or program output names no tool; a console
+  // block's output lines under a prompted command are not commands either.
+  test("README sample data and output lines are no commands (#2620)", () => {
+    const readme = (lang: string, ...lines: string[]) => [{ path: "README.md", text: `\`\`\`${lang}\n${lines.join("\n")}\n\`\`\`\n` }];
+    const gate = { id: "verify", executable: "mvn", args: ["-B", "-q", "verify"], cwd: ".", timeoutMs: 600000, required: true, scope: "feature" as const, envNames: [], writes: [] };
+    expect(ciCheckDrift(readme("", "42.5 tests/test_db.py", "1500ms", "shardplan: 3 shards", "tests/test_db.py"), [gate])).toEqual([]);
+    expect(ciCheckDrift(readme("console", "$ mvn -B -q verify", "[INFO] BUILD SUCCESS"), [gate])).toEqual([]);
+    expect(ciCheckDrift(readme("", "mvn -B -q package"), [gate]).map((d) => d.tool)).toEqual(["mvn"]);
+  });
+
+  // #2634: a README command on a folder inside the check's broader path (`sqlfluff lint sql`
+  // against `sqlfluff lint .`) runs nothing the check does not; a folder outside it is a drift.
+  test("a README path inside the check's broader path is no drift (#2634)", () => {
+    const readme = (line: string) => [{ path: "README.md", text: `\`\`\`sh\n${line}\n\`\`\`\n` }];
+    const gate = (executable: string, ...args: string[]) => ({ id: "gate", executable, args, cwd: ".", timeoutMs: 600000, required: true, scope: "feature" as const, envNames: [], writes: [] });
+    expect(ciCheckDrift(readme("python -m sqlfluff lint sql"), [gate("python", "-m", "sqlfluff", "lint", ".")])).toEqual([]);
+    expect(ciCheckDrift(readme("eslint src"), [gate("eslint", ".")])).toEqual([]);
+    expect(ciCheckDrift(readme("go vet ./cmd/..."), [gate("go", "vet", "./...")])).toEqual([]);
+    expect(ciCheckDrift(readme("ruff check lib"), [gate("ruff", "check", "src")]).map((d) => d.missing)).toEqual([["lib"]]);
+  });
+});
+
+describe("upstream symbol gate: a dotted test namespace and an unchanged helper are no gap (#2837)", () => {
+  // R91 dagwalk: `Dagwalk.Tests` and "the unchanged Rows helper" were 2 of 2 false would-stops.
+  const spec = (text: string) => ({ requirements: [{ id: "FR-001", text, priority: "must" as const, verification: "automated" as const, sourceRefs: [] }], criteria: [] });
+  test("csharp: no gap; a helper the file lacks still is one", () => {
+    const upstream = [
+      { featureId: "core", path: "src/Dagwalk/Api.cs", text: "namespace Dagwalk;\npublic static class Api {}\n" },
+      { featureId: "core", path: "tests/Dagwalk.Tests/Rows.cs", text: "namespace Dagwalk.Tests;\npublic static class Rows {}\n" },
+    ];
+    expect(upstreamSymbolGaps(spec("namespace Dagwalk.Tests; use the unchanged Rows helper."), upstream)).toEqual([]);
+    expect(upstreamSymbolGaps(spec("Rows gain a public Rows helper."), upstream)).toHaveLength(1);
+  });
+});
+
+describe("upstream symbol gate: a helper the request supplies is no missing member (#2566)", () => {
+  // R83 bytemerge training: "the given Rows helper" read as a gap of the supplied Rows.java.
+  const spec = (text: string) => ({ requirements: [{ id: "FR-001", text, priority: "must" as const, verification: "automated" as const, sourceRefs: [] }], criteria: [] });
+  for (const [language, path, text] of [
+    ["java", "src/test/java/bytemerge/Rows.java", "final class Rows { static String row(String s) { return s; } }\n"],
+    ["cpp", "tests/rows.hpp", "#pragma once\nstruct Rows { static int row(); };\n"],
+    ["python", "tests/rows.py", "def row(s):\n    return s\n"],
+  ] as const)
+    test(`${language}: given is no gap, an indefinite helper is`, () => {
+      const upstream = [{ featureId: "cli", path, text }];
+      expect(upstreamSymbolGaps(spec("Tests build rows with the given Rows helper."), upstream)).toEqual([]);
+      expect(upstreamSymbolGaps(spec("Rows gain a public Rows helper."), upstream)).toHaveLength(1);
+    });
+});
+
+describe("documented-example fixture gate: a printf or echo line that writes the next example's input (#2693)", () => {
+  // R88 pokerank: `printf '...' > hand.txt` then `node bin/pokerank.js showdown hand.txt`.
+  const cases: [string, ReturnType<typeof redirectFixture>][] = [
+    ["printf 'board 2c 7d\\nseat ann\\n' > hand.txt", { path: "hand.txt", content: "board 2c 7d\nseat ann\n", append: false }],
+    ["printf 'a\\\\nb' > in/raw.txt", { path: "in/raw.txt", content: "a\\nb", append: false }],
+    ["printf '\\101\\t%%\\n' >> data.csv", { path: "data.csv", content: "A\t%\n", append: true }],
+    ['echo "seat ann" > seats.txt', { path: "seats.txt", content: "seat ann\n", append: false }],
+    ["printf '%s' x > out.txt", null],
+    ["echo -n x > out.txt", null],
+    ["printf 'x' > ../escape.txt", null],
+  ];
+  for (const [command, expected] of cases)
+    test(command, () => {
+      expect(redirectFixture(command)).toEqual(expected);
+    });
 });

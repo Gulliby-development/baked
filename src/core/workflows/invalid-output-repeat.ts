@@ -1,9 +1,14 @@
+import { buildId } from "../build-info.js";
 import { ROUTING_ARTIFACT } from "../llm/model-routing.js";
 import { canonical, hashBytes } from "../specs/hash.js";
 import { releaseLinkCount } from "./release-writes.js";
 import { type RecoveryAdvice, recoveryAdvice } from "./remedies.js";
 import { REPEAT_KIND, type RepeatDecision } from "./repeated-failure.js";
-import { ROW_CLAIM_RESUME_DIR } from "./row-claim-repair.js";
+import {
+  ROW_CLAIM_RESUME_DIR,
+  ROW_SPEC_REPAIR_PREFIX,
+  repairedRunText,
+} from "./row-claim-repair.js";
 import { ROW_RESTORE_RESUME_DIR } from "./row-restore.js";
 import type { WorkflowStore } from "./store.js";
 import { type WriteRefusal, writeRefusalOf } from "./write-refusals.js";
@@ -25,25 +30,44 @@ export const INVALID_OUTPUT_KEY = "invalid-output/repeat-key.json";
  * miscounted prescribed rows (`rows`, `row-restores/resume/`, #2543: the host restores them before
  * the blocked task's next session), each only once there is one, so older keys still match. A new
  * way to change a run's input without the prompt adds its revision here (AGENTS.md).
+ *
+ * `build` is the running BAKED build (`buildId`, #2587): a host check fixed between two resumes
+ * can give the same diagnostic text, and only a resume on the new build tries the fix (R84
+ * sseknit tools 9e40f4b8 was refused after #2586 fixed the check that blocked it). It is always
+ * present, so a key from before #2587, which has none, differs from every new key: one attempt
+ * passes, and the key it records carries the build.
  */
-export function invalidOutputInputs(
-  store: WorkflowStore,
-  runId: string,
-): { routing: number; release?: number; rows?: number; claims?: number } {
+export function invalidOutputInputs(store: WorkflowStore, runId: string): InvalidOutputInputs {
   const release = releaseLinkCount(store, runId);
   const rows = store
     .artifacts(runId)
     .filter((a) => a.logical_path.startsWith(ROW_RESTORE_RESUME_DIR)).length;
-  // The restatements the resume checked against the request's rows (#2561).
+  // The restatements the resume checked against the request's rows (#2561), and the spec and
+  // prompt repairs that followed them (#2563).
   const claims = store
     .artifacts(runId)
-    .filter((a) => a.logical_path.startsWith(ROW_CLAIM_RESUME_DIR)).length;
+    .filter(
+      (a) =>
+        a.logical_path.startsWith(ROW_CLAIM_RESUME_DIR) ||
+        a.logical_path.startsWith(ROW_SPEC_REPAIR_PREFIX),
+    ).length;
   return {
     routing: store.latestArtifact(runId, ROUTING_ARTIFACT)?.revision ?? 0,
     ...(release ? { release } : {}),
     ...(rows ? { rows } : {}),
     ...(claims ? { claims } : {}),
+    build: buildId(),
   };
+}
+
+/** `invalidOutputInputs`: the run inputs a person can change besides the prompt, and the build. */
+export interface InvalidOutputInputs {
+  routing: number;
+  release?: number;
+  rows?: number;
+  claims?: number;
+  /** The BAKED build that decided (`buildId`); absent in records from before #2587. */
+  build?: string;
 }
 
 /** One write the tool policy refused in the attempts that ended in a stop: its code and path. */
@@ -69,8 +93,11 @@ export interface InvalidOutputFacts {
   /** The hash of the diagnostic (its first 2000 characters): the key only without refusals. */
   diagnostic: string;
   /** `invalidOutputInputs`: the run inputs a person can change besides the prompt. */
-  inputs: { routing: number; release?: number; rows?: number; claims?: number };
-  /** Whether the prompt already holds this diagnostic's note (a resume gave it). */
+  inputs: InvalidOutputInputs;
+  /**
+   * Whether the prompt already holds this diagnostic's note (a resume gave it), as written or as
+   * the row repair rewrote it (`repairedRunText`).
+   */
   noted: boolean;
   /** The key the last resume recorded (`INVALID_OUTPUT_KEY`); null when none did. */
   previous: string | null;
@@ -104,21 +131,52 @@ export function invalidOutputKey(
  * recorded this very key (the attempt after it stopped the same way), `progress` when it recorded
  * another, `first` when no resume gave anything to compare. A key from the diagnostic also needs
  * the prompt to hold this diagnostic's note; a note from before the key was recorded was given
- * with the run's first routing. A key from refusals needs no note: the note holds the model's
- * wording, which the key leaves out.
+ * with the run's first routing and on a build that recorded none, so it differs from a key with a
+ * build (#2587). A key from refusals needs no note: the note holds the model's wording, which the
+ * key leaves out.
  */
 export function invalidOutputDecision(inputs: InvalidOutputFacts): RepeatDecision {
   const key = invalidOutputKey(inputs);
   if (inputs.refusals.length)
     return inputs.previous === null ? "first" : inputs.previous === key ? "repeat" : "progress";
   if (!inputs.noted) return "first";
+  const { build: _build, ...unbuilt } = inputs.inputs;
   const previous =
     inputs.previous ??
     canonical({
       diagnostic: inputs.diagnostic,
-      inputs: { ...inputs.inputs, routing: Math.min(inputs.inputs.routing, 1) },
+      inputs: { ...unbuilt, routing: Math.min(inputs.inputs.routing, 1) },
     });
   return previous === key ? "repeat" : "progress";
+}
+
+/** Where a resume that the build change alone let through records why (#2587). */
+export const INVALID_OUTPUT_BUILD_CHANGE = "invalid-output/build-change.json";
+
+/**
+ * The build change that alone makes a stop `progress` rather than `repeat` (#2587): the build of
+ * the last resume's key (`from`, null for a key from before #2587) and the running one (`to`).
+ * Null when the decision is no `progress`, or another input changed as well.
+ */
+export function invalidOutputBuildChange(
+  facts: InvalidOutputFacts,
+): { from: string | null; to: string } | null {
+  const to = facts.inputs.build;
+  if (!to || invalidOutputDecision(facts) !== "progress") return null;
+  let from: string | null = null;
+  try {
+    const parsed = facts.previous
+      ? (JSON.parse(facts.previous) as { inputs?: InvalidOutputInputs })
+      : null;
+    from = parsed?.inputs?.build ?? null;
+  } catch {}
+  if (from === to) return null;
+  const { build: _build, ...unbuilt } = facts.inputs;
+  const before = invalidOutputDecision({
+    ...facts,
+    inputs: from === null ? unbuilt : { ...unbuilt, build: from },
+  });
+  return before === "repeat" ? { from, to } : null;
 }
 
 /**
@@ -166,7 +224,13 @@ export function refusedWrites(
 export function invalidOutputRepeat(
   store: WorkflowStore,
   runId: string,
-): { note: string; key: string; repeats: boolean; record: InvalidOutputRecord } | null {
+): {
+  note: string;
+  key: string;
+  repeats: boolean;
+  record: InvalidOutputRecord;
+  buildChange: { from: string | null; to: string } | null;
+} | null {
   const latest = store
     .artifacts(runId)
     .filter((a) => a.logical_path.startsWith("errors/"))
@@ -176,11 +240,15 @@ export function invalidOutputRepeat(
   if (!diagnostic) return null;
   const note = `\n${INVALID_OUTPUT_NOTE}\n${canonical({ diagnostic })}`;
   const recorded = store.latestArtifact(runId, INVALID_OUTPUT_KEY);
+  // The note as given, or as the row repair rewrote it in the prompt (#2563, #2696).
+  const state = store.state(runId);
   const inputs: InvalidOutputFacts = {
     refusals: refusedWrites(store, runId, latest.id),
     diagnostic: hashBytes(diagnostic),
     inputs: invalidOutputInputs(store, runId),
-    noted: store.state(runId).prompt.includes(note),
+    noted:
+      state.prompt.includes(note) ||
+      state.prompt.includes(repairedRunText(store, runId, state, note)),
     previous: recorded ? store.readArtifact(runId, recorded.id) : null,
   };
   const key = invalidOutputKey(inputs);
@@ -190,6 +258,7 @@ export function invalidOutputRepeat(
     key,
     repeats: decision === "repeat",
     record: { diagnosticId: latest.id, ...inputs, key, decision },
+    buildChange: invalidOutputBuildChange(inputs),
   };
 }
 

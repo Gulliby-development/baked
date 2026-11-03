@@ -182,9 +182,10 @@ const FILE_NAME = /^(?:[\w.-]+[/\\])*[\w-][\w.-]*\.[A-Za-z][A-Za-z0-9]{0,7}$/;
  * for `test/filter_args_test.dart`); `placeholder`, an envelope with upper-case placeholder words
  * (`slotprompt: LINE:COL: MESSAGE\n`); `description`, a character described rather than written
  * (`U+0000 and U+001F`, a lone control escape `\u0000` or caret notation `\^@`, `"\n"` followed
- * by "(backslash followed by letter n)").
+ * by "(backslash followed by letter n)"); `helper`, a single identifier in a code span that a file the
+ * request supplies verbatim or a planned write's content declares (`cellsOf`, #2646).
  */
-export type CitedKind = "count" | "name" | "placeholder" | "description";
+export type CitedKind = "count" | "name" | "placeholder" | "description" | "helper";
 
 /** What `citedKind` reads beside the literal: the plan's test file names and row counts. */
 export interface CitedNames {
@@ -192,6 +193,32 @@ export interface CitedNames {
   names: ReadonlySet<string>;
   /** The row count of each prescribed file and their total. */
   counts: ReadonlySet<number>;
+  /** The names a supplied or planned file declares (`declaredNames`), for `helper` (#2646). */
+  helpers?: ReadonlySet<string>;
+}
+
+/**
+ * A declaration of a named helper: a keyword of a function, class, type or binding followed by its
+ * name (`export function cellsOf`, `const summaryText =`, `def cells_of`, `fn cells_of`).
+ */
+const DECLARATION =
+  /(?<![\w$.])(?:function\*?|const|let|var|class|interface|type|enum|def|defp|defmacro|fn|func|struct|trait|module|sub)\s+([A-Za-z_$][\w$]*)/g;
+/** Names an `export { a, b as c }` list exports. */
+const EXPORT_LIST = /\bexport\s*\{([^{}]*)\}/g;
+/** A single identifier of at least three characters: a helper's name, not a short value. */
+const HELPER_NAME = /^[A-Za-z_$][\w$]{2,}$/;
+
+/** The names the given file contents declare or export (#2646): exact identifiers only. */
+export function declaredNames(contents: readonly string[]): Set<string> {
+  const names = new Set<string>();
+  for (const content of contents) {
+    for (const match of content.matchAll(DECLARATION)) if (match[1]) names.add(match[1]);
+    for (const match of content.matchAll(EXPORT_LIST))
+      for (const part of (match[1] ?? "").split(","))
+        for (const name of part.trim().split(/\s+as\s+/))
+          if (/^[A-Za-z_$][\w$]*$/.test(name)) names.add(name);
+  }
+  return names;
 }
 
 /** Upper-case words a message or usage pattern uses for a value a row fills in. */
@@ -233,8 +260,11 @@ export function citedKind(
   literal: string,
   after: string,
   cited: CitedNames,
+  code = false,
 ): CitedKind | undefined {
   const text = asciiTrim(literal);
+  // A helper the supplied or planned code declares, named in a code span: no row's text (#2646).
+  if (code && HELPER_NAME.test(text) && cited.helpers?.has(text)) return "helper";
   if (/^\d+$/.test(text)) {
     const n = Number(text);
     return cited.counts.has(n) || COUNT_NOUN.test(after) ? "count" : undefined;
@@ -259,9 +289,14 @@ function citedNames(task: CaseTask, context: CaseContext): CitedNames {
     ...(context.prescribedRows?.keys() ?? []),
   ];
   const counts = [...(context.prescribedRows?.values() ?? [])].map((lines) => lines.length);
+  // The code the request fixes: its verbatim files and the planned writes' content (#2646).
+  const planned = [task, ...(context.tasks ?? [])].flatMap((t) =>
+    (t.writes ?? []).flatMap((w) => (w.content ? [w.content] : [])),
+  );
   return {
     names: new Set(paths.flatMap(testFileNames)),
     counts: new Set([...counts, ...(counts.length > 1 ? [counts.reduce((a, b) => a + b, 0)] : [])]),
+    helpers: declaredNames([...planned, ...(context.suppliedFiles ?? [])]),
   };
 }
 
@@ -436,6 +471,11 @@ export interface CaseContext {
    * its writer has written it yet or not. Without it the walk reads only the files on disk.
    */
   prescribedRows?: PrescribedRows;
+  /**
+   * The content of the files the request supplies verbatim (`suppliedFileContents`): a helper one
+   * of them declares, named in a criterion's code span, is `cited` as `helper` (#2646).
+   */
+  suppliedFiles?: readonly string[];
   /**
    * `skip` (`citedCases`, #2531): a case nothing holds whose literal describes rows instead of
    * quoting one (`CriterionCase.cited`) is not demanded, for any task, and the walk record says
@@ -676,6 +716,8 @@ export function criterionCases(
   let bound = new Set<string>();
   /** The criterion text after the span being added, for `citedKind` (#2524); none for a cell. */
   let after = "";
+  /** Whether the span being added is a code span, for `citedKind`'s `helper` (#2646). */
+  let code = false;
   const add = (
     criterionId: string,
     literal: string,
@@ -698,7 +740,7 @@ export function criterionCases(
     const key = `${criterionId}:${normalizeLiteral(literal)}`;
     // A literal the criterion also quotes outside its table is not held by the rows alone.
     if (!row) plain.add(key);
-    const cited = citedKind(literal, after, names);
+    const cited = citedKind(literal, after, names, code);
     if (seen.has(key)) {
       // The criterion also quotes it as a row's text: a case like any other.
       const earlier = cases.findIndex(
@@ -745,6 +787,7 @@ export function criterionCases(
         if (!literalCase(span.literal, span.code, value)) continue;
         const sentence = table.prose.slice(sentenceStart(table.prose, span.index), span.index);
         after = table.prose.slice(span.index + span.raw.length);
+        code = span.code;
         add(
           criterion.id,
           span.literal,
@@ -755,6 +798,7 @@ export function criterionCases(
           span.code && !value && /^\d+$/.test(span.literal) && LENGTH_CONTEXT.test(sentence),
         );
         after = "";
+        code = false;
       }
       for (const input of table.inputs)
         add(criterion.id, input.literal, undefined, input.source, input.expected, hostRows);
@@ -1112,6 +1156,17 @@ function enumeratedMembers(text: string, sets: ClosedSet[], source: string): str
 /** The header words of a table's first column, and a separator row's cells. */
 const HEADER_CELL =
   /^(?:inputs?|values?|cases?|args?|arguments?|commands?|given|when|expression|query|request)$/i;
+/** A word of a header cell of a table's other columns (`Scenario`, `Expected result`). */
+const HEADER_WORD =
+  "(?:inputs?|values?|cases?|args?|arguments?|commands?|given|when|then|expression|query|request|scenarios?|expected|actual|results?|outputs?|outcomes?|descriptions?|names?|notes?|comments?|reasons?|labels?|kinds?|types?|exit|codes?|status|stdout|stderr|errors?|messages?|returns?|why|rows?|ids?)";
+/** A header cell of up to three header words. */
+const HEADER_PHRASE = new RegExp(String.raw`^${HEADER_WORD}(?:[ \t]+${HEADER_WORD}){0,2}$`, "i");
+/** The header cell at the end of a first cell glued to the sentence before it (#2646). */
+const GLUED_HEADER = new RegExp(
+  String.raw`(?:^|[.:;!?][ \t]+)(${HEADER_WORD}(?:[ \t]+${HEADER_WORD}){0,2})$`,
+  "i",
+);
+const unquoteCell = (cell: string): string => cell.trim().replace(/^[`"\u201c]|[`"\u201d]$/g, "");
 const separatorRow = (cells: string[]): boolean =>
   cells.length >= 2 && cells.every((cell) => SEPARATOR_CELL.test(cell));
 
@@ -1140,6 +1195,28 @@ function tableRows(text: string): { line: string; cells: string[]; skipped: bool
 }
 
 /**
+ * A table's header row, or undefined (#2646): a first cell that is a header word, or a first row of
+ * a table whose next row is a separator or whose other cells are all header words. A first cell
+ * glued to the sentence before it (`All 14 exact comparisons pass. Input`) ends in its header word;
+ * `sentence` is the text before it, which stays prose. R87 slackbar: 5 false `case_not_prescribed`
+ * notes read such a cell as a literal.
+ */
+function headerRow(
+  cells: string[],
+  first: boolean,
+  next: string[] | undefined,
+): { sentence: string } | undefined {
+  const raw = (cells[0] ?? "").trim();
+  if (HEADER_CELL.test(unquoteCell(raw))) return { sentence: "" };
+  if (!first) return undefined;
+  const others = cells.slice(1).every((cell) => HEADER_PHRASE.test(unquoteCell(cell)));
+  if (!others && !(next && separatorRow(next))) return undefined;
+  if (HEADER_PHRASE.test(unquoteCell(raw))) return { sentence: "" };
+  const glued = GLUED_HEADER.exec(raw);
+  return glued ? { sentence: raw.slice(0, glued.index + 1).trimEnd() } : undefined;
+}
+
+/**
  * Split explicit input spans in the first cell, leaving context words out.
  * Standalone cells still need a concrete literal rather than a scenario label (#1565).
  * Return the remaining cells and prose for the usual quoted-span walk.
@@ -1153,15 +1230,24 @@ function tableInputs(text: string): {
   const rows = tableRows(text);
   if (rows.length < 2) return { inputs: [], prose: text, cells: [] };
   const inputs: { literal: string; source: string; expected: string }[] = [];
-  rows.forEach(({ cells, skipped }, index) => {
+  /** The prose kept of each header row's line: the sentence its first cell is glued to. */
+  const headers = new Map<string, string>();
+  const lines = text.split(/\r?\n/);
+  rows.forEach(({ line, cells, skipped }, index) => {
     if (skipped) return;
     if (cells.every((cell) => SEPARATOR_CELL.test(cell))) return;
     const next = rows[index + 1]?.cells;
+    const at = lines.indexOf(line);
+    const first = at <= 0 || !lines[at - 1]?.includes("|");
+    const header = headerRow(cells, first, next);
+    if (header) {
+      headers.set(line, header.sentence);
+      return;
+    }
     if (next?.every((cell) => SEPARATOR_CELL.test(cell))) return;
     const raw = cells[0] ?? "";
     const push = (literal: string, source = "") =>
       inputs.push({ literal, source, expected: cells.slice(1).join(" ") });
-    if (HEADER_CELL.test(raw.replace(/^[`"\u201c]|[`"\u201d]$/g, ""))) return;
     if (/^[A-Za-z_]\w*\s*=(?!=)/.test(raw)) {
       push(raw);
       return;
@@ -1182,12 +1268,13 @@ function tableInputs(text: string): {
   );
   const cells: [number, number][] = [];
   let offset = 0;
-  const prose = text
-    .split(/\r?\n/)
+  const prose = lines
     .map((line) => {
       const cell = tableLines.get(line);
-      const kept = cell ?? line;
-      if (cell !== undefined) cells.push([offset, offset + kept.length]);
+      // A header's first cell glued to a sentence: the sentence stays prose, outside the cells.
+      const sentence = headers.get(line) ? `${headers.get(line)} ` : "";
+      const kept = cell === undefined ? line : `${sentence}${cell}`;
+      if (cell !== undefined) cells.push([offset + sentence.length, offset + kept.length]);
       offset += kept.length + 1;
       return kept;
     })

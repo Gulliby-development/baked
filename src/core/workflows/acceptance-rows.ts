@@ -18,6 +18,7 @@ import {
   javaString,
   javaValue,
   jsonText,
+  kotlinRows,
   layoutFree,
   literalChunks,
   luaString,
@@ -30,6 +31,8 @@ import {
   rString,
   rspecExamples,
   rubyString,
+  SCALA_SUITES,
+  scalaRows,
   testthatRows,
   utf16Escape,
 } from "./acceptance-rows-inline.js";
@@ -238,7 +241,7 @@ export function literalPropertyProblems(spec: Pick<Spec, "criteria">): string[] 
 }
 
 export const ROWS_NOTE =
-  'Acceptance rows as data is enabled. For pure call-and-compare tests with JSON Input | Expected tables (an optional Scenario column is a label), set rows to the criterion IDs and rowTest to {framework, harness: "relative harness path", test: "relative test path", data: "relative JSON path"}, adding package where the framework needs one. Declare all three paths in writes, with test and data created by this task. Write only the harness; the host writes the JSON rows and the parameterized test, preserving row IDs, and compares the harness result with each expected value as JSON. Frameworks and harness contracts: "bun": a .ts or .js harness exporting actual(input), which may be async, and a .test.ts test. "pytest": a .py harness defining actual(input) and a test_*.py test. "go": a .go harness defining func Actual(input any) (any, error) in the same directory as a _test.go test, with package set to the Go package name. "junit" (JUnit 5): a .java harness class, named after its file, with static Object actual(Object input) in the same package as a *Test.java test, both under the directories of package (the Java package); input is built from Map<String, Object>, List<Object>, Long, Double, String, Boolean and null. "rust": a test tests/<name>.rs and a harness .rs file (best under tests/support/) defining pub fn actual(input: serde_json::Value) -> serde_json::Value; the project needs serde_json, at least in [dev-dependencies]. "xunit": a .cs harness static class, named after its file, with public static object? Actual(System.Text.Json.Nodes.JsonNode? input) and a .cs test in a project that references xunit, with package set to the C# namespace of both. "rspec": a .rb harness defining actual(input) at its top level, which the host\'s test loads into a module of its own (its require_relative still resolves from its file), and a *_spec.rb test. "phpunit": a .php harness class, named after its file, with public static function actual(mixed $input): mixed, and a *Test.php test, which loads the harness with require_once; set package to the PHP namespace of both with dots for backslashes (App.Tests for App\\Tests), or leave it out for the global namespace; input is decoded with JSON objects as associative arrays. "testthat": an .R harness defining actual(input), not named test-, helper- or setup-, which the host\'s test sources into an environment of its own, and a tests/testthat/test-*.R test; input is read by jsonlite with JSON objects as named lists and arrays as unnamed lists, and the result is compared as JSON, so return a list for an array. "busted": a .lua harness module that returns a table with actual(input), which the host\'s test loads with dofile from the test\'s directory, and a *_spec.lua test; input is decoded by dkjson with JSON null as dkjson.null, and the result is compared as JSON. "minitest": a .rb harness defining actual(input) at its top level, which the host\'s test loads into a module of its own, and a *_test.rb or test_*.rb test. "pest": a .php harness file that returns a closure function (mixed $input): mixed, not a *Test.php, which the host\'s test loads with require, and a *Test.php Pest test; input is decoded with JSON objects as associative arrays. "dart" (package:test): a .dart harness, not a *_test.dart, defining a top-level Object? actual(Object? input), which the host\'s test imports with a prefix, and a *_test.dart test; input is decoded by dart:convert with JSON objects as Map<String, dynamic>, and the result is compared as JSON. "exunit" (Elixir 1.18 or later, whose standard library has JSON): an .exs harness file, not a *_test.exs, whose last expression is fn input -> ... end, which the host\'s test evaluates with Code.eval_file from the test\'s directory, and a *_test.exs test; input is decoded with JSON objects as maps with string keys, and the result is compared as JSON. Inline mode, for a brief or boundary that fixes the test files (no new harness, test or data file, no new dependency): set rowTest to {mode: "inline", framework, test: "a test file this task writes"}, adding package for go (the Go package), junit (the Java package of the file\'s directory) and xunit (the C# namespace of the file\'s class). Do not add other paths for it. The host appends the rows and their parameterized test to the end of that file between BEGIN and END acceptance rows comments (Go: also an import block after the package clause; junit and xunit: as a class nested in the file\'s own class, before its closing brace, so the file keeps one top-level type; phpunit: as methods of the file\'s own class, before its closing brace; exunit: in the file\'s own module, before its end; dart: in the file\'s main, before its closing brace, with prefixed imports after the file\'s own), and restores the block if an edit drops it. In that file define the harness the block calls, next to the task\'s ordinary tests: "bun": function acceptanceActual(input), which may be async; "pytest": def acceptance_actual(input); "go": func acceptanceActual(input any) (any, error), one per package directory; "junit": static Object acceptanceActual(Object input) in the class named after the file; "rust": fn acceptance_actual(input: &AcceptanceJson) -> AcceptanceJson, where the host block defines AcceptanceJson (Null, Bool, Number(f64), String, Array, Object; as_f64, as_i64, as_str, as_array, get, and From for numbers, strings, bools, Vec and Option); "xunit": a static (public or internal) object? AcceptanceActual(System.Text.Json.Nodes.JsonNode? input) in the class named after the file; "rspec": def acceptance_actual(input) at the top level of the spec file, above the block; "phpunit": public static function acceptanceActual(mixed $input): mixed in the class named after the file; "testthat": acceptance_actual <- function(input) in the test-*.R file, above the block; "busted": local function acceptance_actual(input) in the *_spec.lua file, above the block; "minitest": def acceptance_actual(input) at the top level of the test file, above the block, which loads Minitest as the project\'s other tests do (require \'minitest/autorun\' or its test_helper); "pest": $acceptanceActual = function (mixed $input): mixed { ... }; in the *Test.php file, above the block; "dart": a top-level Object? acceptanceActual(Object? input) in the *_test.dart file, outside main; "exunit": defp acceptance_actual(input) (or def) in the module of the *_test.exs file, which the block ends. Prefer inline whenever the files of the file mode would be extra files the request does not allow. Keep stateful, process, file and non-JSON cases in ordinary agent-written tests. Do not mark a criterion unless its whole table fits one harness.';
+  'Acceptance rows as data is enabled. For pure call-and-compare tests with JSON Input | Expected tables (an optional Scenario column is a label), set rows to the criterion IDs and rowTest to {framework, harness: "relative harness path", test: "relative test path", data: "relative JSON path"}, adding package where the framework needs one. Declare all three paths in writes, with test and data created by this task. Write only the harness; the host writes the JSON rows and the parameterized test, preserving row IDs, and compares the harness result with each expected value as JSON. Frameworks and harness contracts: "bun": a .ts or .js harness exporting actual(input), which may be async, and a .test.ts test. "pytest": a .py harness defining actual(input) and a test_*.py test. "go": a .go harness defining func Actual(input any) (any, error) in the same directory as a _test.go test, with package set to the Go package name. "junit" (JUnit 5): a .java harness class, named after its file, with static Object actual(Object input) in the same package as a *Test.java test, both under the directories of package (the Java package); input is built from Map<String, Object>, List<Object>, Long, Double, String, Boolean and null. "rust": a test tests/<name>.rs and a harness .rs file (best under tests/support/) defining pub fn actual(input: serde_json::Value) -> serde_json::Value; the project needs serde_json, at least in [dev-dependencies]. "xunit": a .cs harness static class, named after its file, with public static object? Actual(System.Text.Json.Nodes.JsonNode? input) and a .cs test in a project that references xunit, with package set to the C# namespace of both. "rspec": a .rb harness defining actual(input) at its top level, which the host\'s test loads into a module of its own (its require_relative still resolves from its file), and a *_spec.rb test. "phpunit": a .php harness class, named after its file, with public static function actual(mixed $input): mixed, and a *Test.php test, which loads the harness with require_once; set package to the PHP namespace of both with dots for backslashes (App.Tests for App\\Tests), or leave it out for the global namespace; input is decoded with JSON objects as associative arrays. "testthat": an .R harness defining actual(input), not named test-, helper- or setup-, which the host\'s test sources into an environment of its own, and a tests/testthat/test-*.R test; input is read by jsonlite with JSON objects as named lists and arrays as unnamed lists, and the result is compared as JSON, so return a list for an array. "busted": a .lua harness module that returns a table with actual(input), which the host\'s test loads with dofile from the test\'s directory, and a *_spec.lua test; input is decoded by dkjson with JSON null as dkjson.null, and the result is compared as JSON. "minitest": a .rb harness defining actual(input) at its top level, which the host\'s test loads into a module of its own, and a *_test.rb or test_*.rb test. "pest": a .php harness file that returns a closure function (mixed $input): mixed, not a *Test.php, which the host\'s test loads with require, and a *Test.php Pest test; input is decoded with JSON objects as associative arrays. "dart" (package:test): a .dart harness, not a *_test.dart, defining a top-level Object? actual(Object? input), which the host\'s test imports with a prefix, and a *_test.dart test; input is decoded by dart:convert with JSON objects as Map<String, dynamic>, and the result is compared as JSON. "exunit" (Elixir 1.18 or later, whose standard library has JSON): an .exs harness file, not a *_test.exs, whose last expression is fn input -> ... end, which the host\'s test evaluates with Code.eval_file from the test\'s directory, and a *_test.exs test; input is decoded with JSON objects as maps with string keys, and the result is compared as JSON. "kotlin" (JUnit 5): a .kt harness, not a *Test.kt, declaring an object named after its file with fun actual(input: Any?): Any?, in the directory of a *Test.kt test; set package to the Kotlin package of both, or leave it out for none; input is built from Map<String, Any?>, List<Any?>, Long, Double, String, Boolean and null. "scalatest" (AnyFunSuite) and "munit" (FunSuite): a .scala harness declaring an object named after its file with def actual(input: Any): Any, in the directory of a .scala test named after its suite class; set package to the Scala package of both, or leave it out for none; input is built from Map[String, Any], List[Any], Long, Double, String, Boolean and null. Inline mode, for a brief or boundary that fixes the test files (no new harness, test or data file, no new dependency): set rowTest to {mode: "inline", framework, test: "a test file this task writes"}, adding package for go (the Go package), junit (the Java package of the file\'s directory) and xunit (the C# namespace of the file\'s class), and for kotlin when the file starts a new Kotlin package. Do not add other paths for it. The host appends the rows and their parameterized test to the end of that file between BEGIN and END acceptance rows comments (Go: also an import block after the package clause; junit and xunit: as a class nested in the file\'s own class, before its closing brace, so the file keeps one top-level type; phpunit: as methods of the file\'s own class, before its closing brace; exunit: in the file\'s own module, before its end; dart: in the file\'s main, before its closing brace, with prefixed imports after the file\'s own; kotlin: as an inner @Nested class in the file\'s own class, before its closing brace; scalatest and munit: as a suite class of its own, AcceptanceRows<file name>, at the end of the file), and restores the block if an edit drops it. In that file define the harness the block calls, next to the task\'s ordinary tests: "bun": function acceptanceActual(input), which may be async; "pytest": def acceptance_actual(input); "go": func acceptanceActual(input any) (any, error), one per package directory; "junit": static Object acceptanceActual(Object input) in the class named after the file; "rust": fn acceptance_actual(input: &AcceptanceJson) -> AcceptanceJson, where the host block defines AcceptanceJson (Null, Bool, Number(f64), String, Array, Object; as_f64, as_i64, as_str, as_array, get, and From for numbers, strings, bools, Vec and Option); "xunit": a static (public or internal) object? AcceptanceActual(System.Text.Json.Nodes.JsonNode? input) in the class named after the file; "rspec": def acceptance_actual(input) at the top level of the spec file, above the block; "phpunit": public static function acceptanceActual(mixed $input): mixed in the class named after the file; "testthat": acceptance_actual <- function(input) in the test-*.R file, above the block; "busted": local function acceptance_actual(input) in the *_spec.lua file, above the block; "minitest": def acceptance_actual(input) at the top level of the test file, above the block, which loads Minitest as the project\'s other tests do (require \'minitest/autorun\' or its test_helper); "pest": $acceptanceActual = function (mixed $input): mixed { ... }; in the *Test.php file, above the block; "dart": a top-level Object? acceptanceActual(Object? input) in the *_test.dart file, outside main; "exunit": defp acceptance_actual(input) (or def) in the module of the *_test.exs file, which the block ends; "kotlin": fun acceptanceActual(input: Any?): Any? in the class named after the *Test.kt file (or its companion object); "scalatest" and "munit": def acceptanceActual(input: Any): Any in an object named after the .scala file (the suite\'s companion object), which the block\'s suite calls by that name. Prefer inline whenever the files of the file mode would be extra files the request does not allow. Keep stateful, process, file and non-JSON cases in ordinary agent-written tests. Do not mark a criterion unless its whole table fits one harness.';
 
 /** Told to the spec author, so the tables the planner may select are ones the host can read (#1660). */
 export const SPEC_ROWS_NOTE =
@@ -267,6 +270,9 @@ const TESTTHAT_TEST = /(?:^|\/)tests\/testthat\/test[^/]*\.[rR]$/;
 
 /** The files Rake's TestTask and `ruby -Itest` run as Minitest tests. */
 const MINITEST_TEST = /(?:_test|(?:^|\/)test_[^/]*)\.rb$/;
+
+/** The Kotlin test classes Gradle's and Maven's default patterns run, as `junit`'s (#2410). */
+const KOTLIN_TEST = /(?:Test|Tests|TestCase)\.kt$|(?:^|\/)Test[^/]*\.kt$/;
 
 /** The test file name each framework runs, and the package a typed language needs. */
 function testFileProblem(rowTest: RowTest): string | null {
@@ -316,6 +322,17 @@ function testFileProblem(rowTest: RowTest): string | null {
       return test.endsWith("_test.exs") ? null : "need a *_test.exs test";
     case "dart":
       return test.endsWith("_test.dart") ? null : "need a *_test.dart test";
+    case "kotlin":
+      if (!KOTLIN_TEST.test(test)) return "need a *Test.kt test";
+      return IDENTIFIER.test(baseName(test, /\.kt$/))
+        ? null
+        : "need a Kotlin class name as the test file name";
+    case "scalatest":
+    case "munit":
+      if (!test.endsWith(".scala")) return "need a .scala test";
+      return IDENTIFIER.test(baseName(test, /\.scala$/))
+        ? null
+        : "need a Scala class name as the test file name";
   }
 }
 
@@ -407,6 +424,24 @@ function layoutProblem(rowTest: FileRowTest): string | null {
         !harness.endsWith("_test.dart")
         ? null
         : "need a *_test.dart test and a .dart harness that is not a test file";
+    case "kotlin":
+      // The harness is an object named after its file, which a test runner would not run.
+      if (!KOTLIN_TEST.test(test) || !harness.endsWith(".kt") || KOTLIN_TEST.test(harness))
+        return "need a *Test.kt test and a .kt harness that is not a test file";
+      if (![test, harness].every((path) => IDENTIFIER.test(baseName(path, /\.kt$/))))
+        return "need Kotlin class names as the harness and test file names";
+      return posix.dirname(test) === posix.dirname(harness)
+        ? null
+        : "need the Kotlin harness and test in one directory, so they share a package";
+    case "scalatest":
+    case "munit":
+      if (!test.endsWith(".scala") || !harness.endsWith(".scala"))
+        return "need a .scala test and harness";
+      if (![test, harness].every((path) => IDENTIFIER.test(baseName(path, /\.scala$/))))
+        return "need Scala class names as the harness and test file names";
+      return posix.dirname(test) === posix.dirname(harness)
+        ? null
+        : "need the Scala harness and test in one directory, so they share a package";
   }
 }
 
@@ -620,6 +655,16 @@ const camel = (text: string): string =>
 const csharpString = (text: string): string => escapeInvisible(JSON.stringify(text), utf16Escape);
 const relative = (from: string, to: string): string => posix.relative(posix.dirname(from), to);
 
+/** The file mode's Scala suite: the rows and their tests, calling the harness object's actual. */
+const scalaFile = (
+  framework: keyof typeof SCALA_SUITES,
+  { harness, test, package: pkg, rows }: Parameters<Template>[0],
+): string => {
+  const { suite, check } = SCALA_SUITES[framework];
+  const name = suite.slice(suite.lastIndexOf(".") + 1);
+  return `${header("//", harness)}${pkg ? `package ${pkg}\n\n` : "\n"}import ${suite}\n\nclass ${posix.basename(test, ".scala")} extends ${name} {\n${scalaRows(rows, `${posix.basename(harness, ".scala")}.actual`, check)}\n}\n`;
+};
+
 /**
  * One contract for every framework: the agent writes only the harness, and the host's test feeds
  * it each row's input and compares its result with the expected value as JSON data.
@@ -696,6 +741,14 @@ const TEMPLATES: Record<RowTest["framework"], Template> = {
       .split("\n")
       .map((line) => (line ? `  ${line}` : line))
       .join("\n")}\n}\n`,
+  // Kotlin has no JSON reader in its standard library (kotlinx.serialization is a dependency), so
+  // the rows are Kotlin literals, as Java's; the harness is an object named after its file (#2410).
+  kotlin: ({ harness, test, package: pkg, rows }) =>
+    `${header("//", harness)}${pkg ? `package ${pkg}\n\n` : "\n"}import org.junit.jupiter.api.Assertions\nimport org.junit.jupiter.api.DynamicTest\nimport org.junit.jupiter.api.TestFactory\n\nclass ${posix.basename(test, ".kt")} {\n${kotlinRows(rows, "", `${posix.basename(harness, ".kt")}.actual`)}\n}\n`,
+  // Scala has had no JSON reader in its standard library since 2.13, so the rows are literals too;
+  // sbt's testOnly selects the suite by its file's name (#1496, #2410).
+  scalatest: (input) => scalaFile("scalatest", input),
+  munit: (input) => scalaFile("munit", input),
   // testthat runs a test file from its own directory, where test_path() resolves; the harness is
   // sourced into an environment of its own, so its actual is no name of the test file (#2348).
   testthat: ({ harness, test, data }) =>

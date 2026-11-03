@@ -273,10 +273,12 @@ export async function prepareStart(
     rustFormatWritten: policyRustFormatWritten,
     sourceDefectRoute: policySourceDefectRoute,
     rowRunRoute: policyRowRunRoute,
+    conflictRowReply: policyConflictRowReply,
     rowRunRestore: policyRowRunRestore,
     rowEditGuard: policyRowEditGuard,
     rowClaimCheck: policyRowClaimCheck,
     baselineFix: policyBaselineFix,
+    languagePitfalls: policyLanguagePitfalls,
     propertyTests: policyPropertyTests,
     allowOverlappingWrites,
     editDiagnostics: _editDiagnostics,
@@ -334,6 +336,7 @@ export async function prepareStart(
   const rustFormatWritten = policyRustFormatWritten ?? config.quality?.rustFormatWritten ?? "off";
   const sourceDefectRoute = policySourceDefectRoute ?? config.quality?.sourceDefectRoute ?? "off";
   const rowRunRoute = policyRowRunRoute ?? config.quality?.rowRunRoute ?? "off";
+  const conflictRowReply = policyConflictRowReply ?? config.quality?.conflictRowReply ?? "off";
   // On by default (#2543): only `off` is kept, so stored policies keep their hash.
   const rowRunRestore = policyRowRunRestore ?? config.quality?.rowRunRestore ?? "on";
   // On by default (#2558): only `off` is kept, so stored policies keep their hash.
@@ -341,6 +344,7 @@ export async function prepareStart(
   // On by default (#2561): only `off` is kept, so stored policies keep their hash.
   const rowClaimCheck = policyRowClaimCheck ?? config.quality?.rowClaimCheck ?? "on";
   const baselineFix = policyBaselineFix ?? config.quality?.baselineFix ?? "off";
+  const languagePitfalls = policyLanguagePitfalls ?? config.quality?.languagePitfalls ?? "off";
   const propertyTests =
     request.propertyTests ??
     policyPropertyTests ??
@@ -407,10 +411,12 @@ export async function prepareStart(
     ...(rustFormatWritten === "on" ? { rustFormatWritten } : {}),
     ...(sourceDefectRoute === "on" ? { sourceDefectRoute } : {}),
     ...(rowRunRoute === "on" ? { rowRunRoute } : {}),
+    ...(conflictRowReply === "on" ? { conflictRowReply } : {}),
     ...(rowRunRestore === "off" ? { rowRunRestore } : {}),
     ...(rowEditGuard === "off" ? { rowEditGuard } : {}),
     ...(rowClaimCheck === "off" ? { rowClaimCheck } : {}),
     ...(baselineFix === "on" ? { baselineFix } : {}),
+    ...(languagePitfalls === "on" ? { languagePitfalls } : {}),
     ...(propertyTests !== presetPropertyTests(preset) ? { propertyTests } : {}),
     ...(request.maxConcurrentWriters !== undefined
       ? { maxConcurrentWriters: request.maxConcurrentWriters }

@@ -371,7 +371,7 @@ export interface QualityConfig {
   misquoteFix?: "off" | "on";
   /** Let the host put a prescribed test row a delivered file changed back from the request's text, when the file keeps it on one line in the request's notation and the checks pass on it: `on` or `off` (default, recorded in shadow). */
   rowRestore?: "off" | "on";
-  /** Let the host write a test file whose only content is the rows the request prescribes, in the shape of the file in the task's base or its reference file, instead of a model session transcribing them: `on` or `off` (default, recorded in shadow). */
+  /** Let the host write a test file whose only content is the rows the request prescribes, in the shape of the file in the task's base or its reference file, instead of a model session transcribing them, and give a session that still writes such a file place_rows, which inserts the request's rows as written: `on` or `off` (default, recorded in shadow). */
   rowFileWrite?: "off" | "on";
   /** Let the host write a task the request gives verbatim (exact diffs, whole files, a README section) instead of starting an implementer, when every diff applies: `on` or `off` (default, recorded in shadow). */
   hostApply?: "off" | "on";
@@ -391,6 +391,8 @@ export interface QualityConfig {
   sourceDefectRoute?: "off" | "on";
   /** Send a failing check's correction to the test's task when the test counts a long byte run of a prescribed row differently: `on` or `off` (default, recorded in shadow). */
   rowRunRoute?: "off" | "on";
+  /** Answer a spec conflict about a test file whose rows the request prescribes with the row diff, keeping the request's rows, instead of a model settle: `on` or `off` (default, recorded in shadow). */
+  conflictRowReply?: "off" | "on";
   /** Restore a prescribed row whose long byte run a test counts differently on resume of a run blocked at a task and before a task's session, kept when the writing task's checks pass: `on` (default) or `off` (recorded in shadow, the brief names the miscount). */
   rowRunRestore?: "off" | "on";
   /** Put back a session's edit after which a prescribed test row the file held no longer holds: `on` (default) or `off`. */
@@ -399,6 +401,8 @@ export interface QualityConfig {
   rowClaimCheck?: "off" | "on";
   /** Before the first task, let the host run a required check's fixer on files no task writes when the check fails before any change with only correctable findings, and keep the edit when the check then passes: `on` or `off` (default). */
   baselineFix?: "off" | "on";
+  /** Give each implementer step its languages' pitfalls note and the first error line of the run's other tasks' failing checks: `on` or `off` (default, recorded in shadow). */
+  languagePitfalls?: "off" | "on";
   /** Property-based tests from marked criteria: `preset` or absent follows the workflow preset. */
   propertyTests?: "preset" | "auto" | "off";
 }

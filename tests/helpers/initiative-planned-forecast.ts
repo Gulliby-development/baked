@@ -121,12 +121,13 @@ function repository(root: string): void {
 
 export async function plannedForecastScenario(
   count: number, firstUsd: number | Record<string, number>, histories: string[],
-  options: { forecastStop?: boolean; stopModes?: RunPolicy["stopModes"]; mix?: Mix; skeleton?: boolean; capUsd?: number | null; maxTotalTokens?: number; extendWithinDollars?: "off" | "shadow" | "on"; costTolerance?: number | "off"; approve?: boolean; globPaths?: boolean; tasks?: Record<string, number>; planAhead?: boolean } = {},
+  options: { forecastStop?: boolean; stopModes?: RunPolicy["stopModes"]; mix?: Mix; skeleton?: boolean; capUsd?: number | null; maxTotalTokens?: number; extendWithinDollars?: "off" | "shadow" | "on"; planChargeExpected?: "off" | "shadow" | "on"; costTolerance?: number | "off"; approve?: boolean; globPaths?: boolean; tasks?: Record<string, number>; planAhead?: boolean } = {},
 ) {
   const skeleton = options.skeleton ?? true;
   const fixture = workflowFixture({ executor: (root) => new ScriptedExecutor(root, firstUsd, skeleton, options.mix, options.tasks) });
   fixture.executor.store = fixture.service.store;
   if (options.extendWithinDollars) fixture.config.workflows = { ...fixture.config.workflows, extendWithinDollars: options.extendWithinDollars };
+  if (options.planChargeExpected) fixture.config.workflows = { ...fixture.config.workflows, planChargeExpected: options.planChargeExpected };
   // Plan ahead (#1834) runs every feature in a worktree of a Git repository, two at once.
   if (options.planAhead) {
     repository(fixture.root);

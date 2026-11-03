@@ -10,6 +10,7 @@ import { canRepairRun } from "../repairable.js";
 
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
+import { isTestFile } from "../../intelligence/language-traits.js";
 import { ROUTING_ARTIFACT } from "../../llm/model-routing.js";
 import { getCachedProviderStatuses } from "../../llm/provider.js";
 import { availableVendorModels } from "../../llm/vendor-models.js";
@@ -40,6 +41,7 @@ import {
 } from "../estimate.js";
 import { forecastSamples, forecastStageCost, runForecastStages } from "../forecast-price.js";
 import { executingLeases } from "../leases.js";
+import { FEATURE_REQUEST_HEADING } from "../person-request.js";
 import { plannedRunTokens } from "../plan-cost.js";
 import { plannedStages } from "../pre-run.js";
 import { type RecoveryAdvice, recoveryAdvice } from "../remedies.js";
@@ -91,6 +93,12 @@ import {
 } from "./calls-pool.js";
 import { criticalPathSummary, planWidth, remainingPath } from "./critical-path.js";
 import { DECOMPOSE_WORKFLOW_ID } from "./decompose.js";
+import {
+  boundaryKindOf,
+  documentedSurfaceRate,
+  documentsProgram,
+  requestCommands,
+} from "./documented-surface.js";
 import { type InitiativeDriveState, initiativeDriveState } from "./drive-state.js";
 import {
   calibrationLagText,
@@ -118,10 +126,12 @@ import {
 } from "./growth.js";
 import {
   applySplitEdit,
+  boundaryCovers,
   boundaryPathCounts,
   type FeatureSize,
   featureDigest,
   foldSkeletonFeatures,
+  hostRowCases,
   type InitiativeFeature,
   InitiativeId,
   type InitiativePlan,
@@ -171,11 +181,13 @@ import {
   affordableClause,
   affordableTokens,
   DEFAULT_EXTEND_WITHIN_DOLLARS,
+  DEFAULT_PLAN_CHARGE_EXPECTED,
   DEFAULT_STAGE_RESERVE,
   DEFAULT_TIME_POOL_GROWTH,
   dollarTokens,
   type ExtendWithinDollars,
   NO_DOLLAR_FORECAST,
+  type PlanChargeExpected,
   type PlanChargeView,
   type PlanShareDecision,
   type PlanShareInputs,
@@ -200,6 +212,7 @@ import {
   type AmendmentRequest,
   amendmentAnswer,
   amendmentLines,
+  plannedFiles,
   type UpstreamSymbolGap,
   upstreamFiles,
   upstreamSymbolGaps,
@@ -1235,6 +1248,21 @@ export function planChargedGate(view: ShareGateView): ShareGateView | null {
       f.share === null ? f : { ...f, share: { ...f.share, tokens: shares.get(f.id) ?? 0 } },
     ),
   };
+}
+
+/**
+ * The share gate with the open runs' unmeasured plans held at their expected need instead of
+ * their high end (`budget.planCharge.expected`, `workflows.planChargeExpected: shadow`, #2534):
+ * `planChargedGate` on that charge. Null without one, or while the pool does not hold the plan
+ * charge (`initiative-plan-charge` in shadow), where the gate compares the limits instead.
+ */
+export function expectedChargedGate(view: ShareGateView): ShareGateView | null {
+  const charge = view.budget.planCharge;
+  if (!charge?.expected || charge.mode !== "enforce") return null;
+  return planChargedGate({
+    ...view,
+    budget: { ...view.budget, planCharge: { ...charge.expected, mode: "shadow" } },
+  });
 }
 
 /**
@@ -2466,6 +2494,7 @@ export class InitiativeService {
       this.noteCallsForecast(view, feature.id);
     }
     this.notePlanCharge(view, { view: gateView, feature, verdict });
+    if (verdict === "park") this.noteExpectedCharge(gateView, feature);
     if (!growth?.wouldExtend) return false;
     if (mode === "on") return this.extendWithinDollarsOn(gateView, feature.id, growth);
     this.noteWouldExtend(gateView, feature.id, growth);
@@ -2536,6 +2565,11 @@ export class InitiativeService {
   /** `workflows.extendWithinDollars`: whether a token park records the host's extension (#2042). */
   private extendWithinDollars(): ExtendWithinDollars {
     return this.workflows.config.workflows?.extendWithinDollars ?? DEFAULT_EXTEND_WITHIN_DOLLARS;
+  }
+
+  /** Which plan point the pool holds unmeasured plans at (`workflows.planChargeExpected`, #2534). */
+  private planChargeExpected(): PlanChargeExpected {
+    return this.workflows.config.workflows?.planChargeExpected ?? DEFAULT_PLAN_CHARGE_EXPECTED;
   }
 
   /**
@@ -2767,6 +2801,53 @@ export class InitiativeService {
       wouldStart,
       wouldPark,
       summary: `Holding the open runs with a sized plan at their plan's need ${amount(charge.releasedTokens)}: ${tokenText(charged.budget.remaining.tokens)} of the ${tokenText(limit)} pool would remain and ${gate.feature.id} would ${wouldStart ? "start" : "not start"}.`,
+    });
+  }
+
+  /**
+   * `workflows.planChargeExpected: shadow` at a share gate that parks (#2534): when holding the
+   * open runs' unmeasured plans at their expected need instead of their high end
+   * (`budget.planCharge.expected`) would start the feature, a `decision.would_release` event with
+   * `point: "expected"` records it, once per feature. Nothing changes: the pool keeps the high end.
+   * R83 pnmforge parked geometry at minute 36 on charges of 18.98M of the 19.6M pool for runs that
+   * had used 4.7M, and it started at minute 66.
+   */
+  private noteExpectedCharge(gateView: ShareGateView, feature: FeatureView): void {
+    const charge = gateView.budget.planCharge;
+    const expected = charge?.expected;
+    if (!charge || !expected || charge.mode !== "enforce") return;
+    const id = gateView.initiativeId;
+    const key = `expected-start-${feature.id}`;
+    const seen = this.store
+      .eventsOfType(id, "decision.would_release")
+      .some((p) => (p as { key?: string } | null)?.key === key);
+    if (seen) return;
+    const charged = expectedChargedGate(gateView);
+    if (!charged) return;
+    const own = charged.features.find((f) => f.id === feature.id);
+    if (shareShortfall(charged, { ...feature, share: own?.share ?? null })) return;
+    const freed = charge.planCommittedTokens - expected.planCommittedTokens;
+    const limit = gateView.budget.limits?.maxTotalTokens ?? 0;
+    this.store.emit(id, "decision.would_release", {
+      reason: "initiative-plan-charge",
+      mode: "shadow",
+      point: "expected",
+      key,
+      featureId: feature.id,
+      ratio: expected.ratio,
+      planCommittedTokens: charge.planCommittedTokens,
+      expectedCommittedTokens: expected.planCommittedTokens,
+      releasedTokens: freed,
+      wouldStart: true,
+      wouldPark: false,
+      runs: expected.runs.map(({ featureId, runId, usedTokens, chargeTokens }) => ({
+        featureId,
+        runId,
+        usedTokens,
+        chargeTokens,
+        highTokens: charge.runs.find((r) => r.runId === runId)?.chargeTokens ?? chargeTokens,
+      })),
+      summary: `Holding the open runs' unmeasured plans at their expected need instead of their high end frees ${tokenText(freed)} tokens: ${tokenText(charged.budget.remaining.tokens)} of the ${tokenText(limit)} pool would remain and ${feature.id} would start (workflows.planChargeExpected: on).`,
     });
   }
 
@@ -3458,12 +3539,37 @@ export class InitiativeService {
       baseCeilingTokens: settings.basePolicy.sizing?.maxRunTokens ?? null,
       plan,
       planRatio: charge?.ratio ?? null,
+      ...(charge?.point ? { planPoint: charge.point } : {}),
       heldTokens: own ? own.chargeTokens : Math.max(used, policy.maxTotalTokens),
       othersUsedTokens: this.othersUsedTokens(id, runId),
       pool,
     };
     const decision = planShareDecision(inputs);
     if (!decision.over) return false;
+    // `planChargeExpected: shadow` (#2534): what the gate decides with the plans at their expected
+    // need, recorded beside the decision it makes; R82 tinyflate's deflate would not have asked.
+    const atExpected = charge?.expected;
+    const ownExpected =
+      atExpected && charge?.mode === "enforce"
+        ? atExpected.runs.find((r) => r.runId === runId)
+        : null;
+    const expectedDecision = atExpected
+      ? planShareDecision({
+          ...inputs,
+          planPoint: "expected",
+          ...(ownExpected ? { heldTokens: ownExpected.chargeTokens } : {}),
+        })
+      : null;
+    const expected =
+      expectedDecision && expectedDecision.needTokens !== decision.needTokens
+        ? {
+            expected: {
+              needTokens: expectedDecision.needTokens,
+              over: expectedDecision.over,
+              wouldExtend: expectedDecision.over && expectedDecision.wouldExtend,
+            },
+          }
+        : {};
     const mode = this.extendWithinDollars();
     const key = `${decision.reason}-${runId}-${ceiling}`;
     const seen = (type: string) =>
@@ -3482,6 +3588,7 @@ export class InitiativeService {
           byTokens: decision.byTokens,
           ceilingTokens: decision.ceilingTokens,
           needTokens: decision.needTokens,
+          ...expected,
           summary: `${decision.why} ${featureId} would run its tasks within its plan.`,
           inputs,
         });
@@ -3507,6 +3614,7 @@ export class InitiativeService {
         ...(decision.suggestedUsd !== null ? { suggestedUsd: decision.suggestedUsd } : {}),
       },
       needTokens: decision.needTokens,
+      ...expected,
       inputs,
     });
     return false;
@@ -3775,7 +3883,8 @@ export class InitiativeService {
     plan: InitiativePlan | null,
     baseCommit: string,
   ): Promise<UpstreamSymbolGap[]> {
-    const spec = this.workflows.store.state(runId).spec;
+    const state = this.workflows.store.state(runId);
+    const spec = state.spec;
     if (!spec || !plan) return [];
     const files = upstreamFiles(plan, feature);
     if (!files.length) return [];
@@ -3785,7 +3894,27 @@ export class InitiativeService {
         return { ...file, text: shown.code === 0 ? shown.stdout : null };
       }),
     );
-    return upstreamSymbolGaps(spec, upstream, feature.boundary.paths);
+    // The files the run and the base know besides the plan's paths (#2619): host-written files,
+    // task writes, and the base's test files a boundary glob covers (`test/**` holds
+    // `test/support/row_case.ex`). Source files a glob covers stay out: `src/**` would make every
+    // stem of the tree a module and hide real gaps.
+    const tree = await git(this.workflows.workspace, [
+      "ls-tree",
+      "-r",
+      "-z",
+      "--name-only",
+      baseCommit,
+    ]);
+    const known = [
+      ...(state.hostFiles ?? []).map((file) => file.path),
+      ...[state.graph, state.rootGraph].flatMap(
+        (graph) => graph?.tasks.flatMap((task) => task.writes.map((write) => write.path)) ?? [],
+      ),
+      ...(tree.code === 0 ? tree.stdout.split("\0").filter(Boolean) : []).filter(
+        (path) => isTestFile(path) && plan.features.some((f) => boundaryCovers(f, path)),
+      ),
+    ];
+    return upstreamSymbolGaps(spec, upstream, feature.boundary.paths, plannedFiles(plan, known));
   }
 
   /** The amendment requests of the approved split (#2157), oldest first. */
@@ -4027,13 +4156,18 @@ export class InitiativeService {
    * and a token range per feature and in total, from this project's run history. Null before a
    * split exists.
    */
-  estimate(id: string): InitiativeEstimate | null {
+  /**
+   * The estimate of the initiative's split. A caller that just took `view(id)` and changed nothing
+   * since passes it, so its accepted features are not computed a second time (the replay corpus
+   * takes both at every rewound start).
+   */
+  estimate(id: string, view?: Pick<InitiativeView, "features">): InitiativeEstimate | null {
     const row = this.store.get(id);
     const latest = row.plan_revision ? this.store.revision(id, row.plan_revision) : null;
     const plan = this.approvedPlan(row) ?? (latest ? this.store.plan(latest) : null);
     if (!plan) return null;
-    const accepted = this.view(id)
-      .features.filter((f) => f.state === "accepted")
+    const accepted = (view ?? this.view(id)).features
+      .filter((f) => f.state === "accepted")
       .map((f) => f.id);
     // Asked for rarely and right after runs finish, so it reads the store fresh.
     return this.estimateOf(row, plan, new Set(accepted), 0);
@@ -4096,10 +4230,15 @@ export class InitiativeService {
     const settings = this.store.settings(row);
     const facts = this.workflowFacts(settings);
     const models = settings.model ? [settings.model] : [];
-    const counts = boundaryPathCounts(plan, row.prompt);
+    // The prescribed row files the host writes with no session are neither paths nor test cases
+    // a session pays for (#2640), as task-plan sizing prices their tasks at nothing (#2633).
+    const counts = boundaryPathCounts(plan, row.prompt, settings.basePolicy);
+    const hostRows = hostRowCases(plan, row.prompt, settings.basePolicy);
     const language = planLanguage(plan);
+    const commands = requestCommands(row.prompt).length;
     const features = plan.features.map((feature) => {
       const workflowId = featureWorkflowId(settings, feature);
+      const testCases = Math.max(0, (feature.testCases ?? 0) - (hostRows.get(feature.id) ?? 0));
       return {
         id: feature.id,
         title: feature.title,
@@ -4108,7 +4247,9 @@ export class InitiativeService {
         stages: (facts(workflowId)?.stages ?? []).map((stage) => ({ ...stage, models })),
         ...counts.get(feature.id),
         dependsOn: feature.dependsOn,
-        ...(feature.testCases ? { testCases: feature.testCases } : {}),
+        ...(testCases ? { testCases } : {}),
+        ...(commands && documentsProgram(feature) ? { documentedCommands: commands } : {}),
+        ...boundaryKindOf(feature),
       };
     });
     const history = estimateHistory(
@@ -4136,16 +4277,17 @@ export class InitiativeService {
       if (planned) entry.planned = planned;
       spent[link.feature_id] = entry;
     }
+    const samples = [
+      ...featureRunSamples(this.store, this.workflows.store, history),
+      ...sharedFeatureRunSamples(
+        historyStorePaths(this.workflows.workspace, settings.basePolicy),
+        history,
+      ),
+    ].filter((s) => !own.has(s.runId));
     const estimate = estimateInitiative({
       features,
       history,
-      samples: [
-        ...featureRunSamples(this.store, this.workflows.store, history),
-        ...sharedFeatureRunSamples(
-          historyStorePaths(this.workflows.workspace, settings.basePolicy),
-          history,
-        ),
-      ].filter((s) => !own.has(s.runId)),
+      samples,
       maxTotalTokens: this.limits(row).maxTotalTokens,
       progress: {
         features: spent,
@@ -4156,12 +4298,23 @@ export class InitiativeService {
       ...(settings.basePolicy?.sizing?.recencyHalfLife
         ? { recencyHalfLife: settings.basePolicy.sizing.recencyHalfLife }
         : {}),
+      ...(settings.basePolicy?.sizing?.fewPathPrice ? { fewPathPrice: true } : {}),
       // Read only when the request demands a test volume: the sizing history opens every store.
       ...(features.some((f) => f.testCases)
         ? {
             testCaseRate: testCaseRate(
               sizingHistory(this.workflows.workspace, settings.basePolicy),
             ),
+          }
+        : {}),
+      // A documentation feature's listed commands (#2569): priced with `sizing.documentedSurface`,
+      // recorded on the feature's estimate in shadow otherwise.
+      ...(features.some((f) => f.documentedCommands)
+        ? {
+            documentedSurface: {
+              rate: documentedSurfaceRate(samples),
+              mode: settings.basePolicy?.sizing?.documentedSurface ? "on" : "shadow",
+            },
           }
         : {}),
     });
@@ -5540,13 +5693,25 @@ export class InitiativeService {
           limitCommittedUsd: runIds.reduce((sum, runId) => sum + this.committedUsd(runId), 0),
         }
       : undefined;
-    return planCharge(
-      stopMode(settings.basePolicy, "initiative-plan-charge"),
-      estimate.planCalibration.ratio,
+    const mode = stopMode(settings.basePolicy, "initiative-plan-charge");
+    const ratio = estimate.planCalibration.ratio;
+    const expected = this.planChargeExpected();
+    const charge = planCharge(
+      mode,
+      ratio,
       limitCommitted,
       runs,
       dollars,
+      expected === "on" ? "expected" : "high",
     );
+    // `shadow` (#2534): the same charge at the plans' expected need, beside the one the pool holds.
+    if (!charge || expected !== "shadow") return charge;
+    const atExpected = planCharge(mode, ratio, limitCommitted, runs, dollars, "expected");
+    const differs =
+      atExpected !== null &&
+      (atExpected.planCommittedTokens !== charge.planCommittedTokens ||
+        (atExpected.usd?.planCommittedUsd ?? 0) !== (charge.usd?.planCommittedUsd ?? 0));
+    return differs ? { ...charge, expected: atExpected } : charge;
   }
 
   private limits(row: InitiativeRow): BudgetLimitsValue {
@@ -5705,6 +5870,7 @@ function featureRunSamples(
         language: string | null;
       }
     >();
+    const commands = requestCommands(row.prompt).length;
     return initiatives.links(row.id).flatMap((link) => {
       const run = runs.get(link.run_id);
       if (run?.status !== "completed") return [];
@@ -5712,7 +5878,7 @@ function featureRunSamples(
         const plan = initiatives.plan(initiatives.revision(row.id, link.plan_revision));
         plans.set(link.plan_revision, {
           plan,
-          counts: boundaryPathCounts(plan, row.prompt),
+          counts: boundaryPathCounts(plan, row.prompt, settings.basePolicy),
           language: planLanguage(plan),
         });
       }
@@ -5736,6 +5902,7 @@ function featureRunSamples(
           ...(source === "shared" ? { source } : {}),
           startedAt: link.created_at,
           ...(revision?.language ? { language: revision.language } : {}),
+          ...(commands && documentsProgram(feature) ? { documentedCommands: commands } : {}),
         },
       ];
     });
@@ -6170,6 +6337,7 @@ export function featurePrompt(
       "Other features of the initiative own this work; do not implement it here:",
       ...others.map((f) => `- ${f.id}: ${f.title}`),
     );
-  lines.push("", "The original request of the initiative:", row.prompt);
+  // The person's words begin after this heading; `requestSections` splits there (#2492).
+  lines.push("", FEATURE_REQUEST_HEADING, row.prompt);
   return lines.join("\n");
 }

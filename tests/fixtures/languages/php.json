@@ -14,6 +14,8 @@
     "tests/RuntimeTest.php": "<?php\n$dir = sys_get_temp_dir();\n$want = \"bad: $dir\";\n"
   },
   "expected": {
+    "rowIndent": ["\"    row(1),\""],
+    "languagePitfalls": ["PHP"],
     "generatedValues": ["tests/GenTest.php:2 repeat","tests/GenTest.php:3 interpolate"],
     "exampleBuild": null,
     "runtimePaths": ["tests/RuntimeTest.php: dir"],
@@ -86,8 +88,38 @@
     ],
     "dependencyPrepare": null,
     "worktreePathLimits": null,
+    "diagnosticFormats": null,
     "testClasses": null,
     "testDeclarations": ["tests/SumTest.php: 2 tests, per class 2"],
-    "rowFileShapes": null
+    "rowFileShapes": [
+      "tests/CountRowsTest.php",
+      "<?php",
+      "",
+      "declare(strict_types=1);",
+      "",
+      "namespace Tests;",
+      "",
+      "use PHPUnit\\Framework\\Attributes\\DataProvider;",
+      "use PHPUnit\\Framework\\TestCase;",
+      "use Wordcount\\Words;",
+      "",
+      "final class CountRowsTest extends TestCase",
+      "{",
+      "    public static function rows(): array",
+      "    {",
+      "        return [",
+      "            [\"a\\tb\\nc\", 3],",
+      "            ['  lead', 1],",
+      "        ];",
+      "    }",
+      "",
+      "    #[DataProvider('rows')]",
+      "    public function testCountsWords(string $text, int $count): void",
+      "    {",
+      "        self::assertSame($count, Words::count($text));",
+      "    }",
+      "}",
+      ""
+    ]
   }
 }

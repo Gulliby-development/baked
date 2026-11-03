@@ -3,17 +3,26 @@ import { spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import type { LanguageModelV3, LanguageModelV3GenerateResult } from "@ai-sdk/provider";
 import { isNoRow } from "../src/core/intelligence/language-records.js";
+import { getProvider } from "../src/core/llm/providers/index.js";
+import { hashBytes, hashJson } from "../src/core/specs/hash.js";
+import * as placeRowsModule from "../src/core/tools/place-rows.js";
+import { PLACE_ROWS_DIR, type PlaceRowsInput, type PlaceRowsRecord, placeRows, placeRowTargets } from "../src/core/tools/place-rows.js";
+import { NativeAgentExecutor } from "../src/core/workflows/agent-executor.js";
 import { layoutFree } from "../src/core/workflows/acceptance-rows-inline.js";
 import { type HostApplyWrite, hostApplyDecision, hostApplyRecords, rowFileTasks } from "../src/core/workflows/host-apply.js";
+import * as rowBlockModule from "../src/core/workflows/row-block-drift.js";
 import { ROW_FILE_SHAPES, type RowFileInputs, rowArity, rowFilePlan, rowFileRefusal } from "../src/core/workflows/row-file.js";
+import { ROW_RESTORE_DIR, type RowRestoreRecord, rowEditBreaks, rowRestorePlan } from "../src/core/workflows/row-restore.js";
 import type { RunPolicy, TaskGraph } from "../src/core/workflows/schemas.js";
 import { runRootPath } from "../src/core/workflows/effects.js";
 import { newId } from "../src/core/workflows/store.js";
 import { INTEGRITY_DIR } from "../src/core/workflows/test-integrity.js";
-import { exportTrace, replayTrace } from "../src/core/workflows/trace.js";
+import { exportTrace, replayRowBlocks, replayTrace } from "../src/core/workflows/trace.js";
 import type { ExecutionRequest } from "../src/core/workflows/types.js";
-import { FixtureExecutor, fixturePolicy, workflowFixture } from "./helpers/workflow-fixture.js";
+import { FixtureExecutor, fixturePolicy, fixtureSpec, workflowFixture } from "./helpers/workflow-fixture.js";
+import { MockLanguageModelV3 } from "./helpers/workflow-model.js";
 
 // #2528 (step 2 of #2522): a task whose only content is the rows a request prescribes for a test
 // file opened a model session that transcribed them. Bench round 82: those tasks were 5.1M of the
@@ -91,20 +100,167 @@ const SLOTPROMPT: WriteShape = {
   written: textFile(TEXT_ROWS),
 };
 
+// pnmforge (C++, R83) cli T004: nine rows for `tests/cli_test.cpp`, the two usage rows long runs of
+// `\n` escapes (1,412 characters) that attempt 1 spent 1.57M on. Five such rows here, braced rows in
+// a `std::vector`; the host writes the request's text, so every escape is the file's as given.
+const CLI_PATH = "tests/cli_test.cpp";
+const cliFile = (rows: string[]) =>
+  [
+    "#include <gtest/gtest.h>",
+    "",
+    '#include "cli.h"',
+    "",
+    "static const std::vector<CliRow> rows = {",
+    ...rows.map((r) => `    ${r},`),
+    "};",
+    "",
+    "TEST(CliTest, Rows) { checkRows(rows); }",
+    "",
+  ].join("\n");
+const USAGE = "usage: pnmforge <command> [options]\\n\\ncommands:\\n  info FILE          print the header\\n  invert IN OUT      invert every sample\\n  scale N IN OUT     scale by N\\n";
+const CLI_ROWS = [
+  '{{"--version"}, 0, "pnmforge 0.1.0\\n", ""}',
+  `{{"--help"}, 0, "${USAGE}", ""}`,
+  `{{}, 2, "", "${USAGE}"}`,
+  '{{"info", "missing.pnm"}, 1, "", "pnmforge: missing.pnm: cannot open\\n"}',
+  '{{"scale", "x", "a.pnm", "b.pnm"}, 2, "", "pnmforge: scale: \\"x\\" is not a number\\n"}',
+];
+const PNMFORGE: WriteShape = {
+  path: CLI_PATH,
+  reference: { path: "tests/scaffold_test.cpp", text: cliFile(['{{}, 0, "", ""}']) },
+  block: [`CliRows in ${CLI_PATH} (5 rows, {args, code, out, err})`, ...CLI_ROWS],
+  written: cliFile(CLI_ROWS),
+};
+
+// bytemerge (Java, R83) encoding: `Arguments.of(text, ids)` rows in a `Stream.of(`, the last row
+// closing the list (`));`). T006 (291k) corrected rows 6 and 8, whose Java escapes differed from
+// the request; model T003 delivered `256 \\ n \n` one escape layer off.
+const ENCODE_PATH = "src/test/java/bytemerge/EncodeIdsTest.java";
+const encodeFile = (rows: string[]) =>
+  [
+    "package bytemerge;",
+    "",
+    "class EncodeIdsTest {",
+    "  static Stream<Arguments> rows() {",
+    "    return Stream.of(",
+    ...rows.map((r, i) => `        ${r}${i === rows.length - 1 ? "));" : ","}`),
+    "  }",
+    "",
+    "  @ParameterizedTest",
+    '  @MethodSource("rows")',
+    "  void encodesIds(String text, String ids) {",
+    "    assertEquals(ids, Encoder.encodeIds(text).toString());",
+    "  }",
+    "}",
+    "",
+  ].join("\n");
+const ENCODE_ROWS = [
+  'Arguments.of("hello", "[104, 101, 108, 108, 111]")',
+  'Arguments.of("", "[]")',
+  'Arguments.of("a\\tb", "[97, 9, 98]")',
+  'Arguments.of("\\"q\\"", "[34, 113, 34]")',
+  'Arguments.of("\\u00e9", "[195, 169]")',
+  'Arguments.of("256 \\\\ n \\n", "[50, 53, 54, 32, 92, 32, 110, 32, 10]")',
+  'Arguments.of("\\0", "[0]")',
+  'Arguments.of("C:\\\\tmp\\\\new", "[67, 58, 92, 116, 109, 112, 92, 110, 101, 119]")',
+];
+const BYTEMERGE: WriteShape = {
+  path: ENCODE_PATH,
+  reference: { path: "src/test/java/bytemerge/ScaffoldTest.java", text: encodeFile(['Arguments.of("x", "[120]")', 'Arguments.of("y", "[121]")']) },
+  block: [`EncodeIdsTest in ${ENCODE_PATH} (8 rows, Arguments.of(text, ids))`, ...ENCODE_ROWS],
+  written: encodeFile(ENCODE_ROWS),
+};
+
+// sseknit (Rust, R84) parse: `(input, events)` tuples in a `const` array; rustfmt's layout.
+const SSE_PATH = "tests/parse_rows.rs";
+const sseFile = (rows: string[]) =>
+  ["use sseknit::parse;", "", "const ROWS: &[(&str, &[&str])] = &[", ...rows.map((r) => `    ${r},`), "];", "", "#[test]", "fn rows() {", "    for (input, events) in ROWS {", "        assert_eq!(parse(input), *events);", "    }", "}", ""].join("\n");
+const SSE_ROWS = ['("data: a\\n\\n", &["a"])', '(": comment\\n\\ndata: b\\n\\n", &["b"])', '("data: x\\ndata: y\\n\\n", &["x\\ny"])', '("event: tick\\ndata: 1\\n\\n", &["1"])'];
+const SSEKNIT: WriteShape = {
+  path: SSE_PATH,
+  reference: { path: "tests/scaffold_rows.rs", text: sseFile(['("", &[])']) },
+  block: [`ParseRows in ${SSE_PATH} (4 rows, (input, events))`, ...SSE_ROWS],
+  written: sseFile(SSE_ROWS),
+};
+
+// wrapsmith (PowerShell, R84) cols: Pester `-TestCases @(` hashtables, one per line, no separator,
+// PowerShell's own escapes (`` `n ``).
+const COLS_PATH = "tests/Cols.Tests.ps1";
+const colsFile = (rows: string[]) =>
+  ["BeforeAll {", '    . "$PSScriptRoot/../src/Cols.ps1"', "}", "", "Describe 'cols' {", "    It 'cols <Argv>' -TestCases @(", ...rows.map((r) => `        ${r}`), "    ) {", "        $Stdin | Invoke-Cols @Argv | Should -BeExactly $Out", "    }", "}", ""].join("\n");
+const COLS_ROWS = ["@{ Argv = @('3'); Stdin = \"abc def ghi`n\"; Out = \"abc`ndef`nghi`n\" }", "@{ Argv = @('5'); Stdin = \"a b c`n\"; Out = \"a b c`n\" }", "@{ Argv = @('1'); Stdin = \"it's`n\"; Out = \"it's`n\" }"];
+const WRAPCOLS: WriteShape = {
+  path: COLS_PATH,
+  reference: { path: "tests/Scaffold.Tests.ps1", text: colsFile(["@{ Argv = @(); Stdin = ''; Out = '' }"]) },
+  block: [`cols rows in ${COLS_PATH} (3 rows, @{ Argv; Stdin; Out })`, ...COLS_ROWS],
+  written: colsFile(COLS_ROWS),
+};
+
+// csp (ReScript, R85) cli: `Harness.row(...)` calls, two spaces, a comma after every row.
+const CSP_PATH = "tests/CliTest.res";
+const cspFile = (rows: string[]) => ["let rows = [", ...rows.map((r) => `  ${r},`), "]", "", "Harness.run(rows)", ""].join("\n");
+const CSP_ROWS = ['Harness.row(["--help"], "", 0, "usage: csp [--strict] FILE\\n", "")', 'Harness.row(["--version"], "", 0, "csp 1.0\\n", "")', 'Harness.row(["--nope"], "", 2, "", "csp: unknown option --nope\\n")'];
+const CSP: WriteShape = {
+  path: CSP_PATH,
+  reference: { path: "tests/ScaffoldTest.res", text: cspFile(['Harness.row([], "", 0, "", "")']) },
+  block: [`CliTest in ${CSP_PATH} (3 rows, Harness.row(args, stdin, code, out, err))`, ...CSP_ROWS],
+  written: cspFile(CSP_ROWS),
+};
+
+// Ruby (minitest): arrays in a `ROWS = [` list; rubocop's layout puts no comma after the last row.
+const RB_PATH = "test/split_rows_test.rb";
+const rbFile = (rows: string[]) =>
+  ['require "minitest/autorun"', 'require_relative "../lib/split"', "", "class SplitRowsTest < Minitest::Test", "  ROWS = [", ...rows.map((r, i) => `    ${r}${i === rows.length - 1 ? "" : ","}`), "  ].freeze", "", "  def test_rows", "    ROWS.each { |input, out| assert_equal out, Split.split(input) }", "  end", "end", ""].join("\n");
+const RB_ROWS = ['["a,b", ["a", "b"]]', '["a,,b", ["a", "", "b"]]', '["\\"q,r\\",s", ["q,r", "s"]]'];
+const RBSPLIT: WriteShape = {
+  path: RB_PATH,
+  reference: { path: "test/scaffold_test.rb", text: rbFile(['["", []]', '[",", ["", ""]]']) },
+  block: [`SplitRows in ${RB_PATH} (3 rows, [input, out])`, ...RB_ROWS],
+  written: rbFile(RB_ROWS),
+};
+
+// Swift (XCTest): tuples in a `let rows: [(...)] = [` list; swift-format's layout.
+const SW_PATH = "Tests/SplitTests/SplitRowsTests.swift";
+const swFile = (rows: string[]) =>
+  ["import Split", "import XCTest", "", "final class SplitRowsTests: XCTestCase {", "  let rows: [(String, [String])] = [", ...rows.map((r) => `    ${r},`), "  ]", "", "  func testRows() {", "    for (input, out) in rows {", "      XCTAssertEqual(split(input), out)", "    }", "  }", "}", ""].join("\n");
+const SW_ROWS = ['("a,b", ["a", "b"])', '("a,,b", ["a", "", "b"])', '("\\(1),\\t", ["\\(1)", "\\t"])'];
+const SWSPLIT: WriteShape = {
+  path: SW_PATH,
+  reference: { path: "Tests/SplitTests/ScaffoldTests.swift", text: swFile(['("", [])']) },
+  block: [`SplitRows in ${SW_PATH} (3 rows, (input, out))`, ...SW_ROWS],
+  written: swFile(SW_ROWS),
+};
+
+// Lua (busted): tables in a list; stylua's layout (tabs, a comma after every row).
+const LUA_PATH = "spec/split_rows_spec.lua";
+const luaFile = (rows: string[]) =>
+  ['local split = require("split")', "", "local rows = {", ...rows.map((r) => `\t${r},`), "}", "", 'describe("split", function()', "\tfor _, row in ipairs(rows) do", "\t\tit(row[1], function()", "\t\t\tassert.are.same(row[2], split(row[1]))", "\t\tend)", "\tend", "end)", ""].join("\n");
+const LUA_ROWS = ['{ "a,b", { "a", "b" } }', '{ "a,,b", { "a", "", "b" } }', '{ "a\\tb", { "a\\tb" } }'];
+const LUASPLIT: WriteShape = {
+  path: LUA_PATH,
+  reference: { path: "spec/scaffold_spec.lua", text: luaFile(['{ "", {} }']) },
+  block: [`SplitRows in ${LUA_PATH} (3 rows, { input, out })`, ...LUA_ROWS],
+  written: luaFile(LUA_ROWS),
+};
+
+/** The #2553 part A languages: each row's shape case, fixed point and scenario. */
+const PART_A: Record<string, WriteShape> = { rust: SSEKNIT, powershell: WRAPCOLS, rescript: CSP, ruby: RBSPLIT, swift: SWSPLIT, lua: LUASPLIT };
+
 const rowsOf = (shape: WriteShape) => shape.block.slice(1);
 const plan = (shape: WriteShape, text = shape.reference.text, source: "file" | "reference" = "reference") =>
   rowFilePlan(shape.path, rowsOf(shape), { source, text });
 const OK: Omit<RowFileInputs, "count"> = { language: true, shape: "reference", runs: 1, oneLine: true, sameHead: true, arity: true, separated: true };
 
 describe("rowFilePlan: the host writes a prescribed row file from its shape (#2528)", () => {
-  for (const [name, shape] of Object.entries({ "c deflate": TINYFLATE, "c macro": INFLATE, "dart slotprompt": SLOTPROMPT }))
+  for (const [name, shape] of Object.entries({ "c deflate": TINYFLATE, "c macro": INFLATE, "dart slotprompt": SLOTPROMPT, "cpp pnmforge": PNMFORGE, "java bytemerge": BYTEMERGE, ...PART_A }))
     test(`${name}: the reference's preamble and epilogue around one prescribed row per line`, () => {
       const { inputs, content } = plan(shape);
       expect(inputs).toEqual({ count: rowsOf(shape).length, ...OK });
       expect(content).toBe(shape.written);
       expect(rowFileRefusal(shape.path, inputs)).toBeNull();
       // Every row as the request gives it, on its own line: the long runs keep their 300 and 259 bytes.
-      for (const row of rowsOf(shape)) expect(content?.split("\n").some((l) => l.trim().replace(/[,;]$/, "") === row)).toBe(true);
+      // The last row of a Java `Stream.of(` keeps the list's close (`));`).
+      for (const row of rowsOf(shape)) expect(content?.split("\n").some((l) => l.trim().startsWith(row) && /^[)\]}]*[,;]?$/.test(l.trim().slice(row.length)))).toBe(true);
     });
 
   test("the file in the task's base is its own shape: every row is written as the request gives it", () => {
@@ -127,6 +283,54 @@ describe("rowFilePlan: the host writes a prescribed row file from its shape (#25
     );
   });
 
+  test("C++: gtest `Values(` rows keep the call's close on the last row; Catch2 table rows", () => {
+    const values = (rows: string[]) =>
+      ["INSTANTIATE_TEST_SUITE_P(", "    Rows, CliTest,", "    ::testing::Values(", ...rows.map((r, i) => `        ${r}${i === rows.length - 1 ? "));" : ","}`), ""].join("\n");
+    const typed = ['CliRow{{"--version"}, 0, "pnmforge 0.1.0\\n", ""}', `CliRow{{"--help"}, 0, "${USAGE}", ""}`, `CliRow{{}, 2, "", "${USAGE}"}`];
+    expect(rowFilePlan("tests/cli_test.cpp", typed, { source: "reference", text: values(['CliRow{{"a"}, 0, "", ""}', 'CliRow{{"b"}, 0, "", ""}']) }).content).toBe(values(typed));
+    const table = (rows: string[]) =>
+      ['TEST_CASE("header rows") {', "  auto [input, width, height] = GENERATE(table<std::string, int, int>({", ...rows.map((r) => `      ${r},`), "  }));", "  CHECK(parse_header(input) == Size{width, height});", "}", ""].join("\n");
+    const headers = ['{"P1\\n1 1\\n0\\n", 1, 1}', '{"P2\\n2 1\\n255\\n0 0\\n", 2, 1}', '{"P5\\n# c\\n3 2\\n255\\n", 3, 2}'];
+    expect(rowFilePlan("tests/header_test.cpp", headers, { source: "reference", text: table(['{"", 0, 0}']) }).content).toBe(table(headers));
+  });
+
+  test("Java: a `Stream.of(` with one row gives no separator between rows, its `));` closes the list", () => {
+    const one = BYTEMERGE.reference.text.replace('        Arguments.of("x", "[120]"),\n', "");
+    const { inputs } = rowFilePlan(ENCODE_PATH, rowsOf(BYTEMERGE), { source: "reference", text: one });
+    expect(rowFileRefusal(ENCODE_PATH, inputs)).toContain("no separator");
+    // One prescribed row takes the one row's place, close and all.
+    expect(rowFilePlan(ENCODE_PATH, rowsOf(BYTEMERGE).slice(0, 1), { source: "reference", text: one }).content).toBe(encodeFile(rowsOf(BYTEMERGE).slice(0, 1)));
+  });
+
+  test("Rust: rstest `#[case(...)]` rows need no separator, so one case is a shape; call statements and struct literals", () => {
+    const rstest = (rows: string[]) =>
+      ["use rstest::rstest;", "", "#[rstest]", ...rows, "fn cli(#[case] args: &[&str], #[case] code: i32, #[case] out: &str) {", "    assert_eq!(run(args), (code, out.to_string()));", "}", ""].join("\n");
+    const cases = ['#[case(&["cols", "3"], 0, "abc\\ndef\\n")]', '#[case(&["--help"], 0, "usage: sseknit <command>\\n")]', '#[case(&[], 2, "")]'];
+    const one = rowFilePlan("tests/cli.rs", cases, { source: "reference", text: rstest(['#[case(&[], 0, "")]']) });
+    expect(one.inputs).toEqual({ count: 3, ...OK });
+    expect(one.content).toBe(rstest(cases));
+    // `#[rstest]` and the `#[case]` parameters are no rows; a case's arguments are its call's.
+    expect(rowArity(cases[0] ?? "")).toBe(3);
+    // A call statement per row in a test function.
+    const calls = (rows: string[]) => ["#[test]", "fn cli_rows() {", ...rows.map((r) => `    ${r};`), "}", ""].join("\n");
+    const callRows = ['row(&["cols", "3"], "abc def\\n", 0, "abc\\ndef\\n", "")', 'row(&["--help"], "", 0, "usage\\n", "")'];
+    expect(rowFilePlan("tests/cli.rs", callRows, { source: "reference", text: calls(['row(&[], "", 0, "", "")']) }).content).toBe(calls(callRows));
+    // sseknit's struct literals (`Row { input, events }`): two fields each.
+    expect(rowArity(PLACE_PARSE_ROWS[0] ?? "")).toBe(2);
+    expect(rowFilePlan(PLACE_PARSE_PATH, PLACE_PARSE_ROWS, { source: "reference", text: placeParseFile(['Row { input: "", events: &[] }']) }).content).toBe(placeParseFile(PLACE_PARSE_ROWS));
+  });
+
+  test("PowerShell: a helper's command rows (R84 wrapsmith) are written; the request's notation rows are not", () => {
+    expect(rowArity(WRAP_CALLS[0] ?? "")).toBe(9);
+    const one = rowFilePlan(WRAP_PATH, WRAP_CALLS, { source: "reference", text: wrapFile(["Row @() -Stdin '' -Code 0 -Out '' -Err ''"]) });
+    expect(one.inputs).toEqual({ count: 2, ...OK });
+    expect(one.content).toBe(WRAPSMITH.written);
+    // `run "cols" "3" stdin="..." => 0 "..." ""` is the request's notation: the session translates it (#2583).
+    const notation = rowFilePlan(WRAP_PATH, WRAP_ROWS, { source: "reference", text: wrapFile(["Row @() -Stdin '' -Code 0 -Out '' -Err ''"]) });
+    expect(rowFileRefusal(WRAP_PATH, notation.inputs)).toContain("one row head");
+    expect(notation.content).toBeNull();
+  });
+
   test("a shape the host cannot read declines with its reason", () => {
     const refusal = (text: string | null, rows = rowsOf(TINYFLATE), path = TINYFLATE.path) =>
       rowFileRefusal(path, rowFilePlan(path, rows, text === null ? null : { source: "reference", text }).inputs);
@@ -143,7 +347,7 @@ describe("rowFilePlan: the host writes a prescribed row file from its shape (#25
     // Rows of two heads.
     expect(refusal(TINYFLATE.reference.text, ['{ "a", "b" }', 'ROW("a", "b")'])).toContain("one row head");
     // A language without a row yet (#2553).
-    expect(refusal("const ROWS: &[(&str, &str)] = &[\n    (\"a\", \"b\"),\n];\n", ['("c", "d")'], "tests/rows.rs")).toContain("language");
+    expect(refusal('ROWS=(\n  "a b"\n)\n', ['("c d")'], "tests/rows.sh")).toContain("language");
   });
 
   test("rowArity counts a row's top-level arguments, strings and nested brackets skipped", () => {
@@ -185,6 +389,29 @@ const FORMATTERS: Record<string, { program: string; args: (file: string) => stri
   typescript: { program: "prettier", args: (f) => ["--write", "--log-level", "silent", f] },
   javascript: { program: "prettier", args: (f) => ["--write", "--log-level", "silent", f] },
   dart: { program: "dart", args: (f) => ["format", f] },
+  cpp: { program: "clang-format", args: (f) => ["-i", "-style=LLVM", f] },
+  java: { program: "google-java-format", args: (f) => ["-i", f] },
+  rust: { program: "rustfmt", args: (f) => ["--edition", "2021", f] },
+  ruby: { program: "rubocop", args: (f) => ["--autocorrect", "--only", "Layout", "--format", "quiet", f] },
+  swift: { program: "swift-format", args: (f) => ["format", "-i", f] },
+  lua: { program: "stylua", args: (f) => [f] },
+  // `rescript format` skips a project's `tests/*Test.res`; the example is its layout as written.
+  rescript: { program: "rescript", args: (f) => ["format", f] },
+  powershell: {
+    program: "pwsh",
+    args: (f) => ["-NoProfile", "-Command", `$t = Get-Content -Raw '${f}'; Set-Content -NoNewline -Path '${f}' -Value (Invoke-Formatter -ScriptDefinition $t)`],
+    probe: ["-NoProfile", "-Command", "Get-Command Invoke-Formatter"],
+  },
+  // #2553 part B. dotnet format and the R styler work on a folder or through R; the others in place.
+  csharp: { program: "dotnet", args: (f) => ["format", "whitespace", dirname(f), "--folder", "--include", f], probe: ["format", "--version"] },
+  kotlin: { program: "ktlint", args: (f) => ["--format", f] },
+  scala: { program: "scalafmt", args: (f) => ["--quiet", "--config-str", "version=3.8.3,runner.dialect=scala213", f] },
+  php: { program: "pint", args: (f) => ["--preset", "psr12", f] },
+  r: { program: "Rscript", args: (f) => ["-e", `styler::style_file(${JSON.stringify(f)})`], probe: ["-e", "library(styler)"] },
+  ocaml: { program: "ocamlformat", args: (f) => ["--enable-outside-detected-project", "-i", f] },
+  zig: { program: "zig", args: (f) => ["fmt", f], probe: ["version"] },
+  objc: { program: "clang-format", args: (f) => ["-i", "-style=LLVM", f] },
+  solidity: { program: "forge", args: (f) => ["fmt", f] },
 };
 
 describe("the written row file is a fixed point of its language's formatter (#2528)", () => {
@@ -206,6 +433,53 @@ describe("the written row file is a fixed point of its language's formatter (#25
       expect(formatted).toBe(content ?? "");
     });
   }
+  // The C++ row forms besides the example's `std::vector`: a gtest `Values(` call (its last row
+  // closes the call) and a Catch2 `GENERATE(table<...>({...}))` list.
+  test.skipIf(!has("clang-format"))("clang-format leaves the C++ gtest Values and Catch2 table forms as written", () => {
+    const gtest = (rows: string[]) =>
+      ["#include <gtest/gtest.h>", "", '#include "cli.h"', "", "class CliTest : public ::testing::TestWithParam<CliRow> {};", "", "TEST_P(CliTest, Runs) { EXPECT_EQ(run(GetParam().args), GetParam().result()); }", "", "INSTANTIATE_TEST_SUITE_P(", "    Rows, CliTest,", "    ::testing::Values(", ...rows.map((r, i) => `        ${r}${i === rows.length - 1 ? "));" : ","}`), ""].join("\n");
+    const catch2 = (rows: string[]) =>
+      ["#include <catch2/catch_test_macros.hpp>", "#include <catch2/generators/catch_generators.hpp>", "", '#include "pnm.h"', "", 'TEST_CASE("header rows") {', "  auto [input, width, height] = GENERATE(table<std::string, int, int>({", ...rows.map((r) => `      ${r},`), "  }));", "  CHECK(parse_header(input) == Size{width, height});", "}", ""].join("\n");
+    const cases = [
+      { path: "tests/cli_test.cpp", file: gtest, shape: ['CliRow{{"--version"}, 0, "pnmforge 0.1.0\\n", ""}', 'CliRow{{"--help"}, 0, "usage: pnmforge <command> [options]\\n", ""}'], rows: ['CliRow{{"info", "missing.pnm"}, 1, "", "pnmforge: cannot open\\n"}', 'CliRow{{}, 2, "", "usage: pnmforge <command> [options]\\n"}', 'CliRow{{"scale", "x", "a.pnm", "b.pnm"}, 2, "", "pnmforge: bad N\\n"}'] },
+      { path: "tests/header_test.cpp", file: catch2, shape: ['{"P1\\n1 1\\n0\\n", 1, 1}'], rows: ['{"P2\\n2 1\\n255\\n0 0\\n", 2, 1}', '{"P5\\n# comment\\n3 2\\n255\\n", 3, 2}'] },
+    ];
+    const dir = mkdtempSync(join(tmpdir(), "baked-row-file-"));
+    cleanups.push(() => rmSync(dir, { recursive: true, force: true }));
+    for (const { path, file, shape, rows } of cases) {
+      const reference = file(shape);
+      const target = join(dir, path.slice(path.lastIndexOf("/") + 1));
+      // The shape is a fixed point itself, and so is the file written from it.
+      for (const text of [reference, rowFilePlan(path, rows, { source: "reference", text: reference }).content]) {
+        expect(text).toBe(text === reference ? reference : file(rows));
+        writeFileSync(target, text ?? "");
+        expect(spawnSync("clang-format", ["-i", "-style=LLVM", target]).status).toBe(0);
+        expect(readFileSync(target, "utf8")).toBe(text ?? "");
+      }
+    }
+  });
+  // The Rust row forms besides the example's tuples: rstest `#[case(...)]` rows and call statements.
+  test.skipIf(!has("rustfmt"))("rustfmt leaves the Rust rstest case and call-statement forms as written", () => {
+    const rstest = (rows: string[]) =>
+      ["use rstest::rstest;", "use sseknit::cli::run;", "", "#[rstest]", ...rows, "fn cli(#[case] args: &[&str], #[case] stdin: &str, #[case] code: i32, #[case] out: &str) {", "    assert_eq!(run(args, stdin), (code, out.to_string()));", "}", ""].join("\n");
+    const calls = (rows: string[]) => ["#[test]", "fn cli_rows() {", ...rows.map((r) => `    ${r};`), "}", ""].join("\n");
+    const cases = [
+      { file: rstest, shape: ['#[case(&["--version"], "", 0, "sseknit 0.1.0\\n")]'], rows: ['#[case(&["cols", "3"], "abc def ghi\\n", 0, "abc\\ndef\\nghi\\n")]', '#[case(&["--help"], "", 0, "usage: sseknit <command>\\n")]'] },
+      { file: calls, shape: ['row(&[], "", 0, "", "")'], rows: ['row(&["cols", "3"], "abc def ghi\\n", 0, "abc\\ndef\\nghi\\n", "")', 'row(&["--help"], "", 0, "usage: sseknit <command>\\n", "")'] },
+    ];
+    const dir = mkdtempSync(join(tmpdir(), "baked-row-file-"));
+    cleanups.push(() => rmSync(dir, { recursive: true, force: true }));
+    const target = join(dir, "cli.rs");
+    for (const { file, shape, rows } of cases) {
+      const reference = file(shape);
+      for (const text of [reference, rowFilePlan("tests/cli.rs", rows, { source: "reference", text: reference }).content]) {
+        expect(text).toBe(text === reference ? reference : file(rows));
+        writeFileSync(target, text ?? "");
+        expect(spawnSync("rustfmt", ["--edition", "2021", target]).status).toBe(0);
+        expect(readFileSync(target, "utf8")).toBe(text ?? "");
+      }
+    }
+  });
   test("the ruff formatter leaves the Python example as written", () => {
     if (!has("ruff")) return;
     const row = ROW_FILE_SHAPES.python;
@@ -297,7 +571,7 @@ async function deliver(shape: WriteShape, extra: Partial<RunPolicy>) {
 }
 
 describe("scenario: R82, a row-file task the host writes without a session (#2528)", () => {
-  for (const [language, shape] of Object.entries({ c: TINYFLATE, "c-macro": INFLATE, dart: SLOTPROMPT }))
+  for (const [language, shape] of Object.entries({ c: TINYFLATE, "c-macro": INFLATE, dart: SLOTPROMPT, cpp: PNMFORGE, java: BYTEMERGE, ...PART_A }))
     test(`${language}: with rowFileWrite on the host writes ${shape.path} from the reference and no session opens for it`, async () => {
       const { final, file, sessions, record, skipped } = await deliver(shape, { rowFileWrite: "on" });
       expect(final.status).toBe("completed");
@@ -346,4 +620,648 @@ describe("scenario: R82, a row-file task the host writes without a session (#252
     const before = replayTrace(out, { hostApplyRule: (writes) => hostApplyDecision(writes.map(({ rows: _, ...w }) => w)) }).runs.find((r) => r.runId === runId);
     expect(before?.newApplyDecisions).toBe(1);
   }, 120000);
+});
+
+// #2553 (part B): a row file in C#, Kotlin, Scala, PHP, R, OCaml, Zig, Objective-C or Solidity had
+// no `ROW_FILE_SHAPES` row, so the host declined with "the host does not write row files for
+// <path>'s language yet" and a session retyped the rows (R83-R85: 1M or more tokens per language a
+// round put through an initiative). Each case is the language's list form in its formatter's
+// layout: the scaffold's rows and the request's rows, the file written from the scaffold.
+const listFile = (before: string[], row: (r: string, last: boolean) => string, after: string[]) => (rows: string[]) =>
+  [...before, ...rows.map((r, i) => row(r, i === rows.length - 1)), ...after].join("\n");
+const listShape = (path: string, scaffold: string, file: (rows: string[]) => string, shapeRows: string[], rows: string[]): WriteShape => ({
+  path,
+  reference: { path: scaffold, text: file(shapeRows) },
+  block: [`Rows in ${path} (${rows.length} rows)`, ...rows],
+  written: file(rows),
+});
+const ROWS_B: Record<string, WriteShape> = {
+  // xUnit: one `[InlineData(...)]` attribute per row; the `[Theory]` above them is not a row.
+  csharp: listShape(
+    "tests/Wordcount.Tests/CountRowsTests.cs",
+    "tests/Wordcount.Tests/ScaffoldTests.cs",
+    listFile(["using Xunit;", "", "public class CountRowsTests", "{", "    [Theory]"], (r) => `    ${r}`, ["    public void Counts(string text, int count) => Assert.Equal(count, Words.Count(text));", "}", ""]),
+    ['[InlineData("", 0)]', '[InlineData("a", 1)]'],
+    ['[InlineData("", 0)]', '[InlineData("a b", 2)]', '[InlineData("tab\\there", 2)]', '[InlineData("\\"q\\" \\\\ x", 3)]'],
+  ),
+  // JUnit 5 in Kotlin: `Arguments.of(...)` rows in a `listOf(`, ktlint's trailing comma on each.
+  kotlin: listShape(
+    "src/test/kotlin/wordcount/CountRowsTest.kt",
+    "src/test/kotlin/wordcount/ScaffoldTest.kt",
+    listFile(["package wordcount", "", "object CountRows {", "    @JvmStatic", "    fun rows() =", "        listOf("], (r) => `            ${r},`, ["        )", "}", ""]),
+    ['Arguments.of("", 0)'],
+    ['Arguments.of("", 0)', 'Arguments.of("a b", 2)', 'Arguments.of("\\$x\\t\\"q\\"", 2)'],
+  ),
+  // ScalaTest: tuples in a `Seq(`, no comma after the last (scalafmt's default).
+  scala: listShape(
+    "src/test/scala/wordcount/CountRowsSuite.scala",
+    "src/test/scala/wordcount/ScaffoldSuite.scala",
+    listFile(["class CountRowsSuite extends AnyFunSuite {", "  val rows = Seq("], (r, last) => `    ${r}${last ? "" : ","}`, ["  )", "}", ""]),
+    ['("", 0)', '("a", 1)'],
+    ['("", 0)', '("a b", 2)', '("tab\\there", 2)', '("\\"q\\"", 1)'],
+  ),
+  // PHPUnit: arrays returned by a data provider.
+  php: listShape(
+    "tests/CountRowsTest.php",
+    "tests/ScaffoldTest.php",
+    listFile(["<?php", "", "final class CountRowsTest extends TestCase", "{", "    public static function rows(): array", "    {", "        return ["], (r) => `            ${r},`, ["        ];", "    }", "}", ""]),
+    ["['', 0]"],
+    ["['', 0]", "['a b', 2]", '["tab\\there", 2]', "['it\\'s', 1]"],
+  ),
+  // testthat: `list(...)` rows in a list (styler), no comma after the last. Outside
+  // `tests/testthat`: that folder makes `detectGates` offer styler, and on a runner with Rscript
+  // (Windows) a `styler-written` check then runs on the host's file whether styler is installed
+  // or not, which this scenario is not about.
+  r: listShape(
+    "tests/test-count-rows.R",
+    "tests/test-scaffold.R",
+    listFile(['test_that("words are counted", {', "  rows <- list("], (r, last) => `    ${r}${last ? "" : ","}`, ["  )", "  for (row in rows) expect_equal(count_words(row[[1]]), row[[2]])", "})", ""]),
+    ['list("", 0)', 'list("a", 1)'],
+    ['list("", 0)', 'list("a b", 2)', 'list("tab\\there", 2)', 'list("\\"q\\"", 1)'],
+  ),
+  // alcotest: tuples in a list, each closed by `;` (ocamlformat's vertical layout).
+  ocaml: listShape(
+    "test/test_count_rows.ml",
+    "test/test_scaffold.ml",
+    listFile(["let rows =", "  ["], (r) => `    ${r};`, ["  ]", "", 'let () = Alcotest.run "count" [ ("rows", List.map case rows) ]', ""]),
+    ['("", 0)'],
+    ['("", 0)', '("the quick brown fox jumps over the lazy dog", 9)', '("tab\\there", 2)', '("\\"q\\"", 1)'],
+  ),
+  // std.testing: struct literals in a table, zig fmt's trailing comma on each.
+  zig: listShape(
+    "src/count_rows_test.zig",
+    "src/scaffold_test.zig",
+    listFile(["const rows = [_]Row{"], (r) => `    ${r},`, ["};", "", 'test "rows" {', "    for (rows) |row| try std.testing.expectEqual(row.count, words.count(row.text));", "}", ""]),
+    ['.{ .text = "", .count = 0 }'],
+    ['.{ .text = "", .count = 0 }', '.{ .text = "a b", .count = 2 }', '.{ .text = "tab\\there", .count = 2 }', '.{ .text = "\\"q\\"", .count = 1 }'],
+  ),
+  // XCTest: array literals in an `@[` list (clang-format's layout).
+  objc: listShape(
+    "Tests/HexRowsTests.m",
+    "Tests/ScaffoldTests.m",
+    listFile(["@implementation HexRowsTests", "", "- (void)testRows {", "  NSArray<NSArray<NSString *> *> *rows = @["], (r) => `    ${r},`, ["  ];", "  for (NSArray<NSString *> *row in rows)", "    XCTAssertEqualObjects([HexCodec encode:row[0]], row[1]);", "}", "", "@end", ""]),
+    ['@[ @"", @"" ]'],
+    ['@[ @"", @"" ]', '@[ @"abc", @"616263" ]', '@[ @"a\\tb", @"610962" ]', '@[ @"\\"q\\"", @"227122" ]'],
+  ),
+  // Foundry: rows pushed onto a storage array of structs in `setUp`.
+  solidity: listShape(
+    "test/CountRows.t.sol",
+    "test/Scaffold.t.sol",
+    listFile(["contract CountRowsTest is Test {", "    Row[] internal rows;", "", "    function setUp() public {"], (r) => `        ${r};`, ["    }", "}", ""]),
+    ['rows.push(Row("", 0))'],
+    ['rows.push(Row("", 0))', 'rows.push(Row("a b", 2))', 'rows.push(Row("tab\\there", 2))', 'rows.push(Row("\\"q\\"", 1))'],
+  ),
+};
+
+describe("rowFilePlan: row files in C#, Kotlin, Scala, PHP, R, OCaml, Zig, Objective-C and Solidity (#2553)", () => {
+  for (const [language, shape] of Object.entries(ROWS_B))
+    test(`${language}: the scaffold's preamble and epilogue around one prescribed row per line`, () => {
+      const { inputs, content } = plan(shape);
+      expect(inputs).toEqual({ count: rowsOf(shape).length, ...OK });
+      expect(content).toBe(shape.written);
+      expect(rowFileRefusal(shape.path, inputs)).toBeNull();
+    });
+
+  test("C#: TheoryData initialiser rows and `Add(...)` rows", () => {
+    const theory = (rows: string[]) =>
+      ["public static TheoryData<string, int> Rows => new()", "{", ...rows.map((r) => `    ${r},`), "};", ""].join("\n");
+    const rows = ['{ "a b", 2 }', '{ "tab\\there", 2 }'];
+    expect(rowFilePlan("tests/CountRows.cs", rows, { source: "reference", text: theory(['{ "", 0 }']) }).content).toBe(theory(rows));
+    const add = (rows: string[]) =>
+      ["public class CountRows : TheoryData<string, int>", "{", "    public CountRows()", "    {", ...rows.map((r) => `        ${r};`), "    }", "}", ""].join("\n");
+    const added = ['Add("a b", 2)', 'Add("tab\\there", 2)'];
+    expect(rowFilePlan("tests/CountRows.cs", added, { source: "reference", text: add(['Add("", 0)']) }).content).toBe(add(added));
+  });
+
+  test("Kotlin: a JUnit `Stream.of(` list's last row keeps the list's close", () => {
+    const stream = (rows: string[]) =>
+      ["fun rows(): Stream<Arguments> =", "    Stream.of(", ...rows.map((r, i) => `        ${r}${i === rows.length - 1 ? ")" : ","}`), ""].join("\n");
+    const rows = ['Arguments.of("a b", 2)', 'Arguments.of("", 0)', 'Arguments.of("c", 1)'];
+    expect(rowFilePlan("src/test/kotlin/CountRowsTest.kt", rows, { source: "reference", text: stream(['Arguments.of("x", 1)', 'Arguments.of("y", 1)']) }).content).toBe(stream(rows));
+  });
+
+  test("forms with no one-line row head decline with their reason", () => {
+    const refusal = (path: string, text: string, rows: string[]) =>
+      rowFileRefusal(path, rowFilePlan(path, rows, { source: "reference", text }).inputs);
+    // A testthat `tibble::tribble(` row is bare cells: no bracket head, so no row line of R.
+    expect(refusal("tests/testthat/test-rows.R", 'rows <- tibble::tribble(\n  ~text, ~count,\n  "", 0,\n)\n', ['"a b", 2,'])).toContain("one row head");
+    // A PHP keyed provider row starts with its string key.
+    expect(refusal("tests/RowsTest.php", "return [\n    'empty' => ['', 0],\n];\n", ["'two' => ['a b', 2]"])).toContain("one row head");
+    // A C# attribute other than `[InlineData(` is not a row.
+    expect(refusal("tests/RowsTests.cs", "[Theory]\n[InlineData(\"\", 0)]\n[InlineData(\"a\", 1)]\n", ["[Fact]"])).toContain("one row head");
+  });
+});
+
+describe("scenario: a row file in the languages of #2553 part B, written by the host without a session", () => {
+  for (const [language, shape] of Object.entries(ROWS_B))
+    test(`${language}: with rowFileWrite on the host writes ${shape.path} from the scaffold and no session opens for it`, async () => {
+      const { final, file, sessions, record, skipped } = await deliver(shape, { rowFileWrite: "on" });
+      expect(final.status).toBe("completed");
+      // On main the host declines (`language: false`) and a session writes the file: T001, T002.
+      expect(sessions).toEqual(["T001"]);
+      expect(file).toBe(shape.written);
+      expect(record).toMatchObject({ mode: "on", wouldApply: true, applied: true });
+      expect(record?.writes[0]?.rows).toEqual({ count: rowsOf(shape).length, ...OK });
+      expect(skipped).toBe("host-written");
+    }, 120000);
+});
+
+// #2564: a row file whose language has no `ROW_FILE_SHAPES` row (C++ and Java, #2553), or whose
+// shape the host cannot read, still opened a session that retyped the rows through its edit tool.
+// Bench round 83: pnmforge (C++) `cli` T004 spent 2.74M tokens on nine rows, 1.57M of them on the
+// two usage rows through four escape layers; bytemerge (Java) `model` T003 failed `verify-written`
+// on a row one escape layer off. With `rowFileWrite: "on"` the session gets `place_rows`, which
+// inserts the request's rows from `suppliedRows` after a line of the file, and never types a row.
+
+const usage = {
+  inputTokens: { total: 1000, noCache: 1000, cacheRead: 0, cacheWrite: 0 },
+  outputTokens: { total: 100, text: 100, reasoning: 0 },
+};
+const call = (name: string, input: unknown): LanguageModelV3GenerateResult => ({
+  content: [{ type: "tool-call", toolCallId: crypto.randomUUID(), toolName: name, input: JSON.stringify(input) }],
+  finishReason: { unified: "tool-calls", raw: undefined },
+  usage,
+  warnings: [],
+});
+
+/** Route `openai/*` to a scripted model; returns the prompts and tool names it was sent. */
+function scriptModel(script: (() => LanguageModelV3GenerateResult)[]) {
+  const provider = getProvider("openai");
+  if (!provider) throw new Error("openai provider missing");
+  const original = provider.createModel;
+  const seen = { prompts: [] as string[], tools: [] as string[][] };
+  let index = 0;
+  const model = new MockLanguageModelV3({
+    doGenerate: async (options) => {
+      seen.prompts.push(JSON.stringify(options.prompt));
+      seen.tools.push((options.tools ?? []).map((t) => t.name));
+      const next = script[index++];
+      if (!next) throw new Error("script exhausted");
+      return next();
+    },
+  });
+  provider.createModel = () => model as LanguageModelV3;
+  cleanups.push(() => {
+    provider.createModel = original;
+  });
+  return seen;
+}
+
+interface PlaceShape {
+  path: string;
+  /** The file in the task's base: everything but the rows. */
+  scaffold: string;
+  /** The line of the scaffold the rows follow. */
+  line: number;
+  /** The request's fenced row block, header first. */
+  block: string[];
+  /** What the session passes besides path, line and rows. */
+  options: Record<string, string>;
+  /** The file once the rows are placed. */
+  written: string;
+  formatter?: { program: string; args: (file: string) => string[] };
+}
+
+// pnmforge (C++) cli: the usage rows carry `\n` escapes in the request's C++ notation.
+const PLACE_CLI_PATH = "tests/cli_test.cpp";
+const placeCliFile = (rows: string[]) =>
+  ['#include "check.h"', "", "static const Row rows[] = {", ...rows.map((r) => `    ${r},`), "};", "", "int main() { return run_rows(rows); }", ""].join("\n");
+const PLACE_CLI_ROWS = [
+  '{"--help", 0, "usage: pnmforge [--invert] [--scale N] FILE\\n"}',
+  '{"--version", 0, "pnmforge 1.0\\n"}',
+  '{"--scale", 2, "pnmforge: --scale needs a value\\n"}',
+];
+const PLACE_PNMFORGE: PlaceShape = {
+  path: PLACE_CLI_PATH,
+  scaffold: placeCliFile([]),
+  line: 3,
+  block: [`CliTests in ${PLACE_CLI_PATH} (3 rows, { args, code, out })`, ...PLACE_CLI_ROWS],
+  options: {},
+  written: placeCliFile(PLACE_CLI_ROWS),
+  formatter: { program: "clang-format", args: (f) => ["-i", "-style=LLVM", f] },
+};
+
+// bytemerge (Java) encoding: `List.of(...)` takes no comma after its last row.
+const PLACE_ENCODE_PATH = "src/test/java/bytemerge/EncodeIdsTest.java";
+const placeEncodeFile = (rows: string[]) =>
+  [
+    "package bytemerge;",
+    "",
+    "import java.util.List;",
+    "",
+    "class EncodeIdsTest {",
+    "  record Row(String text, int[] ids) {}",
+    "",
+    "  static final List<Row> ROWS =",
+    "      List.of(",
+    ...rows.map((r, i) => `          ${r}${i === rows.length - 1 ? "" : ","}`),
+    "      );",
+    "}",
+    "",
+  ].join("\n");
+const PLACE_ENCODE_ROWS = [
+  'new Row("ab", new int[] {97, 98})',
+  'new Row("a\\nb", new int[] {97, 10, 98})',
+  'new Row("256 \\\\ n", new int[] {256, 32, 92, 32, 110})',
+];
+const PLACE_BYTEMERGE: PlaceShape = {
+  path: PLACE_ENCODE_PATH,
+  scaffold: placeEncodeFile([]),
+  line: 9,
+  block: [`EncodeIdsTest in ${PLACE_ENCODE_PATH} (3 rows, new Row(text, ids))`, ...PLACE_ENCODE_ROWS],
+  options: { indent: "          ", lastSeparator: "" },
+  written: placeEncodeFile(PLACE_ENCODE_ROWS),
+};
+
+/** Plans one task that places the rows in the scaffold and runs it through the real executor. */
+class PlaceRowsExecutor extends FixtureExecutor {
+  native: NativeAgentExecutor | null = null;
+  constructor(
+    workspace: string,
+    private shape: PlaceShape,
+  ) {
+    super(workspace);
+    mkdirSync(dirname(join(workspace, shape.path)), { recursive: true });
+    writeFileSync(join(workspace, shape.path), shape.scaffold);
+  }
+  override async execute(request: ExecutionRequest) {
+    if (request.profile.output === "plan") {
+      const markdown = "# Plan\n## Context\nRows.\n## Decisions\nDEC-001: FR-001 takes the rows.\n## Components\ntests\n## Data\nText\n## Verification\nCheck the rows\n## Risks\nNone for fixture";
+      const output = {
+        schemaVersion: 1,
+        markdown,
+        taskGraph: {
+          schemaVersion: 1, featureId: "fixture", revision: 1, specHash: hashJson(fixtureSpec), planHash: hashBytes(markdown),
+          tasks: [{ id: "T001", title: "Row file", description: `Place the prescribed rows in ${this.shape.path}`, requirementIds: ["FR-001"], criterionIds: ["AC-001"], dependsOn: [], profileId: "implementer", writes: [{ path: this.shape.path, action: "modify", reason: "the request prescribes its rows" }], readHints: [], checkIds: [], origin: "planned", findingIds: [], rationale: "Required behavior" }],
+        },
+      };
+      return { output, inputTokens: 25, outputTokens: 25 };
+    }
+    if (request.profile.output !== "implementation") return super.execute(request);
+    if (!this.native) throw new Error("native executor missing");
+    return this.native.execute({ ...request, profile: { ...request.profile, model: "openai/fixture-model" } });
+  }
+}
+
+const placeRequest = (shape: PlaceShape) =>
+  ["Place the prescribed rows.", "", "The prescribed rows, one test each:", "", "```text", ...shape.block, "```", ""].join("\n");
+const placeAll = (shape: PlaceShape) => () => call("place_rows", { path: shape.path, line: shape.line, rows: [1, shape.block.length - 1], ...shape.options });
+const submitRows = (shape: PlaceShape) => () =>
+  call("submit_result", { schemaVersion: 1, taskId: "T001", outcome: "implemented", summary: `Placed the rows of ${shape.path}`, evidenceIds: [], unresolved: [] });
+
+async function placeScenario(shape: PlaceShape, extra: Partial<RunPolicy>, script: (() => LanguageModelV3GenerateResult)[], checks?: RunPolicy["checks"]) {
+  const asShape = { path: shape.path, block: shape.block } as WriteShape;
+  const policy: RunPolicy = { ...fixturePolicy, checks: checks ?? [rowsCheck(asShape)], ...extra };
+  const fixture = workflowFixture({ policy, executor: (root) => new PlaceRowsExecutor(root, shape) });
+  cleanups.push(fixture.dispose);
+  const native = new NativeAgentExecutor(fixture.service.store, fixture.service.leases, { ...fixture.config, repoMap: false });
+  cleanups.push(() => native.dispose());
+  fixture.executor.native = native;
+  const seen = scriptModel(script);
+  const run = await fixture.service.start({ commandId: newId(), featureId: "fixture", workflowId: "sdd", prompt: placeRequest(shape), ownerLabel: "test", policy });
+  let current = await fixture.service.drive(run.runId, new AbortController().signal);
+  for (let i = 0; i < 8 && current.status === "waiting"; i++) {
+    if (fixture.service.store.requests(run.runId).find((r) => r.status === "pending")?.kind !== "approval") break;
+    await fixture.approve(run.runId);
+    current = await fixture.service.drive(run.runId, new AbortController().signal);
+  }
+  const store = fixture.service.store;
+  const tree = join(fixture.root, runRootPath(store, run.runId));
+  const record = store.latestArtifact(run.runId, `${PLACE_ROWS_DIR}T001.json`);
+  return {
+    final: await fixture.service.get(run.runId),
+    file: readFileSync(join(tree, shape.path), "utf8"),
+    seen,
+    record: record ? (JSON.parse(store.readArtifact(run.runId, record.id)) as PlaceRowsRecord) : undefined,
+    rowBlocks: replayRowBlocks(store, run.runId).filter((b) => b.path === shape.path),
+    restores: store
+      .artifacts(run.runId)
+      .filter((a) => a.logical_path.startsWith(ROW_RESTORE_DIR))
+      .map((a) => JSON.parse(store.readArtifact(run.runId, a.id)) as RowRestoreRecord),
+  };
+}
+
+describe("scenario: R83, a session places the prescribed rows with place_rows and never types one (#2564)", () => {
+  for (const [language, shape] of Object.entries({ cpp: PLACE_PNMFORGE, java: PLACE_BYTEMERGE }))
+    test(`${language}: with rowFileWrite on the session gets place_rows and the file holds the request's rows as written`, async () => {
+      const { final, file, seen, record, rowBlocks } = await placeScenario(shape, { rowFileWrite: "on" }, [placeAll(shape), submitRows(shape)]);
+      expect(seen.tools[0]).toContain("place_rows");
+      // The brief says the rows are placed, never typed.
+      expect(seen.prompts[0]).toContain("You must place them with place_rows and never type a row");
+      expect(seen.prompts[1]).toContain(`Placed rows 1 to 3 of the request's rows for ${shape.path} at lines ${shape.line + 1} to ${shape.line + 3}`);
+      expect(final.status).toBe("completed");
+      // One model call per scripted step: no edit_file, no correction.
+      expect(seen.prompts).toHaveLength(2);
+      expect(file).toBe(shape.written);
+      expect(record).toMatchObject({ mode: "on", offered: true, files: [{ path: shape.path, rows: 3 }] });
+      // The row-block comparison finds nothing to repair: no drift, no added, duplicated or moved row.
+      expect(rowBlocks.length).toBeGreaterThan(0);
+      for (const boundary of rowBlocks) {
+        expect(boundary.recorded).toEqual([]);
+        expect(boundary.moves?.recorded ?? { added: [], duplicated: [], reordered: [] }).toEqual({ added: [], duplicated: [], reordered: [] });
+      }
+      // The placed file is a fixed point of the language's formatter.
+      const formatter = shape.formatter;
+      if (formatter && has(formatter.program)) {
+        const dir = mkdtempSync(join(tmpdir(), "baked-place-rows-"));
+        cleanups.push(() => rmSync(dir, { recursive: true, force: true }));
+        const target = join(dir, shape.path.slice(shape.path.lastIndexOf("/") + 1));
+        writeFileSync(target, file);
+        expect(spawnSync(formatter.program, formatter.args(target), { cwd: dir }).status).toBe(0);
+        expect(readFileSync(target, "utf8")).toBe(file);
+      }
+    });
+
+  test("cpp: a row the request does not hold and a path that is not the row file are refused with the change to make", async () => {
+    const { final, file, seen } = await placeScenario(PLACE_PNMFORGE, { rowFileWrite: "on" }, [
+      () => call("place_rows", { path: PLACE_CLI_PATH, line: 3, rows: [1, 9] }),
+      () => call("place_rows", { path: "src/cli.cpp", line: 1, rows: [1, 3] }),
+      () => call("place_rows", { path: PLACE_CLI_PATH, line: 3, rows: [1, 2] }),
+      // Row 2 is in the file: placing it again is refused, naming its line.
+      () => call("place_rows", { path: PLACE_CLI_PATH, line: 5, rows: [2, 3] }),
+      () => call("place_rows", { path: PLACE_CLI_PATH, line: 5, rows: [3] }),
+      submitRows(PLACE_PNMFORGE),
+    ]);
+    expect(seen.prompts[1]).toContain(`The request prescribes rows 1 to 3 for ${PLACE_CLI_PATH}; row 9 is not one of them. Call place_rows with rows [first, last] between 1 and 3.`);
+    expect(seen.prompts[2]).toContain(`src/cli.cpp is not a file this task's prescribed rows go in; place_rows writes the request's rows only into ${PLACE_CLI_PATH}. Change src/cli.cpp with edit_file.`);
+    expect(seen.prompts[4]).toContain(`${PLACE_CLI_PATH} already holds row 2 (line 5).`);
+    expect(final.status).toBe("completed");
+    expect(file).toBe(PLACE_PNMFORGE.written);
+  });
+
+  test("java: shadow by default, the tool is not offered and place-rows records what would have been", async () => {
+    const typed = PLACE_ENCODE_ROWS.map((r, i) => `          ${r}${i === PLACE_ENCODE_ROWS.length - 1 ? "" : ","}`).join("\n");
+    const { final, file, seen, record } = await placeScenario(PLACE_BYTEMERGE, {}, [
+      () => call("edit_file", { path: PLACE_ENCODE_PATH, oldString: "      List.of(\n", newString: `      List.of(\n${typed}\n` }),
+      submitRows(PLACE_BYTEMERGE),
+    ]);
+    expect(seen.tools[0]).not.toContain("place_rows");
+    expect(seen.prompts[0]).not.toContain("place_rows");
+    expect(record).toEqual({ schemaVersion: 1, taskId: "T001", mode: "shadow", offered: false, files: [{ path: PLACE_ENCODE_PATH, rows: 3, shaped: expect.any(Boolean) }] });
+    expect(final.status).toBe("completed");
+    expect(file).toBe(PLACE_BYTEMERGE.written);
+  });
+});
+
+// #2585: R84 sseknit (Rust) 9e40f4b8 T008. Under `rowFileWrite: "on"` a row-file task's first
+// session runs on the single-writer path in the run root (the host tries its no-session write
+// first, #2528) and places the rows there; its retry is no longer pending, so with two writers it
+// runs in a batch worker whose worktree base already holds those rows. The worker counted only
+// its own manifest and journal, saw no change and refused the retry's result: "reported
+// implemented but changed none of its files". The task's earlier writes still in place count on
+// every path (`taskEditsInPlace`), whatever tool made them.
+const PLACE_PARSE_PATH = "tests/parse_rows.rs";
+const placeParseFile = (rows: string[]) =>
+  ["use sseknit::parse;", "", "struct Row {", "    input: &'static str,", "    events: &'static [&'static str],", "}", "", "const ROWS: &[Row] = &[", ...rows.map((r) => `    ${r},`), "];", "", "#[test]", "fn rows() {", "    for r in ROWS {", "        assert_eq!(parse(r.input), r.events);", "    }", "}", ""].join("\n");
+const PLACE_PARSE_ROWS = ['Row { input: "data: a\\n\\n", events: &["a"] }', 'Row { input: ": c\\n\\n", events: &[] }', 'Row { input: "data: x\\ndata: y\\n\\n", events: &["x\\ny"] }'];
+const PLACE_SSEKNIT: PlaceShape = {
+  path: PLACE_PARSE_PATH,
+  scaffold: placeParseFile([]),
+  line: 8,
+  block: [`ParseRows in ${PLACE_PARSE_PATH} (3 rows, Row { input, events })`, ...PLACE_PARSE_ROWS],
+  options: {},
+  written: placeParseFile(PLACE_PARSE_ROWS),
+};
+
+/** The place_rows executor in a Git repository, so the run can cut task worktrees. */
+class WorktreePlaceRowsExecutor extends PlaceRowsExecutor {
+  constructor(workspace: string, shape: PlaceShape) {
+    super(workspace, shape);
+    writeFileSync(join(workspace, ".gitignore"), ".baked/\n");
+    for (const args of [["init", "-q", "-b", "main"], ["config", "user.name", "Test User"], ["config", "user.email", "test@example.test"], ["config", "commit.gpgsign", "false"], ["config", "core.autocrlf", "false"], ["add", "."], ["commit", "-q", "-m", "Initial"]]) {
+      const result = spawnSync("git", args, { cwd: workspace, encoding: "utf8" });
+      if (result.status !== 0) throw new Error(`git ${args.join(" ")}: ${result.stderr}`);
+    }
+  }
+}
+
+describe("scenario: R84, a retry in a batch worker counts the rows its first session placed (#2585)", () => {
+  test("rust: the first session places the rows and ends unfinished; the retry only submits, and the task completes", async () => {
+    const shape = PLACE_SSEKNIT;
+    const policy: RunPolicy = { ...fixturePolicy, checks: [rowsCheck({ path: shape.path, block: shape.block } as WriteShape)], rowFileWrite: "on", clarification: "assume" };
+    const fixture = workflowFixture({ policy, executor: (root) => new WorktreePlaceRowsExecutor(root, shape) });
+    cleanups.push(fixture.dispose);
+    const native = new NativeAgentExecutor(fixture.service.store, fixture.service.leases, { ...fixture.config, repoMap: false });
+    cleanups.push(() => native.dispose());
+    fixture.executor.native = native;
+    const seen = scriptModel([
+      placeAll(shape),
+      // Unfinished: under clarification assume the host restarts the task.
+      () => call("submit_result", { schemaVersion: 1, taskId: "T001", outcome: "implemented", summary: "Placed the rows", evidenceIds: [], unresolved: ["the parser still has to read them"] }),
+      // The retry: the rows are in place, so it only submits.
+      submitRows(shape),
+      submitRows(shape),
+    ]);
+    const run = await fixture.service.start({ commandId: newId(), featureId: "fixture", workflowId: "sdd", prompt: placeRequest(shape), ownerLabel: "test", policy, executionMode: "worktree", maxConcurrentWriters: 2 });
+    let current = await fixture.service.drive(run.runId, new AbortController().signal);
+    for (let i = 0; i < 8 && current.status === "waiting"; i++) {
+      if (fixture.service.store.requests(run.runId).find((r) => r.status === "pending")?.kind !== "approval") break;
+      await fixture.approve(run.runId);
+      current = await fixture.service.drive(run.runId, new AbortController().signal);
+    }
+    const store = fixture.service.store;
+    const steps = store.steps(run.runId).filter((s) => s.stage_id === "task-T001");
+    const roots = store
+      .effects(run.runId)
+      .filter((e) => e.kind === "file_patch")
+      .map((e) => JSON.parse(e.intent_json) as { path: string; tool?: string; root?: string })
+      .filter((intent) => intent.path === shape.path && intent.tool === "edit_file")
+      .map((intent) => intent.root ?? "");
+    const refusals = store.artifacts(run.runId).filter((a) => a.logical_path.startsWith("errors/") && store.readArtifact(run.runId, a.id).includes("changed none of its files"));
+    // The rows were placed once, by the first session in the run root; the retry ran in its own
+    // task worktree.
+    expect(roots).toEqual([runRootPath(store, run.runId)]);
+    expect(store.artifacts(run.runId).some((a) => a.logical_path.startsWith("tasks/batches/"))).toBe(true);
+    expect(steps.length).toBeGreaterThanOrEqual(2);
+    // No refusal of the retry's result, and no third session: three model calls in all.
+    expect(refusals.map((a) => store.readArtifact(run.runId, a.id))).toEqual([]);
+    expect(seen.prompts).toHaveLength(3);
+    expect(current.status).toBe("completed");
+    expect(readFileSync(join(fixture.root, runRootPath(store, run.runId), shape.path), "utf8")).toBe(shape.written);
+  });
+});
+
+// #2618: bench round 85 csp (ReScript) `cli` T004 created the file with `let rows = [`, `]` and the
+// harness call (no indented line) and called place_rows without indent; the eight rows landed with
+// four spaces against a request that wrote them with two (AC-007), and the correction cost 574k.
+const PLACE_CSP_PATH = "tests/CliTest.res";
+const placeCspFile = (rows: string[]) => ["let rows = [", ...rows.map((r) => `  ${r},`), "]", "", "Harness.run(rows)", ""].join("\n");
+const PLACE_CSP_ROWS = ['Harness.row(["--help"], 0, "usage: csp [--strict] FILE\\n")', 'Harness.row(["--version"], 0, "csp 1.0\\n")', 'Harness.row(["--nope"], 2, "csp: unknown option --nope\\n")'];
+const PLACE_CSP: PlaceShape = {
+  path: PLACE_CSP_PATH,
+  scaffold: placeCspFile([]),
+  line: 1,
+  block: [`CliTest in ${PLACE_CSP_PATH} (3 rows, one per line, two spaces of indentation)`, ...PLACE_CSP_ROWS.map((r) => `  ${r}`)],
+  options: {},
+  written: placeCspFile(PLACE_CSP_ROWS),
+};
+
+describe("scenario: R85, place_rows indents rows as the request writes them (#2618)", () => {
+  test("rescript: a frame without indented lines gets the request's two-space rows, and the result shows the first line", async () => {
+    const { final, file, seen } = await placeScenario(PLACE_CSP, { rowFileWrite: "on" }, [placeAll(PLACE_CSP), submitRows(PLACE_CSP)]);
+    expect(seen.prompts[0]).toContain("the indentation of the request's own row lines");
+    // The prompt is the serialized conversation: the echoed line's quotes show escaped once more.
+    expect(seen.prompts[1]).toContain('Line 2 now reads \\"  Harness.row(');
+    expect(final.status).toBe("completed");
+    expect(seen.prompts).toHaveLength(2);
+    expect(file).toBe(PLACE_CSP.written);
+  });
+
+  test("rescript: rows placed with four spaces are re-indented by one place_rows call", async () => {
+    // Since ReScript has a row-file shape (#2553) the host writes a file it can read from that
+    // file's own layout, four spaces and all; the frame's second list (two runs of rows) makes it
+    // decline, so the layout correction is the session's one place_rows call.
+    const extra = '\nlet extra = [\n  Harness.row(["--x"], "", 2, "", ""),\n]\n';
+    const four = `${placeCspFile([]).replace("[\n", `[\n${PLACE_CSP_ROWS.map((r) => `    ${r},`).join("\n")}\n`)}${extra}`;
+    const { final, file, seen } = await placeScenario({ ...PLACE_CSP, scaffold: four }, { rowFileWrite: "on" }, [
+      () => call("place_rows", { path: PLACE_CSP_PATH, line: 1, rows: [1, 3], reindent: true }),
+      submitRows(PLACE_CSP),
+    ]);
+    expect(seen.prompts[1]).toContain(`Re-indented rows 1 to 3 of the request's rows for ${PLACE_CSP_PATH} at lines 2 to 4`);
+    expect(final.status).toBe("completed");
+    expect(file).toBe(`${PLACE_CSP.written}${extra}`);
+  });
+});
+
+describe("placeRows: the request's rows after a line, from suppliedRows and restoredLine (#2564)", () => {
+  const targets = new Map([[PLACE_CLI_PATH, PLACE_CLI_ROWS]]);
+  const input = (rows: number[], line = 3, more: Partial<PlaceRowsInput> = {}): PlaceRowsInput => ({ path: PLACE_CLI_PATH, line, rows, ...more });
+  test("one row per line with the default indentation and separator, CRLF kept", () => {
+    expect(placeRows(input([1, 3]), targets, PLACE_PNMFORGE.scaffold)).toMatchObject({ content: PLACE_PNMFORGE.written, placed: [1, 2, 3], lines: [4, 6] });
+    expect(placeRows(input([1, 3]), targets, PLACE_PNMFORGE.scaffold.replaceAll("\n", "\r\n"))).toMatchObject({ content: PLACE_PNMFORGE.written.replaceAll("\n", "\r\n") });
+    // A tab-indented file gets a tab; the separator and the last row's separator are the caller's.
+    const tabbed = "var rows = []row{\n\t{\"x\"},\n}\n";
+    expect(placeRows({ path: "t_test.go", line: 2, rows: [1], separator: ";" }, new Map([["t_test.go", ['{"y"}']]]), tabbed)).toMatchObject({ content: 'var rows = []row{\n\t{"x"},\n\t{"y"};\n}\n' });
+    expect(placeRows(input([1, 2], 3, { indent: "  ", lastSeparator: "" }), targets, PLACE_PNMFORGE.scaffold)).toMatchObject({
+      content: placeCliFile([]).replace("= {\n", `= {\n  ${PLACE_CLI_ROWS[0]},\n  ${PLACE_CLI_ROWS[1]}\n`),
+    });
+  });
+  test("refusals name the change the worker can make", () => {
+    const refusal = (result: ReturnType<typeof placeRows>) => ("refusal" in result ? result.refusal : null);
+    expect(refusal(placeRows(input([0, 2]), targets, PLACE_PNMFORGE.scaffold))).toContain("row 0 is not one of them");
+    expect(refusal(placeRows(input([3, 1]), targets, PLACE_PNMFORGE.scaffold))).toContain("end before they start");
+    expect(refusal(placeRows(input([1]), targets, null))).toContain("does not exist yet. Create it with edit_file");
+    expect(refusal(placeRows(input([1], 40), targets, PLACE_PNMFORGE.scaffold))).toContain(`${PLACE_CLI_PATH} has 6 lines; line 40 is not one of them`);
+    expect(refusal(placeRows({ ...input([1]), path: "src/cli.cpp" }, targets, ""))).toContain("is not a file this task's prescribed rows go in");
+  });
+  test("placeRowTargets reads the task's row files from suppliedRows only", () => {
+    const request = placeRequest(PLACE_PNMFORGE);
+    expect([...placeRowTargets(request, { writes: [{ path: PLACE_CLI_PATH, action: "modify" }, { path: "src/cli.cpp", action: "modify" }] })]).toEqual([[PLACE_CLI_PATH, PLACE_CLI_ROWS]]);
+    expect(placeRowTargets(request, { writes: [{ path: PLACE_CLI_PATH, action: "delete" }] }).size).toBe(0);
+  });
+});
+
+// #2583: some requests give their rows in their own notation, not as code of the file's language.
+// Bench round 84 (`rowFileWrite: "on"`): wrapsmith (PowerShell) T002 got `place_rows`, which wrote
+// rows like `run "cols" "3" stdin=... => 0 "..." "",` into `tests/*.Tests.ps1`; Pester failed to
+// parse the file, and the prescribed-row edit guard put back every edit that rewrote a row as an
+// executable `Row` call (the translation spells `\n` as PowerShell's `` `n ``), so the run stuck.
+
+const WRAP_PATH = "tests/Cols.Tests.ps1";
+const wrapFile = (rows: string[]) => ['BeforeAll { . "$PSScriptRoot/Row.ps1" }', "", "Describe 'cols' {", ...rows.map((r) => `    ${r}`), "}", ""].join("\n");
+const WRAP_ROWS = ['run "cols" "3" stdin="abc def ghi\\n" => 0 "abc\\ndef\\nghi\\n" "",', 'run "cols" "5" stdin="a b c\\n" => 0 "a b c\\n" "",'];
+// The session's translation: Pester calls with PowerShell's own escapes.
+const WRAP_CALLS = ["Row @('cols', '3') -Stdin \"abc def ghi`n\" -Code 0 -Out \"abc`ndef`nghi`n\" -Err ''", "Row @('cols', '5') -Stdin \"a b c`n\" -Code 0 -Out \"a b c`n\" -Err ''"];
+const WRAPSMITH: PlaceShape = {
+  path: WRAP_PATH,
+  scaffold: wrapFile([]),
+  line: 3,
+  block: [`cols rows in ${WRAP_PATH} (2 rows)`, ...WRAP_ROWS],
+  options: { separator: "" },
+  written: wrapFile(WRAP_CALLS),
+};
+// The pester-written check's stand-in: a notation line is a ParseException; every row is a `Row` call.
+const pesterCheck = {
+  id: "pester-written",
+  executable: "bun",
+  args: ["-e", `const t = await Bun.file(${JSON.stringify(WRAP_PATH)}).text(); if (/^\\s*run\\s.*=>/m.test(t)) { console.log("ParseException: ${WRAP_PATH}"); process.exit(1); } if ((t.match(/^\\s*Row @\\(/gm) ?? []).length !== 2) { console.log("${WRAP_PATH}: a row is missing"); process.exit(1); }`],
+  cwd: ".",
+  timeoutMs: 10000,
+  required: true,
+  scope: "feature" as const,
+  envNames: [],
+  writes: [],
+};
+const translate = (from: string, to: string) => () => call("edit_file", { path: WRAP_PATH, oldString: from, newString: to });
+
+describe("scenario: R84 wrapsmith, rows in the request's notation are translated by the session, never placed (#2583)", () => {
+  test("powershell: place_rows is not offered for notation rows, and the session's Pester calls stand", async () => {
+    const { final, file, seen, record } = await placeScenario(
+      WRAPSMITH,
+      { rowFileWrite: "on" },
+      [translate("Describe 'cols' {\n", `Describe 'cols' {\n${WRAP_CALLS.map((c) => `    ${c}`).join("\n")}\n`), submitRows(WRAPSMITH)],
+      [pesterCheck],
+    );
+    expect(seen.tools[0]).not.toContain("place_rows");
+    expect(seen.prompts[0]).not.toContain("You must place them with place_rows");
+    expect(seen.prompts[0]).toContain(`The request gives the rows of ${WRAP_PATH} (every row) in its own notation`);
+    expect(seen.prompts[1]).not.toContain("Edit put back");
+    expect(record).toMatchObject({ mode: "on", offered: false, files: [{ path: WRAP_PATH, rows: 2, notation: 2 }] });
+    expect(final.status).toBe("completed");
+    expect(file).toBe(WRAPSMITH.written);
+    expect(file).not.toContain("=>");
+  });
+
+  test("powershell resume: a file holding the notation rows place_rows wrote is converted without a refusal or a restore", async () => {
+    const { final, file, seen, restores } = await placeScenario(
+      { ...WRAPSMITH, scaffold: wrapFile(WRAP_ROWS) },
+      { rowFileWrite: "on", rowRestore: "on" },
+      [translate(WRAP_ROWS[0] ?? "", WRAP_CALLS[0] ?? ""), translate(WRAP_ROWS[1] ?? "", WRAP_CALLS[1] ?? ""), submitRows(WRAPSMITH)],
+      [pesterCheck],
+    );
+    for (const prompt of seen.prompts.slice(1, 3)) expect(prompt).not.toContain("Edit put back");
+    expect(final.status).toBe("completed");
+    expect(file).toBe(WRAPSMITH.written);
+    // Nothing writes the request's notation back over the executable rows.
+    expect(restores.filter((r) => r.verdict === "restored" || r.verdict === "would_restore")).toEqual([]);
+  });
+
+  test("placeRows refuses a notation row with the change to make; code rows of the same task still place", () => {
+    const targets = new Map<string, readonly string[]>([[WRAP_PATH, WRAP_ROWS], [PLACE_CLI_PATH, PLACE_CLI_ROWS]]);
+    const refused = placeRows({ path: WRAP_PATH, line: 3, rows: [1, 2] }, targets, WRAPSMITH.scaffold);
+    expect("refusal" in refused ? refused.refusal : null).toContain(`${WRAP_PATH}: the request gives rows 1, 2 in its own notation`);
+    expect("refusal" in refused ? refused.refusal : null).toContain("Write these rows yourself with edit_file as the test framework's call");
+    expect(placeRows({ path: PLACE_CLI_PATH, line: 3, rows: [1, 3] }, targets, PLACE_PNMFORGE.scaffold)).toMatchObject({ content: PLACE_PNMFORGE.written });
+    const forms = placeRowsModule.placeRowForms(targets);
+    expect([...forms.code.keys()]).toEqual([PLACE_CLI_PATH]);
+    expect([...forms.notation]).toEqual([[WRAP_PATH, [1, 2]]]);
+  });
+
+  test("the edit guard lets a notation row become code, and still guards the code row afterwards", () => {
+    const request = placeRequest(WRAPSMITH);
+    expect(rowEditBreaks(request, WRAP_PATH, wrapFile(WRAP_ROWS), wrapFile([WRAP_CALLS[0] ?? "", WRAP_ROWS[1] ?? ""]))).toBeNull();
+    // A code row that holds the request's row is guarded as before: changing its output is put back.
+    const held = "Row @('cols', '5') -Stdin 'a b c' -Code 0 -Out 'a b c' -Err ''";
+    const rows = ['run "cols" "5" stdin="a b c" => 0 "a b c" ""'];
+    const plain = ["Prescribed.", "", "```text", `cols rows in ${WRAP_PATH} (1 row)`, ...rows, "```", ""].join("\n");
+    expect(rowEditBreaks(plain, WRAP_PATH, wrapFile([held]), wrapFile([held.replace("-Out 'a b c'", "-Out 'a b'")]))?.rows).toEqual([1]);
+  });
+
+  test("the whole-line restore never writes the request's notation over code that shares its head", () => {
+    // A Pester helper named after the notation: the same head, `run`, but PowerShell's own call.
+    const code = "run @('cols', '3') -Stdin \"abc def ghi`n\" -Code 0 -Out \"abc`ndef`nghi`n\" -Err ''";
+    const file = wrapFile([code, WRAP_ROWS[1] ?? ""]);
+    const plan = rowRestorePlan(WRAP_ROWS, file);
+    expect(plan.sites).toMatchObject([{ row: 1, line: 4, sameHead: false }]);
+    expect(plan.restore).toEqual([]);
+    expect(plan.after).toBe(file);
+  });
+
+  test("rowNotation tells the request's notation from code rows of every shape; the host write declines notation rows", () => {
+    for (const row of [...WRAP_ROWS, 'run "deflate" "--hex" stdin="7171" => 0 "cd\\n" ""', "run ls => 0 \"<dir>/out.txt\\n\"", "split \"a,b\" => \"a|b\""]) expect(rowBlockModule.rowNotation(row)).toBe(true);
+    const code = [
+      ...PLACE_CLI_ROWS,
+      ...PLACE_ENCODE_ROWS,
+      ...WRAP_CALLS,
+      ...Object.values(ROW_FILE_SHAPES).flatMap((shape) => (isNoRow(shape) ? [] : shape.example.rows)),
+      "yield 'cols 3' => ['cols', '3', 0, \"abc\\n\"],",
+      "['args' => ['cols'], 'code' => 0],",
+      '@test "cols 3" {',
+      'it "maps a => b" do',
+      "assert_row \"cols\" \"3\"",
+    ];
+    for (const row of code) expect([row, rowBlockModule.rowNotation(row)]).toEqual([row, false]);
+    // `rowFilePlan` needs every row to be a row line of the language, so notation rows decline.
+    for (const shape of [TINYFLATE, PNMFORGE, BYTEMERGE]) expect(rowFilePlan(shape.path, WRAP_ROWS, { source: "reference", text: shape.reference.text }).inputs.sameHead).toBe(false);
+  });
 });

@@ -222,6 +222,105 @@ const GO: RestoreShape = {
   restored: [2],
 };
 
+// pnmforge (C++, R83) cli: usage rows with `\n` escapes, here braced rows in a `std::vector`; the
+// drifted file lost the usage row's command lines.
+const PNM_PATH = "tests/cli_test.cpp";
+const PNM_USAGE = "usage: pnmforge <command> [options]\\n\\ncommands:\\n  info FILE\\n  invert IN OUT\\n";
+const pnmTest = (row2: string) =>
+  [
+    "#include <gtest/gtest.h>",
+    "",
+    '#include "cli.h"',
+    "",
+    "static const std::vector<CliRow> rows = {",
+    '    {{"--version"}, 0, "pnmforge 0.1.0\\n", ""},',
+    `    ${row2},`,
+    "};",
+    "",
+    "TEST(CliTest, Rows) { checkRows(rows); }",
+    "",
+  ].join("\n");
+const PNMFORGE: RestoreShape = {
+  path: PNM_PATH,
+  block: [
+    `CliRows in ${PNM_PATH} (2 rows, {args, code, out, err})`,
+    '{{"--version"}, 0, "pnmforge 0.1.0\\n", ""}',
+    `{{"--help"}, 0, "${PNM_USAGE}", ""}`,
+  ],
+  faithful: pnmTest(`{{"--help"}, 0, "${PNM_USAGE}", ""}`),
+  drifted: pnmTest('{{"--help"}, 0, "usage: pnmforge <command> [options]\\n", ""}'),
+  restored: [2],
+};
+
+// bytemerge (Java, R83) encoding: `Arguments.of` rows in a `Stream.of(`; the last row closes the
+// list on its line (`));`); the drifted last row lost a byte of its ids.
+const BYTE_PATH = "src/test/java/bytemerge/EncodeIdsTest.java";
+const byteTest = (row2: string) =>
+  [
+    "package bytemerge;",
+    "",
+    "class EncodeIdsTest {",
+    "  static Stream<Arguments> rows() {",
+    "    return Stream.of(",
+    '        Arguments.of("hello", "[104, 101, 108, 108, 111]"),',
+    `        ${row2}));`,
+    "  }",
+    "}",
+    "",
+  ].join("\n");
+const BYTEMERGE: RestoreShape = {
+  path: BYTE_PATH,
+  block: [
+    `EncodeIdsTest in ${BYTE_PATH} (2 rows, Arguments.of(text, ids))`,
+    'Arguments.of("hello", "[104, 101, 108, 108, 111]")',
+    'Arguments.of("256 \\\\ n \\n", "[50, 53, 54, 32, 92, 32, 110, 32, 10]")',
+  ],
+  faithful: byteTest('Arguments.of("256 \\\\ n \\n", "[50, 53, 54, 32, 92, 32, 110, 32, 10]")'),
+  drifted: byteTest('Arguments.of("256 \\\\ n \\n", "[50, 53, 54, 92, 32, 110, 32, 10]")'),
+  restored: [2],
+};
+
+// sseknit (Rust, R84) cli: rstest `#[case(...)]` attribute rows, no separator; the drifted row
+// lost a line of its usage text.
+const SSE_PATH = "tests/cli.rs";
+const SSE_USAGE = "usage: sseknit <command>\\n\\ncommands:\\n  parse\\n  tools\\n";
+const sseTest = (row2: string) =>
+  ["use rstest::rstest;", "", "#[rstest]", '#[case(&["--version"], 0, "sseknit 0.1.0\\n")]', row2, "fn cli(#[case] args: &[&str], #[case] code: i32, #[case] out: &str) {", "    assert_eq!(run(args), (code, out.to_string()));", "}", ""].join("\n");
+const SSEKNIT: RestoreShape = {
+  path: SSE_PATH,
+  block: [`CliRows in ${SSE_PATH} (2 rows, #[case(args, code, out)])`, '#[case(&["--version"], 0, "sseknit 0.1.0\\n")]', `#[case(&["--help"], 0, "${SSE_USAGE}")]`],
+  faithful: sseTest(`#[case(&["--help"], 0, "${SSE_USAGE}")]`),
+  drifted: sseTest('#[case(&["--help"], 0, "usage: sseknit <command>\\n\\ncommands:\\n  parse\\n")]'),
+  restored: [2],
+};
+
+// wrapsmith (PowerShell, R84) cols: a helper's command rows, PowerShell's escapes; the drifted row
+// lost its last output line.
+const WRAP_PATH = "tests/Cols.Tests.ps1";
+const wrapTest = (row2: string) =>
+  ["BeforeDiscovery { . \"$PSScriptRoot/Row.ps1\" }", "", "Describe 'cols' {", "    Row @('cols', '5') -Stdin \"a b c`n\" -Code 0 -Out \"a b c`n\" -Err ''", `    ${row2}`, "}", ""].join("\n");
+const WRAP_ROW = "Row @('cols', '3') -Stdin \"abc def ghi`n\" -Code 0 -Out \"abc`ndef`nghi`n\" -Err ''";
+const WRAPSMITH: RestoreShape = {
+  path: WRAP_PATH,
+  block: [`cols rows in ${WRAP_PATH} (2 rows)`, "Row @('cols', '5') -Stdin \"a b c`n\" -Code 0 -Out \"a b c`n\" -Err ''", WRAP_ROW],
+  faithful: wrapTest(WRAP_ROW),
+  drifted: wrapTest(WRAP_ROW.replace("ghi`n\" -Err", "\" -Err")),
+  restored: [2],
+};
+
+// csp (ReScript, R85) cli: `Harness.row(...)` calls, a comma after the last row too; the drifted
+// row lost the usage text's option.
+const CSP_PATH = "tests/CliTest.res";
+const cspTest = (row2: string) =>
+  ["let rows = [", '  Harness.row(["--version"], "", 0, "csp 1.0\\n", ""),', `  ${row2},`, "]", "", "Harness.run(rows)", ""].join("\n");
+const CSP: RestoreShape = {
+  path: CSP_PATH,
+  block: [`CliTest in ${CSP_PATH} (2 rows)`, 'Harness.row(["--version"], "", 0, "csp 1.0\\n", "")', 'Harness.row(["--help"], "", 0, "usage: csp [--strict] FILE\\n", "")'],
+  faithful: cspTest('Harness.row(["--help"], "", 0, "usage: csp [--strict] FILE\\n", "")'),
+  drifted: cspTest('Harness.row(["--help"], "", 0, "usage: csp FILE\\n", "")'),
+  restored: [2],
+};
+
 /** One case per row notation the host restores (AGENTS.md: a new notation adds its case here). */
 const RESTORE_SHAPES: Record<string, RestoreShape> = {
   c: TINYFLATE,
@@ -230,6 +329,11 @@ const RESTORE_SHAPES: Record<string, RestoreShape> = {
   typescript: DELTAGLUE,
   elixir: RATDEC,
   go: GO,
+  cpp: PNMFORGE,
+  java: BYTEMERGE,
+  rust: SSEKNIT,
+  powershell: WRAPSMITH,
+  rescript: CSP,
 };
 
 const requestOf = (shape: RestoreShape) =>
@@ -284,6 +388,9 @@ describe("rowRestorePlan: the host restores a changed prescribed row from the re
     expect(restoredLine('  { "1", "2" },', '{ "3", "4" }')).toBe('  { "3", "4" },');
     expect(restoredLine('\tROW("1");\r', 'ROW("3")')).toBe('\tROW("3");\r');
     expect(restoredLine("    row(1)", "row(2)")).toBe("    row(2)");
+    // The list's close on the last row's line stays (#2553: a Java `Stream.of(`, a gtest `Values(`).
+    expect(restoredLine('        Arguments.of("a", 1));', 'Arguments.of("b", 2)')).toBe('        Arguments.of("b", 2));');
+    expect(restoredLine("    CliRow{{}, 2, \"\", \"\"}));", 'CliRow{{"-h"}, 0, "u\\n", ""}')).toBe('    CliRow{{"-h"}, 0, "u\\n", ""}));');
   });
 
   test("rowRestores records sites and verdicts per file; the decision replays from the flags", () => {

@@ -65,6 +65,11 @@ export type SettingDefinition = SettingBase &
      * each with an optional `maxChars`; null means none. The whole source is one value.
      */
     | { type: "library-docs"; default: null }
+    /**
+     * A folder on the machine: absolute, starting with `~`, or relative to the project; null means
+     * unset. `placeholder` is an example value for the editors.
+     */
+    | { type: "path"; default: null; placeholder: string }
   );
 
 export type SettingType = SettingDefinition["type"];
@@ -145,7 +150,7 @@ export const SETTING_PAGES: readonly SettingPage[] = [
     id: "code-quality",
     title: "Code quality",
     description:
-      "Quality gates of workflow runs. New runs take these defaults and keep them until they finish.",
+      "Quality gates and worktrees of workflow runs. New runs take these defaults and keep them until they finish.",
     command: "/code-quality",
   },
   {
@@ -1066,7 +1071,11 @@ export const SETTINGS: readonly SettingDefinition[] = [
     type: "enum",
     default: "off",
     options: [
-      { value: "off", label: "off", help: "The rewrite gets only the cases review found." },
+      {
+        value: "off",
+        label: "off",
+        help: "A first rewrite gets only the cases review found; a second rewrite of the same code still probes once.",
+      },
       { value: "on", label: "on", help: "Probe the class once and add the failing inputs." },
     ],
   },
@@ -1097,7 +1106,7 @@ export const SETTINGS: readonly SettingDefinition[] = [
     page: "code-quality",
     section: "Workflow runs",
     label: "Host-written prescribed row files",
-    help: "When a planned task only writes a test file whose rows the request prescribes verbatim, the host writes the file itself: the shape (imports, the row type, the harness call) from the file already in the task's base or the task's reference file, and one prescribed row per line in the shape's own row notation. No model session transcribes the rows; the task's checks decide the file, and a failing check opens the normal correction.",
+    help: "When a planned task only writes a test file whose rows the request prescribes verbatim, the host writes the file itself: the shape (imports, the row type, the harness call) from the file already in the task's base or the task's reference file, and one prescribed row per line in the shape's own row notation. No model session transcribes the rows; the task's checks decide the file, and a failing check opens the normal correction. Where the host cannot write the file (a language without a row shape yet, a shape it cannot read), the session gets place_rows: it writes the rest of the file and the host inserts the request's rows exactly as written.",
     scopes: BOTH,
     type: "enum",
     default: "off",
@@ -1105,12 +1114,12 @@ export const SETTINGS: readonly SettingDefinition[] = [
       {
         value: "off",
         label: "off",
-        help: "A session writes the file; the host only records whether it would write it.",
+        help: "A session writes the file; the host only records whether it would write it, and whether the session would get place_rows.",
       },
       {
         value: "on",
         label: "on",
-        help: "Write the row file from its shape and start no session for it.",
+        help: "Write the row file from its shape and start no session for it; otherwise give the session place_rows.",
       },
     ],
   },
@@ -1301,6 +1310,28 @@ export const SETTINGS: readonly SettingDefinition[] = [
     ],
   },
   {
+    id: "quality.languagePitfalls",
+    page: "code-quality",
+    section: "Workflow runs",
+    label: "Tell implementers their language's pitfalls and the run's traps",
+    help: "Each implementer step gets a short pitfalls note for the languages its task writes (the same table the language reviewer reads), and the first error line of every other task's failing checks in the run as a one-line rule, so a sibling task does not meet the same trap again.",
+    scopes: BOTH,
+    type: "enum",
+    default: "off",
+    options: [
+      {
+        value: "off",
+        label: "off",
+        help: "Implementers get neither; the host records what each step would have been told.",
+      },
+      {
+        value: "on",
+        label: "on",
+        help: "Put the pitfalls note and the run's traps into each implementer step's input.",
+      },
+    ],
+  },
+  {
     id: "quality.sourceDefectRoute",
     page: "code-quality",
     section: "Workflow runs",
@@ -1341,6 +1372,28 @@ export const SETTINGS: readonly SettingDefinition[] = [
         value: "on",
         label: "on",
         help: "Send the failing check's correction to the test's task only.",
+      },
+    ],
+  },
+  {
+    id: "quality.conflictRowReply",
+    page: "code-quality",
+    section: "Workflow runs",
+    label: "Answer a conflict about prescribed test rows with the row diff",
+    help: "When a task reports that a test file whose rows the request prescribes contradicts the program, the host compares the file with the request's rows. With this on, a file that does not keep a row as given gets a reply naming the row and the literal it lacks, and the request's rows win, instead of a model settle. Off records the reply it would send.",
+    scopes: BOTH,
+    type: "enum",
+    default: "off",
+    options: [
+      {
+        value: "off",
+        label: "off",
+        help: "The conflict takes the other settles; the host records the row diff it would reply with.",
+      },
+      {
+        value: "on",
+        label: "on",
+        help: "Reply with the row diff and keep the request's rows.",
       },
     ],
   },
@@ -1438,6 +1491,17 @@ export const SETTINGS: readonly SettingDefinition[] = [
     scopes: BOTH,
     type: "library-docs",
     default: null,
+  },
+  {
+    id: "workflows.worktreeRoot",
+    page: "code-quality",
+    section: "Worktrees",
+    label: "Worktree folder",
+    help: "Where new worktree runs keep their worktrees: <folder>/<8 hex digits>/main, beside the project on its drive. Not set, they live in the project's .baked/worktrees. On Windows a short folder such as C:\\.bk keeps a task's checks under the path length a toolchain handles (dart test fails past about 90 characters). A run keeps the folder its worktree was created in.",
+    scopes: BOTH,
+    type: "path",
+    default: null,
+    placeholder: "C:\\.bk",
   },
   {
     id: "coordinator.workStyle",

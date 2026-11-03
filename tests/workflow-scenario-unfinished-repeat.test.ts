@@ -141,6 +141,8 @@ describe("scenario: R77 pairwick, a task that ends unfinished twice on the same 
     expect(wouldStops[0]?.summary).toContain("T001 ended unfinished 2 times in a row with the same failing output of scalafmt");
     expect(message).toContain("Task T001 did not complete its implementation");
     expect(message).toContain("Task T001 ended unfinished 2 times in a row with the same failing output of scalafmt.");
+    // The worker's own account is in the block too (#2643): the cause may be no check at all.
+    expect(message).toContain('Its worker reported unresolved: "The fixer could not run, and scalafmt still reports Rules.scala".');
     expect(advice?.summary).toContain("Task T001 ended unfinished 2 times in a row with the same failing output of scalafmt.");
     // The message says a resume repeats the failure, so no resume is offered; each remedy changes
     // an input, and the message names which (#2520, R82 tinyflate deflate 82f19908).

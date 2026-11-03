@@ -231,6 +231,18 @@ describe("run_probe", () => {
     expect(outcome.status).toBe("refused");
   });
 
+  // #2609: the change stays and has no effect row, so the probe's record names what it changed.
+  test("a refused probe names the files it changed, a removed one included", async () => {
+    const dir = workspace();
+    const outcome = await runProbe(
+      new ProcessScope(),
+      { executable: "bun", args: ["-e", "require('fs').unlinkSync('a.txt')"] },
+      options(dir),
+    );
+    expect(outcome.status).toBe("refused");
+    expect(outcome.changed).toEqual([{ path: "a.txt", before: expect.any(String), after: null }]);
+  });
+
   test("stops after the allowed number of tries", async () => {
     const tool = probeTool(["bun"], async () => ({ status: "ran", output: "" }));
     for (let i = 0; i < PROBE_TRIES; i += 1)

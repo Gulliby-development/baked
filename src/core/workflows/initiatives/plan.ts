@@ -17,7 +17,8 @@ import {
 import { canHold, deliverableKind, normalizePath } from "../../verification/deliverable-paths.js";
 import { isCodePath } from "../check-policy.js";
 import { WorkflowFault } from "../errors.js";
-import { HOST_CONTENT_MAX_CHARS, SafeId } from "../schemas.js";
+import { hostRowFiles } from "../host-apply.js";
+import { HOST_CONTENT_MAX_CHARS, type RunPolicy, SafeId } from "../schemas.js";
 import { suppliedRows } from "../sizing.js";
 import type { StopMode } from "../stop-reasons.js";
 import { conditionalContractProblems } from "./upstream-symbols.js";
@@ -469,6 +470,28 @@ export function boundaryFiles(
 }
 
 /**
+ * Each feature's boundary files (`boundaryFiles`), the feature that writes each in full (the last
+ * in plan order that lists it), and the prescribed row files among them the host writes with no
+ * session (`hostRowFiles`), with their rows: what `boundaryPathCounts` and `hostRowCases` count.
+ */
+function boundaryOwners(
+  plan: Pick<InitiativePlan, "features">,
+  request: string,
+  policy: Pick<RunPolicy, "rowFileWrite">,
+): {
+  files: Map<string, string[] | null>;
+  owner: Map<string, string>;
+  host: Map<string, number>;
+} {
+  const named = namedFiles(request);
+  const files = new Map(plan.features.map((f) => [f.id, boundaryFiles(f, named)]));
+  const owner = new Map<string, string>();
+  for (const f of plan.features) for (const path of files.get(f.id) ?? []) owner.set(path, f.id);
+  const host = hostRowFiles(request, [...owner.keys()], policy);
+  return { files, owner, host };
+}
+
+/**
  * Every feature's literal boundary paths, each counted in full only in the last feature in plan
  * order that lists it and as a placeholder in the earlier ones. A skeleton-first split lists its
  * module stubs in the first feature and again in the features that fill them: bench round 40
@@ -476,19 +499,19 @@ export function boundaryFiles(
  * what it used (#1464). A file of the feature's own skeleton counts apart, at no cost: the host
  * writes it with no agent (#1461), and bench round 45 (grundykit) priced 22 such stubs at a third
  * of a path each, 2.1M to 3.1M tokens the feature never used (#1550). A glob boundary counts the files of the request it
- * matches (`boundaryFiles`); one that matches none counts no paths and claims none.
+ * matches (`boundaryFiles`); one that matches none counts no paths and claims none. A prescribed
+ * row file the host writes with no session (`hostRowFiles`, under the policy's `rowFileWrite:
+ * "on"`) counts nowhere either (#2640): R87 citeseek's six row test files were priced as paths.
  */
 export function boundaryPathCounts(
   plan: Pick<InitiativePlan, "features">,
   request = "",
+  policy: Pick<RunPolicy, "rowFileWrite"> = {},
 ): Map<string, BoundaryPathCount> {
-  const named = namedFiles(request);
-  const files = new Map(plan.features.map((f) => [f.id, boundaryFiles(f, named)]));
-  const owner = new Map<string, string>();
-  for (const f of plan.features) for (const path of files.get(f.id) ?? []) owner.set(path, f.id);
+  const { files, owner, host } = boundaryOwners(plan, request, policy);
   return new Map(
     plan.features.map((f): [string, BoundaryPathCount] => {
-      const paths = files.get(f.id);
+      const paths = files.get(f.id)?.filter((path) => !host.has(path));
       if (!paths?.length) return [f.id, { paths: 0, placeholders: 0, skeleton: 0 }];
       const own = new Set((f.skeleton ?? []).map((file) => file.path));
       const skeleton = paths.filter((path) => own.has(path)).length;
@@ -498,6 +521,28 @@ export function boundaryPathCounts(
       return [f.id, { paths: paths.length - placeholders - skeleton, placeholders, skeleton }];
     }),
   );
+}
+
+/**
+ * The prescribed rows the host writes with no session under `rowFileWrite: "on"`, by feature id
+ * (#2640): the row files of the feature's boundary (`boundaryFiles`) that `hostRowFiles` takes,
+ * each counted only in the last feature in plan order that lists it, as `boundaryPathCounts`
+ * counts paths. The estimate takes them off the feature's `testCases`, as task-plan sizing prices
+ * the tasks that write them at nothing (`hostRowFileTasks`, #2633): R87 citeseek's preview priced
+ * its 101 host-written rows at the session rate, 6.17M expected against 2.16M used.
+ */
+export function hostRowCases(
+  plan: Pick<InitiativePlan, "features">,
+  request: string,
+  policy: Pick<RunPolicy, "rowFileWrite">,
+): Map<string, number> {
+  const { owner, host } = boundaryOwners(plan, request, policy);
+  const out = new Map<string, number>();
+  for (const [path, rows] of host) {
+    const id = owner.get(path);
+    if (id) out.set(id, (out.get(id) ?? 0) + rows);
+  }
+  return out;
 }
 
 /**

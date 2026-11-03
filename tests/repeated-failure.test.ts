@@ -11,7 +11,7 @@ import {
   unfinishedRepeatRemedies,
 } from "../src/core/workflows/repeated-failure.js";
 import { WorkflowFault } from "../src/core/workflows/errors.js";
-import { invalidOutputDecision, invalidOutputKey } from "../src/core/workflows/invalid-output-repeat.js";
+import { invalidOutputBuildChange, invalidOutputDecision, invalidOutputKey } from "../src/core/workflows/invalid-output-repeat.js";
 import { errorRecovery } from "../src/core/workflows/remedies.js";
 import { unfinishedRepeatFault } from "../src/core/workflows/scheduler.js";
 import { writeRefusalOf } from "../src/core/workflows/write-refusals.js";
@@ -44,6 +44,7 @@ const pairs: [string, string, string][] = [
   ["tap (prove)", "t/parse.t .. 1/2 \n#   Failed test 'rejects empty'\n#   at t/parse.t line 7.\nt/parse.t .. Dubious, test returned 1 (wstat 256, 0x100)\nFailed 1/2 subtests \nFiles=1, Tests=2,  0 wallclock secs ( 0.01 usr  0.00 sys +  0.03 cusr  0.01 csys =  0.05 CPU)\nResult: FAIL", "t/parse.t .. 1/2 \n#   Failed test 'rejects empty'\n#   at t/parse.t line 7.\nt/parse.t .. Dubious, test returned 1 (wstat 256, 0x100)\nFailed 1/2 subtests \nFiles=1, Tests=2,  1 wallclock secs ( 0.02 usr  0.01 sys +  0.05 cusr  0.00 csys =  0.08 CPU)\nResult: FAIL"],
   ["pytest", "FAILED tests/test_cli.py::test_parse - AssertionError\n1 failed in 0.12s", "FAILED tests/test_cli.py::test_parse - AssertionError\n1 failed in 0.31s"],
   ["pytest (randomly)", "Using --randomly-seed=1234567\nFAILED tests/test_cli.py::test_parse - AssertionError\n1 failed in 2.01s", "Using --randomly-seed=987\nFAILED tests/test_cli.py::test_parse - AssertionError\n1 failed in 1.50s"],
+  ["unittest", "F\n======================================================================\nFAIL: test_rejects_empty (tests.test_parse.ParseTest.test_rejects_empty)\n----------------------------------------------------------------------\nAssertionError: 2 != 1\n\n----------------------------------------------------------------------\nRan 1 test in 0.001s\n\nFAILED (failures=1)", "F\n======================================================================\nFAIL: test_rejects_empty (tests.test_parse.ParseTest.test_rejects_empty)\n----------------------------------------------------------------------\nAssertionError: 2 != 1\n\n----------------------------------------------------------------------\nRan 1 test in 0.123s\n\nFAILED (failures=1)"],
   ["cargo", "test parse ... FAILED\ntest result: FAILED. 0 passed; 1 failed; finished in 0.00s", "test parse ... FAILED\ntest result: FAILED. 0 passed; 1 failed; finished in 0.02s"],
   ["dotnet test", "  Failed App.Tests.ParserTests.RejectsEmpty [12 ms]\n  Error Message:\n   Assert.Equal() Failure\nFailed!  - Failed:     1, Passed:     0, Skipped:     0, Total:     1, Duration: 12 ms - App.Tests.dll (net8.0)", "  Failed App.Tests.ParserTests.RejectsEmpty [< 1 ms]\n  Error Message:\n   Assert.Equal() Failure\nFailed!  - Failed:     1, Passed:     0, Skipped:     0, Total:     1, Duration: < 1 ms - App.Tests.dll (net8.0)"],
   ["maven", "[ERROR] Tests run: 1, Failures: 1, Errors: 0, Skipped: 0, Time elapsed: 0.012 s <<< FAILURE! -- in app.ParserTest\n[INFO] BUILD FAILURE\n[INFO] Total time:  3.456 s\n[INFO] Finished at: 2026-10-27T01:02:03+02:00", "[ERROR] Tests run: 1, Failures: 1, Errors: 0, Skipped: 0, Time elapsed: 0.2 s <<< FAILURE! -- in app.ParserTest\n[INFO] BUILD FAILURE\n[INFO] Total time:  01:05 min\n[INFO] Finished at: 2026-10-27T02:03:04+02:00"],
@@ -216,6 +217,17 @@ describe("unfinishedRepeatFault (#2520)", () => {
     expect(blocked.details.unfinishedTask).toBe("T007");
     expect(unfinishedRepeatRemedies(3)).toEqual(["reroute", "revise", "replan", "cancel"]);
   });
+  // #2643: R87 slackbar T005 blocked naming `format` while its worker reported no run_probe.
+  test("the block names what the worker reported unresolved, clipped", () => {
+    const long = "x".repeat(400);
+    const blocked = unfinishedRepeatFault(fault(), "run-1", { taskId: "T005", ends: 2, checks: ["format"], unresolved: ["run_probe is not available in this environment", long, "third"] });
+    expect(blocked.message).toContain('Its worker reported unresolved: "run_probe is not available in this environment"; "' + "x".repeat(300) + '...".');
+    expect(blocked.message).not.toContain("third");
+    expect(blocked.message).toContain("or behind what its worker reported unresolved");
+    expect(errorRecovery(blocked)?.summary).toContain("run_probe is not available in this environment");
+    const quiet = unfinishedRepeatFault(fault(), "run-1", { taskId: "T005", ends: 2, checks: ["format"], unresolved: [" "] });
+    expect(quiet.message).not.toContain("reported unresolved");
+  });
   test("without a repeat the fault stays as it was", () => {
     const plain = fault();
     expect(unfinishedRepeatFault(plain, "run-1", null)).toBe(plain);
@@ -242,6 +254,26 @@ describe("invalid-output repeat decision (#2520)", () => {
     expect(invalidOutputDecision({ refusals: [], diagnostic: "d1", inputs, noted: true, previous })).toBe("repeat");
     expect(invalidOutputDecision({ refusals: [], diagnostic: "d2", inputs, noted: true, previous })).toBe("progress");
     expect(invalidOutputDecision({ refusals: [], diagnostic: "d1", inputs, noted: false, previous })).toBe("first");
+  });
+  // #2587: the build is an input of the key; a key from before it, which has none, differs.
+  test("another build, or a key without one, is progress; the same build repeats", () => {
+    const built = { routing: 1, build: "0.5.0+1c434312e0b7" };
+    const previous = invalidOutputKey({ refusals: [], diagnostic: "d1", inputs: { routing: 1, build: "0.5.0+7d1e0a52c4b9" } });
+    const facts = { refusals: [], diagnostic: "d1", inputs: built, noted: true, previous };
+    expect(invalidOutputDecision(facts)).toBe("progress");
+    expect(invalidOutputBuildChange(facts)).toEqual({ from: "0.5.0+7d1e0a52c4b9", to: built.build });
+    const same = invalidOutputKey({ refusals: [], diagnostic: "d1", inputs: built });
+    expect(invalidOutputDecision({ ...facts, previous: same })).toBe("repeat");
+    expect(invalidOutputBuildChange({ ...facts, previous: same })).toBeNull();
+    // A key from before #2587 and the pre-key fallback both have no build.
+    const legacy = invalidOutputKey({ refusals, diagnostic: "d1", inputs });
+    expect(invalidOutputDecision({ refusals, diagnostic: "d1", inputs: built, noted: false, previous: legacy })).toBe("progress");
+    expect(invalidOutputDecision({ ...facts, previous: null })).toBe("progress");
+    expect(invalidOutputBuildChange({ ...facts, previous: null })).toEqual({ from: null, to: built.build });
+    // Another input changed as well: the build is not why the resume passes.
+    expect(invalidOutputBuildChange({ ...facts, inputs: { ...built, routing: 2 } })).toBeNull();
+    // A record from before #2587 replays as it was decided.
+    expect(invalidOutputDecision({ refusals: [], diagnostic: "d1", inputs, noted: true, previous: null })).toBe("repeat");
   });
   test("a journaled refusal reads back as its code and path", () => {
     expect(writeRefusalOf("Create target already exists: lib/src/template.dart")).toEqual({ code: "exists", path: "lib/src/template.dart" });

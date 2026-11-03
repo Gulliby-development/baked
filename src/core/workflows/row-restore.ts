@@ -5,9 +5,11 @@ import {
   measureFileRows,
   measureRows,
   type RowBlockDrift,
+  type RowMeasure,
   rowBlockDecision,
   rowBlockDrifts,
   rowHead,
+  rowNotation,
   rowPlaces,
 } from "./row-block-drift.js";
 import type { TaskGraph } from "./schemas.js";
@@ -148,6 +150,9 @@ export interface RowEditBreak {
  * of the request's block for the file (`suppliedRows`) that held before (`rowBlockDecision` of
  * `measureRows`, the one comparison) and drifts after. A file the request prescribes no rows for,
  * a new file, or rows that did not hold before are no break, so a task writing its rows is free.
+ * Nor is a row only a line in the request's own notation held (`rowNotation`, #2583): R84
+ * wrapsmith's `place_rows` wrote `run "cols" … => 0 "…" ""` rows into a Pester file, and every
+ * edit that rewrote one as an executable `Row` call was put back, so the run could not recover.
  * R82 tinyflate 82f19908 rev 51: after the host restored rows 7 and 8, T007's implementer edited
  * them to 306/259, then 312/283 bytes, and changed their expected outputs to its encoder's.
  */
@@ -161,9 +166,21 @@ export function rowEditBreaks(
   const plainPath = path.trim().replace(/^(?:\.\/)+/, "");
   const block = suppliedRows(request, [plainPath]).get(plainPath);
   if (!block) return null;
-  const driftedBefore = new Set(rowBlockDecision(measureRows(block.lines, before)));
-  const rows = rowBlockDecision(measureRows(block.lines, after)).filter(
-    (n) => !driftedBefore.has(n),
+  const beforeRows = measureFileRows(block.lines, before);
+  // A dropped copy of a row the request gives twice (#2704) is recorded, not guarded: no `copy`.
+  const guarded = (measures: RowMeasure[]) =>
+    rowBlockDecision(measures.map(({ copy: _, ...measure }) => measure));
+  const driftedBefore = new Set(guarded(measureRows(block.lines, before, beforeRows)));
+  // A row held only by a line in the request's notation (#2583: `run "cols" … => 0 "…" ""` that
+  // place_rows wrote into a Pester file) is no executable row: translating it is no break.
+  const places = rowPlaces(beforeRows);
+  const lines = before.split(/\r?\n/);
+  const notation = (n: number) => {
+    const at = places.get(n);
+    return at !== undefined && rowNotation(lines[at - 1] ?? "");
+  };
+  const rows = guarded(measureRows(block.lines, after)).filter(
+    (n) => !driftedBefore.has(n) && !notation(n),
   );
   if (!rows.length) return null;
   const cut = (line: string) => (line.length > 160 ? `${line.slice(0, 157)}...` : line);
@@ -195,11 +212,120 @@ export function respelledRunLine(text: string, row: string): string | null {
   return out === text ? null : out;
 }
 
-/** The prescribed `row` in place of the file line `text`: its indentation and separator kept. */
+/**
+ * A row line's top-level argument count (`{ "a", "b" }` 2, `row(x, [y, z])` 2) and the index just
+ * past the bracket that closes the row, or null when the row's bracket does not close on the line.
+ * Strings are skipped with their escapes. Besides a bracketed head (`{`, `row(`, `Arguments.of(`)
+ * it reads three forms (#2553): a struct literal after a bare name (Rust `Row { input: "a", events:
+ * &[] }`, its fields), an attribute row (Rust rstest `#[case("a", 0)]`, the inner call's arguments,
+ * the row ending past its `]`) and a command row (PowerShell `Row @('a') -Code 0`, its words).
+ */
+export function rowSpan(line: string): { count: number; end: number } | null {
+  const head = rowHead(line);
+  const at = line.indexOf(head);
+  if (head === "#[") {
+    const call = /^#\[[A-Za-z_]\w*\(/.exec(line.slice(at))?.[0];
+    if (!call) return bracketSpan(line, at + 1);
+    const inner = bracketSpan(line, at + call.length - 1);
+    return inner && line[inner.end] === "]" ? { count: inner.count, end: inner.end + 1 } : null;
+  }
+  if (/[([{]$/.test(head)) return bracketSpan(line, at + head.length - 1);
+  if (!/^[A-Za-z_][\w.:-]*$/.test(head)) return null;
+  const rest = line.slice(at + head.length);
+  const gap = /^\s+/.exec(rest)?.[0].length ?? 0;
+  if (!gap) return null;
+  const from = at + head.length + gap;
+  if (line[from] === "{") return bracketSpan(line, from);
+  return commandSpan(line, from);
+}
+
+/** The arguments of the bracket that opens at `open` and the index just past its close. */
+function bracketSpan(line: string, open: number): { count: number; end: number } | null {
+  let depth = 0;
+  let count = 0;
+  let content = false;
+  for (let i = open; i < line.length; i++) {
+    const ch = line[i] ?? "";
+    if (ch === '"' || ch === "'" || ch === "`") {
+      let j = i + 1;
+      while (j < line.length && line[j] !== ch) j += line[j] === "\\" ? 2 : 1;
+      if (j >= line.length) return null;
+      i = j;
+      if (depth === 1) content = true;
+      continue;
+    }
+    if ("([{".includes(ch)) {
+      depth++;
+      if (depth > 1) content = true;
+      continue;
+    }
+    if (")]}".includes(ch)) {
+      depth--;
+      if (depth === 0) return { count: count + (content ? 1 : 0), end: i + 1 };
+      continue;
+    }
+    if (depth === 1 && ch === ",") {
+      // A trailing comma before the close adds no argument.
+      if (content) count++;
+      content = false;
+    } else if (depth === 1 && ch.trim()) content = true;
+  }
+  return null;
+}
+
+/**
+ * The words of a command row from `from` (`@('cols', '3') -Code 0 -Out "a`n"`: 5) and the index
+ * just past the last one; a trailing `,` or `;` is the row's separator, not a word. A double-quoted
+ * word escapes with a backtick (PowerShell), a single-quoted one has no escape. Null when a string
+ * or bracket does not close on the line, or a closing bracket has no opening one.
+ */
+function commandSpan(line: string, from: number): { count: number; end: number } | null {
+  let count = 0;
+  let end = from;
+  let depth = 0;
+  let word = false;
+  for (let i = from; i < line.length; i++) {
+    const ch = line[i] ?? "";
+    if (depth === 0 && /\s/.test(ch)) {
+      word = false;
+      continue;
+    }
+    if (depth === 0 && (ch === ";" || ch === ",") && !line.slice(i + 1).trim()) break;
+    if (!word && depth === 0) {
+      word = true;
+      count++;
+    }
+    if (ch === '"' || ch === "'") {
+      let j = i + 1;
+      while (j < line.length && line[j] !== ch) j += ch === '"' && line[j] === "`" ? 2 : 1;
+      if (j >= line.length) return null;
+      i = j;
+    } else if ("([{".includes(ch)) depth++;
+    else if (")]}".includes(ch) && --depth < 0) return null;
+    if (depth === 0) end = i + 1;
+  }
+  return depth === 0 && count ? { count, end } : null;
+}
+
+/** The text after a row line's closing bracket (`,`, `;`, or `));` closing the list too). */
+export function rowTail(line: string): string | null {
+  const end = rowSpan(line)?.end;
+  return end === undefined ? null : line.slice(end).trim();
+}
+
+/**
+ * The prescribed `row` in place of the file line `text`: its indentation and separator kept, and
+ * the brackets that close the list on the row's line (a Java `Stream.of(` or a gtest `Values(`
+ * call's last row, `Arguments.of(...));`, #2553) when the prescribed row is one closed row.
+ */
 export function restoredLine(text: string, row: string): string {
   const eol = text.endsWith("\r") ? "\r" : "";
   const body = eol ? text.slice(0, -1) : text;
   const indent = /^\s*/.exec(body)?.[0] ?? "";
+  const closers = rowTail(body) ?? "";
+  const own = row.trim();
+  if (/^[)\]}]+[,;]?$/.test(closers) && rowSpan(own)?.end === own.length)
+    return `${indent}${own}${closers}${eol}`;
   const separator = /([,;])\s*$/.exec(body)?.[1] ?? "";
   const tail = separator && !row.trimEnd().endsWith(separator) ? separator : "";
   return `${indent}${row.trim()}${tail}${eol}`;
@@ -237,7 +363,12 @@ export function rowRestorePlan(
       return { row, line: null, oneLine: false, sameHead: false, held: false };
     const oneLine = !CONTINUES.test(lines[line] ?? "");
     const head = rowHead(text);
-    const sameHead = head !== "" && head === rowHead(prescribed);
+    // The request's notation is restored only over a line in that notation, never over code
+    // that shares its head (#2583: a Pester helper named `run`).
+    const sameHead =
+      head !== "" &&
+      head === rowHead(prescribed) &&
+      (!rowNotation(prescribed) || rowNotation(text));
     const restored = restoredLine(text, prescribed);
     const after = withLines(lines, new Map([[line, restored]]));
     const afterRows = measureFileRows(rows, after);

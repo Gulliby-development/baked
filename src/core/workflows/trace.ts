@@ -1,5 +1,14 @@
 import { Database } from "bun:sqlite";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  copyFileSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { DEFAULT_CONFIG } from "../../config/index.js";
@@ -18,6 +27,7 @@ import {
   firstByteDeadline,
   providerFirstByteMs,
 } from "../llm/provider-health.js";
+import { streamOutputDecision } from "../llm/providers/output-limit.js";
 import { canonical, hashBytes, hashJson } from "../specs/hash.js";
 import { workspacePath } from "../specs/validate.js";
 import { replayUnselectedTests } from "../verification/check-runner.js";
@@ -132,12 +142,18 @@ import {
   familyDecision,
   familyKey,
   findingChain,
+  type RewriteRepeatRule,
+  rewriteRepeatDecision,
+  rewritesSymbol,
+  withRewrites,
 } from "./finding-chain.js";
+import { withHistorySnapshot } from "./history-snapshot.js";
 import {
   HOST_APPLY_KIND,
   type HostApplyRule,
   hostApplyDecision,
   hostApplyRecords,
+  hostApplyVerdict,
 } from "./host-apply.js";
 import type { initiativePriceSamples } from "./initiatives/forecast.js";
 import {
@@ -163,6 +179,7 @@ import {
   timeShortfall,
 } from "./initiatives/service.js";
 import {
+  type PlanChargeExpected,
   type PlanShareDecision,
   type PlanShareInputs,
   planShareDecision,
@@ -184,6 +201,7 @@ import {
   misquoteFixDecision,
 } from "./misquote-fix.js";
 import { recordingOf } from "./model-recording.js";
+import { PITFALLS_KIND } from "./pitfall-notes.js";
 import { type PlanCostRate, planCostOf, plannedRunTokens } from "./plan-cost.js";
 import {
   REPEAT_KIND,
@@ -244,6 +262,7 @@ import {
   rowVolumePrice,
   runPace,
   type SizingReport,
+  suppliedRows,
 } from "./sizing.js";
 import {
   SOURCE_DEFECT_DIR,
@@ -303,6 +322,8 @@ const KEPT_ARTIFACTS = new Set([
   CHAIN_KIND,
   // Each failing corrective's required checks, normalized output stood in (#1996).
   REPEAT_KIND,
+  // Each implementer step's pitfalls notes and run traps, text stood in (#2598).
+  PITFALLS_KIND,
   // Each spec conflict's request decision: checked sides and re-audit verdicts, no quotes (#2016).
   REQUEST_CONFLICT_KIND,
   // Each planned task's host apply decision: its writes' supplied blocks and apply checks (#2023).
@@ -917,6 +938,10 @@ export interface RunReplay {
   firstByte: FirstByteBoundary[];
   /** Calls the current deadline would end as an outage that got their answer in the recording. */
   newFirstByteStops: number;
+  /** Each step a stream guard watched against the current rule (`stream_output_limit`, #2660). */
+  streamOutputs: StreamOutputBoundary[];
+  /** Steps the current rule stops (or records a would-stop for) that the recording passed. */
+  newStreamOutputStops: number;
   /** Each planned test task of the run's sizing reports against the current split rule (#1789). */
   testSplits: TestSplitBoundary[];
   /** Test tasks the current rule splits that the recorded sizing kept whole. */
@@ -1182,7 +1207,8 @@ export interface ActiveTimeBoundary {
   replayed: { tokensPerMinute: number; basis: PaceBasis; after: number };
   /**
    * In shadow (#2414): the cap at the clean pace, from the rates the report recorded beside its
-   * pace (`cleanPace`), else from the trace's runs that completed before it (`cleanRates`).
+   * pace (`cleanPace`) with their `stallMs`, else (none recorded, or recorded before #2424 with the
+   * whole wait left out) from the trace's runs that completed before it (`cleanRates`).
    */
   clean: CleanSizingShadow | null;
 }
@@ -1274,10 +1300,16 @@ export function replayActiveTimes(
     if (!history) return [];
     const chosen = pace(history, time.ownRates ?? initiativeRatesAt(store, runId, at));
     const recordedClean = (report as { cleanPace?: CleanSizingShadow }).cleanPace;
+    // A report before #2424 recorded rates without the whole wait (no `stallMs`): its clean pace is
+    // taken again from the trace's runs, so the replay shows the rule as it is now.
     const clean = cleanSizingShadow(
       report,
-      recordedClean
-        ? { rates: recordedClean.rates, silentMs: recordedClean.silentMs }
+      recordedClean?.stallMs !== undefined
+        ? {
+            rates: recordedClean.rates,
+            silentMs: recordedClean.silentMs,
+            stallMs: recordedClean.stallMs,
+          }
         : cleanRates(store, initiativeRunsAt(store, runId, at)),
     );
     const after = activeTimeLimit({
@@ -2050,7 +2082,7 @@ export function replayHostApply(
   decide: HostApplyRule = hostApplyDecision,
 ): HostApplyBoundary[] {
   return hostApplyRecords(store, runId).map((record) => {
-    const verdict = decide(record.writes ?? []);
+    const verdict = hostApplyVerdict(record.writes ?? [], record.suppliedConflict, decide);
     return {
       taskId: record.taskId,
       recorded: record.wouldApply,
@@ -2297,10 +2329,12 @@ export function newRepeatStops(boundaries: readonly RepeatedFailureBoundary[]): 
 export interface FindingChainBoundary {
   /**
    * The corrective task of a rewrite decision, the battery record's path, or a probed case's.
-   * `crash` is a battery or sibling-probe case's shadow crash decision (#2136).
+   * `crash` is a battery or sibling-probe case's shadow crash decision (#2136). `rewrite_repeat`
+   * is a symbol rewrite's count of earlier rewrites (#2568): `none`, `probe` or `ask`, keyed
+   * `<task>#rewrites`.
    */
   key: string;
-  kind: "rewrite" | "battery" | "family" | "crash" | "site";
+  kind: "rewrite" | "rewrite_repeat" | "battery" | "family" | "crash" | "site";
   recorded: string;
   replayed: string;
 }
@@ -2315,9 +2349,15 @@ export interface FindingChainBoundary {
 export function replayFindingChains(
   store: WorkflowStore,
   runId: string,
-  rules: { chain?: ChainRule; battery?: BatteryRule; family?: FamilyRule } = {},
+  rules: {
+    chain?: ChainRule;
+    battery?: BatteryRule;
+    family?: FamilyRule;
+    rewriteRepeat?: RewriteRepeatRule;
+  } = {},
 ): FindingChainBoundary[] {
   const decideChain = rules.chain ?? chainRewriteDecision;
+  const decideRepeat = rules.rewriteRepeat ?? rewriteRepeatDecision;
   const decideBattery = rules.battery ?? batteryDecision;
   const decideFamily = rules.family ?? familyDecision;
   return store.artifacts(runId).flatMap((artifact): FindingChainBoundary[] => {
@@ -2332,6 +2372,17 @@ export function replayFindingChains(
             recorded: record.decision,
             replayed: decideChain(record.length, record.policy),
           },
+          // A symbol rewrite's count of earlier rewrites (#2568); records before it have none.
+          ...(rewritesSymbol(record) && record.rewrites !== undefined
+            ? [
+                {
+                  key: `${record.taskId}#rewrites`,
+                  kind: "rewrite_repeat" as const,
+                  recorded: record.repeat ?? "none",
+                  replayed: decideRepeat(record.rewrites),
+                },
+              ]
+            : []),
         ];
       }
       // A case's shadow crash decision (#2136), on its recorded output's tail and the chain's file.
@@ -2415,6 +2466,13 @@ export interface ChainEscalation {
   decision: "rewrite" | "patch";
   /** The findings whose repros a rewrite's battery holds, oldest first; empty for a patch. */
   battery: string[];
+  /**
+   * The earlier rewrites of the step's symbol or family (#2568): steps before it whose finding
+   * the run gave a corrective and which the policy rewrote.
+   */
+  rewrites: number;
+  /** What the count decides for a rewrite: `probe` at the second, `ask` after two; else `none`. */
+  repeat: "none" | "probe" | "ask";
 }
 
 export interface ChainEscalationReplay {
@@ -2473,6 +2531,8 @@ export function replayChainEscalation(
      * that declares families would have said on a run recorded before the field existed.
      */
     families?: Readonly<Record<string, string | null>>;
+    /** Decides each step's count of earlier rewrites (#2568); the current rule by default. */
+    rewriteRepeat?: RewriteRepeatRule;
   } = {},
 ): ChainEscalationReplay {
   const policy = options.policy ?? "on";
@@ -2495,19 +2555,26 @@ export function replayChainEscalation(
   }
   const steps: ChainEscalation[] = [];
   const known = new Map<string, ChainFinding>();
+  // The rewrites decided so far, for each step's count of earlier rewrites (#2568).
+  const rewrites: ChainRecord[] = [];
   for (const row of rows) {
     const finding = all.get(row.id);
     if (!finding || missing.has(row.id)) continue;
     known.set(row.id, finding);
     const chain = findingChain(known, finding);
     const decision = decide(chain.length, policy);
-    const battery =
-      decision === "rewrite" && chain.length >= CHAIN_REWRITE_AT
-        ? batteryOf(
-            known,
+    const record =
+      chain.length >= CHAIN_REWRITE_AT
+        ? withRewrites(
             chainRecord(row.repair_task_id ?? "", finding, chain, policy, decide),
-          ).map((f) => f.id)
-        : [];
+            rewrites,
+            options.rewriteRepeat,
+          )
+        : null;
+    const battery =
+      decision === "rewrite" && record ? batteryOf(known, record).map((f) => f.id) : [];
+    // Only a finding the run gave a corrective counts as a rewrite for the later ones.
+    if (record && rewritesSymbol(record) && row.repair_task_id) rewrites.push(record);
     steps.push({
       findingId: row.id,
       taskId: row.repair_task_id,
@@ -2515,6 +2582,8 @@ export function replayChainEscalation(
       family: finding.family,
       decision,
       battery,
+      rewrites: record?.rewrites ?? 0,
+      repeat: record?.repeat ?? "none",
     });
   }
   return { runId, steps, missingBodies: [...missing] };
@@ -2809,7 +2878,8 @@ export function replayFirstBytes(
   const boundaries = new Map<string, FirstByteBoundary[]>(runIds.map((runId) => [runId, []]));
   for (const { runId, attemptId, model, call, index, estimated } of calls) {
     // A refused call (a 429, say) answered before any deadline; it is the retry ladder's, not this.
-    if (call.status !== undefined) continue;
+    // So is one that ended in a provider error, such as a model at capacity (#2820).
+    if (call.status !== undefined || call.failure === "error") continue;
     const limitMs =
       adaptive && call.limitMs !== undefined
         ? adaptive(history, providerFirstByteMs(call.provider, call), model, call)
@@ -2830,6 +2900,67 @@ export function replayFirstBytes(
       recorded: call.firstByteMs === null ? "stop" : "pass",
       replayed: replayed ? "stop" : "pass",
     });
+  }
+  return boundaries;
+}
+
+/** The stream guard's rule (#2660); `streamOutputDecision` unless a test passes another. */
+export type StreamOutputRule = typeof streamOutputDecision;
+
+/** A step a stream guard watched (`outputGuard` in its usage record), against the current rule. */
+export interface StreamOutputBoundary {
+  attemptId: string;
+  /** The step's index in its attempt. */
+  step: number;
+  mode: string;
+  maxOutputTokens: number;
+  streamedChars: number;
+  /** `stop` for a recorded `would_stop` or `stopped`. */
+  recorded: "pass" | "stop";
+  replayed: "pass" | "stop";
+}
+
+/**
+ * Every step of a run whose provider guarded its stream (`steps[].outputGuard` in
+ * `attempts/*\/usage.json`, Codex app-server, #2660), decided again from its limit and streamed
+ * characters. The current factor is the rule's, not the recorded one, so a change of the factor
+ * shows here. Traces before #2660 record none.
+ */
+export function replayStreamOutputs(
+  store: WorkflowStore,
+  runId: string,
+  rule: StreamOutputRule = streamOutputDecision,
+): StreamOutputBoundary[] {
+  const attempts = store.connection
+    .query("SELECT id FROM attempts WHERE run_id=? ORDER BY started_at, rowid")
+    .all(runId) as { id: string }[];
+  const boundaries: StreamOutputBoundary[] = [];
+  for (const attempt of attempts) {
+    const artifact = store.latestArtifact(runId, `attempts/${attempt.id}/usage.json`);
+    if (!artifact) continue;
+    let usage: Pick<AttemptUsageRecord, "steps">;
+    try {
+      usage = JSON.parse(store.readArtifact(runId, artifact.id)) as typeof usage;
+    } catch {
+      continue;
+    }
+    for (const [step, entry] of (usage.steps ?? []).entries()) {
+      const guard = entry.outputGuard;
+      if (!guard || typeof guard.maxOutputTokens !== "number") continue;
+      const { over } = rule({
+        maxOutputTokens: guard.maxOutputTokens,
+        streamedChars: guard.streamedChars,
+      });
+      boundaries.push({
+        attemptId: attempt.id,
+        step,
+        mode: guard.mode,
+        maxOutputTokens: guard.maxOutputTokens,
+        streamedChars: guard.streamedChars,
+        recorded: guard.decision === "pass" ? "pass" : "stop",
+        replayed: over ? "stop" : "pass",
+      });
+    }
   }
   return boundaries;
 }
@@ -2914,7 +3045,10 @@ export function replayStallLadder(
     }
     const last = usage.calls?.at(-1);
     // A stall, or a turn that finished with no usable answer (#1957), which climbs the same way.
-    const stalled = !!last && last.firstByteMs === null && last.status === undefined;
+    // A call that ended in a provider error (the model at capacity) is the retry's, not a stall
+    // (#2820); a call recorded before its failure kind was is read by its timing alone.
+    const stalled =
+      !!last && last.firstByteMs === null && last.status === undefined && last.failure !== "error";
     if (attempt.status !== "failed" || (!stalled && usage.lostAnswer === undefined)) continue;
     const entry =
       (stage ? routing.stages?.[stage] : undefined) ??
@@ -3821,12 +3955,25 @@ export function replayInitiativeStarts(
     moments?: number[];
     /** Sets the initiative's `sizing.recencyHalfLife`, to backtest the weighting (#2150). */
     recencyHalfLife?: number;
+    /** Sets the initiative's `sizing.fewPathPrice`, to backtest it (#2640). */
+    fewPathPrice?: boolean;
     /**
      * Sets entries of the initiative's base policy `stopModes`, to replay a round at the mode it
      * ran in: a round before #2245 held open runs at their limits (`initiative-plan-charge` in
      * shadow), and a replay without this entry takes the current default.
      */
     stopModes?: RunPolicy["stopModes"];
+    /**
+     * Sets `workflows.planChargeExpected` for the replay (#2534): `on` holds the open runs'
+     * unmeasured plans at their expected need, to backtest it against the default high end.
+     */
+    planChargeExpected?: PlanChargeExpected;
+    /**
+     * Computes the view and estimate only at each initiative's first replayed start, for a backtest
+     * that reads `starts[0]` alone (#2753). Every later start is still rewound through, so the
+     * first one reads the state a full replay gives it; the rest of `starts` is left out.
+     */
+    firstStartOnly?: boolean;
   } = {},
 ): Omit<
   InitiativeReplay,
@@ -3858,7 +4005,10 @@ export function replayInitiativeStarts(
       budgetAtStart: options.budgetAtStart !== false,
       moments: options.moments ?? [],
       ...(options.recencyHalfLife ? { recencyHalfLife: options.recencyHalfLife } : {}),
+      ...(options.fewPathPrice ? { fewPathPrice: true } : {}),
       ...(options.stopModes ? { stopModes: options.stopModes } : {}),
+      ...(options.planChargeExpected ? { planChargeExpected: options.planChargeExpected } : {}),
+      firstStartOnly: options.firstStartOnly === true,
     }),
   );
 }
@@ -3916,6 +4066,49 @@ function removeRuns(db: Database, tables: string[], runIds: Iterable<string>): v
   }
 }
 
+/**
+ * Restores the row blocks of an initiative's request in a trace (#2640): a trace keeps a stand-in
+ * for the request text, so `hostRowCases` would read no rows there. Each prescribed row file the
+ * trace's runs recorded at their checks (`row-blocks/<file>.json`, the rows `suppliedRows` read
+ * from the request) gets a block of that many placeholder rows, headed as a request heads one,
+ * unless the stand-in already gives the file rows. A file no run reached checks with has no
+ * record and stays unpriced as rows, so a replay never discounts more than the run had.
+ */
+export function restoreRowBlocks(db: Database, initiativeId: string): void {
+  const row = db.query("SELECT prompt FROM initiatives WHERE id=?").get(initiativeId) as {
+    prompt: string;
+  } | null;
+  if (!row) return;
+  const counts = new Map<string, number>();
+  for (const artifact of db
+    .query(
+      "SELECT a.inline_content AS content FROM artifacts a JOIN initiative_runs l ON l.run_id=a.run_id WHERE l.initiative_id=? AND a.logical_path LIKE 'row-blocks/%' ORDER BY a.created_at",
+    )
+    .all(initiativeId) as { content: string | null }[]) {
+    try {
+      const record = JSON.parse(artifact.content ?? "") as { path?: unknown; rows?: unknown };
+      if (typeof record.path === "string" && Array.isArray(record.rows))
+        counts.set(record.path, record.rows.length);
+    } catch {}
+  }
+  const given = suppliedRows(row.prompt, [...counts.keys()]);
+  const blocks = [...counts]
+    .filter(([path, rows]) => rows > 0 && !given.has(path))
+    .map(([path, rows]) =>
+      [
+        "```",
+        `Rows in ${path} (${rows} rows)`,
+        ...Array.from({ length: rows }, (_, i) => `row-${i + 1}`),
+        "```",
+      ].join("\n"),
+    );
+  if (!blocks.length) return;
+  db.run("UPDATE initiatives SET prompt=? WHERE id=?", [
+    [row.prompt, "Row blocks restored from the trace's records.", ...blocks].join("\n\n"),
+    initiativeId,
+  ]);
+}
+
 function replayStarts(
   path: string,
   initiativeId: string,
@@ -3926,12 +4119,18 @@ function replayStarts(
     budgetAtStart,
     moments,
     recencyHalfLife,
+    fewPathPrice,
     stopModes,
+    planChargeExpected,
+    firstStartOnly,
   }: {
     budgetAtStart: boolean;
     moments: number[];
     recencyHalfLife?: number;
+    fewPathPrice?: boolean;
     stopModes?: RunPolicy["stopModes"];
+    planChargeExpected?: PlanChargeExpected;
+    firstStartOnly: boolean;
   },
 ): Omit<
   InitiativeReplay,
@@ -3953,15 +4152,27 @@ function replayStarts(
       .get(initiativeId) as { settings_json: string; decompose_run_id: string | null };
     const settings = JSON.parse(row.settings_json) as {
       basePolicy?: {
-        sizing?: { historyStores?: string[]; recencyHalfLife?: number };
+        sizing?: { historyStores?: string[]; recencyHalfLife?: number; fewPathPrice?: boolean };
         stopModes?: RunPolicy["stopModes"];
+        rowFileWrite?: RunPolicy["rowFileWrite"];
       };
     };
+    // The estimate prices the rows the host writes from the request's row blocks (#2640), and a
+    // trace keeps no request text: the blocks are restored from the trace's own records first.
+    if (settings.basePolicy?.rowFileWrite === "on") restoreRowBlocks(db, initiativeId);
     const missingHistory: string[] = [];
-    if (recencyHalfLife || stopModes) {
+    if (recencyHalfLife || fewPathPrice || stopModes) {
       settings.basePolicy = {
         ...settings.basePolicy,
-        ...(recencyHalfLife ? { sizing: { ...settings.basePolicy?.sizing, recencyHalfLife } } : {}),
+        ...(recencyHalfLife || fewPathPrice
+          ? {
+              sizing: {
+                ...settings.basePolicy?.sizing,
+                ...(recencyHalfLife ? { recencyHalfLife } : {}),
+                ...(fewPathPrice ? { fewPathPrice } : {}),
+              },
+            }
+          : {}),
         ...(stopModes ? { stopModes: { ...settings.basePolicy?.stopModes, ...stopModes } } : {}),
       };
       db.run("UPDATE initiatives SET settings_json=? WHERE id=?", [
@@ -4027,7 +4238,10 @@ function replayStarts(
       ...links,
       ...moments.map((at) => ({ feature_id: "", run_id: "", created_at: at })),
     ].sort((a, b) => a.created_at - b.created_at);
-    for (const link of points.reverse()) {
+    points.reverse();
+    // The last boundary the loop reaches: the earliest one after the latest split revision.
+    const first = points.findLast((p) => revisedAt === null || revisedAt < p.created_at);
+    for (const link of points) {
       const t = link.created_at;
       if (revisedAt !== null && revisedAt >= t) break;
       db.transaction(() => {
@@ -4111,77 +4325,94 @@ function replayStarts(
         ).map((r) => r.id);
         if (later.length) hdb.transaction(() => removeRuns(hdb, runTables(hdb), later))();
       }
+      if (firstStartOnly && link !== first) continue;
       const service = new NativeWorkflowService(
         workspace,
-        { ...DEFAULT_CONFIG, ...routingAt(db, t) },
+        {
+          ...DEFAULT_CONFIG,
+          ...routingAt(db, t),
+          // The replay reads only this setting of `workflows`; the rest stays unset, as before.
+          ...(planChargeExpected
+            ? {
+                workflows: {
+                  ...DEFAULT_CONFIG.workflows,
+                  planChargeExpected,
+                } as AppConfig["workflows"],
+              }
+            : {}),
+        },
         NO_AGENTS,
         true,
       );
       try {
-        const initiatives = new InitiativeService(service);
-        if (priceSamples) initiatives.priceSamples = priceSamples;
-        const view = initiatives.view(initiativeId);
-        const feature = view.features.find((f) => f.id === link.feature_id);
-        const cost = view.budget.cost;
-        const whole = initiatives.estimate(initiativeId);
-        const short = feature ? dollarShortfall(view, feature) : null;
-        const park = feature ? dollarCapPark(view, feature) : null;
-        const timeShort = feature ? timeShortfall(view, feature) : null;
-        const estimate = (whole?.features ?? []).map((f) => ({
-          featureId: f.featureId,
-          low: f.tokens.low,
-          high: f.tokens.high,
-        }));
-        starts.unshift({
-          featureId: link.feature_id,
-          at: t,
-          accepted: view.features.filter((f) => f.state === "accepted").length,
-          features: view.features.length,
-          spentUsd: cost.spentUsd,
-          forecastUsd: cost.forecastUsd,
-          ceilingUsd: cost.ceilingUsd,
-          advice: cost.advice ?? null,
-          forecastNotice: cost.forecastNotice,
-          replayed: feature && gate(view, feature) ? "park" : "pass",
-          estimate,
-          tokens: whole ? { ...whole.tokens, expected: whole.expectedTokens } : null,
-          pool: view.budget.pool && {
-            limitTokens: view.budget.pool.limitTokens,
-            usedTokens: view.budget.pool.usedTokens,
-            forecastTokens: view.budget.pool.forecastTokens,
-            advice: view.budget.pool.advice,
-            suggestedTokens: view.budget.pool.suggestedTokens,
-            notice: view.budget.pool.notice,
-          },
-          planCharge: replayPlanCharge(view, feature, gate),
-          shareWouldStop: short
-            ? {
-                summary: short,
-                spareUsd: shareSpareUsd(view, link.feature_id),
-                lowUsd: feature?.needUsd?.low ?? null,
-                measuredFeatures: cost.measuredFeatures,
-                finalUsd: finalUsd > 0 ? Math.round(finalUsd * 100) / 100 : null,
-              }
-            : null,
-          capWouldStop: park
-            ? {
-                summary: park.summary,
-                leftUsd: park.leftUsd,
-                lowUsd: park.lowUsd,
-                openNeedUsd: park.openNeedUsd,
-                suggestedUsd: park.suggestedUsd,
-                finalUsd: finalUsd > 0 ? Math.round(finalUsd * 100) / 100 : null,
-              }
-            : null,
-          timeWouldStop: timeShort
-            ? {
-                summary: timeShort.summary,
-                availableMs: timeShort.availableMs,
-                lowMs: timeShort.needMs.low,
-                tokensPerMinute: timeShort.tokensPerMinute,
-                suggestedTimeMs: timeShort.suggestedTimeMs,
-              }
-            : null,
+        // The history stores do not change until the next rewind: each is read once for the
+        // view, the estimate and the gates of this start.
+        withHistorySnapshot(() => {
+          const initiatives = new InitiativeService(service);
+          if (priceSamples) initiatives.priceSamples = priceSamples;
+          const view = initiatives.view(initiativeId);
+          const feature = view.features.find((f) => f.id === link.feature_id);
+          const cost = view.budget.cost;
+          const whole = initiatives.estimate(initiativeId, view);
+          const short = feature ? dollarShortfall(view, feature) : null;
+          const park = feature ? dollarCapPark(view, feature) : null;
+          const timeShort = feature ? timeShortfall(view, feature) : null;
+          const estimate = (whole?.features ?? []).map((f) => ({
+            featureId: f.featureId,
+            low: f.tokens.low,
+            high: f.tokens.high,
+          }));
+          starts.unshift({
+            featureId: link.feature_id,
+            at: t,
+            accepted: view.features.filter((f) => f.state === "accepted").length,
+            features: view.features.length,
+            spentUsd: cost.spentUsd,
+            forecastUsd: cost.forecastUsd,
+            ceilingUsd: cost.ceilingUsd,
+            advice: cost.advice ?? null,
+            forecastNotice: cost.forecastNotice,
+            replayed: feature && gate(view, feature) ? "park" : "pass",
+            estimate,
+            tokens: whole ? { ...whole.tokens, expected: whole.expectedTokens } : null,
+            pool: view.budget.pool && {
+              limitTokens: view.budget.pool.limitTokens,
+              usedTokens: view.budget.pool.usedTokens,
+              forecastTokens: view.budget.pool.forecastTokens,
+              advice: view.budget.pool.advice,
+              suggestedTokens: view.budget.pool.suggestedTokens,
+              notice: view.budget.pool.notice,
+            },
+            planCharge: replayPlanCharge(view, feature, gate),
+            shareWouldStop: short
+              ? {
+                  summary: short,
+                  spareUsd: shareSpareUsd(view, link.feature_id),
+                  lowUsd: feature?.needUsd?.low ?? null,
+                  measuredFeatures: cost.measuredFeatures,
+                  finalUsd: finalUsd > 0 ? Math.round(finalUsd * 100) / 100 : null,
+                }
+              : null,
+            capWouldStop: park
+              ? {
+                  summary: park.summary,
+                  leftUsd: park.leftUsd,
+                  lowUsd: park.lowUsd,
+                  openNeedUsd: park.openNeedUsd,
+                  suggestedUsd: park.suggestedUsd,
+                  finalUsd: finalUsd > 0 ? Math.round(finalUsd * 100) / 100 : null,
+                }
+              : null,
+            timeWouldStop: timeShort
+              ? {
+                  summary: timeShort.summary,
+                  availableMs: timeShort.availableMs,
+                  lowMs: timeShort.needMs.low,
+                  tokensPerMinute: timeShort.tokensPerMinute,
+                  suggestedTimeMs: timeShort.suggestedTimeMs,
+                }
+              : null,
+          });
         });
       } finally {
         service.close();
@@ -4498,6 +4729,44 @@ interface RevisionRecord {
   next: Record<string, unknown>;
 }
 
+/**
+ * Each trace decompressed and migrated once per process, keyed by its path, size and time (#2766).
+ * A replay opens a trace many times (each initiative's rewound starts, the run replay, the plan
+ * approvals, and every history store of its round for each of them), and gunzipping a large trace
+ * and migrating it again on each open was most of a corpus test's time: R71 xmlvet took 33.5 s of
+ * its 30 s limit on a macOS runner. `openTrace` copies the prepared file, so every caller still
+ * gets its own database to rewind.
+ */
+const PREPARED = new Map<string, { key: string; file: string }>();
+let preparedDir: string | null = null;
+let preparedCount = 0;
+
+function preparedTrace(path: string): string {
+  const stat = statSync(path);
+  const key = `${stat.size}:${stat.mtimeMs}`;
+  const known = PREPARED.get(path);
+  if (known?.key === key && existsSync(known.file)) return known.file;
+  if (!preparedDir || !existsSync(preparedDir)) {
+    const dir = mkdtempSync(join(tmpdir(), "baked-trace-cache-"));
+    preparedDir = dir;
+    process.once("exit", () => rmSync(dir, { recursive: true, force: true }));
+  }
+  const workspace = join(preparedDir, String(preparedCount++));
+  mkdirSync(join(workspace, ".baked"), { recursive: true });
+  const bytes = readFileSync(path);
+  const file = join(workspace, ".baked", "workflows.sqlite");
+  writeFileSync(file, path.endsWith(".gz") ? Bun.gunzipSync(bytes) : bytes);
+  // Opening it once applies the migrations; the checkpoint folds the WAL back into the file.
+  const store = new WorkflowStore(workspace);
+  try {
+    store.connection.exec("PRAGMA wal_checkpoint(TRUNCATE)");
+  } finally {
+    store.close();
+  }
+  PREPARED.set(path, { key, file });
+  return file;
+}
+
 /** Opens a trace in a scratch workspace; `dispose` removes it. */
 export function openTrace(path: string): {
   store: WorkflowStore;
@@ -4506,9 +4775,7 @@ export function openTrace(path: string): {
 } {
   const workspace = mkdtempSync(join(tmpdir(), "baked-replay-"));
   mkdirSync(join(workspace, ".baked"), { recursive: true });
-  const bytes = readFileSync(path);
-  const raw = path.endsWith(".gz") ? Bun.gunzipSync(bytes) : bytes;
-  writeFileSync(join(workspace, ".baked", "workflows.sqlite"), raw);
+  copyFileSync(preparedTrace(path), join(workspace, ".baked", "workflows.sqlite"));
   const store = new WorkflowStore(workspace);
   return {
     store,
@@ -4744,6 +5011,8 @@ function replayRun(
   RunReplay,
   | "firstByte"
   | "newFirstByteStops"
+  | "streamOutputs"
+  | "newStreamOutputStops"
   | "testSplits"
   | "newTestSplits"
   | "stallLadder"
@@ -5005,6 +5274,8 @@ export function replayTrace(
   path: string,
   options: {
     firstByteLimit?: FirstByteLimit;
+    /** Decides each guarded step's streamed output again (#2660); the current rule by default. */
+    streamOutputRule?: StreamOutputRule;
     /** The adaptive deadline's rule (#2041); null replays every call on `firstByteLimit`. */
     adaptiveFirstByte?: AdaptiveFirstByteRule | null;
     shareGate?: ShareGate;
@@ -5017,6 +5288,8 @@ export function replayTrace(
     chainRule?: ChainRule;
     batteryRule?: BatteryRule;
     familyRule?: FamilyRule;
+    /** Decides each chain record's count of earlier rewrites again (#2568). */
+    rewriteRepeatRule?: RewriteRepeatRule;
     repeatRule?: RepeatRule;
     requestConflictRule?: RequestConflictRule;
     hostApplyRule?: HostApplyRule;
@@ -5073,6 +5346,10 @@ export function replayTrace(
       options.firstByteLimit,
       options.adaptiveFirstByte === undefined ? adaptiveDeadline : options.adaptiveFirstByte,
     );
+    // Usage records too: the forecast replay removes later attempts' artifacts.
+    const guarded = new Map(
+      runIds.map((runId) => [runId, replayStreamOutputs(store, runId, options.streamOutputRule)]),
+    );
     const splits = new Map(
       runIds.map((runId) => [runId, replayTestSplits(store, runId, options.testSplit)]),
     );
@@ -5089,6 +5366,7 @@ export function replayTrace(
           ...(options.chainRule ? { chain: options.chainRule } : {}),
           ...(options.batteryRule ? { battery: options.batteryRule } : {}),
           ...(options.familyRule ? { family: options.familyRule } : {}),
+          ...(options.rewriteRepeatRule ? { rewriteRepeat: options.rewriteRepeatRule } : {}),
         }),
       ]),
     );
@@ -5191,6 +5469,7 @@ export function replayTrace(
     const runs: RunReplay[] = [];
     for (const runId of runIds) {
       const firstByte = timings.get(runId) ?? [];
+      const streamOutputs = guarded.get(runId) ?? [];
       const replay = replayRun(store, runId, options.callRate) ?? {
         runId,
         featureId: store.run(runId).feature_id,
@@ -5232,6 +5511,7 @@ export function replayTrace(
       if (
         !replay.boundaries.length &&
         !firstByte.length &&
+        !streamOutputs.length &&
         !testSplits.length &&
         !stallLadder.length &&
         !policyRefusals.length &&
@@ -5265,6 +5545,10 @@ export function replayTrace(
         firstByte,
         newFirstByteStops: firstByte.filter((b) => b.replayed === "stop" && b.recorded === "pass")
           .length,
+        streamOutputs,
+        newStreamOutputStops: streamOutputs.filter(
+          (b) => b.replayed === "stop" && b.recorded === "pass",
+        ).length,
         testSplits,
         newTestSplits: testSplits.filter((b) => b.replayed === "split" && b.recorded === "whole")
           .length,

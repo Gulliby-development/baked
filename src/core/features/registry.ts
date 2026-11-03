@@ -1380,6 +1380,18 @@ export const FEATURES: readonly Feature[] = [
     desktop: ["settings/chat: Code quality page"],
   },
   {
+    id: "language-pitfalls",
+    group: "Workflow runs",
+    title:
+      "Tell each implementer its language's pitfalls and the first error line of the run's other tasks' failing checks",
+    tui: ["/code-quality"],
+    cli: notNeeded(
+      "quality.languagePitfalls in config.json; the record shows as pitfalls/tasks/<task>.json",
+    ),
+    api: ["/v1/settings: code-quality page"],
+    desktop: ["settings/chat: Code quality page"],
+  },
+  {
     id: "row-run-route",
     group: "Workflow runs",
     title:
@@ -1392,12 +1404,24 @@ export const FEATURES: readonly Feature[] = [
     desktop: ["settings/chat: Code quality page"],
   },
   {
-    id: "row-file-write",
+    id: "conflict-row-reply",
     group: "Workflow runs",
-    title: "Write a prescribed test row file on the host from its shape, without a session",
+    title: "Answer a spec conflict about a prescribed-row test file with the row diff",
     tui: ["/code-quality"],
     cli: notNeeded(
-      "quality.rowFileWrite in config.json; the write shows as the task's host-apply record and a host edit of the test file",
+      "quality.conflictRowReply in config.json; the reply shows as the task's settled conflict",
+    ),
+    api: ["/v1/settings: code-quality page"],
+    desktop: ["settings/chat: Code quality page"],
+  },
+  {
+    id: "row-file-write",
+    group: "Workflow runs",
+    title:
+      "Write a prescribed test row file on the host from its shape, without a session, or place its rows from the request with place_rows",
+    tui: ["/code-quality"],
+    cli: notNeeded(
+      "quality.rowFileWrite in config.json; the write shows as the task's host-apply record and a host edit of the test file, a placed row as the session's place_rows call",
     ),
     api: ["/v1/settings: code-quality page"],
     desktop: ["settings/chat: Code quality page"],
@@ -1451,6 +1475,20 @@ export const FEATURES: readonly Feature[] = [
     tui: ["/code-quality: Library docs source"],
     cli: ["baked workflow doctor: libraryDocs in config.json"],
     api: ["/v1/settings: libraryDocs, with its check"],
+    desktop: ["settings/chat: Code quality page"],
+  },
+  {
+    id: "worktree-root",
+    group: "Workflow runs",
+    title: "Folder for run worktrees, and a probe for path-length failures in them",
+    tui: ["/code-quality: Worktree folder"],
+    cli: [
+      "baked workflow run: --worktree-root DIR, or workflows.worktreeRoot in config.json",
+      "baked workflow quick: --worktree-root DIR",
+      "baked workflow doctor: --worktree-root DIR, checks the folder",
+      "baked workflow worktrees: --worktree-root DIR",
+    ],
+    api: ["/v1/settings: workflows.worktreeRoot, with its check"],
     desktop: ["settings/chat: Code quality page"],
   },
   {
@@ -1844,6 +1882,16 @@ export const FEATURES: readonly Feature[] = [
     cli: ["baked workflow initiative drive", "baked workflow initiative show"],
     api: ["/v1/initiatives/:id"],
     desktop: ["project/initiatives: the shared budget line shows up to N features at once"],
+  },
+  {
+    id: "parallel-cap-queued-resume",
+    group: "Initiatives",
+    title:
+      "A run resumed at the workspace's parallel-run cap keeps the change and waits for a free slot",
+    tui: ["/workflow: the change is kept and the run starts when one of the executing runs ends"],
+    cli: ["baked workflow extend: --resume", "baked workflow reroute: --resume"],
+    api: ["/v1/workflow/runs/:id/resume: queued", "/v1/workflow/runs/:id: queued"],
+    desktop: ["project/runs: Waiting for a free slot in the run header"],
   },
   {
     id: "initiative-upstream-amendments",

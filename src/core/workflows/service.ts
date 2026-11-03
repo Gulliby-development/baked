@@ -83,11 +83,15 @@ import { isStoreError, recordHostError } from "./host-error.js";
 import { InitiativeService } from "./initiatives/service.js";
 import { InitiativeStore } from "./initiatives/store.js";
 import {
+  INVALID_OUTPUT_BUILD_CHANGE,
   INVALID_OUTPUT_KEY,
+  invalidOutputInputs,
+  invalidOutputKey,
   invalidOutputRepeat,
   repeatedInvalidOutputAdvice,
 } from "./invalid-output-repeat.js";
 import {
+  commandLiveness,
   commandProcessMayRun,
   executionLeaseFor,
   leaseOwnerAlive,
@@ -120,6 +124,7 @@ import {
 } from "./retry.js";
 import {
   REFUSED_EDIT_PREFIX,
+  readKept,
   runWrittenHash,
   UNFINISHED_BLOCK_PREFIX,
   undoRunEdits,
@@ -133,7 +138,7 @@ import {
   routeChanges,
   strictRoutingConfig,
 } from "./routing.js";
-import { repairRowClaims } from "./row-claim-repair.js";
+import { repairRowClaims, repairRunRows } from "./row-claim-repair.js";
 import { ROW_RESTORE_KIND, ROW_RESTORE_RESUME_DIR, rowRunRestores } from "./row-restore.js";
 import {
   GATES_ARTIFACT,
@@ -191,7 +196,13 @@ import {
   produces,
   stageKind,
 } from "./v2/runtime.js";
-import { moveRunWorktree, placeBaseFiles, removeRunWorktree, runRoot } from "./worktree.js";
+import {
+  moveRunWorktree,
+  placeBaseFiles,
+  removeRunWorktree,
+  runRoot,
+  worktreeRootDir,
+} from "./worktree.js";
 import {
   cleanWorktrees,
   type WorktreeCleanup,
@@ -644,7 +655,10 @@ export class NativeWorkflowService implements WorkflowService {
    */
   private async smokeChecks(prepared: PreparedStart): Promise<CheckSmoke[]> {
     const smoke = await smokeChecks(prepared.policy.checks, this.workspace);
-    const failed = smoke.filter((s) => s.status === "not_found" || s.status === "cannot_start");
+    const failed = smoke.filter(
+      (s) =>
+        s.status === "not_found" || s.status === "cannot_start" || s.status === "missing_package",
+    );
     const missing = failed.filter((s) => s.required);
     if (missing.length)
       throw new WorkflowFault(
@@ -964,6 +978,8 @@ export class NativeWorkflowService implements WorkflowService {
     const limit = stallSettings(this.config).autoResumes;
     const attempt = state.stallResumes + 1;
     const resumes = attempt <= limit;
+    // The resume below checks the gone driver's commands.
+    using _liveness = resumes ? this.deadOwnerLiveness(runId) : null;
     return this.store.transaction(() => {
       this.store.artifact(
         runId,
@@ -1160,6 +1176,7 @@ export class NativeWorkflowService implements WorkflowService {
     if (primary) this.primaryBusy = true;
     const scheduler = primary ? this.scheduler : this.lane();
     scheduler.maxParallelRuns = parallelRunCap(this.config);
+    scheduler.worktreeRoot = worktreeRootDir(this.workspace, this.config.workflows?.worktreeRoot);
     const promise = scheduler
       .drive(runId, controller.signal)
       .then(() => this.store.snapshot(runId));
@@ -1206,12 +1223,7 @@ export class NativeWorkflowService implements WorkflowService {
     command: CommandIdentity,
     status: "paused" | "cancelled",
   ): Promise<RunSnapshot> {
-    const result = this.store.command(runId, command, { runId, ...command, action: status }, () => {
-      assertMutable(this.store.run(runId).status);
-      this.store.transition(runId, status, "user_pause");
-      // A crashed owner must not keep the workspace locked for ordinary edits after the user stops the run.
-      if (!this.active.has(runId)) releaseDeadOwnerLeases(this.store, runId);
-    });
+    const result = this.stopCommand(runId, command, status);
     const active = this.active.get(runId);
     const providerWait = this.providerWaits.get(runId);
     providerWait?.controller.abort();
@@ -1219,6 +1231,26 @@ export class NativeWorkflowService implements WorkflowService {
     if (active) await active.promise;
     if (providerWait) await providerWait.promise;
     return result;
+  }
+  private stopCommand(
+    runId: string,
+    command: CommandIdentity,
+    status: "paused" | "cancelled",
+  ): RunSnapshot {
+    // A crashed owner's leases are released only once its commands are read as stopped, and
+    // that read runs before the write lock (see `commandLiveness`).
+    const crashed =
+      !this.active.has(runId) &&
+      this.store
+        .leases()
+        .some((lease) => lease.run_id === runId && leaseOwnerAlive(lease) === false);
+    using _liveness = commandLiveness(this.store, crashed ? [runId] : []);
+    return this.store.command(runId, command, { runId, ...command, action: status }, () => {
+      assertMutable(this.store.run(runId).status);
+      this.store.transition(runId, status, "user_pause");
+      // A crashed owner must not keep the workspace locked for ordinary edits after the user stops the run.
+      if (!this.active.has(runId)) releaseDeadOwnerLeases(this.store, runId);
+    });
   }
   async resume(
     runId: string,
@@ -1258,12 +1290,24 @@ export class NativeWorkflowService implements WorkflowService {
     } catch {
       return;
     }
-    if (!repaired.note) return;
     const note = repaired.note;
     this.store.transaction(() => {
       const current = this.store.state(runId);
-      current.prompt += `\n${note}`;
-      this.store.saveState(runId, current);
+      // Once a restatement is overridden, the spec's and the prompt's stale citations of the rows
+      // are put back from the request too (#2563: R82 rev 73 overrode the decision, and T009 still
+      // read ab1805240200 in the spec and 306 in the settled notes).
+      let changed = false;
+      if (mode === "on")
+        try {
+          changed = repairRunRows(
+            this.store,
+            runId,
+            current,
+            current.requestText || current.prompt,
+          );
+        } catch {}
+      if (note) current.prompt += `\n${note}`;
+      if (note || changed) this.store.saveState(runId, current);
     });
   }
   /**
@@ -1405,6 +1449,8 @@ export class NativeWorkflowService implements WorkflowService {
   /** A person's grant applies only to the operation refused by the current diagnostic. */
   async repair(runId: string, command: CommandIdentity, rounds = 1): Promise<RunSnapshot> {
     this.enabled();
+    // The resume inside the repair command checks a dead owner's commands.
+    using _liveness = this.deadOwnerLiveness(runId);
     return this.store.command(
       runId,
       command,
@@ -1485,6 +1531,7 @@ export class NativeWorkflowService implements WorkflowService {
       ...(outside ? { acceptWorkspace: true } : {}),
       ...(remedy ? { remedy } : {}),
     };
+    using _liveness = this.deadOwnerLiveness(runId);
     return this.store.command(runId, command, body, () => {
       assertMutable(this.store.run(runId).status);
       if (remedy === "accept-limitation") this.acceptCheckLimitation(runId, command);
@@ -1540,14 +1587,47 @@ export class NativeWorkflowService implements WorkflowService {
     });
   }
   /**
+   * A resume asks a person about the commands of an execution lease's dead owner, which reads
+   * their processes: this reads them before the command's write lock (see `commandLiveness`).
+   */
+  private deadOwnerLiveness(runId: string): Disposable {
+    const lease = this.store.lease(executionLeaseFor(this.store, runId));
+    const gone = lease?.run_id === runId && leaseOwnerAlive(lease) === false;
+    return commandLiveness(this.store, gone ? [runId] : []);
+  }
+  /**
    * A plain resume after a stop by repeated hash refusals (#954) would start an attempt whose edits
    * of that file are refused again, while the run root still holds the refused content: that is a
    * decision for a person, keep the file or restore it (#1269). A file in a task worktree is
-   * rebuilt on resume, so only a refusal in the run root is held.
+   * rebuilt on resume, so only a refusal in the run root is held. The refusal is the one
+   * `outsideChanges` lists, so `--accept-workspace` can always keep what this refuses (#2609).
    */
   private assertNoRefusedEdit(runId: string): void {
+    const refused = this.heldRefusal(runId);
+    if (!refused) return;
+    const wrote = this.runWroteNote(runId, refused);
+    throw new WorkflowFault(
+      "STALE_DECISION",
+      recoveryAdvice(
+        `${refused.path} still differs from what the run recorded, so its edits would be refused again. ${wrote}Keep it as it is now with \`baked workflow resume ${runId} --accept-workspace\`, or put back the content the run wrote and resume`,
+        `${refused.path} still differs from what the run recorded. Keep these changes, or restore the content the run wrote before retrying.`,
+        { action: "accept-workspace", runId },
+      ),
+      { path: refused.path },
+    );
+  }
+  /**
+   * The refused file a stop by repeated hash refusals left in the run root, while the run root
+   * still holds the refused content. The one predicate of both the resume gate and
+   * `outsideChanges` (#2609): a file the run created and that is now missing, or a file the run
+   * changed that is back at its baseline, is no difference from the baseline, yet its edits are
+   * refused, so the difference check alone would never offer it to accept.
+   */
+  private heldRefusal(
+    runId: string,
+  ): { path: string; current: string | null; written: string | null | undefined } | null {
     const run = this.store.run(runId);
-    if (run.status !== "blocked" || run.reason !== "input_changed") return;
+    if (run.status !== "blocked" || run.reason !== "input_changed") return null;
     const diagnostic = this.store
       .artifacts(runId)
       .filter((a) => a.logical_path.startsWith("errors/"))
@@ -1555,25 +1635,45 @@ export class NativeWorkflowService implements WorkflowService {
     const last = diagnostic
       ? this.store.latestArtifact(runId, `${REFUSED_EDIT_PREFIX}${diagnostic.id}.json`)
       : null;
-    if (!last) return;
+    if (!last) return null;
     const refused = JSON.parse(this.store.readArtifact(runId, last.id)) as {
       path: string;
       root: string;
       hash: string | null;
     };
     const state = this.store.state(runId);
-    if (refused.root !== (state.worktree?.path ?? "")) return;
-    if (fileHash(workspacePath(runRoot(this.workspace, state), refused.path)) !== refused.hash)
-      return;
-    throw new WorkflowFault(
-      "STALE_DECISION",
-      recoveryAdvice(
-        `${refused.path} still differs from what the run recorded, so its edits would be refused again. Keep it with \`baked workflow resume ${runId} --accept-workspace\`, or put back the content the run wrote and resume`,
-        `${refused.path} still differs from what the run recorded. Keep these changes, or restore the content the run wrote before retrying.`,
-        { action: "accept-workspace", runId },
-      ),
-      { path: refused.path },
-    );
+    if (refused.root !== (state.worktree?.path ?? "")) return null;
+    const current = fileHash(workspacePath(runRoot(this.workspace, state), refused.path));
+    if (current !== refused.hash) return null;
+    return {
+      path: refused.path,
+      current,
+      written: runWrittenHash(this.store, runId, refused.path),
+    };
+  }
+  /**
+   * What the run last wrote to a held refused file, for the resume refusal: the person would
+   * otherwise have to rewrite a file the run made without knowing its content (#2609). The run
+   * keeps the content an edit overwrites, not the content it writes, so the written content can
+   * be named only when a later edit of the file kept it as its pre-image.
+   */
+  private runWroteNote(
+    runId: string,
+    refused: { path: string; current: string | null; written: string | null | undefined },
+  ): string {
+    if (refused.written === undefined || refused.written === refused.current) return "";
+    if (refused.written === null) return `The run last deleted ${refused.path}. `;
+    // Text content only: `artifacts --file` prints an artifact as text.
+    const row = this.store.latestArtifact(runId, `pre-images/${refused.written}`);
+    const kept =
+      row && readKept(this.store, runId, refused.written)
+        ? ` It is kept: \`baked workflow artifacts ${runId} --file ${row.id}\` prints it.`
+        : " The run did not keep that content.";
+    const now =
+      refused.current === null
+        ? `${refused.path} is missing now`
+        : `${refused.path} now has hash ${refused.current.slice(0, 12)}`;
+    return `The run last wrote ${refused.path} with hash ${refused.written.slice(0, 12)}, and ${now}.${kept} `;
   }
   /**
    * The source files that differ from what the run expects and that none of the run's own
@@ -1593,6 +1693,12 @@ export class NativeWorkflowService implements WorkflowService {
           .sort()
           .map((path) => ({ path, before: expected[path] ?? null, after: files[path] ?? null })),
       );
+      // The file the run's edits were refused on is a change to accept even when it matches the
+      // baseline (#2609): a file the run created and that is now missing has no baseline entry,
+      // yet a plain resume refuses on it.
+      const held = this.heldRefusal(runId);
+      if (held && !changes.some((change) => change.path === held.path))
+        changes.push({ path: held.path, before: expected[held.path] ?? null, after: held.current });
     }
     // A changed instruction or configuration file the run froze is accepted too (#1654), named
     // relative to the workspace when it lies there.
@@ -1687,11 +1793,34 @@ export class NativeWorkflowService implements WorkflowService {
     if (!repeat) return true;
     if (repeat.repeats) return false;
     const state = this.store.state(runId);
-    if (!state.prompt.includes(repeat.note)) {
+    // The key is recorded with the inputs the next attempt runs on: the repair of the note below
+    // is one of them (`claims`), so the same stop after it is a repeat (#2696).
+    let key = repeat.key;
+    if (!repeat.record.noted) {
       state.prompt += repeat.note;
+      // A diagnostic that restates the request's rows otherwise is put back from them once the
+      // run overrode that restatement (#2563: R82 rev 73's T009 diagnostic, "restore the exact
+      // prescribed 306-byte x input").
+      if (PolicySchema.parse(JSON.parse(this.store.run(runId).policy_json)).rowClaimCheck !== "off")
+        try {
+          if (repairRunRows(this.store, runId, state, state.requestText || state.prompt))
+            key = invalidOutputKey({
+              ...repeat.record,
+              inputs: invalidOutputInputs(this.store, runId),
+            });
+        } catch {}
       this.store.saveState(runId, state);
     }
-    this.store.artifact(runId, "recovery", INVALID_OUTPUT_KEY, repeat.key);
+    // A resume on another build than the last one's tries what that build changed in the host
+    // checks, so it is one attempt even with the same diagnostic; record why it passed (#2587).
+    if (repeat.buildChange)
+      this.store.artifact(
+        runId,
+        "recovery",
+        INVALID_OUTPUT_BUILD_CHANGE,
+        canonical({ diagnosticId: repeat.record.diagnosticId, ...repeat.buildChange }),
+      );
+    this.store.artifact(runId, "recovery", INVALID_OUTPUT_KEY, key);
     return true;
   }
   /**
@@ -1751,6 +1880,9 @@ export class NativeWorkflowService implements WorkflowService {
   async decide(runId: string, command: CommandIdentity, given: Decision): Promise<RunSnapshot> {
     // A recovery decision needs no evidence: it records a generated note instead (#2415).
     const decision = withRecoveryNote(given);
+    // A recovery decision checks the run's command processes: read them before the write lock,
+    // since a Windows process-table read takes seconds and would block every other writer.
+    using _liveness = commandLiveness(this.store, decision.kind === "recovery" ? [runId] : []);
     return this.store.command(runId, command, { runId, ...command, decision }, () => {
       const named = this.store.requests(runId).find((r) => r.id === decision.requestId);
       // The decision on an acceptance test is advisory work beside the run, at any status.
@@ -3040,11 +3172,19 @@ export class NativeWorkflowService implements WorkflowService {
   }
   /** Run and task worktrees on disk with their size and run status (`baked workflow worktrees`). */
   worktrees(): Promise<WorktreeReport> {
-    return worktreeUsage(this.store, (runId) => this.active.has(runId));
+    return worktreeUsage(
+      this.store,
+      (runId) => this.active.has(runId),
+      worktreeRootDir(this.workspace, this.config.workflows?.worktreeRoot),
+    );
   }
   /** Removes the worktrees of ended and unknown runs; their branches stay. */
   cleanWorktrees(dryRun: boolean): Promise<WorktreeCleanup> {
-    return cleanWorktrees(this.store, { dryRun, isActive: (runId) => this.active.has(runId) });
+    return cleanWorktrees(this.store, {
+      dryRun,
+      isActive: (runId) => this.active.has(runId),
+      worktreeRoot: worktreeRootDir(this.workspace, this.config.workflows?.worktreeRoot),
+    });
   }
   events(runId: string, afterSeq: number, signal: AbortSignal) {
     return replayEvents(this.store, runId, afterSeq, signal);

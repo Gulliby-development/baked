@@ -13,6 +13,8 @@
     "src/test/scala/RuntimeSpec.scala": "val dir = Files.createTempDirectory(\"rt\")\nval want = s\"bad: $dir\"\n"
   },
   "expected": {
+    "rowIndent": ["\"  row(1),\""],
+    "languagePitfalls": ["Scala"],
     "generatedValues": ["src/test/scala/GenSpec.scala:1 repeat","src/test/scala/GenSpec.scala:2 interpolate"],
     "exampleBuild": null,
     "runtimePaths": ["src/test/scala/RuntimeSpec.scala: dir"],
@@ -70,8 +72,28 @@
     "dependencyDirs": null,
     "dependencyPrepare": null,
     "worktreePathLimits": null,
+    "diagnosticFormats": ["/p/src/main/scala/Calc.scala: type mismatch;"],
     "testClasses": null,
     "testDeclarations": ["src/test/scala/SumSuite.scala: 2 tests, per class 2"],
-    "rowFileShapes": null
+    "rowFileShapes": [
+      "src/test/scala/wordcount/CountRowsSuite.scala",
+      "package wordcount",
+      "",
+      "import org.scalatest.funsuite.AnyFunSuite",
+      "",
+      "class CountRowsSuite extends AnyFunSuite {",
+      "  val rows = Seq(",
+      "    (\"a\\tb\\nc\", 3),",
+      "    (\"  lead \\\"q\\\"\", 2)",
+      "  )",
+      "",
+      "  rows.foreach { case (text, count) =>",
+      "    test(s\"count($text)\") {",
+      "      assert(Words.count(text) == count)",
+      "    }",
+      "  }",
+      "}",
+      ""
+    ]
   }
 }

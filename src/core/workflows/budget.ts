@@ -600,6 +600,14 @@ function affordableTokens(store: WorkflowStore, runId: string, policy: RunPolicy
  * feature run grows no further than its pool leaves after the other runs (`hold`, from
  * `WorkflowStore.tokenHold`): R79 deltaglue's chunks extended to 12.0M on a $25.51 bound that paid
  * for 35.8M while the other features had used 1.86M of the 12.0M pool (#2468).
+ *
+ * Tokens the open attempts used since the last extension count as progress too, while the
+ * extension stays under the hard ceiling, the pool hold and what the dollar cap pays for: with
+ * several writers in flight none may finish before the limit runs out, and their tokens are the
+ * work not yet counted. R84 md-site 2361845b extended at 6.0M to 7.5M, then failed two of its
+ * three in-flight writers `BUDGET_EXHAUSTED` with $6.6 of its $12 cap and a 17.6M hard ceiling
+ * left, and spent their 1.44M again (#2590). Each attempt is bounded by its own cap, and a new
+ * attempt is checked against its cap before it starts, so one writer alone rarely reaches this.
  */
 function extendUnderAssume(
   store: WorkflowStore,
@@ -613,10 +621,8 @@ function extendUnderAssume(
   if (tokenHard === null || ceiling === null || policy.clarification !== "assume") return false;
   // An initiative's feature run grows no further than its pool leaves after the other runs: the
   // run's dollar bound pays for more than the pool the person set (#2468).
-  const hard = Math.min(
-    Math.max(tokenHard, affordableTokens(store, runId, policy) ?? 0),
-    hold ?? Number.POSITIVE_INFINITY,
-  );
+  const affordable = affordableTokens(store, runId, policy);
+  const hard = Math.min(Math.max(tokenHard, affordable ?? 0), hold ?? Number.POSITIVE_INFINITY);
   if (policy.maxTotalTokens >= hard || projected > hard) return false;
   const progress = progressOf(store, runId);
   const last = store
@@ -631,6 +637,7 @@ function extendUnderAssume(
           taskCompletions?: number;
           continuedAttempts?: number;
           resolvedFindings?: number;
+          openAttemptTokens?: Record<string, number>;
         },
     )
     .filter((r) => r.kind === "auto-extend")
@@ -640,12 +647,24 @@ function extendUnderAssume(
     continuedAttempts: last?.continuedAttempts ?? 0,
     resolvedFindings: last?.resolvedFindings ?? 0,
   };
-  if (
-    progress.taskCompletions <= before.taskCompletions &&
-    progress.continuedAttempts <= before.continuedAttempts &&
-    progress.resolvedFindings <= before.resolvedFindings
-  )
-    return false;
+  const openAttemptTokens = Object.fromEntries(
+    store
+      .attempts(runId)
+      .filter((a) => a.status === "running")
+      .map((a) => [a.id, a.used_tokens ?? 0]),
+  );
+  const inFlightTokens = Object.entries(openAttemptTokens).reduce(
+    (sum, [id, used]) => sum + Math.max(0, used - (last?.openAttemptTokens?.[id] ?? 0)),
+    0,
+  );
+  const finishedProgress =
+    progress.taskCompletions > before.taskCompletions ||
+    progress.continuedAttempts > before.continuedAttempts ||
+    progress.resolvedFindings > before.resolvedFindings;
+  // Work in flight is progress only inside what the dollar cap pays for: past it the cap stops
+  // the run, as it does for finished work, rather than a token extension the run cannot pay for.
+  const inFlightProgress = inFlightTokens > 0 && (affordable === null || projected <= affordable);
+  if (!finishedProgress && !inFlightProgress) return false;
   const next = Math.min(
     hard,
     Math.max(projected, policy.maxTotalTokens + Math.ceil(ceiling * EXTEND_STEP)),
@@ -655,6 +674,9 @@ function extendUnderAssume(
     hardCeiling: hard,
     ...heldBy(hold),
     ...progress,
+    inFlightTokens,
+    openAttemptTokens,
+    ...(affordable !== null ? { affordableTokens: affordable } : {}),
   });
   return projected <= policy.maxTotalTokens;
 }

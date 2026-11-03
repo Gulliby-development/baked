@@ -36,6 +36,69 @@ const WRAPPERS: Record<string, readonly string[]> = {
   py: ["-m"],
 };
 
+/**
+ * Interpreters with an inline-code flag, by program: the flags that take the code (#2593). A check
+ * that runs `pwsh -NoProfile -Command "Invoke-Pester ..."` runs the tool `invoke-pester`, which a
+ * README documents as `Invoke-Pester`; read as `pwsh` with the script as its words, every such
+ * line was a drift. The code runs to the first unquoted `|`, `;` or `&&`; the later commands of a
+ * pipeline shape its output. A new language whose gate runs through an interpreter's inline-code
+ * flag adds its row here and a case to `tests/workflow-scenario-ci-check-drift.test.ts`.
+ */
+const INLINE_CODE: Record<string, readonly string[]> = {
+  pwsh: ["-command", "-c"],
+  powershell: ["-command", "-c"],
+  rscript: ["-e"],
+  python: ["-c"],
+  py: ["-c"],
+  node: ["-e", "--eval"],
+  bash: ["-c"],
+  sh: ["-c"],
+  zsh: ["-c"],
+  cmd: ["/c"],
+};
+/** Interpreters whose code is case-insensitive: their parameters compare lower case. */
+const CASELESS = new Set(["pwsh", "powershell", "cmd"]);
+/** A PowerShell cmdlet or function name, `Verb-Noun`: `Invoke-Pester`, `Invoke-ScriptAnalyzer`. */
+const CMDLET = /^[A-Z][a-z]+-[A-Z][A-Za-z]+$/;
+/**
+ * Interpreters that run a script file given as their first word (#2593). `pwsh bin/app.ps1 fill`
+ * runs the project's own program, an example and not a gate: it is read as the script itself, as
+ * `./bin/app` is, so it is compared only with a check that runs the same script.
+ */
+const SCRIPT_INTERPRETERS = new Set([
+  "pwsh",
+  "powershell",
+  "python",
+  "py",
+  "node",
+  "ruby",
+  "php",
+  "perl",
+  "lua",
+  "rscript",
+  "bash",
+  "sh",
+  "zsh",
+  "elixir",
+]);
+
+/** The first command of an interpreter's inline code, cut at an unquoted `|`, `;` or `&&`. */
+function firstCommand(code: string): string {
+  let quote = "";
+  let depth = 0;
+  for (let i = 0; i < code.length; i++) {
+    const c = code[i] ?? "";
+    if (quote) {
+      if (c === quote) quote = "";
+    } else if (c === "'" || c === '"') quote = c;
+    else if (c === "{" || c === "(") depth++;
+    else if (c === "}" || c === ")") depth = Math.max(0, depth - 1);
+    else if (depth === 0 && (c === "|" || c === ";" || (c === "&" && code[i + 1] === "&")))
+      return code.slice(0, i).trim();
+  }
+  return code.trim();
+}
+
 /** Tools whose first word after the program names what it runs (`cargo clippy`, `go vet`). */
 const SUBCOMMAND_TOOLS = new Set([
   "cargo",
@@ -141,6 +204,8 @@ export function toolCommand(executable: string, args: readonly string[]): ToolCo
   const [first, ...restWords] = words;
   if (!first) return null;
   const program = programName(first);
+  const inline = inlineCode(program, restWords);
+  if (inline) return inline;
   let rest = restWords;
   const tool = [program];
   // A toolchain pick (`cargo +nightly clippy`) is not part of the gate.
@@ -167,7 +232,64 @@ export function toolCommand(executable: string, args: readonly string[]): ToolCo
     if (eq) out.push(flag, eq[2] ?? "");
     else out.push(word);
   }
-  return { tool: tool.join(" ").toLowerCase(), words: out };
+  // A PowerShell cmdlet (`Invoke-Pester`) takes its parameters in any case (#2593).
+  const words2 = CMDLET.test(first)
+    ? out.map((w) => (w.startsWith("-") ? w.toLowerCase() : w))
+    : out;
+  return { tool: tool.join(" ").toLowerCase(), words: words2 };
+}
+
+/**
+ * An interpreter's command read as what it runs (#2593): the tool of its inline code (`pwsh
+ * -Command "Invoke-Pester"` is `invoke-pester`), or the script file it is given first (`pwsh
+ * bin/app.ps1 fill` is `app fill`, as `./bin/app.ps1 fill` is). Null for any other command, which `toolCommand` reads itself.
+ */
+function inlineCode(program: string, rest: readonly string[]): ToolCommand | null {
+  const flags = INLINE_CODE[program];
+  let i = 0;
+  while (
+    i < rest.length &&
+    rest[i]?.startsWith("-") &&
+    !flags?.includes(rest[i]?.toLowerCase() ?? "")
+  )
+    i++;
+  if (program === "cmd")
+    while (
+      i < rest.length &&
+      rest[i]?.startsWith("/") &&
+      !flags?.includes(rest[i]?.toLowerCase() ?? "")
+    )
+      i++;
+  const flag = rest[i]?.toLowerCase() ?? "";
+  if (flags?.includes(flag)) {
+    // pwsh and cmd join every word after the flag into the code; the others take one word.
+    const joins = program === "pwsh" || program === "powershell" || program === "cmd";
+    const code = firstCommand((joins ? rest.slice(i + 1) : rest.slice(i + 1, i + 2)).join(" "));
+    let inner: string[];
+    try {
+      inner = splitCommandLine(code);
+    } catch {
+      inner = code.split(/\s+/).filter(Boolean);
+    }
+    // PowerShell's call operators (`& ./build.ps1`, `. ./tools.ps1`) are not the tool.
+    while (inner[0] === "&" || inner[0] === ".") inner = inner.slice(1);
+    const [head, ...args] = inner;
+    if (!head) return null;
+    // R code: `testthat::test_local()` is the tool `testthat::test_local`.
+    const call = program === "rscript" ? /^([\w.:]+)\((.*)\)$/s.exec(inner.join(" ")) : null;
+    const parsed = call
+      ? { tool: (call[1] ?? "").toLowerCase(), words: call[2] ? [call[2]] : [] }
+      : toolCommand(head, args);
+    if (!parsed || !CASELESS.has(program)) return parsed;
+    return {
+      tool: parsed.tool,
+      words: parsed.words.map((w) => (w.startsWith("-") ? w.toLowerCase() : w)),
+    };
+  }
+  const script = rest[i];
+  if (SCRIPT_INTERPRETERS.has(program) && script && !script.startsWith("-") && isPathWord(script))
+    return toolCommand(script, rest.slice(i + 1));
+  return null;
 }
 
 /** A command line read from a CI file or README, as a tool command. */
@@ -351,14 +473,44 @@ export function fileGateCommands(path: string, text: string): string[] {
   if (CI_WORKFLOW.test(path)) return workflowRunCommands(text);
   if (!README_FILE.test(path)) return [];
   return fences(text)
-    .filter(
-      (f) =>
-        !f.diff &&
-        ["", "sh", "bash", "shell", "console", "zsh", "powershell", "pwsh"].includes(f.lang),
-    )
-    .flatMap((f) => f.lines)
-    .map((line) => line.trim().replace(/^[$>]\s+/, ""))
-    .filter((line) => line && !line.startsWith("#"));
+    .filter((f) => !f.diff && SHELL_FENCES.includes(f.lang))
+    .flatMap((f) => fenceCommands(f.lang, f.lines));
+}
+
+const SHELL_FENCES = ["", "sh", "bash", "shell", "console", "zsh", "powershell", "pwsh"];
+/** A shell prompt before a command: `$ `, `% `, `> `, `PS> `, `PS C:\app> `. */
+const PROMPT = /^(?:[$%>]|PS(?: [^>]*)?>)\s+/;
+/** Script files a README runs by path: `./scripts/check.sh`, `.\build.ps1`. */
+const SCRIPT_FILE = /\.(?:sh|bash|zsh|ps1|bat|cmd|exe)$/i;
+
+/**
+ * The commands of one README fence (#2620). In a `console` block, and in an untagged block where
+ * some line has a prompt, only the prompted lines are commands: the others are what they print. A
+ * shell-tagged block is a script, so each of its lines may be a command. A line is a command only
+ * when its first word can name a program (`looksLikeCommand`).
+ */
+function fenceCommands(lang: string, lines: readonly string[]): string[] {
+  const trimmed = lines.map((line) => line.trim());
+  const prompted = lang === "console" || (lang === "" && trimmed.some((line) => PROMPT.test(line)));
+  return trimmed
+    .filter((line) => !prompted || PROMPT.test(line))
+    .map((line) => line.replace(PROMPT, ""))
+    .filter((line) => line && !line.startsWith("#") && looksLikeCommand(line));
+}
+
+/**
+ * Whether a README line's first word can name a program (#2620): it starts with a letter, `.`, `/`
+ * or `~`, does not end in `:` (a label such as `Usage:` or a program's own `shardplan:` message),
+ * and is no file path other than a script. R85 shu (shardplan, Java): untagged blocks held the
+ * example timings file (`42.5 tests/test_db.py`), the program's output and its usage text, and 22 of
+ * 25 drift records named a number, a duration or `shardplan:` as a tool no check runs.
+ */
+export function looksLikeCommand(line: string): boolean {
+  const first = line.split(/\s+/)[0] ?? "";
+  if (!/^[A-Za-z./~]/.test(first) || first.endsWith(":")) return false;
+  // A path with a data or source extension is a file the block lists, not a program it runs.
+  if (/[/\\]/.test(first) && /\.[A-Za-z]\w*$/.test(first)) return SCRIPT_FILE.test(first);
+  return true;
 }
 
 export interface CiCheckDrift {
@@ -379,6 +531,104 @@ export interface CiCheckDrift {
 const words = (check: Pick<Check, "executable" | "args">): string =>
   [check.executable, ...check.args].join(" ");
 
+/** A word with glob syntax: `src/*.cpp`, `tests/**\/*.py`, `src/?.c`. */
+const GLOB = /[*?[]/;
+/** A file or folder argument rather than a flag or a subcommand word: a path, a glob or a file name. */
+const isPathWord = (word: string) =>
+  !word.startsWith("-") && (GLOB.test(word) || /[/\\]/.test(word) || /\.[A-Za-z]\w*$/.test(word));
+/** A README's stand-in for a file argument: `FILE`, `<file>`, `PATH`. */
+const PLACEHOLDER = /^(?:<[^<>\s]+>|[A-Z][A-Z_]*)$/;
+/** A glob as a matcher of `/`-separated paths: `**` crosses folders, `*` and `?` do not. */
+function globMatcher(glob: string): RegExp {
+  let out = "";
+  const text = glob.replace(/^\.\//, "");
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i] ?? "";
+    if (c === "*" && text[i + 1] === "*") {
+      out += text[i + 2] === "/" ? "(?:.*/)?" : ".*";
+      i += text[i + 2] === "/" ? 2 : 1;
+    } else if (c === "*") out += "[^/]*";
+    else if (c === "?") out += "[^/]";
+    else out += c.replace(/[.+^${}()|[\]\\]/g, "\\$&");
+  }
+  return new RegExp(`^${out}$`);
+}
+
+/**
+ * The file and glob words of a command that cover the paths a check lists one by one (#2567): R83
+ * pnmforge's README ran `clang-format --dry-run --Werror src/*.cpp src/*.hpp tests/*.cpp
+ * tests/*.hpp` while the check listed its files at detection, and the globs read as four missing
+ * words. Covered when every listed path matches a glob or a path of the command; the command may
+ * name more files (the files written later have their own `-written` checks). Returns the
+ * command's path words to drop and the check's paths they cover, or null when a listed path is
+ * not covered, so the globs stay a drift.
+ */
+function coveredPaths(
+  command: readonly string[],
+  listed: readonly string[],
+): { drop: string[]; covered: string[] } | null {
+  const paths = command.filter(isPathWord);
+  if (!paths.some((word) => GLOB.test(word))) return null;
+  const files = listed.filter((word) => isPathWord(word) && !GLOB.test(word));
+  if (!files.length) return null;
+  const norm = (path: string) => path.replace(/\\/g, "/").replace(/^\.\//, "").replace(/\/+$/, "");
+  const matchers = paths.map((word) =>
+    GLOB.test(word)
+      ? globMatcher(norm(word))
+      : new RegExp(`^${norm(word).replace(/[.+^${}()|[\]\\*?]/g, "\\$&")}(?:/.*)?$`),
+  );
+  const uncovered = files.filter((file) => !matchers.some((m) => m.test(norm(file))));
+  return uncovered.length ? null : { drop: paths, covered: files };
+}
+
+/** A path as `coveredPaths` and `narrowerPaths` compare it: `/`-separated, no `./`, no trailing `/` or `/...`. */
+const normPath = (path: string) =>
+  path
+    .replace(/\\/g, "/")
+    .replace(/^\.\//, "")
+    .replace(/\/\.\.\.$/, "")
+    .replace(/\/+$/, "");
+/**
+ * The positional words of `words`: not a flag, and not a flag's value. A word after a flag is its
+ * value unless `other` (the side compared with) has that flag as a switch, last or before a flag:
+ * the check's `gofmt -l .` makes `-l` a switch, so the README's `gofmt -l cmd` names a path.
+ */
+function positional(words: readonly string[], other: readonly string[] = []): string[] {
+  const switches = new Set(
+    other.filter((word, i) => /^-[^=]*$/.test(word) && (other[i + 1] ?? "-").startsWith("-")),
+  );
+  return words.filter((word, i) => {
+    if (word.startsWith("-")) return false;
+    const before = words[i - 1] ?? "";
+    return !/^-[^=]*$/.test(before) || switches.has(before);
+  });
+}
+
+/**
+ * The path words of a README command that a check's broader path covers (#2634): R86 binlayer's
+ * README ran `python -m sqlfluff lint sql` while the check ran `python -m sqlfluff lint .`, and
+ * `sql` read as a word the check lacks. The check's paths are its positional words the command
+ * does not share (a shared word is a subcommand such as `lint`). It covers the whole tree when it
+ * has none (`.` and `./` are dropped as the working directory, and a tool given no path runs
+ * there) or `./...`, and a folder when it names that folder or one above it. A command path
+ * outside every check path, a glob (#2567 reads those), a word that is no path (`ARGS=-race`)
+ * or a path above the check's directory stays missing. Returns the words to drop.
+ */
+function narrowerPaths(command: readonly string[], check: readonly string[]): string[] {
+  const scope = positional(check)
+    .filter((word) => !command.includes(word))
+    .map(normPath);
+  const whole = scope.length === 0 || scope.some((path) => path === "" || path === "...");
+  return positional(command, check).filter((word) => {
+    // A path, not an assignment (`ARGS=-race`) or an expression (`stop_on_failure=TRUE`).
+    if (check.includes(word) || GLOB.test(word) || !/^[\w.@+-][\w./\\@+-]*$/.test(word))
+      return false;
+    const path = normPath(word);
+    if (!path || /^(?:\/|[A-Za-z]:|\.\.(?:\/|$))/.test(path)) return false;
+    return whole || scope.some((dir) => path.startsWith(`${dir}/`));
+  });
+}
+
 /**
  * Each gate command of the changed files that the configured checks do not run as written: a
  * check runs its tool without some of its words (a flag, a scope such as `--all-targets`, `-race`,
@@ -394,7 +644,10 @@ const words = (check: Pick<Check, "executable" | "args">): string =>
  */
 export function ciCheckDrift(
   files: readonly { path: string; text: string }[],
-  checks: readonly (Pick<Check, "id" | "executable" | "args"> & { cwd?: string })[],
+  checks: readonly (Pick<Check, "id" | "executable" | "args"> & {
+    cwd?: string;
+    fix?: Check["fix"];
+  })[],
   scripts: (dir: string) => ScriptTables = () => ({}),
 ): CiCheckDrift[] {
   const tablesOf = new Map<string, ScriptTables>();
@@ -409,7 +662,26 @@ export function ciCheckDrift(
   };
   const configured = checks.flatMap((check) => {
     const parsed = toolCommand(check.executable, check.args);
-    return parsed ? [{ check, parsed, resolved: resolved(parsed, tables(check.cwd ?? ".")) }] : [];
+    if (!parsed) return [];
+    const own = { check, parsed, resolved: resolved(parsed, tables(check.cwd ?? ".")) };
+    // A check's fixer is the same gate in write mode (`clang-format -i`, `gofmt -w`, `cargo fmt`):
+    // a README that documents it documents the check's fix, not a drift from it (#2567). It runs
+    // on the check's files, so it is compared with them.
+    if (!check.fix) return [own];
+    // The check's file words, read through its tool (a `pwsh -Command` script is one argument), less
+    // the ones its fixer names itself (`-Settings ./PSScriptAnalyzerSettings.psd1`, #2593).
+    const fixWords = new Set(check.fix.args.flatMap((arg) => arg.split(/\s+/)));
+    const files = parsed.words.filter((word) => isPathWord(word) && !fixWords.has(word));
+    const fixed = toolCommand(check.fix.executable, [...check.fix.args, ...files]);
+    if (!fixed) return [own];
+    const fixer = {
+      check,
+      parsed: fixed,
+      resolved: resolved(fixed, tables(check.cwd ?? ".")),
+      // A fixer that takes the task's file: the README's last word names it (`-Path FILE`, #2593).
+      takesFile: files.length === 0,
+    };
+    return [own, fixer];
   });
   const opaqueCheck = configured.some((c) => c.resolved.opaque);
   const root = tables(".");
@@ -448,9 +720,25 @@ export function ciCheckDrift(
       }
       const ranked = same
         .map((c) => {
-          const have = [...c.cmp.words];
+          let have = [...c.cmp.words];
+          let mine = compared.words;
+          const cover = coveredPaths(mine, have);
+          if (cover) {
+            mine = mine.filter((word) => !cover.drop.includes(word));
+            have = have.filter((word) => !cover.covered.includes(word));
+          }
+          const last = mine.at(-1);
+          if (
+            "takesFile" in c &&
+            c.takesFile &&
+            last &&
+            (isPathWord(last) || PLACEHOLDER.test(last))
+          )
+            mine = mine.slice(0, -1);
+          const narrower = narrowerPaths(mine, have);
+          if (narrower.length) mine = mine.filter((word) => !narrower.includes(word));
           const missing: string[] = [];
-          for (const word of compared.words) {
+          for (const word of mine) {
             const at = have.indexOf(word);
             if (at < 0) missing.push(word);
             else have.splice(at, 1);

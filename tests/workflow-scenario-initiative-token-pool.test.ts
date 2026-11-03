@@ -5,6 +5,7 @@ import { suggestedExtension } from "../apps/desktop/src/renderer/screens/insight
 import { tuiRecoveryText } from "../src/components/workflow/remedies.js";
 import { startApiServer } from "../src/core/api/server.js";
 import {
+  expectedChargedGate,
   FIRST_WAVE_HOLD_TEXT,
   type InitiativeView,
   planChargedGate,
@@ -377,10 +378,10 @@ describe("scenario: a scripted initiative whose features cost more than their es
 
 describe("scenario: an open feature run with a sized plan is charged at its plan's need (#2100, #2056)", () => {
   /** f1 accepted, f2's run open with its plan sized and its tasks started. */
-  async function sized(mode?: "shadow" | "enforce") {
+  async function sized(mode?: "shadow" | "enforce", planChargeExpected?: "off" | "shadow" | "on") {
     const history = await historyFixture(1, { taskShare: 0.4 });
     cleanups.push(() => history.dispose());
-    const result = await plannedForecastScenario(5, 1, [history.root], { skeleton: false, maxTotalTokens: 30_000_000, ...(mode ? { stopModes: { "initiative-plan-charge": mode } } : {}) });
+    const result = await plannedForecastScenario(5, 1, [history.root], { skeleton: false, maxTotalTokens: 30_000_000, ...(mode ? { stopModes: { "initiative-plan-charge": mode } } : {}), ...(planChargeExpected ? { planChargeExpected } : {}) });
     cleanups.push(() => result.fixture.dispose());
     const { initiatives, fixture } = result;
     const driveUntil = async (stop: (type: string) => boolean): Promise<void> => {
@@ -454,6 +455,45 @@ describe("scenario: an open feature run with a sized plan is charged at its plan
     const done = await initiatives.drive("values", new AbortController().signal);
     expect(done.features.find((f) => f.id === "f2")?.state).toBe("accepted");
   }, 180000);
+  // #2534: before a ratio is measured, `planChargeExpected` decides the plan point the pool holds.
+  test("planChargeExpected shadow (the default) holds f2 at its plan's high end and records the charge at its expected need beside it", async () => {
+    const { initiatives } = await sized();
+    const charge = initiatives.view("values").budget.planCharge;
+    const run = charge?.runs[0];
+    const plan = run?.plan;
+    expect(plan?.expected).toBeLessThan(plan?.high ?? 0);
+    expect(charge?.point).toBeUndefined();
+    expect(run?.chargeTokens).toBe(Math.max(run?.usedTokens ?? 0, plan?.high ?? 0));
+    const expected = charge?.expected;
+    expect(expected).toMatchObject({ mode: "enforce", ratio: null, point: "expected" });
+    expect(expected?.runs[0]?.chargeTokens).toBe(Math.max(run?.usedTokens ?? 0, plan?.low ?? 0, plan?.expected ?? 0));
+    expect(expected?.planCommittedTokens).toBeLessThan(charge?.planCommittedTokens ?? 0);
+    // Shadow: the pool holds the high end.
+    expect(initiatives.view("values").budget.pool?.committedTokens).toBe(charge?.planCommittedTokens);
+  }, 120000);
+
+  test("planChargeExpected on holds f2 at its plan's expected need, never below what it used, and the run still finishes", async () => {
+    const { initiatives } = await sized(undefined, "on");
+    const view = initiatives.view("values");
+    const charge = view.budget.planCharge;
+    const run = charge?.runs[0];
+    expect(charge).toMatchObject({ mode: "enforce", ratio: null, point: "expected" });
+    expect(charge?.expected).toBeUndefined();
+    expect(run?.chargeTokens).toBe(Math.max(run?.usedTokens ?? 0, run?.plan.low ?? 0, run?.plan.expected ?? 0));
+    expect(run?.chargeTokens).toBeLessThan(run?.plan.high ?? 0);
+    expect(view.budget.pool?.committedTokens).toBe(charge?.planCommittedTokens);
+    expect(view.budget.remaining.tokens).toBe(30_000_000 - (charge?.planCommittedTokens ?? 0));
+    const done = await initiatives.drive("values", new AbortController().signal);
+    expect(done.features.find((f) => f.id === "f2")?.state).toBe("accepted");
+  }, 180000);
+
+  test("planChargeExpected off holds the high end and records nothing beside it", async () => {
+    const { initiatives } = await sized(undefined, "off");
+    const charge = initiatives.view("values").budget.planCharge;
+    expect(charge?.point).toBeUndefined();
+    expect(charge?.expected).toBeUndefined();
+    expect(charge?.runs[0]?.chargeTokens).toBe(Math.max(charge?.runs[0]?.usedTokens ?? 0, charge?.runs[0]?.plan.high ?? 0));
+  }, 120000);
 });
 
 // Bench round 67, ampwhy (#2100): 11 features, planAhead, 3 slots. The split's warning made the
@@ -1120,5 +1160,161 @@ describe("scenario: a share-gate hold for no measurement is asked again when the
     expect(events("budget.extended").filter((e) => e.by === "host")).toEqual([]);
     expect(view.next).toMatchObject({ kind: "blocked", featureId: "f2" });
     expect(view.budget.limits.maxTotalTokens).toBe(3_000_000);
+  });
+});
+
+// Bench rounds 82 and 83 (#2534): before a plan-to-actual ratio is measured the plan charge held
+// each open run at its plan's high end. R82 tinyflate held core at 8.05M (it used 3.02M), inflate
+// at 6.89M (4.88M) and deflate at 6.49M (4.54M): 21.5M committed against the 19.6M pool for runs
+// that used 12.4M, and deflate's plan-time share gate recorded a false `initiative-plan-share`
+// would-stop at 22:21:31 on its 4.41M plan against its 4,140,106 ceiling. R83 pnmforge (cap $25,
+// extendWithinDollars on) parked geometry at minute 36 (share 399k, need low 1.14M) on charges
+// of 18.98M of the 19.6M pool while the runs had used 4.7M; tone recorded a plan-share
+// would-stop on the same charges, the host extended the pool by 2.7M, the initiative finished at
+// 16.17M, and geometry started at minute 66. Neither trace is in the corpus: the highs, limits,
+// uses and pools below are the issues', and the plans' lows and expected points, which the
+// issues do not give, are rebuilt between each run's use and its high end.
+describe("replay: unmeasured plans held at their expected need instead of their high end (#2534, R82 tinyflate, R83 pnmforge)", () => {
+  const POOL_19_6 = 19_600_000;
+  const run = (featureId: string, usedTokens: number, limitTokens: number, plan: { low: number; expected: number; high: number }) => ({ featureId, runId: `r-${featureId}`, usedTokens, limitTokens, plan });
+  /** A gate at the open runs' limits (the plan charge in shadow), for `planChargedGate` to charge. */
+  const gateAt = (initiativeId: string, limitCommitted: number, usedTokens: number, waiting: { id: string; low: number; high: number }[], cost: Partial<ShareGateView["budget"]["cost"]> = {}): ShareGateView => ({
+    initiativeId,
+    budget: {
+      remaining: { tokens: Math.max(0, POOL_19_6 - limitCommitted), calls: 400, activeMs: 10_000_000 },
+      cost: { capUsd: 25, tolerance: 0.25, ceilingUsd: 31.25, spentUsd: 4, reservedUsd: 0, remainingUsd: 21, forecastUsd: null, measuredFeatures: 0, forecastBinding: false, forecastMode: "shadow", shareMode: "shadow", forecastNotice: null, ...cost },
+      limits: { maxTotalTokens: POOL_19_6, maxAgentCalls: 1000, maxActiveMs: 21_600_000 },
+      used: { tokens: usedTokens, calls: 0, activeMs: 0 },
+    },
+    features: waiting.map((f) => ({ id: f.id, state: "ready", share: { tokens: 0, calls: 100, activeMs: 3_600_000 }, need: { low: f.low, high: f.high }, shareUsd: 4, needUsd: null })),
+  });
+  const charged = (view: ShareGateView, charge: ReturnType<typeof planCharge>) => planChargedGate({ ...view, budget: { ...view.budget, planCharge: charge } }) as ShareGateView;
+  const feature = (view: ShareGateView, id: string) => {
+    const f = view.features.find((g) => g.id === id);
+    return { id, share: f?.share ?? null, need: f?.need ?? null, shareUsd: f?.shareUsd ?? null };
+  };
+
+  describe("R82 tinyflate", () => {
+    const SPLIT = 70_000;
+    // The first starter, core, held 9.99M; deflate, the third, its 3.79M start share.
+    const open = (used: [number, number, number]) => [
+      run("core", used[0], 9_990_000, { low: 2_900_000, expected: 4_400_000, high: 8_050_000 }),
+      run("inflate", used[1], 5_750_000, { low: 3_300_000, expected: 4_600_000, high: 6_890_000 }),
+      run("deflate", used[2], 3_790_000, { low: 3_000_000, expected: 4_200_000, high: 6_490_000 }),
+    ];
+    const limits = SPLIT + 9_990_000 + 5_750_000 + 3_790_000;
+    const atGate = open([1_600_000, 1_000_000, 570_000]);
+
+    test("at the high end the charges oversubscribe the 19.6M pool; at the expected need they hold 13.3M, near the 12.4M the runs used", () => {
+      const high = planCharge("enforce", null, limits, atGate);
+      expect(high?.runs.map((r) => r.chargeTokens)).toEqual([8_050_000, 6_890_000, 6_490_000]);
+      expect(high?.planCommittedTokens).toBe(21_500_000);
+      expect(high?.point).toBeUndefined();
+      const expected = planCharge("enforce", null, limits, atGate, undefined, "expected");
+      expect(expected?.point).toBe("expected");
+      expect(expected?.runs.map((r) => r.chargeTokens)).toEqual([4_400_000, 4_600_000, 4_200_000]);
+      expect(expected?.planCommittedTokens).toBe(13_270_000);
+      expect(expected?.planCommittedTokens).toBeLessThan(POOL_19_6);
+      // Never below what a run used: at the runs' final use inflate and deflate hold their use.
+      const end = planCharge("enforce", null, limits, open([3_020_000, 4_880_000, 4_540_000]), undefined, "expected");
+      expect(end?.runs.map((r) => r.chargeTokens)).toEqual([4_400_000, 4_880_000, 4_540_000]);
+      // A measured ratio keeps the high end at that ratio, whatever the point.
+      expect(planCharge("enforce", 1.2, limits, atGate, undefined, "expected")?.runs.map((r) => r.chargeTokens)).toEqual(planCharge("enforce", 1.2, limits, atGate)?.runs.map((r) => r.chargeTokens));
+      // A plan without expected tasks (before #2043) keeps its high end.
+      expect(planCharge("enforce", null, 0, [{ ...atGate[0]!, plan: { low: 2_900_000, high: 8_050_000 } }], undefined, "expected")?.runs[0]?.chargeTokens).toBe(8_050_000);
+    });
+
+    test("deflate's plan-time share gate: the high end records the false would-stop, the expected need asks nothing", () => {
+      // deflate's plan at 22:21:31, sized before its later 6.49M plan: 4.41M at the high end.
+      const plan = { low: 3_000_000, expected: 3_600_000, high: 4_410_000 };
+      const inputs = (point: "high" | "expected") => {
+        const charge = planCharge("enforce", null, limits, [atGate[0]!, atGate[1]!, { ...atGate[2]!, plan }], undefined, point);
+        return {
+          runId: "r-deflate", featureId: "deflate", usedTokens: 570_000, limitTokens: 3_790_000, ceilingTokens: 4_140_106, baseCeilingTokens: 12_000_000,
+          plan, planRatio: null, planPoint: point, heldTokens: charge?.runs[2]?.chargeTokens ?? 0, othersUsedTokens: 2_670_000,
+          pool: { initiativeId: "tinyflate", limitTokens: POOL_19_6, usedTokens: 3_240_000, committedTokens: charge?.planCommittedTokens ?? 0, forecastTokens: null, ratio: null, features: 5, waiting: [{ id: "cli", low: 900_000, high: 2_000_000 }, { id: "docs", low: 300_000, high: 700_000 }], cost: { capUsd: 25, ceilingUsd: 31.25, spentUsd: 2.6, remainingUsd: 22.4, forecastUsd: null } },
+        };
+      };
+      const high = planShareDecision(inputs("high"));
+      expect(high).toMatchObject({ needTokens: 4_410_000, over: true, wouldExtend: false });
+      const expected = planShareDecision(inputs("expected"));
+      expect(expected).toMatchObject({ needTokens: 3_600_000, over: false, wouldExtend: false });
+      // Without the point the inputs a recorded gate replays keep the high end.
+      const { planPoint: _, ...recorded } = inputs("high");
+      expect(planShareDecision(recorded).needTokens).toBe(4_410_000);
+    });
+  });
+
+  describe("R83 pnmforge", () => {
+    const SPLIT = 200_000;
+    // Only tone is named among the open runs at minute 36; the others are open-a and open-b.
+    const open = [
+      run("tone", 1_200_000, 6_000_000, { low: 2_900_000, expected: 3_900_000, high: 6_200_000 }),
+      run("open-a", 2_000_000, 7_000_000, { low: 3_100_000, expected: 4_300_000, high: 7_100_000 }),
+      run("open-b", 1_300_000, 5_000_000, { low: 2_400_000, expected: 3_400_000, high: 5_480_000 }),
+    ];
+    const limits = SPLIT + 6_000_000 + 7_000_000 + 5_000_000;
+    const used = SPLIT + 1_200_000 + 2_000_000 + 1_300_000;
+    const waiting = [{ id: "geometry", low: 1_140_000, high: 2_200_000 }, { id: "docs", low: 600_000, high: 1_220_000 }];
+
+    test("minute 36: the high-end charges hold 18.98M and park geometry on a 399k share; the expected need starts it", () => {
+      expect(used).toBe(4_700_000);
+      const base = gateAt("pnmforge", limits, used, waiting);
+      const high = planCharge("shadow", null, limits, open);
+      expect(high?.planCommittedTokens).toBe(18_980_000);
+      const parked = charged(base, high);
+      expect(parked.budget.remaining.tokens).toBe(620_000);
+      expect(feature(parked, "geometry").share?.tokens).toBe(398_830);
+      expect(shareShortfall(parked, feature(parked, "geometry"))?.summary).toStartWith("The shared budget is short: geometry");
+      const expected = planCharge("shadow", null, limits, open, undefined, "expected");
+      expect(expected?.planCommittedTokens).toBe(11_800_000);
+      const started = charged(base, expected);
+      expect(started.budget.remaining.tokens).toBe(7_800_000);
+      expect(shareShortfall(started, feature(started, "geometry"))).toBeNull();
+    });
+
+    test("shadow: the enforced gate parks geometry and the gate at the expected need, which the would_release record reads, starts it", () => {
+      const high = planCharge("enforce", null, limits, open);
+      const expected = planCharge("enforce", null, limits, open, undefined, "expected");
+      const base = gateAt("pnmforge", limits, used, waiting);
+      // The enforced view: the pool holds the high end, and `planCharge.expected` rides beside it.
+      const enforced = charged(base, { ...high!, mode: "shadow" });
+      const view: ShareGateView = { ...enforced, budget: { ...enforced.budget, planCharge: { ...high!, expected: expected! } } };
+      expect(shareShortfall(view, feature(view, "geometry"))).not.toBeNull();
+      const atExpected = expectedChargedGate(view);
+      expect(atExpected?.budget.remaining.tokens).toBe(7_800_000);
+      expect(shareShortfall(atExpected!, feature(atExpected!, "geometry"))).toBeNull();
+      // Without the expected charge, or with the plan charge itself in shadow, there is no such gate.
+      expect(expectedChargedGate({ ...view, budget: { ...view.budget, planCharge: high } })).toBeNull();
+      expect(expectedChargedGate({ ...view, budget: { ...view.budget, planCharge: { ...high!, mode: "shadow", expected: expected! } } })).toBeNull();
+    });
+
+    test("the extension inside the $25 cap rested on the high-end charges: at the expected need nothing parks to extend for", () => {
+      // After the first accepted feature the dollar forecast is measured ($21.38 inside $31.25),
+      // at the round's $0.95 per million tokens ($15.31 for 16.17M).
+      const measured = { measuredFeatures: 1, forecastUsd: 21.38, spentUsd: 4.45, remainingUsd: 20.55 };
+      const base = gateAt("pnmforge", limits, used, waiting, measured);
+      const parked = charged(base, planCharge("shadow", null, limits, open));
+      const growth = poolGrowthOf(parked, feature(parked, "geometry"));
+      // The round's host extension was +2.7M to 22.3M; on these figures it is +2.8M to 22.4M.
+      expect(growth).toMatchObject({ wouldExtend: true, toTokens: 22_400_000, byTokens: 2_800_000 });
+      const started = charged(base, planCharge("shadow", null, limits, open, undefined, "expected"));
+      expect(shareShortfall(started, feature(started, "geometry"))).toBeNull();
+      expect(poolGrowthOf(started, feature(started, "geometry"))).toBeNull();
+    });
+
+    test("tone's plan-share would-stop rested on its plan's high end above its 6.0M start share", () => {
+      const tone = open[0]!;
+      const inputs = (point: "high" | "expected") => {
+        const charge = planCharge("enforce", null, limits, open, undefined, point);
+        return {
+          runId: tone.runId, featureId: "tone", usedTokens: tone.usedTokens, limitTokens: tone.limitTokens, ceilingTokens: tone.limitTokens, baseCeilingTokens: 12_000_000,
+          plan: tone.plan, planRatio: null, planPoint: point, heldTokens: charge?.runs[0]?.chargeTokens ?? 0, othersUsedTokens: used - tone.usedTokens,
+          pool: { initiativeId: "pnmforge", limitTokens: POOL_19_6, usedTokens: used, committedTokens: charge?.planCommittedTokens ?? 0, forecastTokens: null, ratio: null, features: 6, waiting: waiting.map((w) => ({ ...w })), cost: { capUsd: 25, ceilingUsd: 31.25, spentUsd: 4, remainingUsd: 21, forecastUsd: null } },
+        };
+      };
+      expect(planShareDecision(inputs("high"))).toMatchObject({ needTokens: 6_200_000, over: true });
+      expect(planShareDecision(inputs("expected"))).toMatchObject({ needTokens: 3_900_000, over: false });
+    });
   });
 });

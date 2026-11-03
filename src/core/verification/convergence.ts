@@ -9,10 +9,13 @@ import {
   chainFindings,
   chainRecord,
   chainSubject,
+  chainTaskRecords,
   correctiveChain,
+  recordRewriteRepeats,
   recordUnchangedRepeats,
   rewriteStep,
   rewritesSymbol,
+  withRewrites,
 } from "../workflows/finding-chain.js";
 import { counterexampleOf } from "../workflows/quality/properties.js";
 import { recoveryAdvice } from "../workflows/remedies.js";
@@ -45,7 +48,8 @@ import { canHold, requestedDeliverable } from "./deliverable-paths.js";
 import { isFailedTestLine } from "./failed-test-line.js";
 import { checkSites, keptSites, recordSites, type SiteCheck, sitesStep } from "./family-sites.js";
 import { noteSiblingFindings } from "./initiative-ownership.js";
-import { emptyTestRun, growingCounts } from "./output-counts.js";
+import { emptyTestRun, growingCounts, heldTests } from "./output-counts.js";
+import { plainOutput } from "./plain-output.js";
 import { reproCannotSeeCorrection } from "./repro.js";
 import { normalizeVolatile } from "./volatile.js";
 
@@ -359,9 +363,14 @@ export function failureSignature(output: string): string {
  * and its 'the default "test/" directory doesn't exist' exits 65 (#1494), and PHPUnit's "No tests executed!" (#1491; Pest says "No tests found") and busted's "No test files found matching Lua pattern" (#1495), and a TAP plan of no tests, `1..0` (bats on an empty folder, #1497), CTest's "No tests were found!!!" (exit 0) or a GoogleTest binary's "0 tests from 0 test suites ran" (#1490). A test target that exists and holds no test yet (Swift's "Executed 0 tests" and "Test run with 0 tests", dotnet's "No test is available in", and the zero summaries of ExUnit, OUnit, Alcotest, busted, testthat and Pester) is read by `emptyTestRun` from the runners' own summaries (#2419). A plan that writes the tests last has this state until its test tasks run, and
  * it is no defect of the code (#1031, #1208). sbt 2's "No tests to run for Test / testQuick" is
  * not one: `testQuick` (sbt 2's `test`) skips the tests its cache has seen pass, so the build may
- * hold tests; `testsRan` still reads its "Passed: Total 0" as none run (#2440).
+ * hold tests; `testsRan` still reads its "Passed: Total 0" as none run (#2440). A run that shows
+ * tests elsewhere (`heldTests`: a failing `go test ./...` beside a package's "[no test
+ * files]", an umbrella `mix test` beside an app's "There are no tests to run") collected tests
+ * (#2778).
  */
-export function noTestsCollected(output: string): boolean {
+export function noTestsCollected(raw: string): boolean {
+  const output = plainOutput(raw);
+  if (heldTests(output)) return false;
   return (
     emptyTestRun(output) ||
     /\bno tests ran\b|\bno tests were found!!!|^\[==========\] 0 tests from 0 test suites ran\.|\bno tests executed!|\bno test files found matching lua pattern\b|^1\.\.0(?:[ \t]+#.*)?$|\bcollected 0 items\b|\bno tests? (?:files? )?found\b|\bno test files\b|\bno files were found in testpaths\b|\b0 test files matching\b|\bdid not discover any tests to execute\b|\bno tests to run\b(?! for .*\btestQuick\b)|\bdid not match any directory\/file\b|\btest directory "?test"? not found\b|\bno examples found\b|\ball examples were filtered out\b|^0 runs, 0 assertions\b|\bthe default "test\/" directory doesn't exist\b|^Result: NOTESTS\b/im.test(
@@ -1175,6 +1184,12 @@ export function appendCorrections(
     ? chainFindings(store, runId, findings)
     : new Map();
   const chainRecords: ChainRecord[] = [];
+  // The run's earlier chain decisions, read once, for each record's count of rewrites (#2568).
+  let earlierChains: ChainRecord[] | null = null;
+  const earlier = (): ChainRecord[] => {
+    if (!earlierChains) earlierChains = chainTaskRecords(store, runId);
+    return earlierChains;
+  };
   const siteRecords: { taskId: string; findingIds: string[]; sites: SiteCheck[] }[] = [];
   const additions = [...groups].map(([key, group]) => {
     const id = `T${String(next++).padStart(3, "0")}`;
@@ -1182,7 +1197,10 @@ export function appendCorrections(
       ? null
       : correctiveChain(known, group.findings.filter(chainable));
     const record = found
-      ? chainRecord(id, found.finding, found.chain, policy.chainRewrite ?? "off")
+      ? withRewrites(chainRecord(id, found.finding, found.chain, policy.chainRewrite ?? "off"), [
+          ...earlier(),
+          ...chainRecords,
+        ])
       : null;
     if (record) chainRecords.push(record);
     // A rewrite of a family across files may write each file of its chain (#2334).
@@ -1293,6 +1311,8 @@ export function appendCorrections(
   // A finding back after its corrective changed no file (#2137, shadow); v1, v2 and a granted
   // round all open review and convergence correctives here.
   recordUnchangedRepeats(store, runId, policy, findings.filter(chainable));
+  // A finding after two rewrites of its symbol or family is the convergence ask (#2568, shadow).
+  recordRewriteRepeats(store, runId, policy, chainRecords);
   state.correctionHashes.push(artifact.content_hash);
   state.manifest.correctionHashes = [...state.correctionHashes];
   state.graph = graph;

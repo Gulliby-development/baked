@@ -119,6 +119,9 @@ const RowFramework = z.enum([
   "pest",
   "exunit",
   "dart",
+  "kotlin",
+  "scalatest",
+  "munit",
 ]);
 const RowPackage = z
   .string()
@@ -163,8 +166,8 @@ export const TaskSchema = z
           .object({
             framework: RowFramework,
             /**
-             * The Go package, Java package, C# namespace or PHP namespace (dots for backslashes) of
-             * the harness and the host's test.
+             * The Go package, Java or Kotlin package, Scala package, C# namespace or PHP namespace
+             * (dots for backslashes) of the harness and the host's test.
              */
             package: RowPackage.optional(),
             harness: RelativePath,
@@ -731,7 +734,8 @@ export const PolicySchema = z
     /**
      * The sibling probe of a chain rewrite (#1969): `on` asks the `chain-family` profile once per
      * rewrite corrective for a family of inputs around the chain's repros; the host runs them and
-     * a failing case joins the chain's battery as a finding. Needs `chainRewrite`. Absent is off.
+     * a failing case joins the chain's battery as a finding. Needs `chainRewrite`. Absent is off,
+     * except for the second rewrite of one symbol or family, which probes either way (#2568).
      */
     chainProbe: z.literal("on").optional(),
     /**
@@ -755,9 +759,11 @@ export const PolicySchema = z
      * The host's write of a prescribed row file (row-file.ts, host-apply.ts, #2528): `on` lets the
      * host write a planned task's test file from its shape (the file in the task's base or the
      * task's `reference`) and the rows the request prescribes, when the host apply decision would
-     * write it, and start no session; the task's checks decide it. Absent means shadow (the
-     * decision is recorded under `host-apply/tasks/`, the session runs), so stored policies keep
-     * their hash.
+     * write it, and start no session; the task's checks decide it. A session that still writes
+     * such a file (no row shape for its language, a shape the host cannot read) gets `place_rows`
+     * (`src/core/tools/place-rows.ts`, #2564), which inserts the request's rows as written. Absent
+     * means shadow (the decision is recorded under `host-apply/tasks/`, the tool that would have
+     * been offered under `place-rows/`, the session runs), so stored policies keep their hash.
      */
     rowFileWrite: z.literal("on").optional(),
     /**
@@ -836,6 +842,14 @@ export const PolicySchema = z
      */
     rowRunRoute: z.literal("on").optional(),
     /**
+     * The host's answer to a spec conflict about a test file whose rows the request prescribes
+     * (conflict-row-reply.ts, #2493): `on` lets the host compare the file with the rows and, when
+     * it drifts, reply with the row diff and keep the request side, instead of a model settle.
+     * Absent means shadow (the decision and the reply are recorded under `conflicts/rows/`, the
+     * conflict takes the other settles), so stored policies keep their hash.
+     */
+    conflictRowReply: z.literal("on").optional(),
+    /**
      * The host's restore of a prescribed row whose long byte run a delivered test file counts
      * differently, outside the checks stage (row-restore.ts `rowRunRestores`, #2543): on resume of
      * a run blocked `invalid_output` and before a task's session, the host replaces the row's line
@@ -875,6 +889,13 @@ export const PolicySchema = z
      * their hash.
      */
     baselineFix: z.literal("on").optional(),
+    /**
+     * The implementer's pitfalls (pitfall-notes.ts, #2598): `on` gives an implementer step the
+     * `LANGUAGE_PITFALLS` notes of the languages its task writes and, as one-line rules, the first
+     * error line of the run's other tasks' failing checks. Absent means shadow: each step records
+     * what it would get under `pitfalls/tasks/`, so stored policies keep their hash.
+     */
+    languagePitfalls: z.literal("on").optional(),
     /**
      * The project's choices for the anti-slop rule pack (quality/rules.ts), which is always on:
      * rules turned off, severities changed and ast-grep rule files added. Absent means the
@@ -951,6 +972,22 @@ export const PolicySchema = z
          * the rows are recorded in `sizing/plan-N.json` (`rowVolume`, mode `shadow`) only.
          */
         rowVolume: z.boolean().optional(),
+        /**
+         * Prices a feature that documents the program (`documentsProgram`: a README, `docs/` or
+         * examples, beside legal files) at the commands the request lists times a per-command
+         * rate plus one README correction round, with the high end at the measured actual-to-low
+         * spread (`documentedSurfaceRate`, #2569). Absent means off: the price is recorded on the
+         * feature's estimate (`documentedSurface`, mode `shadow`) only.
+         */
+        documentedSurface: z.boolean().optional(),
+        /**
+         * Prices a feature with fewer paths than its size pool's median, where the pool's tokens
+         * do not follow their paths (no path fit), at the square root of that path share of the
+         * pool's range, and a feature of legal files alone (a `LICENSE`) at the per-path rate
+         * (`fewPathShare`, #2640). Documentation features keep their price. Absent means off: the
+         * size pool prices them as features of its usual paths.
+         */
+        fewPathPrice: z.boolean().optional(),
         /**
          * Weighs an initiative estimate's finished features by how recent their initiative is: a
          * feature's weight halves for every this many initiatives started after its own
@@ -1644,6 +1681,8 @@ export const EXTEND_WITHIN_DOLLARS_MODES = ["off", "shadow", "on"] as const;
 export const TIME_POOL_GROWTH_MODES = ["off", "shadow"] as const;
 /** The modes of `workflows.stageReserve` (#2241); see `initiatives/growth.ts`. */
 export const STAGE_RESERVE_MODES = ["off", "shadow", "on"] as const;
+/** The modes of `workflows.planChargeExpected` (#2534); see `initiatives/token-pool.ts`. */
+export const PLAN_CHARGE_EXPECTED_MODES = ["off", "shadow", "on"] as const;
 export const WorkflowConfigSchema = z
   .object({
     enabled: z.boolean().default(true),
@@ -1692,6 +1731,22 @@ export const WorkflowConfigSchema = z
      * event and the run still stops; `on` grows the bound; `off` records nothing.
      */
     stageReserve: z.enum(STAGE_RESERVE_MODES).optional(),
+    /**
+     * Which point of an open feature run's sized plan an initiative's token pool holds while no
+     * plan-to-actual ratio is measured (#2534): `shadow`, the default, holds the high end as before
+     * and records what holding the expected need would free (`budget.planCharge.expected`, and a
+     * `decision.would_release` at a share gate it would turn); `on` holds the expected need, never
+     * below what the run used; `off` records nothing.
+     */
+    planChargeExpected: z.enum(PLAN_CHARGE_EXPECTED_MODES).optional(),
+    /**
+     * The folder that holds new runs' worktrees, `<root>/<run's 8 hex digits>/main` (#2461):
+     * absolute, starting with `~`, or relative to the project. Unset, they live in the project's
+     * `.baked/worktrees`. A short folder such as `C:\.bk` keeps a task's checks under the path
+     * length a toolchain handles on Windows (`WORKTREE_PATH_LIMITS`). It must be on the project's
+     * drive; a run's worktree keeps the folder it was created in.
+     */
+    worktreeRoot: z.string().trim().min(1).max(240).optional(),
     /**
      * Deadlines and stall limits (milliseconds): a tool call that never returns, a model attempt
      * with no progress, and how often a stalled run resumes by itself. Defaults in `stall.ts`.
@@ -1760,6 +1815,7 @@ export const EventType = z.enum([
   "attempt.finished",
   "attempt.advisory",
   "attempt.recovery",
+  "attempt.large_prompt",
   "decision.would_stop",
   "decision.would_resume",
   "decision.would_rerun",
@@ -1962,6 +2018,36 @@ export const EventSchema = z.discriminatedUnion("type", [
           transport: z.literal("exec").optional(),
           effort: z.string().optional(),
           detail: z.string().max(500),
+        })
+        .strict(),
+    })
+    .strict(),
+  // A task attempt's first prompt was more than three times the median first attempt of the run,
+  // with the section that holds the most bytes (#2597, `largePrompt` in prompt-sections.ts).
+  z
+    .object({
+      ...EventBase,
+      type: z.literal("attempt.large_prompt"),
+      payload: z
+        .object({
+          attemptId: SafeId,
+          taskId: SafeId.nullable(),
+          firstBytes: z.number().int().nonnegative(),
+          medianBytes: z.number().int().nonnegative(),
+          firstAttempts: z.number().int().positive(),
+          largest: z.object({ name: z.string(), bytes: z.number().int().nonnegative() }).strict(),
+          // What the bound on the evidence section cut (#2617, `boundEvidence`).
+          evidence: z
+            .object({
+              budget: z.number().int().nonnegative(),
+              keptChars: z.number().int(),
+              collapsed: z.number().int().nonnegative(),
+              summarized: z.number().int().nonnegative(),
+              cutChars: z.number().int().nonnegative(),
+              cut: z.array(z.string()),
+            })
+            .strict()
+            .optional(),
         })
         .strict(),
     })

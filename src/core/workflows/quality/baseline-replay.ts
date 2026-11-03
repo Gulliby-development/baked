@@ -8,6 +8,7 @@
  */
 import { posix } from "node:path";
 import { buildFailure, FAILED_TESTS, type TestRunner } from "../../verification/output-counts.js";
+import { plainOutput } from "../../verification/plain-output.js";
 import { toolchainCommand } from "../toolchain.js";
 import type { ResolutionDiff } from "./dependency-resolution.js";
 import { isTestCodePath } from "./duplication.js";
@@ -195,6 +196,9 @@ export const REPLAY_TARGETS: Record<
   pester: { none: "Pester runs each test file as its own container" },
   testthat: { none: "testthat runs each test file in its own environment" },
   go: { none: "go test builds each package on its own, and a package's files build together" },
+  unittest: {
+    none: "unittest imports each test module on its own: one that does not import is a failed test and the others run",
+  },
   // A collection error aborts the session; this flag collects and runs the other files, and each
   // file that does not collect is named in an "ERROR collecting" line.
   pytest: ({ args, tests }) =>
@@ -365,6 +369,8 @@ export const REPLAY_KEEP_GOING: Record<TestRunner, KeepGoingRow | { none: string
   phpunit: { programs: ["phpunit"], stop: PHPUNIT_STOPS },
   pest: { programs: ["pest"], stop: ["--bail", ...PHPUNIT_STOPS] },
   rspec: { programs: ["rspec"], stop: ["--fail-fast"] },
+  // `python -m unittest -f` stops at the first failing test (#2737).
+  unittest: { programs: ["unittest"], stop: ["-f", "--failfast"] },
   minitest: { programs: ["rails"], verbs: ["test"], stop: ["--fail-fast", "-f"] },
   busted: { none: "busted runs every spec file and keeps going after a failure by default" },
   ctest: { programs: ["ctest"], stop: ["--stop-on-failure"] },
@@ -466,7 +472,7 @@ export function replayTargetRecords(
   outcome: { status: "passed" | "failed" | "timeout"; output: string },
   toWorkspace: (path: string) => string,
 ): BaselineReplayTarget[] {
-  const names = FAILED_TESTS[run.runner](outcome.output);
+  const names = FAILED_TESTS[run.runner](plainOutput(outcome.output));
   const errors = outcome.status === "failed" ? (buildFailure(outcome.output, 1000) ?? []) : [];
   const target = (path: string, failed: string[], build: string[]): BaselineReplayTarget => ({
     path,

@@ -6,7 +6,7 @@ import { DEFAULT_CONFIG } from "../src/config/index.js";
 import { hashBytes, hashJson } from "../src/core/specs/hash.js";
 import { defaultWorkflowPolicy } from "../src/core/workflows/defaults.js";
 import { SUPPORTED_LANGUAGES, type SupportedLanguage } from "../src/core/intelligence/language-records.js";
-import { CHAIN_REWRITE_AT, type ChainFinding, type ChainRecord, chainMembers, chainRecord, containsSymbol, type FamilyRecord, familyKey, findingChain, rewriteStep, symbolKey } from "../src/core/workflows/finding-chain.js";
+import { CHAIN_REWRITE_AT, CHAIN_REWRITE_REPEAT_AT, type ChainFinding, type ChainRecord, chainMembers, chainRecord, containsSymbol, DESIGN_NOTE, type FamilyRecord, familyKey, findingChain, rewriteStep, symbolKey } from "../src/core/workflows/finding-chain.js";
 import { type Check, type Repro, ReviewSchema, type RunPolicy, type Spec, type Task } from "../src/core/workflows/schemas.js";
 import { NativeWorkflowService } from "../src/core/workflows/service.js";
 import { newId } from "../src/core/workflows/store.js";
@@ -61,7 +61,7 @@ interface Correction {
   title: string;
   description: string;
   findingIds: string[];
-  battery?: { symbol: string; findings: string[]; cases: { findingId: string; command: string; expected: string; actual: string }[]; spec: { criteria: { id: string }[] }; note: string };
+  battery?: { symbol: string; findings: string[]; cases: { findingId: string; command: string; expected: string; actual: string }[]; spec: { criteria: { id: string }[] }; note: string; design?: { findingId: string; suggestedFix: string; note: string } };
   saved?: Record<string, unknown>;
 }
 
@@ -303,7 +303,9 @@ describe("scenario: R62 md-site, a finding chain on one symbol (#1959)", () => {
     const out = join(dir, "run.sqlite.gz");
     exportTrace(root, out);
     const replayed = replayTrace(out).runs.find((r) => r.runId === runId);
-    expect(replayed?.findingChains.filter((b) => b.kind !== "crash").map((b) => [b.kind, b.recorded, b.replayed])).toEqual([["rewrite", "rewrite", "rewrite"], ["battery", "pass", "pass"]]);
+    // A first rewrite has no earlier one (#2568): no forced probe, no design, no ask.
+    expect(replayed?.findingChains.filter((b) => b.kind !== "crash").map((b) => [b.kind, b.recorded, b.replayed])).toEqual([["rewrite", "rewrite", "rewrite"], ["rewrite_repeat", "none", "none"], ["battery", "pass", "pass"]]);
+    expect(rewrite?.battery?.design).toBeUndefined();
     // Each battery case records its output tail and crash decision in shadow (#2136): none crashed.
     expect(replayed?.findingChains.filter((b) => b.kind === "crash").every((b) => b.recorded === "pass" && b.replayed === "pass")).toBe(true);
     expect(replayed?.newChainDecisions).toBe(0);
@@ -415,13 +417,85 @@ describe("scenario: R62 md-site, a sibling probe at the second link of a chain (
     expect(replayTrace(out, { familyRule: () => "skip" }).runs.find((r) => r.runId === runId)?.newChainDecisions).toBe(2);
   }, 120_000);
 
-  test("with chainProbe off, the next member is found by another review round", async () => {
+  test("with chainProbe off, the first rewrite runs no probe and the next member is found by another review round; the second rewrite probes (#2568)", async () => {
     const { done, executor, artifacts } = await drive({ policy: { chainRewrite: "on" }, members: FOUR, batteryOnly: true, probe: ["c", "d"] });
     expect(done.status).toBe("completed");
-    expect(executor.calls.filter((c) => c.output === "chain-family")).toEqual([]);
-    expect(artifacts("chains/family/")).toEqual([]);
-    expect(executor.corrections.map((c) => c.findingIds)).toEqual([["F1"], ["F2"], ["F3"], ["F4"]]);
-    expect(executor.calls.filter((c) => c.output === "convergence").length).toBeGreaterThan(3);
+    const [, first, second, ...rest] = executor.corrections;
+    expect(rest).toEqual([]);
+    expect(executor.corrections.map((c) => c.findingIds)).toEqual([["F1"], ["F2"], ["F3"]]);
+    // No probe before the first rewrite: review found c one round later.
+    const probes = executor.calls.flatMap((c, index) => (c.output === "chain-family" ? [index] : []));
+    expect(probes).toHaveLength(1);
+    expect(probes[0]).toBeGreaterThan(executor.calls.findIndex((c) => c.taskId === first?.taskId));
+    expect(probes[0]).toBeLessThan(executor.calls.findIndex((c) => c.taskId === second?.taskId));
+    // The second rewrite's probe found d, so no fourth finding round comes.
+    expect((artifacts("chains/family/") as unknown as FamilyRecord[]).map((f) => [f.taskId, f.seededBy, f.cases.map((c) => c.decision)])).toEqual([[second?.taskId, [first?.taskId], ["join"]]]);
+    expect(second?.battery?.cases.map((c) => c.command.match(/case-(\w)/)?.[1])).toEqual(["a", "b", "c", "d"]);
+    expect(executor.calls.filter((c) => c.output === "convergence")).toHaveLength(4);
+  }, 120_000);
+});
+
+// R83 md-site (#2568): `findDelimited` was rewritten twice (T012, T013), each rewrite passing its
+// battery of the members review had found, and the next round found a mixed-marker member each
+// time. Here the class has four members, a rewrite makes only the cases it is shown pass, and the
+// probe finds nothing new: the second rewrite still probes once with `chainProbe` absent and gets
+// the reviewer's suggested fix as design, and the finding after two rewrites records the
+// convergence ask in shadow.
+describe("scenario: R83 md-site, a second rewrite of one symbol (#2568)", () => {
+  const FOUR = ["a", "b", "c", "d"] as const;
+
+  test("the second rewrite probes once with chainProbe absent and carries the reviewer's design; a finding after two rewrites records the convergence ask with rewrites: 2", async () => {
+    const { root, runId, done, executor, service, artifacts } = await drive({ policy: { chainRewrite: "on" }, members: FOUR, batteryOnly: true, probe: ["pass"] });
+    expect(done.status).toBe("completed");
+    expect(service.store.run(runId).policy_json).not.toContain("chainProbe");
+    expect(CHAIN_REWRITE_REPEAT_AT).toBe(2);
+    const [patch, first, second, third, ...rest] = executor.corrections;
+    expect(rest).toEqual([]);
+    expect([patch, first, second, third].map((c) => c?.findingIds)).toEqual([["F1"], ["F2"], ["F3"], ["F4"]]);
+    // F3 passes nothing the first rewrite was shown: it is a new member of the class.
+    expect(first?.battery?.cases.map((c) => c.findingId)).toEqual(["F1", "F2"]);
+    // One probe, before the second rewrite's attempt, seeded with the first rewrite's battery.
+    const probes = executor.calls.flatMap((c, index) => (c.output === "chain-family" ? [index] : []));
+    expect(probes).toHaveLength(1);
+    expect(probes[0]).toBeGreaterThan(executor.calls.findIndex((c) => c.taskId === first?.taskId));
+    expect(probes[0]).toBeLessThan(executor.calls.findIndex((c) => c.taskId === second?.taskId));
+    const [family, ...others] = artifacts("chains/family/") as unknown as FamilyRecord[];
+    expect(others).toEqual([]);
+    expect(family).toMatchObject({ taskId: second?.taskId, findingId: "F3", shown: ["F1", "F2", "F3"], seededBy: [first?.taskId] });
+    // The first rewrite has no design; the second carries the latest reviewer suggestedFix.
+    expect(first?.battery?.design).toBeUndefined();
+    expect(second?.battery?.design).toEqual({ findingId: "F3", suggestedFix: "Handle case-c", note: DESIGN_NOTE });
+    expect(second?.saved?.battery).toEqual(second?.battery);
+    expect(third?.battery?.design?.findingId).toBe("F4");
+    // Each chain record counts the earlier rewrites of the symbol.
+    const decisions = artifacts("chains/tasks/") as unknown as ChainRecord[];
+    expect(decisions.map((d) => [d.findingId, d.decision, d.rewrites, d.rewrittenBy, d.repeat])).toEqual([
+      ["F2", "rewrite", 0, undefined, undefined],
+      ["F3", "rewrite", 1, [first?.taskId], "probe"],
+      ["F4", "rewrite", 2, [first?.taskId, second?.taskId], "ask"],
+    ]);
+    // The third finding records the convergence ask in shadow; its corrective still runs.
+    const asks = service.store.eventsOfType(runId, "decision.would_stop").flatMap((e) => (e.type === "decision.would_stop" && e.payload.reason === "chain_rewrite_repeat" ? [e.payload] : []));
+    expect(asks).toHaveLength(1);
+    expect(asks[0]).toMatchObject({ mode: "shadow", key: `task-${third?.taskId}`, inputs: { findingId: "F4", symbol: "findDelimitedInline", rewrites: 2, rewrittenBy: [first?.taskId, second?.taskId], chain: ["F1", "F2", "F3", "F4"] } });
+    expect(readFileSync(join(root, "inline.txt"), "utf8")).toContain("case-d");
+
+    // The counts replay from the bench trace, and a rule without the count differs on two.
+    const dir = mkdtempSync(join(tmpdir(), "finding-chain-repeat-trace-"));
+    cleanups.push(() => rmSync(dir, { recursive: true, force: true }));
+    const out = join(dir, "run.sqlite.gz");
+    exportTrace(root, out);
+    const replayed = replayTrace(out).runs.find((r) => r.runId === runId);
+    expect(replayed?.findingChains.filter((b) => b.kind === "rewrite_repeat").map((b) => [b.key, b.recorded, b.replayed])).toEqual([
+      [`${first?.taskId}#rewrites`, "none", "none"],
+      [`${second?.taskId}#rewrites`, "probe", "probe"],
+      [`${third?.taskId}#rewrites`, "ask", "ask"],
+    ]);
+    expect(replayed?.newChainDecisions).toBe(0);
+    expect(replayTrace(out, { rewriteRepeatRule: () => "none" }).runs.find((r) => r.runId === runId)?.newChainDecisions).toBe(2);
+    const traced = openTrace(out);
+    cleanups.push(traced.dispose);
+    expect(replayChainEscalation(traced.store, runId).steps.filter((s) => s.decision === "rewrite").map((s) => [s.findingId, s.rewrites, s.repeat])).toEqual([["F2", 0, "none"], ["F3", 1, "probe"], ["F4", 2, "ask"]]);
   }, 120_000);
 });
 
