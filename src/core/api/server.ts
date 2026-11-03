@@ -353,6 +353,13 @@ function errorOf(error: unknown): {
     };
   if (error instanceof SyntaxError)
     return { status: 400, code: "INVALID_REQUEST", message: error.message };
+  // decodeURIComponent of a path segment with a malformed percent escape (#2790).
+  if (error instanceof URIError)
+    return {
+      status: 400,
+      code: "INVALID_REQUEST",
+      message: "The path has a malformed percent escape",
+    };
   return {
     status: 500,
     code: "INTERNAL",

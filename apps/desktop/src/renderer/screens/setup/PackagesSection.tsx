@@ -12,11 +12,11 @@ import type { SectionProps } from "../sections.js";
 import { CreatePackageDialog, InstallPackageDialog, removeSummary } from "./PackageDialogs.js";
 import {
   errorText,
-  GROW,
   LINE,
   LIST,
   LoadState,
   NOTE,
+  ROW_TEXT,
   SETUP,
   STACK,
   Tag,
@@ -84,7 +84,7 @@ function Installed({
       <span className="flex size-8 shrink-0 items-center justify-center rounded-base border-2 border-border bg-main text-main-foreground">
         <Icon name="packages" size={16} />
       </span>
-      <span className={cn(GROW, STACK, "gap-1")}>
+      <span className={cn(ROW_TEXT, STACK, "gap-1")}>
         <span className="font-semibold text-foreground">
           {item.name} <span className="font-mono font-normal">{item.version}</span>
         </span>
