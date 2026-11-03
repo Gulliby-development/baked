@@ -235,6 +235,7 @@ export function mergeConfigs(global: AppConfig, project: Partial<AppConfig> | nu
     const watchdogTimeouts = layer.watchdogTimeouts
       ? { ...merged.watchdogTimeouts, ...layer.watchdogTimeouts }
       : merged.watchdogTimeouts;
+    const watch = layer.watch ? { ...merged.watch, ...layer.watch } : merged.watch;
     const mcpServers = mergeMCPServers(merged.mcpServers, layer.mcpServers);
     // Merged before the spread below replaces merged.modelRouting with the layer's own.
     const routing = mergeModelRouting(merged.modelRouting, layer.modelRouting);
@@ -255,6 +256,7 @@ export function mergeConfigs(global: AppConfig, project: Partial<AppConfig> | nu
       ...(runBudget ? { runBudget } : {}),
       ...(coordinator ? { coordinator } : {}),
       watchdogTimeouts,
+      ...(watch ? { watch } : {}),
       mcpServers,
     };
     if (routing) merged.modelRouting = routing;
@@ -351,7 +353,12 @@ export function removeGlobalConfigKeys(keys: string[]): void {
   } catch {}
 }
 
-const NESTED_KEYS = [
+/**
+ * Config objects whose fields merge one by one over the defaults (`loadConfig`). `mergeConfigs`
+ * merges each of them project over global too, except `workflows`, which a project replaces
+ * whole (`readGates`); `tests/config.test.ts` fails when a key here is missing there (#2730).
+ */
+export const NESTED_KEYS = [
   "theme",
   "codeIntelligence",
   "thinking",
