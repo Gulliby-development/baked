@@ -668,11 +668,11 @@ function gateFlags(root: string, files: readonly string[]): Map<string, string[]
   );
 }
 
-/** The JUnit and xUnit test files that hold an inline acceptance rows block. */
+/** The JUnit (Java or Kotlin) and xUnit test files that hold an inline acceptance rows block. */
 function inlineRowFiles(root: string, files: readonly string[]): Set<string> {
   return new Set(
     files.filter((path) => {
-      if (!/\.(?:java|cs)$/.test(path)) return false;
+      if (!/\.(?:java|kt|cs)$/.test(path)) return false;
       try {
         return INLINE_ROWS_BEGIN.test(readFileSync(join(root, path), "utf8"));
       } catch {
