@@ -244,12 +244,18 @@ const GTEST_SUMMARY = /^\[==========\] (\d+) tests? from \d+ test (?:suites?|cas
 const PEST_SUMMARY = /^\s*Tests:\s+((?:\d+ \w+(?:, )?)+) \(\d+ assertions?\)/m;
 
 /**
+ * Surefire's summary of a module, "[INFO] Tests run: 12, Failures: 0, Errors: 0, Skipped: 0", with
+ * ", Flakes: 1" after it when a test failed and then passed on a rerun (`rerunFailingTestsCount`);
+ * `Tests run` counts that test once (#2782).
+ */
+const MAVEN_SUMMARY =
+  /^\[\w+\] Tests run: (\d+), Failures: \d+, Errors: \d+, Skipped: (\d+)(?:, Flakes: \d+)?\s*$/gm;
+
+/**
  * The summary parsers, in the order `testCount` tries them: a more specific summary first, the
  * report formats any runner can print (JUnit XML, TAP) last. `ran` is the share of `count` that
  * executed, skipped and ignored tests left out, or null where the summary does not tell (#1832).
  */
-const MAVEN_SUMMARY = /^\[\w+\] Tests run: (\d+), Failures: \d+, Errors: \d+, Skipped: (\d+)\s*$/gm;
-
 const TEST_COUNTERS: readonly {
   tool: TestRunner;
   count: (output: string) => number | null;
@@ -721,7 +727,18 @@ export const FAILED_TESTS: Record<TestRunner, (output: string) => string[]> = {
   dotnet: (o) => captured(o, /^\s*Failed (\S+) \[/gm),
   // "[ERROR] app.ParserTest.keepsBlank -- Time elapsed: 0.01 s <<< FAILURE!" (surefire 3), or
   // "[ERROR] keepsBlank(app.ParserTest)  Time elapsed: 0.01 s  <<< ERROR!" (surefire 2)
-  maven: (o) => captured(o, /^\[ERROR\] (\S+?)(?: --)?\s+Time elapsed: .*<<< (?:FAILURE|ERROR)!/gm),
+  // A test surefire lists under "[WARNING] Flakes:" failed and then passed on a rerun (#2782).
+  maven: (o) => {
+    const flaky = new Set(
+      [
+        ...o.matchAll(/^\[WARNING\] Flakes: *\r?\n((?:\[\w+\] .*\r?\n?)*?)\[INFO\] *\r?$/gm),
+      ].flatMap((m) => captured(m[1] ?? "", /^\[WARNING\] (\S+)\s*$/gm)),
+    );
+    return captured(
+      o,
+      /^\[ERROR\] (\S+?)(?: --)?\s+Time elapsed: .*<<< (?:FAILURE|ERROR)!/gm,
+    ).filter((name) => !flaky.has(name));
+  },
   // "--- FAIL: TestKeepsBlank (0.00s)", subtests included
   go: (o) => captured(o, /^\s*--- FAIL: (\S+)/gm),
   // "1) Tests\\SumTest::testAdds" under "There was 1 failure:" or "There were 2 errors:", not
