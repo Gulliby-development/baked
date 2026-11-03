@@ -6,7 +6,11 @@ import { canonical, hashJson } from "../specs/hash.js";
 import { workspacePath } from "../specs/validate.js";
 import { rootField } from "../workflows/effects.js";
 import { pendingPrerequisite } from "../workflows/gate-prerequisites.js";
-import type { ProcessResult, ProcessScope } from "../workflows/process-scope.js";
+import {
+  inStreamOrder,
+  type ProcessResult,
+  type ProcessScope,
+} from "../workflows/process-scope.js";
 import { generatedPaths, type RunPolicy } from "../workflows/schemas.js";
 import { recordWouldStop, stopMode } from "../workflows/stop-reasons.js";
 import type { WorkflowStore } from "../workflows/store.js";
@@ -320,6 +324,8 @@ export class CheckRunner {
   ): Promise<{
     status: "passed" | "failed" | "inconclusive";
     output: string;
+    /** `output` with the command's pipes in stream order, for a signature (`inStreamOrder`, #2859). */
+    signatureOutput: string;
     truncated: boolean;
     /** The recorded timeout when the command ran out of time (#2358). */
     timeout?: CommandTimeout;
@@ -348,16 +354,23 @@ export class CheckRunner {
           root,
           timeoutMs: limit,
         });
+        const output = `${result.output}\n\nNote: ${check.id}: ${timeout.note}.`;
         return {
           status,
-          output: `${result.output}\n\nNote: ${check.id}: ${timeout.note}.`,
+          output,
+          signatureOutput: inStreamOrder(output, result.streams),
           truncated: result.truncated,
           timeout,
         };
       }
-      return { status, output: result.output, truncated: result.truncated };
+      return {
+        status,
+        output: result.output,
+        signatureOutput: inStreamOrder(result.output, result.streams),
+        truncated: result.truncated,
+      };
     } catch {
-      return { status: "inconclusive", output: "", truncated: false };
+      return { status: "inconclusive", output: "", signatureOutput: "", truncated: false };
     }
   }
   async run(
@@ -371,6 +384,8 @@ export class CheckRunner {
     evidenceId: string;
     snapshotId: string;
     output: string;
+    /** `output` with the command's pipes in stream order, for a signature (`inStreamOrder`, #2859). */
+    signatureOutput: string;
     /** Why the status is what it is: `exit`, `spawn_error`, `timeout`, `cancelled`, `source_changed`, `environment_broken`. */
     reason: string;
   }> {
@@ -381,13 +396,16 @@ export class CheckRunner {
     const prerequisite = pendingPrerequisite(check, policy.checks, root);
     if (prerequisite) {
       const ran = await this.run(runId, attemptId, prerequisite.check, signal, root);
-      if (ran.status !== "passed")
+      if (ran.status !== "passed") {
+        const lead = prerequisite.marker
+          ? `${check.id} reads what ${prerequisite.check.id} writes (${prerequisite.marker}), which this directory does not have, so the host ran ${prerequisite.check.id} first and it did not pass:`
+          : `${check.id} runs what ${prerequisite.check.id} builds, so the host ran ${prerequisite.check.id} first to build the current sources and it did not pass:`;
         return {
           ...ran,
-          output: prerequisite.marker
-            ? `${check.id} reads what ${prerequisite.check.id} writes (${prerequisite.marker}), which this directory does not have, so the host ran ${prerequisite.check.id} first and it did not pass:\n\n${ran.output}`
-            : `${check.id} runs what ${prerequisite.check.id} builds, so the host ran ${prerequisite.check.id} first to build the current sources and it did not pass:\n\n${ran.output}`,
+          output: `${lead}\n\n${ran.output}`,
+          signatureOutput: `${lead}\n\n${ran.signatureOutput}`,
         };
+      }
     }
     const generated = generatedPaths(policy);
     for (const path of check.writes) workspacePath(root, path);
@@ -599,7 +617,7 @@ export class CheckRunner {
       };
     // `output` already holds stdout and stderr interleaved; storing them again tripled a 2 MB
     // pytest diff in one artifact (#993).
-    const { stdout: _stdout, stderr: _stderr, ...recorded } = result;
+    const { stdout: _stdout, stderr: _stderr, streams: _streams, ...recorded } = result;
     const evidenceId = this.store.transaction(() => {
       this.store.effectStatus(runId, effectId, "reconciled");
       const artifact = this.store.artifact(
@@ -639,6 +657,7 @@ export class CheckRunner {
       evidenceId,
       snapshotId: snapshot.id,
       output: result.output,
+      signatureOutput: inStreamOrder(result.output, result.streams),
       reason,
     };
   }

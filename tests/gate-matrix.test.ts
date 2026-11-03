@@ -16,7 +16,7 @@ import { fixtureSpec, workflowFixture } from "./helpers/workflow-fixture.js";
 import { slicedCorrective } from "./helpers/sliced-corrective-scenario.js";
 import { evidencePaths, scopeRecord, stackFrames } from "../src/core/workflows/corrective-scope.js";
 import { cellSamples, cellSpec, omittedCellInput, withoutCellInput } from "./helpers/criteria-cell-fixtures.js";
-import { ProcessScope, windowsBatchInvocation, windowsProgram } from "../src/core/workflows/process-scope.js";
+import { inStreamOrder, ProcessScope, windowsBatchInvocation, windowsProgram } from "../src/core/workflows/process-scope.js";
 import { canRepairRun, type RepairBlock } from "../src/core/workflows/repairable.js";
 import {
   growthLimit,
@@ -6351,6 +6351,21 @@ describe("ci check drift gate: the PowerShell gates' cmdlets and the project's o
     expect(ciCheckDrift(readme("eslint src"), [gate("eslint", ".")])).toEqual([]);
     expect(ciCheckDrift(readme("go vet ./cmd/..."), [gate("go", "vet", "./...")])).toEqual([]);
     expect(ciCheckDrift(readme("ruff check lib"), [gate("ruff", "check", "src")]).map((d) => d.missing)).toEqual([["lib"]]);
+  });
+});
+
+describe("baseline gate: a check's signature does not depend on the order its pipes arrived in (#2859)", () => {
+  // The CI queue ejected #2805 when a Biome stand-in's stdout summary arrived before its stderr diagnostic.
+  const err = "biome.json format ━━━━━━━━━━\n  × Formatter would have printed the following content:\n";
+  const out = "Checked 2 files in 3ms. No fixes applied.\nFound 1 error.\n";
+  test("stdout first and stderr first sign alike; notes around the output stay", () => {
+    const ordered = err + out;
+    const before = inStreamOrder(`${out}${err}`, { arrival: out + err, ordered });
+    const after = inStreamOrder(`${ordered}\n\nNote: biome timed out.`, { arrival: ordered, ordered });
+    expect(failureSignature(before, "/w")).toBe(failureSignature(after.replace("\n\nNote: biome timed out.", ""), "/w"));
+    expect(after.endsWith("Note: biome timed out.")).toBe(true);
+    // A scripted process without streams keeps its output.
+    expect(inStreamOrder(out, undefined)).toBe(out);
   });
 });
 

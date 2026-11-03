@@ -1520,6 +1520,13 @@ const docGateRules = (policy: RunPolicy): GateShadowRules => ({
   doc: stopMode(policy, "doc_finding_unrepaired") === "enforce",
 });
 
+/**
+ * A check result's output for a comparison with another run: in stream order when the runner
+ * kept it (`inStreamOrder`, #2859), else as recorded.
+ */
+const signedOutput = (result: { output?: string; signatureOutput?: string }): string =>
+  result.signatureOutput ?? result.output ?? "";
+
 export class WorkflowScheduler {
   dispose(): void {
     this.executor.dispose?.();
@@ -5260,13 +5267,14 @@ export class WorkflowScheduler {
         );
         if (result.timeout) timeouts[commandKey(check)] = result.timeout.note;
         if (result.status === "failed" && check.required && !result.truncated) {
+          // In stream order: the pipes' arrival order is not fixed (#2859).
           failures[commandKey(check)] = failureSignature(
-            result.output,
+            result.signatureOutput,
             root,
             runRoots(this.store.workspace, state),
           );
           shapes[commandKey(check)] = shapedFailureSignature(
-            result.output,
+            result.signatureOutput,
             root,
             runRoots(this.store.workspace, state),
           );
@@ -13160,6 +13168,7 @@ ${note}`;
     status: "passed" | "failed" | "inconclusive";
     evidenceId: string;
     output?: string;
+    signatureOutput?: string;
     reason?: string;
   }> {
     const attempt = this.store.reserve(runId, child, null, 0, policy);
@@ -15890,7 +15899,12 @@ ${note}`;
     state: RuntimeState,
     task: Task,
     check: Check,
-    checked: { status: "passed" | "failed" | "inconclusive"; evidenceId: string; output?: string },
+    checked: {
+      status: "passed" | "failed" | "inconclusive";
+      evidenceId: string;
+      output?: string;
+      signatureOutput?: string;
+    },
     taskFailures: Review["findings"],
     checkEvidence: string[],
     policy?: RunPolicy,
@@ -15916,7 +15930,7 @@ ${note}`;
       checked.status === "failed" &&
       checked.output &&
       !failingFilesInOutput(checked.output, [task]).length &&
-      this.failsAsBaseline(runId, state, check, checked.output, true)
+      this.failsAsBaseline(runId, state, check, signedOutput(checked), true)
     )
       return undefined;
     const owner =
@@ -16117,7 +16131,7 @@ ${note}`;
       ]),
     ];
     if (scope.length) state.repairScope[findingId] = scope;
-    const signature = checked.output ? failingLines(checked.output) : "";
+    const signature = checked.output ? failingLines(signedOutput(checked)) : "";
     taskFailures.push({
       id: findingId,
       kind: "correctness",
@@ -17294,7 +17308,13 @@ ${note}`;
       }
       if ((result.status === "failed" || regression) && check.required) {
         if (!regression)
-          this.assertNotBaselineFailure(runId, state, check, result.output, result.evidenceId);
+          this.assertNotBaselineFailure(
+            runId,
+            state,
+            check,
+            signedOutput(result),
+            result.evidenceId,
+          );
         // A formatter that hung on the files hangs as their fixer too (#2240).
         if (result.reason !== "timeout_slow") failedIds.push(check.id);
         const task =
@@ -20130,6 +20150,8 @@ ${note}`;
     /** Set when the host failed the gate without running it. */
     reason?: string;
     output?: string;
+    /** `output` in stream order, for a comparison with the baseline (#2859). */
+    signatureOutput?: string;
     /** The gate timed out on the run's own work (`timeout_slow`, #2240): no fixer runs. */
     slow?: boolean;
     /** The check runner's reason for the last attempt (`exit`, `timeout`, ...). */
@@ -20185,6 +20207,7 @@ ${note}`;
           attempts,
           flaky: false,
           output: result.output,
+          signatureOutput: result.signatureOutput,
           checkReason: result.reason,
           ...(slow ? { slow } : {}),
         };
@@ -20282,7 +20305,7 @@ ${note}`;
         continue;
       }
       if (!result.reason && !regression)
-        this.assertNotBaselineFailure(runId, state, check, result.output ?? "", result.evidenceId);
+        this.assertNotBaselineFailure(runId, state, check, signedOutput(result), result.evidenceId);
       if (!result.reason && !result.slow) failedIds.push(check.id);
       const task =
         state.graph?.tasks.find((t) => t.checkIds.includes(check.id)) ?? state.graph?.tasks[0];
