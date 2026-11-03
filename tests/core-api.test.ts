@@ -522,6 +522,16 @@ describe("local core API", () => {
     expect(text.status).toBe(415);
     const missing = await post("/v1/workflow/runs/no-such-run/cancel", { commandId: newId(), expectedRevision: 0 });
     expect(missing.status).toBe(404);
+    // A malformed percent escape in a path segment is the client's mistake, not an internal fault (#2790).
+    for (const [method, path] of [
+      ["GET", "/v1/workflow/runs/%E0%A4%A"],
+      ["DELETE", "/v1/workflow/definitions/%ZZ"],
+      ["GET", "/v1/artifacts/%E0"],
+    ] as const) {
+      const badPath = await call(path, { method });
+      expect(badPath.status).toBe(400);
+      expect(((await badPath.json()) as { error: { code: string } }).error.code).toBe("INVALID_REQUEST");
+    }
 
     expect(faultStatus("CAPABILITY_DENIED")).toBe(403);
     expect(faultStatus("INVALID_DEFINITION")).toBe(400);
