@@ -94,6 +94,7 @@ import {
   repairCaseTask,
   writtenTestPaths,
 } from "../verification/criteria-cases.js";
+import { caseEvidence } from "../verification/criteria-evidence.js";
 import { canHold } from "../verification/deliverable-paths.js";
 import {
   type DocExampleResult,
@@ -767,6 +768,8 @@ import {
   requestConflictPath,
   sidesSettle,
   sideTests,
+  sliceForeignDecision,
+  sliceForeignInput,
 } from "./request-conflict.js";
 import { deliverableProblems, repairDeliverables, requestCoverage } from "./request-coverage.js";
 import {
@@ -13479,6 +13482,7 @@ ${note}`;
       result,
       account,
       report,
+      root,
       signal,
       fix,
     );
@@ -14755,6 +14759,7 @@ ${note}`;
     result: Implementation,
     account: Record<string, unknown>,
     report: string,
+    root: string,
     signal: AbortSignal,
     fix?: MisquoteFixContext,
   ): Promise<boolean | ConflictFinished> {
@@ -14815,6 +14820,8 @@ ${note}`;
       reaudit: null,
       reauditedBefore: earlier.some((r) => r.reaudit !== null),
     };
+    const slice = this.sliceForeign(spec, task, tasks, criteria, root, policy);
+    if (slice) input.slice = slice;
     let decision = requestConflictDecision(input);
     let derivations: NonNullable<Analysis["derivations"]> = [];
     if (decision === "reaudit") {
@@ -14838,20 +14845,40 @@ ${note}`;
       input.reaudit = reauditVerdicts(derivations, input.criterionIds, request);
       decision = requestConflictDecision(input);
     }
+    const foreignSlice = sliceForeignDecision(input, decision);
     const record: RequestConflictRecord = {
       taskId: task.id,
       report: earlier.length + 1,
       ...input,
       decision,
+      ...(foreignSlice ? { sliceForeign: true as const } : {}),
     };
-    this.store.transaction(() =>
+    this.store.transaction(() => {
       this.store.artifact(
         runId,
         REQUEST_CONFLICT_KIND,
         `${REQUEST_CONFLICTS_DIR}${task.id}-${record.report}.json`,
         canonical(record),
-      ),
-    );
+      );
+      // A report about literals only another slice's rows hold (#2476): shadow until promoted, so
+      // the would-stop is recorded and the person is still asked.
+      if (foreignSlice && input.slice) {
+        const mode = stopMode(policy, "slice_foreign_conflict");
+        if (mode !== "enforce")
+          recordWouldStop(this.store, runId, {
+            reason: "slice_foreign_conflict",
+            mode,
+            key: `${task.id}-${record.report}`,
+            summary: `${task.id}'s spec conflict asks for ${input.slice.missing} literal${input.slice.missing === 1 ? "" : "s"} of ${input.criterionIds.join(", ")} that the rows of ${input.slice.holders.join(", ")} (slices of ${input.slice.taskId}) hold; the host would record it as slice-foreign and ask no one`,
+            inputs: {
+              taskId: task.id,
+              report: record.report,
+              criterionIds: input.criterionIds,
+              slice: input.slice,
+            },
+          });
+      }
+    });
     if (decision !== "request") return false;
     const bySides = sidesSettle(input.sides);
     const overruled = bySides
@@ -15027,6 +15054,34 @@ ${note}`;
    * Whether this run created a file: absent from the baseline snapshot, or, without one, created
    * by a task of the plan.
    */
+  /**
+   * The slice-foreign inputs of a row slice's spec conflict (#2476): the cited criteria's whole
+   * cases (no plan identity, so no slice split them yet), which of them the slice's test files on
+   * disk lack, by the walk's evidence, and which of those another slice owns by its rows.
+   */
+  private sliceForeign(
+    spec: Spec,
+    task: Task,
+    tasks: readonly Task[],
+    criteria: Spec["criteria"],
+    root: string,
+    policy: RunPolicy,
+  ): ReturnType<typeof sliceForeignInput> {
+    if (!task.sizingSlice?.rows?.length || !criteria.length) return undefined;
+    const cases = criterionCases(
+      { ...spec, criteria },
+      { criterionIds: criteria.map((c) => c.id), writes: task.writes },
+      { checks: policy.checks },
+    ).filter((c) => !c.cited);
+    const texts = writtenTestPaths(task).map((path) => {
+      try {
+        return caseEvidence(path, readFileSync(workspacePath(root, path), "utf8"));
+      } catch {
+        return "";
+      }
+    });
+    return sliceForeignInput(task, tasks, cases, (c) => missingCases([c], texts).length === 0);
+  }
   private createdByRun(runId: string, state: RuntimeState, path: string): boolean {
     const baselineId = state.manifest.baselineSnapshotId;
     const baseline = baselineId ? this.store.snapshotFiles(runId, baselineId) : null;

@@ -1,6 +1,12 @@
-import { describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, test } from "bun:test";
+import { hashJson } from "../src/core/specs/hash.js";
 import { criterionCases } from "../src/core/verification/criteria-cases.js";
 import { defaultWorkflowPolicy } from "../src/core/workflows/defaults.js";
+import {
+  type RequestConflictRecord,
+  sliceForeignDecision,
+  sliceForeignInput,
+} from "../src/core/workflows/request-conflict.js";
 import type { RunPolicy, Spec, Task, TaskGraph } from "../src/core/workflows/schemas.js";
 import {
   ROW_TEXT_PER_CHAR,
@@ -9,6 +15,11 @@ import {
   splitTestTasks,
   suppliedRows,
 } from "../src/core/workflows/sizing.js";
+import { StopModesSchema, stopMode } from "../src/core/workflows/stop-reasons.js";
+import { newId } from "../src/core/workflows/store.js";
+import { replayRequestConflicts } from "../src/core/workflows/trace.js";
+import type { ExecutionRequest } from "../src/core/workflows/types.js";
+import { fixturePolicy, fixtureSpec, workflowFixture } from "./helpers/workflow-fixture.js";
 
 // Bench round 79 verhop (#2466): the brief gave `tests/check.bats` as 15 prescribed rows, sizing
 // split it into T004 (rows 1-7) and T007 (rows 8-15), and the task-end walk dealt AC-003's literals
@@ -187,4 +198,230 @@ describe("row slices own the criteria literals of their rows (#2466)", () => {
       ["1.2.3-alpha.1", "1.2.3-0a.01a.-.a-b.1e3", "1.2.3+", "v1.2.3", "1.2.3.4"].sort(),
     );
   });
+});
+
+// Bench round 79 verhop T004 (#2476): rows 1-7 of `tests/check.bats` reported three spec
+// conflicts about AC-003 and AC-005 literals of rows 8-15 (`conflicts/request/T004-1..3.json`,
+// decision `none` each time, the request side unverified), and the third became the blocking
+// clarification a person answered with "AC-003 and AC-005 are satisfied by the union of both
+// slices". A report whose every missing literal another slice's rows hold is slice-foreign: the
+// host records it, in shadow as a `slice_foreign_conflict` would-stop while the person is still
+// asked.
+describe("a row slice's spec conflict about another slice's literals (#2476)", () => {
+  const { path, row } = LANGUAGES[0] as (typeof LANGUAGES)[number];
+  const rows = VERSIONS.map(row);
+  const whole = (ids: string[]) =>
+    criterionCases(
+      { criteria: spec.criteria.filter((c) => ids.includes(c.id)) },
+      { criterionIds: ids },
+      { checks: [] },
+    );
+  const heldBy = (text: string) => (c: { literal: string }) => text.includes(c.literal);
+
+  test("every AC-003 literal slice 1 lacks is held by slice 2's rows: slice-foreign", () => {
+    const { tasks } = slices(path, rows);
+    const [first, second] = tasks.filter((t) => t.sizingSlice) as [Task, Task];
+    // Slice 1 wrote its own rows, as T004 did.
+    const slice = sliceForeignInput(
+      first,
+      tasks,
+      whole(["AC-003"]),
+      heldBy(rows.slice(0, 7).join("\n")),
+    );
+    expect(slice).toEqual({ taskId: "T004", missing: 3, foreign: 3, holders: [second.id] });
+    const input = { slice, foreignTests: 0 };
+    expect(sliceForeignDecision(input, "none")).toBe(true);
+    // A report the request settles, or one about a test the run did not write, is not this rule's.
+    expect(sliceForeignDecision(input, "request")).toBe(false);
+    expect(sliceForeignDecision({ ...input, foreignTests: 1 }, "none")).toBe(false);
+  });
+
+  test("a missing literal no row holds, or one of the slice's own rows, keeps the report with the slice", () => {
+    const { tasks } = slices(path, rows);
+    const [first, second] = tasks.filter((t) => t.sizingSlice) as [Task, Task];
+    // AC-002's `1.2.3-0a.01a.-.a-b.1e3` is in no row: the last slice owns it, not slice 1's report.
+    const unrowed = sliceForeignInput(first, tasks, whole(["AC-002"]), heldBy(rows.join("\n")));
+    expect(unrowed).toMatchObject({ missing: 1, foreign: 0 });
+    expect(sliceForeignDecision({ slice: unrowed, foreignTests: 0 }, "none")).toBe(false);
+    // Slice 1 has not written `1.2.3-alpha.1`, its own row 3: its own work, not another slice's.
+    const own = sliceForeignInput(first, tasks, whole(["AC-002"]), heldBy(""));
+    expect(own).toMatchObject({ missing: 2, foreign: 0, holders: [] });
+    expect(sliceForeignDecision({ slice: own, foreignTests: 0 }, "none")).toBe(false);
+    // A literal an earlier slice's rows hold is that slice's, as `partitionCases` decides.
+    const later = sliceForeignInput(
+      second,
+      tasks,
+      whole(["AC-002"]),
+      heldBy("1.2.3-0a.01a.-.a-b.1e3"),
+    );
+    expect(later).toEqual({ taskId: "T004", missing: 1, foreign: 1, holders: [first.id] });
+    // Nothing missing: nothing to settle.
+    const none = sliceForeignInput(first, tasks, whole(["AC-003"]), () => true);
+    expect(sliceForeignDecision({ slice: none, foreignTests: 0 }, "none")).toBe(false);
+  });
+
+  test("slices without their rows (planner-written, or a graph from before #2466) are not decided", () => {
+    const { tasks } = slices(path, rows);
+    const bare = tasks.map((t) => {
+      if (!t.sizingSlice) return t;
+      const { rows: _rows, ...slice } = t.sizingSlice;
+      return { ...t, sizingSlice: slice };
+    });
+    const [first] = bare.filter((t) => t.sizingSlice) as [Task];
+    expect(sliceForeignInput(first, bare, whole(["AC-003"]), () => false)).toBeUndefined();
+    expect(sliceForeignInput(tasks[0] as Task, tasks, whole(["AC-003"]), () => false)).toBeUndefined();
+  });
+
+  test("the holder is the slice the case walk asks for the literal (the partitionCases test)", () => {
+    const { tasks } = slices(path, rows);
+    const [first, second] = tasks.filter((t) => t.sizingSlice) as [Task, Task];
+    const slice = sliceForeignInput(first, tasks, whole(["AC-003"]), () => false);
+    const walked = literals(second, tasks);
+    for (const literal of ["1.2.3+", "v1.2.3", "1.2.3.4"]) expect(walked).toContain(literal);
+    expect(literals(first, tasks)).not.toContain("1.2.3+");
+    expect(slice?.holders).toEqual([second.id]);
+  });
+});
+
+describe("scenario: R79 verhop T004 reports a conflict about slice 2's rows, in shadow (#2476)", () => {
+  const { path, row } = LANGUAGES[0] as (typeof LANGUAGES)[number];
+  const rows = VERSIONS.map(row);
+  const cleanups: (() => Promise<void>)[] = [];
+  afterEach(async () => {
+    for (const cleanup of cleanups.splice(0).reverse()) await cleanup();
+  });
+
+  const drive = async (stopModes?: RunPolicy["stopModes"]) => {
+    const runSpec: Spec = { ...fixtureSpec, criteria: [...fixtureSpec.criteria, ...spec.criteria] };
+    const policy: RunPolicy = {
+      ...fixturePolicy,
+      clarification: "assume",
+      ...(stopModes ? { stopModes } : {}),
+    };
+    const fixture = workflowFixture({ policy });
+    cleanups.push(fixture.dispose);
+    const { service, executor } = fixture;
+    const original = executor.execute.bind(executor);
+    let reports = 0;
+    executor.execute = async (req: ExecutionRequest) => {
+      if (req.profile.output === "spec") return { output: runSpec, inputTokens: 25, outputTokens: 25 };
+      if (req.profile.output === "plan") {
+        const out = await original(req);
+        const graph = (out.output as { taskGraph: TaskGraph }).taskGraph;
+        const code = graph.tasks[0] as Task;
+        graph.specHash = hashJson(runSpec);
+        const slice = (index: number, own: string[], extra: Partial<Task>): Task => ({
+          ...code,
+          id: index === 0 ? "T002" : "T003",
+          title: `Test check (part ${index + 1} of 2)`,
+          description: `Write check rows ${index === 0 ? "1 to 7" : "8 to 15"} of ${path}`,
+          criterionIds: ["AC-002", "AC-003"],
+          sizingSlice: { taskId: "T002", index, count: 2, share: own.length / rows.length, rows: own },
+          ...extra,
+        });
+        graph.tasks = [
+          code,
+          slice(0, rows.slice(0, 7), { dependsOn: ["T001"], writes: [{ path, action: "create" }] }),
+          slice(1, rows.slice(7), {
+            dependsOn: ["T001", "T002"],
+            writes: [{ path, action: "modify" }],
+          }),
+        ];
+        return out;
+      }
+      if (req.profile.output !== "implementation" || req.task?.id !== "T002") return original(req);
+      // T004 reported AC-003's literals of rows 10, 13 and 14 (here before writing its file, so
+      // the host's own-test rule does not settle the report first).
+      reports++;
+      return {
+        output: {
+          schemaVersion: 1,
+          taskId: "T002",
+          outcome: "spec_conflict",
+          summary:
+            "AC-003 asks for `1.2.3+`, `v1.2.3` and `1.2.3.4`, which are not among the rows 1 to 7 this slice writes.",
+          evidenceIds: [],
+          unresolved: ["Should this slice also test rows outside its range?"],
+          conflictSides: [
+            {
+              kind: "criterion",
+              ref: "AC-003",
+              quote: "check rejects `1.2.3+`, `v1.2.3` and `1.2.3.4` with exit 1",
+            },
+            { kind: "request", quote: "write only rows 1 to 7 of the 15 prescribed rows" },
+          ],
+        },
+        inputTokens: 25,
+        outputTokens: 25,
+      };
+    };
+    const started = await service.start({
+      commandId: newId(),
+      featureId: "fixture",
+      workflowId: "sdd",
+      prompt: request(path, rows),
+      ownerLabel: "test",
+      policy,
+    });
+    for (let i = 0; i < 12; i++) {
+      const current = await service.get(started.runId);
+      if (["completed", "blocked", "failed"].includes(current.status)) break;
+      const pending = service.store.requests(started.runId).find((r) => r.status === "pending");
+      if (pending?.kind === "approval") await fixture.approve(started.runId);
+      else if (pending?.kind === "clarification") break;
+      else if (current.status === "paused" || current.status === "created")
+        await fixture.resume(started.runId);
+      await service.drive(started.runId, new AbortController().signal);
+    }
+    const store = service.store;
+    return {
+      reports,
+      records: store
+        .artifacts(started.runId)
+        .filter((a) => a.logical_path.startsWith("conflicts/request/T002-"))
+        .map(
+          (a) => JSON.parse(store.readArtifact(started.runId, a.id)) as RequestConflictRecord,
+        ),
+      wouldStops: store
+        .eventsOfType(started.runId, "decision.would_stop")
+        .flatMap((e) =>
+          e.type === "decision.would_stop" && e.payload.reason === "slice_foreign_conflict"
+            ? [e.payload]
+            : [],
+        ),
+      asked: store.requests(started.runId).filter((r) => r.kind === "clarification"),
+      replay: replayRequestConflicts(store, started.runId),
+    };
+  };
+
+  test("the report is recorded slice-foreign with a would-stop, and the person is still asked until promoted", async () => {
+    const result = await drive();
+    // Every report the slice made is recorded slice-foreign, with one would-stop each.
+    expect(result.records.length).toBe(result.reports);
+    expect(result.records.length).toBeGreaterThan(1);
+    for (const record of result.records)
+      expect(record).toMatchObject({
+        decision: "none",
+        sliceForeign: true,
+        slice: { taskId: "T002", missing: 3, foreign: 3, holders: ["T003"] },
+      });
+    expect(result.wouldStops.map((w) => w.key)).toEqual(result.records.map((r) => `T002-${r.report}`));
+    expect(result.wouldStops[0]).toMatchObject({
+      mode: "shadow",
+      inputs: { taskId: "T002", criterionIds: ["AC-003"], slice: { foreign: 3 } },
+    });
+    // Shadow: the decision changes nothing, so the conflict still reaches a person.
+    expect(result.asked).toHaveLength(1);
+    expect(result.replay.map((b) => [b.recorded, b.replayed, b.sliceForeign])).toEqual(
+      result.records.map(() => ["none", "none", { recorded: true, replayed: true }]),
+    );
+  }, 120_000);
+
+  test("the policy can make it advisory, never enforce yet", async () => {
+    expect(StopModesSchema.safeParse({ slice_foreign_conflict: "enforce" }).success).toBe(false);
+    expect(stopMode(fixturePolicy, "slice_foreign_conflict")).toBe("shadow");
+    const result = await drive({ slice_foreign_conflict: "advisory" });
+    expect(result.wouldStops[0]).toMatchObject({ mode: "advisory" });
+    expect(result.asked).toHaveLength(1);
+  }, 120_000);
 });

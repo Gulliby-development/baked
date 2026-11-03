@@ -206,9 +206,9 @@ describe("scenario: uritpl cli T003, a criterion that contradicts the request's 
       expect(result.read("amendments/conflict-T001.json")).toMatchObject({ criterionIds: ["AC-005"], requirementIds: ["FR-005"], authority: "request" });
       expect(result.decisions.find((d) => d.requestId === "request-T001")?.criterionIds).toEqual(["AC-005"]);
       expect(result.records).toEqual([expect.objectContaining({ report: 1, decision: "request", reaudit: null })]);
-      expect(result.replay()).toEqual([{ taskId: "T001", report: 1, recorded: "request", replayed: "request" }]);
+      expect(result.replay()).toEqual([{ taskId: "T001", report: 1, recorded: "request", replayed: "request", sliceForeign: { recorded: false, replayed: false } }]);
       // The rule before #2016 never settled on the sides: the hook shows the difference.
-      expect(result.replay(() => "none")).toEqual([{ taskId: "T001", report: 1, recorded: "request", replayed: "none" }]);
+      expect(result.replay(() => "none")).toEqual([{ taskId: "T001", report: 1, recorded: "request", replayed: "none", sliceForeign: { recorded: false, replayed: false } }]);
       // The case walk no longer demands the overruled `t.txt:1:6` in the test.
       expect(result.walks).toEqual([[]]);
       expect(result.status).toBe("completed");

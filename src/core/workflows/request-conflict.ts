@@ -1,6 +1,8 @@
+import { type CriterionCase, prescribedRowsHeld } from "../verification/criteria-cases.js";
 import { citedCriteria } from "./conflict-rows.js";
 import { quoteInRequest } from "./derivation-audit.js";
 import type { Analysis, Spec } from "./schemas.js";
+import type { Task } from "./types.js";
 
 /**
  * A spec conflict between a criterion and the request, settled for the request on verified quotes
@@ -69,6 +71,24 @@ export interface RequestConflictInput {
   reaudit: ReauditVerdict[] | null;
   /** A re-audit of this task's conflict ran before, on an earlier report. */
   reauditedBefore: boolean;
+  /**
+   * For a host row slice (#2476): the cited criteria's literals its test files lack and how many
+   * of them the rows of another slice of the same file own. Absent for any other task, and in
+   * records from before #2476.
+   */
+  slice?: SliceForeign;
+}
+
+/** What a row slice's report asks for that other slices' rows hold (#2476). */
+export interface SliceForeign {
+  /** The task sizing cut the slices from (`sizingSlice.taskId`). */
+  taskId: string;
+  /** The cited criteria's literals the slice's test files lack. */
+  missing: number;
+  /** Of those, the literals another slice owns by its rows, as `partitionCases` decides. */
+  foreign: number;
+  /** The slices that own them. */
+  holders: string[];
 }
 
 /** What `conflicts/request/<task>-<n>.json` records. */
@@ -77,6 +97,67 @@ export interface RequestConflictRecord extends RequestConflictInput {
   /** The task's how-manieth conflict report this decision was made on, from 1. */
   report: number;
   decision: RequestConflictDecision;
+  /**
+   * The slice-foreign rule settles this report (#2476): the `slice_foreign_conflict` reason
+   * records it as a would-stop, and in shadow the person is still asked.
+   */
+  sliceForeign?: true;
+}
+
+type SliceTask = Pick<Task, "id"> & Partial<Pick<Task, "sizingSlice">>;
+
+/**
+ * The slice-foreign inputs of a host row slice's spec conflict (#2476), or undefined when the
+ * task is not a host row slice with rows (planner-written slices, slices from before #2466). A
+ * literal is another slice's when the first slice of the file whose rows hold it
+ * (`prescribedRowsHeld`) is not this one: the holder test `partitionCases` gives row slices, so
+ * the walk and this decision agree on who owns a literal. A literal no row holds, or one this
+ * slice's own rows hold, stays this slice's. R79 verhop T004 (rows 1-7 of `tests/check.bats`)
+ * reported three conflicts about AC-003 and AC-005 literals of rows 8-15, the last one a person
+ * answered with "satisfied by the union of both slices".
+ */
+export function sliceForeignInput(
+  task: SliceTask,
+  tasks: readonly SliceTask[],
+  cases: readonly CriterionCase[],
+  held: (c: CriterionCase) => boolean,
+): SliceForeign | undefined {
+  const own = task.sizingSlice;
+  if (!own?.rows?.length) return undefined;
+  const slices = tasks
+    .filter((t) => t.sizingSlice?.taskId === own.taskId && t.sizingSlice.rows?.length)
+    .sort((a, b) => (a.sizingSlice?.index ?? 0) - (b.sizingSlice?.index ?? 0));
+  if (slices.length < 2 || !slices.some((t) => t.id === task.id)) return undefined;
+  const missing = cases.filter((c) => !held(c));
+  const holders = new Set<string>();
+  let foreign = 0;
+  for (const c of missing) {
+    const holder = slices.find((t) => prescribedRowsHeld(c, t.sizingSlice?.rows ?? []));
+    if (!holder || holder.id === task.id) continue;
+    foreign++;
+    holders.add(holder.id);
+  }
+  return { taskId: own.taskId, missing: missing.length, foreign, holders: [...holders].sort() };
+}
+
+/**
+ * Whether a report is slice-foreign (#2476): a host row slice's report that the request does not
+ * settle and whose every missing literal another slice of the same file owns. The host would
+ * record it under `conflicts/request/` and ask no one; until `slice_foreign_conflict` is promoted
+ * it records a would-stop and the person is still asked.
+ */
+export function sliceForeignDecision(
+  input: Pick<RequestConflictInput, "slice" | "foreignTests">,
+  decision: RequestConflictDecision,
+): boolean {
+  const slice = input.slice;
+  return (
+    decision !== "request" &&
+    input.foreignTests === 0 &&
+    !!slice &&
+    slice.missing > 0 &&
+    slice.foreign === slice.missing
+  );
 }
 
 export type RequestConflictRule = (input: RequestConflictInput) => RequestConflictDecision;

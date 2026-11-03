@@ -208,6 +208,7 @@ import {
   type RequestConflictRecord,
   type RequestConflictRule,
   requestConflictDecision,
+  sliceForeignDecision,
 } from "./request-conflict.js";
 import {
   CONVERGENCE_GATE_DIR,
@@ -2075,6 +2076,11 @@ export interface RequestConflictBoundary {
   report: number;
   recorded: RequestConflictDecision;
   replayed: RequestConflictDecision;
+  /**
+   * Whether the slice-foreign rule settles the report (#2476), recorded and replayed; false for a
+   * record from before #2476, which holds no slice inputs.
+   */
+  sliceForeign: { recorded: boolean; replayed: boolean };
 }
 
 /**
@@ -2107,12 +2113,22 @@ export function replayRequestConflicts(
         criterionIds: record.criterionIds ?? [],
         reaudit: record.reaudit ?? null,
         reauditedBefore: record.reauditedBefore ?? false,
+        ...(record.slice ? { slice: record.slice } : {}),
       };
       // The re-audit is a step of the decision: with its verdicts recorded, ask the rule with them.
       const first = decide({ ...input, reaudit: null });
       const replayed = first === "reaudit" && input.reaudit !== null ? decide(input) : first;
       return [
-        { taskId: record.taskId, report: record.report, recorded: record.decision, replayed },
+        {
+          taskId: record.taskId,
+          report: record.report,
+          recorded: record.decision,
+          replayed,
+          sliceForeign: {
+            recorded: record.sliceForeign === true,
+            replayed: sliceForeignDecision(input, replayed),
+          },
+        },
       ];
     });
 }
