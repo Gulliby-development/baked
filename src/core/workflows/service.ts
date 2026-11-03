@@ -646,7 +646,10 @@ export class NativeWorkflowService implements WorkflowService {
    */
   private async smokeChecks(prepared: PreparedStart): Promise<CheckSmoke[]> {
     const smoke = await smokeChecks(prepared.policy.checks, this.workspace);
-    const failed = smoke.filter((s) => s.status === "not_found" || s.status === "cannot_start");
+    const failed = smoke.filter(
+      (s) =>
+        s.status === "not_found" || s.status === "cannot_start" || s.status === "missing_package",
+    );
     const missing = failed.filter((s) => s.required);
     if (missing.length)
       throw new WorkflowFault(

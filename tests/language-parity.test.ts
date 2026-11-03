@@ -169,6 +169,10 @@ const RECORDS: Record<
         [],
         ofLanguage(language, files).map(([path]) => ({ path, action: "create" })),
         (command) => `/usr/bin/${command}`,
+        undefined,
+        undefined,
+        // The formatter's package is there: the golden is the same with or without R or pwsh (#2817).
+        { packages: () => true },
       ).map((c) => `${c.id}: ${formatCommandLine(c.executable, c.args)}`),
   },
   entryPoints: {
