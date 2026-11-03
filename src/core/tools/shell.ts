@@ -15,7 +15,7 @@ import {
 } from "../security/sandbox.js";
 // TODO(beta): inline image rendering — disabled until suspend/resume bridge is stable
 // import { canRenderImages, renderImages } from "../terminal/image.js";
-import { buildSafeEnv, SAFE_SPAWN_OPTS } from "../spawn.js";
+import { buildSafeEnv, OUTPUT_HELD_NOTE, onOutputHeld, SAFE_SPAWN_OPTS } from "../spawn.js";
 import { getIOClient } from "../workers/io-client.js";
 import { assertWorkspaceMutationAllowed } from "../workflows/leases.js";
 import { checkShellBinaryRead } from "./binary-detect.js";
@@ -106,6 +106,7 @@ async function runPreCommitChecks(cwd: string): Promise<string | null> {
         settled = true;
         clearTimeout(killTimer);
         clearTimeout(forceKillTimer);
+        cancelOutputHeld();
         resolve(result);
       };
       const killProc = (signal: "SIGTERM" | "SIGKILL") => {
@@ -133,9 +134,13 @@ async function runPreCommitChecks(cwd: string): Promise<string | null> {
         lintBytes += d.length;
         if (lintBytes <= MAX_COLLECT_BYTES) errChunks.push(d.toString());
       });
-      proc.on("close", (code) =>
-        finish({ exitCode: code, stdout: chunks.join(""), stderr: errChunks.join("") }),
-      );
+      const result = (code: number | null) => ({
+        exitCode: code,
+        stdout: chunks.join(""),
+        stderr: errChunks.join(""),
+      });
+      const cancelOutputHeld = onOutputHeld(proc, (code) => finish(result(code)));
+      proc.on("close", (code) => finish(result(code)));
       proc.on("error", () => finish({ exitCode: 1, stdout: "", stderr: "lint process error" }));
     });
 
@@ -459,15 +464,17 @@ export const shellTool = {
         if (stderrBytes <= MAX_COLLECT_BYTES) errChunks.push(data.toString());
       });
 
-      proc.on("close", async (code: number | null) => {
+      const complete = async (code: number | null, heldNote?: string): Promise<void> => {
         if (settled) return;
         settled = true;
         clearTimeout(hardKillTimer);
         cleanupAbortListener?.();
+        cancelOutputHeld();
         let raw = sanitizeOutput(chunks.join(""));
         if (stdoutBytes > MAX_COLLECT_BYTES) {
           raw += `\n[output truncated — ${String(Math.round(stdoutBytes / 1024))}KB total, showing first ${String(Math.round(MAX_COLLECT_BYTES / 1024))}KB]`;
         }
+        if (heldNote) raw += `\n${heldNote}`;
         let compressed: { text: string; original: string | null };
         try {
           compressed = await Promise.race([
@@ -518,13 +525,22 @@ export const shellTool = {
             error: stderr || `Exit code: ${code}`,
           });
         }
+      };
+
+      // The command exited but something still holds its output pipes: stop what the platform
+      // can find of its tree and return what was read, instead of waiting out the tool timeout.
+      const cancelOutputHeld = onOutputHeld(proc, (code) => {
+        killChildTree("SIGKILL");
+        void complete(code, OUTPUT_HELD_NOTE);
       });
+      proc.on("close", (code: number | null) => void complete(code));
 
       proc.on("error", (err: Error) => {
         if (settled) return;
         settled = true;
         clearTimeout(hardKillTimer);
         cleanupAbortListener?.();
+        cancelOutputHeld();
         resolve({ success: false, output: err.message, error: err.message });
       });
     });

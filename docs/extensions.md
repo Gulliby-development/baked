@@ -29,7 +29,7 @@ BAKED connects to MCP servers and offers their tools next to the built-in ones a
 | `transport` | `stdio` (default, a local subprocess), `http` (Streamable HTTP) or `sse` (legacy) |
 | `command`, `args`, `env` | The subprocess for `stdio` |
 | `url`, `headers` | The endpoint for `http` and `sse` |
-| `timeout` | Per tool call, in ms (default 30000) |
+| `timeout` | Per tool call and for the connect handshake, in ms (default 30000); a `stdio` server that misses it is stopped before the retry |
 | `disabled` | Keep the entry but do not connect |
 
 Servers connect at startup, at most 5 at a time; a failed one is retried 3 times with backoff, and a crashed `stdio` server restarts. `/mcp` shows status and tools: type to filter, `Ctrl+A` adds, `Ctrl+D` deletes, `Ctrl+T` toggles, `Ctrl+R` retries, `Tab` switches to the tool browser. The desktop app has the same in a project's MCP servers page, over the local API's [`/v1/mcp`](desktop/api.md#mcp-servers). Headless runs connect the same servers; `baked mcp list` prints them (`--json` for scripts, `--check` connects each enabled one, lists its tools and exits 1 when one fails), and `baked mcp enable|disable|remove NAME [--scope global|project]` changes the config. Workflow agents use MCP tools only where a profile and the run policy grant them ([MCP tools](workflows/runtime.md#mcp-tools)).
@@ -78,7 +78,7 @@ A hook in a file is addressed by its position and a hash of its content, so a ch
 | `Notification` | When BAKED asks for a permission or a question, and when a workflow run starts waiting | `permission_prompt`, `question`, `run_attention` |
 | `RunAttention` | When a workflow run starts waiting for a person ([runtime guide](workflows/runtime.md#notifications-when-a-run-waits)) | Request kind or blocked reason |
 
-Tool names follow Claude Code (`Bash`, `Edit`, `Write`, `Read`, `Grep`, `Glob`, `WebSearch`, `Agent`); BAKED maps its own tools to them. A hook entry may set `async`, `timeout` (seconds, default 10), `once` (once per session) and `if` (a glob on the first string argument, such as `Edit(*.ts)`).
+Tool names follow Claude Code (`Bash`, `Edit`, `Write`, `Read`, `Grep`, `Glob`, `WebSearch`, `Agent`); BAKED maps its own tools to them. A hook entry may set `async`, `timeout` (seconds, default 10), `once` (once per session) and `if` (a glob on the first string argument, such as `Edit(*.ts)`; its tool name is read as a matcher reads it, so `Edit(*.ts)` also covers multi-edits and `Write(*.ts)` covers file edits).
 
 A hook receives JSON on stdin (`session_id`, `cwd`, `hook_event_name`, `tool_name`, `tool_input`; `prompt` for `UserPromptSubmit`, `source` for `SessionStart`, `reason` for `SessionEnd`, `message`, `title` and `notification_type` for `Notification`, `trigger` for `PreCompact` and `PostCompact`, `agent_id` and `agent_type` for `SubagentStart` and `SubagentStop`, `stop_hook_active` for `Stop` and `SubagentStop`, `error` for `StopFailure`, `run_attention` for `RunAttention`). Exit code `0` is success, `2` blocks the call, anything else logs a warning. On stdout, a `PreToolUse` hook may return `hookSpecificOutput` with `permissionDecision: "deny"`, an `updatedInput` or `additionalContext`; a `PostToolUse` hook may return `additionalContext`. `additionalContext` from `SessionStart` and `UserPromptSubmit` hooks, or their plain (non-JSON) stdout, is sent to the model ahead of the next message, in the terminal app, the headless CLI and desktop chats alike. Hooks are stopped with the agent on `Ctrl+X`.
 

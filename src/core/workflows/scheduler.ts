@@ -12550,7 +12550,8 @@ ${note}`;
           t.id !== task.id &&
           !done(t.id) &&
           t.writes.some(
-            (w) => w.action !== "delete" && holdsWrittenTests(w.path, compiled, task.readHints),
+            (w) =>
+              w.action !== "delete" && holdsWrittenTests(w.path, compiled, task.readHints, root),
           ),
       )
     )
