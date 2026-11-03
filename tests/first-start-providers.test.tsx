@@ -73,6 +73,17 @@ describe("first start", () => {
           await view.renderOnce();
         });
     };
+    // The model list loads asynchronously; a busy runner can take longer than
+    // one settle, so wait for the text instead of a fixed number of frames.
+    const until = async (text: string) => {
+      const deadline = Date.now() + 5000;
+      while (Date.now() < deadline) {
+        await settle();
+        if (view.captureCharFrame().includes(text)) return;
+        await Bun.sleep(20);
+      }
+      throw new Error(`"${text}" never showed:\n${view.captureCharFrame()}`);
+    };
     try {
       await settle();
       const frame = view.captureCharFrame();
@@ -88,8 +99,7 @@ describe("first start", () => {
       await act(async () => {
         view.mockInput.pressEnter();
       });
-      await settle();
-      expect(view.captureCharFrame()).toContain("GPT Test");
+      await until("GPT Test");
       await act(async () => {
         view.mockInput.pressEnter();
       });
