@@ -198,3 +198,81 @@ describe("scenario: an open feature run grows into its refreshed bound no furthe
     expect(explainPolicy.maxTotalTokens).toBe(5_500_000);
   });
 });
+
+// #2481: the hold counted the other runs at their use, so two feature runs that extend at about
+// the same time each reached "the pool less the others' use", and a limit set earlier did not
+// shrink when the others used more later: their limits summed past the pool. The hold now counts
+// each other open run at its granted limit or its use if more (`poolTokenHold`), as the pool's
+// committed tokens and `chargeHold` do. R79 deltaglue's chunks extended to 12.0M while commands
+// was still open (waiting on manual evidence) at an 8M limit: 20.8M granted of a 12.0M pool.
+describe("scenario: two feature runs that extend at about the same time stay inside the pool together (#2481)", () => {
+  async function twoRuns() {
+    const fixture = workflowFixture();
+    fixture.config.defaultModel = MODEL;
+    cleanups.push(fixture.dispose);
+    const initiatives = new InitiativeService(fixture.service);
+    const policy: RunPolicy = { ...fixturePolicy, maxTotalTokens: 3_000_000, maxAgentCalls: 1000, costForecast: "off", sizing: { maxRunTokens: 8_000_000 } };
+    const view = await initiatives.start({ commandId: newId(), initiativeId: "wheeltags", prompt: "Create values", plan, policy, model: MODEL, ownerLabel: "test", keepFeatures: true, featureAutoApproval: null, budget: { maxTotalTokens: 12_000_000, maxAgentCalls: 1000, maxActiveMs: 21_600_000 } });
+    const request = view.pendingDecisions.find((d) => d.scope === "initiative")!;
+    await initiatives.approve("wheeltags", { commandId: newId(), expectedRevision: view.revision }, { requestId: request.requestId, digest: request.digest });
+    const service = initiatives as unknown as { startFeature(id: string, featureId: string): Promise<boolean> };
+    expect(await service.startFeature("wheeltags", "base")).toBe(true);
+    expect(await service.startFeature("wheeltags", "explain")).toBe(true);
+    const runOf = (id: string) => initiatives.view("wheeltags").features.find((f) => f.id === id)!.runId!;
+    const store = fixture.service.store;
+    const runs = ["base", "explain"].map((featureId) => {
+      const runId = runOf(featureId);
+      store.transaction(() => store.transition(runId, "running"));
+      // Each at 3M with bounds a refresh left above the pool: 20M to grow to, 30M to extend to.
+      const own: RunPolicy = { ...JSON.parse(store.run(runId).policy_json), clarification: "assume", maxTotalTokens: 3_000_000, maxCostUsd: null, sizing: { maxRunTokens: 20_000_000, extendToTokens: 30_000_000 } };
+      store.setPolicy(runId, own);
+      store.transaction(() => {
+        store.syncTasks(runId, { schemaVersion: 1, featureId, revision: 1, specHash: "a".repeat(64), planHash: "b".repeat(64), tasks: [task("T001"), task("T002")] });
+        store.taskStatus(runId, "T001", "implemented");
+      });
+      return { runId, policy: own };
+    });
+    const stored = (runId: string) => (JSON.parse(store.run(runId).policy_json) as RunPolicy).maxTotalTokens;
+    return { store, initiatives, a: runs[0]!, b: runs[1]!, stored };
+  }
+
+  test("each asks for 9M of the 12M pool: the sum of their limits never passes it", async () => {
+    const { store, initiatives, a, b, stored } = await twoRuns();
+    const pool = initiatives.view("wheeltags").budget.limits.maxTotalTokens;
+    expect(pool).toBe(12_000_000);
+    // Neither has used anything yet. base grows first, then explain right after. Before #2481
+    // explain's hold was the pool less base's use, 12M, and it grew to 9M too: 18M of 12M.
+    growBudgetOnProgress(store, a.runId, a.policy, 9_000_000);
+    growBudgetOnProgress(store, b.runId, b.policy, 9_000_000);
+    expect(stored(a.runId) + stored(b.runId)).toBeLessThanOrEqual(pool);
+    // base's growth reserved explain's 3M limit; explain's reserved base's 9M though base used
+    // none of it.
+    expect(stored(a.runId)).toBe(9_000_000);
+    expect(stored(b.runId)).toBe(3_000_000);
+    expect(store.tokenHold?.(b.runId)).toBe(3_000_000);
+    const growth = store.artifacts(a.runId).filter((x) => x.logical_path.startsWith("policy-revisions/auto-")).map((x) => JSON.parse(store.readArtifact(a.runId, x.id)));
+    expect(growth.map((g) => [g.kind, g.next.maxTotalTokens, g.poolHoldTokens])).toEqual([["auto-growth", 9_000_000, 9_000_000]]);
+    // A run's own limit never holds itself back: base's hold is still the pool less explain's.
+    expect(store.tokenHold?.(a.runId)).toBe(9_000_000);
+    // A hold at the run's limit only stops its growth; no growth path lowers a limit.
+    store.transaction(() => store.taskStatus(b.runId, "T002", "implemented"));
+    expect(growBudgetOnProgress(store, b.runId, b.policy, 3_500_000)).toBe(false);
+    expect(stored(b.runId)).toBe(3_000_000);
+  });
+
+  test("a finished run gives back its limit above its use: the other grows into it", async () => {
+    const { store, a, b, stored } = await twoRuns();
+    expect(growBudgetOnProgress(store, a.runId, a.policy, 9_000_000)).toBe(true);
+    // base finishes having used 2M of its 9M: it takes 2M from the pool, no longer 9M.
+    const stepId = store.beginStep(a.runId, "implement");
+    const attempt = store.reserve(a.runId, stepId, MODEL, 1000, { ...fixturePolicy, maxTotalTokens: 1_000_000_000, maxCostUsd: null });
+    store.transaction(() => {
+      store.artifact(a.runId, "usage", `attempts/${attempt}/usage.json`, canonical(usage(2_000_000)));
+      store.finishAttempt(a.runId, attempt, "completed", 2_000_000);
+    });
+    store.transaction(() => store.transition(a.runId, "completed"));
+    expect(store.tokenHold?.(b.runId)).toBe(10_000_000);
+    expect(growBudgetOnProgress(store, b.runId, b.policy, 9_000_000)).toBe(true);
+    expect(stored(b.runId)).toBe(9_000_000);
+  });
+});

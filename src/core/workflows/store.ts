@@ -1858,7 +1858,8 @@ export class WorkflowStore {
   /**
    * The most tokens a run's limit may reach by the host's own growth (`growBudgetOnProgress`,
    * `raiseToStartEstimate`): for an initiative's feature run, its pool less what the other runs
-   * used (`InitiativeService.tokenHold`, #2468); null for a run of no initiative. Installed by
+   * take from it, an open run at its granted limit or its use if more (`InitiativeService.tokenHold`,
+   * #2468, #2481); null for a run of no initiative. Installed by
    * `NativeWorkflowService` like `reserveStages`; unset elsewhere.
    */
   tokenHold: ((runId: string) => number | null) | undefined;

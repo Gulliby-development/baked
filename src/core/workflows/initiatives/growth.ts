@@ -292,6 +292,35 @@ export function chargeHold(inputs: ChargeHoldInputs): ChargeHold {
   };
 }
 
+/** What `poolTokenHold` reads: the initiative's token pool and every run of it but the one held. */
+export interface PoolTokenHoldInputs {
+  limitTokens: number;
+  /**
+   * The decompose run and the other feature runs, superseded ones too: what each used, holds and
+   * has in flight, and its token limit while it is open (null once it is terminal).
+   */
+  others: { usedTokens: number; limitTokens: number | null }[];
+}
+
+/**
+ * The most tokens a feature run's limit may reach by the host's own growth (`auto-growth`,
+ * `planning-growth`, `auto-extend`, the planning floor; `WorkflowStore.tokenHold`): the pool less
+ * what every other run takes from it, an open run at its granted limit or its use if that is
+ * more, a terminal run at its use. It reserves what the others were granted, as `chargeHold` and
+ * the pool's committed tokens do, because a hold of the pool less the others' use let two runs
+ * that extend at about the same time each take that whole remainder, and a limit set earlier did
+ * not shrink when the others used more later: their limits summed past the pool (#2481). The
+ * run's own limit and use are not counted, so a run never holds itself back, and a hold below
+ * the run's limit only stops its growth: no growth path lowers a limit.
+ */
+export function poolTokenHold(inputs: PoolTokenHoldInputs): number {
+  const others = inputs.others.reduce(
+    (sum, other) => sum + Math.max(other.usedTokens, other.limitTokens ?? 0),
+    0,
+  );
+  return Math.max(0, Math.floor(inputs.limitTokens - others));
+}
+
 /**
  * Whether a dollar amount is above a ceiling by more than the half-cent tolerance. It compares the
  * unrounded amounts: the cent-floored hold could refuse a bound up to a cent below the ceiling, and

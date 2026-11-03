@@ -114,6 +114,7 @@ import {
   guardGrowth,
   openGuardRoom,
   poolBoundDecision,
+  poolTokenHold,
   type RunBound,
   refreshedGrowth,
   stageReserveDecision,
@@ -3467,12 +3468,14 @@ export class InitiativeService {
 
   /**
    * The most tokens a feature run's limit may reach by the host's own growth: the initiative's
-   * token pool less what its other runs used (the decompose run and every other feature run,
-   * superseded ones too), the hold `poolBoundDecision` reads. The pool is a hard limit the person
-   * set, so the host never grows a run past it (#2468): R79 deltaglue's chunks auto-extended to
-   * 12.0M with 1.86M of the 12.0M pool used by the other features and took the initiative to
-   * 12.68M. Null for a run of no initiative. The workflow store asks it (`WorkflowStore.tokenHold`)
-   * before a host growth raises the run's token limit.
+   * token pool less what its other runs take from it (the decompose run and every other feature
+   * run, superseded ones too), an open run at its granted limit or its use if more, a terminal run
+   * at its use (`poolTokenHold`). The pool is a hard limit the person set, so the host never grows
+   * a run past it (#2468): R79 deltaglue's chunks auto-extended to 12.0M with 1.86M of the 12.0M
+   * pool used by the other features and took the initiative to 12.68M. Counting the others' open
+   * limits, not only their use, keeps two runs that extend at about the same time from each taking
+   * the whole remainder (#2481). Null for a run of no initiative. The workflow store asks it
+   * (`WorkflowStore.tokenHold`) before a host growth raises the run's token limit.
    */
   tokenHold(runId: string): number | null {
     if (!this.store.available()) return null;
@@ -3480,17 +3483,32 @@ export class InitiativeService {
     const links = id ? this.store.links(id) : [];
     if (!id || !links.some((l) => l.run_id === runId)) return null;
     const row = this.store.get(id);
-    return Math.max(0, this.limits(row).maxTotalTokens - this.othersUsedTokens(id, runId));
+    return poolTokenHold({
+      limitTokens: this.limits(row).maxTotalTokens,
+      others: this.otherRuns(id, runId).map((other) => {
+        const run = this.workflows.store.run(other);
+        return {
+          usedTokens: this.usage(other).tokens,
+          limitTokens: terminalStates.includes(run.status)
+            ? null
+            : limitsOf(PolicySchema.parse(JSON.parse(run.policy_json))).maxTotalTokens,
+        };
+      }),
+    });
+  }
+
+  /** Every run of the initiative but `runId`: the decompose run and every feature run. */
+  private otherRuns(id: string, runId: string): string[] {
+    const row = this.store.get(id);
+    return [
+      ...(row.decompose_run_id ? [row.decompose_run_id] : []),
+      ...this.store.links(id).map((l) => l.run_id),
+    ].filter((other) => other !== runId);
   }
 
   /** What every run of the initiative but `runId` used: the decompose run and every feature run. */
   private othersUsedTokens(id: string, runId: string): number {
-    const row = this.store.get(id);
-    const others = [
-      ...(row.decompose_run_id ? [row.decompose_run_id] : []),
-      ...this.store.links(id).map((l) => l.run_id),
-    ].filter((other) => other !== runId);
-    return others.reduce((sum, other) => sum + this.usage(other).tokens, 0);
+    return this.otherRuns(id, runId).reduce((sum, other) => sum + this.usage(other).tokens, 0);
   }
 
   /**

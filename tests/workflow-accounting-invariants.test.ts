@@ -4,7 +4,7 @@ import { canonical } from "../src/core/specs/hash.js";
 import { growBudgetOnProgress } from "../src/core/workflows/budget.js";
 import { type CostForecast, costForecast, kindRatio } from "../src/core/workflows/cost-forecast.js";
 import { POOL_STEP, planCharge, planChargeTokens, poolExtensionDecision, poolForecast, timePoolExtensionDecision, tokenPool } from "../src/core/workflows/initiatives/token-pool.js";
-import { chargeHold, poolBoundDecision, refreshedGrowth, stageReserveDecision } from "../src/core/workflows/initiatives/growth.js";
+import { chargeHold, poolBoundDecision, poolTokenHold, refreshedGrowth, stageReserveDecision } from "../src/core/workflows/initiatives/growth.js";
 import { CALLS_STEP, callsPool, callsRaise } from "../src/core/workflows/initiatives/calls-pool.js";
 import { dollarCapPark, expectedSplitUsd, growthLimit, type ShareGateView } from "../src/core/workflows/initiatives/service.js";
 import type { RunPolicy } from "../src/core/workflows/schemas.js";
@@ -822,6 +822,46 @@ describe("initiative token pool hold invariants (#2468)", () => {
     } finally {
       store.tokenHold = installed;
     }
+  });
+
+  // #2481: the hold reserves what the other runs were granted, not only what they used. Runs that
+  // grow in any order, each to what it asks capped at its hold, and use tokens inside their limits,
+  // never take the pool's granted tokens (an open run at its limit or its use if more, a finished
+  // run at its use) past the pool, once they started inside it. A run's own limit never lowers
+  // its own hold, and a finished run's limit above its use goes back to the others.
+  test("the open runs' limits never sum past the pool: the hold counts the others at their granted limits", () => {
+    const step = fc.record({ run: fc.nat(), kind: fc.constantFrom("grow", "use", "finish"), amount: fc.integer({ min: 0, max: 30_000_000 }) });
+    fc.assert(
+      fc.property(
+        fc.integer({ min: 1_000_000, max: 40_000_000 }),
+        fc.array(fc.double({ min: 0, max: 1, noNaN: true }), { minLength: 2, maxLength: 5 }),
+        fc.array(step, { minLength: 1, maxLength: 30 }),
+        (pool, shares, steps) => {
+          const total = shares.reduce((sum, s) => sum + s, 0) || 1;
+          const runs = shares.map((s) => ({ used: 0, limit: Math.floor((pool * s) / total), open: true }));
+          const granted = () => runs.reduce((sum, r) => sum + (r.open ? Math.max(r.used, r.limit) : r.used), 0);
+          const hold = (i: number) => poolTokenHold({ limitTokens: pool, others: runs.filter((_, j) => j !== i).map((r) => ({ usedTokens: r.used, limitTokens: r.open ? r.limit : null })) });
+          expect(granted()).toBeLessThanOrEqual(pool);
+          for (const s of steps) {
+            const i = s.run % runs.length;
+            const run = runs[i]!;
+            if (!run.open) continue;
+            const before = hold(i);
+            expect(before).toBeGreaterThanOrEqual(0);
+            // The run's own limit is not in its hold.
+            const own = run.limit;
+            run.limit = own + 1_000_000;
+            expect(hold(i)).toBe(before);
+            run.limit = own;
+            if (s.kind === "grow") run.limit = Math.max(run.limit, Math.min(s.amount, before));
+            else if (s.kind === "use") run.used = Math.min(run.limit, run.used + s.amount);
+            else run.open = false;
+            expect(granted()).toBeLessThanOrEqual(pool);
+          }
+        },
+      ),
+      { numRuns: RUNS * 10 },
+    );
   });
 });
 
