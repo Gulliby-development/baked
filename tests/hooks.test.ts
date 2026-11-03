@@ -747,4 +747,46 @@ describe("if: conditional", () => {
     expect(result.blocked).toBe(true);
     cleanup();
   });
+
+  // The `if` tool name resolves like the matcher: Edit covers multi_edit, Write covers edit_file.
+  test.each([
+    ["Edit", "Edit(*.ts)", "multi_edit", { path: "src/a.ts", edits: [] }],
+    ["Write", "Write(*.ts)", "edit_file", { path: "src/a.ts", oldString: "", newString: "x" }],
+    ["Edit", "Edit(*.ts)", "edit_file", { path: "src/a.ts", oldString: "a", newString: "b" }],
+  ])("matcher %s with if %s fires for %s", async (matcher, condition, toolName, toolInput) => {
+    cleanup();
+    setup({
+      hooks: {
+        PreToolUse: [{ matcher, hooks: [{ type: "command", command: "exit 2", if: condition }] }],
+      },
+    });
+    const hit = await runHooks({ event: "PreToolUse", toolName, toolInput, cwd: testDir });
+    expect(hit.blocked).toBe(true);
+    const miss = await runHooks({
+      event: "PreToolUse",
+      toolName,
+      toolInput: { ...toolInput, path: "src/a.js" },
+      cwd: testDir,
+    });
+    expect(miss.blocked).toBe(false);
+    cleanup();
+  });
+
+  test("if naming an MCP tool with a dash in its server name filters by the glob", async () => {
+    cleanup();
+    setup({
+      hooks: {
+        PreToolUse: [{
+          matcher: "mcp__my-db__.*",
+          hooks: [{ type: "command", command: "exit 2", if: "mcp__my-db__query(DROP *)" }],
+        }],
+      },
+    });
+    const toolName = "mcp__my-db__query";
+    const drop = await runHooks({ event: "PreToolUse", toolName, toolInput: { sql: "DROP TABLE t" }, cwd: testDir });
+    expect(drop.blocked).toBe(true);
+    const select = await runHooks({ event: "PreToolUse", toolName, toolInput: { sql: "SELECT 1" }, cwd: testDir });
+    expect(select.blocked).toBe(false);
+    cleanup();
+  });
 });

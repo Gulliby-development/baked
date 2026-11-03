@@ -5,14 +5,15 @@ import { replayInitiativeStarts } from "../src/core/workflows/trace.js";
 import { featureUsage, quarterBound, ROOT } from "./helpers/replay-corpus.js";
 
 // Part of the bench-trace replay corpus (tests/forecast-replay-corpus.test.ts), in a file of its own
-// because it replays every initiative start of the corpus twice and takes minutes on a CI runner.
+// because it replays each initiative's first start over the whole corpus twice.
 
 /** Finished features below and above the range of their initiative's first replayed start, by round. */
 function rangeMisses(options: { recencyHalfLife?: number } = {}) {
+  // Only the first start's estimate is read, so the later starts are rewound through, not priced.
   const rounds = new Map<number, { features: number; below: number; above: number }>();
   for (const name of readdirSync(ROOT, { recursive: true, encoding: "utf8" }).filter((p) => p.endsWith(".sqlite.gz"))) {
     const path = join(ROOT, name);
-    const replays = replayInitiativeStarts(path, options);
+    const replays = replayInitiativeStarts(path, { ...options, firstStartOnly: true });
     if (!replays.length) continue;
     const { used, finished } = featureUsage(path);
     const round = Number(/R(\d+)/.exec(name)?.[1]);
@@ -27,16 +28,20 @@ function rangeMisses(options: { recencyHalfLife?: number } = {}) {
       }
     rounds.set(round, counts);
   }
-  const last = Math.max(...rounds.keys());
   /** The rounds from `from` to `to`, both included. */
-  const sum = (from: number, to = last) =>
+  const sum = (from: number, to = Number.POSITIVE_INFINITY) =>
     [...rounds]
       .filter(([round]) => round >= from && round <= to)
       .reduce((t, [, c]) => ({ features: t.features + c.features, below: t.below + c.below, above: t.above + c.above }), { features: 0, below: 0, above: 0 });
-  return { all: sum(0), window: sum(last - RANGE_WINDOW + 1), r63to68: sum(63, 68) };
+  // The window is the last rounds the corpus holds, not the last round numbers: traces pull requests
+  // land out of order, and R87's on a main that ended at R80 made a window of R87 alone, 6 features
+  // whose two standard errors no single round's spread fits (#2753).
+  const held = [...rounds.keys()].sort((a, b) => a - b);
+  const window = held.slice(-RANGE_WINDOW);
+  return { all: sum(0), window: sum(window[0] ?? 0), windowRounds: window, r63to68: sum(63, 68) };
 }
 
-/** Rounds of the rolling window a range backtest bounds too (#2150). */
+/** Rounds of the corpus the rolling window holds, the last ones it has (#2150). */
 const RANGE_WINDOW = 6;
 
 describe("the size pools' ranges over the last rounds (#2150)", () => {
@@ -67,6 +72,7 @@ describe("the size pools' ranges over the last rounds (#2150)", () => {
     }
     expect(on.r63to68.below).toBeLessThan(off.r63to68.below);
     // The standing guard: the last six rounds, as the whole corpus is, within the bounds by default.
+    expect(off.windowRounds).toHaveLength(RANGE_WINDOW);
     expect(off.window.below / off.window.features).toBeLessThanOrEqual(quarterBound(off.window.features));
     expect(off.window.above / off.window.features).toBeLessThanOrEqual(quarterBound(off.window.features));
   }, 1200000);
