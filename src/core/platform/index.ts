@@ -9,6 +9,7 @@ import { type SpawnOptions, spawn, spawnSync } from "node:child_process";
 import { existsSync, readdirSync, readFileSync, realpathSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
+import { windowsProcessTree } from "./process-table-win32.js";
 
 declare const __BAKED_COMPILED__: boolean | undefined;
 
@@ -207,8 +208,9 @@ const FILETIME_UNIX_OFFSET_MS = 11644473600000;
  *
  * Returns null when the process table cannot be read, so callers can stay conservative.
  * A live process answers from `process.kill(pid, 0)` on every platform. Only when it is gone
- * does Windows read the whole process table (a PowerShell CIM query that takes about a second
- * and far longer on a loaded host, #2498): descendants are found by ParentProcessId and must
+ * does Windows read the whole process table, in process through a Toolhelp snapshot
+ * (`process-table-win32.ts`), or through a PowerShell CIM query when bun:ffi is not available
+ * (about a second, and past its 15 s timeout on a loaded host, #2498 #2839): descendants are found by ParentProcessId and must
  * have started at or after `sinceMs` (minus a small clock tolerance); this skips unrelated
  * processes whose parent PID was reused. On POSIX the command runs as a process group leader,
  * so a live group member counts; with `scope`, Linux also counts a process carrying the scope
@@ -229,6 +231,14 @@ export function processTreeAlive(pid: number, sinceMs: number, scope?: string): 
     const marked = scopedProcesses(scope);
     return marked === null ? false : marked.length > 0;
   }
+  const earliest = sinceMs - 2000;
+  const tree = windowsProcessTree(pid);
+  if (tree)
+    // A child whose start time cannot be read counts, as an unreadable table does.
+    return (
+      tree.listed ||
+      tree.children.some((child) => child.startedMs === null || child.startedMs >= earliest)
+    );
   const result = spawnSync(
     "powershell.exe",
     [
@@ -254,7 +264,6 @@ export function processTreeAlive(pid: number, sinceMs: number, scope?: string): 
   if (table.some((p) => p.id === pid)) return true;
   // Windows keeps the dead parent's PID on an orphan, so direct descendants stay findable.
   // A chain whose intermediate process also exited cannot be linked without job objects.
-  const earliest = sinceMs - 2000;
   return table.some((p) => p.parent === pid && p.startedMs >= earliest);
 }
 

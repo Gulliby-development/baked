@@ -636,3 +636,49 @@ describe("platform shim: process tree liveness", () => {
     }
   });
 });
+
+describe.skipIf(!IS_WIN)("platform shim: Windows process table in process (#2839)", () => {
+  test("a stopped process and its live child are read without PowerShell", async () => {
+    // The PowerShell CIM query ran past its 15 s timeout on a loaded runner, which read as "may
+    // still run" and refused a recovery whose command had stopped.
+    const { mock } = await import("bun:test");
+    const cp = await import("node:child_process");
+    let tableReads = 0;
+    mock.module("node:child_process", () => ({
+      ...cp,
+      spawnSync: (...args: Parameters<typeof cp.spawnSync>) => {
+        tableReads++;
+        return originalChildProcess.spawnSync(...args);
+      },
+    }));
+    const since = Date.now();
+    // The parent starts a long child, prints its PID and exits; Windows keeps the dead parent's
+    // PID on the orphan.
+    const script = `const c = Bun.spawn([process.execPath, "-e", "setTimeout(() => {}, 30000)"], { stdout: "ignore", stderr: "ignore" }); c.unref(); console.log(c.pid);`;
+    const parent = Bun.spawn([process.execPath, "-e", script], { stdout: "pipe", stderr: "ignore" });
+    const orphan = Number((await new Response(parent.stdout).text()).trim());
+    await parent.exited;
+    try {
+      const { processTreeAlive } = await import(`../src/core/platform/index.ts?t=${Date.now()}`);
+      expect(orphan).toBeGreaterThan(0);
+      expect(processTreeAlive(parent.pid, since)).toBe(true);
+      process.kill(orphan);
+      for (let i = 0; i < 50 && processTreeAlive(orphan, since) !== false; i++)
+        await new Promise((r) => setTimeout(r, 100));
+      expect(processTreeAlive(parent.pid, since)).toBe(false);
+      expect(tableReads).toBe(0);
+    } finally {
+      try {
+        process.kill(orphan);
+      } catch {}
+      mock.restore();
+      // mock.restore does not undo module replacements in Bun.
+      mock.module("node:child_process", () => originalChildProcess);
+    }
+  });
+
+  test("the snapshot lists this process", async () => {
+    const { windowsProcessTree } = await import("../src/core/platform/process-table-win32.ts");
+    expect(windowsProcessTree(process.pid)?.listed).toBe(true);
+  });
+});
