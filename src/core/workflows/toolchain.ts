@@ -50,7 +50,10 @@ const ENVIRONMENT_RUNNERS: readonly (readonly [string, string])[] = [
  * The program a check runs, behind at most two shell launchers and one environment runner, with
  * a `launch` that rebuilds the whole command around new arguments.
  */
-export function toolchainCommand(executable: string, args: readonly string[]): LaunchedCommand {
+export function toolchainCommand(
+  executable: string,
+  args: readonly string[],
+): LaunchedCommand & { script?: string } {
   const outer = launchedCommand(executable, args);
   // `php vendor/bin/phpunit`: a Composer-installed tool run by the interpreter (#1491).
   const vendor = outer.program === "php" ? COMPOSER_BIN.exec(outer.args[0] ?? "") : null;
@@ -59,6 +62,8 @@ export function toolchainCommand(executable: string, args: readonly string[]): L
     return {
       program: programName(script),
       args: outer.args.slice(1),
+      // The proxy script itself, which exists only once `composer install` ran (#2817).
+      script,
       launch: (next, program) =>
         outer.launch([program ? script.replace(/[^\\/]+$/, program) : script, ...next]),
     };

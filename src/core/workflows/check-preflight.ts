@@ -123,10 +123,7 @@ export async function smokeChecks(
             ...base,
             status: "missing_package",
             detail: missing
-              .map(
-                (need) =>
-                  `${need.language === "r" ? "the R package" : "the PowerShell module"} ${need.name} is not installed (${need.install})`,
-              )
+              .map((need) => `${need.what} is not installed (${need.install})`)
               .join("; "),
           });
         else results.push({ ...base, status: "started" });
