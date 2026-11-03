@@ -4,6 +4,7 @@ import { Icon } from "../../components/Icon.js";
 import { Button } from "../../components/ui/button.js";
 import { Segment, SegmentGroup } from "../../components/ui/segmented.js";
 import { cn } from "../../lib/cn.js";
+import { reducedMotion } from "../../lib/motion.js";
 import { LABEL, PANEL } from "../../lib/styles.js";
 import { Conveyor } from "../runs/Conveyor.js";
 import { GATE_KIND, stageIcon } from "../runs/line-model.js";
@@ -27,11 +28,6 @@ import {
 
 const SPEEDS = [1, 2, 0.5] as const;
 const TICK_MS = 1700;
-
-const reducedMotion = (): boolean =>
-  typeof window !== "undefined" &&
-  typeof window.matchMedia === "function" &&
-  window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 
 export function WorkflowFlow({
   line,
