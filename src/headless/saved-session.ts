@@ -9,6 +9,7 @@ import type { CheckpointTag } from "../core/checkpoints/turns.js";
 import { dropRedoTags, type RedoTurn } from "../core/checkpoints/undo.js";
 import { SessionManager } from "../core/sessions/manager.js";
 import { rebuildCoreMessages } from "../core/sessions/rebuild.js";
+import { addTabUsage, readTabUsage, type StepTokens } from "../core/sessions/token-usage.js";
 import type { SessionMeta, TabMeta } from "../core/sessions/types.js";
 import type { BakeMode, ChatEffort, ChatMessage } from "../types/index.js";
 
@@ -103,7 +104,8 @@ export async function endHeadlessTurn(
 export interface HeadlessSaveInput {
   /** The whole conversation: the resumed messages and this run's turns. */
   messages: ChatMessage[];
-  tokens: { input: number; output: number; cacheRead: number };
+  /** The run's usage as providers report it: `input` includes the cached tokens. */
+  tokens: StepTokens;
   cwd: string;
   modelId: string;
   mode: BakeMode;
@@ -121,7 +123,7 @@ export async function saveHeadlessSession(
   input: HeadlessSaveInput,
 ): Promise<void> {
   const prior = session.meta?.tabs.find((t) => t.id === session.tabId);
-  const used = prior?.tokenUsage;
+  const used = readTabUsage(prior?.tokenUsage, prior?.activeModel);
   const tab: TabMeta = {
     label: "Headless",
     planMode: false,
@@ -132,13 +134,7 @@ export async function saveHeadlessSession(
     activeModel: input.modelId,
     sessionId: session.id,
     ...(input.effort !== "default" ? { effort: input.effort } : {}),
-    tokenUsage: {
-      ...used,
-      prompt: (used?.prompt ?? 0) + input.tokens.input,
-      completion: (used?.completion ?? 0) + input.tokens.output,
-      total: (used?.total ?? 0) + input.tokens.input + input.tokens.output,
-      cacheRead: (used?.cacheRead ?? 0) + input.tokens.cacheRead,
-    },
+    tokenUsage: addTabUsage(used, input.modelId, input.tokens),
     messageRange: { startLine: 0, endLine: input.messages.length },
   };
   // Empty lists are left out of the saved tab (undefined is not written).
