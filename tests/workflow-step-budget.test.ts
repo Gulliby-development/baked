@@ -1,7 +1,9 @@
 import { describe, expect, test } from "bun:test";
 import type { ModelMessage } from "@ai-sdk/provider-utils";
 import {
+  ALL_TOKENS_FACTOR,
   AttemptStepController,
+  allTokensCapFor,
   compactToolHistory,
   finalizeNotice,
   finalizeReason,
@@ -169,7 +171,8 @@ describe("AttemptStepController", () => {
     const steps = [usage(48_000, 2000), usage(0, 0), usage(48_000, 2000), usage(0, 0)];
     const controller = new AttemptStepController(options);
     expect(controller.tokenCap(steps)).toBe(500_000);
-    expect(controller.allTokensCap(steps)).toBe(1_500_000);
+    // The all-token floor is one request past the 30-step limit at the 50k average request (#2650).
+    expect(controller.allTokensCap(steps)).toBe(1_550_000);
     // Without a reported step there is nothing to average: the sized cap stands.
     expect(controller.tokenCap([usage(0, 0)])).toBe(150_000);
   });
@@ -329,5 +332,85 @@ describe("AttemptStepController", () => {
     const record = controller.record(steps, true, { profileId: "implementer", taskId: "T001" });
     expect(record.modelRequests).toBe(4);
     expect(record.steps.map((s) => s.modelRequests)).toEqual([3, undefined, 1]);
+  });
+});
+
+/** `n` requests that together spend `total` tokens, `uncached` of them outside the cache. */
+function cachedRequests(n: number, total: number, uncached: number) {
+  return Array.from({ length: n }, (_, i) => {
+    const input = Math.floor(total / n) + (i === 0 ? total % n : 0);
+    const fresh = Math.floor(uncached / n) + (i === 0 ? uncached % n : 0);
+    return { usage: { inputTokens: input, outputTokens: 0, inputTokenDetails: { cacheReadTokens: input - fresh } }, toolCalls: [] };
+  });
+}
+
+describe("the all-token cap's floor follows the step limit (#2650)", () => {
+  const implementer = { maxSteps: 20, maxTokens: 250_000, minSteps: 10, submitTools: ["submit_result"], fallbackStepTokens: 100 };
+
+  test("50k cached requests reach a 20-step limit instead of stopping at request 15", () => {
+    const controller = new AttemptStepController(implementer);
+    let finalizedAt: number | null = null;
+    const steps: ReturnType<typeof cachedRequests> = [];
+    for (let stepNumber = 0; stepNumber < implementer.maxSteps && finalizedAt === null; stepNumber++) {
+      if (controller.prepare({ stepNumber, steps, messages: history(1) }).toolChoice === "required") finalizedAt = stepNumber;
+      steps.push({ usage: { inputTokens: 50_000, outputTokens: 0, inputTokenDetails: { cacheReadTokens: 45_000 } }, toolCalls: [] });
+    }
+    // Three times the 250k cap is 750k, 15 such requests: the step limit finalizes, not the tokens.
+    expect(finalizedAt).toBe(18);
+    expect(controller.record(steps, true, { profileId: "implementer", taskId: "T009" })).toMatchObject({
+      stopReason: "submitted",
+      finalizedBy: "steps",
+      allTokensCap: 21 * 50_000,
+      allTokensInputs: { requests: 19, averageRequestTokens: 50_000, firstRequestTokens: 50_000 },
+    });
+  });
+
+  test("an attempt that ends at its step limit without a result stops on its steps, not this cap", () => {
+    const controller = new AttemptStepController(implementer);
+    const steps = cachedRequests(20, 1_000_000, 100_000);
+    expect(controller.record(steps, false, { profileId: "implementer", taskId: "T009" }).stopReason).toBe("steps");
+  });
+
+  test("a looping attempt on a growing context is bounded by its step limit at its own request size (#1300)", () => {
+    // Read, edit and check cycles: each request resends the last one's context and adds 8k.
+    const controller = new AttemptStepController(implementer);
+    const steps: ReturnType<typeof cachedRequests> = [];
+    let finalizedAt: number | null = null;
+    for (let stepNumber = 0; stepNumber < implementer.maxSteps && finalizedAt === null; stepNumber++) {
+      if (controller.prepare({ stepNumber, steps, messages: history(1) }).toolChoice === "required") finalizedAt = stepNumber;
+      const input = 60_000 + 8_000 * stepNumber;
+      steps.push({ usage: { inputTokens: input, outputTokens: 500, inputTokenDetails: { cacheReadTokens: input - 3_000 } } });
+    }
+    expect(finalizedAt).not.toBeNull();
+    expect(finalizedAt ?? Number.POSITIVE_INFINITY).toBeLessThanOrEqual(implementer.maxSteps - 2);
+    const total = controller.consumed(steps);
+    // The cap that bounds it never passes one request past the step limit at its average request.
+    expect(controller.allTokensCap(steps)).toBe(Math.ceil((total / steps.length) * 21));
+    expect(total).toBeLessThan(controller.allTokensCap(steps));
+  });
+
+  test("without a request the cap is the factor alone", () => {
+    expect(allTokensCapFor(250_000)).toBe(ALL_TOKENS_FACTOR * 250_000);
+    expect(new AttemptStepController(implementer).allTokensCap([])).toBe(750_000);
+  });
+
+  // Replay of the attempts R88 md-site (run 351323db) lost at the all-token cap: T009 d454e35b and
+  // T013 a087a466, both implementer correctives with a 250k cap and a 20-step limit.
+  test.each([
+    ["T009 d454e35b", 14, 790_154, 103_818],
+    ["T013 a087a466", 16, 822_492, 183_900],
+  ])("R88 md-site %s would not have been ended by the all-token cap", (_, requests, total, uncached) => {
+    const steps = cachedRequests(requests, total, uncached);
+    // What the old cap was: three times 250k, below what the attempt had spent.
+    expect(ALL_TOKENS_FACTOR * implementer.maxTokens).toBeLessThan(total);
+    const controller = new AttemptStepController(implementer);
+    expect(controller.capped(steps)).toBe(uncached);
+    expect(controller.consumed(steps)).toBe(total);
+    const cap = controller.allTokensCap(steps);
+    expect(cap).toBe(allTokensCapFor(implementer.maxTokens, { maxSteps: 20, consumed: total, requests }));
+    expect(cap).toBeGreaterThan(total + 2 * Math.ceil(total / requests));
+    // The next step is neither forced to submit nor counted as an attempt at its cap.
+    expect(controller.prepare({ stepNumber: requests, steps, messages: history(1) }).toolChoice).toBeUndefined();
+    expect(controller.overBudget(steps)).toBe(false);
   });
 });
