@@ -944,3 +944,105 @@ describe("scenario: R82 slotprompt dart-test-written, a row transcribed with a d
     expect(replayed.every((b) => JSON.stringify(b.recorded) === JSON.stringify(b.replayed))).toBe(true);
   });
 });
+
+// #2836: `verbatimHeld` decoded the file text through every escape layer and the literal only
+// through its own, so a literal ending in an escaped backslash (`"a\\"`) swallowed its closing
+// quote in the file (`a\\"` -> `a\"` -> `a"`) while the literal stopped at `a\`. Bench round 91
+// stopcut (C++) T004 wrote `tests/options_test.cpp` byte for byte and row 11,
+// `{{"cut", "--stop", "a\\"}, "", 2, "", "stopcut: bad escape in stop sequence\n"},`, was
+// recorded as a shadow row_block_drift. Each layer of the file is now compared with the same
+// layer of the literal.
+type StopRow = [args: string[], stdin: string, code: number, out: string, err: string];
+const STOP_ROWS: StopRow[] = [
+  [["cut", "--stop", "END"], "a\\nEND\\nb\\n", 0, "a\\n", ""],
+  [["cut", "--stop", "a\\\\b"], "x\\n", 0, "x\\n", ""],
+  [["cut", "--stop", "a\\\\"], "", 2, "", "stopcut: bad escape in stop sequence\\n"],
+  [["cut", "--stop", "a\\\\\\\\"], "y\\n", 0, "y\\n", ""],
+];
+const STOP_ROW = 3;
+/** Row 3 with its trailing escaped backslash dropped to a lone one (`"a\"`, which eats the quote). */
+const STOP_CHANGED: StopRow[] = STOP_ROWS.map((r, i) => (i === STOP_ROW - 1 ? [["cut", "--stop", "a\\"], r[1], r[2], r[3], r[4]] : r));
+const STOP_SPELLINGS: Record<string, { path: string; row: (row: StopRow) => string; file: (rows: string[]) => string }> = {
+  cpp: {
+    path: "tests/options_test.cpp",
+    row: ([a, i, c, o, e]) => `{{${a.map(dq).join(", ")}}, ${dq(i)}, ${c}, ${dq(o)}, ${dq(e)}},`,
+    file: (rows) => ['#include "check.hpp"', "", "static const std::vector<Row> rows = {", ...rows.map((r) => `    ${r}`), "};", "", "int main() { return check_rows(rows); }", ""].join("\n"),
+  },
+  python: {
+    path: "tests/test_options.py",
+    row: ([a, i, c, o, e]) => `([${a.map(dq).join(", ")}], ${dq(i)}, ${c}, ${dq(o)}, ${dq(e)}),`,
+    file: (rows) => ["import pytest", "", "ROWS = [", ...rows.map((r) => `    ${r}`), "]", "", '@pytest.mark.parametrize("args,stdin,code,out,err", ROWS)', "def test_row(args, stdin, code, out, err):", "    assert run(args, stdin) == (code, out, err)", ""].join("\n"),
+  },
+  java: {
+    path: "src/test/java/stopcut/OptionsTest.java",
+    row: ([a, i, c, o, e]) => `row(List.of(${a.map(dq).join(", ")}), ${dq(i)}, ${c}, ${dq(o)}, ${dq(e)}),`,
+    file: (rows) => ["package stopcut;", "", "class OptionsTest {", "  static final List<Row> ROWS = List.of(", ...rows.map((r) => `      ${r}`), "      null);", "}", ""].join("\n"),
+  },
+  go: {
+    path: "options_test.go",
+    row: ([a, i, c, o, e]) => `{[]string{${a.map(dq).join(", ")}}, ${dq(i)}, ${c}, ${dq(o)}, ${dq(e)}},`,
+    file: (rows) => ["package stopcut", "", 'import "testing"', "", "var rows = []row{", ...rows.map((r) => `\t${r}`), "}", "", "func TestRows(t *testing.T) { checkRows(t, rows) }", ""].join("\n"),
+  },
+  csharp: {
+    path: "tests/OptionsTest.cs",
+    row: ([a, i, c, o, e]) => `Row(Args(${a.map(dq).join(", ")}), ${dq(i)}, ${c}, ${dq(o)}, ${dq(e)}),`,
+    file: (rows) => ["namespace Stopcut.Tests;", "", "public class OptionsTest {", "  public static readonly Row[] Rows = {", ...rows.map((r) => `    ${r}`), "  };", "}", ""].join("\n"),
+  },
+  rust: {
+    path: "tests/options.rs",
+    row: ([a, i, c, o, e]) => `row(&[${a.map(dq).join(", ")}], ${dq(i)}, ${c}, ${dq(o)}, ${dq(e)}),`,
+    file: (rows) => ["mod common;", "use common::row;", "", "#[test]", "fn rows() {", "    let rows = [", ...rows.map((r) => `        ${r}`), "    ];", "    common::check(&rows);", "}", ""].join("\n"),
+  },
+};
+const stopBlock = (path: string, rows: string[]) => [`OptionsTest in ${path} (${rows.length} rows, row(ARGS, STDIN, CODE, OUT, ERR))`, ...rows];
+
+describe("#2836: a literal ending in an escaped backslash is held by the file that spells it", () => {
+  for (const [language, spelling] of Object.entries(STOP_SPELLINGS)) {
+    const block = stopBlock(spelling.path, STOP_ROWS.map(spelling.row));
+    const compare = (rows: StopRow[]) =>
+      rowBlockDrifts(request({ path: spelling.path, block } as Shape), graphOf(spelling.path), () => spelling.file(rows.map(spelling.row)))[0];
+    test(`${language}: the file with the row "a\\\\" as given records no drift`, () => {
+      const compared = compare(STOP_ROWS);
+      expect(compared?.record.drifting).toEqual([]);
+      expect(compared?.drifts).toEqual([]);
+      expect(compared?.record.rows.every((r) => r.line !== undefined && !r.missing.length && r.differs === undefined)).toBe(true);
+    });
+    test(`${language}: the file that changes "a\\\\" to "a\\" drifts on that row`, () => {
+      expect(compare(STOP_CHANGED)?.record.drifting).toEqual([STOP_ROW]);
+    });
+  }
+
+  test("verbatimHeld: a literal ending in one, two or a pair of escaped backslashes is held by its own spelling, not by one backslash less", () => {
+    for (const literal of ["a\\\\", "a\\\\\\\\", "a\\\\b", "a\\\\ "]) expect(verbatimHeld(`("${literal}", 1)`, literal)).toBe(true);
+    expect(verbatimHeld('("a\\", 1)', "a\\\\")).toBe(false);
+    expect(verbatimHeld('("a\\\\", 1)', "a\\\\\\\\")).toBe(false);
+    // The case walk's fallback for a multi-line literal (the Sweep's sibling).
+    // JSON text in a string (#1997) whose lines end in an escaped backslash, and one backslash less.
+    expect(testsHold(String.raw`expect(parse("a\\\\\\nb\\\\")).toBe(1);`, String.raw`a\\\nb\\`)).toBe(true);
+    expect(testsHold(String.raw`expect(parse("a\\\\\\nb\\")).toBe(1);`, String.raw`a\\\nb\\`)).toBe(false);
+  });
+});
+
+describe("scenario: R91 stopcut, a row whose literal ends in an escaped backslash, written exactly (#2836)", () => {
+  const cpp = STOP_SPELLINGS.cpp!;
+  const SHAPE: Shape = {
+    path: cpp.path,
+    block: stopBlock(cpp.path, STOP_ROWS.map(cpp.row)),
+    faithful: cpp.file(STOP_ROWS.map(cpp.row)),
+    drifted: cpp.file(STOP_CHANGED.map(cpp.row)),
+    row: STOP_ROW,
+    missing: [],
+    added: "",
+    addedLine: 0,
+  };
+  test("the checks stage records no row_block_drift for the file as given, and the run completes", async () => {
+    const { final, wouldStops } = await deliver(SHAPE, SHAPE.faithful);
+    expect(wouldStops).toEqual([]);
+    expect(final.status).toBe("completed");
+  });
+  test("the file whose row lost a backslash records a shadow row_block_drift for that row", async () => {
+    const { wouldStops } = await deliver(SHAPE, SHAPE.drifted);
+    expect(wouldStops.map((w) => w.key)).toEqual([`${cpp.path}#row-${STOP_ROW}`]);
+    expect(wouldStops[0]).toMatchObject({ mode: "shadow" });
+  });
+});
