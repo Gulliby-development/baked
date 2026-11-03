@@ -298,6 +298,31 @@ describe("edit_file tool: create new file", () => {
 		expect(content).toBe("const x = 1;\n");
 	});
 
+	it("says it overwrote an existing file, and undo_edit restores it (#2793)", async () => {
+		const path = await writeTestFile("existing.txt", "keep me\nand me\n");
+		const result = await editFileTool.execute({ path, oldString: "", newString: "new\n" });
+		expect(result.success).toBe(true);
+		expect(result.output).toContain("Overwrote");
+		expect(result.output).not.toContain("Created");
+		expect(await readFile(path, "utf-8")).toBe("new\n");
+		const undo = await undoEditTool.execute({ path });
+		expect(undo.success).toBe(true);
+		expect(await readFile(path, "utf-8")).toBe("keep me\nand me\n");
+	});
+
+	it("refuses to overwrite an existing file on a stale ifHash (#2793)", async () => {
+		const path = await writeTestFile("stale.txt", "current\n");
+		const result = await editFileTool.execute({
+			path,
+			oldString: "",
+			newString: "new\n",
+			ifHash: "deadbeef",
+		});
+		expect(result.success).toBe(false);
+		expect(result.error).toBe("concurrent modification");
+		expect(await readFile(path, "utf-8")).toBe("current\n");
+	});
+
 	it("creates nested directories", async () => {
 		const path = join(TMP, "deep", "nested", "dir", "file.ts");
 		const result = await editFileTool.execute({
