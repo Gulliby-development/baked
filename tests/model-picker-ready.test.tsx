@@ -41,7 +41,14 @@ describe("model picker", () => {
 				});
 		};
 		try {
-			await settle();
+			// Availability and models arrive by async fetches: wait for them, not for a fixed number of
+			// frames, which a loaded CI runner does not finish in (#2848).
+			const deadline = Date.now() + 5000;
+			do await settle();
+			while (
+				!(/ 2\/\d+ providers ready/.test(view.captureCharFrame()) && view.captureCharFrame().includes("1 · non-streaming")) &&
+				Date.now() < deadline
+			);
 			const frame = view.captureCharFrame();
 			const header = frame.split("\n").find((line) => line.includes("providers ready")) ?? "";
 			expect(header).toMatch(/ 2\/\d+ providers ready/);
