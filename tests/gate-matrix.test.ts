@@ -58,6 +58,7 @@ import { criterionCases, missingCases, testsHold, writtenTestPaths } from "../sr
 import { INLINE_HARNESS, type InlineRowTest, inlineRowFile, withInlineRows } from "../src/core/workflows/acceptance-rows-inline.js";
 import { reproExecutables, rerootRepro } from "../src/core/verification/repro.js";
 import { packageNeeds } from "../src/core/workflows/package-probe.js";
+import { redirectFixture } from "../src/core/verification/doc-examples.js";
 import { entryPointCommand } from "../src/core/verification/entry-points.js";
 import { noteSiblingFindings, ownerOfFinding } from "../src/core/verification/initiative-ownership.js";
 import { failureSignature as convergenceSignature, missingPlannedPaths, noTestsCollected } from "../src/core/verification/convergence.js";
@@ -6239,6 +6240,19 @@ describe("ci check drift gate: the PowerShell gates' cmdlets and the project's o
   });
 });
 
+describe("upstream symbol gate: a dotted test namespace and an unchanged helper are no gap (#2837)", () => {
+  // R91 dagwalk: `Dagwalk.Tests` and "the unchanged Rows helper" were 2 of 2 false would-stops.
+  const spec = (text: string) => ({ requirements: [{ id: "FR-001", text, priority: "must" as const, verification: "automated" as const, sourceRefs: [] }], criteria: [] });
+  test("csharp: no gap; a helper the file lacks still is one", () => {
+    const upstream = [
+      { featureId: "core", path: "src/Dagwalk/Api.cs", text: "namespace Dagwalk;\npublic static class Api {}\n" },
+      { featureId: "core", path: "tests/Dagwalk.Tests/Rows.cs", text: "namespace Dagwalk.Tests;\npublic static class Rows {}\n" },
+    ];
+    expect(upstreamSymbolGaps(spec("namespace Dagwalk.Tests; use the unchanged Rows helper."), upstream)).toEqual([]);
+    expect(upstreamSymbolGaps(spec("Rows gain a public Rows helper."), upstream)).toHaveLength(1);
+  });
+});
+
 describe("upstream symbol gate: a helper the request supplies is no missing member (#2566)", () => {
   // R83 bytemerge training: "the given Rows helper" read as a gap of the supplied Rows.java.
   const spec = (text: string) => ({ requirements: [{ id: "FR-001", text, priority: "must" as const, verification: "automated" as const, sourceRefs: [] }], criteria: [] });
@@ -6251,5 +6265,22 @@ describe("upstream symbol gate: a helper the request supplies is no missing memb
       const upstream = [{ featureId: "cli", path, text }];
       expect(upstreamSymbolGaps(spec("Tests build rows with the given Rows helper."), upstream)).toEqual([]);
       expect(upstreamSymbolGaps(spec("Rows gain a public Rows helper."), upstream)).toHaveLength(1);
+    });
+});
+
+describe("documented-example fixture gate: a printf or echo line that writes the next example's input (#2693)", () => {
+  // R88 pokerank: `printf '...' > hand.txt` then `node bin/pokerank.js showdown hand.txt`.
+  const cases: [string, ReturnType<typeof redirectFixture>][] = [
+    ["printf 'board 2c 7d\\nseat ann\\n' > hand.txt", { path: "hand.txt", content: "board 2c 7d\nseat ann\n", append: false }],
+    ["printf 'a\\\\nb' > in/raw.txt", { path: "in/raw.txt", content: "a\\nb", append: false }],
+    ["printf '\\101\\t%%\\n' >> data.csv", { path: "data.csv", content: "A\t%\n", append: true }],
+    ['echo "seat ann" > seats.txt', { path: "seats.txt", content: "seat ann\n", append: false }],
+    ["printf '%s' x > out.txt", null],
+    ["echo -n x > out.txt", null],
+    ["printf 'x' > ../escape.txt", null],
+  ];
+  for (const [command, expected] of cases)
+    test(command, () => {
+      expect(redirectFixture(command)).toEqual(expected);
     });
 });

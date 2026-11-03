@@ -64,6 +64,24 @@
     "diagnosticFormats": ["src/main.zig: error: expected type 'u32', found '[]const u8'"],
     "testClasses": null,
     "testDeclarations": ["src/sum_test.zig: 2 tests"],
-    "rowFileShapes": null
+    "rowFileShapes": [
+      "src/count_rows_test.zig",
+      "const std = @import(\"std\");",
+      "const words = @import(\"words.zig\");",
+      "",
+      "const Row = struct { text: []const u8, count: usize };",
+      "",
+      "const rows = [_]Row{",
+      "    .{ .text = \"a\\tb\\nc\", .count = 3 },",
+      "    .{ .text = \"  lead \\\"q\\\"\", .count = 2 },",
+      "};",
+      "",
+      "test \"rows\" {",
+      "    for (rows) |row| {",
+      "        try std.testing.expectEqual(row.count, words.count(row.text));",
+      "    }",
+      "}",
+      ""
+    ]
   }
 }

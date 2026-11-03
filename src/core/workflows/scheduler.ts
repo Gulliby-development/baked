@@ -382,6 +382,15 @@ import {
   conflictFinishReady,
 } from "./conflict-finish.js";
 import {
+  CONFLICT_ROWS_DIR,
+  CONFLICT_ROWS_KIND,
+  type ConflictRowRecord,
+  conflictRowDiff,
+  conflictRowEvidence,
+  conflictRowFiles,
+  conflictRowNote,
+} from "./conflict-row-reply.js";
+import {
   auditVerified,
   type ContestedRow,
   contestedRows,
@@ -573,6 +582,7 @@ import {
   repairChangedFiles,
 } from "./invalidation.js";
 import {
+  commandLiveness,
   commandMayBeRunning,
   mutationLeaseFor,
   type WorkspaceLeases,
@@ -1335,6 +1345,18 @@ const CHECK_KIND =
   /test|lint|ruff|eslint|biome|clippy|flake8|mypy|pyright|tsc|typecheck|type check/i;
 /** A linter rule code such as Ruff's ISC004 or ESLint-style E501: naming one reports a violation. */
 const RULE_CODE = /\b[A-Z]{1,4}\d{3,4}\b/;
+/**
+ * A task step's result, bound to the task the step ran: `taskId` is a host field (#2828,
+ * `HOST_FIELDS`), so a result that names another task, such as windowfit 08da8647 T003's
+ * `T002` copied from the task before it, is this task's result and not a reason to reject it.
+ * Every task path parses here: planned tasks and correctives, batch workers, best-of-N
+ * candidates and integrators.
+ */
+export function taskImplementation(taskId: string, output: unknown): Implementation {
+  return ImplementationSchema.parse(
+    output && typeof output === "object" && !Array.isArray(output) ? { ...output, taskId } : output,
+  );
+}
 /**
  * A task that changed its files and reports, as unresolved, only failing tests or lint findings in
  * those files has done its work: the failures go to a corrective task like a failed task check,
@@ -3734,6 +3756,9 @@ export class WorkflowScheduler {
       await this.processes.stop();
       const fault =
         signal.aborted && signal.reason instanceof WorkflowFault ? signal.reason : error;
+      // A recovery request checks command processes: read them before the write lock is taken.
+      const recovering = fault instanceof WorkflowFault && fault.code === "RECOVERY_REQUIRED";
+      using _liveness = commandLiveness(this.store, recovering ? [runId] : []);
       this.store.transaction(() => {
         if (stepId) {
           // Task, review and transition steps opened under the stage end with it (#1745).
@@ -9280,7 +9305,8 @@ ${note}`;
       let result = this.settleSizeTargets(
         runId,
         task.id,
-        ImplementationSchema.parse(
+        taskImplementation(
+          task.id,
           await this.call(
             runId,
             child,
@@ -9377,7 +9403,7 @@ ${note}`;
           }),
         ),
       );
-      if (result.outcome === "spec_conflict" && result.taskId === task.id) {
+      if (result.outcome === "spec_conflict") {
         const attemptId = this.store
           .attempts(runId)
           .filter((a) => a.step_id === child)
@@ -9492,7 +9518,6 @@ ${note}`;
       }
       const ownFailures = ownCheckFailures(task, result, changed);
       if (
-        result.taskId !== task.id ||
         ["blocked", "failed"].includes(result.outcome) ||
         (result.unresolved.length > 0 && !ownFailures) ||
         correction !== true
@@ -10923,7 +10948,8 @@ ${note}`;
       let result = this.settleSizeTargets(
         runId,
         task.id,
-        ImplementationSchema.parse(
+        taskImplementation(
+          task.id,
           await this.call(
             runId,
             entry.child,
@@ -10988,7 +11014,7 @@ ${note}`;
       );
       // Check results the host ran to finish a stopped attempt, reused by the task checks.
       const hostChecked = new Map<string, WorkerCheck["checked"]>();
-      if (result.outcome === "spec_conflict" && result.taskId === task.id) {
+      if (result.outcome === "spec_conflict") {
         const fix: MisquoteFixContext = {
           root,
           attemptId: entry.attemptId,
@@ -11166,7 +11192,6 @@ ${note}`;
       if (correction instanceof WorkflowFault)
         return { kind: "rejected", entry, error: correction };
       if (
-        result.taskId !== task.id ||
         ["blocked", "failed"].includes(result.outcome) ||
         (result.unresolved.length > 0 && !ownCheckFailures(task, result, changed)) ||
         correction !== true
@@ -11754,7 +11779,8 @@ ${note}`;
     const result = this.settleSizeTargets(
       runId,
       task.id,
-      ImplementationSchema.parse(
+      taskImplementation(
+        task.id,
         await this.call(
           runId,
           entry.child,
@@ -11797,7 +11823,6 @@ ${note}`;
         `The integrator of ${task.id} changed files outside the conflict: ${outside.slice(0, 5).join(", ")}`,
       );
     if (
-      result.taskId !== task.id ||
       ["blocked", "failed", "spec_conflict"].includes(result.outcome) ||
       result.unresolved.length > 0
     ) {
@@ -13604,6 +13629,11 @@ ${note}`;
       ...(rows.length ? { criterionIds: rows.map((r) => r.criterion.id) } : {}),
     };
     const assumedPath = `assumptions/conflicts/${task.id}.json`;
+    // A conflict about a test file whose rows the request prescribes is answered first, with the
+    // row diff the host reads itself: the request's rows win over a transcription that dropped
+    // one (#2493, R80 deltaglue cli T010). Shadow unless `conflictRowReply` is on.
+    if (this.replyWithRows(runId, state, policy, child, task, account, report, result, root))
+      return null;
     // A criterion that contradicts what the request states loses to the request, on quotes the
     // host checked and on every report of the task, whatever words the report uses (#2016). It
     // comes before the rows are compared with the test: a test that changed a row because the
@@ -14881,6 +14911,113 @@ ${note}`;
     if (finished) return finished;
     state.prompt += `\nSettled spec conflict (${path}): task ${task.id} reported that the spec contradicts the code: ${report.slice(0, 1200)} ${settled}. Implement what ${requirementIds.join(", ")} state, and where a test this run wrote follows the contradicting row, change only that expected value to what the requirements give; weaken no other test. Report implemented or already_satisfied, not spec_conflict.`;
     return null;
+  }
+  /**
+   * A spec conflict whose test side is a file the request prescribes rows for, answered with the
+   * row diff (#2493): the files the conflict names (its test sides, the paths its report names,
+   * the files the task's failing check names) that `suppliedRows` reads are compared with their
+   * rows through `rowBlockDrifts` on the attempt's tree. A delivered file that drifts is verified
+   * evidence for the `prescribed-rows` site: with `conflictRowReply: "on"` the request's rows win,
+   * the task is interrupted and its next attempt reads the row diff, and no model settle runs.
+   * Every comparison is recorded under `conflicts/rows/` (with the reply, sent or not) and its
+   * decision under `conflicts/evidence/`. True when the host replied.
+   */
+  private replyWithRows(
+    runId: string,
+    state: RuntimeState,
+    policy: RunPolicy,
+    child: string,
+    task: Task,
+    account: Record<string, unknown>,
+    report: string,
+    result: Implementation,
+    root: string,
+  ): boolean {
+    const graph = state.rootGraph ?? state.graph;
+    if (!graph) return false;
+    const assumedPath = `assumptions/conflicts/${task.id}-rows.json`;
+    if (this.store.latestArtifact(runId, assumedPath)) return false;
+    const failing = this.failedCheckOutput(runId, task.id);
+    const named = new Set(
+      [
+        ...pathsInOutput(report, graph.tasks),
+        ...(failing ? failingFilesInOutput(failing, graph.tasks) : []),
+        ...sideTests(result.conflictSides),
+      ].filter(isTestPath),
+    );
+    if (!named.size) return false;
+    // Only the named files: `rowBlockDrifts` compares the files the graph writes.
+    const scoped = {
+      tasks: graph.tasks.map((t) => ({ ...t, writes: t.writes.filter((w) => named.has(w.path)) })),
+    };
+    let compared: ReturnType<typeof rowBlockDrifts> = [];
+    try {
+      compared = rowBlockDrifts(state.requestText || state.prompt, scoped, (path) =>
+        readText(workspacePath(root, path)),
+      );
+    } catch {
+      return false;
+    }
+    if (!compared.length) return false;
+    const files = conflictRowFiles(compared.map((c) => c.record));
+    const drifts = compared.flatMap((c) => c.drifts);
+    const input: EvidenceInput = {
+      site: "prescribed-rows",
+      eligible: policy.clarification === "assume",
+      evidence: conflictRowEvidence(files),
+      wording: false,
+      fallback: false,
+    };
+    const decision = evidenceDecision(input);
+    this.recordEvidenceDecisions(runId, [{ ref: task.id, input }]);
+    const mode = policy.conflictRowReply === "on" ? "on" : "shadow";
+    const n =
+      this.store
+        .artifacts(runId)
+        .filter(
+          (a) =>
+            a.kind === CONFLICT_ROWS_KIND &&
+            a.logical_path.startsWith(`${CONFLICT_ROWS_DIR}${task.id}-`),
+        ).length + 1;
+    const record: ConflictRowRecord = {
+      schemaVersion: 1,
+      taskId: task.id,
+      report: n,
+      mode,
+      files,
+      decision,
+      reply: decision ? conflictRowDiff(drifts) : null,
+    };
+    this.store.transaction(() =>
+      this.store.artifact(
+        runId,
+        CONFLICT_ROWS_KIND,
+        `${CONFLICT_ROWS_DIR}${task.id}-${n}.json`,
+        canonical(record),
+      ),
+    );
+    if (!decision || mode !== "on") return false;
+    const paths = [...new Set(drifts.map((d) => d.path))];
+    const assumed = `The request's rows win over ${paths.join(", ")}: ${record.reply}`;
+    this.store.transaction(() => {
+      this.store.artifact(
+        runId,
+        "diagnostic",
+        `tasks/conflicts/${task.id}.json`,
+        canonical(account),
+      );
+      this.store.artifact(runId, "assumption", assumedPath, canonical({ ...account, assumed }));
+      recordConflictDecision(this.store, runId, {
+        requestId: `assumed-${task.id}-rows`,
+        taskId: task.id,
+        findingIds: task.findingIds,
+        answer: `Assumed under clarification assume (${assumedPath}): ${assumed}.`,
+      });
+      this.store.taskStatus(runId, task.id, "interrupted", null, { cause: "spec_conflict" });
+      this.store.finishStep(runId, child, "failed");
+    });
+    state.prompt += `\n${conflictRowNote(task.id, assumedPath, report, drifts)}`;
+    return true;
   }
   /**
    * Whether the task's latest request conflict record holds a request side that only the host's

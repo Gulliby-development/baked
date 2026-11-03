@@ -842,6 +842,14 @@ export const PolicySchema = z
      */
     rowRunRoute: z.literal("on").optional(),
     /**
+     * The host's answer to a spec conflict about a test file whose rows the request prescribes
+     * (conflict-row-reply.ts, #2493): `on` lets the host compare the file with the rows and, when
+     * it drifts, reply with the row diff and keep the request side, instead of a model settle.
+     * Absent means shadow (the decision and the reply are recorded under `conflicts/rows/`, the
+     * conflict takes the other settles), so stored policies keep their hash.
+     */
+    conflictRowReply: z.literal("on").optional(),
+    /**
      * The host's restore of a prescribed row whose long byte run a delivered test file counts
      * differently, outside the checks stage (row-restore.ts `rowRunRestores`, #2543): on resume of
      * a run blocked `invalid_output` and before a task's session, the host replaces the row's line
@@ -972,6 +980,14 @@ export const PolicySchema = z
          * feature's estimate (`documentedSurface`, mode `shadow`) only.
          */
         documentedSurface: z.boolean().optional(),
+        /**
+         * Prices a feature with fewer paths than its size pool's median, where the pool's tokens
+         * do not follow their paths (no path fit), at the square root of that path share of the
+         * pool's range, and a feature of legal files alone (a `LICENSE`) at the per-path rate
+         * (`fewPathShare`, #2640). Documentation features keep their price. Absent means off: the
+         * size pool prices them as features of its usual paths.
+         */
+        fewPathPrice: z.boolean().optional(),
         /**
          * Weighs an initiative estimate's finished features by how recent their initiative is: a
          * feature's weight halves for every this many initiatives started after its own

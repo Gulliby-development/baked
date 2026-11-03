@@ -27,6 +27,7 @@ import {
   firstByteDeadline,
   providerFirstByteMs,
 } from "../llm/provider-health.js";
+import { streamOutputDecision } from "../llm/providers/output-limit.js";
 import { canonical, hashBytes, hashJson } from "../specs/hash.js";
 import { workspacePath } from "../specs/validate.js";
 import { replayUnselectedTests } from "../verification/check-runner.js";
@@ -937,6 +938,10 @@ export interface RunReplay {
   firstByte: FirstByteBoundary[];
   /** Calls the current deadline would end as an outage that got their answer in the recording. */
   newFirstByteStops: number;
+  /** Each step a stream guard watched against the current rule (`stream_output_limit`, #2660). */
+  streamOutputs: StreamOutputBoundary[];
+  /** Steps the current rule stops (or records a would-stop for) that the recording passed. */
+  newStreamOutputStops: number;
   /** Each planned test task of the run's sizing reports against the current split rule (#1789). */
   testSplits: TestSplitBoundary[];
   /** Test tasks the current rule splits that the recorded sizing kept whole. */
@@ -2873,7 +2878,8 @@ export function replayFirstBytes(
   const boundaries = new Map<string, FirstByteBoundary[]>(runIds.map((runId) => [runId, []]));
   for (const { runId, attemptId, model, call, index, estimated } of calls) {
     // A refused call (a 429, say) answered before any deadline; it is the retry ladder's, not this.
-    if (call.status !== undefined) continue;
+    // So is one that ended in a provider error, such as a model at capacity (#2820).
+    if (call.status !== undefined || call.failure === "error") continue;
     const limitMs =
       adaptive && call.limitMs !== undefined
         ? adaptive(history, providerFirstByteMs(call.provider, call), model, call)
@@ -2894,6 +2900,67 @@ export function replayFirstBytes(
       recorded: call.firstByteMs === null ? "stop" : "pass",
       replayed: replayed ? "stop" : "pass",
     });
+  }
+  return boundaries;
+}
+
+/** The stream guard's rule (#2660); `streamOutputDecision` unless a test passes another. */
+export type StreamOutputRule = typeof streamOutputDecision;
+
+/** A step a stream guard watched (`outputGuard` in its usage record), against the current rule. */
+export interface StreamOutputBoundary {
+  attemptId: string;
+  /** The step's index in its attempt. */
+  step: number;
+  mode: string;
+  maxOutputTokens: number;
+  streamedChars: number;
+  /** `stop` for a recorded `would_stop` or `stopped`. */
+  recorded: "pass" | "stop";
+  replayed: "pass" | "stop";
+}
+
+/**
+ * Every step of a run whose provider guarded its stream (`steps[].outputGuard` in
+ * `attempts/*\/usage.json`, Codex app-server, #2660), decided again from its limit and streamed
+ * characters. The current factor is the rule's, not the recorded one, so a change of the factor
+ * shows here. Traces before #2660 record none.
+ */
+export function replayStreamOutputs(
+  store: WorkflowStore,
+  runId: string,
+  rule: StreamOutputRule = streamOutputDecision,
+): StreamOutputBoundary[] {
+  const attempts = store.connection
+    .query("SELECT id FROM attempts WHERE run_id=? ORDER BY started_at, rowid")
+    .all(runId) as { id: string }[];
+  const boundaries: StreamOutputBoundary[] = [];
+  for (const attempt of attempts) {
+    const artifact = store.latestArtifact(runId, `attempts/${attempt.id}/usage.json`);
+    if (!artifact) continue;
+    let usage: Pick<AttemptUsageRecord, "steps">;
+    try {
+      usage = JSON.parse(store.readArtifact(runId, artifact.id)) as typeof usage;
+    } catch {
+      continue;
+    }
+    for (const [step, entry] of (usage.steps ?? []).entries()) {
+      const guard = entry.outputGuard;
+      if (!guard || typeof guard.maxOutputTokens !== "number") continue;
+      const { over } = rule({
+        maxOutputTokens: guard.maxOutputTokens,
+        streamedChars: guard.streamedChars,
+      });
+      boundaries.push({
+        attemptId: attempt.id,
+        step,
+        mode: guard.mode,
+        maxOutputTokens: guard.maxOutputTokens,
+        streamedChars: guard.streamedChars,
+        recorded: guard.decision === "pass" ? "pass" : "stop",
+        replayed: over ? "stop" : "pass",
+      });
+    }
   }
   return boundaries;
 }
@@ -2978,7 +3045,10 @@ export function replayStallLadder(
     }
     const last = usage.calls?.at(-1);
     // A stall, or a turn that finished with no usable answer (#1957), which climbs the same way.
-    const stalled = !!last && last.firstByteMs === null && last.status === undefined;
+    // A call that ended in a provider error (the model at capacity) is the retry's, not a stall
+    // (#2820); a call recorded before its failure kind was is read by its timing alone.
+    const stalled =
+      !!last && last.firstByteMs === null && last.status === undefined && last.failure !== "error";
     if (attempt.status !== "failed" || (!stalled && usage.lostAnswer === undefined)) continue;
     const entry =
       (stage ? routing.stages?.[stage] : undefined) ??
@@ -3885,6 +3955,8 @@ export function replayInitiativeStarts(
     moments?: number[];
     /** Sets the initiative's `sizing.recencyHalfLife`, to backtest the weighting (#2150). */
     recencyHalfLife?: number;
+    /** Sets the initiative's `sizing.fewPathPrice`, to backtest it (#2640). */
+    fewPathPrice?: boolean;
     /**
      * Sets entries of the initiative's base policy `stopModes`, to replay a round at the mode it
      * ran in: a round before #2245 held open runs at their limits (`initiative-plan-charge` in
@@ -3933,6 +4005,7 @@ export function replayInitiativeStarts(
       budgetAtStart: options.budgetAtStart !== false,
       moments: options.moments ?? [],
       ...(options.recencyHalfLife ? { recencyHalfLife: options.recencyHalfLife } : {}),
+      ...(options.fewPathPrice ? { fewPathPrice: true } : {}),
       ...(options.stopModes ? { stopModes: options.stopModes } : {}),
       ...(options.planChargeExpected ? { planChargeExpected: options.planChargeExpected } : {}),
       firstStartOnly: options.firstStartOnly === true,
@@ -4046,6 +4119,7 @@ function replayStarts(
     budgetAtStart,
     moments,
     recencyHalfLife,
+    fewPathPrice,
     stopModes,
     planChargeExpected,
     firstStartOnly,
@@ -4053,6 +4127,7 @@ function replayStarts(
     budgetAtStart: boolean;
     moments: number[];
     recencyHalfLife?: number;
+    fewPathPrice?: boolean;
     stopModes?: RunPolicy["stopModes"];
     planChargeExpected?: PlanChargeExpected;
     firstStartOnly: boolean;
@@ -4077,7 +4152,7 @@ function replayStarts(
       .get(initiativeId) as { settings_json: string; decompose_run_id: string | null };
     const settings = JSON.parse(row.settings_json) as {
       basePolicy?: {
-        sizing?: { historyStores?: string[]; recencyHalfLife?: number };
+        sizing?: { historyStores?: string[]; recencyHalfLife?: number; fewPathPrice?: boolean };
         stopModes?: RunPolicy["stopModes"];
         rowFileWrite?: RunPolicy["rowFileWrite"];
       };
@@ -4086,10 +4161,18 @@ function replayStarts(
     // trace keeps no request text: the blocks are restored from the trace's own records first.
     if (settings.basePolicy?.rowFileWrite === "on") restoreRowBlocks(db, initiativeId);
     const missingHistory: string[] = [];
-    if (recencyHalfLife || stopModes) {
+    if (recencyHalfLife || fewPathPrice || stopModes) {
       settings.basePolicy = {
         ...settings.basePolicy,
-        ...(recencyHalfLife ? { sizing: { ...settings.basePolicy?.sizing, recencyHalfLife } } : {}),
+        ...(recencyHalfLife || fewPathPrice
+          ? {
+              sizing: {
+                ...settings.basePolicy?.sizing,
+                ...(recencyHalfLife ? { recencyHalfLife } : {}),
+                ...(fewPathPrice ? { fewPathPrice } : {}),
+              },
+            }
+          : {}),
         ...(stopModes ? { stopModes: { ...settings.basePolicy?.stopModes, ...stopModes } } : {}),
       };
       db.run("UPDATE initiatives SET settings_json=? WHERE id=?", [
@@ -4928,6 +5011,8 @@ function replayRun(
   RunReplay,
   | "firstByte"
   | "newFirstByteStops"
+  | "streamOutputs"
+  | "newStreamOutputStops"
   | "testSplits"
   | "newTestSplits"
   | "stallLadder"
@@ -5189,6 +5274,8 @@ export function replayTrace(
   path: string,
   options: {
     firstByteLimit?: FirstByteLimit;
+    /** Decides each guarded step's streamed output again (#2660); the current rule by default. */
+    streamOutputRule?: StreamOutputRule;
     /** The adaptive deadline's rule (#2041); null replays every call on `firstByteLimit`. */
     adaptiveFirstByte?: AdaptiveFirstByteRule | null;
     shareGate?: ShareGate;
@@ -5258,6 +5345,10 @@ export function replayTrace(
       runIds,
       options.firstByteLimit,
       options.adaptiveFirstByte === undefined ? adaptiveDeadline : options.adaptiveFirstByte,
+    );
+    // Usage records too: the forecast replay removes later attempts' artifacts.
+    const guarded = new Map(
+      runIds.map((runId) => [runId, replayStreamOutputs(store, runId, options.streamOutputRule)]),
     );
     const splits = new Map(
       runIds.map((runId) => [runId, replayTestSplits(store, runId, options.testSplit)]),
@@ -5378,6 +5469,7 @@ export function replayTrace(
     const runs: RunReplay[] = [];
     for (const runId of runIds) {
       const firstByte = timings.get(runId) ?? [];
+      const streamOutputs = guarded.get(runId) ?? [];
       const replay = replayRun(store, runId, options.callRate) ?? {
         runId,
         featureId: store.run(runId).feature_id,
@@ -5419,6 +5511,7 @@ export function replayTrace(
       if (
         !replay.boundaries.length &&
         !firstByte.length &&
+        !streamOutputs.length &&
         !testSplits.length &&
         !stallLadder.length &&
         !policyRefusals.length &&
@@ -5452,6 +5545,10 @@ export function replayTrace(
         firstByte,
         newFirstByteStops: firstByte.filter((b) => b.replayed === "stop" && b.recorded === "pass")
           .length,
+        streamOutputs,
+        newStreamOutputStops: streamOutputs.filter(
+          (b) => b.replayed === "stop" && b.recorded === "pass",
+        ).length,
         testSplits,
         newTestSplits: testSplits.filter((b) => b.replayed === "split" && b.recorded === "whole")
           .length,
