@@ -143,7 +143,7 @@ Without the terminal UI, `baked login codex|claude-code` and `baked logout ...` 
 | `/agent-context preview` | Preview the rules and files an agent's prompt carries |
 | `/agent-context remove` | Remove an entry from the working set |
 | `/agent-features` | Toggle agent features (de-sloppify, tier routing) |
-| `/code-quality` | Quality gates of workflow runs (duplication ratchet, anti-slop rules, dependency check, Semgrep, property-based tests, mutation gate) and the library docs source of implementers |
+| `/code-quality` | Quality gates of workflow runs (duplication ratchet, anti-slop rules, dependency check, Semgrep, property-based tests, mutation gate), the library docs source of implementers and the worktree folder of worktree runs (`workflows.worktreeRoot`) |
 | `/chat-style` | Toggle chat layout style |
 | `/diff-style` | Change diff display style |
 | `/instructions` | Toggle instruction files (baked.md, CLAUDE.md, etc.) |
