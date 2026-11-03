@@ -600,6 +600,31 @@ describe("workflow worktree execution", () => {
     expect(parseWorkflowArgs(["worktrees", "--clean", "--dry-run"]).flags).toMatchObject({ clean: true, "dry-run": true });
     expect(() => parseWorkflowArgs(["worktrees", "extra"])).toThrow();
   });
+
+  test("a run worktree Git no longer lists is still discarded and cleaned (#2806)", async () => {
+    const fx = setup();
+    const store = fx.service.store;
+    const identity = (runId: string) => ({ commandId: newId(), expectedRevision: store.run(runId).revision });
+    const ended = async () => {
+      const run = await fx.start("worktree");
+      await fx.drive(run.runId);
+      await fx.service.cancel(run.runId, identity(run.runId));
+      return { runId: run.runId, dir: join(fx.root, runWorktreeDir(fx.root, run.runId)) };
+    };
+    const discarded = await ended();
+    const cleaned = await ended();
+    // A moved project folder leaves each admin entry pointing at the old path, and the next
+    // `git worktree prune` drops it: `git worktree remove` then answers "is not a working tree".
+    rmSync(join(fx.root, ".git", "worktrees"), { recursive: true, force: true });
+    await fx.service.discardWorktree(discarded.runId, identity(discarded.runId));
+    expect(existsSync(discarded.dir)).toBe(false);
+    expect(git(fx.root, "branch", "--list", `baked/wf/${discarded.runId}`)).toBe("");
+    const result = await fx.service.cleanWorktrees(false);
+    expect(result.warnings).toEqual([]);
+    expect(result.runIds).toEqual([cleaned.runId]);
+    expect(existsSync(cleaned.dir)).toBe(false);
+    expect(git(fx.root, "worktree", "list", "--porcelain").split("\n").filter((l) => l.startsWith("worktree "))).toHaveLength(1);
+  }, 60000);
   test("the CLI requests worktree execution, the exclusion choice and discard", () => {
     expect(parseWorkflowArgs(["run", "--feature", "f", "--prompt", "p", "--worktree"]).flags.worktree).toBe(true);
     expect(

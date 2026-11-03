@@ -32,7 +32,7 @@ export interface RowReplay {
   framework: Framework;
   /** The Go package, Java package, C# or PHP namespace of the harness file. */
   package?: string;
-  /** The class the harness defines (JUnit, xUnit, PHPUnit), named after the file. */
+  /** The class (JUnit, xUnit, PHPUnit, Kotlin) or object (Scala) of the harness, named after the file. */
   className?: string;
 }
 
@@ -53,7 +53,21 @@ const REPLAY_FILE: Record<Framework, (dir: string, id: string, test: string) => 
   pest: (dir, id) => posix.join(dir, `BakedReplay${id.toUpperCase()}Test.php`),
   exunit: (dir, id) => posix.join(dir, `baked_replay_${id}_test.exs`),
   dart: (dir, id) => posix.join(dir, `baked_replay_${id}_test.dart`),
+  kotlin: (dir, id) => posix.join(dir, `BakedReplay${id.toUpperCase()}Test.kt`),
+  scalatest: (dir, id) => posix.join(dir, `BakedReplay${id.toUpperCase()}Suite.scala`),
+  munit: (dir, id) => posix.join(dir, `BakedReplay${id.toUpperCase()}Suite.scala`),
 };
+
+/** The frameworks whose harness is a member of a class or object named after the replay file. */
+const NAMED_HARNESS = new Set<Framework>([
+  "junit",
+  "xunit",
+  "phpunit",
+  "kotlin",
+  "scalatest",
+  "munit",
+]);
+const SCALA = new Set<Framework>(["scalatest", "munit"]);
 
 const dependencies = (graph: Pick<TaskGraph, "tasks">, id: string): Set<string> => {
   const byId = new Map(graph.tasks.map((t) => [t.id, t]));
@@ -101,7 +115,7 @@ export function rowReplay(
     ),
     framework,
     ...(pkg ? { package: pkg } : {}),
-    ...(framework === "junit" || framework === "xunit" || framework === "phpunit"
+    ...(NAMED_HARNESS.has(framework)
       ? { className: posix.basename(path).replace(/\.\w+$/, "") }
       : {}),
   };
@@ -115,7 +129,10 @@ export function replayNote(replay: RowReplay): string {
         ? `namespace ${replay.framework === "phpunit" ? phpNamespace(replay.package) : replay.package}`
         : `package ${replay.package}`
       : "",
-    replay.className ? `class ${replay.className}` : "",
+    // Scala's harness is in the object named after the file, which the block's suite calls.
+    replay.className
+      ? `${SCALA.has(replay.framework) ? "object" : "class"} ${replay.className}`
+      : "",
   ]
     .filter(Boolean)
     .join(", ");
