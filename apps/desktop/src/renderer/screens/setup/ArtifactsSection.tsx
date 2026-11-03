@@ -17,10 +17,10 @@ import {
   ACTIONS,
   errorText,
   GATE,
-  GROW,
   LIST,
   LoadState,
   NOTE,
+  ROW_TEXT,
   SETUP,
   SIDE,
   SPLIT,
@@ -223,7 +223,7 @@ export function ArtifactsSection({ project }: SectionProps) {
                   aria-pressed={selected?.id === a.id}
                   onClick={() => setPicked(a.id)}
                 >
-                  <span className={cn(GROW, STACK, "gap-1")}>
+                  <span className={cn(ROW_TEXT, STACK, "gap-1")}>
                     <span className="font-semibold">{a.title}</span>
                     <span className={cn("font-mono text-dim-foreground", NOTE)}>
                       {a.id} v{a.version} · {kb(a.bytes)}
