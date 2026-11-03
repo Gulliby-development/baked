@@ -3,7 +3,9 @@
  *
  * A snapshot is a commit of every file Git would add (tracked and untracked, ignored files left
  * out), built in a temporary index so the user's index, HEAD and branch stay untouched, and kept
- * alive by a lightweight tag under `refs/tags/baked/`.
+ * alive by a lightweight tag under `refs/tags/baked/`. Files are read back from a snapshot only
+ * through `readFileAt`, with the path's working-tree filters (eol, `ident`, LFS) applied as a
+ * checkout would, so they compare equal to the untouched file they were snapshotted from.
  */
 import { spawn } from "node:child_process";
 import { copyFile, mkdtemp, rm, stat, utimes } from "node:fs/promises";
@@ -127,9 +129,13 @@ export function workspacePath(cwd: string, absPath: string): string | null {
   return rel.split(sep).join("/");
 }
 
-/** The bytes of a workspace file in snapshot `ref`, or null when the snapshot has no such file. */
+/**
+ * The bytes of a workspace file in snapshot `ref` as a checkout would write them (the path's eol
+ * and smudge filters applied, since `git add` stored the cleaned form), or null when the snapshot
+ * has no such file.
+ */
 export async function readFileAt(cwd: string, ref: string, rel: string): Promise<Buffer | null> {
-  const r = await git(["show", `refs/tags/${ref}:./${rel}`], cwd);
+  const r = await git(["cat-file", "--filters", `refs/tags/${ref}:./${rel}`], cwd);
   return r.ok ? r.stdout : null;
 }
 
