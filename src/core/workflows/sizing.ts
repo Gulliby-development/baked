@@ -1415,30 +1415,46 @@ export function exceedsTestCapacity(
 }
 
 /**
+ * Text files that are not code although `fileKind` prices them as code for want of a docs
+ * extension: a license, a notice, a changelog, a plain `.txt` that is no manifest.
+ */
+const TEXT_FILE =
+  /(^|\/)(licen[cs]e|copying|notice|authors|contributors|changelog|changes|history|readme)(\.txt)?$/i;
+
+/** Whether a file is documentation or other non-code text (#2649). */
+export const isDocsOrText = (path: string): boolean =>
+  fileKind(path) === "docs" ||
+  TEXT_FILE.test(path) ||
+  (/\.txt$/i.test(path) && fileKind(path) === "code");
+
+/**
  * Whether a task that is not a test task needs more than one attempt and goes back to the planner
- * split (#2649). One file is never split: a single file is as small as a task gets. Several files
- * split when the expected price of their sum (the sum of the per-file midpoints) is above one
- * attempt's cap, not the sum of their high ends: each file's high end is the 90th percentile of its
- * kind, and a sum of 90th percentiles is far above the 90th percentile of a sum. Bench round 88
- * pokerank and pathwarden priced a README and LICENSE task at 899,706 tokens against 600,000 and
- * split it, a planner call of 46k-91k tokens and one more session each, for a task that cost
- * 175k-330k. A task that also writes a test file keeps the high-end rule: splitting it moves the
- * test into a task of its own, priced by its cases, as the planner is told to plan it.
+ * split (#2649). One file is never split: a single file is as small as a task gets. A task whose
+ * files are all documentation or non-code text (`isDocsOrText`) splits when the expected price of
+ * their sum (the sum of the per-file midpoints) is above one attempt's cap, not the sum of their
+ * high ends: each file's high end is the 90th percentile of its kind, and a sum of 90th
+ * percentiles is far above the 90th percentile of a sum. Bench round 88 pokerank and pathwarden
+ * priced a README and LICENSE task at 899,706 tokens against 600,000 and split it, a planner call
+ * of 46k-91k tokens and one more session each, for a task that cost 175k-330k.
+ *
+ * Any other task of several files (code, a manifest, a test file, or a mix of them with docs) keeps
+ * the high-end rule: the wide code tasks it split in bench rounds 49-54 (md-site and expenses-py
+ * skeletons of four or five files, expected 478k) went on to spend 1.0M-1.5M across their parts,
+ * and splitting a task that writes a test file moves the test into a task priced by its cases.
  *
  * Both answers are returned, so the sizing report records the high-end rule beside the one that
  * decided and a replay can compare them.
  */
 export function multiFileSplit(
   estimate: TokenRange,
-  files: number,
-  testFiles: number,
+  paths: readonly string[],
   cap: number,
 ): MultiFileSplit | null {
-  if (files <= 1) return null;
+  if (paths.length <= 1) return null;
   const expected = Math.round(expectedPrice(estimate));
   const byHigh = estimate.high > cap;
   const byExpected = expected > cap;
-  const rule = testFiles > 0 ? "high" : "expected";
+  const rule = paths.every(isDocsOrText) ? "expected" : "high";
   return {
     rule,
     expected,
@@ -1454,7 +1470,7 @@ export function multiFileSplit(
  * as the sizing report records it.
  */
 export interface MultiFileSplit {
-  /** `expected` for a task without a test file, `high` for one that writes a test file. */
+  /** `expected` for a task of documentation and text files only, `high` for any other. */
   rule: "expected" | "high";
   /** The expected price of the files' sum, the midpoint of the task's range. */
   expected: number;
@@ -1598,12 +1614,7 @@ export function sizePlan(input: {
       const byRows = rowVolume?.mode === "on" && rowVolume.slices > 1;
       const multiFile =
         kind !== "test" && !fromRequest
-          ? multiFileSplit(
-              estimate,
-              files,
-              writtenFiles(task).filter((path) => fileKind(path) === "test").length,
-              maxAttemptTokens,
-            )
+          ? multiFileSplit(estimate, writtenFiles(task), maxAttemptTokens)
           : null;
       return {
         taskId: task.id,

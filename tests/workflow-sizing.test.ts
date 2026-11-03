@@ -15,6 +15,7 @@ import {
   DEFAULT_PER_FILE,
   MIN_HISTORY_SAMPLES,
   fileKind,
+  isDocsOrText,
   partCriteria,
   perFileRates,
   plannerSizing,
@@ -392,7 +393,7 @@ describe("plan-time sizing", () => {
 
   // #2649: R88 pokerank and pathwarden priced README.md and LICENSE at 899,706 tokens, the sum of
   // the two files' high ends, against a 600,000 cap, and split the task; it cost 175k-330k.
-  test("a multi-file task splits on its expected price, not the sum of its files' high ends (#2649)", () => {
+  test("a multi-file docs task splits on its expected price, not the sum of its files' high ends (#2649)", () => {
     const capped = policy({ maxAttemptTokens: 600_000, maxRunTokens: 5_000_000 }, 5_000_000);
     const created = (kind: SizingSample["kind"], tokens: number) => sample(kind, tokens, 1, { action: "create" });
     // Docs at 40k-250k per file; LICENSE has no docs extension and prices as code, whose history
@@ -403,17 +404,25 @@ describe("plan-time sizing", () => {
     expect(readme.tasks[0]?.multiFile).toEqual({ rule: "expected", expected: 490_000, high: 900_000, byHigh: true, byExpected: false, split: false });
     expect(readme.tasks[0]?.oversized).toBe(false);
     expect(readme.decision).toBe("fits");
-    // Two code files whose expected sum is above the cap still split, with the expected price in
-    // the reason.
-    const code = [created("code", 400_000), created("code", 900_000)];
+    // Two code files keep the high-end rule: their expected sum fits, their high sum does not, and
+    // they still split (wide code tasks split by it spent 1.0M-1.5M across their parts, R49-R54).
+    const code = [created("code", 40_000), created("code", 500_000)];
     const pair = sizePlan({ graph: graph(task("T001", ["src/a.ts", "src/b.ts"], "planned", "create")), policy: capped, samples: code, spent: 0 });
-    expect(pair.tasks[0]?.multiFile).toMatchObject({ rule: "expected", expected: 1_300_000, byHigh: true, byExpected: true, split: true });
+    expect(pair.tasks[0]?.multiFile).toEqual({ rule: "high", expected: 540_000, high: 1_000_000, byHigh: true, byExpected: false, split: true });
     expect(pair.decision).toBe("split-tasks");
-    expect(pair.reasons[0]).toBe("T001 writes 2 files and needs about 1300000 tokens, above one attempt's 600000");
-    // A task that also writes a test file keeps the high-end rule, so the test gets a task of its own.
+    expect(pair.reasons[0]).toBe("T001 writes 2 files and needs about 1000000 tokens, above one attempt's 600000");
+    // A mix of code and docs, or a task that also writes a test file, keeps the high-end rule too.
+    const docsAndCode = sizePlan({ graph: graph(task("T001", ["README.md", "src/a.ts"], "planned", "create")), policy: capped, samples: docs, spent: 0 });
+    expect(docsAndCode.tasks[0]?.multiFile).toMatchObject({ rule: "high", byHigh: true, byExpected: false, split: true });
     const mixed = sizePlan({ graph: graph(task("T001", ["src/a.ts", "tests/a.test.ts"], "planned", "create")), policy: capped, samples: docs, spent: 0 });
     expect(mixed.tasks[0]?.multiFile).toMatchObject({ rule: "high", byHigh: true, byExpected: false, split: true });
     expect(mixed.decision).toBe("split-tasks");
+    // Docs files whose expected sum is above the cap still split.
+    const wide = sizePlan({ graph: graph(task("T001", ["README.md", "CHANGELOG.md", "docs/guide.md", "LICENSE"], "planned", "create")), policy: capped, samples: [created("docs", 300_000), created("docs", 900_000), ...code], spent: 0 });
+    expect(wide.tasks[0]?.multiFile).toMatchObject({ rule: "expected", byExpected: true, split: true });
+    expect(wide.decision).toBe("split-tasks");
+    expect(["README.md", "LICENSE", "docs/guide.md", "COPYING.txt", "notes.txt", "CHANGELOG"].every(isDocsOrText)).toBe(true);
+    expect(["src/a.ts", "requirements.txt", "package.json", "tests/a.test.ts", "docs/build.ts"].some(isDocsOrText)).toBe(false);
     // One file is never split by this rule, and records no multi-file decision.
     const one = sizePlan({ graph: graph(task("T001", ["src/a.ts"], "planned", "create")), policy: capped, samples: code, spent: 0 });
     expect(one.tasks[0]?.multiFile).toBeUndefined();
