@@ -254,6 +254,29 @@ function levelOf(path: string, requested: string | undefined, lines: readonly st
 const bare = (text: string) => text.trim().replace(/[,;]$/, "").trimEnd();
 
 /**
+ * The file line (from 0, -1 when not held) that holds each of `rows`: a row the request gives more
+ * than once takes the next equal line after the ones its earlier copies take, so a duplicate counts
+ * as held only when the file holds it as often.
+ */
+function heldLines(rows: readonly string[], lines: readonly string[]): number[] {
+  const taken = new Map<string, number[]>();
+  for (const [i, line] of lines.entries()) {
+    const text = bare(line);
+    if (!text) continue;
+    const at = taken.get(text);
+    if (at) at.push(i);
+    else taken.set(text, [i]);
+  }
+  const used = new Map<string, number>();
+  return rows.map((row) => {
+    const want = bare(row);
+    const k = used.get(want) ?? 0;
+    used.set(want, k + 1);
+    return taken.get(want)?.[k] ?? -1;
+  });
+}
+
+/**
  * The file with rows `input.rows` of `rows` placed after `input.line`, or the refusal with the
  * change the worker can make. `text` is the file's content, null when it does not exist. `indents`
  * holds the indentation the request writes each target's rows with (`placeRowIndents`). `first` is
@@ -298,12 +321,8 @@ export function placeRows(
       refusal: `${path} has ${count} line${count === 1 ? "" : "s"}; line ${input.line} is not one of them. Give the line the rows follow (0 puts them before the first line).`,
     };
   const placed = span;
-  const at = new Map(
-    placed.map((n) => {
-      const want = bare(rows[n - 1] ?? "");
-      return [n, lines.findIndex((l) => bare(l) === want)] as const;
-    }),
-  );
+  const lineOf = heldLines(rows, lines);
+  const at = new Map(placed.map((n) => [n, lineOf[n - 1] ?? -1] as const));
   const held = placed.flatMap((n) => {
     const line = at.get(n) ?? -1;
     return line < 0 ? [] : [`row ${n} (line ${line + 1})`];

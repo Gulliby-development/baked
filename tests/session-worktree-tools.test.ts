@@ -69,8 +69,16 @@ describe("tools of an agent in its own worktree", () => {
     expect(list.output).toContain("src/");
     expect(list.output).toContain("docs/");
 
-    // Works the same in bash, cmd and PowerShell.
-    const shell = await call(tools, "shell", { command: "echo shell> shell.txt", description: "Write a file" });
+    // Works the same in bash, cmd and PowerShell. The command's own bound (with its 5 s of kill
+    // steps) stays under the suite's 30 s and the Windows shards' 90 s test limits; the tool's
+    // default is 2 minutes, so a stuck command reports itself instead of the test timing out
+    // (#2657, AGENTS.md: a bound inside a fixture stays under the test's own limit).
+    const shell = await call(tools, "shell", {
+      command: "echo shell> shell.txt",
+      description: "Write a file",
+      timeout: 20_000,
+    });
+    expect(shell.error).toBeUndefined();
     expect(shell.success).toBe(true);
     expect(existsSync(join(dir, "shell.txt"))).toBe(true);
     expect(existsSync(join(getCwd(), "shell.txt"))).toBe(false);
