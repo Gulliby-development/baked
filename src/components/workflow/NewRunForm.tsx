@@ -181,8 +181,9 @@ export function NewRunForm({
   );
   const accountFocus = accountProviders.find((p) => ACCOUNT_FIELD[p] === focus) ?? null;
   const cycleAccount = (provider: AccountProvider, delta: number): void => {
-    const ids: (string | undefined)[] = [undefined, ...accounts[provider].allowed.map((a) => a.id)];
-    const next = cycle(ids, accountPick[provider], delta);
+    // "" is the project's own account; `cycle` keeps the value when it lands on nothing.
+    const ids = ["", ...accounts[provider].allowed.map((a) => a.id)];
+    const next = cycle(ids, accountPick[provider] ?? "", delta);
     setAccountPick(({ [provider]: _old, ...rest }) =>
       next ? { ...rest, [provider]: next } : rest,
     );

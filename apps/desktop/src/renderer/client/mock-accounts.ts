@@ -99,6 +99,24 @@ export function mockAccountLimits(provider: ProviderAccounts["provider"]): Provi
   });
 }
 
+/**
+ * Why the core would refuse a run started on `accounts` (`checkAccountChoice`), or null: each
+ * named account must exist and be allowed for the backend's project.
+ */
+export function mockAccountRefusal(key: string, accounts: unknown): string | null {
+  if (accounts === undefined) return null;
+  if (!accounts || typeof accounts !== "object")
+    return "accounts: an object of provider to account";
+  for (const [provider, id] of Object.entries(accounts)) {
+    if (!isProvider(provider)) return `accounts: ${provider} keeps no accounts`;
+    const account = store[provider].find((a) => a.id === id);
+    if (!account) return `${provider} has no account ${String(id)}.`;
+    if (!account.allowedProjects.includes(projectOf(key)))
+      return `Account ${account.label} of ${provider} is not allowed for ${projectOf(key)}; allow it for this project first.`;
+  }
+  return null;
+}
+
 /** Project folder → provider → the account it uses. */
 const chosen = new Map<string, Partial<Record<ProviderAccounts["provider"], string>>>();
 
