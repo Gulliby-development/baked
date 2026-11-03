@@ -35,6 +35,7 @@ interface Accepted {
   newStops?: number;
   newGrowth?: number;
   newFirstByteStops?: number;
+  newStreamOutputStops?: number;
   newCostStops?: number;
   newTestSplits?: number;
   newRecoveries?: number;
@@ -100,6 +101,7 @@ describe("bench-round traces replay without new forecast stops or growth (#1649)
           newStops: stops.length,
           newGrowth: growth.length,
           newFirstByteStops: run.newFirstByteStops,
+          newStreamOutputStops: run.newStreamOutputStops,
           newCostStops: run.newCostStops,
           newTestSplits: run.newTestSplits,
           newRecoveries: run.newRecoveries,
@@ -134,6 +136,7 @@ describe("bench-round traces replay without new forecast stops or growth (#1649)
           newStops: allowed?.newStops ?? 0,
           newGrowth: allowed?.newGrowth ?? 0,
           newFirstByteStops: allowed?.newFirstByteStops ?? 0,
+          newStreamOutputStops: allowed?.newStreamOutputStops ?? 0,
           newCostStops: allowed?.newCostStops ?? 0,
           newTestSplits: allowed?.newTestSplits ?? 0,
           newRecoveries: allowed?.newRecoveries ?? 0,

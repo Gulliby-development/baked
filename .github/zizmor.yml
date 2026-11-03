@@ -10,4 +10,4 @@ rules:
     ignore:
       # The npm-package smoke test installs the tarball the same job just packed with `npm pack`,
       # not a registry package (#1844).
-      - builds.yml:110
+      - builds.yml:113

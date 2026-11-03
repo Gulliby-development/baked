@@ -224,6 +224,11 @@ export const CAPABILITIES = [
   "permission-modes",
   "file-preview",
 ] as const;
+/**
+ * The HTTP methods the routes accept, which a CORS preflight from an allowed origin advertises
+ * (#2791). A route that takes another method adds it here; `tests/core-api.test.ts` fails otherwise.
+ */
+export const API_METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE"] as const;
 export const DEFAULT_MAX_BODY_BYTES = 1024 * 1024;
 const EVENT_PAGE = 200;
 
@@ -1732,7 +1737,7 @@ export async function startApiServer(options: ApiServerOptions): Promise<ApiServ
           return new Response(null, {
             status: 204,
             headers: headers(allowedOrigin, {
-              "Access-Control-Allow-Methods": "GET, POST, PATCH, DELETE",
+              "Access-Control-Allow-Methods": API_METHODS.join(", "),
               "Access-Control-Allow-Headers": "Authorization, Content-Type, Last-Event-ID",
               "Access-Control-Max-Age": "600",
             }),
