@@ -318,6 +318,11 @@ export interface AttemptUsageRecord {
    * summed: active time a provider did not answer in (#2414); absent when none.
    */
   silentMs?: number;
+  /**
+   * The stall part of those waits (`CallTiming.stallMs`), summed: what the clean pace leaves out
+   * of active time (#2424); absent when none.
+   */
+  stallMs?: number;
 }
 
 /** Calls of one tool answered by one backend (lsp with its server, tree-sitter, regex, repo-map). */

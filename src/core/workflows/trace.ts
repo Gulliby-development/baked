@@ -1191,7 +1191,8 @@ export interface ActiveTimeBoundary {
   replayed: { tokensPerMinute: number; basis: PaceBasis; after: number };
   /**
    * In shadow (#2414): the cap at the clean pace, from the rates the report recorded beside its
-   * pace (`cleanPace`), else from the trace's runs that completed before it (`cleanRates`).
+   * pace (`cleanPace`) with their `stallMs`, else (none recorded, or recorded before #2424 with the
+   * whole wait left out) from the trace's runs that completed before it (`cleanRates`).
    */
   clean: CleanSizingShadow | null;
 }
@@ -1283,10 +1284,16 @@ export function replayActiveTimes(
     if (!history) return [];
     const chosen = pace(history, time.ownRates ?? initiativeRatesAt(store, runId, at));
     const recordedClean = (report as { cleanPace?: CleanSizingShadow }).cleanPace;
+    // A report before #2424 recorded rates without the whole wait (no `stallMs`): its clean pace is
+    // taken again from the trace's runs, so the replay shows the rule as it is now.
     const clean = cleanSizingShadow(
       report,
-      recordedClean
-        ? { rates: recordedClean.rates, silentMs: recordedClean.silentMs }
+      recordedClean?.stallMs !== undefined
+        ? {
+            rates: recordedClean.rates,
+            silentMs: recordedClean.silentMs,
+            stallMs: recordedClean.stallMs,
+          }
         : cleanRates(store, initiativeRunsAt(store, runId, at)),
     );
     const after = activeTimeLimit({

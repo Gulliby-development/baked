@@ -77,6 +77,7 @@ import {
   wholeUnitFixerCommand,
   writtenCodePaths,
 } from "./check-policy.js";
+import { callStallMs } from "./clean-pace.js";
 import { promptParts, splitWorkflowContext } from "./context.js";
 import { assertForecastFits } from "./cost-forecast.js";
 import { fileHash, rootField } from "./effects.js";
@@ -296,10 +297,20 @@ function sumUsage(steps: readonly StepLike[]): Partial<LanguageModelUsage> {
 }
 
 /** What the stall watchdog of one attempt knows: its progress, its tool in flight, its limits. */
-/** The summed `silentMs` of an attempt's calls for its usage record (#2414); empty when none. */
-function silentOf(calls: readonly CallTiming[]): { silentMs?: number } {
+/**
+ * The summed `silentMs` of an attempt's calls for its usage record (#2414), and the summed stall
+ * part of it (`stallMs`, #2424); each empty when none.
+ */
+function silentOf(calls: readonly CallTiming[]): { silentMs?: number; stallMs?: number } {
   const silentMs = calls.reduce((sum, call) => sum + (call.silentMs ?? 0), 0);
-  return silentMs > 0 ? { silentMs } : {};
+  const stallMs = calls.reduce((sum, call) => sum + (call.stallMs ?? 0), 0);
+  return { ...(silentMs > 0 ? { silentMs } : {}), ...(stallMs > 0 ? { stallMs } : {}) };
+}
+
+/** A call's timing with the stall part of its wait (`callStallMs`, #2424) when there is one. */
+function withStall(call: CallTiming): CallTiming {
+  const stallMs = callStallMs(call);
+  return stallMs > 0 ? { ...call, stallMs } : call;
 }
 
 interface AttemptWatch {
@@ -2225,8 +2236,9 @@ export class NativeAgentExecutor implements AgentExecutor {
         firstByteLimit: (ceilingMs, call) =>
           history.decide(ceilingMs, request.profile.model, call, shared),
         timing: (call) => {
+          const timed = withStall(call);
           watch.calls.push(
-            watch.calls.length === 0 && parts ? { ...call, promptParts: parts } : call,
+            watch.calls.length === 0 && parts ? { ...timed, promptParts: parts } : timed,
           );
           history.record(request.profile.model, call, shared);
         },
