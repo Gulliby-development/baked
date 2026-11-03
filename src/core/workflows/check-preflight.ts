@@ -4,6 +4,7 @@ import { isAbsolute, join, resolve } from "node:path";
 import { tmpDir } from "../platform/index.js";
 import { buildCheckEnv, executeCheckCommand } from "../verification/check-runner.js";
 import { WorkflowFault } from "./errors.js";
+import { missingPackages, type PackageProbe, runPackageProbe } from "./package-probe.js";
 import { ProcessScope } from "./process-scope.js";
 import type { Check } from "./types.js";
 
@@ -64,9 +65,10 @@ export interface CheckSmoke {
   /**
    * `started`: the command spawned; `not_found`: a bare name not on its PATH; `cannot_start`: the
    * spawn itself failed (EINVAL, EACCES, ENOEXEC, a refused cmd.exe line); `not_probed`: the
-   * running `bun`, or a path a task may still generate.
+   * running `bun`, or a path a task may still generate; `missing_package`: the program started,
+   * but an R package or PowerShell module its command calls is not installed (#2817).
    */
-  status: "started" | "not_found" | "cannot_start" | "not_probed";
+  status: "started" | "not_found" | "cannot_start" | "not_probed" | "missing_package";
   detail?: string;
 }
 
@@ -84,6 +86,7 @@ export async function smokeChecks(
   root: string,
   processes: ProcessScope = new ProcessScope(),
   which?: Parameters<typeof unresolvedChecks>[2],
+  packages: PackageProbe = runPackageProbe,
 ): Promise<CheckSmoke[]> {
   const unresolved = new Set(unresolvedChecks(checks, root, which).map((probe) => probe.checkId));
   const scratch = await mkdtemp(join(tmpDir(), "baked-check-smoke-"));
@@ -113,7 +116,20 @@ export async function smokeChecks(
           // Stopped as soon as it spawns, in an empty scratch directory: only whether it starts counts.
           sandbox: null,
         });
-        results.push({ ...base, status: "started" });
+        // Rscript without styler starts, then fails every attempt the same way (#2817).
+        const missing = missingPackages({ executable, args: check.args }, cwd, packages);
+        if (missing.length)
+          results.push({
+            ...base,
+            status: "missing_package",
+            detail: missing
+              .map(
+                (need) =>
+                  `${need.language === "r" ? "the R package" : "the PowerShell module"} ${need.name} is not installed (${need.install})`,
+              )
+              .join("; "),
+          });
+        else results.push({ ...base, status: "started" });
       } catch (error) {
         const detail = (error instanceof Error ? error.message : String(error)).split("\n")[0];
         results.push({ ...base, status: "cannot_start", detail });
@@ -129,7 +145,9 @@ export async function smokeChecks(
 
 /** The line a start refusal or warning shows for a check the smoke could not start. */
 export function smokeLine(smoke: CheckSmoke): string {
-  return smoke.status === "not_found"
-    ? `check ${smoke.checkId}: ${smoke.executable} was not found on the PATH`
-    : `check ${smoke.checkId}: ${smoke.executable} cannot be started (${smoke.detail ?? "spawn failed"})`;
+  if (smoke.status === "not_found")
+    return `check ${smoke.checkId}: ${smoke.executable} was not found on the PATH`;
+  if (smoke.status === "missing_package")
+    return `check ${smoke.checkId}: ${smoke.executable} starts, but ${smoke.detail ?? "a package it calls is not installed"}`;
+  return `check ${smoke.checkId}: ${smoke.executable} cannot be started (${smoke.detail ?? "spawn failed"})`;
 }
