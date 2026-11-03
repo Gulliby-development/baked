@@ -1,4 +1,4 @@
-import { type ConvergenceGate, type ConvergenceGateFinding, convergenceGateDecision, convergenceReproCandidates, type GateFinding, gateFinding, type ReviewGate, reviewGateCandidates, reviewGateDecision } from "../src/core/workflows/review-gate.js";
+import { type ConvergenceGate, type ConvergenceGateFinding, convergenceGateDecision, convergenceGateDocKeeps, convergenceReproCandidates, type GateFinding, gateFinding, type ReviewGate, reviewGateCandidates, reviewGateDecision, reviewGateDocKeeps } from "../src/core/workflows/review-gate.js";
 import { literalPropertyProblems, rowFiles, rowsArtifact } from "../src/core/workflows/acceptance-rows.js";
 import { clearBannedProperties } from "../src/core/verification/initiative-ownership.js";
 import { CALL_COST_MODELS, NEXT_CALL, perCallCostScenario } from "./helpers/per-call-cost-scenario.js";
@@ -56,7 +56,7 @@ import { join } from "node:path";
 import { syntaxErrors } from "../src/core/intelligence/syntax-check.js";
 import { criterionCases, missingCases, testsHold, writtenTestPaths } from "../src/core/verification/criteria-cases.js";
 import { INLINE_HARNESS, type InlineRowTest, inlineRowFile, withInlineRows } from "../src/core/workflows/acceptance-rows-inline.js";
-import { reproExecutables, rerootRepro } from "../src/core/verification/repro.js";
+import { docFindingRepairs, documentationFinding, reproAllows, reproExecutables, rerootRepro } from "../src/core/verification/repro.js";
 import { entryPointCommand } from "../src/core/verification/entry-points.js";
 import { noteSiblingFindings, ownerOfFinding } from "../src/core/verification/initiative-ownership.js";
 import { failureSignature as convergenceSignature, missingPlannedPaths, noTestsCollected } from "../src/core/verification/convergence.js";
@@ -5957,6 +5957,84 @@ describe("review gate: a finding its reviewer marked noRepro (#2194)", () => {
     const finding = { id: "N1", severity: "low", kind: "correctness", claim: "c", confidence: 0.1, criterionIds: [] } as unknown as Parameters<typeof gateFinding>[0];
     expect(gateFinding({ ...finding, noRepro: "  " }, false, "reproduced").noRepro).toBe(false);
     expect(gateFinding({ ...finding, noRepro: "needs the README setup" }, false, "reproduced").noRepro).toBe(true);
+  });
+});
+
+describe("review and converge gates: a documentation finding marked noRepro (#2835, shadow)", () => {
+  // R91 stopcut docs F1: correctness, medium, confidence 1, basis spec, README.md, noRepro "README
+  // wording". `reproAllows` keeps it a note (repaired: []) where the same defect called `partial`
+  // repairs; `doc_finding_unrepaired` records what `docFindingRepairs` would repair instead.
+  const doc = (over: Partial<GateFinding> = {}): GateFinding => ({
+    id: "F1",
+    severity: "medium",
+    kind: "correctness",
+    basis: "spec",
+    confidence: 1,
+    repro: false,
+    sibling: false,
+    outcome: null,
+    noRepro: true,
+    doc: true,
+    ...over,
+  });
+  const gate = (findings: GateFinding[]): ReviewGate => ({
+    reviewer: "correctness",
+    required: true,
+    blocking: ["critical", "high", "medium"],
+    severities: ["critical", "high", "medium"],
+    minConfidence: 0.7,
+    reproAvailable: true,
+    findings,
+  });
+  const convergence = (findings: GateFinding[]): ConvergenceGate => ({
+    severities: ["critical", "high", "medium"],
+    minConfidence: 0.7,
+    checksPass: true,
+    reproAvailable: true,
+    canRepro: true,
+    criteria: [{ criterionId: "AC-001", verdict: "pass", evidence: 1 }],
+    failing: [],
+    findings: findings.map((f) => ({ ...f, testOrDoc: f.doc === true, criterionIds: ["AC-001"] })),
+  });
+
+  for (const [name, finding, keeps] of [
+    ["README correctness with noRepro (R91 stopcut F1)", doc(), ["F1"]],
+    ["the same claim on a source file", doc({ doc: undefined }), []],
+    ["README correctness without noRepro", doc({ noRepro: false }), []],
+    ["README correctness below the minimum confidence", doc({ confidence: 0.5 }), []],
+    ["README correctness on an inferred basis", doc({ basis: "inferred" }), []],
+    ["README correctness whose repro the host refuted", doc({ repro: true, outcome: "refuted" }), []],
+    ["README partial with noRepro (already repaired)", doc({ kind: "partial" }), []],
+    ["README correctness below the repaired severities", doc({ severity: "low" }), []],
+  ] as const)
+    test(`${name}: would repair ${JSON.stringify(keeps)}`, () => {
+      expect(reviewGateDocKeeps(gate([finding]))).toEqual([...keeps]);
+      expect(convergenceGateDocKeeps(convergence([finding]))).toEqual([...keeps]);
+    });
+
+  test("shadow: the live decisions are unchanged", () => {
+    expect(reviewGateDecision(gate([doc()]))).toEqual([]);
+    expect(reviewGateDecision(gate([doc({ kind: "partial" })]))).toEqual(["F1"]);
+    expect(convergenceGateDecision(convergence([doc()])).verdicts).toEqual([{ id: "F1", verdict: "repro" }]);
+    expect(reproAllows({ kind: "correctness", severity: "medium" }, undefined, true)).toBe(false);
+  });
+
+  test("docFindingRepairs and gateFinding read documentation files", () => {
+    const labels = { kind: "correctness" as const, severity: "medium" as const, basis: "spec" as const, confidence: 1, noRepro: true };
+    for (const [file, repairs] of [
+      ["README.md", true],
+      ["docs/x.md", true],
+      ["CHANGELOG.rst", true],
+      ["README", true],
+      ["src/escapes.ts", false],
+      ["src/main.cpp", false],
+    ] as const) {
+      expect([file, docFindingRepairs({ ...labels, doc: documentationFinding(file) }, undefined, 0.7)]).toEqual([file, repairs]);
+      const finding = { id: "F1", severity: "medium", kind: "correctness", file, noRepro: "README wording", criterionIds: [] } as unknown as Parameters<typeof gateFinding>[0];
+      expect([file, gateFinding(finding, false, undefined).doc]).toEqual([file, repairs ? true : undefined]);
+    }
+    expect(docFindingRepairs({ ...labels, doc: true }, "inconclusive", 0.7)).toBe(true);
+    expect(docFindingRepairs({ ...labels, doc: true }, "refuted", 0.7)).toBe(false);
   });
 });
 

@@ -5,6 +5,7 @@ import { z } from "zod";
 import { commentOnlyChange } from "../intelligence/comments.js";
 import type { SandboxRequest } from "../security/sandbox.js";
 import { buildSafeEnv } from "../spawn.js";
+import { isDocumentationPath } from "../workflows/affected-tests.js";
 import { BATTERY_CASES } from "../workflows/finding-chain.js";
 import type { ProcessScope } from "../workflows/process-scope.js";
 import { ProbeSchema, type Repro, ReproSchema, type Review } from "../workflows/schemas.js";
@@ -12,7 +13,7 @@ import type { HostTool } from "../workflows/types.js";
 import { fileArgs, recordCommandTimeout } from "./command-timeouts.js";
 import { caseCrash } from "./edge-inputs.js";
 import { entryPointCommand } from "./entry-points.js";
-import { confidenceOnlyNote } from "./findings.js";
+import { confidenceOnlyNote, type FindingLabels } from "./findings.js";
 import { changedPaths, sourceManifest } from "./snapshot.js";
 
 /** Time a repro may run; it shows one input, not a test suite. */
@@ -450,6 +451,32 @@ export function reproAllows(
   const exempt = finding.kind === "security" || finding.severity === "critical";
   if (outcome === "inconclusive") return exempt;
   return exempt || finding.kind !== "correctness";
+}
+
+/** Whether a finding's file is documentation (README, Markdown, reStructuredText, AsciiDoc, a changelog). */
+export const documentationFinding = (file: string | null | undefined): boolean =>
+  !!file && isDocumentationPath(file);
+
+/**
+ * Whether a documentation finding repairs as a `partial` one would, whatever kind the reviewer
+ * gave it (#2835): based on the spec, at or above the minimum confidence, marked `noRepro` and on a
+ * documentation file. A README claim has no command that shows it, so `reproAllows` keeps a
+ * `correctness` one a note while the same defect called `partial` repairs; R91 stopcut shipped its
+ * escape reference with doubled backslashes that way. A repro the host refuted still keeps it a
+ * note. The review and converge gates decide it in shadow (`doc_finding_unrepaired`).
+ */
+export function docFindingRepairs(
+  finding: FindingLabels & { noRepro?: boolean; doc?: boolean },
+  outcome: ReproOutcome["status"] | undefined,
+  minConfidence: number,
+): boolean {
+  return (
+    finding.doc === true &&
+    finding.noRepro === true &&
+    (finding.basis ?? "spec") === "spec" &&
+    (finding.confidence ?? 1) >= minConfidence &&
+    outcome !== "refuted"
+  );
 }
 
 /**

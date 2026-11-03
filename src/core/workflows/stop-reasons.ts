@@ -315,6 +315,15 @@ export const STOP_REASONS = {
     modes: NOT_ENFORCED,
     defaultMode: "shadow",
   },
+  doc_finding_unrepaired: {
+    label:
+      "A reviewer's documentation finding marked noRepro stays a note because its kind is correctness, where a partial one repairs",
+    // Shadow only until two bench rounds show no false would-stop (#2835, R91 stopcut's README
+    // escape reference with doubled backslashes, R90 holefit docs F1 and F3); its promotion makes
+    // the review and converge gates repair it as a `partial` finding (`docFindingRepairs`).
+    modes: NOT_ENFORCED,
+    defaultMode: "shadow",
+  },
   row_block_drift: {
     label:
       "A test file the run delivered lacks a quoted literal of a row the request prescribes for it, or holds a row beyond them",

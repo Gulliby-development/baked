@@ -918,6 +918,7 @@ import {
   type ConvergenceVerdict,
   convergenceGateCrashKeeps,
   convergenceGateDecision,
+  convergenceGateDocKeeps,
   convergenceGateFinding,
   convergenceReproCandidates,
   type GateFinding,
@@ -929,6 +930,7 @@ import {
   reviewGateCandidates,
   reviewGateCrashKeeps,
   reviewGateDecision,
+  reviewGateDocKeeps,
 } from "./review-gate.js";
 import {
   applyRevision,
@@ -3548,6 +3550,13 @@ export class WorkflowScheduler {
                 gatePath,
                 convergenceGateCrashKeeps(gate),
                 crashes,
+              );
+              this.docFindingWouldStops(
+                runId,
+                policy,
+                gatePath,
+                convergenceGateDocKeeps(gate),
+                review.findings,
               );
               const verdictOf = new Map(decision.verdicts.map((v) => [v.id, v.verdict]));
               const ofVerdict = (verdict: ConvergenceVerdict) =>
@@ -16185,6 +16194,32 @@ ${note}`;
     }
   }
   /**
+   * The `doc_finding_unrepaired` would-stops (#2835): documentation findings marked `noRepro` that
+   * the review or converge gate kept notes for their kind, where a `partial` one repairs (R91
+   * stopcut's README escapes with doubled backslashes). Shadow: the gate's decision is unchanged.
+   */
+  private docFindingWouldStops(
+    runId: string,
+    policy: RunPolicy,
+    gatePath: string,
+    keeps: readonly string[],
+    findings: readonly Review["findings"][number][],
+  ): void {
+    const mode = stopMode(policy, "doc_finding_unrepaired");
+    if (mode === "enforce") return;
+    for (const findingId of keeps) {
+      const finding = findings.find((f) => f.id === findingId);
+      if (!finding) continue;
+      recordWouldStop(this.store, runId, {
+        reason: "doc_finding_unrepaired",
+        mode,
+        key: `${gatePath}#${findingId}`,
+        summary: `Documentation finding ${findingId} (${finding.kind}, noRepro) on ${finding.file ?? "its file"} stays a note for its kind: as a partial finding it would start a correction`,
+        inputs: { findingId, kind: finding.kind, file: finding.file ?? null },
+      });
+    }
+  }
+  /**
    * The edge-input probe of a planned source task (#1808), once after it settled without
    * failures: the `edge-cases` profile is shown the task's criteria, files and the edge taxonomy
    * of its languages (edge-inputs.ts) and proposes extreme legal inputs; the host runs each
@@ -19580,6 +19615,13 @@ ${note}`;
           ),
         );
         this.reproCrashWouldStops(runId, policy, gatePath, reviewGateCrashKeeps(gate), crashes);
+        this.docFindingWouldStops(
+          runId,
+          policy,
+          gatePath,
+          reviewGateDocKeeps(gate),
+          result.findings,
+        );
         const blocking = result.findings.filter((f) => decided.has(f.id));
         const repaired = new Set(blocking.map((f) => f.id));
         addReviewNotes(
