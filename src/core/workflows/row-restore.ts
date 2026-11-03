@@ -5,6 +5,7 @@ import {
   measureFileRows,
   measureRows,
   type RowBlockDrift,
+  type RowMeasure,
   rowBlockDecision,
   rowBlockDrifts,
   rowHead,
@@ -166,7 +167,10 @@ export function rowEditBreaks(
   const block = suppliedRows(request, [plainPath]).get(plainPath);
   if (!block) return null;
   const beforeRows = measureFileRows(block.lines, before);
-  const driftedBefore = new Set(rowBlockDecision(measureRows(block.lines, before, beforeRows)));
+  // A dropped copy of a row the request gives twice (#2704) is recorded, not guarded: no `copy`.
+  const guarded = (measures: RowMeasure[]) =>
+    rowBlockDecision(measures.map(({ copy: _, ...measure }) => measure));
+  const driftedBefore = new Set(guarded(measureRows(block.lines, before, beforeRows)));
   // A row held only by a line in the request's notation (#2583: `run "cols" … => 0 "…" ""` that
   // place_rows wrote into a Pester file) is no executable row: translating it is no break.
   const places = rowPlaces(beforeRows);
@@ -175,7 +179,7 @@ export function rowEditBreaks(
     const at = places.get(n);
     return at !== undefined && rowNotation(lines[at - 1] ?? "");
   };
-  const rows = rowBlockDecision(measureRows(block.lines, after)).filter(
+  const rows = guarded(measureRows(block.lines, after)).filter(
     (n) => !driftedBefore.has(n) && !notation(n),
   );
   if (!rows.length) return null;

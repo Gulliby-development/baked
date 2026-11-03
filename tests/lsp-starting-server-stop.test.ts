@@ -132,3 +132,37 @@ describe("an intelligence worker with a server in its handshake", () => {
     expect(await gone(pid)).toBe(true);
   }, 60_000);
 });
+
+// #2656: every intelligence worker (a workflow fixture's NativeAgentExecutor, a ContextManager)
+// warmed up the servers of the workspace's languages that the machine has on PATH. On the
+// windows-latest image that started LLVM's clangd for a C++ fixture, a process the test never
+// asked for, and the R83 C++ scenario hung to its 90 s limit there only. The suite turns warmup
+// off (`BAKED_NO_LSP_WARMUP` in tests/setup/isolate-home.ts); it reaches the worker only because
+// the worker is given the environment: under `bun test` its default one missed the preload's and
+// the test's changes, so the worker neither saw the switch nor found a fake server on PATH.
+describe("a test's intelligence worker (#2656)", () => {
+  test("warms up no language server", async () => {
+    const { root, pidFile } = fakeServer();
+    const client = new IntelligenceClient(root);
+    cleanups.push(() => client.close());
+    await client.routerWarmup();
+    expect(await client.routerGetChildPids()).toEqual([]);
+    expect(existsSync(pidFile)).toBe(false);
+  });
+
+  test("is given the test's environment: with warmup on, it starts the server on the test's PATH", async () => {
+    const { root, pidFile } = fakeServer();
+    const saved = process.env.BAKED_NO_LSP_WARMUP;
+    delete process.env.BAKED_NO_LSP_WARMUP;
+    cleanups.push(() => {
+      process.env.BAKED_NO_LSP_WARMUP = saved;
+    });
+    const client = new IntelligenceClient(root);
+    cleanups.push(() => client.close());
+    const warming = client.routerWarmup().catch(() => {});
+    const pid = await startedPid(pidFile);
+    expect(await client.routerStopLspServersUnder(root)).toBe(1);
+    expect(await gone(pid)).toBe(true);
+    await warming;
+  });
+});

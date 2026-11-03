@@ -22,6 +22,7 @@ import {
   type LspTextEdit,
   type LspTypeHierarchyItem,
   type LspWorkspaceEdit,
+  uriToFilePath,
 } from "./protocol.js";
 import { excludeServerFiles, type LspServerConfig, serverProjectState } from "./server-registry.js";
 import { spawnLspServer } from "./spawn.js";
@@ -72,9 +73,10 @@ export class StandaloneLspClient {
   private openDocuments = new Map<string, { version: number; content: string }>();
   private diagnostics = new Map<string, LspDiagnostic[]>();
   /**
-   * Open documents whose cached diagnostics predate the last change sent to the server. A change
-   * to one file can change the errors of every file that imports it, so a didChange marks all
-   * open documents until the server publishes for them again.
+   * Documents whose cached diagnostics predate the last change sent to the server. A change to one
+   * file can change the errors of every file that imports it, so a didChange marks all open
+   * documents, and every closed one a workspace-wide server has published for, until the server
+   * publishes for them again.
    */
   private staleDiagnostics = new Set<string>();
   private diagnosticWaiters = new Map<string, Array<() => void>>();
@@ -245,6 +247,7 @@ export class StandaloneLspClient {
         existing.version++;
         existing.content = text;
         for (const open of this.openDocuments.keys()) this.staleDiagnostics.add(open);
+        for (const published of this.diagnostics.keys()) this.staleDiagnostics.add(published);
         this.notify("textDocument/didChange", {
           textDocument: { uri, version: existing.version },
           contentChanges: [{ text }],
@@ -595,7 +598,7 @@ export class StandaloneLspClient {
   getRecentDiagnostics(limit = 20): Array<{ file: string; message: string; severity: number }> {
     const results: Array<{ file: string; message: string; severity: number }> = [];
     for (const [uri, diags] of this.diagnostics) {
-      const file = uri.replace("file://", "");
+      const file = uriToFilePath(uri);
       for (const d of diags) {
         if (results.length >= limit) return results;
         results.push({ file, message: d.message, severity: d.severity ?? 1 });
