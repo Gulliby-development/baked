@@ -43,6 +43,29 @@ export function toLf(text: string): string {
   return text.includes("\r\n") ? text.replace(/\r\n/g, "\n") : text;
 }
 
+const BOM_CHAR = "﻿";
+
+/**
+ * Text without a leading UTF-8 byte-order mark, and whether it had one. The edit tools match
+ * model text on the text without the mark, which `read` shows invisibly on line 1 (#2789).
+ */
+export function splitBom(text: string): { bom: boolean; text: string } {
+  return text.startsWith(BOM_CHAR) ? { bom: true, text: text.slice(1) } : { bom: false, text };
+}
+
+/**
+ * Model text without a byte-order mark it copied from line 1 of `read` output. A string that is
+ * only the mark stays as it is, so it never turns into the empty `oldString` that creates a file.
+ */
+export function withoutCopiedBom(text: string): string {
+  return splitBom(text).text || text;
+}
+
+/** Puts the byte-order mark back in front of `text` when the file had one. */
+export function withBom(text: string, bom: boolean): string {
+  return bom ? BOM_CHAR + text : text;
+}
+
 /** Re-encode text with the given ending, whatever endings it had before. */
 export function withLineEnding(text: string, eol: LineEnding): string {
   const lf = toLf(text);
