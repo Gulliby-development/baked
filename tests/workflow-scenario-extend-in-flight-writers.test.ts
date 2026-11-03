@@ -153,3 +153,127 @@ describe("scenario: R84 md-site 2361845b, writers in flight count as progress fo
     expect(extensions(store, runId)).toHaveLength(1);
   });
 });
+
+// The same shape before any task finishes (#2607): below the ceiling `growWhilePlanning` grows the
+// budget only when a model attempt completed since its last growth. A first wave of three parallel
+// writers completes none before the budget runs out, so the growth one writer's step made left the
+// others to fail BUDGET_EXHAUSTED with the ceiling unused.
+
+const PLANNED = 1_000_000;
+
+const planningGrowths = (store: WorkflowStore, runId: string) =>
+  store
+    .artifacts(runId)
+    .filter((a) => a.logical_path.startsWith("policy-revisions/auto-"))
+    .map((a) => JSON.parse(store.readArtifact(runId, a.id)))
+    .filter((r) => r.kind === "planning-growth");
+
+/**
+ * A run that planned for 1.0M with a 2.0M budget and three writers of its first wave in flight: the
+ * first writer's step grew the budget to 3.0M with the writers open at 0.1M each, and the writers
+ * since then at 0.6M each, no task finished and no attempt completed. `ceiling` is the sizing
+ * ceiling, `costTokens` the dollar cap as tokens at the model's price (null: no cap), `hold` the
+ * initiative pool hold (null: no initiative).
+ */
+async function firstWave(opts: { ceiling?: number; costTokens?: number | null; hold?: number | null } = {}) {
+  const { ceiling = 10_000_000, costTokens = null, hold = null } = opts;
+  const cap = costTokens === null ? null : Math.round(costTokens * INPUT * 100) / 100;
+  const policy: RunPolicy = { ...fixturePolicy, maxAgentCalls: 1000, maxTotalTokens: 2_000_000, maxCostUsd: cap, costTolerance: "off", sizing: { maxRunTokens: ceiling } };
+  const made = workflowFixture({ policy: { ...policy, maxCostUsd: null } });
+  cleanups.push(made.dispose);
+  const { store } = made.service;
+  const { runId } = await made.start();
+  store.transaction(() => store.transition(runId, "running"));
+  store.setPolicy(runId, policy);
+  store.tokenHold = (id) => (id === runId ? hold : null);
+  const tasks = Array.from({ length: 3 }, (_, i) => task(taskId(i)));
+  store.transaction(() => {
+    store.syncTasks(runId, { schemaVersion: 1, featureId: "fixture", revision: 1, specHash: "a".repeat(64), planHash: "b".repeat(64), tasks });
+  });
+  const stepId = store.beginStep(runId, "fixture");
+  const plan = store.reserve(runId, stepId, MODEL, 1000, policy);
+  store.transaction(() => {
+    store.artifact(runId, "usage", `attempts/${plan}/usage.json`, canonical(usage(PLANNED)));
+    store.finishAttempt(runId, plan, "completed", PLANNED);
+  });
+  const writers = [0, 1, 2].map(() => store.reserve(runId, stepId, MODEL, 1000, policy));
+  for (const id of writers) {
+    store.recordAttemptUsage(runId, id, 100_000);
+    store.expandReservation(runId, id, 200_000, policy);
+  }
+  // 1.0M + 0.7M + 0.2M + 0.2M = 2.1M passes 2.0M: the planning attempt completed since the start,
+  // so the budget grows by half again to 3.0M.
+  store.expandReservation(runId, writers[0] as string, 700_000, policy);
+  expect(policy.maxTotalTokens).toBe(3_000_000);
+  expect(planningGrowths(store, runId)).toHaveLength(1);
+  for (const id of writers) store.recordAttemptUsage(runId, id, 600_000);
+  store.expandReservation(runId, writers[1] as string, 620_000, policy);
+  store.expandReservation(runId, writers[2] as string, 620_000, policy);
+  return { store, runId, policy, writers };
+}
+
+/** The third writer's next step: 1.0M + 0.7M + 0.62M + 0.9M = 3.22M, past the 3.0M budget. */
+const FIRST_WAVE_STEP = 900_000;
+
+function refusal(run: () => void): string | undefined {
+  try {
+    run();
+  } catch (error) {
+    return (error as { code?: string }).code;
+  }
+  return undefined;
+}
+
+describe("scenario: a first wave of writers in flight counts as progress for a planning growth (#2607)", () => {
+  test("no task finished, three writers in flight: the budget grows while the ceiling has room", async () => {
+    const { store, runId, policy, writers } = await firstWave({ costTokens: 20_000_000 });
+    expect(() => store.expandReservation(runId, writers[2] as string, FIRST_WAVE_STEP, policy)).not.toThrow();
+    expect(policy.maxTotalTokens).toBe(4_500_000);
+    const all = planningGrowths(store, runId);
+    expect(all).toHaveLength(2);
+    expect(all[1].completedAttempts).toBe(all[0].completedAttempts);
+    expect(all[1].inFlightTokens).toBe(1_500_000);
+    expect(Object.values(all[1].openAttemptTokens)).toEqual([600_000, 600_000, 600_000]);
+    expect(all[1].affordableTokens).toBeGreaterThan(4_500_000);
+    // The second writer's next step fits the grown budget: no attempt fails BUDGET_EXHAUSTED.
+    expect(() => store.expandReservation(runId, writers[1] as string, 900_000, policy)).not.toThrow();
+    expect(store.run(runId).status).toBe("running");
+  });
+
+  test("without a dollar cap the budget grows the same way", async () => {
+    const { store, runId, policy, writers } = await firstWave();
+    expect(() => store.expandReservation(runId, writers[2] as string, FIRST_WAVE_STEP, policy)).not.toThrow();
+    const all = planningGrowths(store, runId);
+    expect(all).toHaveLength(2);
+    expect(all[1].affordableTokens).toBeUndefined();
+  });
+
+  test("the same in-flight tokens do not grow the budget twice", async () => {
+    const { store, runId, policy, writers } = await firstWave();
+    store.expandReservation(runId, writers[2] as string, FIRST_WAVE_STEP, policy);
+    expect(refusal(() => store.expandReservation(runId, writers[2] as string, policy.maxTotalTokens, policy))).toBe("BUDGET_EXHAUSTED");
+    expect(planningGrowths(store, runId)).toHaveLength(2);
+  });
+
+  test("a step past the sizing ceiling still stops BUDGET_EXHAUSTED", async () => {
+    const { store, runId, policy, writers } = await firstWave({ ceiling: 3_100_000 });
+    expect(refusal(() => store.expandReservation(runId, writers[2] as string, FIRST_WAVE_STEP, policy))).toBe("BUDGET_EXHAUSTED");
+    expect(policy.maxTotalTokens).toBe(3_000_000);
+    expect(planningGrowths(store, runId)).toHaveLength(1);
+  });
+
+  test("a step past what the dollar cap pays for still stops BUDGET_EXHAUSTED", async () => {
+    // The cap pays for 3.1M tokens, short of the 3.22M the step needs; the ceiling is 10M.
+    const { store, runId, policy, writers } = await firstWave({ costTokens: 3_100_000 });
+    expect(refusal(() => store.expandReservation(runId, writers[2] as string, FIRST_WAVE_STEP, policy))).toBe("BUDGET_EXHAUSTED");
+    expect(policy.maxTotalTokens).toBe(3_000_000);
+    expect(planningGrowths(store, runId)).toHaveLength(1);
+  });
+
+  test("a step past the initiative pool hold still stops BUDGET_EXHAUSTED", async () => {
+    const { store, runId, policy, writers } = await firstWave({ hold: 3_100_000 });
+    expect(refusal(() => store.expandReservation(runId, writers[2] as string, FIRST_WAVE_STEP, policy))).toBe("BUDGET_EXHAUSTED");
+    expect(policy.maxTotalTokens).toBe(3_000_000);
+    expect(planningGrowths(store, runId)).toHaveLength(1);
+  });
+});
