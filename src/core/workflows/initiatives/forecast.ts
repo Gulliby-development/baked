@@ -2,6 +2,7 @@ import { existsSync, statSync } from "node:fs";
 import { basename, dirname } from "node:path";
 import type { PastRun } from "../estimate.js";
 import { forecastSamples } from "../forecast-price.js";
+import { historySnapshot } from "../history-snapshot.js";
 import { WorkflowStore } from "../store.js";
 import type { AttemptUsageRow } from "../usage.js";
 
@@ -12,6 +13,13 @@ function sharedPriceSamples(path: string, history: PastRun[]): AttemptUsageRow[]
   const parent = dirname(path);
   if (basename(path) !== "workflows.sqlite" || basename(parent) !== ".baked") return [];
   const runs = history.filter((r) => r.source === "shared" && r.status === "completed");
+  // Read once per history snapshot (`withHistorySnapshot`), where a store's time stamp may not move.
+  return historySnapshot(`prices:${path}:${runs.map((r) => r.runId).join("/")}`, () =>
+    readSharedPrices(path, runs),
+  );
+}
+function readSharedPrices(path: string, runs: PastRun[]): AttemptUsageRow[] {
+  const parent = dirname(path);
   const stamp = [
     ...[path, `${path}-wal`].map((file) => {
       try {

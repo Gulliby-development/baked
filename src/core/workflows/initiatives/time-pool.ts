@@ -80,13 +80,15 @@ export interface TimePoolView {
   /** Set when the forecast is above the limit. */
   notice: string | null;
   /**
-   * In shadow (#2414): the pace without the finished runs' silent time (`cleanInitiativePace`),
-   * its inputs, and the forecast and suggestion it would give; the fields above decide.
+   * In shadow (#2414): the pace without the finished runs' stalled time (`cleanInitiativePace`),
+   * its inputs (their waits before a first response, `silentMs`, and the stall part of them taken
+   * out, `stallMs`, #2424), and the forecast and suggestion it would give; the fields above decide.
    */
   cleanPace?: {
     pace: ActivePace | null;
     rates: number[];
     silentMs: number;
+    stallMs: number;
     forecastMs: number | null;
     suggestedMs: number | null;
   };

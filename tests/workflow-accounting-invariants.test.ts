@@ -1,6 +1,7 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import fc from "fast-check";
 import { canonical } from "../src/core/specs/hash.js";
+import { callStallMs, cleanRunPace, STALL_FLOOR_MS, stallBasisMs } from "../src/core/workflows/clean-pace.js";
 import { growBudgetOnProgress } from "../src/core/workflows/budget.js";
 import { type CostForecast, costForecast, kindRatio } from "../src/core/workflows/cost-forecast.js";
 import { POOL_STEP, planCharge, planChargeTokens, poolExtensionDecision, poolForecast, timePoolExtensionDecision, tokenPool } from "../src/core/workflows/initiatives/token-pool.js";
@@ -1065,5 +1066,54 @@ describe("calls pool invariants (#2345)", () => {
       if (raise !== null) expect(raise).toBeGreaterThan(inputs.limitCalls);
       if (inputs.pace === null) expect(calls.forecastCalls).toBeNull();
     }), { numRuns: 300 });
+  });
+});
+
+describe("clean pace stall invariants (#2424)", () => {
+  const callSeed = fc.record({
+    wait: fc.integer({ min: 0, max: 20 * 60_000 }),
+    basis: fc.oneof(
+      fc.constant({}),
+      fc.record({ limitMs: fc.integer({ min: STALL_FLOOR_MS, max: 10 * 60_000 }) }),
+      fc.record({
+        deadlineInputs: fc.record({
+          samples: fc.integer({ min: 0, max: 50 }),
+          p95Ms: fc.integer({ min: 1_000, max: 600_000 }),
+          expired: fc.option(fc.constant(true as const), { nil: undefined }),
+        }),
+        promptChars: fc.option(fc.integer({ min: 100, max: 500_000 }), { nil: undefined }),
+      }),
+    ),
+  });
+
+  test("a call's stall is within its wait, never inside the floor, and grows with the wait by at most as much", () => {
+    fc.assert(fc.property(callSeed, fc.integer({ min: 0, max: 600_000 }), ({ wait, basis }, more) => {
+      const call = { provider: "codex", firstByteMs: wait, durationMs: wait, silentMs: wait, ...basis };
+      const stall = callStallMs(call);
+      expect(stall).toBeGreaterThanOrEqual(0);
+      expect(stall).toBeLessThanOrEqual(Math.max(0, wait - STALL_FLOOR_MS));
+      expect(stallBasisMs(call)).toBeGreaterThanOrEqual(STALL_FLOOR_MS);
+      const longer = callStallMs(call, wait + more);
+      expect(longer).toBeGreaterThanOrEqual(stall);
+      expect(longer - stall).toBeLessThanOrEqual(more);
+    }), { numRuns: 300 });
+  });
+
+  test("a finished run's clean rate lies between its ordinary rate and its rate without the whole wait", () => {
+    fc.assert(fc.property(
+      fc.integer({ min: 60_000, max: 10_000_000 }),
+      fc.integer({ min: 1, max: 50_000_000 }),
+      fc.array(callSeed, { maxLength: 10 }),
+      (activeMs, tokens, seeds) => {
+        const silentMs = Math.min(activeMs - 1, seeds.reduce((sum, s) => sum + s.wait, 0));
+        const stallMs = Math.min(silentMs, seeds.reduce((sum, s) => sum + callStallMs({ ...s.basis, silentMs: s.wait }), 0));
+        const ordinary = cleanRunPace({ status: "completed", tokens, activeMs, stallMs: 0 });
+        const clean = cleanRunPace({ status: "completed", tokens, activeMs, stallMs });
+        const whole = cleanRunPace({ status: "completed", tokens, activeMs, stallMs: silentMs });
+        if (ordinary === null || clean === null || whole === null) return;
+        expect(clean).toBeGreaterThanOrEqual(ordinary);
+        expect(clean).toBeLessThanOrEqual(whole);
+      },
+    ), { numRuns: 300 });
   });
 });
