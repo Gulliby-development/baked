@@ -2,6 +2,7 @@ import { connectionError, ProviderUnreachableError } from "../llm/provider-healt
 import { canonical, hashJson } from "../specs/hash.js";
 import { WorkflowFault } from "./errors.js";
 import type { WorkflowStore } from "./store.js";
+import { namesPath } from "./task-graph.js";
 
 export const PROVIDER_ZERO_TOKEN_LIMIT = 3;
 
@@ -397,7 +398,8 @@ const EDIT_NOT_APPLIED =
  * The files of a task's own write list that an `implemented` result leaves unresolved because an
  * edit did not apply (cfgtrace b8544e36, #1036: a `multi_edit` of a test file in the task's
  * scope did not apply, one line remained, and the run stopped at 13 of 14 tasks). That is not a
- * conflict or a missing prerequisite: a fresh attempt from the applied edits finishes it.
+ * conflict or a missing prerequisite: a fresh attempt from the applied edits finishes it. An item
+ * names a file by its whole name (`namesPath`): `tests/test_cli.py` is not the task's `cli.py` (#2672).
  */
 export function failedOwnEdits(
   result: { outcome: string; unresolved: string[] },
@@ -406,7 +408,7 @@ export function failedOwnEdits(
   if (result.outcome !== "implemented") return [];
   const own = writes.filter((w) => w.action !== "delete").map((w) => w.path);
   const failed = result.unresolved.filter((item) => EDIT_NOT_APPLIED.test(item));
-  return own.filter((path) => failed.some((item) => item.includes(path)));
+  return own.filter((path) => failed.some((item) => namesPath(item, path)));
 }
 
 /**

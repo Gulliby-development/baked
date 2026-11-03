@@ -78,4 +78,15 @@ describe("scenario: cfgtrace b8544e36, an edit of the task's own file did not ap
     expect(failedOwnEdits(implemented(["tests/test_cli.py conflicts with FR-002"]), writes)).toEqual([]);
     expect(failedOwnEdits({ outcome: "blocked", unresolved: ["tests/test_cli.py: edit failed"] }, writes)).toEqual([]);
   });
+
+  test("an unapplied edit of a longer file name that ends with the task's file is not its own (#2672)", () => {
+    // The task writes cli.py; another task owns tests/test_cli.py and src/cli.pyi. A substring
+    // match read their unapplied edits as the task's own and restarted it for a file that was fine.
+    const writes = [{ path: "cli.py", action: "modify" }];
+    const implemented = (unresolved: string[]) => ({ outcome: "implemented", unresolved });
+    expect(failedOwnEdits(implemented(["tests/test_cli.py: the attempted edit did not apply"]), writes)).toEqual([]);
+    expect(failedOwnEdits(implemented(["src/cli.pyi: old_string not found"]), writes)).toEqual([]);
+    expect(failedOwnEdits(implemented(["`cli.py`: the attempted edit did not apply."]), writes)).toEqual(["cli.py"]);
+    expect(failedOwnEdits(implemented(["C:\\work\\cli.py: edit failed"]), writes)).toEqual(["cli.py"]);
+  });
 });
