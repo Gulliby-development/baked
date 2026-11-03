@@ -382,6 +382,15 @@ import {
   conflictFinishReady,
 } from "./conflict-finish.js";
 import {
+  CONFLICT_ROWS_DIR,
+  CONFLICT_ROWS_KIND,
+  type ConflictRowRecord,
+  conflictRowDiff,
+  conflictRowEvidence,
+  conflictRowFiles,
+  conflictRowNote,
+} from "./conflict-row-reply.js";
+import {
   auditVerified,
   type ContestedRow,
   contestedRows,
@@ -13620,6 +13629,11 @@ ${note}`;
       ...(rows.length ? { criterionIds: rows.map((r) => r.criterion.id) } : {}),
     };
     const assumedPath = `assumptions/conflicts/${task.id}.json`;
+    // A conflict about a test file whose rows the request prescribes is answered first, with the
+    // row diff the host reads itself: the request's rows win over a transcription that dropped
+    // one (#2493, R80 deltaglue cli T010). Shadow unless `conflictRowReply` is on.
+    if (this.replyWithRows(runId, state, policy, child, task, account, report, result, root))
+      return null;
     // A criterion that contradicts what the request states loses to the request, on quotes the
     // host checked and on every report of the task, whatever words the report uses (#2016). It
     // comes before the rows are compared with the test: a test that changed a row because the
@@ -14897,6 +14911,113 @@ ${note}`;
     if (finished) return finished;
     state.prompt += `\nSettled spec conflict (${path}): task ${task.id} reported that the spec contradicts the code: ${report.slice(0, 1200)} ${settled}. Implement what ${requirementIds.join(", ")} state, and where a test this run wrote follows the contradicting row, change only that expected value to what the requirements give; weaken no other test. Report implemented or already_satisfied, not spec_conflict.`;
     return null;
+  }
+  /**
+   * A spec conflict whose test side is a file the request prescribes rows for, answered with the
+   * row diff (#2493): the files the conflict names (its test sides, the paths its report names,
+   * the files the task's failing check names) that `suppliedRows` reads are compared with their
+   * rows through `rowBlockDrifts` on the attempt's tree. A delivered file that drifts is verified
+   * evidence for the `prescribed-rows` site: with `conflictRowReply: "on"` the request's rows win,
+   * the task is interrupted and its next attempt reads the row diff, and no model settle runs.
+   * Every comparison is recorded under `conflicts/rows/` (with the reply, sent or not) and its
+   * decision under `conflicts/evidence/`. True when the host replied.
+   */
+  private replyWithRows(
+    runId: string,
+    state: RuntimeState,
+    policy: RunPolicy,
+    child: string,
+    task: Task,
+    account: Record<string, unknown>,
+    report: string,
+    result: Implementation,
+    root: string,
+  ): boolean {
+    const graph = state.rootGraph ?? state.graph;
+    if (!graph) return false;
+    const assumedPath = `assumptions/conflicts/${task.id}-rows.json`;
+    if (this.store.latestArtifact(runId, assumedPath)) return false;
+    const failing = this.failedCheckOutput(runId, task.id);
+    const named = new Set(
+      [
+        ...pathsInOutput(report, graph.tasks),
+        ...(failing ? failingFilesInOutput(failing, graph.tasks) : []),
+        ...sideTests(result.conflictSides),
+      ].filter(isTestPath),
+    );
+    if (!named.size) return false;
+    // Only the named files: `rowBlockDrifts` compares the files the graph writes.
+    const scoped = {
+      tasks: graph.tasks.map((t) => ({ ...t, writes: t.writes.filter((w) => named.has(w.path)) })),
+    };
+    let compared: ReturnType<typeof rowBlockDrifts> = [];
+    try {
+      compared = rowBlockDrifts(state.requestText || state.prompt, scoped, (path) =>
+        readText(workspacePath(root, path)),
+      );
+    } catch {
+      return false;
+    }
+    if (!compared.length) return false;
+    const files = conflictRowFiles(compared.map((c) => c.record));
+    const drifts = compared.flatMap((c) => c.drifts);
+    const input: EvidenceInput = {
+      site: "prescribed-rows",
+      eligible: policy.clarification === "assume",
+      evidence: conflictRowEvidence(files),
+      wording: false,
+      fallback: false,
+    };
+    const decision = evidenceDecision(input);
+    this.recordEvidenceDecisions(runId, [{ ref: task.id, input }]);
+    const mode = policy.conflictRowReply === "on" ? "on" : "shadow";
+    const n =
+      this.store
+        .artifacts(runId)
+        .filter(
+          (a) =>
+            a.kind === CONFLICT_ROWS_KIND &&
+            a.logical_path.startsWith(`${CONFLICT_ROWS_DIR}${task.id}-`),
+        ).length + 1;
+    const record: ConflictRowRecord = {
+      schemaVersion: 1,
+      taskId: task.id,
+      report: n,
+      mode,
+      files,
+      decision,
+      reply: decision ? conflictRowDiff(drifts) : null,
+    };
+    this.store.transaction(() =>
+      this.store.artifact(
+        runId,
+        CONFLICT_ROWS_KIND,
+        `${CONFLICT_ROWS_DIR}${task.id}-${n}.json`,
+        canonical(record),
+      ),
+    );
+    if (!decision || mode !== "on") return false;
+    const paths = [...new Set(drifts.map((d) => d.path))];
+    const assumed = `The request's rows win over ${paths.join(", ")}: ${record.reply}`;
+    this.store.transaction(() => {
+      this.store.artifact(
+        runId,
+        "diagnostic",
+        `tasks/conflicts/${task.id}.json`,
+        canonical(account),
+      );
+      this.store.artifact(runId, "assumption", assumedPath, canonical({ ...account, assumed }));
+      recordConflictDecision(this.store, runId, {
+        requestId: `assumed-${task.id}-rows`,
+        taskId: task.id,
+        findingIds: task.findingIds,
+        answer: `Assumed under clarification assume (${assumedPath}): ${assumed}.`,
+      });
+      this.store.taskStatus(runId, task.id, "interrupted", null, { cause: "spec_conflict" });
+      this.store.finishStep(runId, child, "failed");
+    });
+    state.prompt += `\n${conflictRowNote(task.id, assumedPath, report, drifts)}`;
+    return true;
   }
   /**
    * Whether the task's latest request conflict record holds a request side that only the host's
