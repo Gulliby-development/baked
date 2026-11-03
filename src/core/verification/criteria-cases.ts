@@ -1357,23 +1357,25 @@ function decodedTwice(once: string): string {
 }
 
 /**
- * A test text decoded until no escape layer is left, at most four: JSON text the test holds in a
- * quoted string literal (`JSON.parse("[\"a\\r\\nb\"]")`, a host block's rows) keeps
- * `\r\n` as two characters after one decoding, so a multi-line literal finds no line break in it
- * (#1997, R64 cfgquill lint: 12 refusals of rows the host's own block held). The literal side is
+ * A test text and each of its escape layers decoded in turn, until none is left, at most four:
+ * JSON text the test holds in a quoted string literal (`JSON.parse("[\"a\\r\\nb\"]")`, a host
+ * block's rows) keeps `\r\n` as two characters after one decoding, so a multi-line literal finds
+ * no line break in it (#1997, R64 cfgquill lint: 12 refusals of rows the host's own block held).
+ * The first entry is the text as given, the last the text with no layer left. The literal side is
  * decoded the same way by `decodedTwice`.
  */
-function canonicalText(unescaped: string): string {
-  let text = unescaped;
+function canonicalLayers(unescaped: string): string[] {
+  const layers = [unescaped];
   for (let layer = 0; layer < 4; layer++) {
+    const text = layers[layers.length - 1] ?? unescaped;
     // Java, C, Python and Go also spell a control character as an octal escape (`\015\012`).
     const next = normalizeLiteral(text).replace(/\\([0-3][0-7]{2})/g, (_, octal: string) =>
       String.fromCharCode(Number.parseInt(octal, 8)),
     );
     if (next === text) break;
-    text = next;
+    layers.push(next);
   }
-  return text;
+  return layers;
 }
 
 /**
@@ -1421,9 +1423,10 @@ function linesHeld(unescaped: string, literal: string): boolean | null {
 
 /**
  * Whether a test's text holds a text the request gives verbatim, both sides decoded until no
- * escape layer is left (`canonicalText`): a quoted literal of a prescribed row (#2486), which the
- * test may spell in its own language's string syntax, split into adjacent strings or a list of
- * lines (`joinedStrings`), or, for several lines, as indented lines of a heredoc (`linesHeld`).
+ * escape layer is left (`canonicalLayers`, the same layer of each first, #2836): a quoted literal
+ * of a prescribed row (#2486), which the test may spell in its own language's string syntax,
+ * split into adjacent strings or a list of lines (`joinedStrings`), or, for several lines, as
+ * indented lines of a heredoc (`linesHeld`).
  * Unlike `testsHold`, which accepts a criterion literal's tokens spread over the file, every
  * character of the text counts: a row whose input lost its last event is not held. A long byte
  * run (a hex string, a byte list, a repeat) is decided by its count (`runsHeld`, #2515): 300
@@ -1432,11 +1435,24 @@ function linesHeld(unescaped: string, literal: string): boolean | null {
 export function verbatimHeld(text: string, literal: string): boolean {
   const runs = runsHeld(text, literal);
   if (runs !== null) return runs;
-  const wanted = canonicalText(literal);
+  const literalLayers = canonicalLayers(literal);
+  const wanted = literalLayers[literalLayers.length - 1] ?? literal;
   if (!asciiTrim(wanted).replace(/\r?\n/g, "")) return true;
+  const held = (decoded: string, value: string) =>
+    decoded.includes(value) || linesHeld(decoded, value) === true;
   for (const source of [text, joinedStrings(text)]) {
-    const decoded = canonicalText(source);
-    if (decoded.includes(wanted) || linesHeld(decoded, wanted) === true) return true;
+    const layers = canonicalLayers(source);
+    // Each layer of the text against the same layer of the literal (#2836): a literal ending in
+    // an escaped backslash (`a\\`) stops at `a\` while the text decodes on through its closing
+    // quote (`a\\"` -> `a\"` -> `a"`), so only the text with every layer left would lose it.
+    if (
+      layers.some((decoded, i) =>
+        held(decoded, literalLayers[Math.min(i, literalLayers.length - 1)] ?? wanted),
+      )
+    )
+      return true;
+    // A text in another quoting than the literal (#1997) keeps a layer more: every layer of both.
+    if (held(layers[layers.length - 1] ?? source, wanted)) return true;
   }
   return false;
 }
@@ -1498,7 +1514,10 @@ function holds(text: string, literal: string, decoded: string): boolean {
   // A literal with an escape no decoding layer knows is raw escape text, matched below (#1709).
   // JSON text inside a quoted string keeps one more escape layer than the string itself (#1997).
   const lines = RAW_ESCAPE.test(literal) ? null : linesHeld(unescaped, normalized);
-  if (lines === false) return linesHeld(canonicalText(unescaped), normalized) === true;
+  // Every layer, not only the last (#2836): a line ending in an escaped backslash would swallow
+  // the closing quote at the last layer.
+  if (lines === false)
+    return canonicalLayers(unescaped).some((layer) => linesHeld(layer, normalized) === true);
   if (lines !== null) return lines;
   if (!normalized.replace(PLACEHOLDER, "")) return false;
   const tokens = normalized.replace(PLACEHOLDER, " ").match(SIGNIFICANT_TOKEN) ?? [];
