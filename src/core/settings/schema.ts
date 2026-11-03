@@ -1376,6 +1376,28 @@ export const SETTINGS: readonly SettingDefinition[] = [
     ],
   },
   {
+    id: "quality.conflictRowReply",
+    page: "code-quality",
+    section: "Workflow runs",
+    label: "Answer a conflict about prescribed test rows with the row diff",
+    help: "When a task reports that a test file whose rows the request prescribes contradicts the program, the host compares the file with the request's rows. With this on, a file that does not keep a row as given gets a reply naming the row and the literal it lacks, and the request's rows win, instead of a model settle. Off records the reply it would send.",
+    scopes: BOTH,
+    type: "enum",
+    default: "off",
+    options: [
+      {
+        value: "off",
+        label: "off",
+        help: "The conflict takes the other settles; the host records the row diff it would reply with.",
+      },
+      {
+        value: "on",
+        label: "on",
+        help: "Reply with the row diff and keep the request's rows.",
+      },
+    ],
+  },
+  {
     id: "quality.rowRunRestore",
     page: "code-quality",
     section: "Workflow runs",
