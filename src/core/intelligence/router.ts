@@ -421,13 +421,13 @@ export class CodeIntelligenceRouter {
   }
 
   /** Dispose all backends */
-  dispose(): void {
-    for (const backend of this.backends) {
-      backend.dispose?.();
-    }
+  /** Disposes every backend; resolves once the processes they stop (language servers) exited. */
+  async dispose(): Promise<void> {
+    const backends = this.backends;
     this.backends = [];
     this.initialized.clear();
     this.fileCache.clear();
+    await Promise.all(backends.map((backend) => backend.dispose?.()));
   }
 
   /**

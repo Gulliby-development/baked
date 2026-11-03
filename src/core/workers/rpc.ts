@@ -226,6 +226,8 @@ export class WorkerClient {
   private eventTaps = new Set<(event: string, data: unknown) => void>();
   private callbackHandlers = new Map<string, CallbackHandler>();
   private disposed = false;
+  /** Workers whose thread has exited, so {@link disposeAndWait} does not wait for them. */
+  private exitedWorkers = new WeakSet<WorkerLike>();
   private workerPath: string | (() => WorkerLike);
   private initConfig?: Record<string, unknown>;
   private workerOpts?: { smol?: boolean };
@@ -251,12 +253,22 @@ export class WorkerClient {
   private spawnWorker(): WorkerLike {
     const w: WorkerLike =
       typeof this.workerPath === "string"
-        ? new Worker(this.workerPath, this.workerOpts)
+        ? // The environment is passed, not left to the default: under `bun test` (Bun 1.4.4) a
+          // worker's default environment missed the changes made to process.env, so the suite's
+          // empty profile, its BAKED_NO_* switches and a test's PATH never reached it (#2656).
+          new Worker(this.workerPath, {
+            ...this.workerOpts,
+            env: { ...process.env } as Record<string, string>,
+          })
         : this.workerPath();
     w.unref();
     w.onmessage = (e: MessageEvent<WorkerOutbound | CallbackRequest>) => this.handleMessage(e.data);
     w.onerror = (e: ErrorEvent) => this.handleWorkerError(e);
-    w.addEventListener("close", () => this.handleWorkerClose());
+    w.addEventListener("close", () => {
+      this.exitedWorkers.add(w);
+      // A replaced worker exiting is not the current one crashing.
+      if (w === this.worker) this.handleWorkerClose();
+    });
     if (this.initConfig) {
       w.postMessage({ type: "init", config: this.initConfig } satisfies InitMessage);
     }
@@ -268,9 +280,7 @@ export class WorkerClient {
     if (this.disposed || this.restartCount >= WorkerClient.MAX_RESTARTS) return false;
     this.restartCount++;
     this.onStatusChange?.("restarting");
-    try {
-      this.worker.terminate();
-    } catch {}
+    this.retire(this.worker);
     try {
       this.worker = this.spawnWorker();
       return true;
@@ -278,6 +288,27 @@ export class WorkerClient {
       this.onStatusChange?.("crashed");
       return false;
     }
+  }
+
+  /**
+   * Lets a replaced worker go the way a disposed one does: its dispose handler stops the children
+   * it runs (language servers, ready or still starting) and it exits; one still running after
+   * {@link DISPOSE_BOUND_MS} is terminated. A bare terminate skipped the handler and left them.
+   */
+  private retire(worker: WorkerLike): void {
+    worker.onmessage = null;
+    worker.onerror = null;
+    if (this.exitedWorkers.has(worker)) return;
+    try {
+      worker.postMessage({ type: "dispose" });
+    } catch {}
+    const timer = setTimeout(() => {
+      if (this.exitedWorkers.has(worker)) return;
+      try {
+        worker.terminate();
+      } catch {}
+    }, WorkerClient.DISPOSE_BOUND_MS);
+    timer.unref?.();
   }
 
   protected resetRestartCount(): void {
@@ -454,6 +485,37 @@ export class WorkerClient {
       this.tryRestart();
     }
   }
+
+  /**
+   * Disposes the worker and resolves once its thread has exited, so whatever its dispose handler
+   * stops (language servers) is stopped when the caller goes on, for instance to delete the
+   * workspace. A worker not gone within `boundMs` is terminated. A relayed worker belongs to its
+   * owner: there is nothing to wait for.
+   */
+  protected async disposeAndWait(boundMs = WorkerClient.DISPOSE_BOUND_MS): Promise<void> {
+    if (this.disposed) return;
+    const worker = this.worker;
+    if (typeof this.workerPath !== "string" || this.exitedWorkers.has(worker)) {
+      this.dispose();
+      return;
+    }
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const exited = new Promise<boolean>((resolve) => {
+      worker.addEventListener("close", () => resolve(true));
+      timer = setTimeout(() => resolve(false), boundMs);
+    });
+    this.dispose();
+    const gone = await exited;
+    clearTimeout(timer);
+    if (!gone)
+      try {
+        worker.terminate();
+      } catch {}
+  }
+
+  /** How long a disposed worker gets to stop its children and exit: a server's shutdown answer,
+   * its exit after SIGTERM and after SIGKILL each get 2 s, and the worker's own cleanup the rest. */
+  private static readonly DISPOSE_BOUND_MS = 10_000;
 
   dispose(): void {
     if (this.disposed) return;

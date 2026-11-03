@@ -191,7 +191,7 @@ export function disposeIntelligenceRouter(): void {
     _client = null;
   }
   if (router) {
-    router.dispose();
+    router.dispose().catch(() => {});
     router = null;
   }
 }

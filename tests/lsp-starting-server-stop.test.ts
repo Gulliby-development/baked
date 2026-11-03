@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import { LspBackend } from "../src/core/intelligence/backends/lsp/index.js";
 import { clearProbeCache } from "../src/core/intelligence/backends/lsp/server-registry.js";
+import { IntelligenceClient } from "../src/core/workers/intelligence-client.js";
 import { removeTempDir } from "./helpers/temp-dir.js";
 
 // #2268: the router's warmup started rust-analyzer in a workflow fixture's workspace, and the
@@ -90,5 +91,44 @@ describe("a language server still in its handshake (#2268)", () => {
     expect(await backend.stopServersUnder(root)).toBe(1);
     expect(await gone(pid)).toBe(true);
     await warming;
+  }, 60_000);
+});
+
+// #2800, the worker path of the same leak: `IntelligenceClient.close()` disposed its worker, whose
+// handler started the stop of a server still in its handshake but did not await it and exited
+// at once. The server got its SIGKILL, but the thread that spawned it was gone before it saw the
+// exit, so nobody reaped it (a zombie on POSIX for the life of the host process; a ready server
+// lost its SIGKILL fallback timer too). `close()` also returned before the worker had exited.
+// Recycling a worker (its heap watchdog) terminated it without its dispose handler, so every
+// server it ran, ready or starting, kept running with nobody left to stop it.
+describe("an intelligence worker with a server in its handshake", () => {
+  /** A worker whose warmup is starting the fake server; warmup is on whatever the suite sets. */
+  function warmingWorker(root: string): { client: IntelligenceClient; warming: Promise<void> } {
+    const saved = process.env.BAKED_NO_LSP_WARMUP;
+    delete process.env.BAKED_NO_LSP_WARMUP;
+    cleanups.push(() => {
+      if (saved !== undefined) process.env.BAKED_NO_LSP_WARMUP = saved;
+    });
+    const client = new IntelligenceClient(root);
+    cleanups.push(() => client.close());
+    return { client, warming: client.routerWarmup().catch(() => {}) };
+  }
+
+  test("has stopped and reaped the server when close returns", async () => {
+    const { root, pidFile } = fakeServer();
+    const { client, warming } = warmingWorker(root);
+    const pid = await startedPid(pidFile);
+    await client.close();
+    expect(alive(pid)).toBe(false);
+    await warming;
+  }, 60_000);
+
+  test("stops the server when the worker is recycled", async () => {
+    const { root, pidFile } = fakeServer();
+    const { client, warming } = warmingWorker(root);
+    const pid = await startedPid(pidFile);
+    (client as unknown as { recycleWorker(): void }).recycleWorker();
+    await warming;
+    expect(await gone(pid)).toBe(true);
   }, 60_000);
 });

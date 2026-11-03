@@ -429,7 +429,7 @@ export interface IntelligenceBackend {
   initialize?(cwd: string): Promise<void>;
 
   /** Dispose resources */
-  dispose?(): void;
+  dispose?(): void | Promise<void>;
 
   /** Check if this backend supports a given language */
   supportsLanguage(language: Language): boolean;
