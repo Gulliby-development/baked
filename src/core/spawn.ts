@@ -1,4 +1,4 @@
-import type { SpawnOptions } from "node:child_process";
+import type { ChildProcess, SpawnOptions } from "node:child_process";
 import { IS_WIN } from "./platform/index.js";
 
 const SECRET_ENV_PATTERN = /_API_KEY$|_SECRET$|_TOKEN$|_PASSWORD$|_CREDENTIAL$|_PRIVATE_KEY$/;
@@ -145,4 +145,36 @@ export async function processOutput(proc: {
     finished = true;
     if (timer) clearTimeout(timer);
   }
+}
+
+/** The note a command's result carries when `onOutputHeld` stopped reading its output. */
+export const OUTPUT_HELD_NOTE =
+  "[baked] The command exited, but a process it started kept its output open; later output is not captured.";
+
+/**
+ * The `processOutput` bound for a `node:child_process` child whose result waits for `close`.
+ * `close` fires only once every handle to the output pipes is closed, so a process that holds one
+ * (one the command started, or on Windows any process created while the pipes were inheritable)
+ * keeps the wait open past the command's own exit, out of reach of a timeout kill of the command.
+ * `OUTPUT_GRACE_MS` after the child exited with its pipes still open, this closes them and calls
+ * `held` with the exit status, so the caller returns what it read (#1029, #2657). Returns a
+ * function that cancels it; call it once the result is settled.
+ */
+export function onOutputHeld(
+  child: ChildProcess,
+  held: (code: number | null, signal: NodeJS.Signals | null) => void,
+): () => void {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const onExit = (code: number | null, signal: NodeJS.Signals | null): void => {
+    timer = setTimeout(() => {
+      child.stdout?.destroy();
+      child.stderr?.destroy();
+      held(code, signal);
+    }, OUTPUT_GRACE_MS);
+  };
+  child.once("exit", onExit);
+  return () => {
+    if (timer) clearTimeout(timer);
+    child.off("exit", onExit);
+  };
 }
