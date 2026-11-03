@@ -2873,7 +2873,8 @@ export function replayFirstBytes(
   const boundaries = new Map<string, FirstByteBoundary[]>(runIds.map((runId) => [runId, []]));
   for (const { runId, attemptId, model, call, index, estimated } of calls) {
     // A refused call (a 429, say) answered before any deadline; it is the retry ladder's, not this.
-    if (call.status !== undefined) continue;
+    // So is one that ended in a provider error, such as a model at capacity (#2820).
+    if (call.status !== undefined || call.failure === "error") continue;
     const limitMs =
       adaptive && call.limitMs !== undefined
         ? adaptive(history, providerFirstByteMs(call.provider, call), model, call)
@@ -2978,7 +2979,10 @@ export function replayStallLadder(
     }
     const last = usage.calls?.at(-1);
     // A stall, or a turn that finished with no usable answer (#1957), which climbs the same way.
-    const stalled = !!last && last.firstByteMs === null && last.status === undefined;
+    // A call that ended in a provider error (the model at capacity) is the retry's, not a stall
+    // (#2820); a call recorded before its failure kind was is read by its timing alone.
+    const stalled =
+      !!last && last.firstByteMs === null && last.status === undefined && last.failure !== "error";
     if (attempt.status !== "failed" || (!stalled && usage.lostAnswer === undefined)) continue;
     const entry =
       (stage ? routing.stages?.[stage] : undefined) ??
