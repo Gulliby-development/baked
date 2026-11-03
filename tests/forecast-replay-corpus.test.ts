@@ -696,7 +696,7 @@ describe("test task splits replay on recorded sizing reports (#1789)", () => {
         dispose();
       }
     }
-    // Only README and LICENSE tasks change, from split to whole (six documentation features). callmend's files then cost 268,807;
+    // Only README and LICENSE tasks change, from split to whole (seven documentation features). callmend's files then cost 268,807;
     // verhop's 614,482 over three tasks; manlens's 262,605.
     expect(changed).toEqual([
       "R61/manlens.sqlite.gz 25d4802d sizing/plan-0.json T001 README.md,LICENSE",
@@ -705,6 +705,7 @@ describe("test task splits replay on recorded sizing reports (#1789)", () => {
       "R75/maskback.sqlite.gz 13bb147b sizing/plan-0.json T001 README.md,LICENSE",
       "R77/trailspin.sqlite.gz ae89f897 sizing/plan-0.json T001 README.md,LICENSE",
       "R79/verhop.sqlite.gz f0a2962f sizing/plan-0.json T001 README.md,LICENSE",
+      "R83/pnmforge.sqlite.gz 1820f92d sizing/plan-0.json T001 README.md,LICENSE",
     ]);
     // R68 ewvet's three code files and the R50 md-site skeleton (4 code files and a README, expected
     // 478k, whose parts spent 1.23M) still split.
