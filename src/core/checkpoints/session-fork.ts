@@ -5,6 +5,7 @@
 import type { ModelMessage } from "ai";
 import type { SessionManager } from "../sessions/manager.js";
 import { rebuildCoreMessages } from "../sessions/rebuild.js";
+import { emptyTabUsage } from "../sessions/token-usage.js";
 import type { SessionMeta, TabMeta } from "../sessions/types.js";
 import {
   checkpointEndMessageId,
@@ -81,12 +82,21 @@ export async function forkSavedSession(input: SavedForkInput): Promise<SavedFork
     id: newTabId,
     label: `${tab.label}-fork`,
     sessionId: newId,
-    tokenUsage: { prompt: 0, completion: 0, total: 0, cacheRead: 0 },
+    tokenUsage: emptyTabUsage(),
     messageRange: { startLine: 0, endLine: messages.length },
     ...(copied.length > 0 ? { checkpointTags: copied } : {}),
   };
+  // The fork takes the conversation, not the source's own session fields: it is not the
+  // coordinator, has no worktree, parent or archived flag of its own, as the API fork (#2811).
+  const {
+    kind: _kind,
+    worktree: _worktree,
+    archived: _archived,
+    parentId: _parentId,
+    ...sourceMeta
+  } = data.meta;
   const meta: SessionMeta = {
-    ...data.meta,
+    ...sourceMeta,
     id: newId,
     title: data.meta.title,
     customTitle: title,

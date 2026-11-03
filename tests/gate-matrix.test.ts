@@ -58,7 +58,7 @@ import { criterionCases, missingCases, testsHold, writtenTestPaths } from "../sr
 import { INLINE_HARNESS, type InlineRowTest, inlineRowFile, withInlineRows } from "../src/core/workflows/acceptance-rows-inline.js";
 import { reproExecutables, rerootRepro } from "../src/core/verification/repro.js";
 import { packageNeeds } from "../src/core/workflows/package-probe.js";
-import { redirectFixture } from "../src/core/verification/doc-examples.js";
+import { nodeUnderBun, redirectFixture } from "../src/core/verification/doc-examples.js";
 import { entryPointCommand } from "../src/core/verification/entry-points.js";
 import { noteSiblingFindings, ownerOfFinding } from "../src/core/verification/initiative-ownership.js";
 import { failureSignature as convergenceSignature, missingPlannedPaths, noTestsCollected } from "../src/core/verification/convergence.js";
@@ -2563,7 +2563,8 @@ describe("gate matrix: swift test, XCTest, swift-testing and swift-format (#1492
     expect(fixerCommand(checks[0]!.fix!, "Sources/Calc/Calc.swift")).toEqual({ executable: "swift", args: ["format", "format", "--in-place", "Sources/Calc/Calc.swift"] });
     expect(detectGates(project({ "Package.swift": "" })).map((s) => s.check.id)).toEqual(["swift-build", "swift-test"]);
     const root = project(files);
-    expect(formatWrittenChecks(root, [], [{ path: "Sources/Calc/Calc.swift", action: "create" }], (c) => `/usr/bin/${c}`).map((c) => [c.id, [c.executable, ...c.args].join(" "), [c.fix!.executable, ...c.fix!.args].join(" ")])).toEqual([
+    // The toolchain bundles swift format (Swift 6): the probe is answered here, not by the runner's swift (#2817).
+    expect(formatWrittenChecks(root, [], [{ path: "Sources/Calc/Calc.swift", action: "create" }], (c) => `/usr/bin/${c}`, undefined, undefined, { packages: () => true }).map((c) => [c.id, [c.executable, ...c.args].join(" "), [c.fix!.executable, ...c.fix!.args].join(" ")])).toEqual([
       ["swift-format-written", "swift format lint --strict Sources/Calc/Calc.swift", "swift format format --in-place"],
     ]);
   });
@@ -3451,6 +3452,14 @@ for (const stack of STACKS) {
       expect(resolved?.entry.name).toBe("tool");
       expect(executables).toContain(resolved!.argv[0]!);
       expect(resolved!.argv.at(-1)).toBe("--help");
+    });
+
+    // R88 pokerank: a bun project's README wrote `node bin/pokerank.js ...` and none of it ran.
+    cell(stack, "a README's node example runs under the checks' runtime (#2678)", () => {
+      const executables = reproExecutables(preselected());
+      const runs = executables.includes("node") || nodeUnderBun(["node", "cli.js"], executables);
+      expect(runs).toBe(stack === "bun" || stack === "npm");
+      expect(nodeUnderBun(["node", "cli.js"], executables)).toBe(stack === "bun");
     });
 
     cell(stack, "edit-profile", async () => {
