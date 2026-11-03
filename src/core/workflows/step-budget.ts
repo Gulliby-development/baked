@@ -1,6 +1,7 @@
 import type { JSONValue } from "@ai-sdk/provider";
 import type { ModelMessage } from "@ai-sdk/provider-utils";
 import type { AnswerEvidence } from "../llm/provider-answer.js";
+import type { StreamOutputGuard } from "../llm/providers/output-limit.js";
 import type { EvidenceBound } from "./evidence-budget.js";
 import {
   type BrokenFile,
@@ -71,8 +72,30 @@ export function capTokens(usage: StepUsageLike, fallback: number): number {
  * growing context never reached it and ran to its step limit: notesift T004 spent 2.27M tokens in
  * one attempt, 90 percent of them cache reads, and jsonshape-update T004 2.09M on a 600k cap
  * (#1300). Finalizing there hands the task to a continuation that starts from a fresh context.
+ * The cap is never below the step limit's cost at the attempt's request size (`allTokensCapFor`).
  */
 export const ALL_TOKENS_FACTOR = 3;
+
+/**
+ * The cap on all of an attempt's tokens, cache reads included: `ALL_TOKENS_FACTOR` times its token
+ * cap, and never below one request past its step limit at its average request (`consumed` over
+ * `requests`). The floor follows the step limit, not `minSteps`: a task whose prompt resends a
+ * 45k to 50k cached prefix reached three times a 250k cap after about 15 of its 20 steps, and the
+ * attempt ended without a result (R88 md-site T009 and T013, 1.61M tokens, #2650). The extra
+ * request leaves the step limit, never this cap, to end an attempt whose requests keep their size,
+ * so a looping attempt on a growing context (#1300) is bounded by its step limit at its own
+ * request size. Without an attempt (no request yet) the cap is the factor alone.
+ */
+export function allTokensCapFor(
+  tokenCap: number,
+  attempt?: { maxSteps: number; consumed: number; requests: number },
+): number {
+  const floor =
+    attempt && attempt.requests > 0
+      ? Math.ceil((attempt.consumed / attempt.requests) * (attempt.maxSteps + 1))
+      : 0;
+  return Math.max(ALL_TOKENS_FACTOR * tokenCap, floor);
+}
 
 /** `watcher`: the progress watcher ended a stuck attempt early (`progress-watch.ts`). */
 export type FinalizeReason = "steps" | "tokens" | "watcher";
@@ -250,6 +273,12 @@ export interface AttemptStepUsage {
    * absent for a step the controller did not prepare and in older records.
    */
   sentBytes?: number;
+  /**
+   * What the stream guard saw on the step (Codex app-server, #2660): the limit, the streamed
+   * characters and the decision, which `replayStreamOutputs` decides again. Absent for a step no
+   * guard watched and in older records.
+   */
+  outputGuard?: StreamOutputGuard;
 }
 
 export interface AttemptUsageRecord {
@@ -270,6 +299,16 @@ export interface AttemptUsageRecord {
   cappedTokens?: number;
   /** Effective cap on total tokens, including the step floor. */
   allTokensCap?: number;
+  /**
+   * The inputs of `allTokensCap` besides `maxSteps`, `maxTokens` and `totalTokens` (#2650), so a
+   * replay decides it again with `allTokensCapFor`: the model requests counted, their average and
+   * the first one's tokens. Absent when no step reported tokens, and in older records.
+   */
+  allTokensInputs?: {
+    requests: number;
+    averageRequestTokens: number;
+    firstRequestTokens: number;
+  };
   /** Remaining run budget available to this attempt. */
   ceilingTokens?: number;
   /** Sum of the steps' model requests; absent when the provider reports none. */
@@ -304,8 +343,11 @@ export interface AttemptUsageRecord {
   /** Their queries in order, each cut to 200 characters, at most 50; absent when none. */
   webSearchQueries?: string[];
   /**
-   * The provider reported no tokens for any step, so these are estimated from the sizes of the
-   * request and the response (about 4 bytes a token); absent when the provider reported usage.
+   * The attempt's whole spend is an estimate, absent when the provider reported usage. Either no
+   * step reported tokens, so these come from the sizes of the request and the response (about 4
+   * bytes a token), or a call that reported none (output cap, lost answer) was charged as a step,
+   * and these sum every step including it. They overlap the steps: a price adds only the part the
+   * steps do not carry (`attemptCost`, #2669).
    */
   estimatedUsage?: { inputTokens: number; outputTokens: number };
   /**
@@ -318,6 +360,11 @@ export interface AttemptUsageRecord {
    * summed: active time a provider did not answer in (#2414); absent when none.
    */
   silentMs?: number;
+  /**
+   * The stall part of those waits (`CallTiming.stallMs`), summed: what the clean pace leaves out
+   * of active time (#2424); absent when none.
+   */
+  stallMs?: number;
 }
 
 /** Calls of one tool answered by one backend (lsp with its server, tree-sitter, regex, repo-map). */
@@ -363,6 +410,22 @@ export function stepWebSearchQueries(step: Pick<StepLike, "providerMetadata">): 
     ?.codex;
   const queries = codex?.webSearchQueries;
   return Array.isArray(queries) ? queries.map((q) => (typeof q === "string" ? q : "")) : [];
+}
+
+/** The stream guard's record of a step, when its provider watched the stream (Codex, #2660). */
+export function stepOutputGuard(
+  step: Pick<StepLike, "providerMetadata">,
+): StreamOutputGuard | undefined {
+  const guard = (step.providerMetadata as { codex?: { outputGuard?: unknown } } | undefined)?.codex
+    ?.outputGuard as Partial<StreamOutputGuard> | undefined;
+  if (
+    !guard ||
+    typeof guard.maxOutputTokens !== "number" ||
+    typeof guard.streamedChars !== "number" ||
+    (guard.decision !== "pass" && guard.decision !== "would_stop" && guard.decision !== "stopped")
+  )
+    return undefined;
+  return guard as StreamOutputGuard;
 }
 
 /**
@@ -479,18 +542,32 @@ export class AttemptStepController {
       0,
     );
   }
-  /**
-   * The cap on all tokens, cache reads included: `ALL_TOKENS_FACTOR` times the token cap, and never
-   * below the step floor (`minSteps` model requests at the attempt's average request, all tokens
-   * counted).
-   */
+  /** The cap on all tokens, cache reads included (`allTokensCapFor`). */
   allTokensCap(steps: ReadonlyArray<{ usage: StepUsageLike }>): number {
-    const { minSteps } = this.options;
-    const floor =
-      minSteps && steps.length
-        ? Math.ceil((this.consumed(steps) / this.requests(steps)) * minSteps)
-        : 0;
-    return Math.max(ALL_TOKENS_FACTOR * this.tokenCap(steps), floor);
+    return allTokensCapFor(
+      this.tokenCap(steps),
+      steps.length
+        ? {
+            maxSteps: this.options.maxSteps,
+            consumed: this.consumed(steps),
+            requests: this.requests(steps),
+          }
+        : undefined,
+    );
+  }
+  /** What `allTokensCap` decided from, for the usage record; undefined before a reported request. */
+  private allTokensInputs(
+    steps: ReadonlyArray<{ usage: StepUsageLike }>,
+  ): AttemptUsageRecord["allTokensInputs"] {
+    const fallback = this.options.fallbackStepTokens;
+    const first = steps.find((step) => stepTokens(step.usage, fallback) > 0);
+    if (!first) return undefined;
+    const requests = this.requests(steps);
+    return {
+      requests,
+      averageRequestTokens: Math.round(this.consumed(steps) / requests),
+      firstRequestTokens: stepTokens(first.usage, fallback),
+    };
   }
   /** Whether the steps used the cap, the all-token cap, or all the tokens the ceiling allows. */
   private atCap(steps: ReadonlyArray<{ usage: StepUsageLike }>): boolean {
@@ -734,12 +811,14 @@ export class AttemptStepController {
     const totalTokens = this.consumed(steps);
     const cappedTokens = this.capped(steps);
     const maxTokens = this.tokenCap(steps);
+    const allTokensInputs = this.allTokensInputs(steps);
     const requests = steps.map(stepModelRequests);
     const reported = requests.filter((r): r is number => r !== undefined);
     const unreported = steps.map(stepUnreportedResponses);
     const lost = unreported.reduce<number>((sum, n) => sum + (n ?? 0), 0);
     const searches = steps.map(stepWebSearchQueries);
     const queries = searches.flat();
+    const guards = steps.map(stepOutputGuard);
     const sent = steps
       .map((_, index) => this.sentBytes[index])
       .filter((bytes): bytes is number => bytes !== undefined);
@@ -762,6 +841,7 @@ export class AttemptStepController {
       totalTokens,
       cappedTokens,
       allTokensCap: this.allTokensCap(steps),
+      ...(allTokensInputs ? { allTokensInputs } : {}),
       ...(this.ceiling !== undefined ? { ceilingTokens: this.ceiling } : {}),
       ...(reported.length ? { modelRequests: reported.reduce((a, b) => a + b, 0) } : {}),
       ...(lost ? { unreportedResponses: lost } : {}),
@@ -794,6 +874,7 @@ export class AttemptStepController {
         ...(unreported[index] !== undefined ? { unreportedResponses: unreported[index] } : {}),
         ...(searches[index]?.length ? { webSearches: searches[index]?.length } : {}),
         ...(this.sentBytes[index] !== undefined ? { sentBytes: this.sentBytes[index] } : {}),
+        ...(guards[index] ? { outputGuard: guards[index] } : {}),
       })),
     };
   }

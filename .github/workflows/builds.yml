@@ -106,7 +106,10 @@ jobs:
           app="$RUNNER_TEMP/app"
           mkdir -p "$app" "$RUNNER_TEMP/home"
           cd "$app"
-          echo '{"name":"baked-smoke","private":true}' > package.json
+          # Pin every package to bun.lock: npm otherwise takes the newest release in each range,
+          # and a release the registry lists but cannot serve yet turned every PR red.
+          bun "$GITHUB_WORKSPACE/scripts/npm-smoke-overrides.ts" "$GITHUB_WORKSPACE/bun.lock" \
+            | bun -e 'const o = JSON.parse(await Bun.stdin.text()); await Bun.write("package.json", JSON.stringify({ name: "baked-smoke", private: true, ...o }))'
           npm install --no-audit --no-fund "$RUNNER_TEMP"/pack/*.tgz
           export HOME="$RUNNER_TEMP/home" USERPROFILE="$RUNNER_TEMP/home" LOCALAPPDATA="$RUNNER_TEMP/home/local"
           npx --no-install baked --version

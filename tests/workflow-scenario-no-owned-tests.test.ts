@@ -99,3 +99,17 @@ test("a check that really failed still reads failed", async () => {
   expect(report).toMatch(/\| `tests` \| failed \|/);
   expect(view?.checkDetails.find((c) => c.checkId === "tests")?.status).toBe("failed");
 });
+
+// #2778: a "no tests" line one part of the run prints (a Go package without test files, an
+// umbrella app without tests) beside another part whose tests failed is no empty run. Measured
+// with go 1.24.7 (`go test ./...`, exit 1) and Elixir 1.14 (umbrella `mix test`, exit 1).
+const GO_FAILED_BESIDE_UNTESTED = "--- FAIL: TestF (0.00s)\n    a_test.go:3: \nFAIL\nFAIL\texample.com/m/a\t0.003s\n?   \texample.com/m/b\t[no test files]\nFAIL";
+const MIX_FAILED_BESIDE_UNTESTED = "==> a\n\n\n  1) test x (ATest)\n     apps/a/test/a_test.exs:3\n     Assertion with == failed\n     code:  assert 1 == 2\n     left:  1\n     right: 2\n     stacktrace:\n       test/a_test.exs:4: (test)\n\n\nFinished in 0.01 seconds (0.00s async, 0.01s sync)\n1 test, 1 failure\n\nRandomized with seed 60860\n==> b\nThere are no tests to run";
+for (const [stack, output] of [["go test ./...", GO_FAILED_BESIDE_UNTESTED], ["umbrella mix test", MIX_FAILED_BESIDE_UNTESTED]] as const)
+  test(`a failing ${stack} beside a part without tests still fails in a plan that writes none (#2778)`, async () => {
+    const failing = { ...pytestEmpty, args: ["-e", `console.log(${JSON.stringify(output)}); process.exit(1)`] };
+    const { done, diagnostics, report } = await run(false, { ...fixturePolicy, checks: [fixturePolicy.checks[0]!, failing] });
+    expect(diagnostics).toEqual([]);
+    expect((done as { status: string }).status).not.toBe("completed");
+    expect(report).toMatch(/\| `tests` \| failed \|/);
+  });

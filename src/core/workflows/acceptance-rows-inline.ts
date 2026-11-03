@@ -28,6 +28,9 @@ export const INLINE_HARNESS: Record<Framework, string> = {
   pest: "$acceptanceActual",
   exunit: "acceptance_actual",
   dart: "acceptanceActual",
+  kotlin: "acceptanceActual",
+  scalatest: "acceptanceActual",
+  munit: "acceptanceActual",
 };
 
 /**
@@ -59,7 +62,7 @@ export interface InlineRowFile {
   /** The file the host starts when the test file does not exist yet. */
   skeleton: string;
   nest?: {
-    language: "java" | "csharp" | "php" | "elixir" | "dart";
+    language: "java" | "csharp" | "php" | "elixir" | "dart" | "kotlin";
     className: string;
     namespace?: string;
   };
@@ -77,11 +80,19 @@ const comment = (framework: Framework): string =>
       : "//";
 /**
  * Python's first line stays within ruff's and black's 88 columns, so its comment takes two (#1927),
- * and so does Java's, whose comment google-java-format wraps at 100 columns (#1961), and R's,
- * whose lintr default is 80.
+ * and so does Java's, whose comment google-java-format wraps at 100 columns (#1961), R's, whose
+ * lintr default is 80, Kotlin's (ktfmt's 100 columns) and Scala's (scalafmt's 80, #2410).
  */
+const TWO_LINE_BEGIN: ReadonlySet<Framework> = new Set([
+  "pytest",
+  "junit",
+  "testthat",
+  "kotlin",
+  "scalatest",
+  "munit",
+]);
 const begin = (framework: Framework, what = "acceptance rows"): string =>
-  `${comment(framework)} BEGIN ${what}: cases from the spec's acceptance table.${framework === "pytest" || framework === "junit" || framework === "testthat" ? `\n${comment(framework)}` : ""} Edit ${INLINE_HARNESS[framework]}, not this block.`;
+  `${comment(framework)} BEGIN ${what}: cases from the spec's acceptance table.${TWO_LINE_BEGIN.has(framework) ? `\n${comment(framework)}` : ""} Edit ${INLINE_HARNESS[framework]}, not this block.`;
 const end = (framework: Framework, what = "acceptance rows"): string =>
   `${comment(framework)} END ${what}`;
 /**
@@ -534,6 +545,200 @@ export const dartRows = (chunks: string[], json: string, test: string, call: str
   return `final acceptanceText = [\n${chunks.map((chunk) => `  ${chunk},\n`).join("")}];\nfinal acceptanceRows = ${json}jsonDecode(acceptanceText.join());\nfor (final row in (acceptanceRows as List).cast<Map<String, Object?>>()) {\n  final id = row['id'] as String;\n  ${test}test(id, () {\n    final got = ${call}(row['input']);\n    final text = ${json}jsonEncode([got]);\n    final value = (${json}jsonDecode(text) as List)[0];\n    ${dartLine(6, expect, `${test}expect(\n      value,\n      ${test}equals(row['expected']),\n      reason: '$id: got $text',\n    );`)}\n  });\n}`;
 };
 
+/**
+ * A double-quoted string literal of Kotlin or Scala, split as `javaString` is into literals of at
+ * most 60 characters joined by `+`, so no formatter finds a literal over its line limit. `own`
+ * writes the characters each language spells its own way: Kotlin's `$`, which would start a
+ * template, and Scala's `\f`. A unicode escape is written only for a control or another character
+ * of `LITERAL_ESCAPED`, never for a quote, a backslash or a line break, which Scala 2 reads before
+ * lexing (#1995, #2410).
+ */
+const jvmString =
+  (own: (ch: string) => string | null) =>
+  (text: string, width = 60): string => {
+    const simple: Record<string, string> = {
+      '"': '\\"',
+      "\\": "\\\\",
+      "\n": "\\n",
+      "\r": "\\r",
+      "\t": "\\t",
+      "\b": "\\b",
+    };
+    const chunks = [""];
+    for (const ch of text) {
+      const code = ch.codePointAt(0) ?? 0;
+      const unit =
+        own(ch) ??
+        simple[ch] ??
+        (code < 0x20 || code === 0x7f ? utf16Escape(code) : escapeInvisible(ch, utf16Escape));
+      const chunk = chunks.at(-1) ?? "";
+      if (chunk.length + unit.length > width) {
+        // At a space in its second half when there is one, which then starts the next literal.
+        const space = chunk.lastIndexOf(" ");
+        const at = space > width / 2 ? space : chunk.length;
+        chunks[chunks.length - 1] = chunk.slice(0, at);
+        chunks.push(chunk.slice(at));
+      }
+      chunks[chunks.length - 1] += unit;
+    }
+    return chunks.map((chunk) => `"${chunk}"`).join(" + ");
+  };
+export const kotlinString = jvmString((ch) => (ch === "$" ? "\\$" : null));
+export const scalaString = jvmString((ch) => (ch === "\f" ? "\\f" : null));
+
+/**
+ * A JSON value as a Kotlin or Scala expression of the rows' helpers: `list(...)`, `map(k to v)` or
+ * `map(k -> v)`, Long and Double literals, strings and null. Neither standard library reads JSON
+ * (kotlinx.serialization and circe are dependencies), so the rows are literals, as Java's (#2410).
+ */
+const jvmValue =
+  (string: (text: string) => string, pair: string) =>
+  (value: unknown): string => {
+    const write = jvmValue(string, pair);
+    if (value === null) return "null";
+    if (typeof value === "boolean") return String(value);
+    if (typeof value === "number") return Number.isInteger(value) ? `${value}L` : String(value);
+    if (typeof value === "string") return string(value);
+    if (Array.isArray(value)) return `list(${value.map(write).join(", ")})`;
+    return `map(${Object.entries(value as Record<string, unknown>)
+      .map(([key, item]) => `${string(key)} ${pair} ${write(item)}`)
+      .join(", ")})`;
+  };
+export const kotlinValue = jvmValue(kotlinString, "to");
+export const scalaValue = jvmValue(scalaString, "->");
+
+/**
+ * What the Kotlin blocks share, as members of a class at four spaces: one JUnit 5 `DynamicTest` per
+ * row, named by its id, and the helpers the rows are built with. The result and the expected value
+ * are normalized as the Java block's are, so 2, 2L and 2.0 are equal and collections compare as
+ * lists; the message starts with the id and what it got, as the replay reads a failure line.
+ * `junit` is the package prefix of JUnit's types, empty where the file imports them (#2410).
+ */
+export const kotlinRows = (rows: AcceptanceRow[], junit: string, call: string): string =>
+  `    @${junit}TestFactory
+    fun acceptanceRows(): List<${junit}DynamicTest> =
+        listOf(
+${rows.map((row) => `            row(${kotlinString(row.id)}, ${kotlinValue(row.input)}, ${kotlinValue(row.expected)}),`).join("\n")}
+        )
+
+    private fun row(
+        id: String,
+        input: Any?,
+        expected: Any?,
+    ): ${junit}DynamicTest =
+        ${junit}DynamicTest.dynamicTest(id) {
+            val got = normal(${call}(input))
+            val want = normal(expected)
+            ${junit}Assertions.assertEquals(want, got, "$id: got $got")
+        }
+
+    private fun map(vararg entries: Pair<String, Any?>) = linkedMapOf(*entries)
+
+    private fun list(vararg items: Any?): List<Any?> = items.toList()
+
+    // JSON numbers compare by value (2, 2L and 2.0); collections as lists.
+    private fun normal(value: Any?): Any? =
+        when (value) {
+            null, is String, is Boolean -> value
+            is Char, is Enum<*> -> value.toString()
+            is Double, is Float, is java.math.BigDecimal -> whole((value as Number).toDouble())
+            is Number -> value.toLong()
+            is Map<*, *> -> value.entries.associate { it.key.toString() to normal(it.value) }
+            is Iterable<*> -> value.map { normal(it) }
+            is Array<*> -> value.map { normal(it) }
+            is IntArray -> value.map { it.toLong() }
+            is LongArray -> value.toList()
+            is DoubleArray -> value.map { whole(it) }
+            else -> value
+        }
+
+    private fun whole(number: Double): Any {
+        val exact = number == Math.rint(number) && Math.abs(number) <= 9007199254740991.0
+        return if (exact) number.toLong() else number
+    }`;
+
+/**
+ * What the Scala blocks share, as members of a suite class at two spaces: one `test` per row,
+ * named by its id and registered when the suite is built, as ScalaTest's `AnyFunSuite` and MUnit's
+ * `FunSuite` both do, and the helpers the rows are built with. Results are normalized as Kotlin's
+ * are; `check` is the framework's assertion, whose message starts with the id and what it got, as
+ * the replay reads a failure line (#2410).
+ */
+export const scalaRows = (rows: AcceptanceRow[], call: string, check: string): string =>
+  `  private val acceptanceRows: List[(String, Any, Any)] = List(
+${rows.map((row) => `    (${scalaString(row.id)}, ${scalaValue(row.input)}, ${scalaValue(row.expected)})`).join(",\n")}
+  )
+
+  acceptanceRows.foreach { case (id, input, expected) =>
+    test(id) {
+      val got = normal(${call}(input))
+      ${check}
+    }
+  }
+
+  private def map(entries: (String, Any)*): Map[String, Any] = entries.toMap
+
+  private def list(items: Any*): List[Any] = items.toList
+
+  // JSON numbers compare by value (2, 2L and 2.0); collections as lists.
+  private def normal(value: Any): Any = value match {
+    case null => null
+    case text: String => text
+    case flag: Boolean => flag
+    case char: Char => char.toString
+    case number: Double => whole(number)
+    case number: Float => whole(number.toDouble)
+    case number: BigDecimal => whole(number.toDouble)
+    case number: java.math.BigDecimal => whole(number.doubleValue)
+    case number: BigInt => number.toLong
+    case number: java.lang.Number => number.longValue
+    case entries: scala.collection.Map[_, _] =>
+      entries.toList.map { case (k, v) => k.toString -> normal(v) }.toMap
+    case Some(item) => normal(item)
+    case None => null
+    case items: Iterable[_] => items.toList.map(normal)
+    case items: Array[_] => items.toList.map(normal)
+    case other => other
+  }
+
+  private def whole(number: Double): Any = {
+    val safe = math.abs(number) <= 9007199254740991d
+    if (safe && number == math.rint(number)) number.toLong else number
+  }`;
+
+/** Each Scala framework's suite class, by its full name, and its assertion of a row (#2410). */
+export const SCALA_SUITES = {
+  scalatest: {
+    suite: "org.scalatest.funsuite.AnyFunSuite",
+    check: 'assert(got == normal(expected), s"$id: got $got")',
+  },
+  munit: {
+    suite: "munit.FunSuite",
+    check: 'assertEquals(got, normal(expected), s"$id: got $got")',
+  },
+} as const;
+
+/** The class of a Scala file's inline rows, named so sbt's `testOnly *<file name>` selects it. */
+export const scalaRowsClass = (test: string): string =>
+  `AcceptanceRows${posix.basename(test, ".scala")}`;
+
+/** The inline block of a Scala framework: a suite class that calls the file object's harness. */
+const scalaInline = (
+  framework: keyof typeof SCALA_SUITES,
+  test: string,
+  rows: AcceptanceRow[],
+): Omit<InlineRowFile, "path" | "inline"> => ({
+  skeleton: "",
+  tail: block(
+    framework,
+    `class ${scalaRowsClass(test)} extends ${SCALA_SUITES[framework].suite} {\n${scalaRows(
+      rows,
+      `${posix.basename(test, ".scala")}.acceptanceActual`,
+      SCALA_SUITES[framework].check,
+    )}\n}`,
+  ),
+});
+
 /** The import of a PHP test file the host starts, so Pint finds no fully qualified name. */
 const PHPUNIT_USE = "use PHPUnit\\Framework\\TestCase;";
 
@@ -682,6 +887,20 @@ const TEMPLATES: Record<Framework, Template> = {
       ),
     ),
   }),
+  // An inner @Nested class in the file's own class, as Java's: JUnit runs it with the outer class,
+  // and it calls acceptanceActual whether that is a member, a companion's or top-level (#2410).
+  kotlin: ({ test, package: pkg }, rows) => ({
+    skeleton: pkg ? `package ${pkg}\n` : "",
+    nest: { language: "kotlin", className: className(test, ".kt") },
+    tail: block(
+      "kotlin",
+      `@org.junit.jupiter.api.Nested\ninner class AcceptanceRows {\n${kotlinRows(rows, "org.junit.jupiter.api.", "acceptanceActual")}\n}`,
+    ),
+  }),
+  // A suite class of its own at the end of the file, so the file's own suite may be of any style
+  // and in either syntax of Scala 3; the harness is in the object named after the file (#2410).
+  scalatest: ({ test }, rows) => scalaInline("scalatest", test, rows),
+  munit: ({ test }, rows) => scalaInline("munit", test, rows),
   // Methods of the file's own class, which PSR-1 keeps to one per file; the harness is its static
   // method, so two test files never share a name.
   phpunit: ({ test, package: pkg }, rows) => {
@@ -1003,7 +1222,8 @@ function primaryType(
   language?: NonNullable<InlineRowFile["nest"]>["language"],
 ): { open: number; end: number } | null {
   if (language === "elixir") return elixirModuleSpan(text, className);
-  const code = codeOnly(text, language);
+  // Kotlin's literals are Java's, with `"""` raw strings, which every language's reading skips.
+  const code = codeOnly(text, language === "kotlin" ? "java" : language);
   if (language === "dart") {
     // A test file's own `main`, where package:test declares its tests.
     const main =
@@ -1081,9 +1301,10 @@ function nested(
           : nest.language === "php"
             ? `final class ${nest.className} extends ${head.includes(PHPUNIT_USE) ? "" : "\\PHPUnit\\Framework\\"}TestCase\n{\n}\n`
             : nest.language === "java" ||
+                nest.language === "kotlin" ||
                 !nest.namespace ||
                 /^\s*namespace\s+[\w.]+\s*;/m.test(head)
-              ? nest.language === "java"
+              ? nest.language === "java" || nest.language === "kotlin"
                 ? `class ${nest.className} {\n}\n`
                 : `public class ${nest.className}\n{\n}\n`
               : `namespace ${nest.namespace}\n{\n    public class ${nest.className}\n    {\n    }\n}\n`;

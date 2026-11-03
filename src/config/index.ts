@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { mergeModelRouting } from "../core/llm/model-routing.js";
 import { configDir } from "../core/platform/index.js";
 import { activeProject } from "../core/projects/resolve.js";
+import { parseConfigJson } from "../core/utils/config-json.js";
 import { ensurebakedDir } from "../core/utils/ensure-baked-dir.js";
 import { writeViaTemp } from "../core/workflows/atomic-write.js";
 import { parseWorkflowConfig } from "../core/workflows/config-policy.js";
@@ -77,7 +78,7 @@ function writeConfigFile(path: string, text: string): void {
 function readConfigFile(path: string): Partial<AppConfig> {
   for (let attempt = 1; ; attempt++) {
     try {
-      return JSON.parse(readFileSync(path, "utf-8")) as Partial<AppConfig>;
+      return parseConfigJson(readFileSync(path, "utf-8")) as Partial<AppConfig>;
     } catch (error) {
       const code = (error as NodeJS.ErrnoException).code ?? "";
       const transient =
@@ -168,7 +169,7 @@ export function loadProjectConfig(cwd: string): Partial<AppConfig> | null {
   if (!existsSync(projectFile)) return null;
   try {
     const raw = readFileSync(projectFile, "utf-8");
-    return JSON.parse(raw) as Partial<AppConfig>;
+    return parseConfigJson(raw) as Partial<AppConfig>;
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     process.stderr.write(
@@ -235,6 +236,7 @@ export function mergeConfigs(global: AppConfig, project: Partial<AppConfig> | nu
     const watchdogTimeouts = layer.watchdogTimeouts
       ? { ...merged.watchdogTimeouts, ...layer.watchdogTimeouts }
       : merged.watchdogTimeouts;
+    const watch = layer.watch ? { ...merged.watch, ...layer.watch } : merged.watch;
     const mcpServers = mergeMCPServers(merged.mcpServers, layer.mcpServers);
     // Merged before the spread below replaces merged.modelRouting with the layer's own.
     const routing = mergeModelRouting(merged.modelRouting, layer.modelRouting);
@@ -255,6 +257,7 @@ export function mergeConfigs(global: AppConfig, project: Partial<AppConfig> | nu
       ...(runBudget ? { runBudget } : {}),
       ...(coordinator ? { coordinator } : {}),
       watchdogTimeouts,
+      ...(watch ? { watch } : {}),
       mcpServers,
     };
     if (routing) merged.modelRouting = routing;
@@ -282,7 +285,7 @@ export function saveProjectConfig(cwd: string, patch: Partial<AppConfig>): void 
 
   let existing: Partial<AppConfig> = {};
   try {
-    existing = JSON.parse(readFileSync(file, "utf-8")) as Partial<AppConfig>;
+    existing = parseConfigJson(readFileSync(file, "utf-8")) as Partial<AppConfig>;
   } catch {
     // no existing file
   }
@@ -334,7 +337,7 @@ export function removeProjectConfigKeys(cwd: string, keys: string[]): void {
   const file = join(cwd, ".baked", "config.json");
   if (!existsSync(file)) return;
   try {
-    const existing = JSON.parse(readFileSync(file, "utf-8")) as Record<string, unknown>;
+    const existing = parseConfigJson(readFileSync(file, "utf-8")) as Record<string, unknown>;
     for (const k of keys) delete existing[k];
     writeConfigFile(file, JSON.stringify(existing, null, 2));
   } catch {}
@@ -345,13 +348,18 @@ export function removeGlobalConfigKeys(keys: string[]): void {
   const configFile = getConfigFile();
   if (!existsSync(configFile)) return;
   try {
-    const existing = JSON.parse(readFileSync(configFile, "utf-8")) as Record<string, unknown>;
+    const existing = parseConfigJson(readFileSync(configFile, "utf-8")) as Record<string, unknown>;
     for (const k of keys) delete existing[k];
     writeConfigFile(configFile, JSON.stringify(existing, null, 2));
   } catch {}
 }
 
-const NESTED_KEYS = [
+/**
+ * Config objects whose fields merge one by one over the defaults (`loadConfig`). `mergeConfigs`
+ * merges each of them project over global too, except `workflows`, which a project replaces
+ * whole (`readGates`); `tests/config.test.ts` fails when a key here is missing there (#2730).
+ */
+export const NESTED_KEYS = [
   "theme",
   "codeIntelligence",
   "thinking",

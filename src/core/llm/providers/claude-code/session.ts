@@ -8,6 +8,7 @@ import { activeProviderAccount } from "../../provider-accounts.js";
 import { recordClaudeRateLimit } from "../../usage-limits-record.js";
 import { providerAccountEnv } from "../account-env.js";
 import { onJsonLines, UnparsedLines } from "../json-lines.js";
+import { claudeCodeEnv } from "../output-limit.js";
 import { claudeCodeCommand, getClaudeCodeFlags } from "./cli.js";
 import { type ClaudeCodePromptParts, claudeCodeTurnContent } from "./prompt.js";
 
@@ -20,6 +21,8 @@ export interface ClaudeCodeCall {
   modelId: string;
   /** Reasoning effort (`--effort`); Claude Code's default when absent. */
   effort?: string;
+  /** The output limit of each API request the turn makes (the profile's `maxOutputTokens`). */
+  maxOutputTokens?: number;
   parts: ClaudeCodePromptParts;
   abortSignal?: AbortSignal;
   onResponse?: () => void;
@@ -143,6 +146,7 @@ export type ClaudeCodeProcessFactory = (options: {
   env?: NodeJS.ProcessEnv;
   modelId: string;
   effort?: string;
+  maxOutputTokens?: number;
   instructions: string;
   schema: JSONSchema7;
 }) => ClaudeCodeProcess;
@@ -153,6 +157,8 @@ interface SessionState {
   account: string | null;
   modelId: string;
   effort: string | undefined;
+  /** The process's `CLAUDE_CODE_MAX_OUTPUT_TOKENS`; a call with another limit needs another process. */
+  maxOutputTokens: number | undefined;
   instructions: string;
   schemaKey: string;
   /** Transcript entries the session already holds, as `role\ntext` keys. */
@@ -268,11 +274,13 @@ let workDirCounter = 0;
  * Spawns `claude -p` in stream-json mode with every built-in tool off, BAKED's adapter
  * instructions as the system prompt and the structured-output schema. It runs in an
  * empty directory so no project CLAUDE.md reaches the prompt; BAKED sends its own context.
+ * The CLI has no output-limit flag; `CLAUDE_CODE_MAX_OUTPUT_TOKENS` bounds each request (#2547).
  */
 export const spawnClaudeCodeProcess: ClaudeCodeProcessFactory = ({
   env,
   modelId,
   effort,
+  maxOutputTokens,
   instructions,
   schema,
 }) => {
@@ -305,6 +313,7 @@ export const spawnClaudeCodeProcess: ClaudeCodeProcessFactory = ({
   const child = spawn(claudeCodeCommand(), args, {
     ...(env ? { env } : {}),
     cwd: dir,
+    env: claudeCodeEnv(maxOutputTokens),
     stdio: ["pipe", "pipe", "pipe"],
     windowsHide: true,
   });
@@ -443,6 +452,7 @@ export class ClaudeCodeSessionRunner implements ClaudeCodeRunner {
       if (session.busy || session.closed || session.modelId !== call.modelId) continue;
       if (session.account !== account) continue;
       if (session.effort !== call.effort) continue;
+      if (session.maxOutputTokens !== call.maxOutputTokens) continue;
       if (session.instructions !== call.parts.instructions || session.schemaKey !== schemaKey)
         continue;
       if (session.messages.length > keys.length) continue;
@@ -470,6 +480,7 @@ export class ClaudeCodeSessionRunner implements ClaudeCodeRunner {
       ...(account ? { env: providerAccountEnv("claude-code", { id: account }) } : {}),
       modelId: call.modelId,
       ...(call.effort ? { effort: call.effort } : {}),
+      ...(call.maxOutputTokens !== undefined ? { maxOutputTokens: call.maxOutputTokens } : {}),
       instructions: call.parts.instructions,
       schema: call.parts.schema,
     });
@@ -478,6 +489,7 @@ export class ClaudeCodeSessionRunner implements ClaudeCodeRunner {
       account,
       modelId: call.modelId,
       effort: call.effort,
+      maxOutputTokens: call.maxOutputTokens,
       instructions: call.parts.instructions,
       schemaKey,
       messages: [],

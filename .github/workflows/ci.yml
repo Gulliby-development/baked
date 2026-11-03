@@ -8,11 +8,62 @@ on:
   merge_group:
 
 jobs:
+  # The suite in five shards balanced by measured time (scripts/test-shard.ts, the macOS column of
+  # scripts/test-shard-weights.json). One `bun run test` ran 35 to 37 minutes by 2026-11-03, most of it
+  # the replay corpus, which grows with every bench round's traces; each merge queue entry waited that
+  # long, and five entries at a time held the queue for hours.
+  test:
+    runs-on: ubuntu-latest
+    name: test (${{ matrix.shard }}/5)
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4, 5]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        with:
+          bun-version: "1.4.3"
+
+      - run: bun install --frozen-lockfile
+
+      # The OS sandbox integration tests need a working bubblewrap; Ubuntu 24.04 restricts the
+      # unprivileged user namespaces it creates unless AppArmor allows them.
+      - name: Install bubblewrap
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bubblewrap
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
+
+      # The shard runs `bun test --timeout 30000` on its files and then the slow-test report (#1656).
+      - name: Test
+        env:
+          BAKED_REQUIRE_SANDBOX: bwrap
+        run: bun scripts/test-shard.ts ${{ matrix.shard }} 5
+
+  # The required check: lint, typecheck and build, and it fails unless every test shard passed. It
+  # runs after the shards, so a failed or cancelled shard can never leave it skipped (a skipped
+  # required check counts as passed).
   check:
+    needs: test
+    if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
     steps:
+      - name: Test shards
+        env:
+          RESULT: ${{ needs.test.result }}
+        run: |
+          echo "Test shards: $RESULT"
+          [ "$RESULT" = "success" ]
+
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
@@ -31,25 +82,6 @@ jobs:
 
       - name: Typecheck
         run: bun run typecheck
-
-      # The OS sandbox integration tests need a working bubblewrap; Ubuntu 24.04 restricts the
-      # unprivileged user namespaces it creates unless AppArmor allows them.
-      - name: Install bubblewrap
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y bubblewrap
-          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
-
-      - name: Test
-        env:
-          BAKED_REQUIRE_SANDBOX: bwrap
-        run: bun run test --reporter=junit --reporter-outfile=junit.xml
-
-      # Tests above half of their time limit, as annotations (#1656); the Windows shards in
-      # `OS tests` report the same with their longer limit.
-      - name: Slow tests
-        if: always() && hashFiles('junit.xml') != ''
-        run: bun scripts/slow-tests.ts junit.xml 30000
 
       - name: Build
         run: bun run build

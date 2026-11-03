@@ -84,6 +84,12 @@ describe("which task replays which rows (#1617)", () => {
     { framework: "pest", test: "tests/PathsTest.php", run: check("php", ["vendor/bin/pest"]), file: "tests/BakedReplayT001Test.php", args: ["vendor/bin/pest", "./tests/BakedReplayT001Test.php"] },
     { framework: "exunit", test: "test/paths_test.exs", run: check("mix", ["test", "--exclude", "slow"]), file: "test/baked_replay_t001_test.exs", args: ["test", "--exclude", "slow", "test/baked_replay_t001_test.exs"] },
     { framework: "dart", test: "test/paths_test.dart", run: check("dart", ["test"]), file: "test/baked_replay_t001_test.dart", args: ["test", "./test/baked_replay_t001_test.dart"] },
+    // #2410: Kotlin's block is an inner class of the file's own, which gradle names too; sbt
+    // selects the Scala block's suite, AcceptanceRows<file name>, by the file's name.
+    { framework: "kotlin", package: "com.ex.paths", test: "src/test/kotlin/com/ex/paths/PathsTest.kt", run: check("gradle", ["test"]), file: "src/test/kotlin/com/ex/paths/BakedReplayT001Test.kt",
+      args: ["test", "--tests", "com.ex.paths.BakedReplayT001Test", "--tests", "com.ex.paths.BakedReplayT001Test$AcceptanceRows"] },
+    { framework: "scalatest", test: "src/test/scala/paths/PathsSuite.scala", run: check("sbt", ["test"]), file: "src/test/scala/paths/BakedReplayT001Suite.scala", args: ["testOnly *BakedReplayT001Suite"] },
+    { framework: "munit", test: "src/test/scala/paths/PathsSuite.scala", run: check("sbt", ["-batch", "test"]), file: "src/test/scala/paths/BakedReplayT001Suite.scala", args: ["-batch", "testOnly *BakedReplayT001Suite"] },
   ] as const;
   test.each(FRAMEWORKS.map((f) => [f.framework, f]))("%s: the replay file runs on its own with the project's test command", (_name, f) => {
     const later = rowTask(f.framework, f.test, "package" in f ? f.package : undefined);
@@ -94,8 +100,19 @@ describe("which task replays which rows (#1617)", () => {
     const root = mkdtempSync(join(tmpdir(), "baked-row-replay-unit-"));
     cleanups.push(() => rmSync(root, { recursive: true, force: true }));
     mkdirSync(dirname(join(root, f.file)), { recursive: true });
-    writeFileSync(join(root, f.file), withInlineRows(f.framework === "go" ? "package paths\n" : f.framework === "junit" ? "package com.ex.paths;\n" : "", replay?.file as NonNullable<typeof replay>["file"]));
+    writeFileSync(join(root, f.file), withInlineRows(f.framework === "go" ? "package paths\n" : f.framework === "junit" ? "package com.ex.paths;\n" : f.framework === "kotlin" ? "package com.ex.paths\n" : "", replay?.file as NonNullable<typeof replay>["file"]));
     expect(writtenTestsCheck(root, [f.run], [{ path: f.file, action: "create" }])?.args).toEqual([...f.args]);
+  });
+});
+
+describe("where the replay's harness goes (#2410)", () => {
+  test("Kotlin's in the class named after the file, Scala's in the object the block's suite calls", () => {
+    const note = (framework: NonNullable<Task["rowTest"]>["framework"], test: string, pkg?: string) => {
+      const later = rowTask(framework, test, pkg);
+      return replayNote(rowReplay({ tasks: [source, later] }, artifact(later), source) as NonNullable<ReturnType<typeof rowReplay>>);
+    };
+    expect(note("kotlin", "src/test/kotlin/com/ex/PathsTest.kt", "com.ex")).toContain("(package com.ex, class BakedReplayT001Test), which defines acceptanceActual(input)");
+    expect(note("munit", "src/test/scala/PathsSuite.scala")).toContain("(object BakedReplayT001Suite), which defines acceptanceActual(input)");
   });
 });
 
@@ -114,6 +131,10 @@ describe("reading a replay run (#1617)", () => {
     expect(replayResult("failed", "   FAILED  Tests\\BakedReplayT001Test > AC-003:1\n  Failed asserting that 3 is identical to 4.", rows).failed).toEqual(["AC-003:1"]);
     expect(replayResult("failed", "  1) test AC-003:2 (BakedReplayT001Test)\n     test/baked_replay_t001_test.exs:22\n     AC-003:2: got 3, want 4", rows).failed).toEqual(["AC-003:2"]);
     expect(replayResult("failed", "00:00 +0 -1: AC-003:2 [E]\n  Expected: <4>\n    Actual: <3>\n  AC-003:2: got [3]", rows).failed).toEqual(["AC-003:2"]);
+    // #2410: gradle's and ScalaTest's test lines, and the message of MUnit's.
+    expect(replayResult("failed", "BakedReplayT001Test > AcceptanceRows > acceptanceRows() > AC-003:2 FAILED", rows).failed).toEqual(["AC-003:2"]);
+    expect(replayResult("failed", "[info] - AC-003:1 *** FAILED ***\n[info]   List(3) did not equal List(4) AC-003:1: got List(3)", rows).failed).toEqual(["AC-003:1"]);
+    expect(replayResult("failed", "==> X paths.AcceptanceRowsBakedReplayT001Suite.AC-003:2  0.01s munit.ComparisonFailException: /p/BakedReplayT001Suite.scala:20\nAC-003:2: got 3", rows).failed).toEqual(["AC-003:2"]);
     expect(replayResult("failed", "src/paths.ts(3,1): error TS1005: ';' expected.", rows)).toMatchObject({ status: "error", failed: [] });
     expect(replayResult("inconclusive", "", rows).status).toBe("error");
   });

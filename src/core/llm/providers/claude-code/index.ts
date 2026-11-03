@@ -62,7 +62,7 @@ export function claudeCodeContextSizes(modelId: string): ContextSizeOption[] {
   ];
 }
 
-// maxOutputTokens is left out: BAKED sets it on every agent, so the CLI ignoring it is expected.
+// maxOutputTokens is not here: the session sets it as CLAUDE_CODE_MAX_OUTPUT_TOKENS (#2547).
 const UNSUPPORTED_SETTINGS = [
   "temperature",
   "stopSequences",
@@ -92,6 +92,9 @@ export function createClaudeCodeLanguageModel(
     const result = await runner.run({
       modelId,
       ...(effort ? { effort } : {}),
+      ...(options.maxOutputTokens !== undefined
+        ? { maxOutputTokens: options.maxOutputTokens }
+        : {}),
       parts: buildClaudeCodePromptParts(options),
       abortSignal: options.abortSignal,
       onResponse: () => providerResponded(options.abortSignal),

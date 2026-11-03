@@ -1,5 +1,5 @@
 import { statSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { runSandbox, type SandboxRequest, SandboxUnavailableError } from "../security/sandbox.js";
 import { buildSafeEnv } from "../spawn.js";
 import { canonical, hashJson } from "../specs/hash.js";
@@ -667,14 +667,15 @@ export class CheckRunner {
     // The edit tools saw the formatter time out on one of them: name it without a bisect (#2242).
     const { formatTimeoutsUnder } = await import("../tools/auto-format.js");
     const { runWorktreeDir } = await import("../workflows/worktree.js");
+    // The run's own directory, wherever `workflows.worktreeRoot` put it (#2461).
+    const recorded = this.store.state(runId).worktree?.path;
+    const runDir = recorded ? dirname(recorded) : runWorktreeDir(this.store.workspace, runId);
     const known = new Set([
       ...formatTimeoutsUnder(root).keys(),
       // A task edits in its own worktree, `.baked/worktrees/<run>/<task>/`.
-      ...[
-        ...formatTimeoutsUnder(
-          join(this.store.workspace, runWorktreeDir(this.store.workspace, runId)),
-        ).keys(),
-      ].map((path) => path.slice(path.indexOf("/") + 1)),
+      ...[...formatTimeoutsUnder(join(this.store.workspace, runDir)).keys()].map((path) =>
+        path.slice(path.indexOf("/") + 1),
+      ),
     ]);
     const hung = paths.find(
       (path) => known.has(path) && fileScopedFormat(check, dir, path.slice(prefix.length)),

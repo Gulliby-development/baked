@@ -172,6 +172,16 @@ const accountFlag = (value: string): AccountChoice => {
     );
   }
 };
+/** `--worktree-root PATH` (#2461) in place of `workflows.worktreeRoot` for this command. */
+function withWorktreeRoot(config: AppConfig, flag: unknown): AppConfig {
+  if (typeof flag !== "string") return config;
+  if (!flag.trim())
+    throw new WorkflowFault("INVALID_DEFINITION", "--worktree-root requires a folder");
+  return {
+    ...config,
+    workflows: { ...config.workflows, worktreeRoot: flag.trim() } as AppConfig["workflows"],
+  };
+}
 const modelFlag = (args: WorkflowArgs, config: AppConfig): string =>
   typeof args.flags.model === "string" ? args.flags.model : config.defaultModel;
 /** Profiles as a run with these flags would route them: an explicit `--model` serves `$active`. */
@@ -1021,7 +1031,10 @@ export async function runWorkflowCli(argv: string[]): Promise<number> {
     if (argv[0] === "routing") return runRoutingCli(argv.slice(1));
     const args = parseWorkflowArgs(argv);
     const cwd = getCwd();
-    const config = mergeConfigs(loadConfig(), loadEffectiveProjectConfig(cwd));
+    const config = withWorktreeRoot(
+      mergeConfigs(loadConfig(), loadEffectiveProjectConfig(cwd)),
+      args.flags["worktree-root"],
+    );
     const readonly = [
       "status",
       "list",

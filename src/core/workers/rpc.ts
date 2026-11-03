@@ -251,7 +251,13 @@ export class WorkerClient {
   private spawnWorker(): WorkerLike {
     const w: WorkerLike =
       typeof this.workerPath === "string"
-        ? new Worker(this.workerPath, this.workerOpts)
+        ? // The environment is passed, not left to the default: under `bun test` (Bun 1.4.4) a
+          // worker's default environment missed the changes made to process.env, so the suite's
+          // empty profile, its BAKED_NO_* switches and a test's PATH never reached it (#2656).
+          new Worker(this.workerPath, {
+            ...this.workerOpts,
+            env: { ...process.env } as Record<string, string>,
+          })
         : this.workerPath();
     w.unref();
     w.onmessage = (e: MessageEvent<WorkerOutbound | CallbackRequest>) => this.handleMessage(e.data);

@@ -364,15 +364,18 @@ export function documentsOnly(task: Task): boolean {
  * Whether `text` names `path`: the path itself, or a module path's dotted form (`pkg.__main__`).
  * The dotted form followed by `/` or `.` and another component is a prefix of a longer path or
  * module (`ignorewhy/globs.py`), so it names that, not the package's `__init__.py` (#1031).
+ * The path counts only as a whole file name: `test_wordcount.py` does not name `wordcount.py`,
+ * nor `src/app.tsx` name `src/app.ts` (#2672). A directory before it (`/tmp/w/wordcount.py`, a
+ * Windows `C:\w\wordcount.py`) and a full stop after it still name it.
  */
 export function namesPath(text: string, path: string): boolean {
-  if (text.includes(path)) return true;
+  const literal = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const whole = new RegExp(`(?<![\\w.-])${literal(path)}(?![\\w-]|\\.\\w)`);
+  if (whole.test(text.replaceAll("\\", "/"))) return true;
   const stem = path.replace(/\.[^./]+$/, "");
   if (!stem.includes("/")) return false;
   const dotted = stem.replaceAll("/", ".").replace(/\.__init__$/, "");
-  return new RegExp(
-    `(?:^|[^\\w.])${dotted.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?![\\w]|[./\\\\]\\w)`,
-  ).test(text);
+  return new RegExp(`(?:^|[^\\w.])${literal(dotted)}(?![\\w]|[./\\\\]\\w)`).test(text);
 }
 
 /**

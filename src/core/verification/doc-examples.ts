@@ -1,4 +1,5 @@
 import {
+  appendFileSync,
   copyFileSync,
   existsSync,
   mkdirSync,
@@ -58,6 +59,12 @@ export interface DocExampleResult {
   status: "match" | "mismatch" | "not_run";
   reason?: string;
   exitCode?: number | null;
+  /**
+   * The files an earlier `printf`/`echo` line of the document wrote that this command names
+   * (#2693): a repro of the example gives them through its `files`, so it does not depend on the
+   * earlier line.
+   */
+  inputs?: { path: string; content: string }[];
   documented: string;
   printed?: string;
   /**
@@ -569,6 +576,101 @@ export function copyWorkspace(root: string, files: readonly string[]): string | 
   return copy;
 }
 
+/** The bytes `printf FORMAT` prints for a format with no conversion but `%%`, or null. */
+export function printfText(format: string): string | null {
+  let out = "";
+  for (let i = 0; i < format.length; i++) {
+    const c = format[i] as string;
+    if (c === "%") {
+      if (format[i + 1] !== "%") return null;
+      out += "%";
+      i++;
+      continue;
+    }
+    if (c !== "\\") {
+      out += c;
+      continue;
+    }
+    const next = format[i + 1];
+    if (next === undefined) return null;
+    const octal = /^[0-7]{1,3}/.exec(format.slice(i + 1))?.[0];
+    if (octal) {
+      out += String.fromCharCode(Number.parseInt(octal, 8));
+      i += octal.length;
+      continue;
+    }
+    const escaped = PRINTF_ESCAPES[next];
+    out += escaped ?? `\\${next}`;
+    i++;
+  }
+  return out;
+}
+const PRINTF_ESCAPES: Record<string, string> = {
+  n: "\n",
+  t: "\t",
+  r: "\r",
+  a: "\x07",
+  b: "\b",
+  f: "\f",
+  v: "\v",
+  "\\": "\\",
+  '"': '"',
+  "'": "'",
+};
+
+/**
+ * A `printf 'FORMAT' > path` or `echo WORDS > path` line (`>>` appends) that writes an input of
+ * the examples after it, or null (#2693). R88 pokerank's README wrote its hand with `printf ...
+ * > hand.txt` and the host ran neither that line ("needs a shell") nor the command that read it.
+ * The host writes the file itself, without a shell: one quoted format with no conversion but
+ * `%%`, or plain words without a backslash or an option, which bash and dash echo alike.
+ */
+export function redirectFixture(
+  command: string,
+): { path: string; content: string; append: boolean } | null {
+  let quote: string | null = null;
+  let at = -1;
+  for (let i = 0; i < command.length && at < 0; i++) {
+    const c = command[i] as string;
+    if (quote) {
+      if (c === quote) quote = null;
+      else if (c === "\\" && quote === '"') i++;
+    } else if (c === "'" || c === '"') quote = c;
+    else if (c === "\\") i++;
+    else if (c === ">") at = i;
+  }
+  if (at < 0) return null;
+  const append = command[at + 1] === ">";
+  const path = command.slice(at + (append ? 2 : 1)).trim();
+  if (!FIXTURE_PATH.test(path)) return null;
+  const argv = commandArgv(command.slice(0, at));
+  if (!argv) return null;
+  const [program, ...args] = argv;
+  if (program === "printf" && args.length === 1) {
+    const content = printfText(args[0] as string);
+    return content === null ? null : { path, content, append };
+  }
+  if (program === "echo" && args.every((a) => !a.startsWith("-") && !a.includes("\\")))
+    return { path, content: `${args.join(" ")}\n`, append };
+  return null;
+}
+
+/** The note of an example the host ran under bun in place of node. */
+export const UNDER_BUN = "ran with bun in place of node: the run's checks start bun, not node";
+
+/**
+ * Whether a documented `node` command runs under bun: the run's checks start bun and not node
+ * (#2678). R88 pokerank (plain JavaScript, `bun test` and `bunx eslint` checks) documented every
+ * example as `node bin/pokerank.js ...`, and the host ran none of them ("node is not a program the
+ * run's checks start"), so its README's broken first example passed. Bun runs a Node script as it
+ * is, and the checks already run the project's code with bun, so no program is added.
+ */
+export function nodeUnderBun(argv: readonly string[], executables: readonly string[]): boolean {
+  // `node --version` or `node -e ...` asks about node itself, which bun would answer for itself.
+  if (argv[0] !== "node" || !argv[1] || argv[1].startsWith("-")) return false;
+  return !executables.includes("node") && executables.includes("bun");
+}
+
 /** Writes a fixture into the copy unless the workspace already has a file there. */
 function writeFixture(copy: string, fixture: DocFixture): void {
   const target = join(copy, ...fixture.path.split("/"));
@@ -628,6 +730,8 @@ export async function runDocExamples(
     const fixtures = extractFixtures(doc.text);
     // Each document starts from the workspace as the change left it, as its reader would.
     let copy: string | null | undefined;
+    // What the document's printf and echo lines wrote so far, by path (#2693).
+    const written = new Map<string, string>();
     try {
       for (const example of examples) {
         const base = {
@@ -637,6 +741,33 @@ export async function runDocExamples(
           documented: example.documented.slice(0, OUTPUT_LIMIT),
         };
         const skip = (reason: string) => results.push({ ...base, status: "not_run", reason });
+        const write = redirectFixture(example.command);
+        if (write) {
+          if (copy === undefined) copy = copyWorkspace(options.root, options.files);
+          if (copy === null) {
+            skip(`The workspace is larger than ${DOC_EXAMPLE_COPY_BYTES / 1024 / 1024} MiB`);
+            continue;
+          }
+          const target = join(copy, ...write.path.split("/"));
+          mkdirSync(dirname(target), { recursive: true });
+          if (write.append) appendFileSync(target, write.content);
+          else writeFileSync(target, write.content);
+          written.set(
+            write.path,
+            (write.append ? (written.get(write.path) ?? "") : "") + write.content,
+          );
+          // The line prints nothing; a document that shows output after it shows wrong output.
+          const difference = firstDifference(example.documented, "");
+          results.push({
+            ...base,
+            status: difference ? "mismatch" : "match",
+            reason: `written by the host without a shell: ${write.path}`,
+            exitCode: 0,
+            printed: "",
+            ...(difference ? { firstDifference: difference } : {}),
+          });
+          continue;
+        }
         const placeholder = placeholderOf(example.command);
         if (placeholder) {
           skip(
@@ -648,12 +779,15 @@ export async function runDocExamples(
           skip("The command needs a shell (a pipe, redirect, variable or glob)");
           continue;
         }
+        // A `node` example of a project whose checks start bun runs under bun (#2678).
+        const underBun = nodeUnderBun(example.argv, options.executables);
+        const argv = underBun ? ["bun", ...example.argv.slice(1)] : example.argv;
         // The project's own command runs through its toolchain (`routeshadow ...` as `cargo run
         // --bin routeshadow -- ...`, #1821).
-        const entry = options.executables.includes(example.argv[0] as string)
+        const entry = options.executables.includes(argv[0] as string)
           ? null
-          : entryPointCommand(options.root, example.argv, options.executables);
-        const [program, ...entryArgs] = (entry?.argv ?? example.argv) as [string, ...string[]];
+          : entryPointCommand(options.root, argv, options.executables);
+        const [program, ...entryArgs] = (entry?.argv ?? argv) as [string, ...string[]];
         if (!options.executables.includes(program)) {
           skip(
             `${program} is not a program the run's checks or their toolchains start (${options.executables.join(", ") || "none"})`,
@@ -753,8 +887,13 @@ export async function runDocExamples(
           );
           continue;
         }
+        const inputs = [...written]
+          .filter(([path]) => args.includes(path))
+          .map(([path, content]) => ({ path, content: content.slice(0, OUTPUT_LIMIT) }));
         results.push({
           ...base,
+          ...(inputs.length ? { inputs } : {}),
+          ...(underBun ? { reason: UNDER_BUN } : {}),
           status: difference ? "mismatch" : "match",
           exitCode: result.exitCode,
           printed: result.output.slice(0, OUTPUT_LIMIT),

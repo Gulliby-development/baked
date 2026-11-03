@@ -35,6 +35,13 @@ export const RUNNER_SUMMARIES: Record<
     total: 3,
     ran: 3,
   },
+  unittest: {
+    passed: "..s\n----------------------------------------------------------------------\nRan 3 tests in 0.001s\n\nOK (skipped=1)\n",
+    failed: "F.s\n======================================================================\nFAIL: test_sub (tests.test_a.CalcTest.test_sub)\n----------------------------------------------------------------------\nAssertionError: 1 != 2\n\n----------------------------------------------------------------------\nRan 3 tests in 0.001s\n\nFAILED (failures=1, skipped=1)\n",
+    total: 3,
+    ran: 2,
+    failedNames: ["test_sub (tests.test_a.CalcTest.test_sub)"],
+  },
   cargo: {
     passed: "running 4 tests\ntest adds ... ok\n\ntest result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s\n",
     failed: "running 4 tests\ntest adds ... FAILED\n\ntest result: FAILED. 3 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s\n",

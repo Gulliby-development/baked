@@ -98,7 +98,8 @@ describe("attempt step floor on the recorded rounds (#1987)", () => {
     const before = caps(stopped!, false);
     const after = caps(stopped!, true);
     const consumed = stopped!.steps.reduce((sum, s) => sum + (s.usage.inputTokens ?? 0) + (s.usage.outputTokens ?? 0), 0);
-    expect(before.all).toBeLessThanOrEqual(consumed + 1);
+    expect(before.tokens).toBeLessThan(after.tokens);
+    // Since #2650 the all-token floor is one request past the step limit in both readings.
     expect(after.all).toBeGreaterThan(consumed * 1.3);
   }, 120000);
 });
