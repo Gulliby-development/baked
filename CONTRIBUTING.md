@@ -78,7 +78,15 @@ A pull request that closes a Bug issue also gets an advisory adversarial sweep r
 
 ## Releases
 
-Versions follow semantic versioning and are tagged `vX.Y.Z`. `main` takes changes only through the merge queue, so a release is a pull request followed by a tag. From an up-to-date `main` with every change merged:
+Versions follow semantic versioning and are tagged `vX.Y.Z`.
+
+### Scheduled releases
+
+`.github/workflows/scheduled-release.yml` releases a new minor version every second day (0.5.0, then 0.6.0, then 0.7.0) with no manual step. It runs daily at 06:07 UTC and releases when the latest `v*` tag is at least 44 hours old and `main` has commits that tag does not contain; otherwise the run's summary says why it skipped. To release it commits the version bump of `package.json` and `apps/desktop/package.json` on top of `main` outside any branch, tags that commit `vX.Y.Z` and starts the Release workflow on the tag. `main` is not changed, so its `package.json` keeps the version of the last release cut by hand, and the next version always comes from the higher of that and the latest tag (`bun scripts/scheduled-release.ts current` prints it). To release now, run the workflow from the Actions tab: `force` skips the two-day wait and `bump` picks `patch` or `major` instead of `minor`. To pause the schedule, disable the workflow in the Actions tab.
+
+### Releasing by hand
+
+`main` takes changes only through the merge queue, so a manual release is a pull request followed by a tag. From an up-to-date `main` with every change merged:
 
 ```sh
 bun run release:dry     # next version and the commits since the last tag
@@ -92,4 +100,4 @@ git switch main && git pull
 bun run release:tag     # tags vX.Y.Z from package.json and pushes the tag
 ```
 
-The tag starts `.github/workflows/release.yml`, which checks that the tag matches `package.json`, runs the full check suite, builds every archive through the Builds workflow and publishes a GitHub release with `SHA256SUMS.txt` and notes generated from the merged pull requests. Label a pull request `skip-changelog` to leave it out of the notes; Dependabot pull requests are grouped under "Dependencies".
+Either way the tag starts `.github/workflows/release.yml`, which checks that the tag matches `package.json`, runs the full check suite, builds every archive through the Builds workflow and publishes a GitHub release with `SHA256SUMS.txt` and notes generated from the merged pull requests. Label a pull request `skip-changelog` to leave it out of the notes; Dependabot pull requests are grouped under "Dependencies".
