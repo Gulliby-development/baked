@@ -280,6 +280,47 @@ const BYTEMERGE: RestoreShape = {
   restored: [2],
 };
 
+// sseknit (Rust, R84) cli: rstest `#[case(...)]` attribute rows, no separator; the drifted row
+// lost a line of its usage text.
+const SSE_PATH = "tests/cli.rs";
+const SSE_USAGE = "usage: sseknit <command>\\n\\ncommands:\\n  parse\\n  tools\\n";
+const sseTest = (row2: string) =>
+  ["use rstest::rstest;", "", "#[rstest]", '#[case(&["--version"], 0, "sseknit 0.1.0\\n")]', row2, "fn cli(#[case] args: &[&str], #[case] code: i32, #[case] out: &str) {", "    assert_eq!(run(args), (code, out.to_string()));", "}", ""].join("\n");
+const SSEKNIT: RestoreShape = {
+  path: SSE_PATH,
+  block: [`CliRows in ${SSE_PATH} (2 rows, #[case(args, code, out)])`, '#[case(&["--version"], 0, "sseknit 0.1.0\\n")]', `#[case(&["--help"], 0, "${SSE_USAGE}")]`],
+  faithful: sseTest(`#[case(&["--help"], 0, "${SSE_USAGE}")]`),
+  drifted: sseTest('#[case(&["--help"], 0, "usage: sseknit <command>\\n\\ncommands:\\n  parse\\n")]'),
+  restored: [2],
+};
+
+// wrapsmith (PowerShell, R84) cols: a helper's command rows, PowerShell's escapes; the drifted row
+// lost its last output line.
+const WRAP_PATH = "tests/Cols.Tests.ps1";
+const wrapTest = (row2: string) =>
+  ["BeforeDiscovery { . \"$PSScriptRoot/Row.ps1\" }", "", "Describe 'cols' {", "    Row @('cols', '5') -Stdin \"a b c`n\" -Code 0 -Out \"a b c`n\" -Err ''", `    ${row2}`, "}", ""].join("\n");
+const WRAP_ROW = "Row @('cols', '3') -Stdin \"abc def ghi`n\" -Code 0 -Out \"abc`ndef`nghi`n\" -Err ''";
+const WRAPSMITH: RestoreShape = {
+  path: WRAP_PATH,
+  block: [`cols rows in ${WRAP_PATH} (2 rows)`, "Row @('cols', '5') -Stdin \"a b c`n\" -Code 0 -Out \"a b c`n\" -Err ''", WRAP_ROW],
+  faithful: wrapTest(WRAP_ROW),
+  drifted: wrapTest(WRAP_ROW.replace("ghi`n\" -Err", "\" -Err")),
+  restored: [2],
+};
+
+// csp (ReScript, R85) cli: `Harness.row(...)` calls, a comma after the last row too; the drifted
+// row lost the usage text's option.
+const CSP_PATH = "tests/CliTest.res";
+const cspTest = (row2: string) =>
+  ["let rows = [", '  Harness.row(["--version"], "", 0, "csp 1.0\\n", ""),', `  ${row2},`, "]", "", "Harness.run(rows)", ""].join("\n");
+const CSP: RestoreShape = {
+  path: CSP_PATH,
+  block: [`CliTest in ${CSP_PATH} (2 rows)`, 'Harness.row(["--version"], "", 0, "csp 1.0\\n", "")', 'Harness.row(["--help"], "", 0, "usage: csp [--strict] FILE\\n", "")'],
+  faithful: cspTest('Harness.row(["--help"], "", 0, "usage: csp [--strict] FILE\\n", "")'),
+  drifted: cspTest('Harness.row(["--help"], "", 0, "usage: csp FILE\\n", "")'),
+  restored: [2],
+};
+
 /** One case per row notation the host restores (AGENTS.md: a new notation adds its case here). */
 const RESTORE_SHAPES: Record<string, RestoreShape> = {
   c: TINYFLATE,
@@ -290,6 +331,9 @@ const RESTORE_SHAPES: Record<string, RestoreShape> = {
   go: GO,
   cpp: PNMFORGE,
   java: BYTEMERGE,
+  rust: SSEKNIT,
+  powershell: WRAPSMITH,
+  rescript: CSP,
 };
 
 const requestOf = (shape: RestoreShape) =>

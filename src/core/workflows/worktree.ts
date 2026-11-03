@@ -26,12 +26,14 @@ import {
   git,
   gitMode,
   gitWorktreePaths,
+  inSubmodule,
   internalPath,
   looksSecret,
   runSpecPath,
   statusPaths,
   treeModes,
   treeShipsSpecs,
+  treeSubmodules,
 } from "./delivery-git.js";
 import {
   ALL_DEPENDENCY_DIRS,
@@ -388,13 +390,13 @@ export async function provisionalBase(
   files: { path: string; content: string }[],
   date: number,
 ): Promise<string> {
-  const present = new Set(
-    (await required(workspace, ["ls-tree", "-r", "-z", "--name-only", base]))
-      .split("\0")
-      .filter(Boolean),
-  );
+  const listing = await required(workspace, ["ls-tree", "-r", "-z", base]);
+  const present = new Set(listing.split("\0").map((entry) => entry.slice(entry.indexOf("\t") + 1)));
+  const submodules = treeSubmodules(listing);
   const added = [...new Map(files.map((f) => [f.path, f])).values()]
-    .filter((f) => !present.has(f.path) && !internalPath(f.path))
+    .filter(
+      (f) => !present.has(f.path) && !internalPath(f.path) && !inSubmodule(f.path, submodules),
+    )
     .sort((a, b) => a.path.localeCompare(b.path));
   if (!added.length) return base;
   const directory = mkdtempSync(join(tmpdir(), "baked-provisional-"));
@@ -865,7 +867,10 @@ export async function commitRunBranch(
   const env = { GIT_INDEX_FILE: join(directory, "index") };
   try {
     await required(root, ["read-tree", worktree.baseHead], { env });
-    const modes = treeModes(await required(root, ["ls-tree", "-r", "-z", worktree.baseHead]));
+    const listing = await required(root, ["ls-tree", "-r", "-z", worktree.baseHead]);
+    const modes = treeModes(listing);
+    // A file written inside a submodule would replace its gitlink in the index (#2798).
+    const submodules = treeSubmodules(listing);
     // The run's spec artifacts stay run artifacts unless the project already tracks specs/, as
     // in the delivery plan (#1998), or the caller needs them on the branch. An initiative
     // feature's upstream specs are untracked files of its worktree (`placeBaseFiles`, #2046); a
@@ -892,7 +897,12 @@ export async function commitRunBranch(
           updates.push(`0 ${"0".repeat(worktree.baseHead.length)}\t${path}\0`);
     }
     for (const path of [...new Set(paths)].sort()) {
-      if (internalPath(path) || (!withSpecs && runSpecPath(path, featureId, prefix))) continue;
+      if (
+        internalPath(path) ||
+        inSubmodule(path, submodules) ||
+        (!withSpecs && runSpecPath(path, featureId, prefix))
+      )
+        continue;
       const absolute = workspacePath(root, path);
       const stat = existsSync(absolute) ? lstatSync(absolute) : null;
       if (stat?.isSymbolicLink() || looksSecret(path)) continue;
@@ -954,6 +964,11 @@ export async function commitRunBranch(
 /**
  * Removes a terminal run's worktree, and its branch when the user discards the result. Delivery
  * keeps the branch: it records the accepted commit the delivered one was built from.
+ *
+ * Same steps as `removeTaskWorktree` (#2806): the holders stop first, `git worktree remove` is only
+ * a first try, and the directory itself is what must go. Git refuses a worktree it no longer lists
+ * ("is not a working tree": the project folder moved, or a prune dropped its entry) and a file a
+ * Windows process holds; a removal that ended there left the worktree on disk for good.
  */
 export async function removeRunWorktree(
   store: WorkflowStore,
@@ -969,14 +984,14 @@ export async function removeRunWorktree(
     for (const entry of readdirSync(runDirectory))
       if (entry !== RUN_MARKER && join(runDirectory, entry) !== absolute)
         await removeTaskWorktree(workspace, join(dirname(worktree.path), entry));
+  await stopHolders(runDirectory);
   if (existsSync(absolute))
     await worktreeCommand(workspace, () =>
-      required(workspace, ["worktree", "remove", "--force", absolute]),
+      git(workspace, ["worktree", "remove", "--force", absolute]),
     );
-  await worktreeCommand(workspace, () => git(workspace, ["worktree", "prune"]));
-  await stopHolders(runDirectory);
   let left = await removeDirectory(runDirectory);
   if (left && moveAside(workspace, runDirectory)) left = null;
+  await worktreeCommand(workspace, () => git(workspace, ["worktree", "prune"]));
   if (left)
     throw new WorkflowFault(
       "INPUT_CHANGED",
