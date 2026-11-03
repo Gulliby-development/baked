@@ -470,6 +470,10 @@ export async function streamTurn(
       } else if (part.type === "error") {
         // A provider failure arrives as a stream part rather than a thrown error.
         throw new Error(streamErrorText(part.error));
+      } else if (part.type === "abort") {
+        // Ctrl+C or --timeout ends the AI SDK stream with an `abort` part and a normal close,
+        // not a thrown error; the catch below turns it into the aborted turn (#2810).
+        throw new Error("Aborted");
       } else if (part.type === "finish-step") {
         steps++;
         const usage = part.usage as {
@@ -496,6 +500,8 @@ export async function streamTurn(
         }
       }
     }
+    // A stream that closes after the signal fired without an `abort` part was cut short too.
+    if (signal.aborted && exitCode === EXIT_OK) throw new Error("Aborted");
   } catch (err) {
     if (signal.aborted) {
       error = "Aborted";
