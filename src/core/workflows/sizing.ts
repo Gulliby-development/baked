@@ -1200,6 +1200,12 @@ export interface TaskSize {
   sliceCount?: number;
   /** A rows task (`rows` and `rowTest`), with its criteria that have no rows (#1930). */
   rowsTask?: TestTaskRows;
+  /**
+   * A task that is not a test task and writes several files: both split answers, by the expected
+   * price and by the sum of high ends, and which rule decided (`multiFileSplit`, #2649). Absent in
+   * reports written before it.
+   */
+  multiFile?: MultiFileSplit;
 }
 
 /** What sizing knows of a rows task: the criteria a planner could move to a test task of their own. */
@@ -1485,6 +1491,76 @@ export function exceedsTestCapacity(
 }
 
 /**
+ * Text files that are not code although `fileKind` prices them as code for want of a docs
+ * extension: a license, a notice, a changelog, a plain `.txt` that is no manifest.
+ */
+const TEXT_FILE =
+  /(^|\/)(licen[cs]e|copying|notice|authors|contributors|changelog|changes|history|readme)(\.txt)?$/i;
+
+/** Whether a file is documentation or other non-code text (#2649). */
+export const isDocsOrText = (path: string): boolean =>
+  fileKind(path) === "docs" ||
+  TEXT_FILE.test(path) ||
+  (/\.txt$/i.test(path) && fileKind(path) === "code");
+
+/**
+ * Whether a task that is not a test task needs more than one attempt and goes back to the planner
+ * split (#2649). One file is never split: a single file is as small as a task gets. A task whose
+ * files are all documentation or non-code text (`isDocsOrText`) splits when the expected price of
+ * their sum (the sum of the per-file midpoints) is above one attempt's cap, not the sum of their
+ * high ends: each file's high end is the 90th percentile of its kind, and a sum of 90th
+ * percentiles is far above the 90th percentile of a sum. Bench round 88 pokerank and pathwarden
+ * priced a README and LICENSE task at 899,706 tokens against 600,000 and split it, a planner call
+ * of 46k-91k tokens and one more session each, for a task that cost 175k-330k.
+ *
+ * Any other task of several files (code, a manifest, a test file, or a mix of them with docs) keeps
+ * the high-end rule: the wide code tasks it split in bench rounds 49-54 (md-site and expenses-py
+ * skeletons of four or five files, expected 478k) went on to spend 1.0M-1.5M across their parts,
+ * and splitting a task that writes a test file moves the test into a task priced by its cases.
+ *
+ * Both answers are returned, so the sizing report records the high-end rule beside the one that
+ * decided and a replay can compare them.
+ */
+export function multiFileSplit(
+  estimate: TokenRange,
+  paths: readonly string[],
+  cap: number,
+): MultiFileSplit | null {
+  if (paths.length <= 1) return null;
+  const expected = Math.round(expectedPrice(estimate));
+  const byHigh = estimate.high > cap;
+  const byExpected = expected > cap;
+  const rule = paths.every(isDocsOrText) ? "expected" : "high";
+  return {
+    rule,
+    expected,
+    high: Math.round(estimate.high),
+    byHigh,
+    byExpected,
+    split: rule === "high" ? byHigh : byExpected,
+  };
+}
+
+/**
+ * The split decision of a task that writes several files and is not a test task (`multiFileSplit`),
+ * as the sizing report records it.
+ */
+export interface MultiFileSplit {
+  /** `expected` for a task of documentation and text files only, `high` for any other. */
+  rule: "expected" | "high";
+  /** The expected price of the files' sum, the midpoint of the task's range. */
+  expected: number;
+  /** The sum of the files' high ends. */
+  high: number;
+  /** The rule before #2649: the sum of high ends above the cap. */
+  byHigh: boolean;
+  /** The expected price above the cap. */
+  byExpected: boolean;
+  /** The answer of the rule that decided. */
+  split: boolean;
+}
+
+/**
  * The price of a set of tasks: the sum of their midpoints plus the root of the summed squares of
  * their half-ranges. One task is priced at its upper bound; many independent ones well below the
  * sum of their upper bounds (seven priced runs of round 01 cost 0.36-0.77x the summed highs).
@@ -1612,6 +1688,10 @@ export function sizePlan(input: {
           : byText;
       // A whole task whose rows need more than one attempt is split into row slices by the host.
       const byRows = rowVolume?.mode === "on" && rowVolume.slices > 1;
+      const multiFile =
+        kind !== "test" && !fromRequest
+          ? multiFileSplit(estimate, writtenFiles(task), maxAttemptTokens)
+          : null;
       return {
         taskId: task.id,
         kind,
@@ -1629,7 +1709,8 @@ export function sizePlan(input: {
                 !(task.sizingSlice && task.criterionIds.length === 1) &&
                 // A slice holds the same text, so the text's price never splits a task.
                 exceedsTestCapacity(cases, limit, byCases, maxAttemptTokens, true, rowsTask)
-              : files > 1 && estimate.high > maxAttemptTokens,
+              : multiFile?.split === true,
+        ...(multiFile ? { multiFile } : {}),
         basis: fromRequest ? "supplied" : historyBasis(task, rates, tests, cases),
         ...(fromRequest ? { suppliedLines: fromRequest.lines } : {}),
         ...(textChars ? { exactTextChars: textChars } : {}),
@@ -1673,7 +1754,7 @@ export function sizePlan(input: {
                   (limit?.cases ?? 0) > 0 &&
                   (task.cases ?? 0) > CAPACITY_PROBE * (limit?.cases ?? 0)
                 ? `${task.taskId} covers ${task.cases} cases, above ${CAPACITY_PROBE} times the observed capacity of ${limit?.cases}`
-                : `${task.taskId} writes ${task.files} files and needs about ${Math.round(task.kind === "test" ? expectedPrice(task.estimate) : task.estimate.high)} tokens, above one attempt's ${maxAttemptTokens}`,
+                : `${task.taskId} writes ${task.files} files and needs about ${Math.round(task.kind === "test" || task.multiFile?.rule === "expected" ? expectedPrice(task.estimate) : task.estimate.high)} tokens, above one attempt's ${maxAttemptTokens}`,
       );
   }
   if (runTokens + repairReserve > budgetBefore && maxRunTokens !== null) {

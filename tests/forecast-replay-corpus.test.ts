@@ -9,10 +9,10 @@ import { documentedSurfaceRate } from "../src/core/workflows/initiatives/documen
 import { estimateInitiative } from "../src/core/workflows/initiatives/estimate.js";
 import { adaptiveFirstByteMs } from "../src/core/llm/provider-health.js";
 import { planApprovalDecision } from "../src/core/workflows/auto-approval.js";
-import { CAPACITY_PROBE, exceedsTestCapacity, rowVolumePrice } from "../src/core/workflows/sizing.js";
+import { CAPACITY_PROBE, exceedsTestCapacity, multiFileSplit, rowVolumePrice, type SizingReport } from "../src/core/workflows/sizing.js";
 import { type CallRate, chainCosts, openTrace, type PlanPriceReplay, replayChainEscalation, replayEdgeRecord, replayInitiativeStarts, replayPlanApprovals, replayPlanPrices, replayActiveTimes, replayPoolBounds, replayTestSplits, replayTrace, type TestSplitRule } from "../src/core/workflows/trace.js";
 import { type EdgeRecord, edgeCrashDecision } from "../src/core/verification/edge-inputs.js";
-import { ROOT, traces } from "./helpers/replay-corpus.js";
+import { ROOT, traces, traces as corpusTraces } from "./helpers/replay-corpus.js";
 import { fixturePolicy } from "./helpers/workflow-fixture.js";
 
 // #1649, #1715: every recorded bench-round trace replays through the current host decisions: the
@@ -659,6 +659,54 @@ describe("test task splits replay on recorded sizing reports (#1789)", () => {
       deltaglue.dispose();
     }
   }, 120000);
+
+  test("a multi-file task splits as before unless all its files are docs or text: the README and LICENSE tasks no longer split (#2649)", () => {
+    // Every recorded non-test, non-supplied task of two or more files, decided again by
+    // `multiFileSplit` on its recorded estimate and the paths of the plan sizing priced.
+    const changed: string[] = [];
+    const kept: string[] = [];
+    for (const path of corpusTraces(ROOT)) {
+      const { store, dispose } = openTrace(path);
+      try {
+        const reports = store.connection
+          .query("SELECT run_id AS runId, id, logical_path AS report, created_at AS at FROM artifacts WHERE logical_path LIKE 'sizing/plan-%' ORDER BY created_at, id")
+          .all() as { runId: string; id: string; report: string; at: number }[];
+        for (const { runId, id, report: name, at } of reports) {
+          const report = JSON.parse(store.readArtifact(runId, id)) as Partial<SizingReport>;
+          const plan = store.connection
+            .query("SELECT id FROM artifacts WHERE run_id=? AND logical_path='tasks.json' AND created_at<=? ORDER BY created_at DESC, id DESC LIMIT 1")
+            .get(runId, at) as { id: string } | null;
+          if (!plan || !report.tasks || typeof report.maxAttemptTokens !== "number") continue;
+          const graph = JSON.parse(store.readArtifact(runId, plan.id)) as { tasks: { id: string; writes: { path: string; action: string }[] }[] };
+          for (const task of report.tasks) {
+            if (task.kind === "test" || task.basis === "supplied" || task.files < 2) continue;
+            const paths = graph.tasks.find((t) => t.id === task.taskId)?.writes.filter((w) => w.action !== "delete").map((w) => w.path) ?? [];
+            if (paths.length !== task.files) continue;
+            const replayed = multiFileSplit(task.estimate, paths, report.maxAttemptTokens);
+            const label = `${relative(ROOT, path).replaceAll("\\", "/")} ${runId.slice(0, 8)} ${name} ${task.taskId}`;
+            if (replayed?.split !== task.oversized) changed.push(`${label} ${paths.join(",")}`);
+            else if (task.oversized) kept.push(label);
+          }
+        }
+      } finally {
+        dispose();
+      }
+    }
+    // Only README and LICENSE tasks change, from split to whole (six documentation features). callmend's files then cost 268,807;
+    // verhop's 614,482 over three tasks; manlens's 262,605.
+    expect(changed).toEqual([
+      "R61/manlens.sqlite.gz 25d4802d sizing/plan-0.json T001 README.md,LICENSE",
+      "R74/callmend.sqlite.gz 1770c254 sizing/plan-0.json T001 README.md,LICENSE",
+      "R75/latcell.sqlite.gz f4a5066f sizing/plan-0.json T001 README.md,LICENSE",
+      "R75/maskback.sqlite.gz 13bb147b sizing/plan-0.json T001 README.md,LICENSE",
+      "R77/trailspin.sqlite.gz ae89f897 sizing/plan-0.json T001 README.md,LICENSE",
+      "R79/verhop.sqlite.gz f0a2962f sizing/plan-0.json T001 README.md,LICENSE",
+    ]);
+    // R68 ewvet's three code files and the R50 md-site skeleton (4 code files and a README, expected
+    // 478k, whose parts spent 1.23M) still split.
+    expect(kept).toContain("R68/ewvet.sqlite.gz 82293901 sizing/plan-0.json T001");
+    expect(kept).toContain("R50/md-site.sqlite.gz 2a841b03 sizing/plan-0.json T001");
+  }, 300000);
 
   test("R62 stepvet: tagexpr's active time is sized at the initiative's own pace and covers what it used (#2336)", () => {
     // tagexpr was sized at the history's 135k tokens per minute to 2,100,000 ms, stopped there
