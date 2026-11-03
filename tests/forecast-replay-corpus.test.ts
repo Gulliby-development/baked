@@ -719,12 +719,17 @@ describe("test task splits replay on recorded sizing reports (#1789)", () => {
       const [plan] = replayActiveTimes(store, runId);
       expect(plan).toMatchObject({ report: "sizing/plan-0.json", recorded: { basis: "history", after: 2_100_000 }, replayed: { basis: "initiative", tokensPerMinute: 71_173 } });
       expect(plan?.replayed.after).toBeGreaterThan(store.run(runId).active_ms);
-      // #2414, shadow: the clean pace is replayed beside the deciding one from the five finished
-      // runs' first-response waits (5,746,801 ms, from their calls before `silentMs` was recorded).
-      // Without them the runs pass the history's pace, so it would keep 135k and the 2,100,000 ms
-      // cap: first-response latency is no stall, which the default switch (R78) must tell apart.
-      expect(plan?.clean).toMatchObject({ basis: "history", tokensPerMinute: 135_149, silentMs: 5_746_801, after: 2_100_000 });
-      expect(plan?.clean?.rates).toHaveLength(5);
+      // #2414, shadow: the clean pace is replayed beside the deciding one from the finished runs'
+      // first-response waits (from their calls' `firstByteMs`, before `silentMs` was recorded).
+      // With the whole wait left out (6.84M ms on Codex, which buffers its answer) five runs passed
+      // the history's 135k and the shadow kept it and the 2,100,000 ms cap, undoing #2336. Only the
+      // stall part is left out now (#2424): 19,279 ms past the calls' deadline bases, so the seven
+      // clean rates keep the initiative's own pace and none of them beats the history's.
+      expect(plan?.clean).toMatchObject({ basis: "initiative", tokensPerMinute: 71_173, silentMs: 6_840_104, stallMs: 19_279 });
+      expect(plan?.clean?.rates).toHaveLength(7);
+      expect(plan?.clean?.after).toBe(plan?.replayed.after);
+      expect(plan?.clean?.after).toBeGreaterThan(store.run(runId).active_ms);
+      expect(plan?.clean?.rates.filter((rate) => rate > 135_149)).toEqual([]);
     } finally {
       dispose();
     }
