@@ -22,6 +22,7 @@ import { homedir, tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { canonical } from "../specs/hash.js";
 import { workspacePath } from "../specs/validate.js";
+import type { RunRoots } from "../verification/run-roots.js";
 import {
   git,
   gitMode,
@@ -244,6 +245,18 @@ export function worktreeView(
 /** The directory a run reads, edits and checks in: its worktree once it exists, else the project. */
 export function runRoot(workspace: string, state: Pick<RuntimeState, "worktree">): string {
   return state.worktree ? join(workspace, state.worktree.path) : workspace;
+}
+
+/**
+ * The run's workspace and the directory of its worktrees (`main` and one per task), for the
+ * recognizers that find another root of the run in a repro or a check's output (#2697): under
+ * `workflows.worktreeRoot` that directory is not under `.baked/worktrees`.
+ */
+export function runRoots(workspace: string, state: Pick<RuntimeState, "worktree">): RunRoots {
+  return {
+    workspace,
+    worktrees: state.worktree ? dirname(join(workspace, state.worktree.path)) : null,
+  };
 }
 
 /** Fallback identity for the run branch commit when the repository configures none. */

@@ -8,6 +8,7 @@ import {
   failureSignature,
   diagnosticCount,
   outputCounts,
+  shapedFailureSignature,
   testCount,
 } from "../src/core/verification/output-counts.js";
 import type { RunPolicy } from "../src/core/workflows/schemas.js";
@@ -450,6 +451,22 @@ describe("baseline comparison in update runs", () => {
     expect(failureSignature(at("/work/app"), `${unix}/main`)).toBe(expected);
     expect(failureSignature(at(`${win}\\T005`), `${win}\\main`)).toBe(
       failureSignature(at(`${win}\\main`), `${win}\\main`),
+    );
+  });
+
+  test("under workflows.worktreeRoot every worktree of the run is the workspace too (#2697)", () => {
+    const at = (path: string) => `Error: boom\n    at ${path}/src/a.ts:3:7`;
+    const expected = "Error: boom\n    at <root>/src/a.ts:3:7";
+    const run = { workspace: "/work/app", worktrees: "/work/.bk/3d7389cf" };
+    for (const path of ["/work/.bk/3d7389cf/main", "/work/.bk/3d7389cf/T005", "/work/app"]) {
+      expect(failureSignature(at(path), "/work/.bk/3d7389cf/main", run)).toBe(expected);
+      expect(shapedFailureSignature(at(path), "/work/.bk/3d7389cf/T005", run)).toBe(expected);
+    }
+    // Another run's worktree in the same root is no path of this run.
+    expect(failureSignature(at("/work/.bk/aaaaaaaa/T005"), "/work/.bk/3d7389cf/main", run)).not.toBe(expected);
+    const win = { workspace: "C:\\Project\\app", worktrees: "C:\\.bk\\3d7389cf" };
+    expect(failureSignature(at("C:\\.bk\\3d7389cf\\T005"), "C:\\.bk\\3d7389cf\\main", win)).toBe(
+      failureSignature(at("C:\\.bk\\3d7389cf\\main"), "C:\\.bk\\3d7389cf\\main", win),
     );
   });
 

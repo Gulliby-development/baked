@@ -2,6 +2,7 @@ import { type LanguageRecord, none } from "../intelligence/language-records.js";
 import { isTestFile } from "../intelligence/language-traits.js";
 import type { Check } from "../workflows/types.js";
 import { plainOutput } from "./plain-output.js";
+import { inRunWorktrees, type RunRoots, runWorktreePattern } from "./run-roots.js";
 import { normalizeVolatile } from "./volatile.js";
 
 /**
@@ -1223,8 +1224,8 @@ const GROWING_COUNTS: [RegExp, string][] = [
 export const growingCounts = (text: string): string =>
   GROWING_COUNTS.reduce((out, [pattern, to]) => out.replace(pattern, to), text);
 
-export function failureSignature(output: string, root: string): string {
-  const text = withoutWorkspace(output, root)
+export function failureSignature(output: string, root: string, run?: RunRoots): string {
+  const text = withoutWorkspace(output, root, run)
     .replace(/\d{4}-\d{2}-\d{2}T[\d:.]+Z?/g, "<time>")
     .replace(/\d+(\.\d+)?\s*(ms|s|sec|seconds|m)\b/g, "<duration>")
     .replace(/\[\d+(\.\d+)?(ms|s)\]/g, "<duration>")
@@ -1247,19 +1248,26 @@ export function failureSignature(output: string, root: string): string {
  * signature in the check baseline (`shapes`); the `baseline_signature` reason records, in shadow,
  * where it would match and the live one does not.
  */
-export function shapedFailureSignature(output: string, root: string): string {
-  const text = withoutWorkspace(output, root)
+export function shapedFailureSignature(output: string, root: string, run?: RunRoots): string {
+  const text = withoutWorkspace(output, root, run)
     .replaceAll("\r\n", "\n")
     .replaceAll("\r", "\n")
     .replaceAll("\\", "/");
   return withoutCounts(normalizeVolatile(text));
 }
 
-/** The output without colours and with every worktree path of the project as `<root>`. */
-function withoutWorkspace(output: string, root: string): string {
-  const project = root.replace(/[\\/]\.baked[\\/]worktrees[\\/].*$/, "");
-  return plainOutput(output)
-    .replace(WORKTREE_PATH, "<root>")
+/**
+ * The output without colours and with every worktree path of the project as `<root>`. `run` names
+ * the run's worktree directory, which under `workflows.worktreeRoot` has no `.baked/worktrees`
+ * spelling (#2697).
+ */
+function withoutWorkspace(output: string, root: string, run?: RunRoots): string {
+  const project = inRunWorktrees(root, run)
+    ? (run?.workspace ?? root)
+    : root.replace(/[\\/]\.baked[\\/]worktrees[\\/].*$/, "");
+  const others = runWorktreePattern(run, "()<>:");
+  const text = plainOutput(output).replace(WORKTREE_PATH, "<root>");
+  return (others ? text.replace(others, "<root>") : text)
     .split(root)
     .join("<root>")
     .split(project)

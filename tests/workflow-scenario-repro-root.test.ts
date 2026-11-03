@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { rerootRepro, runRepro } from "../src/core/verification/repro.js";
+import { reproOutsidePaths, rerootRepro, runRepro } from "../src/core/verification/repro.js";
 import { ProcessScope } from "../src/core/workflows/process-scope.js";
 import type { Repro } from "../src/core/workflows/schemas.js";
 
@@ -68,6 +68,33 @@ describe("scenario: evalpin checks T003, a repro bound to the review's worktree 
     expect(outcome.status).toBe("refuted");
     expect(outcome.rewritten).toBeUndefined();
   });
+
+  test("under workflows.worktreeRoot the corrective's run sees its own fix (#2697)", async () => {
+    const base = mkdtempSync(join(tmpdir(), "baked-repro-root-"));
+    cleanups.push(() => rmSync(base, { recursive: true, force: true }));
+    const project = join(base, "evalpin");
+    const roots = { workspace: project, worktrees: join(base, ".bk", "b38e180d") };
+    const main = join(roots.worktrees, "main");
+    const task = join(roots.worktrees, "T003");
+    for (const [root, label] of [[project, "disp"], [main, "disp"], [task, "name"]] as const) {
+      mkdirSync(join(root, "src"), { recursive: true });
+      writeFileSync(join(root, "src", "label.txt"), label);
+    }
+    const inRun = (repro: Repro, root: string) =>
+      runRepro(new ProcessScope(), repro, { root, run: roots, executables: ["bun"], generated: [], signal: new AbortController().signal, sandbox: null });
+    expect((await inRun(probe(main), main)).status).toBe("reproduced");
+    const fixed = await inRun(probe(main), task);
+    expect(fixed.status).toBe("refuted");
+    expect(fixed.rewritten?.map((p) => p.replace(/\\/g, "/"))).toEqual([main.replace(/\\/g, "/")]);
+    // The workspace the worktrees belong to is a root of the run too.
+    expect((await inRun(probe(project), task)).status).toBe("refuted");
+    // Neither counts as a path outside the run (#2287); another run's worktree does.
+    const other = join(base, ".bk", "aaaaaaaa", "main", "src", "a.ts");
+    const args = [join(main, "src", "a.ts"), join(project, "src", "a.ts"), other];
+    expect(reproOutsidePaths({ args }, task, roots)).toEqual([other]);
+    // Without the run's roots only the `.baked/worktrees` spelling is known.
+    expect(reproOutsidePaths({ args }, task)).toHaveLength(3);
+  });
 });
 
 // Each language's way for a probe project to name the workspace's code: rewritten to the root the
@@ -85,11 +112,24 @@ const REFERENCES: Record<string, string> = {
   kotlin: `includeBuild("${MAIN}")`,
 };
 
+// The same run with `workflows.worktreeRoot` set to `C:/.bk` (#2461, #2697): no `.baked/worktrees`
+// spelling to find the run's other worktree or its workspace by.
+const ROOT_MAIN = "C:/.bk/b38e180d/main";
+const ROOT_TASK = "C:/.bk/b38e180d/T003";
+const RUN_ROOTS = { workspace: "C:\\Project\\bench\\evalpin", worktrees: "C:\\.bk\\b38e180d" };
+
 describe("a probe project's reference to the review's worktree, per language (#2279)", () => {
   test.each(Object.entries(REFERENCES))("%s", (_, content) => {
     const { text, rewritten } = rerootRepro(content, TASK, true);
     expect(text).toBe(content.replaceAll(MAIN, TASK_SLASHED));
     expect(rewritten).toEqual([MAIN]);
+  });
+
+  test.each(Object.entries(REFERENCES))("%s under workflows.worktreeRoot (#2697)", (_, content) => {
+    const custom = content.replaceAll(MAIN, ROOT_MAIN);
+    const { text, rewritten } = rerootRepro(custom, ROOT_TASK, true, RUN_ROOTS);
+    expect(text).toBe(content.replaceAll(MAIN, ROOT_TASK));
+    expect(rewritten).toEqual([ROOT_MAIN]);
   });
 
   test("an argument keeps its backslashes and a glued flag, and the own root is left alone", () => {
