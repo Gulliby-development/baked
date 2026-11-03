@@ -1,6 +1,7 @@
 import { type CriterionCase, prescribedRowsHeld } from "../verification/criteria-cases.js";
 import { citedCriteria } from "./conflict-rows.js";
 import { quoteInRequest } from "./derivation-audit.js";
+import type { RequestSections } from "./person-request.js";
 import type { Analysis, Spec } from "./schemas.js";
 import type { Task } from "./types.js";
 
@@ -43,6 +44,13 @@ export interface CheckedSide {
   verified: boolean;
   /** `sides`: the report's `conflictSides`; `report`: read off its text (ids, quoted spans). */
   source: "sides" | "report";
+  /**
+   * A request side of a feature run (#2492): `request` when the person's words hold the quote,
+   * `framing` when only the host's own feature framing does (the scope fence, the boundary). A
+   * framing side is never verified and is not a request side of the conflict (`sidesSettle`).
+   * Absent outside an initiative and in records before #2492.
+   */
+  section?: "request" | "framing";
 }
 
 /** The re-audit's verdict on one cited criterion. */
@@ -164,7 +172,8 @@ export type RequestConflictRule = (input: RequestConflictInput) => RequestConfli
 
 /** Whether the checked sides set a verified criterion or requirement against a verified request. */
 export function sidesSettle(sides: readonly CheckedSide[]): boolean {
-  const request = sides.filter((s) => s.kind === "request");
+  // A quote of the host's own framing is not the request's side (#2492).
+  const request = sides.filter((s) => s.kind === "request" && s.section !== "framing");
   return (
     request.length > 0 &&
     request.every((s) => s.verified) &&
@@ -211,17 +220,35 @@ export function quotedSpans(report: string): string[] {
 }
 
 /**
+ * Where a request quote is found: in the person's words, only in the host's framing, or nowhere.
+ * A plain string is the person's words with no framing (a run outside an initiative).
+ */
+export function requestSection(
+  quote: string,
+  request: string | RequestSections,
+  criteria: readonly string[],
+): "request" | "framing" | null {
+  const { person, framing } =
+    typeof request === "string" ? { person: request, framing: "" } : request;
+  if (requestQuote(quote, person, criteria)) return "request";
+  return framing && requestQuote(quote, framing, criteria) ? "framing" : null;
+}
+
+/**
  * The sides of a conflict, checked against the spec and the request. Without `conflictSides` the
  * criteria the report cites by id and each span it quotes that the request holds (and no cited
  * criterion does) are its sides, so a report that quotes the request settles whatever words
- * surround the quote.
+ * surround the quote. The request is the person's words (`personRequest`, #2492): for a feature
+ * of an initiative a quote the host's framing holds and the original request does not is recorded
+ * as a `framing` side, never verified.
  */
 export function checkedSides(
   spec: Pick<Spec, "criteria" | "requirements">,
-  request: string,
+  request: string | RequestSections,
   report: string,
   reported: readonly ReportedSide[] | undefined,
 ): CheckedSide[] {
+  const feature = typeof request !== "string" && request.framing !== "";
   if (reported?.length) {
     const cited = reported.flatMap((side) =>
       side.kind === "criterion"
@@ -231,16 +258,27 @@ export function checkedSides(
     return reported.map((side) => {
       const ref = side.ref ?? null;
       let verified = false;
+      let section: CheckedSide["section"];
       if (side.kind === "criterion") {
         const criterion = spec.criteria.find((c) => c.id === ref);
         verified = !!criterion && quoteInRequest(side.quote, criterionText(criterion));
       } else if (side.kind === "requirement") {
         const requirement = spec.requirements.find((r) => r.id === ref);
         verified = !!requirement && quoteInRequest(side.quote, requirement.text);
-      } else if (side.kind === "request") verified = requestQuote(side.quote, request, cited);
+      } else if (side.kind === "request") {
+        const found = requestSection(side.quote, request, cited);
+        verified = found === "request";
+        if (feature && found) section = found;
+      }
       // A platform side is checked against the task's failing checks and probes (#2032).
       else if (side.kind === "test") verified = ref !== null;
-      return { kind: side.kind, ref, verified, source: "sides" as const };
+      return {
+        kind: side.kind,
+        ref,
+        verified,
+        source: "sides" as const,
+        ...(section ? { section } : {}),
+      };
     });
   }
   const criteria = citedCriteria(spec, report);
@@ -252,14 +290,19 @@ export function checkedSides(
       verified: true,
       source: "report" as const,
     })),
-    ...quotedSpans(report)
-      .filter((span) => requestQuote(span, request, texts))
-      .map(() => ({
-        kind: "request" as const,
-        ref: null,
-        verified: true,
-        source: "report" as const,
-      })),
+    ...quotedSpans(report).flatMap((span) => {
+      const found = requestSection(span, request, texts);
+      if (!found) return [];
+      return [
+        {
+          kind: "request" as const,
+          ref: null,
+          verified: found === "request",
+          source: "report" as const,
+          ...(feature ? { section: found } : {}),
+        },
+      ];
+    }),
   ];
 }
 
@@ -282,7 +325,10 @@ export function conflictCriteria(
 export const sideTests = (reported: readonly ReportedSide[] | undefined): string[] =>
   (reported ?? []).flatMap((s) => (s.kind === "test" && s.ref ? [s.ref] : []));
 
-/** The re-audit's verdicts on the cited criteria, each quote checked against the request again. */
+/**
+ * The re-audit's verdicts on the cited criteria, each quote checked against the request again:
+ * the person's words (`personRequest`, #2492), never the host's framing of a feature.
+ */
 export function reauditVerdicts(
   derivations: Analysis["derivations"],
   criterionIds: readonly string[],

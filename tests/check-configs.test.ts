@@ -148,6 +148,17 @@ describe("auto-approval of check configs, per language row (#2221)", () => {
     expect(loose.reasons.join("\n")).toContain("tsconfig.json needs a person: a tsconfig config sets what the checks enforce; the planned content changes compilerOptions.strict, which is not a tightening the request names");
   });
 
+  // Hot module auto-approval (#2628): a context that does not say the baseline is a scaffold is no
+  // scaffold, so an edit of an existing check config outside the enforced ones is a would-stop.
+  test("a context without the scaffold flag treats the baseline as no scaffold", () => {
+    const edit = graph({ path: ".rubocop.yml", action: "modify" });
+    const result = evaluateAutoApproval(policy(), manifest, spec, edit, [], [], { exists: () => true, request: "Create the value." });
+    expect(result.approval?.mode).toBe("limits");
+    expect(result.configWouldStop).toEqual({ mode: "shadow", problems: [expect.stringContaining(".rubocop.yml needs a person: a ")] });
+    // On a scaffold the same edit is how the project starts.
+    expect(evaluateAutoApproval(policy(), manifest, spec, edit, [], [], { exists: () => true, scaffold: true, request: "Create the value." }).configWouldStop).toBeUndefined();
+  });
+
   test("a file outside the table is unchanged", () => {
     for (const path of ["src/config.yml", "src/settings.json", "README.md"])
       expect(evaluateAutoApproval(policy(), manifest, spec, graph({ path, action: "modify" }), [], [], { ...present, request: "x" })).toEqual({ approval: expect.objectContaining({ mode: "limits" }), reasons: [] });
