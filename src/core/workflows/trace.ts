@@ -142,6 +142,7 @@ import {
   type HostApplyRule,
   hostApplyDecision,
   hostApplyRecords,
+  hostApplyVerdict,
 } from "./host-apply.js";
 import type { initiativePriceSamples } from "./initiatives/forecast.js";
 import {
@@ -2059,7 +2060,7 @@ export function replayHostApply(
   decide: HostApplyRule = hostApplyDecision,
 ): HostApplyBoundary[] {
   return hostApplyRecords(store, runId).map((record) => {
-    const verdict = decide(record.writes ?? []);
+    const verdict = hostApplyVerdict(record.writes ?? [], record.suppliedConflict, decide);
     return {
       taskId: record.taskId,
       recorded: record.wouldApply,

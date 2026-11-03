@@ -879,7 +879,13 @@ import {
   stopFault,
   stopMode,
 } from "./stop-reasons.js";
-import { SUPPLIED_CHECK_DIR, SUPPLIED_CHECK_KIND, suppliedCheckRecord } from "./supplied-checks.js";
+import {
+  SUPPLIED_CHECK_DIR,
+  SUPPLIED_CHECK_KIND,
+  type SuppliedCheckRecord,
+  suppliedCheckRecord,
+  suppliedCheckVeto,
+} from "./supplied-checks.js";
 import { taskToolProblems, toolsOfferedTo } from "./task-tools.js";
 import { transcriptDriftSummary, transcriptDrifts } from "./transcript-drift.js";
 import {
@@ -21260,7 +21266,15 @@ ${note}`;
       // `rowFileWrite`, the request's verbatim content under `hostApply`. Otherwise the shadow
       // record before the session (`recordHostApply`) keeps the decision.
       if (!writes.every((w) => (w.rows ? rowsOn : policy.hostApply === "on"))) return false;
-      record = hostApplyRecord(task.id, writes, hostApplyDecision, "on");
+      // Content the project's own file-scoped check rejects goes to an implementer (#2462): the
+      // task's supplied-checks record, made just before this, is read only through its veto.
+      record = hostApplyRecord(
+        task.id,
+        writes,
+        hostApplyDecision,
+        "on",
+        suppliedCheckVeto(this.suppliedCheckOf(runId, task.id)),
+      );
     } catch {
       return false;
     }
@@ -21414,6 +21428,16 @@ ${note}`;
           ...(supplied ? { suppliedCheck: supplied.logical_path } : {}),
         },
       });
+    }
+  }
+  /** The task's `supplied-checks/` record (#2275), or null when none was made or it is unreadable. */
+  private suppliedCheckOf(runId: string, taskId: string): SuppliedCheckRecord | null {
+    const artifact = this.store.latestArtifact(runId, `${SUPPLIED_CHECK_DIR}${taskId}.json`);
+    if (!artifact) return null;
+    try {
+      return JSON.parse(this.store.readArtifact(runId, artifact.id)) as SuppliedCheckRecord;
+    } catch {
+      return null;
     }
   }
   /**
