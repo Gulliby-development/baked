@@ -6240,6 +6240,19 @@ describe("ci check drift gate: the PowerShell gates' cmdlets and the project's o
   });
 });
 
+describe("upstream symbol gate: a dotted test namespace and an unchanged helper are no gap (#2837)", () => {
+  // R91 dagwalk: `Dagwalk.Tests` and "the unchanged Rows helper" were 2 of 2 false would-stops.
+  const spec = (text: string) => ({ requirements: [{ id: "FR-001", text, priority: "must" as const, verification: "automated" as const, sourceRefs: [] }], criteria: [] });
+  test("csharp: no gap; a helper the file lacks still is one", () => {
+    const upstream = [
+      { featureId: "core", path: "src/Dagwalk/Api.cs", text: "namespace Dagwalk;\npublic static class Api {}\n" },
+      { featureId: "core", path: "tests/Dagwalk.Tests/Rows.cs", text: "namespace Dagwalk.Tests;\npublic static class Rows {}\n" },
+    ];
+    expect(upstreamSymbolGaps(spec("namespace Dagwalk.Tests; use the unchanged Rows helper."), upstream)).toEqual([]);
+    expect(upstreamSymbolGaps(spec("Rows gain a public Rows helper."), upstream)).toHaveLength(1);
+  });
+});
+
 describe("upstream symbol gate: a helper the request supplies is no missing member (#2566)", () => {
   // R83 bytemerge training: "the given Rows helper" read as a gap of the supplied Rows.java.
   const spec = (text: string) => ({ requirements: [{ id: "FR-001", text, priority: "must" as const, verification: "automated" as const, sourceRefs: [] }], criteria: [] });

@@ -45,6 +45,22 @@ select {
   font-family: var(--font-sans);
 }
 
+/* A search field's clear button drops Chromium's blue cross for an ink one in the text colour. */
+input[type="search"]::-webkit-search-cancel-button {
+  appearance: none;
+  width: 12px;
+  height: 12px;
+  margin: 0 0 0 6px;
+  background: currentColor;
+  mask: var(--cross) no-repeat center / 12px;
+  opacity: 0.6;
+  cursor: pointer;
+}
+
+input[type="search"]::-webkit-search-cancel-button:hover {
+  opacity: 1;
+}
+
 /* Native selects, checkboxes and radio buttons drop the platform look for the ink outline and accent fill. */
 select {
   appearance: none;
