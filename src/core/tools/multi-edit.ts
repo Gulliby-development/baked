@@ -12,7 +12,15 @@ import { assertEditActive } from "./edit-deadline.js";
 import { buildRichEditError, fuzzyWhitespaceMatchAsync } from "./edit-file.js";
 import { pushEdit } from "./edit-stack.js";
 import { emitFileEdited } from "./file-events.js";
-import { dominantLineEnding, minorityLineCount, toLf, withLineEnding } from "./line-endings.js";
+import {
+  dominantLineEnding,
+  minorityLineCount,
+  splitBom,
+  toLf,
+  withBom,
+  withLineEnding,
+  withoutCopiedBom,
+} from "./line-endings.js";
 import {
   appendAutoFormatResult,
   appendCloneHints,
@@ -86,8 +94,10 @@ export const multiEditTool = {
       const rawContent = await readFile(filePath, "utf-8");
       const eol = dominantLineEnding(rawContent);
       const normalizedLines = minorityLineCount(rawContent);
-      // Match and edit on LF text; the file is written back with its own dominant ending.
-      const originalContent = toLf(rawContent);
+      // Match and edit on LF text without a byte-order mark; the file is written back with its
+      // own dominant ending and its mark (#2789).
+      const body = splitBom(rawContent);
+      const originalContent = toLf(body.text);
       let content = originalContent;
 
       // Phase 1: Validate and apply edits sequentially against evolving content.
@@ -98,7 +108,11 @@ export const multiEditTool = {
       // each edit only shifts lines below it. Edits without lineStart go last (string-match fallback).
       toolPhase("match");
       const sortedEdits = args.edits
-        .map((e) => ({ ...e, oldString: toLf(e.oldString), newString: toLf(e.newString) }))
+        .map((e) => ({
+          ...e,
+          oldString: toLf(withoutCopiedBom(e.oldString)),
+          newString: toLf(withoutCopiedBom(e.newString)),
+        }))
         .sort((a, b) => {
           if (a.lineStart == null && b.lineStart == null) return 0;
           if (a.lineStart == null) return 1;
@@ -241,7 +255,7 @@ export const multiEditTool = {
       }
 
       // Push single undo entry for the entire batch — write immediately
-      const finalContent = withLineEnding(content, eol);
+      const finalContent = withBom(withLineEnding(content, eol), body.bom);
       assertEditActive();
       pushEdit(filePath, rawContent, finalContent, args.tabId);
 
