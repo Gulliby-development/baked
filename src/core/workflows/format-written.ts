@@ -8,7 +8,12 @@ import { cwdPath, isCodePath } from "./check-policy.js";
 import { unresolvedChecks } from "./check-preflight.js";
 import { detectGates } from "./gates.js";
 import { programName } from "./launcher.js";
-import { missingPackages, type PackageProbe, runPackageProbe } from "./package-probe.js";
+import {
+  missingComposerScript,
+  missingPackages,
+  type PackageProbe,
+  runPackageProbe,
+} from "./package-probe.js";
 import { PS_FORMAT_CHECK, PS_FORMAT_FIX } from "./ps-format.js";
 import { stripComments } from "./quality/code-mask.js";
 import { STYLER_CHECK_FILES, STYLER_FIX } from "./r-tools.js";
@@ -703,6 +708,8 @@ function formatWrittenOf(
       // Rscript or pwsh on the PATH without styler or PSScriptAnalyzer fails every check and
       // fixer just the same (#2817).
       if (needsMissing(gate.check, join(root, gate.check.cwd ?? "."))) continue;
+      // `php vendor/bin/pint` before `composer install`: php resolves, the script is not there.
+      if (missingComposerScript(gate.check, join(root, gate.check.cwd ?? "."))) continue;
       const found: Check[] = [];
       // The check runs in the gate's cwd: it holds only the files under it, named from there
       // (`fixPaths` stay workspace paths, as the host matches them).

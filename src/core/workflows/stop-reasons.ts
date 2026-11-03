@@ -337,6 +337,17 @@ export const STOP_REASONS = {
     modes: NOT_ENFORCED,
     defaultMode: "shadow",
   },
+  slice_foreign_conflict: {
+    label:
+      "A host row slice's spec conflict asks for literals that only another slice's rows of the same file hold: the host would settle it without asking a person",
+    // Shadow only (#2476, R79 verhop T004: rows 1-7 of `tests/check.bats` reported three
+    // conflicts about AC-003 and AC-005 literals of rows 8-15, and a person answered the third
+    // with "satisfied by the union of both slices"). It records the would-stop beside the
+    // `conflicts/request/` record and the person is still asked; its promotion, after two bench
+    // rounds with no false would-stop, settles the report as slice-foreign with no clarification.
+    modes: NOT_ENFORCED,
+    defaultMode: "shadow",
+  },
   committed_tree: {
     label:
       "A required static check that passed on the working tree fails on a clean worktree of the feature's commit",
