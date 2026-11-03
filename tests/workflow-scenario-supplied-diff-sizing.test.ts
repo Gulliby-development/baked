@@ -59,10 +59,12 @@ const planned = (id: string, paths: string[], action: "create" | "modify" = "mod
 const graph = (...tasks: Task[]): TaskGraph => ({ schemaVersion: 1, featureId: "spdxok", revision: 1, specHash: "a".repeat(64), planHash: "b".repeat(64), tasks });
 const spdxok = graph(planned("T001", ["src/spdx.ts", "src/cli.ts"]), planned("T004", ["src/license.ts", "src/format.ts"]));
 
-// 80 finished 2-file code tasks of this project at 300k-758k: the per-file middle half prices a
-// 2-file task above 600k, as the 79-214 samples of round 64 did.
+// 80 finished 2-file code tasks of this project at 600k-1.06M: the per-file middle half prices a
+// 2-file task with an expected price above 600k, so history alone splits it. Round 64's own
+// samples (300k-758k) priced it at 307k-762k, whose expected price fits since #2649 splits a
+// multi-file task on its expected price, not its high end; this history keeps the split to compare.
 const history: SizingSample[] = Array.from({ length: 80 }, (_, i) => ({
-  runId: `r${i}`, taskId: "T001", kind: "code", action: "modify", source: "project", files: 2, tokens: 300_000 + i * 5_800, model: null,
+  runId: `r${i}`, taskId: "T001", kind: "code", action: "modify", source: "project", files: 2, tokens: 600_000 + i * 5_800, model: null,
 }));
 const cheapestSample = Math.min(...history.map((s) => s.tokens));
 const policy = (suppliedDiff?: boolean): RunPolicy => ({ ...defaultWorkflowPolicy, sizing: { maxAttemptTokens: 600_000, ...(suppliedDiff === undefined ? {} : { suppliedDiff }) } });
