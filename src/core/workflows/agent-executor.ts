@@ -142,6 +142,7 @@ import {
 } from "./stall.js";
 import {
   AttemptStepController,
+  type AttemptStepUsage,
   type AttemptUsageRecord,
   allTokensCapFor,
   DEFAULT_MAX_ATTEMPT_TOKENS,
@@ -282,6 +283,32 @@ export function outputLimitUsage(
   maxOutputTokens: number,
 ): { inputTokens: number; outputTokens: number } {
   return { inputTokens: Math.ceil(sentBytes / 4), outputTokens: maxOutputTokens };
+}
+
+/**
+ * The usage record of a format-correction attempt (#2777): its model calls as steps, so the run's
+ * cost, the dollar cap, `baked usage` and the bench reports price it like any other model attempt.
+ */
+export function correctionUsage(input: {
+  meta: { profileId: string; taskId: string | null };
+  steps: AttemptStepUsage[];
+  totalTokens: number;
+  maxTokens: number;
+  stopReason: "submitted" | "error" | "aborted";
+  effort?: string | undefined;
+}): AttemptUsageRecord {
+  return {
+    schemaVersion: 1,
+    profileId: input.meta.profileId,
+    taskId: input.meta.taskId,
+    maxSteps: 1,
+    maxTokens: input.maxTokens,
+    stopReason: input.stopReason,
+    finalizedBy: null,
+    totalTokens: input.totalTokens,
+    steps: input.steps,
+    ...(input.effort ? { effort: input.effort } : {}),
+  };
 }
 
 function sumUsage(steps: readonly StepLike[]): Partial<LanguageModelUsage> {
@@ -2074,17 +2101,59 @@ export class NativeAgentExecutor implements AgentExecutor {
             .find((a) => a.id === request.attemptId)?.step_id;
           if (!step) throw new WorkflowFault("OUTPUT_INVALID", "Result attempt missing");
           const correctionPrompt = `Reformat this previous result using submit_result. Preserve its claims and evidence IDs. Do not implement or verify anything again.${request.formatHints ? `\n${request.formatHints}` : ""}\n${result.text.slice(0, 256 * 1024)}`;
+          const correctionReserve =
+            Math.ceil(Buffer.byteLength(correctionPrompt) / 2) +
+            request.profile.maxOutputTokens +
+            8192;
           const attempt = this.store.reserve(
             request.runId,
             step,
             request.profile.model,
-            Math.ceil(Buffer.byteLength(correctionPrompt) / 2) +
-              request.profile.maxOutputTokens +
-              8192,
+            correctionReserve,
             policy,
           );
           // Zero until the single correction step reports its usage.
           let correctionTokens = 0;
+          // The correction's model calls, recorded as its own usage.json so every cost view
+          // prices it like any other model attempt (#2777).
+          const correctionSteps: AttemptStepUsage[] = [];
+          const finishCorrection = (
+            status: "completed" | "failed" | "cancelled",
+            error?: unknown,
+          ) =>
+            this.store.transaction(() => {
+              this.store.artifact(
+                request.runId,
+                "usage",
+                `attempts/${attempt}/usage.json`,
+                canonical(
+                  correctionUsage({
+                    meta,
+                    steps: correctionSteps,
+                    totalTokens: correctionTokens,
+                    maxTokens: correctionReserve,
+                    stopReason:
+                      status === "completed"
+                        ? "submitted"
+                        : status === "cancelled"
+                          ? "aborted"
+                          : "error",
+                    effort,
+                  }),
+                ),
+              );
+              if (status === "completed")
+                this.store.finishAttempt(request.runId, attempt, status, correctionTokens);
+              else
+                this.store.finishAttempt(
+                  request.runId,
+                  attempt,
+                  status,
+                  correctionTokens,
+                  false,
+                  error,
+                );
+            });
           const refusalsBefore = refusals;
           try {
             let correctedText = "";
@@ -2105,6 +2174,18 @@ export class NativeAgentExecutor implements AgentExecutor {
                 // Counted per model call so a response that skips the tool is still charged.
                 onLanguageModelCallEnd: ({ usage, content }) => {
                   correctionTokens += stepTokens(usage, request.profile.maxOutputTokens);
+                  const tools = content.flatMap((part) =>
+                    part.type === "tool-call" ? [part.toolName] : [],
+                  );
+                  correctionSteps.push({
+                    inputTokens: usage.inputTokens ?? null,
+                    outputTokens: usage.outputTokens ?? null,
+                    cacheReadTokens: usage.inputTokenDetails?.cacheReadTokens ?? null,
+                    cacheWriteTokens: usage.inputTokenDetails?.cacheWriteTokens ?? null,
+                    toolCalls: tools.length,
+                    ...(tools.length ? { tools } : {}),
+                    compactedBytes: 0,
+                  });
                   correctedText = content
                     .flatMap((part) => (part.type === "text" ? [part.text] : []))
                     .join("");
@@ -2134,28 +2215,23 @@ export class NativeAgentExecutor implements AgentExecutor {
               );
             }
             submitted = schema.parse(submitted ?? JSON.parse(correctedText));
-            this.store.transaction(() =>
-              this.store.finishAttempt(request.runId, attempt, "completed", correctionTokens),
-            );
+            finishCorrection("completed");
           } catch (error) {
-            if (isOutputLimit(error) && !request.signal.aborted)
-              correctionTokens += stepTokens(
-                outputLimitUsage(
-                  Buffer.byteLength(request.prompt),
-                  request.profile.maxOutputTokens,
-                ),
+            if (isOutputLimit(error) && !request.signal.aborted) {
+              const usage = outputLimitUsage(
+                Buffer.byteLength(request.prompt),
                 request.profile.maxOutputTokens,
               );
-            this.store.transaction(() =>
-              this.store.finishAttempt(
-                request.runId,
-                attempt,
-                request.signal.aborted ? "cancelled" : "failed",
-                correctionTokens,
-                false,
-                error,
-              ),
-            );
+              correctionTokens += stepTokens(usage, request.profile.maxOutputTokens);
+              correctionSteps.push({
+                ...usage,
+                cacheReadTokens: null,
+                cacheWriteTokens: null,
+                toolCalls: 0,
+                compactedBytes: 0,
+              });
+            }
+            finishCorrection(request.signal.aborted ? "cancelled" : "failed", error);
             // A provider outage is not invalid output: the scheduler retries or falls back, and
             // retries a response past the output cap at a lower effort.
             if (isTransient(error) || isOutputLimit(error)) throw error;
