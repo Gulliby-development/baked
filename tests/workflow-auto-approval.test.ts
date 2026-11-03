@@ -483,6 +483,20 @@ describe("planner scope advice", () => {
     expect(advice).toContain("authorizes every write it lists");
     expect(advice).toContain("Do not mention approval in task descriptions or rationales");
   });
+  // #2672: a request that names a longer file ending with a write's name (`tests/test_util.py`,
+  // `src/app.tsx`) did not name the write, but a substring match left it out of the advice, so the
+  // planner kept a deletion or an out-of-scope write and the plan went to a person anyway.
+  test("a write counts as named by the request only by its whole file name", () => {
+    const [deleted] = planScopeAdvice(limited, graph([{ path: "src/util.py", action: "delete" }]), undefined, false, "Add tests in tests/test_util.py.");
+    expect(deleted).toContain("src/util.py would be deleted");
+    const [outside] = planScopeAdvice(limited, graph([modify("wordcount.py")]), undefined, false, "Cover empty input in tests/test_wordcount.py.");
+    expect(outside).toContain("wordcount.py is outside the allowed paths");
+    const [tsx] = planScopeAdvice(limited, graph([modify("lib/app.ts")]), undefined, false, "Render the list in lib/app.tsx.");
+    expect(tsx).toContain("lib/app.ts is outside the allowed paths");
+    // The file itself, by path or by name, still makes the write required.
+    expect(planScopeAdvice(limited, graph([modify("wordcount.py")]), undefined, false, "Fix the count in `wordcount.py`.")).toEqual([]);
+    expect(planScopeAdvice(limited, graph([modify("lib/app.ts")]), undefined, false, "Fix LIB/APP.TS.")).toEqual([]);
+  });
   // R22 ratesim 029a5aec: the request names the csproj edits and the placeholder delete, so the
   // planner could only resubmit the same plan after the advice (#1111).
   test("leaves out writes the request names and template placeholders it deletes", () => {

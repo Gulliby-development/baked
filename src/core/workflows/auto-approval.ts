@@ -21,7 +21,7 @@ import {
 import { SLICE_PART, SPLIT_PART } from "./sizing.js";
 import { stopMode } from "./stop-reasons.js";
 import type { ArtifactRow, RequestRow } from "./store.js";
-import { hostWritten } from "./task-graph.js";
+import { hostWritten, namesPath } from "./task-graph.js";
 import type { RuntimeState } from "./types.js";
 import { isAcceptanceRequest } from "./v2/acceptance.js";
 
@@ -420,13 +420,15 @@ const templatePlaceholder = /(?:^|\/)(?:UnitTest1|Class1)\.(?:cs|fs|vb)$/i;
 /**
  * A write the planner cannot drop: the request names its file, or it deletes a project template's
  * placeholder. Advising against it only makes the planner submit the same plan again (#1111).
+ * The request names the file by its whole path or name (`namesPath`): `tests/test_util.py` does not
+ * name `src/util.py`, nor `lib/app.tsx` `lib/app.ts` (#2672).
  */
 function requiredByRequest(write: Write, request: string): boolean {
   if (write.action === "delete" && templatePlaceholder.test(write.path)) return true;
   const text = request.toLowerCase();
   const path = write.path.toLowerCase();
   const name = path.split("/").at(-1) ?? path;
-  return text.includes(path) || (name.includes(".") && text.includes(name));
+  return namesPath(text, path) || (name.includes(".") && namesPath(text, name));
 }
 
 /**
