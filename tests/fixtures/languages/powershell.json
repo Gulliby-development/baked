@@ -86,6 +86,21 @@
     "diagnosticFormats": null,
     "testClasses": null,
     "testDeclarations": ["tests/Sum.Tests.ps1: 2 tests"],
-    "rowFileShapes": null
+    "rowFileShapes": [
+      "tests/Cols.Tests.ps1",
+      "BeforeAll {",
+      "    . \"$PSScriptRoot/../src/Cols.ps1\"",
+      "}",
+      "",
+      "Describe 'cols' {",
+      "    It 'cols <Argv>' -TestCases @(",
+      "        @{ Argv = @('5'); Stdin = \"a b c`n\"; Out = \"a b c`n\" }",
+      "        @{ Argv = @('1'); Stdin = \"it's`n\"; Out = \"it's`n\" }",
+      "    ) {",
+      "        $Stdin | Invoke-Cols @Argv | Should -BeExactly $Out",
+      "    }",
+      "}",
+      ""
+    ]
   }
 }

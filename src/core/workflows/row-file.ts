@@ -1,7 +1,7 @@
 import { type LanguageRecord, none, rowOf } from "../intelligence/language-records.js";
 import { detectLanguageFromPath } from "../intelligence/types.js";
 import { stripComments } from "./quality/code-mask.js";
-import { CONTINUES, rowHead } from "./row-block-drift.js";
+import { CONTINUES, rowHead, rowNotation } from "./row-block-drift.js";
 import { restoredLine, rowSpan, rowTail } from "./row-restore.js";
 
 /**
@@ -34,6 +34,12 @@ export interface RowFileShape {
    * tuple. A shape line is a row line when it starts with the prescribed rows' head and matches.
    */
   rowLine: RegExp;
+  /**
+   * Rows whose head matches need no separator (#2553): an attribute row (Rust rstest
+   * `#[case(...)]`) or a line of a list whose lines are its elements (PowerShell `@(` ... `)`, a
+   * command row per line). A one-row shape of such rows gives the separator (none) between rows.
+   */
+  bareRows?: RegExp;
   /** A shape file and the rows its golden writes into it (`tests/language-parity.test.ts`). */
   example: { path: string; reference: string; rows: readonly string[] };
 }
@@ -238,7 +244,38 @@ export const ROW_FILE_SHAPES: LanguageRecord<RowFileShape> = {
       ],
     },
   },
-  rust: none(FOLLOW_UP),
+  rust: {
+    // A tuple in a `const` array (`("data: a\\n\\n", &["a"]),`), a call statement in a test
+    // function (`row(&["cols", "3"], "x", 0, "out", "");`), a struct literal (`Row { input: "a",
+    // events: &[] },`, which rustfmt splits past 18 characters) or an rstest attribute row
+    // (`#[case(&["cols"], 0)]`, no separator; `#[rstest]` is no row).
+    rowLine: /^\s*(?:\(|&?\[|#\[case\(|[A-Za-z_][\w:]*\s*[({])/,
+    bareRows: /^#\[$/,
+    example: {
+      path: "tests/parse_rows.rs",
+      reference: [
+        "use sseknit::parse;",
+        "",
+        "const ROWS: &[(&str, &[&str])] = &[",
+        '    ("data: a\\n\\n", &["a"]),',
+        '    (": comment\\n\\ndata: b\\n\\n", &["b"]),',
+        "];",
+        "",
+        "#[test]",
+        "fn rows() {",
+        "    for (input, events) in ROWS {",
+        "        assert_eq!(parse(input), *events);",
+        "    }",
+        "}",
+        "",
+      ].join("\n"),
+      // sseknit (R84) `parse`: event streams whose `\n` escapes are the file's text as given.
+      rows: [
+        '("data: x\\ndata: y\\n\\n", &["x\\ny"])',
+        '(": comment\\n\\nevent: tick\\ndata: 1\\n\\n", &["1"])',
+      ],
+    },
+  },
   java: {
     // `Arguments.of(...)` rows in a `Stream.of(` (the last row `Arguments.of(...));`). A JUnit
     // `@CsvSource` row is a bare string, which `rowHead` reads no head from: #2553.
@@ -280,10 +317,82 @@ export const ROW_FILE_SHAPES: LanguageRecord<RowFileShape> = {
   kotlin: none(FOLLOW_UP),
   scala: none(FOLLOW_UP),
   csharp: none(FOLLOW_UP),
-  ruby: none(FOLLOW_UP),
+  ruby: {
+    // Arrays (or hashes) in a `ROWS = [` list; rubocop's layout puts no comma after the last row.
+    rowLine: CALL_OR_LITERAL,
+    example: {
+      path: "test/split_rows_test.rb",
+      reference: [
+        'require "minitest/autorun"',
+        'require_relative "../lib/split"',
+        "",
+        "class SplitRowsTest < Minitest::Test",
+        "  ROWS = [",
+        '    ["", []],',
+        '    [",", ["", ""]]',
+        "  ].freeze",
+        "",
+        "  def test_rows",
+        "    ROWS.each { |input, out| assert_equal out, Split.split(input) }",
+        "  end",
+        "end",
+        "",
+      ].join("\n"),
+      rows: ['["a,b", ["a", "b"]]', '["a\\tb,c", ["a\\tb", "c"]]'],
+    },
+  },
   php: none(FOLLOW_UP),
-  swift: none(FOLLOW_UP),
-  lua: none(FOLLOW_UP),
+  swift: {
+    // Tuples in a `let rows: [(...)] = [` list; swift-format's layout: two spaces, a comma after
+    // every row including the last.
+    rowLine: CALL_OR_LITERAL,
+    example: {
+      path: "Tests/SplitTests/SplitRowsTests.swift",
+      reference: [
+        "import Split",
+        "import XCTest",
+        "",
+        "final class SplitRowsTests: XCTestCase {",
+        "  let rows: [(String, [String])] = [",
+        '    ("", []),',
+        "  ]",
+        "",
+        "  func testRows() {",
+        "    for (input, out) in rows {",
+        "      XCTAssertEqual(split(input), out)",
+        "    }",
+        "  }",
+        "}",
+        "",
+      ].join("\n"),
+      rows: ['("a,b", ["a", "b"])', '("a\\tb,\\"c\\"", ["a\\tb", "\\"c\\""])'],
+    },
+  },
+  lua: {
+    // Tables in a list (`{ "a,b", { "a", "b" } },`); stylua's layout: tab indentation, a comma
+    // after every row including the last.
+    rowLine: CALL_OR_LITERAL,
+    example: {
+      path: "spec/split_rows_spec.lua",
+      reference: [
+        'local split = require("split")',
+        "",
+        "local rows = {",
+        '\t{ "", {} },',
+        "}",
+        "",
+        'describe("split", function()',
+        "\tfor _, row in ipairs(rows) do",
+        "\t\tit(row[1], function()",
+        "\t\t\tassert.are.same(row[2], split(row[1]))",
+        "\t\tend)",
+        "\tend",
+        "end)",
+        "",
+      ].join("\n"),
+      rows: ['{ "a,b", { "a", "b" } }', '{ "a,,b", { "a", "", "b" } }'],
+    },
+  },
   zig: none(FOLLOW_UP),
   bash: none(FOLLOW_UP),
   ocaml: none(FOLLOW_UP),
@@ -291,10 +400,58 @@ export const ROW_FILE_SHAPES: LanguageRecord<RowFileShape> = {
   r: none(FOLLOW_UP),
   vue: none("a Vue single-file component is not a test file of prescribed rows"),
   svelte: none("a Svelte component is not a test file of prescribed rows"),
-  rescript: none(FOLLOW_UP),
+  rescript: {
+    // `Harness.row(...)` calls in a `let rows = [` list: two spaces, a comma after every row
+    // including the last (R85 csp). `rescript format` skips `tests/*Test.res`.
+    rowLine: CALL_OR_LITERAL,
+    example: {
+      path: "tests/CliTest.res",
+      reference: [
+        "let rows = [",
+        '  Harness.row(["--version"], "", 0, "csp 1.0\\n", ""),',
+        "]",
+        "",
+        "Harness.run(rows)",
+        "",
+      ].join("\n"),
+      // csp (R85) `cli` T004: usage rows with `\n` escapes as given.
+      rows: [
+        'Harness.row(["--help"], "", 0, "usage: csp [--strict] FILE\\n", "")',
+        'Harness.row(["--nope"], "", 2, "", "csp: unknown option --nope\\n")',
+      ],
+    },
+  },
   solidity: none(FOLLOW_UP),
   sql: none("SQL tests (pgTAP) assert per statement, with no list of rows"),
-  powershell: none(FOLLOW_UP),
+  powershell: {
+    // Pester `-TestCases @(` hashtables (`@{ Argv = @('3'); Out = "a`n" }`, one per line, no
+    // separator) or a helper's command rows (`Row @('cols', '3') -Code 0 -Out "a`n" -Err ''`, R84
+    // wrapsmith). A row in the request's notation (`run "cols" ... => 0 ...`) is not one.
+    rowLine: /^\s*(?:@\{|[A-Za-z][\w-]*\s+[@$'"(-])/,
+    bareRows: /^/,
+    example: {
+      path: "tests/Cols.Tests.ps1",
+      reference: [
+        "BeforeAll {",
+        '    . "$PSScriptRoot/../src/Cols.ps1"',
+        "}",
+        "",
+        "Describe 'cols' {",
+        "    It 'cols <Argv>' -TestCases @(",
+        '        @{ Argv = @(\'3\'); Stdin = "abc def ghi`n"; Out = "abc`ndef`nghi`n" }',
+        "    ) {",
+        "        $Stdin | Invoke-Cols @Argv | Should -BeExactly $Out",
+        "    }",
+        "}",
+        "",
+      ].join("\n"),
+      // wrapsmith (R84) `cols`: PowerShell's own escapes (`` `n ``), written as given.
+      rows: [
+        '@{ Argv = @(\'5\'); Stdin = "a b c`n"; Out = "a b c`n" }',
+        "@{ Argv = @('1'); Stdin = \"it's`n\"; Out = \"it's`n\" }",
+      ],
+    },
+  },
 };
 
 /** What the decision knows of a prescribed row file's shape: counts and flags only. */
@@ -405,8 +562,12 @@ export function rowFilePlan(
   if (!record || !shape || !rows.length) return { inputs, content: null };
   const heads = new Set(rows.map((r) => rowHead(r.trim())));
   const [head = ""] = heads;
+  // A row in the request's own notation (`run "cols" "3" => 0 "out" ""`, #2583) is no code of the
+  // language, even when it starts like a command row: the session translates it.
   inputs.sameHead =
-    heads.size === 1 && head !== "" && rows.every((r) => record.rowLine.test(r.trim()));
+    heads.size === 1 &&
+    head !== "" &&
+    rows.every((r) => record.rowLine.test(r.trim()) && !rowNotation(r));
   if (!inputs.sameHead) return { inputs, content: null };
   const { runs, oneLine } = shapeRuns(path, shape.text, head, record);
   inputs.runs = runs.length;
@@ -423,8 +584,13 @@ export function rowFilePlan(
   const eol = (lines[run.rows[0] ?? 0] ?? "").endsWith("\r") ? "\r" : "";
   // One shape row gives the separator between rows only when nothing else follows its close: the
   // `));` after a Java `Stream.of(` list's one row closes the list, it does not separate rows.
+  // An attribute row or a PowerShell list line needs none (`bareRows`).
+  const tail = rowTail(first) ?? "";
   inputs.separated =
-    rows.length === 1 || rowLines.length > 1 || /^[,;]$/.test(rowTail(first) ?? "");
+    rows.length === 1 ||
+    rowLines.length > 1 ||
+    /^[,;]$/.test(tail) ||
+    (tail === "" && record.bareRows?.test(head) === true);
   if (!inputs.arity || !inputs.separated) return { inputs, content: null };
   const from = run.rows[0] ?? 0;
   const to = run.rows[run.rows.length - 1] ?? from;

@@ -138,6 +138,7 @@ if (command === "export" && args.length === 2) {
           `  ${run.featureId} ${run.runId}: final ${usd(run.finalUsd)}, ${run.boundaries.length} attempts, ` +
             `new stops ${run.newStops}, new growth ${run.newGrowth}, stops removed ${run.removedStops}, ` +
             `first-response stops ${run.newFirstByteStops} of ${run.firstByte.length} calls, ` +
+            `stream output stops ${run.newStreamOutputStops} of ${run.streamOutputs.length} guarded steps, ` +
             `cost-cap refusals ${run.newCostStops} of ${run.costCap.length} attempts, ` +
             `new test splits ${run.newTestSplits} of ${run.testSplits.length} test tasks, ` +
             `new recovery rungs ${run.newRecoveries} of ${run.stallLadder.length} stalls, ` +
@@ -162,7 +163,7 @@ if (command === "export" && args.length === 2) {
           );
         for (const b of run.activeTimes.filter((b) => b.clean && b.clean.after !== b.recorded.after))
           console.log(
-            `    ${b.report}: clean pace (shadow) would cap ${b.clean?.after} ms at ${b.clean?.tokensPerMinute} tokens/min (${b.clean?.basis}, ${b.clean?.rates.length} clean runs, ${b.clean?.silentMs} ms silent), recorded ${b.recorded.after} ms`,
+            `    ${b.report}: clean pace (shadow) would cap ${b.clean?.after} ms at ${b.clean?.tokensPerMinute} tokens/min (${b.clean?.basis}, ${b.clean?.rates.length} clean runs, ${b.clean?.silentMs} ms silent, ${b.clean?.stallMs ?? "?"} ms of it stalled), recorded ${b.recorded.after} ms`,
           );
         for (const b of run.repeatedFailures.filter((b) => b.replayed === "repeat"))
           console.log(
