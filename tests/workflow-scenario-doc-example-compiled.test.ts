@@ -4,8 +4,9 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { isNoRow, SUPPORTED_LANGUAGES } from "../src/core/intelligence/language-records.js";
 import { runDocExamples } from "../src/core/verification/doc-examples.js";
+import { entryPointCommand } from "../src/core/verification/entry-points.js";
 import { commandShape, EXAMPLE_BUILD, exampleBuildOf, prepareExampleBuild } from "../src/core/verification/example-build.js";
-import type { ProcessResult, ProcessScope } from "../src/core/workflows/process-scope.js";
+import { type ProcessResult, ProcessScope } from "../src/core/workflows/process-scope.js";
 
 // #2505, R81 hintsieve-update (Swift): the README's 11 `swift run hintsieve ...` examples ran in a
 // copy of the source files with no `.build`; 8 compiled from nothing under the 30 s example timeout
@@ -126,5 +127,89 @@ describe("scenario: R81 vtsnap-update, an example that names a build output (#25
     const results = await runDocExamples(scope, [{ path: "README.md", text: readme }], { root, files: Object.keys(files), executables: ["dotnet"], signal: new AbortController().signal, sandbox: () => null });
     expect(results.map((r) => r.status)).toEqual(["match"]);
     expect(calls).toEqual([["dotnet", "src/Vtsnap/bin/Release/net10.0/vtsnap.dll", "diff", "a"]]);
+  });
+});
+
+// #2511, R81 ratdec (Elixir): the README builds an escript (`mix escript.build`) and runs
+// `./ratdec ...`; no check builds the escript and `./ratdec` is no program the checks start, so all
+// five examples were recorded not_run. The escript's `main/1` now runs through `mix run -e`, on the
+// checks' `_build`.
+describe("scenario: R81 ratdec, README examples of an Elixir escript (#2511)", () => {
+  const MIX = [
+    "defmodule Ratdec.MixProject do",
+    "  use Mix.Project",
+    "",
+    "  def project do",
+    '    [app: :ratdec, version: "0.1.0", name: "Ratdec", escript: escript()]',
+    "  end",
+    "",
+    "  defp escript, do: [main_module: Ratdec.CLI]",
+    "end",
+    "",
+  ].join("\n");
+  const CLI = 'defmodule Ratdec.CLI do\n  def main(argv), do: IO.puts(Enum.join(argv, " "))\nend\n';
+  const SOURCES = { "mix.exs": MIX, "lib/ratdec/cli.ex": CLI };
+  const readme = [
+    "# ratdec",
+    `${fence}console`,
+    "$ mix escript.build",
+    fence,
+    ...[["./ratdec", "eval", "7/3"], ["escript", "ratdec", "eval", "1/2"]].flatMap((argv) => [
+      `${fence}console`,
+      `$ ${argv.join(" ")}`,
+      argv.slice(-2).join(" "),
+      fence,
+    ]),
+  ].join("\n");
+  const examples = (root: string, scope: ProcessScope) =>
+    runDocExamples(scope, [{ path: "README.md", text: readme }], { root, files: Object.keys(SOURCES), executables: ["mix"], signal: new AbortController().signal, sandbox: () => null });
+
+  test("./ratdec and escript ratdec run the escript's main through mix run on the checks' _build", async () => {
+    const root = project({ ...SOURCES, "_build/dev/lib/ratdec/ebin/Elixir.Ratdec.CLI.beam": "beam" });
+    const calls: string[][] = [];
+    const scope = {
+      execute: async (program: string, args: string[], options: { cwd: string }) => {
+        calls.push([program, ...args]);
+        const built = existsSync(join(options.cwd, "_build", "dev", "lib", "ratdec", "ebin"));
+        const output = built && args.includes("--no-compile") ? `${args.slice(args.indexOf("--") + 1).join(" ")}\n` : "";
+        return { exitCode: built ? 0 : 1, signal: null, output, timedOut: false, cancelled: false, truncated: false, durationMs: 1 };
+      },
+    } as unknown as ProcessScope;
+    const results = await examples(root, scope);
+    expect(results.filter((r) => r.command !== "mix escript.build").map((r) => [r.command, r.status, r.reason])).toEqual([
+      ["./ratdec eval 7/3", "match", undefined],
+      ["escript ratdec eval 1/2", "match", undefined],
+    ]);
+    expect(calls).toContainEqual(["mix", "run", "--no-compile", "-e", "Ratdec.CLI.main(System.argv())", "--", "eval", "7/3"]);
+  });
+
+  test("the escript's name, main module and launcher, read from mix.exs", () => {
+    const at = (files: Record<string, string>, argv: string[]) => entryPointCommand(project(files), argv, ["/usr/bin/mix"])?.argv ?? null;
+    const launcher = ["/usr/bin/mix", "run", "-e", "Ratdec.CLI.main(System.argv())", "--", "a"];
+    expect(at(SOURCES, ["./ratdec", "a"])).toEqual(launcher);
+    expect(at(SOURCES, ["escript", "./ratdec", "a"])).toEqual(launcher);
+    expect(at(SOURCES, ["ratdec", "a"])).toEqual(launcher);
+    // The escript's own `name:` wins over the app; the project's `name: "Ratdec"` is not it.
+    const named = { "mix.exs": MIX.replace("[main_module: Ratdec.CLI]", "[main_module: Ratdec.CLI, name: :rd]") };
+    expect(at(named, ["./rd", "a"])).toEqual(launcher);
+    expect(at(named, ["./ratdec", "a"])).toBeNull();
+    // No escript key: nothing to run; a path that is not at the root is never an entry point.
+    expect(at({ "mix.exs": MIX.replace(", escript: escript()", "").replace(/ {2}defp escript.*\n/, "") }, ["./ratdec", "a"])).toBeNull();
+    expect(at(SOURCES, ["./bin/ratdec", "a"])).toBeNull();
+    // A by-path form names only a command the build writes at the root, never a Cargo binary.
+    const cargo = { "Cargo.toml": '[package]\nname = "tool"\n', "src/main.rs": "fn main() {}\n" };
+    expect(entryPointCommand(project(cargo), ["./tool"], ["cargo"])).toBeNull();
+  });
+
+  // mix is a batch file on Windows, which the examples start only by its full name.
+  test.skipIf(Bun.which("mix") === null || process.platform === "win32")("with mix installed, the example runs the compiled escript module and matches", async () => {
+    const root = project(SOURCES);
+    const compiled = Bun.spawnSync(["mix", "compile"], { cwd: root, env: { ...process.env, MIX_ENV: "dev" } });
+    expect(compiled.exitCode).toBe(0);
+    const results = await examples(root, new ProcessScope());
+    expect(results.filter((r) => r.command !== "mix escript.build").map((r) => [r.status, r.reason])).toEqual([
+      ["match", undefined],
+      ["match", undefined],
+    ]);
   });
 });
