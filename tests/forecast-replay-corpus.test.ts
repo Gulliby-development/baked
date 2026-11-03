@@ -668,7 +668,7 @@ describe("test task splits replay on recorded sizing reports (#1789)", () => {
             const paths = graph.tasks.find((t) => t.id === task.taskId)?.writes.filter((w) => w.action !== "delete").map((w) => w.path) ?? [];
             if (paths.length !== task.files) continue;
             const replayed = multiFileSplit(task.estimate, paths, report.maxAttemptTokens);
-            const label = `${relative(ROOT, path)} ${runId.slice(0, 8)} ${name} ${task.taskId}`;
+            const label = `${relative(ROOT, path).replaceAll("\\", "/")} ${runId.slice(0, 8)} ${name} ${task.taskId}`;
             if (replayed?.split !== task.oversized) changed.push(`${label} ${paths.join(",")}`);
             else if (task.oversized) kept.push(label);
           }
