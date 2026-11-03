@@ -143,6 +143,14 @@ describe("scenario: plan cost priced at the run's measured rate (#1386)", () => 
     expect(planCostText(cost)).toEndWith(`on ${SONNET}`);
   });
 
+  // Hot module cost-forecast (#2629): a task attempt that used no tokens paid nothing per token, so
+  // it does not make the run's own rate.
+  test("a task attempt that used no tokens is no run rate", () => {
+    const empty = { id: "t1", stage: "task-T001", model: SONNET, input: 0, output: 0 };
+    const cost = planCostOf(makeStore([...cached(SONNET), empty], sizing), runId);
+    expect(cost.implementation?.rate).toBe("mix");
+  });
+
   test("without any measured attempt the task mix prices them", () => {
     const cost = planCostOf(makeStore([{ id: "host", stage: "check", model: null, input: 0, output: 0 }], sizing), runId);
     expect(cost.implementation).toMatchObject({ rate: "default", usd: { low: 3_000_000 * rateAt(SONNET, TASK_MIX) } });
