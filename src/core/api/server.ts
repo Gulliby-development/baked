@@ -65,10 +65,13 @@ import { readHistory } from "../workflows/estimate.js";
 import { uniqueFeatureId } from "../workflows/feature-id.js";
 import { initiativeStartRequest } from "../workflows/initiatives/forms.js";
 import { InitiativeService } from "../workflows/initiatives/service.js";
+import { executingLeases, PARALLEL_CAP } from "../workflows/leases.js";
+import { isParallelCapBusy, type QueuedResume, queuedResume } from "../workflows/queued-resume.js";
 import { redactSecrets } from "../workflows/redaction.js";
 import { errorRecovery, type RecoveryAdvice } from "../workflows/remedies.js";
 import {
   PolicySchema,
+  parallelRunCap,
   type RunSnapshot,
   SafeId,
   type WorkflowErrorCode,
@@ -157,6 +160,8 @@ import { setupRoute } from "./setup-routes.js";
 
 /** How long shutdown waits for the HTTP server to report its connections closed. */
 const STOP_WAIT_MS = 1000;
+/** How long a resume at the parallel-run cap waits for the drive's refusal before answering. */
+const QUEUED_ANSWER_WAIT_MS = 1500;
 /** How long `baked serve` waits after start before it opens the project's index. */
 const BACKGROUND_INDEX_DELAY_MS = 3000;
 export const API_VERSION = 1;
@@ -812,10 +817,49 @@ export async function startApiServer(options: ApiServerOptions): Promise<ApiServ
     executeWorkflowCommand(service, args, shutdown.signal);
 
   /**
+   * Runs a resume here could not start because the workspace was at its parallel-run cap, with
+   * the answer the CLI and the TUI give (`queuedResume`, #2415, #2421). Kept until the run is
+   * driven again or leaves `paused`.
+   */
+  const queuedRuns = new Map<string, QueuedResume>();
+  /** What a resume applied before its drive, in the words of `queuedResume`'s message. */
+  const changeOf = (args: WorkflowArgs): string =>
+    args.command === "repair"
+      ? "The repair round is granted"
+      : typeof args.flags.remedy === "string"
+        ? "The remedy is recorded"
+        : args.flags["accept-workspace"] === true
+          ? "The workspace changes are accepted"
+          : "The resume is recorded";
+  /** The cap's refusal as the drive would raise it, or null while a slot is free for `runId`. */
+  const capRefusal = (runId: string): WorkflowFault | null => {
+    const cap = parallelRunCap(service.config);
+    const executing = executingLeases(service.store)
+      .filter((lease) => lease.run_id !== runId)
+      .map((lease) => lease.run_id ?? lease.owner_id);
+    if (executing.length < cap) return null;
+    return new WorkflowFault("WORKSPACE_BUSY", "The workspace is at its parallel-run cap", {
+      reason: PARALLEL_CAP,
+      maxParallelRuns: cap,
+      executing,
+    });
+  };
+  /** The queued answer of a run still waiting for a slot, or null. */
+  const queuedOf = (runId: string): QueuedResume | null => {
+    const queued = queuedRuns.get(runId);
+    if (!queued) return null;
+    const waiting =
+      service.store.run(runId).status === "paused" &&
+      !executingLeases(service.store).some((lease) => lease.run_id === runId);
+    if (!waiting) queuedRuns.delete(runId);
+    return waiting ? queued : null;
+  };
+
+  /**
    * Runs a `run` or `resume` command like the CLI and answers once it starts driving. The drive
    * keeps going in the background; its outcome is in the event log and the run status.
    */
-  async function launch(args: WorkflowArgs): Promise<RunSnapshot> {
+  async function launch(args: WorkflowArgs): Promise<RunSnapshot & { queued?: QueuedResume }> {
     let started = false;
     let onDrive: (runId: string) => void = () => {};
     const driving = new Promise<string>((resolve) => {
@@ -833,13 +877,29 @@ export async function startApiServer(options: ApiServerOptions): Promise<ApiServ
       progress.end(progressId);
       started = true;
       driven = runId;
+      queuedRuns.delete(runId);
       // A second drive of a run this server is driving fails at once; keep waiting on the first.
       if (!runDrives.has(runId)) runDrives.set(runId, tracked);
       onDrive(runId);
     });
     const tracked: Promise<unknown> = execution
+      .then((result) => {
+        // A resume that applied a change answers the cap's refusal with `queued` itself.
+        const queued = (result as { queued?: QueuedResume } | null)?.queued;
+        if (driven !== undefined && queued) queuedRuns.set(driven, queued);
+      })
       .catch((error: unknown) => {
         if (!started) return;
+        // A plain resume refused at the cap waits for a slot; the run view says so (#2421).
+        const queued =
+          driven !== undefined && isParallelCapBusy(error)
+            ? queuedResume(error, service.store, driven, changeOf(args))
+            : null;
+        if (driven !== undefined && queued) {
+          queuedRuns.set(driven, queued);
+          log(JSON.stringify({ event: "drive-queued", runId: driven, message: queued.message }));
+          return;
+        }
         const { code, message } = errorOf(error);
         log(JSON.stringify({ event: "drive-error", code, message: redactSecrets(message) }));
       })
@@ -854,7 +914,19 @@ export async function startApiServer(options: ApiServerOptions): Promise<ApiServ
     drives.add(tracked);
     const runId = await Promise.race([driving, execution.then(() => undefined)]);
     if (!runId) throw new ApiError(500, "INTERNAL", "The run did not start");
-    return service.get(runId);
+    // At the cap the drive is refused moments after it began: wait for that answer briefly so
+    // the response says the run waits for a slot, and fall back to the cap as it stands now.
+    const refusal = capRefusal(runId);
+    if (refusal) {
+      await Promise.race([tracked, Bun.sleep(QUEUED_ANSWER_WAIT_MS)]);
+      if (!queuedRuns.has(runId) && service.store.run(runId).status === "paused") {
+        const queued = queuedResume(refusal, service.store, runId, changeOf(args));
+        if (queued) queuedRuns.set(runId, queued);
+      }
+    }
+    const snapshot = await service.get(runId);
+    const queued = queuedOf(runId);
+    return queued ? { ...snapshot, queued } : snapshot;
   }
 
   /**
@@ -1497,11 +1569,11 @@ export async function startApiServer(options: ApiServerOptions): Promise<ApiServ
     const action = match[2];
     if (action === undefined) {
       only("GET");
-      return json(
-        200,
-        await execute({ command: "status", positional: [runId], flags: {} }),
-        origin,
-      );
+      const status = (await execute({ command: "status", positional: [runId], flags: {} })) as
+        | Record<string, unknown>
+        | undefined;
+      const queued = queuedOf(runId);
+      return json(200, queued ? { ...status, queued } : status, origin);
     }
     if ((MUTATIONS as readonly string[]).includes(action)) {
       only("POST");
