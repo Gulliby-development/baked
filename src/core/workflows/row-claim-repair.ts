@@ -235,6 +235,25 @@ export function repairSpecRows(
   };
 }
 
+/**
+ * `text` as `repairRunRows` leaves it in the run's prompt: each restatement of a row put back from
+ * the request and the overridden records' literals. `text` unchanged without an `on` record. The
+ * invalid-output repeat guard reads its note in this form too, since the repair rewrites a note
+ * that restates a row as soon as it goes in (#2696).
+ */
+export function repairedRunText(
+  store: WorkflowStore,
+  runId: string,
+  state: RuntimeState,
+  text: string,
+): string {
+  const records = rowClaimRecords(store, runId).filter((r) => r.mode === "on");
+  if (!records.length) return text;
+  const paths = graphPaths(state.rootGraph ?? state.graph);
+  const request = state.requestText || state.prompt;
+  return repairRowText(request, paths, text, literalCorrections(records)).text;
+}
+
 /** Where a repair of the run's spec and prompt from the request's rows is recorded (#2563). */
 export const ROW_SPEC_REPAIR_PREFIX = "spec-repairs/row-claims-";
 

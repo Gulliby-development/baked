@@ -340,3 +340,96 @@ void main() {
     expect(withInlineRows("void main() {}\n", file)).toContain("void main() {\n  // BEGIN acceptance rows:");
   });
 });
+
+// #2410: the Kotlin rows are an inner @Nested class of the file's own class, as Java's are, so the
+// file keeps one top-level type; a gradle written-tests run names that class too.
+describe("Kotlin rows in the file's own class (#2410)", () => {
+  const kotlin: InlineRowTest = { mode: "inline", framework: "kotlin", package: "com.ex.lanes", test: "src/test/kotlin/com/ex/lanes/OptionsTest.kt" };
+  const file = inlineRowFile(kotlin, rows);
+  const own = `package com.ex.lanes
+
+import org.junit.jupiter.api.Test
+import kotlin.test.assertEquals
+
+/** A '{' in a comment, and class Fake { in a string, are not code. */
+private const val BRACE = "} class Fake {"
+
+class OptionsTest {
+    fun acceptanceActual(input: Any?): Any? = parse(input as List<*>)
+
+    @Test
+    fun lanes() {
+        assertEquals(1, parse(listOf("{")))
+    }
+}
+`;
+
+  test("the block ends the file's class, indented by its members; a second write changes nothing", () => {
+    const written = withInlineRows(own, file);
+    expect(topLevelTypes(written)).toEqual(["class OptionsTest"]);
+    expect(written).toContain("    }\n\n    // BEGIN acceptance rows: cases from");
+    expect(written).toContain("    @org.junit.jupiter.api.Nested\n    inner class AcceptanceRows {\n");
+    expect(written.trimEnd()).toEndWith("    // END acceptance rows\n}");
+    expect(withInlineRows(written, file)).toBe(written);
+    expect(hasInlineRows(written, file)).toBe(true);
+    // A block moved out of the class is put back in it.
+    const moved = `${withInlineRows(own, { ...file, nest: undefined })}`;
+    expect(hasInlineRows(moved, file)).toBe(false);
+    expect(topLevelTypes(withInlineRows(moved, file))).toEqual(["class OptionsTest"]);
+  });
+
+  test("a file with no class yet gets one named after it, in its package", () => {
+    const started = withInlineRows(null, file);
+    expect(started).toStartWith("package com.ex.lanes\n\nclass OptionsTest {\n    // BEGIN acceptance rows: cases from");
+    expect(topLevelTypes(started)).toEqual(["class OptionsTest"]);
+  });
+
+  test("gradle's written-tests run names the file's class and its rows class", () => {
+    const root = mkdtempSync(join(tmpdir(), "baked-kotlin-one-type-"));
+    cleanups.push(() => rmSync(root, { recursive: true, force: true }));
+    mkdirSync(dirname(join(root, kotlin.test)), { recursive: true });
+    writeFileSync(join(root, kotlin.test), withInlineRows(own, file));
+    const gradle = { id: "tests", executable: "gradle", args: ["--console=plain", "test"], cwd: ".", timeoutMs: 600_000, required: true, scope: "feature", envNames: [], writes: [] } as unknown as Check;
+    expect(writtenTestsCheck(root, [gradle], [{ path: kotlin.test, action: "modify" }])?.args).toEqual(["--console=plain", "test", "--tests", "com.ex.lanes.OptionsTest", "--tests", "com.ex.lanes.OptionsTest$AcceptanceRows"]);
+  });
+});
+
+// #2410: the Scala rows are a suite class of their own at the end of the file, named so sbt's
+// `testOnly *<file name>` selects it, so the file's own suite may be of any style and in either
+// syntax of Scala 3; the harness is in the object named after the file.
+describe("Scala rows as a suite of their own (#2410)", () => {
+  const scala: InlineRowTest = { mode: "inline", framework: "munit", test: "src/test/scala/lanes/OptionsSuite.scala" };
+  const file = inlineRowFile(scala, rows);
+  const braceless = `package lanes
+
+class OptionsSuite extends munit.FunSuite:
+  test("lanes"):
+    assertEquals(Options.parse(List("--lanes", "2")), 2)
+
+object OptionsSuite:
+  def acceptanceActual(input: Any): Any = Options.parse(input.asInstanceOf[List[String]])
+`;
+
+  test("the block ends the file at column 0 and calls the file object's harness; a second write changes nothing", () => {
+    const written = withInlineRows(braceless, file);
+    expect(written).toStartWith(braceless);
+    expect(written).toContain("\n\n// BEGIN acceptance rows: cases from the spec's acceptance table.\n// Edit acceptanceActual, not this block.\nclass AcceptanceRowsOptionsSuite extends munit.FunSuite {\n");
+    expect(written).toContain("val got = normal(OptionsSuite.acceptanceActual(input))");
+    expect(written.trimEnd()).toEndWith("}\n// END acceptance rows");
+    expect(withInlineRows(written, file)).toBe(written);
+    expect(hasInlineRows(written, file)).toBe(true);
+    expect(inlineRowFile({ ...scala, framework: "scalatest" }, rows).tail).toContain("extends org.scalatest.funsuite.AnyFunSuite {");
+  });
+
+  test("sbt's written-tests run selects the file's suites and the rows suite by the file's name", () => {
+    const root = mkdtempSync(join(tmpdir(), "baked-scala-one-type-"));
+    cleanups.push(() => rmSync(root, { recursive: true, force: true }));
+    mkdirSync(dirname(join(root, scala.test)), { recursive: true });
+    writeFileSync(join(root, scala.test), withInlineRows(braceless, file));
+    const sbt = { id: "sbt-test", executable: "sbt", args: ["-batch", "test"], cwd: ".", timeoutMs: 600_000, required: true, scope: "feature", envNames: [], writes: [] } as unknown as Check;
+    const args = writtenTestsCheck(root, [sbt], [{ path: scala.test, action: "modify" }])?.args;
+    expect(args).toEqual(["-batch", "testOnly *OptionsSuite"]);
+    // The glob ends with the file's name, which the rows suite's name does too.
+    expect(new RegExp(`^.*${"OptionsSuite"}$`).test("lanes.AcceptanceRowsOptionsSuite")).toBe(true);
+  });
+});
