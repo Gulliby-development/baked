@@ -230,7 +230,7 @@ export function SettingsScreen({
           </a>
         ))}
       </nav>
-      <div className={cn(PAGE, "max-w-[900px] flex-1")}>
+      <div className={cn(PAGE, "min-w-0 max-w-[900px] flex-1")}>
         {section === "app" ? (
           <AppSection />
         ) : section === "chat" ? (

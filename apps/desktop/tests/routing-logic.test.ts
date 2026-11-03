@@ -99,3 +99,21 @@ describe("model routing section", () => {
     );
   });
 });
+
+describe("settings layout at a narrow window", () => {
+  test("the content column can shrink below its table so wide tables scroll inside it (#2679)", async () => {
+    const scope = globalThis as { window?: unknown };
+    scope.window = {};
+    const { createElement } = await import("react");
+    const { renderToStaticMarkup } = await import("react-dom/server");
+    const { SettingsScreen } = await import("../src/renderer/screens/SettingsScreen.tsx");
+    const { DesktopProvider } = await import("../src/renderer/store.tsx");
+    delete scope.window;
+    const html = renderToStaticMarkup(
+      createElement(DesktopProvider, null, createElement(SettingsScreen, { section: "routing", page: null })),
+    );
+    const column = html.match(/<\/nav><div class="([^"]*)"/)?.[1] ?? "";
+    expect(column.split(" ")).toContain("min-w-0");
+    expect(column.split(" ")).toContain("flex-1");
+  });
+});
