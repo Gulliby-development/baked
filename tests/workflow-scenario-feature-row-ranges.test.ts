@@ -219,9 +219,10 @@ class CliRowsExecutor extends FixtureExecutor {
     mkdirSync(dirname(join(workspace, SCAFFOLD)), { recursive: true });
     writeFileSync(join(workspace, SCAFFOLD), classFile(['[InlineData("x", 0, "x")]', '[InlineData("y", 0, "y")]']));
     if (existing !== null) writeFileSync(join(workspace, CLI_ROWS), existing);
-    // Worktree execution (two writers) branches from a commit that holds the scaffold.
+    // Worktree execution (two writers) branches from a commit that holds the scaffold; with
+    // Windows' default `core.autocrlf` its checkout would turn the LF scaffold into CRLF.
     if (git) {
-      for (const args of [["init"], ["config", "user.email", "fixture@example.invalid"], ["config", "user.name", "Fixture"], ["add", "-A"], ["-c", "core.hooksPath=", "commit", "-m", "Fixture"]])
+      for (const args of [["init"], ["config", "user.email", "fixture@example.invalid"], ["config", "user.name", "Fixture"], ["config", "core.autocrlf", "false"], ["add", "-A"], ["-c", "core.hooksPath=", "commit", "-m", "Fixture"]])
         expect(Bun.spawnSync(["git", ...args], { cwd: workspace }).exitCode).toBe(0);
     }
   }
