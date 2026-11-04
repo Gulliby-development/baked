@@ -29,6 +29,16 @@ import { changedPaths, sourceManifest } from "./snapshot.js";
 import { testReport } from "./test-reports.js";
 
 /**
+ * How much of a check's stream-ordered output its artifact keeps as `orderedTail` when the pipes
+ * arrived in another order (#2861): more than the repeated-failure hash and the handoff tail read.
+ */
+export const ORDERED_TAIL_CHARS = 32_000;
+
+/** A stored check artifact's output for a comparison with another run: `orderedTail` when kept. */
+export const storedSignatureOutput = (body: { output?: unknown; orderedTail?: unknown }): string =>
+  typeof body.orderedTail === "string" ? body.orderedTail : String(body.output ?? "");
+
+/**
  * Shared process execution for native checks and the legacy project formatter. A Gradle run gets
  * the totals of the test reports it wrote appended to its output (`testReport`, #1489), and so
  * does a Maven run (#2378). The output comes back without terminal escape codes (`plainOutput`):
@@ -618,6 +628,11 @@ export class CheckRunner {
     // `output` already holds stdout and stderr interleaved; storing them again tripled a 2 MB
     // pytest diff in one artifact (#993).
     const { stdout: _stdout, stderr: _stderr, streams: _streams, ...recorded } = result;
+    // A comparison of two stored runs reads the output in stream order (#2861): its tail is kept
+    // only when the pipes arrived in another order, so most artifacts do not grow.
+    const signed = inStreamOrder(result.output, result.streams);
+    const ordered =
+      signed === result.output ? {} : { orderedTail: signed.slice(-ORDERED_TAIL_CHARS) };
     const evidenceId = this.store.transaction(() => {
       this.store.effectStatus(runId, effectId, "reconciled");
       const artifact = this.store.artifact(
@@ -631,6 +646,7 @@ export class CheckRunner {
           afterHash: hashJson(after),
           reason,
           ...recorded,
+          ...ordered,
         }),
       );
       const evidence = this.store.addEvidence(
@@ -657,7 +673,7 @@ export class CheckRunner {
       evidenceId,
       snapshotId: snapshot.id,
       output: result.output,
-      signatureOutput: inStreamOrder(result.output, result.streams),
+      signatureOutput: signed,
       reason,
     };
   }

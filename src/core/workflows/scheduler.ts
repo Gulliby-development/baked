@@ -53,7 +53,12 @@ import {
   v1ReviewDimensions,
 } from "../verification/acceptance.js";
 import { caseCommand, probeCase } from "../verification/case-source-probe.js";
-import { buildCheckEnv, CheckRunner, executeCheckCommand } from "../verification/check-runner.js";
+import {
+  buildCheckEnv,
+  CheckRunner,
+  executeCheckCommand,
+  storedSignatureOutput,
+} from "../verification/check-runner.js";
 import {
   appendCorrections,
   checkClaims,
@@ -10678,6 +10683,8 @@ ${note}`;
     stepId: string,
     taskId: string,
     lines = FAILED_CHECK_LINES,
+    /** For a comparison with another run: the output in stream order where it was kept (#2861). */
+    signed = false,
   ): { id: string; output: string }[] {
     const last = new Map<string, { status: string; artifactId: string }>();
     for (const row of this.store.taskCheckRuns(runId, taskId))
@@ -10688,10 +10695,11 @@ ${note}`;
       if (row.status !== "failed") continue;
       let output = "";
       try {
-        output = String(
-          (JSON.parse(this.store.readArtifact(runId, row.artifactId)) as { output?: unknown })
-            .output ?? "",
-        );
+        const body = JSON.parse(this.store.readArtifact(runId, row.artifactId)) as {
+          output?: unknown;
+          orderedTail?: unknown;
+        };
+        output = signed ? storedSignatureOutput(body) : String(body.output ?? "");
       } catch {}
       failed.push({ id, output: output.split("\n").slice(0, lines).join("\n") });
     }
@@ -10801,7 +10809,7 @@ ${note}`;
     unresolved: string[] = [],
   ): UnfinishedRepeat | null {
     const tasks = this.store.state(runId).graph?.tasks ?? [];
-    const checks = this.failedChecksOf(runId, stepId, taskId, Number.POSITIVE_INFINITY).map(
+    const checks = this.failedChecksOf(runId, stepId, taskId, Number.POSITIVE_INFINITY, true).map(
       ({ id, output }) => repeatCheck(id, output, failingFilesInOutput(output, tasks)),
     );
     const path = `${REPEAT_TASKS_DIR}${taskId}.json`;
@@ -20837,7 +20845,12 @@ ${note}`;
     }
   }
   /** The last lines of the command output behind a finding's evidence, or null when it has none. */
-  private commandOutput(runId: string, evidenceIds: readonly string[]): string | null {
+  private commandOutput(
+    runId: string,
+    evidenceIds: readonly string[],
+    /** For a comparison with another run: the output in stream order where it was kept (#2861). */
+    signed = false,
+  ): string | null {
     const ids = new Set(evidenceIds);
     const tails: string[] = [];
     for (const row of this.store.evidence(runId)) {
@@ -20845,9 +20858,11 @@ ${note}`;
       try {
         const body = JSON.parse(this.store.readArtifact(runId, row.artifact_id)) as {
           output?: unknown;
+          orderedTail?: unknown;
         };
-        if (typeof body.output === "string" && body.output.trim())
-          tails.push(outputTail(body.output, HANDOFF_OUTPUT_LINES));
+        const text = signed ? storedSignatureOutput(body) : body.output;
+        if (typeof text === "string" && text.trim())
+          tails.push(outputTail(text, HANDOFF_OUTPUT_LINES));
       } catch {
         // Redacted or missing evidence hands over the finding without output.
       }
@@ -22092,7 +22107,7 @@ ${note}`;
         const id = taskCheckOfClaim(finding.claim) ?? checkOfClaim(finding.claim);
         if (!id) return [];
         const output =
-          this.commandOutput(runId, finding.evidenceIds) ?? failingOf(finding.impact) ?? "";
+          this.commandOutput(runId, finding.evidenceIds, true) ?? failingOf(finding.impact) ?? "";
         const files = [
           ...(finding.file ? [finding.file] : []),
           ...failingFilesInOutput(output, graph.tasks),
