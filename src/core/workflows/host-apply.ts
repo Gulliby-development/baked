@@ -182,6 +182,71 @@ export interface HostApplyRecord extends HostApplyVerdict {
    * content. An input of the decision, which it overrides; absent when the record found none.
    */
   suppliedConflict?: string;
+  /**
+   * In `on` mode, once applied: the hash of each file the host wrote (`hashBytes`), so a rerun can
+   * tell a file left as the host wrote it from one a correction changed (#2877). Absent in records
+   * before #2877.
+   */
+  written?: Record<string, string>;
+  /** Each rerun of the applied task after an invalidation, decided by `hostRerunDecision` (#2877). */
+  rerun?: HostApplyRerun[];
+}
+
+/** How the host settled one rerun of a task it applied (#2877). */
+export interface HostApplyRerun {
+  /** The task's generation the rerun is for. */
+  generation: number;
+  /**
+   * `kept`: every file already holds the host's content, nothing is written; `written`: the host
+   * wrote its content again (`writes` names the paths); `session`: an implementer runs.
+   */
+  decision: "kept" | "written" | "session";
+  reason: string | null;
+  writes?: string[];
+}
+
+/**
+ * The one decision for a rerun (generation above 0, after an invalidation) of a planned task the
+ * host applied before (`applied: true`, #2877): R94 rankvote's T013 corrective invalidated eight
+ * host-written R row files, and each went to a session that found its rows already in place
+ * (917,938 tokens). A file that still holds the bytes the host wrote is kept; otherwise the content
+ * is computed again (`computed`, from `hostApplyContents`; null when that failed) and a file that
+ * already holds it is kept too. A prescribed row file whose rows differ is written again, since
+ * the host replaces only the row run and keeps the rest of the file. Any other changed file (a
+ * correction edited a verbatim file or diff target) goes to a session, so the host never reverts
+ * a correction's edit. `current` maps each path to its file's hash (null: missing); `hash`
+ * hashes a content as `current` does.
+ */
+export function hostRerunDecision(
+  record: Pick<HostApplyRecord, "writes" | "written">,
+  current: ReadonlyMap<string, string | null>,
+  computed: readonly { path: string; content: string }[] | null,
+  hash: (content: string) => string,
+): Omit<HostApplyRerun, "generation" | "writes"> & {
+  writes: { path: string; content: string }[];
+} {
+  const writes: { path: string; content: string }[] = [];
+  for (const write of record.writes) {
+    const now = current.get(write.path) ?? null;
+    const wrote = record.written?.[write.path];
+    if (wrote !== undefined && now === wrote) continue;
+    const content = computed?.find((c) => c.path === write.path)?.content;
+    if (content === undefined)
+      return {
+        decision: "session",
+        reason: `the host cannot compute ${write.path} again`,
+        writes: [],
+      };
+    if (now !== null && hash(content) === now) continue;
+    if (!write.rows)
+      return {
+        decision: "session",
+        reason: `${write.path} changed since the host wrote it`,
+        writes: [],
+      };
+    writes.push({ path: write.path, content });
+  }
+  return { decision: writes.length ? "written" : "kept", reason: null, writes };
 }
 
 /** Decides from the recorded writes; `replayHostApply` takes another rule to replay. */
