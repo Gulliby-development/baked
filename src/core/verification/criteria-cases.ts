@@ -183,9 +183,20 @@ const FILE_NAME = /^(?:[\w.-]+[/\\])*[\w-][\w.-]*\.[A-Za-z][A-Za-z0-9]{0,7}$/;
  * (`slotprompt: LINE:COL: MESSAGE\n`); `description`, a character described rather than written
  * (`U+0000 and U+001F`, a lone control escape `\u0000` or caret notation `\^@`, `"\n"` followed
  * by "(backslash followed by letter n)"); `helper`, a single identifier in a code span that a file the
- * request supplies verbatim or a planned write's content declares (`cellsOf`, #2646).
+ * request supplies verbatim or a planned write's content declares (`cellsOf`, #2646); `range`, row
+ * numbers or allowed values (`1–28`, `0–100`, the `20` of "rows `1–17` and `20`"); `scaffold`, a
+ * placeholder handler's stub text (`varprompt: not implemented\n`); `state`, a null value of a
+ * program's model (`null`, `nil`, `None`) not named as output (#2911).
  */
-export type CitedKind = "count" | "name" | "placeholder" | "description" | "helper";
+export type CitedKind =
+  | "count"
+  | "name"
+  | "placeholder"
+  | "description"
+  | "helper"
+  | "range"
+  | "scaffold"
+  | "state";
 
 /** What `citedKind` reads beside the literal: the plan's test file names and row counts. */
 export interface CitedNames {
@@ -223,10 +234,47 @@ export function declaredNames(contents: readonly string[]): Set<string> {
 
 /** Upper-case words a message or usage pattern uses for a value a row fills in. */
 const PLACEHOLDER_WORD =
-  /(?<![\p{L}\p{N}_])(?:LINE|LINENO|COL|COLUMN|MESSAGE|MSG|NAME|FILES?|PATH|DIR|VALUE|KEY|NUM|COUNT|TEXT|ARGS?|PATTERN|URL|PORT|HOST|INPUT|OUTPUT|OFFSET|INDEX|POS|REASON|DETAIL|TOKEN|FILTER|EXPR)(?![\p{L}\p{N}_])/gu;
+  /(?<![\p{L}\p{N}_])(?:LINE|LINENO|COL|COLUMN|MESSAGE|MSG|NAME|FILES?|PATH|DIR|VALUE|KEY|NUM|COUNT|TEXT|ARGS?|PATTERN|URL|PORT|HOST|INPUT|OUTPUT|OFFSET|INDEX|POS|REASON|DETAIL|TOKEN|FILTER|EXPR|WORDS?)(?![\p{L}\p{N}_])/gu;
 /** A number the words after it make a count of rows, cases or tests. */
 const COUNT_NOUN =
   /^[\s`"']*(?:[\w-]+\s+){0,2}?(?:rows?|cases?|tests?|lines?|entries|records|examples|blocks?|files?)\b/i;
+/**
+ * Numbers joined by an en or em dash, alone or in a list (`1–28`, `1–17, 20`): rows or allowed
+ * values a criterion describes (#2911). A row writes a range its own way (`1..28`, `range(1, 29)`).
+ */
+const DASH_RANGE = /^\d+\s*[\u2013\u2014]\s*\d+(?:\s*,\s*\d+(?:\s*[\u2013\u2014]\s*\d+)?)*$/u;
+/** A row number or a hyphen range of them: `20`, `1-10`. */
+const ROW_NUMBER = /^\d+(?:\s*[-\u2013\u2014]\s*\d+)?$/u;
+/** One item of a list of row numbers, quoted or not, and what separates two of them. */
+const ROW_ITEM = String.raw`[\x60"\u201c]?\d+(?:\s*[-\u2013\u2014]\s*\d+)?[\x60"\u201d]?`;
+const ROW_SEP = String.raw`\s*(?:,|&|\band\b|\bor\b)\s*`;
+/**
+ * The text before a row number in a list of them: "rows ", "rows `1–17` and ", "`1–10`, ".
+ */
+const ROW_LIST_BEFORE = new RegExp(
+  String.raw`(?:\brows?\s+(?:${ROW_ITEM}${ROW_SEP})*|[\x60"\u201c]?\d+\s*[\u2013\u2014]\s*\d+[\x60"\u201d]?${ROW_SEP}(?:${ROW_ITEM}${ROW_SEP})*)$`,
+  "iu",
+);
+/**
+ * The text of a placeholder handler a scaffold writes, with or without a program prefix and a line
+ * end: `varprompt: not implemented\n`, `TODO`, `NotImplementedError` (#2911). The stubs of the
+ * supported languages: C#'s `NotImplementedException`, Java's and Kotlin's
+ * `UnsupportedOperationException` and `TODO()`, Python's `NotImplementedError`, Rust's `todo!()`
+ * and `unimplemented!()`, Scala's `???`, R's `.NotYetImplemented()`, and the message most stubs
+ * of every language print.
+ */
+const SCAFFOLD_TEXT =
+  /^(?:[\w.-]+:\s*)?(?:(?:[Ee]rror|[Ff]atal|panic):\s*)?(?:[Nn]ot\s+(?:yet\s+)?implemented(?:\s+yet)?|[Uu]nimplemented|TODO|NotImplemented(?:Error|Exception)?|UnsupportedOperationException|todo!\(\)|unimplemented!\(\)|TODO\(\)|\.NotYetImplemented\(\)|\?\?\?)[.!]?(?:\\n|\n)?$/;
+/**
+ * The null value of each supported language: `null` (C#, Java, Kotlin, Dart, JavaScript,
+ * TypeScript, PHP), `nil` (Go, Ruby, Elixir, Swift, Lua, Clojure, Objective-C), `None` (Python,
+ * Rust's `Option`), `NULL` (C, SQL, R), `nullptr` (C++), `undefined` (JavaScript), `Nothing`
+ * (Haskell, Visual Basic), `Nil` (Scala), `NA` (R) and `$null` (PowerShell).
+ */
+const NULL_WORD = /^(?:null|nil|None|NULL|nullptr|undefined|Nothing|Nil|NA|\$null)$/;
+/** Words before a literal that make it output a row prints, not a state: "prints `null`". */
+const OUTPUT_BEFORE =
+  /\b(?:prints?|printed|outputs?|writes?|written|emits?|echo(?:es)?|stdout|stderr)\b(?:\s+(?:to\s+)?(?:stdout|stderr))?\s*[:=]?\s*$/i;
 /** A code point by its Unicode name: `U+0000`, `U+1F600`. */
 const CODE_POINT = /\bU\+[\dA-Fa-f]{4,6}\b/;
 /**
@@ -254,15 +302,20 @@ export function testFileNames(path: string): string[] {
  * Whether a criterion literal describes rows instead of quoting one (#2524), and how. R82
  * slotprompt filters: 4 of 4 `case_not_prescribed` notes cited the criteria's own row counts and
  * test names, the error envelope `slotprompt: LINE:COL: MESSAGE\n`, and control characters the
- * criterion described in prose. `after` is the criterion text right after the literal.
+ * criterion described in prose. `after` is the criterion text right after the literal and `before`
+ * the text before it. R96 varprompt (#2911): 5 of 5 notes were row-number ranges, a `WORD`
+ * placeholder, scaffold stub text and `null`.
  */
 export function citedKind(
   literal: string,
   after: string,
   cited: CitedNames,
   code = false,
+  before = "",
 ): CitedKind | undefined {
   const text = asciiTrim(literal);
+  if (DASH_RANGE.test(text) || (ROW_NUMBER.test(text) && ROW_LIST_BEFORE.test(before)))
+    return "range";
   // A helper the supplied or planned code declares, named in a code span: no row's text (#2646).
   if (code && HELPER_NAME.test(text) && cited.helpers?.has(text)) return "helper";
   if (/^\d+$/.test(text)) {
@@ -277,6 +330,8 @@ export function citedKind(
   const words = text.match(PLACEHOLDER_WORD) ?? [];
   if (words.length && text.replace(PLACEHOLDER_WORD, "").replace(/[^\p{L}\p{N}]/gu, "").length)
     return "placeholder";
+  if (SCAFFOLD_TEXT.test(text)) return "scaffold";
+  if (NULL_WORD.test(text) && !OUTPUT_BEFORE.test(before)) return "state";
   return undefined;
 }
 
@@ -727,6 +782,8 @@ export function criterionCases(
   let after = "";
   /** Whether the span being added is a code span, for `citedKind`'s `helper` (#2646). */
   let code = false;
+  /** The criterion text before the span being added, for `citedKind`'s `range` and `state`. */
+  let prior = "";
   const add = (
     criterionId: string,
     literal: string,
@@ -749,7 +806,7 @@ export function criterionCases(
     const key = `${criterionId}:${normalizeLiteral(literal)}`;
     // A literal the criterion also quotes outside its table is not held by the rows alone.
     if (!row) plain.add(key);
-    const cited = citedKind(literal, after, names, code);
+    const cited = citedKind(literal, after, names, code, prior);
     if (seen.has(key)) {
       // The criterion also quotes it as a row's text: a case like any other.
       const earlier = cases.findIndex(
@@ -797,6 +854,7 @@ export function criterionCases(
         const sentence = table.prose.slice(sentenceStart(table.prose, span.index), span.index);
         after = table.prose.slice(span.index + span.raw.length);
         code = span.code;
+        prior = before;
         add(
           criterion.id,
           span.literal,
@@ -808,6 +866,7 @@ export function criterionCases(
         );
         after = "";
         code = false;
+        prior = "";
       }
       for (const input of table.inputs)
         add(criterion.id, input.literal, undefined, input.source, input.expected, hostRows);
