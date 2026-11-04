@@ -1,0 +1,1 @@
+The desktop app shows no native dialog for its own messages (#2686): a startup failure loads the self-contained BAKED-styled page from `apps/desktop/src/main/startup-error.ts` in a sandboxed window without a preload, and `dialog.showErrorBox` is only the last fallback when that page cannot load; the OS file pickers (`showOpenDialog`, `showSaveDialog`) are the one exception.

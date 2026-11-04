@@ -1,0 +1,1 @@
+A desktop flex child that holds a table or long text sets `min-w-0`, and a wide table scrolls inside its own container (the `Table` frame in `components/ui/table.tsx`), so a 900px window never clips a page (#2679).

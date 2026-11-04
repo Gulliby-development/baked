@@ -1,0 +1,1 @@
+A `baked serve` route that accepts an HTTP method no other route uses adds it to `API_METHODS` in `src/core/api/server.ts`, the list the CORS preflight of an allowed origin advertises (#2791); the method guard in `tests/core-api.test.ts` fails on a method literal in `src/core/api/` that is missing from it.
