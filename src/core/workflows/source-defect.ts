@@ -21,10 +21,14 @@ import { decodeXmlEntities } from "../verification/test-reports.js";
  * first failing check. A test whose expected value is not a criterion's literal keeps the current
  * path: the test may be what is wrong.
  *
- * Each decision records `source-defect/tasks/<task>-<signature>.json` (kind `source-defect`,
+ * Each decision records `source-defect/tasks/<task>-<signature>.json` (`<task>-run-<signature>`
+ * for a failed run-level check's, #2888; kind `source-defect`,
  * kept in bench traces: counts, task ids and paths, never literals). With the policy field
  * `sourceDefectRoute` absent the decision is shadow (recorded, the owner stays the test task);
- * `replaySourceDefects` (`trace.ts`) decides each record again.
+ * `replaySourceDefects` (`trace.ts`) decides each record again. A failed run-level check whose
+ * named failing files are a planned test task's tests runs the same decision (`level: "run"`,
+ * always on): a route adds a finding on each source to the check run's findings, so its corrective
+ * may write them from its first session (#2888).
  */
 export const SOURCE_DEFECT_KIND = "source-defect";
 export const SOURCE_DEFECT_DIR = "source-defect/tasks/";
@@ -50,6 +54,12 @@ export interface SourceDefectRecord extends SourceDefectInput {
   taskId: string;
   /** `shadow`: recorded only, the owner stays the test task; `on`: the failure routes. */
   mode: "shadow" | "on";
+  /**
+   * `run`: a failed run-level check's decision (#2888). It is always `on`: a route gives the
+   * check run's corrective a finding on each source, so it may write them from its first session.
+   * Absent: a planned test task's own failure.
+   */
+  level?: "run";
   /** The criteria whose literals the expected values matched. */
   criterionIds: string[];
   route: boolean;

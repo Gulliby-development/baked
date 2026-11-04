@@ -283,3 +283,95 @@ describe("expected values of an escaped, multi-line JUnit report block (#2888)",
     expect(expectedValues('Expected: "a &lt; b"\nReceived: "a"')).toEqual(["a &lt; b"]);
   });
 });
+
+// R95 windowgate 7bbc2758 (#2888): the run-level gradle-check failed on a row of the finished test
+// task, and the value was wrong because Cli.kt (a finished sibling) escaped Kotlin's `$`. The
+// first correctives could write only the test file.
+const CLI = "src/main/kotlin/windowgate/Cli.kt";
+const ROWS = "src/test/kotlin/windowgate/RowsTest.kt";
+const runSpec: Spec = {
+  ...spec,
+  title: "Windowgate version",
+  requirements: [{ id: "FR-001", text: "Print the version row", priority: "must", verification: "automated", sourceRefs: [] }],
+  criteria: [
+    { id: "AC-001", requirementIds: ["FR-001"], given: "the CLI", when: "the version row is read", then: 'the row is "(0, windowgate 0.1.0)"', method: "automated" },
+  ],
+};
+const runGraph: TaskGraph = {
+  ...graph,
+  specHash: hashJson(runSpec),
+  tasks: [task("T001", [CLI], [], ["build"]), task("T002", [ROWS], ["T001"], ["build"])],
+};
+
+class RunCheckExecutor extends ScriptedExecutor {
+  constructor(private dir: string) {
+    super(dir);
+  }
+  override async execute(request: ExecutionRequest) {
+    if (request.profile.output === "spec") return { output: runSpec, inputTokens: 20, outputTokens: 30 };
+    if (request.profile.output === "plan") return { output: { schemaVersion: 1, markdown, taskGraph: runGraph }, inputTokens: 20, outputTokens: 30 };
+    if (request.profile.output !== "implementation") return super.execute(request);
+    const t = request.task as Task;
+    this.attempts.push(t.id);
+    const writes = t.writes.map((w) => w.path).sort();
+    if (t.origin !== "planned") {
+      this.correctionWrites.push(writes);
+      if (writes.includes(CLI)) this.write(CLI, 'package windowgate\n\nobject Cli {\n  fun version() = "windowgate ${Registry.VERSION}"\n}\n');
+    } else if (t.id === "T001") this.write(CLI, 'package windowgate\n\nobject Cli {\n  fun version() = "windowgate \\${Registry.VERSION}"\n}\n');
+    else this.write(ROWS, 'package windowgate\n\nimport kotlin.test.Test\nimport kotlin.test.assertEquals\n\nclass RowsTest {\n  @Test fun `version row`() = assertEquals(Pair(0, "windowgate 0.1.0\\n"), Pair(0, Cli.version() + "\\n"))\n}\n');
+    void this.dir;
+    return { output: { schemaVersion: 1, taskId: t.id, outcome: "implemented", summary: "Done", evidenceIds: [], unresolved: [] }, inputTokens: 20, outputTokens: 30 };
+  }
+}
+
+async function runCheckScenario(executable: "gradle" | "mvn", folder: string) {
+  const root = mkdtempSync(join(tmpdir(), "baked-source-defect-run-"));
+  cleanups.push(() => removeTempDir(root));
+  const tool = executable === "gradle" ? "> Task :test FAILED\n\nRowsTest > version row() FAILED\n    org.opentest4j.AssertionFailedError at RowsTest.kt:14" : "[ERROR] Tests run: 1, Failures: 1, Errors: 0, Skipped: 0\n[ERROR] windowgate.RowsTest.version row  Time elapsed: 0.012 s  <<< FAILURE!";
+  const output = `${tool}\n\n${reportBlock(executable, folder)}`;
+  // The first run with the rows passes (the test task's gate: in R95 the host wrote the rows after
+  // it), every later one fails while Cli.kt escapes `$`: the checks stage's run is the first to fail.
+  const seen = join(mkdtempSync(join(tmpdir(), "baked-source-defect-seen-")), "seen");
+  cleanups.push(() => removeTempDir(dirname(seen)));
+  const script = `const fs = require("node:fs"); if (fs.existsSync(${JSON.stringify(ROWS)}) && fs.existsSync(${JSON.stringify(CLI)})) { if (!fs.existsSync(${JSON.stringify(seen)})) fs.writeFileSync(${JSON.stringify(seen)}, ""); else if (fs.readFileSync(${JSON.stringify(CLI)}, "utf8").includes("\\\\$")) { console.log(${JSON.stringify(output)}); process.exit(1) } }`;
+  const build: Check = { id: "build", executable: "bun", args: ["-e", ""], cwd: ".", timeoutMs: 10000, required: true, scope: "task", envNames: [], writes: [] };
+  const gradle: Check = { ...build, id: `${executable}-check`, args: ["-e", script], scope: "feature" };
+  const policy: RunPolicy = { ...defaultWorkflowPolicy, checks: [build, gradle] };
+  const executor = new RunCheckExecutor(root);
+  const service = new NativeWorkflowService(
+    root,
+    { ...DEFAULT_CONFIG, defaultModel: "fixture/model", workflows: { enabled: true, importsEnabled: true, defaultWorkflow: "sdd", policy } },
+    executor,
+  );
+  executor.service = service;
+  cleanups.push(() => service.close());
+  const run = await service.start({ commandId: newId(), featureId: "fixture", workflowId: "sdd", prompt: "Print the version row and test it", ownerLabel: "test", policy });
+  await service.drive(run.runId, new AbortController().signal);
+  const waiting = await service.get(run.runId);
+  const approval = service.store.requests(run.runId).find((r) => r.kind === "approval" && r.status === "pending");
+  if (!approval) throw new Error(`No approval: ${waiting.status} ${waiting.reason}`);
+  await service.decide(run.runId, { commandId: newId(), expectedRevision: waiting.revision }, { kind: "approve", requestId: approval.id, digest: approval.digest });
+  const done = await service.drive(run.runId, new AbortController().signal);
+  const records = service.store
+    .artifacts(run.runId)
+    .filter((a) => a.logical_path.startsWith(SOURCE_DEFECT_DIR))
+    .map((a) => JSON.parse(service.store.readArtifact(run.runId, a.id)) as SourceDefectRecord);
+  return { done, executor, root, records };
+}
+
+describe("scenario: a run-level check's wrong-value failure in a finished sibling's source (#2888)", () => {
+  for (const [runner, executable, folder] of [
+    ["Gradle", "gradle", "build/test-results/test"],
+    ["Maven surefire", "mvn", "target/surefire-reports"],
+  ] as const)
+    test(`${runner}: the first corrective of the checks-stage failure may write the source`, async () => {
+      const { done, executor, root, records } = await runCheckScenario(executable, folder);
+      expect(executor.correctionWrites[0]).toEqual([CLI, ROWS].sort());
+      expect(executor.correctionWrites).toHaveLength(1);
+      expect(done.status).toBe("completed");
+      expect(readFileSync(join(root, CLI), "utf8")).not.toContain("\\$");
+      expect(records).toEqual([
+        expect.objectContaining({ taskId: "T002", mode: "on", level: "run", route: true, expected: 1, matched: 1, owners: ["T001"], files: [CLI], criterionIds: ["AC-001"] }),
+      ]);
+    });
+});

@@ -884,6 +884,7 @@ import {
 import {
   criterionExpected,
   SOURCE_DEFECT_KIND,
+  type SourceDefectInput,
   type SourceDefectRecord,
   sourceDefectDecision,
   sourceDefectPath,
@@ -15824,13 +15825,43 @@ ${note}`;
     const parsed = stored ? PolicySchema.safeParse(JSON.parse(stored)) : null;
     if (!parsed?.success) return owner;
     const policy = parsed.data;
+    const decided = this.sourceDefectMatch(
+      runId,
+      state,
+      policy,
+      policy.sourceDefectRoute === "on" ? "on" : "shadow",
+      task,
+      output,
+      rows,
+    );
+    return decided?.route && decided.mode === "on"
+      ? { kind: "finished", owners: decided.owners, files: decided.files }
+      : owner;
+  }
+  /**
+   * The #2220 decision for a planned test task's failing output, recorded once per failure under
+   * `source-defect/tasks/`: the criterion literals its expected values match, and the sources that
+   * the finished planned tasks carrying those criteria wrote and the failing tests import. Null
+   * when the output states no expected value.
+   */
+  private sourceDefectMatch(
+    runId: string,
+    state: RuntimeState,
+    policy: RunPolicy,
+    mode: SourceDefectRecord["mode"],
+    task: Task,
+    output: string,
+    rows: TaskRow[],
+    level?: SourceDefectRecord["level"],
+  ): (SourceDefectInput & { route: boolean; mode: SourceDefectRecord["mode"] }) | null {
+    if (!state.spec) return null;
     const graph = state.rootGraph ?? state.graph;
     const cases = criterionCases(state.spec, task, {
       checks: policy.checks,
       tasks: graph?.tasks ?? [],
     });
     const found = criterionExpected(output, cases);
-    if (!found.expected) return owner;
+    if (!found.expected) return null;
     const done = new Set(
       rows.filter((r) => ["implemented", "verified"].includes(r.status)).map((r) => r.id),
     );
@@ -15871,8 +15902,9 @@ ${note}`;
       files,
     };
     const route = sourceDefectDecision(input);
-    const mode = policy.sourceDefectRoute === "on" ? "on" : "shadow";
-    const path = sourceDefectPath(task.id, hashBytes(failingLines(output)).slice(0, 12));
+    const signature = hashBytes(failingLines(output)).slice(0, 12);
+    // A run-level record keeps its own path: the task's gate may have failed with the same lines.
+    const path = sourceDefectPath(task.id, level ? `${level}-${signature}` : signature);
     if (!this.store.latestArtifact(runId, path))
       this.store.artifact(
         runId,
@@ -15882,12 +15914,73 @@ ${note}`;
           schemaVersion: 1,
           taskId: task.id,
           mode,
+          ...(level ? { level } : {}),
           criterionIds: found.criterionIds,
           ...input,
           route,
         } satisfies SourceDefectRecord),
       );
-    return route && mode === "on" ? { kind: "finished", owners, files } : owner;
+    return { ...input, route, mode };
+  }
+  /**
+   * The findings of a failed run-level check, with a finding on each source the #2220 decision
+   * finds at fault (#2888): when the failing tests the output names are a planned test task's
+   * only, and every expected value is a literal of its criteria, the sources a finished sibling
+   * carrying those criteria wrote and the tests import get a finding of their own. The check run's
+   * findings become one corrective, so its first session may write the source. R95 windowgate
+   * 7bbc2758: a Gradle row test failed on a version that Cli.kt wrote with an escaped `$`, and the
+   * first two correctives (219k tokens) could write only the test files. Live: it only widens
+   * the corrective's writes, as the subjects of the named tests do (#1270).
+   */
+  private sourceDefectFindings(
+    runId: string,
+    state: RuntimeState,
+    policy: RunPolicy,
+    output: string,
+    found: Review["findings"],
+  ): Review["findings"] {
+    const tasks = (state.rootGraph ?? state.graph)?.tasks ?? [];
+    if (!state.spec || !output || !found.length) return found;
+    const named = failingFilesInOutput(output, tasks);
+    if (!named.length || !named.every((path) => isTestPath(path))) return found;
+    const testers = tasks.filter(
+      (t) =>
+        t.origin === "planned" &&
+        isTestTask(t) &&
+        t.writes.some((w) => w.action !== "delete" && named.includes(w.path)),
+    );
+    if (!testers.length) return found;
+    const rows = this.store.tasks(runId);
+    const extra: Review["findings"] = [];
+    for (const tester of testers) {
+      const decided = this.sourceDefectMatch(
+        runId,
+        state,
+        policy,
+        "on",
+        tester,
+        output,
+        rows,
+        "run",
+      );
+      if (!decided?.route) continue;
+      const base = found.find((f) => f.file !== null && named.includes(f.file)) ?? found[0];
+      if (!base) continue;
+      for (const file of decided.files) {
+        if ([...found, ...extra].some((f) => f.file === file)) continue;
+        const owner = tasks.find(
+          (t) => decided.owners.includes(t.id) && t.writes.some((w) => w.path === file),
+        );
+        extra.push({
+          ...base,
+          id: newId(),
+          file,
+          requirementIds: owner?.requirementIds ?? base.requirementIds,
+          criterionIds: owner?.criterionIds ?? base.criterionIds,
+        });
+      }
+    }
+    return extra.length ? [...found, ...extra] : found;
   }
   /**
    * The open correctives of a sibling test task's failed check whose failing tests import a source
@@ -17418,7 +17511,14 @@ ${note}`;
         failures.push(
           ...(regression
             ? found
-            : this.rowRunFindings(runId, state, policy, check.id, found, rowDrifts)),
+            : this.rowRunFindings(
+                runId,
+                state,
+                policy,
+                check.id,
+                this.sourceDefectFindings(runId, state, policy, result.output, found),
+                rowDrifts,
+              )),
         );
       }
     }
@@ -20505,7 +20605,14 @@ ${note}`;
       failures.push(
         ...(result.reason || regression
           ? found
-          : this.rowRunFindings(runId, state, policy, check.id, found, rowDrifts)),
+          : this.rowRunFindings(
+              runId,
+              state,
+              policy,
+              check.id,
+              this.sourceDefectFindings(runId, state, policy, result.output ?? "", found),
+              rowDrifts,
+            )),
       );
     }
     this.resolveCoveredFindings(runId, passedIds);
