@@ -1,12 +1,16 @@
 import { statSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { runSandbox, type SandboxRequest, SandboxUnavailableError } from "../security/sandbox.js";
 import { buildSafeEnv } from "../spawn.js";
 import { canonical, hashJson } from "../specs/hash.js";
 import { workspacePath } from "../specs/validate.js";
 import { rootField } from "../workflows/effects.js";
 import { pendingPrerequisite } from "../workflows/gate-prerequisites.js";
-import type { ProcessResult, ProcessScope } from "../workflows/process-scope.js";
+import {
+  inStreamOrder,
+  type ProcessResult,
+  type ProcessScope,
+} from "../workflows/process-scope.js";
 import { generatedPaths, type RunPolicy } from "../workflows/schemas.js";
 import { recordWouldStop, stopMode } from "../workflows/stop-reasons.js";
 import type { WorkflowStore } from "../workflows/store.js";
@@ -27,7 +31,9 @@ import { testReport } from "./test-reports.js";
 /**
  * Shared process execution for native checks and the legacy project formatter. A Gradle run gets
  * the totals of the test reports it wrote appended to its output (`testReport`, #1489), and so
- * does a Maven run (#2378).
+ * does a Maven run (#2378). The output comes back without terminal escape codes (`plainOutput`):
+ * a tool that colours in spite of `plainOutputEnv` (rustfmt under a colour `TERM`, R90 windowfit,
+ * #2830) leaves no codes in the stored check result, its decision records or its prompts.
  */
 export const executeCheckCommand = async (
   scope: ProcessScope,
@@ -36,11 +42,17 @@ export const executeCheckCommand = async (
   options: Parameters<ProcessScope["execute"]>[2],
 ): Promise<ProcessResult> => {
   const started = Date.now();
-  const result = await scope.execute(
+  const raw = await scope.execute(
     executable,
     withPerTestTimeout({ executable, args }, options.cwd),
     options,
   );
+  const result: ProcessResult = {
+    ...raw,
+    output: plainOutput(raw.output),
+    ...(raw.stdout === undefined ? {} : { stdout: plainOutput(raw.stdout) }),
+    ...(raw.stderr === undefined ? {} : { stderr: plainOutput(raw.stderr) }),
+  };
   const report =
     result.timedOut || result.cancelled
       ? null
@@ -312,6 +324,8 @@ export class CheckRunner {
   ): Promise<{
     status: "passed" | "failed" | "inconclusive";
     output: string;
+    /** `output` with the command's pipes in stream order, for a signature (`inStreamOrder`, #2859). */
+    signatureOutput: string;
     truncated: boolean;
     /** The recorded timeout when the command ran out of time (#2358). */
     timeout?: CommandTimeout;
@@ -340,16 +354,23 @@ export class CheckRunner {
           root,
           timeoutMs: limit,
         });
+        const output = `${result.output}\n\nNote: ${check.id}: ${timeout.note}.`;
         return {
           status,
-          output: `${result.output}\n\nNote: ${check.id}: ${timeout.note}.`,
+          output,
+          signatureOutput: inStreamOrder(output, result.streams),
           truncated: result.truncated,
           timeout,
         };
       }
-      return { status, output: result.output, truncated: result.truncated };
+      return {
+        status,
+        output: result.output,
+        signatureOutput: inStreamOrder(result.output, result.streams),
+        truncated: result.truncated,
+      };
     } catch {
-      return { status: "inconclusive", output: "", truncated: false };
+      return { status: "inconclusive", output: "", signatureOutput: "", truncated: false };
     }
   }
   async run(
@@ -363,6 +384,8 @@ export class CheckRunner {
     evidenceId: string;
     snapshotId: string;
     output: string;
+    /** `output` with the command's pipes in stream order, for a signature (`inStreamOrder`, #2859). */
+    signatureOutput: string;
     /** Why the status is what it is: `exit`, `spawn_error`, `timeout`, `cancelled`, `source_changed`, `environment_broken`. */
     reason: string;
   }> {
@@ -373,13 +396,16 @@ export class CheckRunner {
     const prerequisite = pendingPrerequisite(check, policy.checks, root);
     if (prerequisite) {
       const ran = await this.run(runId, attemptId, prerequisite.check, signal, root);
-      if (ran.status !== "passed")
+      if (ran.status !== "passed") {
+        const lead = prerequisite.marker
+          ? `${check.id} reads what ${prerequisite.check.id} writes (${prerequisite.marker}), which this directory does not have, so the host ran ${prerequisite.check.id} first and it did not pass:`
+          : `${check.id} runs what ${prerequisite.check.id} builds, so the host ran ${prerequisite.check.id} first to build the current sources and it did not pass:`;
         return {
           ...ran,
-          output: prerequisite.marker
-            ? `${check.id} reads what ${prerequisite.check.id} writes (${prerequisite.marker}), which this directory does not have, so the host ran ${prerequisite.check.id} first and it did not pass:\n\n${ran.output}`
-            : `${check.id} runs what ${prerequisite.check.id} builds, so the host ran ${prerequisite.check.id} first to build the current sources and it did not pass:\n\n${ran.output}`,
+          output: `${lead}\n\n${ran.output}`,
+          signatureOutput: `${lead}\n\n${ran.signatureOutput}`,
         };
+      }
     }
     const generated = generatedPaths(policy);
     for (const path of check.writes) workspacePath(root, path);
@@ -591,7 +617,7 @@ export class CheckRunner {
       };
     // `output` already holds stdout and stderr interleaved; storing them again tripled a 2 MB
     // pytest diff in one artifact (#993).
-    const { stdout: _stdout, stderr: _stderr, ...recorded } = result;
+    const { stdout: _stdout, stderr: _stderr, streams: _streams, ...recorded } = result;
     const evidenceId = this.store.transaction(() => {
       this.store.effectStatus(runId, effectId, "reconciled");
       const artifact = this.store.artifact(
@@ -631,6 +657,7 @@ export class CheckRunner {
       evidenceId,
       snapshotId: snapshot.id,
       output: result.output,
+      signatureOutput: inStreamOrder(result.output, result.streams),
       reason,
     };
   }
@@ -667,14 +694,15 @@ export class CheckRunner {
     // The edit tools saw the formatter time out on one of them: name it without a bisect (#2242).
     const { formatTimeoutsUnder } = await import("../tools/auto-format.js");
     const { runWorktreeDir } = await import("../workflows/worktree.js");
+    // The run's own directory, wherever `workflows.worktreeRoot` put it (#2461).
+    const recorded = this.store.state(runId).worktree?.path;
+    const runDir = recorded ? dirname(recorded) : runWorktreeDir(this.store.workspace, runId);
     const known = new Set([
       ...formatTimeoutsUnder(root).keys(),
       // A task edits in its own worktree, `.baked/worktrees/<run>/<task>/`.
-      ...[
-        ...formatTimeoutsUnder(
-          join(this.store.workspace, runWorktreeDir(this.store.workspace, runId)),
-        ).keys(),
-      ].map((path) => path.slice(path.indexOf("/") + 1)),
+      ...[...formatTimeoutsUnder(join(this.store.workspace, runDir)).keys()].map((path) =>
+        path.slice(path.indexOf("/") + 1),
+      ),
     ]);
     const hung = paths.find(
       (path) => known.has(path) && fileScopedFormat(check, dir, path.slice(prefix.length)),

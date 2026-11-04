@@ -1,6 +1,7 @@
 import type { ModelMessage } from "ai";
 import { useCallback, useMemo, useRef, useState } from "react";
 import { rebuildCoreMessages } from "../core/sessions/rebuild.js";
+import { readTabUsage } from "../core/sessions/token-usage.js";
 import type { TabMeta } from "../core/sessions/types.js";
 import { useCheckpointStore } from "../stores/checkpoints.js";
 import { useUIStore } from "../stores/ui.js";
@@ -340,15 +341,13 @@ export function useTabs(onTabClosed?: (survivingIds: Set<string>) => void): UseT
           activePlan: null,
           sidebarPlan: null,
           tokenUsage: {
-            cacheRead: 0,
-            cacheWrite: 0,
             subagentInput: 0,
             subagentOutput: 0,
             lastStepInput: 0,
             lastStepOutput: 0,
             lastStepCacheRead: 0,
-            modelBreakdown: {},
-            ...tm.tokenUsage,
+            // Whichever surface saved it, read it in the one saved meaning (#2784).
+            ...readTabUsage(tm.tokenUsage, tm.activeModel),
           },
           coAuthorCommits: tm.coAuthorCommits,
           sessionId: tm.sessionId,

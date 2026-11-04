@@ -3,6 +3,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { changedLines, diffSections } from "../intelligence/call-context.js";
 import { isManifestFile, isTestFile } from "../intelligence/language-traits.js";
+import { hashBytes } from "../specs/hash.js";
 import { isTestOf } from "../verification/convergence.js";
 import {
   type CaseContext,
@@ -14,6 +15,7 @@ import { type Fence, fences } from "../verification/doc-examples.js";
 import { hostRowPaths, literalRows, rowsAsDataOn } from "./acceptance-rows.js";
 import { MAX_EXTENDED_MS } from "./budget.js";
 import { DEFAULT_STAGE_RANGES, historyStorePaths, rangeOf, type TokenRange } from "./estimate.js";
+import { historySnapshot } from "./history-snapshot.js";
 import { type HostEdit, plannerGraph, recordGraphEdits } from "./host-edits.js";
 import { MIN_DURATION_SAMPLES } from "./initiatives/duration.js";
 import { extendToOf, type RunPolicy, SpecSchema, type TaskGraph } from "./schemas.js";
@@ -170,6 +172,121 @@ function taskAction(task: Pick<Task, "writes">): SizingSample["action"] {
   return actions.size === 1 ? ([...actions][0] as WriteAction) : "mixed";
 }
 
+/** The rows of one run that its sizing samples are computed from (`samplesFrom`). */
+interface RunSampleRows {
+  id: string;
+  source: SizingSample["source"];
+  current: boolean;
+  policy: string | null;
+  content: string | null;
+  tasks: { id: string; definition_json: string; status: string }[];
+  byModel: { stage: string; model: string; tokens: number | null }[];
+}
+
+/**
+ * A run's samples by the hash of the rows they are computed from. Parsing the spec and pricing its
+ * cases (`pricedCaseCount`) is most of an estimate's cost, and the same finished runs are read
+ * again by every estimate: an initiative view, its estimate and each rewound start of the replay
+ * corpus (R71 xmlvet spent 30 s in it, #2766). A row that changes changes the key.
+ */
+const RUN_SAMPLES = new Map<string, SizingSample[]>();
+const RUN_SAMPLES_MAX = 2048;
+
+function runSamples(rows: RunSampleRows): SizingSample[] {
+  const key = hashBytes(JSON.stringify(rows));
+  let samples = RUN_SAMPLES.get(key);
+  if (!samples) {
+    samples = computeRunSamples(rows);
+    if (RUN_SAMPLES.size >= RUN_SAMPLES_MAX) {
+      const oldest = RUN_SAMPLES.keys().next().value;
+      if (oldest !== undefined) RUN_SAMPLES.delete(oldest);
+    }
+    RUN_SAMPLES.set(key, samples);
+  }
+  // Callers get their own objects: a cached sample is never shared with a caller that changes it.
+  return samples.map((sample) => ({ ...sample }));
+}
+
+function computeRunSamples({
+  id,
+  source,
+  current,
+  policy,
+  content,
+  tasks: taskRows,
+  byModel,
+}: RunSampleRows): SizingSample[] {
+  let spec: SpecText | null = null;
+  let checks: CaseContext["checks"] = [];
+  try {
+    if (policy) checks = (JSON.parse(policy) as Partial<Pick<RunPolicy, "checks">>).checks ?? [];
+  } catch {
+    // A run without a readable policy prices every quoted literal, as before #1762.
+  }
+  try {
+    if (content) spec = SpecSchema.safeParse(JSON.parse(content)).data ?? null;
+  } catch {
+    // Older stores and synthetic history may have no spec artifacts. Keep their file rates.
+  }
+  const tasks = taskRows.map((row) => ({
+    id: row.id,
+    status: row.status,
+    ...(JSON.parse(row.definition_json) as Pick<Task, "writes" | "origin"> &
+      Partial<Pick<Task, "criterionIds" | "description" | "dependsOn" | "sizingSlice">>),
+  }));
+  const samples: SizingSample[] = [];
+  const spent = new Map<string, number>();
+  const modelOf = new Map<string, { model: string; tokens: number }>();
+  for (const row of byModel) {
+    const tokens = row.tokens ?? 0;
+    spent.set(row.stage, (spent.get(row.stage) ?? 0) + tokens);
+    const top = modelOf.get(row.stage);
+    if (!top || tokens > top.tokens) modelOf.set(row.stage, { model: row.model, tokens });
+  }
+  const planned = tasks.filter((task) => task.origin === "planned");
+  const totals = new Map(planned.map((task) => [task.id, spent.get(`task-${task.id}`) ?? 0]));
+  for (const correction of tasks.filter(
+    (task) => task.origin !== "planned" && ["implemented", "verified"].includes(task.status),
+  )) {
+    const files = writtenFiles(correction);
+    const base = planned.find((task) => files.every((path) => writtenFiles(task).includes(path)));
+    if (base)
+      totals.set(base.id, (totals.get(base.id) ?? 0) + (spent.get(`task-${correction.id}`) ?? 0));
+  }
+  for (const task of planned) {
+    if (!["implemented", "verified"].includes(task.status)) continue;
+    const files = writtenFiles(task).length;
+    const tokens = totals.get(task.id) ?? 0;
+    if (files > 0 && tokens > 0)
+      samples.push({
+        runId: id,
+        taskId: task.id,
+        ...(current ? { current: true } : {}),
+        kind: taskKind(task),
+        action: taskAction(task),
+        source,
+        files,
+        tokens,
+        model: modelOf.get(`task-${task.id}`)?.model ?? null,
+        criteria: task.criterionIds?.length ?? 0,
+        ...(spec && task.criterionIds
+          ? {
+              cases: pricedCaseCount(
+                spec,
+                { ...task, criterionIds: task.criterionIds },
+                {
+                  checks,
+                  tasks: planned.map((t) => ({ ...t, criterionIds: t.criterionIds ?? [] })),
+                  includeBroad: true,
+                },
+              ),
+            }
+          : {}),
+      });
+  }
+  return samples;
+}
+
 /**
  * Finished tasks of a workflow store, read-only. A corrective task is not a sample of its own: its
  * tokens join the planned task of the same run that writes the same files, because getting that
@@ -178,6 +295,18 @@ function taskAction(task: Pick<Task, "writes">): SizingSample["action"] {
 export function samplesFrom(
   databasePath: string,
   source: SizingSample["source"] = "project",
+  currentRunId?: string,
+): SizingSample[] {
+  // Another project's store is read once per history snapshot (`withHistorySnapshot`).
+  if (source === "shared" && !currentRunId)
+    return historySnapshot(`samples:${databasePath}`, () => samplesNow(databasePath, source)).map(
+      (sample) => ({ ...sample }),
+    );
+  return samplesNow(databasePath, source, currentRunId);
+}
+function samplesNow(
+  databasePath: string,
+  source: SizingSample["source"],
   currentRunId?: string,
 ): SizingSample[] {
   if (!existsSync(databasePath)) return [];
@@ -189,25 +318,23 @@ export function samplesFrom(
       : db.query<{ id: string }, []>("SELECT id FROM runs WHERE status='completed'").all();
     const samples: SizingSample[] = [];
     for (const { id } of runs) {
-      let spec: SpecText | null = null;
-      let checks: CaseContext["checks"] = [];
+      let policy: string | null = null;
       try {
-        const policy = db
-          .query<{ policy_json: string }, [string]>("SELECT policy_json FROM runs WHERE id=?")
-          .get(id);
-        if (policy)
-          checks =
-            (JSON.parse(policy.policy_json) as Partial<Pick<RunPolicy, "checks">>).checks ?? [];
+        policy =
+          db
+            .query<{ policy_json: string }, [string]>("SELECT policy_json FROM runs WHERE id=?")
+            .get(id)?.policy_json ?? null;
       } catch {
         // A run without a readable policy prices every quoted literal, as before #1762.
       }
+      let content: string | null = null;
       try {
         const artifact = db
           .query<{ inline_content: string | null; blob_path: string | null }, [string]>(
             "SELECT inline_content, blob_path FROM artifacts WHERE run_id=? AND logical_path='spec.json' ORDER BY revision DESC LIMIT 1",
           )
           .get(id);
-        const content =
+        content =
           artifact?.inline_content ??
           (artifact?.blob_path
             ? readFileSync(
@@ -215,7 +342,6 @@ export function samplesFrom(
                 "utf8",
               )
             : null);
-        if (content) spec = SpecSchema.safeParse(JSON.parse(content)).data ?? null;
       } catch {
         // Older stores and synthetic history may have no spec artifacts. Keep their file rates.
       }
@@ -225,13 +351,7 @@ export function samplesFrom(
             ? "SELECT id, definition_json, status FROM tasks WHERE run_id=?"
             : "SELECT id, definition_json, status FROM tasks WHERE run_id=? AND status='verified'",
         )
-        .all(id)
-        .map((row) => ({
-          id: row.id,
-          status: row.status,
-          ...(JSON.parse(row.definition_json) as Pick<Task, "writes" | "origin"> &
-            Partial<Pick<Task, "criterionIds" | "description" | "dependsOn" | "sizingSlice">>),
-        }));
+        .all(id);
       const byModel = db
         .query<{ stage: string; model: string; tokens: number | null }, [string]>(
           `SELECT s.stage_id AS stage, a.model_id AS model, SUM(COALESCE(a.used_tokens,0)) AS tokens
@@ -240,60 +360,16 @@ export function samplesFrom(
            GROUP BY s.stage_id, a.model_id`,
         )
         .all(id);
-      const spent = new Map<string, number>();
-      const modelOf = new Map<string, { model: string; tokens: number }>();
-      for (const row of byModel) {
-        const tokens = row.tokens ?? 0;
-        spent.set(row.stage, (spent.get(row.stage) ?? 0) + tokens);
-        const top = modelOf.get(row.stage);
-        if (!top || tokens > top.tokens) modelOf.set(row.stage, { model: row.model, tokens });
-      }
-      const planned = tasks.filter((task) => task.origin === "planned");
-      const totals = new Map(planned.map((task) => [task.id, spent.get(`task-${task.id}`) ?? 0]));
-      for (const correction of tasks.filter(
-        (task) => task.origin !== "planned" && ["implemented", "verified"].includes(task.status),
-      )) {
-        const files = writtenFiles(correction);
-        const base = planned.find((task) =>
-          files.every((path) => writtenFiles(task).includes(path)),
-        );
-        if (base)
-          totals.set(
-            base.id,
-            (totals.get(base.id) ?? 0) + (spent.get(`task-${correction.id}`) ?? 0),
-          );
-      }
-      for (const task of planned) {
-        if (!["implemented", "verified"].includes(task.status)) continue;
-        const files = writtenFiles(task).length;
-        const tokens = totals.get(task.id) ?? 0;
-        if (files > 0 && tokens > 0)
-          samples.push({
-            runId: id,
-            taskId: task.id,
-            ...(currentRunId ? { current: true } : {}),
-            kind: taskKind(task),
-            action: taskAction(task),
-            source,
-            files,
-            tokens,
-            model: modelOf.get(`task-${task.id}`)?.model ?? null,
-            criteria: task.criterionIds?.length ?? 0,
-            ...(spec && task.criterionIds
-              ? {
-                  cases: pricedCaseCount(
-                    spec,
-                    { ...task, criterionIds: task.criterionIds },
-                    {
-                      checks,
-                      tasks: planned.map((t) => ({ ...t, criterionIds: t.criterionIds ?? [] })),
-                      includeBroad: true,
-                    },
-                  ),
-                }
-              : {}),
-          });
-      }
+      const rows: RunSampleRows = {
+        id,
+        source,
+        current: !!currentRunId,
+        policy,
+        content,
+        tasks,
+        byModel,
+      };
+      samples.push(...runSamples(rows));
     }
     return samples;
   } catch {
@@ -1124,6 +1200,12 @@ export interface TaskSize {
   sliceCount?: number;
   /** A rows task (`rows` and `rowTest`), with its criteria that have no rows (#1930). */
   rowsTask?: TestTaskRows;
+  /**
+   * A task that is not a test task and writes several files: both split answers, by the expected
+   * price and by the sum of high ends, and which rule decided (`multiFileSplit`, #2649). Absent in
+   * reports written before it.
+   */
+  multiFile?: MultiFileSplit;
 }
 
 /** What sizing knows of a rows task: the criteria a planner could move to a test task of their own. */
@@ -1409,6 +1491,76 @@ export function exceedsTestCapacity(
 }
 
 /**
+ * Text files that are not code although `fileKind` prices them as code for want of a docs
+ * extension: a license, a notice, a changelog, a plain `.txt` that is no manifest.
+ */
+const TEXT_FILE =
+  /(^|\/)(licen[cs]e|copying|notice|authors|contributors|changelog|changes|history|readme)(\.txt)?$/i;
+
+/** Whether a file is documentation or other non-code text (#2649). */
+export const isDocsOrText = (path: string): boolean =>
+  fileKind(path) === "docs" ||
+  TEXT_FILE.test(path) ||
+  (/\.txt$/i.test(path) && fileKind(path) === "code");
+
+/**
+ * Whether a task that is not a test task needs more than one attempt and goes back to the planner
+ * split (#2649). One file is never split: a single file is as small as a task gets. A task whose
+ * files are all documentation or non-code text (`isDocsOrText`) splits when the expected price of
+ * their sum (the sum of the per-file midpoints) is above one attempt's cap, not the sum of their
+ * high ends: each file's high end is the 90th percentile of its kind, and a sum of 90th
+ * percentiles is far above the 90th percentile of a sum. Bench round 88 pokerank and pathwarden
+ * priced a README and LICENSE task at 899,706 tokens against 600,000 and split it, a planner call
+ * of 46k-91k tokens and one more session each, for a task that cost 175k-330k.
+ *
+ * Any other task of several files (code, a manifest, a test file, or a mix of them with docs) keeps
+ * the high-end rule: the wide code tasks it split in bench rounds 49-54 (md-site and expenses-py
+ * skeletons of four or five files, expected 478k) went on to spend 1.0M-1.5M across their parts,
+ * and splitting a task that writes a test file moves the test into a task priced by its cases.
+ *
+ * Both answers are returned, so the sizing report records the high-end rule beside the one that
+ * decided and a replay can compare them.
+ */
+export function multiFileSplit(
+  estimate: TokenRange,
+  paths: readonly string[],
+  cap: number,
+): MultiFileSplit | null {
+  if (paths.length <= 1) return null;
+  const expected = Math.round(expectedPrice(estimate));
+  const byHigh = estimate.high > cap;
+  const byExpected = expected > cap;
+  const rule = paths.every(isDocsOrText) ? "expected" : "high";
+  return {
+    rule,
+    expected,
+    high: Math.round(estimate.high),
+    byHigh,
+    byExpected,
+    split: rule === "high" ? byHigh : byExpected,
+  };
+}
+
+/**
+ * The split decision of a task that writes several files and is not a test task (`multiFileSplit`),
+ * as the sizing report records it.
+ */
+export interface MultiFileSplit {
+  /** `expected` for a task of documentation and text files only, `high` for any other. */
+  rule: "expected" | "high";
+  /** The expected price of the files' sum, the midpoint of the task's range. */
+  expected: number;
+  /** The sum of the files' high ends. */
+  high: number;
+  /** The rule before #2649: the sum of high ends above the cap. */
+  byHigh: boolean;
+  /** The expected price above the cap. */
+  byExpected: boolean;
+  /** The answer of the rule that decided. */
+  split: boolean;
+}
+
+/**
  * The price of a set of tasks: the sum of their midpoints plus the root of the summed squares of
  * their half-ranges. One task is priced at its upper bound; many independent ones well below the
  * sum of their upper bounds (seven priced runs of round 01 cost 0.36-0.77x the summed highs).
@@ -1536,6 +1688,10 @@ export function sizePlan(input: {
           : byText;
       // A whole task whose rows need more than one attempt is split into row slices by the host.
       const byRows = rowVolume?.mode === "on" && rowVolume.slices > 1;
+      const multiFile =
+        kind !== "test" && !fromRequest
+          ? multiFileSplit(estimate, writtenFiles(task), maxAttemptTokens)
+          : null;
       return {
         taskId: task.id,
         kind,
@@ -1553,7 +1709,8 @@ export function sizePlan(input: {
                 !(task.sizingSlice && task.criterionIds.length === 1) &&
                 // A slice holds the same text, so the text's price never splits a task.
                 exceedsTestCapacity(cases, limit, byCases, maxAttemptTokens, true, rowsTask)
-              : files > 1 && estimate.high > maxAttemptTokens,
+              : multiFile?.split === true,
+        ...(multiFile ? { multiFile } : {}),
         basis: fromRequest ? "supplied" : historyBasis(task, rates, tests, cases),
         ...(fromRequest ? { suppliedLines: fromRequest.lines } : {}),
         ...(textChars ? { exactTextChars: textChars } : {}),
@@ -1597,7 +1754,7 @@ export function sizePlan(input: {
                   (limit?.cases ?? 0) > 0 &&
                   (task.cases ?? 0) > CAPACITY_PROBE * (limit?.cases ?? 0)
                 ? `${task.taskId} covers ${task.cases} cases, above ${CAPACITY_PROBE} times the observed capacity of ${limit?.cases}`
-                : `${task.taskId} writes ${task.files} files and needs about ${Math.round(task.kind === "test" ? expectedPrice(task.estimate) : task.estimate.high)} tokens, above one attempt's ${maxAttemptTokens}`,
+                : `${task.taskId} writes ${task.files} files and needs about ${Math.round(task.kind === "test" || task.multiFile?.rule === "expected" ? expectedPrice(task.estimate) : task.estimate.high)} tokens, above one attempt's ${maxAttemptTokens}`,
       );
   }
   if (runTokens + repairReserve > budgetBefore && maxRunTokens !== null) {

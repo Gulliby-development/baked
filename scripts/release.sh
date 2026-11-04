@@ -62,6 +62,10 @@ if [[ "$MODE" == "tag" ]]; then
   exit 0
 fi
 
+# Scheduled releases (.github/workflows/scheduled-release.yml) tag a version bump that never
+# reaches main, so bump from the higher of package.json and the latest v* tag.
+git fetch --quiet --tags origin
+CURRENT=$(bun scripts/scheduled-release.ts current)
 IFS='.' read -r MAJOR MINOR PATCH <<< "$CURRENT"
 case "$MODE" in
   major) MAJOR=$((MAJOR + 1)); MINOR=0; PATCH=0 ;;

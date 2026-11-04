@@ -868,3 +868,61 @@ describe("scenario: the Dart rows pass dart format and dart analyze as written (
     expect(withInlineRows(tampered, file)).toContain("macosx_11_0_arm64");
   });
 });
+
+// #2410: rows as data for Kotlin (JUnit 5) and Scala (ScalaTest, MUnit). Neither standard library
+// reads JSON, so the rows are literals of the test, as Java's. No code line passes ktfmt's 100
+// columns or scalafmt's 80 but the rows' own, and a formatter's layout of either is not an edit.
+const kotlinInline: InlineRowTest = { mode: "inline", framework: "kotlin", package: "com.example.platformtags", test: "src/test/kotlin/com/example/platformtags/PlatformsTest.kt" };
+const KOTLIN_TEST = "package com.example.platformtags\n\nimport org.junit.jupiter.api.Test\n\nclass PlatformsTest {\n    fun acceptanceActual(input: Any?): Any? = input\n\n    @Test\n    fun own() {}\n}\n";
+const scalaInline: InlineRowTest = { mode: "inline", framework: "scalatest", test: "src/test/scala/platformtags/PlatformsSuite.scala" };
+const SCALA_TEST = 'package platformtags\n\nclass PlatformsSuite extends org.scalatest.funsuite.AnyFunSuite {\n  test("own") {}\n}\n\nobject PlatformsSuite {\n  def acceptanceActual(input: Any): Any = input\n}\n';
+
+describe("scenario: the Kotlin and Scala rows keep their formatters' line limits (#2410)", () => {
+  const kotlinFile = { framework: "kotlin", package: "com.example.platformtags", harness: "src/test/kotlin/com/example/platformtags/PlatformsHarness.kt", test: "src/test/kotlin/com/example/platformtags/PlatformsRowsTest.kt", data: "src/test/resources/platforms_rows.json" };
+  const scalaFiles = ["scalatest", "munit"].map((framework) => ({ framework, harness: "src/test/scala/PlatformsHarness.scala", test: "src/test/scala/PlatformsRowsSuite.scala", data: "src/test/resources/platforms_rows.json" }));
+  const rowLine = /^\s*(?:row\(|\(")/;
+
+  test("Kotlin: no code line over 100 columns but the rows', in the file mode's test and the nested block", () => {
+    const texts = [fileMode(kotlinFile)[kotlinFile.test] ?? "", withInlineRows(KOTLIN_TEST, inlineRowFile(kotlinInline, rows))];
+    for (const text of texts) expect(text.split("\n").filter((line) => line.length > 100 && !rowLine.test(line))).toEqual([]);
+  });
+
+  test("Scala: no code line over 80 columns but the rows' and the rows class's own, in both frameworks and both modes", () => {
+    const texts = [
+      ...scalaFiles.map((file) => fileMode(file)[file.test] ?? ""),
+      withInlineRows(SCALA_TEST, inlineRowFile(scalaInline, rows)),
+      withInlineRows(SCALA_TEST, inlineRowFile({ ...scalaInline, framework: "munit" }, rows)),
+    ];
+    for (const text of texts) expect(text.split("\n").filter((line) => line.length > 80 && !rowLine.test(line) && !line.startsWith("class AcceptanceRows"))).toEqual([]);
+  });
+
+  test("ktfmt's layout of the rows (one argument a line, no trailing comma) is kept, and a changed row is put back", () => {
+    const file = inlineRowFile(kotlinInline, rows);
+    const written = withInlineRows(KOTLIN_TEST, file);
+    const formatted = written.replace(/row\(("AC-003:2"), ("macosx_11_0_arm64"), (false)\),/, "row(\n                    $1,\n                    $2,\n                    $3\n                )");
+    expect(formatted).not.toBe(written);
+    expect(hasInlineRows(formatted, file)).toBe(true);
+    const tampered = formatted.replace("macosx_11_0_arm64", "macosx_12_0_arm64");
+    expect(hasInlineRows(tampered, file)).toBe(false);
+    expect(withInlineRows(tampered, file)).toContain('row("AC-003:2", "macosx_11_0_arm64", false)');
+  });
+
+  test("scalafmt's trailing comma and four-space indentation are kept, and a changed row is put back", () => {
+    const file = inlineRowFile(scalaInline, rows);
+    const written = withInlineRows(SCALA_TEST, file);
+    const formatted = written.replace('"macosx_11_0_arm64", false)\n', '"macosx_11_0_arm64", false),\n').replace(/^ {2}(?=\S)/gm, "    ");
+    expect(formatted).not.toBe(written);
+    expect(hasInlineRows(formatted, file)).toBe(true);
+    const tampered = formatted.replace("macosx_11_0_arm64", "macosx_12_0_arm64");
+    expect(hasInlineRows(tampered, file)).toBe(false);
+    expect(withInlineRows(tampered, file)).toContain('("AC-003:2", "macosx_11_0_arm64", false)');
+  });
+
+  test("a file-mode test a formatter laid out again is the host's file; a changed row is not", async () => {
+    const [data, test] = rowFiles({ id: "T003", rows: ["AC-003"], rowTest: kotlinFile } as never, { tasks: [{ rows: ["AC-003"], rowTest: kotlinFile }], rows } as never);
+    const root = temp({ [test!.path]: test!.content.replace(/^ {4}/gm, "  "), [data!.path]: data!.content });
+    expect(await rowFileProblems(root, [data!, test!])).toEqual([]);
+    const tampered = temp({ [test!.path]: test!.content.replace("macosx_11_0_arm64", "macosx_12_0_arm64"), [data!.path]: data!.content });
+    expect(await rowFileProblems(tampered, [data!, test!])).toHaveLength(1);
+  });
+});

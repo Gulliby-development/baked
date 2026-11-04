@@ -487,6 +487,35 @@ export const FEATURES: readonly Feature[] = [
     desktop: ["settings/providers"],
   },
   {
+    id: "provider-accounts",
+    group: "Models and providers",
+    title: "Several accounts of one provider, chosen per project (Codex, Claude Code)",
+    tui: [
+      "/accounts",
+      "/accounts add",
+      "/accounts login",
+      "/accounts use",
+      "/accounts logout",
+      "/accounts remove",
+      "/limits",
+      "/workflow: new run, Codex and Claude account fields",
+    ],
+    cli: [
+      "baked accounts",
+      "baked login --account",
+      "baked logout --account",
+      "baked workflow run --account",
+      "baked limits",
+    ],
+    api: [
+      "/v1/providers/:id/accounts",
+      "/v1/providers/:id/account",
+      "/v1/workflow/runs: accounts",
+      "/v1/providers/limits: account",
+    ],
+    desktop: ["settings/providers", "project/overview: New run"],
+  },
+  {
     id: "model-picker",
     group: "Models and providers",
     title: "Pick a model from the list",
@@ -1404,6 +1433,17 @@ export const FEATURES: readonly Feature[] = [
     desktop: ["settings/chat: Code quality page"],
   },
   {
+    id: "conflict-row-reply",
+    group: "Workflow runs",
+    title: "Answer a spec conflict about a prescribed-row test file with the row diff",
+    tui: ["/code-quality"],
+    cli: notNeeded(
+      "quality.conflictRowReply in config.json; the reply shows as the task's settled conflict",
+    ),
+    api: ["/v1/settings: code-quality page"],
+    desktop: ["settings/chat: Code quality page"],
+  },
+  {
     id: "row-file-write",
     group: "Workflow runs",
     title:
@@ -1464,6 +1504,20 @@ export const FEATURES: readonly Feature[] = [
     tui: ["/code-quality: Library docs source"],
     cli: ["baked workflow doctor: libraryDocs in config.json"],
     api: ["/v1/settings: libraryDocs, with its check"],
+    desktop: ["settings/chat: Code quality page"],
+  },
+  {
+    id: "worktree-root",
+    group: "Workflow runs",
+    title: "Folder for run worktrees, and a probe for path-length failures in them",
+    tui: ["/code-quality: Worktree folder"],
+    cli: [
+      "baked workflow run: --worktree-root DIR, or workflows.worktreeRoot in config.json",
+      "baked workflow quick: --worktree-root DIR",
+      "baked workflow doctor: --worktree-root DIR, checks the folder",
+      "baked workflow worktrees: --worktree-root DIR",
+    ],
+    api: ["/v1/settings: workflows.worktreeRoot, with its check"],
     desktop: ["settings/chat: Code quality page"],
   },
   {
@@ -1857,6 +1911,16 @@ export const FEATURES: readonly Feature[] = [
     cli: ["baked workflow initiative drive", "baked workflow initiative show"],
     api: ["/v1/initiatives/:id"],
     desktop: ["project/initiatives: the shared budget line shows up to N features at once"],
+  },
+  {
+    id: "parallel-cap-queued-resume",
+    group: "Initiatives",
+    title:
+      "A run resumed at the workspace's parallel-run cap keeps the change and waits for a free slot",
+    tui: ["/workflow: the change is kept and the run starts when one of the executing runs ends"],
+    cli: ["baked workflow extend: --resume", "baked workflow reroute: --resume"],
+    api: ["/v1/workflow/runs/:id/resume: queued", "/v1/workflow/runs/:id: queued"],
+    desktop: ["project/runs: Waiting for a free slot in the run header"],
   },
   {
     id: "initiative-upstream-amendments",

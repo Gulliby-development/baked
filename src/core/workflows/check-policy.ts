@@ -80,15 +80,42 @@ const withoutOutputFormat = (args: readonly string[]): string[] =>
       !OUTPUT_FORMAT.test(arg) && !/^--?(?:format|formatter|reporter)$/.test(args[i - 1] ?? ""),
   );
 
+/**
+ * For a Maven or Gradle invocation, whether it runs a lifecycle phase or task that includes the
+ * tests: `mvn test` or `verify` (also package and install), `gradle test` or `check` (also build),
+ * unless the arguments skip them; null for any other program (#844: the mutation gate found no
+ * test check in a Maven project checked by `mvn verify`).
+ */
+export function buildToolRunsTests(tool: string, args: readonly string[]): boolean | null {
+  const phases =
+    tool === "mvn" || tool === "mvnw"
+      ? ["test", "verify", "package", "install"]
+      : tool === "gradle" || tool === "gradlew"
+        ? ["test", "check", "build"]
+        : null;
+  if (!phases) return null;
+  if (!args.some((arg) => phases.includes(arg.toLowerCase().replace(/^:/, "")))) return false;
+  return !args.some(
+    (arg, i) =>
+      /^-D(?:skipTests|maven\.test\.skip)(?:=true)?$/i.test(arg) ||
+      ((arg === "-x" || arg === "--exclude-task") && /^:?test$/i.test(args[i + 1] ?? "")),
+  );
+}
+
 /** Task runners whose targets the gate fallback offers (#1488). */
 const TASK_RUNNER = /^(?:make|gmake|mingw32-make|just|task)$/;
 
 /**
  * A task runner's `check` target: in the projects the fallback serves it is the test suite
  * (autotools' `make check`) or tests plus lint, not a linter, so it is no file-local static
- * check that runs after every code task and is corrected as diagnostics only (#1680).
+ * check that runs after every code task and is corrected as diagnostics only (#1680). Gradle's
+ * `check` task, and any Maven or Gradle invocation that runs the tests (`buildToolRunsTests`), is
+ * the same: the preselected `gradle-check` gate read as static, so every code task ran the whole
+ * suite after it and the written-tests and affected-tests checks skipped it.
  */
 function runsAggregateTarget(check: Pick<Check, "executable" | "args">): boolean {
+  const launched = toolchainCommand(check.executable, check.args);
+  if (buildToolRunsTests(launched.program, launched.args)) return true;
   const program = (check.executable.replaceAll("\\", "/").split("/").at(-1) ?? "")
     .replace(/\.(?:exe|cmd|bat)$/i, "")
     .toLowerCase();

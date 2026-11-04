@@ -5,6 +5,7 @@ import { getCwd } from "../core/cwd.js";
 import { gitInitSummary, initWorkspaceGit } from "../core/git/init.js";
 import { loadModelCatalog } from "../core/llm/model-catalog.js";
 import { parseRouteOverrides, type RoutingEntry } from "../core/llm/model-routing.js";
+import { type AccountChoice, parseAccountChoice } from "../core/llm/provider-accounts.js";
 import { clarificationAnswers, clarificationKeys } from "../core/workflows/answers.js";
 import { WorkflowArtifacts } from "../core/workflows/artifacts.js";
 import { withModelReview } from "../core/workflows/auto-approval.js";
@@ -158,6 +159,27 @@ export function quickRunArgs(service: NativeWorkflowService, args: WorkflowArgs)
       feature,
       prompt,
     },
+  };
+}
+/** `--account codex=work,claude-code=client`, refused as a bad request when malformed. */
+const accountFlag = (value: string): AccountChoice => {
+  try {
+    return parseAccountChoice(value);
+  } catch (error) {
+    throw new WorkflowFault(
+      "INVALID_REFERENCE",
+      error instanceof Error ? error.message : String(error),
+    );
+  }
+};
+/** `--worktree-root PATH` (#2461) in place of `workflows.worktreeRoot` for this command. */
+function withWorktreeRoot(config: AppConfig, flag: unknown): AppConfig {
+  if (typeof flag !== "string") return config;
+  if (!flag.trim())
+    throw new WorkflowFault("INVALID_DEFINITION", "--worktree-root requires a folder");
+  return {
+    ...config,
+    workflows: { ...config.workflows, worktreeRoot: flag.trim() } as AppConfig["workflows"],
   };
 }
 const modelFlag = (args: WorkflowArgs, config: AppConfig): string =>
@@ -426,6 +448,9 @@ export async function executeWorkflowCommand(
           : {}),
         ...(args.flags.worktree === true ? { executionMode: "worktree" as const } : {}),
         ...(args.flags["model-strict"] === true ? { modelStrict: true } : {}),
+        ...(typeof args.flags.account === "string"
+          ? { accounts: accountFlag(args.flags.account) }
+          : {}),
         ...(typeof args.flags.route === "string"
           ? { routes: parseRouteOverrides(args.flags.route) }
           : {}),
@@ -1006,7 +1031,10 @@ export async function runWorkflowCli(argv: string[]): Promise<number> {
     if (argv[0] === "routing") return runRoutingCli(argv.slice(1));
     const args = parseWorkflowArgs(argv);
     const cwd = getCwd();
-    const config = mergeConfigs(loadConfig(), loadEffectiveProjectConfig(cwd));
+    const config = withWorktreeRoot(
+      mergeConfigs(loadConfig(), loadEffectiveProjectConfig(cwd)),
+      args.flags["worktree-root"],
+    );
     const readonly = [
       "status",
       "list",

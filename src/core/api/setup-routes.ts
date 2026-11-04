@@ -30,6 +30,7 @@ import {
   writeInstructionFile,
 } from "../instruction-files.js";
 import { buildInstructionPrompt, loadInstructions } from "../instructions.js";
+import { deleteProviderAccount, providerAccountsView } from "../llm/account-overview.js";
 import {
   CliLoginCodeError,
   cancelCliLogin,
@@ -49,6 +50,14 @@ import {
   RouteEffort,
 } from "../llm/model-routing.js";
 import { checkProviders } from "../llm/provider.js";
+import {
+  ACCOUNT_ID,
+  addProviderAccount,
+  isAccountProvider,
+  ProviderAccountError,
+  setProjectAccount,
+  updateProviderAccount,
+} from "../llm/provider-accounts.js";
 import { getProviderSecretEntries } from "../llm/providers/index.js";
 import { readUsageLimits } from "../llm/usage-limits.js";
 import { cachedVendorModels } from "../llm/vendor-models.js";
@@ -235,6 +244,23 @@ const PROVIDER_KEY = /^\/v1\/providers\/([a-z0-9-]+)\/key$/;
 const PROVIDER_LOGIN = /^\/v1\/providers\/([a-z0-9-]+)\/(login|logout|switch)$/;
 const PROVIDER_LOGIN_CODE = /^\/v1\/providers\/([a-z0-9-]+)\/login\/code$/;
 const LoginCodeBody = z.strictObject({ code: z.string().trim().min(1).max(4096) });
+const PROVIDER_ACCOUNTS = /^\/v1\/providers\/([a-z0-9-]+)\/accounts$/;
+const PROVIDER_ACCOUNT_ITEM = /^\/v1\/providers\/([a-z0-9-]+)\/accounts\/([a-z0-9-]+)$/;
+const PROVIDER_ACCOUNT_CHOICE = /^\/v1\/providers\/([a-z0-9-]+)\/account$/;
+/** `?account=ID` on a sign-in route acts for that account's credential home (#2303). */
+const AccountQuery = z.strictObject({ account: z.string().regex(ACCOUNT_ID).optional() });
+const AccountProjects = z.array(z.string().min(1).max(4096)).max(200);
+const AccountAddBody = z.strictObject({
+  id: z.string().regex(ACCOUNT_ID, "Use lowercase letters, digits and hyphens"),
+  label: z.string().trim().min(1).max(60),
+  allowedProjects: AccountProjects.optional(),
+});
+const AccountPatchBody = z.strictObject({
+  label: z.string().trim().min(1).max(60).optional(),
+  allowedProjects: AccountProjects.optional(),
+});
+/** The account the workspace's project uses; null goes back to the CLI's own sign-in. */
+const AccountChoiceBody = z.strictObject({ account: z.string().regex(ACCOUNT_ID).nullable() });
 
 /** Answers a setup request, or returns null when the path is not a setup endpoint. */
 export async function setupRoute(ctx: SetupRouteContext): Promise<Response | null> {
@@ -690,15 +716,89 @@ export async function setupRoute(ctx: SetupRouteContext): Promise<Response | nul
       }),
     });
   }
+  const accountStore = ctx.configDir ? { configDir: ctx.configDir } : {};
+  /** Runs an account change, answering a refused one with its status instead of a 500. */
+  const accountCall = async <T>(work: () => T | Promise<T>): Promise<T> => {
+    try {
+      return await work();
+    } catch (error) {
+      if (error instanceof ProviderAccountError)
+        ctx.fail(
+          error.code === "NOT_FOUND" ? 404 : error.code === "CONFLICT" ? 409 : 400,
+          error.code,
+          error.message,
+        );
+      throw error;
+    }
+  };
+  const accountsMatch =
+    PROVIDER_ACCOUNTS.exec(path) ??
+    PROVIDER_ACCOUNT_ITEM.exec(path) ??
+    PROVIDER_ACCOUNT_CHOICE.exec(path);
+  if (accountsMatch?.[1]) {
+    const id = accountsMatch[1];
+    if (!isAccountProvider(id))
+      ctx.fail(404, "NOT_FOUND", `Provider ${id} does not keep several accounts`);
+    const view = () => providerAccountsView(id, workspace, accountStore);
+    if (PROVIDER_ACCOUNT_CHOICE.test(path)) {
+      ctx.only("PUT");
+      const body = AccountChoiceBody.parse(await ctx.readJson());
+      await accountCall(() =>
+        setProjectAccount(id, workspace, body.account, { ...accountStore, allow: true }),
+      );
+      return ctx.json(200, view());
+    }
+    const accountId = accountsMatch[2];
+    if (accountId) {
+      ctx.only("PATCH", "DELETE");
+      if (method === "DELETE") {
+        await accountCall(() => deleteProviderAccount(id, accountId, accountStore));
+        return ctx.json(200, view());
+      }
+      const body = AccountPatchBody.parse(await ctx.readJson());
+      await accountCall(() =>
+        updateProviderAccount(
+          id,
+          accountId,
+          {
+            ...(body.label !== undefined ? { label: body.label } : {}),
+            ...(body.allowedProjects !== undefined
+              ? { allowedProjects: body.allowedProjects }
+              : {}),
+          },
+          accountStore,
+        ),
+      );
+      return ctx.json(200, view());
+    }
+    ctx.only("GET", "POST");
+    if (method === "POST") {
+      const body = AccountAddBody.parse(await ctx.readJson());
+      await accountCall(() =>
+        addProviderAccount(
+          id,
+          {
+            id: body.id,
+            label: body.label,
+            ...(body.allowedProjects ? { allowedProjects: body.allowedProjects } : {}),
+          },
+          accountStore,
+        ),
+      );
+      return ctx.json(201, view());
+    }
+    return ctx.json(200, view());
+  }
   const codeMatch = PROVIDER_LOGIN_CODE.exec(path);
   if (codeMatch?.[1]) {
     const id = codeMatch[1];
     if (!isCliLoginProvider(id))
       ctx.fail(404, "NOT_FOUND", `Provider ${id} does not sign in through a CLI`);
     ctx.only("POST");
+    const { account } = ctx.query(AccountQuery);
     const body = LoginCodeBody.parse(await ctx.readJson());
     try {
-      return ctx.json(202, { login: submitCliLoginCode(id, body.code) });
+      return ctx.json(202, { login: submitCliLoginCode(id, body.code, account) });
     } catch (error) {
       if (error instanceof CliLoginCodeError) ctx.fail(409, "CONFLICT", error.message);
       throw error;
@@ -709,19 +809,27 @@ export async function setupRoute(ctx: SetupRouteContext): Promise<Response | nul
     const id = loginMatch[1];
     if (!isCliLoginProvider(id))
       ctx.fail(404, "NOT_FOUND", `Provider ${id} does not sign in through a CLI`);
+    const { account } = ctx.query(AccountQuery);
     if (loginMatch[2] === "logout") {
       ctx.only("POST");
-      return ctx.json(200, await logoutCli(id));
+      return ctx.json(200, await accountCall(() => logoutCli(id, account)));
     }
     if (loginMatch[2] === "switch") {
       ctx.only("POST");
+      if (account)
+        ctx.fail(
+          400,
+          "INVALID_REQUEST",
+          "Switch the CLI's own sign-in; an account signs in by itself",
+        );
       const result = await switchCliAccount(id);
       return ctx.json(result.login ? 202 : 200, result);
     }
     ctx.only("GET", "POST", "DELETE");
-    if (method === "POST") return ctx.json(202, { login: startCliLogin(id) });
-    if (method === "DELETE") return ctx.json(200, { login: await cancelCliLogin(id) });
-    return ctx.json(200, { login: getCliLogin(id) });
+    if (method === "POST")
+      return ctx.json(202, { login: await accountCall(() => startCliLogin(id, account)) });
+    if (method === "DELETE") return ctx.json(200, { login: await cancelCliLogin(id, account) });
+    return ctx.json(200, { login: getCliLogin(id, account) });
   }
   const keyMatch = PROVIDER_KEY.exec(path);
   if (keyMatch?.[1]) {

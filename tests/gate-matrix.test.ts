@@ -1,4 +1,4 @@
-import { type ConvergenceGate, type ConvergenceGateFinding, convergenceGateDecision, convergenceReproCandidates, type GateFinding, gateFinding, type ReviewGate, reviewGateCandidates, reviewGateDecision } from "../src/core/workflows/review-gate.js";
+import { type ConvergenceGate, type ConvergenceGateFinding, convergenceGateDecision, convergenceGateDocCarries, convergenceGateDocKeeps, convergenceGateDocRepeats, convergenceReproCandidates, type GateFinding, gateFinding, type ReviewGate, reviewGateCandidates, reviewGateDecision, reviewGateDocCarries, reviewGateDocKeeps, reviewGateDocRepeats } from "../src/core/workflows/review-gate.js";
 import { literalPropertyProblems, rowFiles, rowsArtifact } from "../src/core/workflows/acceptance-rows.js";
 import { clearBannedProperties } from "../src/core/verification/initiative-ownership.js";
 import { CALL_COST_MODELS, NEXT_CALL, perCallCostScenario } from "./helpers/per-call-cost-scenario.js";
@@ -16,7 +16,7 @@ import { fixtureSpec, workflowFixture } from "./helpers/workflow-fixture.js";
 import { slicedCorrective } from "./helpers/sliced-corrective-scenario.js";
 import { evidencePaths, scopeRecord, stackFrames } from "../src/core/workflows/corrective-scope.js";
 import { cellSamples, cellSpec, omittedCellInput, withoutCellInput } from "./helpers/criteria-cell-fixtures.js";
-import { ProcessScope, windowsBatchInvocation, windowsProgram } from "../src/core/workflows/process-scope.js";
+import { inStreamOrder, ProcessScope, windowsBatchInvocation, windowsProgram } from "../src/core/workflows/process-scope.js";
 import { canRepairRun, type RepairBlock } from "../src/core/workflows/repairable.js";
 import {
   growthLimit,
@@ -56,7 +56,9 @@ import { join } from "node:path";
 import { syntaxErrors } from "../src/core/intelligence/syntax-check.js";
 import { criterionCases, missingCases, testsHold, writtenTestPaths } from "../src/core/verification/criteria-cases.js";
 import { INLINE_HARNESS, type InlineRowTest, inlineRowFile, withInlineRows } from "../src/core/workflows/acceptance-rows-inline.js";
-import { reproExecutables, rerootRepro } from "../src/core/verification/repro.js";
+import { docFindingRepairs, documentationFinding, reproAllows, reproExecutables, rerootRepro } from "../src/core/verification/repro.js";
+import { packageNeeds } from "../src/core/workflows/package-probe.js";
+import { nodeUnderBun, redirectFixture } from "../src/core/verification/doc-examples.js";
 import { entryPointCommand } from "../src/core/verification/entry-points.js";
 import { noteSiblingFindings, ownerOfFinding } from "../src/core/verification/initiative-ownership.js";
 import { failureSignature as convergenceSignature, missingPlannedPaths, noTestsCollected } from "../src/core/verification/convergence.js";
@@ -84,7 +86,7 @@ import { toolchainCommand } from "../src/core/workflows/toolchain.js";
 import { type HostEdit, hostOnlyEvidence, plannerGraph } from "../src/core/workflows/host-edits.js";
 import { defaultWorkflowPolicy } from "../src/core/workflows/defaults.js";
 import { fixerProbeDecision } from "../src/core/workflows/fixer-run.js";
-import { STOP_REASONS } from "../src/core/workflows/stop-reasons.js";
+import { STOP_REASONS, stopMode } from "../src/core/workflows/stop-reasons.js";
 import { sizePlan, splitTestTasks, suppliedBlocks } from "../src/core/workflows/sizing.js";
 import { withPerTestTimeout } from "../src/core/workflows/test-timeout.js";
 import { detectProfile } from "../src/core/tools/project.js";
@@ -150,7 +152,7 @@ test("#1643 initiative ceiling gate uses central stage prices from shared histor
       expect(shareShortfall(over, view.features[1]!)?.message).toContain("above its $37.50 ceiling");
       const at = { ...view, budget: { ...view.budget, cost: { ...view.budget.cost, forecastUsd: 37.5, forecastBinding: true } } };
       expect(shareShortfall(at, view.features[1]!)).toBeNull();
-      const estimate = initiatives.estimate("values", 0);
+      const estimate = initiatives.estimate("values");
       expect(view.budget.cost.forecastUsd).toBeCloseTo(0.72 + estimate.features.slice(1)
         .reduce((sum, f) => sum + (f.costUsd!.low + f.costUsd!.high) / 2, 0), 2);
     } finally { await fixture.dispose(); }
@@ -304,6 +306,9 @@ describe("host-written acceptance rows in the case-walk and mutation gates (#159
     pest: { harness: "tests/harness.php", test: "tests/RowsTest.php" },
     exunit: { harness: "tests/harness.exs", test: "tests/rows_test.exs" },
     dart: { harness: "tests/harness.dart", test: "tests/rows_test.dart" },
+    kotlin: { harness: "tests/Harness.kt", test: "tests/RowsTest.kt", package: "tests" },
+    scalatest: { harness: "tests/Harness.scala", test: "tests/RowsSuite.scala" },
+    munit: { harness: "tests/Harness.scala", test: "tests/RowsSuite.scala", package: "tests" },
   } as const;
   test.each(Object.keys(layouts) as (keyof typeof layouts)[])("%s retains every case in its JSON data and keeps generated tests out of mutation proposals", async (framework) => {
     const root = mkdtempSync(join(tmpdir(), "baked-row-gate-"));
@@ -321,8 +326,9 @@ describe("host-written acceptance rows in the case-walk and mutation gates (#159
       const check = caseCheck(spec, task, { checks: [] });
       expect(check).toBeDefined();
       expect(await check?.(root)).toEqual([]);
-      // Java, C# and Dart tests hold the rows themselves, and the host refuses any change to that file.
-      if (framework === "junit" || framework === "xunit" || framework === "dart") expect(files[1]?.content).toMatch(/\b34L?\b.*\b68L?\b/);
+      // Java, C#, Dart, Kotlin and Scala tests hold the rows themselves, and the host refuses any
+      // change to that file.
+      if (["junit", "xunit", "dart", "kotlin", "scalatest", "munit"].includes(framework)) expect(files[1]?.content).toMatch(/\b34L?\b.*\b68L?\b/);
       else {
         writeFileSync(join(root, "tests/rows.json"), JSON.stringify(artifact.rows.slice(0, 1)));
         expect((await check?.(root))?.join()).toContain("34");
@@ -369,6 +375,9 @@ describe("gate matrix: inline rows block holds its own cells (#1997)", () => {
     pest: { mode: "inline", framework: "pest", test: "tests/CalcTest.php" },
     exunit: { mode: "inline", framework: "exunit", test: "test/calc_test.exs" },
     dart: { mode: "inline", framework: "dart", test: "test/calc_test.dart" },
+    kotlin: { mode: "inline", framework: "kotlin", package: "com.ex.calc", test: "src/test/kotlin/com/ex/calc/CalcTest.kt" },
+    scalatest: { mode: "inline", framework: "scalatest", test: "src/test/scala/CalcSuite.scala" },
+    munit: { mode: "inline", framework: "munit", test: "src/test/scala/CalcSuite.scala" },
   };
   const shapes: [string, unknown][] = [
     ["two-line CRLF text", ["[a]\r\nb=1\r\n", {}]],
@@ -470,7 +479,7 @@ const FORMAT_FILE: Record<Stack, { path: string; command: string | null }> = {
   npm: { path: "src/sum.js", command: null },
   python: { path: "src/app/sum.py", command: "ruff format --check src/app/sum.py" },
   go: { path: "sum.go", command: "gofmt -l sum.go" },
-  rust: { path: "tests/json.rs", command: "rustfmt --check --edition 2021 tests/json.rs" },
+  rust: { path: "tests/json.rs", command: "rustfmt --check --color=never --edition 2021 tests/json.rs" },
   // Maven formatters run inside `mvn verify`; no gate runs one alone.
   maven: { path: "src/main/java/app/Sum.java", command: null },
   dotnet: { path: "src/App/Sum.cs", command: "dotnet format --verify-no-changes --include src/App/Sum.cs" },
@@ -2554,7 +2563,8 @@ describe("gate matrix: swift test, XCTest, swift-testing and swift-format (#1492
     expect(fixerCommand(checks[0]!.fix!, "Sources/Calc/Calc.swift")).toEqual({ executable: "swift", args: ["format", "format", "--in-place", "Sources/Calc/Calc.swift"] });
     expect(detectGates(project({ "Package.swift": "" })).map((s) => s.check.id)).toEqual(["swift-build", "swift-test"]);
     const root = project(files);
-    expect(formatWrittenChecks(root, [], [{ path: "Sources/Calc/Calc.swift", action: "create" }], (c) => `/usr/bin/${c}`).map((c) => [c.id, [c.executable, ...c.args].join(" "), [c.fix!.executable, ...c.fix!.args].join(" ")])).toEqual([
+    // The toolchain bundles swift format (Swift 6): the probe is answered here, not by the runner's swift (#2817).
+    expect(formatWrittenChecks(root, [], [{ path: "Sources/Calc/Calc.swift", action: "create" }], (c) => `/usr/bin/${c}`, undefined, undefined, { packages: () => true }).map((c) => [c.id, [c.executable, ...c.args].join(" "), [c.fix!.executable, ...c.fix!.args].join(" ")])).toEqual([
       ["swift-format-written", "swift format lint --strict Sources/Calc/Calc.swift", "swift format format --in-place"],
     ]);
   });
@@ -2865,7 +2875,7 @@ describe("gate matrix: Pester and PSScriptAnalyzer (#1498)", () => {
     expect(PS_FORMAT_CHECK).toContain("$s.Settings = './PSScriptAnalyzerSettings.psd1'");
     expect(PS_FORMAT_FIX).toContain("New-Object Text.UTF8Encoding $bom");
     expect(PS_FORMAT_CHECK).not.toContain("WriteAllText");
-    const [written] = formatWrittenChecks(root, [], [{ path: "src/Sum.ps1", action: "create" }], (c) => `/usr/bin/${c}`);
+    const [written] = formatWrittenChecks(root, [], [{ path: "src/Sum.ps1", action: "create" }], (c) => `/usr/bin/${c}`, undefined, undefined, { packages: () => true });
     expect(written && [written.id, written.args.slice(-2), written.fix?.args.at(-1), written.required]).toEqual(["psformat-written", [PS_FORMAT_CHECK, "src/Sum.ps1"], PS_FORMAT_FIX, true]);
     expect(diagnosticCount("src/Sum.ps1: would be reformatted by Invoke-Formatter\ntests/A.Tests.ps1: would be reformatted by Invoke-Formatter\n")).toEqual({ tool: "invoke-formatter", count: 2, errors: 2 });
   });
@@ -2921,6 +2931,21 @@ describe("gate matrix: testthat, lintr and styler (#1500)", () => {
   const ids = (files: Record<string, string>) =>
     detectGates(project(files)).map((s) => [s.check.id, s.check.args.at(-1), s.source, s.preselected]);
   const TEST = 'test_that("adds", {\n  expect_equal(add_numbers(1, 2), 3)\n})\n';
+  // #2817: a Windows queue runner had Rscript and no styler; the required styler-written check
+  // failed every attempt. Each R gate's command names the package the probe asks about.
+  test("styler-written only where Rscript loads styler; each R gate names its package (#2817)", () => {
+    const files = { "tests/testthat/test-sum.R": TEST };
+    const written = (has: boolean) =>
+      formatWrittenChecks(project(files), [], [{ path: "tests/testthat/test-sum.R", action: "create" }], (c) => `/usr/bin/${c}`, undefined, undefined, { packages: () => has }).map((c) => c.id);
+    expect(written(false)).toEqual([]);
+    expect(written(true)).toEqual(["styler-written"]);
+    const gates = detectGates(project({ DESCRIPTION: "Package: sumr\n", ...files })).map((s) => s.check);
+    expect(gates.map((c) => [c.id, packageNeeds(c).map((n) => n.name)])).toEqual([
+      ["testthat", ["testthat"]],
+      ["lintr", ["lintr"]],
+      ["styler", ["styler"]],
+    ]);
+  });
   test("a package gets testthat on the loaded package, lintr offered, styler offered; a scripts project tests its folder", () => {
     expect(ids({ DESCRIPTION: "Package: sumr\n", "tests/testthat/test-sum.R": TEST })).toEqual([
       ["testthat", testthatRun(true), "tests/testthat", true],
@@ -3280,7 +3305,7 @@ describe("gate matrix: format-written check on a dirty repository (#1837)", () =
   // An edited file: only the lines the run changed against its content before the run (#1837, R57
   // zonevet), by a formatter that formats a range; none where the formatter cannot.
   const edited = (files: Record<string, string>, path: string, before: string) =>
-    formatWrittenChecks(project(files), [], [{ path, action: "modify" }], (c) => `/usr/bin/${c}`, (p) => (p === path ? before : undefined), () => true).map((c) => [
+    formatWrittenChecks(project(files), [], [{ path, action: "modify" }], (c) => `/usr/bin/${c}`, (p) => (p === path ? before : undefined), () => true, { packages: () => true }).map((c) => [
       c.id,
       [c.executable, ...c.args].join(" "),
       c.fix ? [c.fix.executable, ...c.fix.args].join(" ") : null,
@@ -3370,7 +3395,7 @@ describe("gate matrix: format-written check on a dirty repository (#1837)", () =
     const cargoFmt: Check = { id: "cargo-fmt", executable: "cargo", args: ["fmt", "--check"], cwd: ".", timeoutMs: 300000, required: true, scope: "feature", envNames: [], writes: [], fix: { executable: "cargo", args: ["fmt"] } };
     const shown = (checks: Check[]) => checks.map((c) => [c.id, [c.executable, ...c.args].join(" "), [c.fix!.executable, ...c.fix!.args].join(" "), c.fixPaths]);
     // lib.rs declares `mod parser;` (rustfmt would format parser.rs too); old.rs is an edit (no range form).
-    const expected = [["rustfmt-written", "/usr/bin/rustfmt --check --edition 2021 src/parser.rs tests/json.rs", "/usr/bin/rustfmt --edition 2021", ["src/parser.rs", "tests/json.rs"]]];
+    const expected = [["rustfmt-written", "/usr/bin/rustfmt --check --color=never --edition 2021 src/parser.rs tests/json.rs", "/usr/bin/rustfmt --edition 2021", ["src/parser.rs", "tests/json.rs"]]];
     const which = (c: string) => `/usr/bin/${c}`;
     const at = (check: Check) => ({ ...check, executable: "/usr/bin/cargo" });
     expect(shown(rustFormatWrittenChecks(root, [at(cargoFmt)], writes, which, () => "fn o() {}\n"))).toEqual(expected);
@@ -3378,12 +3403,12 @@ describe("gate matrix: format-written check on a dirty repository (#1837)", () =
     expect(formatWrittenChecks(root, [at(cargoFmt)], writes, which, () => "fn o() {}\n")).toEqual([]);
     expect(shown(formatWrittenChecks(root, [at(cargoFmt)], writes, which, () => "fn o() {}\n", () => true, { rust: true }))).toEqual(expected);
     // A file the run created is whole like a new one.
-    expect(shown(rustFormatWrittenChecks(root, [at(cargoFmt)], [{ path: "src/old.rs", action: "modify" }], which, () => null)).map(([id, command]) => [id, command])).toEqual([["rustfmt-written", "/usr/bin/rustfmt --check --edition 2021 src/old.rs"]]);
+    expect(shown(rustFormatWrittenChecks(root, [at(cargoFmt)], [{ path: "src/old.rs", action: "modify" }], which, () => null)).map(([id, command]) => [id, command])).toEqual([["rustfmt-written", "/usr/bin/rustfmt --check --color=never --edition 2021 src/old.rs"]]);
     // No rustfmt on the PATH, or no cargo fmt gate: no check.
     expect(rustFormatWrittenChecks(root, [cargoFmt], writes, () => null)).toEqual([]);
     expect(rustFormatWrittenChecks(project({ "src/a.rs": "fn a() {}\n" }), [], [{ path: "src/a.rs", action: "create" }], which)).toEqual([]);
     // Its file-scoped form, for a check that times out (#2240).
-    expect(fileScopedFormat(rustFormatWrittenChecks(root, [at(cargoFmt)], writes, which)[0]!, root, "tests/json.rs")).toEqual({ executable: "/usr/bin/rustfmt", args: ["--check", "--edition", "2021", "tests/json.rs"] });
+    expect(fileScopedFormat(rustFormatWrittenChecks(root, [at(cargoFmt)], writes, which)[0]!, root, "tests/json.rs")).toEqual({ executable: "/usr/bin/rustfmt", args: ["--check", "--color=never", "--edition", "2021", "tests/json.rs"] });
   });
   cell("maven", "no Maven formatter gate is detected: no check", () => {
     expect(scoped({ "pom.xml": "<project/>", "src/main/java/A.java": "class A {}\n" }, ["src/main/java/A.java"])).toEqual([]);
@@ -3427,6 +3452,14 @@ for (const stack of STACKS) {
       expect(resolved?.entry.name).toBe("tool");
       expect(executables).toContain(resolved!.argv[0]!);
       expect(resolved!.argv.at(-1)).toBe("--help");
+    });
+
+    // R88 pokerank: a bun project's README wrote `node bin/pokerank.js ...` and none of it ran.
+    cell(stack, "a README's node example runs under the checks' runtime (#2678)", () => {
+      const executables = reproExecutables(preselected());
+      const runs = executables.includes("node") || nodeUnderBun(["node", "cli.js"], executables);
+      expect(runs).toBe(stack === "bun" || stack === "npm");
+      expect(nodeUnderBun(["node", "cli.js"], executables)).toBe(stack === "bun");
     });
 
     cell(stack, "edit-profile", async () => {
@@ -5656,6 +5689,22 @@ describe("gate matrix: plain output per tool (#2631)", () => {
   });
 });
 
+// #2830: rustfmt reads neither NO_COLOR nor CARGO_TERM_COLOR and colours its diff under a colour
+// TERM (R90 windowfit). The Rust format gates pass its own switch, and a check command's output
+// comes back plain whatever the tool printed, so the stored result holds no escape codes.
+describe("gate matrix: tools that colour in spite of the plain-output environment (#2830)", () => {
+  cell("rust", "the cargo fmt gate passes rustfmt --color=never", () => {
+    const gate = detectGates(project({ "Cargo.toml": "[package]\nname = 'p'\n" })).find((s) => s.check.id === "cargo-fmt");
+    expect([gate?.check.executable, ...(gate?.check.args ?? [])].join(" ")).toBe("cargo fmt --check -- --color=never");
+    expect(gate?.check.fix).toEqual({ executable: "cargo", args: ["fmt"] });
+  });
+  cell("rust", "a coloured rustfmt diff comes back from the check command without escape codes", async () => {
+    const coloured = "Diff in src/main.rs:3:\n }\n\u001b(B\u001b[m\u001b[31m-\n\u001b[m\u000f\u001b[32m+\n\u001b[0m";
+    const result = await executeCheckCommand(new ProcessScope(), process.execPath, ["-e", `process.stdout.write(${JSON.stringify(coloured)})`], { cwd: tmpdir(), timeoutMs: 60000, signal: new AbortController().signal, sandbox: null });
+    expect(result.output).toBe("Diff in src/main.rs:3:\n }\n-\n+\n");
+  });
+});
+
 describe("gate matrix: coloured runner output (#2615)", () => {
   for (const [tool, sample] of Object.entries(RUNNER_SUMMARIES))
     test(`${tool}: the coloured passing and failing summaries read as the plain ones`, () => {
@@ -5813,6 +5862,24 @@ describe("gate matrix: no tests collected (#1864)", () => {
   ];
   for (const [stack, output] of NO_TESTS)
     test(`${stack}: no test collected`, () => expect(noTestsCollected(output)).toBe(true));
+  // #2778: one part's "no tests" line beside another part that ran tests. go 1.24.7 (`go test
+  // ./...` failing, and passing from the test cache), Elixir 1.14 (umbrella `mix test`), and a
+  // Gradle multi-project build in its documented console output.
+  test("a part without tests beside a part that ran or failed tests is not 'no tests'", () => {
+    expect(noTestsCollected("--- FAIL: TestF (0.00s)\n    a_test.go:3: \nFAIL\nFAIL\texample.com/m/a\t0.003s\n?   \texample.com/m/b\t[no test files]\nFAIL")).toBe(false);
+    expect(noTestsCollected("FAIL\texample.com/m/a [build failed]\n?   \texample.com/m/b\t[no test files]\nFAIL")).toBe(false);
+    expect(noTestsCollected("ok  \texample.com/m/a\t(cached)\nok  \texample.com/m/c\t0.003s [no tests to run]")).toBe(false);
+    expect(noTestsCollected("==> a\n  1) test x (ATest)\n     apps/a/test/a_test.exs:3\n\nFinished in 0.01 seconds (0.00s async, 0.01s sync)\n1 test, 1 failure\n\nRandomized with seed 60860\n==> b\nThere are no tests to run")).toBe(false);
+    expect(noTestsCollected("> Task :lib:test FAILED\n\nLibTest > adds() FAILED\n    org.opentest4j.AssertionFailedError at LibTest.java:9\n\n2 tests completed, 1 failed\n\n> Task :app:test FAILED\nThere are test sources present and no filters are applied, but the test task did not discover any tests to execute.")).toBe(false);
+    // Every Go package without tests, or filtered to none, is still "no tests".
+    expect(noTestsCollected("?   \texample.com/m/b\t[no test files]\nok  \texample.com/m/a\t(cached) [no tests to run]")).toBe(true);
+  });
+  // #2778: `testsRan` takes a package's cached result as a package that ran tests.
+  test("go: a cached package beside one without test files did not run zero tests", () => {
+    expect(testsRan("ok  \texample.com/m/a\t(cached)\n?   \texample.com/m/b\t[no test files]")).toBeNull();
+    expect(testsRan("ok  \texample.com/m/a\t0.004s\tcoverage: 100.0% of statements\n?   \texample.com/m/b\t[no test files]")).toBeNull();
+    expect(testsRan("ok  \texample.com/m/a\t(cached) [no tests to run]\n?   \texample.com/m/b\t[no test files]")).toEqual({ tool: "go", count: 0 });
+  });
   test("a failing test and a passing run are not 'no tests'", () => {
     expect(noTestsCollected("FAILED tests/test_tags.py::test_wheel - AssertionError\n1 failed in 0.02s")).toBe(false);
     expect(noTestsCollected(" 3 pass\n 0 fail\nRan 3 tests across 1 file.")).toBe(false);
@@ -5932,6 +5999,128 @@ describe("review gate: a finding its reviewer marked noRepro (#2194)", () => {
     const finding = { id: "N1", severity: "low", kind: "correctness", claim: "c", confidence: 0.1, criterionIds: [] } as unknown as Parameters<typeof gateFinding>[0];
     expect(gateFinding({ ...finding, noRepro: "  " }, false, "reproduced").noRepro).toBe(false);
     expect(gateFinding({ ...finding, noRepro: "needs the README setup" }, false, "reproduced").noRepro).toBe(true);
+  });
+});
+
+describe("review and converge gates: a documentation finding marked noRepro (#2835, shadow)", () => {
+  // R91 stopcut docs F1: correctness, medium, confidence 1, basis spec, README.md, noRepro "README
+  // wording". `reproAllows` keeps it a note (repaired: []) where the same defect called `partial`
+  // repairs; `doc_finding_unrepaired` records what `docFindingRepairs` would repair instead.
+  const doc = (over: Partial<GateFinding> = {}): GateFinding => ({
+    id: "F1",
+    severity: "medium",
+    kind: "correctness",
+    basis: "spec",
+    confidence: 1,
+    repro: false,
+    sibling: false,
+    outcome: null,
+    noRepro: true,
+    doc: true,
+    ...over,
+  });
+  const gate = (findings: GateFinding[]): ReviewGate => ({
+    reviewer: "correctness",
+    required: true,
+    blocking: ["critical", "high", "medium"],
+    severities: ["critical", "high", "medium"],
+    minConfidence: 0.7,
+    reproAvailable: true,
+    findings,
+  });
+  const convergence = (findings: GateFinding[]): ConvergenceGate => ({
+    severities: ["critical", "high", "medium"],
+    minConfidence: 0.7,
+    checksPass: true,
+    reproAvailable: true,
+    canRepro: true,
+    criteria: [{ criterionId: "AC-001", verdict: "pass", evidence: 1 }],
+    failing: [],
+    findings: findings.map((f) => ({ ...f, testOrDoc: f.doc === true, criterionIds: ["AC-001"] })),
+  });
+
+  for (const [name, finding, keeps] of [
+    ["README correctness with noRepro (R91 stopcut F1)", doc(), ["F1"]],
+    ["the same claim on a source file", doc({ doc: undefined }), []],
+    ["README correctness without noRepro", doc({ noRepro: false }), []],
+    ["README correctness below the minimum confidence", doc({ confidence: 0.5 }), []],
+    ["README correctness on an inferred basis", doc({ basis: "inferred" }), []],
+    ["README correctness whose repro the host refuted", doc({ repro: true, outcome: "refuted" }), []],
+    ["README partial with noRepro (already repaired)", doc({ kind: "partial" }), []],
+    ["README correctness below the repaired severities", doc({ severity: "low" }), []],
+  ] as const)
+    test(`${name}: would repair ${JSON.stringify(keeps)}`, () => {
+      expect(reviewGateDocKeeps(gate([finding]))).toEqual([...keeps]);
+      expect(convergenceGateDocKeeps(convergence([finding]))).toEqual([...keeps]);
+    });
+
+  test("shadow: the live decisions are unchanged", () => {
+    expect(reviewGateDecision(gate([doc()]))).toEqual([]);
+    expect(reviewGateDecision(gate([doc({ kind: "partial" })]))).toEqual(["F1"]);
+    expect(convergenceGateDecision(convergence([doc()])).verdicts).toEqual([{ id: "F1", verdict: "repro" }]);
+    expect(reproAllows({ kind: "correctness", severity: "medium" }, undefined, true)).toBe(false);
+  });
+
+  // #2868, R92 tailclose: F1 (correctness, noRepro, README) stayed out of the corrective that F3
+  // (missing, the same README) opened, and its medium repeat after that correction recorded nothing.
+  test("a kept documentation finding rides a correction the gate starts, and only then", () => {
+    const missing = doc({ id: "F3", kind: "missing", noRepro: false });
+    const source = doc({ id: "F4", kind: "partial", doc: undefined, noRepro: false });
+    expect(reviewGateDecision(gate([doc(), missing]))).toEqual(["F3"]);
+    expect(reviewGateDocCarries(gate([doc(), missing]))).toEqual(["F1"]);
+    expect(reviewGateDocCarries(gate([doc(), source]))).toEqual(["F1"]);
+    expect(reviewGateDocCarries(gate([doc()]))).toEqual([]);
+    expect(reviewGateDocCarries(gate([doc({ doc: undefined }), missing]))).toEqual([]);
+    const converge = convergence([doc(), missing]);
+    converge.failing = ["AC-002"];
+    converge.findings[1].criterionIds = ["AC-002"];
+    converge.criteria.push({ criterionId: "AC-002", verdict: "fail", evidence: 1 });
+    expect(convergenceGateDocCarries(converge)).toEqual(["F1"]);
+    expect(convergenceGateDocCarries(convergence([doc()]))).toEqual([]);
+  });
+
+  test("a repeat kept out only by a later round's severity floor would open one more correction", () => {
+    const later = (findings: GateFinding[]): ReviewGate => ({ ...gate(findings), severities: ["critical", "high"] });
+    const repeat = doc({ id: "F1-2" });
+    expect(reviewGateDocKeeps(later([repeat]))).toEqual([]);
+    expect(reviewGateDocRepeats(later([repeat]), new Set(["F1-2"]))).toEqual(["F1-2"]);
+    // Not a repeat, not documentation, a partial repeat (decided live in a first round), or already kept.
+    expect(reviewGateDocRepeats(later([repeat]), new Set())).toEqual([]);
+    expect(reviewGateDocRepeats(later([doc({ id: "F1-2", doc: undefined })]), new Set(["F1-2"]))).toEqual([]);
+    expect(reviewGateDocRepeats(later([doc({ id: "F1-2", kind: "partial" })]), new Set(["F1-2"]))).toEqual([]);
+    expect(reviewGateDocRepeats(gate([repeat]), new Set(["F1-2"]))).toEqual([]);
+    const converge = { ...convergence([repeat]), severities: ["critical", "high"] };
+    expect(convergenceGateDocRepeats(converge, new Set(["F1-2"]))).toEqual(["F1-2"]);
+    expect(convergenceGateDocRepeats(converge, new Set())).toEqual([]);
+  });
+
+  // #2866, R92 tailclose: `enforce` is a mode of the reason, and under it the gates repair the
+  // README finding with the documentation rule; shadow stays the default.
+  test("enforce: the gates repair the README finding; shadow is the default", () => {
+    expect(STOP_REASONS.doc_finding_unrepaired.modes).toContain("enforce");
+    expect(STOP_REASONS.doc_finding_unrepaired.defaultMode).toBe("shadow");
+    const enforced = stopMode({ stopModes: { doc_finding_unrepaired: "enforce" } }, "doc_finding_unrepaired") === "enforce";
+    expect(reviewGateDecision(gate([doc(), doc({ id: "F2", doc: undefined })]), { doc: enforced })).toEqual(["F1"]);
+    expect(convergenceGateDecision(convergence([doc()]), { doc: enforced }).verdicts).toEqual([{ id: "F1", verdict: "repair" }]);
+    expect(stopMode({}, "doc_finding_unrepaired")).toBe("shadow");
+  });
+
+  test("docFindingRepairs and gateFinding read documentation files", () => {
+    const labels = { kind: "correctness" as const, severity: "medium" as const, basis: "spec" as const, confidence: 1, noRepro: true };
+    for (const [file, repairs] of [
+      ["README.md", true],
+      ["docs/x.md", true],
+      ["CHANGELOG.rst", true],
+      ["README", true],
+      ["src/escapes.ts", false],
+      ["src/main.cpp", false],
+    ] as const) {
+      expect([file, docFindingRepairs({ ...labels, doc: documentationFinding(file) }, undefined, 0.7)]).toEqual([file, repairs]);
+      const finding = { id: "F1", severity: "medium", kind: "correctness", file, noRepro: "README wording", criterionIds: [] } as unknown as Parameters<typeof gateFinding>[0];
+      expect([file, gateFinding(finding, false, undefined).doc]).toEqual([file, repairs ? true : undefined]);
+    }
+    expect(docFindingRepairs({ ...labels, doc: true }, "inconclusive", 0.7)).toBe(true);
+    expect(docFindingRepairs({ ...labels, doc: true }, "refuted", 0.7)).toBe(false);
   });
 });
 
@@ -6198,6 +6387,34 @@ describe("ci check drift gate: the PowerShell gates' cmdlets and the project's o
   });
 });
 
+describe("baseline gate: a check's signature does not depend on the order its pipes arrived in (#2859)", () => {
+  // The CI queue ejected #2805 when a Biome stand-in's stdout summary arrived before its stderr diagnostic.
+  const err = "biome.json format ━━━━━━━━━━\n  × Formatter would have printed the following content:\n";
+  const out = "Checked 2 files in 3ms. No fixes applied.\nFound 1 error.\n";
+  test("stdout first and stderr first sign alike; notes around the output stay", () => {
+    const ordered = err + out;
+    const before = inStreamOrder(`${out}${err}`, { arrival: out + err, ordered });
+    const after = inStreamOrder(`${ordered}\n\nNote: biome timed out.`, { arrival: ordered, ordered });
+    expect(failureSignature(before, "/w")).toBe(failureSignature(after.replace("\n\nNote: biome timed out.", ""), "/w"));
+    expect(after.endsWith("Note: biome timed out.")).toBe(true);
+    // A scripted process without streams keeps its output.
+    expect(inStreamOrder(out, undefined)).toBe(out);
+  });
+});
+
+describe("upstream symbol gate: a dotted test namespace and an unchanged helper are no gap (#2837)", () => {
+  // R91 dagwalk: `Dagwalk.Tests` and "the unchanged Rows helper" were 2 of 2 false would-stops.
+  const spec = (text: string) => ({ requirements: [{ id: "FR-001", text, priority: "must" as const, verification: "automated" as const, sourceRefs: [] }], criteria: [] });
+  test("csharp: no gap; a helper the file lacks still is one", () => {
+    const upstream = [
+      { featureId: "core", path: "src/Dagwalk/Api.cs", text: "namespace Dagwalk;\npublic static class Api {}\n" },
+      { featureId: "core", path: "tests/Dagwalk.Tests/Rows.cs", text: "namespace Dagwalk.Tests;\npublic static class Rows {}\n" },
+    ];
+    expect(upstreamSymbolGaps(spec("namespace Dagwalk.Tests; use the unchanged Rows helper."), upstream)).toEqual([]);
+    expect(upstreamSymbolGaps(spec("Rows gain a public Rows helper."), upstream)).toHaveLength(1);
+  });
+});
+
 describe("upstream symbol gate: a helper the request supplies is no missing member (#2566)", () => {
   // R83 bytemerge training: "the given Rows helper" read as a gap of the supplied Rows.java.
   const spec = (text: string) => ({ requirements: [{ id: "FR-001", text, priority: "must" as const, verification: "automated" as const, sourceRefs: [] }], criteria: [] });
@@ -6210,5 +6427,22 @@ describe("upstream symbol gate: a helper the request supplies is no missing memb
       const upstream = [{ featureId: "cli", path, text }];
       expect(upstreamSymbolGaps(spec("Tests build rows with the given Rows helper."), upstream)).toEqual([]);
       expect(upstreamSymbolGaps(spec("Rows gain a public Rows helper."), upstream)).toHaveLength(1);
+    });
+});
+
+describe("documented-example fixture gate: a printf or echo line that writes the next example's input (#2693)", () => {
+  // R88 pokerank: `printf '...' > hand.txt` then `node bin/pokerank.js showdown hand.txt`.
+  const cases: [string, ReturnType<typeof redirectFixture>][] = [
+    ["printf 'board 2c 7d\\nseat ann\\n' > hand.txt", { path: "hand.txt", content: "board 2c 7d\nseat ann\n", append: false }],
+    ["printf 'a\\\\nb' > in/raw.txt", { path: "in/raw.txt", content: "a\\nb", append: false }],
+    ["printf '\\101\\t%%\\n' >> data.csv", { path: "data.csv", content: "A\t%\n", append: true }],
+    ['echo "seat ann" > seats.txt', { path: "seats.txt", content: "seat ann\n", append: false }],
+    ["printf '%s' x > out.txt", null],
+    ["echo -n x > out.txt", null],
+    ["printf 'x' > ../escape.txt", null],
+  ];
+  for (const [command, expected] of cases)
+    test(command, () => {
+      expect(redirectFixture(command)).toEqual(expected);
     });
 });
