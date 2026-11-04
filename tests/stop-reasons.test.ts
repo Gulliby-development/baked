@@ -105,8 +105,8 @@ describe("stop reasons", () => {
     expect(STOP_REASONS.unfinished_row_split.defaultMode).toBe("shadow");
     expect(STOP_REASONS.row_block_drift.modes).toEqual(["shadow", "advisory"]);
     expect(STOP_REASONS.row_block_drift.defaultMode).toBe("shadow");
-    // Shadow until its promotion (#2835): a noRepro documentation finding kept a note for its kind.
-    expect(STOP_REASONS.doc_finding_unrepaired.modes).toEqual(["shadow", "advisory"]);
+    // Shadow by default until its promotion (#2835); `enforce` repairs it in the gates (#2866).
+    expect(STOP_REASONS.doc_finding_unrepaired.modes).toEqual(["shadow", "advisory", "enforce"]);
     expect(STOP_REASONS.doc_finding_unrepaired.defaultMode).toBe("shadow");
     // Shadow until its promotion (#2501): a criterion literal no prescribed row holds.
     expect(STOP_REASONS.case_not_prescribed.modes).toEqual(["shadow", "advisory"]);
@@ -142,7 +142,7 @@ describe("stop reasons", () => {
     expect(parse({ row_block_drift: "advisory" })).toBe(true);
     expect(parse({ row_block_drift: "enforce" })).toBe(false);
     expect(parse({ doc_finding_unrepaired: "advisory" })).toBe(true);
-    expect(parse({ doc_finding_unrepaired: "enforce" })).toBe(false);
+    expect(parse({ doc_finding_unrepaired: "enforce" })).toBe(true);
     expect(parse({ case_not_prescribed: "enforce" })).toBe(false);
     // Promoted (#2245) after R70 and R71: enforced with stopModes unset, shadow still on request.
     expect(STOP_REASONS["initiative-plan-charge"].defaultMode).toBe("enforce");
