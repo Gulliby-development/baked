@@ -1,4 +1,5 @@
 import { normalizeLiteral } from "../verification/criteria-cases.js";
+import { decodeXmlEntities } from "../verification/test-reports.js";
 
 /**
  * A planned test task's failing check whose expected values are the literals of its own criteria
@@ -11,18 +12,23 @@ import { normalizeLiteral } from "../verification/criteria-cases.js";
  *
  * `sourceDefectInput` reads the expected side of every assertion in the output (rspec, bun and
  * Jest, Minitest, testify, xUnit, JUnit, Dart, ExUnit, Rust `right:`, Go `want`, pytest
- * `assert a == b`, XCTest, PHPUnit, alcotest) and compares each with the case walk's literals of
- * the task's criteria. When every expected value is one of them, and the finished planned tasks
+ * `assert a == b`, XCTest, PHPUnit, alcotest; a Gradle or Maven report block's escaped `<failure>`
+ * decoded first, and a JUnit value that spans lines closed at `but was`, #2888) and compares each
+ * with the case walk's literals of the task's criteria. When every expected value is one of them, and the finished planned tasks
  * that carry those criteria wrote the sources the failing tests import, `sourceDefectDecision`
  * routes the failure to those tasks as the frame-located `finished` owner of #1564 does: no
  * continuation of the test task, and its corrective writes the tests and those sources at the
  * first failing check. A test whose expected value is not a criterion's literal keeps the current
  * path: the test may be what is wrong.
  *
- * Each decision records `source-defect/tasks/<task>-<signature>.json` (kind `source-defect`,
+ * Each decision records `source-defect/tasks/<task>-<signature>.json` (`<task>-run-<signature>`
+ * for a failed run-level check's, #2888; kind `source-defect`,
  * kept in bench traces: counts, task ids and paths, never literals). With the policy field
  * `sourceDefectRoute` absent the decision is shadow (recorded, the owner stays the test task);
- * `replaySourceDefects` (`trace.ts`) decides each record again.
+ * `replaySourceDefects` (`trace.ts`) decides each record again. A failed run-level check whose
+ * named failing files are a planned test task's tests runs the same decision (`level: "run"`,
+ * always on): a route adds a finding on each source to the check run's findings, so its corrective
+ * may write them from its first session (#2888).
  */
 export const SOURCE_DEFECT_KIND = "source-defect";
 export const SOURCE_DEFECT_DIR = "source-defect/tasks/";
@@ -48,6 +54,12 @@ export interface SourceDefectRecord extends SourceDefectInput {
   taskId: string;
   /** `shadow`: recorded only, the owner stays the test task; `on`: the failure routes. */
   mode: "shadow" | "on";
+  /**
+   * `run`: a failed run-level check's decision (#2888). It is always `on`: a route gives the
+   * check run's corrective a finding on each source, so it may write them from its first session.
+   * Absent: a planned test task's own failure.
+   */
+  level?: "run";
   /** The criteria whose literals the expected values matched. */
   criterionIds: string[];
   route: boolean;
@@ -106,9 +118,24 @@ function bare(value: string): string {
   }
 }
 
+/**
+ * A JUnit-style `<failure>` or `<error>` element of a report block (`testReport`, Gradle and Maven),
+ * attributes and text: the block re-escapes the report's text, so its values read `&lt;x&gt;`.
+ */
+const REPORT_FAILURE = /<(failure|error)\b[^>]*?(?:\/>|>[\s\S]*?<\/\1>)/g;
+
+/**
+ * JUnit's `expected: <x> but was: <y>` whose expected value runs on to later lines: a value that
+ * ends in a newline (Kotlin's `Pair(0, "windowgate 0.1.0\n")`) prints its closing `>` and the
+ * `but was` marker on the next line (#2888, R95 windowgate).
+ */
+const JUNIT_SPANNING = /\bexpected\s*:\s*<([\s\S]*?)>\s*,?\s*but\s+was\b/i;
+/** How many lines a spanning JUnit value may take before the `but was` marker. */
+const SPAN_LINES = 10;
+
 /** The expected values of the assertions a failing check's output prints, as the tests spell them. */
 export function expectedValues(output: string): string[] {
-  const lines = output.split(/\r?\n/);
+  const lines = output.replace(REPORT_FAILURE, decodeXmlEntities).split(/\r?\n/);
   const values: string[] = [];
   let diff = false;
   for (let index = 0; index < lines.length; index++) {
@@ -123,6 +150,19 @@ export function expectedValues(output: string): string[] {
       if (removed) values.push(bare(removed));
       if (!line.trim()) diff = false;
       continue;
+    }
+    if (/\bexpected\s*:\s*</i.test(line) && !/\bbut\s+was\b/i.test(line)) {
+      const end = lines
+        .slice(index + 1, index + 1 + SPAN_LINES)
+        .findIndex((next) => /\bbut\s+was\b/i.test(next));
+      const value =
+        end < 0
+          ? undefined
+          : JUNIT_SPANNING.exec(lines.slice(index, index + end + 2).join("\n"))?.[1];
+      if (value?.trim()) {
+        values.push(bare(value));
+        continue;
+      }
     }
     for (const pattern of EXPECTED) {
       const found = pattern.exec(line);

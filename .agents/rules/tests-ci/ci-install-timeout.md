@@ -1,0 +1,1 @@
+A CI step that installs or launches a packaged program (an installer, a self-check of a built binary) has a `timeout-minutes`, and its job has one too. Otherwise a hung step holds a required check for GitHub's 6 h default, and auto-merge cannot queue the pull request: #2856's Windows "Install silently and self-check" step hung for 4.5 h (`.github/workflows/builds.yml`).

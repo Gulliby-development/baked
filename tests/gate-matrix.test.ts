@@ -1,4 +1,4 @@
-import { type ConvergenceGate, type ConvergenceGateFinding, convergenceGateDecision, convergenceReproCandidates, type GateFinding, gateFinding, type ReviewGate, reviewGateCandidates, reviewGateDecision } from "../src/core/workflows/review-gate.js";
+import { type ConvergenceGate, type ConvergenceGateFinding, convergenceGateDecision, convergenceGateDocCarries, convergenceGateDocKeeps, convergenceGateDocRepeats, convergenceReproCandidates, type GateFinding, gateFinding, type ReviewGate, reviewGateCandidates, reviewGateDecision, reviewGateDocCarries, reviewGateDocKeeps, reviewGateDocRepeats } from "../src/core/workflows/review-gate.js";
 import { literalPropertyProblems, rowFiles, rowsArtifact } from "../src/core/workflows/acceptance-rows.js";
 import { clearBannedProperties } from "../src/core/verification/initiative-ownership.js";
 import { CALL_COST_MODELS, NEXT_CALL, perCallCostScenario } from "./helpers/per-call-cost-scenario.js";
@@ -16,8 +16,10 @@ import { fixtureSpec, workflowFixture } from "./helpers/workflow-fixture.js";
 import { slicedCorrective } from "./helpers/sliced-corrective-scenario.js";
 import { evidencePaths, scopeRecord, stackFrames } from "../src/core/workflows/corrective-scope.js";
 import { cellSamples, cellSpec, omittedCellInput, withoutCellInput } from "./helpers/criteria-cell-fixtures.js";
-import { ProcessScope, windowsBatchInvocation, windowsProgram } from "../src/core/workflows/process-scope.js";
+import { inStreamOrder, ProcessScope, windowsBatchInvocation, windowsProgram } from "../src/core/workflows/process-scope.js";
 import { canRepairRun, type RepairBlock } from "../src/core/workflows/repairable.js";
+import { RepairBlockSchema } from "../src/core/workflows/repairable-schema.js";
+import { failureHash, repeatCheck } from "../src/core/workflows/repeated-failure.js";
 import {
   growthLimit,
   type InitiativeView,
@@ -56,13 +58,13 @@ import { join } from "node:path";
 import { syntaxErrors } from "../src/core/intelligence/syntax-check.js";
 import { criterionCases, missingCases, testsHold, writtenTestPaths } from "../src/core/verification/criteria-cases.js";
 import { INLINE_HARNESS, type InlineRowTest, inlineRowFile, withInlineRows } from "../src/core/workflows/acceptance-rows-inline.js";
-import { reproExecutables, rerootRepro } from "../src/core/verification/repro.js";
+import { docFindingRepairs, documentationFinding, reproAllows, reproExecutables, rerootRepro } from "../src/core/verification/repro.js";
 import { packageNeeds } from "../src/core/workflows/package-probe.js";
-import { redirectFixture } from "../src/core/verification/doc-examples.js";
+import { nodeUnderBun, redirectFixture } from "../src/core/verification/doc-examples.js";
 import { entryPointCommand } from "../src/core/verification/entry-points.js";
 import { noteSiblingFindings, ownerOfFinding } from "../src/core/verification/initiative-ownership.js";
 import { failureSignature as convergenceSignature, missingPlannedPaths, noTestsCollected } from "../src/core/verification/convergence.js";
-import { CheckRunner, executeCheckCommand, exitStatus, ranNoTests, timedOutFailure } from "../src/core/verification/check-runner.js";
+import { CheckRunner, executeCheckCommand, exitStatus, ranNoTests, storedSignatureOutput, timedOutFailure } from "../src/core/verification/check-runner.js";
 import { emptyScriptNote, emptyTestScript } from "../src/core/verification/empty-test-script.js";
 import { FORMAT_FAILURE_READERS, hostDocumentFailure } from "../src/core/verification/host-documents.js";
 import { transcriptDrifts } from "../src/core/workflows/transcript-drift.js";
@@ -86,7 +88,7 @@ import { toolchainCommand } from "../src/core/workflows/toolchain.js";
 import { type HostEdit, hostOnlyEvidence, plannerGraph } from "../src/core/workflows/host-edits.js";
 import { defaultWorkflowPolicy } from "../src/core/workflows/defaults.js";
 import { fixerProbeDecision } from "../src/core/workflows/fixer-run.js";
-import { STOP_REASONS } from "../src/core/workflows/stop-reasons.js";
+import { STOP_REASONS, stopMode } from "../src/core/workflows/stop-reasons.js";
 import { sizePlan, splitTestTasks, suppliedBlocks } from "../src/core/workflows/sizing.js";
 import { withPerTestTimeout } from "../src/core/workflows/test-timeout.js";
 import { detectProfile } from "../src/core/tools/project.js";
@@ -113,6 +115,7 @@ import {
 } from "../src/core/workflows/quality/mutation-tools.js";
 import { generateMutants, isTestCheck, proposalFiles } from "../src/core/workflows/quality/mutation.js";
 import {
+  checkPropertyTests,
   libraryFiles,
   propertyLibraries,
   propertyTestKind,
@@ -479,7 +482,7 @@ const FORMAT_FILE: Record<Stack, { path: string; command: string | null }> = {
   npm: { path: "src/sum.js", command: null },
   python: { path: "src/app/sum.py", command: "ruff format --check src/app/sum.py" },
   go: { path: "sum.go", command: "gofmt -l sum.go" },
-  rust: { path: "tests/json.rs", command: "rustfmt --check --edition 2021 tests/json.rs" },
+  rust: { path: "tests/json.rs", command: "rustfmt --check --color=never --edition 2021 tests/json.rs" },
   // Maven formatters run inside `mvn verify`; no gate runs one alone.
   maven: { path: "src/main/java/app/Sum.java", command: null },
   dotnet: { path: "src/App/Sum.cs", command: "dotnet format --verify-no-changes --include src/App/Sum.cs" },
@@ -2563,7 +2566,8 @@ describe("gate matrix: swift test, XCTest, swift-testing and swift-format (#1492
     expect(fixerCommand(checks[0]!.fix!, "Sources/Calc/Calc.swift")).toEqual({ executable: "swift", args: ["format", "format", "--in-place", "Sources/Calc/Calc.swift"] });
     expect(detectGates(project({ "Package.swift": "" })).map((s) => s.check.id)).toEqual(["swift-build", "swift-test"]);
     const root = project(files);
-    expect(formatWrittenChecks(root, [], [{ path: "Sources/Calc/Calc.swift", action: "create" }], (c) => `/usr/bin/${c}`).map((c) => [c.id, [c.executable, ...c.args].join(" "), [c.fix!.executable, ...c.fix!.args].join(" ")])).toEqual([
+    // The toolchain bundles swift format (Swift 6): the probe is answered here, not by the runner's swift (#2817).
+    expect(formatWrittenChecks(root, [], [{ path: "Sources/Calc/Calc.swift", action: "create" }], (c) => `/usr/bin/${c}`, undefined, undefined, { packages: () => true }).map((c) => [c.id, [c.executable, ...c.args].join(" "), [c.fix!.executable, ...c.fix!.args].join(" ")])).toEqual([
       ["swift-format-written", "swift format lint --strict Sources/Calc/Calc.swift", "swift format format --in-place"],
     ]);
   });
@@ -2669,6 +2673,22 @@ describe("gate matrix: shared criterion rows (#1597)", () => {
       expect(missingCases(cases, [rows[index]!])).toEqual([]);
       expect(missingCases(cases, [])).toHaveLength(1);
     }
+  });
+});
+
+describe("gate matrix: a criterion naming another feature's row file cites a file (#2889)", () => {
+  // R95 windowgate AC-008 named the validation feature's `InputRowsTest`: no row's text.
+  for (const [stack, own, other, name] of [
+    ["bun", "tests/options_rows.test.ts", "tests/input_rows.test.ts", "input_rows"],
+    ["python", "tests/test_options_rows.py", "tests/test_input_rows.py", "test_input_rows"],
+    ["rust", "tests/options_rows.rs", "tests/input_rows.rs", "input_rows"],
+  ] as const) cell(stack, `${stack}: the other feature's row file is a name`, () => {
+    const spec = { criteria: [{ id: "AC-008", requirementIds: ["FR-001"], given: "the earlier rows", when: "tests run",
+      then: `the rows in \`${name}\` still pass`, method: "automated" as const }] };
+    const task = { criterionIds: ["AC-008"], writes: [{ path: own, action: "create" as const }] };
+    const cited = (rowFiles: string[]) => criterionCases(spec, task, { checks: [], rowFiles }).find((c) => c.literal === name)?.cited;
+    expect(cited([])).toBeUndefined();
+    expect(cited([own, other])).toBe("name");
   });
 });
 
@@ -3394,7 +3414,7 @@ describe("gate matrix: format-written check on a dirty repository (#1837)", () =
     const cargoFmt: Check = { id: "cargo-fmt", executable: "cargo", args: ["fmt", "--check"], cwd: ".", timeoutMs: 300000, required: true, scope: "feature", envNames: [], writes: [], fix: { executable: "cargo", args: ["fmt"] } };
     const shown = (checks: Check[]) => checks.map((c) => [c.id, [c.executable, ...c.args].join(" "), [c.fix!.executable, ...c.fix!.args].join(" "), c.fixPaths]);
     // lib.rs declares `mod parser;` (rustfmt would format parser.rs too); old.rs is an edit (no range form).
-    const expected = [["rustfmt-written", "/usr/bin/rustfmt --check --edition 2021 src/parser.rs tests/json.rs", "/usr/bin/rustfmt --edition 2021", ["src/parser.rs", "tests/json.rs"]]];
+    const expected = [["rustfmt-written", "/usr/bin/rustfmt --check --color=never --edition 2021 src/parser.rs tests/json.rs", "/usr/bin/rustfmt --edition 2021", ["src/parser.rs", "tests/json.rs"]]];
     const which = (c: string) => `/usr/bin/${c}`;
     const at = (check: Check) => ({ ...check, executable: "/usr/bin/cargo" });
     expect(shown(rustFormatWrittenChecks(root, [at(cargoFmt)], writes, which, () => "fn o() {}\n"))).toEqual(expected);
@@ -3402,12 +3422,12 @@ describe("gate matrix: format-written check on a dirty repository (#1837)", () =
     expect(formatWrittenChecks(root, [at(cargoFmt)], writes, which, () => "fn o() {}\n")).toEqual([]);
     expect(shown(formatWrittenChecks(root, [at(cargoFmt)], writes, which, () => "fn o() {}\n", () => true, { rust: true }))).toEqual(expected);
     // A file the run created is whole like a new one.
-    expect(shown(rustFormatWrittenChecks(root, [at(cargoFmt)], [{ path: "src/old.rs", action: "modify" }], which, () => null)).map(([id, command]) => [id, command])).toEqual([["rustfmt-written", "/usr/bin/rustfmt --check --edition 2021 src/old.rs"]]);
+    expect(shown(rustFormatWrittenChecks(root, [at(cargoFmt)], [{ path: "src/old.rs", action: "modify" }], which, () => null)).map(([id, command]) => [id, command])).toEqual([["rustfmt-written", "/usr/bin/rustfmt --check --color=never --edition 2021 src/old.rs"]]);
     // No rustfmt on the PATH, or no cargo fmt gate: no check.
     expect(rustFormatWrittenChecks(root, [cargoFmt], writes, () => null)).toEqual([]);
     expect(rustFormatWrittenChecks(project({ "src/a.rs": "fn a() {}\n" }), [], [{ path: "src/a.rs", action: "create" }], which)).toEqual([]);
     // Its file-scoped form, for a check that times out (#2240).
-    expect(fileScopedFormat(rustFormatWrittenChecks(root, [at(cargoFmt)], writes, which)[0]!, root, "tests/json.rs")).toEqual({ executable: "/usr/bin/rustfmt", args: ["--check", "--edition", "2021", "tests/json.rs"] });
+    expect(fileScopedFormat(rustFormatWrittenChecks(root, [at(cargoFmt)], writes, which)[0]!, root, "tests/json.rs")).toEqual({ executable: "/usr/bin/rustfmt", args: ["--check", "--color=never", "--edition", "2021", "tests/json.rs"] });
   });
   cell("maven", "no Maven formatter gate is detected: no check", () => {
     expect(scoped({ "pom.xml": "<project/>", "src/main/java/A.java": "class A {}\n" }, ["src/main/java/A.java"])).toEqual([]);
@@ -3451,6 +3471,14 @@ for (const stack of STACKS) {
       expect(resolved?.entry.name).toBe("tool");
       expect(executables).toContain(resolved!.argv[0]!);
       expect(resolved!.argv.at(-1)).toBe("--help");
+    });
+
+    // R88 pokerank: a bun project's README wrote `node bin/pokerank.js ...` and none of it ran.
+    cell(stack, "a README's node example runs under the checks' runtime (#2678)", () => {
+      const executables = reproExecutables(preselected());
+      const runs = executables.includes("node") || nodeUnderBun(["node", "cli.js"], executables);
+      expect(runs).toBe(stack === "bun" || stack === "npm");
+      expect(nodeUnderBun(["node", "cli.js"], executables)).toBe(stack === "bun");
     });
 
     cell(stack, "edit-profile", async () => {
@@ -3541,6 +3569,18 @@ for (const stack of STACKS) {
       const written = writtenTestsCheck(root, preselected(), writes);
       expect(plannedWrittenTests(preselected(), writes)?.id ?? null).toBe(written?.id ?? null);
       if (written) expect(plannedWrittenTests(preselected(), writes)?.timeoutMs).toBe(written.timeoutMs);
+    });
+
+    // R95 youngkit-update (#2886): an exact patch whose files the request supplies gets no property
+    // finding, in every stack; a test file the run writes itself still needs its property test.
+    cell(stack, "property gate gives way to supplied files (#2886)", () => {
+      const path = fixture.property.path;
+      const criteria = [{ id: "AC-001", property: "numbers" }];
+      const tasks = [{ criterionIds: ["AC-001"], writes: [{ path, action: "create" }] }];
+      const status = (supplied: string[]) =>
+        checkPropertyTests("on", criteria, tasks, () => "no property here\n", undefined, new Set(supplied)).criteria[0]?.status;
+      expect(status([])).toBe("missing");
+      expect(status([path])).toBe("waived");
     });
 
     cell(stack, "test-task-price-and-case-capacity (#1595)", () => {
@@ -5608,6 +5648,18 @@ describe("repair-limit decisions (#1577)", () => {
   });
 });
 
+describe("repair-limit decisions: a grant hands the refused pass's findings over (#2878)", () => {
+  // R94 md-site: F2 and SEC-002 were recorded at maxRepairRounds and kept no task after the grant.
+  test("a stop names its stranded findings; an older record without them still offers the grant", () => {
+    const stranded = { limit: "maxRepairRounds", scope: "review", required: 1, taskIds: [], stranded: { pass: "review", findingIds: ["F2", "SEC-002"] } };
+    expect(RepairBlockSchema.parse(stranded).stranded).toEqual({ pass: "review", findingIds: ["F2", "SEC-002"] });
+    const older = RepairBlockSchema.parse({ limit: "maxRepairRounds", scope: "review", required: 1, taskIds: [] });
+    expect(older.stranded).toBeUndefined();
+    expect(canRepairRun({ status: "blocked", reason: "no_progress", repairBlock: older })).toBe(true);
+    expect(RepairBlockSchema.safeParse({ ...stranded, stranded: { pass: "checks", findingIds: ["F1"] } }).success).toBe(false);
+  });
+});
+
 // Ownership is independent of the check program: an initiative's review gate must not ask
 // the current feature to correct a file reserved for a downstream feature (#1590).
 test("review gate keeps sibling-owned missing tests as notes", () => {
@@ -5677,6 +5729,22 @@ describe("gate matrix: plain output per tool (#2631)", () => {
       else process.env.FORCE_COLOR = saved;
       rmSync(root, { recursive: true, force: true });
     }
+  });
+});
+
+// #2830: rustfmt reads neither NO_COLOR nor CARGO_TERM_COLOR and colours its diff under a colour
+// TERM (R90 windowfit). The Rust format gates pass its own switch, and a check command's output
+// comes back plain whatever the tool printed, so the stored result holds no escape codes.
+describe("gate matrix: tools that colour in spite of the plain-output environment (#2830)", () => {
+  cell("rust", "the cargo fmt gate passes rustfmt --color=never", () => {
+    const gate = detectGates(project({ "Cargo.toml": "[package]\nname = 'p'\n" })).find((s) => s.check.id === "cargo-fmt");
+    expect([gate?.check.executable, ...(gate?.check.args ?? [])].join(" ")).toBe("cargo fmt --check -- --color=never");
+    expect(gate?.check.fix).toEqual({ executable: "cargo", args: ["fmt"] });
+  });
+  cell("rust", "a coloured rustfmt diff comes back from the check command without escape codes", async () => {
+    const coloured = "Diff in src/main.rs:3:\n }\n\u001b(B\u001b[m\u001b[31m-\n\u001b[m\u000f\u001b[32m+\n\u001b[0m";
+    const result = await executeCheckCommand(new ProcessScope(), process.execPath, ["-e", `process.stdout.write(${JSON.stringify(coloured)})`], { cwd: tmpdir(), timeoutMs: 60000, signal: new AbortController().signal, sandbox: null });
+    expect(result.output).toBe("Diff in src/main.rs:3:\n }\n-\n+\n");
   });
 });
 
@@ -5977,6 +6045,138 @@ describe("review gate: a finding its reviewer marked noRepro (#2194)", () => {
   });
 });
 
+describe("review and converge gates: a documentation finding marked noRepro (#2835, shadow)", () => {
+  // R91 stopcut docs F1: correctness, medium, confidence 1, basis spec, README.md, noRepro "README
+  // wording". `reproAllows` keeps it a note (repaired: []) where the same defect called `partial`
+  // repairs; `doc_finding_unrepaired` records what `docFindingRepairs` would repair instead.
+  const doc = (over: Partial<GateFinding> = {}): GateFinding => ({
+    id: "F1",
+    severity: "medium",
+    kind: "correctness",
+    basis: "spec",
+    confidence: 1,
+    repro: false,
+    sibling: false,
+    outcome: null,
+    noRepro: true,
+    doc: true,
+    ...over,
+  });
+  const gate = (findings: GateFinding[]): ReviewGate => ({
+    reviewer: "correctness",
+    required: true,
+    blocking: ["critical", "high", "medium"],
+    severities: ["critical", "high", "medium"],
+    minConfidence: 0.7,
+    reproAvailable: true,
+    findings,
+  });
+  const convergence = (findings: GateFinding[]): ConvergenceGate => ({
+    severities: ["critical", "high", "medium"],
+    minConfidence: 0.7,
+    checksPass: true,
+    reproAvailable: true,
+    canRepro: true,
+    criteria: [{ criterionId: "AC-001", verdict: "pass", evidence: 1 }],
+    failing: [],
+    findings: findings.map((f) => ({ ...f, testOrDoc: f.doc === true, criterionIds: ["AC-001"] })),
+  });
+
+  for (const [name, finding, keeps] of [
+    ["README correctness with noRepro (R91 stopcut F1)", doc(), ["F1"]],
+    ["the same claim on a source file", doc({ doc: undefined }), []],
+    ["README correctness without noRepro", doc({ noRepro: false }), []],
+    ["README correctness below the minimum confidence", doc({ confidence: 0.5 }), []],
+    ["README correctness on an inferred basis", doc({ basis: "inferred" }), []],
+    ["README correctness whose repro the host refuted", doc({ repro: true, outcome: "refuted" }), []],
+    ["README partial with noRepro (already repaired)", doc({ kind: "partial" }), []],
+    ["README correctness below the repaired severities", doc({ severity: "low" }), []],
+  ] as const)
+    test(`${name}: would repair ${JSON.stringify(keeps)}`, () => {
+      expect(reviewGateDocKeeps(gate([finding]))).toEqual([...keeps]);
+      expect(convergenceGateDocKeeps(convergence([finding]))).toEqual([...keeps]);
+    });
+
+  test("shadow: the live decisions are unchanged", () => {
+    expect(reviewGateDecision(gate([doc()]))).toEqual([]);
+    expect(reviewGateDecision(gate([doc({ kind: "partial" })]))).toEqual(["F1"]);
+    expect(convergenceGateDecision(convergence([doc()])).verdicts).toEqual([{ id: "F1", verdict: "repro" }]);
+    expect(reproAllows({ kind: "correctness", severity: "medium" }, undefined, true)).toBe(false);
+  });
+
+  // #2868, R92 tailclose: F1 (correctness, noRepro, README) stayed out of the corrective that F3
+  // (missing, the same README) opened, and its medium repeat after that correction recorded nothing.
+  test("a kept documentation finding rides a correction the gate starts, and only then", () => {
+    const missing = doc({ id: "F3", kind: "missing", noRepro: false });
+    const source = doc({ id: "F4", kind: "partial", doc: undefined, noRepro: false });
+    expect(reviewGateDecision(gate([doc(), missing]))).toEqual(["F3"]);
+    expect(reviewGateDocCarries(gate([doc(), missing]))).toEqual(["F1"]);
+    expect(reviewGateDocCarries(gate([doc(), source]))).toEqual(["F1"]);
+    expect(reviewGateDocCarries(gate([doc()]))).toEqual([]);
+    expect(reviewGateDocCarries(gate([doc({ doc: undefined }), missing]))).toEqual([]);
+    const converge = convergence([doc(), missing]);
+    converge.failing = ["AC-002"];
+    converge.findings[1].criterionIds = ["AC-002"];
+    converge.criteria.push({ criterionId: "AC-002", verdict: "fail", evidence: 1 });
+    expect(convergenceGateDocCarries(converge)).toEqual(["F1"]);
+    expect(convergenceGateDocCarries(convergence([doc()]))).toEqual([]);
+  });
+
+  test("a repeat kept out only by a later round's severity floor would open one more correction", () => {
+    const later = (findings: GateFinding[]): ReviewGate => ({ ...gate(findings), severities: ["critical", "high"] });
+    const repeat = doc({ id: "F1-2" });
+    expect(reviewGateDocKeeps(later([repeat]))).toEqual([]);
+    expect(reviewGateDocRepeats(later([repeat]), new Set(["F1-2"]))).toEqual(["F1-2"]);
+    // Not a repeat, not documentation, a partial repeat (decided live in a first round), or already kept.
+    expect(reviewGateDocRepeats(later([repeat]), new Set())).toEqual([]);
+    expect(reviewGateDocRepeats(later([doc({ id: "F1-2", doc: undefined })]), new Set(["F1-2"]))).toEqual([]);
+    expect(reviewGateDocRepeats(later([doc({ id: "F1-2", kind: "partial" })]), new Set(["F1-2"]))).toEqual([]);
+    expect(reviewGateDocRepeats(gate([repeat]), new Set(["F1-2"]))).toEqual([]);
+    const converge = { ...convergence([repeat]), severities: ["critical", "high"] };
+    expect(convergenceGateDocRepeats(converge, new Set(["F1-2"]))).toEqual(["F1-2"]);
+    expect(convergenceGateDocRepeats(converge, new Set())).toEqual([]);
+  });
+
+  // #2866, R92 tailclose: `enforce` is a mode of the reason, and under it the gates repair the
+  // README finding with the documentation rule.
+  test("enforce: the gates repair the README finding", () => {
+    expect(STOP_REASONS.doc_finding_unrepaired.modes).toContain("enforce");
+    const enforced = stopMode({ stopModes: { doc_finding_unrepaired: "enforce" } }, "doc_finding_unrepaired") === "enforce";
+    expect(reviewGateDecision(gate([doc(), doc({ id: "F2", doc: undefined })]), { doc: enforced })).toEqual(["F1"]);
+    expect(convergenceGateDecision(convergence([doc()]), { doc: enforced }).verdicts).toEqual([{ id: "F1", verdict: "repair" }]);
+  });
+
+  // Promotion after R92-R93 (3 true would-stops, no false one): a policy that names no mode
+  // repairs the README finding in both gates; an explicit `shadow` keeps the old note.
+  test("default enforce: a policy without stopModes repairs; explicit shadow keeps the note", () => {
+    expect(STOP_REASONS.doc_finding_unrepaired.defaultMode).toBe("enforce");
+    const byDefault = stopMode({}, "doc_finding_unrepaired") === "enforce";
+    expect(byDefault).toBe(true);
+    expect(reviewGateDecision(gate([doc()]), { doc: byDefault })).toEqual(["F1"]);
+    expect(convergenceGateDecision(convergence([doc()]), { doc: byDefault }).verdicts).toEqual([{ id: "F1", verdict: "repair" }]);
+    const shadowed = stopMode({ stopModes: { doc_finding_unrepaired: "shadow" } }, "doc_finding_unrepaired") === "enforce";
+    expect(reviewGateDecision(gate([doc()]), { doc: shadowed })).toEqual([]);
+  });
+
+  test("docFindingRepairs and gateFinding read documentation files", () => {
+    const labels = { kind: "correctness" as const, severity: "medium" as const, basis: "spec" as const, confidence: 1, noRepro: true };
+    for (const [file, repairs] of [
+      ["README.md", true],
+      ["docs/x.md", true],
+      ["CHANGELOG.rst", true],
+      ["README", true],
+      ["src/escapes.ts", false],
+      ["src/main.cpp", false],
+    ] as const) {
+      expect([file, docFindingRepairs({ ...labels, doc: documentationFinding(file) }, undefined, 0.7)]).toEqual([file, repairs]);
+      const finding = { id: "F1", severity: "medium", kind: "correctness", file, noRepro: "README wording", criterionIds: [] } as unknown as Parameters<typeof gateFinding>[0];
+      expect([file, gateFinding(finding, false, undefined).doc]).toEqual([file, repairs ? true : undefined]);
+    }
+    expect(docFindingRepairs({ ...labels, doc: true }, "inconclusive", 0.7)).toBe(true);
+    expect(docFindingRepairs({ ...labels, doc: true }, "refuted", 0.7)).toBe(false);
+  });
+});
+
 describe("convergence gate: a low note on a file the request gives verbatim (#2332)", () => {
   // R74 ewvet-update: F1 (low, partial, README.md) said the README's printf example doubled a
   // backslash the request's verbatim diff has once; AC-005 and AC-006 were `fail` because of it,
@@ -6237,6 +6437,35 @@ describe("ci check drift gate: the PowerShell gates' cmdlets and the project's o
     expect(ciCheckDrift(readme("eslint src"), [gate("eslint", ".")])).toEqual([]);
     expect(ciCheckDrift(readme("go vet ./cmd/..."), [gate("go", "vet", "./...")])).toEqual([]);
     expect(ciCheckDrift(readme("ruff check lib"), [gate("ruff", "check", "src")]).map((d) => d.missing)).toEqual([["lib"]]);
+  });
+});
+
+describe("baseline gate: a check's signature does not depend on the order its pipes arrived in (#2859)", () => {
+  // The CI queue ejected #2805 when a Biome stand-in's stdout summary arrived before its stderr diagnostic.
+  const err = "biome.json format ━━━━━━━━━━\n  × Formatter would have printed the following content:\n";
+  const out = "Checked 2 files in 3ms. No fixes applied.\nFound 1 error.\n";
+  test("stdout first and stderr first sign alike; notes around the output stay", () => {
+    const ordered = err + out;
+    const before = inStreamOrder(`${out}${err}`, { arrival: out + err, ordered });
+    const after = inStreamOrder(`${ordered}\n\nNote: biome timed out.`, { arrival: ordered, ordered });
+    expect(failureSignature(before, "/w")).toBe(failureSignature(after.replace("\n\nNote: biome timed out.", ""), "/w"));
+    expect(after.endsWith("Note: biome timed out.")).toBe(true);
+    // A scripted process without streams keeps its output.
+    expect(inStreamOrder(out, undefined)).toBe(out);
+  });
+});
+
+describe("repeated-failure gate: two stored runs of one failure hash alike whatever order their pipes arrived in (#2861)", () => {
+  // The sibling of #2859: the unfinished-task hash and the corrective repeat chain read stored artifacts.
+  const err = "src/duration.ts format ━━━━━━━━━━\n  × Formatter would have printed the following content:\n";
+  const out = "Checked 2 files in 3ms. No fixes applied.\nFound 1 error.\n";
+  const hash = (output: string) => failureHash([repeatCheck("biome", output, ["src/duration.ts"])]);
+  test("an orderedTail is read in place of the arrival-ordered output; without one the output is", () => {
+    const outOfOrder = { output: out + err, orderedTail: err + out };
+    const inOrder = { output: err + out };
+    expect(hash(outOfOrder.output)).not.toBe(hash(inOrder.output));
+    expect(hash(storedSignatureOutput(outOfOrder))).toBe(hash(storedSignatureOutput(inOrder)));
+    expect(storedSignatureOutput({})).toBe("");
   });
 });
 

@@ -7,6 +7,7 @@ import { type CaseWalk, caseCheck, citedKind } from "../src/core/verification/cr
 import type { Spec, TaskGraph } from "../src/core/workflows/schemas.js";
 import { newId } from "../src/core/workflows/store.js";
 import { requestConflictDecision } from "../src/core/workflows/request-conflict.js";
+import { rowBlockFiles } from "../src/core/workflows/sizing.js";
 import {
   namesExactContent,
   notPrescribedFindings,
@@ -171,6 +172,24 @@ describe("a literal that describes rows is not a case to remove (#2524)", () => 
     expect(findings.map((f) => f.id)).toEqual(["NOT-PRESCRIBED-AC-009"]);
     expect(findings[0]?.description).toContain(JSON.stringify('["eval","--as","frac","7/3"]'));
     expect(findings[0]?.blocking).toBe(false);
+  });
+
+  // #2889, R95 windowgate scheduling AC-008: the criterion named the row files of the earlier
+  // validation feature (`InputRowsTest`, `LimitsRowsTest`, `ReadsRowsTest`), which the request
+  // prescribes and this feature's plan does not write; the names were noted as missing rows.
+  test("R95 windowgate: a criterion naming another feature's row files raises no note", () => {
+    const own = "src/test/kotlin/OptionsRowsTest.kt";
+    const other = ["InputRowsTest", "LimitsRowsTest", "ReadsRowsTest"].map((n) => `src/test/kotlin/${n}.kt`);
+    const kt = (path: string, n: number) => `\`\`\`kotlin\n// Rows in ${path} (${n} rows)\n${Array.from({ length: n }, (_, i) => `row("--opt${i}", "ok${i}"),`).join("\n")}\n\`\`\``;
+    const request = `Add scheduling.\n\n${[own, ...other].map((p) => kt(p, 2)).join("\n\n")}\n`;
+    const spec: Spec = {
+      ...fixtureSpec,
+      criteria: [criterion("AC-008", "the rows in `InputRowsTest`, `LimitsRowsTest` and `ReadsRowsTest` still pass"), R81],
+    };
+    const plan = [task("T008", [{ path: own, action: "create" }], ["AC-008", "AC-009"])];
+    const findings = notPrescribedFindings(spec, graph(plan), request, { checks });
+    expect(findings.map((f) => f.id)).toEqual(["NOT-PRESCRIBED-AC-009"]);
+    expect(rowBlockFiles(request)).toEqual([own, ...other]);
   });
 
   test("each R82 literal is cited, and how", () => {

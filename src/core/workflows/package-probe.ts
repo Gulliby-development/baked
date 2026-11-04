@@ -1,4 +1,6 @@
-import { basename } from "node:path";
+import { existsSync } from "node:fs";
+import { basename, join } from "node:path";
+import { toolchainCommand } from "./toolchain.js";
 
 /**
  * A package a check's program loads before it can do anything (#2817): an R package an `Rscript
@@ -8,10 +10,14 @@ import { basename } from "node:path";
  * package called 'styler'" and the run ended in repeated_failure.
  */
 export interface PackageNeed {
-  language: "r" | "powershell";
+  language: "r" | "powershell" | "swift";
   name: string;
-  /** The arguments, after the check's own program, that print `PACKAGE_PRESENT` when it loads. */
+  /** What it is, for a person: `the R package styler`. */
+  what: string;
+  /** The arguments, after the check's own program, that print `marker` when it loads. */
   probe: string[];
+  /** What the probe prints when the package is there: `PACKAGE_PRESENT` unless given. */
+  marker?: string;
   /** How the user installs it. */
   install: string;
 }
@@ -71,6 +77,7 @@ export function packageNeeds(check: {
       add({
         language: "r",
         name,
+        what: `the R package ${name}`,
         probe: [
           "-e",
           `if (requireNamespace('${name}', quietly = TRUE)) cat(paste0('${a}', '${b}'), '\\n')`,
@@ -87,6 +94,7 @@ export function packageNeeds(check: {
       add({
         language: "powershell",
         name,
+        what: `the PowerShell module ${name}`,
         probe: [
           "-NoProfile",
           "-NonInteractive",
@@ -97,7 +105,33 @@ export function packageNeeds(check: {
       });
     }
   }
+  // `swift format` is a subcommand only the Swift 6 toolchain bundles: a Swift 5 `swift` starts
+  // and fails every check and fixer with "unable to invoke subcommand" (#2817). Its lint help
+  // lists `--strict`, which the gate passes.
+  if (program === "swift" && check.args[0] === "format")
+    add({
+      language: "swift",
+      name: "swift-format",
+      what: "swift format (the swift-format tool)",
+      probe: ["format", "lint", "--help"],
+      marker: "--strict",
+      install: "a Swift 6 toolchain, which bundles swift format",
+    });
   return out;
+}
+
+/**
+ * The Composer `vendor/bin` script a check runs through `php` (`php vendor/bin/pint`) when it is
+ * not under `cwd` (#2817): `php` resolves, and the check fails with "Could not open input file"
+ * until `composer install` runs. Null for a check that runs no such script, or whose script is
+ * there.
+ */
+export function missingComposerScript(
+  check: { executable: string; args: readonly string[] },
+  cwd: string,
+): string | null {
+  const { script } = toolchainCommand(check.executable, check.args);
+  return script && !existsSync(join(cwd, script)) ? script : null;
 }
 
 /** Runs a probe: whether its output holds the marker. Unknown (a probe that does not run) is true. */
@@ -146,6 +180,11 @@ export function missingPackages(
   probe: PackageProbe = runPackageProbe,
 ): PackageNeed[] {
   return packageNeeds(check).filter(
-    (need) => !probe({ executable: check.executable, args: need.probe }, cwd, PACKAGE_PRESENT),
+    (need) =>
+      !probe(
+        { executable: check.executable, args: need.probe },
+        cwd,
+        need.marker ?? PACKAGE_PRESENT,
+      ),
   );
 }

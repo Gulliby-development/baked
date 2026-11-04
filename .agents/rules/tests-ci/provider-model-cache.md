@@ -1,0 +1,1 @@
+A test that replaces a registered provider's method (`fetchModels`, `checkAvailability` through `getProvider`) clears that provider's model cache with `invalidateProviderModelCache` (`src/core/llm/models.ts`) when it stubs and when it restores, because the cache lives for the whole test process and another file's models would answer instead of the stub (#2846).

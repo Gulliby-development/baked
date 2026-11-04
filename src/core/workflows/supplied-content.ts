@@ -9,7 +9,7 @@ import {
   writtenTestPaths,
 } from "../verification/criteria-cases.js";
 import type { Analysis, Spec, TaskGraph } from "./schemas.js";
-import { exactTextSections, suppliedBlocks, suppliedRows } from "./sizing.js";
+import { exactTextSections, rowBlockFiles, suppliedBlocks, suppliedRows } from "./sizing.js";
 import type { Task } from "./types.js";
 
 /**
@@ -166,6 +166,7 @@ function prescribedCases(
   const rows = prescribedRowFiles(request, graph);
   if (!rows.size) return [];
   const suppliedFiles = suppliedFileContents(request, graph);
+  const rowFiles = rowBlockFiles(request);
   return graph.tasks.flatMap((task) => {
     const paths = writtenTestPaths(task);
     // The rows give `citedKind` their counts: a criterion's "`12` rows" is no row's text (#2524).
@@ -174,6 +175,7 @@ function prescribedCases(
       tasks: graph.tasks,
       prescribedRows: rows,
       suppliedFiles,
+      rowFiles,
     });
     return cases.map((c) => ({
       task,

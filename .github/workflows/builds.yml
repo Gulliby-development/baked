@@ -191,6 +191,9 @@ jobs:
   windows:
     needs: scope
     runs-on: windows-latest
+    # A hung step otherwise holds the required check for GitHub's 6 h default and keeps the PR
+    # out of the merge queue (#2856's install step hung for 4.5 h).
+    timeout-minutes: 45
     steps:
       - name: Skip
         if: needs.scope.outputs.native != 'true'
@@ -237,6 +240,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Install silently and self-check
         if: needs.scope.outputs.native == 'true'
+        timeout-minutes: 10
         shell: pwsh
         run: |
           $version = (Get-Content package.json -Raw | ConvertFrom-Json).version

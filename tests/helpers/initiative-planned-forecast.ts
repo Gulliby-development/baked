@@ -121,7 +121,7 @@ function repository(root: string): void {
 
 export async function plannedForecastScenario(
   count: number, firstUsd: number | Record<string, number>, histories: string[],
-  options: { forecastStop?: boolean; stopModes?: RunPolicy["stopModes"]; mix?: Mix; skeleton?: boolean; capUsd?: number | null; maxTotalTokens?: number; extendWithinDollars?: "off" | "shadow" | "on"; planChargeExpected?: "off" | "shadow" | "on"; costTolerance?: number | "off"; approve?: boolean; globPaths?: boolean; tasks?: Record<string, number>; planAhead?: boolean } = {},
+  options: { forecastStop?: boolean; stopModes?: RunPolicy["stopModes"]; mix?: Mix; skeleton?: boolean; capUsd?: number | null; maxTotalTokens?: number; extendWithinDollars?: "off" | "shadow" | "on"; planChargeExpected?: "off" | "shadow" | "on"; costTolerance?: number | "off"; approve?: boolean; globPaths?: boolean; tasks?: Record<string, number>; planAhead?: boolean; fewPathPrice?: boolean } = {},
 ) {
   const skeleton = options.skeleton ?? true;
   const fixture = workflowFixture({ executor: (root) => new ScriptedExecutor(root, firstUsd, skeleton, options.mix, options.tasks) });
@@ -148,7 +148,7 @@ export async function plannedForecastScenario(
     let view = await initiatives.start({ commandId: newId(), initiativeId: "values", prompt: "Write values", ownerLabel: "test", model: MODEL,
       plan, keepFeatures: true, featureAutoApproval: { maxTasks: 5, maxFiles: 5 },
       ...(options.forecastStop ? { forecastStop: true } : {}),
-      policy: { ...fixturePolicy, clarification: "assume", ...(options.planAhead ? { executionMode: "worktree" as const } : {}), checks: [{ ...fixturePolicy.checks[0]!, args: ["-e", "0"] }], sizing: { maxRunTokens: 50_000_000, historyStores: histories },
+      policy: { ...fixturePolicy, clarification: "assume", ...(options.planAhead ? { executionMode: "worktree" as const } : {}), checks: [{ ...fixturePolicy.checks[0]!, args: ["-e", "0"] }], sizing: { maxRunTokens: 50_000_000, historyStores: histories, ...(options.fewPathPrice ? { fewPathPrice: true } : {}) },
         ...(options.stopModes ? { stopModes: options.stopModes } : {}) },
       budget: { maxTotalTokens: options.maxTotalTokens ?? 100_000_000, maxAgentCalls: 1000, maxActiveMs: 21_600_000 },
       ...(options.capUsd === null ? {} : { costBudget: { maxCostUsd: options.capUsd ?? 30, costTolerance: options.costTolerance ?? 0.25 } }),

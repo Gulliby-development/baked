@@ -135,7 +135,12 @@ describe("subprocess stdin isolation", () => {
 		try {
 			const env = buildSafeEnv();
 			env.GIT_ASKPASS = "/bin/false";
-			const proc = spawn("git", ["ls-remote", `http://127.0.0.1:${server.port}/missing.git`], {
+			// Only the prompt paths the safe env controls may answer the 401. The runner's own git
+			// config adds a credential helper (Git Credential Manager on windows-latest) that can
+			// stall past the timeout, and its child keeps the pipes open after git is killed (#2872).
+			env.GIT_CONFIG_NOSYSTEM = "1";
+			env.GIT_CONFIG_GLOBAL = process.platform === "win32" ? "NUL" : "/dev/null";
+			const proc = spawn("git", ["-c", "credential.helper=", "ls-remote", `http://127.0.0.1:${server.port}/missing.git`], {
 				stdio: SAFE_STDIO,
 				env,
 				timeout: 30_000,

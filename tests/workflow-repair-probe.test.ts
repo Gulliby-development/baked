@@ -10,6 +10,7 @@ import {
 } from "../src/core/verification/convergence.js";
 import { PROBE_TRIES, probeTool, runProbe, writesDocumentation } from "../src/core/verification/repro.js";
 import { WorkflowFault } from "../src/core/workflows/errors.js";
+import type { RepairBlock } from "../src/core/workflows/repairable.js";
 import { ProcessScope } from "../src/core/workflows/process-scope.js";
 import type { Review, RunPolicy, TaskGraph } from "../src/core/workflows/schemas.js";
 import type { WorkflowStore } from "../src/core/workflows/store.js";
@@ -162,6 +163,25 @@ describe("no-progress detection of repair rounds", () => {
     appendCorrections(store, "run", limited, { ...capped, maxRepairRounds: 3 }, failing(ONE), "repair");
     appendCorrections(atLimit, "run", limited, capped, failing(ONE), "repair");
     expect(Object.keys(limited.freshTasks)).toHaveLength(1);
+  });
+
+  // #2878: a refused correction leaves its findings recorded without a task, so the stop names
+  // them for the grant to hand to the next pass of the kind that raised them.
+  test("a round limit names the review and convergence findings it leaves without a task", () => {
+    const capped = { ...policy, maxRepairRounds: 0, maxConvergenceRounds: 0 } as RunPolicy;
+    const atLimit = { ...store, run: () => ({ repair_rounds: 0, convergence_rounds: 0, review_rounds: 0, corrective_tasks: 0 }) } as unknown as WorkflowStore;
+    const refused = (kind: "repair" | "convergence", scope: "round" | "review") => {
+      const state = { ...stateOf(), extraConvergenceRounds: 0 } as RuntimeState;
+      const findings = failing(ONE);
+      const stop = fault(() => appendCorrections(atLimit, "run", state, capped, findings, kind, scope));
+      return { ids: findings.map((f) => f.id), block: (stop?.details as { repairBlock?: RepairBlock }).repairBlock };
+    };
+    const review = refused("repair", "review");
+    expect(review.block).toMatchObject({ limit: "maxRepairRounds", scope: "review", stranded: { pass: "review", findingIds: review.ids } });
+    const convergence = refused("convergence", "round");
+    expect(convergence.block).toMatchObject({ limit: "maxConvergenceRounds", stranded: { pass: "convergence", findingIds: convergence.ids } });
+    // A failed check's finding closes when the check passes; it needs no hand-over.
+    expect(refused("repair", "round").block?.stranded).toBeUndefined();
   });
 
   test("fewer failures count as progress", () => {

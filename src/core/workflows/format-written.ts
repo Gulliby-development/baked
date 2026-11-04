@@ -8,7 +8,12 @@ import { cwdPath, isCodePath } from "./check-policy.js";
 import { unresolvedChecks } from "./check-preflight.js";
 import { detectGates } from "./gates.js";
 import { programName } from "./launcher.js";
-import { missingPackages, type PackageProbe, runPackageProbe } from "./package-probe.js";
+import {
+  missingComposerScript,
+  missingPackages,
+  type PackageProbe,
+  runPackageProbe,
+} from "./package-probe.js";
 import { PS_FORMAT_CHECK, PS_FORMAT_FIX } from "./ps-format.js";
 import { stripComments } from "./quality/code-mask.js";
 import { STYLER_CHECK_FILES, STYLER_FIX } from "./r-tools.js";
@@ -354,6 +359,20 @@ function formatterCommand(check: Pick<Check, "executable" | "args">): {
 }
 
 /**
+ * Whether a check runs a formatter: a `FILE_FORMATTERS` row's, `cargo fmt`, `rustfmt` or `gofmt` in
+ * any mode (`-l`, `-d`). Such a check fails by printing a diff or a list of files, which names no
+ * failure word, so `silentRerun` must not read its failure as a toolchain crash (#2829).
+ */
+export function runsFormatter(check: Pick<Check, "executable" | "args">): boolean {
+  const { program, args } = formatterCommand(check);
+  if ((program === "cargo" && args[0] === "fmt") || program === "rustfmt" || program === "gofmt")
+    return true;
+  return Object.keys(FILE_FORMATTERS).some((language) =>
+    (rowOf(FILE_FORMATTERS, language) ?? []).some((f) => f.runs(program, args)),
+  );
+}
+
+/**
  * A formatter check's command on one file alone, run from the check's directory, so a whole-tree
  * run that timed out can name the file the formatter hangs on (#2240: rustfmt never finished on a
  * 20-deep nested literal). The language's `FILE_FORMATTERS` row, or for `cargo fmt` (which has no
@@ -374,7 +393,7 @@ export function fileScopedFormat(
     const edition = cargoEdition(join(dir, path));
     return {
       executable: check.executable.replace(/cargo(\.exe)?$/i, "rustfmt$1"),
-      args: ["--check", ...(edition ? ["--edition", edition] : []), path],
+      args: ["--check", "--color=never", ...(edition ? ["--edition", edition] : []), path],
     };
   }
   // The task-end rustfmt check (`rustFormatWrittenCheck`) on one of its files.
@@ -703,6 +722,8 @@ function formatWrittenOf(
       // Rscript or pwsh on the PATH without styler or PSScriptAnalyzer fails every check and
       // fixer just the same (#2817).
       if (needsMissing(gate.check, join(root, gate.check.cwd ?? "."))) continue;
+      // `php vendor/bin/pint` before `composer install`: php resolves, the script is not there.
+      if (missingComposerScript(gate.check, join(root, gate.check.cwd ?? "."))) continue;
       const found: Check[] = [];
       // The check runs in the gate's cwd: it holds only the files under it, named from there
       // (`fixPaths` stay workspace paths, as the host matches them).
@@ -818,7 +839,8 @@ export function rustFormatWrittenChecks(
       ...gate,
       id: `rustfmt-written${i ? `-${String(i + 1)}` : ""}`,
       executable: rustfmt,
-      args: ["--check", ...flags, ...paths.map((path) => cwdPath(gate, path))],
+      // rustfmt colours its diff under a colour TERM whatever NO_COLOR says (#2830).
+      args: ["--check", "--color=never", ...flags, ...paths.map((path) => cwdPath(gate, path))],
       fix: { executable: rustfmt, args: flags },
       fixPaths: paths,
       required: true,
