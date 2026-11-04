@@ -25,7 +25,8 @@ describe("check diagnostics under a configured worktree root (#2731)", () => {
   const run = runRoots("/home/me/app", { worktree: { path: "../../../.bk/0a1b2c3d/main" } } as never);
 
   test("runRoots names the run's directory under the root", () => {
-    expect(run.worktrees).toBe("/.bk/0a1b2c3d");
+    // `join` spells it with the platform separator (`\.bk\0a1b2c3d` on Windows).
+    expect(run.worktrees?.replaceAll("\\", "/")).toBe("/.bk/0a1b2c3d");
   });
 
   test("a path in another worktree of the run and in the project is workspace-relative", () => {
